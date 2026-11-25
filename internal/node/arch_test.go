@@ -517,12 +517,12 @@ func settingsImports(_ string, files []fileImports) ([]string, error) {
 // whole files.
 //
 // decision: the link check lists the two binaries that ship, ./cmd/dfs and
-// ./cmd/dfsctl, as they are released: once per shipped GOOS, with cgo off,
-// on the host's GOARCH and with no build tags. The other mains (the rest of
+// ./cmd/dfsctl, as they are released: once per shipped GOOS and GOARCH, with
+// cgo off and with no build tags. The other mains (the rest of
 // cmd, test/spec-citations, scripts, the */gen and *gen generators) do not
 // ship and may link test helpers. Widen it when a shipped binary is added,
-// when the release turns cgo on or adds a GOOS, or when a file that ships
-// carries a GOARCH or tag constraint that could link a test-named package.
+// when the release turns cgo on or adds a GOOS or GOARCH, or when a file that
+// ships carries a tag constraint that could link a test-named package.
 // The build tags are set empty on go list's command line, which overrides a
 // -tags in GOFLAGS, from the environment or from go env -w alike.
 func weakKeyCallers(root string, _ []fileImports) ([]string, error) {
@@ -613,29 +613,36 @@ func refersToWeakKey(f *ast.File, self bool) bool {
 	return found
 }
 
-// shippedGOOS are the systems the release builds dfs and dfsctl for.
-var shippedGOOS = []string{"linux", "darwin", "windows"}
+// shippedTargets are the GOOS and GOARCH pairs the release
+// builds dfs and dfsctl for, as .goreleaser.yml lists them.
+var shippedTargets = [][2]string{
+	{"linux", "amd64"}, {"linux", "arm64"},
+	{"darwin", "amd64"}, {"darwin", "arm64"},
+	{"windows", "amd64"}, {"windows", "arm64"},
+}
 
 // linkedTestPackages returns each package of the module rooted at root whose
-// name ends in test and which dfs or dfsctl links, for any shipped GOOS.
+// name ends in test and which dfs or dfsctl links, for any shipped GOOS and
+// GOARCH.
 func linkedTestPackages(root string) ([]string, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
 	}
 	seen := map[string]bool{}
-	for _, goos := range shippedGOOS {
+	for _, target := range shippedTargets {
+		goos, goarch := target[0], target[1]
 		cmd := exec.Command("go", "list", "-tags=", "-deps", "-f", "{{if and .Module .Module.Main}}{{.Name}} {{.Dir}}{{end}}", "./cmd/dfs", "./cmd/dfsctl")
 		cmd.Dir = abs
 		// The planted trees are modules of their own, outside any workspace.
 		// cmd.Environ sets PWD to cmd.Dir, so go list reports .Dir under abs
 		// even when root is reached through a symlink.
-		cmd.Env = append(cmd.Environ(), "GOWORK=off", "GOOS="+goos, "CGO_ENABLED=0")
+		cmd.Env = append(cmd.Environ(), "GOWORK=off", "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()
 		if err != nil {
-			return nil, fmt.Errorf("go list -deps ./cmd/dfs ./cmd/dfsctl for %s: %w: %s", goos, err, stderr.String())
+			return nil, fmt.Errorf("go list -deps ./cmd/dfs ./cmd/dfsctl for %s/%s: %w: %s", goos, goarch, err, stderr.String())
 		}
 		for line := range strings.Lines(string(out)) {
 			name, dir, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " ")
@@ -718,6 +725,8 @@ func TestImportRules(t *testing.T) {
 				"internal/dot/dot.go references GenerateWeakKeyFile",
 				"internal/dotvalue/value.go references GenerateWeakKeyFile",
 				"internal/install/weak.go references GenerateWeakKeyFile",
+				"pkg/amdtest is named amdtest and linked into a binary",
+				"pkg/armtest is named armtest and linked into a binary",
 				"pkg/attest is named attest and linked into a binary",
 				"pkg/keyprovider/keyprovider.go references GenerateWeakKeyFile",
 				"pkg/store/store.go references GenerateWeakKeyFile",
