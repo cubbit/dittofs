@@ -628,13 +628,16 @@ it:
 - **The filesystem service**, which composes the metadata store, open state,
   identity and the engine into the one API the adapters call. It holds a
   component concretely where only one implementation exists
-  ([RFC 17](rfc-17-vfs.md)), and is imported only by the adapters and the node.
+  ([RFC 17](rfc-17-vfs.md)), and its implementation is imported only by the
+  node; the adapters import its contract.
 
 A component **MAY** import another component's contract. A contract holds no
-behaviour beyond pure methods on its own value types, keeps no state, and
-imports only the standard library, libraries outside this set and other
-contracts, so importing one brings in no component's behaviour and no cycle. A component that offers a contract keeps it in a unit
-of its own, apart from its implementation. A unit that holds a contract and an
+behaviour beyond pure functions and methods over its own value types and
+constructors that mint a new value of one, such as a random identifier; it
+keeps no state, and imports only the standard library, libraries outside this
+set and other contracts, so importing one brings in no component's behaviour
+and no cycle. A component that offers a contract keeps it in a unit of its
+own, apart from its implementation. A unit that holds a contract and an
 implementation together counts as an implementation, and no exception is named:
 until its contract is split out, only the composers import it, and a component
 that needs what it holds gets plain values or an interface from the composer.
