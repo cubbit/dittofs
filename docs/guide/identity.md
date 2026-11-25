@@ -9,7 +9,7 @@ and NFS**. This covers the two halves of AD integration:
   (the `idmap_ad` model) or deriving them algorithmically from the RID
   (`idmap_rid`), and resolves nested group membership.
 - **Kerberos** — accepts Kerberos service tickets for the server's SPN over both
-  SMB (SPNEGO) and NFS (RPCSEC_GSS), from a single service keytab. NTLM remains
+  SMB (SPNEGO), and NFS (RPCSEC_GSS) once it is served (not yet: v2 answers it with `AUTH_BADCRED`), from a single service keytab. NTLM remains
   available as a fallback for SMB.
 
 > **Status.** AD/LDAP/Kerberos support is functional but the project is **not
@@ -43,7 +43,7 @@ The two providers play complementary roles:
 
 | Provider | What it does | When it applies |
 |---|---|---|
-| **Kerberos** | Authenticates the ticket (SMB SPNEGO / NFS RPCSEC_GSS), yields a principal + PAC group SIDs | At session/RPC auth time |
+| **Kerberos** | Authenticates the ticket (SMB SPNEGO; NFS RPCSEC_GSS is not served yet), yields a principal + PAC group SIDs | At session/RPC auth time |
 | **LDAP idmap** | Maps the principal / SID to a Unix UID/GID + group GIDs | When resolving the authenticated identity to POSIX |
 
 You can enable LDAP alone (idmap for NTLM/AUTH_UNIX-named principals), Kerberos
@@ -320,7 +320,7 @@ Server walkthrough including per-user "mount on login", see
 
 ## Part C: Configure Kerberos
 
-Kerberos backs both NFS RPCSEC_GSS and SMB SPNEGO from a single service keytab.
+Kerberos backs SMB SPNEGO from a single service keytab, and NFS RPCSEC_GSS once it is served (v2 answers it with `AUTH_BADCRED` for now).
 **Kerberos changes are restart-required** — the NFS/SMB adapters bind the
 config at startup.
 
@@ -373,7 +373,7 @@ samba-tool domain exportkeytab /etc/dittofs/dittofs.keytab \
 ```
 
 Point `kerberos.keytab_path` at the combined keytab. The SMB handler selects the
-`cifs/` principal; NFS RPCSEC_GSS uses the `nfs/` principal.
+`cifs/` principal; NFS RPCSEC_GSS, once served, uses the `nfs/` principal.
 
 ### Domain-aware SMB
 

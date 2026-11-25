@@ -225,9 +225,11 @@ curl -k https://localhost:8080/health/live
 ```
 
 `dittofs-blocks` carries the journal, which holds the only copy of every byte that has not
-reached the block store yet — never leave it in the container's writable layer. These
-volumes only receive data if the config points at directories on them, never at their
-mount points: set `metadata.badger.path` to `/data/metadata/store` and list
+reached the block store yet — never leave it in the container's writable layer. With
+`XDG_STATE_HOME=/data/state` in every image, `dittofs-state` fills with no config at all: the
+log, the runtime directory and, when `metadata.badger.path` is unset, the Badger store
+(`metadata` under the state directory). `dittofs-metadata` and `dittofs-blocks` only receive
+data if the config points at directories on them, never at their mount points: set `metadata.badger.path` to `/data/metadata/store` and list
 `/data/blocks/journal` under `journals` (the image creates that directory; `dfs init` needs
 it to exist). The container starts with no stores
 and no shares; create them with `dfsctl` (see the [CLI reference](cli.md)) or use the
@@ -418,6 +420,7 @@ docker run --rm -e DFS_ADMIN_PASSWORD=my-secure-password \
   -v ./foundationdb:/etc/foundationdb \
   -v ./keys:/config/keys \
   -v dittofs-blocks:/data/blocks \
+  -v dittofs-state:/data/state \
   marmos91c/dittofs:vX.Y.Z-foundationdb init --config /config/config.yaml \
   --admin-password-env DFS_ADMIN_PASSWORD
 ```

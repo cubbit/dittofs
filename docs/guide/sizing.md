@@ -20,8 +20,9 @@ replicas against the same data, so "sizing" means sizing a single server.
 
 All file content lives on the node's journal devices (the `journals` list): no remote
 block store is wired to the engine yet, and the remote tier returns with
-[RFC 4](../internals/rfcs/rfc-4-remote-tier.md). The topology is **badger metadata + the
-journal devices**, all on the one box.
+[RFC 4](../internals/rfcs/rfc-4-remote-tier.md). The default build's topology is **badger metadata + the
+journal devices**, all on the one box; with the `foundationdb` build the metadata sits in the
+FoundationDB cluster instead, and the journal devices stay on the node.
 
 ## What drives each resource
 

@@ -53,7 +53,7 @@ DittoFS supports **NFSv3 over TCP** (28 procedures fully implemented), **NFSv4.0
 - Compound operations and sessions
 - File and directory delegations with CB_NOTIFY
 - ACLs (Access Control Lists)
-- Kerberos authentication via RPCSEC_GSS
+- Kerberos authentication via RPCSEC_GSS (not served yet: v2 answers RPCSEC_GSS with `AUTH_BADCRED`)
 
 ### Does it support file locking?
 
@@ -80,7 +80,7 @@ with no NLM/portmapper setup. See [NFS.md](nfs.md#nfsv3-file-locking-nlmnsm).
 
 ### Does it support Kerberos authentication?
 
-Yes. NFSv4 supports Kerberos via RPCSEC_GSS, and SMB supports Kerberos via SPNEGO alongside NTLM.
+SMB does: Kerberos via SPNEGO alongside NTLM. NFS Kerberos (RPCSEC_GSS) is not served yet: v2 answers RPCSEC_GSS with `AUTH_BADCRED`, so `sec=krb5` mounts fail.
 
 ### Can I implement my own protocol adapter?
 
