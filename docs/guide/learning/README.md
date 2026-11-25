@@ -2,7 +2,8 @@
 
 Slide decks that explain DittoFS RFCs in plain language, with clickable terms, a
 glossary, and small animations where a picture moves better than it reads. They
-are served as static HTML under `/learn-dittofs/`.
+are published as static HTML at
+<https://dittofs-learning.s3.cubbit.eu/index.html>.
 
 This file is the guideline: how the tree is laid out, how a deck is built, and
 the rules that keep a simplified explanation from becoming a wrong one. A skill
@@ -14,35 +15,23 @@ that generates decks will be distilled from it once the first deck exists.
 > metadata store (RFC 16), the engine (RFC 8), the journal (RFC 1) and the test
 > harness (RFC 29), in English, Italian and Brazilian Portuguese.
 
-## Serving
-
-```bash
-docs/guide/learning/serve.sh            # http://127.0.0.1:8765/learn-dittofs/
-PORT=9000 docs/guide/learning/serve.sh
-```
-
-It is `python3 -m http.server` rooted at `docs/guide/learning/`, bound to
-`127.0.0.1`, so only this machine can open the decks. To serve them to other
-machines, opt in with `BIND=0.0.0.0 docs/guide/learning/serve.sh`. A server is
-required rather than opening the file: decks load their strings and glossary
-with `fetch`, which browsers refuse over `file://`.
-
 ## Publishing
 
 `.github/workflows/learning-pages.yml` mirrors `learn-dittofs/` to the
 `dittofs-learning` bucket on Cubbit DS3 whenever a push to `develop` changes it,
 and the site is then at <https://dittofs-learning.s3.cubbit.eu/index.html>. The
 bucket serves objects, not directories: `intro/` is not resolved to
-`intro/index.html` as `serve.sh` resolves it. So a link to a page names its
-file, `rfcs/rfc-8-engine/index.html`, never just its directory.
+`intro/index.html`. So a link to a page names its file,
+`rfcs/rfc-8-engine/index.html`, never just its directory. Opening a deck from
+the checkout over `file://` does not work: decks load their strings and
+glossary with `fetch`, which browsers refuse there.
 
 ## Layout
 
 ```text
 docs/guide/learning/
 ├── README.md                  this file
-├── serve.sh                   local HTTP server
-└── learn-dittofs/             served at /learn-dittofs/
+└── learn-dittofs/             published to the bucket root
     ├── index.html             home page: one card per section
     ├── decks.json             the sections it lists, in order: id, deck path, RFC
     ├── shared/                the runtime every deck loads

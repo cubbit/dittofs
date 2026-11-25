@@ -4314,7 +4314,7 @@ invertible. Every wire-to-neutral decoder, and each adapter's decoder of its
 `Adapter` bytes — truncated, corrupt, of an older or newer version — has a
 native fuzz target (`testing.F`): it never panics, and yields a valid neutral
 request or a refusal, never a misread. The protocol rows are RFC 21's and
-RFC 22's; pynfs, smbtorture, WPTS, cthon04 and nfstest through `dt`
+RFC 22's; pjdfstest, pynfs, smbtorture, WPTS, cthon04 and nfstest through `dt`
 ([RFC 29](rfc-29-test-harness.md#4.3%20Tiers)) are the end-to-end layer.
 
 These boundary checks run per change:
