@@ -134,14 +134,15 @@ func TestNoCallBesideTheTable(t *testing.T) {
 		"Handle":                     true,
 		"Overlapped":                 true,
 		"ByHandleFileInformation":    true,
-		"UTF16PtrFromString":         true,
-		// A conversion of a buffer to a string, the handle sentinel and an
-		// error constant: none makes a system call.
-		"UTF16ToString":        true,
-		"InvalidHandle":        true,
-		"ERROR_INVALID_HANDLE": true,
-		"Errno":                true,
-		"ENOSPC":               true,
+		// Windows: the conversion of a path to UTF-16, which makes no system
+		// call, sizes the path-call's buffer beside the constant.
+		"StringToUTF16":      true,
+		"UTF16PtrFromString": true,
+		// A conversion of a buffer to a string, and the errno type and ENOSPC
+		// a full volume is matched with: none makes a system call.
+		"UTF16ToString": true,
+		"Errno":         true,
+		"ENOSPC":        true,
 	}
 	raw := map[string]bool{
 		"golang.org/x/sys/unix":    true,

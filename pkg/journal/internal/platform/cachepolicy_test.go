@@ -144,12 +144,6 @@ func TestCheckWriteCachePolicy(t *testing.T) {
 			answer: append(with(flushingOff(), 4, 0x20), 0x00, 0x00, 0x00, 0x00),
 		},
 		{
-			// The smallest Version that holds the field, 26 bytes. Fails if
-			// a Version of 26 is read as ending before offset 25.
-			name:   "flushing off refuses at version 26",
-			answer: with(flushingOff(), 0, 0x1a),
-		},
-		{
 			// The smallest Size and the fewest bytes that hold the field:
 			// Size 26 and 26 bytes returned. Fails if a Size of 26, or 26
 			// bytes, are read as cut short.
@@ -174,6 +168,14 @@ func TestCheckWriteCachePolicy(t *testing.T) {
 			// Fails if FlushCacheSupported, offset 24 and set here, is read
 			// as the policy.
 			name:   "flushing on passes",
+			answer: flushingOn(),
+		},
+		{
+			// The boundary of the "cut short" error below: 28 is the Version
+			// of the one published layout, which the verdict answers and not
+			// errors on. Fails if the error's floor is read as inclusive, so
+			// that this Version begins it.
+			name:   "the published structure's version 28 passes",
 			answer: flushingOn(),
 		},
 		{
@@ -215,31 +217,6 @@ func TestCheckWriteCachePolicy(t *testing.T) {
 				volume:     testVolume,
 				queryErr:   1,
 			},
-		},
-		{
-			// An older structure: Version "Contains the size of this
-			// structure" and "will change as members are added to the
-			// structure" (the Learn page above). Version 25 ends before
-			// UserDefinedPowerProtection at offset 25, so it does not report
-			// the policy.
-			name: "version 25 ends before the field",
-			p: cacheProbeOf([]byte{
-				0x19, 0x00, 0x00, 0x00, // Version: 25
-				0x19, 0x00, 0x00, 0x00, // Size: 25
-				0x02, 0x00, 0x00, 0x00, // WriteCacheType
-				0x02, 0x00, 0x00, 0x00, // WriteCacheEnabled
-				0x01, 0x00, 0x00, 0x00, // WriteCacheChangeable
-				0x02, 0x00, 0x00, 0x00, // WriteThroughSupported
-				0x01, // FlushCacheSupported
-			}),
-		},
-		{
-			// Version 25 with 28 bytes returned whose byte 25 is set: the
-			// byte lies past the structure Version describes, so it is not
-			// the policy. Fails if a Version of 25 is read as holding the
-			// field.
-			name: "version 25 with a set byte past it",
-			p:    cacheProbeOf(with(flushingOff(), 0, 0x19)),
 		},
 	}
 
@@ -321,6 +298,38 @@ func TestCheckWriteCachePolicy(t *testing.T) {
 			// short of the field.
 			name:   "one byte short of size 26",
 			answer: with(flushingOff(), 4, 0x1a)[:25],
+		},
+		{
+			// Version "Contains the size of this structure" and "will change
+			// as members are added to the structure" (the Learn page above),
+			// and 28 is every layout published: a Version below it is no
+			// structure a driver ever wrote, cut short rather than passed as
+			// "not reported". Version 27 misses only the padding — 25 ended
+			// before the field — so the error begins one byte before the one
+			// published layout. Fails if such a Version is read as reporting
+			// the policy or as "not reported".
+			name:   "version 27 under the published structure",
+			answer: with(flushingOff(), 0, 0x1b),
+		},
+		{
+			// Version 26: the row a reader of the old rule could mistake the
+			// field's first whole Version for. Fails the same way.
+			name:   "version 26 under the published structure",
+			answer: with(flushingOff(), 0, 0x1a),
+		},
+		{
+			// Version 25, 25 bytes returned: what the "not reported" rows
+			// used to pass. Fails rather than passing now.
+			name:   "version 25 ends before the field",
+			answer: with(flushingOff(), 0, 0x19)[:25],
+		},
+		{
+			// Version 25 with 28 bytes returned whose byte 25 is set: the
+			// byte lies past the structure such a Version describes, and
+			// such an answer is cut short, whatever its bytes say. Fails if a
+			// Version of 25 is read as holding the field.
+			name:   "version 25 with a set byte past it",
+			answer: with(flushingOff(), 0, 0x19),
 		},
 		{
 			// Version 28 holds the field, but Size 25, the total of the data
