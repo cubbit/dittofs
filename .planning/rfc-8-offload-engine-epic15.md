@@ -873,10 +873,16 @@ A suggestion only: one pull request per subtask works as well.
   node composes only in the integration epic. The options:
   - **A (recommended):** this epic adds the three members, refused at `New`, and pulls the node's
     composition of the provider and the stores forward from the integration epic, about 1.5
-    man-days moved, not added; the node then builds each with what it ships.
+    man-days moved, not added; the node then builds each with what it ships. The fixture composes
+    all three whatever a row asks, and `Puts` resolves a store only when a put is built, so the
+    first part's rows still bind. Its cost is plan rule 12: nothing in `pkg/engine` calls the
+    members before epic 16. It is recommended because the programme asked this epic to add the
+    three declarations to `Deps`.
   - **B:** the three members join `Deps` with epic 16, whose offload source is the first engine
     code to hand them to `Run`; this epic tests `offload/` through `offload.Deps` alone, and the
-    node's gap moves to epic 16 unchanged.
+    node's gap moves to epic 16 unchanged. It meets rule 12 exactly and moves T15.5's fixture and
+    wiring work, and the 41 messages' rewrite, into epic 16 (about 1.5 man-days out of this epic),
+    so the messages are rewritten once. The review passes recommended it.
   - **C:** the members join here, and `New` accepts them nil until the node composes them, a nil
     member running no pass, with a `decision:` at `New`: a departure from RFC 8 §2.1's MUST, which
     makes "no offload" a reachable state of a live share.
@@ -888,6 +894,10 @@ A suggestion only: one pull request per subtask works as well.
   agreement test the fake's other calls have and says so in its pull request.
 - **`Stats.Carver` is a field epic 11 did not freeze** (D14). It is additive; the S1 reviewers were
   not asked about it.
+- **Needs on other epics and plans.** The RFC 5 plan's epic 2: `keystest`'s provider exports a count
+  of attempts outstanding, covered by its suite (T15.9's R29). Epic 11's T11.5 lists `MarkOffloaded`
+  under this epic; its first caller is epic 19's reseed (§1.2), and epic 11's document is not
+  revised here. Epic 16's document takes the "O2 long outage" row (below).
 - **The "O2 long outage" row** of RFC 8 §6.3's checks asserts the put-unhealthy pause, epic 16's,
   so epic 16 carries it, though the plan's epic 15 lists it.
 - **The §6.3 check table's O6 leg "a source with `Deadline` 10 s"** checks the scheduler's
