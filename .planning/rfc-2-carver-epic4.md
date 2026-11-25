@@ -60,7 +60,7 @@ one BLAKE3 hasher that allocates nothing and starts no goroutine at any chunk si
   §10.2 is cut correctly or refused (T4.6);
 - every stretch shape and buffer edge of RFC 2 §10.2 passes through `Cut` (T4.7);
 - the fault sweep and a fuzzed property of C1, C4 and C7 across two buffer sizes and every content
-  kind run, the sweep reduced under `-short` (T4.8).
+  kind run, the sweep reduced unless its full-size flag is set (T4.8).
 
 ### 1.1 In scope
 
@@ -135,7 +135,7 @@ title and not copied.
 | rule 6, known failures shrink | none | `unit` and `fuzz` keep no `known.yaml`; every test lands green, each seen to fail on its planted break before the pull request opens |
 | rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | T4.1, T4.4 | `internal/blake3` is a library outside the component set, imports the standard library and its chosen backing alone, and has its own import and structure tests (D1); `carve`'s row gains `internal/chunker`, `internal/blake3` and the backing's import path, and `section`'s row the same, since it reaches what `carve` does; `params` imports nothing new (D2), so the chunker's row is unchanged. v1's `pkg/block/carver` is not read |
 | rule 8, real dependencies for properties of those dependencies | T4.1 | the hasher is held to BLAKE3's published vectors through E2's `TestBLAKE3Modes`, not to a fake, and against `lukechampine.com/blake3` itself past their longest input; its cost is measured on amd64 and arm64 by T4.1, and its vectors run on arm64 nightly through E2's tests in E7's cell. The reference box is E7's |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T4.1, T4.2, T4.4, T4.5 | `decision:` markers for D1 at `internal/blake3`'s package doc, D2 at `params.WithChunkIDKey`, D3 and D4 at `Cut`'s fill loop, D5 at the artificial-end stop |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T4.1, T4.2, T4.4, T4.5, T4.8 | `decision:` markers for D1 at `internal/blake3`'s package doc, D2 at `params.WithChunkIDKey`, D3 and D4 at `Cut`'s fill loop, D5 at the artificial-end stop, D6 at the `-carver.sweep-full` flag |
 | rule 10, a test must be able to fail | all | each test names its planted break: a key byte changed, two hashes swapped, a refill that drops a byte, an artificial end that cuts its tail, a short chunk emitted on error, a reader's empty reads unbounded |
 | rule 11, a symbol is exported only if the RFC's interface uses it | T4.1, T4.2 | none joins S1's frozen surface. `internal/blake3` exports `Hasher` and its `InitKeyed`, `InitDeriveKey`, `Write` and `Sum256` for its two consumers, `carve` and the RFC 5 plan's epic 5. No RFC interface names them, so this is an exception to the rule's letter: they are a library's surface inside the module, exported only because Go's package boundary needs it. `params` gains two package functions inside the carver's tree |
 | rule 12, each subtask creates only what it declares | all | `internal/blake3` lands with `ChunkID`, its first consumer, named in T4.1; the measurement's losing candidate is not committed; `params` grows only the key `ChunkID` reads |
@@ -217,7 +217,7 @@ which.
 | R35 | The same input through two buffer sizes gives identical output | test row | RFC 2 §10.3 ("the property tests run the same input with two buffer sizes and require identical output") | T4.8 |
 | R36 | C1, C4 and C7 are fuzzed properties over random input and random valid settings, asserting on what `emit` saw; fuzzing past the seeds runs in the shared nightly fuzz suite and the seeds in `unit`. C2 and C3 are E3's | invariant | RFC 2 §10.1 (Properties), §10.6; RFC 2 plan, §1.4 (the `fuzz` suite), epic 4's expected content ("property fuzzing of C1, C4, C7") | T4.8 |
 | R38 | Two implementations over the same random input emit identical chunks: `Cut` and the reference chunker over E2's tables agree on every end | MUST | RFC 2 §10.1 (Differential), §1.3; RFC 2 plan, §1.4 | T4.4, T4.8 |
-| R37 | Under `-short` only the fault sweep runs reduced: every chunk end and buffer refill, one byte either side, and a seeded sample of other offsets, at the smallest `Target`; the full sweep runs nightly | bound | RFC 2 plan, D8; RFC 2 §10.6 | T4.8 |
+| R37 | Only the fault sweep runs reduced in a per-change run: every chunk end and buffer refill, one byte either side, and a seeded sample of other offsets, at the smallest `Target`; the full sweep runs in no per-change run, only nightly | bound | RFC 2 plan, D8; RFC 2 §10.6 | T4.8 |
 
 How each row is enforced once this epic lands, where no test of this epic can break it: R1's
 transitive walk by E1's `imports_test.go`, which T4.4 extends, and `pkg/transform`'s admission of
@@ -331,11 +331,15 @@ size to choose (RFC 2 §1.2, the RFC 8 offload plan's epic 15).
 - **D6, the fault sweep is sized as the RFC 2 plan's D8 says.** The stretch is 640 KiB of seeded
   random bytes at the smallest `Target`, 64 KiB (`Min` 16 KiB, `Max` 256 KiB), through a buffer of
   `Max` bytes: about ten chunks, and since a buffer of exactly `Max` refills after nearly every
-  chunk (D3), about ten refills. Under `-short`, the reader
+  chunk (D3), about ten refills. By default the reader
   fails one byte before, at and after every chunk end and every refill, and at 256 offsets drawn
-  from a fixed seed; without it, at every one of the 655,360 offsets, each followed by a retry,
-  which E7 runs nightly. `emit` fails at every chunk in both. Prior art: the RFC 2 plan's D8;
-  `testing.Short()` in the standard library's tests (from memory). Applied by T4.8.
+  from a fixed seed; only when the test flag `-carver.sweep-full` is set, at every one of the
+  655,360 offsets, each followed by a retry, which E7's T7.4 runs nightly. The flag, not
+  `testing.Short()`, decides it: `unit` passes `-short` only on pull requests, so a sweep keyed on
+  `-short` would run at full size under `-race` in `unit` after every merge and time it out. The
+  flag is declared in `carve`'s test files with `flag.Bool`, with a `decision:` saying so. `emit`
+  fails at every chunk in both. Prior art: the RFC 2 plan's D8; E7's D6; test-only flags such as
+  `-update` for golden files (from memory). Applied by T4.8.
 
 - **D7, `FuzzCut` fuzzes the generator's parameters.** A seed, a content kind of E2's, a length up
   to 4 × `Max`, an index into `carvetest.Targets`, whether the table is keyed, a `base`, a buffer of
@@ -375,7 +379,8 @@ pkg/carver/
                                  TestAllocsCut
     bench_test.go          T4.4  BenchmarkCut (K2, K3)
     end_test.go            T4.5  the artificial end
-    errors_test.go         T4.6, T4.8  failAt, stall, the awkward readers; TestFaultSweep (D6)
+    errors_test.go         T4.6, T4.8  failAt, stall, the awkward readers; TestFaultSweep and its
+                                       -carver.sweep-full flag (D6)
     edges_test.go          T4.7  stretch shapes and buffer edges
     fuzz_test.go           T4.8  FuzzCut (D7)
 test/suites.yaml           T4.1, T4.8  carver-allocs reaches ./internal/blake3; FuzzCut's line of
@@ -535,10 +540,13 @@ test/suites.yaml           T4.1, T4.8  carver-allocs reaches ./internal/blake3; 
   - `carve`'s rows in E1's `imports_test.go` admit `internal/chunker`, `internal/blake3` and the
     backing's import path, and `section`'s row the same, since it reaches what `carve` reaches.
   - `TestAllocsCut`, which joins `carver-allocs` by its name.
-  - `BenchmarkCut`: per entry of `carvetest.Targets`, sub-benchmarks `Random` (K2), `BLAKE3` (the
-    same bytes through `internal/blake3`'s keyed hash in `Target`-sized pieces, K2's baseline),
-    `Zeros` and `Period64` (K3), each over 64 MiB built before `b.ResetTimer`, with `b.SetBytes` and
-    `b.ReportAllocs`. Consumed by E7, which runs it as K2 and K3.
+  - `BenchmarkCut`: per entry `t` of `carvetest.Targets`, a sub-benchmark named `strconv.Itoa(t)`,
+    holding four named `Random` (K2), `BLAKE3` (the same bytes through `internal/blake3`'s keyed
+    hash in `Target`-sized pieces, K2's baseline), `Zeros` and `Period64` (K3), so the full names
+    are `BenchmarkCut/<Target>/<Random|BLAKE3|Zeros|Period64>`, as `BenchmarkCut/262144/BLAKE3`.
+    The names are a contract E7's checker reads (E7's T7.1). Each runs over 64 MiB built before
+    `b.ResetTimer`, with `b.SetBytes` and `b.ReportAllocs`. Consumed by E7, which runs it as K2
+    and K3.
 - **Acceptance criteria:**
   - Every golden of `carvetest.LoadBoundaries`, unkeyed and keyed, is reproduced by `Cut`, ends and
     hashes, through buffers of `Max` and 2 × `Max` bytes.
@@ -654,8 +662,9 @@ test/suites.yaml           T4.1, T4.8  carver-allocs reaches ./internal/blake3; 
 - **Track:** B. **Depends on:** T4.6, T4.7.
 - **Covers:** R14, R15, R23, R26, R27, R28, R29, R33 to R38.
 - **Deliverables:**
-  - `TestFaultSweep` in `errors_test.go`, sized by D6, over T4.6's `failAt`. Consumed by E7, whose
-    nightly cell runs it without `-short`.
+  - `TestFaultSweep` in `errors_test.go`, sized by D6, over T4.6's `failAt`, and the test flag
+    `-carver.sweep-full` that runs it at full size, with D6's `decision:`. Consumed by E7's T7.4,
+    whose nightly cell sets the flag.
   - `FuzzCut` (D7) with `f.Add` seeds covering every content kind of E2's, both tables, three
     profiles, both ends, the three buffer sizes and T4.7's boundary-at-the-refill stretches; its
     line of the `fuzz` suite, `go test -run=^$ -fuzz=^FuzzCut$ -fuzztime=10m ./pkg/carver/carve`,
@@ -664,7 +673,8 @@ test/suites.yaml           T4.1, T4.8  carver-allocs reaches ./internal/blake3; 
   - After a reader failure at each offset D6 names, and an `emit` failure at every chunk, the chunks
     delivered are a prefix of the clean run's, byte for byte, none a truncated prefix of a clean
     chunk, and a retry gives the clean run.
-  - Under `-short` the sweep takes under a minute on a developer machine with the race detector.
+  - Without the flag, with or without `-short`, the sweep takes under a minute on a developer
+    machine with the race detector; with it, every offset of D6 runs.
   - For any fuzzed input, the properties of D7 hold; the seeds of every content kind tile within
     C4's bounds and agree with the reference.
 - **Tests:** the sweep (catches a chunk delivered short at one offset only, which an example test
@@ -675,7 +685,7 @@ test/suites.yaml           T4.1, T4.8  carver-allocs reaches ./internal/blake3; 
   R23, R33, R35, R36, R38), seen to fail with a refill that drops the byte at the buffer's end on
   one size only. The fuzz cell's red on a crasher is `go test`'s own exit status. Test doubles:
   `failAt`, a fault wrapper (kind 3).
-- **Rules:** rule 2, the target. Others as §2 says.
+- **Rules:** rule 2, the target; rule 9, D6's `decision:`. Others as §2 says.
 
 ## 7. Order of work
 
