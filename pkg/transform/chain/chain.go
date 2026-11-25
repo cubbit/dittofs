@@ -53,25 +53,25 @@ type Deps struct {
 	// ns was created and never changed (RFC 5 §3.2). In a namespace that
 	// encrypts, the encrypt stage is implicitly required, so a body without it
 	// is transform.ErrMalformed even after the chain has lost its encrypt
-	// stage.
+	// stage. NewChain refuses a nil Encrypts, so the check never fails open.
 	Encrypts func(ns entity.NamespaceID) bool
 }
 
 // Recorder records RFC 5 §6's series, one call per moment the chain observes.
-// transform is the transform's registered name, the series' label. The
+// name is the transform's registered name, the series' label. The
 // content wiring implements it over the node's metrics.
 type Recorder interface {
 	// Encoded records one transform's encode of one chunk:
 	// transform_chunks_total by applied, and transform_bytes_total and
 	// transform_seconds with direction encode.
-	Encoded(transform string, applied bool, in, out int, took time.Duration)
+	Encoded(name string, applied bool, in, out int, took time.Duration)
 
 	// Decoded records one transform's successful decode of one body:
 	// transform_bytes_total and transform_seconds with direction decode.
-	Decoded(transform string, in, out int, took time.Duration)
+	Decoded(name string, in, out int, took time.Duration)
 
 	// DecodeFailed records one transform_decode_failures_total. reason is its
 	// error label, one of malformed, material_unavailable, material_unknown,
 	// material_destroyed or too_large.
-	DecodeFailed(transform string, reason string)
+	DecodeFailed(name, reason string)
 }
