@@ -323,7 +323,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 | E11 🔀 | NLM, NSM and the datagram path | `core`'s datagram listener, NLM v4, NSM, grants resent, `SM_NOTIFY`, `DialClient`'s network | 7 | 22 | B | E16 |
 | E12 | NFSv4.2 operations | `DEALLOCATE`, `SEEK`, `READ_PLUS`, `COPY`, `CLONE`, xattrs, the hold budget | 5 | 13 | C | E16 |
 | E13 🔀 | RPCSEC_GSS | the context table as NFS's `Security` stage over `gss`, `krb5`, `krb5i`, `krb5p` | 6 | 16 | B | E16 |
-| E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries | 4 | 9.75 | A | E16 |
+| E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries | 4 | 11.5 | A | E16 |
 | E15 🔀 | Integration with the node | settings, the NFS suites turned on | none | planned after S7 | team | E16, partly |
 | E16 🔀 | E2E green | in-process and restart rows, cross-protocol rows, e2e, benchmarks, soak, the totality test, pins; the burn-down after E15 | 8 | 25.5 | team | none |
 | | **Total** | | **95** | **260.75** | | |
@@ -1044,7 +1044,7 @@ steps, "§6.3 `MNT` on a Kerberos-only share *(1 node)*"'s `sec=krb5` step (afte
 
 ### Epic 14 — Capture diffs against knfsd 🔀
 
-**Epic 14 estimate: 4 subtasks, 9.75 man-days.**
+**Epic 14 estimate: 4 subtasks, 11.5 man-days.**
 
 RFC 20 §8's differential runs for NFS, over the tools `test/pcap-corpus/` already has: `pcap-diff.sh`
 and `normalize.py`, which drop stateids, verifiers, client IDs and sequence IDs; this epic keeps a
@@ -1304,6 +1304,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | A capture-diff script for delegation grants (E14's §9, point 3) | the scripted client answers no back channel | unowned | E10's T10.2 gives the scripted client a back channel |
 | A capture-diff script for NLM and NSM (E14's §9, point 3) | the scripted client has no NLM host | unowned | E11's T11.2 adds `nfsclient.Host` |
 | A capture-diff script for NFSv4.2's operations (E14's §9, point 3) | the operations' loopback rows come first | unowned | E12's T12.8 lands |
+| A check that every status an error table produces has a capture-diff script (E14's §9, point 4; RFC 20 §8.5) | the scripts declare operations, not statuses, and E16's totality test reads the tables, not the scripts | unowned | E16 takes it, or RFC 20 §8.5's rule is amended |
 | A capture-diff script for a refused flavour, `AUTH_SYS` to a `sec=krb5` export (E14's §9, point 2) | RFC 21 §10 answers it `AUTH_TOOWEAK` where knfsd answers `NFS3ERR_ACCES`, and no divergence entry names that | unowned | RFC 21 §13 names §10's difference as a divergence entry |
 | A remote outage on the composed node: §13's "§11.5 full journal" with the store unreachable (E16) | a journal-only node has no remote tier; `vfstest.Faults` covers the adapter's half | RFC 8's second part, the remote tier (stage 3 of #3119) | a composed node with a remote tier |
 | The `grace` and `nfs_clients` API endpoints (RFC 20's plan's ledger, §6.4) | RFC 23 defines no such endpoint, and RFC 23's plan (#4050) builds none | unowned | RFC 23 adds an endpoint over RFC 14's grace and client records |
