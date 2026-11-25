@@ -60,7 +60,7 @@ against BLAKE3 measured in the same run.
 `test/carver/bench.sh`; the ratio checker `pkg/carver/internal/carvetest/ratios`;
 `BenchmarkCorpus`, K4 and K5 as benchmarks with their own metrics; the `carver` group, the
 `carver-bench` suite with its `arm64` and `corpus` options, and `unit`'s `carver-sweep` option;
-their lines in `tests.yml`'s plan select; the size switch of `TestFaultSweep`; the first run on
+their lines in `tests.yml`'s `plan` job select; `TestFaultSweep`'s full-size flag; the first run on
 the reference box and the RFC 2 §10.5 edit it makes; RFC 2's §10.6 suites paragraph and
 `docs/internals/testing.md`; the import-test rows of what this epic adds.
 
@@ -122,7 +122,7 @@ title and not copied.
 | rule 6, known failures shrink | none | `carver-bench` and `unit/carver-sweep` keep no `known.yaml`: a missed ratio or target is a finding to fix or a design finding against RFC 2 (T7.3), never a listed failure, as `journal-bench` decides |
 | rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | T7.1, T7.2 | `ratios` imports the standard library and `carvetest` alone, a row in E1's import test, as E2's `corpus/fetch` has; `carve`'s test row admits `internal/carvetest/corpus`, which E2 left unadmitted until this epic. v1's measurements and their code are not read |
 | rule 8, real dependencies for properties of those dependencies | all | the whole epic: the speed ratios on the reference box and on a real arm64 machine, the golden vectors on that machine's BLAKE3 path, K4 and K5 on real files of the three kinds |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T7.1, T7.4, T7.5 | `decision:` markers for D1 at the checker's targets, D3 at the script's record, D5 in the `arm64` option's comment and D7 at `TestFaultSweep`'s size switch; the registry's comments carry each cell's reason, as the existing entries do |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T7.1, T7.4, T7.5 | `decision:` markers for D1 at the checker's targets, D3 at the script's record, D5 in the `arm64` option's comment and D7 at `TestFaultSweep`'s flag; the registry's comments carry each cell's reason, as the existing entries do |
 | rule 10, a test must be able to fail | all | each cell is seen red on a planted break before its pull request opens: a full-chunk warm-up for K1, a vector byte for arm64, a part-built chunk emitted for the sweep, fixed-size cuts for K4 |
 | rule 11, a symbol is exported only if the RFC's interface uses it | none | nothing is exported: `ratios` is a command and `BenchmarkCorpus` a test function |
 | rule 12, each subtask creates only what it declares | all | each file lands with the cell that runs it; `bench.sh` gains its `corpus` group with T7.2, not before |
@@ -172,7 +172,7 @@ cite them. Where the check a run executes is another epic's, the row says so.
 | R19 | The golden vectors, chunks and names, run on a second CPU architecture nightly, since BLAKE3 takes different code paths on each | MUST | RFC 2 §10.1 (Architecture), §10.3, §10.4, §3.1 B2 | T7.4 |
 | R20 | The allocation counts pass on the second architecture nightly | invariant | RFC 2 §10.4 (allocations); RFC 2 plan, epic 7 (Done when) | T7.4 |
 | R21 | The reader fails at every byte offset of the fault sweep's stretch, at full size, nightly, with the same prefix-and-retry assertions as the reduced sweep | MUST | RFC 2 §10.3, §10.6; RFC 2 plan, D8; E4's T4.8 (`TestFaultSweep`) | T7.5 |
-| R22 | The full sweep runs in no per-change run and in no raced run: under `-short` or the race detector `TestFaultSweep` runs its reduced size | bound | RFC 2 plan, D8; RFC 2 §10.6 (the race detector); E4's D6 | T7.5 |
+| R22 | The full sweep runs in no per-change run and in no raced run: every run that does not ask for it by name runs the reduced sweep | bound | RFC 2 plan, D8; RFC 2 §10.6 (the race detector); E4's D6 | T7.5 |
 
 **The suites**
 
@@ -187,7 +187,7 @@ a pull request; R11 by `needs: [linux, host:dedicated]` on the gated cell and by
 option's `record` mode (D5); R12 by `metrics: go-bench`, which puts each night's medians in
 `dt history`, while the decision itself is the owner's, by hand; R23 and R24 by `lint-repo`'s
 `dt docs --check` for a name the registry lacks, and by review for a registered cell the paragraph
-leaves out; R22's `-short` half by E4's own sweep test, and its race half by T7.5's switch.
+leaves out; R22 by T7.5's flag, which only `unit/carver-sweep` passes.
 
 The candidates of the owned sections that bind other epics are theirs: §9.1's full-stack **MUST**
 (E6); §10.5's memory per call (E4); K5's average on random input (E3's per-change count, §10.4);
@@ -208,7 +208,12 @@ the design, and binds nothing here.
   not run. Not a Go test calling `testing.Benchmark`, as RFC 29's `TestBLAKE3FasterThanSHA256`
   does (checked, `pkg/block/hash_bench_test.go` on develop): the two benchmarks live in two
   packages, `testing.Benchmark` returns no sub-benchmark's result, and it would take one sample
-  where the record keeps ten, so the gate and the series would measure different runs. Prior
+  where the record keeps ten, so the gate and the series would measure different runs. The
+  pairing a ratio needs holds where it is tight: `-count` repeats each benchmark function whole,
+  so K2's `Random` and its `BLAKE3` baseline, and K3's kinds and their `Random`, run back to back
+  at each `Target` in every repetition; K1 runs in the chunker's binary before them, under
+  `go test -p 1`, and its target sits more than twice under what was measured (Appendix A.2), so a
+  host that drifts between the two binaries cannot cross it. Prior
   art: that test, the shape of a ratio against a hash in the same process; `unit --nonrace`,
   RFC 29 §4.10's nightly throughput gate. Applied by T7.1.
 
@@ -275,16 +280,21 @@ the design, and binds nothing here.
   This hands E5's "`FuzzFold` at full size on the second architecture" back as its seeds on arm64
   each night, with the reason. Prior art: none found. Applied by T7.4.
 
-- **D7, the full sweep switches on the race detector too.** `unit` passes `-short` only on pull
+- **D7, the full sweep runs only when asked for by a flag.** `unit` passes `-short` only on pull
   requests (`args: { pr: "-short" }` in `test/suites.yaml` on `feat/storage-v2`, checked), so after
   a merge and nightly it runs every test without it, under `-race`. A sweep that grows to full
-  size whenever `-short` is absent would run its 655,360 offsets there, raced, against `unit`'s 25
-  minute limit. `TestFaultSweep` therefore runs full size only when `!testing.Short() &&
-  !prof.RaceEnabled`, with a `decision:` at the switch saying why; `unit`'s raced runs keep the
-  reduced sweep. `unit/carver-sweep` runs it full: `go test -timeout=60m -run=^TestFaultSweep$
-  ./pkg/carver/carve/`, nightly, no race detector, which a sweep over output needs none of, since
-  nothing in `Cut` is shared between goroutines. Prior art: `unit --nonrace` in RFC 29 §4.1, an
-  option of `unit` for what the raced run cannot measure (checked). Applied by T7.5.
+  size whenever `-short` is absent would run its 655,360 offsets there, raced, against `unit`'s
+  25 minute limit, and in any developer's plain `go test ./...`, past `go test`'s default
+  10 minute limit. So `TestFaultSweep` runs the reduced sweep unless the test flag
+  `-carver.sweep-full` is set, declared in `carve`'s test files with `flag.Bool`, with a
+  `decision:` at it saying why `-short` cannot be the switch. `unit/carver-sweep` sets it:
+  `go test -timeout=60m -run=^TestFaultSweep$ ./pkg/carver/carve/ -args -carver.sweep-full`,
+  nightly, without the race detector, which a sweep over `Cut`'s output needs none of, since
+  nothing in `Cut` is shared between goroutines. A flag rather than an environment variable: an
+  option's `env` replaces the suite's whole, and a `DITTOFS_` name would join the start's
+  drift check. Prior art: `unit --nonrace` in RFC 29 §4.1, an option of `unit` for what the
+  raced run cannot measure (checked); the standard library's `-update`-style test flags (from
+  memory). Applied by T7.5.
 
 - **D8, settling §10.5.** The first run on the reference box replaces each speed target, a floor,
   by the larger of the proposed value and 90 % of the measured median ratio, rounded down to two
@@ -310,7 +320,7 @@ pkg/carver/
     main_test.go                  T7.1  the rule over written benchmark text
   carve/
     corpus_bench_test.go          T7.2  BenchmarkCorpus (K4, K5)
-    errors_test.go                T7.5  TestFaultSweep's size switch; D7's decision:
+    errors_test.go                T7.5  TestFaultSweep's -carver.sweep-full flag; D7's decision:
 test/suites.yaml                  T7.1, T7.2, T7.4, T7.5  carver group; carver-bench with its
                                                           arm64 and corpus options; unit's
                                                           carver-sweep option
@@ -331,7 +341,7 @@ docs/internals/testing.md         T7.1, T7.2, T7.4, T7.5  regenerated by dt docs
   E3's T3.2 and E4's T4.4.
 - **Covers:** R1 to R12, R23, R24.
 - **Deliverables:**
-  - `test/carver/bench.sh GROUP OUT`, its `speed` group: `go test -count=10 -run '^$' -bench
+  - `test/carver/bench.sh GROUP OUT`, its `speed` group: `go test -p 1 -count=10 -run '^$' -bench
     '^(BenchmarkNextBoundary|BenchmarkCut)$' -timeout=25m ./pkg/carver/internal/chunker/
     ./pkg/carver/carve/ > OUT/speed.txt`, then `go run ./pkg/carver/internal/carvetest/ratios
     OUT/speed.txt` unless `CARVER_RATIOS` is `record`, then `meta.txt` (D3), with D3's `decision:`;
@@ -467,7 +477,7 @@ docs/internals/testing.md         T7.1, T7.2, T7.4, T7.5  regenerated by dt docs
       needs: [macos]
       timeout: { test: 50m, cell: 60m }
     ```
-  - In `.github/workflows/tests.yml`'s plan select, `carver-bench/arm64` beside `unit/windows`.
+  - In `.github/workflows/tests.yml`'s `plan` job select, `carver-bench/arm64` beside `unit/windows`.
   - RFC 2 §10.6's suites paragraph names `carver-bench/arm64`; `testing.md` regenerated.
 - **Acceptance criteria:**
   - On an arm64 machine, `dt run carver-bench --arm64` passes, and its `meta.txt` names arm64,
@@ -486,26 +496,26 @@ docs/internals/testing.md         T7.1, T7.2, T7.4, T7.5  regenerated by dt docs
 **Subtask T7.5 estimate: 1 man-days.**
 
 - **Track:** the team. **Depends on:** none. It changes E4's `TestFaultSweep`, so it lands after
-  E4's T4.8.
+  E4's T4.8, or with it (§9 point 3).
 - **Covers:** R21 to R24.
 - **Deliverables:**
-  - `TestFaultSweep`'s size switch (D7), `!testing.Short() && !prof.RaceEnabled`, with its
-    `decision:`.
+  - `TestFaultSweep`'s `-carver.sweep-full` flag (D7), with its `decision:`; without the flag it
+    runs E4's reduced sweep, `-short` or not.
   - `unit`'s `carver-sweep` option, D7's command, `tier: nightly`, and a `timeout` of three times
     the full sweep's measured time on a hosted Linux runner, measured by a `workflow_dispatch` run
     and recorded in the pull request with the runner's CPU and its SIMD flags.
-  - In `tests.yml`'s plan select, `unit/carver-sweep`.
+  - In `tests.yml`'s `plan` job select, `unit/carver-sweep`.
   - RFC 2 §10.6's suites paragraph names `unit/carver-sweep`; `testing.md` regenerated.
 - **Acceptance criteria:**
   - `dt run unit --carver-sweep` runs the sweep at all 655,360 offsets of E4's D6 and passes.
-  - `go test -race -run=^TestFaultSweep$ ./pkg/carver/carve/`, without `-short`, runs the reduced
-    sweep and finishes in under a minute on a developer machine.
+  - `go test -race -run=^TestFaultSweep$ ./pkg/carver/carve/`, without `-short` and without the
+    flag, runs the reduced sweep and finishes in under a minute on a developer machine.
   - The measured full sweep fits the nightly tier's budget; if it takes more than 30 minutes on
     the hosted runner, the cell is not registered and the figure goes to RFC 2's author as a §10.3
     amendment, rather than a smaller stretch chosen in the test.
 - **Tests:** the full sweep, seen to fail with a part-built chunk emitted on a reader error at one
-  offset only, one the reduced sweep does not sample (R21); the raced run without `-short`,
-  seen to run full size with the race term removed from the switch (R22). No test double: the
+  offset only, one the reduced sweep does not sample (R21); the raced run without `-short`
+  and without the flag, seen to run full size with the switch keyed on `-short` instead (R22). No test double: the
   sweep's `failAt` is E4's fault wrapper around a real reader (kind 3).
 - **Rules:** rule 9, D7's `decision:`. Others as §2 says.
 
@@ -545,7 +555,7 @@ A suggestion only: one pull request per subtask works as well.
 ## 9. Open points
 
 1. **Estimate against the RFC 2 plan's figure.** The plan says 5 subtasks and 8.5 man-days; this
-   document says 5 and 8. The checker over the recorded run (D1) costs about as much as the plan's
+   document says 5 and 8. The checker over the recorded run (D1) costs about as much as the RFC 2 plan's
    in-process ratio tests would, the settling run (T7.3) is new, and K4 and K5 as benchmarks in
    the one suite (D4) and a `record` mode on arm64 (D5) take back the rest.
 2. **The sub-benchmark names (D2) are not in E3's and E4's documents** (#5939, #5974, open). Their
@@ -553,8 +563,8 @@ A suggestion only: one pull request per subtask works as well.
    name, and the fix is one line in whichever side moves.
 3. **E4's D6 runs the full sweep in `unit`'s raced runs after a merge**, since `unit` passes
    `-short` on pull requests only (D7). That would time `unit` out on `feat/storage-v2` at E4's
-   own merge, before this epic exists, so E4's pull request (#5974) is the place for D7's switch;
-   T7.5 makes the change if E4 lands without it.
+   own merge, before this epic exists, so E4's pull request (#5974) is the place for D7's flag;
+   T7.5 adds it if E4 lands without it.
 4. **No nightly runs on `feat/storage-v2`.** The schedule runs `tests.yml` on develop only, and
    the dedicated host runs develop's latest commit, so every cell here starts its nightly series
    when `feat/storage-v2` reaches develop. Until then each cell is accepted by a hand run: a
@@ -568,5 +578,9 @@ A suggestion only: one pull request per subtask works as well.
    `meta.txt` shows which flags each run had. Not checked against the hosts.
 7. **Needs of E2's cells, outside this epic.** `unit/carver-allocs` runs in CI only as a step of
    `tests.yml`'s unit job, as `unit/adapter-allocs` does, and the nightly `fuzz` suite only once
-   the plan's select names it; E2's document says neither. Its owner adds both with T2.4, or no
+   the `plan` job's select names it; E2's document says neither. Its owner adds both with T2.4, or no
    allocation count and no fuzz target of RFC 2 runs in CI.
+8. **K2's baseline hashes in `Target`-sized pieces** (E4's T4.4), while `Cut` hashes chunks of
+   `Min` to `Max`. BLAKE3's rate per byte barely moves across those sizes, all past its 16 KiB
+   group, so the 90 % floor should hold; T7.3's first run is where a gap would show, and the
+   baseline then moves to the chunk lengths `Cut` emitted, in E4's benchmark.
