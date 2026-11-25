@@ -27,7 +27,7 @@ settings LocalStack 4.13.1 holds (T3.5). **E4**, the S3 data path: the error tab
 client and the `s3-allocs` option (T4.2, T4.3), `Open` with its unexported `open` and `choice`
 (T4.3), `Put`, `Get`, `PutControl`, `GetControl`, `Delete` and `List` (T4.3 to T4.7), and its
 conformance run (T4.8); and the recorder `pkg/remote/s3` declares in place of a
-`*metrics.Registry`, which #5795 gives E4 and E4's document does not yet show (§9 point 1). **E2**,
+`*metrics.Registry`, as #5795 gives it and #5803 states it. **E2**,
 `remotetest` and its opener. Until E4's calls land, T5.1 needs only the SDK's types.
 **Blocks:** **E7**, which reports a refused open as a field error and backs `remote_capability`
 with its definition; **R4-S3**, and through it RFC 8 offload plan epic 21, which opens a
@@ -185,7 +185,7 @@ row's work is shared, the other part's owner is named.
 | R19 | No lifecycle rule that expires or transitions objects and whose filter could match an object under the prefix: a shorter or empty prefix filter, or a tag or size filter the store's objects could meet | MUST NOT | C.1, §6 R12 | T5.1, T5.4 |
 | R20 | No intelligent-tiering configuration with an archive tier whose filter could match the prefix | MUST NOT | §4.11, C.1, §6 R12 | T5.1, T5.4 |
 | R21 | The bucket's default encryption is read; where the chosen mechanism is the ETag, a default under which the ETag is not the MD5 of the stored bytes (a customer-managed or service-managed KMS key, or customer-provided keys) refuses the open. Recording it for a later comparison lands with `Recheck` (RFC 9) | MUST | C.1 | T5.1, T5.4 |
-| R22 | For the versioning and lifecycle reads, "no configuration" (`404` with the service's not-found code) and `501 NotImplemented` pass, and `403` refuses: the credential must be allowed to read the setting. D4 applies the same rule to the tiering and encryption reads, pending §9 point 3 | MUST | C.1 | T5.1, T5.4 |
+| R22 | For each of the four bucket-setting reads (versioning, lifecycle, tiering, encryption), "no configuration" (`404` with the service's not-found code) and `501 NotImplemented` pass, and `403` refuses: the credential must be allowed to read the setting | MUST | C.1, as #5795 amends it | T5.1, T5.4 |
 | R23 | A mutable store does not open on a versioned or object-locked bucket, under an expiring lifecycle rule, or where a storage class or tiering rule can archive what it writes. The immutable half is RFC 26's | invariant | §6 R12, §8 item 4 | T5.4 |
 
 **The claim, the health object and the mode** (C.4 steps 6 and 7)
@@ -211,7 +211,7 @@ row's work is shared, the other part's owner is named.
 | R30 | `remote_capability` reports the last check per feature, 1 if present, labelled by store, and carries `conditional_put` | MUST | §4.12 | T5.4 |
 | R31 | A refused open logs every missing feature at `Error`, once | MUST | §4.12 | T5.4 |
 | R32 | A probe is counted once, as `op` `health`, in `remote_requests_total` and `remote_request_seconds` | MUST | §4.12 | T5.5 |
-| R33 | The check reports at open the storage class's failure domain, so a deployment configuring a class that keeps data in one failure domain is told what it accepted. Reporting it "through health" is pending §9 point 4 | MUST | §8 item 7, Appendix B | T5.4 |
+| R33 | The check reports at open the storage class's failure domain, so a deployment configuring a class that keeps data in one failure domain is told what it accepted, in the open's log line | MUST | §8 item 7 as #5795 amends it, Appendix B | T5.4 |
 
 **Conformance rows** (RFC 4 §7.1, §7.2 and §7.4, the rows and halves this epic owns)
 
@@ -244,7 +244,7 @@ row's work is shared, the other part's owner is named.
   features' verdicts; `Open` builds the namespace's store with that `choice`. This departs from the
   plan's D10 ("nothing exported changes") only by D2's additions. Prior art: none found; rclone and
   restic make no such check (from memory).
-- **D2. Additions to E4's surface, pending the user's approval (§9 point 1).** The check needs
+- **D2. Additions to E4's surface, approved and carried by #5803 and #5795.** The check needs
   the largest encoded block size, and hands the claim back:
 
   ```go
@@ -299,10 +299,8 @@ row's work is shared, the other part's owner is named.
   error, a `5xx`, a throttle) fails the open with that call's error as E4's table maps it,
   `ErrTransient` or `ErrThrottled`, so the caller retries the open; a refused credential is
   `ErrDenied` of cause `access`. Only a `403` that C.1 makes a verdict, on a bucket-setting read
-  (R22) or on step 2's never-written key (R12), names a feature instead. C.1 states the `404`,
-  `501` and `403` rule for the versioning and lifecycle reads; the check applies it to the tiering
-  and encryption reads too, since C.1's rows read all four at open and the same reasons hold (§9
-  point 3). To name every missing feature, the check runs every step it can: when step 1 proves no
+  (R22) or on step 2's never-written key (R12), names a feature instead. C.1, as #5795 amends it, states the
+  `404`, `501` and `403` rule for all four bucket-setting reads. To name every missing feature, the check runs every step it can: when step 1 proves no
   mechanism, steps 2 to 4 cannot put and their features stay unverified, reported at 0 and not
   named, while steps 5 and 6 still run. Prior art: none found.
 - **D5. What "could match the prefix" means, as one pure function.** A lifecycle rule or a
@@ -605,30 +603,12 @@ their own until T5.4 calls them.
 
 ## 9. Open points
 
-1. **E4's surface grows by D2, pending the user's approval.** `Open` returns a `Claim`;
-   `ClientConfig` gains `MaxBlockSize`; the recorder gains `Capability`. E4's document (under
-   review) states its D1 without them and still injects a `*metrics.Registry`, where #5795 gives
-   `pkg/remote/s3` a recorder of its own; whichever of E4's document and this one merges second
-   carries the change. Alternative for the claim: the opener reads it with `GetControl(RoleClaim)`
-   after `Open`, which keeps E4's signature but leaves §4.11's "read, and handed to the opener" to
-   every caller.
-2. **The refusal's shape for the API, E7's.** D4 keeps the missing features in an unexported type
+1. **The refusal's shape for the API, E7's.** D4 keeps the missing features in an unexported type
    and the error's text; E7 exports what its field error needs, the only consumer.
-3. **C.1's `404`/`501`/`403` rule for the tiering and encryption reads, pending the user's
-   answer.** C.1 states it for "the two bucket-setting calls" (versioning and lifecycle). D4
-   applies it to all four step-5 reads. Recommended: the same rule, with an RFC 4 C.1 amendment
-   saying "the four bucket-setting reads". Alternative: a `403` on tiering or encryption fails the
-   open as a denial rather than naming a feature.
-4. **Reporting a one-zone class "through health", pending the user's answer.** §8 item 7 says the
-   check reports the class's failure domain at open and through health, and Appendix B marks
-   Scaleway One Zone "allowed, reported at open". The store keeps no health status (§4.7, §4.9), so
-   D11's `Info` line is the report at open. Recommended: the open line only, and an RFC 4 §8 item 7
-   amendment dropping "and through health". Alternative: a gauge of the class's domain, which §4.12
-   does not list.
-5. **What LocalStack 4.13.1 holds decides where R37's tiering half and R42 run.** E3's T3.5
+2. **What LocalStack 4.13.1 holds decides where R37's tiering half and R42 run.** E3's T3.5
    measures an archive tiering rule and a KMS default encryption; each it does not hold runs in E9
    by hand, and T5.4's estimate falls by the tests not written here.
-6. **Estimates least certain: T5.2 and T5.4.** T5.2 rests on E3's compositions reproducing
+3. **Estimates least certain: T5.2 and T5.4.** T5.2 rests on E3's compositions reproducing
    Appendix B on LocalStack, and on the SDK sending a wrong checksum as given rather than
    recomputing it; T5.4 on the four setting reads' not-found codes, which LocalStack may answer
    differently from S3.
