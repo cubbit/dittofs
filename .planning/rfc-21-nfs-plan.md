@@ -1077,7 +1077,8 @@ expected failures listed by name; D11's settings closed as decided. Two fixture 
 the v2 store refuses a user record holding it, so a pjdfstest run as 65534 would lose its per-user
 grant; and the `pynfs` fixture's `users` gains uids 123 and 10000 to 10019, which pynfs `nfs4.0`
 `ACL5` and `ACL10` name in the ACLs they set and which, held by no user record, answer
-`NFS4ERR_BADOWNER` (RFC 18 §4.5). The user guide's NFS pages are
+`NFS4ERR_BADOWNER` (RFC 18 §4.5). `pynfs` gains a minor-2 cell, the only minor at which its `XATT*`
+tests of E12's xattr operations run (its `ALLOC*` tests fail there as RFC 21 §13 expects). The user guide's NFS pages are
 the cutover's (§6.6).
 
 **Owns:** RFC 20 §3.4's node build, §3.6's live settings; RFC 13 Appendix B's NFS settings; RFC 21

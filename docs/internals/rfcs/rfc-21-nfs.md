@@ -2932,7 +2932,9 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 
 **Release goal.** Four suites are the end-to-end layer over §11.6's rows and
 this section's: pjdfstest, POSIX semantics through a kernel mount at NFSv3,
-v4.0 and v4.1; pynfs, its `nfs4.0` and `nfs4.1` trees; cthon04; and nfstest.
+v4.0 and v4.1; pynfs, its `nfs4.0` tree and its `nfs4.1` tree at minor
+versions 1 and 2, the second running the NFSv4.2 tests (`XATT*`, `ALLOC*`);
+cthon04; and nfstest.
 Each, and any other NFS or POSIX conformance suite the harness registers, is
 green when this RFC's implementation is done: every test passes except those
 listed in "Tests expected to fail". A failure outside that list is a defect, or
