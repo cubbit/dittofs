@@ -59,6 +59,9 @@ type Env struct {
 	TempDir string
 	Cleanup func(func())
 	Step    int
+
+	// unfinished answers, for each call begun, the panic no step took over.
+	unfinished []func() string
 }
 
 // Result is what a step's real call answered, reduced to what the contract

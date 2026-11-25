@@ -60,12 +60,12 @@ func deterministic[R, M any](t *testing.T, target Target[R, M], data []byte) err
 func execute[R, M any](t *testing.T, target Target[R, M], program Program) (trace string, err error) {
 	running := prof.Goroutines()
 
+	env := &Env{}
 	passed := t.Run("input", func(t *testing.T) {
-		env := &Env{
-			T:       t,
-			TempDir: t.TempDir(),
-			Cleanup: t.Cleanup,
-		}
+		env.T = t
+		env.TempDir = t.TempDir()
+		env.Cleanup = t.Cleanup
+
 		_, trace, err = run(target, env, program)
 	})
 
@@ -76,6 +76,14 @@ func execute[R, M any](t *testing.T, target Target[R, M], program Program) (trac
 	if left := running(cmp.Or(target.StepBound, defaultStepBound)); len(left) > 0 {
 		err = errors.Join(err, fmt.Errorf("%sfuzz: %s: %d goroutine(s) left running after the input:\n\n%s",
 			trace, target.Name, len(left), strings.Join(left, "\n\n")))
+	}
+
+	// Read after the wait for the goroutines, so a call a cleanup released has
+	// had its time to return.
+	for _, untaken := range env.unfinished {
+		if panicked := untaken(); panicked != "" {
+			err = errors.Join(err, fmt.Errorf("%sfuzz: %s: panic: %s", trace, target.Name, panicked))
+		}
 	}
 
 	return trace, err
