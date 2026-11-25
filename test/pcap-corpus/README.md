@@ -24,6 +24,7 @@ hides.
 pcap-corpus/
   pcap-diff.sh        # structural diff harness (tshark + normalize.py + diff)
   normalize.py        # tshark PDML -> canonical structural skeleton
+  cut-golden.sh       # one frame's message -> a golden .hex file (tshark)
   kerberos/           # AS-REQ/AP-REQ / SPNEGO / PAC reference
   ldap/               # RFC2307 query reference
   nfsv4-acl/          # fattr4_acl get/set reference
@@ -47,6 +48,17 @@ test/pcap-corpus/pcap-diff.sh \
 ```
 
 Exit `0` = structurally identical, `1` = divergence (unified diff printed).
+
+Cut one message out of a capture into a golden file the wire packages' tests
+read, with its framing stripped: `rpc` (RFC 5531's record mark; a record of
+more than one fragment is refused), `smb2` (the direct-TCP header) or `none`
+(a UDP datagram). The file's header names the capture, the frame and the
+`tshark` command. Only the machine that cuts needs `tshark`.
+
+```bash
+test/pcap-corpus/cut-golden.sh test/pcap-corpus/nfsv4-acl/reference.pcap 4 rpc \
+  internal/adapter/nfs/wire/testdata/golden/knfsd-nfs40-null-call.hex
+```
 
 ## Regenerating the reference captures
 
