@@ -297,11 +297,11 @@ func TestLookupErrorPassesThrough(t *testing.T) {
 	}
 }
 
-// owner and oidc are not served yet, and a scheme outside the enum never is.
+// oidc is not served yet, and a scheme outside the enum never is.
 func TestDeferredSchemes(t *testing.T) {
 	r := naming(t)
 	ctx := context.Background()
-	for _, scheme := range []pid.Scheme{pid.SchemeOwner, pid.SchemeOIDC, 0, pid.SchemeQualified + 1} {
+	for _, scheme := range []pid.Scheme{pid.SchemeOIDC, 0, pid.SchemeOwnerGroup + 1} {
 		if p, err := r.srv.Find(ctx, pid.Spelling{Scheme: scheme, Text: "alice@corp.example"}, pid.FindOpts{}); !errors.Is(err, vfserr.ErrInvalid) {
 			t.Errorf("Find in scheme %d = %v, %v; want ErrInvalid", scheme, p, err)
 		}
