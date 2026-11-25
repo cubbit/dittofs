@@ -522,8 +522,8 @@ func TestAStopJoinsTheDrainOfARebuild(t *testing.T) {
 		}
 		return a
 	})
-	from, to := freePort(t), freePort(t)
-	h.Node().SetSMB(true, smbAt(from))
+	to := freePort(t)
+	h.Node().SetSMB(true, smbAt(0))
 	if err := h.Node().Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -975,7 +975,7 @@ func TestARebuildLeavesTheNodeReady(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
 	stoppedSMB, release := make(chan struct{}, 2), make(chan struct{})
 	h.Node().OnAdapter(func(_ string, a adapter.Adapter) adapter.Adapter { return heldStop{a, stoppedSMB, release} })
-	h.Node().SetSMB(true, smbAt(freePort(t)))
+	h.Node().SetSMB(true, smbAt(0))
 	started(t, h)
 	end := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(end)
@@ -1018,7 +1018,7 @@ func TestTheStatusCarriesEachAdaptersState(t *testing.T) {
 		return a
 	})
 	ch := watchStatus(h)
-	h.Node().SetSMB(true, smbAt(freePort(t)))
+	h.Node().SetSMB(true, smbAt(0))
 	started(t, h)
 	t.Cleanup(func() { close(release) }) // before the node's Stop, which runs after it
 	turnAt(t, h, ch, "SMB serving, NFS disabled", statesAre("nfs stopped", "smb serving"))
@@ -1064,7 +1064,7 @@ func TestTheStatusCarriesTheGenerationEachAdapterRuns(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
 	ch := watchStatus(h)
 	configure(t, h, storeA) // a settings generation above zero
-	h.Node().SetSMB(true, smbAt(freePort(t)))
+	h.Node().SetSMB(true, smbAt(0))
 	started(t, h)
 	servingAt := func(gen uint64) func(statusTurn) bool {
 		return func(tr statusTurn) bool {

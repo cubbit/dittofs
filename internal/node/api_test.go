@@ -469,7 +469,7 @@ func TestTheConnectionsOfAnotherNodeAreNotFound(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewAuthenticating(caller(entity.RoleViewer))))
 	release := make(chan struct{})
 	h.Node().OnAdapter(func(_ string, a adapter.Adapter) adapter.Adapter { return heldConnections{a, release} })
-	h.Node().SetSMB(true, smbAt(freePort(t)))
+	h.Node().SetSMB(true, smbAt(0))
 	started(t, h)
 	t.Cleanup(func() { close(release) }) // before Stop, which a read still held would hold
 	addr, _ := h.Node().Addrs()
