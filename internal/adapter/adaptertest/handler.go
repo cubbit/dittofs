@@ -54,9 +54,14 @@ type Expect struct {
 	// calls are outside the rule.
 	SessionSetup bool
 	// Completes is the leg that completes a session setup with a verified
-	// identity: its client-record calls, Connect, AddSession and Disconnect,
-	// are outside the rule, and so is SignIn.
+	// identity: its client-record calls are outside the rule, one Connect,
+	// one AddSession and at most two Disconnects, one of them the last, and
+	// so is SignIn.
 	Completes bool
+	// FreesRevoked is a request in a protocol with no operation that frees a
+	// reference (NFSv4.0, SMB): its FreeState of a reference its call was
+	// answered revoked for is outside the rule.
+	FreesRevoked bool
 	// NamesPrincipal is a request that carries a SID, a principal's name, or a
 	// security descriptor or ACL naming one: its Find calls are outside the
 	// rule.
@@ -187,10 +192,14 @@ func verdict(calls []vfstest.Mutation, refused bool, e Expect) error {
 // what the request is, and which earlier calls have already exempted a later
 // one, each of which exempts one call at most.
 type exemptions struct {
-	refused  bool   // the request's Park was refused
-	e        Expect // what the caller says the request is
-	used     []bool // by index into the calls, an earlier call that has exempted one
-	repeated bool   // a last Disconnect has been exempted as a repeat
+	refused bool   // the request's Park was refused
+	e       Expect // what the caller says the request is
+	used    []bool // by index into the calls, an earlier call that has exempted one
+
+	// A completing leg's client-record calls exempted so far.
+	connected, added bool
+	disconnects      int  // Disconnects exempted by the leg, not as a repeat
+	plain            bool // one of them was not the last
 }
 
 // exempt reports whether m, made after before in one request, is a call RFC 20
@@ -202,6 +211,14 @@ type exemptions struct {
 // read-only calls are not recorded, so one after a READ's revoked Read counts
 // as the request's one call: a test of it names FreeState as the call due.
 // Withdraw it if the record comes to keep a read-only call's answer.
+//
+// decision: a completing leg's Disconnects are bounded by count, not by
+// origin: one may be other than the last, SMB's PreviousSessionId cleanup,
+// and one the last, the Connect decision's, but the record keeps no Gen
+// Connect or AddSession answered, so the last one is not matched to it, and
+// an NFSv4.1 CREATE_SESSION, which has no cleanup, may still send one that is
+// not the last. Match them if the record comes to keep those Gens and Expect
+// to name the protocol.
 //
 // decision: a CancelLock withdraws the waiter of an earlier Lock of the
 // request on the same open and owner, its range unmatched since the record
@@ -218,29 +235,41 @@ func (x *exemptions) exempt(before []vfstest.Mutation, m vfstest.Mutation) bool 
 	case vfs.OpUnwatch:
 		return x.refused && x.take(before, func(p vfstest.Mutation) bool { return p.Op == vfs.OpWatch })
 	case vfs.OpFreeState:
-		return x.take(before, func(p vfstest.Mutation) bool {
+		return x.e.FreesRevoked && x.take(before, func(p vfstest.Mutation) bool {
 			var se *vfs.StateError
 			return errors.As(p.Err, &se) && se.Kind == vfs.StateRevoked && p.Open != nil && sameState(p.Open.State, m.State)
 		})
 	case vfs.OpDisconnect:
-		if x.e.Completes {
+		// A repeat at the non-zero Gen the previous one returned, as often as
+		// each answers one: zero says the entry is gone.
+		if m.End.Last && m.End.Gen != 0 && x.take(before, func(p vfstest.Mutation) bool {
+			return p.Op == vfs.OpDisconnect && p.Err == nil && p.End.Last && p.Gen == m.End.Gen
+		}) {
 			return true
 		}
-		if x.repeated || !m.End.Last {
+		if !x.e.Completes || x.disconnects == 2 || !m.End.Last && x.plain {
 			return false
 		}
-		x.repeated = x.take(before, func(p vfstest.Mutation) bool {
-			return p.Op == vfs.OpDisconnect && p.Err == nil && p.End.Last && p.Gen == m.End.Gen
-		})
-		return x.repeated
-	case vfs.OpConnect, vfs.OpAddSession:
-		return x.e.Completes
+		x.disconnects++
+		x.plain = x.plain || !m.End.Last
+		return true
+	case vfs.OpConnect:
+		return x.e.Completes && once(&x.connected)
+	case vfs.OpAddSession:
+		return x.e.Completes && once(&x.added)
 	case vfs.OpSignIn:
 		return x.e.SessionSetup || x.e.Completes
 	case vfs.OpFind:
 		return x.e.NamesPrincipal
 	}
 	return false
+}
+
+// once reports whether done was unset, and sets it.
+func once(done *bool) bool {
+	was := *done
+	*done = true
+	return !was
 }
 
 // take marks the first earlier call that answers holds for and that has

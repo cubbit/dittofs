@@ -60,11 +60,9 @@ func TestRunnerExemptsEachCallByItsRequest(t *testing.T) {
 		return c
 	}
 	info := vfs.ClientInfo{Protocol: proto, Name: []byte("pc"), Boot: [8]byte{1}, Recovery: recovery}
-	// disconnect connects a client on sessions 1 and 2, then answers a row
-	// that disconnects session 1, as its last where last is set, at the Gen
-	// the first Connect returned, and then once more as its last for each
-	// skew, at the Gen the Disconnect before it returned plus the skew.
-	disconnect := func(t *testing.T, last bool, skews ...uint64) func(context.Context, *core.Request) error {
+	// connect connects a client on sessions 1 and 2 and returns it and the
+	// Gen the first Connect returned, which the second has made stale.
+	connect := func(t *testing.T) (vfs.ClientID, uint64) {
 		id, first, err := rn.Mem.Connect(t.Context(), smb(1), info, &vfstest.Callbacks{})
 		if err != nil {
 			t.Fatalf("Connect on session 1: %v", err)
@@ -72,6 +70,14 @@ func TestRunnerExemptsEachCallByItsRequest(t *testing.T) {
 		if _, _, err := rn.Mem.Connect(t.Context(), smb(2), info, &vfstest.Callbacks{}); err != nil {
 			t.Fatalf("Connect on session 2: %v", err)
 		}
+		return id, first
+	}
+	// disconnect connects, then answers a row that disconnects session 1, as
+	// its last where last is set, at the Gen the first Connect returned, and
+	// then once more as its last for each skew, at the Gen the Disconnect
+	// before it returned plus the skew.
+	disconnect := func(t *testing.T, last bool, skews ...uint64) func(context.Context, *core.Request) error {
+		id, first := connect(t)
 		return func(ctx context.Context, _ *core.Request) error {
 			gen, err := rn.Rec.Disconnect(ctx, smb(1), id, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Last: last, Gen: first})
 			if err != nil || last && gen == 0 {
@@ -79,6 +85,32 @@ func TestRunnerExemptsEachCallByItsRequest(t *testing.T) {
 			}
 			for _, skew := range skews {
 				gen, _ = rn.Rec.Disconnect(ctx, smb(1), id, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Last: true, Gen: gen + skew})
+			}
+			return nil
+		}
+	}
+	// repeat connects, then answers a row that disconnects session 1 as its
+	// last at the stale Gen and repeats it twice, each at the Gen the one
+	// before returned. Where relist is set session 2 is connected again
+	// before the first repeat, so that repeat is answered a newer Gen, not
+	// zero; the service's own Connect is not recorded.
+	repeat := func(t *testing.T, relist bool) func(context.Context, *core.Request) error {
+		id, gen := connect(t)
+		return func(ctx context.Context, _ *core.Request) error {
+			for i := range 3 {
+				if i == 1 && relist {
+					if _, _, err := rn.Mem.Connect(ctx, smb(2), info, &vfstest.Callbacks{}); err != nil {
+						t.Fatalf("Connect on session 2 again: %v", err)
+					}
+				}
+				// The last may find the record released, StaleClient.
+				var err error
+				if gen, err = rn.Rec.Disconnect(ctx, smb(1), id, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Last: true, Gen: gen}); err != nil && i < 2 {
+					t.Fatalf("Disconnect %d: %v", i, err)
+				}
+				if want := i == 0 || i == 1 && relist; (gen != 0) != want {
+					t.Fatalf("Disconnect %d answered Gen %d; want a non-zero one: %v", i, gen, want)
+				}
 			}
 			return nil
 		}
@@ -124,9 +156,12 @@ func TestRunnerExemptsEachCallByItsRequest(t *testing.T) {
 	}{
 		{"a FreeState of the reference its call was answered revoked for", func(*testing.T) func(context.Context, *core.Request) error {
 			return writeRevoked(held)
-		}, Expect{Call: vfs.OpWrite}, ""},
+		}, Expect{Call: vfs.OpWrite, FreesRevoked: true}, ""},
 		{"a FreeState of another reference than the revoked one", func(*testing.T) func(context.Context, *core.Request) error {
 			return writeRevoked(other)
+		}, Expect{Call: vfs.OpWrite, FreesRevoked: true}, "2 mutating calls, Write, FreeState"},
+		{"a FreeState of the revoked reference in a protocol whose own operation frees it", func(*testing.T) func(context.Context, *core.Request) error {
+			return writeRevoked(held)
 		}, Expect{Call: vfs.OpWrite}, "2 mutating calls, Write, FreeState"},
 		{"a FreeState with no revoked answer before it", func(*testing.T) func(context.Context, *core.Request) error {
 			return func(ctx context.Context, _ *core.Request) error {
@@ -134,7 +169,7 @@ func TestRunnerExemptsEachCallByItsRequest(t *testing.T) {
 				_ = rn.Rec.FreeState(ctx, admin, 5, held)
 				return err
 			}
-		}, Expect{Call: vfs.OpWrite}, "2 mutating calls, Write, FreeState"},
+		}, Expect{Call: vfs.OpWrite, FreesRevoked: true}, "2 mutating calls, Write, FreeState"},
 		{"a CancelLock after a refused Park", func(*testing.T) func(context.Context, *core.Request) error {
 			return lockThen(func(r *core.Request) error {
 				_, err := r.Park(func() {})
@@ -169,7 +204,7 @@ func TestRunnerExemptsEachCallByItsRequest(t *testing.T) {
 		}, Expect{Call: vfs.OpDisconnect}, "2 mutating calls, Disconnect, Disconnect"},
 		{"a FreeState of the revoked reference, twice", func(*testing.T) func(context.Context, *core.Request) error {
 			return writeRevoked(held, held)
-		}, Expect{Call: vfs.OpWrite}, "2 mutating calls, Write, FreeState"},
+		}, Expect{Call: vfs.OpWrite, FreesRevoked: true}, "2 mutating calls, Write, FreeState"},
 		{"a second CancelLock after a refused Park", func(*testing.T) func(context.Context, *core.Request) error {
 			return lockThen(func(r *core.Request) error {
 				_, err := r.Park(func() {})
@@ -202,8 +237,11 @@ func TestRunnerExemptsEachCallByItsRequest(t *testing.T) {
 				return err
 			})
 		}, Expect{Call: vfs.OpWatch}, "2 mutating calls, Watch, Unwatch"},
-		{"a last Disconnect repeated twice, each at the Gen the one before returned", func(t *testing.T) func(context.Context, *core.Request) error {
-			return disconnect(t, true, 0, 0)
+		{"a last Disconnect repeated at each newer Gen the one before returned", func(t *testing.T) func(context.Context, *core.Request) error {
+			return repeat(t, true)
+		}, Expect{Call: vfs.OpDisconnect}, ""},
+		{"a last Disconnect repeated at the zero Gen the one before returned", func(t *testing.T) func(context.Context, *core.Request) error {
+			return repeat(t, false)
 		}, Expect{Call: vfs.OpDisconnect}, "2 mutating calls, Disconnect, Disconnect"},
 		{"a last Disconnect at the Gen a Disconnect that was not the last returned", func(t *testing.T) func(context.Context, *core.Request) error {
 			return disconnect(t, false, 0)
@@ -211,6 +249,32 @@ func TestRunnerExemptsEachCallByItsRequest(t *testing.T) {
 		{"a Disconnect in the leg that completes a session setup", func(t *testing.T) func(context.Context, *core.Request) error {
 			return disconnect(t, true)
 		}, Expect{Completes: true}, ""},
+		{"a Disconnect that is not the last and a last one in the leg that completes a session setup", func(t *testing.T) func(context.Context, *core.Request) error {
+			id, first := connect(t)
+			return func(ctx context.Context, _ *core.Request) error {
+				_, _ = rn.Rec.Disconnect(ctx, smb(1), id, vfs.SessionRef{ID: 1}, vfs.SessionEnd{})
+				_, _ = rn.Rec.Disconnect(ctx, smb(1), id, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Last: true, Gen: first})
+				return nil
+			}
+		}, Expect{Completes: true}, ""},
+		{"two Disconnects that are not the last in the leg that completes a session setup", func(t *testing.T) func(context.Context, *core.Request) error {
+			id, _ := connect(t)
+			return func(ctx context.Context, _ *core.Request) error {
+				for range 2 {
+					_, _ = rn.Rec.Disconnect(ctx, smb(1), id, vfs.SessionRef{ID: 1}, vfs.SessionEnd{})
+				}
+				return nil
+			}
+		}, Expect{Completes: true}, "a Disconnect call, where the request is due none"},
+		{"three last Disconnects, none a repeat, in the leg that completes a session setup", func(t *testing.T) func(context.Context, *core.Request) error {
+			id, _ := connect(t)
+			return func(ctx context.Context, _ *core.Request) error {
+				for range 3 {
+					_, _ = rn.Rec.Disconnect(ctx, smb(1), id, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Last: true})
+				}
+				return nil
+			}
+		}, Expect{Completes: true}, "a Disconnect call, where the request is due none"},
 		{"a Disconnect in another leg of a session setup", func(t *testing.T) func(context.Context, *core.Request) error {
 			return disconnect(t, true)
 		}, Expect{SessionSetup: true}, "a Disconnect call, where the request is due none"},
@@ -220,6 +284,14 @@ func TestRunnerExemptsEachCallByItsRequest(t *testing.T) {
 				return nil
 			}
 		}, Expect{Completes: true}, ""},
+		{"two AddSessions in the leg that completes a session setup", func(*testing.T) func(context.Context, *core.Request) error {
+			return func(ctx context.Context, _ *core.Request) error {
+				for range 2 {
+					_, _ = rn.Rec.AddSession(ctx, smb(5), 5, nil, []byte("session"))
+				}
+				return nil
+			}
+		}, Expect{Completes: true}, "AddSession call, where the request is due none"},
 		{"an AddSession in another leg of a session setup", func(*testing.T) func(context.Context, *core.Request) error {
 			return func(ctx context.Context, _ *core.Request) error {
 				_, _ = rn.Rec.AddSession(ctx, smb(5), 5, nil, []byte("session"))
@@ -232,6 +304,16 @@ func TestRunnerExemptsEachCallByItsRequest(t *testing.T) {
 				return err
 			}
 		}, Expect{Completes: true}, ""},
+		{"two Connects in the leg that completes a session setup", func(*testing.T) func(context.Context, *core.Request) error {
+			return func(ctx context.Context, _ *core.Request) error {
+				for _, s := range []uint64{6, 7} {
+					if _, _, err := rn.Rec.Connect(ctx, smb(s), info, &vfstest.Callbacks{}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+		}, Expect{Completes: true}, "a Connect call, where the request is due none"},
 		{"a Connect in another leg of a session setup", func(*testing.T) func(context.Context, *core.Request) error {
 			return func(ctx context.Context, _ *core.Request) error {
 				_, _, err := rn.Rec.Connect(ctx, smb(4), info, &vfstest.Callbacks{})
