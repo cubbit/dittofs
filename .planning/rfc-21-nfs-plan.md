@@ -1071,7 +1071,13 @@ Waits for S7. Then: `settings.NFS` reaching `New` and, through `Reconfigure`, wh
 under `adapters.nfs`, its default and its check (#4059's D2, D3); `pjdfstest`, `pynfs`, `cthon04`,
 `nfstest` and the NFS rows of `e2e`, `e2e/kerberos` and `e2e/cross-protocol` out of the V2 filter, their
 `known.yaml` rewritten for v2 with each entry naming this plan's epic issue and RFC 21 §13's
-expected failures listed by name; D11's settings closed as decided. The user guide's NFS pages are
+expected failures listed by name; D11's settings closed as decided. Two fixture fixes in
+`test/suites.yaml` come with the suites, so they fail none of their tests on the fixture: the
+`pjdfstest` fixture's `users` drops uid 65534 for another, since 65534 is anonymous (epic 7's R2) and
+the v2 store refuses a user record holding it, so a pjdfstest run as 65534 would lose its per-user
+grant; and the `pynfs` fixture's `users` gains uids 123 and 10000 to 10019, which pynfs `nfs4.0`
+`ACL5` and `ACL10` name in the ACLs they set and which, held by no user record, answer
+`NFS4ERR_BADOWNER` (RFC 18 §4.5). The user guide's NFS pages are
 the cutover's (§6.6).
 
 **Owns:** RFC 20 §3.4's node build, §3.6's live settings; RFC 13 Appendix B's NFS settings; RFC 21
