@@ -127,7 +127,7 @@ their `NULL` rows, and `ops/v4`'s `NULL`; the error rows of §3; the TLS configu
   and locks. **E10**, delegations and the back channel, with the drain test. **E11**, NLM, NSM and
   the datagram path. **E13**, RPCSEC_GSS. **E14**, the capture diffs against knfsd. **E16**, E2E
   green: the suites, the totality test and the end-to-end rows.
-- **S0**, the shared test pieces the RFC 22 implementation plan's epic 2 builds, `vfstest.Mutations`
+- **S0**, the shared test pieces this plan's E2 builds for both adapters, `vfstest.Mutations`
   among them.
 - **S2**, NFS's test foundations in CI, after E1, E2 and S0: what this epic starts from.
 - **S6c**, the RFC 22 implementation plan's epic 4, which builds `gss`.
