@@ -9,6 +9,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
 	"os"
 	"path/filepath"
 	"slices"
@@ -60,7 +64,11 @@ type Server struct {
 // the harness builds it.
 func Start(t *testing.T, opts ...nodetest.Option) Server {
 	t.Helper()
-	// Not t.TempDir(), whose path can pass the length a socket's may have.
+	// decision: the socket's directory is made outside t.TempDir(), against
+	// the rule that a test writes only under it, because a socket's path is
+	// capped near 104 bytes on some hosts and t.TempDir() of a nested test
+	// can pass that. The cleanup below removes it. Withdraw it if t.TempDir()
+	// paths come under the cap.
 	dir, err := os.MkdirTemp("", "clisuite")
 	if err != nil {
 		t.Fatal(err)
@@ -78,6 +86,39 @@ func Start(t *testing.T, opts ...nodetest.Option) Server {
 	})
 	srv.Harness.Account(t, srv.User, srv.Password, entity.RoleAdmin)
 	return srv
+}
+
+// Proxy serves the API of s, a server Start started, on a loopback URL it
+// returns, every request passed through to s once rewrite has seen it, and
+// may have changed it: a fault a test injects, such as a query parameter
+// dropped, or its record of a call reaching the server.
+func (s Server) Proxy(t *testing.T, rewrite func(*http.Request)) string {
+	t.Helper()
+	if s.Harness == nil {
+		t.Fatal("clisuite: Proxy serves only a server Start started, on its socket")
+	}
+	tr := &http.Transport{DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", s.Addr)
+	}}
+	srv := httptest.NewServer(&httputil.ReverseProxy{Transport: tr, Rewrite: func(r *httputil.ProxyRequest) {
+		r.Out.URL.Scheme, r.Out.URL.Host = "http", "socket"
+		rewrite(r.Out)
+	}})
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// Polled is a Proxy's rewrite that signals on polls, without blocking,
+// each time a wait's poll, a read with ?wait=, passes through.
+func Polled(polls chan<- struct{}) func(*http.Request) {
+	return func(r *http.Request) {
+		if r.URL.Query().Has("wait") {
+			select {
+			case polls <- struct{}{}:
+			default:
+			}
+		}
+	}
 }
 
 // Login signs run's context in to s as its admin account.

@@ -1,145 +1,52 @@
-# Deployment
+# Installation
 
-This guide covers running DittoFS beyond a local source build: package managers, Docker,
-and the Kubernetes operator. For the quick local path (Nix / Homebrew / source build), see
-the [README](../../README.md). For configuration details, see [CONFIGURATION.md](configuration.md).
+This page shows every way to install and run DittoFS: from source, from a package
+manager, in Docker, with FoundationDB, and on Kubernetes. It also covers standard
+ports and uninstalling. For a first run on your own machine, follow
+[Getting started](getting-started.md) instead; for the config file, see
+[Configuration](configuration.md).
 
-DittoFS ships two binaries — `dfs` (the server daemon) and `dfsctl` (the REST client).
-Most package managers install both.
+DittoFS ships two programs: `dfs`, the server, and `dfsctl`, the client of its
+management API.
 
-## Default ports
+> **No release ships this version yet.** The packages, the install script, Homebrew,
+> Scoop and the published Docker images install the released server, which uses a
+> different config file and does not have `dfs init` as described here. To run this
+> version, [build it from source](#build-from-source), or
+> [build the Docker image yourself](#build-the-image).
 
-| Port | Service |
-|------|---------|
-| `12049` | NFS |
-| `12445` | SMB |
-| `8080`  | Control-plane REST API (health checks, management) |
-| `9090`  | Prometheus metrics |
+> **Not served on this version:** NFS and SMB. Steps that mount a share, and the NFS
+> and SMB ports below, describe the released server.
 
-DittoFS defaults to these **non-privileged** ports (>1024) so it starts without
-root. The portmapper, when enabled, defaults to `10111`.
+## Build from source
 
-## Running on standard ports (production)
-
-In production we recommend running on the **standard, well-known ports** so
-clients connect with no special options:
-
-| Service | Default (unprivileged) | Standard (production) |
-|---------|------------------------|-----------------------|
-| NFS | `12049` | `2049` |
-| SMB | `12445` | `445` |
-| Portmapper (rpcbind) | `10111` | `111` |
-
-On standard ports, mount commands drop the `port=` / `mountport=` options and
-NFSv3 clients can auto-discover via the portmapper:
+You need [Go](https://go.dev/dl/) 1.26 or later and `git`:
 
 ```bash
-# Non-standard (default)
-sudo mount -t nfs -o vers=4.1,tcp,port=12049 server:/export /mnt/point
-# Standard ports — no port option needed
-sudo mount -t nfs -o vers=4.1 server:/export /mnt/point
+git clone --depth 1 --branch feat/storage-v2 https://github.com/cubbit/dittofs.git
+cd dittofs
+go build -o dfs ./cmd/dfs
+go build -o dfsctl ./cmd/dfsctl
+sudo install -m 755 dfs dfsctl /usr/local/bin/   # optional: put them on your PATH
 ```
 
-Two things are required: **(1)** free the standard ports on the host, and
-**(2)** let DittoFS bind a port below 1024.
-
-### 1. Free the standard ports on the host
-
-Ports 2049 / 445 / 111 are usually claimed by the OS's own NFS, SMB, and
-RPC-bind services. Stop and disable them, or DittoFS cannot bind:
-
-```bash
-# Linux (systemd) — disable the kernel NFS server, Samba, and rpcbind
-sudo systemctl disable --now nfs-server rpcbind rpcbind.socket smbd nmbd
-
-# Confirm nothing else holds the ports
-sudo ss -tulpn | grep -E ':(2049|445|111)\b'
-```
-
-```bash
-# macOS — turn off built-in File Sharing (SMB) and nfsd
-sudo nfsd stop && sudo nfsd disable
-# Disable SMB file sharing in System Settings → General → Sharing, or:
-sudo launchctl disable system/com.apple.smbd
-```
-
-### 2. Bind the privileged ports — by deployment mode
-
-#### Single binary
-
-Set the ports in `config.yaml`, then grant the
-binary permission to bind low ports.
-
-```yaml
-adapters:
-  nfs:
-    port: 2049
-    portmapper:
-      enabled: true
-      port: 111        # enables NFSv3 client auto-discovery
-  smb:
-    port: 445
-```
-
-Binding a port below 1024 needs privilege. Either run as root, or — preferred —
-grant just the bind capability so the process stays unprivileged:
-
-```bash
-# Grant the capability to the binary (no root at runtime)
-sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/dfs
-
-# Or, under systemd, add to the [Service] section:
-#   AmbientCapabilities=CAP_NET_BIND_SERVICE
-```
-
-#### Docker
-
-The process is root **inside** the container, so it can bind low ports there
-directly. Set the adapter ports to the standard values and publish them 1:1:
-
-```bash
-docker run -d \
-  -p 2049:2049 -p 445:445 -p 111:111/tcp -p 111:111/udp \
-  -p 8080:8080 \
-  marmos91c/dittofs:latest
-```
-
-> **Publish the same number on both sides.** NFSv3's portmapper advertises the
-> port the server *listens* on, so a mismatched mapping like `-p 2049:12049`
-> breaks v3 auto-discovery (it works for v4, which has no portmapper). Set the
-> container to listen on the standard port and map `2049:2049`.
-
-The Docker **host** must still not run its own `nfsd` / `smbd` / `rpcbind` on
-those ports — see [step 1](#1-free-the-standard-ports-on-the-host).
-
-#### Kubernetes (operator)
-
-In-cluster there is no host service to disable, and the pod never needs to bind
-a privileged port: set the adapter ports in the `DittoServer` CR and let the
-operator's **Service** publish them. With a `LoadBalancer` (or `NodePort`)
-service, external clients reach the standard ports through the load balancer.
-
-```yaml
-apiVersion: dittofs.dittofs.com/v1alpha1
-kind: DittoServer
-metadata:
-  name: dittofs
-spec:
-  nfs:
-    port: 2049
-  smb:
-    enabled: true
-    port: 445
-  service:
-    type: LoadBalancer   # publishes the adapter ports externally
-```
-
-The operator wires each adapter port into the Service. For NFSv3 portmapper
-exposure (port 111) and the complete CR schema, see the
-[Kubernetes operator](#kubernetes-operator) section and the chart under
-`k8s/dittofs-operator/`.
+Then continue with [Getting started](getting-started.md#2-write-the-config-file).
 
 ## Package managers
+
+These install the released server today (see the note above).
+
+| System | Install |
+|--------|---------|
+| macOS, Linux (Homebrew) | `brew tap cubbit/tap && brew install --cask cubbit/tap/dfs cubbit/tap/dfsctl` |
+| macOS, Linux (script) | `curl -fsSL https://github.com/cubbit/dittofs/releases/latest/download/install.sh \| sh` |
+| Debian, Ubuntu | see [APT](#debian--ubuntu-apt) |
+| RHEL, Fedora | see [YUM](#rhel--fedora-yum) |
+| Arch Linux | `sudo pacman -U dfs_<version>_amd64.pkg.tar.zst`, downloaded from GitHub Releases |
+| Windows (Scoop) | `scoop bucket add cubbit https://github.com/cubbit/scoop-bucket` then `scoop install dfs dfsctl` |
+
+The install script puts both programs in `/usr/local/bin`, asking for `sudo` if it
+needs to.
 
 ### Debian / Ubuntu (APT)
 
@@ -148,92 +55,200 @@ curl -fsSL https://s3.cubbit.eu/dittofs-binaries/apt/dittofs.gpg.key \
   | gpg --dearmor --yes | sudo tee /usr/share/keyrings/dittofs.gpg > /dev/null
 echo "deb [signed-by=/usr/share/keyrings/dittofs.gpg] https://s3.cubbit.eu/dittofs-binaries/apt stable main" \
   | sudo tee /etc/apt/sources.list.d/dfs.list
-sudo apt update && sudo apt install dfs
-sudo systemctl enable --now dfs
+sudo apt update && sudo apt install dfs dfsctl
 ```
 
 ### RHEL / Fedora (YUM)
 
 ```bash
 sudo curl -fsSLo /etc/yum.repos.d/dfs.repo https://s3.cubbit.eu/dittofs-binaries/rpm/dfs.repo
-sudo yum install dfs
-sudo systemctl enable --now dfs
+sudo yum install dfs dfsctl
 ```
 
-### Arch Linux
+### Run it under systemd
+
+The `.deb`, `.rpm` and Arch packages install a systemd service, `dfs`, that runs
+`dfs start` in the foreground as root. The unit names no config file and no
+directories, so set them in a drop-in before the first start:
+
+1. Make the config directory, readable by root only, and put the passphrase in a file
+   there. Quote the value, since the file is read both by systemd and by a shell:
+
+   ```bash
+   sudo install -d -m 700 /etc/dittofs
+   echo "DITTOFS_ENCRYPTION_PASSPHRASE='correct horse battery staple'" | sudo tee /etc/dittofs/passphrase.env > /dev/null
+   sudo chmod 600 /etc/dittofs/passphrase.env
+   ```
+
+2. Write the config file to `/etc/dittofs/config.yaml`, with absolute paths under
+   `/var/lib/dittofs` (see [Configuration](configuration.md#a-first-config-file)), and
+   create each journal directory, for example `sudo mkdir -p /var/lib/dittofs/journal`.
+
+3. Add a drop-in that names the config, the passphrase file and the directories:
+
+   ```bash
+   sudo systemctl edit dfs
+   ```
+
+   ```ini
+   [Service]
+   Environment=DITTOFS_CONFIG=/etc/dittofs/config.yaml
+   EnvironmentFile=/etc/dittofs/passphrase.env
+   StateDirectory=dittofs
+   RuntimeDirectory=dittofs
+   ```
+
+4. Create the installation once, with the same passphrase and state directory, then
+   start the service:
+
+   ```bash
+   sudo sh -c 'set -a; . /etc/dittofs/passphrase.env; STATE_DIRECTORY=/var/lib/dittofs exec dfs init --config /etc/dittofs/config.yaml'
+   sudo systemctl enable --now dfs
+   ```
+
+`dfs init` prints the `admin` account's generated password once, to its terminal and
+never to the log, so run it where you can read the output. To choose the password
+instead, pass `--admin-password-file` or `--admin-password-env`. If the password is
+lost, stop the service and run `dfs reset-admin` the same way as `init`; it prints a
+new one:
 
 ```bash
-# Download the latest .pkg.tar.zst from GitHub Releases, then:
-sudo pacman -U dfs_<version>_amd64.pkg.tar.zst
-sudo systemctl enable --now dfs
+sudo systemctl stop dfs
+sudo sh -c 'set -a; . /etc/dittofs/passphrase.env; STATE_DIRECTORY=/var/lib/dittofs exec dfs reset-admin --config /etc/dittofs/config.yaml'
+sudo systemctl start dfs
 ```
 
-### Windows (Scoop)
+With `RuntimeDirectory=dittofs`, the local socket is `/run/dittofs/dfs.sock`, so on
+the host you can sign in without a network address:
 
-```powershell
-scoop bucket add cubbit https://github.com/cubbit/scoop-bucket
-scoop install dfs       # server daemon
-scoop install dfsctl    # client CLI
+```bash
+sudo dfsctl login --server /run/dittofs/dfs.sock --username admin
 ```
-
-When installed via the system package managers, the server runs under systemd as the `dfs`
-service. Run `dfs init` before the first start, handing it the admin password with
-`--admin-password-file` or `--admin-password-env` (see the
-[README](../../README.md#first-run--admin-password)). With neither, `dfs init` prints a
-generated password once to its standard output and never to the log, so run it where
-you can read that output; `dfs reset-admin`, with the node stopped, prints a new one.
 
 ## Docker
 
-Pre-built multi-architecture images (`linux/amd64`, `linux/arm64`) are published on Docker Hub.
+Multi-architecture images (`linux/amd64`, `linux/arm64`) are published on Docker Hub
+as `marmos91c/dittofs`. They hold the released server today.
+
+### Build the image
+
+To run this version, build the image from your clone:
+
+```bash
+cd dittofs
+docker build -t dittofs:dev .
+```
+
+Use `dittofs:dev` in place of `marmos91c/dittofs:latest` below.
 
 ### Single container
 
-```bash
-docker pull marmos91c/dittofs:latest
+The image runs `dfs` as user `65532`, and its default command is
+`start --config /config/config.yaml`. In a container the API must listen on every
+interface, and an API that is not on loopback is served over TLS only. So the
+container needs a certificate, and a config file that names the node, the journal and
+both key files.
 
-# Write ~/.config/dittofs/config.yaml first (see below), then initialize the
-# installation on the volumes, handing init the admin password
-docker run --rm \
-  -e DFS_ADMIN_PASSWORD=my-secure-password \
-  -v ~/.config/dittofs/config.yaml:/config/config.yaml:ro \
-  -v dittofs-metadata:/data/metadata \
-  -v dittofs-blocks:/data/blocks \
-  -v dittofs-state:/data/state \
-  marmos91c/dittofs:latest init --config /config/config.yaml \
-  --admin-password-env DFS_ADMIN_PASSWORD
+1. Make a working directory, and a certificate that names `localhost` (the image
+   ships none):
 
-# Run the server
-docker run -d \
-  --name dittofs \
-  -p 12049:12049 \
-  -p 12445:12445 \
-  -p 8080:8080 \
-  -v ~/.config/dittofs/config.yaml:/config/config.yaml:ro \
-  -v dittofs-metadata:/data/metadata \
-  -v dittofs-blocks:/data/blocks \
-  -v dittofs-state:/data/state \
-  marmos91c/dittofs:latest
+   ```bash
+   mkdir -p ~/dittofs-docker/keys ~/dittofs-docker/tls && cd ~/dittofs-docker
+   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 365 \
+     -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost" \
+     -keyout tls/api.key -out tls/api.crt
+   export DITTOFS_ENCRYPTION_PASSPHRASE='correct horse battery staple'
+   ```
 
-curl -k https://localhost:8080/health/live
-# The curl works only when the mounted config sets api.listen to a non-loopback
-# address (e.g. 0.0.0.0:8080) with api.tls.cert_file and key_file; the API serves
-# loopback inside the container, which the published port does not reach, and
-# -k skips the certificate check. Metrics stay on the container's loopback.
-# Without --admin-password-env, init prints a generated password once, to this
-# terminal only: it never reaches the log or `docker logs`.
-```
+2. Write `config.yaml`:
 
-`dittofs-blocks` carries the journal, which holds the only copy of every byte that has not
-reached the block store yet — never leave it in the container's writable layer. With
-`XDG_STATE_HOME=/data/state` in every image, `dittofs-state` fills with no config at all: the
-log, the runtime directory and, when `metadata.badger.path` is unset, the Badger store
-(`metadata` under the state directory). `dittofs-metadata` and `dittofs-blocks` only receive
-data if the config points at directories on them, never at their mount points: set `metadata.badger.path` to `/data/metadata/store` and list
-`/data/blocks/journal` under `journals` (the image creates that directory; `dfs init` needs
-it to exist). The container starts with no stores
-and no shares; create them with `dfsctl` (see the [CLI reference](cli.md)) or use the
-Compose stack below, which does it for you.
+   ```yaml
+   node:
+     id: 6f1c2a4e-8d3b-4f7a-9c5e-2b8d4a6f0e13   # generate your own with uuidgen
+   api:
+     listen:
+       - 0.0.0.0:8080
+     tls:
+       cert_file: /config/tls/api.crt
+       key_file: /config/tls/api.key
+   metadata:
+     badger:
+       path: /data/metadata/store
+   journals:
+     - path: /data/blocks/journal
+   keys:
+     protocol:
+       kind: local
+       local:
+         file: /config/keys/protocol.key
+     storage:
+       kind: local
+       local:
+         file: /config/keys/storage.key
+   ```
+
+3. Write the protocol key file with the program in
+   [Adding the protocol key](configuration.md#adding-the-protocol-key), run from your
+   clone: `(cd ~/dittofs && go run /tmp/dfs-keygen/main.go ~/dittofs-docker/keys/protocol.key)`. Then
+   hand `keys` and `tls` to the container's user, `65532`; `dfs init` writes
+   `keys/storage.key` itself:
+
+   ```bash
+   cd ~/dittofs-docker
+   sudo chown -R 65532 keys tls
+   ```
+
+4. Create the installation once, then run the server:
+
+   ```bash
+   docker run --rm \
+     -e DITTOFS_ENCRYPTION_PASSPHRASE \
+     -e STATE_DIRECTORY=/data/state \
+     -v ./config.yaml:/config/config.yaml:ro \
+     -v ./keys:/config/keys \
+     -v ./tls:/config/tls:ro \
+     -v dittofs-metadata:/data/metadata \
+     -v dittofs-blocks:/data/blocks \
+     -v dittofs-state:/data/state \
+     marmos91c/dittofs:latest init --config /config/config.yaml
+
+   docker run -d --name dittofs \
+     -e DITTOFS_ENCRYPTION_PASSPHRASE \
+     -e STATE_DIRECTORY=/data/state \
+     -p 8080:8080 \
+     -v ./config.yaml:/config/config.yaml:ro \
+     -v ./keys:/config/keys \
+     -v ./tls:/config/tls:ro \
+     -v dittofs-metadata:/data/metadata \
+     -v dittofs-blocks:/data/blocks \
+     -v dittofs-state:/data/state \
+     marmos91c/dittofs:latest
+   ```
+
+5. Check it and sign in from the host:
+
+   ```console
+   $ curl --cacert tls/api.crt https://localhost:8080/health/ready
+   ready
+   $ dfsctl login --server https://localhost:8080 --cacert tls/api.crt --username admin
+   password:
+   Logged in to https://localhost:8080 as admin (context default)
+   ```
+
+Things to know:
+
+- `init` prints the generated `admin` password once, to that terminal only. It never
+  reaches the log or `docker logs`. Pass `-e DFS_ADMIN_PASSWORD=...` and
+  `--admin-password-env DFS_ADMIN_PASSWORD` to choose it yourself.
+- `init` prints where it wrote `keys/storage.key`. Copy that file off the host and
+  keep the passphrase: losing either loses the data.
+- **Never keep the journal in the container's writable layer.** `dittofs-blocks`
+  holds the journal, the only copy of every byte written. A volume only receives
+  data if the config points inside it, not at its mount point: hence
+  `/data/metadata/store` and `/data/blocks/journal`. The image creates
+  `/data/blocks/journal`, which `dfs init` needs to exist.
+- The health check polls `/health/live`. Metrics stay on the container's loopback,
+  `127.0.0.1:9090`. `docker stop` stops the node cleanly.
 
 `dittofs-state` was also the name of a v1 volume, which kept its control-plane database at the
 volume's root. On a host upgraded from v1, `init` succeeds there and `start` then refuses it
@@ -243,96 +258,36 @@ the FoundationDB image below.
 
 **Image tags:**
 
-- `marmos91c/dittofs:latest` — latest stable release
-- `marmos91c/dittofs:vX.Y.Z` — a specific version
-- `marmos91c/dittofs:vX.Y` — latest patch of a minor version
-- `marmos91c/dittofs:vX` — latest minor of a major version
+| Tag | Meaning |
+|-----|---------|
+| `marmos91c/dittofs:latest` | latest stable release |
+| `marmos91c/dittofs:vX.Y.Z` | a specific version |
+| `marmos91c/dittofs:vX.Y` | latest patch of a minor version |
+| `marmos91c/dittofs:vX` | latest minor of a major version |
+| `marmos91c/dittofs:vX.Y.Z-foundationdb` | a version built with FoundationDB support |
 
 ### Docker Compose
 
-The repository ships a `docker-compose.yml` that brings up a server **and provisions it** —
-a metadata store, a block store, one share `/export`, and the NFS and SMB adapters — so the
-stack is usable the moment it is healthy. Clone the repository and run it from the root:
-
-```bash
-docker compose up -d                                       # BadgerDB + memory block store
-COMPOSE_PROFILES=s3-backend docker compose up -d           # S3 content via Localstack
-docker compose logs -f dittofs bootstrap
-```
-
-Select the backend through `COMPOSE_PROFILES` rather than `--profile`: the bootstrap
-service reads that variable to decide which stores to create, so `--profile` would start
-the extra container without provisioning against it.
-
-| Profile | Metadata | Block store |
-|---------|----------|-------------|
-| default | BadgerDB | `memory` |
-| `s3-backend` | BadgerDB | `s3` (Localstack) |
-
-There is no filesystem block store: a share's durable home is `s3` or `memory`, always
-fronted by an on-disk journal. The journal and the metadata store each get a named volume, so nothing that has to survive a restart lives in a
-container's writable layer.
-
-**None of these profiles is durable storage**, `s3-backend` included — and what the journal
-actually does is worth stating, because it is easy to mistake for a second copy. A write
-lands in the journal first and the syncer copies it to the block store in the background.
-The journal reclaims a segment's local bytes only when a write would push it past its size
-ceiling, or when an operator drains it explicitly, and only for segments that are fully
-synced. So an already-offloaded payload *may* still have a local copy — for exactly as long
-as nothing has needed the space — and nothing guarantees it. Once the journal reclaims that
-segment the bytes exist only in the block store.
-
-Localstack holds its bucket for the life of its container, so `docker compose down`
-followed by `up` comes back to an **empty bucket** while the metadata, which is on a volume,
-still names the objects that were in it. That destroys every already-offloaded payload
-outright; the journal is not a fallback for them, it has merely not been asked for the
-space yet. The default profile is the same story with the block store in RAM.
-Localstack is an S3 stand-in for exercising the S3 path, not a place to keep bytes — point
-the block store at a real bucket for anything you care about.
-
-The stack is built from the checkout rather than pulled, because the compose file and the
-server have to agree on the store model and the published image trails the repository
-between releases.
-
-Once it is up:
-
-```bash
-# NFS (the share exports with root kept as root, so a root mount can write immediately)
-sudo mount -t nfs -o vers=4.1,tcp,port=12049 localhost:/export /mnt/point
-
-# SMB — the admin password is the one the stack was started with
-smbclient //localhost/export -p 12445 -U admin
-```
-
-The stack ships fixed development credentials — the admin password defaults to
-`dittofs-compose-dev-password`, the JWT secret to a fixed string — and exports the share
-with root kept as root, so a client claiming root over NFS writes as root without a
-password. Every published port is therefore bound to `127.0.0.1`; reaching the stack from
-another host means removing that prefix in `docker-compose.yml`, and an unattended export
-on a shared network is not what these defaults are for. Override
-`COMPOSE_ADMIN_PASSWORD` first. Localstack
-publishes no host port at all.
-
-`docker compose down` stops the stack and keeps the volumes; `docker compose down -v`
-discards them too. Running `up` again re-runs the provisioning, which skips whatever is
-already there.
+> **Does not run on this version.** The repository's `docker-compose.yml` uses
+> `docker/config.yaml`, which names neither the key files nor the API certificate,
+> runs no `dfs init`, and its setup script (`docker/bootstrap.sh`) calls the released
+> server's API. Use the single container above.
 
 ## FoundationDB metadata
 
-The default build keeps its metadata in Badger, on one node's disk. To keep it in a
-FoundationDB cluster (`metadata.backend: foundationdb`) you need a `dfs` built with the
-`foundationdb` tag, which links FoundationDB's client library. Releases publish the tagged
-build next to the default ones, as an image and two tarballs. The package managers, the
-quick install script and the default image do not carry it: a `dfs` without the tag
-refuses `metadata.backend: foundationdb` in every command that opens the store (`dfs init`,
-`dfs start` and `dfs reset-admin`), naming the tag.
+By default the metadata lives in Badger, on one node's disk. To keep it in a
+FoundationDB cluster instead (`metadata.backend: foundationdb`), you need a `dfs`
+built with FoundationDB support. Releases publish the tagged build next to the default
+ones, as an image and two tarballs. The packages, the install script and the default image do not include it: a
+`dfs` without it refuses `metadata.backend: foundationdb` in `dfs init`, `dfs start` and
+`dfs reset-admin`, and says so.
 
-**Requirements:**
+**You need:**
 
-- A FoundationDB **7.3** cluster, and its cluster file (usually `/etc/foundationdb/fdb.cluster`).
-  The client is 7.3 too, and a 7.3 client reaches only a 7.3 cluster.
-- **An installation owns its whole cluster.** `dfs` writes with no key prefix, so the cluster
-  must hold no other data, and no second installation may share it.
+- A FoundationDB **7.3** cluster and its cluster file (usually
+  `/etc/foundationdb/fdb.cluster`). The client is 7.3, and reaches only a 7.3 cluster.
+- **A cluster for this installation alone.** `dfs` writes keys with no prefix, so the
+  cluster must hold no other data, and no second installation may share it.
 - Linux. The tarballs need glibc 2.34 or later (Debian 12, Ubuntu 22.04, RHEL 9 or newer).
 
 ### The image
@@ -341,37 +296,37 @@ refuses `metadata.backend: foundationdb` in every command that opens the store (
 docker pull marmos91c/dittofs:vX.Y.Z-foundationdb
 ```
 
-The image is published for `linux/amd64` and `linux/arm64` under the tag `<release tag>-foundationdb`
-(`vX.Y.Z-foundationdb`). It carries the 7.3 client, runs as the non-root user `65532`, and has
-the same ports, volumes and health check as the default image, plus one volume:
+It is published for `linux/amd64` and `linux/arm64`. It carries the 7.3 client, runs
+as user `65532`, and has the same ports, volumes and health check as the default
+image, plus one volume:
 
-- `/etc/foundationdb`: put the cluster file `fdb.cluster` here, and name it as
-  `metadata.foundationdb.cluster_file`. The client rewrites the cluster file when the cluster's
-  coordinators change, so mount a directory there that user `65532` can write, not the file
-  alone and not read-only.
+- `/etc/foundationdb`: put `fdb.cluster` here and name it in
+  `metadata.foundationdb.cluster_file`. The client rewrites the file when the
+  cluster's coordinators change, so mount a directory that user `65532` can write,
+  not the file alone and not read-only.
 
 ### The tarball
 
-`dfs-foundationdb_<version>_Linux_x86_64.tar.gz` and `dfs-foundationdb_<version>_Linux_arm64.tar.gz`
-are on the release page, listed in the release's `checksums.txt` like every other asset. Each holds
-the `dfs` binary, the README, the LICENSE and a `FOUNDATIONDB.txt` note. It does **not**
-carry `libfdb_c.so`: install the `foundationdb-clients` 7.3 package from
-[FoundationDB's releases](https://github.com/apple/foundationdb/releases). The deb puts it in
-`/usr/lib` and the rpm in `/usr/lib64`, both on the default library path.
+`dfs-foundationdb_<version>_Linux_x86_64.tar.gz` and
+`dfs-foundationdb_<version>_Linux_arm64.tar.gz` are on the release page, listed in
+`checksums.txt`. Each holds `dfs`, the README, the LICENSE and a `FOUNDATIONDB.txt`
+note. It does **not** include `libfdb_c.so`: install the `foundationdb-clients` 7.3
+package from [FoundationDB's releases](https://github.com/apple/foundationdb/releases)
+(the deb puts it in `/usr/lib`, the rpm in `/usr/lib64`).
 
 ```bash
 sha256sum -c --ignore-missing checksums.txt
-tar -xzf dfs-foundationdb_<version>_Linux_x86_64.tar.gz
+tar -xzf dfs-foundationdb_*_Linux_x86_64.tar.gz
 ```
 
 ### Configure, initialize, start
 
-Select the backend and name the cluster file. Only the `metadata.foundationdb` block is read
-with `foundationdb`, and a `metadata.badger` key beside it is refused:
+Select the backend and name the cluster file. A `metadata.badger` key beside it is
+refused:
 
 ```yaml
 node:
-  id: 7c0f3a52-9d4e-4b8e-8a31-5b6f2f0e9c11   # a UUID of your own
+  id: 7c0f3a52-9d4e-4b8e-8a31-5b6f2f0e9c11   # generate your own with uuidgen
 metadata:
   backend: foundationdb
   foundationdb:
@@ -389,101 +344,180 @@ keys:
       file: /config/keys/storage.key
 ```
 
-The journals stay on local disk: FoundationDB holds the metadata, not the journal. See
-[Configuration](configuration.md#foundationdb-metadata) for every key.
+The journals stay on local disk: FoundationDB holds only the metadata. Write the
+protocol key file first ([how](configuration.md#adding-the-protocol-key)); `dfs init`
+creates the storage key file in a directory that must exist and be writable. Every
+key is in [Configuration](configuration.md#foundationdb-metadata).
 
-Both key files are unlocked with `DITTOFS_ENCRYPTION_PASSPHRASE`, which `dfs init` and
-`dfs start` both need. `dfs init` creates the storage key file over a new cluster, and prints
-once where it is; copy it off the host, as
-[Encryption: local key files](encryption.md#local-key-files) says. Its directory has to exist and
-be writable. The protocol key file is not created by `init`: write it first, with the helper that
-section shows.
-
-Then, with the tarball's binary:
+With the tarball's binary:
 
 ```bash
-export DITTOFS_ENCRYPTION_PASSPHRASE=...   # the key files' passphrase
-./dfs init --config /etc/dittofs/config.yaml --admin-password-env DFS_ADMIN_PASSWORD
+export DITTOFS_ENCRYPTION_PASSPHRASE='correct horse battery staple'
+./dfs init --config /etc/dittofs/config.yaml
 ./dfs start --config /etc/dittofs/config.yaml
 ```
 
-or with the image, as for the [default image](#single-container) with no metadata volume, the
-cluster file's directory mounted, and the key files' directory mounted where the configuration
-names them. Create both host directories first, with the cluster file in `./foundationdb`, and
-hand them to user `65532`; a directory Docker creates for a missing path is root's, and `init`
-fails on it:
+Or with the image, as for the [default image](#single-container), with no metadata
+volume, the cluster file's directory mounted, and the key directory mounted where the
+config names it. Create both host directories first, with the cluster file in `./foundationdb`,
+and hand them to user `65532`; a directory Docker creates for a missing path is root's, and
+`init` fails on it:
 
 ```bash
 mkdir -p ./foundationdb ./keys
 cp /etc/foundationdb/fdb.cluster ./foundationdb/
-# write the protocol key file into ./keys here, as Encryption: local key files shows
+# write the protocol key file into ./keys here, as the single-container steps show
 sudo chown -R 65532:65532 ./foundationdb ./keys
 
-export DITTOFS_ENCRYPTION_PASSPHRASE=...   # the key files' passphrase
-docker run --rm -e DFS_ADMIN_PASSWORD=my-secure-password \
+export DITTOFS_ENCRYPTION_PASSPHRASE='correct horse battery staple'
+docker run --rm \
   -e DITTOFS_ENCRYPTION_PASSPHRASE \
-  -v ~/.config/dittofs/config.yaml:/config/config.yaml:ro \
+  -v ./config.yaml:/config/config.yaml:ro \
   -v ./foundationdb:/etc/foundationdb \
   -v ./keys:/config/keys \
   -v dittofs-blocks:/data/blocks \
   -v dittofs-state:/data/state \
-  marmos91c/dittofs:vX.Y.Z-foundationdb init --config /config/config.yaml \
-  --admin-password-env DFS_ADMIN_PASSWORD
+  marmos91c/dittofs:vX.Y.Z-foundationdb init --config /config/config.yaml
 ```
 
-Run the server the same way with `start`, the ports and the other volumes of
-[Single container](#single-container). Every command that opens the store (`init`, `start` and
-`reset-admin`) waits up to 30 seconds for the cluster, and
-a wrong cluster file ends in a refusal naming it rather than a hang.
+Run the server the same way with `start`, plus the ports and other volumes of
+[Single container](#single-container). `init`, `start` and `reset-admin` wait up to 30
+seconds for the cluster; a wrong cluster file ends in an error naming it, not a hang.
 
-For a cluster that requires TLS, name the client's certificate, its key and the CA file under
-`metadata.foundationdb.tls` (see [Configuration](configuration.md#foundationdb-metadata)). In the
-image, mount them read-only and name their paths inside the container. A file that is missing is
-refused, named, before `dfs` connects.
+For a cluster that requires TLS, name the client certificate, its key and the CA file
+under `metadata.foundationdb.tls` (see
+[Configuration](configuration.md#foundationdb-metadata)). In the image, mount them
+read-only and use their paths inside the container. A missing file is refused, by
+name, before `dfs` connects.
 
 ## Kubernetes operator
 
-DittoFS has an official operator that manages the deployment lifecycle, configuration via
-Custom Resources, persistent volume claims for metadata and block stores, and service
-exposure for the NFS/SMB protocols.
+> **Does not run on this version.** The operator still writes the released server's
+> config file (`database:`, `controlplane:`, `shutdown_timeout`), with no `node.id`,
+> `journals` or `keys`, so this version refuses it. Use the
+> [single container](#single-container) instead.
+
+For the released server, the operator manages the deployment, its configuration through
+a `DittoServer` custom resource, volume claims for its stores, and a Service for NFS
+and SMB:
 
 ```bash
-# From the operator directory
 cd k8s/dittofs-operator
-make deploy
-
-# Create a DittoFS instance
-kubectl apply -f config/samples/dittofs_v1alpha1_dittofs.yaml
-
-# Check status
-kubectl get dittofs
+make deploy                                                       # uses marmos91c/dittofs-operator:latest
+kubectl apply -f config/samples/dittofs_v1alpha1_dittofs.yaml     # create an instance
+kubectl get dittofs                                               # check it
 ```
 
-`make deploy` uses the published operator image (`marmos91c/dittofs-operator:latest`) by
-default. To build and deploy from source instead, point `IMG` at your own registry:
-`make docker-build docker-push IMG=<your-registry>/dittofs-operator:tag` then
-`make deploy IMG=<your-registry>/dittofs-operator:tag`.
+To deploy your own build of the operator:
+`make docker-build docker-push IMG=registry.example.com/dittofs-operator:dev`, then
+`make deploy IMG=registry.example.com/dittofs-operator:dev`. The CRD reference, RBAC
+and Helm chart are in [`k8s/dittofs-operator/`](../../k8s/dittofs-operator/).
 
-See the [`k8s/dittofs-operator/`](../../k8s/dittofs-operator/) directory for the CRD reference,
-RBAC, and Helm chart configuration.
+## Default ports
+
+| Port | Service |
+|------|---------|
+| `12049` | NFS, once served |
+| `12445` | SMB, once served |
+| `8080`  | Management API and health checks (`api.listen`, default `127.0.0.1:8080`) |
+| `9090`  | Prometheus metrics (`metrics.listen`, default `127.0.0.1:9090`) |
+
+All four are above 1024, so `dfs` starts without root. The API and metrics addresses
+are keys in the config file. The NFS and SMB ports are not: each is a setting of its
+adapter, `adapters.nfs.port` and `adapters.smb.port`, kept in the metadata store and
+changed through the management API.
+
+## Running on standard ports (production)
+
+In production, serve NFS on `2049` and SMB on `445`, so clients connect with no port
+options:
+
+```bash
+# Default ports: the port must be named
+sudo mount -t nfs -o vers=4.1,tcp,port=12049 server:/export /mnt/point
+# Standard ports: no port option
+sudo mount -t nfs -o vers=4.1 server:/export /mnt/point
+```
+
+> **Not available yet on this version:** setting the adapter ports. The commands in
+> step 2 are refused with `unknown_key` until the adapters' settings exist
+> ([why](configuration.md#the-management-api)).
+
+### 1. Free the standard ports on the host
+
+The operating system's own NFS, SMB and rpcbind services usually hold `2049` and
+`445`. Stop them first:
+
+```bash
+# Linux (systemd)
+sudo systemctl disable --now nfs-server rpcbind rpcbind.socket smbd nmbd
+sudo ss -tulpn | grep -E ':(2049|445)\b'      # should print nothing
+```
+
+```bash
+# macOS
+sudo nfsd stop && sudo nfsd disable
+sudo launchctl disable system/com.apple.smbd   # or turn off File Sharing in System Settings → General → Sharing
+```
+
+### 2. Set the ports and allow `dfs` to bind them
+
+**Single binary.** Set each adapter's port, then let `dfs` bind ports below 1024
+without running as root:
+
+```bash
+dfsctl adapter set nfs --setting port=2049
+dfsctl adapter set smb --setting port=445
+sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/dfs
+```
+
+Under systemd, add `AmbientCapabilities=CAP_NET_BIND_SERVICE` to the `[Service]`
+section instead of `setcap`. A config file that names `adapters.nfs.port` is refused:
+the port is a setting, not a host fact.
+
+**Docker.** The process may bind low ports inside the container. Set the adapter ports
+as above and publish them one to one, with the volumes and config of
+[Single container](#single-container):
+
+```bash
+docker run -d -p 2049:2049 -p 445:445 -p 8080:8080 marmos91c/dittofs:latest
+```
+
+The Docker host must still not run its own `nfsd`, `smbd` or `rpcbind` on those
+ports; see [step 1](#1-free-the-standard-ports-on-the-host).
+
+**Kubernetes.** The operator does not run this version yet (see
+[above](#kubernetes-operator)). For the released server, set the ports in the
+`DittoServer` resource and let the operator's Service publish them; the pod never
+binds a privileged port itself:
+
+```yaml
+apiVersion: dittofs.dittofs.com/v1alpha1
+kind: DittoServer
+metadata:
+  name: dittofs
+spec:
+  nfs:
+    port: 2049
+  smb:
+    enabled: true
+    port: 445
+  service:
+    type: LoadBalancer   # publishes the adapter ports outside the cluster
+```
 
 ## Uninstall
 
-Removing DittoFS takes three steps:
+Removing DittoFS takes three steps: stop the server, remove the programs, and,
+if you want, delete the data. Removing the programs never deletes data.
 
-1. Stop the server.
-2. Remove the binaries.
-3. Optionally, delete the data.
+If you plan to delete the data, first note the directories your config names for
+`metadata.badger.path` and `journals`. `dfs config show` prints them.
 
-Removing the binaries never deletes your data.
+### 1. Unmount shares and stop the server
 
-Before you start, if you plan to delete the metadata store, note the directory
-`metadata.badger.path` names in the server's config file.
-
-### 1. Stop the server and unmount shares
-
-On every client, unmount NFS and SMB shares first. A mount left behind hangs
-once the server is gone:
+On every client, unmount the shares first; a mount left behind hangs once the server
+is gone:
 
 ```bash
 sudo umount /mnt/nfs /mnt/smb
@@ -495,16 +529,16 @@ Then stop the server:
 # Package install (.deb, .rpm, Arch)
 sudo systemctl disable --now dfs
 
-# Quick install script, Homebrew, or source build: the server runs in the
-# foreground, so press Ctrl+C in its terminal, or
+# Source build, install script or Homebrew: press Ctrl+C in its terminal, or
 pkill -TERM -x dfs
 ```
 
-### 2. Remove the binaries
+### 2. Remove the programs
 
 | Install method | Command |
 |---|---|
-| Quick install script | `sudo rm /usr/local/bin/dfs /usr/local/bin/dfsctl` |
+| Source build | delete the `dfs` and `dfsctl` binaries and the clone; `sudo rm /usr/local/bin/dfs /usr/local/bin/dfsctl` if you installed them |
+| Install script | `sudo rm /usr/local/bin/dfs /usr/local/bin/dfsctl` |
 | Homebrew | `brew uninstall --cask dfs dfsctl` |
 | Debian / Ubuntu | `sudo apt purge dfs dfsctl` |
 | RHEL / Fedora | `sudo yum remove dfs dfsctl` |
@@ -512,89 +546,72 @@ pkill -TERM -x dfs
 | Scoop | `scoop uninstall dfs dfsctl` |
 | Docker | `docker rm -f dittofs && docker rmi marmos91c/dittofs:latest` |
 | Docker Compose | `docker compose down && docker rmi dittofs:compose` |
-| Source build | delete the `dfs` and `dfsctl` binaries you built, and the clone |
 | Kubernetes operator | see the [operator uninstall guide](../../k8s/dittofs-operator/docs/INSTALL.md#uninstallation) |
 
-If you installed the Homebrew formula instead of the cask (the README
-command, without `--cask`), use
+If you installed the older Homebrew formula rather than the cask, use
 `brew uninstall cubbit/tap/dfs cubbit/tap/dfsctl`.
 
-> **Note:** removing the `.deb` also removes `/usr/local/bin` if it is left
-> empty. Recreate it with `sudo mkdir -p /usr/local/bin` if other tools need it.
+Removing the `.deb` also removes `/usr/local/bin` if it is left empty. Recreate it with
+`sudo mkdir -p /usr/local/bin` if other tools need it.
 
-Optionally remove the package sources:
+To remove the package sources too:
 
 ```bash
-# APT
-sudo rm /etc/apt/sources.list.d/dfs.list /usr/share/keyrings/dittofs.gpg
-sudo apt update
-
-# YUM
-sudo rm /etc/yum.repos.d/dfs.repo
-
-# Scoop
-scoop bucket rm cubbit
+sudo rm /etc/apt/sources.list.d/dfs.list /usr/share/keyrings/dittofs.gpg && sudo apt update   # APT
+sudo rm /etc/yum.repos.d/dfs.repo                                                            # YUM
+scoop bucket rm cubbit                                                                       # Scoop
 ```
 
-### 3. Remove data (optional)
+### 3. Remove the data (optional)
 
-> **Warning:** This cannot be undone. It deletes your configuration, users,
-> shares, file metadata, and any file data that has not reached the block
-> store. Objects already in a remote block store remain, but without their
-> metadata they are unusable.
+> **Warning:** this cannot be undone. It deletes your configuration, users, shares,
+> file metadata and file content. The journal holds the only copy of every byte
+> written, since no remote store is wired yet.
 
-**Server run by your user** (quick install script, Homebrew, source build):
+**A server you ran as yourself** (source build, install script, Homebrew):
 
-| Data | Linux / macOS | Windows |
-|---|---|---|
-| Config file | `~/.config/dittofs/` | `%APPDATA%\dittofs\` |
-| Logs, PID file, journal (`blocks/`) | `~/.local/state/dittofs/` | `%LOCALAPPDATA%\dittofs\` |
+| Data | Default path |
+|---|---|
+| Config file | `~/.config/dittofs/` |
+| State directory: the metadata store, the log, `dfs.sock` | `~/.local/state/dittofs/` |
+| Journals | the paths `journals` lists; there is no default |
+| Key files | the paths `keys.<role>.local.file` names |
 
 ```bash
 rm -rf ~/.config/dittofs ~/.local/state/dittofs
 ```
 
-If you set `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, or `blockstore.journal.path`,
-remove those locations instead.
+Also delete the journal directories and the key files your config names. If you set
+`XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `metadata.badger.path` or `logging.output`, remove
+those locations instead; the rules are in
+[Configuration](configuration.md#the-state-and-runtime-directories).
 
-**Server run by the packaged systemd service:** the service runs as root with
-no home directory, so unless you configured paths explicitly its data is in:
-
-| Data | Path |
-|---|---|
-| Config file | `/.config/dittofs/` |
-| Logs and journal | `/tmp/dittofs/` |
-| systemd overrides you created | `/etc/systemd/system/dfs.service.d/` |
+**A server run by the packaged service:** remove the directories your config file and
+drop-ins name (with the drop-in above, `/etc/dittofs` and `/var/lib/dittofs`), the
+journals and the key files, then the drop-ins:
 
 ```bash
-sudo rm -rf /.config/dittofs /tmp/dittofs /etc/systemd/system/dfs.service.d
+sudo rm -rf /etc/systemd/system/dfs.service.d
 sudo systemctl daemon-reload
 ```
 
 **Everywhere:**
 
-- The metadata store: the directory `metadata.badger.path` names, which you
-  noted before stopping the server.
-- `dfsctl` credentials: `~/.config/dfsctl/config.json` (Windows:
+- `dfsctl` sessions: `~/.config/dfsctl/config.json` (Windows:
   `%APPDATA%\dfsctl\config.json`), for each user who ran `dfsctl login`.
-- Client leftovers: `~/.smbcredentials`, mount point directories, and any
-  DittoFS entries in `/etc/fstab`.
+- Client leftovers: `~/.smbcredentials`, mount point directories, and DittoFS entries
+  in `/etc/fstab`.
 
 **Docker:**
 
 ```bash
 docker volume rm dittofs-metadata dittofs-blocks dittofs-state
-# an upgraded v1 host also has this, and its dittofs-state (removed above)
-# holds v1's controlplane.db, which start refuses
-docker volume rm dittofs-cache
-# or, with Compose
-docker compose down -v
+docker volume rm dittofs-cache       # only on a host upgraded from the released server
 ```
 
-The single-container setup also bind-mounts `~/.config/dittofs/config.yaml`
-from the host; remove it as shown above.
+Also remove the `config.yaml`, `keys` and `tls` you mounted from the host.
 
-**Remote storage:** data a v1 release left in remote block stores such as S3
-buckets, or in an externally managed PostgreSQL database, is not touched by any
-step above. Delete it on the storage side if you no longer need it. See
+**Remote storage:** data the released server left in remote stores such as S3
+buckets, or in an externally managed PostgreSQL database, is not touched by any step
+above. Delete it on the storage side if you no longer need it. See
 [Upgrading from v1](upgrading-from-v1.md).

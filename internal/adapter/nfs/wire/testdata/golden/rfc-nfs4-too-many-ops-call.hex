@@ -1,0 +1,14 @@
+# An NFSv4.1 COMPOUND counting 129 operations, one past the compound cap (RFC 21 section 11.5).
+0000002b  # xid
+00000000  # CALL
+00000002  # RPC version 2
+000186a3  # program NFS
+00000004  # version 4
+00000001  # procedure COMPOUND
+00000000 00000000  # credential: AUTH_NONE, no body
+00000000 00000000  # verifier: AUTH_NONE, no body
+00000005 61626364 65000000  # tag "abcde", 5 bytes and its padding
+00000001  # minor version 1
+00000081  # 129 operations
+0000270f  # operation 9999
+00000001 00000002  # eight bytes after it

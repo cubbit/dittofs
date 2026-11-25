@@ -442,7 +442,7 @@ func TestGenericSettingGuards(t *testing.T) {
 		status     int
 		field, via string
 	}{
-		{"a store's endpoint", "/api/v1/stores/" + uuid.NewString() + "/settings/remote.endpoint", http.StatusBadRequest, "remote.endpoint", "POST /api/v1/stores"},
+		{"a store's endpoint", "/api/v1/stores/" + uuid.NewString() + "/settings/remote.endpoint", http.StatusBadRequest, "remote.endpoint", "PATCH /api/v1/stores/{id}"},
 		{"a store's credential", "/api/v1/stores/" + st.String() + "/settings/remote.credential", http.StatusBadRequest, "remote.credential", "PUT /api/v1/stores/{id}/credential"},
 		{"the keytab", "/api/v1/settings/identity.keytab", http.StatusBadRequest, "identity.keytab", "PUT /api/v1/installation/keytab"},
 		{"an unknown node's", "/api/v1/nodes/" + uuid.NewString() + "/settings/adapters.nfs.port", http.StatusNotFound, "", ""},

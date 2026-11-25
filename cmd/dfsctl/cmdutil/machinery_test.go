@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -114,10 +115,13 @@ func newFixture(t *testing.T) *fixture {
 }
 
 // login is a fresh credentials file, signed in to the node.
-func (f *fixture) login(t *testing.T) cmdutil.Env {
+func (f *fixture) login(t *testing.T) cmdutil.Env { t.Helper(); return login(t, f.srv) }
+
+// login is a fresh credentials file, signed in to srv.
+func login(t *testing.T, srv clisuite.Server) cmdutil.Env {
 	t.Helper()
 	env := cmdutil.Env{In: strings.NewReader(""), Out: io.Discard, Err: io.Discard, ConfigPath: filepath.Join(t.TempDir(), "dfsctl", "config.json")}
-	f.srv.Login(t, clisuite.InProcess(env))
+	srv.Login(t, clisuite.InProcess(env))
 	return env
 }
 
@@ -236,6 +240,35 @@ func TestUpdateRefusesWhatNamesNothing(t *testing.T) {
 	}
 	if got := f.path(t); got != "/builds" {
 		t.Errorf("the share's path after the refusals: got %q, want /builds", got)
+	}
+}
+
+// A name is matched as the server matches it, so a case variant names the
+// share; and a listing that ignored the name filter, which a proxy dropping
+// ?name= stands in for, is refused rather than counted: a delete of a name
+// that matches nothing never deletes the one share the listing held.
+func TestResolveChecksTheListedName(t *testing.T) {
+	f := newFixture(t)
+	if _, err := run(t.Context(), f.env, "sh", "update", "BUILDS", "--path", "/upper", "-o", "json"); err != nil {
+		t.Fatalf("sh update BUILDS: %v, want the share builds resolved", err)
+	}
+	if got := f.path(t); got != "/upper" {
+		t.Errorf("the share after sh update BUILDS: path %q, want /upper", got)
+	}
+
+	p := f.srv
+	p.Addr = f.srv.Proxy(t, func(r *http.Request) {
+		q := r.URL.Query()
+		q.Del("name")
+		r.URL.RawQuery = q.Encode()
+	})
+	env := login(t, p)
+	want := `dfsctl sh delete: asked for the share named "staging", the server listed ` + f.share.ID + ` named "builds"`
+	if _, err := run(t.Context(), env, "sh", "delete", "staging"); err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Fatalf("sh delete staging through a listing that ignores ?name=: got %v, want an error starting %q", err, want)
+	}
+	if sh, err := f.c.Shares().Get(t.Context(), f.share.ID); err != nil || sh.Status.State != f.share.Status.State {
+		t.Errorf("the share builds after sh delete staging: %+v (%v), want it as it was", sh.Status, err)
 	}
 }
 
@@ -364,6 +397,20 @@ func TestDeleteWaitsOnlyWithWait(t *testing.T) {
 	}
 }
 
+// A wait interrupted before its first read of the operation is refused
+// naming the command that tries it again, and claims no operation goes on,
+// since none was read.
+func TestWaitInterruptedAtItsReadResumes(t *testing.T) {
+	f := newFixture(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	id := uuid.NewString()
+	want := "'dfsctl operation wait " + id + "' tries again"
+	if _, err := run(ctx, f.env, "operation", "wait", id); err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "goes on") {
+		t.Errorf("operation wait under an ended context: got %v, want an error naming %q and no claim the operation goes on", err, want)
+	}
+}
+
 // A wait interrupted through its context leaves the operation running and
 // prints the command that resumes it; that command, from a fresh root and
 // credentials file, follows the operation to its end.
@@ -378,18 +425,18 @@ func TestInterruptedWaitResumes(t *testing.T) {
 	if err != nil || json.Unmarshal([]byte(out), &op) != nil || op.ID == "" {
 		t.Fatalf("share delete builds -o json: got %q, %v, want its operation", out, err)
 	}
-	base := f.srv.Harness.Clock().Pending()
+	polls := make(chan struct{}, 1)
+	p := f.srv
+	p.Addr = f.srv.Proxy(t, clisuite.Polled(polls))
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	done := background(ctx, f.env, "operation", "wait", op.ID)
-	// Polling until the wait has armed a timer on the node's clock, which
-	// nothing advances here: past its read of the operation, so the
-	// interrupt lands in the wait. Whether the timer is the poll's own or
-	// another the node arms meanwhile, what the command prints is the same.
-	for end := time.Now().Add(time.Minute); f.srv.Harness.Clock().Pending() <= base; time.Sleep(time.Millisecond) {
-		if time.Now().After(end) {
-			t.Fatal("the wait's poll did not park within a minute")
-		}
+	done := background(ctx, login(t, p), "operation", "wait", op.ID)
+	// The interrupt lands once the wait's poll is on its way to the server,
+	// past the command's read of the operation.
+	select {
+	case <-polls:
+	case <-time.After(time.Minute):
+		t.Fatal("the wait's poll did not reach the server within a minute")
 	}
 	cancel()
 	var w waited

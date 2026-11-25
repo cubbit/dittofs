@@ -62,11 +62,7 @@ when the wait itself is interrupted, which leaves the operation running.`,
 				if err != nil {
 					return err
 				}
-				op, err := c.Operation(cmd.Context(), args[0])
-				if err != nil {
-					return fmt.Errorf("%s: operation %s: %w", cmd.CommandPath(), args[0], err)
-				}
-				return cmdutil.Wait(cmd, c, op)
+				return cmdutil.WaitFor(cmd, c, args[0])
 			},
 		},
 		&cobra.Command{

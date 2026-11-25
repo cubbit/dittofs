@@ -1,0 +1,6 @@
+# Its reply: GARBAGE_ARGS, an accept state, which carries no tag (RFC 5531 section 9).
+0000002f  # xid
+00000001  # REPLY
+00000000  # MSG_ACCEPTED
+00000000 00000000  # verifier: AUTH_NONE, no body
+00000004  # GARBAGE_ARGS

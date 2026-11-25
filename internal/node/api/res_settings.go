@@ -292,11 +292,11 @@ func scopeOf(k entity.ScopeKind) func([16]byte) entity.SettingScope {
 }
 
 // ownKeys are the keys only a resource's own route writes, each with the
-// route that does: a store is created with its endpoint, and a store's
-// credential's and the keytab's references are each written with the secret
-// they name, after their route's checks.
+// route that does: a store is created with its endpoint and its PATCH
+// changes it, and a store's credential's and the keytab's references are
+// each written with the secret they name, after their route's checks.
 var ownKeys = map[string]string{
-	storeEndpoint:   "POST /api/v1/stores",
+	storeEndpoint:   "PATCH /api/v1/stores/{id}",
 	storeCredential: "PUT /api/v1/stores/{id}/credential",
 	keytabKey:       "PUT /api/v1/installation/keytab",
 }

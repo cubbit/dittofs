@@ -436,3 +436,24 @@ func testAllSettingsResumes(t *testing.T, kvo Opener) {
 		sameKeys(t, what, settingKeys(t, s.Nodes(), keys[i]), keys[i+1:])
 	}
 }
+
+// Every scope's settings are listed by scope kind, then scope ID as bytes,
+// then key, whatever order they were written in: the order a listing of one
+// kind's scopes starts and ends by.
+func testAllSettingsScopeOrder(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	low, high := uuid.UUID{0x01}, uuid.UUID{0xf0}
+	want := []entity.SettingKey{
+		{Scope: instScope, Key: "z"},
+		{Scope: entity.SettingScope{Kind: entity.ScopeNamespace, ID: high}, Key: "a"},
+		{Scope: entity.SettingScope{Kind: entity.ScopeRemote, ID: low}, Key: "b"},
+		{Scope: entity.SettingScope{Kind: entity.ScopeRemote, ID: low}, Key: "c"},
+		{Scope: entity.SettingScope{Kind: entity.ScopeRemote, ID: high}, Key: "a"},
+		{Scope: entity.SettingScope{Kind: entity.ScopeShare, ID: low}, Key: "a"},
+	}
+	for _, i := range []int{5, 2, 4, 0, 3, 1} {
+		putSetting(t, s.ControlPlane(), want[i])
+	}
+
+	sameKeys(t, "settings by scope kind, scope ID and key", settingKeys(t, s.Nodes(), entity.SettingKey{}), want)
+}

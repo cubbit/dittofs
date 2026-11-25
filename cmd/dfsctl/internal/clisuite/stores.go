@@ -2,6 +2,7 @@ package clisuite
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -84,6 +85,17 @@ func storeRows() []row {
 				t.Errorf("store delete %s: read back %v, want 404", id, err)
 			}
 		}},
+		{name: "store list lists a store written through the store", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
+			id := s.putStore(t)
+			var got []apiv1.Store
+			decodeJSON(t, mustRun(t, run, "store", "list", "-o", "json"), &got)
+			if n := len(slices.DeleteFunc(got, func(st apiv1.Store) bool { return st.ID != id })); n != 1 {
+				t.Errorf("store list: listed store %s %d times, want once", id, n)
+			}
+		}},
+		{name: "store update prints the refusal until the settings table declares the remote store", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
+			refused(t, run, "unknown_key", "remote.region", "store", "update", s.putStore(t), "--setting", "remote.region=eu-west-1")
+		}},
 		{name: "store delete without --force and no one to confirm deletes nothing", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, c *client.Client) {
 			id := s.putStore(t)
 			unconfirmed(t, run, "store", "delete", id)
@@ -129,6 +141,13 @@ func storeRows() []row {
 			decodeJSON(t, mustRun(t, run, "adapter", "get", "nfs", "-o", "json"), &got)
 			if got.ID != "nfs" || got.Spec.Enabled != want.Spec.Enabled {
 				t.Errorf("adapter get nfs: got %+v, want %+v", got, want.Resource)
+			}
+		}},
+		{name: "adapter list lists every protocol's adapter", run: func(t *testing.T, run Runner, _ Server, _ *client.Client) {
+			var got []apiv1.Adapter
+			decodeJSON(t, mustRun(t, run, "adapter", "list", "-o", "json"), &got)
+			if len(got) != 2 || got[0].ID != "nfs" || got[1].ID != "smb" {
+				t.Errorf("adapter list: got %+v, want nfs and smb", got)
 			}
 		}},
 		{name: "adapter get of a protocol no adapter serves is refused", run: func(t *testing.T, run Runner, _ Server, _ *client.Client) {

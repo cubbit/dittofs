@@ -86,8 +86,8 @@ Native Go SMB3 client tests using [hirochachacha/go-smb2](https://github.com/hir
 
 ### Test Files
 
-- `test/e2e/smb3_gosmb2_test.go` - 7 test functions
-- `test/e2e/helpers/smb3_helpers.go` - Shared test helpers
+The tests (`test/e2e/smb3_gosmb2_test.go`) and their helpers were deleted with v1's e2e
+driver; they return once the e2e helpers are rebuilt on the v2 API.
 
 ### Running
 

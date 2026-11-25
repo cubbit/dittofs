@@ -177,10 +177,12 @@ this epic's part is that every command reaches the API through that client and n
   spec it read and the one the server now holds, and exits non-zero. The write is the route's:
   `cmdutil.ByPatch` sends a JSON merge patch of what the command changed, so a field it empties is
   cleared rather than left as it was (a share's route takes `PATCH` only), `cmdutil.ByPut` the
-  whole spec (a netgroup's takes `PUT` only), and a write that may start an operation, a user's,
+  whole spec as this dfsctl decoded it (a netgroup's takes `PUT` only), so against a newer server a
+  field this dfsctl does not know is sent empty and reset, and a write that may start an operation, a user's,
   passes its own `cmdutil.Write`, answering `client.Result`; a change that changes nothing writes
   nothing. YAML, the diff's and `-o yaml`'s, goes through the spec's JSON, so its keys are the API's
-  field names. No marker. Prior art: `kubectl apply`'s conflict report (from memory).
+  field names. Marker: `decision:` at `cmdutil.ByPut`, for the reset field. Prior art: `kubectl
+  apply`'s conflict report (from memory).
 - **D4, every change to the credentials file runs under the operating system's lock on a file
   beside it.** `credentials.Update(ctx, path, waiting, fn)` opens `<config>.lock` and takes an
   exclusive lock on it without waiting (`flock(LOCK_EX|LOCK_NB)` on Unix, `LockFileEx` with
@@ -431,13 +433,15 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
 - **Track:** A. **Depends on:** T6.3; E4 (stores, namespaces, secrets, adapters, settings, nodes, the
   audit, the domain's routes, `GET /api/v1/health`).
 - **Covers:** R3, R17.
-- **Deliverables:** `store create|get|delete|set-credential` (`create`'s credential, which
-  it may go without, from a file; `set-credential`'s from a prompt or a file); `namespace create|list|get|delete`; `adapter get|set`;
+- **Deliverables:** `store create|list|get|update|delete|set-credential` (`create`'s credential,
+  which it may go without, from a file; `set-credential`'s from a prompt or a file);
+  `namespace create|list|get|delete`; `adapter list|get|set`;
   `setting get|set|unset <scope> <key>`; `node list|get`; `audit list` with its filters;
   `domain resolve|test|join|rotate-machine-password`, `join` online or `--offline`, neither sending
   a key; `status`, reading `GET /api/v1/health`; their `clisuite` rows; `cli.md` regenerated.
-  `store list`, `store update` and `adapter list` are not built: no route serves them, a row of
-  [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger). A remote store, a
+  `store list`, `store update` and `adapter list` read `GET /stores`, write `PATCH /stores/{id}`
+  and read `GET /adapters`; `store update` changes a store's settings, and `set-credential` its
+  credential. A remote store, a
   namespace and a node carry no name, so their commands take the ID as the argument. A scope is
   `installation`, `node:<id>`, `namespace:<id>`, `store:<id>` or `share:<name>`; a value, a
   `setting set`'s or a `--setting key=value`'s, is taken as JSON when it parses and as a string

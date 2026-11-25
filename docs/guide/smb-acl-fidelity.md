@@ -1,225 +1,173 @@
-# SMB Windows-ACL / Security-Descriptor Fidelity Matrix
+# SMB Windows-ACL Fidelity
 
-This is the interop reference for what the DittoFS SMB Security Descriptor (SD)
-path actually round-trips, derived from the code — not from the spec. It is the
-"documented interop matrix" required by [#1228](https://github.com/cubbit/dittofs/issues/1228).
+This page lists, item by item, what happens to Windows permissions (security
+descriptors) when a client reads them from DittoFS over SMB, changes them, and
+reads them back. Use it to predict what Explorer's **Security** tab, `icacls`
+or `Set-Acl` will show and keep.
 
-For the cross-protocol ACL *model* (why NFSv4 ACEs are the canonical form, the
-evaluation algorithm, mode sync), see [Access Control](access-control.md). This document is
-narrower: it states, aspect by aspect, whether the SMB SD wire path is
-**Works**, **Partial**, or **Unsupported**, with the source of truth for each.
+> **Not available yet on this version.** This version does not serve SMB, so no
+> client can read or write a security descriptor through it yet. The matrix
+> describes the **released server**. On this version a user's or group's SID is
+> stored with the user or group rather than computed from its UID, so the SID
+> rows below may change when SMB is served again.
 
-## Legend
+For the model behind it (why DittoFS stores NFSv4-style ACLs, how access is
+evaluated, how mode bits stay in step), see [Access control](access-control.md).
 
-- **Works** — round-trips faithfully through QUERY_INFO (read) → SET_INFO
-  (write) → QUERY_INFO with no semantic loss.
-- **Partial** — round-trips with a documented caveat or under conditions.
-- **Unsupported** — dropped, stubbed, or not implemented; behavior noted.
+## How to read the tables
 
-Code paths referenced:
+Each row is one part of a security descriptor. The columns are:
 
-| Path | Function(s) | File |
-|------|-------------|------|
-| SD read (build) | `BuildSecurityDescriptor`, `buildDACL`, `buildSACL`, `buildEmptySACL` | `internal/adapter/smb/handlers/security.go` |
-| Read-side DACL synthesis | `SynthesizeWindowsDefault`, `SynthesizeFromMode` | deleted with the v1 store |
-| SD write (parse) | `ParseSecurityDescriptorWithOptions`, `parseDACL`, `parseACEs` (shared DACL/SACL) | `internal/adapter/smb/handlers/security.go` |
-| SET_INFO Security | `setSecurityInfo`, `checkSetInfoSecurityAccess` | `internal/adapter/smb/handlers/set_info.go` |
-| SID derivation | `UserSID`, `GroupSID`, `UIDFromSID`, `GIDFromSID`, `PrincipalToSID`, `SIDToPrincipal` | `pkg/auth/sid/mapper.go` |
-| Generic-mask expansion | `ExpandGenericMask` | deleted with the v1 store |
-| Inheritance | `ComputeInheritedACL`, `PropagateACL`, flag translation | deleted with the v1 store |
-| Storage | `FileAttr.ACL` / `SetAttrs.ACL` | deleted with the v1 store |
+| Column | Meaning |
+|--------|---------|
+| **Aspect** | The part of the security descriptor, or the operation on it. |
+| **State** | How faithfully it round-trips: a client writes it, reads it back, and compares. |
+| **What happens** | What a client sees, and any condition or caveat. |
 
-NFSv4 ACE mask bits and Windows `ACCESS_MASK` bits share identical positions by
-RFC 7530 design, so masks need no translation. Only the principal format differs
-(NFSv4 `who@domain` strings vs. binary SIDs) and the inheritance-flag bit for
-`INHERITED_ACE` (NFSv4 `0x80` vs. Windows `0x10`, translated in `flags.go`).
+The **State** values:
 
-## Owner / Group SID
+| State | Meaning |
+|-------|---------|
+| **Works** | Read back exactly as written. Nothing is lost. |
+| **Partial** | Kept, with the limit or condition the row states. |
+| **Unsupported** | Refused, dropped or not implemented. The row says which. |
 
-| Aspect | State | Notes |
-|--------|-------|-------|
-| Owner SID read | Works | `BuildSecurityDescriptor` emits `mapper.UserSID(file.UID)`. UID 0 → `BUILTIN\Administrators` (`S-1-5-32-544`); all other UIDs → domain SID `S-1-5-21-{machine}-{uid*2+1000}`. |
-| Group SID read | Works | `mapper.GroupSID(file.GID)` → `S-1-5-21-{machine}-{gid*2+1001}`. The `+1001` (vs `+1000`) offset guarantees `UserSID(n) != GroupSID(n)`. |
-| Owner SID write | Works (round-trips local) | Parsed only when `OwnerSecurityInformation` is requested AND `UIDFromSID` recognizes the SID (machine-domain, even RID offset ≥ 1000). Recognized → `SetAttrs.UID`. Unrecognized owner SID is silently ignored (UID unchanged). |
-| Group SID write | Works (round-trips local) | `GIDFromSID` (odd RID offset); falls back to `UIDFromSID` if the group SID actually encodes a user. Unrecognized → ignored. |
-| Owner/Group section gating | Works | Write requires `WRITE_OWNER` on the open's `GrantedAccess` (`checkSetInfoSecurityAccess`); both sections fold under one `WRITE_OWNER` gate per MS-DTYP §2.5.3.3. |
+A short background: Windows access masks and NFSv4 access masks use the same bit
+positions, so masks are stored unchanged. What DittoFS translates is the
+principal (a Windows SID or an NFSv4 `user@domain` name) and one inheritance
+flag, whose bit differs between the two (`0x10` on Windows, `0x80` in NFSv4).
 
-Note: `OWNER@`/`GROUP@` *inside a DACL ACE* resolve to the file's current
-owner/group SID via `principalToSID` (`UserSID`/`GroupSID`) — NOT to
-`CREATOR_OWNER`/`CREATOR_GROUP`. The CREATOR placeholders (`S-1-3-0`/`S-1-3-1`)
-are distinct and only meaningful as inheritable placeholders (see Inheritance).
+## Owner and group
 
-## DACL — ACE count, type, mask
+| Aspect | State | What happens |
+|--------|-------|--------------|
+| Read the owner | Works | UID 0 shows as `BUILTIN\Administrators` (`S-1-5-32-544`). Any other UID shows as a SID in the server's own domain: `S-1-5-21-<machine>-<uid×2+1000>`. |
+| Read the group | Works | `S-1-5-21-<machine>-<gid×2+1001>`. The different offset means a user and a group with the same number never share a SID. |
+| Change the owner | Works, for the server's own SIDs | A SID the server issued is turned back into a UID and stored. Any other SID is **ignored without an error**: the owner stays as it was. |
+| Change the group | Works, for the server's own SIDs | Same as the owner. A user SID given as the group is accepted as that UID. |
+| Permission to change them | Works | Needs **Take ownership** (`WRITE_OWNER`) on the open file. One right covers both owner and group. |
 
-| Aspect | State | Notes |
-|--------|-------|-------|
-| ALLOW ACE (type 0x00) | Works | `accessAllowedACEType` ↔ `ACE4_ACCESS_ALLOWED_ACE_TYPE`, both directions. |
-| DENY ACE (type 0x01) | Works | `accessDeniedACEType` ↔ `ACE4_ACCESS_DENIED_ACE_TYPE`. Stored and round-tripped; canonical ordering (deny before allow) is the ACL engine's concern. |
-| Access mask bits | Works | Identical bit positions; written/parsed verbatim. Generic bits are expanded on write (see below). |
-| ACE count | Partial | Capped at `acl.MaxACECount` (128). `parseDACL` rejects a DACL whose header AceCount exceeds the cap with an error → SET_INFO returns `STATUS_INVALID_PARAMETER`. DACL size cap is `acl.MaxDACLSize` (64 KiB). |
-| Unknown ACE types on write | Unsupported | An ACE type the server cannot store (object, callback, mandatory label, …) refuses the whole SET_INFO or CREATE with `STATUS_INVALID_PARAMETER`: nothing is stored, and a CREATE creates nothing. A SACL is parsed whenever it is present, so a label ACE fails the request even when the SACL was not selected. |
-| Integrity labels (`icacls /setintegritylevel`) | Unsupported | Refused with `STATUS_INVALID_PARAMETER`, not silently dropped. |
-| Empty DACL (0 ACEs) | Works | `file.ACL != nil, len(ACEs)==0` emits a 0-ACE DACL (deny-all) on read; no default is synthesized. |
-| nil ACL on read | Partial (synthesized) | `file.ACL == nil` → `SynthesizeWindowsDefault`: ALLOW `OWNER@` + ALLOW `SYSTEM@`, both FullControl, no inherit flags, `Protected=true` (SD control `0x9004`). This is a *display* default; server-side access enforcement still uses POSIX mode bits for nil-ACL files. `SynthesizeFromMode` (POSIX-mode → Allow-only DACL) exists but is currently only exercised by tests. |
+`OWNER@` and `GROUP@` inside an access entry show as the file's current owner
+and group. They are not the same as `CREATOR OWNER` and `CREATOR GROUP`, which
+only matter in inheritable entries (see [Inheritance](#inheritance-flags)).
+
+## Access entries (DACL)
+
+| Aspect | State | What happens |
+|--------|-------|--------------|
+| Allow entries | Works | Kept as written. |
+| Deny entries | Works | Kept as written. Putting deny before allow is the client's job, as on Windows. |
+| Access rights (the mask) | Works | Kept bit for bit. Generic rights are expanded when written (see [Generic rights](#generic-rights)). |
+| Number of entries | Partial | At most **128 entries** and **64 KiB** per DACL. A larger one is refused with `STATUS_INVALID_PARAMETER`; nothing is stored. |
+| Other entry types (object, callback, mandatory label, …) | Unsupported | The whole change, or the whole create, is refused with `STATUS_INVALID_PARAMETER`: nothing is stored and no file is created. This applies to an audit section too, even when the client did not ask to change it. |
+| Integrity labels (`icacls /setintegritylevel`) | Unsupported | Refused with `STATUS_INVALID_PARAMETER`, never dropped silently. |
+| Empty DACL (no entries) | Works | Read back as empty, which denies everyone. No default is added. |
+| A file with no ACL | Partial | Shown with a default DACL: Full Control for the owner and for `SYSTEM`, protected from inheritance. That DACL is for display only: access to such a file is still decided by its Unix mode bits. |
 
 ## Inheritance flags
 
-| Flag | Wire | NFSv4 | State | Notes |
-|------|------|-------|-------|-------|
-| OBJECT_INHERIT (OI) | 0x01 | `ACE4_FILE_INHERIT_ACE` 0x01 | Works | Translated by `flags.go`. |
-| CONTAINER_INHERIT (CI) | 0x02 | `ACE4_DIRECTORY_INHERIT_ACE` 0x02 | Works | |
-| NO_PROPAGATE (NP) | 0x04 | `ACE4_NO_PROPAGATE_INHERIT_ACE` 0x04 | Works | Stops propagation at first child; honored in `ComputeInheritedACL`. |
-| INHERIT_ONLY (IO) | 0x08 | `ACE4_INHERIT_ONLY_ACE` 0x08 | Works | IO ACEs skipped in evaluation, kept for children. |
-| INHERITED_ACE | 0x10 | `ACE4_INHERITED_ACE` 0x80 | Works | Bit position differs (0x10 ↔ 0x80) and is correctly remapped — a naive truncation would corrupt this. |
-| Inheritance computation at create | Works | — | Works | `ComputeInheritedACL` mirrors Samba `create_descriptor.c`; CREATOR_OWNER/CREATOR_GROUP (`S-1-3-0`/`S-1-3-1`) placeholders are substituted with the creator's frozen identity at create time. |
-| Recursive propagation on parent change | Works | — | Works | `PropagateACL` recomputes inherited ACEs while preserving explicit ones and child per-SD flags. |
+| Flag | Windows bit | NFSv4 bit | State | What happens |
+|------|-------------|-----------|-------|--------------|
+| Object inherit (OI) | `0x01` | `0x01` | Works | |
+| Container inherit (CI) | `0x02` | `0x02` | Works | |
+| No propagate (NP) | `0x04` | `0x04` | Works | Inherited by direct children only. |
+| Inherit only (IO) | `0x08` | `0x08` | Works | Not applied to the folder itself; passed on to children. |
+| Inherited | `0x10` | `0x80` | Works | The bit differs between the two and is translated both ways. |
+| Inheritance when a file is created | | | Works | Follows Windows (and Samba). `CREATOR OWNER` and `CREATOR GROUP` are replaced by the creator's identity. |
+| Re-applying inheritance after a parent changes | | | Works | Inherited entries are recomputed. Explicit entries, and each child's own protection flag, are kept. |
 
-## SD control flags
+## Security descriptor flags
 
-| Flag | State | Notes |
-|------|-------|-------|
-| SE_SELF_RELATIVE (0x8000) | Works | Always set; all SDs are self-relative. |
-| SE_DACL_PRESENT (0x0004) | Works | Set when `DACLSecurityInformation` requested. |
-| SE_DACL_PROTECTED (0x1000) | Works | Read from `ACL.Protected`; written from inbound Control. Blocks inheritance from ancestors; never itself inherited onto children. |
-| SE_DACL_AUTO_INHERITED (0x0400) | Works (canonicalized) | Round-trips via `ACL.AutoInherited`. Default canonicalization (MS-DTYP §2.5.3.4.2, mirrors Samba `canonicalize_inheritance_bits`): persisted only when SET_INFO carries BOTH `AUTO_INHERITED` and `AUTO_INHERIT_REQ` (0x0100). Per-share opt-out (`acl flag inherited canonicalization = no`) preserves it verbatim. |
-| SE_DACL_AUTO_INHERIT_REQ (0x0100) | Works (request-only) | Processed as a request flag; never echoed back on read. |
-| SE_SACL_PRESENT (0x0010) | Works | Set when `SACLSecurityInformation` requested; the SACL body carries stored audit ACEs (or a valid 0-ACE SACL when none are stored) — see SACL below. |
+| Flag | State | What happens |
+|------|-------|--------------|
+| Self-relative (`0x8000`) | Works | Always set. |
+| DACL present (`0x0004`) | Works | Set when the client asks for the DACL. |
+| DACL protected (`0x1000`) | Works | Kept. Blocks inheritance from parents; it is never itself passed to children. |
+| DACL auto-inherited (`0x0400`) | Works, normalized | Kept only when the change also carries **auto-inherit required** (`0x0100`), as Windows and Samba do. On the released server, a share created with the `--acl-canonicalize-inherited=false` option keeps it exactly as sent; this version has no such option yet. |
+| Auto-inherit required (`0x0100`) | Works, request only | Acted on when written; never shown on read. |
+| SACL present (`0x0010`) | Works | Set when the client asks for the audit section. See [SACL](#sacl-audit). |
 
 ## Null DACL
 
-| Aspect | State | Notes |
-|--------|-------|-------|
-| Read | Works | `ACL.NullDACL` → `SE_DACL_PRESENT` set with `daclOffset == 0` (no DACL body) = everyone-full-access semantics. |
-| Write | Works | SD with `SE_DACL_PRESENT` and zero DACL offset → `&acl.ACL{NullDACL: true}`. Also produced when `DACLSecurityInformation` is requested but the SD carries no DACL (`setSecurityInfo`). |
+A null DACL (present, but with no body) means "everyone has full access".
+
+| Aspect | State | What happens |
+|--------|-------|--------------|
+| Read | Works | Shown as a null DACL. |
+| Write | Works | Stored as a null DACL. A change that asks to set the DACL but carries none also stores a null DACL. |
 
 ## SACL (audit)
 
-| Aspect | State | Notes |
-|--------|-------|-------|
-| SACL read | Works | When `SACLSecurityInformation` is requested and the file carries stored SACL ACEs, `buildSACL` serializes them into the SD's SACL section (same MS-DTYP §2.4.5 + §2.4.4.2 wire layout as a DACL). Windows Explorer's "Auditing" tab shows the stored audit ACEs. `buildEmptySACL` is the fallback only when no SACL is stored (valid 0-ACE SACL). |
-| SACL write | Works | `ParseSecurityDescriptorWithOptions` parses the SACL body via the shared `parseACEs` and persists audit ACEs into `ACL.SACL`; `setSecurityInfo` installs it via `mergeSecurityACL`, preserving the unrequested DACL/SACL section. Access-gated (`ACCESS_SYSTEM_SECURITY` required). |
-| AUDIT / ALARM ACE round-trip | Works | `ACE4_SYSTEM_AUDIT_ACE_TYPE` ↔ `systemAuditACEType` and `ACE4_SYSTEM_ALARM_ACE_TYPE` ↔ `systemAlarmACEType` map both directions (`nfsToWindowsACEType` / `windowsToNFSACEType`); the SUCCESSFUL/FAILED audit flags round-trip through `NFSv4FlagsToWindowsFlags`. Audit ACEs ride the SACL section, not the DACL. |
+| Aspect | State | What happens |
+|--------|-------|--------------|
+| Read the audit entries | Works | Shown in Explorer's **Auditing** tab. A file with none shows an empty audit section. |
+| Change the audit entries | Works | Stored. The DACL is left alone when only the SACL changes, and the other way round. Needs **Manage auditing** (`ACCESS_SYSTEM_SECURITY`). |
+| Audit and alarm entry types, success and failure flags | Works | Kept both ways. |
+| Generating audit events | Unsupported | No audit log is written and no alarm raised, whatever the entries say. Audit entries never affect access. |
 
-The SACL is stored on the same `acl.ACL` carrier as the DACL (`ACL.SACL`
-slice) and never participates in access checks. The store-layer round-trip
-shipped under [#1228](https://github.com/cubbit/dittofs/issues/1228); the SMB
-wire parse/serialize under
-[#1381](https://github.com/cubbit/dittofs/pull/1381).
+## Generic rights
 
-## GENERIC_* mask expansion
+| Aspect | State | What happens |
+|--------|-------|--------------|
+| `GENERIC_READ`, `WRITE`, `EXECUTE`, `ALL` when written | Works | Expanded to the file rights they stand for, as Windows does. For example, `GENERIC_ALL` (`0x10000000`) is stored as `FILE_ALL_ACCESS` (`0x001F01FF`). |
+| Generic rights in inherited entries | Works | Expanded for each child when it inherits. Inherit-only entries keep them for later children. |
+| Generic rights on read | n/a | Never shown: they were expanded when written. |
 
-| Aspect | State | Notes |
-|--------|-------|-------|
-| GENERIC_READ / WRITE / EXECUTE / ALL on write | Works | `parseDACL` calls `ExpandGenericMask` on each ACE before storing, per MS-DTYP §2.5.3 / MS-FSA §2.1.5.1.2.1. Generic bits are expanded to file-object-specific rights and the generic bits stripped (e.g. `GENERIC_ALL 0x10000000` → `FILE_ALL_ACCESS 0x001F01FF`). |
-| Generic bits at inherit time | Works | `ComputeInheritedACL` expands generic bits on effective (non-INHERIT_ONLY) ACEs against the child object type; INHERIT_ONLY placeholders keep generic bits for the eventual leaf. |
-| Generic bits on read | n/a | Stored masks are already specific (expanded on write), so read emits specific rights. |
+## SIDs from other domains
 
-## Foreign (AD/LDAP) SID mapping
+| Aspect | State | What happens |
+|--------|-------|--------------|
+| Owner or group SID from another domain | Unsupported | Ignored: it cannot be turned into a UID. The owner or group stays as it was. |
+| Access entry naming a SID from another domain | Partial | Kept and read back unchanged, but it matches no local UID or GID. |
+| NFSv4 name with no SID (for example `alice@EXAMPLE.COM`) | Partial | Shown as a SID computed from the name. It is stable, but it is not a real AD SID and cannot be turned back into a UID. Two names could in theory get the same SID. |
+| SID shown as a name in Explorer | Works | The server's own SIDs, well-known SIDs and domain SIDs show as names. A raw SID shows only for a principal with no directory entry. |
+| Well-known SIDs (Everyone, SYSTEM, Administrators, Owner Rights, Creator Owner, Creator Group) | Works | Mapped both ways to their NFSv4 equivalents (`EVERYONE@`, `SYSTEM@`, …). |
 
-| Aspect | State | Notes |
-|--------|-------|-------|
-| Foreign domain SID → local UID/GID (write) | Unsupported / out of scope | A SID outside the joined domain is not decodable to a local UID/GID. As an owner/group it is ignored; inside a DACL ACE it round-trips as the `sid:<canonical>` principal form (preserved verbatim by `SIDToPrincipal`/`PrincipalToSID`), so the ACE is kept but the SID maps to no local UID/GID. AD integration shipped under [#1231](https://github.com/cubbit/dittofs/issues/1231) (Kerberos/NTLM logon, NETLOGON machine credential, `idmap_rid` for the *joined* domain); mapping a *foreign* (non-joined) domain SID to a local UID/GID remains out of scope. Foreign-SID → **name** display does resolve — see below. |
-| Named NFS principal → SID (e.g. `alice@EXAMPLE.COM`) | Partial (lossy) | `PrincipalToSID` synthesizes a hash-based fallback SID (full 32-bit hash as a 6th sub-authority) so it is NOT decodable back to a numeric UID and round-trips through `sid:`. Deterministic but not a real AD SID. |
-| SID → name resolution (display) | Works | LSA `\pipe\lsarpc` is implemented (`internal/adapter/smb/rpc/lsarpc.go`, all 7 ops incl. `LsarLookupSids2/3`, `LsarOpenPolicy3`). Windows Explorer's Security tab resolves machine-domain user/group SIDs and well-known SIDs to names; foreign AD-domain SIDs resolve via the foreign resolver (`pkg/adapter/smb/lsarpc_foreign.go`). Shipped under [#236](https://github.com/cubbit/dittofs/issues/236) / [#1341](https://github.com/cubbit/dittofs/issues/1341). |
+## What a client may change
 
-## Unmappable-SID-on-write behavior
+DittoFS checks each part of a change against the rights the client was granted
+when it **opened** the file, not against the file's current DACL:
 
-| Scenario | Behavior |
-|----------|----------|
-| Owner/Group SID not recognized by `UIDFromSID`/`GIDFromSID` | Section silently ignored; UID/GID unchanged. No error returned. |
-| DACL ACE SID not a local domain SID | `SIDToPrincipal` returns `sid:<canonical>`; ACE stored with that `Who`. Preserved on subsequent reads via `PrincipalToSID`'s `sid:` round-trip. |
-| Well-known SIDs (Everyone `S-1-1-0`, SYSTEM `S-1-5-18`, BUILTIN\Administrators `S-1-5-32-544`, OWNER_RIGHTS `S-1-3-4`, CREATOR_OWNER `S-1-3-0`, CREATOR_GROUP `S-1-3-1`) | Mapped to/from their NFSv4 special principals (`EVERYONE@`, `SYSTEM@`, `ADMINISTRATORS@`, `OwnerRights@`, `CreatorOwner@`, `CreatorGroup@`). Works. |
-| DACL AceCount > 128 or DACL > 64 KiB | `parseDACL` errors → SET_INFO returns `STATUS_INVALID_PARAMETER`. |
+| The client changes | It needs |
+|--------------------|----------|
+| The DACL | **Change permissions** (`WRITE_DAC`) |
+| The owner or group | **Take ownership** (`WRITE_OWNER`) |
+| The SACL | **Manage auditing** (`ACCESS_SYSTEM_SECURITY`) |
 
-## Access gating on SET_INFO Security
-
-`checkSetInfoSecurityAccess` authorizes each requested section against the
-**open's** `GrantedAccess` (captured at CREATE, per MS-SMB2 §3.3.5.21.3), not
-the file's current DACL:
-
-| Requested section | Required right |
-|-------------------|----------------|
-| DACL (`0x04`) | `WRITE_DAC` |
-| OWNER / GROUP (`0x01` / `0x02`) | `WRITE_OWNER` |
-| SACL (`0x08`) | `ACCESS_SYSTEM_SECURITY` |
-
-Any requested section lacking its bit denies the whole request with
+If any part lacks its right, the whole change is refused with
 `STATUS_ACCESS_DENIED`.
 
-## Client-tested
+## Tested with
 
-Behaviors confirmed against real clients (per repo history, CLAUDE.md, and
-project memory):
-
-- **Windows 11 Explorer — Security tab.** SD read/build path verified through
-  the Phase 31/32 Windows integration work: explicit-Deny synthesis was removed
-  in favor of Allow-only DACLs (Samba convention) so Explorer no longer shows
-  spurious "Write: Deny"; CREATE-context (MxAc) parsing and SET_INFO attribute
-  persistence (Hidden/ReadOnly) were fixed. SID-to-name resolution is
-  implemented (LSA `lsarpc` pipe, [#236](https://github.com/cubbit/dittofs/issues/236)),
-  so Explorer resolves user/group and well-known SIDs to names; raw SIDs appear
-  only for principals with no directory entry.
-- **AD / Kerberos SMB.** `alice@REALM` → uid 10001 verified live against an
-  AD-DC over Kerberos-bound SMB (idmap_rid SID→UID), confirming the
-  domain-SID derivation in `mapper.go` end-to-end for the local-domain case.
-- **smbtorture `smb2.acls`.** The SD build/parse, inheritance
-  (INHERITANCE/INHERITFLAGS), GENERIC expansion, and AUTO_INHERITED
-  canonicalization paths are exercised by the SMB conformance suite (see
-  inline references in `security.go`, `inherit.go`, `generic.go`).
-- **SACL round-trip.** Audit-ACE build → parse → re-build is covered by
-  `security_sacl_test.go` (`TestBuildSD_SACL_RoundTrip`): SE_SACL_PRESENT, the
-  serialized ACE count, and the audit ACE's type/flags/mask all survive a
-  full SD round-trip.
-- **macOS Finder.** Not separately validated for the ACL Security path; treat
-  as untested for ACL fidelity.
+- **Windows 11 Explorer, Security tab.** Reading, editing and name display.
+  DACLs are shown as allow entries only, as Samba does, so Explorer shows no
+  stray "Deny" entries.
+- **Active Directory over Kerberos.** A domain user's SID mapped to the right
+  UID against a real domain controller.
+- **smbtorture `smb2.acls`.** Building and parsing descriptors, inheritance,
+  generic rights and the auto-inherited flag.
+- **macOS Finder.** Not tested for permissions; treat it as unverified.
 
 ## Known limitations
 
-1. **SACL round-trips but does not drive audit-event generation.** Audit/alarm
-   ACEs are parsed, stored, and surfaced to the Windows "Auditing" tab
-   (read/write/round-trip via `ACL.SACL`), and the `ACCESS_SYSTEM_SECURITY` gate
-   is enforced. What is *not* implemented is acting on them: the server emits no
-   audit log when an operation matches a SUCCESSFUL/FAILED audit ACE, and ALARM
-   ACEs raise no alarm. The SACL is descriptive metadata only — it never
-   participates in access checks or event emission.
-2. **Foreign AD/LDAP SIDs are not mapped to local UID/GID.** They round-trip
-   as opaque `sid:<canonical>` principals (so the ACE survives) but resolve to
-   no local UID/GID. AD interop shipped under [#1231](https://github.com/cubbit/dittofs/issues/1231)
-   (logon + `idmap_rid` for the joined domain); foreign-SID → local-UID idmap
-   specifically stays out of scope. Foreign-SID → **name** display does resolve
-   via `lsarpc` (see limitation 4).
-3. **Hash-based fallback SIDs for named principals are lossy.** Deterministic
-   but not real AD SIDs; collisions are vanishingly rare but theoretically
-   possible.
-4. **LSA SID→name pipe is implemented** ([#236](https://github.com/cubbit/dittofs/issues/236),
-   `internal/adapter/smb/rpc/lsarpc.go`). Explorer resolves machine-domain and
-   well-known SIDs — and foreign AD-domain SIDs via the foreign resolver
-   (`pkg/adapter/smb/lsarpc_foreign.go`) — to names. Raw SIDs appear only for
-   principals with no directory entry.
-5. **nil-ACL access enforcement uses POSIX mode, not the synthesized DACL.**
-   The `SynthesizeWindowsDefault` DACL shown to SMB clients for nil-ACL files is
-   display-only; server-side access checks fall back to Unix mode bits, which
-   stay authoritative.
-6. **Owner/Group live in `FileAttr`, not in the ACL.** Changing owner/group
-   does not emit ACL-change events (see [Access Control](access-control.md#known-limitations)).
-
-7. **Clearing FILE_ATTRIBUTE_READONLY does not restore POSIX owner-write.**
-   READONLY is stored in `modeDOSReadonly` rather than in the POSIX permission
-   bits, so that toggling it leaves the mode-derived DACL stable (smbtorture
-   `smb2.winattr`). A file made read-only out-of-band (an NFS or shell `chmod
-   0444`) reports READONLY through a POSIX-derived fallback in
-   `fileAttrToSMBAttributesInternal`; that fallback is retired for the file as
-   soon as any SET_INFO gives it an explicit DOS attribute state. A client that
-   then clears the read-only box is told the file is writable while the POSIX
-   bits still refuse the write. Making the file writable is a `chmod` from the
-   client's own side — an attribute write deliberately never widens the mode.
-   Pinned by `TestSetInfo_FileBasicInfo_PosixReadonlyFallbackIsOneWay`.
+1. **Audit entries are stored, never acted on.** No audit log, no alarm.
+2. **SIDs from other domains map to no UID or GID.** Entries naming them are
+   kept, but match nobody locally. Their names still display.
+3. **SIDs computed from NFSv4 names are not real AD SIDs.** They are stable,
+   but cannot be turned back into a UID.
+4. **A file with no ACL is checked by its mode bits.** The default DACL Windows
+   shows for it is for display only.
+5. **Owner and group are stored with the file, not in its ACL.** Changing them
+   does not count as an ACL change (see [Access control](access-control.md#known-limitations)).
+6. **Clearing the read-only box may not make a file writable.** The Windows
+   read-only attribute is stored apart from the Unix mode bits. A file made
+   read-only from NFS or a shell (`chmod 0444`) shows as read-only in Windows.
+   Clearing the box clears only the Windows attribute: Windows then shows the
+   file as writable, but the mode bits still refuse writes. Run `chmod u+w` on
+   it from NFS or a shell. An attribute change never widens the mode, by design.
 
 ## References
 
-- [#1228](https://github.com/cubbit/dittofs/issues/1228) — Windows-ACL / stable-handle fidelity (this matrix).
-- [#1231](https://github.com/cubbit/dittofs/issues/1231) — AD/LDAP enterprise integration (shipped).
-- [#236](https://github.com/cubbit/dittofs/issues/236) — SID-to-name (LSA) resolution (shipped).
-- [Access Control](access-control.md) — cross-protocol ACL model and tradeoff analysis.
-- [MS-DTYP §2.4.4–2.4.6](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/) — SID / ACE / ACL / Security Descriptor formats.
-- [RFC 7530 §6](https://www.rfc-editor.org/rfc/rfc7530#section-6) — NFSv4 ACL model.
+- [Access control](access-control.md): the cross-protocol ACL model.
+- [MS-DTYP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/): SID, ACE, ACL and security descriptor formats.
+- [RFC 7530, section 6](https://www.rfc-editor.org/rfc/rfc7530#section-6): the NFSv4 ACL model.

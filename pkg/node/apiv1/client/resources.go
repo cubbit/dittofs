@@ -175,11 +175,12 @@ func (c *Client) Health(ctx context.Context) (apiv1.Health, error) {
 	return get[apiv1.Health](ctx, c, "/api/v1/health")
 }
 
-// Stores is the remote stores: Create is POST /stores, whose spec carries
-// its credential's value and so goes with no idempotency key; Get is GET
-// /stores/{id} and Delete is DELETE /stores/{id}; no route serves List, Put
-// or Patch. A store's settings are each a setting at its scope, and its
-// credential is set on the create or by SetStoreCredential, which the
+// Stores is the remote stores: List is GET /stores; Create is POST /stores,
+// whose spec carries its credential's value and so goes with no idempotency
+// key; Get, Patch and Delete are GET, PATCH and DELETE /stores/{id}; no route
+// serves Put. A
+// store's settings are each also a setting at its scope, and its credential
+// is set on the create, by a Patch or by SetStoreCredential, which the
 // store's capability check refuses until it is built.
 func (c *Client) Stores() Resource[apiv1.StoreSpec, struct{}] {
 	return Resource[apiv1.StoreSpec, struct{}]{c: c, path: "/api/v1/stores", keyless: true}
@@ -212,9 +213,9 @@ func (c *Client) Namespaces() Resource[apiv1.NamespaceSpec, struct{}] {
 	return Resource[apiv1.NamespaceSpec, struct{}]{c: c, path: "/api/v1/namespaces"}
 }
 
-// Adapters is the adapters, each named by its protocol: Get and Put are GET
-// and PUT /adapters/{protocol}, a first Put naming the tag "0" its Get
-// answered; no route serves the others.
+// Adapters is the adapters, each named by its protocol: List is GET
+// /adapters, Get and Put are GET and PUT /adapters/{protocol}, a first Put
+// naming the tag "0" its Get answered; no route serves the others.
 func (c *Client) Adapters() Resource[apiv1.AdapterSpec, apiv1.AdapterStatus] {
 	return Resource[apiv1.AdapterSpec, apiv1.AdapterStatus]{c: c, path: "/api/v1/adapters"}
 }

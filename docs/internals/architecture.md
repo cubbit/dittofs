@@ -2,12 +2,11 @@
 
 This document provides a deep dive into DittoFS's architecture, design patterns, and internal implementation.
 
-> **On this branch the v1 protocol adapters are deleted.** `pkg/adapter`,
-> `internal/adapter` and the runtime's adapter half are gone and no file protocol
-> is served, so the diagram, the runtime's sub-services, the adapter and
-> Kerberos sections and the directory map below still describe what this branch
-> removed. RFC 20's v2 adapters replace them; see
-> [RFC 20](rfcs/rfc-20-adapters.md).
+> **On this branch no file protocol is served.** The node builds the NFS and SMB
+> adapters of [RFC 20](rfcs/rfc-20-adapters.md) over `vfs.Service`, but their
+> operation tables hold no file operation (see [Data path](#data-path)). The adapter
+> sections below that describe NFS and SMB state machines describe the protocol
+> design, not code this branch runs.
 
 **Storage terms used throughout** (see the [Glossary](../guide/glossary.md) for protocol and security terms):
 
@@ -19,9 +18,10 @@ This document provides a deep dive into DittoFS's architecture, design patterns,
 
 - [Core Abstraction Layers](#core-abstraction-layers)
 - [Data path](#data-path)
-- [Control Plane Pattern](#control-plane-pattern)
+- [Object ownership](#object-ownership-a-client-supplied-identifier-is-not-authorization)
+- [The control plane](#the-control-plane)
 - [Service Layer](#service-layer)
-- [Built-In and Custom Backends](#built-in-and-custom-backends)
+- [Custom Backends](#custom-backends)
 - [Directory Structure](#directory-structure)
 - [Multi-Node Metadata](#multi-node-metadata)
 - [Durable Handle State Flow](#durable-handle-state-flow)
@@ -29,99 +29,102 @@ This document provides a deep dive into DittoFS's architecture, design patterns,
 
 ## Core Abstraction Layers
 
-DittoFS uses a **Runtime-centric architecture** where the Runtime is the single entrypoint for all operations. This design ensures that both persistent store and in-memory state stay synchronized.
+One object per process, the **node** (`node.Node`, built by `node.New` in
+`internal/node`), builds every component, starts and stops them, and keeps them
+matching the records in the metadata store ([RFC 23](rfcs/rfc-23-control-plane.md)
+§2). The management API writes records and never calls a component; the node
+reads the records and applies them. `dfsctl` is a client of the API and nothing
+else.
 
 ```
-┌─────────────────────────────────────────┐
-│         Protocol Adapters               │
-│            (NFS, SMB)                   │
-│       pkg/adapter/{nfs,smb}/            │
-└───────────────┬─────────────────────────┘
-                │ (no file operations yet: see Data path)
-                ▼
-┌─────────────────────────────────────────┐
-│              Runtime                    │
-│   (Composition layer + sub-services)    │
-│   pkg/controlplane/runtime/             │
-│                                         │
-│  ┌──────────┐ ┌────────┐ ┌──────────┐  │
-│  │ adapters │ │ stores │ │  shares  │  │
-│  │lifecycle │ │registry│ │ registry │  │
-│  └──────────┘ └────────┘ │ + remote │  │
-│  ┌──────────┐ ┌────────┐ └──────────┘  │
-│  │  mounts  │ │lifecycl│ ┌──────────┐  │
-│  │ tracking │ │  serve  │ │ identity │  │
-│  └──────────┘ └────────┘ │ mapping  │  │
-│                           └──────────┘  │
-│  ┌────────────┐  ┌───────────────────┐  │
-│  │   Store    │  │   Auth Layer      │  │
-│  │ (Persist)  │  │  pkg/auth/        │  │
-│  │ 9 sub-ifs  │  │ kerberos,         │  │
-│  │            │  │ sid               │  │
-│  └────────────┘  └───────────────────┘  │
-└───────┬───────────────────┬─────────────┘
-        │                   │
-        ▼                   ▼
-┌────────────────┐  ┌──────────────────────┐
-│   Metadata     │  │ Per-Share BlockStore │
-│     Stores     │  │  pkg/engine, journal │
-│                │  │                      │
-│  - BadgerDB    │  │  ┌──────────────┐    │
-│    (on disk or │  │  │   Journal    │    │
-│     in memory) │  │  │  (on disk)   │    │
-│                │  │  └──────┬───────┘    │
-│                │  │         │            │
-│                │  │  ┌──────▼───────┐    │
-│                │  │  │   Syncer     │    │
-│                │  │  │ (async xfer) │    │
-│                │  │  └──────┬───────┘    │
-│                │  │         │            │
-│                │  │  ┌──────▼────────┐   │
-│                │  │  │  Block Store  │   │
-│                │  │  │  s3 / memory  │   │
-│                │  │  │ (ref counted) │   │
-│                │  │  └───────────────┘   │
-└────────────────┘  └──────────────────────┘
+   dfsctl, any HTTP client              NFS / SMB clients
+            │                                   │
+            ▼                                   ▼
+┌───────────────────────┐        ┌───────────────────────────┐
+│    Management API     │        │     Protocol adapters     │
+│  internal/node/api    │        │  internal/adapter/{nfs,   │
+│  (writes records)     │        │   smb}, core              │
+└──────────┬────────────┘        └─────────────┬─────────────┘
+           │ one transaction per write          │ vfs.Service only
+           ▼                                    ▼
+┌───────────────────────┐   reads   ┌───────────────────────────┐
+│    Metadata store     │◄──────────│    Filesystem service     │
+│  pkg/metadata/kvstore │           │  internal/vfs: admission, │
+│  over kv.KV (Badger,  │           │  authorization, files     │
+│  FoundationDB)        │           └──────┬─────────────┬──────┘
+└──────────┬────────────┘                  │             │
+           │ records                       ▼             ▼
+           ▼                        ┌─────────────┐ ┌──────────────┐
+┌───────────────────────┐ applies   │  Identity   │ │    Engine    │
+│        Node           │──────────►│  server     │ │  pkg/engine  │
+│  internal/node:       │ reconcile │  internal/  │ │  over        │
+│  build, start, stop,  │           │  identity   │ │  pkg/journal │
+│  reconcile, runner    │           └─────────────┘ └──────────────┘
+└───────────────────────┘
 ```
 
 ### Key Interfaces
 
-**1. Runtime** (`pkg/controlplane/runtime/`)
-- **Single entrypoint for all operations** - both API handlers and internal code
-- Updates both persistent store AND in-memory state together
-- Thin composition layer delegating to 6 focused sub-services:
-  - `adapters/`: Protocol adapter lifecycle management (create, start, stop, delete)
-  - `stores/`: Metadata store registry
-  - `shares/`: Share registration and configuration; owns per-share `*engine.BlockStore` instances
-  - `mounts/`: Unified mount tracking across protocols
-  - `lifecycle/`: Server startup/shutdown orchestration
-  - `identity/`: Share-level identity mapping
-- Key methods:
-  - `Serve(ctx)`: Starts all adapters and servers, blocks until shutdown
-  - `CreateAdapter(ctx, cfg)`: Saves to store AND starts immediately
-  - `DeleteAdapter(ctx, type)`: Stops adapter AND removes from store
-  - `AddAdapter(adapter)`: Direct adapter injection (for testing)
+**1. The node** (`internal/node`)
+- `node.New` builds every component once from the host's bootstrap
+  (`pkg/bootstrap`) and the metadata store's KV, which `dfs start` opens and
+  hands it: the store over the KV, the engine, the identity server, the
+  filesystem service, the API and the adapters.
+- `Start` runs its steps in order: refuse a journal of another installation, open the listeners,
+  register the node, read the records, start the engine, the identity server,
+  the filesystem service and the operation runner, reconcile once, then start
+  the adapters and the reconcile loop. Readiness turns `ready` after the last
+  step. `Stop` reverses it.
+- Reconcile reads the generation counters each second, re-reads what changed
+  and applies it by its binding class ([RFC 13](rfcs/rfc-13-configuration.md)
+  §5): a share's storage binding, a live setting, and, once the adapters'
+  section is declared, an adapter started or drained. The node writes one
+  node-status record saying what it applied and what it refused.
+- The runner (`internal/node/runner.go`; a step speaks `internal/node/step`)
+  runs long work as operations, every kind in `pkg/node/apiv1/opkind.go`: a
+  share's, a user's or a group's deletion, a domain join, a machine-password or
+  signing-key rotation, a directory test or name resolution, the NT hashes'
+  deletion. An operation's progress is
+  its owning component's durable cursor, so it survives a restart.
+- `internal/install` is what `dfs init` and `dfs reset-admin` run over the
+  host's own store, outside the API.
 
-**2. Control Plane Store** (`pkg/controlplane/store/`)
-- Persistent configuration (users, groups, permissions, adapters)
-- Decomposed into 9 sub-interfaces: `UserStore`, `GroupStore`, `ShareStore`, `PermissionStore`, `MetadataStoreConfigStore`, `BlockStoreConfigStore`, `AdapterStore`, `SettingsStore`, `GuestStore`
-- Composite `Store` interface embeds all sub-interfaces
-- API handlers accept narrowest interface needed
-- SQLite (single-node) or PostgreSQL (distributed)
+**2. The management API** (`internal/node/api`, wire types in `pkg/node/apiv1`)
+- Resources under `/api/v1/`: shares, export policies, grants, quotas, users,
+  groups, netgroups, API tokens, adapters, remote stores, namespaces, settings,
+  nodes, operations, the installation and the audit log. `pkg/node/apiv1/openapi.json`
+  is generated from the routes (`go run ./cmd/genopenapi`).
+- Every write commits its records and its audit record in one transaction.
+  Updates and deletes carry `If-Match`; creates, deletes and actions carry an
+  idempotency key, but the credential calls take none; long work answers
+  `202` with an operation.
+- Callers are API accounts, `User` records with a role, `admin`, `operator` or
+  `viewer` (`internal/node/api/auth`). A role grants nothing on files.
+- Errors are the components' own values, mapped once to a status and a problem
+  code (`problems.go`).
+- `GET /health/live` and `GET /health/ready` answer without a token.
 
-**3. Adapter Interface** (`pkg/adapter/adapter.go`)
-- Each protocol implements the `Adapter` interface (`Serve`, `Stop`, `SetRuntime`, `Protocol`, `Port`, `Healthcheck`)
-- Adapters receive a Runtime reference to access services (`SetRuntime(rt any)`, type-asserted to `*runtime.Runtime` to avoid an import cycle)
-- `BaseAdapter` provides the shared TCP lifecycle: accept loop with backoff, graceful drain, forced close, and listener-readiness signalling
-- Lifecycle: `SetRuntime() -> Serve() -> Stop()`
-- Multiple adapters can share the same runtime
-- Thread-safe, supports graceful shutdown
+**3. The CLI** (`cmd/dfsctl`, client in `pkg/node/apiv1/client`)
+- `dfsctl` reaches a node over https, over http on a loopback address, or over
+  the node's local socket, and keeps each sign-in in a named context.
+- It links none of the node's, the bootstrap's or the store's code.
 
-**4. Auth** (`pkg/auth/`)
-- Shared authentication and identity primitives used across protocols
-- Sub-packages:
-  - `kerberos/`: Kerberos `Provider` — keytab and krb5.conf state with hot-reload
-  - `sid/`: Windows SID types, encoding, and cross-protocol mapping
+**4. Adapters** (`internal/adapter`, settings in `pkg/adapter/settings`)
+- `core` holds the listeners, connections and request pipeline every adapter
+  shares; `nfs` and `smb` add their protocol's wire and operation tables.
+- An adapter reaches files only through `vfs.Service` (`pkg/vfs`).
+- An adapter's settings will be records under `adapters.<protocol>` once the
+  node's settings table declares that section; today no record enables an
+  adapter. The node binds each adapter on the bootstrap's `adapters.listen`
+  addresses.
+
+**Filesystem service and identity** (`internal/vfs`, `internal/identity`)
+- `vfs.Service` admits each call (`internal/vfs/admit`: the share's security
+  minimums and client rules), resolves the caller on the share through the
+  identity server, authorizes it (`internal/vfs/authz`) and runs the file
+  operation against the store and the engine.
+- The identity server signs callers in, keeps the directory and the keytab, and
+  maps and squashes a caller on a share ([RFC 18](rfcs/rfc-18-identity.md)).
 
 **5. Block storage** (`pkg/engine/`, `pkg/journal/`)
 - `pkg/engine/`: the engine (RFC 8) over `pkg/journal/`, the journal (RFC 1). The node builds it and `vfs.Service` over it; adapters reach it only through `vfs.Service` (see [Data path](#data-path)).
@@ -141,13 +144,14 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 it, and `vfs.Service`'s Read, Write and Commit read and write file content
 through the engine (`internal/vfs/data.go`). No protocol serves that path yet:
 the RFC 20 NFS and SMB adapters are built on `vfs.Service`, but their operation
-tables are empty, so every NFS procedure answers `PROC_UNAVAIL` and SMB has no
+tables hold no file operation: NFSv3, MOUNT, NLM and NSM answer `PROC_UNAVAIL`,
+NFSv4 decodes COMPOUND with no operation but ILLEGAL, and SMB has no
 file operations until RFC 20's file operations land.
 
-The journal devices come from `bootstrap.journals`. `blockstore.journal.path`
-is still parsed and validated, but the node reads it only at preflight, to
-detect a v1 state layout (`probeV1State`, `internal/node/preflight.go`); shares
-keep no state directory beneath it.
+The journal devices come from the bootstrap's `journals`. A file that still
+names v1's `blockstore.journal.path` is refused, naming `journals`; at start
+the node refuses a v1 state layout it finds (`probeV1State`,
+`internal/node/preflight.go`).
 
 The engine (`pkg/engine`, [RFC 8](rfcs/rfc-8-engine.md)) and the journal
 (`pkg/journal`, [RFC 1](rfcs/rfc-1-journal.md)) are built and tested on
@@ -155,138 +159,13 @@ their own, behind the `engine_conformance` and `journal_conformance` tags.
 
 ## Share Snapshots
 
-Share snapshots are point-in-time, reference-based protection for a
-share's content. The subsystem produces three artifacts per snapshot
-on local disk and one row in the control-plane database; it does not
-copy any block data. See [SNAPSHOTS.md](../guide/snapshots.md) for the
-operator-facing runbook; this section describes the architectural
-layout and the orchestration flows.
+v1's snapshots are deleted; the snapshot resource waits with
+[RFC 12](rfcs/rfc-12-snapshots.md).
 
-### Subsystem layout
+## Object ownership: a client-supplied identifier is not authorization
 
-| Location | Role |
-| --- | --- |
-| `pkg/snapshot/` | Verify gate, hash-manifest read/write, helper types. |
-| `pkg/controlplane/runtime/snapshot.go` | `Runtime.CreateSnapshot`, `WaitForSnapshot`, `RestoreSnapshot`, `GetSnapshot`, `ListSnapshots`, `DeleteSnapshot`. Composition over the metadata store, block store, and snapshot store. |
-| `pkg/controlplane/runtime/snapshot_hold.go` | `SnapshotHoldProvider` — per-share delete lock + manifest-on-disk hold surface for GC. |
-| `pkg/controlplane/models/snapshot.go` | `Snapshot` GORM model; `SnapshotDir`, `ManifestPath`, `MetadataDumpPath` path helpers. |
-| `pkg/controlplane/store/snapshots.go` | `SnapshotStore` CRUD (`GetSnapshot`, `ListSnapshots`, `DeleteSnapshot`). |
-| `pkg/controlplane/api/dto/snapshot.go` | Neutral wire DTOs imported by both the REST handler and the apiclient. No GORM types cross the wire. |
-| `internal/controlplane/api/handlers/snapshot.go` | Five REST handlers (`Create`, `List`, `Get`, `Delete`, `Restore`), the narrow `SnapshotRuntime` interface (testability seam), and the single `mapSnapshotError` sentinel-to-HTTP table. |
-| `pkg/apiclient/snapshots.go` | Typed Go client (6 methods) re-exporting the wire DTOs as type aliases of `dto.Snapshot`. |
-| `cmd/dfsctl/commands/share/snapshot/` | Five cobra leaf commands matching the REST surface (`create`, `list`, `show`, `delete`, `restore`). |
-
-### On-disk artifacts
-
-Every snapshot owns a directory under the share's local store:
-
-```
-<localStoreDir>/snapshots/<share>/<snap-id>/
-  ├─ metadata.dump          ← engine-native metadata serialization
-  └─ manifest.json          ← BLAKE3 hashes of every CAS block the share references
-```
-
-`SnapshotDir(localStoreDir)`, `ManifestPath(localStoreDir)`, and
-`MetadataDumpPath(localStoreDir)` on the `Snapshot` model compute the
-canonical paths. Atomic write is via `temp + rename` so a partial
-manifest never surfaces to the GC enumeration step. The manifest
-file's existence is the GC hold; there is no separate hold record.
-
-### Create orchestration
-
-```
-CreateSnapshot ─→ persist Snapshot row (state=creating)
-              ─→ DrainAllUploads (always — the dump must carry every block locator)
-              ─→ Dump metadata to metadata.dump
-              ─→ Build hash manifest from CAS
-              ─→ Verify gate: DrainAllUploads + VerifyRemoteDurability
-                 (both skipped if NoVerify, concurrency = 16)
-              ─→ Update row state=ready (or failed) + remote_durable flag
-```
-
-`Runtime.CreateSnapshot` returns the new snapshot ID immediately and
-runs the orchestration in a background goroutine. The REST handler
-returns `202 Accepted` with a `Location` header pointing at the
-record; callers poll `GET /snapshots/{id}` until `state != "creating"`.
-The CLI's `WaitForSnapshot` does that polling on the operator's
-behalf.
-
-`NoVerify=true` (CLI `--no-verify`) skips the verify gate — its upload
-drain and the HEAD-probe phase. It does not skip the drain that runs
-before the metadata dump, so a block store that cannot be reached fails
-snapshot creation either way. The snapshot still completes with
-`remote_durable=false`. Restore of a non-durable snapshot then
-requires the explicit `AllowNonDurable` flag (CLI `--force`).
-
-### Restore orchestration
-
-```
-RestoreSnapshot ─→ Pre-flight: refuse if share enabled
-                ─→ Verify source snapshot's remote durability
-                   (skipped if AllowNonDurable)
-                ─→ Pre-restore safety snapshot (ID returned to caller)
-                ─→ Close metadata store
-                ─→ Reset (via Resetable interface)
-                ─→ Restore from metadata.dump
-                ─→ HashSetFromMetadataStore walk
-                ─→ Post-restore block verify
-```
-
-`Runtime.RestoreSnapshot` returns `(safetySnapshotID, err)`. The
-safety snap ID is set as soon as step 3 succeeds, even if a later
-step fails — callers (REST + CLI) surface the ID to the operator so
-the rollback path is always available without a separate
-`ListSnapshots` filter. On precheck / pre-verify failure (before
-step 3) the safety ID is the empty string.
-
-### Per-share delete lock
-
-`SnapshotHoldProvider.AcquireDeleteLock(share)` returns a release
-function around a per-share `*sync.RWMutex`. The same mutex
-serializes `CreateSnapshot`, `RestoreSnapshot`, and
-`DeleteSnapshot` on the same share so that:
-
-- Two concurrent `delete` calls on different snapshots of the same
-  share cannot race the per-snapshot directory wipe against each
-  other.
-- A `delete` cannot race a `create` whose manifest write would
-  appear in the snapshots directory mid-sweep.
-- A `restore` cannot race a `delete` of the safety snap it is about
-  to create.
-
-`Runtime.DeleteSnapshot` is the canonical entry point — handlers
-never reach into `r.store.DeleteSnapshot` directly. The wrapper owns
-the lock acquisition, the database row delete, the on-disk
-directory wipe, and the lock release.
-
-### HTTP surface
-
-Five REST endpoints under `/api/v1/shares/{name}/snapshots` (admin
-only, inherits the existing `RequireAdmin` middleware):
-
-| Method | Path | Result |
-| --- | --- | --- |
-| `POST` | `/` | 202 Accepted + `Location` header |
-| `GET` | `/` | 200 OK + JSON array (empty: `[]`, not `null`) |
-| `GET` | `/{id}` | 200 OK + full record |
-| `DELETE` | `/{id}` | 204 No Content |
-| `POST` | `/{id}/restore` | 200 OK + `{snapshot_id, safety_snapshot_id, share}` |
-
-The single `mapSnapshotError` helper handles the 14 typed sentinels
-that can cross the boundary (12 snapshot sentinels + share-not-found
-- nil-guard). The mapping table lives in the handler file as the
-sole source of truth; future sentinels add a single case.
-
-The Restore handler wraps `r.Context()` with
-`context.WithTimeout(ctx, cfg.Snapshot.restore_http_timeout)`
-(default 30 minutes) to bound runaway restores. The apiclient
-mirrors the timeout on the client's `http.Client` for the restore
-call only (`WithRestoreTimeout`).
-
-For the full operator runbook see
-[SNAPSHOTS.md](../guide/snapshots.md).
-
-### Object ownership: a client-supplied identifier is not authorization
+The choke points this section and the durable-handle flow below name are v1's
+adapters, deleted on this branch; the rule stands for RFC 20's adapters.
 
 Every protocol here lets a client name a server-side object by an identifier the
 server issued earlier — an SMB `TreeID` or `FileId`, an SMB `AsyncId`, an NFSv4
@@ -347,29 +226,32 @@ routes through the existing choke point instead of adding a comparison of its
 own, and ships with a test that fails when the guard is removed. A guard that
 has never refused anything in a test is unverified.
 
-## Control Plane Pattern
+## The control plane
 
-The Control Plane is the central management component enabling flexible, multi-share configurations.
+Every change to what an installation serves is a record written through the
+management API ([RFC 23](rfcs/rfc-23-control-plane.md)):
 
-### How It Works
+1. **The API writes records.** A write is judged by the settings table and the
+   resource's own rules, and commits with its audit record in one transaction
+   through the store's control-plane view. It never reaches a running
+   component.
+2. **The node applies them.** Each node reads the generations each second and
+   applies what changed: a share's binding to the engine or a live setting. A restart-class change waits for the next start.
+3. **Each node reports.** The node-status record says what each node applied,
+   so a setting's read shows how many nodes run it.
+4. **File handles route by share.** A handle encodes the share's ID and the
+   file's; the filesystem service resolves the share and its binding from it.
 
-1. **Named Store Creation**: Stores are created with unique names (e.g., "fast-memory", "s3-archive")
-2. **Share-to-Store Mapping**: Each share references metadata and block stores by name
-3. **Handle Identity**: File handles encode both the share ID and file-specific data
-4. **Store Resolution**: When handling operations, the runtime decodes the handle to identify the share, then routes to the correct stores
+A share is created with its export policy, in a namespace on a remote store.
+On this branch no namespace can be created yet (the store's and namespace's
+settings are not declared), so this command cannot succeed:
 
-### Configuring shares
+```bash
+./dfsctl share create export --path /export --namespace <namespace-id> --flavor sys --client 0.0.0.0/0=read-write
+```
 
-Each share names its metadata store and its block store, and gets its own
-`*engine.Store` and journal directory. The CLI's share and store commands are
-unavailable until they are rebuilt on the v2 management API.
-
-### Benefits
-
-- **Per-share isolation**: Each share gets its own BlockStore and its own journal directory
-- **Resource Efficiency**: Block stores are shared (ref counted) when multiple shares reference the same config
-- **Flexible Topologies**: Different shares can target different block stores
-- **Future Multi-Tenancy**: Foundation for per-tenant store isolation
+Every share binds to the node's one engine, over the node's journal devices.
+No remote store is wired to the engine yet.
 
 ## Service Layer
 
@@ -384,145 +266,58 @@ content (a conflicting grant may already be recalled); one the engine refuses
 may already have cleared setuid and setgid; a zero-count write returns once
 judged. No protocol WRITE handler calls it yet.
 
-## Built-In and Custom Backends
+## Custom Backends
 
-### Using Built-In Backends
-
-No custom code required - configure via CLI:
-
-```bash
-# Create a share referencing the stores
-./dfsctl share create export --path /export --namespace <namespace-id> --flavor sys --client 0.0.0.0/0=read-write
-```
-
-### Implementing Custom Store Backends
-
-See [docs/IMPLEMENTING_STORES.md](implementing-stores.md) for detailed implementation guides for:
-- **Metadata Store**: Implement `pkg/metadata/kv.KV` and pass `kv/kvtest`
+See [Implementing stores](implementing-stores.md): a metadata backend
+implements `pkg/metadata/kv.KV` and passes `kv/kvtest`.
 
 ## Directory Structure
 
 ```
 dittofs/
 ├── cmd/
-│   ├── dfs/                      # Server CLI binary
-│   │   ├── main.go               # Entry point
-│   │   └── commands/             # Cobra commands (start, stop, config, logs)
-│   └── dfsctl/                   # Client CLI binary
-│       ├── main.go               # Entry point
-│       ├── cmdutil/              # Shared utilities (auth, output, flags)
-│       └── commands/             # Cobra commands (user, group, share, store, adapter)
+│   ├── dfs/commands/             # dfs: init, start, reset-admin, config, version
+│   ├── dfsctl/                   # dfsctl, the management API's client
+│   │   ├── cmdutil/              # Contexts, name resolution, output
+│   │   ├── commands/             # One package per resource
+│   │   └── internal/clisuite/    # The CLI's shared test rows
+│   ├── gendocs/                  # Generates docs/guide/cli.md
+│   ├── genopenapi/               # Generates pkg/node/apiv1/openapi.json
+│   └── dt/                       # The test harness's runner
 │
-├── pkg/                          # Public API (stable interfaces)
-│   ├── adapter/                  # Protocol adapter interface
-│   │   ├── adapter.go            # Adapter, OplockBreaker interfaces
-│   │   ├── base.go               # BaseAdapter shared TCP lifecycle
-│   │   ├── healthcheck.go        # BaseAdapter.Healthcheck
-│   │   ├── identity.go           # BuildIdentityResolver, ExtractRealm
-│   │   ├── sidecar/              # Sidecar-service lifecycle group
-│   │   ├── nfs/                  # NFS adapter: dispatch.go routes RPC procedures
-│   │   └── smb/                  # SMB adapter implementation
-│   │
-│   ├── auth/                     # Shared authentication primitives
-│   │   ├── kerberos/             # Kerberos Provider
-│   │   │   ├── provider.go       # Provider (keytab/krb5.conf state)
-│   │   │   ├── keytab.go         # Keytab hot-reload manager
-│   │   │   └── doc.go            # Package doc
-│   │   └── sid/                  # Windows SID types and mapping
-│   │
-│   ├── metadata/                 # Metadata layer (RFC 16)
-│   │   ├── kvstore/              # The store over a kv.KV; kvstoretest/ is its suite
-│   │   ├── kv/                   # Key-value contract, badgerkv/, fdbkv/, kvtest/
-│   │   ├── entity/               # Record types
-│   │   └── errors/               # Store error codes
-│   │
-│   ├── block/                    # Per-share block storage
-│   │   ├── engine/               # The engine (RFC 8), not yet wired to the adapters
-│   │   └── journal/              # The journal (RFC 1), one per device
-│   │       └── journaltest/      # Throwaway real store for outside tests
-│   │
-│   ├── controlplane/             # Control plane (config + runtime)
-│   │   ├── store/                # GORM-based persistent store
-│   │   │   ├── interface.go      # 9 sub-interfaces + composite Store
-│   │   │   ├── gorm.go           # GORMStore implementation
-│   │   │   ├── helpers.go        # Generic GORM helpers
-│   │   │   └── ...               # Per-entity implementations
-│   │   ├── runtime/              # Ephemeral runtime state
-│   │   │   ├── runtime.go        # Composition layer (~500 lines)
-│   │   │   ├── adapters/         # Adapter lifecycle sub-service
-│   │   │   ├── stores/           # Metadata store registry sub-service
-│   │   │   ├── shares/           # Share management sub-service
-│   │   │   ├── mounts/           # Unified mount tracking sub-service
-│   │   │   ├── lifecycle/        # Serve/shutdown orchestration sub-service
-│   │   │   └── identity/         # Identity mapping sub-service
-│   │   ├── api/                  # REST API server
-│   │   │   ├── server.go         # HTTP server with JWT
-│   │   │   └── router.go         # Route definitions
-│   │   └── models/               # Domain models (User, Group, Share)
-│   │
-│   ├── apiclient/                # REST API client library
-│   │   ├── client.go             # HTTP client with token auth
-│   │   ├── helpers.go            # Generic API client helpers
-│   │   └── ...                   # Resource-specific methods
-│   │
-│   ├── identity/                 # Identity resolution (providers, resolver, cache)
-│   ├── discovery/                # Service discovery (mDNS/DNS-SD)
-│   ├── health/                   # Health/readiness aggregation
-│   ├── metrics/                  # Prometheus metrics
-│   ├── snapshot/                 # Snapshot/backup support
-│   │
-│   └── config/                   # Configuration parsing
-│       ├── config.go             # Main config struct
-│       ├── blockstore.go         # Block store config
-│       ├── metadata.go           # Metadata store config
-│       ├── defaults.go           # Defaults + env binding
-│       └── ...                   # Per-section config (logging, gc, snapshot, ...)
+├── internal/
+│   ├── node/                     # The node: build, start, stop, reconcile, runner
+│   │   ├── api/                  # The management API: routes, auth, problems
+│   │   ├── step/                 # What an operation's step speaks to the runner
+│   │   └── nodetest/             # A real node for tests
+│   ├── install/                  # dfs init and dfs reset-admin over the store
+│   ├── vfs/                      # The filesystem service: admit/, authz/, pseudofs/, quota/
+│   ├── identity/                 # The identity server: directory/, netlogon/
+│   ├── adapter/                  # core/, nfs/, smb/, adaptertest/
+│   └── ...                       # logger/, cli/, tlsconfig/, prof/, sidecar/
 │
-├── internal/                     # Private implementation details
-│   ├── adapter/nfs/              # NFS protocol internals
-│   │   ├── rpc/                  # RPC layer (call/reply handling)
-│   │   │   └── gss/              # RPCSEC_GSS framework
-│   │   ├── xdr/core/             # Generic XDR codec
-│   │   ├── auth/                 # Auth context, AUTH_UNIX, share permission
-│   │   ├── middleware/           # Per-request auth extraction
-│   │   ├── types/                # NFS constants and types
-│   │   ├── mount/handlers/       # Mount protocol procedures
-│   │   ├── nlm/, nsm/, portmap/  # Lock/status/portmapper sidecar services
-│   │   ├── v3/handlers/          # NFSv3 procedures (READ, WRITE, etc.)
-│   │   └── v4/handlers/          # NFSv4.0 and v4.1 procedures
-│   ├── adapter/smb/              # SMB protocol internals
-│   │   ├── auth/                 # NTLM/SPNEGO authentication
-│   │   ├── handlers/             # SMB2 command handlers
-│   │   ├── session/, lease/      # Session + oplock/lease state
-│   │   ├── signing/, encryption/, kdf/   # Crypto primitives
-│   │   ├── framing.go            # NetBIOS framing
-│   │   └── dispatch.go           # Command dispatch
-│   ├── controlplane/api/         # API implementation
-│   │   ├── handlers/             # HTTP handlers with centralized error mapping
-│   │   └── middleware/           # Auth middleware
-│   ├── cli/                      # CLI output formatting
-│   ├── logger/                   # Logging utilities
-│   └── ...                       # tlsconfig/, pathutil/, bytesize/
+├── pkg/
+│   ├── bootstrap/                # The host's bootstrap file and environment
+│   ├── node/apiv1/               # The API's wire types; client/ is its Go client
+│   ├── metadata/                 # kvstore/, kv/ (badgerkv, fdbkv, kvtest), entity/, errors/
+│   ├── engine/, journal/         # The engine (RFC 8) over the journal (RFC 1)
+│   ├── settings/                 # Settings sections, the write check, classes
+│   ├── secrets/, keyprovider/    # Sealed secrets and the wrapping keys
+│   ├── identity/                 # The identity contract
+│   ├── vfs/                      # The filesystem service's contract
+│   ├── adapter/                  # nfs/, smb/, settings/
+│   └── ...                       # health/, metrics/, openstate/, resources/, sim/
 │
-├── docs/                         # Documentation
-│   ├── internals/                # This file, protocol and store internals
-│   ├── guide/                    # User guides (configuration, NFS, SMB, CLI)
-│   └── ...
-│
-└── test/                         # Test suites
-    ├── integration/              # Integration tests (S3, BadgerDB)
-    ├── e2e/                      # End-to-end tests (real NFS mounts)
-    ├── conformance/              # SMB/NFS conformance harnesses
-    ├── posix/, edge/, crash/     # Behavioural and fault-injection suites
-    └── spec-citations/           # Verifies spec-section citations in code
+├── docs/                         # guide/ for users, internals/ for contributors
+└── test/                         # harness/ (dt), integration/, e2e/, conformance suites
 ```
 
 ## Multi-Node Metadata
 
-Badger is embedded in one `dfs` process, so a metadata store serves exactly one
-server. A distributed transactional key-value store — TiKV is the preferred
-one — is the planned backend for multi-node deployments; it is not implemented
-yet.
+Badger is embedded in one `dfs` process, so a Badger metadata store serves
+exactly one node. `metadata.backend: foundationdb` keeps the store in a
+FoundationDB cluster instead, in a `dfs` built with the `foundationdb` tag; every
+node still runs both roles ([RFC 15](rfcs/rfc-15-topology.md)).
 
 ## Durable Handle State Flow
 
@@ -548,7 +343,7 @@ OPEN -[disconnect]-> ORPHANED -[scavenger timeout]-> EXPIRED -[cleanup]-> CLOSED
 
 **App Instance ID**: For Hyper-V failover, a CREATE with a matching `AppInstanceId` triggers force-close of the old handle, allowing the new VM instance to take over.
 
-**Admin API**: `GET /api/v1/durable-handles` lists all active handles with remaining timeout. `DELETE /api/v1/durable-handles/{id}` force-closes a specific handle.
+**Admin API**: the management API has no durable-handle routes; `GET /api/v1/nodes/{id}/connections` lists a node's connections.
 
 ## Migration & Block-Layout Routing
 
@@ -570,7 +365,6 @@ DittoFS is designed for high performance through several architectural choices:
 - **Goroutine-per-connection model**: Leverages Go's lightweight concurrency
 - **Buffer pooling**: Reduces GC pressure for large I/O operations
 - **Streaming I/O**: Efficient handling of large files without full buffering
-- **Three-tier storage**: Unified CAS-keyed `Cache` + local disk + remote store for optimal read latency
 - **Zero-copy aspirations**: Working toward minimal data copying in hot paths
 
 ## Why Pure Go?

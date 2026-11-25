@@ -76,7 +76,7 @@ func operationRows() []row {
 				}
 			}
 		}},
-		{name: "operation wait refused by the server mid-wait gives no resume hint", harnessOnly: true, run: func(t *testing.T, _ Runner, s Server, c *client.Client) {
+		{name: "operation wait refused by the server at a poll gives no resume hint", harnessOnly: true, run: func(t *testing.T, _ Runner, s Server, c *client.Client) {
 			// An operation of a kind the node has no step for stays pending,
 			// so its poll ends only when its wait does.
 			id := entity.OperationID(uuid.New())
@@ -86,11 +86,12 @@ func operationRows() []row {
 			}
 			watcher := "w-" + uuid.NewString()[:8]
 			s.Harness.Account(t, watcher, "the watcher's password", entity.RoleViewer)
+			polls := make(chan struct{}, 1)
 			w := s
 			w.User, w.Password = watcher, "the watcher's password"
+			w.Addr = s.Proxy(t, Polled(polls))
 			run := s.newRunner(t)
 			w.Login(t, run)
-			base := s.Harness.Clock().Pending()
 			type answered struct {
 				errOut string
 				status int
@@ -100,11 +101,14 @@ func operationRows() []row {
 				_, errOut, status := run(t.Context(), "operation", "wait", uuid.UUID(id).String())
 				done <- answered{errOut, status}
 			}()
-			// Polling until the wait's poll has parked on the node's clock.
-			for end := time.Now().Add(time.Minute); s.Harness.Clock().Pending() <= base; time.Sleep(time.Millisecond) {
-				if time.Now().After(end) {
-					t.Fatal("the wait's poll did not park within a minute")
-				}
+			// The account is demoted once the wait's poll is on its way to the
+			// server, past the command's first read of the operation: the poll
+			// is refused, at its entry or once parked, and the command meets
+			// the same refusal either way.
+			select {
+			case <-polls:
+			case <-time.After(time.Minute):
+				t.Fatal("the wait's poll did not reach the server within a minute")
 			}
 			s.demote(t, watcher)
 			a := Await(t, s, "the wait refused once its account lost its role", done)
