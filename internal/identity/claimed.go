@@ -59,10 +59,11 @@ func (s *Server) claimedUID(ctx context.Context, st *State, pr kvstore.Principal
 // of st's directory as claimedUID asks a uid. A gid no principal holds after
 // that is no group at all, left out and counted unmapped under gid, and a
 // primary gid no principal holds leaves group zero, so a create falls back
-// to the user's primary group. short reports a supplementary gid left out
-// unasked past the client's lookup cap. A store or directory error, or a
-// cap reached for the primary gid, is ErrUnavailable.
-func (s *Server) claimedGroups(ctx context.Context, st *State, pr kvstore.Principals, id identity.Identity) (group entity.Principal, groups []entity.Principal, short bool, err error) {
+// to the user's primary group. A store or directory error, or a cap reached
+// for any of its gids, is ErrUnavailable: a directory group minted under
+// another number can hold a claimed gid, so a gid left unasked could drop a
+// group a deny entry names (RFC 18 §7.3).
+func (s *Server) claimedGroups(ctx context.Context, st *State, pr kvstore.Principals, id identity.Identity) (group entity.Principal, groups []entity.Principal, err error) {
 	c := id.Claims
 	seen := map[uint32]bool{}
 	for i, gid := range append([]uint32{c.GID}, c.GIDs...) {
@@ -74,24 +75,9 @@ func (s *Server) claimedGroups(ctx context.Context, st *State, pr kvstore.Princi
 		if !ok {
 			if g, ok, err = byNumber(ctx, pr, entity.SchemeGID, gid); err == nil && !ok {
 				g, ok, err = s.claimedDir(ctx, st, id.Client, directory.ByGID, gid)
-				// decision: past the client's lookup cap, a supplementary
-				// gid no principal holds is left out of the caller's groups,
-				// unasked and uncharged, rather than refusing the call as RFC
-				// 18 §7.3 has it; only the uid and the primary gid refuse it.
-				// A gid no principal holds names nothing an ACL or a grant
-				// can hold, so leaving it out loses no grant and escapes no
-				// deny entry, and a host whose users carry local gids the
-				// directory lacks does not spend its window on them and then
-				// refuse every user. The caller is built with a zero Fresh,
-				// so it is not cached and its next call asks again.
-				// Overturned if an ACL can ever name a group the node has not
-				// minted.
-				if i > 0 && errors.Is(err, errLookupCap) {
-					ok, err, short = false, nil, true
-				}
 			}
 			if err != nil {
-				return entity.Principal{}, nil, false, err
+				return entity.Principal{}, nil, err
 			}
 		}
 		if !ok {
@@ -103,7 +89,7 @@ func (s *Server) claimedGroups(ctx context.Context, st *State, pr kvstore.Princi
 		}
 		groups = append(groups, g)
 	}
-	return group, groups, short, nil
+	return group, groups, nil
 }
 
 // claimedDir is the principal of the entry st's directory holds under n by

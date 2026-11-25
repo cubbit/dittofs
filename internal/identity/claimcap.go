@@ -77,9 +77,10 @@ func (c *charges) lookupFn() func() error {
 // claimWindow ever holds more than claimLimit charges: a fixed window would
 // admit twice the limit across its boundary, and a token bucket nearly so.
 //
-// ponytail: a ring holds up to claimLimit eight-byte times, about 52 MB
-// with the lookup cap's table full. Count charges per second, summed over
-// the last 60, if the table's memory shows in a profile.
+// ponytail: a ring holds up to claimLimit eight-byte times, allocated whole
+// on its first charge, about 52 MB with the lookup cap's table full. Count
+// charges per second, summed over the last 60, if the table's memory shows
+// in a profile.
 type ring struct{ at []int64 }
 
 // room is how many more charges r admits at now, dropping those claimWindow
@@ -95,6 +96,9 @@ func (r *ring) room(now int64) int {
 
 // charge records n charges at now; room must have admitted them.
 func (r *ring) charge(now int64, n int) {
+	if r.at == nil {
+		r.at = make([]int64, 0, claimLimit) // so append never grows it past claimLimit
+	}
 	for range n {
 		r.at = append(r.at, now)
 	}
@@ -117,7 +121,8 @@ func (r *ring) refund(at int64, n int) {
 // decision: a full table makes room by evicting its least recently charged
 // unit. That unit is idle, its newest charge claimWindow old or more and its
 // ring bounding nothing, unless every unit has charged within the window;
-// only then is a live ring reset, logged, which takes claimUnits units
+// only then is a live ring reset, counted and logged at most once a
+// claimWindow with the count since the last log, which takes claimUnits units
 // charging at once, a flood that one unit's reset adds little to. So no
 // client fills the table to refuse every other, as the logon throttle's full
 // table never refuses either. Overturned if a flood across that many units
@@ -126,9 +131,11 @@ type lookupCap struct {
 	log   *slog.Logger
 	bound int
 
-	mu     sync.Mutex
-	units  map[netip.Addr]*list.Element // of *capUnit
-	recent list.List                    // most recently charged first
+	mu       sync.Mutex
+	units    map[netip.Addr]*list.Element // of *capUnit
+	recent   list.List                    // most recently charged first
+	evicted  int                          // live rings reset since the last log
+	loggedAt int64                        // when the last of those logs was written
 }
 
 type capUnit struct {
@@ -143,6 +150,12 @@ func newLookupCap(bound int, log *slog.Logger) *lookupCap {
 
 // charge charges one lookup to client's unit at now, false when the unit
 // has claimLimit lookups within the last claimWindow.
+//
+// decision: an invalid client, an Identity whose adapter set no address,
+// falls in throttleUnit's zero unit, so every such caller shares one window
+// of claimLimit lookups. That fails closed: those callers are refused
+// sooner, never charged less. Refuse such a Claimed caller outright if an
+// adapter that sets no address is ever meant to reach the directory.
 func (c *lookupCap) charge(client netip.Addr, now time.Time) bool {
 	unit, t := throttleUnit(client), now.UnixNano()
 	c.mu.Lock()
@@ -152,7 +165,11 @@ func (c *lookupCap) charge(client netip.Addr, now time.Time) bool {
 		if len(c.units) >= c.bound {
 			old := c.recent.Back().Value.(*capUnit)
 			if t-old.last < int64(claimWindow) {
-				c.log.Warn("identity: the lookup cap's full table evicted a unit charged within its window", "units", len(c.units))
+				c.evicted++
+				if c.loggedAt == 0 || t-c.loggedAt >= int64(claimWindow) {
+					c.log.Warn("identity: the lookup cap's full table evicted units charged within their window", "units", len(c.units), "evicted", c.evicted)
+					c.evicted, c.loggedAt = 0, t
+				}
 			}
 			c.recent.Remove(c.units[old.unit])
 			delete(c.units, old.unit)

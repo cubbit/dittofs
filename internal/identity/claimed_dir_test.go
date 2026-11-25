@@ -193,39 +193,46 @@ func TestClaimedLookupCapSlides(t *testing.T) {
 	expect("119 s, past 99", 1, vfserr.ErrUnavailable)
 }
 
-// A mint's closure query is charged to the client's lookup cap: 51 directory
-// users sharing one group, from one address, mint the first 50, each costing
-// a uid and a closure query, and the 51st is refused ErrUnavailable at its
-// uid, the address's 101st lookup. Catches the closure query uncharged,
-// which lets one address send about 200 queries a minute.
+// A mint's closure query, and the entry read that follows it, are charged
+// to the client's lookup cap: 34 directory users sharing one group, from one
+// address, mint the first 33, each costing a uid, a closure and an entry
+// query, and the 34th, its uid the address's 100th lookup, is refused
+// ErrUnavailable at its closure query, the 101st, minting nothing. Catches
+// the closure query or the entry read uncharged, which lets one address send
+// about 200 or 300 queries a minute.
 func TestClaimedLookupCapChargesTheClosure(t *testing.T) {
 	e := newAD(t)
 	var dns [][]byte
-	for i := range 51 {
+	for i := range 34 {
 		dns = append(dns, []byte(e.numbered(t, fmt.Sprintf("u%02d", i), uint32(30000+i), nil)))
 	}
 	e.d.AddGroup(t, "shared", map[string][][]byte{"member": dns})
-	for i := range 50 {
+	for i := range 33 {
 		if c, err := e.resolveClaim(claimFrom(hostA, uint32(30000+i), 0)); err != nil || c.Mapped == entity.AnonymousPrincipal {
-			t.Fatalf("directory user %d of 50: %+v, %v; want its minted principal", i, c, err)
+			t.Fatalf("directory user %d of 33: %+v, %v; want its minted principal", i, c, err)
 		}
 	}
-	if c, err := e.resolveClaim(claimFrom(hostA, 30050, 0)); !errors.Is(err, vfserr.ErrUnavailable) || c != nil {
-		t.Errorf("the 51st directory user, the 101st lookup = %+v, %v; want nil, ErrUnavailable", c, err)
+	users := e.mints(t, "user")
+	if c, err := e.resolveClaim(claimFrom(hostA, 30033, 0)); !errors.Is(err, vfserr.ErrUnavailable) || c != nil {
+		t.Errorf("the 34th directory user, its closure the 101st lookup = %+v, %v; want nil, ErrUnavailable", c, err)
 	}
-	for _, q := range []string{"uid", "groups"} {
-		if got := e.sent(t, q); got != 50 {
-			t.Errorf("%s questions sent %v, want 50", q, got)
+	if got := e.mints(t, "user"); got != users {
+		t.Errorf("users minted by the refused call %v, want 0", got-users)
+	}
+	for q, want := range map[string]float64{"uid": 34, "groups": 33, "entry_id": 33} {
+		if got := e.sent(t, q); got != want {
+			t.Errorf("%s questions sent %v, want %v", q, got, want)
 		}
 	}
 }
 
 // Past the lookup cap, a claim of a minted directory principal's uid with
-// ten supplementary gids no principal holds is admitted as that principal
-// without them, no query sent for them, and with a zero Fresh, so admission
-// does not cache it; once the address's window has room, the same claim
-// asks for them. Catches a call refused for a supplementary gid, and a short
-// caller cached.
+// ten supplementary gids no principal holds is refused ErrUnavailable,
+// counted lookup_cap, no query sent for them, as RFC 18 §7.3 refuses the
+// uid and the primary gid; once the address's window has room, the same
+// claim asks for them and is admitted. Catches a supplementary gid left out
+// past the cap, which drops a group the directory holds under that number,
+// minted under another, and so a deny entry naming it.
 func TestClaimedSupplementaryGIDsPastTheCap(t *testing.T) {
 	e := newAD(t)
 	e.numbered(t, "bob", 5000, nil)
@@ -234,27 +241,67 @@ func TestClaimedSupplementaryGIDsPastTheCap(t *testing.T) {
 	for i := range gids {
 		gids[i] = uint32(40000 + i)
 	}
+	// bob's first claim reads his entry, one lookup, so the claims past the
+	// cap find it fresh and only the gids can refuse them.
+	if _, err := e.resolveClaim(claimFrom(hostA, 5000, 0)); err != nil {
+		t.Fatalf("bob's first claim: %v", err)
+	}
+	for i := range 99 {
+		if _, err := e.resolveClaim(claimFrom(hostA, uint32(10000+i), 0)); err != nil {
+			t.Fatalf("unknown uid %d of 99: %v", i, err)
+		}
+	}
+	c, err := e.resolveClaim(claimFrom(hostA, 5000, 0, gids...))
+	if !errors.Is(err, vfserr.ErrUnavailable) || c != nil {
+		t.Fatalf("bob's claim with ten unknown gids past the cap = %+v, %v; want nil, ErrUnavailable", c, err)
+	}
+	if got := e.refusals(t, "lookup_cap"); got != 1 {
+		t.Errorf("refusals{lookup_cap} = %v, want 1", got)
+	}
+	if got := e.sent(t, "gid"); got != 0 {
+		t.Errorf("gid questions sent past the cap %v, want 0", got)
+	}
+	if c, err := e.resolveClaim(claimFrom(hostA, 5000, 0)); err != nil || c.Principal != bob {
+		t.Errorf("bob's claim past the cap with no unknown gid = %+v, %v; want bob, his entry fresh", c, err)
+	}
+	e.clock.Advance(time.Minute)
+	c, err = e.resolveClaim(claimFrom(hostA, 5000, 0, gids...))
+	if err != nil || c.Principal != bob {
+		t.Fatalf("bob's claim once the window has room = %+v, %v; want bob", c, err)
+	}
+	if got := e.sent(t, "gid"); got != 10 {
+		t.Errorf("gid questions sent once the window has room %v, want 10", got)
+	}
+}
+
+// A minted directory principal's entry read, once its answer is past the
+// TTL, is a lookup its Claimed caller triggers, charged to the client's cap:
+// with the address's 100 lookups spent, a claim of the principal's uid is
+// refused ErrUnavailable, counted lookup_cap, and sends no entry query.
+// Catches the entry read uncharged, which lets an address read one entry per
+// minted directory user every TTL on top of its 100.
+func TestClaimedLookupCapChargesTheEntryRead(t *testing.T) {
+	e := newAD(t)
+	e.numbered(t, "bob", 5000, nil)
+	if c, err := e.resolveClaim(claimFrom(hostA, 5000, 0)); err != nil || c.Mapped == entity.AnonymousPrincipal {
+		t.Fatalf("bob's first claim = %+v, %v; want bob minted", c, err)
+	}
+	e.clock.Advance(5*time.Minute + time.Second)
 	for i := range 100 {
 		if _, err := e.resolveClaim(claimFrom(hostA, uint32(10000+i), 0)); err != nil {
 			t.Fatalf("unknown uid %d of 100: %v", i, err)
 		}
 	}
-	c, err := e.resolveClaim(claimFrom(hostA, 5000, 0, gids...))
-	if err != nil {
-		t.Fatalf("bob's claim with ten unknown gids past the cap: %v, want admitted", err)
+	queries := len(e.f.Queries())
+	c, err := e.resolveClaim(claimFrom(hostA, 5000, 0))
+	if !errors.Is(err, vfserr.ErrUnavailable) || c != nil {
+		t.Errorf("bob's claim past the TTL, the address's 101st lookup = %+v, %v; want nil, ErrUnavailable", c, err)
 	}
-	if c.Principal != bob || len(c.Groups) != 1 || !c.Fresh.IsZero() {
-		t.Errorf("bob's claim past the cap: Principal %v, Groups %v, Fresh %v; want bob, root's group alone, zero", c.Principal, c.Groups, c.Fresh)
+	if got := e.refusals(t, "lookup_cap"); got != 1 {
+		t.Errorf("refusals{lookup_cap} = %v, want 1", got)
 	}
-	if got := e.sent(t, "gid"); got != 0 {
-		t.Errorf("gid questions sent past the cap %v, want 0", got)
-	}
-	e.clock.Advance(time.Minute)
-	if _, err := e.resolveClaim(claimFrom(hostA, 5000, 0, gids...)); err != nil {
-		t.Fatalf("bob's claim once the window has room: %v", err)
-	}
-	if got := e.sent(t, "gid"); got != 10 {
-		t.Errorf("gid questions sent once the window has room %v, want 10", got)
+	if got := len(e.f.Queries()); got != queries {
+		t.Errorf("queries sent for the refused entry read %d, want 0", got-queries)
 	}
 }
 

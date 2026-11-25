@@ -368,7 +368,7 @@ func (s *Server) bindTicket(ctx context.Context, st *State, step identity.SignIn
 	// cache does not hide a rename from the resolutions after it.
 	if id, ok := dirEntryID(u); ok {
 		bctx, cancel := directory.Bounded(ctx, s.deps.Clock, directoryBound, errDirectoryBound)
-		e, queried, disabled, err := s.dirRead(bctx, st, id)
+		e, queried, disabled, err := s.dirRead(bctx, st, id, nil)
 		if err == nil && !disabled && queried {
 			s.refreshOrLog(bctx, st, []dirBound{{p, e.ans}})
 		}
@@ -482,7 +482,7 @@ func (s *Server) dirAccountGone(ctx context.Context, st *State, realm string, lo
 	}
 	ctx, cancel := directory.Bounded(ctx, s.deps.Clock, directoryBound, errDirectoryBound)
 	defer cancel()
-	_, _, disabled, err := s.dirRead(ctx, st, id)
+	_, _, disabled, err := s.dirRead(ctx, st, id, nil)
 	return err == nil && disabled
 }
 

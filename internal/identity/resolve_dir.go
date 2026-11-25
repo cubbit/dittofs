@@ -59,12 +59,17 @@ func dirRefusal(err error) error {
 // grace, or no directory, is a refusal counted directory_unavailable and
 // failing ErrUnavailable (dirRefusal), which a sign-in reads as
 // ErrUnavailable. It writes nothing; a caller that admits the entry
-// refreshes from it when queried.
-func (s *Server) dirRead(ctx context.Context, st *State, entryID []byte) (e *dirEntry, queried, disabled bool, err error) {
+// refreshes from it when queried. A query the read sends or joins is
+// charged to ch, a nil one charging nothing; past its cap the read is
+// refused as the cap refuses it.
+func (s *Server) dirRead(ctx context.Context, st *State, entryID []byte, ch *charges) (e *dirEntry, queried, disabled bool, err error) {
 	if st == nil || st.dir == nil {
 		return nil, false, false, dirRefusal(errors.New("identity: a directory principal with no directory"))
 	}
-	e, queried, err = st.dir.lookupEntry(ctx, directory.ByEntryID, entryID, st.Settings.DirectoryStaleGrace, false)
+	e, queried, err = st.dir.lookupCharged(ctx, directory.ByEntryID, entryID, st.Settings.DirectoryStaleGrace, false, ch.lookupFn())
+	if r := (*refusal)(nil); errors.As(err, &r) {
+		return nil, false, false, err
+	}
 	if err != nil {
 		return nil, false, false, dirRefusal(err)
 	}
@@ -86,11 +91,12 @@ func (s *Server) dirRead(ctx context.Context, st *State, entryID []byte) (e *dir
 // call ErrUnavailable, counted directory_unavailable, never a caller without
 // what it would have read. oldest is when the oldest answer it used was
 // given. The step opens the 20-second bound once, which each of its queries,
-// mints and waits inherits.
-func (s *Server) dirStep(ctx context.Context, st *State, p entity.Principal, entryID []byte, ev identity.Evidence, groups bool) (dir []entity.Principal, oldest time.Time, err error) {
+// mints and waits inherits. The entry read is charged to ch, a Claimed
+// caller's, as dirRead charges it.
+func (s *Server) dirStep(ctx context.Context, st *State, p entity.Principal, entryID []byte, ev identity.Evidence, groups bool, ch *charges) (dir []entity.Principal, oldest time.Time, err error) {
 	ctx, cancel := directory.Bounded(ctx, s.deps.Clock, directoryBound, errDirectoryBound)
 	defer cancel()
-	e, queried, disabled, err := s.dirRead(ctx, st, entryID)
+	e, queried, disabled, err := s.dirRead(ctx, st, entryID, ch)
 	if err != nil {
 		return nil, time.Time{}, err
 	}

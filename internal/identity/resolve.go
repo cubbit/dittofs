@@ -243,7 +243,11 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 	if entryID, ok := dirEntryID(u); named && ok {
 		now := s.deps.Clock.Now()
 		var oldest time.Time
-		if dirClosure, oldest, err = s.dirStep(ctx, st, mapped, entryID, id.Evidence, proven && fileUser && p.Share != (entity.ShareID{})); err != nil {
+		var ch *charges // a Claimed caller's entry read is a lookup it triggers, charged to its client
+		if claimed {
+			ch = &charges{s: s, client: id.Client}
+		}
+		if dirClosure, oldest, err = s.dirStep(ctx, st, mapped, entryID, id.Evidence, proven && fileUser && p.Share != (entity.ShareID{}), ch); err != nil {
 			return nil, err
 		}
 		c.Fresh = freshUntil(now, oldest, c.Fresh, st.Settings.DirectoryStaleGrace)
@@ -299,12 +303,8 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 		// (RFC 18 §6.3), and its grant is read for the principal its uid
 		// mapped to, unauthenticated, so the grant to authenticated users
 		// never matches it.
-		var short bool
-		if c.Group, groups, short, err = s.claimedGroups(ctx, st, pr, id); err != nil {
+		if c.Group, groups, err = s.claimedGroups(ctx, st, pr, id); err != nil {
 			return nil, err
-		}
-		if short {
-			c.Fresh = time.Time{}
 		}
 		if err := s.capped(ctx, mapped, groups); err != nil {
 			return nil, err

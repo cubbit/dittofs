@@ -1,8 +1,10 @@
 package identity
 
 import (
+	"context"
 	"log/slog"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 )
@@ -34,4 +36,56 @@ func TestLookupCapEvictsAnIdleUnitFirst(t *testing.T) {
 	if _, held := c.units[throttleUnit(idle)]; held {
 		t.Error("the idle unit is still held, want it evicted for the new one")
 	}
+}
+
+// A full table evicting live rings logs at most once a window, with the
+// count of live rings reset since the last log, and a ring is allocated to
+// claimLimit on its first charge, so it never grows past it. Catches a log
+// line per evicted unit, an eviction left uncounted, and a ring grown by
+// append's doubling.
+func TestLookupCapCountsLiveEvictions(t *testing.T) {
+	var logs recordedLogs
+	c := newLookupCap(1, slog.New(&logs))
+	t0 := time.Unix(1_000_000, 0)
+	for i := range 5 {
+		c.charge(netip.AddrFrom4([4]byte{192, 0, 2, byte(i)}), t0.Add(time.Duration(i)*time.Second))
+	}
+	if got := logs.evicted(); len(got) != 1 || got[0] != 1 {
+		t.Errorf("logs after four live evictions within a window = %v, want one, counting 1", got)
+	}
+	c.charge(netip.MustParseAddr("192.0.2.9"), t0.Add(62*time.Second)) // unit 4 charged 58 s before, the last log 61 s before
+	if got := logs.evicted(); len(got) != 2 || got[1] != 4 {
+		t.Errorf("logs once the window has passed = %v, want a second, counting 4", got)
+	}
+	u := c.units[netip.MustParseAddr("192.0.2.9")].Value.(*capUnit)
+	if got := cap(u.ring.at); got != claimLimit {
+		t.Errorf("a ring's capacity after its first charge = %d, want %d", got, claimLimit)
+	}
+}
+
+// recordedLogs keeps the evicted count of each record logged to it.
+type recordedLogs struct {
+	mu sync.Mutex
+	n  []int64
+}
+
+func (l *recordedLogs) Enabled(context.Context, slog.Level) bool { return true }
+func (l *recordedLogs) WithAttrs([]slog.Attr) slog.Handler       { return l }
+func (l *recordedLogs) WithGroup(string) slog.Handler            { return l }
+func (l *recordedLogs) Handle(_ context.Context, r slog.Record) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "evicted" {
+			l.n = append(l.n, a.Value.Int64())
+		}
+		return true
+	})
+	return nil
+}
+
+func (l *recordedLogs) evicted() []int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]int64(nil), l.n...)
 }
