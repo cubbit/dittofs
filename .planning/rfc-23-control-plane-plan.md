@@ -416,10 +416,10 @@ registers no suite and no group, and changes no `lint-go` tag.
 | E5 🔀 | Accounts and sign-in | on RFC 18 §8.1's interface (X1, X2): resumable `dfs init`, `dfs`'s `reset-admin`, tokens, sessions, roles, throttling, first password, signing key and its retention, their wire types | 10 | 25.5 | C | E6 (partly), E7; X3 (partly); the RFC 13 plan's S4 (#4059, `dfs init`) |
 | E6 | The CLI | `login` and the rebuilt `dfsctl` on epic 4's client, generated reference | 6 | 11.5 | A | E7 |
 | E7 🔀 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides and `CLAUDE.md` | 7 | 12 | team | E8 (partly) |
-| E8 🔀 | E2E green | the e2e helpers rebuilt on the new client, the e2e rows, the #3714 filter's entries removed | 9 | 18.75 | team | — |
-| | **Total** | | **74** | **184.25** | | |
+| E8 🔀 | E2E green | the e2e helpers rebuilt on the new client, the e2e rows, the #3714 filter's entries removed | 9 | 19.75 | team | — |
+| | **Total** | | **74** | **186.25** | | |
 
-**Plan estimate: 74 subtasks, 184.25 man-days.**
+**Plan estimate: 74 subtasks, 186.25 man-days.**
 
 The figure counts none of the work this plan consumes from the RFC 13 plan (#4059) and the RFC 18
 plan (#4058), which estimate it once, in their own epics.
@@ -657,8 +657,10 @@ decision.
     `setup-posix.sh` is gone, as `pjdfstest` starts through epic 7's fixture, and the
     SMB-conformance bootstrap is RFC 22's;
   - a cell of `e2e` leaves the filter with its first green test, and the rows after it join a
-    running cell: `e2e` with epic 8's second-user CLI row, `e2e/kerberos` with epic 8's Kerberos
-    rows unless a protocol plan's land first, `e2e/cross-protocol` with the protocol plans' first
+    running cell: the `e2e` suite with epic 8's second-user CLI row, which runs in its own
+    `e2e/second-user` option, and `e2e`'s own cell with epic 8's first admission row,
+    `e2e/kerberos` with epic 8's Kerberos rows unless a protocol plan's land first,
+    `e2e/cross-protocol` with the protocol plans' first
     cross-protocol test;
   - RFC 21's plan's epic 15 removes `pynfs`, `cthon04` and `nfstest`; RFC 22's plan's epic 15
     `smbtorture` and `wpts`, and its T16.5 `system`;
@@ -1606,7 +1608,7 @@ The §1.4 scenarios assigned to epic 7 pass too.
 
 ### Epic 8 — E2E green 🔀
 
-**Epic 8 estimate: 9 subtasks, 18.75 man-days.**
+**Epic 8 estimate: 9 subtasks, 19.75 man-days.**
 
 The epic's breakdown, [`rfc-23-control-plane-epic8.md`](rfc-23-control-plane-epic8.md), is the
 source for its subtasks. The helpers, the e2e paths and the scripts start before S3, and the
