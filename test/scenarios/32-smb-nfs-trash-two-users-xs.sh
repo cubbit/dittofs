@@ -33,4 +33,4 @@ test -z "$(grep 'b1\.txt' /tmp/root.ls)"
 test -z "$(grep 'b2\.txt' /tmp/root.ls)"
 smbclient //127.0.0.1/shared -c 'ls "#recycle/t1.txt"'
 test "$(cat /tmp/empty)" = refused
-! grep -q 'unknown command' /tmp/empty.out
+if grep -q 'unknown command' /tmp/empty.out; then exit 1; fi

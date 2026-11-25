@@ -58,8 +58,8 @@ echo "revoked: smb open read $(test -s /tmp/r/revoked && echo read || echo refus
 echo "read: smb open read $(test -s /tmp/r/granted && echo read || echo refused), smb open write $(grep -q 'w-granted ' /tmp/ls && echo written || echo refused), smb new read $SGN, smb new write $SGW, nfs new read $NGR, nfs new write $NGW"
 
 test ! -s /tmp/r/revoked
-! grep -q w-revoked /tmp/ls
+if grep -q w-revoked /tmp/ls; then exit 1; fi
 test "$NH/$SN/$NN/$NW" = refused/refused/refused/refused
 test ! -s /tmp/r/granted
-! grep -q 'w-granted ' /tmp/ls
+if grep -q 'w-granted ' /tmp/ls; then exit 1; fi
 test "$SGN/$SGW/$NGR/$NGW" = read/refused/read/refused

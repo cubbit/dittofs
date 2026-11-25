@@ -83,7 +83,7 @@ echo "bin: $(cat /tmp/bin-before.txt) before, $(cat /tmp/bin-after.txt) after th
 echo "j: $R rounds, $(cat /tmp/j-failed.txt 2>/dev/null | wc -l) failed writes"
 cat /tmp/j-failed.txt 2>/dev/null || true
 test "$(cat /tmp/bin-before.txt)" = 'a.bin b.bin c.bin d.bin'
-! grep -q 'x\.tmp' /tmp/bin-root.txt
+if grep -q 'x\.tmp' /tmp/bin-root.txt; then exit 1; fi
 test "$(cat /tmp/bin-after.txt)" = 'b.bin c.bin d.bin'
 test "$R" -ge 5
 test "$(jq .bytes /tmp/zeros-full.json)" -gt "$(jq .bytes /tmp/zeros-base.json)"

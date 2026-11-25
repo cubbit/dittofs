@@ -73,8 +73,8 @@ rclone mkdir s3:dittofs
 echo '{"access_key_id":"test","secret_access_key":"test-secret"}' >/etc/dittofs-s3.credential
 
 # DittoFS: its configuration, an API on a port the kernel picks (dfs-server reads it from the log),
-# and its two wrapping keys under one passphrase. No command makes a key file, so a few lines of Go
-# do, joining the read-only checkout through an overlay so they build against its go.mod. dfs init
+# and its two wrapping keys under one passphrase. dfs init makes the storage key but not the protocol key,
+# so a few lines of Go make both, joining the read-only checkout through an overlay so they build against its go.mod. dfs init
 # prints the administrator's password, which dfs-server's first start signs in with and changes.
 mkdir -p /etc/dittofs /var/lib/dittofs/journal ~/.config/dittofs /tmp/keygen
 head -c 24 /dev/urandom | base64 >/etc/dittofs/passphrase
