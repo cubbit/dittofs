@@ -46,6 +46,8 @@ const (
 	ByGroupName                // a group's name, under the record's group name attribute
 	BySID                      // an objectSid, its binary form
 	ByEntryID                  // an Answer's EntryID
+	ByUID                      // a user's uidNumber, in decimal
+	ByGID                      // a group's gidNumber, in decimal
 )
 
 // Answer is the one entry that holds what a question asked.

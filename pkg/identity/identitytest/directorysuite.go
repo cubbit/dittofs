@@ -227,6 +227,46 @@ func DirectoryConformance(t *testing.T, open func(t *testing.T) (directory.Conn,
 		}
 	})
 
+	// identity asks a claimed uid or gid by uidNumber or gidNumber, under the
+	// object class of the kind it wants: the one entry of that kind holding
+	// exactly that number answers, never a user for a group question, nor a
+	// number holding it as a prefix; none answers a number no entry holds, and
+	// two holders are ambiguous.
+	t.Run("a uidNumber or gidNumber finds its one holder of its kind", func(t *testing.T) {
+		c, s := bound(t)
+		tok := token()
+		n := number()
+		num := func(k uint32) []byte { return []byte(strconv.FormatUint(uint64(k), 10)) }
+		user := s.AddUser(t, "nu"+tok, map[string][][]byte{"uidNumber": {num(n)}, "gidNumber": {num(n + 1)}})
+		s.AddUser(t, "nl"+tok, map[string][][]byte{"uidNumber": {num(n*10 + 1)}})
+		group := s.AddGroup(t, "ng"+tok, map[string][][]byte{"gidNumber": {num(n)}})
+		s.AddUser(t, "nd1"+tok, map[string][][]byte{"uidNumber": {num(n + 2)}})
+		s.AddUser(t, "nd2"+tok, map[string][][]byte{"uidNumber": {num(n + 2)}})
+		name, pw := s.Account()
+		cl := directory.NewClient(directory.Record{Address: "ldap://suite", Base: naming(t, c), BindName: name},
+			func(context.Context, directory.Record) (directory.Conn, error) { conn, _ := open(t); return conn, nil },
+			func(context.Context) ([]byte, error) { return pw, nil }, sim.NewTestClock(time.Unix(0, 0)), nil)
+		defer cl.Close()
+		for _, row := range []struct {
+			by   directory.Key
+			n    uint32
+			want string // the DN found; "" for none
+		}{
+			{directory.ByUID, n, user},
+			{directory.ByGID, n, group},
+			{directory.ByGID, n + 1, ""}, // the user's gidNumber answers no group question
+			{directory.ByUID, n + 3, ""},
+		} {
+			a, ok, err := cl.Lookup(call(t), row.by, num(row.n))
+			if err != nil || ok != (row.want != "") || !strings.EqualFold(a.DN, row.want) {
+				t.Errorf("Lookup(%v, %d) = %q, %v, %v; want %q", row.by, row.n, a.DN, ok, err, row.want)
+			}
+		}
+		if _, _, err := cl.Lookup(call(t), directory.ByUID, num(n+2)); !errors.Is(err, directory.ErrAmbiguous) {
+			t.Errorf("Lookup of a uidNumber two users hold: %v, want ErrAmbiguous", err)
+		}
+	})
+
 	// Active Directory answers such a search with a referral, Samba with no
 	// such object; either way it is refused, never an empty answer.
 	t.Run("a search based outside the naming context is refused", func(t *testing.T) {
@@ -613,6 +653,15 @@ func escape(v []byte) string {
 		}
 	}
 	return b.String()
+}
+
+// number is a random uidNumber from 10^8 up, apart from every other run's
+// in a shared directory, small enough that ten times it plus one still fits
+// the directory's signed 32-bit integer.
+func number() uint32 {
+	var b [3]byte
+	_, _ = rand.Read(b[:])
+	return 100_000_000 + (uint32(b[0])<<16 | uint32(b[1])<<8 | uint32(b[2]))
 }
 
 // token is eight random lower-case letters and digits, which keep one row's

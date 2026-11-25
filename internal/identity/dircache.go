@@ -190,6 +190,10 @@ func question(k dirKey) string {
 		return "sid"
 	case directory.ByEntryID:
 		return "entry_id"
+	case directory.ByUID:
+		return "uid"
+	case directory.ByGID:
+		return "gid"
 	}
 	return "unknown"
 }

@@ -635,3 +635,61 @@ func TestLookupFreshConnectionClosedIsNotRetried(t *testing.T) {
 		t.Errorf("%d dials, want 1: a fresh connection's failure is not retried", len(got))
 	}
 }
+
+// A uidNumber or gidNumber finds the one entry of its kind holding exactly
+// that number, in either schema: a user's uidNumber answers no group
+// question and a user's gidNumber, its primary group's, none either; a
+// number that is a prefix of another's matches only its own; a number no
+// entry holds is no entry; and two holders are ambiguous.
+func TestLookupByNumberIsExact(t *testing.T) {
+	for _, schema := range []string{directory.SchemaAD, directory.SchemaRFC2307} {
+		t.Run(schema, func(t *testing.T) {
+			ctx := context.Background()
+			e := newEnv(t)
+			e.rec.Schema = schema
+			user := func(name string, uid, gid string) string {
+				attrs := map[string][][]byte{"uidNumber": {[]byte(uid)}, "gidNumber": {[]byte(gid)}}
+				if schema == directory.SchemaRFC2307 {
+					attrs["objectClass"] = [][]byte{[]byte("top"), []byte("posixAccount")}
+					attrs["uid"] = [][]byte{[]byte(name)}
+				}
+				return e.d.AddUser(t, name, attrs)
+			}
+			group := func(name, gid string) string {
+				attrs := map[string][][]byte{"gidNumber": {[]byte(gid)}}
+				if schema == directory.SchemaRFC2307 {
+					attrs["objectClass"] = [][]byte{[]byte("top"), []byte("posixGroup")}
+				}
+				return e.d.AddGroup(t, name, attrs)
+			}
+			alice := user("alice", "1500", "3000")
+			user("al", "15001", "3000")
+			eng := group("eng", "1500")
+			staff := group("staff", "3000")
+			user("dup1", "2000", "3000")
+			user("dup2", "2000", "3000")
+			c := e.client(e.d.Dial)
+			for _, row := range []struct {
+				by    directory.Key
+				value string
+				want  string // the DN found; "" for none
+			}{
+				{directory.ByUID, "1500", alice},
+				{directory.ByGID, "1500", eng},
+				{directory.ByGID, "3000", staff},
+				{directory.ByUID, "3000", ""},
+				{directory.ByUID, "150", ""},
+				{directory.ByUID, "4242", ""},
+				{directory.ByGID, "15001", ""},
+			} {
+				a, ok, err := c.Lookup(ctx, row.by, []byte(row.value))
+				if err != nil || ok != (row.want != "") || a.DN != row.want {
+					t.Errorf("Lookup(%v, %s) = %q, %v, %v; want %q", row.by, row.value, a.DN, ok, err, row.want)
+				}
+			}
+			if _, _, err := c.Lookup(ctx, directory.ByUID, []byte("2000")); !errors.Is(err, directory.ErrAmbiguous) {
+				t.Errorf("Lookup of a uidNumber two users hold: %v, want ErrAmbiguous", err)
+			}
+		})
+	}
+}
