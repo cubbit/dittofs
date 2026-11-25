@@ -708,7 +708,7 @@ plan also takes over the rows of RFC 20's plan's deferral ledger that name RFC 2
 - `dfsctl share mount` reading the adapter's `port` (epic 6).
 
 An adapter's per-node status splits the other way (RFC 20's epic 7's O7): `NodeStatus.Adapters`,
-each protocol's state and the settings generation it runs, and the per-node read of
+each protocol's state, the settings generation it runs and the port it bound while serving (#5394), and the per-node read of
 `/adapters/{protocol}` are epic 4's T4.9; the node's write of each slot into it is RFC 20's T7.7.
 
 Client eviction is O9.

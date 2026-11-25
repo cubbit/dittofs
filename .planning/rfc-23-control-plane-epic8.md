@@ -13,7 +13,7 @@ for NFS Kerberos for T8.8. S3 has not been reached (§9): RFC 20's plan's epic 7
 adapters inside the node, but the NFS and SMB
 handlers on the filesystem service, RFC 21's and RFC 22's plans, are at their first two epics, so
 no client can mount yet. Outside RFC 23's plan as well: #5394 (an adapter's status names the port
-it bound) for T8.5; the RFC 18 plan's epic 5 (Kerberos and the PAC, closed) and epic 9 (the e2e
+it bound, landed: `port` on each node of `GET /adapters/{protocol}` while the adapter serves) for T8.5; the RFC 18 plan's epic 5 (Kerberos and the PAC, closed) and epic 9 (the e2e
 Kerberos helper mended) for T8.8; the RFC 13 plan's epic 6 for `dt stack` in T8.4; RFC 8's second
 part for the `badger-s3` profile (T8.5, T8.9).
 **Blocks:** nothing in RFC 23's plan. RFC 21's plan's epic 16, RFC 22's plan's epic 16 and the RFC 18
