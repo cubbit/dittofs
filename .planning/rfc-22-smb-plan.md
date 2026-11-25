@@ -225,7 +225,7 @@ client in epic 16:
 **What the catalogue leaves out.** RFC 22's **(cluster)** steps, outside the first release's
 conformance (RFC 22 §18), Witness's row and a watch across shards among them (amendment A1; §6.2,
 point 13); the namespace-move
-rows of §6.3, which need RFC 27's move (out of scope); and the rows needing a Windows runner until
+rows of §6.3, which need RFC 27's move (out of scope); and the profile-container run, needing E15's Windows runner joined to the test domain, until
 one is provisioned (§6.2, point 8).
 
 **Test components.** The SMB handler harness, golden files from captures and the import test's
@@ -1233,7 +1233,8 @@ key, and one a later gap adds comes with its json tag under `adapters.smb`, its 
 filter, their `known.yaml` rewritten for v2 with each entry naming this plan's epic issue, RFC 22
 §18's "Tests expected to fail" listed by name, and each (cluster) row, `rpc.witness` among them,
 and each of plan gap 17's tests an entry with its reason. The user guide's SMB pages are the
-cutover's, as RFC 20's plan's ledger has them.
+cutover's, as RFC 20's plan's ledger has them. E15 provides the Windows runner CI runs
+`clients/windows` on, and owns that cell.
 
 Fixture fixes in `test/suites.yaml`, `test/smb-conformance/shares.yaml` and WPTS's `ptfconfig`
 templates come with the suites, since each leaves a test RFC 22 serves unrun, skipped as `env`
@@ -1606,10 +1607,10 @@ thread is named.
 7. **RFC 20's track C order** (RFC 20's plan, §3.4). This plan needs only its epic 6's SMB half;
    T6.1 and T6.3 before T6.2 and T6.4 bring S2 and S3 forward here, at no cost to NFS, which no plan
    builds on yet.
-8. **A Windows runner** (RFC 22 §18's suites paragraph). `clients/windows` and the
-   profile-container run need a Windows client with FSLogix joined to the test domain;
-   `integration/ad-dc` has the domain controller, but no Windows runner serves `feat/storage-v2`.
-   The rows that need one are parked until one does.
+8. **A Windows runner** (RFC 22 §18's suites paragraph). E15 provides the Windows runner CI runs
+   `clients/windows` on, and owns that cell. The profile-container run also needs a Windows client
+   with FSLogix joined to the test domain, which `integration/ad-dc`'s domain controller serves;
+   it stays parked until E15's runner is joined to it.
 9. **Copy, clone and snapshots below the service.** `Copy` and `Clone` answer unbuilt until RFC 17's
    plan's piece 11, which waits for the engine's journal-only part
    (`rfc-8-journal-only-engine-plan.md`), which builds both; `Snapshots` answers an empty list
@@ -1655,12 +1656,10 @@ thread is named.
    (RFC 20 Appendix B); it is re-tested against the specifications' vectors, since v1's tests ran
    on real stores.
 5. **The release goal against what this plan parks.** RFC 22 §18 wants every SMB suite green at
-   its expected failures when RFC 22 is done, and two rows of §6.5 stand against it, neither a
-   decision RFC 22 makes: `clients/windows`, parked until a Windows runner serves
-   `feat/storage-v2`, owner unowned; and T13.4's Previous Versions, parked until RFC 12's store
-   view, which leaves smbtorture's `smb2.twrp` tests and WPTS's `BVT_EnumerateSnapShots` failing.
-   Either each is brought back before E16 ends, or RFC 22 records the decision and the tests join
-   its list; this plan changes neither row. WPTS's `BVT_CBAC_CountryCodeEquals156Policy`, once the
+   its expected failures when RFC 22 is done. `clients/windows` meets it through E15, which
+   provides its Windows runner and owns the cell. T13.4's Previous Versions stays parked until
+   RFC 12's store view, and RFC 22 §15 now declines it until then, so smbtorture's `smb2.twrp`
+   tests and WPTS's `BVT_EnumerateSnapShots` are in RFC 22 §18's list. WPTS's `BVT_CBAC_CountryCodeEquals156Policy`, once the
    domain fixture runs it, needs claim-based ACL entries, which no RFC states either way.
 
 ### 6.4 RFC 20's ledger rows for SMB
@@ -1710,7 +1709,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 
 | Deferred | Why | Owner | Trigger |
 | --- | --- | --- | --- |
-| The rows that need a Windows runner: `clients/windows` and the profile-container run (§6.2, point 8) | no Windows runner serves `feat/storage-v2` | unowned: the test infrastructure's | a Windows runner joined to the test domain |
+| The profile-container run (§6.2, point 8) | it needs a Windows client with FSLogix joined to the test domain | unowned: the test infrastructure's | E15's Windows runner joined to the test domain |
 | §6.3's namespace-move rows, RFC 22 §18's move rows (§6.2, point 10) | a move between installations needs RFC 27's move | RFC 27's plan, not written yet | RFC 27's move is built |
 | A `Find` in `SET_INFO` minting a principal record before `SetACL` is authorised (A5): a `Find` that does not mint, or a `decision:` naming the directory's size as the ceiling | RFC 18 §4.1 mints on `Find`, and A5 keeps the call where the request needs it | the RFC 18 plan (#4058) | before T12.4's `SetACL` row |
 | Witness, RFC 22 §14 (amendment A1; §6.2, point 13) | **(cluster)**: one node has no other node to move a client to | the cluster stage | a share served by more than one node |

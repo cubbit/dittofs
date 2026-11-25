@@ -2257,6 +2257,11 @@ restore; here they are the share's read-only snapshots
   never takes a file in one snapshot for the same file in another, or in the
   live share.
 
+> decision: Previous Versions is not served until RFC 12's store view answers
+> `Snapshots`; until then the listing is empty and a token names no snapshot.
+> The cost: smbtorture's `smb2.twrp` tests and WPTS's `BVT_EnumerateSnapShots`
+> fail (§18). Serve it once the store view lands.
+
 ## 16. Translation
 
 The adapter translates and the core decides
@@ -3121,6 +3126,7 @@ that starts passing means the decision changed and this list is stale.
 | WPTS `BVT_SetGetIntegrityInfo` | integrity streams refused (§10, Appendix F) |
 | WPTS shared virtual disk tests (MS-RSVD), listed by name in the harness's known-failure list | shared virtual disks refused (§10, Appendix D) |
 | WPTS DFS referral tests (`BVT_RootAndLinkReferral*`, `BVT_*ToDC*`) | DFS referrals are a non-goal (§1.1) |
+| smbtorture `smb2.twrp` tests, WPTS `BVT_EnumerateSnapShots` | Previous Versions not served until RFC 12's store view (§15) |
 | WPTS shadow copy tests over MS-FSRVP (`BVT_VSS*`) | `IPC$` serves three RPC services, FSRVP not among them (§5.2) |
 
 A single-node run also expects Witness's tests to fail, WPTS `BVT_SWN*` and
