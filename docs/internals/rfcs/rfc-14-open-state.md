@@ -290,7 +290,8 @@ nothing the adapter refuses.
 
 **An SMB client record names a machine, not a user.** One Windows machine sends
 one name on every connection, and a multi-session host carries many users'
-sessions under it. The SMB record therefore holds no `Owner`: the first
+sessions under it. The SMB adapter therefore registers it with `Machine` set
+([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), and the record holds no `Owner`: the first
 authenticated session setup naming a known name finds its record whoever
 authenticates, and is never refused for its principal. A null or guest session
 never joins a client: it registers no record and is never one of a record's
@@ -456,7 +457,9 @@ NFSv4 is one kind whatever its minor version: a name confirmed under one minor
 version and proposed again under the other is a new `Boot`, a reboot, never
 the same instance, and the adapter keeps the minor version in `Adapter`
 ([RFC 21 §3.5](rfc-21-nfs.md#3.5%20Confirming%20a%20client)). NFSv3 holds no
-client record; its kind names a request's protocol (§11.3).
+client record; its kind keys the record's name and is compared by no rule: what
+a rule needs of a client it reads from a capability the caller states, its
+`Recovery` here and the request's fields at a call ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types), §11.3).
 
 ### 2.2 Open
 
@@ -540,7 +543,8 @@ node.
 **An open takes an `OpenID` only where one is needed.** Every open has a
 `Token`, which names it in the table and in its file's locks. An `OpenID` is
 issued (`NextID`) only to an open that something outside the table names
-across a reconnect or in a key: an SMB open, whose `FileId` carries it; a
+across a reconnect or in a key: an open whose request sets `WantOpenID`, as
+an SMB open's does, whose `FileId` carries it; a
 durable open, whose record is keyed by it (§8), so an NFS open made durable by
 an unlink takes one in that step (§9.1); and a clone's source open (§9.2). An
 NFS open is named by its stateid's token and takes none.
@@ -787,8 +791,9 @@ own, since a key travels in clear and joining makes an opener (§2.1). For one o
 the key's openers, a key already naming a grant on another file makes the open
 `ErrInvalid`, as MS-SMB2 answers `STATUS_INVALID_PARAMETER`, and a key naming an
 existing lease of the file joins it. The key is free again when its lease's last
-open closes. An oplock covers exactly the one open that asked for it. An NFS
-delegation is held by the client and covers none of its opens: it ends by
+open closes. An oplock, a grant whose request sets `GrantPerOpen` and names no key,
+covers exactly the one open that asked for it. An NFS
+delegation, a grant asked with neither, is held by the client and covers none of its opens: it ends by
 return or recall, not by close.
 
 > decision: a key is the first opener's, refusing only the grant to anyone
@@ -1432,7 +1437,9 @@ errors; every mapping from a protocol to them, and back, is its adapter's
 ### 4.1 A client lease
 
 A **client lease** is how long the server keeps a client's state while the
-client is silent. Every request from the client renews it (`Renew`); a client
+client is silent. A client holds one when its `Recovery` (§4.4) is status or
+refusal, the kinds whose client keeps calling, as NFSv4's do; one that
+recovers by reconnect or by notice holds none. Every request from the client renews it (`Renew`); a client
 with nothing to do sends an empty renewal. A client silent for a whole lease
 period is treated as gone. Without that, a laptop that sleeps holding a lock
 blocks every other client forever. An SMB-durable open's `Timeout` plays the
@@ -1530,7 +1537,8 @@ it, it **MUST** refuse every request for open state that is not a reclaim — a
 new lock, a new open, a deny mode, a grant — whether or not it appears to
 conflict: the state it would be checked against is what was lost, so a conflict
 cannot be decided. For the same reason, in a shard whose records name any
-client that can reclaim a deny mode or a mandatory lock (an NFSv4 client), it
+client that can reclaim a deny mode or a mandatory lock (one whose `Recovery`
+is status or refusal, as an NFSv4 client's is), it
 **MUST** refuse, with `ErrGrace`, every
 read or write through an anonymous or unreclaimed open; without that, an NFSv3
 write lands in an extent a client is about to reclaim a lock on. An SMB client
@@ -1858,8 +1866,9 @@ rather than by open so that two opens by one client do not break each other.
 | handle | keep the file open after the application closes it, so a reopen is local | yes |
 
 An NFS read delegation is a read grant; an NFS write delegation is read and
-write. Neither is ever a handle grant, which only SMB offers: a delegation
-already lets its holder open the file locally, and it ends by recall or
+write. Neither is ever a handle grant: a grant asked with no lease key and
+without `GrantPerOpen` is the client's, and the table offers it no handle
+caching, which only SMB asks. A delegation already lets its holder open the file locally, and it ends by recall or
 return, not by close. SMB leases combine the three freely.
 
 ### 5.2 A recall, and why nothing is merged
@@ -2339,6 +2348,8 @@ its create request; the protocol's rules and their reasons are
 | durable (SMB-durable, v1 and v2) | a disconnect, for `Timeout`; a handover. Not a restart or failover of its primary: a reconnect after one finds no open | the primary's table |
 | persistent | a disconnect, for `Timeout`; a handover; a restart or failover of its primary | an `OpenRecord` ([§8](#8.%20What%20is%20durable)), with its locks and its lease |
 
+An open asking durable or persistent is refused `ErrInvalid` without a
+`Timeout`, or without `WantOpenID`: a reconnect finds the open by its `OpenID`.
 A persistent open of a named stream is refused `ErrInvalid`: its record would
 name the stream, not the base file whose table a new primary installs it into.
 The adapter asks such an open durable instead
@@ -2673,7 +2684,8 @@ run it.
 ### 9.5 Open children refuse an SMB rename or delete of their directory
 
 SMB refuses to rename a directory, or to delete it, while a file below it is
-open. A rename or delete of a directory that comes from SMB therefore checks the
+open. A rename or delete of a directory by a caller that sets
+`OpenFilesKeepNames` ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), as every SMB call does, therefore checks the
 opens whose `Via` — the directory the open was made through — is that
 directory. Each primary keeps, in memory, a count of its opens per `Via`,
 changed by every open and close; the check is one lookup. A child that starts
@@ -3007,15 +3019,18 @@ func (t *Table) Checks() Checks
 ```
 
 **Every call names its caller.** `Caller` is the client a call acts for, the
-principal it runs as, mapped before squashing (§2.1), and the protocol of the
-request; the primary refuses, with `ErrNotYours`, a call naming state its client
+principal it runs as, mapped before squashing (§2.1), and the capabilities
+it states; the primary refuses, with `ErrNotYours`, a call naming state its client
 does not hold, or through an open by a principal that is neither the opener nor,
 with `Protect`, the client's `Owner`, or state created on a session when the
-call has none (§2.2). `Protocol` is set on every call, NFSv3's
-included, and is what a rule that differs by protocol reads: `CheckChange`
-applies §7's deny-delete refusal to an NFS caller and §9.5's open-children
-refusal to an SMB one. It is never looked up from the client record: NFSv3 has
-no client, and in a cluster the file's primary holds no client records.
+call has none (§2.2). No rule reads the caller's protocol: one that differs
+between clients reads a capability the caller states. `OpenFilesKeepNames` is
+the caller's: `CheckChange` applies §7's deny-delete refusal to every caller,
+and to one that sets it, as every SMB call does, also §9.5's open-children
+refusal and refuses a rename over a file another open holds, as Windows does.
+The rest are the request's own fields (`WantOpenID`, `GrantPerOpen`, `Lease`,
+`Durability`). None is looked up from the client record: NFSv3 has no client,
+and in a cluster the file's primary holds no client records.
 
 **Every call on a file names it by `FileKey`.** The share and shard come with
 the file, so a call that may mint a reference — an open, a lock, a watch, a
@@ -3030,10 +3045,10 @@ with its shard left zero is refused, never passed.
 
 ```go
 type Caller struct {
-	Client    ClientID      // as the adapter proved it for the call (§2.2); for NLM the host's client record; zero for an NFSv3 call that names no lock
-	Principal Principal     // mapped, never squashed
-	Protocol  protocol.Kind // the request's protocol (§2.1), set on every call
-	Sessioned bool          // the call has a session (RFC 17's Call.Session set); false: refused state created on one (§2.2)
+	Client             ClientID  // as the adapter proved it for the call (§2.2); for NLM the host's client record; zero for an NFSv3 call that names no lock
+	Principal          Principal // mapped, never squashed
+	Sessioned          bool      // the call has a session (RFC 17's Call.Session set); false: refused state created on one (§2.2)
+	OpenFilesKeepNames bool      // a name in use keeps it: CheckChange adds §9.5's refusal and refuses a rename over an open file; SMB sets it (RFC 17 §3.0)
 }
 
 // FileKey names the file a call acts on.
@@ -3108,7 +3123,7 @@ type Recovery interface {
 
 type Checks interface {
 	CheckIO(ctx, who Caller, f FileKey, o OpenRef, r ByteRange, want entity.AccessMask) error // want: ReadData for a read, WriteData for a write starting below the file's size, AppendData for one starting at or past it, which WriteData also admits (§2.2); f: the file o's handle names; its Shard, not o's, decides grace and anonymous I/O
-	CheckChange(ctx, who Caller, f FileKey, via *OpenRef, what ChangeMask) error // recalls grants and never waits; via: the open it came through, nil: none (§2.4); who.Protocol picks §7's or §9.5's rule
+	CheckChange(ctx, who Caller, f FileKey, via *OpenRef, what ChangeMask) error // recalls grants and never waits; via: the open it came through, nil: none (§2.4); who.OpenFilesKeepNames adds §9.5's rule to §7's
 }
 ```
 
@@ -3133,6 +3148,8 @@ type OpenRequest struct {
 	Parent        LeaseKey      // a v2 lease request's parent key, kept with a new lease (CachingGrant.Parent); zero: none
 	SetID         bool          // the file's mode has setuid or setgid, as the service read it: no write caching (§5.4)
 	Want          GrantKind     // the grant kind asked for
+	GrantPerOpen  bool          // a grant asked with no Lease key is this open's own, an oplock; false: the client's, a delegation, never a handle grant (§2.4, §5.1)
+	WantOpenID    bool          // the open is issued an OpenID that names it from then on, as an SMB FileId does; false: named by its token (§2.2)
 	MaxRead       bool          // the caller's maximal access to the file includes read (§8.1's app instance)
 	Reclaim       bool
 	Replay        bool          // a create marked as a replay: one naming its client's open by Durable.Create answers that open (§8.1)
