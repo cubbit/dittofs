@@ -765,8 +765,9 @@ func TestCheckDataJournal(t *testing.T) {
 }
 
 // TestCheckRefusalOrder pins which refusal is reported when several rules
-// fail at once: the first in the order mount options, subvolume root,
-// directory attribute, files. Only that one is reported.
+// fail at once: the first in the order kernel release, mount-table barrier
+// options, effective-options barrier, data=journal, subvolume root,
+// directory attribute, file attribute. Only that one is reported.
 func TestCheckRefusalOrder(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 

@@ -164,17 +164,20 @@ var (
 
 // CheckDir decides whether dir is suitable for a journal. It returns an
 // error matching core.ErrUnsuitableStorage for the first rule of the
-// platform profile a directory refuses — a mount without cache flushes, a
-// Btrfs directory that is not a subvolume root or keeps copy-on-write —
-// with its message naming the rule, the directory and what to change; any
+// platform profile a directory refuses: on Linux a kernel older than 4.13, a
+// mount without cache flushes, ext4 data journaling (the data=journal mode
+// or the journal-data attribute on the directory or a file), a Btrfs
+// directory that is not a subvolume root, and a Btrfs directory or file
+// keeping copy-on-write; on Windows a volume with write-cache buffer
+// flushing turned off by policy — with its message naming the rule, the directory and what to change; any
 // other error as itself, which says nothing about whether the directory is
 // suitable; and nil for a suitable one.
 //
 // The verdict runs on gathered inputs, so it builds on every platform.
 // gather, when not nil, is what reads those inputs for the check; nil takes
-// the platform's own check, the real probe on Linux and none where the
-// profile names no rule the platform can read, whose answer accepts every
-// directory. A gather's error is returned as itself, never as a refusal.
+// the platform's own check: the real probe on Linux, the volume's cache
+// policy on Windows, and on darwin none, whose answer accepts every
+// directory since the profile names no rule it can read. A gather's error is returned as itself, never as a refusal.
 func CheckDir(dir string, gather storage.Gather) error {
 	if gather == nil {
 		return checkDirOS(dir)
@@ -226,8 +229,9 @@ var barrierRows = [...]struct {
 
 // CheckProbe decides whether the directory p describes is suitable for a
 // journal under RFC 28 Appendix A. It returns a *refusal for the first rule
-// that fails, in the order kernel release, mount options, ext effective
-// options, subvolume root, directory attribute, files; errDirectoryNotClean
+// that fails, in the order kernel release, mount-table barrier options,
+// effective-options barrier, data=journal, subvolume root, directory
+// attribute, file attribute; errDirectoryNotClean
 // or one of the errMount errors when the inputs do not describe the
 // directory; and nil otherwise. A filesystem outside the listed ones, on a
 // mount line of a type outside them too, is not refused — though the kernel

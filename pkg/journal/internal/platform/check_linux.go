@@ -159,7 +159,11 @@ func probeDir(c calls, mountinfo, dir string) (storage.Probe, error) {
 // files are read on every ext mount, where the journal-data attribute is one
 // file's to set, and on a Btrfs subvolume root, the one place the copy-on-
 // write attribute is read; on every other filesystem the verdict passes them,
-// and asking there would fail a directory it accepts.
+// and asking there would fail a directory it accepts. The listing and the
+// per-file ioctls now run on ext, so errEntryLink (a symbolic link in the
+// directory) and errEntryTypeUnknown (DT_UNKNOWN, which ext2 and ext3 without
+// the filetype feature return for every entry) fail the check on an ext
+// journal directory where they were never read: closed on what it cannot read.
 //
 // An open interrupted by a signal is made again, as SyncDir and os.OpenFile
 // make it. Every other call is made once: an interrupted fstatfs, fstat,
