@@ -413,7 +413,8 @@ func TestPassBudgetStops(t *testing.T) {
 // Copy to move, so the unit's whole output is the carry's record, and the
 // bytes the pass appends — RepackedBytes — must count it. A pass that reports
 // no bytes for such a unit never reaches its budget and re-selects the
-// segments its own carries seal, chasing itself forever.
+// segments its own carries seal, chasing itself forever. The source retires
+// in-run: its record and the carried copy hold neither segment.
 func TestPassBudgetCountsCarriedRecords(t *testing.T) {
 	p := newPassFixture(t)
 	file := copyFile(1)
@@ -433,6 +434,29 @@ func TestPassBudgetCountsCarriedRecords(t *testing.T) {
 	gain := p.f.core.Stats().Counters.RepackedBytes - before
 	if gain == 0 {
 		t.Fatalf("RepackedBytes gained %d, want the carried removal record's bytes > 0: a contentless source otherwise reports no copied bytes and its pass never reaches a budget", gain)
+	}
+	if !p.setGone(seg) {
+		t.Fatal("the carried record's source is still in the set, want its unit to retire it in-run: its record and the carried copy hold neither segment and the copy owns the record's wait")
+	}
+}
+
+// TestRemovalAppendsMintFreshPairs pins the pair rule's trust where the test
+// can reach it: two removals for one file and extent appended apart through
+// the journal's own removal path register under different number pairs, so
+// the two placements never share a record identity and the stay's pairing
+// cannot read one as the other's copy. An append path that minted a record
+// under numbers an earlier removal already used would pair every segment
+// holding the later one with the earlier one's placement and wrongly unhold
+// it before any copy of its own is durable.
+func TestRemovalAppendsMintFreshPairs(t *testing.T) {
+	p := newPassFixture(t)
+	file := copyFile(31)
+	first, _, _, _ := p.f.plantRemoval(t, copyTag, file, format.KindTruncate, core.ChangeTruncate,
+		core.Extent{Off: 1 << 20}, core.Extent{Off: 1 << 20, Len: math.MaxInt64 - 1<<20}, false)
+	second, _, _, _ := p.f.plantRemoval(t, copyTag, file, format.KindTruncate, core.ChangeTruncate,
+		core.Extent{Off: 1 << 20}, core.Extent{Off: 1 << 20, Len: math.MaxInt64 - 1<<20}, false)
+	if second.Pair.Compare(first.Pair) == 0 {
+		t.Fatalf("the second removal's numbers = %v, want a fresh pair distinct from the first's %v: two journal-path placements of one identity would let the stay pair one as the other's copy", second.Pair, first.Pair)
 	}
 }
 
@@ -492,12 +516,13 @@ func TestPassACarriedRecordHoldsNeitherSegment(t *testing.T) {
 // TestPassBudgetStopsAtCarriedRecords runs a pass of budget one byte over two
 // sealed sources beside each other: the least-live one holds only a
 // registered, unsettled removal record — no content exists for Copy to move,
-// so its unit's whole output is the record the carry places, and the source
-// stays held by its record's original registration — and the other holds a
-// plain write. The carried record's bytes reach the budget, so the pass stops
-// after the first unit: the content source is left standing, un-repacked and
-// unretired. A pass whose carried records report no bytes never reaches a
-// budget smaller than a record and runs unit after unit.
+// so its unit's whole output is the record the carry places, and the record
+// and its carried copy hold neither segment, so the source retires in-run —
+// and the other holds a plain write. The carried record's bytes reach the
+// budget, so the pass stops after the first unit: the content source is left
+// standing, un-repacked and unretired. A pass whose carried records report
+// no bytes never reaches a budget smaller than a record and runs unit after
+// unit.
 func TestPassBudgetStopsAtCarriedRecords(t *testing.T) {
 	p := newPassFixture(t)
 	fa, fb := passFilesOnDistinctStreams(p.f)
@@ -523,6 +548,9 @@ func TestPassBudgetStopsAtCarriedRecords(t *testing.T) {
 	}
 	if p.setGone(content) {
 		t.Fatal("the content source left the set too, want the carried record's bytes to reach the budget and stop the pass before its unit ever starts")
+	}
+	if !p.setGone(bare) {
+		t.Fatal("the carried record's source is still in the set, want its unit to retire it in-run: its record and the carried copy hold neither segment and the copy owns the record's wait")
 	}
 }
 
