@@ -3109,8 +3109,9 @@ against Windows or only against Samba (WPTS
 WPTS runs on, stays skipped after the domain join), one that needs a hook only Samba's
 server has (a test-only control code, a file-system module, a clustered
 database), or an smbfuzz divergence where the reference server departs from
-MS-SMB2 or MS-FSA. It stays in its suite's known-failure file as `proto` or
-`permanent`, `wontfix`, with that reason
+MS-SMB2 or MS-FSA. It stays in its suite's known-failure file as `proto`,
+`permanent`, or `env` when only the computer the tool runs on lacks what it
+needs, `wontfix`, with that reason
 ([RFC 29 §4.7](rfc-29-test-harness.md#4.7%20Grading%3A%20known%20failures%2C%20expected%20skips%2C%20quarantine%2C%20retries)).
 
 **Tests expected to fail.** The suites' tests that the decisions of this RFC
