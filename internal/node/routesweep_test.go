@@ -476,9 +476,12 @@ func keytabOf(t *testing.T, name string) []byte {
 // refusal it waits on (sweepApplied). Catches a change with no record.
 //
 // decision: three groups of routes wait rather than apply. A setting's
-// write and delete at every scope, an adapter's write, a store's create, a
-// namespace's create and a store credential's delete are refused by the
-// node's settings table, which holds no section that reads their keys yet; a
+// write and delete at a node's, a namespace's, a store's and a share's
+// scope, an adapter's write, a store's create and update, a namespace's
+// create and a store credential's delete are refused by the node's settings
+// table, which holds no section at those scopes, nor the adapters', the
+// remote store's or the namespace's: each is declared by the plan of the
+// component that reads it, and the route applies here once it is; a
 // store's first credential is refused by the store's capability check, not
 // built; :cancel has no success answer while no operation kind is
 // cancellable. Each waits as a refused write, so the row fails the day its
@@ -618,9 +621,14 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 		store := "/api/v1/stores/" + uuid.UUID(storeA).String()
 		setting := func(scope string) string { return scope + "/settings/" + sweepSetting }
 		putSetting := json.RawMessage(`{"spec":{"value":"weekly"}}`)
+		// The installation's audit.retention, a key the node's table
+		// declares, written and deleted at the installation's scope.
+		retention := "/api/v1/settings/audit.retention"
+		ap.do(wiredWrite{by: a, route: "PUT /api/v1/settings/{sub}", path: retention, body: json.RawMessage(`{"spec":{"value":"2880h"}}`), hdr: create})
+		ap.do(wiredWrite{by: a, route: "DELETE /api/v1/settings/{sub}", path: retention, hdr: match(retention, idemKey()...)})
 		var waits []waitingWrite
 		for _, sc := range []struct{ route, scope string }{
-			{"/api/v1", "/api/v1"}, {"/api/v1/nodes/{id}", node}, {"/api/v1/namespaces/{id}", "/api/v1/namespaces/" + f.namespace},
+			{"/api/v1/nodes/{id}", node}, {"/api/v1/namespaces/{id}", "/api/v1/namespaces/" + f.namespace},
 			{"/api/v1/stores/{id}", store}, {"/api/v1/shares/{id}", "/api/v1/shares/" + f.share},
 		} {
 			path := setting(sc.scope)

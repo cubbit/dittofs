@@ -464,6 +464,45 @@ PR 4 can be open beside any other. A suggestion only: one pull request per subta
     clause runs where the host routes that address to loopback (Linux; macOS with an `lo0` alias).
   - R6 holds, but the node's API stays open past §2.2's step 3: Stop closes its listeners after the
     engine. #5469 owns that.
+- T7.5 as built differs from its text in these places.
+  - X3 hands the node's table to the write path, but the table holds only the `api`, `audit`,
+    `identity` and `identity.directory` sections, all at the installation's scope. The sections
+    the success paths need are other plans' to declare: the adapters' (RFC 20's plan, epic 7's
+    T7.6), the remote store's `remote.*` (RFC 4's section, RFC 13's Appendix B) and the
+    namespace's, and every section at a node's, a namespace's, a store's or a share's scope (the
+    sweep's `gc.schedule` is RFC 9's). Until they are, `store create`, `store update`, a store
+    credential's delete, `namespace create`, `adapter set` and a setting's write and delete at
+    those scopes still answer `400` `unknown_key`, and wait in `sweepApplied` as before; a store's
+    first credential still waits on the capability check. Only a setting's write and delete at the
+    installation's scope moved into the applied writes, as `audit.retention`. E6's refusal rows
+    for them stay, and D3's seeding through the store stays in the fixture and in T7.3's rows,
+    with its `decision:` marker now naming the missing sections rather than X3. So this
+    subtask's acceptance criterion "no fixture or row seeds through the store" is not met; it is
+    met when those sections land, and the issue stays open until then.
+  - R17, R18 and R21 run through the API over sections the test declares (`node.DeclareSections`)
+    in place of the components that will declare them: a live level per share, a node's live and
+    restart-class keys, and a remote store's live and bound keys. A write the node itself must
+    not apply yet (R18's frozen change, R17's change while reads fail) goes through the store, as
+    another node's would, since the API's write waits for its own node to apply it.
+  - R17 faults the node's scans of the settings rows, not every read: with the counters' read
+    failing too, no pass gets far enough to lose a generation. The change is shown applied by the
+    node's snapshot as well as the API's count, since a position moved past a walk that failed
+    still reads applied there.
+  - R18's node-scoped restart-class setting is read not applied before a restart, and held
+    restart-pending, not refused, in the node's status; the restart itself is not driven, as
+    `nodetest`'s wired node is not restarted in place. R18's case of a record whose own
+    generation is 2 while the counter stands at 100 cannot be posed: the store raises a record's
+    generation to at least the position its change raised. "Applied" inferred from the writing
+    node needs a second node. Both are left to the multi-node rows.
+  - The rows landed in `internal/node/settingrows_test.go` beside `integration_test.go`, not in it.
+    R18 freezes the node by the reconcile-read hook `NewPausing` sets (as T7.3's R10 row does),
+    not by a `FaultKV` hold on the binding's commit (D5): the setting changed is a share's, and
+    its apply is the settings walk, which binds nothing.
+  - R19's refusal after a failed deletion names no operation, as the API's rule cannot list one
+    inside its transaction; the row checks the code and leaves the name to that rule's
+    `ponytail:`.
+  - R20's `api.password_sign_in` is refused `unknown_key`, not `forbidden`: the `api` section
+    declares it with OpenID Connect's sign-in policy, a row of the deferral ledger.
 - T7.6 as built differs from its text in these places.
   - Its directory rows run on RFC 18's machine node (`newMachine` in `machine_test.go`), which
     builds through `NewWithDialers` over `identitytest`'s directory and domain controller, seeds

@@ -141,7 +141,9 @@ func (s *Server) initialise(ctx context.Context) error {
 // before the node opens it, with one setting at its remote store's scope.
 //
 // decision: the namespace is written through the store, not the API, which
-// refuses a namespace's write until the settings table is wired. A namespace
+// refuses a namespace's create and a remote store's while the node's settings
+// table declares neither the namespace's section nor the remote store's;
+// each is declared by the component that reads it. A namespace
 // must name a remote store, and the node's reconcile refuses a share whose
 // namespace's store holds no setting at its scope, so the store gets an
 // endpoint that nothing dials, as a memory profile reads no block from it.
@@ -426,7 +428,7 @@ func applied(st apiv1.ShareStatus) bool {
 // one is created on the same namespace, which races that deletion once the
 // share holds files. A fixture must therefore serve no files through a reset
 // share until a share's deletion ends, and each reset then gets a namespace
-// of its own, through the API once the settings table is wired.
+// of its own, through the API once the table declares a namespace's section.
 func (s *Server) Reset(ctx context.Context, name string) error {
 	id, ok := s.shareIDs[name]
 	if !ok {
