@@ -77,6 +77,23 @@ func adapterOf(dir string) string {
 	return ""
 }
 
+// harnessOf names the protocol whose handler harness or scripted client the
+// package at dir is, adaptertest/<protocol>harness or
+// adaptertest/<protocol>client and the packages below it; "" for any other.
+func harnessOf(dir string) string {
+	rest, ok := strings.CutPrefix(dir, "internal/adapter/adaptertest/")
+	if !ok {
+		return ""
+	}
+	name, _, _ := strings.Cut(rest, "/")
+	for _, suffix := range []string{"harness", "client"} {
+		if proto, ok := strings.CutSuffix(name, suffix); ok && proto != "" {
+			return proto
+		}
+	}
+	return ""
+}
+
 // forbidden says why the file named file in dir may not import imp, or ""
 // when it may.
 func forbidden(dir, file, imp string) string {
@@ -164,6 +181,19 @@ func forbiddenToAnAdapter(dir, name string, test bool, imp string) string {
 	case under(p, "internal/adapter/"+name), p == "internal/adapter/core" && !under(dir, "pkg"):
 		return ""
 	case under(p, "internal/adapter"):
+		// decision: a protocol's harness or scripted client,
+		// adaptertest/<protocol>harness or adaptertest/<protocol>client, may
+		// import that protocol's packages and no other's, since it decodes
+		// and lays out that protocol's messages for its tests. It is
+		// test-only: the rule above already refuses adaptertest to a non-test
+		// file outside it, so no serving package reaches a protocol through
+		// it. Withdraw it if a serving package ever imports one.
+		if proto := harnessOf(dir); proto != "" {
+			if under(p, "internal/adapter/"+proto) {
+				return ""
+			}
+			return "a protocol's harness or scripted client imports only its own protocol's packages"
+		}
 		if name == "core" {
 			return "core imports no protocol"
 		}
@@ -385,6 +415,7 @@ func TestImportCheckReportsEachSeededViolation(t *testing.T) {
 	want := []string{
 		"internal/adapter/auth/doc.go: a package at internal/adapter/auth, a path the first adapters used",
 		"internal/adapter/common/doc.go: a package at internal/adapter/common, a path the first adapters used",
+		"internal/adapter/adaptertest/nfsharness/smb.go: imports github.com/cubbit/dittofs/internal/adapter/smb/wire: a protocol's harness or scripted client imports only its own protocol's packages",
 		"internal/adapter/core/metadata.go: imports github.com/cubbit/dittofs/pkg/metadata: an adapter imports, of the module, only pkg/vfs, pkg/adapter, pkg/adapter/settings, pkg/resources, pkg/metrics, internal/tlsconfig, core and its own packages",
 		"internal/adapter/core/protocol.go: imports github.com/cubbit/dittofs/internal/adapter/nfs: core imports no protocol",
 		"internal/adapter/core/protocol_test.go: imports github.com/cubbit/dittofs/internal/adapter/nfs: core imports no protocol",
