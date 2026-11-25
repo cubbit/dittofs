@@ -353,8 +353,9 @@ func generationsHeld(t *testing.T, d wiredWrite, rec apiv1.AuditRecord) {
 // record, applied or naming the operation it started, with the generations
 // its call saw and no secret value it carried. Each waiting write is sent as
 // the admin, which holds every right, and must still answer the refusal it
-// waits on, audited once: once the route can succeed here, this fails, and
-// the route moves into the applied writes.
+// waits on, audited once and holding no secret value it carried: once the
+// route can succeed here, this fails, and the route moves into the applied
+// writes.
 func sweepApplied(t *testing.T, w *wired, done []wiredWrite, waits []waitingWrite) {
 	t.Helper()
 	routes := map[string]int{}
@@ -411,6 +412,7 @@ func sweepApplied(t *testing.T, w *wired, done []wiredWrite, waits []waitingWrit
 		if len(got) != 1 || got[0].Outcome != "refused: "+string(c.code) {
 			t.Errorf("%s %s, refused: %d audit records %+v, want one refused %s", method, c.path, len(got), got, c.code)
 		}
+		noSecret(t, method+" "+c.path, got, c.secrets)
 	}
 	for _, d := range done {
 		method, _, _ := strings.Cut(d.route, " ")
@@ -430,14 +432,28 @@ func sweepApplied(t *testing.T, w *wired, done []wiredWrite, waits []waitingWrit
 				t.Errorf("%s %s: outcome %q, want applied or the operation it started", method, d.path, rec.Outcome)
 			}
 			generationsHeld(t, d, rec)
-			raw, _ := json.Marshal(rec)
-			for _, s := range d.secrets {
-				if strings.Contains(string(raw), s) {
-					t.Errorf("%s %s: its audit record holds a secret value the call carried: %s", method, d.path, raw)
-				}
+		}
+		noSecret(t, method+" "+d.path, got, d.secrets)
+	}
+}
+
+// noSecret fails if any of recs holds one of secrets.
+func noSecret(t *testing.T, what string, recs []apiv1.AuditRecord, secrets []string) {
+	t.Helper()
+	for _, rec := range recs {
+		raw, _ := json.Marshal(rec)
+		for _, s := range secrets {
+			if strings.Contains(string(raw), s) {
+				t.Errorf("%s: its audit record holds a secret value the call carried: %s", what, raw)
 			}
 		}
 	}
+}
+
+// secretForms is a credential's value v raw and as base64, the form its
+// call's JSON body carries it in.
+func secretForms(v string) []string {
+	return []string{v, base64.StdEncoding.EncodeToString([]byte(v))}
 }
 
 func waitsOf(waits []waitingWrite) []wiredWrite {
@@ -476,9 +492,12 @@ func keytabOf(t *testing.T, name string) []byte {
 // refusal it waits on (sweepApplied). Catches a change with no record.
 //
 // decision: three groups of routes wait rather than apply. A setting's
-// write and delete at every scope, an adapter's write, a store's create, a
-// namespace's create and a store credential's delete are refused by the
-// node's settings table, which holds no section that reads their keys yet; a
+// write and delete at a node's, a namespace's, a store's and a share's
+// scope, an adapter's write, a store's create and update, a namespace's
+// create and a store credential's delete are refused by the node's settings
+// table, which holds no section at those scopes, nor the adapters', the
+// remote store's or the namespace's: each is declared by the plan of the
+// component that reads it, and the route applies here once it is; a
 // store's first credential is refused by the store's capability check, not
 // built; :cancel has no success answer while no operation kind is
 // cancellable. Each waits as a refused write, so the row fails the day its
@@ -584,7 +603,7 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 		ap.do(wiredWrite{by: a, route: "POST /api/v1/installation:rotate-signing-key", path: "/api/v1/installation:rotate-signing-key", hdr: idemKey()})
 		ap.do(wiredWrite{by: a, route: "POST /api/v1/installation:test-directory", path: "/api/v1/installation:test-directory", hdr: idemKey()})
 		ap.do(wiredWrite{by: a, route: "POST /api/v1/installation:resolve-principal", path: "/api/v1/installation:resolve-principal", body: apiv1.ResolvePrincipalParams{Name: "bob@AD.EXAMPLE"}, hdr: idemKey()})
-		ap.do(wiredWrite{by: a, route: "POST /api/v1/installation:join-domain", path: "/api/v1/installation:join-domain", secrets: []string{joinPassword, base64.StdEncoding.EncodeToString([]byte(joinPassword))},
+		ap.do(wiredWrite{by: a, route: "POST /api/v1/installation:join-domain", path: "/api/v1/installation:join-domain", secrets: secretForms(joinPassword),
 			body: apiv1.JoinDomain{Spec: apiv1.JoinDomainSpec{Mode: apiv1.JoinOnline}, Credential: apiv1.JoinCredential{User: "Administrator@AD.EXAMPLE", Password: []byte(joinPassword)}}})
 		// The keytab is a secret: its bytes, raw or as the body carries them,
 		// reach no audit record, no answer and no log line.
@@ -618,9 +637,14 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 		store := "/api/v1/stores/" + uuid.UUID(storeA).String()
 		setting := func(scope string) string { return scope + "/settings/" + sweepSetting }
 		putSetting := json.RawMessage(`{"spec":{"value":"weekly"}}`)
+		// The installation's audit.retention, a key the node's table
+		// declares, written and deleted at the installation's scope.
+		retention := "/api/v1/settings/audit.retention"
+		ap.do(wiredWrite{by: a, route: "PUT /api/v1/settings/{sub}", path: retention, body: json.RawMessage(`{"spec":{"value":"2880h"}}`), hdr: create})
+		ap.do(wiredWrite{by: a, route: "DELETE /api/v1/settings/{sub}", path: retention, hdr: match(retention, idemKey()...)})
 		var waits []waitingWrite
 		for _, sc := range []struct{ route, scope string }{
-			{"/api/v1", "/api/v1"}, {"/api/v1/nodes/{id}", node}, {"/api/v1/namespaces/{id}", "/api/v1/namespaces/" + f.namespace},
+			{"/api/v1/nodes/{id}", node}, {"/api/v1/namespaces/{id}", "/api/v1/namespaces/" + f.namespace},
 			{"/api/v1/stores/{id}", store}, {"/api/v1/shares/{id}", "/api/v1/shares/" + f.share},
 		} {
 			path := setting(sc.scope)
@@ -638,11 +662,11 @@ func TestWiredEveryWriteAudited(t *testing.T) {
 			// keeps no idempotency record (RFC 23 §4.5).
 			waitingWrite{wiredWrite: wiredWrite{route: "POST /api/v1/stores", path: "/api/v1/stores", body: map[string]any{"spec": apiv1.StoreSpec{
 				Settings:   map[string]json.RawMessage{"remote.endpoint": json.RawMessage(`"https://s3.example"`), "remote.bucket": json.RawMessage(`"b"`)},
-				Credential: &apiv1.StoreCredential{Value: []byte("a store's secret key")}}}},
+				Credential: &apiv1.StoreCredential{Value: []byte("a store's secret key")}}}, secrets: secretForms("a store's secret key")},
 				status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
 			waitingWrite{wiredWrite: wiredWrite{route: "PATCH /api/v1/stores/{id}", path: store, body: json.RawMessage(`{"spec":{"settings":{"remote.region":"eu"}}}`), hdr: match(store)},
 				status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
-			waitingWrite{wiredWrite: wiredWrite{route: "PUT /api/v1/stores/{id}/credential", path: bare + "/credential", body: map[string]any{"spec": apiv1.CredentialSpec{Value: []byte("a new credential")}}, hdr: []string{"If-None-Match", "*"}},
+			waitingWrite{wiredWrite: wiredWrite{route: "PUT /api/v1/stores/{id}/credential", path: bare + "/credential", body: map[string]any{"spec": apiv1.CredentialSpec{Value: []byte("a new credential")}}, hdr: []string{"If-None-Match", "*"}, secrets: secretForms("a new credential")},
 				status: http.StatusConflict, code: "unproven", why: "the store's capability check"},
 			waitingWrite{wiredWrite: wiredWrite{route: "DELETE /api/v1/stores/{id}/credential", path: cred, hdr: append([]string{"If-Match", `"1"`}, idemKey()...)}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},
 			waitingWrite{wiredWrite: wiredWrite{route: "POST /api/v1/namespaces", path: "/api/v1/namespaces", body: json.RawMessage(`{"spec":{"store":"` + uuid.UUID(storeA).String() + `","settings":{"namespace.prefix":"p/"}}}`), hdr: idemKey()}, status: http.StatusBadRequest, code: "unknown_key", why: "the settings table"},

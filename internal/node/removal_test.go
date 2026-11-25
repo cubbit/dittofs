@@ -185,7 +185,7 @@ func TestAShareDeletedWhileServingEndsItsLiveState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect a client: %v", err)
 	}
-	who := openstate.Caller{Client: client, Principal: anAdmin.Principal, Protocol: entity.ProtocolNFSv4}
+	who := openstate.Caller{Client: client, Principal: anAdmin.Principal}
 	res, err := tab.Opens().Open(ctx, who, openstate.FileKey{Share: sh.ID, Shard: openstate.ShardID(file.Shard), ID: file.ID},
 		openstate.OpenRequest{Via: sh.Root, Name: []byte("f2"), Access: entity.ReadData})
 	if err != nil {

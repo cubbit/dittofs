@@ -52,7 +52,7 @@ func newFix(t *testing.T) *fix {
 	const passphrase = "install test passphrase"
 	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", passphrase)
 	root := t.TempDir()
-	b, err := keyprovider.GenerateKeyFile(passphrase)
+	b, err := keyprovider.GenerateWeakKeyFile(passphrase)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -24,7 +24,11 @@ import (
 // over the destination's prior content; and a clone whose reservation the
 // destination's journal refuses fails before its journal step, the
 // destination reading its prior content and both extents writable again,
-// their registrations undone.
+// their registrations undone. The half left: the refused reservation is
+// checked here for its refusal, retry-later or no space, and for what follows
+// it; that it answers retry-later is TestRFC8A_CloneRetryLaterAtTheDestinationLimit's,
+// which waits on the offload part, whose put-healthy store behind dirty bytes
+// RFC 8 §10.2 asks for.
 func TestRFC8A_Clone(t *testing.T) {
 	f := enginetest.New(t)
 	ctx := t.Context()
@@ -81,8 +85,10 @@ func TestRFC8A_Clone(t *testing.T) {
 	}
 	err := f.E.Clone(ctx, f.Share.ID, src, second.ID, full, vfserr.Extent{Len: n})
 	var d *vfserr.Delay
-	if !errors.As(err, &d) || d.Cause != vfserr.DelayCapacity {
-		t.Fatalf("a clone its destination's journal cannot reserve: %v, want ErrDelay(DelayCapacity)", err)
+
+	retryLater := errors.As(err, &d) && d.Cause == vfserr.DelayCapacity
+	if !retryLater && !errors.Is(err, vfserr.ErrNoSpace) {
+		t.Fatalf("a clone its destination's journal cannot reserve: %v, want it refused", err)
 	}
 	got := make([]byte, len(prior))
 	if _, err := f.E.Read(ctx, second.ID, full, 0, got); err != nil || !bytes.Equal(got, prior) {
@@ -93,6 +99,47 @@ func TestRFC8A_Clone(t *testing.T) {
 	}
 	if _, err := f.E.Write(bctx, f.Share.ID, src, 0, []byte("x"), engine.WriteOpts{Done: func() {}}); err != nil {
 		t.Errorf("a write into the refused clone's source extent: %v, want its registration undone", err)
+	}
+}
+
+// §9.1 clone, the refused reservation's answer: a clone whose reservation the
+// destination's journal refuses at its limit, the destination holding dirty
+// bytes, answers retry-later, ErrDelay(DelayCapacity). The row assumes a
+// put-healthy store behind the dirty bytes (RFC 8 §10.2), which the
+// offload part composes; until then the settled answer is no space and the
+// row is listed as failing.
+func TestRFC8A_CloneRetryLaterAtTheDestinationLimit(t *testing.T) {
+	f := enginetest.New(t)
+	ctx := t.Context()
+
+	const n = 64 << 10
+
+	_, src := f.File("src")
+	write(t, f, src, 0, bytes.Repeat([]byte{'s'}, n))
+
+	second := f.Second
+	second.Limit = 16 << 10
+
+	if err := f.E.Bind(ctx, second); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	full := secondFile(t, f, "full")
+	opts := engine.WriteOpts{Done: func() {}}
+
+	if _, err := f.E.Write(ctx, second.ID, full, 0, []byte("prior content"), opts); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	err := f.E.Clone(ctx, f.Share.ID, src, second.ID, full, vfserr.Extent{Len: n})
+
+	var d *vfserr.Delay
+
+	if !errors.As(err, &d) || d.Cause != vfserr.DelayCapacity {
+		t.Fatalf(
+			"a clone its destination's journal cannot reserve: %v, want ErrDelay(DelayCapacity)",
+			err,
+		)
 	}
 }
 

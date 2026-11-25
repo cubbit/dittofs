@@ -6,6 +6,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/vfs/caps"
 )
 
 const (
@@ -15,7 +16,7 @@ const (
 )
 
 func smb(name string) Client {
-	return Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte(name), Boot: [8]byte{1}}}
+	return Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte(name), Boot: [8]byte{1}, Recovery: entity.RecoverReconnect}}
 }
 
 // caller connects c and answers a caller of it running as a new principal.
@@ -25,8 +26,12 @@ func (f *fixture) caller(t *testing.T, c Client) Caller {
 	if p.IsZero() {
 		p = entity.NewUser()
 	}
-	// An SMB call always has a session; an NFS one here has none.
-	return Caller{Client: f.connect(t, c), Principal: p, Protocol: c.Protocol, Sessioned: c.Protocol == entity.ProtocolSMB}
+	// An SMB call always has a session and states SMB's profile; an NFS one
+	// here has no session and states NFSv4's.
+	if c.Protocol == entity.ProtocolSMB {
+		return Caller{Client: f.connect(t, c), Principal: p, Sessioned: true, Caps: caps.SMBCaps}
+	}
+	return Caller{Client: f.connect(t, c), Principal: p, Caps: caps.NFSv4Caps}
 }
 
 func (f *fixture) open(who Caller, file FileKey, r OpenRequest) (Open, error) {
@@ -570,21 +575,27 @@ func TestSuspendedTimesArePerOpen(t *testing.T) {
 	}
 }
 
-// An NFS remove or rename of a file is refused
-// against a deny-delete, which an SMB caller's own open was judged against at
-// open. An SMB rename or delete of a directory is refused while an open made
-// through it exists, an NFS one is not, and an open two levels below does
-// not count.
+// A remove or rename of a file is refused against a deny-delete, except the
+// one of the open the change comes through, which was judged at open: an
+// SMB rename through its own exclusive open goes, and an NFS rename of the
+// same file, through no open, is refused. An SMB rename or delete of a
+// directory is refused while an open made through it exists, an NFS one is
+// not, and an open two levels below does not count.
 func TestChangeChecks(t *testing.T) {
 	f := newFixture(t)
 	s, n := f.caller(t, smb("alice-pc")), f.caller(t, nfs("bob", 1, entity.NewUser()))
 	file := anyFile()
-	f.mustOpen(t, s, file, OpenRequest{Access: rd | del, Deny: del})
-	if err := f.Checks().CheckChange(ctx, n, file, nil, ChangeRemove); !errors.Is(err, ErrShareViolation) {
-		t.Errorf("an NFS remove against a deny-delete: %v, want ErrShareViolation", err)
+	excl := f.mustOpen(t, s, file, OpenRequest{Access: rd | del, Deny: rd | wr | del})
+	for _, what := range []ChangeMask{ChangeRemove, ChangeRename} {
+		if err := f.Checks().CheckChange(ctx, n, file, nil, what); !errors.Is(err, ErrShareViolation) {
+			t.Errorf("an NFS change %d against a deny-delete: %v, want ErrShareViolation", what, err)
+		}
 	}
-	if err := f.Checks().CheckChange(ctx, s, file, nil, ChangeRename); err != nil {
-		t.Errorf("an SMB rename through its own deny-delete open: %v", err)
+	if err := f.Checks().CheckChange(ctx, s, file, ptr(refOf(excl)), ChangeRename); err != nil {
+		t.Errorf("an SMB rename through its own exclusive open: %v", err)
+	}
+	if err := f.Checks().CheckChange(ctx, s, file, nil, ChangeRename); !errors.Is(err, ErrShareViolation) {
+		t.Errorf("an SMB rename of the same file through no open: %v, want ErrShareViolation", err)
 	}
 
 	d, e := entity.NewFileID(), entity.NewFileID()
@@ -598,8 +609,8 @@ func TestChangeChecks(t *testing.T) {
 	if err := f.Checks().CheckChange(ctx, n, FileKey{ID: d}, nil, ChangeRename); err != nil {
 		t.Errorf("an NFS rename of a directory with an open child: %v", err)
 	}
-	// The caller's protocol decides, not a client the table knows.
-	if err := f.Checks().CheckChange(ctx, Caller{Principal: s.Principal, Protocol: entity.ProtocolSMB}, FileKey{ID: d}, nil, ChangeRename); !errors.Is(err, ErrShareViolation) {
+	// The caller's stated capability decides, not a client the table knows.
+	if err := f.Checks().CheckChange(ctx, Caller{Principal: s.Principal, Caps: caps.SMBCaps}, FileKey{ID: d}, nil, ChangeRename); !errors.Is(err, ErrShareViolation) {
 		t.Errorf("an SMB rename of a directory with an open child, by a caller of no known client: %v, want ErrShareViolation", err)
 	}
 	if err := f.Checks().CheckChange(ctx, Caller{Client: s.Client, Principal: s.Principal}, FileKey{ID: d}, nil, ChangeRename); err != nil {
@@ -900,7 +911,7 @@ func TestOpenIDJudgedByHandleAndClient(t *testing.T) {
 	if _, err := f.Opens().Close(ctx, a, OpenRef{Kind: RefOpened, Open: o.ID, Handle: handle(entity.NewFileID())}, Seqs{}); !errors.Is(err, ErrBadState) {
 		t.Errorf("a close of the open under another file's handle: %v, want ErrBadState", err)
 	}
-	other := Caller{Client: b.Client, Principal: a.Principal, Protocol: entity.ProtocolSMB}
+	other := Caller{Client: b.Client, Principal: a.Principal, Caps: caps.SMBCaps}
 	if _, err := f.Opens().Close(ctx, other, OpenRef{Kind: RefOpened, Open: o.ID, Handle: handle(file.ID)}, Seqs{}); !errors.Is(err, ErrNotYours) {
 		t.Errorf("a close of the open by its principal under another client: %v, want ErrNotYours", err)
 	}

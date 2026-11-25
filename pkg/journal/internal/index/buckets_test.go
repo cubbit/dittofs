@@ -52,6 +52,10 @@ func idOutside(b int, n int) core.FileID { return idInBucket((b + 1 + n) % floor
 // recreated, is refused: the delete dropped its entry but raised its bucket
 // first. One journal-wide floor refuses the fill of X.
 func TestFloorBuckets(t *testing.T) {
+	// decision: the deletes and fills run in one goroutine and start none, so the race detector has nothing to check and only slows it.
+	if raceEnabled {
+		t.Skip("single-goroutine check; runs in the journal-index cell without -race")
+	}
 	var fs files
 	fs.setExtentLimit(1 << 20)
 	const others = 10000

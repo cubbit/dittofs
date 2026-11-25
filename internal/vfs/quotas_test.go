@@ -109,7 +109,7 @@ func TestARefusedWriteHoldsNoReservation(t *testing.T) {
 	ref := s.opener(t, pc, "frozen", entity.ReadData|entity.WriteData)
 	_, err := s.fs.Store.Files().SetAttrs(ctx, s.fs.Admin, frozen, entity.Attrs{}.WithFlags(entity.FlagImmutable))
 	s.must(t, err)
-	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Protocol: entity.ProtocolSMB}
+	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Caps: vfs.SMBCaps}
 	_, err = s.tab.Opens().Open(ctx, who, keyOf(s.record(t, leased)), openstate.OpenRequest{Access: entity.ReadData | entity.WriteData,
 		Want: openstate.GrantRead | openstate.GrantWrite, Lease: openstate.LeaseKey{1}})
 	s.must(t, err)

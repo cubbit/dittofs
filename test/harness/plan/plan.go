@@ -63,7 +63,7 @@ func Plan(root string, r *registry.Registry, tier string, changed []string) ([]C
 	if tier != "pr" {
 		changed = nil
 	}
-	if changed != nil && !slices.ContainsFunc(changed, func(p string) bool { return !isDocs(p) }) {
+	if changed != nil && DocsOnly(changed) {
 		return nil, nil
 	}
 	var cells []Cell
@@ -89,6 +89,13 @@ func RunsIn(unit, want string) bool {
 		return want == "manual"
 	}
 	return slices.Index(registry.Tiers, unit) <= slices.Index(registry.Tiers, want)
+}
+
+// DocsOnly reports whether every changed path is documentation, which no
+// suite tests. Such a change plans nothing on the pr tier: a pull request's
+// through Plan, a merge queue group's through dt plan --docs-only-base.
+func DocsOnly(changed []string) bool {
+	return !slices.ContainsFunc(changed, func(p string) bool { return !isDocs(p) })
 }
 
 // isDocs reports whether a changed path is documentation, which no suite

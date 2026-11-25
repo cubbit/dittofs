@@ -21,7 +21,7 @@ var addr = netip.MustParseAddr("192.0.2.1")
 
 func nfs(name string, boot byte, owner entity.Principal) Client {
 	return Client{ClientRecord: entity.ClientRecord{
-		Protocol: entity.ProtocolNFSv4, Name: []byte(name), Boot: [8]byte{boot}, Owner: owner, Protect: !owner.IsZero(),
+		Protocol: entity.ProtocolNFSv4, Name: []byte(name), Boot: [8]byte{boot}, Owner: owner, Protect: !owner.IsZero(), Recovery: entity.RecoverStatus,
 	}}
 }
 

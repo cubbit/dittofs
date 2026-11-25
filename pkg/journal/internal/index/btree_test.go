@@ -306,6 +306,10 @@ func runOps(t *testing.T, tr *btree[int], o *oracle, ops int, key func() uint64,
 // catches keys lost or duplicated on a split or merge, a borrow from the wrong
 // sibling, and a separator left stale after a delete.
 func TestAgainstOracle(t *testing.T) {
+	// decision: the oracle comparison runs in one goroutine and starts none, so the race detector has nothing to check and only slows it.
+	if raceEnabled {
+		t.Skip("single-goroutine check; runs in the journal-index cell without -race")
+	}
 	for _, keySpace := range []uint64{64, 1000, math.MaxUint64} {
 		for seed := range uint64(40) {
 			t.Run(fmt.Sprintf("keys=%d/seed=%d", keySpace, seed), func(t *testing.T) {

@@ -18,6 +18,10 @@ var ErrIdempotencyMismatch = errors.New("entity: idempotency key used for anothe
 // its kind runs there. Nothing was written.
 var ErrOperationRunning = errors.New("entity: an operation of this kind already runs on this target")
 
+// ErrNewerSchema is a setting whose schema is above the newest one
+// the store was opened to write. Nothing was written.
+var ErrNewerSchema = errors.New("entity: setting schema newer than this node writes")
+
 // OperationRunningError is ErrOperationRunning naming the operation that
 // runs: ID is the one a caller polls instead of starting its own.
 type OperationRunningError struct{ ID OperationID }
