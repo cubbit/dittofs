@@ -1,307 +1,325 @@
 # SMB
 
-> **Not served on this branch.** This build serves no file protocol; the SMB
-> adapter is being rebuilt (RFC 20, RFC 22). This guide describes SMB as the
-> released server serves it.
+This page shows you how to mount a DittoFS share over SMB from Linux, macOS or
+Windows, how users sign in, and how to turn on encryption and signing. Read it
+when you set up an SMB client, or when a mount or a sign-in fails.
 
-DittoFS speaks SMB 2.0.2 through SMB 3.1.1 over TCP. This page covers everything an operator or
-end-user needs: supported dialects, how to mount, authentication, encryption and signing
-configuration, and lease/durable-handle behaviour as seen from clients.
+> **Contributors:** protocol internals, wire formats and key derivation are in
+> [SMB protocol internals](../internals/smb-protocol.md).
 
-> **Contributors:** protocol internals, wire formats, key derivation details, and cross-protocol
-> coordination live in [../internals/smb-protocol.md](../internals/smb-protocol.md).
+> **Not available yet on this version.** This version does not serve SMB. You
+> cannot mount a share from it today:
+>
+> - The SMB adapter cannot be turned on: `dfsctl adapter set smb --enabled` is
+>   refused with `unknown_key`, because the node does not declare the adapter
+>   settings yet.
+> - Once it can be turned on, it answers every SMB command with
+>   `STATUS_NOT_SUPPORTED` until its command handlers are built.
+> - A new installation cannot create a share yet either (see
+>   [Getting started, step 5](getting-started.md#5-stores-and-namespaces)).
+>
+> What does work today is the identity side: users, groups, grants, the
+> directory and the domain join are all set through `dfsctl` and kept for when
+> SMB is served. The rest of this page describes SMB as the **released server**
+> serves it, and uses this version's `dfsctl` commands. Each section that
+> differs on this version says so at its top.
 
 ## Table of Contents
 
-- [Supported Dialects](#supported-dialects)
+- [What works where](#what-works-where)
 - [Mounting SMB Shares](#mounting-smb-shares)
+- [Dialects](#dialects)
+- [Authentication](#authentication)
+- [Share access policy](#share-access-policy)
+- [Users, groups and grants](#users-groups-and-grants)
 - [Encryption](#encryption)
 - [Signing](#signing)
-- [Leases and Durable Handles](#leases-and-durable-handles)
-- [Authentication](#authentication)
-- [User, Group and Permission Configuration](#user-group-and-permission-configuration)
-- [Testing SMB Operations](#testing-smb-operations)
-- [Troubleshooting](#troubleshooting)
-- [Known Limitations](#known-limitations)
+- [Leases and durable handles](#leases-and-durable-handles)
+- [Feature support](#feature-support)
+- [Testing your mount](#testing-your-mount)
+- [Common problems](#common-problems)
 - [Glossary](#glossary)
 - [References](#references)
 
 ---
 
-## Supported Dialects
+## What works where
 
-DittoFS negotiates the highest mutually-supported dialect with each client.
-
-| Dialect | Hex | Key Features |
-| --------- | -------- | -------------- |
-| SMB 2.0.2 | 0x0202 | Basic file operations, credits, HMAC-SHA256 signing |
-| SMB 2.1 | 0x0210 | Leasing, large MTU |
-| SMB 3.0 | 0x0300 | AES-128-CCM encryption, AES-128-CMAC signing, secure dialect negotiation |
-| SMB 3.0.2 | 0x0302 | VALIDATE_NEGOTIATE_INFO downgrade protection |
-| SMB 3.1.1 | 0x0311 | Preauth integrity (SHA-512), AES-256/128-GCM & -CCM encryption (AES-256-GCM preferred), GMAC signing, negotiate contexts |
-
-SMB 3.1.1 is preferred; it provides the strongest security and best cipher performance on
-AES-NI-capable hardware.
-
-### Selecting a dialect (the SMB "version")
-
-Unlike NFS — where the client states an exact version with `vers=` — SMB
-**auto-negotiates**: the client and server agree on the highest dialect both
-support, and DittoFS always offers up to 3.1.1. So most clients need no version
-flag at all.
-
-You only pin a dialect when troubleshooting or forcing weaker/stronger crypto:
-
-| Client | How to pin a dialect | Default behaviour |
-| -------- | ---------------------- | ------------------- |
-| **Linux** (`mount.cifs`) | `-o vers=3.1.1` (also `2.0`, `2.1`, `3.0`) | Modern `cifs-utils` negotiates ≥ 2.1 automatically. |
-| **macOS** (`mount_smbfs`) | No per-mount dialect flag — always negotiates the best. | Negotiates up to 3.1.1. |
-| **Windows** (`net use` / Explorer) | No per-mount flag (tune via the SMB client service). | Negotiates up to 3.1.1. |
-| **`dfsctl share mount --protocol smb`** | No flag; requests `vers=3.1.1` on Linux, lets macOS negotiate. | Wrapper picks safe defaults — see [Mounting](#mounting-smb-shares). |
-
-`seal` (on Linux `mount.cifs`) forces SMB3 encryption and therefore a 3.x
-dialect; pair it with `vers=3.1.1` to negotiate the strongest AEAD cipher the
-client offers — DittoFS prefers AES-256-GCM, then AES-256-CCM, then the AES-128
-variants.
-The matching `dfsctl` convenience wrapper is shown under
-[Mounting SMB Shares](#mounting-smb-shares).
-
-### Protocol Implementation Status
-
-**Session and negotiation:**
-
-| Command | Status | Notes |
-| --------- | -------- | ------- |
-| NEGOTIATE | Implemented | Multi-dialect (2.0.2 through 3.1.1), negotiate contexts |
-| SESSION_SETUP | Implemented | NTLM and Kerberos via SPNEGO, key derivation |
-| LOGOFF | Implemented | |
-| TREE_CONNECT | Implemented | Share-level permissions, per-share encryption |
-| TREE_DISCONNECT | Implemented | |
-
-**File operations:**
-
-| Command | Status | Notes |
-| --------- | -------- | ------- |
-| CREATE | Implemented | Files and directories, lease V2 request/grant, durable handle create contexts |
-| CLOSE | Implemented | |
-| FLUSH | Implemented | Flushes data to block store |
-| READ | Implemented | With cache support |
-| WRITE | Implemented | With cache support |
-| QUERY_INFO | Implemented | Multiple info classes |
-| SET_INFO | Implemented | Attributes, timestamps, rename, delete |
-| QUERY_DIRECTORY | Implemented | With pagination |
-| CHANGE_NOTIFY | Partial | Accepts watches, async delivery via notification queue |
-| IOCTL | Implemented | VALIDATE_NEGOTIATE_INFO, FSCTL_PIPE_WAIT, server-side copy (SRV_REQUEST_RESUME_KEY + SRV_COPYCHUNK) |
-| LOCK | Implemented | Shared and exclusive byte-range locks |
-
-**SMB3 advanced features:**
-
-| Feature | Status | Notes |
-| --------- | -------- | ------- |
-| Multi-Dialect Negotiation | Implemented | 2.0.2, 2.1, 3.0, 3.0.2, 3.1.1 |
-| Negotiate Contexts | Implemented | PREAUTH_INTEGRITY, ENCRYPTION, SIGNING |
-| Preauth Integrity Hash | Implemented | SHA-512 chain over raw wire bytes |
-| AES-GCM Encryption | Implemented | Default for 3.1.1 |
-| AES-CCM Encryption | Implemented | Default for 3.0/3.0.2 |
-| AES-256-GCM/CCM | Implemented | 256-bit variants |
-| AES-CMAC Signing | Implemented | Default for 3.0+ |
-| AES-GMAC Signing | Implemented | Preferred for 3.1.1 |
-| SP800-108 KDF | Implemented | Key derivation for signing/encryption |
-| VALIDATE_NEGOTIATE_INFO | Implemented | Downgrade protection for 3.0/3.0.2 |
-| Leases V2 | Implemented | ParentLeaseKey, epoch tracking |
-| Directory Leases | Implemented | Read-caching for directory listings |
-| Durable Handles V1 | Implemented | DHnQ/DHnC with batch oplock |
-| Durable Handles V2 | Implemented | DH2Q/DH2C with CreateGuid |
-| Durable Handle Scavenger | Implemented | Timeout-based cleanup |
-| Kerberos via SPNEGO | Implemented | Shared keytab with NFS adapter |
-| Compound Requests | Implemented | CREATE+QUERY_INFO+CLOSE |
-| Credit Management | Implemented | Adaptive flow control |
-| Parallel Requests | Implemented | Per-connection concurrency |
-| Byte-Range Locking | Implemented | Shared/exclusive locks |
-| Oplocks | Implemented | Level II, Exclusive, Batch |
-| Cross-Protocol Coordination | Implemented | Bidirectional lease/delegation breaks |
-
-**Features not supported:**
-
-| Feature | Notes |
-| --------- | ------- |
-| SMB1 | Legacy protocol, security risk |
-| Compression | SMB 3.1.1 compression contexts not implemented |
-| Multichannel | Multiple TCP connections per session |
-| Persistent Handles | Cluster-aware handles (requires shared state) |
-| RDMA | Remote Direct Memory Access transport |
-| QUIC | UDP-based transport (SMB over QUIC) |
-| SACL / auditing | Audit ACEs round-trip (read/write/Auditing tab) but are not *enforced* — no audit events are emitted (owner/group/DACL **are** supported — see [Access Control](access-control.md)) |
-| DFS | Distributed File System referrals |
+| Feature | Released server | This version |
+|---------|-----------------|--------------|
+| Serving SMB at all | Yes | **No**: the adapter cannot be enabled, and answers every command `STATUS_NOT_SUPPORTED` |
+| Default port | 12445 | 12445 (`adapters.smb.port`) |
+| Dialects | SMB 2.0.2 to 3.1.1 | `adapters.smb.dialects`, from `2.1` to `3.1.1`; SMB 2.0.2 is not offered |
+| Encryption, signing, leases, durable handles config blocks | In the config file | **Not read**: the config file refuses them as unknown keys |
+| Per-share encryption | `--smb-encrypt` | `--smb-encrypt` on the export policy (kept for when SMB is served) |
+| Users, groups, grants, directory, domain join | Yes | Yes, through `dfsctl` |
 
 ---
 
 ## Mounting SMB Shares
 
-DittoFS listens on **port 12445** by default (port 445 requires root). All examples below use
-that port. To serve the standard SMB port 445 in production (so clients connect with no port
-suffix), see [Running on standard ports (production)](install.md#running-on-standard-ports-production).
+DittoFS listens on port **12445** by default, because port 445 needs root. Every
+example below uses that port. To serve 445, so clients need no port, see
+[Running on standard ports](install.md#running-on-standard-ports-production).
 
-### Using dfsctl (Recommended)
+SMB always needs a user with a password (or a Kerberos ticket). Create one and
+grant it the share first; see [Users, groups and grants](#users-groups-and-grants).
 
-`dfsctl share mount` handles platform-specific mount options automatically. Run it
-as yourself, not under `sudo`: it reads your login, and runs the mount command
-through `sudo` itself where that needs root (`--dry-run` prints the command):
+### The easy way: `dfsctl share mount`
 
-```bash
-# macOS - mount_smbfs runs as you, so mount to a directory you own
-mkdir -p ~/mnt/dittofs
-dfsctl share mount --protocol smb export ~/mnt/dittofs
+`dfsctl share mount --protocol smb` builds the right command for your operating
+system and runs it. Run it as yourself, **not** under `sudo`: it reads your
+login, and runs `mount` through `sudo` itself where that needs root. The mount
+command asks for the SMB password; `dfsctl` never sees it.
 
-# Linux - mount.cifs runs through sudo, the mount owned by your uid and gid
-dfsctl share mount --protocol smb export /mnt/smb
+Pass `--username`: without it, `dfsctl` uses the account you signed in to
+`dfsctl` with, which is usually `admin`. Add `--dry-run` to print the command
+instead of running it. The dry run still contacts the server, to read the
+share and the port.
 
-# Unmount
-sudo umount /mnt/smb  # or: diskutil unmount ~/mnt/dittofs (macOS)
-```
-
-### Platform-Specific Mount Behaviour
-
-#### macOS Security Restriction
-
-macOS restricts SMB mounts so that **only the mount owner can access files**, regardless of
-Unix permissions. Even with 0777 permissions, non-owner users get "Permission denied". Apple
-confirmed this is "works as intended".
-
-**How dfsctl handles this**: `dfsctl share mount` runs `mount_smbfs` as you, never
-through `sudo`, so the mount is yours. Mount to a directory you own:
-
-```bash
-mkdir -p ~/mnt/dittofs
-dfsctl share mount --protocol smb export ~/mnt/dittofs
-# No sudo needed; directory permissions default to 0755
-```
-
-#### Windows
-
-The Windows SMB client connects to port 445 unless told otherwise. Connecting to a non-default
-port (such as the default `12445`) requires **Windows 11 24H2 / Windows Server 2025 or later**.
-Older Windows clients can only reach DittoFS when it serves the standard port 445 — see
-[Running on standard ports (production)](install.md#running-on-standard-ports-production).
-
-From Command Prompt:
-
-```cmd
-:: Standard port 445
-net use Z: \\server\export /user:username password
-
-:: Non-default port (Windows 11 24H2 / Windows Server 2025+)
-net use Z: \\server\export /user:username /tcpport:12445 password
-
-:: Disconnect
-net use Z: /delete
-```
-
-From PowerShell:
-
-```powershell
-# Non-default port (Windows 11 24H2 / Windows Server 2025+)
-New-SmbMapping -LocalPath Z: -RemotePath \\server\export -UserName username -Password 'password' -Persistent $true -TcpPort 12445
-
-# Disconnect
-Remove-SmbMapping -LocalPath Z:
-```
-
-> **Note:** do not use the `\\server@12445\export` form. That is WebDAV (WebClient) syntax,
-> not SMB — Windows will try WebDAV over HTTP and never reach the SMB listener.
-
-From Explorer: right-click "This PC" > "Map network drive", set path to `\\server\export`.
-Explorer cannot set a custom port, so this only works when DittoFS serves port 445; for a
-non-default port, map the drive with `net use` or `New-SmbMapping` as above.
-
-#### macOS (native commands)
-
-```bash
-# Using mount_smbfs (built-in)
-# Note: -f sets file mode, -d sets directory mode (required for write access with sudo)
-sudo mount_smbfs -f 0777 -d 0777 //username:password@localhost:12445/export /mnt/smb
-
-# Mount to home directory (no sudo, user-owned)
-mount_smbfs //username:password@localhost:12445/export ~/mnt/smb
-
-# Using open (opens in Finder)
-open smb://username:password@localhost:12445/export
-
-# Unmount
-sudo umount /mnt/smb
-# or
-diskutil unmount /mnt/smb
-```
+The examples assume you signed in to a server at `192.0.2.10`, the share is
+`archive`, and the SMB user is `alice`.
 
 #### Linux
 
-```bash
-# Using mount.cifs (requires cifs-utils)
-# uid/gid options set the owner of mounted files
-sudo mount -t cifs //localhost/export /mnt/smb \
-    -o port=12445,username=testuser,vers=2.0,uid=$(id -u),gid=$(id -g)
-# Password will be prompted interactively
-
-# Mount with SMB3 encryption
-sudo mount -t cifs //localhost/export /mnt/smb \
-    -o port=12445,username=testuser,vers=3.1.1,seal,uid=$(id -u),gid=$(id -g)
+```console
+$ sudo mkdir -p /mnt/archive
+$ dfsctl share mount archive /mnt/archive --protocol smb --username alice --dry-run
+sudo mount -t cifs -o vers=3.1.1,port=12445,username=alice,uid=1000,gid=1000 //192.0.2.10/archive /mnt/archive
 ```
 
-### Using smbclient
+What the options do:
+
+| Option | Why |
+|--------|-----|
+| `vers=3.1.1` | The newest dialect, with the strongest encryption. SMB 3.0 is the first that can encrypt, which a share may require. |
+| `port=12445` | DittoFS's default SMB port. |
+| `username=alice` | The DittoFS user to sign in as. `mount.cifs` prompts for the password. |
+| `uid=`, `gid=` | Your own IDs, so the mounted files belong to you locally and you can write without `sudo`. |
+
+To keep the password out of the prompt, use a credentials file only you can read:
 
 ```bash
-# Interactive client
-smbclient //localhost/export -p 12445 -U testuser
-
-# List shares
-smbclient -L localhost -p 12445 -U testuser
-
-# One-liner file operations
-smbclient //localhost/export -p 12445 -U testuser -c "ls"
-smbclient //localhost/export -p 12445 -U testuser -c "get file.txt"
-smbclient //localhost/export -p 12445 -U testuser -c "put localfile.txt"
+printf 'username=alice\npassword=ALICE_PASSWORD\n' > ~/.smbcredentials
+chmod 600 ~/.smbcredentials
+sudo mount -t cifs //192.0.2.10/archive /mnt/archive \
+  -o port=12445,credentials=$HOME/.smbcredentials,vers=3.1.1,uid=$(id -u),gid=$(id -g)
 ```
 
-To mount a share automatically at boot, see [Mount at boot](persistent-mounts.md).
+Add `seal` to force encryption on this mount.
+
+#### macOS
+
+macOS lets **only the user who mounted** an SMB share reach its files, whatever
+the file permissions say. So `dfsctl` runs `mount_smbfs` as you, never through
+`sudo`. Mount to a directory you own:
+
+```console
+$ mkdir -p ~/archive
+$ dfsctl share mount archive ~/archive --protocol smb --username alice --dry-run
+mount_smbfs smb://alice@192.0.2.10:12445/archive /Users/alice/archive
+```
+
+`mount_smbfs` prompts for the password. A domain user is written `CORP;alice`
+in the URL; `dfsctl` converts `--username 'CORP\alice'` for you.
+
+To open the share in Finder instead: `open smb://alice@192.0.2.10:12445/archive`.
+
+#### Windows
+
+```console
+> dfsctl share mount archive Z: --protocol smb --username alice --dry-run
+net use Z: \\192.0.2.10\archive /user:alice * /TCPPORT:12445
+```
+
+The `*` makes `net use` prompt for the password. `/TCPPORT` exists only on
+**Windows 11 24H2 and Windows Server 2025** or later, and needs an
+administrator prompt. Older Windows can only reach DittoFS on port 445. See
+[Windows clients](windows.md) for Explorer, PowerShell and Active Directory.
+
+#### Unmount
+
+```bash
+sudo umount /mnt/archive       # Linux
+diskutil unmount ~/archive     # macOS
+```
+
+```cmd
+net use Z: /delete
+```
+
+### With `smbclient`
+
+`smbclient` is handy for a quick check without mounting:
+
+```bash
+smbclient -L 192.0.2.10 -p 12445 -U alice                    # list shares
+smbclient //192.0.2.10/archive -p 12445 -U alice -c "ls"      # list files
+smbclient //192.0.2.10/archive -p 12445 -U alice              # interactive
+```
+
+To mount at boot, see [Mount at boot](persistent-mounts.md).
+
+---
+
+## Dialects
+
+> **On this version:** the dialects served are the `adapters.smb.dialects`
+> setting, from `2.1` to `3.1.1` by default. SMB 2.0.2 is not offered.
+
+SMB picks the dialect by itself: client and server agree on the newest one both
+support. Most clients need no version option.
+
+| Dialect | What it adds |
+|---------|--------------|
+| SMB 2.0.2 | Basic file operations, HMAC-SHA256 signing (released server only) |
+| SMB 2.1 | Leases, large reads and writes |
+| SMB 3.0 | AES-128-CCM encryption, AES-128-CMAC signing |
+| SMB 3.0.2 | Protection against dialect downgrade |
+| SMB 3.1.1 | Stronger downgrade protection, AES-256 and AES-128 GCM/CCM encryption, GMAC signing |
+
+SMB 3.1.1 is preferred: it is the most secure, and the fastest on CPUs with AES
+instructions.
+
+Pin a dialect only to troubleshoot:
+
+| Client | How to pin | By default |
+|--------|-----------|------------|
+| Linux (`mount.cifs`) | `-o vers=3.1.1` (or `2.1`, `3.0`) | Negotiates 2.1 or newer |
+| macOS (`mount_smbfs`) | No option | Negotiates up to 3.1.1 |
+| Windows | No per-mount option | Negotiates up to 3.1.1 |
+| `dfsctl share mount` | No option | Asks for `vers=3.1.1` on Linux; macOS and Windows negotiate |
+
+---
+
+## Authentication
+
+Clients sign in with **Kerberos** or **NTLM**. The server offers both. A client
+holding a Kerberos ticket for the server uses Kerberos; any other client uses
+NTLM.
+
+**No fallback to guest.** A failed sign-in (a wrong password, an unknown user,
+an unreachable domain controller) is refused. DittoFS never turns it into a
+guest session. A client gets a guest session only by asking for one.
+
+### Kerberos
+
+DittoFS checks the client's ticket against the keys it holds for `cifs/<host>`.
+Those keys come from a domain join or from an imported keytab (see
+[Identity](identity.md#part-c-configure-kerberos)). The keytab is not a config
+file key: it is imported through the API, `PUT /api/v1/installation/keytab`.
+
+The ticket's user becomes:
+
+- the **local DittoFS user** of that name, if there is one;
+- otherwise the **directory user** the connected directory returns. AD users
+  need no local account;
+- otherwise nobody, and the sign-in is refused.
+
+Kerberos is the best choice for domain users: one round trip, and the client
+also checks the server.
+
+### NTLM
+
+NTLM is used when Kerberos is not possible: no keytab, no ticket on the client,
+or the client connected by IP address.
+
+- **Local users** sign in with the password set by `dfsctl user set-password`.
+- **AD domain users** sign in once the installation has joined the domain.
+  DittoFS passes the user's answer to a domain controller over a secure channel,
+  and the user gets the same identity as over Kerberos. Without a join, a domain
+  user's NTLM sign-in fails. Join with `dfsctl domain join`; see
+  [Identity: join the domain](identity.md#part-c2-join-the-domain) and the
+  [Windows AD runbook](windows-ad-setup.md).
+
+The `identity.ntlm` setting turns NTLM off for the whole installation:
+
+```bash
+dfsctl setting set installation identity.ntlm false
+```
+
+> The domain-controller pass-through has not been fully validated against a
+> Samba AD domain controller yet.
+
+---
+
+## Share access policy
+
+A share's export policy applies to SMB as it does to NFS: every request is
+checked against it, whichever protocol carried it. Change it with
+`dfsctl share export-policy update`:
+
+| Flag | Values | Over SMB |
+|------|--------|----------|
+| `--min-proof` | `none`, `claimed`, `secret`, `ticket` | The weakest sign-in accepted. `secret` is NTLM, `ticket` is Kerberos. |
+| `--min-protection` | `none`, `integrity`, `privacy` | The weakest protection accepted. `integrity` is signing, `privacy` is encryption. |
+| `--client` | `CIDR=access` or `@netgroup=access` | Which client addresses may connect. The first rule that matches decides; no match refuses. |
+| `--smb-encrypt` | (flag) | Encrypt every message on this share. |
+| `--smb-hidden` | (flag) | Leave the share out of the share list clients browse. |
+
+```bash
+# Kerberos only, and encrypted
+dfsctl share export-policy update archive --min-proof ticket --min-protection privacy
+
+# Only the office network may connect
+dfsctl share export-policy update archive --client 192.0.2.0/24=read-write
+
+# Check the result
+dfsctl share export-policy get archive
+```
+
+---
+
+## Users, groups and grants
+
+SMB uses the same users and groups as every DittoFS protocol. They live in the
+metadata store and are managed with `dfsctl`, never in the config file.
+
+```bash
+dfsctl user create alice
+dfsctl user set-password alice          # prompts for the password
+dfsctl group create editors --gid 1001
+dfsctl group add-member editors alice
+dfsctl grant set archive --group editors --access read-write
+```
+
+`dfsctl user set-password` needs the node's protocol key (`keys.protocol` in the
+config file), because the node stores the password's NT hash sealed under it.
+See [Encryption: local key files](encryption.md#local-key-files).
+
+Access levels, lowest to highest: `none`, `read`, `read-write`, `admin`. A user's
+own grant decides; `none` refuses the user. With no grant of its own, its
+groups' grants decide. A new share admits nobody until a grant names them.
 
 ---
 
 ## Encryption
 
-### What Clients Observe
+> **On this version:** the `adapters.smb.encryption` block shown below is a
+> released-server config key. This version's config file refuses it as an
+> unknown key, and there is no setting for it yet. Per-share encryption,
+> `--smb-encrypt`, is set and kept.
 
-SMB3 sessions negotiate AES-GCM or AES-CCM encryption automatically. When encryption is
-active, all messages between client and server are opaque on the wire; packet capture shows
-only the transform header (52 bytes) and ciphertext.
+SMB 3 clients encrypt with AES-GCM or AES-CCM. When encryption is on, a packet
+capture shows only ciphertext. SMB encrypts inside the protocol; it does not use
+TLS. See [Security: SMB encryption](security.md#smb-encryption).
 
-Cipher suites supported:
+| Cipher | Used by default for |
+|--------|---------------------|
+| AES-128-CCM | SMB 3.0, 3.0.2 |
+| AES-128-GCM | SMB 3.1.1 |
+| AES-256-CCM, AES-256-GCM | When the client prefers them |
 
-| Cipher | Default For | Key Size |
-| -------- | ------------- | ---------- |
-| AES-128-CCM | SMB 3.0, 3.0.2 | 128-bit |
-| AES-128-GCM | SMB 3.1.1 | 128-bit |
-| AES-256-CCM | -- | 256-bit |
-| AES-256-GCM | -- | 256-bit |
+For SMB 3.1.1, DittoFS prefers AES-256-GCM, then AES-256-CCM, then the AES-128
+ciphers.
 
-SMB confidentiality is provided by **SMB3 in-protocol encryption**, not TLS or QUIC. See
-[./security.md](./security.md#smb-encryption) for details.
+### Server-wide mode (released server)
 
-### Encryption Modes
-
-| Mode | Behaviour |
-| ------ | ----------- |
-| `disabled` | No encryption for any session |
-| `preferred` | Encrypt SMB 3.x sessions that support it; allow unencrypted 2.x (**default**) |
-| `required` | Reject SMB 2.x clients; encrypt all SMB 3.x sessions |
-
-The default (`preferred`) provides confidentiality for SMB 3.x clients without breaking SMB 2.x
-compatibility. Set `required` to force encryption on the whole server, or set `encrypt_data`
-on an individual share to enforce it only on sensitive data.
-
-**Guest sessions are never encrypted** — guest sessions have no session key and cannot
-participate in key derivation.
-
-### Configuration
+| Mode | Effect |
+|------|--------|
+| `disabled` | No session is encrypted. |
+| `preferred` **(default)** | SMB 3 sessions are encrypted; SMB 2 clients still connect unencrypted. |
+| `required` | SMB 2 clients are refused; every session is encrypted. |
 
 ```yaml
 adapters:
@@ -310,445 +328,211 @@ adapters:
       encryption_mode: preferred   # disabled | preferred | required
 ```
 
-Per-share encryption:
+### Per share
 
 ```bash
 dfsctl share export-policy update sensitive --smb-encrypt
 ```
 
-`--smb-encrypt` is part of the share's export policy, a record of the management API
-(`dfsctl`), not a key of the config file. Enabling it sets `SMB2_SHAREFLAG_ENCRYPT_DATA` in the
-TREE_CONNECT response for that share.
+Every message on that share is then encrypted, whatever the server-wide mode.
 
-See [./configuration.md](./configuration.md) for complete encryption configuration options.
-See [./security.md](./security.md) for security implications and recommendations.
+**Guest sessions are never encrypted.** A guest has no session key to encrypt
+with.
 
 ---
 
 ## Signing
 
-### What Clients Observe
+> **On this version:** the `adapters.smb.signing` block below is a
+> released-server config key, refused by this version's config file. To require
+> signing on a share, use `--min-protection integrity` on its export policy.
 
-Signing adds an integrity tag to every SMB2 message so that tampering in transit is detected.
-Clients may request signing in the NEGOTIATE request (`SIGNING_ENABLED`), or you can require
-it server-wide.
+Signing adds a tag to every message, so the receiver detects tampering.
 
-Signing algorithms by dialect:
-
-| Dialect | Algorithm |
-| --------- | ----------- |
-| SMB 2.0.2 | HMAC-SHA256 |
-| SMB 2.1 | HMAC-SHA256 |
-| SMB 3.0 | AES-128-CMAC |
-| SMB 3.0.2 | AES-128-CMAC |
+| Dialect | Signing algorithm |
+|---------|-------------------|
+| SMB 2.0.2, 2.1 | HMAC-SHA256 |
+| SMB 3.0, 3.0.2 | AES-128-CMAC |
 | SMB 3.1.1 | AES-128-GMAC (preferred) or AES-128-CMAC |
 
-AES-128-GMAC is the preferred algorithm for 3.1.1 — it reuses GCM hardware acceleration. When
-encryption is active, AEAD already provides integrity; DittoFS still signs to match Windows
-Server behaviour.
-
-### Configuration
+An encrypted session is already tamper-proof; DittoFS signs it too, as Windows
+Server does.
 
 ```yaml
 adapters:
   smb:
     signing:
-      enabled: true      # Advertise signing capability
-      required: false    # Require all clients to sign
-      # Signing algorithm preference (for 3.1.1 negotiate context)
-      # Default: [AES-128-GMAC, AES-128-CMAC]
-      preferred_algorithms: []
+      enabled: true      # offer signing
+      required: false    # require every client to sign
 ```
 
 ---
 
-## Leases and Durable Handles
+## Leases and durable handles
 
-### Leases: What Clients Observe
+> **On this version:** the `adapters.smb.leases` and
+> `adapters.smb.durable_handles` blocks below are released-server config keys,
+> refused by this version's config file.
 
-SMB 2.1+ clients receive **lease grants** that allow them to cache file data, writes, and open
-handles locally without round-tripping to the server on every access.
+### Leases
 
-Three caching flags compose a lease state:
+SMB 2.1 and later clients get **leases**: permission to cache a file locally.
 
-| Flag | Abbreviation | What the Client May Do |
-| ------ | ------------- | ------------------------ |
-| Read | R | Cache read data without revalidating against the server |
-| Write | W | Cache writes and defer flushing to the server |
-| Handle | H | Cache the file handle and defer CLOSE |
+| Lease | The client may |
+|-------|----------------|
+| Read (R) | Cache what it read |
+| Write (W) | Cache writes and send them later |
+| Handle (H) | Keep the file open locally after the application closes it |
 
-Common state combinations you'll see:
-
-| State | Flags | Typical Use |
-| ------- | ------- | ------------- |
-| None | -- | No caching |
-| Read | R | Shared read caching (multiple clients) |
-| Read-Handle | RH | Read caching with handle caching |
-| Read-Write | RW | Exclusive read/write caching |
-| Read-Write-Handle | RWH | Full exclusive caching (most aggressive) |
-
-When a conflicting operation arrives (another client opens the file for write, or a cross-
-protocol NFS open occurs), the server sends a **lease break notification**. The client must
-flush cached data and acknowledge before the conflicting operation proceeds.
-
-**Directory leases** (SMB 3.0+) allow clients to cache `QUERY_DIRECTORY` results. Any
-modification to the directory's contents triggers an immediate break to None.
-
-### Configuration
+When another client (over SMB or NFS) opens the file in a conflicting way, the
+server **breaks** the lease: the client sends its cached writes and lets go
+before the other open goes ahead. **Directory leases** (SMB 3) let a client
+cache a directory listing; any change in the directory breaks them.
 
 ```yaml
 adapters:
   smb:
     leases:
-      enabled: true              # Enable lease support
-      directory_leases: true     # Enable directory leasing
-      lease_break_timeout: 35s   # Time to wait for break acknowledgment
+      enabled: true
+      directory_leases: true
+      lease_break_timeout: 35s   # how long to wait for the client to let go
 ```
 
-### Durable Handles: What Clients Observe
+### Durable handles
 
-Durable handles let clients **survive a transient network disconnection** without losing their
-open files or cached state. The client disconnects, reconnects, and resumes — the server
-preserves the handle and its state for up to the configured timeout.
-
-Two versions:
-
-**V1 (SMB 2.0.2+)**: Requires a batch oplock on the open file.
-
-**V2 (SMB 3.0+)**: No oplock requirement; the client provides a `CreateGuid` (16-byte GUID)
-that enables idempotent reconnection. Multiple reconnect attempts with the same GUID all
-succeed.
-
-After a successful reconnect, the client must re-request durability — the `IsDurable` flag is
-not automatically set on the restored handle.
-
-**Ephemeral state caveat**: Durable handles survive disconnection but not server restart. The
-handle metadata is persisted in the metadata store, but in-memory state
-is lost on restart.
-
-### Configuration
+A **durable handle** lets a client keep its open files through a short network
+drop: it reconnects and carries on. The server keeps the handle for up to the
+timeout. A durable handle does **not** survive a server restart.
 
 ```yaml
 adapters:
   smb:
     durable_handles:
-      enabled: true                  # Enable durable handle support
-      default_timeout: 60s           # Default handle preservation timeout
-      scavenger_interval: 30s        # How often to scan for expired handles
-      max_handles_per_session: 1000  # Limit per session
+      enabled: true
+      default_timeout: 60s
+      scavenger_interval: 30s        # how often expired handles are cleaned up
+      max_handles_per_session: 1000
 ```
 
 ---
 
-## Authentication
+## Feature support
 
-### SPNEGO Negotiation
+What the released server supports:
 
-The server advertises both Kerberos and NTLM mechanism OIDs in the NEGOTIATE response.
-Clients with valid Kerberos tickets choose Kerberos for single round-trip authentication;
-other clients fall back to NTLM.
+| Feature | Supported |
+|---------|-----------|
+| SMB 2.0.2 to 3.1.1 | Yes |
+| Kerberos and NTLM sign-in | Yes |
+| Encryption (AES-128/256, GCM and CCM) and signing (HMAC, CMAC, GMAC) | Yes |
+| Leases, directory leases, oplocks | Yes |
+| Durable handles (v1 and v2) | Yes |
+| Byte-range locks | Yes, shared and exclusive; a conflicting lock fails at once, it never waits |
+| Change notifications | Partly |
+| Server-side copy | Yes |
+| Owner, group and DACL (Windows permissions) | Yes, see [ACL fidelity](smb-acl-fidelity.md) |
+| Audit entries (SACL) | Stored and shown, but no audit event is ever generated |
+| Cross-protocol lease and delegation breaks (SMB and NFS on one file) | Yes |
+| SMB 1 | No (insecure) |
+| Compression | No |
+| Multichannel | No: one TCP connection per session |
+| Persistent handles, clustering | No: single node only |
+| RDMA, SMB over QUIC | No |
+| DFS referrals | No |
+| Encrypting single files | No: encryption is per session or per share |
 
-### Kerberos
-
-DittoFS validates Kerberos tickets via SPNEGO during SESSION_SETUP. The SMB adapter shares the
-Kerberos keytab with the NFS adapter; the server automatically derives the `cifs/` service
-principal from the configured `nfs/` principal.
-
-Principal-to-user mapping:
-- A **local DittoFS account** matching the principal wins.
-- When no local account exists but the **LDAP/AD directory** resolves the principal (RFC2307
-  UID/GID + groups), the session is built from that directory identity — AD domain users do not
-  need pre-created local accounts.
-- A valid ticket whose principal resolves to neither a local account nor the directory is
-  rejected (not treated as guest).
-
-Kerberos is the recommended path for AD domain users: single round-trip, mutual authentication,
-no machine-account provisioning required.
-
-### NTLM
-
-When Kerberos is unavailable (no keytab, client has no valid TGT, DNS resolution fails),
-the server falls back to NTLM:
-
-- **Local users**: the NTLMv2 response is validated against the NT hash stored in the control-
-  plane user store.
-- **AD domain users**: once the installation has joined the domain, DittoFS
-  validates the domain user's NTLM response by forwarding it to the DC over a sealed
-  NETLOGON secure channel (MS-NRPC `NetrLogonSamLogon`, sign+seal AES). The DC-returned SID
-  is resolved through the same LDAP/idmap pipeline used for Kerberos, so the user maps to the
-  same UID/GID across NFS-krb5, SMB-krb5, and SMB-NTLM.
-
-**Machine account requirement**: NETLOGON passthrough requires a computer account in the
-domain, created by an online join or pre-created for an offline one. Joining is a
-management-API operation; see [identity.md, Part C2](identity.md#part-c2-join-the-domain).
-The account's password is sealed at rest, rotates by itself, and is never
-returned by the API. Without a join, a domain user's NTLM sign-in fails.
-
-**No map to guest.** A failed sign-in, whether a wrong password, an unknown user or a
-DC that cannot be reached, is a failed sign-in: DittoFS never answers it with a guest
-session. A client gets a guest session only by asking for one.
-
-> **Note**: end-to-end interoperability of the NETLOGON secure channel against a Samba AD-DC
-> is still being validated. The channel runs over TCP, and the `AlterContext` refusal an
-> earlier version met no longer reproduces.
-
-### Share access policy
-
-A share's export policy, set with `dfsctl share export-policy update`, applies to
-SMB as well as NFS: the filesystem service admits every call against it, whichever
-protocol carried it. Its fields:
-
-| Field | Over SMB |
-|-------|----------|
-| `--min-proof` | The proof every caller gives: `none`, `claimed`, `secret` (NTLM) or `ticket` (Kerberos). A session below it is refused. |
-| `--min-protection` | The protection messages need: `none`, `integrity` (signing) or `privacy` (encryption). |
-| `--client` | The client rules, `CIDR=access` or `@netgroup=access`; the first rule matching the connection's address decides, and none matching refuses. |
-| `--smb-encrypt` | Seals every SMB message on the share. |
-
-### Guest Sessions
-
-A failed logon is refused; it never falls back to guest.
-
-### Keytab
-
-The keytab is not a key of the config file: a `kerberos` block there refuses the
-start. It is a secret imported through the management API
-(`PUT /api/v1/installation/keytab`) and named by the `identity.keytab` setting, or,
-for a joined installation, derived from the computer account's password. See
-[Identity](identity.md) and [./security.md](./security.md).
+Locks, oplocks and durable-handle state live in memory. A server restart drops
+them.
 
 ---
 
-## User, Group and Permission Configuration
-
-SMB uses the same user/group store as all other DittoFS protocols. Users, groups and their
-share permissions live in the metadata store and are managed through `dfsctl` — they are
-not declared in a config file.
+## Testing your mount
 
 ```bash
-# Create a user and a group
-dfsctl user create alice --uid 1001
-dfsctl user set-password alice
-dfsctl group create editors --gid 1000
-dfsctl group add-member editors alice
-
-# Grant a group read-write access to a share
-dfsctl grant set export --group editors --access read-write
+cd /mnt/archive
+ls -la                     # list the directory
+echo "test" > new.txt      # create and write a file
+cat new.txt                # read it back
+mkdir docs                 # make a directory
+mv new.txt docs/           # rename
+rm docs/new.txt            # delete a file
+rmdir docs                 # delete the directory
 ```
 
-Permission levels: `none`, `read`, `read-write`, `admin`.
-
-Resolution order: user explicit permission → group permission → share default.
+To watch the server while you test, start it with debug logging:
+`DITTOFS_LOGGING_LEVEL=DEBUG dfs start`. The automated SMB tests are described
+in [Testing DittoFS](../internals/testing.md).
 
 ---
 
-## Testing SMB Operations
+## Common problems
 
-### Manual Testing
+### "Connection refused"
 
-```bash
-# Start server with debug logging
-DITTOFS_LOGGING_LEVEL=debug ./dfs start
+1. Check the server listens on the SMB port: `nc -vz 192.0.2.10 12445`.
+2. Check the host firewall allows port 12445.
+3. Pass the port: `port=12445` (Linux), `:12445` in the URL (macOS),
+   `/TCPPORT:12445` (Windows).
 
-# Mount and test (macOS)
-sudo mount_smbfs //testuser:testpass@localhost:12445/export /mnt/smb
-cd /mnt/smb
+### The sign-in fails
 
-# Test operations
-ls -la              # QUERY_DIRECTORY
-cat readme.txt      # READ
-echo "test" > new   # CREATE + WRITE
-mkdir foo           # CREATE (directory)
-rm new              # SET_INFO (delete)
-rmdir foo           # SET_INFO (delete)
-mv file1 file2      # SET_INFO (rename)
-```
+1. Check the user exists: `dfsctl user list`.
+2. Set or reset the password: `dfsctl user set-password alice`.
+3. Check the user, or one of its groups, has a grant: `dfsctl grant list archive`.
+4. Check the share's policy accepts the sign-in type: `dfsctl share export-policy get archive`.
+5. For Kerberos: check the keytab holds `cifs/` for the name the client used,
+   and that the client reaches the KDC.
+6. For an AD user over NTLM: check the installation has joined the domain.
 
-### Using smbclient
+### macOS
 
 ```bash
-# Interactive mode
-smbclient //localhost/export -p 12445 -U testuser%testpass
-
-smb: \> ls
-smb: \> get file.txt
-smb: \> put local.txt
-smb: \> mkdir newdir
-smb: \> rm file.txt
-smb: \> rmdir newdir
-smb: \> exit
+security delete-internet-password -s 192.0.2.10   # forget a saved password
+mount | grep smbfs                                 # find stale mounts
+umount -f ~/archive                                # force an unmount
 ```
 
-### Automated Testing
+### Linux
 
 ```bash
-# Run SMB E2E tests
-sudo go test -tags=e2e -v ./test/e2e/ -run TestSMB
-
-# Run interoperability tests (NFS <-> SMB)
-sudo go test -tags=e2e -v ./test/e2e/ -run TestInterop
-
-# Run specific test
-sudo go test -tags=e2e -v ./test/e2e/ -run TestSMBCreateFileWithContent
-
-# Run SMB Kerberos authentication tests
-sudo go test -tags=e2e -v ./test/e2e/ -run TestSMBKerberos
-
-# Run cross-protocol lease/delegation tests
-sudo go test -tags=e2e -v ./test/e2e/ -run TestCrossProtocol
+sudo apt-get install cifs-utils    # Debian, Ubuntu
+sudo dnf install cifs-utils        # RHEL, Fedora
 ```
 
----
+### SMB and NFS on the same files
 
-## Troubleshooting
-
-### Mount Fails with "Connection Refused"
-
-1. Verify the server is running: `netstat -an | grep 12445`
-2. Check firewall rules
-3. Try explicit port: `port=12445` in mount options
-
-### Authentication Fails
-
-1. Verify the user exists in config
-2. Check that the password hash is valid bcrypt
-3. Enable debug logging to see the authentication flow
-4. Ensure the user has share permissions
-5. For Kerberos: verify the keytab contains the `cifs/` service principal and the KDC is
-   reachable
-
-### Operations Timeout
-
-1. Increase timeout in SMB config
-2. Check block store connectivity (for an `s3` store, reachability of the endpoint)
-3. Enable debug logging for detailed timing
-
-### macOS-Specific Issues
-
-```bash
-# Clear SMB credential cache
-security delete-internet-password -s localhost
-
-# Check for stale mounts
-mount | grep smb
-
-# Force unmount
-sudo umount -f /mnt/smb
-```
-
-### Linux-Specific Issues
-
-```bash
-# Install cifs-utils if missing
-sudo apt-get install cifs-utils  # Debian/Ubuntu
-sudo yum install cifs-utils      # RHEL/CentOS
-
-# Check kernel module
-lsmod | grep cifs
-```
-
-### Cross-Protocol Issues
-
-See [Troubleshooting › Cross-Protocol Issues](troubleshooting.md#cross-protocol-issues) for cross-protocol troubleshooting, including:
-- File locked by another protocol
-- Delegation recall timeouts
-- Lease break storms
-- Stale data after cross-protocol writes
-
----
-
-## Known Limitations
-
-### Protocol Scope
-
-1. **No SMB1 support**: Legacy protocol, not implemented for security reasons
-2. **No compression**: SMB 3.1.1 compression contexts are not implemented
-3. **No multichannel**: Multiple TCP connections per session not supported
-4. **No persistent handles**: Cluster-aware handles require shared state infrastructure
-5. **No RDMA transport**: Remote Direct Memory Access not supported
-6. **No QUIC transport**: SMB over QUIC (UDP) not supported
-7. **SACL audit events not generated**: Owner, group, and DACL security descriptors **are** supported (see [Access Control](access-control.md)); audit ACEs (SACL) round-trip through read/write and the Windows Auditing tab but are not *enforced* — no audit log is emitted on a matching access
-8. **No DFS referrals**: Distributed File System not supported
-
-### Operational Limitations
-
-9. **Ephemeral locks and oplocks**: Both byte-range locks and oplocks are in-memory only, lost
-   on server restart
-10. **No blocking locks**: Lock requests fail immediately if a conflicting lock exists
-11. **Single-node only**: No clustering or high availability for SMB state
-12. **Durable handle state is in-memory**: Durable handles survive disconnection but not server
-    restart (the metadata store persists handle metadata but in-memory state is lost)
-
-### SMB3 Feature Gaps
-
-13. **No per-file encryption**: Encryption is per-session or per-share only
+See [Troubleshooting: cross-protocol issues](troubleshooting.md#cross-protocol-issues)
+for files locked by the other protocol, slow lease breaks and stale data.
 
 ---
 
 ## Glossary
 
-| Term | Definition |
-| ------ | ------------ |
-| **AEAD** | Authenticated Encryption with Associated Data -- encryption providing both confidentiality and integrity (AES-GCM, AES-CCM) |
-| **ACL** | Access Control List -- Windows permission model |
-| **AES-CCM** | AES in Counter with CBC-MAC mode -- AEAD cipher for SMB 3.0/3.0.2 |
-| **AES-CMAC** | AES-based Cipher-based Message Authentication Code -- signing algorithm for SMB 3.0+ |
-| **AES-GCM** | AES in Galois/Counter Mode -- AEAD cipher preferred for SMB 3.1.1 |
-| **AES-GMAC** | AES-GCM used for authentication only (no encryption) -- signing algorithm for SMB 3.1.1 |
-| **AP-REQ** | Kerberos Application Request -- contains client's service ticket |
-| **AP-REP** | Kerberos Application Reply -- provides mutual authentication |
-| **ACE** | Access Control Entry -- a single allow/deny rule inside an ACL |
-| **CIFS** | Common Internet File System -- older name for SMB |
-| **CreateGuid** | 16-byte GUID used for idempotent durable handle V2 reconnection |
-| **Credit** | Flow control unit in SMB2 |
-| **DACL** | Discretionary ACL -- the access-granting part of a security descriptor |
-| **DH2Q/DH2C** | Durable Handle V2 Request/Reconnect create contexts |
-| **DHnQ/DHnC** | Durable Handle V1 Request/Reconnect create contexts |
-| **Durable / persistent handle** | An open handle a client can reclaim after a network drop (durable) or server restart (persistent) |
-| **Dialect** | SMB protocol version (e.g., 0x0311 = SMB 3.1.1) |
-| **Epoch** | Monotonic counter on lease V2 for stale break detection |
-| **FileID** | 16-byte handle for open file (8 persistent + 8 volatile) |
-| **GUID** | 16-byte globally unique identifier |
-| **KDF** | Key Derivation Function -- derives session-specific keys from base key |
-| **Lease V2** | Enhanced lease with ParentLeaseKey and epoch tracking (SMB 3.0+) |
-| **Kerberos** | Ticket-based network authentication, carried over SMB via SPNEGO |
-| **Lease** | SMB 2.1+ caching grant (read/write/handle) succeeding oplocks |
-| **NetBIOS** | Network Basic Input/Output System -- legacy session layer |
-| **NT_STATUS** | Windows error code format |
-| **NTLM / NTLMSSP** | Microsoft challenge/response authentication; the fallback when Kerberos is unavailable |
-| **Oplock** | Opportunistic lock -- client caching hint |
-| **ParentLeaseKey** | Lease V2 field linking file lease to parent directory lease |
-| **Preauth Integrity** | SHA-512 hash chain over negotiate/session-setup messages for downgrade protection |
-| **SACL** | System ACL -- the auditing part of a security descriptor |
-| **Security descriptor** | Windows/SMB structure bundling owner, group, DACL, and SACL ([MS-DTYP §2.4.6](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/)) |
-| **SessionID** | 64-bit identifier for authenticated session |
-| **Share** | Network-accessible folder (like NFS export) |
-| **SID** | Security Identifier -- Windows user/group identity |
-| **SP800-108** | NIST key derivation specification using Counter Mode with HMAC-SHA256 |
-| **SPNEGO** | Simple and Protected GSSAPI Negotiation Mechanism -- wraps NTLM/Kerberos tokens |
-| **Transform Header** | 52-byte header wrapping encrypted SMB3 messages (magic 0xFD) |
-| **TreeID** | 32-bit identifier for share connection |
-| **UTF-16LE** | 16-bit Unicode, little-endian byte order |
+| Term | Meaning |
+|------|---------|
+| **ACL / ACE** | Access control list, and one allow or deny entry in it |
+| **CIFS** | An old name for SMB |
+| **DACL** | The part of a Windows security descriptor that grants or denies access |
+| **Dialect** | An SMB protocol version, such as 3.1.1 |
+| **Durable handle** | An open file a client can reclaim after a network drop |
+| **Kerberos** | Ticket-based sign-in, used by Active Directory |
+| **Lease** | Permission for a client to cache a file (read, write, handle) |
+| **NTLM** | Microsoft's password challenge sign-in, used when Kerberos is not possible |
+| **Oplock** | The older form of a lease |
+| **SACL** | The audit part of a security descriptor |
+| **Security descriptor** | A file's owner, group, DACL and SACL together |
+| **SID** | Security identifier: a Windows user or group ID |
+| **SPNEGO** | The wrapper that lets client and server choose Kerberos or NTLM |
+
+Terms used by every protocol are in the project [Glossary](glossary.md).
 
 ---
 
 ## References
 
-### Specifications
-
-- [MS-SMB2](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/) - SMB2/3 Protocol Specification
-- [MS-NLMP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/) - NTLM Authentication Protocol
-- [MS-DTYP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/) - SID, ACL, ACE, and security descriptor formats
-- [MS-FSCC](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/) - File System Control Codes
-- [MS-ERREF](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/) - Windows Error Codes
-- [RFC 4178](https://www.rfc-editor.org/rfc/rfc4178) - SPNEGO Protocol
-- [RFC 4120](https://www.rfc-editor.org/rfc/rfc4120) - Kerberos V5
-- [RFC 2743](https://www.rfc-editor.org/rfc/rfc2743) - GSS-API
-- [NIST SP800-108](https://csrc.nist.gov/publications/detail/sp/800-108/final) - Key Derivation Using Pseudorandom Functions
-
-For plain-language definitions of these terms, see the project-wide [Glossary](glossary.md).
-
-### Related Projects
-
-- [go-smb2](https://github.com/hirochachacha/go-smb2) - SMB2 client in Go
-- [Samba](https://www.samba.org/) - SMB/CIFS implementation for Unix
+- [MS-SMB2](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/) - SMB 2 and 3
+- [MS-NLMP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/) - NTLM
+- [MS-DTYP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/) - SIDs, ACLs and security descriptors
+- [RFC 4178](https://www.rfc-editor.org/rfc/rfc4178) - SPNEGO
+- [RFC 4120](https://www.rfc-editor.org/rfc/rfc4120) - Kerberos 5
+- [Samba](https://www.samba.org/) - SMB for Unix

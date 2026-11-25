@@ -1,359 +1,506 @@
 # Windows Active Directory Setup Runbook
 
-> **Not served on this branch.** This build serves no file protocol; the SMB and
-> NFS adapters are being rebuilt (RFC 20, RFC 21, RFC 22). This runbook
-> describes the released server.
+This runbook joins DittoFS to an existing Windows Server Active Directory domain
+and gives domain users access to a share, **without creating a DittoFS user for
+each of them**. Domain users sign in with their own domain credentials, and
+DittoFS authorizes them by their AD user and group SIDs. Follow it when you
+deploy DittoFS in an AD domain.
 
-End-to-end guide for a Windows administrator to join **DittoFS** to an existing
-**Windows Server Active Directory** domain and give domain users SMB (and NFS)
-access to a share — **without creating any local DittoFS user for them**
-(issue #1528). Domain users authenticate with their own Kerberos credentials and
-are authorized directly by their AD user/group **SID**.
+Each step gives the exact command, PowerShell on a domain controller or an
+admin workstation with RSAT, or `dfsctl`, and what success looks like.
+[Identity](identity.md) has the full reference for every setting used here.
 
-This is the production Windows-Server companion to
-[identity.md](identity.md) (which uses a Samba AD-DC dev fixture). DittoFS-side
-steps use the `dfsctl` CLI; Windows-side steps use the native tools (`ktpass`,
-ADUC/ADSI Edit, Group Policy Management Console).
+> **Not available yet on this version.** This version does not serve SMB or
+> NFS, so the client-side steps (step 10 onward) cannot run yet. Steps 1 to 9
+> (the directory, the domain join and the grants) run today and are kept for
+> when SMB is served. NFS with Kerberos is not served on this version either.
 
-> **Status.** AD/LDAP/Kerberos support is functional but the project is **not
-> production ready**. See [faq.md](faq.md).
+> DittoFS is **not production ready**. See the [FAQ](faq.md).
 
-The worked example uses realm **`CUBBIT.LOCAL`** / NetBIOS **`CUBBIT`**, a
-member server **`vm2.cubbit.local`**, a service account **`svc-dittofs`**, and
-domain users **alice** / **bob** in an AD group **Cubbit**. Substitute your own.
+The example uses:
+
+| Thing | Example value |
+|-------|---------------|
+| Domain (Kerberos realm) | `CORP.EXAMPLE.COM` |
+| NetBIOS domain | `CORP` |
+| Domain controller | `dc1.corp.example.com` |
+| DittoFS host | `192.0.2.10`, named `files.corp.example.com` |
+| DittoFS computer account | `FILES` |
+| Directory read account | `svc-dittofs` |
+| Share | `archive` |
+| Domain users and group | `alice`, `bob`, group `Engineering` |
+
+Replace them with your own.
 
 ---
 
-## 0. Accounts: what you create and what you don't
+## Before you begin
 
-There are **two kinds of account**, and #1528 only removes one of them:
+### Two kinds of account
 
-| | Control-plane (management) | Data-plane (mounting) |
+| | Management account | Domain users |
 |---|---|---|
-| Who | The **one native DittoFS admin** | AD users (alice, bob, Administrator) |
-| Auth | Local password → `dfsctl login` | Kerberos ticket from the domain |
-| Created how | Created by `dfs init`, which takes its password from `--admin-password-file` or `--admin-password-env` | **Never created in DittoFS** |
-| Used for | Connect the directory, join the domain, create grants | Mount shares |
+| Who | The one DittoFS `admin` | alice, bob, Administrator, … |
+| Signs in with | A DittoFS password, through `dfsctl login` | Their domain password or Kerberos ticket |
+| Created by | `dfs init` | Active Directory. **Never created in DittoFS** |
+| Used for | Connecting the directory, joining the domain, granting access | Mounting shares |
 
-So the workflow is: **sign in as the native admin to connect the directory and
-create grants; from then on, domain users just mount.** You do **not** create AD-backed
-admin logins, and you do **not** create a DittoFS user for each AD user.
+You sign in as the DittoFS `admin` to set things up. After that, domain users
+just connect.
+
+### What you need
+
+- Domain administrator rights, or the right to create users and computer
+  objects in an OU.
+- A DittoFS host the domain controllers can reach, with a fixed IP address.
+- The DittoFS host's **protocol key** (`keys.protocol` in its config file).
+  DittoFS seals the directory password and the machine password under it.
+  Without it, step 5 and step 6 fail with `500 internal error`. No `dfs`
+  command creates this key file yet: write it with the helper shown in
+  [Encryption: local key files](encryption.md#local-key-files).
 
 ---
 
-## 1. Create the service account, SPN, and AES keytab (in AD)
+## 1. Create a read-only directory account
 
-DittoFS authenticates SMB/NFS clients as a Kerberos service. It needs a domain
-**service account** that holds the service principal name (SPN) and an exported
-**keytab**.
+DittoFS reads the directory to find users and their groups. It needs an
+ordinary domain user for that, with no special rights.
 
-1. **Create the service account** (Active Directory Users and Computers, or
-   PowerShell). Give it a strong password; it needs no special privileges.
-   ```powershell
-   New-ADUser -Name svc-dittofs -SamAccountName svc-dittofs `
-     -AccountPassword (Read-Host -AsSecureString "svc-dittofs password") `
-     -Enabled $true -PasswordNeverExpires $true
+On a domain controller, in PowerShell:
+
+```powershell
+New-ADUser -Name svc-dittofs -SamAccountName svc-dittofs `
+  -UserPrincipalName svc-dittofs@corp.example.com `
+  -AccountPassword (Read-Host -AsSecureString "svc-dittofs password") `
+  -Enabled $true -PasswordNeverExpires $true
+```
+
+**Success:** `Get-ADUser svc-dittofs` shows `Enabled : True`.
+
+Never use a domain administrator for this account. It only reads.
+
+---
+
+## 2. Add a DNS name for the DittoFS host
+
+Kerberos works only when clients connect by a name the domain knows. Give the
+DittoFS host one:
+
+```powershell
+Add-DnsServerResourceRecordA -ZoneName corp.example.com -Name files -IPv4Address 192.0.2.10
+```
+
+**Success:** `Resolve-DnsName files.corp.example.com` answers `192.0.2.10`.
+
+---
+
+## 3. Start DittoFS and sign in
+
+On the DittoFS host, initialise and start the server, with the admin password in
+a file only root can read:
+
+```bash
+export DITTOFS_ENCRYPTION_PASSPHRASE='choose-a-passphrase'
+dfs init --admin-password-file /etc/dittofs/admin-password
+dfs start
+```
+
+[Getting started](getting-started.md) explains the config file and the
+passphrase.
+
+The config file holds no identity settings. The realm, the directory and the
+join are set through `dfsctl` in the next steps, and the server applies them
+without a restart. (A v1 `kerberos:` or `ldap:` block in the config file is
+refused.)
+
+Sign in as `admin`. Over the loopback address the API answers plain HTTP:
+
+```console
+$ dfsctl login --server http://127.0.0.1:8080 --username admin
+password:
+Logged in to http://127.0.0.1:8080 as admin (context default)
+```
+
+---
+
+## 4. Point DittoFS at the directory
+
+Set the directory's address first, then the rest:
+
+```bash
+dfsctl setting set installation identity.directory.address ldaps://dc1.corp.example.com:636
+dfsctl setting set installation identity.directory.base 'DC=corp,DC=example,DC=com'
+dfsctl setting set installation identity.directory.realm CORP.EXAMPLE.COM
+dfsctl setting set installation identity.directory.netbios_domain CORP
+dfsctl setting set installation identity.directory.bind_name svc-dittofs@corp.example.com
+```
+
+**Success:** each command prints the key and its value:
+
+```console
+KEY                         VALUE                               APPLIED
+identity.directory.address  "ldaps://dc1.corp.example.com:636"
+```
+
+`APPLIED` counts the nodes that have picked the change up. It is empty right
+after the write; `dfsctl setting get installation identity.directory.address`
+shows `1/1` a few seconds later.
+
+If the domain controller's certificate is issued by your own CA, give DittoFS
+that CA (export it as Base-64 `.cer` first):
+
+```bash
+dfsctl setting set installation identity.directory.trust_roots -- "$(cat corp-root-ca.pem)"
+```
+
+The `--` is needed because the PEM text starts with dashes. Without this
+setting, the host's trusted CAs are used. Certificate checks cannot be turned
+off: `ldaps://` always uses TLS, and `ldap://` always upgrades with StartTLS.
+
+---
+
+## 5. Give DittoFS the directory password, and test
+
+```bash
+dfsctl setting set installation identity.directory.bind_credential 'svc-dittofs-password'
+```
+
+**Success:** the value comes back as a sealed reference, never the password:
+
+```console
+KEY                                 VALUE                                                        APPLIED
+identity.directory.bind_credential  {"ref":"14908706-e6af-4e00-8595-ea4fc8cf71fc","version":1}
+```
+
+A password that looks like JSON, such as `12345`, must be quoted twice:
+`'"12345"'`.
+
+Now test the connection:
+
+```bash
+dfsctl domain test --wait -o yaml
+```
+
+**Success:** the result says `reached: true` (output trimmed):
+
+```yaml
+result:
+  reached: true
+state: succeeded
+```
+
+`state: succeeded` alone only means the test ran. A failed test still has
+`state: succeeded`, with `reached: false` and an `error` saying why, for example:
+
+```yaml
+result:
+  error: 'vfs: unavailable: identity.directory: dial: identity.directory: dial ldaps://dc1.corp.example.com:636: dial tcp: lookup dc1.corp.example.com: no such host'
+  reached: false
+```
+
+---
+
+## 6. Join the domain
+
+Joining creates a **computer account** for DittoFS. It does two jobs:
+
+- **Kerberos:** clients get tickets for `cifs/files.corp.example.com`, and
+  DittoFS checks them with keys derived from the account's password. You need no
+  keytab for SMB.
+- **NTLM for domain users:** when a client connects by IP address, or by
+  double-clicking the server under **Network** in Explorer, Windows uses NTLM.
+  DittoFS passes the user's answer to a domain controller over the computer
+  account's secure channel. Without a join, a domain user's NTLM sign-in fails.
+
+Join as an administrator who may create computer objects in the OU:
+
+```bash
+dfsctl domain join --user administrator@corp.example.com \
+  --account FILES --ou 'OU=Servers,DC=corp,DC=example,DC=com' --wait
+```
+
+`dfsctl` prompts for the administrator's password (or reads `--password-file`).
+DittoFS uses it once and never stores it. The account's DNS name defaults to
+`files.corp.example.com`, the account name and the realm in lower case; set
+another with `--dns-host-name`.
+
+**Success:** the operation ends in `succeeded`:
+
+```console
+ID                                    KIND                         TARGET                                             STATE      UPDATED
+5b0e2c7a-…                            installation.join-domain     installation/02478ac7-…                            succeeded  2026-11-25T09:40:12Z
+```
+
+Check the account from PowerShell:
+
+```powershell
+Get-ADComputer FILES -Properties msDS-SupportedEncryptionTypes, servicePrincipalName
+```
+
+`msDS-SupportedEncryptionTypes` is `24` (AES128 and AES256), and
+`servicePrincipalName` lists `HOST/files.corp.example.com`.
+
+The machine password then changes by itself every 7 days. To change it now:
+`dfsctl domain rotate-machine-password --wait`.
+
+### Alternative: an offline join
+
+If DittoFS must never hold an administrator's password, create the account
+yourself, with AES enabled. An account created in **Active Directory Users and
+Computers** lacks the AES attribute, and DittoFS refuses it:
+
+```powershell
+New-ADComputer -Name FILES -Path 'OU=Servers,DC=corp,DC=example,DC=com' -Enabled $true `
+  -AccountPassword (Read-Host -AsSecureString "FILES password") `
+  -OtherAttributes @{'msDS-SupportedEncryptionTypes'=0x18}
+```
+
+Write that password to a file on the DittoFS host, readable only by you, then:
+
+```bash
+dfsctl domain join --offline --account FILES --password-file machine-password.txt --wait
+```
+
+DittoFS changes the password twice during the join, because you know the one
+you handed over. Keep the account's creator off the network path between DittoFS
+and the domain controller while the join runs: the first change is
+authenticated by that handed-over password.
+
+---
+
+## 7. Hand the computer object to Domain Admins
+
+Whoever owns the computer object can make the domain controller issue a ticket
+for **any** user to DittoFS. After the join, the owner is usually the
+administrator who ran it. Change that:
+
+1. Open **Active Directory Users and Computers**, and turn on **View → Advanced
+   Features**.
+2. Open the `FILES` computer object, **Security → Advanced**.
+3. Next to **Owner**, click **Change**, enter `Domain Admins`, click OK twice.
+4. On the **Attribute Editor** tab, check that
+   `msDS-AllowedToActOnBehalfOfOtherIdentity` is `<not set>`.
+
+**Success:** the Advanced Security dialog shows `Owner: Domain Admins`.
+
+DittoFS cannot check this for you.
+
+---
+
+## 8. Grant domain users and groups
+
+Grant access straight to AD names. `--directory` takes `DOMAIN\name`; DittoFS
+looks the name up in the directory and grants the user or group it finds. Give
+each principal its own level:
+
+```bash
+dfsctl grant set archive --directory 'CORP\alice' --access read
+dfsctl grant set archive --directory 'CORP\bob' --access read-write
+dfsctl grant set archive --directory 'CORP\Engineering' --access read-write
+dfsctl grant set archive --directory 'CORP\Domain Admins' --access admin
+```
+
+**Success:** `dfsctl grant list archive` lists one line per grant, with the
+principal's ID and its access.
+
+Levels, lowest to highest: `none`, `read`, `read-write`, `admin`. A user's own
+grant decides, and `none` refuses the user; with no grant of its own, its
+groups' grants decide. To remove one:
+`dfsctl grant remove archive --directory 'CORP\Engineering'`.
+
+A user with no `uidNumber` in AD gets a UID from `identity.id_range`
+(`1000000` to `1999999999` by default), which DittoFS keeps. You do not need to
+add POSIX attributes to your AD users.
+
+---
+
+## 9. Open the firewall
+
+The DittoFS host can run Linux or Windows; only the firewall commands differ.
+
+**From the DittoFS host to each domain controller (outbound):**
+
+| Port | For |
+|------|-----|
+| 53 | DNS, to find the domain controllers |
+| 88 | Kerberos |
+| 135 | RPC endpoint mapper |
+| 49152–65535 (or your site's narrower range) | The secure channel for NTLM pass-through |
+| 636 (or 389 for an `ldap://` address) | LDAP |
+
+**From clients to the DittoFS host (inbound):** SMB on 445, or the port
+DittoFS serves (12445 by default). Double-clicking the server under **Network**
+in Explorer also needs network discovery: UDP 3702, UDP 5353 and TCP 5357.
+
+DittoFS on **Linux** (firewalld):
+
+```bash
+firewall-cmd --permanent --add-port=445/tcp --add-port=5357/tcp --add-port=3702/udp --add-port=5353/udp
+firewall-cmd --reload
+```
+
+DittoFS on **Windows**: the built-in Network Discovery rules apply only to
+Windows' own services, so add rules for `dfs.exe`:
+
+```powershell
+$dfs = "C:\Program Files\DittoFS\dfs.exe"
+New-NetFirewallRule -DisplayName "DittoFS SMB"            -Direction Inbound -Action Allow -Protocol TCP -LocalPort 445  -Program $dfs -Profile Domain
+New-NetFirewallRule -DisplayName "DittoFS discovery meta" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5357 -Program $dfs -Profile Domain
+New-NetFirewallRule -DisplayName "DittoFS discovery"      -Direction Inbound -Action Allow -Protocol UDP -LocalPort 3702 -Program $dfs -Profile Domain
+New-NetFirewallRule -DisplayName "DittoFS mDNS"           -Direction Inbound -Action Allow -Protocol UDP -LocalPort 5353 -Program $dfs -Profile Domain
+```
+
+If Windows' own file server holds port 445 on that host, stop it so DittoFS can
+bind 445: `Stop-Service LanmanServer; Set-Service LanmanServer -StartupType Disabled`.
+Do this only on a host that serves no other Windows shares.
+
+---
+
+## 10. Map the share at logon
+
+Each person who logs on gets the share with **their own** permissions: each
+logon holds its own Kerberos ticket, and DittoFS authorizes whoever connects. On
+one shared workstation, alice gets read-only, bob gets read-write, and an
+administrator gets admin, through `Domain Admins`.
+
+**Option A: Group Policy drive map (recommended).**
+
+1. In **Group Policy Management**, edit a GPO linked to the users' OU.
+2. Go to **User Configuration → Preferences → Windows Settings → Drive Maps**,
+   and choose **New → Mapped Drive**.
+3. Set **Action** to *Update*, **Location** to `\\files.corp.example.com\archive`,
+   tick **Reconnect**, and pick a drive letter.
+4. Use **Item-level targeting** to give different groups different drives.
+
+It must be under **User** Configuration, so the drive maps with each user's own
+ticket.
+
+**Option B: a logon script.**
+
+```cmd
+net use Z: \\files.corp.example.com\archive /persistent:yes
+```
+
+No password is passed: Windows uses the logged-on user's ticket.
+
+Use the DNS name, never the IP address. With an IP address, Windows uses NTLM
+instead of Kerberos.
+
+---
+
+## 11. Check it works
+
+1. **Kerberos.** Log on to a domain workstation as alice and run:
+
+   ```cmd
+   net use Z: \\files.corp.example.com\archive
+   klist
    ```
 
-2. **Map the SPN and export an AES keytab** with `ktpass` (run on a DC or any
-   RSAT-equipped admin box). This binds `cifs/<host>` (SMB) to the account and
-   writes the keytab. **Use AES** — Windows 11 rejects RC4-only service tickets
-   (#1318):
+   **Success:** `net use` prints `The command completed successfully.`, and
+   `klist` lists a ticket for `cifs/files.corp.example.com @ CORP.EXAMPLE.COM`.
+
+2. **Access levels.** As alice, open a file on `Z:` (works) and save a change
+   (refused: she has `read`). Log on as bob: both work.
+
+3. **NTLM pass-through.** Connect by IP address, which forces NTLM:
+
    ```cmd
-   ktpass -princ cifs/vm2.cubbit.local@CUBBIT.LOCAL ^
-     -mapuser CUBBIT\svc-dittofs -pass * ^
+   net use * /delete /y
+   net use \\192.0.2.10\archive /user:CORP\alice *
+   ```
+
+   **Success:** `The command completed successfully.`
+
+4. **Names in Explorer.** Right-click a file on `Z:`, **Properties →
+   Security**. Owners and entries show as `CORP\alice`. Raw `S-1-5-21-…` SIDs
+   mean the directory is not connected (step 4).
+
+You never ran `dfsctl user create` for alice or bob: they reach the share as AD
+users only.
+
+---
+
+## Optional: a keytab for other service names
+
+The join covers the computer account's own names, such as
+`cifs/files.corp.example.com`. Any other name, such as `nfs/files.corp.example.com`
+for NFS with Kerberos (not served on this version), needs a keytab from a
+service account. Do **not** put the computer account's names in it: DittoFS
+refuses a keytab that holds them.
+
+1. Map the name to the service account and export an AES keytab:
+
+   ```cmd
+   ktpass -princ nfs/files.corp.example.com@CORP.EXAMPLE.COM ^
+     -mapuser CORP\svc-dittofs -pass * ^
      -crypto AES256-SHA1 -ptype KRB5_NT_PRINCIPAL ^
      -out C:\dittofs\dittofs.keytab
    ```
-   For NFS as well, repeat with `-princ nfs/vm2.cubbit.local@CUBBIT.LOCAL` and
-   `-in`/`-out` the same file to append (or export a second keytab and merge).
 
-3. **Advertise AES on the account** so the KDC issues AES tickets. In ADUC enable
-   *"This account supports Kerberos AES 256 bit encryption"* (Account tab), or
-   set `msDS-SupportedEncryptionTypes` via ADSI Edit / Attribute Editor. `ktpass`
-   usually sets this; verify it.
+   Use AES only: DittoFS refuses a keytab holding a DES or RC4 key, and
+   Windows 11 refuses RC4 tickets. **Success:** `ktpass` ends with
+   `Output keytab to C:\dittofs\dittofs.keytab`.
 
-4. Copy `dittofs.keytab` to the DittoFS host (e.g. `C:\ProgramData\dittofs\`).
-   Treat it as a **secret** — it is the service's Kerberos key. Restrict its ACL
-   to the DittoFS service account.
+2. Make the account ask for AES tickets:
 
-> If SMB port 445 on the host is held by the Windows *Server* service, stop and
-> disable `LanmanServer` so DittoFS can bind 445 (or run DittoFS on a host that
-> is not itself an SMB server).
+   ```powershell
+   Set-ADUser svc-dittofs -KerberosEncryptionType AES128,AES256
+   ```
 
----
+3. Copy the keytab to the DittoFS host. It is a secret: anyone holding it can
+   act as the service.
 
-## 2. Start the server and sign in
+4. Import it on the DittoFS host. `dfsctl` has no keytab command, so call the
+   API with a token:
 
-The bootstrap file holds no identity: v1's `kerberos:` and `ldap:` blocks are
-refused. The realm, the directory and the keytab are records the management
-API writes, so the server starts with none of them.
+   ```bash
+   TOKEN=$(dfsctl token create --expires-in 1h)
+   curl -s -X PUT http://127.0.0.1:8080/api/v1/installation/keytab \
+     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+     -H 'If-None-Match: *' \
+     -d '{"spec": {"value": "'"$(base64 < dittofs.keytab | tr -d '\n')"'"}}'
+   ```
 
-Initialise the node (this creates the native admin, with the password read
-from a file) and start the server:
+   **Success:** the API answers the stored keytab's reference:
 
-```powershell
-dfs init --config C:\dittofs\config.yaml --admin-password-file C:\dittofs\admin-password.txt
-dfs start --config C:\dittofs\config.yaml
-```
+   ```json
+   {"ref":"4863a4d8-8106-48e3-bcd1-67ea9e427140","version":1}
+   ```
 
-Sign in with the native admin, the one management account from step 0. Over
-loopback the API answers plain HTTP on `127.0.0.1:8080`:
-
-```powershell
-dfsctl login --server http://127.0.0.1:8080 --username admin
-```
-
-Import the keytab from step 1. `dfsctl` has no keytab command; the import is
-`PUT /api/v1/installation/keytab` with the keytab as base64, as
-[identity.md, Part C](identity.md#import-the-keytab) shows. The node applies it
-with no restart.
+   To replace a keytab later, first delete it (`DELETE` on the same URL), then
+   import the new one.
 
 ---
 
-## 3. Connect the LDAP directory (read-only)
+## Troubleshooting
 
-DittoFS reads the directory to (a) resolve an AD **name to a principal** when
-you write a grant, and (b) resolve a domain user's groups and uid/gid at sign-in.
-Use a **read-only** service account (the same `svc-dittofs` is fine: it only
-needs to read directory objects) and **LDAPS**.
-
-A user's uid is its `uidNumber` when the entry has one. An entry without one
-gets a uid allocated from `identity.id_range`, which DittoFS keeps, so you do
-**not** need to stamp POSIX attributes on your AD objects.
-
-The directory is the `identity.directory` record, written one key at a time.
-Set the address first:
-
-```powershell
-dfsctl setting set installation identity.directory.address ldaps://vm1.cubbit.local:636
-dfsctl setting set installation identity.directory.base 'DC=cubbit,DC=local'
-dfsctl setting set installation identity.directory.realm CUBBIT.LOCAL
-dfsctl setting set installation identity.directory.netbios_domain CUBBIT
-dfsctl setting set installation identity.directory.bind_name 'svc-dittofs@cubbit.local'
-dfsctl setting set installation identity.directory.bind_credential '<svc-dittofs password>'
-dfsctl domain test --wait
-```
-
-**Security notes:**
-- `ldaps://` dials TLS and `ldap://` always upgrades with StartTLS; no field
-  turns either off. Set `identity.directory.trust_roots` to the PEM of the DC's
-  issuing CA, or the host's roots are trusted.
-- The bind account needs **read only**. Never use a domain-admin bind.
-- The bind password is a secret: the API seals it and answers only its
-  reference and version.
-
-See [identity.md, Part B](identity.md#part-b-connect-the-directory) for every
-field.
-
----
-
-## 4. Grant AD users and groups directly (no local users)
-
-Now grant share access straight to AD principals. `--directory` takes an AD
-name, `DOMAIN\name`; the server resolves it through the directory and grants
-the principal it returns. `--user` and `--group` name local users and groups.
-You create no DittoFS user or group by hand.
-
-Grant **distinct levels per principal** — this is what makes the same share
-behave differently for each person:
-
-```powershell
-# AD user alice → read-only
-dfsctl grant set ditto --directory 'CUBBIT\alice' --access read
-
-# AD user bob → read-write
-dfsctl grant set ditto --directory 'CUBBIT\bob' --access read-write
-
-# AD group (everyone in Cubbit) → read-write, resolved to the group SID via LDAP
-dfsctl grant set ditto --directory 'CUBBIT\Cubbit' --access read-write
-
-# Domain Admins → admin (full control)
-dfsctl grant set ditto --directory 'CUBBIT\Domain Admins' --access admin
-
-dfsctl grant list ditto     # shows each grant: principal ID and access
-```
-
-Levels, lowest to highest: `none < read < read-write < admin`.
-
-Revoke symmetrically: `dfsctl grant remove ditto --directory 'CUBBIT\Cubbit'`.
-
----
-
-## 5. Per-user "mount on login" (the target experience)
-
-The goal: on a shared workstation, **each user who logs in gets the share mounted
-with their own permissions.** This works because each interactive Windows logon
-holds its own Kerberos ticket, so mounting `\\vm2.cubbit.local\ditto` under that
-logon presents *that user's* identity; DittoFS reads their PAC user + group SIDs
-and applies the grants keyed to those SIDs. No configuration ties a mount to a
-specific person — DittoFS simply authorizes whoever connects.
-
-- **alice logs in →** the share mounts **read-only** (her grant).
-- **bob logs in on the same box →** his own logon, his own ticket → **read-write**.
-- **Administrator logs in →** matched via *Domain Admins* → **admin**.
-
-Mount on login is a **client-side** Windows step (nothing DittoFS-specific):
-
-**Option A — Group Policy Drive Maps (recommended).** In the Group Policy
-Management Console, edit a GPO applied to the workstations:
-*User Configuration → Preferences → Windows Settings → Drive Maps → New → Mapped
-Drive.* Set Location `\\vm2.cubbit.local\ditto`, Action *Update*, a drive letter,
-and **Reconnect**. Use **item-level targeting** if you want different drives for
-different groups. Because it is under *User Configuration*, the drive maps under
-each user's own logon and ticket.
-
-**Option B — logon script.** A per-user logon script running:
-```cmd
-net use Z: \\vm2.cubbit.local\ditto /persistent:yes
-```
-No credentials are passed — Windows uses the logged-in user's Kerberos ticket
-(single sign-on).
-
-**Verify the resolved identity** in Explorer: right-click a file →
-*Properties → Security*. Owner/ACE SIDs resolve to `CUBBIT\<name>` when the LDAP
-directory is configured (step 3); without it they show as raw `S-1-5-21-…`.
-
----
-
-## 6. NTLM pass-through: Explorer double-click for AD users (optional)
-
-Everything above authenticates over **Kerberos**, which needs a service ticket
-for the SPN — so it works when you mount by the FQDN (`\\vm2.cubbit.local\ditto`).
-But when a user **double-clicks the server in Explorer → Network** (LAN
-discovery), or connects by **IP**, Windows connects by a name with **no SPN** and
-falls back to **NTLM** — which the KDC never sees. Without extra setup, an AD
-domain user fails that path with `STATUS_LOGON_FAILURE` (only local DittoFS users
-with a stored password work over NTLM).
-
-To make double-click work for **domain** users, enable **NETLOGON pass-through**:
-DittoFS forwards the client's NTLM response to a DC (`NetrLogonSamLogon`) over a
-secure channel, gets back the user + group SIDs, and authorizes them with the
-**same SID grants** from step 4 (so `Domain Admins` etc. apply unchanged).
-
-This needs a dedicated **machine (computer) account** — *not* the `svc-dittofs`
-service account, because NETLOGON requires a workstation-trust secure channel
-that only a machine account can establish. DittoFS joins the domain with a
-management-API operation, online or offline; the steps, the request bodies and
-the ports are in [identity.md, Part C2](identity.md#part-c2-join-the-domain).
-
-**Step 1 — pick a join.**
-
-- **Online:** DittoFS creates the computer account itself. Give it an
-  administrator that may create computer objects in the target OU.
-- **Offline:** you create the account and hand DittoFS its password. Create it
-  with AES enabled, `msDS-SupportedEncryptionTypes` = `0x18`. DittoFS accepts
-  AES only, so an account without the attribute, which is what Active
-  Directory Users and Computers creates, is refused:
-
-  ```powershell
-  New-ADComputer -Name DITTOFS `
-    -AccountPassword (ConvertTo-SecureString 'M4chine!Pass2026' -AsPlainText -Force) `
-    -Enabled $true `
-    -OtherAttributes @{'msDS-SupportedEncryptionTypes'=0x18}
-  ```
-
-  Keep the account's creator off the network path between DittoFS and the DC
-  while the join runs: the join rotates the password twice, and the first
-  rotation is authenticated by the password you handed over.
-
-**Step 2 — join.** Online, as an administrator who may create computer objects:
-
-```powershell
-dfsctl domain join --user administrator@cubbit.local --ou 'OU=Servers,DC=cubbit,DC=local' --wait
-```
-
-Offline, with the account you created:
-
-```powershell
-dfsctl domain join --offline --account DITTOFS --password-file machine.txt --wait
-```
-
-The password then rotates by itself; `dfsctl domain rotate-machine-password`
-rotates it now.
-
-**After the join, transfer the computer object's ownership** (for example to
-*Domain Admins*) and check its `msDS-AllowedToActOnBehalfOfOtherIdentity`: the
-owner can have a DC sign a ticket for any user to the account's names.
-
-**Step 3 — test the NTLM path.** From a domain member, connect by **IP** (forces
-NTLM) or double-click the server in Explorer → Network:
-
-```powershell
-net use * /delete /y
-net use \\192.168.100.50\ditto /user:CUBBIT\alice P4ssword!
-```
-
-
-### Ports and firewall
-
-This feature is **server-OS-agnostic** — the DittoFS server can run on **Linux or
-Windows**; the AD/Kerberos/NETLOGON setup is identical and only the host firewall
-differs. Pass-through needs the DittoFS host to reach the **DC outbound** on
-RPC endpoint mapper `135`, the DC's dynamic RPC range (`49152-65535` unless the
-site narrowed it) for the NETLOGON channel, Kerberos `88`, LDAPS `636` (or `389` for an `ldap://` directory record, with StartTLS), and DNS
-`53`, and to accept SMB `445` **inbound** from clients. The Explorer **double-click** additionally needs LAN
-discovery: inbound WS-Discovery UDP `3702`, mDNS UDP `5353`, and the metadata fetch on TCP
-`5357`.
-
-- **DittoFS on Windows** — the built-in "Network Discovery" rules are scoped to
-  `System`/`svchost`, so inbound discovery traffic to a third-party `dfs.exe` is
-  dropped by default. Add **program-scoped** inbound rules:
-  ```powershell
-  $dfs = "C:\path\to\dfs.exe"
-  New-NetFirewallRule -DisplayName "DittoFS Discovery (WSD meta)"  -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5357 -Program $dfs -Profile Any
-  New-NetFirewallRule -DisplayName "DittoFS Discovery (WSD probe)" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 3702 -Program $dfs -Profile Any
-  New-NetFirewallRule -DisplayName "DittoFS Discovery (mDNS)"      -Direction Inbound -Action Allow -Protocol UDP -LocalPort 5353 -Program $dfs -Profile Any
-  ```
-- **DittoFS on Linux** — no program-scoping quirk; just open the ports (e.g. with
-  firewalld):
-  ```bash
-  firewall-cmd --permanent --add-port=445/tcp --add-port=5357/tcp --add-port=3702/udp --add-port=5353/udp
-  firewall-cmd --reload
-  ```
-  Outbound to the DC is usually already permitted; if you restrict egress, allow
-  `135`, the DC's dynamic RPC range, `88`, `636` (or `389` for an `ldap://` record), and `53` to the DC.
-
-> **Known limitation:** SMB multichannel **session-bind** for pass-through domain
-> users is not yet supported — a client that opens extra channels logs a benign
-> `LOGON_FAILURE` on the spare connection and keeps working on the primary. It
-> does not affect browsing or mounting.
-
----
-
-## 7. Verify and troubleshoot
-
-**Prove no local users are needed:** you never ran `dfsctl user create` for alice
-or bob — they mount purely as AD principals.
-
-Check each logon gets the right level: as alice, reading works but writing is
-denied; as bob, both work; as Administrator, full control. The decision comes
-from each session's own sign-in, so two users on one workstation never share
-permissions.
-
-| Symptom | Cause / fix |
+| Symptom | Cause and fix |
 |---|---|
-| `System error 1219` on `net use` | A pre-existing/"Disconnected" session to the same server under different creds. `net use * /delete /y` and `cmdkey /delete:vm2.cubbit.local`, then retry. Not a DittoFS bug. |
-| Mount falls back to NTLM or fails with a signing error | Keytab lacks AES keys (RC4-only) — Windows 11 rejects RC4 (#1318). Re-export with `-crypto AES256-SHA1` and set `msDS-SupportedEncryptionTypes`. |
-| Grant by name returns "not found" | The directory is not connected or not reachable (`dfsctl domain test --wait`), or the name isn't a directory object. The server resolves the name through the directory before granting, so the directory must be reachable. |
-| Access denied despite a grant | Confirm the grant with `dfsctl grant list <share>`; confirm the user's ticket carries the granted group (their PAC group SIDs). |
-| `ldaps://` cert error | Set `identity.directory.trust_roots` to the PEM of the DC's issuing CA. Verification cannot be turned off. |
+| `System error 1219` on `net use` | Windows already holds a connection to the server as another user. Run `net use * /delete /y` and `cmdkey /delete:files.corp.example.com`, then retry. |
+| Kerberos fails, or Windows reports a signing error | The account has no AES keys. Check `msDS-SupportedEncryptionTypes` is `24` (step 6). Windows 11 refuses RC4. |
+| `dfsctl grant set --directory` says not found | The directory is unreachable or the name does not exist. Run `dfsctl domain test --wait -o yaml` and check `reached: true`. |
+| Access denied despite a grant | Check the grant with `dfsctl grant list archive`. For a group grant, check the user is in the group: `Get-ADPrincipalGroupMembership alice`. Group changes reach the user's ticket at the next logon. |
+| A domain user fails when connecting by IP | NTLM needs the join (step 6). |
+| `ldaps://` certificate error | Set `identity.directory.trust_roots` to your CA's PEM (step 4). |
+| `500 internal error` when setting the bind password | The DittoFS host has no protocol key (`keys.protocol`). See [Before you begin](#what-you-need). |
+| A Windows client logs `LOGON_FAILURE` on a second connection but keeps working | SMB multichannel session binding is not supported for NTLM pass-through users. The spare connection fails; the main one keeps working. Browsing and mounting are not affected. |
 
 ---
 
-## How authorization works (reference)
+## How authorization works
 
-- A grant names a principal by its ID. A grant by `--directory` name resolves
-  the name to a principal first, so a directory user or group is a principal of
-  the installation, with the SID the directory gives it.
-- A caller's grants on a share are those naming its own principal or one of
-  its groups: for a Kerberos sign-in, the user and group SIDs of its PAC; for
-  NTLM pass-through, those the domain controller returns.
-- **NFS** carries uids and gids, not SIDs, so an NFS caller is matched by the
-  principal its uid maps to. Keep `identity.id_range` clear of the uids and
-  gids your clients use locally, or a local id could match a directory
-  principal's grant over NFS.
-- The management role grants nothing on files: even the `admin` account reads
-  only what a share grant gives it.
+- A grant names a principal. A grant by `--directory` name looks the name up
+  first, so a directory user or group becomes a principal of the installation,
+  with the SID the directory gives it.
+- A caller's grants are those on its own principal or on one of its groups. For
+  Kerberos, the groups are the SIDs in the ticket; for NTLM pass-through, those
+  the domain controller returns.
+- **NFS** carries UIDs and GIDs, not SIDs, so an NFS caller is matched by the
+  principal its UID maps to. Keep `identity.id_range` clear of the UIDs and
+  GIDs your clients use locally, or a local ID could match a domain user's
+  grant over NFS.
+- The `admin` management account grants nothing on files: it reads only what a
+  share grant gives it.
 
-See [access-control.md](access-control.md) for the full SID/ACL model.
+See [Access control](access-control.md) for how SIDs and ACLs fit together.
