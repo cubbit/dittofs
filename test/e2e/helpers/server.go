@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/node/apiv1/client"
+	"github.com/cubbit/dittofs/test/e2e/framework"
 	"github.com/cubbit/dittofs/test/harness/fixture"
 	"github.com/cubbit/dittofs/test/harness/registry"
 )
@@ -56,8 +57,8 @@ func run(m *testing.M, f registry.Fixture) (int, error) {
 	if err := os.Chmod(bin, 0o755); err != nil {
 		return 0, err
 	}
-	if out, err := exec.Command("go", "build", "-o", filepath.Join(bin, "dfs"), "github.com/cubbit/dittofs/cmd/dfs").CombinedOutput(); err != nil {
-		return 0, fmt.Errorf("go build dfs: %w\n%s", err, out)
+	if err := buildDfs(filepath.Join(bin, "dfs")); err != nil {
+		return 0, err
 	}
 	out, err := os.MkdirTemp("/tmp", "dittofs-e2e-server-")
 	if err != nil {
@@ -74,6 +75,27 @@ func run(m *testing.M, f registry.Fixture) (int, error) {
 	}
 	_ = os.RemoveAll(out)
 	return code, nil
+}
+
+// buildDfs puts dfs at path: a copy of the one dt built as the user, when
+// DITTOFS_E2E_BIN names it, so root never runs go build, or else one built
+// here.
+func buildDfs(path string) error {
+	src, ok, err := framework.Prebuilt("dfs")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		if out, err := exec.Command("go", "build", "-o", path, "github.com/cubbit/dittofs/cmd/dfs").CombinedOutput(); err != nil {
+			return fmt.Errorf("go build dfs: %w\n%s", err, out)
+		}
+		return nil
+	}
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o755)
 }
 
 // Start returns the server Run started, as it runs now, failing t when
