@@ -50,7 +50,17 @@ func run[R, M any](t Target[R, M], env *Env, program Program) ([]M, string, erro
 		fmt.Fprintln(&trace, line)
 
 		if err != nil {
-			return nil, trace.String(), fmt.Errorf("%s%s: %w\n%s", trace.String(), where, err, seedOf(program[:i+1]))
+			failed := &stepFailure{
+				op:  step.Name,
+				err: fmt.Errorf("%s%s: %w\n%s", trace.String(), where, err, seedOf(program[:i+1])),
+			}
+
+			var by *stepFailure
+			if errors.As(err, &by) {
+				failed.check = by.check
+			}
+
+			return nil, trace.String(), failed
 		}
 	}
 
@@ -64,15 +74,24 @@ func check[R, M any](t Target[R, M], env *Env, step Step, got Result, component 
 
 	switch {
 	case len(next) == 0:
-		return nil, fmt.Errorf("no allowed state matches\n  got:  %s\n  closest candidate: %w\n"+
-			"  candidate states before the step: %d", got, refusal, len(states))
+		return nil, &stepFailure{
+			check: "no allowed state",
+			err: fmt.Errorf("no allowed state matches\n  got:  %s\n  closest candidate: %w\n"+
+				"  candidate states before the step: %d", got, refusal, len(states)),
+		}
 	case len(next) > maxStates:
-		return nil, fmt.Errorf("%d candidate states, more than %d", len(next), maxStates)
+		return nil, &stepFailure{
+			check: "too many states",
+			err:   fmt.Errorf("%d candidate states, more than %d", len(next), maxStates),
+		}
 	}
 
-	for _, invariant := range t.Invariants {
+	for i, invariant := range t.Invariants {
 		if err := invariant(env, component); err != nil {
-			return nil, fmt.Errorf("invariant: %w", err)
+			return nil, &stepFailure{
+				check: fmt.Sprintf("invariant %d", i),
+				err:   fmt.Errorf("invariant: %w", err),
+			}
 		}
 	}
 

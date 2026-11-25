@@ -17,10 +17,11 @@ import (
 const defaultStepBound = 10 * time.Second
 
 // Fuzz runs a target under the Go fuzzer: each input is decoded and run
-// against a new component and a new model.
+// against a new component and a new model. A program that fails at a step is
+// shrunk before it is reported.
 func Fuzz[R, M any](f *testing.F, target Target[R, M]) {
 	f.Fuzz(func(t *testing.T, data []byte) {
-		if _, err := execute(t, target, Decode(target, data)); err != nil {
+		if err := executeShrinking(t, target, Decode(target, data)); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -96,7 +97,10 @@ func guard(bound time.Duration, where string, step func() error) (err error) {
 
 	defer func() {
 		if p := recover(); p != nil {
-			err = fmt.Errorf("panic: %v\n%s", p, debug.Stack())
+			err = &stepFailure{
+				check: "panic",
+				err:   fmt.Errorf("panic: %v\n%s", p, debug.Stack()),
+			}
 		}
 	}()
 
