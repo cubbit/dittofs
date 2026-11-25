@@ -1,0 +1,1171 @@
+# RFC 5 — transforms v2: implementation plan
+
+**Scope.** [RFC 5, transforms](../docs/internals/rfcs/rfc-5-transforms.md), as it stands on `origin/develop`
+with this pull request's amendments: the transform model, the chain and its envelope, the chain
+ID, the pin of a chain for one block, material and its provider, the shipped compression and
+encryption transforms, namespace keys and their rotation in the bucket, and RFC 5 §6's series.
+The user asked for the whole RFC (status `draft`, not `deferred`), and decided that a piece with
+no caller in v1.1 is deferred and lands with its first caller: §6.1's ledger holds those pieces,
+and RFC 5 now says so where each is specified. Related RFCs, with how far each is in scope:
+
+- **Constraints only**, as the user decided:
+  - [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md): the failure model and **Lost** (§4.2, §10), and
+    §1.2's component imports as #5774 amends them (§1.5 rule 7);
+  - [RFC 2](../docs/internals/rfcs/rfc-2-carver.md), [RFC 3](../docs/internals/rfcs/rfc-3-syncer.md) and
+    [RFC 4](../docs/internals/rfcs/rfc-4-remote-tier.md): each has its own plan under #5488; §3.2 names
+    the seams the offload contract fixes between them and this plan;
+  - [RFC 8](../docs/internals/rfcs/rfc-8-engine.md): its offload part composes the chain and the provider
+    into the engine and the node (`.planning/rfc-8-offload-engine-plan.md`), and owns the
+    synchronisation points this plan cites as "RFC 8 offload plan S…";
+  - [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md): the settings machinery, bound settings
+    (§5.1) and secret references (§7), built by its plan (`.planning/rfc-13-config-plan.md`), whose
+    §6.1 hands four of RFC 13 §9's rows to this plan (epics 6 and 9).
+- **Constraints only**, a default this plan took (O1): [RFC 6](../docs/internals/rfcs/rfc-6-block-metadata.md)
+  §2.3's block-record census and its `Census` view, which the RFC 8 offload plan's epics 15 and 19
+  build and epic 10 here reads.
+- **Only the parts RFC 5 cannot work without**, a default this plan took (O1):
+  [RFC 16](../docs/internals/rfcs/rfc-16-metadata-store.md) §4.2's namespace key records
+  (`NS‖ns‖key‖kind‖keyID`) and key lock (`NS‖ns‖keyseq‖target`), as a view the provider
+  (`pkg/transform/keys/provider`) declares and `pkg/metadata/kvstore` implements (epic 6, D7).
+- **Constraints only, by the rule of the observability and test RFCs:**
+  [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) (§1.5 rule 3) and
+  [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) (§1.5 rules 6 and 10).
+- **Out**, each a §6.1 row: RFC 9 (GC's retirement relocation, the drain, `Recheck`), RFC 26
+  (catalog backups and their key machinery), RFC 27 (moves and re-homes), RFC 11 (fencing a node
+  that cannot be reached), an operator's destroy, which RFC 23 does not yet specify.
+
+**Tracks.** A, B and C, with no owner (§3.4).
+
+**Programme.** [#5488](https://github.com/cubbit/dittofs/issues/5488), "offload: RFC 2–5 and the
+engine's offload part", release v1.1; this RFC's roadmap epic is
+[#5486](https://github.com/cubbit/dittofs/issues/5486). It builds on the journal-only engine, stage 3
+of #3119 (`.planning/rfc-8-journal-only-engine-plan.md`). The five offload plans follow one
+contract, agreed after a joint review: package paths, the synchronisation points the RFC 8
+offload plan owns, and who builds what across the plans (§3.2). Composition into the engine and
+the node is the RFC 8 offload plan's; this plan keeps what is the component's own. No epic issue
+exists yet: the plan is not merged.
+
+**Naming.** v1 is `pkg/block/middleware`, `middleware/compression` and `middleware/encryption`,
+with the rest of the v1 block tier. Stage 4 of #3119 deleted it on `feat/storage-v2` (that plan's D8,
+[#5484](https://github.com/cubbit/dittofs/issues/5484), `.planning/rfc-16-store-cutover-stage4-plan.md`).
+v2 is RFC 5's chain, built in `pkg/transform`, a new top-level path that waits on nothing of
+#5484. No user-visible name carries a version.
+
+**Transition policy.** New installations only, as #3119 decided. v2 ignores v1, and the
+integration epics touch no v1 code (§1.5 rule 7).
+
+**Where the code lands.** The plan and its RFC amendments land on `develop`. The code lands on
+`feat/storage-v2`, where the engine v2, `pkg/keyprovider`, `pkg/secrets`, `pkg/settings` and
+`pkg/metadata/kvstore` live (`develop` has none of them).
+
+**Defaults used from the skill's inputs:** dashboards none; output path
+`.planning/rfc-5-transforms-plan.md`.
+
+**RFC amendments in this pull request** (RFC 5 is `draft`, so no other RFC follows them):
+- **§3.1, the pin.** `Chain.Pin` returns an `Attempt` that fixes the chain and the current
+  material from a block name's mint to its commit or abandonment; the attempt carries the chain
+  ID, the bounds and `Encode`, and `Release`. The RFC 8 offload plan's epic 15 holds it (D10).
+  `Pin` reads `Current` once for each material kind a transform declares (`Kinds`) and passes
+  those IDs to each transform's `MaxEncodedLen`, `LengthOf` and `Encode`, so a rotation after
+  the pin changes neither the bodies nor their lengths; `Chain.MaxEncodedLen` and
+  `Chain.LengthOf` go, since only an attempt knows its material. The largest encoded block on a
+  put is the maximum `Attempt.MaxEncodedLen` over open attempts, which changes at run time, so
+  the put side's pool is sized once by `MaxDecodeLen(Max)` (RFC 3 §2.2 follows, amended in the
+  RFC 3 plan's pull request), and §2.5's removal waits until no open pin holds the material,
+  as §5.3 does.
+- **§3.1 and §5.3, removal lands with its first caller**, GC's retirement or an operator's
+  destroy, an operation RFC 23 does not yet specify; its fence waits for open pins, not
+  encodes (§5.3, T13).
+- **Appendix B.3, the export key's next generation lands with catalog backups**; every `keys`
+  object names the first export key from the start, so nothing migrates.
+- **Appendix B.2, the `keys` object's read-back on `Recheck` lands with `Recheck`'s first
+  caller**, GC.
+- **Appendix B.1, the periodic primary-version read runs on the provider's own ticker** at
+  GC's recheck period until GC lands, and at open, so an in-place rotation is not left unseen
+  until the next open. The same read takes each master key's state, and `Pin` is refused while
+  the master key wrapping a namespace's current data key is not active, so a key destroyed in the
+  key service stops new writes without a restart. A master key found destroyed marks every key
+  record it wraps `destroyed` (Appendix B.2) before any report of it, so the engine's commit
+  check covers that case too.
+- **§2.8, a block's chain ID is its pin's.**
+- **Appendix B.1 and B.2, the key material's review:** a chunk's nonce is a keyed BLAKE3 hash of
+  its AAD and input under the key `dittofs chunk nonce v2` derives, so a later format version that keeps the labels cannot
+  give one ciphertext two tags; the wrap call raises one server-wide count per master key
+  (`MKW‖masterKeyID`, added to RFC 16 §4.2), so every namespace's wraps, the salvage-key wrap
+  and the escrow check's test record all count, and a key-file master key is current in one
+  installation only, while two installations may share a key-service master key, whose lifecycle
+  the key service owns; and the provider refuses a master key whose ID or fingerprint matches the
+  `storage` key's.
+- **Appendix B, AES-256-GCM in place of AES-256-GCM-SIV** (Q2, D3): a chunk's nonce is a keyed BLAKE3 hash of
+  its AAD and input, stored in the body (`MaxEncodedLen(n) = n + 285`); each export frame is sealed once
+  per salt; a key-file master key makes at most 2³² wraps; §5.4, T15, the `require` example,
+  the vector rows and RFC 26 §3.1's summary follow.
+- **§3.1, the `keys` package.** `MaterialID`, the provider interface, now `keys.Provider`, and
+  the material errors move to package `keys`, a contract, which `transform` imports, so the
+  provider, in `keys/provider`, has no import cycle; the namespace ID is `entity.NamespaceID`,
+  not a copy (§1.5 rule 7). The glossary says the `keys` package provides material.
+- **§3.1, the root package is the contract** (D1). `pkg/transform` holds the value types, the
+  `Transform`, `Chain` and `Attempt` interfaces and the errors, with `MaxDecodeLen` a method of
+  `Chain`, answered from its registry, so the codec reaches it through the root; `Register`,
+  `NewChain`, the registry and the envelope are `pkg/transform/chain`'s, and the stages are
+  `compress` and `encrypt`. The codec and the engine import only the root; the node's content
+  wiring builds the chain and injects it, as RFC 8 §2.8 says.
+- **RFC 25 §3.9 and §7** gain `material_unknown`, `material_destroyed` and the `malformed`
+  ticket (A1); **RFC 23 §4.1, §4.6 and §5.2** gain the key operations (A3); **RFC 16 §4.2** gains
+  the wrap count's row and **RFC 27 §2.4** the move's refusal under a shared key-file master key
+  and the shared key-service master key's lifecycle (A4).
+
+**Answered by the user.** The design questions Q1 to Q4 are answered and written in place (§6),
+and the amendments to RFC 23 and RFC 25 they need (A1, A3) are in this pull request, as is A4,
+from the review of the key material.
+
+## 1. Introduction
+
+### 1.1 What we are building
+
+RFC 5's "Start here" and "In short" describe the result: a per-chunk chain in a fixed stage
+order, a self-describing envelope, reading by registry and material rather than by
+configuration, a plaintext hash that decides, and a key table whose every key is wrapped under a
+master key held off the host where it must be.
+
+What replaces what:
+
+| v1 | v2 | Fate |
+| --- | --- | --- |
+| `pkg/block/middleware` (the decorator chain over the v1 remote store) | `pkg/transform`'s `Chain`, run inside RFC 4's block codec | v1 deleted by stage 4 (its plan's D8) |
+| `pkg/block/middleware/compression` (zstd and LZ4, a marker per layer) | `pkg/transform/compress`, the two compressors of RFC 5 Appendix A | v1 deleted by stage 4; epic 4 adds `pierrec/lz4/v4` back (D4) |
+| `pkg/block/middleware/encryption` (a random data key per chunk under AES-GCM) | `pkg/transform/encrypt`, the transform of RFC 5 Appendix B | v1 deleted by stage 4 |
+| `pkg/keyprovider` (RFC 13's custody of the `storage` wrapping key; its KMIP provider fetches the key out of the server) | `pkg/transform/keys/provider`, with its KMIP custody in `provider/kmip.go`: master keys that never leave a key service | `pkg/keyprovider` stays RFC 13's, its exported surface unchanged; its key-file format and KMIP transport move to `internal/keyfile` and `internal/kmip`, which both import (D5, D14) |
+| the per-remote `encryption.key` configuration blob | the store configuration's `transforms`, `materials` and `require` keys (RFC 5 §3.2), in RFC 13's settings | v1 deleted with its store |
+
+**Dependency limits.** Epic 4 adds back `pierrec/lz4/v4` and makes `klauspost/compress` direct
+again, both v1 dependencies stage 4 dropped (D4); nothing else is added: AES-256-GCM is the standard library's (D3).
+
+### 1.2 How the plan is organised
+
+- Epics 1 and 2 are the team's and run first: the frozen surface of RFC 5 §3.1 with the pin,
+  then the test components every transform and the provider are held to.
+- Six middle epics, two per track, cut along RFC 5's seams:
+  - Track A: the chain (epic 3), then compression (epic 4);
+  - Track B: encryption (epic 5), then the key-service custody (epic 7);
+  - Track C: namespace keys and the provider (epic 6), then rotation and the destroyed-material
+    notice (epic 8).
+- Epic 9 wires what is the component's own: its settings, the operator's key operations, its
+  collectors, conditions and alert rules (registered in the node by the RFC 8 offload plan), the
+  error mapping and the namespace's key creation.
+- Epic 10 is the rest of the integration, the census gauge that reads the RFC 8 offload plan's
+  `Census` view; it is planned after that plan's S7.
+- Epic 11, E2E green, runs RFC 5's rows that need the codec and the engine, and the put and get
+  benchmark, once the engine composes the component.
+
+RFC 5's suites paragraph (§8.3) puts §8.1 and §8.2 in `unit` and §8.1's key-management row in
+`integration`. Neither keeps a `known.yaml`, so no test lands red: each lands green with the
+epic that makes it pass, and epic 2 registers no suite. This plan adds no suite and no group of
+its own: its allocation gates are one `unit` option, `transform-allocs` (`tier: pr`), registered
+by epic 3, and its fuzz targets join the nightly `fuzz` suite the RFC 2 plan's epic 2 registers
+(§1.5 rules 2 and 4).
+
+### 1.3 What epic 1 must deliver
+
+The exported surface of `pkg/transform` and `pkg/transform/chain`, frozen at S1, which is the
+RFC 8 offload plan's S1d, "transform pipeline agreed":
+
+- RFC 5 §3.1's symbols as amended here. In the root, the contract (D1): the ID and stage types
+  and constants, `Transform`, `Encoded`, `Factory`, `Config`, the `Chain` and `Attempt`
+  interfaces, `ErrMalformed` and `ErrTooLarge`. In `pkg/transform/chain`, with stub bodies:
+  `Register`, `NewChain` and the concrete chain and attempt, whose `MaxDecodeLen` method the
+  root's `Chain` declares. In
+  `pkg/transform/keys`, also a contract: `MaterialID`, `Provider` and the material errors.
+  `pkg/transform` imports `keys`, so `keys` imports nothing of `pkg/transform`. `Provider.Remove` is not
+  declared: RFC 5 §3.1 as amended has it land with its first caller, which adds it to the
+  interface (§6.1, §1.5 rule 12).
+- The namespace ID is `entity.NamespaceID`, RFC 16 §2's type. `entity` is a contract, so the
+  transforms import it and keep no copy (§1.5 rule 7).
+- The injection point RFC 25 §8 asks for: `NewChain` takes a logger and a recorder the chain
+  declares for RFC 5 §6's series, which the node's content wiring implements over the root's
+  metrics registry (D2).
+- The two calls the RFC 8 offload plan makes besides the chain: the salvage-key wrap (D16) and
+  the destroyed-material notice (D17), declared in `pkg/transform/keys` next to `Provider`, each
+  a one-method interface the engine holds; the provider in `keys/provider` (epics 6 and 8) and the
+  in-memory `keys.Provider` (epics 2 and 8) implement them.
+- The component's import test (§1.5 rule 7).
+
+It declares no internal interface: the provider's custody seam has one consumer and lands with
+it (D6).
+
+### 1.4 What epic 2 must deliver
+
+**The catalogue.** Each row lands green with the epic named under its **Done when:** line (§5).
+
+- **From RFC 5:** every row of §8.1 and §8.2, mapped in §7; §8.3's benchmarks, in epics 3, 4, 5
+  and 11.
+- **From other sources**, each placed in the epic that owns the code:
+  - v1's bug history, RFC 5 Appendix D's rows: an incompressible chunk that begins with the zstd
+    frame magic round-trips (its D1, epic 4); a body declaring 64 MiB, and a zstd frame with a
+    window above the chunk maximum, fail before allocating (its D2, epic 4); turning compression
+    off between a write and a read (its D4, epic 3; turning encryption on is T15's refusal, epic
+    9); a store whose encryption cannot load writes nothing (its D9, epic 11); a provider failure
+    at start leaves the journal serving (its D10, epic 11, with the RFC 8 offload plan);
+  - Wycheproof's `aes_gcm_test.json` for the standard library's AES-256-GCM as the transform
+    calls it, a tag failure that returns an error and no plaintext and leaves no unauthenticated plaintext in
+    `dst` (`cipher.AEAD.Open` may overwrite `dst` on failure; the standard library's GCM zeroes it), and two inputs under one chunk key
+    getting two nonces, and one input under two versions in the AAD getting two nonces (epic 5);
+  - N concurrent rotations of one namespace leave exactly one current key; the notice's cursor
+    survives a restart; a master-key re-wrap of 10⁴ records resumes after a crash (epic 8);
+  - decompression bombs for zstd and LZ4 as fuzz seeds (epic 4);
+  - KMIP: a server with an expired certificate, a revoked key, and a table over every key
+    state, Item Not Found and an unknown state value: only Destroyed and Destroyed Compromised
+    report the key destroyed, and every other answer reports it unavailable, so a misconfigured
+    endpoint never pages `data_loss` (epic 7); and a master key Destroyed in the KMIP server
+    refuses `Pin` within one tick, with no restart (epic 8).
+
+**Known failures.** None: no suite RFC 5's paragraph names keeps a `known.yaml`, so nothing is
+registered (§1.2).
+
+**The test components.**
+- `transformtest`, the transform conformance suite of RFC 5 §8.1's generic rows, run by every
+  registered transform from its own epic. It is run once against a deliberately broken test
+  transform (one that exceeds its bound, one that encodes nondeterministically, one that
+  returns a foreign error), and must fail on each.
+- `keystest`, a conformance suite for `keys.Provider`, and an in-memory `keys.Provider` that
+  passes it: a verified in-memory implementation (kind 2 of `CLAUDE.md`'s "Writing tests"). It exports
+  a count of provider calls, which the suite covers, so RFC 5 §8.2's "the provider records no
+  call" (T12, T14) is asserted on it rather than on a counting fake. Epic 6's provider passes the
+  same suite and exports the same count; epic 8 adds the destroyed-material notice to both.
+- The golden vectors (D11): RFC 5's vectors (§2.8's chain ID, §2.4's envelope, Appendix B.1's
+  derivations, fingerprint, chunk AAD and key wrap AAD) added to the one vector script the RFC 2
+  plan's epic 2 owns, computed from RFC 5's byte tables alone.
+- The leak check is `internal/prof`, which exists.
+
+### 1.5 General rules for each epic
+
+> **Instruction for whoever expands an epic into its detailed description and subtasks,
+> human or AI:**
+>
+> - **Creating an epic from this plan: use the `epic-breakdown` skill.** Whenever the user
+>   asks to create an epic from this plan, or to expand, detail or break one down, run the
+>   `epic-breakdown` skill (`.claude/skills/epic-breakdown/SKILL.md`) on this plan and that
+>   epic, rather than writing the epic document freehand. It extracts the RFC's MUST and
+>   MUST NOT into numbered requirements, estimates each subtask in man-days and suggests
+>   the pull requests. A human doing it by hand follows the same skill.
+> - **Epic and subtask, nothing else.** The units of work are the epic and its subtasks,
+>   with subtask ids `<e>.<n>` (`subtask 4.3`, or `T4.3` for short), assigned by the epic
+>   document. No other word names
+>   them: not task, ticket, story, step or phase, in headings, tables, ids or prose.
+> - **The epic stands alone for what to build.** Its requirements, subtasks and decisions
+>   are in the epic document itself, which never refers to this plan for them or says "see
+>   the plan": the RFC sections it implements, the interfaces it builds on, the
+>   subtasks, and a short legend of the names it borrows from this plan (E1, E2, S1, the
+>   integration epic, …). It cites the numbered rules below, without copying them, in a
+>   table of how each applies: each row names its rule by number and bold title, which
+>   says what the rule requires, and the table links this §1.5 with a full link (the
+>   plan's path and the section's anchor) and the `CLAUDE.md` sections that hold a rule,
+>   so the epic reads alone and its reader can still open each rule's text in one click.
+> - **The epic document records decisions, not progress, like this plan.** It has no
+>   status fields, no checkboxes to tick and no sections to keep up to date as the work
+>   goes on. It is revised through a pull request only when a decision changes.
+> - **Subtasks are not pull requests.** A subtask is ideally up to 5 man-days. The owner
+>   ships subtasks as they see fit, one pull request each or several together; the epic
+>   document only suggests a grouping, each suggested pull request ideally up to 15
+>   man-days. Cut and group by logic, readability, dependencies and a deliverable that can
+>   be named, not to hit a number.
+> - **Every subtask states how it meets each rule that applies to it.** A rule that does
+>   not apply is named, with the reason.
+> - **In the issue tracker, once each document merges,** following `epic-breakdown`
+>   Step 6, their one description. Issues point at the documents and copy nothing; once
+>   created, their `Estimate` and blocked-by links are the current estimate and
+>   dependencies, and the documents are not revised to follow them. The
+>   epic issues exist before E2's pull request lands, because each red test's
+>   `known.yaml` entry names one; subtask issues come once their epic document has
+>   merged. The release an epic ships in is set by the RFC's roadmap epic that its epic
+>   issue sits under, never in a document and never on the epic issue on its own: the epic
+>   issue and its subtask issues copy that roadmap epic's milestone, and an epic changes
+>   release only by moving under the roadmap epic of the other release.
+
+1. **Independent unit tests.** Each epic carries its own unit tests, built on epic 2's
+   `transformtest`, `keystest` and golden vectors, the implementation of an epic it depends
+   on once that has landed, and only the doubles `CLAUDE.md`'s "Writing tests" allows. Epic 1
+   declares no internal interface for them to stand in for (rule 12).
+2. **Fuzz every decoder of bytes this component did not just write** (`CLAUDE.md`, "Writing
+   tests", "By kind", which names the invariant a target asserts): the envelope and
+   `Chain.Decode` (epic 3), the zstd and LZ4 headers and frames (epic 4), the encryption header
+   (epic 5), the stored wrap and the key record (epic 6), the `keys` object (epic 8). Each
+   transform's `Decode` is also fuzzed by `transformtest` (RFC 5 §8.1, T4). Seeds are the
+   fixtures and the golden vectors; crashers go to `testdata/fuzz/<FuzzName>/`, which plain
+   `go test` runs in `unit`. Every target also joins the nightly `fuzz` suite the RFC 2 plan's
+   epic 2 registers; the epic that adds the first target adds RFC 5's suites-paragraph line
+   naming it.
+3. **Observability follows RFC 25.** The prefixes are `transform_` and `encryption_` (RFC 25
+   §2.1). Epic 3 owns RFC 5 §6's series around each call; epic 5 owns `encryption_chunks_total`;
+   epic 6 owns `encryption_keys_unavailable` and `encryption_current_key_age_seconds`; epic 10
+   owns `transform_census_blocks`. The provider reports the material it cannot reach as a plain
+   value, which the node's content wiring turns into RFC 25 §3.9's `material_unavailable`
+   (epic 6). No package here imports `pkg/metrics` or `pkg/health` (rule 7): the series go
+   through the recorder the chain and the provider declare (D2), and the series specs, the
+   conditions and the alert rules are plain values in this component's packages (epic 9), which
+   the content wiring builds into collectors, a health source and rules, and the RFC 8 offload
+   plan's epic 21 registers in the node. No span per chunk: a transform logs nothing per chunk (RFC 5 §6), and the spans are the
+   engine's and the syncer's. A chain that fails to build logs once at `Error` (epic 3). No key
+   byte, unwrapped material, derived key or passphrase reaches a log line, an error string, a
+   label or a condition: IDs and fingerprints only. Epics 5 to 8 each test it by planting a
+   known key and searching the captured log and every error they return for its bytes.
+4. **Profiling.** Tests and benchmarks run under `internal/prof`'s leak check. The hot paths
+   carrying allocations-per-op assertions: `Attempt.Encode` and `Chain.Decode` with a caller's
+   `dst`, each transform's `Encode` and `Decode`, the envelope parse, and `Provider.Get` on a
+   cached key. They run in `unit`'s `transform-allocs` option (`tier: pr`), which epic 3
+   registers.
+5. **Public interface and internals.** Tests cover each package's internals and the behaviour
+   the epic enables, concurrency under `-race` included (RFC 5 §8.1's 64-goroutine row). Test at
+   the layer that **consumes** a value (`CLAUDE.md`, "Verifying a change"): a census reaches
+   `Decode`'s view, not only the codec that collects it; a destroyed key is asserted where a
+   decode reports it and where the notice delivers it.
+6. **Known failures shrink.** No suite of this RFC keeps a `known.yaml` (§1.2), so no test lands
+   red here. A test this plan adds to a suite that keeps one, such as an engine suite of the
+   RFC 8 offload plan, follows `CLAUDE.md`, "Writing tests", "By kind".
+7. **v2 ignores v1, and imports only what RFC 0 §1.2 allows.** Amended RFC 0 §1.2 (#5774) lets
+   a component import another component's contract, never its implementation, and checks the
+   imports transitively. The root `pkg/transform` and `pkg/transform/keys` are the contract
+   (D1): the remote codec and the engine import only those. The node's content wiring
+   (`internal/node/content`), a composer, imports `pkg/transform/chain`, the stages and the
+   provider, builds the chain and injects it. The transforms import two contracts:
+   - `pkg/metadata/entity`, the value types RFC 16 §2 keeps in one package, for
+     `entity.NamespaceID` (§1.3). Its own imports, BLAKE3 and `github.com/google/uuid`, come
+     with it.
+   - `pkg/remote`, RFC 4's contract, for the `keys` object's errors (D8). Their tests may
+     import `pkg/remote/memory`, its in-memory store.
+
+   They import no implementation of another component: not `pkg/metadata/kvstore`, not
+   `pkg/remote/s3`, and not `pkg/keyprovider`. The provider needs less than each store offers, so
+   it declares the key-record view (D7) and the `keys`-object store (D8) as interfaces of its
+   own, named for the need, and the wiring supplies both. `pkg/keyprovider` has no contract
+   the provider needs: what the two share is implementation, the key-file format and the KMIP
+   transport, so those move to `internal/keyfile` and `internal/kmip` (D5, D14), and neither
+   imports `pkg/keyprovider`. No package copies a provider's types or errors to avoid an
+   import.
+
+   Epic 1 adds `pkg/transform`'s import test. It walks every package of the tree and all that
+   each one imports, transitively, test packages included, against an allowlist per package.
+   The root and `keys` may import the standard library, `keys` and `entity` only, so the codec
+   and the engine reach no implementation through them; the test fails if the root imports
+   `chain`, a stage or the provider. The rest of the tree may also import its own packages
+   (`pkg/transform/...`), `x/crypto`, the compression, BLAKE3 and KMIP modules,
+   `internal/keyfile`, `internal/kmip` and `pkg/remote`. No package imports `pkg/settings`,
+   `pkg/metrics` or `pkg/health`: each holds a contract and its implementation together, so
+   under amended RFC 0 §1.2 it counts as an implementation, and only the two composers import it
+   (the split is tracked in #5775). The test fails on any v1 path or any other component's
+   implementation. v1 is not touched: stage 4 deleted it.
+8. **Real dependencies for properties of those dependencies** (`CLAUDE.md`, "Writing tests").
+   Here: a real KMIP server, the harness's `service:kmip`, for the key service (RFC 5 §8.1's
+   key-management row, in `integration`); the real metadata store for key records and the key
+   lock, through the node's content wiring's tests running the key-record suite (D7) over Badger under
+   `t.TempDir()`, the memory KV and, where that suite runs, FoundationDB. Key creation, escrow
+   and rotation are ordering claims (a key record committed before the wrap or key is used, a
+   key current only after the bucket's put): each has a crash-seam row in that suite, with
+   `pkg/metadata/kv/kvtest`'s fault wrapper tearing or crashing the commit beneath it (epics 6
+   and 8). The bucket's `keys`
+   object is tested against RFC 4's in-memory store, which RFC 4's conformance suite holds to
+   its S3 store, with LocalStack over HTTPS from the RFC 4 plan's epic 3 (D8).
+9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). RFC 5 carries `decision:`
+   notes whose markers go at the code sites that implement them: compression off by default
+   where a namespace encrypts (§3.2), the fixed 1/16 threshold and the double compression of a
+   measuring pass (Appendix A), the clear chunk-ID key of a non-encrypting namespace (B.2), no
+   header key and determinism per namespace (B.5). A piece deferred to its first caller (§6.1)
+   leaves a `decision:` marker where the caller will plug in, naming that caller.
+10. **A test must be able to fail** (`CLAUDE.md`, "Writing tests"), and nothing else would
+    catch the change it guards. The golden vectors are its sharpest case: each is computed by
+    an independent implementation, never by the code it checks (D11), and `transformtest` is
+    proved against a broken transform (§1.4).
+11. **A symbol is exported only if RFC 5's interface or a consumer outside the package uses
+    it.** Everything epic 1 exports is frozen at S1, with one known widening: `Provider.Remove`
+    lands with its first caller (§1.3, RFC 5 §3.1), which adds it to the interface and to every
+    implementation then, the in-memory `keys.Provider` and the provider. The provider's operations are exported by
+    the epic that builds them and frozen when epic 9 first calls them.
+12. **Each subtask creates only what it declares.** No empty package and no stub without a
+    caller; a package, an option or a test helper lands with its first consumer. A piece with no
+    caller in v1.1 is not built (§6.1).
+
+## 2. Epics at a glance
+
+| # | Epic | Content | Subtasks | Man-days | Track | Blocks |
+| --- | --- | --- | --- | --- | --- | --- |
+| E1 ⛔ | Interfaces | `pkg/transform`'s RFC 5 §3.1 surface with the pin, stub bodies, `keys.Provider` and `MaterialID`, the chain's `Deps`, the salvage-key wrap and destroyed-material notice signatures, the import test | 3 | 3.5 | team | every epic |
+| E2 ⛔ | Test foundations | `transformtest` with its broken-transform check, `keystest` with the in-memory `keys.Provider`, RFC 5's golden vectors, the catalogue | 4 | 9.5 | team | E3 to E8 |
+| E3 | The chain | registry, envelope, chain build and refusals, the pin, composed encode and decode with bounds, the census view, `require`, the chain ID, §6's series, the allocation option | 7 | 15 | A | E9; partly E4, E8 |
+| E4 | Compression | zstd and LZ4, their header, decline, window cap, fixtures, ratio benchmarks | 4 | 8.5 | A | E9 |
+| E5 | Encryption | AES-256-GCM from the standard library, the chunk derivations, nonce and AAD, the header, kind refusal, fixtures and vectors | 4 | 8.5 | B | E9; partly E6 |
+| E6 | Namespace keys and the provider | key-record view, stored wrap and its wrap count, key-file custody, escrow, `keys.Provider` with fingerprints and its three failures, namespace key creation, the salvage-key wrap, B.6's gauges, the custody suite | 8 | 19 | C | E8, E9; partly E7 |
+| E7 | Key-service custody | KMIP wrap and unwrap through the server with AAD, version-qualified IDs, the primary version, the real-server row's provider half | 4 | 7 | B | E9; partly E8 |
+| E8 | Rotation and the destroyed-material notice | master and data key rotation in the bucket, the `keys` object, the notice, the primary-version and key-state ticker, master-key destroy marking | 5 | 11 | C | E9 |
+| E9 | Integration | settings keys and the bound `encrypts`, the key operations, collectors and alert rules, error mapping, namespace key creation | 5 | 12 | team | E10, E11 |
+| E10 🔀 | Integration, the census | `transform_census_blocks` and the census per material | planned after S7 | planned after S7 | team | — |
+| E11 🔀 | E2E green | RFC 5's codec and engine rows, the put and get benchmark | 6 | 10 | team | — |
+| | **Total** | | **50** | **104** | | |
+
+**Plan estimate: 50 subtasks, 104 man-days, not counting epic 10.**
+
+The skill's estimate for RFC 5's 1,999 lines is 5 middle epics (`round(1999 / 400)`); this plan
+has 6. Master-key custody through a key service shares no state with the namespace key records
+beyond the custody seam (D6), and splitting it off keeps Track B busy after encryption.
+
+**Legend.** ⛔ is a blocker; 🔀 waits on a synchronisation point. "team" is an epic that belongs
+to no track. "Partly" means the dependent epic starts before the blocker lands (§3.3). Epic 11
+is estimated: it waits on S7 to start, but its rows are this RFC's and known now; epic 10 waits
+on an interface another plan builds and is planned after it.
+
+## 3. Synchronisation points, blockers and the split
+
+### 3.1 Dependency graph
+
+```mermaid
+flowchart TD
+  E1["E1 Interfaces ⛔"]:::blocker --> S1(["S1 = RFC 8 offload plan S1d, transform pipeline agreed"]):::sync
+  S1 --> E2["E2 Test foundations ⛔"]:::blocker --> S2(["S2 conformance suites and vectors in"]):::sync
+  R2["RFC 2 plan epic 2: vector script, corpus, fuzz suite"] -. "vectors" .-> E2
+  R2 -. "corpus" .-> E4
+  subgraph A["Track A"]
+    E3["E3 The chain"]
+    E4["E4 Compression"]
+  end
+  subgraph B["Track B"]
+    E5["E5 Encryption"]
+    E7["E7 Key-service custody"]
+  end
+  subgraph C["Track C"]
+    E6["E6 Namespace keys and the provider"] --> E8["E8 Rotation and the notice"]
+  end
+  S2 --> E3 & E4 & E5 & E6
+  E3 -. "registry for conformance" .-> E4
+  E3 -. "chain ID for data-key rotation" .-> E8
+  E5 -. "the AEAD call for the key-file wrap" .-> E6
+  E6 -. "custody interface" .-> E7
+  E7 -. "primary version and key state" .-> E8
+  S1c(["RFC 8 offload plan S1c, remote store contract agreed"]):::sync -. "keys role" .-> E8
+  E3 & E4 & E5 & E6 & E7 & E8 --> E9["E9 Integration"]
+  S7(["RFC 8 offload plan S7, store adapter and node composition built"]):::sync --> E10["E10 Integration, the census 🔀"]:::sync
+  S7 --> E11["E11 E2E green 🔀"]:::sync
+  E9 --> E10
+  E9 --> E11
+  classDef blocker stroke:#c0392b,stroke-width:3px
+  classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
+```
+
+### 3.2 Synchronisation points
+
+The offload plans share one table of synchronisation points, owned by the RFC 8 offload plan;
+this plan cites them by its names.
+
+- **S1, the surface frozen**, which is **RFC 8 offload plan S1d, transform pipeline agreed**:
+  epic 1's symbols, the pin and release, the salvage-key wrap and the destroyed-material
+  notice, reviewed with the RFC 8 and RFC 4 plans' authors (§1.5 rule 11). Unblocks epic 2 here,
+  and the codec (RFC 4) and the engine (RFC 8) coding against `pkg/transform`.
+- **S2, the conformance suites and vectors in.** `transformtest`, `keystest` with its
+  in-memory `keys.Provider`, and RFC 5's vectors in the shared script exist. Unblocks epics 3, 4, 5
+  and 6.
+- **🔀 RFC 8 offload plan S1c, remote store contract agreed**: RFC 4's contract, its control
+  objects and the codec's encode and decode calls included. Unblocks epic 8's `keys` object (its
+  bytes go through `PutControl` with the `keys` role); the rest of epic 8 does not wait.
+- **🔀 S7, which is RFC 8 offload plan S7, store adapter and node composition built**: the
+  engine holds the pin from mint to commit or abandonment and writes the census at commit (its
+  epic 15), the `Census` view exists (its epic 19), the engine calls the salvage-key wrap (its
+  epic 20) and the destroyed-material notice (its epic 18, which also abandons at commit an attempt
+whose material the notice named after the pin, RFC 8 §10.4 as amended), and the node registers this
+  collectors, alert rules and `material_unavailable` health source the content wiring builds
+  from this component's plain values, and the engine's health source for `material_destroyed`,
+  which only the engine can evaluate, since it alone sees the census and the journal (RFC 25
+  §3.9, failing closed while dependence is unknown) (its epic 21). Unblocks epic 10, which is planned after it, and epic 11.
+
+Seams between this plan and the others, the offload contract's and RFC 13's:
+
+| Plan | It builds | It calls of this plan |
+| --- | --- | --- |
+| RFC 2 | the keyed BLAKE3 chunk ID (RFC 2 §4.1), the keyed gear table (RFC 2 §3.2, §6), RFC 5 §8.2 T17's half that the same file in two namespaces gives disjoint chunk IDs (its epic 4); the one vector script and test corpus (its epic 2), which this plan's vectors join; the nightly `fuzz` suite (its epic 2) | nothing: the engine passes it the keys (below) |
+| RFC 3 | its `Descriptor` and `MaterialRef`, the census entry opaque to the syncer, and its own `ErrMaterialUnavailable` and `ErrMaterialDestroyed` (RFC 3 §1.3) | nothing: its memory bound is sized by the engine and the codec (below) |
+| RFC 4 | the block codec, which writes the census into the header (RFC 4 §3.2 to §3.4) and owns RFC 3 §2.2's memory-bound row on the codec's part; `PutControl` and `GetControl` (RFC 4 §4.13); LocalStack over HTTPS in `integration` (its epic 3) | `Attempt.Encode`, `Chain.Decode`, `MaxDecodeLen`, the stage count and the 255-byte material ID that bound the header census; `Attempt.MaxEncodedLen` for one block's bound; the upload memory is RFC 3 §2.2's, sized once by `Chain.MaxDecodeLen(Max)` |
+| RFC 13 | `pkg/keyprovider`, whose exported surface does not change: epic 6 moves its key-file format to `internal/keyfile` and epic 7 its KMIP transport to `internal/kmip` (D5, D14); its importers (`pkg/secrets`, `internal/install`, `cmd/dfs`) are not touched, and its `kmip_integration_test.go` still runs over the moved transport | nothing: `pkg/transform` does not import it |
+| RFC 8 offload | the pin's holder and the census at commit (epic 15), and there the refusal of a plan keyed under another namespace's key (RFC 5 §8.2 T17's other half, its last Appendix B.2 row: epic 15's Intent step), the `Census` view (epic 19), the destroyed-material handling (epic 18), the salvage export (epic 20), the store adapter, its error mapping and the node's registration of collectors and alert rules (epic 21) | the root's `Chain` (`Pin`, `Decode`) and `Attempt.Release`, the chain the content wiring builds with `chain.NewChain` and injects, `Chain.MaxDecodeLen`, which the wiring calls on the chain it built to size the syncer's fetcher (RFC 3 §2.2), `keys.Provider`'s `Current` and `Get` for the chunk-ID and chunking keys it hands the carver, the salvage-key wrap, the destroyed-material notice; its content wiring (`internal/node/content`) supplies the `keys`-object store (D8) and the key-record view (D7) |
+
+### 3.3 Blockers
+
+| Epic | Blocks | Why |
+| --- | --- | --- |
+| E1 ⛔ | every epic | the surface every test and implementation codes against |
+| E2 ⛔ | E3 to E8 | every transform passes `transformtest`; the provider and every transform's tests use `keystest`'s in-memory `keys.Provider`; the vectors are the oracle |
+| RFC 2 plan epic 2 | E2, partly; E4, partly | RFC 5's vectors join its script; the ratio benchmarks use its corpus |
+| E3 | E4, partly; E8, partly; E9 | `Register` and the registry's `MaxDecodeLen` hold a compressor's registration; a data-key rotation's new chain ID is epic 3's; epic 9 validates settings with `NewChain` |
+| E4 | E9 | epic 9 validates the compress stage's settings with the registered compressors |
+| E5 | E6, partly; E9 | the key-file wrap calls AES-256-GCM as epic 5 does (D3) |
+| E6 | E7, partly; E8; E9 | epic 7 implements the custody interface epic 6 declares (D6); epic 8 rotates epic 6's records |
+| E7 | E8, partly; E9 | a key service's new primary version starts epic 8's master-key re-wrap |
+| E8 | E9 | the operator's operations call rotation, and epic 9 starts `rotate-master-key` from epic 8's primary-version read |
+| S1c 🔀 | E8, partly | the `keys` object goes through RFC 4's control objects |
+| S7 🔀 | E10, E11 | the engine and the node compose this component; epic 10 is planned after it |
+| E9 | E10, E11 | epic 10 completes what epic 9 wires; epic 11 runs through epic 9's settings |
+
+### 3.4 Splitting the work
+
+- **Track A: the chain, then compression.** Epic 3 from S2, then epic 4, which can start on its
+  headers at S2 while epic 3 lands the registry. Busy to epic 9.
+- **Track B: encryption, then the key service.** Epic 5 from S2, then epic 7 once epic 6's
+  custody interface lands; epic 7 does not wait on epic 5. The shortest track: after epic 7 it
+  takes epic 9's key operations (the API and CLI surface), which call into Track C's code.
+- **Track C: namespace keys, then rotation.** Epic 6 from S2, then epic 8, whose `keys` object
+  waits on RFC 8 offload plan S1c and whose key-service re-wrap waits on epic 7. The longest
+  track and the critical path.
+- **The team converges** on epic 9 once every middle epic has landed, and on epics 10 and 11
+  after S7.
+
+## 4. Implementation decisions
+
+### 4.1 Directory layout
+
+On `feat/storage-v2`:
+
+```text
+pkg/transform/                 E1 the contract: value types, Transform, Chain and Attempt
+                               interfaces, errors; the import test
+pkg/transform/chain/           E1 Register, NewChain stubs; E3 registry, MaxDecodeLen,
+                               envelope, chain, Pin, chain ID, census view, the series of
+                               RFC 5 §6; E9 settings.go, the store configuration's rows
+pkg/transform/transformtest/   E2 the transform conformance suite, the vector loader
+pkg/transform/keystest/        E2 the keys.Provider conformance suite, the in-memory
+                               keys.Provider; E6 the custody suite, the key-record suite and
+                               its in-memory view
+pkg/transform/compress/        E4 zstd and LZ4
+pkg/transform/encrypt/         E5 the AES-256-GCM transform and its derivations
+pkg/transform/keys/            E1 the contract: MaterialID, Provider, the material errors,
+                               the salvage-key wrap and notice interfaces
+pkg/transform/keys/provider/   E6 the provider, the key-record
+                               view it declares (D7), the stored wrap, key-file custody,
+                               escrow, namespace key creation, the salvage-key wrap; E7
+                               kmip.go, key-service custody over KMIP; E8 rotation, the keys
+                               object, the destroyed-material notice
+internal/keyfile/              E6 the key-file format moved out of pkg/keyprovider (D5)
+internal/kmip/                 E7 the KMIP transport moved out of pkg/keyprovider (D14)
+pkg/metadata/kvstore/          E6 keys' key-record view over RFC 16 §4.2's NS‖ns‖key
+                               and NS‖ns‖keyseq rows and the MKW wrap count, run under the key-record suite
+pkg/metadata/kv/keys/          E6 the keyseq subtag beside NSKey, and the MKW kind (0x4D)
+```
+
+### 4.2 Decisions
+
+**D1. `pkg/transform`'s root is the contract; the chain, the stages and the provider are
+subpackages.** The offload plans take new top-level paths (`pkg/carver`, `pkg/syncer`,
+`pkg/remote`, `pkg/transform`) and wait on nothing of #5484. The root holds only the value
+types, the `Transform`, `Chain` and `Attempt` interfaces and the errors, and `keys` only
+`MaterialID`, `Provider`, the material errors and the engine's two one-method interfaces, so
+the codec and the engine import them and no implementation (amended RFC 0 §1.2, RFC 8 §2.8).
+The chain is `chain`, the provider `keys/provider`, and the node's content wiring builds both
+and injects them. The shipped transforms register with `chain` from their own packages, so a
+custom transform is one more such package (RFC 5 §4). Prior art: Go's `image` and `database/sql`
+registries, a package per format that registers at init. Applies in epic 1.
+
+**D2. `NewChain` takes a logger and a recorder for its series.** RFC 5 §3.1's signatures are
+indicative, and RFC 25 §8 says every component receives them from the root in its `Deps`, never
+from a global. The chain records RFC 5 §6's series around each transform's call, so a custom
+transform gets them without writing any. It does so through a recorder it declares, named for
+its series, which the node's content wiring implements over the root's metrics registry, so the
+chain imports no `pkg/metrics` (§1.5 rule 7); the provider does the same for its gauges.
+Prior art: RFC 25 §8.1 itself; the Prometheus client's
+practice of registering collectors on an injected registry (from memory). Applies in epic 1,
+filled in epic 3.
+
+**D3. AES-256-GCM comes from the standard library, `crypto/aes` and `crypto/cipher`, as the user
+answered (Q2): a commonly supported algorithm and no implementation of our own.** RFC 5 Appendix B
+is amended to match, and each use keeps GCM's one rule, never one key and nonce for two different
+plaintexts. A chunk's nonce is a keyed BLAKE3 hash of its AAD and the exact bytes sealed, under a key the data key derives,
+stored in the body, because one chunk key does see different inputs (a new compression level, a
+declined chunk compressed later, a relocation), so a zero nonce would repeat. A frame's nonce is
+its section and frame index under a frame key the export's own salt derives, and each frame is
+sealed once per salt. A key-file wrap's nonce is random, so the wrap call itself counts every wrap
+per master key, in one server-wide `MKW‖masterKeyID` row of RFC 16 §4.2, and refuses past 2³² (NIST SP 800-38D §8.3). No use needed XChaCha20-Poly1305. Both the
+chunk seal (epic 5) and the key-file wrap (epic 6) call `cipher.NewGCM`. Prior art: TLS 1.3 and
+SSH run AES-GCM with a counter nonce; a nonce from a PRF of the message is the SIV construction's
+idea, here over AES-GCM and keyed BLAKE3 (from memory). The nonce is keyed BLAKE3 rather than
+HMAC-SHA256, as the user answered: both rest on one assumption, a pseudorandom function under a
+secret key, and keyed BLAKE3 is already a dependency for chunk IDs (RFC 2 §4.1); what the extra
+pass costs on encode is epic 5's benchmark (RFC 5 §8.3), not a number assumed here. Applies in
+epics 5 and 6.
+
+**D4. zstd from `klauspost/compress`, LZ4 from `pierrec/lz4/v4`, as v1 used them.** Stage 4
+deleted v1's `middleware/compression`, their only importer, so `feat/storage-v2`'s `go.mod` no
+longer lists `pierrec/lz4/v4` and lists `klauspost/compress` as indirect only; epic 4 adds both
+back as direct dependencies. zstd decodes with its window and memory capped at the chunk
+maximum (RFC 5 Appendix A, "Its header"). Prior art: v1's own `middleware/compression` used both
+libraries. Applies in epic 4.
+
+**D5. The material provider is new; it shares only the key-file format with `pkg/keyprovider`.**
+`pkg/keyprovider` is RFC 13's custody of the `storage` wrapping key, which must never wrap a
+namespace key (RFC 5 Appendix B.2, "No storage-key fallback"), and its KMIP provider fetches the
+key out of the server, which Appendix B.1 forbids for a master key. A key-file master key is read
+in `pkg/keyprovider`'s passphrase-protected format, under RFC 13 Appendix C's passphrase. Epic 6
+moves that format's reader to `internal/keyfile`, which both packages import. The reader is
+implementation, not contract, so amended RFC 0 §1.2 does not let the provider import it from
+`pkg/keyprovider` (§1.5 rule 7); `pkg/keyprovider`'s exported surface and its tests do not
+change. The wrap itself is RFC 5 Appendix B.1's. Since a master-key file
+and the `storage` key file share a format and a passphrase, nothing in the file tells them apart:
+the node's content wiring passes the `storage` key's ID and fingerprint in the provider's `Deps`, and
+the provider refuses a master key whose ID or fingerprint matches (RFC 5 Appendix B.2, "No
+storage-key fallback"). A fingerprint is one-way, so the provider still holds no `storage` key.
+Prior art: HashiCorp Vault's seal wrappers and the AWS Encryption SDK's keyrings separate key
+custody from the data format (from memory). Applies in epics 6 and 7.
+
+**D6. Master-key custody is a small interface the provider declares**, with two
+implementations: the key file (epic 6) and the key service (epic 7). Its calls are what
+Appendix B.1 asks of a provider: wrap and unwrap with associated data, the version-qualified
+ID of each wrap, and the current primary version. It is not epic 1's: it has one consumer, the
+provider, and lands with it (§1.5 rule 12). Each implementation passes `keystest`'s
+custody suite, which lands with the interface in epic 6, the key service running it at the
+integration tier. Prior art: as D5. Applies in epic 6.
+
+**D7. Key records are a view the provider declares and the metadata store implements.** The
+provider needs a few calls, not the metadata store's interfaces, so it declares them, named for the need
+(§1.5 rule 7): read a namespace's key records, create its keys in one transaction, rewrite them
+under the `keyseq` key lock, and raise a master key's wrap count (D3) by a conditional write.
+Its calls take the namespace as an `entity.NamespaceID`, and plain types for the rest (byte
+slices, strings, integers, the key records in RFC 16 §4.3's codec as bytes). RFC 16 §2.1
+defines no entity for a key record, so no contract type exists to carry one: the record stays
+bytes until RFC 16 adds one. `pkg/metadata/kvstore` satisfies the view in the store's own
+transactions without importing the provider, an implementation that RFC 0 §1.2 forbids it to import;
+the node's content wiring passes it in. Its suite is in `keystest` with a verified in-memory view. The node's content wiring's tests,
+which may import both packages, run the same suite against kvstore, so Badger, the memory KV and
+FoundationDB all run the key-record and key-lock rows, the lock's conflict under FoundationDB
+included; kvstore's own conformance run does not call it. Stage 7's rename of `kvstore` to `pkg/metadata` moves only the implementation. The
+provider holds unwrapped namespace keys in process memory, per namespace. Prior art: RFC 14's
+`OpenRecords`, the other consumer-declared view. Applies in epic 6.
+
+**D8. The `keys` object is a versioned binary record, stored through an interface the provider
+declares.** Its bytes: a format version, the namespace ID, the sequence, the export key ID, the
+key records in RFC 16 §4.3's codec, as the key-record view (D7) reads them, and the keys MAC of Appendix B.1. RFC 5 fixes what the
+MAC covers and RFC 4 §4.13 the object's role, but neither its bytes. Settled now, the export key
+ID included though only the first export key exists in v1.1, because a recovery import
+(RFC 26 §2.3) reads it from every bucket written from the first namespace on: a change later is
+a second version every reader keeps. The provider needs only the put and get of this object, so it
+declares them as a two-call interface over `pkg/remote`, RFC 4's contract: an absent object is
+RFC 4's own error, not a copy (§1.5 rule 7). The node's content wiring passes RFC 4's store.
+The provider's tests use RFC 4's in-memory store, `pkg/remote/memory`, which RFC 4's conformance suite
+holds to the real store, so `keystest` keeps no second store and no suite for it.
+Prior art: none found for this record; RFC 4 §3.5's versioned block format is the house pattern.
+Applies in epic 8.
+
+**D9. Rotating a data key makes a new key current and schedules nothing.** Appendix B.3 makes
+relocating the old key's blocks a separate act, and RFC 9 §4.4 defers to RFC 5 §5.3 for where the
+retiring set is recorded, which §5.3 does not say. A key merely not current is not being retired,
+so the set is not "every non-current data key". The record is GC's, settled with its walk in
+RFC 9's plan (§6.1). Prior art: none found. Applies in epic 8.
+
+**D10. A block's chain is pinned from its name's mint to its commit or abandonment**, as RFC 5
+§3.1 now says. `Chain.Pin` reads the namespace's current material once and returns the
+`Attempt` whose chain ID, bounds and encodes use it; the RFC 8 offload plan's epic 15 holds the
+attempt across the measuring pass, the put, its retries and RFC 3's per-upload measurement, and
+releases it at commit or abandonment. At commit, its epic 18 abandons an attempt whose material
+the destroyed-material notice (D17) named after the pin (RFC 8 §10.4, as the RFC 8 offload plan's
+pull request amends it). In v1.1 the pin counts nothing: the count of open pins
+is `Remove`'s fence (RFC 5 §5.3 as amended), which lands with `Remove` (§6.1). Prior art: a snapshot of
+configuration taken per request, as a database transaction pins its schema version (from
+memory). Applies in epics 1 and 3.
+
+**D11. The golden vectors come from a second implementation**, RFC 5's part of the one vector
+script the RFC 2 plan's epic 2 owns (Python's `cryptography` for AES-GCM, HKDF and HMAC, and
+`blake3`'s keyed mode for chunk IDs, the gear table and the chunk nonce), computed from RFC 5's tables alone and checked in with its output. CI does not run
+it; the Go tests read its output. Prior art: Wycheproof's vectors (from memory).
+Applies in epic 2.
+
+**D12. Fixtures are per transform and per format version**, under the transform's own
+`testdata/fixtures/v<n>/`, holding RFC 5 §4 item 7's inputs, settings, material and bodies;
+`transformtest` reads them. Applies in epics 2, 4 and 5.
+
+**D13. `MaxDecodeLen` takes each registered transform's bound at its default settings.** RFC 5
+§2.5 has the registry build each transform once for decoding with its defaults, and both shipped
+transforms' bounds are independent of their settings. A transform whose bound grows with a
+setting (Appendix C's parity) declares its largest at registration; that is epic 3's open point
+for the first such transform. Prior art: none found. Applies in epic 3.
+
+**D14. The key service speaks KMIP only, with associated data as bytes, as the user answered
+(Q3), over the transport `pkg/keyprovider` already has.** Its round trip, TLS setup, message
+read and key-state mapping move to `internal/kmip`, which both providers import; epic 7 adds
+only the encrypt and decrypt payloads with associated data and the primary-version read, in one
+file of the provider, `kmip.go`, so no second package and no import alias. RFC 5
+§8.1's row names a key-management server and the harness runs one (`service:kmip`). A cloud key
+service taking associated data as a string map is a §6.1 row. Prior art: KMIP 1.4's
+authenticated encryption parameters; AWS KMS's encryption context is the string-map case (from
+memory). Applies in epic 7.
+
+**D15. The operator's key operations are RFC 23 operations on the store configuration and the
+namespace, as the user answered (Q4), with A3 in this pull request.** RFC 5 names the acts (rotate a master or
+data key; verify a key file's escrow; the destroy lands with its first caller, §6.1) and RFC 23
+§4.1's actions table names none of them. Epic 9 adds them with their `dfsctl` commands and
+regenerates `docs/guide/cli.md`. Prior art: RFC 23's own `rotate-signing-key`. Applies in epic 9.
+
+**D16. The salvage-key wrap is one call, declared in `pkg/transform/keys` and implemented by
+the provider**: it draws a fresh data key, wraps it under
+the installation's current master key with associated data naming the salvage export, and
+returns the key and its stored wrap (RFC 5 Appendix B.2, "A salvage key seals one salvage
+export"). It belongs to no namespace, so it writes no key record, but its wrap raises the master key's
+count like any other (D3); the RFC 8 offload plan's epic
+20 writes the wrap beside the export. Prior art: none found. Applies in epic 6.
+
+**D17. The destroyed-material notice is a call the engine polls**, declared in `pkg/transform/keys`
+and implemented by the provider, returning the material IDs the provider has found destroyed
+since a cursor: a key record in state `destroyed`, every record a master key the key service
+reports destroyed wraps among them, which the provider marks before the notice names any of them
+(RFC 5 Appendix B.2), so the commit-time check sees them first. A key the service reports compromised still
+decrypts, so it is not destroyed: RFC 5 Appendix B.4 gives `ErrMaterialDestroyed` only for
+material lost for good. A poll, not a callback, so the engine's own loop decides when to clear offloaded bits
+(RFC 8 §10.4) and nothing runs inside the provider's lock. A destroyed ID the notice names after
+an attempt's pin makes the RFC 8 offload plan's epic 18 abandon that attempt at commit, rather
+than commit a block under lost material (RFC 8 §10.4, as that plan's pull request amends it). The in-memory `keys.Provider` implements it
+under `keystest`. Prior art: a change feed read by cursor, as the metadata store's own
+generation counters (from memory). Applies in epic 8.
+
+### 4.3 Knowingly simple implementations
+
+- **The unwrapped-key cache never evicts.** `ponytail:` every namespace key the provider has
+  unwrapped stays in memory until stop, about 32 bytes and an ID per key; at 10⁴ namespaces and
+  a few keys each that is under a megabyte. Upgrade to a bounded cache that re-unwraps on a miss
+  when the namespaces of one node reach about 10⁶. Epic 6.
+- **One TLS connection per KMIP call.** `ponytail:` the moved transport dials, runs one
+  operation and closes, as `pkg/keyprovider` does; a cold start or a master-key rotation over
+  10⁴ namespaces costs a handshake per unwrap or re-wrap (not measured). Upgrade to a pooled
+  connection with a concurrency bound when a cold start or a rotation shows the handshakes in a
+  profile. Epic 7.
+- **zstd levels collapse onto the library's encoder speeds.** `ponytail:` `klauspost/compress`
+  maps RFC 5's level range onto four encoder speeds, so two levels may write equal bodies under
+  two chain IDs, which costs nothing but a missed dedup across a level change. Upgrade if the
+  ratio benchmark (RFC 5 §8.3) shows a level the operator asks for compressing no better than
+  its neighbour; a new encoder is a new format version (RFC 5 §5.4). Epic 4.
+
+## 5. The epics in detail
+
+### Epic 1 — Interfaces ⛔
+
+**Epic 1 estimate: 3 subtasks, 3.5 man-days.**
+
+The frozen surface of `pkg/transform`, with stub bodies, and the import test.
+
+**Owns:** RFC 5 §3.1 (the symbols, the pin included); §2.3's stage constants; §2.7's error
+values.
+**Done when:** S1, the RFC 8 offload plan's S1d, agreed with the RFC 4 and RFC 8 plans' authors;
+the import test passes on the empty tree and fails on a planted v1 import; the codec's
+bounds reach `MaxDecodeLen` through the root's `Chain`, with no import of `chain`.
+
+**Expected content:**
+- §3.1's types, the `Transform`, `Chain` and `Attempt` interfaces, `Config` and the errors in
+  the root, `MaxDecodeLen` a method of `Chain`; `Register` and `NewChain` in `chain`; doc
+  comments citing the RFC.
+- `keys.Provider`, `MaterialID` and the material errors in `pkg/transform/keys`, and the
+  chain's `Deps` (D2); the namespace ID is `entity.NamespaceID` (§1.3).
+- The salvage-key wrap (D16) and the destroyed-material notice (D17), declared in
+  `pkg/transform/keys` next to `Provider`.
+- `pkg/transform`'s import test, the root and `keys` held to the contract's allowlist (§1.5 rule 7).
+
+### Epic 2 — Test foundations ⛔
+
+**Epic 2 estimate: 4 subtasks, 9.5 man-days.**
+
+The components every transform and the provider are held to, and the oracle the format checks
+compare against.
+
+**Owns:** RFC 5 §8.1's generic rows as a suite; RFC 5 §4 item 7's fixture mechanism.
+**Done when:** S2: `transformtest` passes a test transform and fails each broken one; the
+in-memory `keys.Provider` passes `keystest`; RFC 5's vectors are in the shared script with their
+output.
+
+**Expected content:**
+- `transformtest`: RFC 5 §8.1's rows T2 (round trip, fixtures), T4 (with a fuzz helper), §2.1's
+  bound, concurrency, §2.7's byte flips, T9 (twice, two chains, fixtures), as one function a
+  transform's package calls; run against the broken transforms of §1.4.
+- `keystest`: the `keys.Provider` suite (current per namespace and kind, the three failures,
+  fingerprint refusal, the exported call count) and the in-memory `keys.Provider` passing it.
+- RFC 5's golden vectors in the RFC 2 plan's script (D11).
+- The catalogue of §1.4, written into the epic document with each row's epic.
+
+### Epic 3 — The chain
+
+**Epic 3 estimate: 7 subtasks, 15 man-days.**
+
+The chain over any registered transforms: the envelope, the refusals, the bounds, the pin, the
+census view and the chain ID.
+
+**Owns:** RFC 5 §2.1 to §2.4, §2.6 to §2.8 (the chain's part), §3.1's behaviour, §3.2's refusals
+at build (stage rules and `with_encryption: accept`), §4 items 1 and 2 as the registry checks
+them, §6 but the census gauge and encryption's series.
+**Done when:** RFC 5 §8.2 T11, both T3 rows, §2.4's envelope row but its ranged get, §2.5's
+`require` row, T12, T10, §2.8's vectors, T5's chain half (a failing factory fails `NewChain`),
+T16's refusal half, T14's census-view half; RFC 5 §8.1 §3.1's enlarging row; RFC 5 §8.2 §3.1's
+removed-parity row, with a test transform in the redundancy stage; RFC 5 §8.2 T7's chain half
+(`ErrUnknownMaterial` from the provider reported as `ErrMaterialUnavailable`); a pinned attempt
+keeps its chain ID and bodies across a configuration change and a key rotation; RFC 5 §8.3's
+chain overhead and envelope size.
+
+**Expected content:**
+- The registry: `Register`, duplicate refusal, the ID ranges of RFC 5 §4, `MaxDecodeLen` (D13).
+- Envelope version 1: encode, and a parse that refuses as RFC 5 §2.4 says before any decode;
+  fuzzed.
+- `NewChain`: stage order, duplicates, `with_encryption: accept`, a factory's failure, logged
+  once.
+- `Pin` and `Attempt` (D10); `Attempt.Encode` and `Chain.Decode` composed with each step's
+  bound, `dst` handling and error discipline (RFC 5 §3.1); the census view that answers only
+  listed IDs; `require`.
+- The chain ID per namespace (RFC 5 §2.8), checked against the vectors.
+- RFC 5 §6's series around each call; test transforms: one enlarging by half, one in the
+  redundancy stage.
+- `unit`'s `transform-allocs` option (§1.5 rule 4).
+
+### Epic 4 — Compression
+
+**Epic 4 estimate: 4 subtasks, 8.5 man-days.**
+
+The two shipped compressors.
+
+**Owns:** RFC 5 Appendix A.
+**Done when:** `transformtest` passes for zstd and LZ4 with their fixtures; Appendix A's level
+range refused at build; the Appendix D rows of §1.4 placed here; RFC 5 §8.3's per-transform,
+compression-ratio and `Attempt.MaxEncodedLen`-against-the-largest-body benchmarks over the RFC 2
+plan's corpus.
+
+**Expected content:**
+- zstd: header, decline below the threshold, the capped decoder (D4), `LengthKey`.
+- LZ4, on `pierrec/lz4/v4` (D4).
+- Fixtures for both (D12), fuzz targets seeded with decompression bombs, joined to `fuzz`.
+- The benchmarks.
+
+### Epic 5 — Encryption
+
+**Epic 5 estimate: 4 subtasks, 8.5 man-days.**
+
+The shipped encryption transform, which needs a namespace's data key.
+
+**Owns:** RFC 5 Appendix B.1's chunk part (its derivations, chunk AAD, header and bounds), §2.5's
+"material says what it is for" for `data-key`, Appendix B.6's `encryption_chunks_total`.
+**Done when:** `transformtest` passes for encryption with its fixture; RFC 5 §8.1's authenticating
+rows of §2.7 (every flip `ErrMalformed`, a body under another chunk's hash, destroyed material),
+Appendix B.1's salt, nonce and keystream row, its distinct-labels row and the chunk part of its
+golden-vector row; Wycheproof's AES-GCM vectors through the transform's call; RFC 5 §8.3's
+per-transform benchmark and its encode split into the nonce's keyed BLAKE3 pass and the GCM seal.
+
+**Expected content:**
+- AES-256-GCM through `cipher.NewGCM` (D3), the nonce stored before the ciphertext, and a fuzz
+  of `Decode` against the golden vectors.
+- The salt key, salt, chunk key, nonce key and nonce derivations (the nonce through the keyed
+  BLAKE3 the chunk ID already imports), and the chunk AAD, against the vectors; the salt key is derived once per data key and cached with it, while the chunk key,
+  new per chunk, pays its AES key schedule each time.
+- `Kinds` returning `data-key`; `Encode` sealing under the pinned data key it is passed and
+  `Decode` under the data key a body names, each getting the key's content from `Provider.Get`;
+  `LengthOf` and `MaxEncodedLen` exact under the pinned key ID; kind refusal at construction.
+- The fixture (D12) and the series.
+
+### Epic 6 — Namespace keys and the provider
+
+**Epic 6 estimate: 8 subtasks, 19 man-days.**
+
+The provider that implements `keys.Provider` for a store configuration, over key records in the
+metadata store and master keys in a key file.
+
+**Owns:** RFC 5 §2.5 (the provider's obligations), Appendix B.1's key wrap and stored wrap,
+Appendix B.2's key table as namespace creation applies it, its escrow rule, its "no storage-key
+fallback" and its salvage key, Appendix B.4's distinctions at the provider, Appendix B.6's two
+gauges; RFC 16 §4.2's key-record and key-lock rows and its `MKW‖masterKeyID` wrap count (A4).
+**Done when:** the provider passes `keystest`; RFC 5 §8.1's §2.5 row (a replaced key refused,
+the gauge at 0); RFC 5 §8.1's T18 rows (altered AAD, a record copied to another namespace); RFC 5
+§8.1 T22's stored wrap for the key file; the fingerprint part of RFC 5 §8.1's Appendix B.1
+golden-vector row; RFC 5 §8.2's T14 provider half; the provider half of RFC 5 §8.2 T7
+(`ErrUnknownMaterial` for a key never given, with a condition naming the ID); RFC 5 §8.2 T18's
+key creation, escrow and `storage`-key rows; RFC 13 §9's "§7 namespace keys" and "§7 chunk-ID
+key" rows, and the "§7 key table" row's non-encrypting-namespace and escrow clauses, which RFC
+13's plan hands to this one (its data-key rotation clause is epic 8's, its catalog-backup restore,
+export-key rotation and master-key destroy clauses are RFC 26's, §6.1); a crash torn beneath key creation
+leaves no wrap in use without its committed record (§1.5 rule 8); a salvage key unwraps only
+under its master key and associated data; RFC 5 §8.1's wrap-count row (one wrap more at
+2³² − 1, then refused).
+
+**Expected content:**
+- The key-record view the provider declares, its suite and in-memory view in `keystest`, and
+  its `kvstore` implementation, in plain types, under the node's content wiring's tests' run of that
+  suite (D7), fuzzed decode, and the
+  `keyseq` subtag with its row in `pkg/metadata/kv/keys`' table.
+- The key-file format's reader moved to `internal/keyfile` (D5).
+- The stored wrap and the key-file custody (D5, D6), with the custody interface and its suite;
+  the per-master-key wrap count, one server-wide `MKW‖masterKeyID` row (RFC 16 §4.2), raised
+  inside the wrap call before its bytes are used, so key records, the salvage-key wrap and the
+  escrow check's test record all count (D3).
+- The escrow check and `ErrNotEscrowed`.
+- `Current` and `Get`: fingerprints, the three failure classes, namespace scoping, the cache.
+- Namespace key creation per Appendix B.2's table, the clear chunk-ID key included, with its
+  crash-seam test.
+- The salvage-key wrap (D16).
+- The refusal of a master key whose ID or fingerprint matches the `storage` key's, which the
+  wiring passes in the provider's `Deps` (D5).
+- The two gauges, through the provider's recorder (D2), and the material it cannot reach as a
+  plain value for the content wiring's `material_unavailable` (rule 3).
+
+### Epic 7 — Key-service custody
+
+**Epic 7 estimate: 4 subtasks, 7 man-days.**
+
+Master keys that never leave a KMIP server.
+
+**Owns:** RFC 5 Appendix B.1's key-service wrap (version-qualified IDs, associated data as
+bytes, the primary version read), Appendix B.2's `master-key` row as a key service holds it, §9
+item 2.
+**Done when:** the custody suite passes against the harness's KMIP server; RFC 5 §8.1's
+key-management row, its provider half (the store half is epic 11's); RFC 5 §8.1 T22's stored
+wrap for a key service, as bytes (the string-map half is §6.1's, Q3); RFC 5 §8.2's Appendix B.1
+ambiguous-Locate row.
+
+**Expected content:**
+- `internal/kmip`, moved out of `pkg/keyprovider` (D14). The move changes
+  `kmip_fake_test.go`, which tests the moved TLS, message and key-material helpers, so it fires
+  the RFC 13 plan's ledger row on that file: those helpers keep pure unit tests in
+  `internal/kmip`, and the canned server's round trips become integration tests against
+  `service:kmip`.
+- KMIP encrypt and decrypt with associated data through `kmip-go`, in `keys/kmip.go` (D5, D14).
+- The version-qualified ID of each wrap, and the read of the current primary version; a Locate
+  that returns more than one UID for a master key is refused as an error, re-wraps nothing,
+  and raises `material_unavailable`.
+- A test row against `service:kmip`: two keys under one name, so Locate returns two UIDs;
+  assert the read fails, no record is re-wrapped and `material_unavailable` is raised, and that
+  a second period with the same answer still re-wraps nothing.
+- The failures of RFC 5 §8.1's row (missing key, unreachable server, invalid certificate)
+  mapped to the provider's errors, none falling back.
+- The integration tests, under `-tags=integration`.
+
+### Epic 8 — Rotation and the destroyed-material notice
+
+**Epic 8 estimate: 5 subtasks, 11 man-days.**
+
+Keys changing over time in the bucket, and the notice the engine reads when material is gone
+for good.
+
+**Owns:** RFC 5 §5.1; Appendix B.2's `keys` object in the bucket (sequence, MAC, key lock,
+read-back before and after a writer's own put); Appendix B.3's master-key and data-key rotation;
+Appendix B.4's destroyed material as the provider reports it (D17).
+**Done when:** RFC 5 §8.2's Appendix B.2 rows, the bucket's half only (a failed bucket put keeps
+the old key current; a late put of sequence 7 is repaired at 9 by the next writer; a key-file
+master-key rotation without escrow refused); RFC 5 §8.2's Appendix B.1 key-service rows, but their
+destroy-check clauses and the periodic read (an in-place rotation re-wraps; a retargeted alias
+the same; a rotation while nothing is written, at the next period), the read and the re-wrap
+only, the operation's start being epic 9's, if the harness's server can rotate in place (O9); RFC 13 §9's "§7 key table" row's data-key rotation clause; a crash torn
+beneath a rotation leaves the old key current; the notice reports a destroyed key
+record and a master key the key service reports destroyed, on the in-memory `keys.Provider` and on
+the provider, under `keystest`; RFC 5 §8.2's Appendix B.1 key-state row against the
+harness's KMIP server: Destroyed and Destroyed Compromised refuse `Pin` with
+`ErrMaterialDestroyed` within one tick, every other state but Active and an unknown state value
+refuse it with `ErrMaterialUnavailable`, Active pins, with no restart; RFC 5 §8.2's Appendix B.2
+master-key destroy row (records marked before any report, idempotent, completed after a crash).
+
+**Expected content:**
+- Data-key rotation: a new current key, so a new chain ID (D9).
+- Master-key rotation: re-wrap every record, each current only after the bucket's put, with its
+  crash-seam test.
+- The `keys` object (D8): its two-call store interface over `pkg/remote`, tested against RFC
+  4's in-memory store, the writer under the key lock, MAC, read-back and repair; fuzzed decode.
+- The primary-version read (RFC 5 Appendix B.1), exposed as a call that reports a master key's
+  new primary version: at open, and on the provider's own ticker at RFC 9 §7.5's fixed period
+  until GC's recheck pass takes it over (§6.1). Epic 9 starts the `rotate-master-key` operation
+  from it; epic 8 tests the read and the re-wrap the operation runs.
+- On the same read, each master key's state, mapped through `internal/kmip`'s key-state table (epic
+  7), and `Pin` refused for a namespace whose current data key's master key is not active, with
+  the `material_destroyed` or `material_unavailable` condition (RFC 5 Appendix B.1).
+- A master key found destroyed marks `destroyed` every key record whose stored wrap names it, in
+  batches under the key lock, committed before the notice or a condition names it; idempotent,
+  so a repeat read writes nothing and a crash is completed by the next read (RFC 5 Appendix B.2).
+- The destroyed-material notice (D17).
+
+### Epic 9 — Integration
+
+**Epic 9 estimate: 5 subtasks, 12 man-days.**
+
+What is this component's own and waits on nothing in the engine.
+
+**Owns:** RFC 5 §3.2 (the store configuration's keys, the bound `encrypts`, the default chain),
+§5.1's exception, Appendix B.2's refusal at namespace creation (at backup-policy creation it is
+RFC 26's, §6.1), the observability of §1.5 rule 3 as this component's packages hold it, the
+operator's key operations (D15).
+**Done when:** RFC 5 §8.2 T15; T16's default-chain half; RFC 13 §9's "§5.1 encryption bound"
+row, which RFC 13's plan hands to this one; RFC 5 §8.2 T18's `ErrNotEscrowed` at namespace
+creation through the API; RFC 25 §3.9's rows and RFC 25 §7's alert rules defined in this
+component's packages, with a test that each rule names a condition or a series that exists; each
+operation's API and CLI test; RFC 5 §8.2's Appendix B.1 in-place rotation row end to end, the
+read starting `rotate-master-key` with no administrator.
+
+**Expected content:**
+- `pkg/transform/chain`'s `settings.go`: the rows `transforms`, `materials` and `require` as
+  plain values, validated by building the chain (RFC 13 §4); the node's content wiring
+  registers them in `pkg/settings`, joined into the remote store's section as RFC 4's plan
+  declares it, and hands the chain each value.
+- The namespace's bound `encrypts` (RFC 13 §5.1) and the refusals of RFC 5 §3.2.
+- Namespace key creation called from namespace creation, with the escrow refusal.
+- The key operations (rotate the master key, rotate the data key, verify escrow), their
+  `dfsctl` commands and `go run ./cmd/gendocs`; `rotate-data-key`'s help says it revokes
+  nothing until removal lands (§6.1), so it does not answer RFC 5's leaked-key scenario. The
+  `rotate-master-key` operation is also the one epic 8's primary-version read starts: epic 9
+  wires the read's report to the operation runner, unless one for that master key runs.
+- The series specs, the conditions and the alert rules as plain values, which the content wiring
+  builds into collectors, a health source and rules for the RFC 8 offload plan's epic 21 to
+  register, with A1's `material_unknown` and `material_destroyed`.
+- Error mapping: the provider's and the chain's errors onto the API's problem types.
+
+### Epic 10 — Integration, the census 🔀
+
+**Epic 10 estimate: planned after S7.**
+
+The census as the operator sees it, once the engine records it.
+
+**Owns:** the `transform_census_blocks` gauge of RFC 5 §6, and the census per material through
+the management API.
+**Done when:** planned after S7; the epic document names its rows.
+
+**Expected content:**
+- `transform_census_blocks`, read from the RFC 8 offload plan's `Census` view.
+- The census per material in the management API.
+
+### Epic 11 — E2E green 🔀
+
+**Epic 11 estimate: 6 subtasks, 10 man-days.**
+
+RFC 5's rows that need the codec and the engine, and its last benchmark.
+
+**Owns:** nothing new.
+**Done when:** RFC 5 §8.2 T5 (the store does not open, nothing is written), T6, T7 through the
+engine (retried, never zeros; destroyed is Lost), T8, T20 (with the in-memory `keys.Provider`
+marking the key destroyed, since `Remove` lands later), T21, Appendix B.5's row, §2.4's ranged
+get, §5.3's census row up to its retirement half, the store half of RFC 5 §8.1's key-management
+row; RFC 5 §8.3's put and whole-block get benchmark; §1.4's Appendix D D9 and D10 rows.
+
+**Expected content:**
+- The codec rows over RFC 4's codec and its in-memory store.
+- The engine rows, in the suite the RFC 8 offload plan registers.
+- The key-management row's store half against the harness's KMIP server.
+- The put and get benchmark on the reference link.
+
+## 6. Risks and open points
+
+**Answered by the user.** Q1, how much of the backup-facing key machinery this plan builds: none
+that has no caller in v1.1. The export cryptography, the backup locations' `keys` objects, the
+export key's next generation and its per-location retirement, the master-key destroy check, move
+pins, `Remove` with its fence and the destroy operation are deferred to their first callers
+(§6.1), and RFC 5 says so in this pull request.
+
+**Also answered by the user.**
+
+- **Q2. The cipher is AES-256-GCM from the standard library** (D3): a commonly supported
+  algorithm, no implementation of our own. RFC 5 Appendix B is amended in this pull request: a
+  chunk's nonce is a keyed BLAKE3 hash of its AAD and input, stored in the body; a frame is sealed once per salt; a
+  key-file master key makes at most 2³² random-nonce wraps, counted inside the wrap call in one
+  server-wide row per master key. Example:
+  `aead, _ := cipher.NewGCM(block); body = aead.Seal(nonce, nonce, input, aad)`.
+- **Q3. KMIP only** (D14); a cloud key service is a §6.1 row. Example:
+  `materials: {provider: kmip, endpoint: …, key: …}`.
+- **Q4. RFC 23 operations, built in epic 9** (D15). Example:
+  `POST /namespaces/{id}:rotate-data-key`, and `:rotate-master-key` and `:verify-escrow` on RFC
+  23 §3.1's remote store resource, whose collection path RFC 23 does not name yet.
+
+**Amendments to other RFCs, in this pull request.**
+
+- **A1. RFC 25 §3.9 and §7.** The registry gains `material_unknown` (namespace, unhealthy:
+  behaves as an unavailable remote, page at 5 min) and `material_destroyed` (namespace,
+  `data_loss` while a census entry or journal-held chunk depends on the material, clearing once
+  none does, page at once), and §7's ticket list gains
+  `transform_decode_failures_total{error="malformed"}`, net of the syncer's recovered re-gets.
+  RFC 5 Appendix B.4 names the three
+  material conditions.
+- **A3. RFC 23 §4.1, §4.6 and §5.2.** The actions table gains `rotate-data-key` (namespace) and
+  `rotate-master-key` (remote store), both `admin` operations, and `verify-escrow` (remote
+  store, `admin`, not an operation); §4.6 lists the two rotations as operation-runner work;
+  §5.2's role matrix gives all three to `admin`.
+
+- **A4. RFC 16 §4.2 and RFC 27 §2.4.** RFC 16 gains the server-wide `MKW‖masterKeyID` row,
+  kind 0x4D, the count of wraps under one master-key version (RFC 5 Appendix B.1). RFC 27's
+  importer refuses to publish a move while its current master key is a key-file master key
+  whose ID the export names, since two installations wrapping under one key keep two counts;
+  an export names a master key by its ID only, and a key service keeps its own bound.
+
+(A2, the pin, is RFC 5's own and is in this pull request.)
+
+**Open points.**
+
+- **O1.** RFC 16 §4.2's key records and key lock are built here (epic 6), and RFC 6 §2.3's census
+  is read as a constraint (epic 10): defaults this plan took, since the user named neither RFC and
+  nothing else builds the key records.
+- **O4.** RFC 5 §8.1's key-management row says "the daily tier"; its suites paragraph says
+  `integration`, which runs on pull requests. The plan follows the paragraph.
+- **O5.** RFC 5 §8.1 T22's key-service row asks for "a fake service that records the
+  authenticated data it is sent". Epic 7 builds it as a recording wrapper that passes each call
+  through to the real KMIP server, the form `CLAUDE.md`'s "Writing tests" allows. A real server
+  draws its own IV, so the vector pins the stored-wrap layout around the server's bytes and the
+  associated data the wrapper captured, not the wrap bytes; and the row runs in `integration`,
+  not `unit`. Whether that meets the row is for the RFC's author.
+- **O6.** Least certain estimates: epic 8 (the `keys` object's repair under concurrency), epic 6
+  (its wrap count is new), epic 9 (the key operations' API and CLI tests).
+- **O9.** The harness's KMIP server is PyKMIP; whether it can rotate a key in place and report a
+  primary version is not checked. If it cannot, epic 8's in-place-rotation rows and epic 7's
+  primary-version read move to the cloud-key-service ledger row (§6.1).
+- **O10.** Bucket-setting drift and a `keys` object a late put left behind are not repaired in
+  v1.1 between writers: `Recheck` has no caller until GC (§6.1). The next writer of the object
+  still reads it back and repairs it (epic 8).
+
+### 6.1 Deferral ledger
+
+| Deferred | Why | Owner | Trigger |
+| --- | --- | --- | --- |
+| `Provider.Remove`, its fence and its count of open pins; RFC 5 §8.2's T13 rows; the census check before removal; erasure of every copy (§6 Q1, D10, RFC 5 §5.3 as amended) | no caller in v1.1: GC's retirement or an operator's destroy is the first | RFC 9 | RFC 9's plan starts; if the operator's destroy (next row) is specified first, that row takes `Remove` |
+| The operator's destroy operation and its `dfsctl` command (D15) | RFC 23 does not specify it; `Remove` lands with it or before it | unowned | RFC 9's plan starts or an operator needs to destroy a key |
+| Moving the periodic primary-version and key-state read of RFC 5 Appendix B.1 (as amended) from the provider's own ticker into GC's recheck pass | in v1.1 the provider runs it on its own ticker at RFC 9 §7.5's period, since GC does not run yet | RFC 9 | RFC 9's plan starts |
+| Retirement relocation, its walk and where the retiring set is recorded; RFC 5 §8.2's §5.2 row and §5.3's retirement half (D9) | GC is planned later (#5488) | RFC 9 (roadmap #3620) | RFC 9's plan starts |
+| A drained namespace's key removal under the check token (RFC 5 §5.3) | RFC 9 §7.6's drain runs it | RFC 9 (roadmap #3620) | RFC 9's plan starts |
+| The `keys` object's read-back on each `Recheck` pass (RFC 5 Appendix B.2 as amended; O10) | `Recheck` has no caller in v1.1 (RFC 4 §4.11: only GC runs it) | RFC 9 | RFC 9's plan starts |
+| Appendix B.1's export cryptography (frames, header, MACs, state and progress keys) and RFC 5 §8.1 T22's export vectors (§6 Q1, §1.5 rule 12) | no consumer before catalog backups exist | RFC 26 | RFC 26's plan starts |
+| The export key's next generation and its per-location retirement, re-seal and pending sets; the backup locations' `keys` objects; the master-key destroy check over locations; `ErrMaterialInUse`; RFC 5 §8.2's T19 and Appendix B.3 rows, its Appendix B.2 rows' location halves, the destroy-check clauses of its Appendix B.1 key-service rows; the escrow refusal at backup-policy creation; RFC 13 §9's "§7 key table" row's export-key rotation and master-key destroy clauses (§6 Q1, RFC 5 Appendix B.3 as amended) | they write and read backup locations | RFC 26 | RFC 26's plan starts |
+| The recovery import of key records from `keys` objects, RFC 5 §8.2 T18's "every chunk verifies from the bucket alone", and RFC 13 §9's "§7 key table" row's catalog-backup restore on a fresh host (§6 Q1) | RFC 26 §2.3's import reads them | RFC 26 | RFC 26's plan starts |
+| Re-home and move key handling and move pins, the publish refused under a shared master key among them (RFC 5 Appendix B.2's last paragraphs, RFC 27 §2.4, §2.7) | moves are not in this programme | RFC 27 | RFC 27's plan starts |
+| Removal with two nodes holding the key, and fencing a node that cannot be reached (RFC 5 §5.3, T13's two-node row) | single node first | unowned: RFC 11 has no plan | RFC 11's plan starts |
+| A cloud key service taking associated data as a string map, and RFC 5 §8.1 T22's string-map half (D14, §6 Q3) | the harness runs KMIP only | unowned | an operator asks for a cloud key service |
+| A transform whose bound grows with its settings (D13) | none ships | unowned | such a transform is proposed |
+
+## 7. RFC coverage
+
+| RFC section | Epic(s) |
+| --- | --- |
+| RFC 5 Start here, In short, §1, §1.1 | — (explanatory, scope) |
+| RFC 5 §2.1, §2.2, §2.3 | E1 (constants), E3 |
+| RFC 5 §2.4 | E3; E11 (ranged get) |
+| RFC 5 §2.5 | E3 (registry, census view, `require`), E5 (kind refusal), E6 (provider) |
+| RFC 5 §2.6 | E3; E11 (through the codec) |
+| RFC 5 §2.7 | E1 (errors), E3, E6; E11 (through the engine) |
+| RFC 5 §2.8 | E3 (with the pin) |
+| RFC 5 §3.1 | E1, E3 (`Remove`: §6.1) |
+| RFC 5 §3.2 | E3 (refusals at build), E9 (record, bound `encrypts`, default chain) |
+| RFC 5 §4 | E2 (fixtures, conformance), E3 (ID ranges) |
+| RFC 5 §5.1 | E8, E9 |
+| RFC 5 §5.2 | §6.1 (RFC 9) |
+| RFC 5 §5.3 | E10 (census as the operator sees it); §6.1 (removal, retirement, drain, two nodes, locations); the census itself is the RFC 8 offload plan's (S7) |
+| RFC 5 §5.4 | E4, E5 (fixtures decide a library swap), E7 (custody) |
+| RFC 5 §6 | E3, E5, E6, E10 (census gauge), E9 (packaging for registration) |
+| RFC 5 §7 | each T through its §8 row; T1, which has none, by §3.1's signatures (a transform gets one chunk and returns a body, never a hash or a name: E1) and `transformtest`'s round trip, which passes the hash through unchanged (E2) |
+| RFC 5 §8.1 | E2 (suite), E4, E5, E6, E7, E11; §6.1 (export vectors, string map) |
+| RFC 5 §8.2 | E3, E6, E8, E9, E11; §6.1 (RFC 9, RFC 11, RFC 26 rows, T13) |
+| RFC 5 §8.3 | E3, E4, E5, E11; the suites paragraph's fuzz line with the first target (§1.5 rule 2) |
+| RFC 5 §9 | — (closed questions; item 3 a non-goal) |
+| RFC 5 Appendix A | E4 |
+| RFC 5 Appendix B.1 | E5 (chunk), E6 (key-file wrap, fingerprint), E7 (key-service wrap), E8 (keys MAC); §6.1 (export cryptography) |
+| RFC 5 Appendix B.2 | E6 (table, escrow, records, salvage key), E8 (bucket `keys` object), E9 (refusal at namespace creation); §6.1 (locations, import, moves, `Recheck`) |
+| RFC 5 Appendix B.3 | E8 (master, data); §6.1 (export key's next generation, per-location retirement) |
+| RFC 5 Appendix B.4 | E6, E8 (the notice), E11 |
+| RFC 5 Appendix B.5 | E11 |
+| RFC 5 Appendix B.6 | E5, E6 |
+| RFC 5 Appendix C | E3 (a test transform in its stage); not shipped |
+| RFC 5 Appendix D | — (v1, deleted by stage 4); its bug rows in §1.4 |
+| RFC 0 §1.2 (as #5774 amends it) | E1 (import test) |
+| RFC 16 §4.2, `NS‖ns‖key‖kind‖keyID` and `NS‖ns‖keyseq‖target` | E6, E8 |
+| RFC 16 §4.2, `MKW‖masterKeyID` (A4) | E6 |
+| RFC 16 §4.2, `NS‖ns‖drain` | §6.1 (RFC 9) |
+| RFC 6 §2.3 (block-record census) | the RFC 8 offload plan's epics 15 and 19; E10 reads it |
+| RFC 25 §2.1, §3.9, §7, §8 | E3, E6, E9 |
+| RFC 2 §4.1, §4.2, §6 (keyed IDs, gear table, chain ID in the name), with RFC 5 §8.2 T17's disjoint-IDs half | RFC 2's plan, epic 4 (§3.2) |
+| RFC 5 §8.2 T17's other half and its last Appendix B.2 row (a plan refused under another namespace's key) | the RFC 8 offload plan, epic 15 (§3.2) |
+| RFC 3 §1.3, §2.2 (census entry, errors, memory bound) | RFC 3's and RFC 4's plans (§3.2) |
+| RFC 4 §3.2 to §3.4, §4.11, §4.13 | RFC 4's plan (S1c); `Recheck` §6.1 |
+| RFC 8 §2.4, §2.5, §2.6, §6.3, §6.6, §10.4 | the RFC 8 offload plan (S7) |
+| RFC 13 §4, §5.1, §7, §9's four handed-over rows | E9 (keys, bound `encrypts`), E6 (namespace keys) |
+| RFC 13 Appendix C (the key file's passphrase) | E6 |
+| RFC 23 §4.1, §4.6 (actions, operations) | E9 (A3) |

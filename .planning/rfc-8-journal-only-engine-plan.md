@@ -153,6 +153,11 @@ with stage 2:
   standard-library types only, as `journal` declares its own.
 - The types at the boundary: the engine takes `entity.FileID` and `entity.JournalVersion`
   and converts once, at its journal interface; no `journal` type crosses `Content`.
+  > decision: the journal's `FileID` and `Version` stay opaque and are never unified with
+  > `entity.FileID` and `entity.JournalVersion`. The journal sits below the metadata store
+  > and names content by bytes, so its on-disk identity must not follow a metadata type. The
+  > one conversion is the price. Overturn it only if the conversion itself becomes a
+  > measured cost.
   A clone's hold on its source is `Deps.Holds`, a `CloneHold` (`Hold`, `Release`, `Served`)
   in the engine's own types (`CloneSrc`), which the root adapts from open state, so the
   engine imports no `pkg/openstate` (RFC 0 I6). An orphan a clone's `Release` leaves
@@ -1071,7 +1076,9 @@ owned: RFC 17 §8's integration tier for the engine's side; RFC 8 §12.1's singl
 
 **Epic 10 estimate: 5 subtasks, 12.5 man-days.**
 
-`test/engine/known.yaml` burnt down to empty, as each journal call of §3.3 lands. Its size
+`test/engine/known.yaml` burnt down to the deferred rows that R9 of
+`rfc-8-engine-epic10.md` names, which stay listed under #5757, as each journal call of §3.3
+lands. Its size
 follows the journal's, not this part's (§6 point 7).
 
 - T10.1 A soak: crash and restart in a loop at the integration tier under fault schedules,
@@ -1082,11 +1089,12 @@ follows the journal's, not this part's (§6 point 7).
   rather than SMB), baselines recorded.
 - T10.3 Re-point the known failures that name a closed issue, then at S3 the table of rows
   against tests.
-- T10.4 The burn-down: each remaining row green over the real journal, its entry removed;
-  an adapted row leaves once the half this part runs passes, its other half named in the
-  second part. The entries that name a closed issue are re-pointed to epic 10's as soon as it
-  has an issue (T10.3), not at S3. At S4 it drops the rows' runs over the in-memory journal
-  that rule 8 allows until then, T9.3's start order and T9.4's rows among them.
+- T10.4 The burn-down: each remaining row green over the real journal, its entry removed,
+  except the deferred rows of R9 of `rfc-8-engine-epic10.md`; an adapted row leaves once
+  the half this part runs passes, its other half named in the second part. The entries that
+  name a closed issue are re-pointed to epic 10's as soon as it has an issue (T10.3), not at
+  S3. At S4 it drops the rows' runs over the in-memory journal that rule 8 allows until then,
+  T9.3's start order and T9.4's rows among them.
 - T10.5 The baselines, profiling baselines and the comparison of B5 and B9 with v1.
 
 ## 6. Risks and open points
