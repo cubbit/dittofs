@@ -1005,9 +1005,9 @@ func statesAre(want ...string) func(statusTurn) bool {
 
 // The node's status carries each adapter's state from its slot, a disabled
 // one's too (RFC 23 §3.4, RFC 20 §3.1): with SMB serving and NFS disabled,
-// NFS stopped and SMB serving; while SMB's disable drains it, SMB draining;
-// once that drain ends, both stopped; and NFS enabled on a port another
-// socket holds, refused with nothing serving it, NFS configured.
+// NFS stopped and SMB serving; while SMB's disable drains it, SMB draining,
+// naming no port; once that drain ends, both stopped; and NFS enabled on a
+// port another socket holds, refused with nothing serving it, NFS configured.
 func TestTheStatusCarriesEachAdaptersState(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
 	stopped, release := make(chan struct{}, 1), make(chan struct{})
@@ -1027,7 +1027,9 @@ func TestTheStatusCarriesEachAdaptersState(t *testing.T) {
 	configure(t, h, [16]byte{0: 's', 15: 1})
 	h.Node().Wake()
 	hears(t, stopped, "SMB disabled")
-	turnAt(t, h, ch, "SMB's drain held", statesAre("nfs stopped", "smb draining"))
+	if tr := turnAt(t, h, ch, "SMB's drain held", statesAre("nfs stopped", "smb draining")); adapterOf(tr.s, "smb").Port != 0 {
+		t.Errorf("SMB draining names port %d, want none, as it no longer accepts", adapterOf(tr.s, "smb").Port)
+	}
 	release <- struct{}{}
 	caughtUp(t, h)
 	turnAt(t, h, ch, "SMB's drain ended", statesAre("nfs stopped", "smb stopped"))
