@@ -215,9 +215,9 @@ func (t *Table) throughGrant(who Caller, ref OpenRef, write bool, fn func(e *ent
 // decision: only a caller stating OpenFilesKeepNames is refused a remove or
 // rename of a directory an open was made through, since POSIX allows a
 // rename of a directory with open children; and only it is refused a rename
-// replacing a file any client holds open, ChangeReplace, which Windows
-// refuses since the renamer never opened the target. Narrow either to what
-// Windows refuses if a client is seen relying on more.
+// replacing a file any client holds open, ChangeReplace, refused since the
+// renamer never opened the target. Narrow either if a client is seen relying
+// on a rename these refuse.
 //
 // ChangeTimes through via names a time set made on via's grant, and is
 // refused ErrAccess unless that grant holds write attributes. A caller

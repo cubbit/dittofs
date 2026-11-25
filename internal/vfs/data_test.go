@@ -1075,3 +1075,27 @@ func TestAContentChangeLeavesAloneTheTimesItsOpenSuspends(t *testing.T) {
 		})
 	}
 }
+
+// A commit through an open is a flush that learns of a loss only for a
+// caller stating WantOpenID: an NFS open of a file with no name is issued an
+// OpenID too, as open state must find it again, and a commit through it
+// across a loss still answers the verifier.
+func TestAnUnnamedNFSOpenWithAnOpenIDDoesNotFlush(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	s.user(t, "alice41", "2000", s.share, entity.AccessReadWrite)
+	h := s.file(t, "f", s.alice.Principal, 0o666)
+	nfs := s.nfs41(t, "a-host", 2000, 1)
+	s.opener(t, nfs, "f", entity.ReadData|entity.WriteData) // keeps the file alive once its name goes
+	_, err := s.Unlink(ctx, proven(s.fs.Admin.Principal, inLab), vfs.Target{H: s.fs.Root}, []byte("f"))
+	s.must(t, err)
+	r, err := s.Open(ctx, nfs, vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData | entity.WriteData})
+	s.must(t, err)
+	if r.Ref.Open == 0 {
+		t.Fatalf("an NFS open of a file with no name has no OpenID; the case this guards needs one")
+	}
+	s.content.Lose(s.fs.Share.ID, fileOf(h))
+	if _, err := s.Commit(ctx, nfs, r.Ref, 0, 0); err != nil {
+		t.Errorf("a commit through an unnamed NFS open with an OpenID across a loss: %v, want the verifier", err)
+	}
+}

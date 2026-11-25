@@ -18,6 +18,10 @@ func hostCall(c vfs.Call) bool { return c.Caps.Has(vfs.HostCall) }
 // the shares, which a lookup of ".." at a share's root goes up to.
 func seesPseudoFS(c vfs.Call) bool { return c.Caps.Has(vfs.SeesPseudoFS) }
 
+// wantsOpenID reports whether c names its opens by OpenID, so a flush
+// through one reports a loss to it.
+func wantsOpenID(c vfs.Call) bool { return c.Caps.Has(vfs.WantOpenID) }
+
 // clientIsMachine reports whether the client c registers is a whole
 // machine, whose record names no owner.
 func clientIsMachine(c vfs.Call) bool { return c.Caps.Has(vfs.ClientIsMachine) }

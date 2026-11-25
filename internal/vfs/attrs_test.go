@@ -224,7 +224,7 @@ func TestAChangeWaitsOutAConflictingGrant(t *testing.T) {
 	ctx := t.Context()
 	h := s.file(t, "f", s.alice.Principal, 0o644)
 	f := s.record(t, h)
-	c := openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte("c"), Boot: [8]byte{1}}}
+	c := openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte("c"), Boot: [8]byte{1}, Recovery: entity.RecoverReconnect}}
 	id, _, err := s.tab.Clients().Connect(ctx, c, nil)
 	s.must(t, err)
 	who := openstate.Caller{Client: id, Principal: s.alice.Principal, Caps: vfs.SMBCaps}
@@ -441,7 +441,7 @@ func TestEachAttributeAsksItsOwnRight(t *testing.T) {
 	if _, err := s.SetAttr(ctx, bob, vfs.Target{H: g}, touch); err == nil {
 		t.Error("a group writer set a time it gave on no open")
 	}
-	id, _, err := s.tab.Clients().Connect(ctx, openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte("pc"), Boot: [8]byte{1}}}, nil)
+	id, _, err := s.tab.Clients().Connect(ctx, openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte("pc"), Boot: [8]byte{1}, Recovery: entity.RecoverReconnect}}, nil)
 	s.must(t, err)
 	who := openstate.Caller{Client: id, Principal: s.bob.Principal, Caps: vfs.SMBCaps}
 	res, err := s.tab.Opens().Open(ctx, who, keyOf(s.record(t, g)), openstate.OpenRequest{Access: entity.ReadData | entity.WriteData | entity.WriteAttributes})
@@ -563,7 +563,7 @@ func TestAGrowingSizeChangeMeetsTheLocksPastTheOldSize(t *testing.T) {
 	f := s.record(t, h)
 	_, err := s.engine.Write(ctx, f.Share, f.ID, 99, []byte{1}, WriteOpts{})
 	s.must(t, err)
-	id, _, err := s.tab.Clients().Connect(ctx, openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte("pc"), Boot: [8]byte{1}}}, nil)
+	id, _, err := s.tab.Clients().Connect(ctx, openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte("pc"), Boot: [8]byte{1}, Recovery: entity.RecoverReconnect}}, nil)
 	s.must(t, err)
 	who := openstate.Caller{Client: id, Principal: s.alice.Principal, Caps: vfs.SMBCaps}
 	res, err := s.tab.Opens().Open(ctx, who, keyOf(f), openstate.OpenRequest{Access: entity.ReadData | entity.WriteData})
@@ -615,7 +615,7 @@ func TestATimeThroughAnOpenAsksWriteAttributesInItsGrant(t *testing.T) {
 	_, err := s.fs.Store.Files().SetAttrs(ctx, s.fs.Admin, g, entity.Attrs{}.WithGroup(staff.Principal))
 	s.must(t, err)
 	at := time.Unix(1_900_000_000, 0)
-	id, _, err := s.tab.Clients().Connect(ctx, openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte("pc"), Boot: [8]byte{1}}}, nil)
+	id, _, err := s.tab.Clients().Connect(ctx, openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte("pc"), Boot: [8]byte{1}, Recovery: entity.RecoverReconnect}}, nil)
 	s.must(t, err)
 	open := func(h vfs.Handle, p entity.Principal, access entity.AccessMask) *openstate.OpenRef {
 		t.Helper()

@@ -23,13 +23,17 @@ func span(off, n uint64, exclusive bool) []vfs.LockRange {
 }
 
 // connected connects client info as c, with a recording path, and answers
-// the call from it and the path.
+// the call from it and the path. A host's client, one sent a restart notice,
+// calls under NLM's profile.
 func (s *shares) connected(t *testing.T, c vfs.Call, info vfs.ClientInfo) (vfs.Call, *vfstest.Callbacks) {
 	t.Helper()
 	cb := &vfstest.Callbacks{}
 	id, _, err := s.Connect(t.Context(), c, info, cb)
 	s.must(t, err)
 	c.Client = id
+	if info.Recovery == entity.RecoverNotice {
+		c.Caps = vfs.NLMCaps
+	}
 	return c, cb
 }
 

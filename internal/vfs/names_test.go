@@ -75,7 +75,7 @@ func (n *names) list(t *testing.T, c vfs.Call, dir vfs.Handle, from vfs.Cursor, 
 // smbClient connects an SMB client and answers a call from it as p.
 func (n *names) smbClient(t *testing.T, name string, p entity.Principal) vfs.Call {
 	t.Helper()
-	c := openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte(name), Boot: [8]byte{1}}}
+	c := openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte(name), Boot: [8]byte{1}, Recovery: entity.RecoverReconnect}}
 	pr, err := n.tab.Clients().Propose(t.Context(), c, inLab)
 	n.must(t, err)
 	id, _, err := n.tab.Clients().Connect(t.Context(), c, &pr)
@@ -295,8 +295,8 @@ func TestACreateRefusedAddFileChangesNothing(t *testing.T) {
 }
 
 // Each name change answers its directories' attributes either side of it,
-// the After past the Before, whatever protocol the call is labelled with:
-// the NFSv3 adapter drops a directory's Before itself.
+// the After past the Before, whatever profile the call states: the NFSv3
+// adapter drops a directory's Before itself.
 func TestANameChangeAnswersItsDirectoriesWCC(t *testing.T) {
 	n := newNames(t)
 	ctx := t.Context()
@@ -326,9 +326,9 @@ func TestANameChangeAnswersItsDirectoriesWCC(t *testing.T) {
 		},
 	}
 	order := []string{"create", "link", "rename", "unlink", "rmdir"}
-	nfs3 := n.admin
-	nfs3.Caps = vfs.NFSv3Caps
-	for _, c := range []vfs.Call{n.admin, nfs3} {
+	nfs3, smb := n.admin, n.admin
+	nfs3.Caps, smb.Caps = vfs.NFSv3Caps, vfs.SMBCaps
+	for _, c := range []vfs.Call{n.admin, nfs3, smb} {
 		for _, op := range order {
 			ws, err := changes[op](c)
 			if err != nil {

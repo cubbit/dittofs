@@ -619,7 +619,7 @@ func (fs *Filesystem) refused(f entity.FileID, err error) {
 // refused, and the file keeps its name. Overturned once the store's Unlink
 // takes an open's grant.
 func (fs *Filesystem) deferredUnlink(ctx context.Context, share entity.ShareID, f entity.FileID, d entity.DeleteRecord) (*vfs.UnlinkResult, error) {
-	// A delete on close is Windows' delete, and takes its name rules.
+	// A delete on close takes the name rules of an open that keeps its name.
 	c := vfs.Call{Caps: vfs.OpenFilesKeepNames}
 	a, err := fs.marker(ctx, c, share, d)
 	if err != nil {
