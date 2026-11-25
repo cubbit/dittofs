@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"sync/atomic"
@@ -102,9 +101,12 @@ func (s *stage) Decode(rec *resources.Buf, _ int) (core.Header, error) {
 }
 
 // Encode writes the reply for s, the two high bits telling a program's status
-// from an accept or reject state (RFC 20 section 4.7). A success is the
-// accepted header alone: the procedure's encoder writes its result, a
-// COMPOUND's status, tag and results among them.
+// from an accept or reject state (RFC 20 section 4.7). A program's status,
+// success or not, is the accepted header and what the procedure's result
+// holds ahead of its body (wire.AppendStatus): the status word where the
+// result begins with one, NLM's cookie ahead of it, nothing for a void
+// result; the procedure's encoder writes the rest, a successful COMPOUND's
+// status, tag and results among them.
 func (s *stage) Encode(h core.Header, st core.Status, out *resources.Buf) error {
 	hd, ok := h.(header)
 	if !ok {
@@ -115,14 +117,7 @@ func (s *stage) Encode(h core.Header, st core.Status, out *resources.Buf) error 
 	switch uint32(st) >> 30 {
 	case wire.StatusProgram >> 30:
 		out.B = wire.AppendAccepted(out.B, xid, wire.AcceptSuccess)
-		if layer == 0 {
-			return nil
-		}
-		if hd.compound() {
-			out.B = wire.AppendCompoundStatus(out.B, layer, c.Tag(), 0)
-			return nil
-		}
-		out.B = binary.BigEndian.AppendUint32(out.B, layer)
+		out.B = wire.AppendStatus(out.B, c, layer)
 	case wire.StatusAccept >> 30:
 		if layer == wire.AcceptProgMismatch {
 			out.B = wire.AppendProgMismatch(out.B, xid, uint32(s.served.low[c.Program()]), uint32(s.served.high[c.Program()]))
@@ -151,16 +146,20 @@ func (s *stage) Args(rec *resources.Buf, h core.Header) []byte {
 }
 
 // ReplyLen is the most Encode writes for h: the reply header with an empty
-// AUTH_NONE verifier and a mismatch's two versions, and for a COMPOUND its
-// status, its tag as it came and its results count besides, with the one
-// result's head a reply that fails before or at a member writes beside the
-// members' bounds (RFC 20 section 4.7).
+// AUTH_NONE verifier and a mismatch's two versions, or the accepted header
+// with what wire.AppendStatus writes, an NLM cookie's bytes among them; for a
+// COMPOUND, its status, its tag as it came and its results count, with the
+// one result's head a reply that fails before or at a member writes beside
+// the members' bounds (RFC 20 section 4.7).
 func (s *stage) ReplyLen(h core.Header) int {
 	hd, ok := h.(header)
-	if !ok || !hd.compound() {
+	if !ok {
 		return wire.MaxReplyHeaderLen
 	}
-	return wire.AcceptedLen + wire.CompoundStatusLen(len(hd.call().Tag())) + wire.ResultHeadLen
+	if hd.compound() {
+		return wire.AcceptedLen + wire.StatusLen(hd.call()) + wire.ResultHeadLen
+	}
+	return max(wire.MaxReplyHeaderLen, wire.AcceptedLen+wire.StatusLen(hd.call()))
 }
 
 // Route chooses the table and builds the request, one of the call's own, in

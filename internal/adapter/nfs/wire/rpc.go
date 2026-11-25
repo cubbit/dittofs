@@ -332,3 +332,107 @@ func AppendCompoundStatus(dst []byte, status uint32, tag []byte, n int) []byte {
 	}
 	return binary.BigEndian.AppendUint32(dst, uint32(n))
 }
+
+// The heads a program's result takes ahead of the procedure's own body.
+const (
+	headNone     = iota // void, or a result with no status
+	headStatus          // a status word
+	headCookie          // NLM's: the call's cookie, then the status
+	headCompound        // a COMPOUND's: status, tag and results count
+)
+
+// head is the head c's result takes: nfsstat3 before every NFSv3 result but
+// NULL's (RFC 1813 section 3.3); mountstat3 before MNT's mountres3, while
+// DUMP's mountlist, EXPORT's exports and NULL's, UMNT's and UMNTALL's voids
+// carry none (section 5.2); NLM version 4's cookie and then its stat before
+// TEST's, LOCK's, CANCEL's, UNLOCK's, GRANTED's and NM_LOCK's results and
+// SHARE's and UNSHARE's, its other procedures void (section 6.3); NSM's
+// res_stat before SM_STAT's and SM_MON's sm_stat_res, while SM_UNMON's and
+// SM_UNMON_ALL's sm_stat holds a state alone and its other procedures are
+// void (X/Open XNFS's status monitor); and a COMPOUND's status and tag (RFC
+// 7530 section 16.2).
+func head(c Call) int {
+	p := c.Procedure()
+	switch c.Program() {
+	case ProgNFS:
+		if _, ok := c.MinorVersion(); ok {
+			return headCompound
+		}
+		if c.Version() == VersNFS3 && p != 0 {
+			return headStatus
+		}
+	case ProgMount:
+		if p == 1 {
+			return headStatus
+		}
+	case ProgNLM:
+		if 1 <= p && p <= 5 || 20 <= p && p <= 22 {
+			return headCookie
+		}
+	case ProgNSM:
+		if p == 1 || p == 2 {
+			return headStatus
+		}
+	}
+	return headNone
+}
+
+// cookie is an NLM call's cookie, the netobj its arguments begin with, as a
+// slice of the record; nil where the arguments do not hold it whole.
+func cookie(c Call) []byte {
+	args := c.Args()
+	if len(args) < 4 {
+		return nil
+	}
+	n := binary.BigEndian.Uint32(args)
+	if uint64(n) > uint64(len(args)-4) {
+		return nil
+	}
+	return args[4 : 4+n]
+}
+
+// AppendStatus appends what a reply to c holds between its accepted header
+// and the procedure's own result body, status being the program's status: the
+// status word where the result begins with one, a success's included; NLM's
+// cookie, echoed from the call, ahead of it; nothing for a result with no
+// status; and for a COMPOUND, whose encoder writes a success's status, tag
+// and results itself, a refusal's status, tag and empty results.
+//
+// decision: a program's status on a procedure whose result has no status is
+// not written, since its reply has no place to carry it: the result's body,
+// if any, follows the header directly. Overturned if such a procedure ever
+// needs to report a failure, which only an RPC accept state could carry.
+func AppendStatus(dst []byte, c Call, status uint32) []byte {
+	switch head(c) {
+	case headStatus:
+		return binary.BigEndian.AppendUint32(dst, status)
+	case headCookie:
+		k := cookie(c)
+		dst = binary.BigEndian.AppendUint32(dst, uint32(len(k)))
+		dst = append(dst, k...)
+		for i := len(k); i%4 != 0; i++ {
+			dst = append(dst, 0)
+		}
+		return binary.BigEndian.AppendUint32(dst, status)
+	case headCompound:
+		if status == 0 {
+			return dst
+		}
+		return AppendCompoundStatus(dst, status, c.Tag(), 0)
+	}
+	return dst
+}
+
+// StatusLen is the most AppendStatus writes for c.
+func StatusLen(c Call) int {
+	switch head(c) {
+	case headStatus:
+		return 4
+	case headCookie:
+		n := len(cookie(c))
+		return 4 + n + (4-n%4)%4 + 4
+	case headCompound:
+		return CompoundStatusLen(len(c.Tag()))
+	}
+	return 0
+}
