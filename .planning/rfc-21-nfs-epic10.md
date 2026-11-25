@@ -22,7 +22,7 @@ a pending callback. Every citation is `develop`'s text, which holds amendment A2
 Cited, not owned: RFC 8881 §20 for the callback program's bytes, §18.16 for `open_delegation4`,
 §18.39 for `GET_DIR_DELEGATION`; RFC 5531 for the RPC reply; RFC 20 §2.5's layout of `ops/cb`.
 **Track:** A.
-**Epic 10 estimate: 9 subtasks, 26.5 man-days.**
+**Epic 10 estimate: 9 subtasks, 27 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E1's request state and members' table (T1.1,
 T1.2), E2's `nfsharness` (T2.2) and knfsd's `nfs41/` delegation capture with its `CB_RECALL` (T2.3).
 **S4**, an NFSv4.1 session over loopback, for every loopback row. **S2b**, met: amendment A2 is in
@@ -188,6 +188,7 @@ so that subtasks and tests can cite them.
 | R16 | `DELEGRETURN` is `AckRecall` to `GrantNone`; an unasked one is a return, and `ErrState` (`NoRecall`), never met, is answered the fault by its own row | MUST | RFC 21 §11.4, §11.5, App. D | T10.4 |
 | R17 | `DELEGRETURN` is a release, served while draining | MUST | RFC 21 §11.5 (what runs while draining); RFC 20 §4.7 | T10.4 |
 | R18 | I/O under a delegation stateid belongs to the client: it is refused `NFS4ERR_BAD_STATEID` unless the delegation is held, unrevoked, by the call's client, and is then authorised afresh as anonymous I/O | MUST | RFC 21 §5.2 (rule 6), §13 ("§5.2 delegation stateid") | T10.4 |
+| R37 | `WRITE`, and `SETATTR` of the size, under a read delegation's stateid is refused on the stateid's mode, `NFS4ERR_OPENMODE`, whatever the caller may do to the file: a read delegation's access mode allows no writing | MUST | RFC 8881 §9.1.2 | T10.4 |
 | R19 | A delegation is never changed in place, so its stateid keeps the `seqid` it was granted with | invariant | RFC 21 §5.2 (rule 3) | T10.4 |
 | R20 | `CB_RECALL_ANY` is sent when a client reaches its grant budget at one primary, naming 2048 to keep; for an NFSv4.0 client `RecallAny` answers nil and sends nothing | MUST | RFC 21 §5.3; RFC 14 §5.5; RFC 17 §3.2; RFC 20 §3.3 | T10.3, T10.8 |
 | R21 | `GET_DIR_DELEGATION` returns `GDD4_UNAVAIL` with `will_signal_deleg_avail` false | MUST | RFC 21 §5.3 | T10.8 |
@@ -609,10 +610,10 @@ internal/adapter/adaptertest/nfsclient/
 
 ### T10.4 Delegations offered, recalled and returned
 
-**Subtask T10.4 estimate: 3 man-days.**
+**Subtask T10.4 estimate: 3.5 man-days.**
 
 - **Track:** A. **Depends on:** T10.3, T9.3, T9.4, T9.9.
-- **Covers:** R11, R12, R13, R15, R16, R17, R18, R19.
+- **Covers:** R11, R12, R13, R15, R16, R17, R18, R19, R37.
 - **Deliverables:**
   - `ops/v4/open_deleg.go`: `func want(minor uint32, w uint32) vfs.GrantKind`, a pure, total
     function over the want value T9.4 split from `share_access` and already checked (D6), never
@@ -626,7 +627,10 @@ internal/adapter/adaptertest/nfsclient/
     `NFS4ERR_BAD_STATEID` before the call (R19).
   - "§5.2 delegation stateid" over a delegation `OPEN` offered: the `READ`, `WRITE` and `SETATTR`
     arm for a stateid of the grant type is E9's T9.9, `vfs.Delegated(g, fh)` with the current
-    filehandle and no other check in the adapter (R18); this subtask runs the row over it.
+    filehandle and no other check in the adapter (R18); this subtask runs the row over it, with
+    bob's refused `WRITE` under a write delegation rather than the RFC row's read one (Q4).
+  - A `WRITE`, or a `SETATTR` of the size, under a read delegation's stateid refused
+    `NFS4ERR_OPENMODE` before any authorisation (R37), where Q4 settles.
   - `ops/v4/errors.go`: `ErrState` (`NoRecall`) at `NFS4ERR_SERVERFAULT`, by its own row.
   - The golden file of §11.6's delegation types: each want code and its `GrantKind`, each grant and
     its `open_delegation4`, the empty ACE on the read and the write type alike (D7), NFS → neutral →
@@ -646,8 +650,14 @@ internal/adapter/adaptertest/nfsclient/
   mapped differently, R11, R13), and a loop over every defined want code under minor versions 0, 1
   and 2 (catches a handle grant, R13, or a delegation wanted under NFSv4.0, R12). On `nfsharness` over `memory.New` with two proven principals of one client: alice's
   `OPEN` of a 0644 file she owns with a read delegation, then bob's `READ` under its stateid served
-  and his `WRITE` `NFS4ERR_ACCESS`, and another client's `READ` under it `NFS4ERR_BAD_STATEID` (catch
-  delegation I/O not reauthorised, or served for another client, R18); `DELEGRETURN` with `seqid` 2
+  and another client's `READ` under it `NFS4ERR_BAD_STATEID`; then alice's `OPEN` for write of a
+  second 0644 file she owns with a write delegation, bob's `READ` under its stateid served and his
+  `WRITE` under it `NFS4ERR_ACCESS`, the file unchanged (catch delegation I/O not reauthorised, or
+  served for another client, R18: under a write delegation the stateid's mode allows the write, so
+  only the fresh authorisation can refuse it). The mode alone, separately: alice's own `WRITE`, and
+  her `SETATTR` of the size, under her read delegation's stateid `NFS4ERR_OPENMODE`, the file
+  unchanged (catches a read delegation's stateid admitting a write, R37); a `WRITE` under a read
+  delegation by someone without the right proves neither rule, since either check refuses it; `DELEGRETURN` with `seqid` 2
   `NFS4ERR_BAD_STATEID` and with 1 accepted (catch R19); `DELEGRETURN`'s one `Mutations` entry,
   `AckRecall` (catches a second call, R16); the `NoRecall` row asserted as a matched row, with
   `adapter_unmapped_errors_total` at 0 (R16). Over loopback after S4, the recall and the NFSv4.0
@@ -874,7 +884,7 @@ to T10.9 are tests over what T10.4 offers and can run in any order.
 | --- | --- | --- | --- | --- |
 | 1 | T10.1 | 2 | — | the callback program's bytes and the call codec in `wire`, which E11's T11.2 waits on and which needs no session |
 | 2 | T10.2, T10.3 | 7.5 | PR 1 | the server calling the client, from the back channel to the callbacks the service makes |
-| 3 | T10.4 | 3 | PR 2 | delegations offered, recalled and returned end to end |
+| 3 | T10.4 | 3.5 | PR 2 | delegations offered, recalled and returned end to end |
 | 4 | T10.5, T10.6 | 6.25 | PR 3 | the path down, the service's half and the wire's; T10.5 can open beside PR 1 |
 | 5 | T10.7, T10.8, T10.9 | 7.75 | PR 3 | the rows over delegations: revocations, locks in a recall, the budget, the drain |
 
@@ -927,6 +937,22 @@ Questions pending the user's answer. Each recommended option is written in place
     `Open` is the only way a grant is offered; more service surface for an operation Linux does not
     send.
 
+- **Q4. Where a read delegation's stateid is refused a write** (R37). RFC 8881 §9.1.2 makes
+  `NFS4ERR_OPENMODE` a MUST for a write under a stateid whose access mode allows no writing, a
+  delegation's mode being its type; RFC 17 §3.1's `Delegated` reference "lends no access" and is
+  authorised as an anonymous open, so as written a read delegation admits a write by anyone the
+  file's mode admits. RFC 21 §13's "§5.2 delegation stateid" row has bob `WRITE` under a read
+  delegation and asserts `NFS4ERR_ACCESS`, which a server checking the mode first answers
+  `NFS4ERR_OPENMODE`; the row is amended to bob's `WRITE` under a write delegation, with alice's
+  under the read one `NFS4ERR_OPENMODE` as its own step, in batch two's one RFC 21 pull request.
+  - (a) **Recommended:** RFC 17 §3.1 amended so a `Delegated` reference to a read grant is refused a
+    write (`Write`, and `SetAttr` of the size) before the anonymous authorisation, with a state error
+    the adapter maps to `NFS4ERR_OPENMODE`; the grant's kind is open state's, which the service
+    already reads to check the reference is held. In batch two's one RFC 17 pull request, with Q1.
+  - (b) The adapter keeps each delegation stateid's type from the `OPEN` that offered it and refuses
+    the write itself; no RFC 17 change, but a per-stateid map in the adapter that a stateid moved to
+    another node does not carry, the same objection as Q1 (b).
+
 Gaps, not questions:
 
 1. **An administrator's revoke has no production caller.** Open state's `Revoke` is reached by no
@@ -977,4 +1003,5 @@ Which pull request carries which RFC amendment: Q1's RFC 17 §3.2 `RecallGrant` 
 one RFC 17 pull request, with E9's D1, E11's Q1 and E12's D1, opened before E9's PR 1; T10.3's
 `pkg/vfs` change waits for it (rule 11). Q3's RFC 21 §5.3 sentence goes in batch two's one RFC 21
 pull request, with Q2's sentence on the flag's staleness; Q2's recommended option (b) adds RFC 14
-§11.3 and RFC 17 §3.2 to those.
+§11.3 and RFC 17 §3.2 to those. Q4's amended §13 row goes in the same RFC 21 pull request, and its
+recommended option (a)'s RFC 17 §3.1 sentence in the RFC 17 one with Q1's.
