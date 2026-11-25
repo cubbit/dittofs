@@ -71,6 +71,20 @@ func (h *Hold) Reached() <-chan struct{} { return h.reached }
 // through. A second Release does nothing.
 func (h *Hold) Release() { h.once.Do(func() { close(h.release) }) }
 
+// Disarm removes every fault armed and not yet fired, and answers the method
+// of each in the order armed, so a test that ends a request can tell what the
+// request never reached, and the next request meets none of it.
+func (f *FaultService) Disarm() []vfs.Op {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ops := make([]vfs.Op, len(f.armed))
+	for i, a := range f.armed {
+		ops[i] = a.op
+	}
+	f.armed = nil
+	return ops
+}
+
 func (f *FaultService) arm(a *fault) {
 	f.mu.Lock()
 	f.armed = append(f.armed, a)

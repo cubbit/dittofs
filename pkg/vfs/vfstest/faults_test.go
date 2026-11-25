@@ -173,6 +173,27 @@ func TestFailsOnOneMethodFireInArmingOrder(t *testing.T) {
 	}
 }
 
+// Disarm answers each fault not yet fired, in the order armed, and leaves
+// none: the calls after it pass through.
+func TestDisarmAnswersAndRemovesEveryUnfiredFault(t *testing.T) {
+	s := vfstest.Faults(vfstest.Null{})
+	s.Fail(vfs.OpWrite, errFault)
+	s.Hold(vfs.OpSetAttr)
+	s.Fail(vfs.OpUnlink, errFault)
+	if _, err := s.Unlink(t.Context(), vfs.Call{}, vfs.Target{}, nil); err != errFault {
+		t.Fatalf("Unlink: got %v, want the fault", err)
+	}
+	if got, want := s.Disarm(), []vfs.Op{vfs.OpWrite, vfs.OpSetAttr}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Disarm: got %v, want %v", got, want)
+	}
+	if _, err := s.Write(t.Context(), vfs.Call{}, vfs.OpenRef{}, 0, nil, vfs.Unstable); err != nil {
+		t.Errorf("Write after Disarm: got %v, want it passed through", err)
+	}
+	if got := s.Disarm(); len(got) != 0 {
+		t.Errorf("a second Disarm: got %v, want none", got)
+	}
+}
+
 // A fault on TestState answers its error for every reference, one each.
 func TestFailOnTestStateAnswersEveryReference(t *testing.T) {
 	s := vfstest.Faults(vfstest.Null{})
