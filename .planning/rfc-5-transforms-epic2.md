@@ -13,7 +13,7 @@ and the RFC 2 plan's golden-vector script, which RFC 5's vectors join. Every cit
 **Track:** team.
 **Epic 2 estimate: 5 subtasks, 11 man-days.**
 **Depends on:** **S1**, E1's surface frozen: `transform.Transform`, `Factory`, `Encoded`,
-`ErrMalformed` and `ErrTooLarge`; `keys.Provider`, `keys.MaterialID` and the material errors; the
+`ErrMalformed` and `ErrTooLarge`; `keys.Provider`, `keys.MaterialID` and the material errors;
 and the salvage-key wrap E1 declares in `keys`. Outside RFC 5's epics, the RFC 2 plan's epic 2
 (`.planning/rfc-2-carver-plan.md`, on `develop`):
 its golden-vector script with its chain-ID encoder, and its check of `lukechampine.com/blake3`'s
@@ -198,11 +198,11 @@ suite" is `keystest.Run`.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R1 | `Decode(Encode(p)) == p` byte for byte over 10,000 inputs: random, all zeros, all one byte, sizes from 1 byte to the chunk maximum, and inputs that begin with the transform's own output and with an envelope. `Decode` needs nothing but its arguments and the provider | MUST, test row | RFC 5 §2.1, §3.1 (`Transform.Decode`), §7 T2, §8.1 T2 | T2.3 |
-| R2 | Every body is no longer than `MaxEncodedLen(len(input), m)` under the material it was encoded with, nor than `MaxEncodedLen(len(input), nil)`, the bound under any material; an input built to hit the worst case reaches the first | MUST, test row | §2.1, §3.1 (`MaxEncodedLen`), §4 item 2, §8.1 §2.1 | T2.3 |
+| R2 | Every body is no longer than `MaxEncodedLen(len(input), m)` under the material it was encoded with, nor than `MaxEncodedLen(len(input), nil)`, the bound under any material; an input built to hit the worst case reaches the first. A declined chunk (`Applied=false`) is measured as `plain` passed on unchanged, so its length is `n` and counts as reaching a bound of `MaxEncodedLen(n, m) = n`, so a compressor's worst case is the input it declines | MUST, test row | §2.1, §3.1 (`MaxEncodedLen`), §4 item 2, §8.1 §2.1 | T2.3 |
 | R3 | Encode and decode from 64 goroutines under the race detector give the same results as sequential calls | MUST, test row | §2.1 (stateless per call), §8.1 concurrency | T2.3 |
 | R4 | Every byte of a body flipped in turn: `Decode` never panics, and returns either an error of §2.7's five or bytes that differ from the input, which the codec's hash check rejects; never a foreign error | MUST, test row | §2.7, §4 item 6, §8.1 §2.7 | T2.3 |
-| R5 | A transform that authenticates returns `ErrMalformed` itself for every flip | MUST | §8.1 §2.7 | T2.3 |
-| R6 | A transform that authenticates: chunk A's body decoded with chunk B's hash is `ErrMalformed`; a body naming destroyed material is `ErrMaterialDestroyed` | test row | §2.7, §8.1 §2.7 | T2.1, T2.3 |
+| R5 | A transform that authenticates returns `ErrMalformed` itself for every flip, decoded through D11's census view, so a flipped key ID is `ErrMalformed`, never `ErrUnknownMaterial` | MUST | §8.1 §2.7 | T2.3 |
+| R6 | A transform that authenticates: chunk A's body decoded with chunk B's hash is `ErrMalformed`; a body naming destroyed material is `ErrMaterialDestroyed`; both decode through D11's census view | test row | §2.7, §8.1 §2.7 | T2.1, T2.3 |
 | R7 | `Encode` of each input twice, and through two instances built by one `Factory` from the same settings, gives identical bodies. Where `LengthOf` answers, the body is applied and its length equals the answer | MUST, test row | §2.1 (deterministic, honest about length), §3.1 (`Factory`, `LengthOf`), §7 T9, §8.1 T9 | T2.3 |
 | R8 | `Decode` never allocates or produces more than `max`, however large a body claims its output to be; fuzzed, it never panics | MUST NOT, test row | §2.1, §4 item 5, §7 T4, §8.1 T4 | T2.4 |
 | R9 | A body declaring an output of `max + 1` fails with `ErrTooLarge` | test row | §2.7, §8.1 T4 | T2.3 |
@@ -225,7 +225,7 @@ suite" is `keystest.Run`.
 | R18 | A fingerprint is `HMAC-SHA256(material, "dittofs key check v1")`, 32 bytes, carried in `MaterialID` | MUST | §2.5, §3.1, Appendix B.1 (labels; lengths and encodings) | T2.1, T2.5 |
 | R19 | A test can assert that the provider records no call: each call of the provider's `Current` or `Get` is counted | test row | §3.1 (`Provider`), §8.2 T12, T14 | T2.1 |
 | R31 | `Current` of a kind never given in a namespace is `ErrUnknownMaterial`, the error `Get` gives for the same absence | MUST | §3.1 (`Provider.Current`, `Provider.Get`); D3 | T2.1 |
-| R20 | A salvage key is a fresh 32-byte data key, belongs to no namespace, and is returned with its wrap under the installation's current master key; its layout and its unwrap are E6's | MUST | Appendix B.1 (lengths and encodings), Appendix B.2 (key table's `salvage-key` row; "A salvage key seals one salvage export") | T2.2 |
+| R20 | A salvage key is a fresh 32-byte data key, belongs to no namespace, and is returned with its wrap under the installation's current master key, in Appendix B.1's stored-wrap layout (E1's `SalvageWrapper`); the wrap bytes inside that layout and their unwrap are each provider's, E6's for the key file | MUST | Appendix B.1 (lengths and encodings), Appendix B.2 (key table's `salvage-key` row; "A salvage key seals one salvage export") | T2.2 |
 
 **Golden vectors**
 
@@ -326,10 +326,12 @@ suite" is `keystest.Run`.
   `testing/quick`, seeded (from memory).
 - **D9, `Memory`'s salvage-key wrap is the smallest that meets R20.** It seals the key with
   AES-256-GCM from the standard library under a master key `Memory` draws at construction, with
-  the associated data naming the salvage export that the call is given. Nothing in v1.1 reads the wrap back:
+  the associated data naming the salvage export that the call is given, and returns the seal in
+  Appendix B.1's stored-wrap layout (provider kind `0x01`, the master key's ID, nonce ‖ ciphertext
+  ‖ tag), as E1's `SalvageWrapper` requires of every provider. Nothing in v1.1 reads the wrap back:
   the engine writes it beside the export as bytes, and recovery tools are RFC 26's. So the
-  provider suite's row checks only what holds for every provider, and E6 checks its provider's
-  layout against the stored-wrap vector and its unwrap. Prior art: none found.
+  provider suite's row checks what holds for every provider, the layout included, and E6 checks
+  its provider's wrap bytes against the stored-wrap vector and its unwrap. Prior art: none found.
 - **D10, the exported surface of §6 is the user's approved one** (#5857): `Memory` and its six
   methods, `Harness` and `keystest.Run`; `Subject`, `transformtest.Run`, `FuzzDecode`, `Fixture`,
   `Vectors` and `LoadVectors`. A change to it is a revision of this document. Prior art: none
@@ -424,6 +426,8 @@ pkg/carver/internal/carvetest/  T2.5  RFC 5's vectors added to the RFC 2 plan's 
   provider runs it.
 - **Acceptance criteria:**
   - Two calls return two different 32-byte keys and two different wraps.
+  - Each wrap parses as Appendix B.1's stored-wrap layout: a known provider kind, a non-empty
+    master-key ID, and lengths that account for every byte.
   - No wrap contains its key's bytes, raw, in hex or in base64.
   - No namespace's `Current` changes, since a salvage key belongs to no namespace.
 - **Tests:** at the provider suite's salvage row, the one E6's provider runs: the three criteria
@@ -497,7 +501,7 @@ pkg/carver/internal/carvetest/  T2.5  RFC 5's vectors added to the RFC 2 plan's 
     `testdata/fixtures`.
   - `transformtest.FuzzDecode(f *testing.F, s Subject)`, consumed by E4's and E5's fuzz
     targets: seeds from the fixtures, from round-trip bodies and from bodies claiming 4 × `max`;
-    asserts no panic, an error of §2.7's five or at most `max` bytes, and D5's allocation bound.
+    decodes through D11's census view over the seeds' material, as R5 does; asserts no panic, an error of §2.7's five or at most `max` bytes, and D5's allocation bound.
   - The test transform's fixture under `testdata/fixtures/v1/`.
 - **Acceptance criteria:**
   - The test transform passes the fixture rows and a seed run of `FuzzDecode`.
