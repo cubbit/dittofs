@@ -294,6 +294,11 @@ metadata store's entity package, which holds the chunk ID, block name and
 namespace ID types ([RFC 16 §2](rfc-16-metadata-store.md#2.%20Entities)). That package is a contract
 ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)). An import test **MUST** enforce that, transitively.
 
+The carver's contract is its root package: the value types and errors other
+components name. `Cut`, the chunk-ID and naming functions and the assembler live
+in subpackages, which only the node's content wiring imports; the engine imports
+only the root ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
+
 ### 1.2 Two layers: the chunker and the carver
 
 Two things are specified here, and keeping them apart is what keeps both simple.

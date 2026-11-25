@@ -80,7 +80,7 @@ byte slice and a closure.
 | v1 | v2 |
 | --- | --- |
 | `pkg/block/chunker` | `pkg/carver/internal/chunker` (D1, D2) |
-| `pkg/block/carver`, block assembly included (RFC 2 Appendix A, last row) | `pkg/carver` and `pkg/carver/assembler` (D1) |
+| `pkg/block/carver`, block assembly included (RFC 2 Appendix A, last row) | `pkg/carver`, the contract, with `pkg/carver/carve` and `pkg/carver/assembler` (D1) |
 | the chunk profile per share, from the host file (RFC 13 Appendix A, row C1) | `Target` per namespace, a bound setting (RFC 13 Appendix B): its settings section declared in `pkg/carver/section` by epic 3, its validator calling epic 1's check of a `Target` alone, added to the node's table by the RFC 8 offload plan's epic 21 |
 | `blockstore.journal.chunk_size`, `.chunk_max` | dropped (RFC 13 Appendix C's dropped keys) |
 | on-disk content cut by v1 | none: new installations only |
@@ -111,14 +111,16 @@ interface agreed", with stub bodies. S1 is final: epic 1 also settles the assemb
 pipeline supplies (D3): the key budget `K` with each chunk's worst-case keys, a zero ref's
 included, and a commit's per-block and per-file keys (RFC 2 P2, §5.1 as amended), the lookup (deferred), the all-zero flag and each chunk's age.
 
-- `carver`: the settings value built from a namespace's `Target`, its encryption flag, its
-  chunking key and its chunk-ID key (RFC 2 §3.2, §3.7, §4.1, §6; D4); the check of a `Target`
+- `carver`, the root, is the contract (D1): the settings value's type, `Chunk` (§1.2), the
+  assembler's chunk input and plan types, and the error set of §1.2, §3.7, §7 and §10.2. It
+  declares no function, and the engine imports only it.
+- `carve`: the settings value's constructor from a namespace's `Target`, its encryption flag,
+  its chunking key and its chunk-ID key (RFC 2 §3.2, §3.7, §4.1, §6; D4); the check of a `Target`
   alone (§3.7's three `Target` refusals), which the settings constructor calls and `Target`'s
   settings section calls with no key material (epic 3); `Cut` (§1.2, §2.1, §2.2,
-  §2.4); `Chunk` (§1.2); the chunk-ID function and the block name (§4.1, §4.2), which the RFC 8
-  pipeline calls and hands to RFC 4's codec as functions, for its read checks (RFC 4 §3.4) and
-  its whole-block read (D9);
-  the error set of §1.2, §3.7, §7 and §10.2.
+  §2.4); the chunk-ID function and the block name (§4.1, §4.2), which the node's content wiring
+  hands the RFC 8 pipeline and RFC 4's codec as functions, for its read checks (RFC 4 §3.4) and
+  its whole-block read (D9).
 - `assembler`: the concrete fold of §5.1, with no lookup and no error in the first release, and
   its constructor, which refuses a block target out of §5.2's range (D2, D3).
 - RFC 2 §1.1's import test over every package of the tree, test packages included in its
@@ -127,8 +129,8 @@ included, and a commit's per-block and per-file keys (RFC 2 P2, §5.1 as amended
   `pkg/block/carver/foreign_imports_test.go` is not the model (rule 7).
 
 The chunker's boundary search stays internal (D2): no consumer outside the carver calls it.
-Nothing in epic 1 declares an interface: the engine declares its own over these concrete types
-(RFC 8 §2.1).
+Nothing in epic 1 declares an interface: the engine declares its own over the root's types
+(RFC 8 §2.1), and the node's content wiring hands it `carve`'s functions and the fold.
 
 ### 1.4 What epic 2 must deliver
 
@@ -256,10 +258,12 @@ reader; the one `iotest` lacks, zero bytes with no error, is a few lines in epic
    component's contract, never its implementation, and checks the imports transitively. Epic
    1's import test applies it with RFC 2 §1.1: it walks every package of the tree and all that
    each one imports, transitively, test packages included, against an allowlist per package.
-   - `pkg/carver` and `pkg/carver/assembler` may import the standard library, BLAKE3 and
-     `pkg/metadata/entity`, the value types RFC 16 §2 keeps in one package, which is a contract
-     (D9). Its own imports, BLAKE3 and `github.com/google/uuid`, come with it.
-   - `pkg/carver/section` may also import `pkg/carver`, and nothing else. It never imports
+   - `pkg/carver`, the contract, may import the standard library and `pkg/metadata/entity`, the
+     value types RFC 16 §2 keeps in one package, which is a contract (D9). Its own imports,
+     BLAKE3 and `github.com/google/uuid`, come with it.
+   - `pkg/carver/carve` and `pkg/carver/assembler` may also import BLAKE3, the root and the
+     carver's internal packages.
+   - `pkg/carver/section` may import the root and `pkg/carver/carve`, and nothing else. It never imports
      `pkg/settings`, `pkg/metrics` or `pkg/health`: each holds a contract and its implementation
      together, so under amended RFC 0 §1.2 it counts as an implementation, and only the two
      composers import it (the split is tracked in #5775). The section states `Target`'s row as
@@ -294,7 +298,7 @@ reader; the one `iotest` lacks, zero bytes with no error, is a few lines in epic
 
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | **Interfaces** ⛔ | the exported surface of `carver` and `assembler`, stubbed, the pipeline's inputs settled; the error set; the §1.1 import test | 4 | 3.75 | team | **everything** |
+| 1 | **Interfaces** ⛔ | the exported surface of `carver`, `carve` and `assembler`, stubbed, the pipeline's inputs settled; the error set; the §1.1 import test | 4 | 3.75 | team | **everything** |
 | 2 | **Test foundations** ⛔ | the reference chunker, the golden-vector script and the BLAKE3 modes check, seeded inputs, the corpus fetch; `carver-allocs` and the nightly `fuzz` suite registered | 5 | 8.5 | team | 3, 4, 5, 7 |
 | 3 | **The chunker** ⛔ | settings derivation and refusal, `Target`'s settings section, the gear tables, the boundary search | 7 | 12.5 | A | 4, 7 |
 | 4 | **The carver and identity** | `Cut`, artificial ends, errors, chunk IDs, block names | 7 | 13.5 | B | 6, 7 |
@@ -305,7 +309,7 @@ reader; the one `iotest` lacks, zero bytes with no error, is a few lines in epic
 
 **Plan estimate: 35 subtasks, 57.25 man-days, not counting epic 6.**
 
-RFC 2 is 1,626 lines, which gives N = 4. Its cohesive areas are three: the chunker and the
+RFC 2 is 1,634 lines, which gives N = 4. Its cohesive areas are three: the chunker and the
 carver, RFC 2 §1.2's two layers, and the block assembler, which §1 and §5 make a separate layer.
 The block name joins the carver, since §1.2 puts all of §4 there, rather than make a fourth epic
 of about two man-days. Composing the carver into the engine is not an epic here: it is the RFC 8
@@ -399,7 +403,8 @@ of the default a migration. The programme holds it as a v1.1 release gate in #54
 ### 4.1 Directory layout
 
 ```text
-pkg/carver/                    E1 → E4: the settings value, Cut, Chunk, chunk ID, block name, errors
+pkg/carver/                    E1: the contract: the settings value's type, Chunk, plan types, errors
+pkg/carver/carve/              E1 → E4: the settings constructor, Cut, chunk ID, block name
 pkg/carver/imports_test.go     E1: RFC 2 §1.1's import rule over the tree
 pkg/carver/internal/chunker/   E3: gear tables, masks, the boundary search
 pkg/carver/internal/carvetest/ E2: reference chunker, seeded inputs, golden script, corpus fetch
@@ -413,6 +418,10 @@ pkg/carver/*/testdata/         E2: golden vectors; E3 to E5: fuzz seeds
 - **D1. The carver lives at `pkg/carver`**, the chunker internal to it, as the programme decided
   for the four offload components (`pkg/carver`, `pkg/syncer`, `pkg/remote`, `pkg/transform`). It
   starts without waiting on #5484, and the import test covers the whole tree from one root.
+  The root package is the carver's contract, its value types and errors, and the code lives in
+  subpackages (`carve`, `assembler`), as RFC 8 §2.8 has `pkg/transform` do: the engine holds the
+  carver through `Deps` and imports only the root, and the node's content wiring imports the
+  rest (amended RFC 0 §1.2).
   Prior art: the journal-only engine plan, which built v2 beside v1 at `pkg/block/enginev2` until
   #3645 deleted v1 and moved v2 to the plain name; `pkg/carver` needs no such move.
   Applied by epic 1.
@@ -515,9 +524,10 @@ The surface §1.3 lists, with stub bodies, reviewed at S1, which is final. **Own
 is agreed with the RFC 8 offload plan's and RFC 4 plan's authors.
 
 **Expected content:**
-- `carver`: the settings value and constructor, `Cut`, `Chunk`, the chunk-ID and name functions,
-  the errors.
-- `assembler`: the fold's type, constructor, chunk input and plan types, with D3's inputs, the
+- `carver`, the root: the settings value's type, `Chunk`, the assembler's chunk input and plan
+  types, the errors.
+- `carve`: the settings constructor, `Cut`, the chunk-ID and name functions.
+- `assembler`: the fold's type and constructor, with D3's inputs, the
   key budget among them.
 - The import test, transitive, with its allowlist per package (rule 7).
 
@@ -559,7 +569,7 @@ the RFC 8 offload plan's epic 21 adds the section to the node's table (§6 point
 - `Target`'s settings section in `pkg/carver/section`, namespace-scoped and bound, its validator
   calling the check of a `Target` alone, since a settings validator holds no key material (the
   keys are RFC 5's key table), as the RFC 3 plan does for the syncer's in
-  `pkg/syncer/section`. The section states the row as plain values and imports only `pkg/carver`;
+  `pkg/syncer/section`. The section states the row as plain values and imports only the root and `carve`;
   the node's content wiring, a composer, registers it in `pkg/settings` and passes each
   namespace's `Target` to the carver as a plain value; `pkg/carver` stays the standard library,
   BLAKE3 and `entity` (RFC 2 §1.1, rule 7). Once the node's table
