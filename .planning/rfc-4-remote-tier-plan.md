@@ -776,7 +776,8 @@ naming its missing caller (D11); the store refused at open for an untrusted cert
   re-list on the clock (D8), refusing with every missing feature named.
 - `Health` in both directions (§4.7).
 - `immutable` refused at open (D11).
-- `remote_capability` through the recorder's `Capability(prefix, feature, present)`, the
+- `remote_capability`, labelled by `namespace` and feature, through the recorder's
+  `Capability(prefix, feature, present)`, the
   refused open's log, the one-zone class's failure domain in the open's log (RFC 4 §8 item 7),
   the `404`/`501`/`403` rule on every setting read (Appendix C.1), and the `decision:` markers
   rule 9 gives this epic.

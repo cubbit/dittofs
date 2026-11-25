@@ -1346,6 +1346,8 @@ that failed, is labelled `result="local"`: it is not the service's ([§4.8](#4.8
 sets the drifted setting's `remote_capability` to 0. The gauge also
 carries `conditional_put`, whether the service honoured one at the last check
 ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)); it is reported, and no rule reads it.
+`remote_capability` also carries `namespace`, since a check's lifecycle and
+tiering verdicts depend on the store's prefix.
 
 Logs: a refused open, and a drifted `Recheck`, log every missing feature at
 `Error`, once. `ErrCorrupt`,
