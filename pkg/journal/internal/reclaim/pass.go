@@ -451,7 +451,11 @@ func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64
 	// Held re-read cannot miss a re-hold a sweep of this unit's classes
 	// committed — the registry lock orders the raise before it — and a
 	// held answer is a swept survivor the marks this consult took come
-	// back off, as the worker's own re-read takes them.
+	// back off, as the worker's own re-read takes them. The residual
+	// ceiling is the worker's own: a retire that answers claimed or gone
+	// after the consult leaves the marks standing, and mates stay refused
+	// until the claiming retirement's sweep ends — reclaimable storage
+	// retained, never a record lost.
 	//
 	// decision: the open's emptying of a recovery-ended segment, the other
 	// gate-free hand-over the worker's section names, goes ungated here:
