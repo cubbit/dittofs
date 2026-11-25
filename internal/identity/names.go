@@ -18,7 +18,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
-// unmappedSpec counts the uids, gids and SIDs Find answered no principal for.
+// unmappedSpec counts the uids, gids, SIDs and owner strings Find answered no
+// principal for.
 var unmappedSpec = metrics.Spec{
 	Name:   "identity_unmapped_total",
 	Help:   "Spellings no principal holds, by scheme.",
@@ -27,7 +28,10 @@ var unmappedSpec = metrics.Spec{
 
 // unmappedLabel is the label a scheme's misses are counted under; a scheme
 // with none is not counted.
-var unmappedLabel = map[identity.Scheme]string{identity.SchemeUID: "uid", identity.SchemeGID: "gid", identity.SchemeSID: "sid"}
+var unmappedLabel = map[identity.Scheme]string{
+	identity.SchemeUID: "uid", identity.SchemeGID: "gid", identity.SchemeSID: "sid",
+	identity.SchemeOwner: "owner", identity.SchemeOwnerGroup: "owner",
+}
 
 // wellKnownSIDs spells the well-known principals that have a SID of their
 // own. OWNER@ and GROUP@ have none: an adapter spells them as the file's
@@ -54,15 +58,14 @@ var reservedIDs = map[uint32]entity.Principal{0: entity.RootPrincipal, 65534: en
 
 // deferred refuses a scheme Spell and Find do not serve yet.
 //
-// decision: owner and oidc answer ErrInvalid, not ErrUnknownPrincipal: the
-// owner scheme needs identity.nfs4_domain and the oidc one its rows, neither
-// of which exists yet, and "no one holds it" would be read by a client as
-// data. Withdraw each when its setting or rows land.
+// decision: oidc answers ErrInvalid, not ErrUnknownPrincipal: it needs its
+// rows, which do not exist yet, and "no one holds it" would be read by a
+// client as data. Withdraw it when its rows land.
 func deferred(scheme identity.Scheme) error {
 	switch {
-	case scheme == identity.SchemeOwner, scheme == identity.SchemeOIDC:
+	case scheme == identity.SchemeOIDC:
 		return fmt.Errorf("%w: the %d scheme is not served yet", vfserr.ErrInvalid, scheme)
-	case scheme.Stored(), scheme == identity.SchemeQualified:
+	case scheme.Stored(), scheme == identity.SchemeQualified, scheme == identity.SchemeOwner, scheme == identity.SchemeOwnerGroup:
 		return nil
 	}
 	return fmt.Errorf("%w: unknown scheme %d", vfserr.ErrInvalid, scheme)
@@ -70,7 +73,8 @@ func deferred(scheme identity.Scheme) error {
 
 // Spell returns p's spelling in scheme, or ErrUnknownPrincipal. A stored
 // spelling is read off p's record; qualified is derived from its name and the
-// NetBIOS name of the State applied when the call reads it.
+// NetBIOS name of the State applied when the call reads it, and the owner
+// schemes from its name or number and that State's NFSv4 domain.
 //
 // decision: a deleted principal is ErrUnknownPrincipal, which an SMB adapter
 // shows as the null SID, not as the SID it had, because deleting a principal
@@ -128,6 +132,8 @@ func (s *Server) Spell(ctx context.Context, p entity.Principal, scheme identity.
 		}
 		sp.Text = domain + `\` + name
 		return sp, nil
+	case identity.SchemeOwner, identity.SchemeOwnerGroup:
+		return s.spellOwner(p, scheme, name, ids)
 	}
 	i := slices.IndexFunc(ids, func(id entity.ProtocolID) bool { return id.Scheme == stored(scheme) })
 	if i < 0 {
@@ -158,9 +164,19 @@ func (s *Server) Spell(ctx context.Context, p entity.Principal, scheme identity.
 }
 
 // spellWellKnown spells a well-known principal: root and anonymous by their
-// reserved uid and gid, and each with a SID by it.
+// reserved uid and gid, in the owner schemes too, and each with a SID by it.
+//
+// decision: anonymous's owner string is 65534, never nobody@domain, since
+// Find would resolve that name to a local user named nobody. Overturned if a
+// client is shown to need the name.
 func spellWellKnown(p entity.Principal, scheme identity.Scheme) (identity.Spelling, error) {
 	switch scheme {
+	case identity.SchemeOwner, identity.SchemeOwnerGroup:
+		for n, holder := range reservedIDs {
+			if holder == p {
+				return identity.Spelling{Scheme: scheme, Text: strconv.FormatUint(uint64(n), 10)}, nil
+			}
+		}
 	case identity.SchemeUID, identity.SchemeGID:
 		for n, holder := range reservedIDs {
 			if holder == p {
@@ -178,12 +194,12 @@ func spellWellKnown(p entity.Principal, scheme identity.Scheme) (identity.Spelli
 }
 
 // Find returns the principal holding sp, or ErrUnknownPrincipal: through the
-// index rows for a stored scheme, by name for qualified. A SID of the
-// directory's domain no principal holds is asked of the directory, and its
-// holder minted, only with o.Mint; a qualified name of the directory's domain
-// is asked of the directory, and its holder minted with o.Mint. It never
-// returns an API-only account, and counts a uid, gid or SID no principal
-// holds.
+// index rows for a stored scheme, by name for qualified, by name or number
+// for the owner schemes. A SID of the directory's domain no principal holds is
+// asked of the directory, and its holder minted, only with o.Mint; a qualified
+// name of the directory's domain is asked of the directory, and its holder
+// minted with o.Mint. It never returns an API-only account, and counts a uid,
+// gid, SID or owner string no principal holds.
 func (s *Server) Find(ctx context.Context, sp identity.Spelling, o identity.FindOpts) (entity.Principal, error) {
 	p, err := s.find(ctx, sp, o)
 	if label, ok := unmappedLabel[sp.Scheme]; ok && errors.Is(err, vfserr.ErrUnknownPrincipal) {
@@ -199,6 +215,11 @@ func (s *Server) find(ctx context.Context, sp identity.Spelling, o identity.Find
 	pr := s.deps.Store.Principals()
 	switch sp.Scheme {
 	case identity.SchemeUID, identity.SchemeGID:
+		// decision: a uid or gid is found through the index alone, never asked
+		// of the directory, so no attribute a client sets, a uid or a decimal
+		// owner string, makes the server query the directory or mint.
+		// Overturned if a client is shown setting the uid of a directory user
+		// it has never presented.
 		if p, ok := reservedIDs[sp.Num]; ok {
 			return p, nil
 		}
@@ -224,6 +245,8 @@ func (s *Server) find(ctx context.Context, sp identity.Spelling, o identity.Find
 	case identity.SchemeKrb, identity.SchemeDir:
 		p, err := found(pr.ByProtocolID(ctx, entity.ProtocolID{Scheme: stored(sp.Scheme), Value: sp.Text}))
 		return s.fileUser(ctx, p, err)
+	case identity.SchemeOwner, identity.SchemeOwnerGroup:
+		return s.findOwner(ctx, sp)
 	}
 	return s.findQualified(ctx, sp.Text, o.Mint)
 }

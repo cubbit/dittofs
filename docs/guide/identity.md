@@ -157,6 +157,7 @@ sign-in.
 | `identity.ntlm` | `true` | whether NTLM (password) sign-in is accepted; admin only. Turning it off deletes every stored NT hash |
 | `identity.netbios_name` | `DITTOFS` | the server's NetBIOS name, at most 15 bytes; a join sets it |
 | `identity.keytab` | none | the imported keytab; written only through the keytab route in [Part C](#import-the-keytab) |
+| `identity.nfs4_domain` | the keytab's first realm in lower case, else `localdomain` | the domain of NFSv4 owner strings, `name@domain`. Set it to the domain your NFSv4 clients' idmapper uses (`Domain` in `/etc/idmapd.conf`); a client in another domain sees owners it cannot map. ASCII letters, digits, `.` and `-`, compared ignoring case |
 | `identity.directory_stale_grace` | `15m` | how long past its 5-minute lifetime a cached directory answer may still be used while the directory is down. So a user disabled in the directory during an outage can keep access for up to 5 minutes plus this; `0` limits it to the 5 minutes |
 
 ---

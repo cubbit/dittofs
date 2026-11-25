@@ -142,16 +142,17 @@ const (
 	TransportNFS = identity.TransportNFS
 	TransportSMB = identity.TransportSMB
 
-	SchemeUID       = identity.SchemeUID
-	SchemeGID       = identity.SchemeGID
-	SchemeSID       = identity.SchemeSID
-	SchemeKrb       = identity.SchemeKrb
-	SchemeDir       = identity.SchemeDir
-	SchemeUserName  = identity.SchemeUserName
-	SchemeGroupName = identity.SchemeGroupName
-	SchemeOIDC      = identity.SchemeOIDC
-	SchemeOwner     = identity.SchemeOwner
-	SchemeQualified = identity.SchemeQualified
+	SchemeUID        = identity.SchemeUID
+	SchemeGID        = identity.SchemeGID
+	SchemeSID        = identity.SchemeSID
+	SchemeKrb        = identity.SchemeKrb
+	SchemeDir        = identity.SchemeDir
+	SchemeUserName   = identity.SchemeUserName
+	SchemeGroupName  = identity.SchemeGroupName
+	SchemeOIDC       = identity.SchemeOIDC
+	SchemeOwner      = identity.SchemeOwner
+	SchemeQualified  = identity.SchemeQualified
+	SchemeOwnerGroup = identity.SchemeOwnerGroup
 )
 
 // Call is one call's caller: the Identity it proved and, beside it, never in
