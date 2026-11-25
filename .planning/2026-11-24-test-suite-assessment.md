@@ -9,9 +9,10 @@ We measured on an idle machine and ran mutation testing on one package. The answ
 
 1. **The number of tests is not why CI is slow.** 78% of our unit tests finish in under
    0.1 s, and together they cost 99 s. The suite is **CPU-bound**: on 4 dedicated cores the
-   **race detector doubles the test time**, and the build is small. Without `-race`, coverage
-   costs nothing we can measure; the atomic mode CI uses is unmeasured. CI is 2–3× slower
-   than our 4-core run, and that gap is not explained (§1.2).
+   **race detector doubles the test time**. CI also **rebuilds every race-instrumented
+   package on every run**, because the unit job never caches its own build. Without `-race`,
+   coverage costs nothing we can measure; the atomic mode CI uses is unmeasured. CI is
+   2.4–3.6× slower than our warm 4-core run; the rebuild explains part of that (§1.2).
 2. **Some tests are duplicated, but not in the way a count suggests.** Mutation testing shows
    that many tests overlap. Most of the overlap is *one rule written as several tests*, which
    we can merge. Very few tests are useless.
@@ -23,7 +24,7 @@ We measured on an idle machine and ran mutation testing on one package. The answ
 | # | Decision | Effort |
 | --- | --- | --- |
 | 1 | Split the unit job into 3–4 parallel jobs (shards) | dt change + workflow |
-| 2 | Use a cheap Argon2 cost in tests, with a guard that production keeps the real one | 1 PR |
+| 2 | Tests that build key files use the existing `GenerateWeakKeyFile`; the unit job caches its own race build | 2 PRs |
 | 3 | Type-check the export tests from export data, and run single-goroutine oracle tests without `-race` | 1–2 PRs |
 | 4 | One trial PR that merges duplicate tests and fills gaps in `pkg/journal/internal/format` | 1 PR |
 | 5 | Add one rule to CLAUDE.md "Writing tests" | 1 PR |
@@ -93,11 +94,21 @@ Every variant used `-count=1`, so no run reused cached test results.
 ¹ This run had a busier machine beside it, so it is slower than the others, and we do not
 compare against it. The other four ran together as one batch, with the same load.
 
-CI's suite step takes 884–1,260 s, which is 2.3–3.3× the clean warm run (386 s). We did not
-profile the CI runner, so this gap is not explained. A shared cloud vCPU slower than a
-dedicated core would explain part of it, but that is a guess. (A comment in
-`.github/workflows/tests.yml` says the suite reaches 32 min; the recent runs we read took
-15–21 min.)
+CI runs two different suites, so its figures split by event (the last eight successful runs
+of each, from the CI logs):
+
+| CI run | Tier | `-short` | Suite step |
+| --- | --- | --- | --- |
+| Pull request and merge queue | `pr` | yes | 910–1,285 s (five of eight near 1,030 s) |
+| Push to the branch | `merge` | no | 1,136–1,391 s (six of eight above 1,290 s) |
+
+`test/suites.yaml` gives `-short` to the `pr` tier only. Our 4-core runs used `-short`, so
+they compare with the first row: CI is 2.4–3.3× our warm run (386 s). Part of the gap is the
+build. The unit job restores the Go cache that CodeQL's `Analyze (go)` saves under the same
+key, which holds no `-race` or coverage builds, and it skips its own save whenever the
+restore hits (`tests.yml`, "Save the Go caches"). So CI compiles every race-instrumented
+package on every run, and the fair local comparison is the cold run, not the warm one. We did
+not profile the CI runner, so the rest of the gap is not explained.
 
 Compared within the same batch:
 
@@ -106,7 +117,8 @@ Compared within the same batch:
 - **Coverage costs nothing we can measure without `-race`** (710 s against 703 s). CI runs
   coverage under `-race`, where `go test` uses `-covermode=atomic`. We did not measure that
   pair.
-- **The build is small:** 136 s cold, and the job already restores a build cache.
+- **The build costs 136 s cold** on 4 dedicated cores. CI pays it on every run (above), so
+  A5 gives the unit job a cache of its own race build.
 
 The race cost is concentrated in a few packages (package time, both columns from the clean
 batch: the warm `-race` run against the no-race run):
@@ -132,8 +144,10 @@ CPU profiles of the slowest packages (`go test -race -cpuprofile`, idle machine)
 | `internal/install` | 23 s | 37% | ~48% |
 | `pkg/secrets` | 29 s | 29% | ~45% |
 
-Tests hash passwords with the production Argon2 cost: 19 MiB of memory and 2 passes
-(`pkg/identity/hashes.go`). Under the race detector, each hash is very expensive.
+Most of that Argon2 time is **key files, not password hashes**. Seven test files in these
+packages call `keyprovider.GenerateKeyFile`, which derives a key at the production cost (64
+MiB, 3 passes, 4 threads) and again when the file opens. Password hashes cost less (19 MiB,
+2 passes, `pkg/identity/hashes.go`), and `pkg/secrets` makes none.
 
 The race detector's share in `internal/identity` has no Go caller in the profile. It runs on
 a runtime system thread. We thought it was the detector's work on Argon2's 19 MiB
@@ -201,17 +215,24 @@ func TestAppendSealMarkerAppendsToDst(t *testing.T) {
 }
 
 // Proposed: one table, one case per encoder, each case named in the failure.
+// Each case compares against its own nil-dst encode, as the catalog-entry and
+// trailer tests already do, since those two have no golden file.
 func TestAppendersAppendToDst(t *testing.T) {
+	prefix := []byte{0xee, 0xbe, 0xef}
 	for _, c := range []struct {
 		name   string
-		golden string
 		append func([]byte) []byte
 	}{
-		{"seal marker", "seal", func(b []byte) []byte { return AppendSealMarker(b, testIdentity, testSealMarker) }},
-		{"segment header", "segheader_pred", func(b []byte) []byte { return AppendSegmentHeader(b, testSegmentHeader) }},
+		{"seal marker", func(b []byte) []byte { return AppendSealMarker(b, testIdentity, testSealMarker) }},
+		{"segment header", func(b []byte) []byte { return AppendSegmentHeader(b, testSegmentHeader) }},
 		// … format file, record, catalog entry, trailer
 	} {
-		t.Run(c.name, func(t *testing.T) { /* same check as today */ })
+		t.Run(c.name, func(t *testing.T) {
+			want := append(slices.Clone(prefix), c.append(nil)...)
+			if got := c.append(slices.Clone(prefix)); !bytes.Equal(got, want) {
+				t.Errorf("%s with a prefix =\n% x\nwant the prefix then the encoding\n% x", c.name, got, want)
+			}
+		})
 	}
 }
 ```
@@ -247,12 +268,23 @@ if len(b) < 6 {                        // mutant: "<" → "<=" survives
 }
 ```
 
-No test decodes a 6-byte file that names an **unknown** version. Only that input tells the
-two apart: the original reports `ErrUnknownVersion`, the mutant `ErrDamaged`. (A 6-byte
-version-1 file gets `ErrDamaged` either way.) So nothing pins that boundary. Some survivors
-are *equivalent mutants*, which no test can kill. For example, `catalog.go:127` guards a
-footer of more than `72 × MaxUint32` bytes, which no test can build. A reviewer marks those
-as equivalent and moves on.
+No test decodes a 6-byte file that names an **unknown** version, such as
+`{'D','J','F','1',2,0}`. Only that input tells the two apart: the original reports
+`ErrUnknownVersion`, the mutant `ErrDamaged`. (A 6-byte version-1 file gets `ErrDamaged`
+either way.) So nothing pins that boundary.
+
+**Check a survivor before you call it equivalent.** An *equivalent mutant* behaves like the
+original on every input, so no test can kill it, and it leaves the score's denominator.
+`catalog.go:127` looked like one:
+
+```go
+if int64(len(footer)/CatalogEntrySize) > math.MaxUint32 {   // mutant: "/" → "*"
+```
+
+It is not. A footer of 828,505 entries (about 57 MiB) passes the original and panics on the
+mutant, in milliseconds: `AppendTrailer(nil, 80, make([]byte, CatalogEntrySize*828505))`.
+Only the `>` → `>=` mutant on the same line is out of reach, and that one is infeasible to
+build, not equivalent. So the other survivors marked "equivalent" need the same second look.
 
 ### 2.4 Concurrent packages need a different reading
 
@@ -299,9 +331,10 @@ decoding), and not yet for concurrent ones.
 | Step | Change | Gain | Gate |
 | --- | --- | --- | --- |
 | A1 | **Shard the unit job.** | suite step ÷ ~2 on full runs | none |
-| A2 | **Cheap Argon2 cost in tests.** | a few % of CPU; not `internal/identity` (see A2) | none |
+| A2 | **Weak key files in tests.** | `internal/identity` 74 → 34 s, `pkg/secrets` 23 → 15 s (without `-race`) | none |
 | A3 | **Export tests from compiled export data.** | most of ~85 s of race test time | none |
 | A4 | **Single-goroutine heavy tests without `-race`.** | up to ~14% of race test time (`index`, `model`, `openstate`) | read each test first |
+| A5 | **A cache of the unit job's own race build.** | up to 136 s per run, and per shard after A1 | none |
 
 **A1 — shard the unit job.** `dt` already has `shards:`, but it splits a list of named tests,
 and the unit cell has package patterns instead. The split must happen in `dt run`, after
@@ -316,16 +349,20 @@ What the change must also do:
 
 - **No package falls out.** A test asserts that the union of the shards equals `go list` of
   the unit patterns.
-- **Required check.** "Unit Tests (1.26.x)" is a required check. Either the ruleset moves to
-  the shard names, or a small fan-in job keeps the old name.
+- **The required check is `gate`.** The ruleset requires `gate`, not the unit job (the
+  comment in `tests.yml` that says otherwise is stale), and `gate` already fans in `unit`. So
+  sharding adds the shard jobs to `gate`'s `needs`, and no check is renamed.
 - **No empty shard.** After `--changed`, a shard can get no packages, and a cell with no
   tests listed runs the whole suite (`test/harness/plan/plan.go`). Drop empty shards, and
   cover that case in the union test.
-- **Fan-in.** A fan-in job that keeps the old name must tell "no planned cell" from "skipped
-  after a failure". Today a docs-only change skips `unit`, and a skipped job passes the
-  required check (`.github/workflows/tests.yml`). So the fan-in passes when the plan has no
-  unit cell, and otherwise requires `success` from every shard.
-- **Coverage.** Each shard uploads its own profile, and Codecov merges them per commit.
+- **A skipped shard must not pass.** `gate` passes a need that was skipped, by design, for a
+  plan with no cell of that job (a docs-only change). With shards, a skipped shard would
+  pass too. So `gate` must tell a shard the plan skipped from one that should have run, or
+  the shards must skip only together.
+- **Coverage.** Each shard uploads its own profile, and Codecov merges them per commit. A
+  shard that retried uploads none (`tests.yml` skips the upload when a retry file exists), so
+  Codecov would merge part of the packages. Upload only when no shard retried, or once from
+  `gate` with the merged profile.
 - **Limits.**
   - Sharding helps full runs (merge queue, pushes to the branch) most. A PR already runs
     only the changed packages (`--changed`).
@@ -335,37 +372,32 @@ What the change must also do:
     job by a `decision:` in `tests.yml`, so the change names the shard that carries them. They
     still run
     after the suite. ÷2 on the suite step is a realistic target, not ÷3.
-  - The slowest package, `internal/identity`, sets a floor for any shard, and A2 does not
-    lower it (see A2).
+  - The slowest package, `internal/identity`, sets a floor for any shard. A2 lowers it.
+  - Without A5, each shard also rebuilds the race-instrumented standard library and
+    dependencies, which weakens ÷2.
   - More jobs wait longer in the runner queue, so measure the queue time after A1.
 
-**A2 — cheap Argon2 cost in tests.** Follow the pattern `pkg/keyprovider` already uses:
-`GenerateWeakKeyFile` is a cheap variant, and an architecture rule
-(`internal/node/arch_test.go`) fails if production code calls it.
+**A2 — weak key files in tests.** Seven test files call `keyprovider.GenerateKeyFile`, at
+the key file's production cost:
 
-- Add a weak variant beside `identity.NewHashes`, used only by test helpers
-  (`internal/node/nodetest`), and add it to the same architecture rule.
-- A stored hash carries its own parameters (`$argon2id$v=..$m=..,t=..,p=..`), and
-  verification reads them back. So a cheap hash also verifies cheaply, and nothing else
-  changes.
-- The guard test for the production cost already exists (`pkg/identity/hashes_test.go`,
-  `phcPrefix`, and `internal/identity/account_test.go`).
-- The real risk is a knob, and today nothing enforces "test code only":
-  - the weak-key rule inspects only calls (`*ast.CallExpr`), so `h := identity.NewWeakHashes`
-    passes it;
-  - it exempts every package whose name ends in `test`, and only `nodetest` has an import
-    restriction, so an `identitytest` wrapper imported by production code passes;
-  - `parsePHC` (`internal/identity/account.go`) has no cost floor, so a weak hash that reaches
-    the store verifies without a complaint.
+- `internal/identity`: `account_test.go`, `machine_test.go`, `dirprincipal_test.go`;
+- `pkg/secrets`: `seal_test.go`, `resolve_test.go`;
+- `internal/install`: `install_test.go`, `reset_admin_test.go`.
 
-  A2 must close one of these: a cost floor in `parsePHC`, or a rule that production code
-  imports no `*test` package. Then the weak variant is reachable only from test code.
-- **What A2 does not reach.** `internal/identity`'s own tests hash at production cost
-  directly (`pid.NewHashes`, six calls, two of them in the `withPassword` and `withNTHash`
-  helpers that run once per seeded user), and every `identity.New` computes the dummy hash
-  below at production cost. So A2 lowers `internal/install`, `pkg/secrets` and the node
-  tests, but `internal/identity` stays near its floor. Its tests could call a weak variant
-  directly; the dummy hash stays.
+`keyprovider.GenerateWeakKeyFile` already exists for tests, at the lowest cost a key file may
+record, and an architecture rule (`internal/node/arch_test.go`) fails if production code
+calls it. So A2 adds no API: these tests call the weak variant.
+
+Measured by llucian-iws on a copy of the code, without `-race`:
+
+| Package | Today | Weak key files | Every password hash cheap, dummy included |
+| --- | --- | --- | --- |
+| `internal/identity` | 74.1 s | 33.6 s | 55.3 s |
+| `pkg/secrets` | 23.2 s | 15.2 s | no change (it makes no password hash) |
+
+- The key files are the larger cost, so a weak **password-hash** variant is not part of A2.
+  If one is added later, it needs enforcement that does not exist today (see the deferral
+  ledger).
 - **Do not touch** the dummy hash in `internal/identity/server.go`. It makes a sign-in for an
   unknown user take as long as one for a real user, so its cost must always follow the real
   one.
@@ -386,11 +418,14 @@ as `TestSegmentBytesMatchWalk` (60,000 steps against an oracle). Such a test ski
 - **Pair every skip with a run.** `test/suites.yaml` already states the rule for
   `journal-conformance-norace`: "a name reaching only -skip would silently lose its
   enforcement". A check that every test skipping under `-race` runs in some non-race cell
-  belongs in the same change. **That check fails on today's tree:**
-  `TestDescriptorsHitAllocatesNothing` and `TestStreamReservationAllocatesNothing`
-  (`pkg/journal/internal/segment`) skip under `-race`, and no cell runs that package without
-  it, so both run nowhere in CI. The change that adds the check adds a `segment` non-race
-  cell too.
+  belongs in the same change. **That check fails on today's tree.** Three allocation tests
+  skip under `-race`, and no non-race cell runs their packages, so they run nowhere in CI:
+  - `TestDescriptorsHitAllocatesNothing` and `TestStreamReservationAllocatesNothing`
+    (`pkg/journal/internal/segment`);
+  - `TestRegisterUnregisterAllocations` (`pkg/journal/internal/reclaim`), which reads a
+    package-local `raceEnabled`, so the check must find that form too.
+
+  The change that adds the check adds `segment` and `reclaim` to a non-race cell.
 - `pkg/journal/internal/index` already has a non-race run (`unit/journal-index` runs the
   whole package), so its oracle tests need only the skip.
 - Read each test first. A test keeps `-race` if it, **or the code it calls**, starts
@@ -401,9 +436,11 @@ as `TestSegmentBytesMatchWalk` (60,000 steps against an oracle). Such a test ski
 adapters). A race found only at night lands after the merge. Coverage stays too: without
 `-race` it costs nothing we can measure, and the atomic mode CI uses is unmeasured.
 
-**Not in Track A:** the Go build cache. The unit job already restores it
-(`.github/actions/go-cache`). Its key is built from `go.sum`, not from the code, so it can go stale (see
-the deferral ledger).
+**A5 — a cache of the unit job's own race build.** The unit job restores the cache CodeQL
+saves, which holds no `-race` or coverage builds, and skips its own save on a hit (§1.2). So
+the unit job saves its race build under its own key (the job name and the race flag in the
+key), and restores that. The key is still built from `go.sum`, not from the code, so it
+goes stale between `go.sum` changes; that matters less once the race build is in it at all.
 
 ### 4.2 Track B: one trial dedup PR in `format`
 
@@ -468,15 +505,17 @@ surviving mutants on the changed lines. Run it by hand when you review.
   `TestComposeAdaptsTheTracerToTheJournal` (`pkg/engine/enginewire`) failed 5 of 5 runs and
   `TestJournalOfServesTheJournalsMarks` (`pkg/engine`) 2 of 5, both with `journal: no
   space: refused by the version limit`. With `-race` they passed 5 of 5. CI runs the unit
-  suite only with `-race`, so CI never sees this. Both are now fixed: #5613 for the
+  suite only with `-race`, so CI never sees this. Fixes for both have merged: #5613 for the
   `pkg/engine` test (its first write retried every spare refusal, each refusal spent a
   version, and the `1<<20` version limit ran out before a spare landed), and #5695 for the
-  `enginewire` test (#5694).
+  `enginewire` test (#5694). #5695 did not reproduce the failure on its own machine (0 of 20
+  runs without `-race`), while the VM failed 5 of 5, so the fix is merged but not yet
+  confirmed on a machine that reproduced it.
 - **Side finding 2.** On 4 busy cores, `TestDevTracingShutsDownWithinItsBound`
   (`cmd/dfs/commands/tracing_test.go:128`) failed: the shutdown waited 10.5 s, and the test
   fails at twice its 5 s bound, 10 s. It passed in the less loaded batch.
 - **Side findings and CLAUDE.md.** A flake is fixed, or quarantined with an issue and an
-  expiry. Side finding 2 is #5667. Side finding 1 shows what a race-only suite misses, but
+  expiry. Side finding 2 is #5667; it needs no quarantine, since it has not failed on CI. Side finding 1 shows what a race-only suite misses, but
   A4's cells would not have caught it: they do not run `pkg/engine`. Only a non-race run of
   the whole tree would.
 - **Not done.** No mutation matrix for a concurrent package. No profile of the CI runner
@@ -488,9 +527,10 @@ surviving mutants on the changed lines. Run it by hand when you review.
 
 ### Questions for the team
 
-1. Do we shard the unit job, and into how many jobs? Do we move the required check or keep
-   a fan-in job?
-2. Do we accept a weak Argon2 cost in test helpers, guarded like `GenerateWeakKeyFile`?
+1. Do we shard the unit job, into how many jobs, and how does `gate` tell a shard the plan
+   skipped from one that should have run?
+2. Do the tests that build key files switch to `GenerateWeakKeyFile`, and does the unit job
+   get a cache of its own race build (A5)?
 3. Do we move the export tests to compiled export data, and may single-goroutine oracle
    and model tests skip under `-race` when a non-race cell runs them?
 4. Do we run the trial dedup PR in `format`?
@@ -506,6 +546,6 @@ surviving mutants on the changed lines. Run it by hand when you review.
 | Dedup in packages beyond `format` | The trial PR must show the gain first | unowned | Track B trial merged with a useful line reduction |
 | A CI job that runs `gremlins --diff` on every PR | The manual use must prove useful first; `gremlins` runs only the package's own tests, so it is noisy where a consumer package holds the test | unowned | Reviewers use it by hand on 3+ PRs and ask for it |
 | A scheduled kill-matrix suite (`dt`, `tier: manual`) | The driver needs its own tests, and hang attribution in concurrent packages | unowned | Track B extends beyond `format` |
-| Test selection from the dependency graph, beyond `--changed` | Sharding may be enough | unowned | The unit job is still over 10 min after A1 and A2 |
-| The Go build-cache key (keyed on `go.sum`, not on the code) | Outside the test suite itself | unowned | A cache-hit measurement shows frequent cold builds |
+| Test selection from the dependency graph, for PR runs only, beyond `--changed` (merge runs keep the full set: RFC 29 §4.3, "No selection by changed layer") | Sharding may be enough | unowned | The PR unit job is still over 10 min after A1, A2 and A5 |
+| A weak password-hash variant beside `identity.NewHashes` | Key files are the larger cost (A2). Today nothing would keep it in test code: the weak-key rule checks only calls and exempts every `*test` package, and `parsePHC` has no cost floor | unowned | `internal/identity` is still the slowest package after A2 |
 | Removing the 291 `time.Sleep` calls in tests | Done as tests are touched, per CLAUDE.md | unowned | A flake traced to a sleep |
