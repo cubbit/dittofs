@@ -14,8 +14,8 @@ its stage table's Replay row, §5.4 for the `AUTH_SYS` fuzz target, §5.5's TLS 
 row as an in-process check, §8.2's scripted client, and §10.1's replay-hit counter;
 [RFC 18](../docs/internals/rfcs/rfc-18-identity.md) §3.2 for the credential's wire side;
 [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md) Appendix B's `adapters.nfs.tls` row;
-[RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §3.0's capability table for `Call.HostCall`, which
-this epic sets.
+[RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §3.0's `Caps` profiles, one of which this epic
+states on every call, and its protocol label.
 Every citation is `develop`'s text, which holds the RFC 21 implementation plan's amendments A1 to
 A4 and RFC 21 §11.2's cache, which closed RFC 21's former open question 5, and reaches
 `feat/storage-v2` with the cherry-pick of RFC changes.
@@ -51,9 +51,9 @@ NFS epics is written against.
 **At the end of the epic:**
 
 - every routed call carries an `r.Call` whose `Identity` is RFC 21 §11.1's for its credential,
-  `AUTH_NONE` or `AUTH_SYS`, with the connection's source address, whose `Protocol` label is its
-  program's, and whose `HostCall` is set for every NLM and NSM call and for MOUNT's `MNT` and
-  `EXPORT`, and for nothing else; `Route` still allocates once per call;
+  `AUTH_NONE` or `AUTH_SYS`, with the connection's source address, whose `Caps` is the profile its
+  program and procedure state, `HostCall` among them only for every NLM and NSM call and for MOUNT's
+  `MNT` and `EXPORT`, and whose context carries its protocol label; `Route` still allocates once per call;
 - over loopback through `core`, `adaptertest/nfsclient` sends exactly the bytes a script gives it and
   reads each reply: `NULL` is answered in NFS v3 and v4, MOUNT v3, NLM v4 and NSM v1, and §13's
   refused credentials are each `AUTH_BADCRED` with no mutating call reaching `memory.New`;
@@ -134,8 +134,9 @@ their `NULL` rows, and `ops/v4`'s `NULL`; the error rows of §3; the TLS configu
 - **S3**, an NFSv3 mount over loopback, after this epic and E4. **S4**, an NFSv4.1 session over
   loopback, after this epic, E5 and E8.
 - **A3**, an amendment to RFC 17 §4.9, agreed in #5166 and restated by #5726: admission lowers the
-  minimums for a call that sets `Call.HostCall` (RFC 17 §3.0), by the method called; no rule of the
-  service reads `Call.Protocol`, which stays a label for the access event and the metrics.
+  minimums for a call whose `Caps` has `HostCall` (RFC 17 §3.0), by the method called. `Call` carries
+  no protocol: it travels as a context label, `vfs.WithProtocol`, that only the access event and the
+  metrics read.
 
 ## 2. How the general rules apply
 
@@ -154,7 +155,7 @@ cited by number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | T3.2, T3.4, T3.6 | golden files written by hand from RFC 5531, RFC 1813 and RFC 9289, or cut from knfsd's captures, never vectors the encoder under test made; real TCP over loopback; real TLS 1.3 with certificates generated per test under `t.TempDir()` |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T3.1, T3.3, T3.4, T3.5, T3.6 | `decision:` and `ponytail:` markers named in §4 at their code sites; `stages.go`'s marker on `RPCSEC_GSS` kept as it is, for E13 to withdraw; `settings.go`'s comment on `StartTLS` rewritten; `nfs.go`'s marker on its empty tables removed with the last of them |
 | rule 10, a test must be able to fail | all | each test names the break it catches; none asserts a stub's answer; a row whose status is the fault is asserted as a matched row, which the fault alone would not show |
-| rule 11, a symbol is exported only if an interface uses it | T3.1, T3.2, T3.3, T3.4, T3.5 | `core.Conn.Remote` and `StartTLS` for `nfs/protocol`, through an RFC 20 pull request first (Q2); `vfs.ProtocolNFSv3`, `ProtocolNFSv4`, `ProtocolNLM` for `nfs/protocol`'s label, and `vfs.Call.HostCall` (RFC 17 §3.0) unless #5725 adds it first; `nfsclient`'s surface for every NFS epic's tests; each `ops` package's `Table` for `nfs.go`; `protocol.ErrorTable` for the `ops` packages; `protocol.New`'s new argument for `nfs.go`. Nothing in `wire` is exported for a later epic (D11) |
+| rule 11, a symbol is exported only if an interface uses it | T3.1, T3.2, T3.3, T3.4, T3.5 | `core.Conn.Remote` and `StartTLS` for `nfs/protocol`, through an RFC 20 pull request first (Q2); `vfs.ProtocolNFSv3`, `ProtocolNFSv4`, `ProtocolNLM` for the label `nfs/protocol` returns and `core.Request.Protocol`, which `core` sets with `vfs.WithProtocol`, through Q2's RFC 20 pull request; `nfsclient`'s surface for every NFS epic's tests; each `ops` package's `Table` for `nfs.go`; `protocol.ErrorTable` for the `ops` packages; `protocol.New`'s new argument for `nfs.go`. Nothing in `wire` is exported for a later epic (D11) |
 | rule 12, each subtask creates only what it declares | all | each `ops` package arrives with its `NULL` row and test; `nfsclient` with its first loopback rows; no `Security` stage, since nothing here verifies a message (D1) |
 | rule 13, translate, never decide | T3.1, T3.3 | the credential becomes a neutral `Identity` by a pure, total function (R4); the adapter maps no id, squashes nothing and decides no privilege (R7); the cache answers only what was already decided for that call |
 | rule 14, nothing deferred is lost | all | §1.2 names the owner of each part of an obligation this epic leaves out; §9 the gaps |
@@ -173,8 +174,8 @@ subtasks and tests can cite them.
 | R3 | An `AUTH_SYS` credential's machine name and stamp are ignored: two credentials that differ only there give the same `Identity` | MUST | RFC 18 §3.2 | T3.1, T3.3 |
 | R4 | The credential's translation is a pure function of the decoded credential and the address, and total: every credential maps to an `Identity` or to a named refusal, never to a default | invariant | RFC 21 §11, §12 (N26) | T3.1 |
 | R5 | The `Identity` and `r.Call` are built afresh for each request by the router, never by a handler; a `COMPOUND`'s members read the `r.Call` its route built | MUST | RFC 20 §4.4 | T3.1 |
-| R6 | `r.Call` holds the `Identity` and the request's `Protocol`, a label no rule of the service reads; `Client` and `Session` are left zero for the rows and the session that set them | MUST | RFC 20 §4.4 (the `Call`); RFC 17 §3.0 | T3.1 |
-| R48 | `r.Call.HostCall` is set from the program and procedure alone, never from a field of the request: on every NLM and NSM call, and on MOUNT's `MNT` and `EXPORT`; never on an NFS v3 or v4 call or another MOUNT procedure | MUST | RFC 17 §3.0 (the capability table), §4.9 (step 2); RFC 21 §6.1, §6.3, §11.4 | T3.1 |
+| R6 | `r.Call` holds the `Identity` and the call's `Caps`; `Client` and `Session` are left zero for the rows and the session that set them. The protocol is no field of `Call` but a label on the call's context, set once per request with `vfs.WithProtocol` and read by no rule of the service: `nfs3` for NFS v3, MOUNT, NLM and NSM, `nfs4` for NFS v4 | MUST | RFC 20 §4.4 (the `Call`); RFC 17 §3.0 | T3.1 |
+| R48 | `r.Call.Caps` is one profile chosen by the program and procedure alone, never a value built from a field of the request: `NFSv3Caps` for NFS v3 and MOUNT's procedures but `MNT` and `EXPORT`, `MountCaps` for those two, `NFSv4Caps` for NFS v4, `NLMCaps` for every NLM and NSM call; so `HostCall` is set on NLM, NSM, `MNT` and `EXPORT` alone, and `PrivilegeOnEveryCall` on every call | MUST | RFC 17 §3.0 (the capability table), §4.9 (step 2); RFC 21 §6.1, §6.3, §11.4 | T3.1 |
 | R7 | The adapter maps no principal to ids, applies no squash and decides no privilege: a claimed uid 0 reaches the service as the claim it is, for RFC 18's root principal to be resolved there | MUST NOT | RFC 20 §4.4; RFC 21 §11.1 (root, what a claim reaches) | T3.1 |
 | R8 | A credential whose body does not decode inside its opaque, an `AUTH_SYS` credential past RFC 5531's limits (more than 16 gids, a machine name over 255 bytes, bytes left after the group list), and every flavour but `AUTH_NONE`, `AUTH_SYS` and `RPCSEC_GSS` is rejected `AUTH_BADCRED` and runs nothing; none is ever treated as anonymous. The one exception is R30's probe, a `NULL` under `AUTH_TLS` as the first call of a connection whose mode is not off (D7, R47). Already enforced at the stage and the decoder by the scaffold's tests T3.2 names; this epic adds §13's row over loopback (R9) | MUST | RFC 21 §11.1 (refused credentials), §2.2 (NFS over TLS); RFC 18 §3.2 | T3.2, T3.6 |
 | R9 | §13's row: a truncated `AUTH_SYS` credential, one with 17 gids, one with a 256-byte machine name, an `AUTH_DH` and an unknown flavour, each rejected `AUTH_BADCRED`, nothing created | test row | RFC 21 §13 (§11.1 refused credentials *(1 node)*) | T3.2 |
@@ -255,25 +256,22 @@ row (E8); RFC 20 §4.4's `gss` package, but for D1's reading of it (Q1).
   **pending the user's answer** (Q1). Prior art: knfsd's `svcauth_unix` sets the request's credential
   in the RPC layer before dispatch (from memory). A `decision:` marker at the function, overturned if
   `gss` lands first with an `AUTH_SYS` arm.
-- **D2. `Call.Protocol` by program, a label; `Call.HostCall` by program and procedure.** NFS v3
-  and MOUNT carry `ProtocolNFSv3`, NFS v4 `ProtocolNFSv4`, NLM and NSM `ProtocolNLM`; the label
-  feeds the access event and the metrics, and no rule of the service reads it (RFC 17 §3.0). What
-  admission lowers is keyed on `HostCall` (R48): set on every NLM and NSM call, and on MOUNT's `MNT`
-  and `EXPORT`, which reach the service as `Root` and `ListShares` (RFC 17 §4.9's step 2). `pkg/vfs`
-  gets the three constants as aliases of `entity`'s, as it already aliases identity's
-  enumerations, since an adapter imports `pkg/vfs` alone, and `Call.HostCall` from #5725, or from
-  this epic if that has not landed. Prior art: none found. A `decision:` marker at the mapping,
-  naming RFC 17 §4.9's ceiling: admission fails open for a call that sets `HostCall` by mistake, so
-  the mapping reads the program and procedure only, and T3.1's table test holds every other
-  program and procedure to unset. If #5736 (RFC 17 on `feat/storage-v2`, with #5735 on `develop`)
-  and #5734 (the code) land before T3.1, the call carries one `Caps` value instead, and `Route`
-  states a whole profile by program and procedure: `NFSv3Caps` for NFS v3 and MOUNT's other
-  procedures, `NFSv4Caps` for NFS v4, `NLMCaps` for NLM and NSM, `MountCaps` for `MNT` and
-  `EXPORT`. A profile, never `HostCall` alone, since #5735 makes privilege fail closed: NFS's root
-  keeps its privilege only through `PrivilegeOnEveryCall`, which every NFS-side profile sets.
-  `callProtocol` and `hostCall` become one `callCaps(prog, proc uint32) vfs.Caps`, the
-  `ProtocolNFSv3`, `ProtocolNFSv4` and `ProtocolNLM` aliases and R6's `Protocol` go, `Caps.String()`
-  is the label, and R48's table test runs against the profiles unchanged in what it catches.
+- **D2. `Call.Caps` by program and procedure, the protocol a context label.** `Route` states one
+  of RFC 17 §3.0's profiles on each call, through `callCaps(prog, proc uint32) vfs.Caps` (R48):
+  `NFSv3Caps` for NFS v3 and MOUNT's other procedures, `MountCaps` for `MNT` and `EXPORT`, which
+  reach the service as `Root` and `ListShares` (RFC 17 §4.9's step 2), `NFSv4Caps` for NFS v4 and
+  `NLMCaps` for NLM and NSM. A whole profile, never a bit alone: privilege fails closed, so NFS's root
+  keeps its privilege only through `PrivilegeOnEveryCall`, which every one of them sets. The protocol
+  is a label on the call's context, `vfs.WithProtocol`, which `core` sets where it builds that
+  context, as it sets `vfs.WithHold`, from `core.Request.Protocol`, a field `Route` fills from
+  `callProtocol(prog uint32) vfs.Protocol`: `ProtocolNFSv3` for NFS v3 and MOUNT, `ProtocolNLM` for
+  NLM and NSM, both labelled `nfs3`, and `ProtocolNFSv4`. The field is `core`'s, so it joins Q2's
+  RFC 20 pull request. `pkg/vfs` gets the three constants as aliases of `entity`'s, as it already
+  aliases identity's enumerations, since an adapter imports `pkg/vfs` alone; `vfs.Caps` and its
+  profiles are #5734's, which T3.1 waits for. Prior art: none found. A `decision:` marker at
+  `callCaps`, naming RFC 17 §4.9's ceiling: admission fails open for a call that states `HostCall`
+  by mistake, so the profile is chosen by the program and procedure only, and T3.1's table test
+  holds every program and procedure to its profile.
 - **D3. The source address comes from `core.Conn.Remote`.** `Conn` keeps the client's address,
   already without its port and unmapped, but exports none, and the router has no other way to it.
   `Remote() netip.Addr` returns it, added first to RFC 20 §4.7 by a pull request to the RFC (rule
@@ -429,19 +427,20 @@ row (E8); RFC 20 §4.4's `gss` package, but for D1's reading of it (Q1).
 ```text
 internal/adapter/core/
   conn.go                        T3.1  Remote; T3.5  StartTLS
+  dispatch.go, middleware.go     T3.1  Request.Protocol, set on the call's context with vfs.WithProtocol
   reader.go, writer.go           T3.5  the reader's wait for the probe's reply, the handoff to TLS
   conn_tls_test.go               T3.5  StartTLS on testproto over loopback
   testdata/surface/core.golden   T3.1, T3.5
 internal/adapter/adaptertest/testproto/
   stages.go, client.go           T3.5  a message that asks for the upgrade; the client's TLS handshake
-pkg/vfs/types.go                 T3.1  ProtocolNFSv3, ProtocolNFSv4, ProtocolNLM; Call.HostCall unless #5725 adds it
+pkg/vfs/types.go                 T3.1  ProtocolNFSv3, ProtocolNFSv4, ProtocolNLM
 pkg/adapter/settings/settings.go T3.6  Validate accepts opportunistic and require
 pkg/adapter/nfs/nfs.go           T3.6  New's comment
 internal/adapter/nfs/
   nfs.go                         T3.3  the reply pool to protocol.New; T3.4  tables from ops/; T3.6  TLS configurations, Reconfigure
   nfs_test.go                    T3.2, T3.3, T3.4, T3.6  loopback cases
   protocol/
-    auth.go                      T3.1  the credential's Identity, Protocol by program, HostCall by program and procedure
+    auth.go                      T3.1  the credential's Identity, Caps by program and procedure, the protocol by program
     stages.go                    T3.1  checkAuth returns the credential, Route builds r.Call; T3.6  the probe in Decode, Route and Encode
     errors.go                    T3.4  ErrorTable and its shared rows
     replay.go                    T3.3  the Replay stage and its duplicate-request cache
@@ -463,7 +462,7 @@ internal/adapter/adaptertest/nfsclient/
 
 **Subtask T3.1 estimate: 2.5 man-days.**
 
-- **Track:** A. **Depends on:** S2.
+- **Track:** A. **Depends on:** S2; #5734, which adds `vfs.Caps` and its profiles.
 - **Covers:** R1, R2, R3, R4, R5, R6, R7, R10, R12, R40 (credentials), R48.
 - **Deliverables:**
   - The `Identity`'s source address is `Identity.Client`, the field client rules already read.
@@ -471,13 +470,13 @@ internal/adapter/adaptertest/nfsclient/
     without its port and unmapped (D3, Q2), with `core.golden` updated. Consumed by `Route` here and
     T3.3's key.
   - `pkg/vfs`: `ProtocolNFSv3`, `ProtocolNFSv4`, `ProtocolNLM`, aliases of `entity`'s (D2), the
-    label `Route` sets. `Call.HostCall`, RFC 17 §3.0's field, unless #5725 has added it. Consumed by
-    `Route`; `HostCall` by E4's T4.1, which lowers the minimums on it. If #5734 and #5736 land
-    first, none of these: `vfs.Caps` and its profiles are theirs, and `protocol/auth.go` has
-    `callCaps` (D2).
+    label `Route` returns. `core`: `Request.Protocol`, which `core` sets on the call's context with
+    `vfs.WithProtocol`, with `core.golden` updated. Consumed by `Route` and by the access event and
+    `vfs_op_seconds`, which read the label.
   - `protocol/auth.go`: the unexported `identity(flavour uint32, sys *wire.AuthSysParms, addr
     netip.Addr) (vfs.Identity, error)`, its error the named refusal `Route` answers `AUTH_BADCRED`,
-    `callProtocol(prog uint32) vfs.Protocol` and `hostCall(prog, proc uint32) bool` (D2, R48); `checkAuth` returning the credential it decoded;
+    `callCaps(prog, proc uint32) vfs.Caps` and `callProtocol(prog uint32) vfs.Protocol` (D2, R48),
+    `callCaps`'s `HostCall` consumed by E4's T4.1, which lowers the minimums on it; `checkAuth` returning the credential it decoded;
     `Route` building `r.Call` from them in the one allocation (D4). Consumed by every handler from E4
     on, by E7's T7.1, which resolves the `Claimed` `Identity` it builds, and by E13, which adds the
     `RPCSEC_GSS` arm.
@@ -490,18 +489,19 @@ internal/adapter/adaptertest/nfsclient/
   - Every flavour and every body, generated, gives an `Identity` or the named refusal, never both
     and never neither.
   - `Route` still allocates once per call, with 16 groups.
-  - `HostCall` is set on every NLM and NSM procedure and on MOUNT's `MNT` and `EXPORT`, and on no
-    other procedure RFC 21 Appendix D lists.
+  - Every program and procedure RFC 21 Appendix D lists states the profile RFC 17 §3.0 gives it,
+    and its call's context the label `nfs3` or `nfs4`.
 - **Tests:** over loopback through `core`, with the scaffold's raw call helpers in `nfs_test.go`, on
   `memory.New` behind a test table whose one row records the `r.Call` its handler receives (the
   layer that consumes it): `AUTH_SYS` from uid 1000 with three groups gives `Claimed`, the claims and
   `127.0.0.1` (catches a claim dropped between `Route` and the handler, R1, R2, R5), and
-  `ProtocolNFSv3` for NFS v3 and MOUNT, `ProtocolNLM` for NLM and NSM, `ProtocolNFSv4` for a
-  `COMPOUND`'s member (catches a protocol by connection, R6), and `HostCall` set for an NLM `TEST`,
-  an NSM `SM_NOTIFY`, a MOUNT `MNT` and `EXPORT`, unset for MOUNT's `UMNT`, an NFS v3 `GETATTR` and an
-  NFSv4 `COMPOUND`'s member (catches `HostCall` set by program alone, or on NFS, R48); at `hostCall`,
-  a table over every program and procedure RFC 21 Appendix D lists, each against RFC 17 §3.0's set
-  (catches a procedure added later with `HostCall` set by default, R48); at `identity`, the golden table
+  `vfs.ProtocolFrom` of the handler's context `nfs3` for NFS v3, MOUNT, NLM and NSM and `nfs4` for a
+  `COMPOUND`'s member (catches a protocol by connection, or a label never set, R6), and `NLMCaps` for
+  an NLM `TEST` and an NSM `SM_NOTIFY`, `MountCaps` for a MOUNT `MNT` and `EXPORT`, `NFSv3Caps` for
+  MOUNT's `UMNT` and an NFS v3 `GETATTR`, `NFSv4Caps` for an NFSv4 `COMPOUND`'s member (catches a
+  profile chosen by program alone, `HostCall` on NFS, or a profile without `PrivilegeOnEveryCall`,
+  R48); at `callCaps`, a table over every program and procedure RFC 21 Appendix D lists, each
+  against RFC 17 §3.0's profile (catches a procedure added later with a profile by default, R48); at `identity`, the golden table
   (catches a field mapped differently, R1, R3, R40) and a property test over flavours and bodies
   that each gives an `Identity` with no error or an error with a zero `Identity` (catches a default
   for an unknown flavour, R4); uid 0 kept as 0 (catches a root squash in the adapter, R7);
@@ -509,7 +509,7 @@ internal/adapter/adaptertest/nfsclient/
   is held by `identity`'s signature. No test double: the recording row is the handler under test's
   own.
 - **Rules:** rule 9's `decision:` markers for D1, D2 and D4; rule 11's exports above; rule 13: the
-  adapter states `HostCall` from what its program does, and the service decides what it lowers.
+  adapter states a profile from what its program does, and the service decides what it lowers.
 
 ### T3.2 The scripted client
 
@@ -891,10 +891,9 @@ Questions pending the user's answer. Each recommended option is written in place
     they do not load."
   - (b) A hook on `core.Listener` that `NewServer` and `Reconfigure` call with the snapshot before
     applying it, amended into RFC 20 §4.7; the same check for any protocol, one more `core` surface.
-- **Q4. `Call.Protocol` of an NSM call** (D2). Settled by RFC 17 §3.0 (#5726): no rule reads the
-  protocol, and NSM sets `HostCall` on every call. NSM's label stays `ProtocolNLM`, which only the
-  access event and the metrics read. If #5736 lands before T3.1, the label goes with `Call.Protocol`
-  and NSM states `NLMCaps` (D2), which closes Q4 the same way.
+- **Q4. The protocol of an NSM call** (D2). Settled by RFC 17 §3.0 (#5735, #5736): `Call` carries
+  no protocol, NSM states `NLMCaps`, and its context's label is `ProtocolNLM`, written `nfs3`, which
+  only the access event and the metrics read.
 - **Q5. Which NFSv4.0 `COMPOUND`s the cache stores** (D5). With the whole `COMPOUND` row
   `Cacheable`, every reply up to 8 KiB goes in, and at about 2000 compounds a second the 4096
   entries turn over in about 2 s, so a `REMOVE` retransmitted after a 3 s timeout runs again.
@@ -932,7 +931,7 @@ Gaps, not questions:
   request proposes its NFSv3 row (E4's §9, point 3), and E4's T4.3 adds it once agreed; E16's
   totality test (T16.11) fails until it has one.
 - Which pull request carries which RFC amendment: Q2's RFC 20 pull request carries `Conn.Remote`
-  in §4.7, §5.5's `StartTLS` sentence and RFC 21 §11's "once per member" clause, Q5's sentence of
+  and `Request.Protocol` in §4.7, §5.5's `StartTLS` sentence and RFC 21 §11's "once per member" clause, Q5's sentence of
   §4.7, Q6's text, Q3's sentence for RFC 21 §2.2, §11.5's NSM and MOUNT cases below and §11.2's key
   below; this pull request adds only a `.planning/` file and carries no RFC text. Q1's option (a)
   rewords RFC 20 §4.4.
