@@ -25,7 +25,7 @@ of RFC changes.
 Cited, not owned: RFC 8881, RFC 7530 and RFC 7862 for the bytes, attribute numbers and status
 values; RFC 20 §2.5's layout of `ops/`.
 **Track:** C.
-**Epic 5 estimate: 9 subtasks, 25.5 man-days.**
+**Epic 5 estimate: 9 subtasks, 26 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E1's request state (`protocol.State`,
 `SetFH`) and NFSv4 table with its members' table, E2's `nfsharness` and knfsd's captures cut into
 golden files, S0's `vfstest.Mutations` and golden helper. Beyond S2, pieces of three epics broken
@@ -95,6 +95,8 @@ rows named in §3.
 - `OPEN`, its exclusive create's `CreateVerifier`, an `OPEN` of a delete-pending file, and the
   "§11.3 read-only marker" row, which needs an `OPEN` for write: E9. This epic answers the
   delete-pending and read-only refusals its own operations meet (R36, R42).
+- The session precondition: this epic's NFSv4.1 cases on `nfsharness` run with no `SEQUENCE`;
+  E8, when it adds the session precondition to the rows, starts them with one.
 - The session's reply budget: E8's T8.7 sets `protocol.State`'s `MaxReply` in `SEQUENCE` and makes
   A1's runner change; T5.8's hook reads it. The NFSv4.1 session steps of the §2.3 row: E8.
 - `core`'s own refusals in NFSv4's tables, `ErrNoFH`, `ErrMoved` and `ErrDraining` among them: E3.
@@ -167,7 +169,8 @@ cited by number and title and not copied.
 ## 3. Requirements and invariants
 
 Every MUST and MUST NOT that RFC 21, RFC 20 and RFC 17 place on this epic, numbered so that
-subtasks and tests can cite them.
+subtasks and tests can cite them. R69 to R71 were added after review and sit with their topic, so
+the numbers are not in order and no number is missing.
 
 **Decoding and the generator**
 
@@ -205,6 +208,7 @@ subtasks and tests can cite them.
 | R20 | `maxread` and `maxwrite` are 1 MiB and `maxfilesize` 2^63 − 1, fixed and not a setting | MUST | RFC 21 §2.3, §8.1 | T5.4 |
 | R21 | The fields map as §11.3's NFSv4 column: `type`, `mode`, `owner`, `owner_group`, `numlinks` (a file's `Nlink`, a directory's 2 + `Subdirs`, never below 2, a share's root the same), `size`, `space_used` (`Charged`), `rawdev`, `fileid`, `fsid` derived from the `ShareID`, `time_access`, `time_modify`, `time_metadata`, `time_create`, `change`, and `hidden`, `system` and `archive` from `Flags`; the read-only and sparse markers have no NFSv4 attribute | MUST | RFC 21 §11.3, App. B | T5.2, T5.4 |
 | R22 | `fileid` is the stored `Number`, never the `FileID` the handle carries, which no field of any reply carries; a named stream is never reached | MUST NOT | RFC 21 §7.1, §11.3 | T5.4 |
+| R71 | A `GETATTR` reply is bounded by the attributes its request asks for, never by every attribute at its tag maximum, so a compound holding a `GETATTR` is not refused for the cap a short `READ` would fit | MUST | RFC 21 §2.3, §13 ("§2.3 a compound's reply under the record cap"); RFC 20 §4.3, §4.7 (`Bound`) | T5.4, T5.9 |
 | R23 | `fh_expire_type` is `FH4_PERSISTENT`; `unique_handles` and `homogeneous` are true; a released file's handle is `NFS4ERR_STALE` | MUST | RFC 21 §7.1, App. B | T5.1, T5.4 |
 | R24 | `owner` and `owner_group` are RFC 18 §4.5's owner strings for the call's proof kind, `name@domain` with proof `Secret` or above and the decimal uid or gid with `Claimed` or `None`, and the decimal form on any proof for a principal minted without a name; a principal `Spell` cannot spell is never an error | MUST | RFC 21 §11.3, §11.5 (`ErrUnknownPrincipal`), App. B; RFC 18 §4.5 | T5.4 |
 | R69 | An owner or group is written `65534` only when it has neither a name nor a uid or gid: one the name scheme cannot spell is written in its decimal form first. A `SETATTR` sending back the `owner` or `owner_group` a `GETATTR` gives for the file's current owner or group leaves it unchanged, `65534` included | MUST | RFC 18 §4.5; RFC 21 §11.3 | T5.4, T5.5 |
@@ -220,7 +224,7 @@ subtasks and tests can cite them.
 | R34 | `ACCESS` is `Access`: the bits reported are those `Access` grants of the bits asked, each bit reporting the rights §8.1's table gives it on a file and on a directory | MUST | RFC 21 §8.1 | T5.5 |
 | R35 | A bit with no right on the file's type is never reported; `XAREAD`, `XAWRITE` and `XALIST` are never reported on a minor version before 2 | MUST NOT | RFC 21 §8.1 | T5.5 |
 | R36 | A `WRITE`, a `SETATTR` of `size`, and a `REMOVE` or a `RENAME` over a file an SMB client marked read-only are `NFS4ERR_ACCESS`, and `ACCESS` reports no `MODIFY` or `EXTEND` for it | MUST | RFC 21 §11.3 (read-only marker), §11.5 (`ErrAccess`) | T5.5, T5.6, T5.8 |
-| R70 | A `VERIFY` or `NVERIFY` naming a write-only attribute (`time_access_set`, `time_modify_set`) or `rdattr_error` is `NFS4ERR_INVAL`, checked before any attribute is compared | MUST | RFC 8881 §18.15.3, §18.31.3 (from memory); RFC 21 §8.1 | T5.5 |
+| R70 | A `VERIFY` or `NVERIFY` naming a write-only attribute (`time_access_set`, `time_modify_set`) or `rdattr_error` is `NFS4ERR_INVAL`, checked before any attribute is compared | protocol rule | RFC 8881 §18.15.4, §18.31.4 ("the error NFS4ERR_INVAL is returned", read; no RFC 21 text) | T5.5 |
 | R37 | A `GETATTR`, and a `READDIR`'s attribute request, naming an attribute not served answers without it, never refused | MUST | RFC 21 §8.2, App. B | T5.4, T5.7 |
 | R38 | A pseudo directory reports a filesystem's attributes as a share does, from what the service answers for it: a name limit, case rules, a time granularity and its character-set capability | MUST | RFC 21 §7.4, App. B (`fileid`, `mounted_on_fileid`, `rawdev`: pseudo-filesystem per RFC 17 §4.9) | T5.2, T5.4 |
 
@@ -396,7 +400,7 @@ snapshots (§1.2).
   mapping is total, its refusal named. `SECINFO_STYLE4_CURRENT_FH` is `SecInfo` of the current
   filehandle with an empty name, and `SECINFO_STYLE4_PARENT` `SecInfo` of it with `..`, which T5.2
   makes the service answer; over NFSv4.1 and NFSv4.2 both, and `SECINFO`, leave no current
-  filehandle, as RFC 8881 §2.6.3.1.1.8 has it (from memory), and over NFSv4.0 `SECINFO` keeps it,
+  filehandle, through T5.1's `protocol.ClearFH`, as RFC 8881 §2.6.3.1.1.8 has it (from memory), and over NFSv4.0 `SECINFO` keeps it,
   as RFC 7530 §16.31 says (§9, point 6). Prior art: knfsd lists `AUTH_SYS`
   and the `krb5` pseudo-flavours by OID the same way (from memory). A `decision:` marker at the
   mapping on `FlavorNTLM`.
@@ -491,6 +495,20 @@ snapshots (§1.2).
   through unchanged (R39), `/` and NUL included, which RFC 7 refuses. This is the wire's encoding
   of a component, not a name rule. A `decision:` marker at the check, overturned if RFC 17 gives
   the parent and the current-filehandle style their own arguments rather than in-band names.
+- **D21. `GETATTR`'s reply is bounded by its mask.** With no `Bound` hook a row is bounded at its
+  reply's `MaxWire` (RFC 20 §4.7), which adds every attribute of `fattr4` at its tag maximum, the
+  owner strings at RFC 21 §11's 1 MiB each, so every compound holding a `GETATTR` would pass the
+  cap and be refused (RFC 20 §4.3). The hook ignores the room and answers the sum of the maxima of
+  the attributes the request's `bitmap4` asks for and the row serves at its minor version, plus the
+  mask and length words. An owner or group string is bounded at 511 bytes: RFC 18's 255-byte
+  limit on a local name, `@`, and a domain of at most 255 bytes (inferred: a DNS name's limit, from
+  memory; RFC 18 states none for a directory name or the domain); a spelling `Spell` answers past
+  that is written in its decimal form, R69's fallback, so the bound holds. E6 adds its ACL
+  attributes' maxima when it adds the attributes. `READLINK` keeps its reply's `MaxWire`: the
+  service stores no limit on a link's target, so its 1 MiB bound stands, and one `GETATTR` of
+  fixed-size attributes after it still fits the header room. Prior art: knfsd sizes a `GETATTR`
+  reply from the requested bitmap before encoding (from memory, `nfsd4_getattr_rsize`). A
+  `decision:` marker at the hook on the owner limit, overturned if RFC 18 sets a longer one.
 
 ## 5. Target tree
 
@@ -532,7 +550,7 @@ internal/vfs/
 
 ### T5.1 File-handle operations, the pseudo-filesystem walk and `SECINFO`
 
-**Subtask T5.1 estimate: 3 man-days.**
+**Subtask T5.1 estimate: 3.25 man-days.**
 
 - **Track:** C. **Depends on:** S2.
 - **Covers:** R1, R5, R6, R7, R8, R9, R11, R12, R23, R39, R62, R64.
@@ -540,8 +558,15 @@ internal/vfs/
   over `protocol.State` with no service call; `PUTROOTFH` and `PUTPUBFH`, one `Root` with the zero
   `ShareRef` each, setting the current filehandle through `SetFH`; `LOOKUP` (`Lookup`) and
   `LOOKUPP` (`Lookup` of `..`); `SECINFO` and `SECINFO_NO_NAME` (`SecInfo`, D11), both in
-  `secinfo.go`; each row with the minor versions RFC 8881 defines it in and its drain role, `PUTFH`
-  context. The error rows these meet: `ErrNotFound`, `ErrNotDir`, `ErrAccess`, `ErrStale`,
+  `secinfo.go`; each row with the minor versions RFC 8881 defines it in, its drain role, `PUTFH`
+  context, and its `Needs`: every row of this epic carries `NeedsFH` but `PUTFH`, `PUTROOTFH`,
+  `PUTPUBFH` and `RESTOREFH`, which needs only the saved filehandle, so no handler checks a
+  precondition its row carries. `protocol.ClearFH(r)`, beside `SetFH`: the current filehandle and
+  stateid zeroed and `NeedsFH` lowered in `r.Level`, so a `GETFH` after it is refused by `core`
+  rather than answered an empty handle; `SECINFO` over NFSv4.1 and `SECINFO_NO_NAME` call it (D11).
+  `RESTOREFH` refuses a nil saved filehandle before copying it: `NFS4ERR_RESTOREFH` over NFSv4.0
+  (RFC 7530 §16.29.4, read) and `NFS4ERR_NOFILEHANDLE` from NFSv4.1 (RFC 8881 §18.27.3 and
+  §15.1.16.4, read). The error rows these meet: `ErrNotFound`, `ErrNotDir`, `ErrAccess`, `ErrStale`,
   `ErrInvalid` (D14), `ErrNameTooLong`, `ErrDelay`, `ErrWrongSecurity`. The import test's NFS entry
   files for `Root` and `SecInfo` (`putrootfh.go`, `putpubfh.go`, `secinfo.go`), added to S0's
   call-site list. Golden files: knfsd's captures where they hold an operation, by hand from RFC 8881
@@ -555,6 +580,8 @@ internal/vfs/
   - `SECINFO` encodes the service's flavours in order, `FlavorNTLM` left out.
   - After `SECINFO`, a `GETFH` over NFSv4.0 answers the directory's handle, and over NFSv4.1
     `NFS4ERR_NOFILEHANDLE` (D11).
+  - `PUTROOTFH, RESTOREFH, GETFH` answers `RESTOREFH` `NFS4ERR_RESTOREFH` over NFSv4.0 and
+    `NFS4ERR_NOFILEHANDLE` over NFSv4.1, and never an empty handle.
   - `Root` or `SecInfo` called from a file of `ops/v4` other than the three entry files fails the
     import test, naming the file.
 - **Tests:** on `nfsharness` against `memory.New`, each member with the state its case builds:
@@ -569,11 +596,19 @@ internal/vfs/
   `Role` read from the table (catches `PUTFH` refused while draining, R64). The import test's new
   case with a deliberate `Root` call in another file of its test data (catches an entry outside
   its files, R8). A refused share, with admission now in every service call (RFC 20 §4.10): on
-  `memory.New`, a disabled share and one whose client rules exclude the caller, `PUTFH` of its
+  `memory.New`, a quiesced share and one whose client rules exclude the caller, `PUTFH` of its
   root then `LOOKUP` refused, and a `LOOKUP` across its junction from the pseudo directory refused
   (catch the share reachable by walking the pseudo-filesystem, which CLAUDE.md's invariant 2
   records); the same share left out of a pseudo `READDIR` is T5.7's case, and `LOOKUPP` and
-  `SECINFO_NO_NAME` of the parent out of it T5.2's. `SECINFO` on a Kerberos-only share over
+  `SECINFO_NO_NAME` of the parent out of it T5.2's. Their caller is a proven principal that is
+  not the administrator, added to `memory.New`'s store by the case (proof `Ticket`, a uid), so
+  they need no T7.1; each refused case is paired with the same compound on a share admitting that
+  caller, answering `NFS4_OK`, and the refusals answer as RFC 17 §4.9's admission steps have it: a
+  quiesced share `NFS4ERR_DELAY` (`ErrDelay`) and a client outside the share's rules
+  `NFS4ERR_ACCESS` (`ErrAccess`); T5.2's and T5.7's refused-share cases use the same caller and
+  control. `GETFH` after `SECINFO` over NFSv4.1 refused (catches `ClearFH` leaving `NeedsFH`
+  raised, D11); `PUTROOTFH, RESTOREFH, GETFH` over NFSv4.0 and NFSv4.1 (catches a nil saved
+  filehandle copied). `SECINFO` on a Kerberos-only share over
   `AUTH_SYS` answering its flavours, never `NFS4ERR_WRONGSEC` (catches `SecInfo` admitted with the
   minimums, RFC 8881 §2.6.3.1). The name table of D20 for `LOOKUP` and `SECINFO`: `""`
   `NFS4ERR_INVAL`, `.` and `..` `NFS4ERR_BADNAME`, `/` and a name holding NUL passed to the service
@@ -615,7 +650,8 @@ internal/vfs/
   failing with its change reverted (catch a crossing not reported, R13, a name rule ignored, R26, a
   pseudo directory's zero capabilities, R38, `SECINFO_NO_NAME` failing at the pseudo-root, R11,
   `Subdirs` not counted, R21, and `LOOKUPP` answering the root, R10); `Lookup` of `..` and
-  `SecInfo` with `..` from inside a disabled share and a client-rule-restricted one, refused, and
+  `SecInfo` with `..` from inside a quiesced share and a client-rule-restricted one, refused
+  (`ErrDelay`, `ErrAccess`), each beside the same call on an admitted share, with T5.1's caller, and
   either `SecInfo` style on a Kerberos-only share at `Claimed` answering its flavours (catch the
   new styles admitted unlike `SecInfo`). The adapter's reading of each
   is tested where it is encoded, in T5.4 and T5.9. No test double.
@@ -654,17 +690,19 @@ internal/vfs/
 
 ### T5.4 `GETATTR` and every Appendix B attribute
 
-**Subtask T5.4 estimate: 4 man-days.**
+**Subtask T5.4 estimate: 4.25 man-days.**
 
 - **Track:** C. **Depends on:** T5.2, T5.3, T7.1, T7.2. T7.1 and T7.2 only for the `owner` rows:
   an `AUTH_SYS` call admitted, and `name@domain` spelled; the rest does not wait.
 - **Covers:** R5, R13, R14, R15, R16, R17, R18, R19, R20, R21, R22, R23, R24, R25, R26, R27, R28,
-  R29, R37, R38, R60, R62, R64, R69.
+  R29, R37, R38, R60, R62, R64, R69, R71.
 - **Deliverables:** `getattr.go`: `GetAttr` of the current filehandle, then `StatFS` only when a
   filesystem attribute is asked, or `mounted_on_fileid` on a share's root (`File.IsRoot()`, D18),
   `Quota` only for a quota attribute, with the caller's principal found as D19 says, and
-  `Spell` for `owner` and `owner_group` (D4); its drain role, context. `attrs.go`'s encoder from a
-  `File`, its share's `FilesystemInfo` and the request's minor version: the request's `bitmap4`
+  `Spell` for `owner` and `owner_group` (D4); its drain role, context; its `Bound` hook (D21).
+  `attrs.go`'s encoder from a `File`, its handle (the current filehandle for `GETATTR`, the
+  entry's `EntryHandle` for `READDIR`), its share's `FilesystemInfo` and the request's minor
+  version, `filehandle` (attribute 19) written from that handle: the request's `bitmap4`
   masked by what is served (R37), `supported_attrs` per minor version, every REQUIRED attribute,
   every Appendix B attribute but the ACL rows and `mode_umask`, `fsid` (D5), `change` (D6),
   `numlinks` (R21), `mounted_on_fileid` (D12), `fs_locations` (D16), the fixed values (D17),
@@ -685,6 +723,10 @@ internal/vfs/
   - `owner` on an `AUTH_SYS` call is a decimal uid; on a proven call, a principal with a uid and no
     name is its decimal uid; `65534` only when `Spell` refuses both schemes.
   - Decode and encode of `GETATTR` allocate nothing.
+  - `GETATTR` of `filehandle` answers the bytes `PUTFH` put.
+  - The `Bound` hook answers, for `type` and `size`, the two fixed sizes and the mask's words, and
+    for every attribute served, a figure under the cap; an owner string
+    `Spell` answers past D21's limit is written in its decimal form.
   - With usage above a lowered limit, `space_avail`, `space_free` and `files_avail` are 0.
   - `quota_used` over `AUTH_SYS` reports the claimed uid's usage; for a uid no principal holds, the
     reply is `NFS4_OK` without the quota attributes.
@@ -708,8 +750,13 @@ internal/vfs/
   user scheme, R24). `AllocsPerRun` at 0 for decode and encode (catches an allocation, R60). A share
   whose limit is set below its usage on `memory.New` (catches the free figures wrapping, R25);
   `GETATTR` of `quota_used` over `AUTH_SYS` for a minted uid and for an unknown one (catches the
-  zero principal passed and the whole `GETATTR` failing, R25). No test double.
-- **Rules:** rule 4: the allocation gate; rule 9: D4's, D5's, D6's, D16's, D17's and D19's markers.
+  zero principal passed and the whole `GETATTR` failing, R25). `GETATTR` of `filehandle` after
+  `PUTFH` compared with the `PUTFH` bytes (catches the attribute left out or taken from the
+  `File`, R16). The `Bound` hook's answers above, each failing when the hook is removed and the
+  reply's `MaxWire` stands in (catches the default bound, R71); the compound cases are T5.9's. No
+  test double.
+- **Rules:** rule 4: the allocation gate; rule 9: D4's, D5's, D6's, D16's, D17's, D19's and D21's
+  markers.
 
 ### T5.5 `SETATTR`, `VERIFY`, `NVERIFY` and `ACCESS`
 
@@ -776,7 +823,9 @@ internal/vfs/
   and `NF4FIFO`, `NF4REG` refused `NFS4ERR_BADTYPE` as RFC 8881 §18.4 has it, from memory; its
   `createattrs` through T5.5's translation; the new object made current through `SetFH`),
   `link.go` (`Link` from the saved filehandle into the current directory), `remove.go`
-  (`Unlink`), `rename.go` (`Rename` from the saved directory to the current one), `readlink.go`
+  (`Unlink`), `rename.go` (`Rename` from the saved directory to the current one), `LINK` and
+  `RENAME` refusing a nil saved filehandle `NFS4ERR_NOFILEHANDLE` before any call (RFC 8881
+  §15.1.2.5, RFC 7530's same definition, read), `readlink.go`
   (`GetAttr`, D10); `change_info4` from each result's directory `WCC`, `atomic` false, `before` 0
   where the `WCC` has none (D15). The error rows of `ErrExist`, `ErrNotEmpty`, `ErrIsDir`,
   `ErrCross`, `ErrReadOnly`, `ErrNoSpace`, `ErrQuota`, `ErrInconsistent`, `ErrDeletePending` and
@@ -799,7 +848,9 @@ internal/vfs/
   scope injected through `vfstest.Faults`, answered `NFS4ERR_DELAY`, `NFS4ERR_NOSPC` and
   `NFS4ERR_DQUOT` (catches a transient answered as no space, R57); D20's name table for `CREATE`,
   `LINK`, `REMOVE` and `RENAME`, each name on either side of `RENAME` (catches `..` reaching the
-  service as the parent, D20). No test double.
+  service as the parent, D20); `PUTFH, LINK` and `PUTFH, RENAME` with no `SAVEFH`, each
+  `NFS4ERR_NOFILEHANDLE` with no call made (catches a nil target reaching the service). No test
+  double.
 - **Rules:** rule 9: D10's, D15's and D20's markers.
 
 ### T5.7 `READDIR`
@@ -831,8 +882,10 @@ internal/vfs/
   `rdattr_error` asked (catches an entry encoded with empty attributes, R50); E4's T4.11 fixture,
   the share with its hash key fixed and its colliding pair, as RFC 21 §13's "§7.2 cookies *(1
   node)*" row has it (catches the chain cut on real data, or `maxcount` sized unlike `Fit`'s budget,
-  R47); a pseudo `READDIR` leaving out a disabled share and one whose client rules exclude the
-  caller (catches a refused share listed). `BenchmarkReadDir` in `readdir_bench_test.go`, run by
+  R47); an entry's `filehandle` attribute equal to the handle `Lookup` gives for its name
+  (catches the directory's handle written for every entry, R16); a pseudo `READDIR` leaving out a
+  quiesced share and one whose client rules exclude the caller, with the caller and control case
+  T5.1 states (catches a refused share listed). `BenchmarkReadDir` in `readdir_bench_test.go`, run by
   hand: a 10^4-entry directory on `memory.New` listed in pages with `owner`, `owner_group` and
   `mounted_on_fileid` asked, reporting ns per entry, allocations and the service calls per page,
   the measure D4's, D8's, D9's and D18's markers name as their trigger. No test double.
@@ -894,8 +947,9 @@ internal/vfs/
 
 **Subtask T5.9 estimate: 2.5 man-days.**
 
-- **Track:** C. **Depends on:** T5.1, T5.2, T5.4, T5.6, T5.7, T5.8, T3.2, T3.4, T7.1.
-- **Covers:** R10, R28, R49, R63, R65, R66, R67, R68.
+- **Track:** C. **Depends on:** T5.1, T5.2, T5.4, T5.6, T5.7, T5.8, T3.2, T3.4, T7.1, and for its
+  R63 cases the `core` change of §9, point 10.
+- **Covers:** R10, R28, R49, R63, R65, R66, R67, R68, R71.
 - **Deliverables:** `ops/v4/loopback_test.go`, through `core` over loopback on `memory.New`, sent
   by E3's scripted client (T3.2: `nfsclient.Dial`, then `Do` under `nfsclient.AuthSys`, each
   `COMPOUND`'s arguments encoded and its `Reply.Body` decoded by `ops/v4`'s generated structs), with
@@ -903,7 +957,10 @@ internal/vfs/
   T7.1: S4's namespace half over NFSv4.0, `PUTROOTFH`, `LOOKUP` of
   a share's path, `GETATTR`, and `LOOKUPP` back to the pseudo directory; RFC 21 §13's rows of §3's
   last table; R28's own check; each NFSv4.1 code this epic adds a row for, sent under NFSv4.0,
-  answered `NFS4ERR_OP_ILLEGAL`. Consumed by S4; E16 reruns none of them on the composed node, since
+  answered `NFS4ERR_OP_ILLEGAL`, with well-formed NFSv4.1 arguments and, for `SECINFO_NO_NAME`
+  (code 52), the one with arguments of its own, also as the last member with no argument bytes and
+  again followed by a `GETATTR`, so that a member decoded before its `Versions` is checked answers
+  `NFS4ERR_BADXDR` and fails the case. Consumed by S4; E16 reruns none of them on the composed node, since
   no row asks for it (E16's §9, point 2).
 - **Acceptance criteria:**
   - "§2.3 a compound's reply under the record cap"'s NFSv4.0 steps pass on a file of 2 MiB and one
@@ -911,6 +968,10 @@ internal/vfs/
     regular file only through E9's `OPEN`, then written by `WRITE` under the all-zeros stateid, `adapter_reads_shortened_total` rising by
     one per short `READ`.
   - "§8 attributes"' single-node steps pass on a `posix` and a `windows` share.
+  - `PUTFH, READ(1 MiB), GETATTR(type, size)` answers the `READ` short with at least one byte and
+    the `GETATTR` whole, and `PUTFH, GETATTR` asking every attribute served is not refused (R71).
+  - `PUTROOTFH, SECINFO_NO_NAME` over NFSv4.0, with no argument bytes and with a `GETATTR` after
+    it, answers `NFS4ERR_OP_ILLEGAL` with `OP_ILLEGAL` as the result's operation (R63).
   - "App. B directory link count *(1 node)*"'s NFSv4 steps pass, the file in it made by `CREATE`
     of a symlink, since a regular file needs E9's `OPEN`, the share's root reporting 2 plus its
     subdirectories.
@@ -920,7 +981,8 @@ internal/vfs/
 - **Tests:** the loopback cases above, in a test that starts with `adaptertest.CheckLeaks`, each
   failing on its assertion when the rule it guards is broken: a `READDIR` clamped like a `READ`
   (R49), a REQUIRED attribute dropped (R66), a count that moves on a symlink's create (R67), a
-  ctime from `Modify` (R28), `atomic` true (R68), an NFSv4.1 code served under NFSv4.0 (R63),
+  ctime from `Modify` (R28), `atomic` true (R68), an NFSv4.1 code served under NFSv4.0 or decoded
+  before its version is checked (R63), `GETATTR`'s `Bound` hook removed (R71),
   `LOOKUPP` from a share's root answering the root (R10). No test double: the scripted client
   speaks the wire and `memory.New` is the service.
 - **Rules:** rule 5: every assertion on the bytes the scripted client decodes.
@@ -1060,13 +1122,21 @@ A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can b
    §4.10) it surfaces on whatever operation follows, `GETATTR` or `READ` among them. RFC 8881
    §2.6.3.1 forbids `NFS4ERR_WRONGSEC` on any operation but the put-filehandle operations, `LOOKUP`,
    `LOOKUPP` and `OPEN`, and from `SECINFO` and `SECINFO_NO_NAME`; RFC 21 is silent. `SECINFO`'s two
-   styles are already admitted without the minimums (T5.2), so they never meet it. For the rest the
-   options are: (a) an RFC 21 ruling that this departure is RFC 20 §4.10's consequence, with a
-   `decision:` marker at the row, since Linux re-negotiates on `NFS4ERR_WRONGSEC` from any operation
-   (from memory, unchecked); (b) the put-filehandle operations check the share's flavour policy
-   with a call of their own when the next operation is not `SECINFO`, against RFC 20 §4.10's "no
-   call"; (c) another status (`NFS4ERR_ACCESS`) off those operations, which sends no client to
-   `SECINFO`. Recommended: (a), the cheapest that keeps one gate; it needs its own RFC 21 text.
+   styles are already admitted without the minimums (T5.2), so they never meet it. Linux, checked
+   in `fs/nfs/nfs4proc.c` at v6.12 (read): only `LOOKUP` and the root lookup renegotiate on
+   `NFS4ERR_WRONGSEC` (`nfs4_proc_lookup_common` calls `nfs4_negotiate_security`); on any other
+   operation `nfs4_map_errors` turns it into `EPERM` for the application. The options:
+   (a) an RFC 21 ruling that the departure is RFC 20 §4.10's consequence, with a `decision:` marker
+   at the row: a client then reads `EPERM` from a `GETATTR` or `READ`, never renegotiating, which
+   is what a client walking in by `LOOKUP` never meets, since the `LOOKUP` into the share is refused
+   first and renegotiates; (b) **contrary to CLAUDE.md's architecture invariant 2, so not
+   offered**: a flavour check at the put-filehandle operations, which CLAUDE.md rules out because
+   `NFS4ERR_WRONGSEC` at `PUTFH` sends the client to `SECINFO` rather than to a stronger flavour;
+   (c) `ErrWrongSecurity` answered `NFS4ERR_ACCESS` off the operations RFC 8881 allows
+   `NFS4ERR_WRONGSEC` on, which keeps to RFC 8881 and gives the application `EACCES` where (a)
+   gives `EPERM`; it needs a row the members' table can key by operation, and its own RFC 21 §11.5
+   text. Recommended: (c), now that (a)'s premise, renegotiation from any operation, is checked
+   false; (a) if a per-operation row is not wanted.
 9. **Pending the user's answer: wrong-type statuses.** RFC 21 §11.5 has no row for
    `NFS4ERR_SYMLINK` (a `LOOKUP` from a symlink, I/O on one) or `NFS4ERR_WRONG_TYPE` (I/O on a
    file that is not regular, NFSv4.1 on), and the service answers such a case `ErrNotDir`,
@@ -1075,3 +1145,16 @@ A suggestion only: one pull request per subtask works as well. PRs 1 and 2 can b
    symlink, and RFC 21 §11.5 rows mapping it, `NFS4ERR_INVAL` on NFSv4.0 for `WRONG_TYPE`, with
    point 7's texts; until then R62's rows stand and a client reads `NFS4ERR_NOTDIR` or
    `NFS4ERR_INVAL`, which Linux turns into `ENOTDIR` and `EINVAL` (from memory).
+10. **Pending the user's answer: `core` decodes a member before checking its `Versions`.**
+    `core`'s `members()` decodes every member with `op.Decode(rest, v)` before any runs
+    (`internal/adapter/core/compound.go`), and `check()`, which answers `ErrVersion`, runs later,
+    per member, at run time. E1's D6 has a code of a later minor version reach its row and be
+    refused there by `Versions`, but a row with arguments of its own, `SECINFO_NO_NAME` here, is
+    decoded first: under NFSv4.0 with too few bytes or a style that is no enum value, `Decode`
+    fails and the member is answered `NFS4ERR_BADXDR`, not R63's `NFS4ERR_OP_ILLEGAL`. D13's
+    not-supported rows are safe, since their argument type takes the rest of the compound. The
+    change: `members()` checks `op.Versions` against `v` before `Decode`, and treats a mismatch as
+    E1's D5 treats `ILLEGAL`, the member taking the rest of the compound and answered
+    `NFS4ERR_OP_ILLEGAL`. Recommended owner: E1, by an amendment to its D6, whose statement the
+    change makes true, priced there (about 0.25 man-days, estimated); the alternative is RFC 20's
+    plan, which owns `core`. Not in this epic's figure. T5.9's R63 cases wait for it.
