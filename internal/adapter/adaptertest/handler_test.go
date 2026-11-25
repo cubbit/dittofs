@@ -56,7 +56,7 @@ func TestRunnerExemptsEachCallByItsRequest(t *testing.T) {
 	}
 	smb := func(id uint64) vfs.Call {
 		c := admin
-		c.Protocol, c.Session = proto, vfs.SessionRef{ID: id}
+		c.Session = vfs.SessionRef{ID: id}
 		return c
 	}
 	info := vfs.ClientInfo{Protocol: proto, Name: []byte("pc"), Boot: [8]byte{1}, Recovery: recovery}
