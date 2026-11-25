@@ -527,7 +527,9 @@ commit, where later reads and retirement find them ([RFC 6 §2.2](rfc-6-block-me
 Each try, and each measuring pass inside it, calls `src` again for a fresh
 stream from the first chunk, so the bytes behind it **MUST** stay stable until
 `Upload` returns ([§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable)). A try cancelled by the slow-tail rule can outlive its
-worker, so two tries of one `Upload` can overlap; `Upload` **MUST** return only
+worker, so two tries of one `Upload` can overlap. A call of `attempt` **MUST**
+drop its chunk buffers once its `ctx` ends, so a try that outlives its worker
+holds none of the uploader's memory ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)). `Upload` **MUST** return only
 once every call of `attempt` it made has returned, and **MUST NOT** call
 `attempt` after it returns, which is what lets the caller hand the journal
 reference back.
@@ -806,9 +808,11 @@ one chunk in plaintext, the same chunk encoded, and the block's header ([§1.3](
 A chunk is at most `Max` before encoding, and `Max` here is the largest `Max` of
 any namespace the process serves when it starts, and never less than the default
 `Max`, 1 MiB ([RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)): no namespace admits a chunk longer than its
-own ([RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20migration)), wherever it was cut. A namespace added at runtime with a
-larger `Max` is not opened until the next start, which sizes for it; the node
-reports it as waiting for a restart, naming both figures. Sizing every worker at
+own ([RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20migration)), wherever it was cut. Every namespace opened after start
+with a larger `Max` (one created, a share enabled, a restore, a move's import, or
+[RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)'s re-home target) is not opened until the next start, which sizes
+for it; until then the node raises a health condition naming the namespace and
+both figures ([RFC 8 §11.1](rfc-8-engine.md#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)). Sizing every worker at
 the ceiling `Max` ([RFC 2 §3.7](rfc-2-carver.md#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)), 16 MiB, would make each one about 32 MiB
 where the default needs about 2 MiB. A chunk is at most
 `MaxEncodedLen(Max)` after ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)) for the attempt that writes it, and at most
@@ -846,7 +850,8 @@ when the process starts
   takes no fresh buffer; it waits for the oldest detached buffer to be released,
   which its caller's next iteration or the end of its `ctx` does, and every `ctx`
   ends at a deadline ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)). The term is zero for the uploader, which has
-  no joined callers.
+  no joined callers, and whose cancelled tries drop their buffers when their
+  `ctx` ends ([§1.3](#1.3%20Interface)).
 
 Nothing on the path holds the whole block: not the store, whose put takes a
 stream ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)), and not a file on disk. A measuring pass encodes each
@@ -1860,7 +1865,7 @@ keeps it from holding its share's flow at its cap while that share's reads wait.
 | # | Invariant |
 | --- | --- |
 | S1 | In-flight transfers per half never exceed that half's configured pool size. |
-| S2 | Peak memory per half is at most the pool size times the per-worker figure [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) states, plus at most pool-size detached buffers; both halves' encoded term is `MaxDecodeLen(Max)` over every registered transform, at the `Max` [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) sizes with when the process starts. |
+| S2 | Peak memory per half is at most the pool size times the per-worker figure [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) states, plus at most pool-size detached buffers, a try cancelled by the slow-tail rule holding no chunk buffer once its `ctx` ends; both halves' encoded term is `MaxDecodeLen(Max)` over every registered transform, at the `Max` [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) sizes with when the process starts. |
 | S3 | Backpressure reaches the caller; no unbounded queue exists. |
 | S4 | Every transfer ends in a success or a reported failure, in bounded time. |
 | S5 | An unknown outcome is reported as not stored, and every retry within one `Upload` puts the same name with the same bytes. |
@@ -1903,7 +1908,7 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§3.4](#3.4%20One%20put%20per%20block) partial put | Interrupt a transfer; assert the name is not retrievable and was not reported stored. |
 | [§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable), [§3.5](#3.5%20The%20bytes%20are%20stable%20for%20the%20duration) stability | Give `Upload` a `src` whose bytes change mid-stream; assert the put is refused and nothing is stored under the name. That the journal keeps offered bytes stable is [RFC 1](rfc-1-journal.md)'s check. |
 | [§4.1](#4.1%20One%20fetch%2C%20two%20consumers) verification | Corrupt the fetched bytes; assert no byte of the chunk is yielded and the error is `ErrCorrupt`. |
-| [§3.4](#3.4%20One%20put%20per%20block) measuring pass | Upload through `codec.Store` in the MD5 checksum mode of [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)'s table, answering with `ErrThrottled` eight times and then success: assert `src` is read at most 20 times. Slow-tail-cancel an attempt and hold it until its retry has started, under `-race`: assert no race is reported and `Upload` returns only once both calls of `attempt` have. The passes inside one attempt, and what a measurement keeps across attempts, are the codec's checks ([RFC 4 §7.3](rfc-4-remote-tier.md#7.3%20Codec%20tests)). |
+| [§3.4](#3.4%20One%20put%20per%20block) measuring pass | Upload through `codec.Store` in the MD5 checksum mode of [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)'s table, answering with `ErrThrottled` eight times and then success: assert `src` is read at most 20 times. Slow-tail-cancel an attempt and hold it until its retry has started, under `-race`: assert no race is reported and `Upload` returns only once both calls of `attempt` have. The passes inside one attempt, what a measurement keeps across attempts, and a cancelled call dropping its buffers are the codec's checks ([RFC 4 §7.3](rfc-4-remote-tier.md#7.3%20Codec%20tests)). |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) verification re-get | Flip one byte of a chunk on its first get only; assert the chunk is re-got once and yielded verified, no error is reported, and no budget token is taken. Flip it on every get; assert `ErrCorrupt` after exactly two gets of the range. Do the same to an encrypted body, so the transform's integrity check refuses it: the same two outcomes. Answer a recorded range with a past-the-end refusal; assert `remote.ErrMalformed`, with no re-get. |
 | [§4.2](#4.2%20The%20reply%20neither%20waits%20on%20the%20fill%20nor%20fails%20with%20it) yield at once | Hold one caller mid-iteration; assert the chunk it holds is unchanged until its next iteration, and that each chunk is yielded before the next is read from the store. |
 
@@ -1912,7 +1917,7 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | Requirement | Check |
 | --- | --- |
 | [§2.1](#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control) one limiter | Saturate each half; assert in-flight never exceeds its pool size and that no other limit binds first. |
-| [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) memory bound | Stall the backend at full pools; assert peak bytes stay within pool size times the stated per-worker figure, per half and summed. Register a costlier transform than the current chain and fetch a block written under it; assert the fetcher's figure is the costlier one. Feed the codec a header declaring more entries than the chunk-count cap; assert it is refused before any allocation for it. |
+| [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) memory bound | Stall the backend at full pools; assert peak bytes stay within pool size times the stated per-worker figure, per half and summed. Register a transform costlier than the current chain and fetch a block written under it; assert both halves' per-worker figure is the costlier one's. Feed the codec a header declaring more entries than the chunk-count cap; assert it is refused before any allocation for it. |
 | [§2.3](#2.3%20Backpressure%20propagates%3B%20it%20does%20not%20buffer) backpressure | Stall the backend and keep submitting; assert callers block or are refused rather than queue. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) termination | Present a permanently unavailable backend; assert every transfer returns within its bound. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) refusal contained | Fail one store's probe under load; assert calls to it fail at once without a backend call, and transfers to a second store still start. |

@@ -134,7 +134,7 @@ settings package (D4).
     run real transfers.
   - Track B: termination, retries and the uploader (epic 4), then the memory bound, `Stats` and the
     fault sweep (epic 7).
-  - Track C: store health (epic 5).
+  - Track C: store health (epic 5), and epic 8 below.
 - Epic 8 is the syncer's own integration: its settings, and its collector and conditions, which RFC
   8 offload plan epic 21 registers. The alert rules are epic 21's (O7).
 - Epic 9 runs the benchmarks.
@@ -377,6 +377,7 @@ flowchart TD
   end
   subgraph C["Track C"]
     E5["E5 Store health"]
+    E8["E8 Integration: the syncer's own"]
   end
   S2 --> E3 & E4 & E5
   E3 -. "minimal single-attempt path, dispatch, cap hook" .-> E4
@@ -384,7 +385,7 @@ flowchart TD
   E4 -. "outcomes that count toward health" .-> E5
   E4 -. "attempt loop" .-> E6
   E5 & E6 -. "both halves and health complete" .-> E7
-  S1 -. "the Stats type" .-> E8["E8 Integration: the syncer's own"]
+  S1 -. "the Stats type" .-> E8
   E6 & E7 & E5 --> S3(["S3 syncer complete over the in-memory store"]):::sync
   S3 --> E9["E9 E2E green"]
   S3 -. "the syncer" .-> X5(["RFC 8 offload plan S5 offload components built"]):::sync
@@ -557,9 +558,9 @@ the same three methods as the engine's `Clock`, declared beside its `Deps`.**
 - The bound is fixed at start: RFC 8 offload plan epic 21 computes it once, from the largest `Max`
   of the namespaces served at start (at least the default 1 MiB) and `MaxDecodeLen(Max)` over every
   registered transform, and both halves use it (amended RFC 3 §2.2). A chain changed on its next
-  write or a chain pin held on an older chain cannot exceed it, so nothing updates it. A namespace
-  added at runtime with a larger `Max` is not opened until the next start; epic 21 owns that check
-  (§6.1). Sizing at the ceiling `Max`, 16 MiB, would make each worker about 32 MiB, not about 2.
+  write or a chain pin held on an older chain cannot exceed it, so nothing updates it. Every namespace
+  opened after start with a larger `Max` waits for the next start under a health condition naming
+  it and both figures; epic 21 owns that check, and an RFC 27 re-home inherits the wait (§6.1). Sizing at the ceiling `Max`, 16 MiB, would make each worker about 32 MiB, not about 2.
 - **Prior art.** None found.
 - **Applied by** epic 1.
 
@@ -955,8 +956,9 @@ What this plan knowingly does not build. Each row names the section that defers 
 | `SetDrift`, `ErrDrift`, RFC 3 §7.2's "§2.8 drift condition" row and the drift case of "§2.8 cause per direction"; until then a bucket setting changed after the store opened is seen only at its next open (RFC 4 §4.11), and a put into the drifted store may be expired or kept as a version nothing deletes (RFC 3 §2.8); epic 8's FAQ line says so (epics 5, 8) | its one caller is GC's `Recheck` | RFC 9 plan | RFC 9's plan starts |
 | A registration with `PutProbe` or `GetProbe` false, and RFC 3 §7.2's "§2.8 no put probe" row, S25 (epics 1, 5) | its caller is an immutable backup location | RFC 26 plan | RFC 26's plan starts |
 | The pool sizing tool (RFC 3 §2.11) | no operator needs it in v1.1; the defaults of RFC 3 §2.10 hold, not reduced to the transfers pool while D6's row stands | unowned | an operator needs pool sizes past the defaults |
-| Building a `codec.Store` per store and registering it, computing D7's fixed bound and not opening a namespace added at runtime with a larger `Max` until restart, `ProbeKey`, spreading connections across addresses, the CPU token, the root's syncer, registering epic 8's series and settings and epic 5's conditions, the per-flow queue gauges by share (D4), and RFC 3 §8.1's real-backend checks run over `codec.Store` on the S3 store behind a fault proxy (§1.1, D2), all in `internal/node/content`, the node's content wiring | composition | RFC 8 offload plan, epic 21 | RFC 8 offload plan epic 21 lands |
-| `codec.Store` with `NewPut`, `remote.Chunk`, `ChunkRange`, `Meter` and `ErrMalformed`, and the in-memory store's load record (D8, D9, D10, D2) | RFC 4's contract and codec | RFC 4 plan, epics 1, 2 and 6 | the RFC 4 plan's follow-up amendment lands |
+| Building a `codec.Store` per store and registering it, computing D7's fixed bound and not opening a namespace opened after start with a larger `Max` until restart, and the health condition naming it and both figures meanwhile, `ProbeKey`, spreading connections across addresses, the CPU token, the root's syncer, registering epic 8's series and settings and epic 5's conditions, the per-flow queue gauges by share (D4), and RFC 3 §8.1's real-backend checks run over `codec.Store` on the S3 store behind a fault proxy (§1.1, D2), all in `internal/node/content`, the node's content wiring | composition | RFC 8 offload plan, epic 21 | RFC 8 offload plan epic 21 lands |
+| Re-homing a share into a namespace with a larger `Max` than the process started with (RFC 27 §2.7): RFC 3 §2.2 does not open such a namespace until the next start, so the re-home waits for a restart, under the health condition RFC 8 offload plan epic 21 raises | the pools are sized once, at start (RFC 3 §2.2) | RFC 27 plan | RFC 27's plan starts |
+| `codec.Store` with `NewPut` (its `attempt` dropping its chunk buffers once its `ctx` ends, RFC 3 §1.3), `remote.Chunk`, `ChunkRange`, `Meter` and `ErrMalformed`, and the in-memory store's load record (D8, D9, D10, D2) | RFC 4's contract and codec | RFC 4 plan, epics 1, 2 and 6 | the RFC 4 plan's follow-up amendment lands |
 | The soak (RFC 3 §8.1): hours, nightly, against LocalStack with outages on a cycle | one soak for the composed node; `engine-soak` is a 20-minute `tier: pr` cell with no emulator | RFC 8 offload plan, epic 22 (a nightly cell or option of `engine-soak`) | RFC 8 offload plan epic 22 lands |
 | The codec's part of RFC 3 §7.2's "§2.2 memory bound" row (epic 7) | the codec is RFC 4's | RFC 4 plan, epic 6 (the block codec) | RFC 4 plan epic 6 lands |
 | RFC 25 §3.9's severity per cause on `store_put_unhealthy` and `store_get_unhealthy` (epic 5) | `health.Condition` carries no severity; the `ponytail:` on `pkg/health`'s `Evaluator` names RFC 25's plan as its upgrade | unowned | a plan takes RFC 25's registry, or `pkg/health` gains severity |
