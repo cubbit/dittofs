@@ -134,7 +134,7 @@ title and not copied.
 | rule 8, real dependencies for properties of those dependencies | T4.1 | the hasher is held to BLAKE3's published vectors through E2's `TestBLAKE3Modes`, not to a fake; its cost is measured on this repository's two architectures, amd64 and arm64. The reference box is E7's |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T4.1, T4.2, T4.4, T4.5 | `decision:` markers for D1 at `internal/blake3`'s package doc, D2 at `params.WithChunkIDKey`, D3 and D4 at `Cut`'s fill loop, D5 at the artificial-end stop |
 | rule 10, a test must be able to fail | all | each test names its planted break: a key byte changed, two hashes swapped, a refill that drops a byte, an artificial end that cuts its tail, a short chunk emitted on error, a reader's empty reads unbounded |
-| rule 11, a symbol is exported only if the RFC's interface uses it | T4.1, T4.2 | none joins S1's frozen surface. `internal/blake3` exports `Hasher`, `NewKeyed`, `NewDeriveKey`, `Write` and `Sum256` for its two consumers, `carve` and the RFC 5 plan's epic 5; `params` gains two package functions inside the carver's tree |
+| rule 11, a symbol is exported only if the RFC's interface uses it | T4.1, T4.2 | none joins S1's frozen surface. `internal/blake3` exports `Hasher` and its `InitKeyed`, `InitDeriveKey`, `Write` and `Sum256` for its two consumers, `carve` and the RFC 5 plan's epic 5; `params` gains two package functions inside the carver's tree |
 | rule 12, each subtask creates only what it declares | all | `internal/blake3` lands with `ChunkID`, its first consumer, named in T4.1; the measurement's losing candidate is not committed; `params` grows only the key `ChunkID` reads |
 
 ## 3. Requirements and invariants
@@ -245,7 +245,7 @@ size to choose (RFC 2 §1.2, the RFC 8 offload plan's epic 15).
   `ChainingValue`, `ParentNode`, `CompressNode`, `WordsToBytes`, checked in v1.4.1) driven by a
   tree hasher of this package's own, against another pure-Go implementation,
   `github.com/zeebo/blake3` v0.2.4 (no `go` statement in its production files, checked; `NewKeyed`
-  and `NewDeriveKey` return a `*Hasher`, and it imports `github.com/klauspost/cpuid/v2`, checked),
+  and `NewDeriveKey` return a `*Hasher`, which passes only if escape analysis keeps it off the heap, and it imports `github.com/klauspost/cpuid/v2`, checked),
   and keep the one with zero allocations and no goroutine at every carver size. T4.1 records the
   figures in its pull request and in the `decision:` at the package doc; the loser is not
   committed. Between two that both pass, the one that adds no module wins, then the faster at a
@@ -260,7 +260,9 @@ size to choose (RFC 2 §1.2, the RFC 8 offload plan's epic 15).
   chosen backing alone, test files `internal/prof` and `lukechampine.com/blake3` besides, in the
   shape of `internal/prof`'s `TestImportsStandardLibraryOnly`. The surface is the least both
   consumers need: keyed and key-derivation modes, streaming writes (the name's and RFC 5's nonce's
-  inputs are several slices), and a 32-byte sum. No extendable output: E3's gear tables keep
+  inputs are several slices), and a 32-byte sum. A `Hasher` holds its chaining-value stack and a 16 KiB group buffer, so it is
+  started in place (`InitKeyed`, `InitDeriveKey`) rather than returned by value, which would copy
+  them per chunk. No extendable output: E3's gear tables keep
   `lukechampine.com/blake3`, whose inputs are under one BLAKE3 chunk and whose allocations land in
   the constructor (E3's D5). The marker's ceiling: withdraw the package, and call the library
   directly, if a later `lukechampine.com/blake3` neither allocates nor starts a goroutine on a long
@@ -285,11 +287,10 @@ size to choose (RFC 2 §1.2, the RFC 8 offload plan's epic 15).
   the reader is done. A whole chunk is then always in view, and only a stretch's end can leave fewer
   than `Max` bytes. `final` is set only once the reader is done and the end is real. It does not use
   `io.ReadFull` or `io.ReadAtLeast`, which keep calling a reader that returns zero bytes and no error
-  (from memory), and counts such reads instead: the RFC 2 plan's D5, 100 in a row, `io.ErrNoProgress`,
-  the bound `bufio.Reader`'s fill uses (from memory). A buffer of exactly `Max` bytes moves up to
+  (checked, `io/io.go`), and counts such reads instead: the RFC 2 plan's D5, 100 in a row, `io.ErrNoProgress`,
+  the bound `bufio.Reader`'s fill uses (`maxConsecutiveEmptyReads`, checked). A buffer of exactly `Max` bytes moves up to
   `Max` bytes per chunk; a larger one moves less often, which is the caller's to size (RFC 2 §10.5,
-  at most 2 × `Max`). A `decision:` at the loop says so. Prior art: `bufio.Reader.fill` (from
-  memory). Applied by T4.4.
+  at most 2 × `Max`). A `decision:` at the loop says so. Prior art: `bufio.Reader.fill` (checked). Applied by T4.4.
 
 - **D4, `consumed` is what `emit` accepted, and a reader's error stops `Cut` at once.**
   On every return, success or error, `consumed` is the end of the last chunk `emit` returned nil
@@ -339,7 +340,7 @@ size to choose (RFC 2 §1.2, the RFC 8 offload plan's epic 15).
 
 ```text
 internal/blake3/
-  blake3.go                T4.1  Hasher, NewKeyed, NewDeriveKey, Write, Sum256; D1's decision:
+  blake3.go                T4.1  Hasher, InitKeyed, InitDeriveKey, Write, Sum256; D1's decision:
   blake3_test.go           T4.1  TestAllocsHasher, the goroutine count, FuzzHasher
   imports_test.go          T4.1  the package's own import row (D1)
 pkg/carver/
@@ -362,7 +363,8 @@ pkg/carver/
     edges_test.go          T4.7  stretch shapes, buffer edges, content, offsets
     sweep_test.go          T4.8  the fault sweep (D6)
     fuzz_test.go           T4.8  FuzzCut (D7)
-test/suites.yaml           T4.1, T4.8  two lines of the fuzz suite, its timeouts raised
+test/suites.yaml           T4.1, T4.8  two lines of the fuzz suite, its timeouts raised;
+                                       carver-allocs reaches ./internal/blake3
 ```
 
 ## 6. Subtasks
@@ -387,23 +389,28 @@ test/suites.yaml           T4.1, T4.8  two lines of the fuzz suite, its timeouts
     // input length.
     package blake3
 
-    // Hasher hashes in one mode. It holds no pointer to the heap, so a caller keeps it on its
-    // stack; its zero value is not a mode, and only NewKeyed and NewDeriveKey build one.
+    // Hasher hashes in one mode. It holds no pointer to the heap, so a caller declares it on
+    // its stack and starts it in place, with no copy of its buffers; its zero value is not a
+    // mode, and only InitKeyed and InitDeriveKey start one.
     type Hasher struct{ /* unexported */ }
 
-    // NewKeyed starts BLAKE3's keyed mode under key.
-    func NewKeyed(key *[32]byte) Hasher
+    // InitKeyed starts h in BLAKE3's keyed mode under key, dropping what h held.
+    func (h *Hasher) InitKeyed(key *[32]byte)
 
-    // NewDeriveKey starts BLAKE3's key-derivation mode under context; what is written is the
-    // key material.
-    func NewDeriveKey(context string) Hasher
+    // InitDeriveKey starts h in BLAKE3's key-derivation mode under context, dropping what h
+    // held; what is written next is the key material.
+    func (h *Hasher) InitDeriveKey(context string)
 
-    // Write absorbs p.
+    // Write absorbs p. Whole groups of BLAKE3 chunks are compressed straight from p when
+    // nothing is buffered, so hashing one slice copies nothing.
     func (h *Hasher) Write(p []byte)
 
     // Sum256 returns the first 32 bytes of output over what was written, leaving h unchanged.
     func (h *Hasher) Sum256() [32]byte
     ```
+  - `unit`'s `carver-allocs` command in `test/suites.yaml` gains `./internal/blake3`, since its
+    `./pkg/carver/...` pattern (E2's D7) does not reach the package and `TestAllocsHasher` would
+    otherwise count nowhere.
   - `internal/blake3/imports_test.go`, the package's own row (D1). In E1's `imports_test.go`,
     `carvetest`'s test row admits `internal/blake3`.
   - In E2's `vectors_test.go`, `TestBLAKE3Modes` also checks `internal/blake3` in keyed mode against
@@ -415,7 +422,7 @@ test/suites.yaml           T4.1, T4.8  two lines of the fuzz suite, its timeouts
 - **Acceptance criteria:**
   - Every published keyed and key-derivation vector, at every input length the file holds, gives
     its value through `internal/blake3`.
-  - At every length of the measurement up to 16 MiB, `NewKeyed`, `Write` and `Sum256` together
+  - At every length of the measurement up to 16 MiB, `InitKeyed`, `Write` and `Sum256` together
     make 0 allocations and start 0 goroutines.
   - Production files import the standard library and the chosen backing, nothing else.
 - **Tests:** at `internal/blake3`, which `ChunkID` and the RFC 5 nonce call: `TestBLAKE3Modes`
@@ -501,14 +508,14 @@ test/suites.yaml           T4.1, T4.8  two lines of the fuzz suite, its timeouts
 - **Deliverables:**
   - `Cut`'s body, with D3's and D4's `decision:` at the fill loop: the settings and buffer checks,
     the fill loop, `NextBoundary` from each chunk's start with `final` once the reader is done, the
-    hash over `buf[start:end]`, `emit`, and `consumed`. `Cut`'s doc comment gains D4's sentence on
+    hash over `buf[start:end]`, `emit` handed `buf[start:end:end]`, so an `emit` that appends cannot write over the next chunk's bytes, and `consumed`. `Cut`'s doc comment gains D4's sentence on
     `base`. Consumed by the RFC 8 offload plan's epic 15 at its Carve state, and by T4.5 to T4.8.
   - `carve`'s rows in E1's `imports_test.go` admit `internal/chunker` and `internal/blake3`, and
     `section`'s row the same, since it reaches what `carve` reaches; `arch_test.go`'s row for `carve`
     holds `params.Gear` and `params.Bits` to `settings.go`.
   - `TestAllocsCut`, which joins `carver-allocs` by its name.
   - `BenchmarkCut`: per entry of `carvetest.Targets`, sub-benchmarks `Random` (K2), `BLAKE3` (the
-    same bytes through `internal/blake3`'s keyed hash in `Max`-sized pieces, K2's baseline), `Zeros`
+    same bytes through `internal/blake3`'s keyed hash in `Target`-sized pieces, K2's baseline), `Zeros`
     and `Period64` (K3), each over 64 MiB built before `b.ResetTimer`, with `b.SetBytes` and
     `b.ReportAllocs`. Consumed by E7, which runs it as K2 and K3.
 - **Acceptance criteria:**
