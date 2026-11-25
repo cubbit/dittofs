@@ -1,238 +1,333 @@
 # Access Control
 
-> For the internal ACL evaluation algorithm, canonical ordering, inheritance rules, mode synchronization, and design tradeoff analysis, see [../internals/acl-design.md](../internals/acl-design.md).
+This page shows how to decide who can read and write a share: which users get in, from
+which machines, as whom, and what the files themselves allow. Each section is a task
+you will recognise, with the `dfsctl` commands to run and what the user sees afterwards.
 
-DittoFS implements a unified ACL model that works across both NFSv4 and SMB protocols. A single ACL set on a file via one protocol is immediately visible and enforceable from the other.
+For the design behind it, see [the security model](../internals/security-model.md) and
+[the ACL design](../internals/acl-design.md). Terms such as ACL, ACE and SID are in the
+[glossary](glossary.md).
 
-For a full glossary of terms (ACL, ACE, DACL, SID, security descriptor, etc.) see [./glossary.md](./glossary.md).
+> **On this version:**
+>
+> - This build serves no file protocol and cannot create a share yet (see
+>   [Getting Started](getting-started.md#5-stores-and-namespaces)). `dfsctl user`,
+>   `dfsctl group` and `dfsctl netgroup` work today; the share, grant and mount steps
+>   below are the commands to use once a share exists.
+> - A client that only *claims* a user ID, as NFS `AUTH_SYS` does, is refused: mapping a
+>   claimed uid to a DittoFS user is not built yet. Only a caller that signs in (an SMB
+>   password or Kerberos sign-in) or an anonymous one reaches a share.
+> - NFS Kerberos is not served yet (see [NFS](nfs.md)), so on this version a signed-in
+>   caller arrives over SMB.
 
-## Two permission layers
+## Two checks on every request
 
-Access to a file is decided by **two independent layers**, both of which must allow the operation. This mirrors how enterprise NAS appliances (Windows Server, TrueNAS, Synology) separate *share permissions* from *filesystem permissions*.
+Every request passes two checks, and both must allow it:
 
-1. **Share permissions (the export gate).** A coarse, per-share grant that decides *whether a principal may touch the export at all*, and at what ceiling (`none` / `read` / `read-write` / `admin`). A principal with no grant, and none through its groups, is refused:
+1. **Share access.** Is this caller allowed into the share, and at what level? This is
+   set with `dfsctl`: the share's **grants** (who), and its **export policy** (from
+   which addresses, with which kind of sign-in, and as whom).
+2. **File permissions.** Do the file's mode bits and ACL allow this operation for this
+   caller? This is set from a client, with `chmod`, `chown`, `nfs4_setfacl` or
+   Windows' Security tab.
+
+A grant never changes a file's owner, mode or ACL. A user granted `read-write` on a
+share still cannot write a file whose permissions deny it.
+
+The grant levels:
+
+| Level | What it allows |
+| --- | --- |
+| `none` | nothing: the caller is refused, even if one of its groups is granted more |
+| `read` | read files and list directories |
+| `read-write` | read and change files, as the file permissions allow |
+| `admin` | everything, past file permissions too: an admin can change any file's owner, mode or ACL |
+
+A caller's **own** grant decides, if it has one. With no grant of its own, the highest
+grant among its groups decides. With neither, it is refused. A new share admits nobody
+until a grant names someone.
+
+## Give alice read-write on the archive share
+
+1. Create the user, with the Unix user ID her files are owned by, and give her a
+   password for SMB sign-in:
 
    ```bash
-   # Grant alice read-write access to the export
-   dfsctl grant set data --user alice --access read-write
+   dfsctl user create alice --uid 1000
+   dfsctl user set-password alice
    ```
 
-   A grant **only opens the gate**. It does not modify any file's owner, mode, or ACL.
+   ```console
+   NAME   ID                                    UID   ROLE  EMAIL  DISABLED
+   alice  8c814c1f-9930-4780-b8b5-b96002bba793  1000              no
+   ```
 
-   **Granting directory principals (no local users).** `--directory` names a
-   user or group of the configured directory as `DOMAIN\name`. `dfsctl` asks the
-   node to resolve it (`resolve-principal`), which mints the directory principal,
-   and grants the principal ID it returns. No local DittoFS user or group is
-   created. `--user` and `--group` name local principals; `--principal-id` takes an
-   ID as `dfsctl grant list` prints it.
+   `set-password` prompts for the password. It needs `keys.protocol` in the config file
+   (see [Getting Started](getting-started.md#2-initialize-and-start-the-server)).
+
+2. Grant her read-write:
 
    ```bash
-   dfsctl grant set data --directory 'CUBBIT\Cubbit' --access read-write
+   dfsctl grant set archive --user alice --access read-write
+   dfsctl grant list archive
    ```
 
-   A principal's own grant decides its access, and a grant of `none` refuses it;
-   with no grant of its own, its groups' grants decide. A directory caller's
-   groups are read from the directory. See
-   [windows-ad-setup.md](windows-ad-setup.md) for the operator walkthrough.
+3. Let her write at the top of the share. A new share's top directory is mode `0755`
+   and owned by nobody, so a `read-write` grant alone does not let alice create files
+   there. A user with an `admin` grant gives it to her from a client:
 
-2. **Filesystem permissions (POSIX mode + ACL).** Once past the gate, the file's own POSIX mode bits and ACL decide the actual operation — exactly as described in the rest of this page. A share-level grant never overrides these; a user granted `read-write` on the export still cannot write a file whose mode/ACL denies them.
+   ```bash
+   # run by a user granted admin on archive, on a mounted share
+   sudo chown 1000 /mnt/archive
+   ```
 
-**Effective access = share gate AND filesystem permission.** Both must allow.
+   Or create a directory for her instead and leave the top as it is.
 
-> **The share may also *remap the caller's identity*** (NFS and SMB alike)
-> through its export policy's squash (`none`, `root` or `all`), e.g. mapping a
-> remote `root` to the anonymous principal. A proven caller (Kerberos, NTLM) has
-> its share grant read before the squash, and filesystem permissions then apply
-> to the squashed identity: on an `all` share, alice still needs a share grant
-> of her own to get in, and once in she reads and writes files as the anonymous
-> principal. A claimed caller (AUTH_SYS) is squashed before its grant is read, so
-> it reaches the share only through the anonymous principal's grants. Configure
-> share grants against the real users, and file ownership and modes against the
-> squashed identity. See
-> [NFS § Identity Squashing](nfs.md#identity-squashing-root_squash-and-friends).
+4. alice mounts the share and works in it:
 
-### Share owner
+   ```bash
+   dfsctl share mount archive /mnt/archive --protocol smb --username alice
+   ```
 
-A new share's **root directory** is created with a secure mode (`0755`) owned by `root`. Because the two layers are independent, granting a user `read-write` does **not**, by itself, let them create files *at the share root* — POSIX still applies, and only the owner (or root) can write a `0755` directory.
+   She can create and change files she owns. Writing a file someone else owns with mode
+   `0644` fails with `Permission denied`, because the file permissions say no.
 
-No `dfsctl` command sets the root's owner yet; root (or an ACL) has to give a principal write access at the root. The grant only lets the principal in:
+## A group of read-only users
+
+Create a group, add its members, and grant the group `read`:
 
 ```bash
-# alice may enter home-alice; writing at its root still needs POSIX or an ACL to allow it.
-dfsctl user create alice --uid 1000
-dfsctl user set-password alice
-dfsctl grant set home-alice --user alice --access read-write
+dfsctl group create auditors --gid 2000
+dfsctl group add-member auditors bob
+dfsctl group add-member auditors carol
+dfsctl grant set archive --group auditors --access read
 ```
 
-- The owner can write at the root via normal POSIX rules. Other principals are governed by the root's mode/ACL plus their share grant.
-
-> **Heads-up — this surprises people.** `grant set <share> --user alice --access read-write` lets alice *into* the share but does **not** let her create files at the root unless she owns it (or it is group-/world-writable, or an ACL grants her). This is deliberate POSIX layering, not a bug. Common patterns:
-> - have root give alice the share root (`chown` over a mount) for a single-owner share;
-> - have the owner/admin create **subdirectories** with appropriate modes for other users to work in;
-> - set an explicit **ACL** on the root (see below) granting the desired principals.
-
-## How it works
-
-DittoFS stores one canonical ACL per file, derived from the NFSv4 ACL model (RFC 7530 §6), and translates on the wire for each protocol:
-
-- **NFS** clients read and write ACLs via `GETATTR`/`SETATTR` with `FATTR4_ACL`. No translation is needed — the internal model is the wire format.
-- **SMB** clients read and write ACLs via `QUERY_INFO`/`SET_INFO` as Windows Security Descriptors. DittoFS translates principals (NFS `user@domain` ↔ Windows SIDs) and encodes/decodes the binary Security Descriptor format.
-
-The permission mask bits (READ_DATA, WRITE_DATA, EXECUTE, DELETE, …) are identical across both protocols by RFC design — no translation is needed for the actual permissions, only for the identity and wire encoding.
-
-```mermaid
-graph TB
-    NFS["NFSv4 Client<br/><i>FATTR4_ACL (XDR)</i><br/><i>GETATTR / SETATTR</i>"]
-    SMB["SMB Client<br/><i>Security Descriptor (MS-DTYP)</i><br/><i>QUERY_INFO / SET_INFO</i>"]
-
-    NFS --> NFSWIRE
-    SMB --> SMBWIRE
-
-    subgraph "Protocol Translation"
-        NFSWIRE["<b>NFS ACL Wire Format</b><br/><code>internal/adapter/nfs/v4/attrs/acl.go</code><br/><br/>EncodeACLAttr()<br/>DecodeACLAttr()<br/>EncodeACLSupportAttr()"]
-        SMBWIRE["<b>SMB Security Descriptor</b><br/><code>internal/adapter/smb/handlers/security.go</code><br/><br/>BuildSecurityDescriptor()<br/>ParseSecurityDescriptor()<br/>PrincipalToSID() / SIDToPrincipal()"]
-    end
-
-    NFSWIRE --> ACL
-    SMBWIRE --> ACL
-
-    subgraph "Common Model"
-        ACL["<b>ACL Model</b><br/><code>pkg/metadata/entity/acl.go</code><br/><br/>ACE/ACL types"]
-        IDENTITY["<b>Identity Mapping</b><br/><code>pkg/identity/</code><br/><br/>ConventionMapper<br/>TableMapper<br/>StaticMapper<br/>CachedMapper"]
-    end
-
-    ACL --> IDENTITY
-
-    IDENTITY --> STORAGE["<b>Metadata Storage</b><br/>BadgerDB<br/><br/>FileAttr.ACL → JSON"]
+```console
+NAME      ID                                    GID
+auditors  fd1591fa-f9b8-4e98-9536-9559fcbff2d7  2000
 ```
 
-## Setting and reading ACLs
+bob and carol can now mount `archive`, list it and read files the file permissions let
+them read. Any change, such as creating, editing or deleting a file, fails with
+`Permission denied`.
 
-### Via NFS (nfs4_setfacl / nfs4_getfacl)
+To keep one member out while the rest of the group keeps its access, give that member a
+grant of its own. An own grant beats the group's:
 
 ```bash
-# Grant user alice full control
-nfs4_setfacl -a 'A::alice@EXAMPLE.COM:rwaDxtTNcCy' /mnt/share/file.txt
-
-# Grant the owning group read access
-nfs4_setfacl -a 'A::GROUP@:r' /mnt/share/file.txt
-
-# Deny everyone write access
-nfs4_setfacl -a 'D::EVERYONE@:w' /mnt/share/file.txt
-
-# Read the current ACL
-nfs4_getfacl /mnt/share/file.txt
+dfsctl grant set archive --user carol --access none
 ```
 
-### Via SMB (Windows / icacls)
+To let carol back in through the group, remove her own grant rather than setting it to
+something else:
+
+```bash
+dfsctl grant remove archive --user carol
+```
+
+## Make a whole share read-only
+
+To stop every change to a share, whatever the grants say:
+
+```bash
+dfsctl share export-policy update archive --read-only
+```
+
+A write then fails with `Read-only file system` (`EROFS`) rather than
+`Permission denied`, so the user can tell the share is read-only rather than that they
+lack a permission. To allow writes again:
+
+```bash
+dfsctl share export-policy update archive --read-only=false
+```
+
+## Allow only some machines
+
+An export policy holds **client rules**: an address range, or a netgroup, and the
+access it allows. The first rule that matches the client's address decides. A client
+that matches no rule is refused.
+
+Allow the office network read-write, and one build machine read-only:
+
+```bash
+dfsctl share export-policy update archive \
+  --client 192.0.2.0/24=read-write \
+  --client 198.51.100.7/32=read
+```
+
+`--client` replaces the whole list of rules, so name every rule you want to keep. A
+`read` rule turns a client's access into read-only even for a user granted `read-write`,
+and its writes fail with `Read-only file system`.
+
+To reuse one list of machines on several shares, put it in a **netgroup**:
+
+```bash
+dfsctl netgroup create office --member 192.0.2.0/24 --member 203.0.113.15
+dfsctl share export-policy update archive --client @office=read-write
+```
+
+```console
+NAME    MEMBERS
+office  192.0.2.0/24,203.0.113.15
+```
+
+`dfsctl netgroup update office --member …` replaces the members. Use addresses and
+CIDR ranges.
+
+> **Host names in a netgroup are not resolved on this version.** A host name in an
+> allowing rule (`=read`, `=read-write`) matches no client, and in a refusing rule
+> (`=none`) it matches every client. Write the machine's address instead.
+
+To see the whole policy:
+
+```bash
+dfsctl share export-policy get archive
+```
+
+## Require a stronger sign-in
+
+The export policy also says how a caller must prove who it is:
+
+| Flag | Values | Meaning |
+| --- | --- | --- |
+| `--min-proof` | `none`, `claimed`, `secret`, `ticket` | the weakest sign-in allowed: none at all, a claimed uid (NFS `AUTH_SYS`), a password (SMB NTLM), or a Kerberos ticket |
+| `--min-protection` | `none`, `integrity`, `privacy` | whether messages must be signed (`integrity`) or encrypted (`privacy`); above `none` needs `--min-proof secret` or `ticket` |
+| `--flavor` | `none`, `sys`, `kerberos` | the NFS sign-in methods the share offers, in order of preference |
+| `--smb-encrypt` | | every SMB message to this share is encrypted |
+
+Require a password or Kerberos sign-in, so anonymous and guest sessions are refused:
+
+```bash
+dfsctl share export-policy update archive --min-proof secret
+```
+
+Require Kerberos with encryption:
+
+```bash
+dfsctl share export-policy update archive --flavor kerberos --min-proof ticket --min-protection privacy
+```
+
+## Map users to an anonymous user (squash)
+
+**Squash** makes callers act as the share's anonymous user for file permissions. It is
+set with `--squash`:
+
+| `--squash` | Who is squashed |
+| --- | --- |
+| `none` | nobody |
+| `root` *(default)* | a caller signed in as root |
+| `all` | every caller |
+
+Map every user to the anonymous user, for a share where who wrote a file should not
+matter:
+
+```bash
+dfsctl share export-policy update archive --squash all
+```
+
+Grants are read **before** the squash, against who the caller really is. So on an `all`
+share, alice still needs her own grant (or her group's) to get in. Once in, her files
+are created and checked as the anonymous user, not as alice.
+
+How grants and squash combine for a caller who signed in as alice (a user with a uid):
+
+| alice's grant | `--squash none` | `--squash root` | `--squash all` |
+| --- | --- | --- | --- |
+| `read-write` | gets in, acts as alice | gets in, acts as alice | gets in read-write, acts as anonymous |
+| `read` | gets in read-only, acts as alice | gets in read-only, acts as alice | gets in read-only, acts as anonymous |
+| `none`, or no grant at all | refused | refused | refused |
+
+Two kinds of caller always act as the anonymous user, whatever `--squash` says:
+
+- an anonymous or guest session, which proves no identity. It gets only what the share
+  grants to everyone; `dfsctl grant` has no flag for that yet.
+- a signed-in account with no uid, such as a computer account. It gets the anonymous
+  user's access too.
+
+`--squash root` only matters for a caller that maps to root, and no sign-in maps to root
+on this version, so today it behaves like `none`. No squash mode keeps root's
+administrator rights: only an `admin` grant lets a caller past file permissions.
+
+## Grant users and groups from Active Directory
+
+With a directory connected (see [Identity](identity.md)), grant a directory user or
+group by its `DOMAIN\name`. No local user is created:
+
+```bash
+dfsctl grant set archive --directory 'CORP\alice' --access read-write
+dfsctl grant set archive --directory 'CORP\Engineering' --access read
+```
+
+The node looks the name up in the directory first. If the directory cannot find it, the
+command fails and grants nothing. A directory user's groups come from the directory, so
+a grant to `CORP\Engineering` reaches every member, including members of groups nested
+inside it. [windows-ad-setup.md](windows-ad-setup.md) walks through a whole Active
+Directory setup.
+
+## File permissions and ACLs
+
+Once a caller is in the share, the file's own permissions decide. Each file has one
+ACL, which NFSv4 clients and SMB clients both read and change, so an ACL set from
+Windows is enforced for an NFS client too.
+
+A file with no ACL is checked by its mode bits, as on any Unix system.
+
+### From Linux over NFSv4
+
+```bash
+# Let alice read and write a file
+nfs4_setfacl -a 'A::alice@example.com:rwatTnNcCy' /mnt/archive/report.txt
+
+# Let the file's group read it
+nfs4_setfacl -a 'A::GROUP@:r' /mnt/archive/report.txt
+
+# Show the ACL
+nfs4_getfacl /mnt/archive/report.txt
+```
+
+### From Windows over SMB
 
 ```cmd
-:: Grant alice full control
-icacls \\server\share\file.txt /grant alice:(F)
-
-:: Grant the Administrators group read
-icacls \\server\share\file.txt /grant Administrators:(R)
+:: Give alice full control
+icacls \\server\archive\report.txt /grant alice:(F)
 
 :: Deny Everyone write
-icacls \\server\share\file.txt /deny Everyone:(W)
+icacls \\server\archive\report.txt /deny Everyone:(W)
 
-:: View current ACL
-icacls \\server\share\file.txt
+:: Show the ACL
+icacls \\server\archive\report.txt
 ```
 
-### chmod and mode bits
+Or use the file's **Properties > Security** tab in Explorer.
 
-`chmod` works as expected. DittoFS syncs mode bits to and from the ACL automatically:
+### chmod on a file with an ACL
 
-- When you `chmod`, the OWNER@/GROUP@/EVERYONE@ ACEs in the ACL are updated to match. All explicit named-user/group ACEs are left unchanged.
-- When an ACL is set, `ls -l` mode bits are derived from the OWNER@/GROUP@/EVERYONE@ ALLOW entries.
-
-A `nil` ACL (no ACL set) falls back to classic Unix permission checking (mode bits only). An explicit empty ACL denies all access.
-
-## Identity mapping
-
-NFS uses `user@domain` string principals; SMB uses Windows Security Identifiers (SIDs). DittoFS maps between them:
-
-| NFS Principal | Windows SID | Notes |
-|---------------|-------------|-------|
-| `OWNER@` | `S-1-3-0` (CREATOR OWNER) | File owner, resolved dynamically |
-| `GROUP@` | `S-1-3-1` (CREATOR GROUP) | Owning group, resolved dynamically |
-| `EVERYONE@` | `S-1-1-0` (Everyone) | All principals |
-| `{uid}@localdomain` | `S-1-5-21-0-0-0-{uid}` | Local numeric UID |
-| `alice@EXAMPLE.COM` | `S-1-5-21-0-0-0-{hash}` | Hash-based; AD SIDs are lossy (see limitations) |
-
-The identity mapping package (`pkg/identity/`) resolves NFS principals to Unix credentials (UID/GID) at evaluation time:
-
-| Mapper | Strategy | Use case |
-|--------|----------|----------|
-| `ConventionMapper` | If domain matches configured realm, resolve username | Default for Kerberos environments |
-| `TableMapper` | Explicit mapping table (principal → username) | AD environments with custom mappings |
-| `StaticMapper` | Static configuration map | Small deployments with known users |
-| `CachedMapper` | TTL-based cache wrapping any mapper | Performance (default 5-minute TTL) |
-
-## Cross-protocol scenarios
-
-### Scenario 1: NFS sets ACL, SMB reads it
-
-```
-1. NFS client: SETATTR with FATTR4_ACL
-   ACEs: [ALLOW OWNER@ 0x1F01FF, DENY EVERYONE@ 0x02]
-
-2. Stored internally as:
-   ACL.ACEs = [{Type:ALLOW, Who:"OWNER@", Mask:0x1F01FF},
-               {Type:DENY, Who:"EVERYONE@", Mask:0x02}]
-
-3. SMB client: QUERY_INFO (Security)
-   → BuildSecurityDescriptor()
-   → ACE 1: ALLOW, SID=S-1-5-21-0-0-0-{ownerUID}, Mask=0x1F01FF
-   → ACE 2: DENY,  SID=S-1-1-0 (Everyone), Mask=0x02
-   → Windows Explorer shows correct permissions
-```
-
-### Scenario 2: SMB sets ACL, NFS reads it
-
-```
-1. SMB client: SET_INFO (Security Descriptor)
-   DACL: [ALLOW S-1-1-0 0x1F01FF]  (Everyone, Full Control)
-
-2. ParseSecurityDescriptor()
-   → SIDToPrincipal(S-1-1-0) → "EVERYONE@"
-   → Stored as: ACL.ACEs = [{Type:ALLOW, Who:"EVERYONE@", Mask:0x1F01FF}]
-
-3. NFS client: GETATTR with FATTR4_ACL
-   → EncodeACLAttr()
-   → ACE: ALLOW "EVERYONE@" 0x1F01FF
-   → nfs4_getfacl shows correct ACL
-```
-
-### Scenario 3: Mixed protocol access control
-
-```
-1. SMB client creates file with ACL:
-   [ALLOW S-1-5-21-0-0-0-1000 READ_DATA, DENY S-1-1-0 WRITE_DATA]
-
-2. NFS client (UID 1000) tries to read → evaluateACLPermissions()
-   → ACE 1: "1000@localdomain" matches UID 1000 → READ allowed
-   → Access granted
-
-3. NFS client (UID 1000) tries to write → evaluateACLPermissions()
-   → ACE 1: matches but no WRITE bit → undecided
-   → ACE 2: "EVERYONE@" matches → WRITE denied
-   → Access denied
-```
+`chmod` keeps the ACL's named entries, such as one for alice, but none of them then
+grants more than the new mode bits allow, as a POSIX ACL mask does. `ls -l` shows the
+mode bits the ACL works out to.
 
 ## Known limitations
 
-1. **Non-DittoFS SIDs are lossy**: Real Active Directory SIDs (e.g., `S-1-5-32-544` for Administrators) are stored as string representations but mapped to UID 65534 (nobody) when parsed back. Round-trip fidelity is lost for AD domain SIDs.
+1. **Audit entries do nothing yet.** An ACL's audit entries (the SACL, Windows'
+   Auditing tab) are stored and shown back to SMB clients, but no audit event is
+   written when an operation matches one. See
+   [SMB ACL fidelity](smb-acl-fidelity.md#sacl-audit).
+2. **The share's anonymous user cannot be chosen.** The export policy has no `dfsctl`
+   flag for it, so squashed callers act as the built-in anonymous user.
+3. **No grant to everyone from `dfsctl`.** `dfsctl grant` names a user, a group or a
+   directory principal; it has no flag for "everyone" or "authenticated users".
 
-2. **Hash-based SID generation**: Named principals without numeric UIDs (e.g., `alice@EXAMPLE.COM`) produce a hash-based RID when converted to SID. This is deterministic but could theoretically collide.
+## Common problems
 
-3. **SACL round-trips but audit events are not generated**: System ACLs (audit/alarm ACEs) are parsed, stored, and surfaced to SMB clients in the Security Descriptor's SACL section — Windows Explorer's "Auditing" tab reads back what was set, and the `ACCESS_SYSTEM_SECURITY` gate is enforced. What is not implemented is *acting* on them: the server emits no audit log when an operation matches a SUCCESSFUL/FAILED audit ACE, and ALARM ACEs raise no alarm. See [SMB ACL fidelity § SACL](smb-acl-fidelity.md#sacl-audit).
-
-4. **Owner/Group not in ACL**: Windows Security Descriptors bundle owner, group, and DACL together. DittoFS stores owner (UID) and group (GID) separately in file attributes. This is transparent to clients but means owner/group changes don't trigger ACL-related events.
-
-## References
-
-- [RFC 7530 Section 6](https://tools.ietf.org/html/rfc7530#section-6) — NFSv4 ACL specification
-- [MS-DTYP Section 2.4](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/) — Windows Security Descriptor format
-- [RFC 7530 Section 6.4.1](https://tools.ietf.org/html/rfc7530#section-6.4.1) — Mode/ACL synchronization
+- **"Permission denied" when creating a file at the top of a new share.** The top
+  directory is owned by nobody. An `admin` must `chown` it, or create subdirectories for
+  users. See step 3 of [Give alice read-write](#give-alice-read-write-on-the-archive-share).
+- **A group member is refused although the group is granted.** The member has a grant
+  of its own, which beats the group's. Check `dfsctl grant list archive` and remove it
+  with `dfsctl grant remove archive --user <name>`, for example
+  `dfsctl grant remove archive --user carol`.
+- **Every client is refused after adding a netgroup rule.** The netgroup holds host
+  names, which are not resolved, or a rule above it refuses the client. Use addresses.
+- **An NFS mount with `sec=sys` is refused.** A claimed uid is not accepted on this
+  version. Use SMB with a password or Kerberos sign-in.
