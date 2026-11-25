@@ -1343,6 +1343,7 @@ un-offloaded delete that a crash reverts would resurrect a removed file.
 Extents(id FileID) ([]Extent, error)      // held extents, offset order
 Files() iter.Seq[FileID]                   // files of this share with a held extent, an unsettled removal marker or an unsettled synced loss, recorded or deferred (§6), a `superseded` one excepted
 Stats() Stats                              // the Journal's, not the Handle's (§3): journal-wide, with a per-share breakdown
+Losses() []LossEvent                       // the genuine read: marks the events its copy carries served (§3.8)
 DirtyFiles() iter.Seq2[FileID, time.Time]  // files with a held or retained extent whose offloaded bit is unset, each with its oldest dirty byte's write time
 ```
 
@@ -1389,7 +1390,7 @@ walk can produce is omitted.
 | `PinnedSegments` | gauge | segments held by running offers ([§3.3](#3.3%20Offload)) |
 | `OpenDescriptors` / `DescriptorLimit` | gauge | open segment descriptors, and the bound they are held under ([§7.4](#7.4%20Open%20descriptors)) |
 | `DamagedSegments` | gauge | segments recovery or a read reports as damaged ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding), [§3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)); a torn header or torn tail is never one unless a sync mark proves it synced, and a torn slot above every mark's `Through` never is ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)). A damaged segment that an open then empties and unlinks, or retires before emptying, stays counted until the journal closes, with its row in the per-segment breakdown of [§4.4](#4.4%20Inspection) |
-| `SyncMarks` | value | per append stream, the `SyncMark` of its last completed sync: its synced-through offset, and the end and sequence number of the last record it covered, or, until the stream's next sync after an open, the end of what that open recovered of it ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)); the group commit records them ([RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)) |
+| `SyncMarks` | value | per append stream, the `SyncMark` of the last completed sync that named a file of the stream (a sync no caller named a file for raises nothing): its synced-through offset, and the end and sequence number of the last record it covered, or, until the stream's next sync after an open, the end of what that open recovered of it ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)); the group commit records them ([RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)) |
 | `LastSyncError` | value | the most recent sync failure, and when ([§5.2](#5.2%20Syncing)) |
 | `SyncDuration` | histogram | time per sync; the one operation only the journal can time |
 | `RemovalMarkers` | gauge | removal markers not yet settled ([§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete)) |
@@ -1399,7 +1400,7 @@ walk can produce is omitted.
 | `RejectedSegments` | gauge | segments not attached ([RFC 28 §3.1](rfc-28-journal-format.md#3.1%20Rebuilding)) |
 | `ReadOnly` | value | whether the journal is read-only, the error that made it so, whether a spare has since been made, and the check the last probe found failing, if any ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)) |
 | `Recovery` | value | how many segments the last open read by catalog and by scan, how long it took, the segments holding a range that names no record, and whether a metadata reconcile is owed, whether its ranges are counted yet, and if so why it is owed (a snapshot hold, an ending that appended no record, a settling step the headroom refused, or the reconcile not yet done); set by an unsettled `reconcile` record, cleared when the reconcile settles ([§3.3](#3.3%20Offload)) ([RFC 28 §3.3](rfc-28-journal-format.md#3.3%20Torn%20and%20corrupt%20records)) |
-| `Losses` | value | the most recent loss events, each with a sequence number ([§3.8](#3.8%20Loss%20events)) |
+| `Losses` | value | the most recent loss events, each with a sequence number ([§3.8](#3.8%20Loss%20events)); a `Stats` read reports them as a figure and marks nothing served — `Losses` is the genuine read whose call does ([§3.8](#3.8%20Loss%20events)) |
 | `LossGeneration` | value | raised as [§3.8](#3.8%20Loss%20events) lists: a corrupt or acknowledged-unreadable loss not yet offloaded, a failed sync window, once on turning read-only ([§5.4](#5.4%20A%20journal%20that%20cannot%20write)), and once per uncounted range that names no record; never on a stale, `superseded` or offloaded corrupt loss; never lower than any value this process has exposed for this directory ([§3.8](#3.8%20Loss%20events)) |
 | `TagConflicts` | value | files recovery rebuilt under two tags, each with both tags; every call on them is refused until one tag is forgotten ([§3](#3.%20Interface)) |
 | `Shares` | per share | every tag that holds a record, attached or not, tag 0 excepted ([§3](#3.%20Interface)), with `Limit`, `UsedBytes` — the record bytes of the share's records still on disk —, `ReservedBytes`, `HeldBytes`, `DirtyBytes` and `UnreclaimedBytes` for each share ([§6](#6.%20Capacity)) |
@@ -1494,7 +1495,20 @@ reconcile-retained, is the exception: no window holds it again ([§3.3](#3.3%20O
 index, unless a snapshot hold keeps it ([§3.11](#3.11%20Snapshot%20holds)).
 
 At open, every loss record still on disk is placed in the ring, marked as found
-at open, so a restart does not hide a loss nobody had read. A loss record is
+at open, so a restart does not hide a loss nobody had read. What one read means
+is settled: `Losses` is the genuine read, the read whose call marks the events
+its copy carried served, and an in-process reopen — the served suppression
+lives in the process's memory, so a restart re-places every loss record on
+disk — places found at open the loss records the ended instance's genuine
+reader never took away, so the first reopen reports a loss nobody read and a
+later one past a genuine read does not report it as new, which the
+[§9.4](#9.4%20The%20checks) row separates — except that a read after a gap of overwritten events
+can leave an earlier read's events to be reported again. Every other read of
+the ring, `Stats`'s included, is a figure that marks nothing served: a figure
+read moved ahead of the reader the losses belong to would suppress a report
+nobody delivered, and the engine's commit drain is the one genuine caller
+([RFC 8 §5.1](rfc-8-engine.md#5.1%20Commit%20is%20answered%20by%20the%20journal)).
+A loss record is
 dropped by the same per-extent test as a removal record ([§7.2](#7.2%20Repack)): once no segment
 still on disk holds a record of its file over its extent at or below the pair of
 the record it names, neither that record nor a copy of it can come back. Recovery that drops a record as
@@ -2864,6 +2878,21 @@ released — and a crash would then drop the filled bytes ([§4.3](#4.3%20Versio
 keeps the original's sequence number and content version, and where both are on
 disk after a crash they are equal and either decides the same way.
 
+**A record and its carried copy hold neither segment.** Each live placement of
+a record — each copy of it the journal counts as live, wherever the copy sits —
+holds the segment it sits in **only while it is the record's only live
+placement** ([§4.3](#4.3%20Versions)). While a carried header-only record and
+its original are both on disk, two placements of one record, neither holds: the
+source may therefore be retired before the removal or loss it carries is
+droppable — the copy owns the record's wait ([§5.1](#5.1%20Ordering%20rules)).
+The two segments such a record sits in are judged for retirement in steps that
+**MUST NOT** overlap — the one judgment reads the other's outcome before it
+decides — so whichever retires first, the surviving placement becomes the
+record's only one and holds its segment again, and the record is never without
+a placement somewhere. A rebuild that finds both placements counts both and
+decides the same way, and one that finds a single placement, whichever it is,
+holds it: two hold neither, one holds again.
+
 **The source is verified whole before any part is copied.** Repack **MUST** read
 the source record's whole payload and verify its payload checksum before copying
 any part of it ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)). A record that does not verify is dropped as corrupt
@@ -2901,7 +2930,9 @@ still settles it, synced with the copies before the source segment is retired,
 and appends no loss record for it. It is copied like any live record, into the
 pass's target. A segment is
 **held** while it backs a held or retained extent, holds a live one of these
-records, holds a dropped record whose loss an open deferred ([§6](#6.%20Capacity)), or was ended by a
+records (a record carried from it and its original, while both are on disk and
+both count as its live placements, hold neither segment, [§7.2](#7.2%20Repack)), holds a dropped
+record whose loss an open deferred ([§6](#6.%20Capacity)), or was ended by a
 failure whose copies nothing on disk proves yet ([§3.1](#3.1%20Write)); repack
 copies such records forward like held content, a deferred loss as its loss
 record, and a segment that is not held is retired ([§7.1](#7.1%20Releasing%20storage)).
@@ -3483,7 +3514,7 @@ A check here fails by **coming back up describing something other than what is o
 | [§3](#3.%20Interface) stranded tag salvaged after serving | Fill a journal to 95% of its maximum under tag T, then rebuild the store by a recovery import so no share claims T, one of T's shares' namespaces encrypting. Start: assert T is stranded and reported before any share is served, serving starts without waiting for the export, no read through another tag's handle returns T's bytes, and none of T's extents is evicted. Assert the export lands under `salvage.path` keyed by `FileID` and offset, holds every held extent of T, with the import's old-to-new `FileID` map beside it, in a directory of mode 0700, and `Forget(T)` runs only after it. For the encrypting share's tag, and for a tag whose share's transforms the store no longer records, assert no plaintext byte of T is in the export, a wrapped salvage data key and the chain identity sit beside it, unwrapping that key with the installation's current master key opens every extent byte for byte, and a second export uses a different key; for a share with no transforms, assert the export is the stored bytes. Withhold the master key: assert the export fails as below, never in plaintext. Repeat with no `salvage.path`, with one on the journal's filesystem, and with the export's device full: assert each start refuses the misplaced path, a health condition names T, serving goes on, the export is retried, `Forget(T)` waits, and once a valid path with room is given the export completes and T is forgotten. |
 | [§3.6](#3.6%20Truncate%2C%20deallocate%20and%20delete) clone target survives a crash | `CloneTarget` file D with a spec; crash before any `Settle`; reopen. Assert `Since(D, 0)` yields the marker with its spec unchanged, and the extent reads `missing`. A marker that keeps only the extent hands the engine a plain removal and the destination reads zeros. |
 | [§5.3](#5.3%20A%20failed%20sync) header-only records are re-appended outside a read-only journal | Write A and `Sync`; in one window, truncate A's file and release another offloaded extent; fail the sync and make reads of the failed segment return stale bytes. Assert both records are re-appended, no loss event names either, and both extents read `missing` before and after reopen, and the failed segment carries no seal marker. |
-| [§3.8](#3.8%20Loss%20events) a loss survives restart | Drop a corrupt dirty extent; crash before anyone reads `Losses`; reopen; assert the loss is in `Losses`, marked found at open, the dropped record is not held even if the corruption is repaired on disk, and a second reopen does not report it as new. |
+| [§3.8](#3.8%20Loss%20events) a loss survives restart | Drop a corrupt dirty extent; crash before anyone reads `Losses`; reopen; assert the loss is in `Losses`, marked found at open, the dropped record is not held even if the corruption is repaired on disk, and a second reopen does not report it as new: with no genuine read between the two, its re-placement is a dead instance's — the loss still places found at open, the same loss the disk names, never a new one ([§3.8](#3.8%20Loss%20events)). |
 
 #### Group D — observability
 

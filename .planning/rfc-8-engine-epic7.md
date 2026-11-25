@@ -378,7 +378,8 @@ subtasks and tests can cite them. Sections are RFC 8's unless named.
   document follows it and settles only what §11.1 leaves open:
   - *What it compares.* As it answers the refusal, the engine notes what the refusal lacked
     (its `Missing`) and the journal's figures then. For the journal's maximum the room
-    regained is `freed_bytes` plus any rise of `MaxBytes`, read from the journal's `Stats`;
+    regained is `freed_bytes` plus any change of `MaxBytes`, a lowered one counted against it,
+    read from the journal's `Stats`, and a removed maximum clears it;
     for the headroom or the index bound it is `HeadroomBytes`, or `ExtentLimit` against
     `ExtentCount`. Never `UsedBytes`: a recycle returns a segment to the spare pool, and a
     spare still counts in `UsedBytes` (RFC 1 §3.7), so it does not fall.
@@ -693,7 +694,9 @@ rest is the 5 days the conditions, the figures and the rows already took.
     refusal, a segment freed by repack with nothing written clears it (catches a condition
     only a write clears, D9, R31); a retired segment recycled clears it though `UsedBytes`
     did not fall (catches room read from `UsedBytes`, D9, R33); the maximum raised by a
-    segment's cap with nothing freed clears it (catches a raised maximum not counted, D9);
+    segment's cap with nothing freed clears it (catches a raised maximum not counted, D9); a
+    segment freed and the maximum lowered by one keeps it (catches a lowered maximum not
+    counted); the maximum removed clears it;
   - "`journal_full` on a full device", its room half: the seam's free-bytes budget raised by
     a segment's cap clears it with nothing written, the test clock advanced past the refresh
     second and no `Stats` call needed to trigger it (R33); `Stats` read in between does not

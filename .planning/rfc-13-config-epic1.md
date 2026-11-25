@@ -102,7 +102,7 @@ title and not copied.
 | rule 8, real dependencies for properties of those dependencies | none | no property of a store, a key file or a journal directory is tested here; E2 and E4 test them on real ones |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T1.4, T1.6 | RFC 13 §7's `decision:` note (two wrapping keys) at `secrets.Role`, the site that declares the two roles; RFC 13's plan's D9 `decision:` note at `secrets.ErrUnproven` and `settings.ErrUnproven`; RFC 13's plan's D11 note is E3's, at `Check`'s body, and T1.6's own note on a secret's rotation sits at `Check`'s declaration |
 | rule 10, a test must be able to fail | T1.2 to T1.7 | each test fails on a planted break: a bootstrap key missing from RFC 13's table, a role swapped in the kind table, a `Value` printed by `%v`, an extra export, a symbol with no caller listed |
-| rule 11, a symbol is exported only if RFC 13's interfaces use it, or a component declares through it | T1.3 to T1.7 | the surface frozen here is R5 to R18; T1.7 pins each package's exports and lists each symbol's first caller, `Of`'s `FormatVersion(field)` option (E3's D6, first caller the section of RFC 4's plan that declares the block format version's key) and `(Table).WithMetrics` (E3's T3.9, first caller E5's T5.9, on the table T5.1 builds); these are the two exports added after the freeze |
+| rule 11, a symbol is exported only if RFC 13's interfaces use it, or a component declares through it | T1.3 to T1.7 | the surface frozen here is R5 to R18; T1.7 pins each package's exports and lists each symbol's first caller, `Of`'s `FormatVersion(field)` option (E3's D6, first caller the section of RFC 4's plan that declares the block format version's key) and `(Table).WithMetrics` (E3's T3.9, first caller E5's T5.9, on the table T5.1 builds) and `Advance` with its `Pass` (E3's T3.10, first caller E5's reconcile in `walkSettings` and `routeSettings`); these are the three exports added after the freeze |
 | rule 12, each subtask creates only what it declares | all | each package lands with the subtask that declares its whole surface; a stub is declared only where T1.7 names its caller in a later epic or plan (D4); no test helper lands without the test that uses it |
 
 ## 3. Requirements and invariants
@@ -583,14 +583,20 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
   `OverrideOnly(fields ...string)` (D9), with `OverrideOnly`'s exact signature frozen as part of `pkg/settings`' surface. `Of`'s sixth option, `FormatVersion(field)`, naming the field whose key holds the block
   format version, so that `Check` refuses a version past this node's range with
   `ErrFormatVersion`, is not this subtask's: E3's T3.6 adds it with its gate and to this pin, the
-  one of the two exceptions to the freeze (E3's D6; the other is `(Table).WithMetrics`, E3's T3.9);
+  one of the three exceptions to the freeze, with `(Table).WithMetrics` (E3's T3.9) and `Advance`
+  (E3's T3.10), which are E3's other two;
   - `Table`, `Snapshot`, `Read(ctx, r entity.SettingsReader, table, node)` returning the snapshot and
     the sections it refused, `Change`, and
     `Get[T any](snap *Snapshot, section string, node entity.NodeID) (T, error)` (an error for a
     section the snapshot holds no value of, such as one held at start),
     `Diff(prev, cur *Snapshot) []Change` (a nil `prev` makes every key a change) and
-    `(*Snapshot).Keep(section string, prev *Snapshot) *Snapshot` (the section's values from `prev`,
-    the rest from the receiver);
+    `(*Snapshot).Keep(section string, prev *Snapshot) *Snapshot` (`prev`'s values for what the
+    receiver refuses: in a section with one value per instance or per thing, only the refused
+    instance or thing, and the whole section only when its own value is refused, since a record that
+    does not validate stops only what it configures (RFC 13 §6). When the whole section is refused,
+    the whole section keeps its previous values, and an instance the previous snapshot does not hold
+    stays refused, with no value and no default, as in the new read (`Keep` in `diff.go`); the rest
+    from the receiver);
   - a `Table` built from two sections that declare one key panics and names both sections, so
     keys stay unique across sections and the table's first test fails on a clash;
   - `Write`, `Put(s)`, `Delete(scope, key)`, `HoldsContent` (`func(scope entity.SettingScope) (bool, error)`, so that a write that is not
@@ -646,7 +652,9 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
     listed with the section of RFC 4's plan that declares the block format version's key
     as its first caller, and `(Table).WithMetrics(*metrics.Registry) Table`, which E3's T3.9 adds after the freeze, is
     listed with E5's T5.9, whose call is on the table T5.1 builds, as its first caller. `OverrideOnly(fields ...string)` is listed with the node's table (plan §4.4), which
-    declares the adapters' sections, as its first caller.
+    declares the adapters' sections, as its first caller. `Advance` and its `Pass`, which E3's T3.10
+    adds after the freeze, are listed with the swap T3.10 itself makes in E5's reconcile, in
+    `walkSettings` and `routeSettings`, as their first caller.
 - **Acceptance criteria:**
   - Every symbol T1.3 to T1.6 deliver is exported (they are RFC 13's plan's S1 list), and nothing
     else is but D7's `New` and the `pkg/bootstrap` exports kept above, each with its caller.
@@ -696,7 +704,7 @@ so PR 3 starts once PR 2 is there. A suggestion only: one pull request per subta
   quote is re-read against the merged text. Pending #4486.
 - **`WriteMissingNodeIDs` differs from its caller.** RFC 23's epic 3 (T3.10) calls it with the
   store's `JournalID`, while T1.3's stub takes `recorded func(dir string) (bool, error)`, a
-  callback the caller builds from that read. The stub keeps the callback until T3.10 and E2 agree
+  callback the caller builds from that read. The stub keeps the callback until RFC 23's T3.10 and E2 agree
   on one form.
 - **`kmip_fake_test.go` moves with `keyprovider`.** It is a canned-response KMIP server, which
   `CLAUDE.md`'s "Writing tests" bans for a new or changed test. The move changes no line of it, so
