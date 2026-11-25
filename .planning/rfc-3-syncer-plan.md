@@ -59,8 +59,9 @@ version.
 smaller package split. Adversarial, correctness and simplification passes ran, followed by a
 five-lens review of all five #5488 plans. Every finding is folded in.
 
-**Pending the user's answer.** The alert rules' form (O7). The user settled the put measurement
-(D8) and the CPU token (§1.1), so S1 waits on no answer.
+**Pending the user's answer.** Nothing. The user settled the put measurement (D8) and the CPU
+token (§1.1), and RFC 8 offload plan epic 21 settles the alert rules' form (O7), so S1 waits on no
+answer.
 
 ---
 
@@ -328,7 +329,7 @@ entries, so it binds nothing here.
 | 5 | **Store health** | per-direction state, probes, the failure window, hold-down, denial backoff, causes, the log lines | 7 | 19 | C | 7 |
 | 6 | **The fetcher** | fetch resume, the verification re-get, single flight, join, re-home, detach | 9 | 29.5 | A | 7 |
 | 7 | **Memory bound, `Stats` and the fault sweep** | the per-worker bound, the fit to the transfers pool, the consistent snapshot, the held-pool heap check, the systematic sweep, `unit/syncer-allocs` | 4 | 11 | B | 9 |
-| 8 | **Integration: the syncer's own** | the two settings; the collector and conditions in `pkg/syncer/series` | 3 | 6 | team | RFC 8 offload plan epic 21 |
+| 8 | **Integration: the syncer's own** | the two settings; the collector and conditions in `pkg/syncer/series` | 3 | 6 | C | RFC 8 offload plan epic 21 |
 | 9 | **E2E green** | B1 to B5 in `syncer-bench`, RFC 3 §8.5's targets recorded | 4 | 10 | team | — |
 | | **Total** | | **57** | **160** | | |
 
@@ -510,7 +511,8 @@ the same three methods as the engine's `Clock`, declared beside its `Deps`.**
 
 **D6. The fit to the transfers pool takes the pool's size as a configuration field.**
 - Epic 7 builds RFC 24 §7.2's two rules, the reduction and the refusal, and tests both with a
-  non-zero size.
+  non-zero size. The fit counts the staging budget only once it lands (§6.1's first row; RFC 3
+  §1.3 binds an obligation on what lands later from its caller's release).
 - `pkg/resources` has no `Split` yet, so the root has no size to pass. A zero size reduces and
   refuses nothing. That is a gap against RFC 24 §7.2 (§6.1), and the code site carries a
   `decision:` marker naming it.
@@ -523,16 +525,19 @@ the same three methods as the engine's `Clock`, declared beside its `Deps`.**
 - The syncer derives from them the bound and the largest encoded block, which is the quantum's
   size (RFC 3 §2.9).
 - The bound is fixed at start: RFC 8 offload plan epic 21 computes it once, from the largest `Max`
-  RFC 2 §3.7 admits and `MaxDecodeLen(Max)` over every registered transform, and both halves use it
-  (amended RFC 3 §2.2). A chain changed on its next write, a chain pin held on an older chain, or a
-  namespace added at runtime cannot exceed it, so nothing updates it.
+  of the namespaces served at start (at least the default 1 MiB) and `MaxDecodeLen(Max)` over every
+  registered transform, and both halves use it (amended RFC 3 §2.2). A chain changed on its next
+  write or a chain pin held on an older chain cannot exceed it, so nothing updates it. A namespace
+  added at runtime with a larger `Max` is not opened until the next start; epic 21 owns that check
+  (§6.1). Sizing at the ceiling `Max`, 16 MiB, would make each worker about 32 MiB, not about 2.
 - **Prior art.** None found.
 - **Applied by** epic 1.
 
 **D8. `Store.Put` takes the `Upload`'s `Measure`: `Put(ctx, name, src, m *Measure) (Stored, error)`.**
 - RFC 3 §2.4 keeps an attempt's measured lengths and checksum across a throttled or error retry,
   but RFC 4 §4.9 keeps no state across calls. So the measurement lives in a value the syncer
-  allocates per `Upload`, never reads, and clears after `ErrCorrupt`. The user decided it; RFC 3
+  allocates per `Upload` and passes, non-nil, to every attempt. The syncer never reads its `State`,
+  and sets `State` to nil after `ErrCorrupt`. The user decided it; RFC 3
   §1.3 and §2.4 are amended in this pull request.
 - RFC 8 offload plan epic 15 holds RFC 5's chain pin from Mint to Commit or Abandon, so every
   attempt of one `Upload` encodes under one chain, which keeps a carried measurement valid.
@@ -542,6 +547,9 @@ the same three methods as the engine's `Clock`, declared beside its `Deps`.**
 - `Put` fills the `Measure` only once every measuring pass of the attempt has completed, so an
   attempt cancelled between MD5 mode's two passes leaves it empty and the retry measures again
   (amended RFC 3 §1.3, §2.4; its case is in §7.1's "§3.4 measuring pass" row, epic 4).
+- Attempts of one `Upload` can overlap, since a slow-tail-cancelled `Put` can outlive its worker
+  (§1.5 rule 5). So `Measure` embeds `sync.Mutex`: `Put` reads and fills `State` only under it, and
+  never fills it once its `ctx` has ended. The same row's overlap case, under `-race`, is epic 4's.
 - **Prior art.** From memory: the AWS SDKs compute a body's checksum once per request and reuse
   it across their retries.
 - **Applied by** epics 1 and 4.
@@ -779,9 +787,9 @@ Appendix B's `upload_workers` and `fetch_workers` row; RFC 25 §3.9's `store_put
 - the settings section declares its row as RFC 13 Appendix B states it, so the RFC 13 plan's D3
   check (`internal/node/appendixb_test.go`) passes once epic 21 adds the section to the node's
   table (`newTable`, `internal/node/settings.go`);
-- `docs/guide/configuration.md` states, for each setting, the memory it implies at the largest
-  chunk `Max` of any namespace the process serves, under the costliest chain an open attempt may
-  hold for uploads and the costliest registered chain for fetches (RFC 3 §2.10's MUST);
+- `docs/guide/configuration.md` states, for each setting, the memory it implies per worker,
+  `Max + MaxDecodeLen(Max) + header cap` in both directions, at the default `Max` and at the
+  ceiling `Max` (RFC 3 §2.10's MUST);
 - the collector, over a `Stats` function the test supplies, emits every RFC 3 §2.12 series as RFC
   25 §2.1 requires, each queue gauge summed over flows; the per-flow queue gauges are the node's,
   by share (D4);
@@ -793,7 +801,9 @@ Appendix B's `upload_workers` and `fetch_workers` row; RFC 25 §3.9's `store_put
 - `pkg/syncer/section` (D4).
 - The collector and the conditions (D4).
 - A `docs/guide/faq.md` line: don't change versioning, object lock or lifecycle rules on a live
-  bucket, since v1.1 sees such a change only at the store's next open (§6.1's drift row).
+  bucket, since v1.1 sees such a change only at the store's next open; until then a lifecycle rule
+  can expire referenced blocks, and versioning can keep versions of deleted data that nothing
+  deletes (§6.1's drift row).
 - No error mapping of its own: RFC 3 §1.3's table is built by epics 4 and 5, and the mapping onto it
   is the store adapter's (RFC 8 offload plan epic 21).
 
@@ -849,8 +859,8 @@ RFC 3 §9's first open question.
 - **O7. The repository has no alert rules.** None exist on `feat/storage-v2`, and no plan chooses
   their form: the RFC 1 plan's §6 row and the RFC 23 plan's §6.1 row hold theirs for an RFC 25 plan
   that is not written. RFC 8 offload plan epic 21 owns every component's alert rules, the syncer's
-  `store_put_unhealthy` and `store_get_unhealthy` among them; epic 8 builds none. Their form is
-  pending the user.
+  `store_put_unhealthy` and `store_get_unhealthy` among them; epic 8 builds none. Epic 21 settles
+  their form with its first rule (that plan's §6, point 6).
 
 ### 6.1 Deferral ledger
 
@@ -863,7 +873,7 @@ What this plan knowingly does not build. Each row names the section that defers 
 | `SetDrift`, `ErrDrift`, RFC 3 §7.2's "§2.8 drift condition" row and the drift case of "§2.8 cause per direction"; until then a bucket setting changed after the store opened is seen only at its next open (RFC 4 §4.11), and a put into the drifted store may be expired or kept as a version nothing deletes (RFC 3 §2.8); epic 8's FAQ line says so (epics 5, 8) | its one caller is GC's `Recheck` | RFC 9 plan | RFC 9's plan starts |
 | A registration with `PutProbe` or `GetProbe` false, and RFC 3 §7.2's "§2.8 no put probe" row, S25 (epics 1, 5) | its caller is an immutable backup location | RFC 26 plan | RFC 26's plan starts |
 | The pool sizing tool (RFC 3 §2.11) | no operator needs it in v1.1; the defaults of RFC 3 §2.10 hold, not reduced to the transfers pool while D6's row stands | unowned | an operator needs pool sizes past the defaults |
-| The store adapter, its error mapping and setting `Malformed` on a past-the-end refusal (D9), computing D7's fixed bound, `ProbeKey`, spreading connections across addresses, the CPU token, the root's syncer, registering epic 8's series and settings, the per-flow queue gauges by share (D4), and the conformance suite and RFC 3 §8.1's real-backend checks run against the adapter behind a fault proxy (§1.1, D2) | composition | RFC 8 offload plan, epic 21 | RFC 8 offload plan epic 21 lands |
+| The store adapter, its error mapping and setting `Malformed` on a past-the-end refusal (D9), computing D7's fixed bound and not opening a namespace added at runtime with a larger `Max` until restart, `ProbeKey`, spreading connections across addresses, the CPU token, the root's syncer, registering epic 8's series and settings, the per-flow queue gauges by share (D4), and the conformance suite and RFC 3 §8.1's real-backend checks run against the adapter behind a fault proxy (§1.1, D2) | composition | RFC 8 offload plan, epic 21 | RFC 8 offload plan epic 21 lands |
 | The soak (RFC 3 §8.1): hours, nightly, against LocalStack with outages on a cycle | one soak for the composed node; `engine-soak` is a 20-minute `tier: pr` cell with no emulator | RFC 8 offload plan, epic 22 (a nightly cell or option of `engine-soak`) | RFC 8 offload plan epic 22 lands |
 | The codec's part of RFC 3 §7.2's "§2.2 memory bound" row (epic 7) | the codec is behind the store adapter | RFC 4 plan, epic 6 (the block codec) | RFC 4 plan epic 6 lands |
 | RFC 25 §3.9's severity per cause on `store_put_unhealthy` and `store_get_unhealthy` (epic 8) | `health.Condition` carries no severity; the `ponytail:` on `pkg/health`'s `Evaluator` names RFC 25's plan as its upgrade | unowned | a plan takes RFC 25's registry, or `pkg/health` gains severity |

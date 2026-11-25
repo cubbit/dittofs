@@ -372,7 +372,9 @@ type Store interface {
     // m is the Upload's Measure: Put fills it only once every measuring pass of
     // the attempt has completed, so an attempt cancelled or failed between two
     // passes leaves it as it found it, and an attempt that finds it filled runs
-    // only the sending pass.
+    // only the sending pass. Attempts of one Upload may overlap, since a cancelled
+    // Put can outlive its worker, so Put reads and fills m only under m's lock,
+    // and never fills it once its ctx has ended.
     Put(ctx context.Context, name BlockName, src func() iter.Seq2[Chunk, error], m *Measure) (Stored, error)
     // Get reads the chunks named in want, or the whole block when want is empty.
     // Ranges adjacent in the block are read with one request. Each chunk comes
@@ -398,10 +400,14 @@ type Store interface {
 }
 
 // Measure carries one Upload's measured lengths and checksum across its put
-// attempts (§2.4). The syncer allocates one per Upload, passes it to every
-// attempt, never reads State, and sets it to nil after an attempt that ended
-// in ErrCorrupt. State is the engine's Store's own value.
-type Measure struct{ State any }
+// attempts (§2.4). The syncer allocates one per Upload, passes the same non-nil
+// *Measure to every attempt, never reads State, and sets State to nil, under
+// the lock, after an attempt that ended in ErrCorrupt. State is the engine's
+// Store's own value, read and written only under the lock.
+type Measure struct {
+    sync.Mutex
+    State any
+}
 
 // Version names one stored version of a block at an immutable location
 // (RFC 4 §4.14). Opaque to the syncer.
@@ -865,11 +871,14 @@ Two further limits are permitted, each with its interaction stated:
 
 Each worker runs one transfer at a time, and a streaming transfer holds only
 one chunk in plaintext, the same chunk encoded, and the block's header ([§1.3](#1.3%20Interface)).
-A chunk is at most `Max` before encoding, and `Max` here is the largest `Max`
-any namespace may be configured with, the `Max` of the ceiling `Target`
-([RFC 2 §3.7](rfc-2-carver.md#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)): no namespace admits a chunk longer than its
-own ([RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20migration)), wherever it was cut, and a namespace added at runtime cannot
-exceed it. It is at most
+A chunk is at most `Max` before encoding, and `Max` here is the largest `Max` of
+any namespace the process serves when it starts, and never less than the default
+`Max`, 1 MiB ([RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)): no namespace admits a chunk longer than its
+own ([RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20migration)), wherever it was cut. A namespace added at runtime with a
+larger `Max` is not opened until the next start, which sizes for it; the node
+reports it as waiting for a restart, naming both figures. Sizing every worker at
+the ceiling `Max` ([RFC 2 §3.7](rfc-2-carver.md#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)), 16 MiB, would make each one about 32 MiB
+where the default needs about 2 MiB. A chunk is at most
 `MaxEncodedLen(Max)` after ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)) for the attempt that writes it, and at most
 `MaxDecodeLen(Max)` for any chain a stored block may have been written under, so:
 
@@ -990,8 +999,10 @@ and checksum it measured, in the `Measure` its `Upload` passes to every attempt 
 and its retry runs only the sending pass. The `Measure` is filled only once every
 measuring pass of the attempt has completed: an attempt cancelled or failed between
 two passes, as a slow-tail cancel or the first-byte bound can do in MD5 mode, leaves
-it as it found it, and the retry measures again. An error retry keeps them too, unless the
-attempt failed with `ErrCorrupt`: the syncer then clears the `Measure`, and the retry
+it as it found it, and the retry measures again. A cancelled `Put` can outlive its worker,
+so two attempts of one `Upload` can overlap: `Put` reads and fills the `Measure` only
+under its lock, and never fills it once its `ctx` has ended. An error retry keeps them too, unless the
+attempt failed with `ErrCorrupt`: the syncer then sets the `Measure`'s `State` to nil, and the retry
 measures again. So the table's last column bounds every `Upload`, throttled
 attempts included: each of the up to eight throttled attempts adds one read of
 `src`, and an `Upload` reads `src` at most twelve times plus one per throttled
@@ -1543,9 +1554,9 @@ Deriving it from cores would also scale memory with cores, and give a small VM
 on a fast link too few.
 
 Each is a memory budget as much as a concurrency limit ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), and the
-documentation of each **MUST** state the memory it implies at the largest chunk
-`Max` of any namespace the process serves ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)): for uploads under the costliest chain an open attempt may hold, and under the costliest
-registered chain for fetches ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)). Both are fixed for the life of the process ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)).
+documentation of each **MUST** state the memory it implies per worker,
+`Max + MaxDecodeLen(Max) + header cap` in both directions ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), at the
+default `Max` and at the ceiling `Max`. Both are fixed for the life of the process ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)).
 
 Everything else the syncer needs is derived or fixed, and **MUST NOT** be a
 setting:
@@ -1605,8 +1616,9 @@ Read-ahead depth, pre-warm pacing and when to offload are policy and belong to
 
 ### 2.11 Pool sizes are measured once, by a tool
 
-The pools do not adapt at runtime. The documented way to size them is a separate
-tool that measures a store and prints the two settings; the operator writes them
+The pools do not adapt at runtime. Until an operator needs pool sizes past the
+defaults, the tool is not built ([§1.3](#1.3%20Interface), "What lands with its first caller"),
+and the pools run at [§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)'s defaults. Once built, it measures a store and prints the two settings; the operator writes them
 into the configuration, and they hold for the life of the process ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)).
 A number printed once can be checked against a real bucket. A controller that
 resizes the pool while serving can only be judged by watching it, and its worst
@@ -1915,7 +1927,7 @@ keeps it from holding its share's flow at its cap while that share's reads wait.
 | # | Invariant |
 | --- | --- |
 | S1 | In-flight transfers per half never exceed that half's configured pool size. |
-| S2 | Peak memory per half is at most the pool size times the per-worker figure [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) states, plus at most pool-size detached buffers; the fetcher's figure is the maximum over every registered chain, at the largest `Max` of any namespace served. |
+| S2 | Peak memory per half is at most the pool size times the per-worker figure [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) states, plus at most pool-size detached buffers; both halves' encoded term is `MaxDecodeLen(Max)` over every registered transform, at the `Max` [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) sizes with when the process starts. |
 | S3 | Backpressure reaches the caller; no unbounded queue exists. |
 | S4 | Every transfer ends in a success or a reported failure, in bounded time. |
 | S5 | An unknown outcome is reported as not stored, and every retry within one `Upload` puts the same name with the same bytes. |
@@ -1958,7 +1970,7 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§3.4](#3.4%20One%20put%20per%20block) partial put | Interrupt a transfer; assert the name is not retrievable and was not reported stored. |
 | [§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable), [§3.5](#3.5%20The%20bytes%20are%20stable%20for%20the%20duration) stability | Give `Upload` a `src` whose bytes change mid-stream; assert the put is refused and nothing is stored under the name. That the journal keeps offered bytes stable is [RFC 1](rfc-1-journal.md)'s check. |
 | [§4.1](#4.1%20One%20fetch%2C%20two%20consumers) verification | Corrupt the fetched bytes; assert no byte of the chunk is yielded and the error is `ErrCorrupt`. |
-| [§3.4](#3.4%20One%20put%20per%20block) measuring pass | Upload through a store in each checksum mode of [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)'s table; assert `src` is read once, twice and three times per attempt respectively, never more than twelve times per `Upload`; answer the MD5-mode store with `ErrThrottled` eight times as well: `src` is read at most 20 times, each throttled retry reading it once, that the bytes sent equal the bytes measured, and that a `src` that changes between any two passes fails the put. Cancel an MD5-mode attempt between its two measuring passes: assert the `Measure` is left empty, and that the retry measures again and puts with the MD5. |
+| [§3.4](#3.4%20One%20put%20per%20block) measuring pass | Upload through a store in each checksum mode of [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)'s table; assert `src` is read once, twice and three times per attempt respectively, never more than twelve times per `Upload`; answer the MD5-mode store with `ErrThrottled` eight times as well: `src` is read at most 20 times, each throttled retry reading it once, that the bytes sent equal the bytes measured, and that a `src` that changes between any two passes fails the put. Cancel an MD5-mode attempt between its two measuring passes: assert the `Measure` is left empty, and that the retry measures again and puts with the MD5. Hold a slow-tail-cancelled MD5-mode `Put` until its retry has started, then let it finish its passes, under `-race`: assert no race is reported and the cancelled attempt leaves the `Measure` as it found it. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) verification re-get | Flip one byte of a chunk on its first get only; assert the chunk is re-got once and yielded verified, no error is reported, and no budget token is taken. Flip it on every get; assert `ErrCorrupt` after exactly two gets of the range. Do the same to an encrypted body, so the transform's integrity check refuses it: the same two outcomes. Answer a recorded range with a past-the-end refusal; assert an `ErrCorrupt` whose `Malformed()` is true, with no re-get. |
 | [§1.3](#1.3%20Interface) census | Put a block whose chunks use two transforms and two materials; assert `Upload` returns every distinct descriptor, and none on a failed put. |
 | [§4.2](#4.2%20The%20reply%20neither%20waits%20on%20the%20fill%20nor%20fails%20with%20it) yield at once | Hold one caller mid-iteration; assert the chunk it holds is unchanged until its next iteration, and that each chunk is yielded before the next is read from the store. |
