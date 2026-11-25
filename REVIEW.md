@@ -91,10 +91,10 @@ that every reference to the old path follows it.
   still block: a break (§2.2), and a contradiction the delta creates,
   wherever its other side lives. Any other point outside the delta is a
   follow-up issue.
-- The branch protection requires an approval of the last push and resolved
-  conversations. A push after an approval needs a new approval, and an open
-  thread holds the merge, even with auto-merge armed. The delta round
-  therefore happens before the merge, not after it.
+- A push after an approval needs a new approval, and an open thread holds
+  the merge. Do not count on the ruleset to hold either: arm auto-merge only
+  once the last push is approved and every thread is resolved. The delta
+  round therefore happens before the merge, not after it.
 - If you approved text and now find a break in it, say so in those words:
   "my approval at `<sha>` missed this". The break blocks; nothing else
   reopens.
