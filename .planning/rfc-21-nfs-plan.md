@@ -1078,7 +1078,9 @@ the v2 store refuses a user record holding it, so a pjdfstest run as 65534 would
 grant; and the `pynfs` fixture's `users` gains uids 123 and 10000 to 10019, which pynfs `nfs4.0`
 `ACL5` and `ACL10` name in the ACLs they set and which, held by no user record, answer
 `NFS4ERR_BADOWNER` (RFC 18 §4.5). `pynfs` gains a minor-2 cell, the only minor at which its `XATT*`
-tests of E12's xattr operations run (its `ALLOC*` tests fail there as RFC 21 §13 expects). The user guide's NFS pages are
+tests of E12's xattr operations run (its `ALLOC*` tests fail there as RFC 21 §13 expects). It also gains a Kerberos cell, `nfs4.0` with
+`--security krb5` and `all gss`, for the `GSS*` tests `--security sys` skips and `SEC7`, which `all`
+never names; that cell needs the KDC and Kerberos fixture S6b and E13 bring. The user guide's NFS pages are
 the cutover's (§6.6).
 
 **Owns:** RFC 20 §3.4's node build, §3.6's live settings; RFC 13 Appendix B's NFS settings; RFC 21
