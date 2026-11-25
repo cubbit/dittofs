@@ -7,7 +7,7 @@ here through the API; §3.3's bound fields; §10's CP7; Appendix B's rows for §
 **Track:** the team.
 **Epic 7 estimate: 7 subtasks, 12 man-days.**
 **Depends on:** E3 (`dfs start`, `nodetest`, the runner), E4 (the routes and the client), E5
-(`install.Run`, signed-in callers), E6 (its suite's child-safe rows); outside RFC 23's plan, X3
+(`install.Run`, signed-in callers), E6 (its suite); outside RFC 23's plan, X3
 and the RFC 18 plan's epic 8's T8.10 for T7.5, and X1 with the RFC 18 plan's epics 7 and 8 for
 T7.6.
 **Blocks:** E8, which starts its cells through this epic's server fixture (T7.1) once S3 is in.
@@ -29,7 +29,7 @@ node, the rows that wait for another plan's wiring, and the pages that still des
 - an operation survives the node killed without `Stop` and reads back through the API (CP7);
 - one sweep calls every route as every role on a fully wired node: each answers as §5.2 says, each
   mutating route writes one audit record, and no error goes unmapped;
-- the CLI's child-safe rows pass against a real node from a separate `dfsctl` process;
+- the CLI's suite passes against a real node from a separate `dfsctl` process;
 - once X3 is in, the rows that write a setting pass, and once X1 and the RFC 18 plan's epics 7 and
   8 are in, the domain's idempotency clauses pass;
 - no page names a deleted v1 path, and `CLAUDE.md` names the v2 owner of what v1's Runtime did.
@@ -38,7 +38,7 @@ node, the rows that wait for another plan's wiring, and the pages that still des
 
 The server fixture's rebuild; CP7 and the §12 rows that kill the node; the cross-epic sweep (route
 list, roles, audit, error table) and the §12 and §8.1 clauses only a fully wired node shows; the
-rule-3 condition read through `/api/v1/health`; the CLI's child-safe rows; the rows and success
+rule-3 condition read through `/api/v1/health`; the CLI's suite from a child; the rows and success
 paths other epics hand here until X3; the domain's idempotency clauses; the pages.
 
 ### 1.2 Out of scope
@@ -191,8 +191,11 @@ it, in the part this epic owns.
   the fixture, and T7.3's rows that create a share, write the namespace, its remote store and the
   adapters' settings through the metadata store before `dfs start`, and T7.5 moves them onto the
   API. A `decision:` marker at the seeding names X3 as its end.
-- **D4, `§7 CLI` runs E6's child-safe rows.** A `dfsctl` child, its `HOME` and `XDG_*` directories
-  empty, runs E6's `clisuite` rows marked child-safe against an in-process node. No path reaches
+- **D4, `§7 CLI` runs E6's suite from a child.** A `dfsctl` child, its `HOME` and `XDG_*` directories
+  empty, runs every row of E6's `clisuite` against an in-process node: the harness-only rows too,
+  since the test, not the child, writes through the store and advances the clock. Each noun runs
+  over a node of its own whose clock starts at the wall clock the child reads (`nodetest.StartAt`),
+  as one node for every noun runs ahead of it by every wait the rows before advanced. No path reaches
   the bootstrap or the store; E6's closure rule (`go list -deps ./cmd/dfsctl`) shows it links none
   of their code. Running as a second OS user needs root, which `e2e` has; E8 adds that form. No
   marker.
@@ -223,7 +226,7 @@ test/harness/run/
   fixture.go run.go                        T7.1  the fixture start is the runner's field (D8)
 cmd/dfs/commands/crash_unix_test.go        T7.2  the child and the rows that kill it, //go:build unix
 internal/node/integration_test.go          T7.3, T7.5, T7.6  the cross-epic rows, package node_test
-cmd/dfsctl/integration_test.go             T7.4  E6's child-safe rows from a dfsctl child
+cmd/dfsctl/integration_test.go             T7.4  E6's rows from a dfsctl child
 cmd/gendocs/helpref_test.go                T7.7  D6's case
 docs/guide/*.md, docs/internals/*.md       T7.7
 README.md, CLAUDE.md                       T7.7
@@ -318,10 +321,10 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
 - **Track:** the team. **Depends on:** E6 (its `clisuite`); E3.
 - **Covers:** R16.
 - **Deliverables:** `cmd/dfsctl/integration_test.go`: a `nodetest` node, a `dfsctl` child built
-  from the module with `HOME` and `XDG_*` empty, running each of E6's child-safe rows through
-  `clisuite` against the node's address (D4).
+  from the module with `HOME` and `XDG_*` empty, running every row of E6's suite through
+  `clisuite` against the node's address, one node per noun (D4).
 - **Acceptance criteria:**
-  - Every child-safe row passes from the child.
+  - Every row passes from the child.
 - **Tests:** the rows (catch a command that reads the bootstrap or the store).
 
 ### T7.5 The rows that write a setting

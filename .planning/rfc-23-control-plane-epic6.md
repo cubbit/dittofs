@@ -60,7 +60,7 @@ regenerated reference.
 - The success paths of every settings-backed write (settings, adapters, remote stores,
   namespaces): the empty settings table refuses them until X3, so they are E7's (D9).
 - RFC 23 §12's "§7 CLI" row with the bootstrap and the store unreadable to the CLI's user: E7, on
-  the shared suite's child-safe rows (D8).
+  the shared suite's rows from a child (D8).
 - Snapshots and snapshot policies, uploads draining, GC and trash: no resource of RFC 23 serves
   them, so their commands go (D7); each comes back with its owning RFC's route, through rows of the
   same ledger, proposed in §9.
@@ -219,7 +219,8 @@ this epic's part is that every command reaches the API through that client and n
   E6's tests pass an in-process `NewRoot` against the harness; E7 passes a child `dfsctl`, so E7's
   test of it lives under `cmd/dfsctl`, the only tree that may import an internal package there. Each row
   is marked harness-only (it advances the injected clock or writes through the store) or child-safe;
-  E7 runs the child-safe rows. Consumed by E7. No marker.
+  E7 runs every row from a child against an in-process node, where the test does the harness's
+  part; a server the test did not start runs only the child-safe ones. Consumed by E7. No marker.
 - **D9, a settings-backed write is tested as its refusal.** Until X3 hands in the settings table,
   E4 refuses every setting, adapter, remote-store and namespace write `400`; this epic tests that the
   command prints the problem's code and detail and exits non-zero. No marker.
@@ -473,7 +474,7 @@ flowchart TD
 ```
 
 Checkpoint after T6.3: the machinery every resource command uses. Checkpoint after T6.6: the whole
-suite, whose child-safe rows E7 runs.
+suite, whose rows E7 runs from a child.
 
 ## 8. Suggested pull requests
 
