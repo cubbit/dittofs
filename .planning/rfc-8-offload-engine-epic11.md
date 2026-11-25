@@ -444,7 +444,7 @@ internal/node/
 
 ```mermaid
 flowchart TD
-  S1x(["S1a to S1d agreed"]):::sync --> T11_3
+  Agreed(["S1a to S1d agreed"]):::sync --> T11_3
   T11_1["T11.1 pkg/workqueue surface"] --> T11_4["T11.4 WaitOffloaded and Stats"]
   T11_2["T11.2 Settings and Apply"]
   T11_3["T11.3 Share's store, chunking, settings"]
