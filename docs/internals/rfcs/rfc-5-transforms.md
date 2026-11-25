@@ -997,7 +997,7 @@ without writing any: the chain exports them around each call.
 | chunks encoded, labelled `applied` = `true` or `false` | `transform_chunks_total` | counter |
 | bytes in and out, labelled `direction` = `encode` or `decode`; their ratio is what the transform costs or saves | `transform_bytes_total` | counter |
 | time per call, by direction | `transform_seconds` | histogram |
-| decode failures, labelled `error` = `malformed`, `material_unavailable`, `unknown_material`, `material_destroyed` or `too_large`. `malformed`, `unknown_material` and `material_destroyed` are alerts, `malformed` net of the failures the syncer's single re-get recovered ([RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20makes%20observable)), as `codec_verify_failures_total` is | `transform_decode_failures_total` | counter |
+| decode failures, labelled `error` = `malformed`, `material_unavailable`, `material_unknown`, `material_destroyed` or `too_large`. `malformed`, `material_unknown` and `material_destroyed` are alerts, `malformed` net of the failures the syncer's single re-get recovered ([RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20makes%20observable)), as `codec_verify_failures_total` is | `transform_decode_failures_total` | counter |
 | bodies written per transform ID and version, from block metadata ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)); the census per material is read through the management API, not exported, so rotations add no series | `transform_census_blocks` | gauge |
 
 A chain that fails to build logs the transform and the reason at `Error` and
@@ -1108,7 +1108,7 @@ alike. A new transform gets it by registering.
 | [Appendix B.2](#B.2%20Keys) | Rotate the export key, then expire a removed share's backup at a location no copy reaches again: the expiry first brings that location's `keys` object up to date, and a restore from that location alone, after the bucket and the metadata store are lost, reads the backup as `expired`. |
 | [Appendix B.2](#B.2%20Keys) | Delay the bucket's `keys` put of sequence 7 until after sequence 8 has landed: the next writer, or the next `Recheck` pass, reads back 7 and writes the whole object at 9. Repeat at a mutable backup location, with 8 adding a new export key: the writer about to put a state version under that key reads back 7 and re-puts before it, so a restore from that location alone authenticates the version. |
 | [Appendix B.2](#B.2%20Keys) | A location an operator declared lost: a master-key destroy no longer fails closed on it, and an export-key rotation completes without it. |
-| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | A key service rotates a master key in place while the namespace writes nothing: at the next recheck period the provider reads the new primary version and re-wraps every key record under it. A failed copy's progress under a retiring or retired export key: the successor, and the same copier resumed across the rotation, copy those blocks afresh. A re-seal and a copier's state put on one backup at once: they take the key lock in turn and put distinct sequences. A `damaged` backup expires to `expired`, and a `complete` written again naming another export is refused. |
+| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | A key service rotates a master key in place while the namespace writes nothing: at the next recheck period, on the provider's own ticker until GC runs the read, the provider reads the new primary version and starts a `rotate-master-key` operation that re-wraps every key record under it. A failed copy's progress under a retiring or retired export key: the successor, and the same copier resumed across the rotation, copy those blocks afresh. A re-seal and a copier's state put on one backup at once: they take the key lock in turn and put distinct sequences. A `damaged` backup expires to `expired`, and a `complete` written again naming another export is refused. |
 | [§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census) | Drain a namespace whose data key another namespace's folder census still names: the drain removes none of its keys, the chunk-ID and chunking keys included. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Write a backup's state as `writing`, `complete`, then `damaged`; re-put the authentic `complete` version on top: the reader takes `damaged`, by sequence. Two field lists that join to the same bytes without length prefixes give different MACs. The golden vectors cover the sealed header, the progress MAC, and a state MAC over a nonzero expiry time. Change a `complete` version's expiry time and keep its tag: it fails to authenticate. |
 | [Appendix B.2](#B.2%20Keys) | Hand the put intent step a plan whose chunk IDs were computed under another namespace's chunk-ID key: refused, and nothing is put. |
@@ -1426,8 +1426,8 @@ At 10⁴ namespaces with a few keys each, every write retried, and salvage
 exports and escrow checks rare, the count stays below 2²⁰.
 The count is exact only while one installation wraps under the key, so a
 key-file master key **MUST** be current in one installation only. A move's
-importer refuses to publish while its current master key is one the export
-names ([RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material)). A recovery import on a fresh host takes over
+importer refuses to publish while its current master key is a key-file master
+key whose ID the export names ([RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material)). A recovery import on a fresh host takes over
 the lost installation's master key with a count of 0, which undercounts by the
 wraps that installation made; below 2²⁰ wraps per installation, 2¹² such
 recoveries under one key would reach 2³², and a master-key rotation after a
@@ -1463,7 +1463,9 @@ uses when the configuration opens and then every GC recheck period
 until GC lands, the provider runs it on a ticker of its own at that same fixed
 period, so an in-place rotation is never left unseen until the next open. A
 primary version other than the one its current records name starts that
-master-key rotation. A read that fails changes nothing and is retried at the
+master-key rotation as a `rotate-master-key` operation ([RFC 23 §4.6](rfc-23-control-plane.md#4.6%20Long-running%20operations)), unless one
+for that master key is already running; the operation runner drives it as it
+drives one an administrator starts. A read that fails changes nothing and is retried at the
 next period; until a rotation runs, the records stay wrapped
 under the old version, which still unwraps them. Under a name that stays the same across
 versions, nothing would re-wrap, and destroying an old version in the service
@@ -1763,8 +1765,8 @@ immutable ones included.
 **The check is per installation, and a move pins as well.** An installation that
 imports a namespace re-wraps every imported key record under its own master key
 before it publishes ([RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material)), and refuses to publish while its current master key
-is one the export names, so from then on the two installations share no master
-key in use. The exporting installation keeps a durable pin per
+is a key-file master key the export names ([B.1](#B.1%20How%20a%20chunk%20is%20encrypted)), so from then on the two
+installations share no key-file master key in use. The exporting installation keeps a durable pin per
 move naming every master key the moved export carried, and refuses to destroy
 one (`ErrMaterialInUse`, naming the move) until an operator releases the pin.
 Without it, an installation that rotated away from a shared key and saw its own
@@ -2100,7 +2102,7 @@ Descriptive, for the refactor.
 | D14 | Material carries a fingerprint, and a read asks only for material its block record lists ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)) | not yet checked against the code; to verify during the refactor |
 | D15 | Headers carry keyed chunk IDs and clear ranges, with no header key and no seal ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)) | not yet checked against the code; to verify during the refactor |
 | D16 | Read-side bounds come from every registered transform ([§3.1](#3.1%20Interfaces)) | not yet checked against the code; to verify during the refactor |
-| D17 | Material removal is fenced against in-flight encodes ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | not yet checked against the code; to verify during the refactor |
+| D17 | Material removal is fenced against open pins ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | not yet checked against the code; to verify during the refactor |
 | D18 | Chunk IDs are keyed per namespace, and every namespace has keys held by a provider ([Appendix B.2](#B.2%20Keys)) | not yet checked against the code; to verify during the refactor |
 | D19 | Whether a namespace encrypts is fixed at creation, and compression is off by default when it does ([§3.2](#3.2%20Configuration)) | not yet checked against the code; to verify during the refactor |
 | D20 | Material is named per namespace, and removal erases every copy ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | not yet checked against the code; to verify during the refactor |

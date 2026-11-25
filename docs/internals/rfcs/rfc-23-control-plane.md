@@ -1597,7 +1597,7 @@ second store.
 | users and groups that hold no role | | ✓ | ✓ |
 | accounts with a role, roles, service tokens of others | | | ✓ |
 | drain a node | | ✓ | ✓ |
-| raise a format version, decommission a node, state a location lost or a journal range unreadable, re-home, move, rotate the signing key | | | ✓ |
+| raise a format version, decommission a node, state a location lost or a journal range unreadable, re-home, move, rotate the signing key, rotate a data or master key, verify escrow | | | ✓ |
 | read the audit, and the `access`, `admin` and `logon` event streams | | | ✓ |
 | read the `quota` event stream | | ✓ | ✓ |
 | own password, own tokens, sign out | ✓ | ✓ | ✓ |

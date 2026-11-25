@@ -71,7 +71,8 @@ integration epics touch no v1 code (§1.5 rule 7).
   `Chain.LengthOf` go, since only an attempt knows its material. The largest encoded block on a
   put is the maximum `Attempt.MaxEncodedLen` over open attempts, which changes at run time, so
   the put side's pool is sized once by `MaxDecodeLen(Max)` (RFC 3 §2.2 follows, amended in the
-  RFC 3 plan's pull request), and §2.5's removal waits for no open pin, as §5.3 does.
+  RFC 3 plan's pull request), and §2.5's removal waits until no open pin holds the material,
+  as §5.3 does.
 - **§3.1 and §5.3, removal lands with its first caller**, GC's retirement or an operator's
   destroy, an operation RFC 23 does not yet specify; its fence waits for open pins, not
   encodes (§5.3, T13).
@@ -95,7 +96,7 @@ integration epics touch no v1 code (§1.5 rule 7).
   per salt; a key-file master key makes at most 2³² wraps; §5.4, T15, the `require` example,
   the vector rows and RFC 26 §3.1's summary follow.
 - **RFC 25 §3.9 and §7** gain `material_unknown`, `material_destroyed` and the `malformed`
-  ticket (A1); **RFC 23 §4.1 and §4.6** gain the key operations (A3); **RFC 16 §4.2** gains
+  ticket (A1); **RFC 23 §4.1, §4.6 and §5.2** gain the key operations (A3); **RFC 16 §4.2** gains
   the wrap count's row and **RFC 27 §2.4** the move's refusal under a shared master key (A4).
 
 **Answered by the user.** The design questions Q1 to Q4 are answered and written in place (§6),
@@ -191,8 +192,10 @@ it (D6).
   - N concurrent rotations of one namespace leave exactly one current key; the notice's cursor
     survives a restart; a master-key re-wrap of 10⁴ records resumes after a crash (epic 8);
   - decompression bombs for zstd and LZ4 as fuzz seeds (epic 4);
-  - KMIP: a server with an expired certificate, a revoked key, a key in another state than
-    active (epic 7).
+  - KMIP: a server with an expired certificate, a revoked key, and a table over every key
+    state, Item Not Found and an unknown state value: only Destroyed and Destroyed Compromised
+    report the key destroyed, and every other answer reports it unavailable, so a misconfigured
+    endpoint never pages `data_loss` (epic 7).
 
 **Known failures.** None: no suite RFC 5's paragraph names keeps a `known.yaml`, so nothing is
 registered (§1.2).
@@ -877,7 +880,8 @@ the provider, under `materialtest`.
   crash-seam test.
 - The `keys` object (D8): its store interface and `materialtest`'s suite and in-memory store,
   the writer under the key lock, MAC, read-back and repair; fuzzed decode.
-- The primary-version read that starts a master-key rotation: at open, and on the provider's
+- The primary-version read that starts a master-key rotation, as a `rotate-master-key`
+  operation (RFC 5 Appendix B.1): at open, and on the provider's
   own ticker at RFC 9 §7.5's fixed period until GC's recheck pass takes it over (§6.1).
 - The destroyed-material notice (D17).
 
@@ -904,7 +908,8 @@ operation's API and CLI test.
 - Namespace key creation called from namespace creation, with the escrow refusal.
 - The key operations (rotate the master key, rotate the data key, verify escrow), their
   `dfsctl` commands and `go run ./cmd/gendocs`; `rotate-data-key`'s help says it revokes
-  nothing until removal lands (§6.1), so it does not answer RFC 5's leaked-key scenario.
+  nothing until removal lands (§6.1), so it does not answer RFC 5's leaked-key scenario. The
+  `rotate-master-key` operation is also the one epic 8's primary-version read starts.
 - The collectors, the health source and the alert rules, exported for the RFC 8 offload plan's
   epic 21 to register, with A1's `material_unknown` and `material_destroyed`.
 - Error mapping: the provider's and the chain's errors onto the API's problem types.
@@ -973,15 +978,16 @@ pins, `Remove` with its fence and the destroy operation are deferred to their fi
   `transform_decode_failures_total{error="malformed"}`, net of the syncer's recovered re-gets.
   RFC 5 Appendix B.4 names the three
   material conditions.
-- **A3. RFC 23 §4.1 and §4.6.** The actions table gains `rotate-data-key` (namespace) and
+- **A3. RFC 23 §4.1, §4.6 and §5.2.** The actions table gains `rotate-data-key` (namespace) and
   `rotate-master-key` (remote store), both `admin` operations, and `verify-escrow` (remote
-  store, `admin`, not an operation); §4.6 lists the two rotations as operation-runner work.
+  store, `admin`, not an operation); §4.6 lists the two rotations as operation-runner work;
+  §5.2's role matrix gives all three to `admin`.
 
 - **A4. RFC 16 §4.2 and RFC 27 §2.4.** RFC 16 gains the server-wide `MKW‖masterKeyID` row,
   kind 0x4D, the count of wraps under one master-key version (RFC 5 Appendix B.1). RFC 27's
-  importer refuses to publish a move while its current master key's ID or fingerprint matches
-  a master key the export names, since two installations wrapping under one key keep two
-  counts.
+  importer refuses to publish a move while its current master key is a key-file master key
+  whose ID the export names, since two installations wrapping under one key keep two counts;
+  an export names a master key by its ID only, and a key service keeps its own bound.
 
 (A2, the pin, is RFC 5's own and is in this pull request.)
 
@@ -1011,7 +1017,7 @@ pins, `Remove` with its fence and the destroy operation are deferred to their fi
 
 | Deferred | Why | Owner | Trigger |
 | --- | --- | --- | --- |
-| `Materials.Remove`, its fence and its count of open pins; RFC 5 §8.2's T13 rows; the census check before removal; erasure of every copy (§6 Q1, D10, RFC 5 §5.3 as amended) | no caller in v1.1: GC's retirement or an operator's destroy is the first | RFC 9 | RFC 9's plan starts, or an operator's destroy is specified first |
+| `Materials.Remove`, its fence and its count of open pins; RFC 5 §8.2's T13 rows; the census check before removal; erasure of every copy (§6 Q1, D10, RFC 5 §5.3 as amended) | no caller in v1.1: GC's retirement or an operator's destroy is the first | RFC 9 | RFC 9's plan starts; if the operator's destroy (next row) is specified first, that row takes `Remove` |
 | The operator's destroy operation and its `dfsctl` command (D15) | RFC 23 does not specify it; `Remove` lands with it or before it | unowned | RFC 9's plan starts or an operator needs to destroy a key |
 | Moving the periodic primary-version read of RFC 5 Appendix B.1 (as amended) from the provider's own ticker into GC's recheck pass | in v1.1 the provider runs it on its own ticker at RFC 9 §7.5's period, since GC does not run yet | RFC 9 | RFC 9's plan starts |
 | Retirement relocation, its walk and where the retiring set is recorded; RFC 5 §8.2's §5.2 row and §5.3's retirement half (D9) | GC is planned later (#5488) | RFC 9 (roadmap #3620) | RFC 9's plan starts |
