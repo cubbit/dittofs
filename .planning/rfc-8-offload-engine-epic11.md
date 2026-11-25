@@ -79,15 +79,12 @@ review.
 
 ### 1.3 Names used here
 
-- **E1, E2**: the roles epic 11 and epic 12 play in this part, interfaces and red rows.
 - **S1**, interfaces frozen: the end of this epic, after S1a to S1d.
 - **S1a**, carver interface agreed: the RFC 2 plan's S1, the end of its epic 1.
 - **S1b**, syncer interface agreed: the RFC 3 plan's S1, the end of its epic 1.
 - **S1c**, remote store contract agreed: the RFC 4 plan's S1.
 - **S1d**, transform pipeline agreed: the RFC 5 plan's S1.
 - **S2**, red rows in CI: the end of epic 12; epics 13, 15 and 17 start there.
-- **S5**, offload components built: the four components' implementation epics.
-- **S6**, journal offload half built: the journal plan's epics 9b and 7b.
 - **The integration epic**, epic 21: the node's content wiring composes offload.
 - **The first part**: the journal-only engine, epics 1 to 10 of RFC 8's first plan, whose code this
   epic extends.
@@ -132,7 +129,7 @@ can cite them. Behaviour behind the stubs is listed in §1.2 with its epic.
 | --- | --- | --- | --- | --- |
 | R5 | `Settings` carries the node-scope keys this part reads: `offload.retry_min`, `offload.retry_max`, `offload.retry_max_pressure`, `removal.rescan`, `eviction.repack_threshold`, the eviction occupancy target and the fill low-water mark | invariant | RFC 13 Appendix B; RFC 8 §6.1, §6.3, §7.3, §8.1, §10.1, §10.3 | T11.2 |
 | R6 | `Apply` refuses an invalid setting, NaN included, with an error naming it, and keeps the settings it already had; it never substitutes a default | MUST | RFC 8 §2.4; RFC 0 §1.2 | T11.2 |
-| R7 | A setting RFC 13 classes as fixed (the age tick, five failed passes, the cold-read threshold, the pacing constants, the entries per scheduler instance) is a constant of its epic's code, never a `Settings` or `ShareSettings` field | invariant | RFC 13 Appendix B | T11.2, T11.3 |
+| R7 | withdrawn: a fixed RFC 13 row never becoming a field is a review rule no test can check; D4 states it | — | RFC 13 Appendix B | — |
 | R8 | A share's settings travel on its `Share` and are validated at `Bind`: `offload.max_age`, `readahead.max_blocks`, `readahead.max_bytes` and the speculation budget, the share-scope keys | MUST | RFC 8 §2.3, §2.4, §12.1; RFC 13 Appendix B | T11.3 |
 | R9 | A `Start` or `Bind` handed invalid share settings is refused with an error naming the share and the setting; a refused `Bind` leaves a served binding's settings as they were | MUST | RFC 8 §2.4; RFC 0 §1.2 | T11.3 |
 
@@ -196,7 +193,9 @@ can cite them. Behaviour behind the stubs is listed in §1.2 with its epic.
   the speculation budget are share-scope, so they ride `Share` (RFC 8 §12.1's `Settings
   ShareSettings`). Refused: a duration or size not positive; `retry_min` above `retry_max_pressure`
   or `retry_max_pressure` above `retry_max`, since pressure lowers the cap; a fraction outside
-  (0, 1), NaN included. Every field is required, as the first part's three are, so the node and the fixture pass
+  (0, 1), NaN included. A value RFC 13 classes as fixed (the age tick, the five failed passes, the
+  cold-read threshold, the pacing constants, the entries per scheduler instance) is a constant of
+  its epic's code, never a field. Every field is required, as the first part's three are, so the node and the fixture pass
   RFC 13's proposed defaults (T11.2, T11.3) until the integration epic loads the table. A
   `decision:` marker at `Apply` names the two orderings as the only relations checked, withdrawn if
   a reader needs another. Prior art: the first part's `Apply`, which refuses a non-positive value
@@ -288,8 +287,9 @@ internal/node/
   Every body is a stub: `New` returns an empty scheduler, `Register` a counter, `Post` false,
   `SetTenant`, `WaitTenant` and `Stop` `errors.ErrUnsupported`, `Stats` nil. Consumed by epic 13,
   which fills them, epic 14, which registers the engine's two sources, and T11.4. The import walk
-  `imports_test.go`, after the journal's `TestImportRule` on `feat/storage-v2`: every package under
-  `pkg/workqueue` imports the standard library only, test packages included.
+  `imports_test.go`, after the journal's `TestImportRule` on `feat/storage-v2`: the package's
+  production files import the standard library only; its test files may also import `pkg/health`
+  and `pkg/sim`, for the assertions below, since RFC 0 §1.2's rule binds production code only.
 - **Acceptance criteria:**
   - `go doc ./pkg/workqueue` lists exactly R2's symbols plus `TenantID`, `SourceID`, `Clock`, `Loop`
     and `Scheduler`.
@@ -308,7 +308,7 @@ internal/node/
 **Subtask T11.2 estimate: 2 man-days.**
 
 - **Track:** the team. **Depends on:** none.
-- **Covers:** R5, R6, R7.
+- **Covers:** R5, R6.
 - **Deliverables:** `engine.Settings` gains, each commented with its key as the first part's are:
   `OffloadRetryMin`, `OffloadRetryMax`, `OffloadRetryMaxPressure`, `RemovalRescan` (`time.Duration`);
   `RepackThreshold`, `EvictionTarget`, `FillLowWater` (`float64`, fractions of the journal's maximum
@@ -318,14 +318,13 @@ internal/node/
   RFC 13's proposed values (1 s, 60 s, 5 s, 60 s, 10 %, 85 %, 10 %). Every other `engine.Settings`
   literal on `feat/storage-v2` (35 in 21 files today, mostly `pkg/engine` tests and
   `internal/vfs/integration`) starts from `enginetest.Settings` and overrides only the field it
-  tests, so the next key added touches one place; `TestRFC8C_Settings`'s refusal table gains a row
+  tests, except in `package engine`'s own tests, which cannot import `enginetest` (a cycle) and keep
+  one unexported copy in `export_test.go`, so the next key added touches one place; `TestRFC8C_Settings`'s refusal table gains a row
   per new rule. Consumed by epics 14, 17 and 18, which read the fields, and the integration epic,
   which loads them.
 - **Acceptance criteria:**
   - An `Apply` with any one new key zero, negative, NaN, out of (0, 1), or breaking D4's two orderings is
     refused, and a later valid `Apply` sees the earlier valid settings were kept.
-  - No field names a value RFC 13 classes as fixed (R7): the review checks the struct against
-    Appendix B's "fixed" rows.
 - **Tests:** at `Apply`, which the node calls: a table, one row per refusal (each catches a missing
   check, R6), each asserting the error names the key and that the settings an engine read
   afterwards are the earlier ones, read through an `export_test.go` accessor of the stored settings
@@ -338,7 +337,7 @@ internal/node/
 **Subtask T11.3 estimate: 2 man-days.**
 
 - **Track:** the team. **Depends on:** S1b.
-- **Covers:** R7, R8, R9, R10, R11, R12, R13.
+- **Covers:** R8, R9, R10, R11, R12, R13.
 - **Deliverables:** in `types.go`:
   ```go
   type ShareSettings struct {
@@ -400,14 +399,14 @@ internal/node/
   The engine's walk allows `pkg/workqueue`. Consumed by the epics named, which fill each field, and
   the integration epic, which adapts them.
 - **Acceptance criteria:**
-  - `Stats()` returns every new map made and empty, so the node's adapter ranges over it safely.
+  - Every field is frozen now, though epics 14 to 20 fill it, because epic 12's red rows read them
+    (the reseed's mismatches, eviction's freed bytes, the drain figures) and must compile at S2.
   - No field of `Share`, `Stats`, `ShareStats` or `JournalStats` has an interface (other than
     `error`), func or channel type (R13).
 - **Tests:** at `Stats()`, which the node's adapter reads: a reflection walk over the four types
   that fails on a field of interface (but `error`), func or channel kind (catches a component
-  returned to the caller, R13); an assertion that each new map in `Stats()`'s answer is non-nil and
-  that mutating it leaves the next answer unchanged (catches a shared map, as the first part's
-  `clone` guards). No test of `WaitOffloaded`'s stub answer. No test double.
+  returned to the caller, R13). The copy test of a map lands with the epic that first fills it, since
+  an always-empty map cannot be shared wrongly. No test of `WaitOffloaded`'s stub answer. No test double.
 - **Rules:** rule 3: the fields mirror RFC 8 §14's series; no series is recorded here.
 
 ### T11.5 The S1 review and the recorded declarations
