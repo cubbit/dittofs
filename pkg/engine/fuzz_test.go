@@ -1,12 +1,19 @@
 package engine_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/engine/enginetest"
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 	"github.com/cubbit/dittofs/test/fuzz"
 )
@@ -19,7 +26,144 @@ func fuzzByte(step int, off int64) byte {
 	return byte(1 + (int64(step)+off)%255)
 }
 
-const fuzzFiles = 3
+const (
+	fuzzFiles = 3
+
+	// fuzzMaxFile is the largest size a program can give a file: the highest
+	// offset and the longest write.
+	fuzzMaxFile = 12288 + 8192
+
+	// fuzzSegmentCap keeps each input's segments small: at the format's size an
+	// input spends seconds allocating them. A program writes at most 512 KiB
+	// into a new journal, so no write is split over two segments, and each one
+	// is one record, which a crash keeps whole or not at all.
+	fuzzSegmentCap = 4 << 20
+
+	// fuzzMinJournal is the smallest configured journal maximum the target runs
+	// over: with less, a write could be refused for room, or old segments
+	// repacked, and the model allows neither.
+	fuzzMinJournal = 2 << 30
+)
+
+// fuzzFileIDs are fixed, because the journal picks a file's append stream by a
+// hash of its ID, and a sync of one file makes the whole stream durable: with
+// drawn IDs, what a crash keeps would differ between two runs of one input.
+// Over the fixture's two streams these put the first two files together and the
+// third apart, so a program reaches both.
+var fuzzFileIDs = [fuzzFiles]entity.FileID{{15: 1}, {15: 3}, {15: 2}}
+
+// engineWorld is the real side of one input: the engine over the real journal
+// and store, and what the operations record from their own calls.
+type engineWorld struct {
+	fix     *enginetest.Fixture
+	handles [fuzzFiles]entity.Handle
+	files   [fuzzFiles]entity.FileID
+
+	// ctx is the input's, for the reads made after each step.
+	ctx context.Context
+
+	// writes are the writes the engine accepted.
+	writes []*acceptedWrite
+}
+
+// acceptedWrite counts the calls of one write's Done.
+type acceptedWrite struct {
+	step int
+	done atomic.Int32
+
+	// orphaned is set when a crash leaves the write to recovery, which commits
+	// it with no Done to call.
+	orphaned bool
+}
+
+func newEngineWorld(env *fuzz.Env) (*engineWorld, error) {
+	w := &engineWorld{ctx: env.T.Context()}
+
+	// Registered before the fixture, so it runs after the fixture has closed
+	// the engine, which calls the Done of what its last group commit takes.
+	env.Cleanup(func() {
+		for _, write := range w.writes {
+			if got := write.done.Load(); !write.orphaned && got != 1 {
+				env.T.Errorf("the Done of the write of step #%02d ran %d times by the end, want once", write.step, got)
+			}
+		}
+	})
+
+	w.fix = enginetest.New(env.T, enginetest.WithSegmentCap(fuzzSegmentCap))
+	for i := range fuzzFiles {
+		nf := kvstore.Regular(0o644)
+		nf.ID = fuzzFileIDs[i]
+
+		h, file := w.fix.FS.Create(env.T, w.fix.FS.Admin, w.fix.FS.Root, fmt.Sprintf("f%d", i), nf)
+		w.handles[i], w.files[i] = h, file.ID
+	}
+
+	for _, j := range w.fix.E.Stats().Journals {
+		if j.Stats == nil {
+			return nil, errors.New("the journal answers no figures")
+		}
+
+		// Zero is the default, a share of the filesystem. That filesystem has
+		// room, or the fixture's journal would not have got its spare
+		// segments.
+		if configured := j.Stats.MaxBytes; configured != 0 && configured < fuzzMinJournal {
+			return nil, fmt.Errorf("the journal is configured with a maximum of %d bytes, under %d",
+				configured, int64(fuzzMinJournal))
+		}
+	}
+
+	return w, nil
+}
+
+// doneAtMostOnce is the one invariant: no accepted write is reported finished
+// twice.
+func doneAtMostOnce(_ *fuzz.Env, w *engineWorld) error {
+	for _, write := range w.writes {
+		if got := write.done.Load(); got > 1 {
+			return fmt.Errorf("the Done of the write of step #%02d ran %d times", write.step, got)
+		}
+	}
+
+	return nil
+}
+
+// contents reads every file whole through the engine.
+func (w *engineWorld) contents(ctx context.Context) ([fuzzFiles]string, error) {
+	var out [fuzzFiles]string
+	for i, file := range w.files {
+		// One byte more than any program writes, so a file too long shows.
+		buf := make([]byte, fuzzMaxFile+1)
+
+		n, err := w.fix.E.Read(ctx, w.fix.Share.ID, file, 0, buf)
+		if err != nil {
+			return out, fmt.Errorf("read file %d: %w", i, err)
+		}
+
+		out[i] = string(buf[:n])
+	}
+
+	return out, nil
+}
+
+// leftToReplay counts, per file, what the journal holds above what the store
+// has committed: what a replay would still have to apply.
+func (w *engineWorld) leftToReplay(ctx context.Context) ([fuzzFiles]int, error) {
+	var left [fuzzFiles]int
+	for i, file := range w.files {
+		applied := w.fix.Committed(w.handles[i]).Applied
+		from := journal.VersionFromBytes(applied)
+
+		for _, err := range w.fix.Handle().Since(ctx, journal.NewFileID(file), from) {
+			if err != nil {
+				return left, fmt.Errorf("since, file %d: %w", i, err)
+			}
+
+			left[i]++
+		}
+	}
+
+	return left, nil
+}
 
 // errorClass is what the contract tells one error from another by, and all a
 // trace prints of one.
@@ -142,6 +286,107 @@ func (a restartedAnswer) String() string {
 	}
 
 	return fmt.Sprintf("%s, left to replay %v", describeFiles(a.files), a.replay)
+}
+
+func engineWrite(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
+	off := int64(a.Int("off"))
+	data := make([]byte, a.Int("len"))
+	for i := range data {
+		data[i] = fuzzByte(env.Step, off+int64(i))
+	}
+
+	write := &acceptedWrite{step: env.Step}
+	verifier, err := w.fix.E.Write(env.T.Context(), w.fix.Share.ID, w.files[a.Int("file")], off, data, engine.WriteOpts{
+		Done: func() {
+			write.done.Add(1)
+		},
+	})
+	if err == nil {
+		w.writes = append(w.writes, write)
+	}
+
+	return writeAnswer{
+		step:     env.Step,
+		err:      err,
+		verifier: verifier,
+	}
+}
+
+func engineCommit(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
+	verifier, lossSeq, err := w.fix.E.Commit(
+		env.T.Context(),
+		w.fix.Share.ID,
+		w.files[a.Int("file")],
+		int64(a.Int("off")),
+		int64(a.Int("len")),
+	)
+
+	return commitAnswer{
+		err:      err,
+		verifier: verifier,
+		lossSeq:  lossSeq,
+	}
+}
+
+func engineRead(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
+	off := int64(a.Int("off"))
+	buf := make([]byte, a.Int("len"))
+
+	n, err := w.fix.E.Read(env.T.Context(), w.fix.Share.ID, w.files[a.Int("file")], off, buf)
+
+	return readAnswer{
+		off:  off,
+		err:  err,
+		data: string(buf[:n]),
+	}
+}
+
+// engineCrash is a power loss with no variant: the simulated device keeps no
+// write that was not synced, and a new process starts on what is left.
+func engineCrash(env *fuzz.Env, w *engineWorld, _ fuzz.Args) fuzz.Result {
+	w.fix.Crash()
+	for _, write := range w.writes {
+		if write.done.Load() == 0 {
+			write.orphaned = true
+		}
+	}
+
+	files, err := w.contents(env.T.Context())
+
+	return restartedAnswer{
+		err:   err,
+		files: files,
+	}
+}
+
+// engineRestart is a clean stop and a new start. The new process is held where
+// it raises the shards' incarnations, which is before it replays anything, and
+// what the clean stop left for the replay is counted there.
+func engineRestart(env *fuzz.Env, w *engineWorld, _ fuzz.Args) fuzz.Result {
+	entered, release := w.fix.HoldNextStart()
+	restart := fuzz.Begin(env, func() bool {
+		w.fix.Restart()
+
+		return true
+	})
+
+	if !restart.WaitParked(entered) {
+		restart.Finish()
+
+		return restartedAnswer{err: errors.New("the restart ended before its start raised the incarnations")}
+	}
+
+	replay, replayErr := w.leftToReplay(env.T.Context())
+	release()
+	restart.Finish()
+
+	files, err := w.contents(env.T.Context())
+
+	return restartedAnswer{
+		err:    errors.Join(replayErr, err),
+		files:  files,
+		replay: replay,
+	}
 }
 
 // engineModel is what the contract lets the files hold. It follows the real
@@ -344,6 +589,159 @@ func modelRestart(m engineModel, _ fuzz.Args, got fuzz.Result) ([]engineModel, e
 	return []engineModel{m}, nil
 }
 
+// compareFiles reads every file after each step, so a wrong byte fails at the
+// step that made it wrong.
+func compareFiles(_ fuzz.Step, _ fuzz.Result, w *engineWorld, m engineModel) error {
+	got, err := w.contents(w.ctx)
+	if err != nil {
+		return err
+	}
+
+	for i, file := range m.files {
+		if view := apply(file.synced, file.unsynced); got[i] != view {
+			return fmt.Errorf("file %d reads %s, the model holds %s", i, describe(0, got[i]), describe(0, view))
+		}
+	}
+
+	return nil
+}
+
+// engineKey names a state. Every step allows one, so it only has to tell a
+// state from itself.
+func engineKey(m engineModel) string {
+	return fmt.Sprint(m)
+}
+
+func engineTarget() fuzz.Target[*engineWorld, engineModel] {
+	file := fuzz.Enum("file", 0, 1, 2)
+	off := fuzz.Choice("off", 0, 1, 4095, 4096, 8192, 12288)
+	length := fuzz.Choice("len", 1, 2, 512, 4096, 8192)
+	// Zero is the whole file.
+	commitLength := fuzz.Choice("len", 0, 1, 2, 512, 4096, 8192)
+
+	return fuzz.Target[*engineWorld, engineModel]{
+		Name: "engine",
+		Ops: []fuzz.Op[*engineWorld, engineModel]{
+			{
+				Name:   "write",
+				Weight: 8,
+				Params: []fuzz.Param{file, off, length},
+				Real:   engineWrite,
+				Model:  modelWrite,
+			},
+			{
+				Name:   "commit",
+				Weight: 4,
+				Params: []fuzz.Param{file, off, commitLength},
+				Real:   engineCommit,
+				Model:  modelCommit,
+			},
+			{
+				Name:   "read",
+				Weight: 4,
+				Params: []fuzz.Param{file, off, length},
+				Real:   engineRead,
+				Model:  modelRead,
+			},
+			{
+				Name:   "crash",
+				Weight: 1,
+				Real:   engineCrash,
+				Model:  modelCrash,
+			},
+			{
+				Name:   "restart",
+				Weight: 1,
+				Real:   engineRestart,
+				Model:  modelRestart,
+			},
+		},
+		NewReal:    newEngineWorld,
+		NewModel:   newEngineModel,
+		Compare:    compareFiles,
+		Key:        engineKey,
+		Invariants: []fuzz.Invariant[*engineWorld]{doneAtMostOnce},
+	}
+}
+
+// engineSeeds are the programs every plain go test runs.
+var engineSeeds = []struct {
+	name  string
+	calls []string
+}{
+	{
+		name: "a committed append survives a crash",
+		calls: []string{
+			"write(file=0, off=0, len=8192)",
+			"commit(file=0, off=0, len=0)",
+			"crash()",
+			"read(file=0, off=0, len=8192)",
+		},
+	},
+	{
+		name: "an unsynced write at a crash",
+		calls: []string{
+			"write(file=0, off=0, len=8192)",
+			"crash()",
+			"read(file=0, off=0, len=8192)",
+		},
+	},
+	{
+		name: "a committed overwrite and an unsynced one over it",
+		calls: []string{
+			"write(file=0, off=0, len=8192)",
+			"commit(file=0, off=0, len=0)",
+			"write(file=0, off=4095, len=4096)",
+			"commit(file=0, off=4095, len=2)",
+			"write(file=0, off=0, len=512)",
+			"crash()",
+			"read(file=0, off=4095, len=4096)",
+		},
+	},
+	{
+		name: "a commit of one file and a write of another",
+		calls: []string{
+			"write(file=0, off=4096, len=512)",
+			"write(file=1, off=0, len=512)",
+			"commit(file=0, off=0, len=1)",
+			"crash()",
+			"read(file=0, off=0, len=8192)",
+			"read(file=1, off=0, len=512)",
+		},
+	},
+	{
+		// The third file is on the other stream, which the commit leaves alone.
+		name: "a commit and an unsynced write on the other stream",
+		calls: []string{
+			"write(file=0, off=0, len=512)",
+			"write(file=2, off=0, len=512)",
+			"commit(file=0, off=0, len=0)",
+			"crash()",
+			"read(file=2, off=0, len=512)",
+		},
+	},
+	{
+		name: "a clean restart keeps writes never synced",
+		calls: []string{
+			"write(file=0, off=0, len=512)",
+			"write(file=2, off=12288, len=2)",
+			"restart()",
+			"read(file=2, off=12288, len=8192)",
+		},
+	},
+	{
+		name: "the verifier across restarts",
+		calls: []string{
+			"write(file=0, off=0, len=1)",
+			"write(file=0, off=1, len=1)",
+			"restart()",
+			"write(file=0, off=4095, len=1)",
+			"crash()",
+			"commit(file=0, off=0, len=0)",
+		},
+	},
+}
+
 // TestModelAllowsWhatACrashMayLeave holds the model to the contract: a crash
 // keeps every synced write and any subset of the others, each whole or not at
 // all.
@@ -455,6 +853,24 @@ func TestModelAllowsWhatACrashMayLeave(t *testing.T) {
 				t.Fatalf("the file after the crash holds %s and %d unsynced writes, want %s and none",
 					describe(0, after.synced), len(after.unsynced), describe(0, c.found))
 			}
+		})
+	}
+}
+
+func FuzzEngine(f *testing.F) {
+	target := engineTarget()
+	for _, seed := range engineSeeds {
+		f.Add(fuzz.Seed(target, strings.Join(seed.calls, "\n")))
+	}
+
+	fuzz.Fuzz(f, target)
+}
+
+func TestEngineSeedsRunTheSameTwice(t *testing.T) {
+	target := engineTarget()
+	for _, seed := range engineSeeds {
+		t.Run(seed.name, func(t *testing.T) {
+			fuzz.Deterministic(t, target, fuzz.Seed(target, strings.Join(seed.calls, "\n")))
 		})
 	}
 }
