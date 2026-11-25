@@ -279,13 +279,19 @@ structurally.
 constants, interface and errors of [§4.1](#4.1%20Interface) and nothing else: no state, no
 behaviour beyond methods over its own values, and no import but the standard
 library. Everything that carries behaviour lives in a package beneath it and
-counts as an implementation: the codec, `remote/codec`, with `codec.Store`; each
-backend, such as `remote/s3` and the in-memory `remote/memory`; and the
-configuration keys, collectors and alert rules each of them declares. In
+counts as an implementation: the codec, `remote/codec`, with `codec.Store`; and
+each backend, such as `remote/s3` and the in-memory `remote/memory`. In
 production only the node, through its content wiring, imports an
-implementation; tests may import any. The codec imports the contract and RFC 5's contract, the root
-`transform` package; the chain it encodes under and the name derivation are
-handed to it by the node's content wiring, never imported.
+implementation; tests may import any. The settings, metrics and health
+packages hold a contract and its implementation together, so they count as
+implementations too, and neither the codec nor a backend imports them: each
+records its series through a small recorder interface it declares, and offers
+its settings rows, metric definitions and alert rules as plain values, which
+the content wiring builds into settings, collectors and rules and hands back as
+configuration structs. The codec imports the contract and RFC 5's contract, the
+root `transform` package; the chain it encodes under, the name derivation and
+the decode bound `MaxDecodeLen(Max)` are handed to it by the node's content
+wiring, never imported.
 
 **Two components, one document.** The block codec ([§3](#3.%20The%20block%20format)) and the remote block
 store ([§4](#4.%20The%20store%20contract)) are separate components: the codec's encoder and decoder never
