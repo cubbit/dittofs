@@ -216,5 +216,5 @@ func Run(t *testing.T, newRunner func(*testing.T) Runner, s Server, noun string)
 
 // rows is every row of the suite.
 func rows() []row {
-	return slices.Concat(operationRows(), principalRows())
+	return slices.Concat(operationRows(), principalRows(), shareRows(), grantRows(), quotaRows())
 }

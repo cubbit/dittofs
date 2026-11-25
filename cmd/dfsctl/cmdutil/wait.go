@@ -65,6 +65,12 @@ func Wait(cmd *cobra.Command, c *client.Client, op apiv1.Operation) error {
 	if err := PrintOutput(cmd, ended, false, "", Operations{ended}); err != nil {
 		return err
 	}
+	return endedErr(path, ended)
+}
+
+// endedErr refuses ended, an operation followed to its end, unless it
+// succeeded, prefixed with path.
+func endedErr(path string, ended apiv1.Operation) error {
 	switch ended.State {
 	case apiv1.OpFailed:
 		if ended.Error != nil {

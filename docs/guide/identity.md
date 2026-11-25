@@ -300,15 +300,12 @@ At login, a Kerberos-authenticated principal's PAC user + group SIDs are matched
 against these grants.
 
 ```bash
-# By AD name (resolved to a SID via LDAP; a bare name resolves to a local
-# object first, otherwise to the directory):
-dfsctl share permission grant /ditto --group 'CUBBIT\Cubbit'     --level read-write
-dfsctl share permission grant /ditto --user  alice@cubbit.local  --level read
+# By AD name, which the server resolves through the directory:
+dfsctl grant set ditto --directory 'CUBBIT\Cubbit' --access read-write
+dfsctl grant set ditto --directory 'CUBBIT\alice' --access read
 
-# By raw SID (no directory lookup — works even with LDAP disabled):
-dfsctl share permission grant /ditto --sid S-1-5-21-...-1104      --level read
 
-dfsctl share permission list /ditto     # shows each grant + its resolved SID
+dfsctl grant list ditto     # shows each grant: principal ID and access
 ```
 
 Grants are additive (highest matching level wins) and apply on both SMB (matched

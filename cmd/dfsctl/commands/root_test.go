@@ -22,10 +22,11 @@ func newTestRoot() (*cobra.Command, *bytes.Buffer) {
 // Every v1 command dfsctl still lists refuses, naming itself, until the CLI is
 // rebuilt on the v2 API; the commands that work locally (context, completion,
 // version) and those already rebuilt (login, logout, password, operation,
-// user, group, netgroup, token, installation) are left out of the walk.
+// user, group, netgroup, token, installation, share, grant, quota) are left
+// out of the walk.
 func TestV1CommandsRefuse(t *testing.T) {
 	kept := map[string]bool{"context": true, "completion": true, "version": true, "logout": true, "login": true, "password": true, "operation": true, "help": true,
-		"user": true, "group": true, "netgroup": true, "token": true, "installation": true}
+		"user": true, "group": true, "netgroup": true, "token": true, "installation": true, "share": true, "grant": true, "quota": true}
 	root, _ := newTestRoot()
 	refused := 0
 	var walk func(c *cobra.Command)
@@ -55,12 +56,11 @@ func TestV1CommandsRefuse(t *testing.T) {
 // arguments parsed, exits with the refusal.
 func TestV1CommandRefusesThroughExecute(t *testing.T) {
 	for _, args := range [][]string{
-		{"quota", "list", "builds", "-o", "json"},
-		{"share", "create", "--name", "/export", "--metadata", "default", "--block-store", "default"},
+		{"status"},
 	} {
 		root, _ := newTestRoot()
 		root.SetArgs(args)
-		want := "dfsctl " + strings.Join(args[:2], " ") + ": not available until the CLI is rebuilt on the v2 API"
+		want := "dfsctl " + strings.Join(args, " ") + ": not available until the CLI is rebuilt on the v2 API"
 		if err := root.Execute(); err == nil || err.Error() != want {
 			t.Errorf("dfsctl %s: got %v, want %q", strings.Join(args, " "), err, want)
 		}
@@ -106,7 +106,7 @@ func TestRemovedCommandsAbsent(t *testing.T) {
 	for path, flags := range map[string][]string{
 		"login":        {"client-cert", "client-key", "tls-skip-verify", "password"},
 		"share create": trash,
-		"share edit":   trash,
+		"share update": trash,
 	} {
 		c, _, err := root.Find(strings.Fields(path))
 		if err != nil {

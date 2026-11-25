@@ -57,7 +57,7 @@ You only pin a dialect when troubleshooting or forcing weaker/stronger crypto:
 | **Linux** (`mount.cifs`) | `-o vers=3.1.1` (also `2.0`, `2.1`, `3.0`) | Modern `cifs-utils` negotiates ≥ 2.1 automatically. |
 | **macOS** (`mount_smbfs`) | No per-mount dialect flag — always negotiates the best. | Negotiates up to 3.1.1. |
 | **Windows** (`net use` / Explorer) | No per-mount flag (tune via the SMB client service). | Negotiates up to 3.1.1. |
-| **`dfsctl share mount --protocol smb`** | No flag; requests `vers=2.1` on Linux, lets macOS negotiate. | Wrapper picks safe defaults — see [Mounting](#mounting-smb-shares). |
+| **`dfsctl share mount --protocol smb`** | No flag; requests `vers=3.1.1` on Linux, lets macOS negotiate. | Wrapper picks safe defaults — see [Mounting](#mounting-smb-shares). |
 
 `seal` (on Linux `mount.cifs`) forces SMB3 encryption and therefore a 3.x
 dialect; pair it with `vers=3.1.1` to negotiate the strongest AEAD cipher the
@@ -144,18 +144,17 @@ suffix), see [Running on standard ports (production)](install.md#running-on-stan
 
 ### Using dfsctl (Recommended)
 
-`dfsctl share mount` handles platform-specific mount options automatically:
+`dfsctl share mount` handles platform-specific mount options automatically. Run it
+as yourself, not under `sudo`: it reads your login, and runs the mount command
+through `sudo` itself where that needs root (`--dry-run` prints the command):
 
 ```bash
-# macOS - Mount to user directory (recommended, no sudo needed)
+# macOS - mount_smbfs runs as you, so mount to a directory you own
 mkdir -p ~/mnt/dittofs
-dfsctl share mount --protocol smb /export ~/mnt/dittofs
+dfsctl share mount --protocol smb export ~/mnt/dittofs
 
-# macOS - Mount to system directory (requires sudo)
-sudo dfsctl share mount --protocol smb /export /mnt/smb
-
-# Linux - Mount with sudo (owner set to your user automatically)
-sudo dfsctl share mount --protocol smb /export /mnt/smb
+# Linux - mount.cifs runs through sudo, the mount owned by your uid and gid
+dfsctl share mount --protocol smb export /mnt/smb
 
 # Unmount
 sudo umount /mnt/smb  # or: diskutil unmount ~/mnt/dittofs (macOS)
@@ -169,19 +168,12 @@ macOS restricts SMB mounts so that **only the mount owner can access files**, re
 Unix permissions. Even with 0777 permissions, non-owner users get "Permission denied". Apple
 confirmed this is "works as intended".
 
-**How dfsctl handles this**: When you run `sudo dfsctl share mount`, it automatically uses
-`sudo -u $SUDO_USER` to mount as your user (not root):
-
-```bash
-# Works correctly - mount owned by your user
-sudo dfsctl share mount --protocol smb /export /mnt/share
-```
-
-**Alternative - mount without sudo** (to a user-owned directory):
+**How dfsctl handles this**: `dfsctl share mount` runs `mount_smbfs` as you, never
+through `sudo`, so the mount is yours. Mount to a directory you own:
 
 ```bash
 mkdir -p ~/mnt/dittofs
-dfsctl share mount --protocol smb /export ~/mnt/dittofs
+dfsctl share mount --protocol smb export ~/mnt/dittofs
 # No sudo needed; directory permissions default to 0755
 ```
 
@@ -321,7 +313,7 @@ adapters:
 Per-share encryption:
 
 ```bash
-dfsctl share edit sensitive --encrypt-data true
+dfsctl share export-policy update sensitive --smb-encrypt
 ```
 
 `encrypt-data` is a share attribute, set through the REST API (`dfsctl`) rather than a config
@@ -504,7 +496,7 @@ session. A client gets a guest session only by asking for one.
 
 A share's access policy (`require_kerberos`, `allow_auth_sys`,
 `min_kerberos_level` and the netgroup client allowlist, set with
-`dfsctl share nfs-config set`) applies to SMB as well as NFS. It is checked at
+`dfsctl share export-policy update`) applies to SMB as well as NFS. It is checked at
 TREE_CONNECT and again on every request on the tree, so a policy change, a
 re-authentication with a weaker proof, or a channel bound from another address
 takes effect on the next request. A refusal is `STATUS_ACCESS_DENIED`. The
@@ -553,7 +545,7 @@ dfsctl group create editors --gid 1000
 dfsctl group add-member editors alice
 
 # Grant a group read-write access to a share
-dfsctl share permission grant /export --group editors --level read-write
+dfsctl grant set export --group editors --access read-write
 ```
 
 Permission levels: `none`, `read`, `read-write`, `admin`.

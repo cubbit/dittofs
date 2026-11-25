@@ -216,10 +216,10 @@ logging:
 
 Common causes:
 
-1. **Squash mode**: Try `dfsctl share nfs-config set <share> --squash none` for development
+1. **Squash mode**: Try `dfsctl share export-policy update <share> --squash none` for development
 2. **Root directory permissions**: Set `mode: 0777` temporarily to isolate the issue
 3. **Client UID mismatch**: Check your UID with `id` command
-4. **Export restrictions**: Check the share's netgroup allowlist with `dfsctl share nfs-config show <share>`
+4. **Export restrictions**: Check the share's netgroup allowlist with `dfsctl share export-policy get <share>`
 
 See [TROUBLESHOOTING.md](troubleshooting.md) for solutions.
 
@@ -474,7 +474,7 @@ carries a current timestamp.
 |--------|--------|
 | Handled by dfsctl | Apple security restriction - only mount owner can access |
 
-macOS restricts SMB mount access to the mount owner regardless of Unix permissions. When using `sudo dfsctl share mount`, it automatically uses `sudo -u $SUDO_USER` to mount as your user. See [SMB.md](smb.md) for workarounds.
+macOS restricts SMB mount access to the mount owner regardless of Unix permissions. `dfsctl share mount` runs `mount_smbfs` as you, never through `sudo`, so the mount is yours; run dfsctl as yourself, not under `sudo`. See [SMB.md](smb.md) for workarounds.
 
 ### Storage Backend Limitations
 

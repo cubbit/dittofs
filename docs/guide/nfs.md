@@ -249,7 +249,7 @@ For locking without any of the above, mount with `vers=4` — locking is part of
 the protocol, and there is no NLM, NSM, MOUNT, or portmapper to configure:
 
 ```bash
-dfsctl share mount /my-share /mnt/point --protocol nfs --nfs-version 4.1
+dfsctl share mount my-share /mnt/point --protocol nfs --nfs-version 4.1
 # or directly:
 mount -t nfs -o vers=4.1,port=12049 server:/my-share /mnt/point
 ```
@@ -272,18 +272,19 @@ the convenience wrapper first, then the raw `mount` command for each version.
 ### The easy way: `dfsctl share mount`
 
 `dfsctl share mount` resolves the server's NFS port, picks the right options for
-your platform, and runs `mount` for you. The `--nfs-version` flag selects the
+your platform, and runs `mount` for you through `sudo`; run dfsctl itself as
+yourself, not under `sudo`, since it reads your login. The `--nfs-version` flag selects the
 protocol version (default **3**):
 
 ```bash
 # NFSv4.1 (recommended) — locking just works, no portmapper needed
-sudo dfsctl share mount /my-share /mnt/point --protocol nfs --nfs-version 4.1
+dfsctl share mount my-share /mnt/point --protocol nfs --nfs-version 4.1
 
 # NFSv3 (the default if --nfs-version is omitted)
-sudo dfsctl share mount /my-share /mnt/point --protocol nfs
+dfsctl share mount my-share /mnt/point --protocol nfs
 
 # NFSv4.2 — for sparse files / reflink
-sudo dfsctl share mount /my-share /mnt/point --protocol nfs --nfs-version 4.2
+dfsctl share mount my-share /mnt/point --protocol nfs --nfs-version 4.2
 ```
 
 Accepted `--nfs-version` values are `3`, `4`, `4.0`, `4.1`, and `4.2`. The
@@ -402,7 +403,7 @@ before DittoFS checks permissions. Its classic use is to stop a remote `root`
 from acting as `root` on your files — a remote machine's superuser should not
 automatically be the superuser of your export.
 
-This is a **per-share** policy, set with `dfsctl share nfs-config` but applied
+This is a **per-share** policy, set with `dfsctl share export-policy` but applied
 to SMB sessions as well: an SMB user whose UID is 0 — the built-in `admin`
 among them — is squashed on a `root_to_guest` share exactly as NFS root is, and
 an `all_to_guest` share maps every SMB user to the anonymous UID/GID. SMB guest
@@ -452,13 +453,13 @@ The **anonymous** identity is UID/GID **65534** (`nobody`/`nogroup`) by default.
 
 ```bash
 # Squash remote root to the anonymous user (the usual hardening choice)
-dfsctl share nfs-config set /export --squash root_to_guest
+dfsctl share export-policy update export --squash root
 
 # Force every client to the anonymous user (e.g. a public read-only export)
-dfsctl share nfs-config set /export --squash all_to_guest
+dfsctl share export-policy update export --squash all
 
 # Inspect the current squash mode (and other NFS export options)
-dfsctl share nfs-config show /export
+dfsctl share export-policy get export
 ```
 
 Valid values: `none`, `root_to_admin`, `root_to_guest`, `all_to_admin`,
@@ -596,7 +597,7 @@ The same rule is re-checked at startup, because the policy is persisted and
 outlives the server capability it needs: if Kerberos is later decommissioned, a
 share that still carries `require_kerberos=true` stops the server with exit code
 78 and an error naming the share. Either re-enable `kerberos.enabled`, or clear
-the policy with `dfsctl share nfs-config set <share> --require-kerberos false`.
+the policy with `dfsctl share export-policy update <share> --flavor sys --min-proof none --min-protection none`.
 
 `min_kerberos_level` is the protection floor for any authenticated session.
 Over NFS only RPCSEC_GSS authenticates, so it rejects a Kerberos session whose

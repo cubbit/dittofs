@@ -10,6 +10,7 @@ import (
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	ctxcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/context"
+	grantcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/grant"
 	groupcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/group"
 	installationcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/installation"
 	netgroupcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/netgroup"
@@ -39,8 +40,8 @@ func NewRoot(env cmdutil.Env) *cobra.Command {
 		Short: "DittoFS Control - Remote management client",
 		Long: `dfsctl is the command-line client for managing DittoFS servers remotely.
 
-Its commands for shares and quotas return with the server's v2 API; until
-then each refuses. The context subcommand manages the server
+Its status command returns with the server's v2 API; until then it
+refuses. The context subcommand manages the server
 contexts kept in ~/.config/dfsctl/config.json.
 
 Use "dfsctl [command] --help" for more information about a command.`,
@@ -67,8 +68,9 @@ Use "dfsctl [command] --help" for more information about a command.`,
 		netgroupcmd.New(env),
 		tokencmd.New(env),
 		installationcmd.New(env),
-		sharecmd.New(),
-		quotacmd.New(),
+		sharecmd.New(env),
+		grantcmd.New(env),
+		quotacmd.New(env),
 		operationcmd.New(env),
 		newCompletionCmd(),
 	)

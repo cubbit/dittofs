@@ -34,7 +34,13 @@ func Resolve[S, T any](cmd *cobra.Command, r client.Resource[S, T], kind string,
 	if len(args) != 1 {
 		return "", fmt.Errorf("%s: name the %s by its name or by --id, exactly one", cmd.CommandPath(), kind)
 	}
-	name := args[0]
+	return ByName(cmd, r, kind, args[0])
+}
+
+// ByName returns the ID of the one resource of r, a kind, that the list's
+// name filter admits for name, refusing a name that matches nothing, or more
+// than one, naming it.
+func ByName[S, T any](cmd *cobra.Command, r client.Resource[S, T], kind, name string) (string, error) {
 	var ids []string
 	for res, err := range r.List(cmd.Context(), url.Values{"name": {name}}) {
 		if err != nil {

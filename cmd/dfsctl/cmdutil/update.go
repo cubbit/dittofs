@@ -64,6 +64,51 @@ func Update[S, T any](cmd *cobra.Command, env Env, r getter[S, T], write Write[S
 	if err != nil {
 		return zero, fmt.Errorf("%s: reading %s %s: %w", path, kind, id, err)
 	}
+	return apply(cmd, env, r, write, kind, id, read, change)
+}
+
+// Set is Update for a resource a write creates, such as a grant or a quota:
+// one that does not exist yet is created from the zero spec change fills
+// in, with If-None-Match: *, so a create racing another write of it is
+// refused 412, and nothing written, rather than overwriting what the other
+// wrote.
+func Set[S, T any](cmd *cobra.Command, env Env, r getter[S, T], write Write[S, T], kind, id string, change func(*S) error) (client.Result[S, T], error) {
+	var zero client.Result[S, T]
+	ctx, path := cmd.Context(), cmd.CommandPath()
+	read, err := r.Get(ctx, id)
+	if err == nil {
+		return apply(cmd, env, r, write, kind, id, read, change)
+	}
+	if !HasStatus(err, http.StatusNotFound) {
+		return zero, fmt.Errorf("%s: reading %s %s: %w", path, kind, id, err)
+	}
+	var spec S
+	if err := change(&spec); err != nil {
+		return zero, fmt.Errorf("%s: %w", path, err)
+	}
+	if env.afterRead != nil {
+		env.afterRead()
+	}
+	written, err := write(ctx, id, spec, nil, "*")
+	switch {
+	case HasStatus(err, http.StatusPreconditionFailed):
+		return zero, fmt.Errorf("%s: %s %s was written since it was read absent, so nothing was written; run the command again to change it as it is now: %w", path, kind, id, err)
+	case err != nil:
+		return zero, fmt.Errorf("%s: writing %s %s: %w", path, kind, id, err)
+	}
+	return written, nil
+}
+
+// HasStatus reports whether err is the server's refusal with status.
+func HasStatus(err error, status int) bool {
+	p := (*apiv1.Problem)(nil)
+	return errors.As(err, &p) && p.Status == status
+}
+
+// apply is Update's change and write of read, the resource as it was read.
+func apply[S, T any](cmd *cobra.Command, env Env, r getter[S, T], write Write[S, T], kind, id string, read client.Tagged[S, T], change func(*S) error) (client.Result[S, T], error) {
+	var zero client.Result[S, T]
+	ctx, path := cmd.Context(), cmd.CommandPath()
 	// A snapshot before change runs, which may write through a slice or a
 	// pointer the spec shares with the read.
 	was, err := asObject(read.Spec)
@@ -89,7 +134,7 @@ func Update[S, T any](cmd *cobra.Command, env Env, r getter[S, T], write Write[S
 	if err == nil {
 		return written, nil
 	}
-	if p := (*apiv1.Problem)(nil); !errors.As(err, &p) || p.Status != http.StatusPreconditionFailed {
+	if !HasStatus(err, http.StatusPreconditionFailed) {
 		return zero, fmt.Errorf("%s: writing %s %s: %w", path, kind, id, err)
 	}
 	now, err := r.Get(ctx, id)

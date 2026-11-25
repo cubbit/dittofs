@@ -1,14 +1,12 @@
 package clisuite
 
 import (
-	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"gopkg.in/yaml.v3"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -28,7 +26,7 @@ func operationRows() []row {
 			}
 			for _, format := range []string{"json", "yaml"} {
 				out := mustRun(t, run, "operation", "get", op.ID, "-o", format)
-				got, err := decode(format, out)
+				got, err := decodePrinted[apiv1.Operation](format, out)
 				if err != nil {
 					t.Fatalf("operation get -o %s: decoding %q: %v", format, out, err)
 				}
@@ -51,7 +49,7 @@ func operationRows() []row {
 		{name: "operation wait of an ended operation prints it and exits 0", run: func(t *testing.T, run Runner, s Server, c *client.Client) {
 			op := s.Settle(t, c, startOperation(t, c))
 			out := mustRun(t, run, "operation", "wait", op.ID, "-o", "json")
-			got, err := decode("json", out)
+			got, err := decodePrinted[apiv1.Operation]("json", out)
 			if err != nil || got.ID != op.ID || got.State != apiv1.OpSucceeded {
 				t.Errorf("operation wait %s: got %+v (%v), want it succeeded", op.ID, got, err)
 			}
@@ -73,7 +71,7 @@ func operationRows() []row {
 				if status == 0 || !strings.Contains(errOut, "operation "+op.ID+" "+tc.want) {
 					t.Errorf("operation wait of an operation ended %s: status %d, stderr %q, want non-zero naming it %s", tc.want, status, errOut, tc.want)
 				}
-				if got, err := decode("json", out); err != nil || got.ID != op.ID {
+				if got, err := decodePrinted[apiv1.Operation]("json", out); err != nil || got.ID != op.ID {
 					t.Errorf("operation wait of an operation ended %s: printed %q (%v), want the operation", tc.want, out, err)
 				}
 			}
@@ -132,24 +130,6 @@ func mustRun(t *testing.T, run Runner, args ...string) string {
 		t.Fatalf("dfsctl %s: status %d, stderr %q, want 0", strings.Join(args, " "), status, errOut)
 	}
 	return out
-}
-
-// decode reads out, an operation printed as format, json or yaml, the YAML
-// through JSON as dfsctl printed it.
-func decode(format, out string) (apiv1.Operation, error) {
-	var op apiv1.Operation
-	b := []byte(out)
-	if format == "yaml" {
-		var tree any
-		if err := yaml.Unmarshal(b, &tree); err != nil {
-			return op, err
-		}
-		var err error
-		if b, err = json.Marshal(tree); err != nil {
-			return op, err
-		}
-	}
-	return op, json.Unmarshal(b, &op)
 }
 
 // ended stores an operation already ended in state, as only a runner's

@@ -167,21 +167,18 @@ behave differently for each person:
 
 ```powershell
 # AD user alice → read-only
-dfsctl share permission grant ditto --user alice@cubbit.local --level read
+dfsctl grant set ditto --directory 'CUBBIT\alice' --access read
 
 # AD user bob → read-write
-dfsctl share permission grant ditto --user bob@cubbit.local --level read-write
+dfsctl grant set ditto --directory 'CUBBIT\bob' --access read-write
 
 # AD group (everyone in Cubbit) → read-write, resolved to the group SID via LDAP
-dfsctl share permission grant ditto --group "CUBBIT\Cubbit" --level read-write
+dfsctl grant set ditto --directory 'CUBBIT\Cubbit' --access read-write
 
 # Domain Admins → admin (full control)
-dfsctl share permission grant ditto --group "Domain Admins" --level admin
+dfsctl grant set ditto --directory 'CUBBIT\Domain Admins' --access admin
 
-# By raw SID (no directory lookup needed)
-dfsctl share permission grant ditto --sid S-1-5-21-1111-2222-3333-1104 --level read
-
-dfsctl share permission list ditto     # shows each grant + resolved SID
+dfsctl grant list ditto     # shows each grant: principal ID and access
 ```
 
 **Pro dashboard:** **Access Control → Shares → <share> → Grant**, type the AD
@@ -191,8 +188,7 @@ Levels, lowest to highest: `none < read < read-write < admin`. Grants are
 **additive** — a user gets the highest level of any grant that matches their own
 SID or one of their group SIDs.
 
-Revoke symmetrically: `dfsctl share permission revoke ditto --group "CUBBIT\Cubbit"`
-(or `--sid …`).
+Revoke symmetrically: `dfsctl grant remove ditto --directory 'CUBBIT\Cubbit'`.
 
 ---
 
@@ -344,8 +340,8 @@ workstation never bleed permissions.
 |---|---|
 | `System error 1219` on `net use` | A pre-existing/"Disconnected" session to the same server under different creds. `net use * /delete /y` and `cmdkey /delete:vm2.cubbit.local`, then retry. Not a DittoFS bug. |
 | Mount falls back to NTLM or fails with a signing error | Keytab lacks AES keys (RC4-only) — Windows 11 rejects RC4 (#1318). Re-export with `-crypto AES256-SHA1` and set `msDS-SupportedEncryptionTypes`. |
-| Grant by name returns "not found" | LDAP not configured/reachable, or the name isn't a directory object. Grant by `--sid` to bypass LDAP. |
-| Access denied despite a grant | Confirm the grant with `dfsctl share permission list <share>`; confirm the user's ticket carries the granted group (their PAC group SIDs). |
+| Grant by name returns "not found" | LDAP not configured/reachable, or the name isn't a directory object. The server resolves the name through the directory before granting, so the directory must be reachable. |
+| Access denied despite a grant | Confirm the grant with `dfsctl grant list <share>`; confirm the user's ticket carries the granted group (their PAC group SIDs). |
 | `ldaps://` cert error | Set `tls.ca_cert_file` to the DC's issuing CA; do not disable verification in production. |
 
 ---

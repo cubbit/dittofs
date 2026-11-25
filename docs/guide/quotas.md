@@ -1,7 +1,7 @@
 # Quotas
 
-DittoFS enforces **per-identity** quotas on a share — by user, by group, or a
-default-user fallback — limiting both **bytes** and **inodes (file count)**. Each limit
+DittoFS enforces **per-identity** quotas on a share — by user, by group, or on the
+share itself — limiting both **bytes** and **inodes (file count)**. Each limit
 has a **soft** threshold, a **hard** ceiling, and a **grace** window between them.
 
 > Quotas are managed live on a running server via `dfsctl` (or the REST API). There is no
@@ -10,27 +10,27 @@ has a **soft** threshold, a **hard** ceiling, and a **grace** window between the
 ## Set a quota
 
 ```bash
-# A user (by UID): 10 GiB / 100k files hard, soft at 8 GiB / 90k files,
-# 7-day grace (604800s) before the soft byte limit becomes hard.
-dfsctl quota set /export --scope user --id 1000 \
-    --limit-bytes 10GiB --soft-bytes 8GiB \
-    --limit-files 100000 --soft-files 90000 --grace-seconds 604800
+# A user: 10 GiB / 100k files hard, soft at 8 GiB / 90k files,
+# 7-day grace before the soft limits are refused.
+dfsctl quota set export --user alice \
+    --hard-bytes 10737418240 --soft-bytes 8589934592 \
+    --hard-files 100000 --soft-files 90000 --grace 168h
 
-# A group (by GID): 50 GiB, no file-count limit.
-dfsctl quota set /export --scope group --id 2000 --limit-bytes 50GiB
+# A group: 50 GiB, no file-count limit.
+dfsctl quota set export --group editors --hard-bytes 53687091200
 
-# Everyone without an explicit quota (fallback template):
-dfsctl quota set /export --scope default-user --limit-bytes 5GiB
+# The share itself, with no --user or --group:
+dfsctl quota set export --hard-bytes 5368709120
 ```
 
-Sizes accept binary units (`GiB`, `MiB`, …). Omit a flag to leave that dimension
-unlimited.
+Limits are in bytes and files; 0 limits nothing. A flag not given keeps that
+limit's value.
 
 ## Inspect and remove
 
 ```bash
-dfsctl quota list /export
-dfsctl quota remove /export --scope user --id 1000
+dfsctl quota list export
+dfsctl quota remove export --user alice
 ```
 
 ## How enforcement works
@@ -39,8 +39,8 @@ dfsctl quota remove /export --scope user --id 1000
   starts; once the grace window elapses the soft limit is enforced as hard. Drop back
   under soft and the timer resets. Default-user grace is tracked per-user and survives a
   server restart.
-- **Most-specific wins.** A user is limited by its own quota if set, else its group's,
-  else the default-user fallback.
+- **Most-specific wins.** A user is limited by its own quota if set, else its group's;
+  the share's own quota bounds the share as a whole.
 - **Usage is by owner, within one share.** Bytes and inode counts are keyed by share and
   by file owner UID/GID, and stored durably alongside the files they account for — updated
   in the same transaction that writes the file, and read back at startup rather than
