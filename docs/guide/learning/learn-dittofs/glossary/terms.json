@@ -1216,5 +1216,74 @@
     "sourceLabel": "RFC 20 §7.2",
     "rfcs": ["rfc-20", "rfc-17", "rfc-29"],
     "target": ["pkg/vfs/vfstest"]
+  },
+  "chunker": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-2"],
+    "code": ["pkg/block/chunker"]
+  },
+  "stretch": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-2", "rfc-8"]
+  },
+  "artificial-end": {
+    "source": "docs/internals/rfcs/rfc-2-carver.md#24-an-artificial-end-leaves-the-tail-uncut",
+    "sourceLabel": "RFC 2 §2.4",
+    "rfcs": ["rfc-2", "rfc-8"]
+  },
+  "rolling-fingerprint": {
+    "source": "docs/internals/rfcs/rfc-2-carver.md#34-how-far-back-a-decision-looks",
+    "sourceLabel": "RFC 2 §3.4",
+    "rfcs": ["rfc-2"],
+    "code": ["pkg/block/chunker"]
+  },
+  "chunk-target": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-2"]
+  },
+  "chunk-id": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-2", "rfc-6"],
+    "code": ["pkg/block/types.go"]
+  },
+  "chunk-id-key": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-2", "rfc-5"]
+  },
+  "block-assembler": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-2", "rfc-8"],
+    "code": ["pkg/block/carver"]
+  },
+  "block-plan": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-2", "rfc-8"]
+  },
+  "block-target": {
+    "source": "docs/internals/rfcs/rfc-2-carver.md#52-packing-rules",
+    "sourceLabel": "RFC 2 §5.2",
+    "rfcs": ["rfc-0", "rfc-2", "rfc-3", "rfc-13"]
+  },
+  "zero-ref": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-2", "rfc-6"]
+  },
+  "put-attempt": {
+    "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
+    "sourceLabel": "RFC 0 · Glossary",
+    "rfcs": ["rfc-0", "rfc-2", "rfc-3", "rfc-8"]
+  },
+  "chunking-key": {
+    "source": "docs/internals/rfcs/rfc-2-carver.md#6-boundaries-are-public",
+    "sourceLabel": "RFC 2 §6",
+    "rfcs": ["rfc-2", "rfc-5"]
   }
 }

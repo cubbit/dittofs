@@ -1,0 +1,476 @@
+{
+  "title": "RFC 2 — the carver",
+  "cover": {
+    "kicker": "Learn DittoFS · RFC 2",
+    "title": "The [[carver|carver]]",
+    "lead": "Before bytes go to the bucket, they are cut into pieces and the pieces are packed into boxes. This deck explains where the cuts fall, how each piece is named, and why an edit changes only the pieces around it.",
+    "built": "Built from RFC 2 at {commit}",
+    "notes": "Source: docs/internals/rfcs/rfc-2-carver.md, commit {commit}. The RFC specifies behaviour, not the current code. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition."
+  },
+  "intro": {
+    "twoTitle": "RFC 2 in two sentences",
+    "two": "The [[carver]] cuts the bytes waiting for upload into [[chunk|chunks]], choosing every cut from the content itself, and names each chunk by a keyed hash of its bytes. The [[block-assembler|block assembler]] then packs whole chunks into [[block|blocks]] of about 4 MiB, the objects the bucket holds, and neither of them reads a disk, calls the network or keeps anything between calls.",
+    "twoNotes": "From 'Start here · In plain words' and §1 Purpose. The carver answers one question: given an unbroken stretch of a file's bytes, where do the chunk boundaries fall and what is each chunk's hash? Building blocks is a fold over its output, done by the block assembler (§5). 'Both are pure functions': 'Start here · In plain words'.",
+    "knownLead": "These terms come from RFC 0's glossary and from the RFCs this one builds on, the journal (RFC 1) and the engine (RFC 8). Click one to see its definition.",
+    "knownNotes": "Every definition restates RFC 0's glossary row, which is the definition of record.",
+    "newNotes": "From 'Start here · The words you need' (chunk ID, chunker and carver, stretch, Target/Min/Max, block plan, put attempt), plus the artificial end (§2.4), the rolling fingerprint (§3.2, §3.4, 'Background'), the chunk-ID key (§4.1), the block name (§4.2), the block assembler (§5), the zero ref (§5.1), the block target (§5.2) and the chunking key (§6).",
+    "clashNotes": "Block: RFC 0 §2.1 defines it as one object in the bucket; a filesystem's block is the everyday sense. Chunk: the deck's own framing, against an S3 multipart part and HTTP chunked transfer."
+  },
+  "problem": {
+    "title": "Two ways to get the upload wrong",
+    "c1Title": "One object per file",
+    "c1": "build01, a build server, untars 2,000 small files of about 30 KiB, plus one 40 MiB archive, into the `builds` [[share]]. Uploaded one file at a time, that makes 2,001 objects, and object stores are slow on small objects.",
+    "c2Title": "A cut every 256 KiB",
+    "c2": "Next week build01 untars the same archive with 100 bytes inserted near its start. If the archive is cut every 256 KiB, the content of every piece after the insert shifts by 100 bytes, so every one of them gets a new name.",
+    "answer": "The [[carver]] answers both. It cuts where the content says, so the pieces after an edit keep their names, and the [[block-assembler|block assembler]] packs whole pieces from many files into [[block|blocks]] of about 4 MiB.",
+    "notes": "'Start here · The problem, in one example' (build01, the builds share, 2,000 files of about 30 KiB, the 40 MiB archive, 25 uploads rather than 2,001 objects; 'object stores are slow on small objects') and its closing paragraph (the archive untarred again with 100 bytes inserted near its start; every one of the 160 names after the insert would change)."
+  },
+  "shift": {
+    "title": "One insert, two ways of cutting",
+    "footer": "Only a piece that keeps its name can ever be recognised as already stored. Matching stored pieces by name, called [[deduplication]], is off in the first release, but the way of cutting is fixed now: once content is stored, changing how it is cut is a migration, not a setting.",
+    "notes": "Closing paragraph of 'Start here · The problem', §1 Purpose and §3.1 B4 (shift resistance: inserting or deleting bytes re-cuts only the chunks near the edit). The RFC says 'only the one or two chunks around the insert change'; the scene shows one. Its four pieces stand for the archive's 160. The footer: 'Start here · The problem', last sentence, and §3.6."
+  },
+  "promises": {
+    "items": [
+      "The same bytes under the same settings are cut at the same places and get the same names, on any machine and with any version of DittoFS.",
+      "An edit changes only the one or two [[chunk|chunks]] around it. Every chunk further on keeps its place and its name.",
+      "At the default settings every chunk is between 64 KiB and 1 MiB long, except the last one of a run of bytes that really ends there. Repetitive data cannot become one huge chunk.",
+      "A [[block]] holds whole chunks only, never part of one, and at most 1,024 of them."
+    ],
+    "notes": "'Start here · What this RFC promises', §3.1 B2 and B4, §3.2 (Min = Target ÷ 4 and Max = 4 × Target, at the default Target of 256 KiB), §5.2 P1 and P4. 'A run of bytes that really ends' is a stretch with a real end (§2.1, §2.4), shown later in the deck.",
+    "title2": "What the RFC promises, continued",
+    "items2": [
+      "A chunk of nothing but zeros is never uploaded. The file records that those bytes read as zeros instead.",
+      "A failed cut never hands over a shortened chunk, and cutting the same bytes again gives the same chunks.",
+      "Each attempt to upload a block gets a name of its own, and no other attempt ever uses that name.",
+      "Changing how a [[namespace]] cuts its files is reported as a migration. It is never applied quietly, as if it were an ordinary configuration change."
+    ],
+    "footer": "What it does not promise: someone who can read the bucket sees how long every chunk is, and this layer does not hide which files are stored. An encrypting namespace hides a little more, as a later slide explains.",
+    "notes2": "'Start here · What this RFC promises': the zero ref (RFC 6 §3.5, §5.1), §7 Errors, §4.2 (a block name is minted once, for one put attempt), §3.6 (a migration, never a quiet configuration change), §6 ('This layer does not hide which files a deployment holds'). The encrypting case is scoped on the 'Cuts are public' slide."
+  },
+  "model": {
+    "kicker": "The model"
+  },
+  "ribbon": {
+    "title": "Cutting a ribbon at a stitch pattern",
+    "analogyTitle": "Analogy",
+    "analogy": "Picture cutting a long ribbon wherever a certain stitch pattern appears, not every 10 cm. Sew a bit extra near the start, and only the piece holding the new bit changes. Every later piece still ends at the same stitches, so it keeps its name.",
+    "stopsTitle": "Where it stops holding",
+    "stops": "No stitch is marked in advance. The [[chunker]] works out from the last 64 bytes alone whether a spot is a cut, and it keeps every piece between a minimum and a maximum length.",
+    "boxes": "The [[block-assembler|block assembler]] then packs whole pieces into boxes of about 4 MiB, the [[block|blocks]], and never splits a piece across two boxes.",
+    "notes": "The analogy and its limit are the RFC's own: 'Start here · In plain words'."
+  },
+  "example": {
+    "title": "One untar, followed through",
+    "notes": "'Start here · The problem, in one example', steps 1–4, and its diagram. Chunk sizes between 64 KiB and 1 MiB, 256 KiB on average (§3.2). The chunk ID is keyed BLAKE3 under the namespace's chunk-ID key (§4.1). The block target and whole chunks (§5.2). The engine drives the assembler and puts the blocks through the syncer (§5, RFC 3, RFC 8). About 100 MB is the RFC's own rounding of 60 MB plus 40 MiB."
+  },
+  "layers": {
+    "title": "Two layers: where, and what",
+    "table": [
+      [
+        "",
+        "[[chunker|Chunker]]",
+        "[[carver|Carver]]"
+      ],
+      [
+        "Answers",
+        "where does the next chunk in this buffer end?",
+        "which chunks are in this [[stretch]], and what are they called?"
+      ],
+      [
+        "Given",
+        "the settings and a buffer of at least `Max` bytes, or a shorter last one",
+        "the settings, a reader for the bytes, the file offset they start at, and whether their end is real"
+      ],
+      [
+        "Gives back",
+        "one position",
+        "each chunk, handed to a function the caller passes: its offset, length, hash and bytes; then how many bytes it cut"
+      ],
+      [
+        "Keeps between calls",
+        "nothing",
+        "nothing"
+      ],
+      [
+        "Allocates memory",
+        "never",
+        "never, because the caller lends it the buffer"
+      ]
+    ],
+    "footer": "Neither does the other's job. The chunker never hashes or reads, and the carver never works out a cut itself. That split lets the cutting rules be checked against a plain buffer of bytes, with nothing to read and nothing to hash.",
+    "notes": "§1.2, its table abridged, and 'Neither does the other's job' (the chunker MUST NOT hash, hold a file offset, read or allocate; the carver MUST NOT work out a boundary itself). The reason for the split is §1.2's last paragraph. One call covers one unbroken stretch: §2.1."
+  },
+  "quizShift": {
+    "question": "build01 untars the 40 MiB archive again, with 100 bytes inserted near its start. Which [[chunk|chunks]] get new names?",
+    "options": [
+      "Every chunk after the insert, since each of them now starts 100 bytes later.",
+      "Only the one or two chunks around the insert; the others keep their names.",
+      "None of them, since a chunk's name comes from its file and its offset."
+    ],
+    "why": [
+      "That is what cutting at a fixed size does. Cut by content, every chunk after the insert still ends at the same bytes, so it holds the same bytes and keeps its name.",
+      "Each cut depends only on the 64 bytes just before it and on where the previous cut fell. Past the insert, the cuts fall in the same places in the content, so only the chunks around the insert hold different bytes.",
+      "A [[chunk]]'s name is a hash of its bytes alone, never of its file or its offset. The chunk that now holds the inserted bytes gets a new name."
+    ],
+    "notes": "Closing paragraph of 'Start here · The problem' (only the one or two chunks around the insert change), §3.1 B4, §3.4 (a decision looks back 64 bytes), §4.1 (nothing but the bytes and the key goes into the hash)."
+  },
+  "how": {
+    "kicker": "How it works"
+  },
+  "settings": {
+    "title": "One setting, and two bounds",
+    "table": [
+      [
+        "",
+        "Value",
+        "What it means"
+      ],
+      [
+        "`Target`",
+        "chosen per [[namespace]], 256 KiB by default",
+        "the average [[chunk]] length actually produced, on data with no pattern in it"
+      ],
+      [
+        "`Min`",
+        "a quarter of `Target`, so 64 KiB",
+        "no chunk is shorter, except the last one of a run of bytes that really ends"
+      ],
+      [
+        "`Max`",
+        "four times `Target`, so 1 MiB",
+        "no chunk is longer, ever"
+      ]
+    ],
+    "footer": "`Target` must be a power of two from 64 KiB to 4 MiB. It is fixed when the namespace is created, and every [[share]] in the namespace cuts with it. If a namespace asks for a value outside that range, such as 32 KiB, DittoFS refuses it with an error at startup and never quietly falls back to the default.",
+    "notes": "§3.2 (one setting; Min and Max derived and not configured; per namespace, not per share, because two shares cutting one namespace's content differently would cut identical files into different chunks), §3.7 (power of two; floor 64 KiB Target, so 16 KiB Min; ceiling 16 MiB Max, so 4 MiB Target; refused, never replaced), 'Start here · Scenarios', the 32 KiB namespace. Why one setting: Min moves deduplication by under 1% (Appendix C)."
+  },
+  "search": {
+    "title": "How the [[chunker]] finds a cut",
+    "notes": "§3.2 'The derivation, exactly' (a gear fingerprint; a boundary where the top m bits are zero, m = t + 1 below Target and t − 3 from Target on, so the test is stricter before Target than after; no position below Min tested; a chunk reaching Max ends there; the mean, skip included, is about 0.96 × Target), §3.4 (the 64 bytes are exact: a byte's contribution is shifted out after 64 shifts), §3.8 (repetitive data). The scene is drawn to scale, one chunk of about 290 KiB."
+  },
+  "repetitive": {
+    "title": "Repetitive data runs to the maximum",
+    "lead": "Log files, fixed-width CSV records, zero-filled regions and virtual-disk images full of identical pages all repeat. Over 64 MiB at the default settings, in a namespace that does not encrypt, the RFC predicts this:",
+    "table": [
+      [
+        "Input",
+        "Chunks",
+        "Average length",
+        "Cuts found"
+      ],
+      [
+        "random bytes",
+        "about 270",
+        "just under 256 KiB",
+        "as normal"
+      ],
+      [
+        "all zeros",
+        "64",
+        "1 MiB, the maximum",
+        "none, ever"
+      ],
+      [
+        "a pattern repeating every 64 bytes or less, where the test never passes",
+        "64",
+        "1 MiB",
+        "none, ever"
+      ],
+      [
+        "the same, where the test passes at one place in the pattern",
+        "depends on the pattern",
+        "a fixed multiple of the pattern",
+        "at that fixed multiple"
+      ],
+      [
+        "a pattern repeating every 4 KiB",
+        "depends on the pattern",
+        "a fixed multiple of 4 KiB, at least 64 KiB",
+        "at a fixed period, or none"
+      ]
+    ],
+    "footer": "The fingerprint sees only the last 64 bytes, so data that repeats that often gives it only a few values, and if none of them passes the test, none ever will. So `Max` is not a rare backstop: on repetitive data it is where most chunks end. Zeros cost nothing anyway: such a chunk is recorded as a [[zero-ref|zero ref]] and never uploaded.",
+    "notes": "§3.8, its table (predictions, not measurements, under the unkeyed table) and its three consequences: Max is load-bearing, repetitive data does not dedup well and cannot, and where the period is longer than the window chunking becomes fixed-size at a multiple of it. Under a keyed table (an encrypting namespace) one of the fingerprints may match even on zeros (§3.8). The 64-byte rows merge the RFC's 64-byte pattern and 44-byte text rows. Zero refs: RFC 6 §3.5, §5.1."
+  },
+  "tail": {
+    "title": "An [[offer]] that stops early leaves its tail uncut",
+    "footer": "If build01 stops writing, the tail does not wait forever. The engine sets a maximum age for bytes waiting to be uploaded. Once the tail's oldest byte reaches it, the engine may tell the carver that the end is real, and the tail is cut as the file's last chunk.",
+    "notes": "§2.4 An artificial end leaves the tail uncut; 'Start here · Scenarios', the growing build log. Why: a tail cut at a limit is a chunk whose end was chosen by the limit, and every chunk after it would be cut from a start no earlier cut shares (§3.5). The age exception is RFC 8 §6.2. A second exception, widening back over a short forced chunk, is in §2.4 and RFC 8 §6.7."
+  },
+  "quizTail": {
+    "question": "An [[offer]] reaches the most bytes it may hold in the middle of a growing file. What becomes of the bytes after the last cut the content gave?",
+    "options": [
+      "They are cut into one short chunk, so that the whole offer is uploaded.",
+      "They are dropped from the journal, and the client has to write them again.",
+      "They stay Dirty, and the next offer starts cutting from that last cut."
+    ],
+    "why": [
+      "That chunk would end where the offer's cap fell, not where the content says. The next offer would start there, so its cuts would not match the ones a single long run of bytes gets.",
+      "The [[journal]] never drops bytes that have not been uploaded yet. These bytes are simply left uncut for now.",
+      "The [[carver]] hands over nothing after the last cut the content gave. The tail stays [[dirty|Dirty]], and the next offer cuts exactly as one long run of bytes would have."
+    ],
+    "notes": "§2.4: on an artificial end, Cut MUST NOT emit any byte after the last boundary the chunker found; the tail stays Dirty and is re-offered from that boundary. RFC 1 §3.5: the journal never releases bytes not reported offloaded."
+  },
+  "names": {
+    "kicker": "Names"
+  },
+  "chunkid": {
+    "title": "A [[chunk]]'s name comes from its content",
+    "items": [
+      "A [[chunk-id|chunk ID]] is a 32-byte BLAKE3 hash of the chunk's bytes, keyed with its [[namespace]]'s [[chunk-id-key|chunk-ID key]].",
+      "Nothing else goes into the hash: not the offset, the length, the file or a version. The same bytes in the same namespace always get the same ID.",
+      "Every namespace draws its key when it is created, whether it encrypts or not, and never changes it, because a new key would rename every chunk."
+    ],
+    "encTitle": "In an encrypting namespace",
+    "enc": "The key is stored encrypted under a master key. Someone who reads the bucket but can cause no write into the namespace cannot hash a file of their own and look for its chunks.",
+    "plainTitle": "In a non-encrypting namespace",
+    "plain": "The key is stored in the clear beside the [[block|blocks]], so the data never becomes unreadable because a key was lost. Here the keyed ID hides nothing.",
+    "notes": "§4.1 (keyed BLAKE3-256; MUST NOT feed an offset, file identity, length, settings profile or version into the hash; the key exists from the first release for every namespace, held as RFC 5 Appendix B.2 states; it never rotates). 'Start here · The problem' step 2. Why every namespace is keyed from the start: changing the chunk ID later would migrate every chunk record, header and export already written (§4.1)."
+  },
+  "blockname": {
+    "title": "A [[block-name|block name]] is used once",
+    "lead": "A block's name is a hash of its [[namespace]], a fresh 16-byte random number, the transforms that encode it (compression or encryption, for example), and its chunks' IDs in order.",
+    "steps": [
+      "The [[engine]] takes a [[block-plan|block plan]] from the block assembler, draws the random number, and so mints the name.",
+      "Before the first upload under that name, it durably records a [[put-intent|put intent]] for it.",
+      "The upload times out. Every retry within this [[put-attempt|attempt]] reuses the same name and the same plan, and writes the same bytes.",
+      "The attempt is abandoned. A new attempt at the same chunks draws a new random number, so it gets a new name."
+    ],
+    "rule": "No name is ever uploaded by two attempts, so no name ever has to be defended against a second writer.",
+    "notes": "§4.2 (the derivation: context 'dittofs content-defined block name v2', the scope's canonical encoding, a 16-byte nonce from a cryptographic source written into the block header, the chain ID, the chunk IDs; the put attempt; the put intent) and 'Start here · Scenarios', the put retried, then abandoned. The random number is the RFC's nonce; the encoding is its chain ID (RFC 5 §2.8). Order counts: the same chunks in another order get another name. The price: two writers carrying the same chunks make two objects (§4.2). Why a retried put is safe: RFC 3 §2.5."
+  },
+  "pack": {
+    "kicker": "Packing"
+  },
+  "assembler": {
+    "title": "Each [[chunk]] is zero, adopted or carried",
+    "lead": "The [[block-assembler|block assembler]] takes the chunks one at a time and decides what becomes of each one.",
+    "table": [
+      [
+        "The chunk",
+        "What the file records",
+        "In a block?"
+      ],
+      [
+        "**zero**: all zeros",
+        "a [[zero-ref|zero ref]], which reads as zeros",
+        "no"
+      ],
+      [
+        "**adopted**: already stored, once [[deduplication]] exists",
+        "a [[ref]] to the chunk already stored",
+        "no"
+      ],
+      [
+        "**carried**: anything else",
+        "a ref to the chunk, which this block carries",
+        "yes, in the block being planned"
+      ]
+    ],
+    "footer": "Deduplication is off in the first release, so the middle row does not happen yet. Only carried bytes count towards the 4 MiB [[block-target|block target]]. Otherwise, once deduplication exists, a file whose chunks are mostly stored already would give blocks only a few kilobytes long.",
+    "notes": "§5.1 (the three dispositions; the lookup is passed in as a function, RFC 8 §6.5), §5.2 P3 and P5 ('or a mostly-deduplicated file yields blocks of a few kilobytes'), 'Start here · In short' and the note in §4.3 (dedup off in the first release). A chunk repeated within one pending block is carried once and referenced each time (P6)."
+  },
+  "packing": {
+    "title": "How [[block|blocks]] are packed",
+    "items": [
+      "A block fills up to its target of 4 MiB. Where its total crosses that line, the chunk that crossed stays whole, so the block comes out a little bigger, 4.2 MiB for example.",
+      "Each block starts with a header that lists its chunks, and a block holds at most 1,024 of them. That bounds the header when many short chunks sit between [[hole|holes]].",
+      "A block takes chunks from one file after another: the end of a large file, several small files whole, and the start of the next one. A file's chunks in a block stay together and in order.",
+      "A block never mixes two [[share|shares]] or two [[namespace|namespaces]], and one update of the metadata records the chunks of every file it holds."
+    ],
+    "notes": "§5.2 P1, P2 and P4 (N = 1,024 in this block format), §5.3 (packing across files: only within one share, a file's chunks contiguous, one commit per block, RFC 6 §4.1). The 4.2 MiB example: 'Start here · The problem' step 4. The block target is settable from 1 MiB to 64 MiB and a value outside is refused at startup (§5.2)."
+  },
+  "whole": {
+    "title": "Never half a chunk, and rarely a short block",
+    "splitTitle": "A chunk split across two blocks",
+    "split": [
+      "The metadata records one place for each chunk, and a split chunk would have two.",
+      "Reading it would take two requests instead of one.",
+      "The count of files using the chunk, which decides when it may be deleted, would describe half a chunk."
+    ],
+    "shortTitle": "The short last block",
+    "short": "A block falls short of the target only when the 1,024-chunk cap closed it, or when it is the last block of its pass. The [[block-assembler|block assembler]] may hold that last block back, so its bytes stay [[dirty|Dirty]] and are cut again by the next pass. But once its oldest bytes reach the maximum age the engine sets for bytes waiting to be uploaded, it is uploaded however short it is.",
+    "notes": "The split: 'Start here · The problem' step 4 and §5.2 (P1 is RFC 0 §2.2: one hash naming content in two places stops being a locator, and a refcount stops having a single answer). The short last block: §5.2 P2, §5.4 (at most one short block per pass, none waits past the age ceiling, RFC 8 §6.2)."
+  },
+  "cutfail": {
+    "title": "Reading fails halfway through a cut",
+    "steps": [
+      "The [[carver]] is part-way through the 40 MiB archive and has already handed some chunks over.",
+      "The reader the carver was handed for the bytes returns an error. The carver stops and returns that error.",
+      "The chunks already handed over stay delivered, and the carver does not take them back.",
+      "The chunk it was building is dropped, never handed over shortened. A short chunk would look like a real last chunk, and its hash would name a chunk that no clean cut of these bytes ever produces.",
+      "The bytes stay [[dirty|Dirty]] and the pass is tried again. Cutting keeps no state, so the same bytes give the same chunks."
+    ],
+    "outcome": "A failed pass costs work, never correctness.",
+    "notes": "'Start here · Scenarios', reading the offered bytes fails halfway through a cut; §7 Errors (stop and return the error; MUST NOT take back delivered chunks; MUST drop a part-built chunk; MUST NOT report anything as stored; the extents stay Dirty, RFC 0 §5.2); §3.5 (deterministic)."
+  },
+  "migration": {
+    "title": "Changing the cut is a migration",
+    "items": [
+      "Reading never cuts anything again. A file's list of [[chunk|chunks]] fixes where its cuts are, so content cut under one setting reads fine under any other.",
+      "New writes under a new `Target` are cut in other places, get other names, and match nothing already stored.",
+      "So DittoFS records which settings cut a [[namespace]]'s content, and reports a change of them as a migration instead of quietly applying it.",
+      "Content brought in from another namespace, for example by restoring a backup, keeps its cuts. But any of its chunks longer than this namespace's `Max` is cut again, or the move is refused."
+    ],
+    "footer": "The [[block-target|block target]] is different. It changes no chunk and no name, so a new value applies from the next block, with no migration.",
+    "notes": "§3.6 (reading never re-cuts; a change MUST NOT be treated as a configuration change; the settings that produced a namespace's content MUST be recorded; content cut elsewhere keeps its cut within the destination's Max, RFC 27 §2.7, so every buffer sized by Max — the carver's, the syncer's per worker, a cold read's — holds every chunk the namespace serves), §5.2 and §5.6 (the block target needs no migration)."
+  },
+  "quizCut": {
+    "question": "Reading fails while the [[carver]] is halfway through a [[chunk]]. What becomes of that half-built chunk?",
+    "options": [
+      "It is dropped, and the retried pass cuts the same bytes into the same chunks.",
+      "It is handed over as a short chunk, since the bytes it holds were read correctly.",
+      "The carver keeps it until the next pass, which finishes it and hands it over."
+    ],
+    "why": [
+      "Cutting keeps no state and depends only on the bytes, so the retry over the bytes still [[dirty|Dirty]] in the journal cuts exactly the chunks a clean pass would have.",
+      "A short chunk would look like a real last chunk, and its hash would name a chunk that no clean cut of these bytes ever produces. So it is never handed over.",
+      "The carver keeps nothing between calls. The bytes are still in the [[journal]], and the next pass reads them again from there."
+    ],
+    "notes": "§7 Errors (a part-built chunk MUST be dropped, never handed over short; the carver MUST NOT keep state that would let a retry cut differently), §1.2 (nothing kept between calls), §3.5."
+  },
+  "privacy": {
+    "kicker": "What a bucket reader sees"
+  },
+  "public": {
+    "title": "Cuts are public",
+    "items": [
+      "The way cuts are chosen is fixed in the source code, and the settings are no secret. In a non-encrypting [[namespace]], anyone can work out where a given file's cuts fall.",
+      "The lengths of a file's [[chunk|chunks]] are a fingerprint: three or four of them in a row already single a file out.",
+      "Someone who can read the bucket sees every chunk's length, in every [[block]]'s header, whether the namespace encrypts or not.",
+      "So this layer does not hide which files a namespace holds."
+    ],
+    "encTitle": "In an encrypting namespace",
+    "enc": "There, where the cuts fall also depends on a secret [[chunking-key|chunking key]]. That hides which file a run of lengths belongs to, but only from a bucket reader who can cause no write into the namespace and knows none of its stored content. Anyone who knows some stored file, a standard installer for example, can work the key's effect out, so in practice it hides little.",
+    "notes": "§6 Boundaries are public: the known-file channel; 'everything, for any file of more than a few chunks' (about eighteen bits per length at a 256 KiB Target); lengths in every header (RFC 4 §3.2) and the clear envelope of encrypted bodies (RFC 5 Appendix B.5); keyed boundaries and their scope, which MUST NOT be described as hiding which files a namespace holds from anyone else; recent work [5] recovers keyed-chunking keys from the lengths of known or chosen content. The ponytail marker in §6 names the upgrade, a keyed PRF at each candidate position."
+  },
+  "numbers": {
+    "n1": "256 KiB",
+    "w1": "the default average [[chunk]] length, `Target`, chosen per [[namespace]]",
+    "n2": "64 KiB – 1 MiB",
+    "w2": "the shortest and longest chunk at the default, a quarter of `Target` and four times it",
+    "n3": "64 B",
+    "w3": "how far back a cut looks: the [[rolling-fingerprint|fingerprint]] forgets every older byte",
+    "n4": "4 MiB",
+    "w4": "the default [[block-target|block target]], settable from 1 MiB to 64 MiB",
+    "n5": "1,024",
+    "w5": "the most chunks one [[block]] may hold",
+    "n6": "about 4,096",
+    "w6": "chunk records per GiB of random data at the default, one for each chunk",
+    "notes": "§3.2 (Target, Min, Max; 4,096 chunk records per GiB and about 8.6×10⁹ at 2 PB, on random input), §3.4 (64 bytes, exact), §5.2 (block target 4 MiB, 1 MiB to 64 MiB; P4's 1,024). At 256 KiB a 4 KiB cold read fetches about 0.3 MiB (§3.2, Appendix C)."
+  },
+  "tests": {
+    "kicker": "Testing"
+  },
+  "testable": {
+    "title": "Tested with a buffer and a function",
+    "items": [
+      "Neither layer reads a disk, calls the network, looks at a clock or starts a goroutine. A check builds the settings, hands the [[carver]] a buffer of bytes and a function, and looks at what the function received.",
+      "Same input, same output: two implementations, or one before and after a change, are run over the same random bytes and must cut identical chunks.",
+      "Fixed test vectors pin the cuts and the names. A changed vector fails the build, because a changed way of naming would orphan every block already stored, and a changed cut would be a migration nobody chose.",
+      "The [[engine]] exports metrics on what each pass cut, and the chart of chunk lengths matters most. A wrong average costs storage, never correctness, so nothing else would notice it."
+    ],
+    "kill": "If a check needs anything more, such as a store or a temporary directory, the implementation has picked up a dependency it is not allowed to have, and that is the finding.",
+    "notes": "§1.3 (testable by construction: no store, fake backend, temp directory, network, clock or goroutine), §10.1 (golden vectors, properties fuzzed, differential), §4.2 (a changed name vector MUST fail the build: a changed construction orphans every block already stored), §2.3 (metrics exported by the engine, labelled by namespace; carver_chunk_size_bytes matters most), §9 (the fixture rule)."
+  },
+  "whom": {
+    "engTitle": "Engine developers",
+    "eng": "The bytes the [[carver]] hands over are borrowed from your buffer for the length of one call, so copy them if you keep them. Tell it whether a run's end is real, and offer the tail again from the point it reports.",
+    "ops": "Choose `Target` when you create a [[namespace]], since changing it later is a migration, and a bad value is refused at startup. Watch the chart of chunk lengths: a spike at the minimum means the test that picks cuts is not following `Target`.",
+    "storeTitle": "Format and store authors",
+    "store": "A [[block-name|block name]] covers the namespace, a fresh random number, the transforms that encode it and the chunk IDs. A test vector pins how it is built, and the random number is written into the block's header, so reading the whole block can check the name.",
+    "notes": "§2.2 (borrowed bytes; a caller that keeps them MUST copy them), §2.4 (realEnd, consumed), §3.6 and §3.7 (migration, refusal), §2.3 (carver_chunk_size_bytes; a spike on Min means the boundary test does not follow Target, §3.3), §4.2 (the name's construction; the nonce in the block header, RFC 4 §3.2; the golden vector)."
+  },
+  "rules": {
+    "items": [
+      "Every cut is chosen from the content, never from a position or a running count.",
+      "No chunk is longer than `Max`. None is shorter than `Min`, except the last one of a run of bytes that really ends.",
+      "Content is never padded to make a chunk longer.",
+      "A chunk's name comes from its bytes and its [[namespace]]'s key, and from nothing else.",
+      "A [[block]] holds whole chunks only, and a block name is never minted twice."
+    ],
+    "footer": "Two rules need no checking, because the design makes them impossible to break. A chunk cannot straddle a [[hole]], because one call only ever sees one unbroken run of bytes. And there is no state to clear between calls, because none is kept.",
+    "notes": "§3.1 B1 and B3; §2.1 (MUST NOT pad); §4.1; §5.2 P1; §4.2; §8 Invariants (C1–C11) and the paragraph after it."
+  },
+  "nongoals": {
+    "title": "What the [[carver]] does not do",
+    "items": [
+      "It opens, reads and writes nothing itself. It is handed the bytes to read and hands back what it cut.",
+      "It does not decide when to cut or which bytes to offer. That is the [[engine]]'s policy.",
+      "It does not build blocks: the [[block-assembler|block assembler]], a separate layer the engine drives, packs the chunks. Nor does it upload anything or find out whether an upload worked.",
+      "It does not know whether a chunk is already stored, and asks no other component.",
+      "It keeps nothing between calls."
+    ],
+    "footer": "Its only dependencies are Go's standard library and a BLAKE3 implementation, and a test enforces that.",
+    "notes": "§1.1 Non-goals (the carver MUST NOT open, read or write anything; decide when to cut, which is offload policy, RFC 0 §5.2; build blocks or upload; know whether a chunk is stored; know what a segment, record, block or remote key is; keep state). The import test is a MUST."
+  },
+  "openQuestions": {
+    "questions": [
+      "**The default `Target`.** 256 KiB was chosen from measurements on whole files. It becomes final only once the same measurements have run through the real offload path, before content is first written under it. Another value is adopted if it beats 256 KiB there by a wider margin than 256 KiB had in the whole-file measurements."
+    ],
+    "settled": "The RFC records five other questions as settled: how the test follows `Target`, that `Min` is derived rather than set, how much cuts give away, that chunk IDs are keyed from the start, and the block target's default and range.",
+    "notes": "§11 Open questions: one is open, five settled. 'Target is a set-point, not a benchmark target': the index's measured-value-plus-headroom rule does not apply to it."
+  },
+  "scenes": {
+    "cast": {
+      "journal": "journal",
+      "chunker": "chunker",
+      "where": "where?",
+      "carver": "carver",
+      "what": "what?",
+      "assembler": "block assembler",
+      "pack": "whole chunks",
+      "bucket": "bucket"
+    },
+    "pipeline": {
+      "steps": [
+        "The [[journal]] [[offer|offers]] the bytes build01 wrote to `builds`: 2,000 small files and the 40 MiB archive, each file as one unbroken run of bytes.",
+        "The [[chunker]] picks where each [[chunk]] ends. A 30 KiB file is shorter than the 64 KiB minimum, so it is one chunk, and the archive becomes about 160 chunks of 256 KiB on average.",
+        "The [[carver]] names each chunk by its [[chunk-id|chunk ID]], a 32-byte keyed hash of its bytes.",
+        "The [[block-assembler|block assembler]] takes the chunks file after file, and closes a [[block]] each time it reaches 4 MiB. About 100 MB becomes about 25 blocks.",
+        "The [[engine]] has each block uploaded to the bucket by the [[syncer]]: 25 uploads instead of 2,001 objects."
+      ],
+      "files": "2,000 files + 40 MiB",
+      "ids": "32-byte IDs",
+      "blocks": "~25 blocks",
+      "puts": "25 uploads"
+    },
+    "shift": {
+      "steps": [
+        "Cut at a fixed size, the archive is pieces A, B, C and D, each exactly 256 KiB long.",
+        "Insert 100 bytes near the start, and the content of every piece shifts by 100 bytes. All four pieces now hold different bytes, so all four get new names.",
+        "Cut by content, the same archive is pieces P, Q, R and S, and each one ends where its own bytes call for a cut.",
+        "After the same insert only the piece around it, here P, holds different bytes; sometimes its neighbour changes too. Q, R and S still end at the same places in the content, so they keep their names."
+      ],
+      "fixed": "fixed",
+      "content": "by content"
+    },
+    "search": {
+      "steps": [
+        "The first 64 KiB of every chunk, the minimum, are never tested, so no chunk can come out shorter than that.",
+        "From there on, the [[rolling-fingerprint|rolling fingerprint]] is updated with every byte. It depends only on the last 64 bytes. A cut therefore depends only on those bytes and on where the previous cut fell, since no byte within `Min` of that cut is tested.",
+        "At each byte the fingerprint is tested. The test is stricter before `Target`, 256 KiB by default, than after it, so chunk lengths cluster near `Target`, and average about `Target`. Where it passes, the chunk ends.",
+        "On data that repeats, the test may never pass. Then nothing but the 1 MiB maximum ends the chunk, unless the bytes on offer run out first."
+      ],
+      "searched": "searched",
+      "repeating": "repeating data",
+      "notTested": "not tested",
+      "window": "last 64 bytes",
+      "cut": "cut",
+      "max": "cut at Max: 1 MiB"
+    },
+    "tail": {
+      "steps": [
+        "The [[engine]] caps how many bytes one [[offer]] may hold. build01 is still adding to `build.log` when an offer reaches that cap and stops. That end is artificial, because the file's bytes carry on after it.",
+        "The [[carver]] hands over [[chunk|chunks]] up to the last cut the content gave, here C1 and C2, and reports how many bytes it cut.",
+        "It cuts nothing after that. The tail, always shorter than the 1 MiB maximum, stays [[dirty|Dirty]] in the journal.",
+        "The next offer starts on that last cut, so C3 and C4 fall exactly where one long run of bytes would have put them."
+      ],
+      "offer1": "offer 1, up to its cap",
+      "offer2": "offer 2",
+      "held": "tail",
+      "dirty": "stays Dirty"
+    }
+  }
+}
