@@ -165,6 +165,7 @@ func TestCarverIsPure(t *testing.T) {
 		{"carve", "", nil},
 		{"carve", "state.go", []string{"var tables is state"}},
 		{"carve", "iface.go", []string{"type Cutter is an interface"}},
+		{"carve", "init.go", []string{"func init is not a method"}},
 		{"assembler", "", nil},
 		{"assembler", "state.go", []string{"var open is state"}},
 		{"assembler", "iface.go", []string{"type Assembler is an interface"}},
@@ -189,7 +190,7 @@ func TestCarverIsPure(t *testing.T) {
 
 // byteless reports each field reachable from t that could hold chunk bytes,
 // by its path from t. A plan may hold integers, booleans, byte arrays (the
-// entity package's hashes and IDs), time.Time and time.Duration, and structs
+// entity package's hashes and IDs, none longer than a hash), time.Time and time.Duration, and structs
 // of pkg/carver and slices of them, walked recursively; anything else, a
 // []byte, a string, a pointer, a map, an interface, fails (RFC 2 §5.5).
 func byteless(t reflect.Type, path string) []string {
@@ -198,7 +199,7 @@ func byteless(t reflect.Type, path string) []string {
 		return nil
 	case t.Kind() == reflect.Bool, t.Kind() >= reflect.Int && t.Kind() <= reflect.Uint64:
 		return nil
-	case t.Kind() == reflect.Array && t.Elem().Kind() == reflect.Uint8:
+	case t.Kind() == reflect.Array && t.Elem().Kind() == reflect.Uint8 && t.Len() <= len(entity.ChunkHash{}):
 		return nil
 	case t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Struct:
 		return byteless(t.Elem(), path+"[]")
@@ -223,6 +224,7 @@ type (
 	plantedInterface struct{ Data error }
 	plantedNested    struct{ Chunks []plantedBytes }
 	plantedForeign   struct{ Ref entity.ChunkRef }
+	plantedArray     struct{ Data [4096]byte }
 )
 
 // A plan holds hashes and positions, never chunk bytes: BlockPlan passes, and
@@ -240,6 +242,7 @@ func TestPlanHoldsNoBytes(t *testing.T) {
 		{reflect.TypeFor[plantedInterface](), []string{"plan.Data is error"}},
 		{reflect.TypeFor[plantedNested](), []string{"plan.Chunks[].Data is []uint8"}},
 		{reflect.TypeFor[plantedForeign](), []string{"plan.Ref is entity.ChunkRef"}},
+		{reflect.TypeFor[plantedArray](), []string{"plan.Data is [4096]uint8"}},
 	} {
 		if got := byteless(tc.typ, "plan"); !slices.Equal(got, tc.want) {
 			t.Errorf("%s: fields that could hold bytes %q, want %q", tc.typ, got, tc.want)

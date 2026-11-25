@@ -3,7 +3,12 @@ package archtest
 import (
 	"bytes"
 	"fmt"
+	"go/build/constraint"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -39,7 +44,8 @@ type Graph struct {
 //
 // decision: the walk lists Linux, macOS and Windows on amd64 and arm64, with
 // cgo on and no build tags. A file behind a custom tag, or built only for
-// another platform, is not walked; widen this when a walked package gains one.
+// another platform, is not walked, and Unwalked names it, so a test fails on
+// it; widen this when a walked package needs one.
 var targets = [][2]string{
 	{"linux", "amd64"}, {"linux", "arm64"},
 	{"darwin", "amd64"}, {"darwin", "arm64"},
@@ -87,8 +93,9 @@ func Walk(dir string, tests bool) ([]Graph, error) {
 			name := variant(fields[0])
 
 			// The test binary's main package imports only the variants and the
-			// standard library's test runner.
-			if strings.HasSuffix(name, ".test") {
+			// standard library's test runner; a package that merely ends in
+			// .test is walked.
+			if strings.HasSuffix(name, ".test") && strings.Contains(fields[2], "testing/internal/testdeps") {
 				continue
 			}
 
@@ -282,3 +289,62 @@ func EntityLibs(extra ...string) []string {
 // store, fake backend or network; withdraw the allowance if it ever reaches an
 // implementation. TestSupport holds the list to the package.
 var Support = []string{"internal/archtest", "internal/prof"}
+
+// Unwalked returns each .go file under dir, testdata skipped, whose build
+// constraint names a tag the walk never sets: a custom tag, or a platform
+// outside its targets. go list leaves such a file out of every graph, so a
+// test that walks dir calls this too and fails on what it returns.
+func Unwalked(dir string) ([]string, error) {
+	walked := map[string]bool{"cgo": true, "unix": true, "gc": true}
+	for _, target := range targets {
+		walked[target[0]], walked[target[1]] = true, true
+	}
+
+	var bad []string
+
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() && d.Name() == "testdata" {
+			return filepath.SkipDir
+		}
+
+		if d.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly|parser.ParseComments)
+		if err != nil {
+			return err
+		}
+
+		for _, c := range f.Comments {
+			for _, l := range c.List {
+				expr, err := constraint.Parse(l.Text)
+				if err != nil {
+					continue
+				}
+
+				var tags []string
+
+				expr.Eval(func(tag string) bool {
+					if !walked[tag] && !strings.HasPrefix(tag, "go1.") {
+						tags = append(tags, tag)
+					}
+
+					return true
+				})
+
+				if tags != nil {
+					bad = append(bad, fmt.Sprintf("%s needs %s, which the walk never sets", path, strings.Join(tags, ", ")))
+				}
+			}
+		}
+
+		return nil
+	})
+
+	return bad, err
+}

@@ -18,8 +18,8 @@ type Purity struct {
 // Impurities type-checks the package path made of dir's non-test .go files,
 // whatever their build tags, plus the planted ones, reading its imports
 // through imp, and reports each package-level variable rule does not name,
-// each function that is not a method, init included, unless rule allows
-// them, and each interface type, an alias or a type defined over one
+// each function that is not a method unless rule allows them, init always,
+// since it runs on import, and each interface type, an alias or a type defined over one
 // included, unless rule allows them. These are the state and behaviour an
 // import walk and an export pin cannot see.
 func Impurities(imp types.Importer, path, dir string, rule Purity, planted ...string) ([]string, error) {
@@ -34,7 +34,7 @@ func Impurities(imp types.Importer, path, dir string, rule Purity, planted ...st
 		for _, decl := range f.Decls {
 			switch d := decl.(type) {
 			case *ast.FuncDecl:
-				if d.Recv == nil && !rule.Funcs {
+				if d.Recv == nil && (!rule.Funcs || d.Name.Name == "init") {
 					bad = append(bad, "func "+d.Name.Name+" is not a method")
 				}
 			case *ast.GenDecl:

@@ -41,6 +41,29 @@ func TestImportRule(t *testing.T) {
 	for _, v := range archtest.Check(table, graphs...) {
 		t.Error(v)
 	}
+
+	unwalked, err := archtest.Unwalked(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, v := range unwalked {
+		t.Error(v)
+	}
+}
+
+// A file behind a tag the walk never sets is named, since go list leaves it
+// out of every graph; one built for a walked platform or with cgo is not.
+func TestImportRuleNamesUnwalkedFiles(t *testing.T) {
+	got, err := archtest.Unwalked("testdata/walk/pkg/carver")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"testdata/walk/pkg/carver/carve/tagged.go needs never, which the walk never sets"}
+	if !slices.Equal(got, want) {
+		t.Errorf("unwalked files %q, want %q", got, want)
+	}
 }
 
 // The walk over a planted module reports, with the chain, a store and a
