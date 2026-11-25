@@ -386,6 +386,8 @@ type Span struct {
 	Ref            ChunkRef       // the covering ref, when Carved
 	Overwrite      JournalVersion // when an overwrite record made it Uncarved, that record's version (§8.1)
 	Applied        JournalVersion // the file's applied when the lookup read it, on every Span (§8.1)
+	Chunk          Chunk          // when Carved, but a zero ref: the chunk record Ref names, its block and body's position and length; zero when the record is gone (§8.1)
+	BlockSize      int64          // when Chunk is set: its block's encoded size (§8.1)
 }
 
 // Pure methods: no I/O, no store. Each states one rule of this document once,
@@ -2443,6 +2445,19 @@ saw — and the bytes may be in the journal still
 ([RFC 8 §7.1](rfc-8-engine.md#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata)). Neither alone carries it: a hole fill and an append write no
 overwrite record, and a pending existence committed over several transactions
 writes overwrite records for versions `applied` has not yet reached.
+
+**A carved span names where its chunk is.** Every carved span the lookup
+returns, but a zero ref's, **MUST** carry the chunk record its ref names, read
+in the same transaction in the namespace the ref's generation names
+([§2.1](#2.1%20ChunkRef), [§2.2](#2.2%20Chunk)): the block, and the body's position and length
+there, with that block's encoded size. A span whose chunk record is gone
+carries none. The ref still names only its hash ([§2.5](#2.5%20Refs%20name%20hashes%2C%20never%20blocks)): the location is
+joined at the lookup, one point read per chunk and per block the results name,
+so the cost stays O(log *n* + results). A reader whose get finds the object
+absent runs the lookup again and compares the location it names
+([RFC 8 §7.7](rfc-8-engine.md#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)); a second lookup for the location would let a relocation slip
+between the two, and a reader holding the ref alone could not ask for the chunk
+at all.
 
 It applies the file's removals that are not done ([§6.2](#6.2%20Truncation%20and%20deallocation)): a ref inside such a
 removal's extent whose `newest` is below its version is absent, and so is an
