@@ -59,7 +59,12 @@ type loopItem struct {
 	queued    time.Time // when it was first enqueued
 	notBefore time.Time
 	fails     int
-	stalled   bool
+	// stalled is written by the loop while the item runs, outside l.mu, or by
+	// halt or dropShare once the item left the loop, and read by stalledOn.
+	// It is set after the removal_stalled condition is raised and cleared
+	// before it is, so stalledOn true implies the condition is in Stats,
+	// never the reverse.
+	stalled atomic.Bool
 }
 
 // removalLoop runs one journal's removal work.
@@ -238,8 +243,7 @@ func (l *removalLoop) step(it *loopItem) {
 		it.fails, backoff = 0, 0
 	case itemRetry:
 		it.fails++
-		if it.fails >= stallAfter && !it.stalled {
-			it.stalled = true
+		if it.fails >= stallAfter && !it.stalled.Load() {
 			log.Log(l.ctx, stallLevel(it.kind), "removal_stalled", "file", it.f, "kind", it.kind)
 			l.e.conds.raise(condKey{conditionRemovalStalled, it}, Condition{
 				Name:    conditionRemovalStalled,
@@ -247,6 +251,7 @@ func (l *removalLoop) step(it *loopItem) {
 				Cause:   errRemovalStalled,
 				Detail:  "file " + it.f.String() + ", kind " + it.kind.String() + ": retried at its backoff",
 			}, time.Time{})
+			it.stalled.Store(true) // after the raise: a reader that sees it finds the condition in Stats
 		}
 	}
 	it.notBefore = l.e.d.Clock.Now().Add(backoff)
@@ -268,10 +273,9 @@ func (l *removalLoop) step(it *loopItem) {
 // unstall clears removal_stalled for it, once it finished, advanced or left
 // the loop.
 func (l *removalLoop) unstall(it *loopItem) {
-	if !it.stalled {
+	if !it.stalled.Swap(false) {
 		return
 	}
-	it.stalled = false
 	l.e.d.Logger.Info("removal_stalled cleared", "file", it.f, "kind", it.kind)
 	l.e.conds.clear(condKey{conditionRemovalStalled, it})
 }
@@ -416,12 +420,17 @@ func (l *removalLoop) pending() (n int, oldest time.Duration) {
 	return len(l.items), oldest
 }
 
-// stalledOn reports whether f has an item removal_stalled.
+// stalledOn reports whether f has an item removal_stalled, the one running
+// included: a retry takes the item off the list while it runs, and its stall
+// holds until a run finishes or advances it.
 func (l *removalLoop) stalledOn(f entity.FileID) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if r := l.running; r != nil && r.f == f && r.stalled.Load() {
+		return true
+	}
 	for _, it := range l.items {
-		if it.f == f && it.stalled {
+		if it.f == f && it.stalled.Load() {
 			return true
 		}
 	}

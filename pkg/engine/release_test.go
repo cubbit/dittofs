@@ -156,9 +156,8 @@ func TestAStalledReleaseEndedByAnAbort(t *testing.T) {
 	if !errors.Is(got, vfserr.ErrFileOpen) {
 		t.Errorf("the channel yields %v, want ErrFileOpen", got)
 	}
-	if u.e.RemovalStalled(f) {
-		t.Error("still removal_stalled after the abort")
-	}
+	// The channel yields inside the run, before the loop clears the stall.
+	u.until(t, "removal_stalled cleared after the abort", func() bool { return !u.e.RemovalStalled(f) })
 }
 
 // An aborted release drops only the pending writes below it: a write staged
