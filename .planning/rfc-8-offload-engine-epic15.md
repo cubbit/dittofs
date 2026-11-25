@@ -24,8 +24,11 @@ with its attempt, stable bytes); [RFC 4](../docs/internals/rfcs/rfc-4-remote-tie
 first half** for the finish: RFC 2's carver and fold, RFC 3's syncer over RFC 4's in-memory store
 through `codec.Store` under RFC 4's fault wrapper, RFC 5's chain over `keystest`'s in-memory
 `keys.Provider`; #5775's journal and metadata contract packages, which `offload/` imports instead of
-`pkg/journal` and `kvstore`; epic 11's frozen surface (`ShareSettings.MaxAge`, the `Stats` fields
-this epic fills).
+`pkg/journal` and `kvstore`; the RFC 2 to RFC 5 plans' epic 1 contracts landed on
+`feat/storage-v2` (`pkg/carver`, `pkg/transform` and `keys`, `pkg/syncer`, `pkg/remote`), which
+T15.5's ports are typed over; epic 11's frozen surface (`ShareSettings.MaxAge`, the `Stats` fields
+epic 16 fills from this epic's counters); epic 13's scheduler, which T15.10's O6 leg dispatches
+through; the RFC 2 plan's epic 2, which registers the `fuzz` suite T15.3's target joins.
 **Blocks:** epic 14, whose `Dirty` event, age tick and pressure call T15.1's `offloadDue`; epic 16, which runs this pipeline as the offload source's runs, opens each binding's
 flow, and with S5 and S6 reaches S3; epic 18, which adds the commit's tracked read of each key
 record to the transaction T15.4 shapes and Mark's destroyed-material check to T15.9's Mark; epic 19,
@@ -82,7 +85,10 @@ the RFC 8 §2.1 and §6.7 and RFC 6 §10.1 amendments (D12).
 - Composing the provider, the stores and `codec.Store` in the node: the integration epic (but D2).
 - The removal path on the scheduler: epic 14. The overwrite-prune kind, the put-unhealthy and
   throttling-store legs of epic 14's rows, and the puts and commits of "one run per key": epic 16.
-- The soak over hours with remote faults: epic 22's `engine-soak`.
+- The soak over hours with remote faults: epic 22's `engine-soak`. RFC 8 §6.3's "again as
+  production composes it" is the four §15.1 rows of this path, which epic 16 turns green at S3.
+- Copying `offload.Stats` into the engine's `Stats`: epic 16, with the first binding that runs
+  passes (D14).
 
 ### 1.3 Names used here
 
@@ -135,7 +141,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 | --- | --- | --- | --- | --- |
 | R1 | `offload/`'s production code imports only the components' contracts, never an implementation | MUST NOT | RFC 8 §2.8; RFC 0 §1.2 | T15.5 |
 | R2 | Each interface the engine declares holds exactly the methods it calls, the pipeline's included; a declared method nothing calls fails the architecture test | test row | RFC 8 §2.1; §15.3 "§2.1 declared interfaces" | T15.5 |
-| R3 | The engine calls the carver's `Cut`, `ChunkID` and `BlockName`, reads a namespace's settings' `Max`, and drives the assembler's fold and its constructor; it never builds a namespace's settings and never holds key material, which the content wiring holds | MUST NOT | RFC 8 §2.1 (as amended here, D12) | T15.5, T15.6 |
+| R3 | The engine calls the carver's `Cut`, `ChunkID` and `BlockName`, reads a namespace's settings' `Max`, and drives the assembler's fold and its constructor; it never builds a namespace's settings and reads no key material, which the content wiring holds and hands it sealed | MUST NOT | RFC 8 §2.1 (as amended here, D12) | T15.5, T15.6 |
 | R4 | Every capability the pipeline calls is a method on an interface held by declaration, supplied at construction; an absent one fails construction with an error naming it | MUST | RFC 8 §2.1, §2.2 | T15.5 |
 | R5 | The pipeline holds no bytes and persists nothing; its state is rebuilt by re-offering | invariant | RFC 8 §6.3 O8, §3.1, §3.3 | T15.5, T15.10 |
 
@@ -254,8 +260,9 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 
 Enforced elsewhere once this epic lands: R3's "never builds settings" by the compiler, since
 `carver.Settings` is sealed and the engine's walk refuses `carve` (T15.5's walk names the import);
-R5's "persists nothing" by `offload`'s ports, none of which writes outside the store calls R36 to
-R40 name, read in review. Every other row has a test here.
+R5's "persists nothing" by `offload/`'s import row, which also refuses `os`, so its only durable
+writes are the store calls of its ports, and its "rebuilt by re-offering" by T15.10's crash legs.
+Every other row has a test here.
 
 ## 4. Decisions this epic takes
 
@@ -359,7 +366,7 @@ R40 name, read in review. Every other row has a test here.
   it at `Done`; a `Throttled` outcome leaves it as it is. RFC 8 §6.3's five-failures `decision:` sits
   at the threshold `offloadDue` reads. Prior art: none found.
 - **D12, RFC 8 §2.1 and §6.7, and RFC 6 §10.1, are amended in this pull request.** The carver row names "the carver's
-  `Cut`, `ChunkID` and `BlockName`, a namespace's settings, which the content wiring builds, and their `Max`; the
+  `Cut`, `ChunkID` and `BlockName`, a namespace's settings, which the content wiring builds and the engine holds sealed, reading only their `Max`; the
   assembler's fold and its constructor"; the handle row drops `Offload`, since Capture always calls
   `OffloadMany`, one `Capture` or many, which RFC 1 §3.3 has `Offload` built on; the block-metadata
   row names the content view's `Abandon`, for O4, and its `Budget`, which RFC 6 §10.1's sketch of
@@ -381,11 +388,13 @@ R40 name, read in review. Every other row has a test here.
   the upgrade, a per-file dirty-bytes figure from the journal, once a measurement shows short
   blocks from early offers. Rejected: a per-file figure the journal does not have, which would be an
   RFC 1 change for a policy input. Prior art: none found.
-- **D14, the `carver_` series are a `Stats` field per namespace.** RFC 2 §2.3 has the engine export
-  them labelled with the namespace, and epic 11 froze no field for them. `Stats` gains
-  `Carver map[entity.NamespaceID]CarverStats`, one field per series, counters as `int64` and the two
-  histograms as epic 11's `Series` (its D6); the node's adapter exports them under the `carver_`
-  prefix. Adding the field changes no frozen one. Prior art: the first part's `Stats` (its D6).
+- **D14, `offload` keeps its own `Stats`; the engine copies them with epic 16.** `offload/` cannot
+  import the engine, so its counters, the pipeline's series of RFC 8 §14 and the `carver_` series per
+  namespace (RFC 2 §2.3), live in an `offload.Stats` value that `Run` adds to, under one mutex per
+  binding, and tests read there. The engine's `Stats` reads them once a binding runs passes: epic
+  16 copies them into epic 11's fields and into `Stats.Carver map[entity.NamespaceID]CarverStats`,
+  a field epic 11 did not freeze, counters as `int64` and the two histograms as epic 11's `Series`
+  (its D6). Adding the field changes no frozen one. Prior art: the first part's `Stats` (its D6).
 
 ## 5. Target tree
 
@@ -471,12 +480,16 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
 - **Track:** B. **Depends on:** S2.
 - **Covers:** R23 (the counts), R49, R50, R62.
 - **Deliverables:** in `budget.go`, the floor replacing `minItemKeys` (7 today, below what one
-  chunk's commit writes): `worstCosts`' fixed records gain the offload commit's tracked reads,
-  `Intent(name)`, `Node(primary)` and `maxBlockMaterials` key records (D5), each with its conflict
-  range, beside `F_o` already there; `keyBudget` refuses with `ErrLimits` naming `K` and the floor
+  chunk's commit writes): the offload commit's tracked reads, `Intent(name)`, `Node(primary)` and
+  `maxBlockMaterials` key records (D5), join `F` with their conflict ranges, beside `F_o` already
+  there, and not `e`, since a read writes no entry; the key record's worst-case key is the one RFC 5
+  epic 6's key-record view writes in `kvstore`, and if that has not landed, T15.2 adds the key
+  function from RFC 16 §4.3's layout, which that epic then uses; `keyBudget` refuses with `ErrLimits` naming `K` and the floor
   when `K` is below the keys of one 1-byte chunk's commit in a block of its own, counted from the
   real encoders as RFC 6 §5.2 lists them. `Budget` and `Content.Budget() Budget` (D4), computed once
-  at open. Consumed by T15.6 and T15.7, and by T15.4's over-`K` stop.
+  at open. A larger `F` lowers `K` for every batch, removals and existence commits included, by
+  the few keys those reads cost; the store's existing `K` tests are updated to the new figure.
+  Consumed by T15.6 and T15.7, and by T15.4's over-`K` stop.
 - **Acceptance criteria:**
   - Limits giving `K` one below the floor are refused with both figures in the error; one key's
     cost more opens.
@@ -489,8 +502,9 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   read with conflict tracking, committing within `T` (catches a conflict range left uncounted). At
   `kv.Counting`'s `MostWrites`, wrapped around each backend: commits of one new ref, of one ref
   replacing a ref it splits, of a block and of each extra file, at worst-case encoding, each writing
-  at most the `Budget` count (catches an undercount the fold would trust, R23). No test double: the
-  limits are a real backend's, set through its options.
+  at most the `Budget` count (catches an undercount the fold would trust, R23). The limits are
+  lowered by a wrapper that reports smaller `TxnLimits` over the real backend and enforces them,
+  as the fixture's `limitedKV` does (kind 3); `kv.Counting` records and passes every call through.
 - **Rules:** rule 8, the three backends.
 
 ### T15.3 The block record's `encodings`
@@ -522,9 +536,11 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
 - **Track:** B. **Depends on:** T15.2.
 - **Covers:** R37, R38 (the store half), R39.
 - **Deliverables:** in `offload.go`, `Commit` taking a `BlockCommit` with no `Name` as the zero-ref
-  commit (D3); and its over-`K` stop: it applies the block and its files in order while the keys
-  written stay within `K`, counted as it writes, and stops before the first file that would pass it,
-  returning a `CommitResult` naming only the files applied. A zero-ref commit stops the same way.
+  commit (D3); and its over-`K` stop: before it writes anything, it reads each file's refs the commit
+  replaces and counts, file by file, the keys that file's refs, their reverse keys, the counts and
+  block records they reach and the block's own records would write, and applies only the leading
+  files whose total fits `K`, since a `kv.Txn` cannot take back a write; it returns a `CommitResult`
+  naming only those. A zero-ref commit stops the same way.
   `Content.Abandon(ctx, ns, names)`, RFC 6 §7.6's abandonment through the namespace's `Blocks`, so
   the engine's one content view holds it. Consumed by T15.9.
 - **Acceptance criteria:**
@@ -601,7 +617,8 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   - The engine: `Deps.Carver offload.Carver`, `Deps.Chain offload.Chain`, `Deps.Puts offload.Puts`,
     refused by name at `New` (D2); `Handle` embeds `offload.Offers`, `Content` embeds
     `offload.Store`; the engine's walk gains
-    `offload/`'s row and admits the `pkg/carver` root with `pkg/carver/internal/params`;
+    `offload/`'s row, refusing `os` beside every implementation, and admits the `pkg/carver` root
+    with `pkg/carver/internal/params`;
     `TestRFC8C_DeclaredInterfaces` runs its check over every production package under `pkg/engine`.
   - The in-memory journal's `OffloadMany` and `report`, held to the journal conformance suite's
     offload rows as §9 says; the content wiring's `Carver` (`Settings(ns)` over `carve.NewSettings`
@@ -611,17 +628,24 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
     `test/engine/known.yaml` whose message is `fixture: the carver is not composed`, 41 of them,
     rewritten to `fixture: the syncer is not composed`, the refusal they now meet.
 - **Acceptance criteria:**
-  - A pass over two files captures them in file-identity order, commits their existence, and is
+  - Two captures over the same files in opposite orders never deadlock; a pass commits their existence, and is
     offered nothing above each file's `Through`.
   - A failed capture offers nothing and returns `Retry` for each file.
-  - `New` with any of the three members nil is refused naming it.
+  - `New` with any of the three members nil is refused naming it; the fixture composes all
+    three through the content wiring whatever options a row passes, and `Puts` resolves a store
+    only when a put is built, so a first-part share with no store binds.
   - The engine's walk refuses a planted import of `pkg/carver/carve` in `offload/`; the declared-
     interfaces check reports a planted uncalled method of `offload.Store`.
   - Every first-part row grades as before; the 41 rows grade known at the new message.
-- **Tests:** at `Run`, over the in-memory journal and `kvstore`: two files written in reverse ID
-  order, the guard function recording the order it is called in (an output of the code under test,
-  not an interaction: the order is the requirement) (catches unordered guards, R10); a write landing
-  after the existence commit and before the offer, not offered (catches a missing `Through`, R11);
+- **Tests:** the engine's `capture` and `guard`, built here over the first part's per-file guard
+  and group commit and handed to `Run`, are tested in `package engine` over the unit fixture: two
+  captures of files {a, b} and {b, a} started together a thousand times under `-race`, none
+  deadlocking within the test's backstop (catches guards taken in caller order, R10); a write
+  landing after the existence commit and before the offer, not offered (catches a missing
+  `Through`, R11); at `Run`, over the in-memory journal and `kvstore`, the namespace and the
+  settings the carve used read back from the pass's chunk IDs, each equal to `ChunkID` under the
+  namespace captured, after the share's namespace function changed mid-pass (catches settings read
+  after Capture, R12);
   an existence commit failed through `FailUpdatesSetting`'s kind 3 wrapper, nothing offered and
   `Retry` returned (R13). The import walk and the declared-interfaces check with their planted
   violations (R1, R2). `New`'s refusal table (R4). The run of `engine-conformance`, every entry
@@ -643,7 +667,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   neighbour re-tiles it (R15); the age's forced final cut; `Cut` called with a buffer of `Max`
   bytes per worker, each emitted chunk turned into a `carver.ChunkInfo` with its file, `Zero` set by
   a scan of the borrowed bytes, `Keys` and `Oldest` (D10, its `ponytail:`); nothing reported past
-  `consumed`. The `carver_` series into `Stats.Carver` (D14). Consumed by T15.7.
+  `consumed`. The `carver_` series into `offload`'s own `Stats` (D14). Consumed by T15.7.
 - **Acceptance criteria:**
   - Every byte offered is in exactly one emitted chunk or in a tail past `consumed`.
   - A stretch over refs dense enough to pass `K` ends before them as real, and one chunk's keys
@@ -653,14 +677,17 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   calls and no chunk across a hole (catches joined stretches, R14); an offer cut by `limit`, the
   tail reported nowhere and the next pass starting at the boundary, chunking as one pass would
   (catches a tail cut at the limit, R17); the same tail past the maximum age on the test clock, cut
-  (catches a tail waiting forever, R17); 10⁴ 1-byte refs under a stretch with `K` forced small, the
+  (catches a tail waiting forever, R17); a table of stretch ends, a hole, the settled end, an
+  offloaded neighbour, `limit`, the age before and past the ceiling, each `realEnd` asserted through
+  what `Cut` emitted for the tail (catches an end passed the wrong way, R16); 10⁴ 1-byte refs under a stretch with `K` forced small, the
   stretch ended before them and each chunk's keys within `K`, and a stretch whose first byte lies
   under them, ended one byte past its start (catches an empty stretch or a chunk over `K`, R18, R56);
   a chunk of zeros but its last byte, `Zero` false (catches a flag from the length, R21); a failing
   covering lookup through the fault `kv.KV`, the pass ended and nothing reported (R19); the
-  `carver_` counters read from `Stats` after a pass, bytes equal to what was offered less the tail
+  `carver_` counters read from `offload`'s own `Stats` after a pass, bytes equal to what was offered less the tail
   (R20). A widened run whose neighbour is released meanwhile reads its offered bytes (R15, through
-  the in-memory journal's frozen `Offered`).
+  the in-memory journal's frozen `Offered`). R21's "not kept past `emit`" is held by RFC 2 epic 1's
+  `TestPlanHoldsNoBytes`: `ChunkInfo` can hold no byte slice.
 - **Rules:** rule 3, the series; rule 9, the chunk-age `ponytail:`.
 
 ### T15.7 Assemble, and the plan's keys
@@ -679,9 +706,12 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   - No plan reaches Intent with keys over `K`.
   - A held plan's extents are neither put nor reported.
 - **Tests:** at the plans Intent and Commit consume: a stream with all-zero chunks, none in a plan's
-  carried chunks (catches a zero chunk carried, R22); one chunk planted over `K` by a covering
-  lookup that changed after Carve, refused before Intent with nothing put, the remote store's
-  listing empty (catches a lone over-`K` chunk put and refused on every pass, R26); a pass of two
+  carried chunks (catches a zero chunk carried, R22); in `package offload`, the recompute's table
+  over plans whose refs' `Keys`, with the per-block and per-file keys, sum to `K` and to `K + 1`,
+  the second refused with its count and no put built (catches a lone over-`K` chunk put and refused
+  on every pass, R26). Carve's end makes such a plan unreachable when Carve is right, so the check
+  is a guard against a Carve bug, with a `decision:` saying so, withdrawn when the fold's `Add`
+  gains the error that would report it (RFC 2 plan's epic 5, its D4); a pass of two
   files, each file's chunks contiguous (R24); a pass finished short with a young oldest chunk, its
   extents still dirty in the in-memory journal, then old, put (R25). The key counts' upper bound is
   T15.2's test at the backend (R23).
@@ -712,12 +742,17 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   - The source holds one chunk per worker however large the block.
 - **Tests:** at the remote store and the in-memory journal, through RFC 3's syncer over RFC 4's
   in-memory store under its fault wrapper (kinds 2 and 3): a lost put response, retried by the
-  syncer, one object at the store (R54); every put failing past the syncer's bound, the wrapper's
-  per-name put count one attempt's retries only, and the next pass's name different (catches a
+  syncer, one object at the store (R54); every put failing past the syncer's bound, the in-memory
+  store's own put count by name (`Load().Puts`, which RFC 4's suite covers) one attempt's retries
+  only, and the next pass's name different (catches a
   second retry layer, R55, R32, R33); a namespace function changed between Capture and Intent,
   nothing put and the content re-offered and read back (R27, R58); `keystest`'s provider destroying
   the current data key, the pass refused before any intent (R28); the store's intent records read
-  back with both epochs before the object exists (R31); an offered chunk changed under the source by
+  back with both epochs before the object exists, and nothing at the store when `Intend` fails
+  past its bound, the attempt abandoned (R31); two attempts over one plan's chunks, their names each
+  equal to `BlockName` over the captured namespace, its nonce, the pin's chain ID and the carried IDs
+  in order, and different from each other (catches a name over the wrong inputs or a reused nonce,
+  R30); an offered chunk changed under the source by
   the in-memory journal's corruption control, the put failed (R35). The allocation test: bytes
   allocated per put flat from 1 MiB to 64 MiB blocks, under `testing.AllocsPerRun` (R34).
 - **Rules:** rule 4, `unit/engine-allocs`.
@@ -751,8 +786,12 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   shard's epoch unchanged, its intent abandoned and its object deleted by the store's abandonment
   (R45, R59); a commit applied with its reply dropped by the fault `kv.KV`, the ref and the object
   both present after the pass (R61); a block shared by two files, both reported at its commit (R42).
-  The pin's release, read as the provider's count of pins outstanding, zero after every leg, which
-  `keystest`'s provider exports and its suite covers (R29).
+  The pin's release, read as `keystest`'s provider's count of attempts outstanding, zero after
+  every leg (R29), which the RFC 5 plan's epic 2 is asked to export and cover in its suite (§9).
+  The commit's `Encodings` read back from the block record equal the census `Stored()` returned,
+  material fingerprints included (catches a census dropped at the conversion, R36); each ref's
+  `born` read back equal to its extent's offered cut (R41); each file's result `Done` when all its
+  extents reported and `Retry` otherwise (R46).
 - **Rules:** rule 9, D9's `decision:`.
 
 ### T15.10 Deadlines, outcomes and the checks
@@ -764,12 +803,14 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
 - **Deliverables:** in `run.go`, each state's deadline on the injected clock, Capture's and
   Commit's from the metadata deadline, Put's from `MaxAge` plus a transfer bound proportional to the
   block's size; a state past its deadline failing as one failure; the outcome per file (D11's count
-  updated); the pipeline's series into epic 11's `Stats` fields (`OffloadPasses`,
-  `PipelineStateSeconds`, `PipelineRetries`, `AttemptsAbandoned`, `IntentsAbandoned`,
-  `FailingFiles`, `IntentMissing`, `StageBusy`); a root span per pass through `Deps.Tracer`. In
+  updated); the pipeline's series into `offload.Stats`, one field for each of epic 11's
+  (`OffloadPasses`, `PipelineStateSeconds`, `PipelineRetries`, `AttemptsAbandoned`,
+  `IntentsAbandoned`, `FailingFiles`, `IntentMissing`, `StageBusy`), which epic 16 copies (D14); a root span per pass through `Deps.Tracer`. In
   `engine-conformance`, `TestRFC8A_OffloadSurvivesACrashInEachState`, O1's crash leg over the real
   journal on a real directory and `kvstore`, with its `known.yaml` entry (`fix: planned`, its
-  message the real journal's `stub: Offload`, `issue:` epic 15's epic issue), red until S6.
+  message `fixture: the syncer is not composed`, the first refusal it meets, which epic 16 rewrites
+  to the real journal's `journal: not implemented`; `issue:` the journal plan's epic 9b issue, which
+  turns it green at S6).
 - **Acceptance criteria:**
   - No state waits past its deadline: a hang in any state ends the pass within its bound.
   - After any fault clears, every extent is offloaded within the maximum age plus the backoff cap.
@@ -781,7 +822,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   file among 10³ files over 10 simulated minutes, the scheduler of epic 13 dispatching and backing
   off, the other files offloaded, the failing one's passes within the bound, its count at five and
   more (R9, R60); the crash legs above, whose fresh `Run` starts from no state of the first and
-  offloads everything (R5); each series read from `Stats`
+  offloads everything (R5); each series read from `offload.Stats`
   after a pass (R51); an unsampled pass's span allocating nothing (R52). O1's crash leg, red (R63).
 - **Rules:** rule 6, the new entry; rule 8, the crash leg's real journal.
 

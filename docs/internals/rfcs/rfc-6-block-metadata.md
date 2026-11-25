@@ -2660,7 +2660,7 @@ type Content interface {
     Commit(ctx context.Context, c BlockCommit) (CommitResult, error)              // §4.1
     // Abandon is Blocks' abandonment of the engine's own intents (§7.6), so the offload
     // pipeline's one view holds it (RFC 8 §6.3, O4).
-    Abandon(ctx context.Context, names []BlockName) error
+    Abandon(ctx context.Context, ns NamespaceID, names []BlockName) error
     // Budget is K and, at their worst case, the keys an offload commit writes per new ref, per
     // ref it replaces, per block and per file, derived at open (§5.2).
     Budget() Budget
