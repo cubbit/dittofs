@@ -126,7 +126,7 @@ type OpenRequest struct {
 	SetID         bool               // the file's mode has the setuid or setgid bit, as the service read it: no write caching is offered
 	Reclaim       bool               // the open is one the client held before its shard lost its state
 
-	Durability entity.Durability // what the open survives; durable or persistent only for SMB, with Durable's Timeout set
+	Durability entity.Durability // what the open survives; durable or persistent only with Durable's Timeout set, for a caller wanting OpenIDs
 	Durable    DurableKeys
 	Session    entity.SessionRef // the opening session
 	Replay     bool              // a create marked as a replay: one naming the caller's client's open by Durable.Create answers that open
@@ -239,6 +239,11 @@ type Opens interface {
 	// anonymous reference; ErrBadState for a delegated one. It changes
 	// nothing.
 	Suspended(ctx context.Context, who Caller, f FileKey, o OpenRef) (entity.TimeMask, error)
+	// Privileged reports whether the open o of f names, or a lock state's
+	// open, was granted privileged, as a backup-intent open by a privileged
+	// caller is; false for an anonymous or delegated reference. It changes
+	// nothing.
+	Privileged(ctx context.Context, who Caller, f FileKey, o OpenRef) (bool, error)
 	// Downgrade narrows an open's access and deny to masks within them, and
 	// returns the open's new reference sequence.
 	Downgrade(ctx context.Context, who Caller, o OpenRef, q Seqs, access, deny entity.AccessMask) (seq uint32, err error)
@@ -434,11 +439,8 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 	if r.DeleteOnClose && !r.Stream.IsZero() {
 		return OpenResult{}, ErrInvalid
 	}
-	if r.Lease != (LeaseKey{}) && who.Protocol != entity.ProtocolSMB {
-		return OpenResult{}, ErrInvalid // a lease key is SMB's
-	}
-	if r.Durability != entity.DurabilityNone && (r.Durable.Timeout <= 0 || who.Protocol != entity.ProtocolSMB) {
-		return OpenResult{}, ErrInvalid // only an SMB open, named by its ID, is reconnected
+	if r.Durability != entity.DurabilityNone && (r.Durable.Timeout <= 0 || !who.wantsOpenID()) {
+		return OpenResult{}, ErrInvalid // only an open named by its ID is found again
 	}
 	// decision: a persistent open of a named stream is refused, since its
 	// record names the stream and not the base file whose table it is
@@ -460,8 +462,7 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		}
 	}
 	var id entity.OpenID
-	if who.Protocol == entity.ProtocolSMB {
-		// An SMB FileId names the open across a reconnect.
+	if who.wantsOpenID() {
 		if id, err = t.nextOpenID(ctx); err != nil {
 			return OpenResult{}, err
 		}
@@ -821,6 +822,23 @@ func (v opens) Suspended(ctx context.Context, who Caller, f FileKey, o OpenRef) 
 		return err
 	})
 	return times, err
+}
+
+func (v opens) Privileged(ctx context.Context, who Caller, f FileKey, o OpenRef) (bool, error) {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return false, err
+	}
+	if o.Kind == RefDelegated {
+		return false, nil
+	}
+	var privileged bool
+	err := t.step(f.ID, func(e *entry) error {
+		op, _, _, err := t.lockTarget(e, who, o)
+		privileged = op != nil && op.Mode.Privileged
+		return err
+	})
+	return privileged, err
 }
 
 // addOpen adds o, a new open of f, to e under its step, its shard already

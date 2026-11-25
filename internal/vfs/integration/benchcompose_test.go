@@ -295,7 +295,7 @@ func (c *bench) signIn(b *testing.B) {
 		b.Fatalf("bench: admin grant: %v", err)
 	}
 
-	c.admin = signedIn(p)
+	c.admin = signedInAdmin(p)
 }
 
 // fill writes size bytes to each writer's file and commits their existence

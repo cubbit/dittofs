@@ -14,6 +14,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/vfs/caps"
 )
 
 const (
@@ -68,20 +69,32 @@ type ClientStatus struct {
 	Reclaim           []GraceRef // those instances, which the adapter keeps per session for ReclaimComplete
 }
 
-// Caller is the client a call acts for, as the adapter proved it, the
-// principal it runs as, mapped and never squashed, and the request's
-// protocol, which a rule that differs by protocol reads. The protocol is the
-// caller's to state on every call, never looked up from a client record:
-// NFSv3 has no client. Sessioned is whether the call has a session: a call
-// without one is refused state created on one, ErrNotYoursSessioned. State
-// takes its mark from its open, created on a session when its
-// OpenRequest.Session is set, and the call opening it says Sessioned too.
+// Caller is the client a call acts for, as the adapter proved it, and the
+// principal it runs as, mapped and never squashed. Sessioned is whether the
+// call has a session: a call without one is refused state created on one,
+// ErrNotYoursSessioned. State takes its mark from its open, created on a
+// session when its OpenRequest.Session is set, and the call opening it says
+// Sessioned too. Caps is the caller's to state on every call, whole,
+// never looked up from a client record, as a call may name no client.
 type Caller struct {
 	Client    entity.ClientID
 	Principal entity.Principal
-	Protocol  entity.Protocol // zero: NFSv3, which holds no client
-	Sessioned bool            // the call has a session: SMB and NFSv4.1 do, NFSv4.0, NFSv3 and NLM do not
+	Sessioned bool      // the call has a session: SMB and NFSv4.1 do, NFSv4.0, NFSv3 and NLM do not
+	Caps      caps.Caps // the adapter's capabilities, whole; each rule reads its bit through one method below
 }
+
+// keepsNames reports whether an open name keeps it for this caller: the one
+// place a rule reads OpenFilesKeepNames.
+func (c Caller) keepsNames() bool { return c.Caps.Has(caps.OpenFilesKeepNames) }
+
+// wantsOpenID reports whether each open this caller makes is issued an
+// OpenID: the one place a rule reads WantOpenID.
+func (c Caller) wantsOpenID() bool { return c.Caps.Has(caps.WantOpenID) }
+
+// grantsBelongToOpen reports whether a grant this caller asks with no lease
+// key is its open's alone, an oplock: the one place a rule reads
+// GrantBelongsToOpen.
+func (c Caller) grantsBelongToOpen() bool { return c.Caps.Has(caps.GrantBelongsToOpen) }
 
 // Clients is the view of client records and leases; it runs at the client's
 // lease owner, which on one node is this one.
@@ -275,7 +288,7 @@ func (v clients) Propose(ctx context.Context, c Client, from netip.Addr) (Propos
 	p := Pending{Boot: rec.Boot, Owner: rec.Owner, Adapter: rec.Adapter}
 	known := false
 	cur, found, err := t.byName(ctx, rec)
-	if err == nil && found && cur.Protocol == entity.ProtocolNFSv4 && len(cur.Shards) == 0 {
+	if err == nil && found && cur.Recovery.RenewsLease() && len(cur.Shards) == 0 {
 		// a record with no shard mark, which no serve lists, holds no lease
 		// here until now; one with a mark is leased by its shard's serve
 		if err = t.adopt(ctx, cur.ID); errors.Is(err, ErrStaleClient) {
@@ -328,7 +341,7 @@ func (v clients) Connect(ctx context.Context, c Client, p *Proposal) (entity.Cli
 	var gen uint64
 	t.cstep.Lock()
 	ended, err := t.connect(ctx, &rec, p, &out)
-	if err == nil && rec.Protocol == entity.ProtocolSMB {
+	if err == nil && rec.Recovery == entity.RecoverReconnect {
 		// Listed under the client step, so a last Disconnect's release, which
 		// holds it, runs wholly before or after: a session set up while the
 		// last one ends never finds its record deleted (RFC 14 §2.1).
@@ -395,7 +408,7 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 	}
 
 	cur, found, err := t.byName(ctx, *rec)
-	if err == nil && found && cur.Protocol == entity.ProtocolNFSv4 && len(cur.Shards) == 0 {
+	if err == nil && found && cur.Recovery.RenewsLease() && len(cur.Shards) == 0 {
 		t.leaseIfUnleased(cur) // a record with no shard mark, which no serve lists, holds no lease here until now
 	}
 	var ended *entity.ClientRecord
@@ -458,7 +471,7 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 		delete(t.leases, ended.ID)
 		delete(t.known, ended.ID)
 	}
-	t.leases[rec.ID] = t.leaseEnd(rec.Protocol)
+	t.leases[rec.ID] = t.leaseEnd(rec.Recovery)
 	t.know(*rec)
 	t.cmu.Unlock()
 	if ended != nil {
@@ -510,14 +523,15 @@ func (t *Table) putAdapter(ctx context.Context, cur entity.ClientRecord, adapter
 }
 
 // leaseEnd is the Elapsed reading a lease armed now ends at, or zero for a
-// protocol whose clients hold none.
+// client of recovery kind k, which holds none unless it renews one.
 //
-// decision: only an NFSv4 client holds a lease. An SMB client's opens are
-// kept by their durable Timeout and an NLM host's locks until its restart
-// notice, so neither is expired for silence. Give a protocol a lease if one
-// is served whose clients renew.
-func (t *Table) leaseEnd(p entity.Protocol) time.Duration {
-	if p != entity.ProtocolNFSv4 {
+// decision: only a client told of a loss by a status or a refusal holds a
+// lease, since only it keeps calling. A client that reconnects keeps its
+// opens by their durable Timeout and one sent a notice its locks until its
+// restart notice, so neither is expired for silence. Give a kind a lease if
+// one is served whose clients renew.
+func (t *Table) leaseEnd(k entity.RecoveryKind) time.Duration {
+	if !k.RenewsLease() {
 		return 0
 	}
 	return t.d.Clock.Elapsed() + leasePeriod
@@ -632,7 +646,7 @@ func (t *Table) leaseIfUnleased(rec entity.ClientRecord) {
 	t.cmu.Lock()
 	defer t.cmu.Unlock()
 	if _, ok := t.leases[rec.ID]; !ok {
-		t.leases[rec.ID] = t.leaseEnd(rec.Protocol)
+		t.leases[rec.ID] = t.leaseEnd(rec.Recovery)
 		t.know(rec)
 	}
 }

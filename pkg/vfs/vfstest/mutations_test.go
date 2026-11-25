@@ -77,10 +77,10 @@ func TestMutationsRecordsEachMutatingCallItPasses(t *testing.T) {
 	}
 }
 
-// smbCall is the administrator's call on SMB session id.
+// smbCall is the administrator's call on SMB session id, with SMB's capabilities.
 func smbCall(s *memory.Service, id uint64) vfs.Call {
 	c := s.Admin()
-	c.Protocol, c.Session = entity.ProtocolSMB, vfs.SessionRef{ID: id}
+	c.Caps, c.Session = vfs.SMBCaps, vfs.SessionRef{ID: id}
 	return c
 }
 

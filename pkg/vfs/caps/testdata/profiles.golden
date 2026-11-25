@@ -1,0 +1,5 @@
+NFSv3Caps privilege
+NFSv4Caps privilege|pseudo-fs
+MountCaps privilege|host
+NLMCaps   privilege|machine|host
+SMBCaps   keep-names|open-id|oplock|machine

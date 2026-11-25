@@ -19,11 +19,23 @@ import (
 // admitted is one call admitted to one share: the caller it acts as there,
 // and the share as admission read it.
 type admitted struct {
-	caller    authz.Caller
-	share     entity.Share
-	policy    entity.ExportPolicy
-	sessioned bool // the call has a session, which open state marks the state it creates with
+	caller     authz.Caller
+	share      entity.Share
+	policy     entity.ExportPolicy
+	sessioned  bool // the call has a session, which open state marks the state it creates with
+	privileged bool // the caller's privilege as resolved; caller.Privileged holds it only where the call lets it count
 }
+
+// how is what admission makes of a call beyond its Call: whether it only
+// releases state, and which of the share's minimums it must meet.
+type how uint8
+
+const (
+	releasing how = 1 << iota // the call only releases state: exempt from the client rules' refusal
+	unsecured                 // the share's minimums are skipped, for the one call whose answer is the remedy for failing them
+	hostMount                 // a HostCall meets no minimum: Root and ListShares, which a mount service calls
+	hostLock                  // a HostCall meets MinProof lowered to at most Claimed and no MinProtection: the lock calls, GetAttr, which a blocking lock makes first, and Open and Close, which a lock service calls
+)
 
 // root is the share's root handle.
 func (a *admitted) root() vfs.Handle { return entity.NewHandle(a.share.ID, a.share.Root) }
@@ -33,12 +45,12 @@ func (a *admitted) root() vfs.Handle { return entity.NewHandle(a.share.ID, a.sha
 // names no share and is admitted to none, answering nil. The release, never
 // nil, uncounts the call; it is called once the call has answered.
 func (fs *Filesystem) admitHandle(ctx context.Context, c vfs.Call, h vfs.Handle) (*admitted, func(), error) {
-	return fs.admitHandleFor(ctx, c, h, false)
+	return fs.admitHandleFor(ctx, c, h, 0)
 }
 
-// admitHandleFor is admitHandle for a call that, with releases, only
-// releases state, as admit runs it.
-func (fs *Filesystem) admitHandleFor(ctx context.Context, c vfs.Call, h vfs.Handle, releases bool) (*admitted, func(), error) {
+// admitHandleFor is admitHandle for a call admission takes as w says, as
+// admit runs it.
+func (fs *Filesystem) admitHandleFor(ctx context.Context, c vfs.Call, h vfs.Handle, w how) (*admitted, func(), error) {
 	if pseudofs.IsHandle(h) {
 		return nil, func() {}, nil
 	}
@@ -46,16 +58,15 @@ func (fs *Filesystem) admitHandleFor(ctx context.Context, c vfs.Call, h vfs.Hand
 	if err != nil {
 		return nil, func() {}, vfs.ErrStale
 	}
-	return fs.admit(ctx, c, share, true, releases)
+	return fs.admit(ctx, c, share, w)
 }
 
 // admit runs admission for the call c reaching share: it counts the call
 // against the share, then runs the share's state, its security minimums and
 // its client rules, then Deps.Identity resolves its Identity on the share.
-// secure false skips the minimums alone, for the one call whose answer is the
-// remedy for failing them. releases true is a call that only releases state,
-// which check exempts from the client rules' refusal. A share never created
-// is ErrStale, as a handle naming it is.
+// w says which of the share's minimums the call meets and whether it only
+// releases state, which check exempts from the client rules' refusal. A share
+// never created is ErrStale, as a handle naming it is.
 //
 // decision: a share the node has not bound, one just created or one it
 // refused, answers a Delay rather than an error, as a share reconcile binds
@@ -71,13 +82,13 @@ func (fs *Filesystem) admitHandleFor(ctx context.Context, c vfs.Call, h vfs.Hand
 // step, is not run: no request-buffer pool exists to charge. Add it, refusing
 // with DelayResources except for a call that only releases or reclaims
 // state, releases among them, with the pools.
-func (fs *Filesystem) admit(ctx context.Context, c vfs.Call, share entity.ShareID, secure, releases bool) (*admitted, func(), error) {
+func (fs *Filesystem) admit(ctx context.Context, c vfs.Call, share entity.ShareID, w how) (*admitted, func(), error) {
 	release := fs.count(share)
 	if _, err := fs.tree(ctx); err != nil {
 		release()
 		return nil, func() {}, err
 	}
-	a, err := fs.check(ctx, c, share, secure, false, releases)
+	a, err := fs.check(ctx, c, share, false, w)
 	if err == nil && fs.running != nil && !fs.running(share) {
 		err = &vfs.Delay{Cause: vfs.DelayFrozen}
 	}
@@ -120,7 +131,7 @@ func (fs *Filesystem) servedShard(ctx context.Context, sh entity.Share) error {
 // whether a call would be admitted. Once the share is read, the admission it
 // answers holds it and its policy, refused or not. With paused, a quiesced
 // share is admitted as an enabled one would be, and ErrDelay answered only
-// once every later step admits the call. With releases, a call that only
+// once every later step admits the call. With releasing, a call that only
 // releases state, the client rules' refusal is not answered: the call is
 // admitted narrowed to read-only, as a client rule narrows one; nor is an
 // unsquashed caller's share grant of none (see acting, which names the
@@ -134,7 +145,24 @@ func (fs *Filesystem) servedShard(ctx context.Context, sh entity.Share) error {
 // refuses a caller that does not own the state. Close, Unlock and CancelLock
 // are the calls that pass it; another release-only call passes it once it is
 // written.
-func (fs *Filesystem) check(ctx context.Context, c vfs.Call, share entity.ShareID, secure, paused, releases bool) (*admitted, error) {
+//
+// decision: HostCall lowers the minimums only for the calls a host's mount
+// or lock service makes, which w names: Root and ListShares, the lock calls,
+// GetAttr, Close, and an Open of an existing file by handle that neither
+// creates, overwrites nor deletes on close. Any other call naming a share
+// that sets it is ErrInvalid, a creating or deleting open included, and so is
+// one with a Session, which no mount or lock service has, so an adapter
+// setting it by mistake lowers nothing there. Within those calls the flag is
+// the only guard: one an NFSv4 or SMB adapter set by mistake on a lock call,
+// a GetAttr or such an open would admit it at Claimed. The lowered minimums
+// are worth only what those calls reach: a share's root and flavours, a
+// byte-range lock, a file's attributes, and an open of an existing file with
+// its close. Key the lowering on something an adapter cannot set by mistake
+// if a mis-set flag is ever found.
+func (fs *Filesystem) check(ctx context.Context, c vfs.Call, share entity.ShareID, paused bool, w how) (*admitted, error) {
+	if hostCall(c) && (w&(hostMount|hostLock) == 0 || c.Session != (vfs.SessionRef{})) {
+		return nil, vfs.ErrInvalid
+	}
 	if fs.beforeShareRead != nil {
 		fs.beforeShareRead()
 	}
@@ -151,11 +179,14 @@ func (fs *Filesystem) check(ctx context.Context, c vfs.Call, share entity.ShareI
 		return a, storeErr(err)
 	}
 	in := p
-	if !secure {
+	switch {
+	case w&unsecured != 0, hostCall(c) && w&hostMount != 0:
 		in.MinProof, in.MinProtection = entity.ProofNone, entity.ProtectionNone
+	case hostCall(c):
+		in.MinProof, in.MinProtection = min(in.MinProof, entity.ProofClaimed), entity.ProtectionNone
 	}
 	byClient, err := admit.Check(ctx, in, c.Identity, netgroups{fs.meta.ShareIndex()})
-	if releases && errors.Is(err, admit.ErrClientRule) {
+	if w&releasing != 0 && errors.Is(err, admit.ErrClientRule) {
 		byClient, err = true, nil
 	}
 	if err != nil {
@@ -168,9 +199,13 @@ func (fs *Filesystem) check(ctx context.Context, c vfs.Call, share entity.ShareI
 	case byClient:
 		ro = identity.ReadOnlyClient
 	}
-	a.caller = authz.Caller{Share: sh.ID, Proved: c.Identity, Client: c.Client, Protocol: c.Protocol}
+	a.caller = authz.Caller{Share: sh.ID, Proved: c.Identity, Client: c.Client, Caps: c.Caps}
 	a.sessioned = c.Session != (vfs.SessionRef{})
-	a.caller.Identity, a.caller.Mapped, err = fs.resolve(ctx, c.Identity, sh, p, ro, releases)
+	a.caller.Identity, a.caller.Mapped, err = fs.resolve(ctx, c.Identity, sh, p, ro, w&releasing != 0)
+	// Without PrivilegeOnEveryCall privilege counts only on a backup-intent
+	// open and on calls through the handle it made (through).
+	a.privileged = a.caller.Privileged
+	a.caller.Privileged = a.privileged && privilegeOnEveryCall(c)
 	if err == nil && delay {
 		err = &vfs.Delay{Cause: vfs.DelayFrozen}
 	}

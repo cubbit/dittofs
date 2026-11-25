@@ -23,6 +23,12 @@ func smb(guid string, boot byte) vfs.ClientInfo {
 	return vfs.ClientInfo{Protocol: entity.ProtocolSMB, Name: []byte(guid), Boot: [8]byte{boot}, Recovery: entity.RecoverReconnect}
 }
 
+// smbCall is c as the SMB adapter makes it, stating SMB's profile.
+func smbCall(c vfs.Call) vfs.Call {
+	c.Caps = vfs.SMBCaps
+	return c
+}
+
 // calls waits up to a second for cb to have seen n callbacks, and answers
 // what it saw.
 func calls(t *testing.T, cb *vfstest.Callbacks, n int) []vfstest.Callback {
@@ -94,8 +100,8 @@ func sentAgain(t *testing.T, clock *sim.TestClock, armed, done <-chan struct{}) 
 
 // signedIn is a call from SMB session id, signed in as p.
 func signedIn(p entity.Principal, id uint64) vfs.Call {
-	c := proven(p, inLab)
-	c.Protocol, c.Session = entity.ProtocolSMB, vfs.SessionRef{ID: id}
+	c := smbCall(proven(p, inLab))
+	c.Session = vfs.SessionRef{ID: id}
 	return c
 }
 
@@ -127,7 +133,7 @@ func sentOn(t *testing.T, cb *vfstest.Callbacks, n int) []vfs.SessionRef {
 // answers the lease.
 func leased(t *testing.T, s *shares, cl vfs.ClientID, p entity.Principal, sess uint64, file entity.FileID, k byte) openstate.CachingGrant {
 	t.Helper()
-	who := openstate.Caller{Client: cl, Principal: p, Protocol: entity.ProtocolSMB}
+	who := openstate.Caller{Client: cl, Principal: p, Caps: vfs.SMBCaps}
 	res, err := s.tab.Opens().Open(t.Context(), who, openstate.FileKey{Share: s.share, ID: file}, openstate.OpenRequest{
 		Access: entity.ReadData, Lease: openstate.LeaseKey{k}, Want: openstate.GrantRead | openstate.GrantHandle,
 		Session: vfs.SessionRef{ID: sess}, Durability: entity.DurabilityDurable, Durable: openstate.DurableKeys{Timeout: time.Minute},
@@ -200,7 +206,7 @@ func TestAnSMBBreakGoesToTheSessionHoldingTheLeasesOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	var delay *openstate.DelayError
-	if _, err := s.tab.Opens().Open(ctx, openstate.Caller{Client: build01, Principal: alice.Principal, Protocol: entity.ProtocolSMB},
+	if _, err := s.tab.Opens().Open(ctx, openstate.Caller{Client: build01, Principal: alice.Principal, Caps: vfs.SMBCaps},
 		openstate.FileKey{Share: s.share, ID: file}, openstate.OpenRequest{Access: entity.WriteData}); !errors.As(err, &delay) {
 		t.Fatalf("build01's write open answered %v, want a delay behind the break", err)
 	}
@@ -511,7 +517,7 @@ func TestADelegationsRecallGoesByItsClientsPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := s.tab.Opens().Open(ctx, openstate.Caller{Client: id, Protocol: entity.ProtocolNFSv4},
+	res, err := s.tab.Opens().Open(ctx, openstate.Caller{Client: id},
 		openstate.FileKey{Share: s.share, ID: entity.NewFileID()}, openstate.OpenRequest{Access: entity.ReadData, Want: openstate.GrantRead})
 	if err != nil || res.Grant == nil {
 		t.Fatalf("the delegated open answered %+v, %v", res.Grant, err)
@@ -544,7 +550,7 @@ func laptop(t *testing.T, s *shares, cb vfs.Callbacks) vfs.ClientID {
 // answers the delegation.
 func delegate(t *testing.T, s *shares, cl vfs.ClientID) openstate.CachingGrant {
 	t.Helper()
-	res, err := s.tab.Opens().Open(t.Context(), openstate.Caller{Client: cl, Protocol: entity.ProtocolNFSv4},
+	res, err := s.tab.Opens().Open(t.Context(), openstate.Caller{Client: cl},
 		openstate.FileKey{Share: s.share, ID: entity.NewFileID()}, openstate.OpenRequest{Access: entity.ReadData, Want: openstate.GrantRead})
 	if err != nil || res.Grant == nil {
 		t.Fatalf("the delegated open answered %+v, %v", res.Grant, err)
@@ -836,7 +842,7 @@ func nlmHost(name string, state uint32) vfs.ClientInfo {
 // leaving it holding nothing.
 func lockAndUnlock(t *testing.T, s *shares, cl vfs.ClientID) {
 	t.Helper()
-	who := openstate.Caller{Client: cl, Protocol: entity.ProtocolNLM}
+	who := openstate.Caller{Client: cl}
 	file := openstate.FileKey{Share: s.share, ID: entity.NewFileID()}
 	o := openstate.LockOwner{Client: cl, Name: []byte("pid 1")}
 	r := openstate.ByteRange{Offset: 0, Length: 1}
@@ -1104,11 +1110,13 @@ func TestAHostRestartEndsItsOldClient(t *testing.T) {
 	s := newShares(t, nil, nil)
 	s.user(t, "alice", "1000", s.share, entity.AccessReadWrite)
 	cb := &vfstest.Callbacks{}
-	id, _, err := s.Connect(t.Context(), s.as(t, 1000, inLab), nlmHost("build01", 1), cb)
+	host := s.as(t, 1000, inLab)
+	host.Caps = vfs.NLMCaps
+	id, _, err := s.Connect(t.Context(), host, nlmHost("build01", 1), cb)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.HostRestarted(t.Context(), s.as(t, 1000, inLab), []byte("build01"), 2); err != nil {
+	if err := s.HostRestarted(t.Context(), host, []byte("build01"), 2); err != nil {
 		t.Fatal(err)
 	}
 	got := calls(t, cb, 1)
@@ -1185,7 +1193,7 @@ func TestADelegationsRecall(t *testing.T) {
 		t.Fatal(err)
 	}
 	var delay *openstate.DelayError
-	if _, err := s.tab.Opens().Open(ctx, openstate.Caller{Client: build01, Principal: alice.Principal, Protocol: entity.ProtocolSMB},
+	if _, err := s.tab.Opens().Open(ctx, openstate.Caller{Client: build01, Principal: alice.Principal, Caps: vfs.SMBCaps},
 		openstate.FileKey{Share: s.share, ID: g.File}, openstate.OpenRequest{Access: entity.WriteData}); !errors.As(err, &delay) {
 		t.Fatalf("build01's write open answered %v, want a delay behind the recall", err)
 	}
@@ -1207,7 +1215,7 @@ func TestARefusedLockGrantReleasesTheLock(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return openstate.Caller{Client: id, Protocol: entity.ProtocolNLM}
+		return openstate.Caller{Client: id}
 	}
 	a, b, c := host("a", &vfstest.Callbacks{}), host("b", &vfstest.CallbackFaults{Inner: &vfstest.Callbacks{}, Refuse: true}), host("c", &vfstest.Callbacks{})
 	file := openstate.FileKey{Share: s.share, ID: entity.NewFileID()}
