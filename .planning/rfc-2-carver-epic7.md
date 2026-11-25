@@ -108,7 +108,7 @@ title and not copied.
 | rule 6, known failures shrink | none | `carver-bench` and `unit/carver-sweep` keep no `known.yaml`: a missed ratio or target is a finding, as `journal-bench` decides |
 | rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | T7.1, T7.2 | `ratios` imports the standard library and `carvetest`, a row in E1's import test; `carve`'s test row admits `carvetest/corpus`; the chunker's test files use `internal/blake3`, which their row already admits through what `carve` reaches (E3's T3.2). v1's measurements are not read |
 | rule 8, real dependencies for properties of those dependencies | all | the speed ratios on the reference box and a real arm64 machine, the golden vectors on that machine's BLAKE3 path, K4 and K5 on real files |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T7.1, T7.3, T7.4 | `decision:` markers for D1 at the checker's targets, D3 at the script's record, D5 in the `arm64` option's comment and D6 at `TestFaultSweep`'s flag; `ponytail:` at `medians` (D1) |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T7.1, T7.3 | `decision:` markers for D1 at the checker's targets, D3 at the script's record, D5 in the `arm64` option's comment; `ponytail:` at `medians` (D1). D6's `decision:` at the flag is E4's |
 | rule 10, a test must be able to fail | all | each cell is seen red on a planted break before its pull request opens: a full-chunk warm-up for K1, a vector byte for arm64, a part-built chunk emitted for the sweep, fixed-size cuts for K4 |
 | rule 11, a symbol is exported only if the RFC's interface uses it | none | nothing is exported: `ratios` is a command and the benchmarks are test functions |
 | rule 12, each subtask creates only what it declares | all | each file lands with the cell that runs it; `bench.sh` gains its `corpus` group with T7.2 |
@@ -171,7 +171,7 @@ How each row is enforced once this epic lands, where no test of this epic can br
 registry, whose `carver-bench` cells are `nightly` and `manual`; R11 by
 `needs: [linux, host:dedicated]` on the gated cell and the arm64 option's `-record` (D5); R12 by
 `metrics: go-bench`, which keeps each night's absolute medians in `dt history`, while the decision
-is the owner's, by hand (D1); R22 by T7.4's flag, which only `unit/carver-sweep` passes; R23 and
+is the owner's, by hand (D1); R22 by E4's flag, which only `unit/carver-sweep` passes; R23 and
 R24 by `lint-repo`'s `dt docs --check` for a name the registry lacks, and by review for a
 registered cell the paragraph leaves out.
 
@@ -208,7 +208,7 @@ E5). §10.1's "no crash test, no soak and no concurrency test" describes the des
   `BenchmarkNextBoundary/<Target>/Search`, `BenchmarkNextBoundary/<Target>/BLAKE3` and
   `BenchmarkCut/<Target>/<Random|BLAKE3|Zeros|Period64>`, with `<Target>` the decimal byte count,
   `strconv.Itoa(t)` for each `t` of `carvetest.Targets` (`BenchmarkCut/262144/BLAKE3`). E4's T4.4
-  names its sub-benchmarks but not their spelling; E3's T3.2 has one level, which T7.1 splits into
+  spells its names exactly so; E3's T3.2 has one level, which T7.1 splits into
   `Search`, E3's body unchanged, and `BLAKE3`, the same bytes through `internal/blake3`'s keyed
   hash in `Target`-sized pieces, as E4's baseline. With `GOMAXPROCS` 1 in the cell, `go test` adds
   no `-N` suffix. A benchmark spelled otherwise fails the checker by name. Prior art: `go test`'s
@@ -261,13 +261,13 @@ E5). §10.1's "no crash test, no soak and no concurrency test" describes the des
   requests (`args: { pr: "-short" }` in `test/suites.yaml` on `feat/storage-v2`, checked), so after
   a merge and nightly it runs every test without it, under `-race`. A sweep that grows whenever
   `-short` is absent would run its 655,360 offsets there, raced, against `unit`'s 25-minute limit,
-  and in a developer's plain `go test ./...`. So `TestFaultSweep` runs the reduced sweep unless the
-  test flag `-carver.sweep-full` is set, declared in `carve`'s test files with `flag.Bool`, with a
-  `decision:` saying why `-short` cannot be the switch. `unit/carver-sweep` sets it, nightly,
+  and in a developer's plain `go test ./...`. So E4's `TestFaultSweep` runs the reduced sweep unless
+  the test flag `-carver.sweep-full` is set, which E4's T4.8 declares in `carve`'s test files with
+  `flag.Bool` and its `decision:` (E4's D6). This epic adds no flag: `unit/carver-sweep` sets it, nightly,
   without the race detector, which a sweep over `Cut`'s output needs none of. A flag rather than an
   environment variable: an option's `env` replaces the suite's whole, and a `DITTOFS_` name would
   join the start's drift check. Prior art: `unit --nonrace` in RFC 29 §4.1 (checked). Applied by
-  T7.4, and best taken by E4's T4.8 itself (§9 point 2).
+  T7.4.
 
 - **D7, settling §10.5.** The first run on the reference box sets each speed target, a floor, to
   max(proposed, 90 % of the measured median ratio), rounded down to two significant figures: the
@@ -294,7 +294,6 @@ pkg/carver/
     bench_test.go                 T7.1  BenchmarkNextBoundary split into Search and BLAKE3
   carve/
     corpus_bench_test.go          T7.2  BenchmarkCorpus (K4, K5)
-    errors_test.go                T7.4  TestFaultSweep's -carver.sweep-full flag; D6's decision:
 test/suites.yaml                  T7.1, T7.2, T7.3, T7.4  carver group; carver-bench with its arm64
                                                           and corpus options; unit/carver-sweep
 .github/workflows/tests.yml       T7.3, T7.4  carver-bench/arm64 and unit/carver-sweep in the
@@ -460,12 +459,10 @@ docs/internals/testing.md         T7.1, T7.2, T7.3, T7.4  regenerated by dt docs
 
 **Subtask T7.4 estimate: 1 man-days.**
 
-- **Track:** the team. **Depends on:** none. It changes E4's `TestFaultSweep`, so it lands with or
-  after E4's T4.8 (§9 point 2).
+- **Track:** the team. **Depends on:** none. It runs E4's `TestFaultSweep` with E4's
+  `-carver.sweep-full` flag, so it lands after E4's T4.8.
 - **Covers:** R21 to R24.
 - **Deliverables:**
-  - `TestFaultSweep`'s `-carver.sweep-full` flag (D6), with its `decision:`; without the flag it
-    runs E4's reduced sweep, `-short` or not.
   - `unit`'s `carver-sweep` option: `go test -timeout=55m -run=^TestFaultSweep$
     ./pkg/carver/carve/ -args -carver.sweep-full`, `tier: nightly`, `timeout: { test: 60m, cell:
     70m }`.
@@ -482,7 +479,7 @@ docs/internals/testing.md         T7.1, T7.2, T7.3, T7.4  regenerated by dt docs
   offset the reduced sweep does not sample (R21); the raced run without the flag, the reduced
   sweep's offset count asserted (R22). No test double: `failAt` is E4's fault wrapper around a real
   reader (kind 3).
-- **Rules:** rule 9, D6's `decision:`. Others as §2 says.
+- **Rules:** rule 9 does not apply: the flag and its `decision:` are E4's. Others as §2 says.
 
 ## 7. Order of work
 
@@ -509,7 +506,7 @@ after T7.1.
 | 1 | T7.1 | 3.25 | — | the speed cell, its checker, the settling run and the suite the others extend |
 | 2 | T7.2 | 2.25 | PR 1 | K4 and K5 and their first recorded figures |
 | 3 | T7.3 | 1.25 | PR 1 | the arm64 option; open beside PR 2 |
-| 4 | T7.4 | 1 | — | the full sweep, which reads nothing of PR 1; best folded into E4's T4.8 pull request |
+| 4 | T7.4 | 1 | — | the full sweep's nightly cell, which reads nothing of PR 1; open beside the others |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -518,12 +515,11 @@ A suggestion only: one pull request per subtask works as well.
 1. **Estimate against the RFC 2 plan's figure.** The RFC 2 plan says 5 subtasks and 8.5 man-days;
    this document says 4 and 7.75. The settling run folds into the speed cell, K4 and K5 run as
    benchmarks in the one suite (D4), and arm64 reuses the speed group with `-record` (D5).
-2. **E4's D6 runs the full sweep in `unit`'s raced runs after a merge**, since `unit` passes
-   `-short` on pull requests only (D6). That times `unit` out on `feat/storage-v2` at E4's own
-   merge, before this epic exists. E4's pull request (#5974) is the place for D6's flag; T7.4
-   carries it only if E4 lands without it, and then must land before E4's T4.8 merges.
-3. **The sub-benchmark names (D2) are not in E3's and E4's documents** (#5939, #5974, open). Their
-   owners spell them as D2 says; a different spelling fails the checker by name.
+2. **The full sweep's switch is E4's.** E4's T4.8 declares `-carver.sweep-full` (E4's D6), so
+   `unit`'s raced runs after a merge keep the reduced sweep; T7.4 only sets the flag.
+3. **E3's sub-benchmark names (D2) are not in its document** (#5939, open): T7.1 splits
+   `BenchmarkNextBoundary/<Target>` into `Search` and `BLAKE3`. E4's names are as D2 spells them
+   (#5974). A different spelling fails the checker by name.
 4. **No nightly runs on `feat/storage-v2`.** The schedule runs `tests.yml` on develop only, and the
    dedicated host runs develop's latest commit, so every nightly cell here starts its series when
    `feat/storage-v2` reaches develop. Until then each cell is accepted by a hand run: a
