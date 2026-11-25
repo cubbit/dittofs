@@ -1,26 +1,25 @@
 # Epic 4: syncer v2 termination, retries and the uploader
 
-**Sources:** [RFC 3](../docs/internals/rfcs/rfc-3-syncer.md) §1.3's `Upload` and the "The
-syncer" and "Counts toward health" columns of its error table; §2.4; §2.5; §2.6; §3, §3.1 to
-§3.5; §2.10's throttle limit, throughput floor, first-byte bound, retry bound, retry budget,
-slow-tail retry and retry backoff; §2.12's transfer series; §6's S4, S5, S6, S8 (`src`'s side),
-S9, S17's throttle-limit clause, S19's error-set half, S21 and S23; §7.1's rows "§2.5 unknown is
-failure", "§2.6 no inference", "§3.4 partial put", "§3.3, §3.5 stability" and "§3.4 measuring
-pass"; §7.2's rows "§2.4 termination", "§2.4 throttling lowers concurrency", "§2.4 budget per
-store and direction", "§2.4 slow tail is not charged", "§2.4 trickle fails", "§2.4 throughput
-floor", "§2.4 throttling", "§2.4 retry budget", "§2.4 first byte, per direction", "§2.4 wire
-bytes" (E4's put analogue, §9), "§2.4 lone slow tail" and "§1.3 RFC 4's errors, as they are" (its table
-half); §7.3's first rule; §8.2's "Retries" cases but the detached-buffer one, and its upload cases
-of "Shape of a transfer"; §8.4's "retries" count. Cited for what they hand over: §2.8 (the
-outcomes that count toward health, the cause), §2.9 (the per-store bound, the class of a
-transfer), §4.3 (a fetch's resume and re-get, which epic 6 builds). Cited, not owned:
-[RFC 4](../docs/internals/rfcs/rfc-4-remote-tier.md) §4.1 and §4.8 (the error set and `Meter`)
-and §4.3 (`Put.Attempt`, overlapping tries); epic 1's D1 (what a refused call returns) and its
-`Stats`; epic 2's D1 to D4 (the fault wrapper's effects, `syncertest`'s `Env` and `Faults`);
-epic 3's D1, D9, D10, D11 and D12 (the slot, the fixed-values table, `admit`, the counters,
-the `testing/synctest` bubble) and its T3.3 (the per-store bound). Every citation is `develop`'s text,
-epic 3's that of its open pull request (#5940). The code lands on `feat/storage-v2`, and the paths
-below are paths there.
+**Sources:** [RFC 3](../docs/internals/rfcs/rfc-3-syncer.md) §1.3's `Upload` and the "The syncer"
+and "Counts toward health" columns of its error table; §2.4; §2.5; §2.6; §3, §3.1 to §3.5; §2.10's
+throttle limit, throughput floor, first-byte bound, retry bound, retry budget, slow-tail retry and
+retry backoff; §2.12's transfer series; §6's S4, S5, S6, S8 (`src`'s side), S9, S17's throttle-limit
+clause, S19's error-set half, S21 and S23; §7.1's rows "§2.5 unknown is failure", "§2.6 no
+inference", "§3.4 partial put", "§3.3, §3.5 stability" and "§3.4 measuring pass"; §7.2's rows "§2.4
+termination", "§2.4 throttling lowers concurrency", "§2.4 budget per store and direction", "§2.4
+slow tail is not charged", "§2.4 trickle fails", "§2.4 throughput floor", "§2.4 throttling", "§2.4
+retry budget", "§2.4 first byte, per direction", "§2.4 wire bytes" (E4's put analogue, §9), "§2.4
+lone slow tail" and "§1.3 RFC 4's errors, as they are" (its table half); §7.3's first rule; §8.2's
+"Retries" cases but the detached-buffer one, and its upload cases of "Shape of a transfer"; §8.4's
+"retries" count. Cited for what they hand over: §2.8 (the outcomes that count toward health, the
+cause), §2.9 (the per-store bound, the class of a transfer), §4.3 (a fetch's resume and re-get,
+which epic 6 builds). Cited, not owned: [RFC 4](../docs/internals/rfcs/rfc-4-remote-tier.md) §4.1
+and §4.8 (the error set and `Meter`) and §4.3 (`Put.Attempt`, overlapping tries); epic 1's D1 (what
+a refused call returns) and its `Stats`; epic 2's D1 to D4 (the fault wrapper's effects,
+`syncertest`'s `Env` and `Faults`); epic 3's D1, D9, D10, D11 and D12 (the slot, the fixed-values
+table, `admit`, the counters, the `testing/synctest` bubble) and its T3.3 (the per-store bound).
+Every citation is `develop`'s text, epic 3's that of its open pull request (#5940). The code lands
+on `feat/storage-v2`, and the paths below are paths there.
 **Track:** B.
 **Epic 4 estimate: 10 subtasks, 24 man-days.**
 **Depends on:** **S1**, epic 1's surface, for T4.1. **S2**, epic 2's fault wrapper (`Inject`,
@@ -353,19 +352,20 @@ field (E1's R18).
   starts from, named in its breakdown.
 - **D10, each ended try hands E5 an outcome through one hook on the half.** `outcome{dir, ok,
   counts, cause}` is passed to `half.onOutcome`, once per try, except a try the slow-tail rule
-  cancelled, which hands none, since it says nothing about the store; set per instance from `export_test.go` in this
-  epic's tests and by E5's `New` once health lands; a `Stats` counter is no substitute, since E5
-  needs the order of outcomes within its window. No marker. Prior art: the journal's offload
-  callback, which hands each result to its caller (RFC 1 §3.3).
-- **D11, the syncer's own trips wrap `remote.ErrTransient`.** A floor, stall, trickle or
-  first-byte trip on a transfer's last attempt is reported as an error that names the store and
-  the rule and wraps `remote.ErrTransient`, so the engine's `errors.Is` reads it as RFC 4's
-  transient class, as RFC 3 §1.3 does for `Small`'s bound. No new error value (E1's R16). Each such trip is an error retry like any `ErrTransient`: it takes a budget token and
-  counts toward the four attempts (RFC 3 §2.4's budget sentence, §8.3's "retried within the
-  bound"), under `syncer_retries_total`'s `floor`, `stalled` or `trickle` reason; the first-byte
-  bound counts as `transient`. That a trip takes a token is a reading of §2.4, which names only
-  RFC 4's errors, so a `decision:` marker at the site says so. Whether it counts toward health is the outcome's flag (D10), never
-  read from the wrapped error, since a stall wraps `ErrTransient` and does not count. Prior art:
+  cancelled, which hands none, since it says nothing about the store; set per instance from
+  `export_test.go` in this epic's tests and by E5's `New` once health lands; a `Stats` counter is no
+  substitute, since E5 needs the order of outcomes within its window. No marker. Prior art: the
+  journal's offload callback, which hands each result to its caller (RFC 1 §3.3).
+- **D11, the syncer's own trips wrap `remote.ErrTransient`.** A floor, stall, trickle or first-byte
+  trip on a transfer's last attempt is reported as an error that names the store and the rule and
+  wraps `remote.ErrTransient`, so the engine's `errors.Is` reads it as RFC 4's transient class, as
+  RFC 3 §1.3 does for `Small`'s bound. No new error value (E1's R16). Each such trip is an error
+  retry like any `ErrTransient`: it takes a budget token and counts toward the four attempts (RFC 3
+  §2.4's budget sentence, §8.3's "retried within the bound"), under `syncer_retries_total`'s
+  `floor`, `stalled` or `trickle` reason; the first-byte bound counts as `transient`. That a trip
+  takes a token is a reading of §2.4, which names only RFC 4's errors, so a `decision:` marker at
+  the site says so. Whether it counts toward health is the outcome's flag (D10), never read from the
+  wrapped error, since a stall wraps `ErrTransient` and does not count. Prior art:
   `context.DeadlineExceeded` reported by `net/http` as a timeout (from memory).
 - **D12, the fixed values E4 reads join E3's table.** The throttle limit's rule, the floor, the
   first-byte bound, the retry bound, the retry budget, the slow-tail share and window, and the
@@ -411,7 +411,7 @@ pkg/syncer/
       model_test.go        T4.5  the model's throttle and hold steps
       fuzz_test.go         T4.5  FuzzSched's new steps; seeds
   syncertest/
-    upload.go              T4.8  the §2.5, §2.6, §3.4, §3.3 with §3.5 and measuring-pass rows, §8.2's upload shape cases
+    upload.go              T4.8  the Group A rows of §2.5 to §3.5, §8.2's upload shape cases
 ```
 
 ## 6. Subtasks
@@ -433,7 +433,7 @@ pkg/syncer/
   }
   func classify(err error, d remote.Direction) verdict
   type tries struct{ errors, throttled int } // attempts made, by kind
-  func (t tries) next(k retryKind) (retry bool) // a slow tail counts toward the four, as an error does, and takes no token
+  func (t tries) next(k retryKind) (retry bool) // a slow tail counts as an error attempt, no token
   func backoff(store syncer.StoreID, name remote.Name, k retryKind, attempt int) time.Duration
   ```
 
@@ -467,7 +467,7 @@ pkg/syncer/
 
   ```go
   type bucket struct{ tenths, capacity int64 }
-  func (b *bucket) take(demand bool) bool // an error retry; false when empty, or when only the reserve is left and demand is false
+  func (b *bucket) take(demand bool) bool // an error retry; false when empty, or at the reserve unless demand
   func (b *bucket) refund()               // a transfer that succeeded without an error retry
   ```
 
@@ -478,9 +478,9 @@ pkg/syncer/
   - Ten refunds restore one take; a refund never passes capacity.
 - **Tests:** at `take` and `refund`, which the loops call, as tables (no double): the reserve
   refused to a background take and granted to a demand one (catches a reserve not held, R23); the
-  ten thousand clean refunds from empty, exactly a thousand takes back (catches a refund that
-  drifts or a refill off by ten, R22); the 6%-failure run of RFC 3 §2.4's arithmetic is T4.9's
-  "§2.4 slow tail is not charged" row (R25); two buckets of one store, one per half, draining one leaves the
+  ten thousand clean refunds from empty, exactly a thousand takes back (catches a refund that drifts
+  or a refill off by ten, R22); the 6%-failure run of RFC 3 §2.4's arithmetic is T4.9's "§2.4 slow
+  tail is not charged" row (R25); two buckets of one store, one per half, draining one leaves the
   other full (catches one bucket per store, R24).
 
 ### T4.3 The slow-tail window and its share
@@ -701,34 +701,29 @@ R38's counts for the get half. Consumed by E6, which adds the resume and
   next `500` retried, slow-tail retries within the larger of one and 5% in every window; each
   error of the set given its row at the outcome hook and the caller's error; the backoffs of
   transfers failed together spread.
-- **Tests:** through `export_test.go`'s half over `codec.Store` on the in-memory store under `Link`, `Fail` with a
-  `When` on its load record, and `Hold`, in a bubble; the throttle limit and in-flight at that
-  record, the budget and retries at `Stats`. Each row verified by building its wrong design: a
-  hold without a limit, with a second store waiting so the cap binds (back to 96), a charged throttled retry (96 tokens on the first burst), a
-  charged slow-tail retry (empty after about 8,000), one bucket per process, a per-transfer
-  slow-tail cap alone, jitter on the store and attempt only. Under the leak check.
-
-### T4.10 The time-bound rows
-
-**Subtask T4.10 estimate: 2.5 man-days.**
-
-- **Track:** B. **Depends on:** T4.7.
-- **Covers:** R15, R29, R30, R31, R32, R33, R34, R35, R41, R42.
-- **Deliverables:** `time_rows_test.go`: RFC 3 §7.2's "§2.4 termination", "§2.4 trickle fails",
-  "§2.4 throughput floor" and "§2.4 first byte, per direction"; and R33's own put check, E4's
-  analogue of the get-only "§2.4 wire bytes" row (§9): `syncer_bytes_total` equal to the encoded
-  bytes the store received for a compressible block's put, and a put whose wire bytes trickle
-  below the floor failing on it. Consumed by S3.
-- **Acceptance criteria:** each row as RFC 3 §7.2 states it, on the clock: every transfer to a
-  permanently unavailable store returning within its bound; the trickling one of 32 failing as
-  `trickle` within the interval, uncounted, the other 31 completing; puts below the floor failing
-  and counted, a shared link just above the floor failing none, a stalled transfer failing
-  uncounted, a stalled fetch reader failing nothing; a get held before its first byte and a put
-  held after its last both failing at 10 s; the put-inside-`src` clause as §9 settles it.
-- **Tests:** through `export_test.go`'s half over `codec.Store` on the in-memory store under
-  `Link` and `Hold`, in a bubble (D13), the trip reasons at `Stats` and the counted flag at the outcome hook E5 consumes (D10).
-  Each row verified by building its wrong design: a floor per transfer, a fixed per-transfer
-  deadline, a floor read from decoded bytes. Under the leak check.
+- **Tests:** through `export_test.go`'s half over `codec.Store` on the in-memory store under `Link`,
+  `Fail` with a `When` on its load record, and `Hold`, in a bubble; the throttle limit and in-flight
+  at that record, the budget and retries at `Stats`. Each row verified by building its wrong design:
+  a hold without a limit, with a second store waiting so the cap binds (back to 96), a charged
+  throttled retry (96 tokens on the first burst), a charged slow-tail retry (empty after about
+  8,000), one bucket per process, a per-transfer slow-tail cap alone, jitter on the store and
+  attempt only. Under the leak check. ### T4.10 The time-bound rows **Subtask T4.10 estimate: 2.5
+  man-days.** - **Track:** B. **Depends on:** T4.7. - **Covers:** R15, R29, R30, R31, R32, R33, R34,
+  R35, R41, R42. - **Deliverables:** `time_rows_test.go`: RFC 3 §7.2's "§2.4 termination", "§2.4
+  trickle fails", "§2.4 throughput floor" and "§2.4 first byte, per direction"; and R33's own put
+  check, E4's analogue of the get-only "§2.4 wire bytes" row (§9): `syncer_bytes_total` equal to the
+  encoded bytes the store received for a compressible block's put, and a put whose wire bytes
+  trickle below the floor failing on it. Consumed by S3. - **Acceptance criteria:** each row as RFC
+  3 §7.2 states it, on the clock: every transfer to a permanently unavailable store returning within
+  its bound; the trickling one of 32 failing as `trickle` within the interval, uncounted, the other
+  31 completing; puts below the floor failing and counted, a shared link just above the floor
+  failing none, a stalled transfer failing uncounted, a stalled fetch reader failing nothing; a get
+  held before its first byte and a put held after its last both failing at 10 s; the
+  put-inside-`src` clause as §9 settles it. - **Tests:** through `export_test.go`'s half over
+  `codec.Store` on the in-memory store under `Link` and `Hold`, in a bubble (D13), the trip reasons
+  at `Stats` and the counted flag at the outcome hook E5 consumes (D10). Each row verified by
+  building its wrong design: a floor per transfer, a fixed per-transfer deadline, a floor read from
+  decoded bytes. Under the leak check.
 
 ## 7. Order of work
 
@@ -779,8 +774,8 @@ A suggestion only: one pull request per subtask works as well.
   hash of the store ID and the attempt number, gives every transfer of a store the same delay at
   one attempt, which breaks RFC 3 §2.4's "transfers that failed together do not retry together"
   and §7.2 "§2.4 retry budget"'s spread assertion. This document writes the recommended option:
-  - **A (written, recommended):** add the block name, `fnv64a(StoreID, Name, kind, attempt)`; still no
-    random source, the same on every run, spread across a store's transfers.
+  - **A (written, recommended):** add the block name, `fnv64a(StoreID, Name, kind, attempt)`; still
+    no random source, the same on every run, spread across a store's transfers.
   - **B:** a sequence number the half mints per transfer instead of the name; spread as well,
     but its value depends on the order concurrent calls arrive, so a run is not repeatable.
   - **C:** the store ID and attempt only, as given, with RFC 3 §2.4 and the row amended to drop
@@ -795,12 +790,12 @@ A suggestion only: one pull request per subtask works as well.
   first-byte bound; assert it fails at the bound, as a stalled network would." Not chosen: a third
   `Meter` call from the codec marking `src`'s time, which changes RFC 4's contract for a case §2.4
   already assigns to the engine.
-- **Decision needed: a requeued throttled transfer is outside the waiter bound (D2).** RFC 3
-  S20 says waiters never exceed the bound, and §2.4 that a burst of throttling fails no transfer; a requeue
-  refused at a full bound would break the second. This document keeps §2.4 and proposes S20
-  read: "…never exceed the waiter bound, beside at most one requeued throttled transfer per
-  worker, whatever the number of flows". Not chosen: refusing the requeue, which fails a busy
-  offload flow's transfers on its first throttling reply.
+- **Decision needed: a requeued throttled transfer is outside the waiter bound (D2).** RFC 3 S20
+  says waiters never exceed the bound, and §2.4 that a burst of throttling fails no transfer; a
+  requeue refused at a full bound would break the second. This document keeps §2.4 and proposes S20
+  read: "…never exceed the waiter bound, beside at most one requeued throttled transfer per worker,
+  whatever the number of flows". Not chosen: refusing the requeue, which fails a busy offload flow's
+  transfers on its first throttling reply.
 - **The "§3.4 measuring pass" row says eight throttled replies "and then success".** RFC 3 §2.4
   reports the eighth throttling reply as `ErrThrottled`, so no success follows it. T4.8 runs seven
   then success, and eight reported, and asserts `src` read at most 20 times in both; the row's
