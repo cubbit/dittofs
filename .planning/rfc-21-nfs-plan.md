@@ -1073,8 +1073,9 @@ under `adapters.nfs`, its default and its check (#4059's D2, D3); `pjdfstest`, `
 and `nfstest` out of the V2 filter, their `known.yaml` rewritten for v2 with each entry naming this
 plan's epic issue and RFC 21 §13's expected failures listed by name; whichever of `e2e/kerberos` and
 `e2e/cross-protocol` the V2 filter still skips by name then, out too; D11's settings closed as
-decided. The `e2e` cell comes back with RFC 23's implementation plan's T8.2, by that plan's epic 8
-D2 (a cell leaves the filter with its first green test), not here. Two fixture fixes in
+decided. The `e2e` cell comes back with RFC 23's implementation plan's T8.6, or with E16's T16.7 if
+that lands first, by that plan's epic 8 D2 (a cell leaves the filter with its first green test), not
+here. Two fixture fixes in
 `test/suites.yaml` come with the suites, so they fail none of their tests on the fixture: the
 `pjdfstest` fixture's `users` drops uid 65534 for another, since 65534 is anonymous (epic 7's R2) and
 the v2 store refuses a user record holding it, so a pjdfstest run as 65534 would lose its per-user

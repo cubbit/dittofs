@@ -44,8 +44,10 @@ simulated beneath the code under test; RFC 24 §6.1.
 - **E14**'s T14.1, whose XDR writer and reader the in-process rows, the pipeline benchmark and
   `nfsops` encode their calls with (pending Q5).
 - **S7**, `dfs` serving NFS, and RFC 23's implementation plan's epic 7, which builds the server
-  fixture the e2e tests start `dfs` through, and its epic 8, which rebuilds the e2e helpers on it and
-  takes the `e2e` cell out of `tests.yml`'s V2 filter with its T8.2, for T16.7 to T16.10 and T16.13.
+  fixture the e2e tests start `dfs` through, and its epic 8, which rebuilds the e2e helpers on it,
+  takes `e2e` out of `tests.yml`'s V2 filter's suite list with its T8.2 and stops skipping the `e2e`
+  cell by name with its T8.6, its first green test, unless T16.7 lands first and does (that plan's
+  epic 8, its D2), for T16.7 to T16.10 and T16.13.
   Not E15: by that epic's D2 a cell leaves the filter with its first green test, so `e2e/kerberos`
   and `e2e/cross-protocol`, skipped by name until then, leave with RFC 23's T8.8, with T16.8 or T16.9
   here, or with RFC 22's epic 16, whichever lands first. E15 takes out only `pjdfstest`, `pynfs`,
@@ -661,7 +663,7 @@ in a subtask (§9, gap 8).
 **Subtask T16.7 estimate: 4.75 man-days.**
 
 - **Track:** the team. **Depends on:** T16.4, S7, and RFC 23's implementation plan's epics 7 (the
-  server fixture) and 8 (the e2e helpers, and its T8.2, which takes `e2e` out of the filter).
+  server fixture) and 8 (the e2e helpers, and its T8.2, which takes `e2e` out of the filter's suite list).
 - **Covers:** R29, R30, R34, R54, R55, R56, R59, R60, R62.
 - **Deliverables:** `test/e2e/framework/capture.go` (D8): `func Capture(t *testing.T, port int) (stop
   func() string)`, returning the pcap's path, and `func TsharkFields(t *testing.T, pcap, filter
@@ -679,7 +681,8 @@ in a subtask (§9, gap 8).
   `-skip Restart`, so they never share its 30 minutes. `test/suites.yaml`'s `e2e` gains `tshark` among its needs,
   and the harness's closed set of needs (`test/harness/registry/check.go`) gains `tshark`, with its
   probe and package in `test/harness/needs/needs.go`, since the registry check refuses a need it
-  does not know.
+  does not know. `tests.yml`'s V2 filter stops skipping the `e2e` cell by name if RFC 23's T8.6 has
+  not already (RFC 23's implementation plan's epic 8, its D2).
 - **Acceptance criteria:**
   - The extraction's tree matches a local one byte for byte after the drain and the start.
   - After each restart the client's lock is still held against a second client, and its I/O
@@ -868,7 +871,7 @@ flowchart TD
   S7 --> T16_13["T16.13 Nightly benchmark and soak"]
   T14_1 -.-> T16_13
   EH(["handler epics E4 to E13, as each subtask's Depends on names them"]):::sync -.-> T16_2 & T16_3 & T16_4 & T16_5 & T16_14 & T16_6 & T16_9 & T16_11 & T16_12
-  R23(["RFC 23's plan, epics 7 and 8: the server fixture, the e2e helpers, T8.2's e2e cell"]):::sync --> T16_7 & T16_9 & T16_13
+  R23(["RFC 23's plan, epics 7 and 8: the server fixture, the e2e helpers, the e2e cell (T8.2, T8.6)"]):::sync --> T16_7 & T16_9 & T16_13
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
@@ -913,7 +916,8 @@ suites on, and the burn-down is planned after E15.
     composed single-node harness, driven by the scripted clients; the steps that check what a
     kernel client does run in `e2e`." RFC 18 §10's Tier 2 and RFC 20 §8.5 already place theirs so.
   - (b) As the RFC is: every such row in `e2e`, the scripted client run against the `dfs` the e2e
-    fixture starts; slower, after merge only, and each row waits for S7 and RFC 23's T8.2.
+    fixture starts; slower, after merge only, and each row waits for S7 and for the `e2e` cell to leave the V2
+    filter (RFC 23's T8.6, or T16.7).
   - (c) Both: in process per change and again in `e2e`; twice the work for no failure the first
     cannot catch.
 - **Q2. The nightly NFS reference and its host** (D4).
