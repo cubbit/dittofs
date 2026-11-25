@@ -162,7 +162,7 @@ subtasks and tests can cite them.
 | --- | --- | --- | --- | --- |
 | R15 | Golden vectors come from the specifications' examples or from captures of the reference server, never only from the codec under test | MUST | RFC 20 §5.4 | T2.5, T2.3 |
 | R16 | Every program and version served has captures to take vectors from: NFSv3, MOUNT v3, NLM v4, NSM v1, NFSv4.0, NFSv4.1 and the NFSv4.2 subset | MUST | RFC 21 §2.1; RFC 20 §5.4 | T2.3 |
-| R19 | *Withdrawn:* the capture helper was to live in `adaptertest`'s `golden/` as Go code; captures are now cut with `tshark` at recording time by a script beside `normalize.py` (D7), so this epic puts no capture helper in `golden/` | — | RFC 20 §2.5 | — |
+| R19 | *Withdrawn:* the capture helper was to live in `adaptertest`'s `golden/` as Go code; captures are now cut with `tshark` at recording time by a script beside `normalize.py` (D7), so no capture helper is in `adaptertest`, and this epic's pull request drops `golden/` from RFC 20 §2.5's layout | — | RFC 20 §2.5 | — |
 
 **The import test's call sites and file sizes**
 
