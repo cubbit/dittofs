@@ -227,6 +227,13 @@ func (q *Quotas) Rehome(ctx context.Context, writer vfs.Identity, c Charge, add 
 	return q.reserve(ctx, writer, c, add, true, scopes)
 }
 
+// limitable reports whether p may hold a quota: a user or a group, as the
+// store keys quotas. A file owned by root or anonymous, a well-known
+// principal, is limited by its share's and project's quotas alone.
+func limitable(p entity.Principal) bool {
+	return p.Kind == entity.PrincipalUser || p.Kind == entity.PrincipalGroup
+}
+
 // reserve is Reserve, and with rehome Rehome.
 func (q *Quotas) reserve(ctx context.Context, writer vfs.Identity, c Charge, add entity.Usage, rehome bool, scopes []vfs.QuotaScope) (*Reservation, error) {
 	covering := []struct {
@@ -236,10 +243,10 @@ func (q *Quotas) reserve(ctx context.Context, writer vfs.Identity, c Charge, add
 	}{
 		{vfs.QuotaShare, Target{}, true},
 		{vfs.QuotaProject, Target{Project: c.Project}, c.Project != 0},
-		{vfs.QuotaUser, Target{Principal: c.Owner}, !c.Owner.IsZero()},
+		{vfs.QuotaUser, Target{Principal: c.Owner}, limitable(c.Owner)},
 		// A group that is also the owner, as a privileged caller may make
 		// it, is charged once, as the store charges it.
-		{vfs.QuotaGroup, Target{Principal: c.Group}, !c.Group.IsZero() && c.Group != c.Owner},
+		{vfs.QuotaGroup, Target{Principal: c.Group}, limitable(c.Group) && c.Group != c.Owner},
 	}
 	r := &Reservation{q: q, file: c.File, add: add}
 	var js []judged
