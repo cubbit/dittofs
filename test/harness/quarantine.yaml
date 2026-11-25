@@ -8,6 +8,5 @@
 #   - { suite: integration, test: TestName, issue: "#1234", expires: 2026-12-31 }
 
 - { suite: unit, test: TestPassACopyFailureCountsTheCopiesItLanded, issue: "#5202", expires: 2027-02-18 }
-- { suite: unit, test: TestAReopenBetweenTheCarryAndTheUnlinkLeavesNoWedge, issue: "#5760", expires: 2026-12-25 }
 - { suite: engine-soak, test: TestSoak/seed=1, issue: "#3596", expires: 2027-02-15 }
 - { suite: engine-soak, test: TestSoak/seed=2, issue: "#4771", expires: 2027-02-15 }

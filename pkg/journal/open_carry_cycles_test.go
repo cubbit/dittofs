@@ -65,10 +65,21 @@ func openCarryCycleLeg(t *testing.T) (j *Journal, th *Handle, seam *kit.Seam, di
 	if _, err := th.Sync(t.Context(), file); err != nil {
 		t.Fatalf("the sync making the write's record and the truncate's own durable before any pass: %v", err)
 	}
-	// The segment both records landed in is sealed through the stream itself,
-	// so it holds nothing beside the dead write and the undroppable removal
-	// record: index-empty, the shape a retirement must free.
-	if _, err := j.core.Streams().For(core.FileID(file)).Seal(false); err != nil {
+	// The segment both records landed in is sealed early through the stream
+	// itself, so it holds nothing beside the dead write and the undroppable
+	// removal record: index-empty, the shape a retirement must free.
+	//
+	// decision: the seal is early, never full. A full seal keeps the segment
+	// accounted at its cap and marks it sealed full, which hands the retirer
+	// the recycle-or-unlink choice of the retirement itself: the carry's roll
+	// takes the target out of the pool's reserve class, and on the rare draw
+	// where wantRecycle still sees that class short before the refill's
+	// reservation lands, the source's retirement recycles it — a rename into a
+	// spare that touches no file the legs' OpRemove holds name, so the park
+	// the legs crash at never happens and the pass returns whole. Early-sealed
+	// the source is never a recycle candidate, so its retirement always
+	// reaches the unlink both legs park at, whichever retirement runs it.
+	if _, err := j.core.Streams().For(core.FileID(file)).Seal(true); err != nil {
 		t.Fatalf("sealing the segment holding the removal record: %v", err)
 	}
 	if err := j.core.WaitSpares(t.Context()); err != nil {
