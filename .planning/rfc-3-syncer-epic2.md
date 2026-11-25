@@ -167,23 +167,24 @@ which E3 to E7 write over T2.2's `Link`, and a lifetime count as the source of h
   are fixed at construction and whose `Err` must fail the call, so a lost reply, a flip, a hold
   or a link cannot be said in it, and whose `Lose` means the opposite of RFC 3 §2.5's (reported
   done, nothing durable). Changing the mechanism after S2 costs every fault injection in E3 to
-  E7 and E9. If the RFC 4 plan's epic 2 builds the read-only switch some other way, T2.1 keeps
-  it and adds `Inject` beside it.
+  E7 and E9. The RFC 4 plan's epic 2 makes read-only a setting on `Wrapper` and leaves the
+  per-call faults to this epic (its D8), so `Inject` sits beside `SetReadOnly`.
 - **D2, a fault's timing runs inside the store's call.** RFC 3 §1.4 asserts the pool limit and
   the throttle limit at the in-memory store's record of calls in flight, not at the wrapper, so
   that a call outliving its worker is still counted. The wrapper therefore calls the store first
   and applies `Hold` and `Link` while the store's call is open, at a position in the body: the
   store's reads of a put's body, up to its end, and the caller's reads of a get's. A probe has no
   body; it is held before the store's call, since nothing reads probes in flight. A `decision:` marker at the site says so. It
-  needs the record to count a get in flight until its body is closed, which is open with the
-  RFC 4 plan's epic 2 (§9). Not chosen: a second record kept by the wrapper from a call's
+  needs the record to count a get in flight until its reader is closed, which the RFC 4 plan's
+  epic 2 does (its D6). Not chosen: a second record kept by the wrapper from a call's
   entry, which would count a held call before it reaches the store, but which RFC 3 §1.4 does
   not name and RFC 4's conformance suite does not hold. `Cut` also relies on a put whose body fails storing nothing, RFC 4 §4.3's
   put that stores only on success, which `remotetest` holds. Prior art: none found.
 - **D3, each effect carries what it waits on.** `Link` takes its clock and `Hold` a release
   channel, so the wrapper's constructor, which is the RFC 4 plan's, keeps its signature. The
-  clock is a one-method `Clock` the wrapper declares, `After(d) <-chan struct{}`: `pkg/sim`'s
-  `Waiter` under the wrapper's own name, since RFC 4's package imports no `pkg/sim`. `TestClock`
+  clock is a one-method `Waiter` the wrapper declares, `After(d) <-chan struct{}`: `pkg/sim`'s
+  `Waiter`, redeclared because RFC 4's package imports no `pkg/sim`; the package's `Clock` is the
+  store's `Now` (the RFC 4 plan's epic 2, its D4). `TestClock`
   satisfies it; E9's benchmarks pass the real clock. A test learns that *n* calls are held from
   the in-memory store's record of calls in flight (D2), the condition itself, so no gate type is
   added beside it. Not chosen: a `Gate` with a `Reached(n)` event, which duplicates that record.
@@ -229,7 +230,7 @@ which E3 to E7 write over T2.2's `Link`, and a lifetime count as the source of h
 pkg/remote/memory/            RFC 4's in-memory store and fault wrapper (the RFC 4 plan's epic 2)
   inject.go             T2.1  Rule, Effect, Inject, Fail, Lose, Cut; Health per direction
   inject_test.go        T2.1  each fault over the in-memory store; remotetest with nothing injected
-  timing.go             T2.2  Clock, Flip, Hold, Link, run inside the store's call
+  timing.go             T2.2  Waiter, Flip, Hold, Link, run inside the store's call
   timing_test.go        T2.2  each effect; the load record of a held and a slowed call
 pkg/syncer/syncertest/        the Group A suite
   suite.go              T2.3  Run, Opener, Env, Put, Mode, Faults; the row type and the skip rule
@@ -237,9 +238,6 @@ pkg/syncer/syncertest/        the Group A suite
 pkg/syncer/imports_test.go    T2.3  syncertest's allowlist
 pkg/syncer/surface_test.go    T2.3  syncertest's frozen exports
 ```
-
-If the RFC 4 plan's epic 2 puts its wrapper in another package, T2.1's and T2.2's files go
-with it.
 
 ## 6. Subtasks
 
@@ -253,19 +251,18 @@ with it.
 
   ```go
   type Rule struct {
-      Op    string           // "Put", "Get" or "Health"; "" matches every call
-      Dir   remote.Direction // for "Health" only: the probe's direction; zero matches both
+      Op    string           // "put", "get" or "health", RFC 4 §4.12's op values; "" matches every call
+      Dir   remote.Direction // for "health" only: the probe's direction; zero matches both
       Name  remote.Name      // zero matches every name
       From  int              // the first matching call it fires on, counted from Inject; 0 means 1
       Count int              // how many calls from From; 0 means every one
-      Match func(Call) bool  // nil matches every call; else also required, checked as the call enters
+      When  func(Match) bool // nil matches every call; else also required, checked as the call enters
   }
-  type Call struct {
-      Op       string
-      Dir      remote.Direction
-      Name     remote.Name
-      Attempt  int // 1 for the first call naming Name since Inject, 2 for the next
-      InFlight int // calls in flight in the in-memory store's record as this one enters
+  type Match struct {
+      Op      string
+      Dir     remote.Direction
+      Name    remote.Name
+      Attempt int // 1 for the first call naming Name since Inject, 2 for the next
   }
   type Effect interface{ effect() } // sealed
   func (w *Wrapper) Inject(r Rule, e Effect) (remove func())
@@ -276,8 +273,11 @@ with it.
   ```
 
   Effects whose rules match one call apply in injection order; the first that ends the call
-  wins. `From` and `Count` count the calls that match `Op`, `Dir`, `Name` and `Match`. A row
-  wanting a seeded fraction draws inside `Match` from a source it seeds (kind 1). A `Fail` never
+  wins. `From` and `Count` count the calls that match `Op`, `Dir`, `Name` and `When`. A row
+  wanting a seeded fraction draws inside `When` from a source it seeds (kind 1). A row whose
+  condition is the load reads it inside `When` from the in-memory store it built,
+  `func(Match) bool { return st.Load().InFlight > 8 }`: the wrapper wraps any `remote.Store`
+  and never reaches the record itself (the RFC 4 plan's epic 2, its D8). A `Fail` never
   reaches the store, so the store's record does not count it. Consumed by T2.2, which adds the other three effects; by E3's lifecycle rows and opener;
   E4's §2.5, §3.4 and retry rows and its error table; E5's probe and failure-window rows; E6's
   fetch resume, and its past-the-end row, which injects `Fail(remote.ErrInvalid)` on a recorded
@@ -289,9 +289,9 @@ with it.
     *n*th matching call; `remove` stops it and leaves later rules counting.
   - `Lose` leaves the block stored and the put failed; `Cut` leaves nothing stored under the
     name, and a cut get's reader fails after exactly `after` bytes.
-  - Under `Match` on `InFlight > 8`, a ninth concurrent put fails and an eighth does not; under
-    `Match` on `Attempt == 1`, only a name's first put fails.
-  - `Op: "Health"` with `Dir` fails one direction's probe and passes the other's; removing the
+  - Under `When` reading the store's `Load().InFlight > 8`, a ninth concurrent put fails and an
+    eighth does not; under `When` on `Attempt == 1`, only a name's first put fails.
+  - `Op: "health"` with `Dir` fails one direction's probe and passes the other's; removing the
     rule passes both.
   - `Lose` on a get or a probe panics naming the operation, with the `decision:` marker of D1.
 - **Tests:** at the in-memory store's surface, where `codec.Store` and E3 to E7 meet the faults.
@@ -299,8 +299,9 @@ with it.
   (catches a `Lose` that drops the block, R3, and a `Cut` that stores a prefix, R4). The *n*th
   call for *n* from 1 to 5 under each failing effect (catches an off-by-one in `From`, R8).
   Twenty concurrent calls under `Count: 3` under `-race`, exactly three failing (catches a count
-  taken outside its lock). Sixteen held puts, then one more under `Match` on `InFlight > 8`
-  (catches `InFlight` read from the wrapper instead of the store, R18). `remotetest` over the wrapper with nothing injected (catches a wrapper
+  taken outside its lock). Sixteen puts held by body readers that block until the test closes them, as
+  the RFC 4 plan's epic 2 holds them in its T2.5, then one more under `When` on the store's
+  `Load().InFlight > 8` (catches a condition read from the wrapper's own count, R18). `remotetest` over the wrapper with nothing injected (catches a wrapper
   that changes what it passes through, R10). No test double is written: the store is kind 2, the
   wrapper kind 3.
 
@@ -313,17 +314,17 @@ with it.
 - **Deliverables:** `timing.go` (D2, D3):
 
   ```go
-  type Clock interface{ After(d time.Duration) <-chan struct{} }
+  type Waiter interface{ After(d time.Duration) <-chan struct{} }
   func Flip(off int64) Effect                               // a get covering block offset off reads it with its low bit flipped
   const End int64 = -1 // a put's position after its last body byte is sent, before the store answers
   func Hold(at int64, release <-chan struct{}) Effect       // waits at body byte at (0 is the start; End), until release closes
-  func Link(c Clock, perCall, perByte time.Duration) Effect // a get waits perCall before its first body byte, a put after its last;
+  func Link(c Waiter, perCall, perByte time.Duration) Effect // a get waits perCall before its first body byte, a put after its last;
                                                             // each waits perByte per body byte, on c
   // Every wait of Hold and Link also ends with ctx.Err() once the call's context ends.
   ```
 
   Consumed by E3's scheduler and lifecycle checks (`Link`, `Hold`); E4's slow-tail, floor,
-  trickle and first-byte rows (`Link`, `Hold`); E5's hung-probe row (`Hold` on `"Health"`); E6's
+  trickle and first-byte rows (`Link`, `Hold`); E5's hung-probe row (`Hold` on `"health"`); E6's
   §4.1 verification and re-get rows (`Flip`); E7's sweep and held-pool heap check (`Flip`,
   `Hold`); E9's B1 to B4, `Link` on the real clock.
 - **Acceptance criteria:**
@@ -453,18 +454,10 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **The in-memory store's record must count a get in flight until its body closes** (D2). RFC 3
-  §1.4 lists calls in flight without saying when a get ends, and the RFC 4 plan's epic 2, which
-  builds the record, is not broken down yet. If it ends a get at `Get`'s return, T2.2 holds a
-  get before returning its body and asks that epic for the longer span, since E6's single-flight
-  and E3's pool counts read it.
-- **The wrapper's type and package are the RFC 4 plan's epic 2's.** The RFC 4 plan's §4.1 lists
-  only `pkg/remote/memory` for its epic 2, so this document places the files there and names
-  the type `Wrapper`; T2.1 follows whatever that epic writes.
-- **The RFC 3 plan's S2 and its epic 2 differ from this document.** Its S2 has the suite running
-  its lifecycle rows; here no row runs before E3 (D7). Its epic 2 shows a get's fault through
-  `codec.Store` (D8) and builds the recording log handler and the held-pool heap measurement
-  (D6). The plan is not edited; E3's, E5's and E7's breakdowns take what moved.
+- **The RFC 3 plan's S2 and its epic 2 are restated to match this document.** Its S2 no longer
+  runs lifecycle rows (D7), its epic 2's **Done when** reads a get's fault at `remote.Store`
+  (D8), and the recording log handler and the held-pool heap measurement move to their
+  consumers (D6). E3's, E5's and E7's breakdowns take what moved.
 - **E6's "§4.2 yield at once" row needs to see the store read the next chunk.** `Link` on a get,
   whose body advances only as the clock moves, is the intended way; if E6 needs a fault that
   pauses a body after a set number of bytes, it adds one field to `Faults` and one effect, which
@@ -485,6 +478,6 @@ A suggestion only: one pull request per subtask works as well.
   offload plan epic 21's proxy gives it.
 - **`syncertest`'s allowlist omits `pkg/sim`**, which the RFC 3 plan's rule 7 lists for it: time
   is the opener's (D5), so the suite never names a clock.
-- **The wrapper's operations are `Put`, `Get` and `Health`.** The deferred raw transfers and
+- **The wrapper's operations are `put`, `get` and `health`.** The deferred raw transfers and
   `Small` (rows 1 and 2 of the RFC 3 plan's §6.1 deferral ledger) need RFC 4's version, object
   and listing calls; their first caller adds those operations to `Rule.Op`.
