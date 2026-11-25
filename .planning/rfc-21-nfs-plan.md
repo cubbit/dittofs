@@ -324,7 +324,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 | E10 | Delegations and the back channel | the back channel's calls, delegations offered, recalled, returned and revoked, administrator's revoke, path down with A2's service half after S2b, the drain test | 8 | 22 | A | E16 |
 | E11 🔀 | NLM, NSM and the datagram path | `core`'s datagram listener, NLM v4, NSM, grants resent, `SM_NOTIFY`, `DialClient`'s network | 7 | 22 | B | E16 |
 | E12 | NFSv4.2 operations | `DEALLOCATE`, `SEEK`, `READ_PLUS`, `COPY`, `CLONE`, xattrs, the hold budget | 5 | 13 | C | E16 |
-| E13 🔀 | RPCSEC_GSS | `gss`'s Kerberos side (S6c); the context table as NFS's `Security` stage over it, `krb5`, `krb5i`, `krb5p` | 12 | 27.5 | B | E16; RFC 22's plan's epic 4 |
+| E13 🔀 | RPCSEC_GSS | `gss`'s Kerberos side (S6c); the context table as NFS's `Security` stage over it, `krb5`, `krb5i`, `krb5p` | 12 | 28 | B | E16; RFC 22's plan's epic 4 |
 | E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries | 2 | 4 | A | E16 |
 | E15 🔀 | Integration with the node | settings, the NFS suites turned on | none | planned after S7 | team | E16, partly |
 | E16 🔀 | E2E green | in-process and restart rows, cross-protocol rows, e2e, benchmarks, soak, the totality test, pins; the burn-down after E15 | 8 | 25.5 | team | none |
@@ -1026,7 +1026,7 @@ step; N22. The held clone wait's rows need RFC 17's plan's piece 13 on the branc
 
 ### Epic 13 — RPCSEC_GSS 🔀
 
-**Epic 13 estimate: 12 subtasks, 27.5 man-days.**
+**Epic 13 estimate: 12 subtasks, 28 man-days.**
 
 Kerberos on NFS: `gss`'s Kerberos side (S6c), then a context table as NFS's `Security` stage over
 it, which withdraws E3's interim `AUTH_BADCRED` for `RPCSEC_GSS`.
@@ -1050,7 +1050,7 @@ steps, "§6.3 `MNT` on a Kerberos-only share *(1 node)*"'s `sec=krb5` step (afte
 - `krb5i` and `krb5p` through RFC 4121's `Wrap` and `Unwrap`, added to `gss`.
 - Header MIC verification, `DESTROY`, `CREDPROBLEM`, `CTXPROBLEM`, `MAXSEQ`, ticket expiry.
 - `ErrWrongSecurity` as `NFS4ERR_WRONGSEC` and NFSv3's `AUTH_TOOWEAK`; the `require_kerberos` boot
-  refusal (RFC 20's plan's ledger); the `ErrNotNegotiated`, `ErrNoSession` and `ErrExpired` rows.
+  refusal (RFC 20's plan's ledger); the `ErrNotNegotiated`, `ErrNoSession`, `ErrNoTree` and `ErrExpired` rows.
 - Rows on `memory.New` with injected sign-in errors; rows where `SignIn` succeeds after S6b.
 - knfsd's captures of `RPCSEC_GSS` exchanges at `krb5`, `krb5i` and `krb5p` against a KDC, cut into
   golden files as E2's are, which E2 leaves out.
