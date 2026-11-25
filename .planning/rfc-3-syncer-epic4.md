@@ -9,7 +9,7 @@ failure", "§2.6 no inference", "§3.4 partial put", "§3.3, §3.5 stability" an
 pass"; §7.2's rows "§2.4 termination", "§2.4 throttling lowers concurrency", "§2.4 budget per
 store and direction", "§2.4 slow tail is not charged", "§2.4 trickle fails", "§2.4 throughput
 floor", "§2.4 throttling", "§2.4 retry budget", "§2.4 first byte, per direction", "§2.4 wire
-bytes" (its put half), "§2.4 lone slow tail" and "§1.3 RFC 4's errors, as they are" (its table
+bytes" (E4's put analogue, §9), "§2.4 lone slow tail" and "§1.3 RFC 4's errors, as they are" (its table
 half); §7.3's first rule; §8.2's "Retries" cases but the detached-buffer one, and its upload cases
 of "Shape of a transfer"; §8.4's "retries" count. Cited for what they hand over: §2.8 (the
 outcomes that count toward health, the cause), §2.9 (the per-store bound, the class of a
@@ -17,18 +17,18 @@ transfer), §4.3 (a fetch's resume and re-get, which epic 6 builds). Cited, not 
 [RFC 4](../docs/internals/rfcs/rfc-4-remote-tier.md) §4.1 and §4.8 (the error set and `Meter`)
 and §4.3 (`Put.Attempt`, overlapping tries); epic 1's D1 (what a refused call returns) and its
 `Stats`; epic 2's D1 to D4 (the fault wrapper's effects, `syncertest`'s `Env` and `Faults`);
-epic 3's D1, D3, D9, D10, D11 and D12 (the slot, the per-store bound, the fixed-values table,
-`admit`, the counters, the `testing/synctest` bubble). Every citation is `develop`'s text,
+epic 3's D1, D9, D10, D11 and D12 (the slot, the fixed-values table, `admit`, the counters,
+the `testing/synctest` bubble) and its T3.3 (the per-store bound). Every citation is `develop`'s text,
 epic 3's that of its open pull request (#5940). The code lands on `feat/storage-v2`, and the paths
 below are paths there.
 **Track:** B.
-**Epic 4 estimate: 10 subtasks, 25.25 man-days.**
+**Epic 4 estimate: 10 subtasks, 24 man-days.**
 **Depends on:** **S1**, epic 1's surface, for T4.1. **S2**, epic 2's fault wrapper (`Inject`,
 `Fail`, `Lose`, `Cut`, `Hold`, `Link`) and `syncertest`'s frame, for T4.6 onward. **Epic 3**:
-T3.3's per-store bound and T3.8's model, for T4.2; T3.5's halves, `admit`, single-attempt
+T3.3's per-store bound and T3.8's model, for T4.5; T3.5's halves, `admit`, single-attempt
 `Upload`, `fixed.go` and counters, for T4.6; T3.6's single-attempt `Fetch`, for T4.7; T3.7's
-in-memory opener, for T4.8. **RFC 4 plan epic 6**, `codec.Store` with working bodies, for T4.8
-only, through T3.7's opener.
+in-memory opener, for T4.8. **RFC 4 plan epic 6**, `codec.Store` with working bodies, for T4.6
+onward: every loop test meters through the codec (D13), and T3.6 and T3.7 need it too.
 **Blocks:** E5, which feeds T4.6's outcomes into its failure window and its `ErrDenied` re-trip
 and reads T4.1's cause; E6, which runs its resume and re-get on T4.7's get loop; E7, whose sweep
 needs both halves' loops and whose bound counts T4.6's overlapping tries. Outside RFC 3's epics,
@@ -42,8 +42,8 @@ answered as epic 3 recommends. A different D12 answer is known rework here: ever
 T4.10 would drive the `TestClock` through epic 3's fallback idle wait instead of a bubble, about
 1 man-day across them. The §2.9 sentence changes nothing here.
 
-**Pending the user's answer:** D3's jitter inputs, and the "§2.4 throughput floor" row's last
-clause (§9, first two points).
+**Pending the user's answer:** D3's jitter inputs, the "§2.4 throughput floor" row's last
+clause, and RFC 3 S20's text for a requeued throttled transfer (§9, first three points).
 
 ---
 
@@ -74,8 +74,8 @@ the first-byte bound, and retried once on a slow tail. `Upload` is then complete
 
 ### 1.1 In scope
 
-The error classification and the attempt bounds (T4.1); the throttle limit and the held flow in
-the scheduler (T4.2); the retry budget (T4.3); the slow-tail window (T4.4); the floor judge
+The error classification and the attempt bounds (T4.1); the retry budget (T4.2); the slow-tail
+window (T4.3); the floor judge (T4.4); the throttle limit and the held flow in the scheduler
 (T4.5); the attempt loop for puts and the complete `Upload` (T4.6); the attempt loop for gets
 (T4.7); the Group A rows (T4.8); the §7.2 retry rows (T4.9) and time-bound rows (T4.10).
 
@@ -83,7 +83,7 @@ the scheduler (T4.2); the retry budget (T4.3); the slow-tail window (T4.4); the 
 
 - The fetch resume after a chunk was yielded, the verification re-get, `ErrMalformed`'s report at
   once, and the get half of "§2.4 wire bytes": E6, on T4.7's loop (D9). The re-get's exemption
-  from the budget is written here, as a kind T4.3 takes no token for.
+  from the budget is written here, as a kind T4.2 takes no token for.
 - Health: the failure window, the `ErrDenied` re-trip, the refusal of an unhealthy direction,
   `Flow.Health` and the probes: E5, from T4.6's outcomes (D10). RFC 4 plan epic 8's question,
   whether a store's re-admission probe serialised behind its `ProbeKey`'s shared probe was checked
@@ -131,17 +131,17 @@ title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | T4.1, T4.3, T4.4 and T4.5 are pure functions and values tested by tables, with time passed in as a `time.Duration`. T4.2 extends `internal/sched`, pure, and its model. T4.6, T4.7, T4.9 and T4.10 test the pool's unexported loop through `export_test.go`, each `attempt` and half-level get a closure over RFC 4's in-memory store (kind 2) under E2's wrapper (kind 3), in E3's `testing/synctest` bubble (kind 1). T4.8 runs through `syncertest` over `codec.Store`. No test double is written |
-| rule 2, fuzz tests where relevant ([`CLAUDE.md`, "Writing tests", "By kind"](../CLAUDE.md#writing-tests)) | T4.2 | E3's `FuzzSched` gains the throttle, hold and requeue steps, against the model. Nothing else here reads bytes |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | T4.1, T4.2, T4.3 and T4.4 are pure functions and values tested by tables, with time passed in as a `time.Duration`. T4.5 extends `internal/sched`, pure, and its model. T4.6, T4.7, T4.9 and T4.10 test the pool's unexported loop through `export_test.go`, each `attempt` built by `codec.Store.NewPut` and each get `codec.Store.Get`, over RFC 4's in-memory store (kind 2) under E2's wrapper (kind 3), in E3's `testing/synctest` bubble (kind 1), so every `Meter` count is the codec's own (D13). T4.8 runs through `syncertest` over the same. No test double is written |
+| rule 2, fuzz tests where relevant ([`CLAUDE.md`, "Writing tests", "By kind"](../CLAUDE.md#writing-tests)) | T4.5 | E3's `FuzzSched` gains the throttle, hold and requeue steps, against the model. Nothing else here reads bytes |
 | rule 3, observability follows RFC 25, with RFC 3's own exception | T4.6, T4.7 | `Stats` gains the transfer series of R38 in E1's fields, as atomics read without the half's lock (E3's D11). No log line and no span: RFC 3 §2.8's two lines are E5's |
 | rule 4, profiling | T4.6, T4.9 | Every test runs under `internal/prof`'s leak check, which catches a slow-tail try or a floor watchdog left running after `Upload` or `Close` returns. No per-chunk allocation is added: the `Meter`'s funcs are bound once per try, and the floor's buckets live in the slot. E7's `unit/syncer-allocs` gate measures it |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T4.6 to T4.10 | Under `-race`. The throttle limit and calls in flight at RFC 4's in-memory store's record, where a slow-tail try outliving its slot is counted; the outcome handed to E5 at the per-instance hook E5 replaces (D10); every other count at `Stats`, and each failure at the error the caller gets |
 | rule 6, known failures shrink | none | No suite this epic's tests run in keeps a `known.yaml`: every test lands green |
 | rule 7, v2 ignores v1 | all | Nothing here imports beyond `pkg/syncer`, `pkg/remote`, `internal/sched` and the standard library, which E1's import test holds; nothing reads v1 |
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T4.8 | "§2.6 no inference" needs a service that closes the connection after the whole body: `Faults.Drop`, nil over the in-memory opener and given by RFC 8 offload plan epic 21's proxy over the S3 store against LocalStack. Nothing needs a disk: the syncer persists nothing |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T4.1 to T4.7 | RFC 3 §2.4's `decision:` on slow-tail retries and re-gets at the budget's site (T4.3); the RFC 3 plan's §4.3 slow-tail `ponytail:` at the window (T4.4); the markers each §4 decision names |
-| rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | Each §7.2 row names the wrong design it catches, and is checked by building it: a hold without a limit, a charged throttled retry, a charged slow-tail retry, a floor judged per transfer, a per-transfer slow-tail cap alone, one bucket per process, jitter that ignores the transfer. Each classification row is checked by swapping two rows |
-| rule 11, a symbol is exported only if the RFC's interface uses it | all | Nothing is added to `pkg/syncer` or `pool`'s exports: E1's frozen-exports test still passes. `internal/sched` gains only what `pool` calls (T4.2). `syncertest` gains rows, which are unexported |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T4.1 to T4.7 | RFC 3 §2.4's `decision:` on slow-tail retries and re-gets at the budget's site (T4.2); the slow-tail window's `ponytail:` (T4.3, whose text is written there); the markers each §4 decision names |
+| rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | Each §7.2 row names the wrong design it catches, and is checked by building it: a hold without a limit (with a second store waiting, D7), a charged throttled retry, a charged slow-tail retry, a floor judged per transfer, a per-transfer slow-tail cap alone, one bucket per process, jitter that ignores the transfer. Each classification row is checked by swapping two rows |
+| rule 11, a symbol is exported only if the RFC's interface uses it | all | Nothing is added to `pkg/syncer` or `pool`'s exports: E1's frozen-exports test still passes. `internal/sched` gains only what `pool` calls (T4.5). `syncertest` gains rows, which are unexported |
 | rule 12, each subtask creates only what it declares | all | Each fixed value lands with the subtask that reads it, in E3's `fixed.go`. The outcome hook lands with T4.6, its first caller, and E5 is its consumer. The get loop retries only before a chunk is yielded, and E6 adds the resume (D9) |
 
 ## 3. Requirements and invariants
@@ -159,7 +159,7 @@ cite them. Sections are RFC 3's unless named.
 | R4 | A try the slow-tail rule cancels has its `ctx` ended, so the codec drops its chunk buffers, and it runs on without the transfer's slot while the retry runs | invariant | §1.3; §2.4 | T4.6 |
 | R5 | An unknown outcome, a put sent whose response was lost, is resolved as not stored and reported as a failure | MUST | §2.5; §6, RFC 3 S5 | T4.6, T4.8 |
 | R6 | A block is never reported stored because the call returned, no error was seen, every byte was sent, time passed, or a later read succeeded | MUST NOT | §2.6; §6, RFC 3 S6 | T4.6, T4.8 |
-| R7 | A put that does not complete is never reported stored, and is never inferred stored from parts | MUST NOT | §3.4; §6, RFC 3 S9 | T4.6, T4.8 |
+| R7 | A put that does not complete never leaves the block retrievable and is never reported stored, and is never inferred stored from parts | MUST NOT | §3.4; §6, RFC 3 S9 | T4.6, T4.8 |
 | R8 | The uploader makes no multipart upload: each try is one call of `attempt`, and the syncer has no put of its own to split. E1's `Store`, which has no put, holds it | MUST NOT | §3.4; E1's R9 | T4.6 |
 | R9 | The uploader does not decide which blocks are assembled, when, or in what order: it runs the `Upload` calls it is given, in its flow's queue | MUST NOT | §3.1 | T4.6 |
 | R10 | The uploader holds a reference, never a copy: a queued `Upload` holds its `attempt` and no byte of the block, and the syncer never reads one | MUST, MUST NOT | §3.2; §1.3 | T4.6 |
@@ -178,43 +178,43 @@ cite them. Sections are RFC 3's unless named.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R15 | Every transfer completes in bounded time with a success or a failure reported to its caller; no transfer retries indefinitely | MUST | §2.4; §6, RFC 3 S4; §7.2, "§2.4 termination" | T4.1, T4.6, T4.7, T4.10 |
-| R16 | Only `ErrTransient`, `ErrThrottled`, a put's `ErrCorrupt` and the syncer's own floor, stall, trickle and first-byte trips are retried here; a fetch's `ErrCorrupt` is retried once by E6 | invariant | §2.4 | T4.1 |
+| R16 | Only `ErrTransient`, `ErrThrottled`, a put's `ErrCorrupt` and the syncer's own floor, stall, trickle and first-byte trips are retried here; a fetch's `ErrCorrupt` is retried once by E6 | invariant | §2.4; §8.3; D11 | T4.1 |
 | R17 | At most four attempts per transfer, the first and three retries, not counting attempts ended by throttling; at most eight throttled attempts, the first seven retried after their backoff under the lowered limit and the eighth reported as `ErrThrottled` | bound | §2.4; §2.10, "retry bound"; §6, RFC 3 S21 | T4.1, T4.6, T4.9 |
-| R18 | So an `Upload` calls `attempt` at most twelve times, four error attempts and eight throttled ones, and reads `src` at most twenty times through the codec | bound | §2.4; §7.1, "§3.4 measuring pass" | T4.6, T4.8 |
+| R18 | So an `Upload` reads `src` at most twenty times through the codec, and, derived from R17 (4 + 8), calls `attempt` at most twelve times | bound | §2.4; §7.1, "§3.4 measuring pass" | T4.6, T4.8 |
 | R19 | A transfer whose attempts are exhausted is reported with its last error | invariant | §7.2, "§2.4 retry budget" | T4.6, T4.9 |
-| R20 | Each retry waits a full-jitter backoff, uniform in [0, min(5 s, 100 ms × 2^attempt)], so transfers that failed together do not retry together; the draw is derived from the transfer, not from a random source (D3) | invariant | §2.4; §2.10, "retry backoff"; §1.4; §7.2, "§2.4 retry budget" | T4.1, T4.9 |
+| R20 | Each retry waits a full-jitter backoff, uniform in [0, min(5 s, 100 ms × 2^attempt)], a uniform draw, so transfers that failed together do not retry together (how the draw is made is D3) | invariant | §2.4; §2.10, "retry backoff"; §1.4; §7.2, "§2.4 retry budget" | T4.1, T4.9 |
 | R21 | The syncer is the only layer that retries a transfer, and a retry is the same attempt: the same name and the same bytes | invariant | §2.4 | T4.6 |
 
 **The retry budget**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R22 | Every error retry, an attempt beyond the first after an `ErrTransient` that is not `ErrThrottled` or after a put's `ErrCorrupt`, takes a token from its store's bucket for that direction; every transfer in that direction that succeeds without an error retry returns 0.1; with the bucket empty the failed attempt is reported, not retried | invariant | §2.4; §2.10, "retry budget"; §6, RFC 3 S21 | T4.3, T4.6, T4.9 |
-| R23 | Each bucket holds the half's pool size in tokens, a quarter of it a reserve that only demand retries spend: a `Fetch` on a flow that is not background in the get direction, an `Upload` on a flow that is not background in the put direction | invariant | §2.4; §2.10, "retry budget"; §6, RFC 3 S21 | T4.3, T4.9 |
-| R24 | The budget is per store and direction: no store's failures, and no direction's, spend another's tokens | invariant | §2.4; §6, RFC 3 S21; §7.2, "§2.4 budget per store and direction" | T4.3, T4.9 |
-| R25 | Throttled retries, slow-tail retries and verification re-gets take no token | invariant | §2.4; §2.10; §6, RFC 3 S21; §7.2, "§2.4 slow tail is not charged" | T4.3, T4.9 |
+| R22 | Every error retry, an attempt beyond the first after an `ErrTransient` that is not `ErrThrottled` or after a put's `ErrCorrupt`, takes a token from its store's bucket for that direction; every transfer in that direction that succeeds without an error retry returns 0.1; with the bucket empty the failed attempt is reported, not retried | invariant | §2.4; §2.10, "retry budget"; §6, RFC 3 S21 | T4.2, T4.6, T4.9 |
+| R23 | Each bucket holds the half's pool size in tokens, a quarter of it a reserve that only demand retries spend: a `Fetch` on a flow that is not background in the get direction, an `Upload` on a flow that is not background in the put direction | invariant | §2.4; §2.10, "retry budget"; §6, RFC 3 S21 | T4.2, T4.9 |
+| R24 | The budget is per store and direction: no store's failures, and no direction's, spend another's tokens | invariant | §2.4; §6, RFC 3 S21; §7.2, "§2.4 budget per store and direction" | T4.2, T4.9 |
+| R25 | Throttled retries, slow-tail retries and verification re-gets take no token | invariant | §2.4; §2.10; §6, RFC 3 S21; §7.2, "§2.4 slow tail is not charged" | T4.2, T4.9 |
 
 **Throttling**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R26 | On `ErrThrottled` the flow's queue is dispatched nothing new until that transfer's backoff has run, and the transfer then retries; other flows are dispatched meanwhile | invariant | §2.4; §7.2, "§2.4 throttling" | T4.2, T4.6, T4.9 |
-| R27 | Each store and direction has a throttle limit, the most workers it may hold: it starts at the cap, halves to half of what the store holds, never below one, on each throttling reply, and rises by one per transfer completed without throttling, up to the cap. The store never holds more than it, and it is never above the cap | invariant | §2.4; §2.9; §2.10, "throttle limit"; §6, RFC 3 S17; §7.2, "§2.4 throttling lowers concurrency" | T4.2, T4.6, T4.9 |
-| R28 | Throttling says nothing about health: no throttling reply counts toward it, and no transfer fails on throttling before its eighth throttled attempt | invariant | §1.3; §2.4; §6, RFC 3 S19 | T4.1, T4.9 |
+| R26 | On `ErrThrottled` the flow's queue is dispatched nothing new until that transfer's backoff has run, and the transfer then retries; other flows are dispatched meanwhile | invariant | §2.4; §7.2, "§2.4 throttling" | T4.5, T4.6, T4.9 |
+| R27 | Each store and direction has a throttle limit, the most workers it may hold: it starts at the cap, halves to half of what the store holds, never below one, on each throttling reply, and rises by one per transfer completed without throttling, up to the cap. Below the cap the store never holds more than it; at the cap it binds as the cap does (D7); it is never above the cap | invariant | §2.4; §2.9; §2.10, "throttle limit"; §6, RFC 3 S17; §7.2, "§2.4 throttling lowers concurrency" | T4.5, T4.6, T4.9 |
+| R28 | Throttling says nothing about health: no throttling reply counts toward it, and no transfer fails on throttling before its eighth throttled attempt, a requeue at a full queue or waiter bound included (D2) | invariant | §1.3; §2.4; §6, RFC 3 S19 | T4.1, T4.5, T4.9 |
 
 **Time bounds**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R29 | The throughput floor is 64 KiB/s over 30 s, judged on the store's aggregate per direction: a transfer below it fails on it only when the store's aggregate in that direction, summed over every transfer to it, is also below it over the interval, and only such a failure counts toward health | MUST | §2.4; §2.10, "throughput floor"; §6, RFC 3 S19 | T4.5, T4.6, T4.10 |
-| R30 | A transfer that moves no byte for the interval has stalled and fails, whatever the aggregate, and does not count toward health unless the aggregate is below the floor too | invariant | §2.4; §2.10 | T4.5, T4.10 |
-| R31 | A transfer moving under a quarter of its store's mean per-transfer rate in that direction, the aggregate divided by the transfers in flight, over the interval, while the aggregate is above the floor, fails as trickling and does not count toward health | invariant | §2.4; §6, RFC 3 S23; §7.2, "§2.4 trickle fails" | T4.5, T4.10 |
+| R29 | The throughput floor is 64 KiB/s over 30 s, judged on the store's aggregate per direction: a transfer below it fails on it only when the store's aggregate in that direction, summed over every transfer to it, is also below it over the interval, and only such a failure counts toward health | MUST | §2.4; §2.10, "throughput floor"; §6, RFC 3 S19 | T4.4, T4.6, T4.10 |
+| R30 | A transfer that moves no byte for the interval has stalled and fails, whatever the aggregate, and does not count toward health unless the aggregate is below the floor too | invariant | §2.4; §2.10 | T4.4, T4.10 |
+| R31 | A transfer moving under a quarter of its store's mean per-transfer rate in that direction, the aggregate divided by the transfers in flight, over the interval, while the aggregate is above the floor, fails as trickling and does not count toward health | invariant | §2.4; §6, RFC 3 S23; §7.2, "§2.4 trickle fails" | T4.4, T4.10 |
 | R32 | The first-byte bound is 10 s per direction: for a get from dispatch to the first body byte received; for a put from dispatch to the first body byte accepted, and again from the last body byte sent to the acknowledgement | invariant | §2.4; §2.10, "first-byte bound"; §7.2, "§2.4 first byte, per direction" | T4.6, T4.7, T4.10 |
 | R33 | Every bound, and `syncer_bytes_total`, measures wire bytes: the syncer passes a `remote.Meter` into every call of `attempt` and every `Store.Get`, and reads only its `Moved` counts and its `Sent`; decoded bytes never count | invariant | §2.4; §2.12; RFC 4 §4.1 | T4.6, T4.7, T4.10 |
-| R34 | Only the store's side counts: time a caller spends not reading a fetched stream never trips the floor or the stall rule | invariant | §2.4; §7.2, "§2.4 throughput floor" | T4.5, T4.7, T4.10 |
+| R34 | Only the store's side counts: time a caller spends not reading a fetched stream never trips the floor or the stall rule | invariant | §2.4; §7.2, "§2.4 throughput floor" | T4.4, T4.7, T4.10 |
 | R35 | The time a put spends inside `src`, its measuring passes included, counts toward the floor and the first-byte bound, since the syncer cannot tell it from the network's (§9) | invariant | §2.4 | T4.6, T4.10 |
-| R36 | A transfer whose first byte is later than the 90th percentile of its store's first-byte times in that direction over the last 60 s is cancelled and retried, within the retry bound, at most once per transfer, without a budget token | SHOULD | §2.4; §2.10, "slow-tail retry" | T4.4, T4.6, T4.7, T4.9 |
-| R37 | Slow-tail retries on a store and direction never exceed the larger of one and 5% of the transfers it dispatched over the same 60 s window; past that share a slow transfer is waited out under the floor and the first-byte bound | MUST NOT | §2.4; §2.10; §6, RFC 3 S21; §7.2, "§2.4 slow tail is not charged", "§2.4 lone slow tail" | T4.4, T4.9 |
+| R36 | A transfer whose first byte is later than the 90th percentile of its store's first-byte times in that direction over the last 60 s is cancelled and retried on a new connection, within the retry bound, at most once per transfer, without a budget token | SHOULD | §2.4; §2.10, "slow-tail retry" | T4.3, T4.6, T4.7, T4.9 |
+| R37 | Slow-tail retries on a store and direction never exceed the larger of one and 5% of the transfers it dispatched over the same 60 s window; past that share a slow transfer is waited out under the floor and the first-byte bound | MUST NOT | §2.4; §2.10; §6, RFC 3 S21; §7.2, "§2.4 slow tail is not charged", "§2.4 lone slow tail" | T4.3, T4.9 |
 
 **Observability**
 
@@ -252,23 +252,32 @@ field (E1's R18).
   marker: this is §1.3's table. Prior art: RFC 4's own C.3 table mapping S3 replies to the set;
   gRPC's retry policy keyed on status codes (from memory).
 - **D2, a throttled try gives its slot back and its entry goes back to the head of its flow's
-  queue; an error retry keeps its slot.**
-  - On `ErrThrottled` the half lowers the store's limit, returns the slot, puts the entry back at
-    the head of its flow's queue for its class, and holds the flow for the backoff. Returning
-    the slot is what lets the store's in-flight count fall to the lowered limit, which "§2.4
-    throttling lowers concurrency" asserts; a throttled transfer that kept its slot would retry at
-    the same concurrency. The requeue counts as a waiter and is refused like `Add` at a full
-    queue or a full waiter bound, never displacing; a refused requeue reports the transfer as
-    `ErrThrottled`. A `decision:` marker says so: RFC 3 S20 holds exactly, at the cost of
-    reporting a throttled transfer early only when the half is already full of waiters.
+  queue, where it cannot be refused; an error retry keeps its slot.**
+  - On `ErrThrottled` the half lowers the store's limit, returns the slot and holds the flow;
+    once that transfer's own backoff has run, its entry goes back at the head of its flow's queue
+    for its class and is dispatched under the lowered limit. Returning the slot is what lets the
+    store's in-flight count fall to the lowered limit, which "§2.4 throttling lowers concurrency"
+    asserts; a throttled transfer that kept its slot would retry at the same concurrency.
+  - A requeued entry was admitted once and keeps that admission: it is checked against neither
+    the queue length nor the waiter bound, and never displaces, so a burst of throttling fails no
+    transfer (RFC 3 §2.4, R28). Such entries are at most one per worker of the half, since each
+    held a slot when it was throttled, so the waiters of a half are at most the bound plus the
+    pool. A `decision:` marker says so, and §9 proposes the RFC 3 S20 text.
+  - The hold is what RFC 3 §2.4 says: "the flow's queue is dispatched nothing **new**". A held
+    flow dispatches no entry that was never dispatched, and dispatches its requeued entries as
+    each one's own backoff ends, so one transfer's retry never waits on another transfer's
+    backoff. Holds are counted per flow and released as each backoff ends, so a flow with
+    several throttled transfers dispatches nothing new until the last of them has run its
+    backoff.
   - After `ErrTransient` or a put's `ErrCorrupt` the transfer keeps its slot through the
-    backoff, at most 800 ms for the third error retry (100 ms × 2^3), and calls `attempt`
-    again. Holding the flow instead would stall a busy share's offload on each transient error;
-    giving the slot back would need a second requeue path. A `ponytail:` marker names the cost,
-    one idle worker for up to 1.4 s per failing transfer, and the upgrade, the throttle path's
-    requeue without the hold, if a profile shows workers idle in backoff while work waits.
-  - Holds are counted per flow, so two throttled transfers of one flow hold it until the later
-    backoff ends.
+    backoff, drawn from its error-attempt count (D3): at most 200 ms, 400 ms and 800 ms for the
+    three error retries. Holding the flow instead would stall a busy share's offload on each
+    transient error; giving the slot back would need the requeue path for every retry. A
+    `ponytail:` marker names the cost, one idle worker for up to 1.4 s per failing transfer, and
+    the upgrade, the throttle path's requeue without the hold, if a profile shows workers idle in
+    backoff while work waits.
+  - A requeued get carries its joined callers with it once E6 adds joins; `Flow.Close` refuses a
+    requeued entry as closed like any queued one (E3's D6).
 
   Prior art: AWS SDKs' adaptive retry mode, which lowers a client-side send rate on throttling
   replies (from memory); Kubernetes API priority and fairness, whose seats go back on release
@@ -280,10 +289,11 @@ field (E1's R18).
   so transfers that failed together retry together, which RFC 3 §2.4 forbids and "§2.4 retry
   budget" asserts against ("the backoffs of transfers that failed together are spread"). This
   document therefore adds the transfer's block name to the hash: FNV-1a 64 (`hash/fnv`) over the
-  `StoreID`, the `remote.Name` and the attempt number, reduced to [0, ceiling] in nanoseconds.
-  Still no random source, the same delays on every run, and spread across the transfers of a
-  store. The attempt number is every attempt the transfer has made so far, throttled ones
-  included, so the eighth throttled attempt waits at the 5 s ceiling. A `decision:` marker at the
+  `StoreID`, the `remote.Name`, the retry's kind and its attempt number, reduced to [0, ceiling]
+  in nanoseconds. Still no random source, the same delays on every run, and spread across the
+  transfers of a store. The attempt number counts the retry's own kind: an error retry from its
+  error attempts (1 to 3, ceilings 200 to 800 ms), a throttled retry from its throttled attempts
+  (1 to 7, the ceiling reaching 5 s at the sixth). A `decision:` marker at the
   site names the inputs and that two fetches of one block on one store, which E6's single flight
   normally joins, share their delays. Prior art: AWS's "Exponential Backoff And Jitter" (Brooker,
   2015), whose full jitter is this distribution (from memory); none found for a hash-derived draw.
@@ -300,7 +310,7 @@ field (E1's R18).
   request's context (from memory).
 - **D5, the budget counts tenths of a token in an integer.** A bucket of pool × 10 tenths, an
   error retry taking 10, a clean success returning 1, the reserve a quarter of the capacity;
-  updated under the half's lock at the try's end, mirrored to an atomic for `Stats`. Integer
+  updated under the half's lock at the try's end. Integer
   tenths keep the refill exact over a long run, where a `float64` would drift from the
   arithmetic "§2.4 slow tail is not charged" asserts. Buckets start full. No marker. Prior art:
   gRPC's retry throttling, a token bucket with a 0.1 refill (gRFC A6, from memory), from which
@@ -313,7 +323,12 @@ field (E1's R18).
   nothing in flight, so an idle syncer runs no timer. `ponytail:` the window is judged in
   one-second steps, so a trip is seen up to a second late and a transfer's first second is never
   partial; upgrade to per-transfer timers if a floor or stall trip a second late shows up in B5.
-  A transfer's window does not advance while a fetched chunk is with its caller (R34). Prior art:
+  A transfer's window does not advance while a fetched chunk is with its caller (R34), and restarts
+  with each try, so the seconds a transfer spends in backoff with its slot (D2) are never stall
+  seconds. The watchdog starts and stops under the half's lock, so a dispatch racing its stop
+  restarts it. A trip cancels the try with `context.WithCancelCause`, its reason the cause, and
+  is applied only when the try's error is that cancellation: a try that returns `nil` or
+  `ErrDenied` as it is cut keeps its own outcome. Prior art:
   curl's `--speed-limit` and `--speed-time`, a floor judged over a window (from memory).
 - **D7, the throttle limit at the cap binds as the cap does.** RFC 3 §2.10 starts the limit at
   the cap, and RFC 3 §2.9 lets a lone busy store hold the whole pool. So while a store's limit is
@@ -323,7 +338,7 @@ field (E1's R18).
   lower it toward what the store holds rather than collapsing it to one, as RFC 3 §2.10's bare
   "halves on each throttling response" would. "Completed without throttling" is a transfer that
   ended in success without a
-  throttling reply. Both live in `sched` (T4.2), so the model checks RFC 3 S17's throttle clause.
+  throttling reply. Both live in `sched` (T4.5), so the model checks RFC 3 S17's throttle clause.
   A `decision:` marker names both readings. Prior art: TCP's congestion window, halved on loss and
   grown by one per round trip (RFC 5681, from memory).
 - **D8, `unknown` is a put whose last try failed after its first body byte moved.** RFC 3 §2.5's
@@ -337,18 +352,19 @@ field (E1's R18).
   error, so a reader never sees a chunk twice. E6 replaces the rule. No marker: it is the state E6
   starts from, named in its breakdown.
 - **D10, each ended try hands E5 an outcome through one hook on the half.** `outcome{dir, ok,
-  counts, cause}` is passed to `half.onOutcome`, set per instance from `export_test.go` in this
+  counts, cause}` is passed to `half.onOutcome`, once per try, except a try the slow-tail rule
+  cancelled, which hands none, since it says nothing about the store; set per instance from `export_test.go` in this
   epic's tests and by E5's `New` once health lands; a `Stats` counter is no substitute, since E5
   needs the order of outcomes within its window. No marker. Prior art: the journal's offload
   callback, which hands each result to its caller (RFC 1 §3.3).
 - **D11, the syncer's own trips wrap `remote.ErrTransient`.** A floor, stall, trickle or
   first-byte trip on a transfer's last attempt is reported as an error that names the store and
   the rule and wraps `remote.ErrTransient`, so the engine's `errors.Is` reads it as RFC 4's
-  transient class, as RFC 3 §1.3 does for `Small`'s bound. No new error value (E1's R16). No
-  marker. Each such trip is an error retry like any `ErrTransient`: it takes a budget token and
+  transient class, as RFC 3 §1.3 does for `Small`'s bound. No new error value (E1's R16). Each such trip is an error retry like any `ErrTransient`: it takes a budget token and
   counts toward the four attempts (RFC 3 §2.4's budget sentence, §8.3's "retried within the
   bound"), under `syncer_retries_total`'s `floor`, `stalled` or `trickle` reason; the first-byte
-  bound counts as `transient`. Whether it counts toward health is the outcome's flag (D10), never
+  bound counts as `transient`. That a trip takes a token is a reading of §2.4, which names only
+  RFC 4's errors, so a `decision:` marker at the site says so. Whether it counts toward health is the outcome's flag (D10), never
   read from the wrapped error, since a stall wraps `ErrTransient` and does not count. Prior art:
   `context.DeadlineExceeded` reported by `net/http` as a timeout (from memory).
 - **D12, the fixed values E4 reads join E3's table.** The throttle limit's rule, the floor, the
@@ -356,6 +372,15 @@ field (E1's R18).
   retry backoff go into `pool/fixed.go` under RFC 3 §2.10's `decision:` note, beside E3's.
   Whichever of T3.5 and T4.1 lands first creates the file with that note. No marker beyond the
   RFC's. Prior art: none found.
+
+- **D13, the loop tests meter through the codec.** RFC 4's in-memory store's `Put` and `Get`
+  take no `Meter` (RFC 4 §4.1), so a test closure over them would have to call `Moved` and `Sent`
+  itself, inventing the counts every floor, first-byte and wire-byte assertion reads: a double
+  no conformance suite holds to the codec. So every test of the loop builds `attempt` with
+  `codec.Store.NewPut` and gets through `codec.Store.Get`, whose `Meter` calls RFC 4 §7.3's codec
+  tests hold. This narrows the RFC 3 plan's rule 1, which lets an upload check's `attempt` be a
+  closure over the in-memory store's `Put`, and moves T4.6 onward behind RFC 4 plan epic 6
+  (§9). Only T4.1 to T4.4, which are pure, start before it. Prior art: none found.
 
 ## 5. Target tree
 
@@ -365,12 +390,12 @@ pkg/syncer/
     classify.go            T4.1  classify, the verdict, the attempt bounds, the backoff draw (D1, D3)
     classify_test.go       T4.1
     fixed.go               T4.1  E4's values in RFC 3 §2.10's table (D12)
-    budget.go              T4.3  the bucket per store and direction (D5)
-    budget_test.go         T4.3
-    slowtail.go            T4.4  the first-byte window and the slow-tail share
-    slowtail_test.go       T4.4
-    floor.go               T4.5  the floor judge (D6)
-    floor_test.go          T4.5
+    budget.go              T4.2  the bucket per store and direction (D5)
+    budget_test.go         T4.2
+    slowtail.go            T4.3  the first-byte window and the slow-tail share
+    slowtail_test.go       T4.3
+    floor.go               T4.4  the floor judge (D6)
+    floor_test.go          T4.4
     attempt.go             T4.6  the put loop, the Meter, the timers, the watchdog, the outcome hook
     upload.go              T4.6  Upload over the loop
     fetch.go               T4.7  the get loop under Fetch and Prefetch
@@ -379,14 +404,14 @@ pkg/syncer/
     attempt_test.go        T4.6
     fetch_retry_test.go    T4.7
     retry_rows_test.go     T4.9  the §7.2 retry rows, §8.4's retries count, §8.2's retry cases
-    time_rows_test.go      T4.10 the §7.2 time-bound rows, §8.2's upload shape cases
+    time_rows_test.go      T4.10 the §7.2 time-bound rows
     internal/sched/
-      throttle.go          T4.2  Throttle, Recover, Hold, Release, Requeue
-      throttle_test.go     T4.2
-      model_test.go        T4.2  the model's throttle and hold steps
-      fuzz_test.go         T4.2  FuzzSched's new steps; seeds
+      throttle.go          T4.5  Throttle, Recover, Hold, Release, Requeue
+      throttle_test.go     T4.5
+      model_test.go        T4.5  the model's throttle and hold steps
+      fuzz_test.go         T4.5  FuzzSched's new steps; seeds
   syncertest/
-    upload.go              T4.8  the §2.5, §2.6, §3.4, §3.3 with §3.5 and measuring-pass rows
+    upload.go              T4.8  the §2.5, §2.6, §3.4, §3.3 with §3.5 and measuring-pass rows, §8.2's upload shape cases
 ```
 
 ## 6. Subtasks
@@ -400,7 +425,7 @@ pkg/syncer/
 - **Deliverables:** `classify.go` (D1, D3) and E4's values in `fixed.go` (D12), unexported:
 
   ```go
-  type retryKind uint8 // noRetry, errorRetry, throttledRetry
+  type retryKind uint8 // noRetry, errorRetry, throttledRetry, slowTailRetry
   type verdict struct {
       retry  retryKind
       counts bool  // toward the direction's health (RFC 3 §2.8)
@@ -408,8 +433,8 @@ pkg/syncer/
   }
   func classify(err error, d remote.Direction) verdict
   type tries struct{ errors, throttled int } // attempts made, by kind
-  func (t tries) next(v verdict) (retry bool)  // within four error attempts and eight throttled ones
-  func backoff(store syncer.StoreID, name remote.Name, attempt int) time.Duration
+  func (t tries) next(k retryKind) (retry bool) // a slow tail counts toward the four, as an error does, and takes no token
+  func backoff(store syncer.StoreID, name remote.Name, k retryKind, attempt int) time.Duration
   ```
 
   Consumed by T4.6 and T4.7, whose loops call all three; by E5, which reads `verdict.counts` and
@@ -431,44 +456,9 @@ pkg/syncer/
   draws bucketed into ten equal ranges, none empty (catches a draw that ignores the block, which
   every name would put in one bucket, R20). Each fixed value against RFC 3 §2.10's figure.
 
-### T4.2 The throttle limit and the held flow in the scheduler
+### T4.2 The retry budget per store and direction
 
-**Subtask T4.2 estimate: 3 man-days.**
-
-- **Track:** B. **Depends on:** T3.3, T3.8.
-- **Covers:** R26, R27.
-- **Deliverables:** `internal/sched/throttle.go` (D2, D7):
-
-  ```go
-  func (s *Sched) Throttle(st StoreKey) (limit int)  // the per-store bound to min(bound, max(1, held/2))
-  func (s *Sched) Recover(st StoreKey) (limit int)   // the bound plus one, up to the cap
-  func (s *Sched) Hold(f FlowKey)                    // nothing of f dispatched until as many Releases
-  func (s *Sched) Release(f FlowKey)
-  func (s *Sched) Requeue(e *Entry) error            // back at its flow's head; refused like Add, never displacing
-  ```
-
-  A held flow leaves its ring and rejoins on its last `Release`, in O(1). The model of T3.8 gains
-  the same five steps and checks RFC 3 S17's throttle clause after each; `FuzzSched` gains them,
-  with seeds. Consumed by T4.6, which throttles, recovers, holds and requeues.
-- **Acceptance criteria:**
-  - A store holding 96 of a pool of 128 throttled once has a bound of 48, then 24, 12, 6, 3, 1,
-    and at 1 stays at 1; `Recover` raises it one at a time back to the cap and no further.
-  - At its cap the bound binds only while another store has work waiting (D7); below it, always.
-  - A held flow gets no dispatch while held and its first queued entry is next once released;
-    other flows on its store are served meanwhile, within the bound.
-  - `Requeue` at a full queue or a full waiter bound returns the refusal and displaces nothing.
-  - One dispatch's operation count stays flat at 1 to 1,000 waiting flows with held flows among
-    them, from E3's counter.
-- **Tests:** at `Next`, which T3.5's dispatch consumes, as tables (no double). Each criterion
-  above, with the wrong design it catches: a bound that ignores what the store holds (halving the
-  cap instead, which leaves 48 when 8 are held); a bound that always binds, which caps a lone
-  store at three quarters (RFC 3 §7.2 "§2.9 lone flow", re-run); a hold that only skips the
-  flow's turn once. The model's property test and the fuzz seeds over the new steps, each checked
-  by planting a bound that `Next` ignores and watching them fail (rule 10).
-
-### T4.3 The retry budget per store and direction
-
-**Subtask T4.3 estimate: 1.25 man-days.**
+**Subtask T4.2 estimate: 0.75 man-days.**
 
 - **Track:** B. **Depends on:** T4.1.
 - **Covers:** R22, R23, R24, R25.
@@ -486,24 +476,25 @@ pkg/syncer/
 - **Acceptance criteria:**
   - A bucket of a pool of 128 allows 128 takes from full, the last 32 only to demand.
   - Ten refunds restore one take; a refund never passes capacity.
-  - With first attempts failing at 6% and the refund at 0.1, a bucket stays near full over
-    100,000 transfers; charging 5% more takes empties it within about 8,000, as RFC 3 §2.4's
-    arithmetic says.
 - **Tests:** at `take` and `refund`, which the loops call, as tables (no double): the reserve
   refused to a background take and granted to a demand one (catches a reserve not held, R23); the
-  6% sequence, deterministic, from a seeded source (kind 1) (catches a refund that drifts or a
-  refill off by ten, R22, R25); two buckets of one store, one per half, draining one leaves the
+  ten thousand clean refunds from empty, exactly a thousand takes back (catches a refund that
+  drifts or a refill off by ten, R22); the 6%-failure run of RFC 3 §2.4's arithmetic is T4.9's
+  "§2.4 slow tail is not charged" row (R25); two buckets of one store, one per half, draining one leaves the
   other full (catches one bucket per store, R24).
 
-### T4.4 The slow-tail window and its share
+### T4.3 The slow-tail window and its share
 
-**Subtask T4.4 estimate: 1.75 man-days.**
+**Subtask T4.3 estimate: 1.25 man-days.**
 
 - **Track:** B. **Depends on:** T4.1.
 - **Covers:** R36, R37.
-- **Deliverables:** `slowtail.go`, with the RFC 3 plan's §4.3 `ponytail:` at the ring: a ring per
-  store and direction of the first-byte times of the last 60 s, at most 300 times the half's
-  pool; the 90th percentile by selection, recomputed at most once a second; per-second counts of
+- **Deliverables:** `slowtail.go`: a ring per store and direction of the first-byte times of the
+  last 60 s, at most 300 times the half's pool; the 90th percentile by `slices.Sort` on a copy,
+  recomputed at most once a second; a `ponytail:` at the ring saying past 300 times the pool the
+  window is shorter than 60 s and the recomputation is O(n log n) once a second, to be replaced
+  by per-second buckets when a CPU profile of the engine's soak shows it or a store fills the ring
+  in under 60 s; per-second counts of
   transfers dispatched and slow-tail retries over 60 s.
 
   ```go
@@ -523,12 +514,11 @@ pkg/syncer/
 - **Tests:** at `threshold` and `allow`, as tables over passed-in times (no double). Samples
   spanning 90 s (catches a window that never forgets). One dispatch on an idle store: one retry
   allowed (catches a bare 5% rounding to none, R37). 1,000 dispatches in a window, 60 retries
-  asked: 50 allowed (catches a per-transfer cap alone, R37). The selection run twice in one second
-  costs one recomputation, read from the window's own counter.
+  asked: 50 allowed (catches a per-transfer cap alone, R37).
 
-### T4.5 The floor judge
+### T4.4 The floor judge
 
-**Subtask T4.5 estimate: 2 man-days.**
+**Subtask T4.4 estimate: 2 man-days.**
 
 - **Track:** B. **Depends on:** T4.1.
 - **Covers:** R29, R30, R31, R34.
@@ -553,11 +543,51 @@ pkg/syncer/
   aggregate (R30); a trickle measured against the floor rather than the mean (R31); a window that
   advances while the caller holds a chunk (R34).
 
+### T4.5 The throttle limit and the held flow in the scheduler
+
+**Subtask T4.5 estimate: 2.5 man-days.**
+
+- **Track:** B. **Depends on:** T3.3, T3.8.
+- **Covers:** R26, R27.
+- **Deliverables:** `internal/sched/throttle.go` (D2, D7):
+
+  ```go
+  func (s *Sched) Throttle(st StoreKey) (limit int)  // the per-store bound to min(bound, max(1, held/2))
+  func (s *Sched) Recover(st StoreKey) (limit int)   // the bound plus one, up to the cap
+  func (s *Sched) Hold(f FlowKey)                    // nothing of f dispatched until as many Releases
+  func (s *Sched) Release(f FlowKey)
+  func (s *Sched) Requeue(e *Entry)                  // back at its flow's head, past a hold; never refused (D2)
+  ```
+
+  A held flow leaves its ring and rejoins on its last `Release`, in O(1). The model of T3.8 gains
+  the same five steps and checks RFC 3 S17's throttle clause after each; `FuzzSched` gains them,
+  with seeds. Consumed by T4.6, which throttles, recovers, holds and requeues.
+- **Acceptance criteria:**
+  - A store holding 96 of a pool of 128 throttled once has a bound of 48; throttled again while
+    still holding 96, it stays at 48; throttled as it holds 48, 24, 12, 6 and 3 in turn, it falls
+    to 24, 12, 6, 3 and 1, and at 1 stays at 1. `Recover` raises it one at a time back to the cap
+    and no further.
+  - At its cap the bound binds only while another store has work waiting (D7); below it, always.
+  - A held flow gets no dispatch while held and its first queued entry is next once released;
+    other flows on its store are served meanwhile, within the bound.
+  - `Requeue` at a full queue and a full waiter bound succeeds and displaces nothing; a held
+    flow dispatches a requeued entry and no new one.
+  - One dispatch's operation count stays flat at 1 to 1,000 waiting flows with held flows among
+    them, from E3's counter.
+- **Tests:** at `Next`, which T3.5's dispatch consumes, as tables (no double). Each criterion
+  above, with the wrong design it catches: a bound that ignores what the store holds (halving the
+  cap instead, which leaves 48 when 8 are held); a bound that always binds, which caps a lone
+  store at three quarters (RFC 3 §7.2 "§2.9 lone flow", re-run); a hold that only skips the
+  flow's turn once; a hold that also blocks requeued entries, so one transfer's retry waits on
+  another's backoff. The model's property test and the fuzz seeds over the new steps, each checked
+  by planting a bound that `Next` ignores and watching them fail (rule 10).
+
 ### T4.6 The put attempt loop and the complete `Upload`
 
 **Subtask T4.6 estimate: 5 man-days.**
 
-- **Track:** B. **Depends on:** T4.2, T4.3, T4.4, T4.5, T3.5, and S2.
+- **Track:** B. **Depends on:** T4.2, T4.3, T4.4, T4.5, T3.5, S2, and RFC 4 plan epic 6's
+  `codec.Store` (D13).
 - **Covers:** R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R15, R17, R18, R19, R21, R22, R26,
   R27, R29, R32, R33, R35, R36, R38, R39.
 - **Deliverables:**
@@ -565,7 +595,7 @@ pkg/syncer/
     `remote.Meter` whose `Moved` adds to the try's atomic byte count and stamps its first byte,
     and whose `Sent` restarts the first-byte bound to the acknowledgement; the first-byte and
     slow-tail timers on `Config.Clock`; the half's floor watchdog (D6); after a try, `classify`,
-    `tries.next`, the budget, `backoff` on the clock, or `Throttle`, `Requeue` and `Hold` with a
+    `tries.next`, the budget, `backoff` on the clock, or `Throttle` and `Hold`, then `Requeue` and
     `Release` once the backoff runs; `Recover` on a success; the outcome hook (D10); D11's trip
     errors.
   - `upload.go`: `Upload` over the loop, waiting for every try it started, `nil` if any returned
@@ -579,17 +609,15 @@ pkg/syncer/
 - **Acceptance criteria:**
   - A `Lose` answered once: the retry puts the same name, the store holds one object, `Upload`
     returns `nil`; the outcome counts as one failure in the put direction, then a success.
-  - A slow-tail try held inside `attempt` until its retry has started: `Upload` returns only
-    after both calls return, and the store's in-flight record shows both.
-  - Eight throttled replies: `ErrThrottled`, seven backoffs, the flow held through each, the slot
-    returned during each; seven and then success: `nil`.
-  - Four transient replies: the fourth reported as it came; with the bucket empty, the first.
+  - A slow-tail try held by E2's `Hold` inside the store's put until its retry has started:
+    `Upload` returns only after both calls return, and the store's in-flight record shows both.
   - A `src` failing mid-stream: the error as it is, one call of `attempt`.
   - No timer or goroutine of the loop outlives `Upload`, and the watchdog stops with the half
     idle.
 - **Tests:** at `Upload` and at the in-memory store's record, through `export_test.go`'s half,
-  each `attempt` a closure over the in-memory store's `Put` under E2's `Lose`, `Fail`, `Cut`,
-  `Hold` and `Link` (kind 2 under kind 3), in E3's bubble (kind 1). Each criterion above, and:
+  each `attempt` from `codec.Store.NewPut` over the in-memory store under E2's `Lose`, `Fail`,
+  `Cut`, `Hold` and `Link` (kind 2 under kind 3), in E3's bubble (kind 1) (D13). Throttled and
+  transient sequences are T4.9's rows, at the same layer. Each criterion above, and:
   `attempt` wrapped to record each call and pass it through (the recording wrapper `CLAUDE.md`
   allows), no call after `Upload` returns (catches a slow-tail try started late, R2); a `Cut`
   put, the name absent from `List` and `Upload` failed (catches a partial put reported stored,
@@ -599,24 +627,29 @@ pkg/syncer/
 
 ### T4.7 The get attempt loop under `Fetch` and `Prefetch`
 
-**Subtask T4.7 estimate: 2.25 man-days.**
+**Subtask T4.7 estimate: 2.5 man-days.**
 
 - **Track:** B. **Depends on:** T4.6, T3.6.
-- **Covers:** R15, R32, R33, R34, R36, R38.
+- **Covers:** R15, R17, R22, R23, R24, R26, R27, R32, R33, R34, R36, R38.
 - **Deliverables:** `fetch.go`: T3.6's one `Store.Get` becomes a try of T4.6's loop, retried
   while it has yielded nothing (D9); its `Meter`'s first `Moved` stops the first-byte bound; the
   watchdog pauses its window between a yield and its return; the slow-tail timer cancels a try and
   starts the next once its stream has ended (D4); the budget's reserve for a `Fetch` on a flow
-  that is not background; R38's counts for the get half. Consumed by E6, which adds the resume and
+  that is not background; a throttled get requeued as D2 says, its fetch half's limit lowered;
+R38's counts for the get half. Consumed by E6, which adds the resume and
   the re-get, and by T4.9 and T4.10.
 - **Acceptance criteria:**
   - A get failing transiently before its first chunk is retried and yields every chunk once; one
     failing after a chunk reports the error once.
   - A get held before its first body byte fails at 10 s; a caller holding a chunk for 60 s trips
     nothing.
-  - A get past its store's 90th percentile is cancelled and retried once.
-- **Tests:** at `Fetch`, through `export_test.go`'s half, each get a closure over the in-memory
-  store's `Get` under E2's `Fail`, `Hold` and `Link` (kind 2 under kind 3), in a bubble. Each
+  - A get throttled seven times and then answered: the fetch half's limit lowered, the flow held
+    for new work, every chunk yielded once; an eighth throttling reply reports `ErrThrottled`.
+  - A background `Fetch` meeting a transient failure with its get bucket at the reserve is
+    reported; a demand `Fetch` is retried.
+- **Tests:** at `Fetch`, through `export_test.go`'s half, each get `codec.Store.Get` over the
+  in-memory store under E2's `Fail`, `Hold` and `Link` (kind 2 under kind 3), in a bubble (D13).
+  The first-byte and slow-tail cases of a get are T4.10's and T4.9's rows. Each
   criterion, and a get under `Cut` after one chunk (catches a retry that yields chunk one twice,
   D9). Under `-race` and the leak check.
 
@@ -668,10 +701,10 @@ pkg/syncer/
   next `500` retried, slow-tail retries within the larger of one and 5% in every window; each
   error of the set given its row at the outcome hook and the caller's error; the backoffs of
   transfers failed together spread.
-- **Tests:** through `export_test.go`'s half over the in-memory store under `Link`, `Fail` with a
+- **Tests:** through `export_test.go`'s half over `codec.Store` on the in-memory store under `Link`, `Fail` with a
   `When` on its load record, and `Hold`, in a bubble; the throttle limit and in-flight at that
   record, the budget and retries at `Stats`. Each row verified by building its wrong design: a
-  hold without a limit (back to 96), a charged throttled retry (96 tokens on the first burst), a
+  hold without a limit, with a second store waiting so the cap binds (back to 96), a charged throttled retry (96 tokens on the first burst), a
   charged slow-tail retry (empty after about 8,000), one bucket per process, a per-transfer
   slow-tail cap alone, jitter on the store and attempt only. Under the leak check.
 
@@ -682,17 +715,18 @@ pkg/syncer/
 - **Track:** B. **Depends on:** T4.7.
 - **Covers:** R15, R29, R30, R31, R32, R33, R34, R35, R41, R42.
 - **Deliverables:** `time_rows_test.go`: RFC 3 §7.2's "§2.4 termination", "§2.4 trickle fails",
-  "§2.4 throughput floor", "§2.4 first byte, per direction" and the put half of "§2.4 wire bytes"
-  (`syncer_bytes_total` equal to the `Moved` sum of a compressible block's put, and a put whose
-  wire bytes trickle below the floor failing on it). Consumed by S3.
+  "§2.4 throughput floor" and "§2.4 first byte, per direction"; and R33's own put check, E4's
+  analogue of the get-only "§2.4 wire bytes" row (§9): `syncer_bytes_total` equal to the encoded
+  bytes the store received for a compressible block's put, and a put whose wire bytes trickle
+  below the floor failing on it. Consumed by S3.
 - **Acceptance criteria:** each row as RFC 3 §7.2 states it, on the clock: every transfer to a
   permanently unavailable store returning within its bound; the trickling one of 32 failing as
   `trickle` within the interval, uncounted, the other 31 completing; puts below the floor failing
   and counted, a shared link just above the floor failing none, a stalled transfer failing
   uncounted, a stalled fetch reader failing nothing; a get held before its first byte and a put
   held after its last both failing at 10 s; the put-inside-`src` clause as §9 settles it.
-- **Tests:** through `export_test.go`'s half over the in-memory store under `Link` and `Hold`, in
-  a bubble, the trip reasons at `Stats` and the counted flag at the outcome hook E5 consumes (D10).
+- **Tests:** through `export_test.go`'s half over `codec.Store` on the in-memory store under
+  `Link` and `Hold`, in a bubble (D13), the trip reasons at `Stats` and the counted flag at the outcome hook E5 consumes (D10).
   Each row verified by building its wrong design: a floor per transfer, a fixed per-transfer
   deadline, a floor read from decoded bytes. Under the leak check.
 
@@ -701,17 +735,18 @@ pkg/syncer/
 ```mermaid
 flowchart TD
   S1(["S1 syncer interface agreed"]):::sync --> T4_1["T4.1 Classification, bounds, backoff"]:::blocker
-  C33(["E3 T3.3 and T3.8: the bound and the model"]):::sync --> T4_2["T4.2 Throttle limit and held flow"]
-  T4_1 --> T4_3["T4.3 Retry budget"]
-  T4_1 --> T4_4["T4.4 Slow-tail window"]
-  T4_1 --> T4_5["T4.5 Floor judge"]
+  C33(["E3 T3.3 and T3.8: the bound and the model"]):::sync --> T4_5["T4.5 Throttle limit and held flow"]
+  T4_1 --> T4_2["T4.2 Retry budget"]
+  T4_1 --> T4_3["T4.3 Slow-tail window"]
+  T4_1 --> T4_4["T4.4 Floor judge"]
   C35(["E3 T3.5: halves, admit, Upload"]):::sync --> T4_6
+  C6(["RFC 4 plan epic 6 codec.Store"]):::sync -. "metering, D13" .-> T4_6
   S2(["S2 test foundations in CI"]):::sync --> T4_6
   T4_2 & T4_3 & T4_4 & T4_5 --> T4_6["T4.6 Put loop and Upload"]:::blocker
   C36(["E3 T3.6: Fetch"]):::sync --> T4_7
   T4_6 --> T4_7["T4.7 Get loop"]:::blocker
   T4_6 --> K1(["after T4.6: E5 can feed outcomes"]):::sync
-  C37(["E3 T3.7 opener, RFC 4 plan epic 6 codec.Store"]):::sync --> T4_8
+  C37(["E3 T3.7 opener"]):::sync --> T4_8
   T4_6 --> T4_8["T4.8 Group A rows"]
   T4_7 --> K2(["after T4.7: E6 can resume and re-get"]):::sync
   T4_7 --> T4_9["T4.9 Retry rows"]
@@ -721,20 +756,20 @@ flowchart TD
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-T4.1, T4.3, T4.4 and T4.5 are pure and start at S1, while track A builds E3; T4.2 waits on E3's
+T4.1, T4.2, T4.3 and T4.4 are pure and start at S1, while track A builds E3; T4.5 waits on E3's
 bound and model, and T4.6 on its halves. Checkpoint after T4.6: E5 can wire its failure window to
-the outcome hook. Checkpoint after T4.7: E6 builds its resume and re-get on the get loop. T4.8 is
-the only subtask that needs `codec.Store`.
+the outcome hook. Checkpoint after T4.7: E6 builds its resume and re-get on the get loop. T4.6
+onward needs `codec.Store` (D13); T4.1 to T4.5 do not.
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T4.1, T4.3, T4.4, T4.5 | 7 | S1 | the pure rules: classification, bounds, backoff, budget, slow tail, floor |
-| 2 | T4.2 | 3 | E3's T3.3 and T3.8 | the throttle limit and the hold in `sched`, with its model; open beside PR 1 |
-| 3 | T4.6, T4.7 | 7.25 | PR 1, PR 2, E3's T3.6 | both halves' loops: `Upload` complete, fetches retried |
+| 1 | T4.1, T4.2, T4.3, T4.4 | 6 | S1 | the pure rules: classification, bounds, backoff, budget, slow tail, floor |
+| 2 | T4.5 | 2.5 | E3's T3.3 and T3.8 | the throttle limit and the hold in `sched`, with its model; open beside PR 1 |
+| 3 | T4.6, T4.7 | 7.5 | PR 1, PR 2, E3's T3.6, RFC 4 plan epic 6 | both halves' loops: `Upload` complete, fetches retried |
 | 4 | T4.9, T4.10 | 5.5 | PR 3 | the §7.2 rows and §8.4's count over the loops |
-| 5 | T4.8 | 2.5 | PR 3, E3's T3.7, RFC 4 plan epic 6 | the Group A rows, once `codec.Store` lands; open beside PR 4 |
+| 5 | T4.8 | 2.5 | PR 3, E3's T3.7 | the Group A rows; open beside PR 4 |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -744,7 +779,7 @@ A suggestion only: one pull request per subtask works as well.
   hash of the store ID and the attempt number, gives every transfer of a store the same delay at
   one attempt, which breaks RFC 3 §2.4's "transfers that failed together do not retry together"
   and §7.2 "§2.4 retry budget"'s spread assertion. This document writes the recommended option:
-  - **A (written, recommended):** add the block name, `fnv64a(StoreID, Name, attempt)`; still no
+  - **A (written, recommended):** add the block name, `fnv64a(StoreID, Name, kind, attempt)`; still no
     random source, the same on every run, spread across a store's transfers.
   - **B:** a sequence number the half mints per transfer instead of the name; spread as well,
     but its value depends on the order concurrent calls arrive, so a run is not repeatable.
@@ -760,11 +795,25 @@ A suggestion only: one pull request per subtask works as well.
   first-byte bound; assert it fails at the bound, as a stalled network would." Not chosen: a third
   `Meter` call from the codec marking `src`'s time, which changes RFC 4's contract for a case §2.4
   already assigns to the engine.
+- **Decision needed: a requeued throttled transfer is outside the waiter bound (D2).** RFC 3
+  S20 says waiters never exceed the bound, and §2.4 that a burst of throttling fails no transfer; a requeue
+  refused at a full bound would break the second. This document keeps §2.4 and proposes S20
+  read: "…never exceed the waiter bound, beside at most one requeued throttled transfer per
+  worker, whatever the number of flows". Not chosen: refusing the requeue, which fails a busy
+  offload flow's transfers on its first throttling reply.
 - **The "§3.4 measuring pass" row says eight throttled replies "and then success".** RFC 3 §2.4
   reports the eighth throttling reply as `ErrThrottled`, so no success follows it. T4.8 runs seven
   then success, and eight reported, and asserts `src` read at most 20 times in both; the row's
   "eight" should read "seven", a wording fix proposed with the pull request that settles the
   points above.
+- **"§2.4 wire bytes" has no put half.** The RFC 3 plan's Done-when for this epic names "its put
+  half", but RFC 3 §7.2's row fetches only, so the row is wholly E6's. T4.10 runs E4's own put
+  check for R33 instead; the plan's wording should drop "its put half".
+- **The loop tests wait on RFC 4 plan epic 6 (D13).** The RFC 3 plan's rule 1 and §3.3 let upload
+  checks run before `codec.Store` lands, with `attempt` a closure over the in-memory store's
+  `Put`; that closure would invent the `Meter` counts every bound here reads. So T4.6 onward waits
+  for the codec, and track B fills the wait with T4.1 to T4.5. The plan's rule 1 should drop that
+  sentence.
 - **E5 owns the floor's health case at `Flow.Health`.** T4.10 asserts the counted flag at the
   outcome hook; E5's "§2.8 failure window" row should add a floor trip with the aggregate below
   the floor, read at `Flow.Health`, so the value is also checked where it is consumed.
@@ -780,7 +829,7 @@ A suggestion only: one pull request per subtask works as well.
 - **The least certain estimates** are T4.6 (the try goroutines, the timers, the watchdog and the
   requeue racing `ctx` ends and `Close` under `-race`) and T4.9 ("§2.4 slow tail is not charged"
   runs 100,000 transfers in a bubble, whose run time on `unit` is not yet measured).
-- **The plan's epic 4 outline moved in two places.** Its seven subtasks are ten here, 25.25
-  man-days against 23: the pure rules are split so they start at S1, and the get loop is its own
-  subtask. The throttle limit is a setter on `sched` (T4.2) rather than a hook E3 declares, as
+- **The plan's epic 4 outline moved in two places.** Its seven subtasks are ten here, 24 man-days
+  against 23: the pure rules are split so they start at S1, and the get loop is its own
+  subtask. The throttle limit is a setter on `sched` (T4.5) rather than a hook E3 declares, as
   E3's D9 and rule 12 leave it to this epic.
