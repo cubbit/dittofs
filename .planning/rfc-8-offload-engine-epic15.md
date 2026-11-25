@@ -191,7 +191,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R27 | Intent refuses a plan whose captured namespace is no longer the share's write namespace, before any put; its content is re-offered and carved again | MUST | RFC 8 §6.6, §6.3 (Intent); RFC 2 §4.3; RFC 5 Appendix B.2 | T15.8 |
-| R28 | Intent refuses, before any put, a plan whose pin finds the share's current material destroyed; the content stays **Dirty** until new material is current | MUST | RFC 8 §10.4, §6.3 (Intent); RFC 5 §2.7 | T15.8 |
+| R28 | Intent refuses, before any put, a plan whose pin finds the share's current material destroyed, its chunk-ID key included; the content stays **Dirty** until new material is current | MUST | RFC 8 §10.4, §6.3 (Intent); RFC 5 §2.7, Appendix B.2 | T15.8 |
 | R29 | The chain is pinned from Mint to Commit or Abandon, and released at either end | MUST | RFC 8 §10.4; RFC 5 §3.1 | T15.8, T15.9 |
 | R30 | A block's name is minted once per put attempt, before framing, from the domain, the captured namespace as scope, a fresh 16-byte cryptographic nonce, the pin's chain ID and the plan's chunk IDs in order | MUST | RFC 8 §6.6, RFC 8 E8; RFC 2 §4.2 | T15.8 |
 | R31 | A durable put intent carrying the primary epoch and the node epoch is recorded for the name before the put, and nothing else precedes the put; a failed record is retried in place, and past the step's bound the attempt is abandoned | MUST | RFC 8 §6.6, §6.3 (Intent), RFC 8 E8 | T15.8 |
@@ -273,7 +273,7 @@ other row has a test here.
   architecture test reads every production package of the engine.** RFC 8 §2.8 has `offload/` import
   only contracts, and the engine imports `offload/`, so the pipeline cannot take the engine's
   `Deps` types. It declares, in contract types, exactly what it calls: `Offers` (`OffloadMany`),
-  `Store` (`Covering`, `Intend`, `Commit`, `Abandon`, `Budget`), `Carver`, `Fold`, `Chain`, `Puts`,
+  `Store` (`Covering`, `Intend`, `Commit`, `Abandon`, `Budget`), `Carver`, `Fold`, `Material`, `Chain`, `Puts`,
   `Put` and `Flow` (`Upload`) (T15.5). The engine's `Handle` and `Content` embed
   `offload.Offers` and `offload.Store`, so one value satisfies both by declaration and no assertion
   converts it (RFC 8 §2.2). §15.3's "§2.1 declared interfaces" type-checks `pkg/engine`'s own files
@@ -343,7 +343,11 @@ other row has a test here.
   `crypto/rand.Reader`, and a test may pass a seeded one (kind 1), so a name's inputs can be
   asserted. A short read fails the Intent step, never a weaker nonce. No marker. Prior art:
   `openstate.Deps.Rand`, which the content wiring fills with `crypto/rand.Reader` (checked).
-- **D8, the pass records the namespace and its carver settings, not a key ID.** RFC 2 §4.3 has a
+- **D8, the pass records the namespace and the carver settings `Bind` checked, not a key ID.**
+  The settings are the binding's, handed in with the `Pass`, never re-read mid-serve, so a
+  settings record edited while the share serves fails no pass (epic 16's T16.9 reports the change
+  as a migration). `Settings(ns)` is the content wiring's, which epic 16's `Bind` calls through the engine's own
+  carver declaration; `offload/`'s `Carver` port does not hold it. RFC 2 §4.3 has a
   plan's intent name the namespace and the chunk-ID key ID, and a plan carries neither (the RFC 2
   plan's epic 1 D8). A namespace's chunk-ID key is fixed for its life (RFC 5 Appendix B.2): a new key
   would rename every chunk. So the captured namespace decides the key, and Intent compares the
@@ -571,9 +575,8 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
 - **Deliverables:**
   - `offload/ports.go`, each port holding what `offload/` calls, in contract types (D1). The full
     set is below; each method lands with the subtask that first calls it, so the declared-
-    interfaces check stays green on every change: this subtask declares `Offers` and
-    `Carver.Settings`; T15.6 `Carver.Cut`, `Store.Covering` and `Store.Budget`; T15.7
-    `Carver.NewFold` and `Fold`; T15.8 `Carver.ChunkID`, `Carver.BlockName`, `Chain`, `Puts`,
+    interfaces check stays green on every change: this subtask declares `Offers`; T15.6 `Carver.Cut`, `Store.Covering` and `Store.Budget`; T15.7
+    `Carver.NewFold` and `Fold`; T15.8 `Carver.ChunkID`, `Carver.BlockName`, `Material`, `Chain`, `Puts`,
     `Put`, `Flow` and `Store.Intend`; T15.9 `Store.Commit` and `Store.Abandon`. The engine's
     `Deps` members and embeddings follow the same steps:
     ```go
@@ -589,7 +592,6 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
     	Budget() metac.Budget
     }
     type Carver interface {
-    	Settings(ns entity.NamespaceID) (carver.Settings, error) // the content wiring's, over carve.NewSettings
     	Cut(r io.Reader, base int64, s carver.Settings, buf []byte, realEnd bool,
     		emit func(carver.Chunk, []byte) error) (consumed int64, err error)
     	ChunkID(s carver.Settings, p []byte) entity.ChunkHash // the put source's recompute (R35)
@@ -599,6 +601,9 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
     type Fold interface {
     	Add(c carver.ChunkInfo) ([]carver.BlockPlan, carver.Disposition)
     	Finish(now time.Time) (last *carver.BlockPlan, held bool)
+    }
+    type Material interface { // keys.Provider's Current, as the pipeline calls it
+    	Current(ctx context.Context, ns entity.NamespaceID, kind string) (keys.MaterialID, error)
     }
     type Chain interface {
     	Pin(ctx context.Context, ns entity.NamespaceID) (transform.Attempt, error)
@@ -618,14 +623,24 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
     `journalc` and `metac` stand for #5775's journal and metadata contract packages. `Deps` holds
     the ports with the clock and the logger; `Pass` holds the share, the store's ID, the primary epoch and the node epoch, the files
     with their oldest dirty write, `limit`, `widen`, the captured guard and capture functions (below), the
-    share's current write namespace as a function, the flow, and the failure counts (D11); `Run(ctx,
+    share's current write namespace as a function, the carver settings the binding checked at
+    `Bind` (D8), `Register func(offers []journalc.Offer) (release func())`, `Removed func() bool`,
+    the flow, and the failure counts (D11); `Run(ctx,
     Deps, Pass) []workqueue.Result`, one per file. Consumed by epic 16's offload source.
   - Capture in `capture.go`: the engine hands it `capture(ctx, files) (throughs []journalc.Capture,
     unlock func(), err error)`, which takes the files' guards in file-identity order, syncs them and
     commits their pending existence through the first part's group commit, and `guard(files) (unlock
-    func())` for Commit; Capture calls `OffloadMany` with the throughs, releases the guards once the
-    callback starts, and records the namespace and `Carver.Settings(ns)` (D8).
-  - The engine: `Deps.Carver offload.Carver`, `Deps.Chain offload.Chain`, `Deps.Puts offload.Puts`,
+    func())` for Commit; Capture calls `OffloadMany` with the throughs; inside its callback it calls
+    `Pass.Register` with the offers while the guards are still held, so epic 16's pass registry is
+    set under them, then releases the guards, and calls the returned `release` when the pass
+    returns; it records the namespace and the pass's carver settings (D8). Before the first
+    block's Intent the pass calls `Pass.Removed()` once and, when it answers true, returns `Done`
+    for each file with nothing put (RFC 8 §8.3's abort, epic 16's D3).
+  - Epic 11's "a share with a zero `Store` binds" is replaced by epic 16's refusal (its T16.1);
+    `Puts` resolves a store only when a put is built, so no first-part row meets that refusal
+    here.
+  - The engine: `Deps.Carver offload.Carver`, `Deps.Chain offload.Chain`, `Deps.Puts offload.Puts`
+    (with `Deps.Material offload.Material`, which T15.8 adds with its call),
     refused by name at `New` (D2); `Handle` embeds `offload.Offers`, `Content` embeds
     `offload.Store`; the engine's walk gains
     `offload/`'s row, refusing `os` beside every implementation, and admits the `pkg/carver` root
@@ -634,7 +649,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   - The in-memory journal's `OffloadMany` and `report`, held to the journal conformance suite's
     offload rows as §9 says; the content wiring's `Carver` (`Settings(ns)` over `carve.NewSettings`
     and the provider's two keys, `Cut`, `ChunkID`, `BlockName`, `NewFold` over `assembler.New`), `Chain`
-    (`chain.NewChain` over the provider) and, for D2, `Puts`; `enginetest`'s `WithCarver` and
+    (`chain.NewChain` over the provider), the provider itself as `Material`, and, for D2, `Puts`; `enginetest`'s `WithCarver` and
     `WithChain` composed through it, over `keystest`'s provider; every entry of
     `test/engine/known.yaml` whose message is `fixture: the carver is not composed`, 41 of them,
     rewritten to `fixture: the syncer is not composed`, the refusal they now meet.
@@ -642,6 +657,8 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   - Two captures over the same files in opposite orders never deadlock; a pass commits their existence, and is
     offered nothing above each file's `Through`.
   - A failed capture offers nothing and returns `Retry` for each file.
+  - `Register` runs before any guard is released, and its `release` runs once, when the pass
+    returns; a pass whose `Removed` answers true puts nothing and returns `Done`.
   - `New` with any of the three members nil is refused naming it; the fixture composes all
     three through the content wiring whatever options a row passes, and `Puts` resolves a store
     only when a put is built, so a first-part share with no store binds.
@@ -655,8 +672,10 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   landing after the existence commit and before the offer, not offered (catches a missing
   `Through`, R11); at `Run`, over the in-memory journal and `kvstore`, the namespace and the
   settings the carve used read back from the pass's chunk IDs, each equal to `ChunkID` under the
-  namespace captured, after the share's namespace function changed mid-pass (catches settings read
-  after Capture, R12);
+  settings the `Pass` carried, after the share's namespace function changed mid-pass (catches
+  settings read after Capture, R12); a `Register` that tries the files' guards with a non-blocking
+  lock and fails, since `Run` still holds them (catches a registry set after the guards drop); a
+  `Removed` answering true, nothing at the remote store and every file `Done`;
   an existence commit failed through `FailUpdatesSetting`'s kind 3 wrapper, nothing offered and
   `Retry` returned (R13). The import walk and the declared-interfaces check with their planted
   violations (R1, R2). `New`'s refusal table (R4). The run of `engine-conformance`, every entry
@@ -735,8 +754,10 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
 - **Track:** B. **Depends on:** T15.7.
 - **Covers:** R27 to R35, R54, R55, R58.
 - **Deliverables:** `intent.go`: the namespace check against the pass's current-namespace function
-  (D8, its `decision:`); `Chain.Pin`, a `keys.ErrMaterialDestroyed` from it refusing the plan with
-  its extents left **Dirty**; the nonce from `crypto/rand` (D7); the name from `Carver.BlockName`
+  (D8, its `decision:`); `Chain.Pin`, and `Material.Current(ctx, ns, "chunk-id-key")`, a
+  `keys.ErrMaterialDestroyed` from either refusing the plan before any intent with its extents left
+  **Dirty**, since the share's current material includes its chunk-ID key (RFC 8 §10.4, RFC 5
+  Appendix B.2) and the pin reads only the kinds the chain's transforms declare; the nonce from `crypto/rand` (D7); the name from `Carver.BlockName`
   over the captured namespace, the nonce, `Attempt.ID()` and the carried chunks' IDs; `Store.Intend`
   with the primary epoch and node epoch, retried in place within the step's bound. `put.go`: the
   source, an `iter.Seq2[remote.Chunk, error]` reading each carried chunk from the offer's `Offered`
@@ -758,7 +779,8 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   only, and the next pass's name different (catches a
   second retry layer, R55, R32, R33); a namespace function changed between Capture and Intent,
   nothing put and the content re-offered and read back (R27, R58); `keystest`'s provider destroying
-  the current data key, the pass refused before any intent (R28); the store's intent records read
+  the current data key, and in a second leg the namespace's chunk-ID key, the pass refused before
+  any intent and nothing at the store (catches a check of the data key alone, R28); the store's intent records read
   back with both epochs before the object exists, and nothing at the store when `Intend` fails
   past its bound, the attempt abandoned (R31); two attempts over one plan's chunks, their names each
   equal to `BlockName` over the captured namespace, its nonce, the pin's chain ID and the carried IDs
