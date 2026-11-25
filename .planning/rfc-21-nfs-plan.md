@@ -140,15 +140,15 @@ which lands them before its other content, since E9, E10 and E11 fill or write t
 
 RFC 21 §13's suites paragraph puts §11.6's translation tests, the fuzz seeds and the rows that
 inject a fault below the server in `unit`; the rows naming pynfs, cthon04 or nfstest in `pynfs`,
-`cthon04` and `nfstest`; the other single-node rows against a real server in `e2e`; the rows reaching
+`cthon04` and `nfstest`, and POSIX semantics through a mount in `pjdfstest`; the other single-node rows against a real server in `e2e`; the rows reaching
 one file over NFS and SMB in `e2e/cross-protocol`; and the Kerberos rows in `e2e/kerberos`. Every one
 is registered already. **Epic 2 registers no red suite**: `unit` and `e2e` keep no `known.yaml`, so
-their tests land green with the epic that makes them pass, and `pynfs`, `cthon04` and `nfstest`
-stay off on `feat/storage-v2` under `tests.yml`'s V2 filter until the cutover, when E15 rewrites
+their tests land green with the epic that makes them pass, and `pjdfstest`, `pynfs`, `cthon04` and
+`nfstest` stay off on `feat/storage-v2` under `tests.yml`'s V2 filter until the cutover, when E15 rewrites
 their `known.yaml` for v2: RFC 21 §13's "Tests expected to fail", then each v2 failure an entry
 `status: fail`, `fix: planned`, `category: feature`, with a reason and `issue: "#…"` naming this
-plan's epic issue, which exist before then (`epic-breakdown` Step 6.3, under #3628). So a pynfs,
-cthon04 or nfstest step lands in E16; a middle epic runs the scripted client's equivalent.
+plan's epic issue, which exist before then (`epic-breakdown` Step 6.3, under #3628). So a pjdfstest,
+pynfs, cthon04 or nfstest step lands in E16; a middle epic runs the scripted client's equivalent.
 
 **The catalogue, by source.** Every row lands in the epic that creates what it imports, on
 `memory.New` where the adapter's half can fail alone, and again on the composed node or a real
@@ -262,7 +262,7 @@ come with RFC 22's plan's `gss` (S6c).
    a change"). Tests cover the internal API and the wire behaviour it enables: a slot granted on the
    `CREATE_SESSION` reply the client reads, a stateid on the `READ` that quotes it, an owner string on
    the `GETATTR` a client decodes, a callback on the connection that receives it.
-6. **Known failures shrink.** A test of `pynfs`, `cthon04` or `nfstest` that turns green leaves its
+6. **Known failures shrink.** A test of `pjdfstest`, `pynfs`, `cthon04` or `nfstest` that turns green leaves its
    suite's `known.yaml` in the same change (`CLAUDE.md`, "Writing tests", "By kind"); those suites
    stay off on `feat/storage-v2` until E15 turns them on.
 7. **v2 ignores v1.** Nothing is copied from `develop`'s NFS adapter except what RFC 20
@@ -272,8 +272,8 @@ come with RFC 22's plan's `gss` (S6c).
 8. **Real dependencies for properties of those dependencies** (`CLAUDE.md`, "Writing tests"). RFC
    5531's, RFC 1813's, RFC 8881's and RFC 2203's encodings and knfsd captures for bytes, never vectors
    the codec under test made (RFC 20 §5.4); real TCP and UDP over loopback for sockets; the composed
-   node for a fault below the server and for durability across a restart (RFC 1 §1.3); pynfs,
-   cthon04, nfstest and the Linux kernel client for what a client does; a real KDC for Kerberos at
+   node for a fault below the server and for durability across a restart (RFC 1 §1.3); pjdfstest,
+   pynfs, cthon04, nfstest and the Linux kernel client for what a client does; a real KDC for Kerberos at
    `e2e/kerberos`. RFC 21 §13's "What must not stand in" holds.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). RFC 21's notes go at their code
    sites: its `decision:` notes from NFSv4.0 served (§2.1) to an NFSv3 flavour refused with
@@ -330,7 +330,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 
 **Plan estimate: 95 subtasks, 260.75 man-days, not counting epic 15.**
 
-Nor E16's burn-down of the three NFS suites, which waits for E15 as E15 waits for S7 (§6.2, point
+Nor E16's burn-down of the four NFS and POSIX suites, which waits for E15 as E15 waits for S7 (§6.2, point
 6), nor the rows parked in §6.6's deferral ledger, nor the three test pieces RFC 22's plan prices
 (§6.2, point 1).
 
@@ -1068,8 +1068,8 @@ E3's scripted client lands, and against DittoFS from S5.
 
 Waits for S7. Then: `settings.NFS` reaching `New` and, through `Reconfigure`, while serving (RFC 20
 §3.6), as the `adapters.nfs` section of the node's table (#4059's D2), with any key a later gap adds
-under `adapters.nfs`, its default and its check (#4059's D2, D3); `pynfs`, `cthon04`, `nfstest` and
-the NFS rows of `e2e`, `e2e/kerberos` and `e2e/cross-protocol` out of the V2 filter, their
+under `adapters.nfs`, its default and its check (#4059's D2, D3); `pjdfstest`, `pynfs`, `cthon04`,
+`nfstest` and the NFS rows of `e2e`, `e2e/kerberos` and `e2e/cross-protocol` out of the V2 filter, their
 `known.yaml` rewritten for v2 with each entry naming this plan's epic issue and RFC 21 §13's
 expected failures listed by name; D11's settings closed as decided. The user guide's NFS pages are
 the cutover's (§6.6).
@@ -1081,7 +1081,9 @@ the cutover's (§6.6).
 
 **Epic 16 estimate: 8 subtasks, 25.5 man-days.**
 
-The NFS suites burned down to RFC 21 §13's expected failures (after E15, counted in neither figure),
+`pjdfstest`, `pynfs`, `cthon04` and `nfstest` burned down to RFC 21 §13's expected failures (after
+E15, counted in neither figure; RFC 21 §13's release goal, and the epic is not done until all four
+are green at them),
 the totality test over every complete table, and every row no lower layer can show: on the composed
 node at S5, with both adapters, through Linux kernel clients once E15 has turned the suites on, and
 the benchmarks and soak.
@@ -1097,7 +1099,7 @@ close-to-open and WCC *(1 node)*", "§5.4 single-node restart", "§5.2, §5.4 lo
 node)*", "§5.4 NFSv4.0 signal" on a restart of the one node, "§5.1 revoke across a restart *(1
 node)*"'s NFSv4 steps, "§6.1 NLM grace" and "§6"'s
 `SM_NOTIFY` step on a restart of the one node, "§5.3 lock recall", "§5.3 handle-cached deny mode",
-"§9.3 NFSv4.2"'s non-xfstests steps; after E15, `pynfs`, `cthon04` and `nfstest` at their expected
+"§9.3 NFSv4.2"'s non-xfstests steps; after E15, `pjdfstest`, `pynfs`, `cthon04` and `nfstest` at their expected
 failures, the pynfs steps of "§3.1, §3.2 sessions *(1 node)*", "§3.2 reply cache", "§4.2 v4.0
 owners *(1 node)*" and "§5.2 stateids *(1 node)*" among them.
 
@@ -1116,7 +1118,7 @@ owners *(1 node)*" and "§5.2 stateids *(1 node)*" among them.
   soak under real traffic (RFC 20's plan's ledger).
 - Pins: NFS's authorization gates in `test/required-tests.json`; `unit/adapter-allocs` runs every
   NFS gate.
-- After E15, the burn-down of `pynfs`, `cthon04` and `nfstest`.
+- After E15, the burn-down of `pjdfstest`, `pynfs`, `cthon04` and `nfstest`, until all four are green.
 
 ## 6. Risks and open points
 
@@ -1204,7 +1206,7 @@ follows the RFC as written.
    in-process or restart row runs; until S7, no client reaches NFS through `dfs`.
 5. **The held clone wait** (RFC 17's plan's piece 13, on `develop` as #4239). E12's hold rows need it
    on `feat/storage-v2`, which the next sync brings.
-6. **The burn-down's size.** v2's failures in `pynfs`, `cthon04` and `nfstest` are known only once
+6. **The burn-down's size.** v2's failures in `pjdfstest`, `pynfs`, `cthon04` and `nfstest` are known only once
    E15 turns them on, so E16's burn-down is planned after E15 and counted in no figure; `develop`'s 58
    pynfs entries are a floor.
 7. **RFC 21's (cluster) parts** (§6.6). Built where they are adapter code; tested and finished with
@@ -1267,7 +1269,7 @@ Each row is one of [RFC 20's plan](rfc-20-adapters-plan.md)'s deferral ledger (i
 | the `require_kerberos` boot refusal (D25) | E13 |
 | uid and gid mapping (identity-mapping config) | E7 |
 | `test/required-tests.json` pins for NFS's gates | E16 |
-| suites skipped by the V2 filter (NFS's) | E15 (on), E16 (green) |
+| suites skipped by the V2 filter (NFS's: `pjdfstest`, `pynfs`, `cthon04`, `nfstest`) | E15 (on), E16 (green) |
 
 ### 6.5 RFC 18's ledger rows for NFS
 
