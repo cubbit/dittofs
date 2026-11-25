@@ -376,7 +376,9 @@ func TestOpenOfAnUnlinkedFileIsDurable(t *testing.T) {
 
 	f.Stop()
 	g := reopen(t, f.fs, f.clock)
-	g.clock.advance(leasePeriod)    // past the restart's grace
+	// Past the restart's grace, firing no sweep: a sweep's closeUnreclaimed
+	// would claim the shard first, and the call below would return at once.
+	g.pass(t, leasePeriod)
 	g.closeUnreclaimed(ctx, g.sink) // as the first sweep after grace does: a's open was not reclaimed
 	b := g.caller(t, nfs("host-b", 1, entity.NewUser()))
 	later := g.mustOpen(t, b, file, req)
