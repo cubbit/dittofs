@@ -246,9 +246,9 @@ this epic's.
   sizes: the live refs of the workload's file in the metadata store, zero refs counted as holes and
   never as chunks. The ceiling is checked as an integer, records ≤ ⌈live bytes / `Min`⌉ + holes
   + 1, the one for the file's last chunk, which may fall under `Min`; per GiB it is only reported.
-  Blocks per pass: objects put in phase 1 over the passes that put them, the passes counted from the
-  pass registry the RFC 8 offload plan's epic 16 builds; T6.3 names the call it reads once that
-  epic lands (§9 point 6). Short blocks: blocks whose carried bytes are under the
+  Blocks per pass: objects put in phase 1 over the passes that put them, the passes counted as the
+  change in the engine's `Stats.OffloadPasses` across phase 1, the count the RFC 8 offload plan's
+  epic 16 exports (its pass registry is internal and holds only passes in flight). Short blocks: blocks whose carried bytes are under the
   block target, from the block records RFC 6 §4.1 commits. Cold-read fetch size: Σs²/Σs over the
   live chunk sizes, Appendix C's own definition, computed rather than read through a cold read,
   which needs the RFC 8 offload plan's epic 17 and adds nothing a size list does not say.
@@ -544,6 +544,3 @@ the programme's other RFC edits are.
    pipeline itself, such as a ceiling passed, is filed against the RFC 8 offload plan and blocks
    T6.4 until fixed; how many such findings the first full run surfaces cannot be known, which makes
    T6.4 the least certain estimate here.
-6. **Where blocks per pass are read.** D5 counts passes from the RFC 8 offload plan's epic 16 pass
-   registry, which is not written yet; T6.3 names the call. If that epic exposes no count, the sweep
-   reports blocks per offload round it drives instead, and says so beside the table.
