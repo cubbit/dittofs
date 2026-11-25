@@ -319,7 +319,9 @@ field (E1's R18).
   the cap, and RFC 3 §2.9 lets a lone busy store hold the whole pool. So while a store's limit is
   at its cap it binds only while another store has work waiting, as the cap does, and below the
   cap it binds always. "Halves to half of what it holds" reads the store's held workers from
-  `sched`; "completed without throttling" is a transfer that ended in success without a
+  `sched`, and the bound becomes the smaller of itself and that, so a burst of replies within one
+  round trip halves it once per reply only while the store still holds that many, rather than
+  collapsing to one on RFC 3 §2.10's bare "halves on each throttling response"; "completed without throttling" is a transfer that ended in success without a
   throttling reply. Both live in `sched` (T4.2), so the model checks RFC 3 S17's throttle clause.
   A `decision:` marker names both readings. Prior art: TCP's congestion window, halved on loss and
   grown by one per round trip (RFC 5681, from memory).
@@ -342,7 +344,12 @@ field (E1's R18).
   first-byte trip on a transfer's last attempt is reported as an error that names the store and
   the rule and wraps `remote.ErrTransient`, so the engine's `errors.Is` reads it as RFC 4's
   transient class, as RFC 3 §1.3 does for `Small`'s bound. No new error value (E1's R16). No
-  marker. Prior art: `context.DeadlineExceeded` reported by `net/http` as a timeout (from memory).
+  marker. Each such trip is an error retry like any `ErrTransient`: it takes a budget token and
+  counts toward the four attempts (RFC 3 §2.4's budget sentence, §8.3's "retried within the
+  bound"), under `syncer_retries_total`'s `floor`, `stalled` or `trickle` reason; the first-byte
+  bound counts as `transient`. Whether it counts toward health is the outcome's flag (D10), never
+  read from the wrapped error, since a stall wraps `ErrTransient` and does not count. Prior art:
+  `context.DeadlineExceeded` reported by `net/http` as a timeout (from memory).
 - **D12, the fixed values E4 reads join E3's table.** The throttle limit's rule, the floor, the
   first-byte bound, the retry bound, the retry budget, the slow-tail share and window, and the
   retry backoff go into `pool/fixed.go` under RFC 3 §2.10's `decision:` note, beside E3's.
@@ -432,7 +439,7 @@ pkg/syncer/
 - **Deliverables:** `internal/sched/throttle.go` (D2, D7):
 
   ```go
-  func (s *Sched) Throttle(st StoreKey) (limit int)  // the per-store bound to max(1, held/2)
+  func (s *Sched) Throttle(st StoreKey) (limit int)  // the per-store bound to min(bound, max(1, held/2))
   func (s *Sched) Recover(st StoreKey) (limit int)   // the bound plus one, up to the cap
   func (s *Sched) Hold(f FlowKey)                    // nothing of f dispatched until as many Releases
   func (s *Sched) Release(f FlowKey)
@@ -760,6 +767,13 @@ A suggestion only: one pull request per subtask works as well.
 - **E5 owns the floor's health case at `Flow.Health`.** T4.10 asserts the counted flag at the
   outcome hook; E5's "§2.8 failure window" row should add a floor trip with the aggregate below
   the floor, read at `Flow.Health`, so the value is also checked where it is consumed.
+- **D4 changes E3's D1 for puts.** E3's D1 has the caller run `attempt` itself on its slot; here
+  each put try runs on a goroutine of its own, supervised by the caller, because the
+  measuring-pass row needs a slow-tail-cancelled try to keep running while its retry starts. The
+  slot stays the caller's, and `Upload` still returns only once every try has, so nothing E3's
+  `Close` counts changes; E3's breakdown should note it. The independent architect proposal also
+  ran get tries on their own goroutine, starting the retry at once; this document keeps a get's
+  tries in turn (D4) as the smaller design.
 - **E6 starts from D9.** A get that failed after yielding a chunk is reported, not resumed, until
   E6's fetch resume replaces the rule; E6's breakdown names it.
 - **The least certain estimates** are T4.6 (the try goroutines, the timers, the watchdog and the
