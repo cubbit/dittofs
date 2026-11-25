@@ -7,7 +7,6 @@
 #
 #   - { suite: integration, test: TestName, issue: "#1234", expires: 2026-12-31 }
 
-- { suite: engine-conformance, test: TestRFC8A_CapacityScopedRepack, issue: "#4874", expires: 2027-02-15 }
 - { suite: unit, test: TestPassACopyFailureCountsTheCopiesItLanded, issue: "#5202", expires: 2027-02-18 }
 - { suite: engine-soak, test: TestSoak/seed=1, issue: "#4711", expires: 2027-02-15 }
 - { suite: engine-soak, test: TestSoak/seed=2, issue: "#4711", expires: 2027-02-15 }
