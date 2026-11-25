@@ -260,3 +260,9 @@ func checkRoot(table []Row, g Graph, root string) []string {
 
 	return bad
 }
+
+// EntityLibs are the libraries the metadata store's entity package imports.
+// Every row that lets a package reach the entity package lists them, since
+// the walk checks each library a reached module package imports, and not
+// what a library imports; TestEntityLibs holds the list to the package.
+var EntityLibs = []string{"github.com/google/uuid", "lukechampine.com/blake3"}

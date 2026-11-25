@@ -10,10 +10,6 @@ import (
 // aws is the AWS SDK for Go v2 with its runtime.
 var aws = []string{"github.com/aws/aws-sdk-go-v2/...", "github.com/aws/smithy-go/..."}
 
-// entityLibs are the libraries the metadata entities' contract imports, which
-// a package reaching it reaches too.
-var entityLibs = []string{"github.com/google/uuid", "lukechampine.com/blake3"}
-
 // table is every package of the remote tier, landed or not, and what its
 // production code may reach (RFC 0 §1.2, RFC 4 §1.2): the contract nothing but
 // the standard library; the codec the contract and the transforms' and the
@@ -22,7 +18,7 @@ var entityLibs = []string{"github.com/google/uuid", "lukechampine.com/blake3"}
 // an upper bound: a package that reaches less passes.
 var table = []archtest.Row{
 	{Pkg: "pkg/remote"},
-	{Pkg: "pkg/remote/codec", Reach: []string{"pkg/remote", "pkg/transform", "pkg/transform/keys", "pkg/metadata/entity/..."}, Libs: entityLibs},
+	{Pkg: "pkg/remote/codec", Reach: []string{"pkg/remote", "pkg/transform", "pkg/transform/keys", "pkg/metadata/entity/..."}, Libs: archtest.EntityLibs},
 	{Pkg: "pkg/remote/memory/...", Reach: []string{"pkg/remote", "pkg/sim", "pkg/remote/memory/..."}},
 	{Pkg: "pkg/remote/remotetest", Reach: []string{"pkg/remote", "internal/prof"}},
 	{Pkg: "pkg/remote/s3/...", Reach: []string{"pkg/remote", "pkg/remote/s3/..."}, But: []string{"pkg/remote/s3/s3fault/..."}, Libs: aws},
