@@ -62,7 +62,7 @@ chunk, as the block is encoded ([RFC 4](rfc-4-remote-tier.md)).
 ### The problem, in one example
 
 The `profiles` share stores its blocks in the bucket `dfs-data`, with a chain of
-compression (zstd) then encryption (AES-256-GCM-SIV, under a key belonging to
+compression (zstd) then encryption (AES-256-GCM, under a key belonging to
 the share's namespace in the bucket). The namespace was created encrypting, and
 the operator turned compression on with it explicitly, accepting the size leak
 ([Appendix A](#Appendix%20A%20%E2%80%94%20compression)); a chain that encrypts leaves compression off unless told.
@@ -119,7 +119,8 @@ the operator turned compression on with it explicitly, accepting the size leak
   transforms were applied ([§2.4](#2.4%20Every%20body%20records%20what%20was%20applied)).
 - **Material**: what a transform needs from outside the body, such as a key,
   held by a provider by ID with a fingerprint of its content
-  ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)).
+  ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)). The `keys` package provides material; every material in
+  this release is a key.
 - **Chain ID**: a hash of everything in the chain that decides a body's bytes,
   part of every [block](rfc-0-data-lifecycle.md#Glossary) name ([§2.8](#2.8%20The%20chain%20ID)).
 - **Census**: the record, kept with each block, of which transforms and which
@@ -156,7 +157,7 @@ the operator turned compression on with it explicitly, accepting the size leak
 3. GC relocates every block whose census, its record of the keys its bodies
    used, names the old key. Each chunk is re-encrypted under the new one
    ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census), [§5.2](#5.2%20Relocation%20re-encodes)).
-4. Removal waits for encodes still using the old key, then for an empty census,
+4. Removal waits for open pins that hold the old key, then for an empty census,
    and for no copying backup's census to name it
    ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)).
 5. Removal erases the key everywhere the installation keeps it; the provider
@@ -293,7 +294,7 @@ A transform **MUST** be:
   stored ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)). Two attempts, or two builds, need not agree for any name
   to stay right; the transform's fixtures ([§4](#4.%20Writing%20a%20custom%20transform), item 7) still hold its
   output fixed across builds within one format version;
-- **honest about length**: `LengthOf(n)` returns the exact body length for an
+- **honest about length**: `LengthOf(n)` returns the exact body length, under the material it is given, for an
   `n`-byte input and whether that is known without encoding. Encryption, parity
   and the identity know it; compression does not. When every transform in the
   chain knows it, a put is encoded once; otherwise it takes a measuring pass
@@ -415,7 +416,7 @@ configuration never share a data key or a chunk-ID key, so a
 lookup without the namespace could return another tenant's key. Removing a transform from the chain therefore stops it for new
 writes but keeps its material, and bodies written under it stay readable.
 Removing material is a separate act, allowed only once the census shows nothing
-uses it and no encode in flight is using it ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)).
+uses it and no open pin ([§3.1](#3.1%20Interfaces)) holds it ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)).
 
 **Material carries a fingerprint.** Each piece of material is stored with its ID
 and a **fingerprint** of its content, `HMAC-SHA256(material, "dittofs key check
@@ -527,6 +528,9 @@ configured transform, in order, it covers:
   writes.
 
 The stage order is fixed ([§2.3](#2.3%20The%20chain%20order%20is%20fixed)), so order is not an input of its own.
+A block takes its chain ID from its pin ([§3.1](#3.1%20Interfaces)), read once when its name is
+minted, so a configuration change or a rotation while the block is in flight
+changes the chain ID of the next block only.
 
 **Its bytes.** The chain ID is 32 bytes:
 
@@ -584,6 +588,17 @@ vector fails the build.
 ### 3.1 Interfaces
 
 Signatures are indicative; the obligations of [§2](#2.%20The%20model) are normative.
+The model's contract is package `transform`: the value types, the `Transform`,
+`Chain` and `Attempt` interfaces and the errors. The registry and the chain that
+implements those interfaces are package `chain` beneath it, and each shipped
+transform is its own package. The provider's part, `MaterialID`, `Provider`
+and the material errors, is package `keys`, also a contract, which imports nothing of
+`transform`, so the provider, in a package of its own, implements it with no
+import cycle. The block codec and the engine import only `transform` and
+`keys`; the node's content wiring builds the chain and the provider and injects
+them ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)). The namespace
+ID is the metadata store's `entity.NamespaceID` ([RFC 16 §2](rfc-16-metadata-store.md#2.%20Entities)), a contract
+([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)), not a copy.
 
 ```go
 // ID names a transform in every body it was applied to. Assigned once, never reused.
@@ -603,99 +618,92 @@ type Transform interface {
 	ID() ID
 	Stage() Stage
 
-	// MaxEncodedLen is the largest body Encode can produce from n bytes.
-	MaxEncodedLen(n int) int
+	// Kinds are the material kinds Encode uses (§2.5), which Pin reads as
+	// current for the namespace; none for a transform that uses no material.
+	Kinds() []string
 
-	// LengthOf is the exact body length for n bytes, and whether it is known
-	// without encoding. A declined chunk is never known in advance.
-	LengthOf(n int) (int, bool)
+	// MaxEncodedLen is the largest body Encode can produce from n bytes under
+	// material m, the pinned material of this transform's kinds. A nil m asks
+	// for the bound under any material, which MaxDecodeLen uses.
+	MaxEncodedLen(n int, m []keys.MaterialID) int
+
+	// LengthOf is the exact body length for n bytes under material m, and
+	// whether it is known without encoding. A declined chunk is never known in
+	// advance.
+	LengthOf(n int, m []keys.MaterialID) (int, bool)
 
 	// LengthKey encodes, canonically, the settings that decide the body's
 	// length: this transform's part of the chain ID. The chain ID adds the
 	// transform ID, format version and material itself (§2.8).
 	LengthKey() []byte
 
-	// Encode transforms plain, deterministically (§2.1), for namespace ns.
+	// Encode transforms plain, deterministically (§2.1), for namespace ns,
+	// under material m, the attempt's pinned material: it gets that material's
+	// content from keys.Provider.Get and never asks for the current material.
 	// Applied=false declines the chunk: plain passes on unchanged. hash is the
 	// chunk ID, for transforms that bind to it or derive from it.
-	Encode(ctx context.Context, ns NamespaceID, dst []byte, hash [32]byte, plain []byte) (Encoded, error)
+	Encode(ctx context.Context, ns entity.NamespaceID, m []keys.MaterialID, dst []byte, hash [32]byte, plain []byte) (Encoded, error)
 
 	// Decode inverts Encode. It never produces more than max bytes, and asks m
 	// only for material the block's census lists (§2.5).
-	Decode(ctx context.Context, ns NamespaceID, dst []byte, hash [32]byte, body []byte, max int, m Materials) (plain []byte, err error)
+	Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, hash [32]byte, body []byte, max int, m keys.Provider) (plain []byte, err error)
 }
 
 // Encoded is one transform's output, and what the census records about it.
 type Encoded struct {
 	Body     []byte
 	Applied  bool
-	Version  uint8        // the transform's own format version
-	Material []MaterialID // the material used, if any
-}
-
-// MaterialID names one piece of material of one kind, of one namespace.
-type MaterialID struct {
-	Namespace   NamespaceID
-	Kind        string
-	ID          string
-	Fingerprint [32]byte // HMAC-SHA256(material, "dittofs key check v1") (§2.5)
-}
-
-// Materials holds a store configuration's material, per namespace. A
-// transform asks it for what it needs.
-type Materials interface {
-	// Current is the material new bodies of this kind use in namespace ns.
-	Current(ctx context.Context, ns NamespaceID, kind string) (MaterialID, error)
-	// Get returns material by ID, whose Namespace it is looked up in:
-	// ErrUnknownMaterial for an ID the provider was never given,
-	// ErrMaterialUnavailable for one it cannot reach now or whose content no
-	// longer matches its fingerprint, ErrMaterialDestroyed for one it once had
-	// and has lost or removed for good.
-	Get(ctx context.Context, id MaterialID) ([]byte, error)
-	// Remove destroys material: it refuses while the material is current in
-	// any open chain, waits for encodes in flight that hold it, then checks
-	// the census, all under one fence, and erases every copy (§5.3). A master
-	// key or export key that a retained export names is ErrMaterialInUse.
-	Remove(ctx context.Context, id MaterialID) error
+	Version  uint8             // the transform's own format version
+	Material []keys.MaterialID // the material used, if any
 }
 
 // Factory builds a transform from its settings and the store's material. It
 // fails rather than returning a transform that cannot work.
-type Factory func(ctx context.Context, settings map[string]any, m Materials) (Transform, error)
-
-// Register makes a transform available for configuration and for decoding.
-// Called at init; a duplicate ID panics.
-func Register(id ID, name string, f Factory)
+type Factory func(ctx context.Context, settings map[string]any, m keys.Provider) (Transform, error)
 
 // Chain is a store's configured list of transforms.
-type Chain struct{ /* ... */ }
+type Chain interface {
+	// Pin fixes the chain and namespace ns's current material for one block, from
+	// the mint of its name to its commit or abandonment (RFC 8 §6.6): the block's
+	// chain ID, bounds and bodies all come from the pin, however the configuration
+	// or the current material changes meanwhile (§2.8). It reads Current once for
+	// each kind a transform declares, and passes that material to the transform's
+	// MaxEncodedLen, LengthOf and Encode. It fails with the provider's error when
+	// the current material cannot be read, or when a key service holds the master
+	// key that wraps it in any state but active (Appendix B.1).
+	Pin(ctx context.Context, ns entity.NamespaceID) (Attempt, error)
 
-// NewChain builds the configured transforms. It refuses a duplicate, two
-// transforms of one stage, or a list out of stage order (§2.3).
-func NewChain(ctx context.Context, cfg []Config, m Materials) (*Chain, error)
+	// Decode undoes the envelope's transforms. census is the block record's
+	// (§5.3): a body naming material outside it is ErrMalformed.
+	Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, hash [32]byte, body []byte, max int, census []Encoded) ([]byte, error)
 
-// MaxEncodedLen composes the transforms' bounds, in stage order, plus the
-// envelope. It sizes writes.
-func (c *Chain) MaxEncodedLen(n int) int
+	// MaxDecodeLen is the largest body any registered transforms could have
+	// written from n bytes under any material, one per stage, plus the
+	// envelope, answered from the chain's registry. It sizes reads, and the
+	// put side's buffers (§3.1, below).
+	MaxDecodeLen(n int) int
+}
 
-// MaxDecodeLen is the largest body any registered transforms could have
-// written from n bytes, one per stage, plus the envelope. It sizes reads.
-func MaxDecodeLen(n int) int
+// Attempt is one pinned chain. The engine releases it when the block commits
+// or is abandoned.
+type Attempt interface {
+	// ID is the chain ID (§2.8), from each transform's ID, LengthKey and the
+	// pinned material.
+	ID() [32]byte
 
-// LengthOf composes the transforms' LengthOf; false if any one is false.
-func (c *Chain) LengthOf(n int) (int, bool)
+	// MaxEncodedLen composes the transforms' bounds under the pinned material, in
+	// stage order, plus the envelope.
+	MaxEncodedLen(n int) int
 
-// ID is the chain ID (§2.8) for namespace ns, from each transform's ID,
-// LengthKey and ns's current material.
-func (c *Chain) ID(ns NamespaceID) [32]byte
+	// LengthOf composes the transforms' LengthOf under the pinned material; false
+	// if any one is false. It is exact for the bodies this attempt encodes.
+	LengthOf(n int) (int, bool)
 
-// Encode writes the envelope and returns the body with one Encoded per applied
-// transform, which the codec collects into the block's census (§5.3).
-func (c *Chain) Encode(ctx context.Context, ns NamespaceID, dst []byte, hash [32]byte, plain []byte) ([]byte, []Encoded, error)
-
-// Decode undoes the envelope's transforms. census is the block record's
-// (§5.3): a body naming material outside it is ErrMalformed.
-func (c *Chain) Decode(ctx context.Context, ns NamespaceID, dst []byte, hash [32]byte, body []byte, max int, census []Encoded) ([]byte, error)
+	// Encode writes the envelope and returns the body with one Encoded per applied
+	// transform, which the codec collects into the block's census (§5.3).
+	Encode(ctx context.Context, dst []byte, hash [32]byte, plain []byte) ([]byte, []Encoded, error)
+	Release()
+}
 
 type Config struct {
 	Name     string         // a registered transform's name
@@ -703,13 +711,59 @@ type Config struct {
 }
 
 var (
-	ErrMalformed           = errors.New("transform: malformed body")
-	ErrUnknownMaterial     = errors.New("transform: unknown material")
-	ErrMaterialUnavailable = errors.New("transform: material unavailable")
-	ErrMaterialDestroyed   = errors.New("transform: material destroyed")
-	ErrTooLarge            = errors.New("transform: output exceeds its bound")
-	ErrMaterialInUse       = errors.New("transform: material named by a retained export")
-	ErrNotEscrowed         = errors.New("transform: master key escrow not verified") // Appendix B.2
+	ErrMalformed = errors.New("transform: malformed body")
+	ErrTooLarge  = errors.New("transform: output exceeds its bound")
+)
+```
+
+In package `chain`:
+
+```go
+// Register makes a transform available for configuration and for decoding.
+// Called at init; a duplicate ID panics.
+func Register(id transform.ID, name string, f transform.Factory)
+
+// NewChain builds the configured transforms. It refuses a duplicate, two
+// transforms of one stage, or a list out of stage order (§2.3).
+func NewChain(ctx context.Context, cfg []transform.Config, m keys.Provider) (transform.Chain, error)
+```
+
+In package `keys`:
+
+```go
+// MaterialID names one piece of material of one kind, of one namespace.
+type MaterialID struct {
+	Namespace   entity.NamespaceID
+	Kind        string
+	ID          string
+	Fingerprint [32]byte // HMAC-SHA256(material, "dittofs key check v1") (§2.5)
+}
+
+// Provider holds a store configuration's material, per namespace. A
+// transform asks it for what it needs.
+type Provider interface {
+	// Current is the material new bodies of this kind use in namespace ns.
+	Current(ctx context.Context, ns entity.NamespaceID, kind string) (MaterialID, error)
+	// Get returns material by ID, whose Namespace it is looked up in:
+	// ErrUnknownMaterial for an ID the provider was never given,
+	// ErrMaterialUnavailable for one it cannot reach now or whose content no
+	// longer matches its fingerprint, ErrMaterialDestroyed for one it once had
+	// and has lost or removed for good.
+	Get(ctx context.Context, id MaterialID) ([]byte, error)
+	// Remove destroys material: it refuses while the material is current in
+	// any open chain, waits for every open pin that holds it, then checks the
+	// census, all under one fence, and erases every copy (§5.3). A master
+	// key or export key that a retained export names is ErrMaterialInUse.
+	// It lands with its first caller (§5.3).
+	Remove(ctx context.Context, id MaterialID) error
+}
+
+var (
+	ErrUnknownMaterial     = errors.New("keys: unknown material")
+	ErrMaterialUnavailable = errors.New("keys: material unavailable")
+	ErrMaterialDestroyed   = errors.New("keys: material destroyed")
+	ErrMaterialInUse       = errors.New("keys: material named by a retained export")
+	ErrNotEscrowed         = errors.New("keys: master key escrow not verified") // Appendix B.2
 )
 ```
 
@@ -718,15 +772,26 @@ decodes what an older configuration wrote. It gives each step the chunk maximum
 ([RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)) passed through the `MaxEncodedLen` of the steps applied before it, so
 a step that legitimately enlarges the body is not refused by the next one. `dst`
 **MUST NOT** overlap the input; the result may be `dst` resliced or a new slice.
-The `Materials` a transform's `Decode` receives is a view that answers only for
+The `keys.Provider` a transform's `Decode` receives is a view that answers only for
 the material IDs in `census`, of the namespace being read, and returns
 `ErrMalformed` for any other without asking the provider. `ErrUnknownMaterial`
 from the provider, for an ID the census does list, is reported as
 `ErrMaterialUnavailable` with a configuration health condition
 ([§2.7](#2.7%20Failures)), never as `ErrMalformed`.
 
-Two bounds size everything downstream. `Chain.MaxEncodedLen` of the chunk
-maximum bounds what this chain writes: the largest encoded block on a put. A
+Two bounds size everything downstream. `Attempt.MaxEncodedLen` of the chunk
+maximum bounds what one pinned block writes, and a block keeps encoding under
+the chain it pinned after the configuration changes, so the largest encoded
+block on a put is the maximum of `Attempt.MaxEncodedLen` over the open
+attempts, never the current chain's bound alone. That maximum changes at run
+time, which a pool sized once cannot follow, so the put side, like the read
+side, is sized once when the process starts by `Chain.MaxDecodeLen(Max)`, which the
+node's content wiring calls on the chain it built, `Max` the
+largest chunk maximum of any namespace the process serves when it starts, and at
+least the default ([RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)); it bounds every chain that can be pinned,
+nothing updates it at run time, and a namespace opened after start with a larger
+`Max` waits for the next start
+([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)). A
 read may meet a body any earlier chain wrote, so the read side — the syncer's
 memory bound ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), the block header's bound ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)) and the
 per-body length check before allocating — uses `MaxDecodeLen`, the maximum over
@@ -845,12 +910,13 @@ and material.
   ([RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block)); the chunks move and the move retires the source. Retirement
   relocates a block even when it is fully live, the one exception to
   [RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy).
-- **Removal waits for an empty census, and for encodes in flight.** A census
-  says only what committed blocks use; a put already encoding under the
-  material commits a block the census does not yet show. So removal, under one
-  fence against new encodes, **MUST** first make sure the material is current in
-  no open chain, then wait for every encode in flight that took it, and only then
-  check that the census is empty. An encode that starts after the fence finds the
+- **Removal waits for an empty census, and for open pins.** A census says only
+  what committed blocks use; a block pinned under the material
+  ([§3.1](#3.1%20Interfaces)) commits a block the census does not yet show, and may
+  encode again on a retry until it commits or is abandoned. So removal, under one
+  fence against new pins, **MUST** first make sure the material is current in no
+  open chain, then wait for every open pin that holds it to be released, and only
+  then check that the census is empty. A pin taken after the fence finds the
   material not current and cannot take it.
 - **Copying backups hold material too.** A copying backup copies sealed blocks,
   never re-sealed, into a block folder at its location, and each retained
@@ -883,6 +949,17 @@ and material.
   key that wraps it can still unwrap it. Only destroying that master key makes
   those copies useless, and [Appendix B.2](#B.2%20Keys) refuses that while a retained export
   names it.
+
+**Removal lands with its first caller.** `Remove`, its fence and its count of
+open pins are built with the first act that destroys material: GC's
+retirement relocation ([RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy))
+or an operator's destroy, an operation RFC 23 does not yet specify, whichever
+comes first. Until then no material is destroyed by this installation, and a pin
+([§3.1](#3.1%20Interfaces)) only fixes a block's chain. A key service can still
+destroy material from outside: a master key it destroys makes the provider mark
+every key record that master key wraps `destroyed`
+([Appendix B.2](#B.2%20Keys)), and from then on those keys are destroyed for the
+census, a decode and a commit alike.
 
 **A drained namespace's keys go last, all or none.** When a namespace no share
 names is drained ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)), its keys are removed by this same rule once its
@@ -922,13 +999,14 @@ blocks neither verifiable nor restorable.
 
 A transform ID names an algorithm and its body format, not a library. So:
 
-- **A new algorithm is a new transform.** Moving from AES-256-GCM-SIV to another
-  deterministic AEAD — AES-SIV, or one standardised later — registers a
+- **A new algorithm is a new transform.** Moving from AES-256-GCM to another
+  AEAD — AES-256-GCM-SIV once a standard library ships it, or one standardised
+  later — registers a
   transform with a new ID, in the same stage, and its own material kind. The move is then [§5.1](#5.1%20Configuration%20governs%20the%20next%20write)
   and [§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census): put it in the chain, and old bodies stay readable through their
   envelopes until relocation retires the old transform.
 - **A new library for the same algorithm is not a change.** Replacing the
-  library that implements AES-256-GCM-SIV keeps the ID, provided it produces
+  library that implements AES-256-GCM (Go's `crypto/cipher`) keeps the ID, provided it produces
   identical bodies. The transform's fixtures ([§4](#4.%20Writing%20a%20custom%20transform), item 7) decide, and a library
   that fails them is a new format version or a new transform, never a silent
   swap.
@@ -951,7 +1029,7 @@ without writing any: the chain exports them around each call.
 | chunks encoded, labelled `applied` = `true` or `false` | `transform_chunks_total` | counter |
 | bytes in and out, labelled `direction` = `encode` or `decode`; their ratio is what the transform costs or saves | `transform_bytes_total` | counter |
 | time per call, by direction | `transform_seconds` | histogram |
-| decode failures, labelled `error` = `malformed`, `material_unavailable`, `unknown_material`, `material_destroyed` or `too_large`. `malformed`, `unknown_material` and `material_destroyed` are alerts | `transform_decode_failures_total` | counter |
+| decode failures, labelled `error` = `malformed`, `material_unavailable`, `material_unknown`, `material_destroyed` or `too_large`. `malformed`, `material_unknown` and `material_destroyed` are alerts, `malformed` net of the failures the syncer's single re-get recovered ([RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20makes%20observable)), as `codec_verify_failures_total` is | `transform_decode_failures_total` | counter |
 | bodies written per transform ID and version, from block metadata ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)); the census per material is read through the management API, not exported, so rotations add no series | `transform_census_blocks` | gauge |
 
 A chain that fails to build logs the transform and the reason at `Error` and
@@ -978,7 +1056,7 @@ never moves.
 | T10 | The chain ID changes whenever a body's bytes or length could; nothing else changes it. |
 | T11 | A chain and an envelope list at most one transform per stage, in stage order; anything else is refused. |
 | T12 | A read asks the material provider only for material its block record's census lists, and the provider never serves material whose fingerprint no longer matches. |
-| T13 | Material is destroyed only after it is current in no open chain, no encode in flight holds it, and the census is empty, checked under one fence; once destroyed, no copy of it or of any key derived from it remains anywhere the installation runs. |
+| T13 | Material is destroyed only after it is current in no open chain, no open pin ([§3.1](#3.1%20Interfaces)) holds it, and the census is empty, checked under one fence; once destroyed, no copy of it or of any key derived from it remains anywhere the installation runs. |
 | T14 | Material belongs to one namespace, and every call that names it names that namespace. |
 | T15 | Whether a namespace encrypts is fixed at its creation; an encrypting namespace holds no body without the encrypt stage. |
 | T16 | A chain that encrypts compresses only where its compress stage explicitly accepts the size leak. |
@@ -1009,9 +1087,9 @@ alike. A new transform gets it by registering.
 | [§2.7](#2.7%20Failures) | For an authenticating transform: decode chunk A's body with chunk B's hash: `ErrMalformed`. A body naming destroyed material: `ErrMaterialDestroyed`. |
 | T9 | Encode every round-trip input twice, and from two chains built from the same configuration: identical bodies. Where `LengthOf` answers, the body's length equals it. |
 | T9 | Encode every fixture input with its recorded settings and material: exactly the recorded body. |
-| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Two different chunks under one key get different salts; one chunk under two data keys gets two different bodies. Two different inputs under one plaintext hash (the same chunk compressed at two levels, or declined then compressed) encrypt to bodies that both decode and share no keystream: XOR of the two ciphertexts is not XOR of the two inputs. |
+| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Two different chunks under one key get different salts; one chunk under two data keys gets two different bodies. Two different inputs under one plaintext hash (the same chunk compressed at two levels, or declined then compressed) encrypt to bodies that both decode, carry different nonces and share no keystream: XOR of the two ciphertexts is not XOR of the two inputs. One input under one data key, sealed with two versions in the AAD, gets two different nonces. The key-file provider at a wrap count of 2³² − 1 for a master key makes one more wrap and refuses the next, counted across two namespaces; a salvage-key wrap and an escrow check's test record each raise the count by one. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Every derivation label of Appendix B.1 is distinct, and each is pinned by a golden vector. |
-| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Golden vectors, from an independent implementation working from Appendix B.1's length and field tables alone: the salt key, salt and chunk key for a fixed data key and plaintext hash; one chunk body with its AAD; one fingerprint; the keyed gear table's first and last 8 bytes. Each derived key is 32 bytes, and an implementation deriving with `salt` as an empty string instead of 32 zero bytes gets the same key — RFC 5869 treats both alike — while one using a 16-byte `L` gets a 16-byte prefix of the right key, which the length check refuses, and one prefixing `info` gets a different key. |
+| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Golden vectors, from an independent implementation working from Appendix B.1's length and field tables alone: the salt key, salt, chunk key, nonce key and nonce for a fixed data key, plaintext hash, version and input; one chunk body with its AAD; one fingerprint; the keyed gear table's first and last 8 bytes. The nonce is the first 12 bytes of BLAKE3's keyed mode under the nonce key, so one computed with HMAC-SHA256, with BLAKE3's unkeyed or key-derivation mode, or from the last 12 bytes of the output differs from the vector. Each derived key is 32 bytes, and an implementation deriving with `salt` as an empty string instead of 32 zero bytes gets the same key — RFC 5869 treats both alike — while one using a 16-byte `L` gets a 16-byte prefix of the right key, which the length check refuses, and one prefixing `info` gets a different key. |
 | T22 | Golden vectors, from an independent implementation, for the frame key, MAC key and state key derivations, one sealed frame, each of the four export MACs, one state MAC, and one stored wrap per provider kind: the key file's, and a key service's against a fake service that records the authenticated data it is sent, once as bytes and once as a string map. Write an export of two sections of three frames each: all six nonces differ. Move a frame to the other section at the same frame index, or swap two sections: the read fails. A design whose nonce is the frame index alone gives two equal nonces here. |
 | T18 | Unwrap a wrapped key record after changing its namespace ID, its kind or its key ID in the AAD: each fails. Copy one namespace's wrapped data key into another namespace's key records: it does not unwrap there. |
 | [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | Replace a key under its ID with different bytes: the provider refuses it (`ErrMaterialUnavailable`, availability gauge 0), and no body is decoded or written with it. |
@@ -1025,16 +1103,16 @@ alike. A new transform gets it by registering.
 | T11 | A chain listing transforms out of stage order, two of one stage, or one twice fails to build, and nothing is written. |
 | T3 | Write under chain A, reconfigure to chain B (a transform removed, another added), read everything back. |
 | T3 | A declined chunk's envelope omits the transform, and decodes. |
-| T15 | With a namespace holding content, remove the encryption transform from its configuration's chain, and add one to a non-encrypting configuration: both refused, nothing written. Replace AES-256-GCM-SIV by a second encryption transform: allowed, and every older body still decodes. Plant a body without the encrypt stage in an encrypting namespace: `ErrMalformed`. |
+| T15 | With a namespace holding content, remove the encryption transform from its configuration's chain, and add one to a non-encrypting configuration: both refused, nothing written. Replace AES-256-GCM by a second encryption transform: allowed, and every older body still decodes. Plant a body without the encrypt stage in an encrypting namespace: `ErrMalformed`. |
 | T16 | Build a chain of compression and encryption without `with_encryption: accept`: refused. With it: built. The default chain of an encrypting namespace has no compress stage. |
 | T17 | The same file written into two namespaces yields disjoint chunk IDs; the IDs in a block header, chunk record and export match no unkeyed hash of the plaintext; a golden vector pins the keyed derivation. |
 | T14 | Two namespaces on one store configuration: a read in one asking for a material ID of the other gets `ErrMalformed` from the census view, and the provider records no call; `Current` of one never returns the other's key. |
 | T7 | A body whose census lists a key the provider was never given: `ErrMaterialUnavailable` with a configuration condition naming the ID, retried, never `ErrCorrupt`; load the key and the read succeeds. |
 | T13 | Remove a key while two nodes hold it unwrapped in cache: after `Remove` returns, neither node can encode or decode with it, the key record keeps only ID, fingerprint and `destroyed`, and a decode naming it returns `ErrMaterialDestroyed`. |
 | [§2.4](#2.4%20Every%20body%20records%20what%20was%20applied) | Envelopes with an unknown version, an unregistered ID, a duplicate ID, two IDs of one stage, or IDs out of stage order: `ErrMalformed` before any decode runs. A ranged get of one body decodes without the block header. |
-| [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | With `require: [aes-gcm-siv]`, a body without it is `ErrMalformed`; without `require`, it decodes. |
+| [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | With `require: [aes-gcm]`, a body without it is `ErrMalformed`; without `require`, it decodes. |
 | T12 | A body naming a material ID the store holds but its block record's census does not list: `ErrMalformed`, and the provider records no call. |
-| T13 | Start a put under key K and hold it mid-encode; retire K concurrently: removal waits for the put, then finds K in the census and refuses. Make K not current first: an encode starting after the fence uses the new key. |
+| T13 | Pin a block under key K and hold the pin; retire K concurrently: removal waits for the pin's release, then finds K in the census once the block commits and refuses. Make K not current first: a pin taken after the fence uses the new key. |
 | [§3.1](#3.1%20Interfaces) | Write parity-protected bodies, remove parity from the chain, restart: the read-side bound still admits them and they decode. |
 | [§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census) | Write blocks under two keys and two chains: the census each put returns, and the block records it reaches, list exactly the transform IDs, versions and material IDs used. Retire one key: every block naming it is relocated to a new name, fully live ones included, and the census then shows none. |
 | T10 | Build chains that differ in a transform's version, in a length-affecting setting and in current material: three different IDs. Change only a setting that is not length-affecting: the same ID. |
@@ -1047,7 +1125,7 @@ alike. A new transform gets it by registering.
 | [Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns) | With encryption on, write a known file: no unkeyed hash of its chunks appears anywhere in the stored block, the header's chunk IDs equal block metadata's, and every read still verifies. With encryption off, the header lists chunk IDs, none of which equals an unkeyed hash of the file's chunks. |
 | T19 | Rotate a master key while a retained export carries the old wrapping: destroying the old key is refused with `ErrMaterialInUse` naming the backup; expire the backup and the destroy succeeds. A design that checks only the key records destroys it and leaves the backup unopenable. Make one backup location unreachable: the destroy is refused naming it. Move the namespace to a second installation sharing the key service: the importer re-wraps every key record under its own master key before publish, and the exporter refuses to destroy the old key until an operator releases the move's pin. |
 | [Appendix B.3](#B.3%20Rotation) | Rotate the export key: the next export is sealed under the new key, names both IDs in its clear part and carries the old key wrapped; importing it alone opens an export sealed under the old key. Destroying the old export key while a retained export names it is refused. |
-| T18 | Create a non-encrypting namespace: its chunk-ID key is in its key control object in the clear, it has no chunking key, and its boundaries equal the unkeyed table's. Remove the master key and the metadata store: every chunk still verifies from the bucket alone. On a key-file provider without verified escrow, creating an encrypting namespace or a backup policy is refused with `ErrNotEscrowed`; after the escrow check passes, both succeed. A namespace key offered for wrapping under the `storage` wrapping key is refused. |
+| T18 | Create a non-encrypting namespace: its chunk-ID key is in its key control object in the clear, it has no chunking key, and its boundaries equal the unkeyed table's. Remove the master key and the metadata store: every chunk still verifies from the bucket alone. On a key-file provider without verified escrow, creating an encrypting namespace or a backup policy is refused with `ErrNotEscrowed`; after the escrow check passes, both succeed. A namespace key offered for wrapping under the `storage` wrapping key is refused, and so is a key-file master key holding the `storage` key's bytes under another ID. |
 | T20 | Destroy a data key while the journal still holds some chunks its blocks cover: a decode of a remote-only chunk returns `ErrMaterialDestroyed`, the codec's verification-failure counter does not move, the engine reports those chunks Lost; the chunks still held locally are not evicted, are offloaded again under the current key, and read back. |
 | T21 | Encode a block of an encrypting namespace: no unkeyed hash of any of its chunks appears in its bytes; its header's chunk IDs are the keyed ones block metadata records, and ranged reads at block metadata's ranges still verify. Scan the block for the clear envelope: every body's offset and length is found, as [B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns) states, so no test or text claims lengths hidden. |
 | [Appendix B.2](#B.2%20Keys) | Rotate the data key after the last catalog backup, relocate that backup's blocks under it, then lose the metadata store: the recovery import loads the new key records from the bucket's `keys` object and every file reads back. Fail the put to one backup location during a rotation: the new key becomes current once the bucket's `keys` put succeeds, and the next version written at that location waits until its `keys` object holds every key record. Fail the bucket's `keys` put: the old key stays current. Rotate a key-file master key without its escrow check: refused with `ErrNotEscrowed`. |
@@ -1062,7 +1140,10 @@ alike. A new transform gets it by registering.
 | [Appendix B.2](#B.2%20Keys) | Rotate the export key, then expire a removed share's backup at a location no copy reaches again: the expiry first brings that location's `keys` object up to date, and a restore from that location alone, after the bucket and the metadata store are lost, reads the backup as `expired`. |
 | [Appendix B.2](#B.2%20Keys) | Delay the bucket's `keys` put of sequence 7 until after sequence 8 has landed: the next writer, or the next `Recheck` pass, reads back 7 and writes the whole object at 9. Repeat at a mutable backup location, with 8 adding a new export key: the writer about to put a state version under that key reads back 7 and re-puts before it, so a restore from that location alone authenticates the version. |
 | [Appendix B.2](#B.2%20Keys) | A location an operator declared lost: a master-key destroy no longer fails closed on it, and an export-key rotation completes without it. |
-| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | A key service rotates a master key in place while the namespace writes nothing: at the next recheck period the provider reads the new primary version and re-wraps every key record under it. A failed copy's progress under a retiring or retired export key: the successor, and the same copier resumed across the rotation, copy those blocks afresh. A re-seal and a copier's state put on one backup at once: they take the key lock in turn and put distinct sequences. A `damaged` backup expires to `expired`, and a `complete` written again naming another export is refused. |
+| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | A key service rotates a master key in place while the namespace writes nothing: at the next recheck period, on the provider's own ticker until GC runs the read, the provider reads the new primary version and starts a `rotate-master-key` operation that re-wraps every key record under it. A failed copy's progress under a retiring or retired export key: the successor, and the same copier resumed across the rotation, copy those blocks afresh. A re-seal and a copier's state put on one backup at once: they take the key lock in turn and put distinct sequences. A `damaged` backup expires to `expired`, and a `complete` written again naming another export is refused. |
+| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | A key service answers the primary-version read with more than one current version (a Locate returning two UIDs) for two periods running: assert each read fails, no key record is re-wrapped, and `material_unavailable` names the master key. |
+| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | A key-service provider holding a namespace's data key unwrapped, for each state the service can report for the master key that wraps it: at the next period, a state the service reports as destroyed makes `Pin` fail with `ErrMaterialDestroyed` and raise `material_destroyed`; every other state but active, and a state value the provider does not know, makes `Pin` fail with `ErrMaterialUnavailable` and raises `material_unavailable`; an active key pins. A failed state read leaves the last state in force. No restart is needed in any case. |
+| [Appendix B.2](#B.2%20Keys) | Destroy a master key in the key service while a block pinned under a data key it wraps is open, in two namespaces: at the next period every key record whose stored wrap names it is marked `destroyed` before any decode, condition or destroyed-material report names it, and the block's commit is refused. A record already re-wrapped under the new master key is not marked. The next read, with the key still destroyed, writes nothing and reports nothing twice. Crash after half the records are marked: the read at the next open marks the rest, and `Pin` stays refused throughout. |
 | [§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census) | Drain a namespace whose data key another namespace's folder census still names: the drain removes none of its keys, the chunk-ID and chunking keys included. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Write a backup's state as `writing`, `complete`, then `damaged`; re-put the authentic `complete` version on top: the reader takes `damaged`, by sequence. Two field lists that join to the same bytes without length prefixes give different MACs. The golden vectors cover the sealed header, the progress MAC, and a state MAC over a nonzero expiry time. Change a `complete` version's expiry time and keep its tag: it fails to authenticate. |
 | [Appendix B.2](#B.2%20Keys) | Hand the put intent step a plan whose chunk IDs were computed under another namespace's chunk-ID key: refused, and nothing is put. |
@@ -1076,9 +1157,10 @@ corpus, chunk size distribution and CPU with each result.
 | Benchmark | Measures | Proposed target |
 | --- | --- | --- |
 | Each transform, encode and decode | MB/s per core | report, per transform, against the previous run |
+| Encryption's encode, split into the nonce's keyed BLAKE3 pass and the AES-256-GCM seal | MB/s per core, and the nonce pass's share of encode time | report, with the CPU's AES and hash instruction-set extensions named |
 | The chain around its transforms | overhead | within 2% of the sum of its transforms' own times, median of 10 runs |
 | Envelope size | bytes per chunk | 2 + 2n |
-| `Chain.MaxEncodedLen` against the largest body seen | ratio | at most 1: the declared bound is never exceeded on any corpus |
+| `Attempt.MaxEncodedLen` against the largest body seen | ratio | at most 1: the declared bound is never exceeded on any corpus |
 | Compression ratio per corpus | bytes out / in | report; tracked against the previous run |
 | A put and a whole-block get with the default chain | MB/s | within 10% of the same without a chain, on the reference link, or the chain is what the link waits on and pool sizing must say so ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
 
@@ -1169,20 +1251,23 @@ needs material: a namespace's data keys, of kind `data-key`.
 Keys are layered ([Appendix B.2](#B.2%20Keys)): master keys, held by the provider, wrap one or
 more **data keys** per namespace. A chunk is sealed under a key derived from the
 namespace's current data key and a salt derived from the chunk's hash, with
-AES-256-GCM-SIV (IETF RFC 8452), a deterministic, nonce-misuse-resistant AEAD:
+AES-256-GCM (NIST SP 800-38D) from the standard library, under a nonce derived
+from the exact bytes it seals:
 
 ```
 salt key  = HKDF-SHA256(data key, salt = none, info = "dittofs chunk salt v2"), 32 bytes
 salt      = HMAC-SHA256(salt key, plaintext hash), 32 bytes
 chunk key = HKDF-SHA256(data key, salt = salt, info = "dittofs chunk key v2"), 32 bytes
-body      = AES-256-GCM-SIV(chunk key, nonce = 12 zero bytes, input,
-                            AAD = transform ID ‖ version ‖ data key ID ‖ plaintext hash)
+nonce key = HKDF-SHA256(data key, salt = salt, info = "dittofs chunk nonce v2"), 32 bytes
+nonce     = first 12 bytes of BLAKE3-keyed(nonce key, AAD ‖ input)
+body      = nonce ‖ AES-256-GCM(chunk key, nonce, input,
+                                AAD = transform ID ‖ version ‖ data key ID ‖ plaintext hash)
 ```
 
 `input` is what reaches the encrypt stage: the compressed chunk, or the chunk
 itself when compression declined or is off.
 
-![Encrypting one chunk: the master key unwraps per-namespace data, chunk-ID and chunking keys; the data key seals the chunk with AES-256-GCM-SIV, the chunk-ID key keys the chunk IDs block headers carry, the chunking key keys boundaries](img/rfc5t-key-derivation.svg)
+![Encrypting one chunk: the master key unwraps per-namespace data, chunk-ID and chunking keys; the data key seals the chunk with AES-256-GCM, the chunk-ID key keys the chunk IDs block headers carry, the chunking key keys boundaries](img/rfc5t-key-derivation.svg)
 
 **Every derivation has its own versioned label.** Nothing derived from a key is
 derived under a label another derivation uses:
@@ -1191,6 +1276,7 @@ derived under a label another derivation uses:
 | --- | --- | --- |
 | `dittofs chunk salt v2` | data key | the salt key |
 | `dittofs chunk key v2` | data key and salt | the chunk key |
+| `dittofs chunk nonce v2` | data key and salt | the key of the keyed BLAKE3 hash that gives the chunk's nonce |
 | `dittofs chunking key v1` | chunking key | keyed boundaries, encrypting namespaces only ([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)) |
 | `dittofs export frame v1` | export key and the export's salt | the key sealing each frame of an export ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)) |
 | `dittofs export mac v1` | export key and the export's salt | the key authenticating an export's clear part, header, sections and trailer |
@@ -1206,12 +1292,12 @@ as a chunk, and every value below has a golden vector ([§8.1](#8.1%20Transform%
 export salt = 32 bytes from a cryptographic random source, per export, in its clear part
 frame key   = HKDF-SHA256(export key, salt = export salt, info = "dittofs export frame v1"), 32 bytes
 mac key     = HKDF-SHA256(export key, salt = export salt, info = "dittofs export mac v1"), 32 bytes
-frame       = AES-256-GCM-SIV(frame key,
+frame       = AES-256-GCM(frame key,
                 nonce = section index (4 bytes, big-endian) ‖ frame index (8 bytes, big-endian),
                 records,
                 AAD = export salt ‖ section index ‖ section type ‖ frame index)
 clear MAC   = HMAC-SHA256(mac key, "clear" ‖ every byte of the clear part before it)
-sealed header = AES-256-GCM-SIV(frame key,
+sealed header = AES-256-GCM(frame key,
                 nonce = 0xFFFFFFFF (4 bytes) ‖ 0 (8 bytes),
                 header, AAD = export salt ‖ "header")
 header MAC  = HMAC-SHA256(mac key, "header" ‖ clear MAC ‖ sealed header)
@@ -1242,21 +1328,21 @@ vector:
 | Value | Bytes | How |
 | --- | --- | --- |
 | master key, data key, chunking key, chunk-ID key, export key | 32 | drawn from a cryptographic random source when created or rotated; never derived |
-| every HKDF-SHA256 output: salt key, chunk key, frame key, mac key, state key, progress key | 32 | IETF RFC 5869 with `L = 32`; `salt = none` means RFC 5869's default, 32 zero bytes; `info` is the label's ASCII bytes alone, with no length prefix and no terminator |
+| every HKDF-SHA256 output: salt key, chunk key, nonce key, frame key, mac key, state key, progress key | 32 | IETF RFC 5869 with `L = 32`; `salt = none` means RFC 5869's default, 32 zero bytes; `info` is the label's ASCII bytes alone, with no length prefix and no terminator |
 | salt, every MAC, fingerprint | 32 | HMAC-SHA256, full output, never truncated |
 | plaintext hash, chunk ID | 32 | the keyed BLAKE3 chunk ID ([RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20chunk)) |
 | keyed gear table | 2,048 | BLAKE3 keyed mode under the chunking key, over the ASCII label `dittofs chunking key v1` ([RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)) |
-| AES-256-GCM-SIV nonce | 12 | the chunk's is 12 zero bytes; a frame's and the header's as below; a key wrap's random |
-| AES-256-GCM-SIV tag | 16 | appended to the ciphertext |
+| AES-256-GCM nonce | 12 | the chunk's is the first 12 bytes of BLAKE3's keyed mode under the nonce key, over the chunk nonce input, stored before the ciphertext; a frame's and the header's as below; a key wrap's random, stored before the ciphertext |
+| AES-256-GCM tag | 16 | appended to the ciphertext, full length, never truncated |
 
-A value computed over **one** field — the salt over the plaintext hash, a
-fingerprint over its label — takes that field's bytes alone, with no prefix;
+A value computed over **one** field — the salt over the plaintext hash, a fingerprint over its label — takes that field's bytes alone, with no prefix;
 the prefix rule above applies wherever two or more fields are joined. The
 joined inputs are, field by field:
 
 | Input | Fields, in order |
 | --- | --- |
 | chunk AAD | transform ID (2 bytes, big-endian) ‖ version (1 byte) ‖ data key ID (4-byte length, bytes) ‖ plaintext hash (4-byte length, 32 bytes) |
+| chunk nonce input | chunk AAD (4-byte length, its bytes) ‖ input (4-byte length, its bytes) |
 | frame AAD | export salt (4-byte length, 32 bytes) ‖ section index (4 bytes) ‖ section type (1 byte) ‖ frame index (8 bytes) |
 | header AAD | export salt (4-byte length, 32 bytes) ‖ `header` (4-byte length, ASCII) |
 | each MAC | its literal label (`clear`, `header`, `section`, `trailer`; 4-byte length, ASCII) first, then its fields as listed, each integer at its stated width and each other field length-prefixed |
@@ -1340,22 +1426,49 @@ every progress version under an older key as no base and copy those blocks
 afresh. Progress is never re-sealed: its loss costs one copy's work per
 rotation, not a backup.
 
-The nonce is unique per frame within one export, since a section index and a
-frame index never repeat together, and every export draws its own salt, so its
-frame key is its own; GCM-SIV is chosen anyway, so a repeat would leak only that
-two frames were equal, never the key stream or the authentication key. A frame
-index that restarted per section under one key and one nonce field would repeat
-across sections, which under a nonce-based AEAD reveals the key stream and lets a
-reader forge frames. Every export's clear part names the ID of the export key
+**No frame key seals two plaintexts under one nonce**, the rule AES-GCM holds
+only if its caller does: a repeat reveals the XOR of the two plaintexts and the
+authentication key, so a reader could forge frames. The nonce is unique per
+frame within one export, since a section index and a frame index never repeat
+together, and the header's section index 2³² − 1 names no section. Every export
+draws its own salt, so its frame key is its own. A writer **MUST** seal each
+frame, and the header, exactly once under one salt: a copy that restarts or
+resumes writes a new export under a new salt, and never re-seals a frame whose
+records changed under the salt it already used. A frame index that restarted
+per section under one key and one nonce field would repeat across sections,
+which is why the nonce carries the section index too. Every export's clear part names the ID of the export key
 that seals it and the IDs of every master key whose wrapping it carries
 ([Appendix B.2](#B.2%20Keys)).
 
 **Key wrap.** A namespace key is stored only wrapped under a master key:
 
 ```
-wrapped = AES-256-GCM-SIV(master key, nonce = 12 bytes from a cryptographic random source,
-                          key bytes, AAD = namespace ID ‖ kind ‖ key ID)
+wrapped = nonce ‖ AES-256-GCM(master key, nonce = 12 bytes from a cryptographic random source,
+                              key bytes, AAD = namespace ID ‖ kind ‖ key ID)
 ```
+
+**A master key makes at most 2³² wraps.** A random 96-bit nonce stays unique
+under one key with the margin NIST SP 800-38D §8.3 requires only up to 2³²
+invocations. The key-file provider enforces it inside the wrap call itself: every wrap
+under a master key first raises that key's count of wraps by a conditional
+write, before the wrap's bytes are used, so a crash can only overcount, and the
+call refuses a wrap at 2³² with an error asking for a master-key rotation
+([B.3](#B.3%20Rotation)). The count is one server-wide row per master-key
+version (`MKW‖masterKeyID`, [RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)), not one per namespace, so the wraps of
+every namespace under one key add up. Every wrap counts: each key record written
+(a key created, a data key rotated, a master key re-wrapping every record), a
+salvage key's wrap, and the escrow check's test record ([B.2](#B.2%20Keys)).
+At 10⁴ namespaces with a few keys each, every write retried, and salvage
+exports and escrow checks rare, the count stays below 2²⁰.
+The count is exact only while one installation wraps under the key, so a
+key-file master key **MUST** be current in one installation only. A move's
+importer refuses to publish while its current master key is a key-file master
+key whose ID the export names ([RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material)). A recovery import on a fresh host takes over
+the lost installation's master key with a count of 0, which undercounts by the
+wraps that installation made; below 2²⁰ wraps per installation, 2¹² such
+recoveries under one key would reach 2³², and a master-key rotation after a
+recovery ends the undercount. A key service draws its own nonces and keeps
+its own bound.
 
 That is the key-file provider's wrap. A key-service provider asks the service
 to wrap instead, and the service returns its own opaque ciphertext, with its own
@@ -1381,21 +1494,42 @@ old version can be destroyed in the service only once the destroy check of
 [B.2](#B.2%20Keys) passes for its own ID. **The provider does not wait for a wrap to notice
 it.** A namespace whose keys never change wraps nothing, so the provider reads
 the service's current primary version of each master key the configuration
-uses when the configuration opens and once every GC recheck period
-([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), and a primary version other than the one its current records name
-starts that master-key rotation. A read that fails is retried at the next
-period and changes nothing; until a rotation runs, the records stay wrapped
+uses when the configuration opens and then every GC recheck period
+([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)). The read needs only the period from GC, not GC itself:
+until GC lands, the provider runs it on a ticker of its own at that same fixed
+period, so an in-place rotation is never left unseen until the next open. A
+primary version other than the one its current records name starts that
+master-key rotation as a `rotate-master-key` operation ([RFC 23 §4.6](rfc-23-control-plane.md#4.6%20Long-running%20operations)), unless one
+for that master key is already running; the operation runner drives it as it
+drives one an administrator starts. A read that fails changes nothing and is retried at the
+next period, and so does one that finds more than one current version for a master key: the
+provider re-wraps nothing on an ambiguous answer, logs it and raises
+`material_unavailable` for that master key; until a rotation runs, the records stay wrapped
 under the old version, which still unwraps them. Under a name that stays the same across
 versions, nothing would re-wrap, and destroying an old version in the service
 would silently make every record and export wrapped under it unopenable, past
 any check here. The AAD reaches each provider's input as follows: the key
-file passes the AAD bytes to AES-256-GCM-SIV; a service that takes
+file passes the AAD bytes to AES-256-GCM; a service that takes
 authenticated data as bytes gets the same bytes; a service that takes it as a
 string map gets the one entry `dittofs-wrap-aad` → the AAD bytes in lowercase
 hex, and nothing else. A profile for a service **MUST** name which of the two it
 uses. The AAD binds a wrapped key to its namespace, kind and ID, so a
 wrapped record copied into another namespace's key records, or relabelled as
 another kind, fails to unwrap instead of serving as that key.
+
+**A master key the service holds in any state but active stops new writes.**
+At each read of the primary version above, the provider **MUST** also read the state of every
+master key that wraps a namespace's current data key, and **MUST** refuse `Pin`
+([§3.1](#3.1%20Interfaces)) for that namespace while the last state read is not
+active: with `ErrMaterialDestroyed` and the `material_destroyed` condition when
+the service reports the key destroyed, and with `ErrMaterialUnavailable` and the
+`material_unavailable` condition for every other state, a state the provider
+does not know included ([B.4](#B.4%20Losing%20a%20key%20loses%20the%20data)). So a
+key destroyed in the service stops new writes within one period, with no
+restart, although the provider still holds the data key unwrapped. A read that
+fails changes nothing and is retried at the next period, as for the primary
+version. The refusal applies to new writes only: a decode is not changed, and
+follows [B.4](#B.4%20Losing%20a%20key%20loses%20the%20data).
 
 A change to any derivation is a new label and a new transform format version; a
 golden vector pins each. The chunk-ID key is the one key used with no derivation:
@@ -1410,10 +1544,25 @@ In plain terms:
   stage's output, which can differ for the same chunk: a new compression level,
   a chunk declined once and compressed later, a compression library upgrade, or
   a relocation, which re-encodes by design ([§5.2](#5.2%20Relocation%20re-encodes)). Two different inputs under
-  one key and one fixed nonce are exactly what a nonce-based AEAD must never see.
-  AES-GCM-SIV derives its internal IV from the key, the nonce and the exact bytes
-  encrypted, so two different inputs get two unrelated keystreams, and the most
-  a repeat leaks is that two inputs were identical.
+  one key and one nonce are exactly what AES-GCM must never see: their XOR
+  and the authentication key would leak. So the nonce is a keyed BLAKE3 hash of
+  the chunk's AAD and the exact bytes sealed, under a key only the data key
+  derives: two different inputs get two unrelated nonces (equal with
+  probability 2⁻⁹⁶ per pair, and one chunk key sees a handful of inputs at
+  most). This needs one assumption only: that BLAKE3's keyed mode is a
+  pseudorandom function while its key is secret. An HMAC-SHA256 nonce would
+  need the same assumption of HMAC-SHA256, and every chunk ID already needs it
+  of keyed BLAKE3 ([RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20chunk)), so the choice adds no assumption and no
+  dependency. What the extra pass over the input costs on encode is measured,
+  not assumed ([§8.3](#8.3%20Benchmarks%20and%20targets)). The AAD is in the
+  hashed input because neither key depends on it. A later format version that keeps
+  these labels changes only the AAD's version byte, and one input sealed under
+  one key and one nonce with two AADs is one ciphertext with two tags: GCM's
+  authentication key follows from them, and forged bodies then pass the tag.
+  With the AAD in the hashed input, a nonce repeats only where the AAD and the input
+  both repeat, which seals the same body again, and the most a repeat leaks is
+  that two bodies sealed one input under one AAD. A zero nonce would be safe only if a chunk key sealed
+  one input ever, which compression and relocation break.
 - **deterministic, as [§2.1](#2.1%20A%20transform%20acts%20on%20one%20chunk) requires.** The same input under one data key
   encrypts identically. The salt is an HMAC under a key only the data key
   derives, so no one without it can compute the salt.
@@ -1428,9 +1577,11 @@ In plain terms:
   stored: `Decode` derives it again from the hash it is given.
 
 **Its header:** version (1 byte), data key ID length (1 byte), data key ID. Then
-the ciphertext and its 16-byte tag. `MaxEncodedLen(n) = n + 273`, the worst case
-with a 255-byte key ID: 1 + 1 + 255 + 16. `LengthOf(n)` is exact: `n + 18` plus
-the current data key ID's length. The data key's (ID, fingerprint) is in the
+the 12-byte nonce, the ciphertext and its 16-byte tag. Under the pinned data key,
+`MaxEncodedLen` and `LengthOf` are both exact: `n + 30` plus that key ID's
+length. Under any material, `MaxEncodedLen(n) = n + 285`, the worst case with a
+255-byte key ID: 1 + 1 + 255 + 12 + 16. `Decode` reads the nonce
+from the body; the tag authenticates it with the rest. The data key's (ID, fingerprint) is in the
 chain ID ([§2.8](#2.8%20The%20chain%20ID)) as material, and the stage has no length-affecting setting, so its
 `LengthKey` is empty (*k* = 0).
 
@@ -1519,7 +1670,11 @@ of its store configuration. The `storage` wrapping key
 ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)), which seals remote-tier credentials in the metadata store,
 **MUST NOT** wrap a namespace key: it lives on the host, so an export wrapped
 under it would restore only on the host that made it, which is the one place a
-backup is not needed.
+backup is not needed. The provider enforces it without holding the
+`storage` key: the wiring passes it that key's ID and fingerprint
+([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)), and the provider refuses a master key whose ID or
+fingerprint matches. So a master-key file that holds the `storage` key's bytes
+under another ID is refused too.
 
 **Where wrapped keys live.** Each namespace key is a **key record** in the
 metadata store, under the namespace's prefix: its kind, ID, fingerprint, the ID
@@ -1591,7 +1746,9 @@ writes the whole object again at the next sequence first; and after its own
 reads back once more and requires its own sequence. Every `Recheck` pass of the
 namespace's store, and of a mutable location's store, reads its object back
 the same way and re-puts it under the lock when it lags
-([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)). A late landing is then repaired within one recheck period; at an
+([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)); this read-back lands with `Recheck`'s first caller, GC
+([RFC 9](rfc-9-gc.md)). Until GC lands, a late landing is repaired by the object's next
+writer, which reads it back first; after that, within one recheck period. At an
 immutable location it is only an older version, which the ordering below
 passes over. A destroy owns its puts as a rotation does: it makes the bucket's
 put and returns once it has succeeded, leaving each location's put to the next
@@ -1665,8 +1822,16 @@ immutable ones included.
 
 **The check is per installation, and a move pins as well.** An installation that
 imports a namespace re-wraps every imported key record under its own master key
-before it publishes ([RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material)), so from then on the two installations
-share no master key in use. The exporting installation keeps a durable pin per
+before it publishes ([RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material)), and refuses to publish while its current master key
+is a key-file master key the export names ([B.1](#B.1%20How%20a%20chunk%20is%20encrypted)), so from then on the two
+installations share no key-file master key in use. That claim covers key-file
+master keys only. Two installations **MAY** share one key-service master key,
+since the service draws its own nonces and keeps its own bound ([B.1](#B.1%20How%20a%20chunk%20is%20encrypted)). The key
+service, not either installation, owns that key's lifecycle: a destroy issued through either
+installation destroys it for both, and each installation's destroy check sees
+only its own key records, retained exports and pins. Operators who share a
+key-service master key coordinate its destroy outside both installations.
+The exporting installation keeps a durable pin per
 move naming every master key the moved export carried, and refuses to destroy
 one (`ErrMaterialInUse`, naming the move) until an operator releases the pin.
 Without it, an installation that rotated away from a shared key and saw its own
@@ -1682,9 +1847,11 @@ namespace and its key IDs with each offer it reads, so a plan formed before the
 switch cannot commit IDs of the old namespace into the new one
 ([RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)).
 
-Encryption asks the store configuration's `Materials` for the namespace's
-current data key when it encodes and for the data key a body names when it
-decodes; the provider unwraps it with the master key that wrapped it. Every piece
+Encryption encodes under the data key its attempt pinned ([§3.1](#3.1%20Interfaces)), which
+`Pin` read as the namespace's current data key once, so a rotation after the pin
+changes neither the block's bodies nor their lengths; it decodes with the data
+key a body names. It gets either key's content from the store configuration's
+`keys.Provider`; the provider unwraps it with the master key that wrapped it. Every piece
 of material carries its fingerprint ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)), checked after unwrapping.
 
 The key records keep every key ID the namespace has ever issued, marking one
@@ -1693,6 +1860,23 @@ provider can tell a key it never had, one it cannot reach now, and one that is
 gone for good. Two providers ship: a key file, and a key service that unwraps on
 request and never releases a master key. Encryption **MUST** fail its
 construction if it cannot get the current data key ([§2.7](#2.7%20Failures)).
+
+**A destroyed master key destroys the key records it wraps.** When the provider
+finds a master key destroyed — by the key-state read of [B.1](#B.1%20How%20a%20chunk%20is%20encrypted) or by any other
+path — it **MUST** mark `destroyed`, in the metadata store, every key record
+whose stored wrap names that master key's ID, in every namespace: every data
+key, and every other kind this appendix's table wraps. The marking **MUST**
+commit before the provider reports the master key, or any key it wraps, as
+destroyed by any other means: a decode's `ErrMaterialDestroyed`, the
+`material_destroyed` condition, or the report of destroyed material the engine
+reads ([RFC 8 §10.4](rfc-8-engine.md#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable)). So a block commit that checks the material its
+pin holds against the key records refuses a data key lost this way exactly as it
+refuses one retired by [§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census), and no commit passes between the provider
+seeing the destroy and the engine hearing of it. The marking is idempotent: a
+record already marked is left as it is, so a later read that finds the master
+key still destroyed writes nothing and reports nothing twice, and a marking cut
+short by a crash is completed by the next read. A record already re-wrapped
+under another master key does not name the destroyed one and is not marked.
 
 ### B.3 Rotation
 
@@ -1734,7 +1918,9 @@ There are three rotations, and they cost different things:
   version that differs from its record is a health condition naming the
   backup. Each location's re-seal first brings its `keys` object up to date
   ([B.2](#B.2%20Keys)). It **SHOULD** rotate with the master key, and **MUST** be rotatable on
-  request when thought exposed.
+  request when thought exposed. It lands with its first caller, catalog backups
+  ([RFC 26](rfc-26-catalog-backups.md)): until then a namespace has its first export
+  key only, and every `keys` object already names it, so nothing migrates.
 
 **An export key is retired per location.** At the rotation the old key becomes
 `retiring`, and its key record holds its **pending set**: every location
@@ -1862,7 +2048,12 @@ holding it commits ([RFC 8 §10.4](rfc-8-engine.md#10.4%20Nothing%20but%20dirty%
 Without this, destroying a key would also let eviction drop the one readable copy
 of every chunk it covered.
 
-Each of these is a health condition of the store, not only a log line.
+Each of these is a health condition of the store, not only a log line:
+`material_unavailable` for material the provider cannot return now,
+`material_unknown` for material the census lists and the provider was never
+given, and `material_destroyed`, with `data_loss`, for material lost for good
+while a chunk still depends on it, clearing once none does
+([RFC 25 §3.9](rfc-25-observability.md#3.9%20The%20condition%20registry)).
 
 ### B.5 What a bucket reader still learns
 
@@ -1981,7 +2172,7 @@ Descriptive, for the refactor.
 | D2 | Decoding is bounded by the chunk maximum (T4) | the declared-size ceiling is 64 MiB against a 16 MiB chunk maximum, the buffer is allocated before decoding, and the zstd window is unbounded |
 | D3 | The stage order is fixed, and a chain or envelope out of it is refused ([§2.3](#2.3%20The%20chain%20order%20is%20fixed)) | compression then encryption is fixed in code, as specified, but nothing refuses a stored body layered otherwise, since there is no envelope (D1) |
 | D4 | Reading needs only the registry and keys (T3) | decoders exist only for configured layers: disabling compression fails every compressed body, enabling encryption rejects existing plaintext bodies, and disabling encryption is refused |
-| D5 | Chunks are sealed with AES-256-GCM-SIV under a key derived from a per-namespace data key wrapped by a master key, and every header field is authenticated ([Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted), [Appendix B.2](#B.2%20Keys)) | a random data key per chunk is wrapped under the master key with AES-GCM; frame fields are outside the AAD, and nothing counts the master key's nonces |
+| D5 | Chunks are sealed with AES-256-GCM under a key derived from a per-namespace data key wrapped by a master key, and every header field is authenticated ([Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted), [Appendix B.2](#B.2%20Keys)) | a random data key per chunk is wrapped under the master key with AES-GCM; frame fields are outside the AAD, and nothing counts the master key's nonces |
 | D6 | Relocation re-encodes ([§5.2](#5.2%20Relocation%20re-encodes)) | relocation copies encrypted bodies unchanged |
 | D7 | No transform error crosses the codec (T8) | encryption and compression errors reach callers as their own types |
 | D8 | The hash is checked once, in the codec (T6) | each consumer re-hashes; relocation does not |
@@ -1993,7 +2184,7 @@ Descriptive, for the refactor.
 | D14 | Material carries a fingerprint, and a read asks only for material its block record lists ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)) | not yet checked against the code; to verify during the refactor |
 | D15 | Headers carry keyed chunk IDs and clear ranges, with no header key and no seal ([Appendix B.5](#B.5%20What%20a%20bucket%20reader%20still%20learns)) | not yet checked against the code; to verify during the refactor |
 | D16 | Read-side bounds come from every registered transform ([§3.1](#3.1%20Interfaces)) | not yet checked against the code; to verify during the refactor |
-| D17 | Material removal is fenced against in-flight encodes ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | not yet checked against the code; to verify during the refactor |
+| D17 | Material removal is fenced against open pins ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | not yet checked against the code; to verify during the refactor |
 | D18 | Chunk IDs are keyed per namespace, and every namespace has keys held by a provider ([Appendix B.2](#B.2%20Keys)) | not yet checked against the code; to verify during the refactor |
 | D19 | Whether a namespace encrypts is fixed at creation, and compression is off by default when it does ([§3.2](#3.2%20Configuration)) | not yet checked against the code; to verify during the refactor |
 | D20 | Material is named per namespace, and removal erases every copy ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) | not yet checked against the code; to verify during the refactor |
