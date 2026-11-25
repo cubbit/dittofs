@@ -31,8 +31,13 @@ and §12's L9; [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §6's V20, its off
 - epic 15's pipeline: the offload commit transaction (T15.4) that T18.5 adds its key-record reads
   to, with their slot already counted in the floor (T15.2), the block record's `encodings` (T15.3),
   and Mark (T15.9), whose report T18.4 puts under the destroyed-material lock;
-- epic 16's binding flow and its `Health(Put)` read into the binding (T18.9, T18.11), and the gates'
-  switch (T18.3's eager mode);
+- epic 16's binding flow and its `Health(Put)` read into the binding (T18.9, T18.11), the gates'
+  switch (T18.3's eager mode), and its `retune(b)` (its T16.4 and D13), the one function per binding
+  that sets each shard's offload tenant from the kept put health and the journal's pressure, through
+  which epic 14's pressure cap runs, so a pressure change this epic makes reaches the tenants only
+  through it (T18.8);
+- epic 17's T17.7 `(*speculator).cancelQueued(j)`, the one entry point that cancels the queued
+  speculation of journal `j`'s shares under capacity pressure, which the pacing path calls (T18.7);
 - sync point **S5**'s RFC 5 half: `keys.DestroyedNotice` on `keystest`'s in-memory provider, and the
   key-record view with its `kvstore` implementation, whose state is a byte `kvstore` reads without
   the provider (the RFC 5 plan's epics 6 and 8);
@@ -87,7 +92,11 @@ a file's materials in `kvstore`; the local-space series and span; the rows liste
   destroyed material" asserts: epic 15 (T15.8); this epic's row asserts it.
 - A remote-only chunk under destroyed material reading **Lost**: epic 17, whose read path tells the
   errors apart; this epic's row asserts it.
-- Cancelling speculation on pressure: epic 17.
+- Cancelling speculation on pressure: epic 17's `cancelQueued` (its T17.7, D10), which it already
+  calls from the first part's refusal path; this epic adds only the call from the pacing path
+  (T18.7).
+- Setting a shard's offload tenant: epic 16's `retune(b)`; this epic only changes the journal's
+  pressure state that `retune` reads (T18.8).
 - The put-unhealthy pause of a store's shards, reading the flow's health into the binding, the gates'
   switch and the rerun of every Group A row under it, and the "pressure band" check's put-unhealthy
   leg: epic 16.
@@ -569,7 +578,7 @@ test/engine/known.yaml    T18.3, T18.6, T18.7, T18.9, T18.11  entries removed or
 
 **Subtask T18.7 estimate: 3 man-days.**
 
-- **Track:** B. **Depends on:** T18.3.
+- **Track:** B. **Depends on:** T18.3. Epic 17's T17.7.
 - **Covers:** R1, R2, R3, R14, R31, R32, R33, R34, R35, R36, R49, R50.
 - **Deliverables:** in `policy.go`,
   ```go
@@ -586,7 +595,10 @@ test/engine/known.yaml    T18.3, T18.6, T18.7, T18.9, T18.11  entries removed or
   wait on the injected clock's `After` under the caller's context, inside an `engine.pace` child
   span with the share, the file, the bytes and the outcome, and the delay observed in
   `PacingSeconds`; a delay past the deadline answers `ErrDelay` (`DelayCapacity`) at once, counted
-  as a refusal. `MeasuredDrain` in the fixture returns the journal's *r*. Consumed by T18.8.
+  as a refusal. A write `admit` paces or refuses calls epic 17's `(*speculator).cancelQueued(j)` for
+  its journal before it waits (epic 17's D10, its R32 on this path), once per journal per `nearS`
+  change rather than per write. `MeasuredDrain` in the fixture returns the journal's *r*. Consumed
+  by T18.8.
 - **Acceptance criteria:**
   - Below *S* no write waits; half-way to *L* a write waits *n* / 2*r*.
   - A delay longer than the time left to the deadline returns at once.
@@ -601,7 +613,10 @@ test/engine/known.yaml    T18.3, T18.6, T18.7, T18.9, T18.11  entries removed or
   - the ring's arithmetic after ticks with writes and drains, and a tick with *M* at zero skipped
     (D4);
   - at the tracer the fixture passes, a paced write's `engine.pace` span with its four attributes
-    (R50).
+    (R50);
+  - a read-ahead hint queued on a share, then a write paced on its journal: the hint is cancelled
+    and never fetched, read at the remote store's get count (catches a pacing path that does not
+    call `cancelQueued`).
   No double but the clock and the tracer, which keeps the spans it was given.
 - **Rules:** rule 3: the span and the histogram; rule 9: §10.2.1's `decision:`, D3's `ponytail:`.
 
@@ -609,11 +624,13 @@ test/engine/known.yaml    T18.3, T18.6, T18.7, T18.9, T18.11  entries removed or
 
 **Subtask T18.8 estimate: 1.5 man-days.**
 
-- **Track:** B. **Depends on:** T18.7. Epic 14's T14.4.
+- **Track:** B. **Depends on:** T18.7. Epic 14's T14.4; epic 16's `retune`.
 - **Covers:** R37, R38, R39, R40.
 - **Deliverables:** in `queue.go`, the post of D5 with its `decision:`: on each tick, and on an
   `admit` whose `nearS` changed, epic 14's `pressure(on)` when any measure is past its *S* and
-  `pressure(off)` when all are below 0.9 of theirs. Consumed by T18.9.
+  `pressure(off)` when all are below 0.9 of theirs. The state change reaches each shard's offload
+  tenant only through epic 16's `retune(b)` for every binding on the journal (its D13); this epic
+  calls no `SetTenant` itself. Consumed by T18.9.
 - **Acceptance criteria:**
   - Pressure turns on when a share passes its *S* though the journal is below its own.
   - It stays on until every measure is below 0.9 of its *S*.
@@ -624,6 +641,9 @@ test/engine/known.yaml    T18.3, T18.6, T18.7, T18.9, T18.11  entries removed or
   - **lost events, the pressure leg** (R39): epic 14's drop seam dropping `Pressure` posts with
     probability ½ beside `Dirty` and every third tick; every dirty file is still dispatched within
     the maximum age plus one tick;
+  - pressure on just after a `Drop` cancelled a binding's tenants: no tenant of the dropped share
+    comes back in `JournalStats.Work` (catches a pressure path that writes tenants around
+    `retune`);
   - **growth, the pacing leg** (R40): the run hook pausing every run while writes fill past *S*;
     each write returns, and every wait is an `engine.pace` span (catches a wait on the queue).
   No double but the clock, the seeded source, epic 14's seam and hook.
@@ -728,8 +748,11 @@ flowchart TD
   EPIC15 --> T18_4
   EPIC15 --> T18_5["T18.5 commit refuses destroyed material"]
   T18_4 & T18_5 --> T18_6["T18.6 destroyed-material row"]
+  EPIC17(["epic 17: cancelQueued"]):::sync
   T18_3 --> T18_7["T18.7 admit and pacing"] --> T18_8["T18.8 pressure from admit"]
+  EPIC17 --> T18_7
   EPIC14 --> T18_8
+  EPIC16 --> T18_8
   T18_3 & T18_4 & T18_8 --> T18_9["T18.9 refusal steps 2 and 3"] --> T18_10["T18.10 share's pass"] --> T18_11["T18.11 put-health causes"]
   EPIC16 --> T18_9 & T18_11
   T18_3 --> C1(["after T18.3: epic 19 can start its step 7"]):::sync
