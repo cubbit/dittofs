@@ -2459,9 +2459,11 @@ principal that matches no caller, `acl` with `dacl` or `sacl` — is
 Open state takes only neutral requests and returns neutral results and errors
 ([RFC 14 §1.1](rfc-14-open-state.md#1.1%20Non-goals)). Every NFS → neutral
 mapping it needs is here. Each call states its protocol's profile
-([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)): `NFSv3Caps` and `NFSv4Caps`,
+([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)): `NFSv3Caps`,
 `PrivilegeOnEveryCall` alone, so root's privilege counts on every call and no
-SMB rule applies; `NLMCaps` for NLM and NSM, which adds `HostCall` (§6.1) and
+SMB rule applies; `NFSv4Caps`, which adds `SeesPseudoFS`, so `LOOKUPP` at a
+share's root walks up into the pseudo-filesystem; and each request's context
+carries its protocol label, which no rule reads; `NLMCaps` for NLM and NSM, which adds `HostCall` (§6.1) and
 `ClientIsMachine` for the host's record; `MountCaps` for `MNT` and `EXPORT`,
 which adds `HostCall` (§6.3).
 
