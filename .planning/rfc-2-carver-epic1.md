@@ -18,8 +18,8 @@ becomes and its key budget. Every citation is `develop`'s text. The code lands o
 **Depends on:** no other epic of RFC 2. It builds on `pkg/metadata/entity` on `feat/storage-v2`
 (`ChunkHash`, `BlockName`, `NamespaceID`, `FileID`), on `lukechampine.com/blake3` v1.4.1, already
 in `go.mod` there, and on the RFC 0 §1.2 amendment, merged in #5774.
-**Blocks:** E2, whose `internal/carvetest` names the root's types and adds its own import-test
-row; E3, which fills `NewSettings` and `CheckTarget`, adds the settings value's derived fields and
+**Blocks:** E2, whose `internal/carvetest` adds its own import-test row and, holding plain bytes,
+`int` and `[32]byte`, names none of the carver's types; E3, which fills `NewSettings` and `CheckTarget`, adds the settings value's derived fields and
 declares `pkg/carver/section`; E4, which fills `Cut`, `ChunkID` and `BlockName`; E5, which fills
 the fold. Outside RFC 2, the RFC 8 offload plan's epic 11 writes the engine's declared interface
 over this surface at S1, its epic 15 is the first caller of every symbol here, and its epic 21
@@ -411,7 +411,8 @@ pkg/carver/
 - **Deliverables:** `pkg/carver/carve`, stub bodies (D6), and its rows in `imports_test.go`
   (the root, `internal/params`, `pkg/metadata/entity`, `lukechampine.com/blake3`) and
   `arch_test.go`. Consumed by the node's content wiring (the RFC 8 offload plan's epic 21), which
-  hands them to the engine and the codec, and by E3 and E4, which fill them:
+  is `NewSettings`' only caller, answering the engine's `Settings(ns)` with its value, and hands the
+  other functions to the engine and the codec; and by E3 and E4, which fill them:
   ```go
   // NewSettings builds a namespace's settings from its Target, whether it encrypts and its two
   // keys. A namespace that does not encrypt passes a zero chunking key. It refuses, with
@@ -527,9 +528,11 @@ A suggestion only: one pull request per subtask works as well, with S1 on the la
    hashing through the library's exported `guts` primitives one BLAKE3 chunk at a time, another
    BLAKE3 implementation, and an RFC 2 amendment; E2's BLAKE3 modes check is where the choice is
    first exercised.
-2. **RFC 8 §2.1's carver row names only `Cut` and the fold.** The engine also calls
-   `NewSettings` at `Apply` (the RFC 8 offload plan's D11), reads `Max`, and mints names with
-   `BlockName` at its Intent state; RFC 4's codec gets `ChunkID` and `BlockName` from it. The RFC 8
+2. **RFC 8 §2.1's carver row names only `Cut` and the fold.** The engine also reads `Max` and
+   mints names with `BlockName` at its Intent state; RFC 4's codec gets `ChunkID` and `BlockName`
+   from it. The engine never calls `NewSettings` and never holds key material: the node's content
+   wiring calls `NewSettings` for each namespace and answers the engine's `Settings(ns)` with the
+   value (the RFC 8 offload plan's epic 11, D5). The RFC 8
    offload plan's epic 11 writes the engine's declared interface over this surface at S1, and
    amends §2.1's row if it holds these calls.
 3. **The engine's import walk reaches `pkg/carver/internal/params` through the root** (D1). It is
