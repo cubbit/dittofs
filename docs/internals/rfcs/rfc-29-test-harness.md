@@ -1055,7 +1055,8 @@ two protocols is invisible to every single-protocol suite.
 ```text
 dt list [--tier T] [--json]                    suites, options, groups, tier, format and needs; whether they can run here
 dt plan --tier T [--base REF] [--shard I/N]    the cells a tier runs, each with its place; CI turns --json into its matrix;
-   [--json]                                    --base REF compares the branch with REF for docs-only PRs and `paths`
+   [--docs-only-base REF] [--json]             --base REF compares the branch with REF for docs-only PRs and `paths`;
+                                               --docs-only-base REF, a merge queue group's parent, only for a docs-only PR
    [--estimate [--ci] [--last N]]              and the tier's runner-minutes, from dt history
 dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...] run, grade and write results; exit status below
    [--tier T] [--only A,B] [--skip A,B] [--parallel N] [--base REF] [--changed]
@@ -1812,13 +1813,17 @@ One workflow, `tests.yml`, runs every registered suite:
   artifact is `dt-run-SUITE-ATTEMPT`, and `gate` needs every fixed job, so its report has theirs
   too. On a push to develop,
   `{base}` is the commit before the push, so the commit checks still cover commits pushed straight
-  to develop. The new-package check, which runs on pull requests only today, runs on pushes too,
+  to develop. The merge queue squashes a pull request under its title, so `pr-title.yml` runs
+  `commit-type-matches-diff.sh` with the title (`PR_TITLE`) against the branch's whole diff, on
+  every pull request and again on each edit, which starts no run of `tests.yml`: a `docs:` title
+  over a diff with code fails on the pull request rather than in the queue, where the squashed
+  commit still meets the same check. The new-package check, which runs on pull requests only today, runs on pushes too,
   by intent: the commit before a push is as good a base for its merge base. Where there is no
   `{base}` (the schedule, `workflow_dispatch`, a push without a previous commit), the commands that
   use it are skipped, as `lint.yml` skips the commit checks today, and say so in the log. A
   skipped command neither fails the cell nor leaves it not run: there is no change to check. A
   cell whose every command is skipped this way passes.
-- **Docs-only PRs:** given `--base` (the PR's base), `dt plan` compares the branch with it, and when every changed path is documentation (`docs/**`, `*.md`, images, `LICENSE`, `.gitignore`, the paths the workflows ignore today) it returns no cells, and `gate` passes.
+- **Docs-only PRs:** given `--base` (the PR's base), `dt plan` compares the branch with it, and when every changed path is documentation (`docs/**`, `*.md`, images, `LICENSE`, `.gitignore`, the paths the workflows ignore today) it returns no cells, and `gate` passes. In the merge queue, `--docs-only-base` takes the group's parent (`merge_group.base_sha`: the group of the pull request ahead, or the branch's tip for the first) and applies that rule alone to the one pull request squashed on it: a docs-only one returns no cells, and any other returns every cell of the tier, with no `paths` narrowing, as the queue tests everything. Judging each pull request alone is enough because the queue merges groups only when all of them pass (`ALLGREEN`), so the code ahead is tested by its own group's run, and a group thrown out rebuilds the ones behind it on a new parent, which run again. The unit tests named in `lint-repo` that read the docs and the RFCs run in `Repo Checks`, which runs on every change, so a docs-only change still meets them; a test that reads them joins that list by name.
 
 **Merging.**
 - develop requires `gate`, the Tests workflow's job, beside the lint and security checks (`Go Checks`, `Repo Checks`,

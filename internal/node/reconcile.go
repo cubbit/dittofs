@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/identity"
-	"github.com/cubbit/dittofs/pkg/engine/enginewire"
+	"github.com/cubbit/dittofs/internal/node/content"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -385,7 +385,7 @@ func (n *Node) readShares(ctx context.Context) ([]entity.Share, func(entity.Shar
 		return nil, nil, err
 	}
 	return got.listed, func(s entity.Share) bool {
-		st, ok := got.stores[enginewire.Binding(s, 0).Namespace]
+		st, ok := got.stores[content.Binding(s, 0).Namespace]
 		return ok && got.configured[st]
 	}, nil
 }
@@ -532,7 +532,7 @@ func (n *Node) reconcileShares(ctx context.Context) error {
 		if r.binding != nil {
 			r.binding(s)
 		}
-		err := n.engine.Bind(ctx, enginewire.Binding(s, 0))
+		err := n.engine.Bind(ctx, content.Binding(s, 0))
 		if errors.Is(err, vfserr.ErrStale) {
 			continue
 		}

@@ -324,7 +324,7 @@ func TestAFailedReclaimKeepsTheHeldOpen(t *testing.T) {
 	req := vfs.OpenRequest{H: g, Disposition: vfs.OpenExisting, Access: entity.ReadData | entity.WriteData, Deny: entity.WriteData, Owner: owner}
 	held, err := n.Open(ctx, c, req)
 	n.must(t, err)
-	who := openstate.Caller{Client: c.Client, Principal: carol.Principal, Protocol: entity.ProtocolNFSv4, Sessioned: true}
+	who := openstate.Caller{Client: c.Client, Principal: carol.Principal, Sessioned: true}
 	rg := openstate.ByteRange{Offset: 0, Length: 10}
 	lock := openstate.LockReq{Owner: openstate.LockOwner{Client: c.Client, Name: []byte("lock-owner")}, Open: held.Ref, Ranges: []openstate.LockRange{{ByteRange: rg, Exclusive: true}}}
 	_, err = n.tab.Locks().Lock(ctx, who, keyOf(f), lock)
@@ -346,7 +346,7 @@ func TestAFailedReclaimKeepsTheHeldOpen(t *testing.T) {
 	if _, err := n.Open(ctx, pc, vfs.OpenRequest{H: g, Disposition: vfs.OpenExisting, Access: entity.WriteData}); !errors.Is(err, vfs.ErrShareViolation) {
 		t.Errorf("another client's write open after the failed reclaim: %v, want ErrShareViolation", err)
 	}
-	other := openstate.Caller{Client: pc.Client, Principal: n.fs.Admin.Principal, Protocol: entity.ProtocolSMB}
+	other := openstate.Caller{Client: pc.Client, Principal: n.fs.Admin.Principal, Caps: vfs.SMBCaps}
 	if l, err := n.tab.Locks().TestLock(ctx, other, keyOf(f), openstate.LockOwner{Client: pc.Client, Name: []byte("pc")}, rg, true); err != nil || l == nil {
 		t.Errorf("the owner's lock after the failed reclaim: %v, %v; want held", l, err)
 	}
@@ -488,7 +488,7 @@ func TestAnUndoneOpensDeferredUnlinkRuns(t *testing.T) {
 	h, _ := n.fs.Create(t, n.fs.Admin, d, "f", kvstore.Regular(0o666))
 	m := n.smbClient(t, "marker", n.fs.Admin.Principal)
 	marker := n.open(t, m, d, h, "f", entity.ReadData|entity.Delete)
-	who := openstate.Caller{Client: m.Client, Principal: n.fs.Admin.Principal, Protocol: m.Protocol}
+	who := openstate.Caller{Client: m.Client, Principal: n.fs.Admin.Principal, Caps: m.Caps}
 	// Between the failed open's record and its answer, the marker sets the
 	// file delete pending and closes: the failed open is the file's last.
 	// Only that open's read of the file fails.

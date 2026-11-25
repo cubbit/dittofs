@@ -126,6 +126,19 @@ func pseudoFile(t *pseudofs.Tree, n *pseudofs.Node) vfs.File {
 	}
 }
 
+// mountParent is the pseudo directory share is mounted in, with its File.
+func (fs *Filesystem) mountParent(ctx context.Context, share entity.ShareID) (vfs.Handle, vfs.File, error) {
+	t, err := fs.tree(ctx)
+	if err != nil {
+		return nil, vfs.File{}, err
+	}
+	n := t.Mount(share)
+	if n == nil {
+		return nil, vfs.File{}, vfs.ErrStale // the share left the tree since admission
+	}
+	return n.Parent.Handle(), pseudoFile(t, n.Parent), nil
+}
+
 // pseudoLookup is Lookup in a pseudo directory. A name where a share is
 // mounted crosses into the share: the call is admitted to it, and answers
 // the share's root as the caller may read it.
@@ -144,7 +157,7 @@ func (fs *Filesystem) pseudoLookup(ctx context.Context, c vfs.Call, dir vfs.Hand
 	if n.Share == nil {
 		return n.Handle(), pseudoFile(t, n), nil
 	}
-	a, release, err := fs.admit(ctx, c, *n.Share, true, false)
+	a, release, err := fs.admit(ctx, c, *n.Share, 0)
 	if err != nil {
 		return nil, vfs.File{}, err
 	}
@@ -212,7 +225,7 @@ func (fs *Filesystem) pseudoReadDir(ctx context.Context, c vfs.Call, dir vfs.Han
 		e := vfs.DirEntry{Name: []byte(child.Name), Cursor: vfs.Cursor(child.Cursor())}
 		var admitted *admitted
 		for _, share := range child.Shares {
-			a, ok, err := fs.wouldAdmit(ctx, c, share, true)
+			a, ok, err := fs.wouldAdmit(ctx, c, share, 0)
 			if err != nil {
 				return vfs.Page{}, err
 			}

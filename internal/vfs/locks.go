@@ -127,7 +127,11 @@ func (fs *Filesystem) Unlock(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o
 // call is made to return file data.
 func (fs *Filesystem) lockable(ctx context.Context, c vfs.Call, ref vfs.OpenRef, op vfs.Op) (*admitted, openstate.FileKey, func(), func(), error) {
 	releases := op == vfs.OpUnlock || op == vfs.OpCancelLock
-	a, unlock, release, err := fs.opened(ctx, c, ref, releases)
+	w := hostLock
+	if releases {
+		w |= releasing
+	}
+	a, unlock, release, err := fs.opened(ctx, c, ref, w)
 	if err != nil {
 		return nil, openstate.FileKey{}, nil, nil, err
 	}

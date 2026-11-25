@@ -28,28 +28,43 @@ small | full)
 	test -n "${BENCH_NOT_AFTER:-}" || { echo "set BENCH_NOT_AFTER to the latest start epoch that still ends before the nightly work" >&2; exit 2; }
 	test -n "${BENCH_CHECKOUT:-}" || { echo "set BENCH_CHECKOUT to the dedicated checkout of the scheduled runs" >&2; exit 2; }
 	[ -d "$BENCH_CHECKOUT" ] || { echo "no such checkout directory" >&2; exit 2; }
-	# Before the quiet wait, so a past-deadline run refuses at once instead
-	# of sitting in the wait.
+	# Guard time: a threshold that is not a whole number would error [ -ge ]
+	# inside the wait, and the errors the wait then skips turn it silently off.
+	# The two wait budgets take the same guard: a spelled-out duration errors
+	# the shell arithmetic inside its wait, past the point of refusing well.
+	# A leading zero is refused too: the arithmetic reads it as octal, so
+	# 0900 errors inside the wait and 0600 silently means 384.
+	case "${BENCH_QUIET_LOAD:-4}" in
+	'' | *[!0-9]* | 0[0-9]*) echo "BENCH_QUIET_LOAD must be a whole number without a leading zero" >&2; exit 2 ;;
+	esac
+	case "${BENCH_QUIET_LOAD_MAX_WAIT:-14400}" in
+	'' | *[!0-9]* | 0[0-9]*) echo "BENCH_QUIET_LOAD_MAX_WAIT must be a whole number of seconds without a leading zero" >&2; exit 2 ;;
+	esac
+	case "${BENCH_LOCK_WAIT:-7200}" in
+	'' | *[!0-9]* | 0[0-9]*) echo "BENCH_LOCK_WAIT must be a whole number of seconds without a leading zero" >&2; exit 2 ;;
+	esac
+	# The wait's poll interval, an input like the clock a test injects: the
+	# scheduled runs keep the 300s default, a test advances time with a
+	# small one instead of sleeping real minutes.
+	case "${BENCH_QUIET_POLL:-300}" in
+	'' | *[!0-9]* | 0[0-9]*) echo "BENCH_QUIET_POLL must be a whole number of seconds without a leading zero" >&2; exit 2 ;;
+	esac
+	# Before the lock and the quiet wait, so a past-deadline run refuses at
+	# once instead of sitting in either wait. The quiet wait also ends at
+	# this deadline: it can outlive its own budget's start, but never the
+	# lock's obligation to be free in time.
 	[ "$(date +%s)" -lt "$BENCH_NOT_AFTER" ] || { echo "too late to start before the nightly work" >&2; exit 2; }
+	# The quiet wait's own budget, computed once, before the lock is taken.
+	deadline=$(( $(date +%s) + ${BENCH_QUIET_LOAD_MAX_WAIT:-14400} ))
 	# The suite calls, the git steps and the prune self-call all resolve
 	# inside this checkout, never in whatever tree the script was invoked from.
 	cd "$BENCH_CHECKOUT" || exit 2
 
-	# A load that never drops under the threshold within the budget refuses
-	# the run instead of running hot.
-	# decision: a missing or unreadable /proc/loadavg skips the quiet wait
-	# and runs immediately (a dev machine has no /proc; the bench host has
-	# it). The exemption is worth only what running hot costs — take on the
-	# host check before pointing this script at a host without /proc.
-	if [ -r /proc/loadavg ]; then
-		deadline=$(( $(date +%s) + ${BENCH_QUIET_LOAD_MAX_WAIT:-14400} ))
-		while [ "$(cut -d' ' -f1 /proc/loadavg | cut -d. -f1)" -ge "${BENCH_QUIET_LOAD:-4}" ]; do
-			[ "$(date +%s)" -lt "$deadline" ] || { echo "host not quiet under ${BENCH_QUIET_LOAD:-4} within ${BENCH_QUIET_LOAD_MAX_WAIT:-14400}s" >&2; exit 2; }
-			sleep 300
-		done
-	fi
 	# One bench run at a time: a lock held past its wait refuses the run
-	# rather than racing the other kind over the same host.
+	# rather than racing the other kind over the same host. The lock is
+	# taken before the quiet wait, so the wait re-judges the load only after
+	# the run has the host: waiting on the lock and then starting while the
+	# other kind's load is still high is the overlap the lock prevents.
 	# decision: an unset BENCH_LOCK takes no lock and runs anyway — the
 	# scheduled environment always sets it, and a hand run has no host lock
 	# to take. The exemption is worth only what a forgotten cron env costs
@@ -58,6 +73,22 @@ small | full)
 	if [ -n "${BENCH_LOCK:-}" ]; then
 		exec 9>"$BENCH_LOCK"
 		flock -w "${BENCH_LOCK_WAIT:-7200}" 9 || { echo "lock $BENCH_LOCK not free within ${BENCH_LOCK_WAIT:-7200}s" >&2; exit 2; }
+	fi
+
+	# A load that never drops under the threshold within the budget refuses
+	# the run instead of running hot. The wait ends at the earlier of its
+	# budget and the latest start: it runs under the host's lock, so sitting
+	# past the latest start would hold the lock the scheduled work needs.
+	# decision: a missing or unreadable /proc/loadavg skips the quiet wait
+	# and runs immediately (a dev machine has no /proc; the bench host has
+	# it). The exemption is worth only what running hot costs — take on the
+	# host check before pointing this script at a host without /proc.
+	if [ -r /proc/loadavg ]; then
+		while [ "$(cut -d' ' -f1 /proc/loadavg | cut -d. -f1)" -ge "${BENCH_QUIET_LOAD:-4}" ]; do
+			[ "$(date +%s)" -lt "$deadline" ] || { echo "host not quiet under ${BENCH_QUIET_LOAD:-4} within ${BENCH_QUIET_LOAD_MAX_WAIT:-14400}s" >&2; exit 2; }
+			[ "$(date +%s)" -lt "$BENCH_NOT_AFTER" ] || { echo "too late to start before the nightly work" >&2; exit 2; }
+			sleep "${BENCH_QUIET_POLL:-300}"
+		done
 	fi
 
 	# After both waits: the budget the waits ate may leave the night's work
@@ -74,9 +105,15 @@ small | full)
 	git checkout -f --detach FETCH_HEAD || { echo "git checkout failed" >&2; exit 2; }
 
 	# The previous folder of the kind feeds benchstat; it is read before the
-	# run dir exists so it can never be the run itself.
+	# run dir exists so it can never be the run itself. Only the newest
+	# folder holding the done marker is a candidate: a night that did not
+	# fully succeed is dropped as a baseline, partial figures included.
 	prev=
-	[ -d "$BENCH_RUN_ROOT/$kind" ] && prev=$(ls -1dt "$BENCH_RUN_ROOT/$kind"/*/ 2>/dev/null | sed -n 1p)
+	if [ -d "$BENCH_RUN_ROOT/$kind" ]; then
+		prev=$(ls -1dt "$BENCH_RUN_ROOT/$kind"/*/ 2>/dev/null | while IFS= read -r d; do
+			[ -f "$d/done" ] && { printf '%s\n' "$d"; break; }
+		done)
+	fi
 	rundir=$BENCH_RUN_ROOT/$kind/$(date -u +%Y%m%dT%H%M%SZ)-$(git rev-parse --short=12 HEAD)
 	mkdir -p "$rundir" || exit 2
 	git rev-parse HEAD >"$rundir/commit.txt"
@@ -98,15 +135,29 @@ small | full)
 		# leave the run looking complete.
 		if ! { [ -n "$out" ] && cp "$out/journal-bench/bench.txt" "$rundir/bench.txt"; }; then
 			echo "no dt trailer or no bench.txt to copy from $out" >&2
-			s=1
+			# The first status stays: a dt refusal (its own exit 2) must not
+			# be overwritten into a generic failure.
+			[ "$s" -ne 0 ] || s=1
 		fi
 	fi
 
-	# benchstat runs only when the binary exists and a previous run of the
-	# kind does; otherwise the run completes without benchstat.txt. A failing
-	# benchstat reaches the run's status: the half-written benchstat.txt may
-	# stay behind, the exit status says what happened.
-	if command -v benchstat >/dev/null && [ -n "$prev" ]; then
+	# The marker says the run's bench work fully succeeded; only a folder
+	# holding it is a fresh collection or a benchstat candidate.
+	# decision: a partially failed small night is dropped too, even though
+	# its later groups wrote their files — a night's figures compare only
+	# against a night that completed them all, and the failed night still
+	# surfaces through the run's exit status and its kept files.
+	if [ "$s" -eq 0 ]; then
+		: >"$rundir/done" || s=$?
+	fi
+
+	# benchstat runs only when this run completed, the binary exists and a
+	# finished previous run of the kind does; otherwise the run completes
+	# without benchstat.txt, keeping a failed night's figures out of the
+	# comparison. A failing benchstat reaches the run's status: the
+	# half-written benchstat.txt may stay behind, the exit status says what
+	# happened.
+	if [ -f "$rundir/done" ] && command -v benchstat >/dev/null && [ -n "$prev" ]; then
 		for f in bench.txt j1.txt j2.txt j3.txt; do
 			[ -f "$prev/$f" ] && [ -f "$rundir/$f" ] || continue
 			{ echo "### $f"; benchstat -ignore commit "$prev/$f" "$rundir/$f"; } >>"$rundir/benchstat.txt" || s=$?

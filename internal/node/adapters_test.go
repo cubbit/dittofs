@@ -1005,9 +1005,9 @@ func statesAre(want ...string) func(statusTurn) bool {
 
 // The node's status carries each adapter's state from its slot, a disabled
 // one's too (RFC 23 §3.4, RFC 20 §3.1): with SMB serving and NFS disabled,
-// NFS stopped and SMB serving; while SMB's disable drains it, SMB draining;
-// once that drain ends, both stopped; and NFS enabled on a port another
-// socket holds, refused with nothing serving it, NFS configured.
+// NFS stopped and SMB serving; while SMB's disable drains it, SMB draining,
+// naming no port; once that drain ends, both stopped; and NFS enabled on a
+// port another socket holds, refused with nothing serving it, NFS configured.
 func TestTheStatusCarriesEachAdaptersState(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
 	stopped, release := make(chan struct{}, 1), make(chan struct{})
@@ -1027,7 +1027,9 @@ func TestTheStatusCarriesEachAdaptersState(t *testing.T) {
 	configure(t, h, [16]byte{0: 's', 15: 1})
 	h.Node().Wake()
 	hears(t, stopped, "SMB disabled")
-	turnAt(t, h, ch, "SMB's drain held", statesAre("nfs stopped", "smb draining"))
+	if tr := turnAt(t, h, ch, "SMB's drain held", statesAre("nfs stopped", "smb draining")); adapterOf(tr.s, "smb").Port != 0 {
+		t.Errorf("SMB draining names port %d, want none, as it no longer accepts", adapterOf(tr.s, "smb").Port)
+	}
 	release <- struct{}{}
 	caughtUp(t, h)
 	turnAt(t, h, ch, "SMB's drain ended", statesAre("nfs stopped", "smb stopped"))
@@ -1058,17 +1060,21 @@ func adapterOf(s entity.NodeStatus, protocol string) entity.AdapterStatus {
 // 23 §3.4): a pass that applies moves it to the generation the pass read; a
 // move to a port another socket holds, the API's, drains the old adapter,
 // fails the new one's start and serves the last settings that served again,
-// so it leaves the generation those run, while the refusal names the newer
-// one (RFC 23 §3.4).
+// so it leaves the generation those run, and names the port the adapter
+// started again bound, while the refusal names the newer generation (RFC 23
+// §3.4).
 func TestTheStatusCarriesTheGenerationEachAdapterRuns(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
+	var b built
+	h.Node().OnAdapter(b.keep)
 	ch := watchStatus(h)
 	configure(t, h, storeA) // a settings generation above zero
 	h.Node().SetSMB(true, smbAt(0))
 	started(t, h)
 	servingAt := func(gen uint64) func(statusTurn) bool {
 		return func(tr statusTurn) bool {
-			return adapterOf(tr.s, "smb") == entity.AdapterStatus{Protocol: "smb", State: entity.AdapterServing, Generation: gen}
+			a := adapterOf(tr.s, "smb")
+			return a.State == entity.AdapterServing && a.Generation == gen
 		}
 	}
 	turnAt(t, h, ch, "SMB serving after Start", servingAt(counters(t, h).Settings))
@@ -1090,7 +1096,78 @@ func TestTheStatusCarriesTheGenerationEachAdapterRuns(t *testing.T) {
 			return r.Record.Kind == entity.ResourceAdapter && string(r.Record.ID) == "smb" && r.Generation == refusedAt
 		})
 	})
-	if got, want := adapterOf(tr.s, "smb"), (entity.AdapterStatus{Protocol: "smb", State: entity.AdapterServing, Generation: runs}); got != want {
-		t.Errorf("SMB with its move to generation %d refused and its last settings serving again: got %+v, want %+v, the generation those run", refusedAt, got, want)
+	servedOn := b.last("smb").Addrs()[adapter.Socket{Service: "smb", Network: "tcp"}]
+	if len(servedOn) != 1 {
+		t.Fatalf("SMB started again is bound at %v, want one address", servedOn)
 	}
+	if got := adapterOf(tr.s, "smb"); got.State != entity.AdapterServing || got.Generation != runs || got.Port != servedOn[0].Port() {
+		t.Errorf("SMB with its move to generation %d refused and its last settings serving again: got %+v, want serving at generation %d, the one those run, on port %d", refusedAt, got, runs, servedOn[0].Port())
+	}
+}
+
+// The node's status names the port each serving adapter bound, the one its
+// own listener reports, and the API reads it back (RFC 23 §3.4): SMB at port
+// 0 names the port the system picked; moved to another port, it names that
+// one; disabled, and NFS never enabled, they name none.
+func TestTheStatusAndTheAPINameThePortEachAdapterBound(t *testing.T) {
+	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(node.NewAuthenticating(admin)))
+	var b built
+	h.Node().OnAdapter(b.keep)
+	ch := watchStatus(h)
+	h.Node().SetSMB(true, smbAt(0))
+	started(t, h)
+	api, _ := h.Node().Addrs()
+	bound := func() uint16 {
+		at := b.last("smb").Addrs()[adapter.Socket{Service: "smb", Network: "tcp"}]
+		if len(at) == 0 {
+			t.Fatal("SMB's adapter is bound nowhere")
+		}
+		return at[0].Port()
+	}
+	// portsAre checks that the status turn tr and the API name port for SMB
+	// and none for NFS.
+	portsAre := func(what string, tr statusTurn, port uint16) {
+		t.Helper()
+		if got := adapterOf(tr.s, "smb").Port; got != port {
+			t.Errorf("%s: the status names SMB's port %d, want %d", what, got, port)
+		}
+		if got := adapterOf(tr.s, "nfs").Port; got != 0 {
+			t.Errorf("%s: the status names NFS's port %d, want none, NFS disabled", what, got)
+		}
+		var got apiv1.Adapter
+		getJSON(t, api, "/api/v1/adapters/smb", &got)
+		if len(got.Status.Nodes) != 1 || got.Status.Nodes[0].Port != port {
+			t.Errorf("%s: the API reads SMB's nodes %+v, want one naming port %d", what, got.Status.Nodes, port)
+		}
+	}
+
+	serving := func(port uint16) func(statusTurn) bool {
+		return func(tr statusTurn) bool {
+			a := adapterOf(tr.s, "smb")
+			return tr.wrote && a.State == entity.AdapterServing && a.Port == port
+		}
+	}
+	picked := bound()
+	if picked == 0 {
+		t.Fatal("SMB at port 0 bound port 0, want the port the system picked")
+	}
+	portsAre("SMB serving at port 0", turnAt(t, h, ch, "SMB serving at the port it picked", serving(picked)), picked)
+
+	moved := freePort(t)
+	h.Node().SetSMB(true, smbAt(moved))
+	configure(t, h, [16]byte{0: 's', 15: 5})
+	h.Node().Wake()
+	caughtUp(t, h)
+	if got := bound(); got != moved {
+		t.Fatalf("SMB moved to port %d bound %d", moved, got)
+	}
+	portsAre("SMB moved", turnAt(t, h, ch, "SMB serving at the port it moved to", serving(moved)), moved)
+
+	h.Node().SetSMB(false, smbAt(moved))
+	configure(t, h, [16]byte{0: 's', 15: 6})
+	h.Node().Wake()
+	caughtUp(t, h)
+	portsAre("SMB disabled", turnAt(t, h, ch, "SMB stopped", func(tr statusTurn) bool {
+		return tr.wrote && adapterOf(tr.s, "smb").State == entity.AdapterStopped
+	}), 0)
 }

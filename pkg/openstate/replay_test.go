@@ -32,7 +32,7 @@ func TestCreateReplay(t *testing.T) {
 	if err != nil || !again.Replayed || again.Open.ID != first.Open.ID || again.Grant == nil || again.Grant.ID != first.Grant.ID {
 		t.Errorf("the replay %+v, %v; want the first open and its lease, Replayed", again, err)
 	}
-	if _, err := f.Opens().Open(ctx, Caller{Client: a.Client, Principal: entity.NewUser(), Protocol: a.Protocol}, file, r); !errors.Is(err, ErrNotYours) {
+	if _, err := f.Opens().Open(ctx, Caller{Client: a.Client, Principal: entity.NewUser(), Caps: a.Caps}, file, r); !errors.Is(err, ErrNotYours) {
 		t.Errorf("another principal's replay: %v, want ErrNotYours", err)
 	}
 	r.Session = s2

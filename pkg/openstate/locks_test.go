@@ -1502,7 +1502,7 @@ func TestNotYoursAdvancesNoSequence(t *testing.T) {
 	if _, err := f.Opens().ConfirmOpen(ctx, a, refOf(o), num(2)); err != nil {
 		t.Fatal(err)
 	}
-	other := Caller{Client: a.Client, Principal: entity.NewUser(), Protocol: a.Protocol}
+	other := Caller{Client: a.Client, Principal: entity.NewUser(), Caps: a.Caps}
 	if _, err := f.Opens().Close(ctx, other, refOf(o), num(3)); !errors.Is(err, ErrNotYours) {
 		t.Fatalf("a close by another principal: %v, want ErrNotYours", err)
 	}

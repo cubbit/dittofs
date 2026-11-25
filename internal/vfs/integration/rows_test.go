@@ -24,7 +24,7 @@ const bound = 10 * time.Second
 // smb is a call from a new SMB client named name, signed in as p.
 func (c *composition) smb(t *testing.T, name string, p entity.Principal) vfs.Call {
 	t.Helper()
-	cl := openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte(name), Boot: [8]byte{1}}}
+	cl := openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte(name), Boot: [8]byte{1}, Recovery: entity.RecoverReconnect}}
 	pr, err := c.Opens.Clients().Propose(t.Context(), cl, client)
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +34,7 @@ func (c *composition) smb(t *testing.T, name string, p entity.Principal) vfs.Cal
 		t.Fatal(err)
 	}
 	call := signedIn(p)
-	call.Protocol, call.Client = entity.ProtocolSMB, id
+	call.Caps, call.Client = vfs.SMBCaps, id
 	return call
 }
 

@@ -31,12 +31,12 @@ func (fs *Filesystem) who(ctx context.Context, c vfs.Call, cl vfs.ClientID) (ope
 	if err != nil {
 		return openstate.Caller{}, err
 	}
-	return openstate.Caller{Client: cl, Principal: r.Mapped, Protocol: c.Protocol, Sessioned: c.Session != (vfs.SessionRef{})}, nil
+	return openstate.Caller{Client: cl, Principal: r.Mapped, Sessioned: c.Session != (vfs.SessionRef{}), Caps: c.Caps}, nil
 }
 
-// record is the client record info proposes or connects, owned by p. An SMB
-// record names a machine and an NLM one a host, so neither holds an Owner:
-// many users' sessions share one machine's record, and NLM proves no one.
+// record is the client record info proposes or connects for call c, owned
+// by p. A record of a client that is a whole machine holds no Owner: many users' sessions share one machine's record, and a host's lock
+// service proves no one.
 //
 // decision: so a stranger who presents a machine's ClientGuid joins its
 // record, and shares its grant budget and the caching fence after a missed
@@ -45,8 +45,8 @@ func (fs *Filesystem) who(ctx context.Context, c vfs.Call, cl vfs.ClientID) (ope
 // nor answer them. Keying the record by principal would refuse every user
 // but the first on a shared host. Overturned if a ClientGuid shared this way
 // is seen in the wild.
-func record(info vfs.ClientInfo, p entity.Principal) openstate.Client {
-	if info.Protocol != entity.ProtocolNFSv4 {
+func record(c vfs.Call, info vfs.ClientInfo, p entity.Principal) openstate.Client {
+	if clientIsMachine(c) {
 		p = entity.Principal{}
 	}
 	return openstate.Client{ClientRecord: entity.ClientRecord{
@@ -65,17 +65,18 @@ func (fs *Filesystem) Propose(ctx context.Context, c vfs.Call, info vfs.ClientIn
 	if err != nil {
 		return vfs.Proposal{}, err
 	}
-	p, err := fs.clients.Propose(ctx, record(info, who.Principal), c.Identity.Client)
+	p, err := fs.clients.Propose(ctx, record(c, info, who.Principal), c.Identity.Client)
 	return p, openErr(err)
 }
 
 // Connect makes the client current in open state and registers cb as its
 // Callbacks, replacing any this node held for it: who may connect a client
-// is open state's to refuse, by the principal its record names. An SMB
-// client is connected at its first authenticated session on the node, which
-// lists the node among its sessions, under the node's current epoch, until
-// the Disconnect of its last session there. A null or guest call never
-// connects an SMB client, and is ErrInvalid. So is a zero info.Recovery: the
+// is open state's to refuse, by the principal its record names. A client
+// that recovers by reconnecting is connected at its first authenticated
+// session on the node, which lists the node among its sessions, under the
+// node's current epoch, until the Disconnect of its last session there. A
+// call below a shared-secret proof never connects such a client, and is
+// ErrInvalid: one that reconnects its opens must have proved who it is. So is a zero info.Recovery: the
 // kind sticks for the record's life, and a client of none is never told of a
 // lost shard, so it holds the shard's grace open for the whole period.
 // It answers the entry's Gen, zero for any other client.
@@ -94,20 +95,20 @@ func (fs *Filesystem) Connect(ctx context.Context, c vfs.Call, info vfs.ClientIn
 		return 0, 0, err
 	}
 	defer done()
-	if cb == nil || info.Recovery == 0 || info.Protocol == entity.ProtocolSMB && c.Identity.Proof < vfs.ProofSecret {
+	if cb == nil || info.Recovery == 0 || info.Recovery == entity.RecoverReconnect && c.Identity.Proof < vfs.ProofSecret {
 		return 0, 0, vfs.ErrInvalid
 	}
 	who, err := fs.who(ctx, c, 0)
 	if err != nil {
 		return 0, 0, err
 	}
-	id, gen, err := fs.clients.Connect(ctx, record(info, who.Principal), info.Proposal)
+	id, gen, err := fs.clients.Connect(ctx, record(c, info, who.Principal), info.Proposal)
 	if err != nil {
 		return 0, 0, openErr(err)
 	}
 	var host string
-	if info.Protocol == entity.ProtocolNLM {
-		host = string(info.Name)
+	if info.Recovery == entity.RecoverNotice {
+		host = string(info.Name) // registered by name for its restart notice
 	}
 	fs.reg.register(id, host, cb)
 	return id, gen, nil

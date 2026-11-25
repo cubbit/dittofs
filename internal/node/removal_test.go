@@ -176,7 +176,7 @@ func TestAShareDeletedWhileServingEndsItsLiveState(t *testing.T) {
 		t.Fatalf("a read of the share before its deletion: %v", err)
 	}
 	tab := h.Node().OpenState()
-	c := openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolNFSv4, Name: []byte("c"), Boot: [8]byte{1}}}
+	c := openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolNFSv4, Name: []byte("c"), Boot: [8]byte{1}, Recovery: entity.RecoverStatus}}
 	p, err := tab.Clients().Propose(ctx, c, aClient)
 	if err != nil {
 		t.Fatalf("propose a client: %v", err)
@@ -185,7 +185,7 @@ func TestAShareDeletedWhileServingEndsItsLiveState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect a client: %v", err)
 	}
-	who := openstate.Caller{Client: client, Principal: anAdmin.Principal, Protocol: entity.ProtocolNFSv4}
+	who := openstate.Caller{Client: client, Principal: anAdmin.Principal}
 	res, err := tab.Opens().Open(ctx, who, openstate.FileKey{Share: sh.ID, Shard: openstate.ShardID(file.Shard), ID: file.ID},
 		openstate.OpenRequest{Via: sh.Root, Name: []byte("f2"), Access: entity.ReadData})
 	if err != nil {

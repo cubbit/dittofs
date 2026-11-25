@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/node/content"
 	"github.com/cubbit/dittofs/pkg/engine"
 	"github.com/cubbit/dittofs/pkg/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/journal"
@@ -83,7 +84,7 @@ func (s *starter) openState(t *testing.T) engine.CloneHold {
 	}
 	t.Cleanup(tb.Stop)
 	s.tb = tb
-	return openstate.EngineHolds(tb, s.fs.Store.Opens())
+	return content.EngineHolds(tb, s.fs.Store.Opens())
 }
 
 // serve has open state's recovery serve share one's shard.

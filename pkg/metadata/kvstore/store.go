@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -105,6 +106,24 @@ type Store struct {
 	numbers numbers
 	bounds  boundCache
 	k       int // the key budget of a batch
+
+	settingSchema uint32 // the newest settings schema PutSetting writes
+}
+
+// Option sets one of a Store's values at Open.
+type Option func(*Store)
+
+// SettingSchema is the newest settings record schema the store writes, the
+// one the settings component registers; the composer passes it, since the
+// store does not import that component.
+//
+// decision: a store opened without it writes a row of any schema, as a
+// tool, a test or an installer that writes only schema 0 needs nothing from
+// the settings component. The node passes it, so no node writes a row its
+// readers refuse. Make it a required argument of Open once a second writer
+// of settings rows serves requests.
+func SettingSchema(max uint32) Option {
+	return func(s *Store) { s.settingSchema = max }
 }
 
 // Init creates the store: the format record at the newest format, the
@@ -174,7 +193,7 @@ func refuseForeign(r kv.Reader) error {
 // ceiling, and ErrNotInitialised otherwise. It never rewrites the record: a
 // store's format is raised only by the control plane's gate, so an older
 // binary keeps opening it until then.
-func Open(ctx context.Context, db kv.KV) (*Store, error) {
+func Open(ctx context.Context, db kv.KV, opts ...Option) (*Store, error) {
 	var f format
 	err := db.View(ctx, func(r kv.Reader) error {
 		b, err := r.Get(keys.Format)
@@ -214,7 +233,11 @@ func Open(ctx context.Context, db kv.KV) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{kv: db, format: f.Version, k: k}, nil
+	s := &Store{kv: db, format: f.Version, k: k, settingSchema: math.MaxUint32}
+	for _, o := range opts {
+		o(s)
+	}
+	return s, nil
 }
 
 // Format is the store format the store was opened at, read from \x00format

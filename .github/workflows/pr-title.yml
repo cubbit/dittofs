@@ -1,0 +1,46 @@
+# The merge queue squashes a pull request into one commit under its title, so
+# a title that claims docs: over a diff with code fails the queue's
+# commit-type check. This runs the same check on the title while the pull
+# request is open, and again on each edit, which starts no run of the Tests
+# workflow (docs/internals/rfcs/rfc-29-test-harness.md).
+name: PR title
+
+on:
+  pull_request:
+    branches: [develop, main, feat/storage-v2]
+    types: [opened, edited, reopened, synchronize]
+  # So the check can be required: a required check a merge queue run never
+  # reports holds every group until it times out. In the queue the squashed
+  # commit meets the same rule in Repo Checks, so the job only passes there.
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+# A newer edit or push replaces the run in progress; a queue group, which has
+# no pull request number, keys on its own ref, so groups never cancel each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  title:
+    name: PR title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Full history: the check diffs the branch against its merge base.
+      - name: Checkout
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The title passes through the environment, never into a command line.
+      - name: Judge the title against the branch's diff
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE: origin/${{ github.base_ref }}
+        run: test/commit-type-matches-diff.sh "$BASE"

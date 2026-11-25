@@ -332,9 +332,10 @@ func TestStoreAndNamespaceDeletesRefusedWhileNamed(t *testing.T) {
 }
 
 // An adapter reads back whether it is enabled, its settings below
-// adapters.<protocol>, and, for each node that reports it, its state and
-// the settings generation it runs; a node reporting only another adapter is
-// left out, and a protocol no adapter serves is 404.
+// adapters.<protocol>, and, for each node that reports it, its state, the
+// settings generation it runs and the port it bound, none while not
+// serving; a node reporting only another adapter is left out, and a
+// protocol no adapter serves is 404.
 func TestAdapterStatusPerNode(t *testing.T) {
 	s := serve(t, as(entity.RoleViewer, false))
 	gen := s.putSetting(t, installation, "adapters.smb.enabled", "true")
@@ -342,7 +343,7 @@ func TestAdapterStatusPerNode(t *testing.T) {
 	s.putSetting(t, installation, "adapters.nfs.port", "12049")
 	ids := []entity.NodeID{entity.NodeID(uuid.New()), entity.NodeID(uuid.New()), entity.NodeID(uuid.New())}
 	slices.SortFunc(ids, func(a, b entity.NodeID) int { return bytes.Compare(a[:], b[:]) })
-	s.putStatus(t, entity.NodeStatus{Node: ids[0], Adapters: []entity.AdapterStatus{{Protocol: "nfs", State: entity.AdapterServing, Generation: 4}, {Protocol: "smb", State: entity.AdapterServing, Generation: 5}}})
+	s.putStatus(t, entity.NodeStatus{Node: ids[0], Adapters: []entity.AdapterStatus{{Protocol: "nfs", State: entity.AdapterServing, Generation: 4}, {Protocol: "smb", State: entity.AdapterServing, Generation: 5, Port: 12445}}})
 	s.putStatus(t, entity.NodeStatus{Node: ids[1], Adapters: []entity.AdapterStatus{{Protocol: "smb", State: entity.AdapterConfigured, Generation: 3}}})
 	s.putStatus(t, entity.NodeStatus{Node: ids[2], Adapters: []entity.AdapterStatus{{Protocol: "nfs", State: entity.AdapterStopped, Generation: 5}}})
 	r := s.do(t, http.MethodGet, "/api/v1/adapters/smb", "")
@@ -354,7 +355,7 @@ func TestAdapterStatusPerNode(t *testing.T) {
 		t.Fatalf("adapter %s: %v", r.body, err)
 	}
 	wantNodes := []apiv1.AdapterOnNode{
-		{Node: uuid.UUID(ids[0]).String(), State: "serving", Generation: 5},
+		{Node: uuid.UUID(ids[0]).String(), State: "serving", Generation: 5, Port: 12445},
 		{Node: uuid.UUID(ids[1]).String(), State: "configured", Generation: 3},
 	}
 	if !slices.Equal(got.Status.Nodes, wantNodes) {

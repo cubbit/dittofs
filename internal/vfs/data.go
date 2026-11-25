@@ -177,18 +177,20 @@ func stable(a *admitted, ref vfs.OpenRef, st vfs.Stability) bool {
 
 // Commit makes length bytes from off of the file ref names stable, length 0
 // to its end, and answers the engine's verifier, sampled once the sync
-// completed, which runs holding none of the file's locks. Through an SMB open
-// it is a flush: open state answers ErrLost, once for the open, when content
+// completed, which runs holding none of the file's locks. Through an open
+// named by its OpenID, by a caller stating WantOpenID, it is a
+// flush: open state answers ErrLost, once for the open, when content
 // written while it was open was lost, judged under the admission lock taken
 // again once the sync completed. A failed sync answers its own error, and
 // still records the file's loss sequence for the open, so a loss is answered
 // at most once, whether as ErrLost or as the failure; a retry, ErrDelay, or a
 // cancelled call records nothing, so the retried flush still answers ErrLost.
 //
-// decision: a commit decides no right and asks open state nothing but an SMB
-// flush's loss: it changes no content, only makes what was staged durable,
-// so any caller admitted to the share may sync a file it can name. Overturned
-// if syncing on demand is found to be a load a caller must hold a right for.
+// decision: a commit decides no right and asks open state nothing but a
+// flush's loss through an open named by its OpenID, for a caller stating
+// WantOpenID: it changes no content, only makes what was staged durable, so
+// any caller admitted to the share may sync a file it can name. Overturned if
+// syncing on demand is found to be a load a caller must hold a right for.
 func (fs *Filesystem) Commit(ctx context.Context, c vfs.Call, ref vfs.OpenRef, off, length int64) (vfs.Verifier, error) {
 	ctx, done, err := fs.enter(ctx)
 	if err != nil {
@@ -198,7 +200,7 @@ func (fs *Filesystem) Commit(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o
 	if off < 0 || length < 0 {
 		return vfs.Verifier{}, vfs.ErrInvalid
 	}
-	a, unlock, release, err := fs.opened(ctx, c, ref, false)
+	a, unlock, release, err := fs.opened(ctx, c, ref, 0)
 	if err != nil {
 		return vfs.Verifier{}, err
 	}
@@ -225,7 +227,9 @@ func (fs *Filesystem) Commit(ctx context.Context, c vfs.Call, ref vfs.OpenRef, o
 		// error, when only that one should record the loss.
 		loss = fs.engine.LossSeq(f.Share, f.ID)
 	}
-	if c.Protocol == entity.ProtocolSMB && ref.Kind == openstate.RefOpened {
+	// An open made with no name, or held when its file lost its last name,
+	// has an OpenID whatever its caller states, so the caller decides.
+	if wantsOpenID(c) && ref.Kind == openstate.RefOpened && ref.Open != 0 {
 		unlock, lerr := fs.locks.Take(ctx, lockorder.Set{Admit: []lockorder.Key{lockorder.Key(f.ID)}})
 		if lerr != nil {
 			return vfs.Verifier{}, errContended
@@ -351,7 +355,7 @@ func (fs *Filesystem) io(ctx context.Context, c vfs.Call, ref vfs.OpenRef, op vf
 	if off < 0 || n < 0 {
 		return nil, vfs.File{}, nil, nil, vfs.ErrInvalid
 	}
-	a, unlock, release, err := fs.opened(ctx, c, ref, false)
+	a, unlock, release, err := fs.opened(ctx, c, ref, 0)
 	if err != nil {
 		return nil, vfs.File{}, nil, nil, err
 	}
@@ -439,7 +443,7 @@ func (fs *Filesystem) stage(ctx context.Context, c vfs.Call, a *admitted, h vfs.
 	if err := do(); err != nil {
 		return vfs.WCC{}, storeErr(err)
 	}
-	return fs.wcc(ctx, c, a, h, before), nil
+	return fs.wcc(ctx, a, h, before), nil
 }
 
 // staging is stage's steps before the change: the flags, the clear, then

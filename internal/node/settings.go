@@ -4,8 +4,15 @@ import (
 	"github.com/cubbit/dittofs/internal/identity"
 	"github.com/cubbit/dittofs/internal/node/api/apisettings"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/settings"
 )
+
+// settingSchema opens the store to write settings rows up to the newest
+// schema the settings table reads, so no node writes a row it would refuse.
+func settingSchema() kvstore.Option {
+	return kvstore.SettingSchema(settings.Versions()[entity.FormatSettings].Max)
+}
 
 // newTable is the node's one settings table: every section the node declares,
 // which reconcile reads and the API's write check judges a write by. Each

@@ -564,6 +564,48 @@ func (f *Fixture) TryKill() error {
 	return f.tryOpen(f.id, true)
 }
 
+// CrashInFlight simulates a power loss at an instant the journal has calls
+// in flight — a call parked at a hold, one inside a storage operation — and
+// opens the journal again on what the loss left. As Crash does, it loses
+// every unsynced write and puts the directory back as its last SyncDir left
+// it; unlike Crash, the old journal is abandoned rather than closed, so the
+// crash returns while the calls in flight are still parked or running,
+// instead of joining them first. A call the loss found in flight never
+// completes: released after the crash it fails with fs.ErrClosed on the dead
+// view, and its operation reached the directory through nothing. A test
+// releases every hold it holds once the crash has returned, so the parked
+// goroutines end.
+//
+// decision: the crashed journal closes nothing, as the killed one does not.
+// Crash's own close joins the calls in flight, so a crash holding a seam
+// call at a hold never returns — the parked variant this answers; closing
+// the ended view would add nothing the loss left open. The abandoned
+// journal's goroutines outlive the dead view as the killed one's do, so the
+// checks that crash this way run on NewUnwatched fixtures, the kill rows'
+// own rule.
+func (f *Fixture) CrashInFlight(opts ...kit.CrashOption) {
+	f.tb.Helper()
+
+	if err := f.TryCrashInFlight(opts...); err != nil {
+		f.tb.Fatalf("fixture: crash in flight: %v", err)
+	}
+}
+
+// TryCrashInFlight is CrashInFlight returning the seam's refusal, or
+// Open's error, instead of failing the test: after an error the journal is
+// shut, J is nil, until a later open succeeds.
+func (f *Fixture) TryCrashInFlight(opts ...kit.CrashOption) error {
+	f.tb.Helper()
+
+	if err := f.Seam.Crash(opts...); err != nil {
+		return err
+	}
+	// The old journal is abandoned, not closed: a process the power cut
+	// ends mid-operation, and its calls in flight complete nowhere.
+	f.J = nil
+	return f.tryOpen(f.id, true)
+}
+
 // dropDead closes the handles and the journal the seam's crash left dead,
 // through its dead view, so nothing reaches the directory, and forgets it.
 func (f *Fixture) dropDead() {

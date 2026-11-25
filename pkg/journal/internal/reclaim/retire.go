@@ -523,12 +523,13 @@ func (w *Worker) handle(id core.SegmentID, locs []segment.Location, first time.T
 	// reclaimable storage retained, never a record lost. Overturned by a
 	// retirement path that empties a segment's last placement without the
 	// SegmentRetired sweep, which would hand a mate over into a class the
-	// mark no longer protects, or by a hand-over that skips this gate — the
-	// pass's own retirement of its claimed source (pass.go's retire) and
-	// the open's emptying of a recovery-ended segment (recovery/empty's
-	// retirement) are the two such paths today: both must answer for the
-	// holds their source's classes' survivors carry through the retirer's
-	// retired hook, as the unlink's re-hold rule does.
+	// mark no longer protects, or by a hand-over that skips this gate. The
+	// pass's own hand-over of its claimed source consults the gate as this
+	// section does; the open's emptying of a recovery-ended segment
+	// (recovery/empty's retirement) is the one path left ungated: it runs
+	// alone, no pass beside it, and answers for the holds its classes'
+	// survivors carry through the retirer's retired hook, as the unlink's
+	// re-hold rule does.
 	if w.beforeGate != nil {
 		w.beforeGate(id)
 	}

@@ -1,12 +1,14 @@
 package journaltest
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/journal/journaltest/kit"
@@ -299,5 +301,56 @@ func TestFixtureHandsOpenTheMarksItsSyncsRecorded(t *testing.T) {
 				t.Fatalf("the refusal is %q, want it to name a range of the mark's segment, %q", err, want)
 			}
 		})
+	}
+}
+
+// TestCrashInFlightAbandonsTheCallParkedAtAHold pins the shape Crash cannot
+// reach, whose close would join it: a power loss at the instant a call of
+// the journal sits parked at a hold. The crash returns while the call is
+// still parked, the parked call — released after the crash — fails as a dead
+// process's, and nothing it would have made durable reached the directory:
+// the unsynced write behind it is lost, whatever its sync promised.
+// The fixture is unwatched: the abandoned journal's goroutines outlive the
+// dead view, the kill rows' own rule.
+func TestCrashInFlightAbandonsTheCallParkedAtAHold(t *testing.T) {
+	f := NewUnwatched(t)
+	h, id := f.Share(0), File(0)
+	if _, err := h.WriteAt(t.Context(), id, 0, bytes.Repeat([]byte("abandoned-in-flight"), 256), 0); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	held := f.Seam.HoldFirst(t, kit.OpSync, "*.seg")
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.Sync(t.Context(), id)
+		done <- err
+	}()
+	select {
+	case <-held.Reached():
+	case <-time.After(2 * time.Second):
+		t.Fatal("the Sync did not reach the held sync of its segment within 2s")
+	}
+	if err := f.TryCrashInFlight(); err != nil {
+		t.Fatalf("crash in flight over a parked sync: %v", err)
+	}
+	held.Release()
+	// The parked sync answers the dead view, never the directory a later
+	// reopen serves.
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("the parked Sync succeeded once released after the crash, want the dead view's refusal")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the parked Sync did not return within 2s of the release")
+	}
+
+	reread := f.Share(0)
+	_, missing, _, _, err := reread.ReadAt(t.Context(), id, 0, make([]byte, 256))
+	if err != nil {
+		t.Fatalf("read after the crash in flight: %v", err)
+	}
+	if len(missing) == 0 {
+		t.Fatal("the write the parked sync had not made durable survived the crash, want it lost: the parked operation reached the directory through nothing")
 	}
 }

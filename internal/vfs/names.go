@@ -23,7 +23,8 @@ import (
 // once writes stage in the engine.
 
 // Lookup resolves one name in dir: "." is dir itself, ".." its parent, and a
-// share's root its own parent. A pseudo directory's names are the
+// share's root's parent the pseudo directory the share is mounted in for a
+// caller that sees the pseudo-filesystem, else the root itself. A pseudo directory's names are the
 // pseudo-filesystem's. The caller needs traverse on dir.
 func (fs *Filesystem) Lookup(ctx context.Context, c vfs.Call, dir vfs.Handle, name []byte) (vfs.Handle, vfs.File, error) {
 	ctx, done, err := fs.enter(ctx)
@@ -50,6 +51,8 @@ func (fs *Filesystem) Lookup(ctx context.Context, c vfs.Call, dir vfs.Handle, na
 			return nil, vfs.File{}, storeErr(err)
 		case !d.IsDir():
 			return nil, vfs.File{}, vfs.ErrNotDir
+		case n == ".." && d.IsRoot() && seesPseudoFS(c):
+			return fs.mountParent(ctx, a.share.ID)
 		case n == "." || d.IsRoot():
 			return dir, d, nil
 		}
@@ -280,6 +283,7 @@ func (fs *Filesystem) unlinkAt(ctx context.Context, c vfs.Call, dir vfs.Target, 
 		return vfs.UnlinkResult{}, err
 	}
 	defer release()
+	fs.through(ctx, a, c, dir.Open)
 	for {
 		seen, err := fs.entry(ctx, a, dir.H, name)
 		if err != nil {
@@ -326,7 +330,7 @@ func (fs *Filesystem) unlinkLocked(ctx context.Context, a *admitted, c vfs.Call,
 		return vfs.UnlinkResult{}, false, openErr(err)
 	}
 	var r vfs.UnlinkResult
-	r.Dir.Before = fs.before(ctx, a, c, dir.H)
+	r.Dir.Before = fs.before(ctx, a, dir.H)
 	orphan, err := fs.unlinkDurable(ctx, f, func(open []entity.OpenRecord) (kvstore.Orphaned, error) {
 		return fs.meta.Namespace().Unlink(ctx, a.caller.Identity, dir.H, name, open...)
 	})
@@ -361,6 +365,7 @@ func (fs *Filesystem) Rename(ctx context.Context, c vfs.Call, from vfs.Target, f
 		return vfs.RenameResult{}, err
 	}
 	defer release()
+	fs.through(ctx, a, c, from.Open)
 	if err := a.same(to); err != nil {
 		return vfs.RenameResult{}, err
 	}
@@ -453,7 +458,11 @@ func (fs *Filesystem) renameLocked(ctx context.Context, a *admitted, c vfs.Call,
 			return vfs.RenameResult{}, false, openErr(err)
 		}
 	}
-	r.From.Before = fs.before(ctx, a, c, from.H)
+	if fd == td {
+		r.From.Before = r.To.Before // addable read it under this lock
+	} else {
+		r.From.Before = fs.before(ctx, a, from.H)
+	}
 	rename := func(open []entity.OpenRecord) (kvstore.Orphaned, error) {
 		return fs.meta.Namespace().Rename(ctx, a.caller.Identity, from.H, fromName, to, toName, open...)
 	}
@@ -532,9 +541,7 @@ func (fs *Filesystem) addable(ctx context.Context, a *admitted, c vfs.Call, op v
 	if err := fs.checks.CheckChange(ctx, a.who(), keyOf(d), nil, openstate.ChangeAddEntry); err != nil {
 		return vfs.File{}, openErr(err)
 	}
-	if c.Protocol != entity.ProtocolNFSv3 {
-		w.Before = &d
-	}
+	w.Before = &d
 	return d, nil
 }
 
@@ -575,12 +582,14 @@ func (fs *Filesystem) releaseOrphan(ctx context.Context, f vfs.File, orphan kvst
 }
 
 // before is dir's attributes as a WCC's Before, read under its accept lock:
-// nil over NFSv3, which never reports a directory's, and where the caller
-// may not read them.
-func (fs *Filesystem) before(ctx context.Context, a *admitted, c vfs.Call, dir vfs.Handle) *vfs.File {
-	if c.Protocol == entity.ProtocolNFSv3 {
-		return nil
-	}
+// nil where the caller may not read them. A protocol that never reports a
+// directory's Before drops it in its adapter.
+//
+// ponytail: it is read for every caller, so an NFSv3 REMOVE or RENAME pays
+// one Files().Get under the accept lock already held for a Before its
+// adapter drops. Add a Call field that skips it if that read shows in a
+// profile.
+func (fs *Filesystem) before(ctx context.Context, a *admitted, dir vfs.Handle) *vfs.File {
 	f, err := fs.meta.Files().Get(ctx, a.caller.Identity, dir)
 	if err != nil {
 		return nil
@@ -633,10 +642,11 @@ func (a *admitted) same(h vfs.Handle) error {
 	return nil
 }
 
-// who is the caller as open state takes it: the call's client, protocol and
-// whether it has a session, and the principal it maps to, never squashed.
+// who is the caller as open state takes it: the call's client, whether it
+// has a session and its Caps, whole, and the principal it maps to, never
+// squashed.
 func (a *admitted) who() openstate.Caller {
-	return openstate.Caller{Client: a.caller.Client, Principal: a.caller.Mapped, Protocol: a.caller.Protocol, Sessioned: a.sessioned}
+	return openstate.Caller{Client: a.caller.Client, Principal: a.caller.Mapped, Sessioned: a.sessioned, Caps: a.caller.Caps}
 }
 
 // keyOf is f as open state names it.
