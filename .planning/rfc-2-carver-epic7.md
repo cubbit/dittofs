@@ -209,9 +209,9 @@ the design, and binds nothing here.
   does (checked, `pkg/block/hash_bench_test.go` on develop): the two benchmarks live in two
   packages, `testing.Benchmark` returns no sub-benchmark's result, and it would take one sample
   where the record keeps ten, so the gate and the series would measure different runs. The
-  pairing a ratio needs holds where it is tight: `-count` repeats each benchmark function whole,
-  so K2's `Random` and its `BLAKE3` baseline, and K3's kinds and their `Random`, run back to back
-  at each `Target` in every repetition; K1 runs in the chunker's binary before them, under
+  pairing a ratio needs holds where it is tight: K2's `Random` and its `BLAKE3` baseline, and
+  K3's kinds and their `Random`, are sub-benchmarks of one function at one `Target`, so their ten
+  samples each run within seconds of one another; K1 runs in the chunker's binary before them, under
   `go test -p 1`, and its target sits more than twice under what was measured (Appendix A.2), so a
   host that drifts between the two binaries cannot cross it. Prior
   art: that test, the shape of a ratio against a hash in the same process; `unit --nonrace`,
