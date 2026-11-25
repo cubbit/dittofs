@@ -3612,12 +3612,16 @@ the block committed and clears its extents' offloaded bits as above. The engine
 then abandons a refused attempt and offers its extents again under current
 material.
 
+A destroyed master key is covered the same way: the provider marks every key
+record whose wrap names it destroyed before it reports the destroy
+([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)), so the commit refuses a data key it wraps
+like any destroyed material.
+
 > decision: the commit refuses only on a key record marked destroyed. A loss no
-> operator has declared yet marks no record, and a master key reported destroyed
-> marks none of the data keys it wraps, so a commit under either still lands;
-> the notice's `Unmark` and the reseed below then keep its extents held. Mark
-> the wrapped data keys' records when a master key is reported destroyed if a
-> block is found committed under one.
+> operator has declared yet marks no record, so a commit under it still lands;
+> the notice's `Unmark` and the reseed below then keep its extents held once the
+> loss is declared. Withdraw this if an undeclared loss is found to commit a
+> block that no copy can read.
 
 **A destroy racing Mark, or a crash, never leaves an extent marked.** The engine
 **MUST NOT** mark an attempt's extents offloaded once any material the attempt
@@ -4172,7 +4176,7 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) clone resumed at a full limit | Crash a clone of a 1 GiB dirty extent after its copies synced and before phase 1, on a share at its journal limit with the remote down; restart. Assert start re-makes no copy the journal holds, reserves nothing for them, and serves every other file; an open of the destination answers `ErrDelay` with `DelayCapacity`, and an SMB write into the source extent is held as capacity, never answered `STATUS_FILE_LOCK_CONFLICT`. Bring the remote back: assert the clone finishes and both files serve. |
 | [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) refusals | Clone between shares of two namespaces: assert `ErrCross` (`CrossNamespace`) and nothing changed. `CLONE` one byte over `clone_max_len`: assert `ErrInvalid`. `COPY` 1 GiB while an NFSv3 writer writes the source: assert each source write is held and answered within one chunk's time, measured at the client, with no `NFS3ERR_JUKEBOX`, and that a write whose deadline is shorter than the chunk gets `ErrDelay`, and a deadline mid-copy answers a short count that a continuing copy completes. |
 | [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here) retry later | Fill the journal with dirty bytes, the remote reachable: assert a write returns `ErrDelay`, never `ErrNoSpace`, and succeeds once offload and repack free space. Repeat with the remote unreachable past the caller's deadline: assert `ErrDelay` throughout, never `ErrNoSpace`, and success once it returns. Fill one share to its journal limit: assert `ErrDelay`, not `ErrNoSpace`. Make the store refuse puts with a quota error (storage full, bucket quota exceeded): assert `ErrNoSpace` at once, and that the store error reached the engine as `ErrDenied`, not `ErrInvalid`. Make a proxy refuse block puts for their size (`413`), then make the store refuse the credential (`403`): assert `ErrNoSpace` at once for each, and success once the limit is lifted or the credential restored. An engine reading a bare healthy flag answers the outage and the full store alike. |
-| [§10.4](#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable) destroyed material | Destroy a data key while the journal holds some chunks its blocks cover. Assert those extents lose their offloaded bit, are not evicted, are offloaded again under current material and read back; a remote-only chunk it covered fails as **Lost**, not corrupt. Mark a pinned material's key record destroyed between an attempt's pin and its Commit, as an operator's declared loss does: assert the commit transaction refuses, the attempt is abandoned, no block commits under that material, and its extents are offered again under current material. Destroy it between an attempt's Commit and its Mark: assert its extents end unmarked. Crash after a destroy and before its `Unmark`: assert the reseed clears the bits before any of those extents is evicted. Destroy the current material with no replacement: assert the next pass refuses at Intent, puts nothing and leaves the content dirty and held. |
+| [§10.4](#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable) destroyed material | Destroy a data key while the journal holds some chunks its blocks cover. Assert those extents lose their offloaded bit, are not evicted, are offloaded again under current material and read back; a remote-only chunk it covered fails as **Lost**, not corrupt. Destroy the master key that wraps a pinned data key between an attempt's pin and its Commit: assert the commit transaction refuses. Mark a pinned material's key record destroyed between an attempt's pin and its Commit, as an operator's declared loss does: assert the commit transaction refuses, the attempt is abandoned, no block commits under that material, and its extents are offered again under current material. Destroy it between an attempt's Commit and its Mark: assert its extents end unmarked. Crash after a destroy and before its `Unmark`: assert the reseed clears the bits before any of those extents is evicted. Destroy the current material with no replacement: assert the next pass refuses at Intent, puts nothing and leaves the content dirty and held. |
 
 ### 15.2 Group B — wedging
 

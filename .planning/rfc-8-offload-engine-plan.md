@@ -12,7 +12,8 @@ RFCs, with how far each is in scope:
   **only the parts this RFC cannot work without**, their public surfaces, which their own plans build
   ([`rfc-2-carver-plan.md`](rfc-2-carver-plan.md), in #5529, and the RFC 3, 4 and 5 plans written
   beside this one); this plan merges after #5529, #5530 and #5532: the link resolves, `Store.Put`'s
-  `*Measure` is the RFC 3 plan's D8 (#5530), and RFC 8 §10.4's pin is #5532's `Chain.Pin`. This plan composes them; §3.2 names the four points where each surface is agreed.
+  `*Measure` is the RFC 3 plan's D8 (#5530), and RFC 8 §10.4's pin is #5532's `Chain.Pin`, as is its marking of the key records a destroyed master
+  key wraps. This plan composes them; §3.2 names the four points where each surface is agreed.
 - RFC 0, 1, 28, 6, 9, 12, 14, 15, 16, 17, 23, 25 and 29: **constraints only**. GC (RFC 9) is planned
   later; this plan builds the shared work scheduler GC will also instantiate (D3), and nothing of GC.
 
@@ -50,7 +51,8 @@ yet; §15.4's B1 measures against raw puts on the same store in runs interleaved
 acknowledgement a store record bound to the lost `JournalID`, and §2.1's `Lifecycle` row reads it
 (§6 point 1, decided); §10.4 has the offload commit transaction read each pinned material's
 `destroyed` mark as a guard read, over the material IDs the block's `encodings` name, and refuse,
-the attempt then abandoned, with a `decision:` on what marks no record; Mark leaves an attempt's
+the attempt then abandoned, with a destroyed master key covered through RFC 5 Appendix B.2's marking of the records it wraps
+and a `decision:` on an undeclared loss; Mark leaves an attempt's
 extents dirty once its material is reported destroyed, the reseed clears a destroyed material's bits
 before eviction, and a pass refuses at Intent under destroyed current material, each with its §15.1
 leg; RFC 14's import rule names the composition root and the engine's wiring beside the filesystem
@@ -882,8 +884,8 @@ stays green; RFC 8 E3, E11, E33 hold.
 - The offload commit transaction guard-reading the key record of each material the block's
   `encodings` name, never a list its caller passes, and refusing when one is marked destroyed; the
   attempt then abandoned and its extents offered again under current material (RFC 8 §10.4 as
-  amended), with its `decision:` on a loss that marks no record. The legs: a destroy between pin and
-  Commit, between Commit and Mark, and with no replacement material (epic 15's Intent refusal).
+  amended), with its `decision:` on an undeclared loss. The legs: a destroy between pin and
+  Commit, a master key's destroy refusing a commit on a data key it wraps, between Commit and Mark, and with no replacement material (epic 15's Intent refusal).
 - Eviction never gated by locks, opens or snapshots; a retention pin honoured as policy; a
   `decision:` at `evict` that it trusts the offloaded bit while bucket-setting drift goes undetected
   (§6.1's drift row), withdrawn when `Recheck` runs.
