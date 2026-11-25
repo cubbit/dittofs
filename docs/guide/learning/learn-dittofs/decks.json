@@ -21,6 +21,9 @@
   { "section": "journal", "decks": [
     { "path": "rfcs/rfc-1-journal/", "rfc": 1 }
   ] },
+  { "section": "carver", "decks": [
+    { "path": "rfcs/rfc-2-carver/", "rfc": 2 }
+  ] },
   { "section": "test-harness", "decks": [
     { "path": "rfcs/rfc-29-test-harness/", "rfc": 29 }
   ] }
