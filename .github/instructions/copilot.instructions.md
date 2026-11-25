@@ -241,4 +241,5 @@ metadataStore.CheckPermissions(authCtx, handle, requested)
 ## Writing the review
 
 Follow [`pr-commenting.instructions.md`](pr-commenting.instructions.md) for what to check, the
-review body, the comments and the replies.
+review body, the comments and the replies, and [`REVIEW.md`](../../REVIEW.md) for what may block a
+merge and what a later round reviews.

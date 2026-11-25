@@ -41,7 +41,7 @@ Format: [Conventional Comments](https://conventionalcomments.org/).
 
 The labels used most:
 
-- **issue (blocking)** — must change before merge (bug, data loss, security, broken contract).
+- **issue (blocking)** — must change before merge. What may block is in [`REVIEW.md`](../../REVIEW.md) §2: a contradiction with the repository's record, or a break.
 - **suggestion (non-blocking)** — would improve it, author decides.
 - **nitpick (non-blocking)** — style/naming, never blocks.
 - **question** — you need information, not a change. Ask whenever the intent is unclear rather than guessing it.
