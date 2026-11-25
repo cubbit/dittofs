@@ -3,7 +3,7 @@ package scenarios
 import (
 	"context"
 
-	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/journal"
 
 	"github.com/cubbit/dittofs/cmd/jdemo/jdemo"
 )

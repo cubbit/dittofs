@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/journal"
 
 	"github.com/cubbit/dittofs/cmd/jdemo/jdemo"
 	"github.com/cubbit/dittofs/cmd/jdemo/scenarios"

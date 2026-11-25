@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest/raw"
-	"github.com/cubbit/dittofs/pkg/block/journal/walk"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest/raw"
+	"github.com/cubbit/dittofs/pkg/journal/walk"
 )
 
 // The seam scans a segment planted through the independent byte-level

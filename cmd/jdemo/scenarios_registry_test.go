@@ -5,7 +5,7 @@ import (
 
 	"github.com/cubbit/dittofs/cmd/jdemo/jdemo"
 
-	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/journal"
 )
 
 func TestRegisteredStoriesAreBasicCrashLimits(t *testing.T) {

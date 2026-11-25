@@ -1,5 +1,5 @@
 // The (d) view reads the journal's segment files with the journal's own
-// scanner, re-exported by pkg/block/journal/walk for this throwaway demo
+// scanner, re-exported by pkg/journal/walk for this throwaway demo
 // branch, so what it shows is the layout the journal reads: a record that
 // does not verify is not shown. This file decodes no byte of its own.
 package jdemo
@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/cubbit/dittofs/pkg/block/journal/walk"
+	"github.com/cubbit/dittofs/pkg/journal/walk"
 )
 
 // dumpSeg is what reading one segment file found: the real scan, the body

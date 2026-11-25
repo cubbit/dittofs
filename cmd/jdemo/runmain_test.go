@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest"
 )
 
 func TestDefaultDirIsRemovedNamedDirIsKept(t *testing.T) {

@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/cmd/jdemo/jdemo"
-	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest"
 )
 
 // newStoryDemo wires a demo whose registry the scenarios package filled:

@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/cmd/jdemo/jdemo"
-	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/journal"
 )
 
 // TestStoryShapes pins each story's own exported content: the beats a

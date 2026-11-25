@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/block/journal/journaltest"
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest"
 )
 
 // newTestDemo wires a demo over a temp journal directory with the metadata

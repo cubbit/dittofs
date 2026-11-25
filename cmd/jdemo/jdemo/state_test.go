@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/journal"
 )
 
 func TestStateRoundTrip(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/journal"
 )
 
 // diffDemo is a demo wired for the layer only: no journal, just a screen.

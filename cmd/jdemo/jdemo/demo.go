@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/journal"
 )
 
 // demoSettings is the story-default journal shape, used by the tests'

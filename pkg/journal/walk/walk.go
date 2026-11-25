@@ -8,8 +8,8 @@
 package walk
 
 import (
-	"github.com/cubbit/dittofs/pkg/block/journal/internal/core"
-	"github.com/cubbit/dittofs/pkg/block/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/journal/internal/format"
 )
 
 type (

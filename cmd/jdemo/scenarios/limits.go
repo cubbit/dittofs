@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/cubbit/dittofs/pkg/block/journal"
+	"github.com/cubbit/dittofs/pkg/journal"
 
 	"github.com/cubbit/dittofs/cmd/jdemo/jdemo"
 )
