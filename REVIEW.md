@@ -17,10 +17,12 @@ line:
 - **`.planning/*.md`**: the implementation plans and epic breakdowns, and
   once a plan's issues exist, those issues. "The plan says X" names the file
   and line; a plan in your head is not a plan.
-- **`CLAUDE.md` and `.github/instructions/*.md`**: the repo's conventions.
-  The test rules (no mocks, no sleeps, no fixed ports, a test that can fail,
-  fuzzed decoders), the comment rules and the `decision:` and `ponytail:`
-  markers are rules, not preferences.
+- **`CLAUDE.md`, `pr-opening.instructions.md` and
+  `pr-commenting.instructions.md`**: the repo's conventions. `CLAUDE.md`'s
+  "Writing tests" and "Code comments" sections are rules, not preferences.
+  A checklist that guides a review, such as `pr-commenting`'s "What to
+  check", is not a rule. `copilot.instructions.md` guides Copilot and is not
+  a source.
 - **The code** on the PR's base branch.
 
 If two of these disagree, that disagreement is the finding: cite both. The
