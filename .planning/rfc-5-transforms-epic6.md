@@ -23,7 +23,7 @@ non-encrypting-namespace and escrow clauses), and Appendix C (the key file's pas
 component takes). Every citation is the RFCs' text on `develop`; the code lands on
 `feat/storage-v2`, and the paths below are paths there.
 **Track:** C.
-**Epic 6 estimate: 8 subtasks, 17.5 man-days.**
+**Epic 6 estimate: 8 subtasks, 18.25 man-days.**
 **Depends on:** **S2**: from E2, `keystest.Run` with its `Harness` (`Give`, `Replace`, `Destroy`,
 `Calls`) and its salvage row, and `transformtest.LoadVectors` with the fingerprint, key wrap AAD and
 key-file stored-wrap vectors. From E1, `keys.MaterialID`, `keys.Provider`, the three kinds,
@@ -38,7 +38,8 @@ E5: the key-file wrap calls the standard library's AES-256-GCM itself. On `feat/
 - E8, which builds rotation, the bucket's `keys` object with the `keyseq` key lock, the destroyed
   marking and the notice on the key records, the view and its in-memory implementation, and the key
   creation of this epic.
-- E9, which calls `CreateKeys` from namespace creation, starts `VerifyEscrow` from the
+- E9, which validates the settings with `ValidateConfig`, hands live changes to `Reconfigure`, maps
+  `ErrWrapLimit`, calls `CreateKeys` from namespace creation, starts `VerifyEscrow` from the
   `verify-escrow` action, records its result in the store configuration, maps `ErrNotEscrowed`, and
   defines the gauges and conditions over `Status`.
 - Outside RFC 5's epics, the RFC 8 offload plan: its epic 18's commit reads a key record's state
@@ -83,7 +84,8 @@ namespace as the key table says.
 in-memory implementation in `keystest`, and `kvstore`'s implementation; `pkg/transform/keys/provider`:
 the stored wrap, the key-file custody with its wrap count, the key record and its codec, `Current`
 and `Get` with their cache and failures, `Status`, the escrow check, namespace key creation, the
-salvage-key wrap; `ErrNotEscrowed` in `pkg/transform/keys`; the fuzz targets, the allocation test and
+salvage-key wrap, `ValidateConfig` and `Reconfigure`; `ErrNotEscrowed` and `ErrWrapLimit` in
+`pkg/transform/keys`; the fuzz targets, the allocation test and
 the `keystest.Run` run.
 
 ### 1.2 Out of scope
@@ -157,7 +159,7 @@ title and not copied.
 | rule 8, **real dependencies for properties of those dependencies** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T6.2, T6.8 | the view's suite runs on `kvstore` over the Badger and FoundationDB openers its own suite uses; key creation's ordering claim is tested with `kvtest.FaultKV` failing the commit beneath `kvstore`, and with a committed creation found again by a fresh provider |
 | rule 9, **code comment conventions** ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T6.2, T6.3, T6.4, T6.5, T6.7, T6.8 | RFC 5's `decision:` note on the clear chunk-ID key at key creation (R27); D1's at the view's `Update`, D5's at the wrap count, D6's at `VerifyEscrow`, D11's at the failure mapping, D13's at `WrapSalvageKey`, D15's at the `storage`-key check; D10's `ponytail:` at the cache |
 | rule 10, **a test must be able to fail** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test in §6 names the bug it catches; the fingerprint and wrap vectors are E2's, computed by an independent implementation, never by this code |
-| rule 11, **a symbol is exported only if RFC 5's interface or a consumer outside the package uses it** | T6.2, T6.3, T6.5, T6.6, T6.7, T6.8 | each export names its consumer in §6: `New`, `Open`, `Config`, `Deps`, `StorageKey`, `Row`, `KeyRecords` for the content wiring, `kvstore` and `keystest`; `Calls` for `keystest.Harness`; `Status` for the content wiring; `CreateKeys`, `VerifyEscrow`, `Escrow` and `ErrNotEscrowed` for E9; `keystest.Records` and `RunKeyRecords` for the provider's tests, `kvstore`'s tests and the RFC 8 offload plan's. They are frozen when E9 first calls them |
+| rule 11, **a symbol is exported only if RFC 5's interface or a consumer outside the package uses it** | T6.2, T6.3, T6.5, T6.6, T6.7, T6.8 | each export names its consumer in §6: `New`, `Open`, `Reconfigure`, `ValidateConfig`, `ErrWrapLimit`, `Config`, `Deps`, `StorageKey`, `Row`, `KeyRecords` for the content wiring, `kvstore` and `keystest`; `Calls` for `keystest.Harness`; `Status` for the content wiring; `CreateKeys`, `VerifyEscrow`, `Escrow` and `ErrNotEscrowed` for E9; `keystest.Records` and `RunKeyRecords` for the provider's tests, `kvstore`'s tests and the RFC 8 offload plan's. They are frozen when E9 first calls them |
 | rule 12, **each subtask creates only what it declares** | all | the view lands with its first consumer, the custody (T6.3); the key file's custody is concrete code, and the interface E7 needs lands with E7's second implementation (D3); the `keyseq` subtag is not added: this epic writes no `keys` object, and its writers conflict through a range guard (D1), so the key lock lands with E8's first writer of one |
 
 ## 3. Requirements and invariants
@@ -188,6 +190,8 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
 | R12 | The provider passes E2's provider suite, `keystest.Run` | test row | RFC 5 plan §1.4; E2 T2.1, T2.2 | T6.6 |
 | R41 | A master key that cannot be read or unwrapped at start fails the provider's construction, so the store does not open and nothing is written without it | MUST | §2.7 (a chain that cannot be built); Appendix B.4 (unreachable at start) | T6.3 |
 | R51 | A namespace opens only once every current key record of it has been unwrapped and checked against its fingerprint, once per key, so a store whose master key or key service cannot be reached when a namespace opens does not open it | MUST | Appendix B.4 (unreachable at start); §9 item 2 ("once per key when the namespace opens"); RFC 13 §9 "§7 namespace keys" ("the namespace does not open") | T6.5 |
+| R52 | A store configuration's provider settings are checked for their shape before they are accepted, without reading a file or dialling a service, so a malformed value is refused at the write | MUST | RFC 13 §6 (validation before commit); E9 T9.1 | T6.3 |
+| R53 | A running provider takes a changed configuration without a restart, and refuses one whose master key is not the one it holds, so no namespace's records are left under a key it cannot unwrap | MUST | RFC 13 §5 (the live binding class); E9 D12; Appendix B.2 | T6.7 |
 | R42 | Material that cannot be reached when read is `ErrMaterialUnavailable`, never `ErrUnknownMaterial` and never zeros, and a later read succeeds once it can be reached | MUST | Appendix B.4; §7 T7 | T6.5 |
 
 **Key records**
@@ -208,7 +212,7 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
 | R19 | A namespace key is stored only wrapped: the nonce, 12 bytes from a cryptographic random source, followed by AES-256-GCM under the master key of the key bytes, with `AAD = namespace ID ‖ kind ‖ key ID`, each field with a 4-byte big-endian length, and a 16-byte tag; the key file passes those AAD bytes to AES-256-GCM | MUST | Appendix B.1 ("Key wrap", "Lengths and encodings", the key wrap AAD row, "The AAD reaches each provider's input") | T6.3 |
 | R20 | Every wrapped key is stored as provider kind (1 byte, `0x01` for the key file) ‖ master-key ID length (2 bytes, big-endian) ‖ master-key ID ‖ wrap length (4 bytes, big-endian) ‖ wrap bytes; for the key file the master-key ID is a minted ID's bytes | MUST | Appendix B.1 ("stored wrap") | T6.3 |
 | R21 | A wrapped record whose namespace, kind or key ID is changed in the AAD, or which is copied into another namespace's key records, fails to unwrap | MUST, test row | Appendix B.1; §7 T18; §8.1 T18 | T6.3, T6.5 |
-| R22 | A master key makes at most 2³² wraps: every wrap first raises that master key's one server-wide count, `MKW‖masterKeyID`, by a conditional write before the wrap's bytes are used, and the wrap at a count of 2³² is refused with an error asking for a master-key rotation; every wrap counts, a key record's, a salvage key's and the escrow check's test record's | MUST | Appendix B.1 ("A master key makes at most 2³² wraps"); RFC 16 §4.2 (`MKW‖masterKeyID`); §8.1's wrap-count row | T6.2, T6.3, T6.4, T6.7, T6.8 |
+| R22 | A master key makes at most 2³² wraps: every wrap first raises that master key's one server-wide count, `MKW‖masterKeyID`, by a conditional write before the wrap's bytes are used, and the wrap at a count of 2³² is refused with an error asking for a master-key rotation, one sentinel a caller can map (E9); every wrap counts, a key record's, a salvage key's and the escrow check's test record's | MUST | Appendix B.1 ("A master key makes at most 2³² wraps"); RFC 16 §4.2 (`MKW‖masterKeyID`); §8.1's wrap-count row | T6.2, T6.3, T6.4, T6.7, T6.8 |
 | R23 | The key-file provider holds its master key in its own process memory; a master key never leaves the provider, and a namespace key is stored only wrapped | invariant | Appendix B.1 (plain terms) | T6.3 |
 | R24 | Every master, data, chunking, chunk-ID and export key is 32 bytes from a cryptographic random source, drawn when created, never derived | MUST | Appendix B.1 ("Lengths and encodings") | T6.4, T6.8 |
 | R45 | The provider's fingerprint, key wrap AAD and key-file stored wrap equal RFC 5's golden vectors, computed by an independent implementation | test row | §8.1's Appendix B.1 golden-vector row (the fingerprint), §8.1 T22 (the key file's stored wrap); E2 T2.5 | T6.3, T6.5 |
@@ -337,8 +341,10 @@ R22, the bucket gate (E8, §1.2) and R35.
 
 - **D5, the wrap count is a conditional raise by `n` under a limit the caller passes.** Every wrap
   calls `RaiseWrapCount(ctx, masterKeyID, n, 1<<32)` for the wraps it is about to make before it
-  draws a nonce, and refuses when it reports no raise, with an error naming the master key and asking
-  for a rotation. Key creation raises once by its number of wrapped keys, so the one hot `MKW` row
+  draws a nonce, and refuses when it reports no raise with `keys.ErrWrapLimit`, wrapped with the
+  master key's ID and asking for a rotation; E9 maps it to its own problem type rather than an
+  internal error. The sentinel is in `keys`, beside `ErrNotEscrowed`, since E9 imports only the
+  contract. Key creation raises once by its number of wrapped keys, so the one hot `MKW` row
   takes one write per namespace; a salvage wrap and an escrow check raise by one. Passing the limit
   keeps the bound in RFC 5's code and lets the suite use a limit of 3; the provider's test reaches a
   count of 2³² − 1 through the same call on `Records`, `RaiseWrapCount(ctx, id, 1<<32-1, 1<<32)`. A
@@ -354,8 +360,9 @@ R22, the bucket gate (E8, §1.2) and R35.
   carries the passes back at every start. The gate opens only for a pass naming the loaded master
   key's ID and fingerprint, so a key file replaced under its ID finds it shut; it applies to a
   key-file master key only, since a key service's never leaves the service (Appendix B.2), so it is
-  open for a kind `0x02` master key (D3). The provider also
-  remembers a pass it made, so creation succeeds without a restart. A `decision:` marker at
+  open for a kind `0x02` master key (D3). The gate opens only from passes the configuration has
+  committed, through `Config.Escrowed` at `New` or `Reconfigure` (D16): `VerifyEscrow` remembers
+  nothing, so a pass whose recording transaction failed opens no gate. A `decision:` marker at
   `VerifyEscrow` names this split, to be withdrawn if RFC 16 gains a row for it. Prior art: none
   found.
 
@@ -433,6 +440,21 @@ R22, the bucket gate (E8, §1.2) and R35.
   call stay, as thin wrappers. Prior art: Go's own `internal/` packages shared by two public ones
   (checked).
 
+- **D16, a running provider is reconfigured in place, and never changes master key that way.**
+  `(*Provider).Reconfigure(ctx, cfg Config) error` is what the content wiring calls when the store
+  configuration's live settings change (E9's reach). It checks `cfg`'s shape (D17), reads the key
+  file `cfg` names, and refuses with an error naming both IDs a master key other than the one it
+  holds; otherwise it replaces the escrow passes and the passphrase. A refused call changes
+  nothing. E7 adds the key-service fields; E8 adds opening a retired key file listed at run time and
+  the swap of the current key file a rotation makes, which is the one path to another master key.
+  A `decision:` marker at the refusal says so. Prior art: none found.
+
+- **D17, the shape check reads nothing.** `ValidateConfig(cfg Config) error`, a pure function, refuses
+  an empty `KeyFile` or `Passphrase` and an `Escrow` whose `MasterKeyID` is not a UUID's text; it
+  opens no file, so a settings write is checked where the file is absent, as on a node that has not
+  received it yet. E7 adds the key-service fields' rules. `New` and `Reconfigure` call it first.
+  Prior art: RFC 13 §6's validation before commit (checked).
+
 - **D15, the `storage` keys are refused at construction, for a key-file master key.** `Deps` carries every `storage` key the
   node holds, the current one and RFC 13 Appendix C's retired ones, each as its ID, as its key file
   records it, and its fingerprint; `New` compares each with the loaded master key's and fails on any
@@ -463,16 +485,17 @@ pkg/metadata/kvstore/
   keyrecords.go         T6.2  KeyRecords: Load, the guarded Update, RaiseWrapCount; kinds and states as bytes
   keyrecords_test.go    T6.2  RunKeyRecords over the suite's Badger and FoundationDB openers
 pkg/transform/keys/
-  keys.go               T6.7  ErrNotEscrowed
+  keys.go               T6.3  ErrWrapLimit
+                        T6.7  ErrNotEscrowed
 pkg/transform/keys/provider/
   doc.go                T6.3  package doc
   wrap.go               T6.3  the key wrap AAD, the stored wrap's encode and parse, the key-file wrap and unwrap
-  provider.go           T6.3  Row, KeyRecords, Config, Escrow, StorageKey, Deps, Provider, New
+  provider.go           T6.3  Row, KeyRecords, Config, ValidateConfig, Escrow, StorageKey, Deps, Provider, New
                         T6.5  Open, Current, Get, the cache, Calls
                         T6.6  Status
   salvage.go            T6.4  WrapSalvageKey
   record.go             T6.5  the key record and its codec
-  escrow.go             T6.7  VerifyEscrow, the escrow gate
+  escrow.go             T6.7  VerifyEscrow, the escrow gate, Reconfigure
   create.go             T6.8  CreateKeys
   export_test.go        T6.8  the pause before CreateKeys' Update
   wrap_test.go          T6.3  vectors, the AAD rows, the count, the storage keys, FuzzStoredWrap
@@ -568,11 +591,11 @@ pkg/transform/keys/provider/
 
 ### T6.3 The stored wrap, the key-file custody and its count
 
-**Subtask T6.3 estimate: 2.75 man-days.**
+**Subtask T6.3 estimate: 3 man-days.**
 
 - **Track:** C. **Depends on:** T6.1, T6.2.
 - **Covers:** R1, R19, R20, R21, R22, R23, R38, R41, R45 (key wrap AAD and stored wrap), R48 (the
-  stored wrap).
+  stored wrap), R52.
 - **Deliverables:**
   - The package and its constructor, consumed by the content wiring (the RFC 8 offload plan's epic
     21) and by every later subtask:
@@ -620,14 +643,20 @@ pkg/transform/keys/provider/
   - `wrap.go`, unexported: the key wrap AAD (R19), the stored wrap's encode and parse (R20), the
     key-file wrap, which raises the count (D5), draws a 12-byte nonce from `Deps.Rand` and seals, and
     the unwrap, which checks the master key ID and opens.
-  - `New`: reads the key file through `internal/keyfile`, refuses a non-UUID ID and every `storage`
-    key (D15), and fails if the file cannot be read or unwrapped (R41).
+  - `New`: checks `cfg` with `ValidateConfig`, reads the key file through `internal/keyfile`,
+    refuses a non-UUID ID and every `storage` key (D15), and fails if the file cannot be read or
+    unwrapped (R41).
+  - `func ValidateConfig(cfg Config) error` (D17), consumed by E9's settings validation.
+  - `keys.ErrWrapLimit`, the wrap count's sentinel (D5), consumed by E9's error mapping.
   - `FuzzStoredWrap`, joined to the nightly `fuzz` suite and named in RFC 5 §8.3's suites line.
 - **Acceptance criteria:**
   - A wrap unwraps under its AAD; a changed namespace, kind or key ID in the AAD fails; a flipped
     byte of the wrap fails; the master key ID is the one in the stored wrap.
   - With the count reached through `RaiseWrapCount(…, 1<<32-1, 1<<32)` (D5), one wrap succeeds and
-    the next is refused naming the master key, the two made with the AADs of two namespaces (R22).
+    the next is refused with `keys.ErrWrapLimit` under `errors.Is`, naming the master key, the two
+    made with the AADs of two namespaces (R22).
+  - `ValidateConfig` refuses an empty key file, an empty passphrase and a non-UUID escrow ID, and
+    accepts a valid `Config` whose key file does not exist (R52).
   - `New` fails for a missing file, a wrong passphrase, a `storage` key's ID, a `storage` key's
     bytes under another ID (a retired one's included), and an entry with a zero fingerprint and the
     master key's ID.
@@ -637,6 +666,8 @@ pkg/transform/keys/provider/
     vector's stored wrap unwraps to its key (catch a field order, a length width or an endianness
     apart from RFC 5's, R19, R20, R45).
   - The AAD rows above (catch a wrap that binds nothing, R21).
+  - `ValidateConfig`'s rows, with the key file absent (catch a shape check that opens the file, or
+    one that lets a malformed value through, R52).
   - The count row above, on `Records`, and a wrap whose raise is refused draws no nonce from
     `Deps.Rand` (catch a bound off by one, a count per namespace, or bytes made before the count,
     R22).
@@ -768,12 +799,12 @@ pkg/transform/keys/provider/
 - **Rules:** rule 1: the adapter is test code over the real provider, not a double. rule 3: the
   planted key.
 
-### T6.7 The escrow check
+### T6.7 The escrow check and `Reconfigure`
 
-**Subtask T6.7 estimate: 1.5 man-days.**
+**Subtask T6.7 estimate: 2 man-days.**
 
 - **Track:** C. **Depends on:** T6.3.
-- **Covers:** R22 (the test record counts), R34, R35 (the gate).
+- **Covers:** R22 (the test record counts), R34, R35 (the gate), R53.
 - **Deliverables:**
   - `ErrNotEscrowed` in `pkg/transform/keys`, as RFC 5 §3.1 declares it, consumed by T6.8 and E9.
   - `escrow.go`, consumed by E9's `verify-escrow` action and T6.8:
@@ -784,9 +815,11 @@ pkg/transform/keys/provider/
 
     It opens the copy with the configured passphrase, wraps a fresh test key under the master key
     with D12's AAD (raising the count), unwraps it with the copy's key, compares the copy's ID and
-    fingerprint with the master key's, and on a pass returns them and remembers the pass (D6).
+    fingerprint with the master key's, and on a pass returns them; it records nothing (D6).
   - The gate, unexported: a key-file master key is escrowed when a pass for its ID and fingerprint
-    is in `Config.Escrowed` or was made by this provider.
+    is in the `Config.Escrowed` last given to `New` or `Reconfigure`.
+  - `(*Provider).Reconfigure(ctx context.Context, cfg Config) error` (D16), consumed by the content
+    wiring's reach of E9's settings section, and widened by E7 and E8.
 - **Acceptance criteria:**
   - A copy of the master key file passes and returns the key's ID and fingerprint.
   - A copy of another key file, a copy under the same ID holding other bytes, and an unreadable copy
@@ -795,7 +828,11 @@ pkg/transform/keys/provider/
   count rises by one per check (catches an uncounted test record, R22); a pass made, then a fresh
   provider with that `Escrow` in `Config.Escrowed` has the gate open, one without it shut, and one
   whose `Escrow` names the ID with another fingerprint shut (catch a pass kept only in memory, or a
-  replaced key file let through, R35, D6).
+  replaced key file let through, R35, D6); after `VerifyEscrow` passes, the gate stays shut until
+  `Reconfigure` hands it the pass (catches a gate opened by an uncommitted pass, D6). `Reconfigure`
+  with another key file's `Config`: refused naming both IDs, and the provider still serves and wraps
+  under its own key; with a new passphrase and an added pass: accepted, the gate open (catch a
+  master key swapped at run time, or a live change that needs a restart, R53).
 - **Rules:** rule 9: D6's `decision:`.
 
 ### T6.8 Namespace key creation
@@ -831,7 +868,7 @@ pkg/transform/keys/provider/
     `ErrUnknownMaterial`, the count showing the wraps, and the next `CreateKeys` makes a full set;
     after a committed creation, a fresh provider over the reopened store finds it and a repeated
     `CreateKeys` keeps it (catch a key served without its record, or a set replaced on retry, R32).
-  - The escrow gate: refused, then `VerifyEscrow`, then accepted; and a non-encrypting namespace
+  - The escrow gate: refused, then `VerifyEscrow` and `Reconfigure` with its pass, then accepted; and a non-encrypting namespace
     with the gate shut (catch a gate on the wrong kind of namespace, R35, R37).
   - RFC 13's "§7 chunk-ID key" row, this epic's half: two non-encrypting namespaces get different
     chunk-ID keys (catches a fixed or shared chunk-ID key, R46).
@@ -865,7 +902,7 @@ close the epic.
 | --- | --- | --- | --- | --- |
 | 1 | T6.1 | 0.75 | — | the moved format alone, a refactor `pkg/keyprovider`'s tests check |
 | 2 | T6.2 | 3.5 | — | the key-record view's suite and both implementations, with the `MKW` kind; open beside PR 1 |
-| 3 | T6.3, T6.4, T6.7 | 4.75 | PR 1, PR 2 | the provider's constructor and everything that wraps: the key-file custody and its count, the salvage key and the escrow check, which `Config` and `New` name |
+| 3 | T6.3, T6.4, T6.7 | 5.5 | PR 1, PR 2 | the provider's constructor and everything that wraps: the key-file custody and its count, the salvage key and the escrow check, which `Config` and `New` name |
 | 4 | T6.5, T6.6 | 5.5 | PR 3 | the read path and the suite that holds it: records, `Open`, `Current`, `Get`, `Status`, `keystest.Run` |
 | 5 | T6.8 | 3 | PR 4 | key creation, the provider's last writer, with its failure rows |
 
@@ -917,7 +954,7 @@ A suggestion only: one pull request per subtask works as well.
   writer of a `keys` object, which takes it in its `Update` beside D1's range guard; E8's writes go
   through the provider's `Update`, so D10's cache follows them, and the bucket put before
   creation's records become current (D7) is E8's too.
-- **Estimate.** 8 subtasks and 17.5 man-days, against RFC 5's plan's 8 and 19: no custody
+- **Estimate.** 8 subtasks and 18.25 man-days, against RFC 5's plan's 8 and 19: no custody
   interface or suite here (D3) and the trimmed duplicate tests outweigh the in-memory view's suite.
   The least certain estimates are T6.5's, where every failure mapping, the cache's refreshes and the
   codec meet, and T6.2's state and kind mapping across two backends.
