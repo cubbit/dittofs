@@ -242,7 +242,7 @@ The journal **MUST NOT**:
 - return zero bytes for an extent it does not hold;
 - know what a chunk or a block is;
 - know which remote tier exists, or speak to one;
-- import another component in this set ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
+- import another component's implementation ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
 
 The journal has no dependency on the metadata store, the syncer or the carver,
 and requires no interface from any of them. Its dependency set is the language's
