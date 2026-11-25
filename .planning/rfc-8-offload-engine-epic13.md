@@ -1,20 +1,21 @@
 # Epic 13: engine offload shared work scheduler
 
-**Sources:** [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §6.1.1 (the scheduler, whole, with
-epic 11's amendments of `Key.ID`, `TenantID`, `Clock` and `Loop`, and this pull request's of
-`Stats`), the rules of §6.1 it carries out (posting never blocks, a key in at most one run), §6.3's
-paused tenant and O2, §2.3's `CancelTenant` and `WaitTenant` at `Drop` and `Unbind`, §2.5's stop
-step 2 (`Stop`), §13's E41 and the scheduler's half of E23, §14's `engine_queue_*` and
+**Sources:** [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §6.1.1 (the scheduler, whole, as
+#5877 amended it with `Key.ID`, `TenantID`, `Clock` and `Loop`, and as this pull request amends
+its `Stats`), the rules of §6.1 it carries out (posting never blocks, a key in at most one run),
+§6.3's paused tenant and O2, §2.3's `CancelTenant` and `WaitTenant` at `Drop` and `Unbind`, §2.5's
+stop step 2 (`Stop`), §13's E41 and the scheduler's half of E23, §14's `engine_queue_*` and
 `engine_work_*` series, §15.2's "§6.1.1 a stuck run" over one instance, and §15.3's `ponytail:` on
 table checks; [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §3.5, the watchdog loop
 it turns; [RFC 24](../docs/internals/rfcs/rfc-24-resources.md) §5.1's row for background work
-items; [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §9.2, retries bounded by time.
+items; [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §9.2, retries bounded by time;
+[epic 11's document](rfc-8-offload-engine-epic11.md) D3, `Register`'s refusals.
 **Track:** A.
-**Epic 13 estimate: 7 subtasks, 19 man-days.**
+**Epic 13 estimate: 5 subtasks, 20.5 man-days.**
 **Depends on:** **S1**, interfaces frozen: epic 11's T11.1 lands `pkg/workqueue`'s surface with
-stub bodies and its import walk, and its pull request (#5877) amends RFC 8 §6.1.1 with `Loop`,
-`Clock`, `TenantID` and `Key.ID [16]byte`, which this document cites; **S2**, where track A
-starts. No component, journal or store: the package is a library over the standard library.
+stub bodies and its import walk; #5877, merged, amended RFC 8 §6.1.1 with `Loop`, `Clock`,
+`TenantID` and `Key.ID [16]byte`. **S2**, where track A starts. No component, journal or store:
+the package is a library over the standard library.
 **Blocks:** epic 14, which registers the engine's offload and removal sources on one instance per
 journal, hands it a watchdog loop, fills `JournalStats.Work` from `Stats` and turns §15.2's "§6.1.1
 a stuck run" and "§8.1 removal wedge" rows green over the engine's instances; epics 16 and 18
@@ -27,20 +28,9 @@ unchanged.
 ## 1. Goal
 
 Epic 13 fills the bodies epic 11 stubbed: `pkg/workqueue` dispatches background work as RFC 8
-§6.1.1 specifies, for any component that instantiates it, holding no durable state.
-
-**At the end of the epic:**
-
-- a source registered on a scheduler receives its tenants' work in batches, one run per key at a
-  time, each item completed on its own, posts merging per key and never blocking;
-- a failed item backs off per key with jitter, between its tenant's bounds, and is never retried
-  sooner by a post; a source with a `Deadline` sees an item's last dispatch marked `Expired`;
-- runs are bounded per source and per tenant, dispatch is shared by weight, and every instance
-  holds a fixed total of entries, all of it reserved, dropping and counting what does not fit;
-- a run past twice its `RunTimeout` is reported overdue and stalled, a lost wakeup or a source
-  whose every slot is overdue fails liveness through the watchdog loop, and §15.2's "§6.1.1 a stuck
-  run" passes over one instance;
-- tenants are added, changed live, paused, cancelled and joined, and `Stop` joins every run.
+§6.1.1 specifies (§3 numbers every rule), for any component that instantiates it, holding no
+durable state. At the end of the epic, §15.2's "§6.1.1 a stuck run" passes over one instance, and
+epic 14 can put the engine's sources on it.
 
 ### 1.1 In scope
 
@@ -53,8 +43,9 @@ fault-injecting clock; the markers of §6.1.1 and §15.3 at their code sites.
 - The engine's two sources, their `Rebuild`s from `DirtyFiles` and the unfinished-removal index,
   the events that post (`Dirty`, the age tick, `Pressure`, `RemovalPending`), the rescan that
   re-derives dropped work, the limits and tenant weights the engine registers (`Deadline` 0 for
-  O2, D13's equal budgets), one instance per journal, `Deps.Watchdog` and closing the loop after
-  `Stop`: epic 14.
+  O2, equal share budgets, a `Total` per source that holds the journal's shards and sums to RFC 13's
+  fixed 262,144 entries per instance), one instance per journal, `Deps.Watchdog` and closing the
+  loop after `Stop`: epic 14.
 - Turning `Stats` into `JournalStats.Work` and the §14 series' labels: epic 14 fills the field, and
   the integration epic adapts it into the node's series, including keeping a cancelled tenant's
   counters (§9).
@@ -88,22 +79,22 @@ cited by number and title and not copied.
 | --- | --- | --- |
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | `unit` tests of `pkg/workqueue` under `-race`, over `sim.TestClock` (kind 1), RFC 25's real `*health.Watchdog`, the package's test workload (D9) and a fault-injecting clock around `sim.TestClock` (kind 3). No engine, journal or store, and no internal interface for a test to stand in for |
 | rule 2, fuzz the key and ref decoders the queue's rebuild reads | T13.1 | no decoder here: keys arrive as typed values. The state table is checked by its table, and RFC 8 §15.3's `ponytail:` goes at its code site |
-| rule 3, observability follows RFC 25 | T13.1, T13.3, T13.4, T13.6 | the library owns the `engine_queue_*` and `engine_work_*` series as `Stats` fields per source and tenant (epic 11's D6); it registers no series and opens no span; epic 14 fills `JournalStats.Work` from them |
-| rule 4, profiling | all | every test runs under `prof.Watch`, which fails on a dispatcher goroutine or a run `Stop` left behind |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | each rule is asserted where a source meets it: the batches its `Run` receives, the `Stats` its owner reads, the liveness the watchdog answers. Concurrency under `-race` in T13.1, T13.2 and T13.7 |
+| rule 3, observability follows RFC 25 | T13.1, T13.3, T13.4, T13.5 | the library owns the `engine_queue_*` and `engine_work_*` series as `Stats` fields per source and tenant (epic 11's D6); it registers no series and opens no span; epic 14 fills `JournalStats.Work` from them |
+| rule 4, profiling | all | each test's parent runs under `prof.Watch` (never its subtests), which fails on a dispatcher goroutine or a run `Stop` left behind |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | each rule is asserted where a source meets it: the batches its `Run` receives, the `Stats` its owner reads, the liveness the watchdog answers. Concurrency under `-race` in T13.1, T13.2 and T13.5 |
 | rule 6, known failures shrink | none | no row of `known.yaml` is this epic's: §15.2's "§6.1.1 a stuck run" over the engine's instances is epic 14's, and the instance half here lands green in `unit`, which keeps no known list |
 | rule 7, v2 ignores v1, and the engine imports only what RFC 0 §1.2 allows | T13.1 | production files import the standard library only, as T11.1's walk holds; T13.1 also refuses `os`, `io/fs`, `net` and `database/sql` there (R2). Tests import `pkg/health`, `pkg/sim` and `internal/prof` |
 | rule 8, real dependencies for properties of those dependencies | none | the package has no dependency: its clock and loop are inputs, and the watchdog in its tests is RFC 25's real one |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T13.1, T13.2, T13.3, T13.5, T13.6 | §6.1.1's no-borrowing `decision:` at the reservation (T13.6); §15.3's `ponytail:` at the state table (T13.1); epic 11's D3 `decision:` at `Register` kept (T13.1); this document's markers as §4 names them |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T13.1 to T13.5 | §6.1.1's no-borrowing `decision:` at the reservation (T13.5); §15.3's `ponytail:` at the state table (T13.1); epic 11's D3 `decision:` at `Register` kept (T13.1); this document's markers as §4 names them |
 | rule 10, a test must be able to fail | all | each test names the break it catches; none asserts a stub's answer |
 | rule 11, a symbol is exported only if the RFC's interface uses it | T13.1, T13.4 | nothing is exported but §6.1.1's surface and D8's three `Stats` fields, pending the user's answer; the run context, the heaps and the stride passes are unexported |
-| rule 12, each subtask creates only what it declares | all | no file without a caller in its own subtask; the test workload and the fault-injecting clock land with their first tests |
+| rule 12, each subtask creates only what it declares | all | each `Stats` field lands with the subtask that fills it; the test workload and the fault-injecting clock land with their first tests |
 
 ## 3. Requirements and invariants
 
 Every obligation RFC 8, RFC 25, RFC 24 and RFC 0 place on the scheduler, numbered so subtasks and
-tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; the amended sections are
-§6.1.1 as epic 11 (#5877) and this pull request (D8) amend it.
+tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; "(as amended)" means as
+#5877 and this pull request (D8) amend it.
 
 **The library**
 
@@ -120,7 +111,7 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; the amend
 | R4 | A post for a running key sets its redo mark and nothing else; its `Done` then moves it to pending at once if the mark is set, and to absent otherwise | MUST | §6.1.1, §13 E41 | T13.1 |
 | R5 | A key is in at most one run at once | invariant | §13 E41, §6.1 | T13.1 |
 | R6 | A post for a key in backoff sets its redo mark and never moves its time earlier, so a re-derived post never resets the backoff to `BackoffMin` | MUST NOT | §6.1.1, §13 E41 | T13.3 |
-| R7 | `Post` never blocks and never grows with the bytes behind a key; it answers false when refused (an unknown source or tenant, a cancelled tenant, a stopped scheduler) or when dropped and counted | MUST | §6.1.1, §6.1; RFC 24 §5.1 | T13.1, T13.6 |
+| R7 | `Post` never blocks and never grows with the bytes behind a key; it answers false when refused (D10 names the causes) or when dropped and counted | MUST | §6.1.1, §6.1; RFC 24 §5.1 | T13.1, T13.5 |
 | R8 | An item whose `NotBefore` is zero is due now; none is dispatched before its not-before | MUST | §6.1.1 | T13.1 |
 
 **Batches and completion**
@@ -141,23 +132,23 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; the amend
 | R15 | Lowering a tenant's `BackoffMax` pulls each of its keys in backoff in to at most now plus the new cap; nothing else shortens a backoff | MUST | §6.1.1 | T13.3 |
 | R16 | `Deadline` bounds an item's retries by time, never by an attempt count; 0 retries it for as long as its source asks | MUST | §6.1.1, §6.3 O2; RFC 0 §9.2 | T13.3 |
 | R17 | At its `Deadline` an item is counted in `Expired` and dispatched once more with `Expired` set, never dropped silently | MUST | §6.1.1 | T13.3 |
-| R18 | While positive-rate pacing is deferred, `Throttled` backs its key off as `Retry` does, and `Register` refuses a `Rate` other than 0 (epic 11's D3) | MUST | §6.1.1 (as amended) | T13.1, T13.3 |
+| R18 | Every source registers `Rate` 0 while positive-rate pacing is deferred, and until then `Throttled` backs its key off as `Retry` does; `Register` refuses a `Rate` other than 0 with a panic naming the field | MUST | §6.1.1 (as amended); epic 11's D3 | T13.1, T13.3 |
 
 **Runs that do not return**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R19 | Every `Run`'s ctx carries `RunTimeout` | MUST | §6.1.1 | T13.4 |
-| R20 | A `Run` still running at twice `RunTimeout` is overdue: counted once in `OverdueRuns` (`engine_work_runs_overdue_total`), held in `Overdue` while it runs, its source and tenant `Stalled`; it keeps its slot | MUST | §6.1.1 (as amended), §14 | T13.4 |
-| R21 | A tenant whose entries have been due with none dispatched for 5 minutes is `Stalled` as well | MUST | §6.1.1 (as amended) | T13.4 |
+| R20 | A `Run` still running at twice `RunTimeout` is overdue: counted once in `OverdueRuns` (`engine_work_runs_overdue_total`), held in `Overdue` while it runs, its tenant `Stalled`, naming the source and the tenant; it keeps its slot | MUST | §6.1.1 (as amended), §14 | T13.4 |
+| R21 | A source whose entries have been due with none of them dispatched for 5 minutes is stalled too: `Stalled` is set on the tenant holding its oldest due entry | MUST | §6.1.1 (as amended) | T13.4 |
 
 **The watchdog loop**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R22 | The scheduler turns its loop (`Turn`) after each dispatch and each run's return | MUST | §6.1.1 (as amended); RFC 25 §3.5 | T13.5 |
-| R23 | It reports `Idle` only while no entry is due, or while every slot a due entry waits for holds a run that is not overdue, and while it waits it repeats `Idle` at least every 30 s; so a lost wakeup with entries due and a slot free, or a source whose slots all hold overdue runs, fails liveness within the watchdog's 60 s | MUST | §6.1.1; RFC 25 §3.5 | T13.5 |
-| R24 | §15.2's "§6.1.1 a stuck run", over one instance: with two tenants holding work, a `Run` of one that ignores its ctx in every slot that tenant may hold makes `Stalled` name its source and tenant within twice `RunTimeout`, `OverdueRuns` rise, and the other tenant's work still run; every slot of a source held by overdue runs, and separately one dispatch wakeup lost with entries due and a slot free, each fail liveness within 60 s | test row | §15.2 | T13.5 |
+| R22 | The scheduler turns its loop (`Turn`) after each dispatch and each run's return, from the dispatcher, so a dispatcher that stops turns no loop however many runs return | MUST | §6.1.1 (as amended); RFC 25 §3.5 | T13.4 |
+| R23 | It reports `Idle` only while no entry is due, or while every slot a due entry waits for holds a run that is not overdue (D14 reads "waits for"), and while it waits it repeats `Idle` at least every 30 s; so a lost wakeup with entries due and a slot free, or a source whose slots all hold overdue runs, fails liveness within the watchdog's 60 s | MUST | §6.1.1 (as amended); RFC 25 §3.5 | T13.4 |
+| R24 | §15.2's "§6.1.1 a stuck run", over one instance: with two tenants holding work, a `Run` of one that ignores its ctx in every slot that tenant may hold makes `work_queue_stalled` (`Stalled`) name its source and tenant within twice `RunTimeout`, `engine_work_runs_overdue_total` (`OverdueRuns`) rise, and the other tenant's work still run; every slot of a source held by overdue runs, and separately one dispatch wakeup lost with entries due and a slot free, each fail liveness within 60 s | test row | §15.2; §6.1.1 (as amended) | T13.4 |
 
 **Concurrency and fairness**
 
@@ -170,9 +161,9 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; the amend
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R27 | An instance holds a fixed total of entries, all of it reserved: each source its `Total`, and within it each tenant max(1, ⌊`Total` × its weight ÷ the source's weights⌋) | MUST | §6.1.1; RFC 24 §5.1 | T13.6 |
-| R28 | A post for an absent key whose tenant holds its reservation is dropped and counted in `Dropped`; it never takes another tenant's entry, and no tenant borrows another's reservation | MUST NOT | §6.1.1 | T13.6 |
-| R29 | The total also bounds the tenants one source serves: a tenant past its source's `Total` is refused by `SetTenant` with an error naming the cause | MUST | RFC 24 §5.1 | T13.6 |
+| R27 | An instance holds a fixed total of entries, all of it reserved: each source its `Total`, and within it each tenant max(1, ⌊`Total` × its weight ÷ the source's weights⌋) | MUST | §6.1.1; RFC 24 §5.1 | T13.5 |
+| R28 | A post for an absent key whose tenant holds its reservation is dropped and counted in `Dropped`; it never takes another tenant's entry, and no tenant borrows another's reservation | MUST NOT | §6.1.1 | T13.5 |
+| R29 | The total also bounds the tenants a source serves: a `SetTenant` that would take its source's reservations past `Total` is refused with a named cause | MUST | RFC 24 §5.1; §6.1.1 | T13.5 |
 | R30 | A `Paused` tenant has none of its entries dispatched, keeps them, so pausing loses no work, and grows no backoff | MUST | §6.1.1, §6.3 | T13.3 |
 
 **Sources and tenants**
@@ -181,22 +172,21 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; the amend
 | --- | --- | --- | --- | --- |
 | R31 | A source is registered before `Start`, its `Limits` fixed for its life, and dispatch begins at `Start` | MUST | §6.1.1 | T13.1 |
 | R32 | `SetTenant` adds a tenant, running its source's `Rebuild` for it, whose posts take the tenant's reservation, so a tenant the node gains has its work rebuilt; or changes a tenant live, its weight, backoff and pause applying without a restart | MUST | §6.1.1, §13 E23 | T13.1, T13.3 |
-| R33 | `CancelTenant` drops the tenant's entries and cancels its runs, so no entry of the tenant is dispatched once it returns, and refuses the tenant's posts until `SetTenant` | MUST | §6.1.1, §2.3 | T13.7 |
-| R34 | A `StopTenant` result acts as `CancelTenant` for its item's tenant | MUST | §6.1.1 | T13.7 |
-| R35 | `WaitTenant` returns once every run of the tenant in flight at the call has returned | MUST | §6.1.1, §2.3 | T13.7 |
+| R33 | `CancelTenant` drops the tenant's entries and cancels its runs, so no entry of the tenant is dispatched once it returns, and refuses the tenant's posts until `SetTenant`; a cancel during the tenant's `Rebuild` wins | MUST | §6.1.1, §2.3 | T13.5 |
+| R34 | A `StopTenant` result acts as `CancelTenant` for its item's tenant | MUST | §6.1.1 | T13.5 |
+| R35 | `WaitTenant` returns once every run of the tenant in flight at the call has returned | MUST | §6.1.1, §2.3 | T13.5 |
 | R36 | `Stop` refuses dispatch, cancels every run and joins them | MUST | §6.1.1, §2.5 | T13.1 |
-| R37 | `Stats` reports, per source and tenant, the entries pending, in backoff and running, the runs in flight, the overdue runs, the age of the oldest entry due and not dispatched, the items dropped and expired, and the time the last run returned: the `engine_queue_*` and `engine_work_*` series the library owns | MUST | §6.1.1 (as amended), §14 | T13.1, T13.3, T13.4, T13.6 |
+| R37 | `Stop` is bounded by its ctx: a run that ignores its cancel leaves `Stop` returning the ctx's error at its end, with nothing dispatched after the call | MUST | §6.1.1, §2.5 | T13.1 |
+| R38 | `Stats` reports, per source and tenant, the entries pending, in backoff and running, the runs in flight, the overdue runs, the age of the oldest entry due and not dispatched, the items dropped and expired, and the time the last run returned: the `engine_queue_*` and `engine_work_*` series the library owns | MUST | §6.1.1 (as amended), §14 | T13.1, T13.3, T13.4, T13.5 |
 
 ## 4. Decisions this epic takes
 
 - **D1, a batch holds one tenant's items, oldest due first.** §6.1.1 says "one source" and leaves
   the tenant open. One tenant per batch is what lets per-tenant concurrency count runs (R25), lets
   `CancelTenant` cancel a tenant's runs without touching another's, and matches the engine's pass,
-  which serves one shard. Within a tenant the dispatcher takes the oldest due entry first, so an
-  entry that waits 5 minutes means no entry of its tenant was dispatched for 5 minutes (R21).
-  Changing it after epic 14 would rewrite the engine's `Run`, which assumes one shard. No marker:
-  the doc comment of `Run` says it. Prior art: client-go's workqueue hands out one key at a time,
-  oldest first (from memory); none found for batches.
+  which serves one shard. Changing it after epic 14 would rewrite the engine's `Run`, which assumes
+  one shard. No marker: the doc comment of `Run` says it. Prior art: client-go's workqueue hands
+  out one key at a time, oldest first (from memory); none found for batches.
 - **D2, fairness is two-level stride scheduling, counted in items.** Each source with dispatchable
   work holds a pass advanced by the items it was given ÷ its `Weight`, and each of its tenants a
   pass advanced the same way by the tenant's weight; the dispatcher serves the lowest pass at each
@@ -205,14 +195,14 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; the amend
   tenants, O(tenants) per dispatch, and counts items, not `Cost`, so a source whose items are
   heavier gets more work per share; upgrade to a heap of passes when a profile at the engine's
   10⁴ shares shows the scan, and to `Cost` with positive-rate pacing (RFC 9), which gives `Cost`
-  its first reader. Prior art: Waldspurger and
-  Weihl's stride scheduling (1995) and Linux CFS's placement of a waking task at the minimum
-  virtual runtime (from memory).
+  its first reader. Prior art: Waldspurger and Weihl's stride scheduling (1995) and Linux CFS's
+  placement of a waking thread at the minimum virtual runtime (from memory).
 - **D3, jitter is a hash, not a random source.** `New` takes no random source and §6.1.1 freezes
-  it, so the delay of a key's n-th consecutive failure is drawn in [d/2, d], d = min(`BackoffMax`,
-  `BackoffMin` × 2ⁿ⁻¹), from an FNV-1a hash of the key and n. Two keys failing together spread
-  apart, a test knows every delay exactly, and no global state is read. The RFC 3 plan takes the
-  same rule for the syncer's retries (a hash of the store and the attempt). `decision:` at the delay
+  it, so the delay of a key's n-th consecutive failure is drawn in [d/2, d], d = `BackoffMin`
+  doubled n − 1 times and stopped at `BackoffMax` (doubling stops at the cap, so no failure count
+  overflows it), from an FNV-1a hash of the key and n. Two keys failing together spread apart, a
+  test knows every delay exactly, and no global state is read. The RFC 3 plan takes the same rule
+  for the syncer's retries (a hash of the store and the attempt). `decision:` at the delay
   function, withdrawn if a measurement shows keys of one tenant retrying in lockstep. Prior art:
   "equal jitter" in AWS's "Exponential Backoff And Jitter" (from memory).
 - **D4, a `Deadline` counts from the key's first failure since it last left.** The clock starts at
@@ -222,11 +212,18 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; the amend
   case it is pending at once as new work with no deadline running. `decision:` at the expiry,
   withdrawn if GC, its first source with a deadline, needs an expired item kept. Prior art: none
   found. The engine registers 0, so only GC's sources meet it.
-- **D5, a run's deadline is on the injected clock.** `context.WithTimeout` runs on real time, which
-  a test clock cannot advance. Each run gets an unexported context whose `Deadline` is the clock's
-  `Now` plus `RunTimeout` and whose `Err` becomes `context.DeadlineExceeded` when the clock passes
-  it, so a source that reads `ctx.Err()` sees what it would under `WithTimeout`. Prior art:
-  benbjohnson/clock's mock `WithTimeout` (from memory). No marker.
+- **D5, one wait on the clock per instance, and a run's deadline on it.** `Clock.After` has no
+  stop, and `context.WithTimeout` runs on real time, which a test clock cannot advance. So the
+  dispatcher holds one wait, re-armed after each pass for the earliest of: the next not-before,
+  the next backoff end, the earliest run deadline or overdue point, the 5-minute stall point and
+  the 30-second heartbeat. Each run gets an unexported context, wrapping a `context.WithCancel`,
+  whose `Deadline` is the clock's start of the run plus `RunTimeout` and whose `Err` the
+  dispatcher sets to `context.DeadlineExceeded` when its wait passes that point, so a source that
+  reads `ctx.Err()` sees what it would under `WithTimeout`. Due times are kept on the clock's
+  `Elapsed`, a `NotBefore` converted once at `Post`, so a step of the wall clock moves no entry.
+  `ponytail:` at the wait: a superseded `After` stays armed until its time passes, one per pass at
+  most; upgrade to a clock with a stoppable timer if a profile shows them. Prior art:
+  benbjohnson/clock's mock `WithTimeout` (from memory).
 - **D6, the idle heartbeat never dispatches.** The scheduler wakes at least every 30 s to repeat
   `Idle`, and that wakeup only reports: it dispatches nothing. A heartbeat that dispatched would turn
   a lost wakeup into a hidden 30-second delay, which RFC 25 §3.5's decision says the work scheduler
@@ -242,35 +239,42 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; the amend
   but §14 reports both the entries in the running state (`engine_queue_entries{state}`) and the runs
   in flight (`engine_work_runs_inflight`), which differ once a run holds a batch. `Overdue` is a
   gauge of runs overdue now, but `engine_work_runs_overdue_total` is a counter, and a gauge misses a
-  run that returns between two reads. And nothing lets a reader raise `work_queue_stalled`'s
-  5-minute half without holding the scheduler's 5 minutes and its dispatch order itself. This pull
-  request amends §6.1.1:
+  run that returns between two reads. And no `Stats` field tells when a source last dispatched, so
+  a reader cannot raise `work_queue_stalled`'s 5-minute half at all: `OldestPending` reaching 5
+  minutes does not mean nothing was dispatched for 5 minutes. This pull request amends §6.1.1:
   ```go
   type Stats struct { // per source and tenant
   	Pending, Backoff, Running, Runs, Overdue int // entries by state; Runs: runs in flight; Overdue: runs overdue now
   	OldestPending                            time.Duration
   	Dropped, Expired, OverdueRuns            uint64 // OverdueRuns: runs that passed twice RunTimeout, each counted once
-  	Stalled                                  bool   // work_queue_stalled: a run overdue, or entries due with none dispatched for 5 minutes
-  	LastDone                           time.Time
+  	Stalled                                  bool   // work_queue_stalled: a run of the tenant overdue, or the source's due entries undispatched for 5 minutes, the oldest the tenant's
+  	LastDone                                 time.Time
   }
   ```
-  The scheduler raises the condition this way, the engine's epic 20 and GC turning `Stalled` into
-  their `work_queue_stalled`, and the rule stays in one place. Alternatives and the recommendation
-  are in §9. Changing it after epic 14 fills `JournalStats.Work` would touch each reader. No marker.
+  The scheduler decides the stall, the engine's epic 20 and GC turning `Stalled` into their
+  `work_queue_stalled`, and the rule stays in one place. Alternatives and the recommendation are in
+  §9. Changing it after epic 14 fills `JournalStats.Work` would touch each reader. No marker.
 - **D9, the tests drive the scheduler with a workload, not a double.** The scheduler calls a
   `Source`; it relies on it for nothing but the work. The package's one test workload,
   `source_test.go`, delivers each batch it is handed on a channel (the scheduler's output) and
   answers each item with the outcome, the block or the late `done` the test hands it (the test's
   input, as RFC 8 §15.2's row asks of a run that ignores its ctx). It stands in for no dependency, so
-  it has no conformance suite. Tests synchronise on those channels and on `sim.TestClock.Armed`, and
-  on a per-instance hook set from `export_test.go` that delivers each pass of the dispatcher, so
-  a test that shows nothing was dispatched advances the clock past the deadline and waits for that
-  pass rather than for time. A lost wakeup is a kind-3 wrapper around `sim.TestClock` that swallows
-  one `After` of a given duration; liveness is RFC 25's real `*health.Watchdog`. Prior art: none
-  found.
-- **D10, a failed `Rebuild` adds nothing.** `SetTenant` adding a tenant returns `Rebuild`'s error
-  and leaves the tenant absent, its rebuilt entries dropped, so the caller sees one state for one
-  answer and retries the whole call. No marker. Prior art: none found.
+  it has no conformance suite. Tests synchronise on those channels and on a per-instance hook, set
+  from `export_test.go`, that delivers the end of each dispatcher pass, since D5's single wait has
+  no duration a test could name to `sim.TestClock.Armed`; a test that shows nothing was dispatched
+  advances the clock past the deadline and waits for that pass rather than for time. A lost wakeup
+  is a kind-3 wrapper around `sim.TestClock` that forwards one `After` to the inner clock, so the
+  test's view of armed waits stays true, and returns a channel that never closes. Liveness is RFC
+  25's real `*health.Watchdog`, which fails strictly past 60 s, so the liveness legs advance past
+  it. Prior art: none found.
+- **D10, what `SetTenant` and `Post` refuse, and when a `Rebuild` runs.** `Post` answers false for
+  an unknown source or tenant, a cancelled tenant and a stopped scheduler, and for a drop; nothing
+  else refuses. `SetTenant` adding a tenant runs `Rebuild` without the scheduler's lock, so posts to
+  other tenants never wait on it; the tenant's own posts during it are staged and take effect when
+  `Rebuild` returns nil. A `Rebuild` error leaves the tenant absent, its staged entries dropped, so
+  the caller sees one state for one answer and retries the whole call; a `CancelTenant` during the
+  `Rebuild` marks it cancelled, and `SetTenant` then returns `context.Canceled` and adds nothing.
+  No marker. Prior art: none found.
 - **D11, `Result.Err` is the source's to report.** `New` takes a clock and a loop, no logger or
   sink, so the scheduler reads only the outcome (R12) and drops `Err`; the source that set it holds
   its own logs and conditions, as the engine's do. `decision:` at `done`, withdrawn if a consumer
@@ -278,16 +282,27 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; the amend
 - **D12, misuse panics, as epic 11's D3 decides for `Register`.** `Register` after `Start`, a `done`
   for an index outside its batch, a second `done` for one item, or one after its `Run` returned is
   a programming error of the source and panics naming it (a `done` from a run of a cancelled
-  tenant is not: T13.7 ignores it); nothing a setting or a peer controls reaches one. Kept under D3's
-  `decision:` at `Register`. Prior art: `sync.WaitGroup`'s negative counter panic (from memory).
-- **D13, how weights and reservations meet.** A tenant "with work" (R25) has an entry due or a run
-  in flight; a reservation (R27) divides by the weights of all the source's tenants, since it must
-  not move with load. A reweighting or a new tenant shrinks the others' reservations without
-  evicting: a tenant above its new reservation keeps its entries and drops new posts until under.
-  The floor of one entry per tenant can take a source's reservations past its `Total` by at most
-  one entry per tenant whose share rounds below one, and since a source serves at most `Total`
-  tenants (R29), an instance holds at most twice its total. `decision:` at the reservation,
-  beside §6.1.1's no-borrowing one, withdrawn if RFC 24's inventory needs the strict total. Prior
+  tenant is not: T13.5 ignores it); nothing a setting or a peer controls reaches one. Kept under
+  D3's `decision:` at `Register`. Prior art: `sync.WaitGroup`'s negative counter panic (from memory).
+- **D13, the reservations never exceed the total.** A tenant "with work" (R25) has an entry due or
+  a run in flight; a reservation (R27) divides by the weights of all the source's tenants, since it
+  must not move with load. R27's floor of one entry per tenant can take the sum of a source's
+  reservations past its `Total` when weights are uneven, which RFC 24 §5.1's "all of it reserved"
+  forbids, so `SetTenant` refuses an addition or a reweighting that would, naming the source and its
+  total (R29): the strict total holds, and with equal weights any number of tenants up to `Total`
+  fits. A reweighting that shrinks the others' reservations evicts nothing: a tenant above its new
+  reservation keeps its entries and drops new posts until under. `decision:` at the reservation,
+  beside §6.1.1's no-borrowing one, withdrawn if a consumer needs more tenants than the formula
+  fits. Prior art: none found.
+- **D14, an entry waits for its source's slots (pending the user's answer).** R23 lets the
+  scheduler report idle "while every slot it waits for holds a run that is not overdue". Read as
+  the entry's tenant's slots, one tenant whose runs all hang withholds `Idle` for the whole
+  instance, and once the other tenants drain, liveness fails and the node restarts for one stuck
+  shard, against §6.1.1's "a slow or throttled tenant holds only its own slots" and RFC 25 §3.5's
+  "no dependency fails liveness". Read as the source's slots, the idle rule withholds `Idle` only
+  for a lost wakeup or a source whose every slot is overdue, which is exactly §15.2's row; one
+  tenant's stuck runs raise `Stalled` (R20) and stay visible. Written as the source's slots; RFC 8
+  §6.1.1's sentence is amended to say so once the user agrees. `decision:` at the idle rule. Prior
   art: none found.
 
 ## 5. Target tree
@@ -296,72 +311,74 @@ On `feat/storage-v2`.
 
 ```text
 pkg/workqueue/
-  workqueue.go        T11.1  the surface; T13.1 New, Register, Start, Post, Stop, Stats filled
+  workqueue.go        T11.1  the surface; T13.1 New, Register, Start, Post, Stop, Stats filled, Stats gains Runs; T13.4 OverdueRuns, Stalled
   entry.go            T13.1  a key's states and the merge of posts (§15.3's ponytail: here); T13.3 backoff and expiry
-  dispatch.go         T13.1  the dispatcher, batches and done; T13.2 concurrency and stride passes; T13.5 Turn, Idle and the heartbeat
+  dispatch.go         T13.1  the dispatcher, its one wait, batches and done; T13.2 concurrency and stride passes; T13.4 Turn, Idle, the heartbeat
   backoff.go          T13.3  the jittered delay (D3)
   run.go              T13.1  a run's goroutine and context; T13.4 the deadline on the clock (D5), overdue and stall
-  tenant.go           T13.1  SetTenant's add and change; T13.6 reservations; T13.7 CancelTenant, StopTenant, WaitTenant
+  tenant.go           T13.1  SetTenant's add and change; T13.5 reservations, CancelTenant, StopTenant, WaitTenant
   imports_test.go     T11.1  the walk; T13.1 refuses os, io/fs, net and database/sql in production files
   export_test.go      T13.1  the per-instance dispatch-pass hook (D9)
   source_test.go      T13.1  the test workload (D9)
-  clock_test.go       T13.5  the clock that swallows one After (kind 3)
+  clock_test.go       T13.4  the clock that loses one After (kind 3)
   state_test.go       T13.1  the state table, merges, batches, done, Stop
   fair_test.go        T13.2  concurrency bounds and shares
   backoff_test.go     T13.3  backoff, deadlines, pausing
-  overdue_test.go     T13.4  run deadlines, overdue, stall
-  liveness_test.go    T13.5  the watchdog rules and §15.2's stuck run
-  reserve_test.go     T13.6  totals, drops, the tenant bound
-  tenant_test.go      T13.7  cancel, StopTenant, wait
-docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains OverdueRuns and Stalled (D8)
+  liveness_test.go    T13.4  run deadlines, overdue, stall, the watchdog rules and §15.2's stuck run
+  tenant_test.go      T13.5  totals, drops, the tenant bound, cancel, StopTenant, wait
+docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains Runs, OverdueRuns and Stalled (D8)
 ```
 
 ## 6. Subtasks
 
 ### T13.1 Keys, posts, batches and `Stop`
 
-**Subtask T13.1 estimate: 4 man-days.**
+**Subtask T13.1 estimate: 5 man-days.**
 
-- **Track:** A. **Depends on:** S1.
-- **Covers:** R1, R2, R3, R4, R5, R7, R8, R9, R10, R12, R18, R31, R32, R36, R37.
+- **Track:** A. **Depends on:** S1, S2.
+- **Covers:** R1, R2, R3, R4, R5, R7, R8, R9, R10, R12, R18, R31, R32, R36, R37, R38.
 - **Deliverables:** the bodies of `New`, `Register` (epic 11's D3 refusals, `Register` after
-  `Start` added, D12), `Start`, `Post`, `SetTenant` for a new tenant (its `Rebuild` run inline, D10)
-  and for a changed one (stored, read by T13.2 and T13.3), `Stop` and `Stats`; one dispatcher
-  goroutine per instance, woken by a one-slot channel and by the clock's `After` at the next
-  not-before; entries per tenant in a map with a heap by due time (D1); the state table of §6.1.1
-  for absent, pending and running, `Done` moving a key to absent or, with its redo mark, to pending;
-  one goroutine per run, whose context `Stop` cancels; `done` applied at once under the scheduler's
-  lock, `Err` dropped (D11). Due times are kept on the clock's `Elapsed`, a `NotBefore` converted
-  once at `Post`, so a step of the wall clock moves no entry. `Retry`, `Throttled` and an item
-  returned without `done` move to backoff with T13.3, so T13.1's tests answer `Done`. `Stats` fills
-  `Pending`, `Running` (entries in a run), `OldestPending` and `LastDone`, and, as D8 adds it,
-  `Runs`.
-  The test workload, the dispatch-pass hook and the import walk's refusals (D9). Consumed by every
-  later subtask and by epic 14, which registers its sources.
+  `Start` added, D12), `Start`, `Post`, `SetTenant` for a new tenant (its `Rebuild` outside the
+  lock, D10) and for a changed one (stored, read by T13.2 and T13.3), `Stop` and `Stats`; one
+  dispatcher goroutine per instance, woken by a one-slot channel and by D5's one wait; entries per
+  tenant in a map with a heap by due time (D1); the state table of §6.1.1 for absent, pending and
+  running, `Done` moving a key to absent or, with its redo mark, to pending; one goroutine per run,
+  whose context `Stop` cancels; `done` applied at once under the scheduler's lock, `Err` dropped
+  (D11). `Retry`, `Throttled` and an item returned without `done` move to backoff with T13.3, so
+  T13.1's tests answer `Done`. `Stats` fills `Pending`, `Running` (entries in a run),
+  `OldestPending` and `LastDone`, and `Runs`, which `workqueue.go`'s `Stats` gains here (D8), with
+  epic 11's export pin updated to match. The test workload, the dispatch-pass hook and the import
+  walk's refusals (D9). Consumed by every later subtask and by epic 14, which registers its sources.
 - **Acceptance criteria:**
   - Each row of §6.1.1's state table for absent, pending and running moves a key as the table says,
     and a post never makes two entries of one key.
   - A batch has at most `Batch` items, of one tenant, oldest due first, none of a running key, none
     before its not-before.
   - A slow item in a batch holds back no other: the others' keys move when their `done` arrives.
-  - `Post` called from many goroutines while runs complete returns without waiting on a run, and
-    `Stop` returns only once every run has returned, its context cancelled.
+  - `Post` called from many goroutines while runs complete returns without waiting on a run or on
+    another tenant's `Rebuild`.
+  - `Stop` returns once every run has returned, its context cancelled; with a run that ignores its
+    cancel, it returns its ctx's error at the ctx's end and dispatches nothing more.
   - Two instances are independent: one whose runs block dispatches nothing of the other's.
 - **Tests:** at the batches the test workload receives and at `Stats`, over `sim.TestClock`
-  (kind 1), each under `prof.Watch`: a table of the state table's rows, each a post or an outcome
-  and the state the key reaches, read back from `Stats` and the next batch (catches a merge that
-  makes a second entry, R3, or a redo lost, R4); a `-race` test where many goroutines post the same
-  keys while the workload records each key's concurrent runs, failing on two at once (catches R5's
-  violation, RFC 8 E41); a batch with one item blocked and the rest done, whose keys are posted
-  again and dispatched while it blocks (catches done applied at the run's return, R10); a post with
-  a future `NotBefore`, dispatched only once the clock passes it (R8); `Post` from 64 goroutines
-  while every run is blocked, each call returning (catches a post that waits on the dispatcher,
-  R7); two instances, one with a run blocked, the other dispatching (R1); `Stop` with runs in
-  flight, `prof.Watch` failing if one is left (R36); an `Err` with `Done`, the key leaving as for a
-  `Done` without one (R12); `Register` with each refused limit, and after `Start`, panicking with
-  the field named (R18, R31); the import walk with a planted `os` import (R2). No test double.
+  (kind 1), each test's parent under `prof.Watch`: a table of the state table's rows, each a post or
+  an outcome and the state the key reaches, read back from `Stats` and the next batch (catches a
+  merge that makes a second entry, R3, or a redo lost, R4); a `-race` test where many goroutines
+  post the same keys while the workload records each key's concurrent runs, failing on two at once
+  (catches R5's violation, RFC 8 E41); a batch with one item blocked and the rest done, whose keys
+  are posted again and dispatched while it blocks (catches done applied at the run's return, R10);
+  a batch of 3 items counted in `Runs` as 1 and in `Running` as 3 (catches the two counts merged,
+  R38); a post with a future `NotBefore`, dispatched only once the clock passes it (R8); `Post` from
+  64 goroutines while every run is blocked and another tenant's `Rebuild` is held, each call
+  returning (catches a post that waits on the dispatcher or a `Rebuild`, R7); two instances, one
+  with a run blocked, the other dispatching (R1); `Stop` with runs in flight, `prof.Watch` failing if
+  one is left (R36), and `Stop` with a run ignoring its cancel, returning `context.DeadlineExceeded`
+  from a ctx the test ends (catches a `Stop` that hangs, R37); an `Err` with `Done`, the key leaving
+  as for a `Done` without one (R12); `Register` with each refused limit, and after `Start`,
+  panicking with the field named (R18, R31); the import walk with a planted `os` import (R2). No
+  test double.
 - **Rules:** rule 2 and rule 9: §15.3's `ponytail:` at the state table, naming "one entry per key"
-  as the property a model target would check.
+  as the property a model target would check; D5's `ponytail:` at the wait.
 
 ### T13.2 Concurrency and fair shares
 
@@ -371,7 +388,7 @@ docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains O
 - **Covers:** R25, R26.
 - **Deliverables:** in `dispatch.go`, the per-source and per-tenant run bounds of R25, the tenants
   with work counted as D13 says, and D2's two-level stride passes with its `ponytail:`. Consumed by
-  T13.5, whose stuck-run row needs a tenant's slots bounded, and by epic 14's tenant weights.
+  T13.4, whose stuck-run row needs a tenant's slots bounded, and by epic 14's tenant weights.
 - **Acceptance criteria:**
   - A source never has more than `Concurrency` runs, nor a tenant more than R25's bound, while
     tenants gain and lose work.
@@ -391,14 +408,14 @@ docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains O
 **Subtask T13.3 estimate: 3 man-days.**
 
 - **Track:** A. **Depends on:** T13.1.
-- **Covers:** R6, R11, R13, R14, R15, R16, R17, R18, R30, R32, R37.
+- **Covers:** R6, R11, R13, R14, R15, R16, R17, R18, R30, R32, R38.
 - **Deliverables:** the backoff state of §6.1.1's table, a post there setting redo and never moving
   its time; `Retry`, `Throttled` and an item returned without `done` backing off by D3's delay, with
   its `decision:`; `Done` resetting the key's attempt count; a lowered `BackoffMax` in `SetTenant`
   pulling the tenant's backed-off keys in; `Deadline` and `Expired` as D4 says, with its
   `decision:`; `Paused` holding entries undispatched and, by D7, not due, with its `decision:`.
-  `Stats` fills `Backoff` and `Expired`. Consumed by T13.4 (the stall skips paused tenants), T13.5,
-  epic 14 (`offload.retry_*`, the pressure cap) and epic 16 (the pause).
+  `Stats` fills `Backoff` and `Expired`. Consumed by T13.4 (the stall skips paused tenants), epic 14
+  (`offload.retry_*`, the pressure cap) and epic 16 (the pause).
 - **Acceptance criteria:**
   - A key failing n times waits D3's delay before each retry, never above `BackoffMax`, and its
     first wait after a `Done` is the first again.
@@ -407,149 +424,147 @@ docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains O
     and raising it moves none.
   - A batch with one `Retry` and two `Done`s retries only the first.
   - With a `Deadline`, the item's last dispatch carries `Expired`, `Expired` counts it once, and the
-    key leaves whatever that run reports; with `Deadline` 0 a key failing for a simulated year is
-    still retried at `BackoffMax`.
-  - A paused tenant's entries stay through any number of ticks, none dispatched, and dispatch
-    resumes with every one when the pause lifts.
+    key leaves whatever that run reports; with `Deadline` 0 a key failing 10⁵ times is still
+    retried at `BackoffMax`.
+  - A paused tenant's entries stay through any number of ticks, none dispatched, its keys in
+    backoff keep their delays, and dispatch resumes with every one when the pause lifts.
 - **Tests:** at the batches and `Stats`, on `sim.TestClock`, advancing it to each expected retry
   and to one tick before it: the delays of ten consecutive failures against D3's formula (catches a
-  delay that does not double, is not capped, or ignores the key, R14); a post during backoff, the
-  key not dispatched before its time (catches a post that resets the backoff, R6); a lowered and a
-  raised cap (R15); a batch of mixed outcomes and one item left without `done` (R11, R13); a
-  `Deadline` of 10 min with every run failing, the `Expired` item seen once and counted, and a year
-  of failures with `Deadline` 0 (R16, R17); a `Throttled` key backing off exactly as a `Retry` one
-  (R18); a paused tenant with 100 entries across ten heartbeat periods, then unpaused (catches an
-  entry dropped or dispatched while paused, R30); `SetTenant` changing `BackoffMin` live, the next
-  failure using it (R32). No test double.
+  delay that does not double, is not capped, or ignores the key, R14); the delay at the 10⁵-th
+  failure, at most `BackoffMax` and positive (catches an overflowing doubling, R16); a post during
+  backoff, the key not dispatched before its time (catches a post that resets the backoff, R6); a
+  lowered and a raised cap (R15); a batch of mixed outcomes and one item left without `done` (R11,
+  R13); a `Deadline` of 10 min with every run failing, the `Expired` item seen once and counted
+  (R17); a `Throttled` key backing off exactly as a `Retry` one (R18); a paused tenant with 100
+  entries across ten heartbeat periods, then unpaused (catches an entry dropped or dispatched while
+  paused, R30), and a key in backoff paused across its retry time whose next delay after the pause
+  is the one before it (catches backoff grown while paused, R30); `SetTenant` changing `BackoffMin`
+  live, the next failure using it (R32). No test double.
 - **Rules:** rule 9: D3's, D4's and D7's `decision:` markers.
 
-### T13.4 Run deadlines, overdue runs and stalls
+### T13.4 Overdue runs, stalls and the watchdog loop
 
-**Subtask T13.4 estimate: 2.5 man-days.**
+**Subtask T13.4 estimate: 5 man-days.**
 
-- **Track:** A. **Depends on:** T13.3.
-- **Covers:** R19, R20, R21, R37.
+- **Track:** A. **Depends on:** T13.2, T13.3.
+- **Covers:** R19, R20, R21, R22, R23, R24, R38.
 - **Deliverables:** in `run.go`, D5's run context on the clock; the overdue check at twice
-  `RunTimeout`, the run keeping its slot; the 5-minute stall per tenant over due entries, paused ones
-  excluded (D7). `Stats` fills `Overdue` and, as D8 adds them, `OverdueRuns` and `Stalled`;
-  `workqueue.go`'s `Stats` type gains D8's three fields with their comments, `Runs` filled by
-  T13.1. Consumed by T13.5 and by
-  epics 14 and 20.
+  `RunTimeout`, the run keeping its slot; the 5-minute stall per source over due entries, from the
+  source's last dispatch, paused ones excluded (D7), set on the tenant with the oldest due entry.
+  In `dispatch.go`, `Turn` from the dispatcher after each dispatch and each run's return it
+  handles, `Idle` by R23's rule as D14 reads it, with its `decision:`, and the 30-second heartbeat
+  that reports only (D6), with its `decision:`. `workqueue.go`'s `Stats` gains `OverdueRuns` and
+  `Stalled` with their comments (D8); `Stats` fills `Overdue`, `OverdueRuns` and `Stalled`. The
+  fault-injecting clock of D9 in `clock_test.go`. Consumed by epic 14, which hands each journal's
+  instance its loop and runs the row over the engine's instances, and epic 20.
 - **Acceptance criteria:**
   - Every run's `ctx.Deadline()` is the clock's start of the run plus `RunTimeout`, and `ctx.Err()`
     is `context.DeadlineExceeded` once the clock passes it.
   - A run that ignores its ctx is overdue at twice `RunTimeout`, not before: `OverdueRuns` rises by
     one, `Overdue` is 1 until it returns, `Stalled` holds for its tenant only, and its slot is not
     reused.
-  - A tenant whose due entries wait 5 minutes with none dispatched is `Stalled`, a paused one is
-    not, and `Stalled` clears at its next dispatch.
-- **Tests:** at `Stats` and the workload's runs, on `sim.TestClock`: a run blocked on a channel,
-  the clock advanced to twice `RunTimeout` less a nanosecond and then past it (catches an overdue
-  reported early or not at all, or counted twice, R20); its slot still held, the tenant's next
-  entry waiting (catches a reclaimed slot); a run that reads `ctx.Err()` at the deadline (catches a
-  real-time deadline, R19); a tenant held at its concurrency by long runs for 5 minutes, `Stalled`
-  raised, and the same with the tenant paused, not raised (R21, D7). No test double.
-- **Rules:** rule 3: `OverdueRuns` is `engine_work_runs_overdue_total`; rule 11: the three fields
-  are D8's, exported only once the user agrees.
+  - A source whose due entries wait 5 minutes with none dispatched is `Stalled` on the tenant with
+    the oldest; a paused tenant's entries raise nothing; `Stalled` clears at the next dispatch.
+  - An idle instance, and a busy one whose slots hold runs that are not overdue, keep the watchdog
+    live; §15.2's "§6.1.1 a stuck run" passes over one instance, each assertion of R24.
+- **Tests:** at `Stats`, the workload's runs and RFC 25's real `*health.Watchdog` on the same
+  `sim.TestClock`, each advance waited out with the dispatch-pass hook, and no test duration equal
+  to the 30-second heartbeat:
+  - a run blocked on a channel, the clock advanced to twice `RunTimeout` less a nanosecond and then
+    past it (catches an overdue reported early or not at all, or counted twice, R20); its slot
+    still held, the tenant's next entry waiting (catches a reclaimed slot);
+  - a run that reads `ctx.Err()` at the deadline (catches a real-time deadline, R19);
+  - with `RunTimeout` 10 min, so no run is overdue, a source held at its concurrency by long runs:
+    `Stalled` false at 5 minutes less a nanosecond, true past 5 minutes on the tenant with the
+    oldest due entry, and false with that tenant paused (catches the 5-minute half missing, measured
+    per tenant, or counted while paused, R21, D7); a thousand tenants dispatched in turn faster than
+    every 5 minutes, none `Stalled` (catches a stall raised under fair contention);
+  - an idle instance, `Live` true after 10 minutes (catches a heartbeat that never repeats, R23);
+    continuous short runs with a backlog always due for 10 minutes, `Live` true (catches a missing
+    `Turn`, R22); every slot held by runs that are not overdue with entries due, `Live` true past
+    60 s (catches an `Idle` rule that is too strict, R23);
+  - the row's three legs: two tenants with work, every slot of one held by runs ignoring their ctx,
+    `Stalled` for that source and tenant only within twice `RunTimeout`, `OverdueRuns` risen, the
+    other tenant's items still dispatched; every slot of the source overdue, `Live` false past 60 s;
+    the clock wrapper losing the `After` of the dispatcher's wait for a due entry with a slot free,
+    `Live` false past 60 s (catches a heartbeat that reports idle with work due, or that dispatches
+    it, D6) (R24); and one tenant's runs all overdue while the source has free slots and no other
+    work, `Live` true past 60 s (catches D14's reading reversed).
 
-### T13.5 The watchdog loop and a stuck run
+  The wrapper is kind 3, around the real test clock.
+- **Rules:** rule 9: D6's and D14's `decision:` markers; rule 11: `OverdueRuns` and `Stalled` are
+  D8's, exported only once the user agrees; rule 3: `OverdueRuns` is
+  `engine_work_runs_overdue_total`.
 
-**Subtask T13.5 estimate: 2 man-days.**
+### T13.5 Reservations and the tenant lifecycle
 
-- **Track:** A. **Depends on:** T13.2, T13.4.
-- **Covers:** R22, R23, R24.
-- **Deliverables:** in `dispatch.go`, `Turn` after each dispatch and each run's return, `Idle` by
-  R23's rule, and the 30-second heartbeat that reports only (D6), with its `decision:`; the
-  fault-injecting clock of D9 in `clock_test.go`. Consumed by epic 14, which hands each journal's
-  instance its loop and runs the row over the engine's instances.
-- **Acceptance criteria:**
-  - An idle instance keeps the watchdog live across ten minutes of simulated time.
-  - §15.2's "§6.1.1 a stuck run" passes over one instance, each assertion of R24.
-- **Tests:** over RFC 25's real `*health.Watchdog` on the same `sim.TestClock`, each advance waited
-  out with `Armed` and the dispatch-pass hook: an idle instance, `Live` true after 10 minutes
-  (catches a heartbeat that never repeats, R23); the row's three legs: two tenants with work, every
-  slot of one held by runs ignoring their ctx, `Stalled` for that source and tenant only within
-  twice `RunTimeout`, `OverdueRuns` risen, the other tenant's items still dispatched; every slot of
-  the source overdue, `Live` false after 60 s; the clock wrapper swallowing the `After` of a due
-  entry's not-before with a slot free, `Live` false after 60 s (catches a heartbeat that reports
-  idle with work due, or that dispatches it, D6) (R22 to R24). The wrapper is kind 3, around the
-  real test clock.
-- **Rules:** rule 9: D6's `decision:`; rule 1: the watchdog is the real one.
-
-### T13.6 Reservations and drops
-
-**Subtask T13.6 estimate: 2 man-days.**
+**Subtask T13.5 estimate: 4.5 man-days.**
 
 - **Track:** A. **Depends on:** T13.1.
-- **Covers:** R7, R27, R28, R29, R37.
-- **Deliverables:** in `tenant.go`, each tenant's reservation by R27 and D13, recomputed when a
-  tenant is added, changed or cancelled; a post for an absent key past it dropped and counted in
-  `Dropped`; `SetTenant` refusing a tenant past its source's `Total`; §6.1.1's no-borrowing
-  `decision:` and D13's beside it. Consumed by epic 14, whose age tick and rescan stop posting at a
-  refused post, and T13.7.
+- **Covers:** R7, R27, R28, R29, R33, R34, R35, R38.
+- **Deliverables:** in `tenant.go`, each tenant's reservation by R27, recomputed when a tenant is
+  added, changed or cancelled; a post for an absent key past it dropped and counted in `Dropped`;
+  `SetTenant` refusing what D13 refuses; §6.1.1's no-borrowing `decision:` and D13's beside it.
+  `CancelTenant` dropping the tenant's entries, cancelling its runs' contexts and refusing its posts
+  until `SetTenant`, winning over a `Rebuild` in progress (D10); the `StopTenant` outcome taking the
+  same path; `WaitTenant` joining the runs in flight at the call; a tenant generation, so a `done`
+  from a run of a cancelled tenant changes nothing of the tenant added back. `Stats` fills
+  `Dropped`. Consumed by epic 14, whose age tick and rescan stop posting at a refused post, and epic
+  16's `Unbind` and `Drop`.
 - **Acceptance criteria:**
   - A tenant at its reservation drops a post for a new key, answers false and counts it, and still
-    merges posts for keys it holds.
-  - A full tenant never takes an entry of another, even while the other's reservation is empty.
-  - Adding tenants shrinks reservations without evicting an entry; a tenant past the source's
-    `Total` is refused with the cause named.
-- **Tests:** at `Post`'s answer and `Stats`: a table of totals and weights, each asserting every
-  tenant's reservation and the entries it can hold (catches a formula off by its rounding, R27);
-  one tenant posting 10× its reservation while another is empty, `Dropped` counting the excess and
-  the other's room unchanged (catches borrowing, R28); a post for a held key at a full tenant,
-  merged and answered true (R7); `Total` + 1 tenants, the last refused (R29). No test double.
-- **Rules:** rule 9: the two `decision:` markers.
-
-### T13.7 Cancelling and joining tenants
-
-**Subtask T13.7 estimate: 2.5 man-days.**
-
-- **Track:** A. **Depends on:** T13.6.
-- **Covers:** R33, R34, R35.
-- **Deliverables:** in `tenant.go`, `CancelTenant` dropping the tenant's entries, cancelling its
-  runs' contexts and refusing its posts until `SetTenant`; the `StopTenant` outcome taking the same
-  path; `WaitTenant` joining the runs in flight at the call; a tenant generation, so a `done` from a
-  run of a cancelled tenant changes nothing of the tenant added back. Consumed by epic 16's
-  `Unbind` and `Drop`.
-- **Acceptance criteria:**
+    merges posts for keys it holds; a full tenant never takes an entry of another, even while the
+    other's reservation is empty.
+  - The sum of a source's reservations never exceeds its `Total`; a `SetTenant` that would is
+    refused naming the source; a reweighting evicts no entry.
   - After `CancelTenant` returns, no item of the tenant is dispatched, its posts answer false, and
     each of its runs sees its ctx cancelled; `SetTenant` adds it back, rebuilt, with a fresh
-    reservation.
+    reservation; a cancel during its `Rebuild` leaves it absent.
   - A `StopTenant` from one item cancels the tenant's other runs and entries as `CancelTenant` does.
   - `WaitTenant` returns only after every run in flight at the call has returned, ignores runs
     dispatched after it, and returns `ctx.Err()` if its ctx ends first.
-- **Tests:** at the workload's runs and `Post`'s answer, under `-race`: a tenant with entries and
-  runs in flight, cancelled, then posted to and advanced past every not-before (catches an entry
-  dispatched after the cancel, R33); a late `done` from a cancelled run after `SetTenant` added the
-  tenant back, its new entry unchanged (catches a generation mix-up); a `StopTenant` in a batch
-  (R34); `WaitTenant` with two runs blocked, released one at a time, returning only after the
-  second (catches a join that returns early, R35). No test double.
-- **Rules:** rule 4: `prof.Watch` catches a cancelled run whose goroutine `Stop` does not join.
+- **Tests:** at `Post`'s answer, `SetTenant`'s error, `Stats` and the workload's runs, under
+  `-race`: a table of totals and weights, each asserting every tenant's reservation and the
+  entries it can hold (catches a formula off by its rounding, R27); one tenant posting 10× its
+  reservation while another is empty, `Dropped` counting the excess and the other's room unchanged
+  (catches borrowing, R28); a post for a held key at a full tenant, merged and answered true (R7);
+  `Total` + 1 tenants of equal weight, and a reweighting whose floors would pass `Total`, each
+  refused (catches reservations past the total, R29); a tenant with entries and runs in flight,
+  cancelled, then posted to and advanced past every not-before (catches an entry dispatched after
+  the cancel, R33); a `CancelTenant` while the tenant's `Rebuild` blocks, then the `Rebuild`
+  released, the tenant absent (catches a cancel lost to a rebuild, R33); a late `done` from a
+  cancelled run after `SetTenant` added the tenant back, its new entry unchanged (catches a
+  generation mix-up); a `StopTenant` in a batch (R34); `WaitTenant` with two runs blocked, released
+  one at a time, returning only after the second (catches a join that returns early, R35). No test
+  double.
+- **Rules:** rule 9: the two `decision:` markers; rule 4: `prof.Watch` catches a cancelled run
+  whose goroutine `Stop` does not join.
 
 ## 7. Order of work
 
 ```mermaid
 flowchart TD
+  S1(["S1 interfaces frozen"]):::sync --> T13_1
   S2(["S2 red rows in CI"]):::sync --> T13_1["T13.1 Keys, posts, batches, Stop"]
   T13_1 --> C1(["after T13.1: epic 14 can register its sources"]):::sync
   T13_1 --> T13_2["T13.2 Concurrency and fair shares"]
-  T13_1 --> T13_3["T13.3 Backoff, deadlines, pausing"] --> T13_4["T13.4 Run deadlines, overdue, stalls"]
-  T13_2 & T13_4 --> T13_5["T13.5 Watchdog loop and a stuck run"]
-  T13_5 --> C2(["after T13.5: §15.2's stuck run passes over one instance"]):::sync
-  T13_1 --> T13_6["T13.6 Reservations and drops"] --> T13_7["T13.7 Cancelling and joining tenants"]
+  T13_1 --> T13_3["T13.3 Backoff, deadlines, pausing"]
+  T13_2 & T13_3 --> T13_4["T13.4 Overdue, stalls, watchdog loop"]
+  T13_4 --> C2(["after T13.4: §15.2's stuck run passes over one instance"]):::sync
+  T13_1 --> T13_5["T13.5 Reservations and tenant lifecycle"]
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-T13.2, T13.3 and T13.6 each need only T13.1; the order above finishes the liveness path first,
+T13.2, T13.3 and T13.5 each need only T13.1; the order above finishes the liveness path first,
 since epic 14's stuck-run row needs all of it.
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T13.1, T13.2 | 7 | — | a scheduler that dispatches, bounded and fair, which epic 14 can build on |
-| 2 | T13.3, T13.4, T13.5 | 7.5 | PR 1 | failures: backoff, deadlines, overdue runs and liveness, ending at §15.2's row |
-| 3 | T13.6, T13.7 | 4.5 | PR 1 | reservations and the tenant lifecycle; can be open beside PR 2 |
+| 1 | T13.1, T13.2 | 8 | — | a scheduler that dispatches, bounded and fair, which epic 14 can build on |
+| 2 | T13.3, T13.4 | 8 | PR 1 | failures: backoff, deadlines, overdue runs and liveness, ending at §15.2's row |
+| 3 | T13.5 | 4.5 | PR 1 | reservations and the tenant lifecycle; can be open beside PR 2 |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -557,46 +572,44 @@ A suggestion only: one pull request per subtask works as well.
 
 - **D8, pending the user's answer: what `Stats` adds so §14's series and `work_queue_stalled` can
   leave the scheduler.** The frozen `Stats` cannot carry the runs in flight beside the running
-  entries, nor the overdue counter, and a reader could raise the condition's 5-minute half only by
-  holding the scheduler's rule itself. Options:
-  - **A (recommended, written in place):** `Stats` gains `Runs int`, `OverdueRuns uint64` and
-    `Stalled bool`, and the scheduler alone decides a stall; one rule in one place, and both
-    consumers, the engine and GC, read a flag. RFC 8 §6.1.1 amended in this pull request:
-    ```go
-    Pending, Backoff, Running, Runs, Overdue int // entries by state; Runs: runs in flight; Overdue: runs overdue now
-    Dropped, Expired, OverdueRuns            uint64
-    Stalled                                  bool
-    ```
-  - **B:** `Stats` gains `Runs int` and `OverdueRuns uint64`; each consumer derives the condition as
-    `Overdue > 0 || OldestPending >= 5*time.Minute`, exact only because dispatch within a tenant is
-    oldest first (D1) and paused entries are not due (D7), with the 5 minutes copied into the engine
-    and GC.
+  entries, nor the overdue counter, and has no field from which a reader could raise the
+  condition's 5-minute half. Options:
+  - **A (recommended, written in place, D8's struct):** `Stats` gains `Runs int`, `OverdueRuns
+    uint64` and `Stalled bool`; the scheduler alone decides a stall, and both consumers, the engine
+    and GC, read a flag.
+  - **B:** `Stats` gains `Runs int`, `OverdueRuns uint64` and a per-source `LastDispatch
+    time.Time`; each consumer raises the condition as `Overdue > 0`, or due entries with
+    `LastDispatch` more than 5 minutes ago, copying the 5 minutes and the rule into the engine and GC.
   - **C:** `Running` counts runs and `Overdue` becomes the counter (`uint64`, beside `Dropped` and
     `Expired`), with `Stalled bool` for the condition: one field added, but §14's running entries and
     a reader's way to tell one stuck run from five are lost.
 
   A keeps the RFC's "the scheduler raises `work_queue_stalled`" where the RFC puts it, at three
-  fields; B is one field smaller and copies a rule into two components; C is smallest and drops two
-  figures §14 names. Checked: §14's series and §6.1.1's `Stats`; Prometheus's convention of a
-  `_total` counter beside a gauge is from memory. Epic 11's T11.1 export pin (#5877) follows the
-  answer if it pins `Stats`'s fields.
+  fields; B is as large and copies a rule into two components; C is smallest and drops two figures
+  §14 names. Checked: §14's series and §6.1.1's `Stats`; Prometheus's convention of a `_total`
+  counter beside a gauge is from memory.
+- **D14, pending the user's answer: which slots an entry "waits for" in the idle rule.** Options:
+  - **A (recommended, written in place):** its source's slots. Liveness fails for a lost wakeup or a
+    source whose every slot is overdue, §15.2's two cases; one tenant's hung runs show as `Stalled`
+    and never restart the node. RFC 8 §6.1.1's idle sentence gains "of its source" once agreed.
+  - **B:** its tenant's slots, the sentence as written: a single shard whose store hangs every run
+    restarts the node once the other shards drain, which RFC 25 §3.5's "no dependency fails
+    liveness" argues against.
 
+  Checked: §6.1.1's idle sentence and R25's "a slow or throttled tenant holds only its own slots";
+  RFC 25 §3.5's two decisions.
 - **A cancelled tenant's counters leave `Stats` with it**, so a reader summing a source's tenants
   sees `Dropped`, `Expired` and `OverdueRuns` fall when a share is dropped. The integration epic,
   which adapts `Stats` into `engine_work_items_dropped_total` and its siblings labelled by source,
   keeps each source's departed tenants' last counts so the series stay monotonic.
-- **`engine_lock_wait_seconds{area="work queue"}`** is the wait on the scheduler's own lock, which a
-  post takes; the scheduler exposes no lock figure, so epic 14, which fills `WorkQueueLockWaits`,
-  times its `Post` calls, or asks for a `Stats` field in its own pull request if that proves too
-  coarse.
-- **A lost wakeup over the engine's instances** (epic 12's proposed `DropNextWakeup`) needs no hook
-  of the scheduler's: the engine fixture's clock wrapped as T13.5's is swallows the dispatcher's
-  `After` for a due entry, which D6 makes a lost wakeup the heartbeat does not heal. Epic 14 decides.
-- **One tenant's stuck runs can fail liveness.** By R23, an entry due that waits on its own
-  tenant's slots, all held by overdue runs, withholds `Idle`; while another tenant's runs dispatch
-  and return they turn the loop, but with no other work the watchdog fails and the node restarts.
-  That is RFC 8 §6.1.1 read as written, and §15.2's row asserts only the source-wide case; epic 14,
-  which sets the engine's `RunTimeout`, says so where it registers its sources.
-- **Estimate.** 19 man-days in 7 subtasks against the plan's 20: the plan's separate `Throttled` and
-  tenant-lifecycle bullets share T13.3 and T13.7. T13.2's fairness is the least certain figure: a
-  stride scheduler under per-tenant slot bounds may need a second pass at its tie-breaking.
+- **For epic 14:** each source's `Total` must hold a reservation for every shard the journal
+  serves, or `SetTenant` refuses a shard (D13), and the two sources' `Total`s sum to RFC 13's fixed
+  262,144 entries per instance. `engine_lock_wait_seconds{area="work queue"}` has no scheduler
+  figure: epic 14 times its `Post` calls, or asks for a `Stats` field in its own pull request. A lost
+  wakeup over the engine's instances (epic 12's proposed `DropNextWakeup`) needs no scheduler hook:
+  the engine fixture's clock wrapped as T13.4's is loses the dispatcher's wait.
+- **Estimate.** 20.5 man-days in 5 subtasks against the plan's 20 in 7: the plan's bullets merge
+  where they share state (the overdue run feeds both the stall and the idle rule; the reservation
+  is recomputed by cancelling), and the liveness tests grew by the busy-but-healthy cases. T13.2's
+  fairness and T13.4's single wait are the least certain figures: a stride scheduler under
+  per-tenant slot bounds may need a second pass at its tie-breaking.
