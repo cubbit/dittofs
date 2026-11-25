@@ -72,10 +72,11 @@ review.
   including how a namespace's chunking parameters reach the pipeline (T11.5, D5).
 - Loading the keys from the node's settings table and building `Share.Store` from the syncer's
   registration: epic 21. Key names for the three rows RFC 13 Appendix B leaves unnamed (§9).
-- `PreWarm` and positive-rate pacing: deferred, rows of the [offload plan's deferral
-  ledger](rfc-8-offload-engine-plan.md#61-deferral-ledger) ("`PreWarm` and the speculator's
-  pre-warm…", "Positive-rate pacing in `pkg/workqueue`…").
-- `Share.State`'s `Closing` and `Fenced`: deferred with the re-home, the ledger's RFC 27 row.
+- `PreWarm` and the speculator's pre-warm: deferred, unowned until an operator's pre-warm action is
+  specified (RFC 8 §12.1 as amended).
+- Positive-rate pacing in `pkg/workqueue`, and the pace a `Throttled` result lowers: deferred to
+  RFC 9, with GC's sources (RFC 8 §6.1.1).
+- `Share.State`'s `Closing` and `Fenced`: deferred to RFC 27, with the re-home.
 
 ### 1.3 Names used here
 
@@ -100,7 +101,7 @@ cited by number and title and not copied.
 | rule 2, fuzz the key and ref decoders the queue's rebuild reads | none | no decoder: the settings arrive as typed values |
 | rule 3, observability follows RFC 25 | T11.4 | the §14 series this part fills become `Stats` fields named for their metric, no per-operation share label, per-share figures in `ShareStats`; no series is recorded yet |
 | rule 4, profiling | none | nothing here starts a goroutine or holds a resource |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T11.2, T11.3 | the refusals are asserted where the node and the fixture meet them: `Apply`'s error and the settings a later `Stats`-visible read keeps, `Bind`'s error and the binding left as it was |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T11.2, T11.3 | the refusals are asserted where the node and the fixture meet them: `Apply`'s error and the stored settings, read through an `export_test.go` accessor, `Bind`'s error and the binding left as it was |
 | rule 6, known failures shrink | none | no row turns green or red here |
 | rule 7, v2 ignores v1, and the engine imports only what RFC 0 §1.2 allows | T11.1, T11.3, T11.4 | `pkg/workqueue`'s own walk allows the standard library only (T11.1); the engine's walk gains the `pkg/syncer` root, for `Share.Store`, earlier than the epic that first calls it (D5), and `pkg/workqueue`, a library of this RFC, for `Stats`, and refuses `pkg/syncer/pool` (T11.3, T11.4) |
 | rule 8, real dependencies for properties of those dependencies | none | no property of a journal, a store or a remote store is tested here |
@@ -120,26 +121,26 @@ can cite them. Behaviour behind the stubs is listed in §1.2 with its epic.
 | --- | --- | --- | --- | --- |
 | R1 | The scheduler is a package of its own, `pkg/workqueue`, which each component instantiates; it imports no component, contract or implementation, so no component reaches another through it | MUST NOT | RFC 8 §6.1.1, §2.8; RFC 0 §1.2 | T11.1 |
 | R2 | Its exported surface is §6.1.1's, a key's `ID` holding a 16-byte file ID: `Key`, `Item`, `Outcome` with `Done`, `Retry`, `Throttled` and `StopTenant`, `Result`, `Source` with `Rebuild` and `Run`, `Limits` with `Rate`, `Tenant`, `Stats`, `New`, and `Register`, `Start`, `SetTenant`, `Post`, `CancelTenant`, `WaitTenant`, `Stats` and `Stop` on `*Scheduler` | invariant | RFC 8 §6.1.1 (as amended here) | T11.1 |
-| R3 | `New` takes the clock as the subset of RFC 8 §2.1's `Clock` the scheduler reads, and its watchdog turn as `Loop`, both in standard-library types, so the node's clock and RFC 25's `*health.Loop` satisfy them as they are | MUST | RFC 8 §2.1, §6.1.1 (as amended here); RFC 25 §3.5; RFC 0 §1.2 | T11.1 |
+| R3 | `New` takes the clock as the subset of RFC 8 §2.1's `Clock` the scheduler reads, and its watchdog turn as `Loop`, both in standard-library types, so the node's clock and RFC 25's `*health.Loop` satisfy them as they are | MUST | RFC 8 §2.1, §6.1.1 (as amended here); RFC 25 §3.5, §8.2; RFC 0 §1.2 | T11.1 |
 | R4 | A tenant is a shard for the engine and a namespace for GC, so one `TenantID` type holds either | invariant | RFC 8 §6.1.1 | T11.1 |
 
 **Settings**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R5 | `Settings` carries the node-scope keys this part reads: `offload.retry_min`, `offload.retry_max`, `offload.retry_max_pressure`, `removal.rescan`, `eviction.repack_threshold`, the eviction occupancy target and the fill low-water mark | invariant | RFC 13 Appendix B; RFC 8 §6.1, §6.3, §7.3, §8.1, §10.1, §10.3 | T11.2 |
-| R6 | `Apply` refuses an invalid setting, NaN included, with an error naming it, and keeps the settings it already had; it never substitutes a default | MUST | RFC 8 §2.4; RFC 0 §1.2 | T11.2 |
-| R7 | withdrawn: a fixed RFC 13 row never becoming a field is a review rule no test can check; D4 states it | — | RFC 13 Appendix B | — |
+| R5 | `Settings` carries the node-scope keys this part reads: `offload.retry_min`, `offload.retry_max`, `offload.retry_max_pressure`, `removal.rescan`, `eviction.repack_threshold`, the eviction occupancy target and the fill low-water mark | invariant | RFC 13 Appendix B; RFC 8 §6.1, §6.3, §7.3, §8.1, §10.1, §10.3, §12.1 | T11.2 |
+| R6 | `Apply` refuses an invalid setting, NaN included, with an error naming it, and keeps the settings it already had; it never substitutes a default | MUST | RFC 8 §2.3, §2.4, §12.1; RFC 0 §1.2 | T11.2 |
+| R7 | withdrawn: a fixed RFC 13 row never becoming a field is a review rule no test can check; D4 states it | — | RFC 13 Appendix B; RFC 8 §12.1 | — |
 | R8 | A share's settings travel on its `Share` and are validated at `Bind`: `offload.max_age`, `readahead.max_blocks`, `readahead.max_bytes` and the speculation budget, the share-scope keys | MUST | RFC 8 §2.3, §2.4, §12.1; RFC 13 Appendix B | T11.3 |
-| R9 | A `Start` or `Bind` handed invalid share settings is refused with an error naming the share and the setting; a refused `Bind` leaves a served binding's settings as they were | MUST | RFC 8 §2.4; RFC 0 §1.2 | T11.3 |
+| R9 | A `Start` or `Bind` handed invalid share settings is refused with an error naming the share and the setting; a refused `Bind` leaves a served binding's settings as they were | MUST | RFC 8 §2.3, §2.4, §12.1; RFC 0 §1.2 | T11.3 |
 
 **The share's backends**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R10 | `Share` names its remote block store by RFC 3's `StoreID`, as the syncer registered it | MUST | RFC 8 §12.1, §2.3, §2.6; RFC 3 §1.3 | T11.3 |
-| R11 | The engine's production code imports the contract root `pkg/syncer` for that type, never `pkg/syncer/pool` | MUST NOT | RFC 0 §1.2; RFC 8 §2.1, §12.1 | T11.3 |
-| R12 | A capability is never wired onto a serving engine by a setter: a share's store reaches the engine only through `Start` and `Bind` | MUST NOT | RFC 8 §2.1; §15.3 "§2.2 no assertions" | T11.3 |
+| R11 | The engine's production code imports RFC 3's contract for that type, never its implementation | MUST NOT | RFC 0 §1.2; RFC 8 §2.1, §12.1 | T11.3 |
+| R12 | A capability is never wired onto a serving engine by a setter: a share's store reaches the engine only through `Start` and `Bind` | MUST NOT | RFC 8 §2.1, §2.3, §12.1; §15.3 "§2.2 no assertions" | T11.3 |
 | R13 | The engine never returns a component to its caller: `Share`, `Stats` and their parts hold values and identifiers, never a flow, a store, a scheduler or a journal | MUST NOT | RFC 8 §12.1 | T11.3, T11.4 |
 
 **Offload's observable surface**
@@ -147,7 +148,7 @@ can cite them. Behaviour behind the stubs is listed in §1.2 with its epic.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R14 | `*Engine` offers `WaitOffloaded(ctx) error` | MUST | RFC 8 §11.4, §12.1 | T11.4 |
-| R15 | `Stats` has, per share and summed, dirty bytes, the drain rate, the time to drain and the age of the oldest unoffloaded extent | MUST | RFC 8 §11.4, §14 | T11.4 |
+| R15 | `Stats` has, per share and summed, dirty bytes, the drain rate, the time to drain and the age of the oldest unoffloaded extent | MUST | RFC 8 §11.4, §12.1, §14 | T11.4 |
 | R16 | `Stats` has a field for every other RFC 8 §14 series this part fills, named for its metric, with no per-operation share label; the queue and work series come from `pkg/workqueue`'s own `Stats`, per journal and source | MUST | RFC 8 §14, §6.1.1 | T11.4 |
 
 **Declared interfaces**
@@ -167,7 +168,7 @@ can cite them. Behaviour behind the stubs is listed in §1.2 with its epic.
   RFC 8 §6.1.1's sketch read `*health.Loop`, and **this pull request amends it** to the declared
   `Loop`; RFC 23 §2.1's `workqueue.New(cfg.Clock, n.wd.Loop("gc.sched"))` still compiles against it.
   Changing it after S1 would rewrite every instance's construction, the engine's and GC's. No
-  marker: the doc comment names RFC 25's loop. Prior art: RFC 20's adapters take the same `Loop`
+  marker: the doc comment names RFC 25's loop. Prior art: RFC 20's adapters take a `Loop` of the same shape, plus `Close`,
   through `Deps.Watch`; client-go's workqueue takes a `clock.WithTicker` interface rather than a
   concrete clock (from memory).
 - **D2, `TenantID` is `[16]byte`.** RFC 8 §6.1.1 names the type and not its shape. A namespace
@@ -180,7 +181,7 @@ can cite them. Behaviour behind the stubs is listed in §1.2 with its epic.
   allocation and the parameter.
 - **D3, `Register` panics on limits it cannot honour.** §6.1.1 gives `Register` no error, and every
   caller passes constants of its own code: a `Batch`, `Concurrency`, `Weight` or `Total` below 1, a
-  negative `RunTimeout` or `Deadline`, or a `Rate` other than 0 while positive-rate pacing is
+  `RunTimeout` not positive (it is every run's deadline, and 0 names none), a negative `Deadline`, or a `Rate` other than 0 while positive-rate pacing is
   deferred is a programming error, refused with a panic naming the field, never replaced by a
   default (RFC 0 §1.2). `SourceID` is the registration's index. A `decision:` marker at `Register`
   says so, and is withdrawn if a `Limits` value ever comes from a setting. Prior art:
@@ -241,14 +242,16 @@ pkg/workqueue/
   workqueue.go            T11.1  the exported surface, stub bodies; Loop, Clock, TenantID, SourceID
   imports_test.go         T11.1  the walk: standard library only
 pkg/engine/
-  types.go                T11.2  Settings keys; T11.3 ShareSettings, Share.Store, Share.Settings
+  types.go                T11.2  Settings keys; T11.3 ShareSettings, Share.Store, Share.Settings; T11.4 Stats fields
   engine.go               T11.2  Apply's refusals
   share.go                T11.3  validShare's refusal of invalid ShareSettings, called by Start too
-  health.go               T11.4  WaitOffloaded (stub); Stats, ShareStats, JournalStats fields
+  health.go               T11.4  WaitOffloaded (stub); ShareStats, JournalStats fields
   imports_test.go         T11.3  the pkg/syncer root allowed, pool refused; T11.4 pkg/workqueue
   apply_test.go           T11.2  the Settings refusals
   share_test.go           T11.3  the share-settings refusals (the first part's file)
-  stats_test.go           T11.4  no component-typed field in Stats or Share
+  stats_test.go           T11.4  no component-typed field in Stats or Share (the first part's file)
+  conformance/rfc8_cover_test.go  T11.2  TestRFC8C_Settings's refusal table gains the new rules
+  *_test.go, internal/vfs/integration  T11.2, T11.3  every engine.Settings and engine.Share literal
   enginetest/fixture.go   T11.2  Settings defaults; T11.3 ShareSettings defaults on every fixture share
   enginetest/unit.go      T11.2  the unit fixture's Settings
 internal/node/
@@ -311,9 +314,9 @@ internal/node/
 - **Covers:** R5, R6.
 - **Deliverables:** `engine.Settings` gains, each commented with its key as the first part's are:
   `OffloadRetryMin`, `OffloadRetryMax`, `OffloadRetryMaxPressure`, `RemovalRescan` (`time.Duration`);
-  `RepackThreshold`, `EvictionTarget`, `FillLowWater` (`float64`, fractions of the journal's maximum
-  footprint). `Apply` refuses each as D4 says, with an error naming the key, `vfserr.ErrInvalid`
-  wrapped, and stores nothing; D4's `decision:` marker at `Apply`. `enginetest.Settings`, the unit
+  `RepackThreshold` (`float64`, the unreclaimed fraction of the journal's capacity), `EvictionTarget`
+  and `FillLowWater` (`float64`, fractions of the journal's maximum footprint). `Apply` refuses each as D4 says, with an error naming the key, wrapping nothing, as
+  the first part's refusals do, and stores nothing; D4's `decision:` marker at `Apply`. `enginetest.Settings`, the unit
   fixture's literal in `enginetest/unit.go` and `internal/node/lifecycle.go`'s `engineDefaults` gain
   RFC 13's proposed values (1 s, 60 s, 5 s, 60 s, 10 %, 85 %, 10 %). Every other `engine.Settings`
   literal on `feat/storage-v2` (35 in 21 files today, mostly `pkg/engine` tests and
@@ -324,7 +327,7 @@ internal/node/
   which loads them.
 - **Acceptance criteria:**
   - An `Apply` with any one new key zero, negative, NaN, out of (0, 1), or breaking D4's two orderings is
-    refused, and a later valid `Apply` sees the earlier valid settings were kept.
+    refused, and the stored settings, read through an `export_test.go` accessor, are the earlier ones.
 - **Tests:** at `Apply`, which the node calls: a table, one row per refusal (each catches a missing
   check, R6), each asserting the error names the key and that the settings an engine read
   afterwards are the earlier ones, read through an `export_test.go` accessor of the stored settings
@@ -351,8 +354,8 @@ internal/node/
   	Settings ShareSettings  // validated by Start and Bind (RFC 8 §2.4)
   ```
   `validShare` refuses a non-positive `ShareSettings` field, naming the share and the key; `Bind`
-  already calls it, and `Start` now calls it over every share before step 1, so a share `Bind` would
-  refuse is not attached at start either; a `Bind` changing a served share's `Settings` passes the
+  already calls it, and `Start` now calls it over every share before step 1 and is refused whole,
+  attaching nothing, since RFC 8 §12.1 makes `Start` all or nothing; a `Bind` changing a served share's `Settings` passes the
   same check before `change` applies anything, and `change` keeps the new settings on the binding.
   The engine's `imports_test.go` allows the `pkg/syncer` root to `"*"` and nothing under it (D5,
   rule 7). Every `engine.Share` literal the repository builds gains `Settings` from one
@@ -394,8 +397,12 @@ internal/node/
     `SpeculationUsedBytes`, `Reresolves` (epic 17); `EvictedBytes`, `PacingSeconds` (epic 18);
     `LedgerMismatches` (epic 19); `ShareTableLockWaits`, `WorkQueueLockWaits` beside the first part's
     `FileStateLockWaits` (epics 14 and 16);
-  - `JournalStats`: `Work`, the scheduler's `Stats` per source and tenant, `QueueEvents` by event,
-    `ReseedFilesRemaining` (epics 14 and 19).
+  - `JournalStats`: `Work`, the scheduler's `Stats` per source and tenant, and `WorkLimits`, the
+    `Limits` each source registered, whose `Total` and `Concurrency` are
+    `engine_queue_entries_limit` and `engine_work_runs_inflight_limit`; `QueueEvents` by event;
+    `ReseedFilesRemaining` (epics 14 and 19). The per-share `engine_queue_entries` is the node
+    adapter's sum of `Work`'s tenants by the share each shard belongs to.
+  `Stats` is in `types.go`, its parts in `health.go`.
   The engine's walk allows `pkg/workqueue`. Consumed by the epics named, which fill each field, and
   the integration epic, which adapts them.
 - **Acceptance criteria:**
@@ -478,7 +485,7 @@ flowchart TD
   Agreed(["S1b syncer interface agreed"]):::sync --> T11_3
   T11_1["T11.1 pkg/workqueue surface"] --> T11_4["T11.4 WaitOffloaded and Stats"]
   T11_2["T11.2 Settings and Apply"]
-  T11_3["T11.3 Share's store, chunking, settings"]
+  T11_3["T11.3 Share's store and settings"]
   T11_1 --> C1(["after T11.1: epic 13 can start at S2 on the frozen surface"]):::sync
   T11_1 & T11_2 & T11_3 & T11_4 --> T11_5["T11.5 S1 review"] --> S1(["S1 interfaces frozen"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
