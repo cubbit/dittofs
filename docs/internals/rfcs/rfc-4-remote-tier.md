@@ -641,7 +641,9 @@ type Store interface {
 
 	// List reads one page, with one request, of at most n stored blocks in
 	// ascending name order, starting after the given name (the zero Name starts
-	// at the beginning); next is the last name of the page, and done is true
+	// at the beginning); next is the last name of the page or, when the page
+	// ends on a key that is not a block, the smallest block name after that key,
+	// and done is true
 	// once the walk has passed the last block (§4.6).
 	List(ctx context.Context, after Name, n int) (page []Info, next Name, done bool, err error)
 
@@ -726,7 +728,12 @@ var (
 
 A backend is opened by its own constructor, which takes its settings, its mode
 ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)), the client it shares ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) and a context, and runs the
-capability check ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)) before it returns. On a mutable store, `Delete` and
+capability check ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)) before it returns. The S3 profile's are
+`NewClient(ClientConfig, Deps)`, the client one store configuration shares, and
+`Open(ctx, *Client, prefix, remote.Mode) (remote.Store, Claim, error)`, which
+returns the namespace claim it read ([Appendix C.4](#C.4%20The%20capability%20check)) for its caller to
+judge. `ClientConfig` carries `MaxBlockSize`, the largest block a put may carry
+(§4.8's size rule), and `Region`, the signing region. On a mutable store, `Delete` and
 `DeleteVersions` do what [§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent) says; on an immutable one they return
 `ErrInvalid` for every name without sending a request.
 
@@ -1332,7 +1339,8 @@ count it again ([RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20make
 `list_objects` and `delete_objects` on the counter, where every `op` keeps its
 own value; the histogram counts them all as `other`, so a store's histogram
 stays at six `op` values times its buckets. An `ErrDenied` result is labelled with
-its cause; a drifted `Recheck`
+its cause, and a call its caller cancelled is labelled `result="local"`: a
+local failure is not the service's ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)); a drifted `Recheck`
 sets the drifted setting's `remote_capability` to 0. The gauge also
 carries `conditional_put`, whether the service honoured one at the last check
 ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)); it is reported, and no rule reads it.
@@ -1985,7 +1993,8 @@ Settled with them:
    loss after acknowledgement ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)). [Appendix B](#Appendix%20B%20%E2%80%94%20measurements) records, per measured service, when a
    put is acknowledged and across which failure domains. A storage class that
    keeps data in one failure domain is allowed: the capability check reports the
-   class's failure domain at open and through health, and a deployment that
+   class's failure domain in the open's log line (the store keeps no health
+   status, [§4.9](#4.9%20No%20state%20across%20calls)), and a deployment that
    configures such a class accepts what it promises.
 
 Open:
@@ -2140,11 +2149,12 @@ these, and drops `DeleteObjects`:
 | `ListObjectVersions` under the location's `exports/`, `progress/` and `keys/` prefixes for the namespace | `ListObjects`: every version, delete markers skipped, resumable by key and version marker | check step 4, once per location record |
 | `DeleteObject` without `versionId`, on the location health object | refused (`403`); a delete with `versionId` is not sent, since the lock refuses it whatever the credential may do | check step 7 |
 
-For the two bucket-setting calls, "no configuration" (`404` with the service's
-not-found code) passes, `501 NotImplemented` passes (a service without the
-feature cannot have it enabled), and `403` refuses: the credential must be
-allowed to read both settings, or the check cannot tell. `Recheck` re-reads the
-same two settings under the same rules.
+For every bucket-setting read — versioning, lifecycle, intelligent tiering and
+default encryption — "no configuration" (`404` with the service's not-found
+code) passes, `501 NotImplemented` passes (a service without the feature cannot
+have it enabled), and `403` refuses: the credential must be allowed to read each
+setting, or the check cannot tell. `Recheck` re-reads the same settings under
+the same rules.
 
 **When a put is stored** is cited per service from each service's own
 statement, and recorded in [Appendix B](#Appendix%20B%20%E2%80%94%20measurements) ([§8](#8.%20Decisions%20and%20open%20questions), item 7). A service is added there
@@ -2176,7 +2186,7 @@ Several stores may share a bucket under different prefixes, never one prefix
 | Contract | S3 |
 | --- | --- |
 | one attempt per call ([§4.9](#4.9%20No%20state%20across%20calls)) | SDK retries off (maximum attempts 1) |
-| client configuration | the request and response checksum modes set explicitly to `WhenRequired`, never left at the SDK's default, which has changed between releases; the store sends exactly the integrity header its profile chose and nothing else. A whole-block get sends `x-amz-checksum-mode: ENABLED`, and the store compares a returned checksum of the object with the bytes received ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)); a ranged get asks for none, since an object checksum does not cover a range. The payload-signing mode is pinned too: every request is signed with `x-amz-content-sha256: UNSIGNED-PAYLOAD`, over HTTPS only, and an endpoint that is not HTTPS refuses the open. The service's certificate is verified against the system's roots, or against the store configuration's trust roots in their place, and no setting skips verification. A signed payload hash is not an integrity check here — two measured services store a body whose signed hash is wrong ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)) — and signing it would need a pass over the body before the first byte. The capability check runs with this same configuration |
+| client configuration | the request and response checksum modes set explicitly to `WhenRequired`, never left at the SDK's default, which has changed between releases; the store sends exactly the integrity header its profile chose and nothing else. A whole-block get sends `x-amz-checksum-mode: ENABLED`, and the store compares a returned checksum of the object with the bytes received ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)); a ranged get asks for none, since an object checksum does not cover a range. The payload-signing mode is pinned too: every request is signed with `x-amz-content-sha256: UNSIGNED-PAYLOAD`, over HTTPS only, and an endpoint that is not HTTPS refuses the open. The service's certificate is verified against the system's roots, or against the store configuration's trust roots in their place, and no setting skips verification. A signed payload hash is not an integrity check here — two measured services store a body whose signed hash is wrong ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)) — and signing it would need a pass over the body before the first byte. Requests are signed for `ClientConfig.Region`, which defaults to `us-east-1`, the region most S3-compatible services accept, and is set by `remote.region` where a service needs another. The capability check runs with this same configuration |
 | connection pool ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) | one HTTP client per store configuration: its per-host connection cap, its idle connections per host and its total idle connections all set to the derived limit, over HTTP/1.1 only, since these caps bind no HTTP/2 stream |
 | put integrity ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)) | send the checksum header chosen by the check, computed by the measuring pass. If the service enforces none, `Checksum` is `None`: compute the MD5 while streaming, compare the returned ETag with it, and return `ErrCorrupt` on a mismatch; the retry puts the same bytes again |
 | exact get ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | compare `Content-Range` with the request, then the body's length with `Content-Range` |

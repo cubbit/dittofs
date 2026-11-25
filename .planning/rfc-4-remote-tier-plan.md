@@ -95,7 +95,7 @@ fail on cue (§7.2).
 | `pkg/block/blockcodec` | `pkg/remote/codec`: the codec and `codec.Store` (epic 6) |
 | `pkg/block/blockstoretest` (`RemoteBlockStoreConformance`) | `pkg/remote/remotetest` (epic 2) |
 | no fault transport | `pkg/remote/s3/s3fault` (epic 3) |
-| `remote.endpoint`, `remote.credential`, still declared in `internal/node/api/res_stores.go` | plain values in `pkg/remote/s3`, with the trust roots, bucket, storage class, prefix and block target, and the block format version to write in `pkg/remote/codec`, which the node's content wiring registers in `pkg/settings` (epic 7, D12); RFC 8 offload plan epic 21 calls it |
+| `remote.endpoint`, `remote.credential`, still declared in `internal/node/api/res_stores.go` | plain values in `pkg/remote/s3`, with the region, trust roots, bucket, storage class, prefix and block target, and the block format version to write in `pkg/remote/codec`, which the node's content wiring registers in `pkg/settings` (epic 7, D12); RFC 8 offload plan epic 21 calls it |
 
 **Dependency limits** (RFC 0 §1.2, as amended by #5774; RFC 4 §1.2). The root `pkg/remote` is a
 pure contract: types, constants, `Store`, errors, `Cause`, `DeniedError`, `Chunk`,
@@ -721,7 +721,9 @@ against the S3 store; RFC 4 §7.4's emulator row for these; RFC
 4 R5 to R10, R13's store half, R16 and R21.
 
 **Expected content:**
-- The client and the S3 constructor: retries off, checksum and payload-signing modes pinned,
+- `NewClient(ClientConfig, Deps)` and `Open(ctx, *Client, prefix, remote.Mode) (remote.Store,
+  Claim, error)` (RFC 4 §4.1), `ClientConfig` carrying `MaxBlockSize` and `Region`, signing
+  for `us-east-1` by default (Appendix C.3): retries off, checksum and payload-signing modes pinned,
   HTTPS only with optional trusted roots and no way to skip verification, HTTP/1.1 only, its
   caps from the limit it is handed, a limit of 0 or less refused (Appendix C.3, D6, D9, D10).
   Path-style addressing (`UsePathStyle`), since a dotted bucket name fails TLS under
@@ -740,7 +742,8 @@ against the S3 store; RFC 4 §7.4's emulator row for these; RFC
   (§4.13), at C.2's keys; the digest-only and size `decision:` markers. Table tests of the
   ETag comparison (quoted and unquoted, upper and lower case) and `List` cases for an empty
   page marked truncated and for a prefix with non-ASCII and percent-encoded bytes.
-- The `remote_` series through the recorder `pkg/remote/s3` declares (D12), and §4.12's logs.
+- The `remote_` series through the recorder `pkg/remote/s3` declares (D12), a call its caller
+  cancelled recorded as `result="local"` (RFC 4 §4.12), and §4.12's logs.
 - The `Content-Range` reader's fuzz target (rule 2), and `integration`'s `s3-allocs` option with
   the `Put` and `Get` streams' and the `List` page's allocation assertions (rule 4).
 
@@ -768,8 +771,10 @@ naming its missing caller (D11).
   re-list on the clock (D8), refusing with every missing feature named.
 - `Health` in both directions (§4.7).
 - `immutable` refused at open (D11).
-- `remote_capability`, the refused open's log and the `decision:` markers rule 9 gives this
-  epic.
+- `remote_capability` through the recorder's `Capability(prefix, feature, present)`, the
+  refused open's log, the one-zone class's failure domain in the open's log (RFC 4 §8 item 7),
+  the `404`/`501`/`403` rule on every setting read (Appendix C.1), and the `decision:` markers
+  rule 9 gives this epic.
 
 ### Epic 6 — Block codec ⛔
 
@@ -777,9 +782,8 @@ naming its missing caller (D11).
 
 The codec of D3, on the format of D2. **Owns:** RFC 4 §3.1 to §3.5, §4.3's measuring pass,
 checksum and `codec.Store`, §4.8's `ErrMalformed` and material errors passed through, §4.12's `codec_` rows, and the codec's part of RFC 3 §2.2's memory bound (the header
-bound and the largest encoded block it reports, on the put side the maximum of
-`Attempt.MaxEncodedLen` over the open attempts, never the current chain's `MaxEncodedLen`: a pin
-lives from Mint to Commit or Abandon and can outlive a chain change, RFC 5 §3.1). **Done when:** RFC 4 §7.3's rows but the
+bound and the largest encoded block it reports, which RFC 3 §2.2 sizes by the chain's
+`MaxDecodeLen(Max)`). **Done when:** RFC 4 §7.3's rows but the
 engine's transforms-on-and-off row (§6.1); §7.1's §3.2 census row but its recovery half
 (§6.1); §7.1's §4.4 ranged-flip half, over LocalStack under epic 3's fault transport in
 `integration`, the syncer's re-get excepted (§6.1), as its last subtask once epic 4's store
@@ -809,7 +813,7 @@ R14 and R15.
 
 What the component offers the node as plain values, and what the node's content wiring builds
 from them. **Owns:** RFC 13 Appendix B's rows for
-the remote store's endpoint, credential, trust roots, bucket, storage class and block target,
+the remote store's endpoint, credential, region, trust roots, bucket, storage class and block target,
 and for the namespace's prefix and block format version to write, and §5.4's gate on the last; RFC 25 §7's alert
 on `codec_verify_failures_total`. **Done when:** RFC 13 §9's "§6 block target range" row; RFC 13
 §9's "§5.4 format version" row's single-node part; each series of RFC 4 §4.12, recorded through
@@ -827,7 +831,8 @@ scrape; the alert rule names a series that exists; the import walk shows no pack
   plan's `FormatVersion` option (its epic 3's D6); the storage class's default
   `STANDARD`, pinned by the S3 profile, as RFC 13 Appendix B, amended in this pull request, says;
   `remote.trust_roots`, the certificates that replace the system's roots for the endpoint (D9),
-  with no key that skips verification. RFC 8 offload plan epic 21 registers them.
+  with no key that skips verification; `remote.region`, the signing region, `us-east-1` when
+  unset, as RFC 13 Appendix B, amended in this pull request, says. RFC 8 offload plan epic 21 registers them.
 - The `remote_` and `codec_` metric definitions as plain values in `pkg/remote/s3` and
   `pkg/remote/codec`, and in `internal/node/content` the recorders over the registry and the
   collectors built from those definitions, for RFC 8 offload plan epic 21 to register.
