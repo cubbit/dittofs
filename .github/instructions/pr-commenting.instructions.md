@@ -72,12 +72,12 @@ Good:
 
 ## Review body
 
-The review state is the verdict: **Request changes** if any comment is blocking, **Approve** if none is, **Comment** only when you can't judge. Nobody should have to dig the verdict out of the text.
+The review state is the verdict: **Request changes** if any point is blocking (`REVIEW.md` §2), **Approve** if none is and none of your questions is open, **Comment** while a question of yours is still open. Nobody should have to dig the verdict out of the text.
 
 A reader who skips the inline comments must still know whether the PR can merge and what blocks it. Write the body in this order, and skip any part that would be empty:
 
 1. **Summary**: the first sentence names what blocks the merge, or says nothing does.
-2. **Critical issues**: what blocks the merge (correctness, security, breaking changes).
+2. **Critical issues**: what blocks the merge, each a point that `REVIEW.md` §2 lets block.
 3. **Suggestions**: improvements to performance or maintainability.
 4. **Questions**: what you need to know before you can judge.
 5. **Praise**: what was done well, named specifically enough that nobody changes it later by mistake.
