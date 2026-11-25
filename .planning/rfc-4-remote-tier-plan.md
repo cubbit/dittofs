@@ -572,7 +572,7 @@ test/suites.yaml                       E3: service:localstack in integration; E6
   limit from the callers' concurrency (RFC 4 §4.10) lands with its consumer, the one client per
   store configuration that RFC 8 offload plan epic 21 holds. Until epic 8 lands, the limit
   epic 21 passes is RFC 4 §4.10's sum over the callers v1.1 has: `upload_workers +
-  fetch_workers + 1` (the one for the probe; GC's bound joins with RFC 9), so no cap sits
+  fetch_workers + 2` (one probe per direction; GC's bound joins with RFC 9), so no cap sits
   below the callers. The client's constructor refuses a limit of 0 or less with `ErrInvalid`.
   Prior art: rclone sizes its HTTP transport from `--transfers` and `--checkers` (from
   memory). Applied by epics 4 and 8.
@@ -858,7 +858,7 @@ rows against that holding; R11, and R19's limit half (its shared client is RFC 8
 epic 21's).
 
 **Expected content:**
-- The function deriving the limit from RFC 3 §2.10's worker counts, GC's bound and one probe
+- The function deriving the limit from RFC 3 §2.10's worker counts, GC's bound and one probe per direction
   (D6).
 - The two §4.10 rows over the holding RFC 8 offload plan epic 21 builds.
 

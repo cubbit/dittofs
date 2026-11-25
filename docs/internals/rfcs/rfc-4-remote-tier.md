@@ -1187,7 +1187,7 @@ caller can see it. So:
   of everything that calls stores on it: the syncer's
   `upload_workers + fetch_workers` ([RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) — which also run every call at a
   backup location, as raw or small-object transfers ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) — GC's delete and list bound
-  ([RFC 9 §7.1](rfc-9-gc.md#7.1%20GC%20bounds%20its%20own%20work)), and one for the probe — once, not per store, since those pools are
+  ([RFC 9 §7.1](rfc-9-gc.md#7.1%20GC%20bounds%20its%20own%20work)), and one for each probe direction, two, since the syncer runs at most one probe per `ProbeKey` and direction at a time ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)) — once, not per store, since those pools are
   shared across the stores they serve. A store has no connection setting of its
   own. Set below its callers it is a hidden second limit; set above them it is
   never reached;

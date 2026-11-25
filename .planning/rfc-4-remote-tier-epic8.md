@@ -19,7 +19,7 @@ this epic: `pkg/remote/s3`'s `NewClient(ClientConfig, Deps)` and `Open`. Every c
 `*s3.Client` per store configuration, ref-counted, in the node's content wiring
 (`internal/node/content`), builds the syncer once with its two worker counts, and registers E7's
 recorder over the node's registry; until this epic, it builds each client with the limit
-`upload_workers + fetch_workers + 1`. **R4-S3**, store and codec complete: E4's T4.2, whose test
+`upload_workers + fetch_workers + 2`. **R4-S3**, store and codec complete: E4's T4.2, whose test
 shows the client's caps equal the `ClientConfig.Limit` it is handed, and E5's checked `Open`.
 **Blocks:** nothing of this plan. RFC 9's plan passes GC's bound to this epic's derivation when GC
 lands (D2).
@@ -35,7 +35,7 @@ holding.
 **At the end of the epic:**
 
 - one unexported function in `internal/node/content` derives a client's limit from the syncer's
-  two worker counts, GC's bound and one for the probe, and the holding builds every client with
+  two worker counts, GC's bound and one probe per direction, and the holding builds every client with
   it, once per client, from the counts the syncer was built with;
 - GC's bound is an argument the node passes as zero until RFC 9 lands, behind a `decision:`
   marker naming that caller;
@@ -122,7 +122,7 @@ This section lists every MUST and MUST NOT that RFC 4 places on this epic, with 
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | A client's limit is derived when the client is built, from the concurrency of everything that calls stores on it: the syncer's `upload_workers + fetch_workers`, GC's delete and list bound, and one for the probe | MUST | RFC 4 §4.10, §2's table (connection pool size), §6 R11 | T8.1 |
+| R1 | A client's limit is derived when the client is built, from the concurrency of everything that calls stores on it: the syncer's `upload_workers + fetch_workers`, GC's delete and list bound, and one for each probe direction, two, since the syncer runs at most one probe per `ProbeKey` and direction at a time | MUST | RFC 4 §4.10, §2's table (connection pool size), §6 R11; RFC 3 §2.8 | T8.1 |
 | R2 | The limit is derived once per client, not per store: every store opened from one store configuration runs under that one client's limit, and opening more stores neither raises it nor adds a pool | MUST | RFC 4 §4.10, §6 R19 (its limit half) | T8.2 |
 | R3 | The worker counts the derivation reads are the ones the syncer runs with: fixed for the life of the process, and, once the node passes the syncer its transfers pool's size, the counts reduced to fit it. The reduced half lands with that caller (§1.2, D3) | MUST | RFC 4 §4.10 ("the concurrency of everything that calls stores"), RFC 3 §2.10, RFC 24 §7.2 | T8.1 |
 | R4 | A store has no connection setting of its own: no key sets a client's limit | invariant | RFC 4 §4.10 | T8.1 (the one call site); E7 (its key table) |
@@ -134,8 +134,7 @@ This section lists every MUST and MUST NOT that RFC 4 places on this epic, with 
 | R5 | Construct with syncer pools of 8 and 8 and a GC bound of 4: every client limit is at least 21 | test row | RFC 4 §7.1, §4.10 | T8.1 |
 | R6 | Open 1,000 stores from one store configuration: one client exists, its limit equals the callers' total concurrency, and connections opened under a steady load do not grow with the number of stores | test row | RFC 4 §7.1, §4.10 | T8.2 |
 
-R1's "one for the probe" is RFC 4's count as written; §9 point 1 asks whether it should be one
-per probed direction, pending the user's answer.
+R1's two probe slots are D6's, amended into RFC 4 §4.10 and RFC 3 §2.8 in this epic's pull request.
 
 What already enforces the rest of §4.10 when this epic lands: a client-wide cap at least the
 limit and the idle connections sized the same, E4's T4.2 test (its R44).
@@ -159,7 +158,8 @@ limit and the idle connections sized the same, E4's T4.2 test (its R44).
   package content // internal/node/content
 
   // clientLimit is RFC 4 §4.10's limit for a client every store of one store
-  // configuration shares: the syncer's two pools, GC's bound and one probe.
+  // configuration shares: the syncer's two pools, GC's bound and one probe per
+  // direction.
   func clientLimit(uploadWorkers, fetchWorkers, gcBound int) int
   ```
 
@@ -200,6 +200,18 @@ limit and the idle connections sized the same, E4's T4.2 test (its R44).
   stores: the row's 1,000 is the RFC's, and a node serving 10⁴ namespaces on one configuration pays
   the same check traffic at every start. Prior art: none needed.
 
+- **D6. Two probe slots, one per direction.** RFC 4 §4.10 counted one for the probe. RFC 3 §2.8
+  probes each `ProbeKey` in both directions, the RFC 3 plan's epic 5 runs one probe loop per
+  `ProbeKey` and direction, and a direction tripped by the failure window is re-admitted by a probe
+  against the store's own namespace, so one client could carry two probes at once, and more while
+  several of its stores waited for re-admission. A probe past the limit waits inside the client
+  behind a transfer's connection, the hidden wait §4.10 exists to remove, and under a slow service
+  can outlast the probe's bound and count as a failed probe. So `clientLimit` counts two, RFC 4
+  §4.10 is amended to count one per probe direction, and RFC 3 §2.8 to run at most one probe per
+  `ProbeKey` and direction at a time, a store's own re-admission probe included; RFC 8 offload plan
+  epic 21's interim sum and the plan's D6 become `+ 2`. R5's "at least 21" holds (22 with GC's 4).
+  Decided by the user on this epic's pull request. Prior art: none needed.
+
 ## 5. Target tree
 
 ```text
@@ -224,7 +236,7 @@ docs/guide/configuration.md       T8.1  one line in the remote store section
   and D3's clauses, in place of RFC 8 offload plan epic 21's inline sum; `export_test.go`: the
   holding's clients per store configuration and the `ClientConfig` each was built with, read by
   T8.1's and T8.2's tests; `docs/guide/configuration.md`'s remote store section: a store
-  configuration's client holds at most `upload_workers + fetch_workers + 1` connections to its
+  configuration's client holds at most `upload_workers + fetch_workers + 2` connections to its
   endpoint open at once, and no key sets it. Consumed by: the holding's client build (here), T8.2,
   and RFC 9, which passes GC's bound.
 - **Acceptance criteria:**
@@ -286,23 +298,10 @@ A suggestion only: one pull request per subtask works as well, T8.1 first.
 
 ## 9. Open points
 
-1. **How many probes does a client carry at once? Pending the user's answer.** RFC 4 §4.10 counts
-   one for the probe, and this document follows it (R1). RFC 3 §2.8 probes each `ProbeKey` in both
-   directions, the RFC 3 plan's epic 5 runs one probe loop per `ProbeKey` and direction, and a
-   direction tripped by the failure window is re-admitted by a probe against the store's own
-   namespace, so one client can carry two probes at once, and more while several of its stores
-   wait for re-admission. A probe past the limit waits inside the client behind a transfer's
-   connection, the hidden wait §4.10 exists to remove; under a slow service it can outlast the
-   probe's bound and count as a failed probe (RFC 3 §2.8). Recommended: amend RFC 4 §4.10 to count
-   one probe per direction, two, and RFC 3 §2.8 to say the syncer runs at most one probe per
-   `ProbeKey` and direction at a time, a store's own re-admission probe included, which the RFC 3
-   plan's probe loops already shape; RFC 8 offload plan epic 21's interim `+ 1` and the plan's D6
-   follow. The change here is the constant in `clientLimit`, and R5's "at least 21" still holds.
-   The alternative, keeping one, accepts that wait.
-2. **S7 has not been reached, and RFC 8 offload plan epic 21 has no breakdown document.** This
+1. **S7 has not been reached, and RFC 8 offload plan epic 21 has no breakdown document.** This
    document names the holding by what it does; its type, its constructor and the name of the inline
    sum T8.1 replaces are epic 21's. When epic 21 is broken down, it may write `clientLimit` itself in
    place of its inline sum; T8.1 then shrinks to its tests and the marker.
-3. **Estimate least certain: T8.2**, on LocalStack's throughput for 1,000 checked opens (about 2
+2. **Estimate least certain: T8.2**, on LocalStack's throughput for 1,000 checked opens (about 2
    GiB of check puts, D5), on whether LocalStack 4.13.1 keeps HTTPS connections alive (D4's
    precondition measures it), and on the holding's surface, which epic 21 settles.

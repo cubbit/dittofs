@@ -1055,8 +1055,8 @@ it after, as RFC 8 §2.6 orders.
   `codec.Store` over it, against LocalStack behind a fault proxy (S7).
 - The syncer built once and closed after the engine; remote stores registered per configuration, one
   client per store configuration, ref-counted, with their probe keys; until the RFC 4 plan's epic 8
-  derives it, each client is built with the limit `upload_workers + fetch_workers + 1` (the syncer's two
-  pools and the probe; GC's bound joins with RFC 9), never lower, and its constructor refuses a limit of
+  derives it, each client is built with the limit `upload_workers + fetch_workers + 2` (the syncer's two
+  pools and one probe per direction; GC's bound joins with RFC 9), never lower, and its constructor refuses a limit of
   0 or less. The syncer's per-worker encoded bound is computed once at start and
   passed for both halves: `MaxDecodeLen(Max)` over every registered transform, `Max` being the
   largest of the namespaces the process serves at start, never below the default 1 MiB; nothing
