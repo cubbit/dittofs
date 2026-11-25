@@ -75,11 +75,13 @@ type NodeStatus struct {
 }
 
 // AdapterStatus is one of a node's adapters as the node reports it: its
-// protocol, its state, and the settings generation it runs.
+// protocol, its state, the settings generation it runs, and, while it
+// serves, the TCP port its protocol's listener bound, 0 otherwise.
 type AdapterStatus struct {
 	Protocol   string
 	State      AdapterState
 	Generation uint64
+	Port       uint16
 }
 
 // AdapterState is one of an adapter's states. Its value is stored, so a new

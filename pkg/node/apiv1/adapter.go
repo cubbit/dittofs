@@ -19,11 +19,14 @@ type AdapterStatus struct {
 
 // AdapterOnNode is the adapter on one node: its state and the settings
 // generation it runs, the counter a node's status.reconciled.settings
-// counts, not comparable with the adapter's own generation.
+// counts, not comparable with the adapter's own generation; and, while it
+// serves, the TCP port its protocol's listener bound, the one a client
+// dials, absent otherwise.
 type AdapterOnNode struct {
 	Node       string       `json:"node"`
 	State      AdapterState `json:"state"`
 	Generation uint64       `json:"generation"`
+	Port       uint16       `json:"port,omitempty"`
 }
 
 // AdapterState is one of an adapter's states, a closed set.

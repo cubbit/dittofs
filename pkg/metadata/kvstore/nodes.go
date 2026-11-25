@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"iter"
 	"maps"
+	"math"
 	"slices"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -512,16 +513,20 @@ func decodeNode(id entity.NodeID, b []byte) (entity.Node, error) {
 
 // nodeStatusV2 is the node status's layout with its adapters' list after
 // its conditions; a version 1 status ends at its conditions and reports no
-// adapter.
-const nodeStatusV2 = 2
+// adapter. nodeStatusV3 adds each adapter's bound port after its
+// generation; a version 2 status reports none.
+const (
+	nodeStatusV2 = 2
+	nodeStatusV3 = 3
+)
 
 func encodeNodeStatus(s entity.NodeStatus) []byte {
-	// decision: version 2 is written under store format 1, which is not
-	// raised, since no release has written format 1 and so no older reader
-	// of it can meet version 2. Once a release ships, a new codec version is
+	// decision: versions 2 and 3 are written under store format 1, which is
+	// not raised, since no release has written format 1 and so no older
+	// reader of it can meet either. Once a release ships, a new codec version is
 	// written only under a store format that names it (RFC 16 §4.6), which
 	// needs the format gate.
-	w := codec.NewWriter(nodeStatusV2).Uint64(s.Settings).Uint64(s.ShareList).Uint64(s.Principals).Uint64(s.Claims)
+	w := codec.NewWriter(nodeStatusV3).Uint64(s.Settings).Uint64(s.ShareList).Uint64(s.Principals).Uint64(s.Claims)
 	w.Len(len(s.Refused))
 	for _, rr := range s.Refused {
 		putResource(w, rr.Record).Uint64(rr.Generation).Bytes(rr.Error)
@@ -536,13 +541,13 @@ func encodeNodeStatus(s entity.NodeStatus) []byte {
 	}
 	w.Bytes(s.Conditions).Len(len(s.Adapters))
 	for _, a := range s.Adapters {
-		w.String(a.Protocol).Uint8(uint8(a.State)).Uint64(a.Generation)
+		w.String(a.Protocol).Uint8(uint8(a.State)).Uint64(a.Generation).Uint32(uint32(a.Port))
 	}
 	return w.Encode()
 }
 
 func decodeNodeStatus(node entity.NodeID, b []byte) (entity.NodeStatus, error) {
-	r, ver, err := codec.NewReader(b, v1, nodeStatusV2)
+	r, ver, err := codec.NewReader(b, v1, nodeStatusV2, nodeStatusV3)
 	if err != nil {
 		return entity.NodeStatus{}, err
 	}
@@ -568,12 +573,17 @@ func decodeNodeStatus(node entity.NodeID, b []byte) (entity.NodeStatus, error) {
 		}
 	}
 	s.Conditions = cloneOrNil(r.Bytes())
-	if ver == nodeStatusV2 {
+	if ver >= nodeStatusV2 {
 		if k := r.Len(); k > 0 {
 			s.Adapters = make([]entity.AdapterStatus, k)
 		}
 		for i := range s.Adapters {
 			a := entity.AdapterStatus{Protocol: r.String(), State: entity.AdapterState(r.Uint8()), Generation: r.Uint64()}
+			if ver >= nodeStatusV3 {
+				p := r.Uint32()
+				known = known && p <= math.MaxUint16
+				a.Port = uint16(p)
+			}
 			known = known && a.State.String() != ""
 			s.Adapters[i] = a
 		}

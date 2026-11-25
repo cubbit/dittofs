@@ -166,13 +166,14 @@ type slot[S shape] struct {
 
 // outcome is what a slot's call left: the adapter running, nil when none;
 // while the adapter is enabled and nothing serves it, the error that refused
-// it; whether a drain of running is under way; and the settings generation
-// the slot runs.
+// it; whether a drain of running is under way; the settings generation the
+// slot runs; and the port running bound, 0 when none.
 type outcome struct {
 	running    adapter.Adapter
 	refused    error
 	draining   bool
 	generation uint64
+	port       uint16
 }
 
 // desired is what a slot is to run: whether its adapter is enabled, and its
@@ -215,7 +216,7 @@ func (s *slot[S]) apply(ctx context.Context, loop *health.Loop, gen uint64, enab
 	if err == nil {
 		s.gen = gen
 	}
-	o := outcome{running: s.running, generation: s.gen}
+	o := outcome{running: s.running, generation: s.gen, port: boundPort(s.running, s.name)}
 	if enabled && s.running == nil {
 		o.refused = err
 	}
@@ -343,6 +344,18 @@ func (s *slot[S]) refuse(err error) *refusal {
 	}}
 }
 
+// boundPort is the port a serves protocol on over TCP, read from its Addrs,
+// which name one port per service: 0 when a is nil or bound nowhere.
+func boundPort(a adapter.Adapter, protocol string) uint16 {
+	if a == nil {
+		return 0
+	}
+	if at := a.Addrs()[adapter.Socket{Service: protocol, Network: "tcp"}]; len(at) > 0 {
+		return at[0].Port()
+	}
+	return 0
+}
+
 // withAddrs is s with addrs as its Addrs: the node's, never the record's
 // (RFC 20 §3.6).
 func withAddrs[S shape](s S, addrs []netip.Addr) S {
@@ -384,8 +397,8 @@ func (n *Node) adaptersHeld() (map[string]adapter.Adapter, time.Duration) {
 }
 
 // status is the slot's adapter as the node's status reports it (RFC 23
-// §3.4): its state, in RFC 20 §3.1's terms, and the settings generation it
-// runs. An adapter enabled but refused, nothing serving it, stays configured
+// §3.4): its state, in RFC 20 §3.1's terms, the settings generation it runs
+// and, while it serves, the port it bound, which a client dials. An adapter enabled but refused, nothing serving it, stays configured
 // (RFC 23 §3.4). Start step 9 calls every slot before the status writer's
 // first turn, so a call has always left last.
 //
@@ -394,16 +407,16 @@ func (n *Node) adaptersHeld() (map[string]adapter.Adapter, time.Duration) {
 // status says why an adapter still holds connections it no longer accepts.
 func (s *slot[S]) status() entity.AdapterStatus {
 	o := s.last.Load()
-	state := entity.AdapterStopped
+	st := entity.AdapterStatus{Protocol: s.name, State: entity.AdapterStopped, Generation: o.generation}
 	switch {
 	case o.draining:
-		state = entity.AdapterDraining
+		st.State = entity.AdapterDraining
 	case o.running != nil:
-		state = entity.AdapterServing
+		st.State, st.Port = entity.AdapterServing, o.port
 	case o.refused != nil:
-		state = entity.AdapterConfigured
+		st.State = entity.AdapterConfigured
 	}
-	return entity.AdapterStatus{Protocol: s.name, State: state, Generation: o.generation}
+	return st
 }
 
 // conditionListenerLost is the condition an adapter's Health names for a

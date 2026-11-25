@@ -123,8 +123,8 @@ func putAdapter(ctx context.Context, rq request[adapterDoc], had []string, tx en
 }
 
 // adapterRead is GET /adapters/{protocol}: whether it is enabled, its
-// settings at installation scope, and, per node that reports it, its state
-// and the settings generation it runs; its enabled setting's generation is
+// settings at installation scope, and, per node that reports it, its state,
+// the settings generation it runs and the port it bound while serving; its enabled setting's generation is
 // the ETag, 0 before it is first written. A protocol no adapter serves is
 // 404, refused by its row's target; ?wait= returns once the generation changes.
 var adapterRead = watching[apiv1.Adapter]{
@@ -151,7 +151,7 @@ var adapterRead = watching[apiv1.Adapter]{
 		for _, st := range statuses {
 			for _, a := range st.Adapters {
 				if a.Protocol == rq.Sub {
-					v.Status.Nodes = append(v.Status.Nodes, apiv1.AdapterOnNode{Node: idString(st.Node), State: apiv1.AdapterState(a.State.String()), Generation: a.Generation})
+					v.Status.Nodes = append(v.Status.Nodes, apiv1.AdapterOnNode{Node: idString(st.Node), State: apiv1.AdapterState(a.State.String()), Generation: a.Generation, Port: a.Port})
 				}
 			}
 		}
