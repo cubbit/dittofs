@@ -631,9 +631,9 @@ it:
   ([RFC 17](rfc-17-vfs.md)), and is imported only by the adapters and the node.
 
 A component **MAY** import another component's contract. A contract holds no
-behaviour beyond methods on its own value types, keeps no state, and imports
-only the standard library and other contracts, so importing one brings in no
-behaviour and no cycle. A component that offers a contract keeps it in a unit
+behaviour beyond pure methods on its own value types, keeps no state, and
+imports only the standard library, libraries outside this set and other
+contracts, so importing one brings in no component's behaviour and no cycle. A component that offers a contract keeps it in a unit
 of its own, apart from its implementation.
 
 Where a component requires a capability it does not own, it **MUST** take it as
@@ -663,8 +663,7 @@ Conformance is checked by a per-component import-graph test that follows
 imports transitively, so a library a component imports cannot carry another
 component's implementation in. It fails when a component reaches another
 component's implementation, except a contract's in-memory implementation in its
-tests, and when a contract imports anything but the standard library and other
-contracts.
+tests, and when a contract imports another component's implementation.
 
 > decision: a contract may be shared. A rule that forbade every import made each
 > consumer copy the provider's types and errors, map between the copies, and
