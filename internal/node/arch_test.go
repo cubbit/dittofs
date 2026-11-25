@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/cubbit/dittofs/internal/prof"
+	"gopkg.in/yaml.v3"
 )
 
 // configFields are the fields of Config: what the host supplies and the node
@@ -614,7 +615,8 @@ func refersToWeakKey(f *ast.File, self bool) bool {
 }
 
 // shippedTargets are the GOOS and GOARCH pairs the release
-// builds dfs and dfsctl for, as .goreleaser.yml lists them.
+// builds dfs and dfsctl for; TestShippedTargetsMatchTheRelease holds them to
+// .goreleaser.yml.
 var shippedTargets = [][2]string{
 	{"linux", "amd64"}, {"linux", "arm64"},
 	{"darwin", "amd64"}, {"darwin", "arm64"},
@@ -657,6 +659,52 @@ func linkedTestPackages(root string) ([]string, error) {
 		}
 	}
 	return slices.Collect(maps.Keys(seen)), nil
+}
+
+// shippedTargets is the release's own list: every build .goreleaser.yml makes
+// is of ./cmd/dfs or ./cmd/dfsctl, with cgo off, and each one's GOOS and GOARCH
+// pairs are exactly shippedTargets.
+func TestShippedTargetsMatchTheRelease(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", ".goreleaser.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Builds []struct {
+			ID     string   `yaml:"id"`
+			Main   string   `yaml:"main"`
+			Env    []string `yaml:"env"`
+			GOOS   []string `yaml:"goos"`
+			GOARCH []string `yaml:"goarch"`
+		} `yaml:"builds"`
+	}
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("parse .goreleaser.yml: %v", err)
+	}
+	if len(cfg.Builds) == 0 {
+		t.Fatal(".goreleaser.yml: no builds")
+	}
+	want := map[[2]string]bool{}
+	for _, target := range shippedTargets {
+		want[target] = true
+	}
+	for _, b := range cfg.Builds {
+		if b.Main != "./cmd/dfs" && b.Main != "./cmd/dfsctl" {
+			t.Errorf("build %s: main %q, want ./cmd/dfs or ./cmd/dfsctl, the binaries the link check lists", b.ID, b.Main)
+		}
+		if !slices.Contains(b.Env, "CGO_ENABLED=0") {
+			t.Errorf("build %s: env %q lacks CGO_ENABLED=0, which the link check assumes", b.ID, b.Env)
+		}
+		got := map[[2]string]bool{}
+		for _, goos := range b.GOOS {
+			for _, goarch := range b.GOARCH {
+				got[[2]string{goos, goarch}] = true
+			}
+		}
+		if !maps.Equal(got, want) {
+			t.Errorf("build %s: targets %v, want shippedTargets %v", b.ID, got, shippedTargets)
+		}
+	}
 }
 
 // The weak-key rule's link check builds dfs and dfsctl as the release does,
