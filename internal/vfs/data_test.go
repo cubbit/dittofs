@@ -63,7 +63,7 @@ func TestAWriteRefusedByOpenStateChangesNothing(t *testing.T) {
 	ctx := t.Context()
 	h := s.file(t, "f", s.alice.Principal, 0o6777)
 	pc := s.smb(t, "pc", s.alice.Principal)
-	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Protocol: entity.ProtocolSMB}
+	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Caps: vfs.SMBCaps}
 	r, err := s.tab.Opens().Open(ctx, who, keyOf(s.record(t, h)), openstate.OpenRequest{Access: entity.ReadData | entity.WriteData,
 		Want: openstate.GrantRead | openstate.GrantWrite, Lease: openstate.LeaseKey{1}})
 	s.must(t, err)
@@ -94,7 +94,7 @@ func TestAnEmptyWriteOrReadChangesNothingAndRecallsNothing(t *testing.T) {
 	_, err := s.Write(ctx, admin, vfs.Anonymous(h), 0, []byte("data"), vfs.Unstable)
 	s.must(t, err)
 	pc := s.smb(t, "pc", s.alice.Principal)
-	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Protocol: entity.ProtocolSMB}
+	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Caps: vfs.SMBCaps}
 	r, err := s.tab.Opens().Open(ctx, who, keyOf(s.record(t, h)), openstate.OpenRequest{Access: entity.ReadData | entity.WriteData,
 		Want: openstate.GrantRead | openstate.GrantWrite, Lease: openstate.LeaseKey{1}})
 	s.must(t, err)
@@ -930,7 +930,7 @@ func TestOnlyAnSMBOpenFlushesAndALockStateWritesStable(t *testing.T) {
 	nref := s.opener(t, nfs, "f", entity.ReadData|entity.WriteData)
 	pc := s.smb(t, "pc", s.alice.Principal)
 	sref := s.opener(t, pc, "f", entity.ReadData|entity.WriteData)
-	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Protocol: entity.ProtocolSMB}
+	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Caps: vfs.SMBCaps}
 	unlock := s.Admission(fileOf(h))
 	res, err := s.tab.Locks().Lock(ctx, who, keyOf(s.record(t, h)), openstate.LockReq{
 		Owner: openstate.LockOwner{Client: pc.Client, Name: []byte("lo"), Stack: true}, Open: sref,

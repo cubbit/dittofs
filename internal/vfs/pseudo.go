@@ -144,7 +144,7 @@ func (fs *Filesystem) pseudoLookup(ctx context.Context, c vfs.Call, dir vfs.Hand
 	if n.Share == nil {
 		return n.Handle(), pseudoFile(t, n), nil
 	}
-	a, release, err := fs.admit(ctx, c, *n.Share, true, false)
+	a, release, err := fs.admit(ctx, c, *n.Share, 0)
 	if err != nil {
 		return nil, vfs.File{}, err
 	}
@@ -212,7 +212,7 @@ func (fs *Filesystem) pseudoReadDir(ctx context.Context, c vfs.Call, dir vfs.Han
 		e := vfs.DirEntry{Name: []byte(child.Name), Cursor: vfs.Cursor(child.Cursor())}
 		var admitted *admitted
 		for _, share := range child.Shares {
-			a, ok, err := fs.wouldAdmit(ctx, c, share, true)
+			a, ok, err := fs.wouldAdmit(ctx, c, share, 0)
 			if err != nil {
 				return vfs.Page{}, err
 			}

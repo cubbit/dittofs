@@ -200,19 +200,19 @@ func TestEveryChangesWCCIsReadInOneHold(t *testing.T) {
 	}
 }
 
-// V31: a directory's Before is nil over NFSv3, and returned over any other
-// protocol.
-func TestADirectorysBeforeIsNilOverNFSv3(t *testing.T) {
+// A directory's Before is returned under every profile whose calls change a
+// directory: an adapter whose protocol never reports one drops it.
+func TestADirectorysBeforeIsReturnedUnderEveryProfile(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
 	dir, _ := s.fs.Create(t, s.fs.Admin, s.fs.Root, "d", kvstore.Dir(0o755))
-	for _, p := range []entity.Protocol{entity.ProtocolNFSv3, entity.ProtocolNFSv4, entity.ProtocolSMB} {
+	for _, p := range []vfs.Caps{vfs.NFSv3Caps, vfs.NFSv4Caps, vfs.SMBCaps} {
 		c := proven(s.fs.Admin.Principal, inLab)
-		c.Protocol = p
+		c.Caps = p
 		w, err := s.SetAttr(ctx, c, vfs.Target{H: dir}, vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(0o750)})
 		s.must(t, err)
-		if (w.Before == nil) != (p == entity.ProtocolNFSv3) {
-			t.Errorf("%v: Before %v", p, w.Before)
+		if w.Before == nil || w.Before.ID != fileOf(dir) {
+			t.Errorf("under %q: Before %+v, want the directory's", p, w.Before)
 		}
 	}
 }
@@ -227,7 +227,7 @@ func TestAChangeWaitsOutAConflictingGrant(t *testing.T) {
 	c := openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte("c"), Boot: [8]byte{1}}}
 	id, _, err := s.tab.Clients().Connect(ctx, c, nil)
 	s.must(t, err)
-	who := openstate.Caller{Client: id, Principal: s.alice.Principal, Protocol: entity.ProtocolSMB}
+	who := openstate.Caller{Client: id, Principal: s.alice.Principal, Caps: vfs.SMBCaps}
 	res, err := s.tab.Opens().Open(ctx, who, keyOf(f), openstate.OpenRequest{Access: entity.ReadData | entity.WriteData, Want: openstate.GrantRead | openstate.GrantWrite, Lease: openstate.LeaseKey{1}})
 	s.must(t, err)
 	if res.Grant == nil {
@@ -443,11 +443,12 @@ func TestEachAttributeAsksItsOwnRight(t *testing.T) {
 	}
 	id, _, err := s.tab.Clients().Connect(ctx, openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte("pc"), Boot: [8]byte{1}}}, nil)
 	s.must(t, err)
-	who := openstate.Caller{Client: id, Principal: s.bob.Principal, Protocol: entity.ProtocolSMB}
+	who := openstate.Caller{Client: id, Principal: s.bob.Principal, Caps: vfs.SMBCaps}
 	res, err := s.tab.Opens().Open(ctx, who, keyOf(s.record(t, g)), openstate.OpenRequest{Access: entity.ReadData | entity.WriteData | entity.WriteAttributes})
 	s.must(t, err)
 	viaOpen := bob
-	viaOpen.Protocol, viaOpen.Client = entity.ProtocolSMB, id
+	viaOpen = smbCall(viaOpen)
+	viaOpen.Client = id
 	ref := &openstate.OpenRef{Kind: openstate.RefOpened, State: res.Open.Ref, Open: res.Open.ID, Handle: g}
 	if _, err := s.SetAttr(ctx, viaOpen, vfs.Target{H: g, Open: ref}, touch); err != nil {
 		t.Errorf("a group writer's time set through its open: %v", err)
@@ -467,11 +468,12 @@ func TestEachAttributeAsksItsOwnRight(t *testing.T) {
 	if got := s.record(t, g).Modify; !got.Equal(at) {
 		t.Errorf("a refused time set through a read-only open left Modify %v, want %v", got, at)
 	}
-	aliceWho := openstate.Caller{Client: id, Principal: s.alice.Principal, Protocol: entity.ProtocolSMB}
+	aliceWho := openstate.Caller{Client: id, Principal: s.alice.Principal, Caps: vfs.SMBCaps}
 	mine, err := s.tab.Opens().Open(ctx, aliceWho, keyOf(s.record(t, g)), openstate.OpenRequest{Access: entity.ReadData})
 	s.must(t, err)
 	alice := proven(s.alice.Principal, inLab)
-	alice.Protocol, alice.Client = entity.ProtocolSMB, id
+	alice = smbCall(alice)
+	alice.Client = id
 	mineRef := &openstate.OpenRef{Kind: openstate.RefOpened, State: mine.Open.Ref, Open: mine.Open.ID, Handle: g}
 	if _, err := s.SetAttr(ctx, alice, vfs.Target{H: g, Open: mineRef}, touch); err != nil {
 		t.Errorf("the owner's time set through her read-only open: %v, want it set on her own rights", err)
@@ -563,7 +565,7 @@ func TestAGrowingSizeChangeMeetsTheLocksPastTheOldSize(t *testing.T) {
 	s.must(t, err)
 	id, _, err := s.tab.Clients().Connect(ctx, openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte("pc"), Boot: [8]byte{1}}}, nil)
 	s.must(t, err)
-	who := openstate.Caller{Client: id, Principal: s.alice.Principal, Protocol: entity.ProtocolSMB}
+	who := openstate.Caller{Client: id, Principal: s.alice.Principal, Caps: vfs.SMBCaps}
 	res, err := s.tab.Opens().Open(ctx, who, keyOf(f), openstate.OpenRequest{Access: entity.ReadData | entity.WriteData})
 	s.must(t, err)
 	owner := openstate.LockOwner{Client: id, Name: binary.BigEndian.AppendUint64(nil, uint64(res.Open.ID)), Stack: true}
@@ -617,12 +619,13 @@ func TestATimeThroughAnOpenAsksWriteAttributesInItsGrant(t *testing.T) {
 	s.must(t, err)
 	open := func(h vfs.Handle, p entity.Principal, access entity.AccessMask) *openstate.OpenRef {
 		t.Helper()
-		res, err := s.tab.Opens().Open(ctx, openstate.Caller{Client: id, Principal: p, Protocol: entity.ProtocolSMB}, keyOf(s.record(t, h)), openstate.OpenRequest{Access: access})
+		res, err := s.tab.Opens().Open(ctx, openstate.Caller{Client: id, Principal: p, Caps: vfs.SMBCaps}, keyOf(s.record(t, h)), openstate.OpenRequest{Access: access})
 		s.must(t, err)
 		return &openstate.OpenRef{Kind: openstate.RefOpened, State: res.Open.Ref, Open: res.Open.ID, Handle: h}
 	}
 	bob := proven(s.bob.Principal, inLab)
-	bob.Protocol, bob.Client = entity.ProtocolSMB, id
+	bob = smbCall(bob)
+	bob.Client = id
 	if _, err := s.SetAttr(ctx, bob, vfs.Target{H: g, Open: open(g, s.bob.Principal, entity.ReadData|entity.WriteData)}, vfs.AttrChange{Attrs: entity.Attrs{}.WithModify(at)}); !errors.Is(err, vfs.ErrAccess) {
 		t.Errorf("a group writer's time set through an open holding write data alone: %v, want ErrAccess", err)
 	}
@@ -641,7 +644,8 @@ func TestATimeThroughAnOpenAsksWriteAttributesInItsGrant(t *testing.T) {
 		t.Errorf("the mode after a write-ACL holder's chmod 4755 beside a time: %o, want 755 with setuid dropped", got)
 	}
 	admin := adminCall
-	admin.Protocol, admin.Client = entity.ProtocolSMB, id
+	admin = smbCall(admin)
+	admin.Client = id
 	if _, err := s.SetAttr(ctx, admin, vfs.Target{H: g, Open: open(g, s.fs.Admin.Principal, entity.ReadData)}, vfs.AttrChange{Attrs: entity.Attrs{}.WithModify(at)}); err != nil {
 		t.Errorf("an admin's time set through its read-only open: %v, want it set on the admin's own rights", err)
 	}

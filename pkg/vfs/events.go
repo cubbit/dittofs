@@ -22,7 +22,7 @@ type AccessEvent struct {
 	Client     ClientID // zero for NFSv3
 	Addr       netip.Addr
 	Identity   Identity
-	Protocol   Protocol
+	Caps       Caps // the call's, whose String() labels the event
 	Op         Op
 	File       FileID
 	Name       []byte // the name acted on, for a namespace operation

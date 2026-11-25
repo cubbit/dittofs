@@ -81,7 +81,8 @@ func (n *names) smbClient(t *testing.T, name string, p entity.Principal) vfs.Cal
 	id, _, err := n.tab.Clients().Connect(t.Context(), c, &pr)
 	n.must(t, err)
 	call := proven(p, inLab)
-	call.Protocol, call.Client = entity.ProtocolSMB, id
+	call = smbCall(call)
+	call.Client = id
 	return call
 }
 
@@ -90,7 +91,7 @@ func (n *names) open(t *testing.T, c vfs.Call, dir, h vfs.Handle, name string, a
 	t.Helper()
 	f, err := n.fs.Store.Files().Get(t.Context(), n.fs.Admin, h)
 	n.must(t, err)
-	who := openstate.Caller{Client: c.Client, Principal: c.Identity.Evidence.Principal, Protocol: c.Protocol}
+	who := openstate.Caller{Client: c.Client, Principal: c.Identity.Evidence.Principal, Caps: c.Caps}
 	r, err := n.tab.Opens().Open(t.Context(), who, keyOf(f), openstate.OpenRequest{Via: fileOf(dir), Name: []byte(name), Access: access})
 	n.must(t, err)
 	return r.Open
@@ -103,7 +104,7 @@ func (n *names) markDeletePending(t *testing.T, name string, h vfs.Handle) {
 	c := n.smbClient(t, "marker", n.fs.Admin.Principal)
 	o := n.open(t, c, n.fs.Root, h, name, entity.ReadData|entity.Delete)
 	yes := true
-	who := openstate.Caller{Client: c.Client, Principal: n.fs.Admin.Principal, Protocol: c.Protocol}
+	who := openstate.Caller{Client: c.Client, Principal: n.fs.Admin.Principal, Caps: c.Caps}
 	n.must(t, n.tab.Opens().Update(t.Context(), who, o.ID, openstate.OpenUpdate{Delete: &yes}))
 }
 
@@ -232,7 +233,7 @@ func TestARenamedNamesOpensFollowIt(t *testing.T) {
 	if _, err := n.Rename(ctx, n.admin, vfs.Target{H: n.fs.Root}, []byte("a"), d.Handle, []byte("b"), false); err != nil {
 		t.Fatal(err)
 	}
-	who := openstate.Caller{Client: smb.Client, Principal: n.fs.Admin.Principal, Protocol: smb.Protocol}
+	who := openstate.Caller{Client: smb.Client, Principal: n.fs.Admin.Principal, Caps: smb.Caps}
 	yes := true
 	n.must(t, n.tab.Opens().Update(ctx, who, o.ID, openstate.OpenUpdate{Delete: &yes}))
 	r, err := n.tab.Opens().Close(ctx, who, openstate.OpenRef{Kind: openstate.RefOpened, State: o.Ref, Open: o.ID}, openstate.Seqs{})
@@ -251,7 +252,7 @@ func TestADeletePendingDirectoryTakesNoNewName(t *testing.T) {
 	f := n.create(t, n.admin, n.fs.Root, "f", vfs.CreateRegular)
 	n.markDeletePending(t, "doomed", doomed.Handle)
 	nfs := n.admin
-	nfs.Protocol = entity.ProtocolNFSv4
+	nfs.Caps = vfs.NFSv4Caps
 	for proto, c := range map[string]vfs.Call{"smb": n.smbClient(t, "adder", n.fs.Admin.Principal), "nfs": nfs} {
 		calls := map[string]error{}
 		_, calls["create"] = n.Create(ctx, c, doomed.Handle, []byte("new"), vfs.CreateArgs{Kind: vfs.CreateRegular})
@@ -291,8 +292,9 @@ func TestACreateRefusedAddFileChangesNothing(t *testing.T) {
 	}
 }
 
-// V31: each name change answers its directories' attributes either side of
-// it, the After past the Before, and over NFSv3 no directory's Before.
+// Each name change answers its directories' attributes either side of it,
+// the After past the Before, whatever protocol the call is labelled with:
+// the NFSv3 adapter drops a directory's Before itself.
 func TestANameChangeAnswersItsDirectoriesWCC(t *testing.T) {
 	n := newNames(t)
 	ctx := t.Context()
@@ -323,19 +325,17 @@ func TestANameChangeAnswersItsDirectoriesWCC(t *testing.T) {
 	}
 	order := []string{"create", "link", "rename", "unlink", "rmdir"}
 	nfs3 := n.admin
-	nfs3.Protocol = entity.ProtocolNFSv3
+	nfs3.Caps = vfs.NFSv3Caps
 	for _, c := range []vfs.Call{n.admin, nfs3} {
 		for _, op := range order {
 			ws, err := changes[op](c)
 			if err != nil {
-				t.Fatalf("%s over %v: %v", op, c.Protocol, err)
+				t.Fatalf("%s under %q: %v", op, c.Caps, err)
 			}
 			for _, w := range ws {
 				switch {
-				case c.Protocol == entity.ProtocolNFSv3 && w.Before != nil:
-					t.Errorf("%s over NFSv3 answered a directory's Before", op)
-				case c.Protocol != entity.ProtocolNFSv3 && (w.Before == nil || w.Before.Version.Counter() >= w.After.Version.Counter()):
-					t.Errorf("%s: Before %+v, After version %v", op, w.Before, w.After.Version)
+				case w.Before == nil || w.Before.Version.Counter() >= w.After.Version.Counter():
+					t.Errorf("%s under %q: Before %+v, After version %v", op, c.Caps, w.Before, w.After.Version)
 				case w.After.ID.IsZero():
 					t.Errorf("%s answered no After", op)
 				}
@@ -662,7 +662,7 @@ func TestARenameBetweenTwoNamesOfOneFileLeavesItsOpensAlone(t *testing.T) {
 			t.Errorf("%s after the rename: %v, %v", name, h, err)
 		}
 	}
-	who := openstate.Caller{Client: smb.Client, Principal: n.fs.Admin.Principal, Protocol: smb.Protocol}
+	who := openstate.Caller{Client: smb.Client, Principal: n.fs.Admin.Principal, Caps: smb.Caps}
 	yes := true
 	n.must(t, n.tab.Opens().Update(ctx, who, o.ID, openstate.OpenUpdate{Delete: &yes}))
 	r, err := n.tab.Opens().Close(ctx, who, openstate.OpenRef{Kind: openstate.RefOpened, State: o.Ref, Open: o.ID}, openstate.Seqs{})

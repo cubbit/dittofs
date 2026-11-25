@@ -139,7 +139,7 @@ func (s *shares) nfs41(t *testing.T, name string, uid uint32, sess uint64) vfs.C
 	info.Proposal = &p
 	id, _, err := s.Connect(t.Context(), c, info, &vfstest.Callbacks{})
 	s.must(t, err)
-	c.Protocol, c.Client, c.Session = entity.ProtocolNFSv4, id, vfs.SessionRef{ID: sess}
+	c.Caps, c.Client, c.Session = vfs.NFSv4Caps, id, vfs.SessionRef{ID: sess}
 	return c
 }
 
@@ -754,7 +754,7 @@ func TestStartServesEveryShare(t *testing.T) {
 	g := n.restart(t)
 	g.reg.register(pc.Client, "", &vfstest.Callbacks{})
 	g.must(t, g.Start(ctx))
-	who := openstate.Caller{Client: pc.Client, Principal: alice.Principal, Protocol: entity.ProtocolSMB, Sessioned: true}
+	who := openstate.Caller{Client: pc.Client, Principal: alice.Principal, Caps: vfs.SMBCaps, Sessioned: true}
 	for _, o := range opens {
 		m := openstate.ReconnectMatch{Share: o.share, Create: o.create}
 		if _, err := g.tab.Opens().Reconnect(ctx, who, o.ref.Open, m, vfs.SessionRef{ID: 2}); err != nil {
@@ -1485,7 +1485,7 @@ func TestAnNFSOpenIsDecidedWithThePrivilege(t *testing.T) {
 	info.Proposal = &pr
 	id, _, err := n.Connect(ctx, c, info, &vfstest.Callbacks{})
 	n.must(t, err)
-	c.Protocol, c.Client, c.Session = entity.ProtocolNFSv4, id, vfs.SessionRef{ID: 1}
+	c.Caps, c.Client, c.Session = vfs.NFSv4Caps, id, vfs.SessionRef{ID: 1}
 	if _, err := n.Open(ctx, c, vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData}); err != nil {
 		t.Errorf("a privileged NFS open of a file denying everyone: %v, want granted", err)
 	}

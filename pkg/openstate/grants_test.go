@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/vfs/caps"
 )
 
 const (
@@ -233,15 +234,6 @@ func TestRecallDeadline(t *testing.T) {
 	f.idx.Unlock()
 	if counted != 0 {
 		t.Errorf("a lease cut to none still counts %d against its client's budget", counted)
-	}
-}
-
-// A lease key is SMB's: an open of another protocol naming one is invalid.
-func TestLeaseKeyIsSMBs(t *testing.T) {
-	f := newFixture(t)
-	a := f.caller(t, nfs("host-a", 1, entity.NewUser()))
-	if _, err := f.open(a, anyFile(), OpenRequest{Owner: owner(a, "o"), Access: rd, Lease: LeaseKey{1}, Want: rw}); !errors.Is(err, ErrInvalid) {
-		t.Errorf("an NFS open naming a lease key: %v, want ErrInvalid", err)
 	}
 }
 
@@ -1390,7 +1382,7 @@ func TestLeaseKeyJoinsOnlyItsOpenersPrincipals(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t)
 			alice := f.caller(t, smbMachine("pc"))
-			bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+			bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Caps: caps.SMBCaps}
 			file, _ := f.fileIn(t, "doc")
 			_, g := f.grantOpen(t, alice, file, keep(OpenRequest{Access: rd | wr, Lease: k, Want: rwh}, entity.DurabilityPersistent, s1, time.Minute, 1))
 			if g == nil || g.Kind != rwh {
@@ -1469,7 +1461,7 @@ func TestLeaseKeyJoinsOnlyItsOpenersPrincipals(t *testing.T) {
 func TestChangeThroughAnotherUsersOpen(t *testing.T) {
 	f := newFixture(t)
 	alice := f.caller(t, smb("pc"))
-	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Caps: caps.SMBCaps}
 	file := anyFile()
 	oa, g := f.grantOpen(t, alice, file, OpenRequest{Access: rd | wr, Lease: LeaseKey{7}, Want: rwh})
 	if g == nil || g.Kind != rwh {
@@ -1488,7 +1480,7 @@ func TestChangeThroughAnotherUsersOpen(t *testing.T) {
 func TestRefusedLeaseKeyOffersNoOplock(t *testing.T) {
 	f := newFixture(t)
 	alice := f.caller(t, smb("pc"))
-	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Caps: caps.SMBCaps}
 	file := anyFile()
 	if _, g := f.grantOpen(t, alice, file, OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead}); g == nil {
 		t.Fatal("alice was offered no lease")
@@ -1504,7 +1496,7 @@ func TestRefusedLeaseKeyOffersNoOplock(t *testing.T) {
 func TestOwnKeyBesideAnothersLease(t *testing.T) {
 	f := newFixture(t)
 	alice := f.caller(t, smb("pc"))
-	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Caps: caps.SMBCaps}
 	file := anyFile()
 	if _, g := f.grantOpen(t, alice, file, OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead}); g == nil {
 		t.Fatal("alice was offered no lease")
@@ -1540,7 +1532,7 @@ func TestOpenersAreTheGrantsOwnOpens(t *testing.T) {
 	file := anyFile()
 	s1, s2 := entity.SessionRef{ID: 1}, entity.SessionRef{ID: 2}
 	_, g := f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh, Session: s1})
-	b := Caller{Client: a.Client, Principal: entity.NewUser(), Protocol: a.Protocol}
+	b := Caller{Client: a.Client, Principal: entity.NewUser(), Caps: a.Caps}
 	f.grantOpen(t, b, file, OpenRequest{Access: rd, Lease: LeaseKey{1}, Want: rh, Session: s2, Conn: []entity.Principal{a.Principal}})
 	f.grantOpen(t, a, file, OpenRequest{Access: rd, Lease: LeaseKey{2}, Want: rh, Session: s1})
 
@@ -1569,7 +1561,7 @@ func TestOpenersAreTheGrantsOwnOpens(t *testing.T) {
 func TestAnothersKeyOnAnotherFileRefusesNoOpen(t *testing.T) {
 	f := newFixture(t)
 	alice := f.caller(t, smb("pc"))
-	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Caps: caps.SMBCaps}
 	f.grantOpen(t, bob, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead})
 	res, err := f.Opens().Open(ctx, alice, anyFile(), OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: GrantRead})
 	if err != nil {
@@ -1596,7 +1588,7 @@ func TestOwnKeyOnAnotherFileIsInvalid(t *testing.T) {
 func TestClosedJoinerLeavesTheKey(t *testing.T) {
 	f := newFixture(t)
 	alice := f.caller(t, smb("pc"))
-	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Caps: caps.SMBCaps}
 	file := anyFile()
 	f.grantOpen(t, alice, file, OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: rh})
 	o, g := f.grantOpen(t, bob, file, OpenRequest{Access: rd, Lease: LeaseKey{7}, Want: rh, Conn: []entity.Principal{alice.Principal}})
@@ -1620,7 +1612,7 @@ func TestClosedJoinerLeavesTheKey(t *testing.T) {
 func TestConcurrentFirstCreatesUnderOneKey(t *testing.T) {
 	f := newFixture(t)
 	alice := f.caller(t, smb("pc"))
-	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Caps: caps.SMBCaps}
 	var refused [2]int
 	both := 0
 	for i := range 500 {
@@ -1659,7 +1651,7 @@ func TestConcurrentFirstCreatesUnderOneKey(t *testing.T) {
 func TestAnothersOpenCloseUnderTheKeyRefusesNoCreate(t *testing.T) {
 	f := newFixture(t)
 	alice := f.caller(t, smb("pc"))
-	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Protocol: entity.ProtocolSMB}
+	bob := Caller{Client: alice.Client, Principal: entity.NewUser(), Caps: caps.SMBCaps}
 	k := LeaseKey{7}
 	stop := make(chan struct{})
 	var wg sync.WaitGroup

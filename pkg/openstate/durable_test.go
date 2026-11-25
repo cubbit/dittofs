@@ -14,6 +14,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
+	"github.com/cubbit/dittofs/pkg/vfs/caps"
 )
 
 var (
@@ -219,11 +220,11 @@ func TestReconnectMatches(t *testing.T) {
 	f.disconnect(t, a, s1)
 	for name, try := range map[string]func() error{
 		"another client": func() error {
-			_, err := f.reconnect(Caller{b.Client, a.Principal, entity.ProtocolSMB, true}, o, exact, s2)
+			_, err := f.reconnect(Caller{b.Client, a.Principal, true, caps.SMBCaps}, o, exact, s2)
 			return err
 		},
 		"another principal": func() error {
-			_, err := f.reconnect(Caller{a.Client, entity.NewUser(), entity.ProtocolSMB, true}, o, exact, s2)
+			_, err := f.reconnect(Caller{a.Client, entity.NewUser(), true, caps.SMBCaps}, o, exact, s2)
 			return err
 		},
 		"another create ID": func() error {
@@ -481,7 +482,7 @@ func TestFlushedReportsALossOnce(t *testing.T) {
 	if err := flush(late, 5); err != nil {
 		t.Errorf("a flush through an open made after the loss: %v", err)
 	}
-	if err := f.Opens().Flushed(ctx, Caller{a.Client, entity.NewUser(), entity.ProtocolSMB, true}, o2.ID, 6); !errors.Is(err, ErrNotYours) {
+	if err := f.Opens().Flushed(ctx, Caller{a.Client, entity.NewUser(), true, caps.SMBCaps}, o2.ID, 6); !errors.Is(err, ErrNotYours) {
 		t.Errorf("a flush by another principal: %v, want ErrNotYours", err)
 	}
 	if err := flush(o2, 6); !errors.Is(err, ErrLost) {
@@ -949,7 +950,7 @@ func TestATimeoutClosingAClientsLastOpenReleasesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	who := Caller{Client: id, Principal: c.Owner, Protocol: c.Protocol}
+	who := Caller{Client: id, Principal: c.Owner, Caps: caps.SMBCaps}
 	this := entity.SessionRef{ID: 1}
 	f.mustOpen(t, who, anyFile(), keep(OpenRequest{Access: rd | wr, Want: rwh}, entity.DurabilityDurable, this, time.Minute, 1))
 	if _, err := f.Disconnect(ctx, id, this, SessionEnd{Last: true, Gen: gen}); err != nil {

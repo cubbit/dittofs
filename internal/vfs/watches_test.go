@@ -569,7 +569,7 @@ func TestAClientHearsItsChangesInOrder(t *testing.T) {
 	info := smb("alice-pc", 1)
 	id, _, err := s.Connect(ctx, alice, info, cb)
 	s.must(t, err)
-	alice.Protocol, alice.Client = info.Protocol, id
+	alice.Client = id
 	w, err := s.Watch(ctx, alice, vfs.WatchSpec{Dir: s.fs.Root, Filter: openstate.ChangeAddEntry})
 	s.must(t, err)
 	s.Notify(alice.Client, w, []vfs.Change{{What: openstate.ChangeAddEntry, Name: []byte("f")}})

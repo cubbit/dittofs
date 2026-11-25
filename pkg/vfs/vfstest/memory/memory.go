@@ -72,12 +72,13 @@ func New(t *testing.T) *Service {
 }
 
 // Admin is a call by the share's administrator, proven by a ticket under
-// privacy, from 127.0.0.1: one the share admits for anything.
+// privacy, from 127.0.0.1, under NFSv4's profile, so its privilege counts on
+// every call: one the share admits for anything.
 func (s *Service) Admin() vfs.Call {
 	return vfs.Call{Identity: vfs.Identity{
 		Proof: vfs.ProofTicket, Protection: vfs.ProtectionPrivacy,
 		Evidence: vfs.Evidence{Principal: s.Store.Admin.Principal}, Client: netip.AddrFrom4([4]byte{127, 0, 0, 1}),
-	}}
+	}, Caps: vfs.NFSv4Caps}
 }
 
 // wallClock is the time the store stamps its records with.

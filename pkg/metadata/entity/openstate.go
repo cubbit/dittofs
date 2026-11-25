@@ -153,6 +153,11 @@ func (k RecoveryKind) String() string                { return enumString(recover
 func (k RecoveryKind) MarshalText() ([]byte, error)  { return enumMarshal(recoveryKinds, k) }
 func (k *RecoveryKind) UnmarshalText(b []byte) error { return enumUnmarshal(recoveryKinds, k, b) }
 
+// RenewsLease reports whether a client of this kind renews a lease: one told
+// of a loss by a status or a refusal keeps calling; one that reconnects or is
+// sent a notice does not.
+func (k RecoveryKind) RenewsLease() bool { return k == RecoverStatus || k == RecoverRefusal }
+
 // NSMBoot is an NLM host's NSM state number as its client's Boot: big-endian
 // in the last four bytes, so a host that restarts with a new number is a
 // reboot of the same name, and the bytes order as the numbers do.

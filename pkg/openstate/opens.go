@@ -126,7 +126,7 @@ type OpenRequest struct {
 	SetID         bool               // the file's mode has the setuid or setgid bit, as the service read it: no write caching is offered
 	Reclaim       bool               // the open is one the client held before its shard lost its state
 
-	Durability entity.Durability // what the open survives; durable or persistent only for SMB, with Durable's Timeout set
+	Durability entity.Durability // what the open survives; durable or persistent only with Durable's Timeout set, for a caller wanting OpenIDs
 	Durable    DurableKeys
 	Session    entity.SessionRef // the opening session
 	Replay     bool              // a create marked as a replay: one naming the caller's client's open by Durable.Create answers that open
@@ -434,11 +434,8 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 	if r.DeleteOnClose && !r.Stream.IsZero() {
 		return OpenResult{}, ErrInvalid
 	}
-	if r.Lease != (LeaseKey{}) && who.Protocol != entity.ProtocolSMB {
-		return OpenResult{}, ErrInvalid // a lease key is SMB's
-	}
-	if r.Durability != entity.DurabilityNone && (r.Durable.Timeout <= 0 || who.Protocol != entity.ProtocolSMB) {
-		return OpenResult{}, ErrInvalid // only an SMB open, named by its ID, is reconnected
+	if r.Durability != entity.DurabilityNone && (r.Durable.Timeout <= 0 || !who.wantsOpenID()) {
+		return OpenResult{}, ErrInvalid // only an open named by its ID is found again
 	}
 	// decision: a persistent open of a named stream is refused, since its
 	// record names the stream and not the base file whose table it is
@@ -460,8 +457,7 @@ func (t *Table) grantOpen(ctx context.Context, who Caller, f FileKey, r OpenRequ
 		}
 	}
 	var id entity.OpenID
-	if who.Protocol == entity.ProtocolSMB {
-		// An SMB FileId names the open across a reconnect.
+	if who.wantsOpenID() {
 		if id, err = t.nextOpenID(ctx); err != nil {
 			return OpenResult{}, err
 		}

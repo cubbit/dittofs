@@ -88,12 +88,12 @@ func (fs *Filesystem) copyOrCloneOnce(ctx context.Context, c vfs.Call, a vfs.Cop
 		return 0, vfs.WCC{}, vfs.ErrInvalid
 	}
 	src, dst := spans(a.Extents)
-	sa, srelease, err := fs.admitRef(ctx, c, a.Src, false)
+	sa, srelease, err := fs.admitRef(ctx, c, a.Src, 0)
 	if err != nil {
 		return 0, vfs.WCC{}, err
 	}
 	defer srelease()
-	da, drelease, err := fs.admitRef(ctx, c, a.Dst, false)
+	da, drelease, err := fs.admitRef(ctx, c, a.Dst, 0)
 	if err != nil {
 		return 0, vfs.WCC{}, err
 	}
@@ -183,7 +183,7 @@ func (fs *Filesystem) copyOrCloneOnce(ctx context.Context, c vfs.Call, a vfs.Cop
 	if before == nil { // a retry of a clone done, answered before the hook: nothing changed now
 		before = &df
 	}
-	w := fs.wcc(ctx, c, da, a.Dst.Handle, *before)
+	w := fs.wcc(ctx, da, a.Dst.Handle, *before)
 	fs.entryChanged(ctx, da, &a.Dst, df, written(w))
 	return n, w, nil
 }

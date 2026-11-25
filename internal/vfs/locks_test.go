@@ -29,7 +29,7 @@ func (s *shares) connected(t *testing.T, c vfs.Call, info vfs.ClientInfo) (vfs.C
 	cb := &vfstest.Callbacks{}
 	id, _, err := s.Connect(t.Context(), c, info, cb)
 	s.must(t, err)
-	c.Protocol, c.Client = info.Protocol, id
+	c.Client = id
 	return c, cb
 }
 
@@ -186,7 +186,7 @@ func TestDelegatedIOIsTheHoldersOwn(t *testing.T) {
 	ref := vfs.Delegated(r.Grant.ID, h)
 	as := func(uid uint32) vfs.Call {
 		c := s.as(t, uid, inLab)
-		c.Protocol, c.Client, c.Session = holder.Protocol, holder.Client, holder.Session
+		c.Caps, c.Client, c.Session = holder.Caps, holder.Client, holder.Session
 		return c
 	}
 	if _, err := s.Write(ctx, as(1000), ref, 0, []byte("x"), vfs.Unstable); err != nil {
@@ -304,7 +304,7 @@ func TestDrainLeavesAPendingBreak(t *testing.T) {
 	if err != nil || len(opens) != 1 {
 		t.Errorf("the lease after Drain covers %v, %v; want its open", opens, err)
 	}
-	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Protocol: entity.ProtocolSMB, Sessioned: true}
+	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Caps: vfs.SMBCaps, Sessioned: true}
 	if err := s.tab.Grants().AckRecall(ctx, who, r.Grant.ID, to); err != nil {
 		t.Errorf("the break's answer after Drain: %v, want it still in flight", err)
 	}

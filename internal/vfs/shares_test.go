@@ -135,8 +135,10 @@ func (s *shares) addShare(t testing.TB, name, path string) entity.ShareID {
 	return sh.ID
 }
 
+// proven is a call proven by a ticket as p, from at, under NFSv4's profile,
+// so its privilege counts on every call.
 func proven(p entity.Principal, at netip.Addr) vfs.Call {
-	return vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofTicket, Protection: vfs.ProtectionPrivacy, Evidence: vfs.Evidence{Principal: p}, Client: at}}
+	return vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofTicket, Protection: vfs.ProtectionPrivacy, Evidence: vfs.Evidence{Principal: p}, Client: at}, Caps: vfs.NFSv4Caps}
 }
 
 // as is a call proven by a ticket as the user holding uid, from at.
@@ -658,7 +660,8 @@ func TestAnAuditedDecisionReachesTheSink(t *testing.T) {
 		bob := s.user(t, "bob", "", s.share, entity.AccessReadWrite)
 		h := (&attrs{shares: s}).file(t, "f", alice.Principal, 0o644)
 		call := proven(bob.Principal, inLab)
-		call.Client, call.Protocol = 7, entity.ProtocolSMB
+		call = smbCall(call)
+		call.Client = 7
 		_, err := s.SetAttr(t.Context(), call, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(0o777)})
 		return err
 	}
@@ -669,7 +672,7 @@ func TestAnAuditedDecisionReachesTheSink(t *testing.T) {
 	got := rec.got
 	rec.mu.Unlock()
 	if len(got) != 1 || got[0].Op != vfs.OpSetAttr || got[0].Allowed || got[0].Addr != inLab ||
-		got[0].Client != 7 || got[0].Protocol != entity.ProtocolSMB {
+		got[0].Client != 7 || got[0].Caps != vfs.SMBCaps {
 		t.Errorf("the sink received %+v by the time SetAttr answered", got)
 	}
 
@@ -686,7 +689,7 @@ func TestOnlyAnUnsquashedProvenCallerIsAdmin(t *testing.T) {
 	ops := s.user(t, "ops", "1500", s.share, entity.AccessAdmin)
 	caller := func(id vfs.Call) authz.Caller {
 		t.Helper()
-		a, release, err := s.admit(ctx, id, s.share, true, false)
+		a, release, err := s.admit(ctx, id, s.share, 0)
 		s.must(t, err)
 		release()
 		return a.caller
@@ -794,7 +797,7 @@ func TestAProvenPrincipalWithNoUIDIsAnonymous(t *testing.T) {
 	s.must(t, errOf(s.cp.PutUser(ctx, host, 0, entity.Alloc{})))
 	s.must(t, errOf(s.cp.SetGrant(ctx, entity.ShareGrant{Share: s.share, Principal: host.Principal, Access: entity.AccessAdmin}, 0)))
 	s.must(t, errOf(s.cp.SetGrant(ctx, entity.ShareGrant{Share: s.share, Principal: entity.AuthenticatedUsers, Access: entity.AccessReadWrite}, 0)))
-	a, release, err := s.admit(ctx, proven(host.Principal, inLab), s.share, true, false)
+	a, release, err := s.admit(ctx, proven(host.Principal, inLab), s.share, 0)
 	s.must(t, err)
 	release()
 	if c := a.caller; c.Principal != nobody.Principal || c.Authenticated || c.Admin || c.Privileged || c.Mapped != host.Principal {
@@ -826,7 +829,7 @@ func TestADeletedOrDisabledMachineIsRefused(t *testing.T) {
 			IDs: entity.ProtocolIDs{{Scheme: entity.SchemeKerberos, Value: "host/build0" + strconv.Itoa(i) + ".corp.example@CORP.EXAMPLE"}}}
 		s.must(t, errOf(s.cp.PutUser(ctx, m, 0, entity.Alloc{})))
 		id := proven(m.Principal, inLab)
-		a, release, err := s.admit(ctx, id, s.share, true, false)
+		a, release, err := s.admit(ctx, id, s.share, 0)
 		if err != nil {
 			t.Fatalf("%s: a live machine before: %v", c.name, err)
 		}
@@ -835,7 +838,7 @@ func TestADeletedOrDisabledMachineIsRefused(t *testing.T) {
 			t.Fatalf("%s: a live machine acts as %v, want the anonymous %v", c.name, a.caller.Principal, nobody.Principal)
 		}
 		c.revoke(m)
-		if _, _, err := s.admit(ctx, id, s.share, true, false); !errors.Is(err, vfs.ErrAccess) {
+		if _, _, err := s.admit(ctx, id, s.share, 0); !errors.Is(err, vfs.ErrAccess) {
 			t.Errorf("%s machine: admission on a share with an anonymous principal answered %v, want ErrAccess", c.name, err)
 		}
 		if who, err := s.who(ctx, id, 0); !errors.Is(err, vfs.ErrAccess) {
@@ -894,7 +897,7 @@ func TestAReadOnlyClientRuleNarrowsWrites(t *testing.T) {
 		if writes := info.MaximalAccess&entity.WriteData != 0; writes != (c.want == entity.NotNarrowed) || info.MaximalAccess&entity.ReadData == 0 {
 			t.Errorf("%s: an admin's maximal access %#x", c.name, info.MaximalAccess)
 		}
-		a, release, err := s.admit(ctx, proven(s.fs.Admin.Principal, inLab), s.share, true, false)
+		a, release, err := s.admit(ctx, proven(s.fs.Admin.Principal, inLab), s.share, 0)
 		s.must(t, err)
 		release()
 		if a.caller.ReadOnly != c.want {
@@ -1017,7 +1020,7 @@ func TestANewShareSquashesToAnonymous(t *testing.T) {
 	ctx := t.Context()
 	fresh := s.addShare(t, "fresh", "/fresh")
 	s.must(t, errOf(s.cp.SetGrant(ctx, entity.ShareGrant{Share: fresh, Principal: entity.Everyone, Access: entity.AccessRead}, 0)))
-	a, release, err := s.admit(ctx, vfs.Call{Identity: vfs.Identity{Client: inLab}}, fresh, true, false)
+	a, release, err := s.admit(ctx, vfs.Call{Identity: vfs.Identity{Client: inLab}}, fresh, 0)
 	s.must(t, err)
 	release()
 	if a.caller.Privileged || a.caller.Principal != entity.AnonymousPrincipal {
@@ -1044,7 +1047,7 @@ func TestASquashedCallerIsTheAnonymousPrincipalOnly(t *testing.T) {
 	s.must(t, s.cp.AddMember(ctx, entity.Membership{Group: staff.Principal, Member: bob.Principal}))
 	nobody := s.user(t, "nobody", "", s.share, entity.AccessRead)
 	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, Squash: entity.SquashAll, Anonymous: nobody.Principal}, 0)))
-	a, release, err := s.admit(ctx, proven(bob.Principal, inLab), s.share, true, false)
+	a, release, err := s.admit(ctx, proven(bob.Principal, inLab), s.share, 0)
 	s.must(t, err)
 	release()
 	if a.caller.Principal != nobody.Principal || a.caller.InGroup(staff.Principal) {
@@ -1078,7 +1081,7 @@ func TestANarrowedWriteIsErrReadOnly(t *testing.T) {
 		want     error
 	}{{true, s.fs.Admin.Principal, vfs.ErrReadOnly}, {false, reader.Principal, vfs.ErrAccess}} {
 		s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share, ReadOnly: c.readOnly}, policyVersion(t, s.cp, s.share))))
-		a, release, err := s.admit(ctx, proven(c.who, inLab), s.share, true, false)
+		a, release, err := s.admit(ctx, proven(c.who, inLab), s.share, 0)
 		s.must(t, err)
 		err = storeErr(s.authz.Decide(ctx, a.caller, vfs.OpWrite, a.root(), nil, nil, entity.WriteData))
 		release()
