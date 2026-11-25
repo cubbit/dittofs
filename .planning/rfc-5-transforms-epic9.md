@@ -23,7 +23,7 @@ transform chain, the material provider and `with_encryption`.
 them. Every citation is the RFCs' text on `develop`; the code lands on `feat/storage-v2`, and the
 paths below are paths there.
 **Track:** the team.
-**Epic 9 estimate: 6 subtasks, 15 man-days.**
+**Epic 9 estimate: 6 subtasks, 14.75 man-days.**
 **Depends on:**
 - **E3**: `chain.Register` and its registry (T3.1); `NewChain` with its refusals, the
   `with_encryption: accept` check among them (T3.2); the census view's check of `require` and of
@@ -34,8 +34,13 @@ paths below are paths there.
   `keys.ErrNotEscrowed`, and its D6: a passed escrow check is recorded in the store configuration and
   handed back in `Config.Escrowed`. **E7**: `KMIPConfig`, the type of `Config.KMIP`. Both with the
   additions §9 lists under "Needs on E6 and E7".
-- **E8**: the data-key and master-key rotation calls, and the report of a master key's new primary
-  version (§9, "Needs on E8").
+- **E8**: `(*Provider).RotateDataKey(ctx, ns) (keys.MaterialID, error)` and
+  `RotateMasterKey(ctx) error`, both refusing `ErrNotEscrowed` where the key-file gate is shut;
+  `Deps.RotationNeeded func(masterKeyID []byte)`, which its check calls on a new primary version and
+  at the first read after every open; `Config.RetiredKeyFiles`, with `VerifyEscrow` accepting a copy
+  of any held master key (its D6); `Status.MasterKeysUnavailable` and `MasterKeysDestroyed` (its
+  D8). Its `Deps.KeysObjects`, `Deps.After` and `Run` are the RFC 8 offload plan's epic 21's to pass
+  and run, not this epic's (§9, "Needs on E8").
 - Outside RFC 5's epics, on `feat/storage-v2`: `pkg/settings` (`Of`, the `bound` class, `CheckTx`,
   `SecretRef`, `SelfKey`, `ErrBound`); the node's `newTable()` and `newReaches()`
   (`internal/node/settings.go`); the management API's problem table, its `ownKeys`, its action
@@ -146,8 +151,8 @@ title and not copied.
 | rule 5, **public interface and internals** ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | each rule is asserted where its consumer meets it: a refusal through the API's write and the generic setting route, not only through `Validate`; T15's plant through a chain built with the content wiring's `Encrypts`; a series read back from a scrape of the registry, not from the recorder's state; an escrow pass read by a provider the node built after the commit |
 | rule 6, **known failures shrink** | none | every test here lands green in `unit` or `integration`, neither of which keeps a `known.yaml` |
 | rule 7, **v2 ignores v1, and imports only what RFC 0 §1.2 allows** | T9.1, T9.6 | `chain` gains plain values only and imports nothing new; `pkg/settings`, `pkg/metrics` and `pkg/health` are imported by the content wiring and the node alone; the API reaches the provider only through an interface it declares. E1's import test holds it. The API imports `pkg/transform/keys`, a contract, for its error values |
-| rule 8, **real dependencies for properties of those dependencies** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T9.4, T9.5 | key creation through the API runs the real provider over `kvstore` on Badger; the in-place rotation row runs against the harness's `service:kmip` in `integration` (§9, O9) |
-| rule 9, **code comment conventions** ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T9.1, T9.2, T9.3, T9.4, T9.6 | `decision:` markers for D2, D4, D5, D9, D10, D11 and D12; `ponytail:` for D6. RFC 5 §3.2's own note is E3's, at its `with_encryption` check. `SelfKey`'s existing `decision:` marker, which names its one user, gains `encrypts` |
+| rule 8, **real dependencies for properties of those dependencies** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T9.4, T9.5 | key creation through the API runs the real provider over `kvstore` on Badger; the in-place rotation row runs against the harness's `service:kmip` in `integration`, retargeting the key's Name (§9, O9) |
+| rule 9, **code comment conventions** ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T9.1, T9.2, T9.3, T9.4, T9.5, T9.6 | `decision:` markers for D2, D4, D5, D7, D9, D10, D11 and D12; `ponytail:` for D6. RFC 5 §3.2's own note is E3's, at its `with_encryption` check. `SelfKey`'s existing `decision:` marker, which names its one user, gains `encrypts` |
 | rule 10, **a test must be able to fail** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test names the change that turns it red |
 | rule 11, **a symbol is exported only if RFC 5's interface or a consumer outside the package uses it** | T9.1, T9.6 | `chain` exports `StageOf`, `Spec`, `Rule` and their three lists, each consumed by the content wiring; nothing else in `pkg/transform` is exported here. This epic is where E6's `CreateKeys`, `VerifyEscrow` and `Status` and E8's rotation calls are first called, so they freeze here |
 | rule 12, **each subtask creates only what it declares** | all | no new package: the values join `chain`, and the wiring joins `internal/node/content`, `internal/node/api` and `internal/node`. The destroy operation is not built |
@@ -198,7 +203,7 @@ tests can cite them. Where another epic does the rest, the row says so.
 | R20 | `verify-escrow` is a `POST` on a remote store, `admin`'s, and not an operation | MUST | RFC 23 §4.1, §5.2; RFC 5 Appendix B.2 | T9.3 |
 | R21 | A data-key or master-key rotation is driven by the operation runner, its steps recorded durably and each idempotent; a second request for the same kind on the same target while one runs is refused `409` `operation_running`, naming it | MUST | RFC 23 §4.6 | T9.5 |
 | R22 | An operation no call started carries no account, read as the schedule, and the write that creates it carries its audit record with the schedule as actor | MUST | RFC 23 §4.6, §6 | T9.5 |
-| R23 | A key service that rotates a master key in place, while the namespace writes nothing, has a `rotate-master-key` operation started at the next period by the primary-version read (E8 reads it and re-wraps), with no administrator, unless one runs for that master key | test row | RFC 5 §8.2 (Appendix B.1, in-place rotation), Appendix B.1; RFC 5 plan §5 (epic 9) | T9.5 |
+| R23 | A key service that rotates a master key in place, or retargets its alias, while the namespace writes nothing, has a `rotate-master-key` operation started at the next period by the primary-version read (E8 reads it and re-wraps), with no administrator, unless one runs for that master key | test row | RFC 5 §8.2 (Appendix B.1, in-place rotation and alias rows), Appendix B.1; RFC 5 plan §5 (epic 9) | T9.5 |
 | R24 | `rotate-data-key` revokes nothing while removal has not landed: its help says the old key stays held, so it does not answer a leaked data key | MUST | RFC 5 Appendix B.3; RFC 23 §4.1; RFC 5 plan §5 (epic 9), §6.1 (`Provider.Remove`) | T9.5 |
 | R25 | Each action has a `dfsctl` command, and the CLI reference is regenerated from the command tree | MUST | RFC 23 §7; RFC 5 plan D15; `CLAUDE.md` ("Frequent commands") | T9.3, T9.5 |
 
@@ -234,13 +239,18 @@ tests can cite them. Where another epic does the rest, the row says so.
   (from memory). No marker: the doc comment says it.
 
 - **D2, a configuration's master key changes through `rotate-master-key` only.** Rewriting the key
-  file's path or the KMIP key's name in place would make the provider unwrap old records under a key
-  that did not wrap them (R8). The remote section's `CheckTx`, which every writer passes (the API's
-  routes, the provisioning reload), refuses a write whose master key differs from the row's once the
-  store exists, its first value passing; `ownKeys` gains `remote.materials`, so the generic route's
-  refusal names the route. The rotation's ending transaction writes the new row with `tx.PutSetting`
-  directly. Endpoint, certificates and timeout stay writable (D12). A `decision:` marker at the
-  check names the route. Prior art: the store's own `remote.credential`, written only by its route
+  file's path or the KMIP key's name in place would make the provider wrap under a key whose escrow
+  nothing checked and leave records under one it no longer holds (R8). The remote section's
+  `CheckTx`, which every writer passes (the API's routes, the provisioning reload), refuses a write
+  whose `key_file` or `kmip.key` differs from the row's once the store exists, its first value
+  passing; `ownKeys` gains `remote.materials`, so the generic route's refusal names the route.
+  `retired_files`, E8's `Config.RetiredKeyFiles`, may only grow: an operator adds the next key file
+  there and runs `verify-escrow` with its copy, which E8's `VerifyEscrow` accepts for any held key
+  (E8's D6), and a removal is refused, since dropping a file that still unwraps records is a
+  master-key destroy, the deferral ledger's destroy row. `rotate-master-key` then names a file
+  already retired: its first turn swaps it with the current `key_file` with `tx.PutSetting`, and its
+  failure hook swaps them back if `RotateMasterKey` refuses (T9.5). Endpoint, certificates and
+  timeout stay writable (D12). A `decision:` marker at the check names the route. Prior art: the store's own `remote.credential`, written only by its route
   (checked, `internal/node/api/res_settings.go`'s `ownKeys`).
 
 - **D3, the remote store's section carries `transforms`, `require`, `materials`,
@@ -259,8 +269,8 @@ tests can cite them. Where another epic does the rest, the row says so.
   records the pass in the configuration. `remote.escrowed` holds the list of `Escrow` values (master
   key ID and fingerprint), class live; the section's `CheckTx` refuses any write of it that changes
   the list, and `ownKeys` names `:verify-escrow`, so no operator can type a pass the provider never
-  made. `verify-escrow` and a key-file rotation append their pass with `tx.PutSetting` in their own
-  transaction. The provider learns of it only through the section's reach (D12), after the commit,
+  made. `verify-escrow` alone appends a pass, with `tx.PutSetting` in its own transaction; a key-file
+  rotation needs its next key's pass recorded first (D2). The provider learns of it only through the section's reach (D12), after the commit,
   so a pass whose transaction failed opens no gate (§9, "Needs on E6 and E7"). A `decision:` marker
   at the refusal says why, to be withdrawn if RFC 16 gains a row for the pass. Prior art: RFC 13
   §2.5's system fields of a backup location, which the record holds and the operator never writes
@@ -292,11 +302,15 @@ tests can cite them. Where another epic does the rest, the row says so.
   accumulating. Prior art: two-phase creation with an idempotent first phase, as Kubernetes'
   finalizers (from memory).
 
-- **D7, an operation's ID is its rotation's idempotency token.** RFC 23 §4.6 makes each step
-  idempotent, and a rotation that is retried after a crash must finish the same rotation, not start a
-  second. The step passes the operation's ID to E8's rotation call, which completes a rotation already
-  begun under it and returns its result; the step's cursor (`StepResult.Next`) holds only the phase.
-  E8 decides how it records the token (§9). Prior art: the idempotency keys of RFC 23 §4.5 (checked).
+- **D7, a rotation step is idempotent by what it reads, with no token.** RFC 23 §4.6 makes each step
+  idempotent, and a rotation retried after a crash must finish the same rotation, not start a
+  second; E8's calls take no token. `RotateMasterKey` re-wraps only the records not already under
+  the configuration's current master key, so running it again after a crash changes nothing more
+  (E8's T8.6). For a data key, the operation's first turn records in its cursor
+  (`StepResult.Next`) the namespace's current data key ID, and a later turn that finds another key
+  current ends `succeeded` with it rather than calling `RotateDataKey` again; `noneRunning` keeps a
+  second rotation off the namespace meanwhile. A `decision:` marker at the step says so. Prior art:
+  a compare-and-swap on the observed version, as an `If-Match` write (RFC 23 §4.4, checked).
 
 - **D8, the component's observability values are one table in `chain`.** The plan's rule 3 puts
   the series specs, the conditions and the alert rules as plain values in this component's packages,
@@ -334,7 +348,8 @@ tests can cite them. Where another epic does the rest, the row says so.
   live, and `internal/node/settings.go` requires every section with live keys to have an entry in
   `newReaches()`, or a change of it fails. The remote section's apply hands each store's provider its
   new `Config`; with D2 refusing a new master key, the apply changes only a KMIP endpoint,
-  certificates and timeout and the escrow passes. That call is E6's and E7's to add (§9). A
+  certificates and timeout, the escrow passes, and a retired key file added (which it opens) or the
+  swap a rotation makes. That call is E6's, E7's and E8's to add (§9). A
   `decision:` marker at the apply says it refuses nothing D2 has not. Prior art: the identity
   section's apply in the same table (checked).
 
@@ -356,7 +371,7 @@ internal/node/content/
   remote_test.go, encrypts_test.go, keys_test.go, observe_test.go
 internal/node/
   settings.go         T9.1  the remote section's reach; T9.2 the encrypts section in newTable()
-  keyops.go           T9.5  the two step rows and the start from the primary-version report
+  keyops.go           T9.5  the two step rows and Deps.RotationNeeded's start
 internal/node/api/
   res_settings.go     T9.1  ownKeys rows for remote.materials and remote.escrowed
   problems.go         T9.3  rows for pkg/transform/keys' errors
@@ -396,12 +411,13 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
     recorder (T9.6).
   - `internal/node/content/remote.go`, unexported but for the section and its conversion: the
     fields `transforms` (`[]{name, settings}`, class next write, default empty), `require` (next
-    write), `materials` (live: `key_file`, or `kmip` with `endpoint`, `key`, `client_cert`,
+    write), `materials` (live: `key_file` with `retired_files`, or `kmip` with `endpoint`, `key`, `client_cert`,
     `server_ca`, `timeout`), `kmip_client_key` (`entity.SecretRef`, kind `SecretKey`) and
     `escrowed` (live, a list of `Escrow`); `Required("Materials")`; `Validate` building the chain
     with no material (D1) and refusing a `materials` with neither or both of `key_file` and
     `kmip.endpoint`, or a KMIP block missing its key or certificates, through E6's and E7's shape
-    check, each refusal naming the field; `CheckTx` refusing a changed master key (D2), a changed
+    check, each refusal naming the field; `CheckTx` refusing a changed master key and a removed retired
+    file (D2), a changed
     `escrowed` (D4), and an encrypt stage gained or lost (`StageOf`) while `tx.StoreNamed` (D5), all
     with `settings.ErrBound` or a field error naming the route; the conversion to
     `[]transform.Config` and `provider.Config`, the passphrase from the root (RFC 13 Appendix C).
@@ -421,7 +437,8 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
     (R3).
   - A store created without `remote.materials` is `400` `required` (R2).
   - On an existing store, a changed key file or KMIP key name is refused naming the route, and a
-    changed KMIP endpoint is accepted and reaches the provider (R4, R8); `remote.escrowed` written by
+    changed KMIP endpoint, or a retired file added, is accepted and reaches the provider (R4, R8); a
+    retired file removed is refused; `remote.escrowed` written by
     `PATCH`, the generic route or a provisioning reload is refused.
   - Adding `aes-gcm` to, or removing it from, a store a namespace names is `409` `bound_setting`,
     nothing written; with no namespace it is accepted; replacing it by another encrypt-stage
@@ -551,9 +568,10 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
 
 ### T9.5 The two rotation operations and their start
 
-**Subtask T9.5 estimate: 4 man-days.**
+**Subtask T9.5 estimate: 3.75 man-days.**
 
-- **Track:** the team. **Depends on:** T9.3; E8's rotation calls and its primary-version report.
+- **Track:** the team. **Depends on:** T9.3; E8's `RotateDataKey`, `RotateMasterKey`,
+  `Deps.RotationNeeded` and `Config.RetiredKeyFiles`.
 - **Covers:** R18, R19, R21, R22, R23, R24, R25.
 - **Deliverables:**
   - `pkg/node/apiv1/opkind.go`: `OpRotateDataKey OpKind = "namespace.rotate-data-key"` and
@@ -561,48 +579,57 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
   - `res_domain.go`: `action` and `noneRunning` take the target's kind and reference, so an action
     starts an operation on a namespace or a store as it does on the installation.
   - Routes `POST /namespaces/{id}:rotate-data-key` (no body) and `POST /stores/{id}:rotate-master-key`
-    (`{"key_file": <path>, "copy": <base64>}` for a key file, the copy optional where Appendix B.2
-    requires no escrow; no body for a key service, which re-reads its primary version), both
-    `admin`'s, refused `409` `operation_running` while one of the kind runs on the target.
-  - `Keys.RotateDataKey` and `Keys.RotateMasterKey`, each passing the operation's ID to E8's call
-    (D7); `internal/node/keyops.go`: their step rows in the runner, each step's cursor its phase, the
-    master-key rotation's ending transaction writing the new `remote.materials` and appending its
-    escrow pass to `remote.escrowed` with `tx.PutSetting` (D2, D4).
-  - In `keyops.go`, for each store's provider, the reader of E8's report: on a master key's new
-    primary version, one control-plane `Write` creating an `OpRotateMasterKey` operation on that
-    store with the zero `Account` and its audit record whose actor is the schedule, creating none
-    while one of that kind runs for that master key.
+    (`{"key_file": <path>}` naming a file already in `retired_files` for a key file; no body for a key
+    service, whose primary version E8's check reads), both `admin`'s, refused `409`
+    `operation_running` while one of the kind runs on the target, and a `key_file` not among
+    `retired_files` refused `400` naming it.
+  - `Keys.RotateDataKey` and `Keys.RotateMasterKey` over E8's calls; `internal/node/keyops.go`: their
+    step rows in the runner (D7). The data-key step's first turn records the current data key ID,
+    then calls `RotateDataKey`. The key-file master-key step's first turn swaps `key_file` and the
+    named retired file with `tx.PutSetting`, which the section's reach hands to the provider (D12),
+    then calls `RotateMasterKey`; its `failed` hook swaps them back when the call is refused, so an
+    unescrowed key never stays current (D2). A key-service step calls `RotateMasterKey` alone.
+  - `Deps.RotationNeeded` for each store's provider, which the content wiring builds and the RFC 8
+    offload plan's epic 21 passes: on a master key's ID, one control-plane `Write` creating an
+    `OpRotateMasterKey` operation on that store with the zero `Account` and its audit record whose
+    actor is the schedule, creating none while one of that kind runs on the store. E8 calls it at the
+    first read after every open too (its D7), so each start runs one rotation that re-wraps nothing
+    when nothing changed.
   - `dfsctl namespace rotate-data-key <ns>` and `dfsctl store rotate-master-key <store> [--key-file
-    <path> --copy <file>]`, each with `--wait`; `rotate-data-key`'s help says the old key stays held
-    and readable, and that stopping a leaked key needs the relocation and removal that have not
-    landed (R24); `clisuite` rows; `go run ./cmd/gendocs`.
+    <path>]`, each with `--wait`; `rotate-data-key`'s help says the old key stays held and readable,
+    and that stopping a leaked key needs the relocation and removal that have not landed (R24);
+    `rotate-master-key`'s help gives the key-file order: add the file to `retired_files`, run
+    `verify-escrow` with its copy, then rotate; `clisuite` rows; `go run ./cmd/gendocs`.
 - **Acceptance criteria:**
   - Each route answers `202` with the operation; the operation ends `succeeded`, and the namespace's
     current data key, or the store's master key, is the new one (R18, R19).
   - A second request while one runs is `409` `operation_running` naming it (R21).
-  - A key-file rotation whose copy fails the escrow check, on a store with an encrypting namespace,
-    ends `failed` with `not_escrowed`, and the old key stays current; on a store with none, the same
-    rotation without a copy succeeds (R19).
-  - A primary-version report starts one operation with no account, its audit record naming the
-    schedule; a report while one runs starts none (R22, R23).
+  - A key-file rotation to a file with no recorded pass, on a store with an encrypting namespace,
+    ends `failed` with `not_escrowed`, `key_file` names the old file again and the old key stays
+    current; on a store with none, the same rotation succeeds (R19).
+  - A call of `RotationNeeded` starts one operation with no account, its audit record naming the
+    schedule; one while it runs starts none (R22, R23).
 - **Tests:**
-  - Through the API and the runner on the injected clock, the real provider over Badger and a key
-    file: each rotation to `succeeded`, read back through the namespace read and a fresh provider
-    (R18, R19); the runner stopped after the first step's commit and a new runner started over the
-    same store: one new data key, not two (catches a step that is not idempotent, R21, D7); the
-    concurrent request (R21); the escrow rows (catch escrow demanded or skipped in the wrong case,
-    R19); the role rows (R18, R19); the help text read from the command tree (catches a help that
-    promises revocation, R24).
-  - With E8's in-memory report source (kind 2; §9): a reported version starts one operation that
-    ends `succeeded`, and a second report during it starts none (catches a start per report, R23);
-    the operation's `Account` and the audit record's actor (catch an operation that looks
-    operator-started, R22).
-  - In `integration` against `service:kmip`, if the harness's server can rotate a key in place
-    (O9): rotate it while nothing is written, advance the provider's period on the injected clock,
-    and every key record is re-wrapped under the new version with no administrator's call (R23 end
-    to end).
-- **Rules:** rule 8: the end-to-end row against the real key service. rule 11: E8's rotation calls
-  freeze when these steps first call them.
+  - Through the API and the runner on the injected clock, the real provider over Badger and key
+    files: each rotation to `succeeded`, read back through the namespace read and a fresh provider
+    (R18, R19); the runner stopped after the data-key step's call and before its commit, and a new
+    runner started over the same store: one new data key, not two (catches a step that is not
+    idempotent, R21, D7); the same for the master-key step, every record under the new key once
+    (D7); the concurrent request (R21); the escrow rows and the swap back (catch an unescrowed key
+    left current, or escrow demanded where Appendix B.2 asks none, R19, D2); the role rows (R18,
+    R19); the help text read from the command tree (catches a help that promises revocation, R24).
+  - The start, driven by the real provider as E8's T8.7 does: records under key file A, a provider
+    opened on B with A retired, so its first read calls `RotationNeeded` with B; one operation
+    started that ends `succeeded` with every record under B, and a second call while it runs starts
+    none (catches a start per report, R23); the operation's `Account` and the audit record's actor
+    (catch an operation that looks operator-started, R22).
+  - In `integration` against `service:kmip`: PyKMIP 0.10.0 cannot rotate a key in place (E7's and
+    E8's §9), so the row retargets the master key's KMIP Name to a second key while nothing is
+    written, the alias case RFC 5 treats alike, advances the provider's period on the injected clock,
+    and asserts an operation started with no administrator's call and every key record re-wrapped
+    under the second key (R23 end to end; E8's T8.8 holds the read and the re-wrap alone).
+- **Rules:** rule 8: the end-to-end row against the real key service. rule 9: D7's marker. rule 11:
+  E8's rotation calls freeze when these steps first call them.
 
 ### T9.6 The observability values and their builders
 
@@ -646,8 +673,11 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
       `len(Unavailable)`, `encryption_current_key_age_seconds{namespace}` as now minus
       `CurrentSince`;
     - a `health.Source` raising `material_unavailable` and `material_unknown` per material in
-      `Status`, on its namespace, the material ID in the detail; a material of no namespace (a master
-      key, E8) on every namespace the store's provider has opened;
+      `Status`, on its namespace, the material ID in the detail; each of E8's
+      `Status.MasterKeysUnavailable` as `material_unavailable` on every namespace the store's
+      provider has opened. `MasterKeysDestroyed` raises nothing here: E8 marks the records it wraps
+      before listing it, and the engine's `material_destroyed` reports them, so the condition keeps
+      one owner (RFC 25 §2.7);
     - the rules, as `Rules()` gives them, for the RFC 8 offload plan's epic 21 to register.
 - **Acceptance criteria:**
   - After a scripted run of encodes, declines, decodes and each decode failure, a scrape holds the
@@ -695,7 +725,7 @@ T9.1 and can run beside T9.2 to T9.5.
 | --- | --- | --- | --- | --- |
 | 1 | T9.1, T9.2 | 5.5 | — | a store configuration and a namespace as the operator writes them, with the encrypt stage's bound |
 | 2 | T9.3, T9.4 | 3.25 | PR 1 | escrow and key creation through the API, with the errors they return |
-| 3 | T9.5 | 4 | PR 2 | the two rotations, started by an administrator or by the key service |
+| 3 | T9.5 | 3.75 | PR 2 | the two rotations, started by an administrator or by the key service |
 | 4 | T9.6 | 2.25 | PR 1 | the series, conditions and rules, independent of PRs 2 and 3, which it can run beside |
 
 A suggestion only: one pull request per subtask works as well.
@@ -707,7 +737,7 @@ A suggestion only: one pull request per subtask works as well.
   there, but Appendix B has no row and no key. This epic proposes `remote.escrowed`, written only by
   `verify-escrow` and a key-file rotation, and `remote.kmip_client_key`, a secret reference; RFC 13
   Appendix B should gain both rows ("verified escrow passes | RFC 5 Appendix B.2 | remote store |
-  live, written by `verify-escrow` and the rotation only | none"). Not edited here; for RFC 13's
+  live, written by `verify-escrow` only | none"). Not edited here; for RFC 13's
   author.
 - **`transform_bytes_total`'s `side` label (D10).** RFC 5 §6's row should name it, so RFC 25 §2.4's
   closed set holds. For RFC 5's author.
@@ -722,29 +752,35 @@ A suggestion only: one pull request per subtask works as well.
   (T9.6). For RFC 5's author.
 - **Needs on E6 and E7.** A shape check of `Config` that reads no file and dials nothing, which the
   section's `Validate` calls (T9.1); a call that hands a running provider its new `Config` and
-  refuses a different master key, for the section's reach (D12), E7 taking the KMIP part; the escrow
+  refuses a master key it does not hold, for the section's reach (D12), E7 taking the KMIP part and
+  E8 the retired files; the escrow
   gate opened only from `Config.Escrowed` and that call, so E6's T6.7 drops "remembers a pass it
   made" (D4); E7's `KMIPConfig.ClientKey` filled from the resolved `remote.kmip_client_key`, in
   whatever form E7's transport reads; a sentinel in `keys` for a master key's spent wrap count (E6's
   R22), which T9.3's table would answer `409` `wrap_limit`, so that it is not a `500`.
-- **Needs on E8.** Its data-key and master-key rotation calls take the operation's ID as an
-  idempotency token and complete a rotation already begun under it (D7); the key-file master-key
-  rotation takes the new key file and, where Appendix B.2 requires one, its escrow copy, refuses
-  `ErrNotEscrowed` before the key becomes current, and returns the `Escrow` pass the ending
-  transaction records (D4); the report of a new primary version is a call the node can read per
-  provider, preferably by cursor as the destroyed-material notice is (the RFC 5 plan's D17), with an
-  in-memory source a test can drive (kind 2) for T9.5's unit row; and, if its rotation keeps retired
-  master-key files, a field of the remote section for them, added by E8.
-- **O9 (the RFC 5 plan's): whether the harness's PyKMIP can rotate a key in place.** If it cannot,
-  T9.5's end-to-end row moves with E8's in-place rows to the cloud-key-service ledger row, and its
-  unit row over E8's in-memory report stays.
+- **What E8 already provides.** `RotateDataKey` and `RotateMasterKey`, each refusing
+  `ErrNotEscrowed` where the gate is shut, `RotateMasterKey` safe to repeat (its T8.6), so D7 needs
+  no token; `Deps.RotationNeeded`, a callback rather than a report to poll, which T9.5 implements
+  and the RFC 8 offload plan's epic 21 passes, called at every open as well (its D7);
+  `Config.RetiredKeyFiles` and `VerifyEscrow` accepting a copy of any held master key, which give the
+  key-file rotation its order (its D6, this document's D2); `Status.MasterKeysUnavailable` and
+  `MasterKeysDestroyed` (its D8). Its `Deps.KeysObjects`, `Deps.After`, `Run` and the
+  per-incarnation notice cursor (its D10) are the RFC 8 offload plan's epics 18 and 21's, not this
+  epic's.
+- **Needs on E8.** The running provider's `Config` call (D12) opens a retired key file added at run
+  time and takes a rotation's swap of `key_file`, as `New` does for both; without it,
+  `retired_files` and the swap reach the provider only at the next start, and T9.5's key-file step
+  would have to restart the store's provider.
+- **O9 (the RFC 5 plan's), settled by E7 and E8:** PyKMIP 0.10.0 cannot rotate a key in place but
+  can retarget a Name, the alias case. T9.5's end-to-end row retargets, and no row moves to the
+  cloud-key-service ledger row.
 - **`apiv1.NamespaceStatus`.** T9.4 adds the current data key; E10's census per material joins the
   same status. The field's name is T9.4's; E10 should extend rather than add a second read.
 - **Refinements of the RFC 5 plan,** which is not edited: it places `settings.go` with the three rows
   in `chain`, and here the rows are the content wiring's (D3), since `pkg/transform` may not carry
   `pkg/settings`' tags and `transform.Config` is frozen; it lists five subtasks and 12 man-days, and
-  this document has six and 15, the difference being the rotations' idempotency and recovery and
-  their start from the primary-version read (T9.5), the section's reach and refusals across every
+  this document has six and 14.75, the difference being the rotations' idempotency and recovery and
+  their start from E8's `RotationNeeded` (T9.5), the section's reach and refusals across every
   writer (T9.1), and the builders in the content wiring (T9.6), which E6's D8 brings here. The least
-  certain estimates are T9.5's, which depends on the shape of E8's calls, and T9.1's, whose reach
-  depends on E6's and E7's added call.
+  certain estimates are T9.5's, whose key-file step swaps settings around E8's call, and T9.1's,
+  whose reach depends on the call E6, E7 and E8 add.
