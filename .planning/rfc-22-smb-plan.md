@@ -1260,8 +1260,8 @@ in `develop`'s lists:
 - WPTS joins a domain, the controller `integration/ad-dc` starts, rather than a workgroup, so
   `BVT_FilePermission_AccessAllow_UserSid`, `BVT_FolderPermission_AccessAllow_UserSid`,
   `BVT_SMB2Basic_Query_Quota_Info` and `BVT_KerbAuth_Success` run (§4.1, Appendix E.1), and
-  `BVT_CBAC_CountryCodeEquals156Policy` with them, whose claim-based entries no RFC states (§6.3,
-  risk 5).
+  `BVT_CBAC_CountryCodeEquals156Policy` with them, an expected failure since RFC 22 §11 declines
+  claim-based access control (§6.5).
 
 The fixture's users need no change: `{user}` and `{user2}` hold uids 65535 and 65536, which the
 v2 store does not reserve (it reserves 0 for root and 65534 for anonymous), and each SID
@@ -1659,8 +1659,8 @@ thread is named.
    its expected failures when RFC 22 is done. `clients/windows` meets it through E15, which
    provides its Windows runner and owns the cell. T13.4's Previous Versions stays parked until
    RFC 12's store view, and RFC 22 §15 now declines it until then, so smbtorture's `smb2.twrp`
-   tests and WPTS's `BVT_EnumerateSnapShots` are in RFC 22 §18's list. WPTS's `BVT_CBAC_CountryCodeEquals156Policy`, once the
-   domain fixture runs it, needs claim-based ACL entries, which no RFC states either way.
+   tests and WPTS's `BVT_EnumerateSnapShots` are in RFC 22 §18's list. Claim-based access control
+   is declined in RFC 22 §11, so WPTS's `BVT_CBAC_*` are in that list too (§6.5).
 
 ### 6.4 RFC 20's ledger rows for SMB
 
@@ -1710,6 +1710,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | Deferred | Why | Owner | Trigger |
 | --- | --- | --- | --- |
 | The profile-container run (§6.2, point 8) | it needs a Windows client with FSLogix joined to the test domain | unowned: the test infrastructure's | E15's Windows runner joined to the test domain |
+| Claim-based access control (Dynamic Access Control): conditional entries on directory claims, WPTS's `BVT_CBAC_*` ([#5732](https://github.com/cubbit/dittofs/issues/5732)) | RFC 22 §11 declines it: no identity carries directory claims, and conditional entries are refused | unowned | a customer needs claim-based access control, or RFC 18 adds AD claims |
 | §6.3's namespace-move rows, RFC 22 §18's move rows (§6.2, point 10) | a move between installations needs RFC 27's move | RFC 27's plan, not written yet | RFC 27's move is built |
 | A `Find` in `SET_INFO` minting a principal record before `SetACL` is authorised (A5): a `Find` that does not mint, or a `decision:` naming the directory's size as the ceiling | RFC 18 §4.1 mints on `Find`, and A5 keeps the call where the request needs it | the RFC 18 plan (#4058) | before T12.4's `SetACL` row |
 | Witness, RFC 22 §14 (amendment A1; §6.2, point 13) | **(cluster)**: one node has no other node to move a client to | the cluster stage | a share served by more than one node |

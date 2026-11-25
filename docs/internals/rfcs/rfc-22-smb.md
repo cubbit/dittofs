@@ -1936,6 +1936,13 @@ nothing is stored ([RFC 19 §2.8](rfc-19-authorization.md#2.8%20What%20a%20store
 > withdraws a grant. Both look like success to the client. Overturned only by
 > supporting the kind; a tool that sets one is told so, and can fall back.
 
+> decision: claim-based access control is not supported. A conditional entry
+> that tests a user's or device's directory claims is refused with the other
+> callback entries above, and no identity carries claims
+> ([RFC 18](rfc-18-identity.md)). The cost: WPTS's `BVT_CBAC_*` tests fail
+> (§18). Support it when a deployment needs claim-based access, or once RFC 18
+> carries directory claims.
+
 **Who may read and change a descriptor** is the chokepoint's decision, not the
 adapter's: the file's owner holds `READ_CONTROL` and `WRITE_DAC` whatever the
 DACL denies, unless an entry for owner rights applies, so an owner can always
@@ -3127,6 +3134,7 @@ that starts passing means the decision changed and this list is stale.
 | WPTS shared virtual disk tests (MS-RSVD), listed by name in the harness's known-failure list | shared virtual disks refused (§10, Appendix D) |
 | WPTS DFS referral tests (`BVT_RootAndLinkReferral*`, `BVT_*ToDC*`) | DFS referrals are a non-goal (§1.1) |
 | smbtorture `smb2.twrp` tests, WPTS `BVT_EnumerateSnapShots` | Previous Versions not served until RFC 12's store view (§15) |
+| WPTS claim-based access tests (`BVT_CBAC_*`) | no claim-based access control (§11) |
 | WPTS shadow copy tests over MS-FSRVP (`BVT_VSS*`) | `IPC$` serves three RPC services, FSRVP not among them (§5.2) |
 
 A single-node run also expects Witness's tests to fail, WPTS `BVT_SWN*` and
