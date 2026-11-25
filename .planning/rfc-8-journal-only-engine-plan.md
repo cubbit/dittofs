@@ -158,6 +158,7 @@ with stage 2:
   > and names content by bytes, so its on-disk identity must not follow a metadata type. The
   > one conversion is the price. Overturn it only if the conversion itself becomes a
   > measured cost.
+
   A clone's hold on its source is `Deps.Holds`, a `CloneHold` (`Hold`, `Release`, `Served`)
   in the engine's own types (`CloneSrc`), which the root adapts from open state, so the
   engine imports no `pkg/openstate` (RFC 0 I6). An orphan a clone's `Release` leaves
