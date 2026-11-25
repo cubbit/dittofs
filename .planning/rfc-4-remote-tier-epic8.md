@@ -14,7 +14,7 @@ are the node and its content wiring). The RFC 4 follow-up (#5795) is applied whe
 this epic: `pkg/remote/s3`'s `NewClient(ClientConfig, Deps)` and `Open`. Every citation is
 `develop`'s text; the code lands on `feat/storage-v2`, and the paths below are paths there.
 **Track:** the team.
-**Epic 8 estimate: 2 subtasks, 3.5 man-days.**
+**Epic 8 estimate: 2 subtasks, 3.25 man-days.**
 **Depends on:** **S7**, RFC 8 offload plan's node composition built: its epic 21 holds one
 `*s3.Client` per store configuration, ref-counted, in the node's content wiring
 (`internal/node/content`), builds the syncer once with its two worker counts, and registers E7's
@@ -41,10 +41,10 @@ holding.
   marker naming that caller;
 - §7.1's first §4.10 row passes as a table test of the derivation, and its second against
   LocalStack 4.13.1 through the holding: 1,000 stores on one store configuration, one client,
-  its limit equal to the callers' total, and no more connections opened under load than one
-  store opens;
+  its limit equal to the callers' total, and no more connections opened under load across the
+  1,000 stores than the limit;
 - `docs/guide/configuration.md`'s remote store section says how many connections a store
-  configuration's client opens and that no key sets it.
+  configuration's client holds open at once and that no key sets it.
 
 ### 1.1 In scope
 
@@ -59,14 +59,22 @@ D3); §7.1's two §4.10 rows; the line in the configuration guide.
 - The caps the limit sets on the client: the per-host cap, the idle connections per host and in
   total, HTTP/1.1 only, and a limit below 1 refused (RFC 4 §4.10's last two clauses, Appendix
   C.3): E4, T4.2.
-- GC's delete and list bound itself (RFC 9 §7.1): RFC 9's plan, which passes it here (D2).
-- The counts reduced to fit the transfers pool (RFC 24 §7.2): with the caller that first passes the
-  syncer that pool's size, as RFC 3 §1.3's "What lands with its first caller" table has it (D3).
+- GC's bound itself (RFC 9 §7.1) and its term in the limit: RFC 9, as the plan's §6.1 deferral
+  ledger row on GC's term in the client limit has it (D2).
+- The counts reduced to fit the transfers pool (RFC 24 §7.2), and the limit derived from the
+  reduced counts: the caller that first passes the syncer that pool's size, as RFC 3 §1.3's "What
+  lands with its first caller" table has it and the plan's §6.1 row on the reduced counts records
+  (D3).
+- The limit of a backup location's client: RFC 26, under the plan's §6.1 row on a backup
+  location's calls, since v1.1 opens no location store.
+- That no key sets the limit (R4) is the key table's: E7 declares none.
 - The connections a store's open uses for its capability check: RFC 4 §4.15's `decision:` note
   keeps the open outside the syncer and its handful of calls outside the sum; E5 places that
   marker.
 - §7.5's steady-load row (ten minutes, the connections opened bounded by the pool size plus the
   service's closes): E9.
+- A store's `Close` releasing its reference, and no client left once every store is closed: RFC 8
+  offload plan epic 21's holding.
 
 ### 1.3 Names used here
 
@@ -95,13 +103,13 @@ cited by number and title and not copied.
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | the derivation is a pure function of three counts with a table test (T8.1); the holding's run is against LocalStack, a real service (T8.2). No double |
 | rule 2, fuzz tests where relevant ([`CLAUDE.md`, "By kind"](../CLAUDE.md#by-kind)) | none | nothing decodes bytes |
 | rule 3, observability follows RFC 25 | T8.2 | no new metric, log or span; T8.2 reads `remote_connections_opened_total` from a scrape of the registry E7's recorder writes to, the series an operator reads |
-| rule 4, profiling | T8.2 | the 1,000-store run is under `internal/prof`'s goroutine and descriptor checks, which catch a store's `Close` that leaves a connection or a goroutine behind. No allocation assertion: nothing here is per operation |
+| rule 4, profiling | T8.2 | the 1,000-store run is under `internal/prof`'s goroutine and descriptor checks, as every test is; no allocation assertion, since nothing here is per operation |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | the limit is asserted where it is consumed: E4's T4.2 test shows the client's caps equal `ClientConfig.Limit`, so T8.1 asserts the holding passes the derivation's value there, and T8.2 counts the connections the client opened, read from the metric |
 | rule 6, known failures shrink | none | `unit` and `integration` keep no `known.yaml`; both tests land green |
 | rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | T8.1 | the derivation imports nothing and sits in a composer (RFC 0 §1.2), which may import `pkg/remote/s3` and the syncer; no package of `pkg/remote` changes, so E1's import walk is untouched |
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T8.2 | LocalStack 4.13.1, reached over HTTPS as E3's `integration` cell does, through the checked `Open`; no fault transport, since neither row needs a fault |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T8.1 | the `decision:` markers of D2 and D3 at the derivation's call site |
-| rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test names the break it catches: a term dropped from the sum, a limit derived per store, a client per store |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T8.1 | one `decision:` marker at the derivation's call site, holding D2's and D3's clauses |
+| rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test names the break it catches: a term dropped from the sum, a value other than the derivation's handed to the client, a client per store. R4 has no test: a key nobody adds cannot be caught, so it stays a review rule on E7's key table |
 | rule 11, a symbol is exported only if the RFC's interface uses it | T8.1 | nothing exported: RFC 4 gives the derivation no signature, and its one caller is in the same package (D1); the tests read the holding through `export_test.go` |
 | rule 12, each subtask creates only what it declares | all | the derivation lands with its call site in the holding; T8.2 adds a test and nothing else |
 
@@ -115,9 +123,9 @@ This section lists every MUST and MUST NOT that RFC 4 places on this epic, with 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R1 | A client's limit is derived when the client is built, from the concurrency of everything that calls stores on it: the syncer's `upload_workers + fetch_workers`, GC's delete and list bound, and one for the probe | MUST | RFC 4 §4.10, §2's table (connection pool size), §6 R11 | T8.1 |
-| R2 | The limit is derived once per client, not per store: every store opened from one store configuration runs under that one client's limit, and opening more stores neither raises it nor adds a pool | MUST | RFC 4 §4.10, §6 R19 (its limit half) | T8.1, T8.2 |
-| R3 | The worker counts the derivation reads are the ones the syncer runs with: fixed for the life of the process, and, once the node passes the syncer its transfers pool's size, the counts reduced to fit it | MUST | RFC 4 §4.10 ("the concurrency of everything that calls stores"), RFC 3 §2.10, RFC 24 §7.2 | T8.1 |
-| R4 | A store has no connection setting of its own: no key sets a client's limit | invariant | RFC 4 §4.10 | T8.1 |
+| R2 | The limit is derived once per client, not per store: every store opened from one store configuration runs under that one client's limit, and opening more stores neither raises it nor adds a pool | MUST | RFC 4 §4.10, §6 R19 (its limit half) | T8.2 |
+| R3 | The worker counts the derivation reads are the ones the syncer runs with: fixed for the life of the process, and, once the node passes the syncer its transfers pool's size, the counts reduced to fit it. The reduced half lands with that caller (§1.2, D3) | MUST | RFC 4 §4.10 ("the concurrency of everything that calls stores"), RFC 3 §2.10, RFC 24 §7.2 | T8.1 |
+| R4 | A store has no connection setting of its own: no key sets a client's limit | invariant | RFC 4 §4.10 | T8.1 (the one call site); E7 (its key table) |
 
 **The rows**
 
@@ -130,23 +138,22 @@ R1's "one for the probe" is RFC 4's count as written; §9 point 1 asks whether i
 per probed direction, pending the user's answer.
 
 What already enforces the rest of §4.10 when this epic lands: a client-wide cap at least the
-limit and the idle connections sized the same, E4's T4.2 test (its R44); one client per store
-configuration, RFC 8 offload plan epic 21's holding, which R6 also asserts.
+limit and the idle connections sized the same, E4's T4.2 test (its R44).
 
 ## 4. Decisions this epic takes
 
 - **D1. The derivation lives in the node's content wiring, unexported, beside the holding that
   calls it.** RFC 4 §4.10 gives the rule and no signature. Its inputs are other components'
   settings (the syncer's two counts, GC's bound), and the one place that knows them all is the
-  composer that builds the syncer and the clients, which RFC 0 §1.2 allows to import both. `pkg/remote/s3` keeps taking a
-  number (`ClientConfig.Limit`, E4's D1), so the S3 profile names no syncer or GC concept, and
-  nothing is exported (rule 11). The plan's layout put a `limit.go` in `pkg/remote/s3`; there it
-  would be an exported function with one caller in another package, carrying names of RFC 3 and
-  RFC 9 into the store. The architect pass proposed an exported `remote.ClientLimit` in the root
-  contract, a pure function RFC 0 §1.2 allows there; it was not taken, since its one caller is the
-  composer and an export with one caller is surface rule 11 does not ask for. Moving it later costs
-  one file and one call site. Prior art: rclone sizes its HTTP transport from `--transfers` and
-  `--checkers` in its global configuration, not in a backend (from memory).
+  composer that builds the syncer and the clients, which RFC 0 §1.2 allows to import both.
+  `pkg/remote/s3` keeps taking a number (`ClientConfig.Limit`, E4's D1), so the S3 profile names
+  no syncer or GC concept, and nothing is exported (rule 11). The plan's layout put a `limit.go`
+  in `pkg/remote/s3`; there it would be an exported function with one caller in another package,
+  carrying names of RFC 3 and RFC 9 into the store. The architect pass proposed an exported
+  `remote.ClientLimit` in the root contract, a pure function RFC 0 §1.2 allows there; it was not
+  taken, since its one caller is the composer. Moving it later costs one file and one call site.
+  Prior art: rclone sizes its HTTP transport from `--transfers` and `--checkers` in its global
+  configuration, not in a backend (from memory).
 
   ```go
   package content // internal/node/content
@@ -157,41 +164,41 @@ configuration, RFC 8 offload plan epic 21's holding, which R6 also asserts.
   ```
 
 - **D2. GC's bound is an argument from now, passed as zero until RFC 9 lands.** v1.1 builds no GC
-  (RFC 9 is planned later), so nothing calls a store for it and its term is truly zero. Settling
-  the argument now means RFC 9's plan changes one call site's `0` and adds no signature. A
-  `decision:` marker at the call site says GC's bound is zero because GC is not built, and names
-  RFC 9 §7.1's deletes and lists in flight per process as the value to pass when it is. Prior art:
-  none needed.
-- **D3. The counts are read where the syncer is built, once, from the same two values.** The
-  holding passes `clientLimit` the counts it passed the syncer's constructor, never re-reads the
-  settings, so the two cannot differ (R3); RFC 3 §2.10 fixes both for the life of the process, so
-  one derivation holds for every client built later. In v1.1 the node does not pass the syncer its
-  transfers pool's size, so no count is reduced (RFC 3 §1.3). A `decision:` marker at the call site
-  says that, and that the caller which first passes that size must pass the reduced counts here, or
-  the limit sits above the callers. Prior art: none needed.
-- **D4. R6 is observed at the holding and at the metric.** "One client exists" is the holding's
-  count of clients for the configuration, read through `export_test.go`; "its limit equals" is the
-  `ClientConfig.Limit` the holding built that client with, read the same way, since E4's T4.2 test
-  already shows the client's caps equal it; the connections are `remote_connections_opened_total`
-  for the configuration, read from a scrape. The load is `clientLimit`'s value of concurrent
-  callers, each a `Get` of a block put beforehand, run for a fixed number of requests over one
-  store and then the same number over all 1,000 stores in turn, on one client whose pool the first
-  run has warmed. The bound is that the second run opens at most as many connections as the first
-  plus the limit: a client per store opens one or more per store it touches, so the two outcomes
-  stand 1,000 apart, and whatever connections the service closes fall in both runs alike. The
-  exact bound, the pool size plus one per close the service started, is §7.5's and E9's, read from
-  E4's close counter, which only `pkg/remote/s3`'s own tests reach. The architect pass proposed a
-  fault that holds each reply's body, so that `2L` held requests show exactly `L` connections; it
-  was not taken, since E4's T4.2 test already shows that against a listener holding its replies,
-  and T8.1 shows the holding passes the derivation's value, so the new fault would prove the same
-  link twice. Prior art: none found.
+  (RFC 9 is planned later), so nothing calls a store for it and its term is truly zero. RFC 4
+  §4.10 names it "GC's delete and list bound"; RFC 9 §7.1 states only deletes in flight per
+  process, so what RFC 9's plan passes is its own to settle, and the plan's §6.1 row on GC's term
+  says so. Settling the argument now means RFC 9 changes one call site's `0` and no signature, and
+  its plan tests that value through the holding. Prior art: none needed.
+- **D3. The counts are the ones the syncer is built with; in v1.1 nothing reduces them.** The
+  holding passes `clientLimit` the two counts it passed the syncer's constructor, never re-reads
+  the settings. RFC 24 §7.2's reduction is the syncer's, once the node passes it the transfers
+  pool's size, and nothing passes that size in v1.1 (RFC 3 §1.3), so the counts the syncer is
+  built with are the ones it runs with. The caller that first passes the size must derive the
+  limit from the counts the syncer reports after the reduction, or the limit sits above the
+  callers; the plan's §6.1 row on the reduced counts records it. One `decision:` marker at the call
+  site holds D2's and D3's clauses. Prior art: none needed.
+- **D4. R6 is observed at the holding and at the metric, after proving the service keeps
+  connections.** "One client exists" is the holding's count of clients for the configuration,
+  read through `export_test.go`; "its limit equals" is the `ClientConfig.Limit` the holding built
+  that client with, read the same way, since E4's T4.2 test already shows the client's caps equal
+  it; the connections are `remote_connections_opened_total` for the configuration, read from a
+  scrape. The load runs `clientLimit`'s value of concurrent callers, each a `Get` of a block put
+  beforehand. First, 1,000 requests over one store: the counter must grow by at most the limit
+  plus 2, or the test fails naming LocalStack's connection reuse, since a comparison over a
+  service that closes connections proves nothing. Then 1,000 requests over all 1,000 stores, one
+  each in turn: the counter grows by at most the limit plus 2 again. A client per store opens one
+  connection per store it touches, about 1,000, so the two outcomes stand far apart. The exact
+  bound, the pool size plus one per close the service started, is §7.5's and E9's. The architect
+  pass proposed a fault that holds each reply's body, so that `2L` held requests show exactly `L`
+  connections; it was not taken, since E4's T4.2 test already shows the client never opens more
+  than its caps allow. Prior art: none found.
 - **D5. R6's 1,000 opens run through the checked `Open`, at the smallest block target.** Each open
   runs E5's capability check, which puts the largest encoded block twice (E5's D6), so the row
   sets the block target to RFC 13's floor, 1 MiB, and runs the opens `clientLimit` at a time. That
-  is still about 2 GiB of check puts per run. If its wall time shows in `integration`, the remedy
-  is E5's D6 `ponytail:` upgrade, the proof once per client, never fewer stores: the row's 1,000 is
-  the RFC's, and a node serving 10⁴ namespaces on one configuration pays the same check traffic at
-  every start. Prior art: none needed.
+  is still about 2 GiB of check puts per run, at every pull request in `integration`. If its wall
+  time shows, the remedy is E5's D6 `ponytail:` upgrade, the proof once per client, never fewer
+  stores: the row's 1,000 is the RFC's, and a node serving 10⁴ namespaces on one configuration pays
+  the same check traffic at every start. Prior art: none needed.
 
 ## 5. Target tree
 
@@ -208,32 +215,30 @@ docs/guide/configuration.md       T8.1  one line in the remote store section
 
 ### T8.1 The derivation
 
-**Subtask T8.1 estimate: 1 man-days.**
+**Subtask T8.1 estimate: 0.75 man-days.**
 
 - **Track:** the team. **Depends on:** S7, R4-S3.
-- **Covers:** R1–R5.
+- **Covers:** R1, R3, R4, R5.
 - **Deliverables:** `limit.go`: `clientLimit` (D1), and the holding's client build calling it with
-  the two counts it passed the syncer and a GC bound of 0, with D2's and D3's `decision:` markers,
-  in place of RFC 8 offload plan epic 21's inline sum; `export_test.go`: the holding's clients per
-  store configuration and the `ClientConfig` each was built with, read by T8.1's and T8.2's tests;
-  `docs/guide/configuration.md`'s remote store section: a store configuration's client opens at
-  most `upload_workers + fetch_workers + 1` connections to its endpoint, and no key sets it.
-  Consumed by: the holding's client build (here), T8.2, and RFC 9's plan, which passes GC's bound.
+  the two counts it passed the syncer and a GC bound of 0, under one `decision:` marker holding D2's
+  and D3's clauses, in place of RFC 8 offload plan epic 21's inline sum; `export_test.go`: the
+  holding's clients per store configuration and the `ClientConfig` each was built with, read by
+  T8.1's and T8.2's tests; `docs/guide/configuration.md`'s remote store section: a store
+  configuration's client holds at most `upload_workers + fetch_workers + 1` connections to its
+  endpoint open at once, and no key sets it. Consumed by: the holding's client build (here), T8.2,
+  and RFC 9, which passes GC's bound.
 - **Acceptance criteria:**
-  - `clientLimit(8, 8, 4)` is 21 (R5), and each term moves the result by its own value.
-  - A holding built with `upload_workers` 8 and `fetch_workers` 8 builds each client with
-    `ClientConfig.Limit` 17, and a second store opened on the same configuration leaves it at 17
-    (R2).
-  - No settings key reaches `ClientConfig.Limit`: the value equals `clientLimit` of the syncer's
-    counts for every pair the table sets (R4).
-- **Tests:** in `unit`, at the function, a table over each term zero and non-zero and RFC 4's
-  row (catches a term dropped or counted twice, R1, R5). At the holding, through
-  `export_test.go`: the configuration's client built with `clientLimit` of the counts the syncer
-  was built with, for two pairs of counts (catches a limit from another source, a re-read setting
-  or a default, R3, R4), and unchanged after a second store opens (catches a limit derived per
-  store, R2). The holding's test needs a client and no service: it builds the client, which sends
-  no request, and opens no store. No double.
-- **Rules:** rule 9: D2's and D3's markers sit at the one call site.
+  - `clientLimit(8, 8, 4)` is at least 21 (R5), and each term moves the result by its own value.
+  - A holding whose syncer is built with `upload_workers` 8 and `fetch_workers` 8 builds the
+    configuration's client with `ClientConfig.Limit` equal to `clientLimit(8, 8, 0)`, and with 16
+    and 4, `clientLimit(16, 4, 0)` (R1, R3).
+- **Tests:** in `unit`, at the function, a table over each term zero and non-zero and RFC 4's row
+  (catches a term dropped or counted twice, R1, R5). At the holding, through `export_test.go`, for
+  the two pairs of counts above: the `ClientConfig.Limit` the client was built with (catches a
+  constant, the inline sum left with a term missing, or the counts taken from somewhere but the
+  syncer's build, R1, R3). The holding builds the client, which sends no request, and opens no
+  store, so no service is needed. No double.
+- **Rules:** rule 9: the one marker sits at the one call site.
 
 ### T8.2 One client under 1,000 stores
 
@@ -248,17 +253,15 @@ docs/guide/configuration.md       T8.1  one line in the remote store section
 - **Acceptance criteria:**
   - 1,000 stores opened on one store configuration, under 1,000 prefixes of one fresh bucket, leave
     the holding with one client for that configuration, built with `ClientConfig.Limit` equal to
-    `clientLimit` of the syncer's counts (R6).
-  - Under D4's load, `remote_connections_opened_total` for the configuration grows during the
-    1,000-store run by at most its growth during the one-store run plus the limit (R2, R6).
-  - Closing every store leaves no goroutine or descriptor behind, and the holding with no client
-    for the configuration.
+    `clientLimit` of the syncer's counts (R2, R6).
+  - Under D4's load, 1,000 requests over one store grow `remote_connections_opened_total` for the
+    configuration by at most the limit plus 2, and 1,000 requests spread one per store over all
+    1,000 stores grow it by at most the limit plus 2 again (R2, R6).
 - **Tests:** in `integration`, at the holding and the scraped metric (D4): a holding that builds a
   client per store fails the client count, and its connections grow by about one per store, past
-  the bound (R2, R6); a holding that derives the limit per store, or passes any value but
-  `clientLimit`'s, fails the limit's equality. `internal/prof`'s goroutine and descriptor checks
-  around the run. No double: LocalStack 4.13.1, the checked `Open`, and E7's recorder over a test
-  registry.
+  the bound (R2, R6); a limit other than `clientLimit`'s fails the equality. If LocalStack does not
+  keep connections, the first run's precondition fails and says so, rather than letting the second
+  pass. No double: LocalStack 4.13.1, the checked `Open`, and E7's recorder over a test registry.
 - **Rules:** rule 8: no fault transport, since neither half of the row needs a fault. If the run's
   wall time shows in `integration`, the remedy is D5's, never a smaller row.
 
@@ -273,14 +276,11 @@ flowchart TD
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-T8.1 changes what the node builds and pins it with a unit test; T8.2 shows the whole row against a
-service.
-
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T8.1, T8.2 | 3.5 | — | the derivation and both of RFC 4's §4.10 rows, the epic's one deliverable |
+| 1 | T8.1, T8.2 | 3.25 | — | the derivation and both of RFC 4's §4.10 rows, the epic's one deliverable |
 
 A suggestion only: one pull request per subtask works as well, T8.1 first.
 
@@ -296,13 +296,13 @@ A suggestion only: one pull request per subtask works as well, T8.1 first.
    probe's bound and count as a failed probe (RFC 3 §2.8). Recommended: amend RFC 4 §4.10 to count
    one probe per direction, two, and RFC 3 §2.8 to say the syncer runs at most one probe per
    `ProbeKey` and direction at a time, a store's own re-admission probe included, which the RFC 3
-   plan's probe loops already shape. The change here is the constant in `clientLimit` and R5's
-   value, unchanged at "at least 21". The alternative, keeping one, accepts that wait.
+   plan's probe loops already shape; RFC 8 offload plan epic 21's interim `+ 1` and the plan's D6
+   follow. The change here is the constant in `clientLimit`, and R5's "at least 21" still holds.
+   The alternative, keeping one, accepts that wait.
 2. **S7 has not been reached, and RFC 8 offload plan epic 21 has no breakdown document.** This
    document names the holding by what it does; its type, its constructor and the name of the inline
-   sum T8.1 replaces are epic 21's, to be read from its document when it lands. Nothing here pins
-   them.
-3. **R6's wall time is unmeasured.** About 2 GiB of check puts and some 15 requests per open
-   against LocalStack (D5). T8.2 measures it; E5's D6 `ponytail:` is the remedy if it shows.
-4. **Estimate least certain: T8.2**, on LocalStack's throughput for 1,000 checked opens and on the
-   holding's surface, which epic 21 settles.
+   sum T8.1 replaces are epic 21's. When epic 21 is broken down, it may write `clientLimit` itself in
+   place of its inline sum; T8.1 then shrinks to its tests and the marker.
+3. **Estimate least certain: T8.2**, on LocalStack's throughput for 1,000 checked opens (about 2
+   GiB of check puts, D5), on whether LocalStack 4.13.1 keeps HTTPS connections alive (D4's
+   precondition measures it), and on the holding's surface, which epic 21 settles.
