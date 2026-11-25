@@ -2152,7 +2152,7 @@ package workqueue // pkg/workqueue
 type Key struct {
 	Tenant TenantID // the engine's: a shard; GC's: a namespace
 	Kind   uint8    // the engine's: offload, removal or prune
-	ID     [16]byte // the engine's: a file ID (RFC 16's 16-byte FileID), as it is
+	ID     [16]byte // the engine's: a file ID (RFC 16's 16-byte FileID), as it is; GC's: its prefix, in at most 16 bytes
 }
 
 type Item struct {
@@ -2206,9 +2206,22 @@ type Stats struct { // per source and tenant
 	LastDone                           time.Time
 }
 
+// TenantID names a tenant: a namespace as it is, or a shard big-endian in the
+// last four bytes. SourceID is a registration's index.
+type TenantID [16]byte
+type SourceID int
+
+// Clock is the subset of §2.1's Clock the scheduler reads.
+type Clock interface {
+	Now() time.Time
+	Elapsed() time.Duration
+	After(d time.Duration) <-chan struct{}
+}
+
 // Loop is the watchdog turn the scheduler reports (RFC 25 §3.5), declared here so
 // the package imports no implementation (RFC 0 §1.2); RFC 25's *health.Loop
-// satisfies it as it is.
+// satisfies it as it is. Whoever took the loop from the watchdog closes it once
+// Stop has returned.
 type Loop interface {
 	Turn() // a dispatch or a run's return completed
 	Idle() // waiting, with no entry due
