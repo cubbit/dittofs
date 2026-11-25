@@ -513,70 +513,53 @@ func TestPassACarriedRecordHoldsNeitherSegment(t *testing.T) {
 	}
 }
 
-// TestPassASkippedRecordKeepsItsSource runs one unit over a source whose
-// only live record has a second live placement elsewhere — the shape an
-// earlier carry leaves — while the unit's own carry skips the record whole:
-// the file's tag is cleared, the index's forgetting stand-in, so no copy of
-// the record is placed this unit. The unit must stay its source: the pair
-// rule's witness is the placement the unit itself carried and waited
-// durable, never another segment's registration, for two units over the
-// two segments of one record would each read the other's registration and
-// both retire the record away.
-func TestPassASkippedRecordKeepsItsSource(t *testing.T) {
-	p := newPassFixture(t)
-	file := copyFile(23)
-	rec, _, _, _ := p.f.plantRemoval(t, copyTag, file, format.KindTruncate, core.ChangeTruncate,
-		core.Extent{Off: 1 << 20}, core.Extent{Off: 1 << 20, Len: math.MaxInt64 - 1<<20}, false)
-	p.f.core.Liveness().Register(rec)
-	seg := rec.Seg
-	p.f.sealSource(t, file)
-	p.f.waitSpares(t)
-	// The second live placement, the shape an earlier carry leaves behind:
-	// a copy of the record on disk, registered live where its own pass
-	// would have entered it, its source kept standing beside it.
-	carry, err := p.f.copier().Carry(context.Background(), seg, reclaim.Result{})
-	if err != nil {
-		t.Fatalf("placing the record's second placement: %v", err)
-	}
-	if len(carry.Carried) != 1 {
-		t.Fatalf("the carry placed %d records, want the unsettled truncate alone", len(carry.Carried))
-	}
-	second := carry.Carried[0].Rec
-	p.f.core.Liveness().Register(second)
-	// The unit's carry skips the file whole: the cleared tag reads to the
-	// carry as a forget racing it, so nothing of the record is appended,
-	// noted or registered by the unit itself.
-	if err := p.f.ix.ClearTag(file); err != nil {
-		t.Fatalf("clearing the file's tag: %v", err)
-	}
+// TestPassASkippedRecordsSourceRetiresOverItsClass runs one unit over a
+// source whose only live record has a second live placement elsewhere —
+// the shape an earlier carry leaves — while the unit's own carry skips the
+// record whole: the file's tag is cleared, the index's forgetting
+// stand-in, so no copy of the record is placed this unit. The pair rule
+// spends the source — its record's class spans two placements, so neither
+// holds — and the retire leaves the record in its other placement, which
+// owns the record's wait and answers not-droppable while its marker stays
+// unsettled.
+func TestPassASkippedRecordsSourceRetiresOverItsClass(t *testing.T) {
+	p, seg, cpSeg, second := twoPlacementFixture(t)
+	tr := p.f.core.Liveness()
 
-	freed, err := p.repack(t.Context(), copySegCap*8, seg)
-	if err != nil {
-		t.Fatalf("repack over the skipped record: %v", err)
+	// Whose retirement lands the source — the unit's own hand-over or the
+	// worker the class's doubling fired its crossing at — is not the row's
+	// to name; the retirement reads the same in the source's leaving the
+	// set, which is what the row waits for, the condition itself with the
+	// family's bound as the backstop.
+	if _, rerr := p.repack(t.Context(), copySegCap*8, seg); rerr != nil {
+		t.Fatalf("repack over the skipped record's source: %v", rerr)
 	}
-	if p.setGone(seg) {
-		t.Fatal("the skipped record's source left the set, want the unit to stay it: the pair rule pairs a record with the placement the unit itself carried, never the registration another segment holds")
+	for n := 0; !p.setGone(seg); n++ {
+		if time.Duration(n)*5*time.Millisecond >= copyWait {
+			t.Fatalf("the skipped record's source is still in the set after %v, want the class's spending of it: its record stands in a second placement", copyWait)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	if freed != 0 {
-		t.Fatalf("repack over the skipped record freed %d, want 0: a stayed unit retires nothing", freed)
+	if p.setGone(cpSeg) || !tr.Held(cpSeg) {
+		t.Fatalf("the surviving placement's segment is gone=%v and answers held=%v, want it standing and held: the copy's registration keeps it, and the record's wait owns the whole of the class now", p.setGone(cpSeg), tr.Held(cpSeg))
 	}
-	if !p.f.core.Liveness().Held(seg) {
-		t.Fatal("the skipped record's source answers not held, want its record's registration to keep it")
+	if tr.Droppable(second) {
+		t.Fatal("the removal record answers droppable at its surviving placement, want not: its marker stays unsettled and the placement owns the record's wait")
 	}
 }
 
-// TestPassTwoSkippingUnitsHoldTheirSources drives the two units of one
+// TestPassTwoSkippingUnitsNeverEmptyTheRecord drives the two units of one
 // record concurrently, both carries skipping the record whole: the record
 // has a live placement in each segment — the original beside the copy an
-// earlier carry placed — and its file has no owner, so each unit that walks
-// it appends nothing and registers nothing of it. Both sources are held
-// through the interleaving, each unit's stay answering from its own carried
-// set alone: no unit pairs the record with a placement it did not itself
-// wait durable, so neither source is retired whatever the other unit's
-// timing, and the record keeps both its placements until its own passes
-// carry it.
-func TestPassTwoSkippingUnitsHoldTheirSources(t *testing.T) {
-	p, src, cpSeg := twoPlacementFixture(t)
+// earlier carry placed — and its file has no owner, so each unit that
+// walks it appends nothing and registers nothing of it. The class rule
+// lets each source answer not held at once, and the hand-overs serialize:
+// the second unit's consult of the same class is refused until the first
+// retirement's sweep re-holds the survivor, so whatever the interleaving
+// at least one placement stands, owning the record's wait, and a record
+// whose removal is not settled never ends up placed nowhere.
+func TestPassTwoSkippingUnitsNeverEmptyTheRecord(t *testing.T) {
+	p, src, cpSeg, _ := twoPlacementFixture(t)
 	tr := p.f.core.Liveness()
 
 	// The drive: both units race under the race detector, each run scoped
@@ -591,14 +574,20 @@ func TestPassTwoSkippingUnitsHoldTheirSources(t *testing.T) {
 	if a.err != nil || b.err != nil {
 		t.Fatalf("the concurrent runs answered %v and %v, want no error", a.err, b.err)
 	}
-	if a.freed != 0 || b.freed != 0 {
-		t.Fatalf("the concurrent runs freed %d and %d, want 0 from each: both units stay their skipped record's source", a.freed, b.freed)
+	if p.setGone(src) && p.setGone(cpSeg) {
+		t.Fatalf("the concurrent runs left the record's both placements gone (freed %d and %d), want at least one standing: the hand-overs serialize on the record's class, so a record whose removal is not settled never ends up placed nowhere", a.freed, b.freed)
 	}
-	if p.setGone(src) || p.setGone(cpSeg) {
-		t.Fatalf("the concurrent runs left the record's placements gone (%v, %v), want both sources standing: no unit pairs a record with a placement it did not carry and wait itself", p.setGone(src), p.setGone(cpSeg))
+	var survivor core.SegmentID
+	switch {
+	case !p.setGone(src):
+		survivor = src
+	case !p.setGone(cpSeg):
+		survivor = cpSeg
+	default:
+		t.Fatal("no placement of the record stands")
 	}
-	if !tr.Held(src) || !tr.Held(cpSeg) {
-		t.Fatalf("after the runs the record's segments answer held %v and %v, want both: each placement's own registration keeps its segment standing", tr.Held(src), tr.Held(cpSeg))
+	if !tr.Held(survivor) {
+		t.Fatalf("the surviving placement's segment %d answers not held, want the sweep's re-hold of it: the record's wait owns the whole of the class", survivor)
 	}
 }
 
@@ -607,8 +596,10 @@ func TestPassTwoSkippingUnitsHoldTheirSources(t *testing.T) {
 // second live placement placed on disk through a carry and registered
 // beside it with its segment sealed too, and the file's tag cleared so
 // every unit's carry skips the record whole — the shape a forget racing
-// the passes leaves, an owner no reader can name.
-func twoPlacementFixture(t *testing.T) (p *passFixture, src, cpSeg core.SegmentID) {
+// the passes leaves, an owner no reader can name. It returns the copy's
+// own registration, for a row that asks the drop test at the surviving
+// placement.
+func twoPlacementFixture(t *testing.T) (p *passFixture, src, cpSeg core.SegmentID, second reclaim.Rec) {
 	t.Helper()
 	p = newPassFixture(t)
 	file := copyFile(31)
@@ -625,7 +616,7 @@ func twoPlacementFixture(t *testing.T) (p *passFixture, src, cpSeg core.SegmentI
 	if len(carry.Carried) != 1 {
 		t.Fatalf("the carry placed %d records, want the unsettled truncate alone", len(carry.Carried))
 	}
-	second := carry.Carried[0].Rec
+	second = carry.Carried[0].Rec
 	p.f.core.Liveness().Register(second)
 	cpSeg = second.Seg
 	p.f.sealSource(t, file)
@@ -633,7 +624,7 @@ func twoPlacementFixture(t *testing.T) (p *passFixture, src, cpSeg core.SegmentI
 	if err := p.f.ix.ClearTag(file); err != nil {
 		t.Fatalf("clearing the file's tag: %v", err)
 	}
-	return p, src, cpSeg
+	return p, src, cpSeg, second
 }
 
 // TestPassBudgetStopsAtCarriedRecords runs a pass of budget one byte over two

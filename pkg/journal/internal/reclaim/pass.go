@@ -436,6 +436,35 @@ func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64
 		p.sel.Done(seg)
 		return bytes, 0, false, fmt.Errorf("reclaim: the unit over segment %d: the segment is in state %d, neither sealed nor ended", seg, st)
 	}
+	// The unit's own hand-over goes through the worker's in-flight gate:
+	// one retirement of an identity class at a time. The class hold rule
+	// lets a record standing in two placements hold neither segment, so a
+	// pass retiring its source and a concurrent unit retiring its
+	// class-mate's could each unlink before the other's sweep re-held the
+	// survivor, emptying the class and destroying from the disk a record
+	// whose removal is not settled — this leg (the pass's own retirement,
+	// which the retirement worker's section names the gate-free one) is
+	// what consults here. A refused unit stays its source, its claim held
+	// by the run: the flight it waits on ends with the sweep that re-holds
+	// the survivor or empties the class, and the next pass over each
+	// segment answers from what the sweep left. Once the gate allows, the
+	// Held re-read cannot miss a re-hold a sweep of this unit's classes
+	// committed — the registry lock orders the raise before it — and a
+	// held answer is a swept survivor the marks this consult took come
+	// back off, as the worker's own re-read takes them.
+	//
+	// decision: the open's emptying of a recovery-ended segment, the other
+	// gate-free hand-over the worker's section names, goes ungated here:
+	// it runs alone, no pass beside it, so no two retires of one class can
+	// overlap through it. Overturned by an emptying that can ever run
+	// beside a pass.
+	if p.tr.markClassesInFlight(seg) {
+		return bytes, 0, true, nil
+	}
+	if p.tr.Held(seg) {
+		p.tr.unmarkClassesInFlight(seg)
+		return bytes, 0, true, nil
+	}
 	// The claim is released before the hand-over: the retirer takes the
 	// ledger's own claim itself, and a segment handed over still claimed
 	// would come back refused for ever (Done's own decision).

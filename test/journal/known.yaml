@@ -32,6 +32,14 @@
   issue: '#3379'
   message: 'stub: Offload; running fill-racing-write.txt: step 1, offload s=1 f=1: stub: Offload'
 
+- test: TestRFC1A_CrashWhileARemovalRecordsUnlinkIsNotDurable
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The row crashes between a carried copy''s durability and its source''s unlink. On the removal-carry branch the reopen restores the source alone: the copy segment''s placement is not discoverable on the far side of the crash, although the pass''s own durability wait for the copy answered before its unlink began.'
+  issue: '#5110'
+  message: 'the copy=false, want both placements of one record discovered by the reopen'
+
 - test: TestRFC1A_FillSetsTheBit
   status: fail
   fix: planned
