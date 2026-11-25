@@ -91,12 +91,16 @@ suites:
         cmd: go test -short -race -p 2 -timeout=25m ./...
         needs: [windows]
         blocking: { pr: false }
-      # The journal's allocation and memory checks — the index's, the data path's, durability's
-      # and the record codec's — and the profiler's heap checks, which skip under -race.
+      # The journal's allocation and memory checks — the index's, the data path's, durability's,
+      # the record codec's, the segment cache's and reclaim's — and the profiler's heap checks,
+      # which skip under -race. The large packages run only their checks, by name, since unit
+      # already runs the rest of them under -race.
       journal-index:
         cmd:
           - go test -timeout=5m ./pkg/journal/internal/index/ ./pkg/journal/internal/durability/ ./pkg/journal/internal/format/ ./internal/prof/
           - go test -timeout=5m -run=^(TestReadOfALargeRecordAllocatesFlat|TestRFC1D_StatsCostIsFlat)$ ./pkg/journal/internal/datapath/
+          - go test -timeout=5m -run=^(TestDescriptorsHitAllocatesNothing|TestStreamReservationAllocatesNothing)$ ./pkg/journal/internal/segment/
+          - go test -timeout=5m -run=^TestRegisterUnregisterAllocations$ ./pkg/journal/internal/reclaim/
       # The index built with a bug planted in its split and the truncate marker with one planted
       # past its size, which the model fuzz and the model's runs must find. The planted builds
       # break the packages' other tests by design, so only these tests run.
