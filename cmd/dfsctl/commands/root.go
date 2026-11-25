@@ -49,9 +49,8 @@ func NewRoot(env cmdutil.Env) *cobra.Command {
 		Short: "DittoFS Control - Remote management client",
 		Long: `dfsctl is the command-line client for managing DittoFS servers remotely.
 
-Its status command returns with the server's v2 API; until then it
-refuses. The context subcommand manages the server
-contexts kept in ~/.config/dfsctl/config.json.
+The context subcommand manages the server contexts kept in
+~/.config/dfsctl/config.json.
 
 Use "dfsctl [command] --help" for more information about a command.`,
 		SilenceUsage:  true,
