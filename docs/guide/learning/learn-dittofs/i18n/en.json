@@ -60,6 +60,10 @@
       "name": "The journal",
       "blurb": "Where a write lands first: the local log that keeps every byte safe until it reaches the bucket, then gives the space back."
     },
+    "carver": {
+      "name": "The carver",
+      "blurb": "How the bytes waiting for upload are cut into pieces where the content says, named by a hash of what they hold, and packed whole into the objects the bucket stores."
+    },
     "test-harness": {
       "name": "The test harness",
       "blurb": "One command that runs every test suite the same way, on a laptop or in CI, and never counts a test that didn't run as passed."

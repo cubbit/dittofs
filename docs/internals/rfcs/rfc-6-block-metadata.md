@@ -251,7 +251,7 @@ Block metadata **MUST NOT**:
   [RFC 7](rfc-7-namespace-metadata.md)'s;
 - decide what to offload, evict or sweep — it supplies the atomic operations those
   decisions need and nothing more;
-- import another component in this set ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
+- import another component's implementation ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
 
 ### 1.2 Why it is a separate RFC from the namespace
 
