@@ -1,7 +1,7 @@
 # NLM v4 and NSM v1: knfsd reference
 
 `reference.pcap` is the Linux kernel NFS server (knfsd) answering the Linux
-kernel client over loopback, recorded by `../nfs-record.sh`. It holds over an NFSv3 mount, after a restart of `nfs-server` (a fresh lockd, so statd is asked to monitor again): NSM's `UNMON` and `MON`; NLM's `TEST` (answered `NLM4_DENIED_GRACE_PERIOD`, the restart's grace), a `LOCK` answered `NLM4_BLOCKED` because a process on the server holds the file, the `GRANTED_MSG` callback once it lets go and the client's `GRANTED_RES`, and `UNLOCK`; NSM's `NOTIFY` from `sm-notify -f`, which is what a server restart runs. NSM's `NULL` and `NOTIFY` go over UDP and are cut whole.
+kernel client over loopback, recorded by `../nfs-record.sh`. It holds over an NFSv3 mount, after a restart of `nfs-server` (a fresh lockd, so statd is asked to monitor again): NSM's `UNMON` and `MON`; NLM's `TEST`, the client retrying it while the restart's grace lasts (frames 45 to 64 answered `NLM4_DENIED_GRACE_PERIOD`) until frame 66 answers `NLM4_GRANTED`, a `LOCK` answered `NLM4_BLOCKED` because a process on the server holds the file, the `GRANTED_MSG` callback once it lets go and the client's `GRANTED_RES`, and `UNLOCK`; NSM's `NOTIFY` from `sm-notify -f`, which is what a server restart runs. NSM's `NULL` and `NOTIFY` go over UDP and are cut whole.
 Only the frames `tshark` reads as RPC are kept. `reference.skel` is its
 skeleton.
 
@@ -11,6 +11,9 @@ The client settles a lock conflict between its own processes before asking the s
 
 - Kernel `7.0.0-44-generic` (Ubuntu 26.04.1 LTS), server and client on the same
   host, both over `127.0.0.1`.
+- Host name `ditto0926`, the recording host's: it is the `AUTH_SYS` machine
+  name in every credential and part of the client's owner and caller names,
+  so it shapes the golden bytes; a recording on another host differs there.
 - `nfs-kernel-server` and `nfs-common` from nfs-utils 2.8.5; `tshark` 4.6.4.
 - Exported filesystem: XFS on a 512 MiB loop image, `mkfs.xfs -m reflink=1`
   (xfsprogs 6.18.0), exported with
@@ -21,7 +24,7 @@ The client settles a lock conflict between its own processes before asking the s
 ## How it was produced
 
 ```bash
-sudo test/pcap-corpus/nfs-record.sh <outdir> nlm
+sudo NFS_RECORD_THROWAWAY_HOST=1 test/pcap-corpus/nfs-record.sh <outdir> nlm
 cp <outdir>/nlm/reference.pcap test/pcap-corpus/nlm/
 tshark -r reference.pcap -T pdml | ../normalize.py --proto nlm --proto stat > reference.skel
 ```
@@ -29,6 +32,10 @@ tshark -r reference.pcap -T pdml | ../normalize.py --proto nlm --proto stat > re
 `nfs-record.sh` lists every command the area runs. It makes the scratch
 filesystem and export, records under `tcpdump -i lo`, filters the frames with
 `tshark -Y rpc`, and removes the export, the mounts and the loop image.
+The area was recorded on its own, before the script gained its
+`NFS_RECORD_THROWAWAY_HOST` opt-in, its default order with `nlm` last and its
+cleanup of only what it holds; the script has not been re-run since. None of
+those changes alters what a single area sends.
 
 ## Golden files
 
@@ -50,6 +57,8 @@ file's header repeats its capture, frame and command.
 | `knfsd-nfs3-nlm-nsm-null-reply.hex` | 8 | `none` |
 | `knfsd-nfs3-nlm-test-call.hex` | 45 | `rpc` |
 | `knfsd-nfs3-nlm-test-reply.hex` | 46 | `rpc` |
+| `knfsd-nfs3-nlm-test-granted-call.hex` | 65 | `rpc` |
+| `knfsd-nfs3-nlm-test-granted-reply.hex` | 66 | `rpc` |
 | `knfsd-nfs3-nlm-nsm-mon-call.hex` | 75 | `rpc` |
 | `knfsd-nfs3-nlm-nsm-mon-reply.hex` | 76 | `rpc` |
 | `knfsd-nfs3-nlm-lock-call.hex` | 77 | `rpc` |

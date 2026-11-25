@@ -7,46 +7,67 @@
 # over loopback, and records each area under tcpdump on lo:
 #
 #   nfs3   MOUNT NULL, EXPORT, MNT, UMNT, and NFSv3 create/write/read/readdir
-#   nlm    NLM lock, test, unlock and a blocked lock granted by callback over
-#          an NFSv3 mount; NSM's monitor calls and the SM_NOTIFY that
-#          sm-notify -f sends, as a server restart does
-#   nfs40  NFSv4.0: SETCLIENTID, open/write/read, a lock, and a read
-#          delegation recalled (CB_RECALL) by a write on the server's side
-#   nfs41  the same over NFSv4.1, the recall on the session's back channel
+#   nfs40  NFSv4.0: SETCLIENTID, open/write/read, a lock, and a read open
+#          written on the server's side to recall a delegation (knfsd may
+#          grant none, and then no CB_RECALL is recorded)
+#   nfs41  the same over NFSv4.1, a recall on the session's back channel
 #   nfs42  NFSv4.2: SEEK, ALLOCATE, DEALLOCATE, COPY, CLONE and the xattr
 #          operations
+#   nlm    NLM lock, test, unlock and a blocked lock granted by callback over
+#          an NFSv3 mount; NSM's monitor calls and the SM_NOTIFY that
+#          sm-notify -f sends, as a server restart does. It runs last by
+#          default: its restart opens a grace period, in which knfsd refuses
+#          a non-reclaim NFSv4 OPEN with NFS4ERR_GRACE
 #
 # Each area's frames that tshark reads as RPC are kept in
 # <outdir>/<area>/reference.pcap; everything else on lo is dropped.
 #
+# Run it on a throwaway host that serves nothing else. The nlm area runs
+# `systemctl restart nfs-server`, which drops every export added by hand with
+# exportfs and puts every client of the host into a grace period, and
+# `sm-notify -f`, which tells every peer in /var/lib/nfs/sm that this host
+# rebooted, so those peers drop the NLM locks they hold on it. The script
+# refuses to start unless NFS_RECORD_THROWAWAY_HOST=1 says the host is one.
+#
 # Needs root, the kernel NFS server (nfs-kernel-server), tcpdump, tshark,
-# xfsprogs, attr and python3. Run by hand; no suite runs it. It leaves no
-# export, mount or loop device behind.
+# xfsprogs, attr and python3. Run by hand; no suite runs it. On exit it
+# releases what it started itself: its background processes, its mount, its
+# export and its loop-mounted image.
 #
 # Usage:
-#   sudo nfs-record.sh <outdir> [area...]
+#   sudo NFS_RECORD_THROWAWAY_HOST=1 nfs-record.sh <outdir> [area...]
 
 set -euo pipefail
 
 [[ $# -ge 1 ]] || { grep '^#' "$0" | sed -n '3,$s/^# \{0,1\}//p'; exit 2; }
 [[ $EUID -eq 0 ]] || { echo "needs root" >&2; exit 2; }
+[[ ${NFS_RECORD_THROWAWAY_HOST:-} == 1 ]] || {
+  echo "refusing: restarts nfs-server and runs sm-notify -f; set NFS_RECORD_THROWAWAY_HOST=1 on a throwaway host" >&2
+  exit 2
+}
 out="$(realpath "$1")"; shift
 areas=("$@")
-[[ ${#areas[@]} -gt 0 ]] || areas=(nfs3 nlm nfs40 nfs41 nfs42)
+[[ ${#areas[@]} -gt 0 ]] || areas=(nfs3 nfs40 nfs41 nfs42 nlm)
 for t in exportfs tcpdump tshark mkfs.xfs xfs_io setfattr getfattr python3 sm-notify rpcinfo showmount; do
   command -v "$t" >/dev/null || { echo "missing: $t" >&2; exit 2; }
 done
 
 scratch="$(mktemp -d /tmp/nfs-record.XXXXXX)"
-exp="$scratch/export" mnt="$scratch/mnt" dump_pid=""
+exp="$scratch/export" mnt="$scratch/mnt" dump_pid="" holder="" exported=""
 
+# cleanup releases only what this script holds: fd 3, which would keep $mnt
+# busy, its own tcpdump and lock holder, then the mount, export and image it
+# made under $scratch. The tree is removed only once nothing is mounted in it.
 cleanup() {
   set +e
-  [[ -n "$dump_pid" ]] && kill "$dump_pid" 2>/dev/null && wait "$dump_pid" 2>/dev/null
+  exec 3<&-
+  for p in "$dump_pid" "$holder"; do
+    [[ -n "$p" ]] && kill "$p" 2>/dev/null && wait "$p" 2>/dev/null
+  done
   mountpoint -q "$mnt" && umount -f "$mnt"
-  exportfs -u "127.0.0.1:$exp" 2>/dev/null
+  [[ -n "$exported" ]] && exportfs -u "127.0.0.1:$exp"
   mountpoint -q "$exp" && umount "$exp"
-  rm -rf "$scratch"
+  mountpoint -q "$exp" || mountpoint -q "$mnt" || rm -rf --one-file-system "$scratch"
 }
 trap cleanup EXIT
 
@@ -55,7 +76,7 @@ truncate -s 512M "$scratch/xfs.img"
 mkfs.xfs -q -m reflink=1 "$scratch/xfs.img"
 mount -o loop "$scratch/xfs.img" "$exp"
 chmod 1777 "$exp"
-export_scratch() { exportfs -o rw,sync,no_subtree_check,no_root_squash,fsid=4242 "127.0.0.1:$exp"; }
+export_scratch() { exportfs -o rw,sync,no_subtree_check,no_root_squash,fsid=4242 "127.0.0.1:$exp" && exported=1; }
 export_scratch
 
 # start_dump <area>: tcpdump on lo, packet-buffered, until stop_dump.
@@ -125,7 +146,7 @@ area_nlm() {
   holder=$!
   sleep 1 # bounded: the holder takes its lock before the waiter asks
   python3 -c "$lockpy" wait "$mnt/nlm-file" # blocked, then granted by callback
-  wait "$holder"
+  wait "$holder"; holder=""
   sm-notify -f                          # the SM_NOTIFY a restart sends
   sleep 1 # bounded: statd answers the notify before the unmount
   rm "$mnt/nlm-file"

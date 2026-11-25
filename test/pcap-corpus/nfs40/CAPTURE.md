@@ -11,6 +11,9 @@ skeleton.
 
 - Kernel `7.0.0-44-generic` (Ubuntu 26.04.1 LTS), server and client on the same
   host, both over `127.0.0.1`.
+- Host name `ditto0926`, the recording host's: it is the `AUTH_SYS` machine
+  name in every credential and part of the client's owner and caller names,
+  so it shapes the golden bytes; a recording on another host differs there.
 - `nfs-kernel-server` and `nfs-common` from nfs-utils 2.8.5; `tshark` 4.6.4.
 - Exported filesystem: XFS on a 512 MiB loop image, `mkfs.xfs -m reflink=1`
   (xfsprogs 6.18.0), exported with
@@ -21,7 +24,7 @@ skeleton.
 ## How it was produced
 
 ```bash
-sudo test/pcap-corpus/nfs-record.sh <outdir> nfs40
+sudo NFS_RECORD_THROWAWAY_HOST=1 test/pcap-corpus/nfs-record.sh <outdir> nfs40
 cp <outdir>/nfs40/reference.pcap test/pcap-corpus/nfs40/
 tshark -r reference.pcap -T pdml | ../normalize.py --proto nfs > reference.skel
 ```
@@ -29,6 +32,10 @@ tshark -r reference.pcap -T pdml | ../normalize.py --proto nfs > reference.skel
 `nfs-record.sh` lists every command the area runs. It makes the scratch
 filesystem and export, records under `tcpdump -i lo`, filters the frames with
 `tshark -Y rpc`, and removes the export, the mounts and the loop image.
+The area was recorded on its own, before the script gained its
+`NFS_RECORD_THROWAWAY_HOST` opt-in, its default order with `nlm` last and its
+cleanup of only what it holds; the script has not been re-run since. None of
+those changes alters what a single area sends.
 
 ## Golden files
 
