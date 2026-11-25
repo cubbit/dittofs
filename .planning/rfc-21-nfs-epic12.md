@@ -101,6 +101,12 @@ its call sites in the operations RFC 21 §9.3 lists; the hold a held call carrie
   the plan's deferral ledger, row "The user guide's NFS pages (E15)".
 - An SMB set whose name folds onto two stored xattrs that NFS made differing only in case (D7):
   the RFC 22 implementation plan's open point 20, the case-insensitive `XattrMode`, its epic 8.
+- The conformance cells that would run this epic's xattr rows, which no suite has at NFSv4.2:
+  pynfs runs minor versions 0 and 1 only, so its `XATT*` tests never reach T12.6, and pjdfstest
+  runs NFSv3, 4 and 4.1, so its `xattr/*`, `getxattr/*`, `setxattr/*`, `listxattr/*` and
+  `removexattr/*` never do either. A pynfs cell at minor 2 and a pjdfstest cell at 4.2 are E15's,
+  their burn-down E16's; the pjdfstest cell needs its `fallocate/*` tests added to RFC 21 §13's
+  `ALLOCATE` row, which names only pynfs and xfstests. Both go with #5728's suite changes.
 
 ### 1.3 Names used here
 
