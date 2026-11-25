@@ -312,7 +312,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | NFS surface | request state; `ops/v4`'s handler set, `COMPOUND` row and members' table | 3 | 3.75 | team | all |
 | E2 ⛔ | Test foundations | the shared test pieces (S0); the handler runner and NFS's harness over it; knfsd captures; the service's `NoGrace` | 6 | 13.5 | team | E3 to E14 |
-| E3 | The RPC layer | credentials to `Identity` and `Call`, `NULL`, NFS over TLS, the stages' and programs' tables, status layers, the scripted client, the `Replay` stage and its duplicate-request cache (D10) | 6 | 19.5 | A | E8, E13, E14; S3 and S4 |
+| E3 | The RPC layer | credentials to `Identity` and `Call`, `NULL`, NFS over TLS, the stages' and programs' tables, status layers, the scripted client, the `Replay` stage and its duplicate-request cache (D10) | 6 | 20.5 | A | E8, E13, E14; S3 and S4 |
 | E4 | NFSv3 and MOUNT | every NFSv3 procedure, `fattr3`, `sattr3` and WCC, cookies, stability, `FSINFO`, MOUNT; A3's service half after S2b | 10 | 26 | B | S3; E11, partly; E16 |
 | E5 | NFSv4 namespace, attributes and data | file-handle operations, the pseudo-filesystem, `SECINFO`, `fattr4` and Appendix B, `ACCESS`, name operations, `READDIR`, stateless I/O | 8 | 23 | C | E6, E9; E12, partly; S4 |
 | E6 | NFSv4 ACL attributes | `translate`'s NFSv4 functions, `acl`, `dacl`, `sacl`, `aclsupport`, `who`, `mode_umask` | 5 | 12 | C | E16 |
@@ -326,9 +326,9 @@ the second because this plan takes over rows of two other plans' ledgers.
 | E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries | 2 | 4 | A | E16 |
 | E15 🔀 | Integration with the node | settings, the NFS suites turned on | none | planned after S7 | team | E16, partly |
 | E16 🔀 | E2E green | in-process and restart rows, cross-protocol rows, e2e, benchmarks, soak, the totality test, pins; the burn-down after E15 | 8 | 25.5 | team | none |
-| | **Total** | | **97** | **269.25** | | |
+| | **Total** | | **97** | **270.25** | | |
 
-**Plan estimate: 97 subtasks, 269.25 man-days, not counting epic 15.**
+**Plan estimate: 97 subtasks, 270.25 man-days, not counting epic 15.**
 
 Nor E16's burn-down of the four NFS and POSIX suites, which waits for E15 as E15 waits for S7 (§6.2, point
 6), nor the rows parked in §6.6's deferral ledger.
@@ -470,8 +470,9 @@ Figures are man-days from S2.
   man-days in, at 21, before track C's E9 needs them and well before track B's E11 at 42. E10 starts
   at 45, as track C's E9 brings `OPEN`. E14's scripts use E3's scripted client against knfsd and its
   DittoFS side waits for S5; the track ends at 71, nine before track B, and fills with E16's
-  in-process rows as their epics allow. 73.5 man-days, the 2.5 E3's breakdown added not yet moved
-  into the figures above.
+  in-process rows as their epics allow. 74.5 man-days, the 3.5 E3's breakdown added not yet moved
+  into the figures above: moved, they put E8's callbacks value at about 24.5, after track C's E9
+  starts at 23, and the track's end at 74.5, five and a half before track B.
 - **Track B: E4, E7, E11, E13.** NFSv3 and MOUNT, then identity's NFS side, then NLM and NSM, then
   RPCSEC_GSS. E4 comes first so S3 holds at 26 (D12); E7 follows, ending at 42, before track C reaches
   E6 at 48; E13 starts at 64 and needs S6c, RFC 22's plan's `gss`, and S6b for its signed-in rows,
@@ -481,7 +482,7 @@ Figures are man-days from S2.
   at 21, and its loopback rows wait for S4 at 45; E6 starts at 48 with E7 done; E12 last, with E8's
   slot count and E9's stateids in. 73 man-days.
 - **The team.** E1 and E2 before the tracks; E15 at S7; E16 after the tracks. E1, E2 and E16, 42.75
-  man-days, are the difference between the tracks' 226.5 and the plan's 269.25.
+  man-days, are the difference between the tracks' 227.5 and the plan's 270.25.
 
 **The first mount.** By D12, an NFSv3 mount over `AUTH_SYS` comes first: E1 to E4 and E7, about 76.25
 man-days of plan work, the critical path E1 → E2 → E4 → E7, 59.25 man-days in series, then S5, S7 and
@@ -509,11 +510,10 @@ internal/adapter/
     callbacks.go              E8 type, reached by ops/ through a Handlers field New sets (D13); E9 (Revoked for state), E10 (RecallGrant, RecallAny, Revoked for grants), E11 (LockWaitOver, Revoked for NLM)
     wire/                     RFC 20's E6: record framer, RPC header, program constants, AUTH_SYS, XDR generator and runtime; E8: the header codec reads SEQUENCE's session, slot and sequence (D15)
       gen/                    E4 (unions whose cases share an arm), E5 (linked-list replies)
-      call.go                 E3: a call's header and a reply's decoder, for the scripted client, rpcclient and the back channel
+      call.go                 E10: a call's header and a reply's decoder, moved from E3's scripted client when the back channel first sends a call; rpcclient uses them
       clientrec.go            E8: the Adapter bytes codec (RFC 21 §11.4), XDR-tagged, versioned
-    protocol/                 RFC 20's E6: Router, Tables, stages; E1: State; E3 drops served.go's copies of wire's constants; E10: the Router's demux of replies on a back channel
-      auth.go                 E3: credentials to Identity, the AUTH_SYS and AUTH_NONE Security stage
-      tls.go                  E3: the AUTH_TLS probe and StartTLS
+    protocol/                 RFC 20's E6: Router, Tables, stages; E1: State; E3: the AUTH_TLS probe in stages.go; E10: the Router's demux of replies on a back channel
+      auth.go                 E3: AUTH_NONE and AUTH_SYS credentials to Identity at route, and each call's Caps by program and procedure; no Security stage
       replay.go               E3: the Replay stage and its NFSv3 and NFSv4.0 duplicate-request cache (D10); E8 extends it with sessions' slot tables and reply caches
       sessions.go             E8: the session registry, Pending proposals (D7)
       owners.go               E9: NFSv4.0 owners' last replies (D8)
@@ -692,7 +692,7 @@ cuts both corpus captures to the bytes of the golden files already cut from them
 
 ### Epic 3 — The RPC layer
 
-**Epic 3 estimate: 6 subtasks, 19.5 man-days.**
+**Epic 3 estimate: 6 subtasks, 20.5 man-days.**
 
 Everything a call meets before a handler: its credential as an `Identity` and a `vfs.Call`, `NULL`
 and the TLS upgrade, the replay check, and the status every error of the stages and of `core` is
@@ -794,6 +794,9 @@ table; N7, N9, N16's ctime half, N19's NFSv4 half.
 - `READDIR`: cookies, `maxcount` unclamped, the verifier (D16).
 - `READ`, `WRITE`, `COMMIT` under the all-zeros and all-ones stateids; the `READ` row's `Bound`
   hook; the not-supported rows (D14).
+- Each member row's `Cacheable` column, which E3's NFSv4.0 duplicate-request cache reads: set on the
+  non-idempotent members it adds, `SETATTR`, `WRITE`, `CREATE`, `LINK`, `REMOVE`, `RENAME`, as E4's
+  D13 sets NFSv3's.
 - Over loopback, each NFSv4.1 code this epic adds a row for (`SECINFO_NO_NAME` among them) sent
   under NFSv4.0 answered `NFS4ERR_OP_ILLEGAL`, as RFC 21 §11.5 has it.
 - S4's namespace half over loopback.
@@ -930,6 +933,9 @@ reboot racing renew *(1 node)*", the "§3.5 confirm" step of a rebooted client h
 - Stateids: the six rules, the special stateids, the current stateid, `TEST_STATEID`,
   `FREE_STATEID`, `FreeState` on an NFSv4.0 client's behalf.
 - NFSv4.0 owner sequences and owners' last replies (D8).
+- Each member row's `Cacheable` column, which E3's NFSv4.0 duplicate-request cache reads: set on
+  each non-idempotent member it adds whose retransmission the owners' last replies do not already
+  answer.
 - `LOCK`, `LOCKT`, `LOCKU`, `RELEASE_LOCKOWNER`: one range, `LOCK4denied`, blocking polls.
 - `READ`, `WRITE`, `SETATTR` under open and lock stateids, the principal check, the drain role per
   request; the callbacks value's `Revoked` for opens and locks.

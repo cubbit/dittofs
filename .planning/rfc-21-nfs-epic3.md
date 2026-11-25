@@ -22,7 +22,7 @@ A4 and RFC 21 §11.2's cache, which closed RFC 21's former open question 5, and 
 Cited, not owned: RFC 5531 for the RPC message, RFC 9289 for the `AUTH_TLS` probe, RFC 17 §3.0's
 `Call` and §4.9's admission, RFC 20 §2.5's layout of `ops/`.
 **Track:** A.
-**Epic 3 estimate: 6 subtasks, 19.5 man-days.**
+**Epic 3 estimate: 6 subtasks, 20.5 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E1's request state, NFSv4 table and golden-file
 vector check, E2's knfsd captures cut into golden files, and S0's `vfstest.Mutations`. It builds on
 what RFC 20's epics already landed on `feat/storage-v2`: `core`'s pipeline and `ReplayCache` stage,
@@ -204,10 +204,10 @@ subtasks and tests can cite them.
 | R23 | A gateway node keeps a duplicate-request cache for NFSv3 and NFSv4.0 in NFS's `Replay` stage, a bounded set of replies in the node's memory keyed by (client address, XID, procedure, checksum of the arguments), and answers a retransmission the reply its first send was given instead of running it again. A retransmission that arrives while its first send still runs, before its reply is stored, runs again: a narrowing of §11.2 pending the user's answer (D5, Q6) | MUST | RFC 21 §11.2; RFC 20 §4.7 (the Replay row) | T3.3 |
 | R24 | The key never names the connection: a retransmission on another connection from the same address is answered from the cache | MUST | RFC 21 §11.2 | T3.3 |
 | R25 | The cache is not durable and the service's dedup is not widened: a retransmission after its entry was evicted, or after a restart, runs again | invariant | RFC 21 §11.2 | T3.3 |
-| R26 | `Lookup` returns a fresh copy of the cached reply charged to a reply reservation of its size that waits under the request's context; `Store` keeps its own clear copy, taken before `Wrap`, of a cacheable row's reply only, and of a `COMPOUND` only when a member that ran has a cacheable row (D5, Q5). MOUNT, NLM and NSM have no cache, and an NFSv4.1 or later `COMPOUND` is not this cache's | MUST | RFC 20 §4.7 (`ReplayCache`, the Replay row); RFC 21 §11.2 (a retransmitted `REMOVE` or `CREATE`) | T3.3 |
+| R26 | `Lookup` returns a fresh copy of the cached reply charged to a reply reservation of its size that waits under the request's context; `Store` keeps its own clear copy, taken before `Wrap`, of a cacheable row's reply only, and of a `COMPOUND` only when a member that ran has a cacheable row (D5, Q5). A call ran when its handler returned no error or one its table maps to a status other than the fault: a reply answering `ErrDelay` (`NFS3ERR_JUKEBOX`, `NFS4ERR_DELAY`), the fault (`NFS3ERR_SERVERFAULT`, `NFS4ERR_SERVERFAULT`) or a refusal of `core`'s before the call (`GARBAGE_ARGS`) is never stored, so its retransmission runs MOUNT, NLM and NSM have no cache, and an NFSv4.1 or later `COMPOUND` is not this cache's | MUST | RFC 20 §4.7 (`ReplayCache`, the Replay row); RFC 21 §11.2 (a retransmitted `REMOVE` or `CREATE`) | T3.3 |
 | R27 | A hit is counted by `core` as `adapter_replay_hits_total{protocol="nfs3"}`, as `core` counts every replay hit; RFC 21 §11.7's row names a session's slot, and this cache's hits are counted the same way | MUST | RFC 21 §11.7; RFC 20 §10.1 | T3.3 |
 | R46 | Any cache keyed on identity carries every field the `Identity` has: the key holds the credential's flavour and, for `AUTH_SYS`, its uid, gid and groups, beside the address; a call of any other flavour is neither looked up nor stored | MUST | RFC 20 §4.4 | T3.3 |
-| R42 | A call `Route` would refuse is never answered from the cache: its RPC version, flavour, `AUTH_SYS` body and verifier are judged as `Route` judges them before the cache is read, and a refusal is a miss, answered as its first send would be; a refused call is never stored | invariant | RFC 21 §11.1 (where they are judged), §11.2, §12 (N26) | T3.3 |
+| R42 | A call `Route` would refuse for its credential is never answered from the cache: its RPC version, flavour, `AUTH_SYS` body and verifier are judged as `Route` judges them before the cache is read, and a refusal is a miss, answered as its first send would be; a refused call is never stored. Its program and version are not checked against the served set there: the key holds both, so only a reply stored before a `Reconfigure` narrowed the served range can answer a call of a version no longer served, until it is evicted (D5) | invariant | RFC 21 §11.1 (where they are judged), §11.2, §12 (N26) | T3.3 |
 
 **`NULL` and NFS over TLS**
 
@@ -226,7 +226,8 @@ subtasks and tests can cite them.
 | R43 | A reply given over TLS is never sent in the clear: under `require` a call before the upgrade other than the probe is closed before the duplicate-request cache is read or filled, and a reply stored from an upgraded connection answers a retransmission only on an upgraded connection | MUST | RFC 21 §2.2 (NFS over TLS), §11.2; RFC 20 §5.5 | T3.3, T3.6 |
 | R44 | The connection is upgraded only after a probe `Route` admitted and its row answered with success; a probe refused, answered from an error table or answered with no reply starts no handshake, and the connection reads on in plaintext | MUST | RFC 21 §2.2 (NFS over TLS); RFC 20 §5.5; RFC 9289 §4.1 | T3.5, T3.6 |
 | R45 | A `client_ca` file replaced at its path applies to handshakes begun afterwards, as the certificate pair does | MUST | RFC 20 §5.5 (the settings table); RFC 13 Appendix B | T3.6 |
-| R47 | The probe upgrades only a connection on which it is the first call read: a probe after any other call, answered or in flight, is `AUTH_BADCRED` and starts no handshake, so no reply to an earlier call goes out during or after the upgrade | MUST | RFC 21 §2.2 (NFS over TLS: "before any other request") | T3.6 |
+| R47 | The probe upgrades only a connection on which it is the first record read: a probe after any other record, a call answered or in flight, a record that does not decode or one that is not a call, is `AUTH_BADCRED` and starts no handshake, so no reply to an earlier call goes out during or after the upgrade |
+| R49 | Bytes read past the probe's record before the upgrade are never parsed as RPC: they are the TLS handshake's first input, so a plaintext call among them, pipelined by the client or appended by a party in the path, fails the handshake, closes the connection and runs nothing, and nothing is stored for it | MUST | RFC 21 §2.2 (NFS over TLS: the same connection upgraded before any other request); RFC 20 §5.5; RFC 9289 §4.1 | T3.5, T3.6 | MUST | RFC 21 §2.2 (NFS over TLS: "before any other request") | T3.6 |
 
 **Transport, decoding and vectors**
 
@@ -294,7 +295,9 @@ row (E8); RFC 20 §4.4's `gss` package, but for D1's reading of it (Q1).
   ignores both; the key also holds whether the connection has upgraded to TLS, so a reply given over
   TLS never answers a plaintext retransmission (R43). `core` reads the cache before `Route`, so
   `Lookup` first judges the header with the function `Route` judges it with, the RPC version, the
-  flavour, the `AUTH_SYS` body against RFC 5531's limits and the verifier, and a refusal is a miss:
+  flavour, the `AUTH_SYS` body against RFC 5531's limits and the verifier, and a refusal is a miss
+  (the program and version are left to the key, R42's ceiling, under a `decision:` marker overturned
+  if a `Reconfigure` that narrows the range must withdraw stored replies at once):
   `Route` then refuses the retransmission as it refused, or would have refused, the first send
   (R42). Keying on those fields instead would still answer a call whose credential `Route` refuses
   once its first send had been admitted under another. The key is thus built in `Lookup`, from the
@@ -307,8 +310,22 @@ row (E8); RFC 20 §4.4's `gss` package, but for D1's reading of it (Q1).
   `Cacheable`: `core`'s compound runner stores a `COMPOUND`'s reply when a member that ran has a
   `Cacheable` row, one condition in `compound.go` amended into RFC 20 §4.7 (Q5), so GETATTRs, LOOKUPs
   and small READs do not turn the 4096 entries over and evict the `CREATE` and `REMOVE` replies the
-  cache exists for (RFC 21 §11.2). `Lookup` charges its copy to the reply pool of `Deps.Budgets`, which `nfs.New` hands
-  `protocol.New`. Prior art: knfsd's DRC keys on address, XID, procedure, program, version and a
+  cache exists for (RFC 21 §11.2). A call counts as run, for a single call and for a `COMPOUND`'s
+  member, when its handler returned no error or one its table maps to a status other than the fault:
+  `core` stores no reply answering `ErrDelay`, the fault or its own refusal before the call
+  (`ErrDecode`), at `pipeline.go`'s `Store` and in `compound.go`, one more condition of the same
+  amendment, so a delay or a fault is not replayed to a retransmission of a call that did not run,
+  and a `COMPOUND` whose `CREATE` ran before a later member's delay is still stored. That reaches
+  `testproto`'s cacheable `Create` row and its compounds too, which the `core` change's own tests
+  cover. `core`'s `ReplayCache` sees only the header, so `NewConn` hands every connection a
+  wrapper of the one shared cache holding its `*Conn`, which gives the address (`Conn.Remote`) and the
+  TLS state, and `Lookup` and `Store` build the key with one function. `Lookup` returns a miss at
+  once, before any decode or hash, for an NFS v3 procedure whose row is not `Cacheable`, so `READ`
+  and `GETATTR` pay neither the hash nor the lock; a `COMPOUND`'s members are not known there, so
+  every NFSv4.0 `COMPOUND` is looked up. `Lookup` charges its copy to the reply pool of `Deps.Budgets`, which `nfs.New` hands
+  `protocol.New`; when the reservation cannot be had it returns `ErrDelay`, which the stages' table
+  answers with no reply, a row this epic adds to `newErrors`, so the client retransmits rather than
+  meeting `SYSTEM_ERR` for a call that already ran. Prior art: knfsd's DRC keys on address, XID, procedure, program, version and a
   checksum of the arguments' first 256 bytes, and drops a retransmission still in progress (from
   memory). A `ponytail:` marker on the one lock: shard by key when T3.3's mutex profile or a later one
   shows contention. A `decision:` marker on retransmissions in progress, which this cache does not
@@ -332,7 +349,15 @@ row (E8); RFC 20 §4.4's `gss` package, but for D1's reading of it (Q1).
   not served, since replies to calls read before it could otherwise go out in plaintext during the
   handshake or over TLS to a client that never asked (R47, RFC 21 §2.2's "before any other
   request"); and `core`'s
-  reader reads no further record until that call has ended. `core` performs the upgrade after the
+  reader reads no further record until that call has ended. Bytes the reader already holds past the
+  probe's record, which one `fill` of up to 4 KiB reads with it, are never cut as records once the
+  upgrade starts: they are the first bytes `crypto/tls` reads, through a `net.Conn` that returns them
+  before the socket's, so a client that sent its `ClientHello` without waiting for the reply still
+  upgrades, while a plaintext call pipelined behind the probe, or appended by a party in the path,
+  fails the handshake and closes the connection, running nothing (R49): the STARTTLS
+  command-injection class, CVE-2011-0411 (from memory). With no upgrade they are read on as
+  plaintext records, as any other. The probe is the first record the connection read, whatever the
+  records before it were (R47). `core` performs the upgrade after the
   call's reply is sent, on the same socket under the handshake deadline, only when `Route` admitted
   the call and its row answered with success; a probe `Route` refuses, one answered from an error
   table, and one that ends with no reply (a drain row) withdraw the request, the reader reads on in
@@ -348,7 +373,8 @@ row (E8); RFC 20 §4.4's `gss` package, but for D1's reading of it (Q1).
   ever reads ahead of a record's reply on another path.
 - **D8. `require` refuses with a close, before any other check.** RFC 21 §2.2 refuses a plaintext
   call under `require` and closes the connection; this epic closes it with no reply, through
-  `Conn.Close`, since a reply would be dropped by the close and the client is told nothing a denied
+  `Conn.Close`, with `Decode` returning no header, which `core` drops before anything reads the call
+  (`pipeline.go`'s `serve`), since a reply would be dropped by the close and the client is told nothing a denied
   reply would add. The check runs in the header stage's `Decode`, the first stage a call meets, so
   such a call reaches neither the duplicate-request cache's `Lookup` nor its `Store`, nor `Route`
   (R43). The mode is judged before the flavour: under `require` before the upgrade, `AUTH_TLS` on
@@ -362,9 +388,12 @@ row (E8); RFC 20 §4.4's `gss` package, but for D1's reading of it (Q1).
   `CertReloader` and requires and verifies a client certificate where `client_ca` is set, plus
   `NextProtos` `sunrpc`, as RFC 9289 asks (from memory); each connection takes the one its settings
   snapshot names. `ServerConfig` reads `client_ca` once, so `tlsconfig` gains a CA reloader beside
-  `CertReloader`, reached through `GetConfigForClient`, that re-reads the file when its mtime
-  advances, as the pair is re-read: a CA replaced at its path applies to handshakes begun afterwards
-  (R45). A replacement that does not load keeps the last good pool, is reparsed at most once a second
+  `CertReloader`, reached through `GetConfigForClient`, which returns a clone of the base
+  configuration, `MinVersion` 1.3 and `NextProtos` kept, with the current pool. Both reloaders
+  re-read a file whenever its modification time differs from the one loaded, earlier or later, so a
+  replacement copied with `cp -p` and an older timestamp still loads: a CA replaced at its path applies
+  to handshakes begun afterwards (R45). A file deleted from its path keeps the last good pool or pair,
+  logged at `Error` once, as a file that does not parse is. A replacement that does not load keeps the last good pool, is reparsed at most once a second
   like the pair below, and is logged at `Error` once per modification time, under a `decision:` marker naming the ceiling: a CA withdrawn by a file that
   does not parse is still trusted until a loadable one lands, overturned if an operator needs a
   withdrawal to refuse every handshake at once. `CertReloader.GetCertificate` today drops its reload
@@ -373,7 +402,9 @@ row (E8); RFC 20 §4.4's `gss` package, but for D1's reading of it (Q1).
   a failure does not record the modification time: a truncated file read mid-copy and the finished
   file can share one timestamp tick, so recording it would never load the finished pair. Instead a
   failing pair, and a failing CA, are parsed at most once a second (an injected clock), and the
-  `Error` line is logged once per modification time. Under `opportunistic`, `client_ca` authenticates only the connections that upgrade, since a
+  `Error` line is logged once per modification time. `tlsconfig` is shared with the control plane's
+  API listener (`api/server.go`), so the reloaders' changes reach it too, which T3.6's pull request
+  names and whose tests run with it. Under `opportunistic`, `client_ca` authenticates only the connections that upgrade, since a
   client that does not probe is served in plaintext; a `decision:` marker at the mode's check says
   so, overturned if an operator needs `client_ca` to imply `require`. `New` loads its settings' before it returns, and the adapter `New` returns wraps
   `core.Server`'s `Reconfigure`: it loads the next settings' first, refuses the call if they do not
@@ -548,14 +579,17 @@ internal/adapter/adaptertest/nfsclient/
 
 ### T3.3 The `Replay` stage and its duplicate-request cache
 
-**Subtask T3.3 estimate: 3.5 man-days.**
+**Subtask T3.3 estimate: 4 man-days.**
 
 - **Track:** A. **Depends on:** T3.1, T3.2.
 - **Covers:** R3, R23, R24, R25, R26, R27, R40 (retry identities), R42, R43 (the key's TLS state), R46.
 - **Deliverables:** `protocol/replay.go`: the cache of D5, implementing `core.ReplayCache`, set as
   every connection's `Stages.Replay` by `NewConn`; `protocol.New(t Tables, b *resources.Budgets)`,
   `nfs.go` passing `Deps.Budgets`; `core`'s compound runner storing a `COMPOUND` when a member that
-  ran is `Cacheable` (D5, Q5). Consumed by
+  ran is `Cacheable`, and `core` storing no reply that answers `ErrDelay`, the fault or `ErrDecode`
+  (D5, Q5), a change to `testproto`'s compounds and cacheable row that the pull request names;
+  `newErrors`' row answering `ErrDelay` with no reply; the early miss for NFS v3 rows that are not
+  `Cacheable`. Consumed by
   `core`'s pipeline, by E4's cacheable rows and by E8, which adds a session's slots beside it.
   Golden files of calls and the key's fields each gives, never the hash, which `hash/maphash` seeds
   per process (§11.6's retry-identity table).
@@ -575,6 +609,10 @@ internal/adapter/adaptertest/nfsclient/
   - After a cacheable call is answered, its retransmission with RPC version 3, with an `AUTH_SYS`
     credential carrying 17 gids, or with an `AUTH_SYS` verifier is refused as its first send would
     be, not answered the cached reply.
+  - A cacheable call answered `NFS3ERR_JUKEBOX` once, or the fault, is not stored: its
+    retransmission runs and is answered what the second run returns.
+  - A retransmission whose cached copy cannot be reserved gets no reply, and is answered the cached
+    reply byte for byte once the reservation can be had.
 - **Tests:** over loopback through `core` on `memory.New`, with a test table whose one cacheable row
   makes one mutating call, and a test `COMPOUND` row at minor version 0 whose one member makes one,
   each call under `AUTH_NONE` to a share granting everyone, so admission passes before E7's T7.1:
@@ -601,7 +639,18 @@ internal/adapter/adaptertest/nfsclient/
   eviction and size cases (catch an unbounded cache, R25); a `Lookup` miss, and a `Lookup` of a flavour that is not cached, each allocate 0 under
   `testing.AllocsPerRun` (catches an allocation every NFS call would pay, rule 4); a `Lookup` whose reply reservation cannot
   be had before an ended context returns `ErrDelay` of `DelayResources` (catches an uncharged copy,
-  R26); the retry-identity golden table (R40). The entries' expected lifetime under a measured mix of NFSv3 and NFSv4.0 replies, a benchmark of a
+  R26); the retry-identity golden table (R40); a reflection test over `vfs.Identity`'s fields
+  against the key function's list of the fields it keys and the ones it leaves out by name (catches a
+  field added to `Identity` and not keyed, R46). Over loopback, the test row answering `ErrDelay` on
+  its first call and success on its second: the retransmission runs, two entries in
+  `vfstest.Mutations`, and is answered the success (catches a delay stored, R26); the same with the
+  fault (catches a fault stored); a cacheable call answered, then the adapter's reply pool held by the
+  test's own reservation in `Deps.Budgets` and the call resent: the test waits until
+  `adapter_refusals_total{stage="replay_check"}` counts it, releases the pool, resends, and the first
+  record the client reads is the cached reply byte for byte, with
+  `adapter_unmapped_errors_total` at 0 (catches `ErrDelay` answered `SYSTEM_ERR` at the bytes the
+  client reads, D5); a `READ` row that is not `Cacheable` misses at 0 allocations with no hash
+  computed (catches the early miss lost). The entries' expected lifetime under a measured mix of NFSv3 and NFSv4.0 replies, a benchmark of a
   `Lookup` miss under 64 goroutines, and the mutex and block profiles under 64 connections, are
   reported in the pull request (rule 4). No test double.
 - **Rules:** rule 9's `ponytail:` and `decision:` markers of D5.
@@ -657,14 +706,15 @@ internal/adapter/adaptertest/nfsclient/
 
 ### T3.5 `Conn.StartTLS`
 
-**Subtask T3.5 estimate: 3.5 man-days.**
+**Subtask T3.5 estimate: 3.75 man-days.**
 
 - **Track:** A. **Depends on:** S2.
-- **Covers:** R30, R32, R44.
+- **Covers:** R30, R32, R44, R49.
 - **Deliverables:** `core`: `func (c *Conn) StartTLS(cfg *tls.Config) error`, asked from a header
   stage's `Decode` and performed after the reply to that call is sent, only when the router admitted
   the call and its row answered with success (D7): the reader reads no further record until the call
-  has ended; a call refused, answered from an error table or ending with no reply withdraws the
+  has ended, and the bytes it already holds past that record are handed to `crypto/tls` as its first
+  input, never cut as records (R49); a call refused, answered from an error table or ending with no reply withdraws the
   request and the reader reads on in plaintext; otherwise the writer sends that reply in plaintext, the socket is handed to
   `crypto/tls`'s server side, the handshake runs under the handshake deadline, and reader and writer
   then read and write through it; a second call, or one after the connection began closing, is
@@ -675,12 +725,20 @@ internal/adapter/adaptertest/nfsclient/
     next message is read only after a TLS 1.3 handshake, and every later message and reply is TLS.
   - A client that sends plaintext after the reply has its connection closed by the handshake's
     failure; a second `StartTLS` is refused.
+  - A message that asks for the upgrade, written in one write with the next message, is answered
+    alone: the next message is never served, the handshake fails and the connection closes. A
+    message that asks for the upgrade written in one write with the client's `ClientHello` is
+    upgraded.
   - A message that asks for the upgrade and is then refused by the router, or answered with no
     reply, leaves the connection in plaintext: the next message is read and answered, and no
     handshake starts.
   - No goroutine outlives the connection.
-- **Tests:** on `testproto` over loopback, with a client that writes the next request before
-  reading the reply (catches a reader that reads past the probe, R32); a `-race` run of upgrades
+- **Tests:** on `testproto` over loopback: the upgrade request and the next message in one write,
+  after which the test handler has recorded the upgrade request alone, the client reads the upgrade's
+  reply and then `io.EOF` (catches a reader that reads past the probe, R32, or cuts the bytes it holds
+  as records after the upgrade, R49); the upgrade request and the client's `ClientHello` in one write,
+  after which a message over TLS is answered (catches the held bytes dropped rather than handed to
+  `crypto/tls`, R49); a `-race` run of upgrades
   while replies are queued (catches a writer sending a reply in plaintext after the handoff, R30);
   a message asking for the upgrade with a route that refuses it, and one whose row sends no reply,
   each followed by a plaintext message that is answered (catch an upgrade begun before the route's
@@ -690,10 +748,10 @@ internal/adapter/adaptertest/nfsclient/
 
 ### T3.6 NFS over TLS
 
-**Subtask T3.6 estimate: 4 man-days.**
+**Subtask T3.6 estimate: 4.25 man-days.**
 
 - **Track:** A. **Depends on:** T3.4, T3.5.
-- **Covers:** R8 (the probe's exception), R30, R31, R33, R34, R35, R36, R37, R38, R43, R44, R45, R47.
+- **Covers:** R8 (the probe's exception), R30, R31, R33, R34, R35, R36, R37, R38, R43, R44, R45, R47, R49.
 - **Deliverables:** `stages.go`: `Decode` asking `StartTLS` for the probe (a `NULL` under `AUTH_TLS`,
   mode not off, the first call the connection read), a later probe `AUTH_BADCRED` (R47), `Route` admitting it, the probe's `Encode` writing the
   `STARTTLS` verifier and so confirming the upgrade (D7); `Decode` closing under `require`, before the cache is read, any call before the upgrade but the
@@ -713,16 +771,23 @@ internal/adapter/adaptertest/nfsclient/
   - A probe refused by `Route` (a malformed `AUTH_TLS` body) or under `off` leaves the connection in
     plaintext with no handshake.
   - A probe sent while an earlier call on the connection is still running is `AUTH_BADCRED`, the
-    earlier call's reply is read in plaintext, and no handshake starts.
+    earlier call's reply is read in plaintext, and no handshake starts; so is a probe after a record
+    that did not decode.
+  - A probe and a cacheable mutating call in one write: the client reads the probe's reply, the
+    handshake fails, the connection closes and `vfstest.Mutations` stays empty; the same call sent
+    afterwards over an upgraded connection runs, one entry, with the hit counter put (nothing was
+    stored for it).
   - A certificate pair replaced by a file that does not parse leaves the old certificate presented,
     logs one `Error`, and the next loadable replacement is presented to the handshake after it, also
     when that replacement has the broken file's modification time.
   - A `client_ca` file replaced at its path refuses the next handshake by a client certificate the
-    old CA signed and the new one did not, while a connection upgraded before keeps serving.
+    old CA signed and the new one did not, while a connection upgraded before keeps serving; so does
+    one replaced by a file with an older modification time. A `client_ca` deleted from its path keeps
+    the old pool and logs one `Error`.
   - A `Reconfigure` from `off` to `require` leaves a connection accepted before it in plaintext and
     makes the next one require the upgrade; one that sets `client_ca` refuses the next handshake
     without a client certificate.
-  - A client offering TLS 1.2 only fails the handshake.
+  - A client offering TLS 1.2 only fails the handshake, before and after a `client_ca` reload.
   - Replacing the certificate files changes the certificate the next connection is presented, while
     the first connection keeps serving.
   - `New` with an unreadable `cert_file`, and `Reconfigure` naming one, are refused, and the adapter
@@ -736,14 +801,20 @@ internal/adapter/adaptertest/nfsclient/
   close, R43); the refused probe followed by a plaintext `NULL` that is answered (catches an upgrade
   begun before `Route`, R44); a probe behind a call whose test row waits on a channel, answered
   `AUTH_BADCRED` with that call's reply then read in plaintext (catches an upgrade with a call in
-  flight, R47); the corrupt and then good replacement of the pair, at the certificate a client sees
+  flight, R47), and one behind a seven-byte garbage record (catches a probe counted first after a
+  record that did not decode, R47); the probe and a `CREATE` test row's call in one write, read as the
+  probe's reply then `io.EOF` with `vfstest.Mutations` empty, then that call over an upgraded
+  connection recorded once with `adapter_replay_hits_total` unchanged (catches pipelined plaintext
+  run after the upgrade, or stored under the upgraded key, R49); the corrupt and then good replacement of the pair, at the certificate a client sees
   (catches a reload error swallowed or a broken pair served, D9); a truncated pair and then the
   complete one with the same modification time (set with `os.Chtimes`), the clock advanced a second,
   after which the next handshake presents the new certificate (catches a failure's modification
   time recorded, D9); the CA replaced at its path, at the handshake a client sees (catches a
-  CA read once, R45); the two `Reconfigure` cases (catch a
+  CA read once, R45), with an older modification time set by `os.Chtimes` (catches a reload only on a
+  later time), and deleted (catches a deletion that drops the pool or logs nothing); the two `Reconfigure` cases (catch a
   mode or `client_ca` applied to a connection already accepted, or never applied, R34); TLS 1.2
-  refused (catches `tlsconfig`'s 1.2 default left in place, R33); the certificate replaced (R34,
+  refused, and again after a `client_ca` reload (catches `tlsconfig`'s 1.2 default left in place,
+  or a configuration `GetConfigForClient` builds without the base's floor, R33); the certificate replaced (R34,
   R35); `New` and `Reconfigure` with an unloadable file (R36); settings tests for the modes, `require` without `key_file` refused
   naming `TLS.KeyFile` and `opportunistic` without `cert_file` naming `TLS.CertFile` (R36);
   `TestStartBindsOneTCPPortForEveryProgram` with TLS on (R38). No test double.
@@ -779,9 +850,9 @@ last although it is the epic's riskiest subtask, and T3.5 can run beside any of 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T3.1, T3.2 | 5 | — | the caller every handler receives, and the client every loopback row is written on, tested together over loopback |
-| 2 | T3.3 | 3.5 | PR 1 | the duplicate-request cache, the piece E8 extends |
+| 2 | T3.3 | 4 | PR 1 | the duplicate-request cache, the piece E8 extends |
 | 3 | T3.4 | 3.5 | PR 1 | every program's table in its package, with `NULL` and every refusal of `core` and of the caller |
-| 4 | T3.5, T3.6 | 7.5 | PR 3 | NFS over TLS, from `core`'s upgrade to the probe and the certificates; T3.5 can open beside PR 1 |
+| 4 | T3.5, T3.6 | 8 | PR 3 | NFS over TLS, from `core`'s upgrade to the probe and the certificates; T3.5 can open beside PR 1 |
 
 A suggestion only: one pull request per subtask works as well; PR 2 and PR 3 can be open at once.
 
@@ -883,11 +954,12 @@ Gaps, not questions:
 - Departures from the RFC 21 implementation plan, each updated in the plan by this pull request
   (its §2 row and total, §3.3's E3 row, §5's Epic 3 section, and Epic 13's line on
   `ErrWrongSecurity`):
-  - 6 subtasks and 19.5 man-days against the plan's 7 and 17: the outline's credentials and
+  - 6 subtasks and 20.5 man-days against the plan's 7 and 17: the outline's credentials and
     malformed calls sit in T3.1 and T3.2, `NULL` and the tables in T3.4, TLS in T3.5 and T3.6, the
-    cache in T3.3; the 2.5 man-days more are what the plan's outline did not name: the cache's
+    cache in T3.3; the 3.5 man-days more are what the plan's outline did not name: the cache's
     refusal check and TLS ordering (R42 to R45), the identity fields in the key (R46), the probe as
-    the first call (R47) and `tlsconfig`'s reload failure (D9).
+    the first record (R47), the bytes held past it (R49), the statuses not stored and the delayed
+    copy answered with no reply (D5), and `tlsconfig`'s reload failure (D9).
   - No `AUTH_NONE` and `AUTH_SYS` `Security` stage: nothing here verifies a message, so `Route`
     builds the `Identity` (D1).
   - The call encoder and reply decoder stay in `nfsclient` until E10's T10.1 moves them into `wire`
