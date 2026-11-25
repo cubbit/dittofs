@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -442,6 +443,38 @@ func TestCloseWaitsForQuestionsInFlight(t *testing.T) {
 		if got := f.Dials(); len(got) != 2 {
 			t.Errorf("%d dials, want 2: the connection closed once the first question returned", len(got))
 		}
+	})
+}
+
+// A connect its question stopped waiting for is ended by Close, which
+// returns only once it has: nothing reads the bind password after Close.
+func TestCloseEndsAbandonedConnect(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t)
+		var resolving, returned atomic.Bool
+		password := func(ctx context.Context) ([]byte, error) {
+			resolving.Store(true)
+			<-ctx.Done() // held until Close, or the query timeout, ends it
+			returned.Store(true)
+			return nil, ctx.Err()
+		}
+		c := directory.NewClient(e.rec, e.d.Dial, password, e.clock, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { _, _, err := c.Lookup(ctx, directory.ByUserName, []byte("alice")); done <- err }()
+		synctest.Wait()
+		if !resolving.Load() {
+			t.Fatal("the lookup is not resolving the bind password")
+		}
+		cancel()
+		if err := <-done; !errors.Is(err, vfserr.ErrUnavailable) {
+			t.Errorf("Lookup its caller left = %v, want ErrUnavailable", err)
+		}
+		c.Close()
+		if !returned.Load() {
+			t.Error("Close returned while the abandoned connect still resolved the bind password")
+		}
+		e.clock.Advance(time.Minute) // lets a connect Close left running end, so the bubble does
 	})
 }
 

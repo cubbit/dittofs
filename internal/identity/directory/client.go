@@ -94,6 +94,10 @@ type Client struct {
 	nc       string // the naming context the domain SID was read from
 	inflight int    // questions running
 	closed   bool
+	// abandoned holds the cancel of each detached call its caller stopped
+	// waiting for, until the call returns; Close ends them and waits.
+	abandoned map[*struct{}]context.CancelFunc
+	settled   *sync.Cond // on mu, broadcast as an abandoned call returns
 }
 
 // NewClient returns a client of the directory rec names, dialled through dial
@@ -103,8 +107,10 @@ func NewClient(rec Record, dial Dialer, password Password, clock Clock, log *slo
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Client{rec: rec, dial: dial, password: password, clock: clock, log: log,
-		connecting: make(chan struct{}, 1)}
+	c := &Client{rec: rec, dial: dial, password: password, clock: clock, log: log,
+		connecting: make(chan struct{}, 1), abandoned: map[*struct{}]context.CancelFunc{}}
+	c.settled = sync.NewCond(&c.mu)
+	return c
 }
 
 // unavailable wraps err in vfserr.ErrUnavailable.
@@ -204,11 +210,19 @@ func (c *Client) Test(ctx context.Context) (Entry, error) {
 // Close closes the client's connection once the questions running on it
 // have returned. A question asked after Close still answers, on a connection
 // closed when it returns, so a lookup that read the client before it was
-// replaced finishes on it.
+// replaced finishes on it. A detached call no question waits for any more is
+// ended, and Close returns once it has, so none reads the password or the
+// dialer after Close.
 func (c *Client) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.closed = true
+	for _, cancel := range c.abandoned {
+		cancel()
+	}
+	for len(c.abandoned) > 0 {
+		c.settled.Wait()
+	}
 	c.closeIdle()
 }
 
@@ -265,25 +279,51 @@ func timedOut(ctx context.Context, err error) error {
 // detach runs f on ctx without its cancellation and waits for it or for ctx
 // to end, so a caller that stops waiting leaves a call other questions share
 // (the connection's dial, bind and domain SID read, a search on it) to finish
-// or be ended by the query timeout. A paged search is the exception: pages
-// closes its connection when its caller stops waiting.
-func detach[T any](ctx context.Context, what string, f func(context.Context) (T, error)) (T, error) {
+// or be ended by the query timeout, or by Close, which waits for it. A paged
+// search is the exception: pages closes its connection when its caller stops
+// waiting.
+func detach[T any](c *Client, ctx context.Context, what string, f func(context.Context) (T, error)) (T, error) {
 	type result struct {
 		v   T
 		err error
 	}
+	token := new(struct{})
+	finished := false // under c.mu
+	fctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	done := make(chan result, 1)
 	go func() {
-		v, err := f(context.WithoutCancel(ctx))
+		v, err := f(fctx)
+		c.mu.Lock()
+		finished = true
+		if _, ok := c.abandoned[token]; ok {
+			delete(c.abandoned, token)
+			c.settled.Broadcast()
+		}
+		// A connection an abandoned connect opened after Close is closed
+		// here, since no question's end will.
+		c.closeIdle()
+		c.mu.Unlock()
+		cancel()
 		done <- result{v, err}
 	}()
 	select {
 	case r := <-done:
 		return r.v, r.err
 	case <-ctx.Done():
-		var zero T
-		return zero, unavailable(what, ctx.Err())
 	}
+	c.mu.Lock()
+	if finished { // it returned while this caller took mu
+		c.mu.Unlock()
+		r := <-done
+		return r.v, r.err
+	}
+	c.abandoned[token] = cancel
+	if c.closed {
+		cancel()
+	}
+	c.mu.Unlock()
+	var zero T
+	return zero, unavailable(what, ctx.Err())
 }
 
 // open resolves the bind password, refusing an empty one before any dial,
@@ -337,7 +377,7 @@ func (c *Client) connect(ctx context.Context) (Conn, bool, error) {
 		conn  Conn
 		fresh bool
 	}
-	o, err := detach(ctx, "connect", func(ctx context.Context) (opened, error) {
+	o, err := detach(c, ctx, "connect", func(ctx context.Context) (opened, error) {
 		defer func() { <-c.connecting }()
 		conn, fresh, err := c.establish(ctx)
 		return opened{conn, fresh}, err
@@ -409,7 +449,7 @@ func (c *Client) readDomainSID(ctx context.Context, conn Conn) (string, []byte, 
 // a question costs the next one a dial. Tell the two apart when the dial rate
 // shows it.
 func (c *Client) search(ctx context.Context, conn Conn, req Request) (Result, error) {
-	return detach(ctx, "search", func(ctx context.Context) (Result, error) { return c.searchOn(ctx, conn, req) })
+	return detach(c, ctx, "search", func(ctx context.Context) (Result, error) { return c.searchOn(ctx, conn, req) })
 }
 
 // searchOn is search's work, on a context no caller cancels.
