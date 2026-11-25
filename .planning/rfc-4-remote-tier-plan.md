@@ -613,10 +613,10 @@ test/suites.yaml                       E3: service:localstack in integration; E6
   resolving to the container. The client's settings carry an
   optional set of trusted roots, which replace the system's when set (none: the system's),
   declared as the remote store's `remote.trust_roots` key in epic 7, which a self-hosted
-  service with a private CA needs anyway, and no setting skips verification: a case in epic 4
+  service with a private CA needs anyway, and no setting skips verification: a case in epic 5
   opens against an `httptest.NewTLSServer` listener on `127.0.0.1:0` without its root and
   requires the open refused, whichever certificate LocalStack serves. Prior art: none needed.
-  Applied by epics 3 and 4.
+  Applied by epics 3, 4 and 5.
 - **D10. The S3 constructor's sequence is final from epic 4; the check fills it in epic 5.** The
   exported constructor's signature is RFC 4 §4.1's from its first landing. Epic 4 builds the
   store under it with its integrity mode, HTTPS refusal and layout, and tests the data path
@@ -714,15 +714,16 @@ namespace keys, C.3. **Done when:** RFC 4 §7.1's rows for §4.2, §4.3 (but the
 put's), §4.4 (but the codec's ranged-flip half, and the check's refusal that ends the
 first-get-`404` row, which is epic 5's), §4.5 (but `DeleteVersions`), §4.6, §4.8 (but its
 `PutObject` clauses, §6.1), §4.9 and
-§4.13, and the C.3 row's signing and HTTPS clauses, over LocalStack and the fault transport; an
-open against an `httptest` TLS listener without its trusted root refused (D9); every reply over
+§4.13, and the C.3 row's signing and HTTPS clauses, over LocalStack and the fault transport; every reply over
 HTTP/1.1 (D6); §1.4's unmarked rows
 against the S3 store; RFC 4 §7.4's emulator row for these; RFC
 4 R5 to R10, R13's store half, R16 and R21.
 
 **Expected content:**
 - `NewClient(ClientConfig, Deps)` and `Open(ctx, *Client, prefix, remote.Mode) (remote.Store,
-  Claim, error)` (RFC 4 §4.1), `ClientConfig` carrying `MaxBlockSize` and `Region`, signing
+  Claim, error)` (RFC 4 §4.1), `ClientConfig` carrying `Region` and `MaxBlockSize`, the largest encoded block a put may carry; sized as RFC 3 §2.2 sizes the pools,
+  a larger block refused by `Put` locally with `ErrInvalid` (never `ErrDenied` of cause `size`,
+  which is the service's refusal), signing
   for `us-east-1` by default (Appendix C.3): retries off, checksum and payload-signing modes pinned,
   HTTPS only with optional trusted roots and no way to skip verification, HTTP/1.1 only, its
   caps from the limit it is handed, a limit of 0 or less refused (Appendix C.3, D6, D9, D10).
@@ -743,7 +744,8 @@ against the S3 store; RFC 4 §7.4's emulator row for these; RFC
   ETag comparison (quoted and unquoted, upper and lower case) and `List` cases for an empty
   page marked truncated and for a prefix with non-ASCII and percent-encoded bytes.
 - The `remote_` series through the recorder `pkg/remote/s3` declares (D12), a call its caller
-  cancelled recorded as `result="local"` (RFC 4 §4.12), and §4.12's logs.
+  cancelled and a body reader's failure, both local failures (§4.8), recorded as
+  `result="local"` (RFC 4 §4.12), and §4.12's logs.
 - The `Content-Range` reader's fuzz target (rule 2), and `integration`'s `s3-allocs` option with
   the `Put` and `Get` streams' and the `List` page's allocation assertions (rule 4).
 
@@ -761,7 +763,8 @@ class and tiering row; the C.3 row's encryption set before open), whose `Recheck
 refusal ending §7.1's first-get-`404` row; step 3 choosing the batch delete on LocalStack, its
 `DeleteObjects` sent with `Content-MD5`; a wrong-secret open whose log and error hold no part of
 the access key, the secret or the signature (rule 3); RFC 4 R12's mutable half; an open in `immutable` mode refused,
-naming its missing caller (D11).
+naming its missing caller (D11); the store refused at open for an untrusted certificate, an
+`httptest` TLS listener on `127.0.0.1:0` opened without its trusted root (D9).
 
 **Expected content:**
 - Appendix C.1's judgements for a mutable store, as pure functions over the SDK's replies. A

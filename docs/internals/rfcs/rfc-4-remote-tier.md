@@ -732,8 +732,10 @@ capability check ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%2
 `NewClient(ClientConfig, Deps)`, the client one store configuration shares, and
 `Open(ctx, *Client, prefix, remote.Mode) (remote.Store, Claim, error)`, which
 returns the namespace claim it read ([Appendix C.4](#C.4%20The%20capability%20check)) for its caller to
-judge. `ClientConfig` carries `MaxBlockSize`, the largest block a put may carry
-(§4.8's size rule), and `Region`, the signing region. On a mutable store, `Delete` and
+judge. `ClientConfig` carries `Region`, the signing region, and `MaxBlockSize`,
+the largest encoded block a put may carry; sized as RFC 3 §2.2 sizes the pools ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)). `Put` refuses a larger block
+locally with `ErrInvalid`, before sending a byte: that is the client's refusal,
+distinct from [§4.8](#4.8%20Errors%20are%20a%20closed%20set)'s `ErrDenied` of cause `size`, which is the service's. On a mutable store, `Delete` and
 `DeleteVersions` do what [§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent) says; on an immutable one they return
 `ErrInvalid` for every name without sending a request.
 
@@ -1339,8 +1341,8 @@ count it again ([RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20make
 `list_objects` and `delete_objects` on the counter, where every `op` keeps its
 own value; the histogram counts them all as `other`, so a store's histogram
 stays at six `op` values times its buckets. An `ErrDenied` result is labelled with
-its cause, and a call its caller cancelled is labelled `result="local"`: a
-local failure is not the service's ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)); a drifted `Recheck`
+its cause, and a local failure, a call its caller cancelled or a body reader
+that failed, is labelled `result="local"`: it is not the service's ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)); a drifted `Recheck`
 sets the drifted setting's `remote_capability` to 0. The gauge also
 carries `conditional_put`, whether the service honoured one at the last check
 ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)); it is reported, and no rule reads it.
@@ -2196,7 +2198,7 @@ Several stores may share a bucket under different prefixes, never one prefix
 | `ErrDenied`, cause `quota` | `507` with any code; and any reply whose error code the profile's quota list names — each service's own bucket-quota-exceeded and storage-full codes, recorded per service in [Appendix B](#Appendix%20B%20%E2%80%94%20measurements), measured or taken from the service's documented error table. Such a reply is matched first, and a size refusal next, before the rows below, so a quota or size refusal answered with `400` or `403` is never `ErrInvalid` |
 | `ErrDenied`, cause `size` | to a block put (`Put`, `PutVersion`): `413` with any code, and `EntityTooLarge` with any status, a size refusal ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)); to any other put the same replies are `ErrInvalid` |
 | `ErrThrottled` | `429`, `503 SlowDown` |
-| `ErrTransient` | `400 ExpiredToken`, since the client refreshes a session credential itself and the cause clears by itself ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)); `400 RequestTimeout`, `408`, `409 OperationAborted`, `500`, `502`, `503` other than `SlowDown`, `504`, network errors, timeouts, a body shorter than a `Content-Range` that matches the request, a mismatching response checksum on a get ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)), a response body that does not parse |
+| `ErrTransient` | `400 ExpiredToken`, since the client refreshes a session credential itself and the cause clears by itself ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)); `400 RequestTimeout`, `408`, `409 OperationAborted`, `500`, `502`, `503` other than `SlowDown`, `504`, network errors, timeouts, a body shorter than a `Content-Range` that matches the request, a mismatching response checksum on a get ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)); a 2xx reply whose body does not parse. A response body that does not parse is classified by its status, as a reply with no code; only a 2xx one is `ErrTransient`, so a proxy's HTML `403` stays `ErrDenied` and its HTML `413` to a block put stays cause `size` |
 | `ErrCorrupt` | `400 BadDigest`, `400 InvalidDigest`, `400 XAmzContentSHA256Mismatch`; the exact status and code the check recorded for its chosen checksum, only on puts that carried that checksum; an ETag mismatch on a put |
 | everything else | the rest of its class: any other `4xx` (including `404` with another code) is `ErrInvalid`, any other `5xx` is `ErrTransient`, and a status outside `100`–`599`, or any other reply, is `ErrTransient`. The table is total: a reply this row does not catch cannot exist |
 
