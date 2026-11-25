@@ -227,8 +227,9 @@ it, in the part this epic owns.
   art: Go's `os/exec` tests run children under another credential the same way (from memory). No
   marker.
 - **D6, each account presents every flavour its record lets it present.** Each role account is
-  created with a uid, a gid and a password and no grant, so a refusal can come only from admission,
-  never from a missing spelling: it mounts over `AUTH_SYS` with its uid and, in `e2e/kerberos`,
+  created with a uid and a password and no grant (the API's user record holds no gid), so a refusal
+  can come only from admission, never from a missing spelling: it mounts over `AUTH_SYS` with its
+  uid, presenting the uid as its gid too, and, in `e2e/kerberos`,
   with its NFS Kerberos name. The bootstrap administrator has no spelling, and `AUTH_SYS` names no
   account, so the row mounts over `AUTH_SYS` as uid 0, the uid a root bypass would key on, and that
   is refused. That its record
@@ -268,8 +269,9 @@ test/posix/known.yaml                     T8.9  rewritten for v2
   now and lands with T8.6 (rule 12).
 - **Covers:** R1.
 - **Deliverables:** `test/e2e/helpers` (D3): `Start(t)` over `fixture.Start`, returning the
-  server's addresses and a client signed in as the administrator; `Account(t, role, uid, gid)`
-  creating an account with a password set through `:set-password` and no grant; `Group`, `Member`;
+  server's addresses and a client signed in as the administrator; `NewAccount(t, prefix, role,
+  uid)` creating an account with a password set through `:set-password` and no grant, its uid the
+  gid its `AUTH_SYS` mount presents, since the API's user record has no gid; `Group`, `Member`;
   `Share(t, name)` creating a share whose export policy states its flavours and which holds no
   grant; `Grant(t, share, principal, access)` through `Put` with `If-None-Match: *` and `Ungrant`
   through `Delete`; `MountNFS` over `test/e2e/framework`'s mounts, returning the client's error
