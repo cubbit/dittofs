@@ -20,7 +20,7 @@ and "disable takes effect"'s GSS half. Every clause cited reads the same on `dev
 Cited, not owned: RFC 2203 for the RPCSEC_GSS messages, RFC 4121 for the per-message tokens, RFC
 5531 for `auth_stat`, RFC 17 §4.9's admission, RFC 24's connection-state pool.
 **Track:** B.
-**Epic 13 estimate: 8 subtasks, 21.25 man-days.**
+**Epic 13 estimate: 8 subtasks, 21.75 man-days.**
 **Depends on:**
 - **S2**, NFS's test foundations in CI, with E2's capture recipe, which T13.1 extends to a KDC.
 - **S6c**, the RFC 22 implementation plan's epic 4: `gss`'s `Context`, `Exchanges`, the Kerberos
@@ -95,7 +95,7 @@ two rows, on the composed node.
 - `nfs_gss_contexts`, whose producer is T13.4's table: nothing records it while who records the
   series only NFS code can count is open with the RFC's author, as rule 3 has it. If that settles
   before T13.4 lands, T13.4 adds it, about 0.5 man-days inside its figure; after, the epic the
-  decision names. The counts of dropped calls, dropped `INIT`s and evictions, per reason, which
+  decision names. The counts of dropped calls, `INIT`s refused for want of budget and evictions, per reason, which
   would make D5's, D8's and R4's silent paths visible, go with it, to the same owner; until then
   they leave no trace, as no log line may carry the principal or handle that would explain them.
 - The `require_kerberos` boot refusal, which the RFC 20 implementation plan's deferral ledger gives
@@ -271,7 +271,13 @@ are the authenticator's and already tested at its Tier 1; `SECINFO`'s flavours (
   idle 8 hours, so no sweeper runs and an idle context is never served. The
   window lives in each context under the context's own mutex; `check` releases it before it takes
   the table's mutex to move the context in both lists, so the two are never held together and no
-  lock order arises. Calls on two contexts therefore share the table's mutex, held for the map
+  lock order arises. Between the two, another call on the same context can reach `MAXSEQ` or the
+  ticket's end and delete it, releasing its charge; so the move happens only if, under the table's
+  mutex, the map still holds that context, and a deleted one is never linked back into a list. The
+  call whose `check` passed still runs, as a call already past the stage runs when `DESTROY`
+  arrives: it was verified while the context lived, it holds its own reference to the
+  `gss.Context` for its reply's `Wrap`, and it takes no charge, so the budget is back to zero once
+  the table is empty whichever call finished last. Calls on two contexts therefore share the table's mutex, held for the map
   lookup and the two list moves, and nothing else. A `ponytail:` marker at the mutex: one lock over the table, shard it by handle when
   T13.4's mutex profile, or a later one, shows contention. Prior art: knfsd's `rsc` cache, a hash
   table whose entries expire on lookup (from memory).
@@ -294,25 +300,39 @@ are the authenticator's and already tested at its Tier 1; `SECINFO`'s flavours (
   service, beside E3's address, program, version and procedure, and the arguments as `Unwrap` left
   them, after the sequence number and checksum, so a retransmission, which a client sends under a
   new sequence number, still hits, while a call from another context with the same XID runs (R18).
-  E3's T3.3 case where a GSS `Store` and `Lookup` find nothing becomes T13.5's two cases below. A
-  hit is wrapped under the retransmission's own header, as `core` wraps every cached copy. Prior
+  E3's T3.3 case where a GSS `Store` and `Lookup` find nothing becomes T13.5's two cases below.
+  E3's address is the client's IP address with no port (its R24), so a retransmission after the
+  client reconnects, which on TCP comes from a new port, still hits. The address stays in the key
+  for a GSS call although the handle alone fixes the principal: RFC 21 §11.2's retry identity names
+  it, and a client that reaches the node from a new address after a reconnect is one that a
+  reconnect from a moved address already loses on `AUTH_SYS` too, so dropping it is a change to
+  that row for every flavour rather than this epic's. The cache holds the reply as it was before
+  the `Security` stage: `core` stores a clear copy before `Wrap` and answers a hit with a fresh copy
+  of it, wrapped under the retransmission's own header and sequence number (RFC 20 §4.7's
+  pipeline), so a `krb5p` reply, which `Wrap` seals in the buffer it reads (R23), is never cached
+  sealed and never sealed twice. Prior
   art: knfsd looks up its DRC after the GSS layer has unwrapped the call (from memory). A
   `decision:` marker at the key.
-- **D8. A context is charged before `SignIn`, and a pool that refuses with nothing to evict drops
-  the `INIT` before `SignIn` sees it.** Each context reserves from `Budgets.Connection` its fixed size
+- **D8. A context is charged before `SignIn`, and a pool that refuses with nothing to evict refuses
+  the `INIT` at once, before `SignIn` sees it.** Each context reserves from `Budgets.Connection` its fixed size
   plus a bound on its evidence's name and SIDs computed from the `INIT` token's length, since both are
   decoded from the ticket inside it; once `SignIn` returns, the reservation is trimmed to the
   evidence's real size, and it is released when the context is deleted or the exchange fails. A
   refused reservation evicts as R4 says and retries once, but below the cap it evicts only the
   inserting principal's own contexts, since the pool is shared with other connection state and a
   starved pool must not cost another principal a context; if nothing may be evicted, the
-  `INIT` is dropped unanswered before its AP-REQ reaches `SignIn`, so the replay cache (RFC 18 §3.3)
-  has not seen the authenticator and the client's retransmission, which carries the same AP-REQ, is
-  its retry once the pool frees: RPC has no retry-later answer for `INIT`, and `CREDPROBLEM` would end
-  the client's attempt. Charging after `SignIn` would put the authenticator in the replay cache first,
-  and the retransmission would then be refused `CREDPROBLEM` anyway. Prior art: none found. A
-  `decision:` marker at the drop, overturned if a supported client is shown to give up on a dropped
-  `INIT` sooner than on a refusal.
+  `INIT` is answered `CREDPROBLEM` (D10) before its AP-REQ reaches `SignIn`. Dropping it would not
+  bring a retry of the same AP-REQ: over TCP, `rpc.gssd` sends the `INIT` from its own RPC client
+  once and waits its RPC timeout, 5 s by default (`rpc_timeout` in nfs-utils' `gssd.c`), then
+  answers the kernel's upcall with `-EACCES` (`do_error_downcall` in `gssd_proc.c`), and the
+  kernel's next upcall builds a fresh AP-REQ with a new authenticator; the kernel holds the failed
+  credential for a few seconds before it asks again (from memory). A drop therefore costs the user
+  the same refusal plus the timeout, and a stalled mount, while an answer lets the kernel's next
+  upcall succeed as soon as the pool frees. Refusing before `SignIn` still matters for the cost: a
+  starved pool spends no ticket decryption or replay-cache entry on an `INIT` it cannot keep.
+  Prior art: knfsd answers an `INIT` it cannot complete with a GSS major status rather than
+  dropping it (from memory). A `decision:` marker at the refusal, overturned if a supported client
+  is shown to resend the same AP-REQ after a drop.
 - **D9. The GSS `Identity` is built by `gss.Identity`.** `Route` calls RFC 20 §4.4's
   `gss.Identity(c, nil, proto, addr)` with the context `Unwrap` attached to the header and sets
   `Protection` from the credential's service, whatever E3's Q1 decides for `AUTH_SYS`. Prior art:
@@ -356,7 +376,7 @@ are the authenticator's and already tested at its Tier 1; `SECINFO`'s flavours (
   library gains an in-place one.
 - **D12. `ErrExpired` and the session errors' rows.** **Pending the user's answer** (Q1): written
   as Q1's recommended option, `RPCSEC_GSS_CTXPROBLEM` in the NFSv3-family tables and
-  `NFS4ERR_DELAY` in NFSv4's, `ErrNotNegotiated`, `ErrNoSession` and `ErrNoTree` at the fault in the
+  `NFS4ERR_ACCESS` in NFSv4's, `ErrNotNegotiated`, `ErrNoSession` and `ErrNoTree` at the fault in the
   NFSv3-family tables. A `decision:` marker at each row.
 - **D13. The captures commit the test realm's keytab.** knfsd's `RPCSEC_GSS` exchanges are recorded
   against the harness's KDC image (`dittofs-dt-kdc`) under a realm made for the capture, and its
@@ -511,7 +531,7 @@ test/pcap-corpus/
 
 ### T13.4 The context table
 
-**Subtask T13.4 estimate: 2.75 man-days.**
+**Subtask T13.4 estimate: 3 man-days.**
 
 - **Track:** B. **Depends on:** S6c.
 - **Covers:** R1, R2, R3, R4, R5, R6, R9, R11.
@@ -541,6 +561,8 @@ test/pcap-corpus/
   - In the window: a repeated or too-old number drops; one above advances it; one at or above
     `MAXSEQ`, or past the ticket's end, deletes the context.
   - Every deletion releases its reservation: the budget is back to zero once the table is empty.
+  - A `check` that passes while another call deletes the context moves nothing: the deleted context
+    is in no list, and the passing call's verdict is still run (D4).
 - **Tests:** at the table T13.5 drives, on an injected clock (kind 1): a property test of random
   `insert`, `get`, `check` and clock steps against a model of RFC 21 §10's rules (catch an eviction
   of another principal's context, R4, a context served past 8 hours, R5, a window advanced by a
@@ -551,9 +573,15 @@ test/pcap-corpus/
   evicted by a starved pool, D8); a budget below one context on an empty table (catches a context held
   uncharged, R3, D8); a reservation trimmed by `insert`, the budget read back (catches the bound kept
   as the charge, D8); `MAXSEQ` and the ticket's end (R9); the budget's balance after
-  every deletion (catches a leaked charge, R3). A `-race` run of 64 goroutines over 1 000 contexts
-  reports the mutex and block profiles (rule 4). No test double.
-- **Rules:** rule 9's `ponytail:` markers of RFC 21 §10 and D4, and D8's `decision:`; rule 3, the
+  every deletion (catches a leaked charge, R3). The race of D4, driven rather than hoped for: a
+  pause hook set per instance from `export_test.go` holds one call between its window update and
+  its move, another call's `check` takes the same context to `MAXSEQ` and deletes it, then the
+  first is released; the first's verdict is run, both lists' lengths equal the map's, and the
+  budget is zero (catches a deleted context linked back into a list, or its charge taken again,
+  D4). A `-race` run of 64 goroutines over 1 000 contexts, some reaching `MAXSEQ`, ends with the
+  lists' lengths equal to the map's and the budget zero once the table is emptied, and reports the
+  mutex and block profiles (rule 4). No test double.
+- **Rules:** rule 9's `ponytail:` markers of RFC 21 §10 and D4; rule 3, the
   `nfs_gss_contexts` producer, §1.2.
 
 ### T13.5 The `Security` stage and the control procedures at `krb5`
@@ -619,14 +647,18 @@ test/pcap-corpus/
     rejected call run, R8);
   - one call's bytes sent twice, then a fresh call: the only reply read is the fresh call's, and
     `vfstest.Mutations` holds one entry (catches a replayed sequence number run or answered, R6, R8);
-  - an `INIT` with the table's budget spent and nothing to evict: no reply and no context added;
-    then the pool freed and the same `INIT`'s bytes sent again, as a client retransmits it: a
-    context is set up (catches a refusal that ends the client's attempt, a context held uncharged,
-    or a charge taken after `SignIn`, whose replay cache then refuses the retransmission, D8);
+  - an `INIT` with the table's budget spent and nothing to evict: a `CREDPROBLEM` reply read on the
+    connection, no context added, and the same `INIT`'s bytes sent again once the pool frees set up
+    a context, so its authenticator never reached the replay cache; then a fresh `INIT` from the
+    initiator, a new AP-REQ as `rpc.gssd`'s next upcall sends, sets up a context too (catch an
+    `INIT` dropped unanswered, which leaves the client waiting its RPC timeout, a context held
+    uncharged, or a charge taken after `SignIn`, D8);
   - two contexts sending one XID and the same arguments: two entries in `vfstest.Mutations`; one
-    context retransmitting under a new sequence number: one (catch a cache key without the
-    context, R18, or one that misses a retransmission, D7); these replace E3's T3.3 case where a
-    GSS call is never cached;
+    context retransmitting under a new sequence number: one; a `CREATE` whose connection is closed
+    before its reply is read, retransmitted under a new sequence number on a new connection from
+    another source port of the same address: one entry, and the retransmission answered the first
+    reply (catch a cache key without the context, R18, or one that misses a retransmission, the
+    port kept in it included, D7); these replace E3's T3.3 case where a GSS call is never cached;
   - the three refused tickets and a `SignIn` refusal from a principal with no record (catch an error
     answered as a guest, R13, R39, or a ticket for another service, R12);
   - `SignIn` failing `ErrInvalid`, then `ErrUnavailable`, through `vfstest.Faults` around
@@ -657,12 +689,12 @@ test/pcap-corpus/
     control procedure on a procedure other than `NULL` `AUTH_BADCRED` (R21, D2).
   - Each ends with `adaptertest.CheckLeaks`. No test double: tickets are the test realm's, accepted
     by the real identity server (§9, assumption 1).
-- **Rules:** rule 9's `decision:` markers for D1, D2, D7 and D10, and `stages.go`'s removed; rule
-  11's exports above.
+- **Rules:** rule 9's `decision:` markers for D1, D2, D7, D8 and D10, and `stages.go`'s removed;
+  rule 11's exports above.
 
 ### T13.6 `krb5i` and `krb5p`
 
-**Subtask T13.6 estimate: 2.75 man-days.**
+**Subtask T13.6 estimate: 3 man-days.**
 
 - **Track:** B. **Depends on:** T13.5.
 - **Covers:** R16, R22, R23, R24, R26, R28.
@@ -688,8 +720,11 @@ test/pcap-corpus/
   reservation short of the wrapped reply, R26), and at each of `krb5`, `krb5i` and `krb5p` a MOUNT
   `MNT`, an NFSv3 `GETATTR` and `WRITE`, and an NFSv4.0 `COMPOUND` of `PUTFH`, `GETATTR` and
   `WRITE`, each reaching its handler with its `Identity` and its reply verified at the client
-  (catch a program or a `COMPOUND` the stage leaves unwrapped, R16, R17, R22). No test
-  double.
+  (catch a program or a `COMPOUND` the stage leaves unwrapped, R16, R17, R22); a `krb5p` NFSv3
+  `CREATE` whose connection closes before its reply is read, retransmitted under a new sequence
+  number: the reply unseals at the client under the retransmission's sequence number to the first
+  reply's results, and `vfstest.Mutations` holds one entry (catches a sealed reply cached and
+  sealed again, or answered under the first send's sequence number, D7). No test double.
 - **Rules:** rule 4, the allocation check; rule 8, the captured calls.
 
 ### T13.7 The rows a Kerberos caller meets
@@ -782,8 +817,8 @@ before track B reaches this epic.
 | --- | --- | --- | --- | --- |
 | 1 | T13.1, T13.2 | 3.5 | — | the reference capture and the codec its vectors anchor |
 | 2 | T13.3 | 3 | PR 1, S6c, the RFC 20 pull request (Q3) | `gss`'s per-message tokens, with the RFC 20 §4.4 change, reviewed by `gss`'s owners |
-| 3 | T13.4, T13.5 | 7.75 | PR 1, PR 2 | the table and the stage that drives it: Kerberos at `krb5` end to end |
-| 4 | T13.6, T13.7 | 5.5 | PR 3 | integrity and privacy, and the rows that need them, with the RFC 21 §11.5 change |
+| 3 | T13.4, T13.5 | 8 | PR 1, PR 2 | the table and the stage that drives it: Kerberos at `krb5` end to end |
+| 4 | T13.6, T13.7 | 5.75 | PR 3 | integrity and privacy, and the rows that need them, with the RFC 21 §11.5 change |
 | 5 | T13.8 | 1.5 | PR 3, S5 | RFC 18's rows on the composed node |
 
 A suggestion only: one pull request per subtask works as well; T13.4 can open beside PR 1 once S6c
@@ -797,17 +832,26 @@ Questions pending the user's answer. Each recommended option is written in place
   RFC 21 §11.5 leaves them "settled with the session and GSS tables", and E16's totality test pins
   them. The stage refuses an expired context before `Route` (R9), so `core`'s per-member check meets
   only a ticket that ends between unwrap and a member.
-  - (a) **Recommended:** `ErrExpired` rejects the RPC `RPCSEC_GSS_CTXPROBLEM` in the NFSv3, MOUNT,
-    NLM and NSM tables, as §10 answers an expired context, and is `NFS4ERR_DELAY` in NFSv4's
-    members' table, since a member cannot reject an RPC whose earlier members ran, and the client's
-    retry meets the expired context at unwrap and renews; `ErrNotNegotiated`, `ErrNoSession` and
-    `ErrNoTree` are never met in the NFSv3-family tables, where every route resolves a credential and
-    nothing negotiates, so they are the fault, as `ErrLogonFailure` is; NFSv4's three are E8's.
-    Proposed for §11.5: "| `ErrExpired` — a ticket that ended after the call's header verified
-    (§10) | `NFS4ERR_DELAY` | the RPC is rejected `RPCSEC_GSS_CTXPROBLEM`; NLM likewise |".
-  - (b) `NFS4ERR_ACCESS` in NFSv4's table: the application sees `EACCES` once instead of the client
-    renewing.
-  - (c) The fault everywhere, as never met, leaving the race answered as a server fault.
+  In every option the NFSv3, MOUNT, NLM and NSM tables reject the RPC `RPCSEC_GSS_CTXPROBLEM`, as
+  §10 answers an expired context: their call is one procedure, refused before it runs, and the
+  client renews its context and resends. `ErrNotNegotiated`, `ErrNoSession` and `ErrNoTree` are
+  never met in those tables, where every route resolves a credential and nothing negotiates, so
+  they are the fault, as `ErrLogonFailure` is; NFSv4's three are E8's. The options differ in
+  NFSv4's members' table, where a member cannot reject an RPC whose earlier members ran:
+  - (a) `NFS4ERR_DELAY`, so the client's retry meets the expired context at unwrap and renews. It
+    is not safe: the client resends the whole `COMPOUND`, and the members that ran before the
+    refused one run again. Over NFSv4.0 nothing replays them (the owner's seqid already moved on a
+    successful `OPEN`); over NFSv4.1 the retry takes a new sequence ID, so the slot's cached reply
+    is not it. A `REMOVE` or `RENAME` then answers `NFS4ERR_NOENT`, and an exclusive `OPEN`
+    `NFS4ERR_EXIST`, for work that was done.
+  - (b) **Recommended:** `NFS4ERR_ACCESS`: the client does not resend, so nothing runs twice; the
+    application sees `EACCES` once for that call, its earlier members' effects kept, and the next
+    call meets the expired context at unwrap, `CTXPROBLEM`, and renews. The race is a ticket ending
+    between unwrap and a member, so the wrong answer is rare and never a repeated change. Proposed
+    for §11.5: "| `ErrExpired` — a ticket that ended after the call's header verified (§10) |
+    `NFS4ERR_ACCESS` | the RPC is rejected `RPCSEC_GSS_CTXPROBLEM`; NLM likewise |".
+  - (c) The fault everywhere, as never met: as (b) for what runs, the application seeing `EIO`
+    rather than `EACCES`, and the race reported as a server fault, which it is not.
   Prior art: knfsd checks a context's expiry once, before dispatch (from memory), so it has no
   per-operation answer.
 - **Q2. An expired context and RFC 18 §3.8's release calls** (R9). RFC 18 §3.1 and §3.8 let a
@@ -866,7 +910,7 @@ Assumptions on other plans, and what is settled with the other epics' documents:
 
 Gaps, not questions:
 
-- The figure is 21.25 man-days against the plan's 16: T13.1's capture with a KDC, T13.3's in-place
+- The figure is 21.75 man-days against the plan's 16: T13.1's capture with a KDC, T13.3's in-place
   crypto that `gokrb5` lacks (D11), less what lifting `develop`'s per-message code and window saves,
   and T13.8's composed-node rows were not separate items before. The plan's epic 13 lines carry the
   new figure; its programme and track totals are not recomputed here and reconcile when the
