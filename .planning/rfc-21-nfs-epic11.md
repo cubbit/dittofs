@@ -92,7 +92,10 @@ NSM notice amendment (D11, Q1) and of an NLM record's first state (D5, Q4); the 
   §6.1, point 4). If that settles before T11.4 lands, each producer adds its own, about 0.5 man-days
   inside T11.4's figure; after, the epic the decision names.
 - The port mapper answering on UDP and TCP, and rpcbind registration: the RFC 21 implementation plan's
-  deferral ledger, its port-mapper row, owned by the cutover.
+  deferral ledger, its port-mapper row, owned by the cutover. Until it lands no host can reach this
+  epic's NLM through its rpcbind, so cthon04's `lock/tlocklfs` and `lock/tlock64` and nfstest's
+  `lock` module over NFSv3, which find NLM there (`test/suites.yaml`, `rpcbind: host`), cannot run:
+  E15 turns those cells on after the cutover's registration, never before.
 - `SM_NOTIFY` after a failover between nodes, from a node holding a moved address, or for a moved
   namespace (RFC 21 §6.2, §7.4): the same ledger's rows for RFC 21's (cluster) parts and for the
   namespace move.
@@ -178,7 +181,7 @@ that subtasks and tests can cite them.
 | R15 | An NLM host's client record is keyed by its `caller_name` together with the source address of the request that created it, both its `Name`; its `Boot` is its NSM state number, big-endian in the low four bytes | MUST | RFC 21 §6.1, §11.4 (`Name`, `Boot`) | T11.1, T11.3 |
 | R16 | A request naming a host's `caller_name` from another address is another client, and can neither test, unlock nor free the first host's locks | MUST | RFC 21 §6.1 | T11.3, T11.11 |
 | R17 | `NLMPROC4_FREE_ALL` and a received `SM_NOTIFY` expire a host's client only when they come from the address its record holds | MUST | RFC 21 §6.1, Appendix D (`FREE_ALL`) | T11.3, T11.7 |
-| R18 | A host's first NLM call registers it for restart notification: `Connect` with its `caller_name` as the monitor name, its `mon_name` and `priv` kept in the record's `Adapter` bytes, written by an NLM call through this node even when the record already exists under the same state (a record a received `SM_NOTIFY` created has none); `SM_MON` and `SM_UNMON` are never served to a peer | MUST | RFC 21 §6.2, §11.4 (the `Adapter` bytes), Appendix D (`SM_MON`) | T11.3, T11.7 |
+| R18 | A host's first NLM call registers it for restart notification: `Connect` with its `caller_name` as the monitor name, its `mon_name` and `priv` kept in the record's `Adapter` bytes, written by an NLM call through this node even when the record already exists under the same state (a record a received `SM_NOTIFY` created has none); `SM_MON` and `SM_UNMON` are never served to a peer | MUST | RFC 21 §6.2, §11.4 (the `Adapter` bytes), Appendix D (`SM_MON`) | T11.3, T11.7, T11.8, T11.12 |
 | R19 | A lock request carrying a new NSM state number is a `Connect` under the host's name with a new `Boot`: a reboot, which expires the old client | MUST | RFC 14 §4.5; RFC 21 §11.4 (`Boot`) | T11.3, T11.12 |
 | R20 | An NLM row's `Resolve` sets `Client` on its `r.Call` to the ID of the host's client record | MUST | RFC 20 §4.4 (the `Call`) | T11.3 |
 | R21 | A `StaleClient` refusal makes the adapter `Connect` the host afresh and send the request once more; it never reaches the host as `NLM4_DENIED`, and one met again on the retry is `NLM4_DENIED_GRACE_PERIOD` | MUST | RFC 21 §6.1, §11.5 (`StaleClient`); RFC 14 §4.5 | T11.3 |
@@ -1047,6 +1050,8 @@ Gaps and assumptions, not questions:
 - RFC 21 §6.2 names "the floating address's name" in an outgoing `SM_NOTIFY` and says nowhere how
   the adapter learns it; D22 sends the address in text form. A sentence saying so, or a server name
   per floating address, joins batch two's RFC 21 pull request.
+- D21 narrows RFC 21 §6.1's "refuses it (`NLM4_DENIED` or another error in the reply)" to
+  `NLM4_DENIED` alone; the sentence joins batch two's RFC 21 pull request with Q3's cells.
 - RFC 21 §6.1 says the `*_MSG` procedures are "accepted over TCP", while §2.2 and RFC 20 §4.8 serve
   NLM's whole table over UDP; T11.10 answers them over UDP too, their `*_RES` by TCP. "over TCP and
   UDP" joins batch two's RFC 21 pull request.
