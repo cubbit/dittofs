@@ -72,7 +72,7 @@ sync (#4239); RFC 13's settings (#4059).
 **RFC amendments, agreed** (§6.1): A1 to A3 in #5166, A4 in #5196. A1, RFC 20's compound runner
 asking a `READ`'s hook again just before it runs (#5090 1.4); A2, an RFC 17 call marking a back
 channel down, and `Connect` clearing it (#5090 1.5); A3, RFC 17's admission exempting NLM's lock
-calls, `MNT` and `EXPORT` from the minimums by `Call.Protocol` and entry method (#5090 2.3); A4, RFC
+calls, `MNT` and `EXPORT` from the minimums by `HostCall` and entry method (#5090 2.3; restated from `Call.Protocol` by #5725); A4, RFC
 20 §2.5 placing the folders §4.1 builds beyond it, and NFS v3, MOUNT, NLM and NSM served as one
 unit. The cookie verifier needs none (D16).
 **Pending Marco:** who records RFC 21 §14's six `nfs_*` series and RFC 21 §11.7's three
@@ -530,7 +530,7 @@ internal/adapter/
 internal/identity/            RFC 18's plan; E7 adds the AUTH_SYS mapping, the owner scheme, ManageGIDs' closure
 pkg/metadata/entity/          E7: ExportPolicy.ManageGIDs (RFC 16 §2.3)
 pkg/openstate/                E2: ErrNoGrace, answered where RFC 14 §4.2 says
-pkg/vfs/, internal/vfs/       E2: StateNoGrace; after S2b, E10: A2's ChannelDown and Connect clearing Reach.Down; E4: A3's exemption by Call.Protocol and entry method
+pkg/vfs/, internal/vfs/       E2: StateNoGrace; after S2b, E10: A2's ChannelDown and Connect clearing Reach.Down; E4: A3's exemption by HostCall and entry method
 test/pcap-corpus/nfs*/        E2: knfsd captures per program area, beside nfsv4-acl/ (D6); E14's scripts
 ```
 
@@ -712,6 +712,10 @@ over loopback being E4's.
 - The `AUTH_NONE` and `AUTH_SYS` `Security` stage: each call's `Identity` and `vfs.Call`, the
   source address, refused credentials and verifiers; the scaffold's interim `AUTH_BADCRED` for an
   `RPCSEC_GSS` credential (`protocol/stages.go`'s `checkAuth`) kept until E13 withdraws it.
+- Each call's `Caps` from its program and procedure (RFC 17 §3.0): `NFSv3Caps`, `NFSv4Caps`,
+  `MountCaps` on `MNT` and `EXPORT` and `NFSv3Caps` on MOUNT's other procedures, `NLMCaps` for
+  NLM and NSM; and `vfs.WithProtocol` on each request's context, `nfs3` or `nfs4`. A test asserts
+  the profile and the label per program and procedure.
 - `NULL` for every program; the `AUTH_TLS` probe, `StartTLS`, the `opportunistic` and `require`
   modes, certificates loaded by `New` and `Reconfigure` (RFC 20's plan's TLS row; develop's code, rule
   7).
@@ -754,9 +758,10 @@ N7, N8, N17's reply half, N19's NFSv3 half, N23 on `memory.New`.
 - `FSSTAT`, `FSINFO`, `PATHCONF`.
 - MOUNT: `MNT`, `EXPORT` with its linked-list reply, `DUMP`, `UMNT`, `UMNTALL`; the import test's
   NFS entry files for `Root` and `ListShares`.
-- After S2b, A3's service half: `internal/vfs` admission skipping the minimums for a call whose
-  `Call.Protocol` is NLM, and for `Root` and `ListShares` under NFSv3, with its rows on `memory.New`;
-  E11's NLM calls rely on it.
+- After S2b, A3's service half: `internal/vfs` admission lowering the minimums for a call that sets
+  `HostCall`, to `Claimed` for a lock call or an NLM share reservation's `Open` and `Close`, and to none for
+  `Root` and `ListShares`, and refusing it on any other method naming a share, or with a `Session`, `ErrInvalid`, with its rows on `memory.New`; the MOUNT side sets
+  it on `MNT` and `EXPORT`, and E11's NLM and NSM calls set it and rely on it.
 - S3's loopback rows.
 
 ### Epic 5 — NFSv4 namespace, attributes and data
@@ -1159,14 +1164,16 @@ follows the RFC as written.
    S2b, with a row that a delegation is offered again after the re-bind. Proposed as RFC text
    in commit `docs(rfc-17): ChannelDown, and Connect clears a downed back channel`.
 3. **A3. RFC 17 §4.9: the minimums skipped for NLM, `MNT` and `EXPORT`** (#5090 2.3). RFC 17 §4.9 says
-   NFSv3 `MNT` and the NLM calls meet step 2 "as RFC 21 §6.3 and §6.1 decide", and the service can
-   already tell each without a new field: `Call.Protocol` names NLM apart from NFSv3
-   (`pkg/vfs/types.go`, which `internal/vfs/names.go` already branches on), an NFSv3 `Root` or
-   `ListShares` is only ever `MNT` or `EXPORT`, and admission has the switch `SecInfo` uses to skip
-   the minimums (`internal/vfs/admission.go`'s `secure`). Proposed: RFC 17 §4.9's step 2 names the
-   exemption: a call whose `Protocol` is NLM is admitted with `MinProof` at most `Claimed` and no
-   `MinProtection`, and `Root` and `ListShares` from NFSv3 with neither minimum; no adapter can ask
-   for it by any other means. E4 makes the change after S2b; E11's NLM calls rely on it.
+   NFSv3 `MNT` and the NLM calls meet step 2 "as RFC 21 §6.3 and §6.1 decide". As merged, the
+   service told them apart by `Call.Protocol`; #5725 restates it as a capability, since no rule of
+   the service reads the protocol (RFC 17 §3.0): NLM, NSM, `MNT` and `EXPORT` set `HostCall`,
+   and admission has the switch `SecInfo` uses to skip the minimums
+   (`internal/vfs/admission.go`'s `secure`). RFC 17 §4.9's step 2 names the exemption: a lock call
+   or a share reservation's `Open` or `Close` that sets `HostCall` is admitted with `MinProof` at
+   most `Claimed` and no `MinProtection`, a `Root` or `ListShares` that sets it with neither
+   minimum, and any other method naming a share that sets it, or a call that sets it and carries a
+   `Session`, is refused `ErrInvalid`. Every NFS, NLM and MOUNT `Call` also sets
+   `PrivilegeOnEveryCall`, so root's privilege counts on every call. E4 makes the change after S2b; E11's NLM calls rely on it.
    Proposed as RFC text in commit `docs(rfc-17): NLM, MNT and EXPORT meet admission without a
    share's Kerberos minimums`.
 4. **Who records the series only NFS code can count** (#5090 (a); RFC 20 §10, RFC 25 §2.1). RFC 20
