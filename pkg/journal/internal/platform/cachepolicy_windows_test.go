@@ -310,6 +310,9 @@ func wantCallFailure(t *testing.T, err error, op, path string, cause error) {
 // (ERROR_NOT_SUPPORTED and ERROR_INVALID_FUNCTION) run over a genuinely
 // opened volume and hand the verdict a genuine Win32 code, and every other
 // row fails one call of the chain and never reaches a recorded answer.
+//
+// The watch below covers every subtest: the profiler refuses a second watch
+// inside a watched test's subtests, so none of them watches itself.
 func TestCheckWriteCachePolicyVolume(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -344,8 +347,6 @@ func TestCheckWriteCachePolicyVolume(t *testing.T) {
 	}
 	for _, tc := range notReported {
 		t.Run(tc.name, func(t *testing.T) {
-			prof.Watch(t, prof.Options{})
-
 			r := newVolumeRecorder()
 			r.failNext("deviceIoControl", tc.cause)
 
@@ -354,8 +355,6 @@ func TestCheckWriteCachePolicyVolume(t *testing.T) {
 	}
 
 	t.Run("a query that fails another way is an error", func(t *testing.T) {
-		prof.Watch(t, prof.Options{})
-
 		// ERROR_IO_DEVICE, 1117: the class driver sample's failure when the
 		// disk cannot read its caching mode page
 		// (ClasspWriteCacheProperty, cited in checkCacheProbe). Fails if the
@@ -413,8 +412,6 @@ func TestCheckWriteCachePolicyVolume(t *testing.T) {
 	}
 	for _, tc := range failed {
 		t.Run(tc.name, func(t *testing.T) {
-			prof.Watch(t, prof.Options{})
-
 			r := newVolumeRecorder()
 			r.failNext(tc.op, tc.cause)
 
@@ -423,8 +420,6 @@ func TestCheckWriteCachePolicyVolume(t *testing.T) {
 	}
 
 	t.Run("closeHandle fails after a good query", func(t *testing.T) {
-		prof.Watch(t, prof.Options{})
-
 		// The query ran against the machine's volume and the recorder closed
 		// its handle; only the close's answer is the queued fault. The
 		// gather returns the close failure as the Linux probe joins it, and
