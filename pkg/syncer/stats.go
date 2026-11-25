@@ -4,10 +4,11 @@ import "time"
 
 // Stats is a snapshot of the syncer's counters, one Half per direction. Each
 // field's comment names the series it carries, without the deployment's
-// prefix. Every series is labelled half and store: the half is the field of
-// Stats the value sits under, and the store is StoreStats.Store. A label value
-// such as a reason, an outcome or a class is a named field, so a series with
-// no field is a missing field rather than a string nobody emits.
+// prefix. Every series is labelled half, the field of Stats the value sits
+// under; a series under a StoreStats or a FlowStats is also labelled store,
+// its Store. A label value such as a reason, an outcome or a class is a named
+// field, so a series with no field is a missing field rather than a string
+// nobody emits.
 //
 // Fields are only ever added, so code that reads a Stats keeps compiling as
 // the counters behind it fill in.
@@ -135,6 +136,8 @@ type StoreStats struct {
 // FlowStats is one open flow's queue gauges in one half, the per-flow
 // reading of syncer_queue_depth and syncer_waiters, by class.
 type FlowStats struct {
+	// Flow is the id the flow was opened under, and Store the store it is
+	// open on.
 	Flow                FlowID
 	Store               StoreID
 	QueueDepth, Waiters ByClass[int]
@@ -148,7 +151,7 @@ type ByClass[T any] struct {
 // Refused counts refused calls by reason: an unhealthy direction, a full
 // queue, a full waiter bound, a queued transfer displaced for a flow below
 // its share of the waiter bound, a speculation evicted for a demand, and a
-// call on a closed flow or syncer.
+// call on a closed flow.
 type Refused struct {
 	Unhealthy, QueueFull, WaitersFull, Displaced, Evicted, Closed uint64
 }
@@ -171,8 +174,9 @@ type Detached struct {
 }
 
 // Histogram is a distribution of durations over the request bucket set.
-// Counts[i] counts the observations above Bounds()[i-1] and at most
-// Bounds()[i], and the last count those above every bound. The counts are
+// Counts[0] counts the observations at most Bounds()[0], Counts[i] those above
+// Bounds()[i-1] and at most Bounds()[i], and the last count those above every
+// bound. The counts are
 // per bucket, not cumulative. Sum is the total of every observation.
 type Histogram struct {
 	Counts [19]uint64

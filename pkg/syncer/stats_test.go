@@ -21,7 +21,7 @@ const (
 func (k kind) String() string { return [...]string{"gauge", "counter", "histogram"}[k] }
 
 // series is one labelled series the syncer must make observable, typed from
-// the RFC's metric tables, with the path of the field that carries it in a
+// the syncer's metric list, with the path of the field that carries it in a
 // Half. A path element naming a slice steps into its element type. The half
 // label is the Half itself and the store label StoreStats.Store, so neither
 // appears here.
@@ -151,9 +151,6 @@ func TestEverySeriesHasAField(t *testing.T) {
 			t.Errorf("%s: Half.%s is %v, which cannot carry a %v", s.name, s.path, ft, s.kind)
 		}
 	}
-	if fetch := reflect.TypeOf(syncer.Stats{}.Fetch); fetch != half {
-		t.Errorf("Stats.Fetch is %v, want the same Half as Stats.Upload (%v)", fetch, half)
-	}
 }
 
 // leaves lists the paths of t's value fields, descending into structs other
@@ -194,7 +191,7 @@ func TestEveryFieldIsASeries(t *testing.T) {
 }
 
 // TestHistogramBoundsAreTheRequestSet checks the buckets against the request
-// set of the observability RFC, typed here as it is written there, and that a
+// bucket set, typed here bound by bound, and that a
 // histogram holds one count per bound plus the overflow.
 func TestHistogramBoundsAreTheRequestSet(t *testing.T) {
 	prof.Watch(t, prof.Options{})

@@ -17,5 +17,6 @@ type ProbeKey [32]byte
 
 // Probes says which directions the syncer probes for a store. A store whose
 // put probe would write where it must not, such as an immutable backup
-// location, is registered with PutProbe false.
+// location, would be registered with PutProbe false; until such a store has a
+// caller, the syncer refuses a registration with either probe off.
 type Probes struct{ PutProbe, GetProbe bool }
