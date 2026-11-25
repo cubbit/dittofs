@@ -15,8 +15,8 @@ for the type `Share` carries and the declarations recorded here, and
 **Epic 11 estimate: 5 subtasks, 9.5 man-days.**
 **Depends on:** sync points **S1a to S1d**, the RFC 2 to RFC 5 plans' S1: their epic 1 surfaces
 agreed, the RFC 3 plan's epic 1 merged on `feat/storage-v2`, since T11.3 types `Share.Store`
-with the `pkg/syncer` root's `StoreID`, and the RFC 4 plan's `pkg/remote` root split from its keys,
-metrics and alerts, since that root comes with it; #5775, which makes the engine's import walk
+with the `pkg/syncer` root's `StoreID`, and the RFC 4 plan's epic 1 T1.1, which lands `pkg/remote`
+as a pure contract, since that root comes with it; #5775, which makes the engine's import walk
 transitive and moves `pkg/engine/enginewire` to `internal/node/content` (T11.3 edits whichever of the
 two holds the share build when it starts).
 **Blocks:** every later epic through S1: epic 12, whose fixture builds `Share` and `Settings` with
@@ -369,9 +369,8 @@ internal/node/
   same check before `change` applies anything, and `change` keeps the new settings on the binding.
   The engine's `imports_test.go` allows the `pkg/syncer` root to `"*"` and nothing under it, and
   the `pkg/remote` root it imports (RFC 3 §1.3 uses RFC 4's contract as it is), since the walk is
-  transitive once #5775 lands; while `pkg/remote` still holds its keys, metrics and alerts beside
-  its contract it counts as an implementation, so T11.3 waits for the RFC 4 plan to split them out
-  (D5, rule 7). Every `engine.Share` literal the repository builds gains `Settings` from one
+  transitive once #5775 lands; T11.3 waits for the RFC 4 plan's epic 1 T1.1, which lands
+  `pkg/remote` as a pure contract and holds it there with an arch test (D5, rule 7). Every `engine.Share` literal the repository builds gains `Settings` from one
   `enginetest.ShareSettings` value (RFC 13's proposed defaults: 5 s, 8 blocks, 64 MiB, 256 MiB), and
   the share build in the node's content wiring (`enginewire.Binding`, or its successor in
   `internal/node/content` after #5775) passes the same defaults until the integration epic loads
@@ -492,9 +491,11 @@ internal/node/
 
   // RFC 4 §4.3, S1c: the put attempt of a block on the share's store. Puts reach the store only as
   // the attempt closure Upload runs, so the wiring hands the pipeline a builder keyed by the
-  // binding's store (epic 15), over codec.Store.NewPut(name, src) and *Put's Attempt and Stored.
-  // Proposed: Deps.Puts func(store syncer.StoreID, name remote.Name, src io.Reader) (Put, error),
-  // with Put declaring Attempt(ctx, remote.Meter) error and Stored() in RFC 4's value types.
+  // binding's store (epic 15), over codec.Store.NewPut and *Put's Attempt and Stored (RFC 4 §4.3,
+  // with the RFC 4 plan's epic 1 D9 as settled).
+  // Proposed: Deps.Puts func(store syncer.StoreID, name remote.Name, nonce [16]byte, pin transform.Attempt,
+  //   src iter.Seq2[remote.Chunk, error]) (Put, error), with Put declaring Attempt(ctx, remote.Meter) error
+  //   and Stored() in RFC 4's value types.
 
   // RFC 5 §2.8, S1d: the chain pin, held from Mint to Commit or Abandon (epic 15).
   type Chain interface {
@@ -532,7 +533,7 @@ flowchart TD
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-T11.1 and T11.2 start at once; T11.3 waits on the RFC 3 plan's epic 1 code (`syncer.StoreID`) and on `pkg/remote`'s root being a pure contract, which it imports.
+T11.1 and T11.2 start at once; T11.3 waits on the RFC 3 plan's epic 1 code (`syncer.StoreID`) and on the RFC 4 plan's epic 1 T1.1, which lands `pkg/remote` as a pure contract.
 
 ## 8. Suggested pull requests
 
