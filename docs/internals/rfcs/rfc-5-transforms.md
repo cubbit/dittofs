@@ -775,8 +775,10 @@ block on a put is the maximum of `Attempt.MaxEncodedLen` over the open
 attempts, never the current chain's bound alone. That maximum changes at run
 time, which a pool sized once cannot follow, so the put side, like the read
 side, is sized once when the process starts by `MaxDecodeLen(Max)`, `Max` the
-largest chunk maximum [RFC 2 §3.7](rfc-2-carver.md#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced) admits; it bounds every chain that can
-be pinned, and nothing updates it at run time
+largest chunk maximum of any namespace the process serves when it starts, and at
+least the default ([RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)); it bounds every chain that can be pinned,
+nothing updates it at run time, and a namespace opened after start with a larger
+`Max` waits for the next start
 ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)). A
 read may meet a body any earlier chain wrote, so the read side — the syncer's
 memory bound ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), the block header's bound ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)) and the
