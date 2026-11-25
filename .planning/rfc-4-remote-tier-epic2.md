@@ -5,7 +5,8 @@ rows not marked T that the in-memory store can show (§4.2's raw namespace, §4.
 §4.4's ranges, §4.5's batches, §4.6's walk and foreign key, the read-only half of §4.7's probe row
 and §4.13's roles); §7.4's in-memory row; §7.5's suites paragraph for where they run. Because the
 in-memory store implements the contract, the obligations those rows test bind it too: §4.2, §4.3's
-store half, §4.4, §4.5's `Delete`, §4.6, §4.7, §4.8, §4.9 and §4.13, and §6's R5 to R10 and R16.
+store half, §4.1's calls, §4.4, §4.5's `Delete`, §4.6, §4.7, §4.8, §4.9 and §4.13, §4.12 for what the
+in-memory store records instead, and §6's R5 to R10 and R16.
 [RFC 3](../docs/internals/rfcs/rfc-3-syncer.md) §1.4, for the in-memory store's load record and
 the fault wrapper around it. [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §1.2, for
 where a verified in-memory implementation ships. The
@@ -20,7 +21,7 @@ below are paths there.
 `Info`, `Role`, `Checksum` with its kinds, `StoredSum`, `Version`, `Direction`, the sentinels,
 `Cause` and `DeniedError`. `pkg/sim`'s `TestClock` and `internal/prof`'s `Watch`, both already on
 `feat/storage-v2`, drive the tests.
-**Blocks:** **R4-S2**, which E3 and E4 start from: E4's T4.8 runs this suite against the S3 store,
+**Blocks:** **R5-S2**, which E3 and E4 start from: E4's T4.8 runs this suite against the S3 store,
 and E5's T5.4 through the checked `Open`. **E6**, whose §7.3 `codec.Store` row runs on the
 in-memory store in a mode that needs a measuring pass. Outside RFC 4: the RFC 3 plan's epic 2,
 which extends T2.4's wrapper with per-call faults and reads T2.5's load record; the RFC 5 plan's
@@ -70,7 +71,7 @@ store that the suite holds to the real one.
   count of a skipped foreign key, which is §4.12's `remote_list_foreign_total`. Also §7.1's §4.8
   throttling row.
 - **E3, E4, E5 and E6:** every §7.1 row marked T, over the fault transport. The suite holds none
-  of them: they are not run against a store without the transport (§7.1).
+  of them: they are skipped for a store without the transport (§7.1), and E2 writes none.
 - **E5:** the capability check and the health object it writes at a real open; the §4.7 rows on
   a real service's probes.
 - **E6:** §7.1's §3.2 census row and every §7.3 row, `codec.Store`'s among them. This epic only
@@ -93,6 +94,7 @@ store that the suite holds to the real one.
 
 - **E1**, epic 1, interfaces: `pkg/remote`'s contract for v1.1's callers, and the import walk over
   every package under `pkg/remote`.
+- **E2**, epic 2, this epic.
 - **E3**, epic 3, fault transport and LocalStack: `s3fault` and the `integration` cell.
 - **E4**, epic 4, S3 data path, errors and client: the S3 store. Its T4.8 runs this suite.
 - **E5**, epic 5, capability check and health. Its T5.4 runs this suite through the checked open.
@@ -102,8 +104,8 @@ store that the suite holds to the real one.
 - **S1**, the plan's first synchronisation point, = RFC 8 offload plan S1c remote store contract
   agreed: E1's contract, reviewed by the RFC 3 and RFC 8 offload plans' authors. This epic starts
   there.
-- **R4-S2**, suite and in-memory store in CI: this suite runs green against the in-memory store in
-  `unit`. It is reached at the end of this epic. **S2** appears here only inside it; the `R4-`
+- **R5-S2**, suite and in-memory store in CI: this suite runs green against the in-memory store in
+  `unit`. It is reached at the end of this epic. **S2** appears here only inside it; the `R5-`
   prefix keeps it apart from the RFC 8 offload plan's S2.
 - **S3** is the storage service's protocol, never a synchronisation point.
 - **The RFC 3 plan's epic 2** (PR #5530), test foundations: the per-call faults on this epic's
@@ -119,7 +121,7 @@ by number and title, not copied.
 | --- | --- | --- |
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | the suite is the test of the in-memory store; the store's own tests cover what no generic row can (stream length, checksum modes, the load record). Doubles: `pkg/sim`'s `TestClock` (kind 1) and the wrapper (kind 3, T2.4). Nothing answers in a store's place |
 | rule 2, fuzz tests where relevant ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | none | no parser of outside input: the store reads only the keys it wrote, and the bodies it stores are opaque to it |
-| rule 3, observability follows RFC 25 | none | the in-memory store records no series and logs nothing (D7): its observable output is the load record |
+| rule 3, observability follows RFC 25 | none | the in-memory store records no series and logs nothing (D7): its observable output is the load record, the skipped-key count among it |
 | rule 4, profiling | T2.1 | `Run` calls `prof.Watch` before opening each row's subject, so a goroutine, descriptor or heap growth a row leaves behind fails that row. No allocation assertion: no hot path here |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | every row runs at `remote.Store`, the surface every caller consumes; the load record is tested at `Load`, which the RFC 3 plan's checks read; the read-only setting at the probe RFC 3's health derivation reads |
 | rule 6, known failures shrink | all | no known-failure file: every test lands green with its subtask |
@@ -139,50 +141,51 @@ subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | One suite runs against every store implementation; rows marked T are not in it, since they need the fault transport and are skipped for a store without one | invariant | RFC 4 §7.1 | T2.1 |
+| R1 | One suite runs against every store implementation; rows marked T need the fault transport and are skipped for a store without one, so this epic writes none of them | invariant | RFC 4 §7.1 | T2.1 |
 | R2 | The in-memory store passes §7.1's rows not marked T that need no client, codec, service permission or throttling service, at every change, in `unit` | test row | §7.4, §7.5 "Suites" | T2.1, T2.2, T2.3, T2.4 |
 | R3 | The verified in-memory implementation ships with RFC 4, beside its conformance suite, and is held to that suite; other components' tests import it | MUST | RFC 0 §1.2; RFC 3 §1.4; RFC 29 §4.11 | T2.1 |
+| R4 | The in-memory store is never the only store these rows run against: the suite takes nothing but an opener, so E4's T4.8 runs it against the S3 store over LocalStack | MUST NOT | §7.1 | T2.1 |
 
 **The rows** (RFC 4 §7.1, not marked T)
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R4 | §4.3: put, then get whole: bytes equal | test row | §7.1 | T2.1 |
-| R5 | §4.4: a get of each range inside the block returns exactly its bytes; a range starting past the end fails with `ErrInvalid` | test row | §7.1 | T2.1 |
-| R6 | §4.5: a batch deleted twice, including a never-written name: every result is `nil`; a batch of 2,500: every block gone | test row | §7.1 | T2.2 |
-| R7 | §4.6: 2,500 blocks listed in pages of 1,000, stopped after 1,200 and resumed from the last name: every block seen exactly once, in order, with size and time, and each call returns at most its `n`. The one request per call and the reply under the small-body cap are E4's | test row | §7.1 | T2.2 |
-| R8 | §4.6: a key under the block namespace that is not a block name is skipped; a cancel mid-page ends the call with the context's error. Counting the skipped key is E4's | test row | §7.1 | T2.2 |
-| R9 | §4.2: after the suite's rows, the store's raw namespace holds nothing but blocks, control objects and check objects, and every block key is the prefix followed directly by the name | test row | §7.1 | T2.3 |
-| R10 | §4.13: put and get each role: bytes equal, a second put replaces the first, an absent role is `ErrNotFound`, and a block listing yields none of them. The health role is never absent on an opened store, so its absence is not asserted (§4.7) | test row | §7.1, §4.7 | T2.3 |
-| R11 | §4.7, its read-only half: the put probe fails while the namespace is read-only and succeeds on the next call once write access returns; the get probe succeeds throughout. The prefix-revoke half is E9's | test row | §7.1 | T2.4 |
+| R5 | §4.3: put, then get whole: bytes equal | test row | §7.1 | T2.1 |
+| R6 | §4.4: a get of each range inside the block returns exactly its bytes; a range starting past the end fails with `ErrInvalid` | test row | §7.1 | T2.1 |
+| R7 | §4.5: a batch deleted twice, including a never-written name: every result is `nil`; a batch of 2,500: every block gone | test row | §7.1 | T2.2 |
+| R8 | §4.6: 2,500 blocks listed in pages of 1,000, stopped after 1,200 and resumed from the last name: every block seen exactly once, in order, with size and time, and each call returns at most its `n`. The one request per call and the reply under the small-body cap are E4's | test row | §7.1 | T2.2 |
+| R9 | §4.6: a key under the block namespace that is not a block name is skipped; a cancel mid-page ends the call with the context's error. Counting the skipped key is E4's | test row | §7.1 | T2.2 |
+| R10 | §4.2: after the suite's rows, the store's raw namespace holds nothing but blocks, control objects and check objects, and every block key is the prefix followed directly by the name | test row | §7.1 | T2.3 |
+| R11 | §4.13: put and get each role: bytes equal, a second put replaces the first, an absent role is `ErrNotFound`, and a block listing yields none of them. The health role is never absent on an opened store, so its absence is not asserted (§4.7) | test row | §7.1, §4.7 | T2.3 |
+| R12 | §4.7, its read-only half: the put probe fails while the namespace is read-only and succeeds on the next call once write access returns; the get probe succeeds throughout. The prefix-revoke half is E9's | test row | §7.1 | T2.4 |
 
 **The in-memory store's contract**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R12 | The store never invents a name, stores nothing under its namespace but blocks and control objects, and puts nothing between the block namespace and the name | MUST NOT | §4.2 | T2.1, T2.2, T2.3 |
-| R13 | A put stores a whole block: a put that does not complete leaves no block readable under a new name, and leaves the object already under the name as it was | MUST NOT | §4.3, §6 R5 | T2.1 |
-| R14 | The body is read once, as a stream of exactly the size declared before its first byte; a stream shorter or longer than its size fails the put with `ErrInvalid`, as E4's guard does | MUST | §4.3, §6 R5; [epic 4](rfc-4-remote-tier-epic4.md) D8 | T2.1 |
-| R15 | A put is verified: where the store's `Checksum` is not None, a `sum` that does not match the body is `ErrCorrupt`, and nothing is stored | MUST | §4.1, §4.3, §4.8 | T2.1 |
-| R16 | `Put` returns `nil` only once the block is stored; a put under an existing name replaces it | MUST | §4.3, §6 R5 | T2.1 |
-| R17 | A get returns exactly the bytes of its range, or of the whole block for the zero `Range`, or an error: a range that extends past the end is `ErrInvalid`, an absent block is `ErrNotFound`, and a get after a put of the name returned `nil` returns the block | MUST | §4.1, §4.4, §6 R6 | T2.1 |
-| R18 | `Delete` returns one result per name, in order; an absent name's is `nil`; a batch of any size is accepted | MUST | §4.5, §6 R7 | T2.2 |
-| R19 | A listing yields every block that exists for the whole walk exactly once, in ascending name order from `after`, with its size and the time it was stored, at most `n` per call, and skips a key under the block namespace that is not a block name | MUST | §4.6, §6 R8 | T2.2 |
-| R20 | The store reads time only through a clock interface it declares in its own package, which the node's one clock and a test's virtual clock satisfy as they are; it defines no private clock | MUST | RFC index "Test harness" item 1; RFC 3 §1.4 | T2.2 |
-| R21 | Each role reaches one fixed location outside the block namespace; a control put replaces the whole object; an absent object is `ErrNotFound`; a body is bounded by a constant of the store and read into memory, a larger one `ErrInvalid`; the roles are a closed set | MUST | §4.13, §4.8, §6 R16 | T2.3 |
-| R22 | The health object exists from the moment the store is returned; the put probe writes it, the get probe reads it, and a get probe that finds it absent fails with `ErrNotFound`; the store keeps no health status | MUST | §4.7 | T2.4 |
-| R23 | Every failure wraps exactly one sentinel of §4.1; a local failure, a context ended or a body reader failing, is returned as itself | MUST | §4.8, §6 R9 | T2.1 |
-| R24 | The store carries no retry loop, circuit breaker, health status, concurrency limit or queue, and makes one attempt per call | MUST NOT | §4.9, §6 R10 | T2.5 |
-| R25 | Concurrent calls are safe, two puts of one name overlapping included, since two `Attempt`s of one `codec.Store` put may overlap | MUST | §4.3 | T2.1 |
+| R13 | The store never invents a name, stores nothing under its namespace but blocks and control objects (it writes no versioned or check objects, which §4.2 also allows), and puts nothing between the block namespace and the name | MUST NOT | §4.2 | T2.1, T2.2, T2.3 |
+| R14 | A put stores a whole block: a put that does not complete leaves no block readable under a new name. The in-memory store also leaves an object already under the name as it was (D5) | MUST NOT | §4.3, §6 R5 | T2.1 |
+| R15 | The body is read once, as a stream of exactly the size declared before its first byte; a stream shorter or longer than its size fails the put with `ErrInvalid`, as E4's guard does | MUST | §4.3, §6 R5; [epic 4](rfc-4-remote-tier-epic4.md) D8 | T2.1 |
+| R16 | A put is verified: where the store's `Checksum` is not None, a `sum` that does not match the body is `ErrCorrupt`, and nothing is stored, as on a service that checks the put (D5) | MUST | §4.1, §4.3, §4.8, §7.1 | T2.1 |
+| R17 | `Put` returns `nil` only once the block is stored; a put under an existing name replaces it | MUST | §4.3, §6 R5 | T2.1 |
+| R18 | A get returns exactly the bytes of its range, or of the whole block for the zero `Range`, or an error: a range that extends past the end is `ErrInvalid`, an absent block is `ErrNotFound`, and a get after a put of the name returned `nil` returns the block | MUST | §4.1, §4.4, §6 R6 | T2.1 |
+| R19 | `Delete` returns one result per name, in order; an absent name's is `nil`; a batch of any size is accepted | MUST | §4.5, §6 R7 | T2.2 |
+| R20 | A listing yields every block that exists for the whole walk exactly once, in ascending name order from `after`, with its size and the time it was stored, at most `n` per call, and skips a key under the block namespace that is not a block name and counts it, in the load record (D7) | MUST | §4.6, §6 R8 | T2.2, T2.5 |
+| R21 | The store reads time only through a clock interface it declares in its own package, which the node's one clock and a test's virtual clock satisfy as they are; it defines no private clock | MUST | RFC index "Test harness" item 1; RFC 3 §1.4 | T2.1, T2.2 |
+| R22 | Each role reaches one fixed location outside the block namespace; a control put replaces the whole object; an absent object is `ErrNotFound`; a body is bounded by a constant of the store and read into memory, a larger one `ErrInvalid`; the roles are a closed set | MUST | §4.13, §4.8, §6 R16 | T2.3 |
+| R23 | The health object exists from the moment the store is returned; the put probe writes it, the get probe reads it, and a get probe that finds it absent fails with `ErrNotFound`; the store keeps no health status | MUST | §4.7 | T2.3, T2.4 |
+| R24 | Every failure wraps exactly one sentinel of §4.1; a local failure, a context ended or a body reader failing, is returned as itself | MUST | §4.8, §6 R9 | T2.1 |
+| R25 | The store carries no retry loop, circuit breaker, health status, concurrency limit or queue, and makes one attempt per call | MUST NOT | §4.9, §6 R10 | T2.5 |
+| R26 | Concurrent calls are safe, two puts of one name overlapping included, since two `Attempt`s of one `codec.Store` put may overlap | MUST | §4.3 | T2.1 |
 
 **The fault wrapper and the load record**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R26 | A fault wrapper around the in-memory store fails calls on cue and never answers a call in the store's place with a success; its refusals are errors of §4.8's set | MUST NOT | RFC 3 §1.4; RFC 29 §4.11 | T2.4 |
-| R27 | A read-only namespace refuses every write and the put probe with `ErrDenied` carrying cause `access`, and passes every read and the get probe | MUST | §4.7, §4.8 | T2.4 |
-| R28 | The store keeps its own record of its load: calls in flight and their peak, the order calls reached it, puts per name, and the bytes it holds | MUST | RFC 3 §1.4 | T2.5 |
-| R29 | A check is writable as: build the caller over the in-memory store, call it, and assert on what the store holds, the load it recorded and what came back | MUST | RFC 3 §1.4 | T2.5 |
+| R27 | A fault wrapper around the in-memory store fails calls on cue; its read-only mode never answers a call in the store's place with a success, and its refusals are errors of §4.8's set. The probe passed on cue that RFC 3 §1.4 also allows is the RFC 3 plan's epic 2's | MUST NOT | RFC 3 §1.4; RFC 29 §4.11; §7.2 | T2.4 |
+| R28 | A read-only namespace refuses every write and the put probe with `ErrDenied` carrying cause `access`, and passes every read and the get probe | MUST | §4.7, §4.8 | T2.4 |
+| R29 | The store keeps its own record of its load: calls in flight and their peak, the order calls reached it, puts per name, and the bytes it holds | invariant | RFC 3 §1.4 | T2.5 |
+| R30 | A check is writable as: build the caller over the in-memory store, call it, and assert on what the store holds, the load it recorded and what came back | MUST | RFC 3 §1.4 | T2.5 |
 
 ## 4. Decisions this epic takes
 
@@ -230,15 +233,15 @@ subtasks and tests can cite them.
 - **D4. The store's clock is an interface it declares, so it imports only `pkg/remote`.**
   - `memory.Clock` is `interface{ Now() time.Time }`, the one method the store calls, for
     `Info.ModTime`. `pkg/sim`'s `TestClock` satisfies it as it is, and so does the node's clock
-    (R20). The store never calls `time.Now`.
+    (R21). The store never calls `time.Now`.
   - The RFC 4 plan's rule 7 allows `pkg/remote/memory` `pkg/sim`'s clock. This epic imports none,
     which E1's walk passes either way; §9 notes it for the plan's pending import-list fix.
-  - Prior art: epic 3's D1 and epic 5's D9 declare their clocks the same way, over `pkg/sim`'s
-    signatures.
+  - Prior art: epic 3's D1 declares its fault interface, and epic 5's D9 its clock, the same way,
+    over `pkg/sim`'s signatures.
 - **D5. The store checks the put's checksum in the mode it is built with.**
   - `New(clock, sum)` takes the `Checksum` kind `Checksum()` then reports. With CRC32C or MD5, `Put`
     computes the kind over the body as it reads it and refuses a mismatch with `ErrCorrupt`,
-    storing nothing (R15): it behaves as a service that checks the sum. With None, nothing crosses
+    storing nothing (R16): it behaves as a service that checks the sum. With None, nothing crosses
     a network, so nothing is compared.
   - E6's §7.3 `codec.Store` row needs a mode that forces a measuring pass, and gets it here.
   - A whole-block get reports no stored checksum: `StoredSum.Kind` is None, as §4.1 allows when
@@ -248,8 +251,9 @@ subtasks and tests can cite them.
   - Prior art: none found.
 - **D6. The load record is an output of the store, tested in the store's own package.**
   - `(*Store).Load()` returns a copy: `InFlight` and `Peak`, `Calls` in the order they reached the
-    store, `Puts` per name, and `Bytes`, the bytes of the blocks held (control objects excluded,
-    so the health object written at construction does not count).
+    store, `Puts` per name, `Bytes`, the bytes of the blocks held (control objects excluded, so the
+    health object written at construction does not count), and `Foreign`, the keys a listing
+    skipped (D7).
   - `Call.Op` takes §4.12's `op` values (`put`, `get`, `delete`, `list`, `health`, `put_control`,
     `get_control`), so the record and the S3 store's metrics speak one vocabulary. `Call.Name` is
     the block's name for `put` and `get`, zero otherwise.
@@ -262,21 +266,25 @@ subtasks and tests can cite them.
   - The record is covered by the store's own tests, beside its suite run, not by a suite row: no
     other store keeps one. §9 notes the RFC 3 plan's wording, which says `remotetest` covers it.
   - Prior art: none found.
-- **D7. The in-memory store records no §4.12 series and counts no skipped key.**
-  - §4.12's series exist for operators and dashboards. The node refuses this store outside tests,
-    so nothing reads them, and the only count a test reads is the load record.
-  - Marker: a `decision:` marker at the listing's skip names it, and says to withdraw it if the
-    node ever serves the in-memory store outside tests, or a test needs `remote_list_foreign_total`
-    without LocalStack.
-  - The S3 store's count is E4's (its T4.7).
+- **D7. The in-memory store counts a skipped key in its load record, and records no §4.12 series
+  and no log line.**
+  - §4.6 says a skipped key is counted, through §4.12's `remote_list_foreign_total`. The store
+    counts it as `Load().Foreign`, which a test reads, so the count exists without a metric.
+  - §4.12's series and its `Warn` lines exist for operators. The node refuses this store outside
+    tests, so nothing reads them, and the store takes no logger and no recorder.
+  - Marker: a `decision:` marker at the listing's skip says the store logs and exports nothing,
+    and to withdraw that if the node ever serves the in-memory store outside tests.
+  - The S3 store's series and log are E4's (its T4.7).
 - **D8. The wrapper wraps any `remote.Store`, and its read-only mode is a setting.**
   - `memory.Wrap(s remote.Store) *Wrapper` implements `remote.Store` over `s`. `SetReadOnly(true)`
     makes `Put`, `PutControl`, every name of `Delete` and `Health(DirPut)` return
     `&remote.DeniedError{Cause: remote.CauseAccess, Code: "AccessDenied"}` without calling `s`;
-    every other call passes through. `SetReadOnly(false)` restores it for the next call (R27).
+    every other call passes through. `SetReadOnly(false)` restores it for the next call (R28).
   - `Wrapper` writes out every method of `remote.Store` rather than embedding it, so a call that
     lands later with RFC 9 or RFC 26 does not compile until the wrapper decides whether read-only
-    refuses it. An embedded store would pass a new write through while read-only.
+    refuses it. An embedded store would pass a new write through while read-only. A `decision:`
+    marker at `Wrapper` says read-only refuses every write call it lists, and that each call
+    landing later must be added to that list or the wrapper refuses to compile.
   - Read-only is a state that holds across calls, so it is a seam setting, not a per-call fault
     decided through the one fault interface (RFC index, "Test harness" item 1). The RFC 3 plan's
     epic 2 adds the per-call faults, and their fault interface, as further settings and methods on
@@ -308,8 +316,8 @@ pkg/remote/remotetest/
 pkg/remote/memory/
   store.go        T2.1  Clock, New, Store, Checksum, Put, Get, Close; the C.2 keys (D2)
   list.go         T2.2  Delete, List; putRaw
-  control.go      T2.3  PutControl, GetControl, the 256 KiB bound; rawKeys
-  health.go       T2.4  Health; the health object put by New
+  control.go      T2.3  PutControl, GetControl, the 256 KiB bound; the health object New puts; rawKeys
+  health.go       T2.4  Health
   wrap.go         T2.4  Wrap, Wrapper, SetReadOnly
   load.go         T2.5  Load, Call, the record
   store_test.go   T2.1–T2.5  the store's own tests
@@ -323,7 +331,7 @@ pkg/remote/memory/
 **Subtask T2.1 estimate: 2.5 man-days.**
 
 - **Track:** the team. **Depends on:** S1.
-- **Covers:** R1–R5, R12, R13–R17, R23, R25.
+- **Covers:** R1–R6, R13–R18, R21, R24, R26.
 - **Deliverables:**
   - `remotetest/suite.go`, D1's runner:
 
@@ -336,7 +344,7 @@ pkg/remote/memory/
     func Run(t *testing.T, open func(t *testing.T) Subject)
     ```
 
-    with the rows of R4 and R5, and a get of a never-put name (R17). Consumed by the in-memory
+    with the rows of R5 and R6, and a get of a never-put name (R18). Consumed by the in-memory
     store's suite run here, E4's T4.8 and E5's T5.4.
   - `memory/store.go`:
 
@@ -367,24 +375,24 @@ pkg/remote/memory/
     context's or the reader's own error.
 - **Tests:**
   - The suite's rows, at `remote.Store`. A put-then-get with the get reading one byte short
-    (catches a store returning fewer bytes, R4). A range straddling the end, and one starting past
-    it (catches a store clamping instead of refusing, R5, R17). A get of a name never put (catches
-    a missing block read as empty, R17).
+    (catches a store returning fewer bytes, R5). A range straddling the end, and one starting past
+    it (catches a store clamping instead of refusing, R6, R18). A get of a name never put (catches
+    a missing block read as empty, R18).
   - `store_test.go`, at `Put` and `Get`:
     - A body one byte short of `size` and one byte longer: each `ErrInvalid`, and a following get
-      `ErrNotFound` (catches a store trusting the declared size, or storing a truncated body, R13,
-      R14).
+      `ErrNotFound` (catches a store trusting the declared size, or storing a truncated body, R14,
+      R15).
     - In CRC32C and MD5 modes, a `sum` for other bytes: `ErrCorrupt`, nothing stored; a retry
-      with the right sum stores it (catches the sum ignored, R15). A put over an existing name with
-      a wrong sum leaves the first bytes readable (catches a replace before the check, R13).
+      with the right sum stores it (catches the sum ignored, R16). A put over an existing name with
+      a wrong sum leaves the first bytes readable (catches a replace before the check, R14).
     - A context cancelled while the body reader blocks: the put returns `context.Canceled` and
       stores nothing; a reader failing with its own error: that error, unwrapped (catches a local
-      failure wrapped as `ErrTransient`, R23).
+      failure wrapped as `ErrTransient`, R24).
     - A table of every failure path, asserting `errors.Is` matches its sentinel and no other of the
-      set, `ErrThrottled` counting as one with `ErrTransient` (catches a double wrap, R23).
+      set, `ErrThrottled` counting as one with `ErrTransient` (catches a double wrap, R24).
     - A negative `size`: `ErrInvalid`, and no panic (catches a buffer sized from the caller).
     - Two goroutines putting one name with the same bytes, and gets running beside them, under
-      `-race` (catches unsynchronised map access, R25).
+      `-race` (catches unsynchronised map access, R26).
   - Doubles: `pkg/sim`'s `TestClock` (kind 1). Leak checks through `Run` (rule 4); under `-race`
     `internal/prof` skips its heap check, so a heap leak shows only in the run without it.
 - **Rules:** rule 9: D5's `ponytail:`. Rule 12: `remotetest` and `memory` both land here with
@@ -395,13 +403,13 @@ pkg/remote/memory/
 **Subtask T2.2 estimate: 2 man-days.**
 
 - **Track:** the team. **Depends on:** T2.1.
-- **Covers:** R6–R8, R12, R18–R20.
+- **Covers:** R2, R7–R9, R13, R19–R21.
 - **Deliverables:**
   - `remotetest`: `Subject.PutRaw func(ctx context.Context, key string, body []byte) error`, which
-    stores a body under a key relative to the prefix, beneath the store; the rows of R6, R7 and R8.
+    stores a body under a key relative to the prefix, beneath the store; the rows of R7, R8 and R9.
   - `memory/list.go`: `Delete` and `List` with the signatures of RFC 4 §4.1. `List` walks the
     sorted keys under `blocks/` after `after`, skips a key whose remainder is not a name with D7's
-    `decision:` marker, and reports `ModTime` from the clock at the put (R20). The unexported
+    `decision:` marker, and reports `ModTime` from the clock at the put (R21). The unexported
     `putRaw`, which the opener hands as `PutRaw`. Consumed by the rows, GC's tests (RFC 9) and the
     RFC 3 plan's checks.
 - **Acceptance criteria:**
@@ -409,30 +417,31 @@ pkg/remote/memory/
   - A batch with a name repeated, a name never written and 2,500 names returns one `nil` per name,
     in order.
 - **Tests:**
-  - The suite's rows, at `remote.Store`: R6 (catches a delete of an absent name failing); R7, with
+  - The suite's rows, at `remote.Store`: R7 (catches a delete of an absent name failing); R8, with
     a page asserting at most `n` and each `Info` checked against the size put and a non-zero time
-    (catches a duplicated or dropped block at a page boundary, or a resume that restarts); R8 with
-    a key `blocks/not-a-name` planted through `PutRaw`, which the R9 check then leaves out (D1)
+    (catches a duplicated or dropped block at a page boundary, or a resume that restarts); R9 with
+    a key `blocks/not-a-name` planted through `PutRaw`, which the R10 check then leaves out (D1)
     (catches a foreign key yielded as a block, or the walk stopping at it), and a context cancelled before the call (catches a listing that
     ignores its context).
   - `store_test.go`, at `List`: the clock set to a fixed past instant before a put, `Info.ModTime`
-    equal to it (catches `time.Now`, R20); `Delete` returning one result per name for a batch with
-    duplicates (catches results collapsed by name, R18).
-- **Rules:** rule 9: D7's `decision:`. Rule 12: `PutRaw` lands with R8's row.
+    equal to it (catches `time.Now`, R21); `Delete` returning one result per name for a batch with
+    duplicates (catches results collapsed by name, R19).
+- **Rules:** rule 9: D7's `decision:`. Rule 12: `PutRaw` lands with R9's row.
 
 ### T2.3 Control objects and the raw namespace
 
 **Subtask T2.3 estimate: 1.25 man-days.**
 
 - **Track:** the team. **Depends on:** T2.2.
-- **Covers:** R9, R10, R12, R21.
+- **Covers:** R2, R10, R11, R13, R22, R23.
 - **Deliverables:**
   - `remotetest`: `Subject.Raw func(ctx context.Context) ([]string, error)`, every key the
-    service holds under the store's namespace, relative to its prefix; the R10 row; the R9 check
+    service holds under the store's namespace, relative to its prefix; the R11 row; the R10 check
     after every row (D1), judging keys by C.2's layout, the keys the row planted left out.
   - `memory/control.go`: `PutControl` and `GetControl` (RFC 4 §4.1's signatures; the version
     returned is empty), each role E1 declares at `control/<role>`, as C.2 names it, bodies over 256 KiB refused with `ErrInvalid`
-    (D9), a role outside E1's set `ErrInvalid`. The unexported `rawKeys`, which the opener hands as
+    (D9), a role outside E1's set `ErrInvalid`; `New` puts the health object before it returns
+    (R23), so a store is never opened without it. The unexported `rawKeys`, which the opener hands as
     `Raw`. Consumed by the RFC 5 plan's epic 8 (the `keys` object), T2.4's health object and RFC
     27's claim.
 - **Acceptance criteria:**
@@ -441,25 +450,25 @@ pkg/remote/memory/
   - After every row, the raw namespace holds only `blocks/<name>` keys of names the row stored
     and did not delete, `control/<role>` keys, and keys under `check/`.
 - **Tests:**
-  - The suite's rows, at `remote.Store`: R10 for each role (catches a role mapped under
+  - The suite's rows, at `remote.Store`: R11 for each role (catches a role mapped under
     `blocks/`, or a put that appends), its absence checked for every role but `health`, which
     the row instead reads before any put of it (catches a store opened without its health
-    object); R9 after each row (catches a key with anything between
-    `blocks/` and the name, or an object left by a failed put, R12).
+    object); R10 after each row (catches a key with anything between
+    `blocks/` and the name, or an object left by a failed put, R13).
   - `store_test.go`, at `PutControl`: a body of 256 KiB stored, one of 256 KiB + 1 `ErrInvalid`
     (catches the bound off by one, D9); `Role(0)` and the first value past the set `ErrInvalid`
-    (catches a role cast from outside the set reaching a key, R21).
-- **Rules:** rule 12: `Raw` lands with R9's row.
+    (catches a role cast from outside the set reaching a key, R22).
+- **Rules:** rule 12: `Raw` lands with R10's row.
 
 ### T2.4 Health, and the read-only wrapper
 
 **Subtask T2.4 estimate: 1.25 man-days.**
 
 - **Track:** the team. **Depends on:** T2.3.
-- **Covers:** R11, R22, R26, R27.
+- **Covers:** R2, R12, R23, R27, R28.
 - **Deliverables:**
-  - `memory/health.go`: `Health(ctx, d)`. `New` puts the health object before it returns; the put
-    probe puts it again; the get probe reads it, absent `ErrNotFound` (R22).
+  - `memory/health.go`: `Health(ctx, d)`. The put probe puts the health object again; the get
+    probe reads it, absent `ErrNotFound` (R23).
   - `memory/wrap.go`, D8's wrapper:
 
     ```go
@@ -467,9 +476,9 @@ pkg/remote/memory/
     func (w *Wrapper) SetReadOnly(on bool)
     ```
 
-    with `Wrapper` implementing `remote.Store`. Consumed by the R11 row, the RFC 3 plan's epic 2,
+    with `Wrapper` implementing `remote.Store`. Consumed by the R12 row, the RFC 3 plan's epic 2,
     which extends it, and the RFC 8 offload plan's pipeline tests.
-  - `remotetest`: `Subject.ReadOnly func(ctx context.Context, on bool) error`; the R11 row, which
+  - `remotetest`: `Subject.ReadOnly func(ctx context.Context, on bool) error`; the R12 row, which
     a subject without it skips by name. The in-memory opener backs it with `Wrap` and
     `SetReadOnly`, and returns the wrapped store.
 - **Acceptance criteria:**
@@ -480,15 +489,15 @@ pkg/remote/memory/
     wrapper.
   - The first call after `SetReadOnly(false)` passes.
 - **Tests:**
-  - The suite's R11 row, at `Health`, the call the syncer's probe makes: the put probe during and
+  - The suite's R12 row, at `Health`, the call the syncer's probe makes: the put probe during and
     after, the get probe throughout (catches a read-only mode that also refuses reads, or one that
-    latches, R11, R27).
+    latches, R12, R28).
   - `store_test.go`: the health object deleted through the raw map, then the get probe
-    `ErrNotFound` (catches a probe that reports healthy without reading, R22); a wrapped store's
+    `ErrNotFound` (catches a probe that reports healthy without reading, R23); a wrapped store's
     raw keys unchanged by a refused `Put` and `Delete` (catches a refusal that still reaches the
-    store, R26).
+    store, R27).
   - Doubles: the wrapper (kind 3, around the kind 2 store).
-- **Rules:** rule 12: `ReadOnly` and the wrapper land with R11's row. The S3 store runs the same
+- **Rules:** rule 12: `ReadOnly` and the wrapper land with R12's row. The S3 store runs the same
   row in E5's T5.5 (D8).
 
 ### T2.5 The load record
@@ -496,7 +505,7 @@ pkg/remote/memory/
 **Subtask T2.5 estimate: 1.25 man-days.**
 
 - **Track:** the team. **Depends on:** T2.4.
-- **Covers:** R24, R28, R29. R29 is a property of RFC 3's checks, which this record makes
+- **Covers:** R20, R25, R29, R30. R30 is a property of RFC 3's checks, which this record makes
   possible; those checks enforce it.
 - **Deliverables:** `memory/load.go`, D6's record:
 
@@ -510,6 +519,7 @@ pkg/remote/memory/
       Calls          []Call
       Puts           map[remote.Name]int
       Bytes          int64 // of the blocks held
+      Foreign        int   // keys a listing skipped (D7)
   }
   func (s *Store) Load() Load
   ```
@@ -526,17 +536,20 @@ pkg/remote/memory/
     deletes.
 - **Tests:** at `Load`, the record the RFC 3 plan's checks read:
   - 64 puts whose body readers each block after signalling their first `Read`: once all 64 have
-    signalled, `InFlight` is 64; then released, `InFlight` is 0 and `Peak` 64 (catches a
-    concurrency limit or queue, which would hold a put back before its first read, R24, and
-    `InFlight` not decremented, R28). The test waits on the signals, never on time;
+    signalled, `InFlight` is 64; then half released with a reader error and half to their end,
+    `InFlight` is 0 and `Peak` 64 (catches a
+    concurrency limit or queue, which would hold a put back before its first read, R25, and
+    `InFlight` not decremented, R29). The test waits on the signals, never on time;
   - a get whose reader is left open: `InFlight` is 1 until it is closed (catches a get counted
-    only until it returns, R28);
+    only until it returns, R29);
   - a put whose body reader fails: one `put` in `Calls`, and the reader's error returned (catches
-    a retry inside the store, R24);
+    a retry inside the store, R25);
   - a sequence of put, get, delete, list and control calls from one goroutine, compared with
-    `Calls` (catches a call left out or recorded at return instead of entry, R28);
+    `Calls` (catches a call left out or recorded at return instead of entry, R29);
   - a replaced block and a deleted one, compared with `Bytes` (catches bytes counted per put
-    instead of per block held, R28).
+    instead of per block held, R29);
+  - a listing over a planted foreign key, then `Foreign` is 1 (catches a key skipped uncounted,
+    R20).
 - **Rules:** rule 5: tested at `Load`, which RFC 3's checks consume. Rule 9: D6's `ponytail:`.
 
 ## 7. Order of work
@@ -547,7 +560,7 @@ flowchart TD
   T2_1 --> C1(["after T2.1: the RFC 5 and RFC 8 offload plans can put and get"]):::sync
   T2_1 --> T2_2["T2.2 Delete and listing rows"] --> T2_3["T2.3 Control objects, raw namespace"]
   T2_3 --> T2_4["T2.4 Health, read-only wrapper"] --> T2_5["T2.5 Load record"]
-  T2_5 --> RS2(["R4-S2 suite and in-memory store in CI"]):::sync
+  T2_5 --> RS2(["R5-S2 suite and in-memory store in CI"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
@@ -555,7 +568,7 @@ flowchart TD
 
 - After T2.1, a consumer's test can put and get through the in-memory store.
 - After T2.3, every row E4's T4.8 runs exists, and the RFC 5 plan's `keys` object can be tested.
-- After T2.5, R4-S2: E3 and E4 start, and the RFC 3 plan's epic 2 has the wrapper and the record.
+- After T2.5, R5-S2: E3 and E4 start, and the RFC 3 plan's epic 2 has the wrapper and the record.
 
 ## 8. Suggested pull requests
 
@@ -573,8 +586,8 @@ A suggestion only: one pull request per subtask works as well.
   passes either way. The follow-up that already corrects the same list's `s3fault` and `keys` rows
   can drop `pkg/sim` from this one.
 - **What later documents owe this epic.**
-  - E4's T4.8 opener supplies `PutRaw` and `Raw` over its admin client, or R8's foreign-key half
-    and R9 skip on the S3 store by name; and its cleanup leaves no idle connection behind (D1).
+  - E4's T4.8 opener supplies `PutRaw` and `Raw` over its admin client, or R9's foreign-key half
+    and R10 skip on the S3 store by name; and its cleanup leaves no idle connection behind (D1).
     E4's document names neither yet.
   - The RFC 3 plan's epic 2 adds its time-taking faults through the bodies, as D8 says, so the
     store's record sees the pool bind. Its "`remotetest` covers" the load record (its epic 2's
