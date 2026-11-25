@@ -58,26 +58,10 @@ for T in /src/test/scenarios/lib/tools/*; do
     case "$T" in *.c) tcc -o "/usr/local/bin/$(basename "$T" .c)" "$T" -lnfs -lsmb2 ;; *) install "$T" /usr/local/bin/ ;; esac
 done
 
-# DittoFS, built from this checkout.
-cd /src
-CGO_ENABLED=0 GOFLAGS=-buildvcs=false GOMODCACHE=/cache/go/mod GOCACHE=/cache/go/build /opt/go/usr/local/go/bin/go build -o /usr/local/bin/ ./cmd/dfs ./cmd/dfsctl
-cd /
-
-# A local S3 (SeaweedFS, run by s3 start) with bucket dittofs. rclone reaches it as s3:, and DittoFS
-# stores through dfs-store, with the credential in /etc/dittofs-s3.credential.
-export RCLONE_CONFIG_S3_TYPE=s3 RCLONE_CONFIG_S3_PROVIDER=SeaweedFS RCLONE_CONFIG_S3_ENDPOINT=http://127.0.0.1:9000 RCLONE_CONFIG_S3_ACCESS_KEY_ID=test RCLONE_CONFIG_S3_SECRET_ACCESS_KEY=test-secret RCLONE_LOG_LEVEL=ERROR
-echo '{"identities":[{"name":"test","credentials":[{"accessKey":"test","secretKey":"test-secret"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' >/tmp/seaweedfs-identities.json
-mkdir /tmp/seaweedfs
-s3 start
-rclone mkdir s3:dittofs
-echo '{"access_key_id":"test","secret_access_key":"test-secret"}' >/etc/dittofs-s3.credential
-
-# DittoFS: its configuration, an API on a port the kernel picks (dfs-server reads it from the log),
-# and its two wrapping keys under one passphrase. dfs init makes the storage key but not the protocol key,
-# so a few lines of Go make both, joining the read-only checkout through an overlay so they build against its go.mod. dfs init
-# prints the administrator's password, which dfs-server's first start signs in with and changes.
-mkdir -p /etc/dittofs /var/lib/dittofs/journal ~/.config/dittofs /tmp/keygen
-head -c 24 /dev/urandom | base64 >/etc/dittofs/passphrase
+# DittoFS, built from this checkout, and scenario-keygen, which makes a key file: dfs init makes the
+# storage key but not the protocol key, and no command makes one. It joins the read-only checkout
+# through an overlay, so it builds against the checkout's go.mod.
+mkdir /tmp/keygen
 cat >/tmp/keygen/main.go <<'KEYGEN'
 package main
 
@@ -100,7 +84,27 @@ func main() {
 }
 KEYGEN
 echo '{"Replace": {"/src/cmd/scenario-keygen/main.go": "/tmp/keygen/main.go"}}' >/tmp/keygen/overlay.json
-(cd /src && GOFLAGS=-buildvcs=false GOMODCACHE=/cache/go/mod GOCACHE=/cache/go/build /opt/go/usr/local/go/bin/go run -overlay /tmp/keygen/overlay.json ./cmd/scenario-keygen "$(cat /etc/dittofs/passphrase)" /etc/dittofs/storage.key /etc/dittofs/protocol.key)
+cd /src
+CGO_ENABLED=0 GOFLAGS=-buildvcs=false GOMODCACHE=/cache/go/mod GOCACHE=/cache/go/build /opt/go/usr/local/go/bin/go build -overlay /tmp/keygen/overlay.json -o /usr/local/bin/ ./cmd/dfs ./cmd/dfsctl ./cmd/scenario-keygen
+cd /
+
+# A local S3 (SeaweedFS, run by s3 start) with bucket dittofs. rclone reaches it as s3:, and DittoFS
+# stores through dfs-store, with the credential in /etc/dittofs-s3.credential.
+export RCLONE_CONFIG_S3_TYPE=s3 RCLONE_CONFIG_S3_PROVIDER=SeaweedFS RCLONE_CONFIG_S3_ENDPOINT=http://127.0.0.1:9000 RCLONE_CONFIG_S3_ACCESS_KEY_ID=test RCLONE_CONFIG_S3_SECRET_ACCESS_KEY=test-secret RCLONE_LOG_LEVEL=ERROR
+echo '{"identities":[{"name":"test","credentials":[{"accessKey":"test","secretKey":"test-secret"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' >/tmp/seaweedfs-identities.json
+mkdir /tmp/seaweedfs
+s3 start
+rclone mkdir s3:dittofs
+echo '{"access_key_id":"test","secret_access_key":"test-secret"}' >/etc/dittofs-s3.credential
+
+# DittoFS: its configuration, an API on a port the kernel picks (dfs-server reads it from the log),
+# and its two wrapping keys under one passphrase, which stays out of the trace. dfs init prints the
+# administrator's password, which dfs-server's first start signs in with and changes.
+mkdir -p /etc/dittofs /var/lib/dittofs/journal ~/.config/dittofs
+(umask 077 && head -c 24 /dev/urandom | base64 >/etc/dittofs/passphrase)
+{ set +x; } 2>/dev/null
+scenario-keygen "$(cat /etc/dittofs/passphrase)" /etc/dittofs/storage.key /etc/dittofs/protocol.key
+set -x
 cat >~/.config/dittofs/config.yaml <<CONFIG
 node: { id: $(cat /proc/sys/kernel/random/uuid) }
 journals: [ { path: /var/lib/dittofs/journal } ]
@@ -109,13 +113,16 @@ keys:
   protocol: { kind: local, local: { file: /etc/dittofs/protocol.key } }
 api: { listen: ['127.0.0.1:0'] }
 CONFIG
+{ set +x; } 2>/dev/null
 DITTOFS_ENCRYPTION_PASSPHRASE="$(cat /etc/dittofs/passphrase)" dfs init >/etc/dittofs/init.out
 DITTOFS_ENCRYPTION_PASSPHRASE="$(cat /etc/dittofs/passphrase)" dfs config validate
+set -x
 dfs-server start
 
 # Share test (path /test, namespace prefix test/ on bucket dittofs) for user tester (uid and group
 # 1000), SMB on 445 and NFS on 2049. smbclient defaults to SMB3 and, through USER, to tester.
-N="$(dfsctl namespace create --store "$(dfs-store dittofs)" --setting namespace.prefix=test/ -o json | jq -r .id)"
+S="$(dfs-store dittofs)"
+N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=test/ -o json | jq -r .id)"
 dfsctl share create test --path /test --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
 dfsctl user create tester --uid 1000
 dfsctl group create tester --gid 1000

@@ -6,11 +6,13 @@
 # check.
 
 rclone mkdir s3:export
-N="$(dfsctl namespace create --store "$(dfs-store export)" --setting namespace.prefix=export/ -o json | jq -r .id)"
+S="$(dfs-store export)"
+N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=export/ -o json | jq -r .id)"
 dfsctl share create export --path /export --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
 dfsctl grant set export --user tester --access read-write
 rclone mkdir s3:cubbit
-N="$(dfsctl namespace create --store "$(dfs-store cubbit)" --setting namespace.prefix=cubbit/ -o json | jq -r .id)"
+S="$(dfs-store cubbit)"
+N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=cubbit/ -o json | jq -r .id)"
 dfsctl share create cubbit --path /cubbit --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
 dfsctl grant set cubbit --user tester --access read-write
 

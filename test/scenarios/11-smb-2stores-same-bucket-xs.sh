@@ -8,8 +8,11 @@
 # swept, the bucket keeps its 4).
 
 rclone mkdir s3:dittofs/shared
-NX="$(dfsctl namespace create --store "$(dfs-store dittofs)" --setting namespace.prefix=shared/ -o json | jq -r .id)"
-NY="$(dfsctl namespace create --store "$(dfs-store dittofs)" --setting namespace.prefix=shared/ -o json | jq -r .id)" && Y=accepted || Y=refused
+S="$(dfs-store dittofs)"
+NX="$(dfsctl namespace create --store "$S" --setting namespace.prefix=shared/ -o json | jq -r .id)"
+S="$(dfs-store dittofs)"
+NY="$(dfsctl namespace create --store "$S" --setting namespace.prefix=shared/ -o json 2>/tmp/ny.err | jq -r .id)" && Y=accepted || Y=refused
+cat /tmp/ny.err
 echo "second namespace on the same bucket and prefix: $Y"
 if test "$Y" = accepted; then
   dfsctl share create x --path /x --namespace "$NX" --flavor sys --client 0.0.0.0/0=read-write
@@ -33,3 +36,6 @@ if test "$Y" = accepted; then
   (cd /tmp/back && sha256sum -c /tmp/y.sha256)
 fi
 test "$Y" = refused
+# The refusal must be the overlap, named by the setting, not some other failure
+if grep -q unknown_key /tmp/ny.err; then exit 1; fi
+grep -Eq 'namespace.prefix|remote.bucket' /tmp/ny.err

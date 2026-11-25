@@ -37,7 +37,8 @@ rclone size --json s3:dittofs/test | tee /tmp/zeros-held.json
 
 # 2. The recycle bin
 rclone mkdir s3:bin
-N="$(dfsctl namespace create --store "$(dfs-store bin)" --setting namespace.prefix=bin/ -o json | jq -r .id)"
+S="$(dfs-store bin)"
+N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=bin/ -o json | jq -r .id)"
 dfsctl share create bin --path /bin --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
 dfsctl grant set bin --user tester --access read-write
 mkdir /tmp/bin
@@ -50,7 +51,8 @@ smbclient //127.0.0.1/bin -c 'ls' | tee /tmp/bin-root.txt
 
 # 3. Journal rounds, with Local Disk Used sampled every 5 s (in its own bash, so it stays out of the trace)
 rclone mkdir s3:journal
-N="$(dfsctl namespace create --store "$(dfs-store journal)" --setting namespace.prefix=journal/ -o json | jq -r .id)"
+S="$(dfs-store journal)"
+N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=journal/ -o json | jq -r .id)"
 dfsctl share create j --path /j --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
 dfsctl setting set share:j journal.limit 1073741824
 dfsctl grant set j --user tester --access read-write

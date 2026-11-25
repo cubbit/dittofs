@@ -15,12 +15,13 @@
 # new prefix (NT_STATUS_UNEXPECTED_IO_ERROR, "CAS object missing for live FileChunk").
 rclone mkdir s3:opts
 rclone mkdir s3:other
-NODE="$(dfsctl node list -o json | jq -r '.[0].id')"
+NODE="$(dfsctl node list -o json | jq -er '.[0].id')"
 
 # 1. Each option at its scope, then read back
 dfs-store opts --setting remote.compression=zstd >/tmp/o1.out 2>&1 || echo "exit $?" >/tmp/o1.rc
 dfsctl setting set "node:$NODE" upload_workers 4 >/tmp/o2.out 2>&1 || echo "exit $?" >/tmp/o2.rc
-dfsctl namespace create --store "$(dfs-store opts)" --setting namespace.prefix=o3/ --setting namespace.encrypts=true >/tmp/o3.out 2>&1 || echo "exit $?" >/tmp/o3.rc
+S="$(dfs-store opts)"
+dfsctl namespace create --store "$S" --setting namespace.prefix=o3/ --setting namespace.encrypts=true >/tmp/o3.out 2>&1 || echo "exit $?" >/tmp/o3.rc
 dfsctl store list -o json >/tmp/stores.json
 dfsctl namespace list -o json >/tmp/namespaces.json
 dfsctl setting get "node:$NODE" upload_workers -o json >/tmp/workers.json || true

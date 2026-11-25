@@ -10,7 +10,8 @@
 
 # The store, a namespace that encrypts, the share and a file with a plaintext marker in it
 rclone mkdir s3:enc
-N="$(dfsctl namespace create --store "$(dfs-store enc)" --setting namespace.prefix=enc/ --setting namespace.encrypts=true -o json | jq -r .id)"
+S="$(dfs-store enc)"
+N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=enc/ --setting namespace.encrypts=true -o json | jq -r .id)"
 dfsctl share create enc --path /enc --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
 dfsctl grant set enc --user tester --access read-write
 awk 'BEGIN { for (i = 0; i < 150000; i++) print "PLAINTEXT-MARKER-0123456789" }' >/tmp/m.bin

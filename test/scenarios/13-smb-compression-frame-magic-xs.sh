@@ -5,7 +5,8 @@
 # Compression is the remote store's setting.
 
 rclone mkdir s3:zstd
-N="$(dfsctl namespace create --store "$(dfs-store zstd --setting remote.compression=zstd)" --setting namespace.prefix=zstd/ -o json | jq -r .id)"
+S="$(dfs-store zstd --setting remote.compression=zstd)"
+N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=zstd/ -o json | jq -r .id)"
 dfsctl share create zstd --path /zstd --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
 dfsctl grant set zstd --user tester --access read-write
 

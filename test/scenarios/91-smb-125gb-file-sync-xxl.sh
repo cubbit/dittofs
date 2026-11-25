@@ -8,7 +8,8 @@
 F=/inputs/125GB.testfile
 
 rclone mkdir s3:cubbit
-N="$(dfsctl namespace create --store "$(dfs-store cubbit)" --setting namespace.prefix=cubbit/ -o json | jq -r .id)"
+S="$(dfs-store cubbit)"
+N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=cubbit/ -o json | jq -r .id)"
 dfsctl share create cubbit --path /cubbit --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
 dfsctl grant set cubbit --user tester --access read-write
 rclone lsf -R --files-only --format ps s3:cubbit >/tmp/cubbit0.lst

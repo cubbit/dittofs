@@ -3,7 +3,8 @@
 # /test. Each round deletes one file and runs GC on /extra; its bucket must shrink. A-08 failed it
 # whenever GC visited /test's remote first. 55-smb-extra-share-gc-xs.sh is the same setup with the full checks.
 rclone mkdir s3:extra
-N="$(dfsctl namespace create --store "$(dfs-store extra)" --setting namespace.prefix=extra/ -o json | jq -r .id)"
+S="$(dfs-store extra)"
+N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=extra/ -o json | jq -r .id)"
 dfsctl share create extra --path /extra --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
 dfsctl grant set extra --user tester --access read-write
 mkdir /tmp/up

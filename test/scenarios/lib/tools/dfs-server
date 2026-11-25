@@ -10,6 +10,7 @@
 #           wait until it is gone.
 # Resume a paused S3 before a start: startup checks the bucket.
 set -euo pipefail
+umask 077
 LOG=/logs/dfs.log
 PW=/etc/dittofs/admin.password
 case "$1" in
@@ -17,7 +18,7 @@ start)
     shift
     touch "$LOG"
     FROM=$(($(wc -l <"$LOG") + 1))
-    env DITTOFS_LOGGING_OUTPUT=stdout DITTOFS_ENCRYPTION_PASSPHRASE="$(cat /etc/dittofs/passphrase)" "$@" dfs start >>"$LOG" 2>&1 </dev/null &
+    env DITTOFS_LOGGING_OUTPUT=stdout DITTOFS_LOGGING_FORMAT=text DITTOFS_ENCRYPTION_PASSPHRASE="$(cat /etc/dittofs/passphrase)" "$@" dfs start >>"$LOG" 2>&1 </dev/null &
     PID=$!
     API=
     for _ in $(seq 1 600); do
