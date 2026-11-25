@@ -103,10 +103,12 @@ that every reference to the old path follows it.
   instead, as `pr-commenting.instructions.md` says under "Review body".
 - Cap: two reviewed heads per reviewer. After that, the author and that
   reviewer settle what is left in a quick live review, as
-  `pr-commenting.instructions.md` proposes. What the live review does not
+  `pr-commenting.instructions.md` proposes, or in a written summary of what
+  is still open. What the live review does not
   settle goes to standup. The same reviewer reviews the head that carries
   what they settled, reviews any other change in that head as an ordinary
-  delta, and approves it once nothing sent to standup is still open.
+  delta, and approves it unless a blocking point or a question of theirs is
+  still open, one sent to standup included.
 
 ## 4. Reviews never add scope to an open PR
 
