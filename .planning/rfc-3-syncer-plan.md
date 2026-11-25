@@ -127,8 +127,7 @@ as plain values (D4). Tests import what they need (amended RFC 0 §1.2 binds pro
 ### 1.2 How the plan is organised
 
 - Epic 1 freezes the surface. Epic 2 builds the test harness over RFC 4's in-memory store: the
-  per-call faults RFC 4's wrapper lacks, the recording log handler, the held-pool heap measurement
-  and the Group A suite.
+  per-call faults RFC 4's wrapper lacks and the Group A suite's frame.
 - Five middle epics are cut along RFC 3's seams:
   - Track A: registration, flows and the fair scheduler (epic 3), then the fetcher (epic 6). Epic 3
     also builds a minimal single-attempt `Upload`, `Fetch` and `Prefetch`, so the scheduler's checks
@@ -203,7 +202,9 @@ entries, so it binds nothing here.
   a committed put whose response is lost, a put cut short part-way through its body, one chunk's
   bytes corrupted on a get, a call held until released, and probes failed or passed per direction.
 - **The Group A suite** (D2), over a remote store the caller opens.
-- **A recording log handler, and the held-pool heap measurement**, over `internal/prof`.
+- **No recording log handler and no heap helper**: epic 5's logging row records through
+  `slog.NewJSONHandler` over a buffer, and epic 7's held-pool check reads `internal/prof`'s
+  `LiveHeap`, each where it is consumed.
 
 ### 1.5 General rules for each epic
 
@@ -333,7 +334,7 @@ entries, so it binds nothing here.
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | **Interfaces** ⛔ | RFC 3 §1.3's surface for v1.1 in `pkg/remote`'s types, `Stats`, the configuration, `Clock`, the transitive import test | 4 | 5 | team | **everything** |
-| 2 | **Test foundations** ⛔ | per-call faults on RFC 4's fault wrapper, the Group A suite, the recording log handler, the held-pool heap measurement | 4 | 8 | team | **all testing** in 3 to 7 and 9 |
+| 2 | **Test foundations** ⛔ | per-call faults on RFC 4's fault wrapper, the Group A suite's frame | 4 | 8 | team | **all testing** in 3 to 7 and 9 |
 | 3 | **Registration, flows and the fair scheduler** ⛔ | registry, flows, lifecycle, two pools, classes, two-level DRR, caps, queues, the waiter bound, the reference model; a minimal single-attempt `Upload`, `Fetch` and `Prefetch` | 11 | 35 | A | 4, 5, 6 |
 | 4 | **Termination, retries and the uploader** ⛔ | both halves' attempt loop, the wire-byte meter, the retry budget, throttling, the floor, the first-byte bound, slow tail, unknown outcomes; `Upload` complete | 7 | 23 | B | 5, 6, 7 |
 | 5 | **Store health** | the step function and its one backoff, probe loops, the failure window, causes, refusal, the two log lines, the `health.Source` | 5 | 13 | C | 7, RFC 8 offload plan epic 21 |
@@ -401,8 +402,8 @@ flowchart TD
   settles them, and the `pkg/remote` names they use, `Meter` among them (D10). The test harness is
   not part of S1: it lands at S2. S1 unblocks epic 2, and epic 8, which needs only the `Stats` type.
 - **S2 — test foundations in CI.** RFC 4's fault wrapper drives each per-call fault of RFC 3 §1.4
-  in `unit`, and the Group A suite runs its lifecycle rows over the in-memory store. S2 needs the
-  RFC 4 plan's R4-S2, and unblocks epics 3, 4 and 5.
+  in `unit`, and the Group A suite's frame skips by name a row it cannot run; its first rows and
+  opener are epic 3's. S2 needs the RFC 4 plan's R4-S2, and unblocks epics 3, 4 and 5.
 - **S3 — the syncer complete over the in-memory store.** Every RFC 3 §7 row that epics 1 and 3 to
   7 name is green in `unit`. S3 unblocks epic 9. It is also the syncer's share of RFC 8 offload plan
   S5, which gates that plan's S3, the end of its epic 16.
@@ -678,16 +679,15 @@ store of its own (D2). It starts at S1 and RFC 4 plan R4-S2.
 
 **Done when:**
 - RFC 4's fault wrapper drives each per-call fault in RFC 3 §1.4's list, each in a test of its own,
-  through `codec.Store` where the fault is a get's;
+  at `remote.Store`; a get's fault reaches `codec.Store` in epic 6's "§4.1 verification" row;
 - RFC 3 §1.4's load record (calls in flight and their peak, call order, puts per name, bytes held)
   is read from RFC 4's in-memory store, where the RFC 4 plan builds it and `remotetest` covers it;
-- the Group A suite's frame runs its lifecycle rows over the in-memory store in `unit`, and skips
-  by name a row whose fault the caller cannot give.
+- the Group A suite's frame skips by name a row whose fault the caller cannot give; its lifecycle
+  rows and in-memory opener are epic 3's, and run once the RFC 4 plan's epic 6 lands `codec.Store`.
 
 **Expected content:**
 - The per-call faults on RFC 4's fault wrapper (D2), in RFC 4's package.
 - The Group A suite's frame in `syncertest`, over an opener (D2).
-- The recording log handler and the held-pool heap measurement.
 
 ### Epic 3 — Registration, flows and the fair scheduler ⛔
 
