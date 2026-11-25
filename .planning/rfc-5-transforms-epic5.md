@@ -162,7 +162,7 @@ cite them. `Source` is RFC 5 unless it names another source.
 | --- | --- | --- | --- | --- |
 | R13 | No chunk key and nonce ever seal two different inputs: two different inputs under one plaintext hash and data key (a chunk compressed at two levels, or declined then compressed) both decode, carry different nonces and share no keystream, so the XOR of their ciphertexts is not the XOR of their inputs; one input under one data key, sealed with two versions in the AAD, gets two nonces | invariant, test row | Appendix B.1 ("In plain terms"), §8.1 Appendix B.1 | T5.1, T5.3 |
 | R14 | Two different chunks under one data key get different salts; one chunk under two data keys gets two different bodies | test row | §8.1 Appendix B.1 | T5.3 |
-| R15 | The standard library's AES-256-GCM, called as the transform calls it, passes Wycheproof's AES-GCM vectors for a 256-bit key, 96-bit nonce and 128-bit tag | test row | E2's catalogue (other sources) | T5.3 |
+| R15 | The standard library's AES-256-GCM, called as the transform calls it once the keys are derived (its `seal` and `open`, since `Decode` derives its own key and AAD), passes Wycheproof's AES-GCM vectors for a 256-bit key, 96-bit nonce and 128-bit tag | test row | E2's catalogue (other sources) | T5.3 |
 
 **Decoding and its errors**
 
@@ -336,14 +336,16 @@ docs/internals/rfcs/rfc-5-transforms.md  T5.3  §8.3's suites line names the fuz
   - `aesgcm.go`: the transform, ID `0x0010`, stage encrypt, `Kinds` `[data-key]`, `Version` 1
     with its §5.4 `decision:` note, `LengthKey` empty, `MaxEncodedLen` and `LengthOf` exact under a
     pinned key and `n + 285` under nil, never above `n + 285` for any material.
-  - `Encode`: D2's checks on the pinned material; the key from `Provider.Get`; the derivations of
+  - `Encode`: D2's checks on the pinned material; the key from `Get` on the provider the factory
+    was given, since `Encode` takes none; the derivations of
     T5.1; the header, the nonce and `Seal` appended to `dst`; `Encoded{Body, Applied: true, Version:
     1, Material}` with D6's marker. Appendix B.5's "no header key, lengths in the clear"
     `decision:` note at the header writer.
   - `Decode`: the header parse (an unknown version, a key ID running past the body, or a body
     shorter than its header, nonce and tag is `ErrMalformed`); `ErrTooLarge` when the plaintext
-    would exceed `max`, before any allocation or provider call; `Get` for kind `data-key` under the
-    namespace and the body's key ID; the derivations; `Open` into `dst` when its capacity suffices,
+    would exceed `max`, before any allocation or provider call; `Get` on the provider `Decode` is
+    handed, for a `MaterialID` of the namespace, kind `data-key` and the body's key ID with no
+    fingerprint, which E3's census view fills from the census (its D4); the derivations; `Open` into `dst` when its capacity suffices,
     else into a buffer of exactly the plaintext length; D4's marker; D5's error mapping.
   - Unexported `seal` and `open` around `cipher.NewGCM`, the one call T5.3's Wycheproof test
     drives.
@@ -400,7 +402,8 @@ docs/internals/rfcs/rfc-5-transforms.md  T5.3  §8.3's suites line names the fuz
 - **Covers:** R13, R14, R15, R16, R21, R31.
 - **Deliverables:**
   - `testdata/wycheproof/aes_gcm_test.json`, filtered and attributed (D7), and the test driving
-    T5.2's `seal` and `open` with each case.
+    T5.2's `seal` and `open` with each case, asserting a minimum case count so a filter that
+    matches nothing cannot pass empty.
   - `crypto_test.go`'s rows of RFC 5 §8.1's Appendix B.1 row and E2's catalogue.
   - `FuzzAESGCMDecode`, through `transformtest.FuzzDecode`, with seeds: the fixture bodies, a key
     ID length of 255 over a 10-byte body, a header with no nonce, a body of exactly the header,
@@ -503,6 +506,10 @@ A suggestion only: one pull request per subtask works as well.
   measured again when that choice lands. If the chosen code lives inside `pkg/carver`, this package
   cannot import it (an implementation of another component), so the choice needs a home both can
   import, which that epic should say.
+- **FIPS 140 mode.** A caller-chosen GCM nonce is not an approved use, and Go's FIPS 140 mode
+  (`GODEBUG=fips140=only`) may refuse `Seal` with one (from memory, not checked on Go 1.26). RFC 5
+  Appendix B.1 chose the derived nonce; if an operator needs FIPS mode, that is an RFC question,
+  not this epic's.
 - **Needs on E9**: `encryption_chunks_total` is defined from the chain's encode count of every
   encrypt-stage transform, not recorded by this transform (D6).
 - **Refinements of the RFC 5 plan**, which is not edited: its §4.1 shows one `pkg/transform/encrypt/`
