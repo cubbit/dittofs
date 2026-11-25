@@ -22,7 +22,7 @@ a pending callback. Every citation is `develop`'s text, which holds amendment A2
 Cited, not owned: RFC 8881 §20 for the callback program's bytes, §18.16 for `open_delegation4`,
 §18.39 for `GET_DIR_DELEGATION`; RFC 5531 for the RPC reply; RFC 20 §2.5's layout of `ops/cb`.
 **Track:** A.
-**Epic 10 estimate: 9 subtasks, 27 man-days.**
+**Epic 10 estimate: 9 subtasks, 27.25 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E1's request state and members' table (T1.1,
 T1.2), E2's `nfsharness` (T2.2) and knfsd's `nfs41/` delegation capture with its `CB_RECALL` (T2.3).
 **S4**, an NFSv4.1 session over loopback, for every loopback row. **S2b**, met: amendment A2 is in
@@ -146,7 +146,7 @@ cited by number and title and not copied.
 | rule 3, observability follows RFC 25 and RFC 20 §10 | T10.2, T10.6 | no recorder in NFS code; `nfs_cb_path_down_total` waits as §1.2 says; no log line or attribute added here carries a client address, a file handle or a principal (RFC 25 §5.4) |
 | rule 4, profiling: leaks, allocations and contention | T10.2, T10.3, T10.9 | every loopback test starts with `adaptertest.CheckLeaks`; a back channel's slot table is shared by every recall to its client, so T10.2 reports its mutex profile under 16 concurrent sends; no codec gate applies, since the callback program carries no `READ`, `WRITE` or `GETATTR` |
 | rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | a recall asserted on the `CB_COMPOUND` bytes the client's connection receives; a delegation on the `OPEN` reply the client decodes; path down on the `SEQUENCE` reply; `ChannelDown` on the next `OPEN`'s answer, not only on the record |
-| rule 6, known failures shrink | none | no `pynfs`, `cthon04` or `nfstest` test runs before the cutover; pynfs's `DELEG*` tests under NFSv4.0 and its `GET_DIR_DELEGATION` tests stay on RFC 21 §13's known-divergence list |
+| rule 6, known failures shrink | none | no `pynfs`, `cthon04` or `nfstest` test runs before the cutover; pynfs's `DELEG*` tests under NFSv4.0 and its `GET_DIR_DELEGATION` tests stay on RFC 21 §13's known-divergence list; nfstest's `delegation` module under NFSv4.0 and pynfs `nfs4.1` `DELEG24` and `DELEG25` are not on it, named in §9 (gap 6, Q5) |
 | rule 7, v2 ignores v1 | all | nothing from `develop`'s delegation or callback code; the back channel follows RFC 8881 §2.10 and §20 and RFC 21 §3.4 |
 | rule 8, real dependencies for properties of those dependencies | T10.1, T10.2, T10.4 | `CB_COMPOUND` golden files cut from knfsd's capture, or written by hand from RFC 8881 §20, never vectors the encoder under test made; real TCP over loopback for the back channel |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T10.2, T10.3, T10.4, T10.5, T10.6, T10.8 | RFC 21 §5.3's `decision:` notes, no delegations for NFSv4.0 and no directory delegations, at `OPEN`'s want mapping and `GET_DIR_DELEGATION`'s handler; the `decision:` markers §4 names; `internal/vfs/clients.go`'s `decision:` rewritten (T10.5) |
@@ -189,6 +189,7 @@ so that subtasks and tests can cite them.
 | R17 | `DELEGRETURN` is a release, served while draining | MUST | RFC 21 §11.5 (what runs while draining); RFC 20 §4.7 | T10.4 |
 | R18 | I/O under a delegation stateid belongs to the client: it is refused `NFS4ERR_BAD_STATEID` unless the delegation is held, unrevoked, by the call's client, and is then authorised afresh as anonymous I/O | MUST | RFC 21 §5.2 (rule 6), §13 ("§5.2 delegation stateid") | T10.4 |
 | R37 | `WRITE`, and `SETATTR` of the size, under a read delegation's stateid is refused on the stateid's mode, `NFS4ERR_OPENMODE`, whatever the caller may do to the file: a read delegation's access mode allows no writing | MUST | RFC 8881 §9.1.2 | T10.4 |
+| R38 | Another client's `SETATTR`, `REMOVE` or `RENAME` (source or target) of a file under a delegation is answered `NFS4ERR_DELAY` while the recall runs and served after the return; the recall reaches the holder before the change | test row | RFC 14 §5.2 (the grants' table); RFC 21 §5.3 | T10.4 |
 | R19 | A delegation is never changed in place, so its stateid keeps the `seqid` it was granted with | invariant | RFC 21 §5.2 (rule 3) | T10.4 |
 | R20 | `CB_RECALL_ANY` is sent when a client reaches its grant budget at one primary, naming 2048 to keep; for an NFSv4.0 client `RecallAny` answers nil and sends nothing | MUST | RFC 21 §5.3; RFC 14 §5.5; RFC 17 §3.2; RFC 20 §3.3 | T10.3, T10.8 |
 | R21 | `GET_DIR_DELEGATION` returns `GDD4_UNAVAIL` with `will_signal_deleg_avail` false | MUST | RFC 21 §5.3 | T10.8 |
@@ -202,7 +203,7 @@ so that subtasks and tests can cite them.
 | --- | --- | --- | --- | --- |
 | R24 | A `LOCK` or `LOCKT` from another client on a file under a delegation recalls it before the lock is decided; while the recall runs it is `NFS4ERR_DELAY` and leaves no waiter, never `NFS4ERR_DENIED` | MUST | RFC 21 §5.3, §12 (N14, its NFSv4 half) | T10.8 |
 | R25 | The adapter keeps no recall deadline of its own: it learns of a revocation only from the service, through `Revoked` with `RevokedGrant`, `Renew`'s `ClientStatus` and `ErrState` (`Revoked`) | invariant | RFC 21 §5.3 | T10.3, T10.7 |
-| R26 | A delegation revoked at its recall deadline is `NFS4ERR_DELEG_REVOKED`, never `NFS4ERR_BAD_STATEID`, for a `WRITE` under it and for its `TEST_STATEID`; `SEQ4_STATUS_RECALLABLE_STATE_REVOKED` is set until it is freed, and its `FREE_STATEID` succeeds | test row | RFC 21 §13 ("§5.3 revoked delegation *(1 node)*", "§5.2 stateids *(1 node)*"'s recall step) | T10.7 |
+| R26 | A delegation revoked at its recall deadline is `NFS4ERR_DELEG_REVOKED`, never `NFS4ERR_BAD_STATEID`, for a `READ` or `WRITE` under it and for its `TEST_STATEID`; `SEQ4_STATUS_RECALLABLE_STATE_REVOKED` is set until it is freed, and its `FREE_STATEID` succeeds | test row | RFC 21 §13 ("§5.3 revoked delegation *(1 node)*", "§5.2 stateids *(1 node)*"'s recall step) | T10.7 |
 | R27 | An administrator's revoke keeps the client and its sessions: the next `SEQUENCE` succeeds on the same session with `SEQ4_STATUS_ADMIN_STATE_REVOKED`, and each revoked stateid, a delegation's included, is `NFS4ERR_ADMIN_REVOKED`, never `NFS4ERR_DELEG_REVOKED`, until freed | MUST | RFC 21 §5.1, §12 (N24), §13 ("§5.1 administrator's revoke *(1 node)*") | T10.3, T10.7 |
 
 **The path down**
@@ -520,7 +521,8 @@ internal/adapter/adaptertest/nfsclient/
   - Over loopback, a session created with a back channel and slot count 2 receives, on its
     connection, a `CB_COMPOUND` to the session's callback program whose `CB_SEQUENCE` names its
     session, slot 0 and sequence ID 1, under `AUTH_SYS` when the session asked for it and `AUTH_NONE`
-    when it asked for that.
+    when it asked for that. After the client's `BACKCHANNEL_CTL` names another `AUTH_SYS` uid and gid,
+    the next call carries those (pynfs `DELEG7`).
   - `Send` returns before the client answers; the client's answer on the fore connection frees the
     slot, and the next call on that slot carries sequence ID 2.
   - With both slots unanswered, a third `Send` fails `ErrNoSlot` at once; with the connection
@@ -530,7 +532,9 @@ internal/adapter/adaptertest/nfsclient/
 - **Tests:** over loopback through `core` on `memory.New`, the client's side played by E3's
   scripted client reading the call with `Read` and answering with `Send` (the layer that receives a
   callback): the call's bytes against T10.1's golden encoding with this session's fields (catch a
-  credential other than the one asked, R6, a call on another connection, R1); `Send` returning with
+  credential other than the one asked, R6, a call on another connection, R1); a `BACKCHANNEL_CTL`
+  with a new `AUTH_SYS` body, then a `Send`, the call's credential the new uid and gid (catches the
+  credential kept from `CREATE_SESSION`, R6); `Send` returning with
   the reply unread (catches a wait for the answer, R4); the sequence ID after an answer and after a
   close (catch D3's rules broken); the third `Send` (catches a queue, R5, or a slot past the grant,
   R7); the client closing its only bound connection, then a `Send` failing `ErrNoBackChannel`
@@ -610,10 +614,10 @@ internal/adapter/adaptertest/nfsclient/
 
 ### T10.4 Delegations offered, recalled and returned
 
-**Subtask T10.4 estimate: 3.5 man-days.**
+**Subtask T10.4 estimate: 3.75 man-days.**
 
-- **Track:** A. **Depends on:** T10.3, T9.3, T9.4, T9.9.
-- **Covers:** R11, R12, R13, R15, R16, R17, R18, R19, R37.
+- **Track:** A. **Depends on:** T10.3, T9.3, T9.4, T9.6, T9.9, E5's `SETATTR`, `REMOVE` and `RENAME`.
+- **Covers:** R11, R12, R13, R15, R16, R17, R18, R19, R37, R38.
 - **Deliverables:**
   - `ops/v4/open_deleg.go`: `func want(minor uint32, w uint32) vfs.GrantKind`, a pure, total
     function over the want value T9.4 split from `share_access` and already checked (D6), never
@@ -643,6 +647,9 @@ internal/adapter/adaptertest/nfsclient/
     `OPEN_DELEGATE_NONE_EXT` with `WND4_NOT_WANTED`.
   - A second client's `OPEN` for write is `NFS4ERR_DELAY`; the first receives `CB_RECALL`; after its
     `DELEGRETURN`, the second's retry is granted.
+  - With client A holding a write delegation, client B's `SETATTR` of the mode, `REMOVE` of the file,
+    and `RENAME` with the file as source and, on a second file, as target: each `NFS4ERR_DELAY`, A
+    reads `CB_RECALL` before the change, and after A's `DELEGRETURN` B's retry succeeds (R38).
   - An NFSv4.0 client with a callback address the test listens on opens the file read-only, then for
     write: `OPEN_DELEGATE_NONE` both times, and nothing connects to the address.
   - Every want code T9.4 passes, under each minor version, maps to a kind, never a handle grant.
@@ -654,7 +661,9 @@ internal/adapter/adaptertest/nfsclient/
   second 0644 file she owns with a write delegation, bob's `READ` under its stateid served and his
   `WRITE` under it `NFS4ERR_ACCESS`, the file unchanged (catch delegation I/O not reauthorised, or
   served for another client, R18: under a write delegation the stateid's mode allows the write, so
-  only the fresh authorisation can refuse it). The mode alone, separately: alice's own `WRITE`, and
+  only the fresh authorisation can refuse it); alice's `CLOSE` of the first file, then her `READ`
+  under the read delegation's stateid `NFS4_OK` (catches a delegation stateid tied to the open that
+  offered it, R18, pynfs `DELEG26`). The mode alone, separately: alice's own `WRITE`, and
   her `SETATTR` of the size, under her read delegation's stateid `NFS4ERR_OPENMODE`, the file
   unchanged (catches a read delegation's stateid admitting a write, R37); a `WRITE` under a read
   delegation by someone without the right proves neither rule, since either check refuses it; `DELEGRETURN` with `seqid` 2
@@ -662,7 +671,9 @@ internal/adapter/adaptertest/nfsclient/
   `AckRecall` (catches a second call, R16); the `NoRecall` row asserted as a matched row, with
   `adapter_unmapped_errors_total` at 0 (R16). Over loopback after S4, the recall and the NFSv4.0
   cases above, the listener's accept count 0 (catch a delegation to NFSv4.0, R12, a recall missing,
-  R15). R17 is held by `DELEGRETURN`'s row, which T10.9's drain test runs.
+  R15); the `SETATTR`, `REMOVE` and `RENAME` recalls, each asserting B's file unchanged until A's
+  `DELEGRETURN` (catches a change made before the recall, or a recall missing for an operation other
+  than `OPEN`, R38). R17 is held by `DELEGRETURN`'s row, which T10.9's drain test runs.
 - **Rules:** rule 9, RFC 21 §5.3's `decision:` on NFSv4.0 and D6's at `want`; rule 13, `want` and
   `delegation` pure and total.
 
@@ -776,7 +787,7 @@ internal/adapter/adaptertest/nfsclient/
   Consumed by E16.
 - **Acceptance criteria:**
   - A delegation whose recall the client never answers, the clock advanced past one lease period
-    while the client renews: its stateid's `WRITE` and `TEST_STATEID` are `NFS4ERR_DELEG_REVOKED`, the
+    while the client renews: its stateid's `READ`, `WRITE` and `TEST_STATEID` are `NFS4ERR_DELEG_REVOKED`, the
     next `SEQUENCE` carries `SEQ4_STATUS_RECALLABLE_STATE_REVOKED`, and after its `FREE_STATEID`
     neither.
   - An NFSv4.1 client holding an open, a lock and a delegation, revoked by administrator: its next
@@ -952,6 +963,18 @@ Questions pending the user's answer. Each recommended option is written in place
   - (b) The adapter keeps each delegation stateid's type from the `OPEN` that offered it and refuses
     the write itself; no RFC 17 change, but a per-stateid map in the adapter that a stateid moved to
     another node does not carry, the same objection as Q1 (b).
+- **Q5. pynfs `nfs4.1` `DELEG24` and `DELEG25`.** Both expect a `CB_GETATTR` when a second client
+  sends `GETATTR` on a write-delegated file, and give up early unless the server supports the
+  `open_arguments` attribute (pynfs `st_delegation.py`, `_testCbGetattr`). This epic sends only
+  `CB_SEQUENCE`, `CB_RECALL` and `CB_RECALL_ANY`, RFC 21 says nothing of `CB_GETATTR`, and §13's
+  "Tests expected to fail" has no row for the two; `feat/storage-v2`'s `known.yaml` holds them as
+  `wontfix`, which RFC 21 §13's release goal does not accept.
+  - (a) **Recommended:** a §13 row, "pynfs `nfs4.1` `CB_GETATTR` tests (`DELEG24`, `DELEG25`) | no
+    `CB_GETATTR` and no `open_arguments` attribute (§5.3)", in batch two's one RFC 21 pull request.
+    knfsd fails both too (`known.yaml`'s reason).
+  - (b) `CB_GETATTR` in this epic, with the `open_arguments` attribute in E5's table: a new callback
+    method through RFC 17 §3.2 and RFC 20 §3.3, a `GETATTR` that waits on another client's answer,
+    and a figure this document does not have until the RFC text exists.
 
 Gaps, not questions:
 
@@ -977,6 +1000,13 @@ Gaps, not questions:
    so it cannot happen; the same cluster row, widened in this pull request to name it, owns moving
    the check under open state's client step.
    A `decision:` marker at T10.5's check says so.
+6. **nfstest's `delegation` module under NFSv4.0** asserts a delegation is granted whatever the
+   version (`nfstest_delegation`), and `test/nfs-mount/nfstest/tests.txt` runs it with the `v4.0`
+   mount options, so the whole cell fails by RFC 21 §5.3's decision, which §13 lists only for
+   pynfs's `DELEG*`. §13's row widens to "pynfs `nfs4.0` delegation tests (`DELEG*`) and nfstest's
+   `delegation` module under NFSv4.0", in batch two's one RFC 21 pull request; E15, which rewrites the
+   suite's known failures, lists the cell under it. Dropping `v4.0` from `tests.txt` instead would
+   hide the decision rather than record it.
 
 What this epic takes from other epics, settled with their documents:
 
@@ -1003,5 +1033,6 @@ Which pull request carries which RFC amendment: Q1's RFC 17 §3.2 `RecallGrant` 
 one RFC 17 pull request, with E9's D1, E11's Q1 and E12's D1, opened before E9's PR 1; T10.3's
 `pkg/vfs` change waits for it (rule 11). Q3's RFC 21 §5.3 sentence goes in batch two's one RFC 21
 pull request, with Q2's sentence on the flag's staleness; Q2's recommended option (b) adds RFC 14
-§11.3 and RFC 17 §3.2 to those. Q4's amended §13 row goes in the same RFC 21 pull request, and its
+§11.3 and RFC 17 §3.2 to those. Q4's amended §13 row, gap 6's widened §13 row and, under Q5 (a), Q5's row go in the
+same RFC 21 pull request, and its
 recommended option (a)'s RFC 17 §3.1 sentence in the RFC 17 one with Q1's.
