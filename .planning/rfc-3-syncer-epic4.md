@@ -319,9 +319,10 @@ field (E1's R18).
   the cap, and RFC 3 §2.9 lets a lone busy store hold the whole pool. So while a store's limit is
   at its cap it binds only while another store has work waiting, as the cap does, and below the
   cap it binds always. "Halves to half of what it holds" reads the store's held workers from
-  `sched`, and the bound becomes the smaller of itself and that, so a burst of replies within one
-  round trip halves it once per reply only while the store still holds that many, rather than
-  collapsing to one on RFC 3 §2.10's bare "halves on each throttling response"; "completed without throttling" is a transfer that ended in success without a
+  `sched`, and the bound becomes the smaller of itself and that, so replies arriving together
+  lower it toward what the store holds rather than collapsing it to one, as RFC 3 §2.10's bare
+  "halves on each throttling response" would. "Completed without throttling" is a transfer that
+  ended in success without a
   throttling reply. Both live in `sched` (T4.2), so the model checks RFC 3 S17's throttle clause.
   A `decision:` marker names both readings. Prior art: TCP's congestion window, halved on loss and
   grown by one per round trip (RFC 5681, from memory).
