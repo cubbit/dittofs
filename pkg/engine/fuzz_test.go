@@ -29,14 +29,18 @@ func fuzzByte(step int, off int64) byte {
 const (
 	fuzzFiles = 3
 
+	// fuzzMaxSteps and fuzzMaxWrite are the longest program and the longest
+	// write.
+	fuzzMaxSteps = 64
+	fuzzMaxWrite = 8192
+
 	// fuzzMaxFile is the largest size a program can give a file: the highest
 	// offset and the longest write.
-	fuzzMaxFile = 12288 + 8192
+	fuzzMaxFile = 12288 + fuzzMaxWrite
 
 	// fuzzSegmentCap keeps each input's segments small: at the format's size an
-	// input spends seconds allocating them. A program writes at most 512 KiB
-	// into a new journal, so no write is split over two segments, and each one
-	// is one record, which a crash keeps whole or not at all.
+	// input spends seconds allocating them. checkOneSegment holds that no
+	// program fills one.
 	fuzzSegmentCap = 4 << 20
 
 	// fuzzMinJournal is the smallest configured journal maximum the target runs
@@ -77,6 +81,10 @@ type acceptedWrite struct {
 }
 
 func newEngineWorld(env *fuzz.Env) (*engineWorld, error) {
+	if err := checkOneSegment(fuzzMaxSteps, fuzzMaxWrite, fuzzSegmentCap); err != nil {
+		return nil, err
+	}
+
 	w := &engineWorld{ctx: env.T.Context()}
 
 	// Registered before the fixture, so it runs after the fixture has closed
@@ -113,6 +121,19 @@ func newEngineWorld(env *fuzz.Env) (*engineWorld, error) {
 	}
 
 	return w, nil
+}
+
+// checkOneSegment holds that no program fills a segment, so no write is split
+// over two and each one is one record, which a crash keeps whole or not at all.
+// The model counts on it. The bytes a program writes may take a quarter of a
+// segment: the rest is room for what the journal adds around them.
+func checkOneSegment(steps, write int, segmentCap int64) error {
+	if payload := int64(steps) * int64(write); payload > segmentCap/4 {
+		return fmt.Errorf("a program of %d writes of %d bytes holds %d bytes, over a quarter of a segment of %d",
+			steps, write, payload, segmentCap)
+	}
+
+	return nil
 }
 
 // doneAtMostOnce is the one invariant: no accepted write is reported finished
@@ -650,12 +671,13 @@ func engineKey(m engineModel) string {
 func engineTarget() fuzz.Target[*engineWorld, engineModel] {
 	file := fuzz.Enum("file", 0, 1, 2)
 	off := fuzz.Choice("off", 0, 1, 4095, 4096, 8192, 12288)
-	length := fuzz.Choice("len", 1, 2, 512, 4096, 8192)
+	length := fuzz.Choice("len", 1, 2, 512, 4096, fuzzMaxWrite)
 	// Zero is the whole file.
-	commitLength := fuzz.Choice("len", 0, 1, 2, 512, 4096, 8192)
+	commitLength := fuzz.Choice("len", 0, 1, 2, 512, 4096, fuzzMaxWrite)
 
 	return fuzz.Target[*engineWorld, engineModel]{
-		Name: "engine",
+		Name:     "engine",
+		MaxSteps: fuzzMaxSteps,
 		Ops: []fuzz.Op[*engineWorld, engineModel]{
 			{
 				Name:   "write",
@@ -927,6 +949,42 @@ func TestModelRefusesAStartThatLeftExistenceUncommitted(t *testing.T) {
 			answer.sizes[0] = 0
 			if _, err := start.model(before, fuzz.Args{}, answer); err == nil {
 				t.Fatal("a committed size of 0 under 3 bytes read is allowed")
+			}
+		})
+	}
+}
+
+func TestNoProgramFillsASegment(t *testing.T) {
+	cases := []struct {
+		name       string
+		steps      int
+		segmentCap int64
+		fits       bool
+	}{
+		{
+			name:       "the target's own limits",
+			steps:      fuzzMaxSteps,
+			segmentCap: fuzzSegmentCap,
+			fits:       true,
+		},
+		{
+			name:       "programs eight times as long",
+			steps:      8 * fuzzMaxSteps,
+			segmentCap: fuzzSegmentCap,
+		},
+		{
+			name:       "a segment of one MiB",
+			steps:      fuzzMaxSteps,
+			segmentCap: 1 << 20,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := checkOneSegment(c.steps, fuzzMaxWrite, c.segmentCap)
+
+			if got := err == nil; got != c.fits {
+				t.Fatalf("checkOneSegment(%d, %d, %d) = %v, want fits %v", c.steps, fuzzMaxWrite, c.segmentCap, err, c.fits)
 			}
 		})
 	}
