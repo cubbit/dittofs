@@ -196,7 +196,7 @@ subtasks and tests can cite them.
 | R14 | `MNT` is `Root` with the path, returning the root handle and the share's flavours; `EXPORT` is `ListShares`, the shares the caller may see; `DUMP` is empty, and `UMNT` and `UMNTALL` change nothing | MUST | RFC 21 §6.3, Appendix D; RFC 17 §4.9 (no mount table) | T4.6 |
 | R15 | `Root`, `SecInfo` and `ListShares` are called from the entry handlers' files and nowhere else in the adapter: over NFSv3, `nfs/ops/mount/mnt.go` and `export.go` | invariant | RFC 20 §4.10, §7.1 | T4.6 |
 | R16 | A `MOUNT` of the path of a share being removed or retired is `MNT3ERR_NOENT`, and MOUNT's fault status is the accept state `SYSTEM_ERR` | MUST | RFC 21 §11.5 (`ErrStale`, the fault status) | T4.6 |
-| R17 | The handle `MNT` returns is gated like any other on every later call | invariant | RFC 21 §6.3 | T4.7 |
+| R17 | The handle `MNT` returns is gated like any other on every later call | invariant | RFC 21 §6.3 | T4.7, T4.8, T4.9, T4.10, T4.11, T4.12 |
 
 **Handles, file ids and names**
 
@@ -313,7 +313,10 @@ the service answers (RFC 17 §5.10).
     same (E5).
   - `ShareInfo.Path`, the share's NFS path, which `EXPORT`'s `ex_dir` lists; `ShareInfo` carries
     SMB's name alone. `ex_groups` is empty, since client rules are admission's.
-  - A file number on a listed entry (`DirEntry.Number`), so `READDIR`'s `entry3.fileid` comes from
+  - A file number on a listed entry (`DirEntry.Number`), filled for every entry the caller may
+    list, also when `ReadDir` leaves `Handle` and `File` empty for a caller who may not traverse
+    it, as POSIX `readdir` gives `d_ino` without search permission, since `entry3.fileid` is
+    required on the wire; so `READDIR`'s `entry3.fileid` comes from
     `Entries`, as R25 has it, without asking `EntriesPlus` for every child's record. A listed
     entry has no number today: RFC 7's entry row (`entity.Entry`) holds `Parent`, `Name`, `Child`
     and `Type`, and `Number` is on `File` alone. So the number is copied into the entry row when
@@ -369,8 +372,11 @@ the service answers (RFC 17 §5.10).
   `dircount` for the names, cookies and file ids and `maxcount` for the whole reply, and asks for
   the smaller of `dircount` over the smallest `entry3`'s size and `maxcount` over the size of an
   `entryplus3` with its `fattr3` and a 64-byte handle, so a 64 KiB `maxcount` asks about 390
-  records rather than about 1,800. RFC 20 §4.9's `Fit(entries, budget, size)` answers how many fit
-  under both limits, never ending inside a run of entries sharing a cursor; 0 for a first chain
+  records rather than about 1,800. RFC 20 §4.9's `Fit(entries, budget, size)` takes one budget, so
+  `READDIRPLUS` calls it once per limit, each with that limit's own size function, and keeps the
+  smaller count; each answer ends at a chain boundary, so the smaller one does too, never inside a
+  run of entries sharing a cursor. The reply's `eof` is `Page.EOF` only when `Fit` kept every
+  entry of the page, and false otherwise, so the trimmed entries are asked for again; 0 for a first chain
   that does not fit is `NFS3ERR_TOOSMALL`. D14's `Spell`s run only on the entries `Fit` kept. The `.` and `..` entries
   come first on a listing from cookie 0, from the `GetAttr` of the directory and a `Lookup` of
   `..`, both read-only, and a resume from cookie 1 starts at `..`; Appendix D's `READDIR` cell
@@ -446,11 +452,15 @@ the service answers (RFC 17 §5.10).
   list is bounded below the record. An `offset3` or `size3` is 64 bits unsigned and the service's
   offsets are `int64`: a `WRITE` whose offset plus count, or a `SETATTR` whose size, passes
   `maxfilesize` (2^63 − 1) is `NFS3ERR_FBIG`, refused by the translation before any call, never
-  converted to a negative `int64`; a `READ` at or past it answers no data and `eof`; a `COMMIT`
-  whose offset plus count wraps is `NFS3ERR_INVAL`. RFC 1813 §3.3.7 gives `NFS3ERR_FBIG` for this
+  converted to a negative `int64`; a `READ` at or past it makes one call, `Read(c, Anonymous(h),
+  math.MaxInt64, nil)`, which the service admits and answers as a read of no byte, and the reply is
+  count 0 with the `eof` it returned, so a caller the share refuses still gets its refusal (RFC 21
+  §6.3); a `COMMIT` whose offset plus count wraps is `NFS3ERR_INVAL`. The `FBIG` and `INVAL`
+  refusals are refusals, not successes, judged before admission as `GARBAGE_ARGS` is. RFC 1813 §3.3.7 gives `NFS3ERR_FBIG` for this
   case and RFC 21 §11.5 has no row for it, so the refusal is proposed as RFC 21 text with point
   3's (§9). Prior art: knfsd checks `offset + count` against `s_maxbytes` and answers `EFBIG` (from
-  memory). A `decision:` marker at each cap and at the offset check.
+  memory). A `decision:` marker at each cap and at the offset check, the latter saying `FBIG` and
+  `INVAL` are judged before admission.
 
 ## 5. Target tree
 
@@ -673,10 +683,13 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   answering `DelayCommit`, is RFC 17's V25 test, and the composed-node run E16's T16.2); an unstable
   `WRITE`, `memory.New`'s `Content.Lose` of the file, and a `COMMIT` answered success with a
   verifier other than the `WRITE`'s (catches a verifier cached or a loss answered as an error,
-  R38); the short-read function over each error with and without bytes read (R42); a `COMMIT` and a
+  R38); a `WRITE` whose reply's `before` and `after` equal the `WCC` the service returned, read
+  back through `vfstest.Mutations` (catches a `before` dropped or invented, R33); the short-read function over each error with and without bytes read (R42); a `COMMIT` and a
   `FILE_SYNC` `WRITE` failed `vfs.ErrIO` by `vfstest.Faults` answered `NFS3ERR_IO` (catches it
   mapped to the fault, R44); D15's edges, a `WRITE` at offset 2^63 − 1 with a count of 2 answered
-  `NFS3ERR_FBIG`, a `READ` at 2^63 answered no data and `eof`, a `COMMIT` whose offset plus count
+  `NFS3ERR_FBIG`, a `READ` at 2^63 answered count 0 and `eof` through one `Read` call, and the same `READ` on a
+  share that refuses the caller answered its refusal (catches a success answered with no admitted
+  call, RFC 21 §6.3), a `COMMIT` whose offset plus count
   wraps answered `NFS3ERR_INVAL` (catches an offset converted to a negative `int64`); the reply's
   segment count from the encoded `resources.Buf` (catches a copy, R7); `testing.AllocsPerRun` for
   both (R10).
@@ -692,7 +705,8 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
 - **Deliverables:** `wire/gen`'s `xdr:"list,max=N"` tag and the runtime's list functions, with
   the hand-written second decoder's list case (D1); `wire/const.go`'s `mountstat3` values;
   `ops/mount`'s `mnt.go` (`Root` with the path, the flavours to their RPC numbers, `AUTH_NONE` 0,
-  `AUTH_SYS` 1 and the Kerberos pseudo-flavours 390003 to 390005), `export.go` (`ListShares`, D2's
+  `AUTH_SYS` 1 and the Kerberos pseudo-flavours 390003 to 390005, `FlavorNTLM` left out, since it has
+  no RPC number, as E5's D11 does), `export.go` (`ListShares`, D2's
   paths), `umnt.go`, `umntall.go`, `dump.go` and `errors.go` (D3) with its golden file; `ShareInfo.Path` in
   `pkg/vfs` and `internal/vfs` with its suite row (D2, pending); `mnt.go` and `export.go` added to
   the import test's entry files for `Root` and `ListShares`; golden vectors from knfsd's `nfs3/`
@@ -734,13 +748,17 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   - S3's calls answered, each reply matching its golden file's fields past the transaction ID, and
     each counted under `nfs3` by its procedure's name.
   - On a share whose `MinProof` is `Ticket`, `MNT` over `AUTH_SYS` returns the flavours and root
-    handle, and every NFSv3 procedure past `NULL` sent with that handle is rejected
-    `AUTH_TOOWEAK`, `FSINFO` and `PATHCONF` among them.
-  - Two clients writing one file 10^4 times each: the replies carrying `before` form one chain in
-    the file's write order, each `before` equal to the previous write's `after` and no `after`
-    matched twice.
-- **Tests:** the three rows above, each ending with `adaptertest.CheckLeaks`, the second a table of
-  every NFSv3 procedure past `NULL` at `Claimed` with the handle `MNT` returned (catch a handle that
+    handle, and every NFSv3 procedure past `NULL` that `ops/v3` serves when T4.7 lands, sent with
+    that handle, is rejected `AUTH_TOOWEAK`. The table is shared: it fails while `ops/v3`'s table
+    serves a procedure past `NULL` with no row in it, so each of T4.8 to T4.12 that lands after
+    T4.7 adds its procedures' rows, `FSINFO` and `PATHCONF` (T4.12) among them.
+  - Two clients writing one file 10^4 times each: every reply carries `before` (one node on
+    `memory.New`, whose service always returns it), and they form one chain in the file's write
+    order, each `before` equal to the previous write's `after` and no `after` matched twice.
+- **Tests:** the three rows above, each ending with `adaptertest.CheckLeaks`, the second a table
+  (`mnt_gate_test.go`) of every NFSv3 procedure past `NULL` that `ops/v3` serves, at `Claimed` with
+  the handle `MNT` returned, checked against `ops/v3`'s table so a served procedure with no row fails
+  it (catch a handle that
   skips the minimum on any procedure, a procedure making no service call among them, R17, a `MNT` refused, R2, the status at the wrong layer, R45, a stale or
   reordered `before`, which matches an `after` already matched, R36, and a row counted under
   another label or name, R52). No test double.
@@ -751,7 +769,7 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
 **Subtask T4.8 estimate: 1.75 man-days.**
 
 - **Track:** B. **Depends on:** T4.4.
-- **Covers:** R11, R18, R20, R31.
+- **Covers:** R11, R17, R18, R20, R31.
 - **Deliverables:** `translate`'s access mask table (D8); `lookup.go`, `access.go`, `readlink.go`
   (`GetAttr`'s `File.Target`); golden vectors from knfsd's `nfs3/` captures, and RFC 1813 for
   `READLINK`. Consumed by T4.9 to T4.11, which name files through `LOOKUP`, by E5's `ACCESS`
@@ -772,7 +790,8 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   `EXECUTE` on a directory never granted; `READLINK` of a symlink; `LOOKUP` of names at the
   share's `MaxNameBytes` (found), one byte past it (`NFS3ERR_NAMETOOLONG`), at the 4096-byte cap
   (`NFS3ERR_NAMETOOLONG`) and past it (`GARBAGE_ARGS`) (catches a cap below RFC 7's limit, R20,
-  D15).
+  D15); `LOOKUP`, `ACCESS` and `READLINK` added to T4.7's `MNT`-handle table if it has landed, each
+  expecting `AUTH_TOOWEAK` (catches a procedure that makes no call, R17).
 - **Rules:** rule 9: D8's marker and D15's at the name cap.
 
 ### T4.9 `CREATE`, `MKDIR`, `SYMLINK` and `MKNOD`
@@ -780,12 +799,14 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
 **Subtask T4.9 estimate: 2.75 man-days.**
 
 - **Track:** B. **Depends on:** T4.8.
-- **Covers:** R6, R18, R20, R31, R33, R35, R43.
+- **Covers:** R6, R17, R18, R20, R31, R33, R35, R43.
 - **Deliverables:** `create.go` (`UNCHECKED` through D2's field, `GUARDED`, `EXCLUSIVE` with
   `CreateArgs.Verifier`), `mkdir.go`, `symlink.go`, `mknod.go` (`NF3CHR` and `NF3BLK` with their
   device numbers, `NF3SOCK`, `NF3FIFO`, any other type through the default arm `NFS3ERR_BADTYPE`);
-  the new file's group: `sattr3`'s `gid` through `Find` into `CreateArgs.Attrs` when set, and no
-  group when unset, which the service fills from the caller (E7's T7.1), the part E3's §1.2 gives
+  `specdata3` as `CreateArgs.Dev` `uint64(major)<<32 | minor`, which the service splits back
+  into `File.Device`; the new file's owner and group: `sattr3`'s `uid` and `gid` through `Find`
+  into `CreateArgs.Attrs` when set, as `SETATTR` maps them (T4.4), one no principal holds
+  `NFS3ERR_INVAL` (R28's rule), and neither when unset, which the service fills from the caller (E7's T7.1), the part E3's §1.2 gives
   this epic; `CreateArgs.Unchecked` in `pkg/vfs` and `internal/vfs` with its suite row (D2,
   pending); golden
   vectors from knfsd's `nfs3/` captures and RFC 1813. Consumed by T4.10 and T4.11, which create the
@@ -801,8 +822,11 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   success, R31); a name RFC 7 refuses (R20); R35's 64 creates sent in parallel through
   `nfsharness`, each request's `vfs.Call` carrying `Protocol` NFSv3 as E3's route sets it (T3.1),
   since the service leaves a directory's `before` out only for that protocol (catches a directory
-  `before`, R33, R35); a `CREATE` with `sattr3`'s gid set and one with it unset, against the new
-  file's group (catches the group dropped or invented by the handler).
+  `before`, R33, R35); a `CREATE`, `MKDIR`, `SYMLINK` and `MKNOD` each with `sattr3`'s uid and gid set and
+  with them unset, against the new file's owner and group (catches the owner or group dropped or
+  invented by the handler, R31); a `MKNOD` of `NF3CHR` with major 7 and minor 9 read back by
+  `GETATTR` as `rdev` 7 and 9 (catches `specdata3` packed differently than the service splits it); the four creates added to
+  T4.7's `MNT`-handle table if it has landed, each expecting `AUTH_TOOWEAK` (R17).
 - **Rules:** rule 13: `UNCHECKED` is one call (D2).
 
 ### T4.10 `REMOVE`, `RMDIR`, `RENAME` and `LINK`
@@ -810,7 +834,7 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
 **Subtask T4.10 estimate: 2.25 man-days.**
 
 - **Track:** B. **Depends on:** T4.7, T4.9, T3.3.
-- **Covers:** R20, R32, R33, R49.
+- **Covers:** R17, R20, R32, R33, R49.
 - **Deliverables:** `remove.go`, `rmdir.go`, `rename.go` (both directories' `wcc_data`), `link.go`
   (the file's attributes and the directory's `wcc_data`), each row `Cacheable` (D13) in the column
   test; golden vectors from knfsd's `nfs3/` captures and RFC 1813; the retransmitted `REMOVE` over
@@ -823,7 +847,8 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   of §11.5 it names through `vfstest.Faults` (kind 3), a name RFC 7 refuses (R20), and R32's
   sequence (catches a count taken from the wrong field, R32, a directory `before`, R33). Over
   loopback, the retransmitted `REMOVE`, ending with `adaptertest.CheckLeaks` (catches a row left
-  out of the cache, answered `NFS3ERR_NOENT`, R49).
+  out of the cache, answered `NFS3ERR_NOENT`, R49); the four procedures added to T4.7's
+  `MNT`-handle table, each expecting `AUTH_TOOWEAK` (R17).
 - **Rules:** rule 8: the retransmission through `core`'s real `Replay` stage, E3's T3.3.
 
 ### T4.11 `READDIR` and `READDIRPLUS`
@@ -831,7 +856,7 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
 **Subtask T4.11 estimate: 4 man-days.**
 
 - **Track:** B. **Depends on:** T4.6, T4.10.
-- **Covers:** R11, R13, R19, R21, R22, R23, R24, R25, R26.
+- **Covers:** R11, R13, R17, R19, R21, R22, R23, R24, R25, R26.
 - **Deliverables:** `translate.Fit` with RFC 20 §4.9's signature (D7); `readdir.go` and
   `readdirplus.go`: the directory's `GetAttr` for its attributes and plan D16's verifier through
   D6's fold, `ReadDir` with `EntryHandle` and `EntryFile` for `READDIRPLUS`, `.` and `..` on a
@@ -859,8 +884,11 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   `memory.New`, the listing above (R19, R21, R22, R24, R25) and a count of 2^32 − 1 clamped (R13);
   a `READDIRPLUS` with a small `dircount` and a large `maxcount`, whose reply's names, cookies and
   file ids stay within `dircount` (catches `dircount` ignored, D7); an entry renamed and one
-  hard-linked listed with their file's number (catches a write path that drops it, D2); R26
-  on the fixed-key share (catches a page ending between the colliding pair).
+  hard-linked listed with their file's number (catches a write path that drops it, D2); a caller
+  with list but not traverse on the directory gets each entry's `fileid` equal to its file's
+  `Number` (catches the number following `File`'s rule, D2); R26
+  on the fixed-key share (catches a page ending between the colliding pair); `READDIR` and
+  `READDIRPLUS` added to T4.7's `MNT`-handle table, each expecting `AUTH_TOOWEAK` (R17).
 - **Rules:** rule 9: D7's marker.
 
 ### T4.12 `FSSTAT`, `FSINFO` and `PATHCONF`
@@ -868,7 +896,7 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
 **Subtask T4.12 estimate: 1 man-days.**
 
 - **Track:** B. **Depends on:** T4.4.
-- **Covers:** R12.
+- **Covers:** R12, R17.
 - **Deliverables:** `fsstat.go` (D10), `fsinfo.go` and `pathconf.go` (§2.3's constants and the
   share's `Capabilities`, D9); golden vectors from knfsd's `nfs3/` captures and RFC 1813. Consumed by
   the kernel client's mount, which reads `FSINFO` and `PATHCONF` once E15 serves NFS, and by E16's
@@ -880,7 +908,9 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   - `FSSTAT` on a share with a share-wide quota answers its limits.
 - **Tests:** at `nfsharness` on `memory.New`, each against its reply file (catches a size from the
   wrong constant, R12, the case rule inverted, or a quota's limit dropped); `FSSTAT` on a share
-  whose usage is above its lowered limit, answering 0 free (catches the subtraction wrapping, D10).
+  whose usage is above its lowered limit, answering 0 free (catches the subtraction wrapping, D10);
+  `FSSTAT`, `FSINFO` and `PATHCONF` added to T4.7's `MNT`-handle table if it has landed, each
+  expecting `AUTH_TOOWEAK` (catches a procedure that makes no call, R17).
   No test double.
 - **Rules:** rule 9: RFC 21 §2.3's `ponytail:` notes at `fsinfo.go`, D10's at `fsstat.go`.
 
