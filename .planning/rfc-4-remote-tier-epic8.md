@@ -305,3 +305,10 @@ A suggestion only: one pull request per subtask works as well, T8.1 first.
 2. **Estimate least certain: T8.2**, on LocalStack's throughput for 1,000 checked opens (about 2
    GiB of check puts, D5), on whether LocalStack 4.13.1 keeps HTTPS connections alive (D4's
    precondition measures it), and on the holding's surface, which epic 21 settles.
+3. **Serialised re-admission is unchecked against RFC 3's health.** D6's amendment to RFC 3 §2.8
+   runs a store's own re-admission probe behind the shared probe of its `ProbeKey` and direction.
+   An outage the shared probe sees re-admits every store of the key with that one probe, but
+   stores the failure window tripped wait for their own probes one at a time: a round trip each
+   once the service answers, the probe's bound each while it is still slow. The RFC 3 plan's
+   epic 5 has no breakdown yet; its breakdown checks that wait against many stores on one
+   configuration.

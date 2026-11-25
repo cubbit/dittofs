@@ -497,7 +497,6 @@ pkg/remote/s3/                         E4: client, constructor, data path, error
   record.go                            E4: the recorder it declares (D12)
   settings.go config.go metrics.go     E7: the store configuration's rows and Config, the remote_
                                        definitions, all plain values
-  limit.go                             E8: the client limit derived from its callers
   *_test.go                            E4, E5: the rows marked T, over s3fault and LocalStack
 pkg/remote/s3/s3fault/                 E3: the fault transport, around the client's http.RoundTripper
 pkg/remote/codec/                      E1: surface (S1); E6: format, encode, decode, codec.Store, gate
@@ -506,6 +505,7 @@ pkg/remote/codec/                      E1: surface (S1); E6: format, encode, dec
                                        the alert rule, all plain values
 internal/node/content/remote.go        E7: the recorders over the registry, and the plain values
                                        built into settings rows, collectors and the rule
+internal/node/content/limit.go         E8: the client limit derived from its callers, unexported
   testdata/fuzz/ testdata/v1/          E6: fuzz seeds; the golden block of each released version
 test/suites.yaml                       E3: service:localstack in integration; E6: unit/remote-allocs;
                                        E9: the remote group's service and benchmark cells
