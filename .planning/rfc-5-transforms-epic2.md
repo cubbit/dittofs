@@ -210,6 +210,7 @@ suite" is `keystest.Run`.
 | R11 | Every input of the fixture of the format version `Encode` writes, encoded with its recorded settings and material, gives exactly its recorded body; an older version's fixture is decoded only | MUST, test row | §4 item 7, §7 T9, §8.1 T9 | T2.4 |
 | R12 | A transform ships a fixture holding the inputs, the settings, the material and the bodies its format version wrote from them; a transform with none for the version `Encode` writes fails the suite | MUST | §4 item 7 | T2.4 |
 | R13 | One suite, which every transform passes, shipped and custom alike | test row | §4 item 7, §8.1 | T2.3 |
+| R32 | `Decode` runs against a provider view that answers only the material its census lists, of the namespace read, and returns `ErrMalformed` for any other ID without asking the provider | MUST | §2.5 ("A read asks only for material its block recorded"), §3.1 | T2.3 |
 | R29 | `LengthKey` carries every setting that changes a body's length: two settings whose bodies differ in length for one input have different `LengthKey`s | MUST | §2.8 (length-affecting settings), §4 item 2 | T2.3 |
 | R30 | `dst` never overlaps the input, and the result is `dst` resliced or a new slice: a round trip with a nil `dst`, and with a `dst` of spare capacity holding junk, gives the right bytes and leaves the input unchanged | MUST NOT | §3.1 | T2.3 |
 
@@ -306,7 +307,9 @@ suite" is `keystest.Run`.
   the same encoder the script's block-name vector uses, so the two cannot disagree. The file
   carries each vector's inputs, so a consumer reproduces it without guessing: the chain-ID
   vectors list, per transform, its ID, format version, length key and materials (kind, ID,
-  bytes), and give the compress-then-encrypt chain's two materials, on its encrypt entry, in an
+  bytes). The chunk vectors and the default encrypting chain's entry use the encryption
+  transform as E5 builds it (#5880): ID `0x0010` (RFC 5 Appendix B), format version 1, its
+  first, and an empty length key (Appendix B.1, "Its header"). The vectors give the compress-then-encrypt chain's two materials, on its encrypt entry, in an
   order their kind-then-ID order reverses. The key-file stored wrap takes a fixed nonce as an
   input, since production draws it at random. CI does not run the script. A Go test in
   `transformtest`, written from RFC 5's tables with `crypto/hkdf`, `crypto/hmac`, `crypto/aes`
@@ -331,6 +334,16 @@ suite" is `keystest.Run`.
   methods, `Harness` and `keystest.Run`; `Subject`, `transformtest.Run`, `FuzzDecode`, `Fixture`,
   `Vectors` and `LoadVectors`. A change to it is a revision of this document. Prior art: none
   needed.
+- **D11, the suite decodes through a census view, as the chain does.** RFC 5 §3.1 gives a
+  transform's `Decode` a `keys.Provider` that answers only the material IDs in the block's census,
+  of the namespace being read, and returns `ErrMalformed` for any other without asking the
+  provider. The suite builds the same view, unexported, over `Memory` and the `Encoded.Material`
+  each `Encode` returned, and every row decodes through it. Without it, a flipped byte in a body's
+  key ID would reach `Memory` as an ID it was never given and come back `ErrUnknownMaterial`, so
+  R5 would fail for every transform that names its key in its body, encryption among them. The
+  view is about 15 lines and E3's census view is the product one; the suite's own test holds the
+  two to one behaviour: an ID outside the census is `ErrMalformed` and leaves `Memory.Calls`
+  unchanged, an ID inside it reaches `Memory`. Prior art: none needed; the view restates §3.1.
 
 ## 5. Target tree
 
@@ -343,7 +356,7 @@ pkg/transform/keystest/
   suite_test.go     T2.1  Memory passes; each broken provider fails its row
                     T2.2  Memory's salvage wrap unwraps under its AAD only
 pkg/transform/transformtest/
-  suite.go          T2.3  Subject, Run, the rows of R1 to R7, R9, R29, R30
+  suite.go          T2.3  Subject, Run, the rows of R1 to R7, R9, R29, R30; the census view (D11)
   inputs.go         T2.3  the seeded round-trip inputs (D8)
   broken_test.go    T2.3  the test transform and the broken ones
                     T2.4  the broken ones for R8, R10, R11, R12
@@ -426,7 +439,7 @@ pkg/carver/internal/carvetest/  T2.5  RFC 5's vectors added to the RFC 2 plan's 
 **Subtask T2.3 estimate: 3.5 man-days.**
 
 - **Track:** team. **Depends on:** T2.1.
-- **Covers:** R1, R2, R3, R4, R5, R6, R7, R9, R13, R29, R30.
+- **Covers:** R1, R2, R3, R4, R5, R6, R7, R9, R13, R29, R30, R32.
 - **Deliverables:**
   - `transformtest.Subject` and `transformtest.Run`, consumed by E4 and E5 for the shipped
     transforms and by E3 for its test transforms (D2):
@@ -445,7 +458,8 @@ pkg/carver/internal/carvetest/  T2.5  RFC 5's vectors added to the RFC 2 plan's 
     ```
 
   - The seeded inputs (D8). The material each call uses is `Memory`'s current material for the
-    transform's `Kinds`, read once per namespace as a pin would.
+    transform's `Kinds`, read once per namespace as a pin would; every decode goes through the
+    census view of D11, over the material that body's `Encode` returned.
   - In the package's tests: a correct test transform, and the broken transforms (D1).
 - **Acceptance criteria:**
   - The test transform passes `Run` under `-race`.
@@ -465,7 +479,10 @@ pkg/carver/internal/carvetest/  T2.5  RFC 5's vectors added to the RFC 2 plan's 
   mistaking its input for its output, R1), and runs with a nil `dst` and with a junk-filled one
   (catches a decoder reading stale `dst` bytes, R30). The `max + 1` row encodes an input of
   `max + 1` bytes, zeros first and random bytes if the transform declines zeros, and decodes it
-  with `max` (R9). The authenticating rows use `Memory` (kind 2).
+  with `max` (R9). The authenticating rows use `Memory` (kind 2) behind D11's census view; a flip
+  in a body's key ID is `ErrMalformed` through the view (catches a suite that would report a
+  planted ID as unknown material, R5), and the view's own test asserts an ID outside the census
+  leaves `Memory.Calls` unchanged.
 - **Rules:** as §2; rule 9, the `decision:` marker of D2 on `Run`.
 
 ### T2.4 Fixtures and the fuzz helper
