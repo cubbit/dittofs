@@ -448,7 +448,8 @@ A stretch ends for one of two kinds of reason, and the caller **MUST** tell `Cut
 which (`realEnd`):
 
 - **Real**: the bytes stop there for good — a hole, the file's settled end, or a
-  neighbour already offloaded and committed as chunks. The last chunk is cut at whatever length is left
+  neighbour already offloaded and committed as chunks — or the caller ends the
+  stretch so that no chunk's commit passes the key budget ([§5.2](#5.2%20Packing%20rules)'s P2). The last chunk is cut at whatever length is left
   ([§2.1](#2.1%20One%20unbroken%20stretch%20per%20call)).
 - **Artificial**: the caller stopped reading — the offer's byte limit, or its age
   ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)). The bytes carry on past the end; the caller just has not offered them.
@@ -469,7 +470,7 @@ Two exceptions keep a tail from waiting forever:
 
 - **Age.** The caller **MAY** declare an artificial end real once the held tail's
   oldest byte has reached the offload pass's maximum age ([RFC 8 §6.2](rfc-8-engine.md#6.2%20When%20a%20file%20is%20offered)). That is
-  the only forced final cut, so a stream that stops writing is fully offloaded
+  the only forced cut of a held tail, so a stream that stops writing is fully offloaded
   within that age.
 - **Widening back.** Where the chunk before the stretch is a ref shorter than
   `Min` that ends exactly where the stretch starts — a forced cut from an earlier
@@ -947,7 +948,7 @@ passes, and **MUST NOT** survive its pass. Once there is a lookup, a lookup erro
 | # | Rule |
 | --- | --- |
 | P1 | A block holds whole chunks only. A chunk is never split to make a block come out an exact size. |
-| P2 | A block ends when it reaches the block target, overshooting by at most one chunk, or when it reaches P4's count cap, whichever comes first. It **MUST** also end early, at a chunk boundary, when the next chunk would take its commit past the key budget `K`, counting the keys of the zero refs that fall within its span; a block closed early counts as a short block. A chunk whose keys alone, with the per-block and per-file keys, pass `K` goes alone in a block, and that block's commit is split into transactions that each stay within `K`. A block falls short of the target only when P4's cap or the key budget closed it, or it is the last block of its pass, within [§5.4](#5.4%20The%20short%20last%20block)'s bound; no other block is short. |
+| P2 | A block ends when it reaches the block target, overshooting by at most one chunk, or when it reaches P4's count cap, whichever comes first. It **MUST** also end early, at a chunk boundary, when the next chunk would take its commit past the key budget `K`, counting the keys of the zero refs that fall within its span; a block closed early counts as a short block. No chunk's keys, with the per-block and per-file keys, pass `K`: the caller **MUST** end a stretch, as real, before any extent of at most `Max` bytes in it would replace refs whose keys, with one chunk's own keys and the per-block and per-file keys, pass `K` ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut), [RFC 8 §6.7](rfc-8-engine.md#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile)). So every block holds at least one chunk, and its commit is one transaction ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)); the assembler never splits a commit. A block falls short of the target only when P4's cap or the key budget closed it, or it is the last block of its pass, within [§5.4](#5.4%20The%20short%20last%20block)'s bound; no other block is short. |
 | P3 | A block holds only the chunks whose bytes it actually carries. An all-zero chunk is a zero ref, and no block carries it ([RFC 6 §3.5](rfc-6-block-metadata.md#3.5%20Operations%20that%20make%20holes)). |
 | P4 | A block holds at most `N` chunks, where `N` is a constant of the block format version: 1,024 in this one. It bounds the header ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)), which short chunks next to holes would otherwise grow without limit. |
 | P5 | The target counts **carried** bytes. Adopted chunks and zero refs contribute nothing, or a mostly-deduplicated file yields blocks of a few kilobytes. |
@@ -976,6 +977,22 @@ stop having a single answer. P2 follows from P1: if a block has to end on a chun
 boundary, the most it can overshoot by is the chunk that crossed the line. At the
 default settings the cap is never the limit on full-size chunks — a 1,024-chunk
 block of `Min`-sized chunks is 64 MiB — so it bites only on runs of short chunks.
+
+**Why the caller ends the stretch, and no floor on `K` does.** A commit replaces
+every ref its chunks overlap ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)). A ref can be one byte long: a stretch ends
+at a hole, at an offloaded neighbour or at the age ceiling ([§2.4](#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)), and widening
+is optional, so without it each such piece stays its own ref ([§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)'s ceiling
+under random overwrite). So `Max` bytes can lie under `Max` refs, each at least one
+key to replace: 2²⁰ at the default `Max` of 1 MiB. No floor on `K` follows from
+`Max` and `Min`, and `K` is derived from the backend, never configured
+([RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)). A bound on the stretch does follow. A chunk is at most `Max` bytes (B3),
+so a stretch in which no extent of at most `Max` bytes replaces refs past the
+budget yields no chunk that passes it. The caller knows those keys, because it
+counts them for P2's early close ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline)). Every stretch makes progress: live refs
+do not overlap, so one byte lies under at most one ref, and a one-byte chunk's
+commit writes a fixed number of keys, whatever the file. The cost is a short
+chunk, and chunks cut from a new start after it until they rejoin the earlier ones
+([§3.5](#3.5%20What%20%22deterministic%22%20covers)), only where refs are that dense.
 
 P3 is worth spelling out, because the tempting mistake is to let already-stored
 chunks ride along so that a block's chunk list covers an unbroken range. It must
@@ -1066,7 +1083,7 @@ Each check is a pure function of a chunk stream and settings; the two rows marke
 | --- | --- |
 | P1, P2, P4 | Fold random chunk streams, and a run of 5,000 chunks of 1 KiB between holes. Assert every block ends on a chunk, overshoots the target by at most one chunk, and holds at most `N` chunks. |
 | P3 zero chunks | Fold a stream with all-zero chunks. Assert none is in a plan and each is a zero ref. |
-| P5 zero refs | Fold a stream of carried chunks between runs of all-zero chunks. Assert every block but the last reaches the target in carried bytes. |
+| P5 zero refs | Fold a stream of carried chunks between runs of all-zero chunks, with no count-cap or key-budget closure. Assert every block but the last reaches the target in carried bytes. |
 | P5 carried bytes (with the lookup) | Fold a stream in which the lookup finds 90 % of the chunks. Assert every block but the last reaches the target in carried bytes. |
 | P6 repeats | Repeat one chunk three times in one block's span, and once more past the block's end. Assert the first block carries it once with three refs, and the second block carries it again. |
 | [§5.3](#5.3%20A%20block%20packs%20chunks%2C%20whichever%20files%20they%20came%20from) packing | Fold 10³ files of 64 KiB. Assert ⌈total / target⌉ plans, each file's chunks contiguous in one plan or split only at a block end. |
@@ -1074,7 +1091,7 @@ Each check is a pure function of a chunk stream and settings; the two rows marke
 | [§5.5](#5.5%20A%20pending%20block%20is%20a%20plan%2C%20not%20a%20buffer) no bytes | Fold 1 GiB of chunks. Assert the assembler's memory is independent of chunk size, and the slices `emit` handed over are not retained. |
 | lookup error (with the lookup) | Make the lookup fail. Assert every chunk is carried. |
 | P2 no short block mid-pass | Fold a pass of many files whose chunks end between blocks at every possible point, with no count-cap or key-budget closure; assert every block but the last reaches the target. An assembler that closes a block at a file's end puts short blocks mid-pass. |
-| P2 key budget | Fold a stream whose chunks' keys reach `K` before the block target. Assert the block closes at the last chunk that keeps its commit within `K`, counting the per-block and per-file keys, no plan's keys exceed `K`, and the next block starts with the chunk that did not fit. Fold a few carried chunks between runs of 10⁴ zero chunks, each replacing an existing ref; assert the zero refs' keys close the block before `K`. Fold one chunk whose keys alone pass `K`; assert it is alone in its block and the block's commit is split into transactions each within `K`. |
+| P2 key budget | Fold a stream whose chunks' keys reach `K` before the block target. Assert the block closes at the last chunk that keeps its commit within `K`, counting the per-block and per-file keys, no plan's keys exceed `K`, and the next block starts with the chunk that did not fit. Fold a few carried chunks between runs of 10⁴ zero chunks, each replacing an existing ref; assert the zero refs' keys close the block before `K`. Fold one chunk whose keys, with the per-block and per-file keys, are exactly `K`; assert it is alone in its block and its plan's keys are `K`. |
 | block target range | Configure a block target of 512 KiB, of 128 MiB, and of exactly 1 MiB and 64 MiB; assert the first two are refused at startup and nothing is assembled, and the last two are accepted. |
 
 ## 6. Boundaries are public

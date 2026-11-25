@@ -44,7 +44,8 @@ the corpus fetch are registered here and shared (§1.4).
 caller, the dedup oracle, and the first release's `Add` takes no lookup and returns no error
 (D3); P2, A3, A7, §5.1 and §5.4: a block must close early at the key budget `K`, counting zero
 refs' keys and the per-block and per-file keys, and counts as a short block that A3 does not
-limit; a chunk that alone passes `K` goes alone in a block whose commit is split (D3); §3.2: the
+limit; no chunk passes `K` alone, because the caller ends a stretch, as real, before one could
+(§2.4), so a commit is never split (D3); §3.2: the
 minimum-size count takes only the bytes before the byte under test, a passing byte ends its
 chunk, and the first byte tested is at index `Min` − 1; §3.7 and §9: both keys are `[32]byte`,
 an all-zero chunk-ID key is refused, and the chunking key must agree with the encryption flag,
@@ -423,9 +424,12 @@ pkg/carver/*/testdata/         E2: golden vectors; E3 to E5: fuzz seeds
   ref's included, with the commit's per-block and per-file keys, counted by the caller (RFC 8
   §6.3); it charges the per-block keys once a block and the per-file keys once for each file in
   it, and closes a block early, at a chunk boundary, before a chunk that would pass `K` (RFC 2
-  P2, A7 as amended). A chunk that alone passes `K` goes alone in a block, marked so the RFC 8
-  offload plan's commit splits it into transactions within `K`: the pipeline cutting a plan after the fold instead
-  would duplicate P1's chunk boundaries in the engine. The engine must read `K`: `kvstore`
+  P2, A7 as amended); the pipeline cutting a plan after the fold instead would duplicate P1's
+  chunk boundaries in the engine. No chunk passes `K` alone: the RFC 8 offload plan's Carve state
+  ends a stretch, as real, before any extent of at most `Max` bytes would replace refs past it
+  (RFC 2 §2.4, P2 as amended), so the fold never splits a commit and RFC 6 §4.1's one transaction
+  per block holds. No floor on `K` replaces that end: refs can be one byte long, so `Max` bytes
+  can lie under 2²⁰ refs at the default (RFC 2 §5.2). The engine must read `K`: `kvstore`
   computes it at open from the backend's limits and exports no accessor
   (`pkg/metadata/kvstore/budget.go:75`, `store.go:207` on `feat/storage-v2`); the RFC 8 offload
   plan's epic 15 adds the accessor and is its first reader ("early close within `K`"). Prior
@@ -576,9 +580,8 @@ budget row among them (RFC 2 §5.7 as amended); §10.2's block-target edge cases
 - The constructor and the block-target range, with §5.2's `decision:` at the check.
 - The fold: whole chunks, the target in carried bytes, the count cap (P1, P2, P4, P5).
 - The key budget: the early close at `K` with zero refs' and per-block and per-file keys counted,
-  which counts as a short block A3 does not limit, and a chunk alone over `K` in a block of its
-  own, marked for a split commit; the P2 key-budget check's three cases (P2, A3, A7 as
-  amended).
+  which counts as a short block A3 does not limit; the P2 key-budget check's three cases, the
+  last a chunk whose keys are exactly `K` alone in its block (P2, A3, A7 as amended).
 - Zero refs (P3); repeats within a block (P6), carried once as the store's block commit requires:
   `kvstore.BlockCommit` keeps carried chunks apart from refs, and its commit refuses a chunk
   carried twice (`pkg/metadata/kvstore/offload.go:54`, `:115` on `feat/storage-v2`).
@@ -655,7 +658,7 @@ nightly; RFC 2's suites paragraph names each new suite.
 | --- | --- | --- | --- |
 | Composing the carver into the engine: `Deps.Carver` (absent from the engine's `Deps` on `feat/storage-v2`), the per-namespace settings value at the Carve state, the `enginewire` entry for `pkg/carver` in the engine's import walk, `TestImportRule`'s allowlist (§1.2) | the engine's wiring (RFC 8 §2.6) | RFC 8 offload plan, epics 15 and 21 | those epics land |
 | Deriving and exporting the `carver_` series of RFC 2 §2.3 (§1.5 rule 3) | the carver keeps no counters; its caller derives them (RFC 25 §2.8) | RFC 8 offload plan, epic 15 | the Carve state calls `Cut` |
-| RFC 2 §2.4's two exceptions, the age and widening back, and RFC 8 §6.7's run widening (§1.4) | they are the caller's decisions | RFC 8 offload plan, epic 15 | the pipeline offers runs |
+| RFC 2 §2.4's real end at the key budget (P2 as amended), its two exceptions, the age and widening back, and RFC 8 §6.7's run widening (§1.4) | they are the caller's decisions | RFC 8 offload plan, epic 15 | the pipeline offers runs |
 | RFC 2 §5.3's "a block never mixes two flows or two namespaces", and §10.1's checks at the consumer, whole chunks and copies made before `emit` returns (§1.5 rule 5) | the pipeline decides what one assembler folds and what `emit` keeps | RFC 8 offload plan, epic 15 | its Assemble state lands |
 | Recording which settings produced a namespace's content and reporting a change as a migration (RFC 2 §3.6, RFC 8 §2.4, RFC 13 §5.3) (§1.4) | the engine's validator row, as RFC 13's plan assigns it; the record itself is `settings.Table.Bound`'s once the node's table holds `Target`, declared bound | RFC 8 offload plan, epic 16 (its D11) | the engine applies settings |
 | `Target`'s settings section, `pkg/carver/section`, added to the node's table (`newTable`), and RFC 13 Appendix B's check passing with it (§6 point 2) | the node's composition is the RFC 8 offload plan's; Appendix B's row has no key yet | RFC 8 offload plan, epic 21 | RFC 13 names `Target`'s key |
