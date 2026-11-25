@@ -16,6 +16,7 @@ package main
 // the walk stops and only flags are still checked.
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -489,41 +490,77 @@ func walkCommands(cmd *cobra.Command, path string, fn func(*cobra.Command, strin
 	}
 }
 
-// deletedPaths are the paths of v1's control plane, its API client and its
-// CLI's commands that the v2 node replaced. A page naming one describes code
-// that no longer exists, so a reader following it finds nothing.
+// deletedPaths are the paths of v1's control plane, its API client, its
+// identity providers and its test drivers that the v2 node replaced. A page
+// naming one describes code that no longer exists, so a reader following it
+// finds nothing. v1's removed dfs commands are not paths:
+// TestDocsCommandReferences refuses a page that runs one.
 var deletedPaths = []string{
 	"pkg/controlplane",
 	"internal/controlplane",
 	"pkg/apiclient",
 	"pkg/snapshot",
+	"pkg/config",
+	"pkg/identity/ldap",
+	"pkg/identity/kerberos",
+	"internal/sysinfo",
 	"pkg/auth/sid/mapper.go",
 	"pkg/health/share.go",
 	"pkg/health/cache.go",
 	"test/e2e/helpers",
 	"test/e2e/snapshot",
-	"metadata-store-migration.md",
+	"test/e2e/main_test.go",
+	"test/harness/fixture/api.go",
+	"test/harness/fixture/shares.go",
+	"test/integration/ad-dc/ad_dc_ldap_test.go",
+	"test/integration/ad-dc/netlogon_smbclient_test.go",
+	"docs/guide/metadata-store-migration.md",
 }
 
-// deletedPathsIn returns each deleted path line names. A path counts only
-// where its name ends, so pkg/snapshot does not match pkg/snapshotter or
-// pkg/snapshot.go.
+// deletedPathsIn returns each deleted path line names, a deleted page also by
+// its name alone, as a page beside it links it. A path
+// counts only as a whole name, so pkg/snapshot matches neither
+// pkg/snapshotter, pkg/snapshot.go nor mypkg/snapshot.
+//
+// decision: a path inside a URL is not reported, since a link to a tag or
+// another branch names a file that exists there. A path written with
+// backslashes is not reported either; the pages write paths with slashes.
 func deletedPathsIn(line string) []string {
 	var found []string
-	for _, p := range deletedPaths {
-		for rest := line; ; {
-			i := strings.Index(rest, p)
-			if i < 0 {
-				break
+	for _, path := range deletedPaths {
+		for _, p := range []string{path, filepath.Base(path)} {
+			if p != path && !strings.HasSuffix(p, ".md") {
+				continue // only a page is linked by its name alone; share.go names a live file too
 			}
-			rest = rest[i+len(p):]
-			if nameEnds(rest) {
-				found = append(found, p)
+			if namedIn(line, p) {
+				found = append(found, path)
 				break
 			}
 		}
 	}
 	return found
+}
+
+// namedIn reports whether line names p as a whole name outside a URL.
+func namedIn(line, p string) bool {
+	for from := 0; ; {
+		i := strings.Index(line[from:], p)
+		if i < 0 {
+			return false
+		}
+		i += from
+		from = i + 1
+		if i > 0 && (isNameChar(line[i-1]) || line[i-1] == '.') {
+			continue
+		}
+		if !nameEnds(line[i+len(p):]) {
+			continue
+		}
+		start := strings.LastIndexAny(line[:i], " \t(<[`\"'") + 1
+		if !strings.Contains(line[start:i], "://") {
+			return true
+		}
+	}
 }
 
 // nameEnds reports whether a path's last element ends where rest starts: at
@@ -543,9 +580,8 @@ func isNameChar(c byte) bool {
 	return c == '_' || c == '-' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 }
 
-// TestPagesNameNoDeletedPath checks the pages a reader follows, every page
-// under docs/ but the RFCs and plans, which are design history, and the
-// root's README.md and CLAUDE.md, for a path of v1's control plane.
+// TestPagesNameNoDeletedPath checks README.md, CLAUDE.md and every page under
+// docs/ but the RFCs and plans, which are design history, for a deleted path.
 func TestPagesNameNoDeletedPath(t *testing.T) {
 	for _, p := range deletedPaths {
 		if _, err := os.Stat(filepath.Join(sourceRoot, p)); err == nil {
@@ -580,10 +616,10 @@ func TestPagesNameNoDeletedPath(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}
-		rel := filepath.ToSlash(strings.TrimPrefix(path, sourceRoot+string(filepath.Separator)))
+		rel, _ := filepath.Rel(sourceRoot, path)
 		for i, line := range strings.Split(string(body), "\n") {
 			for _, p := range deletedPathsIn(line) {
-				problems = append(problems, rel+":"+strconv.Itoa(i+1)+": names "+p+", which v2 deleted")
+				problems = append(problems, fmt.Sprintf("%s:%d: names %s, which v2 deleted", filepath.ToSlash(rel), i+1, p))
 			}
 		}
 	}
@@ -601,7 +637,12 @@ func TestDeletedPathsIn(t *testing.T) {
 	}{
 		{"The Runtime (`pkg/controlplane/runtime/`) routes", "pkg/controlplane"},
 		{"see pkg/apiclient.", "pkg/apiclient"},
-		{"[the guide](metadata-store-migration.md)", "metadata-store-migration.md"},
+		{"[the guide](metadata-store-migration.md)", "docs/guide/metadata-store-migration.md"},
+		{"see docs/guide/metadata-store-migration.md.", "docs/guide/metadata-store-migration.md"},
+		{"`pkg/apiclient/`", "pkg/apiclient"},
+		{"see pkg/node/apiv1/share.go", ""},
+		{"mypkg/snapshot and old-metadata-store-migration.md", ""},
+		{"https://github.com/cubbit/dittofs/blob/v0.35.0/pkg/controlplane/x.go", ""},
 		{"`pkg/snapshot`", "pkg/snapshot"},
 		{"pkg/snapshotter, pkg/snapshot.go and pkg/controlplanes", ""},
 		{"internal/node builds the API", ""},
