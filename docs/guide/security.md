@@ -252,8 +252,8 @@ See [Encryption](encryption.md) for KMIP and key rotation.
 - Grant only the users and groups who need it, at the lowest level that works
   (`dfsctl grant set archive --group auditors --access read`).
 - Allow only the client addresses that need it
-  (`dfsctl share export-policy update archive --client 192.0.2.0/24=read-write`). Use
-  addresses, not host names.
+  (`dfsctl share export-policy update archive --client 192.0.2.0/24=read-write`). A share
+  with no client rules admits every address. Use addresses, not host names.
 - Require a real sign-in (`--min-proof secret` or `ticket`), so guests are refused.
 - Make shares read-only where nobody needs to write (`--read-only`).
 - Encrypt SMB traffic to shares holding sensitive data (`--smb-encrypt`).

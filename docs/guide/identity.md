@@ -242,10 +242,18 @@ admin:
 3. Delete `/etc/dittofs/dittofs.keytab`, or keep it readable by its owner only. The
    node stores the keytab sealed and does not read the file again.
 
-`If-None-Match: *` says this is the first import; without it the API answers `428`. To
-replace a keytab, `DELETE $URL/installation/keytab` with the same headers but no
-`If-None-Match`, then import the new one; an import over an existing keytab is refused
-with `409`.
+`If-None-Match: *` says this is the first import; without it the API answers `428`. An
+import over an existing keytab is refused with `409`. To replace a keytab, delete the
+stored one first, then import the new one. A DELETE needs the stored keytab's version,
+which the `identity.keytab` setting's `ETag` header gives, and an `Idempotency-Key` of
+your choice:
+
+```bash
+curl -si "$URL/settings/identity.keytab" -H "Authorization: Bearer $TOKEN" | grep -i '^etag'
+# ETag: "3"
+curl -s -X DELETE "$URL/installation/keytab" -H "Authorization: Bearer $TOKEN" \
+  -H 'If-Match: "3"' -H 'Idempotency-Key: delete-keytab-1'
+```
 
 ### Domain-aware SMB sign-in
 
@@ -272,6 +280,7 @@ does two things:
 
 - The directory is connected ([Part B](#part-b-connect-the-directory)) with
   `identity.directory.realm` and `identity.directory.base` set, and its schema is `ad`.
+  An online join's `--ou` must lie under `identity.directory.base`.
 - DittoFS finds domain controllers through DNS, unless `identity.directory.dc_address`
   names one.
 - The account uses AES keys only (`msDS-SupportedEncryptionTypes` = `0x18`). An online
@@ -374,7 +383,8 @@ Windows' 30-day limit. A failed change is retried after an hour. To change it no
 dfsctl domain rotate-machine-password --wait
 ```
 
-Tickets issued under the previous password keep working for ten hours plus the clock
+A rotation is refused while a join runs, and fails when the installation is not
+joined. Tickets issued under the previous password keep working for ten hours plus the clock
 skew. Two health conditions, shown by `dfsctl status`, report trouble:
 
 | Condition | Meaning | What to do |

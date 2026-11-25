@@ -84,9 +84,9 @@ None. Earlier releases had per-share and per-store durability settings (`commit_
 `relaxed_metadata_commit`, `relaxed_durability`, `blockstore.journal.dirty_expire`).
 This version has none of them: the config file refuses
 `blockstore.journal.dirty_expire`, and no `dfsctl` command or API route sets the
-others. There is also no timer that commits written data in the
-background: data that is never committed stays uncommitted until the application
-commits it.
+others. Nothing promises that written data reaches the disk before the application commits
+it. The node may sync some of it while doing its own housekeeping, but you cannot rely
+on when.
 
 ## See also
 

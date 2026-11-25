@@ -105,7 +105,8 @@ Remove the share's own quota with `dfsctl quota remove archive`.
 4. When she deletes enough to drop back under the soft limit, the grace period resets.
    The next time she passes the limit, she gets a full grace period again.
 
-A soft limit with a `--grace` of `0` is refused as soon as it is passed.
+With a `--grace` of `0`, the write that passes the soft limit is allowed, and every
+later write that adds bytes or files is refused.
 
 ## What a client sees over a quota
 

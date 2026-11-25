@@ -41,10 +41,12 @@ The grant levels:
 | `none` | nothing: the caller is refused, even if one of its groups is granted more |
 | `read` | read files and list directories |
 | `read-write` | read and change files, as the file permissions allow |
-| `admin` | everything, past file permissions too: an admin can change any file's owner, mode or ACL |
+| `admin` | everything, past file permissions too: an admin can change any file's owner, mode or ACL (not on a share that squashes the caller, see [squash](#map-users-to-an-anonymous-user-squash)) |
 
 A caller's **own** grant decides, if it has one. With no grant of its own, the highest
-grant among its groups decides. With neither, it is refused. A new share admits nobody
+grant among its groups decides. With neither, a grant to all signed-in users or to
+everyone decides, if the share has one (`dfsctl grant` has no flag naming those yet).
+Otherwise it is refused. A new share admits nobody
 until a grant names someone.
 
 ## Give alice read-write on the archive share
@@ -74,14 +76,15 @@ until a grant names someone.
 
 3. Let her write at the top of the share. A new share's top directory is mode `0755`
    and owned by nobody, so a `read-write` grant alone does not let alice create files
-   there. A user with an `admin` grant gives it to her from a client:
+   there. No `dfsctl` command sets its owner yet. Instead, a user granted `admin` on the
+   share does it from a client, for example from Windows:
 
-   ```bash
-   # run by a user granted admin on archive, on a mounted share
-   sudo chown 1000 /mnt/archive
+   ```cmd
+   icacls \\server\archive /setowner alice
    ```
 
-   Or create a directory for her instead and leave the top as it is.
+   Or that admin creates a directory for alice, owned by her, and leaves the top as it
+   is.
 
 4. alice mounts the share and works in it:
 
@@ -98,14 +101,17 @@ Create a group, add its members, and grant the group `read`:
 
 ```bash
 dfsctl group create auditors --gid 2000
-dfsctl group add-member auditors bob
-dfsctl group add-member auditors carol
-dfsctl grant set archive --group auditors --access read
 ```
 
 ```console
 NAME      ID                                    GID
 auditors  fd1591fa-f9b8-4e98-9536-9559fcbff2d7  2000
+```
+
+```bash
+dfsctl group add-member auditors bob
+dfsctl group add-member auditors carol
+dfsctl grant set archive --group auditors --access read
 ```
 
 bob and carol can now mount `archive`, list it and read files the file permissions let
@@ -145,8 +151,9 @@ dfsctl share export-policy update archive --read-only=false
 ## Allow only some machines
 
 An export policy holds **client rules**: an address range, or a netgroup, and the
-access it allows. The first rule that matches the client's address decides. A client
-that matches no rule is refused.
+access it allows. A share with no client rules admits every address. Once it has
+rules, the first one that matches the client's address decides, and a client that
+matches none is refused. A rule naming a netgroup that does not exist admits nobody.
 
 Allow the office network read-write, and one build machine read-only:
 
@@ -236,6 +243,7 @@ How grants and squash combine for a caller who signed in as alice (a user with a
 | --- | --- | --- | --- |
 | `read-write` | gets in, acts as alice | gets in, acts as alice | gets in read-write, acts as anonymous |
 | `read` | gets in read-only, acts as alice | gets in read-only, acts as alice | gets in read-only, acts as anonymous |
+| `admin` | gets in, acts as alice, past file permissions | gets in, acts as alice, past file permissions | gets in, acts as anonymous, no bypass |
 | `none`, or no grant at all | refused | refused | refused |
 
 Two kinds of caller always act as the anonymous user, whatever `--squash` says:
@@ -247,7 +255,8 @@ Two kinds of caller always act as the anonymous user, whatever `--squash` says:
 
 `--squash root` only matters for a caller that maps to root, and no sign-in maps to root
 on this version, so today it behaves like `none`. No squash mode keeps root's
-administrator rights: only an `admin` grant lets a caller past file permissions.
+administrator rights: only an `admin` grant lets a caller past file permissions, and
+only when the caller is not squashed.
 
 ## Grant users and groups from Active Directory
 
@@ -316,13 +325,15 @@ mode bits the ACL works out to.
 2. **The share's anonymous user cannot be chosen.** The export policy has no `dfsctl`
    flag for it, so squashed callers act as the built-in anonymous user.
 3. **No grant to everyone from `dfsctl`.** `dfsctl grant` names a user, a group or a
-   directory principal; it has no flag for "everyone" or "authenticated users".
+   directory principal; it has no flag for "everyone" or "all signed-in users".
+4. **No command sets a share's top-directory owner.** It starts owned by nobody; an
+   `admin` grantee sets it from a client.
 
 ## Common problems
 
 - **"Permission denied" when creating a file at the top of a new share.** The top
-  directory is owned by nobody. An `admin` must `chown` it, or create subdirectories for
-  users. See step 3 of [Give alice read-write](#give-alice-read-write-on-the-archive-share).
+  directory is owned by nobody. A user granted `admin` must give it an owner from a
+  client, or create subdirectories for users. See step 3 of [Give alice read-write](#give-alice-read-write-on-the-archive-share).
 - **A group member is refused although the group is granted.** The member has a grant
   of its own, which beats the group's. Check `dfsctl grant list archive` and remove it
   with `dfsctl grant remove archive --user <name>`, for example
