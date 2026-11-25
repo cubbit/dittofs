@@ -311,7 +311,9 @@ fault transport is epic 3's.
      contracts it imports, never `pkg/transform/chain` or a transform's package;
    - `pkg/remote/memory`: `pkg/remote` and `pkg/sim`'s clock;
    - `pkg/remote/s3` and its `internal/` packages: `pkg/remote` and `aws-sdk-go-v2`;
-   - `pkg/remote/s3/s3fault`: `pkg/remote` and `pkg/sim`;
+   - `pkg/remote/s3/s3fault`, test support over the S3 transport: `pkg/remote`, `pkg/sim` and
+     `aws-sdk-go-v2`, for the admin client of its fresh buckets and the operation name of the
+     request it alters;
    - `pkg/remote/remotetest`: `pkg/remote` and `internal/prof`.
 
    No package imports `pkg/settings`, `pkg/metrics` or `pkg/health`, which count as
