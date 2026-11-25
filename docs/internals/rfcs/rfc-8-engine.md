@@ -613,8 +613,8 @@ engine reads it through `Lifecycle` at step 1 and at each retried open
 (proposal, with RFC 16 §3's read and an admin-only node action in RFC 23 §4
 that writes it, shaped as `acknowledge-unreadable`, whose `expect JournalID` it
 follows). It applies only to that recorded journal, never to one not recorded,
-and is consumed when the new journal's `RecordJournal` commits, so it never
-acknowledges a later loss on the same device. A journal not recorded raises no `journal_lost`: its content is
+and is consumed when the new journal's `RecordJournal` commits or the recorded
+journal opens, so it never acknowledges a later loss on the same device. A journal not recorded raises no `journal_lost`: its content is
 intact, and acknowledging a loss would resolve what it alone holds as **Lost**
 ([§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata)). It serves once `RecordJournal` records it, at a later start (step 1),
 and no condition names it yet.
@@ -2603,7 +2603,8 @@ shared copies dead weight.
 - The Carve state **MUST** also end a stretch, as real, before any extent of at
   most `Max` bytes in it would replace refs whose keys, with one chunk's own keys
   and a commit's per-block and per-file keys, pass the key budget `K`
-  ([RFC 2 §2.4](rfc-2-carver.md#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut), P2). It counts the replaced refs' keys from the covering lookup
+  ([RFC 2 §2.4](rfc-2-carver.md#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut), P2); the end may fall inside an extent, down to one byte past the
+  stretch's start, so a stretch is never empty. It counts the replaced refs' keys from the covering lookup
   the Assemble state already reads, so no chunk's commit passes `K` alone.
 - On an artificial end `Cut` returns `consumed`, the bytes it cut; the engine
   reports nothing past `consumed`, and the tail stays **Dirty** and is offered
@@ -3610,7 +3611,7 @@ destroyed fails as **Lost**, reported as itself and never as corruption.
 
 **A commit never lands under destroyed material.** An attempt pins its
 material from Mint to Commit or Abandon ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)). The offload commit
-transaction **MUST** guard-read ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit)) the key record of each material
+transaction **MUST** read with conflict tracking ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit)) the key record of each material
 the attempt pinned, and the material IDs it reads are the ones the block's
 `encodings` name, never a list the caller passes. It refuses to commit if any
 record is marked destroyed. The destroy writes that record, so a destroy that
@@ -3635,8 +3636,10 @@ like any destroyed material.
 pinned has been reported destroyed: Mark checks that under the same lock the
 notice's `Unmark` takes, and leaves the extents **Dirty**. The reseed
 ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) **MUST** clear the offloaded bit of each extent whose block's
-`encodings` name material reported destroyed, before that file can be evicted,
-so a crash between a destroy and its `Unmark` loses nothing. A pass whose pin
+`encodings` name material whose key record is marked destroyed, before that file
+can be evicted. It reads that state from the durable key records, which a
+master-key destroy marks too ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)), never from the notice's
+cursor, so a crash between a destroy and its `Unmark` loses nothing. A pass whose pin
 finds the share's current material destroyed **MUST** refuse at Intent, before
 any put, so it never puts and abandons the same content on every pass; the
 content stays **Dirty** until new material is current, and the provider's
@@ -4136,7 +4139,7 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§6.4](#6.4%20The%20offload%20guard%20is%20narrow) guard across a removal | Stall a truncate between its journal step and its transaction; trigger an offload. Assert the offer waits, and no ref lies past `size` after both finish. |
 | [§8.3](#8.3%20A%20pass%20in%20flight%20survives%20a%20removal%20under%20it) transfer survives a removal | Stall a pass's upload; truncate the file below the offered extent; release the upload. Assert the upload completes, the commit drops the refs past the new size, drops a straddler whole and re-offers its outside part, applies the rest, and the truncated extent reads as past end of file. Run both commit orders. Repeat with deallocate, release and a clone onto the file. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) restart re-offer | Crash after a put and before its commit; restart. Assert the extents are offered again under a new name, the first object stays unrecorded with its intent, collection removes both once the epoch is superseded, and reads are correct. Crash after a commit, before `report`; assert the re-offer carries every chunk, its commit finds every ref already committed and writes none, its block is born dead, and the extents become evictable. |
-| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) journal gone | Write to two shares on one device journal without offloading; stop; delete the journal directory; start. Assert both shares are refused, each named, `journal_lost` is raised, and no journal is created. Acknowledge the loss; assert the shares serve, the condition clears, and a read of the unoffloaded extent fails as **Lost**, never zeros. Repeat with the shard's journal replicated (cluster): assert it rejoins from a replica with no operator action. |
+| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) journal gone | Write to two shares on one device journal without offloading; stop; delete the journal directory; start. Assert both shares are refused, each named, `journal_lost` is raised, and no journal is created. Acknowledge the loss; assert the shares serve, the condition clears, and a read of the unoffloaded extent fails as **Lost**, never zeros. Acknowledge a loss of a journal that is only missing, reattach it and let the retried open succeed, then lose it again: assert `journal_lost` is raised, since the open consumed the acknowledgement. Repeat with the shard's journal replicated (cluster): assert it rejoins from a replica with no operator action. |
 | [§2.7](#2.7%20The%20version%20limit) version limit | Start with a block of 16 versions; assert `S‖id‖vl` is committed before the first write is accepted. Write unstably until fewer versions remain than the trigger (the larger of 8 and the peak rate times the margin); assert the limit is raised in a committed transaction before the journal is given it. Block the raise's commit; assert the write that reaches the limit answers `ErrDelay`, not `ErrNoSpace`, and succeeds once the raise commits. Fail the raise's commit once with the journal at its limit and no write pending; assert, with no write or draw in between, that the raise commits and the next write succeeds. Fail a `Bind`'s limit write after its `Share` raised the counter to the limit last passed; assert, with no write in between, that the limit is raised and a write to a served share succeeds. Crash with a reported, unsynced version; restart; assert no version is issued again. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) attach above the floor | Move a share whose refs reach version 9·10⁸ onto a node whose journal's counter is near 2·10⁶; write over an extent the imported refs cover, offload, evict, read. Assert the new write's version exceeds 9·10⁸ and the read returns the new bytes. Repeat for a clone and a restore into the node. Remove the raise: the read returns the imported content. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) attach after a device loss | Write unstably to a share, the metadata store stalled so none commits, until its journal has reported versions far above its version floor; destroy the device, acknowledge the loss, and attach the share to a new journal whose counter starts at 0. Assert the counter is raised above the share's version limit `S‖id‖vl` as well as its floor, so no version the lost journal reported is issued again, and a write after the attach reads back. Assert too that the attach wrote the limit as a tracked max-write, the incarnation and the verifier changed, and a share whose `rm` row reads offloaded was not attached. An attach that raises only above the floor reissues those versions ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)). |

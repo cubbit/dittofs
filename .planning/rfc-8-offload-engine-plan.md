@@ -57,7 +57,7 @@ sources; §12.1 lands `PreWarm` with its first caller, an operator's pre-warm ac
 yet; §15.4's B1 measures against raw puts on the same store in runs interleaved with it; §2.5 makes the lost-journal
 acknowledgement a store record bound to the lost `JournalID`, and §2.1's `Lifecycle` row reads it
 (§6 point 1, decided); §10.4 has the offload commit transaction read each pinned material's
-`destroyed` mark as a guard read, over the material IDs the block's `encodings` name, and refuse,
+`destroyed` mark as a tracked read, over the material IDs the block's `encodings` name, and refuse,
 the attempt then abandoned, with a destroyed master key covered through RFC 5 Appendix B.2's marking of the records it wraps
 and a `decision:` on an undeclared loss; Mark leaves an attempt's
 extents dirty once its material is reported destroyed, the reseed clears a destroyed material's bits
@@ -215,14 +215,15 @@ hide its green half; its hold-mark offloads are RFC 12's (D7). The "shard handed
 part hands over, of §15.1's "§4.1 verifier inputs" and RFC 17's V25, are the cluster stage's (D9, §6.1). "§2.1 remote
 required" is the RFC 23 plan's (its epic 3), run through the node. The module
 checks of RFC 8 §6.1.1, §6.3 and §7.4 are unit tests of `pkg/workqueue`, `offload/` and the speculator,
-and RFC 6 §11.2's "K floor" row a unit test of `kvstore`, written green with epics 13, 15 and 17: `unit` keeps no known list. O1's crash leg is the exception: it
+and RFC 6 §11.2's "K floor" row a `kvstore` test run over each backend §11.2 names (the memory KV,
+Badger, FoundationDB where it runs), written green with epics 13, 15 and 17: `unit` keeps no known list. O1's crash leg is the exception: it
 is a durability property, so epic 15 writes it in `engine-conformance` over the real journal, red
 until S6 (rule 8). The journal plan's system
 scenarios and the RFC 21 and RFC 22 rows run in `e2e`, which keeps no known list either, so they land
 green with epic 21 or 22 (§6 point 3).
 
-**The test components.** The first part's fixture (`enginetest`) gains options for the carver, the
-syncer and `Refs`. Until S5 delivers the components, a row that needs one fails at one named check, the
+**The test components.** The first part's fixture (`enginetest`) gains options for the carver, RFC
+5's chain over `keystest`'s `keys.Provider`, the syncer and `Refs`. Until S5 delivers the components, a row that needs one fails at one named check, the
 fixture's refusal of a missing component, as the first part's rows failed at the journal's `Init`; the
 epic that first calls a component swaps the real one in (epic 15 the carver and RFC 5's chain over its
 in-memory `keys.Provider`, epic 16 RFC 3's syncer over RFC 4's in-memory store through `codec.Store`,
@@ -354,8 +355,10 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
      errors, epic 15. The RFC 5 plan's epic 1 makes the root a pure contract and moves the chain and
      its stages into subpackages (`chain`, `compress`, `encrypt`); the codec imports only the root,
      and the node's content wiring builds the concrete chain and injects it (D4);
-   - RFC 3's contract (`StoreID`, the flow's value types and errors), epic 16, and RFC 2's (the
-     carver's value types), epic 15, each in the unit its plan keeps apart from the implementation.
+   - the `pkg/syncer` root, RFC 3's contract (the `Syncer` and `Flow` interfaces, `StoreID`, the
+     errors), epic 16; its implementation is `pkg/syncer/pool`, which only the wiring imports;
+   - the `pkg/carver` root, RFC 2's contract (the carver's value types), epic 15; `pkg/carver/carve`
+     and `pkg/carver/assembler` are its implementation, which only the wiring imports.
 
    No import is a named exception. A package that still holds contract and implementation together,
    the journal (`pkg/journal`), `pkg/metadata/kvstore`, `pkg/settings`, `pkg/metrics` and
@@ -511,7 +514,7 @@ What each point means for this plan's epics:
   finish and S3; RFC 4's in-memory store gates epic 17's; the in-memory `keys.Provider`'s
   destroyed-material notice and the
   key-record view with its `kvstore` implementation (the RFC 5 plan's epics 6 and 8) gate epic 18's;
-  its salvage-key wrap (the RFC 5 plan's epics 2 and 8) gates epic 20's. Its second half: RFC 4's S3
+  its salvage-key wrap (the RFC 5 plan's epics 2 and 6) gates epic 20's. Its second half: RFC 4's S3
   store and the codec over it, the RFC 4 plan's R4-S3 (its epics 3 to 6, the capability check
   included), gate epic 21.
 - **S7 🔀 node composition built** (end of epic 21). The RFC 3 and RFC 4 plans'
@@ -716,7 +719,8 @@ each red at its named check.
 **Expected content:**
 - The epic issues the entries name, asked for through `epic-breakdown` Step 6.3 once this plan merges,
   under roadmap epic #5487.
-- The fixture's carver, syncer and `Refs` options, refusing by name while unset.
+- The fixture's carver, chain (RFC 5's, over `keystest`'s `keys.Provider`), syncer and `Refs`
+  options, refusing by name while unset.
 - Group A rows of the offload path (§3.2 no gate is safety, §6.4, §6.6 to §6.8, §8.3, §5.1, restart
   re-offer).
 - Group A rows of reads, clones and fills (§7.1, §7.2, §7.6, §7.7, §9.1).
@@ -804,9 +808,12 @@ Its four §15.1 rows run a pass end to end, so they are epic 16's to turn green 
   (`Handle.DirtyFiles`), with a `ponytail:` at the assignment naming the ceiling (a short block may go
   out before it must) and the upgrade, a time per extent, which the RFC 2 plan's §6.1 ledger gives the
   journal plan, which has no epic for it yet.
-- `kvstore`'s open refusing a `K` below the most keys one 1-byte chunk's commit writes, counted from
-  RFC 6 §4.1 (RFC 6 §5.2 as amended), with RFC 6 §11.2's "K floor" row: limits giving `K` one below
-  the floor refused, one key's cost more opening.
+- `kvstore`'s named startup check refusing a `K` below the floor of one 1-byte chunk's offload
+  commit, counted from RFC 6 §4.1 with its tracked reads (`F_o`, `Intent`, `Node(primary)`, a key
+  record per material) and their conflict ranges (RFC 6 §5.2 as amended). It replaces `kvstore`'s
+  fixed `minItemKeys` (7 today, below the 9 to 10 keys that commit writes). RFC 6 §11.2's "K floor"
+  row: limits giving `K` one below the floor refused; one key's cost more opening, with a one-chunk
+  commit and all its tracked reads within `T`.
 - Assemble: every chunk carried, zero refs, early close within `K` (the key budget `kvstore` computes at open, `budget.go`, which gains an accessor here; it nets out one file's fixed records only, `worstCosts`); the fold handed each chunk's worst-case keys, each zero ref's keys (counting the refs it replaces), and a commit's per-block keys (intent delete, block record, GC index keys) and per-file keys (the offload fence), charged once per block and once per file (RFC 2 §5.1 as amended); one flow and namespace per block
   (RFC 2 §5.3), as S1a agrees the inputs.
 - Intent: the stale-namespace refusal, the refusal before any put when the pin finds the current
@@ -920,7 +927,7 @@ stays green; RFC 8 E3, E11, E33 hold.
 - Destroyed material clearing the offloaded bit through `Unmark`, from S1d's notice, polled; Mark
   checking, under the lock that `Unmark` takes, that no material the attempt pinned has been
   reported destroyed, and leaving the extents dirty if one has (RFC 8 §10.4 as amended).
-- The offload commit transaction guard-reading the key record of each material the block's
+- The offload commit transaction reading, with conflict tracking, the key record of each material the block's
   `encodings` name, never a list its caller passes, and refusing when one is marked destroyed; the
   attempt then abandoned and its extents offered again under current material (RFC 8 §10.4 as
   amended), with its `decision:` on an undeclared loss. The legs: a destroy between pin and
@@ -941,12 +948,12 @@ epic 7b writes their suite rows (§1.4), so the epic does the reseed first and t
 lands; its rows over the real journal stay red until then. **Owns:** RFC 8 §2.5 steps 6 and 7 (the reseed and the reconcile, but the replica
 clauses, D9), the restart re-offer and intent abandonment before serving, the late attach's steps 6
 and 7, §2.3's reconcile clauses in `Unbind`, §2.5's `Bind` takeover of the reconcile's handle, the
-operator's acknowledgement (§6 point 1: the record bound to the lost `JournalID`, its `Lifecycle` read and its consumption at `RecordJournal`), §11.2's crash row, `journal_unreconciled`; RFC 16 §3.1's
+operator's acknowledgement (§6 point 1: the record bound to the lost `JournalID`, its `Lifecycle` read and its consumption at `RecordJournal` or at the recorded journal's open), §11.2's crash row, `journal_unreconciled`; RFC 16 §3.1's
 `Refs` and the `Census` view, RFC 6 §10.1's `Versions`. **Done when:** RFC 8 §15.1's "§2.5 restart re-offer", "§2.5 reseed
 gates offer and eviction", "§2.5 journal gone" and "§2.5 attach after a device loss" (the
 acknowledgement), "§2.5 unsuitable journal at start", "§2.5 unread range at start", "§2.5 metadata
 reconcile" (single-node cases), "§2.5 `Bind` takes over the reconcile's handle", "§4.1 verifier inputs"
-(the offloaded loss), "§5.1 durable commits", §15.2's "§2.3 removal during a reconcile", and §15.3's "§2.5 reseed", turn green; RFC 8 E30 and E36
+(the offloaded loss), "§5.1 durable commits", "§10.4 destroyed material" (its crash leg), §15.2's "§2.3 removal during a reconcile", and §15.3's "§2.5 reseed", turn green; RFC 8 E30 and E36
 hold.
 
 **Expected content:**
@@ -954,8 +961,9 @@ hold.
   `Refs` option made real and the red rows' messages rewritten.
 - Start step 6: each shard a tenant of both sources, rebuilt.
 - Start step 7: the dispatch, age tick, rescan, epic 18's eviction loop and the reseed started; the reseed's marks, its
-  ledger mismatches through `Unmark`, the extents whose block's `encodings` name material the notice
-  reports destroyed unmarked before the file can be evicted, with §15.1's "§10.4 destroyed material"
+  ledger mismatches through `Unmark`, the extents whose block's `encodings` name material whose key
+  record is marked destroyed unmarked before the file can be evicted, read from the durable key
+  records (a master-key destroy marks them too), never from the notice's cursor, with §15.1's "§10.4 destroyed material"
   crash leg (RFC 8 §10.4 as amended), its bound, `engine_reseed_files_remaining`.
 - A file offered or evicted only once reseeded, an offload run reseeding the file it is handed first.
 - Every put intent of this node's shards abandoned before serving (`AbandonShardIntents`); the
@@ -1010,14 +1018,15 @@ with the four components (S5), as RFC 8 §2.6's build and stop order says. Its e
 Appendix B for this part's keys, the components' settings sections and the remote store's keys, which
 the RFC 4 plan moves into `pkg/remote`; RFC 25 §7 for writing and registering its alert rules and
 every component's; RFC 24 §6.2's CPU token; the composers' imports of RFC 0 §1.2. It starts once S4
-and the RFC 4 plan's R4-S3 (its epics 3 to 6) are met. **Done when:** S7: `syncertest`'s Group A
+and the RFC 4 plan's R4-S3 (its epics 3 to 6) are met, and consumes the RFC 3 plan's epics 5 (the
+`health.Source`) and 8 (the settings section and the collector). **Done when:** S7: `syncertest`'s Group A
 suite (RFC 3 §8.1: the Group A and lifecycle checks) runs in `integration` with an opener returning
 the S3 store and `codec.Store` over it, against LocalStack (`LOCALSTACK_HTTPS_ENDPOINT`) behind a
 fault proxy, given the fault proxy's control and the store's checksum modes as the RFC 3 plan's D2
-has the suite take them, a row they cannot give skipped by name; a namespace added at runtime whose
-`Max` exceeds the one the syncer's pools were sized from at start is not opened, and is reported as
-waiting for a restart naming both figures, until the next start opens it (RFC 3 §2.2, the RFC 3
-plan's D7 and its §6.1 row); RFC 8 E5 holds through the node; the
+has the suite take them, a row they cannot give skipped by name; a namespace opened after start
+with a larger `Max` than the syncer's pools were sized from is not opened until the next start, and
+meanwhile a health condition names the namespace and both figures (RFC 3 §2.2, the RFC 3 plan's D7
+and its §6.1 row); RFC 8 E5 holds through the node; the
 engine's read and write tests run with and without transforms (the RFC 4 plan's row); the RFC 21 plan's
 "§11.5 full journal with the store unreachable" and the RFC 22 plan's "§16.5 remote outage on reads"
 rows pass on a composed node in `e2e`; the journal plan's system scenarios left to this part run in
@@ -1040,15 +1049,16 @@ it after, as RFC 8 §2.6 orders.
   0 or less. The syncer's per-worker encoded bound is computed once at start and
   passed for both halves: `MaxDecodeLen(Max)` over every registered transform, `Max` being the
   largest of the namespaces the process serves at start, never below the default 1 MiB; nothing
-  updates it at runtime, so a pin that outlives a chain change stays within it. The node owns the
-  check that does not open a namespace added at runtime with a larger `Max` until the next start,
-  and reports it as waiting for a restart, naming both figures (RFC 3 §2.2 as amended, the RFC 3
-  plan's D7).
+  updates it at runtime, so a pin that outlives a chain change stays within it. Every namespace
+  opened after start with a larger `Max` is not opened until the next start; meanwhile the node
+  raises a health condition naming the namespace and both figures (RFC 3 §2.2, the RFC 3 plan's
+  D7).
 - The syncer's per-flow queue gauges (`syncer_queue_depth`, `syncer_waiters`) exported by share under
   RFC 25 §2.5's worst-n rule through the node's per-share path (`shareGaugeSpec`,
   `internal/node/stats.go`), each flow id in `syncer.Stats` mapped to the share that opened it (epic
-  16 opens one per share); `pkg/syncer/series` exports only the summed gauges.
-- `Deps.Carver`, `Syncer`, `Refs`, `Watchdog` from the root; the engine's conditions, adapted from its `Stats` (epic 20), and the syncer's added to the health evaluator, the syncer's through the `health.Source` the RFC 3 plan's epic 5 publishes (its registration moved here from that plan's epic 8); the node's stats fetch (`internal/node/stats.go`, `engine.Stats` only today) widened to the syncer's `Stats`.
+  16 opens one per share); the syncer's collector in `internal/node/content` (the RFC 3 plan's epic
+  8, D4) exports only the summed gauges.
+- `Deps.Carver`, `Syncer`, `Refs`, `Watchdog` from the root, `Deps.Syncer` typed as the root contract's `syncer.Syncer` interface and built by the root through `pool.New` (the RFC 3 plan's D1); the engine's conditions, adapted from its `Stats` (epic 20), and the syncer's added to the health evaluator, the syncer's through the `health.Source` in `internal/node/content` that the RFC 3 plan's epic 5 builds (its registration moved here from that plan's epic 8); the node's stats fetch (`internal/node/stats.go`, `engine.Stats` only today) widened to the syncer's `Stats`.
 - Each component's collectors registered, and every component's alert rules written and registered,
   in `internal/node`, with RFC 8 §11.1's
   offload conditions and `offload_age_exceeded`, and RFC 3's `store_put_unhealthy` and
@@ -1056,9 +1066,10 @@ it after, as RFC 8 §2.6 orders.
 - RFC 13 Appendix B's keys this part reads and the remote store's keys from `pkg/remote`, reloadable
   as that appendix says; the registry's refusal of the in-memory remote kind outside tests.
 - Each component's settings section added to the node's table (`newTable`): the syncer's, from
-  `pkg/syncer/section`, and the carver's `Target`, from `pkg/carver/section`, which the RFC 2 plan's
-  epic 3 declares and validates (each its own package, since `pkg/settings` imports
-  `pkg/metadata/entity`), with the
+  `internal/node/content` (the RFC 3 plan's epic 8), which passes the two worker counts into
+  `pool.Config`, and the carver's `Target`, from `pkg/carver/section`, which the RFC 2 plan's epic 3
+  declares as plain values and validates, and which the wiring registers and reads into each
+  namespace's `Target` as a plain value, with the
   RFC 13 plan's Appendix B check (`TestAppendixBMatchesTheTable`) passing with each; `Target` waits on
   RFC 13 naming its key.
 - RFC 24 §6.2's CPU token built in the node: a FIFO weighted semaphore of three quarters of the
@@ -1114,7 +1125,8 @@ proposed targets: the first real-service run does (§6.1).
    as amended: the acknowledgement is a store record naming the device and the lost journal's
    `JournalID`, the identity the store records for that device. The engine reads it through
    `Lifecycle` at start step 1 and at each retried open; it applies only to that recorded journal,
-   never to one not recorded, and is consumed when the new journal's `RecordJournal` commits, so it
+   never to one not recorded, and is consumed when the new journal's `RecordJournal` commits or the
+   recorded journal opens, so it
    cannot acknowledge a later loss on the same device. Epic 19 builds the record in `kvstore`, its
    `Lifecycle` read and the engine's use of it; the admin-only node action that writes it, shaped as
    `acknowledge-unreadable`, is RFC 28's plan's, which the RFC 23 plan gives that verb (§6.1). RFC 16
@@ -1206,7 +1218,7 @@ proposed targets: the first real-service run does (§6.1).
 | RFC 2 §2, §2.4, §3.6, §3.7, §4.2, §4.3, §5.1, §5.3, §10.1 | 11 (S1a), 15 (Carve, Assemble, minting, consumer checks), 16 (§3.6, §3.7, D11) |
 | RFC 3 §1.3, §2.8 | 11 (S1b), 15 (`Upload` with an attempt), 16 (flows), 17 (fetch, prefetch), 20 (health), 21 (registration) |
 | RFC 4 §3, §4.1, §4.3, §4.7, §4.8, §4.11 | 11 (S1c), 15 (`NewPut`'s attempt through `Upload`), 21 (a `codec.Store` per store, registered with its `ProbeKey`) |
-| RFC 5 §2.7, §2.8, Appendix B.2 | 11 (S1d), 15 (the pin over the in-memory `keys.Provider`, the refusal at Intent), 17 (destroyed material read Lost), 18 (`Unmark`, Mark's check, the commit's guard read), 19 (the reseed's unmark), 20 (salvage sealing), 21 (chain, the key-record suite against `kvstore`, each namespace's store for the `keys` object) |
+| RFC 5 §2.7, §2.8, Appendix B.2 | 11 (S1d), 15 (the pin over the in-memory `keys.Provider`, the refusal at Intent), 17 (destroyed material read Lost), 18 (`Unmark`, Mark's check, the commit's tracked read), 19 (the reseed's unmark), 20 (salvage sealing), 21 (chain, the key-record suite against `kvstore`, each namespace's store for the `keys` object) |
 | RFC 1 §3 (offload calls, salvage), §3.3, §3.4, §3.5, §7.2 | constraints: 15 to 20 call them |
 | RFC 6 §5.2 (the `K` floor at open) | 15 |
 | RFC 6 §7.6, §8.1, §10.1; RFC 16 §3.1 | constraints: 15 (intents, commits), 17 (covering), 19 (`Refs`, `Versions`) |
