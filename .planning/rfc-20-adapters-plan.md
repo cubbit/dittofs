@@ -905,8 +905,9 @@ RFC sections: §6.10's codec and pipeline rows.
 4. **RFC 24 has no plan.** Epic 3 builds its minimal slice; a future RFC 24 plan starts from
    `pkg/resources` as epic 3 leaves it.
 5. **RFC 20 §4.4 as an RFC of its own.** The owner expects `gss` to become a separate RFC.
-   Until one exists, `gss` sits with the RFC 22 plan, whose SMB sign-in needs it first, but for
-   RFC 4121's `Wrap` and `Unwrap`, which no SMB handler calls (§6.2).
+   Until one exists, `gss`'s NTLM and SPNEGO side sits with the RFC 22 plan, and its Kerberos side,
+   with RFC 4121's MIC token, `Wrap` and `Unwrap`, with the RFC 21 plan, whose RPCSEC_GSS needs it
+   first (§6.2).
 6. ~~**NFS XDR, generated or by hand.**~~ Settled: generated (RFC 20 §5.1's decision). Epic 6
    writes only the RPC header's XDR by hand (T6.2); every program's codecs come from the
    generator (T6.6).
@@ -951,8 +952,8 @@ decision to drop it (its issue closed as not planned).
 | SMB transform header, signing, encryption, credits, message-ID window, multichannel session registry, `Caps` | stage state machines, no driver here | RFC 22 plan | with `NEGOTIATE` and `SESSION_SETUP` |
 | SMB callbacks (lease break, change notify, lock wait, revoked) | need sessions and handlers | RFC 22 plan | with leases |
 | `IPC$`, `dcerpc`, srvsvc share listing, lsarpc lookups | handlers | RFC 22 plan | with `TREE_CONNECT` |
-| `gss`: Kerberos, NTLM, SPNEGO, `Exchanges`, `Identity`, `gsstest` | no handshake to drive it | the RFC 22 plan (E4), until its own RFC (risk 5) | first `SESSION_SETUP` |
-| `gss`: RFC 4121 MIC token (`Context.MIC`) | no handshake to drive it | the RFC 22 plan (E4), until its own RFC (risk 5): SPNEGO's mechanism-list MIC over Kerberos | first `SESSION_SETUP` |
+| `gss`: Kerberos, NTLM, SPNEGO, `Exchanges`, `Identity`, `gsstest` | no handshake to drive it | until its own RFC (risk 5): the Kerberos side (Kerberos, `Exchanges` over one leg, `Identity` from a Kerberos context, the Kerberos initiator) the RFC 21 plan (E13); the rest the RFC 22 plan (E4) | the first RPCSEC_GSS `INIT` handler; first `SESSION_SETUP` |
+| `gss`: RFC 4121 MIC token (`Context.MIC`) | no handshake to drive it | the RFC 21 plan (E13), until its own RFC (risk 5): the `RPCSEC_GSS` verifier and `krb5i`, and SPNEGO's mechanism-list MIC over Kerberos | the first RPCSEC_GSS `INIT` handler |
 | `gss`: RFC 4121 `Wrap`, `Unwrap` | no SMB consumer | RFC 21 plan | RFC 21's first RPCSEC_GSS `INIT` handler |
 | `translate` (ACLs, access masks, times, attributes, `Fit`) | no handler calls it | the RFC 22 plan for what SMB calls (its E7, E8, E12); RFC 21 plan for what NFS calls, RFC 19 §5.1's NFSv4 functions included | their first handler epic |
 | each protocol's error-table rows and its totality test (RFC 20 §7.3), with the helper it calls | rows are protocol choices, and the helper has no caller before a table must be total | rows and tests: RFC 21/22 plans; the one helper, in `core`'s `errors.go` (RFC 20 §4.5): the RFC 22 plan's T3.8 (#3911), which builds it on this branch, and which the RFC 21 plan's tables call too | with their handlers |
