@@ -116,7 +116,7 @@ the scheduler (T4.2); the retry budget (T4.3); the slow-tail window (T4.4); the 
 - **S1**, the syncer interface agreed, at the end of E1 (the RFC 8 offload plan's S1b).
 - **S2**, the test foundations in CI, at the end of E2.
 - **S3**, the syncer complete over the in-memory store, after E5, E6 and E7.
-- **RFC 3 S4, S5, S6, S8, S9, S17, S19, S21, S23**, invariants of RFC 3 §6, always written with
+- **RFC 3 S4, S5, S6, S8, S9, S17, S19, S20, S21, S23**, invariants of RFC 3 §6, always written with
   "RFC 3" before them; they are not synchronisation points.
 - **The S3 store**, RFC 4's production store, whose protocol is the storage service S3; not the
   synchronisation point S3.
@@ -228,7 +228,7 @@ cite them. Sections are RFC 3's unless named.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R40 | The Group A rows of §2.5, §2.6, §3.4 and §3.3 with §3.5, and §3.4's measuring pass, run in the suite over any remote store its caller opens; a row whose fault the caller cannot give is skipped by name | test row | §7.1; §8.1, "Real backend"; E2's D4 | T4.8 |
-| R41 | A backend that returns instantly is not used for §2's checks: the time-bound and retry rows run over E2's `Link` | MUST NOT | §7.3 | T4.9, T4.10 |
+| R41 | A backend that returns instantly is not used for §2's checks: the time-bound and retry rows run over E2's `Link` | MUST NOT | §7.3; E2's D1 | T4.9, T4.10 |
 | R42 | The checks reach §8.2's "Retries" cases (a store's budget empty at the first failure after start and refilled by a single success on it; a throttle limit at one, throttled again) and its upload cases of "Shape of a transfer" (a block of one chunk and one at the largest block size; a `src` that fails before its first chunk and after its last; a chain declaring every length and one needing a measuring pass) | test row | §8.2 | T4.8, T4.9, T4.10 |
 | R43 | In a scripted all-failing run, retries on a store never exceed its budget and no transfer makes more than four attempts | test row | §8.4, "retries"; §6, RFC 3 S21 | T4.9 |
 
@@ -693,17 +693,17 @@ pkg/syncer/
 ```mermaid
 flowchart TD
   S1(["S1 syncer interface agreed"]):::sync --> T4_1["T4.1 Classification, bounds, backoff"]:::blocker
-  E3S(["E3 T3.3 and T3.8: the bound and the model"]):::sync --> T4_2["T4.2 Throttle limit and held flow"]
+  C33(["E3 T3.3 and T3.8: the bound and the model"]):::sync --> T4_2["T4.2 Throttle limit and held flow"]
   T4_1 --> T4_3["T4.3 Retry budget"]
   T4_1 --> T4_4["T4.4 Slow-tail window"]
   T4_1 --> T4_5["T4.5 Floor judge"]
-  E35(["E3 T3.5: halves, admit, Upload"]):::sync --> T4_6
+  C35(["E3 T3.5: halves, admit, Upload"]):::sync --> T4_6
   S2(["S2 test foundations in CI"]):::sync --> T4_6
   T4_2 & T4_3 & T4_4 & T4_5 --> T4_6["T4.6 Put loop and Upload"]:::blocker
-  E36(["E3 T3.6: Fetch"]):::sync --> T4_7
+  C36(["E3 T3.6: Fetch"]):::sync --> T4_7
   T4_6 --> T4_7["T4.7 Get loop"]:::blocker
   T4_6 --> K1(["after T4.6: E5 can feed outcomes"]):::sync
-  E37(["E3 T3.7 opener, RFC 4 plan epic 6 codec.Store"]):::sync --> T4_8
+  C37(["E3 T3.7 opener, RFC 4 plan epic 6 codec.Store"]):::sync --> T4_8
   T4_6 --> T4_8["T4.8 Group A rows"]
   T4_7 --> K2(["after T4.7: E6 can resume and re-get"]):::sync
   T4_7 --> T4_9["T4.9 Retry rows"]
