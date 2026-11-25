@@ -9,7 +9,7 @@ Appendix B, the rows RFC 8 §6.1, §6.2, §6.3, §7.3, §7.4, §8.1, §10.1 and 
 [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §1.2, the import rule and the refusal of an
 invalid setting; [RFC 3](../docs/internals/rfcs/rfc-3-syncer.md) §1.3 (`StoreID`, `Syncer`, `Flow`)
 for the type `Share` carries and the declarations recorded here, and
-[RFC 2](../docs/internals/rfcs/rfc-2-carver.md) §1.2 and §5.1 (`Cut`, the fold), for the carver's; [RFC 25](../docs/internals/rfcs/rfc-25-observability.md)
+[RFC 2](../docs/internals/rfcs/rfc-2-carver.md) §1.2, §4.2 and §5.1 (`Cut`, the block name, the fold), for the carver's; [RFC 25](../docs/internals/rfcs/rfc-25-observability.md)
 §3.5, the watchdog loop the scheduler turns.
 **Track:** the team.
 **Epic 11 estimate: 5 subtasks, 9 man-days.**
@@ -155,7 +155,7 @@ can cite them. Behaviour behind the stubs is listed in §1.2 with its epic.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R17 | No `Deps` member or declared method is added before the epic that first calls it, so the architecture test that fails on a declared method the engine never calls stays green | test row | RFC 8 §15.3 "§2.1 declared interfaces"; §2.1 | T11.5 |
-| R18 | The interfaces the engine will declare for the carver and its assembler, the syncer and its flow, `Refs` and the journal's offload calls each hold exactly the methods RFC 8 §2.1's table names, over the components' contract types, as the S1 review agreed them | MUST | RFC 8 §2.1, §2.6; RFC 0 §1.2 | T11.5 |
+| R18 | The interfaces the engine will declare for the carver and its assembler, the syncer and its flow, `Refs` and the journal's offload calls each hold exactly the methods the engine calls, over the components' contract types, as the S1 review agreed them; where that is more than RFC 8 §2.1's row names, as for the carver, the epic adding the declaration amends the row | MUST | RFC 8 §2.1, §2.6; RFC 0 §1.2 | T11.5 |
 
 ## 4. Decisions this epic takes
 
@@ -206,11 +206,11 @@ can cite them. Behaviour behind the stubs is listed in §1.2 with its epic.
   must exist then. `Store` is not validated here, and a zero one is allowed, as the first part's rows
   bind shares with none: the engine opens no flow until epic 16, whose `Bind` refuses a store the
   syncer does not know when it opens the share's flow. The chunking parameters are not a `Share`
-  field: RFC 2 §3.2 makes `Target` a namespace's setting, its `Params` carries the namespace's keys,
+  field: RFC 2 §3.2 makes `Target` a namespace's setting, its `carver.Settings` carries the namespace's keys,
   and RFC 8 §12.1's `Share` names none. They reach the pipeline through the carver's declaration,
   which T11.5 records for S1a to settle (a per-namespace lookup the wiring implements, so the engine
   never holds key material), and which epics 15 and 16 add with their callers. The option of a
-  `Chunking carver.Params` field on `Share` was rejected: it puts keys in a value the node copies and
+  `Chunking carver.Settings` field on `Share` was rejected: it puts keys in a value the node copies and
   logs, and it freezes a choice S1a has not made. Prior art: none found.
 - **D6, the `Stats` fields carry each series as the first part's do.** A counter is an `int64`, a
   labelled counter a `map[string]int64` keyed by the label's value, a histogram a `Series`, a gauge
@@ -420,15 +420,31 @@ internal/node/
   request against this document, so later epics read them here. As proposed for the review, in the
   components' contract types, each with the epic that adds it to `deps.go` with its first caller:
   ```go
-  // RFC 2 §1.2, §5.1: Cut and the block assembler's fold, over the carver root's types (epic 15).
-  // The review fixes how the fold is built per pass (RFC 2 §5.1's Add and Finish are its calls; a
-  // fold interface in the carver root lets the engine hold it without an adapter, D7's constraint)
-  // and how a namespace's Params reach Cut: proposed, a per-namespace lookup the wiring implements,
-  // so the engine holds no key material (D5).
+  // RFC 2 §1.2, §4.2, §5.1, in the carver root's types as the RFC 2 plan's epic 1 declares them
+  // (pkg/carver: Settings, an alias of the sealed pkg/carver/internal/params.Settings, Chunk,
+  // ChunkInfo, AssemblerConfig, BlockPlan, Disposition). The implementations are package functions
+  // of pkg/carver/carve and the concrete *assembler.Fold, which the engine may not import, so the
+  // wiring hands them in as this one interface (epic 15, with its first caller, Carve). Every call
+  // the engine makes is here, beyond RFC 8 §2.1's "Cut and the fold": NewSettings, BlockName and
+  // the fold's construction; Max is a method of the Settings value and needs no declaration.
   type Carver interface {
-  	Cut(r io.Reader, base int64, p carver.Params, buf []byte, realEnd bool,
-  		emit func(carver.Chunk, []byte) error) (consumed int64, err error)
+  	NewSettings(target int, encrypting bool, chunkingKey, chunkIDKey [32]byte) (carver.Settings, error) // carve.NewSettings
+  	Cut(r io.Reader, base int64, s carver.Settings, buf []byte, realEnd bool,
+  		emit func(carver.Chunk, []byte) error) (consumed int64, err error) // carve.Cut
+  	BlockName(scope entity.NamespaceID, nonce [16]byte, chain [32]byte, ids []entity.ChunkHash) entity.BlockName // carve.BlockName, at Intent
+  	NewFold(c carver.AssemblerConfig) (Fold, error) // assembler.New, wrapped by the wiring (D7: no covariant return)
   }
+  // Fold is the assembler's per-pass fold as the engine calls it; *assembler.Fold satisfies it.
+  // Finish's held plan is short and held back: the pass keeps its extents dirty and reports none.
+  // A plan carries no namespace or key ID: the pass records both at offer time (Capture).
+  type Fold interface {
+  	Add(c carver.ChunkInfo) ([]carver.BlockPlan, carver.Disposition)
+  	Finish(now time.Time) (last *carver.BlockPlan, held bool)
+  }
+  // Whether NewSettings is called at Bind per namespace (so the namespace's keys reach the
+  // engine) or the wiring hands per-namespace Settings through a lookup (D5) is S1a's to settle.
+  // The engine's import walk admits pkg/carver/internal/params beside the pkg/carver root, since
+  // the root's alias brings it in, in the change that admits the root (epic 15).
   // RFC 3 §1.3: one flow per share at attach (epic 16). The flow is RFC 3's syncer.Flow (D7):
   // the engine calls Upload (15), Fetch, Prefetch (17), Healthy, Health (16, 18, 20), Close (16).
   type Syncer interface {
@@ -496,6 +512,9 @@ A suggestion only: one pull request per subtask works as well.
   adds the watchdog member, declares what it calls instead (a function from a loop's name to a
   `workqueue.Loop` the node fills, plus a way to close the loop when a journal's scheduler stops,
   since the scheduler's `Loop` has no `Close`) and amends §2.6 with it.
+- **RFC 8 §2.1's carver row names only `Cut` and the fold**, while the engine also calls
+  `NewSettings`, `BlockName` and the fold's constructor (T11.5, from the RFC 2 plan's epic 1
+  breakdown). Epic 15, which adds the declaration, amends the row in its pull request.
 - **RFC 8 §2.1 lists `Offload` beside `OffloadMany`** in the handle row; if epic 15's Capture calls
   only `OffloadMany`, epic 15 amends the row so §15.3's declared-interfaces check stays honest.
 - **The oldest-unoffloaded alert bound** (RFC 13 Appendix B, share scope, RFC 8 §11.4) is an alert
