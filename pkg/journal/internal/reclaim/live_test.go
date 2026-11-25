@@ -503,8 +503,27 @@ func TestTrackerSegmentUnlinkedReHoldsTheSurvivorBeforeTheDurableSignal(t *testi
 		t.Fatalf("the gone segment's registration after the unlinked report = %d, want %d: the re-hold releases nothing", got, want)
 	}
 
+	// The durable signal's unit: the take of the gone segment's own
+	// registration. Its class weight went to the survivor at the unlink,
+	// so the take reports no weight and lowers none of the gone segment's
+	// own count — the guard keeps the counts exact while nothing reads a
+	// gone segment's count today.
+	goneLive := tr.stateOf(src).live.Load()
+	tr.rm.Lock()
+	delta, taken := tr.take(orig)
+	tr.rm.Unlock()
+	if !taken {
+		t.Fatalf("take of the gone segment's registration after the unlink = not taken, want taken: the durable signal's sweep spends it")
+	}
+	if delta != 0 {
+		t.Fatalf("the take of a registration whose segment the class no longer spans = delta %d, want 0: its weight was re-attributed to the survivor at the unlink", delta)
+	}
+	if got := tr.stateOf(src).live.Load(); got != goneLive {
+		t.Fatalf("the gone segment's live count after its own take = %d, want %d: the take of an unlinked placement spends no weight the segment carries", got, goneLive)
+	}
+
 	// The durable sweep a successful sync would have delivered: the class
-	// already collapsed, its take releases the gone side's registration
+	// already collapsed, the sweep releases what the take above spent
 	// without raising the survivor a second time and sweeps the placements
 	// whole; the survivor's count is the re-hold's alone.
 	tr.SegmentRetired(src, []core.FileID{id})

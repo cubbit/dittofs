@@ -562,7 +562,9 @@ func (t *Tracker) Unregister(rec Rec) {
 // whether one was there and how much live count its release owes rec's own
 // segment: one registration of an identity class standing in its sole
 // segment, none for one a class spans two or more segments in — the class
-// holds nothing in them, by the identities rule. A take that empties the
+// holds nothing in them, by the identities rule — and none for a placement
+// whose segment the class no longer spans, an unlinked one whose weight the
+// unlinked report re-attributed to the survivor. A take that empties the
 // placement's own segment, leaving its class one segment wide, re-holds the
 // surviving segment by the sum of its placements' counts before the
 // registration goes — under the same rm the take runs in, so no Held reader
@@ -582,6 +584,16 @@ func (t *Tracker) take(rec Rec) (delta int64, taken bool) {
 	id := identityOf(rec)
 	class := t.identities[id]
 	delta = 1
+	if class != nil {
+		if _, mine := class[rec.Seg]; !mine {
+			// The placement's segment left the class at its unlink — the
+			// unlinked report re-held the survivor for the whole class
+			// there — so this take owes the gone segment's own count
+			// nothing. A class the unlink emptied reads nil here and keeps
+			// its weight to spend: that one was never re-attributed.
+			delta = 0
+		}
+	}
 	if len(class) > 1 {
 		// The class spans two or more distinct segments, so this
 		// placement's own segment carries none of its weight. The take
