@@ -1,16 +1,23 @@
 package bootstrap
 
 import (
+	"bytes"
+	"fmt"
 	"go/ast"
 	"go/importer"
 	"go/parser"
 	"go/token"
 	"go/types"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/cubbit/dittofs/internal/prof"
 )
 
 // frozenExports is pkg/bootstrap's surface as RFC 13's configuration
@@ -57,8 +64,54 @@ var frozenExports = []string{
 		"reg *metrics.Registry) error",
 }
 
-// sourceImporter reads every import from source, once for all the cases.
-var sourceImporter = importer.ForCompiler(token.NewFileSet(), "source", nil)
+// exportImporter reads each import from the export data the go command
+// compiled for it, once for all the cases: type-checking the imports from
+// source instead takes half a minute under the race detector. Only the
+// imports come from export data; the package itself is always parsed from
+// its files, the planted ones included.
+var exportImporter = importer.ForCompiler(token.NewFileSet(), "gc", func(path string) (io.ReadCloser, error) {
+	files, err := exportFiles()
+	if err != nil {
+		return nil, err
+	}
+
+	if files[path] == "" {
+		return nil, fmt.Errorf("no export data for %s", path)
+	}
+
+	return os.Open(files[path])
+})
+
+// exportFiles lists the export data file of each package this one imports,
+// by import path. The go command compiles what the build cache lacks, with
+// the race detector when this binary has it, so the build of this binary
+// already cached them.
+var exportFiles = sync.OnceValues(func() (map[string]string, error) {
+	args := []string{"list", "-export", "-deps", "-f", "{{.ImportPath}}={{.Export}}"}
+	if prof.RaceEnabled {
+		args = append(args, "-race")
+	}
+
+	cmd := exec.Command("go", append(args, ".")...)
+
+	var stderr bytes.Buffer
+
+	cmd.Stderr = &stderr
+
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("go list -export: %w: %s", err, stderr.String())
+	}
+
+	files := map[string]string{}
+
+	for line := range strings.Lines(string(out)) {
+		path, file, _ := strings.Cut(strings.TrimSpace(line), "=")
+		files[path] = file
+	}
+
+	return files, nil
+})
 
 // exports type-checks the package made of dir's non-test .go files, whatever
 // their build tags, so a file behind a tag cannot hide an export, plus the
@@ -93,7 +146,7 @@ func exports(dir string, planted ...string) ([]string, error) {
 		files = append(files, f)
 	}
 
-	conf := types.Config{Importer: sourceImporter}
+	conf := types.Config{Importer: exportImporter}
 
 	pkg, err := conf.Check("github.com/cubbit/dittofs/pkg/bootstrap", fset, files, nil)
 	if err != nil {
