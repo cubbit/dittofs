@@ -92,6 +92,12 @@ two rows, on the composed node.
 - The `e2e/kerberos` rows with the Linux kernel client, `tar xpf` of §8.1's row among them, and the
   Kerberos halves of RFC 18 §10's rows E7 runs over `AUTH_SYS`: E16, after E15.
 - "disable takes effect"'s SMB half: the RFC 22 implementation plan, and E16 for the row whole.
+- pynfs's `GSS*` tests, which check this epic's server side (the bad sequence number, checksum,
+  version, procedure and service, `MAXSEQ`; R6, R7, R9, R21, D2): `feat/storage-v2`'s
+  `test/nfs-conformance/pynfs/known.yaml` skips them at minor 0 because the run uses `--security
+  sys`, and RFC 21 §13's release goal does not excuse them. E15 adds a pynfs `nfs4.0` cell run with
+  `--security krb5` against the harness's KDC and drops the `GSS*` entry; E16's burn-down owns any
+  that still fail.
 - `nfs_gss_contexts`, whose producer is T13.4's table: nothing records it while who records the
   series only NFS code can count is open with the RFC's author, as rule 3 has it. If that settles
   before T13.4 lands, T13.4 adds it, about 0.5 man-days inside its figure; after, the epic the
@@ -313,15 +319,15 @@ are the authenticator's and already tested at its Tier 1; `SECINFO`'s flavours (
   sealed and never sealed twice. Prior
   art: knfsd looks up its DRC after the GSS layer has unwrapped the call (from memory). A
   `decision:` marker at the key.
-- **D8. A context is charged before `SignIn`, and a pool that refuses with nothing to evict refuses
-  the `INIT` at once, before `SignIn` sees it.** Each context reserves from `Budgets.Connection` its fixed size
+- **D8. A context is charged before `SignIn`, and a pool that refuses refuses the `INIT` at once,
+  before `SignIn` sees it.** Each context reserves from `Budgets.Connection` its fixed size
   plus a bound on its evidence's name and SIDs computed from the `INIT` token's length, since both are
   decoded from the ticket inside it; once `SignIn` returns, the reservation is trimmed to the
   evidence's real size, and it is released when the context is deleted or the exchange fails. A
-  refused reservation evicts as R4 says and retries once, but below the cap it evicts only the
-  inserting principal's own contexts, since the pool is shared with other connection state and a
-  starved pool must not cost another principal a context; if nothing may be evicted, the
-  `INIT` is answered `CREDPROBLEM` (D10) before its AP-REQ reaches `SignIn`. Dropping it would not
+  refused reservation is answered `CREDPROBLEM` (D10) before its AP-REQ reaches `SignIn`, evicting
+  nothing, since no principal is known until `SignIn` decrypts the ticket, and the pool is shared
+  with other connection state, so a starved pool must not cost another principal a context; R4's
+  eviction at the cap runs in `insert`, after `SignIn`. Dropping it would not
   bring a retry of the same AP-REQ: over TCP, `rpc.gssd` sends the `INIT` from its own RPC client
   once and waits its RPC timeout, 5 s by default (`rpc_timeout` in nfs-utils' `gssd.c`), then
   answers the kernel's upcall with `-EACCES` (`do_error_downcall` in `gssd_proc.c`), and the
@@ -541,8 +547,8 @@ test/pcap-corpus/
   ```go
   type gssContext struct { /* handle, *gss.Context, its principal, the window (D5), idle time */ }
   func newGSSTable(b *resources.Budget, c Clock, max int) *gssTable
-  func (t *gssTable) reserve(tokenLen int) (*reservation, error)             // before SignIn: evicts, then refuses (D8)
-  func (t *gssTable) insert(r *reservation, g *gss.Context) (handle [16]byte) // trims the charge to the evidence (D3, D4, D8)
+  func (t *gssTable) reserve(tokenLen int) (*reservation, error)             // before SignIn: charges or refuses, evicts nothing (D8)
+  func (t *gssTable) insert(r *reservation, g *gss.Context) (handle [16]byte) // after SignIn: evicts at the cap (R4), trims the charge (D3, D4, D8)
   func (t *gssTable) get(handle []byte) (*gssContext, bool)              // evicts the idle first
   func (t *gssTable) delete(handle []byte)
   func (c *gssContext) check(seq uint32, now time.Time) verdict          // after the header MIC: run, drop, or ctxProblem
@@ -552,12 +558,11 @@ test/pcap-corpus/
 - **Acceptance criteria:**
   - A context is found by its handle from any connection, and from no other adapter instance.
   - The 10 001st context evicts the inserting principal's least recently used context, and the
-    global least recently used only when that principal holds none; one the budget refuses below
-    the cap evicts only the inserting principal's own, and is refused when it holds none (D8).
+    global least recently used only when that principal holds none; a reservation the budget
+    refuses below the cap is refused, no context evicted (D8).
   - A context idle 8 hours on the clock is gone at the next `insert` or `get`; `check` alone moves
     its idle time and its place in either list, and a `get` moves neither.
-  - With the budget too small for one more context and nothing to evict, `reserve` refuses and
-    charges nothing; `insert` leaves charged only the context's real size (D8).
+  - With the budget too small for one more context, `reserve` refuses and charges nothing; `insert` leaves charged only the context's real size (D8).
   - In the window: a repeated or too-old number drops; one above advances it; one at or above
     `MAXSEQ`, or past the ticket's end, deletes the context.
   - Every deletion releases its reservation: the budget is back to zero once the table is empty.
@@ -567,10 +572,10 @@ test/pcap-corpus/
   `insert`, `get`, `check` and clock steps against a model of RFC 21 §10's rules (catch an eviction
   of another principal's context, R4, a context served past 8 hours, R5, a window advanced by a
   drop, R6, a `get` that reorders a list, which leaves an idle context behind a fresher one at the
-  tail, R5); the budget sized to four contexts, with two principals (catches eviction by insertion
-  order, R3, R4); the budget spent below the cap by another principal's contexts, then an `INIT`
-  from a principal holding none: refused, the other's contexts kept (catches an innocent context
-  evicted by a starved pool, D8); a budget below one context on an empty table (catches a context held
+  tail, R5); `max` set to four, with two principals (catches eviction by insertion order, R4); the
+  budget spent below the cap by one principal's contexts, then a `reserve`: refused, no context
+  evicted (catches an innocent context evicted by a starved pool, or an eviction before `SignIn`
+  has named the principal, D8); a budget below one context on an empty table (catches a context held
   uncharged, R3, D8); a reservation trimmed by `insert`, the budget read back (catches the bound kept
   as the charge, D8); `MAXSEQ` and the ticket's end (R9); the budget's balance after
   every deletion (catches a leaked charge, R3). The race of D4, driven rather than hoped for: a
@@ -635,10 +640,12 @@ test/pcap-corpus/
   - With the test clock past the ticket's end, the next call is `CTXPROBLEM` and the handle is
     then unknown, `CREDPROBLEM`.
   - A second adapter over the same `memory.New` answers the first's handle `CREDPROBLEM`, and no
-    `INIT` adds a mutating call to `vfstest.Mutations`.
+    `INIT` adds a call to `vfstest.Mutations` other than its one `OpSignIn`.
   - An `AUTH_SYS` call on the same connection as `krb5` calls is served as before.
 - **Tests:** over loopback through `core` on `memory.New`, with E3's scripted client and a test
-  table whose one row records the `r.Call` its handler receives and makes one mutating call:
+  table whose one row records the `r.Call` its handler receives and makes one mutating call. Each
+  `INIT`, failed ones included, records an `OpSignIn` in `vfstest.Mutations`, so every test below
+  that counts its entries calls `Reset` after its `INIT`s:
   - the `Identity` on that `r.Call` (catches a principal or protection dropped between the stage and
     the handler, R16, R17, R39);
   - R34's five steps, each asserting the reply and the table's state read back, the forged calls
@@ -647,7 +654,7 @@ test/pcap-corpus/
     rejected call run, R8);
   - one call's bytes sent twice, then a fresh call: the only reply read is the fresh call's, and
     `vfstest.Mutations` holds one entry (catches a replayed sequence number run or answered, R6, R8);
-  - an `INIT` with the table's budget spent and nothing to evict: a `CREDPROBLEM` reply read on the
+  - an `INIT` with the table's budget spent: a `CREDPROBLEM` reply read on the
     connection, no context added, and the same `INIT`'s bytes sent again once the pool frees set up
     a context, so its authenticator never reached the replay cache; then a fresh `INIT` from the
     initiator, a new AP-REQ as `rpc.gssd`'s next upcall sends, sets up a context too (catch an
