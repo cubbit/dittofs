@@ -2871,8 +2871,9 @@ the close that left the file no persistent open has deleted its
 `LockRange` and `LockWaiter` are declared here and aliased by `pkg/vfs`
 ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), since open state cannot
 import vfs; `LockReq` is open state's own, and the service copies `pkg/vfs`'s
-request's ranges into it whole. The import rule — only the filesystem service
-imports this package — is held by the architecture test
+request's ranges into it whole. The import rule — only the two composers of
+[RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) import this package: the node with its content wiring, which builds
+open state, and the filesystem service — is held by the architecture test
 ([RFC 20](rfc-20-adapters.md)), as is the count of `*Table`'s exported methods.
 
 **The store views open state writes through.** `Deps.Records` is the metadata
@@ -3535,7 +3536,7 @@ kind, in RFC 25's values: `nfs3` (NLM included), `nfs4`, `smb`.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| clients held | `openstate_clients{protocol, state}`, `state` = `active`, `pending` | gauge |
+| client records held | `openstate_clients{protocol, record}`, `record` = `confirmed`, `proposal`; a confirmed client with a pending proposal counts once under each | gauge |
 | state held | `openstate_held{kind}`, `kind` = `open`, `lock`, `lock_state`, `waiter`, `grant`, `watch`, `delete_pending`, `revoked` | gauge |
 | grants offered and declined | `openstate_grants_total{result}`, `result` = `offered`, `conflict`, `no_callback`, `budget`, `fenced`, `setuid`, `pool`, `shared`, `recalling` | counter |
 | recalls, by outcome and cause | `openstate_recalls_total{outcome, reason}`, `outcome` = `returned`, `revoked`, `downgraded`; `reason` = `conflict`, `budget`, `setuid` | counter |
