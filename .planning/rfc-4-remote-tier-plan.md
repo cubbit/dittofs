@@ -6,7 +6,8 @@ the store contract, the in-memory store, the S3-compatible store with its capabi
 fault transport, and the tests and benchmarks of §7. What waits for its first caller (a backup
 location's calls and the `immutable` mode, for RFC 26; the `Recheck` calls, for RFC 9) is
 deferred, and RFC 4 §4.1 is amended in this plan's pull request to say so (§6.1); the same
-pull request amends §4.3 for RFC 3's `*Measure` (D3) and §7.1, §7.2 and §7.4 so the fault
+pull request amends §4.3 for RFC 3's put (D3; its follow-up gives §1.2, §4.1, §4.3 and §4.8 the
+syncer's seam, `codec.Store`, `Chunk`, `ChunkRange`, `Meter` and `ErrMalformed`) and §7.1, §7.2 and §7.4 so the fault
 transport never pretends a setting (D7), and §7.4's in-memory row for the rows that store can
 run (epic 2), and Appendix C.1 and C.3 to name the pinned class, HTTP/1.1 and the trust roots
 (epics 4 and 5); RFC 13 Appendix B's storage-class default becomes `STANDARD`, pinned by the S3
@@ -46,12 +47,14 @@ the engine's offload part", release v1.1, roadmap epic
 stage 3 of #3119 ([`rfc-8-journal-only-engine-plan.md`](rfc-8-journal-only-engine-plan.md)).
 The five offload plans share one contract: the synchronisation points are the RFC 8 offload
 plan's (`.planning/rfc-8-offload-engine-plan.md`, under review with this one), cited as "RFC 8
-offload plan S<x> <name>". That plan's epic 21 composes the codec and the store into the engine
-and the node: the RFC 3 `Store` adapter and its error mapping, one client per store
-configuration, ref-counted, a namespace's store opened in the node, the in-memory store refused
+offload plan S<x> <name>". That plan's epic 21 composes the codec and the store in the node's
+content wiring (`internal/node/content`): a `codec.Store` per store, which is RFC 3's `Store`
+with nothing adapting it and no error mapping (D3), one client per store configuration,
+ref-counted, a namespace's store opened in the node, the in-memory store refused
 outside tests (#4276), and the registration of this component's keys, collectors and alert
-rules. This plan's integration keeps only what is the component's own: its keys, collectors and
-alert rules declared in its own package (epic 7), and the client limit's derivation (epic 8,
+rules. This plan's integration keeps only what is the component's own: its settings rows, metric
+definitions and alert rules as plain values in its implementation packages, the recorders and
+the conversions the content wiring builds from them (epic 7), and the client limit's derivation (epic 8,
 planned after RFC 8 offload plan S7). GC (RFC 9, roadmap #3620) is planned later.
 **Naming:** **v1** is the block tier under `pkg/block` (`pkg/block/remote`, `remote/memory`,
 `remote/s3`, `pkg/block/blockcodec`, `pkg/block/blockstoretest`), which #3119's stage 4 (#5484)
@@ -62,7 +65,7 @@ subpackages (§4.1).
 remains for v2 to touch, so no metric, log key or setting carries a version (§1.5 rule 7). One
 v1 surface remains: the `remote.endpoint` and `remote.credential` keys of
 `internal/node/api/res_stores.go` (listed again in `pkg/bootstrap/keyspec.go`), which epic 7
-moves into `pkg/remote` rather than declaring a second time.
+moves into `pkg/remote/s3` rather than declaring a second time.
 **Where the code lands:** `feat/storage-v2`, where the engine, `pkg/sim`, `pkg/metrics`'s
 registry, `pkg/settings` and `internal/prof` live; this plan lands on `develop`. Paths below are on
 `feat/storage-v2`.
@@ -86,19 +89,32 @@ fail on cue (§7.2).
 
 | v1 (deleted from `feat/storage-v2` by #5484) | v2 (this plan) |
 | --- | --- |
-| `pkg/block/remote` (`RemoteStore`, `passthrough.go`) | `pkg/remote`: RFC 4 §4.1's contract (epic 1) |
-| `pkg/block/remote/memory` | `pkg/remote/memory`: the in-memory store (epic 2) |
+| `pkg/block/remote` (`RemoteStore`, `passthrough.go`) | `pkg/remote`: RFC 4 §4.1's contract and nothing else (epic 1) |
+| `pkg/block/remote/memory` | `pkg/remote/memory`: the in-memory store and its load record (epic 2) |
 | `pkg/block/remote/s3` | `pkg/remote/s3`: the S3 profile (epics 4, 5, 8) |
-| `pkg/block/blockcodec` | `pkg/remote/codec` (epic 6) |
+| `pkg/block/blockcodec` | `pkg/remote/codec`: the codec and `codec.Store` (epic 6) |
 | `pkg/block/blockstoretest` (`RemoteBlockStoreConformance`) | `pkg/remote/remotetest` (epic 2) |
 | no fault transport | `pkg/remote/s3/s3fault` (epic 3) |
-| `remote.endpoint`, `remote.credential`, still declared in `internal/node/api/res_stores.go` | declared in `pkg/remote` with the trust roots, bucket, storage class, prefix, block target and block format version to write (epic 7); RFC 8 offload plan epic 21 registers them |
+| `remote.endpoint`, `remote.credential`, still declared in `internal/node/api/res_stores.go` | plain values in `pkg/remote/s3`, with the region, trust roots, bucket, storage class, prefix and block target, and the block format version to write in `pkg/remote/codec`, which the node's content wiring registers in `pkg/settings` (epic 7, D12); RFC 8 offload plan epic 21 calls it |
 
-**Dependency limits** (RFC 0 §1.2, as amended). The codec imports `pkg/remote` for its error
-values and RFC 5's `pkg/transform`; it imports neither the carver nor the engine (D3). The store
-imports no codec, transform, syncer or engine package. Nothing of RFC 5 imports `pkg/remote`:
-its `keys` object reaches the store through a consumer interface RFC 5 declares, which the
-engine's wiring fills. The S3 store imports `aws-sdk-go-v2`, already in `go.mod`.
+**Dependency limits** (RFC 0 §1.2, as amended by #5774; RFC 4 §1.2). The root `pkg/remote` is a
+pure contract: types, constants, `Store`, errors, `Cause`, `DeniedError`, `Chunk`,
+`ChunkRange` and `Meter`, importing only the standard library. Everything that carries
+behaviour is an implementation and lives beneath it: the codec with `codec.Store`, and the
+stores. `pkg/settings`, `pkg/metrics` and `pkg/health` each hold a contract and its
+implementation together, so under amended RFC 0 §1.2 they count as implementations, and only
+the composers import them (the split is tracked in #5775): no package here does. The S3 store
+and the codec record through a recorder each declares (D12), and offer their settings rows,
+metric definitions and alert rule as plain values, which the node's content wiring
+(`internal/node/content`) builds into settings, collectors and rules, handing each package its
+configuration struct (epic 7). The codec imports `pkg/remote` and the root `pkg/transform`,
+RFC 5's contract, and no transform package: the chain and the name derivation are handed to it
+by the content wiring, and it asks the chain for `MaxDecodeLen` (a method of the root
+`transform.Chain`), so it imports neither the carver nor the engine (D3). The store
+imports no codec, transform, syncer or engine package. RFC 5's key
+provider (`pkg/transform/keys/provider`) imports `pkg/remote`'s contract, for its errors, and reaches the
+store through a two-call interface it declares, which the node's content wiring fills. The S3
+store imports `aws-sdk-go-v2`, already in `go.mod`. Rule 7 lists each package's allowed imports.
 
 ### 1.2 How the plan is organised
 
@@ -112,17 +128,22 @@ production services, the rows only a real bucket can show, and the benchmarks.
 ### 1.3 What epic 1 must deliver
 
 - **`pkg/remote`**: the types, constants, interface methods and errors of RFC 4 §4.1 that have a
-  caller in v1.1, with `Cause` and `DeniedError`; behaviour per method is §4.2 to §4.13's, not
-  epic 1's. The calls RFC 4 §4.1 now says land with their first caller are not declared (§6.1).
+  caller in v1.1, with `Cause` and `DeniedError`, and the syncer's seam: `Chunk`, `ChunkRange`,
+  `Meter` and `ErrMalformed`; behaviour per method is §4.2 to §4.13's, not epic 1's. The calls
+  RFC 4 §4.1 now says land with their first caller are not declared (§6.1). Nothing else goes
+  in the root: it is a pure contract (rule 7).
 - **No constructor.** RFC 4 §4.1's last paragraph gives each backend its own constructor, and
   nothing outside this plan calls one before RFC 8 offload plan S7, so each lands with its first
   consumer (rule 12): the in-memory store's in epic 2 (D4), the S3 store's and its client's in
   epic 4 (D9, D10).
-- **The codec's exported surface** (RFC 4 §3.2 to §3.5, §4.3's measuring pass and checksum),
-  which RFC 4 does not give: proposed in D3 and agreed with the RFC 8 offload plan's authors as
-  part of RFC 8 offload plan S1c remote store contract agreed, since the engine is its caller.
-- **Injection points**: `*slog.Logger` and `*metrics.Registry` (RFC 25 §8.1), on the codec
-  here and on the S3 store's client with its constructor; no tracer, since RFC 25 §6.1 lists no
+- **The codec's exported surface** (RFC 4 §3.2 to §3.5, §4.3's measuring pass and checksum):
+  `codec.Store`, `Put` and their methods as RFC 4 §4.3 gives them, and the encoder and decoder
+  beneath, which RFC 4 does not give, proposed in D3 and agreed with the RFC 3 and RFC 8 offload
+  plans' authors as part of RFC 8 offload plan S1c remote store contract agreed, since the
+  syncer and the engine are its callers.
+- **Injection points**: a `*slog.Logger` and the recorder each package declares (RFC 25 §8.1,
+  D12), on the codec here and on the S3 store's client with its constructor, never a
+  `*metrics.Registry`; no tracer, since RFC 25 §6.1 lists no
   span for the store and RFC 4 §4.12 names none.
 - Stub bodies behind final signatures (rule 11). No internal interface: the conformance suite
   and the two stores consume the public `Store` itself.
@@ -156,7 +177,7 @@ exists in `test/suites.yaml` yet, and each lands with its first test.
 - **RFC 4 §7.1, the rows marked T**: each epic that builds the behaviour writes its rows, over
   the S3 store and the fault transport (§5, each epic's **Done when:**). Rows on the deferred
   calls are §6.1's.
-- **RFC 4 §7.3** (15 rows): epic 6. §7.3's "engine's read and write tests with and without
+- **RFC 4 §7.3** (16 rows, `codec.Store`'s put among them): epic 6. §7.3's "engine's read and write tests with and without
   transforms" is RFC 8 offload plan epic 21's (§6.1).
 - **Measured service behaviour** (RFC 4 Appendix B): faults reproducing a service that ignores
   every put checksum (Cubbit DS3 as measured), one enforcing only CRC32C (Scaleway), and one
@@ -175,8 +196,9 @@ exists in `test/suites.yaml` yet, and each lands with its first test.
 with an opener, each S3 run under a fresh prefix of one bucket as the harness's
 `test/harness/fixture/s3.go` already does (its pattern copied, since `newBucket` is
 unexported); the in-memory store, a verified in-memory implementation (`CLAUDE.md`, "Writing
-tests", kind 2) held to that suite; a fault wrapper around it that turns a namespace read-only
-for the §4.7 row (kind 3); and `internal/prof`'s leak checks wired into the suite (rule 4). The
+tests", kind 2) held to that suite, with the load record RFC 3 §1.4 asserts on, an output of
+the store that the suite's rows check; a fault wrapper around it that turns a namespace read-only
+for the §4.7 row (kind 3), which the RFC 3 plan's epic 2 extends per call; and `internal/prof`'s leak checks wired into the suite (rule 4). The
 fault transport is epic 3's.
 
 ### 1.5 General rules for each epic
@@ -246,12 +268,13 @@ fault transport is epic 3's.
    `codec_` prefixes RFC 25 §2.1 gives RFC 4; the histogram's `op` folds to six values, as
    §4.12 and RFC 25 §11 say; units, buckets (`request`) and labels are RFC 25 §2's. `Deps`
    carry a `*slog.Logger` narrowed with `With("component", "remote")` or `"codec"` and the
-   `*metrics.Registry`. The store owns no health condition (its health is the syncer's, RFC 3
+   recorder the package declares (D12); no package here imports `pkg/metrics` or `pkg/health`. The store owns no health condition (its health is the syncer's, RFC 3
    §2.8, registered in RFC 25 §3.9 as `store_put_unhealthy` and `store_get_unhealthy`) and
    opens no span. Logs are §4.12's: a refused open once at `Error`, `ErrCorrupt`, a
-   verification failure and a foreign entry at `Warn`, nothing per call. The collectors and the
-   one alert rule, on `codec_verify_failures_total` net of the syncer's recovered re-gets
-   (RFC 25 §7, RFC 4 §4.12), are declared in this component's packages (epic 7); RFC 8 offload
+   verification failure and a foreign entry at `Warn`, nothing per call. The metric
+   definitions and the one alert rule, on `codec_verify_failures_total` net of the syncer's
+   recovered re-gets (RFC 25 §7, RFC 4 §4.12), are plain values in this component's packages,
+   which the node's content wiring builds into collectors and a rule (epic 7); RFC 8 offload
    plan epic 21 registers them in the node. The access key, the secret and a request's
    signature never appear in a log, an error, a metric label or the field error epic 7 hands
    the API: a wrong-secret open's log and error, which wrap the SDK's `SignatureDoesNotMatch`
@@ -279,9 +302,22 @@ fault transport is epic 3's.
    is not written yet. A later revision that gives RFC 4 a suite of its own with a known file
    follows `CLAUDE.md`, "Writing tests", "By kind", and RFC 29 §4.7.
 7. **v2 ignores v1, and imports only what RFC 0 §1.2 allows.** No import of, copy from, or
-   behavioural dependence on v1. Epic 1's import walk checks every package under `pkg/remote`
-   on its own, test packages included: none imports anything amended RFC 0 §1.2 does not
-   allow (the codec → `pkg/transform` is the one edge out of the component). The engine's
+   behavioural dependence on v1. Epic 1's import walk checks each package under `pkg/remote`
+   on its own, follows imports transitively, and checks production code only: tests import
+   what they need, other components' implementations included (amended RFC 0 §1.2). It
+   allows, beside the standard library:
+   - `pkg/remote`, the contract: nothing more;
+   - `pkg/remote/codec`: `pkg/remote` and the root `pkg/transform` (RFC 5's contract) with the
+     contracts it imports, never `pkg/transform/chain` or a transform's package;
+   - `pkg/remote/memory`: `pkg/remote` and `pkg/sim`'s clock;
+   - `pkg/remote/s3` and its `internal/` packages: `pkg/remote` and `aws-sdk-go-v2`;
+   - `pkg/remote/s3/s3fault`, test support over the S3 transport: `aws-sdk-go-v2` alone, for the
+     admin client of its fresh buckets and the operation name of the request it alters;
+   - `pkg/remote/remotetest`: `pkg/remote` and `internal/prof`.
+
+   No package imports `pkg/settings`, `pkg/metrics` or `pkg/health`, which count as
+   implementations (amended RFC 0 §1.2): only the composers do. A package missing from the
+   list fails the walk, and no exception is named. The engine's
    import walk (`TestImportRule`'s allowlist) is the RFC 8 offload plan's to flip.
 8. **Real dependencies for properties of those dependencies** (`CLAUDE.md`, "Writing
    tests"). LocalStack 4.13.1 under the fault transport for every §7.1 row marked T and for the
@@ -313,18 +349,18 @@ fault transport is epic 3's.
 
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | **Interfaces** ⛔ | `pkg/remote`'s contract for v1.1's callers; the codec's surface; the import walk | 4 | 5.5 | team | **everything** |
-| 2 | **Conformance suite and test foundations** ⛔ | `remotetest`, the in-memory store and its read-only wrapper | 5 | 7 | team | **all testing** |
+| 1 | **Interfaces** ⛔ | `pkg/remote`'s contract for v1.1's callers, the syncer's seam included; the codec's surface and `codec.Store`'s; the import walk | 4 | 6 | team | **everything** |
+| 2 | **Conformance suite and test foundations** ⛔ | `remotetest`, the in-memory store with its load record, and its read-only wrapper | 6 | 8 | team | **all testing** |
 | 3 | **Fault transport and LocalStack** ⛔ | `s3fault` around the real transport, real bucket settings on fresh buckets, LocalStack over HTTPS in `integration` | 5 | 8.5 | C | 4, 5 |
 | 4 | **S3 data path, errors and client** ⛔ | the client and constructor, put, get, delete, list, control objects, the total error table, `remote_` metrics | 7 | 15.5 | B | 5, 6 (last subtask) |
 | 5 | **Capability check and health** ⛔ | Appendix C.4 at open, the setting judgements, both probes, `immutable` refused | 6 | 12 | C | 7, RFC 8 offload plan epic 21 |
-| 6 | **Block codec** ⛔ | format, encode with declared lengths or a measuring pass, verified reads, the version gate, fuzz, `codec_` metrics | 7 | 15 | A | RFC 8 offload plan epic 21 |
-| 7 | **Integration: keys and observability** | RFC 13's keys, collectors and the alert rule in `pkg/remote`, the refusal as a field error | 5 | 6 | team | 9 |
+| 6 | **Block codec** ⛔ | format, encode with declared lengths or a measuring pass, verified reads, `codec.Store`, the version gate, fuzz, `codec_` metrics | 8 | 16.5 | A | RFC 8 offload plan epic 21 |
+| 7 | **Integration: keys and observability** | RFC 13's settings rows, metric definitions and the alert rule as plain values; the recorders and conversions the content wiring builds; the refusal as a field error | 6 | 8 | team | 9 |
 | 8 | **Integration: the client limit** 🔀 | the limit derived from the callers, on RFC 8's client holding | planned after S7 | planned after S7 | team | — |
 | 9 | **E2E green** | the nightly service row, the real-bucket rows, §7.5's benchmarks, fuzz targets in the `fuzz` suite | 6 | 10.5 | team | — |
-| | **Total** | | **45** | **80** | | |
+| | **Total** | | **48** | **85** | | |
 
-**Plan estimate: 45 subtasks, 80 man-days, not counting epic 8.**
+**Plan estimate: 48 subtasks, 85 man-days, not counting epic 8.**
 
 RFC 4 is 2,117 lines, which gives N = 5. Its cohesive areas in v1.1 are four: the codec (§3),
 the data path (§4.2 to §4.6, §4.8, §4.9, §4.13), the open (§4.7, §4.11), and the fault
@@ -382,10 +418,11 @@ same numbers for other points.
 - **S1 🔀 = RFC 8 offload plan S1c remote store contract agreed** (end of epic 1). `pkg/remote`'s
   contract and the codec's encode and decode calls (D3), reviewed by the team and by the
   authors of the RFC 3 and RFC 8 offload plans, whose code consumes them. The RFC 3 plan's D8
-  fixes the shape (`Put(ctx, name, src, m *Measure) (Stored, error)`, D3), so S1 waits on nothing
-  outside this plan but that decision's text: RFC 3 §1.3 declares `Measure` only as the RFC 3
-  plan's pull request (#5530) amends it, so this plan's pull request merges after #5530 or with
-  it, and `develop` never holds RFC 4 §4.3 citing a `Measure` RFC 3 lacks. Epics 2 and 6 start here, and so does the keys half of epic 7.
+  fixes the shape: RFC 3's `Store` is `codec.Store`'s `Get` and `Health`, and `Upload` runs the
+  `Attempt` of the `Put` that `codec.Store.NewPut(name, src)` builds, with a `remote.Meter` (D3).
+  RFC 4 §1.2, §4.1 and §4.3 give it as RFC 3 §1.3 at #5530 uses it, so S1 waits on nothing
+  outside this plan but that pull request's text; the follow-up that amends RFC 4 merges with
+  #5530 or after it. Epics 2 and 6 start here, and so does the keys half of epic 7.
 - **R4-S2 🔀 Suite and in-memory store in CI** (end of epic 2). The conformance suite runs green
   against the in-memory store in `unit`. Epics 3 and 4 start here.
 - **R4-S3 🔀 Store and codec complete** (epics 3 to 6 done). Every row of RFC 4 §7.1 and §7.3
@@ -407,8 +444,8 @@ same numbers for other points.
   epic 6's last subtask only, the §4.4 ranged-flip row, which needs the S3 store under the fault
   transport; the rest of epic 6 starts at S1.
 - **E5** blocks E7: the refused open reported as a field error.
-- **R4-S3** blocks RFC 8 offload plan epic 21, which wires the codec into the store adapter (RFC
-  8 offload plan D5) and composes the S3 store: epic 4's constructor runs no capability check
+- **R4-S3** blocks RFC 8 offload plan epic 21, which builds a `codec.Store` per store in the
+  node's content wiring and composes the S3 store: epic 4's constructor runs no capability check
   until epic 5 inserts it (D10), so epic 21 waits for E5 as well as E6. Its epic 15 runs over the
   in-memory components and does not wait.
 - **E7** blocks E9. E8 blocks nothing of this plan: the §4.10 rows are its own.
@@ -438,7 +475,7 @@ same numbers for other points.
   table before its check can run: it opens with Appendix C.1's setting judgements, pure
   functions over the SDK's types, which fill that wait. Track B needs epic 3's LocalStack cell
   for its `integration` runs, and builds against a local LocalStack meanwhile.
-- **Load.** Track A carries 15 man-days, track B 15.5 and track C 20.5. Tracks A and B fill the
+- **Load.** Track A carries 16.5 man-days, track B 15.5 and track C 20.5. Tracks A and B fill the
   difference with epic 7's keys half, which needs only S1 and the RFC 13 plan's settings table.
   If RFC 5 plan epic 3 is late, track A's round trips wait; the header, bound and gate work and
   the fuzz target over hand-written blocks fill it, and what remains is a real gap that closes
@@ -449,17 +486,25 @@ same numbers for other points.
 ### 4.1 Directory layout
 
 ```text
-pkg/remote/                            E1: RFC 4 §4.1's contract for v1.1: types, Store, errors, Cause
-  keys.go metrics.go alerts.go         E7: RFC 13's keys, the collectors' Specs, the alert rule
+pkg/remote/                            E1: RFC 4 §4.1's contract for v1.1, pure: types, Store, errors,
+                                       Cause, Chunk, ChunkRange, Meter, ErrMalformed
   imports_test.go                      E1: the import walk (rule 7)
 pkg/remote/remotetest/                 E2: the conformance suite (§7.1's shared rows), leak checks
-pkg/remote/memory/                     E2: the in-memory store and its constructor (D4)
+pkg/remote/memory/                     E2: the in-memory store, its constructor (D4), its load record
 pkg/remote/s3/                         E4: client, constructor, data path, error table, layout
   check.go settings.go health.go       E5: Appendix C.4, C.1's judgements, probes
+  record.go                            E4: the recorder it declares (D12)
+  settings.go config.go metrics.go     E7: the store configuration's rows and Config, the remote_
+                                       definitions, all plain values
   limit.go                             E8: the client limit derived from its callers
   *_test.go                            E4, E5: the rows marked T, over s3fault and LocalStack
 pkg/remote/s3/s3fault/                 E3: the fault transport, around the client's http.RoundTripper
-pkg/remote/codec/                      E1: surface (S1); E6: format, encode, decode, gate
+pkg/remote/codec/                      E1: surface (S1); E6: format, encode, decode, codec.Store, gate
+  record.go                            E6: the recorder it declares (D12)
+  settings.go metrics.go alerts.go     E7: the format version's row, the codec_ definitions and
+                                       the alert rule, all plain values
+internal/node/content/remote.go        E7: the recorders over the registry, and the plain values
+                                       built into settings rows, collectors and the rule
   testdata/fuzz/ testdata/v1/          E6: fuzz seeds; the golden block of each released version
 test/suites.yaml                       E3: service:localstack in integration; E6: unit/remote-allocs;
                                        E9: the remote group's service and benchmark cells
@@ -480,8 +525,9 @@ test/suites.yaml                       E3: service:localstack in integration; E6
   RFC 2 plan epic 2 keeps. Prior art, from memory: restic's pack format (fixed-width entries,
   header at the end and encrypted, where RFC 4 puts it first and in the clear); Kopia's pack
   index (fixed-width entries). Applied by epic 6.
-- **D3. The codec takes the name derivation and the chain as arguments, and imports `pkg/remote`
-  only for its error values.** Proposed shape, agreed at S1: an encoder that plans a block (its
+- **D3. The codec takes the name derivation and the chain as arguments, imports only the
+  `pkg/remote` and root `pkg/transform` contracts, and offers the syncer `codec.Store`.**
+  Proposed shape, agreed at S1: an encoder that plans a block (its
   exact size, its checksum of the kind the store's `Checksum` names, each chunk's range and the
   census it writes into the header) from a re-iterable source of the block's chunks, with as
   many measuring passes as RFC 4 §4.3 requires, then streams it; a decoder that reads a whole
@@ -492,14 +538,17 @@ test/suites.yaml                       E3: service:localstack in integration; E6
   header and checks it on read. The chain it encodes under is pinned by RFC 8 offload plan epic
   15 from mint to commit or abandon, so a measuring pass and the send use one chain. Prior art:
   the architect pass proposed this shape independently; restic's `Repository.LoadBlob` verifies
-  by its blob ID after decryption (from memory). The RFC 3 plan's D8 fixes it: RFC 3's
-  `Store.Put` is `Put(ctx, name, src, m *Measure) (Stored, error)` with `type Measure struct{
-  State any }`, as #5530 amends RFC 3 §1.3 (S1 states the merge order): the syncer allocates one per `Upload`, never reads `State`, and sets it to nil
-  after an attempt ending in `ErrCorrupt`; the engine's `Store`, the adapter over this codec
-  (RFC 8 offload plan), owns `State`. RFC 4 §4.3, as amended in this pull request, says the
-  same. So the encoder's plan is a value the adapter keeps in `State` and hands back: a retry
-  streams from it without measuring again. `remote.Store`'s own `Put` (RFC 4 §4.1) is
-  unchanged and keeps nothing across calls (§4.9). The encoder takes RFC 24 §6.2's CPU token as an input, a one-method acquire it
+  by its blob ID after decryption (from memory). The RFC 3 plan's D8 fixes the seam, as #5530
+  gives RFC 3 §1.3 and RFC 4 §4.3 gives `codec.Store` (S1 states the merge order):
+  `codec.Store` is RFC 3's `Store` with nothing adapting it, and a `Put`'s `Attempt` is the
+  closure the syncer's `Upload` runs. The encoder's plan lives in the `Put` (RFC 4 §4.3), so
+  the syncer keeps no put state and RFC 3's former `Measure` is gone.
+  `remote.Store`'s own `Put` (RFC 4 §4.1) keeps nothing across calls (§4.9). `Chunk`,
+  `ChunkRange` and `Meter` are values of the `pkg/remote` contract, and `ErrMalformed` wraps
+  `ErrCorrupt` there, so neither the codec nor the syncer imports the other; the transforms'
+  material errors pass through `codec.Store` unchanged (RFC 4 §4.8). The chain arrives as an
+  argument from the node's content wiring (`internal/node/content`), so the codec imports only
+  the root `pkg/transform`, never a transform's package. The encoder takes RFC 24 §6.2's CPU token as an input, a one-method acquire it
   declares: it takes one per chunk it encodes or hashes and returns it before the next network
   write; RFC 8 offload plan epic 21 builds the token in the node. The decoder takes the same
   optional input, since RFC 24 §6.2 exempts only request-path CPU: a caller doing background
@@ -565,10 +614,10 @@ test/suites.yaml                       E3: service:localstack in integration; E6
   resolving to the container. The client's settings carry an
   optional set of trusted roots, which replace the system's when set (none: the system's),
   declared as the remote store's `remote.trust_roots` key in epic 7, which a self-hosted
-  service with a private CA needs anyway, and no setting skips verification: a case in epic 4
+  service with a private CA needs anyway, and no setting skips verification: a case in epic 5
   opens against an `httptest.NewTLSServer` listener on `127.0.0.1:0` without its root and
   requires the open refused, whichever certificate LocalStack serves. Prior art: none needed.
-  Applied by epics 3 and 4.
+  Applied by epics 3, 4 and 5.
 - **D10. The S3 constructor's sequence is final from epic 4; the check fills it in epic 5.** The
   exported constructor's signature is RFC 4 §4.1's from its first landing. Epic 4 builds the
   store under it with its integrity mode, HTTPS refusal and layout, and tests the data path
@@ -578,6 +627,17 @@ test/suites.yaml                       E3: service:localstack in integration; E6
 - **D11. The S3 store refuses `immutable` at open, behind a `decision:` marker**, naming the
   missing caller, as amended RFC 4 §4.1 says, until the backup location's calls land with RFC
   26's copier. Prior art: none needed beyond the RFC. Applied by epic 5.
+- **D12. The S3 store and the codec record through recorders they declare, and offer their
+  settings rows, metric definitions and alert rule as plain values.** Amended RFC 0 §1.2 counts
+  `pkg/settings`, `pkg/metrics` and `pkg/health` as implementations, since each holds a
+  contract and its implementation together, and names no exception, so only the composers
+  import them. Each package declares a small recorder, named for its series, which the node's
+  content wiring implements over the root's registry; the rows, definitions and rule are plain
+  values the content wiring builds into settings, collectors and a rule, handing each package
+  its `Config` struct. Prior art: the RFC 5 plan's D2 and epic 9 (#5532), the same shape for
+  the chain and the provider; RFC 25 §8.1's injection from the root. Applied by epics 1 (the
+  recorder interfaces), 4 and 6 (recording through them) and 7 (the values and the content
+  wiring's builders).
 
 ### 4.3 Knowingly simple implementations
 
@@ -594,7 +654,7 @@ test/suites.yaml                       E3: service:localstack in integration; E6
 
 ### Epic 1 — Interfaces ⛔
 
-**Epic 1 estimate: 4 subtasks, 5.5 man-days.**
+**Epic 1 estimate: 4 subtasks, 6 man-days.**
 
 The frozen surface of `pkg/remote` and the codec, with stub bodies. **Owns:** RFC 4 §1.2, §2,
 §4.1's types, interface and errors for v1.1's callers. **Done when:** S1 is reached; the import
@@ -602,13 +662,14 @@ walk passes.
 
 **Expected content:**
 - `pkg/remote`'s types, constants, `Store` and errors for v1.1's callers, each method's doc
-  naming the section that states its obligations.
-- The codec's surface (D3), agreed at S1.
-- The import walk of rule 7.
+  naming the section that states its obligations, with `Chunk`, `ChunkRange`, `Meter` and
+  `ErrMalformed`; the root a pure contract.
+- The codec's surface (D3), `codec.Store` and `Put` among it, agreed at S1.
+- The import walk of rule 7, one allowlist per package.
 
 ### Epic 2 — Conformance suite and test foundations ⛔
 
-**Epic 2 estimate: 5 subtasks, 7 man-days.**
+**Epic 2 estimate: 6 subtasks, 8 man-days.**
 
 §1.4's suite and the in-memory store that passes its unmarked rows. **Owns:** RFC 4 §7.1 (the
 suite's form and the unmarked rows §1.4 lists). **Done when:** the unmarked rows §1.4 lists
@@ -619,6 +680,8 @@ service), the other five going to the epics §1.4 names.
 **Expected content:**
 - `remotetest`: the suite's runner over an opener, its unmarked rows, the leak checks.
 - The in-memory store and its constructor (D4), held to the suite.
+- The in-memory store's load record, as RFC 3 §1.4 lists it, an output the suite's rows assert
+  on.
 - The fault wrapper around it that makes a namespace read-only (§4.7's row).
 
 ### Epic 3 — Fault transport and LocalStack ⛔
@@ -652,14 +715,17 @@ namespace keys, C.3. **Done when:** RFC 4 §7.1's rows for §4.2, §4.3 (but the
 put's), §4.4 (but the codec's ranged-flip half, and the check's refusal that ends the
 first-get-`404` row, which is epic 5's), §4.5 (but `DeleteVersions`), §4.6, §4.8 (but its
 `PutObject` clauses, §6.1), §4.9 and
-§4.13, and the C.3 row's signing and HTTPS clauses, over LocalStack and the fault transport; an
-open against an `httptest` TLS listener without its trusted root refused (D9); every reply over
+§4.13, and the C.3 row's signing and HTTPS clauses, over LocalStack and the fault transport; every reply over
 HTTP/1.1 (D6); §1.4's unmarked rows
 against the S3 store; RFC 4 §7.4's emulator row for these; RFC
 4 R5 to R10, R13's store half, R16 and R21.
 
 **Expected content:**
-- The client and the S3 constructor: retries off, checksum and payload-signing modes pinned,
+- `NewClient(ClientConfig, Deps)` and `Open(ctx, *Client, prefix, remote.Mode) (remote.Store,
+  Claim, error)` (RFC 4 §4.1), `ClientConfig` carrying `Region` and `MaxBlockSize`, the largest encoded block a put may carry; sized as RFC 3 §2.2 sizes the pools,
+  a larger block refused by `Put` locally with `ErrInvalid` (never `ErrDenied` of cause `size`,
+  which is the service's refusal), signing
+  for `us-east-1` by default (Appendix C.3): retries off, checksum and payload-signing modes pinned,
   HTTPS only with optional trusted roots and no way to skip verification, HTTP/1.1 only, its
   caps from the limit it is handed, a limit of 0 or less refused (Appendix C.3, D6, D9, D10).
   Path-style addressing (`UsePathStyle`), since a dotted bucket name fails TLS under
@@ -678,7 +744,9 @@ against the S3 store; RFC 4 §7.4's emulator row for these; RFC
   (§4.13), at C.2's keys; the digest-only and size `decision:` markers. Table tests of the
   ETag comparison (quoted and unquoted, upper and lower case) and `List` cases for an empty
   page marked truncated and for a prefix with non-ASCII and percent-encoded bytes.
-- The `remote_` collectors and §4.12's logs.
+- The `remote_` series through the recorder `pkg/remote/s3` declares (D12), a call its caller
+  cancelled and a body reader's failure, both local failures (§4.8), recorded as
+  `result="local"` (RFC 4 §4.12), and §4.12's logs.
 - The `Content-Range` reader's fuzz target (rule 2), and `integration`'s `s3-allocs` option with
   the `Put` and `Get` streams' and the `List` page's allocation assertions (rule 4).
 
@@ -696,7 +764,8 @@ class and tiering row; the C.3 row's encryption set before open), whose `Recheck
 refusal ending §7.1's first-get-`404` row; step 3 choosing the batch delete on LocalStack, its
 `DeleteObjects` sent with `Content-MD5`; a wrong-secret open whose log and error hold no part of
 the access key, the secret or the signature (rule 3); RFC 4 R12's mutable half; an open in `immutable` mode refused,
-naming its missing caller (D11).
+naming its missing caller (D11); the store refused at open for an untrusted certificate, an
+`httptest` TLS listener on `127.0.0.1:0` opened without its trusted root (D9).
 
 **Expected content:**
 - Appendix C.1's judgements for a mutable store, as pure functions over the SDK's replies. A
@@ -706,18 +775,20 @@ naming its missing caller (D11).
   re-list on the clock (D8), refusing with every missing feature named.
 - `Health` in both directions (§4.7).
 - `immutable` refused at open (D11).
-- `remote_capability`, the refused open's log and the `decision:` markers rule 9 gives this
-  epic.
+- `remote_capability`, labelled by `namespace` and feature, through the recorder's
+  `Capability(prefix, feature, present)`, the
+  refused open's log, the one-zone class's failure domain in the open's log (RFC 4 §8 item 7),
+  the `404`/`501`/`403` rule on every setting read (Appendix C.1), and the `decision:` markers
+  rule 9 gives this epic.
 
 ### Epic 6 — Block codec ⛔
 
-**Epic 6 estimate: 7 subtasks, 15 man-days.**
+**Epic 6 estimate: 8 subtasks, 16.5 man-days.**
 
-The codec of D3, on the format of D2. **Owns:** RFC 4 §3.1 to §3.5, §4.3's measuring pass and
-checksum, §4.12's `codec_` rows, and the codec's part of RFC 3 §2.2's memory bound (the header
-bound and the largest encoded block it reports, on the put side the maximum of
-`Attempt.MaxEncodedLen` over the open attempts, never the current chain's `MaxEncodedLen`: a pin
-lives from Mint to Commit or Abandon and can outlive a chain change, RFC 5 §3.1). **Done when:** RFC 4 §7.3's rows but the
+The codec of D3, on the format of D2. **Owns:** RFC 4 §3.1 to §3.5, §4.3's measuring pass,
+checksum and `codec.Store`, §4.8's `ErrMalformed` and material errors passed through, §4.12's `codec_` rows, and the codec's part of RFC 3 §2.2's memory bound (the header
+bound and the largest encoded block it reports, which RFC 3 §2.2 sizes by the chain's
+`MaxDecodeLen(Max)`). **Done when:** RFC 4 §7.3's rows but the
 engine's transforms-on-and-off row (§6.1); §7.1's §3.2 census row but its recovery half
 (§6.1); §7.1's §4.4 ranged-flip half, over LocalStack under epic 3's fault transport in
 `integration`, the syncer's re-get excepted (§6.1), as its last subtask once epic 4's store
@@ -725,38 +796,53 @@ exists (§3.3); the codec's part of RFC 3 §2.2's memory-bound row; R1 to R4,
 R14 and R15.
 
 **Expected content:**
-- The layout of D2, its header bound, and the refusals before allocation (§3.2).
-- Encode from declared or measured lengths through RFC 5's `Chain`, with D5's combine (§4.3),
-  from a plan the adapter holds across retries in RFC 3's `Measure.State` (D3).
+- The layout of D2, its header bound, and the refusals before allocation (§3.2), the body bound
+  asked of the handed chain's `MaxDecodeLen`.
+- Encode from declared or measured lengths through the chain the node's content wiring hands
+  in, with D5's combine (§4.3), into a plan the `Put` keeps across retries (D3).
 - RFC 24 §6.2's CPU token taken per chunk encoded or hashed, and per chunk a background read
   verifies, as an optional input to both encoder and decoder (D3).
-- Whole-block and ranged reads, verified as §3.4 says.
+- Whole-block and ranged reads, verified as §3.4 says, a past-the-end recorded range as
+  `ErrMalformed`.
+- `codec.Store`, its `Get`, `Health` and `NewPut`'s `Put` as RFC 4 §4.3 states them (D3), and
+  RFC 4 §7.3's `codec.Store` row. Its `GetVersion` lands with `remote.Store`'s `GetVersion`
+  and RFC 26's callers (§6.1).
 - The version gate (§3.5) and the golden block of `testdata/v1/`.
-- The decoder's fuzz target (rule 2), the `codec_` collectors, and `unit`'s `remote-allocs`
+- The decoder's fuzz target (rule 2), the `codec_` series through the recorder the codec
+  declares (D12), and `unit`'s `remote-allocs`
   option (rule 4).
 
 ### Epic 7 — Integration: keys and observability
 
-**Epic 7 estimate: 5 subtasks, 6 man-days.**
+**Epic 7 estimate: 6 subtasks, 8 man-days.**
 
-What the component declares for the node to register. **Owns:** RFC 13 Appendix B's rows for
-the remote store's endpoint, credential, trust roots, bucket, storage class and block target,
+What the component offers the node as plain values, and what the node's content wiring builds
+from them. **Owns:** RFC 13 Appendix B's rows for
+the remote store's endpoint, credential, region, trust roots, bucket, storage class and block target,
 and for the namespace's prefix and block format version to write, and §5.4's gate on the last; RFC 25 §7's alert
 on `codec_verify_failures_total`. **Done when:** RFC 13 §9's "§6 block target range" row; RFC 13
-§9's "§5.4 format version" row's single-node part; each collector of RFC 4 §4.12 and the alert
-rule declared in `pkg/remote` and registered once by a test registry, read from a scrape.
+§9's "§5.4 format version" row's single-node part; each series of RFC 4 §4.12, recorded through
+the recorders the content wiring builds, registered once by a test registry and read from a
+scrape; the alert rule names a series that exists; the import walk shows no package under
+`pkg/remote` importing `pkg/settings`, `pkg/metrics` or `pkg/health`.
 
 **Expected content:**
-- The keys declared in `pkg/remote` against `pkg/settings`' table, the block target's range
+- The settings rows as plain values, the store configuration's in `pkg/remote/s3` and the block
+  format version's in `pkg/remote/codec`, with the `Config` structs the content wiring hands
+  back; the content wiring registers the rows in `pkg/settings`' table, the block target's range
   refused there (RFC 13 §6); the carver's constructor keeps its own refusal as a defence (RFC 2
   §5.2, the RFC 2 plan's epic 5), which cites this epic for the setting, moved from
   `internal/node/api/res_stores.go`, the block format version's key marked with the RFC 13
   plan's `FormatVersion` option (its epic 3's D6); the storage class's default
   `STANDARD`, pinned by the S3 profile, as RFC 13 Appendix B, amended in this pull request, says;
   `remote.trust_roots`, the certificates that replace the system's roots for the endpoint (D9),
-  with no key that skips verification. RFC 8 offload plan epic 21 registers them.
-- The `remote_` and `codec_` `Spec`s gathered for the node to register.
-- The alert rule, net of the syncer's recovered re-gets as RFC 25 §7 words it.
+  with no key that skips verification; `remote.region`, the signing region, `us-east-1` when
+  unset, as RFC 13 Appendix B, amended in this pull request, says. RFC 8 offload plan epic 21 registers them.
+- The `remote_` and `codec_` metric definitions as plain values in `pkg/remote/s3` and
+  `pkg/remote/codec`, and in `internal/node/content` the recorders over the registry and the
+  collectors built from those definitions, for RFC 8 offload plan epic 21 to register.
+- The alert rule as a plain value in `pkg/remote/codec`, net of the syncer's recovered re-gets as
+  RFC 25 §7 words it, built into a rule by the content wiring.
 - A refused open's error naming the missing features, for the API to report as a field error.
 - `docs/guide/configuration.md`'s remote store section.
 
@@ -829,18 +915,19 @@ recorded by hand; the codec's and the `Content-Range` reader's fuzz targets runn
    open and cost a few requests each.
 5. **Cross-plan seams**, as the offload contract fixes them. RFC 2's plan owns the name
    derivation, its golden vector and the one golden-vector script, and the `fuzz` suite. RFC 3's
-   plan declares its own narrow `Store` and exports the transfer series epic 7's alert reads.
-   RFC 5's plan builds the `Chain` and envelope the codec calls, and reaches `PutControl` and
-   `GetControl` for its `keys` object through a consumer interface of its own. RFC 8's offload
-   plan owns the synchronisation points, the RFC 3 `Store` adapter and its error mapping, the
-   client holding, the registration of this component's keys, collectors and alert rules, the
+   plan declares its own narrow `Store`, which this plan's `codec.Store` implements as it is
+   (D3), extends epic 2's fault wrapper per call, and exports the transfer series epic 7's alert
+   reads. RFC 5's plan builds the `Chain` and envelope the codec calls, and reaches `PutControl`
+   and `GetControl` for its `keys` object through a consumer interface of its own. RFC 8's
+   offload plan owns the synchronisation points, building a `codec.Store` per store in the
+   node's content wiring, the client holding, the registration of what epic 7's content wiring builds from this component's plain values, the
    chain pin and the census's persistence, and the RFC 0 §1.2 amendment.
 
 ### 6.1 Deferral ledger
 
 | Deferred | Why | Owner | Trigger |
 | --- | --- | --- | --- |
-| A backup location's calls and the `immutable` mode: §4.14's calls, generations and the location health object, §4.15's versioned objects, §4.14's admission and its provocations against a real bucket, their §7.1 rows and the `PutObject` clauses of §7.1's §4.8 size row, R18, R20 and R12's immutable half (§1.3, D11; RFC 4 §4.1 as amended) | no caller in v1.1 | RFC 26 | RFC 26's plan starts, or its copier lands |
+| A backup location's calls and the `immutable` mode: §4.14's calls, `codec.Store.GetVersion` over them (RFC 3's `FetchVersion` calls it), generations and the location health object, §4.15's versioned objects, §4.14's admission and its provocations against a real bucket, their §7.1 rows and the `PutObject` clauses of §7.1's §4.8 size row, R18, R20 and R12's immutable half (§1.3, D11; RFC 4 §4.1 as amended) | no caller in v1.1 | RFC 26 | RFC 26's plan starts, or its copier lands |
 | Versions in the in-memory store (§4.3's `ponytail:`, D4) | no consumer reads one | RFC 26 | its first unit test needs an immutable store without LocalStack |
 | Reading retain-untils from a listing instead of per extension | an optimisation of a deferred call; needs an RFC 4 amendment | RFC 26 | its extensions show in a service's throttling |
 | `Settings`, `RecheckSetting`, `VersionsPage`, `DeleteVersions`, the repair proof's acceptance, and the `Recheck` pass itself: its caller, its retries through `Small`, two missed periods, drift raised through `SetDrift`, no delete on drift; the `Recheck` pass's read-back of the `keys` object (RFC 5 Appendix B.2; each writer's own read-back is the RFC 5 plan's epic 8); §7.1's `Recheck` rows, the `Recheck` halves of its archive-class row and of the C.3 row's encryption clause, and its 10⁶-version walk; R17 (§6 point 3; RFC 4 §4.1 as amended) | no caller in v1.1: GC runs it. Until it lands a setting changed after open goes unseen until the next open, and an expiry rule added then deletes blocks a running node notices only when a read returns `ErrNotFound` | RFC 9 | RFC 9's plan starts |
@@ -860,20 +947,20 @@ recorded by hand; the codec's and the `Content-Range` reader's fuzz targets runn
 | --- | --- |
 | RFC 4 "Start here", "In short" | explanatory: none |
 | RFC 4 §1, §1.1 | header (scope) |
-| RFC 4 §1.2, §2 | 1 |
+| RFC 4 §1.2, §2 | 1 (the pure contract, the import walk) |
 | RFC 4 §3.1, §3.2, §3.3, §3.4 | 6 |
 | RFC 4 §3.5 | 6 (gate); 7 (the namespace's key) |
 | RFC 4 §4.1 | 1 (types, interface, errors); 2, 4 (constructors); the calls landing with their caller: §6.1 |
 | RFC 4 §4.2 | 4 |
-| RFC 4 §4.3 | 4 (the store's put); 5 (conditional put measured); 6 (measuring pass, checksum) |
+| RFC 4 §4.3 | 4 (the store's put); 5 (conditional put measured); 6 (measuring pass, checksum, `codec.Store`) |
 | RFC 4 §4.4 | 4; 6 (the codec's half) |
 | RFC 4 §4.5 | 4 (`Delete`); §6.1 (`DeleteVersions`, RFC 9) |
 | RFC 4 §4.6 | 4 |
 | RFC 4 §4.7 | 5 (a namespace's store); 9 (prefix revoke); §6.1 (the location health object, RFC 26) |
-| RFC 4 §4.8, §4.9 | 4 |
+| RFC 4 §4.8, §4.9 | 4; 6 (`ErrMalformed`, material errors passed through) |
 | RFC 4 §4.10 | 4 (client caps); 8 (the limit's derivation); RFC 8 offload plan epic 21 (one client per configuration) |
 | RFC 4 §4.11 | 5 (the open); §6.1 (the `Recheck` calls, RFC 9) |
-| RFC 4 §4.12 | 4 (`remote_`); 5 (`remote_capability`); 6 (`codec_`); 7 (declaration, alert) |
+| RFC 4 §4.12 | 4 (`remote_`); 5 (`remote_capability`); 6 (`codec_`); 7 (definitions, recorders, alert) |
 | RFC 4 §4.13 | 4 |
 | RFC 4 §4.14, §4.15 | 5 (`immutable` refused, D11); §6.1 (RFC 26) |
 | RFC 4 §5 | 5 |

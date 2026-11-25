@@ -19,9 +19,9 @@ does not plan again. This plan deletes nothing. Related RFCs, with how far each 
   authorization: **SMB's parts only**: NTLM and Kerberos session setup, SMB's SID and identity
   translation, and the share and ACL checks SMB calls. The shared pieces, the authenticator behind
   `SignIn` and the resolution behind `Spell` and `Find`, are **constraints**, owned by RFC 18's
-  plan (#4058) (§6.2, point 1). `gss`, which NFS will share, is built here only as far as SMB's
-  session setup drives it, because RFC 20's plan's ledger gives it to this plan until it has an RFC
-  of its own; it is one epic, so it can move whole, and its owner is an open point too (§6.2).
+  plan (#4058) (§6.2, point 1). `gss`, which NFS shares, is built here only as far as SMB's
+  session setup drives it beyond what RFC 21's plan's epic 13 builds for a Kerberos context (§6.2,
+  point 2); its owner is an open point too (§6.2).
 - [RFC 14](../docs/internals/rfcs/rfc-14-open-state.md), open state: **SMB's wire side only**: lease and oplock
   breaks, durable and persistent reconnect, and replay, against the RFC 14 state the service holds.
   RFC 14 itself is constraints.
@@ -230,7 +230,9 @@ profile-container run, needing E15's Windows runner joined to the test domain, u
 provisioned (§6.2, point 8).
 
 **Test components.** The SMB handler harness and golden files from captures (epic 2), over RFC 21's
-plan's epic 2's runner, cut script and import test's call-site and file-size rules. `gsstest`'s initiators come with `gss` (epic 4) and the
+plan's epic 2's runner, cut script and import test's call-site and file-size rules. `gsstest`'s NTLM
+and SPNEGO initiators come with `gss`'s mechanisms (epic 4), its Kerberos initiator with RFC 21's
+plan's epic 13, and the
 scripted client with sessions (epic 5), the epics that create the packages they import.
 
 ### 1.5 General rules for each epic
@@ -369,7 +371,7 @@ rows of RFC 20's deferral ledger.
 | E1 ⛔ | SMB surface | `smb/protocol`'s request state; `smb/ops`' handler set, table and `ioctl/` table; the callbacks value | 3 | 3 | team | all |
 | E2 ⛔ | Test foundations | the SMB handler harness on `memory.New` and `vfstest.Faults`; golden files cut from Samba captures (the import test's call-site and file-size rules are RFC 21's plan's E2); the service's halves of A3, A6, A7 and plan gaps 23 and 25 | 5 | 11 | team; T2.4 and T2.5 in B | E3 to E14, but T2.4, beside E3, only T6.1, T8.1 and T8.5, and T2.5, after S2b, only the rows of plan gaps 23 and 25 |
 | E3 | Negotiation and the connection's stages | `NEGOTIATE`, `Caps`, signing, encryption, preauthentication, credits, the message-ID window, `HoldCodec`, the error table and its totality test, `ECHO`, `CANCEL` | 9 | 24 | A | E5; S4 |
-| E4 | Authentication mechanisms | `gss`: `Exchanges`, NTLM, Kerberos, SPNEGO, `Identity`, `gsstest` | 6 | 17.5 | B | E5; S4 |
+| E4 | Authentication mechanisms | `gss`: `Exchanges`, NTLM, Kerberos, SPNEGO, `Identity`, `gsstest` (the Kerberos side is RFC 21's plan's E13) | 6 | 17.5 | B | E5; S4 |
 | E5 🔀 | Sessions | `SESSION_SETUP`, `LOGOFF`, the session registry, the client record, re-authentication, expiry, multichannel, `PreviousSessionId`, the scripted client | 8 | 15 | A | E9; E14 (partly); S4 |
 | E6 | Trees, IPC$ and the RPC services | `TREE_CONNECT`, share flags, keyless confinement, DCE/RPC, named pipes, srvsvc, wkssvc, lsarpc | 5 | 18.5 | B | E9, E11 and S4 (partly); E16 |
 | E7 | Opens and the data path | `CREATE`, `CLOSE`, `READ`, `WRITE`, `FLUSH`, `FileId`s, path resolution, access translation, `Adapter` bytes | 8 | 21 | C | E8; E6, E9, E11 to E13 (partly) |
@@ -615,8 +617,8 @@ pkg/adapter/
   settings/                   RFC 20's E1, renamed by #4000; this plan adds no field
   smb/                        RFC 20's E1 and E6: New
 internal/adapter/
-  gss/                        E4: Exchanges, the NTLM, Kerberos and SPNEGO mechanisms, Identity (RFC 20 §4.4)
-    gsstest/                  E4: initiators and a test keytab; tests accept through gss on memory.New
+  gss/                        RFC 21's plan's E13: Context, the Kerberos mechanism, Exchanges over one leg, Identity, MIC; E4: the NTLM and SPNEGO mechanisms, Exchanges' second leg, Identity's Secret arm (RFC 20 §4.4)
+    gsstest/                  RFC 21's plan's E13: the Kerberos initiator; E4: the NTLM and SPNEGO initiators; tests accept through gss on memory.New
   translate/                  E7 (access masks), E8 (attributes, times, Fit), E12 (descriptors)
   adaptertest/
     smbclient/                E5: the scripted client (RFC 20 §8.2)
@@ -845,11 +847,23 @@ RFC sections: §3.1, §3.2, §3.3's credits and pending ceiling, §4.1's signing
 
 **Epic 4 estimate: 6 subtasks, 17.5 man-days.**
 
+**Built by RFC 21's plan.** [RFC 21's plan](rfc-21-nfs-plan.md)'s epic 13 builds, and prices, the
+pieces NFS needs (its S6c): `gss`'s first commit with `Context`, the Kerberos mechanism and
+`gsstest`'s Kerberos initiator, `memory.New`'s `SignIn` taking a test keytab and the import test's
+`gss` clause (its T13.9), `Exchanges` over one leg (T13.10), `Identity` from a Kerberos context
+(T13.11) and RFC 4121's `MIC` and `VerifyMIC` (T13.12). So T4.1 below keeps only `Exchanges`
+holding an exchange across legs; T4.3 keeps SMB's side of Kerberos, the captured `smbclient
+--use-kerberos` exchange and the keys inside SPNEGO; T4.4 checks the mechanism-list MIC over
+Kerberos through T13.12's `VerifyMIC`; T4.5 keeps the `Secret` arm and the anonymous and guest
+path; T4.6 keeps the NTLM and SPNEGO initiators and their tests. NTLM and SPNEGO stay here. The
+figure above still counts the moved work, until standup moves it; RFC 21's plan's T13.9 to T13.12
+price that part too, so until then the programme counts it twice.
+
 `gss` as SMB drives it (RFC 20 §4.4): the message side of NTLM, Kerberos and SPNEGO, the exchange
 machine, and the `Identity` a context yields, with every secret behind `SignIn`. The Kerberos,
 SPNEGO and NTLM mechanism code is lifted from `develop`'s history (RFC 20 Appendix B: replace with
-`gss`, keeping the mechanism code). RFC 4121's MIC token is here, since SPNEGO's mechanism-list MIC
-over Kerberos is one, and so is NTLMSSP's signature, which that MIC is over NTLM (T4.4); RFC 4121's
+`gss`, keeping the mechanism code). SPNEGO's mechanism-list MIC is here, over Kerberos through RFC 4121's
+MIC token, which RFC 21's plan builds (above), and over NTLM as NTLMSSP's signature (T4.4); RFC 4121's
 `Wrap` and `Unwrap` are not: RFC 20's plan's ledger gives
 them to RFC 21's plan (§6.2, point 2). Nothing in E4 imports an SMB package, so
 the epic can move whole. Tested in process, with no KDC, no domain controller and no network,
@@ -1600,12 +1614,15 @@ thread is named.
    its SMB half: its code is `internal/identity`, which no adapter package may import (RFC 20
    §2.3). #4058 has not merged; the S and E numbers cited here are checked again when it does.
 2. **`gss`'s owner** (RFC 20 §4.4; RFC 20's plan's ledger and risk 5). The ledger gives `gss`'s
-   mechanisms, `Exchanges`, `Identity`, `gsstest` and RFC 4121's MIC token, which SPNEGO's
-   mechanism-list MIC over Kerberos needs, to this plan (E4) until it has an RFC of its own, and
-   RFC 4121's `Wrap` and `Unwrap`, which no SMB code calls, to RFC 21's plan; the
+   NTLM and SPNEGO mechanisms, `Exchanges`' second leg, `Identity`'s `Secret` arm and their
+   `gsstest` initiators to this plan (E4) until it has an RFC of its own; the Kerberos side, its
+   `Context`, mechanism, initiator, `Exchanges` over one leg, `Identity` from a Kerberos context and
+   RFC 4121's MIC token, which SPNEGO's mechanism-list MIC over Kerberos also needs, to RFC 21's
+   plan's epic 13, which builds them first, agreed with Marco on 25 Nov; and RFC 4121's `Wrap` and
+   `Unwrap`, which no SMB code calls, to RFC 21's plan too; the
    RPCSEC_GSS context table has its own row, RFC 21's plan's. E4 is an epic of its own, tested
-   against `memory.New`'s `SignIn` and importing no SMB package, so it can move whole. Options:
-   keep it here, its own RFC, or shared with RFC 21's plan.
+   against `memory.New`'s `SignIn` and importing no SMB package. Options for what stays here: keep
+   it here, or its own RFC.
 3. **The composed in-process node** (S5; RFC 20 §7's in-process layer; RFC 22 §18's suites
    paragraph). #4050's epic 3 builds `internal/node/nodetest`; with RFC 20's epic 7 it serves SMB,
    and S5 is that. It lands after #4050's S2, later than a harness without `internal/node` would
@@ -1689,8 +1706,8 @@ the row names it, of the open points (§9) of RFC 20's [epic 2](rfc-20-adapters-
 | transform header, signing, encryption, credits, message-ID window, multichannel session registry, `Caps` | E3; the registry and binding in E5 |
 | SMB callbacks: lease break, change notify, lock wait, revoked | E9 (lease break, revoked), E11 (notify, lock wait) |
 | `IPC$`, `dcerpc`, srvsvc share listing, lsarpc lookups | E6 |
-| `gss`: Kerberos, NTLM, SPNEGO, `Exchanges`, `Identity`, `gsstest` | E4 |
-| `gss`: RFC 4121 MIC token (`Context.MIC`) | E4 (T4.4) |
+| `gss`: Kerberos, NTLM, SPNEGO, `Exchanges`, `Identity`, `gsstest` | E4: NTLM, SPNEGO, `Exchanges`' second leg, `Identity`'s `Secret` arm and their initiators; the Kerberos side RFC 21's plan's E13 (its T13.9 to T13.11) |
+| `gss`: RFC 4121 MIC token (`Context.MIC`) | not here: RFC 21's plan's E13 (its T13.12); E4's T4.4 calls it for the mechanism-list MIC |
 | `gss`: RFC 4121 `Wrap`, `Unwrap` | not here: the row stays in RFC 20's plan's ledger, its owner RFC 21's plan and its trigger RFC 21's first RPCSEC_GSS `INIT` handler (§6.2, point 2) |
 | `translate` | E7 (access masks), E8 (attributes, times, `Fit`), E12 (descriptors) |
 | the error-table rows and the totality test | E3 |
@@ -1710,7 +1727,7 @@ the row names it, of the open points (§9) of RFC 20's [epic 2](rfc-20-adapters-
 | a `FlowControl` conformance check in `adaptertest` that each protocol's `Flow` passes: under an ended context `Admit` takes a free place or returns at once (RFC 20's epic 5, its D8) | E3, with `Flow` (T3.6) |
 | RFC 20 §10.1's `adapter_translation_refused_total`, `adapter_record_decode_failures_total` and `adapter_record_replays_total` | with `translate` (E7, E8, E12) and the client record (T5.4) |
 | `internal/mfsymlink`, deleted by RFC 20's T1.1 for having no importer | not here: unowned, §6.5's deferral ledger |
-| the import test's cases for the packages two protocols share: a protocol may import `translate` and `gss`, `translate` imports only neutral types, `gss`'s own clause, `smb/dcerpc` imports no SMB package (epic 2's §9) | each with its package's first commit: `gss` in E4, `dcerpc` in E6, `translate` in E7 |
+| the import test's cases for the packages two protocols share: a protocol may import `translate` and `gss`, `translate` imports only neutral types, `gss`'s own clause, `smb/dcerpc` imports no SMB package (epic 2's §9) | each with its package's first commit: `gss` in RFC 21's plan's E13 (its T13.9), `dcerpc` in E6, `translate` in E7 |
 | a command added to a table without a vector in its protocol's suite fails the suite, a check in `internal/adapter/smb` (epic 6's §9) | E3, with the first command |
 | each request's `vfs.Call` and its `Identity`, built from SMB's session with SMB's capabilities (RFC 20 §4.4, RFC 22 §16.1, RFC 17 §3.0; epic 6's §9) | E5 (§7's §16.1 row; T5.3) |
 | an `IOCTL` buffer decoded by its control code (RFC 22 §16; epic 6's §9) | T3.5 |
@@ -1861,7 +1878,7 @@ each check runs").
 | --- | --- |
 | RFC 20 §3.1's `IPC$` seams, §4.10's SMB entries | E6 |
 | RFC 20 §3.3 (SMB callbacks) | E9, E11 |
-| RFC 20 §4.4 (`gss`) | E4 |
+| RFC 20 §4.4 (`gss`) | E4; the Kerberos side and the MIC token RFC 21's plan's E13 |
 | RFC 20 §4.5, §7.3 (the error table, totality) | E3 |
 | RFC 20 §4.6, §4.7 (SMB's `Security`, `Flow`, `Replay`, `HoldCodec`; `Park`; `Keep`) | E3, E9, E10, E11 |
 | RFC 20 §4.9 (`translate`, `Caps`) | E1, E3, E7, E8, E12 |
