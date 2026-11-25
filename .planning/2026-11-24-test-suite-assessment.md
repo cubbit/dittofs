@@ -102,7 +102,7 @@ dedicated core would explain part of it, but that is a guess. (A comment in
 Compared within the same batch:
 
 - **The race detector doubles test time.** The sum of package times is 1,380 s with `-race`
-  and 710 s without. Under heavier load the factor was 3.
+  and 710 s without.
 - **Coverage costs nothing we can measure without `-race`** (710 s against 703 s). CI runs
   coverage under `-race`, where `go test` uses `-covermode=atomic`. We did not measure that
   pair.
@@ -114,7 +114,7 @@ batch: the warm `-race` run against the no-race run):
 | Package | With `-race` | Without | Factor |
 | --- | --- | --- | --- |
 | `pkg/journal/internal/index` | 163 s | 12 s | ×13 |
-| `pkg/journal/journaltest/model` | 20 s | 2 s | ×9 |
+| `pkg/journal/journaltest/model` | 20 s | 2.2 s | ×9 |
 | `pkg/openstate` | 30 s | 5 s | ×6 |
 | `internal/identity` | 166 s | 90 s | ×1.8 |
 | all packages | 1,380 s | 710 s | ×1.9 |
@@ -247,8 +247,9 @@ if len(b) < 6 {                        // mutant: "<" → "<=" survives
 }
 ```
 
-No test decodes a format file of exactly 6 bytes, the shortest one that names a version, so
-nothing pins that boundary. Some survivors
+No test decodes a 6-byte file that names an **unknown** version. Only that input tells the
+two apart: the original reports `ErrUnknownVersion`, the mutant `ErrDamaged`. (A 6-byte
+version-1 file gets `ErrDamaged` either way.) So nothing pins that boundary. Some survivors
 are *equivalent mutants*, which no test can kill. For example, `catalog.go:127` guards a
 footer of more than `72 × MaxUint32` bytes, which no test can build. A reviewer marks those
 as equivalent and moves on.
@@ -300,7 +301,7 @@ decoding), and not yet for concurrent ones.
 | A1 | **Shard the unit job.** | suite step ÷ ~2 on full runs | none |
 | A2 | **Cheap Argon2 cost in tests.** | a few % of CPU; not `internal/identity` (see A2) | none |
 | A3 | **Export tests from compiled export data.** | most of ~85 s of race test time | none |
-| A4 | **Single-goroutine heavy tests without `-race`.** | up to ~11% of race test time, mostly `index` | read each test first |
+| A4 | **Single-goroutine heavy tests without `-race`.** | up to ~14% of race test time (`index`, `model`, `openstate`) | read each test first |
 
 **A1 — shard the unit job.** `dt` already has `shards:`, but it splits a list of named tests,
 and the unit cell has package patterns instead. The split must happen in `dt run`, after
@@ -320,14 +321,19 @@ What the change must also do:
 - **No empty shard.** After `--changed`, a shard can get no packages, and a cell with no
   tests listed runs the whole suite (`test/harness/plan/plan.go`). Drop empty shards, and
   cover that case in the union test.
-- **Fan-in.** A fan-in job that keeps the old name requires `success` from every shard. A
-  skipped or cancelled shard does not count as a pass.
+- **Fan-in.** A fan-in job that keeps the old name must tell "no planned cell" from "skipped
+  after a failure". Today a docs-only change skips `unit`, and a skipped job passes the
+  required check (`.github/workflows/tests.yml`). So the fan-in passes when the plan has no
+  unit cell, and otherwise requires `success` from every shard.
 - **Coverage.** Each shard uploads its own profile, and Codecov merges them per commit.
 - **Limits.**
   - Sharding helps full runs (merge queue, pushes to the branch) most. A PR already runs
     only the changed packages (`--changed`).
-  - Each shard repeats the fixed setup (checkout, cache restore, building `dt`), and the
-    extra cells (`journal-index`, `adapter-allocs`, `whole-tree`, the cgo vet) still run
+  - Each shard repeats the fixed setup (checkout, cache restore, building `dt`). The steps
+    after the suite (`journal-index`, `journal-plant`, `journal-conformance-norace`,
+    `adapter-allocs`, `whole-tree`, "Build the commands", the cgo vet) stay in the required
+    job by a `decision:` in `tests.yml`, so the change names the shard that carries them. They
+    still run
     after the suite. ÷2 on the suite step is a realistic target, not ÷3.
   - The slowest package, `internal/identity`, sets a floor for any shard, and A2 does not
     lower it (see A2).
@@ -344,10 +350,16 @@ What the change must also do:
   changes.
 - The guard test for the production cost already exists (`pkg/identity/hashes_test.go`,
   `phcPrefix`, and `internal/identity/account_test.go`).
-- The real risk is a knob. The weak-key rule matches a called function name, and it exempts
-  packages whose name ends in `test`. A config field, an option or an environment variable
-  would get past it. So the weak variant is reachable **only by a direct call from test
-  code**, never through configuration.
+- The real risk is a knob, and today nothing enforces "test code only":
+  - the weak-key rule inspects only calls (`*ast.CallExpr`), so `h := identity.NewWeakHashes`
+    passes it;
+  - it exempts every package whose name ends in `test`, and only `nodetest` has an import
+    restriction, so an `identitytest` wrapper imported by production code passes;
+  - `parsePHC` (`internal/identity/account.go`) has no cost floor, so a weak hash that reaches
+    the store verifies without a complaint.
+
+  A2 must close one of these: a cost floor in `parsePHC`, or a rule that production code
+  imports no `*test` package. Then the weak variant is reachable only from test code.
 - **What A2 does not reach.** `internal/identity`'s own tests hash at production cost
   directly (`pid.NewHashes`, six calls, two of them in the `withPassword` and `withNTHash`
   helpers that run once per seeded user), and every `identity.New` computes the dummy hash
@@ -363,7 +375,8 @@ What the change must also do:
 packages from source (`importer.ForCompiler(…, "source", nil)`, for example in
 `pkg/bootstrap/arch_test.go`). #5473 moved `TestImportRules` to compiled export data. #5465
 records it at 4 min 50 s on CI before, and 6.4 s in a local run with `-race` after. The same switch makes these three cheap
-in every run, with or without `-race`, so they need no skip and no new cell.
+in every run, with or without `-race`, so they need no skip and no new cell. They stay in
+the parallel `unit` run, so the gain is net: nothing moves onto the serial steps after it.
 
 **A4 — single-goroutine heavy tests without `-race`.** The race cost sits in a few packages
 (§1.2). Some of their slow tests are oracle or model checks that run in one goroutine, such
@@ -373,7 +386,11 @@ as `TestSegmentBytesMatchWalk` (60,000 steps against an oracle). Such a test ski
 - **Pair every skip with a run.** `test/suites.yaml` already states the rule for
   `journal-conformance-norace`: "a name reaching only -skip would silently lose its
   enforcement". A check that every test skipping under `-race` runs in some non-race cell
-  belongs in the same change.
+  belongs in the same change. **That check fails on today's tree:**
+  `TestDescriptorsHitAllocatesNothing` and `TestStreamReservationAllocatesNothing`
+  (`pkg/journal/internal/segment`) skip under `-race`, and no cell runs that package without
+  it, so both run nowhere in CI. The change that adds the check adds a `segment` non-race
+  cell too.
 - `pkg/journal/internal/index` already has a non-race run (`unit/journal-index` runs the
   whole package), so its oracle tests need only the skip.
 - Read each test first. A test keeps `-race` if it, **or the code it calls**, starts
@@ -459,8 +476,9 @@ surviving mutants on the changed lines. Run it by hand when you review.
   (`cmd/dfs/commands/tracing_test.go:128`) failed: the shutdown waited 10.5 s, and the test
   fails at twice its 5 s bound, 10 s. It passed in the less loaded batch.
 - **Side findings and CLAUDE.md.** A flake is fixed, or quarantined with an issue and an
-  expiry. Side finding 2 is #5667. Side finding 1
-  is also an argument for non-race cells such as A4's: today no CI run would catch it.
+  expiry. Side finding 2 is #5667. Side finding 1 shows what a race-only suite misses, but
+  A4's cells would not have caught it: they do not run `pkg/engine`. Only a non-race run of
+  the whole tree would.
 - **Not done.** No mutation matrix for a concurrent package. No profile of the CI runner
   itself.
 
