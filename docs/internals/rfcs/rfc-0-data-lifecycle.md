@@ -647,8 +647,10 @@ Each component **MUST** build and pass its tests with every such interface
 supplied by a verified in-memory implementation, or a fault wrapper around one
 ([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)). The in-memory
 implementation of a contract ships with its provider, beside the contract's
-conformance suite, and a consumer's tests **MAY** import both: every consumer
-then tests against the one implementation the suite holds to the real one.
+conformance suite, so every consumer tests against the one implementation the
+suite holds to the real one. The import rule binds production code only: a
+component's tests **MAY** import other components' implementations, to run
+against real collaborators rather than doubles.
 
 A capability **MUST NOT** be negotiated by type assertion on an interface the
 provider does not declare it satisfies. A capability that is absent **MUST**
@@ -661,9 +663,9 @@ invalid setting **MUST** be refused, never replaced by a default.
 
 Conformance is checked by a per-component import-graph test that follows
 imports transitively, so a library a component imports cannot carry another
-component's implementation in. It fails when a component reaches another
-component's implementation, except a contract's in-memory implementation in its
-tests, and when a contract imports another component's implementation.
+component's implementation in. It fails when a component's production code
+reaches another component's implementation, and when a contract imports another
+component's implementation.
 
 > decision: a contract may be shared. A rule that forbade every import made each
 > consumer copy the provider's types and errors, map between the copies, and
