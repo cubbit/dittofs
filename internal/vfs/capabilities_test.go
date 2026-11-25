@@ -115,7 +115,7 @@ func TestHostCallLowersTheMinimumsOnlyForItsCalls(t *testing.T) {
 			}{
 				{"at a secret", secret, map[string]error{"Root": nil, "ListShares": nil, "TestLock": nil, "Open": nil, "GetAttr": nil, "SetAttr": vfs.ErrInvalid}},
 				{"with a session", withSession, all(vfs.ErrInvalid)},
-				{"proving nothing", none, map[string]error{"Root": pastMinimums, "TestLock": vfs.ErrWrongSecurity, "Open": vfs.ErrWrongSecurity, "GetAttr": vfs.ErrWrongSecurity, "SetAttr": vfs.ErrInvalid}},
+				{"proving nothing", none, map[string]error{"Root": pastMinimums, "ListShares": vfs.ErrWrongSecurity, "TestLock": vfs.ErrWrongSecurity, "Open": vfs.ErrWrongSecurity, "GetAttr": vfs.ErrWrongSecurity, "SetAttr": vfs.ErrInvalid}},
 			}
 		}
 		for _, tc := range cases {
