@@ -513,6 +513,58 @@ func TestPassACarriedRecordHoldsNeitherSegment(t *testing.T) {
 	}
 }
 
+// TestPassASkippedRecordKeepsItsSource runs one unit over a source whose
+// only live record has a second live placement elsewhere — the shape an
+// earlier carry leaves — while the unit's own carry skips the record whole:
+// the file's tag is cleared, the index's forgetting stand-in, so no copy of
+// the record is placed this unit. The unit must stay its source: the pair
+// rule's witness is the placement the unit itself carried and waited
+// durable, never another segment's registration, for two units over the
+// two segments of one record would each read the other's registration and
+// both retire the record away.
+func TestPassASkippedRecordKeepsItsSource(t *testing.T) {
+	p := newPassFixture(t)
+	file := copyFile(23)
+	rec, _, _, _ := p.f.plantRemoval(t, copyTag, file, format.KindTruncate, core.ChangeTruncate,
+		core.Extent{Off: 1 << 20}, core.Extent{Off: 1 << 20, Len: math.MaxInt64 - 1<<20}, false)
+	p.f.core.Liveness().Register(rec)
+	seg := rec.Seg
+	p.f.sealSource(t, file)
+	p.f.waitSpares(t)
+	// The second live placement, the shape an earlier carry leaves behind:
+	// a copy of the record on disk, registered live where its own pass
+	// would have entered it, its source kept standing beside it.
+	carry, err := p.f.copier().Carry(context.Background(), seg, reclaim.Result{})
+	if err != nil {
+		t.Fatalf("placing the record's second placement: %v", err)
+	}
+	if len(carry.Carried) != 1 {
+		t.Fatalf("the carry placed %d records, want the unsettled truncate alone", len(carry.Carried))
+	}
+	second := carry.Carried[0].Rec
+	p.f.core.Liveness().Register(second)
+	// The unit's carry skips the file whole: the cleared tag reads to the
+	// carry as a forget racing it, so nothing of the record is appended,
+	// noted or registered by the unit itself.
+	if err := p.f.ix.ClearTag(file); err != nil {
+		t.Fatalf("clearing the file's tag: %v", err)
+	}
+
+	freed, err := p.repack(t.Context(), copySegCap*8, seg)
+	if err != nil {
+		t.Fatalf("repack over the skipped record: %v", err)
+	}
+	if p.setGone(seg) {
+		t.Fatal("the skipped record's source left the set, want the unit to stay it: the pair rule pairs a record with the placement the unit itself carried, never the registration another segment holds")
+	}
+	if freed != 0 {
+		t.Fatalf("repack over the skipped record freed %d, want 0: a stayed unit retires nothing", freed)
+	}
+	if !p.f.core.Liveness().Held(seg) {
+		t.Fatal("the skipped record's source answers not held, want its record's registration to keep it")
+	}
+}
+
 // TestPassBudgetStopsAtCarriedRecords runs a pass of budget one byte over two
 // sealed sources beside each other: the least-live one holds only a
 // registered, unsettled removal record — no content exists for Copy to move,
