@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"maps"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -13,12 +14,13 @@ import (
 	"testing"
 )
 
-// raceSkip is a test that skips itself under the race detector, so only a run
+// raceSkip is a test that gates a check on the race detector, so only a run
 // without -race enforces it.
 type raceSkip struct {
-	Pkg  string          // ./ path of its package
-	Name string          // the test function
-	Tags constraint.Expr // its file's build constraint, or nil
+	Pkg   string          // ./ path of its package
+	Name  string          // the test function, or "" for a helper: the whole package must run
+	Tags  constraint.Expr // its file's build constraint, or nil
+	Short bool            // the gate also skips under -short
 }
 
 // goTestCell is what one go test command of the registry runs without -race.
@@ -27,6 +29,7 @@ type goTestCell struct {
 	Pkgs      []string // ./ paths, a trailing /... matching the subtree
 	Run, Skip *regexp.Regexp
 	Tags      []string
+	Short     bool
 }
 
 // Every test that skips under the race detector runs in some cell without it:
@@ -50,14 +53,19 @@ func TestEveryRaceSkipRunsWithoutRace(t *testing.T) {
 		units = append(units, r.Units(s)...)
 	}
 	for _, s := range unenforced(skips, goTestCells(units)) {
-		t.Errorf("%s %s skips under -race and no cell runs it without -race", s.Pkg, s.Name)
+		if s.Name == "" {
+			t.Errorf("%s: a helper gates a check on the race detector and no pr or merge cell runs the whole package without -race", s.Pkg)
+		} else {
+			t.Errorf("%s %s gates a check on the race detector and no pr or merge cell runs it without -race", s.Pkg, s.Name)
+		}
 	}
 }
 
 // findRaceSkips parses every _test.go file under root, outside testdata and
-// dot directories, for the tests that open with a race skip.
+// dot directories, for the checks gated on the race detector.
 func findRaceSkips(root string) ([]raceSkip, error) {
 	var out []raceSkip
+	helperAt := map[string]int{} // a package's one helper entry, by index
 	fset := token.NewFileSet()
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -80,31 +88,88 @@ func findRaceSkips(root string) ([]raceSkip, error) {
 		if err != nil {
 			return err
 		}
-		for _, name := range raceSkipping(f) {
-			out = append(out, raceSkip{Pkg: "./" + filepath.ToSlash(rel), Name: name, Tags: buildConstraint(f)})
+		pkg := "./" + filepath.ToSlash(rel)
+		for _, g := range raceGated(f) {
+			if i, ok := helperAt[pkg]; ok && g.Name == "" {
+				out[i].Short = out[i].Short || g.Short
+				continue
+			} else if g.Name == "" {
+				helperAt[pkg] = len(out)
+			}
+			g.Pkg, g.Tags = pkg, buildConstraint(f)
+			out = append(out, g)
 		}
 		return nil
 	})
 	return out, err
 }
 
-// raceSkipping returns the Test functions of f holding, at their top level,
-// `if raceEnabled {` or `if <pkg>.RaceEnabled {` whose body calls a Skip.
-func raceSkipping(f *ast.File) []string {
-	var out []string
+// raceGated returns the race gates of f: one per Test function holding one
+// anywhere in its body, closures and loops included, and one with no name if
+// any other declaration holds one. A helper's gate is not traced to the tests
+// that call it; the whole package must run without -race instead.
+func raceGated(f *ast.File) []raceSkip {
+	var out []raceSkip
+	var helper *raceSkip
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Recv != nil || fn.Body == nil || !strings.HasPrefix(fn.Name.Name, "Test") {
-			continue
+		isTest := ok && fn.Recv == nil && strings.HasPrefix(fn.Name.Name, "Test")
+		found, short := false, false
+		ast.Inspect(decl, func(n ast.Node) bool {
+			if is, ok := n.(*ast.IfStmt); ok {
+				if g, sh := raceGate(is); g {
+					found, short = true, short || sh
+				}
+			}
+			return true
+		})
+		switch {
+		case !found:
+		case isTest:
+			out = append(out, raceSkip{Name: fn.Name.Name, Short: short})
+		case helper == nil:
+			helper = &raceSkip{Short: short}
+		default:
+			helper.Short = helper.Short || short
 		}
-		for _, st := range fn.Body.List {
-			if is, ok := st.(*ast.IfStmt); ok && isRaceFlag(is.Cond) && callsSkip(is.Body) {
-				out = append(out, fn.Name.Name)
-				break
+	}
+	if helper != nil {
+		out = append(out, *helper)
+	}
+	return out
+}
+
+// raceGate reports whether is gates a check on the race detector: its
+// condition holds the flag, and either the flag is negated (the body is the
+// check) or the body leaves by a Skip, continue or return (what follows is),
+// or an else holds the check. short reports a testing.Short() beside it.
+func raceGate(is *ast.IfStmt) (gate, short bool) {
+	has, negated := false, false
+	var walk func(e ast.Expr, neg bool)
+	walk = func(e ast.Expr, neg bool) {
+		switch e := e.(type) {
+		case *ast.ParenExpr:
+			walk(e.X, neg)
+		case *ast.UnaryExpr:
+			walk(e.X, neg != (e.Op == token.NOT))
+		case *ast.BinaryExpr:
+			walk(e.X, neg)
+			walk(e.Y, neg)
+		case *ast.CallExpr:
+			if sel, ok := e.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Short" {
+				short = true
+			}
+		case *ast.Ident, *ast.SelectorExpr:
+			if isRaceFlag(e) {
+				has, negated = true, negated || neg
 			}
 		}
 	}
-	return out
+	walk(is.Cond, false)
+	if !has {
+		return false, false
+	}
+	return negated || is.Else != nil || leaves(is.Body), short
 }
 
 func isRaceFlag(e ast.Expr) bool {
@@ -117,11 +182,20 @@ func isRaceFlag(e ast.Expr) bool {
 	return false
 }
 
-func callsSkip(b *ast.BlockStmt) bool {
+// leaves reports whether b calls a Skip, or continues or returns, outside a
+// closure of its own.
+func leaves(b *ast.BlockStmt) bool {
 	found := false
 	ast.Inspect(b, func(n ast.Node) bool {
-		if c, ok := n.(*ast.CallExpr); ok {
-			if sel, ok := c.Fun.(*ast.SelectorExpr); ok && strings.HasPrefix(sel.Sel.Name, "Skip") {
+		switch n := n.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.ReturnStmt:
+			found = true
+		case *ast.BranchStmt:
+			found = found || n.Tok == token.CONTINUE
+		case *ast.CallExpr:
+			if sel, ok := n.Fun.(*ast.SelectorExpr); ok && strings.HasPrefix(sel.Sel.Name, "Skip") {
 				found = true
 			}
 		}
@@ -147,13 +221,14 @@ func buildConstraint(f *ast.File) constraint.Expr {
 	return nil
 }
 
-// goTestCells reads each unit's go test commands that run without -race and
-// outside the manual tier, which never runs on its own. A sh: command is not
-// read, so a test it alone runs counts as unenforced.
+// goTestCells reads each unit's go test commands that run without -race in
+// the pr or merge tier, so a gate is enforced on the change that adds it, not
+// first by a nightly run. A sh: command is not read, so a test it alone runs
+// counts as unenforced.
 func goTestCells(units []*Suite) []goTestCell {
 	var out []goTestCell
 	for _, u := range units {
-		if u.Tier == "manual" {
+		if u.Tier != "pr" && u.Tier != "merge" {
 			continue
 		}
 		for _, c := range u.Cmd {
@@ -181,6 +256,10 @@ func goTestCells(units []*Suite) []goTestCell {
 					cell.Run = regexp.MustCompile(topLevel(next()))
 				case flag == "-skip":
 					cell.Skip = regexp.MustCompile(topLevel(next()))
+				case flag == "-short":
+					cell.Short = !hasVal || val == "true"
+				case w[i] == "{args}":
+					cell.Short = slices.ContainsFunc(slices.Collect(maps.Values(u.Args)), func(a string) bool { return strings.Contains(a, "-short") })
 				case flag == "-tags":
 					cell.Tags = strings.Split(next(), ",")
 				case w[i] == "{packages}" && u.Packages != nil:
@@ -216,9 +295,11 @@ func topLevel(p string) string {
 	return p
 }
 
-// unenforced returns the race skips no cell runs: none whose packages hold the
-// test's, whose -run matches its name and -skip doesn't, and whose tags meet
-// its file's build constraint.
+// unenforced returns the race gates no cell runs: none whose packages hold the
+// test's, whose -run matches its name and -skip doesn't (or, for a helper's,
+// that names no -run or -skip), that doesn't pass -short to a gate that skips
+// under it, and whose tags, with the runner's own, meet its file's build
+// constraint.
 func unenforced(skips []raceSkip, cells []goTestCell) []raceSkip {
 	var out []raceSkip
 	for _, s := range skips {
@@ -233,11 +314,20 @@ func runs(c goTestCell, s raceSkip) bool {
 	if !slices.ContainsFunc(c.Pkgs, func(p string) bool { return pkgMatches(p, s.Pkg) }) {
 		return false
 	}
+	if s.Name == "" && (c.Run != nil || c.Skip != nil) || s.Short && c.Short {
+		return false
+	}
 	if c.Run != nil && !c.Run.MatchString(s.Name) || c.Skip != nil && c.Skip.MatchString(s.Name) {
 		return false
 	}
-	return s.Tags == nil || s.Tags.Eval(func(tag string) bool { return slices.Contains(c.Tags, tag) })
+	return s.Tags == nil || s.Tags.Eval(func(tag string) bool {
+		return slices.Contains(c.Tags, tag) || runnerTags[tag] || strings.HasPrefix(tag, "go1.")
+	})
 }
+
+// runnerTags are the build tags the CI runner, linux on amd64 with cgo, sets
+// without a -tags flag.
+var runnerTags = map[string]bool{"linux": true, "unix": true, "amd64": true, "cgo": true, "gc": true}
 
 func pkgMatches(pattern, pkg string) bool {
 	pattern = strings.TrimSuffix(pattern, "/")
@@ -247,8 +337,9 @@ func pkgMatches(pattern, pkg string) bool {
 	return pattern == pkg
 }
 
-// The scan finds a test by either race flag, with its file's constraint, and
-// leaves out a test whose race branch doesn't skip or isn't at its top level.
+// The scan finds a gate by either race flag, anywhere in a test, negated or
+// beside testing.Short(), with its file's constraint, and a helper's gate for
+// its whole package; it leaves out a race branch or case that gates no check.
 func TestFindRaceSkips(t *testing.T) {
 	got, err := findRaceSkips(filepath.Join("testdata", "raceskip"))
 	if err != nil {
@@ -260,8 +351,11 @@ func TestFindRaceSkips(t *testing.T) {
 		if s.Name == "TestTagged" && (s.Tags == nil || s.Tags.String() != "slow") {
 			t.Errorf("TestTagged: constraint %v, want slow", s.Tags)
 		}
+		if s.Short != (s.Name == "TestShortOrRace") {
+			t.Errorf("%s: short %t, want %t", s.Name, s.Short, !s.Short)
+		}
 	}
-	want := []string{"./a TestLocalFlag", "./a TestProfFlag", "./b TestTagged"}
+	want := []string{"./a TestLocalFlag", "./a TestProfFlag", "./a TestNestedSkip", "./a TestShortOrRace", "./a TestNegatedAssertion", "./a TestContinueInLoop", "./b TestTagged", "./c "}
 	if !slices.Equal(names, want) {
 		t.Errorf("found %q, want %q", names, want)
 	}
@@ -276,6 +370,13 @@ func TestUnenforced(t *testing.T) {
 	}
 	skip := raceSkip{Pkg: "./pkg/x", Name: "TestAllocs"}
 	tagged := raceSkip{Pkg: "./pkg/x", Name: "TestAllocs", Tags: slow}
+	linux, err := constraint.Parse("//go:build linux && amd64 && go1.21")
+	if err != nil {
+		t.Fatal(err)
+	}
+	onLinux := raceSkip{Pkg: "./pkg/x", Name: "TestAllocs", Tags: linux}
+	short := raceSkip{Pkg: "./pkg/x", Name: "TestAllocs", Short: true}
+	helper := raceSkip{Pkg: "./pkg/x"}
 	cases := []struct {
 		name string
 		line string
@@ -297,6 +398,15 @@ func TestUnenforced(t *testing.T) {
 		{"a -run naming another", "go test -run=^TestAllocsMore$ ./pkg/x/", nil, "pr", skip, false},
 		{"a -skip naming it", "go test -skip=^TestAllocs$ ./pkg/x/", nil, "pr", skip, false},
 		{"the manual tier", "go test ./pkg/x/", nil, "manual", skip, false},
+		{"the nightly tier", "go test ./pkg/x/", nil, "nightly", skip, false},
+		{"the merge tier", "go test ./pkg/x/", nil, "merge", skip, true},
+		{"the runner's platform tags", "go test ./pkg/x/", nil, "pr", onLinux, true},
+		{"-short on a gate beside testing.Short()", "go test -short ./pkg/x/", nil, "pr", short, false},
+		{"-short on a plain gate", "go test -short ./pkg/x/", nil, "pr", skip, true},
+		{"no -short on a gate beside testing.Short()", "go test ./pkg/x/", nil, "pr", short, true},
+		{"a helper's, by the whole package", "go test ./pkg/x/", nil, "pr", helper, true},
+		{"a helper's, by a -run", "go test -run=. ./pkg/x/", nil, "pr", helper, false},
+		{"a helper's, by a -skip", "go test -skip=^TestOther$ ./pkg/x/", nil, "pr", helper, false},
 		{"its tag missing", "go test ./pkg/x/", nil, "pr", tagged, false},
 		{"its tag given", "go test -tags=a,slow ./pkg/x/", nil, "pr", tagged, true},
 	}
