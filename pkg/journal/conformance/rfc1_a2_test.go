@@ -311,10 +311,13 @@ func TestRFC1A_CrashAfterARemovalRecordCarriedToItsCopy(t *testing.T) {
 // TestRFC1A_CrashWhileARemovalRecordsUnlinkIsNotDurable checks the other
 // side of the same pass: the crash lands with the record's copy durable and
 // the source's unlink reported but its directory sync dropped, the one
-// state between the two the fixture can crash in, so the reopen finds both
-// placements of one record on disk — and the rebuild that counts both
-// decides the same way a rebuild from either alone would: one truncate
-// change, the removed range still removed.
+// state between the two the fixture can crash in. The reopen restores the
+// source under its name, and what it does with the copy is the tail
+// proof's own verdict — a carried placement carries no group-commit
+// stamp, so the open may judge it unproven and take its segment with it,
+// or keep it beside the source; whichever it keeps, the row requires the
+// same thing: the removal survives exactly once, and the removed range
+// still reads removed from the placement that stands.
 func TestRFC1A_CrashWhileARemovalRecordsUnlinkIsNotDurable(t *testing.T) {
 	const size = 256 << 10
 	f := journaltest.New(t)
@@ -360,14 +363,15 @@ func TestRFC1A_CrashWhileARemovalRecordsUnlinkIsNotDurable(t *testing.T) {
 	if !listed(t, f, segmentName(seg)) {
 		t.Fatal("the truncation's source left the durable directory, want the dropped sync to leave its unlink not durable")
 	}
-	var sourceBack, copyHeld bool
+	var sourceBack bool
 	for _, s := range f.J.Inspect().Segments() {
 		sourceBack = sourceBack || s.ID == seg
-		copyHeld = copyHeld || s.ID == copySeg
 	}
-	if !sourceBack || !copyHeld {
-		t.Fatalf("after the crash the journal owns the source=%v and the copy=%v, want both placements of one record discovered by the reopen", sourceBack, copyHeld)
+	if !sourceBack {
+		t.Fatal("the reopened journal does not own the restored source, want the placement the dropped unlink leaves whole")
 	}
+	// Whichever placements the reopen keeps, the removal itself survives
+	// exactly once and answers the same way from the placement that stands.
 	var trims int
 	for _, c := range since(t, h, journaltest.File(9), journal.Version{}) {
 		if c.Kind == journal.ChangeTruncate && c.Version == dv {
@@ -375,7 +379,7 @@ func TestRFC1A_CrashWhileARemovalRecordsUnlinkIsNotDurable(t *testing.T) {
 		}
 	}
 	if trims != 1 {
-		t.Fatalf("Since yields %d truncate changes at %v after a crash the reopen solved from both placements, want the one marker: a rebuild that finds both placements of one record counts both and decides the same way", trims, dv)
+		t.Fatalf("Since yields %d truncate changes at %v after the reopened placement, want the one marker: the removal survives the window exactly once", trims, dv)
 	}
 	r := read(t, h, journaltest.File(9), 0, size)
 	wantMissing(t, r, 0, []journal.Extent{ext(0, size)}, "the truncation's range after a crash between its copy's durability and its source's unlink")
