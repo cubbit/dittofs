@@ -1193,6 +1193,8 @@ proposed targets: the first real-service run does (§6.1).
 | Fuzz or model targets for the queue's keys and the pacing law (rule 2, RFC 8 §15.3's `ponytail:`) | tables check them | unowned | a table check misses a bug a random input would have found |
 | RFC 8 §16 Q6: upload delay for young data, and manual sync | unspecified policy | unowned | a measurement shows re-uploads of soon-overwritten data |
 | Detecting bucket-setting drift: `Recheck` runs, raising the store's drift condition the engine reads (epic 20) | `Recheck`'s only caller is GC; drift goes undetected in v1.1 | RFC 9 | GC's `Recheck` lands |
+| The relocation leg of §15.1's "§7.7 re-resolution", a chunk moved twice under a reader (epic 17's §9; pending the user's answer there) | nothing moves a chunk while its refs are live before GC's relocation (RFC 6 §7.3); epic 17 tests the rule as a pure function meanwhile | RFC 9 | GC's relocation lands |
+| A read's span linking to the span of a fetch it joined (RFC 8 §14; epic 17's D9) | the syncer joins fetches internally and `Fetch` reports no join, so each read opens its own `engine.fetch` span | unowned | RFC 3 reports a join from `Fetch` |
 | §11.2's metadata-store-lost row and the salvage's recovery-import side (epic 20) | RFC 26's | RFC 26 | the recovery import is built |
 
 ## 7. RFC coverage
