@@ -8,9 +8,9 @@ and §10's CP9 and CP14 for what those rows hold; RFC 23's plan §1.5 rule 8, D9
 **Track:** the team.
 **Epic 8 estimate: 9 subtasks, 15.5 man-days.**
 **Depends on:** E4 (the client, `pkg/node/apiv1/client`); E7 (the server fixture, its T7.1,
-landed; the CLI from a child, its T7.4, #4414, open) for T8.2. S3 for NFS for T8.5, T8.6, T8.8 and
-T8.9. S3 has not
-been reached (§9): RFC 20's plan's epic 7 starts the adapters inside the node, but the NFS and SMB
+landed; the CLI from a child, its T7.4, #4414, open) for T8.2. S3 for NFS for T8.5, T8.6 and T8.9,
+for NFS Kerberos for T8.8. S3 has not been reached (§9): RFC 20's plan's epic 7 starts the
+adapters inside the node, but the NFS and SMB
 handlers on the filesystem service, RFC 21's and RFC 22's plans, are at their first two epics, so
 no client can mount yet. Outside RFC 23's plan as well: #5394 (an adapter's status names the port
 it bound) for T8.5; the RFC 18 plan's epic 5 (Kerberos and the PAC, closed) and epic 9 (the e2e
@@ -52,10 +52,8 @@ exist; the filter entries D2 gives this epic.
 ### 1.2 Out of scope
 
 - The epic's SMB parts, since SMB ships in v1.1, two rows of [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger):
-  - **the SMB rows**: the three mount rows over SMB with NTLM (T8.7, whole) and with Kerberos
-    (T8.8's SMB half), on a `MountSMB` helper and the admission table's SMB columns (T8.1's);
-  - **the SMB fixture and `clients`**: the fixture serving SMB with `{smb-port}` (T8.5's), and
-    the `clients` cell, which mounts over SMB, out of the filter (T8.9's).
+  - **the SMB rows**: T8.7, and T8.8's and T8.1's SMB parts;
+  - **the SMB fixture and `clients`**: T8.5's and T8.9's SMB parts.
 
 - v1's deleted e2e tests as such (D1): the CLI-only ones are covered at `unit` by E6's `clisuite`
   and E7's T7.4; the protocol ones go to RFC 21's plan's epic 16, RFC 22's plan's epic 16 and the
@@ -75,8 +73,8 @@ exist; the filter entries D2 gives this epic.
 - RFC 18 §10's rows over SMB in `e2e/kerberos` ("`none` is stored" among them) and epic 7's
   consumer-side row for the `krb` link (a PAC-bearing ticket binding the linked user, refused once
   the directory account is recreated): the RFC 18 plan's epic 9, which owns RFC 18 §10's Tier 2
-  rows. R7 here is RFC 23 §3.5's admission half, over `AUTH_SYS`; its NTLM half is the SMB rows'
-  (above).
+  rows. R7 here is RFC 23 §3.5's admission half, over `AUTH_SYS` and NFS Kerberos; its NTLM and SMB
+  Kerberos halves are the SMB rows' (above).
 - `docker compose up` on a v2 node, which `dt stack` needs: the ledger's row, the RFC 13 plan's
   epic 6.
 - The multi-node rows and CP15: the ledger's cluster row.
@@ -161,7 +159,7 @@ it, in the part this epic owns.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R10 | The setup that drives v1's `dfsctl` and configuration is rebuilt on the new CLI: `test/harness/env.sh`'s `stack_dev_user` and `test/scenarios`. Of the rest D9 names, `test/posix/setup-posix.sh` no longer exists (`pjdfstest` starts its server through epic 7's fixture), and the SMB-conformance bootstrap is RFC 22's plan's epic 15's (§1.2) | MUST | RFC 23 plan D9, §5 epic 8 | T8.4 |
-| R11 | The filter's entries D2 gives this epic are removed on `feat/storage-v2`, each cell running against the new server: `e2e` (its `second-user` option, then the suite's own cell), `e2e/kerberos`, `pjdfstest`, `fio-verify`, `bench-smoke` and `clients` | MUST | RFC 23 plan D9, §5 epic 8; D2 | T8.2, T8.6, T8.8, T8.9; `clients`, the SMB fixture and `clients` row (§1.2) |
+| R11 | The filter's entries D2 gives this epic are removed on `feat/storage-v2`, each cell running against the new server: `e2e` (its `second-user` option, then the suite's own cell), `e2e/kerberos`, `pjdfstest`, `fio-verify`, `bench-smoke` and `clients` (withdrawn to the ledger, §1.2) | MUST | RFC 23 plan D9, §5 epic 8; D2 | T8.2, T8.6, T8.8, T8.9; `clients`, the ledger (§1.2) |
 
 ## 4. Decisions this epic takes
 
@@ -230,15 +228,14 @@ it, in the part this epic owns.
   marker.
 - **D6, each account presents every flavour its record lets it present.** Each role account is
   created with a uid, a gid and a password and no grant, so a refusal can come only from admission,
-  never from a missing spelling: it mounts over `AUTH_SYS` with its uid, over SMB with NTLM, and, in
-  `e2e/kerberos`, with its Kerberos name. The bootstrap administrator has no spelling, so it presents
-  SMB with NTLM by its name and password; `AUTH_SYS` names no account, so the row also mounts over
-  `AUTH_SYS` as uid 0, the uid a root bypass would key on, and that is refused too. That its record
+  never from a missing spelling: it mounts over `AUTH_SYS` with its uid and, in `e2e/kerberos`,
+  with its NFS Kerberos name. The bootstrap administrator has no spelling, and `AUTH_SYS` names no
+  account, so the row mounts over `AUTH_SYS` as uid 0, the uid a root bypass would key on, and that
+  is refused. That its record
   holds no spelling is read back through the API. Where an NFS refusal shows, at the mount or at the
   first access to the share, is RFC 21's; the row asserts that no file of the share is reachable,
-  with a `decision:` marker naming RFC 21's choice once it is made (§9). The SMB flavours, NTLM and
-  SMB Kerberos, and the administrator's NTLM mount wait with SMB (§1.2), so in this epic each account
-  presents `AUTH_SYS` and its NFS Kerberos name. No other marker.
+  with a `decision:` marker naming RFC 21's choice once it is made (§9). NTLM, SMB Kerberos and the
+  administrator's NTLM mount by name and password are the SMB rows' (§1.2). No other marker.
 
 ## 5. Target tree
 
@@ -254,8 +251,8 @@ test/harness/plan/plan_test.go            T8.3
 test/harness/env.sh                       T8.4  stack_dev_user on the new CLI
 test/scenarios/setup.sh, lib/tools/       T8.4
 test/scenarios/*.sh                       T8.4  calls with a v2 command rewritten
-test/harness/fixture/                     T8.5  spec.go's refusals withdrawn; server.go reads the
-                                                adapters' ports, creates fixture users, seeds S3
+test/harness/fixture/                     T8.5  spec.go's NFS refusals withdrawn; server.go reads the
+                                                NFS adapter's port, creates fixture users, seeds S3
 test/e2e/admission_nfs_test.go            T8.6  §3.2, §3.5, §5.1 over NFS
 test/e2e/admission_kerberos_test.go       T8.8  §3.2, §3.5, §5.1 NFS Kerberos flavours
 test/posix/known.yaml                     T8.9  rewritten for v2
@@ -464,7 +461,8 @@ flowchart TD
 ```
 
 T8.1, T8.3 and T8.4 can be done now (5.5 man-days), T8.2 once E7's T7.4 lands. T8.5, T8.6, T8.8 and
-T8.9 wait for S3 for NFS. T8.7 holds no work here and is not drawn: it moved to v1.1 (§1.2).
+T8.9 wait for S3 for NFS, T8.8 for NFS Kerberos. T8.7 holds no work here and is not drawn: it moved
+to v1.1 (§1.2).
 
 ## 8. Suggested pull requests
 
@@ -518,4 +516,5 @@ A suggestion only: one pull request per subtask works as well.
   expected content (D1, the second-user form) and its dropped `§2.2 order` clause (D4); D9's list of
   who removes each filter entry (D2); the §3.3 and §5 text on what epic 8 waits for; the deferral
   ledger's rows for the protocol e2e tests, the shares file's options and the scenarios' commands
-  with no v2 command.
+  with no v2 command; and for SMB in v1.1, the §2 row and §5 epic 8's figure, D9's `clients`, the
+  ledger's two SMB rows and §7's qualifiers.

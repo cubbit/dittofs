@@ -1572,7 +1572,7 @@ these RFC 23 §12 rows pass, in their single-node part:
 | "§2.4 applied" | API and node status |
 | "§2.5 health" | API and node |
 | "§3.2 delete" | API and the runner |
-| "§3.5 grants" | API only: what a grant stores; its admission half is epic 8's |
+| "§3.5 grants" | API only: what a grant stores; its admission half is epic 8's over NFS; over SMB §6.1 |
 | "§4.4 lost update" | API |
 | "§4.5 idempotency" | API and accounts |
 | "§4.7 error table" | every component's errors |
@@ -1612,7 +1612,7 @@ The §1.4 scenarios assigned to epic 7 pass too.
 
 The epic's breakdown, [`rfc-23-control-plane-epic8.md`](rfc-23-control-plane-epic8.md), is the
 source for its subtasks. The helpers, the e2e paths and the scripts start before S3, and the
-second-user CLI row once epic 7's T7.4 is in; the fixture serving the protocols, the mount rows and
+second-user CLI row once epic 7's T7.4 is in; the fixture serving NFS, the mount rows and
 the data-path cells wait for S3. "§2.2 order"'s adapter clause is held in `unit` by RFC 20's plan's
 epic 7, so it is not this epic's. Its SMB parts wait for SMB, which ships in v1.1: two rows of §6.1.
 
@@ -1778,8 +1778,8 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | `§3.2 delete`'s 10⁵ files: epic 7's T7.2 seeds 50 (epic 7's R3, the `ponytail:` on `ContinueShardRemoval`) | the runner now runs a step again at once while it reports work left, but each batch of step 4 rescans from the share's first file key over the rows earlier batches deleted, so the drop grows with the square of the files: under `-race` 4000 files do not end inside the crash row's 60 s child bound | unowned | the shard's drop keeps its last key in the rm row, ending the quadratic rescan |
 | v1's deleted e2e tests of a protocol's own behaviour (sessions, delegations, locks, leases, Kerberos, squash, NLM, the port mapper, the cross-protocol tests), not brought back by epic 8 (its D1) | `e2e` keeps no known file, so a test lands only green, and green needs the protocol's handlers | RFC 21's plan's epic 16 (NFS); RFC 22's plan's epic 16 (SMB, cross-protocol); the RFC 18 plan's epic 9 (squash, Kerberos identity) | each epic, on epic 8's helpers |
 | The SMB-conformance shares file's per-share options (`encrypt-data`, `access-based-enumeration`, …) applied as share settings by the server fixture (epic 8's §1.2) | they bootstrap `smbtorture` and `wpts`, and their keys wait on X3 | RFC 22's plan's epic 15 | X3, and `smbtorture` out of the filter |
-| Epic 8's e2e rows over SMB: RFC 23 §12's "§3.2 create admits nobody", "§3.5 grants"' admission half and "§5.1 roles grant nothing" with NTLM (its T8.7, whole) and with Kerberos (T8.8's SMB half), the bootstrap administrator's own SMB mount among them, on a `MountSMB` helper and the admission table's SMB columns (T8.1's SMB part) (epic 8's §1.2) | SMB ships in release v1.1 (the user's decision, 2026-11-25) | RFC 22's plan's epic 16, its `e2e` rows (T16.4), on epic 8's helpers | RFC 22's plan's S7, the node serves SMB; due in v1.1 |
-| The server fixture serving SMB, `{smb-port}` read from the adapter's status (epic 8's T8.5), and the `clients` cell, whose Linux cell mounts over SMB, out of the `feat/storage-v2` filter (T8.9's; D9) (epic 8's §1.2) | SMB ships in release v1.1 (the user's decision, 2026-11-25) | RFC 22's plan's epic 15, which turns the SMB suites on | RFC 22's plan's S7, the node serves SMB; due in v1.1 |
+| Epic 8's e2e rows over SMB: RFC 23 §12's "§3.2 create admits nobody", "§3.5 grants"' admission half and "§5.1 roles grant nothing" with NTLM (its T8.7, whole) and with Kerberos (T8.8's SMB half), the bootstrap administrator's own SMB mount among them, on a `MountSMB` helper and the admission table's SMB columns (T8.1's SMB part) (epic 8's §1.2) | SMB ships in release v1.1 (the user's decision, 2026-11-25) | RFC 22's plan's epic 16, its `e2e` rows (T16.4), on epic 8's helpers | `post-v1`, due in v1.1: RFC 22's plan's S7, the node serves SMB, and its epic 15's SMB fixture; S6b for the Kerberos half |
+| The server fixture serving SMB, `{smb-port}` read from the adapter's status (epic 8's T8.5), and the `clients` cell, whose Linux cell mounts over SMB, out of the `feat/storage-v2` filter (T8.9's; D9) (epic 8's §1.2) | SMB ships in release v1.1 (the user's decision, 2026-11-25) | RFC 22's plan's epic 15, which turns the SMB suites on | `post-v1`, due in v1.1: RFC 22's plan's S7, the node serves SMB |
 | `test/scenarios`' calls of `store block gc`, `reclaim`, `audit-refcounts`, `trash` and `stats call`, which no v2 command serves (epic 8's T8.4); `system drain-uploads` waits with the syncer's row and `share snapshot` with the snapshot resource's | RFC 23 names no GC, trash or statistics action or resource | GC's: RFC 9, with the syncer's row; the rest unowned | GC's: GC is built; the rest: an RFC names a trash or statistics resource |
 
 ## 7. RFC coverage
