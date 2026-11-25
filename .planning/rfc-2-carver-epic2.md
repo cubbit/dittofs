@@ -14,7 +14,7 @@ naming it in the RFC. Every citation is `develop`'s text. The code lands on
 `feat/storage-v2`, where E1 creates `pkg/carver` and `test/suites.yaml` has the option form
 `carver-allocs` follows, and the paths below are paths there.
 **Track:** the team.
-**Epic 2 estimate: 5 subtasks, 7.5 man-days.**
+**Epic 2 estimate: 5 subtasks, 8.25 man-days.**
 **Depends on:** **S1**, the end of E1: `pkg/carver/imports_test.go` (E1's T1.2), to which this epic
 adds the rows of the packages it creates. Nothing else of E1: the test components name none of the
 carver's types (D9). `lukechampine.com/blake3` v1.4.1, in `go.mod` on `feat/storage-v2`.
@@ -174,7 +174,9 @@ How each row is enforced once this epic lands, where no test of this epic can br
 property; R14's "size check" by E3's §9 rows, which this epic only supplies; R20 by E1's
 `imports_test.go`, with the rows T2.1 and T2.5 add; R17 by the same rows, which admit no store,
 no backend and no clock package, and by review for goroutines and temporary directories; R4 by
-the RFC 5 plan's epic 2, whose vectors call `encode_chain` and whose Go check recomputes them; R23 by `lint-repo`'s `dt docs --check`.
+the RFC 5 plan's epic 2, whose vectors call `encode_chain` and whose Go check recomputes them; R23
+by `lint-repo`'s `dt docs --check` for a name the registry lacks, and by
+review for a suite the paragraph leaves out.
 
 The candidates of the owned sections that bind other epics are theirs: §1.3's "build the settings,
 hand `Cut` a byte slice and a closure" as a way of writing checks (E3, E4, E5); §10.1's
@@ -186,8 +188,9 @@ stability (E3, E4); §10.6's benchmarks, full-size sweep, second architecture an
 ## 4. Decisions this epic takes
 
 - **D1, one script, BLAKE3's own binding, a Go check on every pull request.** The script is
-  `pkg/carver/internal/carvetest/gen_vectors.py`, Python 3 with BLAKE3's official binding, the
-  `blake3` package, pinned in the script's header with the command that runs it; the RFC 5 plan's epic 2 adds the
+  `pkg/carver/internal/carvetest/gen_vectors.py`, Python 3 with the `blake3` package, the BLAKE3
+  team's binding of their Rust implementation, pinned in the script's header with the command
+  that runs it; the RFC 5 plan's epic 2 adds the
   libraries its own vectors need (its D11 names `cryptography`). It writes `testdata/vectors.json` beside it;
   CI does not run it, since a per-change check may not fetch a toolchain. The script holds one
   `encode_chain` function, RFC 5 §2.8's byte table, which the golden name's chain ID uses and
@@ -228,30 +231,38 @@ stability (E3, E4); §10.6's benchmarks, full-size sweep, second architecture an
   allocation. A seed is a `uint64`, spread into the 32-byte ChaCha8 seed little-endian. The pinned
   prefix of D5's golden seed is a test (T2.2), so a toolchain that changed the stream would fail
   there before it moved every golden boundary. Patterned kinds draw their period's bytes from the
-  same seed. Prior art: Go's own `math/rand/v2` tests pin ChaCha8's output (from memory).
+  same seed. Prior art: Go's own `math/rand/v2` tests check ChaCha8 against C2SP's published `chacha8rand`
+  vector (from memory).
 - **D5, golden boundaries come from the reference, written with `-update`.** `testdata/
   boundaries.json` holds, for each supported `Target` and for the unkeyed table and the keyed table
   of `Vectors`, the seed, the length, every chunk end and every chunk's keyed hash under `Vectors`'
   chunk-ID key. The input is 16 × `Target` of seeded random bytes, about 16 chunks per profile and
   256 MiB in all, which the reference reads in well under a minute under `-race`.
   `go test ./pkg/carver/internal/carvetest -run '^TestGoldenBoundaries$' -update` rewrites it; the
-  test compares otherwise. The hashes are computed with `lukechampine.com/blake3`, which D2 holds
-  to BLAKE3's own vectors and D1's chunk-ID vector to the Python binding. Prior art: Go's `-update`
+  test compares otherwise. The hashes are computed with `lukechampine.com/blake3`, the library
+  E4's `Cut` will call, so they
+  are not an independent oracle for BLAKE3: they pin which bytes each chunk covers and under which
+  key, and D2 and D1 hold the library itself to BLAKE3. Prior art: Go's `-update`
   flag for golden files, as `cmd/gofmt`'s tests use it (from memory).
 - **D6, the `fuzz` suite is a list of commands, one `go test -fuzz` each.** `go test -fuzz` takes
   one target in one package, so each target is one line of the suite's `cmd` list,
-  `go test -run=^$ -fuzz=^<Name>$ -fuzztime=10m <package>`, and the registry runs every command of a
-  list even after one fails. `tier: nightly`, `format: exit`, a cell timeout the RFC 4, 5 and 8
-  plans raise as they add lines. No wrapper script: a failing target prints the input that failed,
-  which its owner commits under `testdata/fuzz/<Name>/` as a seed (`CLAUDE.md`, "By kind"). Prior
+  `go test -run=^$ -fuzz=^<Name>$ -fuzztime=10m <package>`, and `dt` runs every command of a list
+  even after one fails. The list ends with one command that copies every new file under a
+  `testdata/fuzz/` directory (`git ls-files -o`) into `{out}`, since `go test -fuzz` writes a
+  crasher there and prints only its path, which dies with the runner; its owner commits it as a
+  seed (`CLAUDE.md`, "By kind"). `tier: nightly`, `format: exit`, which runs the list as one test,
+  so `timeout.test` and `timeout.cell` both cover every target's ten minutes and build, and the
+  RFC 4, 5 and 8 plans raise both as they add lines. Prior
   art: OSS-Fuzz runs each target for a fixed time budget and keeps crashers as regression inputs
   (from memory); `lint-go`'s command list on `feat/storage-v2` (checked).
 - **D7, `carver-allocs` runs tests by a name prefix.** Its command is
-  `go test -timeout=5m -run '^TestAllocs' ./pkg/carver/...`, with no race detector, so E3, E4 and E5
+  `go test -timeout=5m -run=^TestAllocs ./pkg/carver/...`, unquoted, since `dt` splits a
+  command on spaces with no shell,, with no race detector, so E3, E4 and E5
   add a count by naming its test `TestAllocs…`, with no registry change. Every such test skips under
   the race detector through `internal/prof.RaceEnabled`, the constant the adapters' and the
   journal's allocation tests read on `feat/storage-v2`, so `unit`'s raced run skips it; only the
-  carver's test files import it, which RFC 0 §1.2 allows a component's tests. Prior art: `adapter-allocs` and `journal-conformance-norace` on
+  carver's test files import it, which RFC 0 §1.2 allows a component's tests.
+  Prior art: `adapter-allocs` and `journal-conformance-norace` on
   `feat/storage-v2`, which list their packages or names (checked); a prefix keeps the list from
   falling behind the tests.
 - **D8, the corpus: one directory, three kinds, one fetch.** The cache is the directory named by
@@ -259,15 +270,20 @@ stability (E3, E4); §10.6's benchmarks, full-size sweep, second architecture an
   `source`, `vm` and `media`. That layout is the contract other plans read: the RFC 5 plan's epic 4
   reads the files directly, since `carvetest` is internal to the carver. `corpus.Dir(tb)`
   skips when the variable is unset, naming it; a file missing from a set directory fails the
-  test that opens it. The fetch command, `go run ./pkg/carver/internal/carvetest/corpus/fetch`, which fills the
-  directory and does nothing for a file already present. Each entry is a public file pinned by the
-  SHA-256 of what is downloaded; a `.gz` is stored decompressed, written to a temporary name and
-  renamed once its hash matched. The entries: `source/linux-6.6.tar`, the Linux 6.6 source tarball
+  test that opens it. The fetch command, `go run ./pkg/carver/internal/carvetest/corpus/fetch`,
+  fills the directory. Each entry pins two SHA-256s, of what is downloaded and of the file stored;
+  a `.gz` is stored decompressed, written to a temporary name and renamed once both match, and a
+  file already present is hashed again and refetched when it differs, so a run reads the bytes the
+  last one read. `DITTOFS_CORPUS_DIR` joins `testOnlyEnvNames` in `pkg/bootstrap/drift_test.go`,
+  whose check fails on a `DITTOFS_` name it does not list. The entries: `source/linux-6.6.tar`,
+  the Linux 6.6 source tarball
   from kernel.org, about 1.4 GB once decompressed, which K4's 1 GiB file needs; `vm/debian-12-
   genericcloud-amd64.raw`, a dated Debian 12 generic cloud raw image from cloud.debian.org, a
   mixed VM image of zero runs, filesystem metadata, binaries and text; `media/big-buck-bunny-1080p.mp4`,
   the Blender Foundation's open film (from memory; T2.5 pins each by its hash). Random bytes are not
-  a corpus kind: they are T2.2's seeded input. A `ponytail:` at the fetch says it does not resume a
+  a corpus kind: they are T2.2's seeded input. K5's "chunks at `Max`" target applies to a corpus
+  with no repetitive regions, which the source tree and the film are and the VM image, with its
+  zero runs, is not; each entry says which it is. A `ponytail:` at the fetch says it does not resume a
   partial download, and upgrades if a fetch on the reference box fails part-way more than once.
   Prior art: `golang.org/x/benchmarks` fetches its inputs on first use (from memory); the RFC 2
   plan's D7.
@@ -300,6 +316,8 @@ pkg/carver/
     corpus/corpus.go              T2.5  Dir, Fetch, the pinned entries
     corpus/corpus_test.go         T2.5  Fetch against a local server
     corpus/fetch/main.go          T2.5  the fetch command
+    corpus/fetch/main_test.go     T2.5  run against a local server
+pkg/bootstrap/drift_test.go       T2.5  DITTOFS_CORPUS_DIR in testOnlyEnvNames
 test/suites.yaml                  T2.4  unit's carver-allocs option; the fuzz suite (D6)
 docs/internals/rfcs/rfc-2-carver.md  T2.4  §10.6's suites paragraph
 docs/internals/testing.md         T2.4  regenerated by dt docs
@@ -351,7 +369,9 @@ docs/internals/testing.md         T2.4  regenerated by dt docs
     func LoadVectors(tb testing.TB) Vectors
     ```
   - `doc.go`, and `carvetest`'s rows in E1's `imports_test.go`: the standard library; its test
-    files add `lukechampine.com/blake3`; no production package's row admits it.
+    files add `lukechampine.com/blake3` and `internal/prof` (D7). It widens E1's row for the test
+    files of every carver package to admit `internal/carvetest` and `internal/prof`, which E1's
+    "the same, and the package under test" does not; no production package's row admits either.
 - **Acceptance criteria:**
   - Every value in `vectors.json` equals its recomputation in Go, the chain ID from its inputs
     through RFC 5 §2.8's table and the name from the scope's `0x10` length byte, the nonce, the
@@ -416,7 +436,7 @@ docs/internals/testing.md         T2.4  regenerated by dt docs
 
 ### T2.3 The reference chunker and the golden boundaries
 
-**Subtask T2.3 estimate: 2 man-days.**
+**Subtask T2.3 estimate: 2.25 man-days.**
 
 - **Track:** the team, an engineer other than E3's owner. **Depends on:** T2.1, T2.2.
 - **Covers:** R6, R8 to R11, R17.
@@ -427,9 +447,6 @@ docs/internals/testing.md         T2.4  regenerated by dt docs
   // each chunk's end offset in order. It follows RFC 2 §3.2 one byte at a time, warming from
   // each chunk's first byte (D3).
   func Boundaries(g *[256]uint64, target int, p []byte) []int
-
-  // Bounds returns Min and Max for target: Target/4 and 4×Target.
-  func Bounds(target int) (minLen, maxLen int)
 
   // Golden is one committed profile: its input and the chunks the reference cut.
   type Golden struct {
@@ -448,22 +465,28 @@ docs/internals/testing.md         T2.4  regenerated by dt docs
 - **Acceptance criteria:**
   - Hand-built tables pin each clause: with every `G[b]` zero, every chunk is exactly `Min` and the
     last is the rest; with every `G[b]` 2⁶³, every chunk is exactly `Max`; with `G[1] = 2⁶³` and
-    `G[2] = 2^(63−t)`, a run of byte 1 holding one byte 2 at index `Target` − 1 cuts at `Max`, and
-    with that byte at index `Target` cuts a chunk of `Target` + 1 bytes.
+    a run of byte 1 holding one other byte `x`, each end below asserted exactly, the carry that
+    later bytes of 1 bring included: before `Target`, `G[x] = 2^(62−t)` at index `Target` − 1 ends
+    the chunk there and `G[x] = 2^(63−t)` does not, which pins *m* at *t* + 1 and the switch on the
+    length before the byte under test; from `Target` on,
+    `G[x] = 2^(66−t)` at index `Target` ends the chunk there and `G[x] = 2^(67−t)` does not, which
+    pins *m* at *t* − 3.
   - The reference reproduces `boundaries.json` for every supported `Target`, keyed and unkeyed,
     and its hashes.
 - **Tests:** at `Boundaries` and `LoadBoundaries`, which E3 and E4 call: the three hand-built cases
-  (catch a first byte tested at `Min` instead of `Min` − 1, *m* switching on the length including
-  the byte under test, and a missing `Max` end, the readings §3.2 fixed, R8);
+  (catch a first byte tested at `Min` instead of `Min` − 1, an *m* off by one either side of
+  `Target`, *m* switching on the length including the byte under test, and a missing `Max` end,
+  R8);
   `TestGoldenBoundaries` (catches a reference changed after the goldens were written, and is where
   E3 and E4 meet one fixed answer, R6, R11); every chunk of every golden within C4's bounds and the
   ends tiling the length (catches a golden file written by a broken reference, R10). Each is seen to
-  fail with *m*'s switch moved by one byte before the pull request opens (rule 10). No test double: the tables are inputs.
+  fail with *m*'s switch moved by one byte before the pull request opens (rule 10). No test
+  double: the tables are inputs.
 - **Rules:** rule 9, D3's `decision:`. Others as §2 says.
 
 ### T2.4 The two suites and the first fuzz target
 
-**Subtask T2.4 estimate: 1.25 man-days.**
+**Subtask T2.4 estimate: 1.5 man-days.**
 
 - **Track:** the team. **Depends on:** T2.2, T2.3.
 - **Covers:** R10, R21, R22, R23.
@@ -473,34 +496,40 @@ docs/internals/testing.md         T2.4  regenerated by dt docs
   - The `fuzz` suite (D6), whose first command fuzzes `FuzzReferenceBounds` in
     `./pkg/carver/internal/carvetest`. Consumed by E3 to E5 and by the RFC 4, 5 and 8 plans, which
     add lines.
-  - `fuzz_test.go`: `FuzzReferenceBounds(f *testing.F)` takes random bytes and an index into
-    `Targets`, under the unkeyed or the keyed table, and asserts the chunks tile the input, none
-    exceeds `Max` and none but the last is under `Min`; its seeds in
-    `testdata/fuzz/FuzzReferenceBounds/` hold an empty input, one of `Max` + 1 zeros and one at the
-    smallest `Target`.
+  - `fuzz_test.go`: `FuzzReferenceBounds(f *testing.F)` takes an input seed, a kind, a length up
+    to 4 × `Max`, an index into `Targets` and a table seed, builds the bytes with `Bytes` and a gear
+    table from the table seed, and asserts the chunks tile the input, none exceeds `Max`, none but
+    the last is under `Min`, and cutting again from any chunk's end gives the same later ends. A
+    fuzzed byte slice rarely grows past `Min`, so the target fuzzes the generator's parameters
+    instead and reaches content-defined cuts at every profile. Its seeds in
+    `testdata/fuzz/FuzzReferenceBounds/` are a few lines each.
   - RFC 2 §10.6's suites paragraph names `unit/carver-allocs` and `fuzz`, keeps the benchmarks,
     the full-size sweep and the second architecture as planned for E7's suite, and
     `docs/internals/testing.md` is regenerated with `dt docs`. This is the RFC edit the RFC 2
-    plan's §1.4 asks for, made in the code's pull request, where the names exist.
+    plan's §1.4 asks for. It lands with the code on `feat/storage-v2`, where the names exist: on
+    `develop`, `dt docs --check` would refuse a name its registry lacks.
 - **Acceptance criteria:**
   - `dt run unit/carver-allocs` runs `TestAllocsSeededInput` and passes.
   - `dt run fuzz` runs `FuzzReferenceBounds` for ten minutes and fails when the target finds a
-    crasher, printing the failing input.
+    crasher, which lands in its `{out}`.
   - `dt docs --check` passes.
 - **Tests:** the fuzz target itself, its seeds run by `unit` (catches a reference that breaks C4
   on some input, R10), seen to fail on a planted `Max` + 1 chunk before the pull request opens;
-  `dt docs --check` (R23). The fuzz cell's red on a crasher is `go test`'s own exit status, and
+  `dt docs --check` for a name the registry lacks, and review for a registered suite the paragraph
+  leaves out, which the check does not see (R23). The fuzz cell's red on a crasher is `go
+  test`'s own exit status, and
   the option's command is checked by its run in `dt`, not by a test of its own.
 - **Rules:** rule 2, the target; rule 4, the option; rule 6 does not apply, as §2 says.
 
 ### T2.5 The corpus
 
-**Subtask T2.5 estimate: 1.25 man-days.**
+**Subtask T2.5 estimate: 1.5 man-days.**
 
 - **Track:** the team. **Depends on:** none. It adds rows to E1's import test, so it lands after S1.
 - **Covers:** R18, R19, R20.
 - **Deliverables:** `pkg/carver/internal/carvetest/corpus` and its `fetch` command (D8), with D8's
-  `ponytail:`, and their rows in E1's import test: the standard library alone, admitted by no
+  `ponytail:`; `DITTOFS_CORPUS_DIR` in `pkg/bootstrap/drift_test.go`'s `testOnlyEnvNames`; and
+  their rows in E1's import test: the standard library alone, admitted by no
   production package and, until E7 adds its benchmark files, by no test of the carver. Consumed by
   E7's K4 and K5, and, through the layout, by the RFC 5 plan's epic 4's benchmarks:
   ```go
@@ -508,18 +537,33 @@ docs/internals/testing.md         T2.4  regenerated by dt docs
   // vm and media. It skips tb when the variable is unset, naming it.
   func Dir(tb testing.TB) string
 
-  // Fetch downloads every missing entry into dir, checks its SHA-256, and renames it into place.
-  func Fetch(ctx context.Context, client *http.Client, dir string) error
+  // Entry is one pinned corpus file.
+  type Entry struct {
+      Kind, Name, URL  string
+      Download, Stored [32]byte // SHA-256 of what is downloaded and of the file stored
+      Repetitive       bool     // has repetitive regions, so K5's at-Max target skips it
+  }
+
+  // Entries is the pinned corpus.
+  var Entries = []Entry{ /* source, vm, media (D8) */ }
+
+  // Fetch stores each entry at <dir>/<kind>/<name>, downloading it unless a file there already
+  // has its stored hash, and refuses one whose hashes do not match.
+  func Fetch(ctx context.Context, client *http.Client, dir string, entries []Entry) error
   ```
 - **Acceptance criteria:**
-  - `Fetch` against a server holding an entry with the right hash stores it, decompressed where it
-    is a `.gz`, at `<dir>/<kind>/<name>`, and a second `Fetch` downloads nothing.
+  - `Fetch` against a server holding an entry with the right hashes stores it, decompressed where
+    it is a `.gz`, at `<dir>/<kind>/<name>`; a second `Fetch` downloads nothing, and one over a
+    stored file changed by a byte downloads it again.
   - An entry whose bytes do not match its hash is refused and leaves no file under its name.
   - `Dir` skips with the variable's name when it is unset.
 - **Tests:** at `Fetch` and `Dir`, as E7 calls them: `Fetch` against `httptest` on
   `127.0.0.1:0` under `t.TempDir()`, over a table of entries pointed at it (catches a stored file
-  whose hash was never checked, a partial file left under its final name, and a second download,
-  R18, R19); `Dir` with the variable unset (catches a check that passes with no corpus, R19). The server serves real bytes: no test double.
+  whose hash was never checked, a partial file left under its final name, a second download, and
+  a changed stored file kept, R18, R19); the `fetch` command's `run(dir)` against the same server,
+  and refusing an empty directory argument, which is also the test `lint-repo` asks of a new
+  package; `Dir` with the variable unset (catches a check that passes with no
+  corpus, R19). The server serves real bytes: no test double.
 - **Rules:** rule 8, the real files; rule 9, the `ponytail:`. Others as §2 says.
 
 ## 7. Order of work
@@ -547,19 +591,18 @@ epic 2. S2 needs all five.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T2.1 | 2.25 | — | the script and its check, which the RFC 5 plan's epic 2 builds on |
-| 2 | T2.2, T2.3, T2.4 | 4 | PR 1 | the inputs, the reference and the suites that run them, ending at S2's checks |
-| 3 | T2.5 | 1.25 | — | the corpus, which nothing else here reads; open beside PR 1 and PR 2 |
+| 2 | T2.2, T2.3, T2.4 | 4.5 | PR 1 | the inputs, the reference and the suites that run them, ending at S2's checks |
+| 3 | T2.5 | 1.5 | — | the corpus, which nothing else here reads; open beside PR 1 and PR 2 |
 
 A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
 1. **Estimate against the RFC 2 plan's figure.** The plan says 5 subtasks and 8.5 man-days; this
-   document says 5 and 7.5. The BLAKE3 modes check over the published vectors (D2) and the Go
-   recomputation of the vectors (D1) cost about a day more than the plan's script alone; a fuzz
-   suite with no wrapper script (D6), goldens the reference writes itself (D5), the race constant
-   `internal/prof` already has (D7) and a corpus that is one directory and a fetch (D8) take back
-   more than that.
+   document says 5 and 8.25. The BLAKE3 modes check over the published vectors (D2) and the Go
+   recomputation of the vectors (D1) cost about a day more than the plan's script alone; goldens
+   the reference writes itself (D5), the race constant `internal/prof` already has (D7) and a
+   corpus that is one directory and a fetch (D8) take back most of it.
 2. **`lukechampine.com/blake3` allocates and starts goroutines on writes longer than one BLAKE3
    chunk** (E1's §9 point 1: 15 allocations for an 8 KiB keyed hash). T2.1's modes check runs those
    lengths but checks values, not allocations, so it does not surface the problem, and this epic
@@ -571,3 +614,7 @@ A suggestion only: one pull request per subtask works as well.
    pull request. The `vm` image is about 2 GiB to download.
 4. **Where the code lands.** This document merges to `develop`; the code goes to `feat/storage-v2`,
    whose `test/suites.yaml` has the option form `carver-allocs` follows, where `develop`'s has none.
+5. **Epic 1's document says `carvetest` names the root's types** (its **Blocks:** line). This
+   epic's D9 says it names none, so `carvetest`'s import row stays the standard library. Epic 1's
+   pull request (#5874) is still open; its line is worth changing there, and this document does not
+   edit it.
