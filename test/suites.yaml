@@ -398,13 +398,14 @@ suites:
       # The CLI's suite from a dfsctl child run as uid 65534, to whom the node's files and the
       # bootstrap are unreadable.
       second-user:
-        cmd: go test -tags=e2e -run SecondUser -timeout=30m ./cmd/dfsctl
+        cmd: go test -tags=e2e -run SecondUser -timeout=5m ./cmd/dfsctl
         tier: pr
         needs: [linux, root]
         paths:
           - cmd/dfsctl/**
           - pkg/node/**
           - internal/node/**
+          - internal/cli/**                 # the credentials file the child writes
       kerberos:                         # the Kerberos mounts, on pull requests that can affect them
         cmd: go test -tags=e2e -run Kerberos -timeout=30m ./test/e2e/
         tier: pr

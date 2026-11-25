@@ -27,28 +27,34 @@ const nobody = 65534
 var asNobody = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: nobody, Gid: nobody}}
 
 // Every row of the CLI suite passes from a dfsctl child run as a second OS
-// user, nobody, who can reach neither the node's data directory, its key
-// files among it, nor the bootstrap at the child's default path, each
-// checked first: a command that opened the node's files or read the
-// bootstrap fails. The
-// rows' own setup and reads run in this process, as root, as they do in
+// user, nobody, who can reach neither the node's data directory nor the
+// bootstrap at the child's default path: a command that opened the node's
+// files or read the bootstrap fails. Checked first, as nobody: the data
+// directory and the storage key, refused by the 0700 t.TempDir() above them
+// rather than by their own modes, and the bootstrap; the protocol key, in
+// the same directory, is not checked on its own. The rows' own setup and
+// reads run in this process, as root, as they do in
 // TestSuiteFromAChildProcess. The child owns its home and nothing else of the
 // test's; the API's socket is handed to it, as an operator grants a user the
 // API, and a file a row names on the command line is copied into its home.
 func TestSecondUser(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
-		t.Skip("second user: needs Linux and root, to start dfsctl as uid and gid 65534; dt runs e2e so")
+		t.Skip("second user: needs Linux and root, to start dfsctl as uid and gid 65534")
 	}
 	prof.Watch(t, prof.Options{})
 	bin := filepath.Join(sharedDir(t, 0o755), "dfsctl")
-	// dt builds dfsctl as the user and names its directory, so root never
-	// runs go build; a run by hand builds it here.
+	// DITTOFS_E2E_BIN names a dfsctl built as the user, so root never runs
+	// go build; without it the test builds one here.
 	if dir := os.Getenv("DITTOFS_E2E_BIN"); dir != "" {
 		b, err := os.ReadFile(filepath.Join(dir, "dfsctl"))
 		if err != nil {
 			t.Fatalf("dfsctl from DITTOFS_E2E_BIN: %v", err)
 		}
 		if err := os.WriteFile(bin, b, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// The umask may have masked WriteFile's mode, and nobody must exec it.
+		if err := os.Chmod(bin, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	} else if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
@@ -76,7 +82,8 @@ func TestSecondUser(t *testing.T) {
 // no file under data handed to it.
 func secondUser(t *testing.T, bin, data string, h *nodetest.Harness) clisuite.Runner {
 	home := poisoned(t, sharedDir(t, 0o700))
-	for _, d := range []string{home, filepath.Join(home, ".config")} {
+	// Deepest first: once home is nobody's, nobody could swap .config.
+	for _, d := range []string{filepath.Join(home, ".config"), home} {
 		if err := os.Chown(d, nobody, nobody); err != nil {
 			t.Fatal(err)
 		}
@@ -96,7 +103,9 @@ func secondUser(t *testing.T, bin, data string, h *nodetest.Harness) clisuite.Ru
 //
 // ponytail: only a file given as the argument after a flag ending in -file
 // is handed over, the form every row uses; a --flag=path argument stays
-// root's and its row fails on permission denied. Upgrade to a directory the
+// root's and its row fails on permission denied. The refusal of the node's
+// files compares the path's text only, so a path through .. or a symlink
+// gets past it; every row passes a clean absolute path. Upgrade to a directory the
 // runner gives the rows to write their files in when a row needs another form.
 func handOver(args []string, home, data string) error {
 	for i := 1; i < len(args); i++ {
@@ -115,7 +124,7 @@ func handOver(args []string, home, data string) error {
 			return err
 		}
 		_, werr := f.Write(b)
-		if err := errors.Join(werr, f.Close(), os.Chown(f.Name(), nobody, nobody)); err != nil {
+		if err := errors.Join(werr, f.Chown(nobody, nobody), f.Close()); err != nil {
 			return fmt.Errorf("hand %s to the child: %w", args[i], err)
 		}
 		args[i] = f.Name()

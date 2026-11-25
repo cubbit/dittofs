@@ -211,7 +211,7 @@ jobs:
       # client, rpcbind for the NLM interop tests, the NFSv4 ACL tools, and
       # setfattr and getfattr for the NFSv4.2 xattr tests.
       - name: Install the e2e tests' system packages
-        if: matrix.suite == 'e2e'
+        if: matrix.suite == 'e2e' && matrix.name != 'e2e/second-user'
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |

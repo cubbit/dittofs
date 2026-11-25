@@ -290,7 +290,8 @@ test/posix/known.yaml                     T8.9  rewritten for v2
   `nodetest` node, the child run as uid and gid 65534, every row, the harness-only ones too; the
   node's data directory and bootstrap checked unreadable to that user first. `test/suites.yaml`:
   `e2e`'s option `second-user`, `cmd: go test -tags=e2e -run SecondUser ./cmd/dfsctl`, `tier: pr`,
-  its `paths:` `cmd/dfsctl/**`, `pkg/node/**` and `internal/node/**`; `e2e`'s own `cmd:` is
+  its `paths:` `cmd/dfsctl/**`, `pkg/node/**`, `internal/node/**` and `internal/cli/**`, whose
+  credentials package writes the file the child uses; `e2e`'s own `cmd:` is
   unchanged; it needs only `linux` and `root`. `tests.yml`'s filter: `e2e` out of the suite list,
   `e2e`, `e2e/kerberos`, `e2e/cross-protocol` and `e2e/stress` skipped by name (D2), the
   `decision:` marker narrowed to them.
