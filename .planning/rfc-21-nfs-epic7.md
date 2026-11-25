@@ -140,6 +140,11 @@ deferred, in one RFC pull request on `develop`.
     plan's, run by `TestDirectoryMintRemapsReservedIDs`;
   - the "forwarded identity" unit row, a `Claimed` identity with evidence refused `ErrInvalid`, stays
     green under `TestResolveRefusesAnInconsistentIdentity`, which T7.1 keeps.
+- **pjdfstest's fixture user 65534.** Under R2 a claimed 65534 is anonymous, and the v2 store
+  refuses a user holding it, so `test/suites.yaml`'s pjdfstest fixture (`users: [65532, 65533,
+  65534]`) fails at that user, and pjdfstest's calls as 65534 reach the share's `Anonymous` grant.
+  The fixture change is E15's, which turns pjdfstest on (#5728): drop 65534 from `users`, and grant
+  `Anonymous` read-write on that share.
 
 ### 1.3 Names used here
 
@@ -218,7 +223,7 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
 | R16 | With a directory configured, a claimed uid or gid with no row is asked of the directory by `uidNumber` or `gidNumber` | MUST | §4.3 | T7.4 |
 | R17 | An entry that answers is minted as a directory principal, and the caller acts as it, not `authenticated` | MUST | §4.3, §5.5 | T7.4 |
 | R18 | A record is minted only on the directory's word: a uid the directory does not know acts as anonymous and writes nothing | MUST NOT | §5.5 (guard 1) | T7.4 |
-| R19 | The directory lookups a `Claimed` caller triggers are at most 100 in any 60 seconds per client address; past that, a call needing a lookup for its uid or primary gid is refused with a retryable error and never mapped to anonymous (a supplementary gid is R53's) | bound | §4.3, §7.3 | T7.4 |
+| R19 | The directory lookups a `Claimed` caller triggers, a mint's or `dirStep`'s closure query included, are at most 100 in any 60 seconds per client address; past that, a call needing a lookup for its uid, its primary gid or its closure is refused with a retryable error and never mapped to anonymous (a supplementary gid is R53's) | bound | §4.3, §7.3 | T7.4 |
 | R20 | The records a `Claimed` caller's lookup mints are at most 100 in any 60 seconds per node, whatever the client, each user and each group counted; past that, the call is refused with a retryable error, never mapped to anonymous, and nothing is written | bound | §5.5 (guard 2), §7.3 | T7.4 |
 | R53 | Past the lookup cap, a claimed supplementary gid that no principal holds is left out of the caller's groups, uncharged, rather than refusing the call; a gid a principal holds is never left out, and a caller built with a gid left out is not cached. Amends §7.3, which refuses the call: pending Marco (D6, §9, point 7) | decision | D6; amends §7.3 | T7.4 |
 | R54 | A user is minted only with its whole closure. While its closure's unminted groups and its own record do not all fit the mint cap's room, the groups that fit are minted and the call is refused retryably, writing nothing past the cap; the user is minted on the call whose remainder fits. Every record a `Claimed` caller's resolution mints counts, through `dirPrincipal` or `dirStep`; a proven sign-in's mints do not | MUST | §2.5, §5.4, §5.5 (guard 2), §7.3 | T7.4, T7.5 |
@@ -357,8 +362,12 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
     user, mapped or not. A `decision:` marker states the rule and why it holds: a gid no principal
     holds names nothing any ACL holds, so leaving it out loses no grant and escapes no deny entry; it
     is overturned if an ACL can ever name a group the node has not minted.
-  - The closure queries of the mint that follows are not charged. They are bounded by the group cap,
-    and each follows a lookup that was charged.
+  - A closure query a `Claimed` caller's resolution sends is charged as one more lookup: the mint's
+    `groupsOf` in `dirPrincipal`, and `dirStep`'s group read under `ManageGIDs` (T7.5). RFC 18 §7.3
+    caps every directory lookup such a caller triggers, and §9.2 counts this one as
+    `question="groups"`. It is one query per user, whatever its group count, and a fresh cached
+    answer costs nothing, as for a uid. Past the cap it refuses the call retryably and writes
+    nothing, as a uid does.
   - Each unit keeps the times of its last 100 charged lookups in a ring, on the injected clock, and
     admits a lookup only when the oldest of them is at least 60 seconds old, so no 60 seconds ever
     hold more than 100 lookups (R19). A fixed window would admit 200 across its boundary, and a token
@@ -700,7 +709,8 @@ docs/internals/rfcs/
   - `claimcap.go`: the per-address lookup cap (D6), over the throttle's unit, in a table of its own
     that evicts an idle unit first, and the per-node mint cap (D7), each a ring of the last 100
     charge times. Both run on the injected clock. `claimed.go` leaving out, past the lookup cap, a
-    supplementary gid no principal holds (D6, or refusing the call, as §9, point 7 settles), and,
+    supplementary gid no principal holds (D6, or refusing the call, as §9, point 7 settles),
+    charging a closure query sent to the directory (D6), and,
     when the mint cap's room is short, minting the closure's groups that fit and refusing the call
     (D7). Each refusal is `ErrUnavailable`, counted under `lookup_cap`, with RFC 18 §7.3's
     `ponytail:` on the constants and this epic's markers.
@@ -744,6 +754,11 @@ docs/internals/rfcs/
     - a gid the directory holds (catches a gid never asked, R16);
     - the lookup ring's boundary case above (catches a fixed window or a token bucket, which admit
       more than 100 in some 60 seconds, R19);
+    - 51 directory users sharing one group, from one address: the first 50 are minted, and the
+      51st is refused `ErrUnavailable` at its uid, the address's 101st lookup, with
+      `identity_directory_lookups_total` at 50 for `question="uid"` and 50 for `"groups"` (catches
+      the closure query left uncharged, which lets one address send about 200 queries a minute,
+      R19);
     - a minted directory principal's claim with ten unknown gids past the cap, admitted without them,
       then the same claim again, read from `vfs_caller_cache_misses_total` as a second miss (catches
       the call refused for a supplementary gid, or the short caller cached, R53; a local user would
@@ -824,7 +839,7 @@ docs/internals/rfcs/
 - **Covers:** R37–R39, R45–R47, R50.
 - **Deliverables:** `internal/node/nfs_identity_test.go`, on `nodetest`, with `identitytest`'s
   directory as the installation's directory (§9, point 6). It drives E3's scripted client (T3.2:
-  `nfsclient.DialFrom` from `127.0.0.1`, `127.0.0.2` and `127.0.0.3`, then `Do` with
+  `nfsclient.DialFrom` from `127.0.0.1` to `127.0.0.4`, then `Do` with
   `nfsclient.AuthSys`, the arguments and replies coded by E4's generated structs): `MNT`, then E4's `GETATTR`, `SETATTR`,
   `CREATE`, `READ` and `WRITE`. No later subtask consumes it: it ends the epic.
 - **Acceptance criteria:** each row's `AUTH_SYS` steps get the NFSv3 status that E4's table gives
@@ -835,10 +850,11 @@ docs/internals/rfcs/
   - `NFS3ERR_SERVERFAULT` past the mint cap (D6);
   - `MNT`'s refusal for host C.
 - **Tests:**
-  - Through the adapter: R37's `AUTH_SYS` step, R38, R39, R45, R46 and R47. R46's cap step sends 60
-    directory users with no group from `127.0.0.1` and 60 from `127.0.0.2`, so neither address
-    reaches its lookup cap and only the node's mint cap can refuse: at most 100 are minted, and the
-    rest are answered `NFS3ERR_SERVERFAULT`.
+  - Through the adapter: R37's `AUTH_SYS` step, R38, R39, R45, R46 and R47. R46's cap step sends 50
+    directory users with no group from each of `127.0.0.1`, `127.0.0.2` and `127.0.0.4` (not host
+    C's, which `MNT` refuses). Each user is charged twice, its uid and its closure query (D6), so no
+    address passes its lookup cap and only the node's mint cap can refuse: at most 100 are minted, and the rest are answered
+    `NFS3ERR_SERVERFAULT`.
   - Each fails as its service-level counterpart does when the resolution rule it checks is broken.
   - The run ends with the leak check, `adaptertest.CheckLeaks`.
   - No double: the node is real, and the directory is the in-memory one its suite holds (kind 2).
