@@ -10,8 +10,9 @@ below, and Appendix D's NFSv3 and MOUNT rows;
 [RFC 20](../docs/internals/rfcs/rfc-20-adapters.md) §4.3's one-call rule, §4.9's `translate`
 functions, §4.10's MOUNT entry files, §5.1 to §5.4 as the NFSv3 and MOUNT codecs meet them, §6.10's
 codec gates for NFSv3, and §7.1's entry-call-site rule for NFS's MOUNT files;
-[RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §4.9's step 2 exemption (amendment A3) and §6's §4.9
-row. Every citation is `develop`'s text, which holds amendment A3 and reaches `feat/storage-v2` with
+[RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §3.0's `Call.HostCall` and its rule that no rule of
+the service reads `Call.Protocol`, §4.9's step 2 exemption (amendment A3, restated on `HostCall`)
+with its `decision:`, §5.7's directory `before`, and §6's §4.9 row. Every citation is `develop`'s text, which holds amendment A3 and reaches `feat/storage-v2` with
 the cherry-pick of RFC changes; the one place the two differ for this epic is §11.5's
 `ErrUnknownPrincipal` NFSv3 cell, which `feat/storage-v2`'s copy already sets to `NFS3ERR_INVAL` (R28
 below; the RFC 21 implementation plan's D4) and `develop`'s leaves "not set yet".
@@ -19,7 +20,7 @@ Cited, not owned: RFC 1813 for the bytes and status values; [RFC 7](../docs/inte
 §3.4 (the synthesised `.` and `..`) and §3.5 (cookies); [RFC 18](../docs/internals/rfcs/rfc-18-identity.md)
 §4.3 (uid and gid).
 **Track:** B.
-**Epic 4 estimate: 12 subtasks, 27.75 man-days.**
+**Epic 4 estimate: 12 subtasks, 28.25 man-days.**
 **Depends on:** **S2**, NFS's test foundations: E2's `adaptertest/nfsharness`, knfsd's `nfs3/`
 captures cut into golden files, and S0's `vfstest.Mutations`; **E3**, the RPC layer: each call's
 `Identity` and `vfs.Call`, built at route (T3.1), the scripted client `adaptertest/nfsclient`
@@ -127,8 +128,11 @@ over loopback where they name the wire.
 - **S2b**, amendments A1 to A3 agreed (met, #5166).
 - **S3**, an NFSv3 mount over loopback, after E3 and this epic.
 - **S6a**, `Spell`, `Find` and resolution in the service, from RFC 18's implementation plan.
-- **A3**, the amendment to RFC 17 §4.9 agreed in #5166: NLM calls, and NFSv3's `Root` and
-  `ListShares`, meet lowered minimums.
+- **A3**, the amendment to RFC 17 §4.9 agreed in #5166 and restated by #5726: a call that sets
+  `Call.HostCall` (RFC 17 §3.0) meets lowered minimums, by the method called: a lock call or a share
+  reservation's `Open` or `Close` at most `Claimed`, a `Root` or `ListShares` none. NLM and NSM set
+  it on every call, MOUNT on `MNT` and `EXPORT`; no NFS call sets it, and no rule reads
+  `Call.Protocol`.
 - **Plan D10**, the RFC 21 implementation plan's decision: a per-node NFSv3 and NFSv4.0
   duplicate-request cache in NFS's `Replay` stage, built by E3.
 - **Plan D16**, the same plan's decision: the cookie verifier is the share's `ShareID`, folded to
@@ -145,7 +149,7 @@ cited by number and title and not copied.
 | rule 2, fuzz tests where relevant | T4.6, and each subtask adding structs | every struct this epic tags is reached by its `ops` package's `FuzzCodec`, which the generator's list feeds, seeded with the golden files; the runtime's linked lists are held to the second decoder written by hand (R8) |
 | rule 3, observability follows RFC 25 and RFC 20 §10 | T4.3, T4.6, T4.7 | no recorder in NFS code; the tables are labelled `nfs3` and each row named by its RFC 1813 procedure, which `core` turns into `adapter.nfs3.<PROCEDURE>` spans; no attribute or label carries a path, a name, an owner or a principal, and `MNT`'s path is passed to the service and never logged |
 | rule 4, profiling: leaks, allocations and contention | T4.2, T4.4, T4.5, T4.7 | 0-allocation gates for NFSv3 `READ`, `WRITE` and `GETATTR` decode and encode, `ops/v3` added to the `unit/adapter-allocs` cell; `Attach` allocates no segment header past the buffer's own; every loopback test ends with `adaptertest.CheckLeaks`; no registry, timer or lock is added, so no mutex profile |
-| rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | each translation asserted on the reply bytes a client reads, through `nfsharness` or over loopback; A3 asserted on the service's answer to a call carrying the protocol, the layer every adapter reaches; `Attach` on the bytes the writer sends |
+| rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | each translation asserted on the reply bytes a client reads, through `nfsharness` or over loopback; A3 asserted on the service's answer to a call that sets `HostCall` or does not, the layer every adapter reaches, and over loopback on the answer to `MNT` and to the calls made with its handle, the layer that consumes E3's `HostCall`; `Attach` on the bytes the writer sends |
 | rule 6, known failures shrink | none | no `pynfs`, `cthon04` or `nfstest` test runs before the cutover |
 | rule 7, v2 ignores v1 | all | statuses, codes and sizes from RFC 1813 and RFC 21; vectors from knfsd's captures and RFC 1813, never from `develop`'s `v3` or `mount` packages |
 | rule 8, real dependencies for properties of those dependencies | all | knfsd's bytes and RFC 1813 for vectors; `memory.New` for the service's answers, WCC and verifiers; real TCP over loopback through `core` for S3's rows and the retransmitted `REMOVE` |
@@ -165,9 +169,14 @@ subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | A call whose `Protocol` is NLM meets `MinProof` lowered to at most `Claimed` and no `MinProtection`, so an NLM call below `Claimed` is still refused | MUST | RFC 17 §4.9 (step 2) | T4.1 |
-| R2 | A `Root` or `ListShares` whose `Protocol` is NFSv3, which only `MNT` and `EXPORT` make, meets neither minimum but still meets the share's state and its client rules; every other call, a later call with the handle `MNT` returned among them, meets both minimums | MUST | RFC 17 §4.9 (step 2); RFC 21 §6.3 | T4.1, T4.7 |
-| R3 | The filesystem tells these calls apart by the call's `Protocol` and the method called alone, never by a field an adapter sets to ask for it | MUST | RFC 17 §4.9 (step 2) | T4.1 |
+| R1 | Withdrawn: keyed on the call's `Protocol`, which RFC 17 §3.0 no longer lets a rule read; R53 states it on `HostCall` | withdrawn | RFC 17 §3.0 | — |
+| R2 | Withdrawn: keyed on the call's `Protocol`; R54 states it on `HostCall` | withdrawn | RFC 17 §3.0 | — |
+| R3 | Withdrawn: RFC 17 §3.0 now has the adapter state the exemption by a capability, `HostCall`, the opposite of this row; R55 and R56 replace it | withdrawn | RFC 17 §3.0 | — |
+| R53 | A lock call (`Lock`, `TestLock`, `Unlock`, `CancelLock`) or a share reservation's `Open` or `Close` whose `Call` sets `HostCall` meets `MinProof` lowered to at most `Claimed` and no `MinProtection`, so such a call below `Claimed` is still refused | MUST | RFC 17 §4.9 (step 2); RFC 21 §6.1 | T4.1 |
+| R54 | A `Root` or `ListShares` whose `Call` sets `HostCall`, which only `MNT` and `EXPORT` make, meets neither minimum but still meets the share's state and its client rules; every call that does not set it, every NFSv3 call and a later call with the handle `MNT` returned among them, meets both minimums | MUST | RFC 17 §4.9 (step 2); RFC 21 §6.3 | T4.1, T4.7 |
+| R55 | `HostCall` lowers nothing beyond R53 and R54: any other method naming a share whose `Call` sets it is refused `ErrInvalid`, and the same lock, `Open` and `Close` methods without it, an NFSv4 or SMB caller's, meet the share's full minimums | MUST | RFC 17 §4.9 (step 2 and its `decision:`) | T4.1 |
+| R56 | Admission reads `HostCall` and the method called, never `Call.Protocol`: the same call answers the same under every protocol label, the zero one included | MUST NOT | RFC 17 §3.0, §6 (V43) | T4.1 |
+| R57 | `MNT` and `EXPORT` reach the service with `HostCall` set, and no NFSv3 procedure does, as E3's route sets it (E3's T3.1) | MUST | RFC 17 §3.0 (the capability table); RFC 21 §6.3 | T4.7 |
 | R4 | RFC 17's §4.9 row: on a share whose `MinProof` is `Ticket` and `MinProtection` `Integrity`, an NLM lock at `Claimed` admitted and at `None` refused `ErrWrongSecurity`; NFSv3 `Root` and `ListShares` at `Claimed` admitted, and a `GetAttr` from NFSv3 at `Claimed` with that handle refused; an NFSv4 `Root` and an SMB `ListShares` at `Claimed` refused or leaving the share out | test row | RFC 17 §6 (the §4.9 row) | T4.1 |
 
 **Codecs and shared functions**
@@ -232,7 +241,7 @@ subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R33 | In every `wcc_data`, `before` is absent for a directory, always, and for a file present only when it was captured in the hold of the file's accept lock that accepted the operation: the adapter writes `before` exactly when the service returned one | MUST | RFC 21 §9.2, §11.3 (Change info), §12 (N19) | T4.4, T4.5, T4.9, T4.10 |
+| R33 | In every `wcc_data`, `before` is absent for a directory, always, and for a file present only when it was captured in the hold of the file's accept lock that accepted the operation: the adapter writes a file's `before` exactly when the service returned one, and drops a directory's, which the service returns to every caller | MUST | RFC 21 §9.2, §11.3 (Change info), §12 (N19); RFC 17 §5.7 | T4.4, T4.5, T4.9, T4.10 |
 | R34 | `change` has no NFSv3 field: an NFSv3 client validates by `ctime` and `mtime`, which are reported as the service answers them | invariant | RFC 21 §11.3 (`Version`), §12 (N7) | T4.4 |
 | R35 | §13's "§9.2 change info", its NFSv3 step run on one node: 64 parallel creates in one directory over NFSv3, and no `wcc_data` for the directory carries `before`; the step across two nodes is the deferral ledger's row "RFC 21's (cluster) parts" | test row | RFC 21 §13 | T4.9 |
 | R36 | §13's "§9.2 close-to-open and WCC *(1 node)*", its NFSv3 step: two NFSv3 clients write one file in parallel, 10^4 writes each, and every reply carrying `before` equals the previous write's `after` | test row | RFC 21 §13, §12 (N19) | T4.7 |
@@ -474,7 +483,7 @@ internal/adapter/translate/
   times.go types.go            T4.4  times (D11), file types and modes, the ShareID fold (D6)
   fit.go                       T4.11 Fit (D7)
 internal/vfs/
-  admission.go                 T4.1  the minimums lowered by Call.Protocol and method (A3)
+  admission.go                 T4.1  the minimums lowered by Call.HostCall and method (A3)
   attrs.go                     T4.4  the server-time choice and ErrGuardFailed (D2, D4)
   names.go                     T4.9  CreateArgs.Unchecked (D2); T4.11 DirEntry.Number
   shares.go                    T4.6  ShareInfo.Path (D2)
@@ -529,31 +538,44 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
 
 ### T4.1 Admission's lowered minimums (A3)
 
-**Subtask T4.1 estimate: 1 man-days.**
+**Subtask T4.1 estimate: 1.25 man-days.**
 
 - **Track:** B. **Depends on:** S2b.
-- **Covers:** R1, R2, R3, R4.
+- **Covers:** R4, R53, R54, R55, R56.
 - **Deliverables:** `internal/vfs/admission.go`'s `check` takes the minimum to apply rather than
-  the `secure` flag: the share's, NLM's (`MinProof` at most `Claimed`, no `MinProtection`), or none,
-  chosen from the call's `Protocol` and the method alone; `Root` and `ListShares` under NFSv3 pass
-  none, `SecInfo` keeps none, every NLM call NLM's. Consumed by T4.7's row, where T4.6's `MNT` and
-  `EXPORT` first meet a Kerberos-only share, and by E11's NLM calls; T4.6's own tests run on shares
-  with no minimums and do not wait for it.
+  the `secure` flag: the share's, the lowered one (`MinProof` at most `Claimed`, no
+  `MinProtection`), or none, chosen from `Call.HostCall` and the method alone; with `HostCall`,
+  `Root` and `ListShares` pass none, a lock call or a share reservation's `Open` or `Close` the
+  lowered one, and any other method naming a share is refused `ErrInvalid`; `SecInfo` keeps none;
+  without it, every call meets the share's. `vfs.Call.HostCall` is E3's T3.1's, or #5725's if it
+  lands first. Consumed by T4.7's row, where T4.6's `MNT` and `EXPORT` first meet a Kerberos-only
+  share, and by E11's NLM calls; T4.6's own tests run on shares with no minimums and do not wait for
+  it.
 - **Acceptance criteria:**
   - RFC 17's §4.9 row passes on `memory.New`.
   - An NFSv3 `Root` from a client outside the share's rules is refused `ErrAccess`, and of a
     quiesced share answered `ErrDelay`.
-  - No `vfs.Call` field, flag or option asks for the exemption.
+  - Nothing but `HostCall` and the method lowers a minimum: no rule of admission reads
+    `Call.Protocol`.
 - **Tests:** in the service's suite, on `memory.New`, the §4.9 row (R4) step by step, each step
-  failing with the exemption removed or widened: an NLM lock at `None` still refused (catches a
-  minimum dropped rather than lowered, R1), an NFSv3 `GetAttr` at `Claimed` with `Root`'s handle
-  still refused (catches an exemption by protocol alone, R2), an NFSv4 `Root` at `Claimed` still
-  refused (catches an exemption by method alone, R3); the client-rule and quiesce steps (catch an exemption widened past the
-  minimums, R2): an NFSv3 `Root` from a client outside the rules refused, an NFSv3 `ListShares`
-  leaving out a share whose rules exclude the client, and an NLM lock at `Claimed` from such a
-  client refused. No test double.
-- **Rules:** rule 9: a `decision:` marker at the check naming RFC 21 §6.3's reason and ceiling; rule
-  13: the service decides, no adapter asks.
+  failing with the exemption removed or widened, each call built as a `Call` that states its
+  capabilities: a `HostCall` lock at `None` still refused (catches a minimum dropped rather than
+  lowered, R53), a `GetAttr` at `Claimed` with `Root`'s handle and no `HostCall` still refused
+  (catches an exemption that outlives the mount, R54), an NFSv4 `Root` at `Claimed` still refused
+  (catches an exemption by method alone, R55); an NFSv3 call without `HostCall` meeting the full
+  minimums: a `Root` and a `ListShares` labelled NFSv3 at `Claimed`, refused and leaving the share
+  out (catches the lowering keyed on the protocol, R54, R56); a `Lock` and an `Open` without
+  `HostCall` at `Claimed`, refused `ErrWrongSecurity` (catches the lowering keyed on the method,
+  R55); a `GetAttr` and a `Write` with `HostCall`, refused `ErrInvalid` (catches the flag widened
+  past its methods, R55); the §4.9 row's admitted and refused steps repeated under every protocol
+  label and the zero one, each with the same answer (catches a rule reading the label, R56); the
+  client-rule and quiesce steps (catch an exemption widened past the minimums, R54): a `HostCall`
+  `Root` from a client outside the rules refused, a `HostCall` `ListShares` leaving out a share
+  whose rules exclude the client, and a `HostCall` lock at `Claimed` from such a client refused. No
+  test double.
+- **Rules:** rule 9: a `decision:` marker at the check naming RFC 21 §6.3's reason and RFC 17 §4.9's
+  ceiling, admission failing open for a call that sets `HostCall` by mistake; rule 13: the adapter
+  states `HostCall` from what its program does, and the service decides what it lowers.
 
 ### T4.2 A `READ`'s data as its own reply segment
 
@@ -609,13 +631,14 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
 
 ### T4.4 `fattr3`, `sattr3`, `wcc_data`; `GETATTR` and `SETATTR`
 
-**Subtask T4.4 estimate: 3.5 man-days.**
+**Subtask T4.4 estimate: 3.75 man-days.**
 
 - **Track:** B. **Depends on:** T4.3.
 - **Covers:** R6, R10, R11, R18, R19, R27, R28, R29, R30, R31, R33, R34, R48.
 - **Deliverables:** `translate`'s times (D11), file types and modes; `ops/v3/attrs.go`: `File` to
   `fattr3` (D6's fold, D14's `Spell`s, `File.LinkCount` for `nlink`), `post_op_attr` (D5),
-  `wcc_data` from a `WCC`, `sattr3` to `AttrChange` with its uid and gid through `Find`, unknown as
+  `wcc_data` from a `WCC`, a file's `before` as the service returned it and a directory's dropped,
+  since the service returns one whoever calls (RFC 17 §5.7; R33), `sattr3` to `AttrChange` with its uid and gid through `Find`, unknown as
   `NFS3ERR_INVAL` (R28), and `SET_TO_SERVER_TIME` through D2's server-time choice (pending);
   `types.go`'s shared bodies; `getattr.go` (context role) and `setattr.go`, the guard as
   `AttrChange.Guard`, and D4's `NOT_SYNC` row in `errors.go`; the server-time choice's mask bits
@@ -640,7 +663,8 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   R19, R34, a handle rewritten, R18); `SETATTR` of each `sattr3` arm, both time arms, a guard that
   holds and one that does not, against `wcc_data` with `before` exactly as the service returned it
   (catches a time set from the handler's clock or a client time altered, R29, `NOT_SYNC` lost, R30,
-  a `before` invented, R33); a guarded size change of a symlink whose guard holds, answered
+  a `before` invented, R33); a `SETATTR` of a directory whose service answer carries `before`,
+  answered with none (catches a directory's `before` passed through, R33); a guarded size change of a symlink whose guard holds, answered
   `NFS3ERR_INVAL`, not `NOT_SYNC` (catches every `ErrInvalid` on a guarded call mapped to the
   guard, D4); the import test with `ops/v3` importing `translate` and `translate` importing
   `pkg/vfs` (catches the rule missing or widened past the standard library and `pkg/vfs`); an unknown uid (R28);
@@ -736,7 +760,7 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
 **Subtask T4.7 estimate: 1.75 man-days.**
 
 - **Track:** B. **Depends on:** T4.1, T4.5, T4.6, T3.2, T7.1.
-- **Covers:** R2, R17, R36, R45, R52.
+- **Covers:** R17, R36, R45, R52, R54, R57.
 - **Deliverables:** loopback tests in `internal/adapter/nfs` through `core` with E3's scripted
   client (T3.2: `nfsclient.Dial`, then `Do` under `nfsclient.AuthSys`, each call's `Args` encoded
   and its `Reply.Body` decoded by this epic's generated structs) on `memory.New`, whose identity
@@ -759,7 +783,7 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   (`mnt_gate_test.go`) of every NFSv3 procedure past `NULL` that `ops/v3` serves, at `Claimed` with
   the handle `MNT` returned, checked against `ops/v3`'s table so a served procedure with no row fails
   it (catch a handle that
-  skips the minimum on any procedure, a procedure making no service call among them, R17, a `MNT` refused, R2, the status at the wrong layer, R45, a stale or
+  skips the minimum on any procedure, a procedure making no service call among them, R17, R54, a `MNT` refused, `HostCall` left unset on it by the route, R57, the status at the wrong layer, R45, a stale or
   reordered `before`, which matches an `after` already matched, R36, and a row counted under
   another label or name, R52). No test double.
 - **Rules:** rule 4: leak checks; rule 8: real TCP over loopback.
@@ -820,9 +844,9 @@ test/suites.yaml               T4.5  ops/v3 in unit/adapter-allocs
   its reply file (catches an arm decoded to the wrong mode, R6, a verifier stored in a time, R43,
   a returned handle rewritten, R18); `MKNOD` of a regular file (catches a default arm answered
   success, R31); a name RFC 7 refuses (R20); R35's 64 creates sent in parallel through
-  `nfsharness`, each request's `vfs.Call` carrying `Protocol` NFSv3 as E3's route sets it (T3.1),
-  since the service leaves a directory's `before` out only for that protocol (catches a directory
-  `before`, R33, R35); a `CREATE`, `MKDIR`, `SYMLINK` and `MKNOD` each with `sattr3`'s uid and gid set and
+  `nfsharness`, against `memory.New`, whose service returns a directory's `before` to every caller,
+  so the reply carries none only because the adapter drops it (catches a directory `before`, R33,
+  R35); a `CREATE`, `MKDIR`, `SYMLINK` and `MKNOD` each with `sattr3`'s uid and gid set and
   with them unset, against the new file's owner and group (catches the owner or group dropped or
   invented by the handler, R31); a `MKNOD` of `NF3CHR` with major 7 and minor 9 read back by
   `GETATTR` as `rdev` 7 and 9 (catches `specdata3` packed differently than the service splits it); the four creates added to
@@ -951,9 +975,9 @@ sends to list, create and remove.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T4.1 | 1 | — | a service change, reviewed by the service's owners |
+| 1 | T4.1 | 1.25 | — | a service change, reviewed by the service's owners |
 | 2 | T4.2 | 2 | — | `Attach` and the writer's segmented send, reviewed by `core`'s and `pkg/resources`' owners |
-| 3 | T4.3, T4.4, T4.5 | 8 | PR 2, E3's T3.4 | NFSv3's error table, attributes and data path, with the allocation gates |
+| 3 | T4.3, T4.4, T4.5 | 8.25 | PR 2, E3's T3.4 | NFSv3's error table, attributes and data path, with the allocation gates |
 | 4 | T4.6, T4.7 | 5 | PR 1, PR 3, E3's T3.2, E7's T7.1 | linked lists, MOUNT and the first mount over loopback: S3 |
 | 5 | T4.8, T4.9, T4.10 | 6.75 | PR 4, E3's T3.3 | the namespace procedures that change names, with their loopback row |
 | 6 | T4.11, T4.12 | 5 | PR 5 | listings and the filesystem's limits |
@@ -1017,8 +1041,9 @@ PR 3 beside PR 1.
    holding `core`'s refusals, `ErrWrongSecurity` as `AUTH_TOOWEAK`, `ErrLogonFailure` and the
    drain's no-reply rows, which T4.3 and T4.6 add their rows to; `Table()` takes no `Handlers` until
    this epic's first row calls the service, which adds them, a change to `nfs.go` alone (E3's D6).
-   E3's T3.1 sets `Call.Protocol` to NFSv3 for NFS version 3 and MOUNT at route (E3's D2; E3 has no
-   `Security` stage for `AUTH_SYS`), which A3's exemption reads and T4.7 checks at the service.
+   E3's T3.1 sets `Call.HostCall` at route on MOUNT's `MNT` and `EXPORT` and on no NFSv3 procedure
+   (E3's D2, R48; E3 has no `Security` stage for `AUTH_SYS`), which A3's exemption reads and T4.7
+   checks over loopback; the `Protocol` it sets, NFSv3 for both programs, is a label no rule reads.
    E3's T3.3 reads a row's `Cacheable` column and keys NFSv3 by RFC 21 §11.2's retry identity.
    E3's T3.2 client takes a call's `Args` as bytes and returns `Reply.Body`, which T4.7 and T4.10
    encode and decode with this epic's generated structs. E7's T7.1 resolves the `Claimed` caller
