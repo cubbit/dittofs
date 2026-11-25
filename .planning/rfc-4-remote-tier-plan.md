@@ -796,7 +796,8 @@ R14 and R15.
 - Whole-block and ranged reads, verified as §3.4 says, a past-the-end recorded range as
   `ErrMalformed`.
 - `codec.Store`, its `Get`, `Health` and `NewPut`'s `Put` as RFC 4 §4.3 states them (D3), and
-  RFC 4 §7.3's `codec.Store` row.
+  RFC 4 §7.3's `codec.Store` row. Its `GetVersion` lands with `remote.Store`'s `GetVersion`
+  and RFC 26's callers (§6.1).
 - The version gate (§3.5) and the golden block of `testdata/v1/`.
 - The decoder's fuzz target (rule 2), the `codec_` series through the recorder the codec
   declares (D12), and `unit`'s `remote-allocs`
@@ -916,7 +917,7 @@ recorded by hand; the codec's and the `Content-Range` reader's fuzz targets runn
 
 | Deferred | Why | Owner | Trigger |
 | --- | --- | --- | --- |
-| A backup location's calls and the `immutable` mode: §4.14's calls, generations and the location health object, §4.15's versioned objects, §4.14's admission and its provocations against a real bucket, their §7.1 rows and the `PutObject` clauses of §7.1's §4.8 size row, R18, R20 and R12's immutable half (§1.3, D11; RFC 4 §4.1 as amended) | no caller in v1.1 | RFC 26 | RFC 26's plan starts, or its copier lands |
+| A backup location's calls and the `immutable` mode: §4.14's calls, `codec.Store.GetVersion` over them (RFC 3's `FetchVersion` calls it), generations and the location health object, §4.15's versioned objects, §4.14's admission and its provocations against a real bucket, their §7.1 rows and the `PutObject` clauses of §7.1's §4.8 size row, R18, R20 and R12's immutable half (§1.3, D11; RFC 4 §4.1 as amended) | no caller in v1.1 | RFC 26 | RFC 26's plan starts, or its copier lands |
 | Versions in the in-memory store (§4.3's `ponytail:`, D4) | no consumer reads one | RFC 26 | its first unit test needs an immutable store without LocalStack |
 | Reading retain-untils from a listing instead of per extension | an optimisation of a deferred call; needs an RFC 4 amendment | RFC 26 | its extensions show in a service's throttling |
 | `Settings`, `RecheckSetting`, `VersionsPage`, `DeleteVersions`, the repair proof's acceptance, and the `Recheck` pass itself: its caller, its retries through `Small`, two missed periods, drift raised through `SetDrift`, no delete on drift; the `Recheck` pass's read-back of the `keys` object (RFC 5 Appendix B.2; each writer's own read-back is the RFC 5 plan's epic 8); §7.1's `Recheck` rows, the `Recheck` halves of its archive-class row and of the C.3 row's encryption clause, and its 10⁶-version walk; R17 (§6 point 3; RFC 4 §4.1 as amended) | no caller in v1.1: GC runs it. Until it lands a setting changed after open goes unseen until the next open, and an expiry rule added then deletes blocks a running node notices only when a read returns `ErrNotFound` | RFC 9 | RFC 9's plan starts |

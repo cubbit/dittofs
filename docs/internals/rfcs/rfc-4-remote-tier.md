@@ -587,7 +587,8 @@ type ChunkRange struct {
 
 // Meter receives a transfer's wire bytes (RFC 3 §2.4): Moved with each count of
 // encoded body bytes sent or read, and Sent once a put's last body byte has
-// been sent. It is two funcs and carries no behaviour of its own.
+// been sent. A nil func is skipped, so the zero Meter meters nothing. It is
+// two funcs and carries no behaviour of its own.
 type Meter struct {
 	Moved func(n int64)
 	Sent  func()
@@ -884,6 +885,10 @@ type Store struct{ /* ... */ }
 // decoded and verified against its own hash (§3.4). m receives the encoded
 // bytes as they arrive.
 func (s *Store) Get(ctx context.Context, name remote.Name, want []remote.ChunkRange, m remote.Meter) iter.Seq2[remote.Chunk, error]
+
+// GetVersion is Get of one recorded version, on an immutable store (§4.14).
+// It lands with the remote store's GetVersion and its first caller (§4.1).
+func (s *Store) GetVersion(ctx context.Context, name remote.Name, v remote.Version, want []remote.ChunkRange, m remote.Meter) iter.Seq2[remote.Chunk, error]
 
 // Health is the remote store's probe of direction d, passed straight through (§4.7).
 func (s *Store) Health(ctx context.Context, d remote.Direction) error
@@ -1855,7 +1860,7 @@ are the negative tests.
 | [§3.3](#3.3%20Transforms) | Run the engine's read and write tests with and without transforms: no difference observable apart from offsets and timing. |
 | [§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec) | A ranged read at a wrong offset or length fails with `ErrCorrupt`, and nothing re-reads the header. |
 | [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | Encode the same block twice, once from declared lengths and once after a measuring pass, under every transform configuration: the bytes, the header and the checksum are identical, and the declared size equals the bytes streamed. |
-| [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | Through `codec.Store` on the in-memory store, in a mode that needs a measuring pass: a second `Attempt` of one `Put` reads `src` once, only to send; after an `Attempt` ending in `ErrCorrupt` the next measures again. Two `Attempt`s of one `Put` overlap under `-race`: no race is reported. An `Attempt` whose `ctx` ends mid-body has released its chunk buffers when it returns. The `Meter`'s `Moved` counts sum to the encoded bytes the store received, and `Sent` is called once, after the last. |
+| [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | Through `codec.Store` on the in-memory store, in a mode that needs a measuring pass: a second `Attempt` of one `Put` reads `src` once, only to send; after an `Attempt` ending in `ErrCorrupt` the next measures again. Two `Attempt`s of one `Put` overlap under `-race`: no race is reported. An `Attempt` whose `ctx` ends mid-body has released its chunk buffers when it returns. The `Meter`'s `Moved` counts sum to the encoded bytes the store received, and `Sent` is called once, after the last. A zero `Meter{}` passed to `Get` and to `Attempt` is skipped: both complete without a panic. |
 | [§3.5](#3.5%20Format%20changes%20are%20migrations) | A stored fixture of every released version decodes. |
 
 ### 7.4 Services
