@@ -743,7 +743,6 @@ func engineCrash(env *fuzz.Env, w *engineWorld, _ fuzz.Args) fuzz.Result {
 	}
 
 	w.faults.crashed()
-	w.awaitRemovalLoop()
 	files, gone, err := w.contents(env.T.Context())
 	w.faults.started(files)
 
@@ -776,7 +775,6 @@ func engineRestart(env *fuzz.Env, w *engineWorld, _ fuzz.Args) fuzz.Result {
 	release()
 	restart.Finish()
 
-	w.awaitRemovalLoop()
 	files, gone, err := w.contents(env.T.Context())
 	w.faults.started(files)
 
