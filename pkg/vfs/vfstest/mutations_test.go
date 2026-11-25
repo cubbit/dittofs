@@ -76,3 +76,110 @@ func TestMutationsRecordsEachMutatingCallItPasses(t *testing.T) {
 		t.Errorf("Ops after Reset = %v, want none", got)
 	}
 }
+
+// smbCall is the administrator's call on SMB session id.
+func smbCall(s *memory.Service, id uint64) vfs.Call {
+	c := s.Admin()
+	c.Protocol, c.Session = entity.ProtocolSMB, vfs.SessionRef{ID: id}
+	return c
+}
+
+// A last Disconnect is recorded with its client, its session, its Last and
+// the Gen it was given, and answered with the newer Gen the filesystem
+// returned once a second session's Connect listed the node again.
+func TestMutationsRecordsADisconnectsGivenAndAnsweredGen(t *testing.T) {
+	s := memory.New(t)
+	ctx := t.Context()
+	info := vfs.ClientInfo{Protocol: entity.ProtocolSMB, Name: []byte("pc"), Boot: [8]byte{1}, Recovery: entity.RecoverReconnect}
+	id, first, err := s.Connect(ctx, smbCall(s, 1), info, &vfstest.Callbacks{})
+	if err != nil {
+		t.Fatalf("Connect on session 1: %v", err)
+	}
+	if _, _, err = s.Connect(ctx, smbCall(s, 2), info, &vfstest.Callbacks{}); err != nil {
+		t.Fatalf("Connect on session 2: %v", err)
+	}
+	s.Reset()
+	end := vfs.SessionEnd{Last: true, Gen: first}
+	gen, err := s.Disconnect(ctx, smbCall(s, 1), id, vfs.SessionRef{ID: 1}, end)
+	if err != nil || gen == 0 || gen == first {
+		t.Fatalf("Disconnect at the stale Gen %d: Gen %d, %v; want a newer Gen", first, gen, err)
+	}
+	want := []vfstest.Mutation{{Op: vfs.OpDisconnect, Client: id, Session: vfs.SessionRef{ID: 1}, End: end, Gen: gen}}
+	if got := s.Calls(); !reflect.DeepEqual(got, want) {
+		t.Errorf("Calls = %+v, want %+v", got, want)
+	}
+}
+
+// A CancelLock is recorded with the waiter it names: its open, owner and
+// range, and the answer the filesystem gave.
+func TestMutationsRecordsACancelLocksWaiter(t *testing.T) {
+	s := memory.New(t)
+	h, _ := s.Store.Create(t, s.Store.Admin, s.Store.Root, "f", kvstore.Regular(0o644))
+	ref := vfs.Anonymous(h)
+	owner := vfs.LockOwner{Client: 3, Name: []byte("owner")}
+	r := vfs.ByteRange{Offset: 10, Length: 20}
+	_, err := s.CancelLock(t.Context(), s.Admin(), ref, owner, r)
+	want := []vfstest.Mutation{{Op: vfs.OpCancelLock, Open: &ref, Owner: owner, Range: r, Err: err}}
+	got := s.Calls()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Calls = %+v, want %+v", got, want)
+	}
+	if got[0].Err != err {
+		t.Errorf("CancelLock recorded the answer %v, want the %v it returned", got[0].Err, err)
+	}
+}
+
+// A FreeState answered a revoked reference by a fault under the wrapper is
+// recorded with its client, its reference and that very answer.
+func TestMutationsRecordsAFreeStatesReferenceAndRevokedAnswer(t *testing.T) {
+	faults := vfstest.Faults(memory.New(t))
+	rec := vfstest.RecordMutations(faults)
+	revoked := &vfs.StateError{Kind: vfs.StateRevoked}
+	faults.Fail(vfs.OpFreeState, revoked)
+	ref := vfs.StateRef{Type: vfs.StateOpen, Shard: 1, Instance: 2, Token: 7, Seq: 1}
+	if err := rec.FreeState(t.Context(), vfs.Call{}, 5, ref); err != revoked {
+		t.Fatalf("FreeState: %v, want the fault's %v", err, revoked)
+	}
+	got := rec.Calls()
+	want := []vfstest.Mutation{{Op: vfs.OpFreeState, Client: 5, State: ref, Err: revoked}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Calls = %+v, want %+v", got, want)
+	}
+	if got[0].Err != revoked {
+		t.Errorf("FreeState recorded the answer %v, want the fault's own %p", got[0].Err, revoked)
+	}
+}
+
+// Two calls returning in the opposite order to the one they started in are
+// recorded in the order they started, each with its own answer: the first
+// holds its place, with no answer, until it returns.
+func TestMutationsKeepsStartOrderWhenCallsReturnOutOfOrder(t *testing.T) {
+	mem := memory.New(t)
+	faults := vfstest.Faults(mem)
+	rec := vfstest.RecordMutations(faults)
+	ctx, admin := t.Context(), mem.Admin()
+	h, _ := mem.Store.Create(t, mem.Store.Admin, mem.Store.Root, "f", kvstore.Regular(0o644))
+	hold := faults.Hold(vfs.OpUnlink)
+	unlinked := make(chan error, 1)
+	go func() {
+		_, err := rec.Unlink(ctx, admin, vfs.Target{H: mem.Store.Root}, []byte("missing"))
+		unlinked <- err
+	}()
+	<-hold.Reached()
+	if _, err := rec.SetAttr(ctx, admin, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithSize(2)}); err != nil {
+		t.Fatalf("SetAttr of size 2: %v", err)
+	}
+	running := []vfstest.Mutation{{Op: vfs.OpUnlink}, {Op: vfs.OpSetAttr}}
+	if got := rec.Calls(); !reflect.DeepEqual(got, running) {
+		t.Errorf("Calls while Unlink is held = %+v, want %+v", got, running)
+	}
+	hold.Release()
+	err := <-unlinked
+	if !errors.Is(err, vfs.ErrNotFound) {
+		t.Fatalf("Unlink of a name never made: %v, want ErrNotFound", err)
+	}
+	want := []vfstest.Mutation{{Op: vfs.OpUnlink, Err: err}, {Op: vfs.OpSetAttr}}
+	if got := rec.Calls(); !reflect.DeepEqual(got, want) {
+		t.Errorf("Calls = %+v, want %+v", got, want)
+	}
+}
