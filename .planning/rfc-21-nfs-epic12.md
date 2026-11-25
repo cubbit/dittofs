@@ -17,7 +17,7 @@ cherry-pick of RFC changes.
 Cited, not owned: RFC 7862 and RFC 8276 for the bytes, operation codes and status values; RFC 8
 §9.1 for what a clone does below the service.
 **Track:** C.
-**Epic 12 estimate: 8 subtasks, 19.75 man-days.**
+**Epic 12 estimate: 8 subtasks, 20.25 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E1's request state and members' table,
 E2's `nfsharness` and the `nfs42/` area of knfsd's captures, S0's `vfstest.Mutations`. Beyond S2,
 pieces of five epics, each named by id where a subtask takes it (§9, point 5): **E5**'s current
@@ -210,6 +210,7 @@ subtasks and tests can cite them.
 | R29 | Every row this epic adds declares its drain role none, so the drain refuses it | MUST | RFC 21 §11.5 (what runs while draining); RFC 20 §4.7 (`Role`) | T12.1, T12.3, T12.5, T12.6, T12.7 |
 | R30 | Every row added has a golden vector from the specifications or the reference captures, never only from the codec under test, and §11.6's golden file holds each §11.5 row added here for NFSv4.2 | MUST | RFC 20 §5.4; RFC 21 §11.6 (golden vectors) | T12.1, T12.3, T12.5, T12.6, T12.7 |
 | R31 | Every translation here is total: each kind of content a `SEEK` asks for, each `SETXATTR` option and each `LISTXATTRS` cookie maps to a neutral value or a named refusal, and each service error these operations meet to one status | invariant | RFC 21 §12 (N26), §11.6 (total mapping) | T12.1, T12.3, T12.6 |
+| R36 | A wire offset or count is a `uint64` and never reaches the service as a negative `int64`: a `COPY` or `CLONE` source range ending past 2⁶³ − 1 is `NFS4ERR_INVAL`, as a source range past the size is; a destination range, or a `DEALLOCATE` range, ending past 2⁶³ − 1, the largest file, is `NFS4ERR_FBIG`; a `SEEK` or `READ_PLUS` offset past 2⁶³ − 1 is answered as one at the largest size, past every file's end. Each refusal is made before any service call | MUST | RFC 7862 §15.2.3, §15.13.3, §15.11.3; RFC 8881 §15.1.4.4; RFC 21 §2.3 (`maxfilesize`) | T12.1, T12.3, T12.5 |
 
 **RFC 21 §13's rows run here**
 
@@ -373,12 +374,30 @@ subtasks and tests can cite them.
   bounds become share settings a share raises. Prior art: Linux reads one xattr by name
   (`getxattr(2)`) and lists names without values (`listxattr(2)`).
 
+- **D12. Wire offsets past `int64` are settled where they are decoded into a call.** Every offset
+  and count of this epic's operations is a `uint64` on the wire, while `vfs.Extent` and `Seek` take
+  `int64`, so 2⁶³ or more would turn negative and D2's `max(size − offset, 0)` would overflow into a
+  large length. One pure function, `wireRange(off, n uint64) (int64, int64, bool)`, false when
+  `off` or `off + n` passes 2⁶³ − 1 (the sum computed without wrapping), is the only conversion the
+  handlers make (R36). A source range it refuses is `NFS4ERR_INVAL` (RFC 7862 §15.2.3 and §15.13.3:
+  a source range past the size, and no size reaches 2⁶³); a destination range, or `DEALLOCATE`'s,
+  `NFS4ERR_FBIG`, since RFC 21 §2.3 gives `maxfilesize` 2⁶³ − 1 and RFC 8881 §15.1.4.4 answers a file
+  grown past the server's limit. A `COPY` checks its source before its destination. `SEEK` and
+  `READ_PLUS` clamp their offset to 2⁶³ − 1 and call the service as for any offset, so a stateid is
+  still checked and `ErrPastEnd` gives their answers (`NFS4ERR_NXIO`, end of file with no
+  segment) as at the size. This is a translation refusal, not a range judgment: no size is read,
+  and rule 13's "no range check in the handler" still holds. E5's `READ` and `WRITE` and E9's
+  `LOCK` convert their own fields; this epic adds nothing to them. Prior art: knfsd refuses a
+  `COPY` or `CLONE` whose offset plus count wraps with `NFS4ERR_INVAL` and caps `SEEK`'s offset at
+  the largest file size (from memory).
+
 ## 5. Target tree
 
 ```text
 internal/adapter/nfs/
   ops/v4/
     seek.go, deallocate.go           T12.1
+    wirerange.go                     T12.1  wireRange, the one uint64 → int64 conversion (D12)
     errors.go                        T12.1  ErrPastEnd; T12.3, T12.5  their codes in E5's I/O rows; T12.6  the xattr rows (D8)
     copy.go, clone.go                T12.3  copy.go: RFC 21 §9.4's decision
     gate.go                          T12.4  withSessionGate, putting the session's gate on each listed call (D3)
@@ -420,13 +439,14 @@ pkg/engine/
 
 ### T12.1 `SEEK` and `DEALLOCATE`
 
-**Subtask T12.1 estimate: 2.25 man-days.**
+**Subtask T12.1 estimate: 2.5 man-days.**
 
 - **Track:** C. **Depends on:** T5.1, T5.5. T5.5's `stateid.go` serves the two special stateids,
   and E9's extension the rest once it lands, with no change here. Also batch two's RFC 17 pull
   request, for `Seek`'s `eof` (D4, §9 point 7).
-- **Covers:** R1, R2, R3, R4, R28, R29, R30, R31.
-- **Deliverables:** the service's `Seek` answering `(off int64, eof bool, err error)` (D4): in
+- **Covers:** R1, R2, R3, R4, R28, R29, R30, R31, R36.
+- **Deliverables:** `wirerange.go`'s `wireRange` (D12), which `SEEK` and `DEALLOCATE` use here
+  and T12.3 and T12.5 after. The service's `Seek` answering `(off int64, eof bool, err error)` (D4): in
   `pkg/vfs`, `internal/vfs`'s `data.go`, `eof` judged under the admission lock its size is read
   under, and `vfstest`'s `Faults`, `Mutations` and `Null`, with its case in `internal/vfs`'s own
   tests. `seek.go`: one `Seek` through `stateid.go`'s reference, its `eof` reported; `sa_what` mapped by a total function, an
@@ -445,6 +465,8 @@ pkg/engine/
   - `SEEK` from the size is `NFS4ERR_NXIO`.
   - `DEALLOCATE` of a range then `READ` of it reads zeros, and `SEEK` for a hole finds it;
     `DEALLOCATE` of length 0 reaches `Deallocate` once and changes nothing.
+  - `SEEK` from offset 2⁶³ or 2⁶⁴ − 1 is `NFS4ERR_NXIO`; `DEALLOCATE` from 2⁶³, or of 2 bytes from
+    2⁶³ − 1, is `NFS4ERR_FBIG` with no service call (R36).
 - **Tests:** on `nfsharness` against `memory.New`: each criterion, the reply bytes compared
   (catch a hole reported where data is, R2, R4, an end of file dropped, R3, `ErrPastEnd`
   unmapped, R2); a file whose data is zeros written by `WRITE`, `SEEK` for a hole answering the
@@ -455,7 +477,11 @@ pkg/engine/
   check); as bob on alice's 0600 file, `SEEK` and `DEALLOCATE` `NFS4ERR_ACCESS` with nothing
   changed, on `memory.New` with two users (catches the wrong handle or `Call` passed, which an
   injected `ErrAccess` cannot); each row's `Role` and minor versions read from the table (R28,
-  R29); the golden files (R30). No test double beyond `vfstest.Faults`.
+  R29); the golden files (R30). `wireRange` as a table: (0, 0), (2⁶³ − 1, 0), (2⁶³ − 1, 1), (2⁶³, 0),
+  (1, 2⁶³ − 1), (2⁶⁴ − 1, 2⁶⁴ − 1), each answer and its `ok` (catches a sum that wraps, or a bound one
+  off); the two `SEEK` and two `DEALLOCATE` rows above, `Mutations` empty for the refused
+  `DEALLOCATE`s and `SEEK` answered `NFS4ERR_NXIO`, where a negative offset reaching the service
+  draws its range refusal instead (catch an offset that reaches the service negative, R36). No test double beyond `vfstest.Faults`.
 - **Rules:** rule 13: a hole and the end of file only from `Seek`.
 
 ### T12.2 A copy's write verifier from the service
@@ -490,14 +516,15 @@ pkg/engine/
 
 ### T12.3 `COPY` and `CLONE`
 
-**Subtask T12.3 estimate: 3.25 man-days.**
+**Subtask T12.3 estimate: 3.5 man-days.**
 
 - **Track:** C. **Depends on:** T12.2, T5.1, T5.5, T5.8.
-- **Covers:** R8, R9, R10, R11, R12, R13, R15, R16, R17, R18, R28, R29, R30, R31.
+- **Covers:** R8, R9, R10, R11, R12, R13, R15, R16, R17, R18, R28, R29, R30, R31, R36.
 - **Deliverables:** `copy.go`: the saved filehandle as the source and the current one as the
   destination, a missing saved filehandle `ErrNoFH`; both stateids through `stateid.go`; a
   `ca_source_server` naming any server `NFS4ERR_NOTSUPP` with no call (D10); a count of 0 through
-  one `GetAttr` (D2); one `Copy` of one extent; the reply synchronous whatever `ca_synchronous`
+  one `GetAttr` (D2); both ranges through `wireRange` before any call (D12); one `Copy` of one
+  extent; the reply synchronous whatever `ca_synchronous`
   says, with no callback ID, `wr_count` the count `Copy` answered, `wr_committed` `UNSTABLE4` and
   `wr_writeverf` its verifier, and the consecutive and synchronous requirements both met; RFC 21
   §9.4's `decision:` at the handler. `clone.go`: the same filehandles and stateids, D2's count,
@@ -518,6 +545,9 @@ pkg/engine/
   - A `COPY` or `CLONE` of one file onto an overlapping range of itself is `NFS4ERR_INVAL` and the
     file reads unchanged.
   - A `COPY` naming a source server is `NFS4ERR_NOTSUPP`, and no service call is made.
+  - A `COPY` or `CLONE` with a source offset of 2⁶³, of count 0 or 1, or a source offset of 1 with a
+    count of 2⁶⁴ − 1, is `NFS4ERR_INVAL`; with a destination offset of 2⁶³, `NFS4ERR_FBIG`; with
+    both, `NFS4ERR_INVAL`; no service call in any (R36, D12).
 - **Tests:** on `nfsharness` against `memory.New`: each criterion, reply bytes compared (catch
   the count answered as asked rather than copied, R10, a `FILE_SYNC4` or zero verifier, R12, a
   copy stateid issued, R13, a count of 0 passed through, R11, a `CLONE` of count 0 sent as no
@@ -535,6 +565,9 @@ pkg/engine/
   and bob's `COPY` into alice's 0644 file, each `NFS4ERR_ACCESS` with both files unchanged
   (catches the current filehandle passed as the source, or the wrong `Call`, which an injected
   `ErrAccess` cannot).
+  The R36 criterion as a table over `COPY` and `CLONE`, status and an empty `Mutations` asserted
+  per row (catches `ca_src_offset` 2⁶³ reaching D2 as a negative `int64` and the extent reaching
+  `Copy` or `Clone` with a negative offset, R36).
   The one-call rule from `Mutations`, `GetAttr` making no change. No test double beyond
   `vfstest.Faults` and its `Tear`.
 - **Rules:** rule 9: D2's marker, RFC 21 §9.4's `decision:`; rule 11: `Tear` on `OpCopy` for
@@ -604,9 +637,10 @@ pkg/engine/
 **Subtask T12.5 estimate: 2.75 man-days.**
 
 - **Track:** C. **Depends on:** T12.1, T5.5, T5.8, T4.2, T8.7.
-- **Covers:** R4, R5, R6, R7, R28, R29, R30.
+- **Covers:** R4, R5, R6, R7, R28, R29, R30, R36.
 - **Deliverables:** `read_plus.go`: E5's `READ` hook lowered by one segment's header (D5); the
-  segment from `Seek` and `Read` (D5), the data in a segment `Attach` lends; `ErrPastEnd` answered
+  segment from `Seek` and `Read` (D5), the data in a segment `Attach` lends; its offset clamped
+  to 2⁶³ − 1 (D12), so one of 2⁶³ or more is answered end of file with no segment; `ErrPastEnd` answered
   end of file with no segment; the read errors answered as a short read, then the error, as E5's
   `READ` answers them; drain role none; `READ_PLUS` added to E5's I/O rows. Golden files by hand
   from RFC 7862, since E2's captures hold no `READ_PLUS`. Consumed by T12.8.
@@ -793,9 +827,9 @@ the composed node.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T12.1 | 2.25 | E5's T5.1 and T5.5, batch two's RFC 17 pull request | `SEEK` and `DEALLOCATE`, the hole operations the rest builds on, with `Seek`'s end of file |
+| 1 | T12.1 | 2.5 | E5's T5.1 and T5.5, batch two's RFC 17 pull request | `SEEK` and `DEALLOCATE`, the hole operations the rest builds on, with `Seek`'s end of file |
 | 2 | T12.2 | 2 | the user's answer on §9, point 1, batch two's RFC 17 pull request | a service and engine change, reviewed by their owners apart from the adapter |
-| 3 | T12.3, T12.4 | 6.25 | PRs 1 and 2, batch two's RFC 17 pull request, E5's T5.6 and T5.8, E8's T8.4 and T8.5, E9's T9.6 | copy and clone, then the budget that bounds what waits behind them |
+| 3 | T12.3, T12.4 | 6.5 | PRs 1 and 2, batch two's RFC 17 pull request, E5's T5.6 and T5.8, E8's T8.4 and T8.5, E9's T9.6 | copy and clone, then the budget that bounds what waits behind them |
 | 4 | T12.5, T12.6, T12.7 | 6.75 | PR 1, batch two's RFC 17 pull request, E4's T4.2, E8's T8.7 | `READ_PLUS`, the xattrs and the not-supported rows: the rest of the operation set |
 | 5 | T12.8 | 2.5 | PRs 3 and 4, S4, E3's T3.2, E7's T7.1 | every row over loopback |
 
@@ -875,7 +909,8 @@ and PR 4 beside PR 3.
    T12.6, 0.25 each), the `READ_PLUS` benchmark D5's trigger reads (T12.5, 0.25) and the service's
    xattr name and bound refusals (T12.6, 0.5). 19.75 once those refusals were found already in
    the store, leaving T12.6 only their causes (0.25 rather than 0.5): with point 1's (b) 17.75,
-   with point 8's (b) as well 17.25, with point 2's (b) 0.25 less again. The plan's Epic 12 row still reads 13; its programme
+   with point 8's (b) as well 17.25, with point 2's (b) 0.25 less again. 20.25 once D12 settled
+   wire offsets here (T12.1 and T12.3, 0.25 each), the options' figures 0.5 higher too. The plan's Epic 12 row still reads 13; its programme
    totals reconcile when the breakdown pull requests merge, and this document leaves them alone.
 7. **Which pull request carries which RFC amendment.** Batch two's one RFC 17 pull request, with
    E9's D1, E10's Q1 and E11's Q1, opened before E9's PR 1, carries four of this epic's: point 1's
@@ -897,11 +932,11 @@ and PR 4 beside PR 3.
    `NFS4ERR_DELAY` at once (on 16 slots, a fifth write while 4 others are in flight), and every
    `CLOSE` counted where RFC 21 names the last. (a) is recommended: it is the rule RFC 21 states,
    and the service still counts nothing.
-9. **Wire offsets past `int64`.** An NFSv4 offset or count is a `uint64`, and one of 2⁶³ or more
-   turns negative as an `int64` extent (D2's `max(size − offset, 0)` among them). No epic states
-   the conversion rule, and it spans E1's codec and E4's and E5's I/O as much as this epic's
-   operations, so it is left to the plan as an unowned follow-up rather than settled here; this
-   epic's handlers apply whatever rule that settles, with no rule of their own.
+9. **Wire offsets past `int64`, settled for this epic's operations (D12, R36).** An NFSv4 offset or
+   count is a `uint64`, and one of 2⁶³ or more turns negative as an `int64` extent (D2's
+   `max(size − offset, 0)` among them). This epic's handlers convert through `wireRange` and answer
+   RFC 7862's and RFC 8881's statuses before any call; E5's `READ` and `WRITE` and E9's `LOCK`
+   convert their own fields, which their documents hold.
 10. **How many xattrs a file holds, and where the bound lives (D6, D8, D11), pending the user's
     answer.** RFC 13's settings table bounds a file at 1024 xattrs, a share setting, while the
     store refuses the 129th (`maxXattrs` = 128 in `pkg/metadata/kvstore`'s `attrs.go`), a fixed
