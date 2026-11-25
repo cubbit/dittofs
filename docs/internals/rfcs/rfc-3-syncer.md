@@ -374,7 +374,7 @@ type Flow interface {
     // Upload runs the put attempt of block name: it calls attempt once per try, up
     // to §2.4's bounds, and returns nil only once a call of attempt returned nil.
     // attempt makes one put of the whole block and reports its wire bytes to m;
-    // RFC 4's codec.Store.NewPut(name, src) builds it (RFC 4 §4.3).
+    // RFC 4's codec.Store.NewPut(name, nonce, pin, src) builds it (RFC 4 §4.3).
     Upload(ctx context.Context, name remote.Name, size int64, attempt func(ctx context.Context, m remote.Meter) error) error
     Fetch(ctx context.Context, name remote.Name, want []remote.ChunkRange) iter.Seq2[remote.Chunk, error]
     Prefetch(ctx context.Context, name remote.Name, want []remote.ChunkRange) iter.Seq2[remote.Chunk, error]
@@ -507,7 +507,8 @@ therefore holds one chunk and one header, never the whole block, which is what
 sets the bound of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound).
 
 **`Upload`** runs the put of a block as a closure, `attempt`, which the caller
-builds with `codec.Store.NewPut(name, src)` over the `src` that yields the
+builds with `codec.Store.NewPut(name, nonce, pin, src)`, under the attempt's
+nonce and pinned chain, over the `src` that yields the
 block's chunks from the journal ([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy), [RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)). Each call of `attempt` is
 one try: it encodes and transforms each chunk beneath the syncer and puts the
 whole block. The syncer never sees a byte of it, transformed or not
