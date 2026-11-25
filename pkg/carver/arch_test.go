@@ -82,7 +82,8 @@ var surfaces = []surface{
 			"func (Settings).Min() int",
 			"func (Settings).Target() int",
 		},
-		purity: archtest.Purity{Funcs: true},
+		// Data only: methods over the value. The function that builds one widens this rule when it lands.
+		purity: archtest.Purity{},
 	},
 	{
 		dir: "carve",
@@ -159,6 +160,7 @@ func TestCarverIsPure(t *testing.T) {
 		{".", "defined_iface.go", []string{"type sink is an interface"}},
 		{"internal/params", "", nil},
 		{"internal/params", "state.go", []string{"var defaults is state"}},
+		{"internal/params", "func.go", []string{"func derive is not a method"}},
 		{"internal/params", "iface.go", []string{"type Deriver is an interface"}},
 		{"carve", "", nil},
 		{"carve", "state.go", []string{"var tables is state"}},
