@@ -60,7 +60,7 @@ suites:
       # The tests that read the docs and the RFCs. A docs-only change plans no unit cell, on its
       # pull request or in the merge queue, so they run here, on every change. A test renamed in
       # its package drops out of this list without a word: rename it here too.
-      - go test -timeout=5m -run=^(TestReferenceMatchesCommandTrees|TestDocsCommandReferences|TestPagesNameNoDeletedPath|TestGuideDocumentsEveryKey|TestSettingKeysMatchAppendixB|TestRetiredKeysMatchAppendixC|TestNoTableRowForTypedRefusals|TestRepositoryNamesNoRefusedVariable|TestAppendixBMatchesTheTable|TestAppendixBRFC23Rows|TestKindRolesMatchRFC)$ ./cmd/gendocs/ ./pkg/bootstrap/ ./internal/node/ ./pkg/secrets/
+      - go test -timeout=5m -run=^(TestReferenceMatchesCommandTrees|TestDocsCommandReferences|TestPagesNameNoDeletedPath|TestGuideDocumentsEveryKey|TestSettingKeysMatchAppendixB|TestRetiredKeysMatchAppendixC|TestNoTableRowForTypedRefusals|TestRepositoryNamesNoRefusedVariable|TestAppendixBMatchesTheTable|TestAppendixBRFC23Rows|TestAppendixBScopeForms|TestAppendixBDriftFails|TestKindRolesMatchRFC|TestSchemaPropertiesAreAppendixC)$ ./cmd/gendocs/ ./pkg/bootstrap/ ./internal/node/ ./pkg/secrets/ ./cmd/dfs/commands/config/
       - test/go-cache-push-only.sh             # only a push run saves to the Actions cache
       # Plans moved to .planning/; a change cut before the move would recreate the old folder.
       - { sh: 'f=$(git ls-files docs/internals/planning | grep -vxF docs/internals/planning/README.md); test -z "$f" || { echo "move to .planning/: $f"; exit 1; }; git ls-files --error-unmatch docs/internals/planning/README.md >/dev/null' }
