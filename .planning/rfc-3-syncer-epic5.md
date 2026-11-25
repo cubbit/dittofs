@@ -590,9 +590,9 @@ A suggestion only: one pull request per subtask works as well.
   for all of them to be tripped by the failure window at once, a fault must deny every block
   prefix while the shared probe passes.
 - **D4 reads §8.5's "within one probe interval plus the probe's bound" for a probe that fails at
-  once.** A hung probe takes one interval plus three bounds (D4). Proposed RFC 3 §8.5 text, for
-  the user to accept: "within one probe interval plus the probe's bound when probes fail at once,
-  and one interval plus two bounds when they hang".
+  once.** A hung probe takes one interval plus three bounds: two for the pair, one for an own probe
+  in flight (D4). Proposed RFC 3 §8.5 text, for the user to accept: "within one probe interval
+  plus the probe's bound when probes fail at once, and plus three bounds when they hang".
 - **RFC 25 §5.2 and RFC 3 §2.8 disagree on a summary line** (D10). This epic follows RFC 3, the
   owner; RFC 25 §5.2's sentence would name RFC 3 §2.8's two lines as the exception.
 - **The plan's epic 5 outline names an unprobed direction re-admitted by its backoff.** That is row
