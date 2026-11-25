@@ -396,7 +396,7 @@ suites:
     options:
       stress: { cmd: "go test -tags=e2e,stress -run ^TestStress -timeout=30m ./test/e2e/", tier: nightly }
       # The CLI's suite from a dfsctl child run as uid 65534, to whom the node's files and the
-      # bootstrap are unreadable. It mounts nothing, so it needs only root to switch users.
+      # bootstrap are unreadable.
       second-user:
         cmd: go test -tags=e2e -run SecondUser -timeout=30m ./cmd/dfsctl
         tier: pr

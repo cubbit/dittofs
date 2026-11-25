@@ -23,10 +23,14 @@ import (
 // belongs to, so it reads only what the test hands it.
 const nobody = 65534
 
+// asNobody starts a child as nobody, with no supplementary group.
+var asNobody = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: nobody, Gid: nobody}}
+
 // Every row of the CLI suite passes from a dfsctl child run as a second OS
-// user, nobody, to whom the node's data directory, its key files and the
-// bootstrap at the child's default path are unreadable, each checked first:
-// a command that opened the node's files or read the bootstrap fails. The
+// user, nobody, who can reach neither the node's data directory, its key
+// files among it, nor the bootstrap at the child's default path, each
+// checked first: a command that opened the node's files or read the
+// bootstrap fails. The
 // rows' own setup and reads run in this process, as root, as they do in
 // TestSuiteFromAChildProcess. The child owns its home and nothing else of the
 // test's; the API's socket is handed to it, as an operator grants a user the
@@ -37,7 +41,17 @@ func TestSecondUser(t *testing.T) {
 	}
 	prof.Watch(t, prof.Options{})
 	bin := filepath.Join(sharedDir(t, 0o755), "dfsctl")
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+	// dt builds dfsctl as the user and names its directory, so root never
+	// runs go build; a run by hand builds it here.
+	if dir := os.Getenv("DITTOFS_E2E_BIN"); dir != "" {
+		b, err := os.ReadFile(filepath.Join(dir, "dfsctl"))
+		if err != nil {
+			t.Fatalf("dfsctl from DITTOFS_E2E_BIN: %v", err)
+		}
+		if err := os.WriteFile(bin, b, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	} else if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("go build dfsctl: %v\n%s", err, out)
 	}
 	for _, noun := range clisuite.Nouns() {
@@ -52,38 +66,45 @@ func TestSecondUser(t *testing.T) {
 			data := filepath.Dir(s.Harness.StorageKeyFile())
 			unreadable(t, "ls", data)
 			unreadable(t, "cat", s.Harness.StorageKeyFile())
-			clisuite.Run(t, func(t *testing.T) clisuite.Runner { return secondUser(t, bin, s.Harness) }, s, noun)
+			clisuite.Run(t, func(t *testing.T) clisuite.Runner { return secondUser(t, bin, data, s.Harness) }, s, noun)
 		})
 	}
 }
 
 // secondUser is a child runner whose child runs as nobody in a home of its
-// own, the bootstrap's default path there a file only root may read.
-func secondUser(t *testing.T, bin string, h *nodetest.Harness) clisuite.Runner {
+// own, the bootstrap's default path there a file only root may read, and
+// no file under data handed to it.
+func secondUser(t *testing.T, bin, data string, h *nodetest.Harness) clisuite.Runner {
 	home := poisoned(t, sharedDir(t, 0o700))
 	for _, d := range []string{home, filepath.Join(home, ".config")} {
 		if err := os.Chown(d, nobody, nobody); err != nil {
 			t.Fatal(err)
 		}
 	}
-	bootstrap := filepath.Join(home, ".config", "dittofs", "config.yaml")
-	if err := os.Chmod(bootstrap, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	unreadable(t, "cat", bootstrap)
+	unreadable(t, "cat", filepath.Join(home, ".config", "dittofs", "config.yaml"))
 	return child(bin, home, h, func(cmd *exec.Cmd) error {
-		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: nobody, Gid: nobody, Groups: []uint32{}}}
-		return handOver(cmd.Args, home)
+		cmd.SysProcAttr = asNobody
+		return handOver(cmd.Args, home, data)
 	})
 }
 
 // handOver replaces each file a "-file" flag names in args with a copy in
 // home owned by nobody: a row writes its secrets under its own temporary
-// directory, which only root may read.
-func handOver(args []string, home string) error {
+// directory, which only root may read. A file under data, the node's, is
+// refused rather than handed over, so no row can pass the node's files to
+// the child.
+//
+// ponytail: only a file given as the argument after a flag ending in -file
+// is handed over, the form every row uses; a --flag=path argument stays
+// root's and its row fails on permission denied. Upgrade to a directory the
+// runner gives the rows to write their files in when a row needs another form.
+func handOver(args []string, home, data string) error {
 	for i := 1; i < len(args); i++ {
 		if !strings.HasSuffix(args[i-1], "-file") {
 			continue
+		}
+		if strings.HasPrefix(args[i], data+string(filepath.Separator)) {
+			return fmt.Errorf("%s is the node's, not a row's to hand the child", args[i])
 		}
 		b, err := os.ReadFile(args[i])
 		if err != nil {
@@ -102,10 +123,13 @@ func handOver(args []string, home string) error {
 	return nil
 }
 
-// sharedDir is a directory of mode perm outside t.TempDir(), whose parents
-// only root may enter, removed when the test ends.
+// sharedDir is a directory of mode perm, removed when the test ends.
 func sharedDir(t *testing.T, perm os.FileMode) string {
 	t.Helper()
+	// decision: made outside t.TempDir(), against the rule that a test writes
+	// only under it, because its root is 0700 and root's, closed to nobody,
+	// who must reach the binary and its home. Withdraw it if the test runs as
+	// a user whose temporary directories nobody may enter.
 	dir, err := os.MkdirTemp("", "second-user")
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +145,7 @@ func sharedDir(t *testing.T, perm os.FileMode) string {
 func unreadable(t *testing.T, tool, path string) {
 	t.Helper()
 	cmd := exec.Command(tool, path)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: nobody, Gid: nobody, Groups: []uint32{}}}
+	cmd.SysProcAttr, cmd.Env = asNobody, []string{"LC_ALL=C"}
 	out, err := cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "Permission denied") {
 		t.Fatalf("%s %s as uid %d: %v, %q, want Permission denied", tool, path, nobody, err, out)
