@@ -590,10 +590,13 @@ primary, which offloads the whole file. A file is never split across shards
 
 ### 2.4 Settings are validated once, and refused rather than replaced
 
-The engine validates every setting it is handed at `Apply`, and **MUST**
+The engine validates every setting it is handed, a node's at `Apply` and a
+share's, its namespace's chunking settings among them, at `Bind`
+([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)), and **MUST**
 refuse an invalid one with an error rather than substitute a default, keeping
 the settings it already had
-([RFC 2 §3.7](rfc-2-carver.md#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)). It **MUST** record which chunking settings produced a share's content,
+([RFC 2 §3.7](rfc-2-carver.md#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)). It **MUST** record which chunking settings produced a namespace's content,
+with the namespace ([RFC 13 §5.3](rfc-13-configuration.md#5.3%20What%20content%20was%20written%20with%20is%20recorded%20with%20it)),
 and **MUST** report a change to them as a migration rather than apply it
 ([RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20migration)).
 
