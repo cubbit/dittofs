@@ -4362,7 +4362,11 @@ package at a path the first adapters used (`pkg/controlplane/runtime/adapters`,
 the first adapters were deleted rather than moved, so nothing is
 grandfathered in. It will also list adapter files over 800 lines and fail on
 one not in its allowlist (§2.5), once the plan's ledger row for it lands; that
-allowlist starts with `core`'s `pipeline.go`, `hold.go` and `chain.go`. The
+allowlist starts with `core`'s `pipeline.go`, `hold.go` and `chain.go`. It
+counts hand-written non-test files only: a generated file, recognised by Go's
+standard `// Code generated ... DO NOT EDIT.` header and not by its name, is
+held by its generator's check, which fails a change whose code differs from a
+fresh run, so it needs no allowlist entry. The
 walk reads each package's own imports; its `_test.go`
 files may also import `pkg/vfs/vfstest` and `adaptertest`, whose in-memory
 service builds the real filesystem, and `internal/prof`, a profiler importing
