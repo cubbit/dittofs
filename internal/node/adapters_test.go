@@ -1058,11 +1058,15 @@ func adapterOf(s entity.NodeStatus, protocol string) entity.AdapterStatus {
 
 // The node's status carries the settings generation each adapter runs (RFC
 // 23 §3.4): a pass that applies moves it to the generation the pass read; a
-// move to the API's port is refused before the old adapter stops, so it
-// leaves the generation and the port the old one runs, while the refusal
-// names the newer generation (RFC 23 §3.4).
+// move to a port another socket holds, the API's, drains the old adapter,
+// fails the new one's start and serves the last settings that served again,
+// so it leaves the generation those run, and names the port the adapter
+// started again bound, while the refusal names the newer generation (RFC 23
+// §3.4).
 func TestTheStatusCarriesTheGenerationEachAdapterRuns(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
+	var b built
+	h.Node().OnAdapter(b.keep)
 	ch := watchStatus(h)
 	configure(t, h, storeA) // a settings generation above zero
 	h.Node().SetSMB(true, smbAt(0))
@@ -1079,10 +1083,8 @@ func TestTheStatusCarriesTheGenerationEachAdapterRuns(t *testing.T) {
 	h.Node().Wake()
 	caughtUp(t, h)
 	runs := counters(t, h).Settings
-	servedOn := adapterOf(turnAt(t, h, ch, "a pass at a newer settings generation", servingAt(runs)).s, "smb").Port
-	if servedOn == 0 {
-		t.Fatal("SMB serving names no port")
-	}
+	turnAt(t, h, ch, "a pass at a newer settings generation", servingAt(runs))
+
 	api, _ := h.Node().Addrs()
 	h.Node().SetSMB(true, smbAt(netip.MustParseAddrPort(api).Port()))
 	configure(t, h, [16]byte{0: 's', 15: 4})
@@ -1094,8 +1096,12 @@ func TestTheStatusCarriesTheGenerationEachAdapterRuns(t *testing.T) {
 			return r.Record.Kind == entity.ResourceAdapter && string(r.Record.ID) == "smb" && r.Generation == refusedAt
 		})
 	})
-	if got := adapterOf(tr.s, "smb"); got.State != entity.AdapterServing || got.Generation != runs || got.Port != servedOn {
-		t.Errorf("SMB with its move to generation %d refused and its last settings serving again: got %+v, want serving at generation %d, the one those run, on port %d", refusedAt, got, runs, servedOn)
+	servedOn := b.last("smb").Addrs()[adapter.Socket{Service: "smb", Network: "tcp"}]
+	if len(servedOn) != 1 {
+		t.Fatalf("SMB started again is bound at %v, want one address", servedOn)
+	}
+	if got := adapterOf(tr.s, "smb"); got.State != entity.AdapterServing || got.Generation != runs || got.Port != servedOn[0].Port() {
+		t.Errorf("SMB with its move to generation %d refused and its last settings serving again: got %+v, want serving at generation %d, the one those run, on port %d", refusedAt, got, runs, servedOn[0].Port())
 	}
 }
 
