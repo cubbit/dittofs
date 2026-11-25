@@ -48,7 +48,7 @@ func TestPRTier(t *testing.T) {
 		"adapter-conformance",
 		"integration", "integration/portmap", "integration/kerberos",
 		"operator",
-		"e2e/kerberos", "e2e/cross-protocol",
+		"e2e/second-user", "e2e/kerberos", "e2e/cross-protocol",
 		"pjdfstest/badger-s3/3", "pjdfstest/badger-s3/4", "pjdfstest/badger-s3/4.1",
 		"pynfs/badger-s3/0", "pynfs/badger-s3/1",
 		"wpts/badger-s3", "smbtorture/badger-s3/shard-1", "smbtorture/badger-s3/shard-2",
