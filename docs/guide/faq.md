@@ -84,19 +84,23 @@ Yes. NFSv4 supports Kerberos via RPCSEC_GSS, and SMB supports Kerberos via SPNEG
 
 ### Can I implement my own protocol adapter?
 
-Yes! That's one of the main goals of DittoFS. Implement the `Adapter` interface and wire it to the metadata/block stores:
+Yes, though the interface is still settling. An adapter implements `pkg/adapter`'s
+`Adapter` and reaches files only through the `vfs.Service` it is handed in
+`adapter.Deps`, never the stores directly:
 
 ```go
 type Adapter interface {
-    Serve(ctx context.Context) error
+    Start(ctx context.Context) error
+    Reconfigure(ctx context.Context, s settings.Settings) error
     Stop(ctx context.Context) error
-    SetRuntime(*runtime.Runtime)
-    Protocol() string
-    Port() int
+    Addrs() map[Socket][]netip.AddrPort
+    Health() Health
+    Connections() iter.Seq[ConnInfo]
 }
 ```
 
-See [ARCHITECTURE.md](../internals/architecture.md) for details.
+The node builds each adapter, starts it and reconfigures it from its settings. See
+[ARCHITECTURE.md](../internals/architecture.md) for details.
 
 ### Can I implement my own storage backend?
 
@@ -202,13 +206,13 @@ nothing replaces it yet.
 
 **Via environment variable:**
 ```bash
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 ```
 
 **Via configuration:**
 ```yaml
 logging:
-  level: DEBUG
+  level: debug
   format: text
 ```
 

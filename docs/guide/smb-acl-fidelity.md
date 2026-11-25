@@ -24,7 +24,7 @@ Code paths referenced:
 | Read-side DACL synthesis | `SynthesizeWindowsDefault`, `SynthesizeFromMode` | deleted with the v1 store |
 | SD write (parse) | `ParseSecurityDescriptorWithOptions`, `parseDACL`, `parseACEs` (shared DACL/SACL) | `internal/adapter/smb/handlers/security.go` |
 | SET_INFO Security | `setSecurityInfo`, `checkSetInfoSecurityAccess` | `internal/adapter/smb/handlers/set_info.go` |
-| SID derivation | `UserSID`, `GroupSID`, `UIDFromSID`, `GIDFromSID`, `PrincipalToSID`, `SIDToPrincipal` | `pkg/auth/sid/mapper.go` |
+| SID derivation | `UserSID`, `GroupSID`, `UIDFromSID`, `GIDFromSID`, `PrincipalToSID`, `SIDToPrincipal` | deleted with the v1 control plane; a principal's SID is now stored on its record, a directory SID or a RID appended to the installation's domain SID (`pkg/metadata/entity`) |
 | Generic-mask expansion | `ExpandGenericMask` | deleted with the v1 store |
 | Inheritance | `ComputeInheritedACL`, `PropagateACL`, flag translation | deleted with the v1 store |
 | Storage | `FileAttr.ACL` / `SetAttrs.ACL` | deleted with the v1 store |

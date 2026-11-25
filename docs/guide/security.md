@@ -63,7 +63,8 @@ For the internal mechanism design and threat model, see
 - Export-level IP-based access restrictions
 - Identity mapping (root squash, all squash)
 - AUTH_UNIX for trusted-network deployments
-- Native TLS for the REST API (certificate and key files, `api.tls.*`)
+- TLS for the management API (`api.tls.*` certificate and key files), reloaded when they change; no mutual TLS
+- API accounts with a role (`viewer`, `operator`, `admin`) and an audit record of every management action
 
 ## Remaining limitations
 
@@ -116,26 +117,25 @@ from an unauthenticated user. Use with extreme caution and only for public read-
 ### SMB: Kerberos via SPNEGO
 
 The SMB adapter supports Kerberos authentication through SPNEGO during `SESSION_SETUP`. When a
-Kerberos provider is configured, SMB clients authenticate using Kerberos tickets. When Kerberos
-is not configured, the SMB adapter falls back to NTLM or guest authentication.
+keytab is imported or the installation has joined a domain, SMB clients authenticate using
+Kerberos tickets. Otherwise a client signs in with NTLM, while `identity.ntlm` is on.
 
 See [Kerberos configuration](#kerberos-configuration) for shared setup that applies to both NFS
 and SMB.
 
 ### SMB: NTLM and guest fallback
 
-**Guest sessions** have significant security limitations: no session key is available, so no
-signing and no encryption are possible. Guest sessions should be restricted to read-only access
-on public shares. DittoFS never encrypts guest sessions, even in `required` mode (the connection
-is rejected instead).
+**Guest sessions:** a failed logon is refused and never mapped to guest. A session that
+proves nothing holds no session key, so it can neither sign nor encrypt; a share's
+`--min-proof` refuses it.
 
 **NTLM fallback** occurs when Kerberos keytab is not configured, the client has no valid TGT, or
 DNS resolution prevents Kerberos service ticket acquisition.
 
 NTLM authenticates two classes of user:
 
-- **Local DittoFS users:** the NTLMv2 response is validated directly against the NT hash stored
-  in the control-plane user store.
+- **Local DittoFS users:** the NTLMv2 response is validated directly against the user's NT hash,
+  kept sealed in the metadata store. `identity.ntlm` turns NTLM off for the installation.
 - **AD domain users:** once the installation has joined the domain, the
   challenge/response is forwarded to the Domain Controller over a sealed NETLOGON secure channel
   (MS-NRPC sign+seal AES, post-ZeroLogon). The DC performs the validation; no local NT hash is
@@ -287,11 +287,11 @@ IP addresses, CIDR ranges and hostnames. A share with a netgroup accepts only
 clients whose address matches a member; a share with no netgroup accepts any
 client.
 
-This build removes the netgroup commands and their REST routes, so a netgroup
-cannot be created or edited; netgroups already stored in the control-plane
-database are kept. One is attached to a share with:
+A netgroup is created with `dfsctl netgroup create` and named in a share's
+export policy as a client rule:
 
 ```bash
+dfsctl netgroup create trusted-net --member 192.168.1.0/24 --member build01.example.com
 dfsctl share export-policy update export --client @trusted-net=read-write
 ```
 
@@ -326,15 +326,12 @@ operation on both versions: set it with `--flavor`, `--min-proof` and
 
 ### Identity mapping
 
-Squash mode is a per-share setting (`squash`). The anonymous UID/GID come from
-the share's anonymous identity.
+Squash is part of a share's export policy: `none`, `root` or `all`. A squashed
+caller acts as the policy's anonymous principal.
 
-It is applied *after* the share grant is resolved and *before* file-level POSIX
-and ACL checks. That ordering matters under `all_to_guest`: the share-level
-permission is still chosen from the client's original wire identity, and only
-the identity used for per-file checks is squashed. If a share grant depends on
-the caller being a known user, squashing does not turn that grant into a guest
-grant.
+A claimed identity (AUTH_SYS) is squashed before its share grant is read, since
+any client can claim any uid. A proven identity (Kerberos, NTLM) is squashed after
+its grant is read, so the grant still names who the proof established.
 
 All squash — every client's *file-level* identity is anonymous:
 
@@ -355,8 +352,8 @@ or with Kerberos:
 dfsctl share export-policy update export --squash none
 ```
 
-The full set of modes is `none`, `root_to_admin`, `root_to_guest`,
-`all_to_admin` and `all_to_guest`.
+The modes are `none`, `root` and `all`. No mode keeps root's administrator
+rights: admin access to a share comes only from a share grant.
 
 ### Read-only shares
 
@@ -396,7 +393,7 @@ Mutual TLS is not available on the REST API.
 
 ### Control plane API TLS
 
-The management REST API (default port `8080`) carries the highest-value credentials in the
+The management API (default `127.0.0.1:8080`, plus a local socket) carries the highest-value credentials in the
 system. It binds to `127.0.0.1` (loopback only) by default — a fresh `dfs start` does not
 expose credentials off-host.
 
@@ -412,9 +409,9 @@ api:
     key_file: /etc/dittofs/tls/tls.key
 ```
 
-DittoFS does not generate self-signed certificates or perform ACME. The REST API has no mutual TLS and no
-minimum-version key; see [Configuration](configuration.md#5-api-server) for
-the keys it reads.
+DittoFS does not generate self-signed certificates or perform ACME. The API has no mutual TLS
+and no minimum-version key; see [Configuration](configuration.md#the-keys) for the keys it
+reads. The node reloads the certificate files when they change.
 
 **Recommended deployment model:**
 
@@ -478,44 +475,23 @@ sudo pfctl -f /etc/pf.conf
 
 ## Kerberos configuration
 
-DittoFS uses a shared Kerberos layer (`pkg/auth/kerberos`) that serves both the NFS (RPCSEC_GSS)
-and SMB (SPNEGO) adapters. Configure Kerberos once and both protocols benefit.
+One Kerberos layer serves both the NFS (RPCSEC_GSS) and SMB (SPNEGO) adapters.
 
 ### Server configuration
 
-Add the `kerberos` section to your DittoFS config file:
-
-```yaml
-kerberos:
-  enabled: true
-  keytab_path: /etc/dittofs/dittofs.keytab
-  service_principal: nfs/server.example.com@EXAMPLE.COM
-  krb5_conf: /etc/krb5.conf
-  max_clock_skew: 5m
-  context_ttl: 8h
-```
-
-Configuration fields:
-
-| Field | Description | Default |
-|-------|-------------|---------|
-| `enabled` | Enable Kerberos authentication | `false` |
-| `keytab_path` | Path to the Kerberos keytab file | required when enabled |
-| `service_principal` | Service principal name in `service/hostname@REALM` format | required when enabled |
-| `krb5_conf` | Path to `krb5.conf` | `/etc/krb5.conf` |
-| `max_clock_skew` | Maximum allowed clock difference between client and server | `5m` |
-| `context_ttl` | Maximum lifetime of an RPCSEC_GSS security context | `8h` |
+Kerberos is not configured in the config file: a `kerberos` or `ldap` block there
+refuses the start. The installation's keytab is a secret of the management API,
+imported with `PUT /api/v1/installation/keytab` and named by the `identity.keytab`
+setting; the directory is the `identity.directory` setting. Both are written by an
+`admin`. The clock skew is fixed at 5 minutes. See [Identity](identity.md).
 
 ### Keytab management
 
-The keytab file contains the service principal's cryptographic key. It must be:
-
-- Readable only by the DittoFS process user
-- Stored with restricted permissions (`chmod 600`)
-- Rotated periodically per your organization's security policy
-
-DittoFS supports hot-reload of the keytab: when the file is replaced on disk, the server picks
-up the new key without a restart.
+The node seals the keytab in the metadata store when it is imported, and opens it
+under the protocol wrapping key (`keys.protocol`). A copy left on disk after the
+import is no longer read, so remove it or keep it readable only by its owner
+(`chmod 600`). A joined installation derives its keys from the computer account's
+password instead, and rotates that password itself.
 
 Create a keytab with MIT Kerberos:
 
@@ -525,7 +501,6 @@ kadmin -q "addprinc -randkey nfs/server.example.com@EXAMPLE.COM"
 kadmin -q "ktadd -k /etc/dittofs/dittofs.keytab nfs/server.example.com@EXAMPLE.COM"
 
 chmod 600 /etc/dittofs/dittofs.keytab
-chown dittofs:dittofs /etc/dittofs/dittofs.keytab
 ```
 
 ### NFS client setup
@@ -564,10 +539,11 @@ smbclient -k //server.example.com/export
 - [ ] Enable SMB message signing with `required: true`
 - [ ] Deploy behind VPN for NFS data confidentiality (NFS-over-TLS is not served yet)
 - [ ] Restrict export access by IP address (attach a netgroup to each share)
-- [ ] Use root squash on all exports (`squash: root_to_guest`)
+- [ ] Use root squash on all exports (`--squash root`)
 - [ ] Configure NFSv4 ACLs for fine-grained access control
 - [ ] Use read-only exports where writes are not needed
-- [ ] Bind control plane to loopback or behind a reverse proxy with TLS
+- [ ] Keep the management API on loopback, or give it a certificate (`api.tls.*`)
+- [ ] Give each operator an API account with the least role it needs, and read the audit (`dfsctl audit list`)
 - [ ] Set keytab permissions to `600`, owned by the DittoFS process user
 - [ ] Enable Prometheus metrics and monitor failed authentication attempts
 - [ ] Keep DittoFS updated; apply patches promptly
@@ -580,21 +556,14 @@ logging:
   format: json
   output: /var/log/dittofs/security.log
 
-kerberos:
-  enabled: true
-  keytab_path: /etc/dittofs/dittofs.keytab
-  service_principal: nfs/server.example.com@EXAMPLE.COM
-  krb5_conf: /etc/krb5.conf
-  max_clock_skew: 5m
-  context_ttl: 8h
+api:
+  listen: ["127.0.0.1:8080"]
 
-# Shares and their squash mode live in the control plane, not this file.
-# Create them once:
+# Shares, their squash, the keytab and the directory are records managed
+# through the management API, not keys of this file. For example:
 #
-#   dfsctl share create export --path /export --namespace <namespace-id> --flavor sys --client 0.0.0.0/0=read-write \
-#     --read-only --squash root_to_guest
-#
-# This build serves no file protocol, so it reads no adapter block here.
+#   dfsctl share create export --path /export --namespace <namespace-id> --flavor sys --client 0.0.0.0/0=read \
+#     --read-only --squash root
 ```
 
 See [`./configuration.md`](./configuration.md) for the full configuration reference.
@@ -605,9 +574,8 @@ See [`./configuration.md`](./configuration.md) for the full configuration refere
 
 - [ ] Encryption at rest for content stores
 - [ ] Encrypted metadata storage
-- [ ] Audit logging for all file operations and failed authentication attempts
+- [ ] Audit logging for file operations (management actions and sign-ins are audited)
 - [ ] Integration with SIEM systems
-- [ ] Role-based access control (RBAC) for administrative operations
 
 ---
 

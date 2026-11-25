@@ -11,10 +11,9 @@ access to a share — **without creating any local DittoFS user for them**
 are authorized directly by their AD user/group **SID**.
 
 This is the production Windows-Server companion to
-[identity.md](identity.md) (which uses a Samba AD-DC dev fixture). The commands
-are shown two ways: the **`dfsctl`** CLI (authoritative) and the **DittoFS Pro
-dashboard** UI where applicable; Windows-side steps use the native tools
-(`ktpass`, ADUC/ADSI Edit, Group Policy Management Console).
+[identity.md](identity.md) (which uses a Samba AD-DC dev fixture). DittoFS-side
+steps use the `dfsctl` CLI; Windows-side steps use the native tools (`ktpass`,
+ADUC/ADSI Edit, Group Policy Management Console).
 
 > **Status.** AD/LDAP/Kerberos support is functional but the project is **not
 > production ready**. See [faq.md](faq.md).
@@ -32,12 +31,12 @@ There are **two kinds of account**, and #1528 only removes one of them:
 | | Control-plane (management) | Data-plane (mounting) |
 |---|---|---|
 | Who | The **one native DittoFS admin** | AD users (alice, bob, Administrator) |
-| Auth | Local password → `dfsctl login` / dashboard | Kerberos ticket from the domain |
+| Auth | Local password → `dfsctl login` | Kerberos ticket from the domain |
 | Created how | Created by `dfs init`, which takes its password from `--admin-password-file` or `--admin-password-env` | **Never created in DittoFS** |
-| Used for | Configure LDAP + create grants (once) | Mount shares |
+| Used for | Connect the directory, join the domain, create grants | Mount shares |
 
-So the workflow is: **sign in once as the native admin to wire up LDAP and
-grants; from then on, domain users just mount.** You do **not** create AD-backed
+So the workflow is: **sign in as the native admin to connect the directory and
+create grants; from then on, domain users just mount.** You do **not** create AD-backed
 admin logins, and you do **not** create a DittoFS user for each AD user.
 
 ---
@@ -84,83 +83,77 @@ DittoFS authenticates SMB/NFS clients as a Kerberos service. It needs a domain
 
 ---
 
-## 2. Kerberos config and start the server
+## 2. Start the server and sign in
 
-Provide a `krb5.conf` pointing at the realm/KDC (e.g. `C:\etc\krb5.conf`):
+The bootstrap file holds no identity: v1's `kerberos:` and `ldap:` blocks are
+refused. The realm, the directory and the keytab are records the management
+API writes, so the server starts with none of them.
 
-```ini
-[libdefaults]
-  default_realm = CUBBIT.LOCAL
-[realms]
-  CUBBIT.LOCAL = { kdc = vm1.cubbit.local }
-[domain_realm]
-  .cubbit.local = CUBBIT.LOCAL
-  cubbit.local  = CUBBIT.LOCAL
-```
-
-Add the `kerberos:` block to the DittoFS config (Kerberos changes are
-restart-required):
-
-```yaml
-kerberos:
-  enabled: true
-  keytab_path: "C:/ProgramData/dittofs/dittofs.keytab"
-  service_principal: "cifs/vm2.cubbit.local@CUBBIT.LOCAL"
-  krb5_conf: "C:/etc/krb5.conf"
-  realm: "CUBBIT.LOCAL"
-  netbios_domain: "CUBBIT"
-  dns_domain: "cubbit.local"
-```
-
-Initialise the node (this creates the native admin, with the password read from a file)
-and start the server:
+Initialise the node (this creates the native admin, with the password read
+from a file) and start the server:
 
 ```powershell
 dfs init --config C:\dittofs\config.yaml --admin-password-file C:\dittofs\admin-password.txt
 dfs start --config C:\dittofs\config.yaml
 ```
 
-Sign in with the native admin — this is the one management account from step 0:
+Sign in with the native admin, the one management account from step 0. Over
+loopback the API answers plain HTTP on `127.0.0.1:8080`:
 
 ```powershell
-dfsctl login --server https://127.0.0.1:8080 --username admin
+dfsctl login --server http://127.0.0.1:8080 --username admin
 ```
+
+Import the keytab from step 1. `dfsctl` has no keytab command; the import is
+`PUT /api/v1/installation/keytab` with the keytab as base64, as
+[identity.md, Part C](identity.md#import-the-keytab) shows. The node applies it
+with no restart.
 
 ---
 
 ## 3. Connect the LDAP directory (read-only)
 
-DittoFS reads the directory to (a) resolve an AD **name → SID** when you type a
-grant, and (b) resolve a domain user's UID/GID at login. Use a **read-only**
-service account (the same `svc-dittofs` is fine — it only needs to read
-directory objects) and **LDAPS**.
+DittoFS reads the directory to (a) resolve an AD **name to a principal** when
+you write a grant, and (b) resolve a domain user's groups and uid/gid at sign-in.
+Use a **read-only** service account (the same `svc-dittofs` is fine: it only
+needs to read directory objects) and **LDAPS**.
 
-Use `idmap: rid` (Samba `idmap_rid`-style): UIDs/GIDs are derived
-deterministically from the SID's RID, so you do **not** need to stamp
-`uidNumber`/`gidNumber` POSIX attributes on your AD objects.
+A user's uid is its `uidNumber` when the entry has one. An entry without one
+gets a uid allocated from `identity.id_range`, which DittoFS keeps, so you do
+**not** need to stamp POSIX attributes on your AD objects.
 
-The CLI no longer configures identity providers, and the v2 CLI does not
-rebuild that command.
+The directory is the `identity.directory` record, written one key at a time.
+Set the address first:
 
-**Pro dashboard:** go to **Identity Providers → LDAP**, fill in the URL, base DN,
-bind DN/password, and set idmap to `rid`; click **Test**, then **Save**.
+```powershell
+dfsctl setting set installation identity.directory.address ldaps://vm1.cubbit.local:636
+dfsctl setting set installation identity.directory.base 'DC=cubbit,DC=local'
+dfsctl setting set installation identity.directory.realm CUBBIT.LOCAL
+dfsctl setting set installation identity.directory.netbios_domain CUBBIT
+dfsctl setting set installation identity.directory.bind_name 'svc-dittofs@cubbit.local'
+dfsctl setting set installation identity.directory.bind_credential '<svc-dittofs password>'
+dfsctl domain test --wait
+```
 
 **Security notes:**
-- Use `ldaps://` (or `start_tls: true`) — a plaintext bind is refused unless you
-  explicitly opt in. Set `tls.ca_cert_file` to validate the DC certificate.
+- `ldaps://` dials TLS and `ldap://` always upgrades with StartTLS; no field
+  turns either off. Set `identity.directory.trust_roots` to the PEM of the DC's
+  issuing CA, or the host's roots are trusted.
 - The bind account needs **read only**. Never use a domain-admin bind.
-- The bind password is write-only over the API (redacted on read).
+- The bind password is a secret: the API seals it and answers only its
+  reference and version.
 
-See [identity.md §Part B](identity.md) for every LDAP config field.
+See [identity.md, Part B](identity.md#part-b-connect-the-directory) for every
+field.
 
 ---
 
 ## 4. Grant AD users and groups directly (no local users)
 
-Now grant share access straight to AD principals. `--user` / `--group` accept a
-**local name, an AD name (`user@REALM` or `DOMAIN\group`), or a raw SID**. A bare
-name resolves to a local object if one exists, otherwise to the directory; the
-resolved **SID** is stored. No DittoFS user/group object is created.
+Now grant share access straight to AD principals. `--directory` takes an AD
+name, `DOMAIN\name`; the server resolves it through the directory and grants
+the principal it returns. `--user` and `--group` name local users and groups.
+You create no DittoFS user or group by hand.
 
 Grant **distinct levels per principal** — this is what makes the same share
 behave differently for each person:
@@ -181,12 +174,7 @@ dfsctl grant set ditto --directory 'CUBBIT\Domain Admins' --access admin
 dfsctl grant list ditto     # shows each grant: principal ID and access
 ```
 
-**Pro dashboard:** **Access Control → Shares → <share> → Grant**, type the AD
-user/group (or SID), pick a level, save.
-
-Levels, lowest to highest: `none < read < read-write < admin`. Grants are
-**additive** — a user gets the highest level of any grant that matches their own
-SID or one of their group SIDs.
+Levels, lowest to highest: `none < read < read-write < admin`.
 
 Revoke symmetrically: `dfsctl grant remove ditto --directory 'CUBBIT\Cubbit'`.
 
@@ -269,9 +257,20 @@ the ports are in [identity.md, Part C2](identity.md#part-c2-join-the-domain).
   while the join runs: the join rotates the password twice, and the first
   rotation is authenticated by the password you handed over.
 
-**Step 2 — join.** `POST /api/v1/installation:join-domain` with the mode, the
-account and the credential (see Part C2). Follow the operation it answers with
-until it has succeeded. The password then rotates by itself.
+**Step 2 — join.** Online, as an administrator who may create computer objects:
+
+```powershell
+dfsctl domain join --user administrator@cubbit.local --ou 'OU=Servers,DC=cubbit,DC=local' --wait
+```
+
+Offline, with the account you created:
+
+```powershell
+dfsctl domain join --offline --account DITTOFS --password-file machine.txt --wait
+```
+
+The password then rotates by itself; `dfsctl domain rotate-machine-password`
+rotates it now.
 
 **After the join, transfer the computer object's ownership** (for example to
 *Domain Admins*) and check its `msDS-AllowedToActOnBehalfOfOtherIdentity`: the
@@ -285,8 +284,6 @@ net use * /delete /y
 net use \\192.168.100.50\ditto /user:CUBBIT\alice P4ssword!
 ```
 
-The debug log shows `NETLOGON pass-through: authenticated directory-resolved
-domain user`, then the usual SID-grant match at TREE_CONNECT.
 
 ### Ports and firewall
 
@@ -296,8 +293,7 @@ differs. Pass-through needs the DittoFS host to reach the **DC outbound** on
 RPC endpoint mapper `135`, the DC's dynamic RPC range (`49152-65535` unless the
 site narrowed it) for the NETLOGON channel, Kerberos `88`, LDAPS `636` (or `389` for an `ldap://` directory record, with StartTLS), and DNS
 `53`, and to accept SMB `445` **inbound** from clients. The Explorer **double-click** additionally needs LAN
-discovery (see [configuration.md](configuration.md) → *Network discovery*):
-inbound WS-Discovery UDP `3702`, mDNS UDP `5353`, and the metadata fetch on TCP
+discovery: inbound WS-Discovery UDP `3702`, mDNS UDP `5353`, and the metadata fetch on TCP
 `5357`.
 
 - **DittoFS on Windows** — the built-in "Network Discovery" rules are scoped to
@@ -331,41 +327,33 @@ inbound WS-Discovery UDP `3702`, mDNS UDP `5353`, and the metadata fetch on TCP
 or bob — they mount purely as AD principals.
 
 Check each logon gets the right level: as alice, reading works but writing is
-denied; as bob, both work; as Administrator, full control. In the server debug
-log (`DITTOFS_LOGGING_LEVEL=DEBUG`) each TREE_CONNECT logs the per-session SID
-match — the decision is derived from that session's own PAC, so two users on one
-workstation never bleed permissions.
+denied; as bob, both work; as Administrator, full control. The decision comes
+from each session's own sign-in, so two users on one workstation never share
+permissions.
 
 | Symptom | Cause / fix |
 |---|---|
 | `System error 1219` on `net use` | A pre-existing/"Disconnected" session to the same server under different creds. `net use * /delete /y` and `cmdkey /delete:vm2.cubbit.local`, then retry. Not a DittoFS bug. |
 | Mount falls back to NTLM or fails with a signing error | Keytab lacks AES keys (RC4-only) — Windows 11 rejects RC4 (#1318). Re-export with `-crypto AES256-SHA1` and set `msDS-SupportedEncryptionTypes`. |
-| Grant by name returns "not found" | LDAP not configured/reachable, or the name isn't a directory object. The server resolves the name through the directory before granting, so the directory must be reachable. |
+| Grant by name returns "not found" | The directory is not connected or not reachable (`dfsctl domain test --wait`), or the name isn't a directory object. The server resolves the name through the directory before granting, so the directory must be reachable. |
 | Access denied despite a grant | Confirm the grant with `dfsctl grant list <share>`; confirm the user's ticket carries the granted group (their PAC group SIDs). |
-| `ldaps://` cert error | Set `tls.ca_cert_file` to the DC's issuing CA; do not disable verification in production. |
+| `ldaps://` cert error | Set `identity.directory.trust_roots` to the PEM of the DC's issuing CA. Verification cannot be turned off. |
 
 ---
 
 ## How authorization works (reference)
 
-- At SMB **TREE_CONNECT**, DittoFS resolves the session's permission from (a) any
-  local user/group grant and (b) the **SID grants** matched against the login's
-  Kerberos PAC user + group SIDs — the higher wins. An AD principal with **no
-  local account** is authorized entirely by (b).
-- At the **file** layer, the share-root ACL carries a `sid:<SID>` ACE per grant,
-  matched against the same PAC SIDs, so file operations agree with the share gate.
-- **NFS** carries GIDs, not SIDs, so each SID grant also records the Unix id the
-  principal resolves to (the RID in `idmap: rid`), and the NFS gate + root ACL
-  match on that GID/UID. Grant by **name** (or a raw SID in `idmap: rid`) so the
-  numeric id is captured; see [identity.md](identity.md) for NFS client setup.
-  Because NFS matches by the *mapped* id (no SID is on the NFS wire), NFS
-  authorization inherits the idmap's range contract: ensure AD ids do not overlap
-  your local UID/GID space (the same requirement Samba meets with dedicated idmap
-  ranges), or a local principal could match an AD grant over NFS. The SMB path is
-  always SID-exact and not subject to this. A raw `--sid` grant only carries an
-  NFS-matchable id under `idmap: rid`; under `idmap: rfc2307` grant by **name** so
-  the correct `gidNumber` is captured.
-- A **user-explicit** local grant (including `--level none`) is authoritative and
-  is never overridden by a group or AD/SID grant — an explicit block stays a block.
+- A grant names a principal by its ID. A grant by `--directory` name resolves
+  the name to a principal first, so a directory user or group is a principal of
+  the installation, with the SID the directory gives it.
+- A caller's grants on a share are those naming its own principal or one of
+  its groups: for a Kerberos sign-in, the user and group SIDs of its PAC; for
+  NTLM pass-through, those the domain controller returns.
+- **NFS** carries uids and gids, not SIDs, so an NFS caller is matched by the
+  principal its uid maps to. Keep `identity.id_range` clear of the uids and
+  gids your clients use locally, or a local id could match a directory
+  principal's grant over NFS.
+- The management role grants nothing on files: even the `admin` account reads
+  only what a share grant gives it.
 
 See [access-control.md](access-control.md) for the full SID/ACL model.

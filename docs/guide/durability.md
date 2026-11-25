@@ -21,12 +21,11 @@ any combination of the two is legal, and neither implies the other:
 | Commit acknowledgement | `commit_ack` | `journal` | how far the **data** must travel before an NFS `COMMIT` / SMB `Flush` returns |
 | Relaxed metadata commit | `relaxed_metadata_commit` | `false` | whether the **metadata** `fsync` is paid inline or deferred to a ticker |
 
-Earlier releases folded these into a single three-valued `durability` enum
-(`local` / `writeback` / `remote`) in the share's *local* block-store config. That
-config no longer exists. On first start after the upgrade the server reads the old
-enum (and the older `require_durable_commit` / `writeback` bools it composed) and
-carries each half onto the share, so an existing deployment keeps the promise it
-had. There is nothing to edit by hand.
+> **Not on this branch.** v2's share record carries neither setting, and the
+> management API and `dfsctl` neither show nor set them; no remote block store is
+> wired yet either. This page describes the released server. An installation
+> upgraded from v1 is not supported ([Upgrading from v1](upgrading-from-v1.md)), so
+> nothing is carried over.
 
 ### Axis 1 — commit acknowledgement (`commit_ack`)
 
@@ -40,9 +39,8 @@ bounded by the round-trip to the block store rather than by the local disk. Choo
 it for a share whose acknowledged writes must outlive the node; leave it at
 `journal` otherwise.
 
-The v2 API carries no `commit_ack` on a share yet, so neither the API nor
-`dfsctl` shows or sets it; a share takes the `journal` default, or whatever the
-upgrade carry-over described above gave it.
+The v2 API carries no `commit_ack` on a share, so neither the API nor `dfsctl`
+shows or sets it.
 
 ### Axis 2 — relaxed metadata commit (`relaxed_metadata_commit`)
 
@@ -55,8 +53,7 @@ hard crash can lose the last ~100 ms of size/mtime updates, not the bytes.
 [Read integrity](#read-integrity-per-read-verification--self-heal) before enabling
 it. That coupling is deliberate: the fast path is the point of the setting.
 
-Like `commit_ack`, it is carried over from the old `writeback` bool on upgrade,
-and, like it, no `dfsctl` command sets it yet.
+Like `commit_ack`, no v2 record carries it and no `dfsctl` command sets it.
 
 There is no data-corruption risk on either axis: on restart,
 `reconcileMetadataSizeFromJournal` repairs each file's metadata size from the

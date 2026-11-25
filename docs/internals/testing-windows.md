@@ -88,17 +88,23 @@ On the macOS or Linux host:
 go build -o dfs ./cmd/dfs
 go build -o dfsctl ./cmd/dfsctl
 
-# 2. Start DittoFS
+# 2. Initialise the installation once, then start DittoFS (it runs in the foreground)
+./dfs init
 ./dfs start
 
-# 3. Create a test share (the CLI no longer creates stores)
+# 3. In another shell, sign in as admin with the password dfs init printed
+./dfsctl login --server http://127.0.0.1:8080 --username admin
+./dfsctl password change    # a generated password must be changed first
+
+# 4. Create a test share. A share names an existing namespace; on this branch
+#    `dfsctl namespace create` is refused until the node declares namespace settings.
 ./dfsctl share create smbbasic --path /smbbasic --namespace <namespace-id> --flavor sys --client 0.0.0.0/0=read-write
 
-# 4. Create a test user
+# 5. Create a test user
 ./dfsctl user create testuser
 ./dfsctl user set-password testuser    # enter password when prompted
 
-# 5. Grant permissions
+# 6. Grant permissions
 ./dfsctl grant set smbbasic --user testuser --access read-write
 ```
 

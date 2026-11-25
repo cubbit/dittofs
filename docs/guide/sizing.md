@@ -11,10 +11,11 @@ How to size the machine that runs `dfs`. For picking *which* stores to run, see
 
 ## Single-node, not a cluster
 
-Size **one box**, not a fleet. The only metadata store this build opens (`badger`) is
-embedded in one process, and it also holds the control plane's records, so there is no
-separate database to size and you cannot run active-active `dfs` replicas against the same
-data. So "sizing" means sizing a single server.
+Size **one box**, not a fleet. The default metadata store (`badger`) is embedded in one
+process, and it also holds the control plane's records, so there is no separate database to
+size. A `foundationdb` build keeps the metadata in a FoundationDB cluster instead, but a node
+still runs alone: no two `dfs` nodes serve one installation yet. So "sizing" means sizing a
+single server.
 
 All file content lives on the node's journal devices (the `journals` list): no remote
 block store is wired to the engine yet, and the remote tier returns with

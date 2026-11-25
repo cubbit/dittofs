@@ -58,6 +58,7 @@ also live in [NFS.md](nfs.md#glossary) and [SMB.md](smb.md#glossary).
 | **RPCSEC_GSS** | The NFS/RPC security flavor that carries GSS-API (Kerberos) authentication and optional integrity/privacy. [RFC 2203](https://www.rfc-editor.org/rfc/rfc2203) |
 | **AUTH_UNIX** | The basic NFS authentication flavor that simply asserts a UID/GID — trusted only on a trusted network. |
 | **TLS** (Transport Layer Security) | Encrypts and authenticates a network connection. DittoFS can serve the REST API over TLS by loading a certificate/key pair from disk; certificate lifecycle is left to the platform. [RFC 8446](https://www.rfc-editor.org/rfc/rfc8446) |
+| **mTLS** (mutual TLS) | TLS where both the server *and* the client present certificates, so the server authenticates the caller by its certificate. NFS-over-TLS can require one once it is served; the REST API does not support it. |
 
 ## Storage internals
 
@@ -83,7 +84,7 @@ own documentation for readers who want to go deeper.
 | **Cobra** | The Go library that builds the `dfs`/`dfsctl` command trees (subcommands, flags, help). [Cobra](https://github.com/spf13/cobra) |
 | **Viper** | The configuration library that layers the config file, environment variables, and flags. [Viper](https://github.com/spf13/viper) |
 | **XDG Base Directory Specification** | The Unix convention that places config under `~/.config` and state under `~/.local/state`; DittoFS follows it for its config and state directories. [XDG spec](https://specifications.freedesktop.org/basedir-spec/latest/) |
-| **JWT** (JSON Web Token) | The signed token format the REST API uses for authenticated sessions. [RFC 7519](https://www.rfc-editor.org/rfc/rfc7519) |
+| **JWT** (JSON Web Token) | The signed token format of the management API's short-lived access tokens, which a sign-in returns with a refresh token. [RFC 7519](https://www.rfc-editor.org/rfc/rfc7519) |
 | **pprof** | Go's built-in CPU/memory/blocking profiler; DittoFS can expose it for performance debugging. [pprof](https://pkg.go.dev/net/http/pprof) |
 | **Prometheus** | The metrics format/scraper DittoFS exposes operational metrics in. [Prometheus](https://prometheus.io/docs/) |
 

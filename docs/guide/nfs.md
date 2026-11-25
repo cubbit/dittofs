@@ -403,51 +403,37 @@ before DittoFS checks permissions. Its classic use is to stop a remote `root`
 from acting as `root` on your files — a remote machine's superuser should not
 automatically be the superuser of your export.
 
-This is a **per-share** policy, set with `dfsctl share export-policy` but applied
-to SMB sessions as well: an SMB user whose UID is 0 — the built-in `admin`
-among them — is squashed on a `root_to_guest` share exactly as NFS root is, and
-an `all_to_guest` share maps every SMB user to the anonymous UID/GID. SMB guest
-sessions are the exception and stay at UID/GID 65534 under every mode
-([guest mapping](smb.md)). Crucially, squashing happens at the *identity*
-layer — **after** the client authenticates and after the
-[share-permission gate](access-control.md), but **before** the POSIX/ACL checks.
-The gate resolves grants for the UID the client claimed (NFS) or the user it
-authenticated as (SMB); only file operations run as the squashed identity. It
-rewrites *who you are* on the filesystem; it never grants access on its own.
+This is a **per-share** policy, the `squash` of the share's export policy, and it
+applies to every protocol's callers on the share. Squashing happens at the
+*identity* layer: after the client authenticates and before the POSIX/ACL
+checks. It rewrites *who you are* on the filesystem; it never grants access on
+its own.
 
 ### How NFS sends an identity
 
 - **AUTH_SYS (AUTH_UNIX)** — the default for non-Kerberos mounts. The client
   simply *asserts* a UID/GID in every request. There is no verification: a
   client that says it is UID 0 **is** UID 0 to the server. This is exactly why
-  squashing exists.
+  squashing exists. A claimed identity is squashed before its share grant is
+  read, so a grant on a claimed uid cannot be reached through a squash.
 - **AUTH_NULL** — no credentials at all. DittoFS **always** maps AUTH_NULL to
   the anonymous identity, regardless of the squash mode.
 - **Kerberos (RPCSEC_GSS)** — the principal is cryptographically verified and
-  resolved to a UID/GID via the idmap. Squashing still applies on top of the
-  resolved identity (e.g. `root_to_guest` squashes a resolved UID 0).
+  mapped to a principal. Its share grant is read first, then the squash
+  applies to the mapped identity.
 
-### The five modes
-
-DittoFS models squashing as five modes (matching the familiar Synology NAS
-options) rather than separate `root_squash` / `all_squash` toggles:
+### The three modes
 
 | Mode | Effect | Traditional NFS equivalent |
 |------|--------|----------------------------|
 | `none` | No remapping. UIDs pass through unchanged. | `no_root_squash` |
-| `root_to_admin` | Root (UID 0) keeps root. Other UIDs unchanged. | `no_root_squash` |
-| `root_to_guest` **(default)** | Root (UID 0) → anonymous. Other UIDs unchanged. | `root_squash` |
-| `all_to_admin` | **Every** client UID → root (UID 0). | `all_squash` to root |
-| `all_to_guest` | **Every** client UID → anonymous. | `all_squash` |
+| `root` **(default)** | Root (UID 0) → anonymous. Other UIDs unchanged. | `root_squash` |
+| `all` | **Every** client UID → anonymous. | `all_squash` |
 
-> **Default — root is squashed.** DittoFS defaults to `root_to_guest`, matching
-> the conventional NFS `root_squash`: a remote root is mapped to the anonymous
-> identity and does **not** keep root privileges on the export. If a trusted
-> client's root must act as the server's root (e.g. single-tenant admin
-> automation), opt into `root_to_admin` (`no_root_squash`) per share. `none` and
-> `root_to_admin` behave identically for UID remapping.
-
-The **anonymous** identity is UID/GID **65534** (`nobody`/`nogroup`) by default.
+A policy that names no squash gets `root`. No mode keeps root's administrator
+rights on a share: admin access comes only from a share grant
+([access control](access-control.md)). A squashed caller acts as the
+installation's anonymous principal; the API has no field to choose another.
 
 ### Configuring it
 
@@ -458,34 +444,27 @@ dfsctl share export-policy update export --squash root
 # Force every client to the anonymous user (e.g. a public read-only export)
 dfsctl share export-policy update export --squash all
 
-# Inspect the current squash mode (and other NFS export options)
+# Inspect the current squash mode (and other export options)
 dfsctl share export-policy get export
 ```
 
-Valid values: `none`, `root_to_admin`, `root_to_guest`, `all_to_admin`,
-`all_to_guest`. A squash change applies to active clients immediately — no NFS
-adapter restart is required. The anonymous UID/GID is
-configurable via the REST API (`anonymous_uid` / `anonymous_gid` on the share's
-NFS config); it is not exposed as a `dfsctl` flag and defaults to 65534.
+A squash change is a record write; the node applies it to the next call, with
+no adapter restart.
 
 ### Worked examples
 
-Assume a file owned by UID 1000, mode `0644`, and a share-gate
-`default_permission` of `read-write`:
+Assume a file owned by UID 1000, mode `0644`, and a share grant that admits the
+caller:
 
 | Client mounts and acts as… | Squash mode | Effective identity | Result |
 |----------------------------|-------------|--------------------|--------|
-| `root` (UID 0) | `root_to_admin` | UID 0 (root) | Full access — root bypasses POSIX. |
-| `root` (UID 0) | `root_to_guest` (default) | UID 65534 (nobody) | Treated as `EVERYONE@`; can read the `0644` file, **cannot** write it. |
-| UID 1000 | `root_to_guest` | UID 1000 (unchanged) | Owner access — read/write its own file. |
-| UID 1000 | `all_to_guest` | UID 65534 (nobody) | Squashed to nobody; read-only on the `0644` file even though it "owns" it. |
-| any UID | `all_to_admin` | UID 0 (root) | Everyone gets root — only for fully-trusted, single-tenant exports. |
+| `root` (UID 0) | `none` | UID 0 (root) | Full access — root bypasses POSIX. |
+| `root` (UID 0) | `root` (default) | anonymous | Treated as `EVERYONE@`; can read the `0644` file, **cannot** write it. |
+| UID 1000 | `root` | UID 1000 (unchanged) | Owner access — read/write its own file. |
+| UID 1000 | `all` | anonymous | Read-only on the `0644` file even though it "owns" it. |
 
-> **Squash is not access control.** Even `all_to_admin` (everyone → root) is
-> still gated by the share's `default_permission` and the file's mode/ACL after
-> remapping. Mapping a caller to root grants root's POSIX power, but the
-> [export gate](access-control.md) must still admit them. Use squashing to
-> *constrain* identity, and the [export gate + POSIX/ACL](access-control.md) to
+> **Squash is not access control.** Use squashing to *constrain* identity, and
+> the share grants plus POSIX/ACL ([access control](access-control.md)) to
 > *grant* access.
 
 ---
@@ -498,51 +477,28 @@ the NFS version. Understanding this avoids the most common surprise:
 
 ### The two layers
 
-1. **Export gate** — the share's `default_permission` (access for principals
-   without an explicit grant) plus per-user / per-group grants. Enforced
-   server-side on every request.
+1. **Share grants** — a grant per user or group (`dfsctl grant set`), checked
+   server-side on every request. A principal with no grant, and none through its
+   groups, is refused.
 2. **Filesystem layer** — the file/directory's POSIX mode bits and, where the
    protocol carries it, its ACL.
-
-The share root directory's mode bits track `default_permission` so that
-mode-only clients honour the share's access level:
-
-| `default_permission` | Share root mode | A non-root client can… |
-|----------------------|-----------------|------------------------|
-| `none` / unset       | `0755`          | traverse/read only if the export gate admits it; never write |
-| `read`               | `0755`          | read; not write |
-| `read-write` / `admin` | `0777`        | read and write |
 
 ### NFSv3 vs NFSv4: where per-user grants apply
 
 - **NFSv3 carries only mode bits — no ACL.** The Linux client enforces those
-  bits *client-side*, before sending an RPC. So a **per-user grant is invisible
-  over NFSv3**: mode bits cannot express "uid 2000 may write, uid 4000 may not."
-  Over NFSv3 a non-root user can write the share root only when
-  `default_permission` is `read-write` (root mode `0777`). This is normal Unix
-  behaviour, not a DittoFS limitation — and it is also POSIX-ACL consistent
-  (a named-user ACL entry simply has no NFSv3 transport).
-- **NFSv4 (and SMB) carry the ACL.** Per-user and per-group grants *are*
-  honoured: grant a user read-write and they can write over NFSv4 even on a
-  share whose default is read-only.
+  bits *client-side*, before sending an RPC. So a per-user grant cannot widen
+  what the mode bits show: a non-root user writes the share root over NFSv3 only
+  when its mode lets that user write. This is normal Unix behaviour.
+- **NFSv4 (and SMB) carry the ACL.** An ACL on the root can give a granted user
+  write access that the mode bits alone do not show.
 
-**Rule of thumb:** for per-user least-privilege access, use **NFSv4**. Reserve
-NFSv3 for share-wide access levels set via `default_permission`.
+**Rule of thumb:** for per-user least-privilege access, use **NFSv4**.
 
 ### Other behaviours worth knowing
 
 - **Denials are `EACCES` ("Permission denied"), never `EIO`.** A permission
   failure — including a squashed-root or ungranted-user write — surfaces as
-  `Permission denied`, not the misleading `Input/output error` older builds
-  returned on NFSv3.
-- **A fully-locked (`none`) share is not mountable over NFSv4 by a root client.**
-  The mount runs as root, which `root_to_guest` squashes to the guest identity;
-  with `default_permission=none` the guest cannot traverse the export to
-  complete the NFSv4 mount. Such a share is reachable only over NFSv3 (whose
-  separate mount protocol does not gate on the export root). For the common
-  "world-readable, granted-writable" pattern, use `default_permission=read` and
-  grant write to the specific users — they then write over NFSv4 while everyone
-  else is read-only.
+  `Permission denied`.
 
 ---
 
@@ -568,48 +524,22 @@ the client connects to 2049 and the mount fails with `Connection refused`
 before Kerberos is ever attempted. (Run the embedded portmapper on 111 to drop
 the explicit port — see [Embedded Portmapper](#embedded-portmapper).)
 
-**Per-export policy.** Three NFS export options gate which auth flavors a share
-accepts (set via the share's `NFSExportOptions`):
+**Per-export policy.** A share's export policy gates which flavors it accepts
+(`dfsctl share export-policy update`):
 
-| Option | Default | Effect |
-|--------|---------|--------|
-| `allow_auth_sys` | `true` | When `false`, every flavor but RPCSEC_GSS is refused, AUTH_SYS (AUTH_UNIX) and AUTH_NULL alike. |
-| `require_kerberos` | `false` | When `true`, every mount/operation must use RPCSEC_GSS; AUTH_SYS and AUTH_NULL are refused. |
-| `min_kerberos_level` | `krb5` | The protection floor for any authenticated session (`krb5` = authentication, `krb5i` = + integrity, `krb5p` = + privacy). A session below the floor is refused. |
+| Flag | Effect |
+|------|--------|
+| `--flavor` | The flavors SECINFO answers, in preference order: `none`, `sys` or `kerberos`. |
+| `--min-proof` | The proof every caller gives: `none`, `claimed` (AUTH_SYS), `secret` or `ticket` (Kerberos). A caller below it is refused. |
+| `--min-protection` | The protection messages need: `none`, `integrity` (`krb5i`) or `privacy` (`krb5p`). |
 
-Over NFS the two flavor gates refuse the same flavors; they differ over SMB, where
-an NTLM session passes `allow_auth_sys=false` but not `require_kerberos` (see
-[SMB § Share access policy](smb.md#share-access-policy)).
+The filesystem service checks these on every call, on NFSv3 and NFSv4 alike. A
+refusal is a wrong-security error (`NFS4ERR_WRONGSEC` on v4), which sends the
+client to SECINFO to retry with the right flavor. The same policy applies to SMB
+sessions (see [SMB § Share access policy](smb.md#share-access-policy)).
 
-`allow_auth_sys`, `require_kerberos`, and `min_kerberos_level` are enforced
-identically on **NFSv3** (at MOUNT) and on **NFSv4.0/v4.1** (at the first
-operation that resolves the export handle — v4 has no MOUNT call). A refusal
-surfaces as `NFS4ERR_WRONGSEC` (v4) / `MNT3ERR_ACCES` (v3), prompting the client
-to retry with the correct flavor.
-
-On NFSv4 the retry is guided by SECINFO, which reports only the flavors the
-target share's policy actually permits — a share never advertises a flavor it
-would then refuse. A name that crosses an export junction reports the policy of
-the share it lands in, not the parent's; a pseudo-filesystem path, which belongs
-to no share, reports the full set the server offers.
-
-`require_kerberos=true` is rejected when the server has no Kerberos configured:
-such a share would be reachable by no auth flavor at all, and SECINFO would have
-nothing to report. Configure `kerberos.enabled` first.
-
-The same rule is re-checked at startup, because the policy is persisted and
-outlives the server capability it needs: if Kerberos is later decommissioned, a
-share that still carries `require_kerberos=true` stops the server with exit code
-78 and an error naming the share. Either re-enable `kerberos.enabled`, or clear
-the policy with `dfsctl share export-policy update <share> --flavor sys --min-proof none --min-protection none`.
-
-`min_kerberos_level` is the protection floor for any authenticated session.
-Over NFS only RPCSEC_GSS authenticates, so it rejects a Kerberos session whose
-negotiated service level is below the floor (e.g. a plain `krb5`
-authentication-only session on a `krb5p` privacy share). AUTH_SYS and AUTH_NULL
-prove nothing and are governed by `allow_auth_sys` / `require_kerberos` alone;
-pair `min_kerberos_level` with either to mandate a protection floor for *all*
-access.
+To accept AUTH_SYS again on a Kerberos-only share:
+`dfsctl share export-policy update <share> --flavor sys --min-proof none --min-protection none`.
 
 **Principal → identity mapping (the "access denied after EXCHANGE_ID" case).**
 A successful `sec=krb5` mount has two stages, and they fail differently:
@@ -617,25 +547,17 @@ A successful `sec=krb5` mount has two stages, and they fail differently:
 1. **GSS context establishment** (the client's `EXCHANGE_ID` / context init).
    This succeeds as soon as the ticket verifies against the server keytab.
 2. **Authorization** of the mapped principal on the export. The authenticated
-   principal is resolved to a DittoFS user (and UID/GID) through the identity
-   store / idmap. A principal with **no mapping** resolves to **nobody**
-   (UID 65534), and nobody is then subject to the export's
-   `default_permission`: if that is `none`, the export denies the operation and
-   the mount fails with `access denied` **even though the Kerberos handshake
-   succeeded**.
+   name is mapped to a DittoFS principal, a local user or a directory principal.
+   A name that no step maps is **refused**, so the mount fails with
+   `access denied` **even though the Kerberos handshake succeeded**. A mapped
+   principal still needs a share grant.
 
-This is by design — a host that mounts with its **machine** credential (no user
-`kinit`, e.g. `nfs/host.realm@REALM` from `/etc/krb5.keytab`) authenticates as
-the machine principal, which has no user identity. To grant such a mount:
-
-- add an idmap entry (or a DittoFS user) for the principal so it resolves to a
-  real UID/GID, **or**
-- set the export's `default_permission` to `read` / `read-write` so unmapped
-  (nobody) principals are admitted with that ceiling, **and** ensure the export
-  root's POSIX mode permits the resulting identity to traverse it.
-
-User principals (`alice@REALM`, obtained via `kinit`) that are present in the
-idmap mount and access files as that user with no extra configuration.
+A host that mounts with its **machine** credential (no user `kinit`, e.g.
+`nfs/host.realm@REALM` from `/etc/krb5.keytab`) authenticates as the machine
+principal. A grant cannot name a machine principal (the API refuses one), so
+mount with a user's ticket instead. User principals (`alice@REALM`, obtained
+via `kinit`) that map to a principal with a grant mount and access files as that
+user.
 
 ---
 
@@ -665,7 +587,7 @@ The adapter's TLS settings are settings, not host facts: `adapters.nfs.tls` in t
 
 ```bash
 # Start server
-./dfs start -log-level DEBUG
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 
 # Mount (Linux)
 sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/test
@@ -717,8 +639,8 @@ the e2e suite instead (see [Testing DittoFS](../internals/testing.md#real-nfsv3-
 See [Troubleshooting](./troubleshooting.md) for common issues. Quick reference:
 
 - **`Connection refused` on mount**: DittoFS listens on **12049**, not 2049. Always pass `-o port=12049,mountport=12049` unless the portmapper is running on 111.
-- **`access denied` after Kerberos succeeds**: The principal has no idmap entry; it resolved to nobody and the export's `default_permission` is `none`. See [Kerberos Exports](#kerberos-exports-seckrb5) above.
-- **`NFS4ERR_WRONGSEC`**: The client used AUTH_SYS on a Kerberos-only export (or vice versa). Check `allow_auth_sys` / `require_kerberos` on the share.
+- **`access denied` after Kerberos succeeds**: No step maps the Kerberos name to a principal, or the principal has no share grant. See [Kerberos Exports](#kerberos-exports-seckrb5) above.
+- **`NFS4ERR_WRONGSEC`**: The client used AUTH_SYS on a Kerberos-only export (or vice versa). Check `--flavor`, `--min-proof` and `--min-protection` with `dfsctl share export-policy get <share>`.
 - **NFSv3 locks not working on macOS**: Requires UDP transport + portmapper on 111. See [NFSv3 File Locking](#nfsv3-file-locking-nlmnsm).
 - **Configuration reference**: See [Configuration](./configuration.md) for the full `adapters.nfs` config block.
 - **Security hardening**: See [Security](./security.md) for TLS, Kerberos, and export policy guidance.

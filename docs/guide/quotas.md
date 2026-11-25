@@ -4,8 +4,8 @@ DittoFS enforces **per-identity** quotas on a share — by user, by group, or on
 share itself — limiting both **bytes** and **inodes (file count)**. Each limit
 has a **soft** threshold, a **hard** ceiling, and a **grace** window between them.
 
-> Quotas are managed live on a running server via `dfsctl` (or the REST API). There is no
-> config-file or Kubernetes CRD form.
+> Quotas are managed live on a running node with `dfsctl`, or through the management API.
+> There is no config-file or Kubernetes CRD form.
 
 ## Set a quota
 
@@ -51,9 +51,9 @@ dfsctl quota remove export --user alice
 - **Best-effort.** Under heavy concurrent writes an identity may briefly exceed a limit
   before usage catches up — normal for a userspace NFS/SMB server.
 
-Quota limits live in the metadata store, beside the node's other records (there is no
-separate control-plane database), and are also reachable via the REST API at
-`/api/v1/shares/{id}/quotas`.
+Quota limits are records in the metadata store, beside the node's other records. The
+management API serves them at `/api/v1/shares/{id}/quotas` (a user's or a group's, by
+principal) and `/api/v1/shares/{id}/quota` (the share's own).
 
 ## Repairing a drifted usage figure
 

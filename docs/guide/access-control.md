@@ -19,37 +19,36 @@ Access to a file is decided by **two independent layers**, both of which must al
 
    A grant **only opens the gate**. It does not modify any file's owner, mode, or ACL.
 
-   **Granting AD principals directly by SID (no local users).** A grant can
-   target a raw Windows **SID**, or an AD **name** that DittoFS resolves to a SID
-   via the configured LDAP directory — with **no local DittoFS user/group
-   object** (#1528). `--user`/`--group` accept a local name, an AD name
-   (`user@REALM` / `DOMAIN\group`), or a SID; a bare name resolves to a local
-   object if one exists, otherwise to the directory. The resolved SID is stored.
+   **Granting directory principals (no local users).** `--directory` names a
+   user or group of the configured directory as `DOMAIN\name`. `dfsctl` asks the
+   node to resolve it (`resolve-principal`), which mints the directory principal,
+   and grants the principal ID it returns. No local DittoFS user or group is
+   created. `--user` and `--group` name local principals; `--principal-id` takes an
+   ID as `dfsctl grant list` prints it.
 
    ```bash
    dfsctl grant set data --directory 'CUBBIT\Cubbit' --access read-write
    ```
 
-   At the gate, a Kerberos login is matched against SID grants by its **PAC user
-   + group SIDs** (SMB) or the Unix id the SID resolves to (NFS); the highest
-   matching level wins, alongside any local grant. The share-root ACL projects a
-   `sid:<SID>` ACE per grant so the filesystem layer agrees. See
+   A principal's own grant decides its access, and a grant of `none` refuses it;
+   with no grant of its own, its groups' grants decide. A directory caller's
+   groups are read from the directory. See
    [windows-ad-setup.md](windows-ad-setup.md) for the operator walkthrough.
 
 2. **Filesystem permissions (POSIX mode + ACL).** Once past the gate, the file's own POSIX mode bits and ACL decide the actual operation — exactly as described in the rest of this page. A share-level grant never overrides these; a user granted `read-write` on the export still cannot write a file whose mode/ACL denies them.
 
 **Effective access = share gate AND filesystem permission.** Both must allow.
 
-> **The share may also *remap the caller's identity*** (NFS and SMB alike) via
-> per-share squashing (`root_squash` and friends) — e.g. mapping a remote `root`
-> to an anonymous user. The two layers see different identities: the **share
-> gate** resolves grants for the identity the client authenticated as (SMB) or
-> claimed (NFS), *before* squashing, while **filesystem permissions** apply to
-> the squashed identity. So on an `all_to_guest` share, alice still needs a
-> share grant of her own (or a non-`none` `default_permission`) to get in, and
-> once in she reads and writes files as the anonymous UID/GID. Configure share
-> grants against the real users, and file ownership/modes against the squashed
-> identity. See
+> **The share may also *remap the caller's identity*** (NFS and SMB alike)
+> through its export policy's squash (`none`, `root` or `all`), e.g. mapping a
+> remote `root` to the anonymous principal. A proven caller (Kerberos, NTLM) has
+> its share grant read before the squash, and filesystem permissions then apply
+> to the squashed identity: on an `all` share, alice still needs a share grant
+> of her own to get in, and once in she reads and writes files as the anonymous
+> principal. A claimed caller (AUTH_SYS) is squashed before its grant is read, so
+> it reaches the share only through the anonymous principal's grants. Configure
+> share grants against the real users, and file ownership and modes against the
+> squashed identity. See
 > [NFS § Identity Squashing](nfs.md#identity-squashing-root_squash-and-friends).
 
 ### Share owner

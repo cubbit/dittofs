@@ -316,8 +316,8 @@ Per-share encryption:
 dfsctl share export-policy update sensitive --smb-encrypt
 ```
 
-`encrypt-data` is a share attribute, set through the REST API (`dfsctl`) rather than a config
-file; shares are not configurable from YAML. Enabling it sets `SMB2_SHAREFLAG_ENCRYPT_DATA` in the
+`--smb-encrypt` is part of the share's export policy, a record of the management API
+(`dfsctl`), not a key of the config file. Enabling it sets `SMB2_SHAREFLAG_ENCRYPT_DATA` in the
 TREE_CONNECT response for that share.
 
 See [./configuration.md](./configuration.md) for complete encryption configuration options.
@@ -494,40 +494,29 @@ session. A client gets a guest session only by asking for one.
 
 ### Share access policy
 
-A share's access policy (`require_kerberos`, `allow_auth_sys`,
-`min_kerberos_level` and the netgroup client allowlist, set with
-`dfsctl share export-policy update`) applies to SMB as well as NFS. It is checked at
-TREE_CONNECT and again on every request on the tree, so a policy change, a
-re-authentication with a weaker proof, or a channel bound from another address
-takes effect on the next request. A refusal is `STATUS_ACCESS_DENIED`. The
-defaults admit every session.
+A share's export policy, set with `dfsctl share export-policy update`, applies to
+SMB as well as NFS: the filesystem service admits every call against it, whichever
+protocol carried it. Its fields:
 
-| Setting | Over SMB |
-|---------|----------|
-| `require_kerberos` | Refuses NTLM, guest and anonymous sessions. |
-| `allow_auth_sys=false` | Refuses guest and anonymous sessions; NTLM and Kerberos pass. |
-| `min_kerberos_level` | The protection floor for any authenticated session, NTLM included. `krb5i` needs a session that enforces signing (signing required, or dialect 3.1.1); otherwise the tree is made to require encryption when the session can encrypt. `krb5p` needs every request on the tree encrypted, by the session or by the tree (`SMB2_SHAREFLAG_ENCRYPT_DATA`, set by the share's `encrypt_data` or by this floor); a session that cannot encrypt, such as SMB 2.x, is refused. Guest and anonymous sessions answer to `allow_auth_sys` alone. |
-| `netgroup` | The address of the connection carrying the request must be in the netgroup, as for NFS. An edit to a netgroup's members applies once the cached verdict for that address expires. |
+| Field | Over SMB |
+|-------|----------|
+| `--min-proof` | The proof every caller gives: `none`, `claimed`, `secret` (NTLM) or `ticket` (Kerberos). A session below it is refused. |
+| `--min-protection` | The protection messages need: `none`, `integrity` (signing) or `privacy` (encryption). |
+| `--client` | The client rules, `CIDR=access` or `@netgroup=access`; the first rule matching the connection's address decides, and none matching refuses. |
+| `--smb-encrypt` | Seals every SMB message on the share. |
 
 ### Guest Sessions
 
-When authentication fails and guest access is enabled, a session is created with guest
-privileges. Guest sessions cannot sign or encrypt messages (no session key), so they should be
-limited to read-only public shares.
+A failed logon is refused and gets no session: DittoFS never maps a failed sign-in
+to guest.
 
-### Keytab Configuration and Hot-Reload
+### Keytab
 
-```yaml
-kerberos:
-  enabled: true
-  keytab_path: /etc/dittofs/dittofs.keytab
-  service_principal: nfs/server.example.com@EXAMPLE.COM
-```
-
-The keytab supports **hot-reload**: when the file is replaced on disk the server detects the
-change and loads the new key without restart.
-
-See [./security.md](./security.md) for detailed Kerberos security considerations.
+The keytab is not a key of the config file: a `kerberos` block there refuses the
+start. It is a secret imported through the management API
+(`PUT /api/v1/installation/keytab`) and named by the `identity.keytab` setting, or,
+for a joined installation, derived from the computer account's password. See
+[Identity](identity.md) and [./security.md](./security.md).
 
 ---
 

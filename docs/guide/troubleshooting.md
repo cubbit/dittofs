@@ -5,11 +5,12 @@ This guide covers common issues and their solutions when working with DittoFS.
 > **Not served on this branch.** This build serves no file protocol. The entries
 > that mount a share or read an NFS or SMB error (connection, mount, permission,
 > file handle, cross-protocol, NFSv4 session, Kerberos and ACL issues, and the
-> `export not found` and `authentication failed` messages), and their
-> `adapters:` settings, describe the released server.
+> `export not found` and `authentication failed` messages) describe the released
+> server. The [server and API entries](#the-server-and-its-api) describe this one.
 
 ## Table of Contents
 
+- [The server and its API](#the-server-and-its-api)
 - [Connection Issues](#connection-issues)
 - [Mount Issues](#mount-issues)
   - [A share cannot open: corrupt sealed journal segment](#a-share-cannot-open-corrupt-sealed-journal-segment)
@@ -19,6 +20,65 @@ This guide covers common issues and their solutions when working with DittoFS.
 - [Performance Issues](#performance-issues)
 - [Cross-Protocol Issues](#cross-protocol-issues)
 - [Logging and Debugging](#logging-and-debugging)
+
+## The server and its API
+
+### The server refuses to start
+
+`dfs start` and `dfs init` print every refusal of the config file and the
+environment together, each naming the key and the rule
+([Configuration: Refusals](configuration.md#refusals)). Check a file without
+starting anything:
+
+```bash
+dfs config validate --config /etc/dittofs/config.yaml
+dfs config show --config /etc/dittofs/config.yaml   # each key and where its value came from
+```
+
+A key that is a setting, such as `adapters.nfs.port`, is refused in the file: set it
+through the management API instead. A start over data a v1 release wrote refuses
+too; see [Upgrading from v1](upgrading-from-v1.md).
+
+### Is the server up?
+
+`dfs start` runs in the foreground until it receives SIGINT or SIGTERM. The API
+listener answers two probes without a token, each with one word:
+
+```bash
+curl http://127.0.0.1:8080/health/live    # live, or stalled
+curl http://127.0.0.1:8080/health/ready   # ready, or starting, draining, not_ready
+```
+
+Signed in, `dfsctl status` reads the installation's health and its conditions
+(`GET /api/v1/health`), and `dfsctl node list` and `dfsctl node get <id>` read each
+node's status (`GET /api/v1/nodes`).
+
+### `dfsctl login` refuses the server
+
+`dfsctl` accepts an https URL, an http URL only on a loopback IP address, or the
+absolute path of the node's local socket. `http://localhost:8080` is refused, as a
+name is not checked as loopback: write `http://127.0.0.1:8080`. On the server's own
+host the socket needs no TLS and no address:
+
+```bash
+dfsctl login --server /path/to/dfs.sock --username admin
+```
+
+The socket is `dfs.sock` in the node's runtime directory unless `api.socket` names
+another path; `dfs config show` prints it. An API address that is not loopback is
+served over TLS only: pass the CA that signed its certificate with `--cacert`.
+
+### Every command answers 403 after sign-in
+
+An account whose password must change, such as `admin` with the password
+`dfs init` generated, can only change it and sign out. Run `dfsctl password change`,
+then retry.
+
+### The admin password is lost
+
+Stop the node and run `dfs reset-admin` on the host that holds the metadata store,
+with the same config file. It prints a new generated password once, which must be
+changed at the first sign-in.
 
 ## Connection Issues
 
@@ -76,15 +136,9 @@ mount.nfs: Connection timed out
    telnet localhost 12049
    ```
 
-2. **Review timeout settings in config:**
-   ```yaml
-   adapters:
-     nfs:
-       timeouts:
-         read: 5m
-         write: 30s
-         idle: 5m
-   ```
+2. **Review the adapter's timeouts.** They are adapter settings, read with
+   `dfsctl adapter get nfs`: `read_timeout`, `write_timeout`, `idle_timeout` and
+   `handshake_timeout`.
 
 ## Mount Issues
 
@@ -293,7 +347,6 @@ ls: cannot access 'file.txt': Stale file handle
 ```
 
 **Causes:**
-- Server was restarted with an in-memory metadata store (handles lost)
 - File was deleted while client held a handle
 - The node was pointed at a different metadata store, for example a new
   installation started in place of a v1 one ([Upgrading from v1](upgrading-from-v1.md))
@@ -322,51 +375,18 @@ ls: cannot access 'file.txt': Stale file handle
 
 **Diagnostics:**
 ```bash
-# Run benchmarks to identify bottleneck
-./scripts/benchmark.sh --profile
-
-# Check server logs for slow operations
+# Check server logs for slow operations (the default log file)
 tail -f ~/.local/state/dittofs/dittofs.log | grep -i "slow\|timeout"
 ```
 
-**Solutions:**
-
-1. **Tune buffer sizes:**
-   ```yaml
-   metadata:
-     global:
-       filesystem_capabilities:
-         max_read_size: 1048576   # 1MB
-         max_write_size: 1048576  # 1MB
-   ```
-
 ### High memory usage
 
-**Diagnostics:**
+**Diagnostics:** read the metrics. The listener is on by default at
+`metrics.listen`, `127.0.0.1:9090`:
+
 ```bash
-# Profile memory usage
-go test -bench=. -memprofile=mem.prof ./test/e2e/
-go tool pprof mem.prof
+curl http://127.0.0.1:9090/metrics
 ```
-
-**Solutions:**
-
-1. **Check for memory leaks in logs**
-2. **Reduce max connections:**
-   ```yaml
-   adapters:
-     nfs:
-       max_connections: 100
-   ```
-
-3. **Monitor metrics:**
-   ```yaml
-   server:
-     metrics:
-       enabled: true
-       port: 9090
-   ```
-   Then visit `http://localhost:9090/metrics`
 
 ## Logging and Debugging
 
@@ -415,11 +435,12 @@ wireshark nfs.pcap
 # Check if the server is running
 pgrep -a dfs
 
-# Check metrics (if enabled)
-curl http://localhost:9090/metrics
+# Check its probes and metrics
+curl http://127.0.0.1:8080/health/ready
+curl http://127.0.0.1:9090/metrics
 
 # Check configuration
-DITTOFS_LOGGING_LEVEL=debug ./dfs start 2>&1 | grep -i "config"
+dfs config show
 ```
 
 ## Cross-Protocol Issues
@@ -468,14 +489,7 @@ DITTOFS_LOGGING_LEVEL=debug ./dfs start
 **Resolution:**
 1. After timeout, the delegation is **force-revoked** and the conflicting operation proceeds
 2. Check NFS client connectivity and backchannel health
-3. Adjust timeout if needed:
-   ```yaml
-   adapters:
-     smb:
-       cross_protocol:
-         delegation_recall_timeout: 120s  # Increase from 90s default
-   ```
-4. Enable debug logging to see the recall flow:
+3. Enable debug logging to see the recall flow:
    ```bash
    DITTOFS_LOGGING_LEVEL=debug ./dfs start 2>&1 | grep "delegation"
    ```
@@ -492,15 +506,8 @@ Rapid grant-break-grant-break cycles visible in logs.
 
 **Resolution:**
 1. DittoFS has a built-in **anti-storm cache** (default 30-second TTL) that prevents re-grants after a break
-2. If storms persist, increase the anti-storm TTL:
-   ```yaml
-   adapters:
-     smb:
-       cross_protocol:
-         anti_storm_ttl: 60s  # Increase from 30s default
-   ```
-3. Consider configuring the conflicting clients to use the same protocol for the shared file
-4. Read-only access from both protocols does not cause storms (NFS read delegation + SMB Read lease coexist)
+2. Consider configuring the conflicting clients to use the same protocol for the shared file
+3. Read-only access from both protocols does not cause storms (NFS read delegation + SMB Read lease coexist)
 
 ### SMB Client Cannot Write to NFS-Delegated File
 
@@ -548,7 +555,6 @@ Rapid grant-break-grant-break cycles visible in logs.
 1. DittoFS automatically breaks directory leases and delegations when `CreateFile`, `RemoveFile`, or `Rename` modifies a directory
 2. The break is processed through the LockManager and dispatched to both protocols
 3. If inconsistency persists:
-   - Verify directory leases are enabled: check `leases.directory_leases: true`
    - Check for notification queue overflow (1024 events/directory capacity)
    - Force a directory re-read: `ls -la /mnt/nfs/dir/` or refresh the SMB directory listing
 
@@ -585,11 +591,11 @@ DITTOFS_LOGGING_LEVEL=debug ./dfs start
 
 ### "export not found"
 
-**Cause:** The share name in the mount command doesn't match configuration.
+**Cause:** The path in the mount command doesn't match a share's NFS path.
 
-**Solution:** Check share names in config and use exact match:
+**Solution:** List the shares and mount by the exact `--path` one was created with:
 ```bash
-# If config has "name: /export"
+dfsctl share list
 sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
 ```
 
@@ -677,7 +683,7 @@ If you're still experiencing issues:
 3. **Open a new issue** with:
    - DittoFS version
    - Operating system and version
-   - Configuration file (redact sensitive info)
+   - Configuration file (redact sensitive info), or `dfs config show`
    - Full error messages
    - Debug logs showing the problem
    - Steps to reproduce

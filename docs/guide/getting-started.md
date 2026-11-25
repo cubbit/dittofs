@@ -4,9 +4,10 @@ This guide takes you from zero to a mounted DittoFS share in a few minutes. You'
 install the two binaries, start the server, create a share, and mount it over NFS and
 SMB.
 
-- **`dfs`** — the server daemon (protocol adapters + control-plane REST API).
-- **`dfsctl`** — the command-line client that manages users, shares, stores, and adapters
-  on a running server.
+- **`dfs`** — the server. `dfs init` creates an installation and `dfs start` runs its
+  node: the protocol adapters and the management API.
+- **`dfsctl`** — the command-line client of the management API. It manages users,
+  shares, stores and adapters on a running node, and nothing else.
 
 > ⚠️ **Experimental, pre-1.0.** Not production ready, no security audit. Don't use it for
 > data you can't afford to lose. See the [FAQ](faq.md) for known limitations.
@@ -43,48 +44,77 @@ If you built from source, use `./dfs` and `./dfsctl` in the commands below.
 
 ## 2. Initialize and start the server
 
-`dfs init` creates the installation, its metadata store and its `admin` user, in the
-places the server's config file names: at least `node.id`, `keys.storage`,
-`metadata.badger.path` and the `journals` devices (see [Configuration](configuration.md)).
-`dfs start` then serves it. **Choose the admin password and hand it to `dfs init`** with
-`--admin-password-file` or `--admin-password-env`. This is the recommended path for every
-deployment and the only reliable one for Docker/Kubernetes/CI and systemd:
+`dfs init` creates the installation: its metadata store, its journals, its
+storage key file and its `admin` account. `dfs start` then serves it. Both read
+the same config file (see [Configuration](configuration.md)). A small one:
+
+```yaml
+# ~/.config/dittofs/config.yaml
+node:
+  id: 6f1c2a4e-8d3b-4f7a-9c5e-2b8d4a6f0e13   # any UUID, generated once: uuidgen
+metadata:
+  badger:
+    path: /var/lib/dittofs/metadata
+journals:
+  - path: /var/lib/dittofs/journal
+keys:
+  storage:
+    kind: local
+    local:
+      file: /var/lib/dittofs/storage.key
+```
+
+`dfs init` refuses a config without `node.id` or `metadata.badger.path`. Each
+journal's directory must exist before `dfs init` runs. The storage key file is
+created by `dfs init`, wrapped under the passphrase in
+`DITTOFS_ENCRYPTION_PASSPHRASE`, which `dfs start` needs too. Copy the key file
+off the host: losing it or the passphrase loses the data.
+
+Choose the admin password and hand it to `dfs init` with `--admin-password-file`
+or `--admin-password-env`:
 
 ```bash
+mkdir -p /var/lib/dittofs/journal
+export DITTOFS_ENCRYPTION_PASSPHRASE='choose-a-passphrase'
 # Replace the example with your own password before running this command.
-# A supplied password also skips the forced first-login password change.
 DFS_ADMIN_PASSWORD=my-secure-password dfs init --admin-password-env DFS_ADMIN_PASSWORD
 dfs start
 ```
 
-With neither flag, `dfs init` generates a password and prints it once to standard output,
-never to the log, and it must be changed at the first sign-in. To recover an
-administrator's password, stop the node and run `dfs reset-admin` on the host that holds
-the metadata store: it prints a new generated password once, which must be changed at the
-first sign-in.
+`dfs start` runs in the foreground until it receives SIGINT or SIGTERM. Run it
+under systemd or a container runtime to keep it in the background.
 
-By default the server listens on these ports:
+With neither password flag, `dfs init` generates a password and prints it once to
+standard output, never to the log, and it must be changed at the first sign-in.
+To recover an administrator's password, stop the node and run `dfs reset-admin`
+on the host that holds the metadata store: it prints a new generated password
+once, which must be changed at the first sign-in.
 
-| Port    | Service |
+The node listens on these addresses by default:
+
+| Address | Service |
 |---------|---------|
-| `12049` | NFS |
-| `12445` | SMB |
-| `8080`  | Control-plane REST API (login, management, health checks) |
-| `9090`  | Prometheus metrics (on by default, loopback only; `metrics.listen`) |
+| `127.0.0.1:8080` | Management API (sign-in, management, health checks); `api.listen` |
+| `dfs.sock` in the runtime directory | Management API over a local socket; `api.socket` |
+| `127.0.0.1:9090` | Prometheus metrics; `metrics.listen` |
+| port `12049` | NFS, once the NFS adapter is enabled and served |
+| port `12445` | SMB, once the SMB adapter is enabled and served |
+
+`GET /health/ready` answers `ready` once the node serves.
 
 ## 3. Log in and set the admin password
 
-> **Not available on this branch.** This build's `dfsctl` refuses each command in
-> steps 3 to 6 with `not available until the CLI is rebuilt on the v2 API`; they
-> show the released server's CLI.
+`dfsctl` reaches the node at an `https` URL, at an `http` URL on a loopback IP
+address, or through the local socket's path. A host name is never treated as
+loopback, so write `127.0.0.1`, not `localhost`:
 
 ```bash
-dfsctl login --server http://localhost:8080 --username admin
+dfsctl login --server http://127.0.0.1:8080 --username admin
 ```
 
-If you handed `dfs init` the password above, log in with it and continue to step 4.
-If `dfs init` generated the password instead, you **must** change it on first login
-before any other command will work — until you do, the rest are rejected with HTTP 403:
+If you handed `dfs init` the password, log in with it and continue to step 4. If
+`dfs init` generated it, change it first. Until you do, the account can only
+change its password and sign out:
 
 ```bash
 dfsctl password change
@@ -98,22 +128,31 @@ NFS write access maps to a host UID, so create a user bound to your current one:
 dfsctl user create $(whoami) --uid $(id -u)
 ```
 
-## 5. Stores: nothing to create
+## 5. Stores and namespaces
 
-A node keeps file and directory metadata, and every control-plane record, in its one
-**metadata store**, and file content in the **journal** on its `journals` devices. Both
-come from the config file and are created by `dfs init`; there is no store to create per
-share and no separate control-plane database. See [Choosing stores](choosing-stores.md).
+A node keeps file and directory metadata, and every control-plane record, in its
+one **metadata store**, and file content in the **journal** on its `journals`
+devices. Both come from the config file and are created by `dfs init`. See
+[Choosing stores](choosing-stores.md).
+
+A share's content is counted in a **namespace**, which lives on a **remote store**.
+On this branch the node's settings table does not declare the remote store's or
+the namespace's settings yet, so `dfsctl store create` and
+`dfsctl namespace create` are refused with `unknown_key`. Until they are, no
+namespace can be created through the API, and step 6 cannot run on a new
+installation.
 
 ## 6. Create a share and grant access
+
+With a namespace in place, a share is created with its export policy, and then
+granted. A new share admits nobody until a grant names them:
 
 ```bash
 dfsctl share create export --path /export --namespace <namespace-id> --flavor sys --client 0.0.0.0/0=read-write --client ::/0=read-write
 dfsctl grant set export --user $(whoami) --access read-write
 ```
 
-`--metadata` and `--block-store` name the released server's per-share stores; this
-build has none to name (step 5).
+`dfsctl namespace list` prints each namespace's ID.
 
 ## 7. Mount over NFS
 
