@@ -82,22 +82,26 @@ integration epics touch no v1 code (§1.5 rule 7).
   caller**, GC.
 - **Appendix B.1, the periodic primary-version read runs on the provider's own ticker** at
   GC's recheck period until GC lands, and at open, so an in-place rotation is not left unseen
-  until the next open.
+  until the next open. The same read takes each master key's state, and `Pin` is refused while
+  the master key wrapping a namespace's current data key is not active, so a key destroyed in the
+  key service stops new writes without a restart.
 - **§2.8, a block's chain ID is its pin's.**
-- **Appendix B.1 and B.2, the key material's review:** a chunk's nonce is an HMAC of its AAD and
-  input under `dittofs chunk nonce v2`, so a later format version that keeps the labels cannot
+- **Appendix B.1 and B.2, the key material's review:** a chunk's nonce is a keyed BLAKE3 hash of
+  its AAD and input under the key `dittofs chunk nonce v2` derives, so a later format version that keeps the labels cannot
   give one ciphertext two tags; the wrap call raises one server-wide count per master key
   (`MKW‖masterKeyID`, added to RFC 16 §4.2), so every namespace's wraps, the salvage-key wrap
   and the escrow check's test record all count, and a key-file master key is current in one
-  installation only; and the provider refuses a master key whose ID or fingerprint matches the
+  installation only, while two installations may share a key-service master key, whose lifecycle
+  the key service owns; and the provider refuses a master key whose ID or fingerprint matches the
   `storage` key's.
-- **Appendix B, AES-256-GCM in place of AES-256-GCM-SIV** (Q2, D3): a chunk's nonce is an HMAC of its AAD
-  and input, stored in the body (`MaxEncodedLen(n) = n + 285`); each export frame is sealed once
+- **Appendix B, AES-256-GCM in place of AES-256-GCM-SIV** (Q2, D3): a chunk's nonce is a keyed BLAKE3 hash of
+  its AAD and input, stored in the body (`MaxEncodedLen(n) = n + 285`); each export frame is sealed once
   per salt; a key-file master key makes at most 2³² wraps; §5.4, T15, the `require` example,
   the vector rows and RFC 26 §3.1's summary follow.
 - **RFC 25 §3.9 and §7** gain `material_unknown`, `material_destroyed` and the `malformed`
   ticket (A1); **RFC 23 §4.1, §4.6 and §5.2** gain the key operations (A3); **RFC 16 §4.2** gains
-  the wrap count's row and **RFC 27 §2.4** the move's refusal under a shared master key (A4).
+  the wrap count's row and **RFC 27 §2.4** the move's refusal under a shared key-file master key
+  and the shared key-service master key's lifecycle (A4).
 
 **Answered by the user.** The design questions Q1 to Q4 are answered and written in place (§6),
 and the amendments to RFC 23 and RFC 25 they need (A1, A3) are in this pull request, as is A4,
@@ -195,7 +199,8 @@ it (D6).
   - KMIP: a server with an expired certificate, a revoked key, and a table over every key
     state, Item Not Found and an unknown state value: only Destroyed and Destroyed Compromised
     report the key destroyed, and every other answer reports it unavailable, so a misconfigured
-    endpoint never pages `data_loss` (epic 7).
+    endpoint never pages `data_loss` (epic 7); and a master key Destroyed in the KMIP server
+    refuses `Pin` within one tick, with no restart (epic 8).
 
 **Known failures.** None: no suite RFC 5's paragraph names keeps a `known.yaml`, so nothing is
 registered (§1.2).
@@ -352,13 +357,13 @@ registered (§1.2).
 | E5 | Encryption | AES-256-GCM from the standard library, the chunk derivations, nonce and AAD, the header, kind refusal, fixtures and vectors | 4 | 8.5 | B | E9; partly E6 |
 | E6 | Namespace keys and the provider | key-record view, stored wrap and its wrap count, key-file custody, escrow, `Materials` with fingerprints and its three failures, namespace key creation, the salvage-key wrap, B.6's gauges, the custody suite | 8 | 19 | C | E8, E9; partly E7 |
 | E7 | Key-service custody | KMIP wrap and unwrap through the server with AAD, version-qualified IDs, the primary version, the real-server row's provider half | 4 | 7 | B | E9; partly E8 |
-| E8 | Rotation and the destroyed-material notice | master and data key rotation in the bucket, the `keys` object, the notice, the primary-version ticker | 5 | 11 | C | E9 |
+| E8 | Rotation and the destroyed-material notice | master and data key rotation in the bucket, the `keys` object, the notice, the primary-version and key-state ticker | 5 | 11.5 | C | E9 |
 | E9 | Integration | settings keys and the bound `encrypts`, the key operations, collectors and alert rules, error mapping, namespace key creation | 5 | 12 | team | E10, E11 |
 | E10 🔀 | Integration, the census | `transform_census_blocks` and the census per material | planned after S7 | planned after S7 | team | — |
 | E11 🔀 | E2E green | RFC 5's codec and engine rows, the put and get benchmark | 6 | 10 | team | — |
-| | **Total** | | **50** | **104** | | |
+| | **Total** | | **50** | **104.5** | | |
 
-**Plan estimate: 50 subtasks, 104 man-days, not counting epic 10.**
+**Plan estimate: 50 subtasks, 104.5 man-days, not counting epic 10.**
 
 The skill's estimate for RFC 5's 1,999 lines is 5 middle epics (`round(1999 / 400)`); this plan
 has 6. Master-key custody through a key service shares no state with the namespace key records
@@ -395,7 +400,7 @@ flowchart TD
   E3 -. "chain ID for data-key rotation" .-> E8
   E5 -. "the AEAD call for the key-file wrap" .-> E6
   E6 -. "custody interface" .-> E7
-  E7 -. "primary version for re-wrap" .-> E8
+  E7 -. "primary version and key state" .-> E8
   S1c(["RFC 8 offload plan S1c, remote store contract agreed"]):::sync -. "keys role" .-> E8
   E3 & E4 & E5 & E6 & E7 & E8 --> E9["E9 Integration"]
   S7(["RFC 8 offload plan S7, store adapter and node composition built"]):::sync --> E10["E10 Integration, the census 🔀"]:::sync
@@ -517,7 +522,7 @@ filled in epic 3.
 **D3. AES-256-GCM comes from the standard library, `crypto/aes` and `crypto/cipher`, as the user
 answered (Q2): a commonly supported algorithm and no implementation of our own.** RFC 5 Appendix B
 is amended to match, and each use keeps GCM's one rule, never one key and nonce for two different
-plaintexts. A chunk's nonce is an HMAC of its AAD and the exact bytes sealed, under a key the data key derives,
+plaintexts. A chunk's nonce is a keyed BLAKE3 hash of its AAD and the exact bytes sealed, under a key the data key derives,
 stored in the body, because one chunk key does see different inputs (a new compression level, a
 declined chunk compressed later, a relocation), so a zero nonce would repeat. A frame's nonce is
 its section and frame index under a frame key the export's own salt derives, and each frame is
@@ -525,7 +530,11 @@ sealed once per salt. A key-file wrap's nonce is random, so the wrap call itself
 per master key, in one server-wide `MKW‖masterKeyID` row of RFC 16 §4.2, and refuses past 2³² (NIST SP 800-38D §8.3). No use needed XChaCha20-Poly1305. Both the
 chunk seal (epic 5) and the key-file wrap (epic 6) call `cipher.NewGCM`. Prior art: TLS 1.3 and
 SSH run AES-GCM with a counter nonce; a nonce from a PRF of the message is the SIV construction's
-idea, here over two standard primitives (from memory). Applies in epics 5 and 6.
+idea, here over AES-GCM and keyed BLAKE3 (from memory). The nonce is keyed BLAKE3 rather than
+HMAC-SHA256, as the user answered: both rest on one assumption, a pseudorandom function under a
+secret key, and keyed BLAKE3 is already a dependency for chunk IDs (RFC 2 §4.1); what the extra
+pass costs on encode is epic 5's benchmark (RFC 5 §8.3), not a number assumed here. Applies in
+epics 5 and 6.
 
 **D4. zstd from `klauspost/compress`, LZ4 from `pierrec/lz4/v4`, as v1 used them.** Stage 4
 deleted v1's `middleware/compression`, their only importer, so `feat/storage-v2`'s `go.mod` no
@@ -603,7 +612,7 @@ memory). Applies in epics 1 and 3.
 
 **D11. The golden vectors come from a second implementation**, RFC 5's part of the one vector
 script the RFC 2 plan's epic 2 owns (Python's `cryptography` for AES-GCM, HKDF and HMAC, and
-`blake3`), computed from RFC 5's tables alone and checked in with its output. CI does not run
+`blake3`'s keyed mode for chunk IDs, the gear table and the chunk nonce), computed from RFC 5's tables alone and checked in with its output. CI does not run
 it; the Go tests read its output. Prior art: Wycheproof's vectors (from memory).
 Applies in epic 2.
 
@@ -773,13 +782,13 @@ The shipped encryption transform, which needs a namespace's data key.
 rows of §2.7 (every flip `ErrMalformed`, a body under another chunk's hash, destroyed material),
 Appendix B.1's salt, nonce and keystream row, its distinct-labels row and the chunk part of its
 golden-vector row; Wycheproof's AES-GCM vectors through the transform's call; RFC 5 §8.3's
-per-transform benchmark.
+per-transform benchmark and its encode split into the nonce's keyed BLAKE3 pass and the GCM seal.
 
 **Expected content:**
 - AES-256-GCM through `cipher.NewGCM` (D3), the nonce stored before the ciphertext, and a fuzz
   of `Decode` against the golden vectors.
-- The salt key, salt, chunk key, nonce key and nonce derivations, and the chunk AAD, against the
-  vectors; the salt key is derived once per data key and cached with it, while the chunk key,
+- The salt key, salt, chunk key, nonce key and nonce derivations (the nonce through the keyed
+  BLAKE3 the chunk ID already imports), and the chunk AAD, against the vectors; the salt key is derived once per data key and cached with it, while the chunk key,
   new per chunk, pays its AES key schedule each time.
 - `Kinds` returning `data-key`; `Encode` sealing under the pinned data key it is passed and
   `Decode` under the data key a body names, each getting the key's content from `Materials.Get`;
@@ -856,7 +865,7 @@ wrap for a key service, as bytes (the string-map half is §6.1's, Q3).
 
 ### Epic 8 — Rotation and the destroyed-material notice
 
-**Epic 8 estimate: 5 subtasks, 11 man-days.**
+**Epic 8 estimate: 5 subtasks, 11.5 man-days.**
 
 Keys changing over time in the bucket, and the notice the engine reads when material is gone
 for good.
@@ -872,7 +881,10 @@ the same; a rotation while nothing is written, at the next period), if the harne
 rotate in place (O9); RFC 13 §9's "§7 key table" row's data-key rotation clause; a crash torn
 beneath a rotation leaves the old key current; the notice reports a destroyed key
 record and a master key the key service reports destroyed, on the in-memory `Materials` and on
-the provider, under `materialtest`.
+the provider, under `materialtest`; RFC 5 §8.2's Appendix B.1 key-state row against the
+harness's KMIP server: Destroyed and Destroyed Compromised refuse `Pin` with
+`ErrMaterialDestroyed` within one tick, every other state but Active and an unknown state value
+refuse it with `ErrMaterialUnavailable`, Active pins, with no restart.
 
 **Expected content:**
 - Data-key rotation: a new current key, so a new chain ID (D9).
@@ -883,6 +895,9 @@ the provider, under `materialtest`.
 - The primary-version read that starts a master-key rotation, as a `rotate-master-key`
   operation (RFC 5 Appendix B.1): at open, and on the provider's
   own ticker at RFC 9 §7.5's fixed period until GC's recheck pass takes it over (§6.1).
+- On the same read, each master key's state, mapped through `kmipwire`'s key-state table (epic
+  7), and `Pin` refused for a namespace whose current data key's master key is not active, with
+  the `material_destroyed` or `material_unavailable` condition (RFC 5 Appendix B.1).
 - The destroyed-material notice (D17).
 
 ### Epic 9 — Integration
@@ -959,7 +974,7 @@ pins, `Remove` with its fence and the destroy operation are deferred to their fi
 
 - **Q2. The cipher is AES-256-GCM from the standard library** (D3): a commonly supported
   algorithm, no implementation of our own. RFC 5 Appendix B is amended in this pull request: a
-  chunk's nonce is an HMAC of its AAD and input, stored in the body; a frame is sealed once per salt; a
+  chunk's nonce is a keyed BLAKE3 hash of its AAD and input, stored in the body; a frame is sealed once per salt; a
   key-file master key makes at most 2³² random-nonce wraps, counted inside the wrap call in one
   server-wide row per master key. Example:
   `aead, _ := cipher.NewGCM(block); body = aead.Seal(nonce, nonce, input, aad)`.
@@ -1019,7 +1034,7 @@ pins, `Remove` with its fence and the destroy operation are deferred to their fi
 | --- | --- | --- | --- |
 | `Materials.Remove`, its fence and its count of open pins; RFC 5 §8.2's T13 rows; the census check before removal; erasure of every copy (§6 Q1, D10, RFC 5 §5.3 as amended) | no caller in v1.1: GC's retirement or an operator's destroy is the first | RFC 9 | RFC 9's plan starts; if the operator's destroy (next row) is specified first, that row takes `Remove` |
 | The operator's destroy operation and its `dfsctl` command (D15) | RFC 23 does not specify it; `Remove` lands with it or before it | unowned | RFC 9's plan starts or an operator needs to destroy a key |
-| Moving the periodic primary-version read of RFC 5 Appendix B.1 (as amended) from the provider's own ticker into GC's recheck pass | in v1.1 the provider runs it on its own ticker at RFC 9 §7.5's period, since GC does not run yet | RFC 9 | RFC 9's plan starts |
+| Moving the periodic primary-version and key-state read of RFC 5 Appendix B.1 (as amended) from the provider's own ticker into GC's recheck pass | in v1.1 the provider runs it on its own ticker at RFC 9 §7.5's period, since GC does not run yet | RFC 9 | RFC 9's plan starts |
 | Retirement relocation, its walk and where the retiring set is recorded; RFC 5 §8.2's §5.2 row and §5.3's retirement half (D9) | GC is planned later (#5488) | RFC 9 (roadmap #3620) | RFC 9's plan starts |
 | A drained namespace's key removal under the check token (RFC 5 §5.3) | RFC 9 §7.6's drain runs it | RFC 9 (roadmap #3620) | RFC 9's plan starts |
 | The `keys` object's read-back on each `Recheck` pass (RFC 5 Appendix B.2 as amended; O10) | `Recheck` has no caller in v1.1 (RFC 4 §4.11: only GC runs it) | RFC 9 | RFC 9's plan starts |

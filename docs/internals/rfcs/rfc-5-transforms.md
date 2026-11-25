@@ -698,7 +698,8 @@ func MaxDecodeLen(n int) int
 // or the current material changes meanwhile (§2.8). It reads Current once for
 // each kind a transform declares, and passes that material to the transform's
 // MaxEncodedLen, LengthOf and Encode. It fails with the provider's error when
-// the current material cannot be read.
+// the current material cannot be read, or when a key service holds the master
+// key that wraps it in any state but active (Appendix B.1).
 func (c *Chain) Pin(ctx context.Context, ns NamespaceID) (*Attempt, error)
 
 // Attempt is one pinned chain. The engine releases it when the block commits
@@ -1057,7 +1058,7 @@ alike. A new transform gets it by registering.
 | T9 | Encode every fixture input with its recorded settings and material: exactly the recorded body. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Two different chunks under one key get different salts; one chunk under two data keys gets two different bodies. Two different inputs under one plaintext hash (the same chunk compressed at two levels, or declined then compressed) encrypt to bodies that both decode, carry different nonces and share no keystream: XOR of the two ciphertexts is not XOR of the two inputs. One input under one data key, sealed with two versions in the AAD, gets two different nonces. The key-file provider at a wrap count of 2³² − 1 for a master key makes one more wrap and refuses the next, counted across two namespaces; a salvage-key wrap and an escrow check's test record each raise the count by one. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Every derivation label of Appendix B.1 is distinct, and each is pinned by a golden vector. |
-| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Golden vectors, from an independent implementation working from Appendix B.1's length and field tables alone: the salt key, salt, chunk key, nonce key and nonce for a fixed data key, plaintext hash, version and input; one chunk body with its AAD; one fingerprint; the keyed gear table's first and last 8 bytes. Each derived key is 32 bytes, and an implementation deriving with `salt` as an empty string instead of 32 zero bytes gets the same key — RFC 5869 treats both alike — while one using a 16-byte `L` gets a 16-byte prefix of the right key, which the length check refuses, and one prefixing `info` gets a different key. |
+| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Golden vectors, from an independent implementation working from Appendix B.1's length and field tables alone: the salt key, salt, chunk key, nonce key and nonce for a fixed data key, plaintext hash, version and input; one chunk body with its AAD; one fingerprint; the keyed gear table's first and last 8 bytes. The nonce is the first 12 bytes of BLAKE3's keyed mode under the nonce key, so one computed with HMAC-SHA256, with BLAKE3's unkeyed or key-derivation mode, or from the last 12 bytes of the output differs from the vector. Each derived key is 32 bytes, and an implementation deriving with `salt` as an empty string instead of 32 zero bytes gets the same key — RFC 5869 treats both alike — while one using a 16-byte `L` gets a 16-byte prefix of the right key, which the length check refuses, and one prefixing `info` gets a different key. |
 | T22 | Golden vectors, from an independent implementation, for the frame key, MAC key and state key derivations, one sealed frame, each of the four export MACs, one state MAC, and one stored wrap per provider kind: the key file's, and a key service's against a fake service that records the authenticated data it is sent, once as bytes and once as a string map. Write an export of two sections of three frames each: all six nonces differ. Move a frame to the other section at the same frame index, or swap two sections: the read fails. A design whose nonce is the frame index alone gives two equal nonces here. |
 | T18 | Unwrap a wrapped key record after changing its namespace ID, its kind or its key ID in the AAD: each fails. Copy one namespace's wrapped data key into another namespace's key records: it does not unwrap there. |
 | [§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material) | Replace a key under its ID with different bytes: the provider refuses it (`ErrMaterialUnavailable`, availability gauge 0), and no body is decoded or written with it. |
@@ -1109,6 +1110,7 @@ alike. A new transform gets it by registering.
 | [Appendix B.2](#B.2%20Keys) | Delay the bucket's `keys` put of sequence 7 until after sequence 8 has landed: the next writer, or the next `Recheck` pass, reads back 7 and writes the whole object at 9. Repeat at a mutable backup location, with 8 adding a new export key: the writer about to put a state version under that key reads back 7 and re-puts before it, so a restore from that location alone authenticates the version. |
 | [Appendix B.2](#B.2%20Keys) | A location an operator declared lost: a master-key destroy no longer fails closed on it, and an export-key rotation completes without it. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | A key service rotates a master key in place while the namespace writes nothing: at the next recheck period, on the provider's own ticker until GC runs the read, the provider reads the new primary version and starts a `rotate-master-key` operation that re-wraps every key record under it. A failed copy's progress under a retiring or retired export key: the successor, and the same copier resumed across the rotation, copy those blocks afresh. A re-seal and a copier's state put on one backup at once: they take the key lock in turn and put distinct sequences. A `damaged` backup expires to `expired`, and a `complete` written again naming another export is refused. |
+| [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | A key-service provider holding a namespace's data key unwrapped, for each state the service can report for the master key that wraps it: at the next period, a state the service reports as destroyed makes `Pin` fail with `ErrMaterialDestroyed` and raise `material_destroyed`; every other state but active, and a state value the provider does not know, makes `Pin` fail with `ErrMaterialUnavailable` and raises `material_unavailable`; an active key pins. A failed state read leaves the last state in force. No restart is needed in any case. |
 | [§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census) | Drain a namespace whose data key another namespace's folder census still names: the drain removes none of its keys, the chunk-ID and chunking keys included. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Write a backup's state as `writing`, `complete`, then `damaged`; re-put the authentic `complete` version on top: the reader takes `damaged`, by sequence. Two field lists that join to the same bytes without length prefixes give different MACs. The golden vectors cover the sealed header, the progress MAC, and a state MAC over a nonzero expiry time. Change a `complete` version's expiry time and keep its tag: it fails to authenticate. |
 | [Appendix B.2](#B.2%20Keys) | Hand the put intent step a plan whose chunk IDs were computed under another namespace's chunk-ID key: refused, and nothing is put. |
@@ -1122,6 +1124,7 @@ corpus, chunk size distribution and CPU with each result.
 | Benchmark | Measures | Proposed target |
 | --- | --- | --- |
 | Each transform, encode and decode | MB/s per core | report, per transform, against the previous run |
+| Encryption's encode, split into the nonce's keyed BLAKE3 pass and the AES-256-GCM seal | MB/s per core, and the nonce pass's share of encode time | report, with the CPU's AES and hash instruction-set extensions named |
 | The chain around its transforms | overhead | within 2% of the sum of its transforms' own times, median of 10 runs |
 | Envelope size | bytes per chunk | 2 + 2n |
 | `Attempt.MaxEncodedLen` against the largest body seen | ratio | at most 1: the declared bound is never exceeded on any corpus |
@@ -1223,7 +1226,7 @@ salt key  = HKDF-SHA256(data key, salt = none, info = "dittofs chunk salt v2"), 
 salt      = HMAC-SHA256(salt key, plaintext hash), 32 bytes
 chunk key = HKDF-SHA256(data key, salt = salt, info = "dittofs chunk key v2"), 32 bytes
 nonce key = HKDF-SHA256(data key, salt = salt, info = "dittofs chunk nonce v2"), 32 bytes
-nonce     = first 12 bytes of HMAC-SHA256(nonce key, AAD ‖ input)
+nonce     = first 12 bytes of BLAKE3-keyed(nonce key, AAD ‖ input)
 body      = nonce ‖ AES-256-GCM(chunk key, nonce, input,
                                 AAD = transform ID ‖ version ‖ data key ID ‖ plaintext hash)
 ```
@@ -1240,7 +1243,7 @@ derived under a label another derivation uses:
 | --- | --- | --- |
 | `dittofs chunk salt v2` | data key | the salt key |
 | `dittofs chunk key v2` | data key and salt | the chunk key |
-| `dittofs chunk nonce v2` | data key and salt | the key the chunk's nonce is an HMAC under |
+| `dittofs chunk nonce v2` | data key and salt | the key of the keyed BLAKE3 hash that gives the chunk's nonce |
 | `dittofs chunking key v1` | chunking key | keyed boundaries, encrypting namespaces only ([RFC 2 §6](rfc-2-carver.md#6.%20Boundaries%20are%20public)) |
 | `dittofs export frame v1` | export key and the export's salt | the key sealing each frame of an export ([RFC 26 §3.1](rfc-26-catalog-backups.md#3.1%20Layout)) |
 | `dittofs export mac v1` | export key and the export's salt | the key authenticating an export's clear part, header, sections and trailer |
@@ -1296,7 +1299,7 @@ vector:
 | salt, every MAC, fingerprint | 32 | HMAC-SHA256, full output, never truncated |
 | plaintext hash, chunk ID | 32 | the keyed BLAKE3 chunk ID ([RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20chunk)) |
 | keyed gear table | 2,048 | BLAKE3 keyed mode under the chunking key, over the ASCII label `dittofs chunking key v1` ([RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)) |
-| AES-256-GCM nonce | 12 | the chunk's is the first 12 bytes of its HMAC, stored before the ciphertext; a frame's and the header's as below; a key wrap's random, stored before the ciphertext |
+| AES-256-GCM nonce | 12 | the chunk's is the first 12 bytes of BLAKE3's keyed mode under the nonce key, over the chunk nonce input, stored before the ciphertext; a frame's and the header's as below; a key wrap's random, stored before the ciphertext |
 | AES-256-GCM tag | 16 | appended to the ciphertext, full length, never truncated |
 
 A value computed over **one** field — the salt over the plaintext hash, a fingerprint over its label — takes that field's bytes alone, with no prefix;
@@ -1479,6 +1482,20 @@ uses. The AAD binds a wrapped key to its namespace, kind and ID, so a
 wrapped record copied into another namespace's key records, or relabelled as
 another kind, fails to unwrap instead of serving as that key.
 
+**A master key the service holds in any state but active stops new writes.**
+At each read of the primary version above, the provider **MUST** also read the state of every
+master key that wraps a namespace's current data key, and **MUST** refuse `Pin`
+([§3.1](#3.1%20Interfaces)) for that namespace while the last state read is not
+active: with `ErrMaterialDestroyed` and the `material_destroyed` condition when
+the service reports the key destroyed, and with `ErrMaterialUnavailable` and the
+`material_unavailable` condition for every other state, a state the provider
+does not know included ([B.4](#B.4%20Losing%20a%20key%20loses%20the%20data)). So a
+key destroyed in the service stops new writes within one period, with no
+restart, although the provider still holds the data key unwrapped. A read that
+fails changes nothing and is retried at the next period, as for the primary
+version. The refusal applies to new writes only: a decode is not changed, and
+follows [B.4](#B.4%20Losing%20a%20key%20loses%20the%20data).
+
 A change to any derivation is a new label and a new transform format version; a
 golden vector pins each. The chunk-ID key is the one key used with no derivation:
 it is the key of BLAKE3's keyed mode, which computes every chunk ID
@@ -1493,15 +1510,21 @@ In plain terms:
   a chunk declined once and compressed later, a compression library upgrade, or
   a relocation, which re-encodes by design ([§5.2](#5.2%20Relocation%20re-encodes)). Two different inputs under
   one key and one nonce are exactly what AES-GCM must never see: their XOR
-  and the authentication key would leak. So the nonce is an HMAC of the chunk's
-  AAD and the exact bytes sealed, under a key only the data key derives: two
-  different inputs get two unrelated nonces (equal with probability 2⁻⁹⁶ per
-  pair, and one chunk key sees a handful of inputs at most). The AAD is in the
-  HMAC because neither key depends on it. A later format version that keeps
+  and the authentication key would leak. So the nonce is a keyed BLAKE3 hash of
+  the chunk's AAD and the exact bytes sealed, under a key only the data key
+  derives: two different inputs get two unrelated nonces (equal with
+  probability 2⁻⁹⁶ per pair, and one chunk key sees a handful of inputs at
+  most). This needs one assumption only: that BLAKE3's keyed mode is a
+  pseudorandom function while its key is secret. An HMAC-SHA256 nonce would
+  need the same assumption of HMAC-SHA256, and every chunk ID already needs it
+  of keyed BLAKE3 ([RFC 2 §4.1](rfc-2-carver.md#4.1%20A%20chunk)), so the choice adds no assumption and no
+  dependency. What the extra pass over the input costs on encode is measured,
+  not assumed ([§8.3](#8.3%20Benchmarks%20and%20targets)). The AAD is in the
+  hashed input because neither key depends on it. A later format version that keeps
   these labels changes only the AAD's version byte, and one input sealed under
   one key and one nonce with two AADs is one ciphertext with two tags: GCM's
   authentication key follows from them, and forged bodies then pass the tag.
-  With the AAD in the HMAC, a nonce repeats only where the AAD and the input
+  With the AAD in the hashed input, a nonce repeats only where the AAD and the input
   both repeat, which seals the same body again, and the most a repeat leaks is
   that two bodies sealed one input under one AAD. A zero nonce would be safe only if a chunk key sealed
   one input ever, which compression and relocation break.
@@ -1766,7 +1789,14 @@ immutable ones included.
 imports a namespace re-wraps every imported key record under its own master key
 before it publishes ([RFC 27 §2.4](rfc-27-namespace-migration.md#2.4%20Key%20scope%20and%20material)), and refuses to publish while its current master key
 is a key-file master key the export names ([B.1](#B.1%20How%20a%20chunk%20is%20encrypted)), so from then on the two
-installations share no key-file master key in use. The exporting installation keeps a durable pin per
+installations share no key-file master key in use. That claim covers key-file
+master keys only. Two installations **MAY** share one key-service master key,
+since the service draws its own nonces and keeps its own bound ([B.1](#B.1%20How%20a%20chunk%20is%20encrypted)). The key
+service, not either installation, owns that key's lifecycle: a destroy issued through either
+installation destroys it for both, and each installation's destroy check sees
+only its own key records, retained exports and pins. Operators who share a
+key-service master key coordinate its destroy outside both installations.
+The exporting installation keeps a durable pin per
 move naming every master key the moved export carried, and refuses to destroy
 one (`ErrMaterialInUse`, naming the move) until an operator releases the pin.
 Without it, an installation that rotated away from a shared key and saw its own
