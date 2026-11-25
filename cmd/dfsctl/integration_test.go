@@ -46,19 +46,16 @@ func TestSuiteFromAChildProcess(t *testing.T) {
 	for _, noun := range clisuite.Nouns() {
 		t.Run(noun, func(t *testing.T) {
 			s := clisuite.Start(t, nodetest.StartAt(time.Now().Add(-10*time.Minute)))
-			clisuite.Run(t, func(t *testing.T) clisuite.Runner { return child(t, bin, s.Harness) }, s, noun)
+			clisuite.Run(t, func(t *testing.T) clisuite.Runner { return child(bin, poisoned(t, t.TempDir()), s.Harness, nil) }, s, noun)
 		})
 	}
 }
 
-// child runs bin with each invocation's arguments, its home an empty one of
-// t's, shared by its invocations so they share one credentials file, after
-// catchUp moves h's node up to this machine's clock. Ending ctx kills the
-// child.
-func child(t *testing.T, bin string, h *nodetest.Harness) clisuite.Runner {
-	home := t.TempDir()
-	// The bootstrap's default path, unreadable, so a read of it refuses
-	// rather than loading the defaults a missing file loads.
+// poisoned makes the bootstrap's default path under home a file the child
+// cannot read, so a read of it refuses rather than loading the defaults a
+// missing file loads, and returns home.
+func poisoned(t *testing.T, home string) string {
+	t.Helper()
 	poison := filepath.Join(home, ".config", "dittofs", "config.yaml")
 	if err := os.MkdirAll(filepath.Dir(poison), 0o700); err != nil {
 		t.Fatal(err)
@@ -66,6 +63,15 @@ func child(t *testing.T, bin string, h *nodetest.Harness) clisuite.Runner {
 	if err := os.WriteFile(poison, []byte("not: [a bootstrap\n"), 0o000); err != nil {
 		t.Fatal(err)
 	}
+	return home
+}
+
+// child runs bin with each invocation's arguments, in home and with only it
+// in its environment, shared by its invocations so they share one
+// credentials file, after catchUp moves h's node up to this machine's clock.
+// prepare, when set, sees each command before it starts. Ending ctx kills
+// the child.
+func child(bin, home string, h *nodetest.Harness, prepare func(*exec.Cmd) error) clisuite.Runner {
 	env := []string{"HOME=" + home}
 	return func(ctx context.Context, args ...string) (string, string, int) {
 		if err := catchUp(ctx, h); err != nil {
@@ -75,6 +81,11 @@ func child(t *testing.T, bin string, h *nodetest.Harness) clisuite.Runner {
 		cmd := exec.CommandContext(ctx, bin, args...)
 		cmd.Env, cmd.Dir = env, home
 		cmd.Stdout, cmd.Stderr = &out, &errOut
+		if prepare != nil {
+			if err := prepare(cmd); err != nil {
+				return "", "clisuite child: " + err.Error(), -1
+			}
+		}
 		// Not t.Errorf: a row's goroutine can outlive its test.
 		if err := cmd.Run(); err != nil && !errors.As(err, new(*exec.ExitError)) {
 			return out.String(), errOut.String() + "clisuite child: " + err.Error(), -1
