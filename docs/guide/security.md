@@ -1,409 +1,57 @@
-# Security Guide
+# Security
 
-**Current status:** DittoFS is experimental and has not undergone formal security auditing.
-Exercise caution before deploying in production environments without thorough testing and review.
+This page is a checklist for securing a DittoFS installation. Walk it before anyone but
+you can reach the node: each item says what to do, with the command or config to copy.
 
-For the internal mechanism design and threat model, see
-[`../internals/security-model.md`](../internals/security-model.md).
+DittoFS is experimental and has had no security audit. Do not rely on it to protect
+data that matters without your own review. For how the mechanisms work inside, see
+[the security model](../internals/security-model.md).
 
-> **Not served on this branch.** This build serves no file protocol. The NFS and
-> SMB sections below, and their `adapters:` settings, describe the released
-> server.
+## Not available yet on this version
 
-## Table of Contents
+Know these gaps before you plan a deployment:
 
-- [What is implemented](#what-is-implemented)
-- [Remaining limitations](#remaining-limitations)
-- [Authentication](#authentication)
-  - [NFS: RPCSEC\_GSS (Kerberos)](#nfs-rpcsec_gss-kerberos)
-  - [NFS: AUTH\_UNIX](#nfs-auth_unix)
-  - [NFS: AUTH\_NULL](#nfs-auth_null)
-  - [SMB: Kerberos via SPNEGO](#smb-kerberos-via-spnego)
-  - [SMB: NTLM and guest fallback](#smb-ntlm-and-guest-fallback)
-  - [Active Directory and LDAP](#active-directory-and-ldap)
-- [Message integrity and encryption](#message-integrity-and-encryption)
-  - [SMB signing](#smb-signing)
-  - [SMB encryption](#smb-encryption)
-- [Access control](#access-control)
-  - [NFSv4 ACLs](#nfsv4-acls)
-  - [POSIX file permissions](#posix-file-permissions)
-  - [Export-level access control](#export-level-access-control)
-  - [IP-based restrictions](#export-level-access-control)
-  - [Identity mapping](#identity-mapping)
-  - [Read-only shares](#read-only-shares)
-- [Network security](#network-security)
-  - [NFS-over-TLS (RFC 9289)](#nfs-over-tls-rfc-9289)
-  - [Control plane API TLS](#control-plane-api-tls)
-  - [Network-level alternatives](#network-level-alternatives)
-  - [Firewall configuration](#firewall-configuration)
-- [Kerberos configuration](#kerberos-configuration)
-  - [Server configuration](#server-configuration)
-  - [Keytab management](#keytab-management)
-  - [NFS client setup](#nfs-client-setup)
-  - [SMB client setup](#smb-client-setup)
-- [Production hardening checklist](#production-hardening-checklist)
-- [Secure configuration example](#secure-configuration-example)
-- [Planned security features](#planned-security-features)
-- [Reporting security issues](#reporting-security-issues)
+- **No file protocol is served.** This build serves neither NFS nor SMB yet (see
+  [Getting Started](getting-started.md#5-stores-and-namespaces)). The NFS and SMB items
+  below describe how to set the share up for when they are.
+- **No NFS Kerberos.** A `sec=krb5`, `krb5i` or `krb5p` mount fails: the server answers
+  every Kerberos (RPCSEC_GSS) request with `AUTH_BADCRED`. Kerberos works for SMB.
+- **No NFS-over-TLS.** Every NFS TLS mode except `off` is refused, so NFS traffic is
+  not encrypted. Run NFS over a VPN or an SSH tunnel instead (see
+  [Protect NFS traffic](#protect-nfs-traffic)).
+- **No mutual TLS on the management API.** The API does not ask `dfsctl` for a client
+  certificate. `dfsctl` signs in with a password or an API token.
+- **No SMB signing or encryption settings.** The server-wide SMB signing and encryption
+  modes cannot be changed on this version. Per share, `--smb-encrypt` works (see
+  [SMB encryption](#smb-encryption)).
+- **File content is not encrypted at rest.** Put the journal and metadata directories
+  on an encrypted filesystem (see [Encryption](encryption.md)).
+- **File operations are not audited.** The audit log records management actions and
+  sign-ins to the API, not reads and writes of files.
 
----
+## The checklist
 
-## What is implemented
+- [ ] [1. Keep the management API on loopback, or give it TLS](#1-keep-the-management-api-on-loopback-or-give-it-tls)
+- [ ] [2. Change the admin password](#2-change-the-admin-password)
+- [ ] [3. Give each person an account with the least role it needs](#3-give-each-person-an-account-with-the-least-role-it-needs)
+- [ ] [4. Use API tokens for scripts, with an expiry](#4-use-api-tokens-for-scripts-with-an-expiry)
+- [ ] [5. Shorten sessions if you need to](#5-shorten-sessions-if-you-need-to)
+- [ ] [6. Read the audit log](#6-read-the-audit-log)
+- [ ] [7. Turn off people who leave](#7-turn-off-people-who-leave)
+- [ ] [8. Protect the key files and the passphrase](#8-protect-the-key-files-and-the-passphrase)
+- [ ] [9. Lock down each share](#9-lock-down-each-share)
+- [ ] [10. Firewall the ports](#10-firewall-the-ports)
 
-- Kerberos authentication for NFS via RPCSEC_GSS (RFC 2203)
-- Kerberos authentication for SMB via SPNEGO
-- Active Directory / LDAP idmap (`idmap_ad` RFC2307 attributes or `idmap_rid` RID derivation), with Kerberos keytab and NTLM machine-account pass-through
-- SMB3 encryption with AES-128-GCM, AES-128-CCM, AES-256-GCM, AES-256-CCM
-- SMB3 signing with AES-128-CMAC and AES-128-GMAC; SMB 2.x signing with HMAC-SHA256
-- SMB 3.1.1 preauth integrity (SHA-512 hash chain) for downgrade protection
-- SP800-108 key derivation for per-session cryptographic keys
-- VALIDATE_NEGOTIATE_INFO for SMB 3.0/3.0.2 downgrade detection
-- NFSv4 ACL-based access control
-- POSIX file permission enforcement (owner/group/other)
-- Export-level IP-based access restrictions
-- Identity mapping (root squash, all squash)
-- AUTH_UNIX for trusted-network deployments
-- Native TLS (and optional mutual TLS) for the control plane API with hot-reload
-- NFS-over-TLS (RFC 9289): opportunistic `AUTH_TLS` STARTTLS upgrade to TLS 1.3
+### 1. Keep the management API on loopback, or give it TLS
 
-## Remaining limitations
+The management API holds every credential of the installation. By default it listens
+on `127.0.0.1:8080` and on a local socket, so nothing off the host can reach it.
 
-- No formal security audit performed
-- NFS-over-TLS requires a client that supports RFC 9289 (`xprtsec=tls`); macOS has no such client (use Kerberos or a network tunnel instead)
-- No encryption at rest
-- No audit logging for file operations
-
----
-
-## Authentication
-
-### NFS: RPCSEC_GSS (Kerberos)
-
-DittoFS implements RPCSEC_GSS per RFC 2203, enabling Kerberos-based strong authentication for
-NFSv4 clients. This is the recommended authentication method for any deployment outside of a
-fully trusted network.
-
-When enabled, clients authenticate using Kerberos tickets. The server validates tickets against
-its keytab and maps Kerberos principals to Unix UID/GID for authorization decisions.
-
-Key properties:
-
-- Mutual authentication (server identity is also verified by the client)
-- Cryptographic credential verification (no trust-based UID spoofing)
-- Configurable context lifetime and clock skew tolerance
-- Hot-reload support for keytab rotation without server restart
-
-See [Kerberos configuration](#kerberos-configuration) for setup instructions.
-
-### NFS: AUTH_UNIX
-
-AUTH_UNIX is the traditional NFS authentication mechanism. The client provides UID, GID, and
-supplementary GIDs with each request. The server trusts these values without independent
-verification.
-
-- Suitable for trusted networks only
-- Clients can impersonate any user by sending arbitrary UID/GID values
-- Use identity mapping (root squash, all squash) to limit exposure
-
-### NFS: AUTH_NULL
-
-AUTH_NULL provides anonymous access with no authentication. All requests are treated as coming
-from an unauthenticated user. Use with extreme caution and only for public read-only shares.
-
-### SMB: Kerberos via SPNEGO
-
-The SMB adapter supports Kerberos authentication through SPNEGO during `SESSION_SETUP`. When a
-Kerberos provider is configured, SMB clients authenticate using Kerberos tickets. When Kerberos
-is not configured, the SMB adapter falls back to NTLM or guest authentication.
-
-See [Kerberos configuration](#kerberos-configuration) for shared setup that applies to both NFS
-and SMB.
-
-### SMB: NTLM and guest fallback
-
-**Guest sessions** have significant security limitations: no session key is available, so no
-signing and no encryption are possible. Guest sessions should be restricted to read-only access
-on public shares. DittoFS never encrypts guest sessions, even in `required` mode (the connection
-is rejected instead).
-
-**NTLM fallback** occurs when Kerberos keytab is not configured, the client has no valid TGT, or
-DNS resolution prevents Kerberos service ticket acquisition.
-
-NTLM authenticates two classes of user:
-
-- **Local DittoFS users:** the NTLMv2 response is validated directly against the NT hash stored
-  in the control-plane user store.
-- **AD domain users:** once the installation has joined the domain, the
-  challenge/response is forwarded to the Domain Controller over a sealed NETLOGON secure channel
-  (MS-NRPC sign+seal AES, post-ZeroLogon). The DC performs the validation; no local NT hash is
-  stored or used. **Without a join, domain-user NTLM fails with
-  `STATUS_LOGON_FAILURE`.** A domain user is never mapped to guest.
-
-> **Machine secret sensitivity:** the computer account's password is sealed at rest by the
-> secret provider, like the LDAP bind password and the Kerberos keytab, and is never returned by
-> the API. It rotates by itself. Kerberos keys for the account's service names are
-> derived from it, and **AES only** (`msDS-SupportedEncryptionTypes` `0x18`): DES and RC4 keys
-> are refused.
->
-> **Joining has two operator duties the code cannot check**, listed in
-> [identity.md, Part C2](identity.md#part-c2-join-the-domain).
-
-NTLM security tradeoffs:
-
-- No mutual authentication (client cannot verify server identity)
-- Vulnerable to relay attacks without channel binding
-- Session key derived from password hash (weaker than Kerberos session key)
-- Signing uses HMAC-SHA256 (weaker than AES-CMAC/GMAC)
-- NETLOGON passthrough requires a joined computer account
-
-**Recommendation:** configure Kerberos for all production deployments. Use NTLM only as a
-transition mechanism or for clients that cannot use Kerberos.
-
-### Active Directory and LDAP
-
-DittoFS can authenticate Active Directory domain users directly, with no local DittoFS
-account for them. Three pieces are independent and can be enabled in any combination:
-
-| Piece | What it does | Credential at rest |
-|---|---|---|
-| **Kerberos service keytab** | Verifies AD-issued service tickets over SMB (SPNEGO) and NFS (RPCSEC\_GSS) | Keytab file |
-| **Machine account** (a domain join) | Forwards the NTLM challenge/response to the Domain Controller over a sealed NETLOGON channel, for clients that cannot use Kerberos | Computer account secret |
-| **LDAP idmap** | Maps the authenticated principal or SID to a Unix UID/GID and resolves nested group membership | Read-only bind DN + password |
-
-Security notes:
-
-- Once joined, AD-user NTLM is validated by the Domain Controller —
-  **no local NT hash is stored or used**. Without one, domain-user NTLM fails with
-  `STATUS_LOGON_FAILURE`.
-- The keytab and the computer account's password are sealed at rest by the secret provider,
-  write-only, and never returned by the API. Joining and its operator duties are in
-  [identity.md, Part C2](identity.md#part-c2-join-the-domain).
-- The LDAP bind account is read-only; reach the directory over LDAPS or a private network.
-- A principal is resolved through the same idmap regardless of the protocol it arrived on,
-  so an AD user gets one Unix identity across SMB and NFS.
-
-See [identity.md](identity.md) for the provider reference and
-[windows-ad-setup.md](windows-ad-setup.md) for the end-to-end operator runbook.
-
----
-
-## Message integrity and encryption
-
-### SMB signing
-
-DittoFS supports SMB message signing, providing integrity protection against man-in-the-middle
-attacks and message tampering.
-
-| Algorithm | Dialect | Notes |
-|-----------|---------|-------|
-| HMAC-SHA256 | SMB 2.x | Legacy |
-| AES-128-CMAC | SMB 3.0+ | SP800-108 derived key |
-| AES-128-GMAC | SMB 3.1.1 | Preferred; leverages GCM hardware acceleration |
-
-Signing behavior:
-
-- **Enabled** (default `true`): server advertises signing capability during `NEGOTIATE`.
-- **Required** (default `false`): when `true`, the server rejects unsigned messages from
-  established sessions.
-
-The two states above are stored as one tri-state SMB adapter setting
-(`disabled` | `enabled` | `required`); this build has no command to change it.
-
-**Recommendation:** set `required: true` for all production deployments to prevent tampering even
-when encryption is not used.
-
-### SMB encryption
-
-SMB3 provides AEAD encryption delivering both confidentiality and integrity for all messages on
-an encrypted session.
-
-**Supported cipher suites:**
-
-| Cipher | Dialect | Performance |
-|--------|---------|-------------|
-| AES-128-GCM | 3.1.1 (default) | Fastest (AES-NI + CLMUL) |
-| AES-128-CCM | 3.0/3.0.2 (default) | Good (AES-NI) |
-| AES-256-GCM | 3.1.1 | Fast, higher security |
-| AES-256-CCM | 3.0+ | Highest security AES-CCM variant |
-
-**Encryption modes:**
-
-- **`disabled`**: no encryption. Suitable for testing only. `dfs` logs a startup warning when
-  SMB is bound to a non-loopback address in this mode.
-- **`preferred`** *(shipped default)*: SMB 3.x sessions are encrypted; SMB 2.x sessions are
-  still accepted. Secure by default while remaining wire-compatible with SMB 2.x.
-- **`required`**: only encrypted SMB 3.x clients can connect. SMB 2.x clients are rejected at
-  `NEGOTIATE`. Recommended for production with sensitive data.
-
-**Per-share encryption:** individual shares can require encryption via `--encrypt-data`
-(`dfsctl share export-policy update <share> --smb-encrypt`). This forces encryption on that tree regardless of the
-global mode.
-
-**Recommended production YAML:**
+To reach it from another machine, give it a certificate. The node refuses to start with
+an address off loopback and no certificate:
 
 ```yaml
-adapters:
-  smb:
-    encryption:
-      encryption_mode: required   # reject SMB 2.x; encrypt all SMB 3.x sessions
-    signing:
-      required: true              # reject unsigned messages
-```
-
-See [`../internals/security-model.md`](../internals/security-model.md) for cipher/key derivation
-internals and the full transport security comparison table.
-
----
-
-## Access control
-
-### NFSv4 ACLs
-
-DittoFS supports NFSv4 ACL-based access control with:
-
-- Per-user and per-group access control entries (ACEs)
-- Explicit ALLOW and DENY entries evaluated in order
-- Granular permission bits (read data, write data, append, execute, delete, read/write
-  attributes, read/write ACL, etc.)
-- Inheritance flags for directories
-
-ACLs are enforced at the metadata layer. DENY entries take precedence when encountered before a
-matching ALLOW entry, following the NFSv4 specification. When both NFSv4 ACLs and POSIX
-permissions are present, ACLs take precedence for NFSv4 operations.
-
-### POSIX file permissions
-
-Traditional Unix file permissions are enforced at the metadata layer: owner, group, other
-permission bits are checked in that order. When Kerberos is enabled, the Kerberos principal is
-mapped to a UID/GID before the permission check.
-
-### Export-level access control
-
-Client access is restricted per share by attaching a **netgroup** — a named list of
-IP addresses, CIDR ranges and hostnames. A share with a netgroup accepts only
-clients whose address matches a member; a share with no netgroup accepts any
-client.
-
-This build removes the netgroup commands and their REST routes, so a netgroup
-cannot be created or edited; netgroups already stored in the control-plane
-database are kept. One is attached to a share with:
-
-```bash
-dfsctl share export-policy update export --client @trusted-net=read-write
-```
-
-The netgroup is enforced on both NFS versions and on SMB, on paths that do not
-share code:
-
-- **NFSv3** — checked at MOUNT and refused with `MNT3ERR_ACCES`. The check runs
-  **only** at mount time; the per-operation path re-checks the auth-flavor
-  policy but not the client allowlist.
-- **NFSv4** — there is no MOUNT, so the check runs per request instead: when a
-  share handle enters a compound (PUTFH, or a LOOKUP crossing an export
-  junction out of the pseudo-fs) and again whenever an operation builds an auth
-  context. A client outside the allowlist gets `NFS4ERR_ACCESS`.
-- **SMB**: checked at TREE_CONNECT and again on every request on the tree,
-  against the address of the connection carrying it, and refused with
-  `STATUS_ACCESS_DENIED`. Attaching or changing the share's netgroup applies
-  to the next request; an edit to the netgroup's members applies once the
-  cached verdict for that address expires (30 seconds). See
-  [SMB § Share access policy](smb.md#share-access-policy).
-
-**Consequence for tightening an export.** Because v4 re-checks per request,
-adding or narrowing a netgroup takes effect on a v4 client's next operation,
-including one already holding a file handle. On v3 it takes effect for new
-mounts only — an already-mounted v3 client keeps working until it remounts.
-Remount is what re-reads the allowlist on v3.
-
-Which authentication flavors an export accepts is a separate policy from the
-client allowlist. Unlike the address gate, the flavor gate *is* re-checked per
-operation on both versions: set it with `--flavor`, `--min-proof` and
-`--min-protection` on the same `dfsctl share export-policy update` command, and see
-[configuration](configuration.md) for the Kerberos floor.
-
-### Identity mapping
-
-Squash mode is a per-share setting (`squash`). The anonymous UID/GID come from
-the share's anonymous identity.
-
-It is applied *after* the share grant is resolved and *before* file-level POSIX
-and ACL checks. That ordering matters under `all_to_guest`: the share-level
-permission is still chosen from the client's original wire identity, and only
-the identity used for per-file checks is squashed. If a share grant depends on
-the caller being a known user, squashing does not turn that grant into a guest
-grant.
-
-All squash — every client's *file-level* identity is anonymous:
-
-```bash
-dfsctl share export-policy update export --squash all
-```
-
-Root squash — root (UID 0) is mapped to anonymous for file checks, everyone else passes through:
-
-```bash
-dfsctl share export-policy update export --squash root
-```
-
-No squashing — client UIDs pass through unchanged; use only on trusted networks
-or with Kerberos:
-
-```bash
-dfsctl share export-policy update export --squash none
-```
-
-The full set of modes is `none`, `root_to_admin`, `root_to_guest`,
-`all_to_admin` and `all_to_guest`.
-
-### Read-only shares
-
-```bash
-dfsctl share export-policy update export --read-only
-```
-
-A read-only share fails write and create operations with `EROFS`
-(`ErrReadOnly`), distinct from the `EACCES` a permission denial returns.
-
----
-
-## Network security
-
-### NFS-over-TLS (RFC 9289)
-
-DittoFS implements the opportunistic `AUTH_TLS` STARTTLS upgrade from RFC 9289: a client sends
-a `NULL` RPC with `auth_flavor = AUTH_TLS`, the server replies with the `"STARTTLS"` verifier,
-and both perform a TLS 1.3 handshake on the same connection — all subsequent traffic is
-encrypted. The handshake runs in userspace (no kernel TLS / `tlshd` on the server). Setting
-`client_ca` requires and verifies a client certificate (mutual TLS).
-
-```yaml
-adapters:
-  nfs:
-    tls:
-      cert_file: /etc/dittofs/tls/tls.crt
-      key_file:  /etc/dittofs/tls/tls.key
-      client_ca: /etc/dittofs/tls/ca.crt   # optional — mutual TLS
-      mode: opportunistic                   # "opportunistic" (default) | "require"
-```
-
-- **`opportunistic`** still serves non-TLS clients in plaintext (smooth rollout).
-- **`require`** rejects plaintext connections until they upgrade.
-- DittoFS only loads and hot-reloads cert files; issuance and renewal are the platform's
-  responsibility.
-- **Client support:** Linux `mount -o vers=4.1,xprtsec=tls` needs `tlshd` + `CONFIG_NET_HANDSHAKE`
-  (RHEL 9.x / kernel 6.7+). macOS has no NFS-over-TLS client — use Kerberos or a VPN tunnel.
-
-### Control plane API TLS
-
-The management REST API (default port `8080`) carries the highest-value credentials in the
-system. It binds to `127.0.0.1` (loopback only) by default — a fresh `dfs start` does not
-expose credentials off-host.
-
-Any deployment that accepts connections from another machine (multi-host, Kubernetes) should set
-`api.listen` to a non-loopback address and pair it with TLS. The API serves an address that
-is not loopback only over TLS, so a start without both files is refused:
-
-```yaml
+# /etc/dittofs/config.yaml
 api:
   listen: ["0.0.0.0:8080"]
   tls:
@@ -411,212 +59,281 @@ api:
     key_file: /etc/dittofs/tls/tls.key
 ```
 
-DittoFS does not generate self-signed certificates or perform ACME. v2 has no mutual TLS or
-minimum-version key for the API; see [Configuration](configuration.md#5-api-server) for
-the keys it reads.
+Without the `tls` block, `dfs config validate` says:
 
-**Recommended deployment model:**
-
-- **Kubernetes / internet-facing edge:** terminate TLS at an ingress, service mesh, or reverse
-  proxy (NGINX) in front of DittoFS.
-- **Direct `dfsctl` access / non-Kubernetes hosts:** use DittoFS native TLS. `dfsctl` presents
-  no client certificate: it trusts the server through `--cacert` and signs in with a password or
-  an API token. A credentials file from an older `dfsctl` loses its `client_cert`,
-  `client_key`, `expires_at` and `preferences` fields on the next save, and one holding
-  `tls_skip_verify: true` is refused until that field is removed.
-
-`dfsctl` TLS is captured once at login and reused by every later command:
-
-```bash
-# Private CA
-dfsctl login --server https://host:port --cacert /etc/dittofs/tls/ca.crt -u admin
-
-dfsctl share list   # reuses the stored CA — no flags needed
+```console
+$ dfs config validate
+Error: /etc/dittofs/config.yaml: api.tls.cert_file: required, api.listen has an address off loopback
+/etc/dittofs/config.yaml: api.tls.key_file: required, api.listen has an address off loopback
 ```
 
-The login stores the CA bundle's file path (not its contents); each command re-reads it, so
-cert-manager rotation is picked up automatically.
+DittoFS does not make certificates. Bring your own (a private CA, cert-manager, ACME).
+The node reloads the files when they change, so a renewed certificate needs no restart.
+The metrics listener (`metrics.listen`) uses the same certificate when it is off
+loopback.
 
-See [`./configuration.md`](./configuration.md) for the full option reference.
-
-### Network-level alternatives
-
-Without NFS-over-TLS, NFS data travels in cleartext. Use one of:
-
-1. **WireGuard (recommended):** set up a WireGuard VPN between client and server, then mount
-   over the VPN interface.
-
-2. **IPsec:** configure an IPsec tunnel so NFS traffic flows through an encrypted tunnel.
-
-3. **SSH tunnel:**
-   ```bash
-   ssh -L 12049:localhost:12049 user@server
-   sudo mount -t nfs -o nfsvers=4,tcp,port=12049 localhost:/export /mnt/test
-   ```
-
-### Firewall configuration
-
-Restrict access to DittoFS ports:
+Sign in from another machine with the CA that signed the certificate. `dfsctl`
+remembers it for later commands:
 
 ```bash
-# Linux (iptables)
-sudo iptables -A INPUT -p tcp --dport 12049 -s 192.168.1.0/24 -j ACCEPT
+dfsctl login --server https://dfs.example.com:8080 --username admin --cacert /etc/dittofs/tls/ca.crt
+dfsctl share list     # no TLS flags needed now
+```
+
+`dfsctl` stores the CA file's path, not its contents, and reads it again on each
+command, so a rotated CA file is picked up. A host name is never treated as loopback:
+plain `http://` works only with `127.0.0.1` or `::1`.
+
+In Kubernetes, or behind a reverse proxy, you can end TLS at the ingress instead.
+
+### 2. Change the admin password
+
+If `dfs init` generated the admin password, the account can do nothing but change it
+until you do:
+
+```bash
+dfsctl login --server http://127.0.0.1:8080 --username admin
+dfsctl password change
+```
+
+Changing a password ends the account's other sessions. If you lose the admin password,
+stop the node and run `dfs reset-admin` on its host: it prints a new password once,
+which must be changed at the next sign-in.
+
+### 3. Give each person an account with the least role it needs
+
+Do not share the `admin` account. Create an account for each person, with a role:
+
+| Role | Can |
+| --- | --- |
+| `viewer` | read shares, stores, settings, operations, and users and groups that hold no role; cannot change anything |
+| `operator` | also create and change shares, grants, export policies, quotas, netgroups, stores, settings, and users and groups that hold no role |
+| `admin` | also manage accounts that hold a role, other accounts' API tokens, the installation (such as rotating the signing key) and the identity secrets, and read the audit log |
+
+```bash
+dfsctl user create carl --role viewer
+dfsctl user set-password carl
+```
+
+```console
+NAME  ID                                    UID  ROLE    EMAIL  DISABLED
+carl  ea66f7c8-d0c7-4512-8e0d-0d71a11e0e5f       viewer         no
+```
+
+A user with a role and no `--uid` can use the management API but owns no files. A user
+with a `--uid` and no role is a file user only. One account can be both.
+
+### 4. Use API tokens for scripts, with an expiry
+
+A script or a CI job should sign in with an API token, not a person's password. Make it
+a **service account**, a user with a role and no password, and give it a token:
+
+```bash
+dfsctl user create ci-bot --role operator
+(umask 077; dfsctl token create --user ci-bot --expires-in 720h > token.txt)
+```
+
+```console
+API token 7a6bb95a-075f-e685-39f0-3bfc3c57c945, expiring 2026-12-25T10:28:04+01:00; it is not shown again
+```
+
+The token itself goes to `token.txt`; the line above goes to the terminal. Use it from
+the script:
+
+```bash
+dfsctl login --server https://dfs.example.com:8080 --token-file token.txt -c ci
+dfsctl share list
+```
+
+List and revoke tokens:
+
+```bash
+dfsctl token list --user ci-bot
+dfsctl token revoke 7a6bb95a-075f-e685-39f0-3bfc3c57c945 --user ci-bot
+```
+
+```console
+ID                                    CREATED               EXPIRES
+7a6bb95a-075f-e685-39f0-3bfc3c57c945  2026-11-25T09:28:04Z  2026-12-25T09:28:04Z
+```
+
+A token lives at most `api.token_max_lifetime`, a year by default. An admin can lower
+it; a longer `--expires-in` is then refused:
+
+```bash
+dfsctl setting set installation api.token_max_lifetime 2160h   # 90 days
+```
+
+```console
+$ dfsctl token create --expires-in 100000h
+Error: dfsctl token create: --expires-in 100000h0m0s: the server refused the expiry it gives, which must fall after the server's time and within its api.token_max_lifetime; ...
+```
+
+Setting a user's password (`dfsctl user set-password`) cancels all of that user's
+sessions and API tokens.
+
+If you think the key that signs sign-in sessions leaked, rotate it. A new key signs
+from then on, and what the old key signed stops being accepted once it expires, about
+15 minutes later:
+
+```bash
+dfsctl installation rotate-signing-key --wait
+```
+
+To cut off one leaked API token, revoke it with `dfsctl token revoke` instead.
+
+### 5. Shorten sessions if you need to
+
+A `dfsctl login` session lasts `api.session_lifetime`, 12 hours by default. `dfsctl`
+refreshes it on its own until then. To make people sign in more often:
+
+```bash
+dfsctl setting set installation api.session_lifetime 8h
+```
+
+### 6. Read the audit log
+
+Every management action is recorded: who did it, to what, and whether it was applied
+or refused. Only an `admin` can read it.
+
+```bash
+dfsctl audit list --from 2026-11-25T00:00:00Z
+```
+
+```console
+TIME                  ACTOR  TARGET                                                  OUTCOME
+2026-11-25T09:27:54Z  admin  session:a686d111-aaaf-3d63-4ade-bcb36a223f5d            applied
+2026-11-25T09:28:00Z  admin  user:8c814c1f-9930-4780-b8b5-b96002bba793               applied
+2026-11-25T09:28:00Z  admin  share:                                                  refused: invalid_argument
+2026-11-25T09:28:04Z  admin  api-token:<token-id>                                    applied
+```
+
+Narrow it to one person or one thing:
+
+```bash
+dfsctl audit list --actor alice
+dfsctl audit list --target user:8c814c1f-9930-4780-b8b5-b96002bba793
+```
+
+Records are kept for `audit.retention`, 400 days by default and at least 90. Watch for
+`refused` outcomes you do not expect.
+
+### 7. Turn off people who leave
+
+Disable an account at once. It is refused on every protocol and on the API from its
+next request:
+
+```bash
+dfsctl user update alice --disabled
+```
+
+Re-enable it with `--disabled=false`, or delete it with
+`dfsctl user delete alice --force --wait`.
+
+### 8. Protect the key files and the passphrase
+
+The node seals its secrets (password hashes, the signing key, NT hashes, the keytab,
+the directory's bind password) under the key files that `keys.storage` and
+`keys.protocol` name. Each key file is protected by the passphrase in
+`DITTOFS_ENCRYPTION_PASSPHRASE`.
+
+- Copy the key files off the host and keep the passphrase somewhere safe. Losing either
+  loses what they seal, and nothing recovers it.
+- Keep the key files readable by the `dfs` user only (`chmod 600`).
+- Pass the passphrase through your service manager's secret mechanism, not a shell
+  history.
+
+See [Encryption](encryption.md) for KMIP and key rotation.
+
+### 9. Lock down each share
+
+[Access Control](access-control.md) has the commands. In short, for each share:
+
+- Grant only the users and groups who need it, at the lowest level that works
+  (`dfsctl grant set archive --group auditors --access read`).
+- Allow only the client addresses that need it
+  (`dfsctl share export-policy update archive --client 192.0.2.0/24=read-write`). A share
+  with no client rules admits every address. Use addresses, not host names.
+- Require a real sign-in (`--min-proof secret` or `ticket`), so guests are refused.
+- Make shares read-only where nobody needs to write (`--read-only`).
+- Encrypt SMB traffic to shares holding sensitive data (`--smb-encrypt`).
+
+### 10. Firewall the ports
+
+Open the file-protocol ports only to the clients that use them, and the API port only to
+the machines that manage the node. The defaults are NFS `12049`, SMB `12445` and API
+`8080`.
+
+> NFS Kerberos is not served yet: every RPCSEC_GSS call is answered `AUTH_BADCRED`, so a `sec=krb5` mount fails. The mount below is the intended procedure once it is.
+
+```bash
+# Linux (iptables): NFS from the office network only
+sudo iptables -A INPUT -p tcp --dport 12049 -s 192.0.2.0/24 -j ACCEPT
 sudo iptables -A INPUT -p tcp --dport 12049 -j DROP
 
 # Linux (firewalld)
-sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.168.1.0/24" port protocol="tcp" port="12049" accept'
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.0.2.0/24" port protocol="tcp" port="12049" accept'
 sudo firewall-cmd --reload
-
-# macOS (pf) — add to /etc/pf.conf:
-# pass in proto tcp from 192.168.1.0/24 to any port 12049
-# block in proto tcp from any to any port 12049
-sudo pfctl -f /etc/pf.conf
 ```
 
----
+## Protect NFS traffic
 
-## Kerberos configuration
+NFS-over-TLS is not served on this version, so NFS data crosses the network in clear
+text. Carry it through an encrypted tunnel:
 
-DittoFS uses a shared Kerberos layer (`pkg/auth/kerberos`) that serves both the NFS (RPCSEC_GSS)
-and SMB (SPNEGO) adapters. Configure Kerberos once and both protocols benefit.
+1. **WireGuard** (recommended): connect client and server over WireGuard and mount
+   through the tunnel's address.
+2. **IPsec**: route NFS traffic through an IPsec tunnel.
+3. **SSH tunnel**, for one client:
 
-### Server configuration
+   ```bash
+   ssh -L 12049:localhost:12049 alice@dfs.example.com
+   sudo mount -t nfs -o nfsvers=4,tcp,port=12049 localhost:/archive /mnt/archive
+   ```
 
-Add the `kerberos` section to your DittoFS config file:
+macOS has no NFS-over-TLS client at all, so on macOS a tunnel is the only option even
+once the server supports it.
 
-```yaml
-kerberos:
-  enabled: true
-  keytab_path: /etc/dittofs/dittofs.keytab
-  service_principal: nfs/server.example.com@EXAMPLE.COM
-  krb5_conf: /etc/krb5.conf
-  max_clock_skew: 5m
-  context_ttl: 8h
-```
+## SMB sign-in and encryption
 
-Configuration fields:
+SMB accepts these sign-ins:
 
-| Field | Description | Default |
-|-------|-------------|---------|
-| `enabled` | Enable Kerberos authentication | `false` |
-| `keytab_path` | Path to the Kerberos keytab file | required when enabled |
-| `service_principal` | Service principal name in `service/hostname@REALM` format | required when enabled |
-| `krb5_conf` | Path to `krb5.conf` | `/etc/krb5.conf` |
-| `max_clock_skew` | Maximum allowed clock difference between client and server | `5m` |
-| `context_ttl` | Maximum lifetime of an RPCSEC_GSS security context | `8h` |
+- **Kerberos**, once a keytab is imported or the installation has joined a domain. This
+  is the strongest choice. See [Identity](identity.md).
+- **NTLM with a password** of a DittoFS user, or of a domain user once the installation
+  has joined the domain. NTLM has no mutual authentication and is weaker than Kerberos.
+  An admin can turn it off for the installation with
+  `dfsctl setting set installation identity.ntlm false`. That also deletes every stored
+  NT hash, so users need a new password (`dfsctl user set-password`) if you turn it
+  back on.
+- **Guest.** A failed sign-in is refused, never turned into a guest session. A guest
+  session can neither sign nor encrypt; `--min-proof secret` refuses it on a share.
 
-### Keytab management
+### SMB encryption
 
-The keytab file contains the service principal's cryptographic key. It must be:
-
-- Readable only by the DittoFS process user
-- Stored with restricted permissions (`chmod 600`)
-- Rotated periodically per your organization's security policy
-
-DittoFS supports hot-reload of the keytab: when the file is replaced on disk, the server picks
-up the new key without a restart.
-
-Create a keytab with MIT Kerberos:
+SMB 3 can encrypt every message of a session (AES-128-GCM, AES-128-CCM, AES-256-GCM or
+AES-256-CCM). The server-wide encryption mode cannot be changed on this version. To
+require encryption on one share:
 
 ```bash
-# On the KDC or using kadmin
-kadmin -q "addprinc -randkey nfs/server.example.com@EXAMPLE.COM"
-kadmin -q "ktadd -k /etc/dittofs/dittofs.keytab nfs/server.example.com@EXAMPLE.COM"
-
-chmod 600 /etc/dittofs/dittofs.keytab
-chown dittofs:dittofs /etc/dittofs/dittofs.keytab
+dfsctl share export-policy update archive --smb-encrypt
 ```
 
-### NFS client setup
+See [SMB](smb.md) for client support.
 
-```bash
-# Mount with Kerberos (krb5 security flavor)
-sudo mount -t nfs -o sec=krb5,nfsvers=4,tcp,port=12049 server.example.com:/export /mnt/secure
+## Kerberos keytab
 
-# Verify mount
-mount | grep /mnt/secure
-
-# Ensure client has a valid ticket
-kinit user@EXAMPLE.COM
-klist
-```
-
-### SMB client setup
-
-SMB clients that support Kerberos (Windows, smbclient, CIFS kernel module) automatically
-negotiate Kerberos via SPNEGO during session setup when the client has a valid TGT.
-
-```bash
-# Linux: mount with Kerberos
-sudo mount -t cifs -o sec=krb5,vers=3.0 //server.example.com/export /mnt/secure
-
-# smbclient with Kerberos
-smbclient -k //server.example.com/export
-```
-
----
-
-## Production hardening checklist
-
-- [ ] Enable Kerberos authentication for NFS and SMB
-- [ ] Enable SMB3 encryption with `encryption_mode: required` for sensitive data
-- [ ] Enable SMB message signing with `required: true`
-- [ ] Deploy behind VPN or use NFS-over-TLS for NFS data confidentiality
-- [ ] Restrict export access by IP address (attach a netgroup to each share)
-- [ ] Use root squash on all exports (`squash: root_to_guest`)
-- [ ] Configure NFSv4 ACLs for fine-grained access control
-- [ ] Use read-only exports where writes are not needed
-- [ ] Bind control plane to loopback or behind a reverse proxy with TLS
-- [ ] Set keytab permissions to `600`, owned by the DittoFS process user
-- [ ] Enable Prometheus metrics and monitor failed authentication attempts
-- [ ] Keep DittoFS updated; apply patches promptly
-
-## Secure configuration example
-
-```yaml
-logging:
-  level: warn
-  format: json
-  output: /var/log/dittofs/security.log
-
-kerberos:
-  enabled: true
-  keytab_path: /etc/dittofs/dittofs.keytab
-  service_principal: nfs/server.example.com@EXAMPLE.COM
-  krb5_conf: /etc/krb5.conf
-  max_clock_skew: 5m
-  context_ttl: 8h
-
-# Shares and their squash mode live in the control plane, not this file.
-# Create them once:
-#
-#   dfsctl share create export --path /export --namespace <namespace-id> --flavor sys --client 0.0.0.0/0=read-write \
-#     --read-only --squash root_to_guest
-#
-# This build serves no file protocol, so it reads no adapter block here.
-```
-
-See [`./configuration.md`](./configuration.md) for the full configuration reference.
-
----
-
-## Planned security features
-
-- [ ] Encryption at rest for content stores
-- [ ] Encrypted metadata storage
-- [ ] Audit logging for all file operations and failed authentication attempts
-- [ ] Integration with SIEM systems
-- [ ] Role-based access control (RBAC) for administrative operations
-
----
+The Kerberos keytab is imported through the management API and stored sealed. The copy
+on disk is no longer read after the import, so delete it or keep it `chmod 600`. A
+joined installation needs no keytab for its own names and rotates its computer
+account's password by itself. [Identity](identity.md#import-the-keytab) has the steps.
 
 ## Reporting security issues
 
-If you discover a security vulnerability in DittoFS:
+If you find a vulnerability in DittoFS:
 
-1. **Do not** open a public GitHub issue.
-2. Email security concerns to the maintainers (see repository for contact).
-3. Include: description of the vulnerability, steps to reproduce, potential impact, and suggested
-   fixes if any.
+1. Do **not** open a public GitHub issue.
+2. Email the maintainers (see the repository for contact details).
+3. Include what you found, how to reproduce it, its impact, and a fix if you have one.
 
-We will acknowledge receipt within 48 hours and provide a timeline for a fix.
+We acknowledge reports within 48 hours and give a timeline for the fix.

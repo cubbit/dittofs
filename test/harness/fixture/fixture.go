@@ -90,6 +90,14 @@ func (s *Server) Command(argv []string, dir string, env []string) ([]string, err
 	return s.clients.asUser(argv, dir, env)
 }
 
+// Client is the API client signed in as the administrator, signing in again
+// when the server refuses its token. A Restart replaces it, so a caller
+// asks again after one.
+func (s *Server) Client() *client.Client { return s.client }
+
+// Namespace is the ID of the namespace the fixture's shares are in.
+func (s *Server) Namespace() string { return s.namespace }
+
 // secret returns 32 random hex digits.
 func secret() string {
 	b := make([]byte, 16)

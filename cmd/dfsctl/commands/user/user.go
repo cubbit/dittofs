@@ -228,12 +228,12 @@ with --wait, follows it to its end.`,
 				return fmt.Errorf("%s: user %s: %w", cmd.CommandPath(), id, err)
 			}
 			force, _ := cmd.Flags().GetBool("force")
-			return cmdutil.RunDeleteWithConfirmation(cmd, env, "user", u.Spec.Name, force, func() error {
+			return cmdutil.RunDeleteWithConfirmation(cmd, env, "user", u.Spec.Name, force, func() (*apiv1.Operation, error) {
 				op, err := c.Users().Delete(cmd.Context(), id, u.ETag)
 				if err != nil {
-					return fmt.Errorf("%s: deleting user %s: %w", cmd.CommandPath(), id, err)
+					return nil, fmt.Errorf("%s: deleting user %s: %w", cmd.CommandPath(), id, err)
 				}
-				return cmdutil.Follow(cmd, c, op)
+				return op, cmdutil.Follow(cmd, c, op)
 			})
 		},
 	}

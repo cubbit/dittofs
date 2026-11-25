@@ -14,21 +14,23 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// table is an adapter as a table, a row for each node that reports it.
-func table(a apiv1.Adapter) cmdutil.Table {
-	settings := strings.Join(slices.Sorted(maps.Keys(a.Spec.Settings)), ",")
+// table is adapters as a table, a row for each node that reports one.
+func table(as ...apiv1.Adapter) cmdutil.Table {
 	t := cmdutil.Table{{"PROTOCOL", "ENABLED", "SETTINGS", "NODE", "STATE"}}
-	if len(a.Status.Nodes) == 0 {
-		return append(t, []string{a.ID, cmdutil.BoolToYesNo(a.Spec.Enabled), settings, "", ""})
-	}
-	for _, n := range a.Status.Nodes {
-		t = append(t, []string{a.ID, cmdutil.BoolToYesNo(a.Spec.Enabled), settings, n.Node, string(n.State)})
+	for _, a := range as {
+		settings := strings.Join(slices.Sorted(maps.Keys(a.Spec.Settings)), ",")
+		if len(a.Status.Nodes) == 0 {
+			t = append(t, []string{a.ID, cmdutil.BoolToYesNo(a.Spec.Enabled), settings, "", ""})
+		}
+		for _, n := range a.Status.Nodes {
+			t = append(t, []string{a.ID, cmdutil.BoolToYesNo(a.Spec.Enabled), settings, n.Node, string(n.State)})
+		}
 	}
 	return t
 }
 
-// New returns the adapter command. No route lists the adapters, so each
-// command names one by its protocol.
+// New returns the adapter command; each command but list names an adapter
+// by its protocol.
 func New(env cmdutil.Env) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "adapter",
@@ -40,11 +42,33 @@ them; a node override of one, such as one host's port, is a setting at that
 node's scope, set through 'dfsctl setting set node:<id>'.
 
 Examples:
+  # List the adapters
+  dfsctl adapter list
+
   # Show the NFS adapter on every node
   dfsctl adapter get nfs
 
   # Enable the SMB adapter on port 1445
   dfsctl adapter set smb --enabled --setting port=1445`,
+	}
+	list := &cobra.Command{
+		Use:   "list",
+		Short: "List adapters",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			c, _, err := cmdutil.NewClient(env)
+			if err != nil {
+				return err
+			}
+			all := []apiv1.Adapter{}
+			for a, err := range c.Adapters().List(cmd.Context(), nil) {
+				if err != nil {
+					return fmt.Errorf("%s: %w", cmd.CommandPath(), err)
+				}
+				all = append(all, a)
+			}
+			return cmdutil.PrintOutput(cmd, all, len(all) == 0, "No adapters.", table(all...))
+		},
 	}
 	get := &cobra.Command{
 		Use:   "get <protocol>",
@@ -102,6 +126,6 @@ set, a value that is JSON taken as it is and any other as a string, and each
 	set.Flags().Bool("enabled", false, "Enable the adapter, or disable it with --enabled=false")
 	set.Flags().StringArray("setting", nil, "A setting of the adapter, key=value (repeatable)")
 	set.Flags().StringArray("unset", nil, "A setting of the adapter to remove (repeatable)")
-	cmd.AddCommand(get, set)
+	cmd.AddCommand(list, get, set)
 	return cmd
 }

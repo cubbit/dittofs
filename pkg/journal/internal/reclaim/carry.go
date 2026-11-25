@@ -420,6 +420,16 @@ func (c *Copier) placeCarried(ctx context.Context, rec Rec, h format.RecordHeade
 	cp := rec
 	cp.Seg = pl.Loc.Segment
 	cp.Loc = pl.Loc
+	// decision: the copy doubles its identity class at its registration,
+	// before its bytes are durable, so the source stops holding from here.
+	// What protects the window is the source itself: the pass holds its
+	// claim until its unit's copies are durable, and a worker's own
+	// hand-over of it would park on the same unit's recorded locations and
+	// frozen pending tail — so a crash before the copy is durable finds
+	// the source's bytes on disk to rebuild from. Overturned by a path
+	// that releases the claim or unlinks the source before the copies it
+	// placed are durable; moving the doubling to the copy's durability is
+	// the upgrade.
 	if rec.Kind == format.KindForget {
 		c.tracker.RegisterForget(cp, c.tracker.forgetSnapshotOf(rec))
 	} else {

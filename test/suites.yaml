@@ -395,6 +395,17 @@ suites:
     blocking: { pr: false }
     options:
       stress: { cmd: "go test -tags=e2e,stress -run ^TestStress -timeout=30m ./test/e2e/", tier: nightly }
+      # The CLI's suite from a dfsctl child run as uid 65534, to whom the node's files and the
+      # bootstrap are unreadable.
+      second-user:
+        cmd: go test -tags=e2e -run SecondUser -timeout=5m ./cmd/dfsctl
+        tier: pr
+        needs: [linux, root]
+        paths:
+          - cmd/dfsctl/**
+          - pkg/node/**
+          - internal/node/**
+          - internal/cli/**                 # the credentials file the child writes
       kerberos:                         # the Kerberos mounts, on pull requests that can affect them
         cmd: go test -tags=e2e -run Kerberos -timeout=30m ./test/e2e/
         tier: pr
@@ -407,7 +418,10 @@ suites:
           - pkg/auth/**
           - pkg/bootstrap/**                # the Kerberos keytab and principal
           - cmd/dfs/**                      # the server's Kerberos capability at start
+          - internal/node/**                # the sign-in, the keytab and the export policy reach the mount
+          - pkg/node/**                     # through the node and its API
           - test/e2e/framework/kerberos.go
+          - test/e2e/admission_kerberos_test.go
           - test/integration/kerberos/**
       # The tests that reach one file through both protocols, on pull requests that can break
       # them: a drift between NFS and SMB is invisible to every single-protocol suite. The
@@ -428,6 +442,8 @@ suites:
           - pkg/metadata/**
           - pkg/auth/**                       # the SIDs both adapters encode
           - pkg/identity/**                   # the caller and identity types both adapters carry
+          - internal/node/**                  # the grants and export policy both adapters admit by
+          - pkg/node/**
           - test/e2e/framework/**             # the mount and fixture code the option runs on
 
   # Conformance runs the production profile, badger-s3, only.

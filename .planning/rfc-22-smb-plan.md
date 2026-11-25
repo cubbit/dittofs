@@ -100,7 +100,7 @@ and E5 to E8, for sign-in (§3.2).
   test exempts each by the request's context, never by its operation; §9's invariant A5 names
   those exceptions, and RFC 17 §3.1's and RFC 14 §2.1's sentences on `SESSION_SETUP`'s calls point
   at §4.3. `vfs.Mutates` is unchanged, and RFC 17 §3.1 says the check exempts those calls by
-  context; T2.1 changes `vfstest.Mutations` to keep each call's
+  context; RFC 21's plan's T2.4 changes `vfstest.Mutations` to keep each call's
   reference and answer. T2.1, T5.3, T5.4, T5.7, T6.5, T12.2 and T12.4.
 - **A6. RFC 22 §12.1, §16.5 and §18, RFC 14 §9.4 and L36, RFC 17 §5.4: the service refuses a
   stream's rename and disposition.** The adapter checks no `DELETE` for either: a rename or a
@@ -158,7 +158,8 @@ built where they are adapter code, and tested only once a second node exists. Wi
 Epic 1 fixes what several epics of SMB share before any is built: the request state handlers read,
 the handler set and its tables, and the callbacks value.
 Epic 2 builds what the tests stand on: the SMB handler harness on `memory.New` and
-`vfstest.Faults`, golden files cut from Samba captures, and the import test's last two rules. Twelve
+`vfstest.Faults` and golden files cut from Samba captures, over the runner, the `tshark` cut script and
+the import test's last two rules that RFC 21's plan's epic 2 builds. Twelve
 middle epics follow on three tracks: track A the connection, sessions and RFC 14's wire side;
 track B authentication, trees, the RPC services, security descriptors and the wire tests; track C
 the data path, metadata and names, locks and notification, and control codes. The integration with
@@ -227,8 +228,8 @@ point 13); the namespace-move
 rows of §6.3, which need RFC 27's move (out of scope); and the rows needing a Windows runner until
 one is provisioned (§6.2, point 8).
 
-**Test components.** The SMB handler harness, golden files from captures and the import test's
-call-site and file-size rules (epic 2). `gsstest`'s initiators come with `gss` (epic 4) and the
+**Test components.** The SMB handler harness and golden files from captures (epic 2), over RFC 21's
+plan's epic 2's runner, cut script and import test's call-site and file-size rules. `gsstest`'s initiators come with `gss` (epic 4) and the
 scripted client with sessions (epic 5), the epics that create the packages they import.
 
 ### 1.5 General rules for each epic
@@ -365,7 +366,7 @@ rows of RFC 20's deferral ledger.
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | SMB surface | `smb/protocol`'s request state; `smb/ops`' handler set, table and `ioctl/` table; the callbacks value | 3 | 3 | team | all |
-| E2 ⛔ | Test foundations | the SMB handler harness on `memory.New` and `vfstest.Faults`; golden files cut from Samba captures; the import test's call-site and file-size rules; the service's halves of A3, A6, A7 and plan gaps 23 and 25 | 5 | 11 | team; T2.4 and T2.5 in B | E3 to E14, but T2.4, beside E3, only T6.1, T8.1 and T8.5, and T2.5, after S2b, only the rows of plan gaps 23 and 25 |
+| E2 ⛔ | Test foundations | the SMB handler harness on `memory.New` and `vfstest.Faults`; golden files cut from Samba captures (the import test's call-site and file-size rules are RFC 21's plan's E2); the service's halves of A3, A6, A7 and plan gaps 23 and 25 | 5 | 11 | team; T2.4 and T2.5 in B | E3 to E14, but T2.4, beside E3, only T6.1, T8.1 and T8.5, and T2.5, after S2b, only the rows of plan gaps 23 and 25 |
 | E3 | Negotiation and the connection's stages | `NEGOTIATE`, `Caps`, signing, encryption, preauthentication, credits, the message-ID window, `HoldCodec`, the error table and its totality test, `ECHO`, `CANCEL` | 9 | 24 | A | E5; S4 |
 | E4 | Authentication mechanisms | `gss`: `Exchanges`, NTLM, Kerberos, SPNEGO, `Identity`, `gsstest` | 6 | 17.5 | B | E5; S4 |
 | E5 🔀 | Sessions | `SESSION_SETUP`, `LOGOFF`, the session registry, the client record, re-authentication, expiry, multichannel, `PreviousSessionId`, the scripted client | 8 | 15 | A | E9; E14 (partly); S4 |
@@ -617,9 +618,8 @@ internal/adapter/
     gsstest/                  E4: initiators and a test keytab; tests accept through gss on memory.New
   translate/                  E7 (access masks), E8 (attributes, times, Fit), E12 (descriptors)
   adaptertest/
-    golden/                   E2: golden files cut from reference captures
     smbclient/                E5: the scripted client (RFC 20 §8.2)
-    imports_test.go           RFC 20's E2; E2 here: entry call sites, the 800-line allowlist
+    imports_test.go           RFC 20's E2; RFC 21's plan's E2 (its T2.6): entry call sites, the 800-line allowlist
   smb/
     smb.go                    RFC 20's E6: New; builds the stages and the tables
     callbacks.go              E1 type; E9 (RecallGrant, Revoked), E11 (LockWaitOver, Notify)
@@ -720,6 +720,13 @@ RFC sections: RFC 20 §4.7's `Request.State`, §4.8 (one table for every dialect
 
 **Epic 2 estimate: 5 subtasks, 11 man-days.**
 
+**Built by RFC 21's plan.** [RFC 21's plan](rfc-21-nfs-plan.md)'s epic 2 builds, and prices, the
+pieces both adapters share (its T2.4, T2.5, T2.6) and the protocol-neutral handler runner (its
+T2.2). So T2.1 below keeps only SMB's harness, over that runner and `vfstest.Mutations`' record;
+T2.2 keeps only the Samba captures, cut with RFC 21's T2.5, a `tshark` script beside `normalize.py`; T2.3 is RFC 21's T2.6. The
+figure above still counts the moved work, until this epic is broken down; RFC 21's plan's T2.2,
+T2.4, T2.5 and T2.6 price that shared part too, so until then the programme counts it twice.
+
 What every SMB test stands on (§1.4), and, beside E3, what the service owes this pull request's
 amendments and plan gaps 23 and 25 before T6.1, T8.1, T8.5 and those gaps' rows rely on it (T2.4,
 3.5 man-days, and T2.5, 1 man-day after S2b).
@@ -743,7 +750,7 @@ sites, file sizes), §7.2 (handlers on `memory.New` and `vfstest.Faults`).
   a session setup's `SignIn` and `Connect`, and a `Find` per SID before one `SetACL`, do not.
 - T2.2 Reference captures: a script recording Samba per command area into `test/pcap-corpus/smb`,
   against the AD domain controller and Samba member of `test/smbfuzz`'s fixture rather than a
-  second fixture, and `adaptertest/golden`, which cuts captured messages into golden files.
+  second fixture, cut into golden files with `tshark` at recording time.
 - T2.3 The import test: entry methods (`Root`, `SecInfo`, `ListShares`) called only from RFC 20
   §4.10's entry files, and adapter files over 800 lines against an allowlist that may only shrink,
   each with a seeded violation it must report.
@@ -904,9 +911,12 @@ client rows; Appendix G's `SESSION_SETUP` and `LOGOFF`; RFC 20 §3.2's cleanup p
   `Disconnect` at a session's last channel.
 - T5.3 `SESSION_SETUP`: SPNEGO through `Exchanges` keyed by session ID, `SignIn` (outside the
   one-call rule, amendment A5), the session's keys derived, the final response signed, the
-  identity of §16.1, `Established`; null and guest sessions anonymous, keyless and exempt from
+  identity of §16.1, `Established`; the `Call` every request of the session carries sets
+  `OpenFilesKeepNames` and leaves `PrivilegeOnEveryCall` unset (RFC 17 §3.0, RFC 22 §16.1), with a
+  test that an SMB request's `Call` has the first and not the second; null and guest sessions anonymous, keyless and exempt from
   signing (plan gap 17); a failed credential fails.
-- T5.4 The client record: `Connect` at a `ClientGuid`'s first authenticated setup on the node,
+- T5.4 The client record: `Connect` at a `ClientGuid`'s first authenticated setup on the node, its
+  `ClientInfo` with `ClientIsMachine` set and `Recovery` reconnect (RFC 22 §4.4, §16.4),
   outside the one-call rule (A5), its `Gen`, and Appendix G's counted and skipped setups; `LOGOFF`
   as `Disconnect` with `Logoff`, and `Last` at the node's last session, repeated at a newer `Gen`
   outside the rule (A5); null and guest sessions
@@ -978,7 +988,8 @@ Appendix G's `CREATE`, `CLOSE`, `READ`, `WRITE` and `FLUSH`; RFC 19 §2.4, §3.4
 
 - T7.1 `CREATE`'s and `CLOSE`'s tagged structs, with every create context of Appendix D decoded and
   the response contexts encoded.
-- T7.2 `FileId`s: the persistent half from the open's `OpenID` and shard, through `pkg/vfs`'s codec;
+- T7.2 `FileId`s: the persistent half from the open's `OpenID` and shard, which every `CREATE` gets
+  from `SMBCaps`' `WantOpenID` (RFC 22 §6.1), through `pkg/vfs`'s codec;
   the volatile half in the session's table, never reissued while held (RFC 20 §2.2); a related
   member's current open; a `FileId` answered `STATUS_FILE_CLOSED` for `ErrState` (`Revoked`), then
   freed with `FreeState` in the handler (RFC 22 §16.5's row; RFC 14 §5.3; plan gap 14, amendment
@@ -988,7 +999,8 @@ Appendix G's `CREATE`, `CLOSE`, `READ`, `WRITE` and `FLUSH`; RFC 19 §2.4, §3.4
   gap 28).
 - T7.4 Access translation in `translate`: generic rights to `FILE_GENERIC_*`, `ShareAccess` to the
   deny mode, `MAXIMUM_ALLOWED` as `vfs.MaximumAllowed` in `OpenRequest.Access`, granted or refused
-  by the service, backup intent included (amendment A3; the refusals are T2.4's tests); masks total
+  by the service, backup intent included: `FILE_OPEN_FOR_BACKUP_INTENT` sets `OpenRequest.Backup`,
+  the only open where privilege counts, since T5.3's `Call` leaves `PrivilegeOnEveryCall` unset (amendment A3; the refusals are T2.4's tests); masks total
   and round-tripping.
 - T7.5 `CREATE`: one `Open` with disposition, access, deny mode, directory, name and the options of
   Appendix D; open by file ID and shared virtual disks refused; a named stream opened through
@@ -1038,7 +1050,9 @@ Appendix F's reparse codes; RFC 20 §4.9's `Fit`, §6.10's `QUERY_INFO` gate.
   refused by the service and answered `STATUS_NOT_SUPPORTED` (amendment A6, plan gap 6), extended
   attributes compared without case (plan gap 20); the refusals of Appendix E.3.
 - T8.5 Rename and link (§13): the target from the share root, `ReplaceIfExists`, one `Rename` with
-  the open as `from.Open`, a stream's open's refused by the service (A6, T2.4) and answered
+  the open as `from.Open`; the refusals of an open target and of a directory with an open inside
+  it come from T5.3's `OpenFilesKeepNames`, tested here over loopback against an NFS rename of the
+  directory that succeeds; a stream's open's refused by the service (A6, T2.4) and answered
   `STATUS_NOT_SUPPORTED` (plan gap 6); a target naming a stream, as T7.3 parses it, refused from
   the request alone.
 - T8.6 `QUERY_DIRECTORY`: `ReadDir` by cursor, `Fit` to the client's buffer, every directory class,
@@ -1067,7 +1081,8 @@ bounds by cause; Appendix D's `RqLs`; Appendix G's `OPLOCK_BREAK`; RFC 20 §3.3'
 - T9.1 The lease's and oplock's tagged structs: break notifications and acknowledgements in both
   forms.
 - T9.2 Caching requests on `CREATE`: lease key, parent, epoch and version, oplock levels as grant
-  kinds; none for a guest or null session; the join test through `OpenRequest.Conn` (plan gap
+  kinds, with `SMBCaps`' `GrantBelongsToOpen` on every `CREATE` so an oplock is its open's own
+  (RFC 22 §6.2); none for a guest or null session; the join test through `OpenRequest.Conn` (plan gap
   18); the service grants none on a directory (RFC 22 §6.2; plan gap 23, T2.5) and refuses the
   other-file key with
   `ErrInvalid` (RFC 14 §2.4); the adapter encodes `OpenResult.Grant` in the response's lease
@@ -1101,7 +1116,8 @@ RFC sections: §4.3's reconnect after a node is lost, §6.4, §6.5's create and 
 rules, §16.2, §16.4's durable rows; Appendix D's durable and app-instance contexts; RFC 14 §8.1;
 RFC 20 §4.7's `Keep`, §6.4.
 
-- T10.1 Durability on `CREATE`: v1 and v2 requests, granted only with a batch oplock or a lease with
+- T10.1 Durability on `CREATE`: v1 and v2 requests, as `Durability` with its `Timeout` on an open
+  by a call stating `WantOpenID` (T7.2; RFC 14 §8.1 refuses one without), granted only with a batch oplock or a lease with
   handle caching (plan gap 22); v2's timeout, 60 s if zero and at most 300 s; persistent only on a
   continuously available share, and durable for a stream; the response contexts.
 - T10.2 Reconnect: routed by the `FileId`'s persistent half, never the path; the client, create
@@ -1636,8 +1652,8 @@ the row names it, of the open points (§9) of RFC 20's [epic 2](rfc-20-adapters-
 | the error-table rows and the totality test | E3 |
 | handler tests on `memory.New` and `vfstest.Faults`, the one-call rule read per handler from `memory.New`'s record | E2 (harness), every handler epic |
 | operation codecs, golden vectors, 0-allocation gates | each command's epic; the gates in E7 and E8 |
-| the import test's entry call sites and 800-line allowlist | E2 |
-| the scripted client and a shared golden helper | E5 (client), E2 (helper) |
+| the import test's entry call sites and 800-line allowlist | RFC 21's plan's E2 (its T2.6) |
+| the scripted client and a shared golden helper | E5 (client); the helper RFC 21's plan's E2 (its T2.5) |
 | cross-protocol rows (RFC 20 §7.4) | E16, jointly with RFC 21's plan |
 | end-to-end rows (RFC 20 §7.5) | E16 |
 | wire tests against Samba (RFC 20 §8) | E14 |
@@ -1652,7 +1668,7 @@ the row names it, of the open points (§9) of RFC 20's [epic 2](rfc-20-adapters-
 | `internal/mfsymlink`, deleted by RFC 20's T1.1 for having no importer | not here: unowned, §6.5's deferral ledger |
 | the import test's cases for the packages two protocols share: a protocol may import `translate` and `gss`, `translate` imports only neutral types, `gss`'s own clause, `smb/dcerpc` imports no SMB package (epic 2's §9) | each with its package's first commit: `gss` in E4, `dcerpc` in E6, `translate` in E7 |
 | a command added to a table without a vector in its protocol's suite fails the suite, a check in `internal/adapter/smb` (epic 6's §9) | E3, with the first command |
-| each request's `vfs.Call` and its `Identity`, built from SMB's session (RFC 20 §4.4, RFC 22 §16.1; epic 6's §9) | E5 (§7's §16.1 row) |
+| each request's `vfs.Call` and its `Identity`, built from SMB's session with SMB's capabilities (RFC 20 §4.4, RFC 22 §16.1, RFC 17 §3.0; epic 6's §9) | E5 (§7's §16.1 row; T5.3) |
 | an `IOCTL` buffer decoded by its control code (RFC 22 §16; epic 6's §9) | T3.5 |
 | a buffer decoded by its information class (RFC 22 §16; epic 6's §9) | T8.2 |
 | a security descriptor's self-relative offsets (RFC 22 §16, §11; epic 6's §9) | T12.1 |
@@ -1805,7 +1821,8 @@ each check runs").
 | RFC 20 §4.9 (`translate`, `Caps`) | E1, E3, E7, E8, E12 |
 | RFC 20 §5 (codecs), §6.10 (SMB codec gates) | each command's epic; gates in E7, E8 |
 | RFC 20 §6.10's pipeline micro-benchmark and end-to-end benchmark, §7.4, §7.5 | E16 |
-| RFC 20 §7.1 (call sites, file sizes), §7.2 (handlers on `memory.New` and `vfstest.Faults`) | E2 |
+| RFC 20 §7.1 (call sites, file sizes), §7.2 (the runner on `memory.New` and `vfstest.Faults`) | RFC 21's plan's E2 (its T2.6; T2.2 and T2.4) |
+| RFC 20 §7.2 (SMB's harness over that runner) | E2 |
 | RFC 20 §8, Appendix C (wire tests) | E14 |
 | RFC 20 §10 | rule 3 |
 | RFC 18 §3.3, §3.5, §3.6 (wire halves) | E4 |

@@ -300,6 +300,11 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 				if b, err = mergePatch(b, body); err != nil {
 					return err
 				}
+				if w.secret != nil {
+					// The merged body holds what the record's secret fields hold.
+					defer clear(b)
+					defer wipe(reflect.ValueOf(&rq.Body).Elem())
+				}
 				rq.Body = *new(B)
 				if err := decode(b, &rq.Body); err != nil {
 					return err

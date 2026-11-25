@@ -68,6 +68,12 @@ func mountTableOn(dir, options string, sep rune) storage.Probe {
 		Dir:       probeDir(dir, sep),
 		Mountinfo: fmt.Sprintf("33 33 259:3 / / rw,noatime - ext4 /dev/nvme1n1p1 %s\n", options),
 		FSType:    extMagic,
+		// The same good defaults the verdict's own fixtures carry: a kernel
+		// the kernel rule passes and the effective options of a clean ext4
+		// mount, so a helper differs from SuitableMount in the one input its
+		// rule refuses.
+		KernelRelease: "6.1.0",
+		ExtOptions:    "rw,relatime,data=ordered",
 	}
 }
 

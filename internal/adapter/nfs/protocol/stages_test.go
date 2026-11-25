@@ -156,6 +156,61 @@ func TestASuccessIsTheHeaderAlone(t *testing.T) {
 	}
 }
 
+// A program's status, a success's included, is written where its procedure's
+// result holds it, ahead of the body its encoder writes: nfsstat3 first in
+// every NFSv3 result but NULL's (RFC 1813 section 3.3), mountstat3 first in
+// MNT's and none in EXPORT's (section 5.2), NLM's cookie, echoed from the
+// call, and then its stat (section 6.3), and NSM's res_stat first in SM_MON's
+// and none in SM_UNMON's. Each want is written out in bytes, not built by the
+// encoder it checks.
+func TestAProgramStatusLeadsItsResult(t *testing.T) {
+	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
+	accepted := "11223344 00000001 00000000 00000000 00000000 00000000"
+	cookie := opaque(nil, []byte("abcde")) // nlm4_lockargs begins with its cookie
+	for _, c := range []struct {
+		name             string
+		prog, vers, proc uint32
+		args             []byte
+		st               uint32
+		want             string // past the accepted header
+	}{
+		{"NFSv3 GETATTR NFS3_OK", wire.ProgNFS, wire.VersNFS3, 1, nil, 0, "00000000"},
+		{"NFSv3 GETATTR NFS3ERR_STALE", wire.ProgNFS, wire.VersNFS3, 1, nil, 70, "00000046"},
+		{"NFSv3 WRITE NFS3_OK", wire.ProgNFS, wire.VersNFS3, 7, nil, 0, "00000000"},
+		{"NFSv3 NULL", wire.ProgNFS, wire.VersNFS3, 0, nil, 0, ""},
+		{"MOUNT MNT MNT3_OK", wire.ProgMount, wire.VersMount3, 1, nil, 0, "00000000"},
+		{"MOUNT MNT MNT3ERR_ACCES", wire.ProgMount, wire.VersMount3, 1, nil, 13, "0000000d"},
+		{"MOUNT EXPORT", wire.ProgMount, wire.VersMount3, 5, nil, 0, ""},
+		{"NLM LOCK nlm4_granted", wire.ProgNLM, wire.VersNLM4, 2, cookie, 0, "00000005 6162636465000000 00000000"},
+		{"NLM LOCK nlm4_denied", wire.ProgNLM, wire.VersNLM4, 2, cookie, 1, "00000005 6162636465000000 00000001"},
+		{"NLM TEST, its cookie cut short", wire.ProgNLM, wire.VersNLM4, 1, cookie[:6], 0, "00000000 00000000"},
+		{"NLM LOCK_MSG", wire.ProgNLM, wire.VersNLM4, 7, cookie, 0, ""},
+		{"NSM SM_MON stat_fail", wire.ProgNSM, wire.VersNSM1, 2, nil, 1, "00000001"},
+		{"NSM SM_UNMON", wire.ProgNSM, wire.VersNSM1, 3, nil, 0, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, err := decode(t, s, nullCall(c.prog, c.vers, c.proc, wire.AuthNone, nil, wire.AuthNone, nil, c.args))
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := &resources.Buf{}
+			if err := s.Encode(h, core.Status(c.st), out); err != nil {
+				t.Fatal(err)
+			}
+			want, err := hex.DecodeString(strings.ReplaceAll(accepted+c.want, " ", ""))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(out.B, want) {
+				t.Errorf("status %d writes %x, want %x", c.st, out.B, want)
+			}
+			if bound := s.ReplyLen(h); len(out.B) > bound {
+				t.Errorf("status %d writes %d bytes, past ReplyLen %d", c.st, len(out.B), bound)
+			}
+		})
+	}
+}
+
 // call is a NULL call to prog's version vers under AUTH_NONE.
 func call(prog, vers uint32) []byte {
 	return nullCall(prog, vers, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil)
@@ -642,6 +697,7 @@ func FuzzReplyLenBoundsEncode(f *testing.F) {
 	f.Add(call(wire.ProgNFS, 3), uint32(statusProgMismatch))
 	f.Add(nullCall(wire.ProgNFS, 3, 0, wire.AuthSys, authSys("host", 1000, 1000, 4, 24), wire.AuthNone, nil, nil), uint32(statusAuthCred))
 	f.Add(compoundCall(0, "abcde"), wire.NFS4ErrMinorVersMismatch)
+	f.Add(nullCall(wire.ProgNLM, wire.VersNLM4, 2, wire.AuthNone, nil, wire.AuthNone, nil, opaque(nil, []byte("abcde"))), uint32(1))
 	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
 	f.Fuzz(func(t *testing.T, body []byte, st uint32) {
 		h, _ := s.Decode(&resources.Buf{B: body}, 0)

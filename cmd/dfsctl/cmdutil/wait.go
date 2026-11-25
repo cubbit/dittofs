@@ -3,6 +3,7 @@ package cmdutil
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
@@ -43,24 +44,27 @@ func Follow(cmd *cobra.Command, c *client.Client, op *apiv1.Operation) error {
 	return PrintOutput(cmd, op, false, "", Operations{*op})
 }
 
+// WaitFor reads the operation id names and follows it to its end as Wait
+// does, its read failing as a poll of Wait's does.
+func WaitFor(cmd *cobra.Command, c *client.Client, id string) error {
+	op, err := c.Operation(cmd.Context(), id)
+	if err != nil {
+		return waitFailed(cmd, id, err, false)
+	}
+	return Wait(cmd, c, op)
+}
+
 // Wait follows op to its end with ?wait= and prints it as it ended,
 // refusing one that ended failed or cancelled. A wait that ends first, cmd's
-// context ending or a poll failing to reach the server, leaves the operation
-// running and is refused naming the command that resumes it, from this
-// machine or another; a poll the server refuses 4xx is refused as it is.
+// context ending or a poll failing in a way a later poll may not, leaves
+// the operation running and is refused naming the command that resumes it,
+// from this machine or another; one that a resumed wait would meet again is
+// refused as it is.
 func Wait(cmd *cobra.Command, c *client.Client, op apiv1.Operation) error {
 	path := cmd.CommandPath()
 	ended, err := c.Wait(cmd.Context(), op)
 	if err != nil {
-		if cmd.Context().Err() != nil {
-			err = cmd.Context().Err()
-		} else if p := (*apiv1.Problem)(nil); errors.As(err, &p) && p.Status < 500 {
-			// A refusal of the request, the operation gone or the caller
-			// refused, which a resumed wait would meet again; a 5xx, such as
-			// a node restarting, keeps the hint.
-			return fmt.Errorf("%s: waiting for operation %s: %w", path, op.ID, err)
-		}
-		return fmt.Errorf("%s: waiting for operation %s: %w; it goes on, and 'dfsctl operation wait %s' resumes the wait", path, op.ID, err, op.ID)
+		return waitFailed(cmd, op.ID, err, true)
 	}
 	if err := PrintOutput(cmd, ended, false, "", Operations{ended}); err != nil {
 		return err
@@ -81,4 +85,39 @@ func endedErr(path string, ended apiv1.Operation) error {
 		return fmt.Errorf("%s: operation %s was cancelled", path, ended.ID)
 	}
 	return nil
+}
+
+// waitFailed is the refusal of a wait for the operation id names that err
+// ended, cmd's context's error in its place once that context has ended and
+// err is not a refusal a resumed wait would meet again. Only when resumable
+// holds does it carry the hint that resumes the wait, and it says the
+// operation goes on only when read, a read of it having answered.
+func waitFailed(cmd *cobra.Command, id string, err error, read bool) error {
+	if ce := cmd.Context().Err(); ce != nil && resumable(err) {
+		err = ce
+	}
+	path := cmd.CommandPath()
+	switch {
+	case !resumable(err):
+		return fmt.Errorf("%s: waiting for operation %s: %w", path, id, err)
+	case !read:
+		return fmt.Errorf("%s: waiting for operation %s: %w; 'dfsctl operation wait %s' tries again", path, id, err, id)
+	}
+	return fmt.Errorf("%s: waiting for operation %s: %w; it goes on, and 'dfsctl operation wait %s' resumes the wait", path, id, err, id)
+}
+
+// resumable reports whether a resumed wait may get past err: not past a
+// 4xx refusal of the request, such as the operation gone or the caller
+// refused, nor past an operation in a state this client does not know; past
+// anything else, a 5xx such as a node restarting, a 408, a 429 and any
+// refusal the server marks retryable among them.
+func resumable(err error) bool {
+	if errors.Is(err, client.ErrUnknownState) {
+		return false
+	}
+	p := (*apiv1.Problem)(nil)
+	if !errors.As(err, &p) {
+		return true
+	}
+	return p.Status >= 500 || p.Retryable || p.Status == http.StatusRequestTimeout || p.Status == http.StatusTooManyRequests
 }

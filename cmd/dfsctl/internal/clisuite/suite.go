@@ -9,6 +9,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
 	"os"
 	"path/filepath"
 	"slices"
@@ -56,17 +60,22 @@ type Server struct {
 }
 
 // Start starts a node over an in-memory store, its API on a local socket,
-// with an admin account, and stops it when the test ends.
-func Start(t *testing.T) Server {
+// with an admin account, and stops it when the test ends; opts add to how
+// the harness builds it.
+func Start(t *testing.T, opts ...nodetest.Option) Server {
 	t.Helper()
-	// Not t.TempDir(), whose path can pass the length a socket's may have.
+	// decision: the socket's directory is made outside t.TempDir(), against
+	// the rule that a test writes only under it, because a socket's path is
+	// capped near 104 bytes on some hosts and t.TempDir() of a nested test
+	// can pass that. The cleanup below removes it. Withdraw it if t.TempDir()
+	// paths come under the cap.
 	dir, err := os.MkdirTemp("", "clisuite")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	srv := Server{Addr: filepath.Join(dir, "api.sock"), User: "suite", Password: "the suite's password"}
-	srv.Harness = nodetest.New(t, nodetest.InMemory(), nodetest.APISocket(srv.Addr))
+	srv.Harness = nodetest.New(t, append([]nodetest.Option{nodetest.InMemory(), nodetest.APISocket(srv.Addr)}, opts...)...)
 	if err := srv.Harness.Node().Start(t.Context()); err != nil {
 		t.Fatalf("clisuite: start the node: %v", err)
 	}
@@ -77,6 +86,39 @@ func Start(t *testing.T) Server {
 	})
 	srv.Harness.Account(t, srv.User, srv.Password, entity.RoleAdmin)
 	return srv
+}
+
+// Proxy serves the API of s, a server Start started, on a loopback URL it
+// returns, every request passed through to s once rewrite has seen it, and
+// may have changed it: a fault a test injects, such as a query parameter
+// dropped, or its record of a call reaching the server.
+func (s Server) Proxy(t *testing.T, rewrite func(*http.Request)) string {
+	t.Helper()
+	if s.Harness == nil {
+		t.Fatal("clisuite: Proxy serves only a server Start started, on its socket")
+	}
+	tr := &http.Transport{DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", s.Addr)
+	}}
+	srv := httptest.NewServer(&httputil.ReverseProxy{Transport: tr, Rewrite: func(r *httputil.ProxyRequest) {
+		r.Out.URL.Scheme, r.Out.URL.Host = "http", "socket"
+		rewrite(r.Out)
+	}})
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// Polled is a Proxy's rewrite that signals on polls, without blocking,
+// each time a wait's poll, a read with ?wait=, passes through.
+func Polled(polls chan<- struct{}) func(*http.Request) {
+	return func(r *http.Request) {
+		if r.URL.Query().Has("wait") {
+			select {
+			case polls <- struct{}{}:
+			default:
+			}
+		}
+	}
 }
 
 // Login signs run's context in to s as its admin account.
@@ -187,9 +229,9 @@ type row struct {
 // harness, each through a runner newRunner makes for it, over a credentials
 // file of its own, signed in to s, and with a session of its own for its
 // setup and reads, so a row that ends a session ends none of another row's.
-// A noun's package runs its own rows; a child process runs them all. Rows
-// share the server, so each names what it creates uniquely. A row's name
-// starts with its noun.
+// A noun's package runs its own rows; a child process runs every noun's,
+// each noun over a server of its own. Rows share the server, so each names
+// what it creates uniquely. A row's name starts with its noun.
 func Run(t *testing.T, newRunner func(*testing.T) Runner, s Server, noun string) {
 	s.newRunner = newRunner
 	ran := 0
@@ -212,6 +254,17 @@ func Run(t *testing.T, newRunner func(*testing.T) Runner, s Server, noun string)
 			r.run(t, run, s, s.Client(t))
 		})
 	}
+}
+
+// Nouns is every noun the suite has rows of, in the suite's order.
+func Nouns() []string {
+	var nouns []string
+	for _, r := range rows() {
+		if noun, _, _ := strings.Cut(r.name, " "); !slices.Contains(nouns, noun) {
+			nouns = append(nouns, noun)
+		}
+	}
+	return nouns
 }
 
 // rows is every row of the suite.

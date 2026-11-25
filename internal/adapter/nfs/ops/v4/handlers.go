@@ -3,7 +3,7 @@
 // section 4.8, RFC 21 section 11).
 package v4
 
-//go:generate go run ../../wire/gen -o codec_gen.go compound.go illegal.go table.go
+//go:generate go run ../../wire/gen -o codec_gen.go -types codec_types_gen_test.go compound.go illegal.go table.go
 
 import "github.com/cubbit/dittofs/pkg/vfs"
 

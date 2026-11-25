@@ -122,7 +122,11 @@ func composedWith(t *testing.T, tr trace.Tracer) wiring {
 		return db
 	})
 	dir := t.TempDir()
-	id, err := journal.Init(t.Context(), dir, journal.InstallationID{1}, journaltest.SuitableMount())
+	// Two append streams: at the default sixteen a journal makes a content and
+	// a headroom spare per stream, a pool the first write waits on while each
+	// refused retry spends a version.
+	opts := []journal.Option{journaltest.SuitableMount(), journal.WithSettings(journal.Settings{Streams: 2})}
+	id, err := journal.Init(t.Context(), dir, journal.InstallationID{1}, opts...)
 	if err != nil {
 		t.Fatalf("journal init: %v", err)
 	}
@@ -132,7 +136,7 @@ func composedWith(t *testing.T, tr trace.Tracer) wiring {
 		Store:   fs.Store,
 		Clock:   sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
 		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Journal: []journal.Option{journaltest.SuitableMount()},
+		Journal: opts,
 		Tracer:  tr,
 	})
 	if err != nil {
@@ -336,8 +340,10 @@ func TestComposeAdaptsTheTracerToTheJournal(t *testing.T) {
 	t.Cleanup(func() { _ = j.Close() })
 
 	// The journal issues no version until its first limit, as the fixture
-	// sets one on every open of its own.
-	if err := j.SetVersionLimit(journal.Version{Counter: 1 << 20}); err != nil {
+	// sets one on every open of its own. Every refused retry below spends a
+	// version, so the limit exceeds what RetrySpare can spend: the loop ends
+	// on a spare or on RetrySpare's own bound, never on the version limit.
+	if err := j.SetVersionLimit(journal.Version{Counter: 2 * journaltest.SpareAttempts}); err != nil {
 		t.Fatalf("SetVersionLimit of the composed journal: %v", err)
 	}
 	h, err := j.Share(journal.ShareTag(1), 0, journal.Version{})

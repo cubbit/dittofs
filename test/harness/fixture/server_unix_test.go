@@ -61,10 +61,11 @@ func start(t *testing.T, ctx context.Context, bin string) *Server {
 // The one real start: dfs built, initialised with dfs init and started with
 // dfs start under t.TempDir() on 127.0.0.1:0, holds its users, its share,
 // applied on the node, and exactly the grants RFC 29 gives, read back
-// through the client; a session the server ends is signed in again; Reset
-// recreates the share; a second dfs init over the same installation is
-// refused and changes nothing; after Kill and Restart the share is still
-// there; Stop ends it with exit 0, and Restart then refuses.
+// through the client; a user's password is set; a session the server ends
+// is signed in again; Reset recreates the share; a second dfs init over the
+// same installation is refused and changes nothing; after Kill and Restart
+// the share is still there; Stop ends it with exit 0, and Restart then
+// refuses.
 func TestServer(t *testing.T) {
 	bin := buildDfs(t)
 	t.Setenv("DITTOFS_LOGGING_LEVEL", "error") // would hide the API's address from dt
@@ -79,6 +80,11 @@ func TestServer(t *testing.T) {
 	}
 
 	first := configured(t, s, "after the start")
+	// A password is sealed with an NT hash under the protocol key, which
+	// the fixture's bootstrap must name for the write to be accepted.
+	if err := s.client.Users().SetPassword(ctx, s.users[User], []byte(secret())); err != nil {
+		t.Errorf("setting the password of %s: %v, want it set", User, err)
+	}
 	if err := s.client.SignOut(ctx); err != nil {
 		t.Fatalf("SignOut: %v", err)
 	}

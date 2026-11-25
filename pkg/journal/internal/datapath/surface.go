@@ -55,3 +55,9 @@ func (c *Core) Files(s *Share) []core.FileID {
 	defer exit()
 	return c.index.Files(s.Tag)
 }
+
+// LiveRecords reports how many header-only record registrations the journal's
+// liveness registry holds live. It is the read-out the inspection surface
+// serves its callers; see the tracker's own LiveRecords for what the count
+// is.
+func (c *Core) LiveRecords() int { return c.liveness.LiveRecords() }

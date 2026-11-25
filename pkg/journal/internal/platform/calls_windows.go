@@ -3,10 +3,11 @@ package platform
 import "golang.org/x/sys/windows"
 
 // calls is the table of system calls the storage makes on a file's handle or
-// on the directory's. Each entry is the golang.org/x/sys/windows function
-// itself, never a wrapper, and an argument the call takes as a command is
-// passed as data, so a test that swaps the table sees each call with its
-// arguments as Windows would.
+// on the directory's, and checkDirVolume makes on the directory's volume.
+// Each entry is the golang.org/x/sys/windows function itself, never a
+// wrapper, and an argument the call takes as a command is passed as data, so
+// a test that swaps the table sees each call with its arguments as Windows
+// would.
 type calls struct {
 	createFile func(
 		name *uint16,
@@ -41,15 +42,38 @@ type calls struct {
 		done *uint32,
 		overlapped *windows.Overlapped,
 	) error
+	getVolumePathName func(
+		fileName *uint16,
+		volumePathName *uint16,
+		bufferLength uint32,
+	) error
+	getVolumeNameForVolumeMountPoint func(
+		volumeMountPoint *uint16,
+		volumeName *uint16,
+		bufferlength uint32,
+	) error
+	deviceIoControl func(
+		handle windows.Handle,
+		ioControlCode uint32,
+		inBuffer *byte,
+		inBufferSize uint32,
+		outBuffer *byte,
+		outBufferSize uint32,
+		bytesReturned *uint32,
+		overlapped *windows.Overlapped,
+	) error
 }
 
 // realTable is the table NewOS gives every OS.
 var realTable = calls{
-	createFile:                 windows.CreateFile,
-	flushFileBuffers:           windows.FlushFileBuffers,
-	closeHandle:                windows.CloseHandle,
-	getFileInformationByHandle: windows.GetFileInformationByHandle,
-	setFileInformationByHandle: windows.SetFileInformationByHandle,
-	writeFile:                  windows.WriteFile,
-	readFile:                   windows.ReadFile,
+	createFile:                       windows.CreateFile,
+	flushFileBuffers:                 windows.FlushFileBuffers,
+	closeHandle:                      windows.CloseHandle,
+	getFileInformationByHandle:       windows.GetFileInformationByHandle,
+	setFileInformationByHandle:       windows.SetFileInformationByHandle,
+	writeFile:                        windows.WriteFile,
+	readFile:                         windows.ReadFile,
+	getVolumePathName:                windows.GetVolumePathName,
+	getVolumeNameForVolumeMountPoint: windows.GetVolumeNameForVolumeMountPoint,
+	deviceIoControl:                  windows.DeviceIoControl,
 }

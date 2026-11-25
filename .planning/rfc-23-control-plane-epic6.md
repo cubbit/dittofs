@@ -60,7 +60,7 @@ regenerated reference.
 - The success paths of every settings-backed write (settings, adapters, remote stores,
   namespaces): the empty settings table refuses them until X3, so they are E7's (D9).
 - RFC 23 §12's "§7 CLI" row with the bootstrap and the store unreadable to the CLI's user: E7, on
-  the shared suite's child-safe rows (D8).
+  the shared suite's rows from a child (D8).
 - Snapshots and snapshot policies, uploads draining, GC and trash: no resource of RFC 23 serves
   them, so their commands go (D7); each comes back with its owning RFC's route, through rows of the
   same ledger, proposed in §9.
@@ -177,10 +177,12 @@ this epic's part is that every command reaches the API through that client and n
   spec it read and the one the server now holds, and exits non-zero. The write is the route's:
   `cmdutil.ByPatch` sends a JSON merge patch of what the command changed, so a field it empties is
   cleared rather than left as it was (a share's route takes `PATCH` only), `cmdutil.ByPut` the
-  whole spec (a netgroup's takes `PUT` only), and a write that may start an operation, a user's,
+  whole spec as this dfsctl decoded it (a netgroup's takes `PUT` only), so against a newer server a
+  field this dfsctl does not know is sent empty and reset, and a write that may start an operation, a user's,
   passes its own `cmdutil.Write`, answering `client.Result`; a change that changes nothing writes
   nothing. YAML, the diff's and `-o yaml`'s, goes through the spec's JSON, so its keys are the API's
-  field names. No marker. Prior art: `kubectl apply`'s conflict report (from memory).
+  field names. Marker: `decision:` at `cmdutil.ByPut`, for the reset field. Prior art: `kubectl
+  apply`'s conflict report (from memory).
 - **D4, every change to the credentials file runs under the operating system's lock on a file
   beside it.** `credentials.Update(ctx, path, waiting, fn)` opens `<config>.lock` and takes an
   exclusive lock on it without waiting (`flock(LOCK_EX|LOCK_NB)` on Unix, `LockFileEx` with
@@ -219,7 +221,8 @@ this epic's part is that every command reaches the API through that client and n
   E6's tests pass an in-process `NewRoot` against the harness; E7 passes a child `dfsctl`, so E7's
   test of it lives under `cmd/dfsctl`, the only tree that may import an internal package there. Each row
   is marked harness-only (it advances the injected clock or writes through the store) or child-safe;
-  E7 runs the child-safe rows. Consumed by E7. No marker.
+  E7 runs every row from a child against an in-process node, where the test does the harness's
+  part; a server the test did not start runs only the child-safe ones. Consumed by E7. No marker.
 - **D9, a settings-backed write is tested as its refusal.** Until X3 hands in the settings table,
   E4 refuses every setting, adapter, remote-store and namespace write `400`; this epic tests that the
   command prints the problem's code and detail and exits non-zero. No marker.
@@ -355,8 +358,8 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
   `internal/cli/output`; `clisuite` with its runner and its first rows (D8); a pause hook in
   `cmdutil.Update`, between its read and its write, set per instance from `export_test.go`.
   `clisuite.Run(t, func(*testing.T) Runner, Server, noun)` runs the rows of one noun, a row's name
-  starting with it, so each noun's package tests its own rows, or every row with `noun` empty, as
-  E7's child process does; it gives each row a runner of its own over a
+  starting with it, so each noun's package tests its own rows, or every row with `noun` empty;
+  E7's child process runs each noun over a node of its own; it gives each row a runner of its own over a
   credentials file of its own, signed in to `Server`'s address as its admin account, so a row that
   ends a session ends none of another's; `Server.Harness` is nil for a server the test did not start, which skips a harness-only
   row, and `Server.Settle` waits for an operation to end, advancing the injected clock only when
@@ -430,13 +433,15 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
 - **Track:** A. **Depends on:** T6.3; E4 (stores, namespaces, secrets, adapters, settings, nodes, the
   audit, the domain's routes, `GET /api/v1/health`).
 - **Covers:** R3, R17.
-- **Deliverables:** `store create|get|delete|set-credential` (`create`'s credential, which
-  it may go without, from a file; `set-credential`'s from a prompt or a file); `namespace create|list|get|delete`; `adapter get|set`;
+- **Deliverables:** `store create|list|get|update|delete|set-credential` (`create`'s credential,
+  which it may go without, from a file; `set-credential`'s from a prompt or a file);
+  `namespace create|list|get|delete`; `adapter list|get|set`;
   `setting get|set|unset <scope> <key>`; `node list|get`; `audit list` with its filters;
   `domain resolve|test|join|rotate-machine-password`, `join` online or `--offline`, neither sending
   a key; `status`, reading `GET /api/v1/health`; their `clisuite` rows; `cli.md` regenerated.
-  `store list`, `store update` and `adapter list` are not built: no route serves them, a row of
-  [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger). A remote store, a
+  `store list`, `store update` and `adapter list` read `GET /stores`, write `PATCH /stores/{id}`
+  and read `GET /adapters`; `store update` changes a store's settings, and `set-credential` its
+  credential. A remote store, a
   namespace and a node carry no name, so their commands take the ID as the argument. A scope is
   `installation`, `node:<id>`, `namespace:<id>`, `store:<id>` or `share:<name>`; a value, a
   `setting set`'s or a `--setting key=value`'s, is taken as JSON when it parses and as a string
@@ -473,7 +478,7 @@ flowchart TD
 ```
 
 Checkpoint after T6.3: the machinery every resource command uses. Checkpoint after T6.6: the whole
-suite, whose child-safe rows E7 runs.
+suite, whose rows E7 runs from a child.
 
 ## 8. Suggested pull requests
 

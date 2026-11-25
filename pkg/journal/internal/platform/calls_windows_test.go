@@ -46,6 +46,14 @@ func TestSyscallTableIsReal(t *testing.T) {
 		},
 		{"writeFile", "windows.WriteFile", got.writeFile, windows.WriteFile},
 		{"readFile", "windows.ReadFile", got.readFile, windows.ReadFile},
+		{"getVolumePathName", "windows.GetVolumePathName", got.getVolumePathName, windows.GetVolumePathName},
+		{
+			"getVolumeNameForVolumeMountPoint",
+			"windows.GetVolumeNameForVolumeMountPoint",
+			got.getVolumeNameForVolumeMountPoint,
+			windows.GetVolumeNameForVolumeMountPoint,
+		},
+		{"deviceIoControl", "windows.DeviceIoControl", got.deviceIoControl, windows.DeviceIoControl},
 	}
 
 	table := reflect.ValueOf(got)

@@ -62,9 +62,10 @@ USER 65532:65532
 # - 12049: NFS server (default)
 # - 12445: SMB server (default)
 # - 8080: REST API (health checks, management)
-# - 9090: Prometheus metrics endpoint. Opt-in and loopback-bound by default,
-#         so publishing this port alone exposes nothing: enable metrics and set
-#         their host to 0.0.0.0 for it to be reachable from outside the container.
+# - 9090: Prometheus metrics endpoint. On by default and loopback-bound,
+#         so publishing this port alone exposes nothing: set metrics.listen
+#         to 0.0.0.0:9090 (which needs api.tls.cert_file and key_file) for it
+#         to be reachable from outside the container.
 # - 5353/udp: mDNS / DNS-SD network discovery (macOS Finder, Linux Avahi)
 # - 3702/udp: WS-Discovery (Windows Explorer Network)
 # - 5357/tcp: WS-Discovery device metadata (HTTP)
@@ -75,8 +76,8 @@ EXPOSE 12049/tcp 12445/tcp 8080/tcp 9090/tcp 5353/udp 3702/udp 5357/tcp
 # Volume mounts:
 # - /data/metadata: Metadata store (BadgerDB, etc.)
 # - /data/blocks: Journal root (the only copy of bytes not yet offloaded)
-# - /data/cache: Cache and WAL directory
-# - /data/state: Control plane database
+# - /data/cache: not read by default; holds data only if the config names a path inside it
+# - /data/state: XDG_STATE_HOME, so the state directory is /data/state/dittofs
 # - /config: Configuration file location
 VOLUME ["/data/metadata", "/data/blocks", "/data/cache", "/data/state", "/config"]
 
@@ -85,6 +86,10 @@ VOLUME ["/data/metadata", "/data/blocks", "/data/cache", "/data/state", "/config
 # certificate names the host rather than localhost, so it is not verified.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider --no-check-certificate https://localhost:8080/health/live || exit 1
+
+# The state directory resolves under $STATE_DIRECTORY, else $XDG_STATE_HOME/dittofs,
+# else $HOME/.local/state/dittofs; $HOME is /app, so point it at the volume.
+ENV XDG_STATE_HOME=/data/state
 
 ENTRYPOINT ["/app/dfs"]
 CMD ["start", "--config", "/config/config.yaml"]

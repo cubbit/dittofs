@@ -1324,7 +1324,8 @@ func watchCalls(t *testing.T, workers []*worker, finished <-chan struct{}, bound
 // no call blocked past a bound, and leave an index that verifies against the
 // segments.
 //
-// decision: a call blocked past callWait fails the test with every
+// decision: a call blocked past the watchdog's bound (callWait, raised under
+// the race detector below) fails the test with every
 // goroutine's stack written to its artifact directory, and the journal is
 // abandoned unclosed. Its cleanup would close the journal, which waits for the
 // blocked call, so the test would hang until the suite's timeout took the
@@ -1332,10 +1333,10 @@ func watchCalls(t *testing.T, workers []*worker, finished <-chan struct{}, bound
 // journal's goroutines and descriptors are then reported by the profiler too.
 // Overturned if the journal's Close gains a bound of its own.
 //
-// decision: the bound is callWait of real time, not of the journal's clock. A
+// decision: the bound is of real time, not of the journal's clock. A
 // call blocked on a lock waits on no timer, so moving the test clock neither
 // ends the wait nor shows it, and the run is left on a clock that never moves.
-// Overturned as callWait is.
+// Overturned as the bound is.
 func TestRFC1B_NoDeadlock(t *testing.T) {
 	f := journaltest.New(t)
 	hs := []*journal.Handle{f.Share(0), f.Share(1)}
@@ -1469,7 +1470,17 @@ func TestRFC1B_NoDeadlock(t *testing.T) {
 	close(start)
 	finished := make(chan struct{})
 	go func() { wg.Wait(); close(finished) }()
-	if !watchCalls(t, workers, finished, callWait, f.Abandon) {
+	// decision: the watchdog's bound raises tenfold under the race detector,
+	// whose several-times slowdown lets one slow-but-live pass outlive
+	// callWait on a loaded machine with no call blocked on any lock. The
+	// firing then fails the row on a message no known entry grades — only the
+	// stub refusal matches — so the whole cell reads red for a run that ends
+	// on its own. A true deadlock still trips the raised bound, later.
+	watch := callWait
+	if raceEnabled {
+		watch *= 10
+	}
+	if !watchCalls(t, workers, finished, watch, f.Abandon) {
 		return
 	}
 

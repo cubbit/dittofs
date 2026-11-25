@@ -533,6 +533,82 @@ func TestLostTailRefusedRetriesBurnNothing(t *testing.T) {
 	}
 }
 
+// TestATornTruncateBelowItsMarkRefusesTheOpen plants the silent tear of a
+// crash over an acknowledged truncate: the removal record — the segment's
+// last, and body-less, so its whole fact sits in its header — torn so only
+// its first 16 bytes reach the device, while the caller's mark, the durable
+// record of the sync that acknowledged the truncate, covers the record's
+// whole slot. No later record's synced-through crosses the slot, so without
+// the mark the classing reads the torn slot as a crash's torn tail: it cuts
+// it, the removal marker disappears with it, and the bytes the truncate
+// dropped serve again as held. The mark is the one proof the slot held a
+// synced record, so its bytes are a range that names no record below the
+// mark's Through, and the open refuses with ErrOpenRefused naming the range
+// — writing nothing, for the check runs before any writing phase. The
+// refusal is held up by two checks: the lost-tail check behind the raise
+// would refuse this fixture too, its mark naming the same record with no
+// verifying copy anywhere, so ErrOpenRefused alone proves neither. The
+// message checks below pin the marked-range check as the one that answered,
+// and are the only thing that fails if it stops refusing.
+func TestATornTruncateBelowItsMarkRefusesTheOpen(t *testing.T) {
+	r := newRig(t)
+	r.writeFormat()
+	id := core.SegmentID(2)
+	endA := endAfter(seqSyncedRec(199, 0x4100, 0))
+	trunc := rec(uint8(format.KindTruncate), func(rr *raw.Record) {
+		rr.Seq = 200
+		rr.Offset = 0x200 // the truncate's file offset is the new size
+		rr.Length = 0
+		rr.SyncedThrough = uint64(endA)
+	})
+	full := buildSeg(id, seqSyncedRec(199, 0x4100, endA), trunc)
+	endR := int64(len(full))
+	// The tear's head: 16 bytes of the removal's slot alone on the device.
+	r.plantSeg(id, full[:endA+16])
+	name := format.SegmentName(id)
+	if got := int64(len(r.fileBytes(name))); got != endA+16 {
+		t.Fatalf("fixture: the torn segment's file holds %d bytes, want %d: the device held A and the tear's 16-byte head", got, endA+16)
+	}
+	wantListing := slices.Clone(r.listing())
+	segBytes := r.fileBytes(name)
+	removes := r.seam.Calls(kit.OpRemove)
+	writes := r.seam.Calls(kit.OpWrite)
+	dirSyncs := r.seam.Calls(kit.OpSyncDir)
+
+	st, err := Run(context.Background(), r.runDeps(), core.Version{}, journalID, lostTailMark(id, 200, endR))
+
+	if !errors.Is(err, core.ErrOpenRefused) {
+		t.Fatalf("the torn truncate answered err %v, want ErrOpenRefused refusing the open: the truncation must never serve as undone", err)
+	}
+	for _, want := range [3]string{
+		fmt.Sprintf("segment %d", id),
+		fmt.Sprintf("at [%d,%d)", endA, endA+16),
+		"below a mark's Through that names no record",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal %q does not name %s, the mark's own fact", err.Error(), want)
+		}
+	}
+	if !slices.Equal(r.listing(), wantListing) {
+		t.Errorf("the refused open changed the directory %v, want the names it held %v", r.listing(), wantListing)
+	}
+	if got := r.fileBytes(name); !slices.Equal(got, segBytes) {
+		t.Errorf("the refused open changed the torn segment's bytes, got %x, want %x the bytes it held", got, segBytes)
+	}
+	if got, want := r.seam.Calls(kit.OpRemove), removes; got != want {
+		t.Errorf("the refused open removed something, got %d removes, want %d, the count before the run", got, want)
+	}
+	if got, want := r.seam.Calls(kit.OpWrite), writes; got != want {
+		t.Errorf("the refused open wrote something, got %d writes, want %d, the count before the run", got, want)
+	}
+	if got, want := r.seam.Calls(kit.OpSyncDir), dirSyncs; got != want {
+		t.Errorf("the refused open synced the directory, got %d syncs, want %d, the count before the run", got, want)
+	}
+	if !reflect.DeepEqual(st, State{}) {
+		t.Errorf("the refused open returned state %+v, want the zero State: a refusal serves nothing", st)
+	}
+}
+
 // TestLostTailWithACopyElsewhereIsNotLost plants the lost tail beside a second
 // segment holding a copy of C, the record the mark names — the shape a repack
 // or a re-append from an earlier open leaves: the copy verifies in the other

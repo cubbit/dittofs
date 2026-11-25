@@ -24,9 +24,9 @@ func checkKV(cfg *bootstrap.Bootstrap) error {
 			return errors.New(noFoundationDB)
 		}
 	} else if cfg.Metadata.Badger.Path == "" {
-		// ponytail: RFC 13 Appendix C defaults metadata.badger.path to the
-		// state directory's metadata, which the bootstrap loader does not
-		// fill yet, so an unset path is refused until it does.
+		// The loader gives an unset metadata.badger.path the state
+		// directory's default and refuses an empty one itself, so this guards
+		// only a Bootstrap built without Load.
 		return errors.New("metadata.badger.path is not set")
 	}
 	// ponytail: node.id must be written in the bootstrap, as nothing else

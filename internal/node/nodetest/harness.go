@@ -76,6 +76,7 @@ type options struct {
 	newNode  func(node.Config) (*node.Node, error)
 	password string
 	socket   string
+	start    time.Time
 }
 
 // AdminPassword has New give the administrator password as its first
@@ -104,6 +105,10 @@ func InMemory() Option { return func(o *options) { o.inMemory = true } }
 // not build its configuration itself.
 func APISocket(path string) Option { return func(o *options) { o.socket = path } }
 
+// StartAt starts the node's clock at at rather than at the shared start, for
+// a test whose client reads the wall clock, as a child process does.
+func StartAt(at time.Time) Option { return func(o *options) { o.start = at } }
+
 // WithNew is the constructor New and Restart build the node through;
 // without it they call node.New.
 func WithNew(f func(node.Config) (*node.Node, error)) Option {
@@ -121,7 +126,7 @@ func WithNew(f func(node.Config) (*node.Node, error)) Option {
 // environment.
 func New(t testing.TB, opts ...Option) *Harness {
 	t.Helper()
-	o := options{newNode: node.New}
+	o := options{newNode: node.New, start: start}
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -130,7 +135,7 @@ func New(t testing.TB, opts ...Option) *Harness {
 	}
 	ctx := t.Context()
 	root := t.TempDir()
-	h := &Harness{newNode: o.newNode, clock: sim.NewTestClock(start)}
+	h := &Harness{newNode: o.newNode, clock: sim.NewTestClock(o.start)}
 	if !o.inMemory {
 		h.dir = filepath.Join(root, "store")
 	}

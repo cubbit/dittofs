@@ -3,6 +3,7 @@ package platform
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"path"
 	"slices"
 	"strconv"
@@ -27,6 +28,11 @@ const (
 // with copy-on-write disabled (FS_NOCOW_FL in the kernel's linux/fs.h).
 const fsNoCOW uint32 = 0x00800000
 
+// fsJournalData is the inode flag FS_IOC_GETFLAGS reports for a file or
+// directory whose writes run through the filesystem's own journal
+// (FS_JOURNAL_DATA_FL in the kernel's linux/fs.h).
+const fsJournalData uint32 = 0x00004000
+
 // btrfsSubvolumeRootIno is the inode number of every Btrfs subvolume's root
 // directory (BTRFS_FIRST_FREE_OBJECTID in the kernel's linux/btrfs_tree.h).
 const btrfsSubvolumeRootIno uint64 = 256
@@ -45,6 +51,13 @@ const (
 	// ruleCachePolicy: on Windows, the directory's volume has write-cache
 	// buffer flushing turned off by policy.
 	ruleCachePolicy
+	// ruleDataJournal: on ext, the mount runs data journaling — the
+	// data=journal mode — or the directory or a file in it has the
+	// journal-data attribute set.
+	ruleDataJournal
+	// ruleKernel: the kernel is older than 4.13, where ext4, XFS and Btrfs
+	// each began recording a writeback error per file.
+	ruleKernel
 )
 
 // refusal is a directory refused by a rule of RFC 28 Appendix A.
@@ -55,11 +68,12 @@ type refusal struct {
 	// mount is the mount point holding dir, for ruleBarrier, or the root of
 	// dir's volume, for ruleCachePolicy.
 	mount string
-	// option is the refused mount option, for ruleBarrier.
+	// option is the refused mount option, for ruleBarrier and ruleDataJournal's
+	// mode, or the kernel release, for ruleKernel.
 	option string
 	// path is what the rule refused: the directory for ruleSubvolume, the
-	// directory or the file without the attribute for ruleCopyOnWrite, the
-	// volume GUID path for ruleCachePolicy.
+	// directory or the file holding the attribute for ruleCopyOnWrite and
+	// ruleDataJournal, the volume GUID path for ruleCachePolicy.
 	path string
 }
 
@@ -88,6 +102,23 @@ func (r *refusal) Error() string {
 			"copy it into a new file created in the directory, which inherits the attribute, and rename that over it, "+
 			"or recreate the journal in a directory that had chattr +C set while empty",
 			r.dir, r.path)
+	case ruleDataJournal:
+		// The mode and the attribute are one rule: both run a sync's data
+		// through the filesystem's own journal, where a failure to write it
+		// to its place is reported to a later sync, if at all.
+		if r.option != "" {
+			return fmt.Sprintf("journal: directory %s refused: mount %s runs ext4 data journaling (%s), so a sync returns once the data is in the filesystem's own journal and a write that never reached its place fails a later one; remount with data=ordered or data=writeback",
+				r.dir, r.mount, r.option)
+		}
+		if r.path == r.dir {
+			return fmt.Sprintf("journal: directory %s refused: the directory has the journal-data attribute set, so its writes run through ext4 data journaling; clear it with chattr -j on the directory while it is empty",
+				r.dir)
+		}
+		return fmt.Sprintf("journal: directory %s refused: file %s has the journal-data attribute set, so its writes run through ext4 data journaling; the attribute is inherited at creation only, and it is set on files one at a time (chattr +j), so each file is checked alone; clear it with chattr -j on the file",
+			r.dir, r.path)
+	case ruleKernel:
+		return fmt.Sprintf("journal: directory %s refused: kernel %s is older than 4.13, where ext4, XFS and Btrfs each began recording a writeback error per file and reporting it to every descriptor open when it happened; on an earlier kernel the error reaches the first sync through any descriptor and is cleared, so a write that failed reaches no proof; boot a kernel of 4.13 or newer",
+			r.dir, r.option)
 	case ruleCachePolicy:
 		// The action uses Microsoft's words: Device Manager, the disk's
 		// Policies tab (How to manually turn disk write caching on or off,
@@ -124,21 +155,37 @@ var (
 	errMountIDDisagrees = errors.New("journal: the directory's mount is not the one visible at its path")
 	// errMountTypeMismatch: statfs and the table name different filesystems.
 	errMountTypeMismatch = errors.New("journal: mount table and statfs name different filesystems")
+	// errKernelRelease: the kernel release is not empty but its first two
+	// numbers do not parse. The probe passes uname's text unread, so a
+	// release the verdict cannot read numbers from says the inputs do not
+	// describe the kernel: the check fails rather than refusing on a guess.
+	errKernelRelease = errors.New("journal: the kernel release does not parse")
+	// errNoExtOptionsFile wraps the options file's own absence — the probe's
+	// open of /proc/fs/ext4/<dev>/options answering ENOENT — inside
+	// fs.ErrNotExist, so the ext2 skip can tell it from every other
+	// not-found of the read. A not-found anywhere else, the /sys device
+	// link's among them, says the chain to the file broke — no sysfs is
+	// visible, a container among the cases — not that the options file
+	// exists nowhere, and reaches the verdict without the sentinel.
+	errNoExtOptionsFile = fmt.Errorf("journal: the ext options file is absent: %w", fs.ErrNotExist)
 )
 
 // CheckDir decides whether dir is suitable for a journal. It returns an
 // error matching core.ErrUnsuitableStorage for the first rule of the
-// platform profile a directory refuses — a mount without cache flushes, a
-// Btrfs directory that is not a subvolume root or keeps copy-on-write —
-// with its message naming the rule, the directory and what to change; any
+// platform profile a directory refuses: on Linux a kernel older than 4.13, a
+// mount without cache flushes, ext4 data journaling (the data=journal mode
+// or the journal-data attribute on the directory or a file), a Btrfs
+// directory that is not a subvolume root, and a Btrfs directory or file
+// keeping copy-on-write; on Windows a volume with write-cache buffer
+// flushing turned off by policy — with its message naming the rule, the directory and what to change; any
 // other error as itself, which says nothing about whether the directory is
 // suitable; and nil for a suitable one.
 //
 // The verdict runs on gathered inputs, so it builds on every platform.
 // gather, when not nil, is what reads those inputs for the check; nil takes
-// the platform's own check, the real probe on Linux and none where the
-// profile names no rule the platform can read, whose answer accepts every
-// directory. A gather's error is returned as itself, never as a refusal.
+// the platform's own check: the real probe on Linux, the volume's cache
+// policy on Windows, and on darwin none, whose answer accepts every
+// directory since the profile names no rule it can read. A gather's error is returned as itself, never as a refusal.
 func CheckDir(dir string, gather storage.Gather) error {
 	if gather == nil {
 		return checkDirOS(dir)
@@ -190,11 +237,13 @@ var barrierRows = [...]struct {
 
 // CheckProbe decides whether the directory p describes is suitable for a
 // journal under RFC 28 Appendix A. It returns a *refusal for the first rule
-// that fails, in the order mount options, subvolume root, directory
-// attribute, files; errDirectoryNotClean or one of the errMount errors when
-// the inputs do not describe the directory; and nil otherwise. A filesystem
-// outside the listed ones, on a mount line of a type outside them too, is not
-// refused.
+// that fails, in the order kernel release, mount-table barrier options,
+// effective-options barrier, data=journal, subvolume root, directory
+// attribute, file attribute; errDirectoryNotClean
+// or one of the errMount errors when the inputs do not describe the
+// directory; and nil otherwise. A filesystem outside the listed ones, on a
+// mount line of a type outside them too, is not refused — though the kernel
+// rule still runs, as its MUST is unqualified.
 //
 // It runs on the gathered inputs alone, so it builds and is tested on every
 // platform: the Linux probe is the one Gather that reads them, but the
@@ -217,6 +266,22 @@ func CheckProbe(p storage.Probe) error {
 		}
 		if p.MountID != m.id {
 			return fmt.Errorf("%w: mount ID %d, visible mount %d at %s", errMountIDDisagrees, p.MountID, m.id, m.point)
+		}
+	}
+
+	// decision: an empty KernelRelease passes because it means the probe
+	// read none — the Linux probe always reads the release; a gather
+	// recorded before it did answers without one — as a mount ID of 0 means
+	// a kernel that reports none: a missing answer refuses nothing, while
+	// refusing on it would fail every gather the kernel rule cannot see.
+	// Withdraw the pass when every Gather must report the kernel.
+	if p.KernelRelease != "" {
+		major, minor, ok := kernelVersion(p.KernelRelease)
+		if !ok {
+			return fmt.Errorf("%w: %q", errKernelRelease, p.KernelRelease)
+		}
+		if major < 4 || (major == 4 && minor < 13) {
+			return &refusal{rule: ruleKernel, dir: p.Dir, option: p.KernelRelease}
 		}
 	}
 
@@ -246,6 +311,71 @@ func CheckProbe(p storage.Probe) error {
 
 	if option, ok := refusedOption(p.FSType, m.superOptions); ok {
 		return &refusal{rule: ruleBarrier, dir: p.Dir, mount: m.point, option: option}
+	}
+
+	// The ext4 driver reports the options the mount runs with in its own
+	// file, which an option equal to the superblock's default never reaches
+	// in the mount table (_ext4_show_options in fs/ext4/super.c), so the
+	// barrier and the data-journal options are read from it there. ext3 is
+	// served by the ext4 driver (fs/ext4/Kconfig: EXT3_FS selects EXT4_FS)
+	// and is checked the same.
+	if p.FSType == magicExt {
+		switch m.fsType {
+		case "ext2", "ext3", "ext4":
+			// decision: an ext2-typed mount whose options file is itself
+			// absent skips the ext-options rules and keeps its barrier rows
+			// read from the mount table above. The probe tries the file for
+			// every ext filesystem; ext2's own driver (fs/ext2) registers
+			// nothing under /proc/fs/ext4, so only the file's own absence —
+			// the sentinel errNoExtOptionsFile — names no effective options.
+			// A not-found anywhere else in the read stays an error of the
+			// check: the /sys device link answering it says no sysfs is
+			// visible (a container among the cases), not that the file
+			// exists nowhere, so an ext2-typed mount that the ext4 driver
+			// serves on a kernel built with CONFIG_EXT4_USE_FOR_EXT2 cannot
+			// pass unread, its options judged like an ext4 mount's the day
+			// the file appears. Withdraw the skip if the ext2 driver grows
+			// an options file or the ext2 driver is removed.
+			if m.fsType == "ext2" && errors.Is(p.ExtOptionsErr, errNoExtOptionsFile) {
+				break
+			}
+			// decision: an ext Probe with neither effective options nor a
+			// read error passes the data-journal and effective-barrier
+			// rules: an empty pair is a gather that recorded neither side,
+			// like the empty kernel release above, and the Linux probe, the
+			// one Gather today, always reports one side. Withdraw the pass
+			// when every Gather must report one.
+			//
+			// An unreadable options file is an error of the check, never a
+			// refusal and never a pass: the effective options were never
+			// seen, so the mount is not known clean.
+			if p.ExtOptionsErr != nil {
+				return p.ExtOptionsErr
+			}
+			words := extOptionWords(p.ExtOptions)
+			if option, ok := refusedExtOption(words); ok {
+				return &refusal{rule: ruleBarrier, dir: p.Dir, mount: m.point, option: option}
+			}
+			if slices.Contains(words, "data=journal") {
+				return &refusal{rule: ruleDataJournal, dir: p.Dir, mount: m.point, option: "data=journal"}
+			}
+		}
+	}
+
+	// The journal-data attribute is inherited at creation only, so it is set
+	// on one file alone (chattr +j) and a file created before it was set on
+	// the directory keeps what it was born with: the directory and every
+	// file are asked on their own, as the copy-on-write attribute below is.
+	if p.FSType == magicExt {
+		if p.DirFlags&fsJournalData != 0 {
+			return &refusal{rule: ruleDataJournal, dir: p.Dir, path: p.Dir}
+		}
+		for _, f := range p.Files {
+			if f.Flags&fsJournalData != 0 {
+				return &refusal{rule: ruleDataJournal, dir: p.Dir, path: joinPath(p.Dir, f.Name)}
+			}
+		}
+		return nil
 	}
 
 	if p.FSType != magicBtrfs {
@@ -288,6 +418,72 @@ func listedType(fsType string) bool {
 // reports says whether a mount table type is one this filesystem reports.
 func (fs listedFS) reports(fsType string) bool {
 	return slices.Contains(fs.types, fsType)
+}
+
+// kernelVersion returns the first two numbers of a kernel release, the ones
+// the kernel rule decides on. uname(2) fills utsname.release with
+// "X.Y[.Z...][suffix]", where X and Y alone stand for the kernel's release,
+// so the rest — a patch level, a build suffix such as "-76-generic" — is not
+// read. The numbers are compared as a tuple, never as one: 4.13 follows 4.9,
+// as 13 does not follow 9. A component's leading digits alone are its
+// number, as a development release writes the minor as "13-rc1".
+func kernelVersion(release string) (major, minor int, ok bool) {
+	first, rest, found := strings.Cut(release, ".")
+	if !found {
+		return 0, 0, false
+	}
+	second := rest
+	if i := strings.IndexByte(rest, '.'); i >= 0 {
+		second = rest[:i]
+	}
+	major, okMajor := leadingNumber(first)
+	minor, okMinor := leadingNumber(second)
+	return major, minor, okMajor && okMinor
+}
+
+// leadingNumber returns the digits at the start of s; a component with none
+// is no number a release writes.
+func leadingNumber(s string) (int, bool) {
+	end := 0
+	for end < len(s) && s[end] >= '0' && s[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s[:end])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// extOptionWords splits the effective options the ext4 driver reports into the
+// words the rows match whole, as refusedOption matches the mount table's. The
+// driver's own options file writes one option per line: ext4_seq_options_show
+// passes nodefs=1 to _ext4_show_options, which picks its separator there
+// ("char sep = nodefs ? '\n' : ','" — both in fs/ext4/super.c); the comma form
+// is the mount table's, the one ext4_show_options writes with nodefs=0. The
+// comma and the whitespace separators stay, so a recording of either form
+// splits; the rows in the table tests keep the per-line form whole, so
+// narrowing the split to the commas alone goes red.
+func extOptionWords(options string) []string {
+	return strings.FieldsFunc(options, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	})
+}
+
+// refusedExtOption returns the first word of the effective options a barrier
+// row for ext refuses.
+func refusedExtOption(words []string) (string, bool) {
+	for _, w := range words {
+		for _, row := range barrierRows {
+			if row.magic == magicExt && row.option == w {
+				return w, true
+			}
+		}
+	}
+	return "", false
 }
 
 // refusedOption returns the first option of superOptions a barrier row of

@@ -145,13 +145,17 @@ func stale(t *testing.T, root string) (checked int, differ []string) {
 			return err
 		}
 		first, _, _ := strings.Cut(string(b), "\n")
+		run := generate
 		inputs, ok := strings.CutPrefix(first, header)
 		if !ok {
-			return nil
+			if inputs, ok = strings.CutPrefix(first, typesHeader); !ok {
+				return nil
+			}
+			run = generateTypes
 		}
 		inputs, _ = strings.CutSuffix(inputs, "; DO NOT EDIT.")
 		checked++
-		if fresh, err := generate(filepath.Dir(path), strings.Fields(inputs)); err != nil || !bytes.Equal(fresh, b) {
+		if fresh, err := run(filepath.Dir(path), strings.Fields(inputs)); err != nil || !bytes.Equal(fresh, b) {
 			differ = append(differ, path)
 		}
 		return nil
@@ -175,11 +179,30 @@ func TestGeneratedCodeIsFresh(t *testing.T) {
 	}
 }
 
-// Over its seed, a generated file edited by hand, the check reports it: a
-// check that matched nothing, or compared nothing, would pass the tree too.
+// Over its seed, a generated codec and a generated list of its structs, each
+// edited by hand, the check reports both: a check that matched nothing, or
+// compared nothing, would pass the tree too.
 func TestFreshnessCheckFindsAHandEdit(t *testing.T) {
 	checked, differ := stale(t, filepath.Join("testdata", "stale"))
-	if checked != 1 || len(differ) != 1 {
-		t.Errorf("read %d generated files and found %v differing, want the seed's one", checked, differ)
+	if checked != 2 || len(differ) != 2 {
+		t.Errorf("read %d generated files and found %v differing, want the seed's two", checked, differ)
+	}
+}
+
+// The list -types writes names every struct the codec is generated for, in
+// the order they are declared, and nothing else.
+func TestGenerateTypesListsEveryStruct(t *testing.T) {
+	dir := t.TempDir()
+	src := "package p\n\ntype N uint32\ntype B struct{ X N }\ntype A struct{ Y uint32 }\n"
+	if err := os.WriteFile(filepath.Join(dir, "in.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := generateTypes(dir, []string{"in.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "return []any{\n\t\tnew(B),\n\t\tnew(A),\n\t}"
+	if !bytes.Contains(out, []byte(want)) || bytes.Count(out, []byte("new(")) != 2 {
+		t.Errorf("listed:\n%s\nwant B and A alone, in that order", out)
 	}
 }

@@ -237,6 +237,7 @@ func Run(t *testing.T, open Opener) {
 		{"AllSettingsPages", testAllSettingsPages},
 		{"AllSettingsWriteBetweenPages", testAllSettingsWriteBetweenPages},
 		{"AllSettingsResumes", testAllSettingsResumes},
+		{"AllSettingsScopeOrder", testAllSettingsScopeOrder},
 	} {
 		t.Run(c.name, func(t *testing.T) { c.fn(t, open) })
 	}

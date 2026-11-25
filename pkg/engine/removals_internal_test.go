@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -161,6 +162,49 @@ func TestAnItemStallsAfterFiveFailures(t *testing.T) {
 		}
 
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// A stalled item stays removal_stalled while its next retry runs, though the
+// run has taken it off the loop's list.
+func TestAStallHoldsWhileItsRetryRuns(t *testing.T) {
+	clock := sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	e := &Engine{d: Deps{Clock: clock, Logger: slog.New(slog.NewTextHandler(&syncBuffer{}, nil)),
+		Tracer: func(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
+			return ctx, func(error) {}
+		}}}
+	l := newRemovalLoop(e)
+	f := entity.NewFileID()
+	var runs atomic.Int32
+	inRetry, release := make(chan struct{}), make(chan struct{})
+	l.enqueue(&loopItem{b: &binding{}, f: f, kind: entity.RemoveTruncate, run: func(context.Context) answer {
+		if runs.Add(1) == stallAfter+1 {
+			close(inRetry)
+			<-release
+		}
+		return itemRetry
+	}})
+	go l.run()
+	t.Cleanup(func() { close(release); l.halt(nil) })
+	// One backoff at a time until the retry after the stall runs: the loop may
+	// arm its timer after an Advance, which that Advance then missed.
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		select {
+		case <-inRetry:
+		case <-time.After(time.Millisecond):
+			if time.Now().After(deadline) {
+				t.Fatalf("after 5 s the item ran %d times, want the retry after its stall running", runs.Load())
+			}
+			clock.Advance(loopBackoff)
+			continue
+		}
+		break
+	}
+	if !l.stalledOn(f) {
+		t.Error("stalledOn is false while the stalled item's retry runs, want true until a run finishes or advances it")
+	}
+	if !slices.ContainsFunc(e.conds.current(clock.Now()), func(c Condition) bool { return c.Name == conditionRemovalStalled }) {
+		t.Error("the removal_stalled condition is cleared while the stalled item's retry runs, want raised until a run finishes or advances it")
 	}
 }
 

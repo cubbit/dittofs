@@ -80,8 +80,9 @@ func Start(ctx context.Context, f registry.Fixture, bin, out string, w io.Writer
 	return s, nil
 }
 
-// install writes the installation's bootstrap and storage key under s.data,
-// runs dfs init over them, and seeds the namespace the share is in.
+// install writes the installation's bootstrap, its storage key and its
+// protocol key, which seals a user's NT hash when a password is set, under
+// s.data, runs dfs init over them, and seeds the namespace the share is in.
 func (s *Server) install(ctx context.Context) error {
 	s.home = filepath.Join(s.data, "home")
 	journal := filepath.Join(s.data, "journal")
@@ -91,12 +92,14 @@ func (s *Server) install(ctx context.Context) error {
 		}
 	}
 	s.passphrase = secret()
-	key, err := keyprovider.GenerateKeyFile(s.passphrase)
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(s.data, "storage.key"), key, 0o600); err != nil {
-		return err
+	for _, name := range []string{"storage.key", "protocol.key"} {
+		key, err := keyprovider.GenerateKeyFile(s.passphrase)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(s.data, name), key, 0o600); err != nil {
+			return err
+		}
 	}
 	s.node = uuid.New()
 	s.config = filepath.Join(s.data, "config.yaml")
@@ -106,11 +109,11 @@ func (s *Server) install(ctx context.Context) error {
 node: { id: %s }
 metadata: { badger: { path: %q } }
 journals: [ { path: %q } ]
-keys: { storage: { kind: local, local: { file: %q } } }
+keys: { storage: { kind: local, local: { file: %q } }, protocol: { kind: local, local: { file: %q } } }
 api: { listen: ['127.0.0.1:0'] }
 metrics: { listen: '127.0.0.1:0' }
 adapters: { listen: [%q] }
-`, uuid.UUID(s.node), filepath.Join(s.data, "store"), journal, filepath.Join(s.data, "storage.key"), s.server)
+`, uuid.UUID(s.node), filepath.Join(s.data, "store"), journal, filepath.Join(s.data, "storage.key"), filepath.Join(s.data, "protocol.key"), s.server)
 	if err := os.WriteFile(s.config, []byte(config), 0o600); err != nil {
 		return err
 	}
@@ -387,20 +390,20 @@ func (s *Server) addShare(ctx context.Context, name string) error {
 			return fmt.Errorf("granting %s %s on the share %s: %w", user, access, name, err)
 		}
 	}
-	return s.waitApplied(ctx, name)
+	return s.WaitApplied(ctx, sh.ID)
 }
 
-// waitApplied polls the share name until every node reporting it applied it
-// and none refused it, or ctx ends.
-func (s *Server) waitApplied(ctx context.Context, name string) error {
+// WaitApplied polls the share whose ID is id until every node reporting it
+// applied it and none refused it, or ctx ends.
+func (s *Server) WaitApplied(ctx context.Context, id string) error {
 	for {
-		sh, err := s.client.Shares().Get(ctx, s.shareIDs[name])
+		sh, err := s.client.Shares().Get(ctx, id)
 		if err == nil && applied(sh.Status) {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("the share %s was not applied (status %+v, %v): %w", name, sh.Status, err, ctx.Err())
+			return fmt.Errorf("the share %s was not applied (status %+v, %v): %w", id, sh.Status, err, ctx.Err())
 		case <-time.After(20 * time.Millisecond):
 		}
 	}

@@ -1,7 +1,8 @@
 # Sizing & Hardware
 
-How to size the machine that runs `dfs`. For picking *which* stores to run, see
-[Choosing Stores](choosing-stores.md); this page covers the hardware they need.
+This page helps you pick the CPU, memory and disks for the machine that runs `dfs`.
+Read it before a pilot or an evaluation. To choose *which* stores to run, see
+[Choosing Stores](choosing-stores.md).
 
 > **Read this first.** DittoFS is experimental and **not production ready**. There is no
 > supported production configuration and no true high-availability today (see
@@ -11,21 +12,25 @@ How to size the machine that runs `dfs`. For picking *which* stores to run, see
 
 ## Single-node, not a cluster
 
-Size **one box**, not a fleet. The only metadata store this build opens (`badger`) is
-embedded in one process, and it also holds the control plane's records, so there is no
-separate database to size and you cannot run active-active `dfs` replicas against the same
-data. So "sizing" means sizing a single server.
+Size **one box**, not a fleet. The default metadata store (`badger`) is embedded in one
+process, and it also holds the control plane's records, so there is no separate database to
+size. A `foundationdb` build keeps the metadata in a FoundationDB cluster instead
+([Installation](install.md#foundationdb-metadata)), but a node still runs alone: no two
+`dfs` nodes serve one installation yet. So "sizing" means sizing a
+single server.
 
-All file content lives on the node's journal devices (the `journals` list): no remote
-block store is wired to the engine yet, and the remote tier returns with
-[RFC 4](../internals/rfcs/rfc-4-remote-tier.md). The topology is **badger metadata + the
-journal devices**, all on the one box.
+All file content lives on the node's journal devices (the `journals` list). No remote
+store, such as S3, is wired yet, so nothing moves data off the node; the
+[remote tier design](../internals/rfcs/rfc-4-remote-tier.md) describes what will. The
+default build's topology is **Badger metadata plus the journal devices**, on one machine; with the
+`foundationdb` build the metadata sits in the FoundationDB cluster and the journal devices stay on
+the node.
 
 ## What drives each resource
 
 | Resource | What drives it | How to size it |
 |----------|----------------|----------------|
-| **RAM** | Badger runs with its own default cache sizes, which no key changes. Plus per-connection NFS/SMB buffers. | Give the process a real RAM budget; the operating system's page cache also serves the metadata store's files, so spare RAM still speeds `lookup`/`getattr`/`readdir`. |
+| **RAM** | Badger runs with its own default cache sizes, which no key changes. Once NFS and SMB are served, each connection adds its buffers. | Give the process a real RAM budget; the operating system's page cache also serves the metadata store's files, so spare RAM still speeds `lookup`/`getattr`/`readdir`. |
 | **Disk (journal)** | The journal devices hold the only copy of every byte written. Metadata (badger LSM, at `metadata.badger.path`) also lives on disk and grows with inode/file count. | Size the journal devices for **total data**, and leave headroom for metadata if it shares a volume. Use NVMe/SSD: every write lands on the journal. |
 | **CPU** | Client protocol work and the journal's write path. | Cores help write throughput and concurrent connections. At small scale writes are typically per-op / `fsync`-bound rather than CPU-starved. |
 | **Network** | Client NFS/SMB traffic only: nothing syncs off the node. | Size for your clients. |
@@ -50,6 +55,6 @@ Anchor points, not guarantees — validate against your workload.
 
 ## See also
 
-- [Choosing Stores](choosing-stores.md) — picking metadata and block stores
+- [Choosing Stores](choosing-stores.md) — the metadata store and where file content lives
 - [Durability](durability.md) — how far a write must land before it is acknowledged
 - [Configuration](configuration.md) — every config key and CLI flag

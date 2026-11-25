@@ -114,7 +114,9 @@ jobs:
           SUITE: ${{ inputs.suite }}
           # decision: on feat/storage-v2 the data path answers unavailable until
           # the adapters run on vfs.Service, so the data-path suites are skipped
-          # there.
+          # there, and of e2e the cells that mount: e2e itself, e2e/kerberos,
+          # e2e/cross-protocol and e2e/stress. e2e/second-user mounts nothing
+          # and runs. Each comes off the list with its first green test.
           # unit/windows moves no file bytes but is skipped for its cost;
           # journal-platforms.yml covers the journal on Windows. Delete V2 once
           # the adapters run on vfs.Service. A merge queue run's ref is its
@@ -128,8 +130,9 @@ jobs:
           # after it keeps only the suites that have moved in (the header), so a
           # new suite runs only once it is named there.
           jq -c --arg suite "$SUITE" --arg v2 "$V2" '[(.cells // [])[] | select($suite == "" or .suite == $suite)
-              | select($v2 != "true" or ((IN(.suite; "e2e", "pjdfstest", "pynfs", "wpts", "smbtorture", "cthon04",
-                  "nfstest", "clients", "fio-verify", "bench-smoke", "system") or IN(.name; "unit/windows")) | not))
+              | select($v2 != "true" or ((IN(.suite; "pjdfstest", "pynfs", "wpts", "smbtorture", "cthon04",
+                  "nfstest", "clients", "fio-verify", "bench-smoke", "system")
+                  or IN(.name; "unit/windows", "e2e", "e2e/kerberos", "e2e/cross-protocol", "e2e/stress")) | not))
               | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator" or .suite == "e2e"
                 or .suite == "smbtorture" or (.suite == "system" and .place != "dedicated")
                 or .suite == "clients" or .suite == "cthon04" or .suite == "nfstest" or .suite == "fio-verify"
@@ -208,7 +211,7 @@ jobs:
       # client, rpcbind for the NLM interop tests, the NFSv4 ACL tools, and
       # setfattr and getfattr for the NFSv4.2 xattr tests.
       - name: Install the e2e tests' system packages
-        if: matrix.suite == 'e2e'
+        if: matrix.suite == 'e2e' && matrix.name != 'e2e/second-user'
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -527,7 +530,18 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
-      - *go
+
+      # decision: unit keeps a cache entry of its own. The shared one is saved
+      # by whichever job misses first, usually CodeQL's Analyze (go), which
+      # builds without -race or coverage, so unit restored it, hit, never saved,
+      # and recompiled every race-instrumented package on every run. Drop the
+      # flavor when the job that saves the shared entry builds with -race and
+      # -cover too, or when the cache is saved after every run, not once per key.
+      - name: Set up Go
+        id: go
+        uses: ./.github/actions/go-cache
+        with:
+          flavor: race-cover
       - *download
       - *build
 

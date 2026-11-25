@@ -1104,4 +1104,3 @@
   reason: 'The journal opens; the check fails on a stub call. Needs retained extents kept by repack and released once their hold goes.'
   issue: '#3379'
   message: 'stub: Hold'
-

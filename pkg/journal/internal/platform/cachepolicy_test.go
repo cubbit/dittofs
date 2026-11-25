@@ -144,12 +144,6 @@ func TestCheckWriteCachePolicy(t *testing.T) {
 			answer: append(with(flushingOff(), 4, 0x20), 0x00, 0x00, 0x00, 0x00),
 		},
 		{
-			// The smallest Version that holds the field, 26 bytes. Fails if
-			// a Version of 26 is read as ending before offset 25.
-			name:   "flushing off refuses at version 26",
-			answer: with(flushingOff(), 0, 0x1a),
-		},
-		{
 			// The smallest Size and the fewest bytes that hold the field:
 			// Size 26 and 26 bytes returned. Fails if a Size of 26, or 26
 			// bytes, are read as cut short.
@@ -215,31 +209,6 @@ func TestCheckWriteCachePolicy(t *testing.T) {
 				volume:     testVolume,
 				queryErr:   1,
 			},
-		},
-		{
-			// An older structure: Version "Contains the size of this
-			// structure" and "will change as members are added to the
-			// structure" (the Learn page above). Version 25 ends before
-			// UserDefinedPowerProtection at offset 25, so it does not report
-			// the policy.
-			name: "version 25 ends before the field",
-			p: cacheProbeOf([]byte{
-				0x19, 0x00, 0x00, 0x00, // Version: 25
-				0x19, 0x00, 0x00, 0x00, // Size: 25
-				0x02, 0x00, 0x00, 0x00, // WriteCacheType
-				0x02, 0x00, 0x00, 0x00, // WriteCacheEnabled
-				0x01, 0x00, 0x00, 0x00, // WriteCacheChangeable
-				0x02, 0x00, 0x00, 0x00, // WriteThroughSupported
-				0x01, // FlushCacheSupported
-			}),
-		},
-		{
-			// Version 25 with 28 bytes returned whose byte 25 is set: the
-			// byte lies past the structure Version describes, so it is not
-			// the policy. Fails if a Version of 25 is read as holding the
-			// field.
-			name: "version 25 with a set byte past it",
-			p:    cacheProbeOf(with(flushingOff(), 0, 0x19)),
 		},
 	}
 
@@ -321,6 +290,44 @@ func TestCheckWriteCachePolicy(t *testing.T) {
 			// short of the field.
 			name:   "one byte short of size 26",
 			answer: with(flushingOff(), 4, 0x1a)[:25],
+		},
+		{
+			// Version "Contains the size of this structure" and "will change
+			// as members are added to the structure" (the Learn page above),
+			// and 28 is every layout published: a Version below it comes
+			// from no structure a driver ever wrote, and its answer is cut
+			// short rather than passed as "not reported". Version 27 is the
+			// last answer the error takes — the published layout without one
+			// byte of padding; the rows above answer a Version of 28 — so a
+			// floor one byte higher turns every refusal red and a floor one
+			// lower loses this row. Fails if such a Version is read as
+			// reporting the policy or as "not reported".
+			name:   "version 27 under the published structure",
+			answer: with(flushingOff(), 0, 0x1b),
+		},
+		{
+			// Version 26, one more byte short of the published layout, holds
+			// the policy byte while naming no structure that was ever
+			// published; the answer is cut short however inviting its byte
+			// looks. Fails the same way.
+			name:   "version 26 under the published structure",
+			answer: with(flushingOff(), 0, 0x1a),
+		},
+		{
+			// Version 25 with 25 bytes returned: the answer ends before the
+			// policy byte, and its Version names no published structure
+			// either, so it fails as cut short, never as a property not
+			// reported.
+			name:   "version 25 ends before the field",
+			answer: with(flushingOff(), 0, 0x19)[:25],
+		},
+		{
+			// Version 25 with 28 bytes returned whose byte 25 is set: the
+			// byte lies past the structure such a Version describes, and
+			// such an answer is cut short, whatever its bytes say. Fails if a
+			// Version of 25 is read as holding the field.
+			name:   "version 25 with a set byte past it",
+			answer: with(flushingOff(), 0, 0x19),
 		},
 		{
 			// Version 28 holds the field, but Size 25, the total of the data

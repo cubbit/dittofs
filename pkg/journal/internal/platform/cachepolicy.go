@@ -27,6 +27,15 @@ const (
 	writeCacheHeaderLen = 8
 	// writeCachePolicyOff is the offset of UserDefinedPowerProtection.
 	writeCachePolicyOff = 25
+	// writeCacheFirstWhole is the size of Version itself — the size of the
+	// one layout the Learn page above documents: the four enums held as the
+	// int an enumeration is, the three one-byte BOOLEANs, then one byte of
+	// the 4-byte alignment's padding — 28. Version "will change as members
+	// are added to the structure" (the Learn page), and 28 is every layout
+	// Microsoft has published, so an answer whose Version is below it comes
+	// from no structure that was ever published, and the answer is read as
+	// cut short rather than as a property not reported.
+	writeCacheFirstWhole = 28
 )
 
 // The Win32 errors a query fails with when the device does not report its
@@ -72,9 +81,10 @@ var (
 	// errCacheQueryFailed: the query failed with an error that does not say
 	// the device leaves its write cache unreported.
 	errCacheQueryFailed = errors.New("journal: the volume's write cache query failed")
-	// errCacheAnswerShort: the answer's Version holds the field, but its Size
-	// or the bytes that came back do not reach it, or fewer bytes came back
-	// than its Size declares.
+	// errCacheAnswerShort: the answer's Version is below the one published
+	// structure's size, or its Version holds the field but its Size or the
+	// bytes that came back do not reach it, or fewer bytes came back than
+	// its Size declares.
 	errCacheAnswerShort = errors.New("journal: the volume's write cache answer is cut short")
 )
 
@@ -127,12 +137,13 @@ func checkCacheProbe(p cacheProbe) error {
 		return fmt.Errorf("%w: volume %s: %d bytes", errCacheAnswerShort, p.mountPoint, len(p.answer))
 	}
 
-	// An older structure, whose Version ends before the field, does not
-	// report the policy.
+	// Version is the size of the structure itself, 28 for every published
+	// layout: an answer below it is no structure the driver ever wrote — not
+	// a property "not reported", an answer cut short.
 	version := binary.LittleEndian.Uint32(p.answer[writeCacheVersionOff:])
 
-	if version <= writeCachePolicyOff {
-		return nil
+	if version < writeCacheFirstWhole {
+		return fmt.Errorf("%w: volume %s: version %d", errCacheAnswerShort, p.mountPoint, version)
 	}
 
 	// The structure holds the field, so the data returned must reach it:

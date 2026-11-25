@@ -206,12 +206,12 @@ with --wait, follows it to its end.`,
 				return fmt.Errorf("%s: share %s: %w", cmd.CommandPath(), id, err)
 			}
 			force, _ := cmd.Flags().GetBool("force")
-			return cmdutil.RunDeleteWithConfirmation(cmd, env, "share", sh.Spec.Name, force, func() error {
+			return cmdutil.RunDeleteWithConfirmation(cmd, env, "share", sh.Spec.Name, force, func() (*apiv1.Operation, error) {
 				op, err := c.Shares().Delete(cmd.Context(), id, sh.ETag)
 				if err != nil {
-					return fmt.Errorf("%s: share %s: %w", cmd.CommandPath(), id, err)
+					return nil, fmt.Errorf("%s: share %s: %w", cmd.CommandPath(), id, err)
 				}
-				return cmdutil.Follow(cmd, c, op)
+				return op, cmdutil.Follow(cmd, c, op)
 			})
 		},
 	}

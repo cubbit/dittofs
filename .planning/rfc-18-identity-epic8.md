@@ -84,8 +84,8 @@ Kerberos sign-in.
 
 ### 1.2 Out of scope
 
-- RFC 18 §10's Tier 2 rows over SMB, "NTLM off"'s cache-hit and fresh-sign-in halves among them:
-  E9.
+- RFC 18 §10's Tier 2 rows over SMB, "NTLM off"'s cache-hit half among them: E9. Its fresh
+  NTLM sign-in refused: E4's R15.
 - "NTLM off"'s password-set half: RFC 23's plan's epic 5, whose T5.7 holds a password change
   across an NTLM-off commit over the real identity (D9). The turn-back-on rule's cases: RFC 23's
   plan's epic 4's T4.11, and its `202` and `409` through the route, that plan's epic 7's T7.5; an
@@ -688,13 +688,17 @@ test/integration/ad-dc/
   already builds); the settings table stays out of `api.Deps` until the settings route's per-key
   write role lands, which T8.10 waits on.
 - **Acceptance criteria:**
-  - On the composed node, a route that seals a secret (the keytab route, the offline join's
-    hand-over) answers as RFC 23 says instead of `503`.
+  - On the composed node, the offline join's hand-over answers as RFC 23 says instead of `503`.
+  - The keytab route still answers `503`, before anything is sealed: it writes through the
+    settings table, which the node hands in only with T8.10, so it answers as RFC 23 says from
+    then.
 - **Tests:** in `node_test`, through `nodetest`: the offline join started through
   `POST /api/v1/installation:join-domain` with a handed-over password answers `202` and runs to
   joined (catches a sealer never handed over, which answers `503`); and T8.11's search runs over
   that route's own handling of the handed-over password, its hand-over written through the route
-  instead of the store (catches the route keeping the password in a log line or a step's state).
+  instead of the store (catches the route keeping the password in a log line or a step's state);
+  and a keytab `PUT` answers `503` with no secret sealed (catches a refusal that names a real key
+  unknown, or a seal spent on a write that cannot happen).
   Doubles: the in-memory domain controller (kind 2), the injected clock (kind 1).
 
 ## 7. Order of work

@@ -573,7 +573,7 @@ fake.
 **No mocks, no stubs.** Needing one means the code is coupled to something it should take as an
 argument. Put the logic in a function of its inputs and keep I/O in a thin layer at the edge, or
 take the dependency as a small interface and test against a real implementation of it: the memory
-metadata or block store, `t.TempDir()`, a listener on `127.0.0.1:0`, an in-memory SQLite store.
+metadata store, `t.TempDir()`, a listener on `127.0.0.1:0`, Badger in memory.
 Three kinds of double are allowed ([RFC 29 §4.11](rfcs/rfc-29-test-harness.md#411-test-doubles) has
 the reasoning):
 
@@ -604,8 +604,8 @@ Table-driven cases suit several inputs to one rule.
 
 **By kind:**
 
-- **Unit:** untagged and fast; `-short` on pull requests. Badger under `t.TempDir()` and
-  in-memory SQLite are real implementations, so their tests run untagged.
+- **Unit:** untagged and fast; `-short` on pull requests. Badger, under `t.TempDir()` or
+  in memory, is a real implementation, so its tests run untagged.
 - **Integration** (`-tags=integration`, `-p 1`): for a backend the host must provide, such as a
   KMIP server. External systems (a KDC, a domain controller, S3) are tested for real here; their
   parsing and logic are pure functions with unit tests. A missing backend is a skip that names the
@@ -1264,6 +1264,7 @@ Flags:
       --portmap                      run the suite's portmap option
       --results string               where results go, relative to the checkout's root (default test/harness/results)
       --retry int                    run each test that failed new again, up to N times: a pass on a retry is flaky
+      --second-user                  run the suite's second-user option
       --skip strings                 skip these suites of the group
       --smb                          run the suite's smb option
       --smb21                        run the suite's smb21 option
