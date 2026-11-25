@@ -264,7 +264,15 @@ row (E8); RFC 20 §4.4's `gss` package, but for D1's reading of it (Q1).
   this epic if that has not landed. Prior art: none found. A `decision:` marker at the mapping,
   naming RFC 17 §4.9's ceiling: admission fails open for a call that sets `HostCall` by mistake, so
   the mapping reads the program and procedure only, and T3.1's table test holds every other
-  program and procedure to unset.
+  program and procedure to unset. If #5736 (RFC 17 on `feat/storage-v2`, with #5735 on `develop`)
+  and #5734 (the code) land before T3.1, the call carries one `Caps` value instead, and `Route`
+  states a whole profile by program and procedure: `NFSv3Caps` for NFS v3 and MOUNT's other
+  procedures, `NFSv4Caps` for NFS v4, `NLMCaps` for NLM and NSM, `MountCaps` for `MNT` and
+  `EXPORT`. A profile, never `HostCall` alone, since #5735 makes privilege fail closed: NFS's root
+  keeps its privilege only through `PrivilegeOnEveryCall`, which every NFS-side profile sets.
+  `callProtocol` and `hostCall` become one `callCaps(prog, proc uint32) vfs.Caps`, the
+  `ProtocolNFSv3`, `ProtocolNFSv4` and `ProtocolNLM` aliases and R6's `Protocol` go, `Caps.String()`
+  is the label, and R48's table test runs against the profiles unchanged in what it catches.
 - **D3. The source address comes from `core.Conn.Remote`.** `Conn` keeps the client's address,
   already without its port and unmapped, but exports none, and the router has no other way to it.
   `Remote() netip.Addr` returns it, added first to RFC 20 §4.7 by a pull request to the RFC (rule
@@ -433,7 +441,9 @@ internal/adapter/adaptertest/nfsclient/
     T3.3's key.
   - `pkg/vfs`: `ProtocolNFSv3`, `ProtocolNFSv4`, `ProtocolNLM`, aliases of `entity`'s (D2), the
     label `Route` sets. `Call.HostCall`, RFC 17 §3.0's field, unless #5725 has added it. Consumed by
-    `Route`; `HostCall` by E4's T4.1, which lowers the minimums on it.
+    `Route`; `HostCall` by E4's T4.1, which lowers the minimums on it. If #5734 and #5736 land
+    first, none of these: `vfs.Caps` and its profiles are theirs, and `protocol/auth.go` has
+    `callCaps` (D2).
   - `protocol/auth.go`: the unexported `identity(flavour uint32, sys *wire.AuthSysParms, addr
     netip.Addr) (vfs.Identity, error)`, its error the named refusal `Route` answers `AUTH_BADCRED`,
     `callProtocol(prog uint32) vfs.Protocol` and `hostCall(prog, proc uint32) bool` (D2, R48); `checkAuth` returning the credential it decoded;
@@ -812,7 +822,8 @@ Questions pending the user's answer. Each recommended option is written in place
     applying it, amended into RFC 20 §4.7; the same check for any protocol, one more `core` surface.
 - **Q4. `Call.Protocol` of an NSM call** (D2). Settled by RFC 17 §3.0 (#5726): no rule reads the
   protocol, and NSM sets `HostCall` on every call. NSM's label stays `ProtocolNLM`, which only the
-  access event and the metrics read.
+  access event and the metrics read. If #5736 lands before T3.1, the label goes with `Call.Protocol`
+  and NSM states `NLMCaps` (D2), which closes Q4 the same way.
 - **Q5. Which NFSv4.0 `COMPOUND`s the cache stores** (D5). With the whole `COMPOUND` row
   `Cacheable`, every reply up to 8 KiB goes in, and at about 2000 compounds a second the 4096
   entries turn over in about 2 s, so a `REMOVE` retransmitted after a 3 s timeout runs again.
