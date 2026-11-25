@@ -14,8 +14,15 @@ import (
 // A clone of journal-held bytes reserves their record bytes, not their
 // payload. The unaligned length needs both a record header and padding.
 func TestACloneReservesItsCopiesRecordBytes(t *testing.T) {
-	// The source's first write takes one spare. The clone reserves two more.
-	f := enginetest.New(t, enginetest.WithSpares(3))
+	// The source's first write takes one spare, the clone's reservation two
+	// more, and one spare of tolerance beside them: a journal working in real
+	// time can roll one more of its own records onto a spare in the window
+	// between the write and the reservation, and with the refill held the
+	// pool can never make that spare up before the reservation asks — the
+	// engine answers a refusal at the reservation step, changing nothing, so
+	// the pool the row sizes must cover the journal's own rolls too, not only
+	// the write and the copies.
+	f := enginetest.New(t, enginetest.WithSpares(4))
 	const n = 64<<10 + 3
 	_, src := f.File("src")
 	_, dst := f.File("dst")
