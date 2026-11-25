@@ -580,7 +580,7 @@ The adapter's TLS settings are settings, not host facts: `adapters.nfs.tls` in t
 **Client interop:**
 
 - **Linux:** `mount -o vers=4.1,xprtsec=tls …` — requires `tlshd` (ktls-utils) and `CONFIG_NET_HANDSHAKE` (RHEL 9.x / upstream kernel 6.7+).
-- **macOS:** no NFS-over-TLS client — use Kerberos or a network-level tunnel instead.
+- **macOS:** no NFS-over-TLS client — use a network-level tunnel instead.
 
 ---
 
