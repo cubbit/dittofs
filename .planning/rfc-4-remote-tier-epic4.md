@@ -10,22 +10,28 @@ Cited, not owned: [RFC 12](../docs/internals/rfcs/rfc-12-snapshots.md) §2.1 (a 
 prefix); [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §10.2 (what the engine does with a cause);
 [RFC 3](../docs/internals/rfcs/rfc-3-syncer.md) §2.2 (the memory bound) and §2.10 (the
 small-body cap); [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §2 (names, units,
-labels, buckets) and §8.1 (what the root injects); [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md)
+labels, buckets) and §8.1 (what the root injects); the RFC 4 follow-up (#5795), which makes
+the root `pkg/remote` a pure contract and has `pkg/remote/s3` record through a recorder it
+declares; [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md)
 §1.2 (allowed imports, as amended to "a component imports another's contract only").
 **Track:** B.
 **Epic 4 estimate: 8 subtasks, 18 man-days.**
 **Depends on:** **R4-S2**, the suite and the in-memory store in CI: E1's `pkg/remote` (`Store`,
 `Name`, `Range`, `Info`, `Role`, `Mode`, `Checksum`, `StoredSum`, the sentinels, `Cause` and
 `DeniedError`) and E2's `remotetest` suite with its opener; **E3**, the fault transport and
-LocalStack: `integration`'s LocalStack cell over HTTPS (`LOCALSTACK_HTTPS_ENDPOINT` and the
-container's certificate), `s3fault` around the client's transport, and its request and reply
-faults, which each subtask names. Until E3's cell lands, this epic builds against a local
-`dt services up localstack` through its HTTPS listener, and its rows marked T wait for E3's faults.
+LocalStack: T3.1's `integration` cell over HTTPS (`LOCALSTACK_HTTPS_ENDPOINT` and the
+container's certificate), T3.2's transport with its record, `Answer`, `LoseReply` and
+`TruncateReply`, T3.3's `FlipByte` (and `ClampRange` if LocalStack does not clamp natively),
+T3.4's `FailBatchKey`, and T3.5's `FreshBucket`, each named by the subtask that takes it. Until
+T3.1 lands, this epic builds against a local `dt services up localstack` through its HTTPS
+listener, and its rows marked T wait for the E3 subtask that builds their fault.
 **Blocks:** **E5**, whose capability check runs on this epic's client, error table, put, get,
 control objects, batch delete and listing (C.4 steps 1 to 4, 6 and 7), and which inserts the check
 into this epic's `Open`; **E6**'s last subtask, the §4.4 ranged-flip row, which needs T4.4's
-ranged get under the fault transport; **E9**, whose steady-load row reads T4.2's connection
-counts; **R4-S3**, and through it RFC 8 offload plan epic 21, which holds one client per store
+ranged get under the fault transport; **E7**, whose content wiring implements T4.2's recorder over
+the root's registry; **E9**, whose steady-load row reads T4.2's connection
+counts; **R4-S3**, with E5, and through it the RFC 3 and RFC 8 offload plans' suites over the
+S3 store and RFC 8 offload plan epic 21, which holds one client per store
 configuration and composes the store.
 
 ---
@@ -52,15 +58,17 @@ into one error of RFC 4's closed set. It makes one attempt per call and keeps no
 - E2's conformance suite and RFC 4 §7.1's rows this epic owns pass against LocalStack 4.13.1
   under E3's fault transport in `integration`, and the `Put`, `Get` and `List` allocation bounds in
   `integration`'s `s3-allocs` option;
-- the `remote_` collectors of §4.12, which every backend shares, are declared in `pkg/remote` and
-  recorded by the client, with `ErrCorrupt` and a skipped foreign key logged at `Warn`.
+- the `remote_` series of §4.12 are recorded through the `Recorder` `pkg/remote/s3` declares,
+  which E7's content wiring implements over the root's registry, with `ErrCorrupt` and a skipped
+  foreign key logged at `Warn`; no package of `pkg/remote` imports `pkg/metrics`, `pkg/settings` or
+  `pkg/health`.
 
 ### 1.1 In scope
 
 The client and its constructor; the store's unexported open path and the exported `Open` it sits
 under (D1, D2); the layout of C.2 for blocks and control objects; `Checksum`, `Put`, `Get`, `Delete`,
-`List`, `PutControl`, `GetControl` and `Close`; the error table and its SDK adapter; the `remote_`
-collectors but `remote_capability`; the `Content-Range` reader and its fuzz target; the
+`List`, `PutControl`, `GetControl` and `Close`; the error table and its SDK adapter; the
+`Recorder` and the `remote_` series recorded through it but `remote_capability`; the `Content-Range` reader and its fuzz target; the
 `integration` option `s3-allocs`; the S3 store's run of E2's suite and of the §7.1 rows in §3.
 
 ### 1.2 Out of scope
@@ -70,14 +78,20 @@ collectors but `remote_capability`; the `Content-Range` reader and its fuzz targ
   and the §7.1 rows on them, the conditional-put row and the check's refusal that ends the
   first-get-`404` row: E5. This epic's `Open` takes the integrity mode, the batch-delete choice
   and the recorded corrupt code as unexported inputs that E5's check sets (D2), and the open's refusal against a listener whose
-  certificate is not trusted, which needs the check's first request, is E5's too.
+  certificate is not trusted, which needs the check's first request, is E5's too (#5806, its T5.4
+  test of an `httptest.NewTLSServer` listener whose root the client does not trust).
 - The codec, the ranged-flip half of §7.1's §4.4 row, and the `malformed` kind a recorded range
   the store rejects becomes (`ErrMalformed` once the follow-up RFC 4 change names it): E6. The store
   returns `ErrInvalid` for a range past the end and never produces the malformed case.
 - Deriving the client's limit from its callers (§4.10's two rows, R11, R19's limit half): E8.
   Holding one client per store configuration, ref-counted, and the in-memory store refused outside
   tests: RFC 8 offload plan epic 21, as the plan's §6.1 deferral ledger rows have them.
-- The `remote.*` keys, gathering the collectors for the node and the alert rule: E7.
+- The metric definitions as plain values, the `Recorder`'s implementation over the registry in the
+  node's content wiring (`internal/node/content`), the `remote.*` settings rows (an optional
+  `remote.region` among them, §9 point 2) and the alert rule: E7.
+- E5's additions to this surface (#5806, its D2 and D10): `ClientConfig.MaxBlockSize`, `Open`'s
+  second result `Claim`, and the `Recorder`'s `Capability(prefix, feature, present)`, each landing
+  with the check that uses it.
 - The backup location's calls, `immutable` mode and the `PutObject` clauses of §7.1's §4.8 size
   row; `Settings`, `RecheckSetting`, `VersionsPage` and `DeleteVersions`: the plan's §6.1 deferral
   ledger, rows one and four (RFC 26 and RFC 9).
@@ -114,18 +128,18 @@ cited by number and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | the error table, the `Content-Range` reader, the layout and the stream-length guard are pure functions with table tests and no service; the client against `httptest.NewTLSServer` listeners on `127.0.0.1:0`; the store against LocalStack 4.13.1 in `integration`, under E3's fault transport (kind 3) for every row marked T; E2's suite run with an opener over a fresh prefix. No double answers in the service's place |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | the error table, the `Content-Range` reader, the layout and the stream-length guard are pure functions with table tests and no service; the client against `httptest.NewTLSServer` listeners on `127.0.0.1:0`; the store against LocalStack 4.13.1 in `integration`, under E3's fault transport (T3.2 to T3.4, kind 3) for every row marked T; E2's suite run with an opener over a fresh prefix. No double answers in the service's place |
 | rule 2, fuzz tests where relevant ([`CLAUDE.md`, "By kind"](../CLAUDE.md#by-kind)) | T4.4 | `FuzzContentRange`: no panic, every parsed field inside the header, and a parsed range re-formats to the same range (an independent formatter, not the parser's inverse); crashers in `testdata/fuzz/FuzzContentRange/`. The SDK parses XML replies; the table over its types is table-tested, not fuzzed. E9 joins the target to the nightly `fuzz` suite |
-| rule 3, observability follows RFC 25 | T4.2, T4.3, T4.7 | `Deps` carry the `*slog.Logger`, narrowed with `With("component", "remote")`, and the `*metrics.Registry`; the `remote_` `Spec`s in `pkg/remote` (D3), series resolved once at `NewClient` (RFC 25 §2.9), recording an atomic add or an observe; `ErrCorrupt` and a skipped foreign key at `Warn` with the block name, nothing else per call; no span and no health condition. An error carries the operation, the status and the code, never the reply's message, a header, the access key, the secret or a signature; E5's wrong-secret test greps its open's log and error for all three |
+| rule 3, observability follows RFC 25 | T4.2, T4.3, T4.7 | `Deps` carry the `*slog.Logger`, narrowed with `With("component", "remote")`, and the `Recorder` `pkg/remote/s3` declares (D3), never a `*metrics.Registry`; E7's implementation resolves each series once (RFC 25 §2.9), so recording is an atomic add or an observe; `ErrCorrupt` and a skipped foreign key at `Warn` with the block name, nothing else per call; no span and no health condition. An error carries the operation, the status and the code, never the reply's message, a header, the access key, the secret or a signature; E5's wrong-secret test greps its open's log and error for all three |
 | rule 4, profiling | T4.3, T4.4, T4.7, T4.8 | every test runs under `internal/prof`'s goroutine and descriptor checks; `integration`'s `s3-allocs` option (registered by T4.3, `needs: [docker, "service:localstack"]`, `tier: pr`, no `-race`) asserts bytes allocated per op for `Put` and `Get` at 1 MiB and 8 MiB blocks, required not to grow with the block, and for one `List` page |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | the internal functions tested directly; behaviour through `remote.Store`, under `-race`; a header the store sends asserted where it is consumed: by LocalStack refusing or storing, by the `httptest` server's handler, or by the fault transport seeing the request, never where the store builds it |
-| rule 6, known failures shrink | none | `unit` and `integration` keep no `known.yaml`; every test lands green in the subtask that makes it pass, and a T row waits for E3's fault it needs |
-| rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | all | nothing from `develop`'s `pkg/block/remote/s3`; `pkg/remote/s3` imports `pkg/remote` (its own component's contract), `pkg/metrics` and `aws-sdk-go-v2`, and no codec, transform, syncer or engine package; its tests may import `s3fault`, `remotetest` and `internal/prof`, as amended RFC 0 §1.2 allows tests to. E1's import walk covers the new package without change |
+| rule 6, known failures shrink | none | `unit` and `integration` keep no `known.yaml`; every test lands green in the subtask that makes it pass, and a T row waits for the E3 subtask (T3.2 to T3.5) that builds its fault |
+| rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | all | nothing from `develop`'s `pkg/block/remote/s3`; `pkg/remote/s3` imports `pkg/remote` (its own component's contract) and `aws-sdk-go-v2` only: no codec, transform, syncer or engine package, and none of `pkg/metrics`, `pkg/settings` and `pkg/health`, which amended RFC 0 §1.2 counts as implementations; its tests may import `s3fault`, `remotetest` and `internal/prof`, as amended RFC 0 §1.2 allows tests to. E1's import walk covers the new package without change |
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T4.3 to T4.8 | LocalStack 4.13.1 for what the service stores, refuses and reports; `httptest` TLS listeners for what the client itself does (TLS, HTTP/1.1, caps), since no service is needed to show it; E2's suite runs against the S3 store as well as the in-memory one |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T4.1, T4.3, T4.7 | RFC 4's `decision:` notes at their code sites: the digest-only delayed duplicate at the ETag comparison (§4.3, T4.3) and a block put's size refusal as cause `size` at the table's size row (§4.8, T4.1); this epic's own markers of §4: D5 (T4.7) and D8 (T4.3) |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T4.1, T4.3, T4.7 | RFC 4's `decision:` notes at their code sites: the digest-only delayed duplicate at the ETag comparison (§4.3, T4.3) and a block put's size refusal as cause `size` at the table's size row (§4.8, T4.1); this epic's own markers of §4: D5 (T4.7), D6 (T4.5), D8 (T4.3) and D11 (T4.1) |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test names the break it catches; none asserts a fault's own answer, only the store's mapping of it |
-| rule 11, a symbol is exported only if the RFC's interface uses it | T4.2, T4.3 | exported: `NewClient`, `ClientConfig`, `Deps`, `Client` and `Close`, and `Open`, which returns `remote.Store` (RFC 4 §4.1's constructor, with the client it shares), and the `remote_` `Spec`s in `pkg/remote` that E7 gathers. Unexported: the error table, the layout, the integrity mode, the batch-delete choice, the `Content-Range` reader, the connection counters |
-| rule 12, each subtask creates only what it declares | all | `pkg/remote/s3` lands with the error table, its first file; the `Spec`s with the client that records the first of them; `s3-allocs` with `Put`'s allocation test; the `Content-MD5` middleware with `Delete`; no file before its first caller |
+| rule 11, a symbol is exported only if the RFC's interface uses it | T4.2, T4.3 | exported: `NewClient`, `ClientConfig`, `Deps`, `Client` and `Close`, and `Open`, which returns `remote.Store` (RFC 4 §4.1's constructor, with the client it shares), and the `Recorder` interface, which E7's content wiring implements. Unexported: the error table, the layout, the integrity mode, the batch-delete choice, the `Content-Range` reader, the connection counters |
+| rule 12, each subtask creates only what it declares | all | `pkg/remote/s3` lands with the error table, its first file; the `Recorder` with the client that records through it; `s3-allocs` with `Put`'s allocation test; the `Content-MD5` middleware with `Delete`; no file before its first caller |
 
 ## 3. Requirements and invariants
 
@@ -224,7 +238,7 @@ row's work is shared, the other part's owner is named.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R49 | The store exports §4.12's metrics, the same for every backend, labelled by store: `remote_requests_total` by `op` and `result`, `remote_request_seconds` with `op` folded to the five data calls and `other`, `remote_bytes_total` by `op`, `remote_connections_opened_total`, `remote_list_foreign_total`; each event counted once, here | MUST | §4.12, RFC 25 §2 | T4.2, T4.3, T4.7 |
+| R49 | The store exports §4.12's metrics, the same for every backend, labelled by store: `remote_requests_total` by `op` and `result`, `remote_request_seconds` with `op` folded to the five data calls and `other`, `remote_bytes_total` by `op`, `remote_connections_opened_total`, `remote_list_foreign_total`; each event counted once, here, through the `Recorder` (D3) | MUST | §4.12, RFC 25 §2 | T4.2, T4.3, T4.7 |
 | R50 | An `ErrDenied` result is labelled with its cause | MUST | §4.12 | T4.3 |
 | R51 | `ErrCorrupt` and a skipped foreign entry log at `Warn` with the block name; every other per-call outcome is a metric, not a log line. The codec's verification failures, the clause's third case, are E6's | MUST | §4.12 | T4.3, T4.7 |
 
@@ -259,16 +273,16 @@ row's work is shared, the other part's owner is named.
 
 - **D1. The constructors' surface.** RFC 4 §4.1 says a backend's constructor takes its settings, its
   mode, the client it shares and a context; each constructor lands with its first consumer, and
-  this epic is the first for both. `Open` is exported here with its final signature, and E5
-  inserts the check before it returns (D2), so nothing exported changes when E5 lands. The
-  proposal, pending the user's approval of the surface (§9 point 1):
+  this epic is the first for both. E5 inserts the check into `Open` (D2) and, as #5806's D2 and D10
+  have it, adds `ClientConfig.MaxBlockSize`, `Open`'s second result `Claim` and the `Recorder`'s
+  `Capability` method. Nothing outside this package calls `Open` before R4-S3, which includes E5,
+  so that change edits only this package's tests. Agreed by the user (§9 point 1):
 
   ```go
   package s3 // pkg/remote/s3
 
   // ClientConfig is one store configuration's client (RFC 4 §4.2, §4.10, Appendix C.3).
   type ClientConfig struct {
-  	Name            string         // the store configuration's name: the `store` label
   	Endpoint        string         // https:// only
   	Region          string         // the signing region; "" is us-east-1 (§9 point 2)
   	Bucket          string
@@ -279,10 +293,19 @@ row's work is shared, the other part's owner is named.
   	Limit           int            // RFC 4 §4.10's derived limit; at least 1
   }
 
+  // Recorder is what the store records through (RFC 4 §4.12); the node's content
+  // wiring implements it over the root's registry, one per store configuration,
+  // which supplies the `store` label. op, result and cause take the closed sets of D3.
+  type Recorder interface {
+  	Call(op, result, cause string, took time.Duration, bytes int64)
+  	ConnOpened()
+  	ForeignKey()
+  }
+
   // Deps are what the root injects (RFC 25 §8.1).
   type Deps struct {
-  	Logger  *slog.Logger
-  	Metrics *metrics.Registry
+  	Logger   *slog.Logger
+  	Recorder Recorder
   	// Transport wraps the client's real transport; nil in production. The fault
   	// transport is passed here by every test that runs a T row (RFC 4 §7.2).
   	Transport func(http.RoundTripper) http.RoundTripper
@@ -302,7 +325,8 @@ row's work is shared, the other part's owner is named.
   `Close` releases nothing of the client's: the holder that built the client counts its stores (RFC
   8 offload plan epic 21). `Deps.Transport` stays exported because tests outside this package pass
   the fault transport through it: the RFC 3 and RFC 8 offload plans' suites run over this store
-  behind it. Changing any of this after RFC 8 offload plan epic 21 and E5 call it means editing
+  behind it. They open it through `Open`, whose puts refuse until E5's check proves a mechanism
+  (D2), so those suites wait for E5, through R4-S3, not for this epic alone. Changing any of this after RFC 8 offload plan epic 21 and E5 call it means editing
   both. Prior art: aws-sdk-go-v2 takes its HTTP client as an option (`s3.Options.HTTPClient`, read
   the code), which the `Transport` hook narrows to the one thing tests replace; rclone's S3 backend
   builds one HTTP client per remote configuration (from memory).
@@ -318,26 +342,24 @@ row's work is shared, the other part's owner is named.
   `export_test.go` (CLAUDE.md "Writing tests": a hook set per instance from `export_test.go`). An
   `Open` in any mode but `remote.Mutable` is refused with `ErrInvalid`; E5 gives that refusal its
   wording and its marker naming the missing caller. Prior art: none found.
-- **D3. The `remote_` `Spec`s are declared in `pkg/remote` with this epic, the first that records
-  them, and resolved once per client.** Every backend exports the same metrics (§4.12), so the
-  `Spec`s live in the contract package, not in `s3`. `pkg/remote/metrics.go` lands here with the
-  five `remote_` `Spec`s. E7 adds `remote_capability`'s (with E5), the `codec_` ones and the
-  function gathering them, so E7's declaration starts from this file rather than creating it.
-  `pkg/metrics`' `Counter` and `Histogram` return the vector already registered under a `Spec`
-  (`pkg/metrics/registry.go` on `feat/storage-v2`, read the code), so every client of a node
-  registers into one set of vectors. The `store` label takes the store configuration's name (RFC
-  25 §2.4's entity label names a configured object, and `namespace` is a label of its own), so
-  every namespace on one configuration shares the client's series, which `NewClient` resolves once
-  (RFC 25 §2.9). Labels: `remote_requests_total{store, op, result, cause}`,
-  `remote_request_seconds{store, op}` on the `Request` buckets, `remote_bytes_total{store, op}`,
-  `remote_connections_opened_total{store}` and `remote_list_foreign_total{store}`. `op` takes
-  `put`, `get`, `delete`, `list`, `put_control` and `get_control` here (`health` with E5), and the
-  histogram folds the last two into `other`. `result` takes `ok` or the sentinel's name:
-  `not_found`, `invalid`, `denied`, `transient`, `throttled` or `corrupt`. `cause` is `access`,
-  `quota` or `size` on `denied` and empty otherwise. A call ending in a local failure is counted
-  with `result` `local`, pending the user's answer (§9 point 3). Prior art: Prometheus's
-  `client_golang` returns an `AlreadyRegisteredError` carrying the existing collector, which
-  `pkg/metrics` already uses for the same purpose.
+- **D3. The `remote_` series go through a `Recorder` `pkg/remote/s3` declares.** The root
+  `pkg/remote` is a pure contract and no package of the component imports `pkg/metrics` (#5795; the
+  plan's D12 as #5795 amends it), so the client takes the three-method `Recorder` of D1 in its
+  `Deps` and calls it once per call, per connection opened and per foreign key skipped. E7's content
+  wiring (`internal/node/content`) builds the definitions over the root's registry and hands each
+  client a `Recorder` bound to its store configuration's name, the `store` label (RFC 25 §2.4's
+  entity label names a configured object), so every namespace on one configuration shares the
+  client's series. The values are closed sets, so E7's implementation resolves every combination
+  once (RFC 25 §2.9). Labels as E7 declares them: `remote_requests_total{store, op, result,
+  cause}`, `remote_request_seconds{store, op}` on the `Request` buckets,
+  `remote_bytes_total{store, op}`, `remote_connections_opened_total{store}` and
+  `remote_list_foreign_total{store}`. `op` takes `put`, `get`, `delete`, `list`, `put_control` and
+  `get_control` here (`health` with E5), and the histogram folds the last two into `other`.
+  `result` takes `ok`, the sentinel's name (`not_found`, `invalid`, `denied`, `transient`,
+  `throttled` or `corrupt`), or `local` for a call that ended in a local failure, as the user
+  agreed (§9 point 3). `cause` is `access`, `quota` or `size` on `denied` and empty otherwise. Tests
+  pass a recorder that keeps what it was given, an output sink (CLAUDE.md "Writing tests":
+  outputs are not interactions). Prior art: the RFC 5 plan's D2 (#5532), the same recorder shape.
 - **D4. A certificate the client cannot verify follows C.3, as a network failure.** It is
   `ErrTransient`: the request is refused and the service never reached, which is all C.3 requires
   of verification. The architect pass proposed `ErrDenied` of cause `access`; it was not taken,
@@ -345,8 +367,8 @@ row's work is shared, the other part's owner is named.
   only expired by clock skew, and the RFC states no such row. Prior art: curl reports a
   verification failure as its own error class (60, `CURLE_PEER_FAILED_VERIFICATION`), apart from
   connection failures (from memory); RFC 4 keeps one class for both.
-- **D5. `List`'s `next` when a page ends on a key that is not a block name, pending the user's
-  answer (§9 point 4).** RFC 4 §4.1 says `next` is the last name of the page. A page that ends on
+- **D5. `List`'s `next` when a page ends on a key that is not a block name, as the user agreed
+  (§9 point 4).** RFC 4 §4.1 said `next` is the last name of the page. A page that ends on
   a foreign key cannot resume from its last block name: that lists the same foreign keys again, so
   a page of only foreign keys would never advance. When the page's last key is not a block name,
   `next` is the smallest name whose key sorts after it. The one block that could be skipped is the
@@ -355,13 +377,21 @@ row's work is shared, the other part's owner is named.
   true. A page marked truncated that holds no key cannot advance and is `ErrTransient`, never
   `done` false with `next` equal to `after`. A `decision:` marker at the computation states the
   three cases, and that the rule is withdrawn if `List` ever returns a resume token instead of a
-  name. RFC 4 §4.1's comment on `next` is amended to "where the next page starts" once the user
-  agrees. The architect pass proposed the largest name sorting at or before the last key; resuming
+  name. RFC 4 §4.1's comment on `next` is amended to say where the next page starts, in the RFC 4
+  follow-up (#5795). The architect pass proposed the largest name sorting at or before the last key; resuming
   after it lists that foreign key again, so it was not taken. Prior art: S3's own `ListObjectsV2`
   resumes from an opaque token or a key, never from a value of the caller's namespace (read the API
   reference).
 - **D6. A control object is at most 256 KiB.** RFC 4 §4.13 leaves the constant to the profile.
-  256 KiB is RFC 3 §2.10's small-body cap, so a control call always fits one `Small` call. A
+  256 KiB is RFC 3 §2.10's small-body cap, so a control call always fits one `Small` call. The
+  largest control object is `keys`, which holds every key record of the namespace, retired and
+  destroyed ones included, and grows with each rotation (RFC 5 Appendix B.2): a record of its kind,
+  ID, fingerprint, master key ID, wrapped bytes and state is about 200 bytes, about 450 with a
+  master key ID of 255 bytes, so the cap holds about 1,300 records, or 580 at the longest IDs. Past
+  it `PutControl` is `ErrInvalid` and rotation stops, so a `ponytail:` marker at the constant names
+  that ceiling and its upgrade: raise the constant, which migrates nothing, once a namespace's key
+  records approach it, and move the `keys` object's put from `Small` to a raw transfer when it
+  passes RFC 3's small-body cap. A
   `PutControl` body over it is `ErrInvalid` with no request; a `GetControl` reads at most one byte
   past it and answers `ErrInvalid` when the object is longer. Prior art: none found.
 - **D7. A per-key error inside a `DeleteObjects` reply is mapped by the status S3 documents for its
@@ -404,19 +434,21 @@ row's work is shared, the other part's owner is named.
   no code, a code it makes from the status text (`RequestEntityTooLarge`). `fromSDK` treats a code
   made from the status text as no code, and a body that does not parse on a non-2xx reply as a
   reply with that status and no code, so a proxy's HTML `413` stays cause `size` (§4.8 names the
-  proxy in front of the service). Only an unparseable 2xx body is `ErrTransient`. Prior art: none
+  proxy in front of the service). Only an unparseable 2xx body is `ErrTransient`. C.3 lists "a
+  response body that does not parse" under `ErrTransient` without naming a status, so this is a
+  contract the RFC leaves open: a `decision:` marker at `fromSDK` states it, and the amendment of
+  §9 point 8 settles it in the RFC. Prior art: none
   found; the SDK's behaviour was read in `service/internal/s3shared` on `feat/storage-v2`'s pinned
   version.
 
 ## 5. Target tree
 
 ```text
-pkg/remote/
-  metrics.go            T4.2  the five remote_ Specs (D3); E7 adds the rest
 pkg/remote/s3/
   errors.go             T4.1  the total table classify, the code-to-status table (D7), fromSDK (D11)
   client.go             T4.2  ClientConfig, Deps, NewClient, Close; HTTP/1.1, caps, TLS roots,
-                              the counting dialer, the per-call series and the Warn log
+                              the counting dialer and the Warn log
+  record.go             T4.2  the Recorder (D1, D3); E5 adds Capability
   store.go              T4.3  Open, open, choice, the store, Checksum, Close; the keys of C.2
   put.go                T4.3  Put, the stream guard (D8), the ETag comparison
   get.go                T4.4  Get, whole and ranged, StoredSum (D9, D10), parseContentRange
@@ -491,10 +523,10 @@ test/suites.yaml        T4.3  integration's s3-allocs option
   off (`aws.NopRetryer`), `RequestChecksumCalculation` and `ResponseChecksumValidation` at
   `WhenRequired`, static credentials, and `v4.SwapComputePayloadSHA256ForUnsignedPayloadMiddleware`
   on every operation; `Deps.Transport` wraps the transport when set. A dialer that
-  counts each connection it opens in `remote_connections_opened_total`, and on the connections it
-  wraps counts the closes the service started (a read ending in EOF or a reset before the client
-  closed it), never one the client starts; the per-call series resolved at `NewClient`.
-  `pkg/remote/metrics.go`: the five `remote_` `Spec`s (D3). Consumed by T4.3 to T4.8, E5,
+  counts each connection it opens through `Recorder.ConnOpened`, and on the connections it wraps
+  counts the closes the service started (a read ending in EOF or a reset before the client closed
+  it), never one the client starts. `record.go`: the `Recorder` (D1, D3), refused as nil by
+  `NewClient`. Consumed by T4.3 to T4.8, E5,
   E9's steady-load row (the counters, through `export_test.go`) and RFC 8 offload plan epic 21.
 - **Acceptance criteria:**
   - `http://` and a limit of 0 are refused before any dial.
@@ -506,7 +538,7 @@ test/suites.yaml        T4.3  integration's s3-allocs option
 - **Tests:** at the `httptest.NewUnstartedServer` handler, which consumes what the client sends,
   on `127.0.0.1:0`: `EnableHTTP2` true and the handler records `r.ProtoMajor` (catches HTTP/2
   negotiated, R45); the handler counts concurrent requests and `remote_connections_opened_total`
-  is read from a scrape of a test registry (catch a cap below or above the limit, or an idle pool
+  is read from the connections a sink `Recorder` was told of (catch a cap below or above the limit, or an idle pool
   that reopens, R44); every request's `x-amz-content-sha256` is `UNSIGNED-PAYLOAD` and carries no
   `x-amz-checksum-*` the store did not ask for (catch the SDK's defaults, R46, R47); a dotted bucket
   name reaches `/bucket.with.dots/` on the path (catches virtual-hosted addressing); a `301`
@@ -515,14 +547,16 @@ test/suites.yaml        T4.3  integration's s3-allocs option
   request reaches the handler once (catches a retry, R43); a client trusting another root is
   refused (R48). The service-started close counter: the handler hijacks and closes
   a connection, then the client closes one itself; the counter reads one (catches a client-started
-  close counted). No double: real TLS listeners, a real registry.
+  close counted). No double: real TLS listeners; the test `Recorder` only keeps what it was given
+  (an output sink).
 - **Rules:** rule 3: series resolved once here; rule 11: the only exported symbols are D1's.
 
 ### T4.3 Open, the layout and `Put`
 
 **Subtask T4.3 estimate: 3 man-days.**
 
-- **Track:** B. **Depends on:** T4.2; E3's LocalStack cell.
+- **Track:** B. **Depends on:** T4.2; T3.1 (LocalStack over HTTPS) and T3.2 (the transport's
+  record and `Answer`).
 - **Covers:** R1–R4, R6–R13, R42, R46, R49–R51.
 - **Deliverables:** `store.go`: `Open`, the unexported `open` and `choice` (D2), the store,
   `Checksum`, `Close`, and the keys of C.2: `blockKey(name)`, `controlKey(role)`, `nameFromKey(key)
@@ -557,10 +591,10 @@ test/suites.yaml        T4.3  integration's s3-allocs option
   nothing after either (R8, D8); a reader failing part-way returns its own error, not `ErrTransient`
   (catches the guard's record lost in `net/http`'s transport error, R42); a second put
   replaces the first (R11). The fault transport records every request it passes through: no
-  conditional header, exactly one integrity header (R12, R46). A test registry
-  scraped after a put and a refused put shows `op="put"`, `result="ok"` and `result="corrupt"`,
-  and a denied put its `cause`, and the histogram holds `op="other"` after a `PutControl` once T4.5
-  lands (R49, R50); a test `slog` handler holds one `Warn` naming the block
+  conditional header, exactly one integrity header (R12, R46). The sink `Recorder`, after a put and
+  a refused put, holds `op="put"`, `result="ok"` and `result="corrupt"`,
+  and a denied put its `cause`, and a `PutControl` once T4.5 lands is recorded as `put_control`
+  (R49, R50); a test `slog` handler holds one `Warn` naming the block
   on `ErrCorrupt` and nothing on success (R51). `s3-allocs`: bytes allocated per `Put` at 1 MiB
   and 8 MiB equal within a fixed slack (catches the block buffered, R8). Doubles: E3's transport as
   a pass-through recorder (kind 3, which CLAUDE.md allows when the request reaching the service is
@@ -571,8 +605,9 @@ test/suites.yaml        T4.3  integration's s3-allocs option
 
 **Subtask T4.4 estimate: 2.75 man-days.**
 
-- **Track:** B. **Depends on:** T4.3; E3's faults that clamp a range, truncate a body, flip a byte
-  in either direction, drop a request part-way, and answer the first get after a put with `404`.
+- **Track:** B. **Depends on:** T4.3; T3.2 (`TruncateReply`, `LoseReply`, `Answer` for the first get after a put), T3.3 (`FlipByte`, and
+  `ClampRange` if LocalStack does not clamp), T3.5 (`FreshBucket`, for the whole-block flip row's
+  returned checksum).
 - **Covers:** R7, R9, R14–R20, R40, R52–R59.
 - **Deliverables:** `get.go`: `parseContentRange(h string) (off, n, total int64, ok bool)`, pure,
   with `FuzzContentRange` and its seeds; `Get` sending `Range: bytes=off-end` for a range and
@@ -590,15 +625,15 @@ test/suites.yaml        T4.3  integration's s3-allocs option
   - A whole-block get with a flipped byte yields every byte, then `ErrTransient`, and the reported
     `StoredSum` equals the checksum LocalStack stored.
 - **Tests:** `parseContentRange` table and fuzz target (catches an off-by-one between inclusive
-  end and length, rule 2). Over LocalStack and E3's faults, at `Get`'s reader, the layer RFC 8's
+  end and length, rule 2). Over LocalStack and those faults, at `Get`'s reader, the layer RFC 8's
   fetch consumes: §7.1's rows R52 to R59, each asserting the sentinel and the bytes; R54 in both
   integrity modes through `setChoice`, with the retry without the fault restoring the original
   bytes in the ETag mode; a put cut off part-way followed by `ErrNotFound` (R53, R7). Each range of
-  a block of 100 bytes at every offset and length (catches a range header off by one, R14). An
-  `httptest` TLS server answering a ranged get with `200` and the whole object (catches a reader
-  yielding the wrong bytes, D10). A byte flipped in a whole-block get, asserting `errors.As` finds
+  a block of 100 bytes at every offset and length (catches a range header off by one, R14). T3.3's
+  `StripHeaders("Range")` on a ranged get, so LocalStack itself answers `200` with the whole
+  object: `ErrInvalid` before any byte is yielded (catches a reader yielding the wrong bytes, D10). A byte flipped in a whole-block get, asserting `errors.As` finds
   no SDK type at the reader's end (catches the SDK's validation error leaking, R34). A
-  scrape shows `remote_bytes_total{op="get"}` equal to the bytes read. `s3-allocs`: bytes allocated
+  sink `Recorder` holds the bytes read for `op` `get`. `s3-allocs`: bytes allocated
   per whole `Get` at 1 MiB and 8 MiB equal within the slack (catches the body buffered).
 - **Rules:** rule 2: `FuzzContentRange`.
 
@@ -606,7 +641,7 @@ test/suites.yaml        T4.3  integration's s3-allocs option
 
 **Subtask T4.5 estimate: 1 man-days.**
 
-- **Track:** B. **Depends on:** T4.4; E3's byte flip on a request.
+- **Track:** B. **Depends on:** T4.4; T3.3 (`FlipByte`).
 - **Covers:** R3, R13, R30–R33, R60, R61.
 - **Deliverables:** `control.go`: `PutControl` and `GetControl` over `controlKey(role)`, at
   `<prefix>control/claim`, `<prefix>control/health` and `<prefix>control/keys` for the roles E1
@@ -622,7 +657,7 @@ test/suites.yaml        T4.3  integration's s3-allocs option
   - A body of 256 KiB + 1 is refused with no request; a stored object longer than the cap reads
     `ErrInvalid`.
 - **Tests:** over LocalStack, at `GetControl`, the claim's and the keys object's reader: R60 and
-  R61 under E3's byte flip; the cap from both sides (catches an unbounded read, R33); a control key
+  R61 under T3.3's `FlipByte`; the cap from both sides (catches an unbounded read, R33); a control key
   set beside 10 blocks and a `List` of the store (catches a control key under `blocks/`, R30),
   which runs with T4.7's `List` once it lands and with a raw `ListObjectsV2` of `blocks/` until
   then.
@@ -631,8 +666,7 @@ test/suites.yaml        T4.3  integration's s3-allocs option
 
 **Subtask T4.6 estimate: 2.25 man-days.**
 
-- **Track:** B. **Depends on:** T4.3; E3's faults that fail one key inside a delete reply and drop a
-  response.
+- **Track:** B. **Depends on:** T4.3; T3.2 (`LoseReply`) and T3.4 (`FailBatchKey`).
 - **Covers:** R21–R26, R46, R62, R63.
 - **Deliverables:** `delete.go`: `Delete` splitting the names into requests of at most 1,000 keys,
   `Quiet` false, sent one after another; reading every key of each reply into its name's slot,
@@ -650,7 +684,7 @@ test/suites.yaml        T4.3  integration's s3-allocs option
   - A reply missing one requested key, or naming one twice, gives exactly that name `ErrTransient`.
 - **Tests:** a pure test of the reply accounting over reply values (catch a name inferred from a
   quiet or short reply, R22). Over LocalStack, at `Delete`'s results, which GC consumes: R62 and
-  R63 under E3's faults; the recorder sees `Content-MD5` and no `x-amz-checksum-*` on each
+  R63 under `FailBatchKey` and `LoseReply`; the recorder sees `Content-MD5` and no `x-amz-checksum-*` on each
   `DeleteObjects`, and LocalStack accepting it (catches the SDK's CRC32, R26); the one-key path
   through `setChoice`, one request per name in order, with a never-written name among them
   answered nil (R25, R23). No other double.
@@ -659,7 +693,7 @@ test/suites.yaml        T4.3  integration's s3-allocs option
 
 **Subtask T4.7 estimate: 1.5 man-days.**
 
-- **Track:** B. **Depends on:** T4.3; E3's pass-through recorder.
+- **Track:** B. **Depends on:** T4.3; T3.2 (the transport's record).
 - **Covers:** R5, R27–R29, R49, R51, R64, R65.
 - **Deliverables:** `list.go`: `List` sending one `ListObjectsV2` with `prefix` `<prefix>blocks/`,
   `max-keys` `n` and `start-after` the key of `after` (none for the zero name), yielding each block
@@ -669,21 +703,21 @@ test/suites.yaml        T4.3  integration's s3-allocs option
 - **Acceptance criteria:**
   - Every call sends one request; a walk of pages yields each block once in order.
   - A page of only foreign keys advances the walk.
-- **Tests:** over LocalStack, at the walk GC runs: R64 and R65, the request count from E3's
-  pass-through recorder and the reply's bytes from the reply it saw; 1,001 foreign keys followed by
+- **Tests:** over LocalStack, at the walk GC runs: R64 and R65, the request count from T3.2's
+  record and the reply's bytes from the reply it saw; 1,001 foreign keys followed by
   one block, listed with `n` 1,000 (catches a walk that never advances, D5); a pure table of the
   page reading over reply values: an empty page marked truncated (`ErrTransient`, D5), a page
   ending on `blocks/zz` (`done`, D5), and a
   prefix holding non-ASCII and percent-encoded bytes, whose keys are matched byte for byte
   (catches a prefix stripped after a decoding the request never asked for); `remote_list_foreign_total`
-  read from a scrape. `s3-allocs`: bytes allocated by one page of 1,000 at most a fixed bound.
+  read from the sink `Recorder`'s foreign keys. `s3-allocs`: bytes allocated by one page of 1,000 at most a fixed bound.
 
 ### T4.8 The store against the conformance suite and the cross-cutting rows
 
 **Subtask T4.8 estimate: 2.5 man-days.**
 
-- **Track:** B. **Depends on:** T4.5, T4.6, T4.7; E3's request faults (status and code, a body that
-  does not parse, a dropped request, a delay past the context).
+- **Track:** B. **Depends on:** T4.5, T4.6, T4.7; T3.2 (`Answer` with a status and code or a body
+  that does not parse, `LoseReply`, a scheduled delay past the context).
 - **Covers:** R2, R3, R12, R34, R43, R47, R66–R73.
 - **Deliverables:** an `integration` test in `pkg/remote/s3` running E2's `remotetest` with an
   opener over a fresh random prefix of one LocalStack bucket, created once through the client under
@@ -699,7 +733,7 @@ test/suites.yaml        T4.3  integration's s3-allocs option
   - One failing call is one request; a throttling reply on every request is `ErrThrottled`.
   - Every request of the run carried `UNSIGNED-PAYLOAD` and no conditional header.
 - **Tests:** the suite itself (R73), at `remote.Store`, the layer every caller consumes; R67 to
-  R71 under E3's faults, the request counts and headers from its pass-through recorder; R66 by a
+  R71 under T3.2's faults, the request counts and headers from its record; R66 by a
   raw `ListObjectsV2` of the prefix after the run (catches a check or control key misplaced, or a
   block key with anything between `blocks/` and the name). Doubles: E3's fault transport (kind 3).
 
@@ -710,7 +744,11 @@ flowchart TD
   S2(["R4-S2 suite and in-memory store in CI"]):::sync --> T4_1["T4.1 Error table"]
   T4_1 --> T4_2["T4.2 Client"]
   T4_2 --> T4_3["T4.3 Open, layout, Put"]
-  E3(["E3 LocalStack cell and faults"]):::sync -.-> T4_3 & T4_4 & T4_5 & T4_6 & T4_7 & T4_8
+  T3_1(["T3.1 LocalStack over HTTPS"]):::sync -.-> T4_3
+  T3_2(["T3.2 transport, record, reply faults"]):::sync -.-> T4_3 & T4_4 & T4_6 & T4_7 & T4_8
+  T3_3(["T3.3 FlipByte"]):::sync -.-> T4_4 & T4_5
+  T3_4(["T3.4 FailBatchKey"]):::sync -.-> T4_6
+  T3_5(["T3.5 FreshBucket"]):::sync -.-> T4_4
   T4_3 --> T4_4["T4.4 Get"]
   T4_4 --> T4_5["T4.5 Control objects"]
   T4_4 --> C1(["after T4.4: E5's check steps 1 and 2; E6's ranged-flip row"]):::sync
@@ -725,8 +763,8 @@ flowchart TD
 
 Checkpoints: after T4.4, E5 can run its check's integrity and get steps and E6 its ranged-flip row;
 after T4.5, the check's claim read; after T4.5, T4.6 and T4.7, its batch delete, its listing, and
-its health object put with the cleanup of everything else it wrote. T4.1 and T4.2 need no service, so they proceed while E3's cell is built; from T4.3 on,
-work runs against a local LocalStack and a row marked T lands once E3's fault it names has.
+its health object put with the cleanup of everything else it wrote. T4.1 and T4.2 need no service, so they proceed while T3.1 is built; from T4.3 on,
+work runs against a local LocalStack and a row marked T lands once the E3 subtask it names has.
 
 ## 8. Suggested pull requests
 
@@ -741,24 +779,20 @@ other and can be open at once after PR 2.
 
 ## 9. Open points
 
-1. **The constructors' surface (D1), pending the user's approval.** `NewClient(ClientConfig, Deps)`
-   and `Open(ctx, *Client, prefix, remote.Mode) (remote.Store, error)`, with `Deps.Transport` as the exported hook the
-   fault transport is passed through, frozen once E5 and RFC 8 offload plan epic 21 call them.
-2. **The signing region, pending the user's answer.** SigV4 needs a region, and RFC 13 Appendix B
-   lists no key for it. Recommended: `ClientConfig.Region`, empty meaning `us-east-1`, which
-   LocalStack and most S3-compatible services accept, and an optional `remote.region` row added to
-   RFC 13 Appendix B by E7 for a service that needs another (Scaleway's `fr-par`; AWS answers a
-   wrong region with a `301`, cause `access`, or `400 AuthorizationHeaderMalformed`, `ErrInvalid`,
-   so the open fails either way). Alternative: derive
-   it from the endpoint's host, which fails on every self-hosted service.
-3. **`result` for a local failure, pending the user's answer (D3).** RFC 25 §2.4 gives `result`
-   only `ok` or a sentinel's name. Recommended: `local`, so a cancelled call is still counted.
-   Alternative: count nothing for it, which hides cancelled calls from the request rate.
-4. **`List`'s `next` past a foreign key (D5), pending the user's answer.** RFC 4 §4.1 says `next`
-   is the last name of the page. Recommended: D5's smallest name after the page's last key, with
-   §4.1's comment amended to "where the next page starts". Alternative: keep the RFC's words and
-   return `ErrTransient` for a page that ends on a foreign key, which leaves a walk stuck behind a
-   run of `n` foreign keys until someone removes them.
+Points 1 to 4 were asked as questions and are resolved: the user agreed each recommendation.
+
+1. **The constructors' surface (D1), resolved.** `NewClient(ClientConfig, Deps)` and
+   `Open(ctx, *Client, prefix, remote.Mode)`, with `Deps.Transport` as the exported hook the fault
+   transport is passed through and `Deps.Recorder` in place of a registry (#5795). E5 adds
+   `MaxBlockSize`, the `Claim` result and `Capability` (#5806).
+2. **The signing region, resolved.** `ClientConfig.Region`, empty meaning `us-east-1`, which
+   LocalStack and most S3-compatible services accept; E7 adds an optional `remote.region` settings
+   row for a service that needs another (Scaleway's `fr-par`). AWS answers a wrong region with a
+   `301`, cause `access`, or `400 AuthorizationHeaderMalformed`, `ErrInvalid`, so the open fails
+   either way.
+3. **`result` for a local failure, resolved (D3).** `local`, so a cancelled call is still counted.
+4. **`List`'s `next` past a foreign key, resolved (D5).** The smallest name after the page's last
+   key; RFC 4 §4.1's comment on `next` is amended in #5795.
 5. **The `repair` role has no key in C.2.** RFC 4 §4.1 declares `RoleRepair`, and C.2 lists keys
    for `claim`, `health` and `keys` only. If E1 declares it for v1.1 (its caller, GC's `Recheck`, is
    deferred to RFC 9), `controlKey` places it at `<prefix>control/repair` by analogy and an RFC 4
@@ -770,3 +804,8 @@ other and can be open at once after PR 2.
    service/s3 v1.114.3, service/internal/checksum v1.11.7); `develop` pins newer ones. A bump before
    this epic starts is re-read for D9's validator, D11's error components and the checksum
    middleware's ID.
+8. **C.3's unparseable body (D11).** Proposed amendment to RFC 4 C.3's `ErrTransient` row: "a
+   response body that does not parse is classified by its status, as a reply with no code; only a
+   2xx one is `ErrTransient`". Without it an HTML `403` from a proxy is `ErrTransient` and an HTML
+   `413` to a block put stops being cause `size`. It goes into the RFC 4 follow-up (#5795) or the
+   next one.
