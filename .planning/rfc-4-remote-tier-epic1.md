@@ -322,7 +322,8 @@ cite them. Where an owned section's obligation is another epic's to carry out, t
   the content wiring (D5), as the RFC 2 and RFC 8 offload breakdowns have it.
   A caller could pass a name that does not match the nonce, the pin and the chunks; E6's
   `Attempt` recomputes it through `Config.Name` on its first pass and returns `ErrInvalid` on a
-  mismatch, before any byte is sent. The other options are §9's.
+  mismatch, before any byte is sent, as RFC 4 §4.3's doc comment, §4.8's `ErrInvalid` row and a
+  §7.3 row now say. The other options are §9's.
 - **D10. `codec.Store` finds a block's census through a lookup it is handed.** `Chain.Decode` takes the block record's census (RFC 4 §3.4, RFC 5 §3.1), and RFC 4
   §4.3's `Get(ctx, name, want, m)` carries none. The lookup keeps every signature of
   RFC 3 §1.3 and RFC 4 §4.3 as written, and this pull request names it in RFC 4 §4.3: `Config.Census`, a function the content wiring builds over

@@ -912,7 +912,8 @@ func (s *Store) Health(ctx context.Context, d remote.Direction) error
 // pin, the chain the engine pinned for this attempt (RFC 8 §6.6, RFC 5 §3.1); the
 // header carries both, and every body is encoded under pin. Each range over src
 // yields the block's chunks again from the first; a measuring pass and each
-// Attempt start one.
+// Attempt start one. Attempt recomputes the name from nonce, pin's chain ID and
+// the chunk IDs before it sends a byte, and a name that differs is ErrInvalid.
 func (s *Store) NewPut(name remote.Name, nonce [16]byte, pin transform.Attempt, src iter.Seq2[remote.Chunk, error]) *Put
 
 // Put is one block's put across the syncer's tries.
@@ -1149,7 +1150,7 @@ is `ErrInvalid` for that put alone, since those bodies have bounds of their own
 | Error | Meaning | What the caller does |
 | --- | --- | --- |
 | `ErrNotFound` | this block is absent; the store itself is fine | fails the read; the engine re-resolves the chunk ([RFC 8 §7.7](rfc-8-engine.md#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) |
-| `ErrInvalid` | the request was wrong: a range past the end, an operation the service does not support, or a size refusal of a put that is not a block's; never a quota refusal | fails the call; not retried |
+| `ErrInvalid` | the request was wrong: a range past the end, an operation the service does not support, a size refusal of a put that is not a block's, or a block put whose name does not match its nonce, chain and chunks (§4.3); never a quota refusal | fails the call; not retried |
 | `ErrDenied` | the store refused, or does not exist: credentials, permissions, a missing bucket (cause `access`); a quota or storage limit of the service is reached (cause `quota`); a body-size limit refused a block put (cause `size`) | fails the call; the syncer's health rules decide what follows, and it reports the cause per direction ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | `ErrTransient` | retrying may help: network, timeout, a server error, a short body | the syncer retries within its bound ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | `ErrThrottled` (wraps `ErrTransient`) | the service asked to be sent less: a throttling or slow-down reply | the syncer holds the flow and retries after backoff; it is backpressure and **MUST NOT** count toward health ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
@@ -1882,6 +1883,7 @@ are the negative tests.
 | [§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec) | A ranged read at a wrong offset or length fails with `ErrCorrupt`, and nothing re-reads the header. |
 | [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | Encode the same block twice, once from declared lengths and once after a measuring pass, under every transform configuration: the bytes, the header and the checksum are identical, and the declared size equals the bytes streamed. |
 | [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | Through `codec.Store` on the in-memory store, in a mode that needs a measuring pass: a second `Attempt` of one `Put` reads `src` once, only to send; after an `Attempt` ending in `ErrCorrupt` the next measures again. Two `Attempt`s of one `Put` overlap under `-race`: no race is reported. An `Attempt` whose `ctx` ends mid-body has released its chunk buffers when it returns. The `Meter`'s `Moved` counts sum to the encoded bytes the store received, and `Sent` is called once, after the last. A zero `Meter{}` passed to `Get` and to `Attempt` is skipped: both complete without a panic. |
+| [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | Through `codec.Store` on the in-memory store, `NewPut` with a name minted from another nonce, and with one minted over other chunks: `Attempt` returns `ErrInvalid`, and the store received no put. |
 | [§3.5](#3.5%20Format%20changes%20are%20migrations) | A stored fixture of every released version decodes. |
 
 ### 7.4 Services
