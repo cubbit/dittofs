@@ -303,8 +303,8 @@ pkg/metadata/entity/content.go      T17.1  Span.Chunk, Span.BlockSize
 pkg/metadata/kvstore/covering.go    T17.1  the location join on carved spans
 pkg/metadata/kvstore/clone.go       T17.8  the backstop's log; Content.WithLogger
 pkg/engine/
-  read.go                           T17.2  the carved row, the fetch per extent, the reply; T17.3 re-resolution; T17.4 chunks or the block
-  reresolve.go                      T17.3  reresolve, the pure step
+  read.go                           T17.2  the carved row's reply in file order, the remote class
+  fetch.go                          T17.2  the fetch per missing extent, its errors; T17.3 reresolve and its loop; T17.4 blockShape
   fill.go                           T17.5  the fill workers, the hand-off beside the reply
   policy.go                         T17.5  fill (epic 15's file, or created here if this lands first)
   speculate.go                      T17.6  the speculator, windows, hints; T17.7 budget, cancellation, counters
@@ -357,7 +357,7 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
 
 - **Track:** C. **Depends on:** T17.1.
 - **Covers:** R1 to R4, R7 to R17, R40 to R43.
-- **Deliverables:** in `read.go`, `resCarved` fetches: each carved part of a missing extent is one
+- **Deliverables:** in `read.go` and `fetch.go`, `resCarved` fetches: each carved part of a missing extent is one
   `Fetch(ctx, name, want)` on the binding's `syncer.Flow`, `name` the span's block as RFC 4's
   `remote.Name`, `want` its chunks as `remote.ChunkRange`s from the span's location; the fetches of
   one read run at once, one goroutine per missing extent joined before `Read` returns; each yielded
@@ -406,7 +406,7 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
 
 - **Track:** C. **Depends on:** T17.2.
 - **Covers:** R2, R18 to R22, R41, R43.
-- **Deliverables:** `reresolve.go`: `reresolve(missed []location, next entity.Span, asOf
+- **Deliverables:** in `fetch.go`, `reresolve(missed []location, next entity.Span, asOf
   entity.JournalVersion) step`, a pure function (D2) answering fetch, re-ask, zeros, past end of
   file or lost; `read.go`'s loop on `remote.ErrNotFound`: covering lookup again for the part, the
   step applied, the journal re-asked for an uncarved run above `asOf`, bounded by the read's
