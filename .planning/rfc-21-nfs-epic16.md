@@ -628,7 +628,7 @@ in a subtask (§9, gap 8).
   subtask adds, `node-clone`, `go test -timeout=30m -run ^TestNFSCloneLarge ./internal/node/`,
   nightly, as RFC 29 §4.10 places the gates that skip under `-race`. Before the first large step the
   test reads the free bytes under `t.TempDir()` and fails, naming them, below 12 GiB (the 4 GiB `COPY`'s
-  source and destination, the 512 MiB clone's two, and the journal's room), rather than skip; a `decision:` marker there names that ceiling. Their wall time is not measured yet: the
+  source and destination, the 512 MiB clone's two, and the journal's room), rather than skip; the figure is provisional, measured on the cell's first run and revised then, and the cell runs on ditto, the team's dedicated test box (16 cores, 61 GB), until a CI runner is chosen; a `decision:` marker there names that ceiling. Their wall time is not measured yet: the
   option's first nights give it. Split from T16.5, since clones and locks share no code. No later
   subtask consumes it.
 - **Acceptance criteria:**
@@ -1045,7 +1045,7 @@ Gaps, not questions:
    `needs:`, which its options inherit, and `tshark` and `tlshd` added to the harness's closed set
    of needs (T16.7, T16.8), so a runner without one fails rather than skips. T16.14's large clones
    need 12 GiB free under the nightly `unit/node-clone` cell's temporary directory, and fail
-   naming the free bytes when it is not there. `tests.yml`'s `schedule` trigger runs on the default
+   naming the free bytes when it is not there; the figure is provisional, measured on the cell's first run and revised then. The cell runs on ditto until a CI runner is chosen (rif, 25 Nov). `tests.yml`'s `schedule` trigger runs on the default
    branch only, so the nightly cells this epic adds on `feat/storage-v2` (`unit/node-clone`, the
    soak, `nfs-night`) run nothing until the cutover brings them to `develop`.
 8. **Which pull request carries which RFC amendment.** D1's sentence for RFC 21 §13's suites
