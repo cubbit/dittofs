@@ -329,8 +329,9 @@ func TestRFC1A_CrashWhileARemovalRecordsUnlinkIsNotDurable(t *testing.T) {
 	unlink := f.Seam.HoldFirst(t, kit.OpRemove, segmentName(seg))
 	rename := f.Seam.HoldFirst(t, kit.OpRename, segmentName(seg))
 	repacked := make(chan error, 1)
+	j := f.J
 	go func() {
-		_, err := f.J.Repack(t.Context(), journaltest.FixtureMaxBytes, journal.RepackScope{Segments: []journal.SegmentID{seg}})
+		_, err := j.Repack(t.Context(), journaltest.FixtureMaxBytes, journal.RepackScope{Segments: []journal.SegmentID{seg}})
 		repacked <- err
 	}()
 	select {
@@ -409,8 +410,12 @@ func TestRFC1A_CrashWhileARemovalRecordsCopyWaitsItsSync(t *testing.T) {
 	// before this wait answers.
 	held := f.Seam.HoldFirst(t, kit.OpSync, "*.seg")
 	repacked := make(chan error, 1)
+	// The journal is taken before the goroutine: the crash below abandons
+	// it while the goroutine still runs, and the fixture's field changes
+	// with the reopen — a write the racing read cannot be ordered against.
+	j := f.J
 	go func() {
-		_, err := f.J.Repack(t.Context(), journaltest.FixtureMaxBytes, journal.RepackScope{Segments: []journal.SegmentID{seg}})
+		_, err := j.Repack(t.Context(), journaltest.FixtureMaxBytes, journal.RepackScope{Segments: []journal.SegmentID{seg}})
 		repacked <- err
 	}()
 	select {
