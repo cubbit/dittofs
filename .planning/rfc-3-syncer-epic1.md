@@ -5,14 +5,14 @@ for v1.1 (its table "What lands with its first caller" included), §1.4's depend
 per-worker inputs, §2.10's two settings, §2.12's metrics, §7.2's "§1.3 RFC 4's errors, as they
 are" row (its import half) and §8.1's "Structure" kind.
 [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §1.2, component autonomy as amended.
-[RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §2's "One clock and one fault interface", for
-the clock. [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §2.6, for the histogram
+[RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §2.1's "One clock and one fault interface",
+for the clock. [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §2.6, for the histogram
 buckets. Cited, not owned: [RFC 4](../docs/internals/rfcs/rfc-4-remote-tier.md) §4.1 and §4.8,
-the contract the syncer imports, and its `codec.Store`, as the pull request finalising the
+the contract the syncer imports, and §4.3's `codec.Store`, as the pull request finalising the
 syncer's seam gives them (`docs/rfc-4-syncer-seam`). Every citation is `develop`'s text. The
 code lands on `feat/storage-v2`, and the paths below are paths there.
 **Track:** the team.
-**Epic 1 estimate: 4 subtasks, 5 man-days.**
+**Epic 1 estimate: 4 subtasks, 3.75 man-days.**
 **Depends on:** **RFC 8 offload plan S1c**, the remote store contract agreed: `pkg/remote`'s
 names, ranges, chunks, directions, `Meter` and error set, and `codec.Store` with `NewPut`,
 `Put.Attempt` and `Put.Stored`, all landed with stub bodies on `feat/storage-v2` by the RFC 4
@@ -79,7 +79,6 @@ architecture tests.
 - **S1**, the syncer interface agreed: the joint review of this epic's written signatures with
   the authors of the RFC 8 offload plan and the RFC 4 plan. It is the RFC 8 offload plan's
   **S1b**.
-- **S1b**, the RFC 8 offload plan's name for S1.
 - **S1c**, the RFC 8 offload plan's remote store contract agreed: `pkg/remote` and the codec's
   surface, the RFC 4 plan's own S1.
 - **S2**, the test foundations in CI, at the end of E2.
@@ -97,8 +96,8 @@ number and title, not copied.
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | Every test runs on its own: table tests of `New`'s and `Register`'s refusals, reflection over `Stats`, and the architecture tests over the source tree. No test double. E1 declares no internal interface |
 | rule 2, fuzz tests where relevant ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | none | Nothing here reads bytes: there is no parser to fuzz |
 | rule 3, observability follows RFC 25, with RFC 3's own exception | T1.1, T1.3 | `Stats` carries every RFC 3 §2.12 series (T1.1). Its histograms use RFC 25 §2.6's `request` set. `Config` takes a structured logger and no tracer (D5). No metric is registered here: the collector is E8's |
-| rule 4, profiling | none | No hot path: the stubs do nothing, and the architecture tests read source |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T1.3 | Each pool size is read back from `Stats`, where E8's collector consumes it. Each refusal is asserted at `New` and `Register`, where the composer and the engine meet it |
+| rule 4, profiling | T1.1, T1.3 | The unit tests run under `internal/prof`'s leak check. No hot path carries an allocation or dispatch assertion here: the stubs do nothing, and E3 and E7 own those two |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T1.3 | Under `-race`. Each pool size is read back from `Stats`, where E8's collector consumes it. Each refusal is asserted at `New` and `Register`, where the composer and the engine meet it |
 | rule 6, known failures shrink | none | No suite this epic's tests run in keeps a `known.yaml`: every test lands green |
 | rule 7, v2 ignores v1 | T1.4 | The import test of D8: transitive, one allowlist per package, a package missing from it failing. It is also the import half of RFC 3 §7.2's "§1.3 RFC 4's errors, as they are" row |
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T1.2, T1.4 | The compile check runs against RFC 4's real `codec` package, and the import test against `go list`'s real dependency graph. Nothing here needs a disk, a store or a service |
@@ -116,23 +115,23 @@ that subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | The syncer's production code reaches RFC 4's contract, `pkg/remote`, and no implementation: no codec, no store, no transforms, no carver, no journal, no metadata store, no engine | MUST NOT | RFC 3 §1.1, §1.3, §7.2 ("§1.3 RFC 4's errors, as they are"); RFC 0 §1.2 | T1.4 |
+| R1 | The syncer's production code reaches RFC 4's contract, `pkg/remote`, and no implementation: no codec, no store, no transforms, no carver, no journal, no metadata store, no engine | MUST NOT | RFC 3 §1.1, §1.3, §1.4, §7.2 ("§1.3 RFC 4's errors, as they are"); RFC 0 §1.2 | T1.4 |
 | R2 | The syncer declares none of RFC 4's value types or errors again: names, ranges, chunks, directions, versions, checksums, `Meter`, the error set | MUST NOT | RFC 3 §1.3; RFC 0 §1.2 | T1.1, T1.2, T1.4 |
 | R3 | The syncer's dependencies are exactly four, each supplied: a backend as `Store`, the bytes to upload as the `attempt` closure, time as a clock interface, logging as a structured logger. No disk and no network | MUST NOT | RFC 3 §1.4 | T1.2, T1.3, T1.4 |
 | R4 | The syncer never reads time from anywhere the virtual clock cannot replace | MUST NOT | RFC 3 §1.4 | T1.3, T1.4 |
-| R5 | The clock the syncer reads is declared in its own package, in standard-library types, as the subset of the one clock's methods it uses | invariant | RFC 8 §2, "One clock and one fault interface" | T1.3 |
+| R5 | The clock the syncer reads is declared in its own package, in standard-library types, as the subset of the one clock's methods it uses | invariant | RFC 8 §2.1, "One clock and one fault interface" | T1.3 |
 | R6 | The syncer depends on no metrics library | invariant | RFC 3 §2.12 | T1.4 |
-| R7 | The contract is a unit of its own: the root holds `Syncer` and `Flow` as interfaces and the types they carry, `pool` implements them, and the root keeps no state and imports only the standard library and other contracts | MUST | RFC 0 §1.2; RFC 3 §1.3 | T1.1, T1.2, T1.3, T1.4 |
-| R8 | An import test follows imports transitively for each package, and fails when production code reaches another component's implementation; tests may import implementations | MUST | RFC 0 §1.2; RFC 3 §8.1 ("Structure") | T1.4 |
+| R7 | The contract is a unit of its own: the root holds `Syncer` and `Flow` as interfaces and the types they carry, `pool` implements them, and the root keeps no state and imports only the standard library, libraries outside the components and other contracts | invariant | RFC 0 §1.2; RFC 3 §1.3 | T1.1, T1.2, T1.3, T1.4 |
+| R8 | An import test follows imports transitively for each package, and fails when production code reaches another component's implementation; tests may import implementations | invariant | RFC 0 §1.2; RFC 3 §8.1 ("Structure") | T1.4 |
 
 **The surface**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R9 | `Store` is the syncer's own interface, named for its need: a verified get and a probe, with no put and no delete. RFC 4's `codec.Store` implements it | MUST | RFC 3 §1.3; RFC 0 §1.2 | T1.2 |
-| R10 | Nothing RFC 3 §1.3 lands with its first caller is declared before it: no `FetchRaw`, `UploadRaw`, `FetchVersion`, `Small`, `SetDrift` or `ErrDrift` | MUST NOT | RFC 3 §1.3, "What lands with its first caller" | T1.2, T1.4 |
+| R9 | `Store` is the syncer's own interface, named for its need: a verified get and a probe, with no put and no delete. RFC 4's `codec.Store` implements it | invariant | RFC 3 §1.3; RFC 0 §1.2 | T1.2 |
+| R10 | Nothing RFC 3 §1.3 lands with its first caller is declared before it: no `FetchRaw`, `UploadRaw`, `FetchVersion`, `Small`, `SetDrift` or `ErrDrift` | invariant | RFC 3 §1.3, "What lands with its first caller" | T1.2, T1.4 |
 | R11 | `Register` takes `Probes` from the first release, so a later caller changes no signature | invariant | RFC 3 §1.3 | T1.2 |
-| R12 | A registration with `PutProbe` or `GetProbe` false is refused until its first caller lands | MUST NOT | RFC 3 §1.3, "What lands with its first caller" | T1.3 |
+| R12 | A registration with `PutProbe` or `GetProbe` false is refused until its first caller lands | invariant | RFC 3 §1.3, "What lands with its first caller" | T1.3 |
 | R13 | Work reaches the syncer through a flow bound to one store: a call on a flow carries neither a store nor a key | invariant | RFC 3 §1.3 | T1.2 |
 | R14 | `Fetch` and `Prefetch` are separate methods, not one method with a priority parameter | invariant | RFC 3 §1.3 | T1.2 |
 | R15 | A stream is an `iter.Seq2`; leaving the loop is how a caller stops it, and there is no `Close` to forget | invariant | RFC 3 §1.3 | T1.2 |
@@ -160,7 +159,7 @@ that subtasks and tests can cite them.
   call is refused (a closed flow or syncer, a full queue, the waiter bound, an unhealthy
   direction, a registration with a probe off), but not with what error. RFC 3 §1.3 calls
   `ErrDrift` the syncer's only error value (R16). The engine already depends on the answer: RFC 8
-  §6.8's O6 does not count a pass "refused by a full syncer queue (`Throttled`)" as failed, and
+  §6.3's O6 does not count a pass "refused by a full syncer queue (`Throttled`)" as failed, and
   §10.2 reads a put-unhealthy store's cause from `Health(Put)`. Recommended, and written here
   until the user answers, the option that keeps R16 and needs no RFC amendment, since each
   refusal wraps an error of RFC 4's set:
@@ -171,6 +170,11 @@ that subtasks and tests can cite them.
   - a call after `Flow.Close` or `Close`, a call naming a `StoreID` that is not registered,
     `Unregister` with a flow open, and a registration with a probe off wrap `remote.ErrInvalid`:
     each is the caller's fault and is never worth retrying.
+
+  Two consequences to weigh: `remote.ErrThrottled` wraps `ErrTransient` (RFC 4 §4.1), so a
+  capacity refusal also matches `errors.Is(err, remote.ErrTransient)`; and the engine cannot
+  tell a syncer queue refusal from a store that kept throttling past the retry bound, which O6
+  treats the same way anyway.
 
   The alternative is a sentinel per refusal in `pkg/syncer` (`ErrRefused`, `ErrClosed`), which
   amends RFC 3 §1.3's "only error value". T1.2 writes the convention into the interfaces' doc
@@ -190,7 +194,7 @@ that subtasks and tests can cite them.
 - **D3, the shape of `Stats`.** Per half, then per store, with the per-flow queue gauges beside
   them. Each label value of RFC 3 §2.12 is a named field (`Refused.QueueFull`,
   `Retries.SlowTail`, `ByClass[T].Demand`), never a string or an enum the collector has to
-  decode, so a missing label value is a missing field that the compiler and T1.1's test see.
+  decode, so a missing label value is a missing field, which T1.1's test and E8's collector see.
   The pool-wide gauges, `syncer_workers` and `syncer_detached_buffers`, sit on the half, since
   no store owns them (§9). Fields are added, never changed, so E3 to E7 filling them changes no
   signature. Prior art: the journal's `Stats`, which the node turns into series
@@ -211,40 +215,44 @@ that subtasks and tests can cite them.
   saying the refusal goes when that caller lands. Prior art: `engine.New` taking `Deps`
   (`pkg/engine/deps.go`); `pkg/settings`' refusal of an invalid value.
 - **D6, the clock declares only what the syncer reads.** `pool.Clock` has `Elapsed` and
-  `After`, the subset RFC 8 §2 tells each component to declare. `Now` is left out: every window,
+  `After`, the subset RFC 8 §2.1 tells each component to declare. `Now` is left out: every window,
   bound and backoff of RFC 3 is a difference of monotonic time, and log lines carry their own
   time. This narrows the plan's D3, which named all three. A later epic that needs wall time adds
   `Now`, which costs no caller anything, since the node's clock and `pkg/sim`'s `TestClock`
   already have it. Prior art: `pkg/engine`'s `Clock` (`pkg/engine/deps.go`).
-- **D7, v1.1 declares nothing that lands later.** RFC 3 §1.3's table and rows 1 to 4 of the
-  plan's deferral ledger defer `FetchRaw`, `UploadRaw`, `FetchVersion`, `Small`, `SetDrift` and
-  `ErrDrift`, so none is declared (R10). The plan's §1.3 and epic 1 outline name `ErrDrift` among
-  epic 1's symbols; the RFC and the ledger win (§9). Adding each later adds a method to an
-  interface only `pool` implements, so it costs no other implementation a change.
+- **D7, v1.1 declares nothing that lands later** (R10), against the plan's epic 1 outline (§9).
+  Adding each later adds a method to an interface only `pool` implements, which costs no other
+  implementation a change.
 - **D8, the import test.** One test in `pkg/syncer` runs `go list -deps` on each production
-  package under `pkg/syncer`, and checks each dependency against that package's allowlist:
+  package under `pkg/syncer`, and checks every dependency in this module against that package's
+  allowlist, so an allowed package that grows a dependency fails it too:
   - `pkg/syncer`: `pkg/remote`;
   - `pkg/syncer/pool`: `pkg/syncer` and `pkg/remote`.
 
-  The standard library is allowed except `os`, `net` and its subpackages, `syscall` and
-  `log`, which would bring in a disk, a network or a logger the syncer was not given (R3). A
-  package under `pkg/syncer` with no allowlist fails the test, so E2 adds `syncertest`'s entry and
-  E3 `internal/sched`'s with the packages themselves. The test also asserts that each package
-  reaches `pkg/remote`, and that no production file calls the real clock (`time.Now`, `Since`,
+  Packages outside the module must be the standard library. Of it, `os`, `net` and its
+  subpackages, `syscall` and `log` are refused as **direct** imports only, which would bring in
+  a disk, a network or a logger the syncer was not given (R3): `time`, `context` and `log/slog`
+  reach them transitively, so a transitive ban could never pass. A package under `pkg/syncer`
+  with no allowlist fails the test, so E2 adds `syncertest`'s entry and E3 `internal/sched`'s
+  with the packages themselves. Each package reaching `pkg/remote` needs no check: its
+  signatures are written in `pkg/remote`'s types, so the compiler holds it. The test also
+  asserts that no production file calls the real clock (`time.Now`, `Since`,
   `Until`, `After`, `AfterFunc`, `Sleep`, `Tick`, `NewTimer`, `NewTicker`,
   `context.WithTimeout`, `WithDeadline`), and that the root declares no package-level variable
   (R4, R7). Test files are not checked: amended RFC 0 §1.2 binds production code only. Prior art:
   `go list -deps` in `internal/node/arch_test.go`; the per-package allowlists of
   `pkg/engine/imports_test.go`, which check direct imports only.
 - **D9, the surface is frozen by a test.** A frozen-exports test lists every exported symbol of
-  `pkg/syncer` and `pkg/syncer/pool` with its signature, as `pkg/settings/arch_test.go` does with
-  `internal/archtest`, and fails on an extra or a missing one. The list is what S1 agrees, so a
+  `pkg/syncer` and `pkg/syncer/pool` with its signature, and fails on an extra or a missing one.
+  The lister already exists twice, as `exports` in `pkg/settings/arch_test.go` and `nodeExports`
+  in `internal/node/arch_test.go`: T1.4 moves the settings one into `internal/archtest` and calls
+  it from both rather than write a third copy. The list is what S1 agrees, so a
   later change to the surface is a visible change to the list. Prior art: `TestSettingsExports`
   (`pkg/settings/arch_test.go`).
 - **D10, the seam is checked by the compiler.** A test file in package `syncer_test` asserts
   `var _ syncer.Store = (*codec.Store)(nil)` and that `(*codec.Put).Attempt` has the type of
   `Upload`'s `attempt`. S1b is otherwise a review with no compile check (the RFC 8 offload plan's
-  §3.2), and RFC 3 §1.3 and RFC 4 §4.1 state the two sides in two documents; this is what keeps
+  §3.2), and RFC 3 §1.3 and RFC 4 §4.1 and §4.3 state the two sides in two documents; this is what keeps
   them one shape. Tests may import the codec (amended RFC 0 §1.2). Prior art: the `var _`
   assertions the repository uses for each interface a type must satisfy.
 
@@ -271,7 +279,7 @@ pkg/syncer/                     RFC 3's contract
 
 ### T1.1 Identifiers and `Stats`
 
-**Subtask T1.1 estimate: 1.5 man-days.**
+**Subtask T1.1 estimate: 1 man-days.**
 
 - **Track:** the team. **Depends on:** none.
 - **Covers:** R2, R7, R21, R22.
@@ -346,7 +354,7 @@ pkg/syncer/                     RFC 3's contract
 
 ### T1.2 The contract's interfaces
 
-**Subtask T1.2 estimate: 0.75 man-days.**
+**Subtask T1.2 estimate: 0.5 man-days.**
 
 - **Track:** the team. **Depends on:** T1.1, and S1c for `pkg/remote` and the codec.
 - **Covers:** R2, R3, R9, R10, R11, R13, R14, R15, R16.
@@ -389,7 +397,7 @@ pkg/syncer/                     RFC 3's contract
 
 ### T1.3 `pool`: configuration, constructor and stubs
 
-**Subtask T1.3 estimate: 1.25 man-days.**
+**Subtask T1.3 estimate: 1 man-days.**
 
 - **Track:** the team. **Depends on:** T1.2.
 - **Covers:** R3, R4, R5, R7, R12, R17, R18, R19, R20.
@@ -433,7 +441,7 @@ pkg/syncer/                     RFC 3's contract
 
 ### T1.4 Architecture tests and S1
 
-**Subtask T1.4 estimate: 1.5 man-days.**
+**Subtask T1.4 estimate: 1.25 man-days.**
 
 - **Track:** the team. **Depends on:** T1.3.
 - **Covers:** R1, R2, R3, R4, R6, R7, R8, R10, R16, R18.
@@ -442,18 +450,18 @@ pkg/syncer/                     RFC 3's contract
   plan's and the RFC 4 plan's authors. Consumed by every later epic, whose code they hold, and
   extended by E2 and E3 with their packages' allowlists.
 - **Acceptance criteria:**
-  - Over the real tree, each syncer package reaches `pkg/remote` and nothing outside its
+  - Over the real tree, each syncer package reaches nothing in this module outside its
     allowlist, no production file calls the real clock, the root declares no package-level
     variable, and both packages export exactly the frozen list.
-  - Each planted violation is reported, by name: a direct import of `pkg/remote/codec`; the
-    codec reached through a planted intermediate package; `net/http`; `pkg/metrics`; a package
-    under `pkg/syncer` with no allowlist; a `time.Now` and a `context.WithTimeout` call; a
-    package-level variable in the root; an extra and a missing export, a field added to
-    `Config` and a method added to `Store`.
+  - Each planted violation is reported, by name: `pkg/remote/codec` reached through a planted
+    intermediate package; a direct import of `net/http`; a package under `pkg/syncer` with no
+    allowlist; a `time.Now` call; a package-level variable in the root; an extra and a missing
+    export, and a field added to `Config`.
   - The S1 review has agreed the surface.
 - **Tests:** at the source tree every later epic writes into. Each check runs over its planted
-  tree and fails on that violation (catches R1, R3, R6 and R8's transitive case, R4, R7, R2,
-  R10, R16 and R18's extra setting). No test double: `go list` and the source are real.
+  tree and fails on that violation (catches R1, R6 and R8's transitive case, R3, R4, R7, R2,
+  R10, R16 and R18's extra setting). The settings package's own exports test still passes over
+  the moved lister. No test double: `go list` and the source are real.
 
 ## 7. Order of work
 
@@ -475,7 +483,7 @@ collector can be written against `Stats`. Checkpoint after T1.4: S1, which unblo
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T1.1, T1.2, T1.3, T1.4 | 5 | — | the surface S1 reviews, whole, with the tests that freeze it |
+| 1 | T1.1, T1.2, T1.3, T1.4 | 3.75 | — | the surface S1 reviews, whole, with the tests that freeze it |
 
 A suggestion only: one pull request per subtask works as well, T1.1 first if E8 is to start
 early.
