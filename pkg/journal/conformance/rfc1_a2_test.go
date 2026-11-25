@@ -247,6 +247,15 @@ func soleRemovalSource(t *testing.T, f *journaltest.Fixture, k int, id journal.F
 		_, ok := sealMarkerAt(t, f, segmentName(seg), seg, from)
 		return ok
 	})
+	// The marker's bytes reach the seam's live view before the sealer's
+	// bookkeeping lands the segment's state in the ledger a selection
+	// offers it from, so the wait goes on to the condition the pass's own
+	// selection reads: the row must answer sealed before the pass the rows
+	// below run can take the segment.
+	eventually(t, "the truncation's seal never reached the journal's ledger", func() bool {
+		s, ok := segmentInfo(f, seg)
+		return ok && s.Sealed
+	})
 	if s, ok := segmentInfo(f, seg); !ok || s.HeldBytes != 0 || s.RetainedBytes != 0 {
 		t.Fatalf("the truncation's source %d holds held=%d retained=%d bytes, want no content the truncation has not removed: the segment's one live thing is the record", seg, s.HeldBytes, s.RetainedBytes)
 	}
