@@ -521,11 +521,11 @@ const (
 )
 
 func encodeNodeStatus(s entity.NodeStatus) []byte {
-	// decision: versions 2 and 3 are written under store format 1, which is
-	// not raised, since no release has written format 1 and so no older
-	// reader of it can meet either. Once a release ships, a new codec version is
-	// written only under a store format that names it (RFC 16 §4.6), which
-	// needs the format gate.
+	// decision: version 3 is written, and versions 1 and 2 only read, under
+	// store format 1, which is not raised, since no release has written
+	// format 1 and so no older reader of it can meet version 3. Once a release
+	// ships, a new codec version is written only under a store format that
+	// names it (RFC 16 §4.6), which needs the format gate.
 	w := codec.NewWriter(nodeStatusV3).Uint64(s.Settings).Uint64(s.ShareList).Uint64(s.Principals).Uint64(s.Claims)
 	w.Len(len(s.Refused))
 	for _, rr := range s.Refused {

@@ -398,13 +398,21 @@ func (n *Node) adaptersHeld() (map[string]adapter.Adapter, time.Duration) {
 
 // status is the slot's adapter as the node's status reports it (RFC 23
 // §3.4): its state, in RFC 20 §3.1's terms, the settings generation it runs
-// and, while it serves, the port it bound, which a client dials. An adapter enabled but refused, nothing serving it, stays configured
+// and, while it serves, the port it bound, which a client dials. An adapter
+// enabled but refused, nothing serving it, stays configured
 // (RFC 23 §3.4). Start step 9 calls every slot before the status writer's
 // first turn, so a call has always left last.
 //
 // decision: a drain under way reports draining, the old adapter's, as RFC 20
 // §3.1 names that state, for a disable's drain and a rebuild's alike, so the
 // status says why an adapter still holds connections it no longer accepts.
+//
+// decision: the port is the one the slot's last call read from the adapter,
+// and a reader sees it only once a status turn has written it. Until this
+// start's first turn commits, the store holds the last run's status, its
+// port included, which a restart that bound port 0 anew has released; the
+// status names no run, so a reader cannot tell the two apart. Overturned
+// when readiness waits on the first status turn, or the status names its run.
 func (s *slot[S]) status() entity.AdapterStatus {
 	o := s.last.Load()
 	st := entity.AdapterStatus{Protocol: s.name, State: entity.AdapterStopped, Generation: o.generation}

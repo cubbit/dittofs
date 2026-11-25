@@ -333,8 +333,9 @@ func TestStoreAndNamespaceDeletesRefusedWhileNamed(t *testing.T) {
 
 // An adapter reads back whether it is enabled, its settings below
 // adapters.<protocol>, and, for each node that reports it, its state, the
-// settings generation it runs and the port it bound, none while not serving; a node reporting only another adapter is
-// left out, and a protocol no adapter serves is 404.
+// settings generation it runs and the port it bound, none while not
+// serving; a node reporting only another adapter is left out, and a
+// protocol no adapter serves is 404.
 func TestAdapterStatusPerNode(t *testing.T) {
 	s := serve(t, as(entity.RoleViewer, false))
 	gen := s.putSetting(t, installation, "adapters.smb.enabled", "true")
