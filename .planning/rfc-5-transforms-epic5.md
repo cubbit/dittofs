@@ -15,10 +15,12 @@ benchmark and encryption's encode split; Appendix B.4's rows a decode sees; Appe
 `decision:` notes. Every citation is the RFC's text with #5851's amendment; the code lands on
 `feat/storage-v2`, and the paths below are paths there.
 **Track:** B.
-**Epic 5 estimate: 4 subtasks, 7.75 man-days.**
+**Epic 5 estimate: 4 subtasks, 7.25 man-days.**
 **Depends on:** **S2**: from E2, `transformtest.Run` with its `Subject`, `transformtest.Fixture`,
 `transformtest.FuzzDecode`, `transformtest.LoadVectors` with Appendix B.1's chunk vectors, and
-`keystest.Memory`. From E1, the root contract (`ID`, `Stage`, `Transform`, `Encoded`, `Factory`,
+`keystest.Memory`; and one revision of E2 (#5857) that T5.2's conformance run needs:
+`transformtest.Run` and `FuzzDecode` decode an authenticating transform's bodies through a view
+that answers only the material its `Encode` returned (§9). From E1, the root contract (`ID`, `Stage`, `Transform`, `Encoded`, `Factory`,
 `ErrMalformed`, `ErrTooLarge`), `keys.MaterialID`, `keys.Provider`, the `data-key` kind constant
 and the material errors, and the import allowlist naming `lukechampine.com/blake3`. From E3:
 `Register` and the decode set (T3.1), which the transform's registration and its material-free
@@ -138,7 +140,7 @@ cite them. `Source` is RFC 5 unless it names another source.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | Encryption is transform `0x0010`, of the encrypt stage, in the range `0x0000`–`0x7FFF` kept for shipped transforms, registered at start under the name `aes-gcm` that a configuration's `require` lists | MUST | Appendix B, §2.3, §4 items 1 and 2, §8.2 §2.5 | T5.2 |
+| R1 | Encryption is transform `0x0010`, of the encrypt stage, in the range `0x0000`–`0x7FFF` kept for shipped transforms, registered at start under the name `aes-gcm` that a configuration's `require` lists | MUST | Appendix B, §2.3, §4 items 1 and 2, §8.2's §2.5 row | T5.2 |
 | R2 | Its material kind is `data-key`, and it accepts material of no other kind: `Kinds` declares that one, no setting names another, and material of any other kind, or of a namespace other than the one being encoded, is refused, never used | MUST | Appendix B, §2.5 ("Material says what it is for"), §3.1 (`Kinds`), §7 T14 | T5.2 |
 | R3 | A body is the header (version, 1 byte; data key ID length, 1 byte; data key ID), then the 12-byte nonce, then the ciphertext with its 16-byte tag, full length; a key ID longer than 255 bytes cannot be written and is refused | MUST | Appendix B.1 ("Its header"; lengths and encodings) | T5.2 |
 | R4 | The ciphertext is AES-256-GCM (NIST SP 800-38D) from the standard library, under the chunk key and the nonce, over the input, with the chunk AAD | MUST | Appendix B.1 | T5.2 |
@@ -162,17 +164,18 @@ cite them. `Source` is RFC 5 unless it names another source.
 | --- | --- | --- | --- | --- |
 | R13 | No chunk key and nonce ever seal two different inputs: two different inputs under one plaintext hash and data key (a chunk compressed at two levels, or declined then compressed) both decode, carry different nonces and share no keystream, so the XOR of their ciphertexts is not the XOR of their inputs; one input under one data key, sealed with two versions in the AAD, gets two nonces | invariant, test row | Appendix B.1 ("In plain terms"), §8.1 Appendix B.1 | T5.1, T5.3 |
 | R14 | Two different chunks under one data key get different salts; one chunk under two data keys gets two different bodies | test row | §8.1 Appendix B.1 | T5.3 |
-| R15 | The standard library's AES-256-GCM, called as the transform calls it once the keys are derived (its `seal` and `open`, since `Decode` derives its own key and AAD), passes Wycheproof's AES-GCM vectors for a 256-bit key, 96-bit nonce and 128-bit tag | test row | E2's catalogue (other sources) | T5.3 |
+| R15 | The standard library's AES-256-GCM, called as the transform calls it once the keys are derived (its seal and open calls, since `Decode` derives its own key and AAD), passes Wycheproof's AES-GCM vectors for a 256-bit key, 96-bit nonce and 128-bit tag | test row | E2's catalogue (other sources) | T5.3 |
 
 **Decoding and its errors**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R16 | A tag failure is `ErrMalformed`, returns no plaintext, and leaves no unauthenticated plaintext in `dst` | MUST NOT | §2.7, Appendix B.4 ("A tag fails"), E2's catalogue (other sources) | T5.3 |
-| R17 | `Decode` refuses a body whose plaintext would exceed `max` with `ErrTooLarge`, before it allocates or asks the provider for anything | MUST | §2.1, §2.7, §4 item 5, §8.1 T4 | T5.2 |
+| R17 | `Decode` refuses a body whose plaintext would exceed `max` with `ErrTooLarge`, before it allocates | MUST | §2.1, §2.7, §4 item 5, §8.1 T4 | T5.2 |
 | R18 | Everything is authenticated: every byte of a body flipped in turn, and a body decoded with another chunk's hash, is `ErrMalformed`, returned by the transform itself or, for a key ID flipped to one its block's census does not list, by the census view before the provider is asked | MUST | Appendix B.1 ("In plain terms"), §2.5, §8.1 §2.7 (both rows) | T5.2 |
 | R19 | `Decode` asks the provider only for the data key its body names, by namespace, kind `data-key` and ID, and returns the provider's material errors as themselves: a destroyed key is `ErrMaterialDestroyed`, never `ErrMalformed` | MUST | §2.5, §2.7, §3.1 (`Decode`), §8.1 §2.7, Appendix B.4 | T5.2 |
 | R20 | `Decode` returns only §2.7's errors, so no error type of the libraries or the provider crosses it | MUST NOT | §2.7, §4 item 6 | T5.2 |
+| R34 | `Encode`'s errors are the transform's own values, so no error type of the libraries or the provider is reachable through them; an `Encode` error fails the put | MUST NOT | §2.7 (`Encode` errors; "A transform's own error types MUST NOT cross the codec") | T5.2 |
 | R21 | Fuzzed, `Decode` never panics and never produces or allocates more than `max`, however a body was crafted | MUST NOT | §2.1, §7 T4, §8.1 T4 | T5.3 |
 
 **Encode, bounds, settings and the census**
@@ -192,7 +195,7 @@ cite them. `Source` is RFC 5 unless it names another source.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R30 | `encryption_chunks_total` counts the chunks encrypted. The transform never declines a chunk, so the chain's per-transform encode count of the encrypt stage is that count (D6) | MUST | §6, Appendix B.6 | T5.2 |
+| R30 | `encryption_chunks_total` counts the chunks encrypted. The transform never declines a chunk, so the chain's per-transform encode count of the encrypt stage is that count (D6); `transformtest.Run`'s length row, which asserts `Applied` wherever `LengthOf` answers and it always answers here, holds the never-declines half (E2's R7) | MUST | §6, Appendix B.6 | T5.2 |
 | R31 | No key byte, unwrapped material or derived key reaches an error string the transform returns | invariant | RFC 5 plan §1.5 rule 3 | T5.3 |
 
 **Benchmarks**
@@ -236,7 +239,9 @@ two `decision:` notes (§2, rule 9).
   can name a kind, so the refusal is where material first arrives: `Encode` refuses a pinned list
   that is not exactly one `data-key` of the namespace being encoded, with a key ID of at most 255
   bytes, and content that is not 32 bytes; `Decode` asks only for kind `data-key`, so another
-  kind never reaches it. Prior art: `encoding/json`'s `DisallowUnknownFields` (from memory); E4's
+  kind never reaches it. A `decision:` marker at `Encode`'s refusal says the refusal is at first use
+  because a `Factory` is handed no material, and that it moves into the factory if RFC 5 ever
+  hands one material at build; §9 puts the wording to RFC 5's author. Prior art: `encoding/json`'s `DisallowUnknownFields` (from memory); E4's
   D5.
 - **D3, the derived keys are computed per call, and nothing is cached.** Each `Encode` and
   `Decode` derives the salt key, salt, chunk key and nonce key from the data key, which costs a few
@@ -255,12 +260,14 @@ two `decision:` notes (§2, rule 9).
   free of BLAKE3 entirely. Prior art: AES-GCM-SIV recomputes its synthetic IV on decryption
   because there it is the tag (RFC 8452, from memory); here it is not.
 - **D5, the provider's errors pass through as themselves, and everything else is a sentinel.**
-  `Decode` returns `ErrUnknownMaterial`, `ErrMaterialUnavailable`, `ErrMaterialDestroyed` and
-  `ErrMalformed` from `Get` unchanged, so E3's chain sees them (and maps `ErrUnknownMaterial` to
+  `Decode` classifies `Get`'s error with `errors.Is`, never `==`, and returns an error that is
+  `ErrUnknownMaterial`, `ErrMaterialUnavailable`, `ErrMaterialDestroyed` or `ErrMalformed` as the
+  original value, since E3's census view wraps its sentinels (its D3), so E3's chain sees them (and maps `ErrUnknownMaterial` to
   unavailable, its R29); any other error from `Get`, a cancelled context included, is returned as
   `ErrMaterialUnavailable`, since the key could not be reached now, and the cipher's own error as
   `ErrMalformed`. A key of the wrong length from `Get` is `ErrMaterialUnavailable` on `Decode`, the
-  material the store holds being unusable now, and an error on `Encode`. Prior art: E3's D3.
+  material the store holds being unusable now, and an error on `Encode`. `Encode` returns its own
+  error values, carrying a cause as text only (R34). Prior art: E3's D3.
 - **D6, `encryption_chunks_total` is the chain's encode count of the encrypt stage.** A `Factory`
   receives no recorder (RFC 5 §3.1; E1's D2), and the transform never declines a chunk, so every
   `Encoded(aes-gcm, applied=true)` the chain records (E3's T3.6) is one chunk encrypted. E9's series
@@ -299,7 +306,7 @@ docs/internals/rfcs/rfc-5-transforms.md  T5.3  §8.3's suites line names the fuz
 
 ### T5.1 The chunk derivations and the nonce
 
-**Subtask T5.1 estimate: 1.5 man-days.**
+**Subtask T5.1 estimate: 1.25 man-days.**
 
 - **Track:** B. **Depends on:** S2.
 - **Covers:** R7, R8, R9, R10, R11, R13 (its two-versions half).
@@ -316,8 +323,7 @@ docs/internals/rfcs/rfc-5-transforms.md  T5.3  §8.3's suites line names the fuz
   - The chunk AAD and the nonce input equal their vectors byte for byte.
   - The three labels differ from each other and from every other label of Appendix B.1's table.
 - **Tests:** at the derivations `Encode` and `Decode` call: the vector test (catches a wrong
-  label, a prefixed `info`, an empty `salt` taken for 32 zero bytes the other way round, a
-  16-byte `L`, a missing or 2-byte length prefix, the hash's or the input's prefix dropped, and a
+  label, a prefixed `info`, a 16-byte `L`, a missing or 2-byte length prefix, the hash's or the input's prefix dropped, and a
   nonce taken from the wrong end or another BLAKE3 mode, R7, R8, R9, R11); a table of Appendix
   B.1's ten labels checked pairwise distinct with this package's three among them (catches a label
   reused by copy and paste, R10); the nonce of one input and data key with version 1 and with
@@ -329,9 +335,9 @@ docs/internals/rfcs/rfc-5-transforms.md  T5.3  §8.3's suites line names the fuz
 
 **Subtask T5.2 estimate: 3.25 man-days.**
 
-- **Track:** B. **Depends on:** T5.1, T3.1, T3.4.
+- **Track:** B. **Depends on:** T5.1, T3.1, T3.5.
 - **Covers:** R1, R2, R3, R4, R5, R6, R11 (the body), R12, R17, R18, R19, R20, R22, R23, R24,
-  R25, R26, R27, R28, R29, R30.
+  R25, R26, R27, R28, R29, R30, R34.
 - **Deliverables:**
   - `aesgcm.go`: the transform, ID `0x0010`, stage encrypt, `Kinds` `[data-key]`, `Version` 1
     with its §5.4 `decision:` note, `LengthKey` empty, `MaxEncodedLen` and `LengthOf` exact under a
@@ -354,7 +360,10 @@ docs/internals/rfcs/rfc-5-transforms.md  T5.3  §8.3's suites line names the fuz
   - The `v1` fixture: one data key with a 1-byte ID and one with a 255-byte ID; inputs of 1 byte, a
     text, 64 KiB of seeded random bytes, and one beginning with this transform's own header.
   - A fault wrapper around `keystest.Memory` whose `Get` answers a foreign error on cue (kind 3),
-    for D5.
+    for D5 and R34.
+  - The malformed headers, one slice shared by T5.2's test and T5.3's fuzz seeds: version 0 and 2,
+    a key ID length of 255 over a 10-byte body, a header with no nonce, a body one byte short of
+    its tag.
 - **Acceptance criteria:**
   - `transformtest.Run` passes with empty `Settings`, no `LengthAffecting`, `WorstCase` seeded
     random bytes and the `Scratch` measured for `Decode`, under `-race`, its authenticating rows on
@@ -371,32 +380,35 @@ docs/internals/rfcs/rfc-5-transforms.md  T5.3  §8.3's suites line names the fuz
     destroyed key folded into another error, R17, R18, R19, R20, R23, R26, R27, R28), and its
     fixture rows over `v1` (catch an encoder or library change, R29).
   - The chunk vector's body from `Encode` under the vector's key, hash and input (catches a
-    header, nonce or AAD laid out apart from the vector's, R3, R4, R11).
+    header, nonce or AAD laid out apart from the vector's, or a salt or derived key stored in the
+    body, R3, R4, R5, R11).
   - Pinned under key A, `Memory` then given key B, which becomes current: the body still names A
     and decodes under A (catches an `Encode` that asks for the current key, R22); the returned
     `Encoded.Material` equals the pinned `MaterialID` (catches a census that loses the key, R22).
   - `Encode` refusals, each returning an error and no body: material of kind `chunk-id-key`, a data
     key of another namespace, two materials, a 256-byte key ID, a 16-byte data key (catch a key
-    used for two purposes, another tenant's key, a key ID the header cannot hold, AES-128 under a
-    short key, R2, R3, R12).
-  - `Decode` with `max` one byte below a body's plaintext: `ErrTooLarge`, and `Memory`'s count
-    unchanged (catches a decode sized by the body or a provider asked before the bound, R17).
-  - Version 0 and 2, a key ID length past the body, and a body one byte short of its tag:
-    `ErrMalformed` (catch an unknown version decoded or a truncated parse, R6, R3).
-  - The fault wrapper's foreign error: `ErrMaterialUnavailable`, and `errors.As` finds no foreign
-    type (catches a provider error crossing the transform, R20).
+    used for two purposes, another tenant's key, a key ID the header cannot hold, a data key of the
+    wrong length taken as one, R2, R3, R12); the same 16-byte key returned by `Get` to `Decode` is
+    `ErrMaterialUnavailable` (R12, D5).
+  - The malformed-header slice: each `ErrMalformed` (catch an unknown version decoded or a
+    truncated parse, R6, R3).
+  - The fault wrapper's foreign error: `ErrMaterialUnavailable` from `Decode` and an error from
+    `Encode`, and `errors.As` finds no foreign type in either (catches a provider error crossing
+    the transform, R20, R34); E3's census view's wrapped `ErrMalformed` and `ErrUnknownMaterial`
+    come back from `Decode` still matching under `errors.Is` (catches a `==` comparison that turns
+    a planted ID into an outage, D5).
   - At the chain the codec calls: the round trip above (catches a wrong ID or a missing
     registration, R1); a byte of the key ID flipped in a body: `ErrMalformed` from `Chain.Decode`,
     and the count unchanged (catches the flip E2's suite runs, reached through the census view,
     R18); the build against an empty `Memory` (catches a factory that reaches material, R25).
   - `LengthKey` is empty and the chain ID equals E2's "default encrypting chain" vector under its
-    key (catches a setting or version leaking into the chain ID, R24, R5).
+    key (catches a setting or version leaking into the chain ID, R24).
   - No double but the fault wrapper: the provider is E2's kind 2.
 - **Rules:** rule 9: the B.5 header marker, D4's, D6's and the §5.4 marker at `Version`.
 
 ### T5.3 The cryptographic rows, fuzzing and the planted key
 
-**Subtask T5.3 estimate: 2 man-days.**
+**Subtask T5.3 estimate: 1.75 man-days.**
 
 - **Track:** B. **Depends on:** T5.2.
 - **Covers:** R13, R14, R15, R16, R21, R31.
@@ -405,14 +417,13 @@ docs/internals/rfcs/rfc-5-transforms.md  T5.3  §8.3's suites line names the fuz
     T5.2's `seal` and `open` with each case, asserting a minimum case count so a filter that
     matches nothing cannot pass empty.
   - `crypto_test.go`'s rows of RFC 5 §8.1's Appendix B.1 row and E2's catalogue.
-  - `FuzzAESGCMDecode`, through `transformtest.FuzzDecode`, with seeds: the fixture bodies, a key
-    ID length of 255 over a 10-byte body, a header with no nonce, a body of exactly the header,
-    nonce and tag, version 0 and version 2. Added to the nightly `fuzz` suite in the form the RFC 2
+  - `FuzzAESGCMDecode`, through `transformtest.FuzzDecode`, with seeds: the fixture bodies, the
+    golden-vector chunk body, and T5.2's malformed-header slice. Added to the nightly `fuzz` suite in the form the RFC 2
     plan's epic 2 registers it; RFC 5 §8.3's suites line extended to name it.
 - **Acceptance criteria:**
   - Every valid Wycheproof case seals to its ciphertext and tag and opens to its message; every
     invalid case fails to open.
-  - Every fuzz seed is `ErrMalformed` or `ErrTooLarge`, or decodes to at most `max` bytes.
+  - Every fuzz seed returns one of §2.7's five errors, or decodes to at most `max` bytes.
 - **Tests:**
   - Wycheproof through `seal` and `open` (catches a cipher called with the wrong key size, nonce
     position, AAD or tag length, R15).
@@ -451,8 +462,7 @@ docs/internals/rfcs/rfc-5-transforms.md  T5.3  §8.3's suites line names the fuz
   epic 4's library choice.
 - **Acceptance criteria:**
   - `test/harness/bin/dt run unit` runs the allocation tests in `transform-allocs`, and they pass.
-  - The benchmarks run and report; the split's two parts add up to within the variance of the
-    whole encode.
+  - The benchmarks run and report.
 - **Tests:** the allocation tests (catch a buffer allocated per call beyond the stated count,
   rule 4). The rest are reports, compared with `benchstat` over `-count=10` on one machine, as
   `CLAUDE.md`'s "Writing tests" says.
@@ -463,7 +473,7 @@ docs/internals/rfcs/rfc-5-transforms.md  T5.3  §8.3's suites line names the fuz
 ```mermaid
 flowchart TD
   S2(["S2 conformance suites and vectors in"]):::sync --> T5_1["T5.1 Derivations and the nonce"]
-  A4(["E3 T3.1, T3.4: registry, encode and decode"]):::sync --> T5_2
+  A4(["E3 T3.1, T3.5: registry, encode and decode, census view"]):::sync --> T5_2
   T5_1 --> T5_2["T5.2 The transform"]
   T5_2 --> C1(["after T5.2: a chain can encrypt; E9 can build the default encrypting chain"]):::sync
   T5_2 --> T5_3["T5.3 Cryptographic rows, fuzzing, planted key"]
@@ -480,14 +490,14 @@ T5.3 and the measurements of T5.4 follow on the finished transform.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T5.1, T5.2 | 4.75 | E3's T3.4 | the derivations and the transform end to end: a chain can encrypt |
-| 2 | T5.3, T5.4 | 3 | PR 1, E3's T3.7 | the cryptographic rows, fuzzing and the measurements over the finished transform |
+| 1 | T5.1, T5.2 | 4.5 | E3's T3.5, E2's revision | the derivations and the transform end to end: a chain can encrypt |
+| 2 | T5.3, T5.4 | 2.75 | PR 1, E3's T3.7 | the cryptographic rows, fuzzing and the measurements over the finished transform |
 
 A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **Needs on E2**, whose breakdown is in review (#5857): `transformtest`'s authenticating rows must
+- **Needs on E2, blocking T5.2**, whose breakdown is in review (#5857): `transformtest`'s authenticating rows must
   hand `Decode` a view that answers only the material `Encode` returned in `Encoded.Material` and
   gives `ErrMalformed` for any other ID, as E3's census view does in production. Run on
   `keystest.Memory` directly, a flipped byte of the key ID makes `Decode` ask for an ID never given,
@@ -510,15 +520,20 @@ A suggestion only: one pull request per subtask works as well.
   (`GODEBUG=fips140=only`) may refuse `Seal` with one (from memory, not checked on Go 1.26). RFC 5
   Appendix B.1 chose the derived nonce; if an operator needs FIPS mode, that is an RFC question,
   not this epic's.
-- **Needs on E9**: `encryption_chunks_total` is defined from the chain's encode count of every
-  encrypt-stage transform, not recorded by this transform (D6).
+- **Needs on E3 and E9**: `encryption_chunks_total` is defined by E9's series spec from the chain's
+  encode count of every encrypt-stage transform, not recorded by this transform (D6); E3's §1.2
+  line "Encryption's own series: E5" then points at E9.
+- **For RFC 5's author:** §2.5 says a transform refuses material of another kind "at
+  construction", but a `Factory` is handed no material, and E3's D1 builds it with none. D2 refuses
+  at first use; if that reading is wrong, RFC 5 must say what a factory checks.
 - **Refinements of the RFC 5 plan**, which is not edited: its §4.1 shows one `pkg/transform/encrypt/`
   directory, and D1 follows RFC 5 §3.1's one package per shipped transform, as E4 did; its
   expected content caches the salt key per data key, and D3 derives it per call, since a cache of
   derived keys is a copy a key's removal must erase and the benchmark has not shown the cost; it
   gives this epic the "kind refusal at construction", which D2 places where material first
-  arrives, since the factory reaches none.
-- **The estimate** is 4 subtasks and 7.75 man-days, against the RFC 5 plan's 4 and 8.5: no
-  salt-key cache, and no recomputation of the nonce on decode. The least certain is T5.2's, the
+  arrives, since the factory reaches none; and its rule 3 gives this epic `encryption_chunks_total`,
+  which D6 defines through the chain's count, with E9 writing the spec.
+- **The estimate** is 4 subtasks and 7.25 man-days, against the RFC 5 plan's 4 and 8.5: no
+  salt-key cache, no recomputation of the nonce on decode, and no recorder of its own. The least certain is T5.2's, the
   transform end to end with its chain-level tests, then T5.4's, whose allocation counts wait on the
   BLAKE3 choice.
