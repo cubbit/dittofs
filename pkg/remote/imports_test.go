@@ -1,0 +1,250 @@
+package remote
+
+import (
+	"bytes"
+	"fmt"
+	"os/exec"
+	"slices"
+	"strings"
+	"testing"
+)
+
+const module = "github.com/cubbit/dittofs/"
+
+// row binds the packages pkg names: a module-relative path, or path/... for it
+// and every package beneath it. The row that names a package most closely is
+// its row.
+type row struct {
+	pkg   string
+	reach []string // the module's packages they may reach, transitively
+	but   []string // packages refused although reach names them
+	libs  []string // libraries outside the standard library they may import
+}
+
+// aws is the AWS SDK for Go v2 with its runtime.
+var aws = []string{"github.com/aws/aws-sdk-go-v2/...", "github.com/aws/smithy-go/..."}
+
+// table is every package of the remote tier, landed or not, and what its
+// production code may reach (RFC 0 §1.2, RFC 4 §1.2): the contract nothing but
+// the standard library; the codec the contract and the transforms' and the
+// metadata entities' contracts, never a transform, the carver, the engine or a
+// store; a store the contract and its own packages, never the codec. A row is
+// an upper bound: a package that reaches less passes.
+var table = []row{
+	{pkg: "pkg/remote"},
+	{pkg: "pkg/remote/codec", reach: []string{"pkg/remote", "pkg/transform", "pkg/transform/keys", "pkg/metadata/entity/..."}},
+	{pkg: "pkg/remote/memory/...", reach: []string{"pkg/remote", "pkg/sim", "pkg/remote/memory/..."}},
+	{pkg: "pkg/remote/remotetest", reach: []string{"pkg/remote", "internal/prof"}},
+	{pkg: "pkg/remote/s3/...", reach: []string{"pkg/remote", "pkg/remote/s3/..."}, but: []string{"pkg/remote/s3/s3fault/..."}, libs: aws},
+	{pkg: "pkg/remote/s3/s3fault", libs: aws},
+}
+
+// listed is one package as go list reports it, production files only.
+type listed struct {
+	path    string
+	deps    []string // every package it imports, transitively
+	imports []string // the packages it imports directly
+}
+
+// targets are the platforms the walk lists each package for, so a file built
+// for one of them only is checked too.
+//
+// decision: the walk lists Linux, macOS and Windows with no build tags. A file
+// behind a custom tag, or built only for another platform, is not walked;
+// widen this when a package under pkg/remote gains one.
+var targets = []string{"linux", "darwin", "windows"}
+
+// walk lists every package under dir with go list, once per target, and
+// merges what each target reaches. .Deps is the transitive import set, and
+// without -test go list reads production files only, so a test's imports are
+// never walked (RFC 0 §1.2).
+func walk(dir string) ([]listed, error) {
+	merged := map[string]*listed{}
+
+	for _, goos := range targets {
+		cmd := exec.Command("go", "list", "-tags=", "-f", `{{.ImportPath}}|{{join .Deps " "}}|{{join .Imports " "}}`, "./...")
+		cmd.Dir = dir
+		// The planted tree is a module of its own, outside any workspace.
+		cmd.Env = append(cmd.Environ(), "GOWORK=off", "GOOS="+goos, "GOARCH=amd64", "CGO_ENABLED=0")
+
+		var stderr bytes.Buffer
+
+		cmd.Stderr = &stderr
+
+		out, err := cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("go list in %s for %s: %w: %s", dir, goos, err, stderr.String())
+		}
+
+		for line := range strings.Lines(string(out)) {
+			fields := strings.Split(strings.TrimSpace(line), "|")
+			if len(fields) != 3 {
+				return nil, fmt.Errorf("go list in %s: unexpected line %q", dir, line)
+			}
+
+			p := merged[fields[0]]
+			if p == nil {
+				p = &listed{path: fields[0]}
+				merged[fields[0]] = p
+			}
+
+			p.deps = append(p.deps, strings.Fields(fields[1])...)
+			p.imports = append(p.imports, strings.Fields(fields[2])...)
+		}
+	}
+
+	var pkgs []listed
+
+	for _, p := range merged {
+		pkgs = append(pkgs, *p)
+	}
+
+	return pkgs, nil
+}
+
+// matches reports whether path, module-relative or a library's, is pattern or,
+// for a pattern ending in /..., the package it names or one beneath it.
+func matches(pattern, path string) bool {
+	if root, ok := strings.CutSuffix(pattern, "/..."); ok {
+		return path == root || strings.HasPrefix(path, root+"/")
+	}
+
+	return path == pattern
+}
+
+// rowOf returns the row that names pkg most closely.
+func rowOf(table []row, pkg string) (row, bool) {
+	var best row
+
+	found := false
+
+	for _, r := range table {
+		if matches(r.pkg, pkg) && (!found || len(strings.TrimSuffix(r.pkg, "/...")) > len(strings.TrimSuffix(best.pkg, "/..."))) {
+			best, found = r, true
+		}
+	}
+
+	return best, found
+}
+
+// check returns each violation of table by pkgs: a package with no row, a
+// module package its row does not let it reach, and a library outside the
+// standard library its row does not let it import. Libraries are checked where
+// they are imported only, since no library imports one of the module's
+// packages.
+func check(pkgs []listed, table []row) []string {
+	var bad []string
+
+	for _, p := range pkgs {
+		rel := strings.TrimPrefix(p.path, module)
+
+		r, ok := rowOf(table, rel)
+		if !ok {
+			bad = append(bad, rel+" has no row")
+
+			continue
+		}
+
+		for _, dep := range p.deps {
+			d, ours := strings.CutPrefix(dep, module)
+			if !ours {
+				continue
+			}
+
+			allowed := slices.ContainsFunc(r.reach, func(pat string) bool { return matches(pat, d) }) &&
+				!slices.ContainsFunc(r.but, func(pat string) bool { return matches(pat, d) })
+			if !allowed {
+				bad = append(bad, fmt.Sprintf("%s reaches %s, which row %s does not allow", rel, d, r.pkg))
+			}
+		}
+
+		for _, imp := range p.imports {
+			first, _, _ := strings.Cut(imp, "/")
+			if !strings.Contains(first, ".") || strings.HasPrefix(imp, module) {
+				continue
+			}
+
+			if !slices.ContainsFunc(r.libs, func(pat string) bool { return matches(pat, imp) }) {
+				bad = append(bad, fmt.Sprintf("%s imports %s, which row %s does not allow", rel, imp, r.pkg))
+			}
+		}
+	}
+
+	slices.Sort(bad)
+
+	return slices.Compact(bad)
+}
+
+// Every package under pkg/remote reaches, through its production code, only
+// what its row allows.
+func TestImportWalk(t *testing.T) {
+	pkgs, err := walk(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !slices.ContainsFunc(pkgs, func(p listed) bool { return p.path == module+"pkg/remote" }) {
+		t.Fatalf("the walk listed %d packages, none of them pkg/remote", len(pkgs))
+	}
+
+	for _, v := range check(pkgs, table) {
+		t.Error(v)
+	}
+}
+
+// The walk over a planted module, whose codec reaches the engine through an
+// intermediate package and whose codec test imports the syncer, reports
+// exactly the production reach: a walk of direct imports only misses it, and a
+// walk that binds tests reports the syncer too.
+func TestImportWalkFollowsProductionImportsTransitively(t *testing.T) {
+	pkgs, err := walk("testdata/walk/pkg/remote")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"pkg/remote/codec reaches pkg/engine, which row pkg/remote/codec does not allow"}
+	if got := check(pkgs, table); !slices.Equal(got, want) {
+		t.Errorf("violations over the planted module %q, want %q", got, want)
+	}
+}
+
+// The checker, one case per branch.
+func TestImportCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pkg  listed
+		want []string
+	}{
+		{"an allowed reach", listed{
+			path:    module + "pkg/remote/codec",
+			deps:    []string{module + "pkg/remote", module + "pkg/transform", module + "pkg/metadata/entity/internal", "context"},
+			imports: []string{module + "pkg/transform", "context"},
+		}, nil},
+		{"a reach the row refuses", listed{
+			path: module + "pkg/remote/codec",
+			deps: []string{module + "pkg/remote", module + "pkg/transform/chain"},
+		}, []string{"pkg/remote/codec reaches pkg/transform/chain, which row pkg/remote/codec does not allow"}},
+		{"a package with no row", listed{path: module + "pkg/remote/gcs"}, []string{"pkg/remote/gcs has no row"}},
+		{"a library the contract imports", listed{
+			path:    module + "pkg/remote",
+			imports: []string{"github.com/aws/aws-sdk-go-v2/aws", "io"},
+		}, []string{"pkg/remote imports github.com/aws/aws-sdk-go-v2/aws, which row pkg/remote does not allow"}},
+		{"a library a store imports", listed{
+			path:    module + "pkg/remote/s3",
+			deps:    []string{module + "pkg/remote", module + "pkg/remote/s3/internal/sign"},
+			imports: []string{"github.com/aws/aws-sdk-go-v2/service/s3", "github.com/aws/smithy-go"},
+		}, nil},
+		{"a store reaching its fault transport", listed{
+			path: module + "pkg/remote/s3",
+			deps: []string{module + "pkg/remote", module + "pkg/remote/s3/s3fault"},
+		}, []string{"pkg/remote/s3 reaches pkg/remote/s3/s3fault, which row pkg/remote/s3/... does not allow"}},
+		{"the fault transport by its own row", listed{
+			path: module + "pkg/remote/s3/s3fault",
+			deps: []string{module + "pkg/remote"},
+		}, []string{"pkg/remote/s3/s3fault reaches pkg/remote, which row pkg/remote/s3/s3fault does not allow"}},
+	} {
+		if got := check([]listed{tc.pkg}, table); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: violations %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
