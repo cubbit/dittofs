@@ -1018,7 +1018,9 @@ func TestTheStatusCarriesEachAdaptersState(t *testing.T) {
 		return a
 	})
 	ch := watchStatus(h)
-	h.Node().SetSMB(true, smbAt(freePort(t)))
+	// Port 0: the system picks SMB's port as it binds, so no other socket
+	// can take it between a free-port probe and Start and refuse SMB.
+	h.Node().SetSMB(true, smbAt(0))
 	started(t, h)
 	t.Cleanup(func() { close(release) }) // before the node's Stop, which runs after it
 	turnAt(t, h, ch, "SMB serving, NFS disabled", statesAre("nfs stopped", "smb serving"))
