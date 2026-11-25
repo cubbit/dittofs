@@ -166,11 +166,12 @@ func newDeleteCmd(env cmdutil.Env) *cobra.Command {
 				return fmt.Errorf("%s: netgroup %q: %w", cmd.CommandPath(), args[0], err)
 			}
 			force, _ := cmd.Flags().GetBool("force")
-			return cmdutil.RunDeleteWithConfirmation(cmd, env, "netgroup", args[0], force, func() error {
-				if _, err := c.Netgroups().Delete(cmd.Context(), args[0], n.ETag); err != nil {
-					return fmt.Errorf("%s: deleting netgroup %q: %w", cmd.CommandPath(), args[0], err)
+			return cmdutil.RunDeleteWithConfirmation(cmd, env, "netgroup", args[0], force, func() (*apiv1.Operation, error) {
+				op, err := c.Netgroups().Delete(cmd.Context(), args[0], n.ETag)
+				if err != nil {
+					return nil, fmt.Errorf("%s: deleting netgroup %q: %w", cmd.CommandPath(), args[0], err)
 				}
-				return nil
+				return op, nil
 			})
 		},
 	}

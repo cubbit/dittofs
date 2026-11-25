@@ -94,8 +94,12 @@ func printSuccess(cmd *cobra.Command, msg string) {
 // stays its own. Without a person at the reader it refuses, naming --force,
 // rather than wait on a prompt nobody answers. A deletion the server refuses
 // 412, the record having changed or gone since the command read its tag,
-// reads as that, so the command can be run again.
-func RunDeleteWithConfirmation(cmd *cobra.Command, env Env, resourceType, name string, force bool, deleteFn func() error) error {
+// reads as that, so the command can be run again. deleteFn answers the
+// operation the deletion started, nil for one that finished in its call,
+// having passed it to Follow: one the command did not follow with --wait
+// may still be running, so it is reported as started, naming the command
+// that waits for it, not as removed.
+func RunDeleteWithConfirmation(cmd *cobra.Command, env Env, resourceType, name string, force bool, deleteFn func() (*apiv1.Operation, error)) error {
 	if !force {
 		if !env.Interactive {
 			return fmt.Errorf("%s: removing %s '%s' needs confirmation; pass --force", cmd.CommandPath(), resourceType, name)
@@ -114,12 +118,17 @@ func RunDeleteWithConfirmation(cmd *cobra.Command, env Env, resourceType, name s
 		}
 	}
 
-	if err := deleteFn(); IsPreconditionFailed(err) {
+	op, err := deleteFn()
+	if IsPreconditionFailed(err) {
 		return fmt.Errorf("%s: %s '%s' changed or was removed since it was read, so nothing was removed; run the command again", cmd.CommandPath(), resourceType, name)
 	} else if err != nil {
 		return err
 	}
 
+	if wait, _ := cmd.Flags().GetBool("wait"); op != nil && !wait {
+		printSuccess(cmd, fmt.Sprintf("removal of %s '%s' started as operation %s; 'dfsctl operation wait %s' waits for it", resourceType, name, op.ID, op.ID))
+		return nil
+	}
 	printSuccess(cmd, fmt.Sprintf("%s '%s' removed successfully", resourceType, name))
 	return nil
 }

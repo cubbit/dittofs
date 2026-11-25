@@ -120,12 +120,12 @@ string.`,
 				return fmt.Errorf("%s: namespace %s: %w", cmd.CommandPath(), args[0], err)
 			}
 			force, _ := cmd.Flags().GetBool("force")
-			return cmdutil.RunDeleteWithConfirmation(cmd, env, "namespace", args[0], force, func() error {
+			return cmdutil.RunDeleteWithConfirmation(cmd, env, "namespace", args[0], force, func() (*apiv1.Operation, error) {
 				op, err := c.Namespaces().Delete(cmd.Context(), args[0], n.ETag)
 				if err != nil {
-					return fmt.Errorf("%s: namespace %s: %w", cmd.CommandPath(), args[0], err)
+					return nil, fmt.Errorf("%s: namespace %s: %w", cmd.CommandPath(), args[0], err)
 				}
-				return cmdutil.Follow(cmd, c, op)
+				return op, cmdutil.Follow(cmd, c, op)
 			})
 		},
 	}

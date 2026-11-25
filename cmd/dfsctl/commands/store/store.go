@@ -128,12 +128,12 @@ func newDeleteCmd(env cmdutil.Env) *cobra.Command {
 				return fmt.Errorf("%s: store %s: %w", cmd.CommandPath(), args[0], err)
 			}
 			force, _ := cmd.Flags().GetBool("force")
-			return cmdutil.RunDeleteWithConfirmation(cmd, env, "store", args[0], force, func() error {
+			return cmdutil.RunDeleteWithConfirmation(cmd, env, "store", args[0], force, func() (*apiv1.Operation, error) {
 				op, err := c.Stores().Delete(cmd.Context(), args[0], st.ETag)
 				if err != nil {
-					return fmt.Errorf("%s: store %s: %w", cmd.CommandPath(), args[0], err)
+					return nil, fmt.Errorf("%s: store %s: %w", cmd.CommandPath(), args[0], err)
 				}
-				return cmdutil.Follow(cmd, c, op)
+				return op, cmdutil.Follow(cmd, c, op)
 			})
 		},
 	}
