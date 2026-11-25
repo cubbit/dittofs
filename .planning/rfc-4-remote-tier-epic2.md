@@ -21,7 +21,7 @@ below are paths there.
 `Info`, `Role`, `Checksum` with its kinds, `StoredSum`, `Version`, `Direction`, the sentinels,
 `Cause` and `DeniedError`. `pkg/sim`'s `TestClock` and `internal/prof`'s `Watch`, both already on
 `feat/storage-v2`, drive the tests.
-**Blocks:** **R5-S2**, which E3 and E4 start from: E4's T4.8 runs this suite against the S3 store,
+**Blocks:** **R4-S2**, which E3 and E4 start from: E4's T4.8 runs this suite against the S3 store,
 and E5's T5.4 through the checked `Open`. **E6**, whose §7.3 `codec.Store` row runs on the
 in-memory store in a mode that needs a measuring pass. Outside RFC 4: the RFC 3 plan's epic 2,
 which extends T2.4's wrapper with per-call faults and reads T2.5's load record; the RFC 5 plan's
@@ -56,7 +56,7 @@ store that the suite holds to the real one.
 - `memory.Wrap(store).SetReadOnly(true)` refuses every write and the put probe with `ErrDenied` of
   cause `access`, and passes every read and the get probe.
 - `(*memory.Store).Load()` reports calls in flight and their peak, the order calls reached the
-  store, puts per name and the bytes of the blocks it holds.
+  store, puts per name, the bytes of the blocks it holds and the keys a listing skipped.
 
 ### 1.1 In scope
 
@@ -68,10 +68,10 @@ store that the suite holds to the real one.
 
 - **E4:** the S3 store's opener, its raw hooks over the admin client, and the halves of the rows
   only a service shows: §4.6's one request per call and reply under the small-body cap, and the
-  count of a skipped foreign key, which is §4.12's `remote_list_foreign_total`. Also §7.1's §4.8
+  S3 store's count of a skipped foreign key, §4.12's `remote_list_foreign_total`. Also §7.1's §4.8
   throttling row.
-- **E3, E4, E5 and E6:** every §7.1 row marked T, over the fault transport. The suite holds none
-  of them: they are skipped for a store without the transport (§7.1), and E2 writes none.
+- **E3, E4, E5 and E6:** every §7.1 row marked T, over the fault transport. This epic writes none
+  of them; a store without the transport skips them (§7.1).
 - **E5:** the capability check and the health object it writes at a real open; the §4.7 rows on
   a real service's probes.
 - **E6:** §7.1's §3.2 census row and every §7.3 row, `codec.Store`'s among them. This epic only
@@ -104,8 +104,8 @@ store that the suite holds to the real one.
 - **S1**, the plan's first synchronisation point, = RFC 8 offload plan S1c remote store contract
   agreed: E1's contract, reviewed by the RFC 3 and RFC 8 offload plans' authors. This epic starts
   there.
-- **R5-S2**, suite and in-memory store in CI: this suite runs green against the in-memory store in
-  `unit`. It is reached at the end of this epic. **S2** appears here only inside it; the `R5-`
+- **R4-S2**, suite and in-memory store in CI: this suite runs green against the in-memory store in
+  `unit`. It is reached at the end of this epic. **S2** appears here only inside it; the `R4-`
   prefix keeps it apart from the RFC 8 offload plan's S2.
 - **S3** is the storage service's protocol, never a synchronisation point.
 - **The RFC 3 plan's epic 2** (PR #5530), test foundations: the per-call faults on this epic's
@@ -154,10 +154,10 @@ subtasks and tests can cite them.
 | R6 | §4.4: a get of each range inside the block returns exactly its bytes; a range starting past the end fails with `ErrInvalid` | test row | §7.1 | T2.1 |
 | R7 | §4.5: a batch deleted twice, including a never-written name: every result is `nil`; a batch of 2,500: every block gone | test row | §7.1 | T2.2 |
 | R8 | §4.6: 2,500 blocks listed in pages of 1,000, stopped after 1,200 and resumed from the last name: every block seen exactly once, in order, with size and time, and each call returns at most its `n`. The one request per call and the reply under the small-body cap are E4's | test row | §7.1 | T2.2 |
-| R9 | §4.6: a key under the block namespace that is not a block name is skipped; a cancel mid-page ends the call with the context's error. Counting the skipped key is E4's | test row | §7.1 | T2.2 |
+| R9 | §4.6: a key under the block namespace that is not a block name is skipped; a cancel mid-page ends the call with the context's error. The S3 store's count is E4's; the in-memory store's is R20's | test row | §7.1 | T2.2 |
 | R10 | §4.2: after the suite's rows, the store's raw namespace holds nothing but blocks, control objects and check objects, and every block key is the prefix followed directly by the name | test row | §7.1 | T2.3 |
 | R11 | §4.13: put and get each role: bytes equal, a second put replaces the first, an absent role is `ErrNotFound`, and a block listing yields none of them. The health role is never absent on an opened store, so its absence is not asserted (§4.7) | test row | §7.1, §4.7 | T2.3 |
-| R12 | §4.7, its read-only half: the put probe fails while the namespace is read-only and succeeds on the next call once write access returns; the get probe succeeds throughout. The prefix-revoke half is E9's | test row | §7.1 | T2.4 |
+| R12 | §4.7, its read-only half: the put probe fails while the namespace is read-only and succeeds on the next call once write access returns; the get probe succeeds throughout. The S3 store runs it in E5's T5.5; the prefix-revoke half is E9's | test row | §7.1 | T2.4 |
 
 **The in-memory store's contract**
 
@@ -560,7 +560,7 @@ flowchart TD
   T2_1 --> C1(["after T2.1: the RFC 5 and RFC 8 offload plans can put and get"]):::sync
   T2_1 --> T2_2["T2.2 Delete and listing rows"] --> T2_3["T2.3 Control objects, raw namespace"]
   T2_3 --> T2_4["T2.4 Health, read-only wrapper"] --> T2_5["T2.5 Load record"]
-  T2_5 --> RS2(["R5-S2 suite and in-memory store in CI"]):::sync
+  T2_5 --> RS2(["R4-S2 suite and in-memory store in CI"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
@@ -568,7 +568,7 @@ flowchart TD
 
 - After T2.1, a consumer's test can put and get through the in-memory store.
 - After T2.3, every row E4's T4.8 runs exists, and the RFC 5 plan's `keys` object can be tested.
-- After T2.5, R5-S2: E3 and E4 start, and the RFC 3 plan's epic 2 has the wrapper and the record.
+- After T2.5, R4-S2: E3 and E4 start, and the RFC 3 plan's epic 2 has the wrapper and the record.
 
 ## 8. Suggested pull requests
 
