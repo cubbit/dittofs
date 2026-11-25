@@ -196,7 +196,10 @@ already reads).
   side needs one capture port and one hint. Root is used only to enter the namespace and to start `tcpdump`, which drops to
   the invoking user (`-Z`); the `go test` runs as that user, dropped inside the namespace, since
   `client_ns_exec` runs its command as root (`test/nfs-mount/netns.sh`): `client_ns_exec 1 setpriv
-  --reuid="$SUDO_UID" --regid="$SUDO_GID" --init-groups env NFSWIRE_SCRIPT=… go test …`. `--script` must name a registered
+  --reuid="$SUDO_UID" --regid="$SUDO_GID" --init-groups -- env PATH="$PATH" HOME="$(getent passwd
+  "$SUDO_USER" | cut -d: -f6)" USER="$SUDO_USER" LOGNAME="$SUDO_USER" NFSWIRE_SCRIPT=… go test …`,
+  the drop `dt`'s fixture makes (`test/harness/fixture/client.go`, `asUser`), since `setpriv` keeps
+  root's `HOME` and `go test` writes its build cache under it. `--script` must name a registered
   script (`[a-z0-9-]+`) before it becomes a file name. The host's `nfs.conf`, lease and exports are
   restored by a trap; the export is limited to the namespace subnet. The DittoFS side of T14.3 runs
   on the host's loopback, outside any namespace, since the node is in the test's own process.
@@ -356,7 +359,7 @@ test/suites.yaml                   T14.1  wirediff in lint-go's tag list; normal
     wrapper (D2).
   - `test/pcap-corpus/nfs-wire.sh`: `record --script S --target HOST:PORT --out DIR [--iface I]`,
     which sources `netns.sh` and `capture.sh`, starts the capture as root on the bridge, runs the
-    test inside client 1's namespace through `client_ns_exec`, stops the capture and writes
+    test inside client 1's namespace through `client_ns_exec` as the invoking user (D2), stops the capture and writes
     `S.<side>.pcap` and `S.<side>.skel`, nonzero with no skeleton if the test failed; `diff
     --script S --reference F --candidate F`, which runs `pcap-diff.sh` with `--skeleton-dir` into
     the output directory and leaves both captures, both skeletons and the diff there. Consumed by
