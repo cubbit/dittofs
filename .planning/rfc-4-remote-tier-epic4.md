@@ -136,7 +136,7 @@ cited by number and title and not copied.
 | rule 6, known failures shrink | none | `unit` and `integration` keep no `known.yaml`; every test lands green in the subtask that makes it pass, and a T row waits for the E3 subtask (T3.2 to T3.5) that builds its fault |
 | rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | all | nothing from `develop`'s `pkg/block/remote/s3`; `pkg/remote/s3` imports `pkg/remote` (its own component's contract) and `aws-sdk-go-v2` only: no codec, transform, syncer or engine package, and none of `pkg/metrics`, `pkg/settings` and `pkg/health`, which amended RFC 0 §1.2 counts as implementations; its tests may import `s3fault`, `remotetest` and `internal/prof`, as amended RFC 0 §1.2 allows tests to. E1's import walk covers the new package without change |
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T4.3 to T4.8 | LocalStack 4.13.1 for what the service stores, refuses and reports; `httptest` TLS listeners for what the client itself does (TLS, HTTP/1.1, caps), since no service is needed to show it; E2's suite runs against the S3 store as well as the in-memory one |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T4.1, T4.3, T4.7 | RFC 4's `decision:` notes at their code sites: the digest-only delayed duplicate at the ETag comparison (§4.3, T4.3) and a block put's size refusal as cause `size` at the table's size row (§4.8, T4.1); this epic's own markers of §4: D5 (T4.7), D6 (T4.5), D8 (T4.3) and D11 (T4.1) |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T4.1, T4.3, T4.7 | RFC 4's `decision:` notes at their code sites: the digest-only delayed duplicate at the ETag comparison (§4.3, T4.3) and a block put's size refusal as cause `size` at the table's size row (§4.8, T4.1); this epic's own markers of §4: D5 (T4.7), D6 (T4.5) and D8 (T4.3) |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test names the break it catches; none asserts a fault's own answer, only the store's mapping of it |
 | rule 11, a symbol is exported only if the RFC's interface uses it | T4.2, T4.3 | exported: `NewClient`, `ClientConfig`, `Deps`, `Client` and `Close`, and `Open`, which returns `remote.Store` (RFC 4 §4.1's constructor, with the client it shares), and the `Recorder` interface, which E7's content wiring implements. Unexported: the error table, the layout, the integrity mode, the batch-delete choice, the `Content-Range` reader, the connection counters |
 | rule 12, each subtask creates only what it declares | all | `pkg/remote/s3` lands with the error table, its first file; the `Recorder` with the client that records through it; `s3-allocs` with `Put`'s allocation test; the `Content-MD5` middleware with `Delete`; no file before its first caller |
@@ -356,7 +356,8 @@ row's work is shared, the other part's owner is named.
   `remote_list_foreign_total{store}`. `op` takes `put`, `get`, `delete`, `list`, `put_control` and
   `get_control` here (`health` with E5), and the histogram folds the last two into `other`.
   `result` takes `ok`, the sentinel's name (`not_found`, `invalid`, `denied`, `transient`,
-  `throttled` or `corrupt`), or `local` for a call that ended in a local failure, as the user
+  `throttled` or `corrupt`), or `local` for a call that ended in a local failure, its context
+  ended or its body's reader failed, as RFC 4 §4.12 now labels it (#5795) and the user
   agreed (§9 point 3). `cause` is `access`, `quota` or `size` on `denied` and empty otherwise. Tests
   pass a recorder that keeps what it was given, an output sink (CLAUDE.md "Writing tests":
   outputs are not interactions). Prior art: the RFC 5 plan's D2 (#5532), the same recorder shape.
@@ -434,10 +435,8 @@ row's work is shared, the other part's owner is named.
   no code, a code it makes from the status text (`RequestEntityTooLarge`). `fromSDK` treats a code
   made from the status text as no code, and a body that does not parse on a non-2xx reply as a
   reply with that status and no code, so a proxy's HTML `413` stays cause `size` (§4.8 names the
-  proxy in front of the service). Only an unparseable 2xx body is `ErrTransient`. C.3 lists "a
-  response body that does not parse" under `ErrTransient` without naming a status, so this is a
-  contract the RFC leaves open: a `decision:` marker at `fromSDK` states it, and the amendment of
-  §9 point 8 settles it in the RFC. Prior art: none
+  proxy in front of the service). Only an unparseable 2xx body is `ErrTransient`, as C.3 says
+  since the RFC 4 follow-up (#5795) classifies an unparseable body by its status. Prior art: none
   found; the SDK's behaviour was read in `service/internal/s3shared` on `feat/storage-v2`'s pinned
   version.
 
@@ -804,8 +803,5 @@ Points 1 to 4 were asked as questions and are resolved: the user agreed each rec
    service/s3 v1.114.3, service/internal/checksum v1.11.7); `develop` pins newer ones. A bump before
    this epic starts is re-read for D9's validator, D11's error components and the checksum
    middleware's ID.
-8. **C.3's unparseable body (D11).** Proposed amendment to RFC 4 C.3's `ErrTransient` row: "a
-   response body that does not parse is classified by its status, as a reply with no code; only a
-   2xx one is `ErrTransient`". Without it an HTML `403` from a proxy is `ErrTransient` and an HTML
-   `413` to a block put stops being cause `size`. It goes into the RFC 4 follow-up (#5795) or the
-   next one.
+8. **C.3's unparseable body (D11), resolved.** RFC 4 C.3 classifies a response body that does not
+   parse by its status, as a reply with no code, and only a 2xx one is `ErrTransient` (#5795).
