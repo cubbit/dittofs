@@ -221,6 +221,157 @@ func TestRFC1A_CrashMidRepack(t *testing.T) {
 	}
 }
 
+// soleRemovalSource plants, through the journal's own removal path, one
+// live unsettled truncation in a segment whose content the truncation
+// itself removed: the write is synced beside the truncation's record, both
+// in the one segment, and the truncation's range leaves nothing held in
+// the index, so the segment's one live thing is the record. It returns the
+// truncation's version and the source segment, waited to its idle seal so
+// a pass can take it.
+func soleRemovalSource(t *testing.T, f *journaltest.Fixture, k int, id journal.FileID, size int64) (dv journal.Version, seg journal.SegmentID) {
+	t.Helper()
+
+	h := f.Share(k)
+	write(t, h, id, 0, distinct(k, int(size)))
+	syncFile(t, h, id)
+	seg = heldEntry(t, f, id).Location.Segment
+	dv, err := h.Truncate(t.Context(), id, 0)
+	stub(t, "Truncate", err)
+	if err != nil {
+		t.Fatalf("the truncation: %v", err)
+	}
+	syncFile(t, h, id)
+	from := indexedEnd(t, "the truncation's source", f, seg)
+	f.Advance(2 * journaltest.IdleSealAge)
+	eventually(t, "the truncation's segment was not sealed once idle", func() bool {
+		_, ok := sealMarkerAt(t, f, segmentName(seg), seg, from)
+		return ok
+	})
+	if s, ok := segmentInfo(f, seg); !ok || s.HeldBytes != 0 || s.RetainedBytes != 0 {
+		t.Fatalf("the truncation's source %d holds held=%d retained=%d bytes, want no content the truncation has not removed: the segment's one live thing is the record", seg, s.HeldBytes, s.RetainedBytes)
+	}
+	return dv, seg
+}
+
+// TestRFC1A_CrashAfterARemovalRecordCarriedToItsCopy checks the crash on
+// the far side of a pass that retires, in its own run, a source holding
+// nothing but a live unsettled truncation: the pass carries the record's
+// copy and waits it durable before it unlinks the source, the unlink is
+// durable before the crash, and the reopen finds the copy the record's
+// only placement — the source elsewhere, the marker rebuilt from the copy
+// alone, the truncation still answering over the removed range.
+func TestRFC1A_CrashAfterARemovalRecordCarriedToItsCopy(t *testing.T) {
+	const size = 256 << 10
+	f := journaltest.New(t)
+	dv, seg := soleRemovalSource(t, f, 0, journaltest.File(9), size)
+
+	// The scoped pass, no settle anywhere: the record and its carried copy
+	// hold neither segment, so the source retires in the pass's own run and
+	// its unlink is durable once the pass has returned.
+	freed, err := f.J.Repack(t.Context(), journaltest.FixtureMaxBytes, journal.RepackScope{Segments: []journal.SegmentID{seg}})
+	stub(t, "Repack", err)
+	if err != nil {
+		t.Fatalf("the pass over the truncation's segment: %v", err)
+	}
+	if freed <= 0 || !retired(f, seg) {
+		t.Fatalf("the pass over the truncation's segment freed %d with the source retired=%v, want the retirement in the pass's own run: the record and its carried copy hold neither segment", freed, retired(f, seg))
+	}
+	f.Crash()
+
+	h := f.Share(0)
+	if listed(t, f, segmentName(seg)) {
+		t.Fatalf("the truncation's source is in the directory after the crash, want its durable unlink to have survived")
+	}
+	segs := f.J.Inspect().Segments()
+	if len(segs) != 1 || segs[0].ID == seg {
+		t.Fatalf("after the crash the journal owns %+v, want the carried copy's segment alone: it is the truncation record's only placement", segs)
+	}
+	var trims int
+	for _, c := range since(t, h, journaltest.File(9), journal.Version{}) {
+		if c.Kind == journal.ChangeTruncate && c.Version == dv {
+			trims++
+		}
+	}
+	if trims != 1 {
+		t.Fatalf("Since yields %d truncate changes at %v after the crash, want the one marker rebuilt from the copy alone", trims, dv)
+	}
+	r := read(t, h, journaltest.File(9), 0, size)
+	wantMissing(t, r, 0, []journal.Extent{ext(0, size)}, "the truncation's range once its only placement is the carried copy")
+}
+
+// TestRFC1A_CrashWhileARemovalRecordsUnlinkIsNotDurable checks the other
+// side of the same pass: the crash lands with the record's copy durable and
+// the source's unlink reported but its directory sync dropped, the one
+// state between the two the fixture can crash in, so the reopen finds both
+// placements of one record on disk — and the rebuild that counts both
+// decides the same way a rebuild from either alone would: one truncate
+// change, the removed range still removed.
+func TestRFC1A_CrashWhileARemovalRecordsUnlinkIsNotDurable(t *testing.T) {
+	const size = 256 << 10
+	f := journaltest.New(t)
+	dv, seg := soleRemovalSource(t, f, 0, journaltest.File(9), size)
+
+	// The pass's reclamation is parked at its unlink-or-rename — the copy is
+	// durable by then, its own creation and sync reported before it — and
+	// every directory sync from there on is dropped.
+	unlink := f.Seam.HoldFirst(t, kit.OpRemove, segmentName(seg))
+	rename := f.Seam.HoldFirst(t, kit.OpRename, segmentName(seg))
+	repacked := make(chan error, 1)
+	go func() {
+		_, err := f.J.Repack(t.Context(), journaltest.FixtureMaxBytes, journal.RepackScope{Segments: []journal.SegmentID{seg}})
+		repacked <- err
+	}()
+	select {
+	case <-unlink.Reached():
+	case <-rename.Reached():
+	case err := <-repacked:
+		stub(t, "Repack", err)
+		t.Fatalf("the repack returned (%v) with its source record-held, without reclaiming it", err)
+	}
+	var copySeg journal.SegmentID
+	for _, s := range f.J.Inspect().Segments() {
+		if s.ID != seg {
+			copySeg = s.ID
+		}
+	}
+	if copySeg == 0 {
+		t.Fatal("the journal owns no segment beside the parked source, want the carried copy's segment")
+	}
+	f.Drop(kit.OpSyncDir, "*")
+	unlink.Release()
+	rename.Release()
+	err := <-repacked
+	stub(t, "Repack", err)
+	if err != nil {
+		t.Fatalf("the repack under a dropped directory sync: %v", err)
+	}
+	f.Crash()
+
+	h := f.Share(0)
+	if !listed(t, f, segmentName(seg)) {
+		t.Fatal("the truncation's source left the durable directory, want the dropped sync to leave its unlink not durable")
+	}
+	var sourceBack, copyHeld bool
+	for _, s := range f.J.Inspect().Segments() {
+		sourceBack = sourceBack || s.ID == seg
+		copyHeld = copyHeld || s.ID == copySeg
+	}
+	if !sourceBack || !copyHeld {
+		t.Fatalf("after the crash the journal owns the source=%v and the copy=%v, want both placements of one record discovered by the reopen", sourceBack, copyHeld)
+	}
+	var trims int
+	for _, c := range since(t, h, journaltest.File(9), journal.Version{}) {
+		if c.Kind == journal.ChangeTruncate && c.Version == dv {
+			trims++
+		}
+	}
+	if trims != 1 {
+		t.Fatalf("Since yields %d truncate changes at %v after a crash the reopen solved from both placements, want the one marker: a rebuild that finds both placements of one record counts both and decides the same way", trims, dv)
+	}
+	r := read(t, h, journaltest.File(9), 0, size)
+	wantMissing(t, r, 0, []journal.Extent{ext(0, size)}, "the truncation's range after a crash between its copy's durability and its source's unlink")
+}
+
 // TestRFC1A_RepackUnderRead checks that a read spanning a repack's copy and
 // unlink returns the bytes from the old or the new location, never both, and
 // never missing with the caller's bytes touched.
