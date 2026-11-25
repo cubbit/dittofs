@@ -262,8 +262,10 @@ it, and `Init` does not count it when it requires an empty directory
 A file of any other length, another magic or a checksum that does not verify
 does not parse, and [RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap) refuses the start on it. Copies, and the
 identity the host's file names as a UUID's canonical text, are compared as
-these 16 bytes. The file is written as `format` is: to `node-id.tmp`, synced,
-renamed, and the directory synced; a start ignores a `node-id.tmp`.
+these 16 bytes. The file is written to `node-id.tmp`, created exclusively and
+never through a symbolic link, synced, then published without replacing any
+`node-id` that is already there, and the directory synced; a start ignores a
+leftover `node-id.tmp`.
 
 ### 2.2 Segments
 
