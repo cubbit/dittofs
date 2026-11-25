@@ -620,6 +620,7 @@ func (fs *Filesystem) admitTarget(ctx context.Context, c vfs.Call, t vfs.Target)
 		release()
 		return nil, nil, err
 	}
+	fs.through(ctx, a, c, t.Open)
 	return a, release, nil
 }
 

@@ -19,10 +19,11 @@ import (
 // admitted is one call admitted to one share: the caller it acts as there,
 // and the share as admission read it.
 type admitted struct {
-	caller    authz.Caller
-	share     entity.Share
-	policy    entity.ExportPolicy
-	sessioned bool // the call has a session, which open state marks the state it creates with
+	caller     authz.Caller
+	share      entity.Share
+	policy     entity.ExportPolicy
+	sessioned  bool // the call has a session, which open state marks the state it creates with
+	privileged bool // the caller's privilege as resolved; caller.Privileged holds it only where the call lets it count
 }
 
 // how is what admission makes of a call beyond its Call: whether it only
@@ -201,6 +202,10 @@ func (fs *Filesystem) check(ctx context.Context, c vfs.Call, share entity.ShareI
 	a.caller = authz.Caller{Share: sh.ID, Proved: c.Identity, Client: c.Client, Caps: c.Caps}
 	a.sessioned = c.Session != (vfs.SessionRef{})
 	a.caller.Identity, a.caller.Mapped, err = fs.resolve(ctx, c.Identity, sh, p, ro, w&releasing != 0)
+	// Without PrivilegeOnEveryCall privilege counts only on a backup-intent
+	// open and on calls through the handle it made (through).
+	a.privileged = a.caller.Privileged
+	a.caller.Privileged = a.privileged && privilegeOnEveryCall(c)
 	if err == nil && delay {
 		err = &vfs.Delay{Cause: vfs.DelayFrozen}
 	}

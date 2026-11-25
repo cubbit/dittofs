@@ -283,6 +283,7 @@ func (fs *Filesystem) unlinkAt(ctx context.Context, c vfs.Call, dir vfs.Target, 
 		return vfs.UnlinkResult{}, err
 	}
 	defer release()
+	fs.through(ctx, a, c, dir.Open)
 	for {
 		seen, err := fs.entry(ctx, a, dir.H, name)
 		if err != nil {
@@ -364,6 +365,7 @@ func (fs *Filesystem) Rename(ctx context.Context, c vfs.Call, from vfs.Target, f
 		return vfs.RenameResult{}, err
 	}
 	defer release()
+	fs.through(ctx, a, c, from.Open)
 	if err := a.same(to); err != nil {
 		return vfs.RenameResult{}, err
 	}

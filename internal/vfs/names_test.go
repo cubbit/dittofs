@@ -72,6 +72,15 @@ func (n *names) list(t *testing.T, c vfs.Call, dir vfs.Handle, from vfs.Cursor, 
 	}
 }
 
+// writableRoot makes the share's root 0777, so a caller whose privilege does
+// not count, as an admin under SMB's profile, still adds and removes names
+// in it on its own rights.
+func (n *names) writableRoot(t *testing.T) {
+	t.Helper()
+	_, err := n.fs.Store.Files().SetAttrs(t.Context(), n.fs.Admin, n.fs.Root, entity.Attrs{}.WithMode(0o777))
+	n.must(t, err)
+}
+
 // smbClient connects an SMB client and answers a call from it as p.
 func (n *names) smbClient(t *testing.T, name string, p entity.Principal) vfs.Call {
 	t.Helper()
@@ -249,6 +258,7 @@ func TestARenamedNamesOpensFollowIt(t *testing.T) {
 // are refused, over SMB and over NFS, and add no name.
 func TestADeletePendingDirectoryTakesNoNewName(t *testing.T) {
 	n := newNames(t)
+	n.writableRoot(t)
 	ctx := t.Context()
 	doomed := n.create(t, n.admin, n.fs.Root, "doomed", vfs.CreateDir)
 	f := n.create(t, n.admin, n.fs.Root, "f", vfs.CreateRegular)
@@ -299,6 +309,7 @@ func TestACreateRefusedAddFileChangesNothing(t *testing.T) {
 // adapter drops a directory's Before itself.
 func TestANameChangeAnswersItsDirectoriesWCC(t *testing.T) {
 	n := newNames(t)
+	n.writableRoot(t)
 	ctx := t.Context()
 	root := vfs.Target{H: n.fs.Root}
 	d := n.create(t, n.admin, n.fs.Root, "d", vfs.CreateDir)

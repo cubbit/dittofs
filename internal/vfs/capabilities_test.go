@@ -173,14 +173,20 @@ func TestAHostCallOpenThatChangesAFileIsRefused(t *testing.T) {
 }
 
 // PrivilegeOnEveryCall lets an admin's privilege count on every call.
-// Without it the privilege counts only on an open with backup intent: an
-// open without intent of a file whose DACL denies everyone is refused, and
-// the share root's maximal access leaves out what only privilege grants.
+// Without it the privilege counts only on an open with backup intent and on
+// calls through the handle it made: an open without intent of a file whose
+// DACL denies everyone is refused, so are a SetAttr and an Unlink of it with
+// no open, while a SetAttr through the backup handle goes; and the share
+// root's maximal access leaves out what only privilege grants.
 func TestPrivilegeOnEveryCallDecidesWherePrivilegeCounts(t *testing.T) {
 	eachCase(t, vfs.PrivilegeOnEveryCall, func(t *testing.T, caps vfs.Caps, set bool) {
 		n := newNames(t)
 		ctx := t.Context()
 		h, _ := n.fs.Create(t, n.fs.Admin, n.fs.Root, "f", kvstore.Regular(0o644))
+		// bob owns f, so the admin has no owner's right to its mode.
+		bob := n.user(t, "bob", "", n.share, entity.AccessReadWrite)
+		_, err := n.fs.Store.Files().SetAttrs(ctx, n.fs.Admin, h, entity.Attrs{}.WithOwner(bob.Principal))
+		n.must(t, err)
 		deny := entity.ACL{Entries: []entity.ACE{{Type: entity.ACEDeny, Mask: entity.EntryRights, Who: entity.Everyone}}}
 		for _, f := range []vfs.Handle{h, n.fs.Root} {
 			_, err := n.fs.Store.Files().SetACL(ctx, n.fs.Admin, f, deny)
@@ -193,12 +199,24 @@ func TestPrivilegeOnEveryCallDecidesWherePrivilegeCounts(t *testing.T) {
 			t.Errorf("under %q: an admin's open without intent: %v, want ErrAccess %v", caps, err, !set)
 		}
 		req.Backup = true
-		if _, err := n.Open(ctx, c, req); err != nil {
-			t.Errorf("under %q: an admin's backup-intent open: %v", caps, err)
+		r, err := n.Open(ctx, c, req)
+		if err != nil {
+			t.Fatalf("under %q: an admin's backup-intent open: %v", caps, err)
 		}
 		_, info, err := n.Root(ctx, c, vfs.ShareRef{Path: "/data"})
 		if err != nil || (info.MaximalAccess&entity.ReadData != 0) != set {
 			t.Errorf("under %q: the root's maximal access %#x, %v; want read data %v", caps, info.MaximalAccess, err, set)
+		}
+		chmod := vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(0o600)}
+		if _, err := n.SetAttr(ctx, c, vfs.Target{H: h}, chmod); set != (err == nil) || !set && !errors.Is(err, vfs.ErrAccess) {
+			t.Errorf("under %q: an admin's SetAttr with no open: %v, want ErrAccess %v", caps, err, !set)
+		}
+		if _, err := n.SetAttr(ctx, c, vfs.Target{H: h, Open: &r.Ref}, chmod); err != nil {
+			t.Errorf("under %q: an admin's SetAttr through its backup-intent handle: %v", caps, err)
+		}
+		n.must(t, errOf(n.Close(ctx, c, r.Ref, vfs.Seqs{})))
+		if _, err := n.Unlink(ctx, c, vfs.Target{H: n.fs.Root}, []byte("f")); set != (err == nil) || !set && !errors.Is(err, vfs.ErrAccess) {
+			t.Errorf("under %q: an admin's Unlink with no open: %v, want ErrAccess %v", caps, err, !set)
 		}
 	})
 }
@@ -209,6 +227,7 @@ func TestPrivilegeOnEveryCallDecidesWherePrivilegeCounts(t *testing.T) {
 func TestOpenFilesKeepNamesDecidesTheNameRules(t *testing.T) {
 	eachCase(t, vfs.OpenFilesKeepNames, func(t *testing.T, caps vfs.Caps, set bool) {
 		n := newNames(t)
+		n.writableRoot(t)
 		d := n.create(t, n.admin, n.fs.Root, "d", vfs.CreateDir)
 		f := n.create(t, n.admin, d.Handle, "f", vfs.CreateRegular)
 		holder := n.smbClient(t, "holder", n.fs.Admin.Principal)
@@ -297,6 +316,7 @@ func TestOpenHandsItsCapsToOpenState(t *testing.T) {
 // rename of the same file, through no open, is refused against it.
 func TestARenameThroughItsOwnExclusiveOpenGoes(t *testing.T) {
 	n := newNames(t)
+	n.writableRoot(t)
 	ctx := t.Context()
 	a := n.create(t, n.admin, n.fs.Root, "a", vfs.CreateRegular)
 	c := n.smbClient(t, "pc", n.fs.Admin.Principal)

@@ -66,7 +66,7 @@ func (fs *Filesystem) Open(ctx context.Context, c vfs.Call, req vfs.OpenRequest)
 	// The whole open, its lookup, create and truncate included, is decided
 	// as the open is: unless privilege counts on every call, privileged only
 	// with backup or restore intent.
-	a.caller = forOpen(a.caller, c, req.Backup)
+	a.caller.Privileged = a.privileged && (privilegeOnEveryCall(c) || req.Backup)
 	switch {
 	case req.DeleteOnClose && req.Access&entity.Delete == 0:
 		// Refused before anything is created, as an open asking delete on
@@ -514,7 +514,26 @@ func (fs *Filesystem) admitRef(ctx context.Context, c vfs.Call, ref vfs.OpenRef,
 		release()
 		return nil, nil, err
 	}
+	fs.through(ctx, a, c, &ref)
 	return a, release, nil
+}
+
+// through gives a caller whose privilege counts only on a backup-intent open
+// that privilege back for a call through ref, when ref names an open granted
+// privileged, or a lock state of one. A ref open state does not find leaves
+// the caller unprivileged; the call's own open-state check refuses it.
+func (fs *Filesystem) through(ctx context.Context, a *admitted, c vfs.Call, ref *vfs.OpenRef) {
+	if ref == nil || !a.privileged || privilegeOnEveryCall(c) || ref.Kind == openstate.RefAnonymous {
+		return
+	}
+	share, id, err := ref.Handle.Parse()
+	if err != nil {
+		return
+	}
+	f := openstate.FileKey{Share: share, Shard: ref.State.Shard, ID: id}
+	if ok, err := fs.opens.Privileged(ctx, a.who(), f, *ref); err == nil && ok {
+		a.caller.Privileged = true
+	}
 }
 
 // closed runs what a close left file f of share, a close of the service's or

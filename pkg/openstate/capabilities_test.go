@@ -124,3 +124,21 @@ func TestOnlyAClientThatRenewsHoldsALease(t *testing.T) {
 		t.Errorf("a client recovering by reconnect, silent as long: %v, want nil", err)
 	}
 }
+
+// Privileged reports the open a reference names as it was granted: true for
+// an open granted privileged, false for one that was not and for an
+// anonymous reference.
+func TestPrivilegedReportsTheOpensGrant(t *testing.T) {
+	f := newFixture(t)
+	a := f.caller(t, smb("pc-a"))
+	file := anyFile()
+	for _, want := range []bool{false, true} {
+		o := f.mustOpen(t, a, file, OpenRequest{Access: rd, Privileged: want})
+		if got, err := f.Opens().Privileged(ctx, a, file, refOf(o)); err != nil || got != want {
+			t.Errorf("Privileged of an open granted privileged %v: %v, %v", want, got, err)
+		}
+	}
+	if got, err := f.Opens().Privileged(ctx, a, file, OpenRef{Kind: RefAnonymous}); err != nil || got {
+		t.Errorf("Privileged of an anonymous reference: %v, %v; want false", got, err)
+	}
+}

@@ -603,8 +603,9 @@ func TestChangeOfNamesWhatOpenStateJudges(t *testing.T) {
 
 // A time set through an open asks write attributes in the open's grant,
 // write data being none of it; a mode set beside it keeps the store's owner
-// rule, so a write-ACL holder sets no setuid on another's file; and a
-// privileged caller sets times through a read-only open on its own rights.
+// rule, so a write-ACL holder sets no setuid on another's file; and an
+// admin under SMB's profile sets times through a read-only open on its own
+// rights only when that open was granted privileged, a backup-intent open.
 func TestATimeThroughAnOpenAsksWriteAttributesInItsGrant(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
@@ -617,9 +618,9 @@ func TestATimeThroughAnOpenAsksWriteAttributesInItsGrant(t *testing.T) {
 	at := time.Unix(1_900_000_000, 0)
 	id, _, err := s.tab.Clients().Connect(ctx, openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolSMB, Name: []byte("pc"), Boot: [8]byte{1}, Recovery: entity.RecoverReconnect}}, nil)
 	s.must(t, err)
-	open := func(h vfs.Handle, p entity.Principal, access entity.AccessMask) *openstate.OpenRef {
+	open := func(h vfs.Handle, p entity.Principal, access entity.AccessMask, privileged ...bool) *openstate.OpenRef {
 		t.Helper()
-		res, err := s.tab.Opens().Open(ctx, openstate.Caller{Client: id, Principal: p, Caps: vfs.SMBCaps}, keyOf(s.record(t, h)), openstate.OpenRequest{Access: access})
+		res, err := s.tab.Opens().Open(ctx, openstate.Caller{Client: id, Principal: p, Caps: vfs.SMBCaps}, keyOf(s.record(t, h)), openstate.OpenRequest{Access: access, Privileged: len(privileged) > 0 && privileged[0]})
 		s.must(t, err)
 		return &openstate.OpenRef{Kind: openstate.RefOpened, State: res.Open.Ref, Open: res.Open.ID, Handle: h}
 	}
@@ -646,8 +647,11 @@ func TestATimeThroughAnOpenAsksWriteAttributesInItsGrant(t *testing.T) {
 	admin := adminCall
 	admin = smbCall(admin)
 	admin.Client = id
-	if _, err := s.SetAttr(ctx, admin, vfs.Target{H: g, Open: open(g, s.fs.Admin.Principal, entity.ReadData)}, vfs.AttrChange{Attrs: entity.Attrs{}.WithModify(at)}); err != nil {
-		t.Errorf("an admin's time set through its read-only open: %v, want it set on the admin's own rights", err)
+	if _, err := s.SetAttr(ctx, admin, vfs.Target{H: g, Open: open(g, s.fs.Admin.Principal, entity.ReadData)}, vfs.AttrChange{Attrs: entity.Attrs{}.WithModify(at)}); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("an admin's time set through its read-only open without backup intent: %v, want ErrAccess", err)
+	}
+	if _, err := s.SetAttr(ctx, admin, vfs.Target{H: g, Open: open(g, s.fs.Admin.Principal, entity.ReadData, true)}, vfs.AttrChange{Attrs: entity.Attrs{}.WithModify(at)}); err != nil {
+		t.Errorf("an admin's time set through its read-only backup-intent open: %v, want it set on the admin's own rights", err)
 	}
 }
 
