@@ -52,6 +52,9 @@ func (fs *Filesystem) admitHandle(ctx context.Context, c vfs.Call, h vfs.Handle)
 // admit runs it.
 func (fs *Filesystem) admitHandleFor(ctx context.Context, c vfs.Call, h vfs.Handle, w how) (*admitted, func(), error) {
 	if pseudofs.IsHandle(h) {
+		if hostRefused(c, w) {
+			return nil, func() {}, vfs.ErrInvalid
+		}
 		return nil, func() {}, nil
 	}
 	share, _, err := h.Parse()
@@ -146,21 +149,21 @@ func (fs *Filesystem) servedShard(ctx context.Context, sh entity.Share) error {
 // are the calls that pass it; another release-only call passes it once it is
 // written.
 //
-// decision: HostCall lowers the minimums only for the calls a host's mount
-// or lock service makes, which w names: Root and ListShares, the lock calls,
+// decision: HostCall lowers the minimums only for the calls a host's mount or
+// lock service makes, which w names: Root and ListShares, the lock calls,
 // GetAttr, Close, and an Open of an existing file by handle that neither
-// creates, overwrites nor deletes on close. Any other call naming a share
-// that sets it is ErrInvalid, a creating or deleting open included, and so is
-// one with a Session, which no mount or lock service has, so an adapter
-// setting it by mistake lowers nothing there. Within those calls the flag is
-// the only guard: one an NFSv4 or SMB adapter set by mistake on a lock call,
-// a GetAttr or such an open would admit it at Claimed. The lowered minimums
-// are worth only what those calls reach: a share's root and flavours, a
-// byte-range lock, a file's attributes, and an open of an existing file with
-// its close. Key the lowering on something an adapter cannot set by mistake
-// if a mis-set flag is ever found.
+// creates, overwrites nor deletes on close. Any other call that sets it,
+// naming a share or a pseudo directory, is ErrInvalid, a creating or deleting
+// open included, and so is one with a Session, which no mount or lock service
+// has, so an adapter setting it by mistake lowers nothing there. Within those
+// calls the flag is the only guard: one an NFSv4 or SMB adapter set by mistake
+// on a lock call, a GetAttr or such an open would admit it at Claimed. The
+// lowered minimums are worth only what those calls reach: a share's root and
+// flavours, a byte-range lock, a file's attributes, and an open of an existing
+// file with its close. Key the lowering on something an adapter cannot set by
+// mistake if a mis-set flag is ever found.
 func (fs *Filesystem) check(ctx context.Context, c vfs.Call, share entity.ShareID, paused bool, w how) (*admitted, error) {
-	if hostCall(c) && (w&(hostMount|hostLock) == 0 || c.Session != (vfs.SessionRef{})) {
+	if hostRefused(c, w) {
 		return nil, vfs.ErrInvalid
 	}
 	if fs.beforeShareRead != nil {
@@ -210,6 +213,13 @@ func (fs *Filesystem) check(ctx context.Context, c vfs.Call, share entity.ShareI
 		err = &vfs.Delay{Cause: vfs.DelayFrozen}
 	}
 	return a, err
+}
+
+// hostRefused reports whether c sets HostCall on a call no host's mount or
+// lock service makes, which w names, or with a Session, which neither has. It
+// holds on a pseudo directory's handle as on a share's.
+func hostRefused(c vfs.Call, w how) bool {
+	return hostCall(c) && (w&(hostMount|hostLock) == 0 || c.Session != (vfs.SessionRef{}))
 }
 
 // count counts a call against share, before admission reads the share's
