@@ -363,9 +363,9 @@ docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains R
 - **Tests:** at the batches the test workload receives and at `Stats`, over `sim.TestClock`
   (kind 1), each test's parent under `prof.Watch`: a table of the state table's rows, each a post or
   an outcome and the state the key reaches, read back from `Stats` and the next batch (catches a
-  merge that makes a second entry, R3, or a redo lost, R4); a `-race` test where many goroutines
-  post the same keys while the workload records each key's concurrent runs, failing on two at once
-  (catches R5's violation, RFC 8 E41); a batch with one item blocked and the rest done, whose keys
+  merge that makes a second entry, R3, or a redo lost, R4); `TestOneRunPerKey`, a `-race` test where many
+  goroutines post the same keys while the workload records each key's concurrent runs, failing on
+  two at once (catches R5's violation, RFC 8 E41; epic 14 relies on it and does not repeat it); a batch with one item blocked and the rest done, whose keys
   are posted again and dispatched while it blocks (catches done applied at the run's return, R10);
   a batch of 3 items counted in `Runs` as 1 and in `Running` as 3 (catches the two counts merged,
   R38); a post with a future `NotBefore`, dispatched only once the clock passes it (R8); `Post` from
@@ -429,10 +429,12 @@ docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains R
   - A paused tenant's entries stay through any number of ticks, none dispatched, its keys in
     backoff keep their delays, and dispatch resumes with every one when the pause lifts.
 - **Tests:** at the batches and `Stats`, on `sim.TestClock`, advancing it to each expected retry
-  and to one tick before it: the delays of ten consecutive failures against D3's formula (catches a
-  delay that does not double, is not capped, or ignores the key, R14); the delay at the 10⁵-th
-  failure, at most `BackoffMax` and positive (catches an overflowing doubling, R16); a post during
-  backoff, the key not dispatched before its time (catches a post that resets the backoff, R6); a
+  and to one tick before it: `TestBackoffDoublesToItsCap`, the delays of ten consecutive failures
+  against D3's formula (catches a delay that does not double, is not capped, or ignores the key,
+  R14); the delay at the 10⁵-th
+  failure, at most `BackoffMax` and positive (catches an overflowing doubling, R16); `TestPostNeverShortensBackoff`, a post
+  during backoff, the key not dispatched before its time (catches a post that resets the backoff,
+  R6; with the test above, the backoff epic 14 relies on); a
   lowered and a raised cap (R15); a batch of mixed outcomes and one item left without `done` (R11,
   R13); a `Deadline` of 10 min with every run failing, the `Expired` item seen once and counted
   (R17); a `Throttled` key backing off exactly as a `Retry` one (R18); a paused tenant with 100
@@ -483,13 +485,17 @@ docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains R
     continuous short runs with a backlog always due for 10 minutes, `Live` true (catches a missing
     `Turn`, R22); every slot held by runs that are not overdue with entries due, `Live` true past
     60 s (catches an `Idle` rule that is too strict, R23);
-  - the row's three legs: two tenants with work, every slot of one held by runs ignoring their ctx,
-    `Stalled` for that source and tenant only within twice `RunTimeout`, `OverdueRuns` risen, the
-    other tenant's items still dispatched; every slot of the source overdue, `Live` false past 60 s;
-    the clock wrapper losing the `After` of the dispatcher's wait for a due entry with a slot free,
-    `Live` false past 60 s (catches a heartbeat that reports idle with work due, or that dispatches
-    it, D6) (R24); and one tenant's runs all overdue while the source has free slots and no other
-    work, `Live` true past 60 s (catches D14's reading reversed).
+  - §15.2's "§6.1.1 a stuck run" over one instance, one named test per leg, which epic 14 cites
+    rather than repeats over the engine's instances (R24):
+
+    | Leg | Test | Asserts | Catches |
+    | --- | --- | --- | --- |
+    | a stuck tenant | `TestStuckRunStallsItsTenant` | two tenants with work, every slot of one held by runs ignoring their ctx: `Stalled` for that source and tenant only within twice `RunTimeout`, `OverdueRuns` risen, the other tenant's items still dispatched | a stall reported late, for the wrong tenant, or a stuck tenant holding the other's slots |
+    | every slot overdue | `TestEverySlotOverdueFailsLiveness` | every slot of the source held by overdue runs: `Live` false past 60 s | an `Idle` reported while every slot is overdue |
+    | a lost wakeup | `TestLostWakeupFailsLiveness` | the clock wrapper loses the `After` of the dispatcher's wait for a due entry with a slot free: nothing dispatched, `Live` false past 60 s | a heartbeat that reports idle with work due, or that dispatches it (D6) |
+
+  - one tenant's runs all overdue while the source has free slots and no other work, `Live` true
+    past 60 s (catches D14's reading reversed).
 
   The wrapper is kind 3, around the real test clock.
 - **Rules:** rule 9: D6's and D14's `decision:` markers; rule 11: `OverdueRuns` and `Stalled` are
@@ -607,7 +613,9 @@ A suggestion only: one pull request per subtask works as well.
   262,144 entries per instance. `engine_lock_wait_seconds{area="work queue"}` has no scheduler
   figure: epic 14 times its `Post` calls, or asks for a `Stats` field in its own pull request. A lost
   wakeup over the engine's instances (epic 12's proposed `DropNextWakeup`) needs no scheduler hook:
-  the engine fixture's clock wrapped as T13.4's is loses the dispatcher's wait.
+  the engine fixture's clock wrapped as T13.4's is loses the dispatcher's wait. Epic 14 (#5992)
+  takes the lost-wakeup leg as T13.4's `TestLostWakeupFailsLiveness` over one instance, and one run
+  per key and the backoff as T13.1's and T13.3's named tests.
 - **Estimate.** 20.5 man-days in 5 subtasks against the plan's 20 in 7: the plan's bullets merge
   where they share state (the overdue run feeds both the stall and the idle rule; the reservation
   is recomputed by cancelling), and the liveness tests grew by the busy-but-healthy cases. T13.2's
