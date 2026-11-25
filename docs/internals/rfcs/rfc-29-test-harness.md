@@ -1812,13 +1812,17 @@ One workflow, `tests.yml`, runs every registered suite:
   artifact is `dt-run-SUITE-ATTEMPT`, and `gate` needs every fixed job, so its report has theirs
   too. On a push to develop,
   `{base}` is the commit before the push, so the commit checks still cover commits pushed straight
-  to develop. The new-package check, which runs on pull requests only today, runs on pushes too,
+  to develop. The merge queue squashes a pull request under its title, so `pr-title.yml` runs
+  `commit-type-matches-diff.sh` with the title (`PR_TITLE`) against the branch's whole diff, on
+  every pull request and again on each edit, which starts no run of `tests.yml`: a `docs:` title
+  over a diff with code fails on the pull request rather than in the queue, where the squashed
+  commit still meets the same check. The new-package check, which runs on pull requests only today, runs on pushes too,
   by intent: the commit before a push is as good a base for its merge base. Where there is no
   `{base}` (the schedule, `workflow_dispatch`, a push without a previous commit), the commands that
   use it are skipped, as `lint.yml` skips the commit checks today, and say so in the log. A
   skipped command neither fails the cell nor leaves it not run: there is no change to check. A
   cell whose every command is skipped this way passes.
-- **Docs-only PRs:** given `--base` (the PR's base), `dt plan` compares the branch with it, and when every changed path is documentation (`docs/**`, `*.md`, images, `LICENSE`, `.gitignore`, the paths the workflows ignore today) it returns no cells, and `gate` passes.
+- **Docs-only PRs:** given `--base` (the PR's base), `dt plan` compares the branch with it, and when every changed path is documentation (`docs/**`, `*.md`, images, `LICENSE`, `.gitignore`, the paths the workflows ignore today) it returns no cells, and `gate` passes. In the merge queue, `--docs-only-base` (the group's base) applies that rule alone: a group whose changes, every pull request ahead of it included, are all documentation returns no cells, and any other returns every cell of the tier, with no `paths` narrowing, as the queue tests everything.
 
 **Merging.**
 - develop requires `gate`, the Tests workflow's job, beside the lint and security checks (`Go Checks`, `Repo Checks`,

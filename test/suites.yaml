@@ -52,7 +52,9 @@ suites:
       - test/nfs-mount/nfstest/parse-results_test.sh   # the grader the knfsd baseline keeps
       - test/new-package-tests.sh {base}       # a new package carries a test of its own
       # A docs: commit changes only documentation, and no commit credits an AI tool. Both run
-      # on pushes too, since planning commits reach develop without a pull request.
+      # on pushes too, since planning commits reach develop without a pull request. The PR title
+      # workflow runs the first on a pull request's title, which the merge queue squashes under.
+      - test/commit-type-matches-diff_test.sh
       - test/commit-type-matches-diff.sh {base}
       - test/no-ai-attribution.sh {base}
       - test/go-cache-push-only.sh             # only a push run saves to the Actions cache
