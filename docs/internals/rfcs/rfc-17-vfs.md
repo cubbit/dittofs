@@ -678,7 +678,9 @@ holds.
 **The service acts on what the caller states, never on its protocol.** A rule
 that differs between clients reads a capability the request states, a field of
 `Call`, of `OpenRequest` or of `ClientInfo` that the adapter sets from what its
-protocol does: never `Call.Protocol` and never a client record's kind. The zero
+protocol does. The filesystem **MUST NOT** read `Call.Protocol` or a client
+record's kind in any rule; an adapter **MUST** set a capability from what its
+protocol does, never from a field of the request. The zero
 value of every capability is the plain behaviour, so `Call{}` is the normal
 call and each capability changes only the rule it names. Most are fields the
 requests already carry; six exist only as capabilities. SMB sets five, NLM sets
@@ -1652,6 +1654,17 @@ the handle or open it names, in this order:
    `ErrInvalid`, so the flag lowers nothing beyond those. A call naming no
    share, NSM's `HostRestarted` among them, meets no minimum anyway (§3.0). Every other call, a later
    call with the handle `MNT` returned among them, meets both;
+
+   > decision: the flag, not the method, keeps an NFSv4 or SMB `Lock`,
+   > `TestLock`, `Unlock`, `CancelLock`, `Open` or `Close` at the share's full
+   > minimums, since those methods are NLM's too. Admission therefore fails
+   > open if an adapter sets `HostCall` where its protocol is not NLM, NSM or
+   > MOUNT: on a Kerberos-only share it would admit that call at `Claimed`.
+   > [RFC 21 §13](rfc-21-nfs.md#13.%20Conformance)'s row refusing an NFSv4
+   > `LOCK` and `OPEN` over `AUTH_SYS` with `NFS4ERR_WRONGSEC` there catches
+   > it for NFSv4. Key the lowering
+   > on something an adapter cannot set by mistake if a mis-set flag is ever
+   > found that those rows missed.
 3. its client rules, against the call's address and the netgroups it is in —
    `ErrAccess`, or a narrowing to read-only — and the policy's `ReadOnly` flag,
    which narrows every caller to read-only;
@@ -2077,8 +2090,9 @@ unlink, taking the parent's and the file's steps afresh in file-ID order, and,
 when the parent's primary is another node, as RFC 15 §4.2's coordinator
 (§4.8). Holding the file's step while it took the parent's would deadlock with
 an unlink of another of the file's names, which takes them in the other order.
-It runs as the principal that marked the file and through the marking open's
-`OpenGrant`, so that open's grant — a backup or restore intent's privilege
+It runs as the principal that marked the file, with `OpenFilesKeepNames` set,
+since only an SMB open can mark a file and a delete on close is Windows'
+delete (§3.0), and through the marking open's `OpenGrant`, so that open's grant — a backup or restore intent's privilege
 included — authorises it ([§4.6](#4.6%20One%20chokepoint),
 [RFC 7 §8.2](rfc-7-namespace-metadata.md#8.2%20A%20delete%20on%20close%20is%20an%20ordinary%20unlink%2C%20later)),
 and returns the parent's `WCC`. One still refused is logged at `Warn`, counted

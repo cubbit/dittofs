@@ -2456,8 +2456,9 @@ principal that matches no caller, `acl` with `dacl` or `sacl` — is
 
 Open state takes only neutral requests and returns neutral results and errors
 ([RFC 14 §1.1](rfc-14-open-state.md#1.1%20Non-goals)). Every NFS → neutral
-mapping it needs is here. It sets none of the
-capabilities [RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types) lists for SMB, so every NFS and NLM call
+mapping it needs is here. It sets none of `PrivilegeOnlyForBackup`,
+`OpenFilesKeepNames`, `WantOpenID` and `GrantBelongsToOpen`
+([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), so every NFS and NLM call
 takes the service's plain rules, and the `Call`'s `Protocol` is a label no rule
 reads; NLM, NSM, `MNT` and `EXPORT` set `Call.HostCall` (§6.1, §6.3), and an NLM
 host's `Connect` sets `ClientInfo.ClientIsMachine`.
@@ -2909,6 +2910,7 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | §11.1 refused credentials *(1 node)* | Send a truncated `AUTH_SYS` credential, one with 17 gids, one with a 256-byte machine name, and an `AUTH_DH` and an unknown flavour, to a share with an everyone grant: each rejected `AUTH_BADCRED`, nothing created. | garbage credentials served as anonymous |
 | §6.3 `MNT` on a Kerberos-only share *(1 node)* | `MNT` over `AUTH_UNIX` of a share whose `MinProof` is `Ticket`: the flavours and the root handle returned; a `GETATTR` with that handle over `AUTH_SYS`: refused `AUTH_TOOWEAK`; over `sec=krb5`: answered. | NFSv3 Kerberos mounts refused; or a handle that skips the minimum |
 | §6.1 NLM on a Kerberos-only share *(1 node)* | On a share whose `MinProof` is `Ticket`, an NLM `LOCK` over `AUTH_SYS` as a uid that can read the file: granted; as a uid that can neither read nor own a 0600 file: refused. A store error resolving the caller: the lock refused, never granted as anonymous. | every NFSv3 lock on a Kerberos share failing; locks on files the caller cannot read |
+| §6.1 `HostCall` only from NLM, NSM and MOUNT *(1 node)* | On a share whose `MinProof` is `Ticket`, an NFSv4 `OPEN` over `AUTH_SYS`: refused `NFS4ERR_WRONGSEC`; an `OPEN` over `sec=krb5`, then a `LOCK` on its stateid over `AUTH_SYS`: refused `NFS4ERR_WRONGSEC`. | an NFSv4 adapter setting `HostCall`, which admits its `OPEN` and `LOCK` at `Claimed` ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
 | §10 context table *(1 node)* | `RPCSEC_GSS_DESTROY` with a corrupted header MIC: refused, the context still usable. A call above the window whose verifier fails: `RPCSEC_GSS_CREDPROBLEM`, and the window unchanged, so a call at the old window's top still runs. A call at sequence `MAXSEQ`: `RPCSEC_GSS_CTXPROBLEM`, and the context gone. With the table's share sized to four contexts, one principal opening a fifth evicts its own oldest, never another principal's. A reconnect on a new TCP connection keeps its context. | an unauthenticated teardown; one principal evicting everyone |
 | §8.1 ctime | An SMB client sets −1 on all four times of an open and writes through it; assert an NFSv3 `GETATTR` shows `ctime` moved. | SMB suspension freezing the NFS ctime |
 | §9.1 stability | Write `DATA_SYNC`, crash the primary, read back. Assert the data and its `size` and `mtime`. Append 10^4 `FILE_SYNC` writes to a new file with the metadata store stalled; assert every reply arrives. Overwrite committed bytes `FILE_SYNC` with the store stalled; assert no success reply until the store commits — `NFS4ERR_DELAY` within the deadline — and that the reply follows that write's existence commit. Same with unstable overwrites and `COMMIT`. | an append waiting on a metadata transaction, or an overwrite answered stable before its existence commit |
