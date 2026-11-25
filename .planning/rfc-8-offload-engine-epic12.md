@@ -262,8 +262,8 @@ catalogue makes it pass. The behaviour each row checks is that epic's to build.
   with the last of them. A `decision:` marker at the table says a Group A row joins it or the §3.2
   row skips it. Prior art: `overBoth` in `internal/vfs/integration`, which reruns each row over two
   compositions.
-- **D5, a row that already has a first-part test gets its own test, except the four the plan
-  extends.** "§2.5 journal gone", "§2.5 attach after a device loss", "§2.5 unsuitable journal at
+- **D5, a row that already has a first-part test gets its own test, except four
+  that extend one.** "§2.5 journal gone", "§2.5 attach after a device loss", "§2.5 unsuitable journal at
   start", "§5.1 overwrite waits for existence", "§8.1 removal wedge" and "§1.1 no cross-share
   slowdown" have green first-part tests holding their other halves, so each red half is a new test
   beside it (`TestRFC8A_JournalGoneAcknowledged`, …): a red leg inside the green test would hide it.
