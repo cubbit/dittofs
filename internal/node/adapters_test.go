@@ -1018,8 +1018,6 @@ func TestTheStatusCarriesEachAdaptersState(t *testing.T) {
 		return a
 	})
 	ch := watchStatus(h)
-	// Port 0: the system picks SMB's port as it binds, so no other socket
-	// can take it between a free-port probe and Start and refuse SMB.
 	h.Node().SetSMB(true, smbAt(0))
 	started(t, h)
 	t.Cleanup(func() { close(release) }) // before the node's Stop, which runs after it
@@ -1066,7 +1064,7 @@ func TestTheStatusCarriesTheGenerationEachAdapterRuns(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
 	ch := watchStatus(h)
 	configure(t, h, storeA) // a settings generation above zero
-	h.Node().SetSMB(true, smbAt(freePort(t)))
+	h.Node().SetSMB(true, smbAt(0))
 	started(t, h)
 	servingAt := func(gen uint64) func(statusTurn) bool {
 		return func(tr statusTurn) bool {

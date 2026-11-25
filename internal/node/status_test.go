@@ -85,12 +85,13 @@ func pendingTurn(t *testing.T, h *nodetest.Harness, ch <-chan statusTurn) status
 // released first, whose status satisfies ok.
 func turnAt(t *testing.T, h *nodetest.Harness, ch <-chan statusTurn, what string, ok func(statusTurn) bool) statusTurn {
 	t.Helper()
+	var tr statusTurn
 	for range 10 {
-		if tr := pendingTurn(t, h, ch); ok(tr) {
+		if tr = pendingTurn(t, h, ch); ok(tr) {
 			return tr
 		}
 	}
-	t.Fatalf("no status turn %s within ten turns", what)
+	t.Fatalf("no status turn %s within ten turns; the last: %+v", what, tr.s)
 	return statusTurn{}
 }
 
