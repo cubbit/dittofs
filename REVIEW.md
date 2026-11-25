@@ -97,7 +97,9 @@ that every reference to the old path follows it.
 - Cap: two reviewed heads per reviewer. After that, the author and that
   reviewer settle what is left in a quick live review, as
   `pr-commenting.instructions.md` proposes. What the live review does not
-  settle goes to standup.
+  settle goes to standup. The same reviewer reviews the head that carries
+  what they settled, as a delta limited to the settled points, and approves
+  it.
 
 ## 4. Reviews never add scope to an open PR
 
