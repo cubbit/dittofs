@@ -8,8 +8,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
 
-// Access is what a mount of a share gets: refused, read or read-write,
-// spelled as the grant giving it is.
+// Access is a grant's access, and what a mount of a share gets: refused,
+// read or read-write.
 type Access string
 
 const (
@@ -27,8 +27,9 @@ type Expect struct {
 // Case is one step of an admission row of RFC 23 §12: Arrange creates its
 // share and accounts on the server and returns the share and each mount's
 // expectation. The table names no protocol or flavour: each protocol's test
-// runs every case once per flavour it presents, mounting as Who and asserting
-// Want.
+// runs every case once per flavour it presents, presenting Who as that
+// flavour spells it (over AUTH_SYS, its UID, which the process reading the
+// mount runs as) and asserting Want.
 type Case struct {
 	Row     string // the row, as RFC 23 §12 names it
 	Name    string // the step
@@ -45,17 +46,17 @@ func Admission() []Case {
 		}},
 		{"§3.2 create admits nobody", "alice granted read-write is admitted", func(t *testing.T) (Share, []Expect) {
 			sh, alice := NewShare(t, "created"), NewAccount(t, "alice", "", 0)
-			Grant(t, sh, alice.ID, string(ReadWrite))
+			Grant(t, sh, alice.ID, ReadWrite)
 			return sh, []Expect{{alice, ReadWrite}}
 		}},
 		{"§3.5 grants", "alice granted none is refused though Finance holds read", func(t *testing.T) (Share, []Expect) {
 			sh, alice := financeShare(t)
-			Grant(t, sh, alice.ID, string(Refused))
+			Grant(t, sh, alice.ID, Refused)
 			return sh, []Expect{{alice, Refused}}
 		}},
 		{"§3.5 grants", "alice's none deleted, she is admitted read through Finance", func(t *testing.T) (Share, []Expect) {
 			sh, alice := financeShare(t)
-			Grant(t, sh, alice.ID, string(Refused))
+			Grant(t, sh, alice.ID, Refused)
 			Ungrant(t, sh, alice.ID)
 			return sh, []Expect{{alice, Read}}
 		}},
@@ -76,6 +77,6 @@ func financeShare(t *testing.T) (Share, Account) {
 	t.Helper()
 	sh, alice, finance := NewShare(t, "finance"), NewAccount(t, "alice", "", 0), Group(t, "finance")
 	Member(t, finance, alice.ID)
-	Grant(t, sh, finance, string(Read))
+	Grant(t, sh, finance, Read)
 	return sh, alice
 }

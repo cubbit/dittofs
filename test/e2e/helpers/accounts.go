@@ -4,9 +4,9 @@ package helpers
 
 import (
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
@@ -28,8 +28,9 @@ func Admin() Account { return Account{Name: "admin", UID: 0} }
 
 // NewAccount creates a user named after prefix, unique on the server, with
 // uid, 0 for one the server allocates, a password set through
-// :set-password, and no grant, and then gives it role, "" for none. The
-// test's end deletes it.
+// :set-password, and no grant, and then gives it role, "" for none. A uid
+// given must be unique in the package, since a deleted user may hold its
+// uid until its deletion's operation ends. The test's end deletes it.
 //
 // decision: the role is patched on after the create, since a create with a
 // role and no uid makes an API-only account, which holds no uid to present;
@@ -37,7 +38,7 @@ func Admin() Account { return Account{Name: "admin", UID: 0} }
 // admission.
 func NewAccount(t *testing.T, prefix string, role apiv1.Role, uid uint32) Account {
 	t.Helper()
-	c := api(t)
+	c := Start(t).API
 	ctx, cancel := call()
 	defer cancel()
 	spec := apiv1.UserSpec{Name: unique(prefix)}
@@ -52,14 +53,15 @@ func NewAccount(t *testing.T, prefix string, role apiv1.Role, uid uint32) Accoun
 		t.Fatalf("creating the user %s answered %+v, want the user with a uid", spec.Name, res)
 	}
 	u := res.Resource
-	t.Cleanup(func() { remove(t, "user "+spec.Name, c.Users().Resource, u.ID, "") })
+	t.Cleanup(func() { remove(t, "user "+spec.Name, Start(t).API.Users().Resource, u.ID, "") })
 	if role != "" {
 		patch := map[string]any{"spec": map[string]any{"role": role}}
-		if res, err := c.Users().Patch(ctx, u.ID, patch, u.ETag); err != nil || res.Resource == nil {
-			t.Fatalf("giving the user %s the role %s: answered %+v, %v", spec.Name, role, res, err)
+		res, err := c.Users().Patch(ctx, u.ID, patch, u.ETag)
+		if err != nil || res.Resource == nil || res.Resource.Spec.UID == nil || *res.Resource.Spec.UID != *u.Spec.UID {
+			t.Fatalf("giving the user %s the role %s: answered %+v, %v; want the user keeping uid %d", spec.Name, role, res, err, *u.Spec.UID)
 		}
 	}
-	a := Account{ID: u.ID, Name: spec.Name, Password: secret(), UID: *u.Spec.UID}
+	a := Account{ID: u.ID, Name: spec.Name, Password: rand.Text(), UID: *u.Spec.UID}
 	if err := c.Users().SetPassword(ctx, u.ID, []byte(a.Password)); err != nil {
 		t.Fatalf("setting the password of the user %s: %v", spec.Name, err)
 	}
@@ -70,7 +72,7 @@ func NewAccount(t *testing.T, prefix string, role apiv1.Role, uid uint32) Accoun
 // returns its ID. The test's end deletes it.
 func Group(t *testing.T, prefix string) string {
 	t.Helper()
-	c := api(t)
+	c := Start(t).API
 	ctx, cancel := call()
 	defer cancel()
 	name := unique(prefix)
@@ -78,7 +80,7 @@ func Group(t *testing.T, prefix string) string {
 	if err != nil {
 		t.Fatalf("creating the group %s: %v", name, err)
 	}
-	t.Cleanup(func() { remove(t, "group "+name, c.Groups(), g.ID, "") })
+	t.Cleanup(func() { remove(t, "group "+name, Start(t).API.Groups(), g.ID, "") })
 	return g.ID
 }
 
@@ -86,7 +88,7 @@ func Group(t *testing.T, prefix string) string {
 // test's end removes it.
 func Member(t *testing.T, group, user string) {
 	t.Helper()
-	c := api(t)
+	c := Start(t).API
 	ctx, cancel := call()
 	defer cancel()
 	m, err := c.Members(group).Put(ctx, user, struct{}{}, "*")
@@ -94,7 +96,7 @@ func Member(t *testing.T, group, user string) {
 		t.Fatalf("adding %s to the group %s: %v", user, group, err)
 	}
 	// A membership has no Get, so its removal is tagged with the put's ETag.
-	t.Cleanup(func() { remove(t, "member "+user+" of "+group, c.Members(group), user, m.ETag) })
+	t.Cleanup(func() { remove(t, "member "+user+" of "+group, Start(t).API.Members(group), user, m.ETag) })
 }
 
 // remove deletes the resource id names, whose tag is etag or, when etag is
@@ -127,11 +129,4 @@ func gone(err error) bool {
 
 // unique is prefix with a random suffix, as names are unique on the server
 // that every test of the package shares.
-func unique(prefix string) string { return prefix + "-" + secret()[:8] }
-
-// secret returns 32 random hex digits.
-func secret() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}
+func unique(prefix string) string { return prefix + "-" + strings.ToLower(rand.Text()[:8]) }

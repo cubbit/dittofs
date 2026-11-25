@@ -4,7 +4,6 @@ package helpers
 
 import (
 	"testing"
-	"time"
 
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
@@ -26,7 +25,7 @@ type Share struct {
 // shows as an admitted mount.
 func NewShare(t *testing.T, prefix string) Share {
 	t.Helper()
-	c := api(t)
+	c := Start(t).API
 	ctx, cancel := call()
 	defer cancel()
 	name := unique(prefix)
@@ -37,40 +36,34 @@ func NewShare(t *testing.T, prefix string) Share {
 	if err != nil {
 		t.Fatalf("creating the share %s: %v", name, err)
 	}
-	t.Cleanup(func() { remove(t, "share "+name, c.Shares(), sh.ID, "") })
-	for {
-		got, err := c.Shares().Get(ctx, sh.ID)
-		if st := got.Status; err == nil && st.Applied != nil && st.Applied.Of > 0 && st.Applied.Nodes == st.Applied.Of && st.Refused == 0 {
-			return Share{ID: sh.ID, Name: name}
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("the share %s was not applied (status %+v, %v): %v", name, got.Status, err, ctx.Err())
-		case <-time.After(20 * time.Millisecond):
-		}
+	t.Cleanup(func() { remove(t, "share "+name, Start(t).API.Shares(), sh.ID, "") })
+	if err := served.WaitApplied(ctx, sh.ID); err != nil {
+		t.Fatalf("waiting for the share %s: %v", name, err)
 	}
+	return Share{ID: sh.ID, Name: name}
 }
 
-// Grant gives the principal whose ID is principal access on share, none,
-// read, read-write or admin, through a put that creates the grant, refused
+// Grant gives the principal whose ID is principal access on share, through a put that creates the grant, refused
 // when the principal already holds one. The test's end deletes it unless
 // Ungrant did.
-func Grant(t *testing.T, share Share, principal, access string) {
+func Grant(t *testing.T, share Share, principal string, access Access) {
 	t.Helper()
-	c := api(t)
+	c := Start(t).API
 	ctx, cancel := call()
 	defer cancel()
-	if _, err := c.Grants(share.ID).Put(ctx, principal, apiv1.GrantSpec{Access: access}, "*"); err != nil {
+	if _, err := c.Grants(share.ID).Put(ctx, principal, apiv1.GrantSpec{Access: string(access)}, "*"); err != nil {
 		t.Fatalf("granting %s %s on the share %s: %v", principal, access, share.Name, err)
 	}
-	t.Cleanup(func() { remove(t, "grant of "+principal+" on "+share.Name, c.Grants(share.ID), principal, "") })
+	t.Cleanup(func() {
+		remove(t, "grant of "+principal+" on "+share.Name, Start(t).API.Grants(share.ID), principal, "")
+	})
 }
 
 // Ungrant deletes the grant the principal whose ID is principal holds on
 // share, failing t when it holds none.
 func Ungrant(t *testing.T, share Share, principal string) {
 	t.Helper()
-	c := api(t)
+	c := Start(t).API
 	ctx, cancel := call()
 	defer cancel()
 	g, err := c.Grants(share.ID).Get(ctx, principal)

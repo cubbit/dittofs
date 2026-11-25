@@ -33,10 +33,10 @@ type Server struct {
 }
 
 // Run is a package's TestMain: it builds dfs into a directory every user can
-// read, starts one server from it serving NFS, runs m's tests, and
+// read, starts one server from it as fixture f asks, runs m's tests, and
 // stops the server. It returns the exit code.
-func Run(m *testing.M) int {
-	code, err := run(m)
+func Run(m *testing.M, f registry.Fixture) int {
+	code, err := run(m, f)
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "e2e:", err)
 		return 1
@@ -44,7 +44,7 @@ func Run(m *testing.M) int {
 	return code
 }
 
-func run(m *testing.M) (int, error) {
+func run(m *testing.M, f registry.Fixture) (int, error) {
 	// decision: the binary and the server's data go under /tmp, which every
 	// user can traverse, rather than under TMPDIR, which a developer shell
 	// may make private: a test acting as another uid must reach both.
@@ -65,9 +65,6 @@ func run(m *testing.M) (int, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	// The fixture serves NFS without mounting it; the tests make their own
-	// mounts, each as the account it is about.
-	f := registry.Fixture{Server: "dfs", Profile: "memory", NFS: registry.NFS{Version: "export"}}
 	if served, err = fixture.Start(ctx, f, bin, out, os.Stderr); err != nil {
 		return 0, fmt.Errorf("starting the server: %w; its log is %s", err, filepath.Join(out, "dfs.log"))
 	}
@@ -79,7 +76,8 @@ func run(m *testing.M) (int, error) {
 	return code, nil
 }
 
-// Start returns the server Run started, failing t when there is none.
+// Start returns the server Run started, as it runs now, failing t when
+// there is none.
 func Start(t *testing.T) Server {
 	t.Helper()
 	if served == nil {
@@ -88,12 +86,6 @@ func Start(t *testing.T) Server {
 	p := served.Placeholders()
 	nfs, _ := strconv.Atoi(p["nfs-port"])
 	return Server{Addr: p["server"], NFSPort: nfs, API: served.Client()}
-}
-
-// api is the administrator's client, failing t when no server runs.
-func api(t *testing.T) *client.Client {
-	t.Helper()
-	return Start(t).API
 }
 
 // call is a context for one API call, which a test's cleanup makes too,

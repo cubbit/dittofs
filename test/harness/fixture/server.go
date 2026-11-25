@@ -390,20 +390,20 @@ func (s *Server) addShare(ctx context.Context, name string) error {
 			return fmt.Errorf("granting %s %s on the share %s: %w", user, access, name, err)
 		}
 	}
-	return s.waitApplied(ctx, name)
+	return s.WaitApplied(ctx, sh.ID)
 }
 
-// waitApplied polls the share name until every node reporting it applied it
-// and none refused it, or ctx ends.
-func (s *Server) waitApplied(ctx context.Context, name string) error {
+// WaitApplied polls the share whose ID is id until every node reporting it
+// applied it and none refused it, or ctx ends.
+func (s *Server) WaitApplied(ctx context.Context, id string) error {
 	for {
-		sh, err := s.client.Shares().Get(ctx, s.shareIDs[name])
+		sh, err := s.client.Shares().Get(ctx, id)
 		if err == nil && applied(sh.Status) {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("the share %s was not applied (status %+v, %v): %w", name, sh.Status, err, ctx.Err())
+			return fmt.Errorf("the share %s was not applied (status %+v, %v): %w", id, sh.Status, err, ctx.Err())
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
