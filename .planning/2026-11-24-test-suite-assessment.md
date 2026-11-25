@@ -385,7 +385,7 @@ adapters). A race found only at night lands after the merge. Coverage stays too:
 `-race` it costs nothing we can measure, and the atomic mode CI uses is unmeasured.
 
 **Not in Track A:** the Go build cache. The unit job already restores it
-(`.github/actions/go-cache`). Its key changes only with `go.sum`, so it can go stale (see
+(`.github/actions/go-cache`). Its key is built from `go.sum`, not from the code, so it can go stale (see
 the deferral ledger).
 
 ### 4.2 Track B: one trial dedup PR in `format`
@@ -489,5 +489,5 @@ surviving mutants on the changed lines. Run it by hand when you review.
 | A CI job that runs `gremlins --diff` on every PR | The manual use must prove useful first; `gremlins` runs only the package's own tests, so it is noisy where a consumer package holds the test | unowned | Reviewers use it by hand on 3+ PRs and ask for it |
 | A scheduled kill-matrix suite (`dt`, `tier: manual`) | The driver needs its own tests, and hang attribution in concurrent packages | unowned | Track B extends beyond `format` |
 | Test selection from the dependency graph, beyond `--changed` | Sharding may be enough | unowned | The unit job is still over 10 min after A1 and A2 |
-| The Go build-cache key (changes only with `go.sum`) | Outside the test suite itself | unowned | A cache-hit measurement shows frequent cold builds |
+| The Go build-cache key (keyed on `go.sum`, not on the code) | Outside the test suite itself | unowned | A cache-hit measurement shows frequent cold builds |
 | Removing the 291 `time.Sleep` calls in tests | Done as tests are touched, per CLAUDE.md | unowned | A flake traced to a sleep |
