@@ -12,10 +12,11 @@ for the type `Share` carries and the declarations recorded here, and
 [RFC 2](../docs/internals/rfcs/rfc-2-carver.md) §1.2, §4.2 and §5.1 (`Cut`, the block name, the fold), for the carver's; [RFC 25](../docs/internals/rfcs/rfc-25-observability.md)
 §3.5, the watchdog loop the scheduler turns.
 **Track:** the team.
-**Epic 11 estimate: 5 subtasks, 9 man-days.**
+**Epic 11 estimate: 5 subtasks, 9.5 man-days.**
 **Depends on:** sync points **S1a to S1d**, the RFC 2 to RFC 5 plans' S1: their epic 1 surfaces
-agreed, and the RFC 3 plan's epic 1 merged on `feat/storage-v2`, since T11.3 types `Share.Store`
-with the `pkg/syncer` root's `StoreID`; #5775, which makes the engine's import walk
+agreed, the RFC 3 plan's epic 1 merged on `feat/storage-v2`, since T11.3 types `Share.Store`
+with the `pkg/syncer` root's `StoreID`, and the RFC 4 plan's `pkg/remote` root split from its keys,
+metrics and alerts, since that root comes with it; #5775, which makes the engine's import walk
 transitive and moves `pkg/engine/enginewire` to `internal/node/content` (T11.3 edits whichever of the
 two holds the share build when it starts).
 **Blocks:** every later epic through S1: epic 12, whose fixture builds `Share` and `Settings` with
@@ -156,15 +157,17 @@ can cite them. Behaviour behind the stubs is listed in §1.2 with its epic.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R17 | No `Deps` member or declared method is added before the epic that first calls it, so the architecture test that fails on a declared method the engine never calls stays green | test row | RFC 8 §15.3 "§2.1 declared interfaces"; §2.1 | T11.5 |
-| R18 | The interfaces the engine will declare for the carver and its assembler, the syncer and its flow, `Refs` and the journal's offload calls each hold exactly the methods the engine calls, over the components' contract types, as the S1 review agreed them; where that is more than RFC 8 §2.1's row names, as for the carver, the epic adding the declaration amends the row | MUST | RFC 8 §2.1, §2.6; RFC 0 §1.2 | T11.5 |
+| R18 | withdrawn: that each declaration matches what the S1 review agreed is a review gate no test can check, T11.5's acceptance; R17's architecture test checks the half a test can | — | RFC 8 §2.1, §2.6; RFC 0 §1.2 | — |
 
 ## 4. Decisions this epic takes
 
 - **D1, the scheduler declares its watchdog loop and clock.** RFC 0 §1.2 counts `pkg/health`, which
-  holds contract and implementation together, as an implementation, and the engine's walk is
-  transitive, so a `pkg/workqueue` importing `*health.Loop` would carry it into the engine and into
-  GC. `pkg/workqueue` declares `Loop` (`Turn`, `Idle`) and `Clock` (`Now`, `Elapsed`, `After`, RFC 8
+  holds contract and implementation together, as an implementation, and its walk is transitive, so
+  a `pkg/workqueue` importing `*health.Loop` would carry it into GC and, once #5775 cuts the engine's
+  own `pkg/health` import, back into the engine. `pkg/workqueue` declares `Loop` (`Turn`, `Idle`) and `Clock` (`Now`, `Elapsed`, `After`, RFC 8
   §2.1's signatures) itself; RFC 25's `*health.Loop` and the node's clock satisfy them unchanged.
+  `Loop` has no `Close`: whoever took the loop from the watchdog closes it after `Stop`, as RFC 25
+  §3.5 asks, the node for GC's instance and the engine for each journal's (epic 14).
   RFC 8 §6.1.1's sketch read `*health.Loop`, and **this pull request amends it** to the declared
   `Loop`; RFC 23 §2.1's `workqueue.New(cfg.Clock, n.wd.Loop("gc.sched"))` still compiles against it.
   Changing it after S1 would rewrite every instance's construction, the engine's and GC's. No
@@ -174,7 +177,7 @@ can cite them. Behaviour behind the stubs is listed in §1.2 with its epic.
 - **D2, `TenantID` is `[16]byte`.** RFC 8 §6.1.1 names the type and not its shape. A namespace
   (`entity.NamespaceID`, 16 bytes) fits as it is, and the engine puts a shard (`entity.ShardID`, a
   `uint32`) big-endian in the last four bytes, through an unexported conversion in `queue.go`
-  (epic 14). The options were a generic `Scheduler[T comparable]`, which changes every signature
+  (epic 14) that never leaves the engine: `Stats` reports tenants as shards (D6). The options were a generic `Scheduler[T comparable]`, which changes every signature
   §6.1.1 writes and GC's, and a `string`, which allocates per key on `Post`'s path. Changing it after
   S1 would touch every source and every `Stats` reader. No marker. Prior art: client-go's workqueue
   went from `interface{}` keys to a type parameter in 0.31 (from memory); `[16]byte` avoids both the
@@ -216,8 +219,9 @@ can cite them. Behaviour behind the stubs is listed in §1.2 with its epic.
 - **D6, the `Stats` fields carry each series as the first part's do.** A counter is an `int64`, a
   labelled counter a `map[string]int64` keyed by the label's value, a histogram a `Series`, a gauge
   its plain value; per-share gauges go in `ShareStats` and their sums in `Stats`; the queue and work
-  series are `JournalStats.Work`, `map[string]map[workqueue.TenantID]workqueue.Stats` keyed by
-  source (`offload`, `removal`), since the library owns them (RFC 8 §14). No marker. Prior art: the
+  series are `JournalStats.Work`, `map[string]map[entity.ShardID]workqueue.Stats` keyed by source
+  (`offload`, `removal`), the engine converting each tenant back to its shard, so no reader decodes
+  a `TenantID` (RFC 8 §14). No marker. Prior art: the
   first part's `Stats`, which the node adapts (its D6).
 - **D7, the engine's flow is RFC 3's `syncer.Flow`.** Go has no covariant return types, so an
   engine-declared `Syncer` whose `OpenFlow` returned an engine-declared `Flow` would not be satisfied
@@ -231,7 +235,10 @@ can cite them. Behaviour behind the stubs is listed in §1.2 with its epic.
 - **D8, a work-queue key's `ID` is 16 bytes.** RFC 8 §6.1.1 wrote `ID uint64` for "a file", but
   a file is RFC 16's `FileID`, 16 random bytes, which a `uint64` cannot hold without a hash that
   would merge two files' entries. **This pull request amends §6.1.1** to `ID [16]byte`, the file ID
-  as it is. Changing it after S1 would touch every source's posts. Prior art: none found.
+  as it is. GC, the second consumer, keys work per (namespace, source, prefix) (RFC 9 §7.1), so its
+  `ID` names a prefix in at most 16 bytes, which the amended comment states; a wider ID would cost
+  every entry of every instance memory for a need no RFC states. Changing it after S1 would touch
+  every source's posts. Prior art: none found.
 
 ## 5. Target tree
 
@@ -294,15 +301,18 @@ internal/node/
   production files import the standard library only; its test files may also import `pkg/health`
   and `pkg/sim`, for the assertions below, since RFC 0 §1.2's rule binds production code only.
 - **Acceptance criteria:**
-  - `go doc ./pkg/workqueue` lists exactly R2's symbols plus `TenantID`, `SourceID`, `Clock`, `Loop`
-    and `Scheduler`.
+  - The package exports exactly R2's symbols plus `TenantID`, `SourceID`, `Clock`, `Loop` and
+    `Scheduler`, with R4's `TenantID` a 16-byte array.
   - `*health.Loop` and `sim`'s test clock satisfy `Loop` and `Clock` (a compile-time assertion in a
     test file, which imports them as tests may).
   - The walk passes on the package.
 - **Tests:** the import walk, which fails when a planted `pkg/health` or `pkg/metadata/entity`
   import is added to `workqueue.go` (catches R1); the compile-time assertions `var _ workqueue.Loop
   = (*health.Loop)(nil)` and `var _ workqueue.Clock = (*sim.TestClock)(nil)`, which fail to build if a method's
-  signature drifts from RFC 25's or RFC 8 §2.1's (catches R3). No test double.
+  signature drifts from RFC 25's or RFC 8 §2.1's (catches R3); an export pin that reads the
+  package's scope with `go/types` and compares it, name and kind, with the frozen list, and asserts
+  `TenantID`'s underlying type is `[16]byte` and `Key.ID`'s too (catches a symbol added, dropped or
+  reshaped, R2, R4). No test double.
 - **Rules:** rule 7: the walk is the package's own, refusing every component and every v1 path by
   allowing only the standard library.
 
@@ -339,7 +349,7 @@ internal/node/
 
 **Subtask T11.3 estimate: 2 man-days.**
 
-- **Track:** the team. **Depends on:** S1b.
+- **Track:** the team. **Depends on:** S1b, S1c.
 - **Covers:** R8, R9, R10, R11, R12, R13.
 - **Deliverables:** in `types.go`:
   ```go
@@ -357,8 +367,11 @@ internal/node/
   already calls it, and `Start` now calls it over every share before step 1 and is refused whole,
   attaching nothing, since RFC 8 §12.1 makes `Start` all or nothing; a `Bind` changing a served share's `Settings` passes the
   same check before `change` applies anything, and `change` keeps the new settings on the binding.
-  The engine's `imports_test.go` allows the `pkg/syncer` root to `"*"` and nothing under it (D5,
-  rule 7). Every `engine.Share` literal the repository builds gains `Settings` from one
+  The engine's `imports_test.go` allows the `pkg/syncer` root to `"*"` and nothing under it, and
+  the `pkg/remote` root it imports (RFC 3 §1.3 uses RFC 4's contract as it is), since the walk is
+  transitive once #5775 lands; while `pkg/remote` still holds its keys, metrics and alerts beside
+  its contract it counts as an implementation, so T11.3 waits for the RFC 4 plan to split them out
+  (D5, rule 7). Every `engine.Share` literal the repository builds gains `Settings` from one
   `enginetest.ShareSettings` value (RFC 13's proposed defaults: 5 s, 8 blocks, 64 MiB, 256 MiB), and
   the share build in the node's content wiring (`enginewire.Binding`, or its successor in
   `internal/node/content` after #5775) passes the same defaults until the integration epic loads
@@ -368,7 +381,8 @@ internal/node/
   - A `Start` or `Bind` with any `ShareSettings` field zero or negative is refused with the share and
     the key named; a refused `Bind` of a served share leaves its earlier settings in force.
   - A share with a zero `Store` binds, as the first part's rows need.
-  - The engine's walk refuses a planted import of `pkg/syncer/pool`.
+  - The engine's walk refuses a planted import of `pkg/syncer/pool`, and passes with `Share.Store`
+    in place, `pkg/remote` reached through the `pkg/syncer` root.
   - No exported method sets `Store` or `Settings` on a binding: `Bind` is the one way (the first
     part's architecture test, which seeds a setter, stays green).
 - **Tests:** at `Bind` and `Start`, which the node calls: a table of invalid settings, each refused
@@ -410,18 +424,23 @@ internal/node/
     (the reseed's mismatches, eviction's freed bytes, the drain figures) and must compile at S2.
   - No field of `Share`, `Stats`, `ShareStats` or `JournalStats` has an interface (other than
     `error`), func or channel type (R13).
-- **Tests:** at `Stats()`, which the node's adapter reads: a reflection walk over the four types
-  that fails on a field of interface (but `error`), func or channel kind (catches a component
+- **Tests:** at `Stats()`, which the node's adapter reads: a reflection walk over the four types,
+  recursive through struct, pointer, map, slice and array elements, that fails on an interface
+  (but `error`), func or channel kind, and on a named type of a component's or library's package
+  other than an allowlisted value type (`journal.Stats`, `workqueue.Stats`, `workqueue.Limits`,
+  `entity`'s), with a planted `*workqueue.Scheduler` field as the case it must refuse (catches a component
   returned to the caller, R13). The copy test of a map lands with the epic that first fills it, since
-  an always-empty map cannot be shared wrongly. No test of `WaitOffloaded`'s stub answer. No test double.
+  an always-empty map cannot be shared wrongly. An external test (`package engine_test`) names every
+  new field and calls `WaitOffloaded`, so a field renamed or dropped, or the method's signature
+  changed, fails to compile (R14 to R16); it asserts nothing of the stub's answer. No test double.
 - **Rules:** rule 3: the fields mirror RFC 8 §14's series; no series is recorded here.
 
 ### T11.5 The S1 review and the recorded declarations
 
-**Subtask T11.5 estimate: 1.5 man-days.**
+**Subtask T11.5 estimate: 2 man-days.**
 
 - **Track:** the team. **Depends on:** T11.1, T11.2, T11.3, T11.4.
-- **Covers:** R17, R18.
+- **Covers:** R17.
 - **Deliverables:** the review, with the RFC 2 to RFC 5 plans' authors, of every signature this
   epic freezes and of the declarations below; their result folded into this section through a pull
   request against this document, so later epics read them here. As proposed for the review, in the
@@ -432,10 +451,13 @@ internal/node/
   // ChunkInfo, AssemblerConfig, BlockPlan, Disposition). The implementations are package functions
   // of pkg/carver/carve and the concrete *assembler.Fold, which the engine may not import, so the
   // wiring hands them in as this one interface (epic 15, with its first caller, Carve). Every call
-  // the engine makes is here, beyond RFC 8 §2.1's "Cut and the fold": NewSettings, BlockName and
-  // the fold's construction; Max is a method of the Settings value and needs no declaration.
+  // the engine makes is here, beyond RFC 8 §2.1's "Cut and the fold": a namespace's settings,
+  // BlockName and the fold's construction; Max is a method of the Settings value and needs no
+  // declaration. Proposed (D5): the wiring calls carve.NewSettings with the namespace's Target and
+  // keys and answers Settings(ns), so the engine never holds key material; the RFC 2 plan's epic 1
+  // breakdown has the engine call NewSettings itself, which S1a reconciles.
   type Carver interface {
-  	NewSettings(target int, encrypting bool, chunkingKey, chunkIDKey [32]byte) (carver.Settings, error) // carve.NewSettings
+  	Settings(ns entity.NamespaceID) (carver.Settings, error) // the namespace's, built by carve.NewSettings in the wiring
   	Cut(r io.Reader, base int64, s carver.Settings, buf []byte, realEnd bool,
   		emit func(carver.Chunk, []byte) error) (consumed int64, err error) // carve.Cut
   	BlockName(scope entity.NamespaceID, nonce [16]byte, chain [32]byte, ids []entity.ChunkHash) entity.BlockName // carve.BlockName, at Intent
@@ -448,8 +470,6 @@ internal/node/
   	Add(c carver.ChunkInfo) ([]carver.BlockPlan, carver.Disposition)
   	Finish(now time.Time) (last *carver.BlockPlan, held bool)
   }
-  // Whether NewSettings is called at Bind per namespace (so the namespace's keys reach the
-  // engine) or the wiring hands per-namespace Settings through a lookup (D5) is S1a's to settle.
   // The engine's import walk admits pkg/carver/internal/params beside the pkg/carver root, since
   // the root's alias brings it in, in the change that admits the root (epic 15).
   // RFC 3 §1.3: one flow per share at attach (epic 16). The flow is RFC 3's syncer.Flow (D7):
@@ -466,6 +486,27 @@ internal/node/
   //   OffloadMany (epic 15), MarkOffloaded (epic 15), DirtyFiles (epic 14),
   //   Fill (epic 17), Release, Unmark (epic 18), DropOlder (epic 19, once the journal's epic 7b adds it).
   // Journal gains Reconciled, and Deps AcknowledgeUnreadable (epic 19), as RFC 1 §3 writes them.
+  // Not added by this part: Hold and Stamp (RFC 12's, with snapshots); Acknowledge and
+  // DropSuperseded, an operator's acknowledgement of an unread range (RFC 28 §3.3), whose action
+  // RFC 28's plan adds; each joins with that caller.
+
+  // RFC 4 §4.3, S1c: the put attempt of a block on the share's store. Puts reach the store only as
+  // the attempt closure Upload runs, so the wiring hands the pipeline a builder keyed by the
+  // binding's store (epic 15), over codec.Store.NewPut(name, src) and *Put's Attempt and Stored.
+  // Proposed: Deps.Puts func(store syncer.StoreID, name remote.Name, src io.Reader) (Put, error),
+  // with Put declaring Attempt(ctx, remote.Meter) error and Stored() in RFC 4's value types.
+
+  // RFC 5 §2.8, S1d: the chain pin, held from Mint to Commit or Abandon (epic 15).
+  type Chain interface {
+  	Pin(ctx context.Context, ns entity.NamespaceID) (transform.Attempt, error) // Attempt.Release ends it
+  }
+  // S1d also names the destroyed-material notice (epic 18, polled), the key-record view the
+  // offload commit and the reseed read (epics 18, 19) and the salvage-key wrap (epic 20); each is
+  // declared by its epic in RFC 5's contract types as S1d agrees them.
+
+  // Block metadata's views gain, as kvstore has them on feat/storage-v2: Intend, Commit with the
+  // block's encodings, Abandon (epic 15); AbandonShardIntents, Existence.Versions and the Census
+  // view (epic 19), RFC 6 §10.
   ```
   `Deps` gains nothing here.
 - **Acceptance criteria:**
@@ -474,15 +515,15 @@ internal/node/
   - §15.3's "§2.1 declared interfaces" and "§2.2 no assertions" rows pass on the epic's last
     change.
 - **Tests:** no new test: the first part's architecture test (`arch_test.go`), which seeds an unused
-  method and a setter, already enforces R17 and fails the build of the epic that adds a declaration
-  without its caller. Each declaration's own test is its adding epic's.
+  method and a setter, already enforces R17 and fails, in `engine-conformance`, for the epic that
+  adds a declaration without its caller. Each declaration's own test is its adding epic's.
 - **Rules:** rule 11: the review is S1's freeze.
 
 ## 7. Order of work
 
 ```mermaid
 flowchart TD
-  Agreed(["S1b syncer interface agreed"]):::sync --> T11_3
+  Agreed(["S1b and S1c agreed"]):::sync --> T11_3
   T11_1["T11.1 pkg/workqueue surface"] --> T11_4["T11.4 WaitOffloaded and Stats"]
   T11_2["T11.2 Settings and Apply"]
   T11_3["T11.3 Share's store and settings"]
@@ -491,7 +532,7 @@ flowchart TD
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-T11.1 and T11.2 start at once; T11.3 waits on the RFC 3 plan's epic 1 code (`syncer.StoreID`).
+T11.1 and T11.2 start at once; T11.3 waits on the RFC 3 plan's epic 1 code (`syncer.StoreID`) and on `pkg/remote`'s root being a pure contract, which it imports.
 
 ## 8. Suggested pull requests
 
@@ -499,7 +540,7 @@ T11.1 and T11.2 start at once; T11.3 waits on the RFC 3 plan's epic 1 code (`syn
 | --- | --- | --- | --- | --- |
 | 1 | T11.1, T11.4 | 3.5 | — | the scheduler's surface and the `Stats` fields that expose it |
 | 2 | T11.2, T11.3 | 4 | — | the settings, node and share, and the defaults their callers pass; T11.3's half waits on S1b; PR 2 can be open beside PR 1 |
-| 3 | T11.5 | 1.5 | PR 1, PR 2 | the review's result, as a revision of this document |
+| 3 | T11.5 | 2 | PR 1, PR 2 | the review's result, as a revision of this document |
 
 A suggestion only: one pull request per subtask works as well.
 
