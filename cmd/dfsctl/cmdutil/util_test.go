@@ -3,7 +3,11 @@ package cmdutil
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/node/apiv1/client"
 )
 
 func TestBoolToYesNo(t *testing.T) {
@@ -207,6 +212,88 @@ func TestSettings(t *testing.T) {
 	for _, bad := range []string{"novalue", "=v", "port=null", "port= null "} {
 		if _, err := Settings([]string{bad}); err == nil || !strings.Contains(err.Error(), bad) {
 			t.Errorf("Settings %q: got %v, want a refusal naming it", bad, err)
+		}
+	}
+}
+
+// A wait's refusal carries the resume hint only past what a resumed wait
+// may get past: a 5xx, a 408, a 429, a retryable refusal, a failure to
+// reach the server and an interrupt, and not a 4xx refusal of the request
+// or an operation in a state this client does not know.
+func TestResumable(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"503", &apiv1.Problem{Status: http.StatusServiceUnavailable}, true},
+		{"408", &apiv1.Problem{Status: http.StatusRequestTimeout}, true},
+		{"429", &apiv1.Problem{Status: http.StatusTooManyRequests}, true},
+		{"a retryable 409", &apiv1.Problem{Status: http.StatusConflict, Retryable: true}, true},
+		{"404", &apiv1.Problem{Status: http.StatusNotFound}, false},
+		{"403", &apiv1.Problem{Status: http.StatusForbidden}, false},
+		{"an unknown state", fmt.Errorf("client: an operation in state %q: %w", "paused", client.ErrUnknownState), false},
+		{"a dial failure", &net.OpError{Op: "dial", Err: errors.New("connection refused")}, true},
+		{"an interrupt", context.Canceled, true},
+	} {
+		if got := resumable(tc.err); got != tc.want {
+			t.Errorf("resumable(%s): got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// nameOf answers the name of each kind Resolve resolves by name, and no
+// name for any other spec, which Resolve then refuses to resolve.
+func TestNameOf(t *testing.T) {
+	for _, tc := range []struct {
+		spec   any
+		want   string
+		wantOK bool
+	}{
+		{apiv1.ShareSpec{Name: "builds"}, "builds", true},
+		{apiv1.UserSpec{Name: "alice"}, "alice", true},
+		{apiv1.GroupSpec{Name: "staff"}, "staff", true},
+		{apiv1.NetgroupSpec{}, "", false},
+	} {
+		if got, ok := nameOf(tc.spec); got != tc.want || ok != tc.wantOK {
+			t.Errorf("nameOf(%T): got %q, %v, want %q, %v", tc.spec, got, ok, tc.want, tc.wantOK)
+		}
+	}
+}
+
+// A refusal a resumed wait would meet again keeps its cause and gets no
+// hint even when the context ended as it arrived; an error a resumed wait
+// may get past is reported as the interrupt.
+func TestWaitFailedUnderAnEndedContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	cmd := &cobra.Command{Use: "wait"}
+	cmd.SetContext(ctx)
+	gone := waitFailed(cmd, "op", &apiv1.Problem{Status: http.StatusNotFound, Title: "Not Found"}, true)
+	if !strings.Contains(gone.Error(), "404") || strings.Contains(gone.Error(), "resumes the wait") {
+		t.Errorf("waitFailed of a 404 under an ended context: got %v, want the 404 and no resume hint", gone)
+	}
+	lost := waitFailed(cmd, "op", &net.OpError{Op: "dial", Err: errors.New("connection refused")}, true)
+	if !errors.Is(lost, context.Canceled) || !strings.Contains(lost.Error(), "resumes the wait") {
+		t.Errorf("waitFailed of a dial failure under an ended context: got %v, want context.Canceled with the resume hint", lost)
+	}
+}
+
+// A listed name is the asked one under case folding, but a name that is not
+// UTF-8 only byte for byte.
+func TestSameName(t *testing.T) {
+	for _, tc := range []struct {
+		got, name string
+		want      bool
+	}{
+		{"builds", "BUILDS", true},
+		{"builds", "staging", false},
+		{"a\xff", "a\xff", true},
+		{"a\xff", "a\xfe", false},
+		{"a\uFFFD", "a\xfe", false},
+	} {
+		if got := sameName(tc.got, tc.name); got != tc.want {
+			t.Errorf("sameName(%q, %q): got %v, want %v", tc.got, tc.name, got, tc.want)
 		}
 	}
 }

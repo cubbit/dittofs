@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"strings"
 	"testing"
 	"unicode"
 	"unicode/utf8"
@@ -122,5 +123,22 @@ func TestFoldPrincipalName(t *testing.T) {
 	}
 	if FoldPrincipalName("alice") == FoldPrincipalName("alicia") {
 		t.Error("distinct names fold together")
+	}
+}
+
+// Every rune either name fold maps elsewhere is held equal to its image by
+// strings.EqualFold, so two names a fold keys as one EqualFold also holds
+// equal. A client that cannot link these folds checks a listed name under
+// EqualFold and relies on this to refuse no name the server matched.
+func TestFoldsStayWithinEqualFold(t *testing.T) {
+	for c := rune(0); c < 1<<16; c++ {
+		if u := rune(upcase[c]); u != c && !strings.EqualFold(string(c), string(u)) {
+			t.Errorf("the upcase table maps %U to %U, which strings.EqualFold holds apart", c, u)
+		}
+	}
+	for c, f := range principalFold {
+		if !strings.EqualFold(string(c), string(f)) {
+			t.Errorf("the principal fold maps %U to %U, which strings.EqualFold holds apart", c, f)
+		}
 	}
 }
