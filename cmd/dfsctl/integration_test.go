@@ -25,9 +25,14 @@ import (
 // a store would find none of the node's records, which is in this process's
 // memory. The rows that write through the store or advance the node's clock
 // run too, the test doing that part. Each noun runs over a node of its own,
-// as its package runs it, its clock started at and kept up with this
-// machine's, which the child reads: a node shared by every noun would run
-// ahead of it by every wait the rows before advanced it through.
+// as its package runs it: a node shared by every noun would run ahead of
+// this machine's clock, which the child reads, by every wait the rows before
+// advanced it through. Each node starts ten minutes behind that clock, and
+// child moves it up before every command, so the row "token create signs a
+// context in through login --token-file until token revoke" fails if that
+// catch-up breaks: its token's expiry, which the child reckons on this
+// machine's clock, must land within a minute of an hour after its creation,
+// which the node stamps on its own.
 func TestSuiteFromAChildProcess(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 	bin := filepath.Join(t.TempDir(), "dfsctl")
@@ -39,7 +44,7 @@ func TestSuiteFromAChildProcess(t *testing.T) {
 	}
 	for _, noun := range clisuite.Nouns() {
 		t.Run(noun, func(t *testing.T) {
-			s := clisuite.Start(t, nodetest.StartAt(time.Now()))
+			s := clisuite.Start(t, nodetest.StartAt(time.Now().Add(-10*time.Minute)))
 			clisuite.Run(t, func(t *testing.T) clisuite.Runner { return child(t, bin, s.Harness.Clock()) }, s, noun)
 		})
 	}
