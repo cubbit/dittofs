@@ -314,7 +314,7 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
     after they land rewrites both.
   - Prior art: libnfsidmap's separate `nfs4_name_to_uid` and `nfs4_name_to_gid` (from memory). The
     architect pass proposed the same.
-  - Settled (rif, 25 Nov): a separate `SchemeOwnerGroup`, as built in T7.2. Options are in §9,
+  - Settled in #5804's review: a separate `SchemeOwnerGroup`, as built in T7.2. Options are in §9,
     point 3.
 - **D3. An owner name is found in the store only.** RFC 18 §4.5 maps `name@domain` by name and
   says nothing of the directory.
@@ -930,7 +930,7 @@ RFC text of T7.2, T7.3 and T7.5 goes in one RFC pull request on `develop` (§9, 
    - the rewriting of RFC 18 §3.2, §5.5, §6.3, §7.1 and §10's notes that call `ManageGIDs` deferred.
 
    It is cherry-picked onto `feat/storage-v2` with the other RFC changes.
-3. **`SchemeOwnerGroup`** (D2). Settled (rif, 25 Nov): a separate `SchemeOwnerGroup`, as built in
+3. **`SchemeOwnerGroup`** (D2). Settled in #5804's review: a separate `SchemeOwnerGroup`, as built in
    T7.2.
    - (a), recommended: a second scheme for owner groups, since RFC 18 §2.2 splits uid from gid and
      names by kind.

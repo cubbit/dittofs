@@ -381,7 +381,7 @@ that subtasks and tests can cite them.
 
 ```text
 internal/node/content/
-  engineholds.go                           T3.1  EngineHolds, moved from enginetest (D12)
+  holds.go                                 T3.1  EngineHolds, moved from enginetest (D12)
   content.go                               T3.2  Compose, which the node and enginetest call (D18)
 pkg/engine/
   journalof.go                             T3.1  JournalOf, moved from enginetest (D17)

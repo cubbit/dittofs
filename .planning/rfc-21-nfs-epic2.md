@@ -66,10 +66,9 @@ and the `pynfs`, `cthon04` and `nfstest` suites stay off until the cutover.
 `pkg/openstate`'s `ErrNoGrace` and its check, `pkg/vfs`'s `StateNoGrace`, `internal/vfs`'s mapping,
 and the tests of each; `vfstest.Mutations`' record of references and answers; the runner, built in
 `adaptertest`, and `adaptertest/nfsharness` over it with NFS's two cases; the cut script;
-the import test's call-site and file-size rules; the recording script for MOUNT, NLM
-with NSM and NFSv4.2, the traces kept from the knfsd nfstest baseline for NFSv3, NFSv4.0 and
-NFSv4.1, the five capture directories and the golden files cut from them, which the existing
-`TestParseCaptured` loads.
+the import test's call-site and file-size rules; the recording script for all five areas, over a
+loopback mount against knfsd, the five capture directories and the golden files cut from them,
+which the existing `TestParseCaptured` loads.
 
 ### 1.2 Out of scope
 
@@ -85,7 +84,9 @@ NFSv4.1, the five capture directories and the golden files cut from them, which 
   in E11, as RFC 21 §11.5 has it.
 - Handler tests themselves, and the vectors of each procedure: each handler epic, on `nfsharness`.
 - Captures of `RPCSEC_GSS` exchanges, which need a KDC: E13. The diff scripts that compare DittoFS
-  with these captures: E14.
+  with these captures, and the two-client conflict captures (a second client's `OPEN` answered
+  `NFS4ERR_DELAY`), recorded from a host with client namespaces, which loopback cannot give (D1):
+  E14.
 - The scripted client and loopback rows: E3.
 
 ### 1.3 Names used here
@@ -190,8 +191,9 @@ the service's state after a request, which each handler test makes through `memo
   throwaway. Loopback gives every program and version a call and a real NFSv4.1 and 4.2 back
   channel, and loses the two-client view this decision first had: there is one NFSv4 client, so
   the delegation recall comes from a write on the server rather than a second client's `OPEN`
-  answered `NFS4ERR_DELAY`, and NLM and NSM share one lockd and one statd. knfsd gave the NFSv4.0
-  client no delegation, so `nfs40/` has `CB_NULL` and no `CB_RECALL` (the deferral ledger in §6).
+  answered `NFS4ERR_DELAY`, and NLM and NSM share one lockd and one statd; the two-client conflict
+  captures are E14's (§1.2). `nfs40/` has `CB_NULL` and no `CB_RECALL`, which nothing needs: the
+  server offers NFSv4.0 clients no delegation and so never sends them a callback (RFC 21 §3).
   Each area is kept in `test/pcap-corpus/`, beside `nfsv4-acl/`, which already holds a knfsd
   capture, with `reference.pcap`, `reference.skel` from `normalize.py` and a `CAPTURE.md` recipe,
   as the corpus README lays out. The server is knfsd on the host, the only NFS server the recipe
@@ -552,10 +554,6 @@ internal/adapter/nfs/wire/
   when its rule is removed or written too wide (R20, R21, R22); `TestImports` over the tree. No
   test double.
 - **Rules:** rule 9: the `ponytail:` and `decision:` markers.
-
-| Deferred | Why | Owner | Trigger |
-| --- | --- | --- | --- |
-| NFSv4.0 `CB_RECALL` and two-client conflict vectors (a second client's `OPEN` answered `NFS4ERR_DELAY`) | recorded over one loopback client; knfsd gave the 4.0 client no delegation | E14 | E14's capture diffs need a two-client conflict, or a recording host with client namespaces exists |
 
 ## 7. Order of work
 

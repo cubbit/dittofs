@@ -323,7 +323,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 | E11 🔀 | NLM, NSM and the datagram path | `core`'s datagram listener, NLM v4, NSM, grants resent, `SM_NOTIFY`, `DialClient`'s network | 7 | 22 | B | E16 |
 | E12 | NFSv4.2 operations | `DEALLOCATE`, `SEEK`, `READ_PLUS`, `COPY`, `CLONE`, xattrs, the hold budget | 5 | 13 | C | E16 |
 | E13 🔀 | RPCSEC_GSS | the context table as NFS's `Security` stage over `gss`, `krb5`, `krb5i`, `krb5p` | 6 | 16 | B | E16 |
-| E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries | 2 | 4 | A | E16 |
+| E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries; the two-client conflict captures, from a recording host with client namespaces | 2 | 4 | A | E16 |
 | E15 🔀 | Integration with the node | settings, the NFS suites turned on | none | planned after S7 | team | E16, partly |
 | E16 🔀 | E2E green | in-process and restart rows, cross-protocol rows, e2e, benchmarks, soak, the totality test, pins; the burn-down after E15 | 8 | 25.5 | team | none |
 | | **Total** | | **98** | **266.75** | | |
@@ -565,7 +565,7 @@ for body types two procedures share) are in RFC 20 §2.5 by amendment A4; §6.2,
   loopback rows; every later epic's loopback rows, E14's scripts and E16's benchmarks reuse it.
   Prior art: pynfs's own RPC client, a scripted client of the same kind (from memory). Applied in
   E3.
-- **D6. Reference captures come from knfsd** in a network namespace on the test host, recorded per
+- **D6. Reference captures come from knfsd** over a loopback mount on a throwaway host, recorded per
   program area into `test/pcap-corpus/`, beside `nfsv4-acl/`, which already holds a knfsd capture,
   and diffed by the existing `pcap-diff.sh` and `normalize.py`. Prior art: RFC 20 Appendix C names a
   Linux server as the NFS reference. Applied in E2, E14.

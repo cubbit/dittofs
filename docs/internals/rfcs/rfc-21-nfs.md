@@ -2690,8 +2690,8 @@ its tag and an empty results array.
 
 **For every program status, success included,** the header codec also writes what
 the procedure's result holds before its body: the status word, where the result
-begins with one (every NFSv3 procedure but NULL, MOUNT's MNT, NSM's SM_STAT and
-SM_MON); NLM's cookie, echoed from the call, before its stat; and nothing for a
+begins with one (every NFSv3 procedure but NULL, and MOUNT's MNT and NSM's SM_STAT
+and SM_MON; a COMPOUND's only on a refusal); NLM's cookie, echoed from the call, before its stat; and nothing for a
 result with no status. The procedure's encoder writes the rest, so one handed no
 reply writes only what its result carries beside those.
 
