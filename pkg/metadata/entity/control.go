@@ -254,6 +254,16 @@ type ExportPolicy struct {
 	Anonymous     Principal // what a squashed caller becomes
 	SMB           SMBShareFlags
 	Version       uint64 // raised by every change; the authorisation cache key carries it
+	// ManageGIDs replaces a claimed caller's gids with the closure of the
+	// principal its uid maps to, so its groups are the store's and the
+	// directory's rather than the credential's.
+	//
+	// decision: ManageGIDs is off by default. With it on, a principal's
+	// groups are what the store says, which is right where the store is the
+	// source of truth for groups and wrong where clients get groups from a
+	// local /etc/group the store has never seen. Turn the default on if most
+	// deployments are shown to hold groups in the store or a directory.
+	ManageGIDs bool
 }
 
 // SharePolicy is a share's identity policy as resolution reads it, in one
@@ -266,6 +276,7 @@ type SharePolicy struct {
 	Share         ShareID
 	Squash        Squash
 	Anonymous     Principal
+	ManageGIDs    bool
 	PolicyVersion uint64 // ExportPolicy.Version
 	GrantVersion  uint64 // the share's grant version row, S‖id‖gv
 }
@@ -277,6 +288,7 @@ func (p ExportPolicy) SharePolicy(grantVersion uint64) SharePolicy {
 		Share:         p.Share,
 		Squash:        p.Squash,
 		Anonymous:     p.Anonymous,
+		ManageGIDs:    p.ManageGIDs,
 		PolicyVersion: p.Version,
 		GrantVersion:  grantVersion,
 	}

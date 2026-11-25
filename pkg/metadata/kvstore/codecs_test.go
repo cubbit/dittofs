@@ -84,10 +84,11 @@ func codecCases() []codecCase {
 			{Match: entity.ClientMatch{CIDR: netip.MustParsePrefix("10.0.0.0/8")}, Access: entity.AccessRead},
 			{Match: entity.ClientMatch{Netgroup: "lab"}, Access: entity.AccessReadWrite},
 		},
-		Squash:    entity.SquashRoot,
-		Anonymous: entity.Everyone,
-		SMB:       entity.SMBEncrypt | entity.SMBHidden,
-		Version:   4,
+		Squash:     entity.SquashRoot,
+		Anonymous:  entity.Everyone,
+		SMB:        entity.SMBEncrypt | entity.SMBHidden,
+		Version:    4,
+		ManageGIDs: true,
 	}
 	ng := entity.Netgroup{Name: "lab", Members: []string{"a.example", "10.1.0.0/16"}, Version: 2}
 	in := entity.Installation{ID: [16]byte{15: 1}, Instance: [16]byte{15: 2}, Generation: []byte{5}, MachinePassword: entity.SecretRef{15: 9}, SigningKey: entity.SecretRef{15: 8}}
@@ -183,7 +184,7 @@ func codecCases() []codecCase {
 			"01" + "02" + "0302" + "03" + "01" + "01" + "02" +
 				"01" + "05" + "0a00000008" + "01" +
 				"02" + "036c6162" + "02" +
-				"01" + "03" + "00000000000000000000000000000003" + "03" + "0000000000000004",
+				"01" + "03" + "00000000000000000000000000000003" + "03" + "0000000000000004" + "01",
 			func(b []byte) (any, error) { return decodePolicy(sid, b) }},
 		{"netgroup", ng, encodeNetgroup(ng),
 			"01" + "02" + "09612e6578616d706c65" + "0b31302e312e302e302f3136" + "0000000000000002",

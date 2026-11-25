@@ -209,13 +209,13 @@ func shareRows() []row {
 				return p.Spec
 			}
 			want := policy()
-			mustRun(t, run, "share", "export-policy", "update", sh.Spec.Name, "--read-only", "--smb-encrypt")
-			want.ReadOnly, want.SMB.Encrypt = true, true
+			mustRun(t, run, "share", "export-policy", "update", sh.Spec.Name, "--read-only", "--smb-encrypt", "--manage-gids")
+			want.ReadOnly, want.SMB.Encrypt, want.ManageGIDs = true, true, true
 			if got := policy(); !reflect.DeepEqual(got, want) {
 				t.Errorf("share export-policy update: the server holds %+v, want %+v", got, want)
 			}
 			// set takes every field its flags do not name back to its default,
-			// read-only and SMB encryption among them.
+			// read-only, SMB encryption and manage-gids among them.
 			mustRun(t, run, "share", "export-policy", "set", sh.Spec.Name, "--flavor", "sys", "--client", "192.168.0.0/16=read", "--squash", "all")
 			want = apiv1.ExportPolicySpec{Flavors: []string{"sys"}, Clients: []apiv1.ClientRule{{CIDR: "192.168.0.0/16", Access: "read"}},
 				MinProof: "none", MinProtection: "none", Squash: "all"}

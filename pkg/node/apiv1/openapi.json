@@ -489,6 +489,9 @@
             },
             "type": "array"
           },
+          "manage_gids": {
+            "type": "boolean"
+          },
           "min_proof": {
             "type": "string"
           },
@@ -512,7 +515,8 @@
           "read_only",
           "clients",
           "squash",
-          "smb"
+          "smb",
+          "manage_gids"
         ],
         "type": "object"
       },
@@ -534,6 +538,12 @@
             },
             "type": [
               "array",
+              "null"
+            ]
+          },
+          "manage_gids": {
+            "type": [
+              "boolean",
               "null"
             ]
           },
@@ -584,6 +594,9 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "manage_gids": {
+            "type": "boolean"
           },
           "min_proof": {
             "type": "string"

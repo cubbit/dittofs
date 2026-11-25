@@ -2240,6 +2240,7 @@ Flags:
       --case-insensitive             Fold the case of names; bound when the share is created
       --client stringArray           A client rule, CIDR=access or @netgroup=access, access none, read or read-write; the first match decides, in order
       --flavor strings               The flavours SECINFO answers, in preference order: none, sys or kerberos
+      --manage-gids                  Replace an AUTH_SYS caller's gids with the groups the store and directory hold for its user
       --min-proof string             The proof every caller gives: none, claimed, secret or ticket
       --min-protection string        The protection messages need: none, integrity or privacy
       --namespace string             The ID of the namespace the share's content is counted in
@@ -2354,6 +2355,7 @@ Flags:
       --client stringArray           A client rule, CIDR=access or @netgroup=access, access none, read or read-write; the first match decides, in order
       --flavor strings               The flavours SECINFO answers, in preference order: none, sys or kerberos
       --id string                    The share's ID, in place of its name
+      --manage-gids                  Replace an AUTH_SYS caller's gids with the groups the store and directory hold for its user
       --min-proof string             The proof every caller gives: none, claimed, secret or ticket
       --min-protection string        The protection messages need: none, integrity or privacy
       --read-only                    Hold every caller to read-only
@@ -2385,6 +2387,7 @@ Flags:
       --client stringArray           A client rule, CIDR=access or @netgroup=access, access none, read or read-write; the first match decides, in order
       --flavor strings               The flavours SECINFO answers, in preference order: none, sys or kerberos
       --id string                    The share's ID, in place of its name
+      --manage-gids                  Replace an AUTH_SYS caller's gids with the groups the store and directory hold for its user
       --min-proof string             The proof every caller gives: none, claimed, secret or ticket
       --min-protection string        The protection messages need: none, integrity or privacy
       --read-only                    Hold every caller to read-only
