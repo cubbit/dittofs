@@ -56,8 +56,9 @@ type Server struct {
 }
 
 // Start starts a node over an in-memory store, its API on a local socket,
-// with an admin account, and stops it when the test ends.
-func Start(t *testing.T) Server {
+// with an admin account, and stops it when the test ends; opts add to how
+// the harness builds it.
+func Start(t *testing.T, opts ...nodetest.Option) Server {
 	t.Helper()
 	// Not t.TempDir(), whose path can pass the length a socket's may have.
 	dir, err := os.MkdirTemp("", "clisuite")
@@ -66,7 +67,7 @@ func Start(t *testing.T) Server {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	srv := Server{Addr: filepath.Join(dir, "api.sock"), User: "suite", Password: "the suite's password"}
-	srv.Harness = nodetest.New(t, nodetest.InMemory(), nodetest.APISocket(srv.Addr))
+	srv.Harness = nodetest.New(t, append([]nodetest.Option{nodetest.InMemory(), nodetest.APISocket(srv.Addr)}, opts...)...)
 	if err := srv.Harness.Node().Start(t.Context()); err != nil {
 		t.Fatalf("clisuite: start the node: %v", err)
 	}
@@ -187,9 +188,9 @@ type row struct {
 // harness, each through a runner newRunner makes for it, over a credentials
 // file of its own, signed in to s, and with a session of its own for its
 // setup and reads, so a row that ends a session ends none of another row's.
-// A noun's package runs its own rows; a child process runs them all. Rows
-// share the server, so each names what it creates uniquely. A row's name
-// starts with its noun.
+// A noun's package runs its own rows; a child process runs every noun's,
+// each noun over a server of its own. Rows share the server, so each names
+// what it creates uniquely. A row's name starts with its noun.
 func Run(t *testing.T, newRunner func(*testing.T) Runner, s Server, noun string) {
 	s.newRunner = newRunner
 	ran := 0
@@ -212,6 +213,17 @@ func Run(t *testing.T, newRunner func(*testing.T) Runner, s Server, noun string)
 			r.run(t, run, s, s.Client(t))
 		})
 	}
+}
+
+// Nouns is every noun the suite has rows of, in the suite's order.
+func Nouns() []string {
+	var nouns []string
+	for _, r := range rows() {
+		if noun, _, _ := strings.Cut(r.name, " "); !slices.Contains(nouns, noun) {
+			nouns = append(nouns, noun)
+		}
+	}
+	return nouns
 }
 
 // rows is every row of the suite.
