@@ -25,7 +25,7 @@ reaches `feat/storage-v2` with the cherry-pick of RFC changes.
 Cited, not owned: RFC 8881 and RFC 7530 for the bytes and status values; RFC 17 §3.1 and §3.2 for
 the `Clients` calls and `Callbacks`; RFC 14 §2.1's client record, which the service keeps.
 **Track:** A.
-**Epic 8 estimate: 10 subtasks, 28.25 man-days.**
+**Epic 8 estimate: 10 subtasks, 29 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E1's `protocol.State` and NFSv4 table with
 its members' table, E2's `nfsharness`, knfsd's NFSv4.1 captures and the service's `NoGrace`. E3's
 caller (T3.1), scripted client (T3.2) and `Replay` stage with its duplicate-request cache (T3.3),
@@ -39,8 +39,8 @@ row drives. **S2b**, met, for A1.
 - E10, whose T10.2 adds the slot table, `Send` and `Reply` to T8.4's `BackChannel`, whose
   `RecallGrant` and `RecallAny` (T10.3) fill T8.1's value, and whose `SEQ4_STATUS_CB_PATH_DOWN`
   (T10.6) joins T8.6's flags;
-- E11, whose T11.3 writes T8.2's NLM arm of the `Adapter` bytes, adds `nlm.Handlers`' callbacks
-  field and fills T8.1's `LockWaitOver` and NLM `Revoked`;
+- E11, whose T11.3 writes T8.2's NLM arm of the `Adapter` bytes and adds `nlm.Handlers`' callbacks
+  field, and whose T11.4 and T11.7 fill T8.1's `LockWaitOver` and NLM `Revoked`;
 - E12, whose hold budget (T12.4) reads T8.4's granted slot count, `Session.Fore.Slots`;
 - **S4**, an NFSv4.1 session over loopback, which T8.8 opens with E3 and E5, and through it the
   loopback rows of E6, E9, E10 and E12.
@@ -100,8 +100,8 @@ their error rows and golden files; `core`'s third ask of a member's `Bound` hook
   and `BACKCHANNEL_CTL` (T8.9) call. E10's T10.2 adds its slot table, `Send` and `Reply` to the same
   type, makes `Bind` take the connection's `Keep`, and calls `Unbind` when a bound connection
   closes.
-- NLM and NSM, the callbacks value's `LockWaitOver` and NLM `Revoked`, and `nlm.Handlers`' field
-  for the callbacks value: E11's T11.3, which writes the NLM arm T8.2 defines.
+- NLM and NSM, the callbacks value's `LockWaitOver` and NLM `Revoked` (E11's T11.4 and T11.7), and
+  `nlm.Handlers`' field for the callbacks value: E11's T11.3, which writes the NLM arm T8.2 defines.
 - The hold budget per session, from T8.4's slot count: E12's T12.4.
 - `RPCSEC_GSS`, a machine principal's Kerberos sign-in and `ErrExpired`'s row: E13. "no file
   spelling"'s step with a Kerberos machine principal: E16's T16.3, on the composed node.
@@ -158,12 +158,12 @@ cited by number and title and not copied.
 | rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | handlers on `nfsharness` over `memory.New` (kind 2), with the shared `vfstest.Mutations` record of mutating calls and `vfstest.Faults` for a service error (kind 3); the registry's lease and Pending expiry on an injected clock and its session IDs from a seeded source (kind 1); stages without a socket on header vectors; loopback rows through `core` on the scripted client. No other double |
 | rule 2, fuzz tests where relevant | T8.2, T8.5 | `FuzzClientRec` over the `Adapter`-bytes decoder, seeded with truncated, corrupt, older- and newer-version bytes, against a second decoder written in the test (R5); the header codec's `SEQUENCE` read is held to the members' table's own `SEQUENCE` decoder by `FuzzCompound`'s seeds, extended with session compounds |
 | rule 3, observability follows RFC 25 and RFC 20 §10 | T8.2, T8.4, T8.5 | no recorder in NFS code; a slot's replay hit is counted by `core` as `adapter_replay_hits_total{protocol="nfs3"}` (R37); §1.2 names the producers of the pending series; no log line or attribute carries an owner string, a principal, a session ID or a client address (RFC 25 §5.4) |
-| rule 4, profiling: leaks, allocations and contention | T8.4, T8.5, T8.7, T8.8 | every loopback test starts with `adaptertest.CheckLeaks`; the session registry is a node-wide table, so a map under a read-write mutex never held across a service call (RFC 20 §6.9), and T8.4 and T8.5 report its mutex and block profiles under 64 sessions on 64 connections, `Sessions.Get` on every compound the hot path, `Create` once per mount; RFC 20 §6.9's pipeline gate applies to T8.5 (header codec, `Route`, `Flow`) and T8.7 (`core/compound.go`, every member's `Bound` wrapped): T8.7 runs `core`'s `BenchmarkPipeline`, whose checked-in allocation count may only fall, and T8.5 extends `nfs/protocol`'s header-stage allocation test to `SEQUENCE` headers, held at E3's count; NFS's own pipeline micro-benchmark is E16's, which then holds both. No codec gate: `SEQUENCE` is not among RFC 20 §6.10's 0-allocation messages |
+| rule 4, profiling: leaks, allocations and contention | T8.4, T8.5, T8.7, T8.8 | every loopback test starts with `adaptertest.CheckLeaks`; the session registry is a node-wide table, so a map under a read-write mutex never held across a service call (RFC 20 §6.9), and T8.4 and T8.5 report its mutex and block profiles under 64 sessions on 64 connections, `Sessions.Get` on every compound the hot path, `Create` once per mount; RFC 20 §6.9's pipeline gate applies to T8.5 (header codec, `Route`, `Flow`) and T8.7 (`core/compound.go`, every member's `Bound` wrapped): T8.7 runs `core`'s `BenchmarkPipeline`, whose checked-in allocation count may only fall, and T8.5 extends `nfs/protocol`'s header-stage allocation test to `SEQUENCE` headers, held at E3's count, and pins the slot path with `testing.AllocsPerRun`: `Flow.Admit`, a missing `Lookup`, an uncached `Store` and the `SEQUENCE` member at 0, as E3 pins its `Lookup`, while T8.7 pins one wrapped `Bound` call at 0; NFS's own pipeline micro-benchmark is E16's, which then holds both. No codec gate: `SEQUENCE` is not among RFC 20 §6.10's 0-allocation messages |
 | rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | a slot granted on the `CREATE_SESSION` reply the client reads; a replay on the reply bytes and on `memory.New`'s record of one mutating call; the `Adapter` bytes on the `Record` a second adapter reads; the reply budget on the `READ` reply the client decodes |
 | rule 6, known failures shrink | none | no `pynfs`, `cthon04` or `nfstest` test runs before the cutover; their session steps are E16's |
 | rule 7, v2 ignores v1 | all | nothing from `develop`'s `v4/state` or session code; the limits are RFC 21's, the sequencing RFC 8881's |
 | rule 8, real dependencies for properties of those dependencies | T8.2, T8.3, T8.4, T8.8, T8.10 | golden files written by hand from RFC 8881's and RFC 7530's XDR or cut from E2's knfsd NFSv4.1 captures, never from the encoder under test; real TCP over loopback; an adapter restart as a second `nfs.New` over the same `memory.New` |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T8.1, T8.2, T8.3, T8.4, T8.5, T8.6, T8.7 | RFC 21 §3.1's two `ponytail:` notes, 8 KiB cached replies and 64 slots, at the grant; `decision:` markers for D1, D2, D3, D5, D6, D7, D10, D11 and D12 at their sites, D8's a `ponytail:`, none for D4, D9 and D13 (each says why); `core/compound.go`'s `ponytail:` on the one ask removed with A1 |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T8.1, T8.2, T8.3, T8.4, T8.5, T8.6, T8.7, T8.10 | RFC 21 §3.1's two `ponytail:` notes, 8 KiB cached replies and 64 slots, at the grant; `decision:` markers for D1, D2, D3, D5, D6, D7, D10, D11 and D12 at their sites, T8.10's at the NFSv4.0 rows answering `ErrNotSupported` at minor version 1 (R62), D8's a `ponytail:`, none for D4, D9 and D13 (each says why); `core/compound.go`'s `ponytail:` on the one ask removed with A1 |
 | rule 10, a test must be able to fail | all | each test names the break it catches; none asserts a stub's answer, so T8.1's not-yet-built methods have no test of their own |
 | rule 11, a symbol is exported only if an interface uses it | T8.1, T8.2, T8.4, T8.5 | exported: `wire.ClientRec` and its codec for `ops/v4` and E11's `ops/nlm`; `protocol.Sessions`, `Session`, `SessionID`, `Pending`, `Channel` and `BackChannel` for `ops/v4`; `v4.Handlers`' new fields for `nfs.go`; `adaptertest.FlowConformance` for each protocol's `Flow`. `core` gains none but through RFC 20 first (Q2, Q3) |
 | rule 12, each subtask creates only what it declares | all | the callbacks value lands with `CREATE_SESSION`'s `Connect`, its first caller, in the same pull request; `nlm.Handlers`' field waits for E11's first NLM row (§9); each operation's row lands with its handler and golden files |
@@ -198,9 +198,9 @@ numbered so that subtasks and tests can cite them.
 | R66 | A `SETCLIENTID_CONFIRM` that finds no proposal but names a confirmed NFSv4.0 record with the same confirm verifier, from the record's principal, is `NFS4_OK` and writes nothing; the verifier is kept in the record's NFSv4.0 bytes (D2) | MUST | RFC 7530 §16.34.5 (from memory); pynfs `CIDCF3` | T8.2, T8.10 |
 | R12 | One record kind for both minor versions: a `SETCLIENTID` for a name `EXCHANGE_ID` confirmed, or the reverse, is a new `Boot`, a reboot confirmed as any is | MUST | RFC 21 §3.5 (one record kind) | T8.3, T8.10 |
 | R67 | An `EXCHANGE_ID` with `EXCHGID4_FLAG_UPD_CONFIRMED_REC_A` never makes a proposal: with no confirmed record for the owner it is `NFS4ERR_NOENT`, with another verifier `NFS4ERR_NOT_SAME`, from another principal `NFS4ERR_PERM`, and otherwise answers the confirmed client ID as R7 does | MUST | RFC 8881 §18.35.4 (from memory); pynfs `EID6` to `EID6h` | T8.3 |
-| R13 | The client fields map as §11.4 says: `Name` from `co_ownerid` or the `nfs_client_id4` id, `Boot` from the verifier, `Pending.Confirm` sent as the NFSv4.0 confirm verifier or, its low 32 bits, as `eir_sequenceid`, `Protect` set for `SP4_MACH_CRED` | MUST | RFC 21 §4.1, §11.4 (client table) | T8.3, T8.10 |
+| R13 | The client fields map as §11.4 says: `Name` from `co_ownerid` or the `nfs_client_id4` id, `Boot` from the verifier, `Pending.Confirm` sent as the NFSv4.0 confirm verifier or, its low 32 bits, as `eir_sequenceid`, `Protect` set for `SP4_MACH_CRED`, and `Recovery` the adapter's pick, `RecoverStatus` for NFSv4.1 and `RecoverRefusal` for NFSv4.0, since `Connect` refuses a zero one `ErrInvalid` and `ReclaimComplete` acts only for `RecoverStatus` | MUST | RFC 21 §4.1, §11.4 (client table); RFC 17 §3.0 (`ClientInfo.Recovery`) | T8.3, T8.4, T8.10 |
 | R14 | `SP4_NONE` and `SP4_MACH_CRED` are accepted (`SP4_MACH_CRED` over a flavor other than `RPCSEC_GSS` as Q5 settles); `SP4_SSV` is refused `NFS4ERR_ENCR_ALG_UNSUPP` | MUST | RFC 21 §3.3 | T8.3 |
-| R15 | Under `SP4_MACH_CRED`, an operation in `spo_must_enforce` from any principal but `Owner` is `NFS4ERR_ACCESS`, `CREATE_SESSION` on its new and its replay path included; `DESTROY_SESSION` and `BIND_CONN_TO_SESSION` are refused so whatever the bitmap (where the check runs as Q4 settles) | MUST | RFC 21 §11.4 (`Adapter` bytes, `Protect`); RFC 8881 §18.34.3, §18.37.3 | T8.3, T8.4, T8.9 |
+| R15 | Under `SP4_MACH_CRED`, an operation in `spo_must_enforce` from any principal but `Owner` is `NFS4ERR_ACCESS`, `CREATE_SESSION` on its new and its replay path included; whatever the bitmap, `DESTROY_SESSION` is refused `NFS4ERR_WRONG_CRED`, the status RFC 8881's error table lists for it, and `BIND_CONN_TO_SESSION` `NFS4ERR_ACCESS` (where the check runs as Q4 settles) | MUST | RFC 21 §11.4 (`Adapter` bytes, `Protect`); RFC 8881 §18.34.3, §18.37.3, §15.2 | T8.3, T8.4, T8.9 |
 | R16 | Every gateway node returns the same `server_scope` and `so_major_id`, the installation's, and a `so_minor_id` of its own (single-node half) | MUST | RFC 21 §3.3, §12 (N2); RFC 16 §2.3 (`Installation`) | T8.3 |
 | R17 | `EXCHANGE_ID` sets `EXCHGID4_FLAG_USE_NON_PNFS` and, on a single node, never `EXCHGID4_FLAG_USE_PNFS_MDS` or `EXCHGID4_FLAG_USE_PNFS_DS` | MUST NOT | RFC 21 §3.3, §12 (N20) | T8.3 |
 | R18 | Everything `EXCHANGE_ID`, `SETCLIENTID` and `DESTROY_CLIENTID` decide is in the durable client record, never in one node's memory, a proposal before its confirm excepted | MUST | RFC 21 §3.3, §11.4, §12 (N18) | T8.3, T8.9 |
@@ -212,7 +212,7 @@ numbered so that subtasks and tests can cite them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R21 | The fore channel offers at most 64 slots and the back channel 16; `CREATE_SESSION` grants the lesser of the ask and these, fewer where the pool cannot charge them, at least one, and where it cannot charge one answers `NFS4ERR_DELAY` | MUST | RFC 21 §3.1; RFC 24 §4.5 | T8.4 |
-| R22 | A session is charged to the connection-state pool its fixed session cost, a fixed slot cost per slot of each channel and its fore channel's reply cache, slots times the cached size, decided on the sum; every slot the client retires releases its charge | MUST | RFC 24 §4.5 | T8.4, T8.5 |
+| R22 | A session is charged to the connection-state pool its fixed session cost, a fixed slot cost per slot of each channel and its fore channel's reply cache, slots times the cached size, decided on the sum; every slot the client retires releases its charge, which under D8 never happens: a client retires slots only after the server lowers `sr_target_highest_slotid` (RFC 8881 §2.10.6.1), so the charge is held for the session's life | MUST | RFC 24 §4.5 | T8.4, T8.5 |
 | R23 | `ca_maxoperations` is the lesser of the ask and the compound cap of 128; a `COMPOUND` on the session longer than granted is refused `NFS4ERR_TOO_MANY_OPS` before any of its operations runs | MUST | RFC 21 §3.1, §11.5 (the compound cap) | T8.4, T8.7 |
 | R24 | `ca_maxresponsesize_cached` is the lesser of the ask and 8 KiB, so a session's fore-channel cache never exceeds 64 × 8 KiB | bound | RFC 21 §3.1, §12 (N11) | T8.4 |
 | R25 | `ca_maxrequestsize` and `ca_maxresponsesize` derive from the one transfer size: at most the record cap, `1 MiB + 4 KiB` | MUST | RFC 21 §2.3 | T8.4 |
@@ -233,8 +233,9 @@ numbered so that subtasks and tests can cite them.
 | R35 | A slot keeps a reply only when the request asked (`sa_cachethis`), and then the whole reply; a request asking to be cached whose reply exceeds the cached size is `NFS4ERR_REP_TOO_BIG_TO_CACHE` and not run | MUST | RFC 21 §3.1; RFC 20 §4.3 | T8.5, T8.7 |
 | R36 | A retransmission of an uncached request, same slot and sequence ID, is `NFS4ERR_RETRY_UNCACHED_REP`, never run again and never answered from a partial reply | MUST | RFC 21 §3.1, §12 (N11) | T8.5 |
 | R37 | A retransmission of a cached request is answered its whole cached reply and never run twice on one session; `core` counts it as `adapter_replay_hits_total{protocol="nfs3"}` | MUST | RFC 21 §3.2, §11.7, §12 (N11); RFC 20 §10.1 | T8.5 |
+| R69 | A retransmission whose caller differs from the cached request's is answered `NFS4ERR_SEQ_FALSE_RETRY` as `SEQUENCE`'s result, never the cached reply | MUST | RFC 8881 §2.10.6.1.3.1 | T8.5 |
 | R38 | A request a drain leaves unanswered runs none of its operations and leaves the slot as it was, its previous sequence ID and reply | MUST | RFC 21 §3.1; RFC 20 §4.7 | T8.5 |
-| R39 | The server honours a client that retires slots and never shrinks `sr_highest_slotid` below a slot with a request in flight | MUST | RFC 21 §3.1 | T8.5 |
+| R39 | The server honours a client that retires slots and never shrinks `sr_highest_slotid` below a slot with a request in flight. Under D8 the target is never lowered, so no client retires a slot and the first half has nothing to test until it is; the second holds because both values stay at the grant | MUST | RFC 21 §3.1; RFC 8881 §2.10.6.1, §18.46.3 | T8.5 |
 | R40 | NFS's flow control is the per-connection cap of 64 on every NFS connection, with an NFSv4.1 session's slots bounding it in addition; under an ended context `Admit` takes a free place or returns at once | MUST | RFC 20 §6.3, §4.7 (`FlowControl`) | T8.5 |
 | R41 | `ErrNoSession`, `ErrNotNegotiated` and `ErrNoTree` are settled with the session table: each has a row in NFSv4's tables, without which the totality test fails; their statuses are D6's | MUST | RFC 21 §11.5 (what runs while draining, last sentence) | T8.5 |
 | R42 | §13's "§3.1, §3.2 sessions *(1 node)*" and "§3.2 reply cache"'s replay steps by the scripted client: slot use and `SEQUENCE` replay on one node, no replay run twice | test row | RFC 21 §13 | T8.8 |
@@ -260,6 +261,7 @@ numbered so that subtasks and tests can cite them.
 | --- | --- | --- | --- | --- |
 | R52 | `DESTROY_CLIENTID` maps to `Destroy`, never to `Disconnect`; `ClientBusy` is `NFS4ERR_CLIENTID_BUSY`, never met by releasing state; one from a principal `SP4_MACH_CRED` excludes is `NFS4ERR_WRONG_CRED` | MUST | RFC 21 §5.1, §11.5 (`ClientBusy`) | T8.9 |
 | R53 | `DESTROY_SESSION` drops only this node's session; the node's last session of the client calls `Disconnect` with `Last` and the entry's latest `Gen`, so the `DESTROY_CLIENTID` of a clean unmount that follows is not refused for it | MUST | RFC 21 §5.1, §11.4 (`Reach.Sessions`, `SessionEnd`) | T8.9 |
+| R70 | A `DESTROY_SESSION` naming the session its compound's `SEQUENCE` named is the compound's last operation, else `NFS4ERR_NOT_ONLY_OP` and nothing ended | MUST | RFC 8881 §18.37.3 (`NOT_ONLY_OP` as knfsd answers it, from memory) | T8.9 |
 | R54 | A `Disconnect` that fails leaves the node listed and is repeated, through the node's retrier, until it succeeds; `StaleClient` on a repeat counts as success | MUST | RFC 17 §3.1 (`Disconnect`); RFC 20 §3.2, §3.4 (`Deps.Retry`) | T8.9 |
 | R55 | RFC 18 §10's "no file spelling", its `SP4_MACH_CRED` step: a second principal's state operation on the first's `SP4_MACH_CRED` client record is refused | test row | RFC 18 §10 | T8.9 |
 
@@ -291,15 +293,18 @@ reclaims themselves and stale stateids (E9); the lease owner and `Reach.Sessions
 ## 4. Decisions this epic takes
 
 - **D1. The callbacks value, and how a handler reaches it.** `nfs/callbacks.go` holds one
-  unexported type, a client's ID and the session registry, built by a constructor `nfs.go` sets on
-  `v4.Handlers` (`Callbacks func(vfs.ClientID) vfs.Callbacks`), since `nfs.go` imports every
+  unexported type, a client's ID, its `ClientInfo.Protocol` and the session registry, built by a
+  constructor `nfs.go` sets on `v4.Handlers` (`Callbacks func(vfs.ClientID, vfs.Protocol)
+  vfs.Callbacks`), the protocol being the one the handler puts in the `ClientInfo` it connects, so
+  that E11's arms answer an NLM host and the NFSv4 arms an NFSv4 client (no rule of the service
+  reads the kind, RFC 17 §3.0), since `nfs.go` imports every
   `ops/` package and a handler cannot import the root package's type; one implementation, so no
   interface (RFC 20 §2.5's rule 4). Until its epic, each method answers as a client that cannot be
   reached: `RecallGrant` and `RecallAny` an error naming no back channel, which the service takes as
   the client not answering (no grant exists before E10); `LockWaitOver` the same (no NLM waiter
-  exists before E11); `Notify` nil, since NFS registers no watch. `Revoked` drops the client's
+  exists before E11's T11.4); `Notify` nil, since NFS registers no watch. `Revoked` drops the client's
   sessions on this node for `RevokedLeaseExpired`, this epic's; its other reasons find nothing
-  pending until E9, E10 and E11. `nlm.Handlers`' field waits for E11's first row (rule 12; §9).
+  pending until E9, E10 and E11's T11.7. `nlm.Handlers`' field waits for E11's first row (rule 12; §9).
   Prior art: none found; the RFC 21 implementation plan's architect pass proposed the field. A
   `decision:` marker at the type names each method's interim answer and its epic.
 - **D2. The `Adapter` bytes' layout.** Version 1 is one byte followed by an XDR union on the
@@ -313,7 +318,7 @@ reclaims themselves and stale stateids (E9); the lease owner and `Reach.Sessions
   client is refused on every request until a node that reads the bytes answers it, and until §1.2's
   `adapter_record_decode_failures_total` lands nothing but the debug log shows it; treating the
   bytes as a reboot's would overwrite a newer node's state in a mixed-version cluster. The handler
-  also bounds what it writes: `NetID` at most 16 bytes and `Addr` 64 (RFC 5665's universal
+  also bounds what it writes: `SessionReply` at most the 8 KiB cached size, `NetID` at most 16 bytes and `Addr` 64 (RFC 5665's universal
   addresses), each bitmap at most 3 words after its trailing zero words are dropped (the operations
   RFC 8881 and RFC 7862 define fit in 3), a longer one refused `NFS4ERR_INVAL`, and the decoder
   takes past these limits as `corrupt`. Prior art: none found for a per-adapter blob in a shared
@@ -335,7 +340,14 @@ reclaims themselves and stale stateids (E9); the lease owner and `Reach.Sessions
   it only once its write succeeded, so a confirm answered `NFS4ERR_DELAY` finds it again on resend
   (RFC 21 §3.5's order). `Record` returns a `Pending` only for a
   name with a record, so the confirming `CREATE_SESSION` or `SETCLIENTID_CONFIRM` of a new client
-  finds its proposal only here, by the client ID it names. Prior art: knfsd holds unconfirmed clients in memory (from memory). A `decision:` marker at
+  finds its proposal only here, by the client ID it names. A `CREATE_SESSION` reads
+  `Record(csa_clientid)` first and uses the Pending table only when no record holds that ID: open
+  state drops its own proposal when `Connect` succeeds (`pkg/openstate/clients.go`'s `connect`), so
+  a second `Connect` for it is `ErrStaleClient`, and a resend after a `Connect` that succeeded and an
+  `AddSession` that did not must take the record's path. For that path the proposal's bytes carry
+  `SessionSeq` = `eir_sequenceid` − 1, which `Connect` writes, so the resend is R26's "one more"; a
+  confirming `Connect` answered `ErrStaleClient` rereads `Record` and decides again, which settles
+  two confirms raced on one node to one session. Prior art: knfsd holds unconfirmed clients in memory (from memory). A `decision:` marker at
   the table, overturned with RFC 14 §2.9's own trigger.
 - **D4. Server owner and scope.** `so_major_id` and `server_scope` are the installation's ID (RFC 16
   §2.3's `Installation`), and `so_minor_id` the node's own, both read once at `New`. Neither reaches
@@ -347,9 +359,13 @@ reclaims themselves and stale stateids (E9); the lease owner and `Reach.Sessions
   `sa_cachethis` into the `Header`, beside the tag and minor version, because `ReplayCache.Lookup`
   and `FlowControl.Admit` take only the `Header`. `Route` finds the session and sets `r.Call`'s
   `Session` and `Client` from it; `Flow` marks the slot in flight; `Lookup` answers only a hit, the
-  slot's cached reply for the same sequence; the `SEQUENCE` member then checks the slot and answers
+  slot's cached reply for the same sequence and the same caller: `Store` keeps with the reply a key
+  of the caller's credential as the header carries it after `Security.Unwrap` (the flavor, and
+  `AUTH_SYS`'s uid, gid and gids or the `RPCSEC_GSS` context's principal), and a retransmission
+  whose key differs is no hit (R69); the `SEQUENCE` member then checks the slot and answers
   every sequence error itself, `NFS4ERR_BADSESSION`, `NFS4ERR_BADSLOT`, `NFS4ERR_SEQ_MISORDERED`,
-  `NFS4ERR_RETRY_UNCACHED_REP`, `NFS4ERR_DELAY` for a slot in use, `NFS4ERR_SEQUENCE_POS`, as its
+  `NFS4ERR_RETRY_UNCACHED_REP`, `NFS4ERR_SEQ_FALSE_RETRY` for a retransmission from another caller,
+  `NFS4ERR_DELAY` for a slot in use, `NFS4ERR_SEQUENCE_POS`, as its
   own result, so the reply carries `SEQUENCE`'s result as RFC 8881 §2.10.6.1 has it (from memory),
   never a status alone. On success it marks the slot's next sequence, which `Store` commits with
   the reply, and only then does `Flow`'s release take the slot out of flight, as RFC 20 §4.1's
@@ -373,13 +389,16 @@ reclaims themselves and stale stateids (E9); the lease owner and `Reach.Sessions
   an NFSv4.1 compound, marks its slot in flight without waiting on it: a busy slot is `SEQUENCE`'s
   `NFS4ERR_DELAY`, so one client's slot never stops the connection's reader. The `FlowControl`
   conformance check RFC 20's plan's ledger gives the protocol plans, `adaptertest.FlowConformance`,
-  lands here, run against NFS's `Flow` and `testproto`'s. Prior art: `core`'s default semaphore. A
+  lands here, run against NFS's `Flow` and `testproto`'s; the RFC 22 implementation plan claims it
+  too (its E3's T3.6), so whichever plan lands first adds it and the other runs it. Prior art: `core`'s default semaphore. A
   `decision:` marker at the stage.
 - **D8. No slot shrinking.** `sr_target_highest_slotid` and `sr_highest_slotid` are always the
-  highest slot granted, less the slots the client retired, never below the highest slot in flight;
-  RFC 21 §3.1's MAY of asking for fewer under pressure is not adopted, as RFC 24 §4.5's `ponytail:`
-  has it (a full pool grants fewer or refuses). So R39's second half holds because the server never
-  shrinks the table and a retirement waits for the slots in flight above it. Prior art: knfsd's
+  highest slot granted. `sa_highest_slotid` is the highest slot the client has a request
+  outstanding on, not a retirement (RFC 8881 §18.46.3), so it changes neither value nor any charge:
+  a client retires slots only after the server lowers the target (§2.10.6.1). RFC 21 §3.1's MAY of
+  asking for fewer under pressure is not adopted, as RFC 24 §4.5's `ponytail:` has it (a full pool
+  grants fewer or refuses). So R39's second half holds because the table never shrinks, and its
+  first and R22's last clause wait for the target to be lowered. Prior art: knfsd's
   dynamic slot shrinking came late (from memory). A `ponytail:` marker at the target, naming RFC 24
   §4.5's trigger.
 - **D9. Session IDs and references.** A `sessionid4` is 16 bytes from the registry's random source;
@@ -393,7 +412,9 @@ reclaims themselves and stale stateids (E9); the lease owner and `Reach.Sessions
   time, client ID and a counter (from memory). No marker beyond `internal/vfs`'s.
 - **D10. Renewal and the status a `SEQUENCE` reports.** The registry keeps, per client on this
   node, the clock reading of its last `Renew` and the `ClientStatus` it answered; a `SEQUENCE` calls
-  `Renew` only when a renewal interval, 10 s, has passed, and otherwise sets its flags from the
+  `Renew` only when a renewal interval, 10 s, has passed, claiming the renewal under the registry's
+  lock first, so the 64 slots of a session crossing the interval together make one `Renew` (open
+  state's takes its table-wide lock) and a failed one gives the claim back for the next, and otherwise sets its flags from the
   status kept, which RFC 14 §4.1 lets be one interval stale. A `RECLAIM_COMPLETE` the service
   accepts clears the reclaim flag in the status kept, with no new `Renew` (R44), so the next
   `SEQUENCE` stops carrying `SEQ4_STATUS_RESTART_RECLAIM_NEEDED` (R46): a stale flag after it would send a Linux client into
@@ -473,14 +494,15 @@ internal/adapter/nfs/
 - **Deliverables:** `nfs/callbacks.go`: an unexported type implementing `vfs.Callbacks` for one
   client (D1), asserted with `var _ vfs.Callbacks`; `v4.Handlers` gains
   ```go
-  Callbacks func(cl vfs.ClientID) vfs.Callbacks // set by nfs.New; the value Connect registers
+  Callbacks func(cl vfs.ClientID, p vfs.Protocol) vfs.Callbacks // set by nfs.New; the value Connect registers
   ```
   set by `nfs.go`. `Revoked`'s `RevokedLeaseExpired` arm calls T8.4's registry, so it lands in T8.4's
   pull request. Consumed by T8.4's and T8.10's `Connect` calls, E9 (`Revoked` for opens and locks),
-  E10 (`RecallGrant`, `RecallAny`, `Revoked` for grants) and E11 (`LockWaitOver`, NLM's `Revoked`).
+  E10 (`RecallGrant`, `RecallAny`, `Revoked` for grants) and E11 (the field on `nlm.Handlers` in T11.3,
+  `LockWaitOver` in T11.4, NLM's `Revoked` in T11.7).
 - **Acceptance criteria:**
   - `nfs.New` sets `Callbacks` on the handlers it builds, and each call returns a value for that
-    client.
+    client and protocol.
 - **Tests:** at `nfs.New`, which builds the handlers every `Connect` reads: the constructor set and
   returning a value naming the client asked (catches a handler left with a nil constructor, which
   `Connect` refuses `ErrInvalid`, R1). R1's "once" is held by the compiler's assertion. No test
@@ -532,7 +554,7 @@ internal/adapter/nfs/
 - **Acceptance criteria:**
   - Each golden file decodes to its value and the value encodes to its bytes.
   - A first byte other than 1 is `ErrRecVersion`; a body cut anywhere `ErrRecTruncated`; bytes left
-    over, a kind outside the two, a `mon_name` past 1024 bytes, a `NetID` past 16 bytes, an `Addr`
+    over, a kind outside the two, a `mon_name` past 1024 bytes, a `SessionReply` past 8 KiB, a `NetID` past 16 bytes, an `Addr`
     past 64, a bitmap past 3 words, or a `Host` or `Server` of a length other than 4 or 16
     `ErrRecCorrupt`.
 - **Tests:** at `DecodeClientRec`, which every reader of a record calls: the golden table (catches
@@ -569,7 +591,9 @@ internal/adapter/nfs/
   - `ops/v4/exchange_id.go`: `Record` first where the name is known, then `Propose` for a new owner
     or a new verifier, or the existing client ID for a confirmed owner, verifier and principal; the
     reply's flags (`USE_NON_PNFS` only, `CONFIRMED_R` when confirmed), server owner and scope (D4),
-    `SP4_SSV` refused, the two bitmaps kept for the confirm's bytes, `UPD_CONFIRMED_REC_A` answered
+    `SP4_SSV` refused, `SP4_MACH_CRED` outside `RPCSEC_GSS` integrity or privacy refused
+    `NFS4ERR_INVAL` (Q5's recommended option), the two bitmaps kept for the confirm's bytes, the
+    `ClientInfo`'s `Recovery` `RecoverStatus` (R13), `UPD_CONFIRMED_REC_A` answered
     from `Record` alone (R67); drain role none. `v4.Handlers`
     gains `Sessions *protocol.Sessions` and the server identity (Q1). The `ClientInUse` and
     `ErrDelay` rows.
@@ -587,7 +611,10 @@ internal/adapter/nfs/
   - `Confirm` with the client ID of a new owner's proposal, the only thing its confirm carries,
     finds it; after a second proposal for the same name, `Confirm` with the first's client ID finds
     nothing (D3).
-  - `SP4_SSV` is `NFS4ERR_ENCR_ALG_UNSUPP`; `SP4_MACH_CRED` sets `Protect`.
+  - `SP4_SSV` is `NFS4ERR_ENCR_ALG_UNSUPP`; `SP4_MACH_CRED` under `AUTH_SYS` is `NFS4ERR_INVAL`
+    and leaves no proposal; under `RPCSEC_GSS` integrity it sets `Protect`.
+  - The proposal's `ClientInfo` carries `Recovery` `RecoverStatus`, and its bytes `SessionSeq`
+    `eir_sequenceid` − 1 (D3).
   - With `UPD_CONFIRMED_REC_A`: an unknown owner `NFS4ERR_NOENT`, another verifier
     `NFS4ERR_NOT_SAME`, another principal `NFS4ERR_PERM`, its own verifier and principal its client
     ID; none leaves a proposal or a mutating call.
@@ -600,7 +627,7 @@ internal/adapter/nfs/
   on `memory.New` with the NFSv4.0 bytes T8.2 encodes, sends `EXCHANGE_ID` with the same name and
   verifier: a proposal, not its ID (catches one record kind per minor version, R12); the flags and
   scope of the reply (catch a pNFS flag set, R17, a scope that is not the installation's, R16);
-  `SP4_SSV` (R14); the four `UPD_CONFIRMED_REC_A` cases, as pynfs `EID6` to `EID6h` send them,
+  `SP4_SSV`, and `SP4_MACH_CRED` under `AUTH_SYS` (R14, Q5); the four `UPD_CONFIRMED_REC_A` cases, as pynfs `EID6` to `EID6h` send them,
   the table and `vfstest.Mutations` read after each (catches the flag ignored and a proposal made,
   R67); `SP4_MACH_CRED`'s two bitmaps kept in the proposal's bytes as sent and answered
   in the reply (catches a set dropped before the confirm, R3, R15's half here; its refusal is
@@ -614,15 +641,19 @@ internal/adapter/nfs/
   decision kept only in the adapter, R18). Over loopback, the `EXCHANGE_ID` steps of "§3.5 confirm
   *(1 node)*", "§3.3 one name, two principals *(1 node)*" and "§3.3 client record"'s reboot and
   in-use steps (R19, R20, R65). No test double; the second
-  principal is a second `AUTH_SYS` uid T7.1 resolves.
+  principal of the `CLID_INUSE` cases is a second `AUTH_SYS` uid T7.1 resolves, and every
+  `SP4_MACH_CRED` case here, in T8.4 and in T8.9 runs on requests whose `r.Call` names
+  `RPCSEC_GSS` integrity and one of two Kerberos principals `memory.New`'s identity store holds, as
+  E13's context stage sets them, an input rather than a double; the same steps over a real GSS
+  context are E16's T16.3 (R55).
 - **Rules:** rule 9's `decision:` marker for D3; rule 13: `Propose` is the one mutating call.
 
 ### T8.4 The session registry and `CREATE_SESSION`
 
-**Subtask T8.4 estimate: 4.5 man-days.**
+**Subtask T8.4 estimate: 4.75 man-days.**
 
 - **Track:** A. **Depends on:** T8.1, T8.3.
-- **Covers:** R1, R4, R10, R11, R15, R19, R21, R22, R23, R24, R25, R26, R27, R29, R30, R31, R34, R60, R61.
+- **Covers:** R1, R4, R10, R11, R13, R15, R19, R21, R22, R23, R24, R25, R26, R27, R29, R30, R31, R34, R60, R61.
 - **Deliverables:**
   - `protocol/sessions.go`, the sessions:
     ```go
@@ -648,8 +679,10 @@ internal/adapter/nfs/
     func (s *Sessions) EndClient(cl vfs.ClientID)    // every session of the client, for an expiry
     ```
     and the per-client step R31's decisions run under.
-  - `ops/v4/create_session.go`: `Record`, or the Pending table for a new client's confirm (D3),
-    dropped with `Drop` only after `AddSession` succeeded; under `SP4_MACH_CRED` the owner check of
+  - `ops/v4/create_session.go`: `Record(csa_clientid)` first, and the Pending table only when no
+    record holds that ID (D3), dropped with `Drop` only after `AddSession` succeeded or once a record
+    holds the ID; a confirming `Connect` answered `ErrStaleClient` rereads `Record` and decides
+    again; under `SP4_MACH_CRED` the owner check of
     Q4 on the new and the replay path (R15);
     R26's decision over the bytes' replay; the confirming case's `Connect` naming the proposal, with
     T8.1's value; `Create`; `AddSession` with the bytes read and the new sequence and reply;
@@ -671,8 +704,11 @@ internal/adapter/nfs/
     `NFS4ERR_CLID_INUSE` and the proposal kept.
   - An `AddSession` answered `RecordChanged` (a second adapter applied the same sequence first) is
     answered the winner's reply, with one session.
-  - A confirming `CREATE_SESSION` whose `AddSession` is answered `ErrDelay` once is
-    `NFS4ERR_DELAY`; its resend finds the proposal and leaves exactly one session.
+  - A confirming `CREATE_SESSION` whose `Connect` succeeded and whose `AddSession` is answered
+    `ErrDelay` once is `NFS4ERR_DELAY`; its resend finds the record and leaves exactly one session.
+  - Two confirming `CREATE_SESSION`s of one sequence raced on one adapter, the second's `Connect`
+    answered `ErrStaleClient`, are answered one session's reply.
+  - `csa_sequence` 0 after a stored 0xFFFFFFFF is "one more" and builds the session.
   - On an `SP4_MACH_CRED` client with `CREATE_SESSION` in `spo_must_enforce`, a second principal's
     `CREATE_SESSION`, new or replayed, is `NFS4ERR_ACCESS`, nothing written and no stored reply
     returned.
@@ -685,8 +721,13 @@ internal/adapter/nfs/
   `memory.New`, which answers it from `Record` (catches a sequence held in one adapter's memory, R4,
   R26, R34); the race, two adapters over one service with a `vfstest.Faults` gate holding the first
   `AddSession` until the second's returns (catches a second session built on `RecordChanged`, R26);
-  `AddSession` faulted once with `ErrDelay` through `vfstest.Faults`, then the resend (catches a
-  proposal dropped before the write, R10); the second principal's new and replayed `CREATE_SESSION`
+  `AddSession` faulted once with `ErrDelay` through `vfstest.Faults` after `Connect` succeeded, then
+  the resend (catches a resend sent through the proposal open state already dropped, answered
+  `NFS4ERR_STALE_CLIENTID`, R10, R26); the two confirms raced on one adapter with a `vfstest.Faults`
+  gate holding the first `AddSession` (catches a second `Connect`'s `ErrStaleClient` answered to the
+  client, R34); the wrap of `csa_sequence` (catches unwrapped arithmetic, R26); the `Recovery` in
+  the `ClientInfo` `Connect` received, read from `vfstest.Mutations` (catches a zero kind refused
+  `ErrInvalid`, R13); the second principal's new and replayed `CREATE_SESSION`
   (catches a replay handing another principal the stored `csr_sessionid`, R15); the pool's
   `ErrDelay` row (R60), and `CREATE_SESSION` refused by a drain (R61);
   `vfstest.Mutations` showing the confirming `Connect` before `AddSession`, and no write by a replay
@@ -702,24 +743,29 @@ internal/adapter/nfs/
 
 ### T8.5 `SEQUENCE`'s slots and reply cache
 
-**Subtask T8.5 estimate: 4 man-days.**
+**Subtask T8.5 estimate: 4.5 man-days.**
 
 - **Track:** A. **Depends on:** T8.4, T3.3.
-- **Covers:** R22, R27, R28, R32, R33, R35, R36, R37, R38, R39, R40, R41, R61.
+- **Covers:** R22, R27, R28, R32, R33, R35, R36, R37, R69, R38, R39, R40, R41, R61.
 - **Deliverables:**
   - `wire/rpc.go`: the `COMPOUND` header's `SEQUENCE` fields (D5); `protocol/stages.go`: `Route`
     setting `r.Call.Session`, `r.Call.Client` and the session level (D6); `protocol/flow.go`: NFS's
-    `Flow` (D7); `protocol/replay.go`: a hit from the slot, and `Store` committing the slot's
-    marked sequence and, under `sa_cachethis`, a copy of the reply charged as T8.4 reserved it;
+    `Flow` (D7); `protocol/replay.go`: a hit from the slot for the same caller's key, and `Store` committing the
+    slot's marked sequence and the caller's key and, under `sa_cachethis`, a copy of the reply
+    charged as T8.4 reserved it (D5);
     `core/compound.go` and `core/pipeline.go`: `release()` after `Replay.Store`, as RFC 20 §4.1
     has it (D5), with a hook set from `export_test.go` that holds a request between the two.
   - `ops/v4/sequence.go`: the slot check and every sequence error as `SEQUENCE`'s result (D5),
-    `sr_highest_slotid` and `sr_target_highest_slotid` (D8), the slots a client retires released,
-    the session level raised; drain role context. The rows of `ErrNoSession`, `ErrNotNegotiated` and
+    `NFS4ERR_SEQ_FALSE_RETRY` among them, `sr_highest_slotid` and `sr_target_highest_slotid` at the
+    grant whatever `sa_highest_slotid` says (D8), the session level raised; drain role context. The rows of `ErrNoSession`, `ErrNotNegotiated` and
     `ErrNoTree` (D6).
   - `adaptertest/flow.go`: `func FlowConformance(t *testing.T, newFlow func() core.FlowControl, h
     core.Header)`, run on `testproto`'s `Flow` and NFS's.
   - `core`: the session text `ConnInfo` reads, set by NFS when a connection binds (Q3).
+  - `nfsharness`: a minor-version-1 compound opens a session once per harness and starts with its
+    `SEQUENCE` unless the case sends its own, so the NFSv4.1 cases E5 and E6 wrote before the
+    session level existed, and those of E9 and E12 written beside it, pass unchanged; E5's document
+    expects this epic to add it.
   - Consumed by T8.6 and T8.7, which extend the member, E5's, E9's and E12's members, which run
     after it, and E10, whose drain test reads R38.
 - **Acceptance criteria:**
@@ -733,6 +779,12 @@ internal/adapter/nfs/
   - A sequence two ahead is `NFS4ERR_SEQ_MISORDERED`, a slot past the highest `NFS4ERR_BADSLOT`, an
     unknown session `NFS4ERR_BADSESSION`, a slot in use `NFS4ERR_DELAY`, each as `SEQUENCE`'s
     result with the slot unchanged.
+  - A cached request resent under another `AUTH_SYS` uid is `NFS4ERR_SEQ_FALSE_RETRY` as
+    `SEQUENCE`'s result, with no cached byte in the reply; resent under the first uid it is the
+    cached reply.
+  - A slot whose sequence is 0xFFFFFFFF takes 0 as its next.
+  - An idle client sending `sa_highest_slotid` 0 on a session granted 64 slots is answered 63 in
+    both highest-slot fields, and the pool's charge is unchanged.
   - A compound refused by a drain after `Flow` admitted it leaves its slot's sequence and reply as
     they were and its slot no longer in flight: its retransmission is refused by the drain again,
     never `NFS4ERR_DELAY` or `NFS4ERR_RETRY_UNCACHED_REP`; a compound whose connection closes
@@ -740,7 +792,10 @@ internal/adapter/nfs/
   - A `PUTROOTFH` before any `SEQUENCE` at minor version 1 is `NFS4ERR_OP_NOT_IN_SESSION`; at 0 it
     runs.
   - `FlowConformance` passes for both flows.
-  - The header-stage allocation test, extended to `SEQUENCE` headers, holds E3's count.
+  - The header-stage allocation test, extended to `SEQUENCE` headers, holds E3's count;
+    `Flow.Admit`, a missing `Lookup`, an uncached `Store` and the `SEQUENCE` member allocate 0
+    under `testing.AllocsPerRun`.
+  - A case of E5's written without `SEQUENCE` at minor version 1 passes on the harness unchanged.
 - **Tests:** at the stages and the `SEQUENCE` member, through `nfsharness` and on header vectors
   without a socket: the cached and uncached resends, with `vfstest.Mutations` counting one call
   (catch a replay run twice, R37, or answered from a partial reply, R36); the resend held
@@ -750,9 +805,13 @@ internal/adapter/nfs/
   `Admit` and the member, by `core`'s drain on the test server, then its retransmission (catches a
   slot advanced by an unanswered request, or left in flight so its resend is `NFS4ERR_DELAY`
   forever, R38); the connection closed while a member blocks, then the slot reused on another
-  connection (catches an in-flight mark only a reply clears, R38); a client lowering `sa_highest_slotid`, its released slots seen in the
-  pool's charge, and, with a member blocked in a slot above the new highest, `sr_highest_slotid`
-  not below that slot until it answers (catch R39's two halves, R22); a `SEQUENCE` naming a session after the adapter restarted
+  connection (catches an in-flight mark only a reply clears, R38); a client sending `sa_highest_slotid` 0 while idle, then with a member blocked in slot 5,
+  both answered the granted highest in both fields and the pool's charge read unchanged (catches
+  `sa_highest_slotid` read as a retirement, which shrinks a Linux client to one slot, R39, R22,
+  D8); the cached resend under a second uid (catches another user handed the cached reply, R69);
+  the slot sequence's wrap (catches unwrapped arithmetic, D5); the four allocation pins, each
+  failing if a per-request allocation is added (rule 4); an E5 case left without `SEQUENCE`
+  (catches the session level breaking earlier epics' cases); a `SEQUENCE` naming a session after the adapter restarted
   over the same service, `NFS4ERR_BADSESSION` (R28); `r.Call.Session` and `Client` read by a test
   member after `SEQUENCE` (R33); `ConnInfo.Session` listing the session's ID (R32); the level cases
   (R41); `SEQUENCE` run under a drain's context (R61); `FlowConformance` (R40), which fails for a `Flow` that waits under an ended context; the
@@ -772,11 +831,15 @@ internal/adapter/nfs/
 - **Deliverables:** `sequence.go`: `Renew` at most once per renewal interval (D10), the
   `SEQ4_STATUS` flags of R46 from the status, the `GraceRef`s shown kept on the session; a `Renew`
   answered `StaleClient` ending the client's sessions here and answering `NFS4ERR_BADSESSION`;
-  `reclaim_complete.go`: `ReclaimComplete` with the session's `GraceRef`s, drain role none.
+  `reclaim_complete.go`: `ReclaimComplete` with the session's `GraceRef`s, its `ErrNotYours` (a
+  protected record's other principal, `pkg/openstate/recovery.go`) answered `NFS4ERR_WRONG_CRED`,
+  which RFC 8881's error table lists for it; drain role none.
   Consumed by E10, which adds `SEQ4_STATUS_CB_PATH_DOWN`, and E9's and E16's reclaim rows.
 - **Acceptance criteria:**
   - 10^4 `SEQUENCE`s inside one renewal interval call `Renew` once; one more after the interval on
-    the injected clock calls it again.
+    the injected clock calls it again; 64 `SEQUENCE`s on 64 slots released together just past the
+    interval call it once.
+  - A second principal's `RECLAIM_COMPLETE` on an `SP4_MACH_CRED` client is `NFS4ERR_WRONG_CRED`.
   - With `vfstest.Faults` answering `Renew` a status with each flag, each `SEQUENCE` reply carries
     exactly that flag.
   - `RECLAIM_COMPLETE` names the instances the session's replies showed, and only those; the next
@@ -795,7 +858,8 @@ internal/adapter/nfs/
   `SEQUENCE` before the interval ends, its reply without the flag and no second `Renew` in
   `vfstest.Mutations` (catches the flag served from the status kept, R46, or a renewal it forces,
   R44); a second `RECLAIM_COMPLETE`, as pynfs `RECC4` sends it, then one after a new instance
-  injected through `vfstest.Faults` (catches a repeat answered nil, R68, or a mark never cleared); the two expiry
+  injected through `vfstest.Faults` (catches a repeat answered nil, R68, or a mark never cleared); the 64 concurrent `SEQUENCE`s, under `-race` (catches an interval check that does not claim the
+  renewal, D10); the second principal's `RECLAIM_COMPLETE` (catches `ErrNotYours` unmapped); the two expiry
   paths (catch an expired session served, R48); `RECLAIM_COMPLETE` refused by a drain (R61). No test
   double.
 - **Rules:** rule 9's `decision:` marker for D10.
@@ -829,7 +893,8 @@ internal/adapter/nfs/
   `GETATTR` case and its cached-size twin on `nfsharness` (catch a member over the budget run, R58,
   R35); a session granted a `ca_maxresponsesize_cached` of 10 bytes and a lone `SEQUENCE` with
   `sa_cachethis`, answered `NFS4ERR_REP_TOO_BIG_TO_CACHE` with nothing cached, as pynfs `CSESS27`
-  sends it (catches `SEQUENCE`'s own reply never checked, R35); the operation count (catches a session's grant not enforced, R23). No test double.
+  sends it (catches `SEQUENCE`'s own reply never checked, R35); one wrapped `Bound` call pinned at 0
+  allocations by `testing.AllocsPerRun` (rule 4); the operation count (catches a session's grant not enforced, R23). No test double.
 - **Rules:** rule 4's pipeline gate; rule 9: `core`'s `ponytail:` removed with the change it named;
   D12's `decision:`.
 
@@ -865,13 +930,16 @@ internal/adapter/nfs/
 **Subtask T8.9 estimate: 3 man-days.**
 
 - **Track:** A. **Depends on:** T8.4, T8.6, T3.2.
-- **Covers:** R15, R18, R28, R30, R31, R52, R53, R54, R55, R60, R61, R65.
+- **Covers:** R15, R18, R28, R30, R31, R52, R53, R70, R54, R55, R60, R61, R65.
 - **Deliverables:** `destroy_session.go` (`End`, and at the node's last, `Disconnect` with `Last`
-  and the entry's `Gen`, deciding again on a newer one; drain role release), `destroy_clientid.go`
+  and the entry's `Gen`, deciding again on a newer one; naming its own compound's session, only as
+  the last operation, else `NFS4ERR_NOT_ONLY_OP`, R70; drain role release), `destroy_clientid.go`
   (`Destroy`; drain role release), `bind_conn_to_session.go` and `backchannel_ctl.go` (the connection bound through T8.4's `Bind` and `Unbind`, `Bind` before the `Connect` again when
   the back channel moves;
   `NFS4ERR_BADSESSION` for a
-  session this node does not hold); a failing `Disconnect` handed to `Deps.Retry`, which this
+  session this node does not hold); a failing `Disconnect` handed to `Deps.Retry` while its error is transient (`ErrDelay`,
+  `ErrUnavailable`; `StaleClient` counts as success), any other ending the retry with an `Error`
+  log naming no client, and the retrier stopping with the adapter, which this
   subtask adds to `pkg/adapter/deps.go` if RFC 22's plan has not (§9); the `ClientBusy` row, and
   `NotYours` for `DESTROY_CLIENTID` as `NFS4ERR_WRONG_CRED`. Consumed by E10 (the back channel's
   connection); E16 runs no unmount row of its own, since no row asks for one (E16's §9, point 2).
@@ -881,14 +949,18 @@ internal/adapter/nfs/
   - Two sessions of one client: the first `DESTROY_SESSION` calls nothing, the second `Disconnect`.
   - A `Disconnect` failed twice by `vfstest.Faults` is repeated through `Retry` until it succeeds,
     a `StaleClient` repeat counted as success.
-  - A second principal's `DESTROY_CLIENTID` on an `SP4_MACH_CRED` client is `NFS4ERR_WRONG_CRED`,
-    and its `DESTROY_SESSION` or `BIND_CONN_TO_SESSION` `NFS4ERR_ACCESS` whether or not the client's
-    `spo_must_enforce` names them (RFC 8881 §18.37.3, §18.34.3; where the check runs as Q4 settles).
+  - A second principal's `DESTROY_CLIENTID` or `DESTROY_SESSION` on an `SP4_MACH_CRED` client is
+    `NFS4ERR_WRONG_CRED`, and its `BIND_CONN_TO_SESSION` `NFS4ERR_ACCESS`, whether or not the
+    client's `spo_must_enforce` names them (RFC 8881 §18.37.3, §18.34.3; where the check runs as Q4 settles).
   - `BIND_CONN_TO_SESSION` binds a second connection, whose `SEQUENCE` is then served.
+  - `SEQUENCE(s), DESTROY_SESSION(s), PUTROOTFH` is `NFS4ERR_NOT_ONLY_OP` at `DESTROY_SESSION` and
+    `s` still serves; `SEQUENCE(s), DESTROY_SESSION(t)` with `PUTROOTFH` after it ends `t`.
+  - A `Disconnect` failed with `ErrInvalid` is handed back once, not repeated.
 - **Tests:** at the members on `nfsharness` over `memory.New`: the busy and clean-unmount
   sequence (catches `DESTROY_CLIENTID` answered from this node's sessions, R18, R52, R53, R65); the two
   sessions (catches `Last` sent early); the retried `Disconnect` with a recording retrier, its
-  output (catches a failure dropped, R54); a `Connect` answering a newer `Gen` while the last
+  output (catches a failure dropped, R54, or a permanent one retried forever); the two
+  `DESTROY_SESSION` positions (catches R70 unchecked, or checked against another session's); a `Connect` answering a newer `Gen` while the last
   session ends, the repeat read from `vfstest.Mutations` (R31); the second principal (catches an owner check left to no one, R15, R55, R52);
   the binding cases over loopback on two scripted-client connections (R28, R30); the `ClientBusy`
   row (R60), and `DESTROY_SESSION` and `DESTROY_CLIENTID` run through a drain (R61). No test double: the
@@ -904,7 +976,9 @@ internal/adapter/nfs/
 - **Covers:** R6, R8, R9, R10, R11, R66, R12, R13, R19, R20, R44, R48, R49, R50, R51, R60, R61, R62, R63.
 - **Deliverables:** `setclientid.go` (`Record` first for a known name, `Propose` with the callback in
   the proposal's bytes; drain role none), `setclientid_confirm.go` (the Pending table's proposal,
-  `Connect` naming it with T8.1's value, `Drop` once it succeeded; drain role none), `renew.go` (`Record` first, then `Renew`;
+  `Connect` naming it with T8.1's value and `Recovery` `RecoverRefusal` (R13), `Drop` once it
+  succeeded, a `Connect` answered `ErrStaleClient` rereading the record for R66's check, as D3's
+  `CREATE_SESSION` does; drain role none), `renew.go` (`Record` first, then `Renew`;
   drain role context); the three rows' `Versions` admit 0 and 1 and each handler answers
   `ErrNotSupported` at 1 (R62), with a `decision:` marker naming why; the `StaleClient` row for
   operations naming a client ID. Consumed by E9,
@@ -921,13 +995,15 @@ internal/adapter/nfs/
   - `RENEW` of a client `EXCHANGE_ID` confirmed, or of one `Renew` answers `StaleClient`, is
     `NFS4ERR_STALE_CLIENTID`, and never `NFS4ERR_CB_PATH_DOWN`.
   - 10^4 `SETCLIENTID`s for one client ID and verifier give 10^4 distinct confirm verifiers.
+  - The `ClientInfo` the confirm's `Connect` passes carries `Recovery` `RecoverRefusal`.
 - **Tests:** at the members on `nfsharness` over `memory.New`: the same-verifier `SETCLIENTID` and
   its confirm, the record's bytes read after each (catch a callback taken before the confirm, R8);
   the stale and in-use confirms (R10, R11); the repeated confirm, as pynfs `CIDCF3` sends it
   (catches `Drop` read as the record's absence, R66); an `EXCHANGE_ID`-confirmed name proposed by
   `SETCLIENTID` (R12); the `RENEW` cases, `StaleClient` injected through `vfstest.Faults` (R48, R49,
   R50); no dial reaching a listener the test opens at the callback address (catches a callback
-  connection, R51); the confirm verifiers (catch a confirm derived from the client ID, R19); the
+  connection, R51); the confirm verifiers (catch a confirm derived from the client ID, R19); the `Recovery` read
+  from `vfstest.Mutations` (catches a zero kind refused `ErrInvalid` or NFSv4.1's kind, R13, R49); the
   NFSv4.0 golden files of the client fields table (R13, R63); the `StaleClient` row (R60), `RENEW`
   run under a drain's context and `SETCLIENTID` refused by it (R61). Over loopback, the `SETCLIENTID` steps
   of "§3.5 confirm *(1 node)*" and "§3.3 one name, two principals *(1 node)*" (R19, R20, R6, R9). No
@@ -965,8 +1041,8 @@ Checkpoints: after T8.2, after T8.5, and S4 after T8.8.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T8.2 | 2 | — | the `Adapter` bytes E9, E10 and E11 read and write |
-| 2 | T8.1, T8.3, T8.4 | 8.75 | PR 1 | a client ID proposed and confirmed into a session, with the record's replay; the callbacks value with `Connect`, its first caller (rule 12) |
-| 3 | T8.5, T8.6 | 7 | PR 2 | `SEQUENCE` whole: slots, the reply cache, the lease and its flags |
+| 2 | T8.1, T8.3, T8.4 | 9 | PR 1 | a client ID proposed and confirmed into a session, with the record's replay; the callbacks value with `Connect`, its first caller (rule 12) |
+| 3 | T8.5, T8.6 | 7.5 | PR 2 | `SEQUENCE` whole: slots, the reply cache, the lease and its flags |
 | 4 | T8.7, T8.8 | 5 | PR 3 | the reply budget and S4 over loopback |
 | 5 | T8.9, T8.10 | 5.5 | PR 3 | ending sessions and clients, and NFSv4.0's client ID; can be open beside PR 4 |
 
@@ -1002,8 +1078,9 @@ Questions pending the user's answer. Each recommended option is written in place
 - **Q4. Where `SP4_MACH_CRED`'s owner check runs** (R15, R55). RFC 21 §11.4 has the adapter refuse
   an `spo_must_enforce` operation from a principal other than `Owner` before calling the service,
   but the adapter holds no principal: `vfs` resolves the caller (`internal/vfs/clients.go`'s `who`,
-  RFC 18 §6), and open state compares `Owner` only in `Rebind` and `Destroy`
-  (`pkg/openstate/clients.go` on `feat/storage-v2`); `AddSession` makes no such check, and
+  RFC 18 §6), and open state compares `Owner` only in `Rebind`, `Destroy` and `ReclaimComplete`
+  (`pkg/openstate/clients.go` and `recovery.go` on `feat/storage-v2`; T8.6 maps the last's
+  `ErrNotYours`); `AddSession` makes no such check, and
   `CREATE_SESSION`'s replay, `DESTROY_SESSION` short of the node's last session and
   `BIND_CONN_TO_SESSION` that moves no back channel make no service call at all. RFC 8881 §18.37.3
   and §18.34.3 refuse `DESTROY_SESSION` and `BIND_CONN_TO_SESSION` to another principal whatever
@@ -1012,8 +1089,13 @@ Questions pending the user's answer. Each recommended option is written in place
     comparing the caller's resolved principal with a protected record's `Owner`; the adapter calls
     it before each operation in the client's `spo_must_enforce`, `CREATE_SESSION`'s new and replay
     paths included, and before every `DESTROY_SESSION` and `BIND_CONN_TO_SESSION` of an
-    `SP4_MACH_CRED` client, answering `NFS4ERR_ACCESS`; `Destroy` keeps its own check, mapped to
-    `NFS4ERR_WRONG_CRED`. One read per such operation; Linux names only the session and client
+    `SP4_MACH_CRED` client, answering `NFS4ERR_ACCESS` (`DESTROY_SESSION` `NFS4ERR_WRONG_CRED`,
+    R15); an error from `Owns` refuses the operation with that error's row, never runs it;
+    `Destroy` keeps its own check, mapped to `NFS4ERR_WRONG_CRED`. The bitmap is read from the
+    session, copied from the record's bytes at `CREATE_SESSION`, not from the record each compound:
+    a confirmed record's bitmaps change only with a new client ID, which ends its sessions, and
+    `UPD_CONFIRMED_REC_A` writes nothing (R67). A `decision:` marker at the copy names that
+    exception to R4, overturned if anything rewrites a confirmed record's bitmaps. One read per such operation; Linux names only the session and client
     operations in the set (from memory), none on the I/O path. RFC 21 §11.4's sentence stands.
   - (b) Open state's checks only: `AddSession` takes the caller and refuses `ErrNotYours` for a
     protected record (RFC 14 and RFC 17 amended), which covers `CREATE_SESSION`'s new path; the
@@ -1027,8 +1109,9 @@ Questions pending the user's answer. Each recommended option is written in place
   - (a) **Recommended:** refuse `SP4_MACH_CRED` on an `EXCHANGE_ID` not under `RPCSEC_GSS` with
     integrity or privacy, `NFS4ERR_INVAL` as knfsd answers it (from memory), so until E13 every
     such request is refused and the client falls back to `SP4_NONE`; R15's and R55's
-    second-principal tests then run with E13's Kerberos principals (E13, E16's T16.3), and RFC 21
-    §3.3 says so in batch two's pull request.
+    second-principal tests run on `nfsharness` with requests naming `RPCSEC_GSS` integrity and two
+    Kerberos principals as inputs (T8.3's tests), over a real GSS context in E16's T16.3, and RFC 21
+    §3.3 says so in batch two's pull request. Written in place in T8.3.
   - (b) Accept it over any flavor, with a `decision:` marker at `EXCHANGE_ID` naming that over
     `AUTH_SYS` the protection is only as good as the uid the client asserts; R15's and R55's tests
     stay here on two `AUTH_SYS` uids.
@@ -1036,9 +1119,11 @@ Questions pending the user's answer. Each recommended option is written in place
   `CREATE_SESSION` can fill the connection-state pool and send every other client to
   `NFS4ERR_DELAY`; RFC 21 §3.1 and RFC 24 §4.5 bound the node, not the client.
   - (a) **Recommended:** no cap now, a `ponytail:` at `Create` naming the pool as the only bound
-    and a cap per client (16 per node, answered `NFS4ERR_DELAY`) as the upgrade once the pool is
-    seen exhausted by one client; RFC 24 §4.5 says so.
-  - (b) The cap now, in T8.4 and RFC 24 §4.5, about 0.5 man-days inside T8.4's figure.
+    and a cap per source address (16 sessions per node, answered `NFS4ERR_DELAY`), as RFC 14 §2.9
+    caps proposals per source, as the upgrade once the pool is seen exhausted by one host; a cap
+    per client would not stop an `AUTH_SYS` host that mints owner names for free. RFC 24 §4.5 says
+    so.
+  - (b) The per-source cap now, in T8.4 and RFC 24 §4.5, about 0.5 man-days inside T8.4's figure.
 
 Gaps and assumptions, not questions:
 
@@ -1054,11 +1139,14 @@ Gaps and assumptions, not questions:
   in D2's NFSv4.0 arm); and `EXCHGID4_FLAG_UPD_CONFIRMED_REC_A`, answered `NFS4ERR_NOENT`,
   `NFS4ERR_NOT_SAME` or `NFS4ERR_PERM`, never a new proposal (R67, T8.3). Neither RFC 21 nor R6
   names them; pynfs `CIDCF3` and `EID6` to `EID6h` run them. Likewise RFC 8881 §18.51.4's
-  `NFS4ERR_COMPLETE_ALREADY`, which RFC 21 does not name (R68, T8.6; pynfs `RECC4`).
+  `NFS4ERR_COMPLETE_ALREADY` (R68, T8.6; pynfs `RECC4`), §2.10.6.1.3.1's `NFS4ERR_SEQ_FALSE_RETRY`
+  for a retransmission from another user (R69, T8.5) and §18.37.3's `DESTROY_SESSION` last in its
+  own session's compound (R70, T8.9), none of which RFC 21 names.
 - **Follow-ups outside this document:** the plan's §3.3 and graph lack E7→E8 (T7.1) and E5→E8 (T5.4,
   T5.8, T5.9), and its D13 still gives `nlm.Handlers` to E8; E2's document still names E8 for
   `NO_GRACE`. Each goes with the plan's next edit and E2's.
-- **`nlm.Handlers`' callbacks field** moves to E11's T11.3, the first NLM row that calls `Connect`; the
+- **`nlm.Handlers`' callbacks field** moves to E11's T11.3, the first NLM row that calls `Connect`,
+  and the NLM `LockWaitOver` and `Revoked` arms to its T11.4 and T11.7; the
   RFC 21 implementation plan's D13 names it beside `v4.Handlers`' as this epic's, but `ops/nlm` has
   no `Handlers` before E11 (E3's T3.4), and rule 12 forbids a field ahead of its caller.
 - **`Deps.Retry`** is the RFC 22 implementation plan's, with the first session registry that calls
@@ -1073,7 +1161,8 @@ Gaps and assumptions, not questions:
   `StaleClient` row; E10's T10.2 extends T8.4's `BackChannel` and sends on `Session.Back`, its
   T10.6 adds `SEQ4_STATUS_CB_PATH_DOWN` to T8.6's flags and its T10.5 rewrites
   `internal/vfs/clients.go`'s `decision:` with A2; E11's T11.3 writes T8.2's NLM arm, the host's
-  and server's addresses included, and adds `nlm.Handlers`' field; E12's T12.4 reads
+  and server's addresses included, and adds `nlm.Handlers`' field, its T11.4 and T11.7 the NLM arms
+  of the callbacks value, which tells an NLM host by the protocol T8.1's constructor takes; E12's T12.4 reads
   `Session.Fore.Slots` and adds its count of held calls to `Session`; E13 never offers `RPCSEC_GSS`
   on the back channel (R29). `memory.New`'s clock, which no test here needs (the registry has its
   own, D13), is exported by E9's T9.7.
