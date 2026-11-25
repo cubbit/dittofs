@@ -234,8 +234,8 @@ subtasks and tests can cite them.
   - `New` takes `now func() time.Time`, the one call the store makes on a clock, for
     `Info.ModTime`. A test passes `pkg/sim`'s `TestClock.Now` and the node its own clock's `Now`
     (R21). The store never calls `time.Now`.
-  - No clock type is declared, so none clashes with the `Clock` the RFC 3 plan's epic 2 declares
-    in this package for its `Link` fault (`After(d)`).
+  - No clock type is declared here; the RFC 3 plan's epic 2 declares `Waiter` (`After(d)`) in this
+    package for its `Link` fault.
   - The RFC 4 plan's rule 7 allows `pkg/remote/memory` `pkg/sim`'s clock. This epic imports none,
     which E1's walk passes either way; §9 notes it for the plan's pending import-list fix.
   - Prior art: epic 3's D1 declares its fault interface, and epic 5's D9 its clock, the same way,
@@ -276,8 +276,8 @@ subtasks and tests can cite them.
     `CallRecord` with the same fields, and the in-memory opener copies one into the other.
   - `Foreign` stays with the store's own tests: the S3 store counts a skipped key through §4.12's
     series (E4's T4.7), not through a record.
-  - The type is `CallRecord`, not `Call`, so it does not clash with the `Call` that the RFC 3
-    plan's epic 2's rules match in this package.
+  - The type is `CallRecord`, apart from the `Match` that the RFC 3 plan's epic 2's rules read in
+    this package.
   - Prior art: none found.
 - **D7. The in-memory store counts a skipped key in its load record, and records no §4.12 series
   and no log line.**
@@ -298,9 +298,8 @@ subtasks and tests can cite them.
     refuses it. An embedded store would pass a new write through while read-only. A `decision:`
     marker at `Wrapper` says read-only refuses every write call it lists, and that each call
     landing later must be added to that list or the wrapper refuses to compile.
-  - It takes `*Store`, not any `remote.Store`, because the RFC 3 plan's epic 2 reads the store's
-    record behind it (its `Call.InFlight`). Its only callers are tests over the in-memory store;
-    the S3 store's read-only row goes through E3's `403` (below).
+  - It takes `*Store`, not any `remote.Store`, since its only callers are tests over the in-memory
+    store; the S3 store's read-only row goes through E3's `403` (below).
   - Read-only is a state that holds across calls, so it is a seam setting, not a per-call fault
     decided through the one fault interface (RFC index, "Test harness" item 1). The RFC 3 plan's
     epic 2 adds the per-call faults, and their fault interface, as further settings and methods on
