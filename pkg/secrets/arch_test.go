@@ -49,10 +49,10 @@ var frozenExports = []string{
 	"var ErrWrongRole error",
 }
 
-// exportImporter reads each import, and the store packages storeSymbol
-// reads, from compiled export data; the package itself is always parsed
-// from its files, the planted ones included.
-var exportImporter = archtest.ExportImporter(append([]string{"."}, slices.Collect(maps.Values(storePackages))...)...)
+// exportImporter reads each import, the store packages storeSymbol reads
+// among them, from compiled export data; the package itself is always
+// parsed from its files, the planted ones included.
+var exportImporter = archtest.ExportImporter(".")
 
 // exports type-checks the package made of dir's non-test .go files, whatever
 // their build tags, so a file behind a tag cannot hide an export, plus the
