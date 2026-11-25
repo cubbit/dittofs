@@ -2081,3 +2081,35 @@ func TestTwoReleasesOfOneFileDeleteItOnce(t *testing.T) {
 		t.Errorf("Deletes of one file released twice at once: %d, want 1", got)
 	}
 }
+
+// The deferred unlink of a delete-on-close directory runs under
+// OpenFilesKeepNames, as a Windows delete does: while an open made through
+// the directory is held, the unlink at the last close is refused, counted,
+// and the directory keeps its name. The open's child is unlinked first under
+// another spelling, on a share whose names fold, which leaves the open still
+// made through the directory while the directory is empty, so only that rule
+// can refuse it.
+func TestADeferredUnlinkKeepsTheNameOfADirectoryAnOpenWasMadeThrough(t *testing.T) {
+	n := newFoldNames(t)
+	ctx := t.Context()
+	c := n.smbClient(t, "pc", n.fs.Admin.Principal)
+	d := n.create(t, n.admin, n.fs.Root, "d", vfs.CreateDir)
+	n.create(t, n.admin, d.Handle, "f", vfs.CreateRegular)
+	child, err := n.Open(ctx, c, byName(d.Handle, "f", vfs.OpenExisting, entity.ReadData))
+	n.must(t, err)
+	_, err = n.Unlink(ctx, n.admin, vfs.Target{H: d.Handle}, []byte("F"))
+	n.must(t, err)
+	req := byName(n.fs.Root, "d", vfs.OpenExisting, entity.ReadData|entity.Delete)
+	req.DeleteOnClose, req.Backup = true, true
+	r, err := n.Open(ctx, c, req)
+	n.must(t, err)
+	before := testutil.ToFloat64(n.refusals)
+	if _, err := n.Close(ctx, c, r.Ref, vfs.Seqs{}); err != nil {
+		t.Errorf("the directory's close: %v", err)
+	}
+	_, _, err = n.Lookup(ctx, n.admin, n.fs.Root, []byte("d"))
+	if refused := testutil.ToFloat64(n.refusals) - before; err != nil || refused != 1 {
+		t.Errorf("after the last close of a delete-on-close directory with an open made through it: lookup %v, %v refusals; want d kept and one refusal", err, refused)
+	}
+	n.must(t, errOf(n.Close(ctx, c, child.Ref, vfs.Seqs{})))
+}
