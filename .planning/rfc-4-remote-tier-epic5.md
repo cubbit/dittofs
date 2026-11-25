@@ -337,8 +337,11 @@ row's work is shared, the other part's owner is named.
   random source.** Step 4 lists its three keys in one `List` call, and on a key missing waits 6 s
   and lists again, up to 5 re-lists, 30 s in all; the `max-keys=1` walk then runs once every key
   has appeared. C.4's `decision:` note goes at the loop, and a cancelled context ends the wait at
-  once. The `Client` holds the clock (real time) and the random source (`crypto/rand`) as
-  unexported fields, which tests set per instance from `export_test.go` to a `pkg/sim`
+  once. The `Client` holds the clock and the random source as unexported fields. The clock's
+  type is an unexported interface `s3` declares, `clock{ After(d time.Duration) <-chan struct{} }`,
+  the one method the check calls, which real time and `pkg/sim`'s `TestClock` both satisfy, so
+  production code never imports `pkg/sim` (rule 7); the random source is an `io.Reader`,
+  `crypto/rand.Reader` in production. Tests set both per instance from `export_test.go`, to a
   `TestClock` and a seeded source, so a test knows the check namespace and can aim a fault at one
   of its keys. Neither is exported: nothing outside tests sets them, and C.4 fixes the bound. Prior
   art: the engine's and the journal's use of `pkg/sim`'s clock on `feat/storage-v2` (checked).
@@ -359,7 +362,8 @@ row's work is shared, the other part's owner is named.
   §7.1's read-only row makes the namespace read-only with `Answer(403, "AccessDenied", nil)` on
   every `PutObject` under the prefix, removed to restore write access: a scripted refusal, a fault
   RFC 4 §7.2 allows. The row tests what `Health` does with a refused put, not whether the service
-  enforces a policy, so no bucket policy is needed. Prior art: none needed.
+  enforces a policy, so no bucket policy is needed, and this epic consumes no measurement of one
+  from E3. Prior art: none needed.
 
 ## 5. Target tree
 
@@ -530,10 +534,13 @@ pkg/remote/s3/
   failing the open, R6, R34); `immutable` and an unknown mode, the error text read and E3's record
   empty (R26); the oversize `Put` (catches a digest trusted past the size proved, R10). E2's suite
   through the checked `Open`, with the conditional-header count (catches a store the check left
-  misconfigured that `setChoice` would have hidden, R41, R43). A wrong secret: `ErrDenied` of cause
-  `access`, and the `SignatureDoesNotMatch` reply's `AWSAccessKeyId` and `SignatureProvided`, the
-  access key and the secret absent from the error's text and every record of a test `slog` handler
-  (rule 3). An `httptest.NewTLSServer` listener on `127.0.0.1:0` whose root the client does not
+  misconfigured that `setChoice` would have hidden, R41, R43). A wrong secret: LocalStack checks no
+  signature (E3's D7), so the reply is scripted, `Answer(403, "SignatureDoesNotMatch", body)` on
+  the open's first request, `body` an S3 error document in the shape S3 sends, holding the test's
+  access key as `AWSAccessKeyId` and a fixed `SignatureProvided`, a fault E3 allows. The open fails
+  `ErrDenied` of cause `access`, and the access key, the secret and that signature are absent from
+  the error's text and every record of a test `slog` handler (rule 3). E9's run against a real
+  service sends the same open with a real wrong secret. An `httptest.NewTLSServer` listener on `127.0.0.1:0` whose root the client does not
   trust refuses the open and its handler sees no request, the case E4 hands this epic (catches
   verification skipped at open). A sink implementing the recorder, keeping the values `Open`
   delivered, read for every feature with its prefix (catches a refused open leaving the last
