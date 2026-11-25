@@ -32,18 +32,30 @@ small | full)
 	# inside the wait, and the errors the wait then skips turn it silently off.
 	# The two wait budgets take the same guard: a spelled-out duration errors
 	# the shell arithmetic inside its wait, past the point of refusing well.
+	# A leading zero is refused too: the arithmetic reads it as octal, so
+	# 0900 errors inside the wait and 0600 silently means 384.
 	case "${BENCH_QUIET_LOAD:-4}" in
-	'' | *[!0-9]*) echo "BENCH_QUIET_LOAD must be a whole number" >&2; exit 2 ;;
+	'' | *[!0-9]* | 0[0-9]*) echo "BENCH_QUIET_LOAD must be a whole number without a leading zero" >&2; exit 2 ;;
 	esac
 	case "${BENCH_QUIET_LOAD_MAX_WAIT:-14400}" in
-	'' | *[!0-9]*) echo "BENCH_QUIET_LOAD_MAX_WAIT must be a whole number of seconds" >&2; exit 2 ;;
+	'' | *[!0-9]* | 0[0-9]*) echo "BENCH_QUIET_LOAD_MAX_WAIT must be a whole number of seconds without a leading zero" >&2; exit 2 ;;
 	esac
 	case "${BENCH_LOCK_WAIT:-7200}" in
-	'' | *[!0-9]*) echo "BENCH_LOCK_WAIT must be a whole number of seconds" >&2; exit 2 ;;
+	'' | *[!0-9]* | 0[0-9]*) echo "BENCH_LOCK_WAIT must be a whole number of seconds without a leading zero" >&2; exit 2 ;;
+	esac
+	# The wait's poll interval, an input like the clock a test injects: the
+	# scheduled runs keep the 300s default, a test advances time with a
+	# small one instead of sleeping real minutes.
+	case "${BENCH_QUIET_POLL:-300}" in
+	'' | *[!0-9]* | 0[0-9]*) echo "BENCH_QUIET_POLL must be a whole number of seconds without a leading zero" >&2; exit 2 ;;
 	esac
 	# Before the lock and the quiet wait, so a past-deadline run refuses at
-	# once instead of sitting in either wait.
+	# once instead of sitting in either wait. The quiet wait also ends at
+	# this deadline: it can outlive its own budget's start, but never the
+	# lock's obligation to be free in time.
 	[ "$(date +%s)" -lt "$BENCH_NOT_AFTER" ] || { echo "too late to start before the nightly work" >&2; exit 2; }
+	# The quiet wait's own budget, computed once, before the lock is taken.
+	deadline=$(( $(date +%s) + ${BENCH_QUIET_LOAD_MAX_WAIT:-14400} ))
 	# The suite calls, the git steps and the prune self-call all resolve
 	# inside this checkout, never in whatever tree the script was invoked from.
 	cd "$BENCH_CHECKOUT" || exit 2
@@ -64,16 +76,18 @@ small | full)
 	fi
 
 	# A load that never drops under the threshold within the budget refuses
-	# the run instead of running hot.
+	# the run instead of running hot. The wait ends at the earlier of its
+	# budget and the latest start: it runs under the host's lock, so sitting
+	# past the latest start would hold the lock the scheduled work needs.
 	# decision: a missing or unreadable /proc/loadavg skips the quiet wait
 	# and runs immediately (a dev machine has no /proc; the bench host has
 	# it). The exemption is worth only what running hot costs — take on the
 	# host check before pointing this script at a host without /proc.
 	if [ -r /proc/loadavg ]; then
-		deadline=$(( $(date +%s) + ${BENCH_QUIET_LOAD_MAX_WAIT:-14400} ))
 		while [ "$(cut -d' ' -f1 /proc/loadavg | cut -d. -f1)" -ge "${BENCH_QUIET_LOAD:-4}" ]; do
 			[ "$(date +%s)" -lt "$deadline" ] || { echo "host not quiet under ${BENCH_QUIET_LOAD:-4} within ${BENCH_QUIET_LOAD_MAX_WAIT:-14400}s" >&2; exit 2; }
-			sleep 300
+			[ "$(date +%s)" -lt "$BENCH_NOT_AFTER" ] || { echo "too late to start before the nightly work" >&2; exit 2; }
+			sleep "${BENCH_QUIET_POLL:-300}"
 		done
 	fi
 
@@ -134,7 +148,7 @@ small | full)
 	# against a night that completed them all, and the failed night still
 	# surfaces through the run's exit status and its kept files.
 	if [ "$s" -eq 0 ]; then
-		: >"$rundir/done"
+		: >"$rundir/done" || s=$?
 	fi
 
 	# benchstat runs only when this run completed, the binary exists and a

@@ -227,13 +227,19 @@ func TestBenchRunWaitBudgetsMustBeWholeSeconds(t *testing.T) {
 			name:    "a spelled-out quiet wait budget",
 			env:     map[string]string{"BENCH_QUIET_LOAD_MAX_WAIT": "4h"},
 			varName: "BENCH_QUIET_LOAD_MAX_WAIT",
-			want:    "BENCH_QUIET_LOAD_MAX_WAIT must be a whole number of seconds",
+			want:    "BENCH_QUIET_LOAD_MAX_WAIT must be a whole number of seconds without a leading zero",
 		},
 		{
 			name:    "a spelled-out lock wait budget",
 			env:     map[string]string{"BENCH_LOCK_WAIT": "2h"},
 			varName: "BENCH_LOCK_WAIT",
-			want:    "BENCH_LOCK_WAIT must be a whole number of seconds",
+			want:    "BENCH_LOCK_WAIT must be a whole number of seconds without a leading zero",
+		},
+		{
+			name:    "an octal-looking quiet wait budget",
+			env:     map[string]string{"BENCH_QUIET_LOAD_MAX_WAIT": "0900"},
+			varName: "BENCH_QUIET_LOAD_MAX_WAIT",
+			want:    "BENCH_QUIET_LOAD_MAX_WAIT must be a whole number of seconds without a leading zero",
 		},
 	}
 	for _, tc := range cases {

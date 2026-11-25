@@ -5,9 +5,9 @@
 # 0 while DIR's newest finished run — the newest entry holding a done marker,
 # which bench-run.sh writes only when the bench work succeeded — is younger
 # than $BENCH_FRESHNESS_DAYS nights (default 2); otherwise it raises one gh
-# issue, skipping while one is already open. --freshness DIR is a KIND folder
-# (the small or full directory, e.g. $ROOT/small), never the run root: prune
-# touches the kind dirs, so a root read stays falsely young for a month.
+# issue per kind, skipping while one is already open. --freshness DIR is a
+# KIND folder (the small or full directory, e.g. $ROOT/small): the kind names
+# the alert, so each collection's silence is judged — and raised — on its own.
 # Retention: the local run folders go only after a full 31 days
 # (bench-run.sh prune; find compares whole days), the bucket copy is kept. A
 # relative DIR resolves against the repo root once the script cd's there, so
@@ -54,18 +54,21 @@ case $1 in
 	# would make even an empty dir read fresh.
 	[ -n "$newest" ] && [ "$newest" -nt "$ref" ] && { rm -f "$ref"; exit 0; }
 	rm -f "$ref"
-	# stale: one issue, never a second while one is open. The open list is
-	# captured once — a second, unguarded call could fail empty and raise a
-	# duplicate alert. The repo is named because several remotes or an old
-	# origin make gh ask which one or silently drop; gh's own stderr passes
-	# through beside the wrapper message. Deduplication is by label, which
-	# the open list asks for and the created issue carries.
-	open=$(gh issue list -R cubbit/dittofs --state open --label bench-data-stale) ||
+	# stale: one issue per kind, never a second while one is open. The kind
+	# (the checked directory's own name) travels in the title and the dedup
+	# search — one open alert for one kind must not silence the other. The
+	# open list is captured once — a second, unguarded call could fail empty
+	# and raise a duplicate alert. The repo is named because several remotes
+	# or an old origin make gh ask which one or silently drop; gh's own
+	# stderr passes through beside the wrapper message. Deduplication is by
+	# label, which the open list asks for and the created issue carries.
+	kind=$(basename "$dir")
+	open=$(gh issue list -R cubbit/dittofs --state open --label bench-data-stale --search "($kind) in:title") ||
 		{ echo "gh issue list failed (gh missing or not authenticated)" >&2; exit 2; }
 	[ -z "$open" ] || exit 0
 	gh issue create -R cubbit/dittofs \
 		--label bench-data-stale \
-		--title "journal bench data: no finished run in ${BENCH_FRESHNESS_DAYS:-2} nights (bench-data-stale)" \
+		--title "journal bench data ($kind): no finished run in ${BENCH_FRESHNESS_DAYS:-2} nights (bench-data-stale)" \
 		--body "newest finished run folder in $dir: ${newest:-none} — raised by the bench host's freshness check" \
 		|| { echo "gh issue create failed" >&2; exit 2; }
 	exit 0 ;;
