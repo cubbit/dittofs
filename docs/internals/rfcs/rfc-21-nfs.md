@@ -2984,7 +2984,7 @@ harness. §13's rows that name pynfs, cthon04 or nfstest run in `pynfs`,
 its other single-node rows against a real server in
 `e2e`, those reaching one file over NFS and SMB in `e2e/cross-protocol` and
 those under Kerberos in `e2e/kerberos`. No suite runs yet xfstests (§9.3),
-pynfs's reboot tests, pynfs over Kerberos, the wire tests against a reference NFS server, or any
+pynfs's reboot tests, pynfs at minor 2, pynfs over Kerberos, the wire tests against a reference NFS server, or any
 row's cluster steps.
 
 ## 14. Observability
