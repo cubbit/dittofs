@@ -11,7 +11,7 @@ one fault interface the transport consults. Cited, not owned:
 [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) §4.11 (test doubles). Every citation is
 `develop`'s text. The code lands on `feat/storage-v2`, and the paths below are paths there.
 **Track:** C.
-**Epic 3 estimate: 5 subtasks, 10.25 man-days.**
+**Epic 3 estimate: 5 subtasks, 10 man-days.**
 **Depends on:** **R4-S2**, the conformance suite and the in-memory store in CI (E2). Nothing of
 `pkg/remote`'s surface is called here, because the transport sits under the client, below the
 store. `pkg/sim`'s `Schedule` and `TestClock`, already on `feat/storage-v2`, drive its tests.
@@ -58,8 +58,7 @@ Epic 3 gives the S3 store's tests a real service that fails on cue. It has four 
   - versioning, an expiring lifecycle rule and an archive tiering rule;
   - SSE-S3 and SSE-KMS default encryption;
   - an object stored in an archive class;
-  - a stored checksum returned on a get;
-  - a bucket policy denying puts.
+  - a stored checksum returned on a get.
 - `CLAUDE.md` no longer says CI starts no S3 endpoint.
 
 ### 1.1 In scope
@@ -79,8 +78,9 @@ Epic 3 gives the S3 store's tests a real service that fails on cue. It has four 
   - E4 owns the data path, the error table, the client, HTTP/1.1 and the `s3-allocs` option.
   - E5 owns the capability check and both probes.
   - E6 owns the ranged-flip row.
-- **E4 and E7:** E4 owns the S3 store's client, its trusted-roots setting, its HTTPS refusal and
-  the case that refuses an open without the root. E7 owns the `remote.trust_roots` key.
+- **E4, E5 and E7:** E4 owns the S3 store's client, its trusted-roots setting and its HTTPS
+  refusal. E5 owns the case that refuses an open without the trusted root. E7 owns the
+  `remote.trust_roots` key.
 - **E9:** rows on a setting LocalStack cannot hold, run against a real bucket by hand until CI
   holds service credentials. This is the RFC 4 plan's §6.1 ledger row on §7.1's T rows on a
   bucket setting LocalStack cannot hold.
@@ -125,7 +125,7 @@ by number and title, not copied.
 | rule 4, profiling | T3.2, T3.4 | The transport's tests run under `internal/prof`'s goroutine and descriptor checks, which catch a lost or truncated reply whose real body is never closed. T3.2 also asserts that the transport adds no per-byte allocation, so E4's `s3-allocs` rows may run over it |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | Each fault is asserted where it takes effect: what LocalStack stored or answered, read back through a second client that bypasses the transport. The transport's own state is never what is asserted |
 | rule 6, known failures shrink | all | No known-failure file: every test lands green with its subtask |
-| rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | all | `s3fault` imports the standard library and `aws-sdk-go-v2`, never `pkg/sim` or `pkg/remote`. It is test support, which amended RFC 0 §1.2 allows to import implementations. E1's import walk covers it |
+| rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | all | `s3fault` imports the standard library and `aws-sdk-go-v2` (`Bucket.Admin`, the operation name of D12), never `pkg/sim` or `pkg/remote`. It is test support, which amended RFC 0 §1.2 allows to import implementations. E1's import walk covers it, with `s3fault`'s allowlist naming `aws-sdk-go-v2` alone |
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | LocalStack 4.13.1, the image CI and `env.sh` already pin. Bucket settings are applied for real (T3.5) |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | all | The `decision:` and `ponytail:` markers named in §4, at the code sites that implement them |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | Each test reads the service's state through a second client. With the effect removed it fails on its assertion. Where LocalStack shows a behaviour natively (D4), the test pins LocalStack instead, and it fails when an upgrade changes that behaviour |
@@ -324,7 +324,7 @@ pkg/remote/s3/s3fault/
   testdata/         T3.4  a ListObjectsV2 and a DeleteObjects reply as LocalStack wrote them
 test/harness/needs/needs.go, needs_test.go   T3.1  localstack: prefix LOCALSTACK_, the HTTPS variable
 test/suites.yaml              T3.1  "service:localstack" in integration's needs
-.github/workflows/tests.yml, test/harness/env.sh   T3.5  kms in SERVICES, only if SSE-KMS needs it
+.github/workflows/tests.yml, test/harness/env.sh   T3.5  kms in the container's SERVICES=s3, only if SSE-KMS needs it
 CLAUDE.md                     T3.1  the "CI starts no S3 endpoint yet" sentence corrected
 docs/internals/rfcs/rfc-4-remote-tier.md   T3.3, T3.5  Appendix B's LocalStack 4.13.1 rows
 ```
@@ -371,7 +371,7 @@ docs/internals/rfcs/rfc-4-remote-tier.md   T3.3, T3.5  Appendix B's LocalStack 4
     - With only the plain variable set, the need is reported unmet.
   - `integration`, at the client a row builds: an `aws-sdk-go-v2` client that trusts only
     `LocalStack`'s pool completes `ListBuckets` over HTTPS. This catches a wrong host or an unread
-    certificate. The case that refuses an open without the root is E4's, at its client.
+    certificate. The case that refuses an open without the trusted root is E5's, at the open.
   - `LocalStack` with the variable unset and `CI` set fails, and with `CI` unset it skips (D13).
   - `dt docs --check` passes. This catches the suite table left stale.
 - **Rules:** rule 9: D8's and D13's `decision:` markers. Rule 12: `s3fault` lands here with
@@ -485,8 +485,8 @@ docs/internals/rfcs/rfc-4-remote-tier.md   T3.3, T3.5  Appendix B's LocalStack 4
     overlong range (D4), and whether it checks header signatures (D7). The pull request carrying
     the Appendix B rows asks for an RFC review.
   - Consumers:
-    - E4's §4.3 and §4.13 flip rows, §4.4's clamp row and its whole-block flip, and E6's
-      ranged-flip row.
+    - E4's §4.3 and §4.13 flip rows, §4.4's clamp row and its whole-block flip, E4's T4.4,
+      which strips `Range` from a ranged get, and E6's ranged-flip row.
     - E5's §4.11 threshold row and its row against each fault profile.
     - E5's check step 1 (the ETag, CRC32C and the recorded rejection), step 2 (the overlong range)
       and step 4 (the conditional put, refused or not).
@@ -510,6 +510,9 @@ docs/internals/rfcs/rfc-4-remote-tier.md   T3.3, T3.5  Appendix B's LocalStack 4
   - **The range.** `bytes=8-15` of a 10-byte object comes back `206` with 2 bytes. The test pins
     LocalStack's native clamp, or `ClampRange`'s, per D4. If D4 needs `ClampRange`, an in-range
     `bytes=2-5` outside its rule comes back unchanged.
+  - **A stripped header on a get.** A `bytes=2-5` get of a 10-byte object under
+    `StripHeaders("Range")` comes back `200` with all 10 bytes. This shows a strip acting on a get
+    as well as a put, and pins D7 for a signed header on a get (E4's T4.4).
   - **Cubbit DS3's composition** strips the checksum headers, `Content-MD5` and `If-None-Match` on
     `PutObject`. Under it:
     - A put with a wrong CRC32C and one with a wrong `Content-MD5` are both stored, and the
@@ -538,8 +541,8 @@ docs/internals/rfcs/rfc-4-remote-tier.md   T3.3, T3.5  Appendix B's LocalStack 4
     ```
 
   - Consumers:
-    - `HoldNewKeys`: E5's §4.11 listing row. A hold of fewer listings than step 4's five re-lists
-      lets the open succeed, and a longer hold refuses it. The 30-second half runs on E5's clock.
+    - `HoldNewKeys`: E5's §4.11 listing row. Step 4 lists once and then re-lists up to five
+      times, so a hold of up to 5 listings lets the open succeed, and a hold of 6 refuses it. The 30-second half runs on E5's clock.
     - `FailBatchKey`: E4's §4.5 batch row.
 - **Acceptance criteria:**
   - A held key is absent from its own first `listings` listings and present from the next. Every
@@ -562,7 +565,7 @@ docs/internals/rfcs/rfc-4-remote-tier.md   T3.3, T3.5  Appendix B's LocalStack 4
 
 ### T3.5 A fresh bucket with real settings, and what LocalStack holds
 
-**Subtask T3.5 estimate: 2 man-days.**
+**Subtask T3.5 estimate: 1.75 man-days.**
 
 - **Track:** C. **Depends on:** T3.1.
 - **Covers:** R18, R19, R20, R23.
@@ -589,10 +592,11 @@ docs/internals/rfcs/rfc-4-remote-tier.md   T3.3, T3.5  Appendix B's LocalStack 4
     - SSE-S3 and SSE-KMS default encryption, and whether the ETag is then the content MD5;
     - an intelligent-tiering rule with an archive tier;
     - an object put in an archive storage class;
-    - a stored checksum returned on a get sent with `x-amz-checksum-mode: ENABLED`;
-    - a bucket policy denying puts on a prefix, which §4.7's read-only row would need.
+    - a stored checksum returned on a get sent with `x-amz-checksum-mode: ENABLED`.
 
-    `kms` joins `SERVICES` in `env.sh` and `tests.yml` only if SSE-KMS needs it. A setting it does
+    `kms` joins the LocalStack container's own `SERVICES=s3` variable (its `-e SERVICES=s3` in
+    `env.sh`, and the `localstack` service's `env` in `tests.yml`), not `env.sh`'s `SERVICES` array
+    of `dt` services, only if SSE-KMS needs it. A setting it does
     not hold sends its §7.1 rows to E9 (R20).
 - **Acceptance criteria:**
   - Each setting LocalStack holds behaves as applied.
@@ -603,7 +607,6 @@ docs/internals/rfcs/rfc-4-remote-tier.md   T3.3, T3.5  Appendix B's LocalStack 4
   - encryption: the ETag compared with the MD5;
   - storage class: as a get reports it;
   - stored checksum: as the get returns it;
-  - policy: the put refused;
   - lifecycle and tiering rules: read back, since the check reads only the configuration
     (Appendix C.1).
 
@@ -640,7 +643,7 @@ flowchart TD
 | --- | --- | --- | --- | --- |
 | 1 | T3.1 | 1.5 | — | LocalStack over HTTPS in `integration`, which E4 waits for first |
 | 2 | T3.2, T3.3 | 5.25 | PR 1 | the transport, with every fault of E4's data-path rows except the listing and batch faults |
-| 3 | T3.4, T3.5 | 3.5 | PR 2 | the stateful rewrites, and the buckets and settings that E5's check is proved against |
+| 3 | T3.4, T3.5 | 3.25 | PR 2 | the stateful rewrites, and the buckets and settings that E5's check is proved against |
 
 This is a suggestion only: one pull request per subtask works as well. T3.5 depends on T3.1
 alone and may open beside PR 2.
