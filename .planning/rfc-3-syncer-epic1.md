@@ -155,14 +155,13 @@ that subtasks and tests can cite them.
 
 ## 4. Decisions this epic takes
 
-- **D1, what a refused call returns. Pending the user's answer** (§9). RFC 3 §1.3 and §2.9 say a
+- **D1, what a refused call returns.** RFC 3 §1.3 and §2.9 say a
   call is refused (a closed flow or syncer, a full queue, the waiter bound, an unhealthy
   direction, a registration with a probe off), but not with what error. RFC 3 §1.3 calls
   `ErrDrift` the syncer's only error value (R16). The engine already depends on the answer: RFC 8
   §6.3's O6 does not count a pass "refused by a full syncer queue (`Throttled`)" as failed, and
-  §10.2 reads a put-unhealthy store's cause from `Health(Put)`. Recommended, and written here
-  until the user answers, the option that keeps R16 and needs no RFC amendment, since each
-  refusal wraps an error of RFC 4's set:
+  §10.2 reads a put-unhealthy store's cause from `Health(Put)`. The user chose the option
+  that keeps R16 and needs no RFC amendment, since each refusal wraps an error of RFC 4's set:
   - a full queue, the waiter bound, a displaced or an evicted entry wrap `remote.ErrThrottled`,
     the reason in the message;
   - a call in an unhealthy direction returns that direction's `Flow.Health` error, which names
@@ -176,8 +175,8 @@ that subtasks and tests can cite them.
   tell a syncer queue refusal from a store that kept throttling past the retry bound, which O6
   treats the same way anyway.
 
-  The alternative is a sentinel per refusal in `pkg/syncer` (`ErrRefused`, `ErrClosed`), which
-  amends RFC 3 §1.3's "only error value". T1.2 writes the convention into the interfaces' doc
+  Not chosen: a sentinel per refusal in `pkg/syncer` (`ErrRefused`, `ErrClosed`), which would
+  amend RFC 3 §1.3's "only error value". T1.2 writes the convention into the interfaces' doc
   comments, T1.3's `Register` refusal is its first use, and E3 and E5 apply the rest. Changing it
   after S1 costs a change to every refusal test of E3 and E5 and to the engine's error mapping in
   RFC 8 offload plan epics 15 to 17. Prior art: Go's `net.ErrClosed`, one value for every use of a
@@ -503,8 +502,6 @@ early.
 
 ## 9. Open points
 
-- **D1 is pending the user's answer**: what a refused call returns. The recommended option is
-  written in place; the alternative amends RFC 3 §1.3.
 - **The plan names `ErrDrift` among epic 1's symbols** (its §1.3 and epic 1's outline), while RFC
   3 §1.3's table and the plan's deferral ledger defer it. This epic follows the RFC (D7).
 - **E1 waits on code the plan's graph does not show.** `pkg/remote` and the codec's stubs are not
@@ -512,11 +509,10 @@ early.
 - **The transfers pool's size is not in `Config`.** The plan's D6 puts it in epic 1, but RFC 3
   §1.3 lands it with the node passing it, and the plan's §6.1 leaves that unowned; E7's fit
   waits for it.
-- **`BlockTarget` is the largest at start, pending the user's answer.** RFC 3 §2.2 fixes only
-  `Max` at start. Extending that to the block target keeps `Register`'s signature; the
-  alternative passes each store's block target to `Register`, so a namespace with a larger target
-  opens without a restart, at the cost of a per-store quantum in E3. With the recommended option,
-  RFC 8 offload plan epic 21's wait for a namespace opened after start with a larger `Max`
+- **`BlockTarget` is the largest at start, as the user decided.** RFC 3 §2.2 fixes only `Max`
+  at start; extending that to the block target keeps `Register`'s signature. Not chosen: each
+  store's block target passed to `Register`, with a per-store quantum in E3. RFC 8 offload plan
+  epic 21's wait for a namespace opened after start with a larger `Max`
   extends to a larger block target.
 - **E8 decides how to label the pool-wide gauges.** RFC 3 §2.12 labels every metric with `half`
   and `store`, but the pool size and the detached buffers belong to the half (D3). E8's collector
