@@ -3529,13 +3529,14 @@ runs yet, alongside the multi-node simulation, the rows marked cluster, and §13
 
 Metric names are shown without the deployment's prefix. A series on state
 carries no `protocol` label: the file's primary sees no protocol, only the
-caller's capabilities, so the per-protocol counts are the adapters' own
-metrics. A series on client records keeps `protocol`, read from the record's
+caller's capabilities, and holds no client record to read a kind from, so the
+per-protocol counts are the adapters' own metrics. A series on client records keeps `protocol`, read from the record's
 kind, in RFC 25's values: `nfs3` (NLM included), `nfs4`, `smb`.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| state held | `openstate_held{kind}`, `kind` = `client`, `pending`, `open`, `lock`, `lock_state`, `waiter`, `grant`, `watch`, `delete_pending`, `revoked` | gauge |
+| clients held | `openstate_clients{protocol, state}`, `state` = `active`, `pending` | gauge |
+| state held | `openstate_held{kind}`, `kind` = `open`, `lock`, `lock_state`, `waiter`, `grant`, `watch`, `delete_pending`, `revoked` | gauge |
 | grants offered and declined | `openstate_grants_total{result}`, `result` = `offered`, `conflict`, `no_callback`, `budget`, `fenced`, `setuid`, `pool`, `shared`, `recalling` | counter |
 | recalls, by outcome and cause | `openstate_recalls_total{outcome, reason}`, `outcome` = `returned`, `revoked`, `downgraded`; `reason` = `conflict`, `budget`, `setuid` | counter |
 | recalls not yet sent | `openstate_recalls_queued` | gauge |
