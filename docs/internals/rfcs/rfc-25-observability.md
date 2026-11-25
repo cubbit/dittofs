@@ -340,7 +340,9 @@ are three kinds of allowed label, and a list of forbidden ones.
    [RFC 4 §4.8](rfc-4-remote-tier.md#4.8%20Errors%20are%20a%20closed%20set)). The
    `protocol` label takes `nfs3`, `nfs4` or `smb` — minor versions are not
    separate values — and NFS's auxiliary services (MOUNT, NLM, NSM) and
-   the port mapper count under `nfs3`.
+   the port mapper count under `nfs3`. A call that names no protocol, such
+   as a test or an internal caller, is labelled `none`
+   ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)).
 
    **One name per concept across the set.** `outcome` is the class of an answer
    (`ok`, `error`, `delay`); `result` is `ok` or the name from a closed error set;
