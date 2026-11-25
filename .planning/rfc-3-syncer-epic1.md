@@ -142,7 +142,7 @@ that subtasks and tests can cite them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R17 | The two halves' pool sizes are configurable independently | MUST | RFC 3 §1.2 | T1.3 |
-| R18 | The syncer exposes exactly two settings, `upload_workers` and `fetch_workers`; everything else it needs is derived or fixed, never a setting | MUST NOT | RFC 3 §2.10 | T1.3, T1.4 |
+| R18 | No value RFC 3 §2.10 fixes is a field of the configuration: the two worker counts are its only tunables, `upload_workers` and `fetch_workers`, and every other field is an input derived elsewhere. The settings section that declares exactly those two is E8's | MUST NOT | RFC 3 §2.10 | T1.3, T1.4 |
 | R19 | An invalid setting is refused, never replaced by a default | MUST | RFC 0 §1.2 | T1.3 |
 | R20 | The per-worker figure's inputs are fixed when the process starts: `Max`, the largest of any namespace served at start and never less than 1 MiB, `MaxDecodeLen(Max)` and the header cap | invariant | RFC 3 §2.2 | T1.3 |
 
@@ -196,7 +196,9 @@ that subtasks and tests can cite them.
   `Retries.SlowTail`, `ByClass[T].Demand`), never a string or an enum the collector has to
   decode, so a missing label value is a missing field, which T1.1's test and E8's collector see.
   The pool-wide gauges, `syncer_workers` and `syncer_detached_buffers`, sit on the half, since
-  no store owns them (§9). Fields are added, never changed, so E3 to E7 filling them changes no
+  no store owns them (§9). A refusal with no registered store behind it (an unknown `StoreID`, a
+  call after the syncer's `Close`, a refused `Register`) is not counted, since §2.12 counts
+  refusals by store. Fields are added, never changed, so E3 to E7 filling them changes no
   signature. Prior art: the journal's `Stats`, which the node turns into series
   (`journalSeries`, `internal/node/stats.go`).
 - **D4, histograms carry RFC 25's `request` set.** `syncer.Histogram` holds one count per bucket
@@ -208,11 +210,16 @@ that subtasks and tests can cite them.
 - **D5, `pool.New` returns the contract.** `New(Config) (syncer.Syncer, error)` returns the
   root interface, so `pool` exports only `New`, `Config` and `Clock`. `Config` holds the two
   worker counts (the only settings, R18), the per-worker inputs (R20), the block target, the
-  transfers pool's size in bytes, whose fit E7 builds, the clock and a logger, and no tracer,
+  clock and a logger, and no tracer,
   since RFC 25 §6.1 gives the fetch span to the engine and the syncer opens none. `New` refuses a count below one, a `Max` below 1 MiB, a non-positive input and a
   nil clock or logger, naming the field (R19). `Register` refuses a probe left off, with a
   `decision:` marker naming its first caller, an immutable backup location (RFC 4 §4.14), and
-  saying the refusal goes when that caller lands. Prior art: `engine.New` taking `Deps`
+  saying the refusal goes when that caller lands. The block target is set per namespace, from
+  1 MiB to 64 MiB (RFC 2 §5.2), while RFC 3 §2.2 and §2.10 size the largest encoded block and
+  the quantum from one figure; `BlockTarget` is therefore the largest of the namespaces served at
+  start, fixed like `Max`, so `Register` keeps its signature (§9). The transfers pool's size of
+  the plan's D6 is not declared: RFC 3 §1.3 and §2.10 land it with the node passing it, and
+  nothing does (§9). Prior art: `engine.New` taking `Deps`
   (`pkg/engine/deps.go`); `pkg/settings`' refusal of an invalid value.
 - **D6, the clock declares only what the syncer reads.** `pool.Clock` has `Elapsed` and
   `After`, the subset RFC 8 §2.1 tells each component to declare. `Now` is left out: every window,
@@ -234,7 +241,9 @@ that subtasks and tests can cite them.
   a disk, a network or a logger the syncer was not given (R3): `time`, `context` and `log/slog`
   reach them transitively, so a transitive ban could never pass. A package under `pkg/syncer`
   with no allowlist fails the test, so E2 adds `syncertest`'s entry and E3 `internal/sched`'s
-  with the packages themselves. Each package reaching `pkg/remote` needs no check: its
+  with the packages themselves. The walk takes its root as an argument, so the planted trees,
+  which `./...` skips under `testdata`, are listed by running `go list` in them with
+  `GOWORK=off`, as `internal/node/arch_test.go` does. Each package reaching `pkg/remote` needs no check: its
   signatures are written in `pkg/remote`'s types, so the compiler holds it. The test also
   asserts that no production file calls the real clock (`time.Now`, `Since`,
   `Until`, `After`, `AfterFunc`, `Sleep`, `Tick`, `NewTimer`, `NewTicker`,
@@ -410,11 +419,10 @@ pkg/syncer/                     RFC 3's contract
   }
   type Config struct {
       UploadWorkers, FetchWorkers int   // upload_workers, fetch_workers
-      Max                         int64 // the largest chunk Max of the namespaces served at start
+      Max                         int64 // the largest chunk Max of the namespaces served at start, floored at 1 MiB by the caller
       MaxDecodeLen                int64 // MaxDecodeLen(Max) over every registered transform
       HeaderCap                   int64 // the block format's header cap
-      BlockTarget                 int64 // the block target
-      TransfersPool               int64 // the transfers pool's size in bytes; zero reduces and refuses nothing
+      BlockTarget                 int64 // the largest block target of the namespaces served at start
       Clock                       Clock
       Logger                      *slog.Logger
   }
@@ -427,7 +435,7 @@ pkg/syncer/                     RFC 3's contract
   the stubs, and by RFC 8 offload plan epic 21, which calls `New`.
 - **Acceptance criteria:**
   - `New` refuses a worker count below one in either half, a `Max` below 1 MiB, a non-positive
-    `MaxDecodeLen`, `HeaderCap` or `BlockTarget`, a negative `TransfersPool`, and a nil `Clock`
+    `MaxDecodeLen`, `HeaderCap` or `BlockTarget`, and a nil `Clock`
     or `Logger`, naming the field; a valid `Config` is accepted.
   - `Stats().Upload.Workers` and `Stats().Fetch.Workers` are the two counts, set apart.
   - `Register` refuses `Probes{PutProbe: false}` or `Probes{GetProbe: false}` as D1 says, with
@@ -437,14 +445,15 @@ pkg/syncer/                     RFC 3's contract
   field defaulted instead of refused, R19, R20); one valid configuration accepted. Upload 1 and
   fetch 64 read back from `Stats` (catches one count shared by both halves, R17). Each probe left
   off refused with D1's error, which the not-built error is not (catches the refusal missing,
-  R12). No test double; `pkg/sim`'s `TestClock` is the clock, kind 1.
+  R12). `var _ pool.Clock = (*sim.TestClock)(nil)` holds R5 at compile time. No test double;
+  `pkg/sim`'s `TestClock` is the clock, kind 1.
 
 ### T1.4 Architecture tests and S1
 
 **Subtask T1.4 estimate: 1.25 man-days.**
 
 - **Track:** the team. **Depends on:** T1.3.
-- **Covers:** R1, R2, R3, R4, R6, R7, R8, R10, R16, R18.
+- **Covers:** R1, R2, R3, R4, R6, R7, R8, R10, R11, R13, R14, R15, R16, R18.
 - **Deliverables:** `imports_test.go` (D8), `surface_test.go` (D9) and `testdata/arch/`, a
   planted package per check. The frozen list is what the S1 review agrees with the RFC 8 offload
   plan's and the RFC 4 plan's authors. Consumed by every later epic, whose code they hold, and
@@ -453,14 +462,17 @@ pkg/syncer/                     RFC 3's contract
   - Over the real tree, each syncer package reaches nothing in this module outside its
     allowlist, no production file calls the real clock, the root declares no package-level
     variable, and both packages export exactly the frozen list.
+  - The frozen list holds `Register` taking `Probes`, no `Flow` method taking a store or a key,
+    `Fetch` and `Prefetch` apart, and streams as `iter.Seq2` (R11, R13 to R15).
   - Each planted violation is reported, by name: `pkg/remote/codec` reached through a planted
     intermediate package; a direct import of `net/http`; a package under `pkg/syncer` with no
     allowlist; a `time.Now` call; a package-level variable in the root; an extra and a missing
-    export, and a field added to `Config`.
+    export, a field added to `Config`, and a `StoreID` added to a `Flow` method.
   - The S1 review has agreed the surface.
 - **Tests:** at the source tree every later epic writes into. Each check runs over its planted
   tree and fails on that violation (catches R1, R6 and R8's transitive case, R3, R4, R7, R2,
-  R10, R16 and R18's extra setting). The settings package's own exports test still passes over
+  R10, R11, R13 to R16 and R18's extra field). The exports test sees exported declarations
+  only: an unexported copy of an RFC 4 type in `pool` stays a review item (rule 10). The settings package's own exports test still passes over
   the moved lister. No test double: `go list` and the source are real.
 
 ## 7. Order of work
@@ -476,7 +488,8 @@ flowchart TD
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-T1.1 needs nothing outside this epic, so it can start before S1c. Checkpoint after T1.1: E8's
+T1.1 needs nothing outside this epic, so it alone can land before S1c; T1.2 to T1.4 all build on
+`pkg/remote`. Checkpoint after T1.1: E8's
 collector can be written against `Stats`. Checkpoint after T1.4: S1, which unblocks E2.
 
 ## 8. Suggested pull requests
@@ -496,6 +509,15 @@ early.
   3 §1.3's table and the plan's deferral ledger defer it. This epic follows the RFC (D7).
 - **E1 waits on code the plan's graph does not show.** `pkg/remote` and the codec's stubs are not
   on `feat/storage-v2` yet; the RFC 4 plan's epic 1 lands them at S1c. T1.1 does not wait.
+- **The transfers pool's size is not in `Config`.** The plan's D6 puts it in epic 1, but RFC 3
+  §1.3 lands it with the node passing it, and the plan's §6.1 leaves that unowned; E7's fit
+  waits for it.
+- **`BlockTarget` is the largest at start, pending the user's answer.** RFC 3 §2.2 fixes only
+  `Max` at start. Extending that to the block target keeps `Register`'s signature; the
+  alternative passes each store's block target to `Register`, so a namespace with a larger target
+  opens without a restart, at the cost of a per-store quantum in E3. With the recommended option,
+  RFC 8 offload plan epic 21's wait for a namespace opened after start with a larger `Max`
+  extends to a larger block target.
 - **E8 decides how to label the pool-wide gauges.** RFC 3 §2.12 labels every metric with `half`
   and `store`, but the pool size and the detached buffers belong to the half (D3). E8's collector
   states the label it gives them.
