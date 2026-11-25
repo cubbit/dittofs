@@ -140,7 +140,9 @@ disk file), receives 64 KiB overwrites all day.
   life, because a name is never written with different bytes.
 - A store does not open on a service missing a feature it relies on, or on a
   bucket whose versioning or expiry rules would keep or delete blocks behind its
-  back; a setting that drifts later stops puts and deletes until it is fixed. The
+  back; once GC's `Recheck` runs ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), a setting that drifts later stops
+  puts and deletes until it is fixed; before that pass lands, drift is seen only
+  when the store is next opened ([§4.1](#4.1%20Interface)). The
   one store that opens on a versioned, object-locked bucket is a backup location
   configured `immutable`, which then requires those settings, never deletes,
   sets a capped retain-until on every put, and keeps every version of its
@@ -177,7 +179,10 @@ Outcome: the operator sees "quota" and frees space; reads never stop.
 
 Outcome: GC clears a record only for a name whose result reads `nil` in a reply.
 
-**Someone turns on versioning for `dfs-data` after N1 opened it.**
+**Someone turns on versioning for `dfs-data` after N1 opened it, once GC's `Recheck` runs.**
+
+Until the `Recheck` calls land with GC ([§4.1](#4.1%20Interface)), no step from 2 on happens: the
+change goes unseen until N1 next opens the store, whose capability check refuses it.
 
 1. N1's store opened against an unversioned bucket, which the capability check
    verified ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)).
@@ -674,6 +679,22 @@ capability check ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%2
 `DeleteVersions` do what [§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent) says; on an immutable one they return
 `ErrInvalid` for every name without sending a request.
 
+**Some calls land with their first caller.** Two groups of this interface have no caller in the
+first release that offloads, and each lands with the caller that first needs it, its signatures
+as written here. The calls a backup location's stores make — `PutVersion`, `GetVersion`,
+`Retention`, `ExtendRetention`, `PutControlVersion`, `ExtendControlRetention`,
+`GetControlVersion`, `PutObject`, `GetObject`, `ObjectRetention`, `ExtendObjectRetention`,
+`DeleteObjects`, `ListObjects` — with the `immutable` mode and its admission
+([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes), [§4.15](#4.15%20Versioned%20objects%20at%20a%20backup%20location)), land with RFC 26's copier and restore; until then a store
+refuses to open in `immutable` mode. `Settings`, `RecheckSetting`, `VersionsPage` and
+`DeleteVersions` land with GC's `Recheck` pass ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)), their caller for a namespace's
+store ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)); a backup location's `Recheck` callers come with RFC 26's. Until then a
+service setting that drifts after a store opened goes unseen until the store is next opened,
+whose capability check reads it again: an expiry rule added in between deletes blocks, and a
+node that never restarts sees it only when a read returns `ErrNotFound`. Each consumer declares
+the methods it uses ([§1.2](#1.2%20A%20contract%2C%20not%20a%20component)), so neither group's arrival changes a caller that uses only the
+others; the conformance suite, which takes the whole `Store`, gains their rows with them.
+
 ```go
 // Cause says why a store refused (ErrDenied), so a caller can choose between
 // waiting and failing a write as out of space (RFC 8 §10.2).
@@ -734,6 +755,14 @@ store opened from one configuration shares that configuration's client
   once every length is known: a checksum that can be combined from parts
   (CRC32C) is taken per body and joined to the header's, and one that cannot
   (MD5) needs a second measuring pass when the lengths also had to be measured.
+  The measured lengths and checksum are kept across the syncer's retries of one
+  `Upload` in RFC 3's `Measure` (`type Measure struct{ State any }`), handed to
+  each `Put(ctx, name, src, m *Measure) (Stored, error)` of the syncer's `Store`
+  ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)): the syncer allocates one per `Upload`, never reads `State`,
+  and sets it to nil after an attempt ending in `ErrCorrupt`; the engine's
+  `Store`, the adapter over this codec and a remote store, owns `State`. So a
+  retry runs only the sending pass ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)). The remote store's own `Put`
+  ([§4.1](#4.1%20Interface)) is unchanged and still keeps nothing across calls ([§4.9](#4.9%20No%20state%20across%20calls)).
 - **A put is verified in transit.** Either the service checks the body against a
   checksum the store sends and refuses a mismatch, or the service reports a digest
   of what it stored and the store compares it with the one it computed while
@@ -1649,8 +1678,8 @@ in-memory store).
 | [§4.7](#4.7%20Health%20is%20one%20probe%20call) | The put probe fails while the namespace is read-only, and succeeds on the next call once write access returns; the get probe succeeds throughout. Revoke access to the store's own prefix only: both probes of that direction fail although a neighbouring prefix stays accessible. | |
 | [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer every request with the service's throttling reply: each call fails with `ErrThrottled`, which also matches `ErrTransient`. | |
 | [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | A transport that answers `404` to the first get after a successful put of the name: the get fails, and the capability check of a service that does so refuses the open. | T |
-| [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer each request with every status from 100 to 599, with known and unknown error codes, and with a body that does not parse: each call wraps exactly one sentinel, and a response checksum mismatch on a get is `ErrTransient`, never `ErrCorrupt`. | T |
-| [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | A transport that reports an archive storage class for what the check wrote, or a tiering rule with an archive tier whose filter could match the prefix: open fails naming it, and `Recheck` fails when either appears later. | T |
+| [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer each request with every status from 100 to 599 but the 2xx successes ([§7.2](#7.2%20Fault%20transport)), with known and unknown error codes, and with a body that does not parse: each call wraps exactly one sentinel, and a response checksum mismatch on a get is `ErrTransient`, never `ErrCorrupt`. | T |
+| [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | A bucket that stores what the check wrote in an archive storage class, or holds a tiering rule with an archive tier whose filter could match the prefix: open fails naming it, and `Recheck` fails when either appears later. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Turn versioning on after open: `Recheck` fails, GC issues no delete, and the syncer refuses puts while gets still succeed; turn it off: the next `Recheck` clears both. Count `Recheck` calls over an hour: exactly one per GC recheck period, none from a GC pass. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | A suspended store with an object version left behind: `Recheck` lists versions and fails; after the repair writes the proof, ten further `Recheck` calls list no versions and pass. Enable versioning again: the proof is emptied, and the next suspended `Recheck` lists again. | T |
 | [§4.7](#4.7%20Health%20is%20one%20probe%20call) | Delete the health object behind the store: the get probe fails with `ErrNotFound`; reopen the store: the check writes it again and the get probe passes. A store whose puts all succeed and whose put probes were skipped still passes the get probe. | T |
@@ -1665,10 +1694,10 @@ in-memory store).
 | [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | A bucket whose cap or legal-hold deny names only the location's credential, or which lacks the deny naming the inspection principal: the open is refused. With an inspection credential, `PutObjectRetention` and `PutObjectLegalHold` provoked once per record: both refused. With R 90 d, G 7 d and cap 100 d, every extension and the health target land at or before now plus 99 days and none is refused. | T |
 | [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | Put 10⁵ names reused on one day at an immutable location: their retain-untils are spread across `G` by each name's phase, no one generation end holding more than twice its share. | T |
 | [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | On an immutable store: every `PutVersion` and `PutObject` request carries a compliance-mode retain-until at a generation's end; `Health(DirPut)` returns `ErrInvalid` and the transport sees no request; `ExtendRetention` to a time at or before the current retain-until returns `nil` after one retention read and sends no retention write. Advance a virtual clock past the lifecycle age with opens in between, and again with one process left up and only its `Recheck`s running: the location still opens and the get probe passes. A store that never extends the health object, or extends it only at open, stops opening here. | T |
-| [§4.15](#4.15%20Versioned%20objects%20at%20a%20backup%20location) | At an immutable location put one backup's state object three times, then have the transport add a delete marker over it as an expiring lifecycle rule would: `ListObjects` yields all three versions, `GetObject` by each returns its bytes, and a get of the current object is refused. At a mutable location a second put replaces the first, and `DeleteObjects` removes it. A block listing yields no versioned object. Re-put an older authentic state version on top of a newer one: the caller still takes the newer by its sequence. | T |
+| [§4.15](#4.15%20Versioned%20objects%20at%20a%20backup%20location) | At an immutable location put one backup's state object three times, then add a delete marker over it as an expiring lifecycle rule would: `ListObjects` yields all three versions, `GetObject` by each returns its bytes, and a get of the current object is refused. At a mutable location a second put replaces the first, and `DeleteObjects` removes it. A block listing yields no versioned object. Re-put an older authentic state version on top of a newer one: the caller still takes the newer by its sequence. | T |
 | [§4.15](#4.15%20Versioned%20objects%20at%20a%20backup%20location) | List 10⁴ state versions with `ListObjects` at 200 a page: each call sends one request and returns at most 200 entries; a page failed and retried resumes after the last key and version returned. `GetObject` an export part from byte 3 MiB: exactly the remaining bytes arrive, with the stored checksum. Open a catalog-only location: versioned objects, retention and the health object work; `Put`, `Get` and `List` of a block are `ErrInvalid` with no request. | T |
-| [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | A bucket policy whose cap and legal-hold deny exempt the location's credential, or a second principal beside the record's declared break-glass one: the open is refused. A record declaring the location's or the inspection credential as its break-glass principal: refused when written. Each of these, with the declared break-glass principal: a legal-hold deny whose resource is the bucket alone, a deny carrying an extra condition, an exemption written as a `Principal` list rather than one `ArnNotEquals`, a policy cap one day below the record's: the open is refused. A break-glass role whose trust admits the location's credential: the `AssumeRole` provocation lands and the record is refused. A transport that lets the location credential's legal hold land: the record is refused. | T |
-| [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | Creating a location record: answer the over-cap provocation with `400 InvalidRequest` (a malformed date), then with `500` and then `403`: the first fails the record's creation naming the reply, the second is retried, the third counts as the cap's refusal. A transport that lets a `PutObjectRetention` lowering the health object's retain-until land: the record is refused. A transport that stores the health object in governance mode and refuses the lowering only when it carries no bypass header: the lowering, sent with the header, lands and the record is refused; one that refuses it but reports `GOVERNANCE` on the read-back: refused. A get of an absent key answered `403`: the open fails naming the missing list right. | T |
+| [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | A bucket policy whose cap and legal-hold deny exempt the location's credential, or a second principal beside the record's declared break-glass one: the open is refused. A record declaring the location's or the inspection credential as its break-glass principal: refused when written. Each of these, with the declared break-glass principal: a legal-hold deny whose resource is the bucket alone, a deny carrying an extra condition, an exemption written as a `Principal` list rather than one `ArnNotEquals`, a policy cap one day below the record's: the open is refused. A break-glass role whose trust admits the location's credential: the `AssumeRole` provocation lands and the record is refused. A bucket policy that lets the location credential's legal hold land: the record is refused. | T |
+| [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | Creating a location record: answer the over-cap provocation with `400 InvalidRequest` (a malformed date), then with `500` and then `403`: the first fails the record's creation naming the reply, the second is retried, the third counts as the cap's refusal. A health object stored in governance mode under a credential allowed to bypass it: the lowering, sent with the bypass header, lands and the record is refused. Under a credential not allowed to bypass it, the lowering is refused, the read-back reports `GOVERNANCE`, and the record is refused. A get of an absent key answered `403`: the open fails naming the missing list right. | T |
 | [§4.7](#4.7%20Health%20is%20one%20probe%20call) | Create a location record while the read of an existing health object fails with `503`: the creation fails and no health object is put; retried, it adopts the existing nonce or version. Rotate the credential and prove it while the version exists, then let the version lapse: the next open under the rotated credential re-puts it; under a credential changed after it lapsed, the open is refused. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Run a `Recheck` pass on a suspended store holding 10⁶ versions and no repair proof: every `RecheckSetting` and `VersionsPage` call sends one request, no page is larger than its `n`, and a failure mid-walk resumes from the last marker. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Lower a backup location's lock or suspend its versioning between two copies: the folder record's holder runs `Recheck` before the next copy, finds the drift, and the copy fails before any put; the location's put direction is unhealthy until a `Recheck` passes. A design whose only `Recheck` caller is GC copies into the drifted folder. | T |
@@ -1677,7 +1706,7 @@ in-memory store).
 | [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | On an immutable store, `Delete` returns `ErrInvalid` for every name and the transport sees no request; `PutVersion` twice under one name returns two versions, and `GetVersion` of the first returns the first bytes; `ExtendRetention` to an earlier time is refused without a request. | T |
 | [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) | Open a mutable store on a bucket configured for an immutable location: open fails. Open an immutable store over a bucket with no versioning: open fails. | T |
 | [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | The capability check provokes a conditional put and reports `conditional_put`; no other call of the suite sends a conditional header. | T |
-| [Appendix C.3](#C.3%20How%20the%20contract%20maps%20to%20S3) | Every request of the suite carries the pinned payload-signing value; an endpoint that is not HTTPS refuses the open. Report a bucket default encryption under which the ETag is not the content MD5, on a store whose check chose the ETag: open fails naming it; change the default after open: `Recheck` reports drift. | T |
+| [Appendix C.3](#C.3%20How%20the%20contract%20maps%20to%20S3) | Every request of the suite carries the pinned payload-signing value; an endpoint that is not HTTPS refuses the open. Set a bucket default encryption under which the ETag is not the content MD5, on a store whose check chose the ETag: open fails naming it; change the default after open: `Recheck` reports drift. | T |
 
 The in-memory store **MUST NOT** be the only store these run against. It cannot
 lose an acknowledged write, half-complete or delay.
@@ -1689,16 +1718,26 @@ level, and can, per request: drop it, delay it, fail it with a
 chosen status and error code, truncate the response body, flip a byte in either
 direction, clamp a range, ignore a checksum header (at all sizes, or only above
 a threshold), hold new keys out of listings for a while, answer the first get after a put
-with `404`, report a storage class, or pretend a bucket setting (versioning,
-object lock and its mode and retention, lifecycle and tiering rules) is on or
-off — at open, or switched later — or that a delete is allowed or refused. Each failure the contract names can then be
-produced without a misbehaving service.
+with `404`, or refuse a delete with the service's refusal. Each failure the
+contract names can then be produced without a misbehaving service.
 
-It also emulates the service faults measured in [Appendix B](#Appendix%20B%20%E2%80%94%20measurements): a service that
-ignores every put checksum, and one with versioning or an expiring lifecycle
-rule, **MUST** make a mutable store's capability check refuse, and one lacking
-any requirement of [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) **MUST** make an immutable store's refuse. No real service is available
-with those faults, so these profiles are the negative tests.
+The transport **MUST NOT** answer a request in the service's place with a
+success, nor report a setting or a storage class the service does not hold. A
+bucket setting a row needs (versioning, object lock and its mode and retention,
+lifecycle and tiering rules, default encryption) is applied for real to a fresh
+bucket created for that row, at open or switched later. A row whose setting the
+local emulator cannot hold runs against a real bucket of a production service
+instead ([§7.4](#7.4%20Services)).
+
+It also emulates the service faults measured in [Appendix B](#Appendix%20B%20%E2%80%94%20measurements). A service that
+ignores every put checksum (the transport strips the checksum header) **MUST**
+make a mutable store's capability check choose the ETag ([Appendix C.4](#C.4%20The%20capability%20check), step 1),
+as it does on such a service in Appendix B; one whose bucket default encryption,
+set for real, also breaks the ETag proof **MUST** make it refuse (the [Appendix C.3](#C.3%20How%20the%20contract%20maps%20to%20S3)
+row of [§7.1](#7.1%20Conformance%20suite)). One with versioning or an expiring lifecycle rule (set for real on
+the fresh bucket) **MUST** make a mutable store's check refuse, and one lacking
+any requirement of [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) **MUST** make an immutable store's refuse. These profiles
+are the negative tests.
 
 ### 7.3 Codec tests
 
@@ -1724,11 +1763,14 @@ with those faults, so these profiles are the negative tests.
 
 | Service | Expected | When |
 | --- | --- | --- |
-| In-memory store | passes the rows of [§7.1](#7.1%20Conformance%20suite) not marked T | every change |
-| A local emulator of the remote service, current version, under the fault transport | passes [§7.1](#7.1%20Conformance%20suite) and the capability check | every change |
-| Each supported production service ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)) | passes the capability check and [§7.1](#7.1%20Conformance%20suite) | nightly, in a disposable namespace |
+| In-memory store | passes the rows of [§7.1](#7.1%20Conformance%20suite) not marked T that need no client, codec, service permission or throttling service | every change |
+| A local emulator of the remote service, current version, under the fault transport | passes every row of [§7.1](#7.1%20Conformance%20suite) whose setting it holds, and the capability check | every change |
+| Each supported production service ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)) | passes the capability check and [§7.1](#7.1%20Conformance%20suite) | nightly, in a disposable namespace, and a fresh bucket for each row that needs a bucket setting |
 
-A new service is supported once it passes the nightly row. Its results go into
+A row of [§7.1](#7.1%20Conformance%20suite) on a bucket setting the local emulator cannot hold ([§7.2](#7.2%20Fault%20transport)) runs in
+the production row instead, against a fresh bucket with the setting applied for
+real; until the nightly run holds credentials for a service, it runs by hand, so
+it does not guard a change meanwhile. A new service is supported once it passes the nightly row. Its results go into
 [Appendix B](#Appendix%20B%20%E2%80%94%20measurements). **An immutable backup location is admitted by its own bucket,
 not by its service's name.** The object-lock rows — the over-cap retention put,
 the versionless delete, the configuration writes, the legal hold, the
@@ -1766,10 +1808,11 @@ with every result.
 | Health probe | requests | exactly one |
 | List of 100,000 blocks | requests, peak memory | one per page of the caller's `n` (1,000, and 500 through `Small`), and at most one page held |
 
-**Suites.** §7.1's rows against the in-memory store and §7.3's codec tests run in `unit`, and §7.1
-in full against the local emulator under §7.2's fault transport in `integration`. No suite runs yet
-the nightly pass against each production service, the per-service lab rows, §7.5's benchmarks or
-fuzzing past the seed corpus.
+**Suites.** §7.1's rows against the in-memory store and §7.3's codec tests run in `unit`, and every
+§7.1 row whose setting the local emulator holds runs against it under §7.2's fault transport in
+`integration`. No suite runs yet the nightly pass against each production service, the
+per-service lab rows, §7.5's benchmarks or fuzzing past the seed corpus; the codec's fuzz targets
+join the shared nightly fuzz suite once the carver's plan registers it.
 
 ## 8. Decisions and open questions
 
@@ -1964,7 +2007,7 @@ its capability check.
 | `PutObject`, single part | put, put probe | atomic replace; readers never see a partial object | from the service's documentation; it cannot be provoked |
 | Put integrity: an enforced `x-amz-checksum-crc32c` or `Content-MD5`, or else an ETag equal to the MD5 of the stored bytes | put | a corrupted body is rejected, or detected from the ETag — at the maximum encoded block size, not only on small objects | check step 1 |
 | `GetObject` after `PutObject` | get | strong read-after-write for a new key and an overwritten one: a get from any client after the put's `200` returns the new object ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | check step 2, by a get issued at once after the put; and from the service's documentation, since a lag that the check happens to miss cannot be provoked |
-| `x-amz-storage-class` on every put; the class each get reports | put, open | every object written in the class the profile names, never the service default; no archive class (one whose get needs a restore) | check step 2: the class reported for the check object |
+| `x-amz-storage-class` on every put; the class each get reports | put, open | every object written in the class the profile names, `STANDARD`, never the service default; no archive class (one whose get needs a restore) | check step 2: the class reported for the check object |
 | `GetBucketIntelligentTieringConfiguration` (list) | open, `Recheck` | no configuration with an archive tier whose filter could match the prefix | check step 5 |
 | `GetObject` with `Range` | get | `206` with the bytes asked for; `416` when the range starts past the end. A clamped overlong range is tolerated: the store checks lengths itself ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | check step 2 |
 | `DeleteObjects` (batch, up to 1,000 keys) with `Content-MD5`, `Quiet` false | delete | every key, absent ones included, listed as deleted; per-key errors reported per key; a key missing from the reply is a failure ([§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent)) | check step 3 |
@@ -2029,8 +2072,8 @@ Several stores may share a bucket under different prefixes, never one prefix
 | Contract | S3 |
 | --- | --- |
 | one attempt per call ([§4.9](#4.9%20No%20state%20across%20calls)) | SDK retries off (maximum attempts 1) |
-| client configuration | the request and response checksum modes set explicitly to `WhenRequired`, never left at the SDK's default, which has changed between releases; the store sends exactly the integrity header its profile chose and nothing else. A whole-block get sends `x-amz-checksum-mode: ENABLED`, and the store compares a returned checksum of the object with the bytes received ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)); a ranged get asks for none, since an object checksum does not cover a range. The payload-signing mode is pinned too: every request is signed with `x-amz-content-sha256: UNSIGNED-PAYLOAD`, over HTTPS only, and an endpoint that is not HTTPS refuses the open. A signed payload hash is not an integrity check here — two measured services store a body whose signed hash is wrong ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)) — and signing it would need a pass over the body before the first byte. The capability check runs with this same configuration |
-| connection pool ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) | one HTTP client per store configuration: its per-host connection cap, its idle connections per host and its total idle connections all set to the derived limit |
+| client configuration | the request and response checksum modes set explicitly to `WhenRequired`, never left at the SDK's default, which has changed between releases; the store sends exactly the integrity header its profile chose and nothing else. A whole-block get sends `x-amz-checksum-mode: ENABLED`, and the store compares a returned checksum of the object with the bytes received ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)); a ranged get asks for none, since an object checksum does not cover a range. The payload-signing mode is pinned too: every request is signed with `x-amz-content-sha256: UNSIGNED-PAYLOAD`, over HTTPS only, and an endpoint that is not HTTPS refuses the open. The service's certificate is verified against the system's roots, or against the store configuration's trust roots in their place, and no setting skips verification. A signed payload hash is not an integrity check here — two measured services store a body whose signed hash is wrong ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)) — and signing it would need a pass over the body before the first byte. The capability check runs with this same configuration |
+| connection pool ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) | one HTTP client per store configuration: its per-host connection cap, its idle connections per host and its total idle connections all set to the derived limit, over HTTP/1.1 only, since these caps bind no HTTP/2 stream |
 | put integrity ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)) | send the checksum header chosen by the check, computed by the measuring pass. If the service enforces none, `Checksum` is `None`: compute the MD5 while streaming, compare the returned ETag with it, and return `ErrCorrupt` on a mismatch; the retry puts the same bytes again |
 | exact get ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | compare `Content-Range` with the request, then the body's length with `Content-Range` |
 | `ErrNotFound` | `404 NoSuchKey`; `404 NoSuchVersion` on `GetVersion`, `GetControlVersion`, `GetObject` and every retention read or extension naming a version |
