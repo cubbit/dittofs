@@ -699,7 +699,7 @@ answered with in each program.
 
 **Owns:** RFC 21 §2.2's TLS paragraph, §11's decoding paragraph (the credential with the RPC
 header), §11.1, §11.5's `core` refusals, status layers, malformed calls and fault statuses; §11.6's
-golden vectors for §11.1 and those §11.5 rows; §15 question 5 by D10; RFC 20 §4.4's `Identity` and
+golden vectors for §11.1 and those §11.5 rows; §11.2's duplicate-request cache (D10); RFC 20 §4.4's `Identity` and
 `Call` per request, §4.5, §5.5.
 
 **Done when:** RFC 21 §13's "§11.1 refused credentials *(1 node)*" row; §11.6's "§11.1–§11.5 golden
@@ -720,7 +720,7 @@ over loopback being E4's.
   each a golden vector; every handler epic adds its operations' rows, and the totality test lands in
   E16, once every table is complete.
 - Malformed calls: `RPC_MISMATCH` before the credential, `GARBAGE_ARGS`, `PROG_MISMATCH` with the
-  range; `protocol/served.go`'s copies of `wire`'s program constants removed.
+  range.
 - NFS's `Replay` stage, with D10's duplicate-request cache, which E8 extends with sessions' slots.
 - The scripted client (D5), holding the call encoder and reply decoder until E10 moves them into
   `wire`, with loopback rows of all the above; NFS's `AUTH_TOOWEAK` row for `ErrWrongSecurity`.

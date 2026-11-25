@@ -143,7 +143,7 @@ cited by number and title and not copied.
 | rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | stages tested without a socket on RFC 5531 and capture vectors; loopback rows through `core` on `memory.New` (kind 2) with S0's `vfstest.Mutations`, a recording wrapper that passes each call through; `StartTLS` on `core`'s `testproto`; the cache's bound and eviction on its own; no other double |
 | rule 2, fuzz tests where relevant | T3.1 | `FuzzAuthSys`, beside `wire`'s `FuzzRecord`, which already checks `DecodeAuthSys`'s limits and that it takes the whole body, adds what RFC 20 §5.4 asks of a credential's own target: every decoded field equal to a second decoder written by hand from RFC 5531 Appendix A (R10). The scripted client reads only the server's replies in tests and has no target |
 | rule 3, observability follows RFC 25 and RFC 20 §10 | T3.1, T3.3 | no recorder in NFS code; a cache hit is counted by `core` as `adapter_replay_hits_total{protocol="nfs3"}`, asserted over loopback (R27); no log line or attribute added here carries the source address or a claim (RFC 25 §5.4) |
-| rule 4, profiling: leaks, allocations and contention | T3.1, T3.3, T3.5 | every loopback test starts with `adaptertest.CheckLeaks`; `Route` still allocates once per call, the claims' groups included (`TestHeaderStageAllocs`, D4); the cache is shared by every connection of the adapter, so T3.3 reports its mutex and block profiles under 64 connections; `StartTLS`'s handoff is checked for leaked goroutines |
+| rule 4, profiling: leaks, allocations and contention | T3.1, T3.3, T3.5 | every loopback test starts with `adaptertest.CheckLeaks`; `Route` still allocates once per call, the claims' groups included (`TestHeaderStageAllocs`, D4); `Lookup` runs on every call, so a miss and an uncached flavour are pinned at 0 allocations and a miss is benchmarked under 64 goroutines; the cache is shared by every connection of the adapter, so T3.3 reports its mutex and block profiles under 64 connections; `StartTLS`'s handoff is checked for leaked goroutines |
 | rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T3.1, T3.3, T3.4, T3.6 | the `Identity` asserted on the `r.Call` a handler receives over loopback, not only at the function that builds it; the cache on the reply a client reads and the one call `memory.New` records; each row on the reply bytes and on `core`'s unmapped-error counter; TLS on the bytes a client sees on the socket |
 | rule 6, known failures shrink | none | no `pynfs`, `cthon04` or `nfstest` test runs before the cutover |
 | rule 7, v2 ignores v1 | all | nothing from `develop`'s `rpc` package; the TLS upgrade follows RFC 9289 and RFC 20 §5.5, through `Conn.StartTLS` and the shared `tlsconfig`, which RFC 20 Appendix B keeps |
@@ -348,14 +348,16 @@ row (E8); RFC 20 §4.4's `gss` package, but for D1's reading of it (Q1).
   snapshot names. `ServerConfig` reads `client_ca` once, so `tlsconfig` gains a CA reloader beside
   `CertReloader`, reached through `GetConfigForClient`, that re-reads the file when its mtime
   advances, as the pair is re-read: a CA replaced at its path applies to handshakes begun afterwards
-  (R45). A replacement that does not load keeps the last good pool and is logged at `Error` once per
-  modification time, under a `decision:` marker naming the ceiling: a CA withdrawn by a file that
+  (R45). A replacement that does not load keeps the last good pool, is reparsed at most once a second
+  like the pair below, and is logged at `Error` once per modification time, under a `decision:` marker naming the ceiling: a CA withdrawn by a file that
   does not parse is still trusted until a loadable one lands, overturned if an operator needs a
   withdrawal to refuse every handshake at once. `CertReloader.GetCertificate` today drops its reload
   error and, since the recorded modification time advances only on success, parses a broken pair
-  again on every handshake; it gets the same treatment: the failure logged at `Error`, its
-  modification time recorded so the pair is not parsed again until it changes, the last good pair
-  served. Under `opportunistic`, `client_ca` authenticates only the connections that upgrade, since a
+  again on every handshake; it gets the same treatment, the failure logged at `Error` and the last good pair served, but
+  a failure does not record the modification time: a truncated file read mid-copy and the finished
+  file can share one timestamp tick, so recording it would never load the finished pair. Instead a
+  failing pair, and a failing CA, are parsed at most once a second (an injected clock), and the
+  `Error` line is logged once per modification time. Under `opportunistic`, `client_ca` authenticates only the connections that upgrade, since a
   client that does not probe is served in plaintext; a `decision:` marker at the mode's check says
   so, overturned if an operator needs `client_ca` to imply `require`. `New` loads its settings' before it returns, and the adapter `New` returns wraps
   `core.Server`'s `Reconfigure`: it loads the next settings' first, refuses the call if they do not
@@ -467,7 +469,7 @@ internal/adapter/adaptertest/nfsclient/
   	Body    []byte
   }
   type Call struct {
-  	XID              uint32 // 0: the client's next
+  	XID              *uint32 // nil: the client's next; set to send any XID, 0 included
   	Prog, Vers, Proc uint32
   	Cred, Verf       Auth
   	Args             []byte
@@ -483,7 +485,7 @@ internal/adapter/adaptertest/nfsclient/
   func Dial(ctx context.Context, addr netip.AddrPort) (*Client, error)
   func DialFrom(ctx context.Context, from netip.Addr, addr netip.AddrPort) (*Client, error) // binds the source address
   func (c *Client) Do(ctx context.Context, call Call) (Reply, error) // send one call, read its reply
-    func (c *Client) Send(rec []byte) error                           // one record, framed, as given
+  func (c *Client) Send(rec []byte) error                           // one record, framed, as given
   func (c *Client) Write(b []byte) error                            // bytes as given, record marks included
 
   func (c *Client) Read(ctx context.Context) ([]byte, error)        // the next record's body; io.EOF once closed
@@ -561,17 +563,20 @@ internal/adapter/adaptertest/nfsclient/
   `AUTH_BADCRED` or `AUTH_BADVERF` and the hit counter stays put (catches the cache read before the
   header is judged, R42); a cacheable call whose test row waits on a channel, resent from a second
   connection before the row is released, gives two entries (the decision of D5, which Q6's option
-  (a) turns into one entry and a dropped retransmission). Without a
+  (a) turns into one entry and a dropped retransmission; under (a), the second send gets no reply
+  and `adapter_unmapped_errors_total` stays 0, which catches the row put in a program's table rather
+  than the stages' one). Without a
   socket, on header vectors: a property test that any field of the key changed misses and a stamp or
   machine name changed hits (catch a field left out of the key, R23, or the stamp in it, R3), and the
   connection's TLS state changed misses (catches a TLS reply answered in plaintext, R43); a change
   past the first 256 bytes of the arguments hits (catches the whole arguments hashed, D5); a `Store`
   and a `Lookup` under `RPCSEC_GSS` hold and find nothing (catches a GSS call keyed without its
   principal, R46); the
-  eviction and size cases (catch an unbounded cache, R25); a `Lookup` whose reply reservation cannot
+  eviction and size cases (catch an unbounded cache, R25); a `Lookup` miss, and a `Lookup` of a flavour that is not cached, each allocate 0 under
+  `testing.AllocsPerRun` (catches an allocation every NFS call would pay, rule 4); a `Lookup` whose reply reservation cannot
   be had before an ended context returns `ErrDelay` of `DelayResources` (catches an uncharged copy,
-  R26); the retry-identity golden table (R40). The entries' expected lifetime under a measured mix of NFSv3 and NFSv4.0 replies, and the mutex
-  and block profiles under 64 connections, are
+  R26); the retry-identity golden table (R40). The entries' expected lifetime under a measured mix of NFSv3 and NFSv4.0 replies, a benchmark of a
+  `Lookup` miss under 64 goroutines, and the mutex and block profiles under 64 connections, are
   reported in the pull request (rule 4). No test double.
 - **Rules:** rule 9's `ponytail:` and `decision:` markers of D5.
 
@@ -590,8 +595,11 @@ internal/adapter/adaptertest/nfsclient/
     helper moved, holding for every NFSv3-family table its two refusals and `ErrMoved` and
     `ErrDraining` with no reply, `ErrNotLast`, `ErrTooManyPending`, `ErrCancelled` and
     `ErrLogonFailure` at the fault, and `ErrWrongSecurity` as `AUTH_ERROR` `AUTH_TOOWEAK`.
-  - In `ops/v4`'s two tables: `ErrNoFH` `NFS4ERR_NOFILEHANDLE`, `ErrMoved` `NFS4ERR_MOVED` over D10's
-    list and no reply elsewhere, `ErrDraining` with no reply, the three at the fault,
+  - In `ops/v4`'s `memberErrors` only, since D10's member operation codes (3 and up) never match
+    `compoundErrors`' procedures (0 and 1): `ErrNoFH` `NFS4ERR_NOFILEHANDLE` and `ErrMoved`
+    `NFS4ERR_MOVED` over D10's list. In both tables, as rows with no operation list that a
+    whole-compound refusal and a member's call can each return: `ErrMoved` with no reply (after
+    the listed row in `memberErrors`), `ErrDraining` with no reply, the three at the fault,
     `ErrLogonFailure` at `NFS4ERR_SERVERFAULT`.
   - `wire`'s `AuthTooWeak`, `NFS4ErrNoFileHandle`, `NFS4ErrMoved`; hand-written golden calls and
     replies for each `NULL` E2's captures do not already hold, and for each answered row.
@@ -666,7 +674,8 @@ internal/adapter/adaptertest/nfsclient/
   probe (D8); `wire.AuthTLS`; `nfs.go`: the TLS configurations of D9 loaded in `New`, the
   `Reconfigure` wrapper (Q3); `tlsconfig`'s CA reloader and `CertReloader`'s logged, remembered reload failure (D9), which the
   control plane's listener then shares; `settings.NFS.Validate` accepting `opportunistic` and
-  `require` and refusing `off` with a certificate, key or CA file; `nfsclient`'s `func (c
+  `require` with `cert_file` and `key_file`, and refusing either mode without both (its refusal of
+  `off` with a certificate, key or CA file is already built); `nfsclient`'s `func (c
   *Client) StartTLS(ctx context.Context, cfg *tls.Config) error`, which sends the probe, checks its
   verifier and handshakes. Consumed by E16's TLS row (T16.8) and by every later script that runs over TLS.
 - **Acceptance criteria:**
@@ -680,7 +689,8 @@ internal/adapter/adaptertest/nfsclient/
   - A probe sent while an earlier call on the connection is still running is `AUTH_BADCRED`, the
     earlier call's reply is read in plaintext, and no handshake starts.
   - A certificate pair replaced by a file that does not parse leaves the old certificate presented,
-    logs one `Error`, and the next loadable replacement is presented to the handshake after it.
+    logs one `Error`, and the next loadable replacement is presented to the handshake after it, also
+    when that replacement has the broken file's modification time.
   - A `client_ca` file replaced at its path refuses the next handshake by a client certificate the
     old CA signed and the new one did not, while a connection upgraded before keeps serving.
   - A `Reconfigure` from `off` to `require` leaves a connection accepted before it in plaintext and
@@ -701,12 +711,15 @@ internal/adapter/adaptertest/nfsclient/
   begun before `Route`, R44); a probe behind a call whose test row waits on a channel, answered
   `AUTH_BADCRED` with that call's reply then read in plaintext (catches an upgrade with a call in
   flight, R47); the corrupt and then good replacement of the pair, at the certificate a client sees
-  (catches a reload error swallowed or a broken pair served, D9); the CA replaced at its path, at the handshake a client sees (catches a
+  (catches a reload error swallowed or a broken pair served, D9); a truncated pair and then the
+  complete one with the same modification time (set with `os.Chtimes`), the clock advanced a second,
+  after which the next handshake presents the new certificate (catches a failure's modification
+  time recorded, D9); the CA replaced at its path, at the handshake a client sees (catches a
   CA read once, R45); the two `Reconfigure` cases (catch a
   mode or `client_ca` applied to a connection already accepted, or never applied, R34); TLS 1.2
   refused (catches `tlsconfig`'s 1.2 default left in place, R33); the certificate replaced (R34,
-  R35); `New` and `Reconfigure` with an unloadable file (R36); settings tests for the modes, `off` with
-  a file refused (R36);
+  R35); `New` and `Reconfigure` with an unloadable file (R36); settings tests for the modes, `require` without `key_file` refused
+  naming `TLS.KeyFile` and `opportunistic` without `cert_file` naming `TLS.CertFile` (R36);
   `TestStartBindsOneTCPPortForEveryProgram` with TLS on (R38). No test double.
 - **Rules:** rule 9's `decision:` markers for D8 and D9 (the CA kept on a bad file, `client_ca`
   under `opportunistic`), and `settings.go`'s comment rewritten; rule
@@ -791,8 +804,10 @@ Questions pending the user's answer. Each recommended option is written in place
   - (a) **Recommended:** the row unmarked, and `core`'s compound runner storing a reply when a member
     that ran has a `Cacheable` row; one condition in `compound.go`, with RFC 20 §4.7's
     `if op.Cacheable` sentence amended in Q2's pull request, and each NFSv4.0 member's column set by
-    the epic that adds it (E5, E9). knfsd caches NFSv4.0 compounds whole (from memory), but its
-    cache is sized by memory rather than a fixed count.
+    the epic that adds it (E5, E9). knfsd stores no NFSv4.0 compound in its cache at all
+    (`NFSPROC4_COMPOUND` is `RC_NOCACHE` in `fs/nfsd/nfs4proc.c`) and relies on the open-owner
+    seqid replay instead, so storing only compounds with a non-idempotent member is the closer of
+    the two options to it.
     - (b) The whole row `Cacheable`, as RFC 20 §4.7 reads today, with the entry count raised until
     T3.3's measured lifetime passes a client's retransmission timeout; the bound grows with it.
 - **Q6. A retransmission that arrives while its first send still runs** (D5, R23). RFC 21 §11.2's
@@ -801,11 +816,12 @@ Questions pending the user's answer. Each recommended option is written in place
   ends with nothing stored.
   - (a) **Recommended:** an in-progress entry, made at `Lookup` for a call whose NFSv3 row is
     `Cacheable` and for an NFSv4.0 `COMPOUND`, and completed by `Store`; a retransmission that finds
-    it is answered with no reply, through a protocol error mapped to no reply in the NFSv3 and NFSv4
-    tables, and the client's next retransmission finds the stored reply. `ReplayCache` gains a call
+    it is answered with no reply, through a protocol error mapped to no reply in the stages' table
+    (`protocol/stages.go`'s `newErrors`), since `Lookup` runs before `Route` and `core` maps its
+    error with `Stages.Errors`, never a program's table; the client's next retransmission finds the stored reply. `ReplayCache` gains a call
     `core` makes when a looked-up call ends unstored (a refusal at route, no reply, an ended
     context), amended into RFC 20 §4.7 in Q2's pull request; about 0.75 man-days in T3.3, plus
-    `core`'s change. knfsd drops a retransmission it finds in progress (from memory).
+    `core`'s change. knfsd drops a retransmission it finds in progress (`RC_INPROG` answers `RC_DROPIT` in `fs/nfsd/nfscache.c`).
   - (b) R23 narrowed as written: the in-progress case runs again, under D5's `decision:` marker, and
     RFC 21 §11.2 amended to say so in Q2's pull request.
 
