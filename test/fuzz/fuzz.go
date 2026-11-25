@@ -26,6 +26,8 @@ type Target[R, M any] struct {
 	// Key identifies a model state, so equal candidates collapse.
 	Key func(M) string
 
+	Invariants []Invariant[R] // checked after every step
+
 	MaxSteps  int           // default 64
 	StepBound time.Duration // default 10s, a deadlock backstop and not a timing
 }
