@@ -10,7 +10,7 @@ conformance suite the wrapper passes with nothing injected;
 [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) §4.11, the test doubles. Every citation
 is `develop`'s text. The code lands on `feat/storage-v2`, and the paths below are paths there.
 **Track:** the team.
-**Epic 2 estimate: 3 subtasks, 8 man-days.**
+**Epic 2 estimate: 3 subtasks, 7.5 man-days.**
 **Depends on:** **S1**, E1's surface agreed: `pkg/syncer`'s `Syncer`, `Flow`, `Store`, the
 import test with one allowlist per package and the frozen-exports test. **R4-S2**, the RFC 4
 plan's in-memory store (`pkg/remote/memory`), its load record, `remotetest` and the wrapper that
@@ -155,8 +155,9 @@ lifetime count as the source of health, to E5.
   injection (R8). An `Effect` is one of six sealed constructors: `Fail`, `Lose`, `Cut`, `Flip`,
   `Hold` and `Link`. `Lose` on anything but a put, and `Flip` on anything but a get, panic naming
   the operation, because that is a mistake in the test, not a fault the code under test should
-  see. Prior art: RFC 4's `s3fault` (`Inject(Rule, Effect)`, the RFC 4 plan's epic 3, D2), so
-  RFC 4's two fault seams read alike and RFC 8 offload plan epic 21 maps one onto the other;
+  see. `From` and `Count` count matching calls as `pkg/sim`'s `Rule` does. Prior art: RFC 4's
+  `s3fault`, whose effects are injected the same way (`Inject(Rule, Effect)`, the RFC 4 epic 3
+  document's D2), although its errors, delays and tears come from a `sim.Fault` (its D1);
   toxiproxy's toxics (from memory). Not chosen: `pkg/sim`'s `Fault` and `Schedule`, whose rules
   are fixed at construction and whose `Err` must fail the call, so a lost reply, a flip, a hold
   or a link cannot be said in it, and whose `Lose` means the opposite of RFC 3 §2.5's (reported
@@ -172,13 +173,14 @@ lifetime count as the source of health, to E5.
   RFC 4 plan's epic 2 (§9). Not chosen: a second record kept by the wrapper from a call's
   entry, which would count a held call before it reaches the store, but which RFC 3 §1.4 does
   not name and RFC 4's conformance suite does not hold. Prior art: none found.
-- **D3, each effect carries what it waits on.** `Link` takes its clock and `Hold` a `Gate`, so
-  the wrapper's constructor, which is the RFC 4 plan's, keeps its signature. The clock is a
-  one-method `Clock` the wrapper declares, `After(d) <-chan struct{}`, which `pkg/sim`'s
-  `TestClock` satisfies; E9's benchmarks pass the real clock. A `Gate` reports when *n* calls
-  wait on it, so a test that holds every call of a full pool learns that the pool is full from
-  an event, not a sleep. Prior art: `pkg/sim`'s `Waiter`, the same one method, and
-  `TestClock.Armed`, the same wait-for-the-waiter shape.
+- **D3, each effect carries what it waits on.** `Link` takes its clock and `Hold` a release
+  channel, so the wrapper's constructor, which is the RFC 4 plan's, keeps its signature. The
+  clock is a one-method `Clock` the wrapper declares, `After(d) <-chan struct{}`: `pkg/sim`'s
+  `Waiter` under the wrapper's own name, since RFC 4's package imports no `pkg/sim`. `TestClock`
+  satisfies it; E9's benchmarks pass the real clock. A test learns that *n* calls are held from
+  the in-memory store's record of calls in flight (D2), the condition itself, so no gate type is
+  added beside it. Not chosen: a `Gate` with a `Reached(n)` event, which duplicates that record.
+  Prior art: `pkg/sim`'s `Waiter`.
 - **D4, the suite's frame is settled now, before its rows.** E3 and E6 on track A, E4 on track
   B, and RFC 8 offload plan epic 21 write against it; four authors growing it by need would race
   on its shape. `Run(t, Opener)` opens an `Env` per row. `Env` carries the syncer, the store it
@@ -280,7 +282,7 @@ with it.
 
 ### T2.2 Timing and corruption: flip, hold, link
 
-**Subtask T2.2 estimate: 3 man-days.**
+**Subtask T2.2 estimate: 2.5 man-days.**
 
 - **Track:** the team. **Depends on:** T2.1.
 - **Covers:** R1, R5, R6, R8, R9, R11, R18.
@@ -289,12 +291,9 @@ with it.
   ```go
   type Clock interface{ After(d time.Duration) <-chan struct{} }
   func Flip(off int64) Effect                               // a get covering block offset off reads it with its low bit flipped
-  func Hold(g *Gate) Effect                                 // the call waits, inside the store's call, until g is released or its ctx ends
-  type Gate struct{ /* ... */ }
-  func NewGate() *Gate
-  func (g *Gate) Reached(n int) <-chan struct{} // closed once n calls are waiting on g
-  func (g *Gate) Release()                      // lets every waiting and later call through
+  func Hold(release <-chan struct{}) Effect                 // the call waits, inside the store's call, until release closes
   func Link(c Clock, perCall, perByte time.Duration) Effect // waits perCall once, then perByte for each body byte, on c
+  // Every wait of Hold and Link also ends with ctx.Err() once the call's context ends.
   ```
 
   Consumed by E3's scheduler and lifecycle checks (`Link`, `Hold`); E4's slow-tail, floor,
@@ -305,9 +304,9 @@ with it.
   - A get under `Flip` with `Count: 1` returns one flipped byte at `off` and the stored bytes on
     the next get; with `Count: 0`, on every get. A get whose range does not cover `off` is
     neither changed nor counted.
-  - `Gate.Reached(n)` closes once *n* calls wait on the gate, so a test waits on that event, never
-    on time.
-  - A held put, get or probe returns only after `Release`, or with `ctx.Err()` once its
+  - A test waits for *n* held calls on the in-memory store's record of calls in flight reaching
+    *n*, never on time.
+  - A held put, get or probe returns only after `release` closes, or with `ctx.Err()` once its
     context ends; nothing waits on the real clock.
   - Under `Link` on a `TestClock`, a put of *n* bytes returns only once the clock has moved
     `perCall + n*perByte`.
@@ -413,7 +412,7 @@ faults. Checkpoint at S2: every fault of RFC 3 §1.4 and §8.3, and the frame E3
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T2.1, T2.2 | 5.5 | — | RFC 4's wrapper gains every per-call fault, in RFC 4's package |
+| 1 | T2.1, T2.2 | 5 | — | RFC 4's wrapper gains every per-call fault, in RFC 4's package |
 | 2 | T2.3 | 2.5 | — | the suite's frame, in `pkg/syncer`; open alongside PR 1 |
 
 A suggestion only: one pull request per subtask works as well.
@@ -436,3 +435,8 @@ A suggestion only: one pull request per subtask works as well.
   whose body advances only as the clock moves, is the intended way; if E6 needs a fault that
   pauses a body after a set number of bytes, it adds one field to `Faults` and one effect, which
   changes no caller.
+- **The frame could land with E3 instead.** The simplification review proposed moving T2.3 to
+  E3, which builds the first opener and the first rows. It stays here: the RFC 3 plan gives the
+  frame to this epic, its surface is frozen at S2 for RFC 8 offload plan epic 21 and for E4 and
+  E6 on the other track, and its skip rule is tested on its own. Moving it would cut this epic to
+  5 man-days and add about 1.5 to E3.
