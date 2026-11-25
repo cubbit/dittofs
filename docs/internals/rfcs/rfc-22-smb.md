@@ -946,7 +946,7 @@ up its cache, and how a reconnect finds its open.
   that may read the file ([§6.4](#6.4%20Durable%20and%20persistent%20handles));
   virtual-disk sharing is refused.
 - The FileId's persistent half **MUST** be derived from the RFC 14 open's
-  `OpenID`, which every `CREATE` asks with `WantOpenID`, unique across the installation
+  `OpenID`, which every open by a call stating `SMBCaps` gets, as it holds `WantOpenID`, unique across the installation
   ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)), and name the open's shard, so any node finds the open from it and routes a
   reconnect to its primary without the path (§6.4).
 - Its volatile half names the entry in the gateway node's table and is
@@ -1017,7 +1017,7 @@ file open locally, until the server takes the promise back.
   kind of grant as an NFS delegation: Level II is read, exclusive is read and
   write, batch is read, write and handle.
 - An oplock's grant is keyed by its open, so two opens by one client break each
-  other as oplocks always have: every `CREATE` sets `GrantBelongsToOpen`,
+  other as oplocks always have: `SMBCaps`, which every `CREATE` states, holds `GrantBelongsToOpen`,
   which makes a grant asked with no lease key the open's own
   ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)); a lease's grant is keyed by its lease key, so
   they do not.

@@ -543,8 +543,8 @@ node.
 **An open takes an `OpenID` only where one is needed.** Every open has a
 `Token`, which names it in the table and in its file's locks. An `OpenID` is
 issued (`NextID`) only to an open that something outside the table names
-across a reconnect or in a key: an open whose request sets `WantOpenID`, as
-an SMB open's does, whose `FileId` carries it; a
+across a reconnect or in a key: an open by a caller whose `Caps` states
+`WantOpenID` (`Caller.wantsOpenID`), as SMB's do, whose `FileId` carries it; a
 durable open, whose record is keyed by it (§8), so an NFS open made durable by
 an unlink takes one in that step (§9.1); and a clone's source open (§9.2). An
 NFS open is named by its stateid's token and takes none.
@@ -791,7 +791,7 @@ own, since a key travels in clear and joining makes an opener (§2.1). For one o
 the key's openers, a key already naming a grant on another file makes the open
 `ErrInvalid`, as MS-SMB2 answers `STATUS_INVALID_PARAMETER`, and a key naming an
 existing lease of the file joins it. The key is free again when its lease's last
-open closes. An oplock, a grant whose request sets `GrantBelongsToOpen` and names no key,
+open closes. An oplock, a grant asked with no key by a caller whose `Caps` states `GrantBelongsToOpen` (`Caller.grantsBelongToOpen`),
 covers exactly the one open that asked for it. An NFS
 delegation, a grant asked with neither, is held by the client and covers none of its opens: it ends by
 return or recall, not by close.
@@ -870,7 +870,7 @@ type Change struct {
 
 // ChangeMask names what a change does: what CheckChange judges and a watch
 // filters on.
-type ChangeMask uint16 // Remove, Rename, AddEntry, Attrs, SetID, Size, Times, Security, Streams, Enumerate
+type ChangeMask uint16 // Remove, Rename, AddEntry, Attrs, SetID, Size, Times, Security, Streams, Enumerate, Replace (the target a rename replaces, which the renamer holds no open of)
 ```
 
 A watch is held at its directory's primary, which sees every change in that
@@ -3029,7 +3029,9 @@ the adapter states, passed whole and read through one method each.
 `OpenFilesKeepNames`, read by `Caller.keepsNames`: `CheckChange` applies §7's deny-delete refusal to every caller,
 against every open but `via`, the one the change comes through, whose own deny
 modes were judged against every other open when it was opened; and to one that sets it, as every SMB call does, also §9.5's open-children
-refusal and refuses a rename over a file another open holds, as Windows does.
+refusal and, for the target of a rename that replaces it (`ChangeRemove|ChangeReplace`, no `via`),
+`ErrAccess` while any open of that target is held, a clone's hold excepted, counted as
+`open_target` (L23c).
 `WantOpenID` and `GrantBelongsToOpen` are read from the same `Caps` when the
 caller opens; `Lease` and `Durability` are the request's own fields. None is looked up from the client record: NFSv3 has no client,
 and in a cluster the file's primary holds no client records.
@@ -3125,7 +3127,7 @@ type Recovery interface {
 
 type Checks interface {
 	CheckIO(ctx, who Caller, f FileKey, o OpenRef, r ByteRange, want entity.AccessMask) error // want: ReadData for a read, WriteData for a write starting below the file's size, AppendData for one starting at or past it, which WriteData also admits (§2.2); f: the file o's handle names; its Shard, not o's, decides grace and anonymous I/O
-	CheckChange(ctx, who Caller, f FileKey, via *OpenRef, what ChangeMask) error // recalls grants and never waits; via: the open it came through, nil: none (§2.4); who.OpenFilesKeepNames adds §9.5's rule to §7's
+	CheckChange(ctx, who Caller, f FileKey, via *OpenRef, what ChangeMask) error // recalls grants and never waits; via: the open it came through, nil: none (§2.4); who.keepsNames() adds §9.5's rule to §7's, and, with ChangeReplace, refuses ErrAccess a target any open holds
 }
 ```
 
@@ -3360,6 +3362,7 @@ Deleted numbers are not reused.
 | L21 | A write or read through an open never advances a time that open has suspended; through any other open it does. | Suspend `Modify` on the first of two SMB opens; write through each: unchanged, then advanced; resume, write: advanced. Repeat on a persistent open across a failover. |
 | L22 | An owner's sequence is checked and advanced at its home primary as §2.8 says; no out-of-sequence request, and no request naming a missing record, changes it. | One open-owner opens files on two primaries with consecutive seqids: both accepted; a stale seqid: `ErrBadSeqID`, no change; a request naming a released stateid: `ErrBadState`, no advance. An `ErrDelay` open and an `ErrLocked` lock each advance the sequence. Fail the second primary over: a sequenced request is `ErrStaleState` and does not advance. Fail the home primary over: the next request is accepted in grace as a new owner's. RFC 21 §13 asserts the wire values. |
 | L23 | An SMB rename or delete of a directory is refused while an open made through that directory exists; an NFS one is not. | Open a file in D over SMB: an SMB rename of D is `ErrShareViolation`, an NFS one succeeds and the open still reads; an open two levels below D does not refuse it. |
+| L23c | A rename replacing a file is refused `ErrAccess` while any open of the target is held, a clone's hold excepted, for a caller stating `OpenFilesKeepNames`; for any other caller only §7's deny-delete refuses it. | Hold an NFS open of T sharing delete: an SMB rename of S over T (`ChangeRemove|ChangeReplace` on T) is `ErrAccess` and both names stay; an NFS `RENAME` of S over T succeeds. |
 | L23b | A rename or remove is refused by every open that denies delete except the one it comes through. | Open a file over SMB with `DELETE` access sharing nothing: an SMB rename through that open succeeds; with it held, an NFS `RENAME` of the same file is refused `ErrShareViolation`. |
 | L24 | A reclaim restores only modes, locks and grants the client held where a record shows them — the state a shard that lost nothing still holds — and otherwise what an eligible client claims (§4.2's decision), in both cases authorised like a new open against the file as it is now; it never grants more than the record or the authorisation allows. Only a reclaim of volatile state is ever refused for memory ([RFC 24 §4.6](rfc-24-resources.md#4.6%20Open%20state)). | Open read-only with deny-none; fail over another shard, so this one lost nothing. Reclaim read-write with deny-write while the client still owes the other shard's reclaims: `ErrNoReclaim`, nothing changed. Fail this shard over: the same reclaim by the same eligible client is granted when the principal may open the file read-write, and refused by the service's authorisation when it may only read. Remove the principal's read access, fail over, reclaim the original: refused. Reclaim exactly what was held: granted. Fill the pool past its allowance: a volatile reclaim is `ErrDelay` (`DelayResources`), a persistent open's reconnect succeeds. |
 | L25 | A client record is found by (protocol, name); where it has an `Owner`, the same name from another principal is refused `ErrClientInUse`, and the record keeps its `Boot`, `Owner` and `Protect` durably. An SMB record, and one whose owner maps to the anonymous principal, holds no `Owner`. | Connect a name, again with the same `Boot` through another node: the same ID; with a new `Boot`: a new ID and the old state released; from another principal: refused; after a restart: the same ID. Two principals negotiate one SMB name: one record, no `Owner`; the second presenting or reconnecting the first's open is refused. Two hosts whose uids map to nobody propose different names: two clients, neither able to `Destroy` or `Rebind` the other. |
@@ -3534,7 +3537,7 @@ RFC 25's values: `nfs3` (NLM included), `nfs4`, `smb`.
 | recalls, by outcome and cause | `openstate_recalls_total{protocol, outcome, reason}`, `outcome` = `returned`, `revoked`, `downgraded`; `reason` = `conflict`, `budget`, `setuid` | counter |
 | recalls not yet sent | `openstate_recalls_queued` | gauge |
 | recall time, from send | `openstate_recall_seconds{protocol, outcome}` | histogram (`request`) |
-| conflicts refused | `openstate_conflicts_total{reason}`, `reason` = `deny_mode`, `lock`, `mandatory_io`, `delete_pending`, `open_children`, `grace`, `reclaim` | counter |
+| conflicts refused | `openstate_conflicts_total{reason}`, `reason` = `deny_mode`, `lock`, `mandatory_io`, `delete_pending`, `open_children`, `open_target`, `grace`, `reclaim` | counter |
 | lock waits | `openstate_lock_wait_seconds{protocol, outcome}`, `outcome` = `granted`, `cancelled`, `replaced`, `poll_missed`, `ended` | histogram (`background`) |
 | grants not yet acknowledged by their lock-waiter's host, and the oldest | `openstate_lock_grants_unacknowledged`, `openstate_lock_grant_unacknowledged_oldest_seconds` | gauge |
 | clients fenced from grants ([§5.3](#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)) | `openstate_grant_fenced_clients` | gauge |
