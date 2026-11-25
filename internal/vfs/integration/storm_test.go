@@ -44,6 +44,20 @@ func (z *stormSizer) next() (n, workers int64) {
 	}
 
 	n = stormPool(z.last, rate)
+
+	// decision: from burst 2 on, N stays between half and twice the N before
+	// it. The limit bounds the expected k, not the real one: N sized for an
+	// expected k of 4 gives 2 after one step up and 8 after one step down, and
+	// the real k is about Poisson around it (41% under 2 at an expected 2, 18%
+	// over 10 at an expected 8), so a well sized burst one step off is often
+	// out of the window anyway. It stops one bad measurement from moving N far:
+	// one stalled burst asked for about 80 times the N before it (560 to 44 896,
+	// 7 doublings). The cost: a burst 1 too small by about 16 times reaches
+	// the window's centre (expected k 4) only at burst 5, and by about 40 times
+	// its edge (expected k 10) only there, so from somewhere between the two
+	// sizes fewer than the 4 of 7 bursts B7 needs are evaluated and the run
+	// fails. A larger step at burst 2 alone waits for k values
+	// from the bench host. Overturned if bursts 2 and 3 stay out of 2 to 10.
 	if z.prevN > 0 {
 		n = min(max(n, z.prevN/2, benchWriters), 2*z.prevN, b7Files)
 	}
@@ -63,6 +77,12 @@ func (z *stormSizer) next() (n, workers int64) {
 // chmods a second with chmod latency lat.
 func (z *stormSizer) measured(k int, last time.Duration, rate float64, lat time.Duration) {
 	z.last = last
+
+	// The warm-up runs at N = b7Files with b7WarmWorkers workers, not at a
+	// sized burst's, so its rate and latency size burst 1 and nothing after it.
+	if k == 0 {
+		z.rates, z.lats = nil, nil
+	}
 
 	if rate > 0 {
 		z.rates = lastThree(append(z.rates, min(rate, b7Rate)))

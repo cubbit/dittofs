@@ -87,13 +87,14 @@ const (
 // each on a writer's file with chance 64 / N, so N = 64 × b7Rate × D / 4,
 // within [64, 100 000], with D the last burst's length and a warm-up burst,
 // not evaluated, to measure the first. The rate in it is the median of the
-// last three bursts' measured rates, and from the second burst on N stays
-// between half and twice the N before it: one burst whose chmods stalled
-// measured 21 chmods a second against 251 to 950 for the others, and a raw
-// rate swung N from 560 to 44 896 within a run, so k left 2 to 10 in more
-// than half the bursts. Overturned if the measured k drifts far
-// from 4 while D is steady (chmods outlasting a burst would push it up), or
-// when the key layout changes (the classifier must follow it).
+// last three bursts' measured rates, the warm-up's counting for burst 1 only,
+// and from the second burst on N stays between half and twice the N before
+// it: one burst whose chmods stalled measured 21 chmods a second against 251
+// to 950 for the others, and a raw rate swung N from 560 to 44 896 within a
+// run, so k left 2 to 10 in more than half the bursts. Overturned if the
+// measured k drifts far from 4 while D is steady (chmods outlasting a burst
+// would push it up), or when the key layout changes (the classifier must
+// follow it).
 //
 // The storm is a pool of workers paced by a ticker at b7Rate, never one
 // goroutine per chmod: the Go runtime never frees a goroutine's descriptor,
