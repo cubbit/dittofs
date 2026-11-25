@@ -60,7 +60,8 @@ surfaces:
 
 ## RPCSEC_GSS internals (NFS/Kerberos)
 
-DittoFS implements RPCSEC_GSS per RFC 2203 in `pkg/auth/kerberos` and the NFS protocol layer.
+DittoFS does not serve RPCSEC_GSS yet: the NFS adapter refuses it with `AUTH_BADCRED`, so the
+steps below describe the design. Kerberos itself lives in `internal/identity`.
 The shared Kerberos layer also serves the SMB SPNEGO path (see below).
 
 **Security context establishment:**

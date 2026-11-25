@@ -504,6 +504,11 @@ var deletedPaths = []string{
 	"pkg/identity/ldap",
 	"pkg/identity/kerberos",
 	"internal/sysinfo",
+	"pkg/auth/kerberos",
+	"internal/auth/kerberos",
+	"internal/auth/netlogon",
+	"pkg/discovery",
+	"internal/mfsymlink",
 	"pkg/auth/sid/mapper.go",
 	"pkg/health/share.go",
 	"pkg/health/cache.go",
@@ -564,14 +569,16 @@ func namedIn(line, p string) bool {
 }
 
 // nameEnds reports whether a path's last element ends where rest starts: at
-// the line's end, a slash, a full stop ending the sentence, or any character
-// a name does not hold.
+// the line's end, a slash, a full stop ending the sentence or opening a Go
+// identifier (pkg/apiclient.Client), or any character a name does not hold.
+// A full stop before a lower-case letter is a file's extension, so
+// pkg/snapshot.go is a longer name.
 func nameEnds(rest string) bool {
 	switch {
 	case rest == "" || rest[0] == '/':
 		return true
 	case rest[0] == '.':
-		return len(rest) == 1 || !isNameChar(rest[1])
+		return len(rest) == 1 || !isNameChar(rest[1]) || rest[1] >= 'A' && rest[1] <= 'Z'
 	}
 	return !isNameChar(rest[0])
 }
@@ -637,6 +644,8 @@ func TestDeletedPathsIn(t *testing.T) {
 	}{
 		{"The Runtime (`pkg/controlplane/runtime/`) routes", "pkg/controlplane"},
 		{"see pkg/apiclient.", "pkg/apiclient"},
+		{"see pkg/apiclient.Client", "pkg/apiclient"},
+		{"pkg/config.Load reads it", "pkg/config"},
 		{"[the guide](metadata-store-migration.md)", "docs/guide/metadata-store-migration.md"},
 		{"see docs/guide/metadata-store-migration.md.", "docs/guide/metadata-store-migration.md"},
 		{"`pkg/apiclient/`", "pkg/apiclient"},
