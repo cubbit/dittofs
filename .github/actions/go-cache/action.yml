@@ -12,6 +12,12 @@ inputs:
   go-version:
     description: The Go version, when no file names it.
     default: ''
+  flavor:
+    description: >
+      A name for the builds the job compiles, appended to the key, so a job
+      whose builds differ from the others' (-race, coverage) saves an entry of
+      its own. On a miss it restores the shared entry, for its modules.
+    default: ''
 
 outputs:
   key:
@@ -45,7 +51,7 @@ runs:
       run: |
         set -euo pipefail
         {
-          echo "image=${ImageOS:-}"
+          echo "shared=go-${{ runner.os }}-${{ runner.arch }}-${ImageOS:-}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.sum') }}"
           echo 'path<<EOF'
           go env GOMODCACHE
           go env GOCACHE
@@ -53,11 +59,14 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
     # setup-go's key parts: the image, since cgo builds link its libraries, and
-    # the Go release, since each has a build cache of its own. Exact match
-    # only: an entry is saved once per key and never updated.
+    # the Go release, since each has a build cache of its own. An entry is
+    # saved once per key and never updated. Without a flavor, exact match
+    # only. With one, a miss falls back to the shared entry, and cache-hit
+    # stays false (it is true on an exact match only), so the job still saves.
     - name: Restore the Go caches
       id: restore
       uses: actions/cache/restore@v6
       with:
         path: ${{ steps.paths.outputs.path }}
-        key: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.paths.outputs.image }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.sum') }}
+        key: ${{ steps.paths.outputs.shared }}${{ inputs.flavor != '' && format('-{0}', inputs.flavor) || '' }}
+        restore-keys: ${{ inputs.flavor != '' && steps.paths.outputs.shared || '' }}
