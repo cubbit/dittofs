@@ -761,7 +761,7 @@ SMB names a client by its `ClientGuid`, and one Windows machine sends one
 carries many users' sessions at once.
 
 - The client record of an SMB client **MUST** be keyed by `ClientGuid` alone
-  and hold no principal: the adapter's `Connect` sets `ClientInfo.Machine`
+  and hold no principal: the adapter's `Connect` sets `ClientInfo.ClientIsMachine`
   and `Recovery` reconnect
   ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types))
   ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)): the first
@@ -1017,7 +1017,7 @@ file open locally, until the server takes the promise back.
   kind of grant as an NFS delegation: Level II is read, exclusive is read and
   write, batch is read, write and handle.
 - An oplock's grant is keyed by its open, so two opens by one client break each
-  other as oplocks always have: every `CREATE` sets `OpenRequest.GrantPerOpen`,
+  other as oplocks always have: every `CREATE` sets `OpenRequest.GrantBelongsToOpen`,
   which makes a grant asked with no lease key the open's own
   ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)); a lease's grant is keyed by its lease key, so
   they do not.
@@ -2548,7 +2548,7 @@ mapping it needs is here.
 | --- | --- | --- | --- |
 | `Client.Name` | `ClientGuid` | — | indexed with the protocol; one record per machine (§4.4) |
 | `Client.Boot` | unused, zero | — | a `ClientGuid` carries no boot instance; a restarted machine reconnects its handles under the same record |
-| `Client.Owner`, `Client.Protect` | zero, false: `ClientInfo.Machine` set | — | principals bind per session and per open (§4.4) |
+| `Client.Owner`, `Client.Protect` | zero, false: `ClientInfo.ClientIsMachine` set | — | principals bind per session and per open (§4.4) |
 | `Client.Recovery` | reconnect | — | no client lease; listed per node with a session, released with the last; a null or guest call never connects one (§4.4) |
 | `Client.Reach.Sessions` | the nodes holding an authenticated session of the `ClientGuid`, each added by `Connect` at its first one and again at each new node epoch or when the `Connect` a session skipped behind failed; removed by the `Disconnect` that ends the node's last one, or with the node's loss or restart ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) | none | the nodes asked to pick a session for a break whose opens are all disconnected and one persistent (§4.4); the record is not released while any remains (RFC 14 §2.1) |
 | `Client.Pending` | never set | — | an SMB client is confirmed in one step, at its first authenticated `SESSION_SETUP` |
@@ -2557,7 +2557,7 @@ mapping it needs is here.
 | `Open.Mode.Deny` | the complement of `ShareAccess` over read, write and delete | — | a share bit set allows that access; RFC 14 holds what is refused |
 | `OpenRequest.Backup` | `FILE_OPEN_FOR_BACKUP_INTENT` | — | the service sets `Open.Mode.Privileged` when its caller is privileged (§11, S28); the only open where privilege counts, as the `Call` sets `PrivilegeOnlyForBackup` |
 | `OpenRequest.WantOpenID` | set on every `CREATE` | — | the `OpenID` the FileId's persistent half carries (§6.1); a durable or persistent open needs it |
-| `OpenRequest.GrantPerOpen` | set on every `CREATE` | — | a grant asked with no lease key, an oplock, is the open's own (§6.2) |
+| `OpenRequest.GrantBelongsToOpen` | set on every `CREATE` | — | a grant asked with no lease key, an oplock, is the open's own (§6.2) |
 | `Open.Durability` | `DHnQ`, `DH2Q`; persistent when `DH2Q` asks it on a continuously available share | — | §6.4 |
 | `Durable.Timeout` | the durable timeout the create negotiated | — | MS-SMB2 3.3.5.9.10 bounds |
 | `Durable.Create` | `CreateGuid` (`DH2Q`, `DH2C`) | — | zero for a v1 durable open |

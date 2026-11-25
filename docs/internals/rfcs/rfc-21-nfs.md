@@ -1092,7 +1092,7 @@ A **delegation** is the server's promise that no other client is using a file,
 so the client may cache it without asking. Delegations are RFC 14's caching
 grants: a read delegation is a read grant, a write delegation a read and write
 grant, and neither is ever a handle grant: the adapter asks neither a lease key
-nor `GrantPerOpen`, so the grant is the client's, which caches no handles
+nor `GrantBelongsToOpen`, so the grant is the client's, which caches no handles
 ([RFC 14 §5.1](rfc-14-open-state.md#5.1%20What%20a%20grant%20is)). Offering
 them at all is the server's choice; this one offers both file kinds to NFSv4.1
 and later, none to NFSv4.0, and no directory ones.
@@ -1361,7 +1361,8 @@ client, are RFC 14's.
   anonymous ([RFC 18 §5.4](rfc-18-identity.md#5.4%20Errors%20never%20become%20answers)).
 - **NLM is admitted at `Claimed`.** `LOCK`, `TEST`, `UNLOCK`, `CANCEL`,
   `SHARE`, `UNSHARE`, `FREE_ALL` and their `*_MSG` forms are admitted on a share
-  whose `MinProof` is higher than `Claimed`; the claimed caller is still
+  whose `MinProof` is higher than `Claimed`: every NLM and NSM call sets
+  `Call.HostCall` ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); the claimed caller is still
   resolved and gated as above.
 - **Replies leave from the address the client used.** Callbacks to the host —
   `NLMPROC4_GRANTED`, `NLMPROC4_GRANTED_MSG`, the `NLMPROC4_*_RES` replies — **MUST** be sent
@@ -1502,7 +1503,8 @@ shares [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)
 lets the caller see.
 
 `MNT` and `EXPORT` are admitted on the share's state and its client rules only,
-without the `MinProof` and `MinProtection` step, so a Kerberos-only share can
+without the `MinProof` and `MinProtection` step, as they set `Call.HostCall`
+([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), so a Kerberos-only share can
 return its flavours to a client whose mount daemon sends `MNT` as `AUTH_UNIX`.
 The handle `MNT` returns is gated like any other on every later call.
 
@@ -2457,7 +2459,8 @@ Open state takes only neutral requests and returns neutral results and errors
 mapping it needs is here. It sets none of the
 capabilities [RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types) lists for SMB, so every NFS and NLM call
 takes the service's plain rules, and the `Call`'s `Protocol` is a label no rule
-reads; an NLM host's `Connect` sets `ClientInfo.Machine`.
+reads; NLM, NSM, `MNT` and `EXPORT` set `Call.HostCall` (§6.1, §6.3), and an NLM
+host's `Connect` sets `ClientInfo.ClientIsMachine`.
 
 **Clients.** Every node answers `EXCHANGE_ID`, `SETCLIENTID` and
 `DESTROY_CLIENTID` for any client (§3.3), so each field those calls decide is
@@ -2469,7 +2472,7 @@ in RFC 14's durable client record
 | `Name`, indexed by (protocol, name) | the owner string: `co_ownerid` (`EXCHANGE_ID`), the `nfs_client_id4` id (`SETCLIENTID`); for an NLM host its `caller_name` with the source address it sends from (§6.1) | an `EXCHANGE_ID` / `SETCLIENTID` from a client that rebooted or reconnected through another node finds its record, and `Boot` tells which |
 | `Boot` | the boot verifier; for an NLM host its NSM state number, big-endian in the low four bytes, so the bytes order as the numbers do | a new `Boot` under the same name is a new client instance |
 | `Pending` | an unconfirmed `SETCLIENTID` or `EXCHANGE_ID`: nothing durable, held at the node that answered, `Confirm` sent as the NFSv4.0 confirm verifier or, low 32 bits, as the NFSv4.1 `eir_sequenceid` ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation)) | `SETCLIENTID_CONFIRM`, or NFSv4.1's first `CREATE_SESSION`, at that node (§3.5) |
-| `Owner` | the principal that created the client ID, mapped before squashing; zero for an NLM host, whose `Connect` sets `ClientInfo.Machine` | an `EXCHANGE_ID` or `SETCLIENTID` for the same name from another principal is `NFS4ERR_CLID_INUSE` (RFC 8881 §18.35.5) and leaves no `Pending` |
+| `Owner` | the principal that created the client ID, mapped before squashing; zero for an NLM host, whose `Connect` sets `ClientInfo.ClientIsMachine` | an `EXCHANGE_ID` or `SETCLIENTID` for the same name from another principal is `NFS4ERR_CLID_INUSE` (RFC 8881 §18.35.5) and leaves no `Pending` |
 | `Protect` | set for `SP4_MACH_CRED`, false for `SP4_NONE`; `spo_must_allow` stays in the adapter's bytes, and the adapter refuses a machine-credential call outside it before calling the service | each node admits the machine principal the same way |
 | `Reach.Callback`, `Reach.Down` | the node holding the back channel, and whether it is lost (§3.4) | callbacks, `SEQ4_STATUS_CB_PATH_DOWN` |
 | `Reach.Sessions` | one entry per node holding a session, added at `CREATE_SESSION` through `AddSession` and again through it at each new node epoch, removed by the node's last `DESTROY_SESSION`'s `Disconnect`, or with the node's loss or restart | `DESTROY_CLIENTID` is `NFS4ERR_CLIENTID_BUSY` while any entry remains (§5.1), so a clean unmount's, after its `DESTROY_SESSION`, finds none |

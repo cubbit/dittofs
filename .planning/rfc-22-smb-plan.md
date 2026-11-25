@@ -909,7 +909,7 @@ client rows; Appendix G's `SESSION_SETUP` and `LOGOFF`; RFC 20 §3.2's cleanup p
   `OpenFilesKeepNames` (RFC 22 §16.1), with a test that an SMB request's `Call` has both; null and guest sessions anonymous, keyless and exempt from
   signing (plan gap 17); a failed credential fails.
 - T5.4 The client record: `Connect` at a `ClientGuid`'s first authenticated setup on the node, its
-  `ClientInfo` with `Machine` set and `Recovery` reconnect (RFC 22 §4.4, §16.4),
+  `ClientInfo` with `ClientIsMachine` set and `Recovery` reconnect (RFC 22 §4.4, §16.4),
   outside the one-call rule (A5), its `Gen`, and Appendix G's counted and skipped setups; `LOGOFF`
   as `Disconnect` with `Logoff`, and `Last` at the node's last session, repeated at a newer `Gen`
   outside the rule (A5); null and guest sessions
@@ -1074,7 +1074,7 @@ bounds by cause; Appendix D's `RqLs`; Appendix G's `OPLOCK_BREAK`; RFC 20 §3.3'
 - T9.1 The lease's and oplock's tagged structs: break notifications and acknowledgements in both
   forms.
 - T9.2 Caching requests on `CREATE`: lease key, parent, epoch and version, oplock levels as grant
-  kinds, with `OpenRequest.GrantPerOpen` set on every `CREATE` so an oplock is its open's own
+  kinds, with `OpenRequest.GrantBelongsToOpen` set on every `CREATE` so an oplock is its open's own
   (RFC 22 §6.2); none for a guest or null session; the join test through `OpenRequest.Conn` (plan gap
   18); the service grants none on a directory (RFC 22 §6.2; plan gap 23, T2.5) and refuses the
   other-file key with

@@ -290,7 +290,7 @@ nothing the adapter refuses.
 
 **An SMB client record names a machine, not a user.** One Windows machine sends
 one name on every connection, and a multi-session host carries many users'
-sessions under it. The SMB adapter therefore registers it with `Machine` set
+sessions under it. The SMB adapter therefore registers it with `ClientIsMachine` set
 ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), and the record holds no `Owner`: the first
 authenticated session setup naming a known name finds its record whoever
 authenticates, and is never refused for its principal. A null or guest session
@@ -791,7 +791,7 @@ own, since a key travels in clear and joining makes an opener (§2.1). For one o
 the key's openers, a key already naming a grant on another file makes the open
 `ErrInvalid`, as MS-SMB2 answers `STATUS_INVALID_PARAMETER`, and a key naming an
 existing lease of the file joins it. The key is free again when its lease's last
-open closes. An oplock, a grant whose request sets `GrantPerOpen` and names no key,
+open closes. An oplock, a grant whose request sets `GrantBelongsToOpen` and names no key,
 covers exactly the one open that asked for it. An NFS
 delegation, a grant asked with neither, is held by the client and covers none of its opens: it ends by
 return or recall, not by close.
@@ -1867,7 +1867,7 @@ rather than by open so that two opens by one client do not break each other.
 
 An NFS read delegation is a read grant; an NFS write delegation is read and
 write. Neither is ever a handle grant: a grant asked with no lease key and
-without `GrantPerOpen` is the client's, and the table offers it no handle
+without `GrantBelongsToOpen` is the client's, and the table offers it no handle
 caching, which only SMB asks. A delegation already lets its holder open the file locally, and it ends by recall or
 return, not by close. SMB leases combine the three freely.
 
@@ -3028,7 +3028,7 @@ between clients reads a capability the caller states. `OpenFilesKeepNames` is
 the caller's: `CheckChange` applies §7's deny-delete refusal to every caller,
 and to one that sets it, as every SMB call does, also §9.5's open-children
 refusal and refuses a rename over a file another open holds, as Windows does.
-The rest are the request's own fields (`WantOpenID`, `GrantPerOpen`, `Lease`,
+The rest are the request's own fields (`WantOpenID`, `GrantBelongsToOpen`, `Lease`,
 `Durability`). None is looked up from the client record: NFSv3 has no client,
 and in a cluster the file's primary holds no client records.
 
@@ -3148,7 +3148,7 @@ type OpenRequest struct {
 	Parent        LeaseKey      // a v2 lease request's parent key, kept with a new lease (CachingGrant.Parent); zero: none
 	SetID         bool          // the file's mode has setuid or setgid, as the service read it: no write caching (§5.4)
 	Want          GrantKind     // the grant kind asked for
-	GrantPerOpen  bool          // a grant asked with no Lease key is this open's own, an oplock; false: the client's, a delegation, never a handle grant (§2.4, §5.1)
+	GrantBelongsToOpen  bool          // a grant asked with no Lease key is this open's own, an oplock; false: the client's, a delegation, never a handle grant (§2.4, §5.1)
 	WantOpenID    bool          // the open is issued an OpenID that names it from then on, as an SMB FileId does; false: named by its token (§2.2)
 	MaxRead       bool          // the caller's maximal access to the file includes read (§8.1's app instance)
 	Reclaim       bool
