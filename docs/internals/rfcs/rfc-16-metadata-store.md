@@ -934,7 +934,7 @@ type NodeStatus struct {
 	RestartPending []RecordRef
 	Secrets        []SecretVersion // each secret reference it resolves, and the version it holds (RFC 13 §7)
 	Conditions     []byte // the node's health conditions (RFC 25)
-	Adapters       []AdapterStatus // RFC 23 §2.4: each protocol's state and the settings generation it runs
+	Adapters       []AdapterStatus // RFC 23 §2.4: each protocol's state, the settings generation it runs and the port it bound
 }
 
 // AdapterStatus is one of a node's adapters as the node reports it.
@@ -942,6 +942,7 @@ type AdapterStatus struct {
 	Protocol   string
 	State      AdapterState // configured, serving, draining or stopped (RFC 20); the zero value names none
 	Generation uint64       // the settings generation the adapter runs
+	Port       uint16       // the TCP port its listener bound while serving, 0 otherwise
 }
 ```
 
