@@ -319,7 +319,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 | E7 | Identity's NFS side | `AUTH_SYS` and `AUTH_NONE` resolution, uid and gid mapping and mints, owner strings, `ManageGIDs`, RFC 18 §10's NFS rows | 5 | 16 | B | E6, partly; E16 |
 | E8 🔀 | Clients and sessions | the callbacks value and the `Adapter` bytes first; `EXCHANGE_ID`, `SETCLIENTID`, confirms, `CREATE_SESSION`, `SEQUENCE`'s slots and reply cache, the session registry, lease and reclaim signals; A1's runner change after S2b | 10 | 28 | A | E10; E9, E11 and E12, partly; S4 |
 | E9 | Opens, stateids and locks | `OPEN` and its claims, stateid rules, NFSv4.0 owner sequences, `LOCK`, `LOCKT`, `LOCKU`, `TEST_STATEID`, `FREE_STATEID`, drain roles per request | 8 | 25 | C | E10 and E12, partly; E16 |
-| E10 | Delegations and the back channel | the back channel's calls, delegations offered, recalled, returned and revoked, administrator's revoke, path down with A2's service half after S2b, the drain test | 8 | 22 | A | E16 |
+| E10 | Delegations and the back channel | the back channel's calls, delegations offered, recalled, returned and revoked, administrator's revoke, path down with A2's service half after S2b, the drain test | 9 | 28.75 | A | E16 |
 | E11 🔀 | NLM, NSM and the datagram path | `core`'s datagram listener, NLM v4, NSM, grants resent, `SM_NOTIFY`, `DialClient`'s network | 7 | 22 | B | E16 |
 | E12 | NFSv4.2 operations | `DEALLOCATE`, `SEEK`, `READ_PLUS`, `COPY`, `CLONE`, xattrs, the hold budget | 5 | 13 | C | E16 |
 | E13 🔀 | RPCSEC_GSS | the context table as NFS's `Security` stage over `gss`, `krb5`, `krb5i`, `krb5p` | 6 | 16 | B | E16 |
@@ -929,7 +929,7 @@ reboot racing renew *(1 node)*", the "§3.5 confirm" step of a rebooted client h
 
 ### Epic 10 — Delegations and the back channel
 
-**Epic 10 estimate: 8 subtasks, 22 man-days.**
+**Epic 10 estimate: 9 subtasks, 28.75 man-days.**
 
 The server calling the client: the back channel's calls, the delegations they recall, an
 administrator's revoke, and what runs while draining, once every operation the drain test names
