@@ -289,9 +289,8 @@ records its series through a small recorder interface it declares, and offers
 its settings rows, metric definitions and alert rules as plain values, which
 the content wiring builds into settings, collectors and rules and hands back as
 configuration structs. The codec imports the contract and RFC 5's contract, the
-root `transform` package; the chain it encodes under, the name derivation and
-the decode bound `MaxDecodeLen(Max)` are handed to it by the node's content
-wiring, never imported.
+root `transform` package; the chain it encodes under and the name derivation
+are handed to it by the node's content wiring, never imported.
 
 **Two components, one document.** The block codec ([§3](#3.%20The%20block%20format)) and the remote block
 store ([§4](#4.%20The%20store%20contract)) are separate components: the codec's encoder and decoder never
@@ -373,7 +372,8 @@ Five requirements on the layout:
   length, more than `N` index entries, more census entries than its bound, or a
   census material ID longer than 255 bytes, before allocating for it.
 - Each body's declared length **MUST** be at most `MaxDecodeLen(Max)`, the
-  largest body any registered transform could have written ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)), and
+  largest body any registered transform could have written, which the codec asks
+  of the chain it is handed (`Chain.MaxDecodeLen`, [RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)), and
   the codec checks it before allocating for the body. The read side never uses
   the current chain's `MaxEncodedLen`: a block written under an older chain must
   stay readable.

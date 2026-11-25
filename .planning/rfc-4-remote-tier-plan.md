@@ -108,9 +108,9 @@ and the codec record through a recorder each declares (D12), and offer their set
 metric definitions and alert rule as plain values, which the node's content wiring
 (`internal/node/content`) builds into settings, collectors and rules, handing each package its
 configuration struct (epic 7). The codec imports `pkg/remote` and the root `pkg/transform`,
-RFC 5's contract, and no transform package: the chain, the name derivation and
-`MaxDecodeLen(Max)`, which RFC 5 keeps in `pkg/transform/chain`, are handed to it by the
-content wiring, so it imports neither the carver nor the engine (D3). The store
+RFC 5's contract, and no transform package: the chain and the name derivation are handed to it
+by the content wiring, and it asks the chain for `MaxDecodeLen` (a method of the root
+`transform.Chain`), so it imports neither the carver nor the engine (D3). The store
 imports no codec, transform, syncer or engine package. RFC 5's `keys`
 (`pkg/transform/keys`) imports `pkg/remote`'s contract, for its errors, and reaches the
 store through a two-call interface it declares, which the node's content wiring fills. The S3
@@ -787,7 +787,8 @@ exists (§3.3); the codec's part of RFC 3 §2.2's memory-bound row; R1 to R4,
 R14 and R15.
 
 **Expected content:**
-- The layout of D2, its header bound, and the refusals before allocation (§3.2).
+- The layout of D2, its header bound, and the refusals before allocation (§3.2), the body bound
+  asked of the handed chain's `MaxDecodeLen`.
 - Encode from declared or measured lengths through the chain the node's content wiring hands
   in, with D5's combine (§4.3), into a plan the `Put` keeps across retries (D3).
 - RFC 24 §6.2's CPU token taken per chunk encoded or hashed, and per chunk a background read
