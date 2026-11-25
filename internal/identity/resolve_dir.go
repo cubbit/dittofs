@@ -108,7 +108,7 @@ func (s *Server) dirStep(ctx context.Context, st *State, p entity.Principal, ent
 	if !groups {
 		return nil, oldest, nil
 	}
-	g, groupsQueried, err := st.dir.groupsOf(ctx, e.ans, st.Settings.DirectoryStaleGrace)
+	g, groupsQueried, err := st.dir.groupsOf(ctx, e.ans, st.Settings.DirectoryStaleGrace, nil)
 	if err != nil {
 		return nil, time.Time{}, dirRefusal(err)
 	}
@@ -129,7 +129,7 @@ func (s *Server) dirStep(ctx context.Context, st *State, p entity.Principal, ent
 		oldest = earliest(oldest, at)
 		entries = append(entries, s.mintableGroups(domain, more)...)
 	}
-	ps, bound, err := s.mintDir(ctx, st, entries, false)
+	ps, bound, err := s.mintDir(ctx, st, entries, false, nil)
 	if err != nil {
 		var r *refusal
 		if !errors.As(err, &r) && errors.Is(err, vfserr.ErrUnavailable) {

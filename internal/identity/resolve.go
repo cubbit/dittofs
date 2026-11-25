@@ -198,7 +198,7 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 	case proven:
 		mapped = id.Evidence.Principal
 	case claimed:
-		mapped, u, err = s.claimedUID(ctx, pr, id.Claims.UID)
+		mapped, u, err = s.claimedUID(ctx, st, pr, id)
 	}
 	span.SetAttributes(attribute.String("identity.principal", mapped.ID.String()))
 	if err != nil {
@@ -299,8 +299,12 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 		// (RFC 18 §6.3), and its grant is read for the principal its uid
 		// mapped to, unauthenticated, so the grant to authenticated users
 		// never matches it.
-		if c.Group, groups, err = s.claimedGroups(ctx, pr, id.Claims); err != nil {
+		var short bool
+		if c.Group, groups, short, err = s.claimedGroups(ctx, st, pr, id); err != nil {
 			return nil, err
+		}
+		if short {
+			c.Fresh = time.Time{}
 		}
 		if err := s.capped(ctx, mapped, groups); err != nil {
 			return nil, err

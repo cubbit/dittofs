@@ -203,6 +203,8 @@ type Server struct {
 	verified   func(phc []byte)         // a test's view of each hash VerifyPassword verified against; nil in production
 	holds      holds                    // the joins' administrator credentials
 	throttle   *throttle                // the logon failures per name and client address
+	lookupCap  *lookupCap               // the directory lookups each client's Claimed callers send
+	mintCap    mintCap                  // the records Claimed callers mint on this node
 	replay     *replayCache             // the Kerberos authenticators seen within the clock skew
 	signIns    *prometheus.CounterVec   // by protocol, mechanism and outcome
 	signInSec  *prometheus.HistogramVec // by mechanism
@@ -293,6 +295,7 @@ func New(d Deps) (*Server, error) {
 	s.signInSec = histogram(d.Metrics, signInSecondsSpec)
 	s.throttle = newThrottle(throttleBound, counter(d.Metrics, evictionsSpec).WithLabelValues())
 	s.replay = newReplayCache(replayBound, replayShare)
+	s.lookupCap = newLookupCap(claimUnits, s.logger)
 	return s, nil
 }
 

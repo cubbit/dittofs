@@ -227,6 +227,14 @@ func (c *dirCache) lookup(ctx context.Context, by directory.Key, value []byte, g
 // lookupEntry is lookup's entry, which also says when its answer was given,
 // and whether a query this call sent or joined gave it.
 func (c *dirCache) lookupEntry(ctx context.Context, by directory.Key, value []byte, grace time.Duration, fresh bool) (*dirEntry, bool, error) {
+	return c.lookupCharged(ctx, by, value, grace, fresh, nil)
+}
+
+// lookupCharged is lookupEntry, calling charge, when it is set, just before
+// the lookup sends or joins a query: an answer the cache holds fresh, or an
+// outage that sends nothing, costs nothing. charge's error fails the lookup
+// unsent and is not counted as the directory's.
+func (c *dirCache) lookupCharged(ctx context.Context, by directory.Key, value []byte, grace time.Duration, fresh bool, charge func() error) (*dirEntry, bool, error) {
 	// The client answers an empty value without the directory, since LDAP
 	// holds none, so it is answered here, before the outage is consulted: it
 	// is no probe and neither raises nor clears directory_unreachable.
@@ -237,7 +245,7 @@ func (c *dirCache) lookupEntry(ctx context.Context, by directory.Key, value []by
 	if by == directory.ByUserName || by == directory.ByGroupName {
 		k.value = entity.FoldPrincipalName(k.value)
 	}
-	return c.answer(ctx, k, grace, fresh, c.lookupAsk(by, value))
+	return c.answer(ctx, k, grace, fresh, charge, c.lookupAsk(by, value))
 }
 
 // lookupAsk asks the directory who holds value by by, on a copy of value of
@@ -253,22 +261,24 @@ func (c *dirCache) lookupAsk(by directory.Key, value []byte) asker {
 // groupsOf is user's closure, under a closure's key, its entry ID, answered as lookup answers: fresh for the positive TTL, then from one
 // query shared by every concurrent caller, a failed one served stale within
 // the grace and otherwise ErrUnavailable. A closure the directory cannot
-// finish fails whole, never as a shorter one.
-func (c *dirCache) groupsOf(ctx context.Context, user directory.Answer, grace time.Duration) (*dirEntry, bool, error) {
+// finish fails whole, never as a shorter one. charge is called as
+// lookupCharged calls it.
+func (c *dirCache) groupsOf(ctx context.Context, user directory.Answer, grace time.Duration, charge func() error) (*dirEntry, bool, error) {
 	if len(user.EntryID) == 0 {
 		return nil, false, fmt.Errorf("%w: identity: the directory answered an entry with no ID", vfserr.ErrUnavailable)
 	}
 	k := dirKey{closure: true, value: string(user.EntryID)}
-	return c.answer(ctx, k, grace, false, func(ctx context.Context) (directory.Answer, []directory.Answer, bool, error) {
+	return c.answer(ctx, k, grace, false, charge, func(ctx context.Context) (directory.Answer, []directory.Answer, bool, error) {
 		groups, err := c.client.Groups(ctx, user)
 		return directory.Answer{}, groups, true, err
 	})
 }
 
 // answer is lookup's rule for the question k, which ask puts to the
-// directory. queried says the entry came from a query this call sent or
-// joined, not from the cache, fresh or stale.
-func (c *dirCache) answer(ctx context.Context, k dirKey, grace time.Duration, fresh bool, ask asker) (e *dirEntry, queried bool, err error) {
+// directory, charge, when set, called before a query is sent or joined.
+// queried says the entry came from a query this call sent or joined, not
+// from the cache, fresh or stale.
+func (c *dirCache) answer(ctx context.Context, k dirKey, grace time.Duration, fresh bool, charge func() error, ask asker) (e *dirEntry, queried bool, err error) {
 	q := question(k)
 	e = c.get(k)
 	now := c.clock.Now()
@@ -291,7 +301,12 @@ func (c *dirCache) answer(ctx context.Context, k dirKey, grace time.Duration, fr
 	// operator watches for.
 	if skip, _ := c.out.skip(now); skip {
 		r.Err = errDirUnreachable
-	} else {
+	} else if charge != nil {
+		if err := charge(); err != nil {
+			return nil, false, err
+		}
+	}
+	if r.Err == nil {
 		// The query runs on the first caller's context without its
 		// cancellation, so a caller that stops waiting leaves it to the
 		// others; the client's query timeout bounds it.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -95,7 +96,7 @@ func (s *Server) findDirectorySID(ctx context.Context, st *State, value []byte, 
 	if !e.found {
 		return entity.Principal{}, vfserr.ErrUnknownPrincipal
 	}
-	return s.dirPrincipal(ctx, st, e.ans, queried, true)
+	return s.dirPrincipal(ctx, st, e.ans, queried, true, nil)
 }
 
 // findDirectoryName is the principal holding the dir spelling of the entry
@@ -113,7 +114,7 @@ func (s *Server) findDirectoryName(ctx context.Context, st *State, name string, 
 			return entity.Principal{}, err
 		}
 		if e.found {
-			return s.dirPrincipal(ctx, st, e.ans, queried, mint)
+			return s.dirPrincipal(ctx, st, e.ans, queried, mint, nil)
 		}
 	}
 	return entity.Principal{}, vfserr.ErrUnknownPrincipal
@@ -221,8 +222,10 @@ func (s *Server) markedDir(ctx context.Context, id []byte) (bool, error) {
 // entry whose principal is marked deleted while its deletion runs (§3.7):
 // such a user is ErrUnknownPrincipal, and such a group is left out. A record
 // already minted is refreshed only from an answer a query of this lookup
-// gave, queried for a's own; see refreshable.
-func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer, queried, mint bool) (entity.Principal, error) {
+// gave, queried for a's own; see refreshable. With ch, a Claimed caller's
+// lookup, the closure query is charged to its lookup cap and the batch to
+// the node's mint cap (see mintDir).
+func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer, queried, mint bool, ch *charges) (entity.Principal, error) {
 	if len(a.EntryID) == 0 {
 		return entity.Principal{}, fmt.Errorf("%w: identity: the directory answered an entry with no ID", vfserr.ErrUnavailable)
 	}
@@ -256,14 +259,14 @@ func (s *Server) dirPrincipal(ctx context.Context, st *State, a directory.Answer
 	entries := []directory.Answer{a}
 	groupsQueried := false
 	if !a.Group {
-		g, q, err := st.dir.groupsOf(ctx, a, st.Settings.DirectoryStaleGrace)
+		g, q, err := st.dir.groupsOf(ctx, a, st.Settings.DirectoryStaleGrace, ch.lookupFn())
 		if err != nil {
 			return entity.Principal{}, err
 		}
 		groupsQueried = q
 		entries = append(entries, s.mintableGroups(domain, g.groups)...)
 	}
-	ps, bound, err := s.mintDir(ctx, st, entries, true)
+	ps, bound, err := s.mintDir(ctx, st, entries, true, ch)
 	if err != nil {
 		return entity.Principal{}, err
 	}
@@ -343,16 +346,28 @@ func (s *Server) mintableGroups(domain []byte, groups []directory.Answer) []dire
 // its deletion still running, is not minted anew: with first, the first entry
 // so marked fails the call ErrUnknownPrincipal, and any other is answered the
 // zero principal.
-func (s *Server) mintDir(ctx context.Context, st *State, entries []directory.Answer, first bool) (ps []entity.Principal, bound []int, err error) {
+//
+// With ch, the batch is charged to the node's mint cap, a record each. A
+// batch that does not fit the cap's room loses its user, which is minted
+// only with its whole closure, and keeps as many of its groups as fit, in
+// the directory's order; the call then fails at the cap, having minted only
+// those groups, so the user's next call finds them held and its batch
+// smaller. Nothing records the shortfall: the user's next call asks the
+// directory again, as for any uid no record holds.
+func (s *Server) mintDir(ctx context.Context, st *State, entries []directory.Answer, first bool, ch *charges) (ps []entity.Principal, bound []int, err error) {
 	type remap struct {
 		p  entity.Principal
 		id uint32
 	}
 	var remapped []remap
 	ps = make([]entity.Principal, len(entries))
+	taken, short := 0, false // the records charged to the mint cap, and whether the batch was cut to fit
+	var at int64             // when they were charged
 	err = s.mint(ctx, func(ctx context.Context) (entity.MintBatch, int, error) {
 		remapped, bound = remapped[:0], bound[:0]
 		clear(ps)
+		s.mintCap.refund(at, taken) // a run before this one charged a batch it did not write
+		taken, short = 0, false
 		var b entity.MintBatch
 		claimed := map[entity.ProtocolID]bool{} // the uids and gids this batch takes
 		held := func(id entity.ProtocolID) (bool, error) {
@@ -413,15 +428,32 @@ func (s *Server) mintDir(ctx context.Context, st *State, entries []directory.Ans
 				remapped = append(remapped, remap{np, *from})
 			}
 		}
+		if n := len(b.Users) + len(b.Groups); ch != nil && n > 0 {
+			taken, at = s.mintCap.take(s.deps.Clock.Now(), n)
+			if taken < n {
+				short = true
+				b.Users = nil
+				b.Groups = b.Groups[:min(taken, len(b.Groups))]
+				s.mintCap.refund(at, taken-len(b.Groups))
+				taken = len(b.Groups)
+				remapped = slices.DeleteFunc(remapped, func(r remap) bool {
+					return !slices.ContainsFunc(b.Groups, func(g entity.MintGroup) bool { return g.Group.Principal == r.p })
+				})
+			}
+		}
 		return b, len(bound), nil
 	})
 	if err != nil {
+		s.mintCap.refund(at, taken)
 		return nil, nil, err
 	}
 	for _, r := range remapped {
 		s.remapped.WithLabelValues(r.p.Kind.String()).Inc()
 		s.logger.WarnContext(ctx, "identity: directory principal minted with an allocated ID in place of the entry's reserved or held one",
 			"kind", r.p.Kind.String(), "principal", r.p.ID.String(), "id", r.id)
+	}
+	if short {
+		return nil, nil, capRefusal(errMintCap)
 	}
 	return ps, bound, nil
 }
