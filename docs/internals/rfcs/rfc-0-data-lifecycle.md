@@ -634,7 +634,10 @@ A component **MAY** import another component's contract. A contract holds no
 behaviour beyond pure methods on its own value types, keeps no state, and
 imports only the standard library, libraries outside this set and other
 contracts, so importing one brings in no component's behaviour and no cycle. A component that offers a contract keeps it in a unit
-of its own, apart from its implementation.
+of its own, apart from its implementation. A unit that holds a contract and an
+implementation together counts as an implementation, and no exception is named:
+until its contract is split out, only the composers import it, and a component
+that needs what it holds gets plain values or an interface from the composer.
 
 Where a component requires a capability it does not own, it **MUST** take it as
 an interface: the provider's contract interface, or, where it needs less than
