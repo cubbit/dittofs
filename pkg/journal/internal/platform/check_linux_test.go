@@ -99,6 +99,10 @@ type fakeProbe struct {
 	dev         uint64
 	devName     string
 	optionsFile string
+	// linkTarget, when set, is what readlink answers instead of devName:
+	// the sysfs link's whole target, as a path or a name that fills the
+	// buffer.
+	linkTarget string
 
 	// onePerCall makes getdents return one record per call, whatever the
 	// buffer, so a listing takes as many calls as the directory has
@@ -310,6 +314,10 @@ func (f *fakeProbe) readlink(path string, buf []byte) (int, error) {
 
 	if err := f.failure("readlink", path); err != nil {
 		return 0, err
+	}
+
+	if f.linkTarget != "" {
+		return copy(buf, f.linkTarget), nil
 	}
 
 	return copy(buf, f.devName), nil
@@ -1058,6 +1066,41 @@ func TestCheckEffectiveOptions(t *testing.T) {
 		f.fsType = asInt32(magicExt)
 		f.failOn("open", f.extOptionsPath(), unix.ENOENT)
 		wantBarrier(t, check(f.table(), mountTableWith(t, dir, "ext2", "rw,nobarrier"), dir), dir, dir, "nobarrier")
+		wantAllClosed(t, f)
+	})
+
+	// The ext4 driver serves an ext2-typed mount on a kernel built with
+	// CONFIG_EXT4_USE_FOR_EXT2: the options file is readable, so its
+	// data=journal refuses.
+	t.Run("refuses an ext2-typed mount whose options file is readable", func(t *testing.T) {
+		f := newFake(dir)
+		f.fsType = asInt32(magicExt)
+		f.setOptions(t, "rw,relatime,data=journal")
+		wantRefusal(t, check(f.table(), ext2, dir), ruleDataJournal, dir, dir, "data=journal", "")
+	})
+
+	// The sysfs link's target is a relative path whose last component names
+	// the device; only that component builds the options path.
+	t.Run("reads the options of the device the link's last component names", func(t *testing.T) {
+		f := newFake(dir)
+		f.fsType = asInt32(magicExt)
+		f.linkTarget = "../../devices/virtual/block/" + f.devName
+		f.setOptions(t, "rw,relatime,data=journal")
+		wantRefusal(t, check(f.table(), mountinfo, dir), ruleDataJournal, dir, dir, "data=journal", "")
+		if n := f.callsOn("open", f.extOptionsPath()); n != 1 {
+			t.Errorf("got %d opens of %s, want one", n, f.extOptionsPath())
+		}
+		wantAllClosed(t, f)
+	})
+	// A target that fills the buffer was cut short, so its name is unknown.
+	t.Run("fails on a link target that fills the buffer", func(t *testing.T) {
+		f := newFake(dir)
+		f.fsType = asInt32(magicExt)
+		f.linkTarget = strings.Repeat("a", linkBufSize)
+		wantError(t, check(f.table(), mountinfo, dir), errLinkNameTruncated)
+		if n := f.callsOn("open", f.extOptionsPath()); n != 0 {
+			t.Errorf("got %d opens of the options file, want none after a truncated name", n)
+		}
 		wantAllClosed(t, f)
 	})
 

@@ -3,6 +3,7 @@ package platform
 import (
 	"errors"
 	"fmt"
+	iofs "io/fs"
 	"path"
 	"slices"
 	"strconv"
@@ -308,14 +309,20 @@ func CheckProbe(p storage.Probe) error {
 	// and is checked the same.
 	if p.FSType == magicExt {
 		switch m.fsType {
-		case "ext2":
-			// decision: ext2 has its own driver (fs/ext2), which registers
-			// nothing under /proc/fs/ext4, so the probe reads no options
-			// file for it: the barrier rows stay read from the mount table
-			// above, and the ext-options rules are skipped, since the
-			// absent file's error names no effective options. Withdraw it if
-			// the ext2 driver grows an options file.
-		case "ext3", "ext4":
+		case "ext2", "ext3", "ext4":
+			// decision: an ext2-typed mount whose options file is absent
+			// (ENOENT) skips the ext-options rules and keeps its barrier
+			// rows read from the mount table above. The probe tries the
+			// file for every ext filesystem; ext2's own driver (fs/ext2)
+			// registers nothing under /proc/fs/ext4, so the absent file
+			// names no effective options. A kernel built with
+			// CONFIG_EXT4_USE_FOR_EXT2 serves ext2 mounts with the ext4
+			// driver, and there the file exists, is read, and is judged
+			// like an ext4 mount's. Withdraw the skip if the ext2 driver
+			// grows an options file or the ext2 driver is removed.
+			if m.fsType == "ext2" && errors.Is(p.ExtOptionsErr, iofs.ErrNotExist) {
+				break
+			}
 			// An unreadable options file is an error of the check, never a
 			// refusal and never a pass: the effective options were never
 			// seen, so the mount is not known clean.

@@ -622,6 +622,9 @@ func TestCheckKernelRelease(t *testing.T) {
 		err     error
 	}{
 		{name: "refuses 4.12.0-old", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: "4.12.0-old", refused: true},
+		// 4.9 is older than 4.13 though 9 is not less than 13 as decimals
+		// read: the numbers are compared as a tuple.
+		{name: "refuses 4.9.0", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: "4.9.0", refused: true},
 		{name: "refuses 3.10.0-1160.el7", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: "3.10.0-1160.el7", refused: true},
 		// The rule refuses before the filesystem is named, so an unlisted
 		// one is refused too.
@@ -714,6 +717,25 @@ func TestCheckDataJournal(t *testing.T) {
 		p.ExtOptionsErr = &fs.PathError{Op: "open", Path: "/proc/fs/ext4/sdb1/options", Err: fs.ErrNotExist}
 		wantPass(t, CheckProbe(p))
 	})
+	// A kernel built with CONFIG_EXT4_USE_FOR_EXT2 serves an ext2-typed
+	// mount with the ext4 driver, whose options file is readable: the
+	// ext-options rules apply to it.
+	t.Run("refuses an ext2-typed mount whose readable options say data=journal", func(t *testing.T) {
+		p := probe(hostLines+ext2Line, dir, magicExt)
+		p.ExtOptions = "rw,relatime,data=journal"
+		wantRefusal(t, CheckProbe(p), ruleDataJournal, dir, "/srv/journal", "data=journal", "")
+	})
+	t.Run("refuses an ext2-typed mount whose readable options say nobarrier", func(t *testing.T) {
+		p := probe(hostLines+ext2Line, dir, magicExt)
+		p.ExtOptions = "rw,relatime,nobarrier"
+		wantBarrier(t, CheckProbe(p), dir, "/srv/journal", "nobarrier")
+	})
+	t.Run("fails on an ext2-typed mount whose options file failed otherwise", func(t *testing.T) {
+		p := probe(hostLines+ext2Line, dir, magicExt)
+		read := &fs.PathError{Op: "open", Path: "/proc/fs/ext4/sdb1/options", Err: errors.New("an I/O error met while reading the options")}
+		p.ExtOptionsErr = read
+		wantError(t, CheckProbe(p), read)
+	})
 	t.Run("refuses an ext2 mount by the mount table's nobarrier", func(t *testing.T) {
 		p := probe(hostLines+ext2Line, dir, magicExt)
 		p.ExtOptionsErr = &fs.PathError{Op: "open", Path: "/proc/fs/ext4/sdb1/options", Err: fs.ErrNotExist}
@@ -796,10 +818,9 @@ func TestCheckRefusalOrder(t *testing.T) {
 	p.DirFlags = fsNoCOW
 	wantRefusal(t, CheckProbe(p), ruleCopyOnWrite, dir, "", "", dir+"/format")
 
-	// The kernel rule runs before the barrier one: it asks the directory's
-	// kernel alone, so a directory an older kernel and a mount without
-	// cache flushes both refuse is refused by the kernel, as a probe
-	// failing only it is.
+	// The kernel rule runs before the barrier one: a directory that both an
+	// older kernel and a mount without cache flushes refuse is refused by the
+	// kernel, the same refusal a probe failing only the kernel gets.
 	oldKernel := probe(hostLines+ext4NestedNoBarrier, dir, magicExt)
 	oldKernel.KernelRelease = "4.12.0"
 	err = CheckProbe(oldKernel)
