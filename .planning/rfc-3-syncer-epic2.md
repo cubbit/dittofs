@@ -134,16 +134,16 @@ them.
 | --- | --- | --- | --- | --- |
 | R10 | The in-memory store is the fixture every check shares, held to RFC 4's conformance suite; the wrapper around it, with nothing injected, passes that suite too | invariant | §1.4; RFC 29 §4.11 | T2.1 |
 | R11 | The load record is the in-memory store's own output: calls in flight and their peak, the order calls reached it, puts per name, bytes held. A call the wrapper slows or holds is in flight in that record for as long as it is slowed or held (D2) | invariant | §1.4; D2 | T2.2 |
-| R12 | The syncer keeps no store of its own and no suite of its own for one. `syncertest` is held to it by its import allowlist; the root and `pool` by E1's frozen exports, which an added store type fails | invariant | §1.4 | T2.3 |
+| R12 | The syncer keeps no store of its own and no suite of its own for one. `syncertest` is held to it by its import allowlist; the root and `pool` by E1's frozen exports, which an added store type fails | invariant | §1.4; E1's D8, D9 | T2.3 |
 
 **The Group A suite**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R13 | A check is writable as: build a syncer over the in-memory store, call it, assert on what the store holds, the load it recorded and what came back. The record is the in-memory store's (R11); `Env` gives a row the syncer and the remote store | MUST | §1.4 | T2.1, T2.2, T2.3 |
+| R13 | A check is writable as: build a syncer over the in-memory store, call it, assert on what the store holds, the load it recorded and what came back. The record is the in-memory store's (R11); `Env` gives a row the syncer and the remote store | MUST | §1.4; D4 | T2.1, T2.2, T2.3 |
 | R14 | The Group A checks run over any remote store the caller opens: the in-memory one in `unit`, the real one against a local emulator behind a fault proxy, nightly. The frame takes any opener; the nightly run is RFC 8 offload plan epic 21's | invariant | §1.4; §8.1, "Real backend"; §8.6 | T2.3 |
-| R15 | The checks reach the remote store through `codec.Store`, as production reaches a real store. `Run` checks first that a block put through `Env.NewPut` reads back through `Env.Store` and is found in `Env.Remote`; E3's opener is the first to run that check | invariant | §1.4 | T2.3, E3 |
-| R16 | A check never sleeps on the real clock to let the syncer's time pass: it waits on an outcome, and time moves only when every task is blocked. The frame gives rows only `Env.Wait`; moving time on idle is E3's, whose in-memory opener first implements `Wait` | invariant | §1.4, "Time is virtual in tests" | T2.3, E3 |
+| R15 | The checks reach the remote store through `codec.Store`, as production reaches a real store. `Run` checks first that a block put through `Env.NewPut` reads back through `Env.Store` and is found in `Env.Remote`; E3's opener is the first to run that check | invariant | §1.4; D4 | T2.3, E3 |
+| R16 | A check never sleeps on the real clock to let the syncer's time pass: it waits on an outcome, and time moves only when every task is blocked. The frame gives rows only `Env.Wait`; moving time on idle is E3's, whose in-memory opener first implements `Wait` | invariant | §1.4, "Time is virtual in tests"; D5 | T2.3, E3 |
 | R17 | A Group A check over a backend that cannot lose, corrupt, delay or half-complete asserts nothing, so a check whose fault the caller cannot give is skipped and reported by name, never passed (D4) | invariant | §7, opening paragraph; D4 | T2.3 |
 
 RFC 3 §1.4's other obligations belong to other epics: the four dependencies and the real-clock
