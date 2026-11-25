@@ -4,8 +4,8 @@
 #           environment (another passphrase, say), in the background. It reads the API's address
 #           from the line this start logs, then signs dfsctl in as admin. The first start signs in
 #           with the password dfs init printed, which must change at the first sign-in, and changes
-#           it to one kept in /etc/dittofs/admin.password. It fails if dfs exits first. Its output,
-#           the log among it (logging.output=stdout), goes to /logs/dfs.log.
+#           it to one kept in /etc/dittofs/admin.password, removing the printed one. It fails if dfs
+#           exits first. Its output, the log among it (logging.output=stdout), goes to /logs/dfs.log.
 #   stop    shuts it down cleanly (SIGTERM); kill ends it at once (SIGKILL), like a crash. Both
 #           wait until it is gone.
 # Resume a paused S3 before a start: startup checks the bucket.
@@ -34,16 +34,17 @@ start)
         tail -n 1 /etc/dittofs/init.out >"$CUR"
     fi
     IN=
-    for _ in $(seq 1 60); do
+    for _ in $(seq 1 600); do
         dfsctl login --server "http://$API" --username admin --password-file "$CUR" >/dev/null 2>&1 && IN=1 && break
         kill -0 "$PID" 2>/dev/null || { echo "dfs-server: dfs exited before admin signed in, see $LOG" >&2 && exit 1; }
-        sleep 1
+        sleep 0.1
     done
     test -n "$IN" || dfsctl login --server "http://$API" --username admin --password-file "$CUR"
     if test "$CUR" != "$PW"; then
         head -c 24 /dev/urandom | base64 >"$PW.new"
         dfsctl password change --current-password-file "$CUR" --new-password-file "$PW.new"
         mv "$PW.new" "$PW"
+        rm -f /etc/dittofs/init.out "$CUR"
     fi
     ;;
 stop | kill)

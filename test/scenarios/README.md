@@ -75,7 +75,7 @@ takes no lock, so it does not block a scheduled run.
 - `dfsctl`, logged in as admin. v1's `dfsctl system drain-uploads`, which waited until every share's
   pending uploads were done, has no v2 command yet: the scenarios still call it, and fail there.
 - `dfs-store BUCKET`, which creates a remote store on the local S3's bucket and prints its ID; a share
-  on it: `N="$(dfsctl namespace create --store "$(dfs-store x)" --setting namespace.prefix=x/ -o json | jq -r .id)"`,
+  on it: `S="$(dfs-store x)"`, `N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=x/ -o json | jq -r .id)"`,
   `dfsctl share create x --path /x --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write`,
   `dfsctl grant set x --user tester --access read-write`.
 - The `s3:` rclone remote, for the buckets (`rclone mkdir s3:x`, `rclone size --json s3:x`).

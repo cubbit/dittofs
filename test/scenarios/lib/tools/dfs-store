@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # dfs-store BUCKET [dfsctl store create flag ...]: creates a remote store on the local S3's BUCKET,
 # with setup's credential and any further flags (--setting key=value, say), and prints its ID.
-#   N="$(dfsctl namespace create --store "$(dfs-store x)" --setting namespace.prefix=x/ -o json | jq -r .id)"
+#   S="$(dfs-store x)"
+#   N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=x/ -o json | jq -r .id)"
+# Assign it first: inside --store "$(...)" a failure here would not stop the caller.
 set -euo pipefail
 B="$1"
 shift

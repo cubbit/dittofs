@@ -41,4 +41,4 @@ test "$(cat /tmp/marker.count)" -eq 0
 cmp /tmp/back1.bin /tmp/m.bin
 cmp /tmp/back2.bin /tmp/m.bin
 test -e /tmp/wrong.rc
-grep -q 'the storage key' /logs/dfs.log
+grep -q 'the storage key: keyprovider: unwrap failed' /logs/dfs.log

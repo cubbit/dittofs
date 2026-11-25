@@ -6,8 +6,7 @@
 #      hour (dedupAdoptionMaxAge). An hour after the write, GC must have freed them all.
 #   2. The recycle bin's policies (TR-05): /bin excludes *.tmp, holds at most 3 MiB and keeps entries
 #      for a day. Those policies were v1's share flags, and neither they nor dfsctl trash have a v2
-#      command yet, so this part fails at dfsctl trash list until the trash returns. An excluded
-#      name is deleted for good at once. a, b, c and d (1 MiB each) are deleted
+#      command yet. An excluded name is deleted for good at once. a, b, c and d (1 MiB each) are deleted
 #      in that order; the reaper's first pass, an hour after the server starts, must evict a alone,
 #      the oldest, and keep b, c and d, which are younger than a day.
 #   3. Journal GC against eviction (BS-13, #2908): /j has a 1 GiB journal. For up to 20 rounds in 50
@@ -15,11 +14,13 @@
 #      deleted, so the 30 s journal GC repacks while the next round evicts. With S3 up no write may
 #      fail (RFC 0 §10: a write waits for space).
 #      Each round writes new random content, so no write dedups against an earlier one.
-# Fails today at 1 and 3. 1: the zeros go up as 3 or 4 objects and GC only ever scans one of them;
+# Under v2's CLI the run stops in 1, at dfsctl system drain-uploads, which has no v2 command yet, so no
+# part reaches its checks; past it, 2 would stop at dfsctl trash list. Under v1's CLI it failed at 1
+# and 3, and 2 passed. 1: the zeros go up as 3 or 4 objects and GC only ever scans one of them;
 # it frees that one on its first pass after the hour, and the others are never scanned, so they stay
 # (32 MiB in the hour-long run). 3: from the second to fifth round on, every write times out
 # (NT_STATUS_IO_TIMEOUT) with S3 up: the journal sits at its cap with nothing unsynced and nothing
-# evictable. 2 passes.
+# evictable.
 # It takes about 62 min: run with SCENARIO_TIMEOUT=5400.
 
 date +%s >/tmp/t0
