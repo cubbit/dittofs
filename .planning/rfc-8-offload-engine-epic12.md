@@ -204,7 +204,7 @@ catalogue makes it pass. The behaviour each row checks is that epic's to build.
 | R43 | §11.1 offload health: offload commits that all conflict raise an offload condition, distinct from remote-unreachable, before the journal fills | test row | RFC 8 §15.2 | T12.6 |
 | R44 | §11.1 `stranded_export_failed`: an export refused by the directory names the tag while service continues, and clears once a retry succeeds | test row | RFC 8 §15.2 | T12.6 |
 | R45 | §11.4 drain names its blocker: `WaitOffloaded` returns at its deadline naming the failing file and `file_offload_failing`, never the truncated one | test row | RFC 8 §15.2 | T12.6 |
-| R46 | §6.1.1 a stuck run, over the engine's instances: `work_queue_stalled` names the source and tenant within twice `RunTimeout`, `engine_work_runs_overdue_total` rises, the other tenant's work runs, and liveness fails within 60 s with every slot overdue and again with one dispatch wakeup lost | test row | RFC 8 §15.2 | T12.6 |
+| R46 | §6.1.1 a stuck run, over the engine's instances: `work_queue_stalled` names the source and tenant within twice `RunTimeout`, `engine_work_runs_overdue_total` rises, the other tenant's work runs, and liveness fails within 60 s with every slot of a source overdue; the row's lost-dispatch-wakeup leg is epic 13's single-instance `pkg/workqueue` test, which no engine row can reach | test row | RFC 8 §15.2 | T12.6 |
 | R47 | §2.5 join: `Close` with an offload parked in a stalled put closes no component while the pass runs | test row | RFC 8 §15.2 | T12.6 |
 | R48 | §8.1 removal wedge, the undecodable ref: a truncate over an undecodable ref record and a clone from an undecodable source record retry at the backoff cap, `removal_stalled` names each, other removals complete, and both finish once repaired | test row | RFC 8 §15.2 | T12.6 |
 | R49 | §10 occupancy triggers eviction: a journal at its maximum with filled, offloaded content evicts and accepts a write | test row | RFC 8 §15.2 | T12.7 |
@@ -494,8 +494,9 @@ at S2 (D3) and the epic whose issue its entry names. "c, ch, s" stands for `With
 - **Deliverables:** seven rows in `rfc8_health_test.go` and their entries. In `work.go`, frozen:
   `BlockNextRun(source string, shard entity.ShardID) (release func())`, refusing with `fixture: the
   engine's work queue is not built` until epic 14; `SalvageTo(dir string)`, refusing with
-  `fixture: the salvage export is not built` until epic 20. Proposed: `DropNextWakeup(source
-  string)`, made real by epic 14; drift raised through a `FaultRemote` rule, made real by epic 16.
+  `fixture: the salvage export is not built` until epic 20. Drift is raised through a `FaultRemote`
+  rule, made real by epic 16. No control drops a dispatch wakeup: that leg of "§6.1.1 a stuck run"
+  is epic 13's single-instance test, which epic 14's T14.9 names in the row's place.
   In `rfc8_health_test.go`, used there only: an undecodable value written at a file's ref key
   through the fixture's `kv.KV` and restored, kind 3, as `TestRFC8B_RemovalWedge`'s `refsFault`
   does for the truncate. The stranded tag is made as the first part's strand rows make it, and the
@@ -518,8 +519,12 @@ at S2 (D3) and the epic whose issue its entry names. "c, ch, s" stands for `With
   - `TestRFC8B_RemovalWedgeUndecodableRef` asserts first that the wedged removal retries at the
     backoff cap, read from `JournalStats.Work["removal"]` for the file's shard, which T11.4's stub
     leaves empty, so it is red at that assertion; it then asserts the clone-onto leg, the
-    `removal_stalled` condition per file and the other removals completing. If it passes at S2 it
-    lands green with no entry, and epic 14 keeps it green.
+    `removal_stalled` condition per file and the other removals completing. Red at S2, it turns
+    green in epic 14, whose issue its entry names; if it passes at S2 it lands green with no
+    entry, and epic 14 keeps it green.
+  - `TestRFC8B_AStuckRun` covers the stuck run over the engine's instances only, every slot of a
+    source held by overdue runs among them; its reason says the lost-wakeup leg is epic 13's
+    single-instance test.
 - **Tests:** the seven rows, red. Doubles: kind 3 around the fixture's `kv.KV` and the remote
   store.
 - **Rules:** rule 2, the corrupted ref is the input epic 14's fuzz target also feeds; rule 3, rows
