@@ -1,4 +1,4 @@
-package enginewire_test
+package content_test
 
 import (
 	"bytes"
@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/node/content"
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/engine"
 	"github.com/cubbit/dittofs/pkg/engine/enginetest"
-	"github.com/cubbit/dittofs/pkg/engine/enginewire"
 	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/journal/journaltest/kit"
@@ -42,7 +42,7 @@ import (
 func TestCompose(t *testing.T) {
 	ctx := t.Context()
 	w := composed(t)
-	fs, table, d, dir := w.fs, w.table, w.deps, w.deps.Devices[0]
+	table, d, dir := w.table, w.deps, w.deps.Devices[0]
 
 	j, err := d.Open(ctx, dir, journal.Version{}, w.id, nil)
 	if err != nil {
@@ -62,29 +62,7 @@ func TestCompose(t *testing.T) {
 		end(nil)
 	}
 
-	if err := table.Start(ctx, &enginetest.Sink{}, func(entity.FileID) func() { return func() {} }); err != nil {
-		t.Fatalf("open state start: %v", err)
-	}
-	t.Cleanup(table.Stop)
-	_, src := fs.Create(t, fs.Admin, fs.Root, "src", kvstore.Regular(0o644))
-	_, dst := fs.Create(t, fs.Admin, fs.Root, "dst", kvstore.Regular(0o644))
-	if err := table.Recovery().ServeShard(ctx, fs.Share.ID, entity.ShardID(src.Shard), 1); err != nil {
-		t.Fatalf("serve shard: %v", err)
-	}
-	ex := fs.Store.Existence()
-	failed, err := ex.Commit(ctx, []kvstore.PendingExistence{{Share: fs.Share.ID, File: src.ID,
-		Ops: []kvstore.PendingOp{{Kind: kvstore.OpWrite, Version: entity.VersionOf(1), Extent: entity.ExtentOf(0, 4096)}}}}, nil)
-	if err == nil {
-		err = failed[src.ID]
-	}
-	if err == nil {
-		err = ex.Clone(ctx, kvstore.CloneOp{Share: fs.Share.ID, File: dst.ID, Version: entity.VersionOf(5),
-			Spec: entity.CloneSpec{SrcShare: fs.Share.ID, Src: src.ID, Len: 4096}}, nil)
-	}
-	if err != nil {
-		t.Fatalf("clone src onto dst: %v", err)
-	}
-	o, err := d.Holds.Hold(ctx, engine.CloneSrc{Share: fs.Share.ID, Shard: entity.ShardID(src.Shard), File: src.ID, Dst: dst.ID, AsOf: entity.VersionOf(5)})
+	o, err := d.Holds.Hold(ctx, w.cloned(t))
 	if err != nil {
 		t.Fatalf("Hold of the clone's source: %v", err)
 	}
@@ -130,7 +108,7 @@ func composedWith(t *testing.T, tr trace.Tracer) wiring {
 	if err != nil {
 		t.Fatalf("journal init: %v", err)
 	}
-	table, d, err := enginewire.Compose(enginewire.Params{
+	table, d, err := content.Compose(content.Params{
 		Node:    node,
 		Devices: []string{dir},
 		Store:   fs.Store,
@@ -187,13 +165,13 @@ func TestStartAndStop(t *testing.T) {
 	noOrder := func(entity.FileID) func() { return func() {} }
 
 	w := composed(t)
-	if err := enginewire.Start(t.Context(), w.table, w.e, &enginetest.Sink{}, noOrder, nil); err != nil {
+	if err := content.Start(t.Context(), w.table, w.e, &enginetest.Sink{}, noOrder, nil); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if err := w.table.Recovery().ServeShard(t.Context(), w.fs.Share.ID, w.fs.Share.Shard, 1); err != nil {
 		t.Errorf("serve a shard after Start: got %v, want open state running", err)
 	}
-	if err := enginewire.Stop(t.Context(), w.table, w.e); err != nil {
+	if err := content.Stop(t.Context(), w.table, w.e); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	if err := w.table.Recovery().ServeShard(t.Context(), w.fs.Share.ID, w.fs.Share.Shard, 2); !errors.Is(err, openstate.ErrStopped) {
@@ -201,18 +179,18 @@ func TestStartAndStop(t *testing.T) {
 	}
 
 	w = composed(t)
-	if err := enginewire.Start(t.Context(), w.table, w.e, &enginetest.Sink{}, noOrder, nil); err != nil {
+	if err := content.Start(t.Context(), w.table, w.e, &enginetest.Sink{}, noOrder, nil); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	e := &failingClose{Engine: w.e, fail: true}
-	if err := enginewire.Stop(t.Context(), w.table, e); err == nil || !strings.HasPrefix(err.Error(), "engine: ") {
+	if err := content.Stop(t.Context(), w.table, e); err == nil || !strings.HasPrefix(err.Error(), "engine: ") {
 		t.Fatalf("Stop with the engine's close failing: got %v, want the engine's error", err)
 	}
 	if err := w.table.Recovery().ServeShard(t.Context(), w.fs.Share.ID, w.fs.Share.Shard, 1); err != nil {
 		t.Errorf("serve a shard after a Stop whose engine close failed: got %v, want open state still running", err)
 	}
 	e.fail = false
-	if err := enginewire.Stop(t.Context(), w.table, e); err != nil {
+	if err := content.Stop(t.Context(), w.table, e); err != nil {
 		t.Fatalf("a second Stop once the engine closes: %v", err)
 	}
 	if err := w.table.Recovery().ServeShard(t.Context(), w.fs.Share.ID, w.fs.Share.Shard, 2); !errors.Is(err, openstate.ErrStopped) {
@@ -224,7 +202,7 @@ func TestStartAndStop(t *testing.T) {
 		t.Fatalf("close the engine before its start: %v", err)
 	}
 	before := epoch(t, w.fs.Store)
-	if err := enginewire.Start(t.Context(), w.table, w.e, &enginetest.Sink{}, noOrder, nil); err == nil || !strings.HasPrefix(err.Error(), "engine: ") {
+	if err := content.Start(t.Context(), w.table, w.e, &enginetest.Sink{}, noOrder, nil); err == nil || !strings.HasPrefix(err.Error(), "engine: ") {
 		t.Fatalf("Start of a closed engine: got %v, want the engine's refusal", err)
 	}
 	if got := epoch(t, w.fs.Store); got != before+1 {
@@ -288,7 +266,7 @@ func TestStartOverARecoveryRefusal(t *testing.T) {
 
 			share := enginetest.ShareOf(t, w.fs.Store, w.fs.Share.ID, 1<<20)
 			noOrder := func(entity.FileID) func() { return func() {} }
-			err := enginewire.Start(t.Context(), w.table, w.e, &enginetest.Sink{}, noOrder, []engine.Share{share})
+			err := content.Start(t.Context(), w.table, w.e, &enginetest.Sink{}, noOrder, []engine.Share{share})
 
 			if tc.failed != nil {
 				if !errors.Is(err, tc.failed) {
@@ -306,7 +284,7 @@ func TestStartOverARecoveryRefusal(t *testing.T) {
 				t.Fatalf("Start = %v, want nil: a refusal a retry can clear does not stop the node", err)
 			}
 
-			t.Cleanup(func() { _ = enginewire.Stop(context.Background(), w.table, w.e) })
+			t.Cleanup(func() { _ = content.Stop(context.Background(), w.table, w.e) })
 
 			found := false
 
@@ -479,7 +457,7 @@ func TestComposeOpensTheJournalWithItsMarks(t *testing.T) {
 				tb.Cleanup(func() { _ = db.Close() })
 				return db
 			})
-			_, d, err := enginewire.Compose(enginewire.Params{
+			_, d, err := content.Compose(content.Params{
 				Node: node, Devices: []string{dir}, Store: fs.Store, Clock: clock,
 				Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 				Journal: []journal.Option{journaltest.SuitableMount(), journal.WithStorage(seam.FS()), journal.WithSettings(settings)},
@@ -537,7 +515,7 @@ func TestComposeLogsASkippedMarkToTheEnginesLogger(t *testing.T) {
 	}
 
 	var logs bytes.Buffer
-	_, d, err := enginewire.Compose(enginewire.Params{
+	_, d, err := content.Compose(content.Params{
 		Node: node, Store: fs.Store,
 		Clock:  sim.NewTestClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
 		Logger: slog.New(slog.NewTextHandler(&logs, nil)),

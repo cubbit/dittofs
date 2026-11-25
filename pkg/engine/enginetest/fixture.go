@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/node/content"
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/engine"
-	"github.com/cubbit/dittofs/pkg/engine/enginewire"
 	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/journal/journaltest/kit"
@@ -907,7 +907,7 @@ func (f *Fixture) start() {
 	}
 
 	f.crashed = new(atomic.Bool)
-	opens, d, err := enginewire.Compose(enginewire.Params{
+	opens, d, err := content.Compose(content.Params{
 		Node:    f.Node,
 		Devices: []string{f.Dir},
 		Store:   f.FS.Store,
@@ -974,7 +974,7 @@ func (f *Fixture) start() {
 	if err := e.Apply(Settings); err != nil {
 		t.Fatalf("fixture: engine settings: %v", err)
 	}
-	if err := enginewire.Start(ctx, f.Opens, e, sink, order, []engine.Share{f.Share}); err != nil {
+	if err := content.Start(ctx, f.Opens, e, sink, order, []engine.Share{f.Share}); err != nil {
 		t.Fatalf("fixture: start: %v", err)
 	}
 	f.E = e
@@ -1026,7 +1026,7 @@ func (f *Fixture) stop(clean bool) {
 		}
 		ctx, cancel := context.WithTimeout(parent, closeDeadline)
 		defer cancel()
-		if err := enginewire.Stop(ctx, f.Opens, f.E); err != nil {
+		if err := content.Stop(ctx, f.Opens, f.E); err != nil {
 			if clean {
 				f.t.Errorf("fixture: stop: %v", err)
 			} else {

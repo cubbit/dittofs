@@ -1,14 +1,9 @@
-// Package enginewire composes the engine's dependencies over the metadata
-// store and open state, and starts and stops the two. The node and the
-// engine's test fixture both build, start and stop the engine through it, so
-// the fixture runs the wiring and the order the node ships.
-//
-// decision: this is the one composition code imported by another package:
-// the node and enginetest both build, start and stop the engine through it,
-// so the fixture runs the wiring and the order the node ships, departing
-// from RFC 8 §2.1's "nothing imports it". Only internal/node and enginetest
-// import it.
-package enginewire
+// Package content is the composition root's wiring of content: it composes
+// the engine's dependencies over the metadata store and open state, adapts
+// open state to the engine's CloneHold, and starts and stops the two. The
+// node and the engine's test fixture both build, start and stop the engine
+// through it, so the fixture runs the wiring and the order the node ships.
+package content
 
 import (
 	"context"
@@ -78,7 +73,7 @@ func Compose(p Params) (*openstate.Table, engine.Deps, error) {
 		Existence: p.Store.Existence(),
 		Content:   p.Store.Content(),
 		Lifecycle: p.Store.Lifecycle().WithLogger(p.Logger),
-		Holds:     openstate.EngineHolds(open, p.Store.Opens()),
+		Holds:     EngineHolds(open, p.Store.Opens()),
 		Clock:     p.Clock,
 		Logger:    p.Logger,
 		Tracer:    noTrace,

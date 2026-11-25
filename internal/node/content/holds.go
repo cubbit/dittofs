@@ -1,4 +1,4 @@
-package openstate
+package content
 
 import (
 	"context"
@@ -7,13 +7,14 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/engine"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/openstate"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // EngineHolds adapts t, over the store's durable opens, to the engine's
 // CloneHold, so the engine reaches open state without importing it. An
 // orphan CloneClose leaves reaches t's Sink.Closed.
-func EngineHolds(t *Table, records OpenRecords) engine.CloneHold {
+func EngineHolds(t *openstate.Table, records OpenRecords) engine.CloneHold {
 	return cloneHold{opens: t.Opens(), recovery: t.Recovery(), records: records}
 }
 
@@ -24,8 +25,8 @@ type OpenRecords interface {
 
 // cloneHold is the open-state table as the engine's CloneHold.
 type cloneHold struct {
-	opens    Opens
-	recovery Recovery
+	opens    openstate.Opens
+	recovery openstate.Recovery
 	records  OpenRecords
 }
 
@@ -34,8 +35,8 @@ type cloneHold struct {
 // was dropped, so the record is read again to tell them apart; the dropped
 // share's answer crosses as itself, which the engine retries.
 func (h cloneHold) Hold(ctx context.Context, src engine.CloneSrc) (entity.OpenID, error) {
-	id, err := h.opens.CloneOpen(ctx, FileKey{Share: src.Share, Shard: src.Shard, ID: src.File}, CloneSource{Dst: src.Dst, Version: src.AsOf})
-	if !errors.Is(err, ErrBadState) {
+	id, err := h.opens.CloneOpen(ctx, openstate.FileKey{Share: src.Share, Shard: src.Shard, ID: src.File}, openstate.CloneSource{Dst: src.Dst, Version: src.AsOf})
+	if !errors.Is(err, openstate.ErrBadState) {
 		return id, holdErr(err)
 	}
 	recs, rerr := h.records.Of(ctx, src.Share, src.File)
@@ -52,7 +53,7 @@ func (h cloneHold) Hold(ctx context.Context, src engine.CloneSrc) (entity.OpenID
 
 func (h cloneHold) Release(ctx context.Context, o entity.OpenID) error {
 	err := h.opens.CloneClose(ctx, o)
-	if errors.Is(err, ErrBadState) {
+	if errors.Is(err, openstate.ErrBadState) {
 		return nil // the hold is already gone
 	}
 	return holdErr(err)
@@ -61,8 +62,8 @@ func (h cloneHold) Release(ctx context.Context, o entity.OpenID) error {
 // holdErr is open state's answer to a clone's hold in the engine's types: a
 // shard not yet served or a table not running holds the clone for a retry.
 func holdErr(err error) error {
-	var delay *DelayError
-	if errors.As(err, &delay) && delay.Cause == DelayFrozen || errors.Is(err, ErrStopped) {
+	var delay *openstate.DelayError
+	if errors.As(err, &delay) && delay.Cause == openstate.DelayFrozen || errors.Is(err, openstate.ErrStopped) {
 		return &vfserr.Delay{Cause: vfserr.DelayFrozen}
 	}
 	return err

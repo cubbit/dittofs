@@ -397,10 +397,10 @@ func (noImports) Import(path string) (*types.Package, error) {
 	return nil, errors.New("not loaded: " + path)
 }
 
-// enginewireImporters returns each non-test file of root's rows that imports
-// enginewire outside the two packages its package doc names: the node and
+// contentImporters returns each non-test file of root's rows that imports
+// content outside the two packages its package doc names: the node and
 // enginetest.
-func enginewireImporters(_ string, files []fileImports) ([]string, error) {
+func contentImporters(_ string, files []fileImports) ([]string, error) {
 	var bad []string
 	for _, r := range files {
 		if r.Test {
@@ -410,8 +410,8 @@ func enginewireImporters(_ string, files []fileImports) ([]string, error) {
 		if dir == "internal/node" || dir == "pkg/engine/enginetest" {
 			continue
 		}
-		if slices.Contains(r.Imports, module+"pkg/engine/enginewire") {
-			bad = append(bad, r.File+" imports enginewire")
+		if slices.Contains(r.Imports, module+"internal/node/content") {
+			bad = append(bad, r.File+" imports content")
 		}
 	}
 	slices.Sort(bad)
@@ -702,8 +702,8 @@ func TestImportRules(t *testing.T) {
 			}},
 		{"a file of dfs start renamed away", startImports, "start-imports-missing",
 			[]string{"cmd/dfs/commands/root.go is missing", "cmd/dfs/commands/start.go is missing"}},
-		{"who imports enginewire", enginewireImporters, "enginewire-importers",
-			[]string{"pkg/vfs/vfs.go imports enginewire"}},
+		{"who imports content", contentImporters, "content-importers",
+			[]string{"pkg/vfs/vfs.go imports content"}},
 		{"the CLI's closure", cliClosure, "cli-closure",
 			[]string{"internal/cli/output reaches pkg/metadata"}},
 		{"the wire types' imports", cliClosure, "apiv1-stdlib",
@@ -762,7 +762,8 @@ func TestImportRules(t *testing.T) {
 // store, apart from identity's server, also handed in behind interfaces the
 // API declares; nodetest, which imports Badger, is not allowed. Everything
 // else it reaches through an interface it declares or a value the node hands
-// it.
+// it. The node's content wiring, which imports the engine and open state,
+// is not allowed either.
 func componentAllowed(rel string) bool {
 	switch rel {
 	case "pkg/health", "pkg/metrics", "pkg/metadata/entity", "pkg/node/apiv1",
@@ -770,7 +771,8 @@ func componentAllowed(rel string) bool {
 		"pkg/settings", "pkg/secrets/secreterr", "pkg/auth/sid":
 		return true
 	}
-	return strings.HasPrefix(rel, "internal/node/") && !strings.HasPrefix(rel, "internal/node/nodetest")
+	return strings.HasPrefix(rel, "internal/node/") && !strings.HasPrefix(rel, "internal/node/nodetest") &&
+		!under(rel, "internal/node/content")
 }
 
 // onlyNames are the allowed packages of which a file may use only some
@@ -825,7 +827,7 @@ var libraries = []string{
 }
 
 // componentImports returns, for every package below root but root itself,
-// nodetest and testdata, each import of its non-test files, whatever their
+// content, nodetest and testdata, each import of its non-test files, whatever their
 // build tags, that is neither the standard library nor on componentAllowed.
 func componentImports(root string) ([]string, error) {
 	var bad []string
@@ -834,7 +836,9 @@ func componentImports(root string) ([]string, error) {
 			return err
 		}
 		if d.IsDir() {
-			if path != root && (d.Name() == "nodetest" || d.Name() == "testdata") {
+			// content is the root's own: it composes the engine over open state
+			// and the store, the components the node imports.
+			if path != root && (d.Name() == "nodetest" || d.Name() == "testdata") || path == filepath.Join(root, "content") {
 				return filepath.SkipDir
 			}
 			return nil
@@ -868,8 +872,10 @@ func componentImports(root string) ([]string, error) {
 	return bad, err
 }
 
-// No package under internal/node but node and nodetest imports a component's
-// implementation; a planted package importing the engine is caught.
+// No package under internal/node but node, content and nodetest imports a
+// component's implementation; a planted package importing the engine is
+// caught, and so is one importing content, while content importing the
+// engine is not.
 func TestNoComponentImports(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -880,6 +886,7 @@ func TestNoComponentImports(t *testing.T) {
 		{"testdata/arch/component-import", []string{
 			"api/allowed.go imports github.com/cubbit/dittofs/internal/identity",
 			"api/allowed.go imports github.com/dgraph-io/badger/v4",
+			"api/content.go imports github.com/cubbit/dittofs/internal/node/content",
 			"api/identity.go uses github.com/cubbit/dittofs/pkg/identity.CheckKeytab",
 			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.KV",
 			"api/kv.go uses github.com/cubbit/dittofs/pkg/metadata/kv.Counting",
@@ -1607,7 +1614,7 @@ func TestWritesThroughTheAdapter(t *testing.T) {
 
 // lifecycleCalls type-checks the package in dir, as import path path, and
 // returns every reference to a start or a stop of open state or the engine,
-// by its full name: enginewire's Start and Stop, and the table's and the
+// by its full name: content's Start and Stop, and the table's and the
 // engine's own, called or taken as a value.
 func lifecycleCalls(dir, path string) ([]string, error) {
 	_, _, info, err := typeCheck(dir, path)
@@ -1615,8 +1622,8 @@ func lifecycleCalls(dir, path string) ([]string, error) {
 		return nil, err
 	}
 	watched := map[string]bool{
-		module + "pkg/engine/enginewire.Start":       true,
-		module + "pkg/engine/enginewire.Stop":        true,
+		module + "internal/node/content.Start":       true,
+		module + "internal/node/content.Stop":        true,
 		"(*" + module + "pkg/openstate.Table).Start": true,
 		"(*" + module + "pkg/openstate.Table).Stop":  true,
 		"(*" + module + "pkg/engine.Engine).Start":   true,
@@ -1633,12 +1640,12 @@ func lifecycleCalls(dir, path string) ([]string, error) {
 }
 
 // The node starts and stops open state and the engine only through
-// enginewire's Start and Stop, once each, so the order between the two is
-// the one enginewire ships; a node calling the table's or the engine's own
+// content's Start and Stop, once each, so the order between the two is
+// the one content ships; a node calling the table's or the engine's own
 // Start, Stop or Close is caught.
-func TestNodeStartsThroughEnginewire(t *testing.T) {
+func TestNodeStartsThroughContent(t *testing.T) {
 	t.Parallel()
-	wire := module + "pkg/engine/enginewire."
+	wire := module + "internal/node/content."
 	for _, tc := range []struct {
 		dir  string
 		want []string
@@ -1760,7 +1767,7 @@ func importName(f *ast.File, p string) string {
 }
 
 // composeCalls counts, in the non-test files in dir, the references to
-// enginewire's Compose and the engine.Deps composite literals, each package
+// content's Compose and the engine.Deps composite literals, each package
 // under whatever name each file imports it.
 func composeCalls(dir string) (compose, deps int, err error) {
 	entries, err := os.ReadDir(dir)
@@ -1775,7 +1782,7 @@ func composeCalls(dir string) (compose, deps int, err error) {
 		if err != nil {
 			return 0, 0, err
 		}
-		wire := importName(f, module+"pkg/engine/enginewire")
+		wire := importName(f, module+"internal/node/content")
 		eng := importName(f, module+"pkg/engine")
 		named := func(x ast.Expr, pkg, sel string) bool {
 			s, ok := x.(*ast.SelectorExpr)
@@ -1802,7 +1809,7 @@ func composeCalls(dir string) (compose, deps int, err error) {
 	return compose, deps, nil
 }
 
-// The node references enginewire's Compose exactly once and writes no
+// The node references content's Compose exactly once and writes no
 // engine.Deps literal: a node building Deps itself instead of composing, one
 // composing twice, and one composing once but handing engine.New Deps it built
 // itself are caught. A Deps the node builds without a literal, from a
@@ -1823,7 +1830,7 @@ func TestNodeComposesOnce(t *testing.T) {
 			t.Fatalf("%s: %v", tc.dir, err)
 		}
 		if compose != tc.compose {
-			t.Errorf("%s: enginewire.Compose referenced %d times, want %d", tc.dir, compose, tc.compose)
+			t.Errorf("%s: content.Compose referenced %d times, want %d", tc.dir, compose, tc.compose)
 		}
 		if deps != tc.deps {
 			t.Errorf("%s: engine.Deps literals %d, want %d", tc.dir, deps, tc.deps)
