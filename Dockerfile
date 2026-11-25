@@ -62,9 +62,9 @@ USER 65532:65532
 # - 12049: NFS server (default)
 # - 12445: SMB server (default)
 # - 8080: REST API (health checks, management)
-# - 9090: Prometheus metrics endpoint. Opt-in and loopback-bound by default,
-#         so publishing this port alone exposes nothing: enable metrics and set
-#         their host to 0.0.0.0 for it to be reachable from outside the container.
+# - 9090: Prometheus metrics endpoint. On by default and loopback-bound,
+#         so publishing this port alone exposes nothing: set metrics.listen
+#         to 0.0.0.0:9090 for it to be reachable from outside the container.
 # - 5353/udp: mDNS / DNS-SD network discovery (macOS Finder, Linux Avahi)
 # - 3702/udp: WS-Discovery (Windows Explorer Network)
 # - 5357/tcp: WS-Discovery device metadata (HTTP)
@@ -75,8 +75,8 @@ EXPOSE 12049/tcp 12445/tcp 8080/tcp 9090/tcp 5353/udp 3702/udp 5357/tcp
 # Volume mounts:
 # - /data/metadata: Metadata store (BadgerDB, etc.)
 # - /data/blocks: Journal root (the only copy of bytes not yet offloaded)
-# - /data/cache: Cache and WAL directory
-# - /data/state: Control plane database
+# - /data/cache: not read by default; holds data only if the config names a path inside it
+# - /data/state: state directory, used when XDG_STATE_HOME points at it
 # - /config: Configuration file location
 VOLUME ["/data/metadata", "/data/blocks", "/data/cache", "/data/state", "/config"]
 

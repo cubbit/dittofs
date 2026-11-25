@@ -30,6 +30,7 @@ services:
     # starts no usable server until it runs dfs init, which sets the first one.
     volumes:
       - ./docker/config.yaml:/config/config.yaml:ro
+      # Empty unless XDG_STATE_HOME or STATE_DIRECTORY points at it.
       - dittofs-state:/data/state
       - dittofs-metadata:/data/metadata
       # The journal holds the only copy of every byte not yet in the block
