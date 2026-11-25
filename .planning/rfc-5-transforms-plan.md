@@ -84,7 +84,9 @@ integration epics touch no v1 code (§1.5 rule 7).
   GC's recheck period until GC lands, and at open, so an in-place rotation is not left unseen
   until the next open. The same read takes each master key's state, and `Pin` is refused while
   the master key wrapping a namespace's current data key is not active, so a key destroyed in the
-  key service stops new writes without a restart.
+  key service stops new writes without a restart. A master key found destroyed marks every key
+  record it wraps `destroyed` (Appendix B.2) before any report of it, so the engine's commit
+  check covers that case too.
 - **§2.8, a block's chain ID is its pin's.**
 - **Appendix B.1 and B.2, the key material's review:** a chunk's nonce is a keyed BLAKE3 hash of
   its AAD and input under the key `dittofs chunk nonce v2` derives, so a later format version that keeps the labels cannot
@@ -357,13 +359,13 @@ registered (§1.2).
 | E5 | Encryption | AES-256-GCM from the standard library, the chunk derivations, nonce and AAD, the header, kind refusal, fixtures and vectors | 4 | 8.5 | B | E9; partly E6 |
 | E6 | Namespace keys and the provider | key-record view, stored wrap and its wrap count, key-file custody, escrow, `Materials` with fingerprints and its three failures, namespace key creation, the salvage-key wrap, B.6's gauges, the custody suite | 8 | 19 | C | E8, E9; partly E7 |
 | E7 | Key-service custody | KMIP wrap and unwrap through the server with AAD, version-qualified IDs, the primary version, the real-server row's provider half | 4 | 7 | B | E9; partly E8 |
-| E8 | Rotation and the destroyed-material notice | master and data key rotation in the bucket, the `keys` object, the notice, the primary-version and key-state ticker | 5 | 11.5 | C | E9 |
+| E8 | Rotation and the destroyed-material notice | master and data key rotation in the bucket, the `keys` object, the notice, the primary-version and key-state ticker, master-key destroy marking | 5 | 12 | C | E9 |
 | E9 | Integration | settings keys and the bound `encrypts`, the key operations, collectors and alert rules, error mapping, namespace key creation | 5 | 12 | team | E10, E11 |
 | E10 🔀 | Integration, the census | `transform_census_blocks` and the census per material | planned after S7 | planned after S7 | team | — |
 | E11 🔀 | E2E green | RFC 5's codec and engine rows, the put and get benchmark | 6 | 10 | team | — |
-| | **Total** | | **50** | **104.5** | | |
+| | **Total** | | **50** | **105** | | |
 
-**Plan estimate: 50 subtasks, 104.5 man-days, not counting epic 10.**
+**Plan estimate: 50 subtasks, 105 man-days, not counting epic 10.**
 
 The skill's estimate for RFC 5's 1,999 lines is 5 middle epics (`round(1999 / 400)`); this plan
 has 6. Master-key custody through a key service shares no state with the namespace key records
@@ -651,8 +653,9 @@ count like any other (D3); the RFC 8 offload plan's epic
 
 **D17. The destroyed-material notice is a call the engine polls**, declared in `pkg/transform`
 and implemented by the provider, returning the material IDs the provider has found destroyed
-since a cursor: a key record in state `destroyed`, or a master key the key service reports
-destroyed, which destroys every key it wraps. A key the service reports compromised still
+since a cursor: a key record in state `destroyed`, every record a master key the key service
+reports destroyed wraps among them, which the provider marks before the notice names any of them
+(RFC 5 Appendix B.2), so the commit-time check sees them first. A key the service reports compromised still
 decrypts, so it is not destroyed: RFC 5 Appendix B.4 gives `ErrMaterialDestroyed` only for
 material lost for good. A poll, not a callback, so the engine's own loop decides when to clear offloaded bits
 (RFC 8 §10.4) and nothing runs inside the provider's lock. A destroyed ID the notice names after
@@ -865,7 +868,7 @@ wrap for a key service, as bytes (the string-map half is §6.1's, Q3).
 
 ### Epic 8 — Rotation and the destroyed-material notice
 
-**Epic 8 estimate: 5 subtasks, 11.5 man-days.**
+**Epic 8 estimate: 5 subtasks, 12 man-days.**
 
 Keys changing over time in the bucket, and the notice the engine reads when material is gone
 for good.
@@ -884,7 +887,8 @@ record and a master key the key service reports destroyed, on the in-memory `Mat
 the provider, under `materialtest`; RFC 5 §8.2's Appendix B.1 key-state row against the
 harness's KMIP server: Destroyed and Destroyed Compromised refuse `Pin` with
 `ErrMaterialDestroyed` within one tick, every other state but Active and an unknown state value
-refuse it with `ErrMaterialUnavailable`, Active pins, with no restart.
+refuse it with `ErrMaterialUnavailable`, Active pins, with no restart; RFC 5 §8.2's Appendix B.2
+master-key destroy row (records marked before any report, idempotent, completed after a crash).
 
 **Expected content:**
 - Data-key rotation: a new current key, so a new chain ID (D9).
@@ -898,6 +902,9 @@ refuse it with `ErrMaterialUnavailable`, Active pins, with no restart.
 - On the same read, each master key's state, mapped through `kmipwire`'s key-state table (epic
   7), and `Pin` refused for a namespace whose current data key's master key is not active, with
   the `material_destroyed` or `material_unavailable` condition (RFC 5 Appendix B.1).
+- A master key found destroyed marks `destroyed` every key record whose stored wrap names it, in
+  batches under the key lock, committed before the notice or a condition names it; idempotent,
+  so a repeat read writes nothing and a crash is completed by the next read (RFC 5 Appendix B.2).
 - The destroyed-material notice (D17).
 
 ### Epic 9 — Integration

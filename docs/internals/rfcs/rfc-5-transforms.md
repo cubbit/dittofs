@@ -928,7 +928,11 @@ open pins are built with the first act that destroys material: GC's
 retirement relocation ([RFC 9 §4.4](rfc-9-gc.md#4.4%20When%20to%20compact%20is%20policy))
 or an operator's destroy, an operation RFC 23 does not yet specify, whichever
 comes first. Until then no material is destroyed by this installation, and a pin
-([§3.1](#3.1%20Interfaces)) only fixes a block's chain.
+([§3.1](#3.1%20Interfaces)) only fixes a block's chain. A key service can still
+destroy material from outside: a master key it destroys makes the provider mark
+every key record that master key wraps `destroyed`
+([Appendix B.2](#B.2%20Keys)), and from then on those keys are destroyed for the
+census, a decode and a commit alike.
 
 **A drained namespace's keys go last, all or none.** When a namespace no share
 names is drained ([RFC 9 §7.6](rfc-9-gc.md#7.6%20A%20namespace%20no%20share%20names%20is%20drained)), its keys are removed by this same rule once its
@@ -1111,6 +1115,7 @@ alike. A new transform gets it by registering.
 | [Appendix B.2](#B.2%20Keys) | A location an operator declared lost: a master-key destroy no longer fails closed on it, and an export-key rotation completes without it. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | A key service rotates a master key in place while the namespace writes nothing: at the next recheck period, on the provider's own ticker until GC runs the read, the provider reads the new primary version and starts a `rotate-master-key` operation that re-wraps every key record under it. A failed copy's progress under a retiring or retired export key: the successor, and the same copier resumed across the rotation, copy those blocks afresh. A re-seal and a copier's state put on one backup at once: they take the key lock in turn and put distinct sequences. A `damaged` backup expires to `expired`, and a `complete` written again naming another export is refused. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | A key-service provider holding a namespace's data key unwrapped, for each state the service can report for the master key that wraps it: at the next period, a state the service reports as destroyed makes `Pin` fail with `ErrMaterialDestroyed` and raise `material_destroyed`; every other state but active, and a state value the provider does not know, makes `Pin` fail with `ErrMaterialUnavailable` and raises `material_unavailable`; an active key pins. A failed state read leaves the last state in force. No restart is needed in any case. |
+| [Appendix B.2](#B.2%20Keys) | Destroy a master key in the key service while a block pinned under a data key it wraps is open, in two namespaces: at the next period every key record whose stored wrap names it is marked `destroyed` before any decode, condition or destroyed-material report names it, and the block's commit is refused. A record already re-wrapped under the new master key is not marked. The next read, with the key still destroyed, writes nothing and reports nothing twice. Crash after half the records are marked: the read at the next open marks the rest, and `Pin` stays refused throughout. |
 | [§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census) | Drain a namespace whose data key another namespace's folder census still names: the drain removes none of its keys, the chunk-ID and chunking keys included. |
 | [Appendix B.1](#B.1%20How%20a%20chunk%20is%20encrypted) | Write a backup's state as `writing`, `complete`, then `damaged`; re-put the authentic `complete` version on top: the reader takes `damaged`, by sequence. Two field lists that join to the same bytes without length prefixes give different MACs. The golden vectors cover the sealed header, the progress MAC, and a state MAC over a nonzero expiry time. Change a `complete` version's expiry time and keep its tag: it fails to authenticate. |
 | [Appendix B.2](#B.2%20Keys) | Hand the put intent step a plan whose chunk IDs were computed under another namespace's chunk-ID key: refused, and nothing is put. |
@@ -1825,6 +1830,23 @@ provider can tell a key it never had, one it cannot reach now, and one that is
 gone for good. Two providers ship: a key file, and a key service that unwraps on
 request and never releases a master key. Encryption **MUST** fail its
 construction if it cannot get the current data key ([§2.7](#2.7%20Failures)).
+
+**A destroyed master key destroys the key records it wraps.** When the provider
+finds a master key destroyed — by the key-state read of [B.1](#B.1%20How%20a%20chunk%20is%20encrypted) or by any other
+path — it **MUST** mark `destroyed`, in the metadata store, every key record
+whose stored wrap names that master key's ID, in every namespace: every data
+key, and every other kind this appendix's table wraps. The marking **MUST**
+commit before the provider reports the master key, or any key it wraps, as
+destroyed by any other means: a decode's `ErrMaterialDestroyed`, the
+`material_destroyed` condition, or the report of destroyed material the engine
+reads ([RFC 8 §10.4](rfc-8-engine.md#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable)). So a block commit that checks the material its
+pin holds against the key records refuses a data key lost this way exactly as it
+refuses one retired by [§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census), and no commit passes between the provider
+seeing the destroy and the engine hearing of it. The marking is idempotent: a
+record already marked is left as it is, so a later read that finds the master
+key still destroyed writes nothing and reports nothing twice, and a marking cut
+short by a crash is completed by the next read. A record already re-wrapped
+under another master key does not name the destroyed one and is not marked.
 
 ### B.3 Rotation
 
