@@ -90,11 +90,12 @@ func (w *wired) appliedReaches(t *testing.T, path string, want apiv1.Applied) {
 	}
 }
 
-// §2.3 reconcile: a live share setting changed while the store fails every
-// read of the node, its writes passing, is not applied by the pass that
-// failed, and applies at the next pass whose read works, with no write
+// §2.3 reconcile: a live share setting changed while the store fails the
+// node's reads of the settings, its writes passing, is not applied by the
+// pass that read the counters and failed its walk, and applies at the next pass whose read works, with no write
 // after it: the settings counter stands where the change left it, the
-// node's position reaches it, and the setting reads applied through the API.
+// node's snapshot holds the change, and the setting reads applied through
+// the API.
 // Catches a missed generation lost for good.
 func TestWiredSettingChangedWhileReadsFailAppliesAtTheNextRead(t *testing.T) {
 	onBackends(t, func(t *testing.T, memory bool) {
@@ -112,19 +113,28 @@ func TestWiredSettingChangedWhileReadsFailAppliesAtTheNextRead(t *testing.T) {
 		}
 		caughtUp(t, w.h)
 		waitsSettled(t, armed)
+		prev := w.h.Node().Settings()
+		changed := []settings.Change{{Section: "gamma", Key: "gamma.level", Class: settings.Live, Scope: scope}}
 		// The harness's store is not the node's KV, so its writes pass while
-		// every read the node makes fails.
-		restore := w.faulting(t, sim.Rule{Op: kvtest.OpView, Key: "*", Action: sim.FaultAction{Err: vfserr.ErrUnavailable}})
+		// the node's scans of the settings rows fail: the pass reads the
+		// counters, and its walk of the settings fails.
+		restore := w.faulting(t, sim.Rule{Op: kvtest.OpScan, Key: keys.Describe([]byte{keys.KindCFG}) + "*", Action: sim.FaultAction{Err: vfserr.ErrUnavailable}})
 		gen := putRowGen(t, w.h, scope, "gamma.level", []byte("42"))
 		walkTurn(t, w.h, armed)
 		if got := w.h.Node().Positions().Settings; got >= gen {
 			t.Errorf("settings position after a pass whose reads failed: %d, want below the change at %d", got, gen)
+		}
+		if got := settings.Diff(prev, w.h.Node().Settings()); len(got) != 0 {
+			t.Errorf("the snapshot after a pass whose walk failed: changes %+v, want none", got)
 		}
 		restore()
 
 		caughtUp(t, w.h)
 		if got := counters(t, w.h).Settings; got != gen {
 			t.Fatalf("settings counter once reads work: %d, want %d, no write after the change", got, gen)
+		}
+		if got := settings.Diff(prev, w.h.Node().Settings()); !slices.Equal(got, changed) {
+			t.Errorf("the snapshot once reads work: changes %+v, want the share's gamma.level alone, %+v", got, changed)
 		}
 		w.appliedReaches(t, path, apiv1.Applied{Nodes: 1, Of: 1})
 	})
@@ -232,8 +242,8 @@ func TestWiredBoundSettingRefusedWhileContentExists(t *testing.T) {
 		before := counters(t, w.h)
 		r := w.putSetting(t, w.admin, at(storeA, "tune.floor"), "5")
 		wantStatus(t, "PUT tune.floor of a store a namespace names", r, http.StatusConflict, "bound_setting")
-		if p := r.problem(t); p.Field != "tune.floor" {
-			t.Errorf("the bound refusal names field %q, want tune.floor", p.Field)
+		if r.status == http.StatusConflict && r.problem(t).Field != "tune.floor" {
+			t.Errorf("the bound refusal names field %q, want tune.floor", r.problem(t).Field)
 		}
 		if got := counters(t, w.h); got.Settings != before.Settings {
 			t.Errorf("settings counter after the refused bound write: %d, want %d, nothing committed", got.Settings, before.Settings)
