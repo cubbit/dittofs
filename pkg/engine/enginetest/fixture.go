@@ -605,9 +605,7 @@ type failingKV struct {
 }
 
 func (k *failingKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
-	if k.left.Load() >= 0 && k.left.Add(-1) < 0 {
-		k.left.Store(0)
-
+	if k.fails() {
 		return errors.New("fixture: an injected store failure")
 	}
 
@@ -627,6 +625,24 @@ func (k *failingKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
 
 		return nil
 	})
+}
+
+// fails takes one Update from left and reports whether it fails. The take is
+// one compare-and-swap, so an Update racing FailUpdatesAfter never writes a
+// count over the one the call set: a restore to none stays none.
+func (k *failingKV) fails() bool {
+	for {
+		n := k.left.Load()
+		if n < 0 {
+			return false
+		}
+		if n == 0 {
+			return true
+		}
+		if k.left.CompareAndSwap(n, n-1) {
+			return false
+		}
+	}
 }
 
 // settingTxn is a transaction that notes whether it set a key match accepts.
