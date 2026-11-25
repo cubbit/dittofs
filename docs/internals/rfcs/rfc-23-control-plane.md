@@ -2159,10 +2159,18 @@ in `e2e`, their Kerberos flavours in `e2e/kerberos`. No suite runs yet the multi
    that is once a second. The settings read through `AllSettings` is repeated on
    every moved settings generation too (a `Secret` change raises it as well),
    not only on a full run, so its cost is part of what is weighed here. Whether
-   it needs a rate bound, and whether reconciling only the records above the
-   reconciled position needs an index by (kind, position) in RFC 16, is
-   unmeasured. So is the walk's own progress: while writes raise the settings
-   generation faster than a walk of many pages ends, §2.3 discards every walk and
+   it needs a rate bound is unmeasured. Reconciling only the records above the
+   reconciled position needs no index by (kind, position) in RFC 16 for the
+   settings, as measured at 10⁴ shares on a quiet machine (issue #5563), in a
+   model of that pass before it is built: a pass that walks every row but decodes
+   and diffs only the scopes that changed takes, at the median, 49 ms with few
+   settings per share and 93 ms with many, about a tenth of the one-second poll
+   (100 ms), where reading and diffing every row takes 298 ms and 595 ms. The walk
+   alone is 47 ms and 89 ms. From now on the measure is the settings reconcile
+   benchmark of RFC 13's plan (its epic 3), `BenchmarkReconcileScan`: its
+   `scan_above` case for the pass, and its `walk` case, either passing 100 ms
+   brings the index back. The walk's own progress is unmeasured too: while writes
+   raise the settings generation faster than a walk of many pages ends, §2.3 discards every walk and
    the node's reconciled position stops until the writes pause. Whether the
    restarts are bounded, and what a bounded walk falls back to, is open: one read
    transaction over every page runs into the age past which a store aborts a
