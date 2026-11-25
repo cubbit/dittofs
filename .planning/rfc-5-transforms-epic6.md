@@ -419,12 +419,12 @@ pkg/transform/keys/provider/
   doc.go                T6.3  package doc
   wrap.go               T6.3  the key wrap AAD, the stored wrap's encode and parse
   keyfile.go            T6.3  the key-file custody, its count, custody (unexported)
-  provider.go           T6.3  Row, KeyRecords, Config, Deps, Provider, New, the storage-key refusal
+  provider.go           T6.3  Row, KeyRecords, Config, Escrow, Deps, Provider, New, the storage-key refusal
                         T6.5  Current, Get, the cache, Calls
                         T6.6  Status
   salvage.go            T6.4  WrapSalvageKey
   record.go             T6.5  the key record and its codec
-  escrow.go             T6.7  Escrow, VerifyEscrow, the escrow gate
+  escrow.go             T6.7  VerifyEscrow, the escrow gate
   create.go             T6.8  CreateKeys
   custody_test.go       T6.3  runCustody, the custody suite, run on the key file
   wrap_test.go          T6.3  vectors, the AAD rows, FuzzStoredWrap
@@ -536,7 +536,14 @@ pkg/transform/keys/provider/
     type Config struct {
     	KeyFile    string   // the master key's file
     	Passphrase string   // RFC 13 Appendix C's
-    	Escrowed   []Escrow // passes recorded in the store configuration (D6), read from T6.7
+    	Escrowed   []Escrow // passes recorded in the store configuration (D6)
+    }
+
+    // Escrow is a passed escrow check: what VerifyEscrow (T6.7) returns and the store
+    // configuration records.
+    type Escrow struct {
+    	MasterKeyID string   // as the key file records it
+    	Fingerprint [32]byte
     }
 
     type Deps struct {
@@ -553,8 +560,6 @@ pkg/transform/keys/provider/
     func New(ctx context.Context, cfg Config, deps Deps) (*Provider, error)
     ```
 
-    `Escrow` is declared in T6.7; T6.3 declares the field once its type exists, or lands with T6.7
-    in one pull request (§8).
   - `wrap.go`: the key wrap AAD (R19) and the stored wrap's encode and parse (R20), unexported.
   - `keyfile.go`: the key-file custody behind D3's `custody`: `wrap` raises the count (D5), draws a
     12-byte nonce from `Deps.Rand` and seals; `unwrap` checks the master key ID and opens.
@@ -586,7 +591,7 @@ pkg/transform/keys/provider/
   - `FuzzStoredWrap`'s seeds: the vector, a zero-length ID, lengths past the end (catch a parse that
     trusts a length, R48).
 - **Rules:** rule 9: D5's `decision:` at the raise. rule 11: `Row`, `KeyRecords`, `Config`, `Deps`,
-  `Provider` and `New` for the content wiring and `kvstore`.
+  `Provider`, `Escrow` and `New` for the content wiring, `kvstore` and E9.
 
 ### T6.4 The salvage-key wrap
 
@@ -708,11 +713,6 @@ pkg/transform/keys/provider/
   - `escrow.go`, consumed by E9's `verify-escrow` action and T6.8:
 
     ```go
-    type Escrow struct {
-    	MasterKeyID string   // as the key file records it
-    	Fingerprint [32]byte
-    }
-
     func (p *Provider) VerifyEscrow(ctx context.Context, copy []byte) (Escrow, error)
     ```
 
