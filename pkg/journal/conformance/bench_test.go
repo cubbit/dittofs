@@ -4,12 +4,15 @@ package conformance
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -45,6 +48,9 @@ type jbScale struct {
 	burstStreamed, burstSynced int64
 	// mixedStream is the streaming file of the mixed case.
 	mixedStream int64
+	// largeStream is the bytes of the large sequential row: over several
+	// segment caps at the full sizes, so the journal rolls mid-file.
+	largeStream int64
 	// lookups is how many point lookups one iteration of J3 times, and
 	// extents the sizes of the index it looks in.
 	lookups int
@@ -64,15 +70,17 @@ var (
 		// than one iteration (-benchtime=Nx) rolls and the wait's spin shows in
 		// allocs/op. Upgrade to a wait for the pool before each roll when a run needs
 		// more than one iteration per journal.
-		burstStreamed: 128 << 20, burstSynced: 16 << 20, mixedStream: 128 << 20,
+		burstStreamed: 128 << 20, burstSynced: 16 << 20, mixedStream: 256 << 20,
 		lookups: 100_000, extents: [2]int{1_000, 1_000_000}, warmBytes: 64 << 20,
 		blocks: []string{"4k", "64k", "256k", "1m"}, scalingBlock: 1 << 20,
+		largeStream: 30 << 30,
 	}
 	// jbSmall keeps every row and its twin, at blocks of 4 to 64 KiB.
 	jbSmall = jbScale{
 		burstStreamed: 8 << 20, burstSynced: 1 << 20, mixedStream: 8 << 20,
 		lookups: 10_000, extents: [2]int{1_000, 10_000}, warmBytes: 8 << 20,
 		blocks: []string{"4k", "64k"}, scalingBlock: 64 << 10,
+		largeStream: 512 << 20,
 	}
 )
 
@@ -90,6 +98,40 @@ func jbSizes(b *testing.B) jbScale {
 		b.Fatalf("bench: %s=%q, want full or small", benchScaleEnv, v)
 		return jbScale{}
 	}
+}
+
+// benchLargeEnv names the bytes of the large sequential row, overriding the
+// scale's own size for a bigger customer-shaped file: "30g", "100g", or a
+// bare byte count. Unset is the scale's own largeStream.
+const benchLargeEnv = "JOURNAL_BENCH_LARGE_BYTES"
+
+// jbLargeStream is the bytes of the large sequential row. The value must be a
+// multiple of 1 MiB, the row's largest block, so its span divides whole.
+func jbLargeStream(b *testing.B) int64 {
+	b.Helper()
+
+	raw, ok := os.LookupEnv(benchLargeEnv)
+	if !ok {
+		return jbSizes(b).largeStream
+	}
+	// A one-letter binary suffix; "30g" over "32212254720".
+	unit := int64(1)
+	num := raw
+	for _, suf := range []struct {
+		s string
+		u int64
+	}{{"g", 1 << 30}, {"m", 1 << 20}, {"k", 1 << 10}} {
+		if len(num) > 0 && strings.EqualFold(num[len(num)-1:], suf.s) {
+			unit, num = suf.u, num[:len(num)-1]
+			break
+		}
+	}
+	n, err := strconv.ParseInt(num, 10, 64)
+	if err != nil || n <= 0 || n*unit%(1<<20) != 0 {
+		b.Fatalf("bench: %s=%q, want bytes in 1 MiB steps, like 30g", benchLargeEnv, raw)
+		return 0
+	}
+	return n * unit
 }
 
 const jbWriters = 16
@@ -144,6 +186,7 @@ func jbPrintBox(b *testing.B, dir string) {
 	fmt.Printf("bench-dir: %s\n", dir)
 	fmt.Printf("sync-bound: %v\n", journal.SyncBound)
 	fmt.Printf("segment-cap-bytes: %d\n", journaltest.SegmentCap)
+	fmt.Printf("large-stream-bytes: %d\n", jbLargeStream(b))
 	fmt.Printf("writers: %d\n", jbWriters)
 	fmt.Printf("scale: %s\n", cmp.Or(os.Getenv(benchScaleEnv), "full"))
 	jbBoxDone = true
@@ -231,15 +274,32 @@ type jbJournal struct {
 	h *journal.Handle
 }
 
-func (s jbJournal) write(w int, off int64, p []byte) (took time.Duration, err error) {
-	// Only the last attempt is timed: a refusal for want of a spare is
-	// retried, and its wait is the pool's, not the call's.
+// writeAll puts p at off of writer w's file and reports what the roll-free rows
+// cannot see: the last attempt alone (took, comparable with p99-write-µs, sync
+// and the pool's wait excluded), the whole call from first attempt to success
+// (waited — the latency whose refusals RFC 1 §9.6's method asks timed in), and
+// how many attempts the journal refused for want of a spare. Only the last
+// attempt is timed as took: a refusal, refused at once, is the pool's wait, not
+// the write's, and waited is the wait's own measure.
+func (s jbJournal) writeAll(w int, off int64, p []byte) (took, waited time.Duration, refusals int64, err error) {
+	start := time.Now()
 	err = journaltest.RetrySpare(func() error {
-		start := time.Now()
-		_, err := s.h.WriteAt(s.b.Context(), journaltest.File(w), off, p, 0)
-		took = time.Since(start)
-		return err
+		attempt := time.Now()
+		_, e := s.h.WriteAt(s.b.Context(), journaltest.File(w), off, p, 0)
+		took = time.Since(attempt)
+		if e != nil {
+			var ns *journal.NoSpaceError
+			if errors.As(e, &ns) && ns.Limit == journal.LimitSpare {
+				refusals++
+			}
+		}
+		return e
 	})
+	return took, time.Since(start), refusals, err
+}
+
+func (s jbJournal) write(w int, off int64, p []byte) (time.Duration, error) {
+	took, _, _, err := s.writeAll(w, off, p)
 	return took, err
 }
 
@@ -448,7 +508,8 @@ func BenchmarkJ1_WriteRandom(b *testing.B) {
 }
 
 // J1's mixed case: one writer syncing every 4 KiB beside one stream writing a
-// file in 1 MiB blocks (128 MiB at the full sizes), synced at its end, on the one stream. The
+// file in 1 MiB blocks (256 MiB at the full sizes, one segment long as RFC 1
+// §9.6's J1 sets it), synced at its end, on the one stream. The
 // metric is the p99 of the small writer's write and sync together.
 func BenchmarkJ1_MixedDurability(b *testing.B) {
 	b.ReportAllocs()
@@ -491,6 +552,82 @@ func BenchmarkJ1_MixedDurability(b *testing.B) {
 	b.StopTimer()
 
 	jbReportP99(b, [][]time.Duration{small}, "p99-sync-write-µs")
+}
+
+// J1's large-file row: one writer streams jbLargeStream's bytes in the scale's
+// J2 block, sequentially, and syncs once at the file's end — a customer-shaped
+// write: one writer, a file tens of gigabytes long. It is the only row over more
+// than a couple of segment caps, so the device's write cache empties and the
+// journal rolls and eats spares under a stream faster than the pool refills;
+// the waiting is the measurement, not noise. p99-write-µs stays the other rows'
+// last-attempt figure (comparable), p99-write-waited-µs is the whole call
+// including every spare refusal's wait, spare-refusals counts them, and MB/s is
+// the rate after the cache.
+//
+// ponytail: the whole-call figure counts RetrySpare's yield spin, not a wait on
+// a point the journal reports; upgrade as spare.go's own note names, if the seam
+// ever carries such a point.
+func BenchmarkJ1_LargeSequential(b *testing.B) {
+	jbLarge(b, jbJournal{b, jbOpen(b, 1)}, jbSizes(b).scalingBlock, jbLargeStream(b))
+}
+
+// jbLarge streams span bytes in block through one writer over sink, synced once
+// at the file's end, reporting MB/s and the p99 of one write call. Over the
+// journal it also reports the whole call's p99 and the spare refusals, through
+// jbJournal's writeAll; the raw twin has neither, a plain write, so its waited
+// figure is its own.
+func jbLarge(b *testing.B, sink jbSink, block int, span int64) {
+	b.Helper()
+	b.ReportAllocs()
+
+	ops := int(span) / block
+	took := make([]time.Duration, 0, ops*b.N)
+	waited := make([]time.Duration, 0, ops*b.N)
+	var refusals int64
+	all, overJournal := sink.(interface {
+		writeAll(w int, off int64, p []byte) (time.Duration, time.Duration, int64, error)
+	})
+
+	if p, ok := sink.(interface{ prepare(span int64) error }); ok {
+		if err := p.prepare(span * int64(b.N)); err != nil {
+			b.Fatalf("bench: prepare the raw files: %v", err)
+		}
+	}
+
+	p := make([]byte, block)
+	b.SetBytes(span)
+	b.ResetTimer()
+	for iter := range b.N {
+		base := int64(iter) * span
+		for i := range ops {
+			off := base + int64(i*block)
+			if overJournal {
+				last, whole, ref, err := all.writeAll(0, off, p)
+				if err != nil {
+					b.Fatalf("bench: write at %d: %v", off, err)
+				}
+				took = append(took, last)
+				waited = append(waited, whole)
+				refusals += ref
+			} else {
+				d, err := sink.write(0, off, p)
+				if err != nil {
+					b.Fatalf("bench: write at %d: %v", off, err)
+				}
+				took = append(took, d)
+			}
+		}
+		if err := sink.sync(0); err != nil {
+			b.Fatalf("bench: sync the file's end: %v", err)
+		}
+	}
+	b.StopTimer()
+
+	jbReportP99(b, [][]time.Duration{took}, "p99-write-µs")
+	if overJournal {
+		jbReportP99(b, [][]time.Duration{waited}, "p99-write-waited-µs")
+		b.ReportMetric(float64(refusals)/float64(b.N), "spare-refusals/iter")
+	}
 }
 
 // J2: write scaling, the same bytes spread over n files written concurrently,
@@ -601,6 +738,13 @@ func BenchmarkRawSequential(b *testing.B) {
 	jbForEachMode(b, jbPatterns, func(b *testing.B, spec jbSpec) {
 		jbBurst(b, jbOpenRaw(b, spec.writers), spec)
 	})
+}
+
+// BenchmarkRawLargeSequential is the twin of J1's large-file row: the same
+// single writer, span, block and one sync at the file's end, over a preallocated
+// raw file.
+func BenchmarkRawLargeSequential(b *testing.B) {
+	jbLarge(b, jbOpenRaw(b, 1), jbSizes(b).scalingBlock, jbLargeStream(b))
 }
 
 // BenchmarkRawRandom is the twin of J1's random rows, with the same block
