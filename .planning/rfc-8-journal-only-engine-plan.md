@@ -153,11 +153,10 @@ with stage 2:
   standard-library types only, as `journal` declares its own.
 - The types at the boundary: the engine takes `entity.FileID` and `entity.JournalVersion`
   and converts once, at its journal interface; no `journal` type crosses `Content`.
-  > decision: the journal's identity types (`FileID`, `Version`, `ShareTag`, `Extent`) stay
-  > opaque and are never unified with `entity`'s. The journal sits below the metadata store
+  > decision: the journal's `FileID` and `Version` stay opaque and are never unified with
+  > `entity.FileID` and `entity.JournalVersion`. The journal sits below the metadata store
   > and names content by bytes, so its on-disk identity must not follow a metadata type. The
-  > one conversion is the price; a value with one meaning on both sides, such as
-  > `entity.SyncMark`, may be shared. Overturn it only if the conversion itself becomes a
+  > one conversion is the price. Overturn it only if the conversion itself becomes a
   > measured cost.
   A clone's hold on its source is `Deps.Holds`, a `CloneHold` (`Hold`, `Release`, `Served`)
   in the engine's own types (`CloneSrc`), which the root adapts from open state, so the
