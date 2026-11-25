@@ -83,6 +83,9 @@ attributes at create, and the `ErrUnknownPrincipal` row for a `who` (RFC 20 §4.
 - A batched `Spell`: the plan's deferral ledger row "A batched `Spell`", owned by RFC 17.
 - The compound's reply budget that answers `NFS4ERR_REP_TOO_BIG`, and NFSv4.0's answer to a reply
   over the record cap: E1, E3 and E8. This epic only runs its row for `acl` (T6.5).
+- pynfs `nfs4.0` `ACL5` and `ACL10`, which set an `acl` naming uids 123 and 10000 to 10019: no
+  record holds them, so R10 answers `NFS4ERR_BADOWNER`. The pynfs cell's fixture gains those uids
+  in E15, which #5728 gives the fixture change.
 
 ### 1.3 Names used here
 
@@ -151,7 +154,7 @@ subtasks and tests can cite them.
 | R7 | The order is kept as sent: the translation never reorders, merges or deduplicates entries, but for the owner fold | MUST NOT | RFC 19 §2.7; RFC 21 §11.3 ("Entries") | T6.2 |
 | R8 | An effective `OWNER@` or `GROUP@` entry with no inherit flags, directly followed by the CREATOR OWNER or CREATOR GROUP inherit-only entry RFC 22 §11 would fold with it, is stored as the one entry RFC 22 folds it to | MUST | RFC 21 §11.3 ("Owner pairs"); RFC 22 §11; RFC 19 §2.7 | T6.2 |
 | R9 | Reading an ACL through NFSv4 and writing back what was read stores the same ACL, entries naming deleted principals aside, for a caller allowed to see both lists; shown with the store between the write and the read | MUST | RFC 19 §5.1, §7 (Z8), §9 ("What must not stand in") | T6.2, T6.3 |
-| R10 | A set RFC 19 refuses is refused whole and nothing is stored: a `who` no principal holds is `NFS4ERR_BADOWNER`, so the translation returns the lookup's `ErrUnknownPrincipal` for it rather than `ErrInvalid`; another entry type, a list over the limit (refused before any lookup when it holds more than twice the limit's 128 entries, which no fold or dropped entry can bring within it), a deny naming a well-known principal that matches no caller, and `acl` with `dacl` or `sacl` are `NFS4ERR_INVAL` | MUST | RFC 21 §11.3 ("Refusals"); RFC 19 §2.8 | T6.2, T6.3 |
+| R10 | A set RFC 19 refuses is refused whole and nothing is stored: a `who` no principal holds is `NFS4ERR_BADOWNER`, so the translation returns the lookup's `ErrUnknownPrincipal` for it rather than `ErrInvalid`; another entry type, a list over the limit (refused before any lookup when its entries other than null-SID ones are more than twice the limit's 128, which no fold can bring within it), a deny naming a well-known principal that matches no caller, and `acl` with `dacl` or `sacl` are `NFS4ERR_INVAL` | MUST | RFC 21 §11.3 ("Refusals"); RFC 19 §2.8 | T6.2, T6.3 |
 | R11 | A lookup failing with an error other than "no principal holds this spelling" fails the set with that error, never `ErrInvalid`, and a `Spell` failing on a read fails the read with its error, never leaving the entry out | MUST | RFC 19 §2.8; §5.1 (`Names` passes every error through) | T6.2 |
 | R12 | A set is never accepted with an entry left out, but for an entry naming a deleted principal (the null SID), which is left out and counted | MUST NOT | RFC 19 §2.8, §5.2 | T6.2 |
 | R13 | `ACLFromNFSv4` returns what a set cleared or replaced to fit the model (`Normalised`) and a refusal's reason among `kind`, `principal`, `limit`, `deny_unmatched` and `generic`, `principal` carried by a `who` no principal holds, which still unwraps to `ErrUnknownPrincipal`, and `NFSv4FromACL` how many entries it spelled by SID, for the adapter to count as `acl_set_refused_total`, `acl_set_normalised_total` and `acl_who_sid_fallback_total` | MUST | RFC 19 §5.1, §8 | T6.2 |
@@ -506,7 +509,8 @@ func newNames(svc vfs.Service, c vfs.Call) translate.Names // unexported
     folded; order kept; `aclflag4` to and from each list's flags, other bits cleared and counted (R28), with
     `ACLListFlags` named for `dacl` and `sacl` and not for `acl`; `acl` naming `ACLAccess|ACLAudit`
     when it carries audit entries and `ACLAccess` alone when it carries none; a list of more than
-    256 entries refused with the reason `limit` before any lookup (R10); a `dacl` holding an audit or alarm entry, or a `sacl` an
+    256 entries other than null-SID ones refused with the reason `limit` before any lookup, and
+    100 entries with 200 null-SID ones not refused there (R10); a `dacl` holding an audit or alarm entry, or a `sacl` an
     allow or deny entry, refused with the reason `kind` (R47); the null SID's entry left out and
     counted; every refusal a
     `RefusedError` with its reason, wrapping `ErrInvalid`, or for a `who` no principal holds
@@ -714,7 +718,7 @@ passes on `memory.New`.
 | --- | --- | --- | --- | --- |
 | 1 | T6.1 | 5.25 | the ACL amendment | the service half, reviewed by the store's and the service's owners apart from the adapter |
 | 2 | T6.2 | 4.75 | PR 1, E4's T4.4, E7's T7.2 and T7.3 | `translate`'s `Names` and NFSv4 functions with their property tests and fuzz target |
-| 3 | T6.3, T6.4, T6.5 | 8.25 | PR 2, E5's T5.3 to T5.6, T9.5, S4, E7's T7.1 | the attributes end to end, on `memory.New` and over loopback |
+| 3 | T6.3, T6.4, T6.5 | 8.25 | PR 2, E3's T3.2, E5's T5.3 to T5.6, T9.5, S4, E7's T7.1, E8's T8.8 | the attributes end to end, on `memory.New` and over loopback |
 
 A suggestion only: one pull request per subtask works as well.
 
