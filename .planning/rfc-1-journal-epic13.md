@@ -170,12 +170,12 @@ Deferred, with owners in the plan's ledger:
   - The journal gains a repack span (`SpanRepack`), emitted by `Repack`.
   - A function adapting `Deps.Tracer` to the journal's stdlib `Tracer` option.
     - The `journal` attribute is built once, when the adapter is built.
-  - `enginewire.Params` gains a `Tracer` field.
-    - Today `enginewire.go` hardcodes `noTrace` and `Params` has no tracer.
-  - With no tracer configured, `enginewire` passes nil to the journal's `WithTracer`.
+  - `content.Params` gains a `Tracer` field.
+    - Today `content.go` hardcodes `noTrace` and `Params` has no tracer.
+  - With no tracer configured, `content` passes nil to the journal's `WithTracer`.
     - The journal skips all span work when its tracer is nil (`worker.go`, `fill.go`); a non-nil no-op would pay for it.
     - `noTrace` stays for the engine's own `Deps.Tracer`.
-  - `enginewire` also passes `journal.WithLogger(log.With("journal", id))`.
+  - `content` also passes `journal.WithLogger(log.With("journal", id))`.
     - Today it passes no logger.
   - Spans: open, sync, repack, fill, refused reservation.
   - The offload pass span waits on 9b.

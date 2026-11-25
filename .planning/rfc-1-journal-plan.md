@@ -349,7 +349,7 @@ everything before it.
 - **S4a. Engine interface agreed** (with rif, stage 2 of #3119). **Closed, not as
   written.** No interface negotiation happened: the engine interface exists as
   `engine.Deps` on `feat/storage-v2` (`pkg/engine`, composed by
-  `pkg/engine/enginewire`), and stage 3's first part is planned and under way as the
+  `internal/node/content`), and stage 3's first part is planned and under way as the
   [RFC 8 part-1 plan](rfc-8-journal-only-engine-plan.md), built by rif's team. The engine
   wiring, version-limit raise and store contracts this gate was to unblock are that plan's.
   What it never settled — who writes the system scenarios at the filesystem service's
@@ -491,7 +491,7 @@ label is needed either (epic 1, D1).
 This sketch is illustrative: signatures come from RFC 1 §3 or from `pkg/journal` on
 `feat/storage-v2`, and the epic documents decide the final names.
 
-The composition root — on `feat/storage-v2` it is `pkg/engine/enginewire`,
+The composition root — on `feat/storage-v2` it is `internal/node/content`,
 which the node and the engine's test fixture both call — opens one journal per device at
 start, then attaches a handle per share. `pkg/clock` never landed (the sketch's clock
 argument is served by the clock the composition takes); the `marks` argument is still
@@ -1370,6 +1370,6 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | The old E11's offload half: the engine wiring of `Offload`/`report`, `Fill` and `Release`+`Repack`, and the system e2e rows (§5, epic 11) | stage 3's first part took only the journal-only engine, and RFC 8 part 1 leaves these out by design; its T9.2 owns the engine's `Content` run in part 1 | RFC 8, its second part (no plan yet) | that plan is written, once 9b has landed |
 | The journal's alert rules (RFC 1 §3.9: any `data_loss`, a growing `OldestDirty`, `RemovalMarkers` growing) (§5, epic 13) | the repository has no alert rules; the series they read ship in epic 13; RFC 25 has no plan | unowned (no plan lists them) | an alert-rule plan exists |
 | API and `dfsctl` journal stats, per device and per share (§5, epic 13) | RFC 1 requires metrics, not an API; no RFC specifies the route and the RFC 23 plan has no journal-stats item | unowned (no plan lists it) | RFC 23 adds a journal resource |
-| Journal configuration keys: share-to-device placement, per-share limit, `ExtentLimit`, `DescriptorLimit`, `headroom_records` (§5, epic 11) | the node passes no journal settings: `enginewire` opens journals on the defaults until `Apply` forwards them; the RFC 13 plan names only `salvage.path` | unowned (RFC 13's plan and RFC 8's `Apply` do not list them) | the node first applies configured journal settings |
+| Journal configuration keys: share-to-device placement, per-share limit, `ExtentLimit`, `DescriptorLimit`, `headroom_records` (§5, epic 11) | the node passes no journal settings: `content` opens journals on the defaults until `Apply` forwards them; the RFC 13 plan names only `salvage.path` | unowned (RFC 13's plan and RFC 8's `Apply` do not list them) | the node first applies configured journal settings |
 | Fuzzing beyond the seed corpus (RFC 1 §9.1) (§5, epic 3) | RFC 29 defines no fuzz tier; the seed corpora run in every `go test` | unowned (RFC 29 lists no fuzz suite) | RFC 29 adds a fuzz tier |
 | The daily run of J1 to J3 (RFC 1 §9.1): the benchmarks are registered `manual` (§5, epic 12) | no machine is provisioned as a reference runner; the engine's benchmarks are `manual` for the same reason | unowned (RFC 29 §4.10's manual suites do not include them) | a reference runner exists |

@@ -304,7 +304,7 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
   - Prior art: Linux's `nfs4_disable_idmapping`, on by default, sends numeric owners to `AUTH_SYS`
     clients and names to Kerberos ones (from memory). The independent architect pass proposed the
     same.
-- **D2. Owner groups get their own scheme, pending the user's answer.** RFC 18 §4.6 makes every name
+- **D2. Owner groups get their own scheme.** RFC 18 §4.6 makes every name
   lookup say which kind it wants, and §2.2 already splits uid from gid and user names from group
   names. `SchemeOwner`, though, is one scheme, so a `Find` of `alice@corp.example` for an
   `owner_group` cannot tell the user alice from her private group alice.
@@ -314,7 +314,8 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
     after they land rewrites both.
   - Prior art: libnfsidmap's separate `nfs4_name_to_uid` and `nfs4_name_to_gid` (from memory). The
     architect pass proposed the same.
-  - Options are in §9, point 3.
+  - Settled (rif, 25 Nov): a separate `SchemeOwnerGroup`, as built in T7.2. Options are in §9,
+    point 3.
 - **D3. An owner name is found in the store only.** RFC 18 §4.5 maps `name@domain` by name and
   says nothing of the directory.
   - T7.2 reads the name index and never queries or mints, so a `chown` to a directory user never
@@ -929,7 +930,8 @@ RFC text of T7.2, T7.3 and T7.5 goes in one RFC pull request on `develop` (§9, 
    - the rewriting of RFC 18 §3.2, §5.5, §6.3, §7.1 and §10's notes that call `ManageGIDs` deferred.
 
    It is cherry-picked onto `feat/storage-v2` with the other RFC changes.
-3. **`SchemeOwnerGroup`** (D2), pending the user's answer.
+3. **`SchemeOwnerGroup`** (D2). Settled (rif, 25 Nov): a separate `SchemeOwnerGroup`, as built in
+   T7.2.
    - (a), recommended: a second scheme for owner groups, since RFC 18 §2.2 splits uid from gid and
      names by kind.
    - (b) `Find` of the one owner scheme tries the user, then the group, as `findQualified` does. On

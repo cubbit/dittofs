@@ -2686,8 +2686,14 @@ header codec writes the reply each layer takes.
 `HeaderCodec.Encode`): the RPC reply header, with `mismatch_info`'s lowest and
 highest versions for `PROG_MISMATCH`, those the connection serves, and for
 `RPC_MISMATCH`, 2 and 2 (RFC 5531 §9), and for an NFSv4 `COMPOUND` its status,
-its tag and an empty results array. A procedure's encoder handed no reply writes
-only what its result carries beside the status.
+its tag and an empty results array.
+
+**For every program status, success included,** the header codec also writes what
+the procedure's result holds before its body: the status word, where the result
+begins with one (every NFSv3 procedure but NULL, MOUNT's MNT, NSM's SM_STAT and
+SM_MON); NLM's cookie, echoed from the call, before its stat; and nothing for a
+result with no status. The procedure's encoder writes the rest, so one handed no
+reply writes only what its result carries beside those.
 
 **The `COMPOUND` tag** has no cap of its own: it is a `utf8str_cs`, an
 `opaque<>` (RFC 8881 §3.2, RFC 7530 §2.1), whose definition RFC 8881 §16.2.3
