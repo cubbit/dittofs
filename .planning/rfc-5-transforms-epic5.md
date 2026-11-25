@@ -97,6 +97,7 @@ target, the Wycheproof check, the allocation tests and the benchmarks.
   epic turns green.
 - **E3**, epic 3, the chain: the registry and decode set, `NewChain`, the pin, the envelope,
   encode and decode, the census view, `unit`'s `transform-allocs` option.
+- **E5**, this epic.
 - **E4**, epic 4, compression, whose package layout and strict settings this epic follows.
 - **E6**, epic 6, namespace keys and the provider; **E7**, epic 7, key-service custody; **E8**,
   epic 8, rotation and the destroyed-material notice.
