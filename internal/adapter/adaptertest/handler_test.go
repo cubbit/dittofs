@@ -2,6 +2,7 @@ package adaptertest
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -60,9 +61,10 @@ func TestRunnerExemptsEachCallByItsRequest(t *testing.T) {
 	}
 	info := vfs.ClientInfo{Protocol: proto, Name: []byte("pc"), Boot: [8]byte{1}, Recovery: recovery}
 	// disconnect connects a client on sessions 1 and 2, then answers a row
-	// that disconnects session 1 as its last, at the Gen the first Connect
-	// returned, and again at the Gen that Disconnect returned plus skew.
-	disconnect := func(t *testing.T, skew uint64) func(context.Context, *core.Request) error {
+	// that disconnects session 1, as its last where last is set, at the Gen
+	// the first Connect returned, and then once more as its last for each
+	// skew, at the Gen the Disconnect before it returned plus the skew.
+	disconnect := func(t *testing.T, last bool, skews ...uint64) func(context.Context, *core.Request) error {
 		id, first, err := rn.Mem.Connect(t.Context(), smb(1), info, &vfstest.Callbacks{})
 		if err != nil {
 			t.Fatalf("Connect on session 1: %v", err)
@@ -71,11 +73,13 @@ func TestRunnerExemptsEachCallByItsRequest(t *testing.T) {
 			t.Fatalf("Connect on session 2: %v", err)
 		}
 		return func(ctx context.Context, _ *core.Request) error {
-			gen, err := rn.Rec.Disconnect(ctx, smb(1), id, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Last: true, Gen: first})
-			if err != nil || gen == 0 {
+			gen, err := rn.Rec.Disconnect(ctx, smb(1), id, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Last: last, Gen: first})
+			if err != nil || last && gen == 0 {
 				t.Fatalf("the first Disconnect: Gen %d, %v; want a Gen", gen, err)
 			}
-			_, _ = rn.Rec.Disconnect(ctx, smb(1), id, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Last: true, Gen: gen + skew})
+			for _, skew := range skews {
+				gen, _ = rn.Rec.Disconnect(ctx, smb(1), id, vfs.SessionRef{ID: 1}, vfs.SessionEnd{Last: true, Gen: gen + skew})
+			}
 			return nil
 		}
 	}
@@ -94,16 +98,21 @@ func TestRunnerExemptsEachCallByItsRequest(t *testing.T) {
 			return then(r)
 		}
 	}
-	cancelLock := func(ctx context.Context) {
-		_, _ = rn.Rec.CancelLock(ctx, admin, vfs.Anonymous(h), vfs.LockOwner{}, vfs.ByteRange{Length: 1})
+	// cancelLock withdraws the waiter of owner on h's anonymous open; the
+	// Lock lockThen makes is the zero owner's.
+	cancelLock := func(ctx context.Context, owner vfs.LockOwner) {
+		_, _ = rn.Rec.CancelLock(ctx, admin, vfs.Anonymous(h), owner, vfs.ByteRange{Length: 1})
 	}
+	stranger := vfs.LockOwner{Client: 9, Name: []byte("stranger")}
 	// writeRevoked writes through opened, which a fault answers revoked, then
-	// frees free.
-	writeRevoked := func(free vfs.StateRef) func(context.Context, *core.Request) error {
+	// frees each of free.
+	writeRevoked := func(free ...vfs.StateRef) func(context.Context, *core.Request) error {
 		return func(ctx context.Context, _ *core.Request) error {
 			rn.Faults.Fail(vfs.OpWrite, revoked)
 			_, err := rn.Rec.Write(ctx, admin, opened, 0, []byte("x"), vfs.Unstable)
-			_ = rn.Rec.FreeState(ctx, admin, 5, free)
+			for _, ref := range free {
+				_ = rn.Rec.FreeState(ctx, admin, 5, ref)
+			}
 			return err
 		}
 	}
@@ -129,13 +138,13 @@ func TestRunnerExemptsEachCallByItsRequest(t *testing.T) {
 		{"a CancelLock after a refused Park", func(*testing.T) func(context.Context, *core.Request) error {
 			return lockThen(func(r *core.Request) error {
 				_, err := r.Park(func() {})
-				cancelLock(t.Context())
+				cancelLock(t.Context(), vfs.LockOwner{})
 				return err
 			})
 		}, Expect{Call: vfs.OpLock}, ""},
 		{"a CancelLock in a request whose Park was not refused", func(*testing.T) func(context.Context, *core.Request) error {
 			return lockThen(func(*core.Request) error {
-				cancelLock(t.Context())
+				cancelLock(t.Context(), vfs.LockOwner{})
 				return vfs.ErrIO
 			})
 		}, Expect{Call: vfs.OpLock}, "2 mutating calls, Lock, CancelLock"},
@@ -153,11 +162,70 @@ func TestRunnerExemptsEachCallByItsRequest(t *testing.T) {
 			})
 		}, Expect{Call: vfs.OpWatch}, "2 mutating calls, Watch, Unwatch"},
 		{"a last Disconnect at the Gen the previous one returned", func(t *testing.T) func(context.Context, *core.Request) error {
-			return disconnect(t, 0)
+			return disconnect(t, true, 0)
 		}, Expect{Call: vfs.OpDisconnect}, ""},
 		{"a last Disconnect at another Gen", func(t *testing.T) func(context.Context, *core.Request) error {
-			return disconnect(t, 1)
+			return disconnect(t, true, 1)
 		}, Expect{Call: vfs.OpDisconnect}, "2 mutating calls, Disconnect, Disconnect"},
+		{"a FreeState of the revoked reference, twice", func(*testing.T) func(context.Context, *core.Request) error {
+			return writeRevoked(held, held)
+		}, Expect{Call: vfs.OpWrite}, "2 mutating calls, Write, FreeState"},
+		{"a second CancelLock after a refused Park", func(*testing.T) func(context.Context, *core.Request) error {
+			return lockThen(func(r *core.Request) error {
+				_, err := r.Park(func() {})
+				cancelLock(t.Context(), vfs.LockOwner{})
+				cancelLock(t.Context(), vfs.LockOwner{})
+				return err
+			})
+		}, Expect{Call: vfs.OpLock}, "2 mutating calls, Lock, CancelLock"},
+		{"a CancelLock of another owner's waiter after a refused Park", func(*testing.T) func(context.Context, *core.Request) error {
+			return lockThen(func(r *core.Request) error {
+				_, err := r.Park(func() {})
+				cancelLock(t.Context(), stranger)
+				return err
+			})
+		}, Expect{Call: vfs.OpLock}, "2 mutating calls, Lock, CancelLock"},
+		{"a CancelLock before its Lock, in a request whose Park was refused", func(*testing.T) func(context.Context, *core.Request) error {
+			return func(ctx context.Context, r *core.Request) error {
+				cancelLock(ctx, vfs.LockOwner{})
+				return lockThen(func(r *core.Request) error {
+					_, err := r.Park(func() {})
+					return err
+				})(ctx, r)
+			}
+		}, Expect{Call: vfs.OpLock}, "2 mutating calls, CancelLock, Lock"},
+		{"a second Unwatch after a refused Park", func(*testing.T) func(context.Context, *core.Request) error {
+			return watchThen(func(r *core.Request) error {
+				_, err := r.Park(func() {})
+				_ = rn.Rec.Unwatch(t.Context(), admin, vfs.WatchID{})
+				_ = rn.Rec.Unwatch(t.Context(), admin, vfs.WatchID{})
+				return err
+			})
+		}, Expect{Call: vfs.OpWatch}, "2 mutating calls, Watch, Unwatch"},
+		{"a last Disconnect repeated twice, each at the Gen the one before returned", func(t *testing.T) func(context.Context, *core.Request) error {
+			return disconnect(t, true, 0, 0)
+		}, Expect{Call: vfs.OpDisconnect}, "2 mutating calls, Disconnect, Disconnect"},
+		{"a last Disconnect at the Gen a Disconnect that was not the last returned", func(t *testing.T) func(context.Context, *core.Request) error {
+			return disconnect(t, false, 0)
+		}, Expect{Call: vfs.OpDisconnect}, "2 mutating calls, Disconnect, Disconnect"},
+		{"a Disconnect in the leg that completes a session setup", func(t *testing.T) func(context.Context, *core.Request) error {
+			return disconnect(t, true)
+		}, Expect{Completes: true}, ""},
+		{"a Disconnect in another leg of a session setup", func(t *testing.T) func(context.Context, *core.Request) error {
+			return disconnect(t, true)
+		}, Expect{SessionSetup: true}, "a Disconnect call, where the request is due none"},
+		{"an AddSession in the leg that completes a session setup", func(*testing.T) func(context.Context, *core.Request) error {
+			return func(ctx context.Context, _ *core.Request) error {
+				_, _ = rn.Rec.AddSession(ctx, smb(5), 5, nil, []byte("session"))
+				return nil
+			}
+		}, Expect{Completes: true}, ""},
+		{"an AddSession in another leg of a session setup", func(*testing.T) func(context.Context, *core.Request) error {
+			return func(ctx context.Context, _ *core.Request) error {
+				_, _ = rn.Rec.AddSession(ctx, smb(5), 5, nil, []byte("session"))
+				return nil
+			}
+		}, Expect{SessionSetup: true}, "AddSession call, where the request is due none"},
 		{"a Connect in the leg that completes a session setup", func(*testing.T) func(context.Context, *core.Request) error {
 			return func(ctx context.Context, _ *core.Request) error {
 				_, _, err := rn.Rec.Connect(ctx, smb(3), info, &vfstest.Callbacks{})
@@ -254,5 +322,57 @@ func TestRunnerCountsTheOneCall(t *testing.T) {
 				t.Errorf("verdict %v, want one naming %q", got, c.want)
 			}
 		})
+	}
+}
+
+// A request whose arguments do not decode makes no call, so it fails where a
+// call is due and passes where none is.
+func TestRunnerJudgesARequestThatDoesNotDecode(t *testing.T) {
+	rn := NewRunner(t)
+	type none struct{}
+	tab := core.NewOpTable(core.NewErrorTable(99, core.ErrorRow{Err: core.ErrDecode, Status: 1}), false, &core.Op{Code: 1, Name: "row", Decode: core.Bind(
+		func([]byte, core.Version, *none) (int, error) { return 0, errors.New("garbage") },
+		func(*core.Request, *none, int) (int, bool) { return 0, true },
+		nil, nil, nil,
+		func(context.Context, *core.Request, *none) (*none, error) { return nil, nil },
+		func(*none, core.Version, *resources.Buf) error { return nil },
+	)})
+	rep, got := rn.run(t, tab, 1, &core.Request{Call: rn.Mem.Admin()}, nil, Expect{Call: vfs.OpWrite})
+	if rep.Status != 1 || rep.Body != nil {
+		t.Errorf("reply %+v, want the decode status 1 alone", rep)
+	}
+	if want := "no Write call, where the request is due one"; got == nil || !strings.Contains(got.Error(), want) {
+		t.Errorf("verdict %v, want one naming %q", got, want)
+	}
+	if _, got := rn.run(t, tab, 1, &core.Request{Call: rn.Mem.Admin()}, nil, Expect{}); got != nil {
+		t.Errorf("verdict %v where no call is due, want it passed", got)
+	}
+}
+
+// A fault a request never reached fails it, naming the method, and is
+// disarmed, so the next request's call of that method reaches the service.
+func TestRunnerFailsAndDisarmsAFaultTheRequestNeverReached(t *testing.T) {
+	rn := NewRunner(t)
+	admin := rn.Mem.Admin()
+	made, err := rn.Mem.Create(t.Context(), admin, rn.Mem.Store.Root, []byte("f"), vfs.CreateArgs{Kind: vfs.CreateRegular})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	var answered error
+	write := table(func(ctx context.Context, _ *core.Request) error {
+		_, answered = rn.Rec.Write(ctx, admin, vfs.Anonymous(made.Handle), 0, []byte("x"), vfs.Unstable)
+		return answered
+	})
+	rn.Faults.Fail(vfs.OpSetAttr, vfs.ErrIO)
+	_, got := rn.run(t, write, 1, &core.Request{Call: admin}, nil, Expect{Call: vfs.OpWrite})
+	if want := "faults armed on [SetAttr] that the request never reached"; got == nil || !strings.Contains(got.Error(), want) {
+		t.Errorf("verdict %v, want one naming %q", got, want)
+	}
+	setAttr := table(func(ctx context.Context, _ *core.Request) error {
+		_, answered = rn.Rec.SetAttr(ctx, admin, vfs.Target{H: made.Handle}, vfs.AttrChange{})
+		return answered
+	})
+	if _, got := rn.run(t, setAttr, 1, &core.Request{Call: admin}, nil, Expect{Call: vfs.OpSetAttr}); got != nil || answered != nil {
+		t.Errorf("the next request: verdict %v, SetAttr answered %v; want both nil, the fault gone", got, answered)
 	}
 }

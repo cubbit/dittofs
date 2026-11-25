@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -75,8 +76,10 @@ const room = math.MaxInt32
 
 // Run runs the row of tab whose code is code over args, with r, which the
 // caller builds as its protocol's router would, and fails t where the
-// request broke the one-call rule as e reads it, or encoded past its Bound.
-// The record is reset first, so it holds this request's calls alone.
+// request broke the one-call rule as e reads it, encoded past its Bound, or
+// left a fault armed unfired, which it disarms. The record is reset first,
+// so it holds this request's calls alone, a request whose arguments did not
+// decode included: it made no call, so a call it was due fails it.
 func (rn *Runner) Run(t testing.TB, tab *core.OpTable, code uint32, r *core.Request, args []byte, e Expect) Reply {
 	t.Helper()
 	rep, err := rn.run(t, tab, code, r, args, e)
@@ -97,7 +100,7 @@ func (rn *Runner) run(t testing.TB, tab *core.OpTable, code uint32, r *core.Requ
 	inv, _, err := op.Decode(args, r.Version)
 	if err != nil {
 		s, _, _ := tab.Errors.Map(fmt.Errorf("%w: %v", core.ErrDecode, err), op, r.Version)
-		return Reply{Status: s}, nil
+		return Reply{Status: s}, rn.judge(false, e)
 	}
 	bound, ok := inv.Bound(r, room)
 	if !ok {
@@ -125,7 +128,18 @@ func (rn *Runner) run(t testing.TB, tab *core.OpTable, code uint32, r *core.Requ
 	if body == nil {
 		body = []byte{}
 	}
-	return Reply{Status: s, Body: body}, verdict(rn.Rec.Calls(), errors.Is(err, parkRefused), e)
+	return Reply{Status: s, Body: body}, rn.judge(errors.Is(err, parkRefused), e)
+}
+
+// judge is the request's verdict: the one-call rule over the record, refused
+// telling whether its Park was refused, and each fault armed that the request
+// never reached, which is disarmed so the next request meets none of it.
+func (rn *Runner) judge(refused bool, e Expect) error {
+	var unused error
+	if ops := rn.Faults.Disarm(); len(ops) > 0 {
+		unused = fmt.Errorf("faults armed on %v that the request never reached", ops)
+	}
+	return errors.Join(verdict(rn.Rec.Calls(), refused, e), unused)
 }
 
 // parkRefused is the error Park answers on a request no pipeline runs, whose
@@ -149,9 +163,10 @@ var parkRefused = func() error {
 func verdict(calls []vfstest.Mutation, refused bool, e Expect) error {
 	var counted []string
 	made := false
+	ex := exemptions{refused: refused, e: e, used: make([]bool, len(calls))}
 	for i, m := range calls {
 		made = made || m.Op == e.Call
-		if !exempt(calls[:i], m, refused, e) {
+		if !ex.exempt(calls[:i], m) {
 			counted = append(counted, m.Op.String())
 		}
 	}
@@ -168,42 +183,74 @@ func verdict(calls []vfstest.Mutation, refused bool, e Expect) error {
 	return nil
 }
 
+// exemptions is one request's exemptions as its calls are judged in order:
+// what the request is, and which earlier calls have already exempted a later
+// one, each of which exempts one call at most.
+type exemptions struct {
+	refused  bool   // the request's Park was refused
+	e        Expect // what the caller says the request is
+	used     []bool // by index into the calls, an earlier call that has exempted one
+	repeated bool   // a last Disconnect has been exempted as a repeat
+}
+
 // exempt reports whether m, made after before in one request, is a call RFC 20
 // section 4.3 places outside the one-call rule in that request: each by what
-// the request is or by what came before it, never by its operation alone.
+// the request is or by the call before it that it answers, never by its
+// operation alone, and the earlier call it answers, once.
 //
 // decision: a FreeState is exempted by a recorded call's revoked answer, and
 // read-only calls are not recorded, so one after a READ's revoked Read counts
 // as the request's one call: a test of it names FreeState as the call due.
 // Withdraw it if the record comes to keep a read-only call's answer.
-func exempt(before []vfstest.Mutation, m vfstest.Mutation, refused bool, e Expect) bool {
+//
+// decision: a CancelLock withdraws the waiter of an earlier Lock of the
+// request on the same open and owner, its range unmatched since the record
+// keeps a Lock's owner and open but not its ranges; an Unwatch withdraws an
+// earlier Watch of the request, unmatched by ID since the record keeps no
+// Watch's answer. Each Lock or Watch exempts one withdrawal. Match the range
+// and the watch's ID if the record comes to keep them.
+func (x *exemptions) exempt(before []vfstest.Mutation, m vfstest.Mutation) bool {
 	switch m.Op {
-	case vfs.OpCancelLock, vfs.OpUnwatch:
-		return refused
+	case vfs.OpCancelLock:
+		return x.refused && x.take(before, func(p vfstest.Mutation) bool {
+			return p.Op == vfs.OpLock && reflect.DeepEqual(p.Open, m.Open) && reflect.DeepEqual(p.Owner, m.Owner)
+		})
+	case vfs.OpUnwatch:
+		return x.refused && x.take(before, func(p vfstest.Mutation) bool { return p.Op == vfs.OpWatch })
 	case vfs.OpFreeState:
-		for _, p := range before {
+		return x.take(before, func(p vfstest.Mutation) bool {
 			var se *vfs.StateError
-			if errors.As(p.Err, &se) && se.Kind == vfs.StateRevoked && p.Open != nil && sameState(p.Open.State, m.State) {
-				return true
-			}
-		}
-		return false
+			return errors.As(p.Err, &se) && se.Kind == vfs.StateRevoked && p.Open != nil && sameState(p.Open.State, m.State)
+		})
 	case vfs.OpDisconnect:
-		if e.Completes {
+		if x.e.Completes {
 			return true
 		}
-		for _, p := range before {
-			if p.Op == vfs.OpDisconnect && p.Err == nil && m.End.Last && m.End.Gen == p.Gen {
-				return true
-			}
+		if x.repeated || !m.End.Last {
+			return false
 		}
-		return false
+		x.repeated = x.take(before, func(p vfstest.Mutation) bool {
+			return p.Op == vfs.OpDisconnect && p.Err == nil && p.End.Last && p.Gen == m.End.Gen
+		})
+		return x.repeated
 	case vfs.OpConnect, vfs.OpAddSession:
-		return e.Completes
+		return x.e.Completes
 	case vfs.OpSignIn:
-		return e.SessionSetup || e.Completes
+		return x.e.SessionSetup || x.e.Completes
 	case vfs.OpFind:
-		return e.NamesPrincipal
+		return x.e.NamesPrincipal
+	}
+	return false
+}
+
+// take marks the first earlier call that answers holds for and that has
+// exempted none yet, and reports whether there was one.
+func (x *exemptions) take(before []vfstest.Mutation, answers func(vfstest.Mutation) bool) bool {
+	for i, p := range before {
+		if !x.used[i] && answers(p) {
+			x.used[i] = true
+			return true
+		}
 	}
 	return false
 }
