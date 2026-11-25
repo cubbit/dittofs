@@ -3,6 +3,7 @@
 package framework
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -654,4 +655,24 @@ func SkipIfNoSMBMount(t *testing.T) {
 	if !IsNativeSMBAvailable() {
 		t.Skip("Skipping: requires native SMB mount capability (mount_smbfs on macOS or cifs-utils on Linux)")
 	}
+}
+
+// MountAt mounts source as fstype with options at a new mount point, in one
+// attempt of at most two minutes, and returns the mount, or the client's
+// error with its output without failing t: a refused mount is an answer some
+// tests assert on. The caller unmounts it. The error leaves options out,
+// which may hold a password.
+func MountAt(t *testing.T, fstype, source, options string) (*Mount, error) {
+	t.Helper()
+	mountPath, err := makeTraversableMountPoint("dittofs-e2e-" + fstype + "-")
+	if err != nil {
+		return nil, fmt.Errorf("creating the mount point: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if out, err := exec.CommandContext(ctx, "mount", "-t", fstype, "-o", options, source, mountPath).CombinedOutput(); err != nil {
+		_ = os.RemoveAll(mountPath)
+		return nil, fmt.Errorf("mount -t %s %s: %w: %s", fstype, source, err, strings.TrimSpace(string(out)))
+	}
+	return &Mount{T: t, Path: mountPath, Protocol: fstype, mounted: true}, nil
 }
