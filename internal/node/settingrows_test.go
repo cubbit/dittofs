@@ -198,7 +198,11 @@ func TestWiredAppliedReadFromTheNodeThatRuns(t *testing.T) {
 		if c := awaitRead(t, reached); c.Settings != row.Position {
 			t.Fatalf("frozen pass read settings %d, want the change at %d", c.Settings, row.Position)
 		}
-		w.h.Clock().Advance(6 * time.Second)
+		w.h.Clock().Advance(4 * time.Second)
+		if w.healthBehind(t, w.admin) {
+			t.Error("config_generation_behind named with the node frozen only 4 s behind the change, want it after 5 s")
+		}
+		w.h.Clock().Advance(2 * time.Second)
 		if !w.healthBehind(t, w.admin) {
 			t.Error("config_generation_behind not named with the node frozen 6 s behind the change")
 		}
@@ -441,6 +445,7 @@ func TestWiredNTLMBackOn(t *testing.T) {
 			w.h.Clock().Advance(sweepInterval)
 			awaitSweep(t, swept)
 		}
+		// The 8 days expired the admin's token, so sign in again at the new time.
 		admin := account{p: w.admin.p, token: w.tokens(t, "admin", adminPassword).Access}
 		if r := w.putSetting(t, admin, ntlm, "true"); r.status != http.StatusOK {
 			t.Errorf("PUT identity.ntlm on once the deletion completed and was swept: answered %d %s, want 200", r.status, r.body)
