@@ -15,7 +15,6 @@ import (
 
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/journal"
-	segset "github.com/cubbit/dittofs/pkg/journal/internal/segment"
 	"github.com/cubbit/dittofs/pkg/journal/journaltest"
 )
 
@@ -642,7 +641,7 @@ func soakRepack(t *testing.T, f *journaltest.Fixture, log *soakLog) {
 	// the removals leg's drain and the standing runs' flat bands read in
 	// their own assertions anyway — never for one the worker holds and
 	// releases.
-	if errors.Is(err, segset.ErrClaimed) {
+	if errors.Is(err, journal.ErrClaimed) {
 		log.repackClaims++
 		return
 	}
