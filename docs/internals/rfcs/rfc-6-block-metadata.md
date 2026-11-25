@@ -2658,6 +2658,12 @@ type Content interface {
     // Intend durably records a put intent for a freshly minted name (§7.6).
     Intend(ctx context.Context, name BlockName, epoch uint64) error
     Commit(ctx context.Context, c BlockCommit) (CommitResult, error)              // §4.1
+    // Abandon is Blocks' abandonment of the engine's own intents (§7.6), so the offload
+    // pipeline's one view holds it (RFC 8 §6.3, O4).
+    Abandon(ctx context.Context, names []BlockName) error
+    // Budget is K and, at their worst case, the keys an offload commit writes per new ref, per
+    // ref it replaces, per block and per file, derived at open (§5.2).
+    Budget() Budget
     // Resume runs phase 2 of every removal, clone or restore not done, within K keys per
     // transaction (§6.2); a clone's from the spec its Removal record carries (§6.6).
     Resume(ctx context.Context, file FileID, epoch uint64) error
