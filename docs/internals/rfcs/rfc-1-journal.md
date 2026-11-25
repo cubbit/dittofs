@@ -2876,6 +2876,21 @@ released — and a crash would then drop the filled bytes ([§4.3](#4.3%20Versio
 keeps the original's sequence number and content version, and where both are on
 disk after a crash they are equal and either decides the same way.
 
+**A record and its carried copy hold neither segment.** Each live placement of
+a record — each copy of it the journal counts as live, wherever the copy sits —
+holds the segment it sits in **only while it is the record's only live
+placement** ([§4.3](#4.3%20Versions)). While a carried header-only record and
+its original are both on disk, two placements of one record, neither holds: the
+source may therefore be retired before the removal or loss it carries is
+droppable — the copy owns the record's wait ([§5.1](#5.1%20Ordering%20rules)).
+The two segments such a record sits in are judged for retirement in steps that
+**MUST NOT** overlap — the one judgment reads the other's outcome before it
+decides — so whichever retires first, the surviving placement becomes the
+record's only one and holds its segment again, and the record is never without
+a placement somewhere. A rebuild that finds both placements counts both and
+decides the same way, and one that finds a single placement, whichever it is,
+holds it: two hold neither, one holds again.
+
 **The source is verified whole before any part is copied.** Repack **MUST** read
 the source record's whole payload and verify its payload checksum before copying
 any part of it ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)). A record that does not verify is dropped as corrupt
@@ -2913,7 +2928,9 @@ still settles it, synced with the copies before the source segment is retired,
 and appends no loss record for it. It is copied like any live record, into the
 pass's target. A segment is
 **held** while it backs a held or retained extent, holds a live one of these
-records, holds a dropped record whose loss an open deferred ([§6](#6.%20Capacity)), or was ended by a
+records (a record carried from it and its original, while both are on disk and
+both count as its live placements, hold neither segment, [§7.2](#7.2%20Repack)), holds a dropped
+record whose loss an open deferred ([§6](#6.%20Capacity)), or was ended by a
 failure whose copies nothing on disk proves yet ([§3.1](#3.1%20Write)); repack
 copies such records forward like held content, a deferred loss as its loss
 record, and a segment that is not held is retired ([§7.1](#7.1%20Releasing%20storage)).
