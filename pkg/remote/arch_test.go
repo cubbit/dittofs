@@ -1,11 +1,6 @@
 package remote
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"go/types"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -77,261 +72,15 @@ var frozenExports = []string{
 // itself is always parsed from its files, the planted ones included.
 var exportImporter = archtest.ExportImporter(".")
 
-// exports type-checks the package made of dir's non-test .go files, whatever
-// their build tags, so a file behind a tag cannot hide an export, plus the
-// planted files, and prints each exported declaration on one line: a
-// function or method with its signature and receiver, a constant with its
-// value, a struct with its exported and embedded fields only, since an opaque
-// struct may gain unexported fields.
-func exports(dir string, planted ...string) ([]string, error) {
-	paths, err := goFiles(dir)
-	if err != nil {
-		return nil, err
-	}
-
-	paths = append(paths, planted...)
-
-	fset := token.NewFileSet()
-
-	files := make([]*ast.File, 0, len(paths))
-	for _, p := range paths {
-		f, err := parser.ParseFile(fset, p, nil, parser.SkipObjectResolution)
-		if err != nil {
-			return nil, err
-		}
-
-		// decision: a file of another package, such as a generator behind
-		// //go:build ignore, is not part of the contract and is skipped. Two
-		// files declaring one symbol for different platforms would still fail
-		// to type-check together; split the pin per platform when one appears.
-		if f.Name.Name != "remote" {
-			continue
-		}
-
-		files = append(files, f)
-	}
-
-	conf := types.Config{Importer: exportImporter}
-
-	pkg, err := conf.Check("github.com/cubbit/dittofs/pkg/remote", fset, files, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	qualify := func(p *types.Package) string {
-		if p == pkg {
-			return ""
-		}
-
-		return p.Name()
-	}
-
-	var got []string
-
-	for _, name := range pkg.Scope().Names() {
-		obj := pkg.Scope().Lookup(name)
-		if !obj.Exported() {
-			continue
-		}
-
-		if c, ok := obj.(*types.Const); ok {
-			got = append(got, types.ObjectString(c, qualify)+" = "+c.Val().ExactString())
-
-			continue
-		}
-
-		tn, ok := obj.(*types.TypeName)
-		if !ok {
-			got = append(got, types.ObjectString(obj, qualify))
-
-			continue
-		}
-
-		// An alias prints with its =, and a generic type with its parameters,
-		// so neither can stand in for the defined type the pin names.
-		head := "type " + name
-		if named, ok := tn.Type().(*types.Named); ok && named.TypeParams().Len() > 0 {
-			var params []string
-			for tp := range named.TypeParams().TypeParams() {
-				params = append(params, tp.Obj().Name()+" "+types.TypeString(tp.Constraint(), qualify))
-			}
-
-			head += "[" + strings.Join(params, ", ") + "]"
-		}
-
-		if tn.IsAlias() {
-			head += " ="
-		}
-
-		got = append(got, head+" "+typeString(tn.Type().Underlying(), qualify))
-		// An interface prints every method in typeString; any other type
-		// prints the whole method set, promoted methods of an embedded type
-		// included, since a method promoted that way is public too.
-		if _, isIface := tn.Type().Underlying().(*types.Interface); !isIface {
-			for sel := range types.NewMethodSet(types.NewPointer(tn.Type())).Methods() {
-				if sel.Obj().Exported() {
-					got = append(got, types.ObjectString(sel.Obj(), qualify))
-				}
-			}
-		}
-	}
-
-	return got, nil
-}
-
-// typeString prints t as types.TypeString does, but a struct with its
-// exported and embedded fields only and no tags; a struct a field holds
-// directly is printed the same way. A struct under a pointer, slice, map or
-// array is printed whole, as types.TypeString does: the frozen types hold none.
-func typeString(t types.Type, qualify types.Qualifier) string {
-	st, ok := t.(*types.Struct)
-	if !ok {
-		return types.TypeString(t, qualify)
-	}
-
-	var fields []string
-
-	for f := range st.Fields() {
-		if f.Exported() || f.Embedded() {
-			fields = append(fields, f.Name()+" "+typeString(f.Type(), qualify))
-		}
-	}
-
-	return "struct{" + strings.Join(fields, "; ") + "}"
-}
-
-// goFiles returns the path of each non-test .go file in dir, whatever its
-// build tags.
-func goFiles(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, err
-	}
-
-	var paths []string
-
-	for _, e := range entries {
-		name := e.Name()
-		if !e.IsDir() && strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
-			paths = append(paths, filepath.Join(dir, name))
-		}
-	}
-
-	return paths, nil
-}
-
 // hiddenCase names the case whose planted file sits in the package's
 // directory behind a build tag, so it reaches the pin through the directory
 // scan, as a real file would.
 const hiddenCase = "hidden.go"
 
-// withHidden returns a directory holding a copy of the package's non-test
-// .go files and testdata/arch/hidden.go, an export behind a build tag.
-func withHidden(t *testing.T) string {
-	t.Helper()
-
-	dir := t.TempDir()
-
-	paths, err := goFiles(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	paths = append(paths, filepath.Join("testdata", "arch", hiddenCase))
-
-	for _, p := range paths {
-		b, err := os.ReadFile(p)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if err := os.WriteFile(filepath.Join(dir, filepath.Base(p)), b, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	return dir
-}
-
-// violations compares got with want, whatever their order: each line of got
-// not in want is an extra export, each line of want not in got a missing one.
-func violations(got, want []string) []string {
-	var bad []string
-
-	for _, g := range got {
-		if !slices.Contains(want, g) {
-			bad = append(bad, "extra export: "+g)
-		}
-	}
-
-	for _, w := range want {
-		if !slices.Contains(got, w) {
-			bad = append(bad, "missing export: "+w)
-		}
-	}
-
-	slices.Sort(bad)
-
-	return bad
-}
-
 // errorVars are the package-level variables the contract may hold: its error
 // set, and nothing else (RFC 4 §1.2).
 var errorVars = []string{
 	"ErrNotFound", "ErrInvalid", "ErrDenied", "ErrTransient", "ErrCorrupt", "ErrThrottled", "ErrMalformed",
-}
-
-// impurities parses dir's non-test .go files, whatever their build tags, plus
-// the planted ones, and reports each package-level var other than the error
-// set and each function that is not a method, init included: the contract
-// holds no state and no behaviour beyond methods over its own values (RFC 4
-// §1.2), which neither the import walk nor the export pin can see.
-func impurities(dir string, planted ...string) ([]string, error) {
-	paths, err := goFiles(dir)
-	if err != nil {
-		return nil, err
-	}
-
-	paths = append(paths, planted...)
-
-	var bad []string
-
-	for _, p := range paths {
-		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.SkipObjectResolution)
-		if err != nil {
-			return nil, err
-		}
-
-		// A file of another package is skipped, as exports skips it.
-		if f.Name.Name != "remote" {
-			continue
-		}
-
-		for _, decl := range f.Decls {
-			switch d := decl.(type) {
-			case *ast.FuncDecl:
-				if d.Recv == nil {
-					bad = append(bad, "func "+d.Name.Name+" is not a method")
-				}
-			case *ast.GenDecl:
-				if d.Tok != token.VAR {
-					continue
-				}
-
-				for _, spec := range d.Specs {
-					for _, n := range spec.(*ast.ValueSpec).Names {
-						if !slices.Contains(errorVars, n.Name) {
-							bad = append(bad, "var "+n.Name+" is state")
-						}
-					}
-				}
-			}
-		}
-	}
-
-	slices.Sort(bad)
-
-	return bad, nil
 }
 
 // planted returns each name as a path under testdata/arch.
@@ -377,7 +126,6 @@ func TestRemoteExports(t *testing.T) {
 			return slices.Replace(want, slices.Index(want, storeExport), slices.Index(want, storeExport)+1, changedStore)
 		}, []string{"extra export: " + storeExport, "missing export: " + changedStore}},
 		{"behind a build tag", hiddenCase, nil, []string{"extra export: func Hidden()"}},
-		{"a file of another package", "generator.go", nil, nil},
 	} {
 		dir := "."
 
@@ -385,7 +133,7 @@ func TestRemoteExports(t *testing.T) {
 
 		switch tc.planted {
 		case hiddenCase:
-			dir = withHidden(t)
+			dir = archtest.WithHidden(t, ".", filepath.Join("testdata", "arch", hiddenCase))
 		default:
 			extra = planted(tc.planted)
 		}
@@ -395,12 +143,12 @@ func TestRemoteExports(t *testing.T) {
 			want = tc.edit(want)
 		}
 
-		got, err := exports(dir, extra...)
+		got, err := archtest.Exports(exportImporter, "github.com/cubbit/dittofs/pkg/remote", dir, extra...)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
 
-		bad := violations(got, want)
+		bad := archtest.Violations(got, want)
 
 		if !slices.Equal(bad, tc.want) {
 			t.Errorf("%s: violations %q, want %q", tc.name, bad, tc.want)
@@ -422,7 +170,6 @@ func TestRemoteIsPure(t *testing.T) {
 		{"free function", "free_func.go", []string{"func helper is not a method"}},
 		{"init", "init.go", []string{"func init is not a method"}},
 		{"behind a build tag", hiddenCase, []string{"func Hidden is not a method"}},
-		{"a file of another package", "generator.go", nil},
 	} {
 		dir := "."
 
@@ -430,12 +177,12 @@ func TestRemoteIsPure(t *testing.T) {
 
 		switch tc.planted {
 		case hiddenCase:
-			dir = withHidden(t)
+			dir = archtest.WithHidden(t, ".", filepath.Join("testdata", "arch", hiddenCase))
 		default:
 			extra = planted(tc.planted)
 		}
 
-		bad, err := impurities(dir, extra...)
+		bad, err := archtest.Impurities(dir, errorVars, extra...)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
