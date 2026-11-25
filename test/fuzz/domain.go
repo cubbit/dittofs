@@ -1,6 +1,10 @@
 package fuzz
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+	"strconv"
+)
 
 const (
 	// maxByteDomain is how many values one input byte can tell apart.
@@ -16,6 +20,7 @@ type Param struct {
 	name   string
 	values []int
 	names  []string // a Named parameter's names, indexed by value
+	hex    bool     // its values print in hexadecimal
 }
 
 // Enum is a parameter over at most 256 listed values.
@@ -30,7 +35,10 @@ func Choice(name string, values ...int) Param {
 
 // Pattern is a parameter over the 256 seeds of a payload generator.
 func Pattern(name string) Param {
-	return newParam(name, indexes(maxByteDomain), maxByteDomain)
+	p := newParam(name, indexes(maxByteDomain), maxByteDomain)
+	p.hex = true
+
+	return p
 }
 
 // Named is a parameter over listed names, at most 256.
@@ -81,4 +89,38 @@ func (p Param) decode(b []byte) int {
 	}
 
 	return p.values[v%len(p.values)]
+}
+
+// encode writes the smallest bytes that decode to value, which must be in the
+// domain.
+func (p Param) encode(b []byte, value int) {
+	v := slices.Index(p.values, value)
+	for i := range p.width() {
+		b[i] = byte(v >> (8 * i))
+	}
+}
+
+// format is the value as a trace prints it.
+func (p Param) format(value int) string {
+	switch {
+	case p.names != nil:
+		return p.names[value]
+	case p.hex:
+		return fmt.Sprintf("0x%02x", value)
+	}
+
+	return strconv.Itoa(value)
+}
+
+// parse reads a value format printed, and refuses one outside the domain.
+func (p Param) parse(text string) (int, error) {
+	i := slices.IndexFunc(p.values, func(v int) bool {
+		return p.format(v) == text
+	})
+
+	if i < 0 {
+		return 0, fmt.Errorf("%s=%q is not in the domain", p.name, text)
+	}
+
+	return p.values[i], nil
 }
