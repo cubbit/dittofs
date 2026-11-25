@@ -144,7 +144,7 @@ func newList() *cobra.Command {
 }
 
 func newPlan() *cobra.Command {
-	var tier, base, shardFlag string
+	var tier, base, queueBase, shardFlag string
 	var asJSON, estimating, ci bool
 	var last int
 	var branch string
@@ -160,15 +160,36 @@ func newPlan() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if base != "" && queueBase != "" {
+				return errors.New("--base plans a pull request and --docs-only-base a merge queue run: give one")
+			}
+			if queueBase != "" && tier != "pr" {
+				return errors.New("--docs-only-base is for the merge queue's run, on the pr tier")
+			}
 			var changed []string
 			if base != "" {
 				if changed, err = changedFiles(root, base); err != nil {
 					return err
 				}
 			}
-			cells, err := plan.Plan(root, r, tier, changed)
-			if err != nil {
-				return err
+			// The merge queue tests every cell of the tier, as a push does, so
+			// its base never narrows the plan by paths: it only lets a group
+			// whose changes are all documentation plan nothing, as such a pull
+			// request does. The group's diff holds every pull request ahead of
+			// it, so one with code in any of them plans every cell.
+			skip := false
+			if queueBase != "" {
+				queued, err := changedFiles(root, queueBase)
+				if err != nil {
+					return err
+				}
+				skip = plan.DocsOnly(queued)
+			}
+			var cells []plan.Cell
+			if !skip {
+				if cells, err = plan.Plan(root, r, tier, changed); err != nil {
+					return err
+				}
 			}
 			if shardFlag != "" {
 				if cells, err = shardCells(cells, shardFlag); err != nil {
@@ -207,6 +228,7 @@ func newPlan() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&tier, "tier", "", "the tier to plan: pr, merge, nightly or manual (required)")
 	cmd.Flags().StringVar(&base, "base", "", "compare the branch with REF: a docs-only change plans nothing, and suites with paths run only when touched")
+	cmd.Flags().StringVar(&queueBase, "docs-only-base", "", "compare a merge queue group with REF, its base: on the pr tier a docs-only group plans nothing, and any other plans every cell")
 	cmd.Flags().StringVar(&shardFlag, "shard", "", "only shard I of N of the cells, as I/N")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	cmd.Flags().BoolVar(&estimating, "estimate", false, "give each cell its p50 over the runs dt history reads, and the tier's runner-minutes, their sum")
