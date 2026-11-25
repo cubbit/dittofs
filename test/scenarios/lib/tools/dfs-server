@@ -32,12 +32,13 @@ start)
         CUR=/etc/dittofs/admin.first-password
         tail -n 1 /etc/dittofs/init.out >"$CUR"
     fi
+    IN=
     for _ in $(seq 1 60); do
-        dfsctl login --server "http://$API" --username admin --password-file "$CUR" >/dev/null 2>&1 && break
+        dfsctl login --server "http://$API" --username admin --password-file "$CUR" >/dev/null 2>&1 && IN=1 && break
         kill -0 "$PID" 2>/dev/null || { echo "dfs-server: dfs exited before admin signed in, see $LOG" >&2 && exit 1; }
         sleep 1
     done
-    dfsctl login --server "http://$API" --username admin --password-file "$CUR" >/dev/null
+    test -n "$IN" || dfsctl login --server "http://$API" --username admin --password-file "$CUR"
     if test "$CUR" != "$PW"; then
         head -c 24 /dev/urandom | base64 >"$PW.new"
         dfsctl password change --current-password-file "$CUR" --new-password-file "$PW.new"

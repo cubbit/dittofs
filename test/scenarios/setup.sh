@@ -73,12 +73,34 @@ rclone mkdir s3:dittofs
 echo '{"access_key_id":"test","secret_access_key":"test-secret"}' >/etc/dittofs-s3.credential
 
 # DittoFS: its configuration, an API on a port the kernel picks (dfs-server reads it from the log),
-# and the passphrase of the storage key dfs init creates. dfs init prints the administrator's
-# password, which dfs-server's first start signs in with and changes.
-# decision: the protocol key is a copy of the storage key, since no command makes a key file and a
-# throwaway installation needs no second secret. Make a key of its own once a command makes one.
-mkdir -p /etc/dittofs /var/lib/dittofs/journal ~/.config/dittofs
+# and its two wrapping keys under one passphrase. No command makes a key file, so a few lines of Go
+# do, joining the read-only checkout through an overlay so they build against its go.mod. dfs init
+# prints the administrator's password, which dfs-server's first start signs in with and changes.
+mkdir -p /etc/dittofs /var/lib/dittofs/journal ~/.config/dittofs /tmp/keygen
 head -c 24 /dev/urandom | base64 >/etc/dittofs/passphrase
+cat >/tmp/keygen/main.go <<'KEYGEN'
+package main
+
+import (
+	"os"
+
+	"github.com/cubbit/dittofs/pkg/keyprovider"
+)
+
+func main() {
+	for _, path := range os.Args[2:] {
+		key, err := keyprovider.GenerateKeyFile(os.Args[1])
+		if err != nil {
+			panic(err)
+		}
+		if err := os.WriteFile(path, key, 0o600); err != nil {
+			panic(err)
+		}
+	}
+}
+KEYGEN
+echo '{"Replace": {"/src/cmd/scenario-keygen/main.go": "/tmp/keygen/main.go"}}' >/tmp/keygen/overlay.json
+(cd /src && GOFLAGS=-buildvcs=false GOMODCACHE=/cache/go/mod GOCACHE=/cache/go/build /opt/go/usr/local/go/bin/go run -overlay /tmp/keygen/overlay.json ./cmd/scenario-keygen "$(cat /etc/dittofs/passphrase)" /etc/dittofs/storage.key /etc/dittofs/protocol.key)
 cat >~/.config/dittofs/config.yaml <<CONFIG
 node: { id: $(cat /proc/sys/kernel/random/uuid) }
 journals: [ { path: /var/lib/dittofs/journal } ]
@@ -88,7 +110,7 @@ keys:
 api: { listen: ['127.0.0.1:0'] }
 CONFIG
 DITTOFS_ENCRYPTION_PASSPHRASE="$(cat /etc/dittofs/passphrase)" dfs init >/etc/dittofs/init.out
-cp /etc/dittofs/storage.key /etc/dittofs/protocol.key
+DITTOFS_ENCRYPTION_PASSPHRASE="$(cat /etc/dittofs/passphrase)" dfs config validate
 dfs-server start
 
 # Share test (path /test, namespace prefix test/ on bucket dittofs) for user tester (uid and group

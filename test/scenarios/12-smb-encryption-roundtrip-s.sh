@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # A namespace that encrypts, under the storage key setup's dfs init made and its passphrase. No
 # plaintext may reach the bucket, a cold read must round-trip, also after a restart, and with a wrong
-# passphrase the server must refuse to serve instead of writing unencrypted (RFC 5 §2.7, §5.1).
+# passphrase the server must refuse to start instead of writing unencrypted (RFC 5 §2.7, §5.1).
 # Passed with v1's per-store key file: no marker reached the bucket, and the cold reads matched before
 # and after a restart. With a wrong passphrase the server started, but the share was not served: a tree
 # connect got NT_STATUS_BAD_NETWORK_NAME, the log said the key provider failed, and the bucket was
-# unchanged. The storage key is now the installation's, so a wrong passphrase may stop the start.
+# unchanged. The storage key is now the installation's, so a wrong passphrase stops the start: dfs
+# exits with "the storage key: keyprovider: unwrap failed" before it listens.
 
 # The store, a namespace that encrypts, the share and a file with a plaintext marker in it
 rclone mkdir s3:enc
@@ -26,22 +27,17 @@ dfs-server stop
 dfs-server start
 smbclient //127.0.0.1/enc -c 'get m.bin /tmp/back2.bin'
 
-# A wrong passphrase: no read, no write, nothing new in the bucket
+# A wrong passphrase: the start must fail on the storage key, so nothing is served
 dfs-server stop
 dfs-server start DITTOFS_ENCRYPTION_PASSPHRASE=wrong-passphrase >/tmp/wrong.out 2>&1 || echo "exit $?" >/tmp/wrong.rc
-timeout 120 smbclient //127.0.0.1/enc -c 'get m.bin /tmp/back3.bin' >/tmp/read3.out 2>&1 || echo "exit $?" >/tmp/read3.rc
-head -c 1M /dev/urandom >/tmp/w.bin
-timeout 120 smbclient //127.0.0.1/enc -c 'lcd /tmp; put w.bin' >/tmp/write3.out 2>&1 || echo "exit $?" >/tmp/write3.rc
-sleep 10
-rclone size --json s3:enc | tee /tmp/enc1.json
 
 # Outcomes first, then the checks
-cat /tmp/wrong.out /tmp/read3.out /tmp/write3.out
+cat /tmp/wrong.out
 cat /tmp/*.rc 2>/dev/null || true
+grep 'the storage key' /logs/dfs.log || true
 jq -e '.spec.settings["namespace.encrypts"] == true' /tmp/namespace.json
 test "$(cat /tmp/marker.count)" -eq 0
 cmp /tmp/back1.bin /tmp/m.bin
 cmp /tmp/back2.bin /tmp/m.bin
-test -e /tmp/read3.rc
-test -e /tmp/write3.rc
-test "$(jq .count /tmp/enc1.json)" -eq "$(jq .count /tmp/enc0.json)"
+test -e /tmp/wrong.rc
+grep -q 'the storage key' /logs/dfs.log

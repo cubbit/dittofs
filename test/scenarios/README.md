@@ -72,8 +72,8 @@ takes no lock, so it does not block a scheduled run.
   `test`, the default SMB user.
 - SMB on 445 (SMB3) and NFS on 2049: `smbclient //127.0.0.1/test -c 'ls'`,
   `nfs-ls 'nfs://127.0.0.1/test?version=4&uid=1000&gid=1000'`. Another SMB user: `-U bob%bob-secret`.
-- `dfsctl`, logged in as admin, and v1's `dfsctl system drain-uploads`, which waits until every
-  share's pending uploads are done.
+- `dfsctl`, logged in as admin. v1's `dfsctl system drain-uploads`, which waited until every share's
+  pending uploads were done, has no v2 command yet: the scenarios still call it, and fail there.
 - `dfs-store BUCKET`, which creates a remote store on the local S3's bucket and prints its ID; a share
   on it: `N="$(dfsctl namespace create --store "$(dfs-store x)" --setting namespace.prefix=x/ -o json | jq -r .id)"`,
   `dfsctl share create x --path /x --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write`,

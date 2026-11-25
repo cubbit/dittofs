@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Issue #2922: the group owner of a new file over SMB. bob is created with uid 2002 and is the one
-# member of group bob, gid 2002, so the SMB session's GID is 2002 and bob's SMB files belong to it.
-# Before, the session fell back to 1000 (tester's group) without reading the user's own GID.
+# The group owner of a new file over SMB, the same as over NFS. bob, uid 2002, is the one member of
+# group bob, gid 2002, so bob's SMB files must belong to group 2002. v1's bug, a user's own gid with
+# no group membership ignored, cannot recur: a v2 user has no gid of its own, only its groups'.
 # Control: the same user over NFS, whose AUTH_SYS credential carries gid 2002.
 
 dfsctl user create bob --uid 2002

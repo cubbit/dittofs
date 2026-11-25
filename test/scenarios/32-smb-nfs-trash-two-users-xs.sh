@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Issues #2920 and #2921: the recycle bin with two users. The first delete creates #recycle owned by the
 # deleting user, mode 0700, and a delete that cannot be recycled is refused, so every other user's delete
-# then fails. dfsctl trash empty must refuse bob, a viewer, but over SMB a non-admin can still delete
-# from #recycle. The share's trash flags (--enable-trash, --trash-restrict-empty-to-admin) have no
-# setting in the new CLI, nor has dfsctl trash a command, so both wait for the trash to return.
+# then fails. dfsctl trash empty must refuse bob, who is no admin, but over SMB a non-admin can still
+# delete from #recycle. The share's trash flags (--enable-trash, --trash-restrict-empty-to-admin) have
+# no setting in the new CLI, nor has dfsctl trash a command: the refusal is checked to be the trash's,
+# not an unknown command, so the scenario fails there until the trash returns.
 
 dfsctl user create bob --uid 2002 --role viewer
 dfsctl group create bob --gid 2002
@@ -25,10 +26,11 @@ nfs-io unlink 'nfs://127.0.0.1/shared/b2.txt?version=4&uid=2002&gid=2002' || tru
 smbclient //127.0.0.1/shared -c 'ls "#recycle/*"'
 smbclient //127.0.0.1/shared -c 'del "#recycle/t1.txt"' || true
 smbclient //127.0.0.1/shared -c 'ls "#recycle/*"' || true
-XDG_CONFIG_HOME=/tmp/bob dfsctl trash empty /shared --force && echo emptied >/tmp/empty || echo refused >/tmp/empty
+XDG_CONFIG_HOME=/tmp/bob dfsctl trash empty /shared --force >/tmp/empty.out 2>&1 && echo emptied >/tmp/empty || echo refused >/tmp/empty
 smbclient //127.0.0.1/shared -U bob%bob-secret -c 'ls' | tee /tmp/root.ls
 
 test -z "$(grep 'b1\.txt' /tmp/root.ls)"
 test -z "$(grep 'b2\.txt' /tmp/root.ls)"
 smbclient //127.0.0.1/shared -c 'ls "#recycle/t1.txt"'
 test "$(cat /tmp/empty)" = refused
+! grep -q 'unknown command' /tmp/empty.out

@@ -5,9 +5,9 @@
 #      grace 0 still leaves the blocks dedup adopted, since an adoption keeps a block from GC for an
 #      hour (dedupAdoptionMaxAge). An hour after the write, GC must have freed them all.
 #   2. The recycle bin's policies (TR-05): /bin excludes *.tmp, holds at most 3 MiB and keeps entries
-#      for a day. Those policies were v1's share flags and have no setting yet: they return with the
-#      trash, and until then this part has no policy to check. An excluded name is deleted for good
-#      at once. a, b, c and d (1 MiB each) are deleted
+#      for a day. Those policies were v1's share flags, and neither they nor dfsctl trash have a v2
+#      command yet, so this part fails at dfsctl trash list until the trash returns. An excluded
+#      name is deleted for good at once. a, b, c and d (1 MiB each) are deleted
 #      in that order; the reaper's first pass, an hour after the server starts, must evict a alone,
 #      the oldest, and keep b, c and d, which are younger than a day.
 #   3. Journal GC against eviction (BS-13, #2908): /j has a 1 GiB journal. For up to 20 rounds in 50

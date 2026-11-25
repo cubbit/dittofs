@@ -51,6 +51,8 @@ timeout 120 smbclient //127.0.0.1/used -c 'get u.bin /tmp/back.bin' || true
 for f in o1 o2 o3 b1 b2 b3 b4 e1 e2; do echo "== $f $(cat "/tmp/$f.rc" 2>/dev/null || echo accepted)"; cat "/tmp/$f.out"; done
 jq -c '.[].spec.settings' /tmp/stores.json /tmp/namespaces.json
 cat /tmp/workers.json
+# A key the settings table does not know is no refusal of the value: each must be kept or refused on its merits
+! grep -q unknown_key /tmp/o1.out /tmp/o2.out /tmp/o3.out /tmp/b1.out /tmp/b2.out /tmp/b3.out
 jq -e 'any(.[]; .spec.settings["remote.compression"] == "zstd")' /tmp/stores.json || grep -q remote.compression /tmp/o1.out
 jq -e '.spec.value == 4' /tmp/workers.json || grep -q upload_workers /tmp/o2.out
 jq -e 'any(.[]; .spec.settings["namespace.encrypts"] == true)' /tmp/namespaces.json || grep -q namespace.encrypts /tmp/o3.out
