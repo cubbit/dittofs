@@ -156,6 +156,7 @@ func TestTakeAndTakeTxnsShareOneReset(t *testing.T) {
 		t.Fatalf("takeTxns after take = %+v, want none: both read one record", got)
 	}
 }
+
 // TestTxnRecordClassifiesTheStoresOwnKeys builds the store as the bench does,
 // over a record around a real badger, and classifies what the store itself
 // writes: a create writes a file record and an append's existence commit
@@ -183,7 +184,11 @@ func TestTxnRecordClassifiesTheStoresOwnKeys(t *testing.T) {
 
 	_, made := fs.Create(t, fs.Admin, fs.Root, "f", kvstore.Regular(0o644))
 	if got := countOf(rec.takeTxns()); got.size != 1 || got.existence != 0 {
-		t.Fatalf("create: %d size, %d existence transactions, want 1 and 0", got.size, got.existence)
+		t.Fatalf(
+			"create: %d size, %d existence transactions, want 1 and 0",
+			got.size,
+			got.existence,
+		)
 	}
 
 	version := made.Version.Counter()
@@ -211,13 +216,21 @@ func TestTxnRecordClassifiesTheStoresOwnKeys(t *testing.T) {
 	commit(version + 1)
 
 	if got := countOf(rec.takeTxns()); got.size != 1 || got.existence != 0 {
-		t.Fatalf("append: %d size, %d existence transactions, want 1 and 0", got.size, got.existence)
+		t.Fatalf(
+			"append: %d size, %d existence transactions, want 1 and 0",
+			got.size,
+			got.existence,
+		)
 	}
 
 	commit(version + 2)
 
 	if got := countOf(rec.takeTxns()); got.size != 1 || got.existence != 1 {
-		t.Fatalf("overwrite: %d size, %d existence transactions, want 1 and 1", got.size, got.existence)
+		t.Fatalf(
+			"overwrite: %d size, %d existence transactions, want 1 and 1",
+			got.size,
+			got.existence,
+		)
 	}
 }
 
@@ -239,4 +252,29 @@ func countOf(txns []txnKeys) txnCounts {
 	}
 
 	return c
+}
+
+func TestAppendBurstError(t *testing.T) {
+	marks := txnKeys{other: true}
+	size := txnKeys{size: true, other: true}
+
+	for _, tc := range []struct {
+		name    string
+		txns    []txnKeys
+		wantErr bool
+	}{
+		{"nothing committed", nil, false},
+		{"one marks transaction", []txnKeys{marks}, false},
+		{"two marks transactions", []txnKeys{marks, marks}, true},
+		{"one grouped existence commit", []txnKeys{size}, true},
+		{"a marks transaction and a grouped commit", []txnKeys{marks, size}, true},
+		{"a commit per file", slices.Repeat([]txnKeys{size}, 64), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := appendBurstError(tc.txns)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("appendBurstError = %v, want an error: %v", err, tc.wantErr)
+			}
+		})
+	}
 }

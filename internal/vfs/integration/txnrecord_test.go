@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
@@ -131,4 +132,34 @@ func existenceKey(key []byte) bool {
 // committed size, which an existence commit of an append writes.
 func sizeKey(key []byte) bool {
 	return len(key) == fileRecordLen && key[0] == keys.KindF
+}
+
+// appendBurstError checks the transactions committed while the 64 fsyncs of an
+// appending burst ran, in a composition whose existence timer cannot come due
+// in the window. An fsync of appended content waits for no overwrite, so the
+// group commit's mark transaction is at most one, and no transaction may write
+// a file record (a size), the existence commit RFC 8 §15.4's B5 forbids on an
+// fsync's path.
+func appendBurstError(txns []txnKeys) error {
+	var sizes, marks int
+
+	for _, t := range txns {
+		if t.size {
+			sizes++
+		} else {
+			marks++
+		}
+	}
+
+	switch {
+	case sizes > 0:
+		return fmt.Errorf(
+			"%d transactions wrote a file record, want none: no existence commit on an fsync path",
+			sizes,
+		)
+	case marks > 1:
+		return fmt.Errorf("%d transactions wrote no file record, want at most 1 per journal", marks)
+	}
+
+	return nil
 }
