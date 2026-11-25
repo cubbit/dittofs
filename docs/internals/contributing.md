@@ -49,6 +49,7 @@ The Nix flake provides:
 The binaries also run straight from the flake, without a clone:
 
 ```bash
+nix run github:cubbit/dittofs#dfs -- init
 nix run github:cubbit/dittofs#dfs -- start
 nix run github:cubbit/dittofs#dfsctl -- --help
 ```
@@ -110,8 +111,10 @@ go mod download
 # Build
 go build -o dfs cmd/dfs/main.go
 
-# Run with development settings
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+# Initialise an installation (see docs/guide/configuration.md for the file it
+# reads), then run it with debug logging
+./dfs init
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 ```
 
 ## Development Workflow
@@ -129,19 +132,25 @@ go mod download
 ### Running
 
 ```bash
-# Run server with defaults (NFS port 12049, INFO logging)
+# Initialise the installation once: metadata store, journals, admin account.
+# It reads the config file, which names the journals and both wrapping keys.
+./dfs init
+
+# Run the node with the defaults (info logging)
 ./dfs start
 
-# Run with debug logging and custom settings
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+# Run with debug logging
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 
-# Use environment variables for quick config overrides
-DITTOFS_LOGGING_LEVEL=DEBUG DITTOFS_SHUTDOWN_TIMEOUT=60s ./dfs start
+# Sign in to the node's management API
+./dfsctl login --server http://127.0.0.1:8080 --username admin
 ```
 
-This build serves no file protocol: `dfs start` runs only the control-plane
-REST API and metrics. Adapter settings already stored in the control-plane
-database are kept; `DITTOFS_ADAPTERS_*` variables do not configure adapters.
+This build serves no file protocol: `dfs start` runs the management API and
+metrics. An adapter's settings are records under `adapters.<protocol>`, managed
+through the API, never config-file keys or `DITTOFS_ADAPTERS_*` variables; the
+config file holds only the host's bootstrap (see
+[Configuration](../guide/configuration.md)).
 
 ### Pre-commit Hooks
 
@@ -214,17 +223,11 @@ and compare the two with `benchstat`; never against a number from another host. 
 
 ### Adding a New NFS Procedure
 
-1. Add handler in `internal/adapter/nfs/v3/handlers/` or `internal/adapter/nfs/mount/handlers/`
-2. Implement XDR request/response parsing
-3. Build the auth context (NFSv3 handlers call `h.GetCachedAuthContext(ctx)`, which applies share permission and squashing)
-4. Delegate business logic to repository methods
-5. Add the procedure to its dispatch table (for NFSv3, `NfsDispatchTable` in `internal/adapter/nfs/v3/procedures.go`)
-6. Add test coverage
-
-For a complete example, follow READLINK: the handler is `ReadLink` in
-`internal/adapter/nfs/v3/handlers/readlink.go`, its XDR codec is in `readlink_codec.go`
-next to it, and `handleNFSReadLink` in `internal/adapter/nfs/v3/procedures.go` decodes
-the request, calls the handler and encodes the reply.
+v1's NFS handlers are deleted. RFC 20's adapter lives in `internal/adapter/nfs`:
+`wire` decodes, `ops` holds the operation tables, and each operation reaches files
+only through `vfs.Service`, which admits the caller and resolves its identity, so
+a handler builds no auth context of its own. The tables hold no file operation
+yet; [RFC 21's plan](../../.planning/rfc-21-nfs-plan.md) says how they are added.
 
 ### Adding a New Store Backend
 
@@ -257,53 +260,19 @@ code answers `ErrUnavailable`, a retry. The node API answers store codes from it
 
 ### Adding a New Protocol Adapter
 
-Adapters receive a runtime reference and **interact with services, not stores directly**.
+An adapter reaches files only through the `vfs.Service` the node hands it in
+`adapter.Deps`, never a store directly, and keeps to protocol concerns.
 
-1. Create new package in `pkg/adapter/`
-2. Implement `Adapter` interface:
-   - `Serve(ctx)`: Start protocol server
-   - `Stop(ctx)`: Graceful shutdown
-   - `SetRuntime(rt any)`: Receive the runtime reference (provides access to services)
-   - `Protocol()`: Return name
-   - `Port()`: Return listen port
-   - `Healthcheck(ctx)`: Report health from cheap, already-tracked signals
-3. Reach file content only through `vfs.Service`, whose Read, Write and Commit
-   reach the engine
-4. Register in `cmd/dfs/main.go`
-5. Update README with usage instructions
-
-Embed `*adapter.BaseAdapter` for the shared TCP lifecycle (listener bind, accept loop
-with backoff, connection tracking, graceful drain) instead of reimplementing it.
-
-`SetRuntime` takes `any` rather than `*runtime.Runtime` on purpose: the adapter
-interface must not import the runtime package, which imports the adapters. The
-implementation type-asserts:
-
-Example:
-```go
-// pkg/adapter/smb/adapter.go
-type Adapter struct {
-    *adapter.BaseAdapter // holds Registry *runtime.Runtime, set by SetRuntime
-
-    config  Config
-    handler *handlers.Handler
-}
-
-// SetRuntime takes any, not *runtime.Runtime: the Adapter interface lives in
-// pkg/adapter, which must not import the runtime package (the runtime imports
-// the adapters). BaseAdapter.SetRuntime type-asserts and panics otherwise.
-func (a *Adapter) SetRuntime(rtAny any) {
-    a.BaseAdapter.SetRuntime(rtAny) // sets a.Registry
-    rt := rtAny.(*runtime.Runtime)
-
-    // Protocol-specific wiring: hand the runtime to the components that need it.
-    a.handler.Registry = rt
-}
-```
-
-Adapters therefore reach the runtime through `a.Registry` (or a component they wired in
-`SetRuntime`), not through a `rt *runtime.Runtime` field of their own — storing it directly would
-reintroduce the import cycle the `any` parameter exists to avoid.
+1. Create a package under `pkg/adapter/`, with a constructor of the shape of
+   `nfs.New(d adapter.Deps, s settings.NFS) (adapter.Adapter, error)`.
+2. Implement `pkg/adapter`'s `Adapter` interface: `Start`, `Reconfigure`, `Stop`,
+   `Addrs`, `Health` and `Connections`.
+3. Declare its settings shape in `pkg/adapter/settings`, each field's `json` tag its
+   key under `adapters.<protocol>` and its `class` tag its binding class.
+4. Add its slot to the node (`internal/node/adapters.go`), which builds, starts,
+   reconfigures and stops it from its settings.
+5. Build the connection loop on `internal/adapter/core` rather than reimplementing
+   it, and test it against `internal/adapter/adaptertest`.
 
 ## Areas Needing Attention
 

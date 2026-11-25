@@ -642,8 +642,9 @@ When a directory is deleted (REMOVE/RMDIR), any directory delegations on that di
 
 ### Configuration
 
-Directory delegation settings are NFS adapter settings stored in the
-control-plane database; this build has no command to change them:
+These were v1's NFS adapter settings. The v2 adapter's settings
+(`settings.NFS`, under `adapters.nfs`) declare none of them, so no setting
+changes them on this branch:
 
 | Setting | Default | Description |
 | --------- | --------- | ------------- |

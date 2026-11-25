@@ -37,9 +37,8 @@ path.
 
 Implement a custom metadata store when you need:
 
-- **Distributed metadata**: multi-node deployments over a distributed
-  transactional key-value store (TiKV is the preferred one; planned, not
-  implemented yet)
+- **Distributed metadata**: a cluster store other than FoundationDB, which
+  `fdbkv` already implements
 - **Advanced features**: Full-text search, custom indexing, complex queries
 - **Compliance**: Audit logs, versioning, immutability guarantees
 
@@ -66,6 +65,14 @@ is written once, over the ordered transactional key-value contract `kv.KV`
 
 A backend passes `pkg/metadata/kv/kvtest`'s suite (`kvtest.Run`), and the store
 over it `pkg/metadata/kvstore/kvstoretest`'s (`kvstoretest.Run`).
+
+The same store holds the control plane's records: shares, export policies,
+principals, grants, settings, secrets, operations, idempotency and audit
+records, and each node's status. The management API (`internal/node/api`)
+writes them through the store's control-plane view, one transaction per
+write, and the node (`internal/node`) reads them to reconcile. So a backend
+carries the control plane too, with no database beside it, and
+`kvstoretest` covers those records with the file metadata.
 
 ## The journal (local tier)
 
