@@ -105,8 +105,7 @@ guide's remote store section.
 ### 1.3 Names used here
 
 - **E1**, epic 1, interfaces: `pkg/remote`'s contract and the codec's surface, frozen at S1.
-- **E2**, epic 2, conformance suite and test foundations: the in-memory store and its fault
-  wrapper.
+- **E2**, epic 2, conformance suite and test foundations: the in-memory store.
 - **E3**, epic 3, fault transport and LocalStack: `s3fault`'s `Answer`.
 - **E4**, epic 4, S3 data path, errors and client: `NewClient`, `ClientConfig`, `Deps`, the
   `Recorder`.
@@ -156,7 +155,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 | R2 | The namespace declares, at namespace scope, `remote.prefix` (bound, required) and `remote.block_format_version` (next write, the newest version every node reads) | MUST | RFC 13 Appendix B, §5.4; RFC 4 §3.5 | T7.1, T7.2 |
 | R3 | Every key has a default or is required; a record that omits `remote.endpoint`, `remote.bucket`, `remote.credential` or `remote.prefix` is refused | MUST | RFC 13 §4.2 | T7.2 |
 | R4 | A change to `remote.bucket` or `remote.prefix` is refused while the store or namespace holds content | MUST | RFC 13 §5.1 | T7.2 |
-| R5 | The keys that say how to reach content (endpoint, credential, region, trust roots, bucket, prefix) are marked as the store's location, so a change is refused until the capability check proves the claim at the new location; a first value is no change | MUST | RFC 13 §5.2, Appendix B ("under §5.2") | T7.2 |
+| R5 | The keys that name where content is or the credential that reaches it (endpoint, credential, bucket, prefix) are marked as the store's location, so a change is refused until the capability check proves the claim at the new location; a first value is no change. Region and trust roots are live and carry no mark (D13) | MUST | RFC 13 §5.2, Appendix B | T7.2 |
 | R6 | `remote.credential` holds a reference to a secret of the remote credential kind, never a value; a plaintext in its place is refused, and no refusal prints it | MUST, MUST NOT | RFC 13 §6, §7 | T7.2 |
 | R7 | No key sets a client's connection limit, and no key skips certificate verification | invariant | RFC 4 §4.10, C.3; RFC 13 Appendix B (`remote.trust_roots`) | T7.2 |
 
@@ -200,7 +199,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 | R26 | The codec exports `codec_chunks_verified_total`, `codec_measuring_passes_total`, `codec_verify_failures_total` by `kind` (`hash`, `name`, `version`, `malformed`) and `codec_seconds` by direction, labelled by store | MUST | RFC 4 §4.12 | T7.5 |
 | R27 | Each event is counted in one place: a recorder adds to a series only what its component reported | MUST | RFC 4 §4.12; RFC 25 §2.7 | T7.4, T7.5 |
 | R28 | Names are `<component>_<what>[_<unit>][_total]` under RFC 4's prefixes, in seconds and bytes; a label is a closed set or an entity label, and none is forbidden | MUST, MUST NOT | RFC 25 §2.1, §2.2, §2.4 | T7.4, T7.5 |
-| R29 | A counter an alert reads is exported from start, at zero, for every value of its closed labels: `codec_verify_failures_total` for each `kind` | MUST | RFC 25 §2.3 | T7.5 |
+| R29 | A counter an alert reads is exported from start, at zero, for every value of its closed labels: `codec_verify_failures_total` for each `kind` | MUST | RFC 25 §2.3, §7; RFC 4 §4.12 | T7.5 |
 | R30 | A series is resolved once, when its entity is added; recording is an add or an observe, with no label lookup and no allocation | invariant | RFC 25 §2.9 | T7.4, T7.5 |
 | R31 | When an entity is removed, the component that created its series deletes them | invariant | RFC 25 §2.4 | T7.4, T7.5 |
 | R32 | The one alert is a ticket on `codec_verify_failures_total` less the failures the syncer's re-get recovered (`syncer_retries_total`, `reason` = `verify`), and it names series that exist | MUST | RFC 25 §7; RFC 4 §4.12; RFC 3 §2.12 | T7.6 |
@@ -236,8 +235,8 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   type Settings struct {
   	Endpoint     string `json:"endpoint" class:"live" location:"store"`
   	Credential   string `json:"credential" class:"live" location:"store"` // a secret's reference
-  	Region       string `json:"region" class:"live" location:"store"`
-  	TrustRoots   string `json:"trust_roots" class:"live" location:"store"` // PEM; "" is the system's
+  	Region       string `json:"region" class:"live"`
+  	TrustRoots   string `json:"trust_roots" class:"live"` // PEM; "" is the system's
   	Bucket       string `json:"bucket" class:"bound" location:"store"`
   	StorageClass string `json:"storage_class" class:"next write"`
   }
@@ -263,7 +262,8 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   func (s Settings) Validate() error // refuses 0; an unknown version is the gate's and New's (E1 D5)
   ```
 
-  `Validate` never prints `Credential`. The architect pass proposed the tagged structs in the
+  `Validate` never prints `Credential`, which is a `string` because `s3` may not import
+  `pkg/metadata/entity` (rule 7) and `SecretRef` reads a string field as a reference. The architect pass proposed the tagged structs in the
   content wiring, with the packages exporting pure parsers; it was not taken, since the rules
   would then be the content wiring's, or need one export each to stay the component's. Prior art:
   the RFC 2 plan's `pkg/carver/section` (plain values, no `pkg/settings`); `internal/identity/settings.go`.
@@ -411,8 +411,18 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   key fails every store test. The `ponytail:` there keeps its audit and ETag ceiling and loses its
   "once it names them" clause. `pkg/bootstrap/keyspec.go`'s `settingKeys` is Appendix B's list,
   held to it by `TestSettingKeysMatchAppendixB`, so it gains the new keys when the appendix reaches
-  `feat/storage-v2`. `cmd/dfsctl/internal/clisuite/stores.go`'s refusal of `remote.region` as an
-  unknown key becomes a refusal of an undeclared one. Prior art: none needed.
+  `feat/storage-v2`. API tests that leaned on `remoteFields`' bound `Target` use `remote.bucket`,
+  the real section's bound key. The CLI suite's refusal of `remote.region` as an unknown key
+  (`cmd/dfsctl/internal/clisuite/stores.go`) runs on the node's own table, so it changes when epic
+  21 adds `Sections` to `newTable`, in that change. Prior art: none needed.
+- **D13. Region and trust roots are live, not locations.** RFC 13 §5.2 names the fields that say
+  how to reach content: "a store's endpoint, and its credential"; the bucket and the prefix are
+  where it is. A region or a trust root changes how a request to the same endpoint is signed or
+  verified, and the next open's capability check runs under it anyway. Marking them would also
+  refuse every non-default value: `pkg/settings` counts a first value as no change only for a
+  required key (`gates.go`), and both have defaults, so `remote.region=fr-par` would be refused
+  `ErrUnproven` at the store's creation. Appendix B's "under §5.2" on their rows reads as "a
+  change is allowed, as §5.2 allows", which this keeps. Prior art: none needed.
 
 ## 5. Target tree
 
@@ -435,7 +445,6 @@ internal/node/
 internal/node/api/
   res_stores.go        T7.2  the ponytail reworded (D12)
   writepath_test.go    T7.2  the real remote section in place of remoteFields
-cmd/dfsctl/internal/clisuite/stores.go  T7.2  the unknown-key case moved off remote.region
 pkg/bootstrap/keyspec.go                T7.2  settingKeys with Appendix B's remote keys
 docs/internals/rfcs/rfc-13-configuration.md  T7.2  Appendix B's remote rows, as develop has them
 docs/guide/configuration.md             T7.3  the remote store section
@@ -477,14 +486,14 @@ docs/guide/configuration.md             T7.3  the remote store section
 - **Deliverables:** `internal/node/content/remote_settings.go`: `remoteSettings` and its `Validate`
   against `carver.MinBlockTarget` and `carver.MaxBlockTarget`, `Sections` (D3) with D6's
   `decision:` at the format version's default. `internal/node/appendixb_remote_test.go`. D12's
-  edits: the API tests' table, the `ponytail:` in `res_stores.go`, the CLI suite's unknown-key
-  case, `settingKeys`, and RFC 13 Appendix B's remote rows brought to `feat/storage-v2` from
+  edits: the API tests' table, the `ponytail:` in `res_stores.go`, `settingKeys`, and RFC 13 Appendix B's remote rows brought to `feat/storage-v2` from
   `develop`. Consumed by T7.3 and by RFC 8 offload plan epic 21, which adds `Sections` to
   `newTable`.
 - **Acceptance criteria:**
   - `compareAppendixB` over a table of `Sections()` reports no failure, and the section declares
     exactly the seven and two keys of R1 and R2.
-  - Through `Check`: a record missing each required key refused; `remote.block_target` 512 KiB and
+  - Through `Check`: a record missing each required key refused; `remote.region` set to `fr-par`
+    at the store's creation accepted; `remote.block_target` 512 KiB and
     128 MiB refused naming the key and the range, 1 MiB and 64 MiB accepted; a change of
     `remote.bucket` or `remote.prefix` with content refused as bound; a change of each location
     key, those two without content among them, refused `ErrUnproven`, and its first value accepted; a plaintext in
@@ -503,7 +512,7 @@ docs/guide/configuration.md             T7.3  the remote store section
   missing tag or option, R3–R5, R16, R17). R19 has no test while the block format has one
   version, since a default of 1 and one that follows the binary's newest read the same: D6's
   `decision:` and a review rule hold it until a second version lands. The API's store tests and
-  the CLI suite pass on the real section. No double.
+  pass on the real section. No double.
 - **Rules:** rule 9: D6's `decision:`; rule 11: `Sections` is the one export.
 
 ### T7.3 The conversions and the configuration guide
@@ -528,13 +537,13 @@ docs/guide/configuration.md             T7.3  the remote store section
     `codec.MaxHeaderLen` answers known, and for `Max + 1` unknown.
 - **Tests:** in `unit` for the mapping and the credential cases, their errors and a test `slog`
   handler's records grepped for the access key and the secret (catches a decoder's text passed on,
-  R20, R21); in `integration` the handshake against `httptest.NewTLSServer` on `127.0.0.1:0`, the
+  R20, R21); in `unit` the handshake against `httptest.NewTLSServer` on `127.0.0.1:0`, the
   handler counting the requests that reached it, through `NewClient` and E5's `Open`, which fails
   past the handshake on a listener that is no S3 service (catches roots parsed and dropped, R12);
   a `remoteSettings` with `Region` `eu-west-1`, the signed request's credential scope read by that
   handler (R13); the range test (catches the settings' range and the codec's known set drifting
   apart, R18). No double.
-- **Rules:** rule 3: the secret grep; rule 8: a real TLS handshake.
+- **Rules:** rule 3: the secret grep; rule 8: a real TLS handshake, which needs no LocalStack.
 
 ### T7.4 The remote store's recorder
 
@@ -577,16 +586,16 @@ docs/guide/configuration.md             T7.3  the remote store section
   configuration, and T7.6.
 - **Acceptance criteria:**
   - After construction, `codec_verify_failures_total` reads 0 for each of the four kinds.
-  - A block put and got whole through `codec.Store` over E2's in-memory store, then got with a
-    byte flipped, shows the verified chunks, one `hash` failure and an `encode` and a `decode`
-    observation of `codec_seconds`.
+  - A block put and got whole through `codec.Store` over E2's in-memory store, then got again
+    after one byte of the stored object is flipped, shows the verified chunks, one `hash` failure
+    and an `encode` and a `decode` observation of `codec_seconds`.
   - Recording allocates 0 per call; `close` leaves no series with its `store`.
 - **Tests:** at the scrape, with the codec as the consumer of the recorder: the four zero series
   before any call (catches a counter that first appears at 1, which a rate cannot see, R29); the
-  round trip and the flipped byte through E2's fault wrapper (catches a kind or a direction mapped
-  wrong, or a count made twice, R26, R27); label names against D9 (R28); `AllocsPerRun` in
-  `remote-allocs` (R30); `close` (R31). Doubles: E2's in-memory store (kind 2) and its fault
-  wrapper (kind 3).
+  round trip, then the stored object's byte flipped by a raw `Put` of the altered bytes to the
+  in-memory store under the same name (catches a kind or a direction mapped wrong, or a count made
+  twice, R26, R27); label names against D9 (R28); `AllocsPerRun` in `remote-allocs` (R30); `close`
+  (R31). Doubles: E2's in-memory store (kind 2), written directly, no wrapper.
 
 ### T7.6 The alert rule
 
