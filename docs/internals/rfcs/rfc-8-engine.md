@@ -2152,7 +2152,7 @@ package workqueue // pkg/workqueue
 type Key struct {
 	Tenant TenantID // the engine's: a shard; GC's: a namespace
 	Kind   uint8    // the engine's: offload, removal or prune
-	ID     uint64   // the engine's: a file
+	ID     [16]byte // the engine's: a file ID (RFC 16's 16-byte FileID), as it is
 }
 
 type Item struct {
