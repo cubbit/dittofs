@@ -582,7 +582,7 @@ the same three methods as the engine's `Clock`, declared beside its `Deps`.**
   Upload(ctx context.Context, name remote.Name, size int64, attempt func(ctx context.Context, m remote.Meter) error) error
   ```
 
-  RFC 4's `codec.Store.NewPut(name, src)` builds `attempt`. The closure holds the put's measured
+  RFC 4's `codec.Store.NewPut(name, nonce, pin, src)` builds `attempt`. The closure holds the put's measured
   lengths and checksum across calls, drops them after `ErrCorrupt`, and hands the ranges and
   census to the caller once a call succeeds (RFC 4 §4.3). `Small` already had this shape.
 - The syncer then holds no put state at all: the former `Measure`, its lock, `Stored`, `Descriptor`

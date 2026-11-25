@@ -419,10 +419,14 @@ same numbers for other points.
   contract and the codec's encode and decode calls (D3), reviewed by the team and by the
   authors of the RFC 3 and RFC 8 offload plans, whose code consumes them. The RFC 3 plan's D8
   fixes the shape: RFC 3's `Store` is `codec.Store`'s `Get` and `Health`, and `Upload` runs the
-  `Attempt` of the `Put` that `codec.Store.NewPut(name, src)` builds, with a `remote.Meter` (D3).
+  `Attempt` of the `Put` that `codec.Store.NewPut(name, nonce, pin, src)` builds, with a `remote.Meter` (D3).
   RFC 4 §1.2, §4.1 and §4.3 give it as RFC 3 §1.3 at #5530 uses it, so S1 waits on nothing
-  outside this plan but that pull request's text; the follow-up that amends RFC 4 merges with
-  #5530 or after it. Epics 2 and 6 start here, and so does the keys half of epic 7.
+  outside this plan but that pull request's text and the root `pkg/transform`: the codec's
+  surface (epic 1's T1.3) names its `Chain`, `Attempt` and `Encoded`, so S1 follows RFC 8
+  offload plan S1d, the RFC 5 plan's epic 1. The follow-up that amends RFC 4 merges with #5530
+  or after it. Epics 6 and the keys half of epic 7 start here. Epic 2 and the RFC 3 plan's
+  syncer need only `pkg/remote`'s contract (epic 1's T1.1), so they start once it lands, without
+  waiting for S1d.
 - **R4-S2 🔀 Suite and in-memory store in CI** (end of epic 2). The conformance suite runs green
   against the in-memory store in `unit`. Epics 3 and 4 start here.
 - **R4-S3 🔀 Store and codec complete** (epics 3 to 6 done). Every row of RFC 4 §7.1 and §7.3
