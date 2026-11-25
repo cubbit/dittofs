@@ -10,7 +10,9 @@ body, is in `.github/instructions/pr-commenting.instructions.md`.
 
 A point may block only against the repository's own record, read on the PR's
 base branch. A passage the PR itself edits is under review, not authority for
-it. Cite the file and line:
+it, and a base passage the PR replaces on purpose, saying so in its
+description, is not a contradiction: review the new text against the rest of
+§1 instead. Cite the file and line:
 
 - **`docs/internals/rfcs/*.md`**: the RFCs are the design authority. When a
   PR changes behavior or a ruling, an RFC section it makes false is in
@@ -45,7 +47,8 @@ these two, *with the evidence quoted*:
    that is not a registered known failure (`CLAUDE.md`, "Writing tests").
    Name the failing path. A test the reviewer wrote is a break when it fails
    on the PR's head, checks what a §1 source or the PR itself claims, and
-   either passes on the base or checks a fix the PR claims to make.
+   either passes on the base, or checks behaviour the PR adds or a fix it
+   claims to make.
    A security hole, or a way to take a node down or exhaust its resources,
    names only its class in a public thread. Its path and evidence go to a
    maintainer privately, as `docs/guide/security.md` asks, never into a public
@@ -71,7 +74,8 @@ and the reviewer still wants becomes a follow-up issue (§4). A suggestion
 never blocks a merge.
 
 A file the PR only moves or renames is reviewed as a move, not as new text.
-Check with `git diff -M --color-moved` that its content did not change, and
+Check with `git diff -M --summary <base>...<pr-head>` that it shows as a
+`rename ... (100%)`, anything less being an edit to review, and
 that every reference to the old path follows it.
 
 ## 3. Rounds: review the delta, not the PR again
@@ -80,7 +84,9 @@ that every reference to the old path follows it.
   review names on GitHub. Your next round covers only what changed since:
   `git diff <approved-sha>..<pr-head>`. If the PR was rebased since, use
   `git range-diff <approved-base>..<approved-sha> <base>..<pr-head>`, where
-  `<approved-base>` is `git merge-base <base> <approved-sha>`. The base's own
+  `<approved-base>` is the commit just below the PR's own commits at the
+  approved SHA (`<approved-sha>~<n>` for its `n` commits), not a merge-base,
+  which falls below a parent PR's rewritten commits on a stack. The base's own
   commits then stay out of the delta. Outside the delta, two things may
   still block: a break (§2.2), and a contradiction the delta creates,
   wherever its other side lives. Any other point outside the delta is a
@@ -99,14 +105,15 @@ that every reference to the old path follows it.
   reviewer settle what is left in a quick live review, as
   `pr-commenting.instructions.md` proposes. What the live review does not
   settle goes to standup. The same reviewer reviews the head that carries
-  what they settled, as a delta limited to the settled points, and approves
-  it.
+  what they settled, reviews any other change in that head as an ordinary
+  delta, and approves it once nothing sent to standup is still open.
 
 ## 4. Reviews never add scope to an open PR
 
 A requirement, test, metric or subtask raised in review, even a good one,
 cannot be required of the PR under review unless a rule in §1 already
-requires it. It becomes a follow-up issue labelled `follow-up` and with the
+requires it. If the author leaves it out and the reviewer still wants it, it
+becomes a follow-up issue labelled `follow-up` and with the
 RFC's or epic's label (for example `rfc-20-epic-6`). The reviewer who raised
 the point files it before approving and links it in the thread. An agent
 reviewer drafts it for the person who runs it, who files it. Standup
