@@ -473,7 +473,7 @@ A suggestion only: one pull request per subtask works as well.
   E3, which builds the first opener and the first rows. It stays here: the RFC 3 plan gives the
   frame to this epic, its surface is frozen at S2 for RFC 8 offload plan epic 21 and for E4 and
   E6 on the other track, and its skip rule is tested on its own. Moving it would cut this epic to
-  5 man-days and add about 1.5 to E3.
+  5.5 man-days and add about 1.5 to E3.
 - **E3's idle hook must count a worker parked in `Link` as blocked** (D5). A worker waiting on
   the `TestClock` inside a store call is blocked on time, which only the hook can move; a hook
   that watches only the pools' states never sees it idle. E3's breakdown states this contract.
