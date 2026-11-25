@@ -58,14 +58,22 @@ metadata:
 journals:
   - path: /var/lib/dittofs/journal
 keys:
+  protocol:
+    kind: local
+    local:
+      file: /var/lib/dittofs/protocol.key
   storage:
     kind: local
     local:
       file: /var/lib/dittofs/storage.key
 ```
 
-`dfs init` refuses a config without `node.id` or `metadata.badger.path`. Each
-journal's directory must exist before `dfs init` runs. The storage key file is
+`dfs init` refuses a config without `node.id`. Each journal's directory must
+exist before `dfs init` runs. No `dfs` command creates the protocol key file:
+write it before `dfs init` with the helper
+[Encryption: local key files](encryption.md#local-key-files) shows. The node
+seals NT hashes and other secrets under it, so without it `dfsctl user
+set-password` and a directory's bind credential are refused. The storage key file is
 created by `dfs init`, wrapped under the passphrase in
 `DITTOFS_ENCRYPTION_PASSPHRASE`, which `dfs start` needs too. Copy the key file
 off the host: losing it or the passphrase loses the data.

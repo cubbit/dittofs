@@ -507,8 +507,7 @@ protocol carried it. Its fields:
 
 ### Guest Sessions
 
-A failed logon is refused and gets no session: DittoFS never maps a failed sign-in
-to guest.
+A failed logon is refused; it never falls back to guest.
 
 ### Keytab
 

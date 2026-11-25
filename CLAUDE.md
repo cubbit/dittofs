@@ -115,19 +115,23 @@ replaces v1's Runtime, whose jobs now have three owners:
   component.
 - **The management API** (`internal/node/api`, wire types in `pkg/node/apiv1`) is the one door
   for every change. It writes records, with their audit record, in one transaction through the
-  store's control-plane view, and never calls a component. `dfsctl` is only its client.
-- **The filesystem service** (`vfs.Service`, `internal/vfs`) is the one entrypoint for file
-  operations. Adapters and tests reach files and the engine only through it.
+  store's control-plane view, and never changes a component: it reads their progress and
+  health and, for sign-in and a domain join, calls the identity server. `dfsctl` is only its client.
+- **The filesystem service** (`vfs.Service`, `pkg/vfs`, implemented in `internal/vfs`) is the
+  one entrypoint for file operations. Adapters reach files and the engine only through it.
 
-v1's share gates map onto v2 owners. Their adapter halves are pending their owner under RFC 20's
-plan (RFC 21's for NFS), since no adapter serves a file operation yet:
+v1's share gates map onto v2 owners; each gate's adapter half waits on RFC 20's plan (RFC 21's
+for NFS):
 
 - `CheckShareAccess` (flavor, Kerberos level, netgroup allowlist): `admit.Check`
   (`internal/vfs/admit`), the share's security minimums and client rules, run by the service's
   admission on every call.
 - `shareEntryStatus` (NFSv4's PUTFH and junction-LOOKUP gate): none at entry. The service admits
-  every call to the share its handle names (`admitHandle`, `internal/vfs/admission.go`) and owns
-  the pseudo-filesystem (`internal/vfs/pseudofs`), so no handle-entry path skips admission.
+  the share each handle names on every call that takes one (`admitHandle`,
+  `internal/vfs/admission.go`) and owns the pseudo-filesystem (`internal/vfs/pseudofs`).
+- The per-operation flavor and share checks (`CheckExportAccess`, `refuseCurrentFHAccess`,
+  SMB's `prepareDispatch`) and the `*metadata.AuthContext` each operation carried: the same
+  admission on every call, over the caller a `vfs.Call` carries.
 - `ApplyIdentityMapping` (squash): the identity server's `Resolve` (`internal/identity/resolve.go`),
   which maps and squashes the caller on the share after admission.
 - `SquashMode.RootKeepsAdmin`: dropped. Admin on a share comes only from a share grant (RFC 18

@@ -238,20 +238,12 @@ an encrypted session.
 - **`required`**: only encrypted SMB 3.x clients can connect. SMB 2.x clients are rejected at
   `NEGOTIATE`. Recommended for production with sensitive data.
 
-**Per-share encryption:** individual shares can require encryption via `--encrypt-data`
-(`dfsctl share export-policy update <share> --smb-encrypt`). This forces encryption on that tree regardless of the
+**Per-share encryption:** individual shares can require encryption with
+`dfsctl share export-policy update <share> --smb-encrypt`. This forces encryption on that tree regardless of the
 global mode.
 
-**Recommended production YAML:**
-
-```yaml
-adapters:
-  smb:
-    encryption:
-      encryption_mode: required   # reject SMB 2.x; encrypt all SMB 3.x sessions
-    signing:
-      required: true              # reject unsigned messages
-```
+These are SMB adapter settings, records under `adapters.smb`, not keys of the
+config file, which refuses them; the API does not declare them yet.
 
 See [`../internals/security-model.md`](../internals/security-model.md) for cipher/key derivation
 internals and the full transport security comparison table.
@@ -544,7 +536,7 @@ smbclient -k //server.example.com/export
 - [ ] Use read-only exports where writes are not needed
 - [ ] Keep the management API on loopback, or give it a certificate (`api.tls.*`)
 - [ ] Give each operator an API account with the least role it needs, and read the audit (`dfsctl audit list`)
-- [ ] Set keytab permissions to `600`, owned by the DittoFS process user
+- [ ] Delete the keytab file once it is imported
 - [ ] Enable Prometheus metrics and monitor failed authentication attempts
 - [ ] Keep DittoFS updated; apply patches promptly
 

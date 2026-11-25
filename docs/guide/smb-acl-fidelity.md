@@ -24,7 +24,7 @@ Code paths referenced:
 | Read-side DACL synthesis | `SynthesizeWindowsDefault`, `SynthesizeFromMode` | deleted with the v1 store |
 | SD write (parse) | `ParseSecurityDescriptorWithOptions`, `parseDACL`, `parseACEs` (shared DACL/SACL) | `internal/adapter/smb/handlers/security.go` |
 | SET_INFO Security | `setSecurityInfo`, `checkSetInfoSecurityAccess` | `internal/adapter/smb/handlers/set_info.go` |
-| SID derivation | `UserSID`, `GroupSID`, `UIDFromSID`, `GIDFromSID`, `PrincipalToSID`, `SIDToPrincipal` | deleted with the v1 control plane; a principal's SID is now stored on its record, a directory SID or a RID appended to the installation's domain SID (`pkg/metadata/entity`) |
+| SID derivation | `UserSID`, `GroupSID`, `UIDFromSID`, `GIDFromSID`, `PrincipalToSID`, `SIDToPrincipal` | deleted; a principal's SID is stored on its record (`pkg/metadata/entity`) |
 | Generic-mask expansion | `ExpandGenericMask` | deleted with the v1 store |
 | Inheritance | `ComputeInheritedACL`, `PropagateACL`, flag translation | deleted with the v1 store |
 | Storage | `FileAttr.ACL` / `SetAttrs.ACL` | deleted with the v1 store |
@@ -161,7 +161,7 @@ project memory):
   only for principals with no directory entry.
 - **AD / Kerberos SMB.** `alice@REALM` → uid 10001 verified live against an
   AD-DC over Kerberos-bound SMB (idmap_rid SID→UID), confirming the
-  domain-SID derivation in `mapper.go` end-to-end for the local-domain case.
+  domain-SID derivation of v1's SID mapper end-to-end for the local-domain case.
 - **smbtorture `smb2.acls`.** The SD build/parse, inheritance
   (INHERITANCE/INHERITFLAGS), GENERIC expansion, and AUTO_INHERITED
   canonicalization paths are exercised by the SMB conformance suite (see

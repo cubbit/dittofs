@@ -4,7 +4,7 @@ This document provides a deep dive into DittoFS's architecture, design patterns,
 
 > **On this branch no file protocol is served.** The node builds the NFS and SMB
 > adapters of [RFC 20](rfcs/rfc-20-adapters.md) over `vfs.Service`, but their
-> operation tables are empty (see [Data path](#data-path)). The adapter
+> operation tables hold no file operation (see [Data path](#data-path)). The adapter
 > sections below that describe NFS and SMB state machines describe the protocol
 > design, not code this branch runs.
 
@@ -67,19 +67,23 @@ else.
 
 **1. The node** (`internal/node`)
 - `node.New` builds every component once from the host's bootstrap
-  (`pkg/bootstrap`): the metadata store's KV, the engine, the identity server,
-  the filesystem service, the API and the adapters.
+  (`pkg/bootstrap`) and the metadata store's KV, which `dfs start` opens and
+  hands it: the store over the KV, the engine, the identity server, the
+  filesystem service, the API and the adapters.
 - `Start` runs its steps in order: refuse a journal of another installation, open the listeners,
   register the node, read the records, start the engine, the identity server,
   the filesystem service and the operation runner, reconcile once, then start
   the adapters and the reconcile loop. Readiness turns `ready` after the last
   step. `Stop` reverses it.
-- Reconcile reads the records each second and applies each change by its
-  binding class ([RFC 13](rfcs/rfc-13-configuration.md) §5): a share's storage
-  binding, an adapter started or drained, a live setting. The node writes one
+- Reconcile reads the generation counters each second, re-reads what changed
+  and applies it by its binding class ([RFC 13](rfcs/rfc-13-configuration.md)
+  §5): a share's storage binding, a live setting, and, once the adapters'
+  section is declared, an adapter started or drained. The node writes one
   node-status record saying what it applied and what it refused.
-- The runner (`internal/node/step`) runs long work as operations: a share's
-  removal, a user's or a group's deletion, a domain join, the NT hashes'
+- The runner (`internal/node/runner.go`; a step speaks `internal/node/step`)
+  runs long work as operations, every kind in `pkg/node/apiv1/opkind.go`: a
+  share's, a user's or a group's deletion, a domain join, a machine-password or
+  signing-key rotation, a directory test or name resolution, the NT hashes'
   deletion. An operation's progress is
   its owning component's durable cursor, so it survives a restart.
 - `internal/install` is what `dfs init` and `dfs reset-admin` run over the
@@ -91,8 +95,9 @@ else.
   nodes, operations, the installation and the audit log. `pkg/node/apiv1/openapi.json`
   is generated from the routes (`go run ./cmd/genopenapi`).
 - Every write commits its records and its audit record in one transaction.
-  Updates and deletes carry `If-Match`; creates and actions carry an
-  idempotency key; long work answers `202` with an operation.
+  Updates and deletes carry `If-Match`; creates, deletes and actions carry an
+  idempotency key, but the credential calls take none; long work answers
+  `202` with an operation.
 - Callers are API accounts, `User` records with a role, `admin`, `operator` or
   `viewer` (`internal/node/api/auth`). A role grants nothing on files.
 - Errors are the components' own values, mapped once to a status and a problem
@@ -108,8 +113,10 @@ else.
 - `core` holds the listeners, connections and request pipeline every adapter
   shares; `nfs` and `smb` add their protocol's wire and operation tables.
 - An adapter reaches files only through `vfs.Service` (`pkg/vfs`).
-- Each adapter's settings are records under `adapters.<protocol>`; the node
-  binds each adapter on the bootstrap's `adapters.listen` addresses.
+- An adapter's settings will be records under `adapters.<protocol>` once the
+  node's settings table declares that section; today no record enables an
+  adapter. The node binds each adapter on the bootstrap's `adapters.listen`
+  addresses.
 
 **Filesystem service and identity** (`internal/vfs`, `internal/identity`)
 - `vfs.Service` admits each call (`internal/vfs/admit`: the share's security
@@ -137,7 +144,8 @@ else.
 it, and `vfs.Service`'s Read, Write and Commit read and write file content
 through the engine (`internal/vfs/data.go`). No protocol serves that path yet:
 the RFC 20 NFS and SMB adapters are built on `vfs.Service`, but their operation
-tables are empty, so every NFS procedure answers `PROC_UNAVAIL` and SMB has no
+tables hold no file operation: NFSv3, MOUNT, NLM and NSM answer `PROC_UNAVAIL`,
+NFSv4 decodes COMPOUND with no operation but ILLEGAL, and SMB has no
 file operations until RFC 20's file operations land.
 
 The journal devices come from the bootstrap's `journals`. A file that still
@@ -155,6 +163,9 @@ v1's snapshots are deleted; the snapshot resource waits with
 [RFC 12](rfcs/rfc-12-snapshots.md).
 
 ## Object ownership: a client-supplied identifier is not authorization
+
+The choke points this section and the durable-handle flow below name are v1's
+adapters, deleted on this branch; the rule stands for RFC 20's adapters.
 
 Every protocol here lets a client name a server-side object by an identifier the
 server issued earlier — an SMB `TreeID` or `FileId`, an SMB `AsyncId`, an NFSv4
@@ -225,14 +236,15 @@ management API ([RFC 23](rfcs/rfc-23-control-plane.md)):
    through the store's control-plane view. It never reaches a running
    component.
 2. **The node applies them.** Each node reads the generations each second and
-   applies what changed: a share's binding to the engine, an adapter started
-   or drained, a live setting. A restart-class change waits for the next start.
+   applies what changed: a share's binding to the engine or a live setting. A restart-class change waits for the next start.
 3. **Each node reports.** The node-status record says what each node applied,
    so a setting's read shows how many nodes run it.
 4. **File handles route by share.** A handle encodes the share's ID and the
    file's; the filesystem service resolves the share and its binding from it.
 
-A share is created with its export policy, in a namespace on a remote store:
+A share is created with its export policy, in a namespace on a remote store.
+On this branch no namespace can be created yet (the store's and namespace's
+settings are not declared), so this command cannot succeed:
 
 ```bash
 ./dfsctl share create export --path /export --namespace <namespace-id> --flavor sys --client 0.0.0.0/0=read-write
@@ -353,7 +365,6 @@ DittoFS is designed for high performance through several architectural choices:
 - **Goroutine-per-connection model**: Leverages Go's lightweight concurrency
 - **Buffer pooling**: Reduces GC pressure for large I/O operations
 - **Streaming I/O**: Efficient handling of large files without full buffering
-- **Three-tier storage**: Unified CAS-keyed `Cache` + local disk + remote store for optimal read latency
 - **Zero-copy aspirations**: Working toward minimal data copying in hot paths
 
 ## Why Pure Go?

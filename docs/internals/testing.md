@@ -604,8 +604,8 @@ Table-driven cases suit several inputs to one rule.
 
 **By kind:**
 
-- **Unit:** untagged and fast; `-short` on pull requests. Badger under `t.TempDir()` and
-  Badger in memory are real implementations, so their tests run untagged.
+- **Unit:** untagged and fast; `-short` on pull requests. Badger, under `t.TempDir()` or
+  in memory, is a real implementation, so its tests run untagged.
 - **Integration** (`-tags=integration`, `-p 1`): for a backend the host must provide, such as a
   KMIP server. External systems (a KDC, a domain controller, S3) are tested for real here; their
   parsing and logic are pure functions with unit tests. A missing backend is a skip that names the

@@ -80,8 +80,8 @@ dfsctl adapter set smb --setting port=445
 ```
 
 A port is a setting, not a host fact, so a config file that names
-`adapters.nfs.port` is refused at start. On this branch the API also refuses both
-commands with `unknown_key`, until the node declares the adapters' settings.
+`adapters.nfs.port` is refused at start. On this branch the API refuses both commands
+too ([why](configuration.md#the-management-api)).
 
 Binding a port below 1024 needs privilege. Either run as root, or — preferred —
 grant just the bind capability so the process stays unprivileged:
@@ -108,6 +108,10 @@ The Docker **host** must still not run its own `nfsd` / `smbd` / `rpcbind` on
 those ports — see [step 1](#1-free-the-standard-ports-on-the-host).
 
 #### Kubernetes (operator)
+
+> **Does not run on this branch.** The operator renders v1's config file
+> (`database:`, `controlplane:`, `shutdown_timeout`) and no `node.id`, `journals` or
+> `keys`, which this release's bootstrap refuses.
 
 In-cluster there is no host service to disable, and the pod never needs to bind
 a privileged port: set the adapter ports in the `DittoServer` CR and let the
@@ -172,9 +176,9 @@ scoop install dfsctl    # client CLI
 ```
 
 When installed via the system package managers, the server runs under systemd as the `dfs`
-service, which runs `dfs start` in the foreground; systemd stops it with a
-signal. The unit names no config file, so `dfs start` reads the default path; add
-`--config` or `DITTOFS_CONFIG` in a drop-in to name one. Run `dfs init` once before the first start, with the same config file, handing
+service, which runs `dfs start` in the foreground. The unit names no config file, so
+`dfs start` reads the default path; add `--config` or `DITTOFS_CONFIG` in a drop-in to
+name one. Run `dfs init` once before the first start, with the same config file, handing
 it the admin password with `--admin-password-file` or `--admin-password-env` (see
 [Getting started](getting-started.md#2-initialize-and-start-the-server)). With neither, `dfs init` prints a
 generated password once to its standard output and never to the log, so run it where
@@ -236,6 +240,7 @@ docker run --rm \
   -v ./tls:/config/tls:ro \
   -v dittofs-metadata:/data/metadata \
   -v dittofs-blocks:/data/blocks \
+  -e STATE_DIRECTORY=/data/state \
   -v dittofs-state:/data/state \
   marmos91c/dittofs:latest init --config /config/config.yaml \
   --admin-password-env DFS_ADMIN_PASSWORD
@@ -249,6 +254,7 @@ docker run -d \
   -v ./tls:/config/tls:ro \
   -v dittofs-metadata:/data/metadata \
   -v dittofs-blocks:/data/blocks \
+  -e STATE_DIRECTORY=/data/state \
   -v dittofs-state:/data/state \
   marmos91c/dittofs:latest
 
@@ -400,6 +406,10 @@ image, mount them read-only and name their paths inside the container. A file th
 refused, named, before `dfs` connects.
 
 ## Kubernetes operator
+
+> **Does not run on this branch.** The operator renders v1's config file
+> (`database:`, `controlplane:`, `shutdown_timeout`) and no `node.id`, `journals` or
+> `keys`, which this release's bootstrap refuses. Use the single container above.
 
 DittoFS has an official operator that manages the deployment lifecycle, configuration via
 Custom Resources, persistent volume claims for metadata and block stores, and service

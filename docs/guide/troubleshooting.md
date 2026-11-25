@@ -41,8 +41,7 @@ too; see [Upgrading from v1](upgrading-from-v1.md).
 
 ### Is the server up?
 
-`dfs start` runs in the foreground until it receives SIGINT or SIGTERM. The API
-listener answers two probes without a token, each with one word:
+The API listener answers two probes without a token, each with one word:
 
 ```bash
 curl http://127.0.0.1:8080/health/live    # live, or stalled

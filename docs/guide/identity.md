@@ -227,10 +227,10 @@ Set each field with `dfsctl setting set installation <key> <value>`. Set
 dfsctl setting set installation identity.directory.address ldaps://dc1.dittofs.ad:636
 dfsctl setting set installation identity.directory.base 'DC=dittofs,DC=ad'
 dfsctl setting set installation identity.directory.realm DITTOFS.AD
-dfsctl setting set installation identity.directory.netbios_domain DITTOFS
+dfsctl setting set installation identity.directory.netbios_domain DITTOFSAD   # must differ from identity.netbios_name
 dfsctl setting set installation identity.directory.bind_name 'CN=svc-dittofs,CN=Users,DC=dittofs,DC=ad'
 dfsctl setting set installation identity.directory.bind_credential "$BIND_PASSWORD"
-dfsctl setting set installation identity.directory.trust_roots "$(cat /keytabs/ca.pem)"
+dfsctl setting set installation identity.directory.trust_roots -- "$(cat /keytabs/ca.pem)"   # -- as the PEM starts with dashes
 dfsctl domain test --wait
 ```
 
@@ -517,10 +517,11 @@ Two health conditions report the account:
 
 ## Part D: Kubernetes operator (DittoServer CR)
 
-The dittofs-operator's `spec.identity` still renders v1's `ldap:` and
-`kerberos:` config blocks, which this release's bootstrap refuses. Leave
-`spec.identity` unset, and set the directory and import the keytab through the
-management API once the node runs (Parts B and C). Never put a keytab in a
+The dittofs-operator does not run this release: it renders v1's config file
+(`database:`, `controlplane:`, and `ldap:`/`kerberos:` from `spec.identity`),
+which this release's bootstrap refuses, and no `node.id`, `journals` or `keys`.
+Once it is rebuilt, the directory and the keytab are set through the
+management API (Parts B and C). Never put a keytab in a
 ConfigMap: it is secret key material, and the API stores it sealed.
 
 ---

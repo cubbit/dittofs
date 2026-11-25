@@ -96,8 +96,7 @@ go build -o dfsctl ./cmd/dfsctl
 ./dfsctl login --server http://127.0.0.1:8080 --username admin
 ./dfsctl password change    # a generated password must be changed first
 
-# 4. Create a test share. A share names an existing namespace; on this branch
-#    `dfsctl namespace create` is refused until the node declares namespace settings.
+# 4. Create a test share (it needs a namespace; see docs/guide/configuration.md)
 ./dfsctl share create smbbasic --path /smbbasic --namespace <namespace-id> --flavor sys --client 0.0.0.0/0=read-write
 
 # 5. Create a test user

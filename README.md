@@ -47,8 +47,8 @@ Two binaries drive it:
 
 | Binary | Role |
 |--------|------|
-| **`dfs`** | The server daemon — runs the protocol adapters and a control-plane REST API. |
-| **`dfsctl`** | The REST client — manages users, groups, shares, stores, and adapters on a running server. |
+| **`dfs`** | The server — creates an installation (`dfs init`) and runs its node in the foreground (`dfs start`): the protocol adapters and the management API. |
+| **`dfsctl`** | The management API's client — manages users, groups, shares, stores, and adapters on a running node. |
 
 ## Features
 
@@ -68,8 +68,7 @@ Two binaries drive it:
 | **Active Directory** | Kerberos service keytab for AD-issued tickets; optional machine account (offline or online domain join) for NTLM pass-through; LDAP idmap (`idmap_ad` / `idmap_rid`) maps AD users and nested groups to the same Unix UID/GID over SMB and NFS |
 | **Cross-protocol coordination** | Bidirectional lease/delegation breaks between SMB and NFS |
 | **Metadata stores** | BadgerDB, on disk — one per node. FoundationDB, for multi-node, in the `-foundationdb` image and tarballs |
-| **Block stores** | S3, memory. One per share, fronted by an on-disk journal. Per-share isolation, async sync |
-| **Client-side encryption** | Per-remote envelope encryption (AES-256-GCM / ChaCha20-Poly1305 / XChaCha20-Poly1305) |
+| **File content** | One engine per node over its on-disk journal devices; every share binds to it. No remote store is wired yet |
 | **Share snapshots** | Not yet: v1's snapshots are gone, and [RFC 12](docs/internals/rfcs/rfc-12-snapshots.md) designs the new ones |
 | **Control plane** | A management API over the metadata store: users, groups, grants, shares, settings, long operations and an audit log; roles `admin`, `operator`, `viewer`; `dfsctl` is its client |
 | **Observability** | Prometheus metrics endpoint, structured JSON logging |
@@ -140,6 +139,7 @@ SIGINT or SIGTERM. Both read `~/.config/dittofs/config.yaml`; a small one is in
 
 ```bash
 mkdir -p /var/lib/dittofs/journal            # each journal's directory must exist
+# write the protocol key file first (docs/guide/encryption.md#local-key-files)
 export DITTOFS_ENCRYPTION_PASSPHRASE='choose-a-passphrase'   # wraps the storage key file
 # Replace the example with your own password before running init.
 DFS_ADMIN_PASSWORD=my-secure-password ./dfs init --admin-password-env DFS_ADMIN_PASSWORD
@@ -174,11 +174,9 @@ or through the node's local socket.
 
 ### Serve a share
 
-> This branch serves no file protocol, and its settings table does not declare the remote
-> store's and the namespace's settings yet, so `dfsctl store create` and
-> `dfsctl namespace create` are refused with `unknown_key` and no share can be created on a
-> new installation. The steps below show the commands once both land (see the
-> [Getting started](docs/guide/getting-started.md) guide).
+> This branch serves no file protocol and cannot create a share yet
+> ([why](docs/guide/getting-started.md#5-stores-and-namespaces)). The steps below show the
+> commands once it can.
 
 ```bash
 # A share is created with its export policy, in a namespace that already exists
@@ -247,6 +245,10 @@ metadata:
 journals:
   - path: /var/lib/dittofs/journal
 keys:
+  protocol:
+    kind: local
+    local:
+      file: /var/lib/dittofs/protocol.key     # write it first; see docs/guide/encryption.md
   storage:
     kind: local
     local:
@@ -285,7 +287,7 @@ Full docs live in [`docs/`](docs/), split by audience.
 
 - [Snapshots](docs/guide/snapshots.md) · [Quotas](docs/guide/quotas.md) · [Encryption](docs/guide/encryption.md)
 - [Security](docs/guide/security.md) — hardening checklist and secure configuration
-- [Block Store Migration](docs/guide/block-store-migration.md) — migrating legacy block layouts to CAS
+- [Block Store Migration](docs/guide/block-store-migration.md) — what happened to v1's block layouts
 - [Upgrading from v1](docs/guide/upgrading-from-v1.md) — not supported: what a start over v1 data says
 - [Troubleshooting](docs/guide/troubleshooting.md) · [FAQ](docs/guide/faq.md) · [Glossary](docs/guide/glossary.md)
 

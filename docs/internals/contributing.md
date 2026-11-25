@@ -223,17 +223,11 @@ and compare the two with `benchstat`; never against a number from another host. 
 
 ### Adding a New NFS Procedure
 
-1. Add handler in `internal/adapter/nfs/v3/handlers/` or `internal/adapter/nfs/mount/handlers/`
-2. Implement XDR request/response parsing
-3. Build the auth context (NFSv3 handlers call `h.GetCachedAuthContext(ctx)`, which applies share permission and squashing)
-4. Delegate business logic to repository methods
-5. Add the procedure to its dispatch table (for NFSv3, `NfsDispatchTable` in `internal/adapter/nfs/v3/procedures.go`)
-6. Add test coverage
-
-For a complete example, follow READLINK: the handler is `ReadLink` in
-`internal/adapter/nfs/v3/handlers/readlink.go`, its XDR codec is in `readlink_codec.go`
-next to it, and `handleNFSReadLink` in `internal/adapter/nfs/v3/procedures.go` decodes
-the request, calls the handler and encodes the reply.
+v1's NFS handlers are deleted. RFC 20's adapter lives in `internal/adapter/nfs`:
+`wire` decodes, `ops` holds the operation tables, and each operation reaches files
+only through `vfs.Service`, which admits the caller and resolves its identity, so
+a handler builds no auth context of its own. The tables hold no file operation
+yet; [RFC 21's plan](../../.planning/rfc-21-nfs-plan.md) says how they are added.
 
 ### Adding a New Store Backend
 

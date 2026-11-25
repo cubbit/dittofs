@@ -107,10 +107,10 @@ Every key of the file, with its type and default. `<role>` is `protocol` or
 
 | Key | Type | Default | Fact |
 | --- | --- | --- | --- |
-| `node.id` | UUID | none: the `node-id` copies give it | the node's identity, needed only when every copy is lost. Today `dfs init` and `dfs start` refuse a file without it (`node.id is not set`), as nothing else names the node yet |
+| `node.id` | UUID | none: the `node-id` copies give it | the node's identity, needed only when every copy is lost |
 | `node.roles` | list of `protocol`, `storage` | `[protocol, storage]` | the node's roles, compared as a set, a repeated role refused; both is the only accepted value |
 | `metadata.backend` | `badger` or `foundationdb` | `badger` | which metadata store; only the block it names is read, and a key of the other block is refused |
-| `metadata.badger.path` | path | the state directory's `metadata` | Badger's directory. Today `dfs init` and `dfs start` refuse it unset (`metadata.badger.path is not set`), as the loader does not fill the default yet |
+| `metadata.badger.path` | path | the state directory's `metadata` | Badger's directory |
 | `metadata.foundationdb.cluster_file` | path | required with `foundationdb` | FoundationDB's cluster file |
 | `metadata.foundationdb.tls.cert_file` | path | none: named with the key and CA files, or none | the client certificate FoundationDB's TLS options take; the file is the credential, never a value in this file |
 | `metadata.foundationdb.tls.key_file` | path | none: named with the certificate and CA files, or none | the client certificate's key; the file is the credential, never a value in this file |
@@ -121,7 +121,7 @@ Every key of the file, with its type and default. `<role>` is `protocol` or
 | `api.tls.cert_file` | path | required when an `api.listen` or `metrics.listen` address is not loopback: an IP in `127.0.0.0/8` or `::1`, so a host name, `localhost` included, and an unspecified address (`0.0.0.0`, `::`) are not | the API's certificate |
 | `api.tls.key_file` | path | required when an `api.listen` or `metrics.listen` address is not loopback, as for `api.tls.cert_file` | the key of the API's certificate |
 | `api.socket` | path | `dfs.sock` in the runtime directory | the management API's local socket, created mode `0600`. A `dfsctl` context names the socket by its path, so a shell without the unit's `$RUNTIME_DIRECTORY` passes the path, and two nodes on one host each name their own in their own file. A path past the operating system's socket-address limit (about 104 to 108 bytes) is refused, naming this key |
-| `metrics.listen` | `ip:port`, or `off` | `127.0.0.1:9090` | the metrics listener, served over the API's TLS off loopback. `off` is the only way to turn it off, in the file and in the environment, since a YAML null and an empty variable both read as not set. Today `dfs start` fails on `off`, binding it as an address (#5688) |
+| `metrics.listen` | `ip:port`, or `off` | `127.0.0.1:9090` | the metrics listener, served over the API's TLS off loopback. `off` is the only way to turn it off, in the file and in the environment, since a YAML null and an empty variable both read as not set |
 | `logging.level` | `debug`, `info`, `warn`, `error` | `info` | the log level, in lower case |
 | `logging.format` | `text` or `json` | `text` | the log format |
 | `logging.output` | `stdout`, `stderr` or a path | the state directory's `dittofs.log` | where logs go |
@@ -249,30 +249,31 @@ else the default path.
 ## The management API
 
 Everything the node serves but its bootstrap is a record in the metadata store,
-written only through the management API: shares and their export policies,
+written through the management API, apart from what `dfs init` and
+`dfs reset-admin` write on the host: shares and their export policies,
 users, groups, grants, netgroups, quotas, adapters, remote stores, namespaces,
 settings and their secrets. No file or variable sets any of them, and the node
 applies a change without a restart unless the setting's class says otherwise.
 
-The API listens on each `api.listen` address and on the local socket
+The API listens on the `api.listen` address and on the local socket
 `api.socket` names. Off loopback it serves TLS with `api.tls.cert_file` and
 `api.tls.key_file`. `GET /health/live` and `GET /health/ready` answer without a
-token. Every route under `/api/v1/` but sign-in and refresh needs a signed-in
-caller, and its role, `viewer`, `operator` or `admin`, decides what it may do. `dfsctl` is its client; see the
+token. Every `/api/v1/` route except sign-in and refresh needs a signed-in
+caller, whose role (`viewer`, `operator` or `admin`) decides what it may do. `dfsctl` is its client; see the
 [CLI reference](cli.md).
 
 A setting is read and written by its scope and key:
 
 ```bash
-dfsctl setting get installation audit.retention
 dfsctl setting set installation api.session_lifetime 8h
+dfsctl setting get installation api.session_lifetime
 dfsctl setting unset installation api.session_lifetime   # back to the default
 ```
 
 The scope is `installation`, `node:<id>`, `namespace:<id>`, `store:<id>` or
-`share:<name>`. A value at a narrower scope overrides the wider one, and
-`unset` removes it at that scope. A setting's read shows how many nodes have
-applied it.
+`share:<name>`, and each section declares the scopes it is set at. A `get` of a
+key with no record at that scope answers not found; it does not print the
+default. A setting's read shows how many nodes have applied it.
 
 The node's settings table declares these sections today:
 
@@ -282,6 +283,15 @@ The node's settings table declares these sections today:
 | `audit` | `retention` (default 400 days, at least 90) | `admin` |
 | `identity` | `id_range`, `ntlm`, `netbios_name`, `keytab`, `directory_stale_grace` | `operator`; `ntlm` and `keytab` `admin` only |
 | `identity.directory` | the directory record; see [Identity](identity.md) | `admin` |
+
+All four are set at `installation` only; a write at another scope is refused.
+
+Three bootstrap keys do not yet behave as [the table](#the-keys) says:
+
+- `dfs init`, `dfs start` and `dfs reset-admin` refuse a file without `node.id`
+  (`node.id is not set`), as nothing else names the node yet.
+- `dfs start` fails on `metrics.listen: off`, binding it as an address (#5688).
+- `api.listen` takes one address: the node refuses to start with a second.
 
 A key of no declared section is refused `unknown_key`. The adapters', remote
 stores' and namespaces' settings are not declared yet, so `dfsctl adapter set`,
