@@ -9,7 +9,6 @@ import (
 	"maps"
 	"net"
 	"net/http"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -283,7 +282,10 @@ func TestWiredBehindReadThroughHealth(t *testing.T) {
 func TestWiredOperatorReachesNoAdminCredential(t *testing.T) {
 	onBackends(t, func(t *testing.T, memory bool) {
 		w := newWired(t, memory, nil)
-		configure(t, w.h, storeA)
+		// Seeded by its endpoint as the API writes it, so the API sees a
+		// store: under a bare key the credential's PUT answers 404 to every
+		// role, and its row could not fail.
+		configureJSON(t, w.h, storeA)
 		in, err := w.h.Store().Installation(t.Context())
 		if err != nil {
 			t.Fatalf("read the installation: %v", err)
@@ -332,13 +334,15 @@ func TestWiredOperatorReachesNoAdminCredential(t *testing.T) {
 				t.Errorf("the operator's %s %s: refused naming %s, want the route's refusal, naming no field", c.method, c.path, p.Field)
 			}
 		}
-		// An operator holds these routes. The store credential's PUT is
-		// refused today, as asserted, so the row fails the day it applies and
-		// needs a write that does. The password change is an operator's own,
+		// An operator holds these routes. The store credential's PUT passes
+		// the operator's role and is refused today by the store's capability
+		// check, 409 unproven as the error table answers it, so the row fails
+		// the day the role refuses it or the write applies, and then needs a
+		// write that does. The password change is an operator's own,
 		// with its current password: it applies, to that operator's record,
 		// and the versions below show it reached nothing else.
 		wantStatus(t, "the operator's PUT of a store credential", w.send(t, http.MethodPut, "/api/v1/stores/"+uuid.UUID(storeA).String()+"/credential", w.operator.token,
-			map[string]any{"spec": apiv1.CredentialSpec{Value: []byte("taken over")}}, "If-None-Match", "*"), http.StatusNotFound, codeNotFound)
+			map[string]any{"spec": apiv1.CredentialSpec{Value: []byte("taken over")}}, "If-None-Match", "*"), http.StatusConflict, "unproven")
 		const opPassword = "the operator's password"
 		op := w.h.Account(t, "changing-operator", opPassword, entity.RoleOperator)
 		opBefore := versionOf(t, w.authNode, w.stored(t, op).Password)
@@ -493,7 +497,21 @@ func TestWiredLoopbackSignInsThrottled(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = os.RemoveAll(dir) })
 			path := filepath.Join(dir, "api.sock")
-			h, ps := throttled(t, memory, func(cfg *node.Config) { cfg.Bootstrap.API.Socket = path })
+			var raw kv.KV
+			_, ps := throttled(t, memory, func(cfg *node.Config) { cfg.Bootstrap.API.Socket = path; raw = cfg.KV })
+			// Every sign-in count row, whatever source it names, against want:
+			// the socket writes no source's count or pair, under any address.
+			counted := func(when string, want ...[]byte) {
+				t.Helper()
+				got := slices.Sorted(maps.Keys(rawRows(t, raw, []byte{keys.KindSF})))
+				var wants []string
+				for _, k := range want {
+					wants = append(wants, string(k))
+				}
+				if !slices.Equal(got, wants) {
+					t.Errorf("sign-in count rows %s: %x, want %x", when, got, wants)
+				}
+			}
 			c := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{DisableKeepAlives: true,
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 					return (&net.Dialer{}).DialContext(ctx, "unix", path)
@@ -503,19 +521,11 @@ func TestWiredLoopbackSignInsThrottled(t *testing.T) {
 					t.Fatalf("failed sign-in %d on the socket: answered %d, want 401", i+1, got)
 				}
 			}
+			counted("after five failures on the socket", keys.ID([]byte{keys.KindSF, keys.SFAccount}, ps[0].ID[:]))
 			if got := signInVia(t, c, "http://node", accountName(0), accountName(0)+"'s password"); got != http.StatusOK {
 				t.Errorf("the sixth sign-in on the socket, with the password: answered %d, want 200, checked", got)
 			}
-			for _, k := range []entity.SignInKey{
-				{Source: entity.SourceKey(netip.IPv4Unspecified())},
-				{Source: entity.SourceKey(netip.MustParseAddr("127.0.0.1"))},
-				{Account: ps[0], Source: entity.SourceKey(netip.IPv4Unspecified())},
-				{Account: ps[0], Source: entity.SourceKey(netip.MustParseAddr("127.0.0.1"))},
-			} {
-				if f, found, err := h.Store().ControlPlane().SignInFailures(t.Context(), k); err != nil || found {
-					t.Errorf("sign-in count %+v after failures on the socket: %+v, found %v (%v), want none", k, f, found, err)
-				}
-			}
+			counted("after the sixth sign-in on the socket")
 		})
 	})
 }
