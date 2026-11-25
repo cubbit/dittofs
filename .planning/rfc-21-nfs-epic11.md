@@ -30,7 +30,8 @@ before the subtasks that name them: E3's T3.2, the scripted client and its call 
 the `ops/nlm` and `ops/nsm` packages with their `NULL` rows; E8's first content, the per-client
 callbacks value (T8.1) and the `Adapter` bytes codec with an NLM host's fields, `wire.ClientRecNLM`
 (T8.2); E10's T10.1, the call encoder and reply decoder moved into `wire/call.go`; E4's T4.1,
-admission at `Claimed` for a lock call or share reservation that sets `Call.HostCall` (A3); E7's
+admission at `Claimed` for a lock call, the `GetAttr` before a blocking `LOCK`, or a share
+reservation that sets `Call.HostCall` (A3); E7's
 T7.1, without which `memory.New` refuses every `Claimed` caller. **S3** for the loopback rows, and
 **S5** for the restart row.
 **Blocks:** E13's T13.7, which adds rows to T11.1's NLM and NSM tables; E16, which runs NLM against SMB, the lock recall with NLM, NLM grace and `SM_NOTIFY` on a
@@ -70,8 +71,8 @@ NSM notice amendment (D11, Q1) and of an NLM record's first state (D5, Q4); the 
 
 ### 1.2 Out of scope
 
-- Admission at `Claimed` for a lock call or share reservation that sets `Call.HostCall` (A3's
-  service half): E4's T4.1. `HostCall` on every NLM and NSM call: E3's route (T3.1). This epic's
+- Admission at `Claimed` for a lock call, the `GetAttr` before a blocking `LOCK` (D6), or a share
+  reservation that sets `Call.HostCall` (A3's service half): E4's T4.1. `HostCall` on every NLM and NSM call: E3's route (T3.1). This epic's
   rows drive both.
 - What a `Claimed` caller resolves to: E7's T7.1. The share's flavour policy is the service's
   admission (RFC 17 §4.9), with A3's `HostCall` exemption in E4's T4.1.
@@ -123,6 +124,10 @@ NSM notice amendment (D11, Q1) and of an NLM record's first state (D5, Q4); the 
 - **A3**, the amendment to RFC 17 §4.9 agreed in #5166 and restated by #5726: a lock call or a share
   reservation's `Open` or `Close` whose `Call` sets `HostCall`, as every NLM call does, meets a
   share's `MinProof` lowered to `Claimed` and no `MinProtection`; no rule reads `Call.Protocol`.
+  The `GetAttr` a blocking `LOCK` makes first (D6) meets the same lowered minimums only once RFC 17
+  §4.9 step 2 lists it, which #5735 (`develop`) and #5736 (`feat/storage-v2`) add and #5734 builds,
+  none merged yet; `develop`'s §4.9 lists lock calls, `Open` and `Close` only, and refuses a
+  `HostCall` `GetAttr` `ErrInvalid`. T11.4 waits for that change.
 - **E12**, the NFSv4.2 operations. **E15**, the integration with the node, which turns the NFS
   suites on.
 
@@ -190,7 +195,7 @@ that subtasks and tests can cite them.
 | R20 | An NLM row's `Resolve` sets `Client` on its `r.Call` to the ID of the host's client record | MUST | RFC 20 §4.4 (the `Call`) | T11.3 |
 | R21 | A `StaleClient` refusal makes the adapter `Connect` the host afresh and send the request once more; it never reaches the host as `NLM4_DENIED`, and one met again on the retry is `NLM4_DENIED_GRACE_PERIOD` | MUST | RFC 21 §6.1, §11.5 (`StaleClient`); RFC 14 §4.5 | T11.3 |
 | R22 | An NLM host's `Connect` sets `ClientInfo.ClientIsMachine`, so its record has no `Owner` and two callers' uids on one host lock under one client | MUST | RFC 21 §11.4 (`Owner`); RFC 14 §2.1; RFC 17 §3.0 (`ClientIsMachine`) | T11.3 |
-| R60 | Every NLM and NSM call reaches the service with `Call.HostCall` set, as E3's route sets it, so admission lowers NLM's minimums by it; no rule this epic adds to the service reads `Call.Protocol` or a record's kind: those that pick NLM hosts' records read `Recovery` notice | MUST NOT | RFC 17 §3.0, §4.9 (step 2); RFC 21 §6.1, §11.4; RFC 14 §4.4 | T11.8, T11.11, T11.12 |
+| R60 | Every NLM and NSM call reaches the service with `Call.HostCall` set, as E3's route sets it, so admission lowers NLM's minimums by it, the `GetAttr` before a blocking `LOCK` (D6) among them; no rule this epic adds to the service reads `Call.Protocol` or a record's kind: those that pick NLM hosts' records read `Recovery` notice | MUST NOT | RFC 17 §3.0, §4.9 (step 2); RFC 21 §6.1, §11.4; RFC 14 §4.4 | T11.4, T11.8, T11.11, T11.12 |
 
 **Locks**
 
@@ -332,7 +337,10 @@ that subtasks and tests can cite them.
   `LockWaiter` naming the file by `FileID` and no handle, while `NLMPROC4_GRANTED` must carry the
   handle. Before a blocking `LOCK`, the handler reads the handle's `File` through `GetAttr` and keeps
   the request's handle, cookie and floating address under (`FileID`, owner, range); `LockWaitOver`
-  takes the entry, and `CancelLock`'s return, a grant, a refusal or a share's `Revoked` removes it. A
+  takes the entry, and `CancelLock`'s return, a grant, a refusal or a share's `Revoked` removes it.
+  The `GetAttr` sets `HostCall` like every NLM call (R60), and RFC 17 §4.9 as #5735 and #5736 amend
+  it admits it at `Claimed`, as it does the lock calls; without that change it is `ErrInvalid` and
+  every blocking `LOCK` fails, so T11.4 depends on it (A3). A
   `ponytail:` marker: one extra `GetAttr` per blocking `LOCK`; upgrade to a handle carried on RFC 14's
   `LockWaiter` when a profile shows it (Q7). Prior art: knfsd keeps the blocked request in its
   `nlm_block` list (from memory).
@@ -648,11 +656,12 @@ pkg/openstate/clients.go         T11.12 an NLM record's zero Boot and its first 
 
 **Subtask T11.4 estimate: 3.5 man-days.**
 
-- **Track:** B. **Depends on:** T11.3, T11.2.
-- **Covers:** R10, R13, R14, R33, R34, R35, R36, R37, R38, R39, R50, R58.
+- **Track:** B. **Depends on:** T11.3, T11.2; RFC 17 §4.9 admitting a `HostCall` `GetAttr` at
+  `Claimed` (#5735, #5736) and E4's T4.1 building it (A3).
+- **Covers:** R10, R13, R14, R33, R34, R35, R36, R37, R38, R39, R50, R58, R60.
 - **Deliverables:**
   - `ops/nlm/waiting.go`: the waiting-request table of D6, with its `GetAttr` before a blocking
-    `LOCK`; `LOCK` with `block` set as a callback waiter; `cancel.go`, `CancelLock` then the answer of
+    `LOCK`, sent with `HostCall` set; `LOCK` with `block` set as a callback waiter; `cancel.go`, `CancelLock` then the answer of
     D8, with the release role.
   - `nfs/callbacks.go`'s `LockWaitOver` for an NLM host: granted, one synchronous `GRANTED` through
     `rpcclient.Call` (D7), its reply mapped to `refused`, no reply an error; not granted, the entry
@@ -669,6 +678,8 @@ pkg/openstate/clients.go         T11.12 an NLM record's zero Boot and its first 
     keep it, and the next `LockWaitOver` sends again.
   - `LockWaitOver` called on the callbacks value with a 1 s context, against a `Host` that never
     answers, returns an error by that deadline, never `refused`.
+  - On a share whose `MinProof` is `Ticket`, an `AUTH_SYS` blocking `LOCK` at `Claimed` is answered
+    `NLM4_BLOCKED` and later granted, not refused at its `GetAttr`.
 - **Tests:** through `nfsharness` and `Host`, on `memory.New`: a conflicting blocking `LOCK`, then the
   holder's `UNLOCK`, and `GRANTED` received by `Host` with the request's handle, `svid`, `oh`, range
   and cookie (catches a grant on the request's connection or with another handle or cookie, R10,
@@ -680,7 +691,9 @@ pkg/openstate/clients.go         T11.12 an NLM record's zero Boot and its first 
   nothing sent to `Host` (R36); on a delegated file, a blocking `LOCK` answered `NLM4_BLOCKED` and
   granted when the recall ends, a non-blocking `LOCK` and a `TEST` each `NLM4_DENIED_GRACE_PERIOD`
   (R33, R34); a blocking `LOCK` sent twice before its grant, one `GRANTED` at `Host` (catches a
-  second waiter or a second entry, R58); `-race` with 64 hosts blocking on one range
+  second waiter or a second entry, R58); on a `Ticket` share, an `AUTH_SYS` blocking `LOCK` at
+  `Claimed`, then the holder's `UNLOCK`, and `GRANTED` at `Host` (catches the `GetAttr` refused or
+  sent without `HostCall`, R60); `-race` with 64 hosts blocking on one range
   and released in turn, its mutex and block profiles reported (rule 4). That no adapter timer drops a
   waiter is checked in T11.11's 5-minute step on the composed node's clock (R35).
 - **Rules:** rule 9's markers of D6, D7, D8 and D21; rule 4's profiles.
@@ -959,7 +972,7 @@ path. T11.11 closes the epic once S3 holds, its restart row once S5 does.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T11.1, T11.2 | 6.25 | E10's T10.1 | the NLM translations and the outbound client every handler and callback builds on |
-| 2 | T11.3, T11.4, T11.5 | 9 | PR 1 | NLM locking end to end: a host's client, its locks, a blocked lock granted, the asynchronous forms |
+| 2 | T11.3, T11.4, T11.5 | 9 | PR 1; #5735 and #5736 (D6) | NLM locking end to end: a host's client, its locks, a blocked lock granted, the asynchronous forms |
 | 3 | T11.12, T11.6, T11.7, T11.8 | 9.25 | PR 2 | share reservations and NSM's notices, the service halves once Q4 and Q1 are agreed |
 | 4 | T11.9 | 4 | PR 1 | `core`'s datagram listener, which needs only `Conn.Local`; open beside PR 2 |
 | 5 | T11.10, T11.11 | 4.5 | PR 3, PR 4 | NLM and NSM over UDP, which serves T11.3's rows, and the RFC's rows over loopback and on the composed node |
@@ -1018,6 +1031,8 @@ A second batch, after those:
 - **Q6. `NM_LOCK`** (D16): not served, as written, or served as `LOCK` with no monitoring.
 - **Q7. The handle a grant names** (D6): the `GetAttr` per blocking `LOCK`, as written, or RFC 14 §2.10's
   `LockWaiter` carrying the request's handle, which the table already holds in `LockReq.Open`.
+  Only a cost question: admission no longer decides it, since RFC 17 §4.9 as #5735 and #5736 amend
+  it admits the `GetAttr` with `HostCall` at `Claimed` (D6).
 - **Q8. NLM and NSM over UDP by default** (D18). Over UDP the host binding stops an on-path forger
   only. (a) Recommended: served by default, as RFC 21 §2.2 says, with D18's `decision:` naming the
   reach; (b) an adapter setting, off by default, serving them over UDP, which makes RFC 21 §2.2's
