@@ -298,7 +298,11 @@ func (n netgroups) Members(ctx context.Context, name string) ([]string, bool, er
 // caller's grant of none is not refused (see acting).
 func (fs *Filesystem) resolve(ctx context.Context, id vfs.Identity, sh entity.Share, p entity.ExportPolicy, ro identity.ReadOnlyCause, releases bool) (entity.Identity, entity.Principal, error) {
 	k := callerKey{proof: id.Key(), policy: p.SharePolicy(sh.GrantVersion), narrowed: ro}
-	if len(p.Clients) > 0 {
+	// A Claimed caller's key carries its address as a client rule's does:
+	// resolution charges its directory lookups to that address, so a call
+	// from another address never joins its resolution, nor is served its
+	// refusal at the lookup cap.
+	if len(p.Clients) > 0 || id.Proof == identity.ProofClaimed {
 		k.client = id.Client.Unmap()
 	}
 	c, err := fs.callers.resolve(ctx, k, func(ctx context.Context) (*identity.Caller, error) {

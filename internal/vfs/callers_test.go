@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	identitysrv "github.com/cubbit/dittofs/internal/identity"
+	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -40,10 +41,18 @@ type caching struct {
 	reg   *metrics.Registry    // the identity server's metrics
 	ids   identitysrv.Settings // the identity settings the store holds
 	gen   uint64               // the generation of the last State applied
+	dir   *directory.Record    // the directory every State applied names; nil for none
 	views kv.Counting          // the reads the store has served
 }
 
 func newCaching(t testing.TB) *caching {
+	return newCachingWith(t, func(*kvstoretest.FS) (identitysrv.Deps, *directory.Record) { return identitysrv.Deps{}, nil })
+}
+
+// newCachingWith is newCaching, its identity server built over the Deps
+// with, given the store, answers, beside the store, clock, tracer and
+// metrics, and naming the directory it answers in every State.
+func newCachingWith(t testing.TB, with func(*kvstoretest.FS) (identitysrv.Deps, *directory.Record)) *caching {
 	t.Helper()
 	prof.Watch(t, prof.Options{})
 	c := &caching{clock: sim.NewTestClock(time.Unix(1_000_000, 0)), spans: tracetest.NewSpanRecorder(), reg: metrics.New("test", "test")}
@@ -54,7 +63,10 @@ func newCaching(t testing.TB) *caching {
 	})
 	c.tp = sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()), sdktrace.WithSpanProcessor(c.spans))
 	t.Cleanup(func() { _ = c.tp.Shutdown(context.Background()) })
-	srv, err := identitysrv.New(identitysrv.Deps{Store: fx.Store, Clock: c.clock, Tracer: c.tp.Tracer("test"), Metrics: c.reg})
+	deps, rec := with(fx)
+	c.dir = rec
+	deps.Store, deps.Clock, deps.Tracer, deps.Metrics = fx.Store, c.clock, c.tp.Tracer("test"), c.reg
+	srv, err := identitysrv.New(deps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +92,7 @@ func newCaching(t testing.TB) *caching {
 func (c *caching) raise(t testing.TB) {
 	t.Helper()
 	c.gen++
-	if err := c.srv.Apply(identitysrv.State{Generation: c.gen, Settings: c.ids}); err != nil {
+	if err := c.srv.Apply(identitysrv.State{Generation: c.gen, Settings: c.ids, Directory: c.dir}); err != nil {
 		t.Fatal(err)
 	}
 }

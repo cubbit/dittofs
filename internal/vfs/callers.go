@@ -32,7 +32,7 @@ type callerKey struct {
 	proof    identity.ProofKey
 	policy   entity.SharePolicy
 	narrowed identity.ReadOnlyCause
-	client   netip.Addr // the zero Addr where no client rule decided
+	client   netip.Addr // the zero Addr where no client rule decided and the caller is not Claimed
 }
 
 // The caller cache's bounds, and how long one resolution may run on behalf
