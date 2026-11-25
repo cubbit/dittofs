@@ -1,24 +1,18 @@
 package secrets
 
 import (
-	"bytes"
-	"fmt"
 	"go/ast"
-	"go/importer"
 	"go/parser"
 	"go/token"
 	"go/types"
-	"io"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 
-	"github.com/cubbit/dittofs/internal/prof"
+	"github.com/cubbit/dittofs/internal/archtest"
 )
 
 // frozenExports is pkg/secrets' surface as RFC 13's configuration freeze
@@ -55,55 +49,10 @@ var frozenExports = []string{
 	"var ErrWrongRole error",
 }
 
-// exportImporter reads each import from the export data the go command
-// compiled for it, once for all the cases: type-checking the imports from
-// source instead takes half a minute under the race detector. Only the
-// imports come from export data; the package itself is always parsed from
-// its files, the planted ones included.
-var exportImporter = importer.ForCompiler(token.NewFileSet(), "gc", func(path string) (io.ReadCloser, error) {
-	files, err := exportFiles()
-	if err != nil {
-		return nil, err
-	}
-
-	if files[path] == "" {
-		return nil, fmt.Errorf("no export data for %s", path)
-	}
-
-	return os.Open(files[path])
-})
-
-// exportFiles lists the export data file of each package this one imports
-// and of the store packages storeSymbol reads, by import path. The go
-// command compiles what the build cache lacks, with the race detector when
-// this binary has it, so the build of this binary already cached them.
-var exportFiles = sync.OnceValues(func() (map[string]string, error) {
-	args := []string{"list", "-export", "-deps", "-f", "{{.ImportPath}}={{.Export}}"}
-	if prof.RaceEnabled {
-		args = append(args, "-race")
-	}
-
-	args = append(args, ".")
-	cmd := exec.Command("go", append(args, slices.Collect(maps.Values(storePackages))...)...)
-
-	var stderr bytes.Buffer
-
-	cmd.Stderr = &stderr
-
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("go list -export: %w: %s", err, stderr.String())
-	}
-
-	files := map[string]string{}
-
-	for line := range strings.Lines(string(out)) {
-		path, file, _ := strings.Cut(strings.TrimSpace(line), "=")
-		files[path] = file
-	}
-
-	return files, nil
-})
+// exportImporter reads each import, and the store packages storeSymbol
+// reads, from compiled export data; the package itself is always parsed
+// from its files, the planted ones included.
+var exportImporter = archtest.ExportImporter(append([]string{"."}, slices.Collect(maps.Values(storePackages))...)...)
 
 // exports type-checks the package made of dir's non-test .go files, whatever
 // their build tags, so a file behind a tag cannot hide an export, plus the
