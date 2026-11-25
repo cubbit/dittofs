@@ -321,7 +321,7 @@ The engine **MUST NOT**:
 ### 2.1 Content composition
 
 The process's one composition root is `node.New` ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)), and
-it alone names concrete component types. This section specifies what it builds
+it alone names concrete component types, with the content wiring it builds through. This section specifies what it builds
 for content, on every node: one **journal per device**, the
 syncer, block metadata's view, and one engine over them with a binding per share
 ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)). Everything else holds a concrete type where there is one
@@ -330,7 +330,11 @@ implementation — `*vfs.Filesystem` holds `*engine.Engine`
 [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) requires one: the engine declares one per component it calls, in
 `Deps` ([§2.6](#2.6%20Dependencies%20and%20wiring)). Adapters hold only `vfs.Service`, and the gateway behind it never
 reaches the engine. [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)'s import rule binds the components composed; the
-composition code imports them and nothing imports it.
+composition code imports them. `node.New` builds the content components
+through the node's content wiring, `internal/node/content` ([§2.8](#2.8%20Package%20layout)), which only the node and the engine's test
+fixture import, so the engine's own checks compose the same components the node does. The wiring is
+part of the composition root, so [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) lets it import the components' implementations;
+the engine imports only their contracts.
 
 **Every share has a remote block store.** The root **MUST** refuse to add a share
 whose configuration names no remote block store, with an error naming the share.
@@ -357,7 +361,7 @@ The engine supplies and consumes, at construction:
 
 | Declared by | Need | Supplied from |
 | --- | --- | --- |
-| [RFC 3](rfc-3-syncer.md) | a `Store`: streamed put, verified read, health ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) | the block codec with the store's transform chain ([RFC 4 §3](rfc-4-remote-tier.md#3.%20The%20block%20format), [RFC 5](rfc-5-transforms.md)), over the share's remote block store; it maps every remote-tier and transform error onto the syncer's own error values ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)), so no syncer code tests an error another component declares; a service's quota or capacity refusal (bucket quota exceeded, storage full) maps to `ErrDenied`, never `ErrInvalid`, so it counts toward put health and the engine can tell it from an outage ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) |
+| [RFC 3](rfc-3-syncer.md) | a `Store`: verified get and health; each put is the attempt closure `Upload` calls ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) | RFC 4's `codec.Store`: the block codec with the store's transform chain ([RFC 4 §3](rfc-4-remote-tier.md#3.%20The%20block%20format), [RFC 5](rfc-5-transforms.md)) over the share's remote block store, registered with the syncer under its `ProbeKey`; its `NewPut(name, src)` builds the attempt. No error is mapped: the syncer and the engine read RFC 4 §4.8's errors as they are, so a service's quota or capacity refusal (bucket quota exceeded, storage full) is RFC 4's denial with its cause, never `ErrInvalid`, which counts toward put health and which the engine tells from an outage ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) |
 | [RFC 17](rfc-17-vfs.md) | the content interface, including the one read path for size, times and version, `Overlay` ([§12.1](#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service)) | the engine |
 
 Every capability **MUST** be a method on an interface held by declaration, and an
@@ -379,7 +383,7 @@ interface:
 | [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | the syncer | `OpenFlow`, one flow per share at attach |
 | [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | a syncer flow | `Close`, in `Drop` or `Close`; `Upload`, `Fetch`, `Prefetch`, `Healthy`, and `Health(d)` for the cause of an unhealthy direction — `ErrDenied` for quota, access or size, `ErrTransient`, `ErrCorrupt` or `ErrDrift` ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included), [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) |
 | [RFC 6 §10](rfc-6-block-metadata.md#10.%20API%20surface%20and%20observability) | block metadata's `Existence` and `Content` views, held as two interfaces | every method of both, except `Offloaded` while deduplication is deferred |
-| [RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer) | the metadata store's `Lifecycle` view | `JournalID`, the identity recorded for this node's device, for `Open` ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1); `SyncMarks`, the journal's sync marks for `Open`, raising its open generation in the same transaction (step 1, [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)); `Tags`, every share record's tag and how far its removal has gone, read at start (steps 1 and 5); `VersionLimits`, read for `Open`'s floor, and `RaiseVersionLimits`, a tracked max-write of `S‖id‖vl` within `K` keys a transaction ([§2.7](#2.7%20The%20version%20limit)); `RaiseAtStart`, in the start transactions and at any attach of a shard whose open state the node does not hold, which opens a new grace instance, and `RaiseAtAttach`, at an attach of one whose open state it holds, which keeps it (step 2, [RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)) |
+| [RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer) | the metadata store's `Lifecycle` view | `JournalID`, the identity recorded for this node's device, for `Open` ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1); the lost-journal acknowledgement naming that device and its `JournalID`, read at step 1 and at a retried open (§2.5; proposal); `SyncMarks`, the journal's sync marks for `Open`, raising its open generation in the same transaction (step 1, [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)); `Tags`, every share record's tag and how far its removal has gone, read at start (steps 1 and 5); `VersionLimits`, read for `Open`'s floor, and `RaiseVersionLimits`, a tracked max-write of `S‖id‖vl` within `K` keys a transaction ([§2.7](#2.7%20The%20version%20limit)); `RaiseAtStart`, in the start transactions and at any attach of a shard whose open state the node does not hold, which opens a new grace instance, and `RaiseAtAttach`, at an attach of one whose open state it holds, which keeps it (step 2, [RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)) |
 | this RFC, `CloneHold` ([§2.6](#2.6%20Dependencies%20and%20wiring)), which the root adapts from open state ([RFC 14 §9.2](rfc-14-open-state.md#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends)) | a clone's hold on its source | `Hold`, open state's `CloneOpen`, taking over the source record a clone's phase 1 wrote, before phase 2; `Release`, its `CloneClose`, once the clone is done, whose orphan open state reports through its own `Sink.Closed`; `Served`, its `Recovery.Served`, which a rebuilt clone waits on before its batches run ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)) |
 | [RFC 16 §3.1](rfc-16-metadata-store.md#3.1%20Lookups%20by%20ID%2C%20listings%2C%20and%20who%20may%20use%20them) | the metadata store's `Inspect` view | `Refs`, for the reseed only ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)); every other engine transaction goes through block metadata's views or `Lifecycle` |
 
@@ -397,7 +401,7 @@ views and `Refs`.
 signatures of the two interfaces every component takes at construction
 ([the index's test harness](rfc-index.md#Test%20harness), item 1): the journal, the syncer, the engine, GC,
 the snapshot cut and leases read time only through `Clock`, and every fault
-seam — the journal's storage seam, the fault wrapper around the syncer's in-memory store, the fault transport, the
+seam — the journal's storage seam, the fault wrapper around RFC 4's in-memory store, the fault transport, the
 fault-injecting metadata store — consults a `Fault` before each operation. A component with a private
 clock cannot take part in a check that skews time across components.
 
@@ -603,7 +607,14 @@ returns its error, so the engine is either serving or as built. A share refused
 at step 1, its journal missing, foreign or not recorded for this node's device,
 does not fail `Start`: it is not attached, `Stats` names it and its device, and
 a journal missing or foreign raises `journal_lost` until an operator acknowledges
-the loss. A journal not recorded raises no `journal_lost`: its content is
+the loss. The acknowledgement is a store record naming the device and the lost
+journal's `JournalID`, the identity the store records for that device; the
+engine reads it through `Lifecycle` at step 1 and at each retried open
+(proposal, with RFC 16 §3's read and an admin-only node action in RFC 23 §4
+that writes it, shaped as `acknowledge-unreadable`, whose `expect JournalID` it
+follows). It applies only to that recorded journal, never to one not recorded,
+and is consumed when the new journal's `RecordJournal` commits or the recorded
+journal opens, so it never acknowledges a later loss on the same device. A journal not recorded raises no `journal_lost`: its content is
 intact, and acknowledging a loss would resolve what it alone holds as **Lost**
 ([§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata)). It serves once `RecordJournal` records it, at a later start (step 1),
 and no condition names it yet.
@@ -1203,8 +1214,8 @@ type Deps struct {
 }
 
 // CloneHold is the part of open state a clone calls, in the engine's own
-// types, so the engine imports no open state (RFC 0 I6); the root adapts
-// *openstate.Table to it (RFC 23 §2.1), errors included: open state's
+// types, so the engine imports no open state (RFC 0 I6), only the content wiring
+// does (§2.1); the root adapts *openstate.Table to it through that wiring, errors included: open state's
 // DelayFrozen and a table not started answer vfserr's ErrDelay (DelayFrozen),
 // so the clone holds phase 2 and retries; Release of an open that names no
 // record answers nil, since the hold is already gone; any other error is
@@ -1350,18 +1361,25 @@ pkg/engine/            the engine (this RFC)
   queue.go                   the engine's two sources for the shared work scheduler, per journal (§6.1)
   offload/                   the pipeline state machine (§6.3–§6.8): capture, carve, assemble, intent, put, commit, report
   arch_test.go               §15.3's architecture test
-pkg/sched/                   the shared work scheduler (§6.1.1), used by the engine and GC
+pkg/workqueue/               the shared work scheduler (§6.1.1), used by the engine and GC
+internal/node/content/       the node's content wiring: builds the content components for the node and the engine's checks (§2.1)
 ```
 
 **On `feat/storage-v2` the engine is `pkg/engine`**, as the journal is `pkg/journal`.
 While v1 existed they were `pkg/block/enginev2` and `pkg/block/journalv2`; the
 suffix was in Go package and import paths only, and metric, span and log names
-say `engine` and `journal` from the start.
+said `engine` and `journal` from the start.
 
-`offload/` is the one subpackage. It is the largest state machine, and its tests
-import only in-memory implementations of the offer, the carver, a flow and block metadata's views, each held to its
-component's conformance suite, so the import
-rule enforces its boundary.
+Besides the test packages (`enginetest/`, `conformance/`), `offload/` is the one
+subpackage. It is the largest state machine. Its production code imports only the components'
+contracts, which the import rule enforces. Its tests run over the carver, a pure function, the syncer
+over RFC 4's in-memory store, and in-memory implementations of the offer, the transforms' material and
+block metadata's views, each held to its component's conformance suite.
+
+The transforms' contract is the `pkg/transform` root package: the `Chain` interface, its value types
+and its errors. The chain and its stages live in subpackages (`chain`, `compress`, `encrypt`). The
+engine and RFC 4's codec import only the root; the node's content wiring builds the concrete chain
+and injects it into both ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
 
 ## 3. Policy
 
@@ -2133,7 +2151,7 @@ the engine, a namespace for GC. The scheduler is its own package, which each
 component instantiates, so no component imports another through it:
 
 ```go
-package sched // pkg/sched
+package workqueue // pkg/workqueue
 
 // Key names one entry; posts for one key merge.
 type Key struct {
@@ -2154,7 +2172,7 @@ type Outcome uint8
 const (
 	Done       Outcome = iota // the key leaves, or is pending again at once if a post marked it
 	Retry                     // the key backs off
-	Throttled                 // as Retry, and its tenant's pace drops until the tenant's next Done
+	Throttled                 // as Retry; once Rate pacing lands, its tenant's pace also drops until the tenant's next Done
 	StopTenant                // as CancelTenant for the item's tenant
 )
 
@@ -2270,11 +2288,12 @@ The scheduler **MUST**:
   total;
 - **share fairly**: under contention, sources receive dispatch in proportion to
   their `Weight`, and a source's tenants in proportion to theirs;
-- **rate-limit**: a source with a `Rate` is paced to it, and a `Throttled` result
-  lowers only its tenant's pace, until that tenant's next `Done`. So one throttled
-  store slows no other: GC's tenant is a namespace, whose store is one
-  ([RFC 9 §3.6](rfc-9-gc.md#3.6%20Failures%20resolve%20on%20their%20own)), and the engine's sources register `Rate` 0, since the
-  syncer paces puts ([RFC 3 §2.9](rfc-3-syncer.md#2.9%20Workers%20are%20shared%20fairly%20across%20flows)).
+- **rate-limit, once its first caller, GC's sources, lands**: a source with a `Rate`
+  is paced to it, and a `Throttled` result lowers only its tenant's pace, until that
+  tenant's next `Done`. So one throttled store slows no other: GC's tenant is a
+  namespace, whose store is one ([RFC 9 §3.6](rfc-9-gc.md#3.6%20Failures%20resolve%20on%20their%20own)). Until then every source registers
+  `Rate` 0 and `Throttled` backs its key off as `Retry` does; the engine's sources
+  register `Rate` 0 in any case, since the syncer paces puts ([RFC 3 §2.9](rfc-3-syncer.md#2.9%20Workers%20are%20shared%20fairly%20across%20flows)).
 
 > decision: no tenant borrows another's reservation. Borrowing would make a
 > tenant's room depend on how full the others are, and taking the entries back
@@ -2324,11 +2343,11 @@ file for the scheduler ([§6.1.1](#6.1.1%20The%20shared%20work%20scheduler)).
 | State | Does | Holds | When it fails |
 | --- | --- | --- | --- |
 | **Capture** | under the files' guards ([§6.4](#6.4%20The%20offload%20guard%20is%20narrow)), syncs the files and commits their pending existence ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)) — behind a cut's closed gate, only up to the cut point; content above it waits for the gate to reopen — then opens the offer with `OffloadMany`, passing each file's `Through` as the version that commit covered, so the journal offers nothing whose existence it did not commit ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)), and recording with it the share's write namespace and that namespace's chunk-ID key, which the carve uses ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)) | guards, briefly; then the offer | nothing was offered; the pass is retried after backoff |
-| **Carve** | runs the carver over each run of the offer ([§6.7](#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile)) | the offer | the pass ends; blocks already reported stay reported, the rest stay **Dirty**; retried |
-| **Assemble** | folds the chunks into block plans with the block assembler ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)), every chunk carried ([§6.5](#6.5%20The%20dedup%20oracle), V1); the pass closes no block before it reaches the target or the count cap except its last, so a pass of many small files never yields short blocks mid-pass. It also closes a block early, at a chunk boundary, when its commit's worst-case keys — counting the existing refs each new ref replaces, from a covering lookup of the run — would pass the key budget `K` ([RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)) | plans: hashes and positions, no bytes | pure; cannot fail |
-| **Intent** | refuses a plan whose captured namespace is no longer the share's write namespace; mints the block's name and durably records its put intent ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)) | the intent | a refused plan's content is re-offered and carved again under the current namespace; a failed record is retried in place, and past the step bound the block's attempt is abandoned |
+| **Carve** | reads the covering lookup of each run, then runs the carver over each run of the offer ([§6.7](#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile)) | the offer | a failed lookup or carve ends the pass; blocks already reported stay reported, the rest stay **Dirty**; retried |
+| **Assemble** | folds the chunks into block plans with the block assembler ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)), every chunk carried ([§6.5](#6.5%20The%20dedup%20oracle), V1); the pass closes no block before it reaches the target or the count cap except its last, so a pass of many small files never yields short blocks mid-pass. It also closes a block early, at a chunk boundary, when its commit's worst-case keys — counting the existing refs each new ref replaces, from a covering lookup of the run — would pass the key budget `K` ([RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)). The pass hands the fold each chunk's worst-case keys, each zero ref's keys (counting the refs it replaces), and a commit's per-block keys (the intent's delete, the block record, GC's index keys) and per-file keys (the offload fence), which the fold charges once per block and once per file ([RFC 2 §5.1](rfc-2-carver.md#5.1%20Interface)) | plans: hashes and positions, no bytes | pure; cannot fail |
+| **Intent** | refuses a plan whose captured namespace is no longer the share's write namespace, or whose pin finds the share's current material destroyed ([§10.4](#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable)), before any put; mints the block's name and durably records its put intent ([§6.6](#6.6%20A%20block%27s%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)) | the intent | a plan refused for its namespace is re-offered and carved again under the current namespace; one refused for destroyed current material stays **Dirty** until new material is current; a failed record is retried in place, and past the step bound the block's attempt is abandoned |
 | **Put** | streams the block from the offer through the syncer ([RFC 3 §3.4](rfc-3-syncer.md#3.4%20One%20put%20per%20block)) | one chunk per worker | the syncer retries it under the same name within its own bound ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)); once `Upload` returns a failure the engine puts that name no more: the attempt is abandoned, and its content re-offered under a new name after the pass's backoff |
-| **Commit** | under the guard, one metadata transaction per block ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)) | guard, briefly | conflict: retried; intent missing: abandoned and re-offered; over `K` because a commit landed since the plan: applies the block with the files that fit, reports only those, and re-offers the rest; stale epoch: the shard's pipeline stops. Adoption refused cannot occur while every chunk is carried; with deduplication, the rest applies and the adopting refs are re-offered |
+| **Commit** | under the guard, one metadata transaction per block ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)), always: the Carve state's key-budget end ([§6.7](#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile)) keeps every chunk's commit within `K`, so every block holds at least one chunk and is never split ([RFC 2](rfc-2-carver.md) P2); zero refs with no block to ride commit in one zero-ref commit, with no Intent and no Put ([RFC 6 §4.1](rfc-6-block-metadata.md#4.1%20What%20one%20commit%20records)) | guard, briefly | a key record of the block's material marked destroyed ([§10.4](#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable)): refused, the attempt abandoned and its extents re-offered under current material; conflict: retried; intent missing: abandoned and re-offered; over `K` because a commit landed since the plan: applies the block with the files that fit, reports only those, and re-offers the rest, which the next pass carves again from a new covering lookup, so the key-budget end then applies to the refs that commit added and no chunk is re-offered over `K` forever; stale epoch: the shard's pipeline stops. Adoption refused cannot occur while every chunk is carried; with deduplication, the rest applies and the adopting refs are re-offered |
 | **Mark offloaded** | reports the block's committed extents through `report` ([§6.8](#6.8%20The%20callback%20returns%20only%20what%20committed)) | — | a `report` error leaves the block's extents unmarked and **Dirty**, and the re-offer finds every ref already committed; a crash here is recovered by a re-offer whose commit finds every ref already committed ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) |
 
 A pass is done when every block has been reported or abandoned. What was not
@@ -2410,7 +2429,8 @@ fault wrapper around its in-memory implementation, and again as production compo
 | O1, O2 every step | For each state, inject in turn: one failure, failures past the step bound, a hang, and a process crash. Assert that once the fault clears, every extent is reported offloaded and evictable within the maximum age plus the backoff cap; no extent is reported without its commit; and every orphaned object is named by an intent that is later abandoned. |
 | O3 unknown outcome | Lose a put's response. Assert the retry reuses the name and the bytes, and one object results. |
 | no second retry layer | Make the store fail every put past the syncer's bound. Assert `Upload` is called once per attempt, the engine never calls it again with the same name, and the content is re-offered under a new name after the backoff. An engine that re-puts after `Upload` returned doubles the store's retry budget. |
-| commit within `K` | Plan a block over a run whose current refs are 10⁴ 4 KiB refs, with `K` forced small. Assert the assembler closed the block early and no commit transaction exceeded `K` keys. Land a second pass's commit between plan and commit; assert the commit applies the files that fit and re-offers the rest, never exceeding `K`. |
+| commit within `K` | Plan a block over a run whose current refs are 10⁴ 4 KiB refs, with `K` forced small. Assert the assembler closed the block early and no commit transaction exceeded `K` keys. Land a second pass's commit between plan and commit; assert the commit applies the files that fit and re-offers the rest, never exceeding `K`. Offer a stretch over a region whose existing refs' keys, with one chunk's and a commit's per-block and per-file keys, would pass `K`: assert the Carve state ends the stretch there as real, every block's commit is one transaction, and none exceeds `K`; land a commit that adds refs there between plan and commit, and assert the re-offered chunk is carved again within `K`. Plan a zero run over many existing refs: assert its keys count toward the pending block. |
+| all-zero stretch | Offer a stretch whose chunks are all zeros. Assert no intent is recorded and nothing is put, one zero-ref commit writes the zero refs within `K`, the extents are reported offloaded, and the journal releases them. |
 | namespace captured | Start a re-home switch after a pass's capture and before its intent. Assert the plan is refused at intent, nothing is put under the new namespace with chunk IDs keyed by the old one, and the content is re-offered and reads back. Repeat under sustained writes to the share: assert the `Bind` returns once the passes captured before it are joined, and no pass captured after it carries the old namespace. |
 | O4 own intents | Abandon an attempt past its put bound with the primary still live. Assert its intent is abandoned and its object deleted without an epoch change. |
 | O6 poison file | One file's offered reader fails every read, among 10³ other dirty files, and it is written at 100 writes a second for 10 simulated minutes with the age tick running. Assert the others become offloaded at the unloaded rate, the failing file is backed off alone and reported by name, and its passes number at most 10 minutes ÷ `offload.retry_max` + 5. Register a source with `Deadline` 10 s whose `Run` fails every item: assert each item is dispatched once more with `Expired` set and counted. |
@@ -2586,6 +2606,12 @@ shared copies dead weight.
   ([RFC 2 §2.4](rfc-2-carver.md#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)). The end is real at a hole, at the file's settled end or at a
   offloaded neighbour; it is artificial where the offer's `limit` or age cut the
   stretch short.
+- The Carve state **MUST** also end a stretch, as real, before any extent of at
+  most `Max` bytes in it would replace refs whose keys, with one chunk's own keys
+  and a commit's per-block and per-file keys, pass the key budget `K`
+  ([RFC 2 §2.4](rfc-2-carver.md#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut), P2); the end may fall inside an extent, down to one byte past the
+  stretch's start, so a stretch is never empty. It counts the replaced refs' keys from the covering lookup
+  the Carve state reads first, which the Assemble state then reuses, so no chunk's commit passes `K` alone.
 - On an artificial end `Cut` returns `consumed`, the bytes it cut; the engine
   reports nothing past `consumed`, and the tail stays **Dirty** and is offered
   again from there. Once the tail's oldest byte reaches the maximum age
@@ -3597,6 +3623,42 @@ unevictable and offered again under current material, until a new block holding
 it commits ([RFC 5 §2.7](rfc-5-transforms.md#2.7%20Failures), [Appendix B.4](rfc-5-transforms.md#B.4%20Losing%20a%20key%20loses%20the%20data)). A read of a remote-only chunk whose material is
 destroyed fails as **Lost**, reported as itself and never as corruption.
 
+**A commit never lands under destroyed material.** An attempt pins its
+material from Mint to Commit or Abandon ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)). The offload commit
+transaction **MUST** read with conflict tracking ([RFC 6 §5.4](rfc-6-block-metadata.md#5.4%20Reads%20that%20gate%20a%20commit)) the key record of each material
+the attempt pinned, and the material IDs it reads are the ones the block's
+`encodings` name, never a list the caller passes. It refuses to commit if any
+record is marked destroyed. The destroy writes that record, so a destroy that
+commits first refuses the commit, and a destroy ordered after the commit finds
+the block committed and clears its extents' offloaded bits as above. The engine
+then abandons a refused attempt and offers its extents again under current
+material.
+
+A destroyed master key is covered the same way: the provider marks every key
+record whose wrap names it destroyed before it reports the destroy
+([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)), so the commit refuses a data key it wraps
+like any destroyed material.
+
+> decision: the commit refuses only on a key record marked destroyed. A loss no
+> operator has declared yet marks no record, so a commit under it still lands;
+> the notice's `Unmark` and the reseed below then keep its extents held once the
+> loss is declared. Withdraw this if an undeclared loss is found to commit a
+> block that no copy can read.
+
+**A destroy racing Mark, or a crash, never leaves an extent marked.** The engine
+**MUST NOT** mark an attempt's extents offloaded once any material the attempt
+pinned has been reported destroyed: Mark checks that under the same lock the
+notice's `Unmark` takes, and leaves the extents **Dirty**. The reseed
+([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) **MUST** clear the offloaded bit of each extent whose block's
+`encodings` name material whose key record is marked destroyed, before that file
+can be evicted. It reads that state from the durable key records, which a
+master-key destroy marks too ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)), never from the notice's
+cursor, so a crash between a destroy and its `Unmark` loses nothing. A pass whose pin
+finds the share's current material destroyed **MUST** refuse at Intent, before
+any put, so it never puts and abandons the same content on every pass; the
+content stays **Dirty** until new material is current, and the provider's
+`material_destroyed` names the namespace meanwhile ([RFC 5 Appendix B.4](rfc-5-transforms.md#B.4%20Losing%20a%20key%20loses%20the%20data)).
+
 Locks, deny modes, delegations, open handles and snapshots **MUST NOT** make an
 extent ineligible for eviction ([RFC 14 §9.3](rfc-14-open-state.md#9.3%20Locks%20do%20not%20pin%20bytes), [RFC 6 §6.5](rfc-6-block-metadata.md#6.5%20Who%20owns%20a%20ref)). An operator's retention
 pin **MAY** exclude a share from eviction, and the engine **MAY** suspend eviction
@@ -3799,7 +3861,7 @@ removal ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)
 | `Overlay(share, file)` | size, times and version of the journal's uncommitted operations of the file, replayed in version order, and whether any is pending ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)) |
 | `Allocation(share, file, off)` | [§7.6](#7.6%20Allocation%20answers%20from%20the%20hole%20set) |
 | `PrepareCut(shard)`, `CommitCut(shard)` | the snapshot cut, [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) |
-| `PreWarm(share, files)` | one page of a pre-warm, [§7.4](#7.4%20The%20speculator) |
+| `PreWarm(share, files)` | one page of a pre-warm, [§7.4](#7.4%20The%20speculator); it and the speculator's pre-warm land with their first caller, an operator's pre-warm action, which no RFC specifies yet |
 | `WaitOffloaded()` | [§11.4](#11.4%20How%20far%20behind%20offload%20is%2C%20is%20observable) |
 | `Stats()` | per share and journal, conditions included, [§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included) |
 
@@ -3938,7 +4000,9 @@ type Overlay struct {
 // FileID, ShareID, ShardID, NamespaceID, OpenID, Version, Verifier, TimeMask,
 // Span: aliases of the metadata types. ShareTag, SegmentRange, AckResult:
 // RFC 1's; JournalID, InstallationID: the identifiers RFC 1's calls take.
-// StoreID: RFC 3's. Errors: the engine declares none (below).
+// StoreID: RFC 3's. Each alias is an import of its owner's contract, which
+// RFC 0 §1.2 allows, never of its implementation. Errors: the engine declares
+// none (below).
 ```
 
 **The engine declares no error.** It returns these values of `pkg/vfs/vfserr`,
@@ -4101,7 +4165,7 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§6.4](#6.4%20The%20offload%20guard%20is%20narrow) guard across a removal | Stall a truncate between its journal step and its transaction; trigger an offload. Assert the offer waits, and no ref lies past `size` after both finish. |
 | [§8.3](#8.3%20A%20pass%20in%20flight%20survives%20a%20removal%20under%20it) transfer survives a removal | Stall a pass's upload; truncate the file below the offered extent; release the upload. Assert the upload completes, the commit drops the refs past the new size, drops a straddler whole and re-offers its outside part, applies the rest, and the truncated extent reads as past end of file. Run both commit orders. Repeat with deallocate, release and a clone onto the file. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) restart re-offer | Crash after a put and before its commit; restart. Assert the extents are offered again under a new name, the first object stays unrecorded with its intent, collection removes both once the epoch is superseded, and reads are correct. Crash after a commit, before `report`; assert the re-offer carries every chunk, its commit finds every ref already committed and writes none, its block is born dead, and the extents become evictable. |
-| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) journal gone | Write to two shares on one device journal without offloading; stop; delete the journal directory; start. Assert both shares are refused, each named, `journal_lost` is raised, and no journal is created. Acknowledge the loss; assert the shares serve, the condition clears, and a read of the unoffloaded extent fails as **Lost**, never zeros. Repeat with the shard's journal replicated (cluster): assert it rejoins from a replica with no operator action. |
+| [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) journal gone | Write to two shares on one device journal without offloading; stop; delete the journal directory; start. Assert both shares are refused, each named, `journal_lost` is raised, and no journal is created. Acknowledge the loss; assert the shares serve, the condition clears, and a read of the unoffloaded extent fails as **Lost**, never zeros. Acknowledge a loss of a journal that is only missing, reattach it and let the retried open succeed, then lose it again: assert `journal_lost` is raised, since the open consumed the acknowledgement. Repeat with the shard's journal replicated (cluster): assert it rejoins from a replica with no operator action. |
 | [§2.7](#2.7%20The%20version%20limit) version limit | Start with a block of 16 versions; assert `S‖id‖vl` is committed before the first write is accepted. Write unstably until fewer versions remain than the trigger (the larger of 8 and the peak rate times the margin); assert the limit is raised in a committed transaction before the journal is given it. Block the raise's commit; assert the write that reaches the limit answers `ErrDelay`, not `ErrNoSpace`, and succeeds once the raise commits. Fail the raise's commit once with the journal at its limit and no write pending; assert, with no write or draw in between, that the raise commits and the next write succeeds. Fail a `Bind`'s limit write after its `Share` raised the counter to the limit last passed; assert, with no write in between, that the limit is raised and a write to a served share succeeds. Crash with a reported, unsynced version; restart; assert no version is issued again. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) attach above the floor | Move a share whose refs reach version 9·10⁸ onto a node whose journal's counter is near 2·10⁶; write over an extent the imported refs cover, offload, evict, read. Assert the new write's version exceeds 9·10⁸ and the read returns the new bytes. Repeat for a clone and a restore into the node. Remove the raise: the read returns the imported content. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) attach after a device loss | Write unstably to a share, the metadata store stalled so none commits, until its journal has reported versions far above its version floor; destroy the device, acknowledge the loss, and attach the share to a new journal whose counter starts at 0. Assert the counter is raised above the share's version limit `S‖id‖vl` as well as its floor, so no version the lost journal reported is issued again, and a write after the attach reads back. Assert too that the attach wrote the limit as a tracked max-write, the incarnation and the verifier changed, and a share whose `rm` row reads offloaded was not attached. An attach that raises only above the floor reissues those versions ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)). |
@@ -4150,7 +4214,7 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) clone resumed at a full limit | Crash a clone of a 1 GiB dirty extent after its copies synced and before phase 1, on a share at its journal limit with the remote down; restart. Assert start re-makes no copy the journal holds, reserves nothing for them, and serves every other file; an open of the destination answers `ErrDelay` with `DelayCapacity`, and an SMB write into the source extent is held as capacity, never answered `STATUS_FILE_LOCK_CONFLICT`. Bring the remote back: assert the clone finishes and both files serve. |
 | [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally) refusals | Clone between shares of two namespaces: assert `ErrCross` (`CrossNamespace`) and nothing changed. `CLONE` one byte over `clone_max_len`: assert `ErrInvalid`. `COPY` 1 GiB while an NFSv3 writer writes the source: assert each source write is held and answered within one chunk's time, measured at the client, with no `NFS3ERR_JUKEBOX`, and that a write whose deadline is shorter than the chunk gets `ErrDelay`, and a deadline mid-copy answers a short count that a continuing copy completes. |
 | [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here) retry later | Fill the journal with dirty bytes, the remote reachable: assert a write returns `ErrDelay`, never `ErrNoSpace`, and succeeds once offload and repack free space. Repeat with the remote unreachable past the caller's deadline: assert `ErrDelay` throughout, never `ErrNoSpace`, and success once it returns. Fill one share to its journal limit: assert `ErrDelay`, not `ErrNoSpace`. Make the store refuse puts with a quota error (storage full, bucket quota exceeded): assert `ErrNoSpace` at once, and that the store error reached the engine as `ErrDenied`, not `ErrInvalid`. Make a proxy refuse block puts for their size (`413`), then make the store refuse the credential (`403`): assert `ErrNoSpace` at once for each, and success once the limit is lifted or the credential restored. An engine reading a bare healthy flag answers the outage and the full store alike. |
-| [§10.4](#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable) destroyed material | Destroy a data key while the journal holds some chunks its blocks cover. Assert those extents lose their offloaded bit, are not evicted, are offloaded again under current material and read back; a remote-only chunk it covered fails as **Lost**, not corrupt. |
+| [§10.4](#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable) destroyed material | Destroy a data key while the journal holds some chunks its blocks cover. Assert those extents lose their offloaded bit, are not evicted, are offloaded again under current material and read back; a remote-only chunk it covered fails as **Lost**, not corrupt. Destroy the master key that wraps a pinned data key between an attempt's pin and its Commit: assert the commit transaction refuses. Mark a pinned material's key record destroyed between an attempt's pin and its Commit, as an operator's declared loss does: assert the commit transaction refuses, the attempt is abandoned, no block commits under that material, and its extents are offered again under current material. Destroy it between an attempt's Commit and its Mark: assert its extents end unmarked. Crash after a destroy and before its `Unmark`: assert the reseed clears the bits before any of those extents is evicted. Destroy the current material with no replacement: assert the next pass refuses at Intent, puts nothing and leaves the content dirty and held. |
 
 ### 15.2 Group B — wedging
 
@@ -4229,7 +4293,7 @@ change and each real service daily.
 
 | # | Measures | Setup | Target |
 | --- | --- | --- | --- |
-| B1 | offload throughput | sustained writes of non-deduplicating data larger than the journal | offloaded MiB/s ≥ 80% of the sizing tool's raw figure ([RFC 3 §2.11](rfc-3-syncer.md#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) for the same store and pool sizes |
+| B1 | offload throughput | sustained writes of non-deduplicating data larger than the journal | offloaded MiB/s ≥ 80% of raw puts of the same block size on the same store at the same pool sizes, measured in runs interleaved with it |
 | B2 | small files | create, write and close 10^4 and 10^5 files of 64 KiB | files/s within 20% across directory sizes; puts per file ≤ 64 KiB / block target, rounded up |
 | B3 | pacing | B1 below and above the soft threshold ([§10.2.1](#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it)) | p99 submission latency ≤ 50 ms, max ≤ 500 ms, offloaded throughput within 10% of B1 |
 | B4 | cold reads | random 4 KiB and sequential reads of evicted content | random: one request per read, p99 ≤ 2 store round trips; sequential: bytes fetched per byte read ≤ 1.1 |
