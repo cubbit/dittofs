@@ -45,15 +45,15 @@ caller, the dedup oracle, and the first release's `Add` takes no lookup and retu
 (D3); P2, A3, A7, §5.1 and §5.4: a block must close early at the key budget `K`, counting zero
 refs' keys and the per-block and per-file keys, and counts as a short block that A3 does not
 limit; no chunk passes `K` alone, because the caller ends a stretch, as real, before one could
-(§2.4), so a commit is never split (D3); §3.2: the
-minimum-size count takes only the bytes before the byte under test, a passing byte ends its
+(§2.4), so a commit is never split (D3); §3.2: *m*
+switches at `Target` on the chunk's length before the byte under test, a passing byte ends its
 chunk, and the first byte tested is at index `Min` − 1; §3.7 and §9: both keys are `[32]byte`,
 an all-zero chunk-ID key is refused, and the chunking key must agree with the encryption flag,
 an all-zero one refused, with a fuzz check (D4);
 §9.1, §10.3, §10.4, §10.6: the allocation counts run per pull request and skip under the race
 detector, the golden vectors' second architecture nightly, and K4 on the corpus by hand, with
-edit stability checked per change on seeded input, one byte inserted, against K4's criterion
-(§1.4). This pull request merges after
+edit stability checked per change on seeded input, one byte inserted, against K4's criterion, which §9's B4 row now
+names (§1.4). This pull request merges after
 the RFC 8 offload plan's (#5528), which carries the RFC 0 §1.2 amendment rule 7 cites.
 **Transition:** new installations only, as #3119 decided. v1 and v2 never run in one binary, so no
 name carries a version, and v2 neither reads nor migrates anything v1 wrote. No epic touches v1
@@ -289,7 +289,7 @@ reader; the one `iotest` lacks, zero bytes with no error, is a few lines in epic
 
 **Plan estimate: 35 subtasks, 57 man-days, not counting epic 6.**
 
-RFC 2 is 1,582 lines, which gives N = 4. Its cohesive areas are three: the chunker and the
+RFC 2 is 1,626 lines, which gives N = 4. Its cohesive areas are three: the chunker and the
 carver, RFC 2 §1.2's two layers, and the block assembler, which §1 and §5 make a separate layer.
 The block name joins the carver, since §1.2 puts all of §4 there, rather than make a fourth epic
 of about two man-days. Composing the carver into the engine is not an epic here: it is the RFC 8
@@ -533,7 +533,9 @@ the RFC 8 offload plan's epic 21 adds the section to the node's table (§6 point
 
 **Expected content:**
 - The settings derivation and refusal, an all-zero chunk-ID key among the refusals with its fuzz
-  target (RFC 2 §3.7 as amended, D4), and the mask derived from `Target` with its start-up check.
+  target, whose seeds in `testdata/fuzz/` hold an all-zero chunk-ID key, an all-zero chunking key
+  with encryption and a chunking key without it, since random input never draws a zero key (RFC 2
+  §3.7 as amended, D4), and the mask derived from `Target` with its start-up check.
 - `Target`'s settings section in `pkg/carver/section`, namespace-scoped and bound, its validator
   calling the check of a `Target` alone, since a settings validator holds no key material (the
   keys are RFC 5's key table), as the RFC 3 plan does for the syncer's in
@@ -543,6 +545,7 @@ the RFC 8 offload plan's epic 21 adds the section to the node's table (§6 point
   holds it, a bound key is recorded at the namespace's creation by `settings.Table.Bound`
   (`pkg/settings/bound.go:34`).
 - The unkeyed and keyed gear tables, with §6's `ponytail:` at the keyed one.
+- Edit stability on seeded input, one byte inserted: §9's B4 row, at every profile (§10.4 as amended).
 - The boundary search with normalisation and the 64-byte warm-up, landed first for track B.
 - §9's chunker rows, repetitive input among them, sized by D8.
 - Property fuzzing against the reference chunker, in the `fuzz` suite; the allocation count.
@@ -564,7 +567,7 @@ chunk-ID keys gives disjoint chunk IDs, none equal to the unkeyed hash of its ch
 - `Cut`: the refill loop, borrowed bytes, `consumed`, the buffer-size refusal.
 - The artificial end, checked as offers re-offered from `consumed` against one long stretch.
 - Errors: a reader or `emit` failure, no short chunk, D5's bound.
-- The edge cases of RFC 2 §10.2, and edit stability on seeded input (§10.4 as amended).
+- The edge cases of RFC 2 §10.2.
 - §10.3's sweep; property fuzzing of C1, C4, C7, in the `fuzz` suite.
 - K2 and K3's benchmark functions, and the allocation count.
 
@@ -574,7 +577,7 @@ chunk-ID keys gives disjoint chunk IDs, none equal to the unkeyed hash of its ch
 
 The fold of RFC 2 §5, without the dedup lookup (D3). **Owns:** RFC 2 §5.1 to §5.7. **Done when:**
 RFC 2 §5.7's A1 to A7 and every row of its check table but the two that need the lookup, the key
-budget row among them (RFC 2 §5.7 as amended); §10.2's block-target edge cases.
+budget row included (RFC 2 §5.7 as amended); §10.2's block-target edge cases.
 
 **Expected content:**
 - The constructor and the block-target range, with §5.2's `decision:` at the check.
@@ -666,10 +669,10 @@ nightly; RFC 2's suites paragraph names each new suite.
 | The namespace keys: the chunk-ID key drawn for every namespace and never rotated (RFC 2 §4.1), the chunking key drawn only for an encrypting one, refused by fingerprint and never rotated with the data keys (RFC 2 §6, C10's namespace half) (§1.3, D4) | the key table and namespace keys are RFC 5's; the carver takes keys as inputs | RFC 5 | its namespace keys land |
 | C8 and C11: the nonce drawn from a cryptographic source, the name minted once with its put intent, a plan refused under another namespace's key (RFC 2 §4.2, §4.3; §9's consumer row) (D9) | the intent step is the pipeline's (RFC 8 §6.6), over `kvstore`'s built `Intend` (`pkg/metadata/kvstore/offload.go:69`) | RFC 8 offload plan, epic 15 | its Intent state lands |
 | The block-target key in RFC 13's table and RFC 13 §9's "§6 block target range" row (RFC 2 §5.2; epic 5 keeps the constructor's refusal as a defence) | the block target is a remote-store setting (RFC 13's scope table) | RFC 4 plan, epic 7 | its remote-store settings land |
-| The dedup lookup and the adopted disposition, with §5.7's two rows that need it, and §4.3's matching rules (D3; RFC 2 §5.1 as amended) | no caller in v1.1: deduplication is off in the first release (RFC 8 §6.5) | RFC 8 | deduplication is re-added, post-v1 |
+| The dedup lookup and the adopted disposition, with §5.7's two rows that need it, and §4.3's matching rules (D3; RFC 2 §5.1 as amended) | no caller in v1.1: deduplication is off in the first release, and RFC 8 §6.5 leaves re-adding it to a later RFC | unowned | deduplication is re-added, post-v1 |
 | RFC 2 §6's keyed PRF upgrade of the keyed gear table (§4.3) | the RFC's `ponytail:` | unowned | a deployment must hide which files it holds from a bucket reader |
 | Setting each chunk's all-zero flag from the bytes `emit` hands over, and the consumer check that a chunk with any non-zero byte is never flagged: a wrong flag makes it a zero ref that no block stores (D3; §1.5 rule 5) | the caller holds the bytes; the assembler never sees them (RFC 2 §5.5) | RFC 8 offload plan, epic 15 | its Carve state lands |
-| A time per extent for each chunk's age, in place of its file's oldest dirty write, and removing the Carve state's `ponytail:` (RFC 2 §5.1, §5.4; D3, §4.3) | the journal reports one age per file and none per extent; the file's age is never younger than the truth, so A3 holds | the journal plan ([`rfc-1-journal-plan.md`](rfc-1-journal-plan.md)), the epic after its epic 9b | short blocks put before their age ceiling show up as a measured cost in put count |
+| A time per extent for each chunk's age, in place of its file's oldest dirty write, and removing the Carve state's `ponytail:` (RFC 2 §5.1, §5.4; D3, §4.3) | the journal reports one age per file and none per extent; the file's age is never younger than the truth, so A3 holds | the journal plan ([`rfc-1-journal-plan.md`](rfc-1-journal-plan.md)), which has no epic for it yet | short blocks put before their age ceiling show up as a measured cost in put count |
 | Randomised assembly (RFC 2 §5.6) (epic 5) | sequential assembly is the RFC's proposal; changing it needs no migration | unowned | a measured need to blur the chunk-size fingerprint, post-v1 |
 
 ## 7. RFC coverage

@@ -638,7 +638,7 @@ bit-for-bit identical. Appendix A.2 measures the cost.
 Same bytes, same settings, same boundaries — in any process, on any machine, at
 any version.
 
-The one thing it does **not** cover is where a stretch begins. The first `Min`
+The one thing it does **not** cover is where a stretch begins. The first `Min` − 1
 bytes of any stretch are never tested, so the same bytes starting at a different
 point cut differently. Cutting converges when the same stretch is offered again.
 An offer cut at a limit does not move the next start, because its tail is held
@@ -1237,7 +1237,7 @@ rows need no reader and no hash at all.
 | consumer | C11 plan keyed under one namespace | Form a plan in namespace A, then hand it to namespace B's intent step, as a re-home switching mid-pass would; assert it is refused and nothing is put. |
 | chunker | [§3.4](#3.4%20How%20far%20back%20a%20decision%20looks) warm-up equivalence | Assert boundaries are identical whether the fingerprint is warmed from the chunk start or over the last 64 bytes, across several profiles. |
 | chunker | [§3.8](#3.8%20What%20happens%20on%20repetitive%20data) repetitive input still terminates | Chunk 64 MiB of zeros under the unkeyed table at every supported `Target`; assert every chunk is exactly `Max`. Chunk a 64-byte repeating pattern, keyed and unkeyed; assert the pass ends and no chunk exceeds `Max`. Without `Max` the search can fail forever and the whole file becomes one chunk. |
-| chunker | B4 shift resistance | Insert one byte early in a large input; assert every boundary past the edited chunk is unchanged. |
+| chunker | B4 shift resistance | Insert one byte early in a large input; assert every chunk keeps its hash, except the one or two around the edit, as [§10.5](#10.5%20Performance%20targets)'s K4 target requires. |
 | carver | [§4](#4.%20Identity) hash covers the chunk | Cut identical content at two different `base` offsets; assert one hash. |
 | carver | [§4.1](#4.1%20A%20chunk) chunk IDs are keyed | Cut the same input under two chunk-ID keys; assert the boundaries are the same and every ID differs, and that no ID equals the unkeyed BLAKE3 hash of its bytes. A design with plaintext IDs gives equal IDs under both keys. |
 | chunker | [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) derivation golden | Derive the unkeyed table, a keyed table under a fixed key, and one chunk ID; assert each against committed bytes computed from [§3.2](#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)'s text by an independent implementation, and that the test uses *t* + 1 and *t* − 3 top bits. |
@@ -1301,7 +1301,7 @@ workload's, and inflates every throughput figure it touches.
 | Differential | a faster or refactored implementation | two implementations over the same random input **MUST** emit identical chunks ([§1.3](#1.3%20It%20is%20testable%20on%20its%20own%2C%20by%20construction)) |
 | Reader and emit faults | [§7](#7.%20Errors) | a reader and an `emit` that fail at a chosen byte or chunk ([§10.3](#10.3%20Faults%20and%20determinism)) |
 | Architecture | B2: any machine | the golden vectors run on at least two CPU architectures; BLAKE3 takes different code paths on each |
-| Benchmark | [§9.1](#9.1%20Benchmarks%20and%20quality%20measures), K1–K5 | real time on the reference box, after merge ([tiers](rfc-index.md#Test%20tiers)); the counts of [§10.4](#10.4%20What%20CI%20checks%20instead%20of%20timing) run per change |
+| Benchmark | [§9.1](#9.1%20Benchmarks%20and%20quality%20measures), K1–K5 | real time on the reference box, K1–K3 nightly and K4–K5 by hand ([tiers](rfc-index.md#Test%20tiers)); the counts of [§10.4](#10.4%20What%20CI%20checks%20instead%20of%20timing) run per change |
 
 There is no crash test, no soak and no concurrency test, and that is the design
 working rather than a gap: the carver holds nothing that a crash can tear,
@@ -1400,7 +1400,7 @@ same answer on any runner:
   ([§1.3](#1.3%20It%20is%20testable%20on%20its%20own%2C%20by%20construction)), so it runs by hand with K5.
 
 A warm-up that crept back over the whole chunk ([§3.4](#3.4%20How%20far%20back%20a%20decision%20looks)) changes no output, so no
-count sees it. K1 after merge does: the boundary search falls from over 20×
+count sees it. K1, run nightly, does: the boundary search falls from over 20×
 BLAKE3's rate to about 2×, far below its target.
 
 ### 10.5 Performance targets
