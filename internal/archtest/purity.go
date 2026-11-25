@@ -2,36 +2,39 @@ package archtest
 
 import (
 	"go/ast"
-	"go/parser"
 	"go/token"
+	"go/types"
 	"slices"
 )
 
-// Impurities parses dir's non-test .go files, whatever their build tags, plus
-// the planted ones, and reports each package-level var not named in vars and
-// each function that is not a method, init included: a contract holds no
-// state and no behaviour beyond methods over its own values (RFC 0 §1.2),
-// which neither an import walk nor an export pin can see.
-func Impurities(dir string, vars []string, planted ...string) ([]string, error) {
-	paths, err := GoFiles(dir)
+// Purity is what a package may declare at package level beyond types,
+// constants and methods.
+type Purity struct {
+	Vars       []string // the variables it may hold, by name: its error values
+	Funcs      bool     // whether it may declare functions other than methods
+	Interfaces bool     // whether it may declare interface types
+}
+
+// Impurities type-checks the package path made of dir's non-test .go files,
+// whatever their build tags, plus the planted ones, reading its imports
+// through imp, and reports each package-level variable rule does not name,
+// each function that is not a method, init included, unless rule allows
+// them, and each interface type, an alias or a type defined over one
+// included, unless rule allows them. These are the state and behaviour an
+// import walk and an export pin cannot see.
+func Impurities(imp types.Importer, path, dir string, rule Purity, planted ...string) ([]string, error) {
+	pkg, files, err := load(imp, path, dir, planted)
 	if err != nil {
 		return nil, err
 	}
 
-	paths = append(paths, planted...)
-
 	var bad []string
 
-	for _, p := range paths {
-		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.SkipObjectResolution)
-		if err != nil {
-			return nil, err
-		}
-
+	for _, f := range files {
 		for _, decl := range f.Decls {
 			switch d := decl.(type) {
 			case *ast.FuncDecl:
-				if d.Recv == nil {
+				if d.Recv == nil && !rule.Funcs {
 					bad = append(bad, "func "+d.Name.Name+" is not a method")
 				}
 			case *ast.GenDecl:
@@ -41,11 +44,19 @@ func Impurities(dir string, vars []string, planted ...string) ([]string, error) 
 
 				for _, spec := range d.Specs {
 					for _, n := range spec.(*ast.ValueSpec).Names {
-						if !slices.Contains(vars, n.Name) {
+						if !slices.Contains(rule.Vars, n.Name) {
 							bad = append(bad, "var "+n.Name+" is state")
 						}
 					}
 				}
+			}
+		}
+	}
+
+	if !rule.Interfaces {
+		for _, name := range pkg.Scope().Names() {
+			if tn, ok := pkg.Scope().Lookup(name).(*types.TypeName); ok && types.IsInterface(tn.Type()) {
+				bad = append(bad, "type "+name+" is an interface")
 			}
 		}
 	}

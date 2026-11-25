@@ -10,6 +10,10 @@ import (
 // aws is the AWS SDK for Go v2 with its runtime.
 var aws = []string{"github.com/aws/aws-sdk-go-v2/...", "github.com/aws/smithy-go/..."}
 
+// entityLibs are the libraries the metadata entities' contract imports, which
+// a package reaching it reaches too.
+var entityLibs = []string{"github.com/google/uuid", "lukechampine.com/blake3"}
+
 // table is every package of the remote tier, landed or not, and what its
 // production code may reach (RFC 0 §1.2, RFC 4 §1.2): the contract nothing but
 // the standard library; the codec the contract and the transforms' and the
@@ -18,7 +22,7 @@ var aws = []string{"github.com/aws/aws-sdk-go-v2/...", "github.com/aws/smithy-go
 // an upper bound: a package that reaches less passes.
 var table = []archtest.Row{
 	{Pkg: "pkg/remote"},
-	{Pkg: "pkg/remote/codec", Reach: []string{"pkg/remote", "pkg/transform", "pkg/transform/keys", "pkg/metadata/entity/..."}},
+	{Pkg: "pkg/remote/codec", Reach: []string{"pkg/remote", "pkg/transform", "pkg/transform/keys", "pkg/metadata/entity/..."}, Libs: entityLibs},
 	{Pkg: "pkg/remote/memory/...", Reach: []string{"pkg/remote", "pkg/sim", "pkg/remote/memory/..."}},
 	{Pkg: "pkg/remote/remotetest", Reach: []string{"pkg/remote", "internal/prof"}},
 	{Pkg: "pkg/remote/s3/...", Reach: []string{"pkg/remote", "pkg/remote/s3/..."}, But: []string{"pkg/remote/s3/s3fault/..."}, Libs: aws},
@@ -28,16 +32,18 @@ var table = []archtest.Row{
 // Every package under pkg/remote reaches, through its production code, only
 // what its row allows.
 func TestImportWalk(t *testing.T) {
-	pkgs, err := archtest.Walk(".")
+	graphs, err := archtest.Walk(".", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if !slices.ContainsFunc(pkgs, func(p archtest.Listed) bool { return p.Path == archtest.Module+"pkg/remote" }) {
-		t.Fatalf("the walk listed %d packages, none of them pkg/remote", len(pkgs))
+	for _, g := range graphs {
+		if !slices.Contains(g.Roots, archtest.Module+"pkg/remote") {
+			t.Fatalf("the walk listed %q, not pkg/remote", g.Roots)
+		}
 	}
 
-	for _, v := range archtest.Check(pkgs, table) {
+	for _, v := range archtest.Check(table, graphs...) {
 		t.Error(v)
 	}
 }
@@ -49,62 +55,71 @@ func TestImportWalk(t *testing.T) {
 // imports only misses the engine, a walk of one platform or without cgo misses
 // the others, and a walk that binds tests reports the syncer too.
 func TestImportWalkFollowsProductionImportsTransitively(t *testing.T) {
-	pkgs, err := archtest.Walk("testdata/walk/pkg/remote")
+	graphs, err := archtest.Walk("testdata/walk/pkg/remote", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	want := []string{
 		"pkg/remote/codec reaches pkg/carver, which row pkg/remote/codec does not allow",
-		"pkg/remote/codec reaches pkg/engine, which row pkg/remote/codec does not allow",
+		"pkg/remote/codec reaches pkg/engine through pkg/transform, which row pkg/remote/codec does not allow",
 		"pkg/remote/codec reaches pkg/gc, which row pkg/remote/codec does not allow",
 		"pkg/remote/codec reaches pkg/journal, which row pkg/remote/codec does not allow",
 	}
-	if got := archtest.Check(pkgs, table); !slices.Equal(got, want) {
+	if got := archtest.Check(table, graphs...); !slices.Equal(got, want) {
 		t.Errorf("violations over the planted module %q, want %q", got, want)
 	}
 }
 
+// m names a package of the module by its module-relative path.
+func m(rel string) string { return archtest.Module + rel }
+
 // The checker, one case per branch.
 func TestImportCheck(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		pkg  archtest.Listed
-		want []string
+		name    string
+		root    string
+		imports map[string][]string
+		want    []string
 	}{
-		{"an allowed reach", archtest.Listed{
-			Path:    archtest.Module + "pkg/remote/codec",
-			Deps:    []string{archtest.Module + "pkg/remote", archtest.Module + "pkg/transform", archtest.Module + "pkg/metadata/entity/internal", "context"},
-			Imports: []string{archtest.Module + "pkg/transform", "context"},
+		{"an allowed reach", m("pkg/remote/codec"), map[string][]string{
+			m("pkg/remote/codec"):             {m("pkg/remote"), m("pkg/transform"), "context"},
+			m("pkg/transform"):                {m("pkg/metadata/entity/internal")},
+			m("pkg/metadata/entity/internal"): {"github.com/google/uuid"},
 		}, nil},
-		{"a reach the row refuses", archtest.Listed{
-			Path: archtest.Module + "pkg/remote/codec",
-			Deps: []string{archtest.Module + "pkg/remote", archtest.Module + "pkg/transform/chain"},
+		{"a reach the row refuses", m("pkg/remote/codec"), map[string][]string{
+			m("pkg/remote/codec"): {m("pkg/remote"), m("pkg/transform/chain")},
 		}, []string{"pkg/remote/codec reaches pkg/transform/chain, which row pkg/remote/codec does not allow"}},
-		{"a package with no row", archtest.Listed{Path: archtest.Module + "pkg/remote/gcs"}, []string{"pkg/remote/gcs has no row"}},
-		{"a library the contract imports", archtest.Listed{
-			Path:    archtest.Module + "pkg/remote",
-			Imports: []string{"github.com/aws/aws-sdk-go-v2/aws", "io"},
+		{"a reach through an allowed package", m("pkg/remote/codec"), map[string][]string{
+			m("pkg/remote/codec"): {m("pkg/transform")},
+			m("pkg/transform"):    {m("pkg/engine")},
+		}, []string{"pkg/remote/codec reaches pkg/engine through pkg/transform, which row pkg/remote/codec does not allow"}},
+		{"a package with no row", m("pkg/remote/gcs"), nil, []string{"pkg/remote/gcs has no row"}},
+		{"a library the contract imports", m("pkg/remote"), map[string][]string{
+			m("pkg/remote"): {"github.com/aws/aws-sdk-go-v2/aws", "io"},
 		}, []string{"pkg/remote imports github.com/aws/aws-sdk-go-v2/aws, which row pkg/remote does not allow"}},
-		{"a library a store imports", archtest.Listed{
-			Path:    archtest.Module + "pkg/remote/s3",
-			Deps:    []string{archtest.Module + "pkg/remote", archtest.Module + "pkg/remote/s3/internal/sign"},
-			Imports: []string{"github.com/aws/aws-sdk-go-v2/service/s3", "github.com/aws/smithy-go"},
+		{"a library the contract reaches through a module package", m("pkg/remote"), map[string][]string{
+			m("pkg/remote"):          {m("pkg/remote/internal")},
+			m("pkg/remote/internal"): {"github.com/google/uuid"},
+		}, []string{
+			"pkg/remote reaches github.com/google/uuid through pkg/remote/internal, which row pkg/remote does not allow",
+			"pkg/remote reaches pkg/remote/internal, which row pkg/remote does not allow",
+		}},
+		{"a library a store imports", m("pkg/remote/s3"), map[string][]string{
+			m("pkg/remote/s3"): {m("pkg/remote"), m("pkg/remote/s3/internal/sign"), "github.com/aws/aws-sdk-go-v2/service/s3", "github.com/aws/smithy-go"},
 		}, nil},
-		{"a store reaching its fault transport", archtest.Listed{
-			Path: archtest.Module + "pkg/remote/s3",
-			Deps: []string{archtest.Module + "pkg/remote", archtest.Module + "pkg/remote/s3/s3fault"},
+		{"a store reaching its fault transport", m("pkg/remote/s3"), map[string][]string{
+			m("pkg/remote/s3"): {m("pkg/remote"), m("pkg/remote/s3/s3fault")},
 		}, []string{"pkg/remote/s3 reaches pkg/remote/s3/s3fault, which row pkg/remote/s3/... does not allow"}},
-		{"the fault transport by its own row", archtest.Listed{
-			Path: archtest.Module + "pkg/remote/s3/s3fault",
-			Deps: []string{archtest.Module + "pkg/remote"},
+		{"the fault transport by its own row", m("pkg/remote/s3/s3fault"), map[string][]string{
+			m("pkg/remote/s3/s3fault"): {m("pkg/remote")},
 		}, []string{"pkg/remote/s3/s3fault reaches pkg/remote, which row pkg/remote/s3/s3fault/... does not allow"}},
-		{"a package beneath the fault transport by its row", archtest.Listed{
-			Path: archtest.Module + "pkg/remote/s3/s3fault/wire",
-			Deps: []string{archtest.Module + "pkg/remote/s3/s3fault", archtest.Module + "pkg/remote"},
+		{"a package beneath the fault transport by its row", m("pkg/remote/s3/s3fault/wire"), map[string][]string{
+			m("pkg/remote/s3/s3fault/wire"): {m("pkg/remote/s3/s3fault"), m("pkg/remote")},
 		}, []string{"pkg/remote/s3/s3fault/wire reaches pkg/remote, which row pkg/remote/s3/s3fault/... does not allow"}},
 	} {
-		if got := archtest.Check([]archtest.Listed{tc.pkg}, table); !slices.Equal(got, tc.want) {
+		g := archtest.Graph{Roots: []string{tc.root}, Imports: tc.imports}
+		if got := archtest.Check(table, g); !slices.Equal(got, tc.want) {
 			t.Errorf("%s: violations %q, want %q", tc.name, got, tc.want)
 		}
 	}

@@ -182,7 +182,7 @@ func TestRemoteIsPure(t *testing.T) {
 			extra = planted(tc.planted)
 		}
 
-		bad, err := archtest.Impurities(dir, errorVars, extra...)
+		bad, err := archtest.Impurities(exportImporter, "github.com/cubbit/dittofs/pkg/remote", dir, archtest.Purity{Vars: errorVars, Interfaces: true}, extra...)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
