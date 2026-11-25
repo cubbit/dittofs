@@ -83,7 +83,7 @@ only matter in inheritable entries (see [Inheritance](#inheritance-flags)).
 | Self-relative (`0x8000`) | Works | Always set. |
 | DACL present (`0x0004`) | Works | Set when the client asks for the DACL. |
 | DACL protected (`0x1000`) | Works | Kept. Blocks inheritance from parents; it is never itself passed to children. |
-| DACL auto-inherited (`0x0400`) | Works, normalized | Kept only when the change also carries **auto-inherit required** (`0x0100`), as Windows and Samba do. On the released server, a share created with `dfsctl share create --acl-canonicalize-inherited=false` keeps it exactly as sent; this version has no such option yet. |
+| DACL auto-inherited (`0x0400`) | Works, normalized | Kept only when the change also carries **auto-inherit required** (`0x0100`), as Windows and Samba do. On the released server, a share created with the `--acl-canonicalize-inherited=false` option keeps it exactly as sent; this version has no such option yet. |
 | Auto-inherit required (`0x0100`) | Works, request only | Acted on when written; never shown on read. |
 | SACL present (`0x0010`) | Works | Set when the client asks for the audit section. See [SACL](#sacl-audit). |
 

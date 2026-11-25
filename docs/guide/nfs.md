@@ -247,15 +247,10 @@ instead. DittoFS then registers NFS, MOUNT, NLM and NSM with that `rpcbind` at
 startup, as the kernel's own NFS server does, and removes them at shutdown. If
 no `rpcbind` answers, DittoFS logs a warning and serves without it.
 
-On the released server, set them with `dfsctl adapter settings`:
-
-```bash
-# macOS and BSD clients: UDP plus the portmapper on 111
-dfsctl adapter settings nfs update --udp-enabled --portmapper-enabled --portmapper-port 111
-
-# Or, on a host that already runs rpcbind
-dfsctl adapter settings nfs update --udp-enabled --portmapper-register-with-system
-```
+On the released server they are flags of its NFS adapter settings command:
+`--udp-enabled`, `--portmapper-enabled`, `--portmapper-port 111` for macOS
+and BSD clients, or `--udp-enabled --portmapper-register-with-system` on a
+host that already runs `rpcbind`. See the released server's CLI reference.
 
 Restart the adapter after changing these settings. (This version has neither
 the settings nor that command.)
