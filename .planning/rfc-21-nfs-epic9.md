@@ -242,6 +242,7 @@ so that subtasks and tests can cite them.
 | R46 | `OPEN_CONFIRM` and `RELEASE_LOCKOWNER` are served under minor version 0 only, answered `NFS4ERR_NOTSUPP` under the minor versions that define and do not serve them; `TEST_STATEID` and `FREE_STATEID`, NFSv4.1 codes, sent under NFSv4.0 are `NFS4ERR_OP_ILLEGAL` | MUST | RFC 21 §11.5 (`core`'s own refusals), App. D | T9.6, T9.8, T9.10 |
 | R47 | Each row declares its drain role: `CLOSE`, `LOCKU` and `FREE_STATEID` release; per request, a `WRITE` whose explicit stateid is a delegation stateid flushes, one naming the current stateid is refused, and an `OPEN` with `CLAIM_DELEGATE_CUR` or `CLAIM_DELEG_CUR_FH` flushes; a `WRITE` under an open or lock stateid and every `LOCK` are none, narrower than §11.5, which also flushes those under a recall (D5); every other row of this epic none | MUST | RFC 21 §11.5 (what runs while draining); RFC 20 §4.7 (`Role`) | T9.4, T9.6, T9.8, T9.9, T9.10 |
 | R48 | Each handler makes at most one mutating service call; the `FreeState` a v4.0 handler makes after `ErrState` (`Revoked`) is outside the rule | MUST | RFC 20 §4.3 | T9.4, T9.6, T9.8, T9.9, T9.10 |
+| R61 | Every member row this epic builds has its `Cacheable` column set as D12 gives it: false for `OPEN`, `OPEN_CONFIRM`, `OPEN_DOWNGRADE`, `CLOSE`, `LOCK`, `LOCKT`, `LOCKU`, `RELEASE_LOCKOWNER`, `TEST_STATEID` and `FREE_STATEID`, the duplicate of a seqid-bearing request being answered from the owner's last reply (R29), never from E3's cache; `READ`, `WRITE` and `SETATTR` keep E5's values | MUST | RFC 7530 §9.1.7, §9.1.8; RFC 21 §4.2, §11.2 | T9.4, T9.6, T9.8, T9.9, T9.10 |
 
 **The RFC's test rows**
 
@@ -403,6 +404,26 @@ and §4.2 carry, which become markers (rule 9).
   past the limit, and any offset with length all ones is served. One range translation, shared by
   the three, refuses before any other call, and under NFSv4.0 passes a sequenced `LOCK` or `LOCKU`'s
   refusal to `Refuse` so its owner advances (R42; D2, R26). No marker: the protocol's rule.
+- **D12. The members' `Cacheable` column.** E3's NFSv4.0 duplicate-request cache stores a `COMPOUND`
+  only when a member that ran has a `Cacheable` row (E3's D5), and the column is false for every
+  member this epic builds: `OPEN` (T9.4), `OPEN_CONFIRM`, `OPEN_DOWNGRADE`, `CLOSE` (T9.6), `LOCK`,
+  `LOCKT`, `LOCKU`, `RELEASE_LOCKOWNER` (T9.8), `TEST_STATEID` and `FREE_STATEID` (T9.10); T9.9 keeps
+  E5's values for `READ`, `WRITE` and `SETATTR` (E5's D22). The six that carry a seqid (`OPEN`,
+  `OPEN_CONFIRM`, `OPEN_DOWNGRADE`, `CLOSE`, `LOCK`, `LOCKU`) are not left out of the cache by
+  accident: RFC 7530 §9.1.7 has the server keep "the last sequence number (L) received and the
+  response that was returned", return the stored response for a duplicate (r == L), and says it is
+  "a more reliable cache of duplicate non-idempotent requests than that of the traditional cache",
+  whose least-recently-used eviction cannot keep the last reply "as long as the lock state exists".
+  That cache is T9.7's table (D3), keyed by the owner or the stateid and judged by seqid, argument
+  hash and principal, so it answers a retransmission on another connection or after E3's entries
+  were evicted, and a second copy of the reply under (address, XID) would answer first and skip
+  those checks. The rest are not non-idempotent in a way the table leaves open: `LOCKT`,
+  `TEST_STATEID` and `FREE_STATEID` change nothing the retransmission could not repeat (the last two
+  are NFSv4.1 codes, outside E3's NFSv4.0 cache), and `RELEASE_LOCKOWNER` has no seqid and no error
+  for an owner already released, so running it again answers alike. A `COMPOUND` of these
+  members alone is therefore run again on a retransmission and its sequenced member answered by the
+  table; one with a `Cacheable` member of E5's is stored whole, as E3's D5 has it. Each subtask's
+  role test reads the column beside `Role`. No marker: the column is the record.
 
 ## 5. Target tree
 
@@ -557,7 +578,7 @@ internal/vfs/
 - **Track:** C. **Depends on:** T9.3, T5.1, T8.2. T8.2 for the `Adapter` bytes codec only: no
   E8 session subtask, since `nfsharness` runs the member with a `protocol.State` the test builds,
   its client confirmed by `Propose` and `Connect` straight on `memory.New`.
-- **Covers:** R4, R7, R16, R17, R18, R20, R21, R22, R24, R25, R26, R42, R43, R44, R45, R47, R48.
+- **Covers:** R4, R7, R16, R17, R18, R20, R21, R22, R24, R25, R26, R42, R43, R44, R45, R47, R48, R61.
 - **Deliverables:** `open.go`: the `share_access` and `share_deny` translation into `Access`,
   `Deny` and the want value (D8); the claims into an `OpenRequest` by name or by handle (`Via`),
   `Reclaim` for `CLAIM_PREVIOUS`, `CLAIM_DELEGATE_PREV` and `CLAIM_DELEG_PREV_FH` (D7), the
@@ -569,7 +590,7 @@ internal/vfs/
   the new file made current with its stateid; the drain role, a flush for the delegation-current
   claims and none otherwise; the rows of `ErrShareViolation` (`NFS4ERR_SHARE_DENIED`), `NoGrace`,
   `NoReclaim` and `ReclaimConflict`; `FuzzShareAccess`; golden files of `share_access` and
-  `share_deny` pairs and claim types. Opens with no create only: the create is T9.5. Consumed by
+  `share_deny` pairs and claim types; the row's `Cacheable` false (D12). Opens with no create only: the create is T9.5. Consumed by
   T9.5 to T9.11, E10's T10.4, which offers delegations here, and E6's T6.4 through T9.5.
 - **Acceptance criteria:**
   - Each access and deny pair, under NFSv4.0 and NFSv4.1, reaches `Open` as the golden neutral
@@ -600,7 +621,8 @@ internal/vfs/
   NFSv4.0 `OPEN` with an unknown `share_access` bit, then the owner's next `OPEN` at the next seqid,
   served (catches a refusal the adapter makes that advances nothing, R26); the one-call
   rule, with `Record` read-only (R48); the role of each claim, read by the harness's drain check
-  (R47); `FuzzShareAccess` (R43). No test double.
+  (R47) and the row's `Cacheable` beside it, false (catches a seqid-bearing row stored in E3's
+  cache beside the owners' table, R61); `FuzzShareAccess` (R43). No test double.
 - **Rules:** rule 3: the refusal is a named value for the `open` reason; rule 9: D7's marker.
 
 ### T9.5 `OPEN`'s create
@@ -632,11 +654,11 @@ internal/vfs/
 **Subtask T9.6 estimate: 2.5 man-days.**
 
 - **Track:** C. **Depends on:** T9.4, T9.1.
-- **Covers:** R4, R6, R14, R23, R24, R25, R27, R46, R47, R48.
+- **Covers:** R4, R6, R14, R23, R24, R25, R27, R46, R47, R48, R61.
 - **Deliverables:** `openconfirm.go` (`ConfirmOpen`, minor version 0 only), `opendowngrade.go`
   (`Downgrade`, the access and deny through T9.4's translation), `close.go` (`Close`, its reply's
   stateid by D6, its drain role a release); each with its seqid as `Seqs`, the stateid it answers
-  set as the current one; the NFSv4.0 helper every handler presenting a stateid calls after
+  set as the current one, each row's `Cacheable` false (D12); the NFSv4.0 helper every handler presenting a stateid calls after
   `ErrState` (`Revoked`), answering `NFS4ERR_ADMIN_REVOKED` and then calling `FreeState` for that
   reference on the client's behalf (R14), used here and by T9.8 and T9.9. Consumed by T9.7, T9.11
   and E16.
@@ -655,7 +677,8 @@ internal/vfs/
   `OPEN_CONFIRM` and `OPEN_DOWNGRADE` of state an administrator revoked through the service,
   `NFS4ERR_ADMIN_REVOKED` once, then `NFS4ERR_BAD_STATEID` (catches a revoked stateid flagged
   forever, R14); a v4.0 `CLOSE` presenting `seqid` 0xFFFFFFFF answering 1 (catches D6's wrap
-  to 0, R27). No test double.
+  to 0, R27); each row's `Cacheable` beside its `Role`, false (catches a seqid-bearing row stored in
+  E3's cache beside the owners' table, R61). No test double.
 - **Rules:** rule 9: D6's marker.
 
 ### T9.7 NFSv4.0 owners' last replies
@@ -689,7 +712,8 @@ internal/vfs/
   `New` building one table from `Deps.Budgets` and setting it on `v4.Handlers`; `OPEN`,
   `OPEN_CONFIRM`, `OPEN_DOWNGRADE`, `CLOSE` and, once T9.8 lands, `LOCK` and `LOCKU` asking `Last`
   first under NFSv4.0 and keeping their answer when it is outside RFC 21 §4.2's exempt list; the
-  callbacks value's `Revoked` calling `DropClient` (D9). `pkg/vfs/vfstest/memory`'s
+  callbacks value's `Revoked` calling `DropClient` (D9); these rows' `Cacheable` stays false, the table being the cache that
+  answers them (D12). `pkg/vfs/vfstest/memory`'s
   `Service.Clock`, the test clock its open state already reads (kind 1), exported for the lease
   expiry below. Consumed by T9.8, T9.11, E10's T10.7, which advances the same clock, and E16.
 - **Acceptance criteria:**
@@ -724,7 +748,7 @@ internal/vfs/
 
 - **Track:** C. **Depends on:** T9.7, T9.4, T9.1.
 - **Covers:** R4, R7, R14, R22, R25, R26, R28, R30, R31, R32, R33, R34, R35, R36, R37, R38, R39, R42,
-  R43, R44, R45, R46, R47, R48, R57, R58.
+  R43, R44, R45, R46, R47, R48, R57, R58, R61.
 - **Deliverables:** `lock.go`: the `LOCK` translation into a `LockReq` (one range, D11's
   refusals, under NFSv4.0 passed to `Refuse` (D2), `READW_LT` and `WRITEW_LT` a poll, `reclaim`, `open_to_lock_owner4` as the open
   stateid, the lock owner and `Seqs{Owner, NewOwner}`, an existing lock owner as the lock
@@ -736,7 +760,7 @@ internal/vfs/
   T9.6's revoked-state helper on `LOCK` and `LOCKU` (R14); `releaselockowner.go` (`ReleaseLockOwner`, minor
   version 0 only, `Record` first); `LOCK` and `LOCKU` through T9.7's table under NFSv4.0; the rows
   of `ErrLocked` (`NFS4ERR_DENIED`), `ErrRangeNotLocked` (D10), and `ErrDelay` on a lock;
-  `FuzzLockReq`; golden files of `LOCK` types and `lock_owner4`. Consumed by T9.10, T9.11, E10's
+  `FuzzLockReq`; golden files of `LOCK` types and `lock_owner4`; each row's `Cacheable` false (D12). Consumed by T9.10, T9.11, E10's
   lock-during-recall row and E16.
 - **Acceptance criteria:**
   - A `LOCK` with a new lock owner after an `OPEN` answers a lock stateid; a second `LOCK` and a
@@ -767,7 +791,8 @@ internal/vfs/
   `NFS4ERR_BAD_STATEID` (R14); `ErrDelay` injected through `vfstest.Faults`,
   `NFS4ERR_DELAY` and no waiter (R36); `RELEASE_LOCKOWNER` while a lock is held, then after
   `LOCKU` (R37); a `LOCK` reclaim answered by grace (R22); D4's holder function over every
-  protocol's owner (catches an NLM holder named); `FuzzLockReq` (R43). No test double.
+  protocol's owner (catches an NLM holder named); each row's `Cacheable` beside its `Role`, false
+  (catches `LOCK` or `LOCKU` stored in E3's cache beside the owners' table, R61); `FuzzLockReq` (R43). No test double.
 - **Rules:** rule 3: the refusal is a named value for the `lock` reason; rule 9: D4's, D5's and
   D10's markers.
 
@@ -776,7 +801,7 @@ internal/vfs/
 **Subtask T9.9 estimate: 2 man-days.**
 
 - **Track:** C. **Depends on:** T9.8, T5.8.
-- **Covers:** R5, R6, R8, R9, R11, R14, R47, R48, R51, R59.
+- **Covers:** R5, R6, R8, R9, R11, R14, R47, R48, R51, R59, R61.
 - **Deliverables:** E5's `read.go`, `write.go` and `setattr.go` taking T9.3's references, a
   lock stateid as its open's, a delegation stateid as the delegation (`SETATTR` through
   `vfs.Target`'s open); `WRITE`'s per-request drain role by D5; under NFSv4.0, T9.6's
@@ -797,7 +822,8 @@ internal/vfs/
   by the stateid alone, R8, or an NFSv4.1 open used by any principal of its client, R59, a delegation bypassed or not authorised afresh, R6, R9, a revoked v4.0
   stateid flagged forever, R14); the `FreeState` outside the one-call rule and nothing else (R48);
   E5's allocation gates still green for `READ` and `WRITE` under an open stateid; `WRITE`'s role
-  for each stateid kind (R47). No test double.
+  for each stateid kind (R47); the `Cacheable` of `READ`, `WRITE` and `SETATTR` still E5's D22 values
+  after the stateid arms (R61). No test double.
 - **Rules:** rule 9: RFC 21 §5.2's `decision:` that rule 5 trusts the credential, at the
   `NotYours` mapping; D5's marker at `WRITE`'s role.
 
@@ -806,10 +832,10 @@ internal/vfs/
 **Subtask T9.10 estimate: 1.5 man-days.**
 
 - **Track:** C. **Depends on:** T9.8.
-- **Covers:** R12, R13, R46, R47, R48, R50.
+- **Covers:** R12, R13, R46, R47, R48, R50, R61.
 - **Deliverables:** `teststateid.go` (`TestState` over every stateid, the session's client, one
   status each, no filehandle read); `freestateid.go` (`FreeState`, the session's client, its drain
-  role a release); both NFSv4.1 and NFSv4.2 only. Consumed by T9.11, E10's revoked-delegation rows
+  role a release); both NFSv4.1 and NFSv4.2 only, each row's `Cacheable` false (D12). Consumed by T9.11, E10's revoked-delegation rows
   and E16.
 - **Acceptance criteria:**
   - `TEST_STATEID` of a live, an old, a never-issued and a revoked stateid answers each its own
@@ -823,7 +849,7 @@ internal/vfs/
 - **Tests:** on `nfsharness` against `memory.New`: each criterion above (catch a resolution through
   the current filehandle, R12, a lock state freed with its owner's others, or a miss answered
   success, R13, a removed share's stateid flagged, R12); the one-call rule, `TestState` read-only
-  (R48). No test double.
+  (R48); each row's `Cacheable` beside its `Role`, false (R61). No test double.
 - **Rules:** none beyond §2.
 
 ### T9.11 Loopback rows and the RFC's rows
