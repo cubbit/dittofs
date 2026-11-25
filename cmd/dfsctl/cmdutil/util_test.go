@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
 
 func TestBoolToYesNo(t *testing.T) {
@@ -140,7 +142,7 @@ func TestRunDeleteWithConfirmation(t *testing.T) {
 			deleted := false
 			done := make(chan error, 1)
 			go func() {
-				done <- RunDeleteWithConfirmation(cmd, env, "Context", "c", tt.force, func() error { deleted = true; return nil })
+				done <- RunDeleteWithConfirmation(cmd, env, "Context", "c", tt.force, func() (*apiv1.Operation, error) { deleted = true; return nil, nil })
 			}()
 			// The bound is the assertion for the interrupted row: a prompt
 			// that ignores its context never returns.

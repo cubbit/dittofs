@@ -195,12 +195,12 @@ with --wait, follows it to its end.`,
 				return fmt.Errorf("%s: group %s: %w", cmd.CommandPath(), id, err)
 			}
 			force, _ := cmd.Flags().GetBool("force")
-			return cmdutil.RunDeleteWithConfirmation(cmd, env, "group", g.Spec.Name, force, func() error {
+			return cmdutil.RunDeleteWithConfirmation(cmd, env, "group", g.Spec.Name, force, func() (*apiv1.Operation, error) {
 				op, err := c.Groups().Delete(cmd.Context(), id, g.ETag)
 				if err != nil {
-					return fmt.Errorf("%s: deleting group %s: %w", cmd.CommandPath(), id, err)
+					return nil, fmt.Errorf("%s: deleting group %s: %w", cmd.CommandPath(), id, err)
 				}
-				return cmdutil.Follow(cmd, c, op)
+				return op, cmdutil.Follow(cmd, c, op)
 			})
 		},
 	}

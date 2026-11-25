@@ -160,6 +160,45 @@ func shareRows() []row {
 				t.Errorf("share delete --wait: reading the share back answered %v, want 404", err)
 			}
 		}},
+		{name: "share delete without --wait reports the removal as started, naming its operation", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, c *client.Client) {
+			sh := s.share(t, c)
+			out := mustRun(t, run, "share", "delete", sh.Spec.Name, "--force")
+			// The operation's ID is the first field of the table's one row.
+			lines := strings.Split(out, "\n")
+			if len(lines) < 2 || len(strings.Fields(lines[1])) == 0 {
+				t.Fatalf("share delete: printed %q, want the operation's table", out)
+			}
+			id := strings.Fields(lines[1])[0]
+			op, err := c.Operation(t.Context(), id)
+			if err != nil || op.Kind != apiv1.OpShareDelete {
+				t.Fatalf("share delete: operation %s read back as %+v (%v), want the share's deletion", id, op, err)
+			}
+			want := "removal of share '" + sh.Spec.Name + "' started as operation " + id + "; 'dfsctl operation wait " + id + "' waits for it"
+			if !strings.Contains(out, want) || strings.Contains(out, "removed successfully") {
+				t.Errorf("share delete: printed %q, want %q and no claim it was removed", out, want)
+			}
+			s.Settle(t, c, op)
+		}},
+		{name: "share delete --wait reports the removal once its operation succeeded", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, c *client.Client) {
+			sh := s.share(t, c)
+			type ran struct {
+				out, errOut string
+				status      int
+			}
+			done := make(chan ran, 1)
+			go func() {
+				out, errOut, status := run(t.Context(), "share", "delete", sh.Spec.Name, "--force", "--wait")
+				done <- ran{out, errOut, status}
+			}()
+			r := Await(t, s, "share delete --wait", done)
+			if r.status != 0 {
+				t.Fatalf("share delete --wait: status %d, stderr %q, want 0", r.status, r.errOut)
+			}
+			ended, removed := strings.Index(r.out, string(apiv1.OpSucceeded)), strings.Index(r.out, "share '"+sh.Spec.Name+"' removed successfully")
+			if ended < 0 || removed < ended || strings.Contains(r.out, "started as operation") {
+				t.Errorf("share delete --wait: printed %q, want the operation succeeded and then the share removed, and no claim it only started", r.out)
+			}
+		}},
 		{name: "share export-policy update changes only its flags' fields and set writes the whole policy", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, c *client.Client) {
 			sh := s.share(t, c)
 			policy := func() apiv1.ExportPolicySpec {

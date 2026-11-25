@@ -5,6 +5,7 @@ import (
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/cubbit/dittofs/internal/cli/credentials"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/spf13/cobra"
 )
 
@@ -45,7 +46,7 @@ func runContextRemove(cmd *cobra.Command, env cmdutil.Env, args []string) error 
 	}
 
 	force, _ := cmd.Flags().GetBool("force")
-	return cmdutil.RunDeleteWithConfirmation(cmd, env, "Context", contextName, force, func() error {
-		return cmdutil.Locked(cmd.Context(), env, func(s *credentials.Store) error { return s.DeleteContext(contextName) })
+	return cmdutil.RunDeleteWithConfirmation(cmd, env, "Context", contextName, force, func() (*apiv1.Operation, error) {
+		return nil, cmdutil.Locked(cmd.Context(), env, func(s *credentials.Store) error { return s.DeleteContext(contextName) })
 	})
 }
