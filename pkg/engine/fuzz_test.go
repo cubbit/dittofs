@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -68,16 +69,117 @@ type engineWorld struct {
 
 	// writes are the writes the engine accepted.
 	writes []*acceptedWrite
+
+	// faults is what the operations know from their own answers, which decides
+	// the steps that call nothing.
+	faults faultState
 }
 
 // acceptedWrite counts the calls of one write's Done.
 type acceptedWrite struct {
 	step int
+	file int
 	done atomic.Int32
 
 	// orphaned is set when a crash leaves the write to recovery, which commits
 	// it with no Done to call.
 	orphaned bool
+}
+
+// faultState is what decides a step with no effect: a call that would wait for
+// its context, which no step ends, or one the filesystem service never makes.
+// The real side and the model each keep one, from the same answers, and the
+// model refuses a step the real side skipped or ran against the model's own.
+type faultState struct {
+	// armed is that every update of the store fails.
+	armed bool
+
+	// owed marks a file with a removal whose first transaction has not
+	// committed: the engine holds the file's guard until it does. With the
+	// engine's clock never advanced, it does only after a crash.
+	owed [fuzzFiles]bool
+
+	// gone marks a released file.
+	gone [fuzzFiles]bool
+}
+
+func (s faultState) anyOwed() bool {
+	return s.owed != [fuzzFiles]bool{}
+}
+
+// noEffect is whether op on file calls nothing. A restart names no file.
+//
+// While the store fails, every commit is skipped, though only one that needs
+// the store would wait: telling the two apart takes the file's content. A
+// removal is skipped then only once one is owed, so one can be owed at all.
+func (s faultState) noEffect(op string, file int) bool {
+	switch op {
+	case "restart":
+		return s.armed || s.anyOwed()
+	case "write":
+		// A released file is written by no one: the filesystem service
+		// refuses its handle, and the engine would never commit the write.
+		return s.gone[file]
+	case "read":
+		// A release not yet committed is refused above the engine too.
+		return s.gone[file] && s.owed[file]
+	case "commit":
+		return s.armed || s.gone[file] || s.owed[file]
+	}
+
+	return s.gone[file] || s.owed[file] || (s.armed && s.anyOwed())
+}
+
+// crashed is a new process: the store works, and recovery commits every
+// removal that was owed.
+func (s *faultState) crashed() {
+	s.armed = false
+	s.owed = [fuzzFiles]bool{}
+}
+
+// fileOf is the file op names, or -1 for one that names none.
+func fileOf(op string, a fuzz.Args) int {
+	if op == "restart" {
+		return -1
+	}
+
+	return a.Int("file")
+}
+
+// skippedAnswer is what a step with no effect answers.
+type skippedAnswer struct{}
+
+func (skippedAnswer) String() string {
+	return "no effect"
+}
+
+type realFunc = func(*fuzz.Env, *engineWorld, fuzz.Args) fuzz.Result
+
+type modelFunc = func(engineModel, fuzz.Args, fuzz.Result) ([]engineModel, error)
+
+func realUnless(op string, call realFunc) realFunc {
+	return func(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
+		if w.faults.noEffect(op, fileOf(op, a)) {
+			return skippedAnswer{}
+		}
+
+		return call(env, w, a)
+	}
+}
+
+func modelUnless(op string, allows modelFunc) modelFunc {
+	return func(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, error) {
+		_, skipped := got.(skippedAnswer)
+		if want := m.faults.noEffect(op, fileOf(op, a)); skipped != want {
+			return nil, fmt.Errorf("the step had no effect: %v, and the model's state says %v", skipped, want)
+		}
+
+		if skipped {
+			return []engineModel{m}, nil
+		}
+
+		return allows(m, a, got)
+	}
 }
 
 func newEngineWorld(env *fuzz.Env) (*engineWorld, error) {
@@ -91,7 +193,7 @@ func newEngineWorld(env *fuzz.Env) (*engineWorld, error) {
 	// the engine, which calls the Done of what its last group commit takes.
 	env.Cleanup(func() {
 		for _, write := range w.writes {
-			if got := write.done.Load(); !write.orphaned && got != 1 {
+			if got := write.done.Load(); !write.orphaned && !w.faults.owed[write.file] && got != 1 {
 				env.T.Errorf("the Done of the write of step #%02d ran %d times by the end, want once", write.step, got)
 			}
 		}
@@ -105,6 +207,12 @@ func newEngineWorld(env *fuzz.Env) (*engineWorld, error) {
 		h, file := w.fix.FS.Create(env.T, w.fix.FS.Admin, w.fix.FS.Root, fmt.Sprintf("f%d", i), nf)
 		w.handles[i], w.files[i] = h, file.ID
 	}
+
+	// Registered after the fixture, so it runs before the fixture closes the
+	// engine: with the store still failing, the close would not finish.
+	env.Cleanup(func() {
+		w.fix.FailUpdatesAfter(-1)
+	})
 
 	for _, j := range w.fix.E.Stats().Journals {
 		if j.Stats == nil {
@@ -136,8 +244,7 @@ func checkOneSegment(steps, write int, segmentCap int64) error {
 	return nil
 }
 
-// doneAtMostOnce is the one invariant: no accepted write is reported finished
-// twice.
+// doneAtMostOnce holds that no accepted write is reported finished twice.
 func doneAtMostOnce(_ *fuzz.Env, w *engineWorld) error {
 	for _, write := range w.writes {
 		if got := write.done.Load(); got > 1 {
@@ -148,22 +255,72 @@ func doneAtMostOnce(_ *fuzz.Env, w *engineWorld) error {
 	return nil
 }
 
-// contents reads every file whole through the engine.
-func (w *engineWorld) contents(ctx context.Context) ([fuzzFiles]string, error) {
-	var out [fuzzFiles]string
+// owedRemovalsStay holds every removal that answered retry later to staying in
+// the journal, above what the store has applied, until its first transaction
+// commits: a settle above it would lose it.
+func owedRemovalsStay(env *fuzz.Env, w *engineWorld) error {
+	for i, owed := range w.faults.owed {
+		if !owed {
+			continue
+		}
+
+		applied := journal.VersionFromBytes(w.fix.Committed(w.handles[i]).Applied)
+		found := false
+		for c, err := range w.fix.Handle().Since(env.T.Context(), journal.NewFileID(w.files[i]), applied) {
+			if err != nil {
+				return fmt.Errorf("since, file %d: %w", i, err)
+			}
+
+			found = found || (c.Kind != journal.ChangeWrite && c.Kind != journal.ChangeLoss)
+		}
+
+		if !found {
+			return fmt.Errorf("a removal of file %d is owed, and the journal yields none above what the store has applied", i)
+		}
+	}
+
+	return nil
+}
+
+// awaitRemovalLoop waits until the removal loop has run everything that is due
+// and waits again. The loop runs on its own goroutine, so a step that went on
+// earlier would leave it to the scheduler whether its first run sees the next
+// step's change of the store. It waits on the loop's own state; a loop that
+// never gets there ends the run at the harness's step bound.
+func (w *engineWorld) awaitRemovalLoop() {
+	for !w.fix.E.LoopIdle(w.fix.Share.ID) || !w.fix.E.LoopParked(w.fix.Share.ID) {
+		runtime.Gosched()
+	}
+}
+
+// contents reads every file whole through the engine, and marks the released
+// ones.
+func (w *engineWorld) contents(ctx context.Context) (files [fuzzFiles]string, gone [fuzzFiles]bool, err error) {
 	for i, file := range w.files {
+		// A release not yet committed is refused above the engine, and what
+		// the engine answers for it then is outside its contract.
+		if w.faults.gone[i] && w.faults.owed[i] {
+			continue
+		}
+
 		// One byte more than any program writes, so a file too long shows.
 		buf := make([]byte, fuzzMaxFile+1)
 
 		n, err := w.fix.E.Read(ctx, w.fix.Share.ID, file, 0, buf)
-		if err != nil {
-			return out, fmt.Errorf("read file %d: %w", i, err)
+		if errors.Is(err, vfserr.ErrStale) {
+			gone[i] = true
+
+			continue
 		}
 
-		out[i] = string(buf[:n])
+		if err != nil {
+			return files, gone, fmt.Errorf("read file %d: %w", i, err)
+		}
+
+		files[i] = string(buf[:n])
 	}
 
-	return out, nil
+	return files, gone, nil
 }
 
 // leftToReplay counts, per file, what the journal holds above what the store
@@ -171,6 +328,10 @@ func (w *engineWorld) contents(ctx context.Context) ([fuzzFiles]string, error) {
 func (w *engineWorld) leftToReplay(ctx context.Context) ([fuzzFiles]int, error) {
 	var left [fuzzFiles]int
 	for i, file := range w.files {
+		if w.faults.gone[i] {
+			continue
+		}
+
 		applied := w.fix.Committed(w.handles[i]).Applied
 		from := journal.VersionFromBytes(applied)
 
@@ -197,6 +358,8 @@ func errorClass(err error) string {
 		return "read only"
 	case errors.Is(err, vfserr.ErrLost):
 		return "lost"
+	case errors.Is(err, vfserr.ErrStale):
+		return "no entity"
 	case errors.Is(err, vfserr.ErrInvalid):
 		return "invalid"
 	case errors.Is(err, vfserr.ErrUnavailable):
@@ -293,12 +456,38 @@ func (a readAnswer) String() string {
 	return describe(a.off, a.data)
 }
 
+// removalAnswer is what a truncate, a deallocate or a delete answered. pending
+// is a delete that answered a retry channel.
+type removalAnswer struct {
+	err     error
+	pending bool
+}
+
+func (a removalAnswer) String() string {
+	switch {
+	case a.err != nil:
+		return errorClass(a.err)
+	case a.pending:
+		return "pending"
+	}
+
+	return "ok"
+}
+
+// faultAnswer is what arming or clearing a fault answers.
+type faultAnswer struct{}
+
+func (faultAnswer) String() string {
+	return "ok"
+}
+
 // restartedAnswer is what the files hold after a new process started, the
 // size the store has committed for each, and, after a clean stop, what that
 // stop had left for a replay.
 type restartedAnswer struct {
 	err    error
 	files  [fuzzFiles]string
+	gone   [fuzzFiles]bool
 	sizes  [fuzzFiles]int64
 	replay [fuzzFiles]int
 }
@@ -308,7 +497,8 @@ func (a restartedAnswer) String() string {
 		return a.err.Error()
 	}
 
-	return fmt.Sprintf("%s, committed sizes %v, left to replay %v", describeFiles(a.files), a.sizes, a.replay)
+	return fmt.Sprintf("%s, released %v, committed sizes %v, left to replay %v",
+		describeFiles(a.files), a.gone, a.sizes, a.replay)
 }
 
 // checkSizes holds the new process to having committed the existence of what
@@ -328,7 +518,10 @@ func (a restartedAnswer) checkSizes() error {
 func (w *engineWorld) committedSizes() [fuzzFiles]int64 {
 	var sizes [fuzzFiles]int64
 	for i, h := range w.handles {
-		sizes[i] = w.fix.Committed(h).Size
+		// A released file has no record left to read.
+		if !w.faults.gone[i] {
+			sizes[i] = w.fix.Committed(h).Size
+		}
 	}
 
 	return sizes
@@ -341,7 +534,10 @@ func engineWrite(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 		data[i] = fuzzByte(env.Step, off+int64(i))
 	}
 
-	write := &acceptedWrite{step: env.Step}
+	write := &acceptedWrite{
+		step: env.Step,
+		file: a.Int("file"),
+	}
 	verifier, err := w.fix.E.Write(env.T.Context(), w.fix.Share.ID, w.files[a.Int("file")], off, data, engine.WriteOpts{
 		Done: func() {
 			write.done.Add(1)
@@ -387,6 +583,74 @@ func engineRead(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 	}
 }
 
+func engineTruncate(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
+	file := a.Int("file")
+	err := w.fix.E.Truncate(env.T.Context(), w.fix.Share.ID, w.files[file], int64(a.Int("size")))
+
+	return w.removed(file, err)
+}
+
+func engineDeallocate(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
+	file := a.Int("file")
+	err := w.fix.E.Deallocate(env.T.Context(), w.fix.Share.ID, w.files[file], int64(a.Int("off")), int64(a.Int("len")))
+
+	return w.removed(file, err)
+}
+
+// removed records what a truncate or a deallocate answered.
+func (w *engineWorld) removed(file int, err error) fuzz.Result {
+	if err != nil && errorClass(err) == "retry later" {
+		w.faults.owed[file] = true
+	}
+
+	w.awaitRemovalLoop()
+
+	return removalAnswer{err: err}
+}
+
+// engineDelete releases a file as the filesystem service does: its only name
+// goes first, or the release finds a holder and is aborted. The store works
+// for that, and fails again for the release if it did before.
+func engineDelete(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
+	file := a.Int("file")
+
+	if w.faults.armed {
+		w.fix.FailUpdatesAfter(-1)
+	}
+
+	name := fmt.Appendf(nil, "f%d", file)
+	_, err := w.fix.FS.Store.Namespace().Unlink(env.T.Context(), w.fix.FS.Admin, w.fix.FS.Root, name)
+
+	if w.faults.armed {
+		w.fix.FailUpdatesAfter(0)
+	}
+
+	if err != nil {
+		return removalAnswer{err: fmt.Errorf("unlink: %w", err)}
+	}
+
+	retry, err := w.fix.E.Delete(env.T.Context(), w.fix.Share.ID, w.files[file])
+	if err == nil {
+		w.faults.gone[file] = true
+		w.faults.owed[file] = retry != nil
+	}
+
+	w.awaitRemovalLoop()
+
+	return removalAnswer{
+		err:     err,
+		pending: retry != nil,
+	}
+}
+
+func engineFailUpdates(_ *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
+	n := a.Int("n")
+	w.fix.FailUpdatesAfter(n)
+	w.faults.armed = n == 0
+
+	return faultAnswer{}
+}
+
 // engineCrash is a power loss with no variant: the simulated device keeps no
 // write that was not synced, and a new process starts on what is left.
 func engineCrash(env *fuzz.Env, w *engineWorld, _ fuzz.Args) fuzz.Result {
@@ -397,11 +661,14 @@ func engineCrash(env *fuzz.Env, w *engineWorld, _ fuzz.Args) fuzz.Result {
 		}
 	}
 
-	files, err := w.contents(env.T.Context())
+	w.faults.crashed()
+	w.awaitRemovalLoop()
+	files, gone, err := w.contents(env.T.Context())
 
 	return restartedAnswer{
 		err:   err,
 		files: files,
+		gone:  gone,
 		sizes: w.committedSizes(),
 	}
 }
@@ -427,11 +694,13 @@ func engineRestart(env *fuzz.Env, w *engineWorld, _ fuzz.Args) fuzz.Result {
 	release()
 	restart.Finish()
 
-	files, err := w.contents(env.T.Context())
+	w.awaitRemovalLoop()
+	files, gone, err := w.contents(env.T.Context())
 
 	return restartedAnswer{
 		err:    errors.Join(replayErr, err),
 		files:  files,
+		gone:   gone,
 		sizes:  w.committedSizes(),
 		replay: replay,
 	}
@@ -442,6 +711,8 @@ func engineRestart(env *fuzz.Env, w *engineWorld, _ fuzz.Args) fuzz.Result {
 // engine chose.
 type engineModel struct {
 	files [fuzzFiles]modelFile
+
+	faults faultState
 
 	// verifier is the last one answered, and answered that one was. newProcess
 	// says a new process started since, so the next must differ.
@@ -458,7 +729,12 @@ type modelFile struct {
 	unsynced []unsyncedWrite
 }
 
+// unsyncedWrite is a write not yet synced, or, with grow set, a truncate that
+// made the file longer, to off bytes. A removal is durable once it returns, so
+// every crash keeps a grow. A removal that takes bytes away needs no entry: its
+// first transaction syncs the file before it, so what is left is all synced.
 type unsyncedWrite struct {
+	grow   bool
 	step   int
 	off    int64
 	length int
@@ -469,6 +745,14 @@ type unsyncedWrite struct {
 func apply(content string, writes []unsyncedWrite) string {
 	out := []byte(content)
 	for _, w := range writes {
+		if w.grow {
+			if int(w.off) > len(out) {
+				out = append(out, make([]byte, int(w.off)-len(out))...)
+			}
+
+			continue
+		}
+
 		if end := int(w.off) + w.length; end > len(out) {
 			out = append(out, make([]byte, end-len(out))...)
 		}
@@ -490,6 +774,12 @@ func (f modelFile) afterCrash(found string) (modelFile, error) {
 	// later kept writes, and changes nothing.
 	var kept []unsyncedWrite
 	for _, w := range f.unsynced {
+		if w.grow {
+			kept = append(kept, w)
+
+			continue
+		}
+
 		for off := w.off; off < w.off+int64(w.length) && off < int64(len(found)); off++ {
 			if found[off] == fuzzByte(w.step, off) {
 				kept = append(kept, w)
@@ -536,8 +826,9 @@ func one(m engineModel, err error) ([]engineModel, error) {
 	return []engineModel{m}, nil
 }
 
-// modelWrite allows success alone: no operation of the target makes the store
-// fail, the journal read only or a file the destination of a clone.
+// modelWrite allows success alone: a failing store does not delay a write, and
+// no operation of the target makes the journal read only or a file the
+// destination of a clone.
 func modelWrite(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, error) {
 	answer := got.(writeAnswer)
 	if answer.err != nil {
@@ -574,6 +865,14 @@ func modelCommit(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, er
 
 func modelRead(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, error) {
 	answer := got.(readAnswer)
+	if m.faults.gone[a.Int("file")] {
+		if answer.err == nil || errorClass(answer.err) != "no entity" {
+			return nil, fmt.Errorf("a read of a released file answered %s, want no entity", answer)
+		}
+
+		return []engineModel{m}, nil
+	}
+
 	if answer.err != nil {
 		return nil, fmt.Errorf("the read failed, and nothing allows it: %w", answer.err)
 	}
@@ -590,10 +889,89 @@ func modelRead(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, erro
 	return []engineModel{m}, nil
 }
 
+// reachedFirstTransaction is a removal that takes something away from file,
+// leaving after. With the store failing it must answer retry later and is
+// owed, and otherwise it must succeed. Either way the file is synced first, as
+// before every existence commit.
+func (m engineModel) reachedFirstTransaction(file int, answer removalAnswer, after string) ([]engineModel, error) {
+	switch {
+	case m.faults.armed && (answer.err == nil || errorClass(answer.err) != "retry later"):
+		return nil, fmt.Errorf("the removal answered %s with every store update failing, want retry later", answer)
+	case !m.faults.armed && answer.err != nil:
+		return nil, fmt.Errorf("the removal failed, and nothing allows it: %w", answer.err)
+	}
+
+	m.files[file] = modelFile{synced: after}
+	m.faults.owed[file] = m.faults.armed
+
+	return []engineModel{m}, nil
+}
+
+func modelTruncate(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, error) {
+	answer := got.(removalAnswer)
+	file := &m.files[a.Int("file")]
+	view := apply(file.synced, file.unsynced)
+	size := a.Int("size")
+	if size < len(view) {
+		return m.reachedFirstTransaction(a.Int("file"), answer, view[:size])
+	}
+
+	// A grow takes no transaction, so a failing store does not delay it.
+	if answer.err != nil {
+		return nil, fmt.Errorf("a truncate that takes nothing away failed: %w", answer.err)
+	}
+
+	file.unsynced = append(slices.Clip(file.unsynced), unsyncedWrite{
+		grow: true,
+		off:  int64(size),
+	})
+
+	return []engineModel{m}, nil
+}
+
+func modelDeallocate(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, error) {
+	file := m.files[a.Int("file")]
+	after := []byte(apply(file.synced, file.unsynced))
+	start := min(a.Int("off"), len(after))
+	clear(after[start:min(a.Int("off")+a.Int("len"), len(after))])
+
+	return m.reachedFirstTransaction(a.Int("file"), got.(removalAnswer), string(after))
+}
+
+func modelDelete(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, error) {
+	answer := got.(removalAnswer)
+	if answer.err != nil {
+		return nil, fmt.Errorf("the delete failed, and nothing allows it: %w", answer.err)
+	}
+
+	if answer.pending != m.faults.armed {
+		return nil, fmt.Errorf("the delete answered %s, and every store update failing is %v", answer, m.faults.armed)
+	}
+
+	file := a.Int("file")
+	m.files[file] = modelFile{}
+	m.faults.gone[file] = true
+	m.faults.owed[file] = answer.pending
+
+	return []engineModel{m}, nil
+}
+
+func modelFailUpdates(m engineModel, a fuzz.Args, _ fuzz.Result) ([]engineModel, error) {
+	m.faults.armed = a.Int("n") == 0
+
+	return []engineModel{m}, nil
+}
+
 func modelCrash(m engineModel, _ fuzz.Args, got fuzz.Result) ([]engineModel, error) {
 	answer := got.(restartedAnswer)
 	if answer.err != nil {
 		return nil, fmt.Errorf("after the crash: %w", answer.err)
+	}
+
+	m.faults.crashed()
+
+	if answer.gone != m.faults.gone {
+		return nil, fmt.Errorf("after the crash the released files are %v, want %v", answer.gone, m.faults.gone)
 	}
 
 	for i, file := range m.files {
@@ -622,6 +1000,10 @@ func modelRestart(m engineModel, _ fuzz.Args, got fuzz.Result) ([]engineModel, e
 		return nil, fmt.Errorf("after the restart: %w", answer.err)
 	}
 
+	if answer.gone != m.faults.gone {
+		return nil, fmt.Errorf("after the restart the released files are %v, want %v", answer.gone, m.faults.gone)
+	}
+
 	for i, file := range m.files {
 		if answer.replay[i] != 0 {
 			return nil, fmt.Errorf("the clean stop left %d changes of file %d for the next start to replay", answer.replay[i], i)
@@ -648,12 +1030,21 @@ func modelRestart(m engineModel, _ fuzz.Args, got fuzz.Result) ([]engineModel, e
 // compareFiles reads every file after each step, so a wrong byte fails at the
 // step that made it wrong.
 func compareFiles(_ fuzz.Step, _ fuzz.Result, w *engineWorld, m engineModel) error {
-	got, err := w.contents(w.ctx)
+	got, gone, err := w.contents(w.ctx)
 	if err != nil {
 		return err
 	}
 
 	for i, file := range m.files {
+		// A release not yet committed is not read.
+		if m.faults.gone[i] && m.faults.owed[i] {
+			continue
+		}
+
+		if gone[i] != m.faults.gone[i] {
+			return fmt.Errorf("file %d reads released: %v, the model holds %v", i, gone[i], m.faults.gone[i])
+		}
+
 		if view := apply(file.synced, file.unsynced); got[i] != view {
 			return fmt.Errorf("file %d reads %s, the model holds %s", i, describe(0, got[i]), describe(0, view))
 		}
@@ -675,6 +1066,10 @@ func engineTarget() fuzz.Target[*engineWorld, engineModel] {
 	// Zero is the whole file.
 	commitLength := fuzz.Choice("len", 0, 1, 2, 512, 4096, fuzzMaxWrite)
 
+	size := fuzz.Choice("size", 0, 1, 4096, 8192)
+	// 0 fails every update of the store, -1 clears that.
+	updates := fuzz.Choice("n", -1, 0)
+
 	return fuzz.Target[*engineWorld, engineModel]{
 		Name:     "engine",
 		MaxSteps: fuzzMaxSteps,
@@ -683,22 +1078,22 @@ func engineTarget() fuzz.Target[*engineWorld, engineModel] {
 				Name:   "write",
 				Weight: 8,
 				Params: []fuzz.Param{file, off, length},
-				Real:   engineWrite,
-				Model:  modelWrite,
+				Real:   realUnless("write", engineWrite),
+				Model:  modelUnless("write", modelWrite),
 			},
 			{
 				Name:   "commit",
 				Weight: 4,
 				Params: []fuzz.Param{file, off, commitLength},
-				Real:   engineCommit,
-				Model:  modelCommit,
+				Real:   realUnless("commit", engineCommit),
+				Model:  modelUnless("commit", modelCommit),
 			},
 			{
 				Name:   "read",
 				Weight: 4,
 				Params: []fuzz.Param{file, off, length},
-				Real:   engineRead,
-				Model:  modelRead,
+				Real:   realUnless("read", engineRead),
+				Model:  modelUnless("read", modelRead),
 			},
 			{
 				Name:   "crash",
@@ -709,15 +1104,43 @@ func engineTarget() fuzz.Target[*engineWorld, engineModel] {
 			{
 				Name:   "restart",
 				Weight: 1,
-				Real:   engineRestart,
-				Model:  modelRestart,
+				Real:   realUnless("restart", engineRestart),
+				Model:  modelUnless("restart", modelRestart),
+			},
+			{
+				Name:   "truncate",
+				Weight: 2,
+				Params: []fuzz.Param{file, size},
+				Real:   realUnless("truncate", engineTruncate),
+				Model:  modelUnless("truncate", modelTruncate),
+			},
+			{
+				Name:   "deallocate",
+				Weight: 2,
+				Params: []fuzz.Param{file, off, length},
+				Real:   realUnless("deallocate", engineDeallocate),
+				Model:  modelUnless("deallocate", modelDeallocate),
+			},
+			{
+				Name:   "delete",
+				Weight: 1,
+				Params: []fuzz.Param{file},
+				Real:   realUnless("delete", engineDelete),
+				Model:  modelUnless("delete", modelDelete),
+			},
+			{
+				Name:   "fail_updates_after",
+				Weight: 2,
+				Params: []fuzz.Param{updates},
+				Real:   engineFailUpdates,
+				Model:  modelFailUpdates,
 			},
 		},
 		NewReal:    newEngineWorld,
 		NewModel:   newEngineModel,
 		Compare:    compareFiles,
 		Key:        engineKey,
-		Invariants: []fuzz.Invariant[*engineWorld]{doneAtMostOnce},
+		Invariants: []fuzz.Invariant[*engineWorld]{doneAtMostOnce, owedRemovalsStay},
 	}
 }
 
@@ -726,6 +1149,77 @@ var engineSeeds = []struct {
 	name  string
 	calls []string
 }{
+	{
+		// The truncate's mark in the journal is all that says the bytes are
+		// gone when the power goes.
+		name: "a truncate owed its transaction at a crash",
+		calls: []string{
+			"write(file=0, off=0, len=8192)",
+			"restart()",
+			"fail_updates_after(n=0)",
+			"truncate(file=0, size=0)",
+			"crash()",
+			"read(file=0, off=0, len=8192)",
+		},
+	},
+	{
+		name: "removals that commit, then a crash",
+		calls: []string{
+			"write(file=0, off=0, len=8192)",
+			"deallocate(file=0, off=1, len=4096)",
+			"truncate(file=0, size=8192)",
+			"write(file=1, off=0, len=512)",
+			"truncate(file=1, size=4096)",
+			"truncate(file=0, size=4096)",
+			"delete(file=1)",
+			"read(file=1, off=0, len=1)",
+			"crash()",
+			"read(file=0, off=0, len=8192)",
+		},
+	},
+	{
+		name: "what calls nothing around an owed removal",
+		calls: []string{
+			"write(file=0, off=0, len=8192)",
+			"write(file=1, off=0, len=8192)",
+			"fail_updates_after(n=0)",
+			"deallocate(file=0, off=0, len=4096)",
+			"truncate(file=1, size=0)",
+			"commit(file=2, off=0, len=0)",
+			"restart()",
+			"fail_updates_after(n=-1)",
+			"commit(file=0, off=0, len=0)",
+			"delete(file=0)",
+			"write(file=0, off=8192, len=2)",
+			"write(file=1, off=0, len=1)",
+			"commit(file=1, off=0, len=0)",
+			"truncate(file=1, size=1)",
+			"crash()",
+			"read(file=0, off=0, len=8192)",
+		},
+	},
+	{
+		name: "a release owed at a crash",
+		calls: []string{
+			"write(file=2, off=0, len=512)",
+			"fail_updates_after(n=0)",
+			"delete(file=2)",
+			"read(file=2, off=0, len=1)",
+			"write(file=2, off=0, len=1)",
+			"crash()",
+			"read(file=2, off=0, len=1)",
+			"restart()",
+		},
+	},
+	{
+		name: "a program that ends with the store failing",
+		calls: []string{
+			"write(file=0, off=0, len=512)",
+			"write(file=1, off=0, len=512)",
+			"fail_updates_after(n=0)",
+			"truncate(file=0, size=1)",
+		},
+	},
 	{
 		name: "a committed append survives a crash",
 		calls: []string{
@@ -963,6 +1457,73 @@ func TestModelRefusesAStartThatLeftExistenceUncommitted(t *testing.T) {
 			}
 		})
 	}
+}
+
+// parsed is the arguments of one call written as a trace prints it.
+func parsed(t *testing.T, call string) fuzz.Args {
+	t.Helper()
+
+	program, err := fuzz.Parse(engineTarget(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return program[0].Args
+}
+
+// TestARemovalStepLeavesTheLoopNothingToRun holds a removal step to ending only
+// once the removal loop has made its first try. On one processor, a step that
+// did not wait would leave that try to run after the store works again, and the
+// truncate would commit.
+func TestARemovalStepLeavesTheLoopNothingToRun(t *testing.T) {
+	procs := runtime.GOMAXPROCS(1)
+	t.Cleanup(func() {
+		runtime.GOMAXPROCS(procs)
+	})
+
+	env := &fuzz.Env{
+		T:       t,
+		Cleanup: t.Cleanup,
+	}
+	w, err := newEngineWorld(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	engineWrite(env, w, parsed(t, "write(file=0, off=0, len=8192)"))
+	w.fix.Restart()
+	engineFailUpdates(env, w, parsed(t, "fail_updates_after(n=0)"))
+
+	if got := engineTruncate(env, w, parsed(t, "truncate(file=0, size=0)")).String(); got != "retry later" {
+		t.Fatalf("the truncate answered %s, want retry later", got)
+	}
+
+	engineFailUpdates(env, w, parsed(t, "fail_updates_after(n=-1)"))
+	w.awaitRemovalLoop()
+
+	if size := w.fix.Committed(w.handles[0]).Size; size != 8192 {
+		t.Fatalf("the committed size is %d, want 8192: the first try ran after the store worked again", size)
+	}
+}
+
+func TestAnOwedRemovalMustStayInTheJournal(t *testing.T) {
+	env := &fuzz.Env{
+		T:       t,
+		Cleanup: t.Cleanup,
+	}
+	w, err := newEngineWorld(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	engineWrite(env, w, parsed(t, "write(file=0, off=0, len=8192)"))
+	w.faults.owed[0] = true
+
+	if err := owedRemovalsStay(env, w); err == nil {
+		t.Fatal("an owed removal the journal does not hold is allowed")
+	}
+
+	w.faults.owed[0] = false
 }
 
 func TestNoProgramFillsASegment(t *testing.T) {

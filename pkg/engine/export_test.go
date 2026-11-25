@@ -423,6 +423,25 @@ func (e *Engine) LoopParked(s entity.ShareID) bool {
 	return b.gc.removals.parked.Load()
 }
 
+// LoopIdle reports whether the share's journal's removal loop runs no item and
+// holds none that is due. LoopSteps and LoopParked cannot tell that: a call may
+// queue nothing, and the loop reads parked until it wakes to what was queued.
+func (e *Engine) LoopIdle(s entity.ShareID) bool {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return false
+	}
+
+	l := b.gc.removals
+	now := e.d.Clock.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.running == nil && !slices.ContainsFunc(l.items, func(it *loopItem) bool {
+		return !it.refused() && !it.notBefore.After(now)
+	})
+}
+
 // Registrations is the count of f's source and destination registrations.
 func (e *Engine) Registrations(f entity.FileID) (src, dst int) {
 	fe := e.files.lockOf(f)
