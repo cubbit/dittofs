@@ -32,8 +32,12 @@ paths below are paths there.
   init, with strict settings; E5's factory refuses a nil provider.
 - **E6**: `provider.New`, `Config`, `Escrow`, `(*Provider).CreateKeys`, `VerifyEscrow`, `Status`,
   `keys.ErrNotEscrowed`, and its D6: a passed escrow check is recorded in the store configuration and
-  handed back in `Config.Escrowed`. **E7**: `KMIPConfig`, the type of `Config.KMIP`. Both with the
-  additions §9 lists under "Needs on E6 and E7".
+  handed back in `Config.Escrowed`; `ValidateConfig(cfg Config) error`, the shape check that reads
+  no file (its R52, D17); `(*Provider).Reconfigure(ctx, Config) error`, which a running provider
+  takes and which refuses a master key other than the one it holds (its R53, D16); `VerifyEscrow`
+  returning a pass and recording nothing, so the gate opens only from passes given to `New` or
+  `Reconfigure`; `keys.ErrWrapLimit`. **E7**: `KMIPConfig`, the type of `Config.KMIP`, and the
+  key-service fields of `ValidateConfig` and `Reconfigure`.
 - **E8**: `(*Provider).RotateDataKey(ctx, ns) (keys.MaterialID, error)` and
   `RotateMasterKey(ctx) error`, both refusing `ErrNotEscrowed` where the key-file gate is shut;
   `Deps.RotationNeeded func(masterKeyID []byte)`, which its check calls on a new primary version and
@@ -271,7 +275,8 @@ tests can cite them. Where another epic does the rest, the row says so.
   the list, and `ownKeys` names `:verify-escrow`, so no operator can type a pass the provider never
   made. `verify-escrow` alone appends a pass, with `tx.PutSetting` in its own transaction; a key-file
   rotation needs its next key's pass recorded first (D2). The provider learns of it only through the section's reach (D12), after the commit,
-  so a pass whose transaction failed opens no gate (§9, "Needs on E6 and E7"). A `decision:` marker
+  so a pass whose transaction failed opens no gate: E6's `VerifyEscrow` records nothing, and its gate
+  opens only from the passes `Reconfigure` is given (its D16). A `decision:` marker
   at the refusal says why, to be withdrawn if RFC 16 gains a row for the pass. Prior art: RFC 13
   §2.5's system fields of a backup location, which the record holds and the operator never writes
   (checked).
@@ -347,9 +352,10 @@ tests can cite them. Where another epic does the rest, the row says so.
 - **D12, the material provider is live through the section's reach.** RFC 13 Appendix B makes it
   live, and `internal/node/settings.go` requires every section with live keys to have an entry in
   `newReaches()`, or a change of it fails. The remote section's apply hands each store's provider its
-  new `Config`; with D2 refusing a new master key, the apply changes only a KMIP endpoint,
+  new `Config` through E6's `Reconfigure` (its D16); with D2 refusing a new master key, the apply changes only a KMIP endpoint,
   certificates and timeout, the escrow passes, and a retired key file added (which it opens) or the
-  swap a rotation makes. That call is E6's, E7's and E8's to add (§9). A
+  swap a rotation makes. E7 adds the KMIP fields to it, and E8 the retired files and the swap (E6's
+  D16; §9). A
   `decision:` marker at the apply says it refuses nothing D2 has not. Prior art: the identity
   section's apply in the same table (checked).
 
@@ -415,8 +421,7 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
     `server_ca`, `timeout`), `kmip_client_key` (`entity.SecretRef`, kind `SecretKey`) and
     `escrowed` (live, a list of `Escrow`); `Required("Materials")`; `Validate` building the chain
     with no material (D1) and refusing a `materials` with neither or both of `key_file` and
-    `kmip.endpoint`, or a KMIP block missing its key or certificates, through E6's and E7's shape
-    check, each refusal naming the field; `CheckTx` refusing a changed master key and a removed retired
+    `kmip.endpoint`, or a KMIP block missing its key or certificates, through E6's `ValidateConfig`, with E7's key-service rules, each refusal naming the field; `CheckTx` refusing a changed master key and a removed retired
     file (D2), a changed
     `escrowed` (D4), and an encrypt stage gained or lost (`StageOf`) while `tx.StoreNamed` (D5), all
     with `settings.ErrBound` or a field error naming the route; the conversion to
@@ -503,7 +508,8 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
 - **Covers:** R16, R20, R25 (`verify-escrow`), R26, R27, R35.
 - **Deliverables:**
   - `internal/node/api/problems.go`: `pkg/transform/keys` added to the packages the totality test
-    covers, with D11's four rows. The chain's refusals reach the API only as `settings.ErrInvalid`
+    covers, with D11's four rows and `ErrWrapLimit` `409` `wrap_limit`, so a spent master key asks
+    for a rotation rather than answering a `500`. The chain's refusals reach the API only as `settings.ErrInvalid`
     from the section's `Validate`, so `pkg/transform`'s errors take no row.
   - `internal/node/content/keys.go`: `Keys`, one per node over its stores' providers, which the API
     reaches through an interface it declares (`Deps.Keys`), first with
@@ -750,14 +756,14 @@ A suggestion only: one pull request per subtask works as well.
 - **RFC 5 Appendix B.4 calls the material conditions "of the store", RFC 25 §3.9 scopes them by
   namespace.** This epic follows RFC 25 and raises a store-wide material on each opened namespace
   (T9.6). For RFC 5's author.
-- **Needs on E6 and E7.** A shape check of `Config` that reads no file and dials nothing, which the
-  section's `Validate` calls (T9.1); a call that hands a running provider its new `Config` and
-  refuses a master key it does not hold, for the section's reach (D12), E7 taking the KMIP part and
-  E8 the retired files; the escrow
-  gate opened only from `Config.Escrowed` and that call, so E6's T6.7 drops "remembers a pass it
-  made" (D4); E7's `KMIPConfig.ClientKey` filled from the resolved `remote.kmip_client_key`, in
-  whatever form E7's transport reads; a sentinel in `keys` for a master key's spent wrap count (E6's
-  R22), which T9.3's table would answer `409` `wrap_limit`, so that it is not a `500`.
+- **What E6 already provides.** `ValidateConfig` (its R52, D17), which the section's `Validate`
+  calls; `Reconfigure` (its R53, D16), which the section's reach calls; `VerifyEscrow` returning a
+  pass and recording nothing, so the gate opens only from the passes `New` and `Reconfigure` are
+  given (D4); `keys.ErrWrapLimit`, which T9.3's table answers `409` `wrap_limit`.
+- **Needs on E7.** The key-service fields' rules in `ValidateConfig` and their change in
+  `Reconfigure` (endpoint, certificates, timeout), which E6's D16 leaves to it; and
+  `KMIPConfig.ClientKey` filled from the resolved `remote.kmip_client_key`, in whatever form E7's
+  transport reads.
 - **What E8 already provides.** `RotateDataKey` and `RotateMasterKey`, each refusing
   `ErrNotEscrowed` where the gate is shut, `RotateMasterKey` safe to repeat (its T8.6), so D7 needs
   no token; `Deps.RotationNeeded`, a callback rather than a report to poll, which T9.5 implements
@@ -767,8 +773,8 @@ A suggestion only: one pull request per subtask works as well.
   `MasterKeysDestroyed` (its D8). Its `Deps.KeysObjects`, `Deps.After`, `Run` and the
   per-incarnation notice cursor (its D10) are the RFC 8 offload plan's epics 18 and 21's, not this
   epic's.
-- **Needs on E8.** The running provider's `Config` call (D12) opens a retired key file added at run
-  time and takes a rotation's swap of `key_file`, as `New` does for both; without it,
+- **Needs on E8.** E6's `Reconfigure` (D12) opens a retired key file added at run time and takes a
+  rotation's swap of `key_file`, as `New` does for both, which E6's D16 leaves to E8; without it,
   `retired_files` and the swap reach the provider only at the next start, and T9.5's key-file step
   would have to restart the store's provider.
 - **O9 (the RFC 5 plan's), settled by E7 and E8:** PyKMIP 0.10.0 cannot rotate a key in place but
@@ -783,4 +789,4 @@ A suggestion only: one pull request per subtask works as well.
   their start from E8's `RotationNeeded` (T9.5), the section's reach and refusals across every
   writer (T9.1), and the builders in the content wiring (T9.6), which E6's D8 brings here. The least
   certain estimates are T9.5's, whose key-file step swaps settings around E8's call, and T9.1's,
-  whose reach depends on the call E6, E7 and E8 add.
+  whose reach depends on E7's and E8's parts of `Reconfigure`.
