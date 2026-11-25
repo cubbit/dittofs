@@ -1,5 +1,3 @@
-//go:build windows
-
 package platform
 
 import (
@@ -305,13 +303,13 @@ func wantCallFailure(t *testing.T, err error, op, path string, cause error) {
 // gather runs against the volume until the one the row fails.
 //
 // The refusal the "policy on" answer brings, the passing answer and the cut
-// answers are pinned without the gather by the verdict's untagged rows on
-// checkCacheProbe, and the gather's own byte clipping by the untagged
-// TestWriteCacheAnswer, so no row here needs a scripted volume answer: the
-// query's two "not reported" faults (ERROR_NOT_SUPPORTED and
-// ERROR_INVALID_FUNCTION) run over a genuinely opened volume and hand the
-// verdict a genuine Win32 code, and every other row fails one call of the
-// chain and never reaches a recorded answer.
+// answers are pinned without the gather by the verdict's rows on
+// checkCacheProbe, and the gather's own byte clipping by the direct rows of
+// TestWriteCacheAnswer on the extracted function below, so no row here needs
+// a scripted volume answer: the query's two "not reported" faults
+// (ERROR_NOT_SUPPORTED and ERROR_INVALID_FUNCTION) run over a genuinely
+// opened volume and hand the verdict a genuine Win32 code, and every other
+// row fails one call of the chain and never reaches a recorded answer.
 func TestCheckWriteCachePolicyVolume(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -531,19 +529,25 @@ func TestCheckWriteCachePolicyVolumeCalls(t *testing.T) {
 
 	// The input is STORAGE_PROPERTY_QUERY, pinned by TestWriteCacheQuery from
 	// the same bytes; here it is what the call carried: the property and the
-	// query type as two 4-byte enumerations, and 12 bytes the whole.
+	// query type as two 4-byte enumerations, and 12 bytes the whole. An input
+	// shorter than the two enumerations fails on its own assertion below
+	// rather than a panic.
 	if query.inLen != 12 {
 		t.Errorf("%v: input of %d bytes, want the 12 of STORAGE_PROPERTY_QUERY", query, query.inLen)
 	}
-	if got := binary.LittleEndian.Uint32(query.query[0:]); got != storageDeviceWriteCacheProperty {
-		t.Errorf("%v: PropertyId %d, want StorageDeviceWriteCacheProperty (%d)", query, got, storageDeviceWriteCacheProperty)
-	}
-	if got := binary.LittleEndian.Uint32(query.query[4:]); got != propertyStandardQuery {
-		t.Errorf("%v: QueryType %d, want PropertyStandardQuery (%d)", query, got, propertyStandardQuery)
-	}
-	for i, b := range query.query[8:] {
-		if b != 0 {
-			t.Errorf("%v: AdditionalParameters byte %d is %#x, want 0", query, 8+i, b)
+	if len(query.query) < 8 {
+		t.Errorf("%v: input carried %d bytes, want at least the 8 of PropertyId and QueryType", query, len(query.query))
+	} else {
+		if got := binary.LittleEndian.Uint32(query.query[0:]); got != storageDeviceWriteCacheProperty {
+			t.Errorf("%v: PropertyId %d, want StorageDeviceWriteCacheProperty (%d)", query, got, storageDeviceWriteCacheProperty)
+		}
+		if got := binary.LittleEndian.Uint32(query.query[4:]); got != propertyStandardQuery {
+			t.Errorf("%v: QueryType %d, want PropertyStandardQuery (%d)", query, got, propertyStandardQuery)
+		}
+		for i, b := range query.query[8:] {
+			if b != 0 {
+				t.Errorf("%v: AdditionalParameters byte %d is %#x, want 0", query, 8+i, b)
+			}
 		}
 	}
 

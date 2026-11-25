@@ -2102,7 +2102,9 @@ func TestAppendRegularMalformed(t *testing.T) {
 // one option per line (fs/ext4/super.c, _ext4_show_options). ext alone keeps
 // that file, so a directory on any other filesystem — tmpfs among them, a
 // usual /tmp — skips by name: the skip is a visible report, never counted as
-// a pass.
+// a pass. An ext2-typed mount served by ext2's own driver skips the same way,
+// for no /proc/fs/ext4 entry is that driver's; its cases are pinned by the
+// verdict's and the probe's recorded rows.
 func TestCheckRealExtOptions(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -2123,6 +2125,14 @@ func TestCheckRealExtOptions(t *testing.T) {
 
 	var p storage.Probe
 	probeExtOptions(realTable, &p, st.Dev)
+
+	// A genuine ext2 mount reports the same statfs magic but is served by
+	// ext2's own driver, which keeps no /proc/fs/ext4 entry; this row covers
+	// the ext4-served chain, and the ext2 cases are pinned by the verdict's
+	// and the probe's recorded rows. The skip is a report, never a pass.
+	if errors.Is(p.ExtOptionsErr, errNoExtOptionsFile) {
+		t.Skipf("the ext filesystem under %s (device %d) has no /proc/fs/ext4 options entry, so its driver is ext2's own: this row covers the ext4-served path alone", dir, st.Dev)
+	}
 	if p.ExtOptionsErr != nil {
 		t.Fatalf("the real chain for device %d: got %v, want the options file the device's name builds", st.Dev, p.ExtOptionsErr)
 	}

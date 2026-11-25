@@ -137,10 +137,9 @@ func checkCacheProbe(p cacheProbe) error {
 		return fmt.Errorf("%w: volume %s: %d bytes", errCacheAnswerShort, p.mountPoint, len(p.answer))
 	}
 
-	// Version is the size of the structure itself (cachepolicy.go's constant
-	// names its citation): every published layout is 28 bytes, so an answer
-	// below it is no structure the driver ever wrote — not "not reported",
-	// an answer cut short.
+	// Version is the size of the structure itself, 28 for every published
+	// layout: an answer below it is no structure the driver ever wrote — not
+	// a property "not reported", an answer cut short.
 	version := binary.LittleEndian.Uint32(p.answer[writeCacheVersionOff:])
 
 	if version < writeCacheFirstWhole {

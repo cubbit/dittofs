@@ -20,16 +20,18 @@ import (
 // The test reads the gather's own answer, not only the verdict: a check that
 // returns nil would stay green on a volume whose query the rule never sees —
 // the not-reported answers pass — so the query's answer is asserted on its
-// own: it succeeded, its Version is the published structure's, and it reaches
-// the policy byte at offset 25.
+// own: it succeeded, and its bytes reach the policy byte at offset 25, which
+// every Version of 28 or above holds.
 //
 // decision: a volume that answers ERROR_INVALID_FUNCTION or
 // ERROR_NOT_SUPPORTED reports no write-cache property, and a volume whose
-// Version is not the one published layout reports one the verdict cannot
-// read: neither is the machine's policy, so the test skips naming the
+// Version is below the one published layout never reaches the policy byte:
+// none of those answers is the machine's policy, so the test skips naming the
 // volume and its answer — a skip is a visible report, never counted as a
-// pass. Anything else the volume answers fails here. Withdraw the skips when
-// something can arrange a test's own volume.
+// pass. Anything else the volume answers is asserted, a Version above the
+// published structure's included, since members added past it leave byte 25
+// the policy the verdict reads. Withdraw the skips when something can arrange
+// a test's own volume.
 //
 // No test arranges a real volume's write-cache policy — nothing but the
 // machine's own disk policy decides the refusal here — so the check below
@@ -62,8 +64,10 @@ func TestCheckDirOSRealVolume(t *testing.T) {
 		t.Fatalf("the write-cache query of %s returned %d bytes, want at least the %d of the header", p.mountPoint, len(p.answer), writeCacheHeaderLen)
 	}
 
-	if version := binary.LittleEndian.Uint32(p.answer[writeCacheVersionOff:]); version != writeCacheFirstWhole {
-		t.Skipf("the volume of %s answers Version %d, not the published structure's %d, whose policy byte the rule reads; the skip is a report, never counted as a pass", p.mountPoint, version, writeCacheFirstWhole)
+	// A Version below the published structure's ends before the policy byte;
+	// a Version of it or above holds the field, and is asserted either way.
+	if version := binary.LittleEndian.Uint32(p.answer[writeCacheVersionOff:]); version < writeCacheFirstWhole {
+		t.Skipf("the volume of %s answers Version %d, below the published structure's %d that first holds the policy byte, so no answer of it reaches the rule; the skip is a report, never counted as a pass", p.mountPoint, version, writeCacheFirstWhole)
 	}
 	if len(p.answer) <= writeCachePolicyOff {
 		t.Fatalf("the write-cache answer of %s is %d bytes, want at least the %d that reach the policy byte at offset %d", p.mountPoint, len(p.answer), writeCachePolicyOff+1, writeCachePolicyOff)

@@ -20,8 +20,9 @@ import (
 // every platform are checked on any platform, and finds the testing package
 // by import path, so a renamed import is caught; a dot import, whose names it
 // could not tell apart, is refused. A skip inside a helper of another
-// package, such as the profiler's Watch, is not seen. The two rows the
-// decision marker on skipByName names are exempt, and they alone.
+// package, such as the profiler's Watch, is not seen. The two test functions
+// the decision marker on skipByTest names are exempt, and they alone: their
+// bodies are the only ones the exemption reaches.
 func TestNoSkip(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -32,16 +33,18 @@ func TestNoSkip(t *testing.T) {
 	}
 
 	// decision: two rows over the host's own machine may skip by name —
-	// TestCheckRealExtOptions, whose directory and kernel the runner has, not
+	// TestCheckRealExtOptions, whose directory and kernel the host has, not
 	// the test, and TestCheckDirOSRealVolume, whose volume's write-cache
 	// answer no test arranges. Their subject being the machine's property, a
 	// run without it must say what the machine answered instead of passing
 	// silently; each skip names the answer, so it is a visible report, never
-	// counted as a pass. Every other skip stays an error. Withdraw the
-	// exemption when a test can arrange its own ext filesystem or volume.
-	skipByName := map[string]bool{
-		"check_linux_test.go":      true,
-		"checkdir_windows_test.go": true,
+	// counted as a pass. The exemption is keyed on these two test functions'
+	// names, so a skip anywhere else — in the files they live in included —
+	// stays an error. Withdraw the exemption when a test can arrange its own
+	// ext filesystem or volume.
+	skipByTest := map[string]bool{
+		"TestCheckRealExtOptions":  true,
+		"TestCheckDirOSRealVolume": true,
 	}
 
 	fset := token.NewFileSet()
@@ -59,7 +62,6 @@ func TestNoSkip(t *testing.T) {
 			}
 
 			path := filepath.Join(dir, e.Name())
-			maySkip := skipByName[e.Name()]
 
 			f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 			if err != nil {
@@ -96,29 +98,43 @@ func TestNoSkip(t *testing.T) {
 				names[local] = true
 			}
 
-			ast.Inspect(f, func(n ast.Node) bool {
-				sel, ok := n.(*ast.SelectorExpr)
-				if !ok {
+			inspect := func(fn *ast.FuncDecl) {
+				if fn.Body == nil {
+					return
+				}
+
+				maySkip := skipByTest[fn.Name.Name]
+
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					sel, ok := n.(*ast.SelectorExpr)
+					if !ok {
+						return true
+					}
+
+					if x, ok := sel.X.(*ast.Ident); ok && names[x.Name] && sel.Sel.Name == "Short" {
+						t.Errorf(
+							"%s: testing.Short: no test here may depend on -short",
+							fset.Position(sel.Pos()),
+						)
+					}
+
+					if skips[sel.Sel.Name] && !maySkip {
+						t.Errorf(
+							"%s: .%s: no test here may skip",
+							fset.Position(sel.Pos()),
+							sel.Sel.Name,
+						)
+					}
+
 					return true
-				}
+				})
+			}
 
-				if x, ok := sel.X.(*ast.Ident); ok && names[x.Name] && sel.Sel.Name == "Short" {
-					t.Errorf(
-						"%s: testing.Short: no test here may depend on -short",
-						fset.Position(sel.Pos()),
-					)
+			for _, decl := range f.Decls {
+				if fn, ok := decl.(*ast.FuncDecl); ok {
+					inspect(fn)
 				}
-
-				if skips[sel.Sel.Name] && !maySkip {
-					t.Errorf(
-						"%s: .%s: no test here may skip",
-						fset.Position(sel.Pos()),
-						sel.Sel.Name,
-					)
-				}
-
-				return true
-			})
+			}
 		}
 	}
 

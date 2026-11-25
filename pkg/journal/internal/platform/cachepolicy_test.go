@@ -171,14 +171,6 @@ func TestCheckWriteCachePolicy(t *testing.T) {
 			answer: flushingOn(),
 		},
 		{
-			// The boundary of the "cut short" error below: 28 is the Version
-			// of the one published layout, which the verdict answers and not
-			// errors on. Fails if the error's floor is read as inclusive, so
-			// that this Version begins it.
-			name:   "the published structure's version 28 passes",
-			answer: flushingOn(),
-		},
-		{
 			// Fails if NVCacheEnabled, offset 26 and set here, is read as the
 			// policy.
 			name:   "flushing on with a battery-backed cache passes",
@@ -302,24 +294,30 @@ func TestCheckWriteCachePolicy(t *testing.T) {
 		{
 			// Version "Contains the size of this structure" and "will change
 			// as members are added to the structure" (the Learn page above),
-			// and 28 is every layout published: a Version below it is no
-			// structure a driver ever wrote, cut short rather than passed as
-			// "not reported". Version 27 misses only the padding — 25 ended
-			// before the field — so the error begins one byte before the one
-			// published layout. Fails if such a Version is read as reporting
-			// the policy or as "not reported".
+			// and 28 is every layout published: a Version below it comes
+			// from no structure a driver ever wrote, and its answer is cut
+			// short rather than passed as "not reported". Version 27 is the
+			// last answer the error takes — the published layout without one
+			// byte of padding; the rows above answer a Version of 28 — so a
+			// floor one byte higher turns every refusal red and a floor one
+			// lower loses this row. Fails if such a Version is read as
+			// reporting the policy or as "not reported".
 			name:   "version 27 under the published structure",
 			answer: with(flushingOff(), 0, 0x1b),
 		},
 		{
-			// Version 26: the row a reader of the old rule could mistake the
-			// field's first whole Version for. Fails the same way.
+			// Version 26, one more byte short of the published layout, holds
+			// the policy byte while naming no structure that was ever
+			// published; the answer is cut short however inviting its byte
+			// looks. Fails the same way.
 			name:   "version 26 under the published structure",
 			answer: with(flushingOff(), 0, 0x1a),
 		},
 		{
-			// Version 25, 25 bytes returned: what the "not reported" rows
-			// used to pass. Fails rather than passing now.
+			// Version 25 with 25 bytes returned: the answer ends before the
+			// policy byte, and its Version names no published structure
+			// either, so it fails as cut short, never as a property not
+			// reported.
 			name:   "version 25 ends before the field",
 			answer: with(flushingOff(), 0, 0x19)[:25],
 		},
