@@ -15,7 +15,7 @@ reads. Cited, not owned: [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md)
 doubles). Every citation is `develop`'s text. The code lands on `feat/storage-v2`, and the paths
 below are paths there.
 **Track:** the team.
-**Epic 2 estimate: 5 subtasks, 8.25 man-days.**
+**Epic 2 estimate: 5 subtasks, 8.5 man-days.**
 **Depends on:** **S1**, E1's `pkg/remote` frozen: `Store` with the calls v1.1 has (`Checksum`,
 `Put`, `Get`, `Delete`, `List`, `Health`, `PutControl`, `GetControl`, `Close`), `Name`, `Range`,
 `Info`, `Role`, `Checksum` with its kinds, `StoredSum`, `Version`, `Direction`, the sentinels,
@@ -61,7 +61,7 @@ store that the suite holds to the real one.
 ### 1.1 In scope
 
 - **`pkg/remote/remotetest`:** `Subject`, `Run` and the rows of §3.
-- **`pkg/remote/memory`:** the in-memory store, its clock interface, its fault wrapper with its
+- **`pkg/remote/memory`:** the in-memory store, its clock function, its fault wrapper with its
   read-only setting, and its load record.
 
 ### 1.2 Out of scope
@@ -108,7 +108,7 @@ store that the suite holds to the real one.
   `unit`. It is reached at the end of this epic. **S2** appears here only inside it; the `R4-`
   prefix keeps it apart from the RFC 8 offload plan's S2.
 - **S3** is the storage service's protocol, never a synchronisation point.
-- **The RFC 3 plan's epic 2** (PR #5530), test foundations: the per-call faults on this epic's
+- **The RFC 3 plan's epic 2** (PR #5881), test foundations: the per-call faults on this epic's
   wrapper, and the Group A suite over the in-memory store.
 
 ## 2. How the general rules apply
@@ -119,17 +119,17 @@ by number and title, not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | the suite is the test of the in-memory store; the store's own tests cover what no generic row can (stream length, checksum modes, the load record). Doubles: `pkg/sim`'s `TestClock` (kind 1) and the wrapper (kind 3, T2.4). Nothing answers in a store's place |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | the suite is the test of the in-memory store; the store's own tests cover what no generic row can (stream length, checksum modes, the skipped-key count). Doubles: `pkg/sim`'s `TestClock` (kind 1) and the wrapper (kind 3, T2.4). Nothing answers in a store's place |
 | rule 2, fuzz tests where relevant ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | none | no parser of outside input: the store reads only the keys it wrote, and the bodies it stores are opaque to it |
 | rule 3, observability follows RFC 25 | none | the in-memory store records no series and logs nothing (D7): its observable output is the load record, the skipped-key count among it |
 | rule 4, profiling | T2.1 | `Run` calls `prof.Watch` before opening each row's subject, so a goroutine, descriptor or heap growth a row leaves behind fails that row. No allocation assertion: no hot path here |
-| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | every row runs at `remote.Store`, the surface every caller consumes; the load record is tested at `Load`, which the RFC 3 plan's checks read; the read-only setting at the probe RFC 3's health derivation reads |
+| rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | every row runs at `remote.Store`, the surface every caller consumes; the load record is held by the suite's load row through `Subject.Load`, which the in-memory opener backs with `Load`, the call the RFC 3 plan's checks read; the read-only setting at the probe RFC 3's health derivation reads |
 | rule 6, known failures shrink | all | no known-failure file: every test lands green with its subtask |
-| rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | all | nothing from `develop`'s `pkg/block/remote/memory` or `pkg/block/blockstoretest`. `pkg/remote/memory` imports `pkg/remote` and the standard library only, its clock an interface it declares (D4); `pkg/remote/remotetest` imports `pkg/remote` and `internal/prof`. Their tests import `pkg/sim`. E1's import walk covers both |
+| rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | all | nothing from `develop`'s `pkg/block/remote/memory` or `pkg/block/blockstoretest`. `pkg/remote/memory` imports `pkg/remote` and the standard library only, its clock a function it is given (D4); `pkg/remote/remotetest` imports `pkg/remote` and `internal/prof`. Their tests import `pkg/sim`. E1's import walk covers both |
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T2.1 | the rows are written once for every store, and E4 runs them against LocalStack, so no row's guarantee rests on the in-memory store alone (RFC 4 §7.1's last paragraph) |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T2.1, T2.2, T2.3 | the `ponytail:` and `decision:` markers named in §4, at the code sites that implement them |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test in §6 names the defect that fails it on its assertion |
-| rule 11, a symbol is exported only if the RFC's interface uses it | all | `remotetest` exports `Subject` and `Run`; `memory` exports `Clock`, `New`, the store's `remote.Store` methods, `Load` with `Call`, and `Wrap` with `Wrapper` and `SetReadOnly`, each with a consumer named in §6. The raw hooks stay unexported in `memory`, since only its own test's opener reads them |
+| rule 11, a symbol is exported only if the RFC's interface uses it | all | `remotetest` exports `Subject`, `Run`, and `Load` with `CallRecord`, the load row's view of a record; `memory` exports `New`, the store's `remote.Store` methods, `Load` with `CallRecord`, and `Wrap` with `Wrapper` and `SetReadOnly`, each with a consumer named in §6. The raw hooks stay unexported in `memory`, since only its own test's opener reads them |
 | rule 12, each subtask creates only what it declares | all | each hook of `Subject` lands with the row that first reads it; the wrapper lands with the §4.7 row, its first consumer; the load record with its first test |
 
 ## 3. Requirements and invariants
@@ -230,32 +230,35 @@ subtasks and tests can cite them.
     package" more literally, but `remotetest` imports `testing`, and the node's registry, which
     refuses the in-memory store outside tests (#4276), names it from production code.
   - Prior art: the Go CDK keeps `memblob` and `drivertest` in two packages (from memory).
-- **D4. The store's clock is an interface it declares, so it imports only `pkg/remote`.**
-  - `memory.Clock` is `interface{ Now() time.Time }`, the one method the store calls, for
-    `Info.ModTime`. `pkg/sim`'s `TestClock` satisfies it as it is, and so does the node's clock
+- **D4. The store's clock is a function it is given, so it imports only `pkg/remote`.**
+  - `New` takes `now func() time.Time`, the one call the store makes on a clock, for
+    `Info.ModTime`. A test passes `pkg/sim`'s `TestClock.Now` and the node its own clock's `Now`
     (R21). The store never calls `time.Now`.
+  - No clock type is declared, so none clashes with the `Clock` the RFC 3 plan's epic 2 declares
+    in this package for its `Link` fault (`After(d)`).
   - The RFC 4 plan's rule 7 allows `pkg/remote/memory` `pkg/sim`'s clock. This epic imports none,
     which E1's walk passes either way; §9 notes it for the plan's pending import-list fix.
   - Prior art: epic 3's D1 declares its fault interface, and epic 5's D9 its clock, the same way,
-    over `pkg/sim`'s signatures.
+    over `pkg/sim`'s signatures; here a function value is enough, since the store makes one call.
 - **D5. The store checks the put's checksum in the mode it is built with.**
-  - `New(clock, sum)` takes the `Checksum` kind `Checksum()` then reports. With CRC32C or MD5, `Put`
+  - `New(now, sum)` takes the `Checksum` kind `Checksum()` then reports. With `remote.ChecksumCRC32C`
+    or `remote.ChecksumMD5`, `Put`
     computes the kind over the body as it reads it and refuses a mismatch with `ErrCorrupt`,
-    storing nothing (R16): it behaves as a service that checks the sum. With None, nothing crosses
+    storing nothing (R16): it behaves as a service that checks the sum. With `remote.ChecksumNone`, nothing crosses
     a network, so nothing is compared.
   - E6's §7.3 `codec.Store` row needs a mode that forces a measuring pass, and gets it here.
-  - A whole-block get reports no stored checksum: `StoredSum.Kind` is None, as §4.1 allows when
+  - A whole-block get reports no stored checksum: `StoredSum.Kind` is `remote.ChecksumNone`, as §4.1 allows when
     the service reports none. Marker: a `ponytail:` at `Get` names the ceiling, that a raw copy's
     test cannot read a stored checksum here; upgrade when RFC 26's raw copy needs one without
     LocalStack.
   - Prior art: none found.
-- **D6. The load record is an output of the store, tested in the store's own package.**
+- **D6. The load record is an output of the store, held by a suite row.**
   - `(*Store).Load()` returns a copy: `InFlight` and `Peak`, `Calls` in the order they reached the
     store, `Puts` per name, `Bytes`, the bytes of the blocks held (control objects excluded, so the
     health object written at construction does not count), and `Foreign`, the keys a listing
     skipped (D7).
-  - `Call.Op` takes §4.12's `op` values (`put`, `get`, `delete`, `list`, `health`, `put_control`,
-    `get_control`), so the record and the S3 store's metrics speak one vocabulary. `Call.Name` is
+  - `CallRecord.Op` takes §4.12's `op` values (`put`, `get`, `delete`, `list`, `health`, `put_control`,
+    `get_control`), so the record and the S3 store's metrics speak one vocabulary. `CallRecord.Name` is
     the block's name for `put` and `get`, zero otherwise.
   - A call counts as in flight from entry to return, and a get until its reader is closed, so a
     put whose body reader blocks, or a get whose bytes are still being read, stays in flight: that
@@ -263,8 +266,18 @@ subtasks and tests can cite them.
   - The health object `New` puts is not recorded: the record starts empty.
   - Marker: a `ponytail:` at `Calls` says it grows by one entry per call; upgrade to recording
     that a test switches on if a benchmark over this store shows it in its heap.
-  - The record is covered by the store's own tests, beside its suite run, not by a suite row: no
-    other store keeps one. §9 notes the RFC 3 plan's wording, which says `remotetest` covers it.
+  - The counts RFC 3 §1.4 names (calls in flight and their peak, the order calls reached the
+    store, puts per name, the bytes held) are held by the suite's load row (T2.5), as RFC 29 §4.11
+    asks of a count a test asserts on. The row reads an optional `Subject.Load` hook: the
+    in-memory opener backs it with `Load`, and E4's opener with E3's pass-through request record
+    (its D11), so the counts are held against a real store too. A subject without the hook skips
+    the row by name.
+  - `remotetest` cannot import `memory` (rule 7), so it declares the hook's `Load` and
+    `CallRecord` with the same fields, and the in-memory opener copies one into the other.
+  - `Foreign` stays with the store's own tests: the S3 store counts a skipped key through §4.12's
+    series (E4's T4.7), not through a record.
+  - The type is `CallRecord`, not `Call`, so it does not clash with the `Call` that the RFC 3
+    plan's epic 2's rules match in this package.
   - Prior art: none found.
 - **D7. The in-memory store counts a skipped key in its load record, and records no §4.12 series
   and no log line.**
@@ -275,8 +288,8 @@ subtasks and tests can cite them.
   - Marker: a `decision:` marker at the listing's skip says the store logs and exports nothing,
     and to withdraw that if the node ever serves the in-memory store outside tests.
   - The S3 store's series and log are E4's (its T4.7).
-- **D8. The wrapper wraps any `remote.Store`, and its read-only mode is a setting.**
-  - `memory.Wrap(s remote.Store) *Wrapper` implements `remote.Store` over `s`. `SetReadOnly(true)`
+- **D8. The wrapper wraps the in-memory store, and its read-only mode is a setting.**
+  - `memory.Wrap(s *Store) *Wrapper` implements `remote.Store` over `s`. `SetReadOnly(true)`
     makes `Put`, `PutControl`, every name of `Delete` and `Health(DirPut)` return
     `&remote.DeniedError{Cause: remote.CauseAccess, Code: "AccessDenied"}` without calling `s`;
     every other call passes through. `SetReadOnly(false)` restores it for the next call (R28).
@@ -285,6 +298,9 @@ subtasks and tests can cite them.
     refuses it. An embedded store would pass a new write through while read-only. A `decision:`
     marker at `Wrapper` says read-only refuses every write call it lists, and that each call
     landing later must be added to that list or the wrapper refuses to compile.
+  - It takes `*Store`, not any `remote.Store`, because the RFC 3 plan's epic 2 reads the store's
+    record behind it (its `Call.InFlight`). Its only callers are tests over the in-memory store;
+    the S3 store's read-only row goes through E3's `403` (below).
   - Read-only is a state that holds across calls, so it is a seam setting, not a per-call fault
     decided through the one fault interface (RFC index, "Test harness" item 1). The RFC 3 plan's
     epic 2 adds the per-call faults, and their fault interface, as further settings and methods on
@@ -313,13 +329,14 @@ pkg/remote/remotetest/
                   T2.2  the delete and listing rows; Subject.PutRaw
                   T2.3  the control-object and raw-namespace rows; Subject.Raw
                   T2.4  the read-only probe row; Subject.ReadOnly
+                  T2.5  the load row; Subject.Load, Load, CallRecord
 pkg/remote/memory/
-  store.go        T2.1  Clock, New, Store, Checksum, Put, Get, Close; the C.2 keys (D2)
+  store.go        T2.1  New, Store, Checksum, Put, Get, Close; the C.2 keys (D2)
   list.go         T2.2  Delete, List; putRaw
   control.go      T2.3  PutControl, GetControl, the 256 KiB bound; the health object New puts; rawKeys
   health.go       T2.4  Health
   wrap.go         T2.4  Wrap, Wrapper, SetReadOnly
-  load.go         T2.5  Load, Call, the record
+  load.go         T2.5  Load, CallRecord, the record
   store_test.go   T2.1–T2.5  the store's own tests
   suite_test.go   T2.1  the opener over New and the hooks; remotetest.Run
 ```
@@ -349,9 +366,8 @@ pkg/remote/memory/
   - `memory/store.go`:
 
     ```go
-    // Clock is the one method of the node's clock the store calls.
-    type Clock interface{ Now() time.Time }
-    func New(c Clock, sum remote.Checksum) *Store
+    // now is the node's clock's Now, read only for Info.ModTime.
+    func New(now func() time.Time, sum remote.Checksum) *Store
     func (s *Store) Checksum() remote.Checksum
     func (s *Store) Put(ctx context.Context, name remote.Name, body io.Reader, size int64, sum []byte) error
     func (s *Store) Get(ctx context.Context, name remote.Name, r remote.Range) (io.ReadCloser, remote.StoredSum, error)
@@ -366,7 +382,7 @@ pkg/remote/memory/
     flight when it is closed (D6). D5's `ponytail:` at `Get`.
     Consumed by the RFC 3 plan's epic 2, the RFC 5 plan's epic 8, the RFC 8 offload plan's epics
     15, 17 and 21, and E6.
-  - `memory/suite_test.go`: the opener over `New(sim.NewTestClock(…), CRC32C)`. The None and MD5
+  - `memory/suite_test.go`: the opener over `New(sim.NewTestClock(…).Now, remote.ChecksumCRC32C)`. The None and MD5
     modes are covered by `store_test.go`, and E4 runs the rows against LocalStack's own mode.
 - **Acceptance criteria:**
   - Every row of this subtask passes against the in-memory store, under `-race`, with no leak.
@@ -420,8 +436,10 @@ pkg/remote/memory/
   - The suite's rows, at `remote.Store`: R7 (catches a delete of an absent name failing); R8, with
     a page asserting at most `n` and each `Info` checked against the size put and a non-zero time
     (catches a duplicated or dropped block at a page boundary, or a resume that restarts); R9 with
-    a key `blocks/not-a-name` planted through `PutRaw`, which the R10 check then leaves out (D1)
-    (catches a foreign key yielded as a block, or the walk stopping at it), and a context cancelled before the call (catches a listing that
+    a key `blocks/7f` planted through `PutRaw`, valid hex but too short for a name, so it sorts
+    between a name beginning `00` and one beginning `ff`, both put; the walk lists both names and
+    the R10 check leaves the key out (D1) (catches a foreign key yielded as a block, or the walk
+    stopping at it), and a context cancelled before the call (catches a listing that
     ignores its context).
   - `store_test.go`, at `List`: the clock set to a fixed past instant before a put, `Info.ModTime`
     equal to it (catches `time.Now`, R21); `Delete` returning one result per name for a batch with
@@ -472,7 +490,7 @@ pkg/remote/memory/
   - `memory/wrap.go`, D8's wrapper:
 
     ```go
-    func Wrap(s remote.Store) *Wrapper
+    func Wrap(s *Store) *Wrapper
     func (w *Wrapper) SetReadOnly(on bool)
     ```
 
@@ -502,21 +520,22 @@ pkg/remote/memory/
 
 ### T2.5 The load record
 
-**Subtask T2.5 estimate: 1.25 man-days.**
+**Subtask T2.5 estimate: 1.5 man-days.**
 
 - **Track:** the team. **Depends on:** T2.4.
 - **Covers:** R20, R25, R29, R30. R30 is a property of RFC 3's checks, which this record makes
   possible; those checks enforce it.
-- **Deliverables:** `memory/load.go`, D6's record:
+- **Deliverables:**
+  - `memory/load.go`, D6's record:
 
   ```go
-  type Call struct {
+  type CallRecord struct {
       Op   string      // §4.12's op: put, get, delete, list, health, put_control, get_control
       Name remote.Name // the block's, for put and get; zero otherwise
   }
   type Load struct {
       InFlight, Peak int
-      Calls          []Call
+      Calls          []CallRecord
       Puts           map[remote.Name]int
       Bytes          int64 // of the blocks held
       Foreign        int   // keys a listing skipped (D7)
@@ -528,13 +547,19 @@ pkg/remote/memory/
   whose body reader blocks holds no lock. Consumed by the RFC 3
   plan's epic 2 and its checks of a pool binding and of call order (RFC 3 §1.4). D6's `ponytail:`
   at `Calls`.
+  - `remotetest`: `Subject.Load func() Load`, with `remotetest.Load` and `remotetest.CallRecord`
+    declaring the same fields as `memory`'s, `Foreign` left out (D6); the load row, which a subject
+    without the hook skips by name. The in-memory opener backs it by copying `(*Store).Load()`.
+    Consumed by E4's T4.8 opener, over E3's request record.
 - **Acceptance criteria:**
+  - The load row passes against the in-memory store under `-race`.
   - With 64 puts held open by blocking body readers, `InFlight` and `Peak` are 64; once released
     `InFlight` is 0 and `Peak` stays 64.
   - `Calls` lists the calls in the order they reached the store; `Puts` counts a name put three
     times as 3; `Bytes` equals the sizes of the blocks still held after puts, replacements and
     deletes.
-- **Tests:** at `Load`, the record the RFC 3 plan's checks read:
+- **Tests:** the suite's load row, at `remote.Store`, reading the counts through `Subject.Load`,
+  the record the RFC 3 plan's checks read:
   - 64 puts whose body readers each block after signalling their first `Read`: once all 64 have
     signalled, `InFlight` is 64; then half released with a reader error and half to their end,
     `InFlight` is 0 and `Peak` 64 (catches a
@@ -548,9 +573,9 @@ pkg/remote/memory/
     `Calls` (catches a call left out or recorded at return instead of entry, R29);
   - a replaced block and a deleted one, compared with `Bytes` (catches bytes counted per put
     instead of per block held, R29);
-  - a listing over a planted foreign key, then `Foreign` is 1 (catches a key skipped uncounted,
+  - `store_test.go`: a listing over a planted foreign key, then `Load().Foreign` is 1 (catches a key skipped uncounted,
     R20).
-- **Rules:** rule 5: tested at `Load`, which RFC 3's checks consume. Rule 9: D6's `ponytail:`.
+- **Rules:** rule 5: tested at `remote.Store` and read at `Load`, which RFC 3's checks consume. Rule 9: D6's `ponytail:`. Rule 12: `Subject.Load` lands with the load row.
 
 ## 7. Order of work
 
@@ -575,7 +600,7 @@ flowchart TD
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T2.1, T2.2, T2.3 | 5.75 | — | the suite and the store it holds, every data and control row E4 runs |
-| 2 | T2.4, T2.5 | 2.5 | PR 1 | the probes, the wrapper and the record, which the RFC 3 plan reads |
+| 2 | T2.4, T2.5 | 2.75 | PR 1 | the probes, the wrapper and the record, which the RFC 3 plan reads |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -588,10 +613,11 @@ A suggestion only: one pull request per subtask works as well.
 - **What later documents owe this epic.**
   - E4's T4.8 opener supplies `PutRaw` and `Raw` over its admin client, or R9's foreign-key half
     and R10 skip on the S3 store by name; and its cleanup leaves no idle connection behind (D1).
-    E4's document names neither yet.
+    E4's T4.8 opener also backs `Subject.Load` with E3's
+    request record (its D11), or the load row skips on the S3 store by name (D6). E4's document
+    names none of these yet.
   - The RFC 3 plan's epic 2 adds its time-taking faults through the bodies, as D8 says, so the
-    store's record sees the pool bind. Its "`remotetest` covers" the load record (its epic 2's
-    **Done when:**) should read "`pkg/remote/memory`'s tests cover" (D6).
+    store's record sees the pool bind.
 - **How `sum` is encoded.** RFC 4 §4.1 gives `Put` a `sum []byte` and does not say its form. D1
   takes the raw digest, which E4's store base64-encodes into its header; E1's doc comment on
   `Put` can state it, so the suite, E4 and E6's `codec.Store` agree on one form.
