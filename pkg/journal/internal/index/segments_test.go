@@ -102,6 +102,10 @@ type winRec struct {
 // a hook missing on any of them fails the comparison at the step that caused
 // it.
 func TestSegmentBytesMatchWalk(t *testing.T) {
+	// decision: the walk comparison runs in one goroutine and starts none, so the race detector has nothing to check and only slows it.
+	if raceEnabled {
+		t.Skip("single-goroutine check; runs in the journal-index cell without -race")
+	}
 	rng := rand.New(rand.NewPCG(9, 3373))
 	var fs files
 	fs.openBuckets(ver(0))
