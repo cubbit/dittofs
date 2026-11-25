@@ -2200,9 +2200,10 @@ type Tenant struct {
 }
 
 type Stats struct { // per source and tenant
-	Pending, Backoff, Running, Overdue int
-	OldestPending                      time.Duration
-	Dropped, Expired                   uint64
+	Pending, Backoff, Running, Runs, Overdue int // entries by state; Runs: runs in flight; Overdue: runs overdue now
+	OldestPending                            time.Duration
+	Dropped, Expired, OverdueRuns            uint64 // OverdueRuns: runs that passed twice RunTimeout, each counted once
+	Stalled                                  bool   // work_queue_stalled: a run overdue, or entries due with none dispatched for 5 minutes
 	LastDone                           time.Time
 }
 
