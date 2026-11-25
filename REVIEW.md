@@ -60,7 +60,8 @@ the code" or "I think". A point that rests on "I think" or "not measured" is
 a question, not a blocking point, until someone runs it. A bot that posts
 directly, such as Copilot code review, is named by its account; a review a
 person posts is that person's (`pr-commenting.instructions.md`, "A human owns
-the output"). Its blocking points are judged like anyone's, by this section.
+the output"). Either review's blocking points are judged like anyone's, by
+this section.
 
 Everything else is a **suggestion**: wording, structure, a nicer shape, a
 test or metric that no rule in §1 requires, a subtask someone would split
