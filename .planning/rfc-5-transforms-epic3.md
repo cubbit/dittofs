@@ -19,7 +19,8 @@ bodies and the dependencies `NewChain` takes: a logger and a recorder for RFC 5 
 can be resolved once per transform at build, `Require []string` and `Encrypts
 func(entity.NamespaceID) bool` (D11); `Transform.Version` and `Encoded.ID` (D12). From E2: the in-memory `keys.Provider` under `keystest`, whose current material a test can
 change, which can be told an ID is unknown or destroyed, and whose exported call count backs "the
-provider records no call"; RFC 5 §2.8's three chain-ID vectors from the shared vector script.
+provider records no call"; RFC 5 §2.8's three chain-ID vectors and §2.4's envelope vectors (0, 1
+and 3 IDs, E2's R23) from the shared vector script.
 **Blocks:** E4, partly: `Register` and the registry's `MaxDecodeLen` (T3.1) hold a compressor's
 registration; E8, partly: a data-key rotation's new chain ID is `Attempt.ID` (T3.3); E9: settings
 are validated by building the chain with `NewChain` (T3.2), and its `require` key and T15's
@@ -119,7 +120,7 @@ title and not copied.
 | rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | all | `chain` imports the root, `keys`, `entity` and BLAKE3; no `pkg/metrics`, `pkg/health` or `pkg/settings`. E1's import test holds it |
 | rule 8, real dependencies for properties of those dependencies | none | the chain holds no store and no key service; the material it asks for comes through `keys.Provider`, whose real implementation is E6's |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T3.1, T3.2, T3.3, T3.4 | `decision:` markers for D1, D6 and D7; `ponytail:` for D8. Of RFC 5's own `decision:` notes, §3.2's goes at T3.2's `with_encryption: accept` check; the others are E4's, E5's and E9's |
-| rule 10, a test must be able to fail | all | each test in §6 names the bug it catches; the chain-ID vectors come from E2's independent script, never from this code |
+| rule 10, a test must be able to fail | all | each test in §6 names the bug it catches; the chain-ID and envelope vectors come from E2's independent script, never from this code |
 | rule 11, a symbol is exported only if RFC 5's interface or a consumer outside the package uses it | all | `chain` exports only `Register` and `NewChain`, and whatever E1 declares for `NewChain`'s dependencies; the concrete chain, attempt, envelope and census view are unexported |
 | rule 12, each subtask creates only what it declares | all | each test transform lands with its first test; `transform-allocs` lands with the first allocation tests (T3.7) |
 
@@ -144,7 +145,7 @@ Every obligation RFC 5 places on the chain, numbered so that subtasks and tests 
 | --- | --- | --- | --- | --- |
 | R6 | A chain holds at most one transform per stage; a configuration that lists transforms out of stage order, two in one stage, or one transform twice is refused at build, never reordered, and nothing is written | MUST | §2.3, §8.2 T11, T11 | T3.2 |
 | R7 | A chain with an encrypt stage is refused if its compress stage's settings do not carry `with_encryption: accept`; with it, the chain builds | MUST | §3.2, §8.2 T16, T16 | T3.2 |
-| R8 | A transform that cannot start (an unknown name, bad settings, a factory that fails, material it cannot get) fails `NewChain`, which returns no chain, so the store does not open and never writes without it | MUST NOT | §2.7, §3.1, §8.2 T5, T5 | T3.2 |
+| R8 | A transform that cannot start (an unknown name, bad settings, a factory that fails) fails `NewChain`, which returns no chain, so the store does not open and never writes without it | MUST NOT | §2.7, §3.1, §8.2 T5, T5 | T3.2 |
 | R9 | A chain that fails to build logs the transform and the reason at `Error` | invariant | §6 | T3.2 |
 
 **The pin and the chain ID**
@@ -196,7 +197,10 @@ Every obligation RFC 5 places on the chain, numbered so that subtasks and tests 
 material) are each transform's, checked by E2's `transformtest` in E4 and E5; the chain's part is
 R19–R25. §2.2 and §2.6 (the hash before and after the chain) and T6, T8 through the codec are RFC
 4's codec's, run in E11. §2.5's fingerprint refusal and T12's second half are E6's. §2.7's "the
-store does not open" is the engine's, run in E11; the chain's half is R8. §2.8's "a block name
+store does not open" is the engine's, run in E11; the chain's half is R8. §2.7's "material it
+needs and cannot get" never reaches `NewChain`, since no factory reaches material (D1): the chain
+surfaces it at `Pin` (R12), and that the store then does not open is the engine's open, run in
+E11. §2.8's "a block name
 always carries a 32-byte chain ID" is RFC 2's name. §3.1's `Remove` and T13 are the plan's
 deferral ledger (§1.2). §3.2's change refusals, the bound `encrypts` and the default chain are
 E9's. §4 items 3 to 7 are each transform's, held by `transformtest`. §4 item 1's ID ranges cannot
@@ -226,7 +230,7 @@ nothing.
   transforms, and `transformtest` checks each bound grows with `n`. The per-stage maxima are found
   once in `NewChain`. Prior art: none found.
 - **D3, the chain returns its own decode errors.** Whatever a step or the provider returns, the
-  chain returns a value of its own that wraps exactly one sentinel with `%w` and carries the cause
+  chain returns a value of its own that wraps one sentinel with `%w`, two for unknown material, and carries the cause
   as text only, so no foreign type is reachable through `errors.As`, even one that itself wraps a
   sentinel. A transform's `Decode` error that is no sentinel becomes `ErrMalformed`; a provider
   error that is no sentinel, a cancelled context included, becomes `ErrMaterialUnavailable`, since
@@ -420,7 +424,9 @@ docs/internals/rfcs/rfc-5-transforms.md  T3.4  §8.3's suites line names the fuz
 - **Tests:** at `Attempt.Encode` and `Chain.Decode`, which the codec calls: a table of envelopes
   (version 0 and 2, an unregistered ID, a repeated ID, two IDs of one stage, out of order, a count
   past the body's end) each `ErrMalformed`, and a length check per count (catch each missing
-  refusal, R17, R18); the round-trip table (catches a step-order or envelope bug, R16, R19); the
+  refusal, R17, R18); E2's envelope vectors of 0, 1 and 3 IDs, written byte for byte by the
+  encoder and read back to their IDs by the parse (catches a writer and parser sharing a bug, a
+  little-endian ID or a count off by one, R16); the round-trip table (catches a step-order or envelope bug, R16, R19); the
   50% transform before an identity on a chunk of exactly the maximum (catches a step given the
   plaintext maximum, R20); a test transform whose `Decode` would write past its bound gets
   `ErrTooLarge` (catches a missing per-step bound, R21); chain A then B, and §8.2's removed-parity
@@ -490,8 +496,8 @@ docs/internals/rfcs/rfc-5-transforms.md  T3.4  §8.3's suites line names the fuz
   given, an output sink and not a double, holds the expected counts after a scripted run per label,
   `material_unknown` included through D3 (catches a series recorded under the wrong label, or only
   for configured transforms, R31); an envelope refusal lands under `envelope` (catches a planted
-  envelope invisible to the ticket, D7); the sink holds every resolution before the first call and
-  none after (catches a label lookup per call, R32). Durations are asserted as recorded once per
+  envelope invisible to the ticket, D7). A label lookup per call (R32) is caught by T3.7's
+  allocation test, not here. Durations are asserted as recorded once per
   call, not by value.
 - **Rules:** rule 3: no line per chunk, R32.
 
