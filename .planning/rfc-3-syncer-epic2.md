@@ -19,7 +19,7 @@ makes a namespace read-only, all on `feat/storage-v2` (T2.1 and T2.2 only; T2.3 
 **Blocks:** S2, and through it E3, E4 and E5, which inject faults through T2.1 and T2.2 and add
 rows to T2.3's suite; E6, which does the same; E7, whose sweep fails the *n*th call with each
 kind and whose heap check holds every call; E9, whose B1 to B4 run over T2.2's simulated link.
-Outside this plan, RFC 8 offload plan epic 21 runs T2.3's suite over the S3 store.
+Outside RFC 3's epics, RFC 8 offload plan epic 21 runs T2.3's suite over the S3 store.
 
 ---
 
@@ -80,8 +80,8 @@ suite's frame in `pkg/syncer/syncertest`, its import-test allowlist and its froz
 - **S3**, the syncer complete over the in-memory store. Where the text says "the S3 store", S3
   is the storage service whose protocol RFC 4's production store speaks, not this point.
 - **R4-S2**, the RFC 4 plan's S2: its in-memory store, `remotetest` and read-only wrapper landed.
-  Its S2 is not this plan's.
-- **The integration epic**, E8 here; outside this plan, RFC 8 offload plan epic 21, which
+  Its S2 is not the S2 above.
+- **The integration epic**, E8 here; outside RFC 3's epics, RFC 8 offload plan epic 21, which
   composes the syncer in the node and runs the suite over the S3 store.
 
 ## 2. How the general rules apply
@@ -120,7 +120,7 @@ them.
 | R4 | A put can be cut short part-way through its body: nothing is stored under the name, and the caller is told it failed | invariant | §1.4, §3.4 | T2.1 |
 | R5 | One chunk's bytes of a get can be corrupted, on the first get only or on every get | invariant | §1.4; §7.1, "§2.4 verification re-get" | T2.2 |
 | R6 | Every call can be held until the test releases it | invariant | §1.4 | T2.2 |
-| R7 | The probe of either direction can fail or pass, the store's own or the one the syncer shares across a `ProbeKey` | invariant | §1.4 | T2.1 |
+| R7 | The probe of either direction can fail or pass, the store's own or the one the syncer shares across a `ProbeKey` | invariant | §1.4; §2.8 | T2.1 |
 | R8 | A fault can fail the *n*th call of a scripted run, for every *n*, with each failure kind: transient, terminal, committed with the response lost, stopped part-way, corrupted, held | invariant | §8.3 | T2.1, T2.2 |
 | R9 | Every delay of a fault runs on the clock the test supplies, never on one it cannot replace | MUST NOT | §1.4, "Time is virtual in tests" | T2.2 |
 
