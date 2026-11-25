@@ -177,8 +177,8 @@ namespace-move rows of §7.4, the rows no suite runs yet (xfstests, pynfs's rebo
 §13's suites paragraph) and a remote outage on the composed node, each parked in §6.6.
 
 **Test components.** The three pieces both adapters share (S0), built in E2: `vfstest.Mutations`
-keeping each call's reference and answer, `adaptertest/golden`, and the import test's call-site and
-file-size rules. SMB's handler harness, over E2's runner, stays RFC 22's plan's epic 2. Here also:
+keeping each call's reference and answer, the script that cuts captures into golden files through
+`tshark`, and the import test's call-site and file-size rules. SMB's handler harness, over E2's runner, stays RFC 22's plan's epic 2. Here also:
 NFS's handler harness and knfsd's captures (E2), the import test's NFS
 entry files (E4 and E5, with the calls they name), the scripted client (E3); `gsstest`'s initiators
 come with RFC 22's plan's `gss` (S6c).
@@ -230,7 +230,7 @@ come with RFC 22's plan's `gss` (S6c).
 
 1. **Independent unit tests, under `-race`.** Each epic carries its own unit tests, on another
    epic's implementation once that has landed, `memory.New`, `vfstest.Faults`, `vfstest.Null`, E2's
-   NFS handler harness, S0's golden helper with knfsd's captures, the scripted client, `gsstest`, and RFC 20's
+   NFS handler harness, knfsd's golden files cut by S0's script, the scripted client, `gsstest`, and RFC 20's
    `testproto` and leak checks, and on no other double (`CLAUDE.md`, "Writing tests"). A handler is
    tested as RFC 20 §7.2 says: on `memory.New`, each error an injected one through `vfstest.Faults`,
    the one-call rule read from `memory.New`'s record of mutating calls. A stage is tested without a
@@ -311,7 +311,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | NFS surface | request state; `ops/v4`'s handler set, `COMPOUND` row and members' table | 3 | 3.75 | team | all |
-| E2 ⛔ | Test foundations | the shared test pieces (S0); the handler runner and NFS's harness over it; knfsd captures; the service's `NoGrace` | 6 | 14.75 | team | E3 to E14 |
+| E2 ⛔ | Test foundations | the shared test pieces (S0); the handler runner and NFS's harness over it; knfsd captures; the service's `NoGrace` | 6 | 13.5 | team | E3 to E14 |
 | E3 | The RPC layer | credentials to `Identity` and `Call`, `NULL`, NFS over TLS, the stages' and programs' tables, status layers, the scripted client, the `Replay` stage and its duplicate-request cache (D10) | 7 | 17 | A | E8, E13, E14; S3 and S4 |
 | E4 | NFSv3 and MOUNT | every NFSv3 procedure, `fattr3`, `sattr3` and WCC, cookies, stability, `FSINFO`, MOUNT; A3's service half after S2b | 10 | 26 | B | S3; E11, partly; E16 |
 | E5 | NFSv4 namespace, attributes and data | file-handle operations, the pseudo-filesystem, `SECINFO`, `fattr4` and Appendix B, `ACCESS`, name operations, `READDIR`, stateless I/O | 8 | 23 | C | E6, E9; E12, partly; S4 |
@@ -350,7 +350,7 @@ Legend: ⛔ blocks every epic after it; 🔀 waits for or opens a synchronisatio
 flowchart TD
   E1["E1 NFS surface ⛔"]:::blocker --> S1(["S1 NFS surface frozen"]):::sync
   S1 --> E2["E2 Test foundations ⛔"]:::blocker --> S2(["S2 NFS test foundations in CI"]):::sync
-  E2 --> S0(["S0 shared test pieces, built in E2: Mutations, golden helper, import rules"]):::sync --> S2
+  E2 --> S0(["S0 shared test pieces, built in E2: Mutations, cut script, import rules"]):::sync --> S2
   subgraph A["Track A"]
     E3["E3 RPC layer"] --> E8["E8 Clients and sessions 🔀"]:::sync --> E10["E10 Delegations, back channel"]
     E14["E14 Capture diffs 🔀"]:::sync
@@ -402,7 +402,7 @@ RFC 20's plan's S1 to S3 already hold on `feat/storage-v2`: `core`'s surface is 
 test runs, and NFS's scaffold answers every procedure over loopback through `core`.
 
 - **S0 the shared test pieces** (in E2, for both adapters). `vfstest.Mutations` keeping each call's
-  reference and answer, the `adaptertest/golden` helper, and the import test's call-site and
+  reference and answer, the script cutting captures through `tshark`, and the import test's call-site and
   file-size rules, built here because RFC 22's plan's epic 2, which was to build them, has no owner
   (§6.2, point 1). NFS's handler harness is E2's, `adaptertest/nfsharness`, a thin wrapper over the
   protocol-neutral runner E2 builds in `adaptertest`; SMB's harness, over the same runner, stays
@@ -440,7 +440,7 @@ test runs, and NFS's scaffold answers every procedure over loopback through `cor
 | Epic | Blocks | Why |
 | --- | --- | --- |
 | ⛔ E1 | E2, and through it every epic | the request state and `COMPOUND` row every NFSv4 epic writes against |
-| S0 | S2 | the call record, golden helper and import-test rules every NFS test uses |
+| S0 | S2 | the call record, cut script and import-test rules every NFS test uses |
 | ⛔ E2 | E3, E4, E5, E7, E11 and E12 through S2, and through them the rest | NFS's handler harness, knfsd's golden files, `NoGrace` |
 | E3 | E8, E13, E14; S3 and S4 | E8 extends E3's `Replay` stage; the `Security` stage RPCSEC_GSS joins; the scripted client every loopback row and capture script needs |
 | E4 | S3; E11, partly; E16 | an NFSv3 mount over loopback needs its procedures and MOUNT; A3's admission exemption |
@@ -500,7 +500,6 @@ pkg/adapter/
 internal/adapter/
   translate/                  E6: RFC 19 §5.1's NFSv4 ACL functions; created by whichever of E6 and RFC 22's plan's descriptor epic lands first
   adaptertest/
-    golden/                   E2: golden files cut from captures, for both adapters
     nfsclient/                E3: the scripted client (RFC 20 §8.2)
     imports_test.go           RFC 20's E2; E2: entry call sites and file sizes; E4 and E5: NFS's entry files
     nfsharness/               E2: NFS's handler harness over the runner E2 builds in adaptertest; a v3 row and a COMPOUND member on memory.New
@@ -661,32 +660,32 @@ loopback with its tag echoed.
 
 ### Epic 2 — Test foundations ⛔
 
-**Epic 2 estimate: 6 subtasks, 14.75 man-days.**
+**Epic 2 estimate: 6 subtasks, 13.5 man-days.**
 
 What NFS's tests need (§1.4): S0's three shared pieces, built here for both adapters; NFS's handler
 harness, knfsd's captures, and the one service change every NFSv4 reclaim row needs, `NoGrace`. No red suite is
 registered, and nothing here waits on an amendment.
 
 **Owns:** RFC 20 §5.4's captures for NFS, §7.2's handler tests for NFS and the call record both
-adapters read, §2.5's `golden/`, §7.1's entry call sites and 800-line allowlist; RFC 17 §4.3's `NoGrace` kind
+adapters read, §7.1's entry call sites and 800-line allowlist; RFC 17 §4.3's `NoGrace` kind
 and RFC 14 §4.2's answer (#5090 2.2).
 
 **Done when:** the harness's own test fails on a second mutating call and on a wrong reply byte, for
 an NFSv3 row and for an NFSv4 compound member; golden files cut from knfsd's captures load for each
 program area; `memory.New` answers a reclaim from a client with nothing left to reclaim `ErrState`
 (`NoGrace`), per RFC 14 §4.2, and one still owing reclaims `NoReclaim`; the import test reports
-each seeded call-site and file-size violation once, and `adaptertest/golden` cuts both corpus
-captures to the bytes `tshark` cut.
+each seeded call-site and file-size violation once, and the cut script, beside `normalize.py`,
+cuts both corpus captures to the bytes of the golden files already cut from them.
 
 **Expected content:**
-- S0: `vfstest.Mutations` keeping each call's reference and answer, `adaptertest/golden`, and the
+- S0: `vfstest.Mutations` keeping each call's reference and answer, the cut script, and the
   import test's call-site and file-size rules.
 - The handler runner in `adaptertest`, naming no protocol, shaped for SMB's harness to call.
 - NFS's handler harness, `adaptertest/nfsharness`, a thin wrapper over that runner: request bytes
   through one table row, and through one member inside a `COMPOUND`, against `memory.New`, errors
   through `vfstest.Faults`, the one-call rule from `vfstest.Mutations`' record, reply bytes
   compared.
-- knfsd captures per program area (D6), cut into golden files through `adaptertest/golden`.
+- knfsd captures per program area (D6), cut into golden files with `tshark` at recording time.
 - `openstate.ErrNoGrace` and `vfs.StateNoGrace`, answered where RFC 14 §4.2 says, in place of
   `NoReclaim`.
 
@@ -1188,7 +1187,7 @@ follows the RFC as written.
 ### 6.2 Programme and ownership
 
 1. **Pieces both adapters share, priced once.** The test pieces (`vfstest.Mutations` keeping each
-   call's reference and answer, `adaptertest/golden`, the import test's call-site and file-size
+   call's reference and answer, the cut script, the import test's call-site and file-size
    rules) and the handler runner are this plan's, in E2: RFC 22's plan's epic 2, which was to
    build them, has no owner, and this plan builds them, agreed with Marco on 24 Nov; that epic
    keeps SMB's handler harness and Samba's captures. RFC 22's plan prices the rest: its

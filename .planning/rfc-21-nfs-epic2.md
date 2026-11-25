@@ -4,9 +4,9 @@
 verified service) for NFS, §4.3's one-call rule as §7.2 reads it, §4.7's compound reply
 (`Members.EncodeResult` before a member's `Encode`), §5.4's vectors from captures of the reference
 server, and Appendix C's reference profile for NFS; for both adapters, §7.2's record keeping each
-call's reference and answer, §2.5's `adaptertest/golden/`, which cuts captures into golden files,
-and §7.1's entry call sites (with §4.10's entry handlers) and 800-line allowlist (with §2.5's
-file sizes);
+call's reference and answer, §5.4's golden files cut from captures, and §7.1's entry call sites
+(with §4.10's entry handlers) and 800-line allowlist (with §2.5's file sizes, and the sentence on
+generated files this epic's pull request adds);
 [RFC 14](../docs/internals/rfcs/rfc-14-open-state.md) §4.2's `ErrNoGrace`, with §2.1's, §4.3's and
 §5.3's sentences that name it, §11.3's declaration and §12's rows L3 and L50 for it;
 [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §4.3's `NoGrace` kind;
@@ -17,7 +17,7 @@ changes. RFC 20 §2.5's `adaptertest/nfsharness/`, NFS's handler harness, is thi
 Cited, not owned: [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) §4.11 (test doubles);
 the `test/pcap-corpus` README's layout.
 **Track:** the team.
-**Epic 2 estimate: 6 subtasks, 15 man-days.**
+**Epic 2 estimate: 6 subtasks, 13.5 man-days.**
 **Depends on:** **S1**, E1's request state and members' table, which `nfsharness` hands a member.
 S0's three shared pieces are built here (D6), so nothing outside this epic is waited for but S1.
 **Blocks:** every middle epic through S2: E3, E4, E5, E7, E11 and E12 directly, and through them the
@@ -25,14 +25,14 @@ rest. Every handler epic tests on `nfsharness`; E3, E4 and E5 take vectors from 
 E11 and E16 answer and test reclaims on `NoGrace`; E4's and E5's entry handlers land in the
 files T2.6's call-site rule names. Outside RFC 21, the RFC 22 implementation plan's epic 2 builds
 SMB's handler harness over T2.2's runner and T2.4's record, and cuts Samba's captures with T2.5's
-helper.
+script.
 
 ---
 
 ## 1. Goal
 
 Epic 2 gives NFS's tests what they stand on: S0's three pieces, which both adapters share (the
-mutating-call record keeping each call's reference and answer, the helper that cuts captures into
+mutating-call record keeping each call's reference and answer, the script that cuts captures into
 golden files, and the import test's call-site and file-size rules); NFS's handler harness, a thin
 wrapper over the protocol-neutral runner this epic builds in `adaptertest`, proven on one NFS
 procedure and one member of a `COMPOUND` against the real service in memory; the Linux server's
@@ -49,9 +49,10 @@ and the `pynfs`, `cthon04` and `nfstest` suites stay off until the cutover.
   state, those outside the one-call rule included;
 - the handler runner lives in `adaptertest`, naming no protocol, with the one-call rule and its
   exemptions by request, ready for SMB's harness to call;
-- `adaptertest/golden` cuts a capture's messages into golden files, for either protocol's framing;
-- the import test fails an entry method called outside §4.10's entry files, and an adapter file
-  over 800 lines that its allowlist does not hold;
+- `test/pcap-corpus`'s cut script, beside `normalize.py`, cuts a capture's messages into golden
+  files through `tshark`, for either protocol's framing (D7);
+- the import test fails an entry method called outside §4.10's entry files, and a hand-written
+  adapter file over 800 lines that its allowlist does not hold;
 - `adaptertest/nfsharness`, over that runner, runs request bytes through an NFSv3 row and through
   one member of the NFSv4 members' table, with a request state the test builds and the member's
   result head, against `memory.New`, errors injected through `vfstest.Faults`, and fails a test on
@@ -64,7 +65,7 @@ and the `pynfs`, `cthon04` and `nfstest` suites stay off until the cutover.
 
 `pkg/openstate`'s `ErrNoGrace` and its check, `pkg/vfs`'s `StateNoGrace`, `internal/vfs`'s mapping,
 and the tests of each; `vfstest.Mutations`' record of references and answers; the runner, built in
-`adaptertest`, and `adaptertest/nfsharness` over it with NFS's two cases; `adaptertest/golden`;
+`adaptertest`, and `adaptertest/nfsharness` over it with NFS's two cases; the cut script;
 the import test's call-site and file-size rules; the recording script for MOUNT, NLM
 with NSM and NFSv4.2, the traces kept from the knfsd nfstest baseline for NFSv3, NFSv4.0 and
 NFSv4.1, the five capture directories and the golden files cut from them, which the existing
@@ -73,8 +74,8 @@ NFSv4.1, the five capture directories and the golden files cut from them, which 
 ### 1.2 Out of scope
 
 - SMB's handler harness, which decodes `smb/wire`'s header into the runner's request, and Samba's
-  captures: the RFC 22 implementation plan's epic 2, over this epic's runner, record and golden
-  helper (D2, D6).
+  captures: the RFC 22 implementation plan's epic 2, over this epic's runner, record and cut
+  script (D2, D6).
 - The entry handlers themselves: E4's `MNT` and `EXPORT`, E5's `PUTROOTFH`, `PUTPUBFH` and
   `SECINFO`, in the files T2.6's rule already names, and SMB's in the RFC 22 implementation plan.
 - The import test's rule on an `ops` file calling a method of a `wire` type that reads or writes
@@ -97,7 +98,7 @@ NFSv4.1, the five capture directories and the golden files cut from them, which 
   first NFSv4 reclaims.
 - **E11**, NLM, NSM and the datagram path. **E12**, the NFSv4.2 operations. **E13**, RPCSEC_GSS.
 - **E14**, the capture diffs against knfsd. **E16**, E2E green, with the restart rows.
-- **S0**, the shared test pieces both adapters use: the record of T2.4, the golden helper of T2.5
+- **S0**, the shared test pieces both adapters use: the record of T2.4, the cut script of T2.5
   and the import rules of T2.6, built by this epic (D6).
 - **S1**, the NFS surface frozen, after E1.
 - **S2**, NFS's test foundations in CI, after this epic: what every middle epic starts from.
@@ -110,17 +111,17 @@ cited by number and title and not copied.
 | Rule | Subtasks | How |
 | --- | --- | --- |
 | rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | `NoGrace` is tested in `pkg/openstate` over its own durable-record tests and on `memory.New`; the runner is built from the allowed kinds: `memory.New` (kind 2, held to RFC 17 §8's suite), `vfstest.Faults` (kind 3) and T2.4's recording wrapper, which records and passes through, never answering |
-| rule 2, fuzz tests where relevant | T2.5 | nothing here decodes a peer's bytes: the captures seed E1's `FuzzCompound` and `FuzzCodec` and later epics' targets; T2.5's capture reader reads only the corpus's committed files, by hand, and a malformed one stops the cut, with a `decision:` marker at `Cut` naming that ceiling: withdraw the exemption and add a fuzz target if `Cut` ever reads a capture a peer supplied |
+| rule 2, fuzz tests where relevant | none | nothing here decodes a peer's bytes: `tshark` cuts the captures at recording time (D7), so no Go code reads a capture file, and the captures seed E1's `FuzzCompound` and `FuzzCodec` and later epics' targets |
 | rule 3, observability follows RFC 25 and RFC 20 §10 | none | no series, span or log line is added; `NoGrace` is a value of the service's closed error set, counted by `core` where an adapter answers it |
 | rule 4, profiling: leaks, allocations and contention | T2.2 | the runner calls `adaptertest.CheckLeaks` first, on the top-level test, as its contract asks, so every handler test checks leaks and none runs in parallel; nothing here takes a lock on a hot path |
-| rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T2.1, T2.4, T2.2, T2.5 | `NoGrace` asserted on the error `memory.New` returns, which an adapter maps; the record's references and answers asserted where the runner reads them; the runner returns the bytes a client would read; a cut message compared with one `tshark` cut from the same capture |
+| rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T2.1, T2.4, T2.2, T2.3 | `NoGrace` asserted on the error `memory.New` returns, which an adapter maps; the record's references and answers asserted where the runner reads them; the runner returns the bytes a client would read; the cut golden files checked where they are read, by `TestParseCaptured` |
 | rule 6, known failures shrink | none | no suite with a `known.yaml` is run or registered |
 | rule 7, v2 ignores v1 | T2.3 | the captures are of the Linux server, never of `develop`'s adapter |
 | rule 8, real dependencies for properties of those dependencies | T2.2, T2.3 | the real filesystem in memory for the service's answers; knfsd's own bytes for golden files, never vectors the codec under test made |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T2.1, T2.4, T2.2, T2.5, T2.6 | D5's `decision:` marker at its code site; `openstate`'s comments on `admit` and `ErrNoReclaim` rewritten to name `ErrNoGrace`; `pkg/vfs`'s comment on `Mutates`; the file-size rule's `decision:` on what it counts (§9, point 1); T2.6's `ponytail:` on its match by method name; T2.5's `decision:` on its fuzz exemption; T2.2's `decision:` on the protocol test packages' imports |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T2.1, T2.4, T2.2, T2.6 | D5's `decision:` marker at its code site; `openstate`'s comments on `admit` and `ErrNoReclaim` rewritten to name `ErrNoGrace`; `pkg/vfs`'s comment on `Mutates`; the file-size rule's `decision:` on what it counts (§9, point 1); T2.6's `ponytail:` on its match by method name; T2.2's `decision:` on the protocol test packages' imports |
 | rule 10, a test must be able to fail | all | NFS's runner cases fail on a second or a missing mutating call, and the runner's own on each exemption misapplied; `NoGrace`'s tests fail with the check removed; `TestParseCaptured` fails on a file of another program; the import test reports each seeded violation exactly once |
-| rule 11, a symbol is exported only if an interface uses it | T2.1, T2.4, T2.2, T2.5 | `openstate.ErrNoGrace` and `vfs.StateNoGrace` are exported, for the adapters' rows; the record's entries, for the runner; the runner's exports, for `nfsharness` and SMB's harness; `nfsharness`'s, for every NFS handler epic's tests; `golden`'s cut, for T2.3 and Samba's captures |
-| rule 12, each subtask creates only what it declares | all | T2.4's record is read by T2.2; `nfsharness` holds only what NFS adds to the runner, the request state and a member's head, and arrives with its two cases, whose next consumers are E3's and E4's handler tests; T2.5's helper with T2.3's golden files, and those with E3's, E4's and E5's vectors; T2.6's rules with their seeded violations, the entry files with E4 and E5 |
+| rule 11, a symbol is exported only if an interface uses it | T2.1, T2.4, T2.2 | `openstate.ErrNoGrace` and `vfs.StateNoGrace` are exported, for the adapters' rows; the record's entries, for the runner; the runner's exports, for `nfsharness` and SMB's harness; `nfsharness`'s, for every NFS handler epic's tests |
+| rule 12, each subtask creates only what it declares | all | T2.4's record is read by T2.2; `nfsharness` holds only what NFS adds to the runner, the request state and a member's head, and arrives with its two cases, whose next consumers are E3's and E4's handler tests; T2.5's script with T2.3's golden files, and those with E3's, E4's and E5's vectors; T2.6's rules with their seeded violations, the entry files with E4 and E5 |
 | rule 13, translate, never decide | T2.1, T2.2, T2.6 | the service decides `NoGrace`, so no handler splits a reclaim's refusal by grace (RFC 21 §11.5); the runner enforces the one-call rule on every handler test; the call-site rule keeps a share's entry to its one handler |
 | rule 14, nothing deferred is lost | T2.3 | the `RPCSEC_GSS` captures are E13's, named in its expected content, and the diff scripts E14's, as §1.2 names; a `CLONE` the recording filesystem cannot make is recorded as a gap (§9, point 2) |
 
@@ -161,14 +162,14 @@ subtasks and tests can cite them.
 | --- | --- | --- | --- | --- |
 | R15 | Golden vectors come from the specifications' examples or from captures of the reference server, never only from the codec under test | MUST | RFC 20 §5.4 | T2.5, T2.3 |
 | R16 | Every program and version served has captures to take vectors from: NFSv3, MOUNT v3, NLM v4, NSM v1, NFSv4.0, NFSv4.1 and the NFSv4.2 subset | MUST | RFC 21 §2.1; RFC 20 §5.4 | T2.3 |
-| R19 | The golden-vector and capture helpers live in `adaptertest`'s `golden/`, shared by both protocols | invariant | RFC 20 §2.5 | T2.5 |
+| R19 | *Withdrawn:* the capture helper was to live in `adaptertest`'s `golden/` as Go code; captures are now cut with `tshark` at recording time by a script beside `normalize.py` (D7), so this epic puts no capture helper in `golden/` | — | RFC 20 §2.5 | — |
 
 **The import test's call sites and file sizes**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R20 | A call of an entry method (`Root`, `SecInfo`, `ListShares`) outside the entry handlers' files fails the import test | MUST | RFC 20 §7.1, §4.10 | T2.6 |
-| R21 | The import test lists every adapter file over 800 lines and fails on one not in its checked-in allowlist, which may only shrink and starts with `core`'s `pipeline.go`, `hold.go` and `chain.go` | MUST | RFC 20 §7.1, §2.5 | T2.6 |
+| R21 | The import test lists every hand-written non-test adapter file over 800 lines, a generated one, recognised by Go's `// Code generated ... DO NOT EDIT.` header, not counted, and fails on one not in its checked-in allowlist, which may only shrink and starts with `core`'s `pipeline.go`, `hold.go` and `chain.go` | MUST | RFC 20 §7.1 (its generated-file sentence added by this epic's pull request), §2.5 | T2.6 |
 | R22 | Each rule is seeded in the test's own data with a deliberate violation it must report exactly once, and with a case the rule allows, which it must not report | MUST | RFC 20 §7.1 | T2.6 |
 | R23 | A protocol's harness and scripted client sit in `adaptertest` and import that protocol's packages, and no adapter imports another adapter, so the import test admits the first and still refuses the second | invariant | RFC 20 §2.3, §2.5 | T2.2 |
 
@@ -238,21 +239,21 @@ the service's state after a request, which each handler test makes through `memo
   Prior art: RFC 8881
   §8.4.3's `NFS4ERR_NO_GRACE`, which RFC 14 §4.2 narrows to the client.
 - **D6. This epic builds S0's three shared pieces.** The record keeping each call's reference and
-  answer (T2.4), `adaptertest/golden` (T2.5) and the import test's call-site and file-size rules
+  answer (T2.4), the capture cut (T2.5) and the import test's call-site and file-size rules
   (T2.6) were the RFC 22 implementation plan's epic 2, which has no owner,
   so this epic builds them, for both adapters, and SMB's handler harness and Samba's captures stay
   with that epic, built over them later. Agreed with Marco on 24 Nov. The pieces' scope, criteria
   and tests are the ones that epic gave them, NFS's cases standing in for SMB's
   where a test needs a protocol. No marker: the pieces carry no adapter-specific shortcut.
-- **D7. `golden` reads the classic capture format in Go, not through `tshark`.** The corpus's
-  recipes write classic pcap files (`tcpdump -w`), so T2.5 reads that format: Ethernet (link type
-  1), Linux cooked SLL (113) and SLL2 (276) frames, any other link type refused by its number;
-  IPv4 and IPv6; TCP reassembled per stream and direction and UDP datagrams whole; with the
-  standard library alone, and refuses pcapng naming it. Cutting then needs no `tshark` on
-  the machine that cuts or tests, and the cut is checked against the corpus's files `tshark` already
-  cut from the same capture, an independent decoder (T2.5's tests). Prior art: the corpus's `normalize.py`, which reads captures
-  through `tshark`; Go's `gopacket`, from memory, which the import test's list of outside modules
-  does not hold. No marker.
+- **D7. Golden files are cut with `tshark` at recording time, and the `.hex` files committed.**
+  The recording host needs `tshark` anyway (§9, point 2), and the corpus's existing golden files
+  were cut that way, so T2.5 is a small script beside `normalize.py`, not a Go reader of capture
+  files. No Go code then decodes a capture, so no fuzz target or `decision:` marker is owed for
+  one. Lost, and accepted: a cross-check of a Go cut against a `tshark` cut; `tshark` stays the
+  independent decoder R15 names. Each `.hex` file's provenance, its capture, frame and `tshark`
+  command, is in its header and in its area's `CAPTURE.md`, and only the machine that cuts needs
+  `tshark`, never one that tests. Settled with Marco on this epic's pull request. Prior art: the
+  corpus's `normalize.py` and `pcap-diff.sh`, which read captures through `tshark`. No marker.
 
 ## 5. Target tree
 
@@ -278,9 +279,6 @@ internal/adapter/adaptertest/
   handler.go                   T2.2  the runner and the exemption rule (D2, D3)
   handler_test.go              T2.2  each exemption, and each call it must not exempt, over rows the test declares
   nfsharness/nfsharness.go     T2.2  the request with protocol.State, a member's EncodeResult head
-  golden/golden.go             T2.5  classic pcap reader, TCP streams and UDP datagrams, the two framings, the hex writer (D7)
-  golden/golden_test.go        T2.5  cuts checked against files tshark cut from the same captures
-  golden/cutgolden/main.go     T2.5  run by hand: a capture, the server's port, a framing, an output directory
   imports_test.go              T2.2  a protocol test package's imports of its own protocol (R23)
                                T2.6  entry call sites and file sizes, with their lists
   testdata/imports/            T2.2, T2.6  a seeded violation and an allowed case per new rule
@@ -291,8 +289,9 @@ internal/adapter/nfs/protocol/
 test/nfs-mount/nfstest/
   baseline-knfsd.sh, run.sh    T2.3  keep the traces when asked
 test/pcap-corpus/
+  cut-golden.sh                T2.5  run by hand: a capture, a frame, a framing, a .hex file, through tshark (D7)
   nfs-record.sh                T2.3  records MOUNT, NLM with NSM, NFSv4.2 against knfsd
-  nfs3/ nlm/ nfs40/ nfs41/ nfs42/   T2.3  reference.pcap, reference.skel, CAPTURE.md
+  nfs3/ nlm/ nfs40/ nfs41/ nfs42/   T2.3  reference.pcap, reference.skel, CAPTURE.md with each cut's provenance
 internal/adapter/nfs/wire/
   testdata/golden/knfsd-*.hex  T2.3  messages cut from the captures, named as epic 1's D8 has it
   wire_test.go                 T2.3  TestParseCaptured loops over them
@@ -358,9 +357,10 @@ internal/adapter/nfs/wire/
   leaves outside the rule are true for it, and the handler check exempts them by the request's
   context, as RFC 17 §3.1 does. Consumed by T2.2's runner, and by SMB's handler harness through it.
 - **Acceptance criteria:**
-  - A `FreeState` answered `ErrState` (`Revoked`) is recorded with its reference and that answer; a
-    `Disconnect` with its `Last`, the `Gen` it was given and the `Gen` it returned; a `CancelLock`
-    with the waiter it names.
+  - A `FreeState` answered `ErrState` (`Revoked`), the answer injected through `vfstest.Faults`
+    since `memory.New` answers a `FreeState` of a revoked reference with no error, is recorded with
+    its reference and that answer; a `Disconnect` with its `Last`, the `Gen` it was given and the
+    `Gen` it returned; a `CancelLock` with the waiter it names.
   - Two calls started in one order and returning in the other are recorded in the order they
     started, each with its own answer.
   - A read-only call is not recorded, and `Ops` answers as before for its existing callers.
@@ -442,49 +442,38 @@ internal/adapter/nfs/wire/
 - **Rules:** rule 4: the runner's leak check, called once; rule 9: the import rule's `decision:`
   marker; rule 12: `nfsharness` holds only what NFS adds to the runner.
 
-### T2.5 `adaptertest/golden`: captures cut into golden files
+### T2.5 The cut script: captures cut into golden files through `tshark`
 
-**Subtask T2.5 estimate: 2.5 man-days.**
+**Subtask T2.5 estimate: 1 man-days.**
 
 - **Track:** the team. **Depends on:** none.
-- **Covers:** R15, R19.
-- **Deliverables:**
-  - `adaptertest/golden` (D7): a reader of the classic capture format (Ethernet, Linux cooked SLL
-    and SLL2 frames, link types 1, 113 and 276, any other refused by its number; IPv4 and IPv6), reassembling each TCP stream per direction in sequence order, a
-    retransmitted or overlapping segment taken once, and taking each UDP datagram whole; two
-    framings, RFC 5531's record mark (its marks stripped, fragments joined) and SMB2's
-    four-byte direct-TCP length; and a writer of one `.hex` file per message, in the format the
-    wire packages' golden readers read (hex digits, `#` comments), headed by the capture's path,
-    the frame and the direction. Indicatively `func Cut(pcap io.Reader, port uint16, f Framing)
-    ([]Message, error)`, a `Message` carrying its bytes, its first frame and whether the server
-    sent it. Consumed by T2.3, and by the Samba captures of the RFC 22 implementation plan's
-    epic 2.
-  - `golden/cutgolden`, a main run by hand: a capture, the server's port, a framing and an output
-    directory, writing one file per message for the person cutting to keep and rename by D8 of
-    epic 1. No suite runs it.
+- **Covers:** R15.
+- **Deliverables:** `test/pcap-corpus/cut-golden.sh` (D7), beside `normalize.py`, run by hand
+  where the captures are recorded: given a capture, a frame, a framing and an output file, it has
+  `tshark` give that frame's message, reassembled across TCP segments or whole from a UDP
+  datagram; strips the framing, RFC 5531's record mark or SMB2's four-byte direct-TCP length, or
+  none for a datagram, refusing a record of more than one fragment by naming the frame; and
+  writes one `.hex` file in the format the wire packages' golden readers read (hex digits, `#`
+  comments), headed by the capture's path, the frame and the `tshark` command it ran. The
+  `tshark` fields it reads are written from memory and checked on the first cut. No suite runs
+  it. Consumed by T2.3, and by the Samba captures of the RFC 22 implementation plan's epic 2.
 - **Acceptance criteria:**
-  - Cutting `test/pcap-corpus/nfsv4-acl/reference.pcap` gives, at frame 4, the bytes of
-    `nfs/wire`'s `nfsv4-null-call.hex` past its record mark, which `tshark` cut from the same
-    capture; cutting `test/pcap-corpus/smb-sd/reference.pcap` gives, at frame 127, the bytes of
-    `smb/wire`'s `create_response.hex` past its direct-TCP header, which `tshark` cut too.
-  - A message split across segments, delivered out of order and with one segment retransmitted,
-    is cut once, whole; a record of two fragments is one message.
-  - A pcapng file is refused, naming the format; a truncated frame stops the cut, naming it; a
-    link type other than 1, 113 and 276 is refused, naming it.
+  - Cutting `test/pcap-corpus/nfsv4-acl/reference.pcap` at frame 4 gives the bytes of `nfs/wire`'s
+    `nfsv4-null-call.hex` past its record mark; cutting `test/pcap-corpus/smb-sd/reference.pcap`
+    at frame 127 gives the bytes of `smb/wire`'s `create_response.hex` past its direct-TCP header.
+  - A record of two fragments is refused, naming the frame.
   - A written file, read back as the wire packages' readers read it, gives the message's bytes.
-- **Tests:** in `golden`: the two corpus cuts above (catch a wrong offset, link type or framing:
-  `tshark` is the independent decoder, R15); a capture the test writes from bytes it states,
-  holding the split, reordered and retransmitted segments, two fragments and a UDP datagram
-  (catches a reassembly that drops, doubles or reorders bytes); the pcapng and truncated cases;
-  the written file read back. No test double: the inputs are capture files.
-- **Rules:** rule 8: the reference servers' own bytes, never ones this code produced; rule 2 and
-  rule 9: the fuzz exemption's `decision:` marker, as §2 says.
+- **Tests:** the two corpus cuts above, run by hand and compared with the committed files, their
+  output recorded in the pull request; the cut files' own test is T2.3's `TestParseCaptured`, at
+  the layer that reads them (rule 5). No Go test: no suite has `tshark`, and the script reads only
+  the corpus's own captures.
+- **Rules:** rule 8: the reference servers' own bytes, never ones this code produced.
 
 ### T2.3 knfsd's captures, cut into golden files
 
 **Subtask T2.3 estimate: 2.25 man-days.**
 
-- **Track:** the team. **Depends on:** T2.5.
+- **Track:** the team. **Depends on:** T2.5, whose script cuts the captures at recording time.
 - **Covers:** R15, R16.
 - **Deliverables:**
   - `baseline-knfsd.sh` and `run.sh` keep nfstest's traces when asked, instead of `--rmtraces`;
@@ -501,7 +490,8 @@ internal/adapter/nfs/wire/
     `CLONE` and the xattr operations, from an export on a loop-mounted XFS made with
     `reflink=1`, since knfsd answers `CLONE` `NFS4ERR_NOTSUPP` on a filesystem without reflinks.
   - Each of the five directories with `reference.pcap`, `reference.skel` and `CAPTURE.md` (D1),
-    and the golden files cut from them through T2.5's `adaptertest/golden` into
+    the `CAPTURE.md` naming, for every golden file, its capture, its frame and the `tshark`
+    command that cut it (D7), and the golden files cut from them with T2.5's script into
     `internal/adapter/nfs/wire/testdata/golden/`, named and stripped as epic 1's D8 has it:
     `knfsd-<label>-<what>-{call,reply}.hex`, one whole RPC message each, its record mark
     stripped, from which a seed takes the arguments past the RPC header.
@@ -542,11 +532,15 @@ internal/adapter/nfs/wire/
     typed check if one is ever needed. Test files are not walked, with a `decision:` marker: a
     handler test reaches a share through the service it sets up, which is no second path a client
     can take; withdraw it if a test helper in an adapter starts serving requests;
-  - file sizes: every adapter non-test file over 800 lines is listed, and one not in the
+  - file sizes: every hand-written adapter non-test file over 800 lines is listed, and one not in the
     allowlist fails, as does an allowlist entry whose file is gone or no longer over 800 lines, so
     the list only shrinks: a change that brings `chain.go` (816 lines) under the limit drops its
     entry in the same change. The list starts with `core`'s `pipeline.go`, `hold.go` and
-    `chain.go`. What it counts is §9's point 1, recorded at the check with a `decision:` marker.
+    `chain.go`. A generated file is recognised by Go's `// Code generated ... DO NOT EDIT.` header,
+    not by its name, and not counted, with a `decision:` marker at the check: its generator's check
+    already holds it, failing a change whose code differs from a fresh run, and counting it would
+    give `codec_gen.go` an entry the list could never drop; withdraw it if a generated file is ever
+    edited by hand (§9, point 1; RFC 20 §7.1's sentence on generated files).
   Consumed by E4's and E5's entry handlers, which land in the files the list names, and by every
   later epic's files.
 - **Acceptance criteria:**
@@ -554,8 +548,8 @@ internal/adapter/nfs/wire/
   - In the test's own data, each rule's seeded violation is reported exactly once (an entry
     method called from a non-entry `ops` file; a file over 800 lines not on the list; a stale
     allowlist entry), and its allowed case is not (the call from a listed entry file, and from a
-    test file; a listed file over the limit; a generated file over the limit, while §9's point 1
-    stands as written).
+    test file; a listed file over the limit; a generated file over the limit, recognised by its header, under a
+    name that says nothing of it).
 - **Tests:** `TestImportCheckReportsEachSeededViolation`, extended with the new seeds, each failing
   when its rule is removed or written too wide (R20, R21, R22); `TestImports` over the tree. No
   test double.
@@ -569,7 +563,7 @@ flowchart TD
   T2_1["T2.1 The service's NoGrace"]
   T2_4["T2.4 The record keeps references and answers"] --> T2_2["T2.2 The runner, nfsharness over it"]
   S1 --> T2_2
-  T2_5["T2.5 adaptertest/golden"] --> T2_3["T2.3 knfsd's captures, cut into golden files"]
+  T2_5["T2.5 the cut script"] --> T2_3["T2.3 knfsd's captures, cut into golden files"]
   T2_6["T2.6 Import test: entry call sites, file sizes"]
   T2_4 & T2_5 & T2_6 --> S0(["S0 shared test pieces"]):::sync
   T2_1 & T2_2 & T2_3 & S0 --> S2(["S2 NFS test foundations in CI"]):::sync
@@ -589,22 +583,18 @@ builds on); at the end, S2, which waits for S0 as well as T2.1, T2.2 and T2.3.
 | --- | --- | --- | --- | --- |
 | 1 | T2.1 | 2.75 | — | a service change, reviewed by open state's owners apart from the adapter's tests |
 | 2 | T2.4, T2.2 | 6 | S1 | the record and the runner that reads it, with the exemptions and the two cases that prove it fails for NFS |
-| 3 | T2.5, T2.3 | 4.75 | — | the helper and the captures it cuts, mostly binary and recipe |
+| 3 | T2.5, T2.3 | 3.25 | — | the script and the captures it cuts, mostly binary and recipe |
 | 4 | T2.6 | 1.5 | — | two rules of the import test, with their seeds |
 
 A suggestion only: one pull request per subtask works as well. The four can be open at once.
 
 ## 9. Open points
 
-1. **What the file-size rule counts** (T2.6), pending the user's answer. RFC 20 §2.5 asks non-test
-   files to stay under 500 lines and §7.1 lists "adapter files" over 800, its allowlist starting
-   with three non-test files of `core` although `core`'s tests pass 800 today. Written in place:
-   the rule counts non-test files, and not a generated file (Go's `// Code generated … DO NOT
-   EDIT.` header), so `codec_gen.go` and the generator's output, which no one edits, need no
-   entry. The alternative, counting generated files and listing each over the limit, keeps one
-   reading of "every adapter file" at the price of entries that can never shrink. If the second
-   is chosen, RFC 20 §7.1 needs no change; if the first, a sentence in §7.1 saying so, by
-   amendment.
+1. **What the file-size rule counts** (T2.6), settled by Marco: hand-written non-test files only.
+   A generated file, recognised by Go's standard `// Code generated ... DO NOT EDIT.` header and
+   not by its name, is not counted, since its generator's check holds it and an entry for it could
+   never shrink. RFC 20 §7.1 said "every adapter file", so this epic's pull request adds one
+   sentence to §7.1 saying so, and T2.6 places a `decision:` marker at the check.
 2. **The recording host.** T2.3 needs a Linux host with the kernel NFS server, root, `tshark` and a
    loop device for XFS, or a dispatched runner as the `nfs-knfsd-baseline` workflow uses; NSM's
    `SM_NOTIFY` needs the server's statd restarted, which `CAPTURE.md` records. Where a step cannot
@@ -612,8 +602,7 @@ A suggestion only: one pull request per subtask works as well. The four can be o
    needs the missing message takes it from RFC 1813, RFC 7530, RFC 8881 or RFC 7862 by hand.
 3. **`ALLOCATE`'s reply.** A single node answers `ALLOCATE` `NFS4ERR_NOTSUPP` (RFC 21 §9.3), so
    only knfsd's request is a vector for it; its reply comes from E12's row, written by hand.
-4. **How T2.5 reads captures** (D7), pending the user's answer. Written in place: a classic-pcap
-   reader in Go, 2.5 man-days, so cutting needs no `tshark`. The alternative is to cut with
-   `tshark` at recording time, as the corpus's existing golden files were, and commit the `.hex`
-   files, which leaves T2.5 a small script beside `normalize.py`, about 1 man-day, at the price of
-   `tshark` on every machine that cuts, SMB's included, and no independent check of the cut.
+4. **How T2.5 cuts captures** (D7), settled by Marco: with `tshark` at recording time, the
+   `.hex` files committed, T2.5 a script beside `normalize.py` of 1 man-day, not a Go reader of
+   2.5. The Go-cut against `tshark`-cut cross-check is given up; `tshark` stays R15's independent
+   decoder.

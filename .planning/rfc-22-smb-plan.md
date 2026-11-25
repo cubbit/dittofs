@@ -158,7 +158,7 @@ built where they are adapter code, and tested only once a second node exists. Wi
 Epic 1 fixes what several epics of SMB share before any is built: the request state handlers read,
 the handler set and its tables, and the callbacks value.
 Epic 2 builds what the tests stand on: the SMB handler harness on `memory.New` and
-`vfstest.Faults` and golden files cut from Samba captures, over the runner, `adaptertest/golden` and
+`vfstest.Faults` and golden files cut from Samba captures, over the runner, the `tshark` cut script and
 the import test's last two rules that RFC 21's plan's epic 2 builds. Twelve
 middle epics follow on three tracks: track A the connection, sessions and RFC 14's wire side;
 track B authentication, trees, the RPC services, security descriptors and the wire tests; track C
@@ -229,7 +229,7 @@ rows of §6.3, which need RFC 27's move (out of scope); and the rows needing a W
 one is provisioned (§6.2, point 8).
 
 **Test components.** The SMB handler harness and golden files from captures (epic 2), over RFC 21's
-plan's epic 2's runner, golden helper and import test's call-site and file-size rules. `gsstest`'s initiators come with `gss` (epic 4) and the
+plan's epic 2's runner, cut script and import test's call-site and file-size rules. `gsstest`'s initiators come with `gss` (epic 4) and the
 scripted client with sessions (epic 5), the epics that create the packages they import.
 
 ### 1.5 General rules for each epic
@@ -618,7 +618,6 @@ internal/adapter/
     gsstest/                  E4: initiators and a test keytab; tests accept through gss on memory.New
   translate/                  E7 (access masks), E8 (attributes, times, Fit), E12 (descriptors)
   adaptertest/
-    golden/                   RFC 21's plan's E2 (its T2.5); E2 here: the Samba captures it cuts
     smbclient/                E5: the scripted client (RFC 20 §8.2)
     imports_test.go           RFC 20's E2; RFC 21's plan's E2 (its T2.6): entry call sites, the 800-line allowlist
   smb/
@@ -724,7 +723,7 @@ RFC sections: RFC 20 §4.7's `Request.State`, §4.8 (one table for every dialect
 **Built by RFC 21's plan.** [RFC 21's plan](rfc-21-nfs-plan.md)'s epic 2 builds, and prices, the
 pieces both adapters share (its T2.4, T2.5, T2.6) and the protocol-neutral handler runner (its
 T2.2). So T2.1 below keeps only SMB's harness, over that runner and `vfstest.Mutations`' record;
-T2.2 keeps only the Samba captures, cut with `adaptertest/golden`; T2.3 is RFC 21's T2.6. The
+T2.2 keeps only the Samba captures, cut with RFC 21's T2.5, a `tshark` script beside `normalize.py`; T2.3 is RFC 21's T2.6. The
 figure above still counts the moved work, until this epic is broken down; RFC 21's plan's T2.2,
 T2.4, T2.5 and T2.6 price that shared part too, so until then the programme counts it twice.
 
@@ -751,7 +750,7 @@ sites, file sizes), §7.2 (handlers on `memory.New` and `vfstest.Faults`).
   a session setup's `SignIn` and `Connect`, and a `Find` per SID before one `SetACL`, do not.
 - T2.2 Reference captures: a script recording Samba per command area into `test/pcap-corpus/smb`,
   against the AD domain controller and Samba member of `test/smbfuzz`'s fixture rather than a
-  second fixture, and `adaptertest/golden`, which cuts captured messages into golden files.
+  second fixture, cut into golden files with `tshark` at recording time.
 - T2.3 The import test: entry methods (`Root`, `SecInfo`, `ListShares`) called only from RFC 20
   §4.10's entry files, and adapter files over 800 lines against an allowlist that may only shrink,
   each with a seeded violation it must report.
