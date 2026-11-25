@@ -120,7 +120,7 @@ which.
 | --- | --- | --- | --- | --- |
 | R1 | The carver's production code depends only on the standard library, a BLAKE3 implementation, the metadata store's entity package and its own packages, and an import test enforces it transitively | MUST | RFC 2 §1.1; RFC 0 §1.2 ("Conformance is checked by a per-component import-graph test that follows imports transitively") | T1.2 |
 | R2 | The root package is the contract: the value types and errors other components name. `Cut`, the chunk-ID and naming functions and the assembler live in subpackages, which only the node's content wiring imports; the engine imports only the root | invariant | RFC 2 §1.1; RFC 0 §1.2 | T1.1, T1.3, T1.4 |
-| R3 | The contract holds no behaviour beyond pure functions and methods over its own value types, keeps no state, and imports only the standard library, libraries outside the set and other contracts; a unit that mixes in an implementation counts as one | MUST | RFC 0 §1.2 | T1.1, T1.2 |
+| R3 | The contract holds no behaviour beyond pure functions and methods over its own value types and value-minting constructors, and imports only the standard library, libraries outside the set and other contracts; a unit that mixes in an implementation counts as one | MUST | RFC 0 §1.2 | T1.1, T1.2 |
 | R4 | No package of the carver reaches another component's implementation, directly or through what it imports: not `pkg/carver/section` from the root, not `internal/node/content`, not `pkg/settings`, `pkg/metrics` or `pkg/health` | MUST NOT | RFC 0 §1.2; RFC 2 plan, §1.5 rule 7 | T1.2 |
 | R5 | Test packages are walked too. RFC 0 lets a component's tests import implementations, but the carver's checks need no store, fake backend, temp directory, network, clock or goroutine, so its tests import only what its production code may, plus the carver's own test components | invariant | RFC 0 §1.2; RFC 2 §1.3; RFC 2 plan, §1.5 rule 7 | T1.2 |
 | R6 | The entity package's types are used, never copied: a chunk's hash is `entity.ChunkHash`, a block's name `entity.BlockName`, the scope `entity.NamespaceID` | MUST NOT | RFC 0 §1.2 ("MUST NOT copy a provider's value types"); RFC 2 §1.1, §1.2 | T1.1, T1.3 |
@@ -165,12 +165,6 @@ which.
 | R25 | Closing the pass says whether the short last plan is held back | invariant | RFC 2 §5.4 | T1.4 |
 | R26 | A block target outside 1 MiB to 64 MiB is refused with an error at construction, never clamped. E5 refuses | MUST | RFC 2 §5.2 | T1.4 |
 
-**The freeze**
-
-| # | Requirement | Kind | Source | Subtasks |
-| --- | --- | --- | --- | --- |
-| R27 | A symbol is exported only if the RFC's interface uses it, and everything exported is frozen at S1, agreed with the engine's and the codec's authors | invariant | RFC 2 plan, §1.5 rule 11, §3.2 (S1) | T1.4 |
-
 How each row is enforced once this epic lands, where no test of this epic can break it: R6 and
 R15 by the compiler, since every signature names `entity`'s types and `[32]byte`; R10's
 parameters, R19's inputs, R20 and R21 by the compiler at each caller, through the frozen
@@ -200,9 +194,7 @@ plan's Intent state), §5.1's lookup error (the deferral-ledger row of the dedup
   constructor holds one and it has no error to return. The value is passed by value: the gear
   table sits behind a pointer the value shares, read-only after construction. A `decision:` at
   the alias says the seal is Go's internal rule, not a check, and names its ceiling: code inside
-  `pkg/carver` can still build a bad value. Changing this after S1 changes every caller's type.
-  Prior art: none found for an alias as a seal; the independent architect pass proposed the same
-  shape.
+  `pkg/carver` can still build a bad value. Prior art: none found.
 - **D2, positions are the entity package's file identity.** A chunk's place in the offer is its
   `entity.FileID` and its `Chunk`, so the fold compares files for §5.3's contiguity (A5) and charges
   per-file keys once per file, and the engine builds the commit (`kvstore.BlockCommit` on
@@ -436,7 +428,7 @@ pkg/carver/
 **Subtask T1.4 estimate: 1 man-days.**
 
 - **Track:** the team. **Depends on:** T1.3.
-- **Covers:** R2, R7, R8, R20 to R22, R24 to R27.
+- **Covers:** R2, R7, R8, R20 to R22, R24 to R26.
 - **Deliverables:**
   - `pkg/carver/assembler`, stub bodies (D6), and its rows in `imports_test.go` (the root and
     `pkg/metadata/entity`) and `arch_test.go`. Consumed by the node's content wiring and the RFC
