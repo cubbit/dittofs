@@ -135,9 +135,10 @@ mount.nfs: Connection timed out
    telnet localhost 12049
    ```
 
-2. **Review the adapter's timeouts.** They are adapter settings, read with
-   `dfsctl adapter get nfs`: `read_timeout`, `write_timeout`, `idle_timeout` and
-   `handshake_timeout`.
+2. **Review the adapter's timeouts.** They are adapter settings:
+   `read_timeout`, `write_timeout`, `idle_timeout` and `handshake_timeout`.
+   They cannot be read on this branch yet. The adapters' settings section is
+   not declared, so `dfsctl adapter get nfs` shows an empty SETTINGS column.
 
 ## Mount Issues
 

@@ -305,7 +305,9 @@ see [access-control.md](access-control.md).
 
 ## Part C: Configure Kerberos
 
-Kerberos backs both NFS RPCSEC_GSS and SMB SPNEGO. The keys come from two
+Kerberos backs SMB SPNEGO. NFS RPCSEC_GSS is not served on this branch yet:
+the NFS adapter refuses it with `AUTH_BADCRED`. NFS gains Kerberos when the
+adapter's GSS stage lands (RFC 21). The keys come from two
 places: a joined computer account's names derive theirs from its password
 ([Part C2](#part-c2-join-the-domain)), and every other service name, such as
 `nfs/<host>`, needs an imported keytab. The realm is

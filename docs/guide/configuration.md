@@ -286,11 +286,14 @@ The node's settings table declares these sections today:
 
 All four are set at `installation` only; a write at another scope is refused.
 
-Three bootstrap keys do not yet behave as [the table](#the-keys) says:
+Four bootstrap keys do not yet behave as [the table](#the-keys) says:
+
+- `dfs config validate` refuses a file without `keys.protocol`, while
+  `dfs init` and `dfs start` run without it.
 
 - `dfs init`, `dfs start` and `dfs reset-admin` refuse a file without `node.id`
   (`node.id is not set`), as nothing else names the node yet.
-- `dfs start` fails on `metrics.listen: off`, binding it as an address (#5688).
+- `dfs start` fails on `metrics.listen: off`, binding it as an address.
 - `api.listen` takes one address: the node refuses to start with a second.
 
 A key of no declared section is refused `unknown_key`. The adapters', remote

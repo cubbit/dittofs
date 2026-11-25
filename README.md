@@ -139,7 +139,6 @@ SIGINT or SIGTERM. Both read `~/.config/dittofs/config.yaml`; a small one is in
 
 ```bash
 mkdir -p /var/lib/dittofs/journal            # each journal's directory must exist
-# write the protocol key file first (docs/guide/encryption.md#local-key-files)
 export DITTOFS_ENCRYPTION_PASSPHRASE='choose-a-passphrase'   # wraps the storage key file
 # Replace the example with your own password before running init.
 DFS_ADMIN_PASSWORD=my-secure-password ./dfs init --admin-password-env DFS_ADMIN_PASSWORD
@@ -150,6 +149,11 @@ With neither `--admin-password-file` nor `--admin-password-env`, `dfs init` gene
 password, prints it once to standard output (never to the log), and it must be changed at
 the first sign-in. To recover an administrator's password, stop the node and run
 `./dfs reset-admin` on the host that holds the metadata store.
+
+The small config has no `keys.protocol`. `dfs init`, `dfs start`, `dfsctl login` and
+`dfsctl user create` run without it. Add it before `dfsctl user set-password` or a
+directory bind: the node seals NT hashes and bind credentials under it. See
+[Encryption: local key files](docs/guide/encryption.md#local-key-files).
 
 ### Sign in and manage the node
 
@@ -245,10 +249,6 @@ metadata:
 journals:
   - path: /var/lib/dittofs/journal
 keys:
-  protocol:
-    kind: local
-    local:
-      file: /var/lib/dittofs/protocol.key     # write it first; see docs/guide/encryption.md
   storage:
     kind: local
     local:

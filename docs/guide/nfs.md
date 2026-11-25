@@ -420,7 +420,8 @@ its own.
   the anonymous identity, regardless of the squash mode.
 - **Kerberos (RPCSEC_GSS)** — the principal is cryptographically verified and
   mapped to a principal. Its share grant is read first, then the squash
-  applies to the mapped identity.
+  applies to the mapped identity. This branch does not serve this path yet:
+  see [Kerberos Exports](#kerberos-exports-seckrb5).
 
 ### The three modes
 
@@ -563,8 +564,8 @@ user.
 
 ## NFS-over-TLS (RFC 9289)
 
-> **Not served yet.** v2 refuses every adapter TLS `mode` except `off` until StartTLS is built, so
-> NFS traffic is not encrypted today; use a network tunnel (a VPN or WireGuard). The rest of
+> **Not served yet.** v2 refuses every adapter TLS `mode` except `off` until StartTLS is built,
+> and loads no certificate file, so NFS traffic is not encrypted today; use a network tunnel (a VPN or WireGuard). The rest of
 > this section describes the design and cannot be used yet.
 
 The design is to encrypt NFS wire traffic with TLS 1.3, using the opportunistic `AUTH_TLS` STARTTLS mechanism from RFC 9289. A client opens TCP and sends a `NULL` RPC with `auth_flavor = AUTH_TLS (7)`; the server replies with the 8-octet `"STARTTLS"` verifier, then both perform a TLS 1.3 handshake on the **same** connection. All subsequent RPC traffic is encrypted. Because Go performs the handshake and crypto in userspace, no kernel TLS (`kTLS`) or `tlshd` daemon is needed on the server.

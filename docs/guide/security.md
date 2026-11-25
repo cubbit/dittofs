@@ -467,7 +467,9 @@ sudo pfctl -f /etc/pf.conf
 
 ## Kerberos configuration
 
-One Kerberos layer serves both the NFS (RPCSEC_GSS) and SMB (SPNEGO) adapters.
+Kerberos serves the SMB adapter (SPNEGO). The NFS adapter does not serve
+RPCSEC_GSS on this branch yet: it refuses it with `AUTH_BADCRED`. NFS gains
+Kerberos when the adapter's GSS stage lands (RFC 21).
 
 ### Server configuration
 
