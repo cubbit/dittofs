@@ -236,9 +236,13 @@ suites:
   # decision: format exit, not go-json: go test -json sends no pass event for a passing
   # benchmark, which a go-json cell grades as failed. A count a benchmark breaks fails the cell,
   # which then names the command rather than the benchmark; its b.Fatalf line is in bench.txt.
+  # B7 writes a line a burst to b7-bursts.txt in its artifact directory, one directory a sample
+  # under {out}/_artifacts (-artifacts -outputdir). The cell joins them into {out}/b7-bursts.txt:
+  # find -exec cat keeps each sample's lines together but gives no sample order and no sample id.
+  # The find runs after s=$? so the cell's exit stays go test's.
   engine-bench:
     cmd:
-      - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; n=10; test -z "$ENGINE_BENCH_COUNT" || n=$ENGINE_BENCH_COUNT; case $n in [!1-9]*|*[!0-9]*) echo "ENGINE_BENCH_COUNT must be a number of 1 or more, without a leading zero" >&2; exit 2;; esac; go test -count=$n -benchtime=1x -timeout=290m -tags=engine_conformance,engine_bench -run ^$ -bench . ./internal/vfs/integration/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+      - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; n=10; test -z "$ENGINE_BENCH_COUNT" || n=$ENGINE_BENCH_COUNT; case $n in [!1-9]*|*[!0-9]*) echo "ENGINE_BENCH_COUNT must be a number of 1 or more, without a leading zero" >&2; exit 2;; esac; go test -count=$n -benchtime=1x -timeout=290m -artifacts -outputdir={out} -tags=engine_conformance,engine_bench -run ^$ -bench . ./internal/vfs/integration/ > {out}/bench.txt; s=$?; find {out}/_artifacts -name b7-bursts.txt -exec cat {} + > {out}/b7-bursts.txt; cat {out}/bench.txt; exit $s' }
     tier: manual
     timeout: { test: 300m, cell: 310m }
   # The reconcile pass a live change waits on, at 10⁴ shares cold and under share churn, against

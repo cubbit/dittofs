@@ -5,6 +5,8 @@ package integration
 import (
 	"math"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -127,4 +129,54 @@ func median[T float64 | time.Duration](xs []T) T {
 // lastThree is the last three of xs, or all of them when fewer.
 func lastThree[T any](xs []T) []T {
 	return xs[max(len(xs)-3, 0):]
+}
+
+// burstMetrics is what B7 measured in one burst, in the units of its line in
+// the per-burst file.
+type burstMetrics struct {
+	workers       float64
+	rate          float64 // chmods a second
+	chmodMs       float64
+	pool          float64
+	k             float64
+	windowMs      float64
+	running       float64
+	oldestMs      float64
+	writerChmods  float64
+	writerChmodMs float64
+	otherChmodMs  float64
+	mixedTxns     float64
+}
+
+// burstLine is the benchmark line of burst n of the benchmark name, one
+// iteration, in the form benchstat reads, ending in a newline. Each value is
+// written in full, never with an exponent.
+func burstLine(name string, n int, m burstMetrics) string {
+	var line strings.Builder
+
+	line.WriteString(name + "/burst=" + strconv.Itoa(n) + " 1")
+
+	for _, v := range []struct {
+		value float64
+		unit  string
+	}{
+		{m.workers, "workers"},
+		{m.rate, "chmods/s"},
+		{m.chmodMs, "chmod-ms"},
+		{m.pool, "pool"},
+		{m.k, "k"},
+		{m.windowMs, "window-ms"},
+		{m.running, "running"},
+		{m.oldestMs, "oldest-ms"},
+		{m.writerChmods, "writer-chmods"},
+		{m.writerChmodMs, "writer-chmod-ms"},
+		{m.otherChmodMs, "other-chmod-ms"},
+		{m.mixedTxns, "mixed-txns"},
+	} {
+		line.WriteString(" " + strconv.FormatFloat(v.value, 'f', -1, 64) + " " + v.unit)
+	}
+
+	line.WriteString("\n")
+
+	return line.String()
 }

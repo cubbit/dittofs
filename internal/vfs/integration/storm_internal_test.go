@@ -178,3 +178,28 @@ func TestStormSizerLeavesTheWarmUpOut(t *testing.T) {
 		})
 	}
 }
+
+func TestBurstLine(t *testing.T) {
+	got := burstLine("BenchmarkB7/overwrite/writers=64/chmod=1000ps", 2, burstMetrics{
+		workers:       4096,
+		rate:          950.5,
+		chmodMs:       3,
+		pool:          80000,
+		k:             4,
+		windowMs:      1234567,
+		running:       0,
+		oldestMs:      7,
+		writerChmods:  9,
+		writerChmodMs: 11,
+		otherChmodMs:  13,
+		mixedTxns:     1,
+	})
+
+	want := "BenchmarkB7/overwrite/writers=64/chmod=1000ps/burst=2 1 " +
+		"4096 workers 950.5 chmods/s 3 chmod-ms 80000 pool 4 k 1234567 window-ms " +
+		"0 running 7 oldest-ms 9 writer-chmods 11 writer-chmod-ms 13 other-chmod-ms " +
+		"1 mixed-txns\n"
+	if got != want {
+		t.Fatalf("burst line =\n%q\nwant\n%q", got, want)
+	}
+}
