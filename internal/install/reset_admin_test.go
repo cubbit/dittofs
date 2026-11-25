@@ -41,7 +41,7 @@ func installedFix(t *testing.T) *fix {
 // sharing its passphrase.
 func (f *fix) protocolKey() keyprovider.KeyProvider {
 	f.t.Helper()
-	b, err := keyprovider.GenerateKeyFile(os.Getenv("DITTOFS_ENCRYPTION_PASSPHRASE"))
+	b, err := keyprovider.GenerateWeakKeyFile(os.Getenv("DITTOFS_ENCRYPTION_PASSPHRASE"))
 	if err != nil {
 		f.t.Fatal(err)
 	}
