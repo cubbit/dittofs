@@ -48,8 +48,8 @@ simulated beneath the code under test; RFC 24 §6.1.
   takes the `e2e` cell out of `tests.yml`'s V2 filter with its T8.2, for T16.7 to T16.10 and T16.13.
   Not E15: by that epic's D2 a cell leaves the filter with its first green test, so `e2e/kerberos`
   and `e2e/cross-protocol`, skipped by name until then, leave with RFC 23's T8.8, with T16.8 or T16.9
-  here, or with RFC 22's epic 16, whichever lands first. E15 takes out only `pynfs`, `cthon04` and
-  `nfstest`, which the burn-down waits for (§1.2).
+  here, or with RFC 22's epic 16, whichever lands first. E15 takes out only `pjdfstest`, `pynfs`,
+  `cthon04` and `nfstest`, which the burn-down waits for (§1.2).
 - **S6b** and **E13** for every Kerberos step (T16.3, T16.6's "disable takes effect", T16.8, the
   Kerberos rows of T16.9 and T16.10).
 - The handler epics whose rows these are: E4, E6 and E7 (their composed-node and end-to-end halves),
@@ -102,8 +102,11 @@ soak; RFC 21 §13's suites paragraph amended to say where the in-process rows ru
 
 ### 1.2 Out of scope
 
-- **The burn-down of `pynfs`, `cthon04` and `nfstest`** to RFC 21 §13's "Tests expected to fail",
-  the pynfs steps of "§3.1, §3.2 sessions *(1 node)*", "§3.2 reply cache", "§4.2 v4.0 owners *(1
+- **The burn-down of `pjdfstest` (NFSv3, v4.0 and v4.1 mounts), `pynfs` (`nfs4.0`, `nfs4.1`),
+  `cthon04` and `nfstest`** to RFC 21 §13's "Tests expected to fail": RFC 21 §13's release goal is
+  all four green at release with only those failures, and the burn-down is not done until they are.
+  `pjdfstest` has no expected-to-fail list yet: E15 fills it from its first v2 run, each entry citing
+  the RFC section whose decision fails it. The pynfs steps of "§3.1, §3.2 sessions *(1 node)*", "§3.2 reply cache", "§4.2 v4.0 owners *(1
   node)*", "§5.2 stateids *(1 node)*" and "§8 attributes", cthon04 and nfstest over NFSv3 among them.
   It is planned after E15 (D7): v2's failures in those suites are known only once E15 turns them on,
   so this document gains its subtask, sized then, by a pull request.
@@ -147,8 +150,8 @@ soak; RFC 21 §13's suites paragraph amended to say where the in-process rows ru
 - **E8**, clients and sessions. **E9**, opens, stateids and locks. **E10**, delegations and the back
   channel. **E11**, NLM, NSM and the datagram path. **E12**, the NFSv4.2 operations. **E13**,
   RPCSEC_GSS. **E14**, the capture diffs against knfsd.
-- **E15**, the integration with the node: `settings.NFS`, and `pynfs`, `cthon04` and `nfstest` out of
-  the V2 filter. The `e2e` cells are not E15's (RFC 23's implementation plan's epic 8, its D2).
+- **E15**, the integration with the node: `settings.NFS`, and `pjdfstest`, `pynfs`, `cthon04` and
+  `nfstest` out of the V2 filter. The `e2e` cells are not E15's (RFC 23's implementation plan's epic 8, its D2).
 - **S5**, the composed in-process node, `internal/node/nodetest`, serving NFS.
 - **S6b**, Kerberos sign-in behind `SignIn`: RFC 18's implementation plan's epic 5.
 - **S7**, the node serves NFS through `dfs`: the cutover, which E15 and T16.7 to T16.10 and T16.13
@@ -357,7 +360,7 @@ so that subtasks and tests can cite them. A section cited with no RFC named is R
   and fails when one is missing from `unit/adapter-allocs`'s command, since a gate that skips under
   `-race` and runs nowhere else is never run. A `decision:` marker at that test says it reads
   `test/suites.yaml` as text. Prior art: `test/required-tests.json`'s own comment.
-- **D7. The burn-down is planned after E15.** Its size is v2's failures in three suites, unknown
+- **D7. The burn-down is planned after E15.** Its size is v2's failures in four suites, unknown
   until they run; a figure now would be a guess. `develop`'s 58 pynfs entries are a reference point: v2 is a rewrite and may fail fewer or other tests.
 - **D8. Captures in `e2e` are `tcpdump` on loopback, read with `tshark`.** `framework.Capture` writes
   a pcap of one port and `framework.TsharkFields` decodes fields with a display filter; T16.7 reads
@@ -873,6 +876,11 @@ and 3 can be open at once; PR 4, 5 and 7 wait for S7 and RFC 23's implementation
 Questions pending the user's answer. Each recommended option is written in place above, except in
 an R row, which keeps the RFC's text until the RFC changes.
 
+The burn-down (D7) grew from three suites to four when RFC 21 §13 named pjdfstest in its release
+goal. That adds work, a pjdfstest run over each of NFSv3, v4.0 and v4.1 and whatever it fails that
+RFC 21 §13 does not list, and it has no figure: nothing is known of v2's failures until E15 turns the
+suites on, and the burn-down is planned after E15.
+
 - **Q1. Where RFC 21's wire-answer rows run** (D1). RFC 21 §13's suites paragraph places the
   non-fault single-node rows and the cross-protocol rows in `e2e` and `e2e/cross-protocol`.
   - (a) **Recommended:** in process in `unit` on the composed node, kernel clients only for client
@@ -957,7 +965,7 @@ Gaps, not questions:
    not reach the waiter), in T16.5 on `Harness.Clock` once S5 wires it, never in real time, and
    E13's T13.8 rows (no keytab), in T16.3; each moves with its
    figure. Not taken: E4's §9.2 two-node change-info step, which is the deferral ledger's row "RFC
-   21's (cluster) parts" (§1.2), and every pynfs, cthon04 and nfstest step, which waits for the
+   21's (cluster) parts" (§1.2), and every pjdfstest, pynfs, cthon04 and nfstest step, which waits for the
    burn-down (D7). Of E7's "Tier 2 rows over NFSv4", "`AUTH_SYS` from the directory", "mint from a
    claim, guarded" and "`ManageGIDs`", which E7's T7.6 runs over NFSv3 (§1.2). Nor these consumers
    other documents name, which no row asks for: E5's T5.9 and E12's T12.8 loopback rows rerun on
