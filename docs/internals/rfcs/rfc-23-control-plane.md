@@ -412,7 +412,9 @@ store configuration, and the last storage binding to close one releases it.
 **What `New` looks like.** The sketch is illustrative and elides errors and
 the values beside the rows. Where a component's RFC declares a constructor or a
 `Deps` field, the sketch uses that name; where none is declared yet (the remote
-stores, the syncer and the API), it names one.
+stores, the syncer and the API), it names one. The node builds rows 2 to 5
+through its content wiring, `internal/node/content` ([RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition)), the one
+composition path it shares with the engine's checks; the sketch unrolls what the wiring builds.
 
 ```go
 func New(cfg Config) (*Node, error) {
@@ -426,7 +428,7 @@ func New(cfg Config) (*Node, error) {
 		Node: cfg.Bootstrap.Node /* what bootstrap.NodeID read: the node-id copies, or the host's key when no copy exists; refused as RFC 13 §2.2 says */, Devices: cfg.Bootstrap.Devices, Open: journal.Open, Syncer: n.syncer, // the engine opens its journals at Start
 		Existence: n.meta.Existence(), Content: n.meta.Content(), Lifecycle: n.meta.Lifecycle(),
 		Holds: cloneHolds{n.open}, ...}) // the root's adapter: engine.CloneHold onto CloneOpen, CloneClose and Recovery.Served, their errors mapped as RFC 8 §2.6 says, so the engine imports no open state
-	n.gc     = gc.New(gc.Deps{Sched: sched.New(cfg.Clock, n.wd.Loop("gc.sched")), Syncer: n.syncer, ...}) // a sibling of the engine, never passed into it
+	n.gc     = gc.New(gc.Deps{Sched: workqueue.New(cfg.Clock, n.wd.Loop("gc.sched")), Syncer: n.syncer, ...}) // a sibling of the engine, never passed into it
 	n.ident  = identity.New(identity.Deps{Store: n.meta, ...}) // no settings: the first Apply brings them
 	n.fs     = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine,
 		Identity: n.ident, Auth: n.ident, Names: n.ident, ...})                // the one identity, behind three narrow fields
