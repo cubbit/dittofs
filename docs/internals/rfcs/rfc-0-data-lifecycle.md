@@ -618,9 +618,17 @@ A component has two parts. Its **contract** is the interfaces it offers, the
 value types and constants they carry, and its error values. Its
 **implementation** is everything else.
 
-A component **MUST NOT** import another component's implementation. The
-composition root, the node (`node.New`), is the one exception: it builds the
-components, imports them, and is imported by none of them ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)).
+A component **MUST NOT** import another component's implementation. Two
+composers are the only exceptions, and each is imported only by the layer above
+it:
+
+- **The composition root**, the node (`node.New`), with the wiring it delegates
+  the building of the content components to. It builds the components, imports
+  them, and is imported by none of them ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)).
+- **The filesystem service**, which composes the metadata store, open state,
+  identity and the engine into the one API the adapters call. It holds a
+  component concretely where only one implementation exists
+  ([RFC 17](rfc-17-vfs.md)), and is imported only by the adapters and the node.
 
 A component **MAY** import another component's contract. A contract holds no
 behaviour beyond methods on its own value types, keeps no state, and imports
@@ -651,10 +659,12 @@ behaviour — an unindexed lookup, a disabled guard — that no test observes; a
 declared parameter cannot fail this way. The same holds for configuration: an
 invalid setting **MUST** be refused, never replaced by a default.
 
-Conformance is checked by a per-component import-graph test. It fails when a
-component imports another component's implementation, except a contract's
-in-memory implementation in its tests, and
-when a contract imports anything but the standard library and other contracts.
+Conformance is checked by a per-component import-graph test that follows
+imports transitively, so a library a component imports cannot carry another
+component's implementation in. It fails when a component reaches another
+component's implementation, except a contract's in-memory implementation in its
+tests, and when a contract imports anything but the standard library and other
+contracts.
 
 > decision: a contract may be shared. A rule that forbade every import made each
 > consumer copy the provider's types and errors, map between the copies, and
@@ -1508,7 +1518,7 @@ These hold across components. No component can enforce any of them alone.
 | **I3** | A remote block is never deleted while a referenced chunk's record locates the chunk in it. |
 | **I4** | Fill never overwrites content the journal holds. |
 | **I5** | That content is offloaded is reported, never inferred. |
-| **I6** | No component imports another component's implementation, except the composition root, the node, which composes them; a component may import another's contract ([§1.2](#1.2%20Component%20autonomy)). Adapters import only the filesystem service ([RFC 17](rfc-17-vfs.md)). |
+| **I6** | No component imports another component's implementation, except the two composers, the composition root and the filesystem service; a component may import another's contract ([§1.2](#1.2%20Component%20autonomy)). Adapters import only the filesystem service ([RFC 17](rfc-17-vfs.md)). |
 | **I7** | Every stored record has a named reclamation path that holds at the record's maximum size. |
 | **I8** | A serialization conflict is retried within the caller's deadline, never surfaced as an I/O error; one still unresolved at the deadline answers retry-later ([§9.2](#9.2%20Conflicts%20and%20their%20retries)). |
 | **I9** | A block name is minted by one put attempt and put by no other; a remote object is deleted only when no block record not yet `deleted` and no put intent names it. |
