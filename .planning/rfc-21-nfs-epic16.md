@@ -33,7 +33,7 @@ copy lacks RFC 20 §6.10's sentence on goroutines per record, which this epic ho
 cell's name, `adapter-conformance`, in RFC 20 §8.5's suites paragraph; its RFC 29 §4.10 names
 `unit --nonrace` where `feat/storage-v2` has "a non-race option of `unit`", and keeps the Slack
 posting rules `feat/storage-v2` drops.
-Cited, not owned: RFC 21 §13's "Tests expected to fail" (the burn-down, §1.2); RFC 1 §1.3 on crashes
+Cited, not owned: RFC 21 §13's "Tests expected to fail" (the burn-down, §1.1); RFC 1 §1.3 on crashes
 simulated beneath the code under test; RFC 24 §6.1.
 **Track:** the team.
 **Epic 16 estimate: 14 subtasks, 51.25 man-days.**
@@ -49,7 +49,7 @@ simulated beneath the code under test; RFC 24 §6.1.
   Not E15: by that epic's D2 a cell leaves the filter with its first green test, so `e2e/kerberos`
   and `e2e/cross-protocol`, skipped by name until then, leave with RFC 23's T8.8, with T16.8 or T16.9
   here, or with RFC 22's epic 16, whichever lands first. E15 takes out only `pjdfstest`, `pynfs`,
-  `cthon04` and `nfstest`, which the burn-down waits for (§1.2).
+  `cthon04` and `nfstest`, which the burn-down waits for (§1.1).
 - **S6b** and **E13** for every Kerberos step (T16.3, T16.6's "disable takes effect", T16.8, the
   Kerberos rows of T16.9 and T16.10).
 - The handler epics whose rows these are: E4, E6 and E7 (their composed-node and end-to-end halves),
@@ -58,8 +58,8 @@ simulated beneath the code under test; RFC 24 §6.1.
 - Outside this programme's NFS epics: RFC 22's implementation plan for SMB on the composed node and
   its scripted client (T16.6), its negotiation epic's totality helper in `core`'s `errors.go`
   (T16.11), and its epic 16, which writes the SMB halves of the rows two adapters share (D2).
-**Blocks:** nothing in this programme. The cutover's switch-off of the V2 filter for NFS's suites
-waits for the burn-down this epic gains once E15 lands (§1.2).
+**Blocks:** nothing in this programme. RFC 21's release waits for the burn-down this epic gains
+once E15 has turned the four suites on (§1.1; RFC 21 §13's release goal).
 
 ---
 
@@ -89,7 +89,10 @@ pins NFS's authorization gates so that removing one is a visible edit.
   `unit/adapter-allocs`, a nightly step measures NFS end to end against knfsd, and a soak under
   kernel traffic ends with nothing leaked;
 - `test/required-tests.json` names NFS's authorization gates, and every package holding an
-  allocation gate is in `unit/adapter-allocs`.
+  allocation gate is in `unit/adapter-allocs`;
+- after E15, `pjdfstest` (NFSv3, v4.0, v4.1), `pynfs` (`nfs4.0`, `nfs4.1`), `cthon04` and
+  `nfstest` pass every test outside RFC 21 §13's "Tests expected to fail" (its release goal); the
+  subtask is added once E15 has run them (D7).
 
 ### 1.1 In scope
 
@@ -100,16 +103,37 @@ and `e2e/cross-protocol`, with a capture helper; RFC 19 §9's NFS halves with re
 totality test; the pins; the pipeline micro-benchmark; the nightly end-to-end benchmark step and the
 soak; RFC 21 §13's suites paragraph amended to say where the in-process rows run (D1).
 
+**The burn-down of `pjdfstest` (NFSv3, v4.0 and v4.1 mounts), `pynfs` (`nfs4.0`, `nfs4.1`),
+`cthon04` and `nfstest`** to RFC 21 §13's "Tests expected to fail": RFC 21 §13's release goal is
+all four green at release with only those failures, and the burn-down is not done until they are.
+`pjdfstest` has no expected-to-fail list yet: E15 fills it from its first v2 run, each entry citing
+the RFC section whose decision fails it. It takes the pynfs steps of "§3.1, §3.2 sessions *(1
+node)*", "§3.2 reply cache", "§4.2 v4.0 owners *(1 node)*", "§5.2 stateids *(1 node)*" and "§8
+attributes", and cthon04 and nfstest over NFSv3.
+It is planned after E15 (D7): v2's failures in those suites are known only once E15 turns them on,
+so this document gains its subtask, sized then, by a pull request.
+
+The burn-down starts from a known floor: tests the other RFC 21 epic reviews found red with no §13
+row. Each leaves this list when its own epic fixes it or a §13 row records its decision; until then
+it is the burn-down's.
+
+- pynfs `nfs4.0`: the invalid-argument `OPEN` and `LOCK` tests that reuse the owner and meet the
+  sequence ID left unadvanced by `NFS4ERR_INVAL` (E9's review); `CIDCF3` (E8's).
+- pynfs `nfs4.1`: `EID6`, `EID6a` to `EID6h`, `RECC4`, `CSESS27` (E8's review).
+- pynfs `nfs4.1` `DELEG24` and `DELEG25`, which need `CB_GETATTR`: E10's Q5, recommending a §13 row.
+  `DELEG7`, `DELEG8` and `DELEG26` have rows in E10's T10.2, T10.7 and T10.4 now.
+- nfstest's `delegation` module under NFSv4.0: E10's gap 6 widens §13's `DELEG*` row to it.
+  nfstest's recalls on another client's `SETATTR`, `REMOVE` and `RENAME`: E10's R38.
+- pynfs `nfs4.0` `GSS*`, skipped today because the run uses `--security sys`: E13 hands E15 a
+  `krb5` cell.
+
+Not on it: pjdfstest's uid 65534 fixture and pynfs `ACL5` and `ACL10`'s uids, which E15's fixture
+fixes cover; cthon04's `lock/tlocklfs` and `lock/tlock64` and nfstest's `lock` over NFSv3, which
+wait on the cutover's rpcbind registration through E15 (E11's §1.2); pynfs's minor 2 and pjdfstest
+at NFSv4.2, outside §13's release goal until an RFC change adds them.
+
 ### 1.2 Out of scope
 
-- **The burn-down of `pjdfstest` (NFSv3, v4.0 and v4.1 mounts), `pynfs` (`nfs4.0`, `nfs4.1`),
-  `cthon04` and `nfstest`** to RFC 21 §13's "Tests expected to fail": RFC 21 §13's release goal is
-  all four green at release with only those failures, and the burn-down is not done until they are.
-  `pjdfstest` has no expected-to-fail list yet: E15 fills it from its first v2 run, each entry citing
-  the RFC section whose decision fails it. The pynfs steps of "§3.1, §3.2 sessions *(1 node)*", "§3.2 reply cache", "§4.2 v4.0 owners *(1
-  node)*", "§5.2 stateids *(1 node)*" and "§8 attributes", cthon04 and nfstest over NFSv3 among them.
-  It is planned after E15 (D7): v2's failures in those suites are known only once E15 turns them on,
-  so this document gains its subtask, sized then, by a pull request.
 - **Cross-node steps** of every row: the cluster stage, the RFC 21 implementation plan's deferral
   ledger, row "RFC 21's (cluster) parts". "§3.2 reply cache"'s node loss with no grace and "§9.2
   change info"'s two-node step among them.
@@ -170,7 +194,7 @@ cited by number and title and not copied.
 | rule 3, observability follows RFC 25 and RFC 20 §10 | T16.2, T16.13 | no series is added; the soak reads `adapter_unmapped_errors_total` and `adapter_handler_panics_total`, and T16.2 reads none of the series pending the RFC's author |
 | rule 4, profiling: leaks, allocations and contention | T16.2 to T16.6, T16.12 to T16.14 | every in-process row of T16.2 to T16.6 and T16.14 ends with `adaptertest.CheckLeaks`; T16.12 is RFC 20 §6.10's allocation gate; the soak asserts the pools empty and no goroutine growth (R15) |
 | rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | each row asserts what a client reads: the status on the wire, the bytes read back, the file a kernel mount sees, the descriptor `smbcacls` prints |
-| rule 6, known failures shrink | none, until the burn-down | `e2e` and `unit` keep no `known.yaml`; the burn-down's subtask, added after E15, removes entries (§1.2) |
+| rule 6, known failures shrink | none, until the burn-down | `e2e` and `unit` keep no `known.yaml`; the burn-down's subtask, added after E15, removes entries (§1.1) |
 | rule 7, v2 ignores v1 | all | the rows come from the RFCs; `develop`'s e2e tests are not ported, and only `test/e2e/framework`'s mount, Kerberos and netns helpers, which import nothing of v1, are reused |
 | rule 8, real dependencies for properties of those dependencies | all | the composed node with Badger under `t.TempDir()` and the journal on a real directory for durability; Linux kernel clients, `tlshd`, a real KDC, `nfs4-acl-tools` and `smbcacls` for client behaviour; knfsd as the nightly reference |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T16.13 | the soak's `ponytail:` (D5); D3's and D6's `decision:` markers at their sites |
@@ -178,7 +202,7 @@ cited by number and title and not copied.
 | rule 11, a symbol is exported only if an interface uses it | T16.1, T16.7 | exported: `nodetest`'s `Faults`, `Seam`, `KV` and `Crash`, for this epic's in-process rows and RFC 22's epic 16; `framework.Capture` and `framework.TsharkFields`, for T16.7 and T16.8. Nothing else |
 | rule 12, each subtask creates only what it declares | all | each helper lands with its first consumer: the seams with T16.2 in PR 1 (T16.1's own tests reach them only through the service), the capture with T16.7 |
 | rule 13, translate, never decide | none | no adapter code is written here; the rows assert the service's decisions as the adapter carries them |
-| rule 14, nothing deferred is lost | all | every row's step left out is named in §1.2 with its owner; the burn-down waits as a recorded decision (D7) |
+| rule 14, nothing deferred is lost | all | every row's step left out is named in §1.2 with its owner; the burn-down is in scope, its subtask sized after E15 as a recorded decision (D7) |
 
 ## 3. Requirements and invariants
 
@@ -965,8 +989,8 @@ Gaps, not questions:
    not reach the waiter), in T16.5 on `Harness.Clock` once S5 wires it, never in real time, and
    E13's T13.8 rows (no keytab), in T16.3; each moves with its
    figure. Not taken: E4's §9.2 two-node change-info step, which is the deferral ledger's row "RFC
-   21's (cluster) parts" (§1.2), and every pjdfstest, pynfs, cthon04 and nfstest step, which waits for the
-   burn-down (D7). Of E7's "Tier 2 rows over NFSv4", "`AUTH_SYS` from the directory", "mint from a
+   21's (cluster) parts" (§1.2), and every pjdfstest, pynfs, cthon04 and nfstest step, which the
+   burn-down takes (§1.1, D7). Of E7's "Tier 2 rows over NFSv4", "`AUTH_SYS` from the directory", "mint from a
    claim, guarded" and "`ManageGIDs`", which E7's T7.6 runs over NFSv3 (§1.2). Nor these consumers
    other documents name, which no row asks for: E5's T5.9 and E12's T12.8 loopback rows rerun on
    the composed node (E12's running-clone steps are taken, above), E6's T6.5 rows "run on the
