@@ -37,7 +37,7 @@ func (c ControlPlane) Write(ctx context.Context, meta entity.WriteMeta, fn func(
 				return err
 			}
 		}
-		if err := fn(controlTx{tx, new(uint64)}); err != nil {
+		if err := fn(controlTx{tx: tx, pgen: new(uint64), settingSchema: c.s.settingSchema}); err != nil {
 			return err
 		}
 		if meta.Audit != nil {
@@ -158,6 +158,8 @@ func decodeIdempotency(account entity.Principal, key string, b []byte) (entity.I
 type controlTx struct {
 	tx   kv.Txn
 	pgen *uint64
+
+	settingSchema uint32 // the newest settings schema PutSetting writes
 }
 
 var _ entity.ControlPlaneTx = controlTx{}

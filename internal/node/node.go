@@ -254,7 +254,7 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 		rec:   newReconciler(newTable().WithMetrics(cfg.Metrics), newReaches()),
 		sweep: newSweeper(),
 	}
-	if n.meta, err = kvstore.Open(context.Background(), cfg.KV); err != nil {
+	if n.meta, err = kvstore.Open(context.Background(), cfg.KV, settingSchema()); err != nil {
 		// decision: over Badger a store whose first key has one of v1's
 		// prefixes is v1's, the only program that wrote one at
 		// metadata.badger.path, so it is refused as v1. This format's records
