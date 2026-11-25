@@ -2206,7 +2206,15 @@ type Stats struct { // per source and tenant
 	LastDone                           time.Time
 }
 
-func New(clk Clock, loop *health.Loop) *Scheduler          // Clock: the subset of the node's clock it reads; loop: its watchdog turn (RFC 25 §3.5)
+// Loop is the watchdog turn the scheduler reports (RFC 25 §3.5), declared here so
+// the package imports no implementation (RFC 0 §1.2); RFC 25's *health.Loop
+// satisfies it as it is.
+type Loop interface {
+	Turn() // a dispatch or a run's return completed
+	Idle() // waiting, with no entry due
+}
+
+func New(clk Clock, loop Loop) *Scheduler                   // Clock: the subset of the node's clock it reads; loop: its watchdog turn
 func (s *Scheduler) Register(src Source, l Limits) SourceID // before Start; l is fixed for the source's life
 func (s *Scheduler) Start()                                 // dispatch begins
 func (s *Scheduler) SetTenant(ctx context.Context, src SourceID, t TenantID, c Tenant) error // adds t, running Rebuild for it, or changes it
