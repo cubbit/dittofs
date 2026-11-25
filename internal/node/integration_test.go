@@ -175,7 +175,7 @@ func TestWiredRefusedShareReadsRefused(t *testing.T) {
 			n, err := node.New(cfg)
 			if err == nil {
 				turns := make(chan statusTurn, 1024)
-				n.OnStatus(func(s entity.NodeStatus, wrote bool) { turns <- statusTurn{s, wrote} })
+				n.OnStatus(func(s entity.NodeStatus, wrote bool) { offer(turns, statusTurn{s, wrote}) })
 				ch = turns
 			}
 			return n, err
@@ -226,10 +226,14 @@ func (w *wired) healthBehind(t *testing.T, c account) bool {
 // raised or never cleared through the API.
 func TestWiredBehindReadThroughHealth(t *testing.T) {
 	onBackends(t, func(t *testing.T, memory bool) {
+		// Only a pass that read past the settings counter as it stood
+		// before the change is held: one a store watch starts before the
+		// change commits goes on with the old counters.
 		var frozen atomic.Bool
+		var past uint64
 		reached, release := make(chan kvstore.Counters, 1), make(chan struct{})
 		w := newWired(t, memory, node.NewPausing(func(c kvstore.Counters) {
-			if frozen.Load() {
+			if frozen.Load() && c.Settings > past {
 				reached <- c
 				<-release
 			}
@@ -244,6 +248,7 @@ func TestWiredBehindReadThroughHealth(t *testing.T) {
 			t.Fatal("config_generation_behind named before any change")
 		}
 
+		past = counters(t, w.h).Settings
 		frozen.Store(true)
 		configure(t, w.h, storeA)
 		want := counters(t, w.h).Settings
@@ -477,8 +482,11 @@ func TestWiredLoopbackSignInsThrottled(t *testing.T) {
 			}
 		})
 		t.Run("local socket", func(t *testing.T) {
-			// A socket's path is capped near 104 bytes on some hosts, which a
-			// subtest's t.TempDir() can pass.
+			// decision: the socket's directory is made outside t.TempDir(),
+			// against the rule that a test writes only under it, because a
+			// socket's path is capped near 104 bytes on some hosts and a
+			// subtest's t.TempDir() can pass that. The cleanup below removes
+			// it. Withdraw it if t.TempDir() paths come under the cap.
 			dir, err := os.MkdirTemp("", "dfs")
 			if err != nil {
 				t.Fatal(err)

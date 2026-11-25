@@ -51,7 +51,7 @@ func putGrant(_ context.Context, rq request[grantDoc], _ struct{}, tx entity.Con
 	case !ok:
 		return apiv1.Grant{}, rq.ID, errNotFound
 	case p.Kind == entity.PrincipalMachine:
-		return apiv1.Grant{}, rq.ID, &fieldError{field: "principal", detail: "a machine principal holds no share grant"}
+		return apiv1.Grant{}, rq.ID, &fieldError{detail: "a machine principal holds no share grant"}
 	}
 	g := entity.ShareGrant{Share: entity.ShareID(rq.ID), Principal: p, Access: a}
 	if g.Version, err = tx.SetGrant(g, rq.Expect); err != nil {

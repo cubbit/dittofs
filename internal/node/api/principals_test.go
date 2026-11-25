@@ -304,8 +304,8 @@ func TestGrants(t *testing.T) {
 
 	m := s.machine(t)
 	r := s.do(t, http.MethodPut, at(m.String()), `{"spec":{"access":"read"}}`, "If-None-Match", "*")
-	if p := r.problem(t); r.status != http.StatusBadRequest || p.Code != "invalid" {
-		t.Errorf("PUT a machine's grant: answered %d %+v, want 400 invalid", r.status, p)
+	if p := r.problem(t); r.status != http.StatusBadRequest || p.Code != "invalid" || p.Field != "" {
+		t.Errorf("PUT a machine's grant: answered %d %+v, want 400 invalid naming no field, the principal being the path's", r.status, p)
 	}
 	if _, ok := s.grantOf(t, share, m.String()); ok {
 		t.Error("the store holds the machine's refused grant")
