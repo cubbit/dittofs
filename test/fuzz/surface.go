@@ -52,16 +52,34 @@ func Faults(source string, points []string) Surface {
 	}
 }
 
-// Omission is a name of a surface that no operation covers.
+// Omission is a name of a surface that no operation covers, or, made by
+// Skipped, a behavior the target leaves out.
 type Omission struct {
 	Name string
 	Why  string
+
+	// skipped is set by Skipped: no surface has the name.
+	skipped bool
+}
+
+// skipPrefix starts the name of a skipped behavior.
+const skipPrefix = "skip:"
+
+// Skipped is a behavior the target leaves out on purpose, named "skip:name".
+// It goes in Uncovered and belongs to no surface, being neither a method nor a
+// fault point. CheckCoverage refuses one with no name or no reason.
+func Skipped(name, why string) Omission {
+	return Omission{
+		Name:    skipPrefix + name,
+		Why:     why,
+		skipped: true,
+	}
 }
 
 // CheckCoverage fails the test when a name of the target's surfaces is neither
 // covered by an operation nor omitted, or when a Covers or an Omission names
-// what no surface has. A method added to a surface then fails the target until
-// someone decides whether to fuzz it.
+// what no surface has, a Skipped one apart. A method added to a surface then
+// fails the target until someone decides whether to fuzz it.
 func CheckCoverage[R, M any](t testing.TB, target Target[R, M]) {
 	t.Helper()
 
@@ -98,7 +116,9 @@ func coverage[R, M any](target Target[R, M]) error {
 	omitted := map[string]bool{}
 	for _, omission := range target.Uncovered {
 		switch {
-		case !slices.Contains(names, omission.Name):
+		case omission.skipped && omission.Name == skipPrefix:
+			report("a skipped behavior has no name")
+		case !omission.skipped && !slices.Contains(names, omission.Name):
 			report("omission %s is in no surface", omission.Name)
 		case covered[omission.Name]:
 			report("omission %s is covered by an operation", omission.Name)

@@ -121,6 +121,46 @@ func TestCoverageNamesTheMissingMethod(t *testing.T) {
 	}
 }
 
+func TestCoverageHoldsASkippedBehaviorToANameAndAReason(t *testing.T) {
+	cases := []struct {
+		name    string
+		skipped Omission
+		want    string
+	}{
+		{
+			name:    "a name and a reason",
+			skipped: Skipped("tail", "open"),
+		},
+		{
+			name:    "no name",
+			skipped: Skipped("", "open"),
+			want:    "a skipped behavior has no name",
+		},
+		{
+			name:    "no reason",
+			skipped: Skipped("tail", ""),
+			want:    "omission skip:tail says no reason",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			target := covered()
+			target.Uncovered = append(target.Uncovered, c.skipped)
+
+			err := coverage(target)
+			if c.want != "" {
+				mustHold(t, err, c.want)
+
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("coverage: %v", err)
+			}
+		})
+	}
+}
+
 // uncoveredChild makes FuzzAnUncoveredTarget run in the process that expects
 // it to fail.
 const uncoveredChild = "FUZZ_TEST_UNCOVERED_TARGET"

@@ -101,6 +101,37 @@ type faultState struct {
 
 	// gone marks a released file.
 	gone [fuzzFiles]bool
+
+	// size is each file's size, and recorded is a floor under the size the
+	// store has committed for it: set only by a removal that committed, a
+	// crash and a restart. A commit over committed content records a size too
+	// and is not counted, so the guard may skip more than it has to.
+	size     [fuzzFiles]int
+	recorded [fuzzFiles]int
+}
+
+// truncated is an accepted truncate to size. One that takes bytes away records
+// the size, unless its transaction is owed.
+func (s *faultState) truncated(file, size int, owed bool) {
+	shrunk := size < s.size[file]
+	s.size[file] = size
+
+	if shrunk && !owed {
+		s.recorded[file] = size
+	}
+}
+
+func (s *faultState) released(file int) {
+	s.size[file] = 0
+	s.recorded[file] = 0
+}
+
+// started takes what a new process serves, whose sizes its start committed.
+func (s *faultState) started(files [fuzzFiles]string) {
+	for i, content := range files {
+		s.size[i] = len(content)
+		s.recorded[i] = len(content)
+	}
 }
 
 func (s faultState) anyOwed() bool {
@@ -137,6 +168,36 @@ func (s *faultState) crashed() {
 	s.owed = [fuzzFiles]bool{}
 }
 
+// tailOverUnrecordedSize is whether a deallocate of length bytes at off takes
+// the last byte of a file of size bytes while the store holds less than size.
+// With the store failing, a crash after such a step leaves the file shorter:
+// the journal no longer holds where it ended. The target skips the step then.
+// With the store working the removal commits before the step ends, so it runs.
+func tailOverUnrecordedSize(size, recorded, off, length int) bool {
+	// A range that starts past the end takes no byte of the file.
+	if off >= size || off+length < size {
+		return false
+	}
+
+	return recorded < size
+}
+
+// skips is the answer of a step that calls nothing, and whether op is one.
+func (s faultState) skips(op string, a fuzz.Args) (skippedAnswer, bool) {
+	if s.noEffect(op, fileOf(op, a)) {
+		return skippedAnswer{}, true
+	}
+
+	if op != "deallocate" || !s.armed {
+		return skippedAnswer{}, false
+	}
+
+	file := a.Int("file")
+	tail := tailOverUnrecordedSize(s.size[file], s.recorded[file], a.Int("off"), a.Int("len"))
+
+	return skippedAnswer{unrecordedTail: tail}, tail
+}
+
 // fileOf is the file op names, or -1 for one that names none.
 func fileOf(op string, a fuzz.Args) int {
 	if op == "restart" {
@@ -146,10 +207,17 @@ func fileOf(op string, a fuzz.Args) int {
 	return a.Int("file")
 }
 
-// skippedAnswer is what a step with no effect answers.
-type skippedAnswer struct{}
+// skippedAnswer is what a step that calls nothing answers. unrecordedTail
+// marks the deallocate the target leaves out.
+type skippedAnswer struct {
+	unrecordedTail bool
+}
 
-func (skippedAnswer) String() string {
+func (a skippedAnswer) String() string {
+	if a.unrecordedTail {
+		return "skipped: a deallocate of a tail the store has not recorded"
+	}
+
 	return "no effect"
 }
 
@@ -159,8 +227,8 @@ type modelFunc = func(engineModel, fuzz.Args, fuzz.Result) ([]engineModel, error
 
 func realUnless(op string, call realFunc) realFunc {
 	return func(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
-		if w.faults.noEffect(op, fileOf(op, a)) {
-			return skippedAnswer{}
+		if answer, skipped := w.faults.skips(op, a); skipped {
+			return answer
 		}
 
 		return call(env, w, a)
@@ -169,9 +237,12 @@ func realUnless(op string, call realFunc) realFunc {
 
 func modelUnless(op string, allows modelFunc) modelFunc {
 	return func(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, error) {
-		_, skipped := got.(skippedAnswer)
-		if want := m.faults.noEffect(op, fileOf(op, a)); skipped != want {
-			return nil, fmt.Errorf("the step had no effect: %v, and the model's state says %v", skipped, want)
+		answer, skipped := got.(skippedAnswer)
+		wantAnswer, want := m.faults.skips(op, a)
+
+		if skipped != want || (skipped && answer != wantAnswer) {
+			return nil, fmt.Errorf("the step answered %s, and the model's state says it calls nothing: %v, answering %s",
+				got, want, wantAnswer)
 		}
 
 		if skipped {
@@ -545,6 +616,7 @@ func engineWrite(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 	})
 	if err == nil {
 		w.writes = append(w.writes, write)
+		w.faults.size[write.file] = max(w.faults.size[write.file], int(off)+len(data))
 	}
 
 	return writeAnswer{
@@ -586,6 +658,11 @@ func engineRead(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 func engineTruncate(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 	file := a.Int("file")
 	err := w.fix.E.Truncate(env.T.Context(), w.fix.Share.ID, w.files[file], int64(a.Int("size")))
+	owed := err != nil && errorClass(err) == "retry later"
+
+	if err == nil || owed {
+		w.faults.truncated(file, a.Int("size"), owed)
+	}
 
 	return w.removed(file, err)
 }
@@ -593,6 +670,9 @@ func engineTruncate(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 func engineDeallocate(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 	file := a.Int("file")
 	err := w.fix.E.Deallocate(env.T.Context(), w.fix.Share.ID, w.files[file], int64(a.Int("off")), int64(a.Int("len")))
+	if err == nil {
+		w.faults.recorded[file] = w.faults.size[file]
+	}
 
 	return w.removed(file, err)
 }
@@ -631,6 +711,7 @@ func engineDelete(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 
 	retry, err := w.fix.E.Delete(env.T.Context(), w.fix.Share.ID, w.files[file])
 	if err == nil {
+		w.faults.released(file)
 		w.faults.gone[file] = true
 		w.faults.owed[file] = retry != nil
 	}
@@ -664,6 +745,7 @@ func engineCrash(env *fuzz.Env, w *engineWorld, _ fuzz.Args) fuzz.Result {
 	w.faults.crashed()
 	w.awaitRemovalLoop()
 	files, gone, err := w.contents(env.T.Context())
+	w.faults.started(files)
 
 	return restartedAnswer{
 		err:   err,
@@ -696,6 +778,7 @@ func engineRestart(env *fuzz.Env, w *engineWorld, _ fuzz.Args) fuzz.Result {
 
 	w.awaitRemovalLoop()
 	files, gone, err := w.contents(env.T.Context())
+	w.faults.started(files)
 
 	return restartedAnswer{
 		err:    errors.Join(replayErr, err),
@@ -841,6 +924,8 @@ func modelWrite(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, err
 		off:    int64(a.Int("off")),
 		length: a.Int("len"),
 	})
+	size := &m.faults.size[a.Int("file")]
+	*size = max(*size, a.Int("off")+a.Int("len"))
 
 	return one(m.sawVerifier(answer.verifier))
 }
@@ -903,6 +988,11 @@ func (m engineModel) reachedFirstTransaction(file int, answer removalAnswer, aft
 
 	m.files[file] = modelFile{synced: after}
 	m.faults.owed[file] = m.faults.armed
+	m.faults.size[file] = len(after)
+
+	if !m.faults.armed {
+		m.faults.recorded[file] = len(after)
+	}
 
 	return []engineModel{m}, nil
 }
@@ -925,6 +1015,7 @@ func modelTruncate(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, 
 		grow: true,
 		off:  int64(size),
 	})
+	m.faults.truncated(a.Int("file"), size, false)
 
 	return []engineModel{m}, nil
 }
@@ -950,6 +1041,7 @@ func modelDelete(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, er
 
 	file := a.Int("file")
 	m.files[file] = modelFile{}
+	m.faults.released(file)
 	m.faults.gone[file] = true
 	m.faults.owed[file] = answer.pending
 
@@ -987,6 +1079,7 @@ func modelCrash(m engineModel, _ fuzz.Args, got fuzz.Result) ([]engineModel, err
 		return nil, err
 	}
 
+	m.faults.started(answer.files)
 	m.newProcess = true
 
 	return []engineModel{m}, nil
@@ -1022,6 +1115,7 @@ func modelRestart(m engineModel, _ fuzz.Args, got fuzz.Result) ([]engineModel, e
 		return nil, err
 	}
 
+	m.faults.started(answer.files)
 	m.newProcess = true
 
 	return []engineModel{m}, nil
@@ -1045,8 +1139,14 @@ func compareFiles(_ fuzz.Step, _ fuzz.Result, w *engineWorld, m engineModel) err
 			return fmt.Errorf("file %d reads released: %v, the model holds %v", i, gone[i], m.faults.gone[i])
 		}
 
-		if view := apply(file.synced, file.unsynced); got[i] != view {
+		view := apply(file.synced, file.unsynced)
+		if got[i] != view {
 			return fmt.Errorf("file %d reads %s, the model holds %s", i, describe(0, got[i]), describe(0, view))
+		}
+
+		if m.faults.size[i] != len(view) {
+			return fmt.Errorf("file %d holds %d bytes in the model, and the size its skips are decided from is %d",
+				i, len(view), m.faults.size[i])
 		}
 	}
 
@@ -1135,6 +1235,15 @@ func engineTarget() fuzz.Target[*engineWorld, engineModel] {
 				Real:   engineFailUpdates,
 				Model:  modelFailUpdates,
 			},
+		},
+		// The engine's methods are not listed here yet: this holds only what
+		// the target leaves out on purpose.
+		Uncovered: []fuzz.Omission{
+			fuzz.Skipped(
+				"deallocate_of_an_unrecorded_tail",
+				"while the store fails, a deallocate that takes a file's last byte is skipped unless the store is "+
+					"known to hold the file's size: a crash after it leaves the file shorter",
+			),
 		},
 		NewReal:    newEngineWorld,
 		NewModel:   newEngineModel,
@@ -1302,6 +1411,180 @@ var engineSeeds = []struct {
 			"commit(file=0, off=0, len=0)",
 		},
 	},
+	{
+		// The commit of an append leaves the size to the journal alone, so with
+		// the store failing the deallocate of the tail is the step that is
+		// skipped.
+		name:  "a deallocate of a tail the store has not recorded is skipped",
+		calls: tailDeallocate,
+	},
+	{
+		name: "a deallocate of a tail the store has not recorded runs while the store works",
+		calls: []string{
+			"write(file=0, off=0, len=8192)",
+			"commit(file=0, off=0, len=0)",
+			"deallocate(file=0, off=4096, len=4096)",
+			"crash()",
+			"read(file=0, off=0, len=8192)",
+		},
+	},
+}
+
+var tailDeallocate = []string{
+	"write(file=0, off=0, len=8192)",
+	"commit(file=0, off=0, len=0)",
+	"fail_updates_after(n=0)",
+	"deallocate(file=0, off=4096, len=4096)",
+	"crash()",
+	"read(file=0, off=0, len=8192)",
+}
+
+// TestTheGuardTakesOnlyATailTheStoreHasNotRecorded holds the guard to a
+// deallocate that takes the file's last byte while the store holds a smaller
+// size than the file has.
+func TestTheGuardTakesOnlyATailTheStoreHasNotRecorded(t *testing.T) {
+	cases := []struct {
+		name     string
+		size     int
+		recorded int
+		off      int
+		length   int
+		skipped  bool
+	}{
+		{
+			name:    "the tail, nothing recorded",
+			size:    8192,
+			off:     4096,
+			length:  4096,
+			skipped: true,
+		},
+		{
+			name:    "past the end",
+			size:    8192,
+			off:     4096,
+			length:  8192,
+			skipped: true,
+		},
+		{
+			name:    "the whole file",
+			size:    8192,
+			length:  8192,
+			skipped: true,
+		},
+		{
+			name:     "the tail, part of the size recorded",
+			size:     8192,
+			recorded: 4096,
+			off:      4096,
+			length:   4096,
+			skipped:  true,
+		},
+		{
+			name:     "the tail, the size recorded",
+			size:     8192,
+			recorded: 8192,
+			off:      4096,
+			length:   4096,
+		},
+		{
+			name:   "one byte short of the end",
+			size:   8192,
+			off:    4096,
+			length: 4095,
+		},
+		{
+			name:   "wholly past the end",
+			size:   8192,
+			off:    8192,
+			length: 4096,
+		},
+		{
+			name:   "an empty file",
+			length: 4096,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := tailOverUnrecordedSize(c.size, c.recorded, c.off, c.length); got != c.skipped {
+				t.Fatalf("tailOverUnrecordedSize(size=%d, recorded=%d, off=%d, len=%d) = %v, want %v",
+					c.size, c.recorded, c.off, c.length, got, c.skipped)
+			}
+		})
+	}
+}
+
+// TestTheGuardSkipsOnlyWhileTheStoreFails holds the guard to the failing
+// store: with the store working, a removal has committed by the time its step
+// ends, and a crash after it leaves the size alone.
+func TestTheGuardSkipsOnlyWhileTheStoreFails(t *testing.T) {
+	cases := []struct {
+		name    string
+		armed   bool
+		skipped bool
+	}{
+		{
+			name:    "the store failing",
+			armed:   true,
+			skipped: true,
+		},
+		{
+			name: "the store working",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			faults := faultState{armed: c.armed}
+			faults.size[0] = 8192
+
+			_, got := faults.skips("deallocate", parsed(t, "deallocate(file=0, off=4096, len=4096)"))
+			if got != c.skipped {
+				t.Fatalf("a deallocate of an unrecorded tail with the store armed=%v is skipped: %v, want %v",
+					c.armed, got, c.skipped)
+			}
+		})
+	}
+}
+
+// TestTheSkippedDeallocateShowsInTheTraceAndTheCoverage holds the guard to
+// being seen: the step says why it called nothing, and the target's coverage
+// lists what it leaves out.
+func TestTheSkippedDeallocateShowsInTheTraceAndTheCoverage(t *testing.T) {
+	target := engineTarget()
+
+	program, err := fuzz.Parse(target, strings.Join(tailDeallocate[:4], "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := &fuzz.Env{
+		T:       t,
+		Cleanup: t.Cleanup,
+	}
+	w, err := newEngineWorld(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var answer string
+	for i, step := range program {
+		env.Step = i
+		answer = target.Ops[step.Op].Real(env, w, step.Args).String()
+		t.Logf("#%02d %s -> %s", i, step, answer)
+	}
+
+	if want := "skipped: a deallocate of a tail the store has not recorded"; answer != want {
+		t.Errorf("the deallocate answered %q, want %q", answer, want)
+	}
+
+	listed := slices.ContainsFunc(target.Uncovered, func(o fuzz.Omission) bool {
+		return o.Name == "skip:deallocate_of_an_unrecorded_tail" && o.Why != ""
+	})
+
+	if !listed {
+		t.Errorf("the target's coverage does not list the skipped deallocate and why: %v", target.Uncovered)
+	}
 }
 
 // TestModelAllowsWhatACrashMayLeave holds the model to the contract: a crash
