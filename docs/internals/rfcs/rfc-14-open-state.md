@@ -3050,7 +3050,7 @@ type Caller struct {
 	Client             ClientID  // as the adapter proved it for the call (§2.2); for NLM the host's client record; zero for an NFSv3 call that names no lock
 	Principal          Principal // mapped, never squashed
 	Sessioned          bool      // the call has a session (RFC 17's Call.Session set); false: refused state created on one (§2.2)
-	Caps               vfs.Caps  // the adapter's capabilities, whole (RFC 17 §3.0): OpenFilesKeepNames adds CheckChange's §9.5 refusal and its refusal of a rename over an open file; WantOpenID issues each open an OpenID that names it from then on (§2.2); GrantBelongsToOpen makes a grant asked with no Lease key the open's own, an oplock, where unset it is the client's, a delegation, never a handle grant (§2.4, §5.1)
+	Caps               caps.Caps // pkg/vfs/caps, a leaf package pkg/vfs aliases; the adapter's capabilities, whole (RFC 17 §3.0): OpenFilesKeepNames adds CheckChange's §9.5 refusal and its refusal of a rename over an open file; WantOpenID issues each open an OpenID that names it from then on (§2.2); GrantBelongsToOpen makes a grant asked with no Lease key the open's own, an oplock, where unset it is the client's, a delegation, never a handle grant (§2.4, §5.1)
 }
 
 // FileKey names the file a call acts on.

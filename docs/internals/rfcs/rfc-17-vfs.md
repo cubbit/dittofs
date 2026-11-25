@@ -681,8 +681,9 @@ a single `Caps` value that `Call` carries and RFC 14's `Caller` receives whole,
 never copied flag by flag; an open request or a client's registration reads the
 `Caps` of the call that makes it, so no second copy can disagree with it. The filesystem
 **MUST NOT** read a client record's kind in any rule, and `Call` carries no
-protocol; an adapter **MUST** state the one profile below for its protocol,
-never a value built from a field of the request. The zero value of every
+protocol; an adapter **MUST** state, per call, one of the profiles below,
+chosen by program and procedure, never a value built from a field of the
+request. The zero value of every
 capability is the narrower behaviour, so `Caps(0)` is the narrowest caller, a
 capability left unset fails closed, and each capability changes only the rule
 it names. Each rule reads its capability in one named place, a method of the
@@ -690,6 +691,10 @@ type that owns the rule (`Caller.keepsNames` reads `OpenFilesKeepNames`), so
 a search for `Has(OpenFilesKeepNames)` finds every rule that reads it.
 Per-request intents an adapter does not fix, backup intent and a lease key
 among them, stay ordinary request fields.
+
+`Caps`, its bits and the profiles are declared in a leaf package,
+`pkg/vfs/caps`, that imports nothing, so open state, which `pkg/vfs` imports,
+holds the same type; `pkg/vfs` aliases it, as it aliases `OpenRef`.
 
 ```go
 type Caps uint16
