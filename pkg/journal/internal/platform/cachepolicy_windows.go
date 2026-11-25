@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io/fs"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sys/windows"
@@ -74,13 +75,12 @@ func probeVolume(c calls, dir string) (cacheProbe, error) {
 
 	p.mountPoint = windows.UTF16ToString(mountPathBuf[:])
 
-	// decision: the volume GUID query of a directory whose mount point
-	// names no volume — a mapped or network location — fails the check
-	// closed, as the remote-path example of GetVolumeNameForVolumeMountPoint
-	// (fileapi.h) does for an unreachable share. A volume the probe cannot
-	// name it cannot ask, so the error is returned rather than passed
-	// around. Withdraw this if a real local volume turns out to answer an
-	// error here.
+	// decision: a mount point that names no volume — the mapped or network
+	// locations GetVolumeNameForVolumeMountPoint refuses, like the remote
+	// path its doc's example fails with error 123 (fileapi.h) — fails the
+	// check closed: the error is returned rather than excused, because a
+	// volume the probe cannot name it cannot ask. Withdraw this if a real
+	// local volume turns out to answer an error here.
 	mountPtr, err := windows.UTF16PtrFromString(p.mountPoint)
 	if err != nil {
 		return p, &fs.PathError{Op: "GetVolumeNameForVolumeMountPoint", Path: p.mountPoint, Err: err}
@@ -94,7 +94,19 @@ func probeVolume(c calls, dir string) (cacheProbe, error) {
 
 	p.volume = windows.UTF16ToString(volumeNameBuf[:])
 
-	// The volume is opened with no access: the property query asks the
+	// The volume is opened on its device, not its root directory: "When
+	// opening a volume ... use the following form: \\.\X:. Do not use a
+	// trailing backslash (\), which indicates the root directory of a
+	// drive" — its table opens the C: volume as \\.\C: and the file system
+	// of the C: volume as \\.\C:\ (CreateFileA, fileapi.h), and the volume
+	// GUID path follows the same rule (Naming a Volume). The probe's GUID
+	// answer, "\\?\Volume{GUID}\", ends with exactly that backslash
+	// (GetVolumeNameForVolumeMountPoint, fileapi.h), so exactly one is cut;
+	// p.volume keeps the answer as it came, for the message the verdict
+	// names its volume by.
+	opened := strings.TrimSuffix(p.volume, `\`)
+
+	// The open asks for no access: the property query asks the
 	// device for its attributes, which CreateFile's dwDesiredAccess
 	// documents being able to with zero ("allowing the application to query
 	// device attributes without accessing a device", CreateFileW,
@@ -102,9 +114,9 @@ func probeVolume(c calls, dir string) (cacheProbe, error) {
 	// share and disposition, for the same reason its decision on
 	// FILE_SHARE_DELETE gives: a reader on this handle makes no call the
 	// volume refuses.
-	volumePtr, err := windows.UTF16PtrFromString(p.volume)
+	volumePtr, err := windows.UTF16PtrFromString(opened)
 	if err != nil {
-		return p, &fs.PathError{Op: "CreateFile", Path: p.volume, Err: err}
+		return p, &fs.PathError{Op: "CreateFile", Path: opened, Err: err}
 	}
 
 	h, err := c.createFile(
@@ -121,7 +133,7 @@ func probeVolume(c calls, dir string) (cacheProbe, error) {
 			err = windows.ERROR_INVALID_HANDLE
 		}
 
-		return p, &fs.PathError{Op: "CreateFile", Path: p.volume, Err: err}
+		return p, &fs.PathError{Op: "CreateFile", Path: opened, Err: err}
 	}
 
 	// The query's input is STORAGE_PROPERTY_QUERY (ntddstor.h): a PropertyId,
@@ -165,7 +177,7 @@ func probeVolume(c calls, dir string) (cacheProbe, error) {
 			// An error that carries no Win32 code is no answer the verdict
 			// knows; it fails the check naming the call, as every other
 			// failed one here does.
-			gatherErr = &fs.PathError{Op: "DeviceIoControl", Path: p.volume, Err: err}
+			gatherErr = &fs.PathError{Op: "DeviceIoControl", Path: opened, Err: err}
 		}
 	} else {
 		// A query that reports more than the buffer it was given clips to
@@ -176,7 +188,7 @@ func probeVolume(c calls, dir string) (cacheProbe, error) {
 
 	closeErr := c.closeHandle(h)
 	if closeErr != nil {
-		closeErr = &fs.PathError{Op: "CloseHandle", Path: p.volume, Err: closeErr}
+		closeErr = &fs.PathError{Op: "CloseHandle", Path: opened, Err: closeErr}
 
 		// the one that happened as itself, both through errors.Join when
 		// both did, as the Linux probe joins them (joinClose).

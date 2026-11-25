@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 	"sync"
 	"testing"
 	"unicode/utf16"
@@ -162,12 +163,19 @@ func (f *fakeVolume) callsOf(op string) []volumeCall {
 }
 
 // writeAnswer writes the UTF-16 encoding of answer, with its NUL, into the
-// buffer of length the call was given.
-func writeAnswer(buffer *uint16, length uint32, answer string) {
+// buffer of length the call was given. An answer whose NUL does not fit is
+// refused, as the call is with a buffer too small for its answer.
+func writeAnswer(buffer *uint16, length uint32, answer string) error {
 	buf := unsafe.Slice(buffer, length)
 	units := utf16.Encode([]rune(answer))
 
+	if len(units) >= len(buf) {
+		return windows.ERROR_FILENAME_EXCED_RANGE
+	}
+
 	buf[copy(buf, units)] = 0
+
+	return nil
 }
 
 func (f *fakeVolume) getVolumePathName(fileName *uint16, volumePathName *uint16, bufferLength uint32) error {
@@ -182,9 +190,11 @@ func (f *fakeVolume) getVolumePathName(fileName *uint16, volumePathName *uint16,
 		return err
 	}
 
-	writeAnswer(volumePathName, bufferLength, f.mountPoint)
+	f.mu.Lock()
+	mountPoint := f.mountPoint
+	f.mu.Unlock()
 
-	return nil
+	return writeAnswer(volumePathName, bufferLength, mountPoint)
 }
 
 func (f *fakeVolume) getVolumeNameForVolumeMountPoint(volumeMountPoint *uint16, volumeName *uint16, bufferlength uint32) error {
@@ -199,9 +209,11 @@ func (f *fakeVolume) getVolumeNameForVolumeMountPoint(volumeMountPoint *uint16, 
 		return err
 	}
 
-	writeAnswer(volumeName, bufferlength, f.volume)
+	f.mu.Lock()
+	volume := f.volume
+	f.mu.Unlock()
 
-	return nil
+	return writeAnswer(volumeName, bufferlength, volume)
 }
 
 func (f *fakeVolume) createFile(
@@ -264,8 +276,14 @@ func (f *fakeVolume) deviceIoControl(
 		return err
 	}
 
-	if f.queryErr != nil {
-		return f.queryErr
+	f.mu.Lock()
+	answer := slices.Clone(f.queryAnswer)
+	reported := f.queryReturned
+	queryErr := f.queryErr
+	f.mu.Unlock()
+
+	if queryErr != nil {
+		return queryErr
 	}
 
 	// The bytes past the answer hold what an earlier query's answer left in
@@ -275,11 +293,10 @@ func (f *fakeVolume) deviceIoControl(
 	for i := range out {
 		out[i] = 0xAA
 	}
-	copy(out, f.queryAnswer)
+	copy(out, answer)
 
-	reported := f.queryReturned
 	if reported == 0 {
-		reported = uint32(len(f.queryAnswer))
+		reported = uint32(len(answer))
 	}
 	*bytesReturned = reported
 
@@ -316,6 +333,12 @@ func wantCallFailure(t *testing.T, err error, op, path string, cause error) {
 		t.Fatalf("got %v, want it caused by %v", err, cause)
 	}
 }
+
+// volumeDevice is the volume of the constants above as CreateFile opens it:
+// its GUID path without the trailing backslash, which names "the root
+// directory of a drive" — its table opens the C: volume as \\.\C: and the
+// file system of the C: volume as \\.\C:\ (CreateFileA, fileapi.h).
+const volumeDevice = `\\?\Volume{26a21bda-a627-11d7-9931-806e6f6e6963}`
 
 // TestCheckWriteCachePolicyVolume runs the verdict on the real gather through
 // a recorded table, so what the platform reads decides: "Open MUST refuse a
@@ -470,14 +493,16 @@ func TestCheckWriteCachePolicyVolume(t *testing.T) {
 			wantPath: testMountPoint,
 		},
 		{
-			// The volume refuses its handle. Fails if the gather reads an
-			// unopenable volume as an accepted directory, or hands a failed
-			// createFile's InvalidHandle to the query.
+			// The volume's device refuses its handle. Fails if the gather
+			// reads an unopenable volume as an accepted directory, hands a
+			// failed createFile's InvalidHandle to the query, or opens the
+			// GUID path with its trailing backslash — the root directory,
+			// not the volume.
 			name:     "createFile refuses the handle",
 			op:       "createFile",
 			cause:    windows.ERROR_ACCESS_DENIED,
 			wantOp:   "CreateFile",
-			wantPath: testVolume,
+			wantPath: volumeDevice,
 		},
 	}
 	for _, tc := range failed {
@@ -504,7 +529,7 @@ func TestCheckWriteCachePolicyVolume(t *testing.T) {
 		f := newFakeVolume()
 		f.failNext("closeHandle", windows.ERROR_INVALID_HANDLE)
 
-		wantCallFailure(t, checkDirVolume(f.table(), testDir), "CloseHandle", testVolume, windows.ERROR_INVALID_HANDLE)
+		wantCallFailure(t, checkDirVolume(f.table(), testDir), "CloseHandle", volumeDevice, windows.ERROR_INVALID_HANDLE)
 	})
 }
 
@@ -562,15 +587,19 @@ func TestCheckWriteCachePolicyVolumeCalls(t *testing.T) {
 		t.Errorf("%v: buffer of %d, want at least 50 UTF-16 characters", got[0], got[0].buffer)
 	}
 
-	// The volume is opened on the handle the property query needs: access 0,
-	// which CreateFile's dwDesiredAccess documents for "query device
-	// attributes without accessing a device" (CreateFileW, fileapi.h), and
-	// the share and disposition the package's own opens set
+	// The volume is opened on its device — the GUID path without the
+	// trailing backslash that names its root directory, the form
+	// CreateFileA's own table rules (fileapi.h, and see volumeDevice above) —
+	// with access 0, which CreateFile's dwDesiredAccess documents for "query
+	// device attributes without accessing a device" (CreateFileW, fileapi.h),
+	// and the share and disposition the package's own opens set
 	// (os_windows.go's decision on FILE_SHARE_DELETE). Fails if any of them
-	// differs, or the query and the close do not act on its handle.
+	// differs — this is the pin of the volume device against the root
+	// directory's path — or the query and the close do not act on its
+	// handle.
 	opens := f.callsOf("createFile")
-	if len(opens) != 1 || opens[0].path != testVolume {
-		t.Fatalf("got %v, want one createFile on %s", opens, testVolume)
+	if len(opens) != 1 || opens[0].path != volumeDevice {
+		t.Fatalf("got %v, want one createFile on %s", opens, volumeDevice)
 	}
 	open := opens[0]
 	if want := uint32(0); open.access != want {
