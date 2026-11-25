@@ -3024,13 +3024,14 @@ it states; the primary refuses, with `ErrNotYours`, a call naming state its clie
 does not hold, or through an open by a principal that is neither the opener nor,
 with `Protect`, the client's `Owner`, or state created on a session when the
 call has none (§2.2). No rule reads the caller's protocol: one that differs
-between clients reads a capability the caller states. `OpenFilesKeepNames` is
-the caller's: `CheckChange` applies §7's deny-delete refusal to every caller,
+between clients reads a capability of the caller's `Caps`, RFC 17's one value
+the adapter states, passed whole and read through one method each.
+`OpenFilesKeepNames`, read by `Caller.keepsNames`: `CheckChange` applies §7's deny-delete refusal to every caller,
 against every open but `via`, the one the change comes through, whose own deny
 modes were judged against every other open when it was opened; and to one that sets it, as every SMB call does, also §9.5's open-children
 refusal and refuses a rename over a file another open holds, as Windows does.
-The rest are the request's own fields (`WantOpenID`, `GrantBelongsToOpen`, `Lease`,
-`Durability`). None is looked up from the client record: NFSv3 has no client,
+`WantOpenID` and `GrantBelongsToOpen` are read from the same `Caps` on the open
+request; `Lease` and `Durability` are the request's own fields. None is looked up from the client record: NFSv3 has no client,
 and in a cluster the file's primary holds no client records.
 
 **Every call on a file names it by `FileKey`.** The share and shard come with
@@ -3049,7 +3050,7 @@ type Caller struct {
 	Client             ClientID  // as the adapter proved it for the call (§2.2); for NLM the host's client record; zero for an NFSv3 call that names no lock
 	Principal          Principal // mapped, never squashed
 	Sessioned          bool      // the call has a session (RFC 17's Call.Session set); false: refused state created on one (§2.2)
-	OpenFilesKeepNames bool      // a name in use keeps it: CheckChange adds §9.5's refusal and refuses a rename over an open file; SMB sets it (RFC 17 §3.0)
+	Caps               vfs.Caps  // the adapter's capabilities, whole (RFC 17 §3.0); OpenFilesKeepNames adds CheckChange's §9.5 refusal and its refusal of a rename over an open file
 }
 
 // FileKey names the file a call acts on.
@@ -3149,8 +3150,7 @@ type OpenRequest struct {
 	Parent        LeaseKey      // a v2 lease request's parent key, kept with a new lease (CachingGrant.Parent); zero: none
 	SetID         bool          // the file's mode has setuid or setgid, as the service read it: no write caching (§5.4)
 	Want          GrantKind     // the grant kind asked for
-	GrantBelongsToOpen  bool          // a grant asked with no Lease key is this open's own, an oplock; false: the client's, a delegation, never a handle grant (§2.4, §5.1)
-	WantOpenID    bool          // the open is issued an OpenID that names it from then on, as an SMB FileId does; false: named by its token (§2.2)
+	Caps          vfs.Caps      // the call's, whole: WantOpenID issues the open an OpenID that names it from then on (§2.2); GrantBelongsToOpen makes a grant asked with no Lease key this open's own, an oplock, where unset it is the client's, a delegation, never a handle grant (§2.4, §5.1)
 	MaxRead       bool          // the caller's maximal access to the file includes read (§8.1's app instance)
 	Reclaim       bool
 	Replay        bool          // a create marked as a replay: one naming its client's open by Durable.Create answers that open (§8.1)

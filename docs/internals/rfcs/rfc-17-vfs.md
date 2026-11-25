@@ -660,50 +660,86 @@ holds.
 | Type | What it is |
 | --- | --- |
 | `Identity` | what the adapter proved, not yet mapped through any share's policy, in neutral terms: `Proof`, how it was proved — `None`, `Claimed` (asserted, not proved), `Secret` (a shared-secret challenge, such as NTLM), `Ticket` (a third party's mutual proof, such as Kerberos); `Protection`, how its messages are protected — `None`, `Integrity` (every message signed), `Privacy` (every message sealed); `Claims`, the uid, gid and groups a client asserted, marked as claims and never trusted as proof; the client's address; and `Evidence`, what sign-in established — `Name`, the proven `Principal` or zero for none, `SIDs`, `DenyOnly`, `Expires` ([RFC 18 §3.1](rfc-18-identity.md#3.1%20The%20authentication%20interface)) — which key every cache, so a cache stays keyed on what was proved ([RFC 18 §7.1](rfc-18-identity.md#7.1%20Every%20key%20carries%20the%20whole%20proof)); never the session key. No protocol name, credential flavour or mechanism level: each adapter maps its own to `Proof` and `Protection` ([RFC 21 §11.4](rfc-21-nfs.md#11.4%20Open%20state), [RFC 22 §16.4](rfc-22-smb.md#16.4%20Open%20state)). Every method takes one inside a `Call`; the filesystem resolves it per share ([RFC 18 §6.1](rfc-18-identity.md#6.1%20From%20Identity%20to%20caller)), except a call that names no share, such as the `Clients` area's, which is mapped under the installation's defaults, never a share's ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) |
-| `Call` | `{Identity Identity; Protocol Protocol; Client ClientID; Session SessionRef; Channel struct{Seq uint16; Replay bool}; HostCall, PrivilegeOnEveryCall, OpenFilesKeepNames bool}`: who a call comes from, taken by every method of every area but `SignIn` and `Spell`, which act for no caller (§3.1). `Identity` is the user, what the resolver resolves and caches; the rest sit beside it, never inside it, so no cache ever sees them and two machines signed in as one principal share a resolution but never a client. `Protocol` is the request's, a label the access event (§3.3) and the operation metric (§7) carry and no rule reads; `HostCall`, `PrivilegeOnEveryCall` and `OpenFilesKeepNames` are capabilities the adapter states, below; `Client` the machine, as the adapter proved it — for NFSv4.1 and SMB its session's, for NFSv4.0 the client on the state its stateid resolves to, or for an operation that names an open or lock owner, that owner's client, and only a client confirmed under NFSv4.0, as [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open) defines it, for NLM the host's client record, zero for an NFSv3 call that names no lock; `Session` the SMB or NFSv4.1 session, zero otherwise; `Channel` an SMB request's channel sequence and whether it is a replay, checked through `Opens.Channel` ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)). It is not `Identity.Client`, which is the client's address. One shape serves every call: an NFSv4 `REMOVE` or an SMB delete on close can name an open (`Target.Open`) whose `NotYours` check needs the call's client, and every access event carries the protocol label and client (§3.3); a call that names no open, a `Lookup` say, leaves `Client` unused. A `Clients` method names the client it acts on as its own argument; only `Propose` and `Connect`, which come before there is one, take a `Call` whose `Client` is not yet that client |
+| `Call` | `{Identity Identity; Caps Caps; Client ClientID; Session SessionRef; Channel struct{Seq uint16; Replay bool}}`: who a call comes from, taken by every method of every area but `SignIn` and `Spell`, which act for no caller (§3.1). `Identity` is the user, what the resolver resolves and caches; the rest sit beside it, never inside it, so no cache ever sees them and two machines signed in as one principal share a resolution but never a client. `Caps` the capabilities the adapter states, one value per adapter (below), whose `String()` is the label the access event (§3.3) and the operation metric (§7) carry; `Client` the machine, as the adapter proved it — for NFSv4.1 and SMB its session's, for NFSv4.0 the client on the state its stateid resolves to, or for an operation that names an open or lock owner, that owner's client, and only a client confirmed under NFSv4.0, as [RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open) defines it, for NLM the host's client record, zero for an NFSv3 call that names no lock; `Session` the SMB or NFSv4.1 session, zero otherwise; `Channel` an SMB request's channel sequence and whether it is a replay, checked through `Opens.Channel` ([RFC 14 §8.1](rfc-14-open-state.md#8.1%20SMB%20durable%20and%20persistent%20opens)). It is not `Identity.Client`, which is the client's address. One shape serves every call: an NFSv4 `REMOVE` or an SMB delete on close can name an open (`Target.Open`) whose `NotYours` check needs the call's client, and every access event carries the call's `Caps` and client (§3.3); a call that names no open, a `Lookup` say, leaves `Client` unused. A `Clients` method names the client it acts on as its own argument; only `Propose` and `Connect`, which come before there is one, take a `Call` whose `Client` is not yet that client |
 | `Handle` | opaque bytes naming a file or a pseudo directory (§3.4, [§4.4](#4.4%20Handles%20are%20opaque)) |
 | `OpenRef` | RFC 14's, aliased: `{Kind RefKind; State StateRef; Open OpenID; Handle Handle}` ([RFC 14 §11.3](rfc-14-open-state.md#11.3%20Methods)). `Kind` is `Opened`, `Locked` (a lock state), `Delegated` or `Anonymous`; an NFS reference is its stateid, `State`, whose `Seq` is the seqid presented (zero: current; an older one is `StateError` `OldState`); an SMB one is its `OpenID`, its shard in `State.Shard`. It is the only place that seqid travels: `Seqs` carries the owner sequence numbers only. It names no client — the call's client is the one the adapter proved (`Call.Client`) — and carries no identity: the call's `Identity` is compared with the principal the open was granted to, a lock state's open's for a `Locked` one (§3.1). `vfs.Anonymous(h)` builds an anonymous one, `vfs.Delegated(g, h)` one for I/O under a delegation |
 | `Target` | `{H Handle; Open *OpenRef}`: what a mutation acts on — the file for an attribute change, the directory for a name change — and, when set, the open the request came through, whose grant authorises it ([§4.6](#4.6%20One%20chokepoint)). `Open` is always an open of the file the change acts on — for a name change, the named entry's file, as an SMB rename or delete through its `FileId` sends — never an open of the directory in `H`; it is the `via` RFC 14's `CheckChange` takes, which refuses an open of any other file ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)) |
 | `Cursor` | where a listing resumes: the 63-bit digest of the last entry returned ([RFC 7 §3.5](rfc-7-namespace-metadata.md#3.5%20A%20cookie%20survives%20concurrent%20mutation)), zero to start |
 | `DirEntry`, `Page`, `EntryFields` | one listed entry — name, handle, its digest as cursor, and its `File` when asked; a page `{Entries []DirEntry; Next Cursor; EOF bool}`; which fields a listing fills |
-| `OpenRequest`, `OpenResult` | disposition, access, deny, the caching grant wanted, durability, delete on close, `Backup` (the open asks for backup or restore intent: it is marked privileged when the caller is privileged, [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved), and otherwise opens unprivileged), `MaximumAllowed` in its access (SMB's `MAXIMUM_ALLOWED`, which the service resolves to `G`, with the open's privilege on a backup intent, [RFC 19 §3.4](rfc-19-authorization.md#3.4%20Maximal%20access%20and%20an%20open%27s%20grant)), `WantOpenID` and `GrantBelongsToOpen` (capabilities, below), create GUID and app instance, reclaim, the owner of opens and its sequence, a reconnect's match, a snapshot token, the parent and name it resolves through, `CreateArgs` for a create / the `OpenRef`, the `File`, `MaximalAccess`, the grant given, `Confirm` (the owner must confirm first, [RFC 14 §2.8](rfc-14-open-state.md#2.8%20Owner%20sequences)), `Created`, and the parent's `WCC` when it created |
+| `OpenRequest`, `OpenResult` | disposition, access, deny, the caching grant wanted, durability, delete on close, `Backup` (the open asks for backup or restore intent: it is marked privileged when the caller is privileged, [RFC 7 §7.4](rfc-7-namespace-metadata.md#7.4%20The%20identity%20arrives%20resolved), and otherwise opens unprivileged), `MaximumAllowed` in its access (SMB's `MAXIMUM_ALLOWED`, which the service resolves to `G`, with the open's privilege on a backup intent, [RFC 19 §3.4](rfc-19-authorization.md#3.4%20Maximal%20access%20and%20an%20open%27s%20grant)), the open's `Caps`, the call's, of which open state reads `WantOpenID` and `GrantBelongsToOpen` (below), create GUID and app instance, reclaim, the owner of opens and its sequence, a reconnect's match, a snapshot token, the parent and name it resolves through, `CreateArgs` for a create / the `OpenRef`, the `File`, `MaximalAccess`, the grant given, `Confirm` (the owner must confirm first, [RFC 14 §2.8](rfc-14-open-state.md#2.8%20Owner%20sequences)), `Created`, and the parent's `WCC` when it created |
 | `AttrChange` | `metadata.Attrs` plus `Guard *time.Time` (a ctime guard, [RFC 20 §2.4](rfc-20-adapters.md#2.4%20Protocol%20details%20that%20stay%20in%20the%20adapter)), `DeleteOnClose *bool` and `Suspend`, `Resume` time masks — the last two only through an open |
 | `Access` | an access mask in RFC 7's terms ([RFC 7 §7.7](rfc-7-namespace-metadata.md#7.7%20What%20a%20caller%20may%20be%20asked%20for%2C%20and%20what%20removing%20a%20name%20needs)), plus `MaximumAllowed` (`0x02000000`, SMB's `MAXIMUM_ALLOWED`), which only `OpenRequest.Access` carries and §5.3 resolves to `G` before any check |
 | `WCC` | `{Before *File; After File}`: one object's attributes either side of a mutation, from one hold of its accept lock; when `Before` is nil is [§5.7](#5.7%20GetAttr)'s |
 | `CreateResult`, `UnlinkResult`, `RenameResult` | `{Handle; File; Dir WCC}`; `{Dir WCC}`; `{From, To WCC; Moved *WCC}` — `Moved` when the moved file's own attributes changed |
 | `ShareRef`, `ShareInfo` | a share named as the client sent it, an NFS path or an SMB name; the zero value is the pseudo-root / a share's name, `Flavors []AuthFlavor`, comment, `Hidden`, the root's `MaximalAccess`, computed for `c.ForOpen(false)` as an open's is ([§5.3](#5.3%20Open%20and%20close)), so for a call that does not set `PrivilegeOnEveryCall` it leaves out what only privilege grants, and the share policy's SMB flags (`ExportPolicy.SMB`: encrypt, continuously available, [RFC 16](rfc-16-metadata-store.md)) |
 | `Change`, `Op` | one change a watch reports; the operation an event or metric names |
-| `ClientInfo`, `ClientStatus`, `ClientRecord` | what `Propose` and `Connect` register — protocol (the record's kind, which keys its name and which no rule compares), name, boot, whether state protection is on, `ClientIsMachine` (a capability, below), how the client recovers (`Recovery`), the adapter's own bytes, and for `Connect` the `*Proposal` it confirms (nil for SMB and NLM, which confirm in one step); what `Renew` reports (§3.1); RFC 14's `Client`, aliased, as `Record` and `AddSession` return it |
+| `ClientInfo`, `ClientStatus`, `ClientRecord` | what `Propose` and `Connect` register — protocol (the record's kind, which keys its name and which no rule compares), name, boot, whether state protection is on, `Caps`, the adapter's, of which `ClientIsMachine` is read here (below), how the client recovers (`Recovery`), the adapter's own bytes, and for `Connect` the `*Proposal` it confirms (nil for SMB and NLM, which confirm in one step); what `Renew` reports (§3.1); RFC 14's `Client`, aliased, as `Record` and `AddSession` return it |
 
 **The service acts on what the caller states, never on its protocol.** A rule
-that differs between clients reads a capability the request states, a field of
-`Call`, of `OpenRequest` or of `ClientInfo` that the adapter sets from what its
-protocol does. The filesystem **MUST NOT** read `Call.Protocol` or a client
-record's kind in any rule; an adapter **MUST** set a capability from what its
-protocol does, never from a field of the request. The zero
-value of every capability is the narrower behaviour, so `Call{}` is the
-narrowest call, a capability left unset fails closed, and each capability
-changes only the rule it names. Most are fields the requests already carry;
-six exist only as capabilities. SMB sets four, NLM sets `HostCall`,
-`PrivilegeOnEveryCall` and `ClientIsMachine`, MOUNT sets `HostCall` and
-`PrivilegeOnEveryCall`, and NFS sets `PrivilegeOnEveryCall` alone:
+that differs between clients reads a capability the adapter states, one bit of
+a single `Caps` value that `Call`, `OpenRequest` and `ClientInfo` each carry and
+RFC 14's `Caller` receives whole, never copied flag by flag. The filesystem
+**MUST NOT** read a client record's kind in any rule, and `Call` carries no
+protocol; an adapter **MUST** state the one profile below for its protocol,
+never a value built from a field of the request. The zero value of every
+capability is the narrower behaviour, so `Caps(0)` is the narrowest caller, a
+capability left unset fails closed, and each capability changes only the rule
+it names. Each rule reads its capability in one named place, a method of the
+type that owns the rule (`Caller.keepsNames` reads `OpenFilesKeepNames`), so
+a search for `Has(OpenFilesKeepNames)` finds every rule that reads it.
+Per-request intents an adapter does not fix, backup intent and a lease key
+among them, stay ordinary request fields.
 
-| Capability | Set by | What the service does differently |
+```go
+type Caps uint16
+
+const (
+	PrivilegeOnEveryCall Caps = 1 << iota // a privileged caller's privilege counts on every call, not only through a backup-intent open
+	OpenFilesKeepNames                    // an open name keeps it: a rename over an open file, or of a directory with an open made through it, is refused
+	WantOpenID                            // each open is issued an OpenID that names it from then on
+	GrantBelongsToOpen                    // a grant asked with no lease key belongs to its open alone, an oplock
+	ClientIsMachine                       // the client is a whole machine its users share: its record names no owner
+	HostCall                              // the call comes from a host's lock or mount service, which proves no user
+)
+
+func (c Caps) Has(x Caps) bool // every bit of x is set
+func (c Caps) String() string  // the set bits, short names joined by "|", "" for none: "keep-names|open-id|oplock|machine"
+
+// The profile each adapter states, declared once beside Caps:
+var (
+	NFSv3Caps = PrivilegeOnEveryCall
+	NFSv4Caps = PrivilegeOnEveryCall
+	MountCaps = PrivilegeOnEveryCall | HostCall
+	NLMCaps   = PrivilegeOnEveryCall | ClientIsMachine | HostCall
+	SMBCaps   = OpenFilesKeepNames | WantOpenID | GrantBelongsToOpen | ClientIsMachine
+)
+```
+
+NSM's restart notice names no share and is sent under `NLMCaps`. MOUNT
+states `MountCaps` on `MNT` and `EXPORT` alone, and `NFSv3Caps` otherwise.
+
+| Capability | Profiles | What the service does differently |
 | --- | --- | --- |
-| `Call.HostCall` | NLM and NSM, on every call; MOUNT, on `MNT` and `EXPORT` | On a Kerberos-only share, a Linux client's `MNT`, sent as `AUTH_UNIX`, still gets the share's flavours and root handle, and an NLM `LOCK` over `AUTH_SYS` is admitted at `Claimed`; an NFS `GETATTR` over `AUTH_SYS` on the same share is refused ([RFC 21 §6.1](rfc-21-nfs.md#6.1%20NLM), [RFC 21 §6.3](rfc-21-nfs.md#6.3%20MOUNT)). |
-| `Call.PrivilegeOnEveryCall` | NFS, NLM and MOUNT, on every call | A privileged NFS caller's privilege counts on every call. Without it, as over SMB, an `admin` session's `CREATE` of a file whose DACL denies her is refused; with `FILE_OPEN_FOR_BACKUP_INTENT` it opens, and requests through that handle keep the privilege; a tree's and an open's `MaximalAccess` leave out what only privilege grants ([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)). |
-| `Call.OpenFilesKeepNames` | SMB, on every request | While alice-pc holds `profiles/alice/ODFC_alice.vhdx` open, an SMB rename of `profiles/alice/` is refused, and so is an SMB rename that would replace the open file; an NFS `RENAME` of either succeeds ([RFC 14 §9.5](rfc-14-open-state.md#9.5%20Open%20children%20refuse%20an%20SMB%20rename%20or%20delete%20of%20their%20directory)). |
-| `OpenRequest.WantOpenID` | SMB, on every `CREATE` | The open is issued an `OpenID`, which the `FileId`'s persistent half carries; an NFSv4 `OPEN` is named by its stateid and draws none ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). |
-| `OpenRequest.GrantBelongsToOpen` | SMB, on every `CREATE` | A batch oplock covers its one open, and a second open of the file by the same machine breaks it; an NFSv4 read delegation is the client's, covers none of its opens, is not broken by its own client's opens, and never caches handles ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)). |
-| `ClientInfo.ClientIsMachine` | SMB, at a `ClientGuid`'s first authenticated session; NLM, for a host | The record names no owner, so a second user signing in from the same Windows machine joins it; an NFSv4 `EXCHANGE_ID` of the same name from another principal is refused ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). |
+| `HostCall` | NLM; MOUNT on `MNT` and `EXPORT` | On a Kerberos-only share, a Linux client's `MNT`, sent as `AUTH_UNIX`, still gets the share's flavours and root handle, and an NLM `LOCK` over `AUTH_SYS` is admitted at `Claimed`; an NFS `GETATTR` over `AUTH_SYS` on the same share is refused ([RFC 21 §6.1](rfc-21-nfs.md#6.1%20NLM), [RFC 21 §6.3](rfc-21-nfs.md#6.3%20MOUNT)). |
+| `PrivilegeOnEveryCall` | NFSv3, NFSv4, MOUNT, NLM | A privileged NFS caller's privilege counts on every call. Without it, as over SMB, an `admin` session's `CREATE` of a file whose DACL denies her is refused; with `FILE_OPEN_FOR_BACKUP_INTENT` it opens, and requests through that handle keep the privilege; a tree's and an open's `MaximalAccess` leave out what only privilege grants ([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)). |
+| `OpenFilesKeepNames` | SMB | While alice-pc holds `profiles/alice/ODFC_alice.vhdx` open, an SMB rename of `profiles/alice/` is refused, and so is an SMB rename that would replace the open file; an NFS `RENAME` of either succeeds ([RFC 14 §9.5](rfc-14-open-state.md#9.5%20Open%20children%20refuse%20an%20SMB%20rename%20or%20delete%20of%20their%20directory)). |
+| `WantOpenID` | SMB | The open is issued an `OpenID`, which the `FileId`'s persistent half carries; an NFSv4 `OPEN` is named by its stateid and draws none ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)). |
+| `GrantBelongsToOpen` | SMB | A batch oplock covers its one open, and a second open of the file by the same machine breaks it; an NFSv4 read delegation is the client's, covers none of its opens, is not broken by its own client's opens, and never caches handles ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)). |
+| `ClientIsMachine` | SMB, NLM | The record names no owner, so a second user signing in from the same Windows machine joins it; an NFSv4 `EXCHANGE_ID` of the same name from another principal is refused ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). |
+
+The request fields that already carry an intent state the rest:
+
+| Field | Set by | What the service does differently |
+| --- | --- | --- |
 | `OpenRequest.Lease` (a key) | SMB, for a lease request | The grant is held under the key, so the machine's opens under it never break each other; NFS sends no key. |
 | `OpenRequest.Durability` with a timeout | SMB, for a durable or persistent handle | The open survives its connection for the timeout and is found again by its `OpenID` (so it needs `WantOpenID`); NFS asks none. |
 | `OpenRequest.Backup` | SMB, for `FILE_OPEN_FOR_BACKUP_INTENT` | Without `PrivilegeOnEveryCall`, the one open where a privileged caller's privilege counts. |
 | `Commit` through an `OpenRef` of an open | SMB `FLUSH` | A flush across a loss fails once with `ErrLost` (§5.8); an NFS `COMMIT` names no open and learns of a loss from the verifier. |
 | `ClientInfo.Recovery` | every adapter that registers a client | Status or refusal (NFSv4): the client renews a lease. Reconnect (SMB): it holds no lease, must have proved who it is to connect, lists the nodes holding its sessions and is released with its last one. Notice (NLM): it holds no lease and is sent a restart notice ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)). |
 
-`Call.Protocol` stays a label (above). A source test fails on any comparison with
-a protocol kind in the filesystem, open state or `pkg/vfs` (V43).
+A source test fails on any comparison with a protocol kind in the filesystem,
+open state or `pkg/vfs`, and on a `switch` or `if` over a protocol kind that
+builds a `Caps` anywhere (V43); a reviewed golden pins each profile's `String()`.
 
 > decision: capabilities rather than a protocol switch, so every rule names the
 > behaviour it chooses, the service's suite drives each rule with a `Call` and no
@@ -720,7 +756,7 @@ a protocol kind in the filesystem, open state or `pkg/vfs` (V43).
 The rest carry no meaning beyond their shape:
 
 ```go
-type Protocol = protocol.Kind // NFS3, NFS4, NLM, SMB: the client record's kind (RFC 14 §2.1) and a call's label, one enum; no rule compares it
+type Protocol = protocol.Kind // NFS3, NFS4, NLM, SMB: the client record's kind (RFC 14 §2.1), which keys its name; no rule compares it
 type AuthFlavor uint8 // a flavour a share admits: sys, krb5, krb5i, krb5p, ntlm, none
 type Stability uint8  // Unstable, DataSync, FileSync
 type XattrMode uint8  // Create, Replace, Either
@@ -1190,7 +1226,7 @@ type AccessEvent struct {
 	Client     ClientID   // zero for NFSv3
 	Addr       netip.Addr // the client's address
 	Identity   Identity
-	Protocol   Protocol
+	Caps       Caps // the call's, whose String() labels the event
 	Op         Op
 	File       FileID
 	Name       []byte // the name acted on, for namespace operations
@@ -1835,7 +1871,7 @@ the freed file once the clone is answered, off the clone's batch, and the
 engine makes its `CloneOpen` and `CloneClose` holding none
 ([RFC 14 §11](rfc-14-open-state.md#11.%20Interface)). Every table
 call in the sketches below passes `c.Who()`: the `Call`'s client and
-`OpenFilesKeepNames`, the mapped principal, and whether `Call.Session` is set, as RFC 14's `Caller`, and names a file by `keyOf`: its
+`Caps`, the mapped principal, and whether `Call.Session` is set, as RFC 14's `Caller`, and names a file by `keyOf`: its
 share, shard and ID, as RFC 14's `FileKey`. An open is authorised as `c.ForOpen(backup)`: `c`, but privileged only for a
 backup-intent open of a privileged caller unless the call sets `PrivilegeOnEveryCall`, as NFS's
 do ([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)).
@@ -2807,7 +2843,7 @@ Metric names are shown without the deployment's prefix.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| How fast is each operation, per protocol? `outcome` is `ok`, `error` or `delay` | `vfs_op_seconds{op, protocol, outcome}` | histogram |
+| How fast is each operation, per adapter profile? `caps` is the call's `Caps.String()`; `outcome` is `ok`, `error` or `delay` | `vfs_op_seconds{op, caps, outcome}` | histogram |
 | Which errors does each operation answer? | `vfs_errors_total{op, error}`, `error` one of §4.3's neutral errors | counter |
 | How often are clients told to retry, and why? | `vfs_delayed_total{op, cause}` | counter |
 | How often does quota refuse, and how much is reserved? | `vfs_quota_refusals_total{scope}`, `vfs_quota_reserved_bytes` | counter, gauge |
