@@ -364,7 +364,7 @@ type Stored struct {
 }
 
 // Store is what the syncer needs from a backend, declared here and named for
-// that need. The engine's wiring implements it by composing RFC 4's block codec with a
+// that need. The engine implements it by composing RFC 4's block codec with a
 // remote block store: encoding, transforms and verification happen inside it.
 type Store interface {
     // Put encodes the block and streams it to the store. It calls src once,

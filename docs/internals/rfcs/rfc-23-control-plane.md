@@ -413,7 +413,7 @@ store configuration, and the last storage binding to close one releases it.
 the values beside the rows. Where a component's RFC declares a constructor or a
 `Deps` field, the sketch uses that name; where none is declared yet (the remote
 stores, the syncer and the API), it names one. The node builds rows 2 to 5
-through the engine's wiring, `enginewire` ([RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition)), the one
+through its content wiring, `internal/node/content` ([RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition)), the one
 composition path it shares with the engine's checks; the sketch unrolls what the wiring builds.
 
 ```go

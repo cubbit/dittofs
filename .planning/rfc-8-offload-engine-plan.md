@@ -4,16 +4,18 @@
 [`rfc-8-journal-only-engine-plan.md`](rfc-8-journal-only-engine-plan.md) (the **first part**) leaves out.
 Every row of the first part's deferral ledger (its §6.1) whose owner is "RFC 8 second part plan" is
 taken here, each mapped to an epic in §1.1. Also taken over: #5318 (offload composed in the engine;
-four engine known failures wait on it) and #4276 (the syncer and the remote clients composed in the
+four engine known failures wait on it, filed under #5757) and #4276 (the syncer and the remote clients composed in the
 node, deferred by [`rfc-23-control-plane-plan.md`](rfc-23-control-plane-plan.md)'s §6.1). Related
 RFCs, with how far each is in scope:
 - [RFC 2](../docs/internals/rfcs/rfc-2-carver.md), [RFC 3](../docs/internals/rfcs/rfc-3-syncer.md),
   [RFC 4](../docs/internals/rfcs/rfc-4-remote-tier.md) and [RFC 5](../docs/internals/rfcs/rfc-5-transforms.md):
   **only the parts this RFC cannot work without**, their public surfaces, which their own plans build
   ([`rfc-2-carver-plan.md`](rfc-2-carver-plan.md), in #5529, and the RFC 3, 4 and 5 plans written
-  beside this one); this plan merges after #5529, #5530 and #5532: the link resolves, `Store.Put`'s
-  `*Measure` is the RFC 3 plan's D8 (#5530), and RFC 8 §10.4's pin is #5532's `Chain.Pin`, as is its marking of the key records a destroyed master
-  key wraps. This plan composes them; §3.2 names the four points where each surface is agreed.
+  beside this one); this plan merges after #5529, #5530, #5532 and #5774: the link resolves,
+  `Flow.Upload`'s attempt closure is the RFC 3 plan's D8 (#5530), RFC 8 §10.4's pin is #5532's
+  `Chain.Pin`, as is its marking of the key records a destroyed master key wraps, and RFC 0 §1.2's
+  contract rule is #5774's. This plan composes them; §3.2 names the four points where each surface
+  is agreed.
 - RFC 0, 1, 28, 6, 9, 12, 14, 15, 16, 17, 23, 25 and 29: **constraints only**. GC (RFC 9) is planned
   later; this plan builds the shared work scheduler GC will also instantiate (D3), and nothing of GC.
 
@@ -41,10 +43,15 @@ draft. **Defaults used:** none beyond these.
 **Cross-plan contract:** the five offload plans follow one contract, settled with the user after a
 joint review: pieces with no caller in v1.1 are deferred and the RFC says they land with their first
 caller; component packages are `pkg/carver`, `pkg/syncer`, `pkg/remote` (codec at
-`pkg/remote/codec`) and `pkg/transform`; this plan owns the sync points of §3.2. **RFC amendments in
-this plan's pull request:** RFC 0 §1.2 names two allowed import edges, the engine's wiring to the four
-components and the codec to the transforms, and I6 follows it; RFC 8 §2.1 and §2.8 name
-`enginewire`; RFC 8 §2.8 and §6.1.1 name the scheduler's package `pkg/workqueue`, and RFC 9, RFC 23
+`pkg/remote/codec`) and `pkg/transform`; this plan owns the sync points of §3.2. **Import rule:**
+RFC 0 §1.2 as #5774 amends it, not this pull request. A component imports another component's
+contract, never its implementation. The two composers, the node with its content wiring
+(`internal/node/content`) and the filesystem service, import implementations. The import test is
+transitive and binds production code only; tests may import other components' implementations to
+run against real collaborators. **RFC amendments in this plan's pull request:** RFC 8 §2.1 and §2.8
+name the node's content wiring, `internal/node/content`, §2.8 has the engine and the codec import
+only the `pkg/transform` root, RFC 5's contract, with the chain injected by the wiring, and §12.1
+calls the engine's aliases contract imports; RFC 8 §2.8 and §6.1.1 name the scheduler's package `pkg/workqueue`, and RFC 9, RFC 23
 and the glossary follow; RFC 8 §6.1.1 lands `Rate` pacing, with the pace `Throttled` lowers, with GC's
 sources; §12.1 lands `PreWarm` with its first caller, an operator's pre-warm action no RFC specifies
 yet; §15.4's B1 measures against raw puts on the same store in runs interleaved with it; §2.5 makes the lost-journal
@@ -55,22 +62,19 @@ the attempt then abandoned, with a destroyed master key covered through RFC 5 Ap
 and a `decision:` on an undeclared loss; Mark leaves an attempt's
 extents dirty once its material is reported destroyed, the reseed clears a destroyed material's bits
 before eviction, and a pass refuses at Intent under destroyed current material, each with its §15.1
-leg; RFC 14's import rule names the composition root and the engine's wiring beside the filesystem
-service; RFC 24 §6.2 states the read-ahead decode's ceiling in a `decision:`, and §7.2 applies its two
+leg; RFC 14's import rule names the two composers, the node with its content wiring and the
+filesystem service; RFC 24 §6.2 states the read-ahead decode's ceiling in a `decision:`, and §7.2 applies its two
 rules once the node passes the syncer the transfers pool's size; RFC 8 §2.8 and §12.1's code
-sketch name `pkg/engine` and `pkg/journal`, RFC 9 puts the deleted v1 GC in the past tense, the
-glossary names the storage-v2 and planned paths, and RFC 3 §1.3's `Store` comment names the
-engine's wiring; RFC 0 §1.2 allows a
-component's tests to import another's in-memory implementation; RFC 24 §6.2 lists read-ahead as
+sketch name `pkg/engine` and `pkg/journal`, RFC 9 puts the deleted v1 GC in the past tense, and the
+glossary names the storage-v2 and planned paths; RFC 24 §6.2 lists read-ahead as
 request-path CPU, which takes no token; RFC 8 §6.3's Assemble hands the fold zero-ref, per-block and
 per-file keys, §6.7's Carve state ends a stretch, as real, before a chunk whose replaced refs' keys
 would take its commit past `K` (RFC 2 P2 and §2.4 as #5529 amends them), so Commit is one
 transaction per block, always, and a chunk re-offered after a commit landed is carved again within
 `K`, and its "commit within `K`" check gains both cases; RFC 6 §5.2 refuses to open a store whose `K`
 cannot hold the commit of one 1-byte chunk, which RFC 2 P2's progress argument cites, with RFC 6
-§11.2's "K floor" row; RFC 0 §1.2 lists the journal, the metadata store and open state
-among `enginewire`'s edges, and RFC 8 §2.1 names its two importers, the node and the engine's test
-fixture, which RFC 23 §2.1's sketch follows.
+§11.2's "K floor" row; and RFC 8 §2.1 names the content wiring's two importers, the node and the
+engine's test fixture, which RFC 23 §2.1's sketch follows.
 
 ---
 
@@ -93,7 +97,7 @@ deferred to the epic that takes it, and the first-part stand-in it withdraws:
 | `Carver`, `Syncer`, `Refs` in `Deps`; start steps 6 and 7 | 15, 16, 19 | — |
 | `Gate` in `Deps` | §6.1, RFC 12 | — |
 | Clone's adoption of carved refs | 17 | the copy of every journal-held run |
-| Eviction, pacing, the pressure flag; §10.1, §10.2.1, §10.4 | 18 | the `decision:` that dirty bytes free nothing, and its own row's no-space half (epic 18; #5318's four entries) |
+| Eviction, pacing, the pressure flag; §10.1, §10.2.1, §10.4 | 18 | the `decision:` that dirty bytes free nothing, and its own row's no-space half (epic 18; #5757's four entries) |
 | The metadata reconcile, with `Bind` taking over its handle | 19 | — |
 | Repack from the eviction loop | 18 | its epic 7's `ponytail:` on repack at a refusal only |
 | Removal phase 2 and its prune on the shared scheduler | 14 | its epic 5's `ponytail:` on one loop per journal |
@@ -117,11 +121,11 @@ series, RFC 2 §2.4's two exceptions with RFC 8 §6.7's widening, recording chun
 reporting a change as a migration, the Intent step's namespace refusal and the nonce's source, and
 RFC 2 §5.3 with §10.1's consumer checks (epics 15 and 16).
 
-**Dependency limits.** The engine calls the four components only through interfaces it declares
-(RFC 8 §2.1), so each middle epic builds against those declarations and against components that pass
+**Dependency limits.** The engine calls the four components only through interfaces, the ones it
+declares (RFC 8 §2.1) or their contracts' (rule 7), so each middle epic builds against those and against components that pass
 their own conformance suites. What this part cannot do before the components exist is finish epics 15 and 17, whose
-tests run over the real carver, RFC 3's syncer with its in-memory store and RFC 5's chain over its in-memory
-`Materials` (D4), the material-dependent parts of epics 18 and 20, run a pass end to end
+tests run over the real carver, RFC 3's syncer over RFC 4's in-memory store and RFC 5's chain over
+its in-memory `keys.Provider` (D4), the material-dependent parts of epics 18 and 20, run a pass end to end
 (S3) or compose the node (epic 21). The journal's offload half is not built: on `feat/storage-v2`
 its `Offload`, `OffloadMany`, `MarkOffloaded`, `Unmark` and `Release` answer `ErrNotImplemented`, and
 `DropOlder`, `Reconciled` and `AcknowledgeUnreadable` do not exist (the journal plan's epics 9b and
@@ -168,10 +172,12 @@ registered, `engine-conformance` (`pkg/engine/conformance`, tag `engine_conforma
 `known: test/engine/known.yaml`, `tier: pr`, in group `engine`), so no new suite, tag or group is
 registered and RFC 8's suites paragraph needs no change. Each red row is one `known.yaml` entry as
 `CLAUDE.md` "By kind" lists its fields, with `issue:` the epic issue of the epic that turns it green;
-those issues exist before epic 12's pull request lands (§1.5's instruction). The four entries #5318
-holds since #5491 (`TestRFC8A_RetryLaterAtTheShareLimit`, `TestRFC8A_Clone`,
-`TestRFC8A_CloneResumedAtAFullLimit`, `TestRFC8B_SharedJournal`) are re-pointed to epic 18's issue,
-whose settled answer for a put-healthy store turns them green.
+those issues exist before epic 12's pull request lands (§1.5's instruction). Four entries stay as
+they are: `TestRFC8A_RetryLaterAtTheShareLimit`, `TestRFC8A_Clone`,
+`TestRFC8A_CloneResumedAtAFullLimit` and `TestRFC8B_SharedJournal` already name #5757 ("the share
+limit and clone rows pass with the offload", under roadmap epic #5487), as the first part's epic 10
+does. They are not re-pointed. Epic 18's settled answer for a put-healthy store turns them green,
+and the pull request that does so closes #5757 (`Closes #5757`).
 
 **The scenario catalogue, by source.** Only rows the first part does not catalogue whole, or catalogues
 "adapted" with the rest sent here.
@@ -219,8 +225,8 @@ green with epic 21 or 22 (§6 point 3).
 syncer and `Refs`. Until S5 delivers the components, a row that needs one fails at one named check, the
 fixture's refusal of a missing component, as the first part's rows failed at the journal's `Init`; the
 epic that first calls a component swaps the real one in (epic 15 the carver and RFC 5's chain over its
-in-memory `Materials`, epic 16 RFC 3's syncer over its in-memory store with its fault wrapper, epic 18
-the in-memory `Materials`' destroyed-material notice and its key-record view, epic 19 `Refs`), and in
+in-memory `keys.Provider`, epic 16 RFC 3's syncer over RFC 4's in-memory store through `codec.Store`,
+under RFC 4's fault wrapper, epic 18 the in-memory `keys.Provider`'s destroyed-material notice and its key-record view, epic 19 `Refs`), and in
 the same change rewrites the
 `message:` of every row still red to the failure it now meets, since RFC 29 §4.7 matches it as a
 substring.
@@ -285,14 +291,16 @@ fault-injecting `kv.KV` and the profiling harness are the first part's.
 In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 (D1).
 
 1. **Independent unit tests.** Each epic carries its own unit tests, over the first part's in-memory
-   journal, the real carver (a pure function), RFC 3's real syncer over RFC 3's in-memory store, RFC
-   5's real chain over `materialtest`'s in-memory `Materials`, with its destroyed-material notice,
-   salvage-key wrap and key-record view, and `kvstore` over the in-memory `kv.KV`, each a kind the
-   `CLAUDE.md` "Writing tests" section allows.
+   journal, the real carver (a pure function), RFC 3's real syncer over RFC 4's in-memory store
+   (`pkg/remote/memory`) through RFC 4's `codec.Store`, under RFC 4's fault wrapper, RFC 5's real
+   chain over `keystest`'s in-memory `keys.Provider`, with its destroyed-material notice, salvage-key
+   wrap and key-record view, and `kvstore` over the in-memory `kv.KV`, each a kind the `CLAUDE.md`
+   "Writing tests" section allows.
    Epic 11 declares no internal interface for a test to stand in for (rule 12). The pipeline's tests in
    `offload/` import only those, as RFC 8 §2.8 requires, and build the carver, RFC 3's syncer over
-   its in-memory store and RFC 5's chain directly, not through `enginewire`: `enginewire` imports the engine, which
-   imports `offload/`, so an in-package test importing it is an import cycle (rule 7).
+   RFC 4's in-memory store and RFC 5's chain directly, not through the node's content wiring
+   (`internal/node/content`): the wiring imports the engine, which imports `offload/`, so an
+   in-package test importing it is an import cycle (rule 7).
 2. **Fuzz the key and ref decoders the queue's rebuild reads.** Epic 14's `Rebuild` reads the
    unfinished-removal index and the refs a removal batch walks, and §15.2's "§8.1 removal wedge" feeds
    it an undecodable ref: a target per decoder asserts no panic, lengths inside the buffer, and decode,
@@ -326,25 +334,44 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
    §4.7 fails a run whose known failure passes), a component plan's or the journal's pull request
    included. A change that makes a red row fail at a later check rewrites its `message:` in the same
    change.
-7. **v2 ignores v1, and components import only what amended RFC 0 §1.2 names.** The first part's
-   import walk (`pkg/engine/imports_test.go`) covers every package of `pkg/engine`; it walks only
-   that tree, so epic 13 adds `pkg/workqueue`'s own walk with the package, refusing every component
-   and every v1 path. The engine's walk keeps refusing `pkg/vfs`, the v1 metadata service and the v1 block tier, and
-   allows `enginewire` alone to import `pkg/carver`, `pkg/syncer`, `pkg/remote`, `pkg/remote/codec`
-   and `pkg/transform`, as RFC 0 §1.2 and its I6 name. The allowlist names each package an exception
-   applies to, test packages included. Each entry is flipped with its first consumer (rule 12): epic 15
-   the carver, RFC 3's syncer with its in-memory store and fault wrapper, and `pkg/transform` with
-   `materialtest` for `offload/`'s tests, which import them directly (rule 1), and the carver and
-   the transforms for `enginewire`, which builds them for the fixture; epic 16 the syncer and its
-   in-memory store for `enginewire` and for its external tests, where the RFC 3 plan's B5 runs behind
-   `syncer_bench`; epic 21 the remote tier and its codec.
+7. **v2 ignores v1, and the engine imports only what RFC 0 §1.2 allows.** RFC 0 §1.2, as #5774
+   amends it: a component imports another component's contract, never its implementation; only the
+   two composers, the node with its content wiring (`internal/node/content`) and the filesystem
+   service, import implementations. The check is transitive, so a library cannot carry an
+   implementation in, and binds production code only: the engine's tests may import other
+   components' implementations to run against real collaborators (rule 1). The first part's import
+   walk (`pkg/engine/imports_test.go`) covers every package of `pkg/engine`; epic 13 adds
+   `pkg/workqueue`'s own walk with the package, refusing every component and every v1 path. #5775
+   makes the engine's walk transitive and moves `pkg/engine/enginewire` to `internal/node/content`,
+   which drops the walk's wiring exception; this plan builds on both. The engine's production code
+   then imports the standard library, libraries outside the set, and only these contracts, each
+   flipped into the allowlist with its first consumer (rule 12):
+   - `pkg/metadata/entity`, RFC 16 §2's value types, already imported;
+   - `pkg/vfs/vfserr`, the filesystem's error values (RFC 8 §12.1), already imported;
+   - `pkg/remote`, RFC 4's contract (`Name`, `Direction`, `Meter`, the errors), epic 15;
+   - the `pkg/transform` root package, RFC 5's contract (the `Chain` interface with its pin and
+     release, the value types, the errors), and `keys.Provider` with `MaterialID` and the material
+     errors, epic 15. The RFC 5 plan's epic 1 makes the root a pure contract and moves the chain and
+     its stages into subpackages (`chain`, `compress`, `encrypt`); the codec imports only the root,
+     and the node's content wiring builds the concrete chain and injects it (D4);
+   - RFC 3's contract (`StoreID`, the flow's value types and errors), epic 16, and RFC 2's (the
+     carver's value types), epic 15, each in the unit its plan keeps apart from the implementation.
+
+   No import is a named exception. A package that still holds contract and implementation together,
+   the journal (`pkg/journal`), `pkg/metadata/kvstore`, `pkg/settings`, `pkg/metrics` and
+   `pkg/health` today, counts as an implementation, so only the composers import it. The engine's
+   imports of the journal, `kvstore` and `pkg/health` on `feat/storage-v2` are #5775's to cut, by
+   splitting their contracts out; no epic here adds one. Where the engine needs a setting, a metric
+   sink or a watchdog loop, the composer passes a value or an interface the engine declares (D6,
+   epics 13 and 20). The walk refuses `pkg/vfs`, open state, `pkg/remote/codec`, every remote store,
+   the chain's subpackages, the v1 metadata service and the v1 block tier in production code.
 8. **Real dependencies for properties of those dependencies**, as `CLAUDE.md`'s "Writing tests" says.
    Here: the real journal on a real directory with its crash seam, for durability, recovery and the
    offloaded-bit ledger; `kvstore` for what an offload, intent or removal transaction commits and
    conflicts on; a real S3-compatible endpoint, the LocalStack with HTTPS in `integration` that the RFC
    4 plan's epic 3 brings (a test reads `LOCALSTACK_HTTPS_ENDPOINT`), for remote semantics, a test that needs it waiting on it and never counting
-   a skip as coverage; RFC 3's in-memory store only where
-   RFC 3's suite holds it.
+   a skip as coverage; RFC 4's in-memory store only where
+   RFC 4's suite holds it.
 9. **Code comment conventions** (`CLAUDE.md`, "Code comments"). RFC 8's markers go at the sites that
    implement them: §6.1's prune `ponytail:` and removal-key `decision:`, §6.1.1's no-borrowing
    `decision:`, §6.3's five-failures `decision:`, §7.8's quarter `decision:`, §9.1's clone-copies
@@ -377,11 +404,11 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
 | 18 | **Local space with offload** | eviction loop, `evict`, `repackDue`, refusal steps 2 and 3 with the share's pass, put-health causes, pacing and pressure, destroyed material, the commit under destroyed material | 8 | 30 | B | 19, 21 |
 | 19 | **Restart and the metadata reconcile** | start steps 6 and 7, the reseed and its gates, re-offer, a lost journal served again, the reconcile and `Bind`'s takeover, the `Census` view | 12 | 44 | C | 21 |
 | 20 | **Health, drain and salvage** | per-direction health and drift, the offload conditions, §11.4 and `WaitOffloaded`, the salvage export | 6 | 18.5 | A | 21 |
-| 21 | **Integration: the node composes offload** | the store adapter and its suite, clients per store configuration, the components' collectors, settings sections, keys and alerts, `materialtest` against the RFC 4 store, the CPU token, the import flips, system scenarios; S7 | 11 | 39.5 | team | 22 |
+| 21 | **Integration: the node composes offload** | a `codec.Store` per store registered with its probe key, `syncertest`'s Group A suite against LocalStack, clients per store configuration, the components' collectors and health sources, settings sections, keys and alerts, the key-record suite, the CPU token, the restart-gated namespace, system scenarios; S7 | 10 | 36 | team | 22 |
 | 22 | **E2E green** 🔀 | burn `known.yaml` down, the soak with remote faults, B1 to B4, B6, B8, and B5, B7, B9 with offload; provisional (§6 point 2) | 7 | 21.5 | team | release |
-| | **Total** | | **90** | **298.25** | | |
+| | **Total** | | **89** | **294.75** | | |
 
-**Plan estimate: 90 subtasks, 298.25 man-days.**
+**Plan estimate: 89 subtasks, 294.75 man-days.**
 
 RFC 8 is 4,291 lines, which gives N = 11, clamped to 8. This part covers about half of it in eight
 cohesive areas, matching N: the scheduler, the queue, the pipeline, passes, remote reads, local space,
@@ -426,8 +453,8 @@ flowchart TD
   E17 -. "speculation cancelled on pressure" .-> E18
   E17 -. "track C's order" .-> E19
   S5(["S5 offload components built"]):::sync -. "carver, syncer" .-> S3
-  S5 -. "carver, RFC 3's syncer and in-memory store, RFC 5's chain and in-memory Materials" .-> E15
-  S5 -. "RFC 3's in-memory store" .-> E17
+  S5 -. "carver, RFC 3's syncer, RFC 4's in-memory store, RFC 5's chain and in-memory keys.Provider" .-> E15
+  S5 -. "RFC 4's in-memory store" .-> E17
   S5 -. "RFC 5's notice and key-record view" .-> E18
   S5 -. "RFC 5's salvage-key wrap" .-> E20
   S6(["S6 journal offload half built"]):::sync -. "Offload, Release, Unmark" .-> S3
@@ -437,7 +464,7 @@ flowchart TD
   E18 & E19 & E20 --> S4(["S4 offload complete in the fixture"]):::sync
   S4 --> E21["E21 Integration"]
   S5 -. "RFC 4's store and codec (R4-S3)" .-> E21
-  E21 --> S7(["S7 store adapter and node composition built"]):::sync --> E22["E22 E2E green 🔀"]:::sync
+  E21 --> S7(["S7 node composition built"]):::sync --> E22["E22 E2E green 🔀"]:::sync
   S6 --> E22
   classDef blocker stroke:#c0392b,stroke-width:3px
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
@@ -452,13 +479,13 @@ documents and merged surfaces, not on #5484.
 | Point | Name | What it is |
 | --- | --- | --- |
 | S1a | carver interface agreed | = the RFC 2 plan's S1. RFC 2 folds its open assembler inputs (key budget, lookup, all-zero flag, age) into its epic 1, so its S1 is final. |
-| S1b | syncer interface agreed | = the RFC 3 plan's S1: a joint review of the written signatures with this plan's authors, `Store.Put(ctx, name, src, m *Measure) (Stored, error)` among them (the RFC 3 plan's D8). No compile check. |
+| S1b | syncer interface agreed | = the RFC 3 plan's S1: a joint review of the written signatures with this plan's authors, `Store` (a get and a probe) and `Flow.Upload(ctx, name, size, attempt)` with its attempt closure among them (the RFC 3 plan's D8). No compile check. |
 | S1c | remote store contract agreed | = the RFC 4 plan's S1, including the codec's encode and decode calls. |
 | S1d | transform pipeline agreed | = the RFC 5 plan's S1, including the chain pin and release calls, the salvage-key wrap and the destroyed-material notice. |
 | S3 | a pass runs end to end | internal to this plan; the RFC 2 plan's S3 cites it. |
 | S5 | offload components built | the four components themselves, in two halves (below). |
 | S6 | journal offload half built | the journal plan's epics 9b and 7b. |
-| S7 | store adapter and node composition built | epic 21 done: the RFC 3 store adapter passes `syncertest`'s conformance suite in `integration`; remote stores held one client per store configuration, ref-counted; each component's collectors and alert rules registered in the node. |
+| S7 | node composition built | epic 21 done: `syncertest`'s Group A suite runs in `integration` with an opener returning the S3 store and `codec.Store` over it, against LocalStack behind a fault proxy; remote stores held one client per store configuration, ref-counted; each component's collectors and alert rules registered in the node. |
 
 What each point means for this plan's epics:
 
@@ -466,8 +493,7 @@ What each point means for this plan's epics:
   review; epic 11 folds what was agreed. S1a fixes `Cut`, its settings per namespace with one
   `Deps.Carver` (RFC 8 §2.6), the chunk ID under the namespace's key (RFC 2 §4.3), the block name and
   its nonce (RFC 2 §4.2) and the assembler's fold (RFC 2 §5.1). S1b fixes the calls of RFC 3 §1.3 the
-  engine makes, the errors and denial causes the refusal table reads (RFC 8 §10.2). RFC 3's in-memory store and its fault wrapper are not part of S1b: they land at the RFC 3 plan's S2 (its epic 2), which S5 covers. S1c fixes the calls the store adapter composes and the mapping of
-  RFC 4 §4.8's errors onto RFC 3's values. S1d fixes the chain, its ID and pin (RFC 5 §2.8), the
+  engine makes, the errors and denial causes the refusal table reads (RFC 8 §10.2). The syncer keeps no store of its own: its tests run over RFC 4's in-memory store and fault wrapper, which land with the RFC 4 plan's R4-S2 and the RFC 3 plan's S2 (its epic 2), which S5 covers. S1c fixes `codec.Store`'s get, probe and `NewPut`, the `*Put` its attempt runs, and RFC 4 §4.8's errors, which the syncer and the engine read as they are. S1d fixes the chain, its ID and pin (RFC 5 §2.8), the
   material errors (RFC 5 §2.7), the chunk-ID key (RFC 5 Appendix B.2), the destroyed-material notice
   (RFC 8 §10.4) and the salvage-key wrap (RFC 1 §3).
 - **S1 🔀 interfaces frozen** (this plan's S1: the end of epic 11, after S1a to S1d). Nothing in epics 13 to 20 starts
@@ -476,18 +502,19 @@ What each point means for this plan's epics:
   `feat/storage-v2` and are listed in `known.yaml`. Epics 13, 15 and 17 start here.
 - **S3 🔀 a pass runs end to end** (inside track B, the end of epic 16, over S5's carver and RFC 3's
   syncer and S6's `Offload`). A file written through the journal is offered, carved, packed, put
-  through a flow to RFC 3's in-memory store, committed and reported offloaded. The RFC 2 plan names this point its S3.
+  through a flow to RFC 4's in-memory store, committed and reported offloaded. The RFC 2 plan names this point its S3.
 - **S4 🔀 offload complete in the fixture** (epics 13 to 20 done). Every method of §1.3 has its
   behaviour, and every row whose component and journal call exist is green. Epic 21 starts here.
 - **S5 🔀 offload components built** (external: the RFC 2 to RFC 5 plans' implementation epics). Its
-  first half: the carver and assembler, RFC 3's syncer with its in-memory store, and RFC 5's chain over
-  its in-memory `Materials` (the RFC 5 plan's epics 2 and 3) gate epic 15's finish and S3; RFC 3's
-  in-memory store gates epic 17's; the in-memory `Materials`' destroyed-material notice and the
+  first half: the carver and assembler, RFC 3's syncer, RFC 4's in-memory store with `codec.Store`,
+  and RFC 5's chain over its in-memory `keys.Provider` (the RFC 5 plan's epics 2 and 3) gate epic 15's
+  finish and S3; RFC 4's in-memory store gates epic 17's; the in-memory `keys.Provider`'s
+  destroyed-material notice and the
   key-record view with its `kvstore` implementation (the RFC 5 plan's epics 6 and 8) gate epic 18's;
   its salvage-key wrap (the RFC 5 plan's epics 2 and 8) gates epic 20's. Its second half: RFC 4's S3
-  store and codec, the RFC 4 plan's R4-S3 (its epics 3 to 6, the capability check included), gate
-  epic 21.
-- **S7 🔀 store adapter and node composition built** (end of epic 21). The RFC 3 and RFC 4 plans'
+  store and the codec over it, the RFC 4 plan's R4-S3 (its epics 3 to 6, the capability check
+  included), gate epic 21.
+- **S7 🔀 node composition built** (end of epic 21). The RFC 3 and RFC 4 plans'
   epics that need a composed node, and epic 22, start here.
 - **S6 🔀 journal offload half built** (external: the journal plan's epics 9b and 7b). 9b's `Offload`,
   `OffloadMany`, `MarkOffloaded`, `Unmark` and `Release` gate S3, eviction (epic 18) and the reseed's
@@ -510,7 +537,7 @@ What each point means for this plan's epics:
 - **E15 ⛔** blocks E16: the engine runs the pipeline it builds.
 - **E16 ⛔** blocks E18 (eviction needs offloaded bits, and the refusal table's third step offloads at
   once), and partly E17 (the carved row fetches through the flow a binding opens at `Bind`; until then
-  epic 17's tests open a flow over RFC 3's in-memory store themselves), E19 (the reseed gates the
+  epic 17's tests open a flow over RFC 4's in-memory store themselves), E19 (the reseed gates the
   re-offer) and E20 (pass outcomes feed offload health).
 - **E17** blocks E18 partly (speculation is cancelled on pressure), and E19 through track C's order
   only.
@@ -518,7 +545,7 @@ What each point means for this plan's epics:
 - **E18, E19 and E20** block E21 through S4.
 - **E21** blocks E22 through S7: the burn-down and the benchmarks run over the composed node.
 - **S5 (external)** blocks E15's and E17's finish (their tests run over the carver, RFC 3's syncer
-  with its in-memory store and RFC 5's chain, D4), E18's and E20's material legs (RFC 5's notice,
+  over RFC 4's in-memory store and RFC 5's chain, D4), E18's and E20's material legs (RFC 5's notice,
   key-record view and salvage-key wrap), S3, and with it E16's finish, and E21 (R4-S3).
 - **S6 (external)** blocks S3, E18's and E19's rows over the real journal, and E22.
 
@@ -539,13 +566,13 @@ What each point means for this plan's epics:
   source (the pass registry, a binding's flow opened at `Bind`) fill the gap. Track A reaches epic 20 at about 35 man-days,
   and epic 16's pass outcomes land about 20 man-days later; epic 20's drain metrics, its `WaitOffloaded`
   over the journal's dirty figures and the salvage export, which need no pass, fill that wait, and
-  track A then takes the store adapter's preparation for epic 21 (D5) once S1c and S1d are agreed.
+  track A then takes the preparation of epic 21's store composition (D5) once S1c and S1d are agreed.
   Track C's epic 19 waits on epic 14's tenants, epic 16's passes and epic 18's eviction loop, which
   start step 7 starts; it starts with the reseed's marks and unmarks over the in-memory journal, which
   need none of them, and takes start step 7 last.
 - **The critical path** runs E11, E12, E13, E14, E16, E18, then E19's start step 7, S4, E21 and E22:
   track A's 35 man-days to the offload source outlast epic 15's 32.5. S5's first half (the carver, RFC 3's
-  syncer and its in-memory store, RFC 5's chain and in-memory `Materials`) and S6 lie on it whenever they land after epic 14 ends, since epic
+  syncer, RFC 4's in-memory store, RFC 5's chain and in-memory `keys.Provider`) and S6 lie on it whenever they land after epic 14 ends, since epic
   15 and S3 wait on them.
 
 ## 4. Implementation decisions
@@ -568,9 +595,9 @@ pkg/engine/                             the first part's package
   offload/                              E15: the pipeline state machine, Capture to Mark (RFC 8 §2.8)
   enginetest/                           E12: component options; E15, E16, E19: real components
   conformance/                          E12: the rows
-  enginewire/                           E15, E16: the carver, the transforms and the syncer built for the fixture; E21: stores, the store adapter (D5), clients per store configuration
 pkg/metadata/kvstore/                   E19: Inspect.Refs, Existence.Versions
 internal/node/                          E21: build and stop order, keys, alert rules
+  content/                              the node's content wiring, moved from pkg/engine/enginewire by #5775; E15, E16: the carver, the transforms and the syncer built for the fixture; E21: stores, a codec.Store per store (D5), clients per store configuration
 test/engine/known.yaml                  E12
 ```
 
@@ -591,17 +618,24 @@ test/engine/known.yaml                  E12
   Kubernetes client-go's workqueue keeps a key in one worker at a time and marks a key posted while it
   runs to run again, with per-item exponential backoff (from memory). Epic 13.
 - **D4 — the pipeline's tests compose real components.** `offload/` is tested over the real carver,
-  RFC 3's syncer over its in-memory store and fault wrapper, RFC 5's chain over `materialtest`'s
-  in-memory `Materials`, `kvstore` over the in-memory `kv.KV` and the in-memory journal, each held to its own suite, as RFC 8 §2.8 and §6.3's checks say; no
-  engine-side double is written; epics 18 and 20 use the same in-memory `Materials` for the notice,
+  RFC 3's syncer over RFC 4's in-memory store and fault wrapper through `codec.Store`, RFC 5's chain
+  over `keystest`'s in-memory `keys.Provider`, `kvstore` over the in-memory `kv.KV` and the in-memory journal, each held to its own suite, as RFC 8 §2.8 and §6.3's checks say; no
+  engine-side double is written. The engine and the codec import only the `pkg/transform` root,
+  RFC 5's contract; the chain and its stages are in its subpackages (`chain`, `compress`,
+  `encrypt`), which the RFC 5 plan's epic 1 splits out, and the node's content wiring builds the
+  concrete chain and injects it, as RFC 8 §2.8 says. `offload/`'s tests build it directly
+  (rule 1). Epics 18 and 20 use the same in-memory `keys.Provider` for the notice,
   the key-record view and the salvage-key wrap. Prior art: none found. Epics 15, 16, 18 and 20.
-- **D5 — the RFC 3 store adapter is built here, in `enginewire`**, as the cross-plan contract settled
-  (the RFC 3 plan's real-backend run folds into epic 21). RFC 3 §1.3 and RFC 8 §2.1 say the engine supplies it by composing RFC 4's codec and
-  RFC 5's chain over the share's remote store, mapping their errors onto RFC 3's values; this plan
-  places that composition in `enginewire` and builds it in epic 21, against S1b to S1d, with the
-  past-the-end range wrap and connections spread across the store's addresses. Prior art:
-  rclone's `crypt` and `compress` remotes wrap a backend behind the same backend interface (from
-  memory). Epic 21.
+- **D5 — the node's content wiring composes each store, with no adapter.** The syncer's `Store` is a
+  get and a probe, and `Flow.Upload` takes the put as an attempt closure (the RFC 3 plan's D8). RFC
+  4's `codec.Store` implements `Store` as it is: `Get` with a `remote.Meter`, `Health` passed through,
+  and `NewPut(name, src)` returning a `*Put` whose `Attempt(ctx, m)` is one try and whose `Stored()`
+  gives the ranges and census. So `internal/node/content` builds one `codec.Store` per store, with
+  RFC 5's chain, registers it with its `ProbeKey`, and hands the pipeline a function that builds the
+  attempt; epic 15 passes `put.Attempt` to `Flow.Upload(ctx, name, size, attempt)`. No error is
+  mapped: the syncer and the engine read RFC 4 §4.8's errors as they are (the RFC 3 plan's D9).
+  Connections are spread across the store's addresses. Prior art: rclone's `crypt` and `compress`
+  remotes wrap a backend behind the same backend interface (from memory). Epics 15 and 21.
 - **D6 — `Deps` grows only by what this part calls; metrics stay on `Stats`.** `Watchdog` joins with
   epic 14, which hands each journal's scheduler instance its `Loop` (RFC 25 §3.5), since liveness has
   no `Stats` form; `Metrics` stays out, as the first part decided, and the root keeps adapting `Stats`.
@@ -622,7 +656,8 @@ test/engine/known.yaml                  E12
   Prior art: none found. Epics 14 and 16; §6.1.
 - **D10 — the stand-ins go with their replacements.** Epic 14 deletes the first part's removal loop
   and its `ponytail:`, moving its tests onto the removal source; epic 18 deletes the repack-at-refusal
-  `ponytail:` and the `decision:` that dirty bytes free nothing, which turns #5318's four rows green.
+  `ponytail:` and the `decision:` that dirty bytes free nothing, which turns #5757's four rows green
+  and closes #5757.
   Prior art: none found. Epics 14 and 18.
 - **D11 — chunking settings are recorded where RFC 13 §5.3 says, and checked at `Bind`.** `Apply`
   refuses an invalid value through the carver's own validation (RFC 2 §3.7); `Bind` compares a share's
@@ -673,14 +708,14 @@ S1d, and RFC 8 §15.3's "§2.1 declared interfaces" row stays green.
 
 **Epic 12 estimate: 7 subtasks, 24 man-days.**
 
-§1.4 whole: 50 rows written red over the fixture and listed in `known.yaml`, #5318's four entries
-re-pointed, and the fixture's options for the new components. **Owns:** RFC 8 §15.1 to §15.3 for the
+§1.4 whole: 50 rows written red over the fixture and listed in `known.yaml`, #5757's four entries
+left as they are, and the fixture's options for the new components. **Owns:** RFC 8 §15.1 to §15.3 for the
 rows §1.4 lists, and §15's composition rule. **Done when:** S2: `engine-conformance` runs them all,
 each red at its named check.
 
 **Expected content:**
 - The epic issues the entries name, asked for through `epic-breakdown` Step 6.3 once this plan merges,
-  under roadmap epic #5487; #5318's entries re-pointed.
+  under roadmap epic #5487.
 - The fixture's carver, syncer and `Refs` options, refusing by name while unset.
 - Group A rows of the offload path (§3.2 no gate is safety, §6.4, §6.6 to §6.8, §8.3, §5.1, restart
   re-offer).
@@ -695,7 +730,8 @@ each red at its named check.
 **Epic 13 estimate: 7 subtasks, 20 man-days.**
 
 `pkg/workqueue` as RFC 8 §6.1.1 specifies it: a library each component instantiates, holding no durable
-state. **Owns:** RFC 8 §6.1.1; RFC 25 §3.5 for its watchdog turns, through `pkg/health`'s `Loop`.
+state. **Owns:** RFC 8 §6.1.1; RFC 25 §3.5 for its watchdog turns, through a `Loop` interface (`Turn`) the package
+declares and the node fills with `pkg/health`'s loop, so `pkg/workqueue` imports no `pkg/health` (rule 7).
 **Done when:** RFC 8 §6.1.1's rules and RFC 8 E41's scheduler half pass as `unit` tests under `-race`
 with an injected clock; RFC 8 §15.2's "§6.1.1 a stuck run" passes over a scheduler instance alone.
 
@@ -776,7 +812,10 @@ Its four §15.1 rows run a pass end to end, so they are epic 16's to turn green 
 - Intent: the stale-namespace refusal, the refusal before any put when the pin finds the current
   material destroyed (RFC 8 §10.4), the chain pinned, the name minted once per attempt from a
   cryptographic nonce, `Intend`.
-- Put: streamed from the offer, hashes recomputed, one attempt per name, no second retry layer.
+- Put: `Flow.Upload(ctx, name, size, put.Attempt)`, where `put` is the `*Put` the binding's store
+  builds with `NewPut(name, src)` over a source streamed from the offer (D5); its `Stored()`, read
+  once `Upload` succeeds, gives Commit the ranges and the census. Hashes recomputed, one attempt
+  closure per name, no second retry layer.
 - Commit and Mark: `Commit` per block with its `encodings`, one transaction per block always (RFC 2
   P2), over-`K` and intent-missing paths, the over-`K` rest re-offered and carved again from a new
   covering lookup, with RFC 8 §6.3's "commit within `K`" cases for the key-budget end, a re-offer and a
@@ -865,7 +904,7 @@ and the index-bound row's put-health half, which `settled` answers from `others`
 §10.2.1, §10.3's repack from the loop, §10.4; RFC 14 §9.3 for eviction. **Done when:** RFC 8 §15.1's
 "§10.2 retry later", "§2.5 clone resumed at a full limit" (remote half) and "§10.4 destroyed
 material" (but its crash leg, epic 19's), §15.2's "§10 occupancy triggers eviction", "§10.2 refusal loop", "§10.3 repack reserve" and
-"§10.2.1 pacing law", RFC 14's L9, RFC 17's V20 (its offload half), and #5318's four rows turn green; §15.2's "§10.2 one pass per share"
+"§10.2.1 pacing law", RFC 14's L9, RFC 17's V20 (its offload half), and #5757's four rows turn green, its pull request closing #5757; §15.2's "§10.2 one pass per share"
 stays green; RFC 8 E3, E11, E33 hold.
 
 **Expected content:**
@@ -949,7 +988,8 @@ hold.
   once raised; `Recheck`'s only caller is GC (RFC 4 §4.11), so bucket-setting drift is undetected in
   v1.1 (§6.1).
 - `offload_stalled`, `file_offload_failing`, `offload_age_exceeded`, `work_queue_stalled` and
-  `stranded_export_failed`, in `Stats` and in `*Engine`'s conditions as a `health.Source`.
+  `stranded_export_failed`, in `Stats`, which the node adapts into a `health.Source` (epic 21), so
+  the engine adds no `pkg/health` import (rule 7).
 - Dirty bytes, drain rate, drain time and the oldest unoffloaded age per share and summed.
 - `WaitOffloaded`, naming the oldest file left and the condition holding it.
 - The salvage export of each stranded tag after serving, under `salvage.path`, in a directory of
@@ -962,39 +1002,37 @@ hold.
 
 ### Epic 21 — Integration: the node composes offload
 
-**Epic 21 estimate: 11 subtasks, 39.5 man-days.**
+**Epic 21 estimate: 10 subtasks, 36 man-days.**
 
-`enginewire` and `node.New` compose what epics 11 to 20 built with the four components (S5), as RFC 8
-§2.6's build and stop order says. Its end is S7. **Owns:** RFC 8 §2.1's root obligations (the store
-adapter, D5), §2.6's order; RFC 23 §2.1 and §2.2 for the syncer and the remote stores; RFC 13
+The node's content wiring (`internal/node/content`) and `node.New` compose what epics 11 to 20 built
+with the four components (S5), as RFC 8 §2.6's build and stop order says. Its end is S7. **Owns:** RFC
+8 §2.1's root obligations (a `codec.Store` per store, D5), §2.6's order; RFC 23 §2.1 and §2.2 for the syncer and the remote stores; RFC 13
 Appendix B for this part's keys, the components' settings sections and the remote store's keys, which
 the RFC 4 plan moves into `pkg/remote`; RFC 25 §7 for writing and registering its alert rules and
-every component's; RFC 24 §6.2's CPU token; amended RFC 0 §1.2's import edges. It starts once S4 and
-the RFC 4 plan's R4-S3 (its epics 3 to 6) are met. **Done when:** S7: the store
-adapter passes `syncertest`'s conformance suite in `integration`, and `syncertest`'s real-backend
-suite (RFC 3 §8.1: the Group A and lifecycle checks) passes against the adapter over LocalStack
-(`LOCALSTACK_HTTPS_ENDPOINT`) behind a fault proxy, in `integration`, given the fault proxy's control
-and the adapter's checksum modes as the RFC 3 plan's D2 has the suite take them, a row the adapter
-cannot give skipped by name; RFC 8 E5 holds through the node; the
+every component's; RFC 24 §6.2's CPU token; the composers' imports of RFC 0 §1.2. It starts once S4
+and the RFC 4 plan's R4-S3 (its epics 3 to 6) are met. **Done when:** S7: `syncertest`'s Group A
+suite (RFC 3 §8.1: the Group A and lifecycle checks) runs in `integration` with an opener returning
+the S3 store and `codec.Store` over it, against LocalStack (`LOCALSTACK_HTTPS_ENDPOINT`) behind a
+fault proxy, given the fault proxy's control and the store's checksum modes as the RFC 3 plan's D2
+has the suite take them, a row they cannot give skipped by name; a namespace added at runtime whose
+`Max` exceeds the one the syncer's pools were sized from at start is not opened, and is reported as
+waiting for a restart naming both figures, until the next start opens it (RFC 3 §2.2, the RFC 3
+plan's D7 and its §6.1 row); RFC 8 E5 holds through the node; the
 engine's read and write tests run with and without transforms (the RFC 4 plan's row); the RFC 21 plan's
 "§11.5 full journal with the store unreachable" and the RFC 22 plan's "§16.5 remote outage on reads"
 rows pass on a composed node in `e2e`; the journal plan's system scenarios left to this part run in
 `e2e`; #4276's row is closed by the registry refusing the in-memory remote kind outside tests;
-`materialtest` passes against the RFC 4 store, and its key-record suite against `kvstore`; the node builds the syncer before the engine and stops
+RFC 5's key-record suite passes against `kvstore`; the node builds the syncer before the engine and stops
 it after, as RFC 8 §2.6 orders.
 
 **Expected content:**
-- The store adapter: RFC 4's codec with RFC 5's chain over the share's store, errors mapped onto
-  RFC 3's values with the quota and size causes, checked by a table of each dialect's recorded error
-  replies (S3, GCS, R2, MinIO), since LocalStack emulates none of `SlowDown`, 429, `QuotaExceeded` or
-  413; an error code no row names maps to `ErrTransient` and is logged at `Warn` once per code, with
-  a `decision:` at the table naming its ceiling (an unnamed quota code answers `ErrDelay` until the
-  table names it); the past-the-end range wrap, whose `ErrCorrupt` carries RFC 3 §1.3's `Malformed() bool` set
-  for a recorded range the store refused as past the end (RFC 4 §3.4's `malformed`); `Put` filling the
-  `Measure` only after every measuring pass of the attempt completed, so an attempt cancelled between
-  MD5's two passes leaves it as it found it (RFC 3 §1.3, §2.4 as amended, checked by RFC 3 §7.1's
-  "§3.4 measuring pass" row through `syncertest`); connections spread across the store's addresses (D5); `syncertest`
-  run against it.
+- A `codec.Store` per store, built in `internal/node/content` from RFC 4's codec with RFC 5's chain
+  over the store, and registered with the syncer under its `ProbeKey`; each binding's put builder
+  over it, whose `put.Attempt` epic 15 passes to `Flow.Upload` (D5); connections spread across the
+  store's addresses. The S3 dialect table stays RFC 4's S3 profile mapping, built by the RFC 4 plan;
+  nothing here maps errors.
+- `syncertest`'s Group A suite run in `integration` with an opener returning the S3 store and
+  `codec.Store` over it, against LocalStack behind a fault proxy (S7).
 - The syncer built once and closed after the engine; remote stores registered per configuration, one
   client per store configuration, ref-counted, with their probe keys; until the RFC 4 plan's epic 8
   derives it, each client is built with the limit `upload_workers + fetch_workers + 1` (the syncer's two
@@ -1010,7 +1048,7 @@ it after, as RFC 8 §2.6 orders.
   RFC 25 §2.5's worst-n rule through the node's per-share path (`shareGaugeSpec`,
   `internal/node/stats.go`), each flow id in `syncer.Stats` mapped to the share that opened it (epic
   16 opens one per share); `pkg/syncer/series` exports only the summed gauges.
-- `Deps.Carver`, `Syncer`, `Refs`, `Watchdog` from the root; `*Engine` and the syncer's conditions added to the health evaluator; the node's stats fetch (`internal/node/stats.go`, `engine.Stats` only today) widened to the syncer's `Stats`.
+- `Deps.Carver`, `Syncer`, `Refs`, `Watchdog` from the root; the engine's conditions, adapted from its `Stats` (epic 20), and the syncer's added to the health evaluator, the syncer's through the `health.Source` the RFC 3 plan's epic 5 publishes (its registration moved here from that plan's epic 8); the node's stats fetch (`internal/node/stats.go`, `engine.Stats` only today) widened to the syncer's `Stats`.
 - Each component's collectors registered, and every component's alert rules written and registered,
   in `internal/node`, with RFC 8 §11.1's
   offload conditions and `offload_age_exceeded`, and RFC 3's `store_put_unhealthy` and
@@ -1033,15 +1071,12 @@ it after, as RFC 8 §2.6 orders.
   with a count of one.
 - The material provider's health source registered with the evaluator, for `material_unavailable`
   and for `material_unknown` and `material_destroyed`, which the RFC 5 plan's A1 adds to RFC 25 §3.9;
-  RFC 5's `materialtest` `keys`-object suite run in `integration` against the RFC 4 store, and its
-  key-record suite run from `enginewire`'s tests against `kvstore` over Badger under `t.TempDir()`, the
-  memory KV and FoundationDB where it runs, since `kvstore` may not import `pkg/transform` (the RFC 5
-  plan's D7; `enginewire`'s RFC 0 §1.2 edge to the transforms, flipped by epic 15, covers
-  `materialtest`); the
-  provider wired in `enginewire` with the key-record view `kvstore` implements beside that store, and the namespace
-  converted from `entity.NamespaceID` to `transform.NamespaceID`, since the transforms import no other
-  component.
-- The import walk's flips for `enginewire`'s edges to the remote tier and its codec (rule 7).
+  RFC 5's key-record suite run from `internal/node/content`'s tests against `kvstore` over Badger
+  under `t.TempDir()`, the memory KV and FoundationDB where it runs, since `kvstore` may not import
+  `pkg/transform` (the RFC 5 plan's D7); the provider wired in `internal/node/content` with the
+  key-record view `kvstore` implements beside that store, and with each namespace's remote store for
+  its `keys` object (the RFC 5 plan's D8, whose suite RFC 5 runs over RFC 4's in-memory store). The
+  namespace is `entity.NamespaceID` throughout, which the transforms import as a contract.
 - The engine's read and write tests with and without transforms.
 - The RFC 21 and RFC 22 remote-outage rows and the journal plan's system scenarios on the composed
   node: cold reads after eviction and a restart, its reference workloads, capacity and durability
@@ -1132,7 +1167,7 @@ proposed targets: the first real-service run does (§6.1).
 | --- | --- |
 | RFC 8 Start here, In short, §1, §1.1 | the first part; 17 (§1.1's cold-read row) |
 | RFC 8 §1.2 | review rule: epics 11 to 21 |
-| RFC 8 §2.1 | 15 to 19 (the table's calls, each with its caller), 21 (root obligations, the store adapter); RFC 23's plan ("§2.1 remote required") |
+| RFC 8 §2.1 | 15 to 19 (the table's calls, each with its caller), 21 (root obligations, a `codec.Store` per store); RFC 23's plan ("§2.1 remote required") |
 | RFC 8 §2.2 | the first part's architecture test, kept |
 | RFC 8 §2.3 | 16 (remote side, flows, passes joined), 19 (the reconcile's clauses); first part (rest); RFC 12 (`keepHolds`) |
 | RFC 8 §2.4 | 11 (`Apply` of new keys), 16 (chunking migration, D11) |
@@ -1169,17 +1204,17 @@ proposed targets: the first real-service run does (§6.1).
 | RFC 8 §15.4 | 22 (against LocalStack); the daily real-service runs unowned (§6.1) |
 | RFC 8 §16 | Q1, Q4 and Q2's read-ahead cap: 22 (measured); Q2's yield mechanism: unowned, with `PreWarm` (§6.1); Q3: the RFC 2 plan; Q5: the first part; Q6: unowned (§6.1); Q7: RFC 12 (§6.1) |
 | RFC 2 §2, §2.4, §3.6, §3.7, §4.2, §4.3, §5.1, §5.3, §10.1 | 11 (S1a), 15 (Carve, Assemble, minting, consumer checks), 16 (§3.6, §3.7, D11) |
-| RFC 3 §1.3, §2.8 | 11 (S1b), 16 (flows), 17 (fetch, prefetch), 20 (health), 21 (registration) |
-| RFC 4 §3, §4.1, §4.8, §4.11 | 11 (S1c), 21 (the store adapter) |
-| RFC 5 §2.7, §2.8, Appendix B.2 | 11 (S1d), 15 (the pin over the in-memory `Materials`, the refusal at Intent), 17 (destroyed material read Lost), 18 (`Unmark`, Mark's check, the commit's guard read), 19 (the reseed's unmark), 20 (salvage sealing), 21 (chain, `materialtest` against the RFC 4 store and its key-record suite against `kvstore`) |
+| RFC 3 §1.3, §2.8 | 11 (S1b), 15 (`Upload` with an attempt), 16 (flows), 17 (fetch, prefetch), 20 (health), 21 (registration) |
+| RFC 4 §3, §4.1, §4.3, §4.7, §4.8, §4.11 | 11 (S1c), 15 (`NewPut`'s attempt through `Upload`), 21 (a `codec.Store` per store, registered with its `ProbeKey`) |
+| RFC 5 §2.7, §2.8, Appendix B.2 | 11 (S1d), 15 (the pin over the in-memory `keys.Provider`, the refusal at Intent), 17 (destroyed material read Lost), 18 (`Unmark`, Mark's check, the commit's guard read), 19 (the reseed's unmark), 20 (salvage sealing), 21 (chain, the key-record suite against `kvstore`, each namespace's store for the `keys` object) |
 | RFC 1 §3 (offload calls, salvage), §3.3, §3.4, §3.5, §7.2 | constraints: 15 to 20 call them |
 | RFC 6 §5.2 (the `K` floor at open) | 15 |
 | RFC 6 §7.6, §8.1, §10.1; RFC 16 §3.1 | constraints: 15 (intents, commits), 17 (covering), 19 (`Refs`, `Versions`) |
 | RFC 13 Appendix B | 11 (keys), 21 (loading; the components' sections in `newTable`, `Target` once RFC 13 names its key) |
 | RFC 14 §9.3 | 18 (L9) |
-| RFC 14's import rule (the root and the engine's wiring import open state, as amended) | the first part's `enginewire`; rule 7 |
+| RFC 14's import rule (the two composers, the node with its content wiring and the filesystem service, import open state, as amended) | the first part's wiring, now `internal/node/content` (#5775); rule 7 |
 | RFC 17 §6 V20, V25 | 18 (V20's offload half); cluster (V25's shard handed away and back, §6.1) |
 | RFC 23 §2.1, §2.2 | 21 |
 | RFC 24 §6.2 | 21 (the CPU token, passed to the RFC 4 codec) |
-| RFC 25 §2.1, §2.5, §3.5, §3.9, §7, §8.2 | rule 3; 13 (watchdog), 20 (conditions, `health.Source`), 21 (every component's alert rules, the evaluator, the material provider's health source) |
+| RFC 25 §2.1, §2.5, §3.5, §3.9, §7, §8.2 | rule 3; 13 (watchdog), 20 (conditions in `Stats`), 21 (every component's alert rules, the engine's `health.Source`, the evaluator, the material provider's health source) |
 | RFC 29 §4.7, §4.11 | 12, rules 1, 6, 8 |

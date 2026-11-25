@@ -1357,13 +1357,14 @@ neither count is reduced and none is refused
 - when `upload_workers` and `fetch_workers` are unset, each defaults to
   [RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)'s
   128, reduced in equal proportion, if needed, until both halves' peak and the
-  staging budget fit the pool, and to at least eight each. At about 2 MiB per
-  upload worker and twice that per fetch worker, doubled on the fetch side for
-  its detached buffers
-  ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)),
-  128 of each and their staging come to about 1.7 GiB, so on an 8 GiB node each
-  defaults to about 75;
-- a count set explicitly whose total does not fit **MUST** be refused at start,
+  staging budget fit the pool, and to at least eight each. Each worker costs
+  RFC 3 §2.2's one figure in either direction, `Max + MaxDecodeLen(Max) + header
+  cap`, about 2 MiB at the default `Max`, and the fetch half holds at most one
+  detached buffer of that size per worker besides
+  ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)).
+  So 128 of each and their staging come to about 1.2 GiB, and on an 8 GiB node
+  each defaults to about 100;
+- once the node passes that size, a count set explicitly whose total does not fit **MUST** be refused at start,
   naming the pool, *L* and the figure the counts imply, as
   [RFC 8 §2.4](rfc-8-engine.md#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced)
   refuses an invalid setting rather than replace it;

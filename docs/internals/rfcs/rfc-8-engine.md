@@ -321,7 +321,7 @@ The engine **MUST NOT**:
 ### 2.1 Content composition
 
 The process's one composition root is `node.New` ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)), and
-it alone names concrete component types, with the engine's wiring it builds through. This section specifies what it builds
+it alone names concrete component types, with the content wiring it builds through. This section specifies what it builds
 for content, on every node: one **journal per device**, the
 syncer, block metadata's view, and one engine over them with a binding per share
 ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)). Everything else holds a concrete type where there is one
@@ -331,9 +331,10 @@ implementation — `*vfs.Filesystem` holds `*engine.Engine`
 `Deps` ([§2.6](#2.6%20Dependencies%20and%20wiring)). Adapters hold only `vfs.Service`, and the gateway behind it never
 reaches the engine. [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)'s import rule binds the components composed; the
 composition code imports them. `node.New` builds the content components
-through the engine's wiring, `enginewire` ([§2.8](#2.8%20Package%20layout)), which only the node and the engine's test
-fixture import, so the engine's own checks compose the same components the node does; RFC 0 §1.2 names
-its edges, the journal, the metadata store and open state among them.
+through the node's content wiring, `internal/node/content` ([§2.8](#2.8%20Package%20layout)), which only the node and the engine's test
+fixture import, so the engine's own checks compose the same components the node does. The wiring is
+part of the composition root, so [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) lets it import the components' implementations;
+the engine imports only their contracts.
 
 **Every share has a remote block store.** The root **MUST** refuse to add a share
 whose configuration names no remote block store, with an error naming the share.
@@ -1208,8 +1209,8 @@ type Deps struct {
 }
 
 // CloneHold is the part of open state a clone calls, in the engine's own
-// types, so the engine imports no open state (RFC 0 I6), only its wiring does
-// (§2.1); the root adapts *openstate.Table to it through that wiring, errors included: open state's
+// types, so the engine imports no open state (RFC 0 I6), only the content wiring
+// does (§2.1); the root adapts *openstate.Table to it through that wiring, errors included: open state's
 // DelayFrozen and a table not started answer vfserr's ErrDelay (DelayFrozen),
 // so the clone holds phase 2 and retries; Release of an open that names no
 // record answers nil, since the hold is already gone; any other error is
@@ -1355,8 +1356,8 @@ pkg/engine/            the engine (this RFC)
   queue.go                   the engine's two sources for the shared work scheduler, per journal (§6.1)
   offload/                   the pipeline state machine (§6.3–§6.8): capture, carve, assemble, intent, put, commit, report
   arch_test.go               §15.3's architecture test
-  enginewire/                builds the content components for the node and the engine's checks (§2.1)
 pkg/workqueue/               the shared work scheduler (§6.1.1), used by the engine and GC
+internal/node/content/       the node's content wiring: builds the content components for the node and the engine's checks (§2.1)
 ```
 
 **On `feat/storage-v2` the engine is `pkg/engine`**, as the journal is `pkg/journal`.
@@ -1364,10 +1365,16 @@ While v1 existed they were `pkg/block/enginev2` and `pkg/block/journalv2`; the
 suffix was in Go package and import paths only, and metric, span and log names
 said `engine` and `journal` from the start.
 
-Besides the wiring and the test packages (`enginetest/`, `conformance/`), `offload/` is the one
-subpackage. It is the largest state machine, and its tests import only the carver, a pure function,
-and in-memory implementations of the offer, a flow, the transforms' material and block metadata's
-views, each held to its component's conformance suite, so the import rule enforces its boundary.
+Besides the test packages (`enginetest/`, `conformance/`), `offload/` is the one
+subpackage. It is the largest state machine. Its production code imports only the components'
+contracts, which the import rule enforces. Its tests run over the carver, a pure function, the syncer
+over RFC 4's in-memory store, and in-memory implementations of the offer, the transforms' material and
+block metadata's views, each held to its component's conformance suite.
+
+The transforms' contract is the `pkg/transform` root package: the `Chain` interface, its value types
+and its errors. The chain and its stages live in subpackages (`chain`, `compress`, `encrypt`). The
+engine and RFC 4's codec import only the root; the node's content wiring builds the concrete chain
+and injects it into both ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
 
 ## 3. Policy
 
@@ -3966,7 +3973,9 @@ type Overlay struct {
 // FileID, ShareID, ShardID, NamespaceID, OpenID, Version, Verifier, TimeMask,
 // Span: aliases of the metadata types. ShareTag, SegmentRange, AckResult:
 // RFC 1's; JournalID, InstallationID: the identifiers RFC 1's calls take.
-// StoreID: RFC 3's. Errors: the engine declares none (below).
+// StoreID: RFC 3's. Each alias is an import of its owner's contract, which
+// RFC 0 §1.2 allows, never of its implementation. Errors: the engine declares
+// none (below).
 ```
 
 **The engine declares no error.** It returns these values of `pkg/vfs/vfserr`,
