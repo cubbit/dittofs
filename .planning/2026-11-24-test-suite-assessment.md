@@ -330,7 +330,7 @@ decoding), and not yet for concurrent ones.
 
 | Step | Change | Gain | Gate |
 | --- | --- | --- | --- |
-| A1 | **Shard the unit job.** | suite step ÷ ~2 on full runs | none |
+| A1 | **Shard the unit job (3 shards).** | suite step ÷ ~2 or more on full runs | RFC 29 amendment |
 | A2 | **Weak key files in tests.** | `internal/identity` 74 → 34 s, `pkg/secrets` 23 → 15 s (without `-race`) | none |
 | A3 | **Export tests from compiled export data.** | most of ~85 s of race test time | none |
 | A4 | **Single-goroutine heavy tests without `-race`.** | up to ~14% of race test time (`index`, `model`, `openstate`) | read each test first |
@@ -366,12 +366,14 @@ What the change must also do:
 - **Limits.**
   - Sharding helps full runs (merge queue, pushes to the branch) most. A PR already runs
     only the changed packages (`--changed`).
-  - Each shard repeats the fixed setup (checkout, cache restore, building `dt`). The steps
-    after the suite (`journal-index`, `journal-plant`, `journal-conformance-norace`,
-    `adapter-allocs`, `whole-tree`, "Build the commands", the cgo vet) stay in the required
-    job by a `decision:` in `tests.yml`, so the change names the shard that carries them. They
-    still run
-    after the suite. ÷2 on the suite step is a realistic target, not ÷3.
+  - Each shard repeats the fixed setup (checkout, cache restore, building `dt`).
+  - The steps after the suite (`journal-index`, `journal-plant`, `journal-conformance-norace`,
+    `adapter-allocs`, `whole-tree`, "Build the commands", the cgo vet) run inside the unit job
+    by a `decision:` in `tests.yml`, which says they "go back to being plan cells when the
+    ruleset requires gate". The ruleset now requires `gate`, so A1 moves them to plan cells
+    that run beside the suite, and they leave the critical path.
+  - So the floor of a shard is its fixed setup plus its slowest package. A shard beyond that
+    point adds only a setup and a queued job.
   - The slowest package, `internal/identity`, sets a floor for any shard. A2 lowers it.
   - Without A5, each shard also rebuilds the race-instrumented standard library and
     dependencies, which weakens ÷2.
@@ -538,6 +540,21 @@ surviving mutants on the changed lines. Run it by hand when you review.
 6. What is the target for the unit job? RFC 29 §4.3 sets the PR tier's budget at p90 ≤ 20 min
    wall clock, so 10 minutes on a full run leaves room inside it.
 
+### Answers from the review
+
+rif and simonebaracchi answered every question on #5665, and they agree:
+
+1. **Shard: yes, 3 shards.** No shard can run faster than `internal/identity` plus the fixed
+   setup, so more than 3 gives nothing today; count again after A2 lowers that floor. `dt
+   plan` knows which shard cells it planned, so `gate` requires `success` from exactly those.
+2. **Yes to both.** Weak key files for the reasons in A2. Measure the race cache's size and hit
+   rate after it lands.
+3. **Yes to both**, with A4's pairing check in the same change. `pkg/openstate` and
+   `pkg/engine` keep `-race`.
+4. **Yes**, if the journal team agrees, since `format` is their package.
+5. **Yes.**
+6. **p90 ≤ 20 min (RFC 29) stays the alarm; 10 min on a full run is the goal** Track A aims at.
+
 
 ### Deferral ledger
 
@@ -547,5 +564,6 @@ surviving mutants on the changed lines. Run it by hand when you review.
 | A CI job that runs `gremlins --diff` on every PR | The manual use must prove useful first; `gremlins` runs only the package's own tests, so it is noisy where a consumer package holds the test | unowned | Reviewers use it by hand on 3+ PRs and ask for it |
 | A scheduled kill-matrix suite (`dt`, `tier: manual`) | The driver needs its own tests, and hang attribution in concurrent packages | unowned | Track B extends beyond `format` |
 | Test selection from the dependency graph, for PR runs only, beyond `--changed` (merge runs keep the full set: RFC 29 §4.3, "No selection by changed layer") | Sharding may be enough | unowned | The PR unit job is still over 10 min after A1, A2 and A5 |
-| A weak password-hash variant beside `identity.NewHashes` | Key files are the larger cost (A2). Today nothing would keep it in test code: the weak-key rule checks only calls and exempts every `*test` package, and `parsePHC` has no cost floor | unowned | `internal/identity` is still the slowest package after A2 |
+| A weak password-hash variant beside `identity.NewHashes` | Key files are the larger cost (A2). The weak-key rule matches one symbol in one package (`GenerateWeakKeyFile` in `pkg/keyprovider`), so a second weak variant needs the rule widened to a list; a cost floor in `parsePHC` would not help, since test hashes verify through it too | unowned | `internal/identity` is still the slowest package after A2 |
 | Removing the 291 `time.Sleep` calls in tests | Done as tests are touched, per CLAUDE.md | unowned | A flake traced to a sleep |
+| A nightly non-race run of the whole unit suite | Side finding 1: two tests failed without `-race` and passed with it, and only a non-race run of the whole tree would have caught them; A4's cells run only a few packages | unowned | A4 lands, or another test is found passing only under `-race` |
