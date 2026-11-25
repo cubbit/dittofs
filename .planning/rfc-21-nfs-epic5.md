@@ -259,7 +259,7 @@ the numbers are not in order and no number is missing.
 | R57 | A transient refusal is `NFS4ERR_DELAY` for as long as it lasts, never "no space" because a deadline passed; `ErrNoSpace` is `NFS4ERR_NOSPC` at once, and `ErrQuota` `NFS4ERR_NOSPC` for a share-wide or project quota and `NFS4ERR_DQUOT` for a user or group one | MUST NOT | RFC 21 §9.1, §11.5, §12 (N17) | T5.6, T5.8 |
 | R58 | On a `READ`, `ErrIO`, `ErrUnavailable`, `ErrCorrupt` and `ErrLost` are a short read of the verified bytes, then `NFS4ERR_DELAY` for `ErrUnavailable` and `NFS4ERR_IO` for the others | MUST | RFC 21 §11.5 | T5.8 |
 | R59 | `ErrLocked` and `ErrShareViolation` on I/O are `NFS4ERR_LOCKED` | MUST | RFC 21 §11.5 | T5.8 |
-| R60 | `READ`, `WRITE` and `GETATTR` decode and encode at 0 allocations | bound | RFC 20 §6.10 | T5.4, T5.8 |
+| R60 | `READ`, `WRITE` and `GETATTR` decode and encode at 0 allocations, `GETATTR` on a request naming no ACL attribute, since an ACL reply allocates for its list and its `who`s (E6) | bound | RFC 20 §6.10 | T5.4, T5.8 |
 | R61 | `OPENATTR` is `NFS4ERR_NOTSUPP`; so are `DELEGPURGE`, `SET_SSV`, and on a single node `LAYOUTGET`, `LAYOUTCOMMIT`, `LAYOUTRETURN`, `GETDEVICEINFO` and `GETDEVICELIST` | MUST | RFC 21 §8.2, §12 (N20), App. B, App. C, App. D | T5.8 |
 
 **Errors and the drain**
