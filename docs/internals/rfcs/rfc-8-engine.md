@@ -361,7 +361,7 @@ The engine supplies and consumes, at construction:
 
 | Declared by | Need | Supplied from |
 | --- | --- | --- |
-| [RFC 3](rfc-3-syncer.md) | a `Store`: streamed put, verified read, health ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) | the block codec with the store's transform chain ([RFC 4 §3](rfc-4-remote-tier.md#3.%20The%20block%20format), [RFC 5](rfc-5-transforms.md)), over the share's remote block store; it maps every remote-tier and transform error onto the syncer's own error values ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)), so no syncer code tests an error another component declares; a service's quota or capacity refusal (bucket quota exceeded, storage full) maps to `ErrDenied`, never `ErrInvalid`, so it counts toward put health and the engine can tell it from an outage ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) |
+| [RFC 3](rfc-3-syncer.md) | a `Store`: verified get and health; each put is the attempt closure `Upload` calls ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) | RFC 4's `codec.Store`: the block codec with the store's transform chain ([RFC 4 §3](rfc-4-remote-tier.md#3.%20The%20block%20format), [RFC 5](rfc-5-transforms.md)) over the share's remote block store, registered with the syncer under its `ProbeKey`; its `NewPut(name, src)` builds the attempt. No error is mapped: the syncer and the engine read RFC 4 §4.8's errors as they are, so a service's quota or capacity refusal (bucket quota exceeded, storage full) is RFC 4's denial with its cause, never `ErrInvalid`, which counts toward put health and which the engine tells from an outage ([§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) |
 | [RFC 17](rfc-17-vfs.md) | the content interface, including the one read path for size, times and version, `Overlay` ([§12.1](#12.1%20One%20content%20interface%2C%20called%20by%20the%20filesystem%20service)) | the engine |
 
 Every capability **MUST** be a method on an interface held by declaration, and an
@@ -401,7 +401,7 @@ views and `Refs`.
 signatures of the two interfaces every component takes at construction
 ([the index's test harness](rfc-index.md#Test%20harness), item 1): the journal, the syncer, the engine, GC,
 the snapshot cut and leases read time only through `Clock`, and every fault
-seam — the journal's storage seam, the fault wrapper around the syncer's in-memory store, the fault transport, the
+seam — the journal's storage seam, the fault wrapper around RFC 4's in-memory store, the fault transport, the
 fault-injecting metadata store — consults a `Fault` before each operation. A component with a private
 clock cannot take part in a check that skews time across components.
 
