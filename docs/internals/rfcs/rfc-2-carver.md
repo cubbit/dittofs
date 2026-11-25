@@ -289,8 +289,10 @@ The carver **MUST NOT**:
 - know what a segment, a record, a block or a remote key is;
 - keep state between calls.
 
-Its dependencies are the standard library and a BLAKE3 implementation, and an
-import test **MUST** enforce that.
+Its dependencies are the standard library, a BLAKE3 implementation and the
+metadata store's entity package, which holds the chunk ID, block name and
+namespace ID types ([RFC 16 §2](rfc-16-metadata-store.md#2.%20Entities)). That package is a contract
+([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)). An import test **MUST** enforce that, transitively.
 
 ### 1.2 Two layers: the chunker and the carver
 
@@ -317,7 +319,7 @@ Indicative shapes — the obligations are normative, the signatures are not:
     Cut(r io.Reader, base int64, p Params, buf []byte, realEnd bool,
         emit func(Chunk, []byte) error) (consumed int64, err error)
 
-    Chunk = { Offset int64; Length int32; Hash [32]byte }
+    Chunk = { Offset int64; Length int32; Hash entity.ChunkHash } // [32]byte
 
 `NextBoundary` gets a buffer and returns where the first chunk in it ends. It is
 called only with at least `Max` bytes, or with `final` set, so a whole chunk is
