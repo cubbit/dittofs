@@ -31,8 +31,9 @@ creation; and `kvstore`'s `KeyRecords` over `badgerkv`. From E3 and E5, `NewChai
 ticker, re-wraps on a new primary version, refuses `Pin` on a state that is not active and marks
 records under a destroyed master key; E9 (#5993), whose `materials` row for `provider: kmip`
 fills `Config.KMIP`, with `ClientKey` from the resolved `remote.kmip_client_key`, and whose remote
-section's apply hands a running provider its new `Config` through E6's call, the KMIP part of which
-is T7.2's `reconfigure`; E11, whose key-management row's store half runs this custody.
+section's apply calls E6's `(*Provider).Reconfigure(ctx, Config) error`, the KMIP part of which
+is T7.2's `reconfigure`, and whose settings validation calls E6's `ValidateConfig(cfg Config)
+error`, whose KMIP rules are T7.2's; E11, whose key-management row's store half runs this custody.
 
 ---
 
@@ -305,8 +306,8 @@ exposure is and binds no code here. B.4's rows past the first two are E6's and E
   read at construction and at `reconfigure`. No marker: nothing is skipped. Prior art: Go's
   `tls.X509KeyPair`, the in-memory form of `LoadX509KeyPair` (checked).
 - **D10, a running custody takes a new endpoint, certificates and timeout, never a new key.** E9's
-  remote section is live (RFC 13 Appendix B), and its apply hands each provider its new `Config`
-  through E6's call; a new master key is refused there (E9's D2), so `reconfigure` refuses a
+  remote section is live (RFC 13 Appendix B), and its apply calls each provider's `Reconfigure`
+  (E6's R53); a new master key is refused there (E9's D2), so `reconfigure` refuses a
   changed `Key` too and changes only how the server is reached. It builds and checks the new
   client before the swap, so a bad certificate leaves the running one serving. A `decision:` marker
   at the swap says a call in flight finishes on the old client and that the change of master-key
@@ -427,7 +428,7 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
 
 - **Track:** B. **Depends on:** T7.1, T6.3.
 - **Covers:** R1, R2, R3, R4, R6 (the vector), R7 (the marker), R8, R9, R10 (the read), R11, R15,
-  R16 (the suite); and E9's two asks, which no RFC 5 row names (D9, D10).
+  R16 (the suite); E6's R52 and R53 for the KMIP fields; and E9's two asks (D9, D10).
 - **Deliverables:**
   - `pkg/transform/keys/provider/kmip.go`:
     ```go
@@ -446,13 +447,20 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
     missing its endpoint, key or certificate, as `pkg/keyprovider` does, and dials nothing at
     construction; E6's `Open(ctx, ns)` dials it as it unwraps each current record. Consumed by the
     content wiring and by E9's `materials` row, which fills it.
-  - `reconfigure(cfg KMIPConfig) error` on the KMIP custody, the KMIP part of E6's call that hands
-    a running provider its new `Config` (#5976), which E9's remote section's apply calls (D10): it
+  - `reconfigure(cfg KMIPConfig) error` on the KMIP custody, the KMIP part of E6's
+    `(*Provider).Reconfigure(ctx, cfg Config) error` (its R53, #5976), which E9's remote section's
+    apply calls (D10): it
     refuses a changed `Key`, a missing field, or a certificate, key or CA that does not load,
     leaving the running client in force; otherwise it builds the new `*kmip.Client` and swaps it in
     under the custody's lock, so a call in flight finishes on the old one and the next uses the new.
     An endpoint changed this way changes the master-key ID the next primary-version read reports
-    (D3), which E8 treats as a rotation. Consumed by E6's call and, through it, E9.
+    (D3), which E8 treats as a rotation. Consumed by `Reconfigure` and, through it, E9.
+  - The KMIP rules of E6's `ValidateConfig(cfg Config) error` (its R52), which reads no file and
+    dials nothing: a configuration naming both a key file and `KMIP.Endpoint` is refused; with
+    `KMIP.Endpoint` set, an endpoint that is not `host:port`, an empty `Key`, `ClientCert` or
+    `ClientKey`, a `ClientKey` that is not one PEM block, and a negative `Timeout` are each refused,
+    naming the field. `reconfigure` and the custody's constructor run the same rules first, then
+    load the files. Consumed by E9's settings validation.
   - `custody.go`: the unexported `custody` interface of D3, extracted over E6's key-file wrap and
     unwrap in `wrap.go`, which move behind it unchanged with `kind` `0x01`, and gain `primary` (its
     one master key ID) and `state` (nil); the provider calls its custody through the interface,
@@ -495,6 +503,8 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
     endpoint (D8).
   - `reconfigure` refuses a changed `Key`, an empty endpoint and a client key that does not parse,
     and the custody's client is the old one after each refusal.
+  - `ValidateConfig` refuses each KMIP rule's case, naming its field, with no file present and no
+    listener (catches a check that reads or dials, R52's "without reading a file or dialling").
 - **Tests:**
   - The vector (catches a field order, a length width or a byte order apart from D2 and RFC 5's
     layout, a missing kind byte, an ID without its endpoint, R1, R3, R6).
@@ -564,7 +574,7 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
     deletes it, so the read finds Item Not Found): nil, `ErrMaterialUnavailable` and
     `ErrMaterialUnavailable`, never `ErrMaterialDestroyed` (catches a missing object reported as
     lost material, R10).
-  - `reconfigure` on a running provider's custody through E6's call: a new client certificate and
+  - `Reconfigure` on a running provider over the custody: a new client certificate and
     key (signed by the harness CA) and a new timeout; the next unwrap succeeds over the new client,
     and a reconfigure to a certificate the server refuses is itself refused, with unwraps still
     succeeding on the old client (catches a swap applied before it is checked, or one that drops
