@@ -249,7 +249,7 @@ so that subtasks and tests can cite them.
 | --- | --- | --- | --- | --- |
 | R49 | "§4.2 v4.0 owners *(1 node)*" by the scripted client: an owner's open and lock replays answered, a first `LOCK` of a new lock owner advancing its open owner's seqid, and the open owner's next `CLOSE` accepted | test row | RFC 21 §13 | T9.11 |
 | R50 | "§5.2 stateids *(1 node)*" by the scripted client, but for its pynfs steps (E16) and the recall timeout (E10): a `READ` under an expired client's stateid `NFS4ERR_BAD_STATEID`; a stateid never issued `NFS4ERR_BAD_STATEID`; a removed share's stateids `NFS4ERR_BAD_STATEID` to `TEST_STATEID` and `FREE_STATEID`, with no revoked-state flag on `SEQUENCE` | test row | RFC 21 §13 | T9.10, T9.11 |
-| R51 | "§5.2 v4.0 stateids"'s single-node steps: a `LOCK` with another client's open stateid; `READ`, `WRITE` and `SETATTR` under another principal's open stateid `NFS4ERR_ACCESS`, the file unchanged; an NFSv4.1 client's delegation stateid and open stateid quoted over NFSv4.0 `NFS4ERR_BAD_STATEID`, its state intact | test row | RFC 21 §13 | T9.9, T9.11 |
+| R51 | "§5.2 v4.0 stateids"'s single-node steps: a `LOCK` with another client's open stateid `NFS4ERR_BAD_STATEID` (R5), that client's lock state untouched; `READ`, `WRITE` and `SETATTR` under another principal's open stateid `NFS4ERR_ACCESS`, the file unchanged; an NFSv4.1 client's delegation stateid and open stateid quoted over NFSv4.0 `NFS4ERR_BAD_STATEID`, its state intact | test row | RFC 21 §13 | T9.9, T9.11 |
 | R52 | "§5.2 unguessable `other`": 10^4 opens of one client, no two sharing their random bits, no field rising with open order | test row | RFC 21 §13 | T9.11 |
 | R53 | "§5.1 no courtesy": a client's lease expires with no conflict, its lock is gone, and a new client takes it | test row | RFC 21 §13, §5.1 | T9.11 |
 | R54 | "§5.1 destroy *(1 node)*": `DESTROY_SESSION` then `DESTROY_CLIENTID` of a client holding an open `NFS4ERR_CLIENTID_BUSY`, the open intact; after `CLOSE` the destroy succeeds | test row | RFC 21 §13, §5.1 | T9.11 |
@@ -817,7 +817,10 @@ internal/vfs/
 - **Acceptance criteria:**
   - "§4.2 v4.0 owners *(1 node)*"'s scripted-client steps (R49).
   - "§5.2 stateids *(1 node)*"'s steps but pynfs's and the recall timeout (R50).
-  - "§5.2 v4.0 stateids"'s single-node steps, over `AUTH_SYS` as two principals (R51).
+  - "§5.2 v4.0 stateids"'s single-node steps, over `AUTH_SYS` as two principals (R51). The first,
+    a `LOCK` quoting another client's open stateid, answers `NFS4ERR_BAD_STATEID` and leaves that
+    client's locks and open owner seqid as they were (R5): a success, or `NFS4ERR_ACCESS` as if
+    the stateid were checked against the principal rather than the client, fails the row.
   - "§5.2 unguessable `other`" over 10^4 opens (R2, R52).
   - "§5.1 no courtesy", "§5.1 destroy *(1 node)*", "§3.3 reboot racing renew *(1 node)*" and the
     "§3.5 confirm" step of a rebooted client holding a lock (R53, R54, R55).
