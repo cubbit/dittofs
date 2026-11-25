@@ -16,8 +16,8 @@ chain's halves), and the §8.1 and §8.2 rows §3 names; [RFC 25](../docs/intern
 `Encoded`, `Factory`, `Config`, `Chain`, `Attempt`, `ErrMalformed`, `ErrTooLarge`), `keys`
 (`MaterialID`, `Provider`, the material errors), and `chain`'s `Register` and `NewChain` with stub
 bodies and the dependencies `NewChain` takes: a logger and a recorder for RFC 5 §6's series that
-can be resolved once per transform at build. Two further needs of E1's surface are Q1 and Q2
-(§9). From E2: the in-memory `keys.Provider` under `keystest`, whose current material a test can
+can be resolved once per transform at build, `Require []string` and `Encrypts
+func(entity.NamespaceID) bool` (D11); `Transform.Version` and `Encoded.ID` (D12). From E2: the in-memory `keys.Provider` under `keystest`, whose current material a test can
 change, which can be told an ID is unknown or destroyed, and whose exported call count backs "the
 provider records no call"; RFC 5 §2.8's three chain-ID vectors from the shared vector script.
 **Blocks:** E4, partly: `Register` and the registry's `MaxDecodeLen` (T3.1) hold a compressor's
@@ -80,7 +80,7 @@ recorder, test transforms, the fuzz target, allocation tests, the overhead bench
   (R29) and passes `Pin`'s failure on (R12).
 - The store configuration's settings rows, the bound `encrypts`, T15's refusals at a
   configuration change and the default chain: E9. T15's decode half runs through T3.5's check
-  with E9's input (R30, Q1).
+  with E9's input (R30, D11).
 - `transform_census_blocks` and the census per material: E10. Encryption's own series: E5.
 - Through the codec and the engine: the ranged get of §2.4's row, T5's "the store does not open",
   T6, T7 and T8 end to end: E11.
@@ -181,7 +181,7 @@ Every obligation RFC 5 places on the chain, numbered so that subtasks and tests 
 | R27 | `Decode` checks every material ID a body names against the block record's census before asking the provider: an ID outside it is `ErrMalformed`, with no provider call | MUST | §2.5, §3.1, §8.2 T12, T12 | T3.5 |
 | R28 | The provider a transform's `Decode` receives answers only for the census's IDs of the namespace being read: an ID of another namespace is `ErrMalformed`, with no provider call | MUST | §2.5, §3.1, §8.2 T14, T14 | T3.5 |
 | R29 | `ErrUnknownMaterial` from the provider, for an ID the census lists, is reported as `ErrMaterialUnavailable`, never as `ErrMalformed`; `ErrMaterialDestroyed` is reported as itself. The provider raises the configuration condition naming the ID (E6) | MUST | §2.7, §3.1, §8.2 T7, T7 | T3.5 |
-| R30 | With `require`, a body without a required transform is `ErrMalformed`; without it the body decodes. `require` only refuses, never changes how a body decodes. In an encrypting namespace the encrypt stage is required implicitly; E9 supplies whether a namespace encrypts (Q1) | MUST | §2.5, §3.2, §8.2 §2.5, T3, T15 | T3.5 |
+| R30 | With `require`, a body without a required transform is `ErrMalformed`; without it the body decodes. `require` only refuses, never changes how a body decodes. In an encrypting namespace the encrypt stage is required implicitly; E9 supplies whether a namespace encrypts, through `Encrypts` (D11) | MUST | §2.5, §3.2, §8.2 §2.5, T3, T15 | T3.5 |
 
 **Observability and concurrency**
 
@@ -259,11 +259,25 @@ nothing.
 - **D9, `require` is resolved at build.** Each name in `require` must be registered, or `NewChain`
   fails; the check runs on the parsed envelope before any decode, against the resolved IDs and, for
   an encrypting namespace, any transform of the encrypt stage, so replacing one encryption
-  transform by another stays allowed (Q1). Prior art: none found.
+  transform by another stays allowed (D11). Prior art: none found.
 - **D10, `transform-allocs` selects by test name.** The option runs `go test -run '^TestAllocs'
   ./pkg/transform/...` without `-race`, as `journal-index` does, so E4, E5 and E6 add their
   allocation tests by naming them `TestAllocs…` and touch no YAML. The tests skip under `-race`.
   Prior art: `unit`'s own `journal-index` option.
+- **D11, how the chain learns that a namespace encrypts, as the user answered.** `NewChain`'s
+  dependencies, which E1 declares, carry `Require []string`, the store configuration's `require`,
+  and `Encrypts func(entity.NamespaceID) bool`, which the content wiring supplies from the
+  namespace's bound setting (E9); T3.5 checks both after the envelope parse. One input fixed when
+  the chain is built keeps RFC 5 §3.1's call signatures; a per-call argument to `Chain.Decode`
+  would amend every codec call, and a check in the codec after decoding would let a body decode
+  before it is refused. A test passes the lookup as an input. Prior art: `database/sql`'s
+  connector holds its configuration from open (from memory).
+- **D12, the two fields RFC 5 §3.1 lacked, as the user answered.** `Transform` gains `Version()
+  uint8`, the format version its `Encode` writes, which `Pin` reads for the chain ID before
+  anything is encoded (§2.8), and `Encoded` gains `ID`, the transform that wrote the body, which
+  `Attempt.Encode` fills so a transform cannot misreport it and the census records it (RFC 4
+  §3.2, RFC 5 §5.3). RFC 5 §3.1 is amended in this document's pull request; E1 declares both.
+  Prior art: none found.
 
 ## 5. Target tree
 
@@ -352,8 +366,8 @@ docs/internals/rfcs/rfc-5-transforms.md  T3.4  §8.3's suites line names the fuz
 - **Deliverables:** `pin.go`: `Pin` reading `Current` once per kind (D5) and returning the
   provider's error unchanged (R12); the attempt holding the configured transforms and their pinned
   material, `ID`, `Release` (D6). `chainid.go`: §2.8's encoding and `blake3.DeriveKey` under
-  `dittofs transform chain id v1`; it reads each transform's format version through the call Q2
-  settles. A test transform with a material kind, whose `Encode` writes the material ID it was
+  `dittofs transform chain id v1`; it reads each transform's format version through `Version()`
+  (D12), and fills `Encoded.ID`. A test transform with a material kind, whose `Encode` writes the material ID it was
   given. Consumed by T3.4 (the attempt's bounds and `Encode`), E8 (a new data key's chain ID) and
   the RFC 8 offload plan's epic 15 (the pin).
 - **Acceptance criteria:**
@@ -435,7 +449,7 @@ docs/internals/rfcs/rfc-5-transforms.md  T3.4  §8.3's suites line names the fuz
   entry (D4), and refusing everything else with `ErrMalformed` before the provider is called;
   `Current` answers `ErrMalformed`, since decoding never needs it. D3's mapping of the provider's
   errors; `require` resolved at build (D9) and checked after the envelope parse, with the
-  namespace's implicit encrypt stage from Q1's input. Consumed by T3.6 (the failure labels), E9
+  namespace's implicit encrypt stage from `Encrypts` (D11). Consumed by T3.6 (the failure labels), E9
   (`require` and T15's decode half) and E6, whose condition names the unknown ID.
 - **Acceptance criteria:**
   - A body naming a material ID outside its census, or another namespace's, is `ErrMalformed`,
@@ -454,7 +468,7 @@ docs/internals/rfcs/rfc-5-transforms.md  T3.4  §8.3's suites line names the fuz
   then the loaded one (catches an unknown key reported as corruption, R29); the destroyed ID
   (catches a destroyed key folded into another error, R29); a provider error that is no sentinel,
   through a fault wrapper (kind 3), is `ErrMaterialUnavailable` (catches D3); §8.2's §2.5 row, the
-  implicit encrypt stage under Q1's input, and an unregistered `require` name (catch R30, D9).
+  implicit encrypt stage under a test's `Encrypts`, and an unregistered `require` name (catch R30, D9).
 - **Rules:** rule 5: each refusal asserted where `Decode` returns it and on the provider's count.
 
 ### T3.6 The series
@@ -529,30 +543,6 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **Q1, pending the user's answer: how the chain learns that a namespace encrypts.** RFC 5 §3.2
-  makes the encrypt stage implicitly required in an encrypting namespace, and the namespace's bound
-  `encrypts` is fixed at its creation (E9), but `Chain.Decode`'s signature carries no such input,
-  `NewChain`'s carries no `require`, and its dependencies are E1's frozen surface. Options:
-  - **A, recommended:** `NewChain`'s dependencies carry `Require []string` and a lookup
-    `Encrypts func(entity.NamespaceID) bool`, which the content wiring supplies from the bound
-    setting; T3.5 checks both. The RFC's signatures stay; a test passes the lookup as an input.
-  - **B:** `Chain.Decode` takes the namespace's required stages per call, an RFC 5 §3.1 amendment
-    every codec call follows.
-  - **C:** the codec checks the encrypt stage from the census after decoding, which RFC 4's codec
-    does not parse, and which lets a body decode before it is refused.
-  Recommendation A: one input fixed when the chain is built, as `database/sql`'s connector holds
-  its configuration (from memory). T3.5 is written against A.
-- **Q2, pending the user's answer: two fields RFC 5 §3.1's surface lacks.** The chain ID covers
-  each transform's format version (§2.8), which the chain needs at `Pin`, before anything is
-  encoded, and `Transform` declares no call that answers it. The census records the transform ID
-  of each body (RFC 4 §3.2, RFC 5 §5.3), and `Encoded` carries no ID. Options:
-  - **A, recommended:** amend §3.1: `Transform` gains `Version() uint8`, the version its `Encode`
-    writes, and `Encoded` gains `ID ID`, which `Attempt.Encode` fills, so a transform cannot
-    misreport it. E1 declares both.
-  - **B:** `LengthKey` includes the version, and the codec matches `Encoded` to the envelope by
-    position; §2.8 says the version is encoded outside `LengthKey`, and RFC 4's codec does not
-    read the envelope.
-  Recommendation A. T3.3 and T3.4 are written against it.
 - **Needs on E4 and E5**, whose breakdowns are written in parallel: `with_encryption: accept` sits
   in the compress stage's settings, which the chain reads (T3.2), so E4's compressors must accept
   the key; and a transform's default build reaches no material (D1), so E5's factory must build for
@@ -564,5 +554,3 @@ A suggestion only: one pull request per subtask works as well.
   buffers, a second fuzz target, an envelope benchmark and a refusal RFC 5 does not ask for. The
   least certain estimate is T3.4's, the envelope, the composed paths and the error discipline
   together.
-- E1's breakdown is written in parallel: if it settles Q1 or Q2 otherwise, T3.3, T3.4 and T3.5
-  follow it, and this document is revised.
