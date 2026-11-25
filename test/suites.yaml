@@ -45,9 +45,15 @@ suites:
       - test/scenarios/lib/slack_test.sh       # the Slack poster and its daily threads
       - test/new-package-tests.sh {base}       # a new package carries a test of its own
       # A docs: commit changes only documentation, and no commit credits an AI tool. Both run
-      # on pushes too, since planning commits reach develop without a pull request.
+      # on pushes too, since planning commits reach develop without a pull request. The PR title
+      # workflow runs the first on a pull request's title, which the merge queue squashes under.
+      - test/commit-type-matches-diff_test.sh
       - test/commit-type-matches-diff.sh {base}
       - test/no-ai-attribution.sh {base}
+      # The test that reads the docs. A docs-only change plans no unit cell, on its pull
+      # request or in the merge queue, so it runs here, on every change. A test renamed in its
+      # package drops out of this list without a word: rename it here too.
+      - go test -timeout=5m -run=^TestDocsCommandReferences$ ./cmd/gendocs/
       # Plans moved to .planning/; a change cut before the move would recreate the old folder.
       - { sh: 'f=$(git ls-files docs/internals/planning | grep -vxF docs/internals/planning/README.md); test -z "$f" || { echo "move to .planning/: $f"; exit 1; }; git ls-files --error-unmatch docs/internals/planning/README.md >/dev/null' }
       - go test ./test/harness/...              # dt's own tests
