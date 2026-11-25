@@ -15,17 +15,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Unavailable is the body of every v1 command dfsctl still lists: it refuses,
-// naming the command, and the command exits non-zero.
-//
-// decision: dfsctl keeps the v1 commands a v2 route will serve, each body
-// refusing until it is rebuilt on that route; the commands no route serves are
-// deleted. A command stops calling this when it is rebuilt; once none does,
-// delete it.
-func Unavailable(cmd *cobra.Command, _ []string) error {
-	return fmt.Errorf("%s: not available until the CLI is rebuilt on the v2 API", cmd.CommandPath())
-}
-
 // outputFormat is the format the root's --output flag names for cmd.
 func outputFormat(cmd *cobra.Command) (output.Format, error) {
 	f, _ := cmd.Flags().GetString("output")
@@ -134,3 +123,13 @@ func RunDeleteWithConfirmation(cmd *cobra.Command, env Env, resourceType, name s
 	printSuccess(cmd, fmt.Sprintf("%s '%s' removed successfully", resourceType, name))
 	return nil
 }
+
+// Table is a table built in place: its first row the headers, the others
+// its rows.
+type Table [][]string
+
+// Headers implements output.TableRenderer.
+func (t Table) Headers() []string { return t[0] }
+
+// Rows implements output.TableRenderer.
+func (t Table) Rows() [][]string { return t[1:] }

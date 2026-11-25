@@ -3,23 +3,32 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
+	adaptercmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/adapter"
+	auditcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/audit"
 	ctxcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/context"
+	domaincmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/domain"
 	grantcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/grant"
 	groupcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/group"
 	installationcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/installation"
+	namespacecmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/namespace"
 	netgroupcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/netgroup"
+	nodecmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/node"
 	operationcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/operation"
 	quotacmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/quota"
+	settingcmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/setting"
 	sharecmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/share"
+	storecmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/store"
 	tokencmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/token"
 	usercmd "github.com/cubbit/dittofs/cmd/dfsctl/commands/user"
 	"github.com/cubbit/dittofs/internal/cli/credentials"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -40,9 +49,8 @@ func NewRoot(env cmdutil.Env) *cobra.Command {
 		Short: "DittoFS Control - Remote management client",
 		Long: `dfsctl is the command-line client for managing DittoFS servers remotely.
 
-Its status command returns with the server's v2 API; until then it
-refuses. The context subcommand manages the server
-contexts kept in ~/.config/dfsctl/config.json.
+The context subcommand manages the server contexts kept in
+~/.config/dfsctl/config.json.
 
 Use "dfsctl [command] --help" for more information about a command.`,
 		SilenceUsage:  true,
@@ -61,7 +69,7 @@ Use "dfsctl [command] --help" for more information about a command.`,
 		newLoginCmd(env),
 		newLogoutCmd(env),
 		newPasswordCmd(env),
-		newStatusCmd(),
+		newStatusCmd(env),
 		ctxcmd.New(env),
 		usercmd.New(env),
 		groupcmd.New(env),
@@ -72,6 +80,13 @@ Use "dfsctl [command] --help" for more information about a command.`,
 		grantcmd.New(env),
 		quotacmd.New(env),
 		operationcmd.New(env),
+		storecmd.New(env),
+		namespacecmd.New(env),
+		adaptercmd.New(env),
+		settingcmd.New(env),
+		nodecmd.New(env),
+		auditcmd.New(env),
+		domaincmd.New(env),
 		newCompletionCmd(),
 	)
 
@@ -125,6 +140,11 @@ func Run(ctx context.Context, env cmdutil.Env, args []string) int {
 	root := NewRoot(env)
 	root.SetArgs(args)
 	if err := root.ExecuteContext(ctx); err != nil {
+		// A problem's text names no field, which a refusal of one does.
+		if p := (*apiv1.Problem)(nil); errors.As(err, &p) && p.Field != "" {
+			_, _ = fmt.Fprintf(env.Err, "Error: %v (field %s)\n", err, p.Field)
+			return 1
+		}
 		_, _ = fmt.Fprintf(env.Err, "Error: %v\n", err)
 		return 1
 	}

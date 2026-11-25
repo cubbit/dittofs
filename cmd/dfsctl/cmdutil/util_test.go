@@ -189,3 +189,22 @@ func TestMergePatch(t *testing.T) {
 		}
 	}
 }
+
+// A pair's value is JSON when it parses as JSON and a JSON string
+// otherwise; a pair with no '=' or no key is refused naming it.
+func TestSettings(t *testing.T) {
+	got, err := Settings([]string{"port=8080", "on=true", "name=builds", "obj={\"a\":1}", "quoted=\"true\"", "empty=", "eq=a=b"})
+	if err != nil {
+		t.Fatalf("Settings: %v", err)
+	}
+	for k, want := range map[string]string{"port": `8080`, "on": `true`, "name": `"builds"`, "obj": `{"a":1}`, "quoted": `"true"`, "empty": `""`, "eq": `"a=b"`} {
+		if string(got[k]) != want {
+			t.Errorf("Settings %s: got %s, want %s", k, got[k], want)
+		}
+	}
+	for _, bad := range []string{"novalue", "=v", "port=null", "port= null "} {
+		if _, err := Settings([]string{bad}); err == nil || !strings.Contains(err.Error(), bad) {
+			t.Errorf("Settings %q: got %v, want a refusal naming it", bad, err)
+		}
+	}
+}

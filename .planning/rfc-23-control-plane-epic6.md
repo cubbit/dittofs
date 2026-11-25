@@ -430,22 +430,33 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
 - **Track:** A. **Depends on:** T6.3; E4 (stores, namespaces, secrets, adapters, settings, nodes, the
   audit, the domain's routes, `GET /api/v1/health`).
 - **Covers:** R3, R17.
-- **Deliverables:** `store create|list|get|update|delete|set-credential` (the credential from a
-  prompt or a file); `namespace create|list|get|delete`; `adapter list|get|set`;
+- **Deliverables:** `store create|get|delete|set-credential` (`create`'s credential, which
+  it may go without, from a file; `set-credential`'s from a prompt or a file); `namespace create|list|get|delete`; `adapter get|set`;
   `setting get|set|unset <scope> <key>`; `node list|get`; `audit list` with its filters;
   `domain resolve|test|join|rotate-machine-password`, `join` online or `--offline`, neither sending
   a key; `status`, reading `GET /api/v1/health`; their `clisuite` rows; `cli.md` regenerated.
-  Consumed by E7.
+  `store list`, `store update` and `adapter list` are not built: no route serves them, a row of
+  [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger). A remote store, a
+  namespace and a node carry no name, so their commands take the ID as the argument. A scope is
+  `installation`, `node:<id>`, `namespace:<id>`, `store:<id>` or `share:<name>`; a value, a
+  `setting set`'s or a `--setting key=value`'s, is taken as JSON when it parses and as a string
+  otherwise. `audit list --actor` takes a user's name, resolved, `kind:id` or `schedule`. A
+  refusal naming a field prints it, which a problem's text leaves out. Consumed by E7.
 - **Acceptance criteria:**
   - A setting, adapter, store or namespace write prints the server's refusal and exits non-zero
     (D9).
   - `audit list --actor` shows the record of a change the test made.
 - **Tests:** the `clisuite` rows over the harness; one table over the settings-backed writes, each
   printing the problem's code and detail and exiting non-zero (D9); `setting get` of a record the
-  test writes through the store, at two scopes (R17); `audit list --actor` after a share create;
-  `domain resolve`, `domain test` and `join` sending their arguments and, with no directory wired,
-  printing the refusal and exiting non-zero (their success is E7's T7.6); `status` naming the harness's readiness; `node list` naming the harness's
-  node; the reference matching (R3).
+  test writes through the store, at two scopes (R17), and `setting set`, `set` again and `unset` of
+  a key the table declares, read back through the API; `audit list --actor` after a group create
+  by the actor and one by another account, listing the first and not the second;
+  `domain resolve`, `domain test`, `rotate-machine-password` and `join` sending their arguments,
+  each a field the server refuses naming it, `join` with no idempotency key in its audit record and,
+  with no directory wired, their operations ending failed under `--wait` and the command exiting
+  non-zero, since the harness wires identity and the action starts (their success is E7's T7.6);
+  `status` naming the harness's readiness; `node list` naming the harness's node; the reference
+  matching (R3).
 
 ## 7. Order of work
 

@@ -429,6 +429,11 @@ Global flags:
 ## `dfsctl`
 
 - [`dfsctl`](#dfsctl) — DittoFS Control - Remote management client
+  - [`dfsctl adapter`](#dfsctl-adapter) — Manage protocol adapters
+    - [`dfsctl adapter get`](#dfsctl-adapter-get) — Show an adapter
+    - [`dfsctl adapter set`](#dfsctl-adapter-set) — Change an adapter
+  - [`dfsctl audit`](#dfsctl-audit) — Read the audit of management actions
+    - [`dfsctl audit list`](#dfsctl-audit-list) — List audit records
   - [`dfsctl completion`](#dfsctl-completion) — Generate shell completion script
   - [`dfsctl context`](#dfsctl-context) — Manage server contexts
     - [`dfsctl context current`](#dfsctl-context-current) — Show current context
@@ -436,6 +441,11 @@ Global flags:
     - [`dfsctl context remove`](#dfsctl-context-remove) — Remove a context
     - [`dfsctl context rename`](#dfsctl-context-rename) — Rename a context
     - [`dfsctl context use`](#dfsctl-context-use) — Switch to a different context
+  - [`dfsctl domain`](#dfsctl-domain) — Resolve principals, test the directory and join the domain
+    - [`dfsctl domain join`](#dfsctl-domain-join) — Join the installation to the domain
+    - [`dfsctl domain resolve`](#dfsctl-domain-resolve) — Resolve a directory principal by name or by SID
+    - [`dfsctl domain rotate-machine-password`](#dfsctl-domain-rotate-machine-password) — Rotate the computer account's password
+    - [`dfsctl domain test`](#dfsctl-domain-test) — Test the installation's directory
   - [`dfsctl grant`](#dfsctl-grant) — Manage principals' access to shares
     - [`dfsctl grant list`](#dfsctl-grant-list) — List a share's grants
     - [`dfsctl grant remove`](#dfsctl-grant-remove) — Remove a principal's grant on a share
@@ -452,12 +462,20 @@ Global flags:
     - [`dfsctl installation rotate-signing-key`](#dfsctl-installation-rotate-signing-key) — Rotate the key access tokens are signed with
   - [`dfsctl login`](#dfsctl-login) — Authenticate with DittoFS server
   - [`dfsctl logout`](#dfsctl-logout) — Clear stored credentials
+  - [`dfsctl namespace`](#dfsctl-namespace) — Manage namespaces
+    - [`dfsctl namespace create`](#dfsctl-namespace-create) — Create a namespace on a remote store
+    - [`dfsctl namespace delete`](#dfsctl-namespace-delete) — Delete a namespace no share names
+    - [`dfsctl namespace get`](#dfsctl-namespace-get) — Show a namespace
+    - [`dfsctl namespace list`](#dfsctl-namespace-list) — List namespaces
   - [`dfsctl netgroup`](#dfsctl-netgroup) — Manage netgroups
     - [`dfsctl netgroup create`](#dfsctl-netgroup-create) — Create a netgroup
     - [`dfsctl netgroup delete`](#dfsctl-netgroup-delete) — Delete a netgroup
     - [`dfsctl netgroup get`](#dfsctl-netgroup-get) — Show a netgroup
     - [`dfsctl netgroup list`](#dfsctl-netgroup-list) — List netgroups
     - [`dfsctl netgroup update`](#dfsctl-netgroup-update) — Replace a netgroup's members
+  - [`dfsctl node`](#dfsctl-node) — List the installation's nodes
+    - [`dfsctl node get`](#dfsctl-node-get) — Show a node
+    - [`dfsctl node list`](#dfsctl-node-list) — List nodes
   - [`dfsctl operation`](#dfsctl-operation) — Follow long-running operations
     - [`dfsctl operation cancel`](#dfsctl-operation-cancel) — Cancel an operation
     - [`dfsctl operation get`](#dfsctl-operation-get) — Show an operation
@@ -469,6 +487,10 @@ Global flags:
     - [`dfsctl quota list`](#dfsctl-quota-list) — List a share's quotas, its own first
     - [`dfsctl quota remove`](#dfsctl-quota-remove) — Remove a quota
     - [`dfsctl quota set`](#dfsctl-quota-set) — Set a quota's limits
+  - [`dfsctl setting`](#dfsctl-setting) — Read and change settings
+    - [`dfsctl setting get`](#dfsctl-setting-get) — Show a setting
+    - [`dfsctl setting set`](#dfsctl-setting-set) — Set a setting
+    - [`dfsctl setting unset`](#dfsctl-setting-unset) — Reset a setting to the wider scope's value or the default
   - [`dfsctl share`](#dfsctl-share) — Manage shares
     - [`dfsctl share create`](#dfsctl-share-create) — Create a share with its export policy
     - [`dfsctl share delete`](#dfsctl-share-delete) — Delete a share
@@ -482,7 +504,12 @@ Global flags:
     - [`dfsctl share quiesce`](#dfsctl-share-quiesce) — Quiesce a share: refuse new opens and drain its clients
     - [`dfsctl share resume`](#dfsctl-share-resume) — Resume a quiesced share
     - [`dfsctl share update`](#dfsctl-share-update) — Rename a share or move its NFS path
-  - [`dfsctl status`](#dfsctl-status) — Show server status
+  - [`dfsctl status`](#dfsctl-status) — Show the node's readiness and the installation's health
+  - [`dfsctl store`](#dfsctl-store) — Manage remote stores
+    - [`dfsctl store create`](#dfsctl-store-create) — Create a remote store
+    - [`dfsctl store delete`](#dfsctl-store-delete) — Delete a remote store no namespace names
+    - [`dfsctl store get`](#dfsctl-store-get) — Show a remote store
+    - [`dfsctl store set-credential`](#dfsctl-store-set-credential) — Set a remote store's credential
   - [`dfsctl token`](#dfsctl-token) — Manage API tokens
     - [`dfsctl token create`](#dfsctl-token-create) — Create an API token
     - [`dfsctl token list`](#dfsctl-token-list) — List API tokens
@@ -503,13 +530,147 @@ DittoFS Control - Remote management client
 
 dfsctl is the command-line client for managing DittoFS servers remotely.
 
-Its status command returns with the server's v2 API; until then it
-refuses. The context subcommand manages the server
-contexts kept in ~/.config/dfsctl/config.json.
+The context subcommand manages the server contexts kept in
+~/.config/dfsctl/config.json.
 
 Use "dfsctl [command] --help" for more information about a command.
 
 Flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl adapter`
+
+Manage protocol adapters
+
+Read and set the protocol adapters, each named by its protocol: nfs or smb.
+
+An adapter's settings are its fields below adapters.<protocol>, its port among
+them; a node override of one, such as one host's port, is a setting at that
+node's scope, set through 'dfsctl setting set node:<id>'.
+
+```
+dfsctl adapter [flags]
+```
+
+**Examples:**
+
+```bash
+# Show the NFS adapter on every node
+dfsctl adapter get nfs
+
+# Enable the SMB adapter on port 1445
+dfsctl adapter set smb --enabled --setting port=1445
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl adapter get`
+
+Show an adapter
+
+```
+dfsctl adapter get <protocol> [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl adapter set`
+
+Change an adapter
+
+Change an adapter: --enabled or --enabled=false, each --setting key=value
+set, a value that is JSON taken as it is and any other as a string, and each
+--unset key removed, so its default holds. What is not named stays as it is.
+
+```
+dfsctl adapter set <protocol> [flags]
+```
+
+Flags:
+
+```
+      --enabled               Enable the adapter, or disable it with --enabled=false
+      --setting stringArray   A setting of the adapter, key=value (repeatable)
+      --unset stringArray     A setting of the adapter to remove (repeatable)
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl audit`
+
+Read the audit of management actions
+
+```
+dfsctl audit [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl audit list`
+
+List audit records
+
+List the audit records the filters admit, oldest first: who acted, on what,
+and whether the action was applied, refused or started an operation.
+
+--actor names a user by name, or any account as kind:id, or the schedule as
+schedule. A user named schedule, or whose name holds ':', is named as
+user:<id>. --target names a resource as kind:id; --from and --to are RFC 3339
+times.
+
+```
+dfsctl audit list [flags]
+```
+
+**Examples:**
+
+```bash
+# What alice changed today
+dfsctl audit list --actor alice --from 2026-11-24T00:00:00Z
+
+# Every action on one share
+dfsctl audit list --target share:0b5c1a7e-2f4d-4c8e-9a1b-3c5d7e9f1a2b
+```
+
+Flags:
+
+```
+      --actor string    Only the records of this account: a user's name, kind:id or schedule (a user named schedule or with ':' in its name as user:<id>)
+      --from string     Only the records at or after this RFC 3339 time
+      --target string   Only the records of this resource, as kind:id
+      --to string       Only the records before this RFC 3339 time
+```
+
+Global flags:
 
 ```
       --no-color        Disable colored output
@@ -746,6 +907,145 @@ dfsctl context use production
 
 # Switch to a local development server context
 dfsctl context use local-dev
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl domain`
+
+Resolve principals, test the directory and join the domain
+
+Act on the installation's directory and its domain join.
+
+Each command starts an operation and prints it; with --wait it follows the
+operation to its end, and 'dfsctl operation wait <id>' resumes an interrupted
+wait.
+
+```
+dfsctl domain [flags]
+```
+
+**Examples:**
+
+```bash
+# Find a directory user's SID
+dfsctl domain resolve 'CORP\bob' --wait
+
+# Join the domain as an administrator (prompts for the password)
+dfsctl domain join --user administrator@corp.example.com --wait
+
+# Join with a computer account an administrator created
+dfsctl domain join --offline --account FILESRV --password-file machine.txt
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl domain join`
+
+Join the installation to the domain
+
+Join the installation to the directory's domain.
+
+Online, the default, creates the computer account as the administrator --user
+names, whose password is read from --password-file or a prompt. With --offline
+the join takes a computer account an administrator created, and the password
+read is that account's. The password is sent once, with no idempotency key, so
+the server keeps no record of the request.
+
+```
+dfsctl domain join [flags]
+```
+
+Flags:
+
+```
+      --account string         The computer account's name (defaults to the installation's)
+      --dns-host-name string   The DNS host name of an online join's computer account
+      --offline                Take a computer account an administrator created
+      --ou string              The organisational unit of an online join's computer account
+      --password-file string   File holding the password (prompts without it)
+      --takeover               Replace a join the installation holds, and online an account of that name it did not create
+      --user string            The administrator an online join creates the computer account as
+      --wait                   Follow the operation the command starts to its end
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl domain resolve`
+
+Resolve a directory principal by name or by SID
+
+```
+dfsctl domain resolve [DOMAIN\name] [flags]
+```
+
+Flags:
+
+```
+      --sid string   The principal's SID, in place of its name
+      --wait         Follow the operation the command starts to its end
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl domain rotate-machine-password`
+
+Rotate the computer account's password
+
+```
+dfsctl domain rotate-machine-password [flags]
+```
+
+Flags:
+
+```
+      --wait   Follow the operation the command starts to its end
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl domain test`
+
+Test the installation's directory
+
+```
+dfsctl domain test [flags]
+```
+
+Flags:
+
+```
+      --wait   Follow the operation the command starts to its end
 ```
 
 Global flags:
@@ -1183,6 +1483,119 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
+### `dfsctl namespace`
+
+Manage namespaces
+
+Create, list, read and delete namespaces.
+
+A namespace is created on a remote store with its bound settings, such as its
+prefix and chunking, which are fixed from then on.
+
+```
+dfsctl namespace [flags]
+```
+
+**Examples:**
+
+```bash
+# Create a namespace on a store
+dfsctl namespace create --store 0b5c1a7e-2f4d-4c8e-9a1b-3c5d7e9f1a2b --setting namespace.prefix=builds/
+
+# List the namespaces
+dfsctl namespace list
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl namespace create`
+
+Create a namespace on a remote store
+
+Create a namespace on the remote store --store names, with its settings, each
+--setting key=value, a value that is JSON taken as it is and any other as a
+string.
+
+```
+dfsctl namespace create [flags]
+```
+
+Flags:
+
+```
+      --setting stringArray   A setting of the namespace, key=value (repeatable)
+      --store string          The ID of the remote store the namespace is created on
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl namespace delete`
+
+Delete a namespace no share names
+
+```
+dfsctl namespace delete <id> [flags]
+```
+
+Flags:
+
+```
+  -f, --force   Delete without asking for confirmation
+      --wait    Follow the operation the command starts to its end
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl namespace get`
+
+Show a namespace
+
+```
+dfsctl namespace get <id> [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl namespace list`
+
+List namespaces
+
+```
+dfsctl namespace list [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
 ### `dfsctl netgroup`
 
 Manage netgroups
@@ -1305,6 +1718,57 @@ Flags:
 
 ```
       --member stringArray   A host name, address or CIDR; repeat for each
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl node`
+
+List the installation's nodes
+
+List and read the installation's nodes: the address each serves on, the
+binary it runs, its failure domain, and whether a takeover marked it lapsed.
+
+```
+dfsctl node [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl node get`
+
+Show a node
+
+```
+dfsctl node get <id> [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl node list`
+
+List nodes
+
+```
+dfsctl node list [flags]
 ```
 
 Global flags:
@@ -1588,6 +2052,103 @@ Flags:
       --soft-bytes int        The soft limit on bytes, 0 for none
       --soft-files int        The soft limit on files, 0 for none
       --user string           The user's name
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl setting`
+
+Read and change settings
+
+Read, set and reset any setting by its scope and key.
+
+The scope is installation, or node:<id>, namespace:<id>, store:<id> or
+share:<name>. A value that is JSON, such as 8080, true or {"a":1}, is taken as
+it is, and any other as a string; quote a string that reads as JSON: '"true"'.
+Unsetting a setting removes it at that scope, so the wider scope's value, or
+the default, holds.
+
+```
+dfsctl setting [flags]
+```
+
+**Examples:**
+
+```bash
+# Read the installation's session lifetime
+dfsctl setting get installation api.session_lifetime
+
+# Bind one node's NFS adapter to another port
+dfsctl setting set node:7f3a9c1e-0b2d-4e5f-8a6b-1c2d3e4f5a6b adapters.nfs.port 2050
+
+# Reset it to the installation's value
+dfsctl setting unset node:7f3a9c1e-0b2d-4e5f-8a6b-1c2d3e4f5a6b adapters.nfs.port
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl setting get`
+
+Show a setting
+
+```
+dfsctl setting get <scope> <key> [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl setting set`
+
+Set a setting
+
+```
+dfsctl setting set <scope> <key> <value> [flags]
+```
+
+Flags:
+
+```
+      --wait   Follow the operation the command starts to its end
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl setting unset`
+
+Reset a setting to the wider scope's value or the default
+
+```
+dfsctl setting unset <scope> <key> [flags]
+```
+
+Flags:
+
+```
+      --wait   Follow the operation the command starts to its end
 ```
 
 Global flags:
@@ -1989,15 +2550,11 @@ Global flags:
 
 ### `dfsctl status`
 
-Show server status
+Show the node's readiness and the installation's health
 
-Display the status of the connected DittoFS server.
-
-Calls the /health endpoint on the server configured in the current context and
-reports whether the server is running, how long it has been up, and whether the
-control-plane database is reachable. When a valid token is present, per-entity
-detail (shares, stores) is fetched from the API and rendered as a
-color-coded table. Use -o json or -o yaml for machine-readable output.
+Show the readiness of the node the current context names, ready, starting,
+draining or not_ready, and every health condition it holds, its own and the
+installation's. Use -o json or -o yaml for machine-readable output.
 
 ```
 dfsctl status [flags]
@@ -2006,11 +2563,136 @@ dfsctl status [flags]
 **Examples:**
 
 ```bash
-# Show status of the currently active server
+# Show the status of the current context's node
 dfsctl status
 
 # Emit machine-readable JSON output
 dfsctl status -o json
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl store`
+
+Manage remote stores
+
+Create, read and delete remote stores, and set a store's credential.
+
+A remote store is where namespaces keep their content: its endpoint, bucket and
+the rest are its settings, and its credential is a secret the server seals and
+never prints. A store's endpoint is fixed at its creation; its other settings
+change through 'dfsctl setting set store:<id>'.
+
+```
+dfsctl store [flags]
+```
+
+**Examples:**
+
+```bash
+# Create a store, its credential read from a file
+dfsctl store create --setting remote.endpoint=https://s3.example.com --credential-file cred.txt
+
+# Replace a store's credential (prompts for it)
+dfsctl store set-credential 0b5c1a7e-2f4d-4c8e-9a1b-3c5d7e9f1a2b
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl store create`
+
+Create a remote store
+
+Create a remote store with its settings, each --setting key=value, a value
+that is JSON taken as it is and any other as a string. With --credential-file
+the store is created with the credential that file holds.
+
+```
+dfsctl store create [flags]
+```
+
+Flags:
+
+```
+      --credential-file string   File holding the store's credential
+      --setting stringArray      A setting of the store, key=value (repeatable)
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl store delete`
+
+Delete a remote store no namespace names
+
+```
+dfsctl store delete <id> [flags]
+```
+
+Flags:
+
+```
+  -f, --force   Delete without asking for confirmation
+      --wait    Follow the operation the command starts to its end
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl store get`
+
+Show a remote store
+
+```
+dfsctl store get <id> [flags]
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl store set-credential`
+
+Set a remote store's credential
+
+Set a remote store's credential, read from the file --credential-file names
+or, without it, from a prompt. The server proves the credential before it
+writes it.
+
+```
+dfsctl store set-credential <id> [flags]
+```
+
+Flags:
+
+```
+      --credential-file string   File holding the credential (prompts without it)
 ```
 
 Global flags:

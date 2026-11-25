@@ -19,54 +19,6 @@ func newTestRoot() (*cobra.Command, *bytes.Buffer) {
 	return NewRoot(cmdutil.Env{In: strings.NewReader(""), Out: &out, Err: &out}), &out
 }
 
-// Every v1 command dfsctl still lists refuses, naming itself, until the CLI is
-// rebuilt on the v2 API; the commands that work locally (context, completion,
-// version) and those already rebuilt (login, logout, password, operation,
-// user, group, netgroup, token, installation, share, grant, quota) are left
-// out of the walk.
-func TestV1CommandsRefuse(t *testing.T) {
-	kept := map[string]bool{"context": true, "completion": true, "version": true, "logout": true, "login": true, "password": true, "operation": true, "help": true,
-		"user": true, "group": true, "netgroup": true, "token": true, "installation": true, "share": true, "grant": true, "quota": true}
-	root, _ := newTestRoot()
-	refused := 0
-	var walk func(c *cobra.Command)
-	walk = func(c *cobra.Command) {
-		for _, sub := range c.Commands() {
-			if c == root && kept[sub.Name()] {
-				continue
-			}
-			if sub.Runnable() && !sub.HasSubCommands() {
-				refused++
-				if sub.RunE == nil {
-					t.Errorf("%s: no RunE, want the refusal", sub.CommandPath())
-				} else if err := sub.RunE(sub, nil); err == nil || err.Error() != sub.CommandPath()+": not available until the CLI is rebuilt on the v2 API" {
-					t.Errorf("%s: got %v, want the refusal naming the command", sub.CommandPath(), err)
-				}
-			}
-			walk(sub)
-		}
-	}
-	walk(root)
-	if refused == 0 {
-		t.Error("no command refused, want every v1 command")
-	}
-}
-
-// A v1 command run as a user runs it, through the root with its flags and
-// arguments parsed, exits with the refusal.
-func TestV1CommandRefusesThroughExecute(t *testing.T) {
-	for _, args := range [][]string{
-		{"status"},
-	} {
-		root, _ := newTestRoot()
-		root.SetArgs(args)
-		want := "dfsctl " + strings.Join(args, " ") + ": not available until the CLI is rebuilt on the v2 API"
-		if err := root.Execute(); err == nil || err.Error() != want {
-			t.Errorf("dfsctl %s: got %v, want %q", strings.Join(args, " "), err, want)
-		}
-	}
-}
-
 // The commands no API serves are not in the tree at all: running one is an
 // unknown command, not a refusal, and so is an unknown verb under a kept noun.
 func TestRemovedCommandsAbsent(t *testing.T) {
