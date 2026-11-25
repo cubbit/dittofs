@@ -145,9 +145,12 @@ var soakFlats = []soakFlat{
 	// Mixed-mix band 28..64 against the overwrite mix's 68..93, over the
 	// three measured runs: the removals keep no steady entry count — a
 	// delete empties a file the settle spends and the next write re-holds —
-	// so the width, not the level, is what moved; the halves' medians fall
-	// (49/41, 47/46, 40/50) with the churn's own cuts, so the floor of 8
-	// held clean, and a leak keeps its rise against that floor either way.
+	// so the width, not the level, is what moved. The halves' medians
+	// (49/41, 47/46, 40/50) span the WHOLE runs, the four warm-up windows
+	// soakWantFlat skips included, so they only bound what the check
+	// reads: its band is the post-warm-up sub-band, where the churn's cuts
+	// fall the same way, and a leak keeps its rise against the floor of 8
+	// in the check's own reading either way.
 	{"ExtentCount", func(s *soakSample) int64 { return s.ExtentCount }, 40, 8},
 	// Mixed-mix band 4..13 against the overwrite mix's 6..10, over the three
 	// measured runs: the removals hand the retire worker segments a tick at
@@ -205,11 +208,11 @@ type soakSample struct {
 // soakLog is what one run did: the operation counts, for the report a green
 // run and a finding both want, and the samples the flat checks read.
 type soakLog struct {
-	ops, writes, syncs, settles, repacks, crashes  int
-	refused, reclaimed, repackSpares, repackClaims int
-	written, freed                                 int64
-	repackWall                                     time.Duration
-	samples                                        []soakSample
+	ops, writes, syncs, settles, repacks, crashes int
+	refused, reclaimed, repackSpares              int
+	written, freed                                int64
+	repackWall                                    time.Duration
+	samples                                       []soakSample
 
 	// truncates and deletes are the removals the mix drew, and wedged the
 	// operations the churn could not land over its bounded reclaim attempts —
@@ -626,25 +629,10 @@ func soakRepack(t *testing.T, f *journaltest.Fixture, log *soakLog) {
 		log.repackSpares++
 		return
 	}
-	// decision: a claim refusal spends the attempt rather than the run: the
-	// retire worker runs on real time the wall-clock runs outlive, and its
-	// pass holds a segment's claim while it retires the very unit this pass
-	// selected. The ledger's claim table refuses a second taker by design
-	// and calls its own answer uncounted and retryable — the claim's holder
-	// releases it without retiring when refused — which is how the retire
-	// queue answers it (a requeued id) and how the engine answers any failed
-	// repack step (logged, the refusal kept for retry). The overlap needs a
-	// run the worker's real-time ticks reach inside; a fixed-size leg ends
-	// before its first tick, so the overwrite-only calibration never met it,
-	// while the removals hand the worker segments to retire at every tick of
-	// a long run. Withdraw for a claim the journal never gives back — which
-	// the removals leg's drain and the standing runs' flat bands read in
-	// their own assertions anyway — never for one the worker holds and
-	// releases.
-	if errors.Is(err, journal.ErrClaimed) {
-		log.repackClaims++
-		return
-	}
+	// A claim refusal never reaches the run: the public Repack answers it
+	// freed 0 with no error, the worker's own retirement counting the
+	// attempt's segment — the run's drain and flat-band assertions read
+	// the outcome either way.
 	t.Fatalf("soak: repack: %v", err)
 }
 

@@ -82,8 +82,8 @@ func TestSoakRemovalChurnDrains(t *testing.T) {
 
 	repacksBefore := log.repacks
 	stuck, unreclaimed := soakDrainWait(t, f, log)
-	t.Logf("removal drain: %d repacks spent of the run's %d total, the run's passes spent %d attempts on a claim the retire worker held",
-		log.repacks-repacksBefore, log.repacks, log.repackClaims)
+	t.Logf("removal drain: %d repacks spent of the run's %d total",
+		log.repacks-repacksBefore, log.repacks)
 
 	if len(stuck) > 0 {
 		st := f.J.Stats()

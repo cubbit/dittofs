@@ -197,12 +197,11 @@ func TestCarriedRemovalsRetireTheirSourcesAndUnwindTheCycle(t *testing.T) {
 
 	// The first pass: its unit carries the first truncate into the copy
 	// target — the record's second placement — and retires the source.
-	freed, err := p.repack(context.Background(), copySegCap*8, sa)
-	if err != nil {
+	// Who retired the source is not the assertion's to name: a worker can
+	// have won the claim, and then the pass answers freed 0 with no error
+	// while the leaving reads the same.
+	if _, err := p.repack(context.Background(), copySegCap*8, sa); err != nil {
 		t.Fatalf("Repack over the first cycle segment: %v", err)
-	}
-	if freed <= 0 {
-		t.Fatalf("Repack over the first cycle segment freed %d, want the source retired by the unit that carried its truncation", freed)
 	}
 	if !p.setGone(sa) {
 		t.Fatal("the first cycle segment is still in the set, want the carried record's second placement to free its source to retire while the record stays undroppable")
@@ -227,12 +226,8 @@ func TestCarriedRemovalsRetireTheirSourcesAndUnwindTheCycle(t *testing.T) {
 	// The second pass over the other cycle segment: the mirror unit carries
 	// the second truncate into the same copy target and retires it, and the
 	// first record's drop test then releases at the durable relay.
-	freed, err = p.repack(context.Background(), copySegCap*8, sb)
-	if err != nil {
+	if _, err := p.repack(context.Background(), copySegCap*8, sb); err != nil {
 		t.Fatalf("Repack over the second cycle segment: %v", err)
-	}
-	if freed <= 0 {
-		t.Fatalf("Repack over the second cycle segment freed %d, want the source retired by the unit that carried its truncation", freed)
 	}
 	if !p.setGone(sb) {
 		t.Fatal("the second cycle segment is still in the set, want the unit that carried its truncation to retire it")

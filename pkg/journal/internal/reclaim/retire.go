@@ -523,7 +523,12 @@ func (w *Worker) handle(id core.SegmentID, locs []segment.Location, first time.T
 	// reclaimable storage retained, never a record lost. Overturned by a
 	// retirement path that empties a segment's last placement without the
 	// SegmentRetired sweep, which would hand a mate over into a class the
-	// mark no longer protects, or by a hand-over that skips this gate.
+	// mark no longer protects, or by a hand-over that skips this gate — the
+	// pass's own retirement of its claimed source (pass.go's retire) and
+	// the open's emptying of a recovery-ended segment (recovery/empty's
+	// retirement) are the two such paths today: both must answer for the
+	// holds their source's classes' survivors carry through the retirer's
+	// retired hook, as the unlink's re-hold rule does.
 	if w.beforeGate != nil {
 		w.beforeGate(id)
 	}
@@ -544,10 +549,13 @@ func (w *Worker) handle(id core.SegmentID, locs []segment.Location, first time.T
 	// raise before this read, and no other flight can touch these classes
 	// while this candidate's own marks stand. A held answer here is a
 	// swept survivor become the class's last placement — the record must
-	// stay, so the entry is dropped, never handed over, and the marks the
-	// gate took remain the candidate's own, which a later hand of it
-	// treats as not busy, exactly the self-mark rule.
+	// stay, so the marks this call just took come back off — nothing of the
+	// segment is in flight to hold them against, and a mark kept by a
+	// dropped candidate could refuse its class-mates' hand-overs from a
+	// wait its own segment, held again, may never let them out of — and
+	// the entry is dropped, never handed over.
 	if w.tr.Held(id) {
+		w.tr.unmarkClassesInFlight(id)
 		w.segs.Release(id)
 		w.drop(id)
 		return

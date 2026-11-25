@@ -2,7 +2,6 @@ package journal
 
 import (
 	"github.com/cubbit/dittofs/pkg/journal/internal/core"
-	"github.com/cubbit/dittofs/pkg/journal/internal/segment"
 )
 
 // The journal's errors, declared in internal/core so the internal packages can
@@ -32,7 +31,6 @@ var (
 	ErrJournalReadOnly   = core.ErrJournalReadOnly
 	ErrUnsuitableStorage = core.ErrUnsuitableStorage
 	ErrUnreadable        = core.ErrUnreadable
-	ErrClaimed           = segment.ErrClaimed
 
 	// ErrReservationExhausted is a reserved write's refusal when what its
 	// reservation still holds does not cover the write. It is not a NoSpaceError:

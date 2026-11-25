@@ -768,17 +768,28 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		Maker:    maker,
 		FS:       fs,
 		ReadOnly: d.Admit,
-		Retired:  func(id core.SegmentID) { c.retiredSegment(id) },
-		// decision: the retired segment reaches the liveness tracker
-		// through this durable-retirement signal alone, not through the
-		// retirer's retired hook or the set's retire observer: on the
+		Retired:  func(id core.SegmentID) { tr.SegmentUnlinked(id); c.retiredSegment(id) },
+		// decision: the retired segment's REGISTRATIONS reach the liveness
+		// tracker through this durable-retirement signal alone, not through
+		// the retirer's retired hook or the set's retire observer: on the
 		// unlink's own path those fire after the unlink's directory sync
 		// has returned, whatever it answered — only this signal carries
 		// the sync's success (a recycle has made its removal durable
 		// before its hooks run) — and a crash that undoes the retirement
 		// must find the tracker's registrations intact — the surviving
 		// file rebuilds its records, and what a rebuild is owed cannot
-		// have been released on an unlink nothing made durable.
+		// have been released on an unlink nothing made durable. The
+		// retired hook carries the one thing a two-segment-wide identity
+		// class cannot wait on the signal for: the survivor's RE-HOLD,
+		// which errs held — a failed directory sync delivers no durable
+		// signal, so the class would stay two segments wide and nothing
+		// hold the survivor, and the two hand-over paths that consult no
+		// in-flight gate (a pass retiring its own source, the open's
+		// emptying of a recovery-ended segment) could retire it with the
+		// record's only live placements in it. The re-hold releases no
+		// registration and lowers no count, so whichever of the hook and
+		// the durable signal runs first performs the transition and the
+		// second finds it done.
 		// Both halves of the tracker's own gate ride the signal: the
 		// files the call carries are the index's own, not the tracker's
 		// registry fill — the registry names only files with registered
@@ -788,10 +799,11 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		// itself made, so the ranges reach the index's SegmentGone, whose
 		// contract demands the unlink be durable, in the same delivery.
 		// The ceiling: a failed directory sync delivers neither, so the
-		// tracker keeps a retired segment's registrations — holds it
-		// answered not held, for the segment is gone from the set — and
+		// tracker keeps the gone segment's registrations — its own state
+		// answers by what remains, for the segment is gone from the set,
+		// and its classes' survivors by the retired hook's re-hold — and
 		// its files' drop ranges stay, until the next open's rebuild
-		// recomputes both.
+		// recomputes all of it.
 		Durable: func(ret segment.Retirement) {
 			tr.SegmentRetired(ret.ID, state.Index.FilesOfSegment(ret.ID))
 			tr.RemovalDurable(ret.ID)

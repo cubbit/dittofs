@@ -100,9 +100,11 @@ func TestALossRecordCarriedFromItsSegmentJournalLevel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the pass over the loss record's segment: %v", err)
 	}
-	if freed <= 0 {
-		t.Fatalf("the carrying pass freed %d bytes, want the damaged source segment's storage: a pass that failed over a registration naming no place or share frees nothing, for it retires nothing", freed)
-	}
+	// Who retires the source is not the row's to name: a pass that won
+	// its claim frees its storage itself, and a worker that won it first
+	// answers the pass freed nothing with no error — the retirement reads
+	// the same in the source's leaving the set either way, and that is
+	// what the row asserts below.
 
 	// The source is a damaged segment, so its row stays until the journal
 	// closes — the damage stays counted — and its retirement reads in
@@ -122,34 +124,27 @@ func TestALossRecordCarriedFromItsSegmentJournalLevel(t *testing.T) {
 	}
 
 	// The caller's Settle, covering the marker the loss record left, ends
-	// the record's liveness, and the row reads the ending where the index
-	// holds it: the copy's registration is the only entry the file has
-	// left — its one written extent the corrupted read dropped — so the
+	// the record's liveness — the settle's relay to the tracker's re-test
+	// spends the carried copy's registration — and the row reads the
+	// ending in the registration itself, for the index tells the two
+	// apart: Settle drops the marker and spends the registration in one
+	// call, and an index count cannot fail on the half the row names. The
 	// count before the settle names the carried copy standing, live
-	// without its marker covered, and zero after it names the settle's
-	// own spend. The copy's segment itself — the stream's active one,
-	// holding no more than the copy's header past its last catalogued
-	// point — sits below the idle sealer's threshold and never seals
-	// within this row's window, so no retirement of it can be the settle's
-	// proof: the storage story ended one phase early, with the damaged
-	// source the carrying pass retired above.
-	//
-	// ExtentCount is journal-wide while this row seeds exactly the one
-	// file, so the figure reads the copy's registration alone.
-	extBefore := f.J.Stats().ExtentCount
-	if extBefore < 1 {
-		t.Fatalf("the index holds %d entries before the settle, want the carried copy's registration live in it: nothing else of the file survived the corrupted read's drop", extBefore)
+	// without its marker covered; zero after it names the relay's own
+	// spend. The copy's segment itself — the stream's active one, holding
+	// no more than the copy's header past its last catalogued point —
+	// sits below the idle sealer's threshold and never seals within this
+	// row's window, so no retirement of it can be the settle's proof.
+	regsBefore := f.J.Inspect().LiveRecords()
+	if regsBefore != 1 {
+		t.Fatalf("the journal holds %d live registrations before the settle, want the one carried copy: the damaged source's registration retired with its segment above", regsBefore)
 	}
 	h.Settle(id, v)
 	deadline = time.Now().Add(backgroundWait)
-	for time.Now().Before(deadline) {
-		if f.J.Stats().ExtentCount == 0 {
-			break
-		}
-		time.Sleep(time.Millisecond)
+	for regs := f.J.Inspect().LiveRecords(); regs != 0 && time.Now().Before(deadline); time.Sleep(time.Millisecond) {
 	}
-	if extAfter := f.J.Stats().ExtentCount; extAfter != 0 {
-		t.Fatalf("the index holds %d entries after the settle, want none: the copy's registration is the liveness the settle was to spend, and a settle that spent nothing leaves it standing", extAfter)
+	if regsAfter := f.J.Inspect().LiveRecords(); regsAfter != 0 {
+		t.Fatalf("the journal holds %d live registrations after the settle, want none: the copy's registration is the liveness the settle's relay was to spend, and a settle that spent nothing leaves it standing", regsAfter)
 	}
 
 	// What the convergence pass then proves is only that nothing stands

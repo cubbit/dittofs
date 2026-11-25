@@ -943,6 +943,27 @@ func TestClassFlightSweepBetweenHeldReadAndGateNeverHandsOver(t *testing.T) {
 	src, mate := f.sealed(t), f.sealed(t)
 	tr.Register(oneRec(src))
 	tr.Register(oneRec(mate))
+
+	// The mate's pass, with the source's sweep driven inside the window:
+	// the hook runs on the worker's goroutine, between the mate's Held read
+	// (still false — the sweep has not run) and the class gate's consult.
+	// It is armed before Start — the worker reads it from its own goroutine,
+	// and a later write is a data race — and it early-returns while
+	// disarmed, leaving the source's own hand-over pass untouched; the
+	// sweep itself runs once, through a sync.Once, whatever passes reach
+	// the gate after the arming.
+	var armed atomic.Bool
+	var sweepOnce sync.Once
+	swept := make(chan struct{})
+	w.beforeGate = func(id core.SegmentID) {
+		if id != mate || !armed.Load() {
+			return
+		}
+		sweepOnce.Do(func() {
+			tr.SegmentRetired(src, nil)
+			close(swept)
+		})
+	}
 	w.Start()
 
 	// The flight: the source is handed over and the real retirer retires
@@ -961,17 +982,7 @@ func TestClassFlightSweepBetweenHeldReadAndGateNeverHandsOver(t *testing.T) {
 		t.Fatalf("Enqueue called %d times for the source's hand-over, want 1", got)
 	}
 
-	// The mate's pass, with the source's sweep driven inside the window:
-	// the hook runs on the worker's goroutine, between the mate's Held read
-	// (still false — the sweep has not run) and the class gate's consult.
-	swept := make(chan struct{})
-	w.beforeGate = func(id core.SegmentID) {
-		if id != mate {
-			return
-		}
-		tr.SegmentRetired(src, nil)
-		close(swept)
-	}
+	armed.Store(true)
 	w.Emptied(mate, at64(mate))
 	select {
 	case <-swept:

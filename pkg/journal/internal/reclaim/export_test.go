@@ -33,10 +33,7 @@ func (t *Tracker) LivePlacementsOf(rec Rec) int {
 	t.rm.Lock()
 	defer t.rm.Unlock()
 	n := 0
-	for r := range t.identities[identityOf(rec)] {
-		if r.Seg != rec.Seg {
-			continue
-		}
+	for r := range t.identities[identityOf(rec)][rec.Seg] {
 		if rs, ok := t.recs[r.File]; ok {
 			n += rs[r]
 		}

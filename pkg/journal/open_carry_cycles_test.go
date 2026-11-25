@@ -254,7 +254,8 @@ func carryCycleRequirePlacements(t *testing.T, seam *kit.Seam, id JournalID, fil
 // the proven copy, the class holding neither — stays pinned where its seam
 // exists: the tracker's RegisterAtOpen transition (the reclaim package's
 // unit tests) reads the registrations a rebuild that proves both copies
-// would feed.
+// would feed. The leg guards crash safety — errs held through the window,
+// released by the settle — not the hold rule.
 func TestAReopenBetweenTheCarryAndTheUnlinkLeavesNoWedge(t *testing.T) {
 	j, th, seam, dir, id, clock, file, _, src, vT := openCarryCycleLeg(t)
 	defer func() { _ = th.Close() }()
@@ -352,7 +353,9 @@ func carryCycleHeldSafeAndDrainable(t *testing.T, j *Journal, file FileID, src S
 // direction. The re-hold is honest liveness, not a leak: the held source
 // stays through several of the retire worker's own ticks, and the
 // settlement that covers the removal's marker releases the registration and
-// retires the source through the same ordinary reclamation.
+// retires the source through the same ordinary reclamation. The leg guards
+// that crash direction alone, not the hold rule: one placement is one
+// placement under any rule.
 func TestACrashThatLosesTheCarriedCopyReholdsItsOriginal(t *testing.T) {
 	j, th, seam, dir, id, clock, file, _, src, vT := openCarryCycleLeg(t)
 	defer func() { _ = th.Close() }()
