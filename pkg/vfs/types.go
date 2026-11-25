@@ -153,6 +153,8 @@ const (
 	SchemeOwner      = identity.SchemeOwner
 	SchemeQualified  = identity.SchemeQualified
 	SchemeOwnerGroup = identity.SchemeOwnerGroup
+	SchemeWho        = identity.SchemeWho
+	SchemeWhoGroup   = identity.SchemeWhoGroup
 )
 
 // Call is one call's caller: the Identity it proved and, beside it, never in
