@@ -19,7 +19,9 @@ the volume rule RFC 3 §2.8 sets apart. Cited, not owned: epic 1's D1 (a call in
 direction returns that direction's `Flow.Health` error) and its `Stats`; epic 2's D1 and D2 (the
 fault wrapper's `Inject`, `Fail` and `Hold`, a probe held before the store's call); epic 3's D9,
 D10 and D12 (the fixed-values table, the admission step, the bubble), as its open pull request
-#5940 gives them; RFC 4 plan epic 8's D6 and its §9 point 3, which this document answers (D3).
+#5940 gives them; epic 4's D10, D11 and D12 (the outcome hook `half.onOutcome`, the syncer's own
+trips wrapping `remote.ErrTransient`, its values in `fixed.go`) and T4.1's `verdict`, as its open
+pull request #5998 gives them; RFC 4 plan epic 8's D6 and its §9 point 3, which this document answers (D3).
 Every citation is `develop`'s text. The code lands on `feat/storage-v2`, and the paths below are
 paths there.
 **Track:** C.
@@ -27,9 +29,11 @@ paths there.
 **Depends on:** **S2**, epic 2's `Inject` with `Op: "health"`, `Fail` and `Hold` over RFC 4's
 in-memory store. **E3**: T3.2's registry (`Register`, `Unregister`, the group by `ProbeKey`),
 T3.5's `admit`, `fixed.go` and the half's counters, T3.7's in-memory opener and the bubble its
-D12 recommends (pending the user's answer; §9). **E4**, for T5.4 only: the classification of a transfer's end as
-counting toward health or not, the end of its attempt loop where E5 records the outcome, and the
-retries the "§2.8 re-admission backoff" row runs over.
+D12 recommends (pending the user's answer; §9). **E4**: T4.1's first-byte bound in `fixed.go` (its D12),
+for T5.2's probe bound; for T5.4, T4.6's outcome hook (its D10), `half.onOutcome`, handed
+`outcome{dir, ok, counts, cause}` once per ended try, `counts` and `cause` being T4.1's
+`verdict.counts` and `verdict.cause`, and the retries the "§2.8 re-admission backoff" row runs
+over.
 **RFC 4 plan epic 6**, `codec.Store`, whose `Health` the probes call; for the "§1.3 destroyed
 material" row also RFC 5's chain and its in-memory key provider reporting a material destroyed.
 `pkg/health` is already on `feat/storage-v2`.
@@ -153,7 +157,7 @@ can cite them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R11 | A direction also turns unhealthy when every transfer in it over the 30 s failure window failed with an error that counts toward health, although its probe passed | invariant | RFC 3 §2.8; §2.10, "failure window" | T5.1, T5.4 |
-| R12 | Only what counts toward health moves health: `ErrTransient`, `ErrDenied`, a put's `ErrCorrupt`, a floor trip with the store's aggregate below the floor. `ErrNotFound`, `ErrThrottled`, a fetch's `ErrCorrupt`, a material error and a local error do not. E4 classifies; E5 counts only what E4 says counts | invariant | RFC 3 §1.3; §2.8; §6, RFC 3 S19, S27 | T5.4 |
+| R12 | Only what counts toward health moves health: `ErrTransient`, `ErrDenied`, a put's `ErrCorrupt`, a floor trip with the store's aggregate below the floor. `ErrNotFound`, `ErrThrottled`, a fetch's `ErrCorrupt`, a material error, a local error, a stall, a trickle and a floor trip with the aggregate above the floor do not. E4 classifies; E5 reads only E4's `counts` flag, never the error, since a stall wraps `ErrTransient` and does not count (E4's D11) | invariant | RFC 3 §1.3; §2.8; §6, RFC 3 S19, S27 | T5.4 |
 | R13 | A direction made unhealthy by the failure window recovers only on evidence about that store in that direction, a successful transfer or a probe of its own namespace. The shared probe passing does not clear it. It is retried by its own probe once per re-admission backoff, and never latched | invariant | RFC 3 §2.8; §6, RFC 3 S15 | T5.1, T5.4 |
 
 **The re-admission backoff**
@@ -211,9 +215,13 @@ the counters T5.5 keeps as E3's D11 does.
 
 ## 4. Decisions this epic takes
 
-- **D1, the failure window is a streak since the last success, fed once per transfer.** E4's
-  attempt loop calls the half once at each transfer's end with its final error and E4's verdict
-  on whether it counts. `next` keeps the time of the first counting failure since the last
+- **D1, the failure window is a streak since the last success, fed once per try.** E5's `New`
+  sets E4's `half.onOutcome` (E4's D10), which each ended try calls with
+  `outcome{dir, ok, counts, cause}`; a try the slow-tail rule cancelled calls nothing. `next`
+  reads `ok` and `counts`, and keeps `cause` as the direction's cause, never the error itself.
+  Per try rather than per transfer is what RFC 3 §2.8's "every transfer failed" needs for a
+  transfer whose four attempts span the window, and it lets the `ErrDenied` re-trip fire on the
+  first denied try. `next` keeps the time of the first counting failure since the last
   success, and trips the direction when a counting failure ends at least 30 s after it. A success
   clears it and sets *n* to one; an outcome that does not count neither extends nor clears it;
   turning unhealthy clears it. That is RFC 3 §2.8's "every transfer over the window failed" in
@@ -351,8 +359,8 @@ pkg/syncer/pool/
   outcome_test.go        T5.4  the failure window, re-trips, causes and the K-store wait
   log_test.go            T5.5  the logging row over slog.NewJSONHandler on a buffer
   pool.go                T5.2  Register and Unregister join and leave groups; Close stops loops (E3's)
+                         T5.4  New sets each half's onOutcome to the health recorder (E4's D10)
   half.go                T5.2  admit's health refusal, first, and the check at dispatch (E3's)
-  attempt.go             T5.4  the outcome recorded at a transfer's end (E4's)
   stats.go               T5.2  Refused.Unhealthy, ProbeDuration (E3's)
                          T5.5  Healthy, Unhealthy, Transitions
 internal/node/content/
@@ -384,8 +392,8 @@ internal/node/content/
   type eventKind uint8 // probeOwn, probeShared, probeThrottled, transferOK, transferFailed
   type event struct {
       kind   eventKind
-      err    error
-      counts bool // E4's verdict, for transferFailed
+      err    error // a probe's error, or E4's outcome.cause for a try
+      counts bool  // E4's outcome.counts, for transferFailed
   }
   type effect struct {
       turnedUnhealthy, turnedHealthy bool
@@ -522,11 +530,11 @@ internal/node/content/
 
 **Subtask T5.4 estimate: 4 man-days.**
 
-- **Track:** C. **Depends on:** T5.2, and E4's classification and attempt loop.
+- **Track:** C. **Depends on:** T5.2, and E4's T4.6, its outcome hook.
 - **Covers:** R1, R4, R6, R11, R12, R13, R15, R16, R17, R18, R31, R34.
 - **Deliverables:**
-  - `attempt.go`: one call at each transfer's end, its final error and E4's verdict into `next`
-    (D1). A counting failure also asks the group for a probe (D6).
+  - `pool.go`: `New` sets each half's `onOutcome` (E4's D10) to a recorder that feeds each try's
+    `outcome` into `next` (D1). A counting failure also asks the group for a probe (D6).
   - `probe.go`: own re-admission probes, ordered behind the shared probe and paused after a failed
     shared result (D3), with D3's `ponytail:` and `decision:` at the slot.
 
@@ -549,7 +557,10 @@ internal/node/content/
     `ErrCorrupt` for the window, put-unhealthy; the non-counting errors, `ErrNotFound`,
     `ErrThrottled`, a fetch's `ErrCorrupt`, a local error, and the transforms'
     `ErrMaterialUnavailable` and `ErrMaterialDestroyed`, leaving it healthy (catches the shared
-    probe clearing a window trip, and a non-counting error counted, R12, R13). Its "puts are
+    probe clearing a window trip, and a non-counting error counted, R12, R13). As E4's §9 asks,
+    the row also trickles every put below the floor for the window: put-unhealthy at
+    `Flow.Health`; and stalls one transfer while the aggregate is healthy: still healthy (catches
+    health read from the wrapped `ErrTransient` instead of `counts`, R12). Its "puts are
     retried once per probe interval" is asserted as once per re-admission backoff, one interval
     at *n* = 1 and two after a denial (R15, §9).
   - "§2.8 shared probe" (catches a probe per store: one entry per interval for 100 stores; a
@@ -603,7 +614,7 @@ flowchart TD
   E3(["E3: registry, admit, fixed.go, opener"]):::sync -. "fixed.go" .-> T5_1
   E3 -. "sites" .-> T5_2
   C6(["RFC 4 plan epic 6 codec.Store"]):::sync -. "Health" .-> T5_2
-  E4(["E4: classification and attempt loop"]):::sync -. "outcomes" .-> T5_4
+  E4(["E4: T4.6 outcome hook, half.onOutcome"]):::sync -. "outcomes" .-> T5_4
   T5_1["T5.1 The step function and its one backoff"]:::blocker --> T5_2["T5.2 Probe loops, refusal and Flow.Health"]:::blocker
   T5_2 --> T5_3["T5.3 The conditions' health.Source"]
   T5_2 --> T5_4["T5.4 Transfer outcomes, the failure window and own re-admission"]
@@ -634,10 +645,10 @@ A suggestion only: one pull request per subtask works as well.
   clock inside a `testing/synctest` bubble, as #5940 recommends. If the user declines it, they run
   on `pkg/sim`'s `TestClock` under the idle wait E3's fallback builds; no test here changes, only
   how its opener moves time.
-- **E4's document is not written yet.** This epic expects from it a verdict per transfer end,
-  counting toward health or not, at one site at the end of the attempt loop, and the first-byte
-  bound as a constant in `fixed.go`. If E4 reports per attempt instead, D1's streak takes the
-  attempts unchanged, since a transfer ends with its last attempt.
+- **E4's document is draft #5998.** This epic consumes its `half.onOutcome` and
+  `outcome{dir, ok, counts, cause}` (its D10), its `fixed.go` first-byte bound (its D12), and
+  reads `counts`, never the error (its D11). What it lacks for E5: nothing. If #5998 changes the
+  hook's shape, only T5.4's recorder follows.
 - **RFC 4 plan epic 8's §9 point 3 is answered by D3.** The wait is checked in T5.4 against 200
   stores on one key; its ceiling, about 9,000 window-tripped stores on one key at 50 ms, is D3's
   `ponytail:`. The customer scale target has 10⁴ namespaces, which could sit on one configuration;
