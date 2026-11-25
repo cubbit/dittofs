@@ -320,7 +320,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 | E8 🔀 | Clients and sessions | the callbacks value and the `Adapter` bytes first; `EXCHANGE_ID`, `SETCLIENTID`, confirms, `CREATE_SESSION`, `SEQUENCE`'s slots and reply cache, the session registry, lease and reclaim signals; A1's runner change after S2b | 10 | 28 | A | E10; E9, E11 and E12, partly; S4 |
 | E9 | Opens, stateids and locks | `OPEN` and its claims, stateid rules, NFSv4.0 owner sequences, `LOCK`, `LOCKT`, `LOCKU`, `TEST_STATEID`, `FREE_STATEID`, drain roles per request | 8 | 25 | C | E10 and E12, partly; E16 |
 | E10 | Delegations and the back channel | the back channel's calls, delegations offered, recalled, returned and revoked, administrator's revoke, path down with A2's service half after S2b, the drain test | 8 | 22 | A | E16 |
-| E11 🔀 | NLM, NSM and the datagram path | `core`'s datagram listener, NLM v4, NSM, grants sent, `SM_NOTIFY`, `DialClient`'s network | 12 | 32.5 | B | E16 |
+| E11 🔀 | NLM, NSM and the datagram path | `core`'s datagram listener, NLM v4, NSM, grants sent, `SM_NOTIFY`, `DialClient`'s network | 12 | 33 | B | E16 |
 | E12 | NFSv4.2 operations | `DEALLOCATE`, `SEEK`, `READ_PLUS`, `COPY`, `CLONE`, xattrs, the hold budget | 5 | 13 | C | E16 |
 | E13 🔀 | RPCSEC_GSS | the context table as NFS's `Security` stage over `gss`, `krb5`, `krb5i`, `krb5p` | 6 | 16 | B | E16 |
 | E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries | 2 | 4 | A | E16 |
@@ -631,7 +631,8 @@ for body types two procedures share) are in RFC 20 §2.5 by amendment A4; §6.2,
   nothing cached per host (the service, not the adapter, resends a grant). Ceiling: a port mapper
   round trip per grant. Upgrade to a cache per host when a profile shows them.
 - **E11's other shortcuts** are listed with their ceilings in its document's §4: the outbound queue
-  of 256 with 4 workers (D9), the notice resent for at most 15 minutes (D11), the per-node host and
+  of 256 with 4 workers (D9), the notices' own 4 workers, a round's first sends taking ⌈*s*/4⌉ × 2 s
+  behind *s* silent hosts, and the notice resent for at most 15 minutes (D11), the per-node host and
   share tables (D5, D10), a `GetAttr` per blocking `LOCK` (D6) and the datagram queue (D13).
 - **The reply cache keeps whole reply copies** (E8): a slot's cached reply is copied out of the
   pooled reply buffer, at most 8 KiB (RFC 21 §3.1), rather than holding a reference. Ceiling: 512 KiB
@@ -968,7 +969,7 @@ scripted client; N6's single-node half, N14's NFSv4 half.
 
 ### Epic 11 — NLM, NSM and the datagram path 🔀
 
-**Epic 11 estimate: 12 subtasks, 32.5 man-days.**
+**Epic 11 estimate: 12 subtasks, 33 man-days.**
 
 NFSv3's locking side protocols, over TCP and UDP, and the calls the server makes to an NLM host.
 

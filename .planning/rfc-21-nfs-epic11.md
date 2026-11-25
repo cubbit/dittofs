@@ -21,7 +21,7 @@ Cited, not owned: RFC 1813's NLM v4 appendix and the Open Group's XNFS, the only
 the wire structures, RFC 1833 for the port mapper's `GETPORT`, RFC 17 §4.9's admission (amendment A3, built by
 E4), RFC 18 §5.4, RFC 24 §6.1's goroutine and connection bounds.
 **Track:** B.
-**Epic 11 estimate: 12 subtasks, 32.5 man-days.**
+**Epic 11 estimate: 12 subtasks, 33 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E2's `nfsharness` on `memory.New` and knfsd's
 NLM and NSM captures (`test/pcap-corpus/nlm/`) cut into golden files. From the epics on other tracks,
 before the subtasks that name them: E3's T3.2, the scripted client and its call encoder, and T3.4,
@@ -351,13 +351,24 @@ that subtasks and tests can cite them.
   dropped by `UNSHARE`, `FREE_ALL`, a received `SM_NOTIFY` and a `Revoked` of the client. A `ponytail:`
   marker: per node, lost with it; upgrade when a host can reach another node with its opens kept (the
   cluster stage). Prior art: none found.
-- **D11. `SM_NOTIFY` is resent until the host's monitor answers.** A `Revoked` naming a lost shard puts
-  each host's notice, a record, on D9's outbound queue and returns at once (R14, R59). A notice asks
-  `GETPORT` once and keeps the port for its resends; each send's dial and reply wait are bounded at
-  2 s, well under the 10 s cadence, so a silent host holds one worker for 2 s and never stalls the
-  others. It is sent again on a timer every 10 s for at most 15 minutes, until the reply arrives or
-  the adapter stops; a notice given up is counted (§1.2), and one that finds the queue full waits for
-  its next turn. The state number and the
+- **D11. `SM_NOTIFY` is resent until the host's monitor answers, by its own workers.** A `Revoked`
+  naming a lost shard puts each host's notice, a record, in the adapter's notice table and returns
+  at once (R14, R59). The table holds at most one notice per host, a later report for the same host
+  replacing the state number of the one pending, so it is bounded by the hosts the adapter knows
+  and has no fixed length to fill. Notices never go on D9's queue: 4 notice workers of their own
+  send them, so a silent host never holds a worker a `*_RES` needs. One timer for the whole table,
+  on the adapter's clock, starts a round every 10 s; a round hands each pending notice with no send
+  in flight to the workers, those never sent before ahead of resends, and passes over one whose last
+  send has not ended, so a silent host has at most one send in flight and a round never queues a
+  second behind it. A notice asks `GETPORT` once and keeps the port for its resends; each send's
+  dial and reply wait are bounded at 2 s. The 15 minutes count on the adapter's clock from the report
+  that made the notice, rounds passed over included; a notice still unanswered then is dropped and
+  counted (§1.2), as is every pending notice when the adapter stops. The bound this leaves: in a
+  round, a host behind *s* silent ones waits up to ⌈*s*/4⌉ × 2 s for its send, about 20 s behind 40
+  silent hosts, inside the 90 s grace a told host reclaims in (RFC 21 §5.1). A `ponytail:` marker at
+  the workers: 4 of them, so a round's first sends take ⌈*s*/4⌉ × 2 s behind *s* silent hosts;
+  upgrade to sends that do not wait for their reply, one socket whose replies are matched by `xid`,
+  when a deployment's silent hosts make a round approach the grace period. The state number and the
   report after a restart need an RFC 17 change (Q1): this document writes option (a), a `State` field
   on `Revocation` and the reports of a start held for the NLM `Callbacks` the adapter registers when
   it starts, whose service half is T11.8. A `ponytail:` marker at the sender: a host silent for 15
@@ -485,7 +496,8 @@ internal/adapter/nfs/
     notice.go                    T11.7  SM_NOTIFY sent, its resend (D11)
   rpcclient/
     rpcclient.go                 T11.2  Call, by TCP from the floating address; Notify, by UDP
-    queue.go                     T11.5  the outbound queue and its fixed workers (D9, D11)
+    queue.go                     T11.5  the outbound queue and its fixed workers (D9)
+    notices.go                   T11.7  the notice table, its round timer and its workers (D11)
     getport.go                   T11.2  GETPORT over TCP (D12)
 pkg/vfs/, pkg/openstate/, internal/vfs/   T11.8  Revocation.State; a start's reports held for NLM Callbacks (Q1)
 pkg/openstate/clients.go         T11.12 an NLM record's zero Boot and its first state adopted (Q4)
@@ -739,7 +751,7 @@ pkg/openstate/clients.go         T11.12 an NLM record's zero Boot and its first 
 
 ### T11.7 NSM: `SM_NOTIFY` received and sent
 
-**Subtask T11.7 estimate: 2.75 man-days.**
+**Subtask T11.7 estimate: 3.25 man-days.**
 
 - **Track:** B. **Depends on:** T11.3, T11.2, T11.5, T11.6.
 - **Covers:** R8, R14, R17, R18, R42, R43, R59.
@@ -749,7 +761,7 @@ pkg/openstate/clients.go         T11.12 an NLM record's zero Boot and its first 
     by `nfs.go`, `Forget` dropping the host's entries of D5 and D10 in `ops/nlm`, so a call after the
     notice never reconnects under the old state.
   - `ops/nsm/notice.go` and `nfs/callbacks.go`'s `Revoked` for an NLM host: on `RevokedShardState`,
-    the notice queued on D9's outbound queue as D11 says, sent through `rpcclient.Notify` from the
+    the notice put in the notice table and sent by its own workers as D11 says, sent through `rpcclient.Notify` from the
     floating address in the `Adapter` bytes, naming that address in text form (D22), with the
   report's state number; a
     `Revoked` that ends the client drops its entries of D5 and D10.
@@ -761,15 +773,31 @@ pkg/openstate/clients.go         T11.12 an NLM record's zero Boot and its first 
   - A report of a lost shard sends one datagram per host, resent every 10 s on the adapter's clock
     until `Host`'s NSM service replies, with one `GETPORT` per notice, and `Revoked` returns before
     the first send ends.
-  - A silent host does not delay another host's notice past one 2 s send bound.
+  - A silent host holds only a notice worker, never one of D9's: a `*_RES` is sent while every
+    notice worker waits on a silent host.
+  - A silent host has at most one send in flight: a round that finds its last send not ended passes
+    it over, and its 15 minutes still run.
+  - In a round, a host's first notice goes ahead of every resend, and behind *s* silent hosts it is
+    sent within ⌈*s*/4⌉ send bounds of 2 s.
   - `SM_MON` and `SM_UNMON` from a peer are `PROC_UNAVAIL`.
 - **Tests:** through `nfsharness` and `Host`: the two `SM_NOTIFY` sources (catch a host freed from
   another address, R17); `Revoked` called on the callbacks value with an `Adapter` bytes value E8's
   codec wrote, and the datagram `Host` receives from `127.0.0.3`, its state and server name decoded
   (catch a notice from a node address or to the wrong host, R43); `Host` silent for two resends, then
   answering, the silence scripted as `Host`'s NSM port closed so each send fails at once and only the
-  injected clock paces the resends (catches a single send, D11); one `Host` silent and one answering,
-  the second's notice timed (catches a sender stalled behind a silent host, D11); `Revoked`'s
+  injected clock paces the resends (catches a single send, D11); nine `Host`s silent, more than twice
+  the 4 notice workers, their silence scripted as an NSM port and port mapper that read and never
+  answer, and one answering, reported in that order: a `*_RES` queued while all 4 notice workers wait
+  is received by its host before any of those sends ends (catches notices sharing D9's workers), the
+  answering host's notice is received within ⌈9/4⌉ send bounds, a bounded wait that is the assertion
+  since the 2 s is a socket deadline no clock drives (catches notices queued behind every silent host's
+  full wait twice over), and with the clock advanced 10 s twice while the first round's sends are
+  still waiting, each silent host has received one send per round it was not passed over in and never
+  two at once, while a host reported in the second round receives its first notice before any
+  silent host's resend (catch resends crowding the round, and a first notice queued behind them, D11);
+  the clock advanced past 15 minutes in 10 s rounds with one host's sends never ending, its notice
+  dropped and counted at 15 minutes from its report (catches a cap counting only the rounds sent);
+  `Revoked`'s
   return timed against a silent `Host` (catches a callback past its deadline, R14).
 - **Rules:** rule 9's marker of D11.
 
@@ -917,7 +945,7 @@ path. T11.11 closes the epic once S3 holds, its restart row once S5 does.
 | --- | --- | --- | --- | --- |
 | 1 | T11.1, T11.2 | 6.25 | E10's T10.1 | the NLM translations and the outbound client every handler and callback builds on |
 | 2 | T11.3, T11.4, T11.5 | 9 | PR 1 | NLM locking end to end: a host's client, its locks, a blocked lock granted, the asynchronous forms |
-| 3 | T11.12, T11.6, T11.7, T11.8 | 8.75 | PR 2 | share reservations and NSM's notices, the service halves once Q4 and Q1 are agreed |
+| 3 | T11.12, T11.6, T11.7, T11.8 | 9.25 | PR 2 | share reservations and NSM's notices, the service halves once Q4 and Q1 are agreed |
 | 4 | T11.9 | 4 | PR 1 | `core`'s datagram listener, which needs only `Conn.Local`; open beside PR 2 |
 | 5 | T11.10, T11.11 | 4.5 | PR 3, PR 4 | NLM and NSM over UDP, which serves T11.3's rows, and the RFC's rows over loopback and on the composed node |
 
@@ -982,11 +1010,12 @@ A second batch, after those:
 
 Gaps and assumptions, not questions:
 
-- **The estimate is 32.5 man-days against the plan's 22 for 7 subtasks**, +10.5, and this pull request
+- **The estimate is 33 man-days against the plan's 22 for 7 subtasks**, +11, and this pull request
   updates the plan's two lines for the epic (its §2 row and its epic estimate line); the
   programme totals reconcile when the breakdown pull requests merge. The difference is mostly work the
   plan did not list: the two service halves, T11.8 (2.5) and T11.12 (1.5); the outbound queue and
-  connection count RFC 24 §6.1 asks for (D9, D11, about 1); the fault store and positive notice of
+  connection count RFC 24 §6.1 asks for (D9, D11, about 1); the notices' own workers and rounds
+  (D11, 0.5); the fault store and positive notice of
   T11.11 (0.25). The remaining 5.25 is the plan's own content priced subtask by subtask, `core`'s
   datagram listener (T11.9, 4) chief among it.
 - The plan's §4.3 listed "NLM grants resent by one timer each" for this epic, and its expected content
