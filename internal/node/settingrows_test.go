@@ -92,10 +92,10 @@ func (w *wired) appliedReaches(t *testing.T, path string, want apiv1.Applied) {
 
 // §2.3 reconcile: a live share setting changed while the store fails the
 // node's reads of the settings, its writes passing, is not applied by the
-// pass that read the counters and failed its walk, and applies at the next pass whose read works, with no write
-// after it: the settings counter stands where the change left it, the
-// node's snapshot holds the change, and the setting reads applied through
-// the API.
+// pass that read the counters and failed its walk, and applies at the next
+// pass whose read works, with no write after it: the settings counter stands
+// where the change left it, the node's snapshot holds the change, and the
+// setting reads applied through the API.
 // Catches a missed generation lost for good.
 func TestWiredSettingChangedWhileReadsFailAppliesAtTheNextRead(t *testing.T) {
 	onBackends(t, func(t *testing.T, memory bool) {
