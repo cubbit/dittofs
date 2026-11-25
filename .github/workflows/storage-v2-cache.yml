@@ -11,7 +11,14 @@ name: Storage-v2 build cache
 # decision: only the unit job's race and coverage build is warmed: it is the
 # longest job of a queue run. Go Checks and Integration still build cold in the
 # queue. Drop this workflow when feat/storage-v2 becomes the default branch: its
-# own pushes then save in the default branch's scope.
+# own pushes then save in the default branch's scope. The two branches never
+# meet with this file: feat/storage-v2's guard requires every cache save to run
+# on push only, so the merge that lands feat/storage-v2 on develop deletes it.
+#
+# decision: a queue job with no flavor (Go Checks, Integration) looks up the
+# shared key, and the lookup also matches it as a prefix, so it restores this
+# entry. It then starts with the modules and every dependency built, and still
+# reports a miss. A 1 GB download is cheaper than a cold build.
 
 on:
   workflow_run:
@@ -27,7 +34,10 @@ permissions:
 
 concurrency:
   group: storage-v2-cache
-  cancel-in-progress: true
+  # A later push waits for the running warm-up rather than cancelling it: while
+  # go.sum is unchanged both build the same key, and the waiting one then finds
+  # it saved and stops.
+  cancel-in-progress: false
 
 jobs:
   race-cover:
@@ -56,20 +66,30 @@ jobs:
         if: steps.go.outputs.cache-hit != 'true'
         run: go mod download -x
 
-      # The unit job's compiles: -race and coverage over the same packages,
-      # then its non-race ones, the whole module's vet and the cells that run
-      # without -race. No test runs: -run matches no name. The cells built
+      # The unit job's compiles. No test runs: -run matches no name. A coverage
+      # build leaves no plain -race compile of a module package, so the
+      # whole-tree cell's packages build again without it. The cells built
       # with extra tags stay cold.
-      - name: Build the unit job's test binaries
+      - name: Build the race and coverage test binaries
+        id: race
         if: steps.go.outputs.cache-hit != 'true'
         run: |
           go build -o "$RUNNER_TEMP/dt" ./cmd/dt
           go test -race -count=1 -run='^$' -coverprofile="$RUNNER_TEMP/coverage.txt" ./pkg/... ./internal/... ./cmd/... ./test/...
-          go vet ./...
-          go test -count=1 -run='^$' ./pkg/journal/... ./internal/prof/ ./internal/adapter/... ./pkg/resources/
+          go test -race -count=1 -run='^$' ./internal/node/ ./internal/node/api/ ./cmd/gendocs/ ./pkg/identity/ ./pkg/bootstrap/
+
+      # Separate steps, so a package list that drifts from the unit job fails
+      # here, visibly, and the race build above is still saved.
+      - name: Vet the module
+        if: steps.race.outcome == 'success'
+        run: go vet ./...
+
+      - name: Build the cells that run without -race
+        if: steps.race.outcome == 'success'
+        run: go test -count=1 -run='^$' ./pkg/journal/... ./internal/prof/ ./internal/adapter/... ./pkg/resources/
 
       - name: Save the Go caches
-        if: steps.go.outputs.cache-hit != 'true' && steps.go.outputs.key != ''
+        if: ${{ !cancelled() && steps.race.outcome == 'success' && steps.go.outputs.key != '' }}
         uses: actions/cache/save@v6
         with:
           path: ${{ steps.go.outputs.path }}
