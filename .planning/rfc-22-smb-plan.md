@@ -982,7 +982,7 @@ Appendix G's `CREATE`, `CLOSE`, `READ`, `WRITE` and `FLUSH`; RFC 19 §2.4, §3.4
 - T7.1 `CREATE`'s and `CLOSE`'s tagged structs, with every create context of Appendix D decoded and
   the response contexts encoded.
 - T7.2 `FileId`s: the persistent half from the open's `OpenID` and shard, which every `CREATE` asks
-  with `OpenRequest.WantOpenID` (RFC 22 §6.1), through `pkg/vfs`'s codec;
+  with `WantOpenID` (RFC 22 §6.1), through `pkg/vfs`'s codec;
   the volatile half in the session's table, never reissued while held (RFC 20 §2.2); a related
   member's current open; a `FileId` answered `STATUS_FILE_CLOSED` for `ErrState` (`Revoked`), then
   freed with `FreeState` in the handler (RFC 22 §16.5's row; RFC 14 §5.3; plan gap 14, amendment
@@ -1074,7 +1074,7 @@ bounds by cause; Appendix D's `RqLs`; Appendix G's `OPLOCK_BREAK`; RFC 20 §3.3'
 - T9.1 The lease's and oplock's tagged structs: break notifications and acknowledgements in both
   forms.
 - T9.2 Caching requests on `CREATE`: lease key, parent, epoch and version, oplock levels as grant
-  kinds, with `OpenRequest.GrantBelongsToOpen` set on every `CREATE` so an oplock is its open's own
+  kinds, with `GrantBelongsToOpen` set on every `CREATE` so an oplock is its open's own
   (RFC 22 §6.2); none for a guest or null session; the join test through `OpenRequest.Conn` (plan gap
   18); the service grants none on a directory (RFC 22 §6.2; plan gap 23, T2.5) and refuses the
   other-file key with

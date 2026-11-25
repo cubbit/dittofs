@@ -761,7 +761,7 @@ SMB names a client by its `ClientGuid`, and one Windows machine sends one
 carries many users' sessions at once.
 
 - The client record of an SMB client **MUST** be keyed by `ClientGuid` alone
-  and hold no principal: the adapter's `Connect` sets `ClientInfo.ClientIsMachine`
+  and hold no principal: the adapter's `Connect` sets `ClientIsMachine`
   and `Recovery` reconnect
   ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types))
   ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)): the first
@@ -946,7 +946,7 @@ up its cache, and how a reconnect finds its open.
   that may read the file ([§6.4](#6.4%20Durable%20and%20persistent%20handles));
   virtual-disk sharing is refused.
 - The FileId's persistent half **MUST** be derived from the RFC 14 open's
-  `OpenID`, which every `CREATE` asks with `OpenRequest.WantOpenID`, unique across the installation
+  `OpenID`, which every `CREATE` asks with `WantOpenID`, unique across the installation
   ([RFC 14 §2.2](rfc-14-open-state.md#2.2%20Open)), and name the open's shard, so any node finds the open from it and routes a
   reconnect to its primary without the path (§6.4).
 - Its volatile half names the entry in the gateway node's table and is
@@ -1017,7 +1017,7 @@ file open locally, until the server takes the promise back.
   kind of grant as an NFS delegation: Level II is read, exclusive is read and
   write, batch is read, write and handle.
 - An oplock's grant is keyed by its open, so two opens by one client break each
-  other as oplocks always have: every `CREATE` sets `OpenRequest.GrantBelongsToOpen`,
+  other as oplocks always have: every `CREATE` sets `GrantBelongsToOpen`,
   which makes a grant asked with no lease key the open's own
   ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)); a lease's grant is keyed by its lease key, so
   they do not.
@@ -1975,7 +1975,7 @@ callers hold it is
 and what it lets a decision grant is
 [RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)'s.
 On the wire: take-ownership is not among them — it is the `WRITE_OWNER` right,
-decided by the DACL; every SMB request's `Call` leaves `PrivilegeOnEveryCall` unset
+decided by the DACL; `SMBCaps`, which every SMB request states, leaves `PrivilegeOnEveryCall` unset
 ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), a `CREATE` with `FILE_OPEN_FOR_BACKUP_INTENT` sets
 `OpenRequest.Backup` (§16.4), and the service marks the open privileged when its
 caller is, so every later request through the handle that `CREATE` made carries
@@ -2180,7 +2180,7 @@ link).
 
 Windows refuses to rename or delete a file in use in ways NFS does not. RFC 14
 checks MS-FSA's rules at the primary, so they hold whichever protocol has the
-file open. Every SMB request's `Call` sets `OpenFilesKeepNames`
+file open. `SMBCaps`, which every SMB request states, sets `OpenFilesKeepNames`
 ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), which asks the two refusals below that NFS does not
 make: a replace of an open target, and a rename or delete of a directory with an
 open inside it.
@@ -2408,10 +2408,10 @@ are checked against; an SMB session carries no claims.
   create's transaction.
 - **Privilege.** `FILE_OPEN_FOR_BACKUP_INTENT` sets `OpenRequest.Backup`
   (§16.4); whether the caller is privileged is the core's (§11).
-- **Capabilities.** The `Call` the router builds for every SMB request sets
-  `OpenFilesKeepNames` (§13) and leaves `PrivilegeOnEveryCall` unset (§11), and its
-  `Protocol` label is SMB, which no rule of the service reads
-  ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)). An adapter that left `OpenFilesKeepNames` unset would get NFS's rule
+- **Capabilities.** The `Call` the router builds for every SMB request carries
+  `SMBCaps`, which sets `OpenFilesKeepNames` (§13), `WantOpenID`,
+  `GrantBelongsToOpen` and `ClientIsMachine`, and leaves `PrivilegeOnEveryCall`
+  unset (§11) ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)). An adapter that left `OpenFilesKeepNames` unset would get NFS's rule
   without an error, so §18's row for §13 is what catches it.
 
 ### 16.2 Request identity
@@ -2548,16 +2548,15 @@ mapping it needs is here.
 | --- | --- | --- | --- |
 | `Client.Name` | `ClientGuid` | — | indexed with the protocol; one record per machine (§4.4) |
 | `Client.Boot` | unused, zero | — | a `ClientGuid` carries no boot instance; a restarted machine reconnects its handles under the same record |
-| `Client.Owner`, `Client.Protect` | zero, false: `ClientInfo.ClientIsMachine` set | — | principals bind per session and per open (§4.4) |
+| `Client.Owner`, `Client.Protect` | zero, false: `ClientIsMachine` in `SMBCaps` | — | principals bind per session and per open (§4.4) |
 | `Client.Recovery` | reconnect | — | no client lease; listed per node with a session, released with the last; a null or guest call never connects one (§4.4) |
 | `Client.Reach.Sessions` | the nodes holding an authenticated session of the `ClientGuid`, each added by `Connect` at its first one and again at each new node epoch or when the `Connect` a session skipped behind failed; removed by the `Disconnect` that ends the node's last one, or with the node's loss or restart ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)) | none | the nodes asked to pick a session for a break whose opens are all disconnected and one persistent (§4.4); the record is not released while any remains (RFC 14 §2.1) |
 | `Client.Pending` | never set | — | an SMB client is confirmed in one step, at its first authenticated `SESSION_SETUP` |
 | `Client.Adapter` | — | empty | nothing SMB-only must outlive a connection at the client level |
 | `Open.Mode.Access` | `DesiredAccess`, as granted, generic rights expanded (§6.1) | — | `MAXIMUM_ALLOWED` passed as `vfs.MaximumAllowed`, which the service resolves to the granted mask (§11) |
 | `Open.Mode.Deny` | the complement of `ShareAccess` over read, write and delete | — | a share bit set allows that access; RFC 14 holds what is refused |
-| `OpenRequest.Backup` | `FILE_OPEN_FOR_BACKUP_INTENT` | — | the service sets `Open.Mode.Privileged` when its caller is privileged (§11, S28); the only open where privilege counts, as the `Call` leaves `PrivilegeOnEveryCall` unset |
-| `OpenRequest.WantOpenID` | set on every `CREATE` | — | the `OpenID` the FileId's persistent half carries (§6.1); a durable or persistent open needs it |
-| `OpenRequest.GrantBelongsToOpen` | set on every `CREATE` | — | a grant asked with no lease key, an oplock, is the open's own (§6.2) |
+| `OpenRequest.Backup` | `FILE_OPEN_FOR_BACKUP_INTENT` | — | the service sets `Open.Mode.Privileged` when its caller is privileged (§11, S28); the only open where privilege counts, as `SMBCaps` leaves `PrivilegeOnEveryCall` unset |
+| `Caps` | `SMBCaps` on every call, `CREATE` included: `OpenFilesKeepNames`, `WantOpenID`, `GrantBelongsToOpen`, `ClientIsMachine` | — | `WantOpenID`: the `OpenID` the FileId's persistent half carries (§6.1), which a durable or persistent open needs; `GrantBelongsToOpen`: a grant asked with no lease key, an oplock, is the open's own (§6.2) |
 | `Open.Durability` | `DHnQ`, `DH2Q`; persistent when `DH2Q` asks it on a continuously available share | — | §6.4 |
 | `Durable.Timeout` | the durable timeout the create negotiated | — | MS-SMB2 3.3.5.9.10 bounds |
 | `Durable.Create` | `CreateGuid` (`DH2Q`, `DH2C`) | — | zero for a v1 durable open |
