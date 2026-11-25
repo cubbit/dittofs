@@ -676,6 +676,12 @@ type Chain interface {
 	// Decode undoes the envelope's transforms. census is the block record's
 	// (§5.3): a body naming material outside it is ErrMalformed.
 	Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, hash [32]byte, body []byte, max int, census []Encoded) ([]byte, error)
+
+	// MaxDecodeLen is the largest body any registered transforms could have
+	// written from n bytes under any material, one per stage, plus the
+	// envelope, answered from the chain's registry. It sizes reads, and the
+	// put side's buffers (§3.1, below).
+	MaxDecodeLen(n int) int
 }
 
 // Attempt is one pinned chain. The engine releases it when the block commits
@@ -720,11 +726,6 @@ func Register(id transform.ID, name string, f transform.Factory)
 // NewChain builds the configured transforms. It refuses a duplicate, two
 // transforms of one stage, or a list out of stage order (§2.3).
 func NewChain(ctx context.Context, cfg []transform.Config, m keys.Provider) (transform.Chain, error)
-
-// MaxDecodeLen is the largest body any registered transforms could have
-// written from n bytes under any material, one per stage, plus the envelope.
-// It sizes reads, and the put side's buffers (§3.1, below).
-func MaxDecodeLen(n int) int
 ```
 
 In package `keys`:
@@ -784,7 +785,8 @@ the chain it pinned after the configuration changes, so the largest encoded
 block on a put is the maximum of `Attempt.MaxEncodedLen` over the open
 attempts, never the current chain's bound alone. That maximum changes at run
 time, which a pool sized once cannot follow, so the put side, like the read
-side, is sized once when the process starts by `MaxDecodeLen(Max)`, `Max` the
+side, is sized once when the process starts by `Chain.MaxDecodeLen(Max)`, which the
+node's content wiring calls on the chain it built, `Max` the
 largest chunk maximum of any namespace the process serves when it starts, and at
 least the default ([RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)); it bounds every chain that can be pinned,
 nothing updates it at run time, and a namespace opened after start with a larger

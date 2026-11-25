@@ -105,8 +105,9 @@ integration epics touch no v1 code (§1.5 rule 7).
   provider, in `keys/provider`, has no import cycle; the namespace ID is `entity.NamespaceID`,
   not a copy (§1.5 rule 7). The glossary says the `keys` package provides material.
 - **§3.1, the root package is the contract** (D1). `pkg/transform` holds the value types, the
-  `Transform`, `Chain` and `Attempt` interfaces and the errors; `Register`, `NewChain`,
-  `MaxDecodeLen`, the registry and the envelope are `pkg/transform/chain`'s, and the stages are
+  `Transform`, `Chain` and `Attempt` interfaces and the errors, with `MaxDecodeLen` a method of
+  `Chain`, answered from its registry, so the codec reaches it through the root; `Register`,
+  `NewChain`, the registry and the envelope are `pkg/transform/chain`'s, and the stages are
   `compress` and `encrypt`. The codec and the engine import only the root; the node's content
   wiring builds the chain and injects it, as RFC 8 §2.8 says.
 - **RFC 25 §3.9 and §7** gain `material_unknown`, `material_destroyed` and the `malformed`
@@ -172,7 +173,8 @@ RFC 8 offload plan's S1d, "transform pipeline agreed":
 - RFC 5 §3.1's symbols as amended here. In the root, the contract (D1): the ID and stage types
   and constants, `Transform`, `Encoded`, `Factory`, `Config`, the `Chain` and `Attempt`
   interfaces, `ErrMalformed` and `ErrTooLarge`. In `pkg/transform/chain`, with stub bodies:
-  `Register`, `NewChain`, `MaxDecodeLen` and the concrete chain and attempt. In
+  `Register`, `NewChain` and the concrete chain and attempt, whose `MaxDecodeLen` method the
+  root's `Chain` declares. In
   `pkg/transform/keys`, also a contract: `MaterialID`, `Provider` and the material errors.
   `pkg/transform` imports `keys`, so `keys` imports nothing of `pkg/transform`. `Provider.Remove` is not
   declared: RFC 5 §3.1 as amended has it land with its first caller, which adds it to the
@@ -478,7 +480,7 @@ Seams between this plan and the others, the offload contract's and RFC 13's:
 | RFC 3 | its `Descriptor` and `MaterialRef`, the census entry opaque to the syncer, and its own `ErrMaterialUnavailable` and `ErrMaterialDestroyed` (RFC 3 §1.3) | nothing: its memory bound is sized by the engine and the codec (below) |
 | RFC 4 | the block codec, which writes the census into the header (RFC 4 §3.2 to §3.4) and owns RFC 3 §2.2's memory-bound row on the codec's part; `PutControl` and `GetControl` (RFC 4 §4.13); LocalStack over HTTPS in `integration` (its epic 3) | `Attempt.Encode`, `Chain.Decode`, `MaxDecodeLen`, the stage count and the 255-byte material ID that bound the header census; `Attempt.MaxEncodedLen`, whose maximum over the open attempts, not the current chain's, bounds RFC 3 §2.2's upload memory, since a pin can outlive a chain change |
 | RFC 13 | `pkg/keyprovider`, whose exported surface does not change: epic 6 moves its key-file format to `internal/keyfile` and epic 7 its KMIP transport to `internal/kmip` (D5, D14); its importers (`pkg/secrets`, `internal/install`, `cmd/dfs`) are not touched, and its `kmip_integration_test.go` still runs over the moved transport | nothing: `pkg/transform` does not import it |
-| RFC 8 offload | the pin's holder and the census at commit (epic 15), and there the refusal of a plan keyed under another namespace's key (RFC 5 §8.2 T17's other half, its last Appendix B.2 row: epic 15's Intent step), the `Census` view (epic 19), the destroyed-material handling (epic 18), the salvage export (epic 20), the store adapter, its error mapping and the node's registration of collectors and alert rules (epic 21) | the root's `Chain` (`Pin`, `Decode`) and `Attempt.Release`, the chain the content wiring builds with `chain.NewChain` and injects, `chain.MaxDecodeLen`'s value, which the wiring hands the syncer for its memory bound, `keys.Provider`'s `Current` and `Get` for the chunk-ID and chunking keys it hands the carver, the salvage-key wrap, the destroyed-material notice; its content wiring (`internal/node/content`) supplies the `keys`-object store (D8) and the key-record view (D7) |
+| RFC 8 offload | the pin's holder and the census at commit (epic 15), and there the refusal of a plan keyed under another namespace's key (RFC 5 §8.2 T17's other half, its last Appendix B.2 row: epic 15's Intent step), the `Census` view (epic 19), the destroyed-material handling (epic 18), the salvage export (epic 20), the store adapter, its error mapping and the node's registration of collectors and alert rules (epic 21) | the root's `Chain` (`Pin`, `Decode`) and `Attempt.Release`, the chain the content wiring builds with `chain.NewChain` and injects, `Chain.MaxDecodeLen`, which the wiring calls on the chain it built to size the syncer's fetcher (RFC 3 §2.2), `keys.Provider`'s `Current` and `Get` for the chunk-ID and chunking keys it hands the carver, the salvage-key wrap, the destroyed-material notice; its content wiring (`internal/node/content`) supplies the `keys`-object store (D8) and the key-record view (D7) |
 
 ### 3.3 Blockers
 
@@ -519,7 +521,7 @@ On `feat/storage-v2`:
 ```text
 pkg/transform/                 E1 the contract: value types, Transform, Chain and Attempt
                                interfaces, errors; the import test
-pkg/transform/chain/           E1 Register, NewChain, MaxDecodeLen stubs; E3 registry,
+pkg/transform/chain/           E1 Register, NewChain stubs; E3 registry, MaxDecodeLen,
                                envelope, chain, Pin, chain ID, census view, the series of
                                RFC 5 §6; E9 settings.go, the store configuration's rows
 pkg/transform/transformtest/   E2 the transform conformance suite, the vector loader
@@ -741,11 +743,13 @@ The frozen surface of `pkg/transform`, with stub bodies, and the import test.
 **Owns:** RFC 5 §3.1 (the symbols, the pin included); §2.3's stage constants; §2.7's error
 values.
 **Done when:** S1, the RFC 8 offload plan's S1d, agreed with the RFC 4 and RFC 8 plans' authors;
-the import test passes on the empty tree and fails on a planted v1 import.
+the import test passes on the empty tree and fails on a planted v1 import; the codec's
+bounds reach `MaxDecodeLen` through the root's `Chain`, with no import of `chain`.
 
 **Expected content:**
 - §3.1's types, the `Transform`, `Chain` and `Attempt` interfaces, `Config` and the errors in
-  the root; `Register`, `NewChain` and `MaxDecodeLen` in `chain`; doc comments citing the RFC.
+  the root, `MaxDecodeLen` a method of `Chain`; `Register` and `NewChain` in `chain`; doc
+  comments citing the RFC.
 - `keys.Provider`, `MaterialID` and the material errors in `pkg/transform/keys`, and the
   chain's `Deps` (D2); the namespace ID is `entity.NamespaceID` (§1.3).
 - The salvage-key wrap (D16) and the destroyed-material notice (D17), declared in
