@@ -140,7 +140,7 @@ func (s *Server) initialise(ctx context.Context) error {
 // decision: the namespace is written through the store, not the API, which
 // refuses a namespace's create and a remote store's while the node's settings
 // table declares neither the namespace's section nor the remote store's;
-// each is declared by the plan of the component that reads it. A namespace
+// each is declared by the component that reads it. A namespace
 // must name a remote store, and the node's reconcile refuses a share whose
 // namespace's store holds no setting at its scope, so the store gets an
 // endpoint that nothing dials, as a memory profile reads no block from it.

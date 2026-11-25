@@ -488,8 +488,19 @@ PR 4 can be open beside any other. A suggestion only: one pull request per subta
     failing too, no pass gets far enough to lose a generation. The change is shown applied by the
     node's snapshot as well as the API's count, since a position moved past a walk that failed
     still reads applied there.
-  - R18's node-scoped restart-class setting is read not applied before a restart; the restart
-    itself is not driven, as `nodetest`'s wired node is not restarted in place.
+  - R18's node-scoped restart-class setting is read not applied before a restart, and held
+    restart-pending, not refused, in the node's status; the restart itself is not driven, as
+    `nodetest`'s wired node is not restarted in place. R18's case of a record whose own
+    generation is 2 while the counter stands at 100 cannot be posed: the store raises a record's
+    generation to at least the position its change raised. "Applied" inferred from the writing
+    node needs a second node. Both are left to the multi-node rows.
+  - The rows landed in `internal/node/settingrows_test.go` beside `integration_test.go`, not in it.
+    R18 freezes the node by the reconcile-read hook `NewPausing` sets (as T7.3's R10 row does),
+    not by a `FaultKV` hold on the binding's commit (D5): the setting changed is a share's, and
+    its apply is the settings walk, which binds nothing.
+  - R19's refusal after a failed deletion names no operation, as the API's rule cannot list one
+    inside its transaction; the row checks the code and leaves the name to that rule's
+    `ponytail:`.
   - R20's `api.password_sign_in` is refused `unknown_key`, not `forbidden`: the `api` section
     declares it with OpenID Connect's sign-in policy, a row of the deferral ledger.
 - T7.6 as built differs from its text in these places.

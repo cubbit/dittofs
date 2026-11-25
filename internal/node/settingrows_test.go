@@ -32,7 +32,7 @@ import (
 // declare the sections they write, standing in for the components that will
 // read them, since the node's own table holds no section at a share's, a
 // node's override or a remote store's scope yet: each such section is
-// declared by the plan of the component that reads it. The write path, the
+// declared by the component that reads it. The write path, the
 // reconcile and the applied count they test are the node's own whatever
 // section a key is in. Declare none here once the node's table holds a
 // section of each scope and class these rows need.
@@ -140,13 +140,19 @@ func TestWiredSettingChangedWhileReadsFailAppliesAtTheNextRead(t *testing.T) {
 	})
 }
 
-// §2.4 applied, single-node. A share setting written at a low generation,
-// changed once the settings counter stands at 100, on a node frozen at 100: the setting reads applied on none of one node through the
-// API, and once the lag passes 5 s health names the settings counter
-// behind; released, it reads applied. A node's restart-class setting
-// changed, then a live one: the first reads applied on none until the node
-// restarts, the second on its one node. Catches "applied" inferred from the
-// writing node, from a record's own generation, or past a pending restart.
+// §2.4 applied, single-node. A share setting changed past a node frozen at
+// the settings counter reads applied on none of one node through the API,
+// and once the lag passes 5 s health names the settings counter behind;
+// released, it reads applied. A node's restart-class setting changed, then
+// a live one: the first reads applied on none, held restart-pending and not
+// refused in the node's status, the second on its one node. Catches
+// "applied" read past the node's position or past a pending restart.
+//
+// decision: the RFC's case of a record whose own generation is 2 while the
+// counter stands at 100 cannot be posed, as the store raises a record's
+// generation to at least the position its change raised; and "applied"
+// inferred from the writing node needs a second node. Neither is checked
+// here.
 func TestWiredAppliedReadFromTheNodeThatRuns(t *testing.T) {
 	onBackends(t, func(t *testing.T, memory bool) {
 		var frozen atomic.Bool
@@ -167,10 +173,7 @@ func TestWiredAppliedReadFromTheNodeThatRuns(t *testing.T) {
 		sh := createShares(t, w.h, storeA, "tuned")[0]
 		scope := entity.SettingScope{Kind: entity.ScopeShare, ID: sh.ID}
 		path := "/api/v1/shares/" + sh.ID.String() + "/settings/gamma.level"
-		own := putRowGen(t, w.h, scope, "gamma.level", []byte("2"))
-		for counters(t, w.h).Settings < 100 {
-			putRowGen(t, w.h, entity.SettingScope{Kind: entity.ScopeInstallation}, "alpha.level", []byte(fmt.Sprint(counters(t, w.h).Settings%100)))
-		}
+		putRowGen(t, w.h, scope, "gamma.level", []byte("2"))
 		caughtUp(t, w.h)
 		w.appliedReaches(t, path, apiv1.Applied{Nodes: 1, Of: 1})
 
@@ -189,8 +192,8 @@ func TestWiredAppliedReadFromTheNodeThatRuns(t *testing.T) {
 				row = s
 			}
 		}
-		if own >= 100 || past < 100 || row.Position <= past {
-			t.Fatalf("gamma.level written at %d, changed at %d over a node at %d: want it written below 100, changed past a node at 100 or more", own, row.Position, past)
+		if row.Position <= past {
+			t.Fatalf("gamma.level changed at %d over a node at %d, want past it", row.Position, past)
 		}
 		if c := awaitRead(t, reached); c.Settings != row.Position {
 			t.Fatalf("frozen pass read settings %d, want the change at %d", c.Settings, row.Position)
@@ -208,14 +211,23 @@ func TestWiredAppliedReadFromTheNodeThatRuns(t *testing.T) {
 		w.appliedReaches(t, path, apiv1.Applied{Nodes: 1, Of: 1})
 
 		nodeAt := "/api/v1/nodes/" + uuid.UUID(w.h.NodeID()).String() + "/settings/"
-		for key, value := range map[string]string{"boots.halt": "5", "alpha.level": "7"} {
-			if r := w.putSetting(t, w.admin, nodeAt+key, value); r.status != http.StatusOK {
-				t.Fatalf("PUT %s%s: answered %d %s, want 200", nodeAt, key, r.status, r.body)
+		for _, kv := range [][2]string{{"boots.halt", "5"}, {"alpha.level", "7"}} {
+			if r := w.putSetting(t, w.admin, nodeAt+kv[0], kv[1]); r.status != http.StatusOK {
+				t.Fatalf("PUT %s%s: answered %d %s, want 200", nodeAt, kv[0], r.status, r.body)
 			}
 		}
 		w.appliedReaches(t, nodeAt+"alpha.level", apiv1.Applied{Nodes: 1, Of: 1})
 		if got := w.appliedAt(t, nodeAt+"boots.halt"); got != (apiv1.Applied{Nodes: 0, Of: 1}) {
 			t.Errorf("the node's restart-class boots.halt before a restart: applied %+v, want on 0 of 1", got)
+		}
+		halt := entity.SettingRef(entity.SettingScope{Kind: entity.ScopeNode, ID: w.h.NodeID()}, "boots.halt")
+		is := func(r entity.ResourceRef) bool { return r.Kind == halt.Kind && string(r.ID) == string(halt.ID) }
+		sts, err := w.h.Store().Nodes().RegisteredStatuses(t.Context())
+		if err != nil || len(sts) != 1 {
+			t.Fatalf("the node's status: %d read, %v; want one", len(sts), err)
+		}
+		if !slices.ContainsFunc(sts[0].RestartPending, is) || slices.ContainsFunc(sts[0].Refused, func(r entity.RefusedRecord) bool { return is(r.Record) }) {
+			t.Errorf("boots.halt in the node's status: restart-pending %v, refused %v; want it pending and not refused", sts[0].RestartPending, sts[0].Refused)
 		}
 	})
 }
@@ -229,7 +241,9 @@ func TestWiredBoundSettingRefusedWhileContentExists(t *testing.T) {
 	onBackends(t, func(t *testing.T, memory bool) {
 		w := newWiredThen(t, memory, nil, standIns)
 		for _, st := range [][16]byte{storeA, storeB} {
-			// A store is found by its endpoint, which no route writes yet.
+			// A store is found by its endpoint, seeded through the store under
+			// the file's decision: no route writes one while the table
+			// declares no remote store section.
 			e := entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeRemote, ID: st}, Key: "remote.endpoint", Value: []byte(`"https://store.invalid"`)}
 			if _, err := w.h.Store().ControlPlane().PutSetting(t.Context(), e, 0); err != nil {
 				t.Fatalf("seed a store's endpoint: %v", err)
@@ -257,7 +271,7 @@ func TestWiredBoundSettingRefusedWhileContentExists(t *testing.T) {
 	})
 }
 
-// §5.2 roles, A6's clause: an operator's write of audit.retention,
+// §5.2 roles, its admin-only keys: an operator's write of audit.retention,
 // api.session_lifetime, api.token_max_lifetime, api.password_sign_in or
 // identity.directory is refused naming the key, and an admin's
 // audit.retention of 89 days is refused as invalid, and none of them
@@ -288,7 +302,7 @@ func TestWiredAdminOnlySettingsRefusedToAnOperator(t *testing.T) {
 			what := fmt.Sprintf("PUT %s %s", c.key, c.value)
 			r := w.putSetting(t, c.by, "/api/v1/settings/"+c.key, c.value)
 			wantStatus(t, what, r, c.status, c.code)
-			if r.status == c.status && !strings.Contains(r.problem(t).Field, c.key) {
+			if r.status == c.status && r.problem(t).Field != c.key {
 				t.Errorf("%s: refusal names field %q, want %s", what, r.problem(t).Field, c.key)
 			}
 		}
@@ -389,7 +403,13 @@ func TestWiredNTLMBackOn(t *testing.T) {
 		raw([]byte("not a user"))
 		if op := ended(t, w.h, first); op.State != entity.OpFailed {
 			t.Fatalf("the deletion over an undecodable user: ended %v (%s), want failed", op.State, op.Error)
+		} else if !strings.Contains(string(op.Error), "codec") {
+			t.Errorf("the deletion's error: %s, want the user record's codec refusal", op.Error)
 		}
+		// decision: once the deletion has failed the refusal names no
+		// operation, as a transaction lists none (the ponytail on the API's
+		// NTLM rule); the failed one is found in the operation list. Check
+		// the name here once the store keeps the last deletion's ID.
 		refusedNaming("turning NTLM on once the deletion failed", entity.OperationID{})
 
 		raw(good)
