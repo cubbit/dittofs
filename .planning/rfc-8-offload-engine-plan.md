@@ -64,7 +64,9 @@ request-path CPU, which takes no token; RFC 8 §6.3's Assemble hands the fold ze
 per-file keys, §6.7's Carve state ends a stretch, as real, before a chunk whose replaced refs' keys
 would take its commit past `K` (RFC 2 P2 and §2.4 as #5529 amends them), so Commit is one
 transaction per block, always, and a chunk re-offered after a commit landed is carved again within
-`K`, and its "commit within `K`" check gains both cases; RFC 0 §1.2 lists the journal, the metadata store and open state
+`K`, and its "commit within `K`" check gains both cases; RFC 6 §5.2 refuses to open a store whose `K`
+cannot hold the commit of one 1-byte chunk, which RFC 2 P2's progress argument cites, with RFC 6
+§11.2's "K floor" row; RFC 0 §1.2 lists the journal, the metadata store and open state
 among `enginewire`'s edges, and RFC 8 §2.1 names its two importers, the node and the engine's test
 fixture, which RFC 23 §2.1's sketch follows.
 
@@ -205,7 +207,7 @@ hide its green half; its hold-mark offloads are RFC 12's (D7). The "shard handed
 part hands over, of §15.1's "§4.1 verifier inputs" and RFC 17's V25, are the cluster stage's (D9, §6.1). "§2.1 remote
 required" is the RFC 23 plan's (its epic 3), run through the node. The module
 checks of RFC 8 §6.1.1, §6.3 and §7.4 are unit tests of `pkg/workqueue`, `offload/` and the speculator,
-written green with epics 13, 15 and 17: `unit` keeps no known list. O1's crash leg is the exception: it
+and RFC 6 §11.2's "K floor" row a unit test of `kvstore`, written green with epics 13, 15 and 17: `unit` keeps no known list. O1's crash leg is the exception: it
 is a durability property, so epic 15 writes it in `engine-conformance` over the real journal, red
 until S6 (rule 8). The journal plan's system
 scenarios and the RFC 21 and RFC 22 rows run in `e2e`, which keeps no known list either, so they land
@@ -367,7 +369,7 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
 | 12 | **Red rows and test foundations** ⛔ | 50 rows in `engine-conformance`, red; the fixture's component options | 7 | 24 | team | **all testing** in 13 to 22 |
 | 13 | **The shared work scheduler** ⛔ | `pkg/workqueue`: keys and states, batches, backoff, reservations, fairness, watchdog turns | 7 | 20 | A | 14 |
 | 14 | **The work queue** ⛔ | the offload and removal sources, the four events, the age tick, the rescan, the first part's removal loop moved onto the scheduler; the rebuild's decoders fuzzed | 6 | 15 | A | 16, 18, 19, 20 |
-| 15 | **The offload pipeline** ⛔ | `offload/`: Capture to Mark over the store's existing calls; the chain pin; `encodings` at commit; O1 to O8 but O7, O1's crash leg over the real journal | 8 | 32 | B | 16 |
+| 15 | **The offload pipeline** ⛔ | `offload/`: Capture to Mark over the store's existing calls; the chain pin; `encodings` at commit; O1 to O8 but O7, O1's crash leg over the real journal | 8 | 32.5 | B | 16 |
 | 16 | **Passes and the bindings' remote side** ⛔ | the pass registry, §8.3, a share's flow, namespace and pause, chunking settings; S3 | 6 | 20.25 | B | 17, 18, 19, 20 |
 | 17 | **Remote reads, fill and speculation** | the carved row, verified streaming, re-resolution, chunk or block, `fill`, read-ahead, clone adoption | 7 | 23.5 | C | 18 |
 | 18 | **Local space with offload** | eviction loop, `evict`, `repackDue`, refusal steps 2 and 3 with the share's pass, put-health causes, pacing and pressure, destroyed material, the commit under destroyed material | 8 | 30 | B | 19, 21 |
@@ -375,9 +377,9 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
 | 20 | **Health, drain and salvage** | per-direction health and drift, the offload conditions, §11.4 and `WaitOffloaded`, the salvage export | 6 | 18.5 | A | 21 |
 | 21 | **Integration: the node composes offload** | the store adapter and its suite, clients per store configuration, the components' collectors, settings sections, keys and alerts, `materialtest` against the RFC 4 store, the CPU token, the import flips, system scenarios; S7 | 11 | 39.5 | team | 22 |
 | 22 | **E2E green** 🔀 | burn `known.yaml` down, the soak with remote faults, B1 to B4, B6, B8, and B5, B7, B9 with offload; provisional (§6 point 2) | 7 | 21.5 | team | release |
-| | **Total** | | **90** | **297.75** | | |
+| | **Total** | | **90** | **298.25** | | |
 
-**Plan estimate: 90 subtasks, 297.75 man-days.**
+**Plan estimate: 90 subtasks, 298.25 man-days.**
 
 RFC 8 is 4,291 lines, which gives N = 11, clamped to 8. This part covers about half of it in eight
 cohesive areas, matching N: the scheduler, the queue, the pipeline, passes, remote reads, local space,
@@ -531,7 +533,7 @@ What each point means for this plan's epics:
   reconcile runs inside the reseed.
 - **Where the team converges:** epics 11 and 12 before S2; epics 21 and 22 after S4.
 - **Where the tracks wait on each other:** track B's epic 16 waits on track A's epic 14 for the offload
-  source, about 35 man-days into track A against epic 15's 32 in track B; epic 16's parts that need no
+  source, about 35 man-days into track A against epic 15's 32.5 in track B; epic 16's parts that need no
   source (the pass registry, a binding's flow opened at `Bind`) fill the gap. Track A reaches epic 20 at about 35 man-days,
   and epic 16's pass outcomes land about 20 man-days later; epic 20's drain metrics, its `WaitOffloaded`
   over the journal's dirty figures and the salvage export, which need no pass, fill that wait, and
@@ -540,7 +542,7 @@ What each point means for this plan's epics:
   start step 7 starts; it starts with the reseed's marks and unmarks over the in-memory journal, which
   need none of them, and takes start step 7 last.
 - **The critical path** runs E11, E12, E13, E14, E16, E18, then E19's start step 7, S4, E21 and E22:
-  track A's 35 man-days to the offload source outlast epic 15's 32. S5's first half (the carver, RFC 3's
+  track A's 35 man-days to the offload source outlast epic 15's 32.5. S5's first half (the carver, RFC 3's
   syncer and its in-memory store, RFC 5's chain and in-memory `Materials`) and S6 lie on it whenever they land after epic 14 ends, since epic
   15 and S3 wait on them.
 
@@ -734,7 +736,7 @@ instances, and "§8.1 removal wedge" turns green with the undecodable ref.
 
 ### Epic 15 — The offload pipeline ⛔
 
-**Epic 15 estimate: 8 subtasks, 32 man-days.**
+**Epic 15 estimate: 8 subtasks, 32.5 man-days.**
 
 `offload/`, the state machine per pass, with a sub-machine per block from Intent on, over the
 components' real implementations (D4). Its Capture state takes the files' guards through a function the
@@ -745,8 +747,8 @@ The chain pin is held from Mint to Commit or Abandon, through S1d's pin and rele
 `kvstore`'s `BlockCommit` gains the block's `encodings` (RFC 6 §2.3), written at Commit: the census
 is persisted, so it lands before the first block. **Owns:** RFC 8 §3.1's `offloadDue`, §6.2,
 §6.3 (but snapshot-hold ordering, D7), §6.5's V1, §6.6, §6.7, §6.8, §10.4's refusal at Intent under
-destroyed current material; RFC 2 §2.4's real end at the key budget (P2) and its two exceptions as the
-caller's, RFC 2 §5.3 and §10.1's consumer checks. **Done when:** RFC 8 §6.3's failure and hang legs
+destroyed current material; RFC 6 §5.2's refusal to open below one chunk's commit; RFC 2 §2.4's real
+end at the key budget (P2) and its two exceptions as the caller's, RFC 2 §5.3 and §10.1's consumer checks. **Done when:** RFC 8 §6.3's failure and hang legs
 pass in `unit` over the in-memory components, O7 aside; O1's crash leg runs in `engine-conformance`
 over the real journal on a real directory and `kvstore`, red until S6 (rule 8); RFC 8 E4, E7, E8, E18, E20, E22 and E40's offload commits hold.
 Its four §15.1 rows run a pass end to end, so they are epic 16's to turn green (S3).
@@ -764,6 +766,9 @@ Its four §15.1 rows run a pass end to end, so they are epic 16's to turn green 
   (`Handle.DirtyFiles`), with a `ponytail:` at the assignment naming the ceiling (a short block may go
   out before it must) and the upgrade, a time per extent, which the RFC 2 plan's §6.1 ledger gives the
   journal plan, which has no epic for it yet.
+- `kvstore`'s open refusing a `K` below the most keys one 1-byte chunk's commit writes, counted from
+  RFC 6 §4.1 (RFC 6 §5.2 as amended), with RFC 6 §11.2's "K floor" row: limits giving `K` one below
+  the floor refused, one key's cost more opening.
 - Assemble: every chunk carried, zero refs, early close within `K` (the key budget `kvstore` computes at open, `budget.go`, which gains an accessor here; it nets out one file's fixed records only, `worstCosts`); the fold handed each chunk's worst-case keys, each zero ref's keys (counting the refs it replaces), and a commit's per-block keys (intent delete, block record, GC index keys) and per-file keys (the offload fence), charged once per block and once per file (RFC 2 §5.1 as amended); one flow and namespace per block
   (RFC 2 §5.3), as S1a agrees the inputs.
 - Intent: the stale-namespace refusal, the refusal before any put when the pin finds the current
@@ -1166,6 +1171,7 @@ proposed targets: the first real-service run does (§6.1).
 | RFC 4 §3, §4.1, §4.8, §4.11 | 11 (S1c), 21 (the store adapter) |
 | RFC 5 §2.7, §2.8, Appendix B.2 | 11 (S1d), 15 (the pin over the in-memory `Materials`, the refusal at Intent), 17 (destroyed material read Lost), 18 (`Unmark`, Mark's check, the commit's guard read), 19 (the reseed's unmark), 20 (salvage sealing), 21 (chain, `materialtest` against the RFC 4 store and its key-record suite against `kvstore`) |
 | RFC 1 §3 (offload calls, salvage), §3.3, §3.4, §3.5, §7.2 | constraints: 15 to 20 call them |
+| RFC 6 §5.2 (the `K` floor at open) | 15 |
 | RFC 6 §7.6, §8.1, §10.1; RFC 16 §3.1 | constraints: 15 (intents, commits), 17 (covering), 19 (`Refs`, `Versions`) |
 | RFC 13 Appendix B | 11 (keys), 21 (loading; the components' sections in `newTable`, `Target` once RFC 13 names its key) |
 | RFC 14 §9.3 | 18 (L9) |
