@@ -18,7 +18,8 @@ again. This plan deletes nothing. Related RFCs, with how far each is in scope:
   test's call sites, the scripted client, the cross-protocol and end-to-end rows, the wire tests
   against knfsd, the benchmarks, the three `adapter_*` record and translation series, the
   `required-tests.json` pins, the `FlowControl` conformance check, `core`'s datagram listener, NFS
-  over TLS, the NFS callbacks, `gss`'s `Wrap` and `Unwrap`. §6.4 maps each row. The pieces that
+  over TLS, the NFS callbacks, `gss`'s Kerberos side (S6c, §6.2 point 2) with `Wrap` and `Unwrap`.
+  §6.4 maps each row. The pieces that
   serve both adapters, priced once in RFC 22's plan, are its (§6.2, point 1).
 - [RFC 18](../docs/internals/rfcs/rfc-18-identity.md), identity, and [RFC 19](../docs/internals/rfcs/rfc-19-authorization.md),
   authorization: **NFS's parts only**: an `AUTH_SYS` or `AUTH_NONE` credential as an `Identity`,
@@ -30,8 +31,8 @@ again. This plan deletes nothing. Related RFCs, with how far each is in scope:
 - [RFC 14](../docs/internals/rfcs/rfc-14-open-state.md), open state: **NFS's wire side only**: client IDs,
   sessions' records, stateids, delegations, grace and NLM locks against the state the service
   holds, and the one kind it lacks, `NoGrace` (E2). RFC 14 itself is constraints.
-- [RFC 22](../docs/internals/rfcs/rfc-22-smb.md), SMB: **out**, but RPCSEC_GSS builds on [RFC 22's
-  plan](rfc-22-smb-plan.md)'s epic 4, `gss`, for the Kerberos acceptor (S6c), and this plan's tests
+- [RFC 22](../docs/internals/rfcs/rfc-22-smb.md), SMB: **out**, but E13 builds the `gss` pieces
+  RPCSEC_GSS needs (S6c), which [RFC 22's plan](rfc-22-smb-plan.md)'s epic 4 was to build, and this plan's tests
   use the three pieces that plan's epic 2 builds for both adapters (S0).
 - [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md), [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md),
   [RFC 24](../docs/internals/rfcs/rfc-24-resources.md), [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) and
@@ -64,7 +65,7 @@ and what the epic builds.
 **Defaults used from Step 0:** dashboards none (#9); output path the default (#10). The target
 branch is `feat/storage-v2`; the plan document lands on `develop` and is cherry-picked, as the
 other planning documents are. External dependencies: RFC 20's plan (its scaffold, landed; its epic
-7 for S5 and S7), RFC 22's plan's epic 2 (S0) and epic 4 (`gss`, S6c), RFC 18's plan (#4058): its
+7 for S5 and S7), RFC 22's plan's epic 2 (S0), RFC 18's plan (#4058): its
 S2 for `Spell`, `Find` and resolution (S6a), its E5 for Kerberos (S6b); RFC 17's service on
 `feat/storage-v2`, with its plan's piece 13, the held clone wait, reaching the branch with the next
 sync (#4239); RFC 13's settings (#4059).
@@ -180,8 +181,8 @@ namespace-move rows of §7.4, the rows no suite runs yet (xfstests, pynfs's rebo
 adapters: `vfstest.Mutations` keeping each call's reference and answer, `adaptertest/golden`, and
 the import test's call-site and file-size rules. That epic's handler harness decodes `smb/wire`'s
 header and is SMB's. Here: NFS's handler harness and knfsd's captures (E2), the import test's NFS
-entry files (E4 and E5, with the calls they name), the scripted client (E3); `gsstest`'s initiators
-come with RFC 22's plan's `gss` (S6c).
+entry files (E4 and E5, with the calls they name), the scripted client (E3); `gsstest`'s Kerberos
+initiator comes with `gss`'s Kerberos side (S6c), in E13.
 
 ### 1.5 General rules for each epic
 
@@ -266,8 +267,8 @@ come with RFC 22's plan's `gss` (S6c).
    suite's `known.yaml` in the same change (`CLAUDE.md`, "Writing tests", "By kind"); those suites
    stay off on `feat/storage-v2` until E15 turns them on.
 7. **v2 ignores v1.** Nothing is copied from `develop`'s NFS adapter except what RFC 20
-   Appendix B keeps: the TLS upgrade through `Conn.StartTLS`, and the GSS per-message code, which E13 lifts into
-   `gss` (RFC 22's plan leaves `Wrap` and `Unwrap` to it). Behaviour comes from RFC 21 and the NFS RFCs, never from what v1 did, and RFC 20's
+   Appendix B keeps: the TLS upgrade through `Conn.StartTLS`, and the GSS per-message and Kerberos mechanism code,
+   which E13 lifts into `gss` (S6c). Behaviour comes from RFC 21 and the NFS RFCs, never from what v1 did, and RFC 20's
    import test fails any import of a path v1 used, checking each package on its own.
 8. **Real dependencies for properties of those dependencies** (`CLAUDE.md`, "Writing tests"). RFC
    5531's, RFC 1813's, RFC 8881's and RFC 2203's encodings and knfsd captures for bytes, never vectors
@@ -322,7 +323,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 | E10 | Delegations and the back channel | the back channel's calls, delegations offered, recalled, returned and revoked, administrator's revoke, path down with A2's service half after S2b, the drain test | 8 | 22 | A | E16 |
 | E11 🔀 | NLM, NSM and the datagram path | `core`'s datagram listener, NLM v4, NSM, grants resent, `SM_NOTIFY`, `DialClient`'s network | 7 | 22 | B | E16 |
 | E12 | NFSv4.2 operations | `DEALLOCATE`, `SEEK`, `READ_PLUS`, `COPY`, `CLONE`, xattrs, the hold budget | 5 | 13 | C | E16 |
-| E13 🔀 | RPCSEC_GSS | the context table as NFS's `Security` stage over `gss`, `krb5`, `krb5i`, `krb5p` | 8 | 21.75 | B | E16 |
+| E13 🔀 | RPCSEC_GSS | `gss`'s Kerberos side (S6c); the context table as NFS's `Security` stage over it, `krb5`, `krb5i`, `krb5p` | 12 | 27.5 | B | E16; RFC 22's plan's epic 4 |
 | E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries | 2 | 4 | A | E16 |
 | E15 🔀 | Integration with the node | settings, the NFS suites turned on | none | planned after S7 | team | E16, partly |
 | E16 🔀 | E2E green | in-process and restart rows, cross-protocol rows, e2e, benchmarks, soak, the totality test, pins; the burn-down after E15 | 8 | 25.5 | team | none |
@@ -389,7 +390,7 @@ flowchart TD
   S6a(["S6a Spell, Find and resolution: RFC 18 plan S2"]):::sync -. "rows where they answer" .-> E6 & E7
   S6b(["S6b Kerberos sign-in: RFC 18 plan E5"]):::sync -. "rows where SignIn succeeds" .-> E13
   S6b -. "e2e/kerberos" .-> E16
-  S6c(["S6c gss: RFC 22 plan E4"]):::sync --> E13
+  E13 --> S6c(["S6c gss's Kerberos side, built in E13"]):::sync -. "NTLM, SPNEGO" .-> R22E4(["RFC 22 plan E4"]):::sync
   S7(["S7 the node serves NFS: #4050 S3, RFC 20 E7"]):::sync --> E15["E15 Integration 🔀"]:::sync
   E15 -. "suites on" .-> E16
   E4 & E6 & E7 & E9 & E10 & E11 & E12 & E13 & E14 --> E16
@@ -431,8 +432,12 @@ test runs, and NFS's scaffold answers every procedure over loopback through `cor
   `Spell` and `Find` answer `ErrAccess`; E6's and E7's rows where they answer wait, the rest do not.
 - **🔀 S6b Kerberos sign-in** (outside: RFC 18's plan's E5, Kerberos and the PAC, behind `SignIn`).
   Unblocks E13's rows where an `RPCSEC_GSS` `INIT` succeeds, and E16's `e2e/kerberos` rows.
-- **🔀 S6c `gss`** (outside: RFC 22's plan's epic 4: `Exchanges`, the Kerberos mechanism, `Identity`,
-  `gsstest`). E13 builds its context table on it; if RFC 22's plan has not started, E13 waits.
+- **S6c `gss`'s Kerberos side** (in E13, for both adapters). `gss`'s `Context`, the Kerberos
+  mechanism, `Exchanges` over one leg, `Identity`, RFC 4121's MIC token and `gsstest`'s Kerberos
+  initiator, built here because RFC 22's plan's epic 4, which was to build them, is on the v1.1
+  roadmap and nobody builds them first; agreed with Marco on 25 Nov (§6.2, point 2). NTLM, SPNEGO,
+  `Exchanges`' second leg and `Identity`'s `Secret` arm stay in that epic, which builds on S6c.
+  E13 builds its context table on it.
 - **🔀 S7 the node serves NFS** (outside: #4050's S3 for NFS, RFC 20's epic 7 on #4050's S2).
   Reconcile builds the NFS adapter through `nfs.New` while its record enables it, and `dfs` serves
   it. Unblocks E15.
@@ -458,7 +463,7 @@ test runs, and NFS's scaffold answers every procedure over loopback through `cor
 | 🔀 S5 | E7, E11, E14 and E16, partly | Tier 2 rows, restart rows, the DittoFS side of a diff and every in-process row need the composed node |
 | 🔀 S6a | E6 and E7, partly | `Spell` and `Find` that answer |
 | 🔀 S6b | E13 and E16, partly | a ticket `SignIn` accepts |
-| 🔀 S6c | E13 | the Kerberos acceptor and `Exchanges` the context table drives |
+| S6c | the rest of E13; RFC 22's plan's epic 4 | the Kerberos acceptor and `Exchanges` the context table drives; the package NTLM and SPNEGO join |
 | 🔀 S7 | E15 | no node to wire into, no `dfs` serving NFS |
 | 🔀 E15 | E16, partly | the NFS suites run only once `dfs` serves NFS and the V2 filter lets them |
 
@@ -475,7 +480,7 @@ Figures are man-days from S2.
   in-process rows as their epics allow. 71 man-days.
 - **Track B: E4, E7, E11, E13.** NFSv3 and MOUNT, then identity's NFS side, then NLM and NSM, then
   RPCSEC_GSS. E4 comes first so S3 holds at 26 (D12); E7 follows, ending at 42, before track C reaches
-  E6 at 48; E13 starts at 64 and needs S6c, RFC 22's plan's `gss`, and S6b for its signed-in rows,
+  E6 at 48; E13 starts at 64, builds S6c, `gss`'s Kerberos side, itself, and needs S6b for its signed-in rows,
   which, if late, leave E13's table and refusals done and its sign-in rows waiting. 80 man-days.
 - **Track C: E5, E9, E6, E12.** The NFSv4 namespace and data path, then opens, stateids and locks on
   it, then ACL attributes, then NFSv4.2. E9 runs on `memory.New` from 23, after E8's callbacks value
@@ -501,6 +506,7 @@ pkg/adapter/
   nfs/                        RFC 20's E1 and E6: New
 internal/adapter/
   translate/                  E6: RFC 19 §5.1's NFSv4 ACL functions; created by whichever of E6 and RFC 22's plan's descriptor epic lands first
+  gss/                        E13: Context, the Kerberos mechanism, Exchanges, Identity, MIC, Wrap and Unwrap; gsstest/'s Kerberos initiator (S6c); NTLM and SPNEGO RFC 22's plan's E4
   adaptertest/
     golden/                   RFC 22's plan's E2: golden files cut from captures
     nfsclient/                E3: the scripted client (RFC 20 §8.2)
@@ -1018,13 +1024,15 @@ step; N22. The held clone wait's rows need RFC 17's plan's piece 13 on the branc
 
 ### Epic 13 — RPCSEC_GSS 🔀
 
-**Epic 13 estimate: 8 subtasks, 21.75 man-days.**
+**Epic 13 estimate: 12 subtasks, 27.5 man-days.**
 
-Kerberos on NFS: a context table as NFS's `Security` stage over RFC 22's plan's `gss`, which
-withdraws E3's interim `AUTH_BADCRED` for `RPCSEC_GSS`.
+Kerberos on NFS: `gss`'s Kerberos side (S6c), then a context table as NFS's `Security` stage over
+it, which withdraws E3's interim `AUTH_BADCRED` for `RPCSEC_GSS`.
 
 **Owns:** RFC 21 §10, §11.1's `RPCSEC_GSS` rows, §8.1's privilege over Kerberos; RFC 20 §4.4's
-`Wrap` and `Unwrap` (RFC 20's plan's ledger); RFC 18 §3.3's NFS wire half.
+`gss` for a Kerberos context: `Context`, the Kerberos mechanism, `Exchanges` over one leg,
+`Identity`, `MIC`, `Wrap` and `Unwrap` and `gsstest`'s Kerberos initiator (RFC 20's plan's ledger);
+RFC 18 §3.3's NFS wire half.
 
 **Done when:** RFC 21 §13's "§10 context table *(1 node)*", "§8.1 privilege *(1 node)*"'s Kerberos
 steps, "§6.3 `MNT` on a Kerberos-only share *(1 node)*"'s `sec=krb5` step (after S6b); RFC 18 §10's
@@ -1033,13 +1041,15 @@ steps, "§6.3 `MNT` on a Kerberos-only share *(1 node)*"'s `sec=krb5` step (afte
 **Expected content:**
 - The context table: keyed by handle, window 128, the cap and LRU by principal, the idle eviction,
   charged to the connection-state pool.
+- S6c: `gss`'s `Context`, the Kerberos mechanism with `gsstest`'s initiator, `Exchanges` over one
+  leg, `Identity` and RFC 4121's MIC token.
 - `INIT` and `CONTINUE_INIT` through `gss`'s Kerberos acceptor and `SignIn`, driven in tests by
-  `gsstest`'s initiator (S6c).
+  `gsstest`'s initiator.
 - `krb5i` and `krb5p` through RFC 4121's `Wrap` and `Unwrap`, added to `gss`.
 - Header MIC verification, `DESTROY`, `CREDPROBLEM`, `CTXPROBLEM`, `MAXSEQ`, ticket expiry.
 - `ErrWrongSecurity` as `NFS4ERR_WRONGSEC` and NFSv3's `AUTH_TOOWEAK`; the `require_kerberos` boot
   refusal (RFC 20's plan's ledger); the `ErrNotNegotiated`, `ErrNoSession` and `ErrExpired` rows.
-- Rows on `memory.New` with injected sign-in errors from S6c; rows where `SignIn` succeeds after S6b.
+- Rows on `memory.New` with injected sign-in errors; rows where `SignIn` succeeds after S6b.
 - knfsd's captures of `RPCSEC_GSS` exchanges at `krb5`, `krb5i` and `krb5p` against a KDC, cut into
   golden files as E2's are, which E2 leaves out.
 
@@ -1202,9 +1212,14 @@ follows the RFC as written.
    its wire-test epic (the differential runner, which E14 does without, over `pcap-diff.sh`). If
    this plan starts first, its E2 or E16 builds the piece it needs and that plan's figure moves with
    it; pending a decision on #3119 if both start at once.
-2. **`gss`'s owner** (RFC 22's plan, its §6.2 point 2; RFC 20's plan's risk 5). E13 depends on RFC
-   22's plan's epic 4 (S6c) and adds RFC 4121's `Wrap` and `Unwrap` to `gss`, a row RFC 20's plan's
-   ledger gives this plan. If `gss` gets an RFC of its own, `Wrap` and `Unwrap` move with it.
+2. **`gss`'s owner** (RFC 22's plan, its §6.2 point 2; RFC 20's plan's risk 5). E13 builds S6c,
+   `gss`'s Kerberos side (`Context`, the Kerberos mechanism, `Exchanges` over one leg, `Identity`,
+   RFC 4121's MIC token, `gsstest`'s Kerberos initiator), which RFC 22's plan's epic 4 was to build:
+   that plan is on the v1.1 roadmap and nobody builds them first, agreed with Marco on 25 Nov. It
+   also adds RFC 4121's `Wrap` and `Unwrap`, a row RFC 20's plan's ledger gives this plan. NTLM,
+   SPNEGO, `Exchanges`' second leg and `Identity`'s `Secret` arm stay in that epic, which keeps its
+   figure until standup, so the programme counts S6c twice until then. If `gss` gets an RFC of its
+   own, these move with it.
 3. **The authenticator and resolution** (S6a, S6b; RFC 18's plan). `SignIn`, `Spell`, `Find` and
    resolution are RFC 18's plan's; E7 adds identity's NFS side on top of its E2, E3 and E6, whose
    remaining subtasks wait on RFC 13's secret provider (#3119, stage 6). If S6a slips, E6's and E7's
@@ -1251,6 +1266,8 @@ Each row is one of [RFC 20's plan](rfc-20-adapters-plan.md)'s deferral ledger (i
 | NFS over TLS: `Conn.StartTLS`, `tlsconfig` reload, the modes, certificate loading | E3 |
 | NFS callbacks: `CB_RECALL`, `CB_NOTIFY`, `CB_RECALL_ANY`, NLM `GRANTED` through `Deps.DialClient` | E10; NLM in E11; `CB_NOTIFY` never sent (RFC 21 §5.3) |
 | `ConnInfo.Session` | E8 |
+| `gss`: Kerberos, NTLM, SPNEGO, `Exchanges`, `Identity`, `gsstest` | E13: the Kerberos side (S6c: Kerberos, `Exchanges` over one leg, `Identity` from a Kerberos context, the Kerberos initiator); NTLM, SPNEGO and the rest RFC 22's plan's epic 4 |
+| `gss`: RFC 4121 MIC token (`Context.MIC`) | E13 (S6c) |
 | `gss`: RFC 4121 `Wrap`, `Unwrap` | E13 |
 | `translate`, for what NFS calls, RFC 19 §5.1's NFSv4 functions | E6 |
 | each protocol's error-table rows and its totality test | rows in E3 and each handler epic; the test in E16; the helper RFC 22's plan's (§6.2, point 1) |
@@ -1366,7 +1383,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | RFC 20 §3.3 (NFS callbacks) | E8, E9, E10, E11 |
 | RFC 20 §3.4 (`DialClient`'s network) | E11 |
 | RFC 20 §4.3, §4.7 (compound row, `Bound`) | E1, E5, E8 (D15, A1) |
-| RFC 20 §4.4 (`Identity`, `Call`; `Wrap`, `Unwrap`) | E3, E13 |
+| RFC 20 §4.4 (`Identity`, `Call`; `gss`'s Kerberos side, `Wrap`, `Unwrap`) | E3, E13 |
 | RFC 20 §4.5 (error tables) | E3, each handler epic |
 | RFC 20 §7.3 (totality) | E16 |
 | RFC 20 §5.3, §5.4, §6.10 (codecs, gates) | E4, E5; benchmarks E16 |
