@@ -1257,3 +1257,54 @@ func TestDirectoryCacheSIDsOverlapUnderLoad(t *testing.T) {
 		}
 	})
 }
+
+// Close ends a query no lookup waits for any more, a name lookup's or a SID
+// batch's, and returns only once it has: a query whose caller left never
+// reads the bind password after Close.
+func TestDirectoryCacheCloseEndsQueries(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ask  func(ctx context.Context, c *identity.DirectoryCache) error
+	}{
+		{"name", func(ctx context.Context, c *identity.DirectoryCache) error {
+			_, _, err := c.Lookup(ctx, directory.ByUserName, []byte("alice"), 0, false)
+			return err
+		}},
+		{"sid", func(ctx context.Context, c *identity.DirectoryCache) error {
+			_, err := c.LookupSIDs(ctx, [][]byte{[]byte("S-1-5-21-1-2-3-1104")}, 0)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				e := newDirEnv(t)
+				var resolving, returned atomic.Bool
+				password := func(ctx context.Context) ([]byte, error) {
+					resolving.Store(true)
+					<-ctx.Done() // held until Close, or the query timeout, ends it
+					returned.Store(true)
+					return nil, ctx.Err()
+				}
+				name, _ := e.d.Account()
+				rec := directory.Record{Address: "ldaps://dc.corp.example", Base: "DC=corp,DC=example", BindName: name, Realm: "CORP.EXAMPLE"}
+				c := identity.NewDirectoryCache(directory.NewClient(rec, e.f.Dial, password, e.clock, nil), identity.Deps{Clock: e.clock})
+				ctx, cancel := context.WithCancel(context.Background())
+				done := make(chan error, 1)
+				go func() { done <- tc.ask(ctx, c) }()
+				synctest.Wait()
+				if !resolving.Load() {
+					t.Fatal("the lookup is not resolving the bind password")
+				}
+				cancel()
+				if err := <-done; !errors.Is(err, vfserr.ErrUnavailable) {
+					t.Errorf("lookup its caller left = %v, want ErrUnavailable", err)
+				}
+				c.Close()
+				if !returned.Load() {
+					t.Error("Close returned while the cache's query still resolved the bind password")
+				}
+				e.clock.Advance(time.Minute) // lets a query Close left running end, so the bubble does
+			})
+		})
+	}
+}
