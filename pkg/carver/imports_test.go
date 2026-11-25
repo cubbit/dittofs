@@ -7,33 +7,19 @@ import (
 	"github.com/cubbit/dittofs/internal/archtest"
 )
 
-// carverLibs are the libraries a carver package may reach: a BLAKE3
-// implementation, and what the entity package brings.
-var carverLibs = archtest.EntityLibs
-
-// archtestPkgs are the architecture tests' own support, which every carver
-// test package imports to read the tree.
-//
-// decision: the carver's tests may reach internal/archtest and what it
-// imports, beyond what the carver's production code may: it runs go list and
-// type-checks files, so it holds no store, fake backend or network, and a
-// test reads the tree through it rather than through a copy of it. RFC 2
-// §1.3 binds the carver's conformance checks, which need none of it; withdraw
-// the allowance if archtest ever reaches an implementation.
-var archtestPkgs = []string{"internal/archtest", "internal/prof"}
-
 // table is every package of the carver and what it may reach (RFC 2 §1.1,
 // RFC 0 §1.2): the root, the contract, its own settings value and the entity
 // package; the settings value nothing; carve and the fold the root, with the
-// settings value it brings, and the entity package. Never another component's
-// implementation, never v1's carver. A test may reach besides the package it
-// tests and the architecture tests' support. A row is an upper bound: a
+// settings value it brings, and the entity package with the libraries it
+// imports, BLAKE3 among them. Never another component's implementation, never
+// v1's carver. A test may reach besides the package it tests and the
+// architecture tests' support. A row is an upper bound: a
 // package that reaches less passes.
 var table = []archtest.Row{
-	{Pkg: "pkg/carver", Reach: []string{"pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: carverLibs, Tests: archtestPkgs},
-	{Pkg: "pkg/carver/internal/params", Tests: archtestPkgs},
-	{Pkg: "pkg/carver/carve", Reach: []string{"pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: carverLibs, Tests: archtestPkgs},
-	{Pkg: "pkg/carver/assembler", Reach: []string{"pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: carverLibs, Tests: archtestPkgs},
+	{Pkg: "pkg/carver", Reach: []string{"pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: archtest.Support},
+	{Pkg: "pkg/carver/internal/params", Tests: archtest.Support},
+	{Pkg: "pkg/carver/carve", Reach: []string{"pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: archtest.Support},
+	{Pkg: "pkg/carver/assembler", Reach: []string{"pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: archtest.Support},
 }
 
 // Every package under pkg/carver, its tests included, reaches only what its
@@ -57,10 +43,11 @@ func TestImportRule(t *testing.T) {
 	}
 }
 
-// The walk over a planted module reports, with the chain, a store the root
-// reaches through the entity package and carve through the root; a store an
-// internal test file imports, and v1's carver an external test imports, which
-// a walk of production files only misses; and a package with no row.
+// The walk over a planted module reports, with the chain, a store and a
+// library the root reaches through the entity package, and carve through the
+// root; a store an internal test file imports, and v1's carver an external
+// test imports, which a walk of production files only misses; and a package
+// with no row.
 func TestImportRuleWalksTestsTransitively(t *testing.T) {
 	graphs, err := archtest.Walk("testdata/walk/pkg/carver", true)
 	if err != nil {
@@ -68,8 +55,13 @@ func TestImportRuleWalksTestsTransitively(t *testing.T) {
 	}
 
 	want := []string{
+		"pkg/carver reaches example.com/lib through pkg/metadata/entity, which row pkg/carver does not allow",
 		"pkg/carver reaches pkg/metadata/kvstore through pkg/metadata/entity, which row pkg/carver does not allow",
+		"pkg/carver/carve [test] reaches example.com/lib through pkg/carver -> pkg/metadata/entity, which row pkg/carver/carve does not allow",
 		"pkg/carver/carve [test] reaches pkg/metadata/kvstore, which row pkg/carver/carve does not allow",
+		"pkg/carver/carve reaches example.com/lib through pkg/carver -> pkg/metadata/entity, which row pkg/carver/carve does not allow",
+		"pkg/carver/carve reaches pkg/metadata/kvstore through pkg/carver -> pkg/metadata/entity, which row pkg/carver/carve does not allow",
+		"pkg/carver/carve_test [test] reaches example.com/lib through pkg/carver/carve [test] -> pkg/carver -> pkg/metadata/entity, which row pkg/carver/carve does not allow",
 		"pkg/carver/carve_test [test] reaches pkg/block/carver, which row pkg/carver/carve does not allow",
 		"pkg/carver/carve_test [test] reaches pkg/metadata/kvstore through pkg/carver/carve [test], which row pkg/carver/carve does not allow",
 		"pkg/carver/section has no row",
@@ -120,6 +112,12 @@ func TestImportRuleRefuses(t *testing.T) {
 			m("pkg/carver"):          {m("pkg/metadata/entity")},
 			m("pkg/metadata/entity"): {"github.com/klauspost/cpuid/v2"},
 		}, []string{"pkg/carver reaches github.com/klauspost/cpuid/v2 through pkg/metadata/entity, which row pkg/carver does not allow"}},
+		{"the settings value importing the entity package", m("pkg/carver/internal/params"), map[string][]string{
+			m("pkg/carver/internal/params"): {m("pkg/metadata/entity")},
+		}, []string{"pkg/carver/internal/params reaches pkg/metadata/entity, which row pkg/carver/internal/params does not allow"}},
+		{"the fold importing a library", m("pkg/carver/assembler"), map[string][]string{
+			m("pkg/carver/assembler"): {m("pkg/carver"), "github.com/klauspost/compress/zstd"},
+		}, []string{"pkg/carver/assembler imports github.com/klauspost/compress/zstd, which row pkg/carver/assembler does not allow"}},
 		{"the settings value importing BLAKE3", m("pkg/carver/internal/params"), map[string][]string{
 			m("pkg/carver/internal/params"): {"lukechampine.com/blake3"},
 		}, []string{"pkg/carver/internal/params imports lukechampine.com/blake3, which row pkg/carver/internal/params does not allow"}},

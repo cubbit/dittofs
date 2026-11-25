@@ -1,6 +1,6 @@
-// Package carve imports the contract only.
+// Package carve reaches what the contract reaches.
 package carve
 
-import "time"
+import "github.com/cubbit/dittofs/pkg/carver"
 
-var _ = time.Now
+var _ = carver.Use

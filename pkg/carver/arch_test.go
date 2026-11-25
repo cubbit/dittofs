@@ -1,6 +1,7 @@
 package carver
 
 import (
+	"fmt"
 	"go/ast"
 	"go/doc"
 	"go/parser"
@@ -276,7 +277,7 @@ func funcDoc(dir, name string) (string, error) {
 		}
 	}
 
-	return "", nil
+	return "", fmt.Errorf("no func %s in %s", name, dir)
 }
 
 // Cut's doc comment, the one place its caller reads, says that emit's bytes

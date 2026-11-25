@@ -18,7 +18,7 @@ var aws = []string{"github.com/aws/aws-sdk-go-v2/...", "github.com/aws/smithy-go
 // an upper bound: a package that reaches less passes.
 var table = []archtest.Row{
 	{Pkg: "pkg/remote"},
-	{Pkg: "pkg/remote/codec", Reach: []string{"pkg/remote", "pkg/transform", "pkg/transform/keys", "pkg/metadata/entity/..."}, Libs: archtest.EntityLibs},
+	{Pkg: "pkg/remote/codec", Reach: []string{"pkg/remote", "pkg/transform", "pkg/transform/keys", "pkg/metadata/entity/..."}, Libs: archtest.EntityLibs()},
 	{Pkg: "pkg/remote/memory/...", Reach: []string{"pkg/remote", "pkg/sim", "pkg/remote/memory/..."}},
 	{Pkg: "pkg/remote/remotetest", Reach: []string{"pkg/remote", "internal/prof"}},
 	{Pkg: "pkg/remote/s3/...", Reach: []string{"pkg/remote", "pkg/remote/s3/..."}, But: []string{"pkg/remote/s3/s3fault/..."}, Libs: aws},

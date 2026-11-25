@@ -264,8 +264,21 @@ func checkRoot(table []Row, g Graph, root string) []string {
 	return bad
 }
 
-// EntityLibs are the libraries the metadata store's entity package imports.
-// Every row that lets a package reach the entity package lists them, since
-// the walk checks each library a reached module package imports, and not
-// what a library imports; TestEntityLibs holds the list to the package.
-var EntityLibs = []string{"github.com/google/uuid", "lukechampine.com/blake3"}
+// EntityLibs returns the libraries the metadata store's entity package
+// imports, then extra, in a new slice. Every row that lets a package reach the
+// entity package lists them, since the walk checks each library a reached
+// module package imports, and not what a library imports; TestEntityLibs holds
+// the list to the package.
+func EntityLibs(extra ...string) []string {
+	return append([]string{"github.com/google/uuid", "lukechampine.com/blake3"}, extra...)
+}
+
+// Support is this package and what it imports from the module: what a walk
+// with tests lets every test reach, through a row's Tests, so a test reads the
+// tree through this package rather than through a copy of it.
+//
+// decision: a test may reach this support beyond what its package's
+// production code may. It runs go list and type-checks files, so it holds no
+// store, fake backend or network; withdraw the allowance if it ever reaches an
+// implementation. TestSupport holds the list to the package.
+var Support = []string{"internal/archtest", "internal/prof"}

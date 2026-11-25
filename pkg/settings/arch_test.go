@@ -111,7 +111,12 @@ func TestSettingsExports(t *testing.T) {
 		switch tc.planted {
 		case "":
 		case hiddenCase:
-			dir = archtest.WithHidden(t, ".", filepath.Join("testdata", "arch", hiddenCase))
+			var err error
+
+			dir, err = archtest.WithHidden(t.TempDir(), ".", filepath.Join("testdata", "arch", hiddenCase))
+			if err != nil {
+				t.Fatal(err)
+			}
 		default:
 			planted = append(planted, filepath.Join("testdata", "arch", tc.planted))
 		}

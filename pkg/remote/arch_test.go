@@ -133,7 +133,12 @@ func TestRemoteExports(t *testing.T) {
 
 		switch tc.planted {
 		case hiddenCase:
-			dir = archtest.WithHidden(t, ".", filepath.Join("testdata", "arch", hiddenCase))
+			var err error
+
+			dir, err = archtest.WithHidden(t.TempDir(), ".", filepath.Join("testdata", "arch", hiddenCase))
+			if err != nil {
+				t.Fatal(err)
+			}
 		default:
 			extra = planted(tc.planted)
 		}
@@ -177,7 +182,12 @@ func TestRemoteIsPure(t *testing.T) {
 
 		switch tc.planted {
 		case hiddenCase:
-			dir = archtest.WithHidden(t, ".", filepath.Join("testdata", "arch", hiddenCase))
+			var err error
+
+			dir, err = archtest.WithHidden(t.TempDir(), ".", filepath.Join("testdata", "arch", hiddenCase))
+			if err != nil {
+				t.Fatal(err)
+			}
 		default:
 			extra = planted(tc.planted)
 		}

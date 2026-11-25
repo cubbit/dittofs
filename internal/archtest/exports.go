@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"testing"
 )
 
 // GoFiles returns the path of each non-test .go file in dir, whatever its
@@ -179,29 +178,25 @@ func Violations(got, want []string) []string {
 	return bad
 }
 
-// WithHidden returns a new directory holding a copy of dir's non-test .go
-// files and of hidden, a planted file behind a build tag, so the file reaches
-// a check through the directory scan, as a real file would.
-func WithHidden(t *testing.T, dir, hidden string) string {
-	t.Helper()
-
-	out := t.TempDir()
-
+// WithHidden copies dir's non-test .go files and hidden, a planted file
+// behind a build tag, into out, an empty directory, so the file reaches a
+// check through the directory scan, as a real file would. It returns out.
+func WithHidden(out, dir, hidden string) (string, error) {
 	paths, err := GoFiles(dir)
 	if err != nil {
-		t.Fatal(err)
+		return "", err
 	}
 
 	for _, p := range append(paths, hidden) {
 		b, err := os.ReadFile(p)
 		if err != nil {
-			t.Fatal(err)
+			return "", err
 		}
 
 		if err := os.WriteFile(filepath.Join(out, filepath.Base(p)), b, 0o600); err != nil {
-			t.Fatal(err)
+			return "", err
 		}
 	}
 
-	return out
+	return out, nil
 }

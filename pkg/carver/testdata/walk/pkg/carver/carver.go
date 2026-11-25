@@ -1,6 +1,7 @@
-// Package carver reaches a store through the entity package.
+// Package carver reaches a store and a library through the entity package.
 package carver
 
 import "github.com/cubbit/dittofs/pkg/metadata/entity"
 
-var _ = entity.Hash
+// Use is what carve uses.
+var Use = entity.Hash
