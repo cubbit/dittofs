@@ -153,7 +153,7 @@ subtasks and tests can cite them.
 | R7 | §4.6: 2,500 blocks listed in pages of 1,000, stopped after 1,200 and resumed from the last name: every block seen exactly once, in order, with size and time, and each call returns at most its `n`. The one request per call and the reply under the small-body cap are E4's | test row | §7.1 | T2.2 |
 | R8 | §4.6: a key under the block namespace that is not a block name is skipped; a cancel mid-page ends the call with the context's error. Counting the skipped key is E4's | test row | §7.1 | T2.2 |
 | R9 | §4.2: after the suite's rows, the store's raw namespace holds nothing but blocks, control objects and check objects, and every block key is the prefix followed directly by the name | test row | §7.1 | T2.3 |
-| R10 | §4.13: put and get each role: bytes equal, a second put replaces the first, an absent role is `ErrNotFound`, and a block listing yields none of them | test row | §7.1 | T2.3 |
+| R10 | §4.13: put and get each role: bytes equal, a second put replaces the first, an absent role is `ErrNotFound`, and a block listing yields none of them. The health role is never absent on an opened store, so its absence is not asserted (§4.7) | test row | §7.1, §4.7 | T2.3 |
 | R11 | §4.7, its read-only half: the put probe fails while the namespace is read-only and succeeds on the next call once write access returns; the get probe succeeds throughout. The prefix-revoke half is E9's | test row | §7.1 | T2.4 |
 
 **The in-memory store's contract**
@@ -200,6 +200,11 @@ subtasks and tests can cite them.
     parallel, and the test calling `Run` must not call `prof.Watch` itself.
   - A hook a row needs that the subject leaves nil skips that row by name, so it is reported and
     never counted as a pass.
+  - The suite computes each put's `sum` itself, in the kind the store's `Checksum()` names, with
+    the standard library (`hash/crc32`'s Castagnoli table, `crypto/md5`): the raw digest, as
+    `Hash.Sum(nil)` returns it, 4 bytes for CRC32C and 16 for MD5. E4's store encodes it into
+    its header. No hook carries it, so the S3 opener supplies nothing for it, and the in-memory
+    store's modes (D5) are exercised by the same rows.
   - Prior art: the Go CDK's `blob/drivertest.RunConformanceTests`, which takes a harness maker
     and runs every row against each driver, `memblob` among them (from memory); Go's
     `testing/fstest.TestFS` (from memory).
@@ -266,6 +271,8 @@ subtasks and tests can cite them.
     makes `Put`, `PutControl`, every name of `Delete` and `Health(DirPut)` return
     `&remote.DeniedError{Cause: remote.CauseAccess, Code: "AccessDenied"}` without calling `s`;
     every other call passes through. `SetReadOnly(false)` restores it for the next call (R27).
+  - `Wrapper` embeds `remote.Store`, so a call it does not override passes through, and the
+    calls that land later with RFC 9 and RFC 26 need no change to it.
   - Read-only is a state that holds across calls, so it is a seam setting, not a per-call fault
     decided through the one fault interface (RFC index, "Test harness" item 1). The RFC 3 plan's
     epic 2 adds the per-call faults, and their fault interface, as further settings and methods on
@@ -341,7 +348,7 @@ pkg/remote/memory/
     Consumed by the RFC 3 plan's epic 2, the RFC 5 plan's epic 8, the RFC 8 offload plan's epics
     15, 17 and 21, and E6.
   - `memory/suite_test.go`: the opener over `New(sim.NewTestClock(…), CRC32C)`, and one run over
-    `New(…, None)`.
+    `New(…, None)`, and one over `New(…, MD5)`.
 - **Acceptance criteria:**
   - Every row of this subtask passes against the in-memory store, under `-race`, with no leak.
   - A put that fails for any reason leaves a get of its name as it was before the put.
@@ -411,7 +418,7 @@ pkg/remote/memory/
     service holds under the store's namespace, relative to its prefix; the R10 row; the R9 check
     after every row (D1), judging keys by C.2's layout with D2's `ponytail:`.
   - `memory/control.go`: `PutControl` and `GetControl` (RFC 4 §4.1's signatures; the version
-    returned is empty), each role at `control/<role>`, bodies over 256 KiB refused with `ErrInvalid`
+    returned is empty), each role E1 declares at `control/<role>`, as C.2 names it, bodies over 256 KiB refused with `ErrInvalid`
     (D9), a role outside E1's set `ErrInvalid`. The unexported `rawKeys`, which the opener hands as
     `Raw`. Consumed by the RFC 5 plan's epic 8 (the `keys` object), T2.4's health object and RFC
     27's claim.
@@ -422,7 +429,9 @@ pkg/remote/memory/
     and did not delete, `control/<role>` keys, and keys under `check/`.
 - **Tests:**
   - The suite's rows, at `remote.Store`: R10 for each role (catches a role mapped under
-    `blocks/`, or a put that appends); R9 after each row (catches a key with anything between
+    `blocks/`, or a put that appends), its absence checked for every role but `health`, which
+    the row instead reads before any put of it (catches a store opened without its health
+    object); R9 after each row (catches a key with anything between
     `blocks/` and the name, or an object left by a failed put, R12).
   - `store_test.go`, at `PutControl`: a body of 256 KiB stored, one of 256 KiB + 1 `ErrInvalid`
     (catches the bound off by one, D9); `Role(0)` and the first value past the set `ErrInvalid`
@@ -490,7 +499,8 @@ pkg/remote/memory/
   func (s *Store) Load() Load
   ```
 
-  recorded at every call's entry and return, under the store's mutex. Consumed by the RFC 3
+  recorded at every call's entry and return, under a mutex held only for the update, so a put
+  whose body reader blocks holds no lock. Consumed by the RFC 3
   plan's epic 2 and its checks of a pool binding and of call order (RFC 3 §1.4).
 - **Acceptance criteria:**
   - With 64 puts held open by blocking body readers, `InFlight` and `Peak` are 64; once released
@@ -545,6 +555,9 @@ A suggestion only: one pull request per subtask works as well.
 - **The plan's figure.** The plan expects 6 subtasks and 8 man-days. This breakdown has 5 and 8:
   the suite and the store land together per row family, and the read-only wrapper lands with the
   health probe it is read through.
+- **How `sum` is encoded.** RFC 4 §4.1 gives `Put` a `sum []byte` and does not say its form. D1
+  takes the raw digest, which E4's store base64-encodes into its header; E1's doc comment on
+  `Put` can state it, so the suite, E4 and E6's `codec.Store` agree on one form.
 - **Where a kind 2 lives.** RFC 29 §4.11 says "in that package or its `xxxtest` package", RFC 4
   §1.2 names `remote/memory` and RFC 0 §1.2 says "beside the contract's conformance suite". D3
   follows RFC 4 and RFC 0. If RFC 29's wording is meant strictly, it is RFC 29 that needs the
