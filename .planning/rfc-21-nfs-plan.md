@@ -1068,10 +1068,12 @@ E3's scripted client lands, and against DittoFS from S5.
 
 Waits for S7. Then: `settings.NFS` reaching `New` and, through `Reconfigure`, while serving (RFC 20
 §3.6), as the `adapters.nfs` section of the node's table (#4059's D2), with any key a later gap adds
-under `adapters.nfs`, its default and its check (#4059's D2, D3); `pynfs`, `cthon04`, `nfstest` and
-the NFS rows of `e2e`, `e2e/kerberos` and `e2e/cross-protocol` out of the V2 filter, their
-`known.yaml` rewritten for v2 with each entry naming this plan's epic issue and RFC 21 §13's
-expected failures listed by name; D11's settings closed as decided. The user guide's NFS pages are
+under `adapters.nfs`, its default and its check (#4059's D2, D3); `pynfs`, `cthon04` and `nfstest`
+out of the V2 filter, their `known.yaml` rewritten for v2 with each entry naming this plan's epic
+issue and RFC 21 §13's expected failures listed by name; whichever of `e2e/kerberos` and
+`e2e/cross-protocol` the V2 filter still skips by name then, out too; D11's settings closed as
+decided. The `e2e` cell comes back with RFC 23's implementation plan's T8.2, by that plan's epic 8
+D2 (a cell leaves the filter with its first green test), not here. The user guide's NFS pages are
 the cutover's (§6.6).
 
 **Owns:** RFC 20 §3.4's node build, §3.6's live settings; RFC 13 Appendix B's NFS settings; RFC 21
@@ -1083,7 +1085,7 @@ the cutover's (§6.6).
 
 The NFS suites burned down to RFC 21 §13's expected failures (after E15, counted in neither figure),
 the totality test over every complete table, and every row no lower layer can show: on the composed
-node at S5, with both adapters, through Linux kernel clients once E15 has turned the suites on, and
+node at S5, with both adapters, through Linux kernel clients once `dfs` serves NFS (S7), and
 the benchmarks and soak.
 
 **Owns:** RFC 20 §6.10's pipeline micro-benchmark and end-to-end benchmark for NFS, §7.3, §7.4, §7.5;

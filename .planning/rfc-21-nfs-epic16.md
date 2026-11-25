@@ -43,10 +43,13 @@ simulated beneath the code under test; RFC 24 §6.1.
   to the node as its `Clock`, is what every in-process row advances.
 - **E14**'s T14.1, whose XDR writer and reader the in-process rows, the pipeline benchmark and
   `nfsops` encode their calls with (pending Q5).
-- **E15**, which turns the NFS rows of `e2e`, `e2e/kerberos` and `e2e/cross-protocol` on under
-  `tests.yml`'s V2 filter, and RFC 23's implementation plan's epic 7, which builds the server fixture
-  the e2e tests start `dfs` through, and its epic 8, which rebuilds the e2e helpers on it, for T16.7
-  to T16.10 and T16.13.
+- **S7**, `dfs` serving NFS, and RFC 23's implementation plan's epic 7, which builds the server
+  fixture the e2e tests start `dfs` through, and its epic 8, which rebuilds the e2e helpers on it and
+  takes the `e2e` cell out of `tests.yml`'s V2 filter with its T8.2, for T16.7 to T16.10 and T16.13.
+  Not E15: by that epic's D2 a cell leaves the filter with its first green test, so `e2e/kerberos`
+  and `e2e/cross-protocol`, skipped by name until then, leave with RFC 23's T8.8, with T16.8 or T16.9
+  here, or with RFC 22's epic 16, whichever lands first. E15 takes out only `pynfs`, `cthon04` and
+  `nfstest`, which the burn-down waits for (§1.2).
 - **S6b** and **E13** for every Kerberos step (T16.3, T16.6's "disable takes effect", T16.8, the
   Kerberos rows of T16.9 and T16.10).
 - The handler epics whose rows these are: E4, E6 and E7 (their composed-node and end-to-end halves),
@@ -144,11 +147,12 @@ soak; RFC 21 §13's suites paragraph amended to say where the in-process rows ru
 - **E8**, clients and sessions. **E9**, opens, stateids and locks. **E10**, delegations and the back
   channel. **E11**, NLM, NSM and the datagram path. **E12**, the NFSv4.2 operations. **E13**,
   RPCSEC_GSS. **E14**, the capture diffs against knfsd.
-- **E15**, the integration with the node: `settings.NFS`, and the NFS suites turned on under the V2
-  filter.
+- **E15**, the integration with the node: `settings.NFS`, and `pynfs`, `cthon04` and `nfstest` out of
+  the V2 filter. The `e2e` cells are not E15's (RFC 23's implementation plan's epic 8, its D2).
 - **S5**, the composed in-process node, `internal/node/nodetest`, serving NFS.
 - **S6b**, Kerberos sign-in behind `SignIn`: RFC 18's implementation plan's epic 5.
-- **S7**, the node serves NFS through `dfs`: the cutover, which E15 waits for.
+- **S7**, the node serves NFS through `dfs`: the cutover, which E15 and T16.7 to T16.10 and T16.13
+  wait for.
 - **RFC 22's epic 16**, the SMB counterpart of this epic in RFC 22's implementation plan.
 
 ## 2. How the general rules apply
@@ -609,8 +613,8 @@ in a subtask (§9, gap 8).
 
 **Subtask T16.7 estimate: 4.75 man-days.**
 
-- **Track:** the team. **Depends on:** T16.4, E15, and RFC 23's implementation plan's epics 7 (the
-  server fixture) and 8 (the e2e helpers).
+- **Track:** the team. **Depends on:** T16.4, S7, and RFC 23's implementation plan's epics 7 (the
+  server fixture) and 8 (the e2e helpers, and its T8.2, which takes `e2e` out of the filter).
 - **Covers:** R29, R30, R34, R54, R55, R56, R59, R60, R62.
 - **Deliverables:** `test/e2e/framework/capture.go` (D8): `func Capture(t *testing.T, port int) (stop
   func() string)`, returning the pcap's path, and `func TsharkFields(t *testing.T, pcap, filter
@@ -653,8 +657,9 @@ in a subtask (§9, gap 8).
   xpf` steps under `no_root_squash` and `root_squash`; `test/e2e/nfs_tls_test.go`: an `xprtsec=tls`
   mount, `require`, the certificate files replaced. `test/suites.yaml`'s `e2e` gains `tlshd` among
   its needs, added to the harness's set of needs and probed as T16.7 adds `tshark`. The Kerberos
-  tests' names contain `Kerberos`, which `e2e`'s `kerberos` option selects. No later subtask
-  consumes them.
+  tests' names contain `Kerberos`, which `e2e`'s `kerberos` option selects. `tests.yml`'s V2 filter
+  stops skipping `e2e/kerberos` by name if RFC 23's T8.8 or another protocol plan's Kerberos row has
+  not already (RFC 23's implementation plan's epic 8, its D2). No later subtask consumes them.
 - **Acceptance criteria:**
   - No NFS operation field decodes from the `krb5p` capture, and its GSS service reads privacy
     (RFC 2203 §5.3.2.3 leaves the RPC header and the GSS credential in clear); no RPC field decodes
@@ -675,7 +680,7 @@ in a subtask (§9, gap 8).
 
 **Subtask T16.9 estimate: 3.5 man-days.**
 
-- **Track:** the team. **Depends on:** E6, E15, S6b and E13 (its Kerberos rows), and RFC 23's
+- **Track:** the team. **Depends on:** E6, S7, S6b and E13 (its Kerberos rows), and RFC 23's
   implementation plan's epics 7 and 8.
 - **Covers:** R51, R53, R59, R60.
 - **Deliverables:** `test/e2e/crossprotocol_acl_test.go` (D2): one NFS mount and one SMB mount of
@@ -685,8 +690,9 @@ in a subtask (§9, gap 8).
   caller named `…Kerberos…` as well, so `e2e/kerberos` runs them and `cross-protocol` skips them.
   `test/suites.yaml`'s `e2e` gains `smbclient` among its needs, the need that installs `smbcacls`,
   beside `smb-client`, which mounts; its `cross-protocol` and `kerberos` options, which set no needs
-  of their own, inherit it, and the main cell runs the same tests. The fixture of users, groups and mounts is
-  consumed by T16.10.
+  of their own, inherit it, and the main cell runs the same tests. `tests.yml`'s V2 filter stops
+  skipping `e2e/cross-protocol` by name if RFC 22's epic 16 has not already (RFC 23's implementation
+  plan's epic 8, its D2). The fixture of users, groups and mounts is consumed by T16.10.
 - **Acceptance criteria:**
   - Each row's NFS step answers as the row says, and each read over the other protocol shows what
     the store holds.
@@ -761,7 +767,7 @@ in a subtask (§9, gap 8).
 
 **Subtask T16.13 estimate: 5 man-days.**
 
-- **Track:** the team. **Depends on:** E15, RFC 23's implementation plan's epics 7 and 8, and E14's
+- **Track:** the team. **Depends on:** S7, RFC 23's implementation plan's epics 7 and 8, and E14's
   T14.1 (pending Q5) for `nfsops`.
 - **Covers:** R10, R11, R12, R13, R14, R15, R59.
 - **Deliverables:** `bench/ditto/nfs_night.sh` (D4), called once from `night.sh` after the SMB
@@ -803,19 +809,19 @@ flowchart TD
   S5 --> T16_6["T16.6 Both adapters, in process"]
   S6b -.-> T16_6
   T16_2 & T16_3 & T16_4 & T16_5 & T16_14 & T16_6 --> C1(["after T16.6: every in-process row green"]):::sync
-  E15(["E15 suites on"]):::sync --> T16_7["T16.7 Kernel-client rows"]
+  S7(["S7 dfs serves NFS"]):::sync --> T16_7["T16.7 Kernel-client rows"]
   T16_4 --> T16_7
   T16_7 --> T16_8["T16.8 Kerberos and TLS mounts"]
-  E15 --> T16_9["T16.9 RFC 19 mode and ACL rows"] --> T16_10["T16.10 RFC 19 evaluation rows"]
+  S7 --> T16_9["T16.9 RFC 19 mode and ACL rows"] --> T16_10["T16.10 RFC 19 evaluation rows"]
   S6b -. "Kerberos rows" .-> T16_9
   T16_8 & T16_10 --> C2(["after T16.10: e2e rows green"]):::sync
   T14_1(["E14's T14.1 XDR writer and reader (pending Q5)"]):::sync -.-> T16_2 & T16_3 & T16_4 & T16_5 & T16_6 & T16_14
   T16_3 & T16_5 & T16_6 --> T16_11["T16.11 Totality, pins, allocation cell"]
   T14_1 -.-> T16_12["T16.12 Pipeline micro-benchmark"]
-  E15 --> T16_13["T16.13 Nightly benchmark and soak"]
+  S7 --> T16_13["T16.13 Nightly benchmark and soak"]
   T14_1 -.-> T16_13
   EH(["handler epics E4 to E13, as each subtask's Depends on names them"]):::sync -.-> T16_2 & T16_3 & T16_4 & T16_5 & T16_14 & T16_6 & T16_9 & T16_11 & T16_12
-  R23(["RFC 23's plan, epics 7 and 8: the server fixture and e2e helpers"]):::sync --> T16_7 & T16_9 & T16_13
+  R23(["RFC 23's plan, epics 7 and 8: the server fixture, the e2e helpers, T8.2's e2e cell"]):::sync --> T16_7 & T16_9 & T16_13
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
@@ -840,7 +846,7 @@ and E8 serve their first procedures and T14.1 has landed.
 
 A suggestion only: one pull request per subtask works as well. PR 2 follows PR 1, whose `Crash`
 T16.14's crash mid-clone uses. PR 6 follows PR 1, 2 and 3, whose refusal tests its pins name. PR 1
-and 3 can be open at once; PR 4, 5 and 7 wait for E15.
+and 3 can be open at once; PR 4, 5 and 7 wait for S7 and RFC 23's implementation plan's epic 8.
 
 ## 9. Open points
 
@@ -855,7 +861,7 @@ an R row, which keeps the RFC's text until the RFC changes.
     composed single-node harness, driven by the scripted clients; the steps that check what a
     kernel client does run in `e2e`." RFC 18 §10's Tier 2 and RFC 20 §8.5 already place theirs so.
   - (b) As the RFC is: every such row in `e2e`, the scripted client run against the `dfs` the e2e
-    fixture starts; slower, after merge only, and each row waits for E15.
+    fixture starts; slower, after merge only, and each row waits for S7 and RFC 23's T8.2.
   - (c) Both: in process per change and again in `e2e`; twice the work for no failure the first
     cannot catch.
 - **Q2. The nightly NFS reference and its host** (D4).
