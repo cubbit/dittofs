@@ -20,7 +20,8 @@ import (
 // every platform are checked on any platform, and finds the testing package
 // by import path, so a renamed import is caught; a dot import, whose names it
 // could not tell apart, is refused. A skip inside a helper of another
-// package, such as the profiler's Watch, is not seen.
+// package, such as the profiler's Watch, is not seen. The two rows the
+// decision marker on skipByName names are exempt, and they alone.
 func TestNoSkip(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -28,6 +29,19 @@ func TestNoSkip(t *testing.T) {
 		"Skip":    true,
 		"Skipf":   true,
 		"SkipNow": true,
+	}
+
+	// decision: two rows over the host's own machine may skip by name —
+	// TestCheckRealExtOptions, whose directory and kernel the runner has, not
+	// the test, and TestCheckDirOSRealVolume, whose volume's write-cache
+	// answer no test arranges. Their subject being the machine's property, a
+	// run without it must say what the machine answered instead of passing
+	// silently; each skip names the answer, so it is a visible report, never
+	// counted as a pass. Every other skip stays an error. Withdraw the
+	// exemption when a test can arrange its own ext filesystem or volume.
+	skipByName := map[string]bool{
+		"check_linux_test.go":      true,
+		"checkdir_windows_test.go": true,
 	}
 
 	fset := token.NewFileSet()
@@ -45,6 +59,7 @@ func TestNoSkip(t *testing.T) {
 			}
 
 			path := filepath.Join(dir, e.Name())
+			maySkip := skipByName[e.Name()]
 
 			f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 			if err != nil {
@@ -94,7 +109,7 @@ func TestNoSkip(t *testing.T) {
 					)
 				}
 
-				if skips[sel.Sel.Name] {
+				if skips[sel.Sel.Name] && !maySkip {
 					t.Errorf(
 						"%s: .%s: no test here may skip",
 						fset.Position(sel.Pos()),

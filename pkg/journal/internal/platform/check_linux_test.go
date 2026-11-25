@@ -894,7 +894,10 @@ func TestCheckProbeReadsTheExtOptions(t *testing.T) {
 	writeFiles(t, dir, "format", "00000000000000000001.seg")
 	mountinfo := mountTable(t, dir, "ext4")
 
-	const text = "rw,relatime,data=ordered\n"
+	// One option per line, as the driver's own options file writes them
+	// (fs/ext4/super.c, _ext4_show_options): the comma form is the mount
+	// table's.
+	const text = "rw\nrelatime\ndata=ordered\n"
 	f := newFake(dir)
 	f.fsType = asInt32(magicExt)
 	f.setOptions(t, text)
@@ -991,28 +994,31 @@ func TestCheckEffectiveOptions(t *testing.T) {
 	writeFiles(t, dir, "format", "00000000000000000001.seg")
 	mountinfo := mountTableWith(t, dir, "ext4", "rw")
 
-	t.Run("refuses data=journal in the effective options", func(t *testing.T) {
+	// The options file text below is the form the driver's own file writes,
+	// one option per line (fs/ext4/super.c, _ext4_show_options): the row
+	// fails if the split is narrowed to the commas the mount table uses.
+	t.Run("refuses data=journal the options file writes one per line", func(t *testing.T) {
 		f := newFake(dir)
 		f.fsType = asInt32(magicExt)
-		f.setOptions(t, "rw,relatime,data=journal")
+		f.setOptions(t, "rw\nrelatime\ndata=journal\n")
 		wantRefusal(t, check(f.table(), mountinfo, dir), ruleDataJournal, dir, dir, "data=journal", "")
+	})
+	t.Run("refuses nobarrier the options file writes one per line", func(t *testing.T) {
+		f := newFake(dir)
+		f.fsType = asInt32(magicExt)
+		f.setOptions(t, "rw\nrelatime\nnobarrier\ndata=ordered\n")
+		wantBarrier(t, check(f.table(), mountinfo, dir), dir, dir, "nobarrier")
 	})
 	t.Run("passes data=ordered", func(t *testing.T) {
 		f := newFake(dir)
 		f.fsType = asInt32(magicExt)
-		f.setOptions(t, "rw,relatime,data=ordered")
+		f.setOptions(t, "rw\nrelatime\ndata=ordered\n")
 		wantPass(t, check(f.table(), mountinfo, dir))
-	})
-	t.Run("refuses nobarrier in the effective options", func(t *testing.T) {
-		f := newFake(dir)
-		f.fsType = asInt32(magicExt)
-		f.setOptions(t, "rw,relatime,nobarrier,data=ordered")
-		wantBarrier(t, check(f.table(), mountinfo, dir), dir, dir, "nobarrier")
 	})
 	t.Run("refuses barrier=0 in the effective options", func(t *testing.T) {
 		f := newFake(dir)
 		f.fsType = asInt32(magicExt)
-		f.setOptions(t, "rw,relatime,barrier=0,data=ordered")
+		f.setOptions(t, "rw\nrelatime\nbarrier=0\ndata=ordered\n")
 		wantBarrier(t, check(f.table(), mountinfo, dir), dir, dir, "barrier=0")
 	})
 
@@ -1029,7 +1035,7 @@ func TestCheckEffectiveOptions(t *testing.T) {
 	t.Run("fails on a failed pread of the options file", func(t *testing.T) {
 		f := newFake(dir)
 		f.fsType = asInt32(magicExt)
-		f.setOptions(t, "rw,relatime,data=ordered")
+		f.setOptions(t, "rw\nrelatime\ndata=ordered\n")
 		f.failOn("pread", f.extOptionsPath(), unix.EIO)
 		wantIOError(t, check(f.table(), mountinfo, dir), "pread", f.extOptionsPath(), unix.EIO)
 		wantAllClosed(t, f)
@@ -1043,8 +1049,11 @@ func TestCheckEffectiveOptions(t *testing.T) {
 	})
 
 	// ext2 has its own driver, which registers nothing under /proc/fs/ext4:
-	// its options file answers ENOENT and the verdict skips the ext options
-	// for it, while its barriers stay read from the mount table.
+	// its options file answers ENOENT — wrapped with the sentinel the skip
+	// matches alone — and the verdict skips the ext options for it, while
+	// its barriers stay read from the mount table. A not-found elsewhere in
+	// the read (the device link's) fails the check instead, so an ext2-typed
+	// mount that the ext4 driver serves cannot pass unread.
 	ext2 := mountTableWith(t, dir, "ext2", "rw")
 	t.Run("passes an ext2 mount whose options file is absent", func(t *testing.T) {
 		f := newFake(dir)
@@ -1055,8 +1064,8 @@ func TestCheckEffectiveOptions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !errors.Is(p.ExtOptionsErr, unix.ENOENT) {
-			t.Fatalf("got %v, want the absent file's ENOENT, read for ext2 as for ext4", p.ExtOptionsErr)
+		if !errors.Is(p.ExtOptionsErr, errNoExtOptionsFile) {
+			t.Fatalf("got %v, want the absent file's own sentinel errNoExtOptionsFile, read for ext2 as for ext4", p.ExtOptionsErr)
 		}
 		wantPass(t, CheckProbe(p))
 		wantAllClosed(t, f)
@@ -1068,6 +1077,13 @@ func TestCheckEffectiveOptions(t *testing.T) {
 		wantBarrier(t, check(f.table(), mountTableWith(t, dir, "ext2", "rw,nobarrier"), dir), dir, dir, "nobarrier")
 		wantAllClosed(t, f)
 	})
+	t.Run("fails on an ext2 mount whose device link is not found", func(t *testing.T) {
+		f := newFake(dir)
+		f.fsType = asInt32(magicExt)
+		f.failOn("readlink", "/sys/dev/block/8:17", unix.ENOENT)
+		wantIOError(t, check(f.table(), ext2, dir), "readlink", "/sys/dev/block/8:17", unix.ENOENT)
+		wantAllClosed(t, f)
+	})
 
 	// The ext4 driver serves an ext2-typed mount on a kernel built with
 	// CONFIG_EXT4_USE_FOR_EXT2: the options file is readable, so its
@@ -1075,7 +1091,7 @@ func TestCheckEffectiveOptions(t *testing.T) {
 	t.Run("refuses an ext2-typed mount whose options file is readable", func(t *testing.T) {
 		f := newFake(dir)
 		f.fsType = asInt32(magicExt)
-		f.setOptions(t, "rw,relatime,data=journal")
+		f.setOptions(t, "rw\nrelatime\ndata=journal\n")
 		wantRefusal(t, check(f.table(), ext2, dir), ruleDataJournal, dir, dir, "data=journal", "")
 	})
 
@@ -1085,7 +1101,7 @@ func TestCheckEffectiveOptions(t *testing.T) {
 		f := newFake(dir)
 		f.fsType = asInt32(magicExt)
 		f.linkTarget = "../../devices/virtual/block/" + f.devName
-		f.setOptions(t, "rw,relatime,data=journal")
+		f.setOptions(t, "rw\nrelatime\ndata=journal\n")
 		wantRefusal(t, check(f.table(), mountinfo, dir), ruleDataJournal, dir, dir, "data=journal", "")
 		if n := f.callsOn("open", f.extOptionsPath()); n != 1 {
 			t.Errorf("got %d opens of %s, want one", n, f.extOptionsPath())
@@ -1109,35 +1125,63 @@ func TestCheckEffectiveOptions(t *testing.T) {
 	t.Run("refuses the journal-data attribute on the directory", func(t *testing.T) {
 		f := newFake(dir)
 		f.fsType = asInt32(magicExt)
-		f.setOptions(t, "rw,relatime,data=ordered")
+		f.setOptions(t, "rw\nrelatime\ndata=ordered\n")
 		f.dirFlags = fsJournalData
 		wantRefusal(t, check(f.table(), mountinfo, dir), ruleDataJournal, dir, "", "", dir)
 	})
 	t.Run("refuses the journal-data attribute on one file", func(t *testing.T) {
 		f := newFake(dir)
 		f.fsType = asInt32(magicExt)
-		f.setOptions(t, "rw,relatime,data=ordered")
+		f.setOptions(t, "rw\nrelatime\ndata=ordered\n")
 		f.fileFlags = map[string]uint32{"format": fsJournalData}
 		wantRefusal(t, check(f.table(), mountinfo, dir), ruleDataJournal, dir, "", "", filepath.Join(dir, "format"))
 	})
 	t.Run("passes without the attribute", func(t *testing.T) {
 		f := newFake(dir)
 		f.fsType = asInt32(magicExt)
-		f.setOptions(t, "rw,relatime,data=ordered")
+		f.setOptions(t, "rw\nrelatime\ndata=ordered\n")
 		wantPass(t, check(f.table(), mountinfo, dir))
+	})
+
+	// A file the listing saw whose open answers ENOENT — the journal unlinks
+	// a segment as it rotates its files — holds no attribute to read, so it
+	// is skipped: here as a journal-data attribute on the file, which a
+	// probe that failed the whole check on a gone file would never reach.
+	// Fails on the file's absence from the probe (a probe that listed it
+	// anyway) and on the check's error (the tolerance gone).
+	t.Run("passes with a file unlinked before its open", func(t *testing.T) {
+		gone := "00000000000000000001.seg"
+		dir := realDir(t)
+		writeFiles(t, dir, "format", gone)
+		mountinfo := mountTableWith(t, dir, "ext4", "rw")
+		f := newFake(dir)
+		f.fsType = asInt32(magicExt)
+		f.setOptions(t, "rw\nrelatime\ndata=ordered\n")
+		f.fileFlags = map[string]uint32{gone: fsJournalData}
+		f.failOn("open", filepath.Join(dir, gone), unix.ENOENT)
+
+		p, err := probeDir(f.table(), mountinfo, dir)
+		if err != nil {
+			t.Fatalf("probe of %s: got %v, want the unlinked file skipped", dir, err)
+		}
+		if len(p.Files) != 1 || p.Files[0].Name != "format" {
+			t.Errorf("got files %v, want only [format]: %s is gone and reads no attribute", p.Files, gone)
+		}
+		wantPass(t, CheckProbe(p))
+		wantAllClosed(t, f)
 	})
 
 	t.Run("refuses a kernel release older than 4.13", func(t *testing.T) {
 		f := newFake(dir)
 		f.fsType = asInt32(magicExt)
-		f.setOptions(t, "rw,relatime,data=ordered")
+		f.setOptions(t, "rw\nrelatime\ndata=ordered\n")
 		f.release = "4.12.8"
 		wantRefusal(t, check(f.table(), mountinfo, dir), ruleKernel, dir, "", "4.12.8", "")
 	})
 	t.Run("passes the 4.13 kernel release", func(t *testing.T) {
 		f := newFake(dir)
 		f.fsType = asInt32(magicExt)
-		f.setOptions(t, "rw,relatime,data=ordered")
+		f.setOptions(t, "rw\nrelatime\ndata=ordered\n")
 		f.release = "4.13"
 		wantPass(t, check(f.table(), mountinfo, dir))
 	})
@@ -1276,7 +1320,7 @@ func TestCheckNoIoctlOffBtrfsAndExt(t *testing.T) {
 	f := newFake(dir)
 	f.fsType = asInt32(magicExt)
 	f.ino = 2
-	f.setOptions(t, "rw,relatime,data=ordered")
+	f.setOptions(t, "rw\nrelatime\ndata=ordered\n")
 	f.dirFlags = 0
 	f.fileFlags = map[string]uint32{"format": 0}
 
@@ -1302,7 +1346,7 @@ func TestCheckNoIoctlOffBtrfsAndExt(t *testing.T) {
 	f = newFake(dir)
 	f.fsType = asInt32(magicExt)
 	f.ino = 2
-	f.setOptions(t, "rw,relatime,data=ordered")
+	f.setOptions(t, "rw\nrelatime\ndata=ordered\n")
 	f.fileFlags = map[string]uint32{"format": fsJournalData}
 	wantRefusal(t, check(f.table(), mountinfo, dir), ruleDataJournal, dir, "", "", filepath.Join(dir, "format"))
 	wantAllClosed(t, f)
@@ -2047,6 +2091,58 @@ func TestAppendRegularMalformed(t *testing.T) {
 	names, err = appendRegularBounded(t, direntRecord(32, unix.DT_REG, "a\x00\xff\xff\xff"))
 	if err != nil || !slices.Equal(names, []string{"a"}) {
 		t.Errorf("a record with bytes after the NUL: got names %q and %v, want [a]", names, err)
+	}
+}
+
+// TestCheckRealExtOptions runs the real device link → options file chain on
+// the host's own filesystem, the one row a recorded device name cannot
+// answer: whether the kernel the host runs resolves the fstat answer's device
+// number through /sys/dev/block to the device whose name the options file's
+// path carries, and whether the file's text splits as the kernel writes it,
+// one option per line (fs/ext4/super.c, _ext4_show_options). ext alone keeps
+// that file, so a directory on any other filesystem — tmpfs among them, a
+// usual /tmp — skips by name: the skip is a visible report, never counted as
+// a pass.
+func TestCheckRealExtOptions(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	dir := realDir(t)
+
+	var sfs unix.Statfs_t
+	if err := unix.Statfs(dir, &sfs); err != nil {
+		t.Fatal(err)
+	}
+	if uint32(sfs.Type) != magicExt {
+		t.Skipf("%s is not on an ext filesystem (statfs type %#x): the options file the chain reads is the ext drivers' alone", dir, uint32(sfs.Type))
+	}
+
+	var st unix.Stat_t
+	if err := unix.Stat(dir, &st); err != nil {
+		t.Fatal(err)
+	}
+
+	var p storage.Probe
+	probeExtOptions(realTable, &p, st.Dev)
+	if p.ExtOptionsErr != nil {
+		t.Fatalf("the real chain for device %d: got %v, want the options file the device's name builds", st.Dev, p.ExtOptionsErr)
+	}
+
+	// The words are the file's non-empty lines: the separator the driver
+	// picks for its own file is '\n', so a splitter that reads commas alone,
+	// which the real file never holds, would hand the rows one word holding
+	// every option.
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSuffix(p.ExtOptions, "\n"), "\n") {
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	words := extOptionWords(p.ExtOptions)
+	if len(lines) == 0 {
+		t.Fatalf("the options of %s read as %q, want at least one option the rules match", dir, p.ExtOptions)
+	}
+	if !slices.Equal(words, lines) {
+		t.Errorf("got words %q, want the file's one-per-line options %q (fs/ext4/super.c, _ext4_show_options)", words, lines)
 	}
 }
 

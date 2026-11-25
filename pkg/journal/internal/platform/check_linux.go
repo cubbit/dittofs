@@ -237,6 +237,17 @@ func probeOpenDir(c calls, fd int, p *storage.Probe) error {
 
 	for _, name := range names {
 		flags, err := fileFlags(c, fd, joinPath(p.Dir, name), name)
+		if errors.Is(err, fs.ErrNotExist) {
+			// decision: a file the listing saw whose open answers ENOENT is
+			// skipped, not failed: the journal unlinks a segment as it rotates
+			// its files, and a file that is gone holds no attribute to read.
+			// Only the open answers it — the ioctl and the close act on the
+			// descriptor that open answered, and on a descriptor that exists
+			// neither can fail with a file missing. Withdraw the tolerance if
+			// an ENOENT from a file's open ever names anything but the file
+			// being gone.
+			continue
+		}
 		if err != nil {
 			return err
 		}
@@ -298,6 +309,12 @@ func probeExtOptions(c calls, p *storage.Probe, dev uint64) {
 		return c.open(options, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	})
 	if err != nil {
+		// The file's own not-found carries the sentinel the verdict's ext2
+		// skip matches; every other error of the read — the link's
+		// not-found among them — stays an error of the check.
+		if errors.Is(err, fs.ErrNotExist) {
+			err = errNoExtOptionsFile
+		}
 		p.ExtOptionsErr = &fs.PathError{Op: "open", Path: options, Err: err}
 		return
 	}

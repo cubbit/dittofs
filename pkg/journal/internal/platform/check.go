@@ -3,7 +3,7 @@ package platform
 import (
 	"errors"
 	"fmt"
-	iofs "io/fs"
+	"io/fs"
 	"path"
 	"slices"
 	"strconv"
@@ -160,6 +160,14 @@ var (
 	// release the verdict cannot read numbers from says the inputs do not
 	// describe the kernel: the check fails rather than refusing on a guess.
 	errKernelRelease = errors.New("journal: the kernel release does not parse")
+	// errNoExtOptionsFile wraps the options file's own absence — the probe's
+	// open of /proc/fs/ext4/<dev>/options answering ENOENT — inside
+	// fs.ErrNotExist, so the ext2 skip can tell it from every other
+	// not-found of the read. A not-found anywhere else, the /sys device
+	// link's among them, says the chain to the file broke — no sysfs is
+	// visible, a container among the cases — not that the options file
+	// exists nowhere, and reaches the verdict without the sentinel.
+	errNoExtOptionsFile = fmt.Errorf("journal: the ext options file is absent: %w", fs.ErrNotExist)
 )
 
 // CheckDir decides whether dir is suitable for a journal. It returns an
@@ -314,19 +322,30 @@ func CheckProbe(p storage.Probe) error {
 	if p.FSType == magicExt {
 		switch m.fsType {
 		case "ext2", "ext3", "ext4":
-			// decision: an ext2-typed mount whose options file is absent
-			// (ENOENT) skips the ext-options rules and keeps its barrier
-			// rows read from the mount table above. The probe tries the
-			// file for every ext filesystem; ext2's own driver (fs/ext2)
-			// registers nothing under /proc/fs/ext4, so the absent file
-			// names no effective options. A kernel built with
-			// CONFIG_EXT4_USE_FOR_EXT2 serves ext2 mounts with the ext4
-			// driver, and there the file exists, is read, and is judged
-			// like an ext4 mount's. Withdraw the skip if the ext2 driver
-			// grows an options file or the ext2 driver is removed.
-			if m.fsType == "ext2" && errors.Is(p.ExtOptionsErr, iofs.ErrNotExist) {
+			// decision: an ext2-typed mount whose options file is itself
+			// absent skips the ext-options rules and keeps its barrier rows
+			// read from the mount table above. The probe tries the file for
+			// every ext filesystem; ext2's own driver (fs/ext2) registers
+			// nothing under /proc/fs/ext4, so only the file's own absence —
+			// the sentinel errNoExtOptionsFile — names no effective options.
+			// A not-found anywhere else in the read stays an error of the
+			// check: the /sys device link answering it says no sysfs is
+			// visible (a container among the cases), not that the file
+			// exists nowhere, so an ext2-typed mount that the ext4 driver
+			// serves on a kernel built with CONFIG_EXT4_USE_FOR_EXT2 cannot
+			// pass unread, its options judged like an ext4 mount's the day
+			// the file appears. Withdraw the skip if the ext2 driver grows
+			// an options file or the ext2 driver is removed.
+			if m.fsType == "ext2" && errors.Is(p.ExtOptionsErr, errNoExtOptionsFile) {
 				break
 			}
+			// decision: an ext Probe with neither effective options nor a
+			// read error passes the data-journal and effective-barrier
+			// rules: an empty pair is a gather that recorded neither side,
+			// like the empty kernel release above, and the Linux probe, the
+			// one Gather today, always reports one side. Withdraw the pass
+			// when every Gather must report one.
+			//
 			// An unreadable options file is an error of the check, never a
 			// refusal and never a pass: the effective options were never
 			// seen, so the mount is not known clean.
@@ -439,10 +458,15 @@ func leadingNumber(s string) (int, bool) {
 	return n, true
 }
 
-// extOptionWords splits the effective options the ext4 driver reports — it
-// writes them comma-separated on one line (ext4_seq_options_show in
-// fs/ext4/super.c) — into the words the rows match whole, as refusedOption
-// matches the mount table's.
+// extOptionWords splits the effective options the ext4 driver reports into the
+// words the rows match whole, as refusedOption matches the mount table's. The
+// driver's own options file writes one option per line: ext4_seq_options_show
+// passes nodefs=1 to _ext4_show_options, which picks its separator there
+// ("char sep = nodefs ? '\n' : ','" — both in fs/ext4/super.c); the comma form
+// is the mount table's, the one ext4_show_options writes with nodefs=0. The
+// comma and the whitespace separators stay, so a recording of either form
+// splits; the rows in the table tests keep the per-line form whole, so
+// narrowing the split to the commas alone goes red.
 func extOptionWords(options string) []string {
 	return strings.FieldsFunc(options, func(r rune) bool {
 		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'

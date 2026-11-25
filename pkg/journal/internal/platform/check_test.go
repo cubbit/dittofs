@@ -73,12 +73,13 @@ func probe(table, dir string, fsType uint32) storage.Probe {
 		DirFlags: 0x00800000,
 		DirIno:   256,
 		// Recorded from a Linux 6.1 probe: uname's release, and the effective
-		// options file's clean defaults, which mount options an ext mount
-		// runs with are read from.
+		// options file's clean defaults, one option per line as the driver's
+		// own file writes them (fs/ext4/super.c, _ext4_show_options), which
+		// mount options an ext mount runs with are read from.
 		KernelRelease: "6.1.0",
 	}
 	if fsType == magicExt {
-		p.ExtOptions = "rw,relatime,data=ordered"
+		p.ExtOptions = "rw\nrelatime\ndata=ordered\n"
 	}
 	return p
 }
@@ -629,6 +630,13 @@ func TestCheckKernelRelease(t *testing.T) {
 		// The rule refuses before the filesystem is named, so an unlisted
 		// one is refused too.
 		{name: "refuses an unlisted filesystem", table: hostLines, dir: "/run/user/1000/j", fsType: tmpfsMagic, release: "4.12.8", refused: true},
+		// A development release: the patch level carries the -rc suffix, and
+		// the first two numbers alone still decide (kernelVersion's doc).
+		{name: "passes 4.13.0-rc1", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: "4.13.0-rc1"},
+		{name: "refuses 4.12.0-rc7", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: "4.12.0-rc7", refused: true},
+		// A release with no minor is not the "X.Y[.Z...][suffix]" uname
+		// writes, so its numbers do not parse and the check fails.
+		{name: "fails on the bare major 5", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: "5", err: errKernelRelease},
 		{name: "passes 4.13", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: "4.13"},
 		{name: "passes 4.13.5-arch1", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: "4.13.5-arch1"},
 		{name: "passes 5.15.0-76-generic", table: hostLines + ext4Nested, dir: dir, fsType: magicExt, release: "5.15.0-76-generic"},
@@ -674,6 +682,20 @@ func TestCheckDataJournal(t *testing.T) {
 		p.ExtOptions = "rw,relatime,data=journal"
 		wantRefusal(t, CheckProbe(p), ruleDataJournal, dir, "/srv/journal", "data=journal", "")
 	})
+	// The form the options file really writes, one option per line
+	// (fs/ext4/super.c, _ext4_show_options): the comma form above is a
+	// recording of the mount table's shape. Both rows refuse, so narrowing
+	// the split to the commas alone goes red.
+	t.Run("refuses data=journal the file writes one per line", func(t *testing.T) {
+		p := probe(hostLines+ext4Nested, dir, magicExt)
+		p.ExtOptions = "rw\nrelatime\ndata=journal\n"
+		wantRefusal(t, CheckProbe(p), ruleDataJournal, dir, "/srv/journal", "data=journal", "")
+	})
+	t.Run("refuses nobarrier the file writes one per line", func(t *testing.T) {
+		p := probe(hostLines+ext4Nested, dir, magicExt)
+		p.ExtOptions = "rw\nrelatime\nnobarrier\ndata=ordered\n"
+		wantBarrier(t, CheckProbe(p), dir, "/srv/journal", "nobarrier")
+	})
 	t.Run("passes data=ordered", func(t *testing.T) {
 		p := probe(hostLines+ext4Nested, dir, magicExt)
 		p.ExtOptions = "rw,relatime,data=ordered"
@@ -709,13 +731,23 @@ func TestCheckDataJournal(t *testing.T) {
 	})
 
 	// ext2 has its own driver, which registers nothing under /proc/fs/ext4:
-	// its options file answers ENOENT and passes, while its barrier rows
-	// stay read from the mount table as before.
+	// its options file answers ENOENT, wrapped with the sentinel the skip
+	// matches alone, and passes, while its barrier rows stay read from the
+	// mount table as before.
 	ext2Line := "90 33 8:17 / /srv/journal rw,relatime - ext2 /dev/sdb1 rw\n"
 	t.Run("passes an ext2 mount whose options file is absent", func(t *testing.T) {
 		p := probe(hostLines+ext2Line, dir, magicExt)
-		p.ExtOptionsErr = &fs.PathError{Op: "open", Path: "/proc/fs/ext4/sdb1/options", Err: fs.ErrNotExist}
+		p.ExtOptionsErr = &fs.PathError{Op: "open", Path: "/proc/fs/ext4/sdb1/options", Err: errNoExtOptionsFile}
 		wantPass(t, CheckProbe(p))
+	})
+	// A not-found elsewhere in the read — the device link's, whose absence
+	// says no sysfs is visible rather than that the file exists nowhere —
+	// fails the check on an ext2-typed mount as on an ext4 one, so a mount the
+	// ext4 driver serves (CONFIG_EXT4_USE_FOR_EXT2) cannot pass unread.
+	t.Run("fails on an ext2 mount whose device link is not found", func(t *testing.T) {
+		p := probe(hostLines+ext2Line, dir, magicExt)
+		p.ExtOptionsErr = &fs.PathError{Op: "readlink", Path: "/sys/dev/block/8:17", Err: fs.ErrNotExist}
+		wantError(t, CheckProbe(p), fs.ErrNotExist)
 	})
 	// A kernel built with CONFIG_EXT4_USE_FOR_EXT2 serves an ext2-typed
 	// mount with the ext4 driver, whose options file is readable: the
@@ -738,7 +770,7 @@ func TestCheckDataJournal(t *testing.T) {
 	})
 	t.Run("refuses an ext2 mount by the mount table's nobarrier", func(t *testing.T) {
 		p := probe(hostLines+ext2Line, dir, magicExt)
-		p.ExtOptionsErr = &fs.PathError{Op: "open", Path: "/proc/fs/ext4/sdb1/options", Err: fs.ErrNotExist}
+		p.ExtOptionsErr = &fs.PathError{Op: "open", Path: "/proc/fs/ext4/sdb1/options", Err: errNoExtOptionsFile}
 		p.Mountinfo = hostLines + "90 33 8:17 / /srv/journal rw,relatime - ext2 /dev/sdb1 rw,nobarrier\n"
 		wantBarrier(t, CheckProbe(p), dir, "/srv/journal", "nobarrier")
 	})
