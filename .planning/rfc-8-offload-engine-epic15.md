@@ -219,7 +219,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 | R43 | A block's report waits for no other block, and a failed block holds back none | MUST NOT | RFC 8 §6.3 (O5), §6.8 | T15.9 |
 | R44 | A `report` error leaves the block's extents unmarked and **Dirty** | MUST | RFC 8 §6.3 (Mark) | T15.9 |
 | R45 | An attempt the pipeline gives up has its intent abandoned at once through the abandonment transaction | SHOULD | RFC 8 §6.3 (O4); RFC 6 §7.6 | T15.9 |
-| R46 | A pass is done when every block is reported or abandoned; a file with anything unreported returns `Retry`, one with all reported `Done` | MUST | RFC 8 §6.3 | T15.9 |
+| R46 | A pass is done when every block is reported or abandoned; a file with anything unreported returns `Retry`, one with all reported `Done` | MUST | RFC 8 §6.3, §6.1.1 (`Outcome`) | T15.9 |
 
 **Deadlines and retries**
 
@@ -254,7 +254,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 | R58 | Namespace captured, the Intent half: a namespace change between capture and intent refuses the plan, puts nothing under the new namespace with chunk IDs keyed by the old, and the content is re-offered and reads back | test row | RFC 8 §6.3 (checks); RFC 5 Appendix B.2 (checks) | T15.8 |
 | R59 | O4 own intents: an attempt abandoned past its put bound with the primary live has its intent abandoned and its object deleted without an epoch change | test row | RFC 8 §6.3 (checks) | T15.9 |
 | R60 | O6 poison file: one file whose offered reader fails every read among 10³ others, written at 100 writes a second for 10 simulated minutes: the others offload at the unloaded rate, it is backed off alone and counted by name, in at most 10 minutes ÷ `offload.retry_max` + 5 passes | test row | RFC 8 §6.3 (checks) | T15.10 |
-| R61 | A commit applied with its reply lost leaves the ref and its object both present, whatever the pass then does | MUST | RFC 16's unknown outcome; RFC 8 §6.3 (Commit) | T15.9 |
+| R61 | A commit applied with its reply lost leaves the ref and its object both present, whatever the pass then does | MUST | RFC 16 §4.1 (an unknown outcome); RFC 8 §6.3 (Commit) | T15.9 |
 | R62 | K floor: limits giving `K` one below the floor are refused, naming `K` and the floor; one key's cost more opens, and a one-chunk commit with every tracked read, a key record per material included, commits within `T` | test row | RFC 6 §11.2 | T15.2 |
 | R63 | O1's crash leg: a process crash in each state, over the real journal on a real directory and `kvstore`, leaves every extent offloaded or **Dirty** and readable after restart | test row | RFC 8 §6.3 (checks); plan rule 8 | T15.10 |
 
@@ -262,7 +262,10 @@ Enforced elsewhere once this epic lands: R3's "never builds settings" by the com
 `carver.Settings` is sealed and the engine's walk refuses `carve` (T15.5's walk names the import);
 R5's "persists nothing" by `offload/`'s import row, which also refuses `os`, so its only durable
 writes are the store calls of its ports, and its "rebuilt by re-offering" by T15.10's crash legs.
-Every other row has a test here.
+R29's release by nothing here: `Attempt.Release` does nothing in v1.1 (the RFC 5 plan's epic
+3, its D6), so no test can see a missed release; the pin's own half is T15.8's name test, and the
+release's test goes with `Provider.Remove`'s count of open pins, which that decision names. Every
+other row has a test here.
 
 ## 4. Decisions this epic takes
 
@@ -326,7 +329,8 @@ Every other row has a test here.
   raise it, and the floor with it, when a transform pins more. Prior art: none found.
 - **D6, `encodings` is a plain value type beside `BlockCommit`.** RFC 6 §2.3 records the transform
   IDs, versions and each material's (ID, fingerprint), and RFC 5's `transform.Encoded` carries them,
-  but `kvstore` may not import `pkg/transform` (the RFC 5 plan's D7). So `entity`, beside
+  and the block record is `entity.Block`, whose package imports no component, so the census
+  is restated in `entity`'s own types. So `entity`, beside
   `entity.Block` whose `Carried` it sits next to, declares `Encoding{Transform uint16; Version uint8; Applied bool; Material []MaterialRef}` with
   `MaterialRef{Kind, ID string; Fingerprint [32]byte}`, the namespace being the block's;
   `entity.Block` gains `Encodings []Encoding`, which a block read returns as it returns
@@ -334,11 +338,11 @@ Every other row has a test here.
   `Put.Stored()`'s census once, in `offload/`. The block record's decode accepts a record written
   without them, as empty. Changing the persisted shape later is a migration of every block record,
   so it is settled here. Prior art: none found.
-- **D7, the nonce is drawn from `crypto/rand` in place.** RFC 2 §4.2 requires 16 bytes from a
-  cryptographic source per attempt, and no test needs a chosen nonce: RFC 2's golden vector fixes
-  the construction, and the pipeline's tests assert that names differ across attempts and repeat
-  within one. Rejected: an injected source, an input no test would set. No marker. Prior art:
-  `crypto/rand.Read`, as `openstate` reads it for its IDs (checked).
+- **D7, the nonce is read from a source `offload.Deps` takes, `Rand io.Reader`.** RFC 2 §4.2
+  requires 16 bytes from a cryptographic source per attempt; the content wiring passes
+  `crypto/rand.Reader`, and a test may pass a seeded one (kind 1), so a name's inputs can be
+  asserted. A short read fails the Intent step, never a weaker nonce. No marker. Prior art:
+  `openstate.Deps.Rand`, which the content wiring fills with `crypto/rand.Reader` (checked).
 - **D8, the pass records the namespace and its carver settings, not a key ID.** RFC 2 §4.3 has a
   plan's intent name the namespace and the chunk-ID key ID, and a plan carries neither (the RFC 2
   plan's epic 1 D8). A namespace's chunk-ID key is fixed for its life (RFC 5 Appendix B.2): a new key
@@ -370,8 +374,8 @@ Every other row has a test here.
   assembler's fold and its constructor"; the handle row drops `Offload`, since Capture always calls
   `OffloadMany`, one `Capture` or many, which RFC 1 §3.3 has `Offload` built on; the block-metadata
   row names the content view's `Abandon`, for O4, and its `Budget`, which RFC 6 §10.1's sketch of
-  `Content` gains (D4); §6.7 says `widen` is passed to
-  `OffloadMany`. Each is what §15.3's check enforces once the declarations land, so the RFC matches
+  `Content` gains with D4's struct; §3.1's decision table, §6.3's paragraph on the put streaming
+  from the offer and §6.7 name `OffloadMany` where they said `Offload`. Each is what §15.3's check enforces once the declarations land, so the RFC matches
   the build. Prior art: none found.
 - **D13, the `Throttled` outcome is `Upload`'s `remote.ErrThrottled`.** RFC 8 §6.3 O6 exempts a
   pass a full syncer queue refused, and the RFC 3 plan reuses `remote.ErrThrottled` for that
@@ -405,7 +409,7 @@ pkg/metadata/kvstore/            (its contract types in #5775's metadata contrac
   budget.go                T15.2  the floor replaces minItemKeys; Budget and Content.Budget; T15.3 maxBlockMaterials
   budget_test.go           T15.2  the floor and the counts, over the memory KV, Badger, FoundationDB where it runs
   offload.go               T15.3  BlockCommit.Encodings written to the block record; T15.4 the zero-ref commit, the over-K stop
-  codecs.go                T15.3  Encoding and MaterialRef in the block record's codec
+  contentcodecs.go         T15.3  Encodings in the block record's codec
   offload_test.go          T15.3, T15.4
   fuzz_test.go             T15.3  the block record's decode
 pkg/engine/
@@ -436,7 +440,7 @@ internal/node/content/
   carver.go                T15.5  Settings(ns) over carve.NewSettings, BlockName, the fold's constructor
 test/engine/known.yaml     T15.5  41 messages rewritten; T15.10 O1's crash leg
 test/suites.yaml           T15.8  unit/engine-allocs; T15.3 the fuzz target's line
-docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.1's three rows, §6.7 (D12)
+docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.1's three rows, §3.1, §6.3, §6.7 (D12)
 docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content gains Budget, Abandon (D12)
 ```
 
@@ -448,8 +452,9 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
 
 - **Track:** B. **Depends on:** S2.
 - **Covers:** R6, R7, R8, R9 (pass membership).
-- **Deliverables:** in `policy.go`, `offloadDue(now time.Time, s journalStats, shares []shareView)
-  []offloadPass`, RFC 8 §3.1's signature; `shareView` gains each dirty file's dirty bytes, oldest
+- **Deliverables:** a new `policy.go`, with `journalStats`, `shareView` and `offloadPass`, none of
+  which exists yet, and `offloadDue(now time.Time, s journalStats, shares []shareView)
+  []offloadPass`, RFC 8 §3.1's signature; `shareView` holds each dirty file's dirty bytes, oldest
   dirty write (D10) and failure count (D11), the share's `MaxAge` and block target; `offloadPass`
   names its share, its files with their oldest dirty write, `limit` and `widen`. RFC 8 §6.3's
   five-failures `decision:` at the threshold. The file state's staged-bytes count (D15): `Write`
@@ -564,7 +569,13 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
 - **Track:** B. **Depends on:** T15.1.
 - **Covers:** R1, R2, R3 (the declaration), R4, R5, R10 (capture), R11, R12, R13.
 - **Deliverables:**
-  - `offload/ports.go`, each port holding what `offload/` calls, in contract types (D1):
+  - `offload/ports.go`, each port holding what `offload/` calls, in contract types (D1). The full
+    set is below; each method lands with the subtask that first calls it, so the declared-
+    interfaces check stays green on every change: this subtask declares `Offers` and
+    `Carver.Settings`; T15.6 `Carver.Cut`, `Store.Covering` and `Store.Budget`; T15.7
+    `Carver.NewFold` and `Fold`; T15.8 `Carver.ChunkID`, `Carver.BlockName`, `Chain`, `Puts`,
+    `Put`, `Flow` and `Store.Intend`; T15.9 `Store.Commit` and `Store.Abandon`. The engine's
+    `Deps` members and embeddings follow the same steps:
     ```go
     type Offers interface {
     	OffloadMany(ctx context.Context, files []journalc.Capture, limit, widen int64,
@@ -754,7 +765,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   in order, and different from each other (catches a name over the wrong inputs or a reused nonce,
   R30); an offered chunk changed under the source by
   the in-memory journal's corruption control, the put failed (R35). The allocation test: bytes
-  allocated per put flat from 1 MiB to 64 MiB blocks, under `testing.AllocsPerRun` (R34).
+  allocated per put, read from `testing.Benchmark`'s B/op, flat from 1 MiB to 64 MiB blocks (R34).
 - **Rules:** rule 4, `unit/engine-allocs`.
 
 ### T15.9 Commit and Mark
@@ -762,7 +773,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
 **Subtask T15.9 estimate: 3.5 man-days.**
 
 - **Track:** B. **Depends on:** T15.8, T15.3, T15.4.
-- **Covers:** R10 (commit), R29 (release), R36 to R46, R56 (the commit cases), R57, R59, R61.
+- **Covers:** R10 (commit), R36 to R46, R56 (the commit cases), R57, R59, R61.
 - **Deliverables:** `commit.go`: per plan, under the files' guards, a `BlockCommit` with the block's
   chunks at `Stored()`'s ranges, its `Encodings` converted from the census (D6), each file's refs
   with `born` from the offered cut (D9, its `decision:`), or the zero-ref commit for a plan with no
@@ -786,8 +797,6 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   shard's epoch unchanged, its intent abandoned and its object deleted by the store's abandonment
   (R45, R59); a commit applied with its reply dropped by the fault `kv.KV`, the ref and the object
   both present after the pass (R61); a block shared by two files, both reported at its commit (R42).
-  The pin's release, read as `keystest`'s provider's count of attempts outstanding, zero after
-  every leg (R29), which the RFC 5 plan's epic 2 is asked to export and cover in its suite (§9).
   The commit's `Encodings` read back from the block record equal the census `Stored()` returned,
   material fingerprints included (catches a census dropped at the conversion, R36); each ref's
   `born` read back equal to its extent's offered cut (R41); each file's result `Done` when all its
@@ -894,8 +903,12 @@ A suggestion only: one pull request per subtask works as well.
   agreement test the fake's other calls have and says so in its pull request.
 - **`Stats.Carver` is a field epic 11 did not freeze** (D14). It is additive; the S1 reviewers were
   not asked about it.
-- **Needs on other epics and plans.** The RFC 5 plan's epic 2: `keystest`'s provider exports a count
-  of attempts outstanding, covered by its suite (T15.9's R29). Epic 11's T11.5 lists `MarkOffloaded`
+- **Departures from epic 11's recorded declarations**, all additive, which the S1 reviewers did not
+  see: `Deps.Puts` is the `offload.Puts` interface, not a function field (D1); the `Carver` port
+  adds `ChunkID`, which the put source's recompute needs; `Content` adds `Budget` and `Abandon`
+  (D4, O4); `Stats.Carver` (D14). Epic 11's `PassesAborted`, a wholly removed pass, is epic 16's,
+  with §8.3.
+- **Needs on other epics and plans.** Epic 11's T11.5 lists `MarkOffloaded`
   under this epic; its first caller is epic 19's reseed (§1.2), and epic 11's document is not
   revised here. Epic 16's document takes the "O2 long outage" row (below).
 - **The "O2 long outage" row** of RFC 8 §6.3's checks asserts the put-unhealthy pause, epic 16's,

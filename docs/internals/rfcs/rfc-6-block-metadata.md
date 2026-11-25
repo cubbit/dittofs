@@ -2680,6 +2680,15 @@ type Content interface {
     VersionFloor(ctx context.Context, shares []ShareID) (JournalVersion, error)          // §8.3
 }
 
+// Budget is K and the worst-case keys of each part of an offload commit (§5.2).
+type Budget struct {
+    K        int // the most keys one transaction may write
+    NewRef   int // a ref written: the ref, its reverse key, its chunk record
+    Replaced int // each existing ref replaced, at worst split, with what its count reaches
+    Block    int // a block commit's own: the intent's delete, the block record, its GC index keys
+    File     int // each file in the commit: the offload fence
+}
+
 // Blocks is RFC 9 §8's view of block records, satisfied here, one per namespace:
 // every call reads and writes only that namespace's partition (§2.6). RFC 9's
 // per-namespace calls on NS‖ns records (Lease, State, RecordRecheck, RecordNonce)
