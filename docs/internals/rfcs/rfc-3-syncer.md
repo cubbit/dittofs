@@ -2124,7 +2124,7 @@ calls' throughput (B5); for B1–B4, the in-memory store's simulated latency and
 **Suites.** §7's Group A and B checks against the in-memory store and its fault wrapper and §8's model, memory,
 import, fault-sweep and counted checks run in `unit`, and an allocation count the race detector skews
 in an option of `unit` of its own, the syncer's allocation gate, on pull requests; §8.1's real-backend
-checks (the Group A checks and the lifecycle checks, over `codec.Store` on the real store against the local
+checks (the Group A checks and the lifecycle checks, over RFC 4's codec store on the real store against the local
 emulator behind a fault proxy) run in `integration`. The scheduler model's fuzz
 target joins the nightly fuzz suite every storage component shares. §7.4's benchmarks run in a manual
 suite of the syncer's own, B5 against a real service only where credentials are; §8.1's soak runs in
