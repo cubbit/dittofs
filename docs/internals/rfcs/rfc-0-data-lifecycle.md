@@ -406,7 +406,7 @@ Two families of unit. The **bytes** units say where content is; the
 | **version** | the number ordering every write and removal of one file: 128 bits, an epoch half (zero in this format) and a counter half drawn from the journal serving the file. Where two cover the same byte, the higher wins, whatever order they arrived in. A journal issues versions only below a durable **version limit** the caller raises ahead of use, and at every open and every attach raises its counter above both the share's version floor and that limit, so no version it reported before a crash or a device loss is issued again. Not a sequence number (per journal) nor a cut number (per share) | [§2.1](#2.1%20Entities), [RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions) |
 | **chunk** | a run of one file's bytes, about 256 KiB, cut at a content-defined boundary and named by its **chunk ID**, a keyed hash of its content under the namespace's chunk-ID key; shared by every ref that names it. An all-zero chunk is never stored: the file records a **zero ref** instead, which reads as zeros with no fetch | [§2.1](#2.1%20Entities) |
 | **Target**, **Min**, **Max** | the one chunking setting, default 256 KiB, and the boundary bounds derived from it, Target ÷ 4 and 4 × Target | [RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) |
-| **stretch** | one unbroken run of a file's bytes handed to the carver in one call; an end the offer imposed, not a hole or the file's end, leaves its tail uncut for the next offer | [RFC 2 §2.4](rfc-2-carver.md#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut) |
+| **stretch** | one unbroken run of a file's bytes handed to the carver in one call; an end the offer imposed, not a hole or the file's end, leaves its tail uncut for the next offer; an end the engine sets before an extent whose replaced refs would pass the key budget is real, and the next stretch starts there | [RFC 2 §2.4](rfc-2-carver.md#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut) |
 | **block** | the object the remote tier stores: a whole number of chunks, written by one put. It targets a configured size — 4 MiB by default, settable from 1 MiB to 64 MiB — and passes it by at most one chunk, because a chunk never spans two blocks; it falls short only at the format's chunk cap or at the end of an offload pass | [§2.1](#2.1%20Entities) |
 | **block plan** | the assembler's list of the chunk hashes for one block and where their bytes sit, from which the block is streamed | [RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler) |
 | **block name** | a block's 32-byte identity, minted afresh for each put attempt and never reused, so one name is always one byte sequence | [RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) |
@@ -1257,8 +1257,9 @@ offers the same stretch of bytes converges on the same chunk identities. An offe
 cut at a byte limit does not move boundaries: the carver leaves the tail after
 its last content-chosen boundary uncut, and the next offer starts there
 ([RFC 2 §2.4](rfc-2-carver.md#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)). A retry whose stretch starts elsewhere — after the
-age-forced final cut of a tail that waited the pass's maximum age, or a partial
-report that moved the start of what remains dirty — cuts its first chunks
+age-forced final cut of a tail that waited the pass's maximum age, an end the
+engine set before an extent whose replaced refs would pass the key budget
+([RFC 8 §6.7](rfc-8-engine.md#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile)), or a partial report that moved the start of what remains dirty — cuts its first chunks
 differently until its boundaries rejoin the earlier ones. Those few chunks are stored again under
 new hashes and the earlier ones are left to sweep: a cost in space and transfer,
 never in correctness.

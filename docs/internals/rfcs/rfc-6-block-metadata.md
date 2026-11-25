@@ -1089,6 +1089,14 @@ Partial application **MUST NOT** be observable: a ref without its chunk, a
 refcount without its ref, or a chunk without its block each turns a later read or
 sweep into a guess.
 
+**Zero refs with no block commit alone.** A pass whose carved extents hold only
+all-zero chunks has no block, so no put intent and no block commit. Its zero refs
+**MUST** then commit in a **zero-ref commit**: one transaction that writes the
+zero refs, replacing what they overlap with the history moves and count changes
+that requires, and that makes the per-file checks below. It writes no block
+record, no chunk record and no intent delete, and it stays within K like any
+commit ([§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)). Without it a stretch of zeros would never leave the journal.
+
 **The first block to commit a chunk owns its record.** A later commit that carries
 the same chunk adopts it: it adds its refs and their counts, and leaves `block`
 and `position` as they are. The copy the later block carries is dead weight, not
@@ -1329,7 +1337,8 @@ intent's delete, the block record and its GC index keys
 ([RFC 9 §7.2](rfc-9-gc.md#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation)); and the per-file key, the offload fence `F_o(file)`. It also counts what
 the commit reads with conflict tracking, whose conflict ranges [RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)
 charges to `TxnBytes`: `F_o(file)`, `Intent(name)`, `Node(primary)` and one key
-record per material the block's `encodings` name ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)). The store
+record per material the block's `encodings` name ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)). A zero-ref commit
+([§4.1](#4.1%20What%20one%20commit%20records)) writes and reads a subset of these, so it does not move the floor. The store
 **MUST** refuse to open, naming K and the floor, when K derived as above is below
 it, beside its refusal of a record that does not fit `TxnLimits.Key` or
 `TxnLimits.Value`. So no chunk's commit passes K alone: the engine can always end
