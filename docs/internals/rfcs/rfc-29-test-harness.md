@@ -1056,7 +1056,7 @@ two protocols is invisible to every single-protocol suite.
 dt list [--tier T] [--json]                    suites, options, groups, tier, format and needs; whether they can run here
 dt plan --tier T [--base REF] [--shard I/N]    the cells a tier runs, each with its place; CI turns --json into its matrix;
    [--docs-only-base REF] [--json]             --base REF compares the branch with REF for docs-only PRs and `paths`;
-                                               --docs-only-base REF, a merge queue group's base, only for a docs-only group
+                                               --docs-only-base REF, a merge queue group's parent, only for a docs-only PR
    [--estimate [--ci] [--last N]]              and the tier's runner-minutes, from dt history
 dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...] run, grade and write results; exit status below
    [--tier T] [--only A,B] [--skip A,B] [--parallel N] [--base REF] [--changed]
@@ -1823,7 +1823,7 @@ One workflow, `tests.yml`, runs every registered suite:
   use it are skipped, as `lint.yml` skips the commit checks today, and say so in the log. A
   skipped command neither fails the cell nor leaves it not run: there is no change to check. A
   cell whose every command is skipped this way passes.
-- **Docs-only PRs:** given `--base` (the PR's base), `dt plan` compares the branch with it, and when every changed path is documentation (`docs/**`, `*.md`, images, `LICENSE`, `.gitignore`, the paths the workflows ignore today) it returns no cells, and `gate` passes. In the merge queue, `--docs-only-base` (the group's base) applies that rule alone: a group whose changes, every pull request ahead of it included, are all documentation returns no cells, and any other returns every cell of the tier, with no `paths` narrowing, as the queue tests everything. The unit tests named in `lint-repo` that read the docs and the RFCs run in `Repo Checks`, which runs on every change, so a docs-only change still meets them; a test that reads them joins that list by name.
+- **Docs-only PRs:** given `--base` (the PR's base), `dt plan` compares the branch with it, and when every changed path is documentation (`docs/**`, `*.md`, images, `LICENSE`, `.gitignore`, the paths the workflows ignore today) it returns no cells, and `gate` passes. In the merge queue, `--docs-only-base` takes the group's parent (`merge_group.base_sha`: the group of the pull request ahead, or the branch's tip for the first) and applies that rule alone to the one pull request squashed on it: a docs-only one returns no cells, and any other returns every cell of the tier, with no `paths` narrowing, as the queue tests everything. Judging each pull request alone is enough because the queue merges groups only when all of them pass (`ALLGREEN`), so the code ahead is tested by its own group's run, and a group thrown out rebuilds the ones behind it on a new parent, which run again. The unit tests named in `lint-repo` that read the docs and the RFCs run in `Repo Checks`, which runs on every change, so a docs-only change still meets them; a test that reads them joins that list by name.
 
 **Merging.**
 - develop requires `gate`, the Tests workflow's job, beside the lint and security checks (`Go Checks`, `Repo Checks`,
