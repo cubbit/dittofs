@@ -129,8 +129,8 @@ two rows, on the composed node.
   NFS side, with its owner schemes (T7.2). **E8**, clients and sessions. **E10**, delegations and the
   back channel. **E11**, NLM, NSM and the datagram path. **E12**, the NFSv4.2 operations. **E13**, this epic. **E14**, the capture diffs against knfsd. **E15**, integration
   with the node, which turns the NFS suites on. **E16**, E2E green.
-- **S0**, the shared test pieces the RFC 22 implementation plan's epic 2 builds, `adaptertest/golden`
-  among them.
+- **S0**, the shared test pieces RFC 21's E2 builds for both adapters, `test/pcap-corpus`'s cut
+  script among them.
 - **S2**, NFS's test foundations in CI: what every middle epic starts from.
 - **S5**, the composed in-process node, `internal/node/nodetest`, serving NFS.
 - **S6a**, `Spell`, `Find` and resolution through `vfs.Service`: RFC 18's plan's S2.
@@ -422,7 +422,7 @@ are the authenticator's and already tested at its Tier 1; `SECINFO`'s flavours (
   them, builds and prices what NFS needs: the package's first commit with `Mechanism` and `Context`,
   the Kerberos mechanism with `gsstest`'s initiator (T13.9), `Exchanges` (T13.10), `Identity`
   (T13.11) and RFC 4121's MIC token (T13.12), in the shape RFC 20 §4.4 gives both adapters, the same move #5666
-  makes for S0. NTLM, SPNEGO and their initiators stay in that epic, and so does what only they need:
+  made for S0. NTLM, SPNEGO and their initiators stay in that epic, and so does what only they need:
   `Exchanges` holding an exchange across legs, since Kerberos completes in one (D2) and a second leg
   could only be tested here with a stub mechanism; `Identity`'s `Secret` arm and the anonymous and
   guest path. That epic keeps its figure until standup moves it, so the programme counts T13.9 to
@@ -487,7 +487,7 @@ test/pcap-corpus/
   `netns.sh` mounting each flavour in turn, NFSv3 with MOUNT, then NFSv4.0 and NFSv4.1, each running
   `stat`, a small write and a read, then unmounting; `test/pcap-corpus/nfs-gss/` with
   `reference.pcap`, `reference.skel`, the `nfs/` keytab (D13) and `CAPTURE.md`; golden files cut by
-  S0's `adaptertest/golden`: an `INIT` call and its reply, a data call and reply at each service, a
+  S0's cut script: an `INIT` call and its reply, a data call and reply at each service, a
   `DESTROY`. Consumed by T13.2 (credential and body vectors), T13.3 (token vectors) and T13.6 (the
   stage over captured calls), and by T13.9 (the initial token's framing) and T13.12 (MIC tokens).
 - **Acceptance criteria:**

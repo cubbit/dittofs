@@ -1940,6 +1940,13 @@ nothing is stored ([RFC 19 §2.8](rfc-19-authorization.md#2.8%20What%20a%20store
 > withdraws a grant. Both look like success to the client. Overturned only by
 > supporting the kind; a tool that sets one is told so, and can fall back.
 
+> decision: claim-based access control is not supported. A conditional entry
+> that tests a user's or device's directory claims is refused with the other
+> callback entries above, and no identity carries claims
+> ([RFC 18](rfc-18-identity.md)). The cost: WPTS's `BVT_CBAC_*` tests fail
+> (§18). Support it when a deployment needs claim-based access, or once RFC 18
+> carries directory claims.
+
 **Who may read and change a descriptor** is the chokepoint's decision, not the
 adapter's: the file's owner holds `READ_CONTROL` and `WRITE_DAC` whatever the
 DACL denies, unless an entry for owner rights applies, so an owner can always
@@ -2264,6 +2271,11 @@ restore; here they are the share's read-only snapshots
   client keying its caches or hard-link detection on volume and file id then
   never takes a file in one snapshot for the same file in another, or in the
   live share.
+
+> decision: Previous Versions is not served until RFC 12's store view answers
+> `Snapshots`; until then the listing is empty and a token names no snapshot.
+> The cost: smbtorture's `smb2.twrp` tests and WPTS's `BVT_EnumerateSnapShots`
+> fail (§18). Serve it once the store view lands.
 
 ## 16. Translation
 
@@ -2957,7 +2969,7 @@ service, before any wire suite runs:
 | §16.5 a failure an `IOCTL` shares | Mark a file sparse (`FSCTL_SET_SPARSE`) and write two data ranges with a hole between of at least 64 KiB, aligned to 64 KiB, as a Windows reference needs to report a hole. Send `CREATE`, then a related `IOCTL` `FSCTL_QUERY_ALLOCATED_RANGES` over the file with a 16-byte output buffer, then a related `CLOSE`: the `CLOSE` answers the `IOCTL`'s status with no call, and the open stays (a `READ` on its `FileId` succeeds). The file is marked sparse so the row holds against a server that reports a file not marked so as one range, which would fit. | a `NotFailure` row keyed by a sentinel other FSCTLs share, which runs the related members after a failure |
 | §16.5 a copychunk failure in a chain | Open a file and take its resume key (`FSCTL_SRV_REQUEST_RESUME_KEY`). Send `FSCTL_SRV_COPYCHUNK` on that open with a `MaxOutputResponse` of 8 bytes, below the 12-byte `SRV_COPYCHUNK_RESPONSE`, then a related `CLOSE`: the `IOCTL` is a plain `STATUS_INVALID_PARAMETER` failure (MS-SMB2 3.3.5.15.6), the status of copychunk's `NotFailure` pair, and the `CLOSE` answers it with no call, and the open stays. | a `NotFailure` row for copychunk keyed on its status or a shared error rather than its own value, which would run the related members after a plain failure |
 | §16.5 a session in setup | Send a `SESSION_SETUP` for a new session that the server answers `STATUS_MORE_PROCESSING_REQUIRED`, then a related `TREE_CONNECT`: it is refused at `Unwrap` with `STATUS_USER_SESSION_DELETED`, in a record of its own, its response's `SessionId` the new session's, and no tree is connected; a related `CLOSE` in its place is refused, and no open is closed. Then re-authenticate a valid session with a leg answered `STATUS_MORE_PROCESSING_REQUIRED`, followed by a related `TREE_CONNECT`: it runs as the identity the session already holds. Repeat on an expired session: the `TREE_CONNECT` is refused `STATUS_NETWORK_SESSION_EXPIRED`, §4.1's rule. Bind a second connection to a valid session with a leg answered `STATUS_MORE_PROCESSING_REQUIRED`, followed by a related `LOGOFF`: it is refused with `STATUS_USER_SESSION_DELETED`, and the session still serves its first connection. | a related member run on a new session that has not finished its setup, or on a connection not yet bound to its session, or one refused on a valid session mid re-authentication |
-| §16.4 end to end | smbtorture and the Windows Protocol Test Suites run through `dt` ([RFC 29](rfc-29-test-harness.md)) as the end-to-end layer above the vectors and fuzz targets. | a translation correct in vectors but wrong against a real client |
+| §16.4 end to end | smbtorture, the Windows Protocol Test Suites, the platform clients and smbfuzz run through `dt` ([RFC 29](rfc-29-test-harness.md)) as the end-to-end layer above the vectors and fuzz targets, green at §18's release goal. | a translation correct in vectors but wrong against a real client |
 
 ### 16.7 Monitoring
 
@@ -3095,6 +3107,62 @@ name, a SID, a principal or a client address
 | §11 owner SID | Set an owner SID no principal holds together with a DACL: assert `STATUS_INVALID_OWNER` and the DACL unchanged. |
 | §11 null DACL | Set a null DACL: assert everyone granted, and one allow-everyone entry read back. |
 
+**Release goal.** These suites are the end-to-end layer over §16.6's rows and
+this section's: smbtorture, its `smb2.*` list and its Kerberos option; the
+Windows Protocol Test Suites (WPTS), the file server's MS-SMB2 and MS-FSA
+cases; the platform clients, Linux's at 3.1.1 and at 2.1, macOS's and
+Windows's own, each running its workloads over a mount; and smbfuzz, its rounds
+compared with a reference server joined to the same domain. Each, and any
+other SMB conformance or interop suite the harness registers, is green when
+this RFC's implementation is done: every test passes except those listed in
+"Tests expected to fail". A failure outside that list is a defect, or a
+decision of this RFC the list misses; either the defect is fixed, or the
+decision is written into its section and the tests it fails join the list,
+citing it. No other failure ships. A test that checks the reference server
+rather than the protocol is not this RFC's to pass: one the tool runs only
+against Windows or only against Samba (WPTS
+`BVT_SharePermission_AccessAllow_UserSid`, which needs Netlogon on the computer
+WPTS runs on, stays skipped after the domain join), one that needs a hook only Samba's
+server has (a test-only control code, a file-system module, a clustered
+database), or an smbfuzz divergence where the reference server departs from
+MS-SMB2 or MS-FSA. It stays in its suite's known-failure file as `proto`,
+`permanent`, or `env` when only the computer the tool runs on lacks what it
+needs, `wontfix`, with that reason
+([RFC 29 §4.7](rfc-29-test-harness.md#4.7%20Grading%3A%20known%20failures%2C%20expected%20skips%2C%20quarantine%2C%20retries)).
+
+**Tests expected to fail.** The suites' tests that the decisions of this RFC
+fail by design; a test its suite skips because the server lacks what the row
+names counts as one. A single-node run passes when exactly these fail; one
+that starts passing means the decision changed and this list is stale.
+
+| Test | Fails because |
+| --- | --- |
+| smbtorture `smb2.streams.io` | a named stream is not deleted on its own (§12.1) |
+| smbtorture `smb2.streams.names`, `smb2.streams.rename`, `smb2.streams.rename2` | a named stream is not renamed (§12.1) |
+| smbtorture `smb2.streams.basefile-rename-with-open-stream` | a rename of a file whose stream is open sharing delete is granted (§12.1) |
+| smbtorture `smb2.name-mangling.mangle`, `smb2.name-mangling.mangled-mask` | no 8.3 short names (§9.2, Appendix E.3) |
+| smbtorture `smb2.dirlease` tests | no directory leases (§6.2) |
+| WPTS `BVT_Negotiate_SMB2002`, `BVT_Negotiate_Compatible_2002` | SMB 2.0.2 refused (§3.1) |
+| WPTS `Negotiate_SMB311_IsServerToClientNotificationsSupported` | `SMB2_GLOBAL_CAP_NOTIFICATIONS` clear (§3.1) |
+| WPTS compression tests (`BVT_SMB2Compression_*`, `BVT_Negotiate_SMB311_Compression*`) | compression not offered (§3.2) |
+| WPTS `BVT_Negotiate_SMB311_RdmaTransformCapabilities_IsSupported`, `BVT_SMB2Basic_QuicTransport_OpenNamedPipe` | no SMB Direct, no QUIC (§3.2) |
+| WPTS `BVT_CopyOffload`, `BVT_OffloadReadWrite` | no ODX (§10) |
+| WPTS `BVT_ResilientHandle_*`, `BVT_Resiliency` | resilient handles refused (§10, Appendix F) |
+| WPTS `BVT_FileLevelTrim`, smbtorture `smb2.ioctl.trim_simple` | trim refused (§10, Appendix F) |
+| WPTS `BVT_SetGetIntegrityInfo` | integrity streams refused (§10, Appendix F) |
+| WPTS shared virtual disk tests (MS-RSVD), listed by name in the harness's known-failure list | shared virtual disks refused (§10, Appendix D) |
+| WPTS DFS referral tests (`BVT_RootAndLinkReferral*`, `BVT_*ToDC*`) | DFS referrals are a non-goal (§1.1) |
+| smbtorture `smb2.twrp` tests, WPTS `BVT_EnumerateSnapShots` | Previous Versions not served until RFC 12's store view (§15) |
+| WPTS claim-based access tests (`BVT_CBAC_*`) | no claim-based access control (§11) |
+| WPTS shadow copy tests over MS-FSRVP (`BVT_VSS*`) | `IPC$` serves three RPC services, FSRVP not among them (§5.2) |
+
+A single-node run also expects Witness's tests to fail, WPTS `BVT_SWN*` and
+`BVT_Witnessr*` and smbtorture `rpc.witness`: Witness is **(cluster)** (§14),
+and one node serves none. A cluster run expects them to pass. No decision above
+fails a platform client's workload, and smbfuzz names rounds, not tests; their
+entries, if any, and any other suite's v2 failure the table misses, are filled
+from their first run, each citing the section whose decision fails it.
+
 **Wire tests.** The wire tests of [RFC 20 §8](rfc-20-adapters.md#8.%20Wire%20tests)
 run this adapter and a reference SMB server through the same scripts and
 compare their replies field by field. This RFC owns the SMB divergence list:
@@ -3126,7 +3194,9 @@ harness. §18's rows that name smbtorture tests run in `smbtorture`, the Kerbero
 re-authentication ones in `smbtorture/kerberos`, the MS-FSA cases in `wpts`, the
 rows reaching one file over SMB and NFS in `e2e/cross-protocol`, those with a
 Linux kernel client in `e2e`, those that need Windows itself in
-`clients/windows`, and the hour-long profile-container run in `system`. No suite
+`clients/windows`, the platform clients' workloads over a mount in `clients`,
+`clients/smb21` and `clients/macos`, smbfuzz's rounds in `smb-fuzz`, and the
+hour-long profile-container run in `system`. No suite
 runs yet the wire tests against a reference or Windows server, or the steps §18
 marks cluster.
 
