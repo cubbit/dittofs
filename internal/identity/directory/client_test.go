@@ -478,6 +478,39 @@ func TestCloseEndsAbandonedConnect(t *testing.T) {
 	})
 }
 
+// A connect whose question stops waiting only after Close ran is ended at
+// once: Close has already returned and will not end it.
+func TestAbandonedAfterCloseEndsAtOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t)
+		var resolving, returned atomic.Bool
+		password := func(ctx context.Context) ([]byte, error) {
+			resolving.Store(true)
+			<-ctx.Done() // held until it is ended, or the query timeout ends it
+			returned.Store(true)
+			return nil, ctx.Err()
+		}
+		c := directory.NewClient(e.rec, e.d.Dial, password, e.clock, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { _, _, err := c.Lookup(ctx, directory.ByUserName, []byte("alice")); done <- err }()
+		synctest.Wait()
+		if !resolving.Load() {
+			t.Fatal("the lookup is not resolving the bind password")
+		}
+		c.Close() // the question still waits, so Close leaves its connect running
+		cancel()
+		if err := <-done; !errors.Is(err, vfserr.ErrUnavailable) {
+			t.Errorf("Lookup its caller left = %v, want ErrUnavailable", err)
+		}
+		synctest.Wait()
+		if !returned.Load() {
+			t.Error("a connect abandoned after Close still resolves the bind password")
+		}
+		e.clock.Advance(time.Minute) // lets a connect left running end, so the bubble does
+	})
+}
+
 // The test call binds and reads the record's base entry, and refuses a
 // bind that fails.
 func TestTestCall(t *testing.T) {
