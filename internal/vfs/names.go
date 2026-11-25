@@ -458,7 +458,11 @@ func (fs *Filesystem) renameLocked(ctx context.Context, a *admitted, c vfs.Call,
 			return vfs.RenameResult{}, false, openErr(err)
 		}
 	}
-	r.From.Before = fs.before(ctx, a, from.H)
+	if fd == td {
+		r.From.Before = r.To.Before // addable read it under this lock
+	} else {
+		r.From.Before = fs.before(ctx, a, from.H)
+	}
 	rename := func(open []entity.OpenRecord) (kvstore.Orphaned, error) {
 		return fs.meta.Namespace().Rename(ctx, a.caller.Identity, from.H, fromName, to, toName, open...)
 	}

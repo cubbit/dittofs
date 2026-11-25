@@ -33,6 +33,8 @@ func (fs *Filesystem) Root(ctx context.Context, c vfs.Call, ref vfs.ShareRef) (v
 	var share entity.ShareID
 	ix := fs.meta.ShareIndex()
 	switch {
+	case ref == vfs.ShareRef{} && hostRefused(c, hostMount):
+		return nil, vfs.ShareInfo{}, vfs.ErrInvalid
 	case ref == vfs.ShareRef{}:
 		t, err := fs.tree(ctx)
 		if err != nil {

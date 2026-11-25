@@ -149,7 +149,6 @@ func (fs *Filesystem) mountParent(ctx context.Context, share entity.ShareID) (vf
 // refused by a share's flavour must reach its mount to be told so and ask
 // SECINFO there, and a path is all a walk learns. Hide a path from a lookup
 // too if share paths are found to be secret.
-
 func (fs *Filesystem) pseudoLookup(ctx context.Context, c vfs.Call, dir vfs.Handle, name []byte) (vfs.Handle, vfs.File, error) {
 	n, t, err := fs.pseudoChild(ctx, dir, name)
 	if err != nil {

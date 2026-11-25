@@ -115,7 +115,7 @@ func TestHostCallLowersTheMinimumsOnlyForItsCalls(t *testing.T) {
 			}{
 				{"at a secret", secret, map[string]error{"Root": nil, "ListShares": nil, "TestLock": nil, "Open": nil, "GetAttr": nil, "SetAttr": vfs.ErrInvalid}},
 				{"with a session", withSession, all(vfs.ErrInvalid)},
-				{"proving nothing", none, map[string]error{"Root": pastMinimums, "TestLock": vfs.ErrWrongSecurity, "Open": vfs.ErrWrongSecurity, "GetAttr": vfs.ErrWrongSecurity, "SetAttr": vfs.ErrInvalid}},
+				{"proving nothing", none, map[string]error{"Root": pastMinimums, "ListShares": vfs.ErrWrongSecurity, "TestLock": vfs.ErrWrongSecurity, "Open": vfs.ErrWrongSecurity, "GetAttr": vfs.ErrWrongSecurity, "SetAttr": vfs.ErrInvalid}},
 			}
 		}
 		for _, tc := range cases {
@@ -169,6 +169,36 @@ func TestAHostCallOpenThatChangesAFileIsRefused(t *testing.T) {
 	}
 	if _, err := s.Open(ctx, c, vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: rw}); err != nil {
 		t.Errorf("a HostCall open of the existing file by handle: %v, want admitted", err)
+	}
+}
+
+// The HostCall gate holds on a pseudo directory's handle as on a share's: a
+// call no mount or lock service makes, or one with a Session, is ErrInvalid
+// there too, the pseudo-root's Root included, while a host's GetAttr of it is
+// answered.
+func TestAHostCallIsGatedOnAPseudoDirectory(t *testing.T) {
+	s := newShares(t, nil, nil)
+	ctx := t.Context()
+	pseudo, _, err := s.Root(ctx, proven(s.fs.Admin.Principal, inLab), vfs.ShareRef{})
+	s.must(t, err)
+	host := proven(s.fs.Admin.Principal, inLab)
+	host.Caps = vfs.NLMCaps
+	withSession := host
+	withSession.Session = vfs.SessionRef{ID: 1}
+	for name, err := range map[string]error{
+		"SetAttr":                errOf(s.SetAttr(ctx, host, vfs.Target{H: pseudo}, vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(0o755)})),
+		"GetAttr with a session": errOf(s.GetAttr(ctx, withSession, pseudo)),
+		"Root with a session": func() error {
+			_, _, err := s.Root(ctx, withSession, vfs.ShareRef{})
+			return err
+		}(),
+	} {
+		if !errors.Is(err, vfs.ErrInvalid) {
+			t.Errorf("a HostCall on the pseudo-root, %s: %v, want ErrInvalid", name, err)
+		}
+	}
+	if _, err := s.GetAttr(ctx, host, pseudo); err != nil {
+		t.Errorf("a HostCall GetAttr of the pseudo-root: %v, want answered", err)
 	}
 }
 

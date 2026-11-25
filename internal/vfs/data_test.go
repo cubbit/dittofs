@@ -917,11 +917,12 @@ func TestAFailedReadAnswersItsBytesAndNoEnd(t *testing.T) {
 	}
 }
 
-// Only a commit through an SMB open is a flush that learns of a loss: one
-// through an NFS open, or through an SMB lock state, answers the verifier.
+// Only a commit through an open of a caller wanting OpenIDs is a flush that
+// learns of a loss: one through an NFS open, whose caller does not, or
+// through a lock state, answers the verifier.
 // An unstable write through a lock state on a continuously available share
 // is committed, as one through its open is.
-func TestOnlyAnSMBOpenFlushesAndALockStateWritesStable(t *testing.T) {
+func TestOnlyAnOpenIDCallersOpenFlushesAndALockStateWritesStable(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
 	s.user(t, "alice41", "2000", s.share, entity.AccessReadWrite)

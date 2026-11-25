@@ -27,6 +27,9 @@ var guarded = []string{"internal/vfs", "pkg/vfs", "pkg/openstate"}
 // protocol kind: every non-test file is parsed, and each ==, != or case
 // naming one fails the test with its file and line. The kinds are read from
 // their declaration, so a new one is covered without editing this test.
+// Only a kind written in place at the comparison is caught: one copied to a
+// local first, passed to slices.Contains, used as a map key or compared by
+// < or > slips past.
 func TestNoRuleReadsAProtocol(t *testing.T) {
 	_, here, _, ok := runtime.Caller(0)
 	if !ok {

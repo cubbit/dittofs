@@ -176,7 +176,7 @@ func TestAShareDeletedWhileServingEndsItsLiveState(t *testing.T) {
 		t.Fatalf("a read of the share before its deletion: %v", err)
 	}
 	tab := h.Node().OpenState()
-	c := openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolNFSv4, Name: []byte("c"), Boot: [8]byte{1}}}
+	c := openstate.Client{ClientRecord: entity.ClientRecord{Protocol: entity.ProtocolNFSv4, Name: []byte("c"), Boot: [8]byte{1}, Recovery: entity.RecoverStatus}}
 	p, err := tab.Clients().Propose(ctx, c, aClient)
 	if err != nil {
 		t.Fatalf("propose a client: %v", err)

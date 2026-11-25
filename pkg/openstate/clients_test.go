@@ -323,7 +323,10 @@ func TestProposalBounds(t *testing.T) {
 
 	big := nfs("big", 1, owner)
 	big.Adapter = make([]byte, kvstore.MaxAdapter+1)
+	norecovery := nfs("norecovery", 1, owner)
+	norecovery.Recovery = 0
 	for name, c := range map[string]Client{
+		"no Recovery":             norecovery,
 		"no name":                 nfs("", 1, owner),
 		"a name past 1,024 bytes": nfs(string(make([]byte, maxName+1)), 1, owner),
 		"an Adapter past 4 KiB":   big,

@@ -230,7 +230,8 @@ type pending struct {
 
 func keyOf(rec entity.ClientRecord) nameKey { return nameKey{rec.Protocol, string(rec.Name)} }
 
-// admit checks a client's own fields and returns the record they make.
+// admit checks a client's own fields and returns the record they make. A
+// client stating no Recovery is ErrInvalid, as every rule on it reads one.
 //
 // decision: an owner that is the well-known anonymous principal is recorded
 // as zero, since every caller proving nothing maps to it, so it tells no
@@ -239,7 +240,7 @@ func keyOf(rec entity.ClientRecord) nameKey { return nameKey{rec.Protocol, strin
 // callers the table can tell apart.
 func admit(c Client) (entity.ClientRecord, error) {
 	rec := c.ClientRecord
-	if len(rec.Name) == 0 || len(rec.Name) > maxName || len(rec.Adapter) > kvstore.MaxAdapter {
+	if len(rec.Name) == 0 || len(rec.Name) > maxName || len(rec.Adapter) > kvstore.MaxAdapter || rec.Recovery == 0 {
 		return entity.ClientRecord{}, ErrInvalid
 	}
 	if rec.Owner == entity.AnonymousPrincipal {
