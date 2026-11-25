@@ -6,9 +6,10 @@ and `Chunk`), §1.3 (no interface, testable alone) and §5.1 (the fold's inputs 
 the pipeline supplies them). As signatures only, whose bodies are later epics': §2.1, §2.2 and
 §2.4 (`Cut`), §3.2 and §3.7 (the settings value and its refusals), §4.1 to §4.3 (the chunk ID
 and the block name), §5.2 (the block target's refusal), §5.4 (the short last block) and §5.5
-(a plan holds no bytes). [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §1.2, as #5774
+(a plan holds no bytes), §5.7 (A4), §7 (`Cut`'s errors), §8 (C1, C11) and §10.2 (the stalled
+reader). [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §1.2, as #5774
 amends it: contract and implementation, and the transitive import check. Cited, not owned:
-[RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §2.1, §2.6 and §6.3, the engine that calls this
+[RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §2.1, §2.6, §6.2, §6.3 and §6.6, the engine that calls this
 surface; [RFC 6](../docs/internals/rfcs/rfc-6-block-metadata.md) §4.1 and §5.2, the commit a plan
 becomes and its key budget. Every citation is `develop`'s text. The code lands on
 `feat/storage-v2`, where `pkg/metadata/entity` exists, and the paths below are paths there.
@@ -123,9 +124,9 @@ which.
 | R3 | The contract holds no behaviour beyond pure functions and methods over its own value types and value-minting constructors, and imports only the standard library, libraries outside the set and other contracts; a unit that mixes in an implementation counts as one | MUST | RFC 0 §1.2 | T1.1, T1.2 |
 | R4 | No package of the carver reaches another component's implementation, directly or through what it imports: not `pkg/carver/section` from the root, not `internal/node/content`, not `pkg/settings`, `pkg/metrics` or `pkg/health` | MUST NOT | RFC 0 §1.2; RFC 2 plan, §1.5 rule 7 | T1.2 |
 | R5 | Test packages are walked too. RFC 0 lets a component's tests import implementations, but the carver's checks need no store, fake backend, temp directory, network, clock or goroutine, so its tests import only what its production code may, plus the carver's own test components | invariant | RFC 0 §1.2; RFC 2 §1.3; RFC 2 plan, §1.5 rule 7 | T1.2 |
-| R6 | The entity package's types are used, never copied: a chunk's hash is `entity.ChunkHash`, a block's name `entity.BlockName`, the scope `entity.NamespaceID` | MUST NOT | RFC 0 §1.2 ("MUST NOT copy a provider's value types"); RFC 2 §1.1, §1.2 | T1.1, T1.3 |
+| R6 | The entity package's types are used, never copied: a chunk's hash is `entity.ChunkHash`, a block's name `entity.BlockName`, the scope `entity.NamespaceID` | MUST NOT | RFC 0 §1.2 ("MUST NOT copy a provider's value types"); RFC 2 §1.1, §1.2; RFC 2 plan, D9 | T1.1, T1.3 |
 | R7 | Neither layer declares an interface, and neither does the assembler: each is a concrete type or function, and the engine declares its own interface over them | invariant | RFC 2 §1.3; RFC 8 §2.1; RFC 2 plan, D2 | T1.1, T1.3, T1.4 |
-| R8 | The carver keeps nothing between calls: no package-level state in the root, `carve` or `assembler` but error values | MUST NOT | RFC 2 §1.1, §1.2 ("Keeps between calls: nothing at all") | T1.1, T1.3, T1.4 |
+| R8 | The carver keeps nothing between calls: no package-level state in the root, `carve` or `assembler` but error values | MUST NOT | RFC 2 §1.1, §1.2 ("Keeps between calls: nothing at all"); RFC 2 plan, §1.3 | T1.1, T1.3, T1.4 |
 
 **`Cut` and its chunks**
 
@@ -135,7 +136,7 @@ which.
 | R10 | `Cut` takes a reader, the file offset of its first byte, the settings, a buffer the caller supplies, whether the stretch's end is real, and `emit`, called once per chunk with the chunk and its bytes; it returns how many bytes it consumed, and an error. E4 fills it | MUST | RFC 2 §1.2, §2.1, §2.4 ("the caller **MUST** tell `Cut` which") | T1.3 |
 | R11 | `Cut` says plainly that the bytes handed to `emit` are good only for the length of that call, and that a caller keeping them copies them | MUST | RFC 2 §2.2 | T1.3 |
 | R12 | A buffer shorter than `Max` is refused with an error, which this epic names. E4 refuses it | MUST | RFC 2 §1.2 | T1.3 |
-| R13 | An error from the reader or from `emit` stops `Cut` and is returned as it came. E4 does it | MUST | RFC 2 §7 | T1.3 |
+| R13 | An error from the reader or from `emit` stops `Cut` and is returned, unwrapped (D6). E4 does it | MUST | RFC 2 §7 | T1.3 |
 | R27 | A reader that keeps returning zero bytes and no error fails `Cut` after a bounded number of reads, with an error this epic names. E4 does it | MUST | RFC 2 §10.2; RFC 2 plan, D5 | T1.3 |
 
 **The settings value**
@@ -151,34 +152,34 @@ which.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R18 | A chunk's ID is a function of its bytes and its namespace's chunk-ID key, and of nothing else: no offset, file identity, length or version is an input. E4 computes it | MUST NOT | RFC 2 §4.1, §8 C1 | T1.3 |
-| R19 | A block's name is a function of the scope (the namespace ID's 16 raw bytes), a 16-byte nonce the caller draws, the 32-byte chain ID and the chunk IDs in block order; the function draws no nonce. E4 computes it | MUST | RFC 2 §4.2, §4.3; RFC 2 plan, D9 | T1.3 |
+| R18 | A chunk's ID is a function of its bytes and its namespace's chunk-ID key, and of nothing else: no offset, file identity, length, settings profile or version is an input. E4 computes it | MUST NOT | RFC 2 §4.1, §8 C1 | T1.3 |
+| R19 | A block's name is a function of the scope (the namespace ID's 16 raw bytes), a 16-byte nonce the caller draws, the 32-byte chain ID and the chunk IDs in block order; the function draws no nonce. E4 computes it | invariant | RFC 2 §4.2, §4.3; RFC 2 plan, D9 | T1.3 |
 | R28 | A block plan, and the intent recorded for it, are keyed under one namespace and one chunk-ID key. The pass that folds the plan captured both at the offer, and the intent step refuses a plan whose namespace or key differs from the target store's; this epic's part is that one fold serves one pass (R24), so a plan inherits its pass's namespace and key (D8) | MUST | RFC 2 §4.3, §8 C11; RFC 8 §6.3 (Capture, Intent), §6.6 | T1.4 |
 
 **The fold**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R20 | The fold takes, per chunk, its file, offset, length and hash, whether it is all zeros, the worst-case keys it adds to its block's commit (a zero ref's included, counting the existing refs it replaces) and the age of its oldest byte; and per pass the block target, the count cap `N`, the key budget `K`, a commit's per-block keys and its per-file keys | MUST | RFC 2 §5.1, P2, P4; RFC 8 §6.3 (Assemble); RFC 6 §5.2 | T1.1, T1.4 |
+| R20 | The fold takes, per chunk, its file, offset, length and hash, whether it is all zeros, the worst-case keys it adds to its block's commit (a zero ref's included, counting the existing refs it replaces) and the age of its oldest byte; and per pass the block target, the count cap `N`, the key budget `K`, a commit's per-block keys and its per-file keys | invariant | RFC 2 §5.1, P2, P4; RFC 8 §6.3 (Assemble); RFC 6 §5.2 | T1.1, T1.4 |
 | R21 | In the first release the fold takes no dedup lookup, and adding a chunk cannot fail | invariant | RFC 2 §5.1 | T1.4 |
-| R22 | The fold returns, per chunk, its disposition, zero ref or carried, and a sequence of block plans. A plan lists each carried chunk in block order with its hash and where its bytes sit in the offer, and the refs its commit writes, a chunk repeated within the block (P6) and the zero refs that join the block included | MUST | RFC 2 §5.1, P2, P3, P6; RFC 6 §4.1 | T1.1, T1.4 |
+| R22 | The fold returns, per chunk, its disposition, zero ref or carried, and a sequence of block plans. A plan lists each carried chunk in block order with its hash and where its bytes sit in the offer, and the refs its commit writes, a chunk repeated within the block (P6) and the zero refs that join the block included | invariant | RFC 2 §5.1, P2, P3, P6; RFC 6 §4.1 | T1.1, T1.4 |
 | R23 | A plan holds hashes and positions, never chunk bytes | MUST NOT | RFC 2 §5.5, §5.7 A4 | T1.1 |
 | R24 | One fold serves one pass: it does no I/O, keeps nothing between passes and does not survive its pass, and the time it closes the pass at comes from the caller | MUST NOT | RFC 2 §5.1, §5.4, §1.3 ("no clock") | T1.4 |
-| R25 | Closing the pass returns the short last plan with whether it is held back, so the caller keeps its extents dirty and reports none of them; the dispositions `Add` returned for its chunks count only once a plan is committed | invariant | RFC 2 §5.4 | T1.4 |
-| R26 | A block target outside 1 MiB to 64 MiB is refused with an error, never clamped. The range is two root constants, so the startup check of the block-target setting, which the RFC 2 plan's deferral ledger gives the RFC 4 plan's epic 7, reads the same bounds without importing the fold; the fold's constructor refuses too, as a defence, in E5 | MUST | RFC 2 §5.2 | T1.1, T1.4 |
+| R25 | Closing the pass returns the short last plan with whether it is held back, so the caller keeps its extents dirty and reports none of them; the dispositions `Add` returned for its chunks count only once a plan is committed | invariant | RFC 2 §5.1, §5.4, P2 | T1.4 |
+| R26 | A block target outside 1 MiB to 64 MiB is refused with an error, never clamped. The range is two root constants, so the startup check of the block-target setting, which the RFC 2 plan's deferral ledger gives the RFC 4 plan's epic 7, reads the same bounds without importing the fold; the fold's constructor refuses too, as a defence, in E5 | MUST | RFC 2 §5.2; RFC 2 plan, §6.1 deferral ledger | T1.1, T1.4 |
 
 How each row is enforced once this epic lands, where no test of this epic can break it: R6 and
 R15 by the compiler, since every signature names `entity`'s types and `[32]byte`; R10's
 parameters, R19's inputs, R20 and R21 by the compiler at each caller, through the frozen
 signatures; R16's "only the constructor builds" by Go's rule on `internal` packages (D1);
 R12, R13, R18 and R27 by E4's tests, R16 and R17's refusals by E3's, R25 and R26 by E5's, R28's
-refusal by the RFC 8 offload plan's Intent state (epic 15), each named in that owner's document.
+refusal by RFC 8 §6.3's Intent state (the RFC 8 offload plan's epic 15), each named in that owner's document.
 R11 and R23 have this epic's own tests (T1.3, T1.1).
 
 The candidates of the owned sections that bind other epics are theirs: §1.2's "neither does the
 other's job" (E3 and E4), §2.1's padding, §2.4's artificial end and §7's dropped part-chunk (E4),
-§3.2's mask and mean (E3), §4.2's minting once and golden vector (E4, and the RFC 8 offload
-plan's Intent state), §5.1's lookup error (the deferral-ledger row of the dedup lookup).
+§3.2's mask and mean (E3), §4.2's minting once and golden vector (E4, and RFC 8 §6.6 at the
+Intent state), §5.1's lookup error (the deferral-ledger row of the dedup lookup).
 
 ## 4. Decisions this epic takes
 
@@ -207,7 +208,7 @@ plan's Intent state), §5.1's lookup error (the deferral-ledger row of the dedup
 - **D2, positions are the entity package's file identity.** A chunk's place in the offer is its
   `entity.FileID` and its `Chunk`, so the fold compares files for §5.3's contiguity (A5) and charges
   per-file keys once per file, and the engine builds the commit (`kvstore.BlockCommit` on
-  `feat/storage-v2`, keyed by `entity.FileID`) with no lookup table. A plan reuses the fold's
+  `feat/storage-v2`, whose per-file entries each name an `entity.FileID`) with no lookup table. A plan reuses the fold's
   input type, `ChunkInfo`, for both its lists, rather than a second position type. Prior art:
   `kvstore.BlockCommit` keeps carried chunks (`Chunks`) apart from per-file refs (`Files`)
   (checked), which is the split `BlockPlan`'s `Carried` and `Refs` follow.
@@ -358,7 +359,7 @@ pkg/carver/
   behaviour or state slipping into the contract, R3, R7, R8); `TestPlanHoldsNoBytes` walks
   `BlockPlan`'s fields with `reflect` and fails on any `[]byte` (catches a plan that copies the
   bytes `emit` lent, R23): it allows only integers, booleans, arrays of bytes, `time.Time`,
-  `time.Duration`, the entity package's types and slices of `ChunkInfo`, so a `[]byte`, a
+  `time.Duration`, the entity package's types, and structs of `pkg/carver` and slices of them, walked recursively, so a `[]byte`, a
   `string`, an `any`, a pointer or an interface field fails, each run beside a planted struct
   holding one. No test double.
 - **Rules:** as §2 says.
@@ -519,7 +520,7 @@ A suggestion only: one pull request per subtask works as well, with S1 on the la
 1. **`lukechampine.com/blake3` allocates and starts goroutines on a chunk-sized write.** Measured
    on v1.4.1 with `testing.AllocsPerRun`: a keyed hash of 8 KiB makes 15 allocations, of 300 KB
    54, and `Hasher.Write` spawns goroutines through `sync.WaitGroup` once its input spans several
-   BLAKE3 chunks (`blake3.go`, `guts/node.go`); deriving a keyed 2,048-byte table makes 8. RFC 2
+   BLAKE3 chunks (`blake3.go`, `guts/node.go`); deriving a keyed 2,048-byte table makes 7 or 8, depending on the hasher's output size. RFC 2
    §10.4 wants `Cut` to allocate nothing and §1.3 a check with no goroutine, and the RFC 2 plan's
    §1.1 and rule 4 assume the library allows both. The settings value (D1) can hold what is
    derived once, which takes the table's 8 out of `Cut`, but not the hash's. E4 decides between
