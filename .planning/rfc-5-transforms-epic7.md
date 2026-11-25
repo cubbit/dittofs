@@ -15,15 +15,16 @@ transport moved out of `pkg/keyprovider`), its §1.4 catalogue's KMIP rows, its 
 13 plan's deferral-ledger row on `kmip_fake_test.go`, which this epic owns. The code lands on
 `feat/storage-v2`, and the paths below are paths there.
 **Track:** B.
-**Epic 7 estimate: 3 subtasks, 8 man-days.**
+**Epic 7 estimate: 3 subtasks, 8.5 man-days.**
 **Depends on:** **S2**: from E2, `transformtest.LoadVectors` and its vector file with the key
 wrap AAD vector (its R27), and the vector script's Go recompute test. From E1, `keys.MaterialID`,
 `keys.Provider`, the material errors and the import allowlist naming `internal/kmip` and
-`github.com/gemalto/kmip-go/...`. From E6 (its draft on `docs/rfc-5-epic-6-breakdown`): T6.3's
-unexported `custody` interface of package `provider` (`kind`, `wrap`, `unwrap`), its suite
-`runCustody` in `custody_test.go`, the stored-wrap codec in `wrap.go`, `Config`, `Deps` and `New`;
-T6.5's `Current` and `Get`; T6.7's escrow rule; T6.8's namespace key creation; and `kvstore`'s
-`KeyRecords` over `badgerkv`. From E3 and E5, `NewChain`, `Pin`, `Attempt.Encode` and
+`github.com/gemalto/kmip-go/...`. From E6 (#5976): T6.3's key-file wrap and unwrap and the stored-wrap
+codec in `wrap.go`, concrete code with the provider kind fixed at `0x01` (E6's D3), and `Config`,
+`Deps` with its `StorageKeys`, and `New`; T6.5's `Open(ctx, ns)`, which unwraps every current
+record as a namespace opens, and `Current` and `Get`; T6.7's escrow rule and T6.3's `storage`-key
+check, both keyed on the stored wrap's kind so that kind `0x02` skips them; T6.8's namespace key
+creation; and `kvstore`'s `KeyRecords` over `badgerkv`. From E3 and E5, `NewChain`, `Pin`, `Attempt.Encode` and
 `Chain.Decode` with the `aes-gcm` transform, which T7.3's body round trip runs. The harness's
 `service:kmip` (PyKMIP 0.10.0) in `integration`.
 **Blocks:** E8, which calls the primary-version read and the state read at open and on its
@@ -65,17 +66,17 @@ KMIP through one transport, and the canned KMIP server its tests used goes.
 and the key-state table. `pkg/keyprovider`'s KMIP file over it, and its tests split into pure
 tests and integration rows. `pkg/transform/keys/provider/kmip.go`: `KMIPConfig`, the key-service
 custody, its Encrypt, Decrypt and Locate payloads, the wrap bytes, the primary-version and state
-reads, which T7.2 adds to E6's `custody` interface with the key file's answers to them. The
+reads, and the unexported `custody` interface T7.2 extracts over the key file's wrap and the
+key service's, with its suite `runCustody` over both. The
 key-service stored-wrap vector. The harness changes the live rows need, and those rows against
 `service:kmip`.
 
 ### 1.2 Out of scope
 
-- The `custody` interface's first three methods, its suite `runCustody`, the stored-wrap codec,
-  the key-file custody and its wrap count, the key-file move to `internal/keyfile`, the provider's
+- The stored-wrap codec, the key-file wrap and unwrap and their wrap count, the key-file move to `internal/keyfile`, the provider's
   `Current`, `Get`, fingerprints, cache, its open, escrow rule, the `storage`-key refusal for a key
-  file, key creation and gauges: E6. This epic implements E6's interface for a key service, adds
-  its two reads to it, and runs E6's suite against the real server.
+  file, key creation and gauges: E6. This epic extracts the `custody` interface over E6's key-file
+  code and the key service's, and writes `runCustody`, run on both.
 - Calling the primary-version and state reads at open and on the provider's ticker, keeping the
   last state when a read fails, re-wrapping on a new primary version, refusing `Pin` while a
   master key is not active, raising `material_unavailable` and `material_destroyed` for a master
@@ -99,9 +100,8 @@ key-service stored-wrap vector. The harness changes the live rows need, and thos
   catalogue of the rows each epic turns green.
 - **E3**, epic 3, the chain; **E5**, epic 5, encryption, whose `aes-gcm` transform the body round
   trip uses.
-- **E6**, epic 6, namespace keys and the provider: the `custody` interface and its suite
-  `runCustody`, the key-file custody, `kvstore`'s `KeyRecords`, the provider's `Config`, `Deps`
-  and `New`.
+- **E6**, epic 6, namespace keys and the provider: the key-file wrap and the stored-wrap codec,
+  `kvstore`'s `KeyRecords`, the provider's `Config`, `Deps`, `New` and `Open`.
 - **E7**, this epic.
 - **E8**, epic 8, rotation and the destroyed-material notice: the ticker, the re-wrap and the
   `Pin` refusal on a master key's state.
@@ -124,7 +124,7 @@ title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | the wrap bytes, the Locate answer, the error mapping, the key-state table, the TLS setup, the framing and the response decode are pure functions with table tests; the custody runs E6's `runCustody` against the real server, and the provider over it is E6's, on `kvstore` over `badgerkv` in memory. No double: the server-side binding is proven by opening the server's wrap bytes under the test's own master key (D6) |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | the wrap bytes, the Locate answer, the error mapping, the key-state table, the TLS setup, the framing and the response decode are pure functions with table tests; the custody runs `runCustody`, which T7.2 writes over both custodies, against the real server, and the provider over it is E6's, on `kvstore` over `badgerkv` in memory. No double: the server-side binding is proven by opening the server's wrap bytes under the test's own master key (D6) |
 | rule 2, fuzz every decoder of bytes this component did not just write | T7.1, T7.2 | `FuzzReadMessage` over the KMIP frame read (wire bytes) and `FuzzKMIPWrap` over the wrap bytes a key record carries (store bytes); both join the nightly `fuzz` suite in the form the RFC 2 plan's epic 2 registers, and T7.2 extends RFC 5 §8.3's suites line to name them |
 | rule 3, observability follows RFC 25 | T7.2, T7.3 | the custody records no series and takes no logger: a failure is an error the provider (E6) reports and E8's ticker logs. Its errors carry master-key IDs, endpoints and KMIP result codes only; T7.3 plants a known namespace key and searches every error the custody and the provider return for its bytes (R20) |
 | rule 4, profiling | T7.1, T7.3 | every test under `internal/prof`'s `Watch`, so a TLS connection left open is a leak. No allocation gate: a KMIP call runs once per key at open, not per chunk, and is off the hot paths rule 4 lists |
@@ -134,7 +134,7 @@ title and not copied.
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T7.1, T7.3 | every round trip runs against `service:kmip` under `-tags=integration`; a state the server cannot be put into (Destroyed: PyKMIP's Destroy deletes the object) is a row of the pure key-state table, which is data; the certificate rows use certificates the server or the client really refuses, each beside a control row that succeeds |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T7.1, T7.2 | T7.1 adds the `ponytail:` on one TLS connection per call at `internal/kmip`'s `Do`; `decision:` markers at the key-state table and the unwrap's error mapping (D4), at the wrap-bytes writer (D2), at the Locate check (D3), at the `storage`-key comparison (D8), and at the wrap, that a key-service wrap raises no wrap count since the service keeps its own bound (R7) |
 | rule 10, a test must be able to fail | all | each test in §6 names the bug it catches; the stored-wrap vector comes from the RFC 2 plan's script, never from this code; the audit is the server's log, not the client's own record |
-| rule 11, a symbol is exported only if RFC 5's interface or a consumer outside the package uses it | T7.1, T7.2 | `internal/kmip` exports what `pkg/keyprovider` and `kmip.go` call; the provider gains `KMIPConfig`, the type of the `Config.KMIP` field E9 and the content wiring fill, and nothing else: the custody stays behind E6's unexported interface, built by `New` |
+| rule 11, a symbol is exported only if RFC 5's interface or a consumer outside the package uses it | T7.1, T7.2 | `internal/kmip` exports what `pkg/keyprovider` and `kmip.go` call; the provider gains `KMIPConfig`, the type of the `Config.KMIP` field E9 and the content wiring fill, and nothing else: the custody stays behind the unexported `custody` interface T7.2 extracts, built by `New` |
 | rule 12, each subtask creates only what it declares | all | the transport moves with its two callers' first use (T7.1: keyprovider; T7.2: the custody); the primary-version and state reads land with the wrap that calls the first, T7.3's rows, and E8 as consumers (D3); the harness changes land with T7.3, their first reader |
 
 ## 3. Requirements and invariants
@@ -171,7 +171,7 @@ cite them. `Source` is RFC 5 unless it names another source.
 | R13 | A missing key, an unreachable server and an invalid certificate each return the provider's error, the store does not open, and none falls back to another provider or to writing without encryption; an expired client or server certificate and a revoked key do the same. The decode half of §8.1's row is E11's | MUST NOT, test row | §8.1's Appendix B.2 row, Appendix B.4 (its first two rows); E2's catalogue (KMIP rows) | T7.3 |
 | R14 | A key-service master key lives off the host: it needs no escrow check, and creating an encrypting namespace under it is not refused with `ErrNotEscrowed` | MUST | Appendix B.2 ("Where the master key lives") | T7.3 |
 | R15 | No namespace key is wrapped under the `storage` wrapping key: a key-service master key whose UID is the KMIP `storage` key's is refused | MUST NOT | Appendix B.2 ("No storage-key fallback"); the RFC 13 plan's epic 2, R13 (a KMIP key's `KeyUID`) | T7.2, T7.3 |
-| R16 | The key-service custody passes the custody conformance suite against the harness's KMIP server | test row | RFC 5 plan D6; E6's D3 (`runCustody`) | T7.3 |
+| R16 | The key-service custody passes the custody conformance suite against the harness's KMIP server | test row | RFC 5 plan D6; E6's D3 (`runCustody`, written here) | T7.2, T7.3 |
 
 **The moved transport**
 
@@ -238,11 +238,12 @@ exposure is and binds no code here. B.4's rows past the first two are E6's and E
   another server's key `1`. So the ID is the configured endpoint, `/`, and the UID, the full
   resource name of the key version that RFC 5 asks for. An endpoint respelled (`localhost` for
   `127.0.0.1`) makes the primary version differ from the records' IDs, which E8 treats as a
-  rotation and re-wraps under the same key: a cost, not a loss. Both reads join E6's `custody`
-  interface as `primary(ctx) (masterKeyID []byte, err error)` and `state(ctx, masterKeyID []byte)
-  error`, the latter nil for active and `keys.ErrMaterialDestroyed` or
+  rotation and re-wraps under the same key: a cost, not a loss. Both reads join the unexported `custody` interface T7.2 extracts, as E6's D3 names
+  it: `kind`, `wrap`, `unwrap`, `primary(ctx) (masterKeyID []byte, err error)` and `state(ctx,
+  masterKeyID []byte) error`, the last nil for active and `keys.ErrMaterialDestroyed` or
   `keys.ErrMaterialUnavailable` otherwise, so the interface needs no type of `internal/kmip`; the
-  key file answers its one master key ID and nil, and `runCustody` gains a row for each. A
+  key file answers its one master key ID and nil, and `runCustody` holds both custodies to the same
+  rows. An interface lands now, not in E6, because the key service is its second implementation. A
   `decision:` marker at the Locate check names the rule. Prior art: KMIP 1.4's ReKey and Locate
   (from memory); AWS KMS's key ARN, a key ID qualified by region and account (from memory).
 - **D4, the key-state table has three classes, and only the state read reports destroyed.**
@@ -273,7 +274,7 @@ exposure is and binds no code here. B.4's rows past the first two are E6's and E
   for RFC 5's author (§9). No marker: no gate is narrowed. Prior art: none found.
 - **D7, the audit is the server's own log.** The harness mounts a writable directory for PyKMIP's
   log and names the file in `DITTOFS_TEST_KMIP_LOG`. A test notes the file's size and inode, runs
-  the provider's open, and reads what the file gained: no `Processing operation: Get` line, and
+  the provider's `Open` of each namespace, and reads what the file gained: no `Processing operation: Get` line, and
   at least one Decrypt per key record (the log names the operation, not the UID, and
   `integration` runs with `-p 1`, so the window holds only this test's calls). A file smaller than
   its starting size or with another inode means PyKMIP's handler rotated it, and fails the test
@@ -281,9 +282,10 @@ exposure is and binds no code here. B.4's rows past the first two are E6's and E
   sent, and §8.1's row asks what the server saw. No marker. Prior art: none found.
 - **D8, a key-service master key is compared to the `storage` key by UID, and the comparison fails
   closed.** Its bytes never reach the process, so it has no fingerprint, and `pkg/keyprovider`
-  offers no bytes for a KMIP `storage` key either. RFC 13 names a KMIP key by its `KeyUID`; E6's
-  `Deps.StorageKeyID` holds it when the `storage` key is a KMIP key, and E6's own ID and fingerprint
-  check skips kind `0x02`. The custody refuses a primary version whose UID equals it, in the
+  offers no bytes for a KMIP `storage` key either. RFC 13 names a KMIP key by its `KeyUID`; an entry of E6's
+  `Deps.StorageKeys` holds it as its `ID`, with a zero fingerprint, when the `storage` key is a KMIP
+  key, and E6's own ID and fingerprint check skips kind `0x02` (its D15). The custody refuses a
+  primary version whose UID equals any entry's `ID`, in the
   primary-version read, so every wrap and E8's reads at open and on the ticker refuse it (R15),
   and the check has one site. It compares the UID alone, not the endpoint, since two spellings of
   one endpoint would otherwise let the `storage` key through; two servers whose keys happen to
@@ -313,9 +315,10 @@ pkg/keyprovider/
 pkg/transform/keys/provider/
   kmip.go              T7.2  KMIPConfig, the custody, its payloads, the wrap bytes (D2), the
                              primary-version and state reads (D3, D4, D8)
-  keyfile.go, provider.go  T7.2  the key file's primary and state answers; Config.KMIP,
-                             New choosing the custody, the storage-key check by kind
-  custody_test.go      T7.2  runCustody's primary and state rows
+  custody.go           T7.2  the custody interface, extracted (E6's D3)
+  wrap.go, provider.go T7.2  the key file behind it, with its primary and state answers;
+                             Config.KMIP, New choosing the custody
+  custody_test.go      T7.2  runCustody over the key file
   kmip_test.go         T7.2  the wrap bytes against the vector, malformed wrap bytes, the
                              Locate answer, the error mapping, the storage-key comparison
   kmip_fuzz_test.go    T7.2  FuzzKMIPWrap
@@ -401,10 +404,11 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
 
 ### T7.2 The key-service custody
 
-**Subtask T7.2 estimate: 2.75 man-days.**
+**Subtask T7.2 estimate: 3.25 man-days.**
 
 - **Track:** B. **Depends on:** T7.1, T6.3.
-- **Covers:** R1, R2, R3, R4, R6 (the vector), R7 (the marker), R8, R9, R10 (the read), R11, R15.
+- **Covers:** R1, R2, R3, R4, R6 (the vector), R7 (the marker), R8, R9, R10 (the read), R11, R15,
+  R16 (the suite).
 - **Deliverables:**
   - `pkg/transform/keys/provider/kmip.go`:
     ```go
@@ -419,12 +423,18 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
     ```
     E6's `Config` gains `KMIP KMIPConfig`, and `New` builds the key-service custody when its
     `Endpoint` is set and refuses a configuration naming both a key file and a key service; E6's
-    `storage`-key check by ID and fingerprint skips kind `0x02`, whose check is D8's. The custody
-    refuses a `KMIPConfig` missing its endpoint, key or certificate, as `pkg/keyprovider` does,
-    and dials nothing at construction; `New`'s open dials it through E6's unwrap of each current
-    key. Consumed by the content wiring and by E9's `materials` row, which fills it.
-  - E6's `custody` interface gains `primary` and `state` (D3): the key file answers its master key
-    ID and nil, and `runCustody` gains a row for each, consumed by T7.3's run and by E8.
+    `storage`-key check skips kind `0x02`, whose check is D8's. The custody refuses a `KMIPConfig`
+    missing its endpoint, key or certificate, as `pkg/keyprovider` does, and dials nothing at
+    construction; E6's `Open(ctx, ns)` dials it as it unwraps each current record. Consumed by the content wiring and by E9's `materials` row, which fills it.
+  - `custody.go`: the unexported `custody` interface of D3, extracted over E6's key-file wrap and
+    unwrap in `wrap.go`, which move behind it unchanged with `kind` `0x01`, and gain `primary` (its
+    one master key ID) and `state` (nil); the provider calls its custody through the interface,
+    chosen by the stored wrap's kind on unwrap. Consumed by the KMIP custody below and by E8.
+  - `custody_test.go`: `runCustody(t, newCustody func(t *testing.T) custody)`, the suite both
+    custodies run: a wrap unwraps under its AAD; a changed namespace, kind or key ID in the AAD
+    fails; a flipped byte of the wrap fails; the master key ID a wrap reports is `primary`'s and
+    the stored wrap's; `state` of `primary` is nil. Run here on the key file, and by T7.3 on the
+    key service. E6's key-file tests of the same rows stay as they are.
   - The custody, unexported, implementing that interface with `kind` `0x02`: wrap (the
     primary-version read, then an Encrypt under that UID with AES, GCM, a 16-byte tag, Random IV
     and the key wrap AAD as KMIP 1.4's Authenticated Encryption Additional Data, R4), the stored
@@ -452,7 +462,10 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
     for byte, and the reader splits it back into exactly those fields.
   - The Locate check returns the UID for one, and an error naming the key and the count for none
     and for two.
-  - A primary version whose UID equals `Deps.StorageKeyID` is an error, whatever the endpoint (D8).
+  - `runCustody` passes on the key file, and E6's provider tests pass unchanged over the extracted
+    interface.
+  - A primary version whose UID equals a `Deps.StorageKeys` entry's `ID` is an error, whatever the
+    endpoint (D8).
 - **Tests:**
   - The vector (catches a field order, a length width or a byte order apart from D2 and RFC 5's
     layout, a missing kind byte, an ID without its endpoint, R1, R3, R6).
@@ -466,9 +479,9 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
     misconfigured endpoint reported as lost material, R10, D4).
   - The `storage`-key comparison: the same UID refused at the same endpoint and at another
     spelling of it (catches a comparison that lets a respelled endpoint through, R15).
-  - `runCustody`'s two new rows on the key file: `primary` is the ID every wrap reports, and
-    `state` of it is nil (catches a key file that answers no primary, which E8's ticker would read
-    as a rotation).
+  - `runCustody` on the key file: its AAD rows (catch a wrap that binds nothing behind the
+    interface), and `primary` the ID every wrap reports with `state` nil (catches a key file that
+    answers no primary, which E8's ticker would read as a rotation, R16).
   - No double: the round trips are T7.3's, against the real server.
 - **Rules:** rule 2: `FuzzKMIPWrap` and the suites line. rule 9: D2's, D3's, D4's and D8's markers,
   and R7's. rule 11: `KMIPConfig` and the `Config.KMIP` field are the only new exports.
@@ -500,8 +513,8 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
 - **Tests:**
   - `runCustody` over the KMIP custody, its AAD rows among them: a changed namespace ID, kind or key
     ID, and a record copied to another namespace, each fail to unwrap (R5, R16).
-  - A provider over the custody with three namespaces' key records, opened through `New` inside the
-    audit window of D7: the log gains no Get and at least three Decrypts; a body sealed by `aes-gcm`
+  - A provider over the custody with three namespaces' key records, each opened through `Open`
+    inside the audit window of D7: the log gains no Get and at least three Decrypts; a body sealed by `aes-gcm`
     under one namespace's data key round-trips through `NewChain`, `Pin`, `Attempt.Encode` and
     `Chain.Decode` (catches a custody that fetches the master key, or an open that unwraps
     nothing, R11, R12).
@@ -514,8 +527,8 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
     server CA the test generated; a client certificate signed by the harness CA that expired an
     hour ago, beside a control certificate from the same generator, valid, that opens; the server's
     certificate seen as expired through the client's `tls.Config.Time` set a year ahead (the
-    injected clock); the revoked `dittofs-deactivated` key. Each fails `New` with
-    `ErrMaterialUnavailable` under `errors.Is`, never destroyed, and no body was encoded without
+    injected clock); the revoked `dittofs-deactivated` key. Each fails the namespace's
+    `Open` with `ErrMaterialUnavailable` under `errors.Is`, never destroyed, so it does not open, and no body was encoded without
     encryption (catches a fallback to another provider or to plaintext, an expiry nobody checks, a
     certificate row passing for another reason, R13).
   - The custody's `state` over an Active key, a revoked one and a destroyed one (PyKMIP's Destroy
@@ -534,8 +547,8 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
     removed with DeleteAttribute (PyKMIP has no ReKey): the read reports the second key's ID, the
     next wrap stores it, and the first record still unwraps under its own ID (catches an ID taken
     from the Name, which a retarget would silently repoint, R3, R8).
-  - A provider whose `Deps.StorageKeyID` is the test key's UID: `New` and the first namespace's key
-    creation are refused, and nothing is wrapped (catches the comparison of D8 skipped in the read,
+  - A provider whose `Deps.StorageKeys` names the test key's UID: the first namespace's key creation
+    and `Open` are refused, and nothing is wrapped (catches the comparison of D8 skipped in the read,
     R15).
   - A known namespace key planted and wrapped, then every error the rows above return searched for
     its bytes raw, in hex and in base64 (catches key material formatted into an error, R20).
@@ -551,24 +564,24 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
 flowchart TD
   S2(["S2 conformance suites and vectors in"]):::sync --> T7_1["T7.1 internal/kmip, canned server retired"]
   T7_1 --> T7_2["T7.2 The key-service custody"]
-  dep6a(["E6 T6.3: custody interface, stored wrap, Config, Deps, New, runCustody"]):::sync --> T7_2
+  dep6a(["E6 T6.3: key-file wrap, stored wrap, Config, Deps, New"]):::sync --> T7_2
   T7_2 --> C1(["after T7.2: E8 can call the primary-version and state reads"]):::sync
   T7_2 --> T7_3["T7.3 The custody against the real server"]
-  dep6b(["E6 T6.5, T6.7, T6.8: Current and Get, escrow, key creation"]):::sync --> T7_3
+  dep6b(["E6 T6.5, T6.7, T6.8: Open, Current and Get, escrow, key creation"]):::sync --> T7_3
   E5(["E3, E5: chain and aes-gcm"]):::sync --> T7_3
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
 T7.1 goes first: it waits on nothing of E6, lands the transport both providers need and settles
 the canned server, so it can merge while E6 is in progress. T7.2 is the blocker for E8's reads and
-waits on E6's interface. T7.3 holds the finished custody to the real server.
+waits on E6's key-file wrap, which it moves behind the interface. T7.3 holds the finished custody to the real server.
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T7.1 | 2 | S2 | the move and the canned server's retirement, which touch RFC 13's package and nothing of RFC 5's; open alongside E6's work |
-| 2 | T7.2, T7.3 | 6 | PR 1, E6's T6.3, T6.5, T6.7 and T6.8 | the custody and every row that holds it to the real server: the custody lands with its tests |
+| 2 | T7.2, T7.3 | 6.5 | PR 1, E6's T6.3, T6.5, T6.7 and T6.8 | the custody and every row that holds it to the real server: the custody lands with its tests |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -580,15 +593,15 @@ A suggestion only: one pull request per subtask works as well.
   uses: shorter, but unique only within one server, so E8's destroy marking across every
   namespace could mark another configuration's records under another server's key of the same
   UID (PyKMIP numbers them from 1). Example: `127.0.0.1:5696/3` against `3`.
-- **Which side owns what, with E6** (its draft on `docs/rfc-5-epic-6-breakdown`). E6 owns the
-  unexported `custody` interface's `kind`, `wrap` and `unwrap`, `runCustody`, the stored-wrap
-  codec, the key-file custody, `Config`, `Deps`, `New`, the open and every provider-level rule. E7
-  adds `primary` and `state` to the interface with the key file's answers (D3, as E6's D3 leaves
-  it), `Config.KMIP`, and owns `internal/kmip`, the KMIP custody and the key-service `storage`-key
-  comparison (D8). Needs on E6: `New` unwraps every current key record, so an unreachable custody
-  fails the open (B.4's first row; E6's draft loads records on first use); its `storage`-key check
-  by ID and fingerprint skips kind `0x02`; its escrow rule, written for a key-file master key, does
-  not apply to kind `0x02` (R14).
+- **Which side owns what, with E6** (#5976). E6 owns the stored-wrap codec, the key-file wrap
+  and unwrap as concrete code, `Config`, `Deps`, `New`, `Open` and every provider-level rule, its
+  escrow rule and its `storage`-key check keyed on the stored wrap's kind so that kind `0x02` skips
+  both. E7 extracts the unexported `custody` interface over the key file and the key service, with
+  `primary` and `state` and the key file's answers to them, writes `runCustody` and runs it on both
+  (D3, as E6's D3 hands it over), adds `Config.KMIP`, and owns `internal/kmip`, the KMIP custody and
+  the key-service `storage`-key comparison (D8). E6 has folded the three needs this document raised:
+  `Open` unwraps every current record, so an unreachable custody stops the namespace opening
+  (B.4's first row), and the two checks skip kind `0x02` (R14).
 - **Needs on E8.** §8.2's ambiguous-Locate row asks that no record be re-wrapped and that
   `material_unavailable` name the master key, over two periods: both are E8's ticker and re-wrap,
   so T7.3 holds the read's half and E8's breakdown must take the rest, or the row is unowned; the
@@ -620,9 +633,9 @@ A suggestion only: one pull request per subtask works as well.
   whole ambiguous-Locate row, and the "no record is re-wrapped" and `material_unavailable` clauses
   need E8's ticker (above); its §4.3 simplification on one TLS connection per call is carried at
   `internal/kmip`'s `Do`, not in the provider; its O5's recording wrapper is replaced by D6.
-- **The estimate** is 3 subtasks and 8 man-days, against the RFC 5 plan's 4 and 7: the canned
+- **The estimate** is 3 subtasks and 8.5 man-days, against the RFC 5 plan's 4 and 7: the canned
   server's cases are split into pure tests and integration rows rather than moved as they are
-  (D5), the harness gains the server's log and the CA key, the two reads join E6's interface with
-  the key file's answers, and the live rows of the plan's two last subtasks are one subtask. The
+  (D5), the harness gains the server's log and the CA key, the custody interface and its suite are
+  extracted here over both custodies rather than taken from E6, and the live rows of the plan's two last subtasks are one subtask. The
   least certain is T7.3, whose certificate rows depend on how PyKMIP's TLS layer reports an expired
   client certificate, and whose audit depends on PyKMIP's log lines.
