@@ -68,7 +68,25 @@ jobs:
       # among them. The formula copies feat/storage-v2's go-cache action with
       # flavor race-cover-warm. If that action changes its key, the queue's
       # unit job stops matching this entry and builds cold, which is slower
-      # but safe; change both together.
+      # but safe; the next step fails the job when that happens.
+      #
+      # Reads the checked-out formula as text and runs none of it. Each
+      # expression's braces are stripped first, so the lines below hold no
+      # expression for this workflow to evaluate.
+      - name: Check the key formula against feat/storage-v2's
+        run: |
+          set -euo pipefail
+          check() {
+            if ! sed -E 's/\$\{\{ ?//g; s/ ?\}\}//g; s/^[[:space:]]+//' "$1" | grep -qxF -- "$2"; then
+              echo "::error file=$1::no line '$2': the go-cache key changed, update the key built below to match"
+              exit 1
+            fi
+          }
+          # shellcheck disable=SC2016 # the line is matched as text, never expanded
+          check .github/actions/go-cache/action.yml 'echo "shared=go-runner.os-runner.arch-${ImageOS:-}-steps.go.outputs.go-version-hashFiles('"'go.sum'"')"'
+          check .github/actions/go-cache/action.yml "key: steps.paths.outputs.sharedinputs.flavor != '' && format('-{0}', inputs.flavor) || ''"
+          check .github/workflows/tests.yml 'flavor: race-cover'
+
       - name: Set up Go
         id: setup
         uses: actions/setup-go@v7
