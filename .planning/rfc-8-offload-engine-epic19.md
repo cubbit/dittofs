@@ -77,7 +77,7 @@ the reconcile's handle ownership; the fixture controls epic 12 left refusing for
   "RFC 16 §3 naming `Lifecycle`'s read". The fixture's `AcknowledgeLoss` writes the record until then.
 - The unread-range acknowledgement at a refused open (`AcknowledgeUnreadable` in `Deps`, its run by the
   retry, and the "acknowledging the range instead" leg of "§2.5 unread range at start"): RFC 28's plan,
-  a §6.1 row this pull request adds (D9, pending the user's answer, §9).
+  a §6.1 row this pull request adds (D9).
 - Choosing which device a new share is placed on: a §6.1 row this pull request adds (D5).
 - The reconcile's replica clauses (a replica's visit, its loss point, a promotion, `ErrAmnesiac`, the
   takeover's push, `Copy` and repair), "a new primary settles before serving", and RFC 8 E36's
@@ -298,7 +298,11 @@ rows' own assertions are RFC 8 §15's text; a row's requirement here names the l
   its one transaction. A `ponytail:` at `RecordJournal`: more shards on one device than `K` fail the
   rewrite; batch it, under the acknowledgement's guard, once a device holds that many. A `decision:` at
   the match: one share's shards on two journals are refused, since v1.1 places a share on one device.
-  Which device a new share goes to is the control plane's, a §6.1 row added here. The option of a
+  Which device a new share goes to is the control plane's, a §6.1 row added here. Start over several
+  devices lands in this epic (T19.6, 5 man-days), as the user decided on 2026-11-26: two rows this
+  epic owns need two devices, and epic 12 left `WithDevices` to it. Rejected: deferring T19.6 with
+  placement, which leaves the two-device legs of "§2.5 unsuitable journal at start" and "§2.5
+  unread range at start" known failures naming the placement row's issue. The option of a
   `Device` field on RFC 8 §12.1's `Share`, #3708's (1b), was rejected as the first part's D10 rejected
   it: the node would have to know a placement the store already records. Prior art: the first part's
   epic 6 D10 and #3708 (checked).
@@ -316,8 +320,11 @@ rows' own assertions are RFC 8 §15's text; a row's requirement here names the l
   `journal_lost`; its shares serve once a journal is recorded for the device and opens, since only the
   initialisation step creates one (RFC 1 §3). RFC 8 §15.1's "journal gone" leg reads as if the
   acknowledgement alone served; T19.8 re-initialises the device in that leg as the operator's step, and
-  proposes the row's wording (pending the user's answer, §9). Prior art: RFC 16 §3.2's proposal that
-  the re-initialisation calls `RecordJournal` (checked).
+  its pull request amends the row to "acknowledge the loss and re-initialise the device; assert the
+  shares serve". The user decided this on 2026-11-26. Rejected: the engine initialising a lost device
+  once acknowledged, which gives `Deps` an `Init` and a `RecordJournal` and amends RFC 1 §3, RFC 8
+  §2.1 and RFC 16 §3.2. Prior art: RFC 16 §3.2's proposal that the re-initialisation calls
+  `RecordJournal` (checked).
 - **D7, a re-initialised journal starts its loss floor at 1 until a clean close.** A start past an
   acknowledged loss attaches a re-initialised journal whose acknowledgement the re-initialisation
   already consumed, so nothing in memory names the loss. So `RecordJournal`, when it replaces a
@@ -338,7 +345,7 @@ rows' own assertions are RFC 8 §15's text; a row's requirement here names the l
   on an open handle applies the limit it is passed (RFC 1 §3, checked in T19.12), so a bound share is
   never served at the journal's maximum. T19.12's pull request amends §2.5's sentence to say so. A `decision:` at the open
   says so. Prior art: none found.
-- **D9, the unread-range acknowledgement waits for its trigger (pending the user's answer).** RFC 8
+- **D9, the unread-range acknowledgement waits for its trigger (the user's decision, 2026-11-26).** RFC 8
   §2.5 has a refused open's retry run `AcknowledgeUnreadable` once an operator acknowledges the range,
   and RFC 23 §3.3's `acknowledge-unreadable` is that trigger, which the RFC 23 plan gives RFC 28's
   plan. With no caller in v1.1, `Deps.AcknowledgeUnreadable`, its run and the row's
@@ -390,6 +397,7 @@ pkg/engine/
   conformance/            the rows' entries removed, each with the subtask that turns it green
 test/engine/known.yaml    T19.2  messages rewritten; T19.4 to T19.12 entries removed
 .planning/rfc-8-offload-engine-plan.md  this pull request: the two §6.1 rows of D5 and D9
+docs/internals/rfcs/rfc-8-engine.md     T19.8  §15.1's "§2.5 journal gone" row wording (D6)
 ```
 
 ## 6. Subtasks
@@ -593,7 +601,9 @@ handle" (`TestRFC8A_BindTakesOverTheReconcilesHandle`) and "§2.3 removal during
   when the recorded journal opens; `RecordJournal`'s `J‖journal‖reinit` marker, read at attach and deleted by a clean `Close`, and the
   journal's loss floor at 1 while it stands (D7), with its `decision:`;
   `AcknowledgeLoss(dir)` in `enginetest` made real; the two rows' entries removed, the "journal gone"
-  leg re-initialising the device as the operator's step (D6). `Close` joins the retry as it does today.
+  leg re-initialising the device as the operator's step, and RFC 8 §15.1's "§2.5 journal gone" row
+  amended to "acknowledge the loss and re-initialise the device; assert the shares serve" (D6).
+  `Close` joins the retry as it does today.
 - **Acceptance criteria:**
   - Without an acknowledgement, no directory is opened as a new journal and `journal_lost` stays; with
     one for another `JournalID`, the same.
@@ -742,24 +752,8 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **Pending the user's answer: the "journal gone" row and the acknowledgement (D6).** RFC 8 §15.1's
-  leg "Acknowledge the loss; assert the shares serve" reads as if the acknowledgement alone served, but
-  only the initialisation step creates a journal (RFC 1 §3, RFC 8 §2.1). D6 re-initialises the device in
-  that leg as the operator's step, and T19.8 proposes "acknowledge the loss and re-initialise the
-  device" as the row's wording. The other option, the engine initialising a lost device once
-  acknowledged, gives `Deps` an `Init` and a `RecordJournal` and amends RFC 1 §3, RFC 8 §2.1 and RFC 16
-  §3.2. Recommended: D6.
-- **Pending the user's answer: the unread-range acknowledgement goes to RFC 28's plan (D9),** a cut of
-  what epic 11 recorded for this epic (`Deps.AcknowledgeUnreadable`) and of one leg of a row the plan's
-  "Done when" lists. This pull request adds the §6.1 row; the leg's entry names its issue once created.
-- **Pending the user's answer: multi-device start lands here (D5).** The plan's expected content does
-  not name it, but two rows this epic owns need two devices and epic 12 left `WithDevices` to this epic.
-  It costs T19.6's 5 man-days and follows the first part's epic 6 D10. The other option defers T19.6
-  with placement: the two-device legs of "§2.5 unsuitable journal at start" and "§2.5 unread range at
-  start" then stay known failures naming the placement row's issue, and the epic is 34 man-days. Which device a new share is placed
-  on is the §6.1 row this pull request adds, so until the control plane names one, every share created
-  in production lands on a one-device node's journal or is refused by name on a node with several.
 - **The amendments the implementing pull requests carry:** RFC 8 §2.5's handle limit (D8, T19.12),
+  RFC 8 §15.1's "§2.5 journal gone" row (D6, T19.8),
   RFC 6 §10.1 (`EncodingCount`, `Destroyed`) and RFC 16 §4.2 (the census keys, `J‖journal‖ack`, the shard's journal identity), each with its
   subtask, as epic 11's open points have the adding epic amend RFC 8 §2.1.
 - **For epic 15:** the census delta is one more key in every block commit (D1), which its T15.2 floor
