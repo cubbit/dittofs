@@ -640,7 +640,7 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
    no node epoch to stamp, and no call is answered retry-later while the node
    starts.
 10. **The node's status** (§2.4) is written once, naming what step 9 started,
-    the port each adapter bound included; a write that fails fails the start.
+    the port each adapter bound included; a write that fails, or does not answer within its bound, fails the start.
     Then **reconcile** (§2.3) until `Stop`.
 
 Readiness turns true once every adapter the records enable is serving or was refused at configured ([RFC 20 §3.7](rfc-20-adapters.md#3.7%20Health%20and%20probes)), and step 10 has written the node's status; a refused one raises `adapter_refused` and the others serve.
