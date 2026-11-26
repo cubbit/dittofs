@@ -1067,7 +1067,11 @@ resuming after the largest name sorting at or before it would list the same
 foreign keys again, forever when a page holds nothing else. The cursor holds the
 last key the service listed, so the next request resumes after exactly that key.
 A caller **MUST NOT** build a cursor or read one; it may keep one, across a
-restart too, and pass it back to the store that returned it. A page the service
+restart too, and pass it back to the store that returned it, or to a store
+opened again over the same namespace. The cursor keeps the full key, and `List`
+**MUST** refuse a non-zero cursor whose key lies outside `<prefix>blocks/` with
+`ErrInvalid` and send no request, so a cursor kept across a change of prefix
+never goes out as a starting point that ends the walk early. A page the service
 marks truncated that holds no key cannot advance and is `ErrTransient`, never
 `done` false with `next` equal to `after`. A page that holds no key and is not
 truncated — an empty store, or a walk resumed at its end — is `done` with `next`
@@ -1826,7 +1830,7 @@ in-memory store).
 | [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | A transport that truncates a body under a `Content-Range` matching the request: the get fails with `ErrTransient`. | T |
 | [§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent) | Delete a batch twice, including a never-written name: every result is `nil`. A batch of 2,500 (above the service's limit): every block gone. | |
 | [§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent) | A transport that fails one key inside a batch: exactly that name's result is an error, the others `nil`. A batch whose response is dropped: every result is `ErrTransient`. | T |
-| [§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | Write 2,500 blocks; list with pages of 1,000; stop after the second page and resume, in a new walk, from the cursor it returned: every block seen exactly once, in order, with size and time, and each `List` call sends one request and returns at most its `n`. With `n` 500, no page's reply exceeds the small-body cap. | |
+| [§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | Write 2,500 blocks; list with pages of 1,000; stop after the second page and resume, on a store opened again over the same namespace, from the cursor it returned: every block seen exactly once, in order, with size and time, and each `List` call sends one request and returns at most its `n`. With `n` 500, no page's reply exceeds the small-body cap. A cursor outside the block namespace is `ErrInvalid` with no request. | |
 | [§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | Put a key that is not a block name under the block namespace: the listing skips it and counts it. Cancel mid-page: the call ends with the context's error. | |
 | [§4.2](#4.2%20Names%20in%2C%20locations%20kept%20inside) | After the whole suite, list the store's raw namespace: nothing but blocks, control objects and check objects, and every block key is the prefix followed directly by the name. | |
 | [§4.13](#4.13%20Control%20objects) | Put and get each role: bytes equal, a second put replaces the first, an absent role is `ErrNotFound`, and a block listing yields none of them. | |
