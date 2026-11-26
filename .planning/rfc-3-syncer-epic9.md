@@ -184,12 +184,12 @@ a schedule, which is RFC 4's (§1.2).
   - E3's opener builds `pool.New` over RFC 4's in-memory store under E2's wrapper, with
     `codec.Store` over it, as production composes them (E3's T3.7). T9.1 moves that construction
     into a helper over `testing.TB` and the two worker counts, which the opener and the
-    benchmarks both call, since an `Opener` takes a `*testing.T`. Outside a `testing/synctest`
-    bubble the clock E3's tests pass reads the wall clock, so the benchmarks need no clock of
-    their own; E2's `Link` takes the same clock as its `Waiter` (E2's D3). If E3's D12 is
-    declined and its tests pass `pkg/sim`'s `TestClock`, the helper takes the clock as an
-    argument and T9.1 adds a three-line wall clock in the benchmark file, as
-    `cmd/dfs/commands/clock.go`'s `systemClock` is.
+    benchmarks both call, since an `Opener` takes a `*testing.T`. E3's D12 is decided (the
+    user's decision, 2026-11-26): E3's checks run inside a `testing/synctest` bubble, and the clock
+    they pass reads the standard library's time, so the opener calls the helper inside the bubble,
+    where everything it creates belongs to the bubble, and a benchmark calls it outside one, where
+    that clock is the wall clock. The benchmarks need no clock of their own; E2's `Link` takes the
+    same clock as its `Waiter` (E2's D3).
   - One iteration is a whole workload, run at `-benchtime=1x -count=10` as `engine-bench` runs:
     B1 moves 1,024 blocks from as many callers as the pool has workers; B3 issues 1,000 of the
     second flow's fetches. So the workers are kept busy, and B3's p99 is of a thousand samples,
@@ -218,7 +218,7 @@ a schedule, which is RFC 4's (§1.2).
   dispatch, not transfer, dominating. Prior art: none found for a fair scheduler's own benchmark;
   E3's operation count (its D3) is the same split.
 - **D3, B3 runs in the half where its flows compete, and a round is one transfer of the largest
-  encoded block.**
+  encoded block: accepted by the user, 2026-11-26.**
   - RFC 3 §7.4's setup puts flow A's uploads and flow B's fetches in different halves, which share
     no worker; on the in-memory store they share nothing at all, and on the S3 store only the
     connections (RFC 3 §9, settled point 1). B5 runs that shape over the S3 store (D6), where it
@@ -238,8 +238,12 @@ a schedule, which is RFC 4's (§1.2).
     names of their own (the pass-through recording wrapper `CLAUDE.md` allows); the most is
     reported as `a-peak-workers`.
 
-  A `decision:` marker at the benchmark names the round and why it differs from §7.4's setup. §9
-  proposes the RFC 3 sentences. Prior art: none found.
+  A `decision:` marker at the benchmark names the round and why it differs from §7.4's setup.
+  T9.5's pull request amends RFC 3 with the accepted text: §2.9, "In time, a round is at most one
+  transfer of the largest encoded block on the slowest store with work waiting: every busy worker
+  frees within it"; §7.4's B3 setup, "one flow saturating demand fetches on a slow store; a second
+  flow on it wanting more workers than the first leaves free", and the cross-half shape moved
+  under B5. Prior art: none found.
 - **D4, peak memory is the most live heap seen at the end of a collection.** `prof.PeakLiveHeap`
   reads `runtime/metrics`' `/gc/heap/live:bytes`, the heap marked live at the last collection, in
   a finalizer re-armed on each collection, and `stop` forces one last collection and reads it
@@ -259,10 +263,15 @@ a schedule, which is RFC 4's (§1.2).
   pattern of GC notifiers (from memory). Not chosen: E7's held-pool heap check, a unit check that
   holds the pool and reads `LiveHeap` once, which RFC 3 §7.2's memory-bound row already is.
 - **D5, `syncer-bench` is a manual `exit` cell that fails only when a result is missing, and
-  `syncer-bench-smoke` keeps the benchmarks running.**
+  `syncer-bench-smoke` keeps the benchmarks running: accepted by the user, 2026-11-26.**
   - RFC 3 §8.6 puts the benchmarks in a manual suite of the syncer's own, while §7.4 says they run
     after a change merges; the suites paragraph is the one that registers, so the cell is `tier:
-    manual` and §9 proposes §7.4's sentence.
+    manual`, and T9.3's pull request amends §7.4 with the accepted sentence: "Benchmarks never
+    gate a change; they run by hand in the syncer's manual suite
+    ([§8.6](#8.6%20Recording%20results)), and what gates a change instead is in
+    [§8.4](#8.4%20What%20CI%20checks%20instead%20of%20timing)." RFC 29 §4.10's after-merge step,
+    which gates nothing, could run them once T9.5's baseline exists; joining it is left to the run
+    after that baseline.
   - One `sh` command, as `engine-bench` has: `go test -count=$n -benchtime=1x -run=^$ -bench=.
     -timeout=110m` over `./pkg/syncer/pool/` and `./pkg/syncer/pool/internal/sched/`, written to
     `{out}/bench.txt` and printed. `n` is 10 unless `SYNCER_BENCH_COUNT` says otherwise, as
@@ -281,7 +290,7 @@ a schedule, which is RFC 4's (§1.2).
     configuration lines.
   - No build tag: a benchmark runs only under `-bench`, so `unit` never runs one, and untagged
     files stay under `go vet` and the linter. This drops the RFC 3 plan's `syncer_bench` tag and
-    its line in `lint-go` (§9). The `syncer` group holds `[syncer-bench, syncer-bench-smoke]`, as
+    its line in `lint-go`. The `syncer` group holds `[syncer-bench, syncer-bench-smoke]`, as
     RFC 29 §4.9 names a `syncer` group for the component. A `decision:` comment on the entry says
     it is manual and gates nothing.
   - `go test` never runs a benchmark function, so a manual cell alone would let B1 to B4 rot while
@@ -448,7 +457,7 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
 - **Deliverables:** `test/suites.yaml`: `syncer-bench` and `syncer-bench-smoke` (D5), with the
   `decision:` comment, and the `syncer` group. RFC 3 §8.6's suites paragraph naming both and the
   group, and its last sentence rewritten to name only the suites still unregistered when this
-  lands. `test/harness/bin/dt docs`, regenerating `docs/internals/testing.md`. Consumed by T9.4,
+  lands, and §7.4's sentence on when the benchmarks run (D5). `test/harness/bin/dt docs`, regenerating `docs/internals/testing.md`. Consumed by T9.4,
   which adds the `real-link` option, and T9.5's run.
 - **Acceptance criteria:**
   - `dt run syncer-bench` runs B1 to B4 and writes `{out}/bench.txt`, which `dt`'s go-bench
@@ -510,7 +519,7 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
   - A pull request to RFC 3: §8.5's proposed targets replaced by the measured values with their
     headroom, each with the commit and the box (D7); a target the run misses left proposed and
     named as a design finding against RFC 3, with an issue against the epic that owns the code
-    (R21); §9's open
+    (R21); §2.9's round in time and §7.4's B3 setup (D3); §9's open
     question rewritten as D7 says; §9's settled point 1 confirmed, or reopened if the mixed
     shape's fetch wait missed its round with connections to spare (R23).
 - **Acceptance criteria:**
@@ -556,23 +565,6 @@ goes to `develop` and is picked onto `feat/storage-v2`.
 
 ## 9. Open points
 
-- **RFC 3 §7.4 and §8.6 disagree on when the benchmarks run.** §7.4 says "after a change merges",
-  §8.6 a manual suite. RFC 29 §4.10's after-merge step, which runs the benchmarks of components
-  that name a baseline and gates nothing, could meet §7.4 without contradicting §8.6, once a
-  baseline exists; but B1 to B4 take minutes at `-count=10` and B5 needs LocalStack. D5 follows
-  §8.6, the paragraph that registers, and joining the after-merge step is left to the run after
-  T9.5's baseline. Proposed §7.4 text, for
-  RFC 3's author, in T9.3's pull request: "Benchmarks never gate a change; they run by hand in the
-  syncer's manual suite ([§8.6](#8.6%20Recording%20results)), and what gates a change instead is
-  in [§8.4](#8.4%20What%20CI%20checks%20instead%20of%20timing)."
-- **RFC 3 does not state a round in time, and its B3 setup puts the two flows in halves that share
-  no worker.** D3 takes a round as the link's time for one largest encoded block on the slowest
-  store with work waiting, runs B3 within one half, and runs §7.4's cross-half shape on the S3
-  store in B5. Proposed RFC 3 text, for T9.5's pull request: §2.9, "In time, a round is at most
-  one transfer of the largest encoded block on the slowest store with work waiting: every busy
-  worker frees within it"; §7.4's B3 setup, "one flow saturating demand fetches on a slow store;
-  a second flow on it wanting more workers than the first leaves free", and the cross-half shape
-  moved under B5.
 - **The RFC 3 plan's epic 9 outline differs from this document in four places, and in size.** It
   estimates 4 subtasks and 10 man-days; this document has 5 and 10.75, the difference being the
   smoke cell, the peak heap sampler and B5's mixed shape. It puts B5 in the external tests of
