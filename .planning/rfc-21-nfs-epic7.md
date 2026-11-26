@@ -426,8 +426,9 @@ subtasks and tests can cite them. A section cited with no RFC named is RFC 18's.
   directory cache counts it today. It is never anonymous and never minted, because guard 1 mints on
   one entry's word. A `decision:` marker names the ceiling: a directory with duplicate numbers locks
   those users out until it is fixed.
-- **D11. `ManageGIDs` is one more field of the export policy's version 1 encoding, pending the
-  user's answer.** RFC 16 §4.6 makes a new codec version a format bump, and §6.3 fails a golden
+- **D11. `ManageGIDs` is one more field of the export policy's version 1 encoding. Settled in
+  #5887's review: (a), the field appended to version 1 in place; storage-v2 had not shipped. The create group under `ManageGIDs` stays the credential's
+  primary gid, as Linux `rpc.mountd --manage-gids` does.** RFC 16 §4.6 makes a new codec version a format bump, and §6.3 fails a golden
   vector that changes without one.
   - No release has created a store yet. The krb spelling's linked SID was added to version 1 in the
     same way (#4807), with a `decision:` marker at `putLinked`.
@@ -950,7 +951,7 @@ RFC text of T7.2, T7.3 and T7.5 goes in one RFC pull request on `develop` (§9, 
      `alice@domain`.
    - (c) `Spelling` gains a kind field: a change to RFC 18 §4.1's type that every scheme would carry.
    - The same choice holds for D13's `who` schemes: under (b) or (c) they become one scheme as well.
-4. **The export policy's encoding** (D11), pending the user's answer.
+4. **The export policy's encoding** (D11). Settled in #5887's review: (a), the field appended to version 1 in place; storage-v2 had not shipped. The create group under `ManageGIDs` stays the credential's primary gid, as Linux `rpc.mountd --manage-gids` does.
    - (a), recommended: the field appended to version 1 in place, with the golden vector updated and
      a `decision:` marker, as #4807 did. Every store written before the change refuses its policies,
      and no release has created one.
