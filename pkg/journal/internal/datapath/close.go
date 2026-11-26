@@ -63,16 +63,15 @@ func (c *Core) addStop(stop func()) {
 
 // Close stops the journal's core. It begins the close — no new call starts
 // anywhere from this moment — waits for every call that was in flight on a
-// share the fence collected, stops the registered workers in the reverse of
-// the order they registered — the durability layer first, whose Stop wakes
-// every durability waiter only after the drain ended, then the pool, then
-// the idle sealer, then the reclaim worker, then the retirer — and closes the
-// segment set last, whose
-// close joins the streams' work, stops the idle sealer, the pool and the
-// retirer, and shuts the descriptor cache, whose Shutdown waits for every
-// reader's reference and then closes every descriptor. It is safe to call
-// twice: a second Close returns the first's result and neither fences nor
-// waits again.
+// share the fence collected, stops the registered workers in the reverse of the
+// order they registered — the durability layer first, whose Stop wakes every
+// durability waiter only after the drain ended, then the pool, then the
+// read-ahead worker, then the idle sealer, then the reclaim worker, then the
+// retirer — and closes the segment set last, whose close joins the streams'
+// work, stops the idle sealer, the pool and the retirer, and shuts the
+// descriptor cache, whose Shutdown waits for every reader's reference and then
+// closes every descriptor. It is safe to call twice: a second Close returns the
+// first's result and neither fences nor waits again.
 //
 // decision: the wait below has no bound and no context, because Close takes
 // none by design, so each of the drain goroutines waits for its share's
@@ -81,22 +80,21 @@ func (c *Core) addStop(stop func()) {
 // through it. Overturned by a caller that does, or by a need for a bounded
 // drain, which would give this close a context or a deadline.
 //
-// decision: the workers stop in the reverse of the order they registered —
-// the durability layer, then the pool, then the idle sealer, then the
-// reclaim worker, then the retirer — so the pool is stopped before the
-// retirer, the order the segment package's group close documents for the
-// same reason: the wake the retirer's queue drop sends must reach a pool
-// that makes nothing, and a retirement still in flight must unlink its
-// segment rather than reserve a slot in a live pool. The reclaim worker
-// stops after the durability layer and before the retirer it hands to: a
-// pass it runs while the later ones still run consults the stopped
-// durability gate, which answers conservatively, and no candidate it holds
-// reaches a retirer already stopped. The stops the group close runs
-// afterwards are sync.Once no-ops by this point, so the registry and the
-// group agree on the order and the group stays free to change its own.
-// Overturned by a worker whose Stop must run beside a live pool, or by a
-// group whose order inverts pool and retirer, either of which would have to
-// move the pool's registration with it.
+// decision: the workers stop in the reverse of the order they registered — the
+// durability layer, then the pool, then the read-ahead worker, then the idle
+// sealer, then the reclaim worker, then the retirer — so the pool is stopped
+// before the retirer, the order the segment package's group close documents for
+// the same reason: the wake the retirer's queue drop sends must reach a pool
+// that makes nothing, and a retirement still in flight must unlink its segment
+// rather than reserve a slot in a live pool. The reclaim worker stops after the
+// durability layer and before the retirer it hands to: a pass it runs while the
+// later ones still run consults the stopped durability gate, which answers
+// conservatively, and no candidate it holds reaches a retirer already stopped.
+// The stops the group close runs afterwards are sync.Once no-ops by this point,
+// so the registry and the group agree on the order and the group stays free to
+// change its own. Overturned by a worker whose Stop must run beside a live
+// pool, or by a group whose order inverts pool and retirer, either of which
+// would have to move the pool's registration with it.
 func (c *Core) Close() error {
 	c.closeOnce.Do(func() {
 		c.BeginClose()
