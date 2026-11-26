@@ -148,7 +148,7 @@ func TestSegmentFilesMatchesTheEntries(t *testing.T) {
 	noteRec(t, fs, b, 2, ext(0, 4), nums(20, 20))
 	check("noted after forget")
 
-	// A rivalred pair, rebuilt as an open's recovery plants it, and a forget
+	// A rivalled pair, rebuilt as an open's recovery plants it, and a forget
 	// of one side: the survivor's segment must keep the file — its live pieces
 	// sit there, and the forget's emptying sweep has dropped the ranges that
 	// would otherwise name it — while the forgotten side leaves a placement
@@ -167,11 +167,11 @@ func TestSegmentFilesMatchesTheEntries(t *testing.T) {
 		t.Fatalf("feeding the rival: %v", err)
 	}
 	if err := rb.Finish(ver(23)); err != nil {
-		t.Fatalf("finishing the rivalred rebuild: %v", err)
+		t.Fatalf("finishing the rivalled rebuild: %v", err)
 	}
-	check("rivalred pair rebuilt")
+	check("rivalled pair rebuilt")
 	if _, _, err := ix.ForgetFile(e, 1<<30, eO); err != nil {
-		t.Fatalf("forgetting the rivalred owner: %v", err)
+		t.Fatalf("forgetting the rivalled owner: %v", err)
 	}
 	check("rivalled forget keeps the survivor's segment")
 }
