@@ -154,7 +154,7 @@ can cite them.
 | R9 | B1: the syncer's own overhead, at one pool size, once through the syncer and once as raw calls on the in-memory store; target throughput through the syncer at least 97% of raw, read on D1's `fast` link | bound | RFC 3 §7.4, B1; §8.5, B1 | T9.1 |
 | R10 | B1: no allocation per chunk once warm, buffers being reused, reported beside the raw twin's allocations | bound | RFC 3 §7.4, B1; §8.4, "allocations" | T9.1 |
 | R11 | B2: one transfer dispatched with 1, 10, 100 and 1,000 flows waiting; target at most 1 µs at 1,000, and flat from 1 | bound | RFC 3 §7.4, B2; §8.5, B2; §2.9 | T9.2 |
-| R12 | B3: one flow saturating demand fetches on a slow store while a second on it wants fewer workers than the first's cap leaves free, so only the cap holds the first back (D3); target the second flow's p99 queue wait within one round, and the first never above its cap while the second has work waiting. A round in time is ceil(flows waiting / pool) transfers of the largest encoded block, retries excluded (D3), so one transfer for B3's two flows. The cross-half shape of RFC 3 §7.4 is B5's mixed shape (R23) | bound | RFC 3 §7.4, B3; §8.5, B3; §2.9 | T9.2 |
+| R12 | B3: one flow saturating uploads on a slow store while a second uploading to it wants fewer workers than the first's cap leaves free, so only the cap holds the first back (D3); target the second flow's p99 queue wait within one round, and the first never above its cap while the second has work waiting. A round in time is ceil(flows waiting / pool) transfers of the largest encoded block, retries excluded (D3), so one transfer for B3's two flows. The cross-half shape of RFC 3 §7.4 is B5's mixed shape (R23) | bound | RFC 3 §7.4, B3; §8.5, B3; §2.9 | T9.2 |
 | R13 | B4: N readers on one cold chunk make one transfer, whatever N | bound | RFC 3 §7.4, B4; §8.5 ("B4 is a count") | T9.2 |
 | R14 | B5: the syncer over the store, and raw calls on the same store at the same pool size: `codec.Store`'s put attempt and `Get`, encoding and checksum included, called directly at the configured `upload_workers` and `fetch_workers`; target at least 95% of raw, below 90% a regression | bound | RFC 3 §7.4, B5; §8.5, B5 | T9.4 |
 | R15 | B5 reports its throughput as a fraction of the raw calls', with the pools' occupancy beside it | invariant | RFC 3 §7.4 | T9.4 |
@@ -194,14 +194,14 @@ a schedule, which is RFC 4's (§1.2).
     same clock as its `Waiter` (E2's D3).
   - One iteration is a whole workload, run at `-benchtime=1x -count=10` as `engine-bench` runs:
     B1 moves 1,024 blocks from as many callers as the pool has workers; B3 issues 1,000 of the
-    second flow's fetches. So the workers are kept busy, and B3's p99 is of a thousand samples,
+    second flow's uploads. So the workers are kept busy, and B3's p99 is of a thousand samples,
     not of the handful `-benchtime=1s` would give at 200 ms a call.
   - No two fetches in flight at once name one chunk, so single flight (RFC 3 §4.3) joins none and
-    the syncer makes as many `Get`s as its raw twin: each fetching caller owns one block (B1) or
-    one chunk (B3) of its own, stored before the timer, and fetches it again only after its last
-    fetch returned. B1's fetch half so stores one block per caller, 64 MiB at 16 workers and
-    512 MiB at 128, not the 4 GiB 1,024 distinct blocks would hold; B3 stores one chunk per caller
-    of either flow.
+    the syncer makes as many `Get`s as its raw twin: each fetching caller owns one block of its
+    own (B1), stored before the timer, and fetches it again only after its last fetch returned.
+    B1's fetch half so stores one block per caller, 64 MiB at 16 workers and 512 MiB at 128, not
+    the 4 GiB 1,024 distinct blocks would hold. B3 fetches nothing: both its flows upload, each
+    block deleted once its `Upload` returns, as B1's upload half does.
   - B1 runs two configurations, each with name keys `half=upload|fetch` and `impl=syncer|raw`:
     `link=fast/workers=16`, 1 ms per call and a per-byte time of a tenth of the working link's,
     where the syncer's own CPU is not hidden behind the wait, and against which R9's 97% is read;
@@ -238,8 +238,10 @@ a schedule, which is RFC 4's (§1.2).
   - RFC 3 §7.4's setup puts flow A's uploads and flow B's fetches in different halves, which share
     no worker; on the in-memory store they share nothing at all, and on the S3 store only the
     connections (RFC 3 §9, settled point 1). B5 runs that shape over the S3 store (D6), where it
-    answers R23. Here B3 has flow A keep the fetch half's demand queue full on a slow store while
-    flow B keeps P/8 fetches outstanding on the same store, P the pool, below the P − cap that
+    answers R23. Here both of B3's flows upload, so they compete in one half
+    and B3 tests the upload scheduler's cap: fetches would run in the other half and bear on it
+    not at all. Flow A keeps the upload half's queue full on a slow store while flow B keeps P/8
+    uploads outstanding on the same store, P the upload pool, below the P − cap that
     A's cap leaves free (at least P/4, RFC 3 §2.10's table). Turns are charged in worker-time
     (§2.9), so fair share alone would give A every worker B does not hold, more than its cap:
     only the cap keeps A at or below it while B has work waiting, so `a-peak-workers` above the
@@ -253,25 +255,26 @@ a schedule, which is RFC 4's (§1.2).
     of 128 take 8, and `syncer_queue_wait_seconds` would flag a correct scheduler as starving.
     B3's two flows are the case k ≤ P, one transfer: B3 takes a round as the link's time for one
     largest encoded block on the slow store, `perCall + bytes × perByte`, within which every busy
-    worker frees once, so each waiting flow is visited. B5's mixed shape has one fetching flow,
-    the same case. B3 reports `wait-p99/round` and `round-ns`, and prints the cap and the link as
+    worker frees once, so each waiting flow is visited. B5's mixed shape has one fetching flow, the same case;
+    its fetch waits beside upload load are the separate figure for the cross-half question
+    (D6), never B3's. B3 reports `wait-p99/round` and `round-ns`, and prints the cap and the link as
     configuration lines once, from a parent benchmark with one sub-benchmark as B5 does: printed
     by a leaf benchmark, they land between its name and its figures on every count after the
     first, and `benchstat` drops those samples.
-  - The wait is timed where a caller sees it: from B's `Fetch` call to its first yielded chunk,
-    less the link's time for that chunk, which the benchmark set. It therefore includes any of
+  - The wait is timed where a caller sees it: from B's `Upload` call to its
+    return, less the link's time for that block's put, which the benchmark set. It therefore includes any of
     B's own entries queued ahead, which §2.9's bound of one round does not cover; with B's
-    outstanding fetches below P − cap, a correct syncer has a worker free for each of them once
+    outstanding uploads below P − cap, a correct syncer has a worker free for each of them once
     A is at its cap, and while A is still above it every worker A frees goes to B, so each of B's
     entries reaches a worker within one round and the p99 is read against one round as it is. `Stats` counts busy workers per
     store, not per flow, so A's are counted by a `syncer.Store` the benchmark registers in place
-    of `codec.Store`, passing every call through and counting A's `Get`s open, A's blocks having
-    names of their own (the pass-through recording wrapper `CLAUDE.md` allows); the most is
+    of `codec.Store`, passing every call through and counting A's put attempts open, A's blocks having names of
+    their own (the pass-through recording wrapper `CLAUDE.md` allows); the most is
     reported as `a-peak-workers`. RFC 3 §2.9 binds the per-flow cap only while another flow on the
     store has work waiting, and takes no worker back: A holds the whole pool before B's first
-    fetch queues and again once B's last one is dispatched, and above the cap until enough of its
-    transfers end. So the most is taken only from the moment A's open `Get`s first fall to the
-    cap after B's first fetch is called until B's last fetch reaches its `Get`, and a correct
+    upload queues and again once B's last one is dispatched, and above the cap until enough of its
+    transfers end. So the most is taken only from the moment A's open put attempts first fall to
+    the cap after B's first upload is called until B's last upload's put attempt opens, and a correct
     syncer reads at most the cap.
 
   A `decision:` marker at the benchmark names the round and why it differs from §7.4's setup.
@@ -280,8 +283,8 @@ a schedule, which is RFC 4's (§1.2).
   work waiting, retries excluded: each visit needs a freed worker, and every busy worker frees
   within one such transfer"; §2.12's `syncer_queue_wait_seconds` row, "a flow whose wait exceeds
   one round, in time as §2.9 states it, is being starved", so the metric's threshold grows with
-  the flows waiting; §7.4's B3 setup, "one flow saturating demand fetches on a slow store; a second
-  flow on it wanting fewer workers than the first's cap leaves free, so only the cap holds the
+  the flows waiting; §7.4's B3 setup, "one flow saturating uploads on a slow store; a second
+  flow uploading to it, wanting fewer workers than the first's cap leaves free, so only the cap holds the
   first back", and the cross-half shape moved
   under B5. Prior art: none found.
 - **D4, peak memory is the most live heap seen at the end of a collection.** `prof.PeakLiveHeap`
@@ -544,7 +547,8 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
     runs it at; the `decision:` marker of D2.
   - In `pool`'s `bench_test.go`:
     - `BenchmarkB3` (D3): the slow store under `Link` at 200 ms per call; per iteration 1,000 of
-      flow B's fetches, P/8 of them outstanding at once, each fetching caller of either flow owning one chunk (D1); metrics
+      flow B's uploads, P/8 of them outstanding at once, while flow A keeps the upload half's queue
+      full, every block of either flow deleted once its `Upload` returns (D1); metrics
       `wait-p99/round`, `round-ns` and `a-peak-workers`, the last over D3's window; the cap and
       the link as configuration lines printed once by a parent benchmark; the peak heap as in B1;
       D3's `decision:` marker.
@@ -565,8 +569,8 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
 - **Acceptance criteria:**
   - B2 prints eight results in ns per dispatch, read against R11's 1 µs and against each other
     for flatness, with no allocation per dispatch once the flows exist; none asserted (R5).
-  - B3 prints the second flow's p99 wait against the round, and the first flow's most busy
-    workers beside the cap printed with it (R12).
+  - B3 prints the second flow's p99 upload wait against the round, and the first flow's most
+    busy upload workers beside the upload pool's cap printed with it (R12). It issues no fetch.
   - B4 prints `gets/op`, MB/s and the peak heap at every N, with its link's lines.
 - **Tests:** none of their own: B2's flatness is E3's operation count in `unit` (its T3.1), and
   B4's one `Get` is E6's single-flight count, which these benchmarks stand on (§1.2). Under the
