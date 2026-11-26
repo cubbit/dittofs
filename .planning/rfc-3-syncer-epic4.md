@@ -311,7 +311,8 @@ field (E1's R18).
   the caller pulls its stream itself (E3's D1). A `decision:` marker at the get loop says it relies
   on `Store.Get` returning once its `ctx` ends, and that a get that ignored its `ctx` would hold
   the caller past the slow-tail rule. Prior art: `net/http`'s request cancellation through the
-  request's context (from memory).
+  request's context (from memory). Epic 6 (its D2) runs each dispatched fetch on a flight
+  goroutine of its own, so the get loop moves onto that goroutine, its tries still in turn.
 - **D5, the budget counts tenths of a token in an integer.** A bucket of pool × 10 tenths, an
   error retry taking 10, a clean success returning 1, the reserve a quarter of the capacity;
   updated under the half's lock at the try's end. Integer
