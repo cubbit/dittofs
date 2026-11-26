@@ -406,14 +406,14 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
 | 15 | **The offload pipeline** ⛔ | `offload/`: Capture to Mark over the store's existing calls; the chain pin; `encodings` at commit; O1 to O8 but O7, O1's crash leg over the real journal | 8 | 33.5 | B | 16 |
 | 16 | **Passes and the bindings' remote side** ⛔ | the pass registry, §8.3, a share's flow, namespace and pause, chunking settings; S3 | 6 | 20.25 | B | 17, 18, 19, 20 |
 | 17 | **Remote reads, fill and speculation** | the carved row, verified streaming, re-resolution, chunk or block, `fill`, read-ahead, clone adoption | 7 | 23.5 | C | 18 |
-| 18 | **Local space with offload** | eviction loop, `evict`, `repackDue`, refusal steps 2 and 3 with the share's pass, put-health causes, pacing and pressure, destroyed material, the commit under destroyed material | 9 | 30.5 | B | 19, 21 |
+| 18 | **Local space with offload** | eviction loop, `evict`, `repackDue`, refusal steps 2 and 3 with the share's pass, put-health causes, pacing and pressure, destroyed material, the commit under destroyed material | 9 | 31 | B | 19, 21 |
 | 19 | **Restart and the metadata reconcile** | start steps 6 and 7, the reseed and its gates, re-offer, a lost journal served again, the reconcile and `Bind`'s takeover, the `Census` view | 12 | 44 | C | 21 |
 | 20 | **Health, drain and salvage** | per-direction health and drift, the offload conditions, §11.4 and `WaitOffloaded`, the salvage export, `material_destroyed`'s `data_loss` | 7 | 20 | A | 21 |
 | 21 | **Integration: the node composes offload** | a `codec.Store` per store registered with its probe key, `syncertest`'s Group A suite against LocalStack, clients per store configuration, the components' collectors and health sources, settings sections, keys and alerts, the key-record suite, the CPU token, the restart-gated namespace, system scenarios; S7 | 10 | 36 | team | 22 |
 | 22 | **E2E green** 🔀 | burn `known.yaml` down, the soak with remote faults, B1 to B4, B6, B8, and B5, B7, B9 with offload; provisional (§6 point 2) | 7 | 21.5 | team | release |
-| | **Total** | | **91** | **297.75** | | |
+| | **Total** | | **91** | **298.25** | | |
 
-**Plan estimate: 91 subtasks, 297.75 man-days.**
+**Plan estimate: 91 subtasks, 298.25 man-days.**
 
 RFC 8 is 4,291 lines, which gives N = 11, clamped to 8. This part covers about half of it in eight
 cohesive areas, matching N: the scheduler, the queue, the pipeline, passes, remote reads, local space,
@@ -910,7 +910,7 @@ hold.
 
 ### Epic 18 — Local space with offload
 
-**Epic 18 estimate: 9 subtasks, 30.5 man-days.**
+**Epic 18 estimate: 9 subtasks, 31 man-days.**
 
 Eviction, pacing and the refusal table's first two rows whole, now that offload drains dirty bytes;
 the first part's capacity stand-ins go (D10). **Owns:** RFC 8 §3.1's `evict`, `repackDue` and

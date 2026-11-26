@@ -21,7 +21,7 @@ target, `eviction.repack_threshold` and the index excess row; [RFC 14](../docs/i
 §9.3 and §12's L9; [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §6's V20, its offload half; the
 offload plan's epic 18 "Done when", which names issue #5757's four rows.
 **Track:** B.
-**Epic 18 estimate: 9 subtasks, 30.5 man-days.**
+**Epic 18 estimate: 9 subtasks, 31 man-days.**
 **Depends on:**
 - epic 11's frozen surface: `Settings.EvictionTarget` and `RepackThreshold`, and the `Stats` fields
   `EvictedBytes` and `PacingSeconds` this epic fills;
@@ -349,7 +349,19 @@ R13 by epic 15's Mark-after-commit check (T15.9), since only Mark sets the bit e
   its round runs the unmark scan (T18.4) over the unscanned IDs, marking an ID scanned only once
   every held file of its namespace has been scanned; a scan cut short by an error, a deadline or a
   closed journal leaves the ID unscanned, to be run again by the next round, which the scan's
-  idempotence makes safe. Each unit is released under D10's read lock, after checking that its
+  idempotence makes safe. The scan of an ID reads only the held files epic 19's reseed visited
+  before the ID was added: the provider marks the key records before it reports a destroy (RFC 8
+  §10.4), so a visit begun after the add reads the record destroyed and clears the file's extents
+  itself, and a file not yet visited cannot be evicted before its visit (epic 19's R14). D10's set
+  numbers its adds, and the reseed calls `reseedVisit(file)` as it begins a file's visit, before
+  its first read, which records the last number given for that file (T18.4). Without it every restart would scan again every
+  material ever destroyed, since the provider lists at each namespace's `Open` every record it finds
+  `destroyed` and the cursor restarts at 0, holding each namespace's eviction until its scans end;
+  with it, the IDs listed after a restart scan only the files the reseed visited before their
+  listing, and nothing is persisted (R3). A file with no recorded visit
+  is skipped only when `startEviction` was told the reseed gates eviction, which epic 19's step 7
+  says; until then a scan reads every held file, as it must with no reseed, and that runs only over
+  the in-memory journal, which a restart empties (D16). Each unit is released under D10's read lock, after checking that its
   namespace holds no unscanned ID and that its notice's last read succeeded; a unit of such a
   namespace is skipped, and other namespaces evict as before. A `decision:` at the read: a destroy
   the provider reports after a release's check loses that extent's local copy, content whose remote
@@ -426,7 +438,8 @@ R13 by epic 15's Mark-after-commit check (T15.9), since only Mark sets the bit e
   decides the rest, and the implementing pull request amends both sections to name the adopted
   blocks'. A `decision:` at the repoint. Prior art: none found.
 - **D16, `startEviction` is the loop's one start, and epic 19 calls it.** Start step 7 is
-  epic 19's, so T18.3 provides the unexported `startEviction(j)` and its join; until epic 19's
+  epic 19's, so T18.3 provides the unexported `startEviction(j, reseedGates bool)` and its join,
+  the flag saying whether the reseed gates each file's eviction (D9); until epic 19's
   step 7 lands, the fixture's start and the first part's `Start` call it where step 7's comment
   stands. The reseed's gate on eviction ("evicted only once the reseed has run for it", RFC 8 §2.5)
   is epic 19's, built with the reseed it reads. Until then eviction trusts the persisted bits, which
@@ -576,7 +589,7 @@ test/journal/known.yaml   T18.1  the real journal's Release and Unmark legs, red
   `startEviction` from its step 7.
 - **Covers:** R3, R4, R5, R8, R9, R10, R11, R12, R14, R15, R16, R17, R18, R29, R49.
 - **Deliverables:** `Handle.Release` and `Journal.Inspect() Inspector` declared in `deps.go` (D1),
-  `journalOf` wrapping `Inspect`. In `evict.go`, `startEviction(j)` and its join (D16, its
+  `journalOf` wrapping `Inspect`. In `evict.go`, `startEviction(j, reseedGates)` and its join (D16, its
   `decision:`), one loop per open journal on the injected clock at a fixed 1 s tick (§4.3's
   `ponytail:`): each tick reads `Stats()` once and stores D3's snapshot, then, unless a round is in
   flight, starts one: when `UsedBytes` less `UnreclaimedBytes` passes `EvictionTarget` of the
@@ -625,7 +638,7 @@ test/journal/known.yaml   T18.1  the real journal's Release and Unmark legs, red
 
 ### T18.4 Destroyed material: the notice, Mark's and the fill's check, and `Unmark`
 
-**Subtask T18.4 estimate: 5.5 man-days.**
+**Subtask T18.4 estimate: 6 man-days.**
 
 - **Track:** B. **Depends on:** T18.1, T18.3. Epic 15's Mark and `encodings`; epic 17's fill (its T17.5's `fillExtent`); S5's
   `keys.DestroyedNotice` on `keystest`'s in-memory provider.
@@ -635,8 +648,12 @@ test/journal/known.yaml   T18.1  the real journal's Release and Unmark legs, red
   (D9); `kvstore`'s `Content.Materials` and `MaterialSpan` with each material's state (D11), with
   its `ponytail:`, and the engine's declared `Content` gaining it; in `material.go`, D10's map and
   lock with its `decision:`, the notices' read with D9's `decision:`, `unmarkCovered` (D11), and the
-  round's scan: for each unscanned ID, every held file of its namespace with offloaded entries,
-  `Materials` over those extents and `unmarkCovered`, the ID marked scanned once its scan completes.
+  round's scan: for each unscanned ID, every held file of its namespace with offloaded entries that
+  the reseed visited before the ID's add (D9), `Materials` over those extents and `unmarkCovered`,
+  the ID marked scanned once its scan completes; the add's number in D10's set, `reseedVisit(file)`
+  recording the last number given for the file, which epic 19's reseed calls as it begins a visit,
+  and `startEviction`'s flag saying the reseed gates eviction, so a file with no visit is skipped
+  (D9).
   A release skips a unit whose namespace holds an unscanned ID or whose notice's last read failed
   (D9), each notice read until a call returns none. In `offload/`, Mark takes the read lock,
   checks every material the commit's answer names
@@ -689,7 +706,17 @@ test/journal/known.yaml   T18.1  the real journal's Release and Unmark legs, red
     more than one page (kind 3): every span is returned (catches one snapshot over the whole
     extent);
   - a restart with the map empty: nothing is marked from memory, and no test relies on the map
-    surviving (R3).
+    surviving (R3);
+  - a restart over records holding 50 destroyed IDs, which the provider lists again at `Open`
+    before any held file's visit, `startEviction` told the reseed gates, then every file's visit
+    recorded through `reseedVisit` as the reseed would, with
+    `Materials` failing for those files through a kind 3 wrapper, and one more ID destroyed after
+    the listing: the first round releases the 50's namespaces, which a scan would have held on the
+    failing read, and the new ID's namespace releases nothing until its scan clears its bits; with
+    one file's visit recorded before the 50 were listed and the wrapper lifted, that file's bits
+    under them are cleared before its namespace releases (catches every material ever destroyed
+    scanned again after a restart, holding eviction, D9; and a scan skipping a file visited before
+    the destroy was listed);
   Doubles: kind 3 around the notice and the fake's `Unmark`; the Mark and fill hooks set from
   `export_test.go`.
 - **Rules:** rule 7: `keys.DestroyedNotice` is the RFC 5 contract; `kvstore` imports nothing of
@@ -989,7 +1016,7 @@ and runs beside the material path.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T18.1, T18.2, T18.3 | 7.5 | — | the eviction loop whole, with the journal calls it is the first caller of |
-| 2 | T18.5, T18.4, T18.6 | 10.5 | PR 1 | destroyed material on both sides of the commit and its row |
+| 2 | T18.5, T18.4, T18.6 | 11 | PR 1 | destroyed material on both sides of the commit and its row |
 | 3 | T18.7 | 4 | PR 1 | pacing and the pressure band; can be open beside PR 2 |
 | 4 | T18.8, T18.9 | 7 | PR 2, PR 3 | the refusal table's steps 2 and 3 and its causes, closing #5757 |
 
@@ -1002,6 +1029,9 @@ beside PR 1.
   in-memory journal; over the real journal `Release` and `Unmark` answer `ErrNotImplemented` until
   the journal plan's epic 9b, so their entries stay with rewritten messages until then, and epic 22
   removes those left.
+- **Needs on epic 19's document.** Its reseed calls `reseedVisit(file)` as it begins each file's
+  visit, before its first read, and its step 7 calls `startEviction` with `reseedGates` true (D9),
+  so the notice's scan skips what the reseed covers. Not edited here: #6433 holds that document.
 - **S6 must not reach eviction before epic 19's reseed gate.** Eviction trusts the persisted bits
   until epic 19 gates it (D16), which is safe only while no real journal can release. If 9b lands
   before epic 19, the change that composes the real journal's `Release` keeps `startEviction` off
@@ -1026,7 +1056,7 @@ beside PR 1.
 - **Epic 17's fill takes the destroyed-material lock (D10).** Epic 17 builds the fill with one
   `Fill` site, `fillExtent` (its T17.5, #6002); this epic adds the read lock and the materials check
   there, a hit running `Fill` then `Unmark` under the write lock, and epic 17 builds no lock.
-- **Estimate.** 30.5 man-days in 9 subtasks, which the offload plan now carries, against its 30 in
+- **Estimate.** 31 man-days in 9 subtasks, which the offload plan now carries, against its 30 in
   8 before the breakdown: the in-memory journal's calls are a subtask of their own (T18.1), and the
   material path is three, with the adopted-block repoint (D15), the kept ref's replacement (D17)
   and the fill's check the plan did not foresee. T18.4 is the least
