@@ -99,8 +99,13 @@ type gssTable struct {
 	afterWindow func(*gssContext)
 }
 
-// newGSSTable is an empty table of at most max contexts charged to b.
+// newGSSTable is an empty table of at most max contexts charged to b. A max
+// below one panics: insert evicts one context to make room for the next, and
+// an empty table has none to evict.
 func newGSSTable(b *resources.Budget, c Clock, max int) *gssTable {
+	if max < 1 {
+		panic(fmt.Sprintf("nfs: a GSS context table of at most %d contexts", max))
+	}
 	return &gssTable{budget: b, clock: c, max: max, m: map[[gssHandleLen]byte]*gssContext{}, global: list.New(), byPrincipal: map[vfs.Principal]*list.List{}}
 }
 
@@ -260,6 +265,14 @@ func (t *gssTable) removeLocked(c *gssContext) {
 // together. Between the two another call may delete c; then the move is
 // skipped, so a deleted context is never linked back, and this call's verdict
 // is still run: it was verified while the context lived.
+//
+// decision: the context ends at the ticket's end time, not one tick after:
+// GSS_Context_time (RFC 2743 section 2.2.5) is the end less now, and a
+// context whose lifetime is zero is expired, and RFC 2203 leaves a context's
+// lifetime to the mechanism. RFC 4120 section 3.2.3 would honour the ticket
+// through its end and a clock skew past it; that applies when the AP-REQ is
+// accepted, not to the context it made. Overturned if a supported client is
+// shown to send its last call at the end time exactly and expect it to run.
 func (c *gssContext) check(seq uint32, now time.Time) verdict {
 	if end := c.g.Evidence.Expires; seq >= gssMaxSeq || !end.IsZero() && !now.Before(end) {
 		c.t.delete(c.handle[:])

@@ -3,10 +3,6 @@ package protocol
 import (
 	"fmt"
 	"math/rand/v2"
-	"os"
-	"path/filepath"
-	"runtime"
-	"runtime/pprof"
 	"slices"
 	"sync"
 	"testing"
@@ -366,6 +362,21 @@ func TestGSSWindow(t *testing.T) {
 	}
 }
 
+// A table of fewer than one context is refused at construction, since insert
+// at the cap evicts one context and an empty table has none.
+func TestGSSTableRefusesAMaxBelowOne(t *testing.T) {
+	for _, max := range []int{0, -1} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("newGSSTable(max %d) returned; want a panic", max)
+				}
+			}()
+			newGSSTable(resources.NewBudget("connection", 1<<20), &testClock{now: start}, max)
+		}()
+	}
+}
+
 // A sequence number at or above MAXSEQ, and a call at or past the ticket's
 // end, delete the context and release its charge; MAXSEQ less one and a call
 // before the end run.
@@ -616,17 +627,9 @@ func TestGSSTableMatchesTheModel(t *testing.T) {
 
 // 64 goroutines call over 1 000 contexts, some reaching MAXSEQ; at the end
 // both lists hold the map's contexts and, once the table is emptied, the
-// budget is zero. The table's mutex and block profiles go to the test's
-// artifact directory: under -race they show the run's locking, and the same
-// test run without -race gives the profile the table's ponytail marker reads.
+// budget is zero. Run without -race and with -mutexprofile, it gives the
+// profile the table's ponytail marker reads.
 func TestGSSTableUnderConcurrentCalls(t *testing.T) {
-	prevMutex := runtime.SetMutexProfileFraction(1)
-	runtime.SetBlockProfileRate(1)
-	t.Cleanup(func() {
-		runtime.SetMutexProfileFraction(prevMutex)
-		runtime.SetBlockProfileRate(0)
-	})
-
 	tbl, b, clk := newTable(1<<30, gssMaxContexts)
 	hs := make([][gssHandleLen]byte, 1000)
 	for i := range hs {
@@ -673,19 +676,4 @@ func TestGSSTableUnderConcurrentCalls(t *testing.T) {
 		t.Errorf("table emptied, %d bytes reserved, want 0", got)
 	}
 
-	dir := t.ArtifactDir()
-	for _, name := range []string{"mutex", "block"} {
-		path := filepath.Join(dir, "gss-table-"+name+".pprof")
-		f, err := os.Create(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := pprof.Lookup(name).WriteTo(f, 0); err != nil {
-			t.Fatal(err)
-		}
-		if err := f.Close(); err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("%s profile: %s", name, path)
-	}
 }
