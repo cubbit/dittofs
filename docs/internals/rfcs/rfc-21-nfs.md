@@ -1091,7 +1091,8 @@ which the adapter keeps per session
 A **delegation** is the server's promise that no other client is using a file,
 so the client may cache it without asking. Delegations are RFC 14's caching
 grants: a read delegation is a read grant, a write delegation a read and write
-grant, and neither is ever a handle grant, which only SMB offers
+grant, and neither is ever a handle grant: the adapter asks neither a lease key
+nor `GrantBelongsToOpen`, so the grant is the client's, which caches no handles
 ([RFC 14 §5.1](rfc-14-open-state.md#5.1%20What%20a%20grant%20is)). Offering
 them at all is the server's choice; this one offers both file kinds to NFSv4.1
 and later, none to NFSv4.0, and no directory ones.
@@ -1360,7 +1361,8 @@ client, are RFC 14's.
   anonymous ([RFC 18 §5.4](rfc-18-identity.md#5.4%20Errors%20never%20become%20answers)).
 - **NLM is admitted at `Claimed`.** `LOCK`, `TEST`, `UNLOCK`, `CANCEL`,
   `SHARE`, `UNSHARE`, `FREE_ALL` and their `*_MSG` forms are admitted on a share
-  whose `MinProof` is higher than `Claimed`; the claimed caller is still
+  whose `MinProof` is higher than `Claimed`: every NLM and NSM call sets
+  `HostCall` ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); the claimed caller is still
   resolved and gated as above.
 - **Replies leave from the address the client used.** Callbacks to the host —
   `NLMPROC4_GRANTED`, `NLMPROC4_GRANTED_MSG`, the `NLMPROC4_*_RES` replies — **MUST** be sent
@@ -1501,7 +1503,8 @@ shares [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)
 lets the caller see.
 
 `MNT` and `EXPORT` are admitted on the share's state and its client rules only,
-without the `MinProof` and `MinProtection` step, so a Kerberos-only share can
+without the `MinProof` and `MinProtection` step, as they set `HostCall`
+([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), so a Kerberos-only share can
 return its flavours to a client whose mount daemon sends `MNT` as `AUTH_UNIX`.
 The handle `MNT` returns is gated like any other on every later call.
 
@@ -2453,7 +2456,14 @@ principal that matches no caller, `acl` with `dacl` or `sacl` — is
 
 Open state takes only neutral requests and returns neutral results and errors
 ([RFC 14 §1.1](rfc-14-open-state.md#1.1%20Non-goals)). Every NFS → neutral
-mapping it needs is here.
+mapping it needs is here. Each call states its protocol's profile
+([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)): `NFSv3Caps`,
+`PrivilegeOnEveryCall` alone, so root's privilege counts on every call and no
+SMB rule applies; `NFSv4Caps`, which adds `SeesPseudoFS`, so `LOOKUPP` at a
+share's root walks up into the pseudo-filesystem; and each request's context
+carries its protocol label, which no rule reads; `NLMCaps` for NLM and NSM, which adds `HostCall` (§6.1) and
+`ClientIsMachine` for the host's record; `MountCaps` for `MNT` and `EXPORT`,
+which adds `HostCall` (§6.3).
 
 **Clients.** Every node answers `EXCHANGE_ID`, `SETCLIENTID` and
 `DESTROY_CLIENTID` for any client (§3.3), so each field those calls decide is
@@ -2465,10 +2475,11 @@ in RFC 14's durable client record
 | `Name`, indexed by (protocol, name) | the owner string: `co_ownerid` (`EXCHANGE_ID`), the `nfs_client_id4` id (`SETCLIENTID`); for an NLM host its `caller_name` with the source address it sends from (§6.1) | an `EXCHANGE_ID` / `SETCLIENTID` from a client that rebooted or reconnected through another node finds its record, and `Boot` tells which |
 | `Boot` | the boot verifier; for an NLM host its NSM state number, big-endian in the low four bytes, so the bytes order as the numbers do | a new `Boot` under the same name is a new client instance |
 | `Pending` | an unconfirmed `SETCLIENTID` or `EXCHANGE_ID`: nothing durable, held at the node that answered, `Confirm` sent as the NFSv4.0 confirm verifier or, low 32 bits, as the NFSv4.1 `eir_sequenceid` ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation)) | `SETCLIENTID_CONFIRM`, or NFSv4.1's first `CREATE_SESSION`, at that node (§3.5) |
-| `Owner` | the principal that created the client ID, mapped before squashing; zero for an NLM host | an `EXCHANGE_ID` or `SETCLIENTID` for the same name from another principal is `NFS4ERR_CLID_INUSE` (RFC 8881 §18.35.5) and leaves no `Pending` |
+| `Owner` | the principal that created the client ID, mapped before squashing; zero for an NLM host, whose `Connect` sets `ClientIsMachine` | an `EXCHANGE_ID` or `SETCLIENTID` for the same name from another principal is `NFS4ERR_CLID_INUSE` (RFC 8881 §18.35.5) and leaves no `Pending` |
 | `Protect` | set for `SP4_MACH_CRED`, false for `SP4_NONE`; `spo_must_allow` stays in the adapter's bytes, and the adapter refuses a machine-credential call outside it before calling the service | each node admits the machine principal the same way |
 | `Reach.Callback`, `Reach.Down` | the node holding the back channel, and whether it is lost (§3.4) | callbacks, `SEQ4_STATUS_CB_PATH_DOWN` |
 | `Reach.Sessions` | one entry per node holding a session, added at `CREATE_SESSION` through `AddSession` and again through it at each new node epoch, removed by the node's last `DESTROY_SESSION`'s `Disconnect`, or with the node's loss or restart | `DESTROY_CLIENTID` is `NFS4ERR_CLIENTID_BUSY` while any entry remains (§5.1), so a clean unmount's, after its `DESTROY_SESSION`, finds none |
+| `Recovery` | status for NFSv4.1, refusal for NFSv4.0, notice for an NLM host ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)) | status and refusal hold a client lease, renewed by `SEQUENCE` and `RENEW`; notice holds none |
 | `Lease.Node` | the lease owner: the node holding the client's sessions | renewal by `SEQUENCE` and `RENEW` |
 | `Shards` and the record's per-shard `Done` | the shards it holds state in, and in each the grace instance it last finished reclaiming in; a loss awaits the client's recovery while that is below the shard's grace instance ([RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)) | §5.4 |
 
@@ -2675,8 +2686,14 @@ header codec writes the reply each layer takes.
 `HeaderCodec.Encode`): the RPC reply header, with `mismatch_info`'s lowest and
 highest versions for `PROG_MISMATCH`, those the connection serves, and for
 `RPC_MISMATCH`, 2 and 2 (RFC 5531 §9), and for an NFSv4 `COMPOUND` its status,
-its tag and an empty results array. A procedure's encoder handed no reply writes
-only what its result carries beside the status.
+its tag and an empty results array.
+
+**For every program status, success included,** the header codec also writes what
+the procedure's result holds before its body: the status word, where the result
+begins with one (every NFSv3 procedure but NULL, and MOUNT's MNT and NSM's SM_STAT
+and SM_MON; a COMPOUND's only on a refusal); NLM's cookie, echoed from the call, before its stat; and nothing for a
+result with no status. The procedure's encoder writes the rest, so one handed no
+reply writes only what its result carries beside those.
 
 **The `COMPOUND` tag** has no cap of its own: it is a `utf8str_cs`, an
 `opaque<>` (RFC 8881 §3.2, RFC 7530 §2.1), whose definition RFC 8881 §16.2.3
@@ -2770,7 +2787,7 @@ service, before any wire suite runs:
 | §11.4 decoders fuzzed *(1 node)* | The fuzz targets above, each with its seed corpus. | a decoder that panics, or reads another version's bytes as its own |
 | §6.1 NLM against SMB *(1 node)* | An NLM lock and an SMB byte-range lock over one range of one file, in each order: assert the second refused, and an SMB write into the NLM range admitted (NFS locks are advisory) while an NFSv3 write into the SMB range is refused. | |
 | §11.4 SMB deny-write against an NFS write open *(1 node)* | An SMB client opens a file with `FILE_SHARE_READ` only and no lease; an NFSv4 client `OPEN`s it with `OPEN4_SHARE_ACCESS_WRITE`, and an NFSv3 client `WRITE`s it: assert `NFS4ERR_SHARE_DENIED` and `NFS3ERR_ACCES`. Close the SMB open: assert both then succeed. Reverse it: an NFSv4 `OPEN` with `OPEN4_SHARE_DENY_WRITE`, then an SMB `CREATE` for write: assert `STATUS_SHARING_VIOLATION`. | a deny mode enforced within one protocol only |
-| e2e | pynfs, cthon04 and nfstest through dt ([RFC 29](rfc-29-test-harness.md)) are the end-to-end layer over these rows and §13's. | |
+| e2e | pjdfstest, pynfs, cthon04 and nfstest through dt ([RFC 29](rfc-29-test-harness.md)) are the end-to-end layer over these rows and §13's. | |
 
 ### 11.7 Monitoring
 
@@ -2901,6 +2918,7 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | §11.1 refused credentials *(1 node)* | Send a truncated `AUTH_SYS` credential, one with 17 gids, one with a 256-byte machine name, and an `AUTH_DH` and an unknown flavour, to a share with an everyone grant: each rejected `AUTH_BADCRED`, nothing created. | garbage credentials served as anonymous |
 | §6.3 `MNT` on a Kerberos-only share *(1 node)* | `MNT` over `AUTH_UNIX` of a share whose `MinProof` is `Ticket`: the flavours and the root handle returned; a `GETATTR` with that handle over `AUTH_SYS`: refused `AUTH_TOOWEAK`; over `sec=krb5`: answered. | NFSv3 Kerberos mounts refused; or a handle that skips the minimum |
 | §6.1 NLM on a Kerberos-only share *(1 node)* | On a share whose `MinProof` is `Ticket`, an NLM `LOCK` over `AUTH_SYS` as a uid that can read the file: granted; as a uid that can neither read nor own a 0600 file: refused. A store error resolving the caller: the lock refused, never granted as anonymous. | every NFSv3 lock on a Kerberos share failing; locks on files the caller cannot read |
+| §6.1 `HostCall` only from NLM, NSM and MOUNT *(1 node)* | On a share whose `MinProof` is `Ticket`, an NFSv4 `OPEN` over `AUTH_SYS`: refused `NFS4ERR_WRONGSEC`; an `OPEN` over `sec=krb5`, then a `LOCK` on its stateid over `AUTH_SYS`: refused `NFS4ERR_WRONGSEC`. | an NFSv4 adapter setting `HostCall`, which admits its `OPEN` and `LOCK` at `Claimed` ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
 | §10 context table *(1 node)* | `RPCSEC_GSS_DESTROY` with a corrupted header MIC: refused, the context still usable. A call above the window whose verifier fails: `RPCSEC_GSS_CREDPROBLEM`, and the window unchanged, so a call at the old window's top still runs. A call at sequence `MAXSEQ`: `RPCSEC_GSS_CTXPROBLEM`, and the context gone. With the table's share sized to four contexts, one principal opening a fifth evicts its own oldest, never another principal's. A reconnect on a new TCP connection keeps its context. | an unauthenticated teardown; one principal evicting everyone |
 | §8.1 ctime | An SMB client sets −1 on all four times of an open and writes through it; assert an NFSv3 `GETATTR` shows `ctime` moved. | SMB suspension freezing the NFS ctime |
 | §9.1 stability | Write `DATA_SYNC`, crash the primary, read back. Assert the data and its `size` and `mtime`. Append 10^4 `FILE_SYNC` writes to a new file with the metadata store stalled; assert every reply arrives. Overwrite committed bytes `FILE_SYNC` with the store stalled; assert no success reply until the store commits — `NFS4ERR_DELAY` within the deadline — and that the reply follows that write's existence commit. Same with unstable overwrites and `COMMIT`. | an append waiting on a metadata transaction, or an overwrite answered stable before its existence commit |
@@ -2930,6 +2948,20 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | §3.3 one name, two principals *(1 node)* | Two principals send `EXCHANGE_ID` with one `co_ownerid`: the second is `NFS4ERR_CLID_INUSE` and leaves no `Pending`; over NFSv4.0 the same with `SETCLIENTID`. | |
 | §3.3 reboot racing renew *(1 node)* | An NFSv4.0 client holds a lock; send `SETCLIENTID` with a new verifier and, before its confirm, `RENEW` under the old client ID: assert the renewal succeeds and the lock is held; confirm: the old ID's state released and its `RENEW` `NFS4ERR_STALE_CLIENTID`. | |
 
+**Release goal.** Four suites are the end-to-end layer over §11.6's rows and
+this section's: pjdfstest, POSIX semantics through a kernel mount at NFSv3,
+v4.0 and v4.1; pynfs, its `nfs4.0` tree and its `nfs4.1` tree at minor
+versions 1 and 2, the second running the NFSv4.2 tests (`XATT*`, `ALLOC*`),
+and its `nfs4.0` tree again over `krb5`, which runs the RPCSEC_GSS tests
+(`GSS*`, §10) that `--security sys` skips and `SEC7`, which `all` never names;
+cthon04; and nfstest.
+Each, and any other NFS or POSIX conformance suite the harness registers, is
+green when this RFC's implementation is done: every test passes except those
+listed in "Tests expected to fail". A failure outside that list is a defect, or
+a decision of this RFC the list misses; either the defect is fixed, or the
+decision is written into its section and the tests it fails join the list,
+citing it. No other failure ships.
+
 **Tests expected to fail.** The suites' tests that the decisions of this RFC
 fail by design. A single-node run passes when exactly these fail; one that
 starts passing means the decision changed and this list is stale. A cluster run
@@ -2944,6 +2976,11 @@ expects these and the one cluster entry below the table.
 | pynfs `SP4_SSV` state-protection tests | `SP4_SSV` refused (§3.3) |
 | pynfs and xfstests `ALLOCATE` / `fallocate` reservation tests | `ALLOCATE` not served (§9.3) |
 | pynfs labeled-NFS tests (`sec_label`) | no labeled NFS (§8.2) |
+
+No pjdfstest test follows from a decision above: pjdfstest mounts at NFSv3,
+v4.0 and v4.1, where NLM serves its locks (§6) and no row of the table applies.
+Its entries, if any, are filled from its first run, as the other suites' v2
+failures are, each citing the section whose decision fails it.
 
 No suite in the list runs over UDP; §2.2's own row checks that no UDP
 listener answers. A cluster run also expects pynfs's session-trunking tests across nodes to fail,
@@ -2961,10 +2998,11 @@ profile.
 **Suites.** §11.6's translation tests and fuzz seeds run in `unit`, as do §13's
 rows that inject a fault below the server through the composed single-node
 harness. §13's rows that name pynfs, cthon04 or nfstest run in `pynfs`,
-`cthon04` and `nfstest`, its other single-node rows against a real server in
+`cthon04` and `nfstest`, and POSIX semantics through a mount in `pjdfstest`;
+its other single-node rows against a real server in
 `e2e`, those reaching one file over NFS and SMB in `e2e/cross-protocol` and
 those under Kerberos in `e2e/kerberos`. No suite runs yet xfstests (§9.3),
-pynfs's reboot tests, the wire tests against a reference NFS server, or any
+pynfs's reboot tests, pynfs at minor 2, pynfs over Kerberos, the wire tests against a reference NFS server, or any
 row's cluster steps.
 
 ## 14. Observability

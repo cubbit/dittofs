@@ -449,9 +449,9 @@ lives only in a job that has none.
 
   A TLS-enabled cluster is deferred.
 - **T3.3 — the start check without a store directory (2 md, after D4).**
-  - This implements D4: `Preflight` takes a directory or an opened KV, and classifies the KV's
+  - This implements D4: `Preflight` takes a directory or the store's opener, calls the opener only after the wiring and v1 checks, and classifies the KV's
     `kvstore.Open` answer itself. `internal/node` exports nothing new.
-  - The Badger host passes the directory. The FoundationDB host passes its one open KV.
+  - The Badger host passes the directory. The FoundationDB host passes the opener of its one KV.
   - The `decision:` marker at the host's open in `kv_foundationdb.go`, not in `Preflight`: over a
     foreign cluster, the open writes this node's clock ceiling before the check refuses, as the
     RFC 23 edit states (D4).
@@ -576,7 +576,7 @@ this epic implements: one image and two Linux tarballs.
 | The start check over a FoundationDB cluster without opening it through `fdbkv.Open`, which would retire the clock ceiling it writes into a foreign cluster before refusing it (`fdbkv.go:101-108`, D4) | `Open` raises the ceiling before it returns, so no `Now` precedes a durable ceiling; a read-only open would need its own path through `fdbkv` | unowned | an operator reports the stray key, or the `metadata.foundationdb.prefix` row lands and a cluster can hold other installations |
 | The start check reading a Badger store without opening it, which would retire `badgerkv`'s ceiling write over a v1 store (`badgerkv.go:71-78`) | Badger cannot open read-only after an unclean close | unowned | Badger opens read-only after an unclean close |
 | The compose file's v1 bootstrap, `docker/bootstrap.sh` and its `docker-compose.yml` service | it drives v1's API; the v2 image needs `dfs init` as an explicit step first | RFC 23's plan, its D13 | the v2 image or compose work |
-| Dismantling `pkg/block` completely: `pkg/block/engine` (with `enginetest` and `enginewire`) to `pkg/engine`, and `pkg/block/journal` (with its `internal/` and `journaltest/` trees) to `pkg/journal`, so no `pkg/block` directory remains; the same PR updates every file naming the path (about 177 outside `pkg/block`: Go imports, CLAUDE.md, `test/suites.yaml`, the RFCs and the plans) | once T2.4 lands the level adds nothing, but the move touches every engine and journal import, so it is its own mechanical PR | #3119, a separate PR | T2.4 merged |
+| Dismantling `pkg/block` completely: `pkg/block/engine` (with `enginetest`; its `enginewire` is now `internal/node/content`) to `pkg/engine`, and `pkg/block/journal` (with its `internal/` and `journaltest/` trees) to `pkg/journal`, so no `pkg/block` directory remains; the same PR updates every file naming the path (about 177 outside `pkg/block`: Go imports, CLAUDE.md, `test/suites.yaml`, the RFCs and the plans) | once T2.4 lands the level adds nothing, but the move touches every engine and journal import, so it is its own mechanical PR | #3119, a separate PR | T2.4 merged |
 
 ## 7. RFC coverage
 

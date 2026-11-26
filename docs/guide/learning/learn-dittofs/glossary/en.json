@@ -201,12 +201,14 @@
   "chunk": {
     "name": "chunk",
     "short": "A run of one file's bytes, about 256 KiB, cut at a content-defined boundary and named by a keyed hash of its content.",
-    "long": "A run of one file's bytes, about 256 KiB, cut at a content-defined boundary and named by its chunk ID, a keyed hash of its content. The journal knows nothing about chunks: a [[record]] is not a chunk."
+    "long": "A run of one file's bytes, about 256 KiB, cut at a content-defined boundary and named by its chunk ID, a keyed hash of its content. The journal knows nothing about chunks: a [[record]] is not a chunk.",
+    "clash": "Not a part of an S3 multipart upload, nor a piece of an HTTP chunked transfer, whose sizes the sender picks. A chunk's ends are chosen by the file's content."
   },
   "block": {
     "name": "block",
     "short": "The object the remote tier stores. It holds a whole number of chunks written by one upload, 4 MiB by default.",
-    "long": "The object the [[remote-tier]] stores: a whole number of [[chunk|chunks]], written by one put. It targets a configured size, 4 MiB by default and settable from 1 MiB to 64 MiB; a chunk never spans two blocks."
+    "long": "The object the [[remote-tier]] stores: a whole number of [[chunk|chunks]], written by one put. It targets a configured size, 4 MiB by default and settable from 1 MiB to 64 MiB; a chunk never spans two blocks.",
+    "clash": "Not a filesystem or disk block of a few KiB, the unit an ext4 or NTFS volume allocates. A DittoFS block is one object in the bucket, about 4 MiB, holding many [[chunk|chunks]]."
   },
   "remote-tier": {
     "name": "remote tier",
@@ -215,8 +217,8 @@
   },
   "carver": {
     "name": "carver",
-    "short": "The component that cuts a file's bytes waiting for upload into [[chunk|chunks]], names each one by a hash of its content and packs the chunks into [[block|blocks]].",
-    "long": "The component (RFC 2) that cuts a stretch of bytes into content-defined [[chunk|chunks]], hashes each, and packs them into blocks. It runs over the extents the journal [[offer|offers]]."
+    "short": "The component that cuts a file's bytes waiting for upload into [[chunk|chunks]], choosing each cut from the content, and names each one by a keyed hash of its content. Packing chunks into [[block|blocks]] is the [[block-assembler|block assembler]]'s job.",
+    "long": "The component (RFC 2) that cuts a stretch of bytes into content-defined [[chunk|chunks]] and hashes each; the [[chunker]] says where each chunk ends. It runs over the extents the journal [[offer|offers]], and builds no blocks: that is a separate fold over its output."
   },
   "syncer": {
     "name": "syncer",
@@ -1020,7 +1022,7 @@
   },
   "deduplication": {
     "name": "deduplication",
-    "short": "Storing identical content once when several files carry it. The first release does not deduplicate across files: offload uploads every chunk it cuts.",
+    "short": "Storing identical content once when several files carry it. The first release does not deduplicate across files: offload never asks whether a chunk is already stored, and carries every chunk it cuts except all-zero ones.",
     "long": "Storing content that several files carry only once. The first release does not deduplicate across files: offload never asks whether a [[chunk]] is already stored. Chunks stay named by a keyed hash of their content, and refcounts stay, because [[clone|clones]] and snapshots share chunks.",
     "clash": "Not the [[dedup-table|dedup table]] of a forwarded call, which answers a retried request with its first result."
   },
@@ -1114,5 +1116,70 @@
     "name": "in-memory service",
     "short": "The real filesystem service running over memory stores (`memory.New`), held to the same conformance suite as the production one. Handler tests run against it and check the state it holds afterwards.",
     "long": "`memory.New`: the real `*vfs.Filesystem` over memory stores, passing the service's conformance suite. A handler test checks the encoded reply and the state the service holds afterwards: an SMB `CREATE` whose deny mode is dropped still opens the file, but a second, conflicting open that succeeds shows the field is missing. Error answers come from a fault wrapper around it that fails a named method on cue."
+  },
+  "chunker": {
+    "name": "chunker",
+    "short": "The boundary function the [[carver]] runs: given a buffer of bytes, it says where the next [[chunk]] ends. It reads nothing, hashes nothing and keeps nothing between calls.",
+    "long": "It answers only where a chunk ends, from the bytes and the settings, using a [[rolling-fingerprint|rolling fingerprint]] of the last 64 bytes (RFC 2 §1.2, §3). It never hashes, reads from anything, holds a file offset or allocates memory."
+  },
+  "stretch": {
+    "name": "stretch",
+    "short": "One unbroken run of a file's bytes, handed to the [[carver]] in one call. A chunk never spans two stretches, so it never spans a [[hole]].",
+    "long": "Its end is real (a hole, the file's settled end, or a neighbour already committed as chunks) or artificial, where the [[offer]] stopped reading; an [[artificial-end|artificial end]] leaves its tail uncut for the next offer. Only the last chunk before a real end may be shorter than the minimum."
+  },
+  "artificial-end": {
+    "name": "artificial end",
+    "short": "The end of a [[stretch]] where the offer stopped reading, not where the file's bytes stop. The bytes after the last cut the content gave stay [[dirty|Dirty]] for the next offer.",
+    "long": "On an artificial end the carver hands over nothing after the last content-chosen cut, so the next offer starts on a real boundary and cuts as one long stretch would have (RFC 2 §2.4). The held tail is always shorter than the maximum chunk length. Once its oldest byte reaches the maximum age the engine sets for bytes waiting to be uploaded, the engine may tell the carver the end is real, and the tail is cut as the last chunk."
+  },
+  "rolling-fingerprint": {
+    "name": "rolling fingerprint",
+    "short": "A number the [[chunker]] updates with every byte, which depends only on the last 64 bytes. Where it passes a test, a [[chunk]] ends.",
+    "long": "A gear fingerprint, as in FastCDC: shift left one bit and add a table entry for each byte (RFC 2 §3.2). After 64 shifts a byte's share has left the 64-bit number entirely, so a cut depends only on the 64 bytes before it (§3.4). That is why an edit moves only the cuts near it."
+  },
+  "chunk-target": {
+    "name": "Target, Min, Max",
+    "short": "The one chunking setting of a [[namespace]], `Target`, 256 KiB by default, and two bounds derived from it: `Min` is a quarter of `Target` and `Max` four times it.",
+    "long": "`Target` is the average chunk length the [[chunker]] must really produce, a power of two from 64 KiB to 4 MiB. No chunk is longer than `Max`, and none is shorter than `Min` except the last one of a [[stretch]] that really ends. It is chosen when the namespace is created; changing it later is a migration (RFC 2 §3.2, §3.6, §3.7)."
+  },
+  "chunk-id": {
+    "name": "chunk ID",
+    "short": "A [[chunk]]'s name: a 32-byte BLAKE3 hash of its bytes, keyed with its [[namespace]]'s [[chunk-id-key|chunk-ID key]], and of nothing else.",
+    "long": "Computed over exactly the bytes of the chunk as cut, never with an offset, a length, a file identity or a version mixed in (RFC 2 §4.1). The same bytes in the same namespace get the same ID, wherever and whenever they were cut."
+  },
+  "chunk-id-key": {
+    "name": "chunk-ID key",
+    "short": "A 32-byte key each [[namespace]] draws when it is created, under which all its [[chunk-id|chunk IDs]] are hashed. It never changes.",
+    "long": "Every namespace has one, encrypting or not. In an encrypting namespace it is wrapped under a master key, so a bucket reader who can cause no write cannot confirm a known file from its chunk IDs; in a non-encrypting one it is stored in the clear beside the blocks and hides nothing. A new key would rename every chunk, so it never rotates."
+  },
+  "block-assembler": {
+    "name": "block assembler",
+    "short": "A separate layer, driven by the [[engine]], that packs whole [[chunk|chunks]] from one file after another into [[block-plan|block plans]] of about 4 MiB. It never splits a chunk.",
+    "long": "A pure fold over the chunks the carver hands over, driven by the engine's offload pipeline (RFC 2 §5). RFC 0's glossary calls it part of the carver; RFC 2 §1.2 places it with neither the chunker nor the carver. Each chunk becomes a [[zero-ref|zero ref]], is adopted (once deduplication exists), or is carried in the pending plan. It copies no bytes and keeps nothing after its pass."
+  },
+  "block-plan": {
+    "name": "block plan",
+    "short": "The [[block-assembler|block assembler]]'s list of the [[chunk-id|chunk IDs]] in one [[block]], with where each chunk's bytes sit in the offer. The block is streamed from it.",
+    "long": "A plan holds hashes and positions, never chunk bytes: a few hundred bytes per block, whatever the block's size (RFC 2 §5.5). The upload reads the bytes from the offer when it streams the block."
+  },
+  "block-target": {
+    "name": "block target",
+    "short": "The size the [[block-assembler|block assembler]] fills a [[block]] to, counting only the bytes of chunks the block really holds: 4 MiB by default, settable from 1 MiB to 64 MiB.",
+    "long": "Set with the namespace's remote store. A block passes it by at most one chunk, or stops short at 1,024 chunks or at the end of a pass (RFC 2 §5.2). A value outside the range is refused at startup. Unlike `Target`, changing it re-cuts nothing and needs no migration."
+  },
+  "zero-ref": {
+    "name": "zero ref",
+    "short": "What a file records for a [[chunk]] of nothing but zeros: a [[ref]] that names no chunk and reads as zeros. The chunk is never put in a [[block]] or uploaded.",
+    "long": "The carver hands over an all-zero chunk like any other, and the block assembler turns it into a zero ref (RFC 2 §5.1, RFC 6 §3.5). Zero refs add nothing towards the block target, which counts only the bytes a block carries."
+  },
+  "put-attempt": {
+    "name": "put attempt",
+    "short": "One decision to store one [[block-plan|block plan]], under a [[block-name|block name]] minted for it. Every retry within the attempt reuses that name and writes the same bytes.",
+    "long": "A new attempt at the same chunks, after the first was abandoned or by a second writer, draws a fresh random nonce and so mints a new name (RFC 2 §4.2). A [[put-intent|put intent]] is recorded durably before the first put of a name."
+  },
+  "chunking-key": {
+    "name": "chunking key",
+    "short": "A secret key that only an encrypting [[namespace]] has. Its shares cut with a fingerprint derived from it, so where the cuts fall depends on the key.",
+    "long": "Drawn at random when an encrypting namespace is created, and never rotated, since a new key would re-cut everything (RFC 2 §6). It hides which file a run of chunk lengths belongs to only from a bucket reader who can cause no write into the namespace and knows none of its stored content. A non-encrypting namespace has none and cuts under the public table."
   }
 }
