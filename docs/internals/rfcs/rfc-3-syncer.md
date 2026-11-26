@@ -688,6 +688,10 @@ Both return a stream of chunks, and:
   valid**, because each was verified on its own;
 - **leaving the loop, or cancelling `ctx`, detaches the caller** — from its own
   fetch, or only from a joined one ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)). There is no `Close` to forget.
+- **a loop body MUST NOT fetch from the block it is iterating.** Such a fetch
+  can join the caller's own fetch ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)), which cannot pass the chunk the body
+  holds. A caller that breaks this rule is detached at the detach bound
+  ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) and its stream ends with an error; the inner call gets its chunks.
 
 The syncer's **`Close`** stops accepting work and returns once every transfer in
 flight has ended, which [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) bounds. `Flow.Close` refuses the flow's queued
