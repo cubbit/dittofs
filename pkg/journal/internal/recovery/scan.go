@@ -599,6 +599,7 @@ func rebuildIndex(ctx context.Context, rd *reader, identity core.JournalID, own 
 				onScanStart(own[i].ID)
 			}
 			srd := newReader(wctx, rd.fs, rd.clk, rd.log)
+			defer func() { _ = srd.Close() }()
 			workers[i] = srd
 			scans[i], errs[i] = readSegment(srd, identity, own[i], named, forceScan)
 			if errs[i] != nil {

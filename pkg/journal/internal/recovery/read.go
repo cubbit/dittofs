@@ -36,6 +36,12 @@ type reader struct {
 
 	// unread holds each segment range no bounded read completed.
 	unread []core.SegmentRange
+
+	// slot holds the handle of the file slotName names, the reader's one
+	// cached open: consecutive reads of one segment take it instead of an
+	// open, and a read of another name closes it for the new file's own.
+	slotName string
+	slot     storage.File
 }
 
 // newReader returns the open's reader over fs, running under ctx and on
@@ -65,11 +71,10 @@ func (r *reader) warnUnreadable(name string, err error) {
 // except when the open's own context ended the retries: that says nothing
 // about the device, so it is only returned.
 //
-// ponytail: every attempt opens the file and closes it again, so a scan's
-// per-record header reads each pay an open and a close. Upgrade to one
-// handle per segment per scan, kept open across its reads and reopened by
-// the bound only after a failure, when a profile of the open shows the
-// per-read opens.
+// The read takes the handle the reader holds for name when it was the last
+// name read, opening the file only for a name it holds none for; interleaved
+// reads of two segments still pay an open per switch, a cost to revisit only
+// with a bounded map of handles if a profile ever shows that thrash.
 func (r *reader) ReadAt(name string, buf []byte, off int64) (n int, err error) {
 	// decision: an I/O error suspends, a bad checksum discards. A failed
 	// read returned no bytes, so the device may return them later or after
@@ -87,20 +92,38 @@ func (r *reader) ReadAt(name string, buf []byte, off int64) (n int, err error) {
 	// stays under about twice it.
 	endOfFile := false
 	_, err = readretry.Do(r.ctx, r.clk, readretry.Attempts, func() error {
-		f, ferr := r.fs.Open(name)
-		if ferr != nil {
-			return ferr
+		f := r.slot
+		if r.slotName != name || f == nil {
+			if r.slot != nil {
+				// The replaced handle's own close error is dropped: the
+				// read the slot existed for is under another name now, and
+				// a close that failed releases nothing the caller needs.
+				_ = r.slot.Close()
+				r.slotName, r.slot = "", nil
+			}
+			// The open stays per attempt, as this bound always made it: an
+			// open the device does not answer is started again, and one no
+			// bounded attempt completes takes the caller's error below.
+			var ferr error
+			if f, ferr = r.fs.Open(name); ferr != nil {
+				return ferr
+			}
+			r.slotName, r.slot = name, f
 		}
-		// The close's own error is dropped: the read the attempt existed
-		// for has already finished, and a close that failed releases
-		// nothing the caller still needs.
-		defer func() { _ = f.Close() }()
-
 		var rerr error
 		n, rerr = f.ReadAt(buf, off)
 		if errors.Is(rerr, io.EOF) {
 			endOfFile = true
 			return nil
+		}
+		if rerr != nil {
+			// A handle whose read ever failed is never reused: the bound's
+			// next attempt opens fresh, as every attempt did before the
+			// slot, so a fault on the open or on the read sees the same
+			// shape. The close's own error is dropped, as every attempt's
+			// was: the read is the caller's, not the close's.
+			_ = f.Close()
+			r.slotName, r.slot = "", nil
 		}
 		return rerr
 	})
@@ -127,6 +150,19 @@ func (r *reader) ReadAt(name string, buf []byte, off int64) (n int, err error) {
 	_, id := format.ClassifyName(name)
 	r.unreadable(core.SegmentRange{Segment: id, Off: off, Len: int64(len(buf))})
 	return n, err
+}
+
+// Close releases the handle the reader holds, if it holds one: the handle
+// ReadAt kept for the last name it read. The owner of the reader defers it,
+// so every read its phases made runs under it; a reader whose slot is
+// already empty closes nothing and answers nil.
+func (r *reader) Close() error {
+	if r.slot == nil {
+		return nil
+	}
+	err := r.slot.Close()
+	r.slotName, r.slot = "", nil
+	return err
 }
 
 // unreadable collects sr as a range no bounded read completed. A range an

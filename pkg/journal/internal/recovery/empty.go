@@ -57,6 +57,7 @@ func Emptying(ctx context.Context, deps Deps, st *State, expect core.JournalID, 
 		slog.Int64("scanned_segments", int64(r.ScannedSegments)))
 	defer func() { end(err) }()
 	rd := newReader(ctx, deps.FS, deps.Clock, deps.Log)
+	defer func() { _ = rd.Close() }()
 	empty := &emptying{deps: deps, rd: rd, st: st, identity: expect, marks: marks}
 	if err := empty.runRetire(ctx); err != nil {
 		return err

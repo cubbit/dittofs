@@ -111,6 +111,48 @@ func TestReaderWarnsOfAnUncompletedRead(t *testing.T) {
 	}
 }
 
+// TestAReadsScannerReusesTheOpenSegmentHandle reads two headers of one
+// segment through one reader, then a header of another: a scan's consecutive
+// per-record reads of one segment pay one open, the handle held across
+// them, and a read through a different segment closes the first's handle —
+// no handle is left open past the switch or the reader's own close.
+func TestAReadsScannerReusesTheOpenSegmentHandle(t *testing.T) {
+	r := newRig(t)
+	r.writeSeg(3, journalID)
+	r.writeSeg(9, journalID)
+	seg3, seg9 := format.SegmentName(3), format.SegmentName(9)
+
+	rd := newReader(context.Background(), r.seam.FS(), r.clk, nil)
+	defer func() { _ = rd.Close() }()
+	// The plant of each file made its own close, so its own counts are the
+	// baseline the reader's closes are read over.
+	closed3, closed9 := r.seam.CallsFor(kit.OpClose, seg3), r.seam.CallsFor(kit.OpClose, seg9)
+	hdr := make([]byte, format.SegmentHeaderSize)
+	for range 2 {
+		if _, err := rd.ReadAt(seg3, hdr, 0); err != nil {
+			t.Fatalf("reader: header read of %s: %v", seg3, err)
+		}
+	}
+	if calls := r.seam.CallsFor(kit.OpOpen, seg3); calls != 1 {
+		t.Errorf("reader: consecutive reads of one segment opened it %d times, want 1: the scan holds the segment's handle across its reads", calls)
+	}
+	if _, err := rd.ReadAt(seg9, hdr, 0); err != nil {
+		t.Fatalf("reader: header read of %s: %v", seg9, err)
+	}
+	if calls := r.seam.CallsFor(kit.OpClose, seg3) - closed3; calls != 1 {
+		t.Errorf("reader: the handle a different segment's read replaced was closed %d times, want 1: the one slot holds no two files", calls)
+	}
+	if calls := r.seam.CallsFor(kit.OpOpen, seg9); calls != 1 {
+		t.Errorf("reader: the second segment's read opened it %d times, want 1", calls)
+	}
+	if err := rd.Close(); err != nil {
+		t.Fatalf("reader: the reader's own close: %v", err)
+	}
+	if calls := r.seam.CallsFor(kit.OpClose, seg9) - closed9; calls != 1 {
+		t.Errorf("reader: the segment the reader held was closed %d times at the reader's close, want 1: the held handle is released there and nowhere else", calls)
+	}
+}
+
 // TestReadFormat_ExpectZeroNamesTheAgreeingIdentity reads a directory whose
 // format file no read completes and whose segments name one journal: with
 // expect zero the refusal still names that journal — the one identity every
