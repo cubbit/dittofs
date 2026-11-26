@@ -629,14 +629,30 @@ func (n *Node) firstReconcile(ctx context.Context) error {
 	return n.pass(ctx, nil)
 }
 
-// startReconcile runs reconcile's loop, the status writer and the expiry
-// sweep, each watched by the watchdog, until Stop. Its part uses the
-// adapters' slots, which a pass calls, so a pass held past its bound leaves
-// the adapters open rather than stopped under it.
-func (n *Node) startReconcile(context.Context) error {
+// startReconcile is start step 10 (RFC 23 §2.2): it runs the status
+// writer's first turn, and a write that fails fails the start, so the node
+// reads ready only once the store holds this start's status, not the last
+// one's, whose ports a restart has released (§2.4, §3.4). Then it runs
+// reconcile's loop, the status writer and the expiry sweep, each watched by
+// the watchdog, until Stop. Its part uses the adapters' slots, which a pass
+// calls, so a pass held past its bound leaves the adapters open rather than
+// stopped under it.
+//
+// decision: a first status write that fails, or does not answer within the
+// store bound, fails the start rather than being retried at the status
+// writer's interval, as step 3's registration write fails it: a store the
+// node cannot write is no store to serve from. Overturned if a start must
+// ride out a store fault, and then by readiness waiting on the first
+// write's commit.
+func (n *Node) startReconcile(ctx context.Context) error {
+	next := n.cfg.Clock.After(statusInterval)
+	if err := n.statusTurn(ctx); err != nil {
+		return fmt.Errorf("write the node status: %w", err)
+	}
 	loopCtx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
-	for name, run := range map[string]func(context.Context, *health.Loop){stepReconcile: n.reconcileLoop, stepStatus: n.statusLoop, stepSweep: n.sweepLoop} {
+	status := func(ctx context.Context, loop *health.Loop) { n.statusLoop(ctx, loop, next) }
+	for name, run := range map[string]func(context.Context, *health.Loop){stepReconcile: n.reconcileLoop, stepStatus: status, stepSweep: n.sweepLoop} {
 		loop := n.watchdog.Loop(name)
 		wg.Go(func() {
 			defer loop.Close()

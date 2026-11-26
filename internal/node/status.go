@@ -57,18 +57,17 @@ type statusWriter struct {
 	turned func(s entity.NodeStatus, wrote bool)
 }
 
-// statusLoop runs a status turn at once and then one every statusInterval
-// on the node's clock, counted from the start of the turn before, until ctx
-// ends, reporting each to loop.
+// statusLoop runs a status turn whenever next fires, and then one every
+// statusInterval on the node's clock, counted from the start of the turn
+// before, until ctx ends, reporting each to loop. Start step 10 has run the
+// first turn and set next from its start.
 //
 // ponytail: a pass that moves the positions is reported at the next turn,
 // up to statusInterval later, rather than waking the writer; the rate limit
 // would hold such a write back as long anyway. Wake the writer from the pass
 // if a reader ever needs the status sooner than the rate limit allows.
-func (n *Node) statusLoop(ctx context.Context, loop *health.Loop) {
+func (n *Node) statusLoop(ctx context.Context, loop *health.Loop, next <-chan struct{}) {
 	for {
-		next := n.cfg.Clock.After(statusInterval)
-		n.statusTurn(ctx)
 		loop.Turn()
 		select {
 		case <-ctx.Done():
@@ -76,6 +75,8 @@ func (n *Node) statusLoop(ctx context.Context, loop *health.Loop) {
 		case <-next:
 		}
 		loop.Idle()
+		next = n.cfg.Clock.After(statusInterval)
+		_ = n.statusTurn(ctx) // the fault it reports is the turn's own, and the next turn retries it
 	}
 }
 
@@ -88,7 +89,9 @@ func (n *Node) statusLoop(ctx context.Context, loop *health.Loop) {
 // a later write would then be overwritten by its older status. So while it
 // runs no turn writes, and once it settles last is forgotten, so the turn
 // writes the status as it then is whatever the late write left.
-func (n *Node) statusTurn(ctx context.Context) {
+//
+// It returns the error of the write it made, nil when it made none.
+func (n *Node) statusTurn(ctx context.Context) error {
 	w := &n.status
 	s := n.nodeStatus()
 	b, _ := json.Marshal(s) // a NodeStatus holds integers, strings and bytes, which always marshal
@@ -101,8 +104,10 @@ func (n *Node) statusTurn(ctx context.Context) {
 		}
 	}
 	wrote := false
+	var err error
 	if w.running == nil && !bytes.Equal(b, w.last) {
-		running, err := n.bounded(ctx, func(ctx context.Context) error { return n.meta.Nodes().PutNodeStatus(ctx, s) })
+		var running <-chan error
+		running, err = n.bounded(ctx, func(ctx context.Context) error { return n.meta.Nodes().PutNodeStatus(ctx, s) })
 		w.running = running
 		if err == nil {
 			w.last, wrote = b, true
@@ -120,6 +125,7 @@ func (n *Node) statusTurn(ctx context.Context) {
 	if w.turned != nil {
 		w.turned(s, wrote)
 	}
+	return err
 }
 
 // nodeStatus is what the node reports: the positions it has reconciled

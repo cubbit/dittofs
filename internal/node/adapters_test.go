@@ -22,6 +22,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/sim"
@@ -1170,4 +1171,99 @@ func TestTheStatusAndTheAPINameThePortEachAdapterBound(t *testing.T) {
 	portsAre("SMB disabled", turnAt(t, h, ch, "SMB stopped", func(tr statusTurn) bool {
 		return tr.wrote && adapterOf(tr.s, "smb").State == entity.AdapterStopped
 	}), 0)
+}
+
+// A restarted node reads ready only once the store holds this start's
+// status (RFC 23 §2.2 step 10, §3.4): with the new start's first status
+// write held, Start waits on it and readiness answers starting, though SMB,
+// at port 0, already serves on a new port; once the write commits, Start
+// returns, the node is ready, and the API names the port this start bound,
+// not the last start's, which the test holds so no start can bind it again.
+func TestARestartedNodeReadsReadyOnlyOnceItsStatusIsThisStarts(t *testing.T) {
+	var f *kvtest.FaultKV
+	h := nodetest.New(t, nodetest.Watch(), nodetest.WithNew(func(cfg node.Config) (*node.Node, error) {
+		f = kvtest.NewFaultKV(cfg.KV)
+		cfg.KV = f
+		return node.NewAuthenticating(admin)(cfg)
+	}))
+	var b built
+	serve := func() {
+		h.Node().OnAdapter(b.keep)
+		h.Node().SetSMB(true, smbAt(0))
+	}
+	bound := func() uint16 {
+		t.Helper()
+		at := b.last("smb").Addrs()[adapter.Socket{Service: "smb", Network: "tcp"}]
+		if len(at) == 0 {
+			t.Fatal("SMB's adapter is bound nowhere")
+		}
+		return at[0].Port()
+	}
+	smbPort := func(api string) uint16 {
+		t.Helper()
+		var got apiv1.Adapter
+		getJSON(t, api, "/api/v1/adapters/smb", &got)
+		if len(got.Status.Nodes) != 1 {
+			t.Fatalf("the API reads SMB's nodes %+v, want one", got.Status.Nodes)
+		}
+		return got.Status.Nodes[0].Port
+	}
+
+	serve()
+	started(t, h)
+	api, _ := h.Node().Addrs()
+	last := bound()
+	if got := smbPort(api); got != last {
+		t.Errorf("first start: the API names SMB's port %d, want %d, the one it bound", got, last)
+	}
+
+	h.Restart(t)
+	held, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", last))
+	if err != nil {
+		t.Fatalf("hold the last start's port %d: %v", last, err)
+	}
+	defer func() { _ = held.Close() }()
+	serve()
+	write := sim.NewTestClock(time.Unix(0, 0))
+	setFault(t, f, write, sim.Rule{Op: kvtest.OpSet, Key: statusKey(h), Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
+	defer write.Advance(time.Hour) // a failed test's Stop finds no write held
+	done := make(chan error, 1)
+	go func() { done <- h.Node().Start(t.Context()) }()
+	t.Cleanup(func() {
+		if err := h.Node().Stop(context.Background()); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+	})
+	deadline := time.Now().Add(20 * time.Second)
+	for write.Pending() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the restart's first status write did not reach the store within 20 s")
+		}
+		<-time.After(time.Millisecond)
+	}
+	api, _ = h.Node().Addrs()
+	if got := bound(); got == last || got == 0 {
+		t.Fatalf("SMB at port 0 after the restart bound %d, want a port other than the last start's %d", got, last)
+	}
+	// The bounded wait is the assertion: a Start that does not wait on its
+	// first status write returns as soon as its loops start.
+	select {
+	case err := <-done:
+		t.Fatalf("Start returned (%v) while its first status write was held, want it to wait on the write", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if got := get(t, api, "/health/ready"); got != starting {
+		t.Errorf("readiness while the restart's first status write is held: got %+v, want 503 starting", got)
+	}
+
+	write.Advance(time.Hour)
+	if err := <-done; err != nil {
+		t.Fatalf("Start once its first status write committed: %v", err)
+	}
+	if got := get(t, api, "/health/ready"); got != ready {
+		t.Fatalf("readiness once Start returned: got %+v, want 200 ready", got)
+	}
+	if got, want := smbPort(api), bound(); got != want {
+		t.Errorf("the restarted node, ready: the API names SMB's port %d, want %d, the one this start bound, not the last start's %d", got, want, last)
+	}
 }
