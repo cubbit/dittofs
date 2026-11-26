@@ -692,8 +692,8 @@ type Chain interface {
 // Attempt is one pinned chain. The engine releases it when the block commits
 // or is abandoned.
 type Attempt interface {
-	// ID is the chain ID (§2.8), from each transform's ID, LengthKey and the
-	// pinned material.
+	// ID is the chain ID (§2.8), from each transform's ID, format version,
+	// LengthKey and the pinned material.
 	ID() [32]byte
 
 	// MaxEncodedLen composes the transforms' bounds under the pinned material, in

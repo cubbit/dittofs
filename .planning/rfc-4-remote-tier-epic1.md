@@ -389,13 +389,14 @@ pkg/remote/codec/
     `ChecksumCRC32C`, `ChecksumMD5`, D1), `StoredSum struct{ Kind Checksum; Sum []byte }`, `Role`
     (`RoleClaim`, `RoleHealth`, `RoleKeys`, D2), `Chunk struct{ Hash [32]byte; Bytes []byte }`,
     `ChunkRange struct{ Hash [32]byte; Range Range }`,
-    `Meter struct{ Moved func(n int64); Sent func() }` and
-    `Info struct{ Name Name; Size int64; ModTime time.Time }`;
+    `Meter struct{ Moved func(n int64); Sent func() }`,
+    `Info struct{ Name Name; Size int64; ModTime time.Time }` and `Cursor string`, where a `List`
+    walk resumes, opaque to callers;
   - `Store` with `Checksum() Checksum`,
     `Put(ctx, name Name, body io.Reader, size int64, sum []byte) error`,
     `Get(ctx, name Name, r Range) (io.ReadCloser, StoredSum, error)`,
     `Delete(ctx, names []Name) []error`,
-    `List(ctx, after Name, n int) (page []Info, next Name, done bool, err error)`,
+    `List(ctx, after Cursor, n int) (page []Info, next Cursor, done bool, err error)`,
     `Health(ctx, d Direction) error`, `PutControl(ctx, role Role, body []byte) error`,
     `GetControl(ctx, role Role) (body []byte, v Version, err error)` and `Close() error`;
   - the seven errors, `Cause` (`CauseAccess`, `CauseQuota`, `CauseSize`) with `String`, and

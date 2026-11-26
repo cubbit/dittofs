@@ -2166,7 +2166,7 @@ type NonceRecord struct {
 type Remote interface {
 	Delete(ctx context.Context, names []BlockName) []error
 	DeleteVersions(ctx context.Context, names []BlockName) []error
-	List(ctx context.Context, after BlockName, n int) (page []Info, next BlockName, done bool, err error)
+	List(ctx context.Context, after Cursor, n int) (page []Info, next Cursor, done bool, err error)
 	Settings() []Setting
 	RecheckSetting(ctx context.Context, s Setting) (drifted bool, err error)
 	VersionsPage(ctx context.Context, after VersionMarker, n int) (noncurrent int, next VersionMarker, err error)

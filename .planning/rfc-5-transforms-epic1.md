@@ -181,24 +181,35 @@ holds once they exist: §6 says so per subtask.
   signatures are indicative, and RFC 25 §8 has every component take its logger and metrics from
   its caller (R18). Under amended RFC 0 §1.2, `pkg/metrics` counts as an implementation, so the
   chain declares a recorder named for its series, and the node's content wiring implements it over
-  the root's registry (R17). It has three calls, one per moment the chain observes:
+  the root's registry (R17). `NewChain` calls `For` once per transform it builds, so a chunk's
+  recording is an add on a series resolved at build, with no label lookup and no allocation (RFC 25
+  §2.9); the handle has three calls, one per moment the chain observes:
 
   ```go
   type Recorder interface {
-  	// Encoded records one transform's encode of one chunk: transform_chunks_total by applied,
-  	// transform_bytes_total and transform_seconds with direction encode.
-  	Encoded(transform string, applied bool, in, out int, took time.Duration)
-  	// Decoded records one transform's successful decode of one body, direction decode.
-  	Decoded(transform string, in, out int, took time.Duration)
-  	// DecodeFailed records one transform_decode_failures_total. reason is one of RFC 5 §6's
-  	// values: malformed, material_unavailable, material_unknown, material_destroyed, too_large.
-  	DecodeFailed(transform string, reason string)
+  	// For resolves one transform's series, labelled by its registered name.
+  	For(name string) TransformRecorder
   }
+
+  type TransformRecorder interface {
+  	// Encoded records one encode of one chunk: transform_chunks_total by applied,
+  	// transform_bytes_total and transform_seconds with direction encode.
+  	Encoded(applied bool, in, out int, took time.Duration)
+  	// Decoded records one successful decode of one body, direction decode.
+  	Decoded(in, out int, took time.Duration)
+  	// DecodeFailed records one transform_decode_failures_total under reason's error label.
+  	DecodeFailed(reason FailureReason)
+  }
+
+  // FailureReason is a decode failure's error label (RFC 5 §6): malformed, material_unavailable,
+  // material_unknown, material_destroyed, too_large.
+  type FailureReason uint8
   ```
 
   The details:
-  - `reason` is a plain string rather than a typed constant set, because the content wiring only
-    passes it on as a label.
+  - `reason` is a typed constant set (`ReasonMalformed` … `ReasonTooLarge`) rather than the label
+    string, so a `TransformRecorder` resolves one series per reason in `For` and indexes it per
+    call.
   - `Deps` carries no clock. `took` is a measurement the chain reports, not a duration it waits
     on, and a test asserts what was recorded, not its value.
   - `transform_census_blocks` is not the chain's: E10 reads it from the census.
@@ -342,7 +353,8 @@ pkg/transform/keys/
                           KindChunkingKey, SalvageWrapper, DestroyedNotice, ErrUnknownMaterial,
                           ErrMaterialUnavailable, ErrMaterialDestroyed
 pkg/transform/chain/
-  chain.go          T1.1  package doc; Register and NewChain (stub bodies), Deps, Recorder
+  chain.go          T1.1  package doc; Register and NewChain (stub bodies), Deps, Recorder,
+                          TransformRecorder, FailureReason
 ```
 
 ## 6. Subtasks
@@ -428,10 +440,17 @@ pkg/transform/chain/
     }
 
     type Recorder interface {
-    	Encoded(transform string, applied bool, in, out int, took time.Duration)
-    	Decoded(transform string, in, out int, took time.Duration)
-    	DecodeFailed(transform string, reason string)
+    	For(name string) TransformRecorder
     }
+
+    type TransformRecorder interface {
+    	Encoded(applied bool, in, out int, took time.Duration)
+    	Decoded(in, out int, took time.Duration)
+    	DecodeFailed(reason FailureReason)
+    }
+
+    type FailureReason uint8 // ReasonMalformed, ReasonMaterialUnavailable, ReasonUnknownMaterial,
+                             // ReasonMaterialDestroyed, ReasonTooLarge
     ```
 
     `Register`'s body records nothing, and `NewChain`'s returns `nil, errors.ErrUnsupported` (D7).
