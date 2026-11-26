@@ -1918,6 +1918,7 @@ type Context struct {
 	Evidence vfs.Evidence // RFC 18 §3.1 through RFC 17 §3.0's alias: principal, SIDs, expiry
 	Keys    vfs.Keys        // RFC 18 §3.1's Session, Subkey and APRep; Session is NTLM's exported session key, or RFC 4121 §2's context key (the authenticator's subkey when present, since the acceptor sends none); never in an Identity
 	MIC     func(msg []byte) ([]byte, error)            // RFC 4121: krb5i, the RPCSEC_GSS verifier
+	VerifyMIC func(msg, tok []byte) error               // RFC 4121: a peer's MIC token, the RPCSEC_GSS verifier and krb5i
 	Wrap    func(msg []byte) ([]byte, error)            // RFC 4121: krb5p
 	Unwrap  func(tok []byte) ([]byte, error)
 }
