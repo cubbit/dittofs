@@ -82,10 +82,11 @@ jobs:
       # Full history: on a pull request, dt plan --base compares the branch
       # with where it left its base, so a docs-only change plans no cell. In
       # the merge queue dt plan --docs-only-base compares the group with its
-      # parent, the group ahead of it, only to find a pull request whose
-      # changes are all documentation, which plans no cell; any other plans
-      # every cell of the tier, and with ALLGREEN nothing merges until every
-      # group ahead has passed, so gate never passes on code nobody tested.
+      # parent, the group ahead of it or the branch's tip for the first, only
+      # to find a pull request whose changes are all documentation, which
+      # plans no cell; any other plans every cell of the tier, and with
+      # ALLGREEN nothing merges until every group ahead has passed, so gate
+      # never passes on code nobody tested.
       - name: Checkout
         uses: actions/checkout@v7
         with:

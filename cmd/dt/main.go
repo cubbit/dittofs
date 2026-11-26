@@ -175,8 +175,10 @@ func newPlan() *cobra.Command {
 			// The merge queue tests every cell of the tier, as a push does, so
 			// its base never narrows the plan by paths: it only lets a group
 			// whose changes are all documentation plan nothing, as such a pull
-			// request does. The group's diff holds every pull request ahead of
-			// it, so one with code in any of them plans every cell.
+			// request does. A group's base is the group ahead of it, or the
+			// branch's tip for the first, so its diff holds its own pull request
+			// alone; a pull request ahead with code is tested by its own group,
+			// and nothing merges until every group ahead has passed.
 			skip := false
 			if queueBase != "" {
 				queued, err := changedFiles(root, queueBase)
