@@ -288,8 +288,9 @@ func (t *Tracker) pruneMarks(seg core.SegmentID) []core.FileID {
 // carries no burden of completeness: the index it is drawn from covers the
 // content files no registration names, and the registry covers the carried
 // records it holds whose index notes never landed. Every record registered
-// live of the retired segment is taken whatever the files list names — a
-// forget record's zero file is one such, and a files list never names it. The
+// live of the retired segment is taken, the walk over the union reaching
+// each through the table entry its registration made — a forget record's
+// zero file is one such, and a files list never names it. The
 // holds citing seg as their copies are released with the retirement — the
 // segment is gone, and a still-held record of the segment it held ended
 // was carried to a copy durable before the hand-over — through the same
@@ -320,15 +321,9 @@ func (t *Tracker) pruneMarks(seg core.SegmentID) []core.FileID {
 // durability order the observer neither observes nor controls — safe only
 // where that caller has made removal durable before the Retire it rides.
 //
-// ponytail: the retirement walks the whole registry of forget records to
-// prune the ones naming the segment, O(forgets outstanding) beside a
-// records walk that visits every registered record of every file,
-// O(all registered records) — all of it under rm, and the call runs in
-// the retirer's durable-signal delivery, so a stream roll can wait behind
-// one retirement's whole walk. Upgrade to a walk scoped
-// to the retiring segment's own files, from the state's files table, and
-// an index of forget records by snapshot segment, when a retirement of a
-// busy journal shows in a profile.
+// Both walks the retirement runs are scoped to the segment: the records
+// over the files the union named, the forgets over the segment's bucket
+// of the forget index.
 func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 	t.rm.Lock()
 	// The in-flight class gate's clear: this sweep is the end of the
@@ -363,7 +358,11 @@ func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 		st.mu.Unlock()
 	}
 	rel := make([]spentRec, 0, 8)
-	for f, rs := range t.recs {
+	// A file the union names twice is harmless, like a caller's list that
+	// names one of its own twice: the take hands each registration to
+	// exactly one taker, so a second walk of a file finds nothing.
+	for _, f := range files {
+		rs := t.recs[f]
 		for rec := range rs {
 			if rec.Seg != seg {
 				continue
@@ -373,10 +372,10 @@ func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 			// so the counts below lower for exactly the registrations that
 			// were live: a take that refused (nothing left of the record)
 			// releases nothing. The zero file a forget record registers
-			// under is walked here like any other, whatever the files list
-			// named. A sweep that empties a placement of an identity class
-			// another segment still holds re-holds that one, by take()
-			// under this same lock.
+			// under is reached here like any other file of the table, its
+			// entry made by the registration. A sweep that empties a
+			// placement of an identity class another segment still holds
+			// re-holds that one, by take() under this same lock.
 			for {
 				delta, taken := t.take(rec)
 				if !taken {
@@ -395,14 +394,19 @@ func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 	// a forget record whose snapshot empties here — its last tag-record
 	// bearing segment gone — is released exactly as the re-test would
 	// release it: the take gates the count on the registry as any release
-	// does, once per registration a doubled record holds.
-	for rec, snap := range t.forgets {
+	// does, once per registration a doubled record holds. The walk runs
+	// over the segment's bucket of the forget index, so it pays for the
+	// forgets naming the segment alone; each entry it visits leaves the
+	// bucket with the walk, and the bucket leaves the index with the
+	// segment.
+	for rec := range t.forgetSegs[seg] {
 		if rec.Seg == seg {
 			// The record counted in the retired segment; its snapshot
 			// leaves with its registration.
-			delete(t.forgets, rec)
+			t.forgetTaken(rec)
 			continue
 		}
+		snap := t.forgets[rec]
 		if _, ok := snap[seg]; !ok {
 			continue
 		}
@@ -421,6 +425,7 @@ func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 			}
 		}
 	}
+	delete(t.forgetSegs, seg)
 	// The retired segment leaves every mark set that names it: a mark
 	// holds nothing, so its leaving lowers no count — but a loss record
 	// whose marks empty here, its last holder gone, is NOT taken. It is

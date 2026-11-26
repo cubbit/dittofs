@@ -992,3 +992,107 @@ func TestSegmentRetired_WithdrawsTheSegmentsBytes(t *testing.T) {
 		t.Fatalf("Held after the retirement = %v, want false", got)
 	}
 }
+
+// TestForgetsIndexPrunesOnlyTheRetiredSegment: the by-segment index of forget
+// records answers a retirement only the forgets whose snapshots name the
+// retiring segment. The walk SegmentRetired runs over that bucket prunes the
+// retired segment out of the snapshots that name it — one of a two-wide
+// snapshot leaves the record live over the other segment — and releases the
+// record whose snapshot it emptied through the same per-registration take a
+// re-test's release runs, while a forget whose snapshot names an untouched
+// segment keeps its whole rule — snapshot, zero-file registration, index
+// entry — as any whole-registry walk left it.
+func TestForgetsIndexPrunesOnlyTheRetiredSegment(t *testing.T) {
+	f := newFixture(t)
+	var fired []core.SegmentID
+	tr := New(f.ix, func(seg core.SegmentID) { fired = append(fired, seg) })
+	home := f.takeIn(t)
+	one, two := f.takeIn(t), f.takeIn(t)
+	other, holder := f.takeIn(t), f.takeIn(t)
+
+	// The sweep forget registers under the zero file with a two-segment
+	// snapshot; the plain one lives in a segment of its own and names one
+	// holder segment.
+	sweep := forgetAt(50)
+	sweep.Seg = home
+	tr.RegisterForget(sweep, []core.SegmentID{one, two})
+	plain := forgetAt(60)
+	plain.Seg = other
+	tr.RegisterForget(plain, []core.SegmentID{holder})
+
+	if got := tr.Held(home); !got {
+		t.Fatalf("Held of the sweep forget's segment with its snapshot live = %v, want true", got)
+	}
+	if _, ok := tr.recs[core.FileID{}][sweep]; !ok {
+		t.Fatalf("the zero file's registry holds no registration of the sweep forget, want one: every forget record registers under it")
+	}
+	if _, ok := tr.forgetSegs[one][sweep]; !ok {
+		t.Fatalf("the index's bucket of segment %d holds no entry of the sweep forget, want one per snapshot segment naming the record", one)
+	}
+	if _, ok := tr.forgetSegs[two][sweep]; !ok {
+		t.Fatalf("the index's bucket of segment %d holds no entry of the sweep forget, want one per snapshot segment naming the record", two)
+	}
+	if _, ok := tr.forgetSegs[holder][plain]; !ok {
+		t.Fatalf("the index's bucket of segment %d holds no entry of the plain forget, want one per snapshot segment naming the record", holder)
+	}
+
+	// One of the sweep's snapshot segments retires: only the retired
+	// segment's own bucket goes.
+	tr.SegmentRetired(one, nil)
+	if got := tr.Held(home); !got {
+		t.Fatalf("Held of the sweep forget's segment with one snapshot segment left = %v, want true: the other still holds the tag's records", got)
+	}
+	if got := tr.Droppable(sweep); got {
+		t.Fatalf("Droppable of the sweep forget with one snapshot segment left = %v, want false", got)
+	}
+	if _, ok := tr.forgetSegs[one]; ok {
+		t.Fatalf("the bucket of the retired segment %d survived the retirement, want the index pruned of it", one)
+	}
+	if _, ok := tr.forgetSegs[two][sweep]; !ok {
+		t.Fatalf("the index entry of the sweep forget in segment %d's bucket = absent, want it kept: only the retired segment's bucket is pruned", two)
+	}
+	if got := tr.Droppable(plain); got {
+		t.Fatalf("Droppable of the plain forget after a retirement its snapshot never named = %v, want false", got)
+	}
+	if got := tr.Held(other); !got {
+		t.Fatalf("Held of the plain forget's segment after a retirement its snapshot never named = %v, want true", got)
+	}
+
+	// The last snapshot segment's retirement empties the sweep's snapshot
+	// and releases the record, taking the zero-file registration with it.
+	tr.SegmentRetired(two, nil)
+	if got := tr.Droppable(sweep); !got {
+		t.Fatalf("Droppable of the sweep forget whose snapshot emptied = %v, want true", got)
+	}
+	if got := tr.Held(home); got {
+		t.Fatalf("Held of the sweep forget's segment after its release = %v, want false", got)
+	}
+	if _, ok := tr.recs[core.FileID{}][sweep]; ok {
+		t.Fatalf("the zero file's registry holds a registration of the sweep forget after its release, want the release to have taken it")
+	}
+	if _, ok := tr.forgets[sweep]; ok {
+		t.Fatalf("the sweep forget's snapshot survived its release, want it dropped with the emptied snapshot")
+	}
+	if _, ok := tr.forgetSegs[two]; ok {
+		t.Fatalf("the bucket of the retired segment %d survived the retirement, want the index pruned of it", two)
+	}
+	if got := len(fired); got != 1 || fired[0] != home {
+		t.Fatalf("the candidate fired %d times with %v, want one firing with %d: the emptied snapshot's release is the one crossing", got, fired, home)
+	}
+
+	// The untouched segment's forget still answers as before the
+	// retirements: its snapshot names its holder, the record keeps its
+	// registration, and the index keeps its entry.
+	if got := tr.Droppable(plain); got {
+		t.Fatalf("Droppable of the plain forget after retirements its snapshot never named = %v, want false", got)
+	}
+	if got := tr.Held(other); !got {
+		t.Fatalf("Held of the plain forget's segment after retirements its snapshot never named = %v, want true", got)
+	}
+	if got := len(tr.forgets[plain]); got != 1 {
+		t.Fatalf("the plain forget's snapshot names %d segments, want 1: retirements it never named prune nothing of it", got)
+	}
+	if _, ok := tr.forgetSegs[holder][plain]; !ok {
+		t.Fatalf("the index entry of the plain forget in segment %d's bucket = absent, want it kept: only the retired segments' buckets are pruned", holder)
+	}
+}
