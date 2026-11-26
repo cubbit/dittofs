@@ -154,7 +154,7 @@ can cite them.
 | R9 | B1: the syncer's own overhead, at one pool size, once through the syncer and once as raw calls on the in-memory store; target throughput through the syncer at least 97% of raw, read on D1's `fast` link | bound | RFC 3 §7.4, B1; §8.5, B1 | T9.1 |
 | R10 | B1: no allocation per chunk once warm, buffers being reused, reported beside the raw twin's allocations | bound | RFC 3 §7.4, B1; §8.4, "allocations" | T9.1 |
 | R11 | B2: one transfer dispatched with 1, 10, 100 and 1,000 flows waiting; target at most 1 µs at 1,000, and flat from 1 | bound | RFC 3 §7.4, B2; §8.5, B2; §2.9 | T9.2 |
-| R12 | B3: one flow saturating demand fetches on a slow store while a second on it wants more workers than the first leaves free (D3); target the second flow's p99 queue wait within one round, and the first never above its cap while the second has work waiting. The cross-half shape of RFC 3 §7.4 is B5's mixed shape (R23) | bound | RFC 3 §7.4, B3; §8.5, B3; §2.9 | T9.2 |
+| R12 | B3: one flow saturating demand fetches on a slow store while a second on it wants more workers than the first leaves free (D3); target the second flow's p99 queue wait within one round, and the first never above its cap while the second has work waiting. A round in time is ceil(flows waiting / pool) transfers of the largest encoded block, retries excluded (D3), so one transfer for B3's two flows. The cross-half shape of RFC 3 §7.4 is B5's mixed shape (R23) | bound | RFC 3 §7.4, B3; §8.5, B3; §2.9 | T9.2 |
 | R13 | B4: N readers on one cold chunk make one transfer, whatever N | bound | RFC 3 §7.4, B4; §8.5 ("B4 is a count") | T9.2 |
 | R14 | B5: the syncer over the store, and raw calls on the same store at the same pool size: `codec.Store`'s put attempt and `Get`, encoding and checksum included, called directly at the configured `upload_workers` and `fetch_workers`; target at least 95% of raw, below 90% a regression | bound | RFC 3 §7.4, B5; §8.5, B5 | T9.4 |
 | R15 | B5 reports its throughput as a fraction of the raw calls', with the pools' occupancy beside it | invariant | RFC 3 §7.4 | T9.4 |
@@ -228,8 +228,9 @@ a schedule, which is RFC 4's (§1.2).
   belongs. A `decision:` marker at the benchmark says so; withdraw it if a profile of B1 shows
   dispatch, not transfer, dominating. Prior art: none found for a fair scheduler's own benchmark;
   E3's operation count (its D3) is the same split.
-- **D3, B3 runs in the half where its flows compete, and a round is one transfer of the largest
-  encoded block: accepted by the user, 2026-11-26.**
+- **D3, B3 runs in the half where its flows compete, and a round in time is ceil(flows waiting /
+  pool) transfers of the largest encoded block: accepted by the user, 2026-11-26, the round's
+  wording decided by the user the same day.**
   - RFC 3 §7.4's setup puts flow A's uploads and flow B's fetches in different halves, which share
     no worker; on the in-memory store they share nothing at all, and on the S3 store only the
     connections (RFC 3 §9, settled point 1). B5 runs that shape over the S3 store (D6), where it
@@ -238,9 +239,15 @@ a schedule, which is RFC 4's (§1.2).
     A's cap leaves free and B really queues behind A: the wait exercises the cap and the
     fair-share rule, which is what RFC 3 §2.10's decision note reads B3 for.
   - RFC 3 uses "one round" in time (§2.12, `syncer_queue_wait_seconds`) without stating it in
-    time. B3 takes a round as the link's time for one largest encoded block on the slow store,
-    `perCall + bytes × perByte`: within it every busy worker frees once, so each waiting flow is
-    visited. B3 reports `wait-p99/round` and `round-ns`, and prints the cap and the link as
+    time. A round is one visit per flow with work waiting, and each visit needs a freed worker,
+    so k flows on a pool of P take ceil(k / P) transfers of the largest encoded block on the
+    slowest store with work waiting; retries, and transfers slower than that block's estimate,
+    are excluded. One transfer would not hold past a pool's worth of flows: 1,000 flows on a pool
+    of 128 take 8, and `syncer_queue_wait_seconds` would flag a correct scheduler as starving.
+    B3's two flows are the case k ≤ P, one transfer: B3 takes a round as the link's time for one
+    largest encoded block on the slow store, `perCall + bytes × perByte`, within which every busy
+    worker frees once, so each waiting flow is visited. B5's mixed shape has one fetching flow,
+    the same case. B3 reports `wait-p99/round` and `round-ns`, and prints the cap and the link as
     configuration lines once, from a parent benchmark with one sub-benchmark as B5 does: printed
     by a leaf benchmark, they land between its name and its figures on every count after the
     first, and `benchstat` drops those samples.
@@ -257,9 +264,12 @@ a schedule, which is RFC 4's (§1.2).
     syncer reads at most the cap.
 
   A `decision:` marker at the benchmark names the round and why it differs from §7.4's setup.
-  T9.5's pull request amends RFC 3 with the accepted text: §2.9, "In time, a round is at most one
-  transfer of the largest encoded block on the slowest store with work waiting: every busy worker
-  frees within it"; §7.4's B3 setup, "one flow saturating demand fetches on a slow store; a second
+  T9.5's pull request amends RFC 3 with the decided text: §2.9, "In time, a round is at most
+  ceil(flows waiting / pool) transfers of the largest encoded block on the slowest store with
+  work waiting, retries excluded: each visit needs a freed worker, and every busy worker frees
+  within one such transfer"; §2.12's `syncer_queue_wait_seconds` row, "a flow whose wait exceeds
+  one round, in time as §2.9 states it, is being starved", so the metric's threshold grows with
+  the flows waiting; §7.4's B3 setup, "one flow saturating demand fetches on a slow store; a second
   flow on it wanting more workers than the first leaves free", and the cross-half shape moved
   under B5. Prior art: none found.
 - **D4, peak memory is the most live heap seen at the end of a collection.** `prof.PeakLiveHeap`
@@ -620,7 +630,7 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
   - A pull request to RFC 3: §8.5's proposed targets replaced by the measured values with their
     headroom, each with the commit and the box (D7); a target the run misses left proposed and
     named as a design finding against RFC 3, with an issue against the epic that owns the code
-    (R21); §2.9's round in time and §7.4's B3 setup (D3); §9's open
+    (R21); §2.9's round in time, §2.12's queue-wait row reading it, and §7.4's B3 setup (D3); §9's open
     question rewritten as D7 says; §9's settled point 1 confirmed, or reopened if the mixed
     shape's `wait-p99/round` was above one with `conns-max` below `limit:`, read from a real
     service's run alone (R23, D6). With no real-service run, the settled point stays as it is and
