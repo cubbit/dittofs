@@ -9,11 +9,20 @@ import (
 )
 
 // Settings are the engine's node-level settings, handed to Apply. Every one
-// must be positive.
+// is required: a duration or a size must be positive, a fraction inside
+// (0, 1), and the retry floor and caps ordered as Apply checks.
 type Settings struct {
 	ExistenceAge        time.Duration // existence_age: how long a write's existence may stay uncommitted
 	GroupCommitMaxFiles int           // group_commit.max_files: the most files one group commit batch holds
 	CloneMaxLen         int64         // clone_max_len: the longest extent one Clone takes, in bytes
+
+	OffloadRetryMin         time.Duration // offload.retry_min: the offload and removal retry backoff's floor
+	OffloadRetryMax         time.Duration // offload.retry_max: its cap
+	OffloadRetryMaxPressure time.Duration // offload.retry_max_pressure: its cap under capacity pressure
+	RemovalRescan           time.Duration // removal.rescan: how often each served shard's unfinished removals are read again
+	RepackThreshold         float64       // eviction.repack_threshold: the unreclaimed fraction of a journal's capacity that requests a repack
+	EvictionTarget          float64       // the eviction occupancy target: the fraction of a journal's maximum footprint eviction frees down to
+	FillLowWater            float64       // the fill low-water mark: the free fraction of a journal's maximum footprint below which a demanded extent is not filled
 }
 
 // Share is one share's storage binding, as Start and Bind take it.

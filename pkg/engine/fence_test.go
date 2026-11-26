@@ -1008,7 +1008,10 @@ func TestSelfFenceOnAStoreRefusingWritesBesideAnUndecodableRecord(t *testing.T) 
 	u := newFenceUnit(t)
 	u.rec.noMarks.Store(true)
 	// Batches of one file, so the two are retried in turn.
-	if err := u.e.Apply(engine.Settings{ExistenceAge: 24 * time.Hour, GroupCommitMaxFiles: 1, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = 24 * time.Hour
+	settings.GroupCommitMaxFiles = 1
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	a, x, b := u.create(t, "a"), u.create(t, "x"), u.create(t, "b")
@@ -1207,7 +1210,10 @@ func TestSelfFenceOnAStoreRefusingWritesBesideAConflict(t *testing.T) {
 	u := newFenceUnit(t)
 	u.e.SetConflictBound(20 * time.Millisecond)
 	u.rec.noMarks.Store(true)
-	if err := u.e.Apply(engine.Settings{ExistenceAge: 24 * time.Hour, GroupCommitMaxFiles: 1, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = 24 * time.Hour
+	settings.GroupCommitMaxFiles = 1
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	a, x, b := u.create(t, "a"), u.create(t, "x"), u.create(t, "b")

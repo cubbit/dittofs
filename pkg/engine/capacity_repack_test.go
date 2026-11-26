@@ -1579,7 +1579,9 @@ func TestJournalFullClearsUnderSteadyLoad(t *testing.T) {
 
 	// Each write falls due on the pass after it, as the loop advances the
 	// clock past the existence age.
-	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Nanosecond, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Nanosecond
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 

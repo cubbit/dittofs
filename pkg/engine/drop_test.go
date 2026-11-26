@@ -539,11 +539,10 @@ func TestDropUnderWritesWithABatchDueAsItJoinsCallsEachDoneOnce(t *testing.T) {
 		})
 	})
 
-	if err := u.e.Apply(engine.Settings{
-		ExistenceAge:        time.Hour,
-		GroupCommitMaxFiles: 2,
-		CloneMaxLen:         1 << 30,
-	}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Hour
+	settings.GroupCommitMaxFiles = 2
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 
@@ -657,11 +656,9 @@ func TestDropTakesTheSharesFilesOffTheDueSetAndNoLaterBatchCapturesOne(t *testin
 
 		return next.Commit(ctx, p, marks)
 	}))
-	if err := u.e.Apply(engine.Settings{
-		ExistenceAge:        time.Second,
-		GroupCommitMaxFiles: 64,
-		CloneMaxLen:         1 << 30,
-	}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Second
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 
@@ -788,11 +785,9 @@ func TestDropClearsTheCommitFailingConditionOfItsFiles(t *testing.T) {
 	u := newUnit(t)
 	_, dir := u.fs.Create(t, u.fs.Admin, u.fs.Root, "d", kvstore.Dir(0o755))
 
-	if err := u.e.Apply(engine.Settings{
-		ExistenceAge:        time.Second,
-		GroupCommitMaxFiles: 64,
-		CloneMaxLen:         1 << 30,
-	}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Second
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 

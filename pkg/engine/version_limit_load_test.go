@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
@@ -94,11 +95,8 @@ func newLoadUnit(t *testing.T, block uint64) *loadUnit {
 	lu.e.TrackRaisesForTest()
 	lu.e.SetConflictBound(time.Hour)
 
-	settings := engine.Settings{
-		ExistenceAge:        time.Second,
-		GroupCommitMaxFiles: 64,
-		CloneMaxLen:         1 << 30,
-	}
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Second
 
 	if err := lu.e.Apply(settings); err != nil {
 		t.Fatal(err)

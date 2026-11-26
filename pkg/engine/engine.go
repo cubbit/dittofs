@@ -191,6 +191,12 @@ func New(d Deps) (*Engine, error) {
 
 // Apply hands the engine its node-level settings: first before Start, then on
 // every change. An invalid one is refused and the engine keeps its last.
+//
+// decision: the two orderings of the retry backoff, retry_min at most
+// retry_max_pressure and retry_max_pressure at most retry_max, since
+// pressure lowers the cap, are the only relations between settings checked;
+// every other setting is checked alone. Check another once a reader needs
+// it.
 func (e *Engine) Apply(s Settings) error {
 	switch {
 	case s.ExistenceAge <= 0:
@@ -199,10 +205,33 @@ func (e *Engine) Apply(s Settings) error {
 		return fmt.Errorf("engine: group_commit.max_files %d is not positive", s.GroupCommitMaxFiles)
 	case s.CloneMaxLen <= 0:
 		return fmt.Errorf("engine: clone_max_len %d is not positive", s.CloneMaxLen)
+	case s.OffloadRetryMin <= 0:
+		return fmt.Errorf("engine: offload.retry_min %v is not positive", s.OffloadRetryMin)
+	case s.OffloadRetryMax <= 0:
+		return fmt.Errorf("engine: offload.retry_max %v is not positive", s.OffloadRetryMax)
+	case s.OffloadRetryMaxPressure <= 0:
+		return fmt.Errorf("engine: offload.retry_max_pressure %v is not positive", s.OffloadRetryMaxPressure)
+	case s.OffloadRetryMin > s.OffloadRetryMaxPressure:
+		return fmt.Errorf("engine: offload.retry_min %v is above offload.retry_max_pressure %v",
+			s.OffloadRetryMin, s.OffloadRetryMaxPressure)
+	case s.OffloadRetryMaxPressure > s.OffloadRetryMax:
+		return fmt.Errorf("engine: offload.retry_max_pressure %v is above offload.retry_max %v",
+			s.OffloadRetryMaxPressure, s.OffloadRetryMax)
+	case s.RemovalRescan <= 0:
+		return fmt.Errorf("engine: removal.rescan %v is not positive", s.RemovalRescan)
+	case !fraction(s.RepackThreshold):
+		return fmt.Errorf("engine: eviction.repack_threshold %v is not inside (0, 1)", s.RepackThreshold)
+	case !fraction(s.EvictionTarget):
+		return fmt.Errorf("engine: eviction occupancy target %v is not inside (0, 1)", s.EvictionTarget)
+	case !fraction(s.FillLowWater):
+		return fmt.Errorf("engine: fill low-water mark %v is not inside (0, 1)", s.FillLowWater)
 	}
 	e.settings.Store(&s)
 	return nil
 }
+
+// fraction reports whether f is inside (0, 1); NaN is not.
+func fraction(f float64) bool { return f > 0 && f < 1 }
 
 // errStarted refuses a Start while one runs or after one succeeded.
 var errStarted = fmt.Errorf("engine: already started: %w", vfserr.ErrInvalid)

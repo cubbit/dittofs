@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"math"
 	"strings"
 	"sync"
 	"syscall"
@@ -700,6 +701,19 @@ func TestRFC8C_Settings(t *testing.T) {
 		{"existence_age 0", func(s *engine.Settings) { s.ExistenceAge = 0 }},
 		{"group_commit.max_files 0", func(s *engine.Settings) { s.GroupCommitMaxFiles = 0 }},
 		{"clone_max_len 0", func(s *engine.Settings) { s.CloneMaxLen = 0 }},
+		{"offload.retry_min 0", func(s *engine.Settings) { s.OffloadRetryMin = 0 }},
+		{"offload.retry_max 0", func(s *engine.Settings) { s.OffloadRetryMax = 0 }},
+		{"offload.retry_max_pressure 0", func(s *engine.Settings) { s.OffloadRetryMaxPressure = 0 }},
+		{"offload.retry_min above offload.retry_max_pressure", func(s *engine.Settings) {
+			s.OffloadRetryMin = s.OffloadRetryMaxPressure + 1
+		}},
+		{"offload.retry_max_pressure above offload.retry_max", func(s *engine.Settings) {
+			s.OffloadRetryMaxPressure = s.OffloadRetryMax + 1
+		}},
+		{"removal.rescan 0", func(s *engine.Settings) { s.RemovalRescan = 0 }},
+		{"eviction.repack_threshold 1", func(s *engine.Settings) { s.RepackThreshold = 1 }},
+		{"eviction occupancy target NaN", func(s *engine.Settings) { s.EvictionTarget = math.NaN() }},
+		{"fill low-water mark 0", func(s *engine.Settings) { s.FillLowWater = 0 }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			// One spare per stream's first roll and one for the single writer, so
