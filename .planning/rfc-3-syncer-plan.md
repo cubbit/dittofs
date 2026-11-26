@@ -978,6 +978,7 @@ What this plan knowingly does not build. Each row names the section that defers 
 | A bandwidth cap per direction (RFC 3 §9, "Deferred") | not measured | unowned | a measurement shows the pool cannot bound the link |
 | Weighted flows (RFC 3 §2.9) | no operator needs it | unowned | an operator names a workload that needs one flow weighted |
 | A fixed value of RFC 3 §2.10 becoming a setting | RFC 3 §2.10 forbids it until measured | unowned | epic 9's measurement shows a value wrong for a named workload |
+| Measuring the fixed values of RFC 3 §2.10 that no §7.4 benchmark bears on, the throttle limit's halving and the trickle rule's quarter among them (RFC 3 §9, question 1; epic 9's D8) | B1 to B5 run against stores that neither throttle nor trickle under load | unowned | a benchmark against a store that throttles or trickles under load, or a fault run showing one of those values wrong |
 | §4.3's slow-tail `ponytail:` upgrade | simple is enough until profiled | unowned | the marker's trigger |
 | Skipping a direction's probe while its transfers succeed (§4.3's probe-cost `ponytail:`, RFC 3 §2.8) | one rule fewer; probes cost about half a million requests a month per key and direction | unowned | a service's request bill or rate limit shows the probes |
 
