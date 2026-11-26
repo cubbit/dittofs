@@ -889,8 +889,14 @@ func TestStreamRollLeavesBooksEmptyBesideReaders(t *testing.T) {
 	e := recordedStreams(t)
 	rec := e.rec
 	s := e.ss.Stream(0)
-	awaitCounters(t, "the two content spares ready", e.pool,
-		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+	// The pool settles at the target's two and the opening spare it keeps
+	// until a stream's first segment, so no make runs beside the rolls.
+	if err := e.pool.WaitSpares(t.Context()); err != nil {
+		t.Fatalf("WaitSpares before the rolls: %v", err)
+	}
+	if got, want := e.pool.Counters().Spares, int64(3); got != want {
+		t.Fatalf("Spares = %d before the rolls, want %d: the target's two and the opening spare", got, want)
+	}
 
 	payload := make([]byte, segCap/8)
 	appendAt := func(v int) core.SegmentID {

@@ -86,7 +86,9 @@ func newEnvPinned(t *testing.T, targets segment.Targets) *env {
 	prof.Watch(t, prof.Options{})
 	max := int64(targets.Content+targets.Headroom) * harnessCap
 	if max == 0 {
-		max = harnessCap // the maker refuses a zero maximum; the targets still make nothing
+		// The maker refuses a zero maximum; one below a cap still affords no
+		// spare, the opening spare the streams ask for included.
+		max = 1
 	}
 	return buildEnvWith(t, targets, max)
 }
@@ -131,6 +133,11 @@ func buildEnvWith(t *testing.T, targets segment.Targets, max int64) *env {
 	e.d = e.newDurabilityAt(e.dir)
 	e.streams = segment.NewStreams(1, harnessIdentity, set, e.pool, cache, e.d.Sink)
 	t.Cleanup(func() { _ = e.streams.Close() })
+	// The streams add the pool's opening spare to its goal: wait for its
+	// make, so it does not land in the middle of the test.
+	if err := e.pool.WaitSpares(t.Context()); err != nil {
+		t.Fatalf("WaitSpares once the streams were built: %v", err)
+	}
 	t.Cleanup(e.d.Stop)
 	e.d.Start(e.streams)
 	return e

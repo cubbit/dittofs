@@ -63,6 +63,11 @@ func idleRigOver(t *testing.T, n int, cap int64, threshold int64, admit func() e
 	})
 	streams := NewStreams(n, probeIdentity, set, pool, cache, func(uint32) Sink { return nopInternalSink() })
 	t.Cleanup(func() { _ = streams.Close() })
+	// The streams add the pool's opening spare to its goal: wait for its
+	// make, so it does not land in the middle of the test.
+	if err := pool.WaitSpares(t.Context()); err != nil {
+		t.Fatalf("WaitSpares once the streams were built: %v", err)
+	}
 	clock := kit.NewStopwatchClock()
 	r := &idleRig{
 		streams: streams,

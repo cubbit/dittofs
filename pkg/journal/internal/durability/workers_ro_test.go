@@ -84,6 +84,11 @@ func runWorkers(t *testing.T, enter bool, mutate func(*workerChecks)) (delta, ma
 	})
 	streams := segment.NewStreams(1, harnessIdentity, set, pool, cache, d.Sink)
 	t.Cleanup(func() { _ = streams.Close() })
+	// The streams add the pool's opening spare to its goal: wait for its
+	// make, so it does not land in the middle of the test.
+	if err := pool.WaitSpares(t.Context()); err != nil {
+		t.Fatalf("WaitSpares once the streams were built: %v", err)
+	}
 	t.Cleanup(d.Stop)
 	d.Start(streams)
 
