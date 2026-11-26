@@ -2,7 +2,8 @@
 
 **Sources:** [RFC 3](../docs/internals/rfcs/rfc-3-syncer.md) §2.10's two settings and the
 documentation of the memory each implies, with §2.2's per-worker figure it states; §2.12's metrics,
-exported; §1.3's "What lands with its first caller" table, its `SetDrift` row, for the guide's
+exported, with the two sentences this pull request adds to it (the queue metrics, and the bounds
+fixed by the pool size); §1.3's "What lands with its first caller" table, its `SetDrift` row, for the guide's
 warning. [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md) Appendix B's `upload_workers`,
 `fetch_workers` row, with §4.2, §5 and §6, which that row's cells mean.
 [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §2.1 to §2.8, for the collector.
@@ -87,7 +88,7 @@ number and title, not copied.
 | rule 6, known failures shrink | none | No suite this epic's tests run in keeps a `known.yaml`: every test lands green |
 | rule 7, v2 ignores v1 | T8.1, T8.2 | The production files import the root `pkg/syncer` only; `pool` is imported by T8.2's test alone. `internal/node/content` is a composer, so it has no entry in E1's import test |
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | The real Prometheus client registry, the real `pkg/settings` over a real control plane, RFC 13's text and the guide's as the branch holds them. No disk, store or service |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T8.1, T8.2 | The `decision:` markers of D2, D3, D5, D6, D8 and D10 at their code sites, and `SelfKey`'s own marker in `pkg/settings` rewritten (D7). RFC 3 §2.10's `decision:` on the fixed values sits at E3's table, not here |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T8.1, T8.2 | The `decision:` markers of D2, D3, D5, D6, D8, D10 and D11 at their code sites, and `SelfKey`'s own marker in `pkg/settings` rewritten (D7). RFC 3 §2.10's `decision:` on the fixed values sits at E3's table, not here |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | Each test names the break it is checked against: a series dropped or renamed, two fields swapped, the histogram left per bucket, a label value missing, a scope or class changed, a stored bad count read as the default, a key or figure missing from the guide |
 | rule 11, a symbol is exported only if the RFC's interface uses it | T8.1, T8.2 | The rule binds the syncer's packages, and this epic adds nothing to them. In `internal/node/content` it exports only what RFC 8 offload plan epic 21 calls from `internal/node`: `SyncerSeries`, `SyncerSections` and `SyncerWorkers` |
 | rule 12, each subtask creates only what it declares | all | `syncer_series.go` is created by whichever of T8.1 and E5's T5.3 lands first, and the other adds to it. No option, helper or file without a consumer named in its subtask |
@@ -102,7 +103,7 @@ and tests can cite them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R1 | Every metric RFC 3 §2.12's four tables list is exported, with the name and type the tables give it, and no other series under the `syncer_` prefix: verification, requests and decode failures are counted by their owners, not here | MUST | RFC 3 §2.12; RFC 25 §2.7 | T8.1 |
-| R2 | "Every metric is labelled with `half` (`upload` or `fetch`) and `store`", except the two pool-wide gauges, which have no store (D2); the queue metrics (`syncer_queue_depth`, `syncer_waiters`, `syncer_queue_wait_seconds`) also carry `class`, `demand`, `background` or `speculation`; `reason` and `outcome` take exactly the values RFC 3 §2.12 lists for each metric | MUST | RFC 3 §2.12; RFC 25 §2.4 | T8.1 |
+| R2 | "Every metric is labelled with `half` (`upload` or `fetch`) and `store`", except the two pool-wide gauges, which have no store (D2); the queue metrics (`syncer_queue_depth`, `syncer_waiters`, `syncer_queue_wait_seconds`) also carry `class`, `demand`, `background` or `speculation`, and no counter is a queue metric, so `syncer_refused_total` carries `reason` alone; `reason` and `outcome` take exactly the values RFC 3 §2.12 lists for each metric | MUST | RFC 3 §2.12; RFC 25 §2.4 | T8.1 |
 | R3 | The queue gauges are exported summed over every flow of the store. Queue histograms and counters are reported summed only, and no series carries a flow's id; the per-flow gauges, exported by share, are RFC 8 offload plan epic 21's | invariant | RFC 3 §2.12; RFC 25 §2.4, §2.5 | T8.1 |
 | R4 | The `store` label takes the name the store was registered under, never an internal ID. Which name a store is given is RFC 8 offload plan epic 21's | invariant | RFC 25 §2.4 | T8.1 |
 | R5 | Names carry the exporter's one prefix, `dittofs_`, before RFC 3's `syncer_`, and a name, once exported, does not change except with RFC 3's change and a note in the release | MUST NOT | RFC 25 §2.1 | T8.1 |
@@ -227,12 +228,20 @@ and tests can cite them.
   computes both, and the pool's total at 128 workers, from the constants the code holds when it
   lands: RFC 5's `MaxDecodeLen` over the transforms the release registers and RFC 2's header cap. A
   constant not yet in code is replaced by RFC 3 §2.2's figure, marked "about".
-- **D10, no `_limit` series, pending §9's question.** RFC 25 §2.2 exports a value that bounds a
-  measured metric under its name with `_limit`, and RFC 3 §2.12 reads three gauges against such a
-  bound (the waiter bound, the detached-buffer cap, the throttle limit's cap) while listing no
-  `_limit` series and `Stats` carrying no field for one. As written the collector exports exactly
-  RFC 3's list (R1), every bound being a fixed multiple of `syncer_workers` (RFC 3 §2.10). A
-  `decision:` marker at the descriptors says so until §9's answer.
+- **D10, no `_limit` series: the user's decision, 2026-11-26.** RFC 25 §2.2 exports a value that
+  bounds a measured metric under its name with `_limit`, and RFC 3 §2.12 reads three gauges against
+  such a bound (the waiter bound, the detached-buffer cap, the throttle limit's cap). Each is fixed
+  by `syncer_workers` (RFC 3 §2.10: eight times it, equal to it, three quarters of it), so a
+  dashboard derives it, and the collector exports exactly RFC 3's list (R1). This pull request adds
+  the sentence saying so to RFC 3 §2.12. A `decision:` marker at the descriptors names it. Not
+  chosen: `syncer_waiters_limit`, `syncer_detached_buffers_limit` and `syncer_throttle_limit_limit`,
+  with three `Stats` fields.
+- **D11, `syncer_refused_total` carries no `class`: the user's decision, 2026-11-26.** Its reasons
+  are mostly queue refusals, but RFC 3 §2.12's queue metrics are the two queue gauges and the wait
+  histogram, which this pull request's sentence in §2.12 names, and E1's `Refused` counts by
+  reason alone. So the series is `syncer_refused_total{half, store, reason}`, 768 series at 64
+  stores. Not chosen: `class` on every reason, 2,304 series, with `StoreStats` gaining a
+  `ByClass[Refused]`. A `decision:` marker at the descriptor names it.
 
 ## 5. Target tree
 
@@ -260,7 +269,7 @@ docs/guide/
 
 - **Track:** C. **Depends on:** none (E1's T1.1).
 - **Covers:** R1 to R13.
-- **Deliverables:** `syncer_series.go` (D1 to D6, D10): `SyncerSeries` as D1 gives it, one
+- **Deliverables:** `syncer_series.go` (D1 to D6, D10, D11): `SyncerSeries` as D1 gives it, one
   unexported collector type, its descriptors under `dittofs_syncer_` with the help text of RFC 3
   §2.12's "Answers" column, and one function turning a `syncer.Histogram` into a constant histogram
   over `Histogram.Bounds()`, which E1 gives so the bounds are read and never copied. Consumed by RFC
@@ -379,28 +388,6 @@ A suggestion only: one pull request for both works as well, once E1's T1.3 has l
 
 ## 9. Open points
 
-- **Does `syncer_refused_total` carry a `class` label? Pending the user's answer, asked on #5973.**
-  RFC 3 §2.12 says queue metrics carry `class`, and lists `syncer_refused_total`, whose reasons are
-  mostly queue refusals, in the pool table; E1's D3 gives `Refused` no class, so T8.1 as written
-  exports it without one. The options:
-  - **No `class`** (as written): `syncer_refused_total{half, store, reason}`, 768 series at 64
-    stores. Nothing changes upstream.
-  - **`class` on every reason**: `syncer_refused_total{half, store, class, reason}`, 2,304 series,
-    within R13. `StoreStats` gains a field such as `RefusedBy ByClass[Refused]` (E1's T1.1), which
-    E3 and E5 fill by the refused call's class, and T8.1's table and field walk follow.
-
-  It must be settled before T8.1 lands: a label added after the series is exported changes what
-  every dashboard and alert on it reads (RFC 25 §2.1).
-- **Are the syncer's bounds exported as `_limit` gauges? Pending the user's answer.** RFC 25 §2.2
-  says a value bounding a measured metric is exported under its name with `_limit`; RFC 3 §2.12
-  lists no such series. The options:
-  - **None** (as written, D10, recommended): RFC 3's list is the contract, and each bound is a
-    fixed multiple of `syncer_workers` (RFC 3 §2.10), so a dashboard derives it. RFC 3 §2.12 gains a
-    sentence saying so.
-  - **Three**: `syncer_waiters_limit`, `syncer_detached_buffers_limit` and
-    `syncer_throttle_limit_limit` (the last name shows the clash: `syncer_throttle_limit` is itself
-    a bound of busy workers), with three `Stats` fields E1's T1.1 adds and E3, E4 and E6 fill, and
-    RFC 3 §2.12 amended to list them.
 - **`outcome` takes RFC 3's values, `ok`, `failed`, `unknown`**, while RFC 25 §2.4 calls `outcome`
   "the class of an answer (`ok`, `error`, `delay`)". The collector follows RFC 3, the owner of the
   metric (R2); RFC 25's list reads as examples, but it is the vocabulary rule, so one of the two
@@ -412,7 +399,7 @@ A suggestion only: one pull request for both works as well, once E1's T1.3 has l
   (E1's D2), and two stores under one name break D5's assumption. Refusing it is one check with a
   `remote.ErrInvalid` error, as E1's D1 refuses misuse; it is E3's to take or decline.
 - **The syncer's share of the node's series budget.** At 64 stores the collector exports 20,868
-  series, 42% of RFC 25 §2.5's 50,000 for the whole node; 22,404 with `class` on refusals. Counting
+  series, 42% of RFC 25 §2.5's 50,000 for the whole node. Counting
   the node's total is the second §6.1 row this pull request adds.
 - **The least certain estimate is T8.2.** `settings.SelfKey` has one production user on
   `feat/storage-v2`, and the node's `tableKeys` probe has never read a node-scoped section; either
