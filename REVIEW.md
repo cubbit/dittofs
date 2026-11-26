@@ -95,8 +95,10 @@ that every reference to the old path follows it.
   wherever its other side lives. Any other point outside the delta is a
   follow-up issue.
 - A push after an approval needs a new approval, and an open thread holds
-  the merge. The delta round therefore happens before the merge, not after
-  it.
+  the merge. This is a convention: branch protection does not enforce it, so
+  an approval at an older head still counts and auto-merge can take a pushed
+  head before any delta round. An author who pushes after an approval
+  disarms auto-merge and arms it again after the delta round.
 - If you approved text and now find a break in it, say so in those words:
   "my approval at `<sha>` missed this". The break blocks; nothing else
   reopens.
