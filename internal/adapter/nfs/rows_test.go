@@ -14,13 +14,13 @@ import (
 	"github.com/cubbit/dittofs/pkg/adapter"
 )
 
-// goldenCalls is every golden file that holds one whole RPC call, past a
-// record mark that frames the whole file: a reply or a codec vector is no
-// call and reaches no row. File names are not read, so a capture counts the moment
-// it is cut.
-func goldenCalls(t *testing.T) [][]byte {
+// goldenCalls is every golden file matching glob that holds one whole RPC
+// call, past a record mark that frames the whole file: a reply or a codec
+// vector is no call and reaches no row. File names are not read, so a capture
+// counts the moment it is cut.
+func goldenCalls(t *testing.T, glob string) [][]byte {
 	t.Helper()
-	files, err := filepath.Glob("wire/testdata/golden/*.hex")
+	files, err := filepath.Glob(glob)
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no golden file found: %v", err)
 	}
@@ -118,24 +118,25 @@ func unreached(ts protocol.Tables, calls [][]byte) []string {
 // specification or cut from a capture (RFC 20 section 5.4): a row added
 // without one fails here, naming it.
 func TestEveryRowHasAVector(t *testing.T) {
-	if missing := unreached(tables(adapter.Deps{}), goldenCalls(t)); len(missing) > 0 {
+	if missing := unreached(tables(adapter.Deps{}), goldenCalls(t, "wire/testdata/golden/*.hex")); len(missing) > 0 {
 		t.Errorf("rows no golden call reaches: %s", strings.Join(missing, ", "))
 	}
 }
 
-// The check names a row no golden call reaches, a NULL on NFSv3 here, and
-// only that row: GETATTR beside it is reached by nfs-v3-getattr-call, a
-// golden file that keeps its record mark. A check that passed vacuously, or
-// skipped a file cut with its mark, would pass the tree too.
+// The check names a row no golden call reaches, an NFSv3 procedure 99 that no
+// version of NFS defines, and only that row: GETATTR beside it is reached by
+// nfs-v3-getattr-call, the one file read here, which keeps its record mark. A
+// check that passed vacuously, or skipped a file cut with its mark, would pass
+// the tree too.
 func TestTheVectorCheckNamesAnUnreachedRow(t *testing.T) {
-	ts := tables(adapter.Deps{})
-	ts.V3 = core.NewOpTable(ts.V3.Errors, false,
-		core.Row[void, void](0, "null", core.NeedsNothing,
+	// The other tables are left out: the one file read here reaches none of their rows.
+	ts := protocol.Tables{V3: core.NewOpTable(tables(adapter.Deps{}).V3.Errors, false,
+		core.Row[void, void](99, "unnamed", core.NeedsNothing,
 			func(context.Context, *core.Request, void) (void, error) { return void{}, nil }),
 		core.Row[void, void](1, "getattr", core.NeedsNothing,
-			func(context.Context, *core.Request, void) (void, error) { return void{}, nil }))
+			func(context.Context, *core.Request, void) (void, error) { return void{}, nil }))}
 	ts.V3.Protocol = "nfs3"
-	if got := unreached(ts, goldenCalls(t)); !slices.Equal(got, []string{"nfs3 null"}) {
-		t.Errorf("unreached rows %v, want [nfs3 null]", got)
+	if got := unreached(ts, goldenCalls(t, "wire/testdata/golden/nfs-v3-getattr-call.hex")); !slices.Equal(got, []string{"nfs3 unnamed"}) {
+		t.Errorf("unreached rows %v, want [nfs3 unnamed]", got)
 	}
 }

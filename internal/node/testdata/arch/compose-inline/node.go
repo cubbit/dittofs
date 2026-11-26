@@ -2,10 +2,10 @@
 package node
 
 import (
+	"github.com/cubbit/dittofs/internal/node/content"
 	"github.com/cubbit/dittofs/pkg/engine"
-	"github.com/cubbit/dittofs/pkg/engine/enginewire"
 )
 
-var _ enginewire.Params
+var _ content.Params
 
 func build() (*engine.Engine, error) { return engine.New(engine.Deps{}) }

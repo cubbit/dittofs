@@ -58,33 +58,81 @@ for T in /src/test/scenarios/lib/tools/*; do
     case "$T" in *.c) tcc -o "/usr/local/bin/$(basename "$T" .c)" "$T" -lnfs -lsmb2 ;; *) install "$T" /usr/local/bin/ ;; esac
 done
 
-# DittoFS, built from this checkout.
+# DittoFS, built from this checkout, and scenario-keygen, which makes a key file: dfs init makes the
+# storage key but not the protocol key, and no command makes one. It joins the read-only checkout
+# through an overlay, so it builds against the checkout's go.mod.
+mkdir /tmp/keygen
+cat >/tmp/keygen/main.go <<'KEYGEN'
+package main
+
+import (
+	"os"
+
+	"github.com/cubbit/dittofs/pkg/keyprovider"
+)
+
+func main() {
+	for _, path := range os.Args[2:] {
+		key, err := keyprovider.GenerateKeyFile(os.Args[1])
+		if err != nil {
+			panic(err)
+		}
+		if err := os.WriteFile(path, key, 0o600); err != nil {
+			panic(err)
+		}
+	}
+}
+KEYGEN
+echo '{"Replace": {"/src/cmd/scenario-keygen/main.go": "/tmp/keygen/main.go"}}' >/tmp/keygen/overlay.json
 cd /src
-CGO_ENABLED=0 GOFLAGS=-buildvcs=false GOMODCACHE=/cache/go/mod GOCACHE=/cache/go/build /opt/go/usr/local/go/bin/go build -o /usr/local/bin/ ./cmd/dfs ./cmd/dfsctl
+CGO_ENABLED=0 GOFLAGS=-buildvcs=false GOMODCACHE=/cache/go/mod GOCACHE=/cache/go/build /opt/go/usr/local/go/bin/go build -overlay /tmp/keygen/overlay.json -o /usr/local/bin/ ./cmd/dfs ./cmd/dfsctl ./cmd/scenario-keygen
 cd /
 
 # A local S3 (SeaweedFS, run by s3 start) with bucket dittofs. rclone reaches it as s3:, and DittoFS
-# block stores through the config in /etc/dittofs-s3.json.
+# stores through dfs-store, with the credential in /etc/dittofs-s3.credential.
 export RCLONE_CONFIG_S3_TYPE=s3 RCLONE_CONFIG_S3_PROVIDER=SeaweedFS RCLONE_CONFIG_S3_ENDPOINT=http://127.0.0.1:9000 RCLONE_CONFIG_S3_ACCESS_KEY_ID=test RCLONE_CONFIG_S3_SECRET_ACCESS_KEY=test-secret RCLONE_LOG_LEVEL=ERROR
 echo '{"identities":[{"name":"test","credentials":[{"accessKey":"test","secretKey":"test-secret"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' >/tmp/seaweedfs-identities.json
 mkdir /tmp/seaweedfs
 s3 start
 rclone mkdir s3:dittofs
-echo '{"endpoint":"http://127.0.0.1:9000","access_key_id":"test","secret_access_key":"test-secret","allow_private_endpoint":true}' >/etc/dittofs-s3.json
+echo '{"access_key_id":"test","secret_access_key":"test-secret"}' >/etc/dittofs-s3.credential
 
-# DittoFS: share /test (metadata store md, block store s3: bucket dittofs, prefix test/) for user
-# tester, SMB on 445 and NFS on 2049. smbclient defaults to SMB3 and, through USER, to tester.
-dfs init
+# DittoFS: its configuration, an API on a port the kernel picks (dfs-server reads it from the log), no
+# metrics listener, and its two wrapping keys under one passphrase, which stays out of the trace. dfs
+# init prints the administrator's password, which dfs-server's first start signs in with and changes.
+mkdir -p /etc/dittofs /var/lib/dittofs/journal ~/.config/dittofs
+(umask 077 && head -c 24 /dev/urandom | base64 >/etc/dittofs/passphrase)
+{ set +x; } 2>/dev/null
+scenario-keygen "$(cat /etc/dittofs/passphrase)" /etc/dittofs/storage.key /etc/dittofs/protocol.key
+set -x
+cat >~/.config/dittofs/config.yaml <<CONFIG
+node: { id: $(cat /proc/sys/kernel/random/uuid) }
+journals: [ { path: /var/lib/dittofs/journal } ]
+keys:
+  storage: { kind: local, local: { file: /etc/dittofs/storage.key } }
+  protocol: { kind: local, local: { file: /etc/dittofs/protocol.key } }
+api: { listen: ['127.0.0.1:0'] }
+metrics: { listen: '127.0.0.1:0' }
+CONFIG
+{ set +x; } 2>/dev/null
+(umask 077 && DITTOFS_ENCRYPTION_PASSPHRASE="$(cat /etc/dittofs/passphrase)" dfs init >/etc/dittofs/init.out)
+DITTOFS_ENCRYPTION_PASSPHRASE="$(cat /etc/dittofs/passphrase)" dfs config validate
+set -x
 dfs-server start
-dfsctl store metadata add --name md --type badger --db-path /tmp/md
-dfsctl store block add --name s3 --type s3 --config "$(jq -c '.bucket = "dittofs" | .prefix = "test/"' /etc/dittofs-s3.json)"
-dfsctl share create --name /test --metadata md --block-store s3 --default-permission none
-dfsctl user create --username tester --uid 1000 --gid 1000 --password first-tester-secret --role user
-XDG_CONFIG_HOME=/tmp/tester dfsctl login --server http://127.0.0.1:8080 --username tester --password first-tester-secret
-XDG_CONFIG_HOME=/tmp/tester dfsctl user change-password --current first-tester-secret --new tester-secret
-dfsctl share permission grant /test --user tester --level read-write
-dfsctl adapter enable smb --port 445
-dfsctl adapter enable nfs --port 2049
+
+# Share test (path /test, namespace prefix test/ on bucket dittofs) for user tester (uid and group
+# 1000), SMB on 445 and NFS on 2049. smbclient defaults to SMB3 and, through USER, to tester.
+S="$(dfs-store dittofs)"
+N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=test/ -o json | jq -r .id)"
+dfsctl share create test --path /test --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
+dfsctl user create tester --uid 1000
+dfsctl group create tester --gid 1000
+dfsctl group add-member tester tester
+echo tester-secret >/tmp/tester.password
+dfsctl user set-password tester --password-file /tmp/tester.password
+dfsctl grant set test --user tester --access read-write
+dfsctl adapter set smb --enabled --setting port=445
+dfsctl adapter set nfs --enabled --setting port=2049
 mkdir -p /etc/samba
 printf '[global]\nclient min protocol = SMB3\n' >/etc/samba/smb.conf
 SETUP
@@ -97,7 +145,7 @@ if test "${#SCENARIOS[@]}" -eq 0; then
     exec "${P[@]}" run --rm -it "${IMAGES[@]}" -e LOGS=shell/logs \
         docker.io/library/ubuntu:26.04 bash -c "$SETUP
 set +x
-echo 'Set up: share /test, user tester, SMB on 445, NFS on 2049, logs in /logs.'
+echo 'Set up: share test (/test), user tester, SMB on 445, NFS on 2049, logs in /logs.'
 echo 'Run a scenario: scenario NAME (see ls /src/test/scenarios). Leave: exit.'
 export USER=tester%tester-secret
 exec bash"

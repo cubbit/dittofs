@@ -123,7 +123,8 @@ func TestWireBodies(t *testing.T) {
 		{"adapter spec", AdapterSpec{Enabled: true, Settings: map[string]json.RawMessage{"port": json.RawMessage(`12445`)}}, new(AdapterSpec),
 			[]string{"enabled", "settings"}},
 		{"adapter status", AdapterStatus{Nodes: []AdapterOnNode{{Node: "n_1", State: "serving", Generation: 4}}}, new(AdapterStatus), []string{"nodes"}},
-		{"adapter on a node", AdapterOnNode{Node: "n_1", State: "serving", Generation: 4}, new(AdapterOnNode), []string{"generation", "node", "state"}},
+		{"adapter on a node", AdapterOnNode{Node: "n_1", State: "serving", Generation: 4, Port: 12445}, new(AdapterOnNode), []string{"generation", "node", "port", "state"}},
+		{"adapter on a node, not serving", AdapterOnNode{Node: "n_1", State: "stopped", Generation: 4}, new(AdapterOnNode), []string{"generation", "node", "state"}},
 	} {
 		b, err := json.Marshal(tc.in)
 		if err != nil {

@@ -238,6 +238,10 @@ func heldOps(t *testing.T, data []byte) {
 // partial release, a repoint of the wrong record, and a piece left as two
 // entries.
 func TestHeldMatchesByteOracle(t *testing.T) {
+	// decision: the byte-oracle comparison runs in one goroutine and starts none, so the race detector has nothing to check and only slows it.
+	if raceEnabled {
+		t.Skip("single-goroutine check; runs in the journal-index cell without -race")
+	}
 	rng := rand.New(rand.NewPCG(4, 2))
 	for range 200 {
 		data := make([]byte, 2000)

@@ -5,7 +5,6 @@ package integration
 import (
 	"context"
 	"math"
-	"slices"
 	"testing"
 	"time"
 
@@ -22,21 +21,102 @@ const b5Bursts = 8
 // latency is reported.
 func BenchmarkB5(b *testing.B) {
 	b.Run("append/writers=64", benchB5Append)
+	b.Run("append-interval/writers=64", benchB5AppendInterval)
 	b.Run("overwrite/writers=64", benchB5Overwrite)
 }
 
-// benchB5Append appends: an fsync's path holds no existence commit, only the
-// marks wait's transaction, at most one per journal per burst, and the
-// existence commits that follow are at most one per journal per existence
-// interval.
+// benchB5AppendAge is the existence age of the append bursts: far longer than
+// every burst of a run, so the existence timer cannot come due in a burst's
+// window and no transaction that writes a file record there is the timer's.
+const benchB5AppendAge = time.Hour
+
+// benchB5Append appends past committed content: an fsync's path holds no
+// existence commit, only the marks wait's transaction, at most one per journal
+// per burst. The first MiB of each file is committed before the bursts, since
+// an fsync waits for marks only where its extent covers committed content.
+// While benchHandle drops the journal's marks, that wait writes nothing, so
+// the marks-only bound holds trivially until the handle passes them on.
+//
+// decision: the transactions of a burst are classified by the keys they wrote,
+// and the keys cannot tell an existence commit of the timer from one on an
+// fsync's path. So the timer is kept out of the window, by an existence age
+// longer than the whole run, and any transaction that wrote a file record in
+// it is the fsync path's and fails. The existence commits that follow are
+// checked in benchB5AppendInterval, at the benchmark's own age. Revisit if the
+// engine reports why it committed a file.
 func benchB5Append(b *testing.B) {
-	c := composeBench(b, benchWriters, benchExistenceAge, 0)
+	c := composeBench(b, benchWriters, benchB5AppendAge, 0)
 	ctx := b.Context()
 	data := make([]byte, mib)
+
+	c.fill(b, mib)
 
 	var fsyncs []time.Duration
 
 	most := 0
+
+	b.ResetTimer()
+
+	for i := range b.N {
+		for k := range b5Bursts {
+			off := int64(1+i*b5Bursts+k) * mib
+			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
+				ref := vfs.Anonymous(c.files[w])
+				_, err := c.fs.Write(ctx, c.admin, ref, off, data, vfs.Unstable)
+
+				return err
+			}); err != nil {
+				b.Fatalf("burst %d of run %d: a write refused: %v", k+1, i+1, err)
+			}
+
+			c.counts.TakeUpdates()
+			c.txns.takeTxns()
+
+			took := make([]time.Duration, benchWriters)
+			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
+				start := time.Now()
+				_, err := c.fs.Commit(ctx, c.admin, vfs.Anonymous(c.files[w]), 0, 0)
+				took[w] = time.Since(start)
+
+				return err
+			}); err != nil {
+				b.Fatalf("burst %d of run %d: an fsync failed: %v", k+1, i+1, err)
+			}
+
+			updates := c.counts.TakeUpdates().Updates
+			txns := c.txns.takeTxns()
+
+			b.Logf(
+				"burst %d of run %d: %d store transactions, %d committed",
+				k+1,
+				i+1,
+				updates,
+				len(txns),
+			)
+
+			fsyncs = append(fsyncs, took...)
+
+			if err := appendBurstError(txns); err != nil {
+				b.Fatalf("burst %d of run %d: %d fsyncs: %v", k+1, i+1, benchWriters, err)
+			}
+
+			most = max(most, updates)
+		}
+	}
+
+	b.StopTimer()
+	b.ReportMetric(0, "ns/op") // waits and polling are in the wall time: keep benchstat off it
+	b.ReportMetric(microseconds(percentile(fsyncs, 99)), "fsync-p99-µs")
+	b.ReportMetric(float64(most), "txn/burst")
+}
+
+// benchB5AppendInterval appends with no fsync, at the benchmark's existence
+// age: the existence commits are at most one per journal per existence
+// interval.
+func benchB5AppendInterval(b *testing.B) {
+	c := composeBench(b, benchWriters, benchExistenceAge, 0)
+	ctx := b.Context()
+	data := make([]byte, mib)
 
 	b.ResetTimer()
 
@@ -51,55 +131,8 @@ func benchB5Append(b *testing.B) {
 			}); err != nil {
 				b.Fatalf("burst %d of run %d: a write refused: %v", k+1, i+1, err)
 			}
-
-			before := c.committedSizes(b)
-			c.counts.TakeUpdates()
-
-			took := make([]time.Duration, benchWriters)
-			if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
-				start := time.Now()
-				_, err := c.fs.Commit(ctx, c.admin, vfs.Anonymous(c.files[w]), 0, 0)
-				took[w] = time.Since(start)
-
-				return err
-			}); err != nil {
-				b.Fatalf("burst %d of run %d: an fsync failed: %v", k+1, i+1, err)
-			}
-
-			updates := c.counts.TakeUpdates().Updates
-
-			// Not split into existence and mixed: txnRecord marks only an
-			// overwrite record, which an append never writes, so both read 0 here.
-			b.Logf("burst %d of run %d: %d store transactions", k+1, i+1, updates)
-
-			fsyncs = append(fsyncs, took...)
-
-			// decision: a group commit of earlier bursts' existence may come
-			// due during this burst on its own timer, off every fsync's path,
-			// and the store shows it as committed sizes that moved; it is
-			// allowed as one transaction, the batch bound holding all 64 files.
-			allowed := 1
-			if !slices.Equal(before, c.committedSizes(b)) {
-				allowed++
-			}
-
-			if updates > allowed {
-				b.Fatalf(
-					"burst %d of run %d: %d store transactions across %d fsyncs, want at most %d: "+
-						"one per journal, never one per file",
-					k+1,
-					i+1,
-					updates,
-					benchWriters,
-					allowed,
-				)
-			}
-
-			most = max(most, updates)
 		}
 
-		// The window starts once the burst's last fsync has returned, so no
-		// fsync's transaction is counted in it.
 		start := time.Now()
 
 		c.counts.TakeUpdates()
@@ -109,9 +142,8 @@ func benchB5Append(b *testing.B) {
 		intervals := int(math.Ceil(float64(time.Since(start)) / float64(benchExistenceAge)))
 		if commits > intervals {
 			b.Fatalf(
-				"run %d: %d existence transactions in %d existence intervals with no fsync, "+
-					"want at most "+
-					"one per journal per interval",
+				"run %d: %d existence transactions in %d existence intervals, "+
+					"want at most one per journal per interval",
 				i+1,
 				commits,
 				intervals,
@@ -121,8 +153,6 @@ func benchB5Append(b *testing.B) {
 
 	b.StopTimer()
 	b.ReportMetric(0, "ns/op") // waits and polling are in the wall time: keep benchstat off it
-	b.ReportMetric(microseconds(percentile(fsyncs, 99)), "fsync-p99-µs")
-	b.ReportMetric(float64(most), "txn/burst")
 }
 
 // benchB5Overwrite overwrites committed content: each burst's fsyncs cost at

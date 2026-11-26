@@ -24,7 +24,7 @@ type Caller struct {
 	Share           vfs.ShareID   // the share it was admitted to
 	Proved          vfs.Identity  // what the adapter proved
 	Client          vfs.ClientID  // zero where the call names no client
-	Protocol        vfs.Protocol  // zero where the call names no client
+	Caps            vfs.Caps      // the call's capabilities, which open state receives whole
 }
 
 // Policy is what a share's audit policy selects.
@@ -63,9 +63,10 @@ func (a Authz) Decide(ctx context.Context, c Caller, op vfs.Op, h, via vfs.Handl
 	}
 	if a.selects(c.Share, op, allowed) {
 		_, file, _ := h.Parse()
+		p, _ := vfs.ProtocolFrom(ctx) // the one read of the label: an emitter's
 		a.Emit(ctx, vfs.AccessEvent{
 			Time: time.Now(), Share: c.Share, Client: c.Client, Addr: c.Proved.Client, Identity: c.Proved,
-			Protocol: c.Protocol, Op: op, File: file, Name: name, Want: want, Allowed: allowed,
+			Protocol: p, Op: op, File: file, Name: name, Want: want, Allowed: allowed,
 			SelectedBy: vfs.SelectedByPolicy,
 		})
 	}

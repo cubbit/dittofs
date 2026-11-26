@@ -204,14 +204,15 @@ func (g *grant) public(f entity.FileID) CachingGrant {
 
 // ownedBy reports whether open h is, beside the grant a holder of client c
 // under key key through open o would hold, that holder's own: an open under
-// its lease key, its oplock's open, or any open of a delegation's client.
-func (h *open) ownedBy(c entity.ClientID, key LeaseKey, o *open, smb bool) bool {
+// its lease key, its oplock's open where the grant belongs to its open, or
+// any open of a delegation's client.
+func (h *open) ownedBy(c entity.ClientID, key LeaseKey, o *open, belongsToOpen bool) bool {
 	switch {
 	case h.Client != c:
 		return false
 	case key != (LeaseKey{}):
 		return h.lease == key
-	case smb:
+	case belongsToOpen:
 		return h == o
 	}
 	return true
@@ -388,10 +389,9 @@ func (t *Table) breakHandles(ctx context.Context, e *entry, hs []*open, own func
 // the lease under r's key, widened if r asks more and nothing refuses it; or a
 // new grant of the most of r.Want that nothing refuses; or nil.
 func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, out *outbox) *CachingGrant {
-	smb := who.Protocol == entity.ProtocolSMB
 	want := r.Want
-	if !smb {
-		want &^= GrantHandle // a delegation is never a handle grant
+	if !who.grantsBelongToOpen() && r.Lease == (LeaseKey{}) {
+		want &^= GrantHandle // a grant held by the client, a delegation, never caches handles
 	}
 	if r.SetID {
 		want &^= GrantWrite
@@ -443,7 +443,7 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, o
 		return nil // a grant is offered, never owed: the open stands without one
 	}
 	g := &grant{id: GrantID{ref.Shard, ref.Instance, ref.Token}, client: who.Client, key: r.Lease, parent: r.Parent, fsm: grantfsm.New(k, epoch), counted: true, sessioned: o.sessioned()}
-	if smb && r.Lease == (LeaseKey{}) {
+	if who.grantsBelongToOpen() && r.Lease == (LeaseKey{}) {
 		g.open = o
 	}
 	if g.covers() {
@@ -461,7 +461,9 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, o
 	return &p
 }
 
-// offerable is the most of want a grant to who, through o under key, may hold
+// offerable is the most of want a grant to who, through o under key, and
+// belonging to o alone when who's grants belong to their open and key is
+// zero, may hold
 // on e: none to a client fenced, at its budget or with its back channel down,
 // on a file with a recall in flight, recalled within a recall deadline, with
 // a lock waiter or another holder's byte-range lock, with a record not yet
@@ -477,6 +479,7 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, o
 // that conflict with the delayed requests when files are measured going
 // ungranted after recalls a new grant would not have raced.
 func (t *Table) offerable(e *entry, who Caller, o *open, key LeaseKey, want GrantKind) GrantKind {
+	belongsToOpen := who.grantsBelongToOpen()
 	caching := 0
 	for _, g := range e.grants {
 		if g.fsm.Kind != GrantNone {
@@ -497,14 +500,13 @@ func (t *Table) offerable(e *entry, who Caller, o *open, key LeaseKey, want Gran
 	if !ok || k.down || fenced || recalled {
 		return GrantNone
 	}
-	smb := who.Protocol == entity.ProtocolSMB
 	for _, ls := range e.lstates {
-		if len(ls.locks) > 0 && (ls.open == nil && ls.owner.Client != who.Client || ls.open != nil && !ls.open.ownedBy(who.Client, key, o, smb)) {
+		if len(ls.locks) > 0 && (ls.open == nil && ls.owner.Client != who.Client || ls.open != nil && !ls.open.ownedBy(who.Client, key, o, belongsToOpen)) {
 			return GrantNone // its holder taking locks locally could overlap these
 		}
 	}
 	for _, h := range e.opens {
-		if !h.ownedBy(who.Client, key, o, smb) {
+		if !h.ownedBy(who.Client, key, o, belongsToOpen) {
 			want = grantfsm.Within(want, conflict.GrantKeeps(h.Mode.Access, h.Mode.Deny, key != (LeaseKey{})))
 		}
 	}

@@ -32,7 +32,7 @@ func (s *Store) Minter() Minter { return Minter{s} }
 // the mint keep that index as PutUser does.
 func (m Minter) Create(ctx context.Context, b entity.MintBatch) error {
 	return m.s.kv.Update(ctx, func(tx kv.Txn) error {
-		c := controlTx{tx, new(uint64)}
+		c := controlTx{tx: tx, pgen: new(uint64)}
 		for _, r := range b.Users {
 			u := r.User
 			if u.Role != entity.RoleNone {
@@ -108,7 +108,7 @@ func (m Minter) Rename(ctx context.Context, rs []entity.Renaming) error {
 		takes[key] = true
 	}
 	return m.s.kv.Update(ctx, func(tx kv.Txn) error {
-		c := controlTx{tx, new(uint64)}
+		c := controlTx{tx: tx, pgen: new(uint64)}
 		users := make([]entity.User, len(rs))
 		groups := make([]entity.Group, len(rs))
 		old := make([]string, len(rs))
@@ -169,7 +169,7 @@ func (m Minter) SetEmail(ctx context.Context, p entity.Principal, email string) 
 		return merrs.NewInvalidArgumentError("only a user has an e-mail address")
 	}
 	return m.s.kv.Update(ctx, func(tx kv.Txn) error {
-		c := controlTx{tx, new(uint64)}
+		c := controlTx{tx: tx, pgen: new(uint64)}
 		u, err := c.liveUser(p)
 		if err != nil {
 			return err

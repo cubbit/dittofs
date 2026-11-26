@@ -18,41 +18,30 @@ const module = "github.com/cubbit/dittofs/"
 // standard library and the engine's own packages. Each entry names the
 // packages under this directory it applies to; "*" is every one. The
 // filesystem's package is not on it: the engine takes only its errors, from
-// pkg/vfs/vfserr. Open state is enginewire's, which
-// builds, starts and stops it with the engine, and its test's, the
-// fixture's and the unit tests', which run it for real.
+// pkg/vfs/vfserr. Open state, and the node's content wiring that builds,
+// starts and stops it with the engine, are the fixture's and the unit
+// tests', which run them for real.
 var allowed = map[string][]string{
-	module + "pkg/journal":          {"*"},
-	module + "pkg/health":           {"*"},
-	module + "pkg/metadata/entity":  {"*"},
-	module + "pkg/metadata/kvstore": {"*"},
-	module + "pkg/openstate":        {"enginetest", "enginewire", unitTests, wireTests},
-	module + "pkg/vfs/vfserr":       {"*"},
+	module + "pkg/journal":           {"*"},
+	module + "pkg/health":            {"*"},
+	module + "pkg/metadata/entity":   {"*"},
+	module + "pkg/metadata/kvstore":  {"*"},
+	module + "pkg/openstate":         {"enginetest", unitTests},
+	module + "internal/node/content": {"enginetest", unitTests},
+	module + "pkg/vfs/vfserr":        {"*"},
 	// The test fixture composes the engine over the real journal, its seam and
 	// profiler, the real store on an in-memory kv.KV, and a test clock. The
 	// unit tests' start failure tests, and the fixture's rows of the self-fence,
-	// put the fault-injecting kv.KV under that store. enginewire's test runs
-	// its calls over the same real store, journal and clock, under the
-	// profiler.
-	module + "pkg/journal/journaltest":          {"enginetest", internalTests, wireTests},
-	module + "pkg/journal/journaltest/kit":      {"enginetest", wireTests},
-	module + "pkg/journal/journaltest/raw":      {wireTests},
-	module + "internal/prof":                    {"enginetest", unitTests, wireTests},
-	module + "pkg/metadata/kv":                  {"enginetest", unitTests, wireTests},
-	module + "pkg/metadata/kv/badgerkv":         {"enginetest", unitTests, wireTests},
+	// put the fault-injecting kv.KV under that store.
+	module + "pkg/journal/journaltest":          {"enginetest", internalTests},
+	module + "pkg/journal/journaltest/kit":      {"enginetest"},
+	module + "internal/prof":                    {"enginetest", unitTests},
+	module + "pkg/metadata/kv":                  {"enginetest", unitTests},
+	module + "pkg/metadata/kv/badgerkv":         {"enginetest", unitTests},
 	module + "pkg/metadata/kv/keys":             {"enginetest", unitTests},
 	module + "pkg/metadata/kv/kvtest":           {"enginetest", unitTests},
-	module + "pkg/metadata/kvstore/kvstoretest": {"enginetest", unitTests, wireTests},
-	module + "pkg/sim":                          {"enginetest", unitTests, internalTests, wireTests},
-	// enginewire adapts the host's tracer to each journal's own Tracer
-	// option, so its spans and log lines name the journal by one identity;
-	// the node hands the composition the only tracer the engine sees. Its
-	// test drives the same adapter over the real SDK's in-memory recorder.
-	"go.opentelemetry.io/otel/trace":               {"enginewire", wireTests},
-	"go.opentelemetry.io/otel/attribute":           {"enginewire"},
-	"go.opentelemetry.io/otel/codes":               {"enginewire"},
-	"go.opentelemetry.io/otel/sdk/trace":           {wireTests},
-	"go.opentelemetry.io/otel/sdk/trace/tracetest": {wireTests},
+	module + "pkg/metadata/kvstore/kvstoretest": {"enginetest", unitTests},
+	module + "pkg/sim":                          {"enginetest", unitTests, internalTests},
 	// The engine reads a full device's free space on Windows through the
 	// system package the journal's platform layer already uses, rather than
 	// wrapping the Win32 call by hand.
@@ -65,9 +54,6 @@ var allowed = map[string][]string{
 // tests put the fault-injecting kv.KV under that store. The engine's own
 // files import none of them.
 const unitTests = "._test"
-
-// wireTests names enginewire's external test package.
-const wireTests = "enginewire_test"
 
 // internalTests names the engine's test files in its own package, which use
 // the test clock and a real journal fixture to check the version-limit probe.
@@ -118,9 +104,9 @@ func TestImportRule(t *testing.T) {
 }
 
 // TestImportRuleRefusesFilesystemAndOpenState pins the rule's edges: the
-// filesystem's packages, the journal's test kit and open state are refused,
-// while the metadata packages the engine needs and the filesystem's errors
-// are allowed.
+// filesystem's packages, the journal's test kit, open state and the node's
+// content wiring are refused, while the metadata packages the engine needs
+// and the filesystem's errors are allowed.
 func TestImportRuleRefusesFilesystemAndOpenState(t *testing.T) {
 	for _, c := range []struct {
 		path    string
@@ -135,6 +121,7 @@ func TestImportRuleRefusesFilesystemAndOpenState(t *testing.T) {
 		{module + "pkg/metadata/entity", true},
 		{module + "pkg/metadata/kvstore", true},
 		{module + "pkg/openstate", false},
+		{module + "internal/node/content", false},
 		{module + "pkg/vfs/vfserr", true},
 		{"context", true},
 	} {

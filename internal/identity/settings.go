@@ -29,7 +29,15 @@ type Settings struct {
 	// DirectoryStaleGrace is how long past its 5-minute TTL a directory
 	// answer may be served while the directory fails; 0 serves none.
 	DirectoryStaleGrace time.Duration `json:"directory_stale_grace" class:"live"`
+	// NFS4Domain is the domain of NFSv4 owner strings, name@domain. Empty
+	// is the default, derived at each Apply: the first realm of the
+	// keytab's current version in lower case, else localdomain.
+	NFS4Domain string `json:"nfs4_domain" class:"live"`
 }
+
+// maxNFS4Domain is a DNS name's length in bytes, the longest domain
+// identity.nfs4_domain takes.
+const maxNFS4Domain = 253
 
 // maxNetBIOSName is a NetBIOS name's length in bytes; the sixteenth byte of
 // the wire name is its suffix, never the installation's to choose.
@@ -212,9 +220,10 @@ func settingString(tx entity.ControlPlaneTx, key string) (string, bool, error) {
 }
 
 // Validate refuses a range whose low end is above its high end, a negative
-// stale grace, and a NetBIOS name that is empty, longer than 15 bytes or
-// holds a byte outside [A-Z0-9-], each error naming the field, since the
-// settings check prints it after the section's own name.
+// stale grace, a NetBIOS name that is empty, longer than 15 bytes or holds a
+// byte outside [A-Z0-9-], and an NFSv4 domain validNFS4Domain refuses, each
+// error naming the field, since the settings check prints it after the
+// section's own name.
 func (s Settings) Validate() error {
 	if s.IDRange.Lo > s.IDRange.Hi {
 		return fmt.Errorf("id_range: low end %d above high end %d", s.IDRange.Lo, s.IDRange.Hi)
@@ -224,6 +233,26 @@ func (s Settings) Validate() error {
 	}
 	if err := validNetBIOSName(s.NetBIOSName); err != nil {
 		return fmt.Errorf("netbios_name: %w", err)
+	}
+	if err := validNFS4Domain(s.NFS4Domain); err != nil {
+		return fmt.Errorf("nfs4_domain: %w", err)
+	}
+	return nil
+}
+
+// validNFS4Domain refuses a set domain longer than 253 bytes or holding a
+// byte outside [A-Za-z0-9.-]; empty is the derived default. So a domain never
+// holds '@', at whose last occurrence an owner string splits.
+func validNFS4Domain(d string) error {
+	if len(d) > maxNFS4Domain {
+		return fmt.Errorf("%q is longer than %d bytes", d, maxNFS4Domain)
+	}
+	for i := range len(d) {
+		c := d[i]
+		letter, digit := 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z', '0' <= c && c <= '9'
+		if !letter && !digit && c != '-' && c != '.' {
+			return fmt.Errorf("%q holds %q, outside [A-Za-z0-9.-]", d, c)
+		}
 	}
 	return nil
 }

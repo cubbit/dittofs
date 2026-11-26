@@ -2,12 +2,12 @@
 package node
 
 import (
+	"github.com/cubbit/dittofs/internal/node/content"
 	eng "github.com/cubbit/dittofs/pkg/engine"
-	"github.com/cubbit/dittofs/pkg/engine/enginewire"
 )
 
-func build(p enginewire.Params) error {
-	if _, _, err := enginewire.Compose(p); err != nil {
+func build(p content.Params) error {
+	if _, _, err := content.Compose(p); err != nil {
 		return err
 	}
 	_, err := eng.New(eng.Deps{})

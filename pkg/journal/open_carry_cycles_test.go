@@ -43,7 +43,20 @@ const carryCycleTag = ShareTag(3)
 // is the undroppable removal record it holds. The Rec the tracker knows the
 // record by is answered whole, its placement's pair read straight off the
 // sealed segment's own bytes.
-func openCarryCycleLeg(t *testing.T) (j *Journal, th *Handle, seam *kit.Seam, dir string, id JournalID, clock kit.DrivenClock, file FileID, tr reclaim.Rec, src SegmentID, vT Version) {
+// The leg's seal is its caller's choice: the reopen legs seal early, never
+// full — a full seal keeps the segment accounted at its cap and marks it
+// sealed full, which hands the retirer the recycle-or-unlink choice of the
+// retirement itself: the carry's roll takes the target out of the pool's
+// reserve class, and on the rare draw where wantRecycle still sees that
+// class short before the refill's reservation lands, the source's retirement
+// recycles it — a rename into a spare that touches no file the legs'
+// OpRemove holds name, so the park the legs crash at never happens and the
+// pass returns whole. Early-sealed the source is never a recycle candidate,
+// so its retirement always reaches the unlink both legs park at, whichever
+// retirement runs it. The recycle guard asks for the full seal on purpose:
+// the recycle is the retirement it crashes inside, and the guard parks the
+// pool's refill so the choice is deterministic on the pass's own roll.
+func openCarryCycleLeg(t *testing.T, early bool) (j *Journal, th *Handle, seam *kit.Seam, dir string, id JournalID, clock kit.DrivenClock, file FileID, tr reclaim.Rec, src SegmentID, vT Version) {
 	t.Helper()
 	j, seam, dir, id, clock = openDeferralJournal(t)
 	th, err := j.Share(carryCycleTag, 0, Version{})
@@ -66,9 +79,10 @@ func openCarryCycleLeg(t *testing.T) (j *Journal, th *Handle, seam *kit.Seam, di
 		t.Fatalf("the sync making the write's record and the truncate's own durable before any pass: %v", err)
 	}
 	// The segment both records landed in is sealed through the stream itself,
-	// so it holds nothing beside the dead write and the undroppable removal
-	// record: index-empty, the shape a retirement must free.
-	if _, err := j.core.Streams().For(core.FileID(file)).Seal(false); err != nil {
+	// early or full by the caller's choice, so it holds nothing beside the
+	// dead write and the undroppable removal record: index-empty, the shape
+	// a retirement must free.
+	if _, err := j.core.Streams().For(core.FileID(file)).Seal(early); err != nil {
 		t.Fatalf("sealing the segment holding the removal record: %v", err)
 	}
 	if err := j.core.WaitSpares(t.Context()); err != nil {
@@ -237,27 +251,26 @@ func carryCycleRequirePlacements(t *testing.T, seam *kit.Seam, id JournalID, fil
 // segment it landed in — and crashes the journal there: the window the
 // issue's wedge was said to survive, and the window both placements of the
 // record are demonstrably on disk (the leg asserts them at the park and
-// after the power loss). The recovery tears the copy anyway: a carried
-// record's placement carries no group-commit stamp, so the open's tail
-// proof judges it unproven and never written — a real property of the open
-// path at this window, evidenced once here: the file synced, the stream
-// sealed and the driven clock advanced inside the parked retirement, none
-// of which moves the verdict — and the safe direction of it is what the
-// leg pins:
-// the reopen errs on the held side, and the reopened source is never again
-// wedged — it stays through several of the reopened journal's own
-// retire-worker ticks while its marker stands unsettled, and the settlement
-// that covers the removal releases the registration and retires the source
-// through the ordinary reclamation. The removal itself survives the window
-// whole: the reopened journal serves exactly one truncate of the file. The
-// two-placement reopen itself — the rebuild registering the original beside
-// the proven copy, the class holding neither — stays pinned where its seam
-// exists: the tracker's RegisterAtOpen transition (the reclaim package's
-// unit tests) reads the registrations a rebuild that proves both copies
-// would feed. The leg guards crash safety — errs held through the window,
+// after the power loss). Both placements verify at the reopen — the tail
+// proof reads the candidate's device bytes, and a synced copy passes — and
+// the equal-numbers collapse keeps the greater (segment, offset), this
+// run's original, while the losing copy's target reads index-empty,
+// answers not held, and the open's ordinary reclamation unlinks it: one
+// placement stands on the disk the reopen serves. The safe direction is
+// what the leg pins: the reopen errs on the held side, and the reopened
+// source is never again wedged — it stays through several of the reopened
+// journal's own retire-worker ticks while its marker stands unsettled, and
+// the settlement that covers the removal releases the registration and
+// retires the source through the ordinary reclamation. The removal itself
+// survives the window whole: the reopened journal serves exactly one
+// truncate of the file. The two-placement reopen itself — the rebuild
+// registering both, the class holding neither while both stand — stays
+// pinned where its seam exists: the tracker's RegisterAtOpen transition
+// (the reclaim package's unit tests) reads the registrations a rebuild of
+// both feeds. The leg guards crash safety — errs held through the window,
 // released by the settle — not the hold rule.
 func TestAReopenBetweenTheCarryAndTheUnlinkLeavesNoWedge(t *testing.T) {
-	j, th, seam, dir, id, clock, file, _, src, vT := openCarryCycleLeg(t)
+	j, th, seam, dir, id, clock, file, _, src, vT := openCarryCycleLeg(t, true)
 	defer func() { _ = th.Close() }()
 
 	hold := seam.Hold(t, kit.OpRemove, format.SegmentName(core.SegmentID(src)))
@@ -296,11 +309,14 @@ func TestAReopenBetweenTheCarryAndTheUnlinkLeavesNoWedge(t *testing.T) {
 	}
 
 	j2 := reopenDeferralJournal(t, seam, dir, id, clock)
-	// The reopen tears the carried copy — no writer's stamp proves its sync,
-	// so the tail proof deems it never written and takes its segment with it
-	// — leaving the original alone to hold the source: errs held. If the
-	// recovery ever proves a carried tail instead, this assertion fails and
-	// the leg becomes the two-placement shape it currently cannot be.
+	// Both placements feed the rebuild and both verify — the tail proof reads
+	// the copy's device bytes, and a synced copy passes; the stamp it carries
+	// only bounds the candidate set. Equal-numbers records collapse to their
+	// greater (segment, offset) — here the original's — so the copy's target reads
+	// index-empty, answers not held, and the open's ordinary reclamation
+	// retires it: one placement stands, errs held. Should the proof stop
+	// reading device bytes, the copy drops from the rebuild and this
+	// assertion fails with no placement left to hold the source.
 	carryCycleRequirePlacements(t, seam, id, file, src, "after the reopen")
 	carryCycleHeldSafeAndDrainable(t, j2, file, src, vT)
 }
@@ -357,7 +373,7 @@ func carryCycleHeldSafeAndDrainable(t *testing.T, j *Journal, file FileID, src S
 // that crash direction alone, not the hold rule: one placement is one
 // placement under any rule.
 func TestACrashThatLosesTheCarriedCopyReholdsItsOriginal(t *testing.T) {
-	j, th, seam, dir, id, clock, file, _, src, vT := openCarryCycleLeg(t)
+	j, th, seam, dir, id, clock, file, _, src, vT := openCarryCycleLeg(t, true)
 	defer func() { _ = th.Close() }()
 
 	hold := seam.Hold(t, kit.OpSync, "*.seg")

@@ -83,7 +83,7 @@ func rotKeys(t *testing.T) map[secrets.Role]keyprovider.KeyProvider {
 	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", passphrase)
 	keys := map[secrets.Role]keyprovider.KeyProvider{}
 	for _, role := range []secrets.Role{secrets.Protocol, secrets.Storage} {
-		b, err := keyprovider.GenerateKeyFile(passphrase)
+		b, err := keyprovider.GenerateWeakKeyFile(passphrase)
 		if err != nil {
 			t.Fatal(err)
 		}

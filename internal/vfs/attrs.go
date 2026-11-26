@@ -43,7 +43,8 @@ func (fs *Filesystem) GetAttr(ctx context.Context, c vfs.Call, h vfs.Handle) (vf
 		return vfs.File{}, err
 	}
 	defer done()
-	a, release, err := fs.admitHandle(ctx, c, h)
+	// A host's lock service reads the file a blocking lock names first.
+	a, release, err := fs.admitHandleFor(ctx, c, h, hostLock)
 	if err != nil {
 		return vfs.File{}, err
 	}
@@ -304,7 +305,7 @@ func (fs *Filesystem) setAttr(ctx context.Context, c vfs.Call, t vfs.Target, ch 
 			return vfs.WCC{}, err
 		}
 	}
-	w := fs.wcc(ctx, c, a, t.H, f)
+	w := fs.wcc(ctx, a, t.H, f)
 	fs.entryChanged(ctx, a, t.Open, f, changeOf(ch.Attrs))
 	return w, nil
 }
@@ -592,7 +593,7 @@ func (fs *Filesystem) change(ctx context.Context, c vfs.Call, t vfs.Target, op v
 	if err := do(a, f); err != nil {
 		return vfs.WCC{}, err
 	}
-	w := fs.wcc(ctx, c, a, t.H, f)
+	w := fs.wcc(ctx, a, t.H, f)
 	fs.entryChanged(ctx, a, t.Open, f, what)
 	return w, nil
 }
@@ -619,6 +620,7 @@ func (fs *Filesystem) admitTarget(ctx context.Context, c vfs.Call, t vfs.Target)
 		release()
 		return nil, nil, err
 	}
+	fs.through(ctx, a, c, t.Open)
 	return a, release, nil
 }
 
@@ -642,16 +644,14 @@ func (fs *Filesystem) lockFile(ctx context.Context, a *admitted, h vfs.Handle, r
 }
 
 // wcc is h's WCC once a change has committed, from before, read in the same
-// hold: no Before for a directory over NFSv3, which never reports one.
+// hold. A protocol that never reports a directory's Before drops it in its
+// adapter.
 //
 // decision: an After the store fails to read is left zero and the change
 // answered as done, since it has committed. Overturned if a reply is found
 // that must refuse rather than omit its attributes.
-func (fs *Filesystem) wcc(ctx context.Context, c vfs.Call, a *admitted, h vfs.Handle, before vfs.File) vfs.WCC {
-	w := vfs.WCC{}
-	if !before.IsDir() || c.Protocol != entity.ProtocolNFSv3 {
-		w.Before = &before
-	}
+func (fs *Filesystem) wcc(ctx context.Context, a *admitted, h vfs.Handle, before vfs.File) vfs.WCC {
+	w := vfs.WCC{Before: &before}
 	w.After, _ = fs.file(ctx, a, h)
 	return w
 }

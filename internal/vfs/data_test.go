@@ -63,7 +63,7 @@ func TestAWriteRefusedByOpenStateChangesNothing(t *testing.T) {
 	ctx := t.Context()
 	h := s.file(t, "f", s.alice.Principal, 0o6777)
 	pc := s.smb(t, "pc", s.alice.Principal)
-	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Protocol: entity.ProtocolSMB}
+	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Caps: vfs.SMBCaps}
 	r, err := s.tab.Opens().Open(ctx, who, keyOf(s.record(t, h)), openstate.OpenRequest{Access: entity.ReadData | entity.WriteData,
 		Want: openstate.GrantRead | openstate.GrantWrite, Lease: openstate.LeaseKey{1}})
 	s.must(t, err)
@@ -94,7 +94,7 @@ func TestAnEmptyWriteOrReadChangesNothingAndRecallsNothing(t *testing.T) {
 	_, err := s.Write(ctx, admin, vfs.Anonymous(h), 0, []byte("data"), vfs.Unstable)
 	s.must(t, err)
 	pc := s.smb(t, "pc", s.alice.Principal)
-	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Protocol: entity.ProtocolSMB}
+	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Caps: vfs.SMBCaps}
 	r, err := s.tab.Opens().Open(ctx, who, keyOf(s.record(t, h)), openstate.OpenRequest{Access: entity.ReadData | entity.WriteData,
 		Want: openstate.GrantRead | openstate.GrantWrite, Lease: openstate.LeaseKey{1}})
 	s.must(t, err)
@@ -917,11 +917,12 @@ func TestAFailedReadAnswersItsBytesAndNoEnd(t *testing.T) {
 	}
 }
 
-// Only a commit through an SMB open is a flush that learns of a loss: one
-// through an NFS open, or through an SMB lock state, answers the verifier.
+// Only a commit through an open of a caller wanting OpenIDs is a flush that
+// learns of a loss: one through an NFS open, whose caller does not, or
+// through a lock state, answers the verifier.
 // An unstable write through a lock state on a continuously available share
 // is committed, as one through its open is.
-func TestOnlyAnSMBOpenFlushesAndALockStateWritesStable(t *testing.T) {
+func TestOnlyAnOpenIDCallersOpenFlushesAndALockStateWritesStable(t *testing.T) {
 	s := newAttrs(t)
 	ctx := t.Context()
 	s.user(t, "alice41", "2000", s.share, entity.AccessReadWrite)
@@ -930,7 +931,7 @@ func TestOnlyAnSMBOpenFlushesAndALockStateWritesStable(t *testing.T) {
 	nref := s.opener(t, nfs, "f", entity.ReadData|entity.WriteData)
 	pc := s.smb(t, "pc", s.alice.Principal)
 	sref := s.opener(t, pc, "f", entity.ReadData|entity.WriteData)
-	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Protocol: entity.ProtocolSMB}
+	who := openstate.Caller{Client: pc.Client, Principal: s.alice.Principal, Caps: vfs.SMBCaps}
 	unlock := s.Admission(fileOf(h))
 	res, err := s.tab.Locks().Lock(ctx, who, keyOf(s.record(t, h)), openstate.LockReq{
 		Owner: openstate.LockOwner{Client: pc.Client, Name: []byte("lo"), Stack: true}, Open: sref,
@@ -1073,5 +1074,29 @@ func TestAContentChangeLeavesAloneTheTimesItsOpenSuspends(t *testing.T) {
 				t.Errorf("a %s through another open: Modify %v, want the change time %v, after %v", c.name, got.Modify, got.Change, before.Modify)
 			}
 		})
+	}
+}
+
+// A commit through an open is a flush that learns of a loss only for a
+// caller stating WantOpenID: an NFS open of a file with no name is issued an
+// OpenID too, as open state must find it again, and a commit through it
+// across a loss still answers the verifier.
+func TestAnUnnamedNFSOpenWithAnOpenIDDoesNotFlush(t *testing.T) {
+	s := newAttrs(t)
+	ctx := t.Context()
+	s.user(t, "alice41", "2000", s.share, entity.AccessReadWrite)
+	h := s.file(t, "f", s.alice.Principal, 0o666)
+	nfs := s.nfs41(t, "a-host", 2000, 1)
+	s.opener(t, nfs, "f", entity.ReadData|entity.WriteData) // keeps the file alive once its name goes
+	_, err := s.Unlink(ctx, proven(s.fs.Admin.Principal, inLab), vfs.Target{H: s.fs.Root}, []byte("f"))
+	s.must(t, err)
+	r, err := s.Open(ctx, nfs, vfs.OpenRequest{H: h, Disposition: vfs.OpenExisting, Access: entity.ReadData | entity.WriteData})
+	s.must(t, err)
+	if r.Ref.Open == 0 {
+		t.Fatalf("an NFS open of a file with no name has no OpenID; the case this guards needs one")
+	}
+	s.content.Lose(s.fs.Share.ID, fileOf(h))
+	if _, err := s.Commit(ctx, nfs, r.Ref, 0, 0); err != nil {
+		t.Errorf("a commit through an unnamed NFS open with an OpenID across a loss: %v, want the verifier", err)
 	}
 }

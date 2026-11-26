@@ -22,7 +22,7 @@ type AccessEvent struct {
 	Client     ClientID // zero for NFSv3
 	Addr       netip.Addr
 	Identity   Identity
-	Protocol   Protocol
+	Protocol   Protocol // the call context's label, zero for none: Protocol.Label() is the word RFC 25's audit record and metric write
 	Op         Op
 	File       FileID
 	Name       []byte // the name acted on, for a namespace operation

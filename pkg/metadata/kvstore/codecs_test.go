@@ -2,6 +2,7 @@ package kvstore
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"net/netip"
@@ -125,7 +126,9 @@ func codecCases() []codecCase {
 		Refused:        []entity.RefusedRecord{{Record: entity.ResourceRef{Kind: entity.ResourceShare, ID: []byte{9}}, Generation: 5, Error: []byte("e")}},
 		RestartPending: []entity.ResourceRef{{Kind: entity.ResourceSetting, ID: []byte{8}}},
 		Secrets:        []entity.SecretVersion{{Secret: entity.SecretRef{15: 7}, Version: 6}}, Conditions: []byte("c"),
-		Adapters: []entity.AdapterStatus{{Protocol: "smb", State: entity.AdapterServing, Generation: 8}}}
+		Adapters: []entity.AdapterStatus{{Protocol: "smb", State: entity.AdapterServing, Generation: 8, Port: 12445}}}
+	portless := status
+	portless.Adapters = []entity.AdapterStatus{{Protocol: "smb", State: entity.AdapterServing, Generation: 8}}
 	oldStatus := status
 	oldStatus.Adapters = nil
 	oldStatusHex := "01" + "0000000000000001" + "0000000000000002" + "0000000000000003" + "0000000000000004" +
@@ -216,6 +219,9 @@ func codecCases() []codecCase {
 				"01" + "00000001" + "00000001" + "02" + "00000003" + "00000004" + "01",
 			func(b []byte) (any, error) { return decodeNode(node.ID, b) }},
 		{"node status", status, encodeNodeStatus(status),
+			"03" + oldStatusHex[2:] + "01" + "03736d62" + "02" + "0000000000000008" + "0000309d",
+			func(b []byte) (any, error) { return decodeNodeStatus(node.ID, b) }},
+		{"node status before ports", portless, mustHex("02" + oldStatusHex[2:] + "01" + "03736d62" + "02" + "0000000000000008"),
 			"02" + oldStatusHex[2:] + "01" + "03736d62" + "02" + "0000000000000008",
 			func(b []byte) (any, error) { return decodeNodeStatus(node.ID, b) }},
 		{"node status before adapters", oldStatus, mustHex(oldStatusHex), oldStatusHex,
@@ -339,7 +345,7 @@ func FuzzControlPlaneValues(f *testing.F) {
 	for _, c := range append(codecCases(), fileCodecCases()...) {
 		switch c.name {
 		case "user", "user linked", "group", "share", "setting", "quota", "installation", "audit", "idempotency", "namespace",
-			"session", "api token", "sign-in failures", "operation", "node", "node status", "node status before adapters", "state":
+			"session", "api token", "sign-in failures", "operation", "node", "node status", "node status before adapters", "node status before ports", "state":
 			decoders[c.name] = c.dec
 			f.Add(c.enc)
 			f.Add(c.enc[:len(c.enc)/2])
@@ -356,6 +362,7 @@ func FuzzControlPlaneValues(f *testing.F) {
 		"node":                        func(v any) []byte { return encodeNode(v.(entity.Node)) },
 		"node status":                 func(v any) []byte { return encodeNodeStatus(v.(entity.NodeStatus)) },
 		"node status before adapters": func(v any) []byte { return encodeNodeStatus(v.(entity.NodeStatus)) },
+		"node status before ports":    func(v any) []byte { return encodeNodeStatus(v.(entity.NodeStatus)) },
 		"quota":                       func(v any) []byte { return encodeQuota(v.(entity.Quota)) },
 		"installation":                func(v any) []byte { return encodeInstallation(v.(entity.Installation)) },
 		"audit":                       func(v any) []byte { return encodeAudit(v.(entity.AuditRecord)) },
@@ -399,5 +406,15 @@ func TestNodeStatusUnknownAdapterState(t *testing.T) {
 		if _, err := decodeNodeStatus(entity.NodeID{}, b); !errors.Is(err, errMalformed) {
 			t.Errorf("adapter state %d: %v, want %v", st, err, errMalformed)
 		}
+	}
+}
+
+// A node status naming an adapter's port above 65535 is refused, never read
+// as the port its low 16 bits name.
+func TestNodeStatusPortOutOfRange(t *testing.T) {
+	b := encodeNodeStatus(entity.NodeStatus{Adapters: []entity.AdapterStatus{{Protocol: "nfs", State: entity.AdapterServing, Port: 1}}})
+	binary.BigEndian.PutUint32(b[len(b)-4:], 1<<16+1)
+	if _, err := decodeNodeStatus(entity.NodeID{}, b); !errors.Is(err, errMalformed) {
+		t.Errorf("adapter port %d: %v, want %v", 1<<16+1, err, errMalformed)
 	}
 }

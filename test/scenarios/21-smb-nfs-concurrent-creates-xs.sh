@@ -22,7 +22,7 @@ uniq -d /tmp/listing | head
 smbclient //127.0.0.1/test -c 'cd d; lcd /tmp/back; prompt; mget *'
 
 test "$(grep -h 'rc=' /tmp/log/s* | grep -vc 'rc=0')" -eq 0
-! grep -qhE 'NT_STATUS_IO_DEVICE_ERROR|NFS4ERR_IO|failed' /tmp/log/*
+if grep -qhE 'NT_STATUS_IO_DEVICE_ERROR|NFS4ERR_IO|failed' /tmp/log/*; then exit 1; fi
 test "$(wc -l </tmp/listing)" -eq 1280
 test -z "$(uniq -d /tmp/listing)"
 diff -r /tmp/src /tmp/back

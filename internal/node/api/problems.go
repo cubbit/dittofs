@@ -128,6 +128,9 @@ var components = []struct {
 	{settings.ErrUnknownKey, answerOf{http.StatusBadRequest, "unknown_key", false}},
 	{settings.ErrWrongScope, answerOf{http.StatusBadRequest, "wrong_scope", false}},
 	{settings.ErrNewerSchema, answerOf{http.StatusConflict, "newer_schema", false}},
+	// The store's own refusal of a row above the schema the node opened it
+	// to write, answered as the settings table's.
+	{entity.ErrNewerSchema, answerOf{http.StatusConflict, "newer_schema", false}},
 	{settings.ErrForbidden, answerOf{http.StatusForbidden, "forbidden", false}},
 	{settings.ErrRequired, answerOf{http.StatusBadRequest, "required", false}},
 	{settings.ErrInvalid, answerOf{http.StatusBadRequest, "invalid", false}},

@@ -34,8 +34,13 @@ const (
 	SchemeUserName
 	SchemeGroupName
 	SchemeOIDC
-	SchemeOwner // an NFSv4 owner string
+	SchemeOwner // an NFSv4 owner string naming a user
 	SchemeQualified
+	SchemeOwnerGroup // an NFSv4 owner string naming a group
+	// SchemeWho and SchemeWhoGroup are an NFSv4 ACE's who, naming a user and
+	// a group: an owner string, else S-…@domain by the principal's SID.
+	SchemeWho
+	SchemeWhoGroup
 )
 
 // Stored reports whether s has index rows: Find reads only these, and Spell

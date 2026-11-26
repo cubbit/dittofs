@@ -284,3 +284,105 @@ func TestCarriedRemovalsRetireTheirSourcesAndUnwindTheCycle(t *testing.T) {
 		t.Fatalf("live registrations of the carried second truncate after the settlement's re-test = %d, want 0: the cycle's last registered record drops with its file's answer", n)
 	}
 }
+
+// TestTheCarriedRecordsSurvivorStaysReachableToThePass plants the removal
+// residue's smallest drain and the wedge it reaches: one unsettled truncate
+// in its own sealed segment — an index-empty source a pass carries forward
+// and retires in the same unit — whose carried copy then holds the copy
+// target alone, re-held there by the retirement the pass itself ran. The
+// survivor seals as its stream rolls on, holding nothing the index counts,
+// exactly the sealed, index-empty, held row the removals drain treats as the
+// residue its own repacks must unwind; every later unit over it answers the
+// segment through the records it holds, and a unit that reaches its record
+// carries it — the class rule spends the survivor's hold on the fresh
+// placement, its source retires, and the drain peels one segment a pass.
+//
+// The walk that reaches the record enumerates the registrations the
+// segment's own files table names (registeredIn's scoping), so the re-hold
+// that raises the survivor's live count owes the raised record's file to
+// that table: a raise that enters no file leaves the survivor answering
+// held over a record no walk enumerates, and a segment held that way never
+// drains — no pass retires it, the worker's scan refuses it, no settle
+// releases it before a marker settles that never comes — while the drain's
+// passes spend one clean empty unit after another over it, moving no byte
+// and freeing nothing. That is the capacity wedge the removals soak draws
+// once enough of its records stand re-held in copy targets this way: the
+// first pass retires the source, and every pass after that stays on the
+// survivor.
+func TestTheCarriedRecordsSurvivorStaysReachableToThePass(t *testing.T) {
+	p := newPassFixture(t)
+	f := p.f
+	live := f.core.Liveness()
+	file := copyFile(0x50)
+
+	// The source: the truncate in its own segment, its marker left over
+	// everything past its size and never settled, so the record stays live
+	// whatever else stands.
+	v, err := f.counters.Draw()
+	if err != nil {
+		t.Fatalf("Draw of the truncate's version: %v", err)
+	}
+	ta, seq := f.plantTruncateAt(t, copyTag, file, 64, v)
+	sa := ta.Seg
+	f.sealSource(t, file)
+	f.waitSpares(t)
+
+	// The first pass carries the record into the stream's active target and
+	// retires the source in the same unit, its retirement re-holding the
+	// sole surviving placement onto the copy target.
+	if freed, err := p.repack(t.Context(), copySegCap*8, sa); err != nil {
+		t.Fatalf("Repack over the truncate's source: %v", err)
+	} else if freed == 0 {
+		t.Fatalf("Repack over the truncate's source freed %d, want its retired segment's bytes", freed)
+	}
+	if !p.setGone(sa) {
+		t.Fatal("the truncate's source is still in the set, want the unit that carried its record to retire it")
+	}
+	cp := beside(t, sa, f.truncatePlacementsOf(t, seq)...)
+	cpRec := ta
+	cpRec.Seg = cp.Segment
+	if n := live.LivePlacementsOf(cpRec); n != 1 {
+		t.Fatalf("live registrations of the carried truncate in its copy target = %d, want 1: the source's retirement re-held the target for it alone", n)
+	}
+
+	// The survivor seals as the drain quiesces, an index-empty segment its
+	// record alone answers for.
+	f.sealSource(t, file)
+	f.waitSpares(t)
+	if b := f.ix.SegmentBytes(cp.Segment); b.Held != 0 || b.Retained != 0 {
+		t.Fatalf("the survivor holds %d held and %d retained bytes, want none: its record is header-only, the residue's own index-empty shape", b.Held, b.Retained)
+	}
+	if !live.Held(cp.Segment) {
+		t.Fatal("Held of the survivor = false, want the source's retirement to have re-held it for the carried record alone")
+	}
+
+	// The drain's own unit over the survivor must reach the record: the
+	// walk enumerates it, the copy it places doubles the record's class and
+	// spends the survivor's hold, and the unit retires the survivor — one
+	// segment a pass, the drain's whole pace. A walk that enumerates no
+	// registration answers the unit by staying, moving no byte and freeing
+	// nothing, and the survivor wedges: sealed, index-empty, and answering
+	// held for ever.
+	before := f.core.Stats().Counters.RepackedBytes
+	if freed, err := p.repack(t.Context(), copySegCap*8, cp.Segment); err != nil {
+		t.Fatalf("Repack over the carried record's survivor: %v", err)
+	} else if freed == 0 {
+		t.Fatalf("Repack over the carried record's survivor freed %d, want its retired segment's bytes: the unit must carry the record the retirement re-held and retire the segment it held", freed)
+	}
+	if gain := f.core.Stats().Counters.RepackedBytes - before; gain == 0 {
+		t.Fatalf("the unit over the survivor appended %d repacked bytes, want the carried record's own bytes: a walk that enumerates no registration stays the unit over a segment it answers held in, and the segment never drains", gain)
+	}
+	if !p.setGone(cp.Segment) {
+		t.Fatal("the survivor is still in the set, want the unit that carried its record to retire it and peel one segment off the residue")
+	}
+
+	// The drain's residue now rides the fresh copy, its class back to one
+	// placement wide — the migration the class rule is built on, one carry
+	// ahead of the marker whose settle ends it.
+	next := beside(t, cp.Segment, f.truncatePlacementsOf(t, seq)...)
+	nextRec := ta
+	nextRec.Seg = next.Segment
+	if n := live.LivePlacementsOf(nextRec); n != 1 {
+		t.Fatalf("live registrations of the twice-carried truncate in its new target = %d, want 1: the survivor's retirement re-held the fresh copy for it alone", n)
+	}
+}

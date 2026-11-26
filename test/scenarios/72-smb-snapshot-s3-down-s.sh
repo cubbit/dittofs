@@ -25,14 +25,14 @@ dfsctl system drain-uploads
 dfsctl store block gc /test --grace-period 0 -o json
 for _ in $(seq 1 30); do dfsctl share snapshot list /test -o json | jq -e 'all(.[]; .state != "creating")' >/dev/null && break; sleep 1; done
 dfsctl share snapshot list /test -o json | tee /tmp/snaps.json
-dfsctl share disable /test
+dfsctl share quiesce test
 dfsctl share snapshot restore /test "$(jq -r '.[] | select(.name == "unverified" and .state == "ready") | .id' /tmp/snaps.json)" --yes --force && R1=ok || R1=failed
-dfsctl share enable /test
+dfsctl share resume test
 smbclient //127.0.0.1/test -c 'lcd /tmp/back; get f unverified'
 VID="$(jq -r '.[] | select(.name == "verified" and .state == "ready") | .id' /tmp/snaps.json)"
-if test -n "$VID"; then dfsctl share disable /test; fi
+if test -n "$VID"; then dfsctl share quiesce test; fi
 if test -n "$VID"; then dfsctl share snapshot restore /test "$VID" --yes; fi
-if test -n "$VID"; then dfsctl share enable /test; fi
+if test -n "$VID"; then dfsctl share resume test; fi
 if test -n "$VID"; then smbclient //127.0.0.1/test -c 'lcd /tmp/back; get f verified'; fi
 echo "restore: unverified $R1, verified ${VID:-not made}"
 for F in /tmp/back/*; do for W in v1 v2 v3; do cmp -s "$F" /tmp/v/$W && echo "$F: $W"; done; done

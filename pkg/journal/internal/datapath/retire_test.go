@@ -1391,7 +1391,23 @@ func TestTheDurableRetirementSignalWaitsForTheDirectorySync(t *testing.T) {
 	}
 
 	// Every directory sync fails from here to the end of the row, so no
-	// later sync can race the failed one.
+	// later sync can race the failed one. The pool settles first: a spare
+	// the twins' writes, seals and retirements took is made again, and every
+	// recycle that placed one has placed it, so no maker runs inside the
+	// fault window — the row's fault is the retirement's own directory sync,
+	// and a maker failing under it would turn the journal read-only on a
+	// sync the row does not watch.
+	if err := c.pool.WaitSpares(t.Context()); err != nil {
+		t.Fatalf("the pool did not settle before the row's fault armed: %v", err)
+	}
+	// The settle holds only while the window's write lands in a segment the
+	// stream already holds: f and its witness's home roll together, and a
+	// write that rolls would take a spare and start a maker inside the
+	// window. Pin the shape, so a mapping that moves the read is the
+	// assertion's failure, not the row's flake.
+	if c.Streams().For(f) != c.Streams().For(testFile(11)) {
+		t.Fatal("f's stream must have rolled past its sealed segment before the fault window, or its write takes a spare inside it")
+	}
 	if err := seam.Schedule(kit.Failing(kit.OpSyncDir, "*", 0, errors.New("the failed directory sync"))); err != nil {
 		t.Fatalf("the seam refused the directory sync fault: %v", err)
 	}

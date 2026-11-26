@@ -189,7 +189,7 @@ func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID,
 		// reclaimed rather than installed.
 		sh.reclaim[rec.ID] = reclaimer{
 			reconnect: rec.Recovery == entity.RecoverReconnect,
-			deny:      rec.Protocol != entity.ProtocolNLM && rec.Recovery != entity.RecoverReconnect,
+			deny:      rec.Recovery.RenewsLease(),
 		}
 		// A client the table does not know yet starts its lease at the
 		// grace's start, as its first call would: one silent through the
@@ -209,8 +209,8 @@ func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID,
 		// Clear the mark of each host the grace listed that did not reclaim
 		// once the grace ends, if NLM is served where restarts are routine.
 		t.cmu.Lock()
-		if _, ok := t.leases[rec.ID]; !ok && rec.Protocol == entity.ProtocolNFSv4 {
-			t.leases[rec.ID] = t.leaseEnd(rec.Protocol)
+		if _, ok := t.leases[rec.ID]; !ok && rec.Recovery.RenewsLease() {
+			t.leases[rec.ID] = t.leaseEnd(rec.Recovery)
 			t.know(rec)
 		}
 		t.cmu.Unlock()

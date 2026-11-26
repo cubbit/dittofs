@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/node/content"
 	"github.com/cubbit/dittofs/pkg/bootstrap"
 	"github.com/cubbit/dittofs/pkg/engine"
-	"github.com/cubbit/dittofs/pkg/engine/enginewire"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -408,9 +408,9 @@ func (n *Node) readRecords(ctx context.Context) error {
 func (n *Node) startEngine(ctx context.Context) error {
 	bound := make([]engine.Share, 0, len(n.life.shares)+len(n.life.removing))
 	for _, s := range append(slices.Clone(n.life.shares), n.life.removing...) {
-		bound = append(bound, enginewire.Binding(s, 0))
+		bound = append(bound, content.Binding(s, 0))
 	}
-	if err := enginewire.Start(ctx, n.open, n.engine, n.fs, n.fs.Admission, bound); err != nil {
+	if err := content.Start(ctx, n.open, n.engine, n.fs, n.fs.Admission, bound); err != nil {
 		return err
 	}
 	// A share the engine refused at its start is left out of the running
@@ -425,7 +425,7 @@ func (n *Node) startEngine(ctx context.Context) error {
 			n.rec.running[s.ID] = s
 		}
 	}
-	n.started(stepEngine, func(ctx context.Context) error { return enginewire.Stop(ctx, n.open, n.engine) })
+	n.started(stepEngine, func(ctx context.Context) error { return content.Stop(ctx, n.open, n.engine) })
 	return nil
 }
 

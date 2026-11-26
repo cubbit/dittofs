@@ -2,7 +2,6 @@ package settings
 
 import (
 	"go/ast"
-	"go/importer"
 	"go/parser"
 	"go/token"
 	"go/types"
@@ -11,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/cubbit/dittofs/internal/archtest"
 )
 
 // frozenExports is pkg/settings' surface as RFC 13's configuration freeze
@@ -80,8 +81,9 @@ var frozenExports = []string{
 	"func Versions() map[entity.Format]entity.VersionRange",
 }
 
-// sourceImporter reads every import from source, once for all the cases.
-var sourceImporter = importer.ForCompiler(token.NewFileSet(), "source", nil)
+// exportImporter reads each import from compiled export data; the package
+// itself is always parsed from its files, the planted ones included.
+var exportImporter = archtest.ExportImporter(".")
 
 // exports type-checks the package made of dir's non-test .go files, whatever
 // their build tags, so a file behind a tag cannot hide an export, plus the
@@ -116,7 +118,7 @@ func exports(dir string, planted ...string) ([]string, error) {
 		files = append(files, f)
 	}
 
-	conf := types.Config{Importer: sourceImporter}
+	conf := types.Config{Importer: exportImporter}
 
 	pkg, err := conf.Check("github.com/cubbit/dittofs/pkg/settings", fset, files, nil)
 	if err != nil {

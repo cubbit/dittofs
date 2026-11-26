@@ -483,7 +483,7 @@ These settings exist today, all at the `installation` scope only:
 | --- | --- | --- |
 | `api` | `session_lifetime` (default `12h`), `token_max_lifetime` (default a year) | `admin` |
 | `audit` | `retention` (default 400 days, at least 90) | `admin` |
-| `identity` | `id_range`, `ntlm`, `netbios_name`, `keytab`, `directory_stale_grace` | `operator`; `ntlm` and `keytab` `admin` only |
+| `identity` | `id_range`, `ntlm`, `netbios_name`, `keytab`, `directory_stale_grace`, `nfs4_domain` | `operator`; `ntlm` and `keytab` `admin` only |
 | `identity.directory` | the directory record; see [Identity](identity.md) | `admin` |
 
 > **Not available yet on this version:** settings for the NFS and SMB adapters,

@@ -16,15 +16,15 @@
   <rect width="900" height="400" fill="#ffffff"/>
 
   <text x="16" y="26" class="t">A boundary decision depends on exactly 64 preceding bytes.</text>
-  <text x="16" y="46" class="s">One candidate chunk. Not to scale: the hatched region is Min bytes, the window is 64.</text>
+  <text x="16" y="46" class="s">One candidate chunk. Not to scale: the warmed region is Min&#8722;1 bytes, the window its last 64.</text>
 
   <rect x="150" y="80" width="470" height="44" rx="3" class="x" fill="url(#dead)" stroke="#9aa4b2" stroke-width="1.1"/>
   <rect x="620" y="80" width="60"  height="44" rx="3" fill="#fde8c8" stroke="#c98f2e" stroke-width="1.5"/>
   <rect x="680" y="80" width="170" height="44" rx="3" fill="#dce9f7" stroke="#4a7fb5" stroke-width="1.5"/>
 
   <text x="150" y="142" class="m">0</text>
-  <text x="596" y="142" class="m">Min&#8722;64</text>
-  <text x="662" y="142" class="m">Min</text>
+  <text x="596" y="142" class="m">Min&#8722;65</text>
+  <text x="650" y="142" class="m">Min&#8722;1</text>
   <text x="820" y="142" class="m">boundary</text>
 
   <text x="300" y="107" class="s">warmed, affects nothing</text>
