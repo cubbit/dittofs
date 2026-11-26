@@ -46,8 +46,8 @@ from the first pull request and the epic that turns it green removes the entry.
 
 **At the end of the epic:**
 
-- `engine-conformance` runs 47 new tests (46 rows, §10.4's split in two, D6) and a red subtest in
-  four existing tests, 51 entries in all, each graded known at its named check;
+- `engine-conformance` runs 49 new tests (48 rows, §10.4's split in two, D6) and a red subtest in
+  two existing tests, 51 entries in all, each graded known at its named check;
 - `enginetest` takes `WithCarver`, `WithChain`, `WithSyncer` and `WithRefs`, each refusing by name
   while its component cannot be composed, in an order a table test pins, and the fixture controls
   the rows call, each refusing by name the same way until the epic that needs it builds it;
@@ -79,13 +79,15 @@ controls the rows call; the §3.2 row's first form (D4).
 - "§2.1 remote required": the RFC 23 plan's epic 3, through the node.
 - The journal plan's system scenarios and the RFC 21 and RFC 22 remote-outage rows: `e2e`, which
   keeps no known list, so the integration epic writes them green.
-- Legs already deferred elsewhere: the "shard handed away and back" leg of "§4.1 verifier inputs",
-  the replica and promotion legs of "§2.5 metadata reconcile" and the replicated rejoin of "§2.5
-  journal gone" (the cluster stage); the snapshot-capture visit of "§2.5 metadata reconcile" (RFC
-  12); the pre-warm leg of "§9.1 no pre-clone fill" (unowned, with `PreWarm`); the store's
-  `Recheck` (RFC 9), for which "§11.1 health per direction" raises the store's drift as `Recheck`
-  would; "§2.5 restart re-offer"'s collection of the first object and intent once the epoch is
-  superseded (RFC 9, GC).
+- Legs already deferred elsewhere, each under its row of the offload plan's §6.1 ledger: the "shard
+  handed away and back" leg of "§4.1 verifier inputs", the replica and promotion legs of "§2.5
+  metadata reconcile" and the replicated rejoin of "§2.5 journal gone" (the cluster stage, row "The
+  cluster rules"); the snapshot-capture visit of "§2.5 metadata reconcile" (RFC 12, row
+  "Snapshot-hold ordering in the pipeline"); the pre-warm leg of "§9.1 no pre-clone fill" (unowned,
+  row "`PreWarm` and the speculator's pre-warm"); the store's `Recheck` (RFC 9, row "Detecting
+  bucket-setting drift"), for which "§11.1 health per direction" raises the store's drift as
+  `Recheck` would; "§2.5 restart re-offer"'s collection of the first object and intent once the
+  epoch is superseded (RFC 9, row "GC composed in the node").
 
 ### 1.3 Names used here
 
@@ -93,6 +95,7 @@ controls the rows call; the §3.2 row's first form (D4).
 - **S2**, red rows in CI: the end of this epic; epics 13, 15 and 17 start there.
 - **S5**, offload components built: the RFC 2 to RFC 5 plans' implementation epics.
 - **S6**, journal offload half built: the journal plan's epics 9b and 7b.
+- **S7**, node composition built: the end of epic 21.
 - **The first part**: the journal-only engine, epics 1 to 10 of RFC 8's first plan, whose fixture
   and rows this epic extends.
 - **The integration epic**, epic 21: the node composes offload.
@@ -140,7 +143,7 @@ catalogue makes it pass. The behaviour each row checks is that epic's to build.
 | --- | --- | --- | --- | --- |
 | R5 | Each red row is one entry naming the test exactly, never a pattern, with `status` `fail`, `fix` `planned`, `category` `feature`, never `intermittent`, a `reason`, and `issue` quoted, naming the epic issue of the epic that turns it green | MUST | RFC 29 §4.7; `CLAUDE.md` "By kind"; `test/engine/known.yaml`'s header | T12.2 to T12.8 |
 | R6 | Each entry's `message` is the text of the check that fails, specific enough that no other failure contains it | MUST | RFC 29 §4.7; `CLAUDE.md` "By kind" | T12.1 to T12.8 |
-| R7 | A red half added to a test that passes is a subtest with its own entry, so the test's green half stays graded | MUST | RFC 29 §4.6 (a parent failing only through known subtests is known) | T12.5, T12.8 |
+| R7 | A red half added to a test that passes is a subtest with its own entry only where the test's green half is itself in subtests, each graded on its own; a test that asserts in its own body gets a new test beside it, since a parent failing through known subtests is graded known whatever its body did | MUST | RFC 29 §4.6 (a parent failing only through known subtests is known) | T12.5, T12.8 |
 | R8 | #5757's four entries and the two #5261 entries stay as they are, not re-pointed | MUST | plan §1.4 | T12.5 |
 
 **Group A rows, the offload path**
@@ -185,15 +188,15 @@ catalogue makes it pass. The behaviour each row checks is that epic's to build.
 | R34 | §2.5 `Bind` takes over the reconcile's handle: one handle of the tag, the counter above the imported ref before the share serves, and every held-lock ordering of the row, including the failed `Bind` and `Drop` legs | test row | RFC 8 §15.1 | T12.4 |
 | R35 | §2.5 unsuitable journal at start, two devices: `Start` succeeds and the other device's share serves, and the `Close`, failed-start, emptied-directory, `Unbind` and failed-recovery legs | test row | RFC 8 §15.1 | T12.4 |
 | R36 | §2.5 unread range at start: the other journal's share serves, the first's are unattached with `journal_range_unreadable`, retried at 60 s, attach once the range reads or is acknowledged, and switch to unsuitable on `ErrUnsuitableStorage` | test row | RFC 8 §15.1 | T12.4 |
-| R37 | §2.5 reseed gates offer and eviction: a crash after an offload commit with its record unsynced, with the journal full, puts nothing again and evicts no extent before the reseed visits its file; a bit whose ref was deleted is reported, cleared with `Unmark` and re-offered before any eviction | test row | RFC 8 §15.1 | T12.4 |
+| R37 | §2.5 reseed gates offer and eviction: a crash after an offload commit with its record unsynced, with the journal full, puts nothing again and evicts no extent before the reseed visits its file; a bit whose ref was deleted is reported as a ledger mismatch, cleared with `Unmark` and offered again, and never evicted before that offer commits | test row | RFC 8 §15.1 | T12.4 |
 
 **Group A rows, capacity and material, and the gates**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R38 | §2.5 clone resumed at a full limit, the remote half: with the remote down the destination answers `ErrDelay` with `DelayCapacity`, and once it returns the clone finishes and both files serve | test row | RFC 8 §15.1 | T12.5 |
+| R38 | §2.5 clone resumed at a full limit, the remote half: a clone crashed after its copies synced and before its phase 1, on a share at its journal limit with the remote down, is resumed by the restart's `Start`; an open of the destination answers `ErrDelay` with `DelayCapacity`, and a write into the source extent is held as capacity, `ErrDelay` with `DelayCapacity`, never `DelayClone`, which SMB answers `STATUS_FILE_LOCK_CONFLICT`; once the remote returns the clone finishes and both files serve | test row | RFC 8 §15.1; RFC 22 §16.5 checks the SMB status | T12.5 |
 | R39 | §10.2 retry later, the store legs: dirty bytes with the remote reachable answer `ErrDelay`, never `ErrNoSpace`, and succeed once offload and repack free space; with the remote unreachable past the deadline, `ErrDelay` throughout and success once it returns; a quota refusal answers `ErrNoSpace` at once, the store error reaching the engine as `ErrDenied`; a `413` and a `403` answer `ErrNoSpace` at once, and succeed once the limit is lifted or the credential restored | test row | RFC 8 §15.1 | T12.5 |
-| R40 | §10.4 destroyed material: covered extents lose their bit, are not evicted and are offloaded again; a remote-only chunk reads **Lost**; a destroyed master key or a key record marked destroyed between pin and Commit refuses the commit; a destroy between Commit and Mark leaves the extents unmarked; a crash before `Unmark` is cleared by the reseed; no replacement material refuses the pass at Intent | test row | RFC 8 §15.1 | T12.5 |
+| R40 | §10.4 destroyed material: a data key destroyed while the journal holds chunks its blocks cover leaves those extents without their bit, not evicted, offloaded again under current material and read back, and a remote-only chunk it covered reads **Lost**, not corrupt; the master key wrapping a pinned data key destroyed between pin and Commit refuses the commit; a pinned material's key record marked destroyed between pin and Commit refuses the commit, abandons the attempt, commits no block under that material and offers the extents again under current material; a destroy between Commit and Mark leaves the extents unmarked; a crash after a destroy and before its `Unmark` is cleared by the reseed before any of those extents is evicted; the current material destroyed with no replacement refuses the next pass at Intent, puts nothing and leaves the content dirty and held | test row | RFC 8 §15.1 | T12.5 |
 | R41 | §3.2 no gate is safety: with suspension, pins and health gating off and eviction as eager as possible, every other Group A check passes | test row | RFC 8 §15.1 | T12.5 |
 
 **Group B rows**
@@ -246,8 +249,8 @@ catalogue makes it pass. The behaviour each row checks is that epic's to build.
   `sim` and standard-library values. Most rows refuse at `New`, so the controls they call after it
   never run at S2: their names and signatures here are a proposal, and the epic that makes each
   real may change it and rewrite the rows' calls in the same change. The controls a row does reach
-  at S2 (`WithDevices`, `WithoutGates`, `AcknowledgeLoss`, `ReopenOwingReconcile`, `SalvageTo`,
-  `BlockNextRun`) are frozen as written, since their refusals are messages. Where the fixture
+  at S2 (`WithDevices`, `WithoutGates`, `AcknowledgeLoss`, `ReopenOwingReconcile`, `BlockNextRun`)
+  are frozen as written, since their refusals are messages. Where the fixture
   already has a control (`FailUpdatesSetting`, `FailUpdatesAfter`, `HoldNextWrite`, `FaultStore`,
   `Seam.SetFault`, `Crash`, `HoldBatches`, `NewWithSmallBatches`, `f.FS.Store`, `HandleOf`), a row
   uses it. Prior art: none found.
@@ -263,14 +266,17 @@ catalogue makes it pass. The behaviour each row checks is that epic's to build.
   subtest of the §3.2 row, and gives each subtest that then fails its own entry. Converting the
   first part's rows now would churn green entries for a rerun that cannot run. Prior art: `overBoth`
   in `internal/vfs/integration`, which reruns each row over two compositions.
-- **D5, a row that already has a first-part test gets its own test, except four that extend one.**
+- **D5, a row that already has a first-part test gets its own test, except two that extend one.**
   "§2.5 journal gone", "§2.5 attach after a device loss", "§2.5 unsuitable journal at start", "§5.1
   overwrite waits for existence", "§8.1 removal wedge" and "§1.1 no cross-share slowdown" have green
   first-part tests holding their other halves, so each red half is a new test beside it: a red leg
-  inside the green test would hide it. The four extensions (`TestRFC8A_CloneResumedAtAFullLimit`,
-  `TestRFC8A_RetryLaterAtTheShareLimit`, `TestRFC8C_Settings`, `TestV20`) gain one subtest each,
-  named for the half it adds, with its own entry (R7). The two #5757 ones already stop at a
-  `t.Fatalf`, so their subtest runs before the old body, which stays as it is; `TestV20`'s runs in
+  inside the green test would hide it. So do the remote halves of
+  `TestRFC8A_CloneResumedAtAFullLimit` and `TestRFC8A_RetryLaterAtTheShareLimit`: both assert in
+  their own bodies, and the grader counts a parent failing through known subtests as known whatever
+  its body did (`failedThroughSubtests`), so a red subtest would excuse any failure of the body
+  until epic 18, and #5757's message would pin nothing. The two extensions (`TestRFC8C_Settings`,
+  `TestV20`) gain one subtest each, named for the half it adds, with its own entry (R7): their other
+  legs are subtests, each still graded on its own. `TestV20`'s runs in
   `TestV20` itself, not through `overBoth`, since the offload half has nothing to check over the
   fake journal and would double its entries. Prior art: none found.
 - **D6, "§10.4 destroyed material" is two tests.** Its crash leg (a crash before `Unmark`, cleared
@@ -287,7 +293,9 @@ catalogue makes it pass. The behaviour each row checks is that epic's to build.
   engine rows on this fixture after S7, and asks for a restart onto fresh key material, a wrapped
   provider, read-ahead off and the codec's recorded outputs (T12.1). They are listed here so the
   epic building each component builds its control with it, rather than RFC 5's rows growing a
-  second fixture. Each refuses by name until then (D1), and each takes its final signature from
+  second fixture: `RestartWithFreshKeys` and `WrapKeys` in epic 15's T15.5, with `WithChain`;
+  `Recorder` in epic 16's T16.1, with `WithSyncer`; `WithoutReadahead` in epic 17's T17.6, with
+  read-ahead. Each refuses by name until then (D1), and each takes its final signature from
   the epic that builds it (D2). Prior art: none found.
 
 ## 5. Target tree
@@ -308,7 +316,7 @@ pkg/engine/conformance/
   rfc8_remote_test.go     T12.3  the read, clone and fill rows
   rfc8_restart_test.go    T12.4  the restart rows
   rfc8_material_test.go   T12.5  §10.4's two tests and the §3.2 row
-  rfc8_a_test.go, rfc8_cover_test.go  T12.5 the two #5757 subtests
+  rfc8_a_test.go, rfc8_cover_test.go  T12.5 the two remote-half tests, beside their #5757 parents
   rfc8_health_test.go     T12.6  the health, drain and scheduler rows, with the ref-record corruption they use
   rfc8_space_test.go      T12.7  the local-space and isolation rows
   rfc8_reseed_test.go     T12.8  §15.3's reseed row
@@ -378,8 +386,11 @@ at S2 (D3) and the epic whose issue its entry names. "c, ch, s" stands for `With
   `FaultStore`, whose rules hold, fail, corrupt or deny a put, get or delete by operation and name;
   `RunPass(ctx context.Context, share entity.ShareID) error`; `PrimaryPair() *Fixture`, a second
   engine over the same store with a guard of its own. Offload commits are faulted with
-  `FailUpdatesSetting` and `FailUpdatesAfter`, the store host's crash is `Crash`, the journal's bits
-  read through `HandleOf` and refs through `f.FS.Store`.
+  `FailUpdatesSetting` and `FailUpdatesAfter`, the store host's crash is `Crash`, and refs read
+  through `f.FS.Store`. The journal's bits are read through `Offloaded(id entity.FileID)
+  []entity.Extent`, the extents of file id the real journal's `Inspect` reports with the offloaded
+  bit set, real from the start: `engine.Handle`, which `HandleOf` returns, declares no call that
+  reads the bits, and a method only a test calls would fail `TestRFC8C_DeclaredInterfaces`.
 
   | Row | Test | Asks | Message at S2 | Green |
   | --- | --- | --- | --- | --- |
@@ -408,13 +419,15 @@ at S2 (D3) and the epic whose issue its entry names. "c, ch, s" stands for `With
 
 - **Track:** the team. **Depends on:** T12.2.
 - **Covers:** R2, R5, R6, R19 to R29.
-- **Deliverables:** eleven rows in `rfc8_remote_test.go` and their entries. Controls (D2,
-  proposed; made real by epic 17): `FailNextFill(err error)` at the journal's `Fill`,
-  `HoldBetweenReadSteps() (entered <-chan struct{}, release func())`, `HoldNextRelease()
-  (entered <-chan struct{}, release func())` on a clone source's `Release`, `Relocate(id
-  entity.FileID, chunk int)` (a chunk moved to a new block and the old one swept), `Evict(id
-  entity.FileID)`. Fetches are held and chunks corrupted through `FaultRemote`; `K` is forced small
-  with `NewWithSmallBatches`.
+- **Deliverables:** eleven rows in `rfc8_remote_test.go` and their entries. Controls (D2, proposed;
+  made real by epic 17): `FailNextFill(err error)` at the journal's `Fill`, `HoldBetweenReadSteps()
+  (entered <-chan struct{}, release func())`, `HoldNextRelease() (entered <-chan struct{}, release
+  func())` on a clone source's `Release`, `Relocate(id entity.FileID, chunk int)` (a chunk moved to
+  a new block and the old one swept), `Evict(id entity.FileID)`, the file's offloaded extents
+  released through the real journal's `Release`. That call answers `ErrNotImplemented` until S6, so
+  a row that evicts stays red past epic 17 until S6; the engine's own eviction, `evict` and its
+  loop, is epic 18's, and no row here needs it. Fetches are held and chunks corrupted through
+  `FaultRemote`; `K` is forced small with `NewWithSmallBatches`.
 
   | Row | Test | Asks | Message at S2 | Green |
   | --- | --- | --- | --- | --- |
@@ -478,28 +491,34 @@ at S2 (D3) and the epic whose issue its entry names. "c, ch, s" stands for `With
 
 - **Track:** the team. **Depends on:** T12.2.
 - **Covers:** R2, R5 to R8, R38 to R41.
-- **Deliverables:** a subtest `the remote tier's half` in each of `TestRFC8A_CloneResumedAtAFullLimit`
-  and `TestRFC8A_RetryLaterAtTheShareLimit`, run before the old body, with an entry each (D5), the
-  parents' #5757 entries untouched (R8); `TestRFC8A_DestroyedMaterial` and
-  `TestRFC8A_DestroyedMaterialCrashBeforeUnmark` (D6) and `TestRFC8A_NoGateIsSafety` (D4) in
-  `rfc8_material_test.go`. In `material.go`: `WithoutGates() Option`, frozen, refusing with
-  `fixture: the gates' switch is not built` until epic 16; proposed, made real by epic 18:
-  `DestroyDataKey(ns entity.NamespaceID)`, `DestroyMasterKey()`, `MarkRecordDestroyed(ns
-  entity.NamespaceID)`, `DestroyCurrent(ns entity.NamespaceID)`, `HoldBetweenPinAndCommit()`,
-  `HoldBetweenCommitAndMark()`. The quota, `413`, `403` and outage legs are `FaultRemote` rules.
+- **Deliverables:** `TestRFC8A_CloneResumedAtAFullLimitWithTheRemoteDown` beside
+  `TestRFC8A_CloneResumedAtAFullLimit`, and `TestRFC8A_RetryLaterAtTheStore` beside
+  `TestRFC8A_RetryLaterAtTheShareLimit`, each a test of its own with its own entry (D5), the parents
+  and their #5757 entries untouched (R8). The parent's restart hands `Start` only `f.Share` while
+  its clone sits on the second share, so the resume it names never runs (its entry says so); the
+  clone test restarts through `CrashAll()`, a `Crash` whose restart hands `Start` every share the
+  fixture had bound, proposed (D2) and made real by epic 18 with the row.
+  `TestRFC8A_DestroyedMaterial` and `TestRFC8A_DestroyedMaterialCrashBeforeUnmark` (D6) and
+  `TestRFC8A_NoGateIsSafety` (D4) in `rfc8_material_test.go`. In `material.go`: `WithoutGates()
+  Option`, frozen, refusing with `fixture: the gates' switch is not built` until epic 16; proposed,
+  made real by epic 18: `DestroyDataKey(ns entity.NamespaceID)`, `DestroyMasterKey()`,
+  `MarkRecordDestroyed(ns entity.NamespaceID)`, `DestroyCurrent(ns entity.NamespaceID)`,
+  `HoldBetweenPinAndCommit()`, `HoldBetweenCommitAndMark()`. The quota, `413`, `403` and outage legs
+  are `FaultRemote` rules.
 
   | Row | Test | Asks | Message at S2 | Green |
   | --- | --- | --- | --- | --- |
-  | §2.5 clone resumed at a full limit, remote half | `TestRFC8A_CloneResumedAtAFullLimit/the_remote_tier's_half` | c, ch, s | carver | 18 |
-  | §10.2 retry later, store legs | `TestRFC8A_RetryLaterAtTheShareLimit/the_remote_tier's_half` | c, ch, s | carver | 18 |
+  | §2.5 clone resumed at a full limit, remote half | `TestRFC8A_CloneResumedAtAFullLimitWithTheRemoteDown` | c, ch, s; `CrashAll` | carver | 18 |
+  | §10.2 retry later, store legs | `TestRFC8A_RetryLaterAtTheStore` | c, ch, s | carver | 18 |
   | §10.4 destroyed material | `TestRFC8A_DestroyedMaterial` | c, ch, s | carver | 18 |
   | §10.4 destroyed material, crash before `Unmark` | `TestRFC8A_DestroyedMaterialCrashBeforeUnmark` | c, ch, s, `WithRefs` | carver | 19 |
   | §3.2 no gate is safety | `TestRFC8A_NoGateIsSafety` | `WithoutGates` | `fixture: the gates' switch is not built` | 16 |
 - **Acceptance criteria:**
   - Each row is written whole as R38 to R40 state it and graded known at its message.
-  - Each new subtest runs before its parent's old body, which stops at a `t.Fatalf` and would
-    otherwise never reach it; the parents' `go-json` failure text is still their own, so their
-    #5757 entries still match (read in the run's report).
+  - The two #5757 parents are unchanged and still graded by their own entries, on their own
+    messages (read in the run's report); no new test's failure excuses theirs.
+  - The clone test's restart hands `Start` both shares, so the resume runs in `Start`, not in a
+    later `Bind`.
 - **Tests:** the five, red. Doubles as T12.2, and `keystest`'s in-memory `keys.Provider`, kind 2
   (RFC 5's suite).
 - **Rules:** rule 6, the #5757 entries stay for epic 18, whose pull request closes #5757.
@@ -512,14 +531,20 @@ at S2 (D3) and the epic whose issue its entry names. "c, ch, s" stands for `With
 - **Covers:** R5, R6, R42 to R48.
 - **Deliverables:** seven rows in `rfc8_health_test.go` and their entries. In `work.go`, frozen:
   `BlockNextRun(source string, shard entity.ShardID) (release func())`, refusing with `fixture: the
-  engine's work queue is not built` until epic 14; `SalvageTo(dir string)`, refusing with
-  `fixture: the salvage export is not built` until epic 20. Drift is raised through a `FaultRemote`
+  engine's work queue is not built` until epic 14. Proposed, made real by epic 20: `SalvageTo(dir
+  string)`, refusing with `fixture: the salvage export is not built`, and `LeaveTag(tag
+  journal.ShareTag, n int64)`, n bytes left on the real journal under a tag no share record names,
+  for the next restart to strand. Drift is raised through a `FaultRemote`
   rule, made real by epic 16. No control drops a dispatch wakeup: that leg of "§6.1.1 a stuck run"
   is epic 13's single-instance test, which epic 14's T14.9 names in the row's place.
   In `rfc8_health_test.go`, used there only: an undecodable value written at a file's ref key
   through the fixture's `kv.KV` and restored, kind 3, as `TestRFC8B_RemovalWedge`'s `refsFault`
-  does for the truncate. The stranded tag is made as the first part's strand rows make it, and the
-  export refused by naming a path under a regular file, which refuses even a root process. An
+  does for the truncate. The stranded tag is left with `LeaveTag`, over the real journal: the first
+  part strands a tag only in unit tests over `FakeJournal` (`leaveTag` in `strand_start_test.go`),
+  which no row can reuse. The row asks `WithChain`, since epic 20 seals every stranded export with a
+  fresh salvage key wrapped under the master key (its D8), and an export with no master key fails
+  for that reason instead of the one the row sets. The export is refused by naming a path under a
+  regular file, which refuses even a root process. An
   offered reader that fails every read is a `Seam.SetFault` rule on the file's segment. Rows read
   conditions from `Stats().Journals[dir].Conditions` and the scheduler's figures from
   `JournalStats.Work` by source and shard.
@@ -528,7 +553,7 @@ at S2 (D3) and the epic whose issue its entry names. "c, ch, s" stands for `With
   | --- | --- | --- | --- | --- |
   | §11.1 health per direction | `TestRFC8B_HealthPerDirection` | c, ch, s | carver | 20 |
   | §11.1 offload health | `TestRFC8B_OffloadHealth` | c, ch, s | carver | 20 |
-  | §11.1 `stranded_export_failed` | `TestRFC8B_StrandedExportFailed` | `SalvageTo` | `fixture: the salvage export is not built` | 20 |
+  | §11.1 `stranded_export_failed` | `TestRFC8B_StrandedExportFailed` | ch; `LeaveTag`, `SalvageTo` | `fixture: the chain is not composed` | 20 |
   | §11.4 drain names its blocker | `TestRFC8B_DrainNamesItsBlocker` | c, ch, s | carver | 20 |
   | §6.1.1 a stuck run | `TestRFC8B_AStuckRun` | `BlockNextRun` | `fixture: the engine's work queue is not built` | 14 |
   | §2.5 join | `TestRFC8B_JoinWaitsForAPassInAStalledPut` | c, ch, s | carver | 16 |
@@ -582,8 +607,10 @@ at S2 (D3) and the epic whose issue its entry names. "c, ch, s" stands for `With
 - **Covers:** R5 to R7, R55 to R58.
 - **Deliverables:** `TestRFC8C_Reseed` in `rfc8_reseed_test.go`; a subtest `the pool half` of
   `TestRFC8C_Settings` (D7); `TestRFC14_L9` in `rfc14_test.go`, through the fixture's open-state
-  table; a subtest `the offload half` of `TestV20`, run in `TestV20` itself rather than through
-  `overBoth`, with `compose` passing the options to `enginetest.New`; their entries.
+  table, evicting through epic 18's loop on occupancy, as `TestRFC8B_OccupancyTriggersEviction`
+  does, never through T12.3's `Evict`, so it needs nothing of T12.3; a subtest `the offload half` of
+  `TestV20`, run in `TestV20` itself rather than through `overBoth`, with `compose` passing the
+  options to `enginetest.New`; their entries.
 
   | Row | Test | Asks | Message at S2 | Green |
   | --- | --- | --- | --- | --- |

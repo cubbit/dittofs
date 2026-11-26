@@ -320,17 +320,17 @@ the second because this plan takes over rows of two other plans' ledgers.
 | E6 | NFSv4 ACL attributes | `translate`'s NFSv4 functions, `acl`, `dacl`, `sacl`, `aclsupport`, `who`, `mode_umask` | 5 | 12 | C | E16 |
 | E7 | Identity's NFS side | `AUTH_SYS` and `AUTH_NONE` resolution, uid and gid mapping and mints, owner strings, `ManageGIDs`, RFC 18 §10's NFS rows | 5 | 16 | B | E6, partly; E16 |
 | E8 🔀 | Clients and sessions | the callbacks value and the `Adapter` bytes first; `EXCHANGE_ID`, `SETCLIENTID`, confirms, `CREATE_SESSION`, `SEQUENCE`'s slots and reply cache, the session registry, lease and reclaim signals; A1's runner change after S2b | 10 | 28 | A | E10; E9, E11 and E12, partly; S4 |
-| E9 | Opens, stateids and locks | `OPEN` and its claims, stateid rules, NFSv4.0 owner sequences, `LOCK`, `LOCKT`, `LOCKU`, `TEST_STATEID`, `FREE_STATEID`, drain roles per request | 8 | 25 | C | E10 and E12, partly; E16 |
+| E9 | Opens, stateids and locks | `OPEN` and its claims, stateid rules, NFSv4.0 owner sequences, `LOCK`, `LOCKT`, `LOCKU`, `TEST_STATEID`, `FREE_STATEID`, drain roles per request | 11 | 31.25 | C | E10 and E12, partly; E16 |
 | E10 | Delegations and the back channel | the back channel's calls, delegations offered, recalled, returned and revoked, administrator's revoke, path down with A2's service half after S2b, the drain test | 9 | 28.75 | A | E16 |
 | E11 🔀 | NLM, NSM and the datagram path | `core`'s datagram listener, NLM v4, NSM, grants resent, `SM_NOTIFY`, `DialClient`'s network | 7 | 22 | B | E16 |
 | E12 | NFSv4.2 operations | `DEALLOCATE`, `SEEK`, `READ_PLUS`, `COPY`, `CLONE`, xattrs, the hold budget | 8 | 20.5 | C | E16 |
 | E13 🔀 | RPCSEC_GSS | `gss`'s Kerberos side (S6c); the context table as NFS's `Security` stage over it, `krb5`, `krb5i`, `krb5p` | 12 | 28 | B | E16; RFC 22's plan's epic 4 |
-| E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries | 4 | 11.5 | A | E16 |
+| E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries; the two-client conflict captures, from a recording host with client namespaces, deferred in §6.6 | 4 | 11.5 | A | E16 |
 | E15 🔀 | Integration with the node | settings, the NFS suites turned on | none | planned after S7 | team | E16, partly |
 | E16 🔀 | E2E green | in-process and restart rows, cross-protocol rows, e2e, benchmarks, soak, the totality test, pins; the burn-down after E15 | 8 | 25.5 | team | none |
-| | **Total** | | **97** | **270.25** | | |
+| | **Total** | | **109** | **304** | | |
 
-**Plan estimate: 97 subtasks, 270.25 man-days, not counting epic 15.**
+**Plan estimate: 109 subtasks, 304 man-days, not counting epic 15.**
 
 Nor E16's burn-down of the four NFS and POSIX suites, which waits for E15 as E15 waits for S7 (§6.2, point
 6), nor the rows parked in §6.6's deferral ledger.
@@ -476,19 +476,18 @@ Figures are man-days from S2.
   man-days in, at 21, before track C's E9 needs them and well before track B's E11 at 42. E10 starts
   at 45, as track C's E9 brings `OPEN`. E14's scripts use E3's scripted client against knfsd and its
   DittoFS side waits for S5; the track ends at 71, nine before track B, and fills with E16's
-  in-process rows as their epics allow. 74.5 man-days, the 3.5 E3's breakdown added not yet moved
-  into the figures above: moved, they put E8's callbacks value at about 24.5, after track C's E9
-  starts at 23, and the track's end at 74.5, five and a half before track B.
+  in-process rows as their epics allow. 88.75 man-days by its epics' rows; the start and end
+  figures above predate the epic breakdowns and are not yet moved.
 - **Track B: E4, E7, E11, E13.** NFSv3 and MOUNT, then identity's NFS side, then NLM and NSM, then
   RPCSEC_GSS. E4 comes first so S3 holds at 26 (D12); E7 follows, ending at 42, before track C reaches
   E6 at 48; E13 starts at 64, builds S6c, `gss`'s Kerberos side, itself, and needs S6b for its signed-in rows,
-  which, if late, leave E13's table and refusals done and its sign-in rows waiting. 80 man-days.
+  which, if late, leave E13's table and refusals done and its sign-in rows waiting. 92 man-days.
 - **Track C: E5, E9, E6, E12.** The NFSv4 namespace and data path, then opens, stateids and locks on
   it, then ACL attributes, then NFSv4.2. E9 runs on `memory.New` from 23, after E8's callbacks value
   at 21, and its loopback rows wait for S4 at 45; E6 starts at 48 with E7 done; E12 last, with E8's
-  slot count and E9's stateids in. 73 man-days.
+  slot count and E9's stateids in. 80.5 man-days.
 - **The team.** E1 and E2 before the tracks; E15 at S7; E16 after the tracks. E1, E2 and E16, 42.75
-  man-days, are the difference between the tracks' 227.5 and the plan's 270.25.
+  man-days, are the difference between the tracks' 261.25 and the plan's 304.
 
 **The first mount.** By D12, an NFSv3 mount over `AUTH_SYS` comes first: E1 to E4 and E7, about 76.25
 man-days of plan work, the critical path E1 → E2 → E4 → E7, 59.25 man-days in series, then S5, S7 and
@@ -583,9 +582,11 @@ for body types two procedures share) are in RFC 20 §2.5 by amendment A4; §6.2,
   (`pkg/openstate/clients.go`), so the confirming `CREATE_SESSION` of a new client finds its
   proposal, its ID, confirm and `csa_sequence`, only in the adapter's memory (#5090's §3.5 note).
   Prior art: knfsd holds unconfirmed clients in memory (from memory). Applied in E8.
-- **D8. NFSv4.0 owners' last replies** are a per-node table keyed by (client, owner), bounded by the
-  connection-state pool, beside the sessions (RFC 21 §4.2's last reply in gateway memory). Prior art:
-  knfsd's `so_replay` per state owner (from memory). Applied in E9.
+- **D8. NFSv4.0 owners' last replies** are a per-node table keyed by the state a request names:
+  (client, owner) for an `OPEN`, and the stateid's `other` for a request that names only a stateid,
+  which carries no owner the adapter can read; bounded by the connection-state pool under a ceiling
+  of its own, beside the sessions (RFC 21 §4.2's last reply in gateway memory). Prior art: knfsd's
+  `so_replay` per state owner, found through the stateid (from memory). Applied in E9 (its D3).
 - **D9. `CB_NOTIFY_LOCK` is not sent.** RFC 21 §5.5 makes it optional and the poll decides; a client
   that asked for it polls anyway. Prior art: knfsd sends it, Linux clients poll regardless (from
   memory). Applied in E10; its row is in §6.6.
@@ -920,7 +921,7 @@ signal, N18, N20, N27; the `FlowControl` conformance check; RFC 20 §10.1's
 
 ### Epic 9 — Opens, stateids and locks
 
-**Epic 9 estimate: 8 subtasks, 25 man-days.**
+**Epic 9 estimate: 11 subtasks, 31.25 man-days.**
 
 The state a client takes through an open: open stateids and their sequence, NFSv4.0 owners,
 byte-range locks, and the rules a stateid is checked by.
@@ -945,7 +946,8 @@ reboot racing renew *(1 node)*", the "§3.5 confirm" step of a rebooted client h
 - Stateids: the six rules, the special stateids within an open's context, extending E5's stateid
   function, the current stateid, `TEST_STATEID`,
   `FREE_STATEID`, `FreeState` on an NFSv4.0 client's behalf.
-- NFSv4.0 owner sequences and owners' last replies (D8).
+- NFSv4.0 owner sequences and owners' last replies (D8); the lease renewed by NFSv4.0's stateful
+  operations (RFC 21 §5.1), `SEQUENCE` and `RENEW` renewing it in E8.
 - Each member row's `Cacheable` column, which E3's NFSv4.0 duplicate-request cache reads: set on
   each non-idempotent member it adds whose retransmission the owners' last replies do not already
   answer.
@@ -1369,6 +1371,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | A suite running E14's capture diffs (E14; RFC 21 §13's suites paragraph) | the paragraph names none, so the diffs are run by hand and fail no pull request | RFC 21, by a pull request to §13's suites paragraph, which registers the suite with it | a diff's divergence is seen regress unnoticed, or the cutover's suites go back on (stage 7) |
 | A capture-diff script for Kerberos's security exchange (E14's §9, point 3) | it needs S6b, S6c and a scripted client that speaks `RPCSEC_GSS` | unowned | E13's T13.5 adds `RPCSEC_GSS` to `nfsclient` |
 | A capture diff of the TLS handshake after the `AUTH_TLS` probe (E14's §9, point 3) | its fields are each side's TLS library's, not NFS's, so a difference has no RFC 21 rule to cite | unowned | a TLS interop failure with a supported client |
+| The two-client conflict captures: a second client's `OPEN` answered `NFS4ERR_DELAY` on knfsd, recorded from a host with client namespaces (E2's §1.2; E14's §1.2) | E14 records from client 1's namespace alone, and the scripted client answers no back channel, so no second client's conflicting `OPEN` is sent | unowned | E10's T10.2 gives the scripted client a back channel |
 | A capture-diff script for delegation grants (E14's §9, point 3) | the scripted client answers no back channel | unowned | E10's T10.2 gives the scripted client a back channel |
 | A capture-diff script for NLM and NSM (E14's §9, point 3) | the scripted client has no NLM host | unowned | E11's T11.2 adds `nfsclient.Host` |
 | A capture-diff script for NFSv4.2's operations (E14's §9, point 3) | the operations' loopback rows come first | unowned | E12's T12.8 lands |

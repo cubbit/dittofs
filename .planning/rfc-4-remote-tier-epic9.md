@@ -68,13 +68,16 @@ lines in the `fuzz` suite; RFC 4 §7.5's suites paragraph.
   the nightly service row, owned `unowned`, triggered by a credential per service allowed to create
   and delete buckets, or a pool of fresh buckets, existing as CI secrets. This epic leaves both at
   `tier: manual` (R2) and names in the cell what CI would need (T9.3).
-- **The rows on settings neither LocalStack nor a measured service holds,** in CI: the §6.1 ledger
-  row on §7.1's T rows on a setting LocalStack cannot hold, owned `unowned`.
+- **The rows on settings LocalStack cannot hold,** in CI: the §6.1 ledger row on §7.1's T rows on
+  a setting LocalStack cannot hold, owned `unowned`. A row no measured service holds either goes to
+  the ledger row on such rows (D7).
 - **Every `Recheck` row and half:** the §6.1 ledger row owned by RFC 9.
 - **A backup location's rows, the object-lock lab rows of §7.4 and their release check:** the
   §6.1 ledger row owned by RFC 26, which this epic's pull request extends to name the lab rows and
   the release check. No v1.1 release offers an immutable location.
-- **§7.1's two §4.10 rows:** E8 builds them; T9.3 moves them onto the target once they exist.
+- **§7.1's first §4.10 row on a service:** E8 builds both rows in `internal/node/content`. The
+  first is a table test of a function and reaches no service, so it has nothing to move. The
+  second runs on LocalStack; T9.3 moves it onto the target, with a store count that follows it.
 - **The syncer's re-get of a corrupt ranged chunk:** the §6.1 ledger row owned by the RFC 3 plan's
   epic 6.
 - **Replacing §7.5's proposed targets** with measured values: the §6.1 ledger row on it, owned
@@ -110,16 +113,16 @@ cited by number and title and not copied.
 | --- | --- | --- |
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T9.1, T9.2 | the target's variables are read by a function of a lookup function, table-tested with a map, and the sweep's age by the injected clock (inputs, not doubles); re-signing is a function of a request and credentials, tested on its output. Everything else runs against LocalStack or a real service |
 | rule 2, fuzz tests where relevant ([`CLAUDE.md`, "By kind"](../CLAUDE.md#by-kind)) | T9.7 | this epic writes no decoder; it joins E4's and E6's four targets to the nightly `fuzz` suite |
-| rule 3, observability follows RFC 25 | T9.3 | no metric, log or span is added. The production row handles real credentials, so its cell greps everything it wrote for the access key, the secret and a signature and fails on a hit (R8), and a real wrong-secret open's error and log are searched the same way (R28) |
+| rule 3, observability follows RFC 25 | T9.3 | no metric, log or span is added. The production row handles real credentials, so its cell greps everything it wrote for the access key, the secret and a signature before printing any of it, and fails on a hit (R8), and a real wrong-secret open's error and log are searched the same way (R28) |
 | rule 4, profiling | T9.3 to T9.5 | the rows keep E2's to E6's `internal/prof` checks on every target; every benchmark calls `b.ReportAllocs()`; the list benchmark asserts its peak heap |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T9.2, T9.4, T9.5 | re-signing is judged where it is consumed, by a validating service (T9.3's rows on Scaleway); the real-bucket rows assert at `Open` and `Health`, the calls the node and the syncer make, each verdict against the property measured on the same bucket; the steady-load bound is read from the dialer's own counters, not from the requests sent |
 | rule 6, known failures shrink | none | no suite used here keeps a `known.yaml`; a row that fails on a real service is a defect to fix, not a listed failure |
 | rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | T9.1, T9.2 | `s3fault` keeps importing `aws-sdk-go-v2` alone, its `aws/signer/v4` for re-signing; nothing from `develop`'s `pkg/block`; tests import what they need |
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T9.3 to T9.6 | this epic is the rule's last clause: the real services. Every setting applied for real on a fresh bucket of the service; a setting the service refuses is recorded as not held, never pretended (D7) |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T9.2 to T9.5 | `decision:` markers at `sign` (D3, with E3's marker at `StripHeaders` pointed at it), at the `remote-service` entry's tier (D4), at `remote-bench`'s blocking (D6), and at a row skipped because the service does not hold its setting (D7) |
-| rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test names the break it catches in §6; the steady-load bound is shown failing on a planted idle pool on every run (T9.4), the cell's secret grep on a planted string (T9.3), the counts on a planted second request and page (T9.4) |
-| rule 11, a symbol is exported only if the RFC's interface uses it | T9.1, T9.2 | `s3fault` exports `Target`, `Service`, `Target.Production` and `Target.New`, which the rows of E4, E5, E6 and E8 call from their own packages (rule 11's fault-transport clause); the variables' reader, the sweep and `sign` stay unexported |
-| rule 12, each subtask creates only what it declares | all | `Target` lands with `FreshBucket` as its first consumer, `Target.New` with re-signing, the `remote_service` tag with its first rows, each suite entry with the tests it runs |
+| rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test names the break it catches in §6; the steady-load bound is shown failing on a planted idle pool on every run (T9.4), the cell's secret grep on a planted canary (T9.3), the counts on a planted second request and page (T9.4) |
+| rule 11, a symbol is exported only if the RFC's interface uses it | T9.1, T9.2 | `s3fault` exports `Target`, `Service`, `Emulator`, `Target.Production` and `Target.New`, which the rows of E3, E4, E5, E6 and E8 call from their own packages (rule 11's fault-transport clause); the variables' reader, the sweep and `sign` stay unexported |
+| rule 12, each subtask creates only what it declares | all | `Target` and `Emulator` land with `FreshBucket` as their first consumer, `Target.New` with re-signing, the `remote_service` tag with its first rows, each suite entry with the tests it runs |
 
 ## 3. Requirements and invariants
 
@@ -146,7 +149,7 @@ tests can cite them.
 | --- | --- | --- | --- | --- |
 | R9 | §4.7: revoke access to the store's own prefix only: both probes of that direction fail although a neighbouring prefix stays accessible | test row | RFC 4 §7.1 | T9.5 |
 | R10 | §4.11: a bucket holding a tiering rule with an archive tier whose filter could match the prefix: open fails naming it, on a service that holds such a rule (T); the `Recheck` half is RFC 9's | test row | RFC 4 §7.1, Appendix C.1 | T9.5 |
-| R11 | §4.11: every object is written in the class the profile names, never the service's default, and no archive class; a bucket that stores what the check wrote in an archive storage class: open fails naming it (T). It runs where LocalStack holds no archive class: on a service with one, the store configured for it, and on any service found to ignore the class header; each service's reported class is recorded | test row | RFC 4 §7.1, Appendix C.1 | T9.5, T9.6 |
+| R11 | §4.11: every object is written in the remote store's configured class, never the service's default, and no archive class; a bucket that stores what the check wrote in an archive storage class: open fails naming it (T). It runs where LocalStack holds no archive class: on a service with one, the store configured for it, and on any service found to ignore the class header; each service's reported class is recorded | test row | RFC 4 §7.1, Appendix C.1 | T9.5, T9.6 |
 | R12 | Appendix C.3: a bucket default encryption under which the ETag is not the content MD5, set before open on a store whose check chose the ETag: open fails naming it, on a real bucket where LocalStack holds no such default (T); the drift half is RFC 9's | test row | RFC 4 §7.1, Appendix C.1 | T9.5 |
 
 **Benchmarks**
@@ -189,12 +192,19 @@ tests can cite them.
 - **D2. Rows choose their service through `s3fault.Service`.** E4's, E5's and E6's §7.1 rows and
   E4's run of E2's suite call `Service(tb)` and build their client from its fields, so one body
   runs on the emulator in `integration` and on a production service in `remote-service` (R1, R7).
-  `FreshBucket` creates its bucket on the same target, and its cleanup deletes every object
-  version and delete marker before the bucket, since a versioning row leaves versions behind on a
-  real service; a cleanup that fails is `tb.Errorf` naming the bucket, so a leak is seen. Rows
-  that pin a LocalStack fact keep `LocalStack(tb)`: E3's certificate measurement, its record of
-  held settings and D7's signature pin, and E5's rows asserting LocalStack's step 1 and step 3
-  choices, whose production equivalents are recorded in Appendix B (T9.6). Rows that only a real
+  `FreshBucket` takes the target its bucket is created on, `FreshBucket(tb, t Target)`, and its
+  cleanup deletes every object version and delete marker before the bucket, since a versioning
+  row leaves versions behind on a real service; a cleanup that fails is `tb.Errorf` naming the
+  bucket, so a leak is seen. Rows that pin a LocalStack fact stay on LocalStack under every
+  variable set: they take `Emulator(tb)`, LocalStack's target whatever the variables say, for
+  their client and for `FreshBucket`. They are E3's certificate measurement, its tests of which
+  settings LocalStack holds (including those asserting a setting is not held) and D7's signature
+  pin, and E5's rows asserting LocalStack's step 1 and step 3 choices, whose production
+  equivalents are recorded in Appendix B (T9.6). A row that asserts the service's own answer to a
+  wrong sum follows the mechanism the check chose: E4's wrong-sum rows keep both modes through
+  `setChoice` on `Emulator(tb)`, and on a production target run once more in the mode `Open`'s
+  check chose, since Appendix B has Cubbit DS3 storing a wrong CRC32C and Scaleway a wrong
+  `Content-MD5`. Rows that only a real
   bucket can run sit behind the `remote_service` build tag, so `integration` never carries a row
   that skips on every run (R6). Prior art: the repository's `engine_conformance` tag for a suite
   with its own cell (checked).
@@ -217,10 +227,17 @@ tests can cite them.
   emulator-only rows in the same packages run rather than skip. One `sh` command, as `journal-bench`
   has, since a `go-json` cell rewrites every command as `go test`: it exits 2 naming
   `DITTOFS_TEST_S3_ENDPOINT` when it is unset; sweeps D10's leftovers; runs `go test
-  -tags=integration,remote_service -p 1 -timeout=…` over `./pkg/remote/...` with its output
-  written to `{out}/remote-service.txt` and printed; then `grep -rlF` over `{out}` for the access
-  key, the secret, `Signature=` and `SignatureProvided`, printing only the file names, and fails on a hit (R8). Every
-  failure message comes from that `go test` output, so it is in `{out}`. No `cloud:` need, since
+  -tags=integration,remote_service -p 1 -count=1 -v -timeout=…` over `./pkg/remote/...` and
+  `./internal/node/content/` with its output written to `{out}/remote-service.txt` only, not
+  printed; then `grep -rlF` over `{out}` for the access key, the secret, `Signature=`,
+  `SignatureProvided` and `$DITTOFS_TEST_S3_PLANT` when set; on a hit it prints only the file
+  names and fails (R8), and otherwise prints the file and exits with `go test`'s status. `dt`
+  copies everything a command prints into `logs/<cell>.log`, outside `{out}`, so nothing reaches
+  that log before the grep has passed. `-count=1` because a `format: exit` cell gets none of the
+  `-count=1` `dt` adds to a `go-json` one, and Go's test cache keys on the variables a test reads:
+  a rerun with the same commit and variables would print `(cached)`, reach no service and skip
+  the sweep. `-v` because without it `go test` drops a passing test's `t.Log`, so the grep would
+  never see what a passing row logged. No `cloud:` need, since
   `dt` checks none yet (`needs.go`, checked) and one would make the cell unrunnable by hand; and no
   `service:` entry, which RFC 29 §4.5 keeps for what `dt services` starts. A `decision:` comment on
   the entry names the ledger row that moves it to `nightly`. Prior art: `journal-bench`'s guard
@@ -268,11 +285,16 @@ tests can cite them.
   runs ten minutes at `-benchtime=1x`, `P` workers each putting and getting one block in a loop on
   a client of limit `P`, then asserts E4's dialer counts: opened ≤ `P` + service-started closes
   (R24). The ten minutes is §7.5's measurement window, not a wait for an event, and a comment says
-  so. Its twin, `idle=planted`, runs one minute with the client's idle pool cut to `P/2` through
-  `export_test.go` and fails unless the bound is broken, so the row shows it can fail on every run
-  (R25). The surplus connections the twin's client closes itself are client closes, which E4's
-  dialer never counts as the service's, so the twin's breach does not depend on how often the
-  service closes. Prior art: Appendix B's connection-pool table, which measured the same
+  so. Its twin, `idle=planted`, cuts the client's idle pool to `P/2` through `export_test.go` and
+  runs in rounds: each of the `P` workers sends one request, then waits on a barrier until all
+  `P` have finished. Every round releases all `P` connections at once, so the client closes `P/2`
+  of them and the next round opens `P/2` new ones; after three rounds the bound is broken by
+  construction. The twin fails unless the bound is broken, so the row shows it can fail on every
+  run (R25). A tight loop would not do: with `P` workers on a limit of `P`, the idle pool
+  overflows only when more than half the workers sit between requests at once, which a loop
+  rarely shows, so the blocking cell would fail on noise. The surplus connections the twin's
+  client closes itself are client closes, which E4's dialer never counts as the service's, so the
+  twin's breach does not depend on how often the service closes. Prior art: Appendix B's connection-pool table, which measured the same
   reopenings (checked).
 - **D10. A killed run's leftovers are swept at the next start.** A timeout or a kill skips
   `t.Cleanup`, which on a production service leaves `dittofs-test-*` buckets and namespace prefixes
@@ -284,19 +306,21 @@ tests can cite them.
 
 ```text
 pkg/remote/s3/s3fault/
-  service.go            T9.1  Target, Service, Production, the variables (D1), the sweep (D10)
-  bucket.go             T9.1  FreshBucket on Service's target, versions emptied (E3's file)
+  service.go            T9.1  Target, Service, Emulator, Production, the variables (D1), the sweep (D10)
+  bucket.go             T9.1  FreshBucket on the target it is given, versions emptied (E3's file)
   service_test.go       T9.1  the variables' table, FreshBucket and the sweep on the target
   sign.go               T9.2  Target.New, sign (D3)
   sign_test.go          T9.2  the signed-header list after a rewrite
   effect.go             T9.2  StripHeaders' decision: marker pointed at sign (E3's file)
 pkg/remote/s3/
   *_integration_test.go T9.3  §7.1 rows on Service(tb) and Target.New (D2)
-  secret_test.go        T9.3  the wrong-secret open and the planted string, behind remote_service
+  secret_test.go        T9.3  the wrong-secret open and the grep's canary, behind remote_service
   bench_test.go         T9.4  data-path benchmarks, raw twins and the listing, behind integration
   steady_test.go        T9.4  BenchmarkSteadyLoad and its planted twin, behind integration
   export_test.go        T9.4  the raw SDK client on the store's transport, and the idle cap
   realbucket_test.go    T9.5  the rows only a real bucket shows, behind remote_service
+internal/node/content/
+  limit_integration_test.go  T9.3  E8's second §4.10 row on Service(tb)
 pkg/remote/codec/
   bench_test.go         T9.4  encode, decode and plaintext hash
   bench_s3_test.go      T9.4  put with and without a measuring pass, behind integration
@@ -305,7 +329,7 @@ test/suites.yaml        T9.3  remote-service, the remote group, remote_service i
 docs/internals/rfcs/rfc-4-remote-tier.md
                         T9.6  Appendix B's columns measured again, and one service's benchmark run
                         T9.7  §7.5's suites paragraph
-docs/internals/testing.md  T9.7  regenerated by dt docs
+docs/internals/testing.md  T9.3  remote-service's row in the suite list; T9.4 remote-bench's
 ```
 
 ## 6. Subtasks
@@ -329,18 +353,23 @@ docs/internals/testing.md  T9.7  regenerated by dt docs
       Admin  *s3.Client     // reaches the service without the fault transport
   }
   func Service(tb testing.TB) Target
-  func (t Target) Production() bool // false on LocalStack
+  func Emulator(tb testing.TB) Target // LocalStack, whatever the variables say
+  func (t Target) Production() bool   // false on LocalStack
   ```
 
-  `FreshBucket` creates its bucket on `Service(tb)`, named `dittofs-test-<random>` since a
-  production service's names are global, and empties versions and delete markers at cleanup (D2).
+  `FreshBucket(tb, t Target)` creates its bucket on the target it is given, named
+  `dittofs-test-<random>` since a production service's names are global, and empties versions and
+  delete markers at cleanup (D2); E3's and E5's callers pass `Emulator(tb)` or `Service(tb)` as D2
+  sorts them.
   D10's sweep, unexported, run once per test binary by `Service`. Consumed by T9.2 (the
   credentials), T9.3's rows, T9.4's benchmarks and T9.5's rows.
 - **Acceptance criteria:**
-  - With `_ENDPOINT` unset, `Service` is LocalStack's endpoint, roots and the bucket E4's rows use.
+  - With `_ENDPOINT` unset, `Service` is LocalStack's endpoint, roots and the bucket E4's rows use;
+    with it set, `Emulator` still is.
   - With `_ENDPOINT` set and any other variable empty, the test fails naming that variable.
   - Two `FreshBucket` calls give two buckets on the target; a bucket with versioning on and two
-    versions of one key is gone after cleanup.
+    versions of one key is gone after cleanup; `FreshBucket(tb, Emulator(tb))` creates its bucket
+    on LocalStack with a service's variables set.
   - A `dittofs-test-*` bucket older than the cell's timeout is gone after the next `Service` call;
     a younger one, another run's, is kept.
 - **Tests:** the variables read by an unexported function of a lookup function, table-tested with
@@ -377,9 +406,11 @@ docs/internals/testing.md  T9.7  regenerated by dt docs
 - **Covers:** R1, R2, R6, R7, R8, R28.
 - **Deliverables:**
   - E4's, E5's and E6's `*_integration_test.go` rows, and E4's run of E2's suite, on `Service(tb)`
-    and `Target.New` (D2, D3), and E8's two §4.10 rows when E8 has landed (otherwise E8 builds
-    them on `Service(tb)`); the rows that pin a LocalStack fact keep `LocalStack(tb)`, listed in
-    the pull request.
+    and `Target.New` (D2, D3), and E8's second §4.10 row, its `limit_integration_test.go`, on
+    `Service(tb)` when E8 has landed (otherwise E8 builds it there), opening 1,000 stores on
+    LocalStack and about twice the client's limit on a production service; the rows that pin a
+    LocalStack fact take `Emulator(tb)`, and E4's wrong-sum rows follow the check's mechanism on a
+    production target (D2), all listed in the pull request.
   - A `remote_service` row opening the target with a wrong secret: `ErrDenied` of cause `access`,
     and the access key, the secret and the `SignatureProvided` the service echoes absent from the
     error and from every record of a test `slog` handler (R28), the real-service half of E5's
@@ -387,18 +418,32 @@ docs/internals/testing.md  T9.7  regenerated by dt docs
   - `test/suites.yaml`: `remote-service` (D4), whose `decision:` comment names the §6.1 ledger row
     that would move it to `nightly` and what CI needs for it (one credential per service allowed
     to create and delete buckets, or a pool of fresh buckets); the `remote` group,
-    `[remote-service]`, which T9.4 extends; `remote_service` in lint-go's `go vet -tags=` list.
+    `[remote-service]`, which T9.4 extends; `remote_service` in lint-go's `go vet -tags=` list;
+    `remote-service`'s row in `docs/internals/testing.md`'s suite list, which `dt docs` does not
+    write.
   Consumed by T9.5, whose rows run in the cell, and T9.6.
 - **Acceptance criteria:**
   - `dt run integration` runs the same rows as before against LocalStack, none skipped.
+  - E8's second §4.10 row opens 1,000 stores on LocalStack and about twice the client's limit on
+    a production service. The connections opened stay within the limit plus 2 on LocalStack, as
+    T8.2 asserts, and within the limit plus the closes the service started on a production service
+    (E8's D4). Decided by the user: the row checks DittoFS's own connection sharing, which does not
+    depend on the service, and each open runs the capability check, about a dozen requests, so
+    1,000 opens at Cubbit DS3's 1.2 s round trip (Appendix B) take about 4 hours.
   - `dt run remote-service` without the variables exits 2 naming `DITTOFS_TEST_S3_ENDPOINT`.
   - With a service's variables it runs the switched rows against it, and fails when the access
-    key, the secret or `Signature=` appears in any file under `{out}`, naming the file only.
+    key, the secret or `Signature=` appears in any file under `{out}`, naming the file only and
+    printing nothing else.
+  - A second run with the same commit and variables contacts the service again: no `(cached)`
+    line, and the sweep runs.
 - **Tests:** the switched rows themselves on both targets. The grep is checked by a
-  `remote_service` test that logs a planted string through the same `t.Log` path a failing row
-  uses, and the cell is run once with that string set as the secret, failing; the run is attached
-  to the pull request (catches a grep that misses `go test`'s output, R8). The guard is a command
-  of the cell, checked by running it.
+  `remote_service` test that passes and logs a fixed canary through `t.Log`, the path a row's
+  output takes. The cell is run once with the real credentials and `DITTOFS_TEST_S3_PLANT` set to
+  the canary: every row passes, and the cell fails on the grep alone, naming
+  `remote-service.txt`. The run is attached to the pull request (catches a grep that misses
+  `go test`'s output, or a passing test's log dropped without `-v`, R8). Setting the secret itself
+  to a planted string would prove nothing, since every signed row then fails. The guard is a
+  command of the cell, checked by running it.
 
 ### T9.4 §7.5's benchmarks, the steady-load row and the `remote-bench` cell
 
@@ -418,25 +463,32 @@ docs/internals/testing.md  T9.7  regenerated by dt docs
     which no earlier epic counts, is a `b.Fatalf`, while the probe's and the listing's are already
     E5's and E4's tests in `integration` (E5's `Health` row, E4's R28 and R64).
   - The list of 100,000 blocks (R23): seeded once per package through `Target.Admin`, outside the
-    transport, so neither the seeding nor its record inflates the heap; at `n` 1,000 and 500, the
-    peak heap during the walk reported and a `b.Fatalf` when it exceeds two pages' worth of
-    entries, so "at most one page held" is asserted, not only reported.
+    transport, so neither the seeding nor its record inflates the heap; at `n` 1,000 and 500, one
+    walk outside the timed region runs `runtime.GC()` at each page and reads the live heap then,
+    and a `b.Fatalf` fires when it exceeds one page's worth of entries plus half a page, so "at
+    most one page held" is asserted, not only reported, and a retained page breaks it by half a
+    page. The peak of those reads is reported. A peak `HeapAlloc` without the collection would
+    count garbage not yet swept and move with GC timing.
   - `steady_test.go` (D9), and `export_test.go`'s idle-pool cap for the planted twin.
   - D5's names and configuration lines, on `Service(tb)`'s target; `test/suites.yaml`'s
     `remote-bench` (D6), `needs: [docker, "service:localstack"]`, tests `codec`, `put`, `get`,
     `list` and `steady`, each at `-count=10` but `steady` at `-count=1 -benchtime=1x` (`-benchtime=1x` does not lower
     `-count`, and ten runs of the row and its twin would pass RFC 29 §4.3's `merge` budget), writing
-    `{out}/{test}.txt` for `dt`'s `go-bench` reader; `remote-bench` joins the `remote` group.
+    `{out}/{test}.txt` for `dt`'s `go-bench` reader; with `DITTOFS_TEST_S3_ENDPOINT` set, each
+    test's command runs D4's grep over its file before printing it, since T9.6 runs this cell with
+    a service's credentials (on LocalStack the credentials are public and the grep is skipped);
+    `remote-bench` joins the `remote` group; its row in `docs/internals/testing.md`'s suite list.
     Consumed by T9.6's run against one service and T9.7's suites paragraph.
 - **Acceptance criteria:**
   - `dt run remote-bench` reports every row of §7.5, each result under the service, region, block
     size and workers it ran at (R14).
-  - A ranged get sending two requests, or a listing holding more than two pages, fails the cell;
+  - A ranged get sending two requests, or a listing holding a second page, fails the cell;
     no throughput or latency figure does (R16, R19, R23); a test whose benchmarks all skipped fails
     with exit 2 (D6).
   - Against LocalStack, ten minutes at `P` workers open at most `P` connections plus the closes
-    the service started (R24); the planted twin reports the bound broken, and a twin that sees no
-    breach fails the cell (R25).
+    the service started (R24); the planted twin, in rounds behind a barrier (D9), reports the
+    bound broken on every run, and a twin that sees no breach fails the cell (R25).
+  - With a service's variables, a hit of the grep fails the test and prints only the file name.
 - **Tests:** the benchmarks; the ranged get's and the listing's `b.Fatalf` seen to fire once on a
   planted second request and a planted retained page before the pull request opens (catches a
   count that reads nothing). The steady-load row and its twin read E4's dialer counters, which
@@ -488,7 +540,7 @@ docs/internals/testing.md  T9.7  regenerated by dt docs
   validated, the class a get reports, each setting held, refused or accepted and ignored, and the
   production row passed by hand. No service is marked supported: §7.4 supports one once it passes
   the nightly row, which waits for CI credentials (§9, point 4). A row that no measured service
-  holds is named in the §6.1 ledger row on settings LocalStack cannot hold (D7). A row that fails
+  holds is named in the §6.1 ledger row on real-bucket rows no measured service holds (D7). A row that fails
   on a service is a defect in E4 or E5, fixed through its own issue before the column says it
   passed; that fixing is not in this estimate.
 - **Acceptance criteria:**
@@ -510,8 +562,8 @@ docs/internals/testing.md  T9.7  regenerated by dt docs
   renamed target fails rather than fuzzing nothing, and all placed before the suite's last
   command, which copies crashers into `{out}`; `timeout.test` and `timeout.cell` raised by 40
   minutes each (the RFC 2 plan's D6); RFC 4 §7.5's suites paragraph naming `remote-service` (by
-  hand), `remote-bench` (after each merge) and `fuzz` (nightly) in place of "no suite runs yet";
-  `dt docs`.
+  hand), `remote-bench` (after each merge) and `fuzz` (nightly) in place of "no suite runs yet",
+  which `dt docs --check` holds to the registry.
 - **Acceptance criteria:**
   - `dt run fuzz` fuzzes each of the four for ten minutes, a crasher landing in `{out}`.
   - A target renamed in a scratch branch fails its line.

@@ -205,11 +205,12 @@ and the pull request that does so closes #5757 (`Closes #5757`).
   succeeds once offload frees space, the store unreachable past the deadline, the store denying puts).
   2 rows.
 
-50 rows. Four of them extend a test the first part already has rather than add a second one: "§2.5
-clone resumed at a full limit" extends `TestRFC8A_CloneResumedAtAFullLimit` with its remote half,
-"§10.2 retry later" extends `TestRFC8A_RetryLaterAtTheShareLimit` with its store legs, "§2.4 settings"
+50 rows. Two of them extend a test the first part already has rather than add a second one: "§2.4 settings"
 extends `TestRFC8C_Settings` with `Min`, `Target` and the migration report, and V20 extends `TestV20`
-(`internal/vfs/integration`) with its offload half. A fifth extension is not a red row:
+(`internal/vfs/integration`) with its offload half. The remote halves of "§2.5 clone resumed at a
+full limit" and "§10.2 retry later" are new tests beside `TestRFC8A_CloneResumedAtAFullLimit` and
+`TestRFC8A_RetryLaterAtTheShareLimit`, not subtests: both assert in their own bodies, and a parent
+failing through known subtests is graded known whatever its body did (epic 12's D5). A third extension is not a red row:
 `TestRFC8A_UnbindThenDropLeavesNoEntryForTheTag`, green today, gains §15.2's "§2.3 unbind and drop"
 leg with an offload pass in flight from epic 16, in the change that runs passes, since a red leg would
 hide its green half; its hold-mark offloads are RFC 12's (D7). The "shard handed away and back" legs the first
@@ -408,7 +409,7 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
 | 18 | **Local space with offload** | eviction loop, `evict`, `repackDue`, refusal steps 2 and 3 with the share's pass, put-health causes, pacing and pressure, destroyed material, the commit under destroyed material | 8 | 30 | B | 19, 21 |
 | 19 | **Restart and the metadata reconcile** | start steps 6 and 7, the reseed and its gates, re-offer, a lost journal served again, the reconcile and `Bind`'s takeover, the `Census` view | 12 | 44 | C | 21 |
 | 20 | **Health, drain and salvage** | per-direction health and drift, the offload conditions, §11.4 and `WaitOffloaded`, the salvage export, `material_destroyed`'s `data_loss` | 7 | 20 | A | 21 |
-| 21 | **Integration: the node composes offload** | a `codec.Store` per store registered with its probe key, `syncertest`'s Group A suite against LocalStack, clients per store configuration, the components' collectors and health sources, settings sections, keys and alerts, the key-record suite, the CPU token, the restart-gated namespace, system scenarios; S7 | 10 | 36 | team | 22 |
+| 21 | **Integration: the node composes offload** | a `codec.Store` per store registered with its probe key, `syncertest`'s Group A suite against LocalStack, clients per store configuration, the components' collectors and health sources, settings sections, keys and alerts, the retry of a store whose key provider failed at start, the CPU token, the restart-gated namespace, system scenarios; S7 | 10 | 36 | team | 22 |
 | 22 | **E2E green** 🔀 | burn `known.yaml` down, the soak with remote faults, B1 to B4, B6, B8, and B5, B7, B9 with offload; provisional (§6 point 2) | 7 | 21.5 | team | release |
 | | **Total** | | **90** | **297.25** | | |
 
@@ -451,7 +452,7 @@ flowchart TD
   E14 -. "tenants and Rebuild, start step 6" .-> E19
   E14 -. "scheduler stats, work_queue_stalled" .-> E20
   E16 -. "re-offers the reseed gates" .-> E19
-  E16 -. "a binding's flow, opened at Bind" .-> E17
+  E16 -. "a binding's flow, opened at Bind; E17's rows, after E15's options" .-> E17
   E18 -. "the eviction loop start step 7 starts" .-> E19
   E16 -. "pass outcomes, offload health" .-> E20
   E17 -. "speculation cancelled on pressure" .-> E18
@@ -543,6 +544,9 @@ What each point means for this plan's epics:
   once), and partly E17 (the carved row fetches through the flow a binding opens at `Bind`; until then
   epic 17's tests open a flow over RFC 4's in-memory store themselves), E19 (the reseed gates the
   re-offer) and E20 (pass outcomes feed offload health).
+- **E15 and E16 block E17's finish.** Its conformance rows ask the carver, chain and syncer options
+  and `FaultRemote`, which epics 15 and 16 make real, so epic 17 builds from S2 but turns its rows
+  green, and meets its "Done when", only after E16.
 - **E17** blocks E18 partly (speculation is cancelled on pressure), and E19 through track C's order
   only.
 - **E18** blocks E19 partly: start step 7 starts its eviction loop.
@@ -571,6 +575,8 @@ What each point means for this plan's epics:
   and epic 16's pass outcomes land about 20 man-days later; epic 20's drain metrics, its `WaitOffloaded`
   over the journal's dirty figures and the salvage export, which need no pass, fill that wait, and
   track A then takes the preparation of epic 21's store composition (D5) once S1c and S1d are agreed.
+  Track C finishes epic 17's code at about 23.5 man-days, but its rows turn green only after epic
+  16, at about 55 (§3.3), so track C moves on to epic 19 and comes back to close epic 17 then.
   Track C's epic 19 waits on epic 14's tenants, epic 16's passes and epic 18's eviction loop, which
   start step 7 starts; it starts with the reseed's marks and unmarks over the in-memory journal, which
   need none of them, and takes start step 7 last.
@@ -919,7 +925,7 @@ material" (but its crash leg, epic 19's), §15.2's "§10 occupancy triggers evic
 stays green; RFC 8 E3, E11, E33 hold.
 
 **Expected content:**
-- The eviction loop per journal, started at start step 7, triggered by allocated occupancy, with
+- The eviction loop per journal, which epic 19's start step 7 starts, triggered by allocated occupancy, with
   `evict` by segment and RFC 8 §10.1's `ponytail:`; the loop's fixed tick (§4.3).
 - `repackDue` in the loop; the repack-at-refusal `ponytail:` and the dirty-bytes `decision:` deleted.
 - Steps 2 and 3 in the refusal's caller for the journal's own capacity: eviction by segment, then
@@ -936,7 +942,7 @@ stays green; RFC 8 E3, E11, E33 hold.
   attempt then abandoned and its extents offered again under current material (RFC 8 §10.4 as
   amended), with its `decision:` on an undeclared loss. The legs: a destroy between pin and
   Commit, a master key's destroy refusing a commit on a data key it wraps, between Commit and Mark, and with no replacement material (epic 15's Intent refusal).
-- Eviction never gated by locks, opens or snapshots; a retention pin honoured as policy; a
+- Eviction never gated by locks, opens or snapshots; a retention pin deferred (§6.1); a
   `decision:` at `evict` that it trusts the offloaded bit while bucket-setting drift goes undetected
   (§6.1's drift row), withdrawn when `Recheck` runs.
 - The counters of RFC 8 §14's local-space row.
@@ -1042,7 +1048,7 @@ engine's read and write tests run with and without transforms (the RFC 4 plan's 
 "§11.5 full journal with the store unreachable" and the RFC 22 plan's "§16.5 remote outage on reads"
 rows pass on a composed node in `e2e`; the journal plan's system scenarios left to this part run in
 `e2e`; #4276's row is closed by the registry refusing the in-memory remote kind outside tests;
-RFC 5's key-record suite passes against `kvstore`; the node builds the syncer before the engine and stops
+a store whose key provider failed at start reopens on a 30 s period of the node's clock with no restart, as RFC 5 Appendix D's D10 "recovers" reads, its journal serving meanwhile and its journal-held content offloading once it opens; the node builds the syncer before the engine and stops
 it after, as RFC 8 §2.6 orders.
 
 **Expected content:**
@@ -1095,12 +1101,23 @@ it after, as RFC 8 §2.6 orders.
   and `material_unknown`, which the RFC 5 plan's A1 adds to RFC 25 §3.9, and the engine's
   `material_destroyed` source with its `data_loss` severity (epic 20), adapted from `Stats` like the
   engine's other conditions;
-  RFC 5's key-record suite run from `internal/node/content`'s tests against `kvstore` over Badger
-  under `t.TempDir()`, the memory KV and FoundationDB where it runs, since `kvstore` may not import
-  `pkg/transform` (the RFC 5 plan's D7); the provider wired in `internal/node/content` with the
+  the key-record suite is not run here: it moved to RFC 5's epic 6 (its D2), which runs it over
+  `kvstore` on Badger and FoundationDB; the provider wired in `internal/node/content` with the
   key-record view `kvstore` implements beside that store, and with each namespace's remote store for
   its `keys` object (the RFC 5 plan's D8, whose suite RFC 5 runs over RFC 4's in-memory store). The
   namespace is `entity.NamespaceID` throughout, which the transforms import as a contract.
+- A store whose key provider failed at start retried every 30 s on the node's clock, with no restart,
+  as RFC 8 §2.5 retries a refused journal (RFC 5 Appendix D's D10 "recovers"; the decision was taken
+  in #6000's review, option (a)): its journal keeps serving its shares meanwhile, the store is
+  unavailable as in RFC 8 §11.2's remote-unavailable row, and `material_unavailable` names the
+  namespace; once the provider answers, the store opens and its journal-held content offloads. A
+  `decision:` marker at the retry names the period and the rejected alternative, opening at the next
+  start only, which turns a key server's outage into a restart. A chain that cannot build is a
+  configuration defect and is not retried. Test row: on the composed node over a fault wrapper
+  around `keystest.Memory` that fails at start, the journal serves, the store is unopened and
+  `material_unavailable` is raised; the injected clock advanced past 30 s with the provider answering
+  again opens the store with no restart, clears the condition and offloads the held content; a
+  clock short of 30 s opens nothing.
 - The engine's read and write tests with and without transforms.
 - The RFC 21 and RFC 22 remote-outage rows and the journal plan's system scenarios on the composed
   node: cold reads after eviction and a restart, its reference workloads, capacity and durability
@@ -1167,19 +1184,22 @@ proposed targets: the first real-service run does (§6.1).
 
 | Deferred | Why | Owner | Trigger |
 | --- | --- | --- | --- |
-| GC composed in the node, a namespace added to GC, GC's scheduler instance (header; D3; #4276's GC half) | GC is planned later. Ceiling while it is: orphaned objects (§8.3's dropped refs, the abandoned intents of a restart, an `Abandon` after a put that landed) and dead blocks stay in the bucket and only grow, and no metric reports their rate; bucket-setting drift goes undetected while epic 18 evicts (the drift row below), so a loss it causes is permanent | RFC 9 | GC is built |
-| Snapshot-hold ordering in the pipeline, `Unbind`'s `keepHolds` offload, the cut's `PrepareCut` and `CommitCut`, `Deps.Gate` (RFC 8 §16 Q7), the clone across a cut and between batches (D7) | no snapshot exists before RFC 12 | RFC 12 | snapshots are built |
+| GC composed in the node, a namespace added to GC, GC's scheduler instance, the collection of the first object in §15.1's "§2.5 restart re-offer" (header; D3; #4276's GC half) | GC is planned later. Ceiling while it is: orphaned objects (§8.3's dropped refs, the abandoned intents of a restart, an `Abandon` after a put that landed) and dead blocks stay in the bucket and only grow, and no metric reports their rate; bucket-setting drift goes undetected while epic 18 evicts (the drift row below), so a loss it causes is permanent | RFC 9 | GC is built |
+| Snapshot-hold ordering in the pipeline, `Unbind`'s `keepHolds` offload, the cut's `PrepareCut` and `CommitCut`, `Deps.Gate` (RFC 8 §16 Q7), the clone across a cut and between batches (D7), the snapshot-capture visit of §15.1's "§2.5 metadata reconcile" | no snapshot exists before RFC 12 | RFC 12 | snapshots are built |
 | A re-home `Bind` joining the old namespace's passes, `State: Closing`'s clone counting, a re-home's switch, a copied image's `Fenced` state and §11.2's copied-image row (D8) | re-homes and namespace claims are RFC 27's | RFC 27 | RFC 27 is built |
-| The cluster rules: handover and lease-loss drains, O7 stale epoch, the replica filter, the reconcile's replica clauses, cross-shard clone rows, RFC 8 E26, the "shard handed away and back" legs of §15.1's "§4.1 verifier inputs" and RFC 17's V25 (D9; the first part's handover) | single node | the cluster stage (RFC 10, RFC 11) | the cluster stage |
+| The cluster rules: handover and lease-loss drains, O7 stale epoch, the replica filter, the reconcile's replica clauses (the promotion leg of §15.1's "§2.5 metadata reconcile" and the replicated rejoin of "§2.5 journal gone"), cross-shard clone rows, RFC 8 E26, the "shard handed away and back" legs of §15.1's "§4.1 verifier inputs" and RFC 17's V25 (D9; the first part's handover) | single node | the cluster stage (RFC 10, RFC 11) | the cluster stage |
 | Per-share budget values for capacity, transfers and pacing (D13) | no setting or record carries one | RFC 24 | RFC 24 is built |
 | `PreWarm` and the speculator's pre-warm, and the pre-warm legs of §15.1's "§9.1 no pre-clone fill" and §7.4's S2, S4's pre-warm half and S5 (D12; RFC 8 §12.1 as amended) | no caller in v1.1 | unowned (no RFC specifies a pre-warm action) | a pre-warm action is specified |
 | Positive-rate pacing in `pkg/workqueue`, and the pace a `Throttled` result lowers (D12; RFC 8 §6.1.1 as amended) | the engine's sources register `Rate` 0, and GC is planned later | RFC 9 | GC's sources land |
 | The node's upload drain calling `WaitOffloaded` (D12) | `drain` is RFC 30's, deferred by the RFC 23 plan | RFC 30's plan | that plan adds the verb |
 | The lost-journal acknowledgement's admin-only node action, writing the record epic 19 reads (§6 point 1) | RFC 23 §4 names no such action yet, and the RFC 23 plan gives `acknowledge-unreadable` itself to RFC 28's plan; until one lands an operator has no call that writes the record | RFC 28's plan | that plan adds `acknowledge-unreadable` |
 | RFC 16 §3 naming `Lifecycle`'s read of the lost-journal acknowledgement, which RFC 8 §2.1 marks a proposal (§6 point 1) | the read is named with the action that writes it | RFC 28's plan | that plan adds `acknowledge-unreadable` |
+| The unread-range acknowledgement at a refused open: `Deps.AcknowledgeUnreadable`, the retry running it, and the "acknowledging the range instead" leg of §15.1's "§2.5 unread range at start" (epic 19's D9) | its one trigger is RFC 23 §3.3's `acknowledge-unreadable`, which the RFC 23 plan gives RFC 28's plan; until it lands no acknowledgement reaches the engine, and a range that never reads keeps its journal's shares unattached | RFC 28's plan | that plan adds `acknowledge-unreadable` |
+| Placing a new share on one of several journal devices: the shard's journal identity written from a placement the control plane chooses (epic 19's D5) | no RFC says how a share's device is chosen; until one does, a share is created with no journal identity, which binds on a one-device node and is refused by name on a node with several | unowned | a node is deployed with more than one journal device |
 | The master-key destroy's check that no retained salvage export names the key (RFC 5 Appendix B.2), now that epic 20 writes exports | the destroy lands with its first caller | RFC 5's plan | the master-key destroy lands |
 | The benchmarks run per change against an emulator (§6 point 4) | a per-change cell needs a baseline, which epic 22 records first | unowned | the RFC 4 plan's epic 3 brings LocalStack into `integration` and epic 22 has recorded the baselines |
 | §15.4's daily runs against each real service, and the real-service baselines that replace its proposed targets (its `decision:`) | CI holds no real-service credentials and runs no daily cell | unowned | CI gains a daily cell with real-service credentials |
+| An operator's retention pin excluding a share from eviction (RFC 8 §10.4's MAY; §10.2's second row) | no setting or record names a pin; epic 18 evicts every share alike | unowned | a setting or record names a retention pin |
 | An eviction loop woken by the journal's occupancy crossing its target, not a fixed tick (§4.3) | the fixed tick's lag is covered by the inline refusal path | unowned | B3 shows refusals a sooner eviction would have avoided |
 | Fuzz or model targets for the queue's keys and the pacing law (rule 2, RFC 8 §15.3's `ponytail:`) | tables check them | unowned | a table check misses a bug a random input would have found |
 | RFC 8 §16 Q6: upload delay for young data, and manual sync | unspecified policy | unowned | a measurement shows re-uploads of soon-overwritten data |
@@ -1231,7 +1251,7 @@ proposed targets: the first real-service run does (§6.1).
 | RFC 2 §2, §2.4, §3.6, §3.7, §4.2, §4.3, §5.1, §5.3, §10.1 | 11 (S1a), 15 (Carve, Assemble, minting, consumer checks), 16 (§3.6, §3.7, D11) |
 | RFC 3 §1.3, §2.8 | 11 (S1b), 15 (`Upload` with an attempt), 16 (flows), 17 (fetch, prefetch), 20 (health), 21 (registration) |
 | RFC 4 §3, §4.1, §4.3, §4.7, §4.8, §4.11 | 11 (S1c), 15 (`NewPut`'s attempt through `Upload`), 21 (a `codec.Store` per store, registered with its `ProbeKey`) |
-| RFC 5 §2.7, §2.8, Appendix B.2 | 11 (S1d), 15 (the pin over the in-memory `keys.Provider`, the refusal at Intent), 17 (destroyed material read Lost), 18 (`Unmark`, Mark's check, the commit's tracked read), 19 (the reseed's unmark), 20 (salvage sealing), 21 (chain, the key-record suite against `kvstore`, each namespace's store for the `keys` object) |
+| RFC 5 §2.7, §2.8, Appendix B.2 | 11 (S1d), 15 (the pin over the in-memory `keys.Provider`, the refusal at Intent), 17 (destroyed material read Lost), 18 (`Unmark`, Mark's check, the commit's tracked read), 19 (the reseed's unmark), 20 (salvage sealing), 21 (chain, the retry of a store whose provider failed at start, each namespace's store for the `keys` object) |
 | RFC 1 §3 (offload calls, salvage), §3.3, §3.4, §3.5, §7.2 | constraints: 15 to 20 call them |
 | RFC 6 §5.2 (the `K` floor at open) | 15 |
 | RFC 6 §7.6, §8.1, §10.1; RFC 16 §3.1 | constraints: 15 (intents, commits), 17 (covering), 19 (`Refs`, `Versions`) |

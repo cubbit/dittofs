@@ -61,9 +61,9 @@ the first-byte bound, and retried once on a slow tail. `Upload` is then complete
 - `Fetch` and `Prefetch` retry a get that failed before yielding a chunk, under the same bounds.
 - A throttled store gets fewer workers: its throttle limit halves on each throttling reply and
   climbs back by one per transfer, and the throttled flow is held for its backoff.
-- A transfer below the floor, stalled, trickling, or late to its first byte fails, and only a
-  floor trip on a store whose aggregate is also below the floor is marked as counting toward
-  health.
+- A transfer below the floor, stalled, trickling, or late to its first byte fails. A floor,
+  stall or first-byte trip is marked as counting toward health only when its store's aggregate in
+  that direction is also below the floor (D11); a trickle never is.
 - Each ended try hands epic 5 an outcome saying whether it counts toward health and with what
   cause.
 - `Stats` reports RFC 3 §2.12's transfer series.
@@ -131,7 +131,7 @@ title and not copied.
 | Rule | Subtasks | How |
 | --- | --- | --- |
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | T4.1, T4.2, T4.3 and T4.4 are pure functions and values tested by tables, with time passed in as a `time.Duration`. T4.5 extends `internal/sched`, pure, and its model. T4.6, T4.7, T4.9 and T4.10 test the pool's unexported loop through `export_test.go`, each `attempt` built by `codec.Store.NewPut` and each get `codec.Store.Get`, over RFC 4's in-memory store (kind 2) under E2's wrapper (kind 3), in E3's `testing/synctest` bubble (kind 1), so every `Meter` count is the codec's own (D13). T4.8 runs through `syncertest` over the same. No test double is written |
-| rule 2, fuzz tests where relevant ([`CLAUDE.md`, "Writing tests", "By kind"](../CLAUDE.md#writing-tests)) | T4.5 | E3's `FuzzSched` gains the throttle, hold and requeue steps, against the model. Nothing else here reads bytes |
+| rule 2, fuzz tests where relevant ([`CLAUDE.md`, "Writing tests", "By kind"](../CLAUDE.md#writing-tests)) | T4.5 | E3's `FuzzSched` gains the throttle, requeue and release steps, against the model. Nothing else here reads bytes |
 | rule 3, observability follows RFC 25, with RFC 3's own exception | T4.6, T4.7 | `Stats` gains the transfer series of R38 in E1's fields, as atomics read without the half's lock (E3's D11). No log line and no span: RFC 3 §2.8's two lines are E5's |
 | rule 4, profiling | T4.6, T4.9 | Every test runs under `internal/prof`'s leak check, which catches a slow-tail try or a floor watchdog left running after `Upload` or `Close` returns. No per-chunk allocation is added: the `Meter`'s funcs are bound once per try, and the floor's buckets live in the slot. E7's `unit/syncer-allocs` gate measures it |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T4.6 to T4.10 | Under `-race`. The throttle limit and calls in flight at RFC 4's in-memory store's record, where a slow-tail try outliving its slot is counted; the outcome handed to E5 at the per-instance hook E5 replaces (D10); every other count at `Stats`, and each failure at the error the caller gets |
@@ -199,7 +199,7 @@ cite them. Sections are RFC 3's unless named.
 | --- | --- | --- | --- | --- |
 | R26 | On `ErrThrottled` the flow's queue is dispatched nothing new until that transfer's backoff has run, and the transfer then retries; other flows are dispatched meanwhile | invariant | §2.4; §7.2, "§2.4 throttling" | T4.5, T4.6, T4.9 |
 | R27 | Each store and direction has a throttle limit, the most workers it may hold: it starts at the cap, halves to half of what the store holds, never below one, on each throttling reply, and rises by one per transfer completed without throttling, up to the cap. Below the cap the store never holds more than it; at the cap it is inert and only the cap binds (D7); it is never above the cap | invariant | §2.4; §2.9; §2.10, "throttle limit"; §6, RFC 3 S17; §7.2, "§2.4 throttling lowers concurrency" | T4.5, T4.6, T4.9 |
-| R28 | Throttling says nothing about health: no throttling reply counts toward it, and no transfer fails on throttling before its eighth throttled attempt, a requeue at a full queue or waiter bound included (D2) | invariant | §1.3; §2.4; §6, RFC 3 S19 | T4.1, T4.5, T4.9 |
+| R28 | Throttling says nothing about health: no throttling reply counts toward it, and no transfer fails on throttling before its eighth throttled attempt, a requeue at a full queue or waiter bound included, and a requeued entry is never displaced or evicted (D2) | invariant | §1.3; §2.4; §2.9; §6, RFC 3 S19 | T4.1, T4.5, T4.9 |
 
 **Time bounds**
 
@@ -208,7 +208,7 @@ cite them. Sections are RFC 3's unless named.
 | R29 | The throughput floor is 64 KiB/s over 30 s, judged on the store's aggregate per direction: a transfer below it fails on it only when the store's aggregate in that direction, summed over every transfer to it, is also below it over the interval, and only such a failure counts toward health | MUST | §2.4; §2.10, "throughput floor"; §6, RFC 3 S19 | T4.4, T4.6, T4.10 |
 | R30 | A transfer that moves no byte for the interval has stalled and fails, whatever the aggregate, and does not count toward health unless the aggregate is below the floor too | invariant | §2.4; §2.10 | T4.4, T4.10 |
 | R31 | A transfer moving under a quarter of its store's mean per-transfer rate in that direction, the aggregate divided by the transfers in flight, over the interval, while the aggregate is above the floor, fails as trickling and does not count toward health | invariant | §2.4; §6, RFC 3 S23; §7.2, "§2.4 trickle fails" | T4.4, T4.10 |
-| R32 | The first-byte bound is 10 s per direction: for a get from dispatch to the first body byte received; for a put from dispatch to the first body byte accepted, and again from the last body byte sent to the acknowledgement | invariant | §2.4; §2.10, "first-byte bound"; §7.2, "§2.4 first byte, per direction" | T4.6, T4.7, T4.10 |
+| R32 | The first-byte bound is 10 s per direction: for a get from dispatch to the first body byte received; for a put from dispatch to the first body byte accepted, and again from the last body byte sent to the acknowledgement; a trip of it counts toward health only when the store's aggregate in that direction is below the floor (D11) | invariant | §2.4; §2.8; §2.10, "first-byte bound"; §7.2, "§2.4 first byte, per direction" | T4.6, T4.7, T4.10 |
 | R33 | Every bound, and `syncer_bytes_total`, measures wire bytes: the syncer passes a `remote.Meter` into every call of `attempt` and every `Store.Get`, and reads only its `Moved` counts and its `Sent`; decoded bytes never count | invariant | §2.4; §2.12; RFC 4 §4.1 | T4.6, T4.7, T4.10 |
 | R34 | Only the store's side counts: time a caller spends not reading a fetched stream never trips the floor or the stall rule | invariant | §2.4; §7.2, "§2.4 throughput floor" | T4.4, T4.7, T4.10 |
 | R35 | The time a put spends inside `src`, its measuring passes included, counts toward the floor and the first-byte bound, since the syncer cannot tell it from the network's (§9) | invariant | §2.4 | T4.6, T4.10 |
@@ -251,26 +251,35 @@ field (E1's R18).
   marker: this is §1.3's table. Prior art: RFC 4's own C.3 table mapping S3 replies to the set;
   gRPC's retry policy keyed on status codes (from memory).
 - **D2, a throttled try gives its slot back and its entry goes back to the head of its flow's
-  queue, where it cannot be refused; an error retry keeps its slot.**
-  - On `ErrThrottled` the half lowers the store's limit, returns the slot and holds the flow;
-    once that transfer's own backoff has run, its entry goes back at the head of its flow's queue
-    for its class and is dispatched under the lowered limit, charged again to the flow's deficit
-    for that class (E3's D3). Returning the slot is what lets the store's in-flight count fall to
-    the lowered limit, which "§2.4 throttling lowers concurrency" asserts; a throttled transfer
-    that kept its slot would retry at the same concurrency.
-  - A requeued entry was admitted once and keeps that admission: it is checked against neither
-    the queue length nor the waiter bound, and never displaces, so a burst of throttling fails no
-    transfer (RFC 3 §2.4, R28). Such entries are at most one per worker of the half, since each
-    held a slot when it was throttled, so the waiters of a half are at most the bound plus the
-    pool. A `decision:` marker says so. The user decided 2026-11-26 that RFC 3 S20 reads "…never
-    exceed the waiter bound, beside at most one requeued throttled transfer per worker, whatever
-    the number of flows"; the amendment lands with T4.5's pull request.
+  queue at once, where it waits out its backoff and is never refused, displaced or evicted; an
+  error retry keeps its slot.**
+  - On `ErrThrottled` the half lowers the store's limit, returns the slot and requeues the entry
+    at the head of its flow's queue for its class, which holds the flow. The entry is not
+    dispatched until its own backoff has run and it is released; it is then dispatched under the
+    lowered limit, charged again to the flow's deficit for that class (E3's D3). Returning the slot
+    is what lets the store's in-flight count fall to the lowered limit, which "§2.4 throttling
+    lowers concurrency" asserts; a throttled transfer that kept its slot would retry at the same
+    concurrency.
+  - The entry is a waiter from the throttling reply on, its backoff included: waiting outside the
+    queue would be an unbounded queue under another name (RFC 3 §2.9). It was admitted once and
+    keeps that admission: it is checked against neither the queue length nor the waiter bound,
+    never displaces, and is never displaced or evicted itself, so a burst of throttling fails no
+    transfer (RFC 3 §2.4, §2.9, R28). The bound still holds within the pool. Only a throttling
+    reply adds a waiter past the bound, and it moves a transfer from a worker to the queue; a new
+    call is admitted only below the bound, or in a displaced or evicted entry's place. So a half's
+    waiters and running transfers together never exceed the bound plus the pool. Counting the
+    entry only once its backoff ended would not hold that: each returned slot takes another
+    flow's entry, which can be throttled in turn, so a pool of 4 can leave dozens in backoff, all
+    rejoining past a full bound. A `decision:` marker says so. The user decided 2026-11-26 that
+    RFC 3 S20 reads "…never exceed the waiter bound, beside at most one requeued throttled
+    transfer per worker, whatever the number of flows"; the amendment lands with T4.5's pull
+    request.
   - The hold is what RFC 3 §2.4 says: "the flow's queue is dispatched nothing **new**". A held
-    flow dispatches no entry that was never dispatched, and dispatches its requeued entries as
-    each one's own backoff ends, so one transfer's retry never waits on another transfer's
-    backoff. Holds are counted per flow and released as each backoff ends, so a flow with
-    several throttled transfers dispatches nothing new until the last of them has run its
-    backoff.
+    flow dispatches no entry that was never dispatched, and dispatches each requeued entry once
+    its own backoff has run: a released entry moves to the head, ahead of entries still in
+    backoff, and a held flow is in its ring only while its head is a released entry. So one
+    transfer's retry never waits on another transfer's backoff, and a flow with several
+    throttled transfers dispatches nothing new until the last of them is released.
   - After `ErrTransient` or a put's `ErrCorrupt` the transfer keeps its slot through the
     backoff, drawn from its error-attempt count (D3): at most 200 ms, 400 ms and 800 ms for the
     three error retries. Holding the flow instead would stall a busy share's offload on each
@@ -279,7 +288,8 @@ field (E1's R18).
     the upgrade, the throttle path's requeue without the hold, if a profile shows workers idle in
     backoff while work waits.
   - A requeued get carries its joined callers with it once E6 adds joins; `Flow.Close` refuses a
-    requeued entry as closed like any queued one (E3's D6).
+    requeued entry as closed like any queued one (E3's D6), and a `ctx` ending removes it, in its
+    backoff too.
 
   Prior art: AWS SDKs' adaptive retry mode, which lowers a client-side send rate on throttling
   replies (from memory); Kubernetes API priority and fairness, whose seats go back on release
@@ -311,7 +321,8 @@ field (E1's R18).
   the caller pulls its stream itself (E3's D1). A `decision:` marker at the get loop says it relies
   on `Store.Get` returning once its `ctx` ends, and that a get that ignored its `ctx` would hold
   the caller past the slow-tail rule. Prior art: `net/http`'s request cancellation through the
-  request's context (from memory).
+  request's context (from memory). Epic 6 (its D2) runs each dispatched fetch on a flight
+  goroutine of its own, so the get loop moves onto that goroutine, its tries still in turn.
 - **D5, the budget counts tenths of a token in an integer.** A bucket of pool × 10 tenths, an
   error retry taking 10, a clean success returning 1, the reserve a quarter of the capacity;
   updated under the half's lock at the try's end. Integer
@@ -370,7 +381,12 @@ field (E1's R18).
   `floor`, `stalled` or `trickle` reason; the first-byte bound counts as `transient`. That a trip
   takes a token is a reading of §2.4, which names only RFC 4's errors, so a `decision:` marker at
   the site says so. Whether it counts toward health is the outcome's flag (D10), never read from the
-  wrapped error, since a stall wraps `ErrTransient` and does not count. Prior art:
+  wrapped error, since a stall wraps `ErrTransient` and does not count. A first-byte trip counts
+  as a stall does, only when its store's aggregate in that direction is below the floor over the
+  interval: it is a stall before the first byte. Never counting it would leave healthy forever a
+  direction no probe covers, on a store that accepts every request and sends no byte, since the
+  failure window is all that turns such a direction unhealthy (RFC 3 §2.8). RFC 3 names no rule
+  for it, so a `decision:` marker says so. Prior art:
   `context.DeadlineExceeded` reported by `net/http` as a timeout (from memory).
 - **D12, the fixed values E4 reads join E3's table.** The throttle limit's rule, the floor, the
   first-byte bound, the retry bound, the retry budget, the slow-tail share and window, and the
@@ -411,7 +427,7 @@ pkg/syncer/
     retry_rows_test.go     T4.9  the §7.2 retry rows, §8.4's retries count, §8.2's retry cases
     time_rows_test.go      T4.10 the §7.2 time-bound rows
     internal/sched/
-      throttle.go          T4.5  Throttle, Recover, Hold, Release, Requeue
+      throttle.go          T4.5  Throttle, Recover, Requeue, Release
       throttle_test.go     T4.5
       model_test.go        T4.5  the model's throttle and hold steps
       fuzz_test.go         T4.5  FuzzSched's new steps; seeds
@@ -559,14 +575,16 @@ pkg/syncer/
   ```go
   func (s *Sched) Throttle(st StoreKey) (limit int)  // the per-store bound to min(bound, max(1, held/2))
   func (s *Sched) Recover(st StoreKey) (limit int)   // the bound plus one, up to the cap
-  func (s *Sched) Hold(f FlowKey)                    // nothing of f dispatched until as many Releases
-  func (s *Sched) Release(f FlowKey)
-  func (s *Sched) Requeue(e *Entry)                  // back at its flow's head, past a hold; never refused (D2)
+  func (s *Sched) Requeue(e *Entry)                  // at the reply: back at its flow's head, not yet dispatchable; holds the flow; never refused, displaced or evicted (D2)
+  func (s *Sched) Release(e *Entry)                  // its backoff ran: e moves to its flow's head, dispatchable; the flow's hold drops by one
   ```
 
-  A held flow leaves its ring and rejoins on its last `Release`, in O(1). The model of T3.8 gains
-  the same five steps and checks RFC 3 S17's throttle clause after each; `FuzzSched` gains them,
-  with seeds. Consumed by T4.6, which throttles, recovers, holds and requeues.
+  A held flow is in its ring only while its head is a released entry, and rejoins for new work
+  when its last requeued entry is released, each in O(1). E3's displacement and eviction (T3.4)
+  pass over a requeued entry. The model of T3.8 gains the same four steps and checks after each
+  RFC 3 S17's throttle clause and that waiters and running transfers stay within the bound plus
+  the pool (D2); `FuzzSched` gains them, with seeds. Consumed by T4.6, which throttles, recovers,
+  requeues and releases.
 - **Acceptance criteria:**
   - A store holding 96 of a pool of 128 throttled once has a bound of 48; throttled again while
     still holding 96, it stays at 48; throttled as it holds 48, 24, 12, 6 and 3 in turn, it falls
@@ -574,10 +592,14 @@ pkg/syncer/
     and no further.
   - At its cap the bound is inert and only the cap binds, while another store has work waiting in
     the class being served (D7); below it, the bound binds always.
-  - A held flow gets no dispatch while held and its first queued entry is next once released;
-    other flows on its store are served meanwhile, within the bound.
-  - `Requeue` at a full queue and a full waiter bound succeeds and displaces nothing; a held
-    flow dispatches a requeued entry and no new one.
+  - A held flow dispatches no new entry while any of its requeued entries is unreleased, and does
+    dispatch a released one while another is still in backoff; other flows on its store are served
+    meanwhile, within the bound.
+  - `Requeue` at a full queue and a full waiter bound succeeds and displaces nothing; a call that
+    would displace, and a demand that would evict, pass over a requeued entry, and a demand finding
+    only requeued speculation queued is refused.
+  - With a pool of 4 and the bound full, a throttling reply to every dispatch across 100 flows
+    leaves waiters and running transfers within the bound plus 4.
   - One dispatch's operation count stays flat at 1 to 1,000 waiting flows with held flows among
     them, from E3's counter.
 - **Tests:** at `Next`, which T3.5's dispatch consumes, as tables (no double). Each criterion
@@ -585,8 +607,10 @@ pkg/syncer/
   cap instead, which leaves 48 when 8 are held); a bound that always binds, which caps a lone
   store at three quarters (RFC 3 §7.2 "§2.9 lone flow", re-run); a hold that only skips the
   flow's turn once; a hold that also blocks requeued entries, so one transfer's retry waits on
-  another's backoff. The model's property test and the fuzz seeds over the new steps, each checked
-  by planting a bound that `Next` ignores and watching them fail (rule 10).
+  another's backoff; an entry counted as a waiter only once its backoff ends, which passes the
+  bound plus the pool; a requeued entry taken as a victim. The model's property test and the fuzz
+  seeds over the new steps, each checked by planting a bound that `Next` ignores and watching them
+  fail (rule 10).
 - **Rules:** its pull request amends RFC 3 S20 as the user decided on 2026-11-26 (D2): "…never
   exceed the waiter bound, beside at most one requeued throttled transfer per worker, whatever the
   number of flows".
@@ -604,8 +628,8 @@ pkg/syncer/
     `remote.Meter` whose `Moved` adds to the try's atomic byte count and stamps its first byte,
     and whose `Sent` restarts the first-byte bound to the acknowledgement; the first-byte and
     slow-tail timers on `Config.Clock`; the half's floor watchdog (D6); after a try, `classify`,
-    `tries.next`, the budget, `backoff` on the clock, or `Throttle` and `Hold`, then `Requeue` and
-    `Release` once the backoff runs; `Recover` on a success; the outcome hook (D10); D11's trip
+    `tries.next`, the budget, `backoff` on the clock, or `Throttle` and `Requeue`, then `Release`
+    once the backoff runs; `Recover` on a success; the outcome hook (D10); D11's trip
     errors.
   - `upload.go`: `Upload` over the loop, waiting for every try it started, `nil` if any returned
     `nil`, D8's outcome.
@@ -738,7 +762,9 @@ R38's counts for the get half. Consumed by E6, which adds the resume and
   and counted, a shared link just above the floor failing none, a stalled transfer failing
   uncounted, a stalled fetch reader failing nothing; a get held before its first byte and a put
   held after its last both failing at 10 s; a put held inside `src` past the first-byte bound
-  failing at the bound, as a stalled network would (R35).
+  failing at the bound, as a stalled network would (R35); on a store that accepts every get and
+  sends no byte, each first-byte trip counted toward health, and one hung get on a store whose
+  aggregate is above the floor, its trip not counted (D11).
 - **Tests:** through `export_test.go`'s half over `codec.Store` on the in-memory store under `Link`
   and `Hold`, in a bubble (D13), the trip reasons at `Stats` and the counted flag at the outcome
   hook E5 consumes (D10). Each row verified by building its wrong design: a floor per transfer, a
@@ -811,6 +837,11 @@ A suggestion only: one pull request per subtask works as well.
   sentence, and the same amendment should put E4 behind RFC 4 plan epic 6 where the plan still
   says upload checks need no codec: §3.1's graph (its edge is labelled "fetch checks" and reaches
   only E3 and E6), §3.2 ("upload checks need only R4-S2"), §3.3's RFC 4 epic 6 blocker and O9.
+- **E5's R13 should list the first-byte trip (D11)** beside the floor trip: counted with the
+  aggregate below the floor, not above it.
+- **RFC 3 §2.9 gains one sentence with this follow-up:** displacement and eviction pass over a
+  transfer requeued after a throttling reply (D2). RFC 3 §2.4 retries each of the first seven
+  throttled attempts, and §2.9 would otherwise refuse one in another call's place.
 - **E5 owns the floor's health case at `Flow.Health`.** T4.10 asserts the counted flag at the
   outcome hook; E5's "§2.8 failure window" row should add a floor trip with the aggregate below
   the floor, read at `Flow.Health`, so the value is also checked where it is consumed.

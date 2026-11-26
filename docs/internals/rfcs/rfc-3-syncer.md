@@ -621,7 +621,7 @@ registered here, so they have no flow to run on
 ([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)).
 
 **A small call is one bounded request.** `Small` runs an opaque closure, so the
-throughput floor, trickle rule and first-byte bound, which measure body bytes,
+throughput floor, trickle rule and first-byte bound, which measure wire bytes,
 cannot see it. Each `call` therefore **MUST** make exactly one request, or one
 read followed by one write of the same object — an extension's read and raise of
 a retain-until ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) — and its `ctx` ends at the **small-call bound**
@@ -1046,20 +1046,21 @@ no sharing; a floor of a few bytes per second catches a stalled connection but
 not a crawling one, and the aggregate test catches the crawl.
 
 **Time to the first byte is bounded per direction**, since a request can stall
-before any byte moves. For a get it is from dispatch to the first body byte
-received. For a put it is from dispatch to the first body byte accepted, and
-again from the last body byte sent to the acknowledgement: a service that takes
+before any byte moves. For a get it is from dispatch to the first encoded byte
+received. For a put it is from dispatch to the first byte accepted, and
+again from the last byte sent to the acknowledgement: a service that takes
 the whole body and then does not answer is stalled as surely as one that never
 starts.
 
 **Every bound measures wire bytes, which the transfer reports to a `Meter`.**
 The syncer does not see a put's body or a get's encoded bytes: the codec does.
 So the syncer passes a `remote.Meter` into every call of `attempt` and every
-`Store.Get`. The codec calls its `Moved` with each count of the encoded block's bytes,
-header and index included, sent to the store or read from it, and a put's
-`Sent` once its last byte has been sent. The floor, the stall and trickle rules, the first-byte bound,
-the worker-time estimate ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) and `syncer_bytes_total` ([§2.12](#2.12%20What%20the%20syncer%20makes%20observable)) all read
-these counts. Decoded chunks are not wire bytes: a compressed body yields more
+`Store.Get`. The codec calls its `Moved` with each count of the encoded block's
+bytes, header and index included when the transfer carries them, sent to the
+store or read from it, and a put's `Sent` once its last byte has been sent. The
+floor, the stall and trickle rules, the first-byte bound, the worker-time
+estimate ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) and `syncer_bytes_total`
+([§2.12](#2.12%20What%20the%20syncer%20makes%20observable)) all read these counts. Decoded chunks are not wire bytes: a compressed body yields more
 than it moved, and judging the floor on them would let a stalled get pass it.
 
 Only the store's side counts. Time a caller spends not reading a fetched stream is
@@ -1440,7 +1441,10 @@ Each half runs its own scheduler over its own pool:
   third flow's first call. Above both rules, a demand that would be refused
   evicts the **youngest queued speculative** entry, of any flow, and takes its
   place; that entry's caller gets a refusal, as a speculative caller can
-  ([§4.4](#4.4%20Speculation%20does%20not%20delay%20demand)). Only when no speculation is queued is a demand refused. Waiting
+  ([§4.4](#4.4%20Speculation%20does%20not%20delay%20demand)). Only when no speculation is queued is a demand refused.
+  Both rules pass over a transfer queued again after a throttling reply ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)):
+  it was admitted once, so it is never displaced or evicted, and a demand that
+  finds only such speculation queued is refused. Waiting
   outside the queue would be an unbounded queue under another name
   ([§2.3](#2.3%20Backpressure%20propagates%3B%20it%20does%20not%20buffer)). The refusal travels back to whoever opened the flow — for a share's
   flow, that share's journal — and no other flow's work is refused because of
@@ -1522,8 +1526,8 @@ setting:
 | re-admission backoff | the probe interval × 2^(*n*−1), at most 15 min, per store and direction; *n* starts at one, rises when the direction turns unhealthy within 60 s of its re-admission or with `ErrDenied`, and returns to one when a transfer in that direction succeeds | a direction that keeps failing is re-admitted ever more rarely, never latched; an unprobed direction turns healthy when it runs out ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | failure window | 30 s | a direction whose every transfer failed for this long, with its probe passing or with no probe, turns unhealthy, and recovers only on its own evidence ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | throughput floor | 64 KiB/s over 30 s, judged on the store's aggregate per direction; a transfer moving no byte for 30 s, or under a quarter of its store's mean per-transfer rate over 30 s, fails regardless | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
-| first-byte bound | 10 s: to the first body byte of a get; to the first body byte accepted of a put, and from its last byte sent to the acknowledgement | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
-| small-call bound | 30 s per `Small` attempt, for its one request or its one read-then-write pair | a small-object call, whose body bytes no floor can see, holds a worker for at most this long per attempt ([§1.3](#1.3%20Interface)) |
+| first-byte bound | 10 s: to the first encoded byte of a get; to the first byte accepted of a put, and from its last byte sent to the acknowledgement | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
+| small-call bound | 30 s per `Small` attempt, for its one request or its one read-then-write pair | a small-object call, whose wire bytes no floor can see, holds a worker for at most this long per attempt ([§1.3](#1.3%20Interface)) |
 | small-body cap | 256 KiB per `Small` body, in either direction; progress batches and listing pages are sized to fit | at 32 KiB/s, a working link's share for one of 32 transfers on 1 MiB/s ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)), a capped body takes 8 s, so with the first-byte bound one attempt fits the small-call bound ([§1.3](#1.3%20Interface)) |
 | detach bound | 5 s without taking the next chunk | a joined caller that falls behind is detached ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
 | retry bound | four attempts per transfer: the first and three retries; attempts ended by `ErrThrottled` count apart, up to eight per transfer, and take no token | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
@@ -1589,14 +1593,21 @@ needs, and its cost **MUST NOT** grow with the number of transfers in flight.
 
 Metric names are shown without the deployment's prefix. Every metric is labelled with `half` (`upload` or `fetch`) and `store`; the half
 is also the direction the health metrics describe. Queue metrics also carry
-`class` (`demand`, `background` or `speculation`, [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)). Queue
+`class` (`demand`, `background` or `speculation`, [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)). The queue
+metrics are `syncer_queue_depth`, `syncer_waiters` and `syncer_queue_wait_seconds`; no counter
+is one, so `syncer_refused_total` is labelled by `reason` alone, with no `class`. Queue
 gauges (`syncer_queue_depth`, `syncer_waiters`) are also reported per flow, which
 the engine exports by share under RFC 25's worst-n rule; the syncer knows a flow
 by its id, and the engine replaces it with the share when it exports
-([§1.3](#1.3%20Interface)). Queue histograms and counters are reported summed
+([§1.3](#1.3%20Interface)). The queue histogram is reported summed
 only. The syncer reports each queue gauge summed over all flows too, so the
 total needs no query across series and survives the engine capping how many
-shares it exports one by one. The syncer
+shares it exports one by one. The bounds three gauges below are read against are fixed by the
+half's pool size ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)): the waiter bound is eight times `syncer_workers`, the
+detached-buffer cap equals it, and the throttle limit's cap is §2.10's per-store cap, three
+quarters of it rounded down, at least one and, with a pool of more than one, at most the pool
+less one. So none of the three is exported as a `_limit` series ([RFC 25 §2.2](rfc-25-observability.md#2.2%20Units)); a dashboard derives it
+from `syncer_workers`. The syncer
 **MUST** make every metric below observable:
 
 **Pools** — is the syncer the limit?
@@ -1960,7 +1971,7 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) retry budget | Fail every call on one store; assert retries on it stay within its budget, no transfer makes more than four attempts, exhausted attempts are reported with the last error, and the backoffs of transfers that failed together are spread. |
 | [§1.3](#1.3%20Interface) partial prefetch | `Prefetch` two non-adjacent chunks of a block; assert the store is asked for those ranges only, and that an empty `want` asks for the whole block. |
 | [§1.3](#1.3%20Interface) RFC 4's errors, as they are | Build the syncer with an import test that follows imports transitively; assert it reaches RFC 4's contract and no implementation: no codec, no store, no transforms. Answer through RFC 4's fault wrapper with each error of RFC 4's set, and with an error that wraps none of them; assert each gets the row of [§1.3](#1.3%20Interface)'s table it names, and that the last is returned as it is. |
-| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) first byte, per direction | Hold a get before its first body byte, and a put after its last body byte sent; assert both fail at the first-byte bound. |
+| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) first byte, per direction | Hold a get before its first encoded byte, and a put after its last byte sent; assert both fail at the first-byte bound. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) wire bytes | Fetch a block of highly compressible chunks: assert `syncer_bytes_total` counts the encoded bytes the store sent, not the decoded ones. Trickle a get's encoded body below the floor while its chunks decode to more than the floor: assert it fails on the floor. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) fetch resume | Fail a whole-block fetch transiently after three chunks; assert the retry requests only the rest and no chunk is yielded twice. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) per direction | Fail every put probe and put; assert fetches from the store still run. Fail every get; assert uploads still run. |

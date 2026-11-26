@@ -378,11 +378,11 @@ interface:
 | Declared by | Component | What the engine calls |
 | --- | --- | --- |
 | [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | the journal | `Share`, passed the larger of the share's version floor and version limit; `Forget` (drops a tag's extents, markers and index entries through one header-only record `Since` never yields, refused while a handle of the tag is open, for a namespace moved away, an import attach or a share's removal, [RFC 1 §3](rfc-1-journal.md#3.%20Interface)); `Strand`; `Stats`; `Draw` and `SetVersionLimit` ([RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions)); `Repack` with its budget and scope ([RFC 1 §7.2](rfc-1-journal.md#7.2%20Repack)); `Reconciled`, once the metadata reconcile has covered its scope ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)); `MarksRecorded`, after each marks transaction commits ([§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)); `Acknowledge`, for an unread range an operator acknowledges, then marking `failed` the snapshots its `AckResult` names as at §2.5 ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)); `Close`, after every handle ([RFC 1 §8.7](rfc-1-journal.md#8.7%20Shutdown)) |
-| [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | a share's handle on the journal | `WriteAt`, passed the write's modification time ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)), `ReadAt`, `Sync`, `Offload`, `OffloadMany`, `Fill`, `Release`, `Truncate`, `Deallocate`, `Delete`, `CloneTarget` with its `CloneSpec` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `Reserve(n, writes)` and the reservation's `WriteAt` and `Close`, for a clone's copies ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), `Close`, before the tag's `Forget`, `Since`, `Settle`, `MarkOffloaded`, `Unmark`, `DropSuperseded` ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)), `Hold`, `Stamp`, `Files`, `DirtyFiles`, and `DropOlder`, for the metadata reconcile ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) |
-| [RFC 2 §2](rfc-2-carver.md#2.%20What%20one%20call%20covers), [§5](rfc-2-carver.md#5.%20The%20block%20assembler) | the carver and the block assembler | the carver's `Cut`; the assembler's fold |
+| [RFC 1 §3](rfc-1-journal.md#3.%20Interface) | a share's handle on the journal | `WriteAt`, passed the write's modification time ([RFC 28 §2.3](rfc-28-journal-format.md#2.3%20Records)), `ReadAt`, `Sync`, `OffloadMany`, one `Capture` or many ([§6.3](#6.3%20The%20offload%20pipeline)), `Fill`, `Release`, `Truncate`, `Deallocate`, `Delete`, `CloneTarget` with its `CloneSpec` ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)), `Reserve(n, writes)` and the reservation's `WriteAt` and `Close`, for a clone's copies ([RFC 1 §6](rfc-1-journal.md#6.%20Capacity)), `Close`, before the tag's `Forget`, `Since`, `Settle`, `MarkOffloaded`, `Unmark`, `DropSuperseded` ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)), `Hold`, `Stamp`, `Files`, `DirtyFiles`, and `DropOlder`, for the metadata reconcile ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)) |
+| [RFC 2 §2](rfc-2-carver.md#2.%20What%20one%20call%20covers), [§4](rfc-2-carver.md#4.%20Identity), [§5](rfc-2-carver.md#5.%20The%20block%20assembler) | the carver and the block assembler | the carver's `Cut`, `ChunkID` (a chunk's ID, §4.1) and `BlockName` (§4.2), and a namespace's settings, through the wiring's lookup by namespace, which the content wiring builds and hands it sealed: the engine never loads, derives or reads key bytes, and holds an opaque `carver.Settings`, reading only `Max`; the assembler's fold and its constructor |
 | [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | the syncer | `OpenFlow`, one flow per share at attach |
 | [RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface) | a syncer flow | `Close`, in `Drop` or `Close`; `Upload`, `Fetch`, `Prefetch`, `Healthy`, and `Health(d)` for the cause of an unhealthy direction — `ErrDenied` for quota, access or size, `ErrTransient`, `ErrCorrupt` or `ErrDrift` ([§11.1](#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included), [§10.2](#10.2%20A%20capacity%20refusal%20comes%20back%20here)) |
-| [RFC 6 §10](rfc-6-block-metadata.md#10.%20API%20surface%20and%20observability) | block metadata's `Existence` and `Content` views, held as two interfaces | every method of both, except `Offloaded` while deduplication is deferred |
+| [RFC 6 §10](rfc-6-block-metadata.md#10.%20API%20surface%20and%20observability) | block metadata's `Existence` and `Content` views, held as two interfaces | every method of both, except `Offloaded` while deduplication is deferred; the content view's `Abandon` is the pipeline's own abandonment ([§6.3](#6.3%20The%20offload%20pipeline), O4), and its `Budget` the key budget with the keys each part of an offload commit writes ([RFC 6 §5.2](rfc-6-block-metadata.md#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)) |
 | [RFC 16 §3](rfc-16-metadata-store.md#3.%20Interfaces%2C%20by%20consumer) | the metadata store's `Lifecycle` view | `JournalID`, the identity recorded for this node's device, for `Open` ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), step 1); the lost-journal acknowledgement naming that device and its `JournalID`, read at step 1 and at a retried open (§2.5; proposal); `SyncMarks`, the journal's sync marks for `Open`, raising its open generation in the same transaction (step 1, [§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)); `Tags`, every share record's tag and how far its removal has gone, read at start (steps 1 and 5); `VersionLimits`, read for `Open`'s floor, and `RaiseVersionLimits`, a tracked max-write of `S‖id‖vl` within `K` keys a transaction ([§2.7](#2.7%20The%20version%20limit)); `RaiseAtStart`, in the start transactions and at any attach of a shard whose open state the node does not hold, which opens a new grace instance, and `RaiseAtAttach`, at an attach of one whose open state it holds, which keeps it (step 2, [RFC 14 §4.4](rfc-14-open-state.md#4.4%20Grace%20is%20per%20shard)) |
 | this RFC, `CloneHold` ([§2.6](#2.6%20Dependencies%20and%20wiring)), which the root adapts from open state ([RFC 14 §9.2](rfc-14-open-state.md#9.2%20A%20new%20primary%20releases%20nothing%20before%20grace%20ends)) | a clone's hold on its source | `Hold`, open state's `CloneOpen`, taking over the source record a clone's phase 1 wrote, before phase 2; `Release`, its `CloneClose`, once the clone is done, whose orphan open state reports through its own `Sink.Closed`; `Served`, its `Recovery.Served`, which a rebuilt clone waits on before its batches run ([§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally)) |
 | [RFC 16 §3.1](rfc-16-metadata-store.md#3.1%20Lookups%20by%20ID%2C%20listings%2C%20and%20who%20may%20use%20them) | the metadata store's `Inspect` view | `Refs`, for the reseed only ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing), [RFC 6 §8.3](rfc-6-block-metadata.md#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor)); every other engine transaction goes through block metadata's views or `Lifecycle` |
@@ -590,11 +590,15 @@ primary, which offloads the whole file. A file is never split across shards
 
 ### 2.4 Settings are validated once, and refused rather than replaced
 
-The engine validates every setting it is handed at `Apply`, and **MUST**
+The engine validates every setting it is handed, a node's at `Apply` and a
+share's, its namespace's chunking settings among them, at `Bind`
+([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)), and **MUST**
 refuse an invalid one with an error rather than substitute a default, keeping
 the settings it already had
-([RFC 2 §3.7](rfc-2-carver.md#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)). It **MUST** record which chunking settings produced a share's content,
-and **MUST** report a change to them as a migration rather than apply it
+([RFC 2 §3.7](rfc-2-carver.md#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)). The namespace's record **MUST** hold which chunking settings produced its content,
+written by the node when it creates the namespace and compared by the content wiring
+([RFC 13 §5.3](rfc-13-configuration.md#5.3%20What%20content%20was%20written%20with%20is%20recorded%20with%20it)),
+and a change to them **MUST** be reported as a migration, which the engine refuses at `Bind`, rather than applied
 ([RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20migration)).
 
 ### 2.5 Start in order, stop in reverse, and join before closing
@@ -1202,10 +1206,19 @@ type Deps struct {
 	Gate      Gate      // RFC 12 §2.3: the per-shard cut gate every existence commit passes
 	Clock     Clock     // Now, Elapsed, After: the subset of the node's clock the engine reads
 	FreeSpace func(dir string) (int64, error) // free bytes of the filesystem holding journal directory dir, for journal_full's clear after a full device (§11.1); nil asks the filesystem
-	Watchdog  *health.Watchdog // RFC 25 §3.5: each journal's scheduler takes Loop("engine.sched." + journal)
+	Watch     func(loop string) Loop // RFC 25 §3.5: each journal's scheduler takes Watch("engine.sched." + dir), dir the journal's directory; the engine closes it once that scheduler's Stop has returned with every run joined, and leaves it open after a Stop that timed out
 	Metrics   *metrics.Registry
 	Tracer    trace.Tracer // RFC 25 §8.1: spans; the no-op tracer when tracing is off
 	Logger    *slog.Logger
+}
+
+// Loop is a watched loop as the work scheduler turns it, and its close. The
+// engine declares it so it imports no pkg/health (RFC 0 §1.2); RFC 25's
+// *health.Loop satisfies it, and the root adapts its watchdog's Loop as Watch:
+// func(n string) engine.Loop { return wd.Loop(n) }.
+type Loop interface {
+	workqueue.Loop // Turn, Idle (§6.1.1)
+	Close()
 }
 
 // CloneHold is the part of open state a clone calls, in the engine's own
@@ -1402,7 +1415,7 @@ passes it in.
 
 | Decision | Decided by | Carried out by |
 | --- | --- | --- |
-| When to offload a file | `offloadDue`: eligibility and urgency ([§6.2](#6.2%20When%20a%20file%20is%20offered)) | the offload pipeline ([§6.3](#6.3%20The%20offload%20pipeline)) over journal `Offload` ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)) |
+| When to offload a file | `offloadDue`: eligibility and urgency ([§6.2](#6.2%20When%20a%20file%20is%20offered)) | the offload pipeline ([§6.3](#6.3%20The%20offload%20pipeline)) over journal `OffloadMany` ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)) |
 | What goes in a block | the block assembler ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler)) — a fold, not a policy | the offload pipeline |
 | When to put a block | as soon as it is assembled — no decision | syncer uploader ([RFC 3 §3.1](rfc-3-syncer.md#3.1%20It%20is%20triggered%2C%20not%20scheduled)) |
 | Whether to fill | `fill` ([§7.3](#7.3%20Filling%20is%20a%20decision)) | journal `Fill` ([RFC 1 §3.4](rfc-1-journal.md#3.4%20Fill)) |
@@ -2200,10 +2213,11 @@ type Tenant struct {
 }
 
 type Stats struct { // per source and tenant
-	Pending, Backoff, Running, Overdue int
-	OldestPending                      time.Duration
-	Dropped, Expired                   uint64
-	LastDone                           time.Time
+	Pending, Backoff, Running, Runs, Overdue int // entries by state; Runs: runs in flight; Overdue: runs overdue now
+	OldestPending                            time.Duration
+	Dropped, Expired, OverdueRuns            uint64 // OverdueRuns: runs that passed twice RunTimeout, each counted once
+	Stalled                                  bool   // work_queue_stalled: a run of the tenant overdue, or the source's due entries undispatched for 5 minutes, the oldest the tenant's
+	LastDone                                 time.Time
 }
 
 // TenantID names a tenant: a namespace as it is, or a shard big-endian in the
@@ -2273,8 +2287,8 @@ The scheduler **MUST**:
   tenant, and keeps its slot, since the scheduler cannot reclaim a goroutine, only
   report it;
 - **turn its watchdog loop**: after each dispatch and each run's return. It reports
-  idle only while no entry is due, or while every slot it waits for holds a run
-  that is not overdue. So a lost wakeup, with entries due and a slot free, or a
+  idle only while no entry is due, or while every slot of the entry's source
+  holds a run that is not overdue. So a lost wakeup, with entries due and a slot free, or a
   source whose slots are all held by overdue runs, fails liveness within the
   watchdog's bound ([RFC 25 §3.5](rfc-25-observability.md#3.5%20Liveness)), and `work_queue_stalled` is raised as
   well once entries have been due with none dispatched for 5 minutes;
@@ -2425,7 +2439,7 @@ the block as a stream — header, then bodies — with one chunk in memory per w
 When a transform's output length is not known in advance, or the service checks a
 checksum sent up front, the store walks the plan twice: once to measure, once to
 send ([RFC 5](rfc-5-transforms.md)). The offered bytes stay stable for both walks, which is why the
-put runs inside the `Offload` callback that offered them. The source **MUST**
+put runs inside the `OffloadMany` callback that offered them. The source **MUST**
 recompute each chunk's hash as it reads and fail the put on a mismatch
 ([RFC 3 §3.5](rfc-3-syncer.md#3.5%20The%20bytes%20are%20stable%20for%20the%20duration)).
 
@@ -2610,7 +2624,7 @@ shared copies dead weight.
   call, and never joins two stretches ([RFC 2 §2.1](rfc-2-carver.md#2.1%20One%20unbroken%20stretch%20per%20call)).
 - It **MAY** widen a run over contiguous held bytes that are already offloaded,
   **only** so the new chunking re-tiles a ref the run partially replaces. It widens
-  by passing `widen` to `Offload`, which offers those offloaded neighbours frozen,
+  by passing `widen` to `OffloadMany`, which offers those offloaded neighbours frozen,
   like the dirty bytes, and counts them in the offer's `Oldest`, so a release or
   repack cannot pull them from under the pass ([RFC 1 §3.3](rfc-1-journal.md#3.3%20Offload)).
 - The engine **MUST NOT** read offloaded neighbours outside an offer.
@@ -4256,7 +4270,7 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | Requirement | Check |
 | --- | --- |
 | [§2.2](#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) no assertions | An architecture test scans the engine package: no type assertion or type switch on a value of a `Deps` interface type ([§2.6](#2.6%20Dependencies%20and%20wiring)), no `interface{ … }` literal in an assertion, no setter on `*Engine`. Seed one violation; assert it is reported. |
-| [§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced) settings | Configure `Min ≥ Target`. Assert `Apply` refuses it and the engine keeps its earlier settings. Change a share's profile. Assert it is reported as a migration. |
+| [§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced) settings | Configure a namespace `Target` the carver refuses ([RFC 2 §3.7](rfc-2-carver.md#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)). Assert the share's `Bind` refuses it and the engine keeps its earlier binding. Change the `Target` a namespace's record holds underneath it. Assert the share's `Bind` is refused as a migration ([RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20migration)), and nothing is cut under the new value. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) reseed | Restart with a ledger bit no ref justifies. Assert the bit is reported and cleared, the extent is re-offered rather than released, and extents of other files are evicted as soon as the reseed has visited them. |
 | [§2.1](#2.1%20Content%20composition) declared interfaces | The architecture test lists every method of every `Deps` interface ([§2.6](#2.6%20Dependencies%20and%20wiring)) and fails on one the engine never calls. Seed an unused method; assert it is reported. |
 

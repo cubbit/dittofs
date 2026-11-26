@@ -679,14 +679,15 @@ nightly; RFC 2's suites paragraph names each new suite.
      plan's shape names refs apart from carried entries, which P6 needs.
    - Appendix A: once #5484 deletes v1, its table describes nothing; proposed: keep A.1 and A.2 as
      the measurements behind §3.2 and §3.4, and drop the table.
-2. **`Target` has no key in RFC 13 yet**: RFC 13's plan gives the block target to RFC 4 and the
+2. **`Target`'s key is `carver.target`, settled** (the user's decision, 2026-11-26): RFC 13's plan gives the block target to RFC 4 and the
    keys to RFC 5, and leaves an undeclared Appendix B section to its component's plan. Epic 3
    declares the section in `pkg/carver/section`, validated through the check of a `Target`
    alone; the RFC 8 offload plan's epic 21 adds
    it to the node's table (§6.1). The Appendix B check reads a key only in RFC 13's key form,
    lower case and dotted (`keyForm` in `internal/node/appendixb_test.go`), and fails a table key with no row
-   (`TestAppendixBMatchesTheTable`). Appendix B's row writes `Target`, which is not one, so epic 21's step waits on RFC 13
-   naming the key — pending the user's answer. Epic 3 does not wait on it.
+   (`TestAppendixBMatchesTheTable`). Appendix B's row writes `Target`, which is not one, so epic 21
+   registers the section under `carver.target` and renames that row to it in the same change.
+   Epic 3's section uses the key from the start.
 3. **Burn-down whose size cannot be known**: epic 6's sweep depends on what the pipeline costs to
    run per `Target`; epic 7's second-architecture cell is macOS arm64, the one non-x86 host the
    harness has (`test/suites.yaml`).
@@ -700,7 +701,7 @@ nightly; RFC 2's suites paragraph names each new suite.
 | RFC 2 §2.4's real end at the key budget (P2 as amended), its two exceptions, the age and widening back, and RFC 8 §6.7's run widening (§1.4) | they are the caller's decisions | RFC 8 offload plan, epic 15 | the pipeline offers runs |
 | RFC 2 §5.3's "a block never mixes two flows or two namespaces", and §10.1's checks at the consumer, whole chunks and copies made before `emit` returns (§1.5 rule 5) | the pipeline decides what one assembler folds and what `emit` keeps | RFC 8 offload plan, epic 15 | its Assemble state lands |
 | Recording which settings produced a namespace's content and reporting a change as a migration (RFC 2 §3.6, RFC 8 §2.4, RFC 13 §5.3) (§1.4) | the engine's validator row, as RFC 13's plan assigns it; the record itself is `settings.Table.Bound`'s once the node's table holds `Target`, declared bound | RFC 8 offload plan, epic 16 (its D11) | the engine applies settings |
-| `Target`'s settings section, `pkg/carver/section`, added to the node's table (`newTable`), and RFC 13 Appendix B's check passing with it (§6 point 2) | the node's composition is the RFC 8 offload plan's; Appendix B's row has no key yet | RFC 8 offload plan, epic 21 | RFC 13 names `Target`'s key |
+| `Target`'s settings section, `pkg/carver/section`, added to the node's table (`newTable`), and RFC 13 Appendix B's check passing with it (§6 point 2) | the node's composition is the RFC 8 offload plan's; Appendix B's row is renamed to `carver.target` with the registration | RFC 8 offload plan, epic 21 | epic 21 lands |
 | Re-cutting or refusing an imported chunk longer than `Max` (RFC 2 §3.6, C9, §9's consumer row) (§1.4) | the import and re-home paths are RFC 27's | RFC 27 | a plan for RFC 27 is written |
 | The namespace keys: the chunk-ID key drawn for every namespace and never rotated (RFC 2 §4.1), the chunking key drawn only for an encrypting one, refused by fingerprint and never rotated with the data keys (RFC 2 §6, C10's namespace half) (§1.3, D4) | the key table and namespace keys are RFC 5's; the carver takes keys as inputs | RFC 5 | its namespace keys land |
 | C8 and C11: the nonce drawn from a cryptographic source, the name minted once with its put intent, a plan refused under another namespace's key (RFC 2 §4.2, §4.3; §9's consumer row) (D9) | the intent step is the pipeline's (RFC 8 §6.6), over `kvstore`'s built `Intend` (`pkg/metadata/kvstore/offload.go:69`) | RFC 8 offload plan, epic 15 | its Intent state lands |
@@ -709,6 +710,7 @@ nightly; RFC 2's suites paragraph names each new suite.
 | RFC 2 §6's keyed PRF upgrade of the keyed gear table (§4.3) | the RFC's `ponytail:` | unowned | a deployment must hide which files it holds from a bucket reader |
 | Setting each chunk's all-zero flag from the bytes `emit` hands over, and the consumer check that a chunk with any non-zero byte is never flagged: a wrong flag makes it a zero ref that no block stores (D3; §1.5 rule 5) | the caller holds the bytes; the assembler never sees them (RFC 2 §5.5) | RFC 8 offload plan, epic 15 | its Carve state lands |
 | A time per extent for each chunk's age, in place of its file's oldest dirty write, and removing the Carve state's `ponytail:` (RFC 2 §5.1, §5.4; D3, §4.3) | the journal reports one age per file and none per extent; the file's age is never younger than the truth, so A3 holds | the journal plan ([`rfc-1-journal-plan.md`](rfc-1-journal-plan.md)), which has no epic for it yet | short blocks put before their age ceiling show up as a measured cost in put count |
+| A held plan's outcome: what a pass returns for a file whose only unreported extents are in the short last plan `Finish` held back (RFC 2 §5.4), which RFC 8 §6.3 now makes `Retry`, backed off and counted toward O6's five failed passes, so a file appended slowly raises `file_offload_failing` while healthy (epic 5, §9 point 3) | a contract decision of RFC 8 §6.3, not the fold's; decided: such a file returns `Done`, its extents stay **Dirty**, and `offloadDue` offers it again when its bytes reach the target or its age the maximum age (RFC 8 §6.2). `WaitOffloaded` and the upload drain judge by dirty bytes, never by the `Done` result (RFC 8 §11.4), so a held tail never reads as offloaded | RFC 8 | the RFC 8 offload plan's epic 15 implements the per-file outcome and O6's count, with a test row that a held tail returns `Done` and is offered again; epic 20's T20.6 adds a row that a held tail keeps `WaitOffloaded` waiting |
 | Randomised assembly (RFC 2 §5.6) (epic 5) | sequential assembly is the RFC's proposal; changing it needs no migration | unowned | a measured locality or put-size need, since §6 says it hides nothing, post-v1 |
 
 ## 7. RFC coverage

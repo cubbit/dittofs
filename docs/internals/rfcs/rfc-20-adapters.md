@@ -1918,9 +1918,18 @@ type Context struct {
 	Evidence vfs.Evidence // RFC 18 §3.1 through RFC 17 §3.0's alias: principal, SIDs, expiry
 	Keys    vfs.Keys        // RFC 18 §3.1's Session, Subkey and APRep; Session is NTLM's exported session key, or RFC 4121 §2's context key (the authenticator's subkey when present, since the acceptor sends none); never in an Identity
 	MIC     func(msg []byte) ([]byte, error)            // RFC 4121: krb5i, the RPCSEC_GSS verifier
-	Wrap    func(msg []byte) ([]byte, error)            // RFC 4121: krb5p
-	Unwrap  func(tok []byte) ([]byte, error)
+	VerifyMIC func(msg, tok []byte) error               // RFC 4121: a peer's MIC token, the RPCSEC_GSS verifier and krb5i
+	Wrap    func(msg []byte) ([]byte, error)            // RFC 4121 §4.2.6.2's sealed Wrap token, krb5p's: built in msg's array, the message after WrapHeadroom reserved bytes and WrapTailroom more within msg's capacity
+	Unwrap  func(tok []byte) ([]byte, error)            // RFC 4121: krb5p, a peer's Wrap token unsealed in place; the message is a slice of tok
 }
+
+// WrapHeadroom and WrapTailroom are the room Wrap seals a message in: the
+// token header and the confounder before it, the header's copy and the
+// checksum after it, so a krb5p reply is sealed where it was encoded.
+const (
+	WrapHeadroom = 16 + 16 // header, AES confounder
+	WrapTailroom = 16 + 12 // header's copy, HMAC-SHA1-96
+)
 
 // Exchanges holds exchanges in progress, keyed by the protocol's handle for
 // one — an SMB session ID, an RPCSEC_GSS context handle — each bounded by the
@@ -1929,10 +1938,11 @@ type Exchanges struct{ /* … */ }
 
 func (x *Exchanges) Step(ctx context.Context, key Key, newMech func() Mechanism, in []byte) (out []byte, done *Context, err error)
 
-// Identity builds a request's Identity from a context, or from an AUTH_SYS
-// credential, which proves nothing (RFC 18 §3.2). It is the one place either
-// protocol builds one (§4.4).
-func Identity(c *Context, sys *SysCred, proto vfs.Protocol, addr netip.Addr) (vfs.Identity, error)
+// Identity builds a request's Identity from a context. It is the one place
+// either protocol builds one from a security context (§4.4). An AUTH_SYS or
+// AUTH_NONE credential, which proves nothing (RFC 18 §3.2), is no context:
+// only NFS has one, and NFS translates it itself (RFC 21 §11.1).
+func Identity(c *Context, addr netip.Addr) (vfs.Identity, error)
 ```
 
 | Piece | Where | NFS | SMB | Why there |
@@ -1942,7 +1952,8 @@ func Identity(c *Context, sys *SysCred, proto vfs.Protocol, addr netip.Addr) (vf
 | SPNEGO, which composes the two | `gss` | — | `SESSION_SETUP` | wire format, no secret |
 | `Exchanges`: multi-leg state, deadline, cleanup | `gss` | keyed by GSS context handle | keyed by session ID | one exchange machine for both |
 | RFC 4121 per-message tokens (MIC and wrap) | `gss.Context`, called from NFS's `Security` stage (§5.5) | `krb5i`, `krb5p` and the verifier | `MIC`, inside SPNEGO for the mechanism-list MIC over Kerberos; its own keys from `Keys.Session` | RFC 4121, the Kerberos mechanism's |
-| `Identity`, expiry | `gss` | the RPC `Router` stage | the SMB `Router` stage | the one place either protocol builds one |
+| `Identity`, expiry | `gss` | the RPC `Router` stage | the SMB `Router` stage | the one place either protocol builds one from a context |
+| `Identity` from an `AUTH_SYS` or `AUTH_NONE` credential | NFS adapter, `nfs/protocol`: a pure function the RPC `Router` stage calls | yes | — | only NFS has the flavour, and it proves nothing for `gss` to hold |
 | failure handling: every error a logon failure, never guest | `gss` | GSS `CREDPROBLEM` | `STATUS_LOGON_FAILURE` | decided once for both |
 | NTLMv2 verification — local NT hash, or pass-through to a domain controller over NETLOGON | the server's authenticator behind `SignIn` ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)) | — | through the NTLM mechanism | needs the NT hash or the machine account's secure channel |
 | Kerberos AP-REQ acceptance, keytab, PAC verification | the server's authenticator behind `SignIn` ([RFC 18 §3.3](rfc-18-identity.md#3.3%20Kerberos), [§3.4](rfc-18-identity.md#3.4%20The%20PAC)) | through the Kerberos mechanism | through the Kerberos mechanism | needs the keytab; its rotation is RFC 18's |
@@ -1962,8 +1973,9 @@ exchange is not a middleware, since it spans several requests; what runs on
 every request is:
 
 1. the **Router** stage asks `gss.Identity` for the request's `Identity` from
-   the session's or GSS context's `gss.Context` — one function for both — and
-   builds `r.Call` from it. For an SMB2 chain this and the `needs` check run
+   the session's or GSS context's `gss.Context` — one function for both — or,
+   for an NFS call under `AUTH_SYS` or `AUTH_NONE`, translates the credential
+   itself, and builds `r.Call` from it. For an SMB2 chain this and the `needs` check run
    once per member, each a request of its own; for an NFSv4 `COMPOUND` the
    Router runs once, its members passing its `r.Call`, and the `needs` check
    once per member, through the compound row's `Op.Members` (§4.7), so a
@@ -2410,13 +2422,26 @@ type ReplayCache interface {
 	// protocol that chains returns copies.
 	Lookup(ctx context.Context, h Header) (*Buf, error)
 	// Store keeps its own clear copy of a cacheable row's encoded reply, taken
-	// before Wrap; the caller's reply is then wrapped in place.
+	// before Wrap; the caller's reply is then wrapped in place. It is called
+	// only where a Cacheable row ran (§4.7): NFSv3's and NFSv4.0's
+	// duplicate-request cache so never replays a delay or a fault to a
+	// retransmission of a call that did not run, and NFSv4.1's slot, reached
+	// through SEQUENCE's Cacheable row, commits its sequence here and keeps
+	// the reply as RFC 21 §3.1 says.
 	//
 	// ponytail: the copies Store keeps for NFSv3's and NFSv4.0's duplicate
 	// request cache and for SMB's replay are charged to no pool; RFC 24 §4.5
 	// charges only NFSv4.1's slot cache. Charge them to the connection-state
 	// pool when a replay cache's size shows in a profile.
 	Store(h Header, reply *Buf)
+	// Drop tells the cache that a request whose Lookup returned nil, nil
+	// ended with nothing stored: refused at Route or before its handler,
+	// ended with no reply, answered with a reply Store is not handed, or its
+	// context ended. A cache that marks a looked-up call in progress, so a
+	// retransmission arriving while the first send runs is answered with no
+	// reply through Stages.Errors, clears the mark here; one that keeps no
+	// such mark does nothing.
+	Drop(h Header)
 }
 ```
 
@@ -2424,7 +2449,7 @@ type ReplayCache interface {
 | --- | --- | --- | --- |
 | Header | RPC call and reply header | RPC header | SMB2 header (and transform header) |
 | Router | (program, version) to table; AUTH_SYS or GSS to `Identity` | version 4 to its one table; the minor version selects each row's `Versions`, and one not served is refused with `ErrVersion` (§4.8) | its one table, the dialect selecting each row's `Versions` (§4.8); session to `Identity` |
-| Security | GSS where the flavour is `RPCSEC_GSS`, else nil | GSS, else nil | signing and encryption |
+| Security | GSS on every connection, passing a call of another flavour unchanged | GSS on every connection, as for NFSv3 | signing and encryption |
 | Flow | nil: the cap of 64 | 4.0: nil; 4.1: the session's slots | credits |
 | Replay | NFSv3: a duplicate-request cache (§11 question 2); the others nil | 4.0: the same cache; 4.1: the slot's reply cache | channel sequence and replay |
 
@@ -2791,7 +2816,7 @@ if !send { if tbl.Holds { conn.write(interim(h, true, after)) }; freeReply(); re
 failed := st != 0 && !notFailure
 runner.after(h, failed) // the compound runner stops a compound, and fails a chain's related members, only after a failed member (§4.3)
 reply := encode(stages.Header, h, st, inv)
-if op.Cacheable { stages.Replay.Store(h, reply) } // a clear copy, before Wrap
+if stored(op, inv, err, st) { stages.Replay.Store(h, reply) } else { stages.Replay.Drop(h) } // a clear copy, before Wrap; stored: op Cacheable and it ran, or for a compound row a member that ran is Cacheable (below). Every earlier return after Lookup's miss drops too
 err = stages.Security.Wrap(h, reply) // a chain's replies: once, joined (below)
 conn.write(reply) // the writer's queue (§6.2)
 ```
@@ -2838,7 +2863,26 @@ there and fails the related members of a chain after it; a status its row marks
 writes the compound's `Invocation.EncodeHead` first, then each member's result as
 `Members.EncodeResult` followed by that member's `Encode`, and last writes the
 head again over its own bytes with the compound's status and the count of
-results, so no result is copied. A chain encodes each member's reply, joins them with
+results, so no result is copied.
+
+A call **ran** when its handler was called and returned no error, or one its
+table maps to a status other than the fault; `ErrDelay` does not count, and
+neither does a refusal before the handler, `core`'s `ErrDecode` among them. A
+single call's reply is handed to `Store` when its row is `Cacheable` and it
+ran. A compound row's own `Cacheable` column is not read: the runner hands
+`Store` the compound's reply when a member that ran has a `Cacheable` row.
+The rule is the duplicate-request cache's, NFSv3's and NFSv4.0's: a compound
+whose `CREATE` ran before a later member's delay is stored, and one of reads
+alone never is, and cannot turn the cache over and evict the replies it is
+kept for. NFSv4.1's slot cache keeps what [RFC 21
+§3.1](rfc-21-nfs.md#3.1%20Slot%20tables) says, the whole reply of a
+slot asked to cache (`sa_cachethis`), and reaches it through the same rule:
+NFS marks `SEQUENCE`'s row `Cacheable`, so every compound whose `SEQUENCE`
+ran is handed to `Store` whatever its later members answered, a
+`GETATTR`-only one and one whose later member answered a delay included, and
+`Store` commits the slot's sequence whether or not it keeps the reply (RFC
+8881 §2.10.6.1.3). A compound whose `SEQUENCE` did not run changed no slot,
+and `Drop` is its end. A chain encodes each member's reply, joins them with
 `HeaderCodec.Chain`, which `core` calls between members only, and calls `Wrap`
 once on the joined record: SMB's `Wrap` pads the chain's last reply to 8
 (MS-SMB2 3.3.4.1.3, a SHOULD), signs each member over its own bytes,
@@ -3091,6 +3135,11 @@ func (c *Conn) Established()
 // NFSv4.1 back channel — so the idle timeout passes the connection over until
 // every release is called (§6.4).
 func (c *Conn) Keep() (release func())
+
+// Remote is the client's address as it reached this node, unmapped and
+// without its port: what NFS's router puts in the Identity and its
+// duplicate-request cache keys on.
+func (c *Conn) Remote() netip.Addr
 
 // Settings is the settings snapshot this connection loaded at accept, the
 // protocol's whole shape (§3.6); NewConn reads its own from it.
@@ -3836,11 +3885,20 @@ were it added, it is another unwrap/wrap pair.
 today and stays: a client sends a `NULL` call with the `AUTH_TLS` flavour, the
 server answers, and the same TCP connection is upgraded to TLS before any
 other request. `core.Conn` offers that upgrade once, to the stage that asked —
-`StartTLS(cfg)`, called by NFS's `Header` stage after the reply is sent — and
-from then on the reader and writer read and write through TLS; frame and every
-stage above it are unchanged. `StartTLS` is not in §4.7's list: it is added to
+`StartTLS(cfg)`, asked by NFS's `Header` stage when it decodes the probe, and
+performed by `core` once the probe's reply is sent, if the router admitted it
+and its row answered with success — and from then on the reader and writer
+read and write through TLS; frame and every stage above it are unchanged. It
+is asked at decode, on the reader, because by the time the reply is sent the
+reader may already be reading the client's `ClientHello` as a record: once it
+is asked, the reader reads no further record until the probe's call has ended,
+and bytes it already holds past the probe are the first the handshake reads,
+never cut as records. A probe the router refuses, one answered from an error
+table and one that ends with no reply withdraw the request, and the reader
+reads on in plaintext. `StartTLS` is not in §4.7's list: it is added to
 `Conn` with RFC 21's `NULL` handler, a method on a concrete type that changes
-no existing signature.
+no existing signature. `Remote`, which the RPC router reads for the
+`Identity`'s address, is in it.
 
 It is configured on the NFS adapter, as today:
 
@@ -4248,7 +4306,7 @@ Three, each per protocol:
 | --- | --- | --- | --- |
 | **codec micro**: `BenchmarkDecode*`, `BenchmarkEncode*` per message | ns and allocations per message | per change, in a non-race cell of its own: allocation gates skip under `-race` ([RFC 29 §4.10](rfc-29-test-harness.md#4.10%20Benchmarks%20and%20long%20runs)) | `READ`, `WRITE`, `GETATTR`, SMB `READ`/`WRITE`/`QUERY_INFO` decode and encode at **0 allocations**, asserted with `testing.AllocsPerRun` |
 | **pipeline micro**: the whole pipeline over loopback against a *null service*, a `vfs.Service` answering every call at once from memory | the adapter's own cost per request, ns and allocations, with no storage underneath | per change, as above | allocations per request, a chain's per record it sends, asserted equal to a checked-in number that may only fall, a count below it failing until the number is lowered, with tracing off; at ratio 0.01, with `Deps.TraceIDs` returning only IDs the ratio rule rejects (bit 63 of the low eight bytes set), warm-up included, `testing.AllocsPerRun(N, …)` asserted equal to tracing off's (§10.2). In `core`'s run, `testproto`'s `Create`, whose handler returns a zero-size reply on either answer, run at a level that drops every line once with the call answered success and once through a wrapper around the null service, declared in the test, that answers every call one `ErrDelay` of `DelayResources`, which both of `testproto`'s tables map to `StatusDelay` at once, an expected refusal logged at debug (§4.5), arming nothing per call: the two counts asserted equal (§10.3). ns per request reported, with no gate until a baseline is checked in |
-| **end to end**: the composed node with its real stores | small operations (`GETATTR`, `LOOKUP`, SMB `QUERY_INFO`) per second on one connection and on the node; 1 MiB sequential read and write on one and four connections; p99 of a 4 KiB write at half the request budget | nightly, dedicated host | tracked; three nights below the 7-day median adds a note to the develop-status issue (RFC 29 §4.10) |
+| **end to end**: the composed node with its real stores | small operations (`GETATTR`, `LOOKUP`, SMB `QUERY_INFO`) per second on one connection and on the node; 1 MiB sequential read and write on one and four connections; p99 of a 4 KiB write at half the request budget | nightly, dedicated host | tracked, not gated: a point, an area or the night's figure that falls below its 7-day median by more than its noise band is flagged, which fails nothing ([RFC 29 §4.10](rfc-29-test-harness.md#4.10%20Benchmarks%20and%20long%20runs)) |
 
 The gates cover the served path and the mapped refusal above; a request
 refused at decode, which they do not cover, allocates one error, the
@@ -4944,8 +5002,8 @@ shares the reason's minute
    belong in `Row`'s arguments instead is open.
 7. **Which stage builds the caller.** §4.4 has the `Router` resolve the
    credential into `r.Call` and the pipeline check `needs`, not the `Security`
-   stage: `Security` is nil for `AUTH_SYS` and runs before a table is chosen,
-   so it cannot see a row's `Needs`. Revisit if `Security` is moved after
+   stage: `Security` passes an `AUTH_SYS` call unchanged and runs before a
+   table is chosen, so it cannot see a row's `Needs`. Revisit if `Security` is moved after
    routing.
 
 ## Appendix A — prior art

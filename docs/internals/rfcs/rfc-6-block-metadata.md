@@ -576,7 +576,7 @@ The name is minted per put attempt from a fresh nonce ([RFC 2 §4.2](rfc-2-carve
 `generation` is the block's compaction depth and is never an input to a name.
 
 `encodings` lists the transform IDs and versions the block's bodies use, and the
-material each used as (material ID, fingerprint), as the store reported them at
+material each used as (kind, ID, fingerprint), as the store reported them at
 the put ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)). The transform census and exports read it
 ([RFC 26 §2.1](rfc-26-catalog-backups.md#2.1%20A%20backup%20is%20an%20export%20of%20one%20snapshot%27s%20metadata)); the read path never does.
 
@@ -1090,12 +1090,16 @@ refcount without its ref, or a chunk without its block each turns a later read o
 sweep into a guess.
 
 **Zero refs with no block commit alone.** A pass whose carved extents hold only
-all-zero chunks has no block, so no put intent and no block commit. Its zero refs
-**MUST** then commit in a **zero-ref commit**: one transaction that writes the
+all-zero chunks has no block, so no put intent and no block commit; and zero refs
+whose keys would take the nearest block's commit past K ride in no block either
+([RFC 2 §5.2](rfc-2-carver.md#5.2%20Packing%20rules), P2). Such zero refs
+**MUST** commit in a **zero-ref commit**: one transaction that writes the
 zero refs, replacing what they overlap with the history moves and count changes
 that requires, and that makes the per-file checks below. It writes no block
 record, no chunk record and no intent delete, and it stays within K like any
-commit ([§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)). Without it a stretch of zeros would never leave the journal.
+commit ([§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)). A run of zero refs
+whose keys would pass K splits into several zero-ref commits, each counting its
+files' per-file keys. Without it a stretch of zeros would never leave the journal.
 
 **The first block to commit a chunk owns its record.** A later commit that carries
 the same chunk adopts it: it adds its refs and their counts, and leaves `block`
@@ -2658,6 +2662,12 @@ type Content interface {
     // Intend durably records a put intent for a freshly minted name (§7.6).
     Intend(ctx context.Context, name BlockName, epoch uint64) error
     Commit(ctx context.Context, c BlockCommit) (CommitResult, error)              // §4.1
+    // Abandon is Blocks' abandonment of the engine's own intents (§7.6), so the offload
+    // pipeline's one view holds it (RFC 8 §6.3, O4).
+    Abandon(ctx context.Context, ns NamespaceID, names []BlockName) error
+    // Budget is K and, at their worst case, the keys an offload commit writes per new ref, per
+    // ref it replaces, per block and per file, derived at open (§5.2).
+    Budget() Budget
     // Resume runs phase 2 of every removal, clone or restore not done, within K keys per
     // transaction (§6.2); a clone's from the spec its Removal record carries (§6.6).
     Resume(ctx context.Context, file FileID, epoch uint64) error
@@ -2672,6 +2682,15 @@ type Content interface {
     Cut(ctx context.Context, share ShareID) (SnapshotCut, error)                    // §6.5, behind the cut gate
     DropCut(ctx context.Context, share ShareID, k SnapshotCut) error                // §6.5, batched
     VersionFloor(ctx context.Context, shares []ShareID) (JournalVersion, error)          // §8.3
+}
+
+// Budget is K and the worst-case keys of each part of an offload commit (§5.2).
+type Budget struct {
+    K        int // the most keys one transaction may write
+    NewRef   int // a ref written: the ref, its reverse key, its chunk record
+    Replaced int // each existing ref replaced, at worst split, with what its count reaches
+    Block    int // a block commit's own: the intent's delete, the block record, its GC index keys
+    File     int // each file in the commit: the offload fence
 }
 
 // Blocks is RFC 9 §8's view of block records, satisfied here, one per namespace:
@@ -3007,7 +3026,7 @@ range-splitting backend's tail ranges.
 | **LiveCut** | kind (share or subtree) · the snapshot's ordinal · a subtree cut's covered set of shards | snapshot cut creates, deletion removes |
 | **Chunk** | `block` name · `position` u64 · `length` u32 · `refcount` u64 · `stamp` u64 | offload commit creates; every ref change counts and stamps; relocation and a carrying commit repoint; prune of its block deletes |
 | **Reverse ref** | — (the key is `hash‖share‖file‖offset‖died`) | every transaction that writes or deletes a ChunkRef or History record, in the same transaction |
-| **Block** | `state` (live, retired, deleted) · `not_before` (i64 ns, store time) · `marked_at` (i64 ns, store time of the move to `deleted`) · `live` u32 · `dead` u64 · `dead_at` (i64 ns) · `generation` u8 · `size` u64 · `encodings` list of (transform ID, version, material ID, fingerprint) · `carried` list of (hash 32 B, length u32), at most `N` | offload commit, relocation create; abandonment and the listing backstop create as `retired`; every count change across zero retires or resurrects; the deleter moves to `deleted`; pruning deletes |
+| **Block** | `state` (live, retired, deleted) · `not_before` (i64 ns, store time) · `marked_at` (i64 ns, store time of the move to `deleted`) · `live` u32 · `dead` u64 · `dead_at` (i64 ns) · `generation` u8 · `size` u64 · `encodings` list of (transform ID, version, material kind, material ID, fingerprint) · `carried` list of (hash 32 B, length u32), at most `N` | offload commit, relocation create; abandonment and the listing backstop create as `retired`; every count change across zero retires or resurrects; the deleter moves to `deleted`; pruning deletes |
 | **Put intent** | `domain` u8 · `id` (shard ID or GC partition) · `epoch` u64 · `node` NodeID and `nodeEpoch` u64 (shard intents) | writer before a put; commit or abandonment deletes |
 | **GC index keys** (retired, deleted, compaction) | the deleted key's value: store time the delete succeeded | every transaction that changes a block's state or compaction bucket; derived, rebuildable ([RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt)) |
 

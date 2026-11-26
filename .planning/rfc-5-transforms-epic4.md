@@ -178,7 +178,7 @@ round-trip input (E2's R2), and T4.3's corpus check reports it on real files.
   `compress` can import it. The header's version is 1 for both, the first format each writes.
   The length is read with `binary.Uvarint`, which already refuses an overlong encoding, and
   reports a 10-byte value of 2⁶⁴ or more as overflow, which the parse returns as `ErrMalformed`,
-  not R5's `ErrTooLarge`: such a header is not a length at all, and both map to `ErrCorrupt`. It
+  not R5's `ErrTooLarge`: such a header is not a length at all, and both map to `ErrCorrupt`. It is
   refused when `binary.AppendUvarint` of the value is shorter than what was read, which makes it
   minimal. Prior art: Go's `compress/flate`, `compress/gzip` and `compress/zlib`, one package per
   format under one parent, sharing nothing exported (from memory).
@@ -209,7 +209,7 @@ round-trip input (E2's R2), and T4.3's corpus check reports it on real files.
   library's default of 4, and one encoder per encoder speed a configured level maps to (D7), built
   on first use with `WithEncoderConcurrency(GOMAXPROCS)`. All of them are built with a nil reader or
   writer, which starts no goroutine, and `EncodeAll` and `DecodeAll` are safe for concurrent use.
-  They are never freed, and one best-speed encoder slot alone holds a table of about 32 MiB, so
+  They are never freed, and one `SpeedBestCompression` encoder slot alone holds a table of about 32 MiB, so
   the first `prof.Watch` that built them would fail its heap check: the package's `TestMain`, and
   the benchmarks before their first `Watch`, build every codec and warm each slot first.
   `feat/storage-v2` pins v1.20.3 as indirect, whose `DecodeAll` allocates the declared size up front
@@ -232,7 +232,8 @@ round-trip input (E2's R2), and T4.3's corpus check reports it on real files.
   before conversion. Empty settings build, as E3's decode set needs (its D1). A level of 0 encodes
   as zstd's default, 3, as zstd itself defines it, but its `LengthKey` is `0x00`, the level as
   given, as RFC 5 Appendix A defines the key: `level: 0` and `level: 3` write the same bodies under
-  two chain IDs, a missed dedup across that change only; a `decision:` marker says so. Prior art: `encoding/json`'s
+  two chain IDs, a missed dedup across that change only; a `decision:` marker says so. An absent
+  level is 3, keyed `0x03` (R22). Prior art: `encoding/json`'s
   `DisallowUnknownFields` (from memory); zstd's own level-0 convention.
 - **D6, the decline rule in integers.** A body applies when `16 × (n − len(body)) ≥ n`, `body`
   counting the header, and declines otherwise, so "saves less than 1/16" has no rounding case and a
@@ -245,7 +246,7 @@ round-trip input (E2's R2), and T4.3's corpus check reports it on real files.
   a level change. A `ponytail:` marker at the mapping names the ceiling and the upgrade: an encoder
   honouring each level, when the ratio benchmark shows a level an operator asks for compressing no
   better than its neighbour, which is a new format version (§5.4). A second `ponytail:` at the
-  encoder pool states the memory T4.1 measures for one best-speed encoder slot, times
+  encoder pool states the memory T4.1 measures for one `SpeedBestCompression` encoder slot, times
   `GOMAXPROCS`, and the upgrade: a lower encoder concurrency when that shows in a node's memory.
   Prior art: `klauspost/compress`'s own documented mapping, read in the module cache.
 - **D8, the registered names are `zstd` and `lz4`.** RFC 5 names the algorithms but not the names
@@ -296,7 +297,8 @@ test/suites.yaml        T4.1  FuzzZstdDecode's `fuzz` line, timeout.test and tim
 
 **Subtask T4.1 estimate: 4.25 man-days.**
 
-- **Track:** A. **Depends on:** S2, T3.4, T3.7.
+- **Track:** A. **Depends on:** S2, T3.4, T3.7. Outside this epic, the RFC 2 plan's epic 2 T2.4, which
+  creates the `fuzz` suite this subtask adds a line to.
 - **Covers:** R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15, R16, R17, R18, R21,
   R22.
 - **Deliverables:**
@@ -364,7 +366,8 @@ test/suites.yaml        T4.1  FuzzZstdDecode's `fuzz` line, timeout.test and tim
 
 **Subtask T4.2 estimate: 1.5 man-days.**
 
-- **Track:** A. **Depends on:** T4.1.
+- **Track:** A. **Depends on:** T4.1. Outside this epic, the RFC 2 plan's epic 2 T2.4, which creates
+  the `fuzz` suite this subtask adds a line to.
 - **Covers:** R1, R2, R3, R5, R7, R8, R9, R10, R12, R13, R14, R15, R16, R17, R18, R21, R22.
 - **Deliverables:** `lz4`: the transform of D4, ID `0x0002`, stage compress, `Kinds` empty,
   `Version` 1, `MaxEncodedLen(n, m) = n`, `LengthOf` false with RFC 5's double-compression
