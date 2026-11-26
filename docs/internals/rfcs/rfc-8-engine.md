@@ -590,11 +590,15 @@ primary, which offloads the whole file. A file is never split across shards
 
 ### 2.4 Settings are validated once, and refused rather than replaced
 
-The engine validates every setting it is handed at `Apply`, and **MUST**
+The engine validates every setting it is handed, a node's at `Apply` and a
+share's, its namespace's chunking settings among them, at `Bind`
+([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)), and **MUST**
 refuse an invalid one with an error rather than substitute a default, keeping
 the settings it already had
-([RFC 2 §3.7](rfc-2-carver.md#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)). It **MUST** record which chunking settings produced a share's content,
-and **MUST** report a change to them as a migration rather than apply it
+([RFC 2 §3.7](rfc-2-carver.md#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)). The namespace's record **MUST** hold which chunking settings produced its content,
+written by the node when it creates the namespace and compared by the content wiring
+([RFC 13 §5.3](rfc-13-configuration.md#5.3%20What%20content%20was%20written%20with%20is%20recorded%20with%20it)),
+and a change to them **MUST** be reported as a migration, which the engine refuses at `Bind`, rather than applied
 ([RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20migration)).
 
 ### 2.5 Start in order, stop in reverse, and join before closing
@@ -4281,7 +4285,7 @@ the work queue [§6.1](#6.1%20The%20work%20queue), the offload pipeline [§6.3](
 | Requirement | Check |
 | --- | --- |
 | [§2.2](#2.2%20Capabilities%20are%20parameters%2C%20never%20assertions) no assertions | An architecture test scans the engine package: no type assertion or type switch on a value of a `Deps` interface type ([§2.6](#2.6%20Dependencies%20and%20wiring)), no `interface{ … }` literal in an assertion, no setter on `*Engine`. Seed one violation; assert it is reported. |
-| [§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced) settings | Configure `Min ≥ Target`. Assert `Apply` refuses it and the engine keeps its earlier settings. Change a share's profile. Assert it is reported as a migration. |
+| [§2.4](#2.4%20Settings%20are%20validated%20once%2C%20and%20refused%20rather%20than%20replaced) settings | Configure a namespace `Target` the carver refuses ([RFC 2 §3.7](rfc-2-carver.md#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)). Assert the share's `Bind` refuses it and the engine keeps its earlier binding. Change the `Target` a namespace's record holds underneath it. Assert the share's `Bind` is refused as a migration ([RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20migration)), and nothing is cut under the new value. |
 | [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) reseed | Restart with a ledger bit no ref justifies. Assert the bit is reported and cleared, the extent is re-offered rather than released, and extents of other files are evicted as soon as the reseed has visited them. |
 | [§2.1](#2.1%20Content%20composition) declared interfaces | The architecture test lists every method of every `Deps` interface ([§2.6](#2.6%20Dependencies%20and%20wiring)) and fails on one the engine never calls. Seed an unused method; assert it is reported. |
 
