@@ -305,15 +305,17 @@ node passes the pool's size (D6).
   1 man-day plus an amendment of E1's frozen `Config` and of RFC 3 §1.3's table. Prior art: none
   found.
 - **D7, the header cap is the codec's bound, `codec.MaxHeaderLen(1)`.** RFC 4 §3.2 puts the
-  census in the header, and RFC 4 plan epic 6's breakdown (#5942) puts the bound at 935,005 bytes,
+  census in the header, and RFC 4 plan epic 6's breakdown (#5942) puts the bound at 1,036,381 bytes,
   where RFC 3 §2.2's derivation from the chunk index alone gives about 41 KB. T7.3 sizes its bound
   from the codec's figure, which is what a worker's codec can hold; a bound sized from the smaller
   one would fail on a header the codec accepts. The user accepted the RFC text (2026-11-26), which
   lands with T7.3's pull request: RFC 3 §2.2 reads "its header cap is `N` times one fixed-size
   index entry, plus the census at its bound, plus the fixed fields: a constant of the format
   version ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout))", and the per-worker figures in RFC 3
-  §2.2, §2.10 and RFC 24 §7.2 are recomputed from it (about 2.9 MiB per worker at the default
-  `Max`, nearer 1.6 GiB for 128 workers in each half with staging). Prior art:
+  §2.2, §2.10 and RFC 24 §7.2 are recomputed from it: 2 × 1 MiB + 1,036,381 bytes, about
+  3.0 MiB per worker at the default `Max`; 128 workers in each half, the fetch half's detached
+  buffers and the staging budget (98 blocks of about 6 MiB, the header now included) come to
+  about 1.7 GiB, where RFC 24 §7.2's text, at 2 MiB per worker, says about 1.2 GiB. Prior art:
   none found.
 
 ## 5. Target tree
