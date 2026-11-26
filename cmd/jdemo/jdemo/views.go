@@ -49,16 +49,19 @@ func (d *Demo) viewFS() {
 // humanSize renders bytes at the scale a screen can carry: at distance,
 // "256 MiB" reads and "268435456" does not.
 func HumanSize(n int64) string {
-	switch {
-	case n >= 1<<30:
-		return strconv.FormatInt(n>>30, 10) + " GiB"
-	case n >= 1<<20:
-		return strconv.FormatInt(n>>20, 10) + " MiB"
-	case n >= 1<<10:
-		return strconv.FormatInt(n>>10, 10) + " KiB"
-	default:
-		return strconv.FormatInt(n, 10) + " B"
+	for _, u := range []struct {
+		shift uint
+		name  string
+	}{{30, "GiB"}, {20, "MiB"}, {10, "KiB"}} {
+		if n >= 1<<u.shift {
+			// Two decimals, trailing zeros trimmed: 1.25 GiB must not read
+			// as "1 GiB", and a whole number stays whole.
+			t := strconv.FormatFloat(float64(n)/float64(int64(1)<<u.shift), 'f', 2, 64)
+			t = strings.TrimSuffix(strings.TrimRight(t, "0"), ".")
+			return t + " " + u.name
+		}
 	}
+	return strconv.FormatInt(n, 10) + " B"
 }
 
 // journalClosed answers plainly when a view runs with no live journal:
