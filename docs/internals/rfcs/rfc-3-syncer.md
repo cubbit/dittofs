@@ -1440,7 +1440,10 @@ Each half runs its own scheduler over its own pool:
   third flow's first call. Above both rules, a demand that would be refused
   evicts the **youngest queued speculative** entry, of any flow, and takes its
   place; that entry's caller gets a refusal, as a speculative caller can
-  ([§4.4](#4.4%20Speculation%20does%20not%20delay%20demand)). Only when no speculation is queued is a demand refused. Waiting
+  ([§4.4](#4.4%20Speculation%20does%20not%20delay%20demand)). Only when no speculation is queued is a demand refused.
+  Both rules pass over a transfer queued again after a throttling reply ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)):
+  it was admitted once, so it is never displaced or evicted, and a demand that
+  finds only such speculation queued is refused. Waiting
   outside the queue would be an unbounded queue under another name
   ([§2.3](#2.3%20Backpressure%20propagates%3B%20it%20does%20not%20buffer)). The refusal travels back to whoever opened the flow — for a share's
   flow, that share's journal — and no other flow's work is refused because of
