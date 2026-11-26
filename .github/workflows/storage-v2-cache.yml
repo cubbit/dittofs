@@ -1,0 +1,107 @@
+name: Storage-v2 build cache
+
+# A run restores caches saved on its own branch or on the default branch only.
+# A merge queue run's branch is a fresh gh-readonly-queue/feat/storage-v2/...
+# one, so the race and coverage build cache that feat/storage-v2's pushes save
+# is out of its reach, and every queue run builds the whole module from
+# nothing. A workflow_run workflow always runs on the default branch, so the
+# entry this one saves is one every branch can restore.
+#
+# The key is the unit job's with -warm added. A lookup matches its key as a
+# prefix after an exact miss, so the queue's unit job restores this entry. A
+# push run's unit job never hits it exactly, so it still saves its own, fuller
+# entry for feat/storage-v2.
+#
+# decision: only the unit job's race and coverage build is warmed: it is the
+# longest job of a queue run. Go Checks and Integration still build cold in the
+# queue. Drop this workflow when feat/storage-v2 becomes the default branch: its
+# own pushes then save in the default branch's scope. The two branches never
+# meet with this file: feat/storage-v2's guard requires every cache save to run
+# on push only, so the merge that lands feat/storage-v2 on develop deletes it.
+# A carry of develop's changes onto feat/storage-v2 leaves it out for the same
+# reason, or that branch's lint-repo job fails on its save step.
+#
+# decision: a queue job with no flavor (Go Checks, Integration) looks up the
+# shared key, and the lookup also matches it as a prefix, so it restores this
+# entry. It then starts with the modules and every dependency built, and still
+# reports a miss. A 1 GB download is cheaper than a cold build.
+
+on:
+  workflow_run:
+    workflows: [Tests]
+    # Requested, not completed: the warm-up runs beside the push run, so the
+    # entry is ready about one push run sooner.
+    types: [requested]
+    branches: [feat/storage-v2]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: storage-v2-cache
+  # A later push waits for the running warm-up rather than cancelling it: while
+  # go.sum is unchanged both build the same key, and the waiting one then finds
+  # it saved and stops.
+  cancel-in-progress: false
+
+jobs:
+  race-cover:
+    name: Warm the unit job's cache
+    # A push run's head is a commit on feat/storage-v2 itself; a pull request
+    # run's head is the contributor's branch, which this must never build.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout feat/storage-v2
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || 'feat/storage-v2' }}
+          persist-credentials: false
+
+      # The checked-out tree's own action, so the key is built as the unit job
+      # builds it.
+      - name: Set up Go
+        id: go
+        uses: ./.github/actions/go-cache
+        with:
+          flavor: race-cover-warm
+
+      - name: Download modules
+        if: steps.go.outputs.cache-hit != 'true'
+        run: go mod download -x
+
+      # The unit job's compiles. No test runs: -run matches no name. A coverage
+      # build leaves no plain -race compile of a module package, so the
+      # whole-tree cell's packages build again without it. The cells built
+      # with extra tags stay cold.
+      - name: Build the race and coverage test binaries
+        id: race
+        if: steps.go.outputs.cache-hit != 'true'
+        run: |
+          go build -o "$RUNNER_TEMP/dt" ./cmd/dt
+          go test -race -count=1 -run='^$' -coverprofile="$RUNNER_TEMP/coverage.txt" ./pkg/... ./internal/... ./cmd/... ./test/...
+          go test -race -count=1 -run='^$' ./internal/node/ ./internal/node/api/ ./cmd/gendocs/ ./pkg/identity/ ./pkg/bootstrap/
+
+      # Separate steps, so a package list that drifts from the unit job fails
+      # here, visibly, and the race build above is still saved.
+      - name: Vet the module
+        if: steps.race.outcome == 'success'
+        run: go vet ./...
+
+      # vet compiles only what vetted code imports, not the main packages.
+      - name: Build the module
+        if: steps.race.outcome == 'success'
+        run: go build ./...
+
+      - name: Build the cells that run without -race
+        if: steps.race.outcome == 'success'
+        run: go test -count=1 -run='^$' ./pkg/journal/... ./internal/prof/ ./internal/adapter/... ./pkg/resources/
+
+      - name: Save the Go caches
+        if: ${{ !cancelled() && steps.race.outcome == 'success' && steps.go.outputs.key != '' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.go.outputs.path }}
+          key: ${{ steps.go.outputs.key }}

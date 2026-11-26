@@ -1,0 +1,390 @@
+{
+  "title": "RFC 2 — il carver",
+  "cover": {
+    "kicker": "Impara DittoFS · RFC 2",
+    "title": "Il [[carver|carver]]",
+    "lead": "Prima di arrivare nel bucket, i byte vengono tagliati a pezzi e i pezzi vengono messi in scatole. Questo deck spiega dove cadono i tagli, che nome riceve ogni pezzo e perché una modifica cambia solo i pezzi che le stanno intorno.",
+    "built": "Basato sull'RFC 2, commit {commit}",
+    "notes": "Fonte: docs/internals/rfcs/rfc-2-carver.md, commit {commit}. L'RFC specifica un comportamento, non il codice attuale. Tasti: → avanti, S note del relatore, ? aiuto. Clicca un termine sottolineato per leggerne la definizione."
+  },
+  "intro": {
+    "twoTitle": "L'RFC 2 in due frasi",
+    "two": "Il [[carver]] taglia in [[chunk]] i byte in attesa di upload, sceglie ogni taglio in base al contenuto stesso e dà a ogni chunk come nome un hash con chiave dei suoi byte. Poi il [[block-assembler|block assembler]] raccoglie chunk interi in [[block|blocchi]] di circa 4 MiB, gli oggetti che stanno nel bucket. Nessuno dei due legge un disco, usa la rete o conserva qualcosa fra una chiamata e l'altra.",
+    "twoNotes": "Da 'Start here · In plain words' e §1 Purpose. Il carver risponde a una sola domanda: dato un tratto ininterrotto dei byte di un file, dove cadono i confini dei chunk e qual è l'hash di ciascuno? Costruire i blocchi è un fold sul suo risultato, fatto dal block assembler (§5). 'Both are pure functions': 'Start here · In plain words'.",
+    "knownLead": "Questi termini vengono dal glossario dell'RFC 0 e dagli RFC su cui questo si appoggia: il journal (RFC 1) e l'engine (RFC 8). Cliccane uno per leggerne la definizione.",
+    "knownNotes": "Ogni definizione riprende la riga del glossario dell'RFC 0, che fa testo.",
+    "newNotes": "Da 'Start here · The words you need' (chunk ID, chunker e carver, stretch, Target/Min/Max, block plan, put attempt), più la fine artificiale (§2.4), il rolling fingerprint (§3.2, §3.4, 'Background'), la chunk-ID key (§4.1), il block name (§4.2), il block assembler (§5), lo zero ref (§5.1), il block target (§5.2) e la chunking key (§6).",
+    "clashNotes": "Block: l'RFC 0 §2.1 lo definisce come un oggetto nel bucket; il blocco di un filesystem è il senso comune. Chunk: il confronto con una parte di un upload multipart S3 e con il trasferimento HTTP chunked è del deck."
+  },
+  "problem": {
+    "title": "Due modi di sbagliare l'upload",
+    "c1Title": "Un oggetto per ogni file",
+    "c1": "build01, un server di build, scompatta nella [[share]] `builds` 2.000 file piccoli di circa 30 KiB e un archivio da 40 MiB. Caricati un file alla volta, sarebbero 2.001 oggetti, e gli object store sono lenti con gli oggetti piccoli.",
+    "c2Title": "Un taglio ogni 256 KiB",
+    "c2": "La settimana dopo build01 scompatta lo stesso archivio con 100 byte inseriti vicino all'inizio. Se l'archivio viene tagliato ogni 256 KiB, il contenuto di ogni pezzo dopo l'inserimento si sposta di 100 byte, e così ognuno riceve un nome nuovo.",
+    "answer": "Il [[carver]] risolve entrambi i problemi. Taglia dove lo dice il contenuto, così i pezzi dopo una modifica conservano il loro nome, e il [[block-assembler|block assembler]] raccoglie pezzi interi di molti file in [[block|blocchi]] di circa 4 MiB.",
+    "notes": "'Start here · The problem, in one example' (build01, la share builds, 2.000 file di circa 30 KiB, l'archivio da 40 MiB, 25 upload invece di 2.001 oggetti; 'object stores are slow on small objects') e il suo paragrafo finale (l'archivio scompattato di nuovo con 100 byte inseriti vicino all'inizio; ognuno dei 160 nomi dopo l'inserimento cambierebbe)."
+  },
+  "shift": {
+    "title": "Un inserimento, due modi di tagliare",
+    "footer": "Solo un pezzo che conserva il suo nome può essere riconosciuto come già memorizzato. La [[deduplication|deduplicazione]], cioè il riconoscere per nome i pezzi già memorizzati, è disattivata nella prima release. Il modo di tagliare però è fissato fin d'ora, perché una volta memorizzato il contenuto cambiare il modo in cui è tagliato è una migrazione, non un'impostazione.",
+    "notes": "Paragrafo finale di 'Start here · The problem', §1 Purpose e §3.1 B4 (resistenza allo scorrimento: inserire o togliere byte ritaglia solo i chunk vicini alla modifica). L'RFC dice 'only the one or two chunks around the insert change'; la scena ne mostra uno. I quattro pezzi stanno per i 160 dell'archivio. Il footer: 'Start here · The problem', ultima frase, e §3.6."
+  },
+  "promises": {
+    "items": [
+      "Gli stessi byte con le stesse impostazioni vengono tagliati negli stessi punti e ricevono gli stessi nomi, su qualunque macchina e con qualunque versione di DittoFS.",
+      "Una modifica cambia solo il [[chunk]] che le sta intorno, o al massimo due. Ogni chunk più avanti conserva il suo posto e il suo nome.",
+      "Con le impostazioni di default ogni chunk è lungo fra 64 KiB e 1 MiB, tranne l'ultimo di un tratto di byte che finisce davvero lì. I dati ripetitivi non possono diventare un unico chunk enorme.",
+      "Un [[block|blocco]] contiene solo chunk interi, mai un pezzo di chunk, e non più di 1.024."
+    ],
+    "notes": "'Start here · What this RFC promises', §3.1 B2 e B4, §3.2 (Min = Target ÷ 4 e Max = 4 × Target, con il Target di default di 256 KiB), §5.2 P1 e P4. 'Un tratto di byte che finisce davvero' è uno stretch con una fine reale (§2.1, §2.4), mostrato più avanti nel deck.",
+    "title2": "Cosa promette l'RFC, continua",
+    "items2": [
+      "Un chunk fatto solo di zeri non viene mai caricato. Al suo posto il file registra che quei byte si leggono come zeri.",
+      "Un taglio fallito non consegna mai un chunk accorciato, e tagliare di nuovo gli stessi byte dà gli stessi chunk.",
+      "Ogni tentativo di caricare un blocco riceve un nome tutto suo, che nessun altro tentativo usa mai.",
+      "Cambiare il modo in cui un [[namespace]] taglia i suoi file viene segnalato come migrazione. Non viene mai applicato in silenzio, come se fosse un normale cambio di configurazione."
+    ],
+    "footer": "C'è anche ciò che l'RFC non promette. Chi può leggere il bucket vede quanto è lungo ogni chunk, e questo strato non nasconde quali file sono memorizzati. Un namespace che cifra nasconde un po' di più, come spiega una slide più avanti.",
+    "notes2": "'Start here · What this RFC promises': lo zero ref (RFC 6 §3.5, §5.1), §7 Errors, §4.2 (un block name è coniato una volta sola, per un solo put attempt), §3.6 (una migrazione, mai un cambio di configurazione silenzioso), §6 ('This layer does not hide which files a deployment holds'). Il caso cifrato è circoscritto nella slide 'I tagli sono pubblici'."
+  },
+  "model": {
+    "kicker": "Il modello"
+  },
+  "ribbon": {
+    "title": "Tagliare un nastro dove compare un motivo cucito",
+    "analogyTitle": "Analogia",
+    "analogy": "Immagina di tagliare un lungo nastro ovunque compaia un certo motivo cucito, e non ogni 10 cm. Se cuci un pezzetto in più vicino all'inizio, cambia solo il pezzo che contiene l'aggiunta. Ogni pezzo successivo finisce ancora sugli stessi punti di cucito, e quindi conserva il suo nome.",
+    "stopsTitle": "Dove l'analogia non regge",
+    "stops": "Nessun punto di cucito è segnato in anticipo. Il [[chunker]] decide se tagliare in una certa posizione guardando solo gli ultimi 64 byte, e mantiene ogni pezzo fra una lunghezza minima e una massima.",
+    "boxes": "Poi il [[block-assembler|block assembler]] mette pezzi interi in scatole di circa 4 MiB, i [[block|blocchi]], e non divide mai un pezzo fra due scatole.",
+    "notes": "L'analogia e il suo limite sono dell'RFC stesso: 'Start here · In plain words'."
+  },
+  "example": {
+    "title": "Un untar seguito passo per passo",
+    "notes": "'Start here · The problem, in one example', passi 1–4, e il suo diagramma. Chunk fra 64 KiB e 1 MiB, 256 KiB in media (§3.2). Il chunk ID è un BLAKE3 con la chunk-ID key del namespace come chiave (§4.1). Il block target e i chunk interi (§5.2). L'engine guida l'assembler e manda i blocchi attraverso il syncer (§5, RFC 3, RFC 8). Circa 100 MB è l'arrotondamento dell'RFC stesso per 60 MB più 40 MiB."
+  },
+  "layers": {
+    "title": "Due strati: dove e cosa",
+    "table": [
+      ["", "[[chunker|Chunker]]", "[[carver|Carver]]"],
+      ["Risponde", "dove finisce il prossimo chunk di questo buffer?", "quali chunk ci sono in questo [[stretch]], e come si chiamano?"],
+      ["Riceve", "le impostazioni e un buffer di almeno `Max` byte, o più corto se è l'ultimo", "le impostazioni, un reader per i byte, l'offset nel file da cui partono e se la loro fine è reale"],
+      ["Restituisce", "una posizione", "ogni chunk, con offset, lunghezza, hash e byte, passato a una funzione fornita dal chiamante, e alla fine quanti byte ha tagliato"],
+      ["Conserva fra le chiamate", "niente", "niente"],
+      ["Alloca memoria", "mai", "mai, perché il buffer glielo presta il chiamante"]
+    ],
+    "footer": "Nessuno dei due fa il lavoro dell'altro. Il chunker non calcola hash e non legge, e il carver non decide mai un taglio da solo. Questa divisione permette di verificare le regole di taglio su un semplice buffer di byte, senza nulla da leggere e nulla di cui calcolare l'hash.",
+    "notes": "§1.2, la sua tabella in forma ridotta, e 'Neither does the other's job' (il chunker MUST NOT calcolare hash, tenere un offset nel file, leggere o allocare; il carver MUST NOT stabilire da sé un confine). Il motivo della divisione è nell'ultimo paragrafo di §1.2. Una chiamata copre un solo stretch ininterrotto: §2.1."
+  },
+  "quizShift": {
+    "question": "build01 scompatta di nuovo l'archivio da 40 MiB, con 100 byte inseriti vicino all'inizio. Quali [[chunk]] ricevono un nome nuovo?",
+    "options": [
+      "Tutti i chunk dopo l'inserimento, perché ora ognuno comincia 100 byte più avanti.",
+      "Solo il chunk o i due chunk intorno all'inserimento. Gli altri conservano il nome.",
+      "Nessuno, perché il nome di un chunk dipende dal suo file e dal suo offset."
+    ],
+    "why": [
+      "Questo è ciò che succede tagliando a dimensione fissa. Tagliando in base al contenuto, ogni chunk dopo l'inserimento finisce ancora sugli stessi byte, quindi contiene gli stessi byte e conserva il nome.",
+      "Ogni taglio dipende solo dai 64 byte che lo precedono e dal punto in cui è caduto il taglio prima. Dopo l'inserimento i tagli cadono negli stessi punti del contenuto, quindi solo i chunk intorno all'inserimento contengono byte diversi.",
+      "Il nome di un [[chunk]] è un hash soltanto dei suoi byte, mai del file o dell'offset. Il chunk che ora contiene i byte inseriti riceve un nome nuovo."
+    ],
+    "notes": "Paragrafo finale di 'Start here · The problem' (cambiano solo uno o due chunk intorno all'inserimento), §3.1 B4, §3.4 (una decisione guarda indietro di 64 byte), §4.1 (nell'hash entrano solo i byte e la chiave)."
+  },
+  "how": {
+    "kicker": "Come funziona"
+  },
+  "settings": {
+    "title": "Un'impostazione e due limiti",
+    "table": [
+      ["", "Valore", "Che cosa significa"],
+      ["`Target`", "scelto per [[namespace]], 256 KiB di default", "la lunghezza media dei [[chunk]] prodotti davvero, su dati senza alcuna regolarità"],
+      ["`Min`", "un quarto di `Target`, quindi 64 KiB", "nessun chunk è più corto, tranne l'ultimo di un tratto di byte che finisce davvero"],
+      ["`Max`", "quattro volte `Target`, quindi 1 MiB", "nessun chunk è più lungo, mai"]
+    ],
+    "footer": "`Target` deve essere una potenza di due fra 64 KiB e 4 MiB. Si fissa quando si crea il namespace, e ogni [[share]] del namespace taglia con quel valore. Se un namespace chiede un valore fuori da questo intervallo, per esempio 32 KiB, DittoFS lo rifiuta con un errore all'avvio e non ripiega mai in silenzio sul default.",
+    "notes": "§3.2 (una sola impostazione; Min e Max derivati e non configurabili; per namespace e non per share, perché due share che tagliassero in modo diverso il contenuto di un namespace taglierebbero file identici in chunk diversi), §3.7 (potenza di due; minimo 64 KiB di Target, quindi 16 KiB di Min; massimo 16 MiB di Max, quindi 4 MiB di Target; rifiutato, mai sostituito), 'Start here · Scenarios', il namespace da 32 KiB. Perché una sola impostazione: Min sposta la deduplicazione di meno dell'1% (Appendix C)."
+  },
+  "search": {
+    "title": "Come il [[chunker]] trova un taglio",
+    "notes": "§3.2 'The derivation, exactly' (un fingerprint gear; un confine dove i primi m bit sono zero, m = t + 1 sotto Target e t − 3 da Target in poi, quindi il test è più severo prima di Target che dopo; nessuna posizione sotto Min viene testata; un chunk che arriva a Max finisce lì; la media, salto compreso, è circa 0,96 × Target), §3.4 (i 64 byte sono esatti: dopo 64 spostamenti il contributo di un byte è uscito), §3.8 (dati ripetitivi). La scena è in scala: un chunk di circa 290 KiB."
+  },
+  "repetitive": {
+    "title": "I dati ripetitivi arrivano al massimo",
+    "lead": "File di log, record CSV a larghezza fissa, zone piene di zeri e immagini di dischi virtuali piene di pagine identiche: sono tutti dati che si ripetono. Su 64 MiB, con le impostazioni di default e in un namespace che non cifra, l'RFC prevede questo:",
+    "table": [
+      ["Input", "Chunk", "Lunghezza media", "Tagli trovati"],
+      ["byte casuali", "circa 270", "poco meno di 256 KiB", "come al solito"],
+      ["solo zeri", "64", "1 MiB, il massimo", "nessuno, mai"],
+      ["una sequenza che si ripete ogni 64 byte o meno, su cui il test non passa mai", "64", "1 MiB", "nessuno, mai"],
+      ["la stessa, ma il test passa in un punto della sequenza", "dipende dalla sequenza", "un multiplo fisso della lunghezza della sequenza", "a quel multiplo fisso"],
+      ["una sequenza che si ripete ogni 4 KiB", "dipende dalla sequenza", "un multiplo fisso di 4 KiB, almeno 64 KiB", "a un periodo fisso, o nessuno"]
+    ],
+    "footer": "Il fingerprint vede solo gli ultimi 64 byte, perciò dati che si ripetono a intervalli così brevi gli forniscono pochi valori, e se nessuno di questi supera il test, non lo supererà mai nessuno. Quindi `Max` non è una rete di sicurezza che scatta di rado, perché sui dati ripetitivi è lì che finisce la maggior parte dei chunk. Gli zeri, comunque, non costano nulla, perché un chunk di soli zeri viene registrato come [[zero-ref|zero ref]] e non viene mai caricato.",
+    "notes": "§3.8, la sua tabella (previsioni, non misure, con la tabella senza chiave) e le sue tre conseguenze: Max è essenziale, i dati ripetitivi non si deduplicano bene e non possono farlo, e dove il periodo è più lungo della finestra il chunking diventa a dimensione fissa, un multiplo del periodo. Con una tabella con chiave (un namespace che cifra) uno dei fingerprint può passare il test anche sugli zeri (§3.8). Le righe da 64 byte uniscono le righe dell'RFC per la sequenza da 64 byte e per il testo con periodo di 44 byte. Zero ref: RFC 6 §3.5, §5.1."
+  },
+  "tail": {
+    "title": "Un'[[offer]] che si ferma prima lascia la coda non tagliata",
+    "footer": "Se build01 smette di scrivere, la coda non aspetta per sempre. L'engine fissa un'età massima per i byte in attesa di upload. Quando il byte più vecchio della coda la raggiunge, l'engine può dire al carver che la fine è reale, e la coda viene tagliata come ultimo chunk del file.",
+    "notes": "§2.4 An artificial end leaves the tail uncut; 'Start here · Scenarios', il log di build che cresce. Perché: una coda tagliata a un limite è un chunk la cui fine l'ha scelta il limite, e ogni chunk dopo di esso verrebbe tagliato a partire da un punto che nessun taglio precedente condivide (§3.5). L'eccezione dell'età è RFC 8 §6.2. Una seconda eccezione, allargare all'indietro su un chunk corto forzato, è in §2.4 e RFC 8 §6.7."
+  },
+  "quizTail": {
+    "question": "Un'[[offer]] raggiunge il numero massimo di byte che può contenere a metà di un file che cresce. Che fine fanno i byte dopo l'ultimo taglio scelto dal contenuto?",
+    "options": [
+      "Diventano un unico chunk corto, così l'offer viene caricata per intero.",
+      "Vengono tolti dal journal, e il client deve scriverli di nuovo.",
+      "Restano Dirty, e l'offer successiva comincia a tagliare da quell'ultimo taglio."
+    ],
+    "why": [
+      "Quel chunk finirebbe dove è caduto il limite dell'offer, non dove dice il contenuto. L'offer successiva partirebbe da lì, e i suoi tagli non coinciderebbero con quelli di un unico lungo tratto di byte.",
+      "Il [[journal]] non elimina mai byte che non sono ancora stati caricati. Questi byte, per ora, restano semplicemente non tagliati.",
+      "Il [[carver]] non consegna nulla dopo l'ultimo taglio scelto dal contenuto. La coda resta [[dirty|Dirty]], e l'offer successiva taglia esattamente come avrebbe fatto un unico lungo tratto di byte."
+    ],
+    "notes": "§2.4: su una fine artificiale, Cut MUST NOT emettere alcun byte dopo l'ultimo confine trovato dal chunker; la coda resta Dirty e viene offerta di nuovo a partire da quel confine. RFC 1 §3.5: il journal non rilascia mai byte non segnalati come offloaded."
+  },
+  "names": {
+    "kicker": "Nomi"
+  },
+  "chunkid": {
+    "title": "Il nome di un [[chunk]] viene dal suo contenuto",
+    "items": [
+      "Un [[chunk-id|chunk ID]] è un hash BLAKE3 di 32 byte calcolato sui byte del chunk, con la [[chunk-id-key|chunk-ID key]] del suo [[namespace]] come chiave.",
+      "Nell'hash non entra nient'altro: né l'offset, né la lunghezza, né il file, né una versione. Gli stessi byte nello stesso namespace ricevono sempre lo stesso ID.",
+      "Ogni namespace genera la sua chiave quando viene creato, che cifri o no, e non la cambia mai, perché una chiave nuova rinominerebbe ogni chunk."
+    ],
+    "encTitle": "In un namespace che cifra",
+    "enc": "La chiave è conservata cifrata con una master key. Chi legge il bucket ma non può provocare scritture nel namespace non può calcolare l'hash di un proprio file e cercarne i chunk.",
+    "plainTitle": "In un namespace che non cifra",
+    "plain": "La chiave è conservata in chiaro accanto ai [[block|blocchi]], così i dati non diventano mai illeggibili perché si è persa una chiave. Qui l'ID con chiave non nasconde nulla.",
+    "notes": "§4.1 (BLAKE3-256 con chiave; MUST NOT mettere nell'hash un offset, l'identità di un file, una lunghezza, un profilo di impostazioni o una versione; la chiave esiste dalla prima release per ogni namespace, conservata come dice RFC 5 Appendix B.2; non ruota mai). 'Start here · The problem' passo 2. Perché ogni namespace ha la chiave fin dall'inizio: cambiare il chunk ID in seguito obbligherebbe a migrare ogni chunk record, header ed export già scritto (§4.1)."
+  },
+  "blockname": {
+    "title": "Un [[block-name|block name]] si usa una volta sola",
+    "lead": "Il nome di un blocco è un hash del suo [[namespace]], di un nuovo numero casuale di 16 byte, delle trasformazioni che lo codificano (compressione o cifratura, per esempio) e degli ID dei suoi chunk, in ordine.",
+    "steps": [
+      "L'[[engine]] prende un [[block-plan|block plan]] dal block assembler, genera il numero casuale e conia così il nome.",
+      "Prima del primo upload con quel nome, registra in modo durevole un [[put-intent|put intent]] per quel nome.",
+      "L'upload va in timeout. Ogni ripetizione dell'upload dentro questo [[put-attempt|tentativo]] riusa lo stesso nome e lo stesso piano, e scrive gli stessi byte.",
+      "Il tentativo viene abbandonato. Un nuovo tentativo sugli stessi chunk genera un nuovo numero casuale, e quindi riceve un nome nuovo."
+    ],
+    "rule": "Nessun nome viene mai caricato da due tentativi, quindi nessun nome deve mai essere difeso da un secondo writer.",
+    "notes": "§4.2 (la derivazione: contesto 'dittofs content-defined block name v2', la codifica canonica dello scope, un nonce di 16 byte da una sorgente crittografica scritto nell'header del blocco, il chain ID, i chunk ID; il put attempt; il put intent) e 'Start here · Scenarios', il put ritentato e poi abbandonato. Il numero casuale è il nonce dell'RFC; le trasformazioni sono il suo chain ID (RFC 5 §2.8). L'ordine conta: gli stessi chunk in un altro ordine danno un altro nome. Il prezzo: due writer che portano gli stessi chunk producono due oggetti (§4.2). Perché un put ritentato è sicuro: RFC 3 §2.5."
+  },
+  "pack": {
+    "kicker": "Impacchettare"
+  },
+  "assembler": {
+    "title": "Ogni [[chunk]] è zero, adottato o trasportato",
+    "lead": "Il [[block-assembler|block assembler]] prende i chunk uno alla volta e decide che cosa diventa ciascuno.",
+    "table": [
+      ["Il chunk", "Che cosa registra il file", "Sta in un blocco?"],
+      ["**zero**: solo zeri", "uno [[zero-ref|zero ref]], che si legge come zeri", "no"],
+      ["**adottato**: già memorizzato, quando esisterà la [[deduplication|deduplicazione]]", "un [[ref]] al chunk già memorizzato", "no"],
+      ["**trasportato**: tutto il resto", "un ref al chunk, che questo blocco trasporta", "sì, nel blocco in preparazione"]
+    ],
+    "footer": "Nella prima release la deduplicazione è disattivata, quindi la riga centrale per ora non si verifica. Per il [[block-target|block target]] di 4 MiB contano solo i byte trasportati. Altrimenti, quando esisterà la deduplicazione, un file i cui chunk sono quasi tutti già memorizzati darebbe blocchi di pochi kilobyte.",
+    "notes": "§5.1 (le tre destinazioni; il lookup viene passato come funzione, RFC 8 §6.5), §5.2 P3 e P5 ('or a mostly-deduplicated file yields blocks of a few kilobytes'), 'Start here · In short' e la nota in §4.3 (dedup disattivata nella prima release). Un chunk ripetuto dentro uno stesso blocco in preparazione viene trasportato una volta e referenziato ogni volta (P6)."
+  },
+  "packing": {
+    "title": "Come si riempiono i [[block|blocchi]]",
+    "items": [
+      "Un blocco si riempie fino al suo target di 4 MiB. Quando il totale supera quella soglia, il chunk che l'ha superata resta intero, quindi il blocco viene un po' più grande, per esempio 4,2 MiB.",
+      "Ogni blocco comincia con un header che elenca i suoi chunk, e un blocco ne contiene al massimo 1.024. Così l'header resta limitato anche quando molti chunk corti si trovano fra un [[hole|buco]] e l'altro.",
+      "Un blocco prende chunk da un file dopo l'altro: la fine di un file grande, alcuni file piccoli interi e l'inizio del successivo. I chunk di un file dentro un blocco restano insieme e in ordine.",
+      "Un blocco non mescola mai due [[share]] o due [[namespace]], e un solo aggiornamento dei metadati registra i chunk di tutti i file che contiene."
+    ],
+    "notes": "§5.2 P1, P2 e P4 (N = 1.024 in questo formato di blocco), §5.3 (impacchettare più file: solo dentro una share, i chunk di un file contigui, un commit per blocco, RFC 6 §4.1). L'esempio da 4,2 MiB: 'Start here · The problem' passo 4. Il block target si imposta fra 1 MiB e 64 MiB, e un valore fuori intervallo viene rifiutato all'avvio (§5.2)."
+  },
+  "whole": {
+    "title": "Mai mezzo chunk, e raramente un blocco corto",
+    "splitTitle": "Un chunk diviso fra due blocchi",
+    "split": [
+      "I metadati registrano un solo posto per ogni chunk, e un chunk diviso ne avrebbe due.",
+      "Per leggerlo servirebbero due richieste invece di una.",
+      "Il conteggio dei file che usano il chunk, che decide quando lo si può cancellare, descriverebbe mezzo chunk."
+    ],
+    "shortTitle": "L'ultimo blocco corto",
+    "short": "Un blocco resta sotto il target solo se l'ha chiuso il limite di 1.024 chunk, oppure se è l'ultimo blocco del suo passaggio. Il [[block-assembler|block assembler]] può trattenere quell'ultimo blocco, e allora i suoi byte restano [[dirty|Dirty]] e vengono tagliati di nuovo nel passaggio successivo. Ma quando i suoi byte più vecchi raggiungono l'età massima che l'engine fissa per i byte in attesa di upload, il blocco viene caricato, per quanto corto sia.",
+    "notes": "La divisione: 'Start here · The problem' passo 4 e §5.2 (P1 è RFC 0 §2.2: un hash che indica contenuto in due posti smette di essere un localizzatore, e un refcount smette di avere una risposta unica). L'ultimo blocco corto: §5.2 P2, §5.4 (al massimo un blocco corto per passaggio, nessuno aspetta oltre il limite di età, RFC 8 §6.2)."
+  },
+  "cutfail": {
+    "title": "La lettura fallisce a metà di un taglio",
+    "steps": [
+      "Il [[carver]] è a metà dell'archivio da 40 MiB e ha già consegnato alcuni chunk.",
+      "Il reader che il carver ha ricevuto per i byte restituisce un errore. Il carver si ferma e restituisce quell'errore.",
+      "I chunk già consegnati restano consegnati, e il carver non li riprende.",
+      "Il chunk che stava costruendo viene scartato, e mai consegnato accorciato. Un chunk corto sembrerebbe un vero ultimo chunk, e il suo hash darebbe il nome a un chunk che nessun taglio pulito di questi byte produce mai.",
+      "I byte restano [[dirty|Dirty]] e il passaggio viene ritentato. Il taglio non conserva stato, quindi gli stessi byte danno gli stessi chunk."
+    ],
+    "outcome": "Un passaggio fallito costa lavoro, mai correttezza.",
+    "notes": "'Start here · Scenarios', la lettura dei byte offerti che fallisce a metà di un taglio; §7 Errors (fermarsi e restituire l'errore; MUST NOT riprendere i chunk consegnati; MUST scartare un chunk costruito a metà; MUST NOT segnalare nulla come memorizzato; gli extent restano Dirty, RFC 0 §5.2); §3.5 (deterministico)."
+  },
+  "migration": {
+    "title": "Cambiare il taglio è una migrazione",
+    "items": [
+      "La lettura non ritaglia mai nulla. L'elenco dei [[chunk]] di un file fissa dove cadono i suoi tagli, quindi il contenuto tagliato con un'impostazione si legge senza problemi con qualunque altra.",
+      "Le nuove scritture con un nuovo `Target` vengono tagliate in altri punti, ricevono altri nomi e non coincidono con nulla di già memorizzato.",
+      "Per questo DittoFS registra quali impostazioni hanno tagliato il contenuto di un [[namespace]], e segnala una loro modifica come migrazione invece di applicarlo in silenzio.",
+      "Il contenuto portato da un altro namespace, per esempio ripristinando un backup, conserva i suoi tagli. Ma ogni suo chunk più lungo del `Max` di questo namespace viene tagliato di nuovo, oppure lo spostamento viene rifiutato."
+    ],
+    "footer": "Il [[block-target|block target]] è diverso. Non cambia né i chunk né i nomi, quindi un nuovo valore vale dal blocco successivo, senza migrazione.",
+    "notes": "§3.6 (la lettura non ritaglia mai; un cambio MUST NOT essere trattato come cambio di configurazione; le impostazioni che hanno prodotto il contenuto di un namespace MUST essere registrate; il contenuto tagliato altrove conserva i suoi tagli entro il Max della destinazione, RFC 27 §2.7, così ogni buffer dimensionato su Max — quello del carver, quello del syncer per ogni worker, quello di una lettura a freddo — contiene ogni chunk che il namespace serve), §5.2 e §5.6 (il block target non richiede migrazione)."
+  },
+  "quizCut": {
+    "question": "La lettura fallisce mentre il [[carver]] è a metà di un [[chunk]]. Che fine fa quel chunk costruito a metà?",
+    "options": [
+      "Viene scartato, e il passaggio ritentato taglia gli stessi byte negli stessi chunk.",
+      "Viene consegnato come chunk corto, perché i byte che contiene sono stati letti bene.",
+      "Il carver lo tiene fino al passaggio successivo, che lo completa e lo consegna."
+    ],
+    "why": [
+      "Il taglio non conserva stato e dipende solo dai byte, quindi il nuovo tentativo sui byte ancora [[dirty|Dirty]] nel journal taglia esattamente i chunk che avrebbe tagliato un passaggio senza errori.",
+      "Un chunk corto sembrerebbe un vero ultimo chunk, e il suo hash darebbe il nome a un chunk che nessun taglio pulito di questi byte produce mai. Per questo non viene mai consegnato.",
+      "Il carver non conserva nulla fra una chiamata e l'altra. I byte sono ancora nel [[journal]], e il passaggio successivo li rilegge da lì."
+    ],
+    "notes": "§7 Errors (un chunk costruito a metà MUST essere scartato, mai consegnato corto; il carver MUST NOT conservare uno stato che permetta a un nuovo tentativo di tagliare diversamente), §1.2 (nulla conservato fra le chiamate), §3.5."
+  },
+  "privacy": {
+    "kicker": "Che cosa vede chi legge il bucket"
+  },
+  "public": {
+    "title": "I tagli sono pubblici",
+    "items": [
+      "Il modo in cui si scelgono i tagli è fissato nel codice sorgente, e le impostazioni non sono un segreto. In un [[namespace]] che non cifra, chiunque può calcolare dove cadono i tagli di un dato file.",
+      "Le lunghezze dei [[chunk]] di un file sono un'impronta: tre o quattro di fila bastano già a identificare un file.",
+      "Chi può leggere il bucket vede la lunghezza di ogni chunk, nell'header di ogni [[block|blocco]], che il namespace cifri o no.",
+      "Quindi questo strato non nasconde quali file contiene un namespace."
+    ],
+    "encTitle": "In un namespace che cifra",
+    "enc": "Lì la posizione dei tagli dipende anche da una [[chunking-key|chunking key]] segreta. Questo nasconde a quale file appartiene una serie di lunghezze, ma solo a chi legge il bucket senza poter provocare scritture nel namespace e senza conoscere nulla del contenuto memorizzato. Chi conosce un file memorizzato, per esempio un installer standard, può ricostruire l'effetto della chiave, quindi in pratica la chiave nasconde poco.",
+    "notes": "§6 Boundaries are public: il canale del file noto; 'everything, for any file of more than a few chunks' (circa diciotto bit per lunghezza con un Target di 256 KiB); le lunghezze in ogni header (RFC 4 §3.2) e l'involucro in chiaro dei corpi cifrati (RFC 5 Appendix B.5); i confini con chiave e il loro ambito, che MUST NOT essere descritti come capaci di nascondere a chiunque altro quali file contiene un namespace; lavori recenti [5] recuperano le chiavi del chunking con chiave dalle lunghezze di contenuti noti o scelti. Il marker ponytail in §6 indica il miglioramento, una PRF con chiave su ogni posizione candidata."
+  },
+  "numbers": {
+    "n1": "256 KiB",
+    "w1": "la lunghezza media di default di un [[chunk]], `Target`, scelta per [[namespace]]",
+    "n2": "64 KiB – 1 MiB",
+    "w2": "il chunk più corto e quello più lungo con il default: un quarto di `Target` e quattro volte tanto",
+    "n3": "64 B",
+    "w3": "quanto indietro guarda un taglio, perché il [[rolling-fingerprint|fingerprint]] dimentica ogni byte più vecchio",
+    "n4": "4 MiB",
+    "w4": "il [[block-target|block target]] di default, impostabile fra 1 MiB e 64 MiB",
+    "n5": "1.024",
+    "w5": "il numero massimo di chunk in un [[block|blocco]]",
+    "n6": "circa 4.096",
+    "w6": "i chunk record per GiB di dati casuali con il default, uno per ogni chunk",
+    "notes": "§3.2 (Target, Min, Max; 4.096 chunk record per GiB e circa 8,6×10⁹ a 2 PB, su input casuale), §3.4 (64 byte, esatti), §5.2 (block target 4 MiB, da 1 MiB a 64 MiB; i 1.024 di P4). Con 256 KiB una lettura a freddo di 4 KiB scarica circa 0,3 MiB (§3.2, Appendix C)."
+  },
+  "tests": {
+    "kicker": "Test"
+  },
+  "testable": {
+    "title": "Si testa con un buffer e una funzione",
+    "items": [
+      "Nessuno dei due strati legge un disco, usa la rete, guarda un orologio o avvia una goroutine. Un controllo prepara le impostazioni, passa al [[carver]] un buffer di byte e una funzione, e guarda che cosa ha ricevuto la funzione.",
+      "Lo stesso input dà lo stesso output. Due implementazioni, o la stessa prima e dopo una modifica, vengono eseguite sugli stessi byte casuali e devono tagliare chunk identici.",
+      "Vettori di test fissi fissano i tagli e i nomi. Un vettore cambiato fa fallire la build, perché un modo diverso di dare i nomi renderebbe orfano ogni blocco già memorizzato, e un taglio diverso sarebbe una migrazione che nessuno ha deciso.",
+      "L'[[engine]] esporta metriche su ciò che ogni passaggio ha tagliato, e la più importante è il grafico delle lunghezze dei chunk. Una media sbagliata costa spazio, mai correttezza, quindi nient'altro se ne accorgerebbe."
+    ],
+    "kill": "Se un controllo ha bisogno di qualcos'altro, per esempio uno store o una directory temporanea, l'implementazione ha preso una dipendenza che non le è permessa, e il problema da segnalare è proprio questo.",
+    "notes": "§1.3 (testabile per costruzione: nessuno store, backend finto, directory temporanea, rete, orologio o goroutine), §10.1 (golden vector, proprietà con fuzzing, test differenziale), §4.2 (un vettore del nome cambiato MUST far fallire la build: una costruzione cambiata rende orfano ogni blocco già memorizzato), §2.3 (metriche esportate dall'engine, etichettate per namespace; conta soprattutto carver_chunk_size_bytes), §9 (la regola delle fixture)."
+  },
+  "whom": {
+    "engTitle": "Chi sviluppa l'engine",
+    "eng": "I byte che il [[carver]] consegna sono presi in prestito dal tuo buffer per la durata di una chiamata, quindi se vuoi tenerli devi copiarli. Digli se la fine di un tratto è reale, e offri di nuovo la coda a partire dal punto che ti indica.",
+    "ops": "Scegli `Target` quando crei un [[namespace]], perché cambiarlo dopo è una migrazione, e un valore non valido viene rifiutato all'avvio. Tieni d'occhio il grafico delle lunghezze dei chunk: un picco sul minimo vuol dire che il test che sceglie i tagli non segue `Target`.",
+    "storeTitle": "Chi scrive formati e store",
+    "store": "Un [[block-name|block name]] si calcola dal namespace, da un nuovo numero casuale, dalle trasformazioni che codificano il blocco e dai chunk ID. Un vettore di test fissa come si costruisce, e il numero casuale è scritto nell'header del blocco, così chi legge il blocco intero può verificare il nome.",
+    "notes": "§2.2 (byte in prestito; un chiamante che li tiene MUST copiarli), §2.4 (realEnd, consumed), §3.6 e §3.7 (migrazione, rifiuto), §2.3 (carver_chunk_size_bytes; un picco su Min vuol dire che il test di confine non segue Target, §3.3), §4.2 (la costruzione del nome; il nonce nell'header del blocco, RFC 4 §3.2; il golden vector)."
+  },
+  "rules": {
+    "items": [
+      "Ogni taglio si sceglie dal contenuto, mai da una posizione o da un conteggio progressivo.",
+      "Nessun chunk è più lungo di `Max`. Nessuno è più corto di `Min`, tranne l'ultimo di un tratto di byte che finisce davvero.",
+      "Un chunk non viene mai allungato aggiungendo byte di riempimento al contenuto.",
+      "Il nome di un chunk dipende dai suoi byte e dalla chiave del suo [[namespace]], e da nient'altro.",
+      "Un [[block|blocco]] contiene solo chunk interi, e un block name non viene mai coniato due volte."
+    ],
+    "footer": "Due regole non hanno bisogno di controlli, perché il progetto le rende impossibili da violare. Un chunk non può stare a cavallo di un [[hole|buco]], perché una chiamata vede sempre un solo tratto ininterrotto di byte. E non c'è stato da azzerare fra una chiamata e l'altra, perché non se ne conserva nessuno.",
+    "notes": "§3.1 B1 e B3; §2.1 (MUST NOT riempire); §4.1; §5.2 P1; §4.2; §8 Invariants (C1–C11) e il paragrafo che segue."
+  },
+  "nongoals": {
+    "title": "Che cosa il [[carver]] non fa",
+    "items": [
+      "Non apre, non legge e non scrive nulla da sé. Riceve i byte da leggere e restituisce ciò che ha tagliato.",
+      "Non decide quando tagliare né quali byte offrire. Lo decide la politica dell'[[engine]].",
+      "Non costruisce blocchi, perché i chunk li raccoglie il [[block-assembler|block assembler]], uno strato separato guidato dall'engine. E non carica nulla, né scopre se un upload è riuscito.",
+      "Non sa se un chunk è già memorizzato, e non lo chiede a nessun altro componente.",
+      "Non conserva nulla fra una chiamata e l'altra."
+    ],
+    "footer": "Le sue uniche dipendenze sono la libreria standard di Go e un'implementazione di BLAKE3, e un test lo verifica.",
+    "notes": "§1.1 Non-goals (il carver MUST NOT aprire, leggere o scrivere nulla; decidere quando tagliare, che è politica di offload, RFC 0 §5.2; costruire blocchi o caricare; sapere se un chunk è memorizzato; sapere che cosa sono un segment, un record, un blocco o una chiave remota; conservare stato). Il test sugli import è un MUST."
+  },
+  "openQuestions": {
+    "questions": [
+      "**Il `Target` di default.** 256 KiB è stato scelto da misure su file interi. Diventa definitivo solo quando le stesse misure saranno state ripetute sul vero percorso di offload, e prima che con quel valore venga scritto qualunque contenuto. Si adotta un altro valore se lì batte 256 KiB con un margine più ampio di quello che 256 KiB aveva nelle misure su file interi."
+    ],
+    "settled": "L'RFC considera chiuse altre cinque questioni: come il test segue `Target`, che `Min` è derivato e non impostato, quanto rivelano i tagli, che i chunk ID hanno una chiave fin dall'inizio, e il default e l'intervallo del block target.",
+    "notes": "§11 Open questions: una aperta, cinque chiuse. 'Target is a set-point, not a benchmark target': la regola dell'indice sul valore misurato più margine non si applica."
+  },
+  "scenes": {
+    "cast": {
+      "journal": "journal",
+      "chunker": "chunker",
+      "where": "dove?",
+      "carver": "carver",
+      "what": "cosa?",
+      "assembler": "block assembler",
+      "pack": "chunk interi",
+      "bucket": "bucket"
+    },
+    "pipeline": {
+      "steps": [
+        "Il [[journal]] [[offer|offre]] i byte che build01 ha scritto in `builds`: 2.000 file piccoli e l'archivio da 40 MiB, ogni file come un unico tratto ininterrotto di byte.",
+        "Il [[chunker]] sceglie dove finisce ogni [[chunk]]. Un file da 30 KiB è più corto del minimo di 64 KiB, quindi è un solo chunk, mentre l'archivio diventa circa 160 chunk da 256 KiB in media.",
+        "Il [[carver]] dà a ogni chunk come nome il suo [[chunk-id|chunk ID]], un hash con chiave di 32 byte calcolato sui suoi byte.",
+        "Il [[block-assembler|block assembler]] prende i chunk un file dopo l'altro e chiude un [[block|blocco]] ogni volta che arriva a 4 MiB. Circa 100 MB diventano circa 25 blocchi.",
+        "L'[[engine]] fa caricare ogni blocco nel bucket dal [[syncer]]: 25 upload invece di 2.001 oggetti."
+      ],
+      "files": "2.000 file + 40 MiB",
+      "ids": "ID da 32 byte",
+      "blocks": "~25 blocchi",
+      "puts": "25 upload"
+    },
+    "shift": {
+      "steps": [
+        "Tagliato a dimensione fissa, l'archivio è fatto dei pezzi A, B, C e D, ciascuno lungo esattamente 256 KiB.",
+        "Se si inseriscono 100 byte vicino all'inizio, il contenuto di ogni pezzo si sposta di 100 byte. Ora tutti e quattro i pezzi contengono byte diversi, quindi ricevono tutti e quattro un nome nuovo.",
+        "Tagliato in base al contenuto, lo stesso archivio è fatto dei pezzi P, Q, R e S, e ognuno finisce dove lo richiedono i suoi stessi byte.",
+        "Dopo lo stesso inserimento contiene byte diversi solo il pezzo che lo contiene, qui P. A volte cambia anche quello accanto. Q, R e S finiscono ancora negli stessi punti del contenuto, quindi conservano il loro nome."
+      ],
+      "fixed": "fisso",
+      "content": "dal contenuto"
+    },
+    "search": {
+      "steps": [
+        "I primi 64 KiB di ogni chunk, il minimo, non vengono mai testati, quindi nessun chunk può uscire più corto di così.",
+        "Da lì in poi il [[rolling-fingerprint|rolling fingerprint]] viene aggiornato a ogni byte, e dipende solo dagli ultimi 64. Un taglio dipende quindi solo da quei byte e da dove è caduto il taglio precedente, perché nessun byte entro `Min` da quel taglio viene testato.",
+        "A ogni byte il fingerprint viene testato. Il test è più severo prima di `Target`, 256 KiB di default, che dopo, quindi le lunghezze dei chunk si addensano intorno a `Target` e in media sono circa pari a `Target`. Dove il test passa, il chunk finisce.",
+        "Sui dati che si ripetono il test può non passare mai. Allora a chiudere il chunk è solo il massimo di 1 MiB, a meno che i byte offerti non finiscano prima."
+      ],
+      "searched": "esaminato",
+      "repeating": "dati ripetitivi",
+      "notTested": "non testato",
+      "window": "ultimi 64 byte",
+      "cut": "taglio",
+      "max": "taglio a Max: 1 MiB"
+    },
+    "tail": {
+      "steps": [
+        "L'[[engine]] limita quanti byte può contenere un'[[offer]]. build01 sta ancora aggiungendo righe a `build.log` quando un'offer raggiunge quel limite e si ferma. Quella fine è artificiale, perché i byte del file continuano oltre.",
+        "Il [[carver]] consegna i [[chunk]] fino all'ultimo taglio scelto dal contenuto, qui C1 e C2, e dice quanti byte ha tagliato.",
+        "Dopo quel punto non taglia nulla. La coda, sempre più corta del massimo di 1 MiB, resta [[dirty|Dirty]] nel journal.",
+        "L'offer successiva parte da quell'ultimo taglio, quindi C3 e C4 cadono esattamente dove li avrebbe messi un unico lungo tratto di byte."
+      ],
+      "offer1": "offer 1, fino al suo limite",
+      "offer2": "offer 2",
+      "held": "coda",
+      "dirty": "resta Dirty"
+    }
+  }
+}

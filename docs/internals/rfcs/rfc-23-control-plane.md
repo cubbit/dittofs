@@ -291,7 +291,8 @@ cluster is several over one replicated store.
    journal devices the bootstrap names, it refuses, naming the reason. A store
    with a directory is checked before anything opens, and a refusal leaves
    nothing opened. A store with no directory, such as FoundationDB's, is opened
-   first and checked through that KV, which a refusal closes.
+   by the check through the host's opener, only once the wiring and the v1
+   layout have passed, and checked through that KV, which a refusal closes.
 3. It builds the `Config` (§2.1) from the bootstrap: the bootstrap, the key-value
    store the metadata store opens on, the transport (none on one node), the
    clock, the fault seam, the metrics registry and the logger.
@@ -304,10 +305,15 @@ cluster is several over one replicated store.
 func run(ctx context.Context) error {
 	boot := config.LoadBootstrap()               // the host's file or environment
 	var db kv.KV                                 // a store with a directory opens after the check
+	var open func(context.Context) (kv.KV, error)
 	if boot.Store.Dir == "" {
-		db = kv.Open(boot.Store)                 // a store with no directory: the check reads its KV
+		open = func(ctx context.Context) (kv.KV, error) { // a store with no directory: the check opens it, after its local refusals, and reads its KV
+			var err error
+			db, err = kv.Open(ctx, boot.Store)
+			return db, err
+		}
 	}
-	if err := node.Preflight(ctx, boot.Store.Dir, db, boot.V1Root(), boot.Devices(), systemClock{}); err != nil {
+	if err := node.Preflight(ctx, boot.Store.Dir, open, boot.V1Root(), boot.Devices(), systemClock{}); err != nil {
 		if db != nil {
 			db.Close()                           // the one thing opened
 		}
@@ -406,7 +412,9 @@ store configuration, and the last storage binding to close one releases it.
 **What `New` looks like.** The sketch is illustrative and elides errors and
 the values beside the rows. Where a component's RFC declares a constructor or a
 `Deps` field, the sketch uses that name; where none is declared yet (the remote
-stores, the syncer and the API), it names one.
+stores, the syncer and the API), it names one. The node builds rows 2 to 5
+through its content wiring, `internal/node/content` ([RFC 8 §2.1](rfc-8-engine.md#2.1%20Content%20composition)), the one
+composition path it shares with the engine's checks; the sketch unrolls what the wiring builds.
 
 ```go
 func New(cfg Config) (*Node, error) {
@@ -420,7 +428,7 @@ func New(cfg Config) (*Node, error) {
 		Node: cfg.Bootstrap.Node /* what bootstrap.NodeID read: the node-id copies, or the host's key when no copy exists; refused as RFC 13 §2.2 says */, Devices: cfg.Bootstrap.Devices, Open: journal.Open, Syncer: n.syncer, // the engine opens its journals at Start
 		Existence: n.meta.Existence(), Content: n.meta.Content(), Lifecycle: n.meta.Lifecycle(),
 		Holds: cloneHolds{n.open}, ...}) // the root's adapter: engine.CloneHold onto CloneOpen, CloneClose and Recovery.Served, their errors mapped as RFC 8 §2.6 says, so the engine imports no open state
-	n.gc     = gc.New(gc.Deps{Sched: sched.New(cfg.Clock, n.wd.Loop("gc.sched")), Syncer: n.syncer, ...}) // a sibling of the engine, never passed into it
+	n.gc     = gc.New(gc.Deps{Sched: workqueue.New(cfg.Clock, n.wd.Loop("gc.sched")), Syncer: n.syncer, ...}) // a sibling of the engine, never passed into it
 	n.ident  = identity.New(identity.Deps{Store: n.meta, ...}) // no settings: the first Apply brings them
 	n.fs     = vfs.New(vfs.Deps{Meta: n.meta, Open: n.open, Engine: n.engine,
 		Identity: n.ident, Auth: n.ident, Names: n.ident, ...})                // the one identity, behind three narrow fields
@@ -482,15 +490,17 @@ func (n *Node) Start(ctx context.Context) error // §2.2's start, then reconcile
 func (n *Node) Stop(ctx context.Context) error  // §2.2's stop: the components in reverse build order
 
 // Preflight is the start check. Over the store, which is a directory or, on a
-// store with no directory, the KV the host has opened, and the journal devices
-// the bootstrap names, and a pre-journal (v1) layout on a device or at the
-// configured pre-journal root, it refuses naming what it found. It creates
-// nothing, except that opening a store with no directory writes the node's
-// clock ceiling first, also into a foreign cluster it then refuses. A first
-// start meets two of its refusals most often: a store never initialised, and a
-// bootstrap with no journal device. Exactly one of storeDir and store is set,
-// and Preflight never closes store: the host hands the same KV to New.
-func Preflight(ctx context.Context, storeDir string, store kv.KV, v1Root string, devices []string, clock Clock, opts ...journal.Option) error
+// store with no directory, the KV the host's opener returns, and the journal
+// devices the bootstrap names, and a pre-journal (v1) layout on a device or at
+// the configured pre-journal root, it refuses naming what it found. It calls
+// openKV only once the wiring and the v1 layout have passed, so a v1 host never
+// reaches the store's host. It creates nothing, except that opening a store
+// with no directory writes the node's clock ceiling first, also into a foreign
+// cluster it then refuses. A first start meets two of its refusals most often:
+// a store never initialised, and a bootstrap with no journal device. Exactly
+// one of storeDir and openKV is set, and Preflight never closes the KV openKV
+// returns: the host keeps it and hands the same KV to New.
+func Preflight(ctx context.Context, storeDir string, openKV func(context.Context) (kv.KV, error), v1Root string, devices []string, clock Clock, opts ...journal.Option) error
 
 // Config is what the host supplies and the node cannot build.
 type Config struct {
@@ -1176,6 +1186,9 @@ this table is all of them:
 | `rebuild-reverse-index` | share | `operator` | yes | [RFC 9 §7.4](rfc-9-gc.md#7.4%20The%20index%20can%20be%20dropped%20and%20rebuilt) |
 | `raise-format` | installation | `admin` | no | [RFC 13 §5.5](rfc-13-configuration.md#5.5%20A%20node%20joins%20only%20where%20its%20versions%20overlap) |
 | `rotate-signing-key` | installation | `admin` | yes | §5.3 |
+| `rotate-data-key` | namespace | `admin` | yes | [RFC 5 Appendix B.3](rfc-5-transforms.md#B.3%20Rotation) |
+| `rotate-master-key` | remote store | `admin` | yes | [RFC 5 Appendix B.3](rfc-5-transforms.md#B.3%20Rotation) |
+| `verify-escrow` | remote store | `admin` | no | [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys) |
 | `reload-provisioning` | node | `admin` | yes | [RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file) |
 | `set-password` | user | `operator`; `admin` for an account with a role | no | §3.5, [RFC 18 §8](rfc-18-identity.md#8.%20Management-API%20users) |
 | `drain` | node | `operator` | yes | [RFC 30 §5.2](rfc-30-kubernetes.md#5.2%20Scale-down%20is%20a%20drain) |
@@ -1465,7 +1478,7 @@ changed. A client **MUST** reuse a key across its own retries of one action and
 
 Work that does not finish in one transaction — a share's removal, a user's
 deletion, a clone, a restore, a backup, a re-home, a move, a credential
-rotation, a signing-key rotation, the NT hashes' deletion, an index rebuild, a copy's acceptance, a location's loss — is an **operation**. Its call commits the work's
+rotation, a signing-key rotation, a data-key or master-key rotation, the NT hashes' deletion, an index rebuild, a copy's acceptance, a location's loss — is an **operation**. Its call commits the work's
 first durable step and answers `202 Accepted` with `Location:
 /api/v1/operations/{id}` and the operation's body.
 
@@ -1501,7 +1514,7 @@ type Progress struct {
   re-home by RFC 27's — and resumes as that RFC says after a crash or failover.
   The operation record **MUST NOT** choose a driver for such work. Its progress
   is read from the owner's durable cursor, so a restart loses none of it.
-- **Work no component drives on its own** — a credential or signing-key rotation, GC's index
+- **Work no component drives on its own** — a credential, signing-key, data-key or master-key rotation, GC's index
   rebuilds, a new namespace's first claim and a copy's acceptance, a provisioning reload — is driven by the operation runner (§2.2) of a
   node, under a claim in the operation record: (node, node epoch,
   expiry), the expiry 30 s ahead and renewed every 10 s, both fixed.
@@ -1607,7 +1620,7 @@ second store.
 | users and groups that hold no role | | ✓ | ✓ |
 | accounts with a role, roles, service tokens of others | | | ✓ |
 | drain a node | | ✓ | ✓ |
-| raise a format version, decommission a node, state a location lost or a journal range unreadable, re-home, move, rotate the signing key | | | ✓ |
+| raise a format version, decommission a node, state a location lost or a journal range unreadable, re-home, move, rotate the signing key, rotate a data or master key, verify escrow | | | ✓ |
 | read the audit, and the `access`, `admin` and `logon` event streams | | | ✓ |
 | read the `quota` event stream | | ✓ | ✓ |
 | own password, own tokens, sign out | ✓ | ✓ | ✓ |
@@ -2151,10 +2164,18 @@ in `e2e`, their Kerberos flavours in `e2e/kerberos`. No suite runs yet the multi
    that is once a second. The settings read through `AllSettings` is repeated on
    every moved settings generation too (a `Secret` change raises it as well),
    not only on a full run, so its cost is part of what is weighed here. Whether
-   it needs a rate bound, and whether reconciling only the records above the
-   reconciled position needs an index by (kind, position) in RFC 16, is
-   unmeasured. So is the walk's own progress: while writes raise the settings
-   generation faster than a walk of many pages ends, §2.3 discards every walk and
+   it needs a rate bound is unmeasured. Reconciling only the records above the
+   reconciled position needs no index by (kind, position) in RFC 16 for the
+   settings, as measured at 10⁴ shares on a quiet machine (issue #5563), in a
+   model of that pass before it is built: a pass that walks every row but decodes
+   and diffs only the scopes that changed takes, at the median, 49 ms with few
+   settings per share and 93 ms with many, about a tenth of the one-second poll
+   (100 ms), where reading and diffing every row takes 298 ms and 595 ms. The walk
+   alone is 47 ms and 89 ms. From now on the measure is the settings reconcile
+   benchmark of RFC 13's plan (its epic 3), `BenchmarkReconcileScan`: its
+   `scan_above` case for the pass, and its `walk` case, either passing 100 ms
+   brings the index back. The walk's own progress is unmeasured too: while writes
+   raise the settings generation faster than a walk of many pages ends, §2.3 discards every walk and
    the node's reconciled position stops until the writes pause. Whether the
    restarts are bounded, and what a bounded walk falls back to, is open: one read
    transaction over every page runs into the age past which a store aborts a

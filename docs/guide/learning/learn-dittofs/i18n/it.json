@@ -60,6 +60,10 @@
       "name": "Il journal",
       "blurb": "Dove finisce prima una scrittura: il log locale che tiene al sicuro ogni byte finché non arriva nel bucket, e poi restituisce lo spazio."
     },
+    "carver": {
+      "name": "Il carver",
+      "blurb": "Come i byte in attesa di upload vengono tagliati in pezzi dove lo decide il contenuto, chiamati con un hash di ciò che contengono e raccolti interi negli oggetti che il bucket conserva."
+    },
     "test-harness": {
       "name": "L'harness di test",
       "blurb": "Un solo comando che esegue ogni suite di test allo stesso modo, sul portatile o in CI, e non conta mai come superato un test che non è girato."

@@ -219,9 +219,8 @@ Outcome: one get and one worker serve twenty readers.
    ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)).
 3. With puts also unhealthy, new writes still land in the journal until it
    fills ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)).
-4. The log shows one error line per direction, then one warning a minute with
-   refused counts
-   ([What an unhealthy store logs](#What%20an%20unhealthy%20store%20logs)).
+4. The log shows one error line per direction; refused calls are counted, not
+   logged ([What an unhealthy store logs](#What%20an%20unhealthy%20store%20logs)).
 5. Probes never stop. Two passing in a row make the direction healthy again
    ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)).
 
@@ -322,206 +321,144 @@ fetches on latency and on how many readers are blocked.
 Signatures are indicative; the obligations are normative.
 
 ```go
-type Chunk struct {
-    Hash  Hash   // plaintext content hash
-    Bytes []byte // borrowed until the next iteration
-}
-
-// Range is where one chunk's body sits in an encoded block: a byte offset and a
-// length, after transforms, as the block's header records them (RFC 4 §3.2).
-type Range struct {
-    Off, Len int64
-}
-
-// ChunkRange asks for one chunk: the hash to verify it against, and its range.
-type ChunkRange struct {
-    Hash  Hash
-    Range Range
-}
-
-// Descriptor is one census entry (RFC 5 §5.3): a transform, its format version
-// and the material it used, each by ID and fingerprint. Opaque to the syncer,
-// which passes it through.
-type Descriptor struct {
-    Transform uint16
-    Version   uint8
-    Material  []MaterialRef
-}
-
-type MaterialRef struct {
-    ID          string
-    Fingerprint [32]byte
-}
-
-// Direction is a half: put or get. Health is kept per direction (§2.8).
-type Direction uint8 // Put, Get
-
-// Stored is what a put reports: one Range per chunk, in the order given, and
-// the block's census, each distinct Descriptor its bodies used.
-type Stored struct {
-    Ranges []Range
-    Census []Descriptor
-}
+// The syncer uses RFC 4's contract, package remote, as it is (RFC 0 §1.2):
+// remote.Name, Range, Chunk, ChunkRange, Direction (DirPut, DirGet), Version,
+// Checksum, StoredSum, Meter, and the error set of RFC 4 §4.8 with its Cause.
+// It declares none of them again.
 
 // Store is what the syncer needs from a backend, declared here and named for
-// that need. The engine implements it by composing RFC 4's block codec with a
-// remote block store: encoding, transforms and verification happen inside it.
+// that need: a verified get and a probe. RFC 4's codec.Store, the block codec
+// over a remote store, implements it.
 type Store interface {
-    // Put encodes the block and streams it to the store. It calls src once,
-    // twice or three times per attempt, by checksum mode (§2.4, RFC 4 §4.3).
-    Put(ctx context.Context, name BlockName, src func() iter.Seq2[Chunk, error]) (Stored, error)
     // Get reads the chunks named in want, or the whole block when want is empty.
     // Ranges adjacent in the block are read with one request. Each chunk comes
-    // back decoded and verified against its own hash.
-    Get(ctx context.Context, name BlockName, want []ChunkRange) iter.Seq2[Chunk, error]
-    // GetVersion is Get of one recorded version, at an immutable backup
-    // location (RFC 4 §4.14): decoded and verified chunk by chunk like Get.
-    GetVersion(ctx context.Context, name BlockName, v Version, want []ChunkRange) iter.Seq2[Chunk, error]
-    // PutRaw stores exactly size opaque bytes under name, without decoding or
-    // encoding them, sending sum as the put's checksum, and returns the version
-    // the store recorded (empty on a mutable store). src is called once per attempt.
-    PutRaw(ctx context.Context, name RawName, src func() (io.Reader, error), size int64, sum []byte, retainUntil time.Time) (Version, error)
-    // GetRaw streams the stored bytes of name, of version v when v is not
-    // empty, from byte off to the end: exactly that many bytes, or an error,
-    // and nothing decoded. stored is the whole-object checksum the service
-    // holds, when it reports one, with its kind; a response checksum that
-    // mismatches fails the reader at its end with ErrTransient, voiding every
-    // byte it yielded (RFC 4 §4.4).
-    GetRaw(ctx context.Context, name RawName, v Version, off int64) (body io.ReadCloser, size int64, stored Checksum, err error)
-    // Health makes one probe call of the given direction against this store's
-    // own namespace (RFC 4 §4.7).
-    Health(ctx context.Context, d Direction) error
+    // back decoded and verified against its own hash (RFC 4 §3.4). m receives
+    // the encoded bytes as they arrive (§2.4).
+    Get(ctx context.Context, name remote.Name, want []remote.ChunkRange, m remote.Meter) iter.Seq2[remote.Chunk, error]
+    // Health is RFC 4 §4.7's probe call of direction d, passed straight through.
+    Health(ctx context.Context, d remote.Direction) error
 }
 
-// Version names one stored version of a block at an immutable location
-// (RFC 4 §4.14). Opaque to the syncer.
-type Version string
-
-// RawName names what a raw transfer carries: a block's name, or a versioned
-// object at a backup location, such as an export part (RFC 4 §4.15). Opaque
-// to the syncer, which schedules and charges the transfer and never reads the
-// name; the engine's Store resolves it to the remote store's block or object
-// call, and RFC 4's GetObject takes the same offset and reports the same
-// stored checksum as Get.
-type RawName string
-
-// Every Store error wraps one of the syncer's own error values below, or is a
-// local error returned as itself. The engine's Store maps RFC 4's closed set
-// (§4.8) and RFC 5's ErrMaterialUnavailable (§2.7) onto them.
-var (
-    ErrNotFound, ErrInvalid, ErrDenied, ErrTransient, ErrCorrupt, ErrMaterialUnavailable, ErrMaterialDestroyed error
-    ErrThrottled error // wraps ErrTransient
-    ErrDrift     error // the store's drift condition stands (§2.8)
-)
-
-// DeniedQuota is set on an ErrDenied whose cause is a quota or storage limit
-// of the service (RFC 4 §4.8), as opposed to an access refusal.
-type DeniedQuota interface{ Quota() bool }
-
-// DeniedSize is set on an ErrDenied whose cause is a body-size limit that
-// refused a block put (RFC 4 §4.8).
-type DeniedSize interface{ Size() bool }
-
-// Checksum is a whole-object checksum and its kind (CRC32C or MD5); empty
-// when the service reported none.
-type Checksum struct {
-    Kind string
-    Sum  []byte
-}
+// ErrDrift is the cause of a put direction whose store's drift condition
+// stands (§2.8). It is the syncer's only error value.
+var ErrDrift error
 
 // Probes says which probes the syncer sends for a store. A store whose put
 // probe would write what it must not, such as an immutable backup location
 // (RFC 4 §4.14), is registered with PutProbe false.
 type Probes struct{ PutProbe, GetProbe bool }
 
-// probe names the probe this store shares with every store registered under the
-// same value (§2.8); the engine derives it from endpoint, credential and bucket.
-// probes says which directions are probed at all.
-Register(name string, store Store, probe ProbeKey, probes Probes) (StoreID, error)
-// Unregister drops a store once no flow on it is open: its health state, its
-// probes and its counters end with it.
-Unregister(store StoreID) error
-// SetDrift raises the store's drift condition, err naming the drifted
-// setting, or clears it when err is nil (§2.8). The process's GC is its one
-// caller, from the namespace's Recheck record (RFC 9 §7.5): raised while the
-// record holds drift, cleared once it holds a passed Recheck, on every node,
-// whichever node ran the Recheck. Nothing else calls it.
-SetDrift(store StoreID, err error)
-// A background flow's fetches run in the background class (§2.9); GC, copying
-// backups and re-homes open one.
-OpenFlow(store StoreID, background bool) (*Flow, error)
+// Syncer and Flow are the contract; package pool implements them (RFC 0 §1.2).
+type Syncer interface {
+    // probe names the probe this store shares with every store registered under the
+    // same value (§2.8); the engine derives it from endpoint, credential and bucket.
+    // probes says which directions are probed at all.
+    Register(name string, store Store, probe ProbeKey, probes Probes) (StoreID, error)
+    // Unregister drops a store once no flow on it is open: its health state, its
+    // probes and its counters end with it.
+    Unregister(store StoreID) error
+    // SetDrift raises the store's drift condition, err naming the drifted
+    // setting, or clears it when err is nil (§2.8). The process's GC is its one
+    // caller, from the namespace's Recheck record (RFC 9 §7.5): raised while the
+    // record holds drift, cleared once it holds a passed Recheck, on every node,
+    // whichever node ran the Recheck. Nothing else calls it.
+    SetDrift(store StoreID, err error)
+    // A background flow's fetches run in the background class (§2.9); GC, copying
+    // backups and re-homes open one.
+    OpenFlow(store StoreID, background bool) (Flow, error)
+    Close() error // the syncer's own
+    Stats() Stats // a consistent snapshot of the counters of §2.12
+}
 
-func (f *Flow) Upload(ctx context.Context, name BlockName, size int64, src func() iter.Seq2[Chunk, error]) (Stored, error)
-func (f *Flow) Fetch(ctx context.Context, name BlockName, want []ChunkRange) iter.Seq2[Chunk, error]
-func (f *Flow) Prefetch(ctx context.Context, name BlockName, want []ChunkRange) iter.Seq2[Chunk, error]
-// A raw transfer carries a block byte for byte between two stores, never
-// decoding it; a copying backup uses it (RFC 26 §2.4.2). FetchRaw writes the
-// whole stored block into the caller's writer at its offsets, a retry resuming
-// at the first byte not yet written (at byte 0 after a response-checksum
-// mismatch), checks the staged bytes against the source's stored checksum of
-// whatever kind, and returns a checksum of kind, the destination's put kind:
-// the source's stored one when it is of that kind, else the checksum of the
-// staged bytes it just checked; UploadRaw puts exactly size bytes under that
-// checksum and returns the store's version.
-func (f *Flow) FetchRaw(ctx context.Context, name RawName, v Version, size int64, kind string, dst io.WriterAt) (sum []byte, err error)
-func (f *Flow) UploadRaw(ctx context.Context, name RawName, size int64, sum []byte, retainUntil time.Time, src func() (io.Reader, error)) (Version, error)
-// Small runs one small-object call as a transfer of direction d: scheduled,
-// retried, throttled and health-checked like a block's. call makes one
-// request, or one read and then one write of the same object (a retention
-// extension), under a ctx that ends at the small-call bound, with a body of
-// at most the small-body cap (§2.10). Every call at a backup location that
-// is not a raw transfer runs through it (RFC 4 §4.15), as do a Recheck
-// pass's setting reads and version-walk pages (RFC 4 §4.11) and each batch
-// request of a backup folder sweep's deletes. d is DirGet for a read or a
-// listing page, DirPut for anything that changes the store: a put, a retention
-// extension or a delete batch.
-func (f *Flow) Small(ctx context.Context, d Direction, call func(ctx context.Context) error) error
-// FetchVersion is Fetch of one recorded version, verified like Fetch.
-func (f *Flow) FetchVersion(ctx context.Context, name BlockName, v Version, want []ChunkRange) iter.Seq2[Chunk, error]
-func (f *Flow) Healthy(d Direction) bool
-// Health is nil while direction d is healthy, and otherwise the error that made
-// it unhealthy, naming the store and wrapping its cause (§2.8).
-func (f *Flow) Health(d Direction) error
-func (f *Flow) Close() error
-
-Close() error // the syncer's own
-Stats() Stats // a consistent snapshot of the counters of §2.12
+type Flow interface {
+    // Upload runs the put attempt of block name: it calls attempt once per try, up
+    // to §2.4's bounds, and returns nil only once a call of attempt returned nil.
+    // attempt makes one put of the whole block and reports its wire bytes to m;
+    // RFC 4's codec.Store.NewPut(name, nonce, pin, src) builds it (RFC 4 §4.3).
+    Upload(ctx context.Context, name remote.Name, size int64, attempt func(ctx context.Context, m remote.Meter) error) error
+    Fetch(ctx context.Context, name remote.Name, want []remote.ChunkRange) iter.Seq2[remote.Chunk, error]
+    Prefetch(ctx context.Context, name remote.Name, want []remote.ChunkRange) iter.Seq2[remote.Chunk, error]
+    // A raw transfer carries a block, or an export part or head, byte for byte
+    // between two stores, never decoding it; a copying backup uses it (RFC 26
+    // §2.4.2). FetchRaw writes the whole stored object into the caller's writer at
+    // its offsets. get opens the stored bytes from byte off to the end and reports
+    // the stored checksum; the caller's closure calls RFC 4's Get, GetVersion or
+    // GetObject. A retry calls get again at the first byte not yet written (at byte
+    // 0 after a response-checksum mismatch). FetchRaw checks the staged bytes
+    // against the source's stored checksum of whatever kind, and returns a checksum
+    // of kind, the destination's put kind: the source's stored one when it is of
+    // that kind, else the checksum of the staged bytes it just checked.
+    FetchRaw(ctx context.Context, size int64, kind remote.Checksum, dst io.WriterAt, get func(ctx context.Context, off int64) (io.ReadCloser, remote.StoredSum, error)) (sum []byte, err error)
+    // UploadRaw is Upload of an object that has no block name. Its attempt puts
+    // exactly size bytes under FetchRaw's checksum through RFC 4's PutVersion or
+    // PutObject, and keeps the version the store returns.
+    UploadRaw(ctx context.Context, size int64, attempt func(ctx context.Context, m remote.Meter) error) error
+    // Small runs one small-object call as a transfer of direction d: scheduled,
+    // retried, throttled and health-checked like a block's. call makes one
+    // request, or one read and then one write of the same object (a retention
+    // extension), under a ctx that ends at the small-call bound, with a body of
+    // at most the small-body cap (§2.10). Every call at a backup location that
+    // is not a raw transfer runs through it (RFC 4 §4.15), as do a Recheck
+    // pass's setting reads and version-walk pages (RFC 4 §4.11) and each batch
+    // request of a backup folder sweep's deletes. d is DirGet for a read or a
+    // listing page, DirPut for anything that changes the store: a put, a retention
+    // extension or a delete batch.
+    Small(ctx context.Context, d remote.Direction, call func(ctx context.Context) error) error
+    // FetchVersion is Fetch of one recorded version, verified like Fetch. get is
+    // the caller's closure over codec.Store's get of that version (RFC 4 §4.14);
+    // the syncer passes it the chunks still wanted, as on a Fetch retry.
+    FetchVersion(ctx context.Context, name remote.Name, want []remote.ChunkRange, get func(ctx context.Context, want []remote.ChunkRange, m remote.Meter) iter.Seq2[remote.Chunk, error]) iter.Seq2[remote.Chunk, error]
+    Healthy(d remote.Direction) bool
+    // Health is nil while direction d is healthy, and otherwise the error that made
+    // it unhealthy, naming the store and wrapping its cause (§2.8).
+    Health(d remote.Direction) error
+    Close() error
+}
 ```
 
 Streams are `iter.Seq2`: a caller consumes one with `for c, err := range`, and
 leaving the loop early stops the producer.
 
-`Chunk` and `Store` are declared by the syncer, as
-[RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) requires: the syncer depends on neither the carver, the journal nor the
-remote tier, and is tested with none of them ([§1.4](#1.4%20It%20is%20testable%20on%20its%20own)). `Chunk` is not the
-carver's chunk ([RFC 2 §1.2](rfc-2-carver.md#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver)) under another name. The carver's describes where a
-chunk sits in a file; this one is what a transfer carries, a hash and its bytes,
-and has no file offset. The engine converts one
-into the other. `Hash` is a plain `[32]byte`, so not even the hash type is
-shared. `Store` has no delete: the syncer neither decides a delete nor issues
-one of its own, and a delete reaches a store through it only inside a caller's
-`Small` call ([§1.1](#1.1%20Non-goals)).
+**The syncer imports RFC 4's contract, and no implementation.** Names,
+ranges, chunks, directions, versions, checksums and the error set are RFC 4's
+([RFC 4 §4.1](rfc-4-remote-tier.md#4.1%20Interface)), imported as [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) allows, never copied. `Store` is the syncer's
+own interface, named for what it needs: a verified get and a probe. RFC 4's
+`codec.Store`, the block codec over a remote store, implements it; the syncer
+imports neither the codec, a store, the carver, the journal nor the transforms,
+and is tested as [§1.4](#1.4%20It%20is%20testable%20on%20its%20own) says. `remote.Chunk` is not the carver's chunk
+([RFC 2 §1.2](rfc-2-carver.md#1.2%20Two%20layers%3A%20the%20chunker%20and%20the%20carver)) under another name. The carver's describes where a chunk sits in a
+file; this one is what a transfer carries, a hash and its bytes, and has no file
+offset. The engine converts one into the other. `Store` has no put and no
+delete. A put is the caller's `attempt`, which the syncer runs and retries
+without seeing its bytes. The syncer neither decides a delete nor issues one of
+its own, and a delete reaches a store through it only inside a caller's `Small`
+call ([§1.1](#1.1%20Non-goals)).
 
-**The error set is closed, and the syncer declares it.** Its values mirror the
-remote store's set ([RFC 4 §4.8](rfc-4-remote-tier.md#4.8%20Errors%20are%20a%20closed%20set)) and `ErrMaterialUnavailable` from the transforms
-([RFC 5 §2.7](rfc-5-transforms.md#2.7%20Failures)), but they are the syncer's own values, declared beside `Store`; the
-engine's `Store` wraps each remote-store or transform error in the matching one,
-and the codec reports every other transform failure as `ErrCorrupt`. So the
-syncer imports neither component to recognise an error, which sentinels shared
-by identity would force it to. Neither the syncer nor its callers interpret a
+**The error set is RFC 4's, used as it is** ([RFC 4 §4.8](rfc-4-remote-tier.md#4.8%20Errors%20are%20a%20closed%20set)). The syncer
+recognises each error with `errors.Is` and `errors.As` on RFC 4's values, and
+reads a denial's cause from `remote.DeniedError`. `remote.ErrMalformed`, which
+wraps `ErrCorrupt`, is the codec's report of a recorded range the store refused
+as past the end ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)). Neither the syncer nor its callers interpret a
 service's or a transform's own errors:
 
 | Error | The syncer | Counts toward health ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | --- | --- | --- |
 | `ErrNotFound` | fails the call; the engine re-resolves ([RFC 8 §7.7](rfc-8-engine.md#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) | no |
 | `ErrInvalid` | fails the call, not retried | no |
-| `ErrDenied` | fails the call, not retried; its cause, quota or access, is kept as the direction's cause ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) | yes, in the call's direction |
+| `ErrDenied` | fails the call, not retried; its `Cause`, quota, size or access, is kept as the direction's cause ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) | yes, in the call's direction |
 | `ErrThrottled` | holds the flow, then retries after backoff within its bound ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) | no: it is backpressure, not failure |
 | `ErrTransient` | retries within its bound ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) | yes, in the call's direction |
-| `ErrCorrupt` | on a put, retries within its bound; on a fetch, re-gets the failing chunk once, then fails the call ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) | on a put, yes, toward put health; on a fetch, no |
-| `ErrMaterialUnavailable` | fails the call, not retried; the read fails as the remote being unavailable | no |
-| `ErrMaterialDestroyed` | fails the call, not retried; the engine reports the chunk Lost, never corrupt ([RFC 5 §2.7](rfc-5-transforms.md#2.7%20Failures)) | no |
-| a local error | fails the call | no |
+| `ErrCorrupt` | on a put, retries within its bound; on a fetch, re-gets the failing chunk once, then fails the call, and fails it at once on `ErrMalformed` ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) | on a put, yes, toward put health; on a fetch, no |
+| any other error: a local one, or a material error of the transforms ([RFC 5 §2.7](rfc-5-transforms.md#2.7%20Failures)) | fails the call, not retried, and returns the error as it is | no |
+
+**Material errors need no row of their own.** The codec passes the transforms'
+`ErrMaterialUnavailable` and `ErrMaterialDestroyed` through unwrapped by RFC 4's
+set, and the syncer treats them as it treats a local error: it fails the call,
+retries nothing and counts nothing. It returns the error as it is, so the
+engine, which imports the transforms' contract, tells the two apart with
+`errors.Is`: an unavailable material fails the read as the remote being
+unavailable, a destroyed one makes the chunk Lost, never corrupt. Naming them
+in the syncer would add an import and change no outcome.
 
 A put that keeps failing its in-transit check says something about the path to
 the store, not about one block: the same bytes are sent again and fail again. So
@@ -563,37 +500,50 @@ interpret them, except to sum the lengths of `want` for scheduling ([§2.9](#2.9
 
 **Both directions stream, one chunk at a time.** The header indexes every
 chunk's body with its plaintext hash, each body decodes on its own
-([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)), and every transform applies per chunk ([RFC 5](rfc-5-transforms.md)). On a put, the
-engine's `Store` sends the header, then encodes each chunk as it sends it
+([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout)), and every transform applies per chunk ([RFC 5](rfc-5-transforms.md)). On a put,
+`codec.Store`'s attempt sends the header, then encodes each chunk as it sends it
 ([§3.4](#3.4%20One%20put%20per%20block)); on a get, it decodes and verifies each body as it arrives. A worker
 therefore holds one chunk and one header, never the whole block, which is what
 sets the bound of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound).
 
-**`Upload`** puts the block whose chunks `src` yields from the journal
-([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy)). It hands that stream to the store's `Put`, which encodes and transforms
-each chunk beneath the syncer; the syncer never sees a transformed byte
-([RFC 4 §3.3](rfc-4-remote-tier.md#3.3%20Transforms)). `size` is the block's largest encoded length, the chain's
+**`Upload`** runs the put of a block as a closure, `attempt`, which the caller
+builds with `codec.Store.NewPut(name, nonce, pin, src)`, under the attempt's
+nonce and pinned chain, over the `src` that yields the
+block's chunks from the journal ([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy), [RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)). Each call of `attempt` is
+one try: it encodes and transforms each chunk beneath the syncer and puts the
+whole block. The syncer never sees a byte of it, transformed or not
+([RFC 4 §3.3](rfc-4-remote-tier.md#3.3%20Transforms)); it sees only the wire bytes `attempt` reports to its `Meter`
+([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)). The put's measured lengths and checksum, and the block's ranges and
+census, live in the closure, not in the syncer: the codec keeps them across
+tries and hands the ranges and census to the caller once a try succeeds
+([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)). `size` is the block's largest encoded length, the chain's
 `MaxEncodedLen` ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)) summed over its chunks plus the header, which the
 engine knows from its plan and the scheduler charges ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)). GC's relocation calls
-`Upload` with the same signature and gets the same `Stored` back ([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)).
+`Upload` the same way ([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)).
 
 It waits in its flow's queue until a worker is free or `ctx` ends, which is the
 backpressure of [§2.3](#2.3%20Backpressure%20propagates%3B%20it%20does%20not%20buffer), and fails at once if its store is put-unhealthy ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) or its
-flow's queue, or the half's waiter bound, is full ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)). It returns the store's `Stored`, and a `nil` error,
-only on the store's acknowledgement, which means stored on every store
-([§2.6](#2.6%20A%20stored%20block%20is%20observed%2C%20never%20inferred)); every other ending, an unknown one included ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)), is an error.
-The ranges and the census go into the block's commit, where later reads and
-retirement find them ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk), [RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block)).
+flow's queue, or the half's waiter bound, is full ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)). It returns `nil` only once a call of
+`attempt` returned `nil`, which is the store's acknowledgement and means stored
+on every store ([§2.6](#2.6%20A%20stored%20block%20is%20observed%2C%20never%20inferred)); every other ending, an unknown one included ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)), is an
+error. The ranges and the census the codec hands back go into the block's
+commit, where later reads and retirement find them ([RFC 6 §2.2](rfc-6-block-metadata.md#2.2%20Chunk), [RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block)).
 
-A retry, and a measuring pass, call `src` again for a fresh stream from the first
-chunk, so the bytes behind it **MUST** stay stable until `Upload` returns ([§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable)). It **MUST NOT**
-call `src` after it returns, which is what lets the caller hand the journal
+Each try, and each measuring pass inside it, calls `src` again for a fresh
+stream from the first chunk, so the bytes behind it **MUST** stay stable until
+`Upload` returns ([§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable)). A try cancelled by the slow-tail rule can outlive its
+worker, so two tries of one `Upload` can overlap. A call of `attempt` **MUST**
+drop its chunk buffers once its `ctx` ends, so a try that outlives its worker
+holds none of the uploader's memory ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)). `Upload` **MUST** return only
+once every call of `attempt` it made has returned, and **MUST NOT** call
+`attempt` after it returns, which is what lets the caller hand the journal
 reference back.
 
 One `Upload` is one **put attempt** of [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block): the caller minted `name` for it
 and recorded its put intent before calling ([RFC 8 §6.6](rfc-8-engine.md#6.6%20A%20block's%20name%20is%20minted%2C%20and%20its%20intent%20recorded%2C%20before%20the%20put)). Every retry inside
-`Upload` puts that same name with the same bytes; the syncer never puts a name
-it was not handed, and never puts a name again after `Upload` returns.
+`Upload` calls the same `attempt`, which puts that same name with the same
+bytes; the syncer makes no put of its own, and never calls `attempt` again
+after `Upload` returns.
 
 **A raw transfer copies a block without opening it.** A copying backup carries
 each block byte for byte from the namespace's store to the backup's block folder
@@ -601,10 +551,12 @@ each block byte for byte from the namespace's store to the backup's block folder
 namespace's material and hold plaintext, which the copier must not. So
 `FetchRaw` and `UploadRaw` move **opaque bytes of an exact size**:
 
-- `FetchRaw` writes the whole stored block, of the version named when one is,
-  into the caller's writer, and fails unless exactly `size` bytes arrive — the
-  size block metadata or the backup's manifest recorded. Each byte is written at
-  its own offset, and a retry resumes by range at the first byte not yet
+- `FetchRaw` writes the whole stored object, read through the caller's `get`
+  closure over RFC 4's `Get`, `GetVersion` or `GetObject`, into the caller's
+  writer, and fails unless exactly `size` bytes arrive — the size block metadata
+  or the backup's manifest recorded. The syncer reads the body itself, so it
+  meters the wire bytes without a `Meter`. Each byte is written at
+  its own offset, and a retry resumes by calling `get` at the first byte not yet
   written, so a reset after 3 MiB never writes bytes 0 to 3 MiB twice into one
   stream. A get whose response checksum mismatches voids that whole response
   ([RFC 4 §4.4](rfc-4-remote-tier.md#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)): the mismatch arrives after the last byte, so the bytes it wrote
@@ -627,10 +579,11 @@ namespace's material and hold plaintext, which the copier must not. So
   verified beyond the store's own transfer checks; the copier checks the
   block's name from its header without material ([RFC 4 §3.4](rfc-4-remote-tier.md#3.4%20Every%20read%20is%20verified%20by%20the%20codec)), and `Verify`
   checks content later;
-- `UploadRaw` puts exactly `size` bytes from `src`, under the retain-until the
-  caller names at an immutable location, and returns the **version** the store
-  recorded, which the caller writes into its progress object and manifest. Its
-  `src` reads local staging the caller filled with `FetchRaw`, never a remote
+- `UploadRaw` runs the caller's `attempt`, which puts exactly `size` bytes,
+  under the retain-until the caller names at an immutable location, and keeps
+  the **version** the store recorded, which the caller writes into its progress
+  object and manifest. The attempt reports its wire bytes to its `Meter`, and
+  reads local staging the caller filled with `FetchRaw`, never a remote
   stream ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)), and the put carries `FetchRaw`'s checksum, so staging
   damaged between the two fails the put rather than landing as a complete copy.
   A destination that takes no up-front checksum and acknowledges with an MD5
@@ -638,9 +591,10 @@ namespace's material and hold plaintext, which the copier must not. So
   sum and fails the put as `ErrCorrupt` on a mismatch
   ([RFC 4 C.3](rfc-4-remote-tier.md#C.3%20How%20the%20contract%20maps%20to%20S3)). The staging itself is counted against the process's
   staging budget ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound));
-- **`FetchVersion`** reads chunks of one recorded version, decoded and verified
-  exactly as `Fetch` does; `Verify` and a restore from an immutable location use
-  it ([RFC 26 §2.4.5](rfc-26-catalog-backups.md#2.4.5%20Restore%20into%20a%20new%20namespace)).
+- **`FetchVersion`** reads chunks of one recorded version through the caller's
+  `get` closure over the codec, decoded and verified exactly as `Fetch` does,
+  with the same resume and re-get; `Verify` and a restore from an immutable
+  location use it ([RFC 26 §2.4.5](rfc-26-catalog-backups.md#2.4.5%20Restore%20into%20a%20new%20namespace)).
 
 Each is a transfer like any other: background class, scheduled, retried within
 the bound, refused by an unhealthy direction, and charged at its size.
@@ -697,9 +651,9 @@ largest encoded block is cut into head parts like the export's
 ([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)), so every raw transfer stays within a block's size. `FetchRaw` takes an
 exact size, so a head's size is recorded where its version is: the backup
 record keeps the export head's size beside its head version
-([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)), and a read of a head never guesses it from a listing. For a raw transfer `name` is
-then the object's `RawName`, which the engine's `Store` resolves to the remote
-store's versioned-object calls.
+([RFC 26 §2.2](rfc-26-catalog-backups.md#2.2%20A%20backup%20holds%20its%20snapshot)), and a read of a head never guesses it from a listing. A raw transfer
+names no object to the syncer: the caller's closures call the remote store's
+block or versioned-object calls.
 
 **`Fetch`** is a demand: a reader is waiting. **`Prefetch`** is speculation
 ([§4.4](#4.4%20Speculation%20does%20not%20delay%20demand)): nobody is waiting yet. They are separate methods, not one method with
@@ -744,12 +698,27 @@ location deleted, a namespace re-homed away — is unregistered once its flows a
 closed; `Unregister` on a store with an open flow **MUST** fail. A registration
 that outlived its store would go on probing, and reporting, a store nothing uses.
 
-`Store` keeps no health state; `Health` is one probe call ([RFC 4 §4.7](rfc-4-remote-tier.md#4.7%20Health%20is%20one%20probe%20call)). The syncer
+`Store` keeps no health state; `Health` is RFC 4's probe call, which
+`codec.Store` passes straight through to its remote store ([RFC 4 §4.7](rfc-4-remote-tier.md#4.7%20Health%20is%20one%20probe%20call)). The syncer
 probes each store itself, per direction, and refuses work in a direction that is unhealthy, and `Flow.Healthy` reports the result
 ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)). `Register`'s `probe` is how the syncer learns which stores share a probe: it
 cannot see an endpoint, a credential or a bucket, so the engine, which can, names
 the group, and stores registered under one `ProbeKey` share their outage probe.
 A zero key shares with nothing.
+
+**What lands with its first caller.** Some of this interface has no caller in the first
+release that ships the syncer, and lands with the caller that first needs it, never before:
+
+| Lands later | With its first caller |
+| --- | --- |
+| `FetchRaw`, `UploadRaw`, `FetchVersion`; the staging budget ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)) | a copying backup, a restore or `Verify` ([RFC 26](rfc-26-catalog-backups.md)); GC's relocation ([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)); a re-home ([RFC 27](rfc-27-namespace-migration.md)) |
+| `Small` | a backup location's calls ([RFC 26](rfc-26-catalog-backups.md)); a `Recheck` pass ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)) |
+| `SetDrift` and `ErrDrift` | GC's `Recheck` ([RFC 9 §7.5](rfc-9-gc.md#7.5%20Service%20settings%20are%20rechecked%20on%20their%20own%20period)); until then a bucket setting changed after the store opened is seen only at its next open ([RFC 4 §4.11](rfc-4-remote-tier.md#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)), and a put into the drifted store may be expired or kept as a version nothing deletes ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
+| a registration with `PutProbe` or `GetProbe` false, refused until then | an immutable backup location ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) |
+| the sizing tool ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) | an operator's need to size the pools beyond the defaults. Until the node passes the syncer its transfers pool's size, the defaults are not reduced to fit it, and counts set explicitly that do not fit are not refused ([RFC 24 §7.2](rfc-24-resources.md#7.2%20The%20syncer%20and%20staging)) |
+
+Each obligation in this RFC on what lands later binds from the release that brings its caller. `Register`
+takes `Probes` from the first release, so a later caller changes no signature.
 
 ### 1.4 It is testable on its own
 
@@ -758,8 +727,8 @@ for:
 
 | Dependency | Supplied as | In a test |
 | --- | --- | --- |
-| a backend | the `Store` interface of [§1.3](#1.3%20Interface) | the in-memory store under a fault wrapper |
-| the bytes to upload | the `src` closure passed to `Upload` | a closure over a byte slice |
+| a backend | the `Store` interface of [§1.3](#1.3%20Interface) | RFC 4's `codec.Store` over RFC 4's in-memory store, under RFC 4's fault wrapper |
+| the bytes to upload | the `attempt` closure passed to `Upload` | `codec.Store.NewPut` over a `src` that reads a byte slice |
 | time | the one clock interface every component takes ([index, Test harness](rfc-index.md#Test%20harness)), never a clock of its own | that interface's virtual clock |
 | logging | a structured logger | a handler that records the lines |
 
@@ -768,38 +737,43 @@ A conformance check **MUST** be writable as: build a syncer over the in-memory s
 call it, assert on what the store holds, the load it recorded and what came back. An implementation that
 picks up another dependency loses that, and **MUST NOT**.
 
-**Time is virtual in tests.** The probe interval, the unhealthy log interval,
+**Time is virtual in tests.** The probe interval, the re-admission backoff,
 retry backoff and every `ctx` deadline run on a virtual clock that advances only
-when every task is blocked. A check of the 60-second log line
+when every task is blocked. A check of the 15-minute backoff cap
 ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) runs in microseconds and gives the same answer every time. The syncer
 therefore **MUST NOT** read time from anywhere the virtual clock cannot replace.
 A check that sleeps on the real clock is slow, and on a loaded machine it fails
 for reasons that have nothing to do with the syncer.
 
-**The in-memory store is the fixture every check shares.** It is a verified
-in-memory `Store` ([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)): the Group A checks run against it and
-against the remote tier's adapter alike ([§8.1](#8.1%20Kinds%20of%20test)). A fault wrapper around it can, per call:
+**RFC 4's in-memory store is the fixture every check shares.** It is the
+verified in-memory implementation of RFC 4's contract, held to RFC 4's
+conformance suite ([RFC 4 §7.1](rfc-4-remote-tier.md#7.1%20Conformance%20suite), [RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)), and it ships with RFC 4, so the
+syncer's tests import it as [RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) allows. The checks reach it through
+`codec.Store`, as production reaches a real store. The syncer keeps no store of
+its own, and no suite of its own for one. The Group A checks run over any
+remote store the caller opens: over the in-memory one here, and over the real
+one against a local emulator ([§8.1](#8.1%20Kinds%20of%20test)). RFC 4's fault wrapper around it can, per call:
 
 - take a set latency and a set time per byte, so the pool binds ([§7.3](#7.3%20What%20must%20not%20stand%20in));
-- fail with any error of the set in [§1.3](#1.3%20Interface), throttling included, once or every time, in one direction or both;
+- fail with any error of RFC 4's set, throttling included, once or every time, in one direction or both;
 - **commit and then lose the response** — the unknown outcome of [§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success);
-- stop part-way through a put, or corrupt one chunk of a get;
+- cut a put short part-way through its body, or corrupt one chunk's bytes of a get;
 - hold every call until the test releases it;
 - fail or pass the probe of either direction, its own or a shared one.
 
 And the in-memory store keeps its own record of its load, an output of the verified
 implementation, with the syncer's own per-flow counters beside it: calls in
-flight, per store and per flow, and their peak (S1,
-S17); the order calls reached it (S13, S18); attempts per block; bytes it holds.
+flight and their peak (S1, S17); the order calls reached it (S13, S18); puts
+per name; bytes it holds.
 
 **Memory is checked by holding, then measuring.** With every call held and every
 pool full, the heap in use above the idle baseline **MUST** stay within the bound
 of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) plus a stated slack. The test chooses the chunk `Max` and pool size large
 enough that the Go runtime's own noise stays under that slack.
 
-The in-memory store covers the syncer's logic. It does not cover the adapter from the remote
-tier to `Store`, nor a real backend's failure modes; those run the same checks
-against a local emulator of the remote service ([§7.3](#7.3%20What%20must%20not%20stand%20in)).
+The in-memory store covers the syncer's logic. It does not cover a real
+backend's failure modes; the Group A checks run again over `codec.Store` on the
+real store against a local emulator of the remote service ([§7.3](#7.3%20What%20must%20not%20stand%20in)).
 
 ## 2. What both halves obey
 
@@ -837,24 +811,34 @@ Two further limits are permitted, each with its interaction stated:
 Each worker runs one transfer at a time, and a streaming transfer holds only
 one chunk in plaintext, the same chunk encoded, and the block's header ([§1.3](#1.3%20Interface)).
 A chunk is at most `Max` before encoding, and `Max` here is the largest `Max` of
-any namespace the process serves: no namespace admits a chunk longer than its
-own ([RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20migration)), wherever it was cut. It is at most
-`MaxEncodedLen(Max)` after ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)) for the chain that writes it, and at most
+any namespace the process serves when it starts, and never less than the default
+`Max`, 1 MiB ([RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it)): no namespace admits a chunk longer than its
+own ([RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20migration)), wherever it was cut. Every namespace opened after start
+with a larger `Max` (one created, a share enabled, a restore, a move's import, or
+[RFC 27 §2.7](rfc-27-namespace-migration.md#2.7%20Moving%20one%20share%20out%20of%20a%20shared%20namespace)'s re-home target) is not opened until the next start, which sizes
+for it; until then the node raises a health condition naming the namespace and
+both figures ([RFC 8 §11.1](rfc-8-engine.md#11.1%20Health%20is%20derived%20from%20recent%20outcomes%2C%20offload%20included)). Sizing every worker at
+the ceiling `Max` ([RFC 2 §3.7](rfc-2-carver.md#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)), 16 MiB, would make each one about 32 MiB
+where the default needs about 2 MiB. A chunk is at most
+`MaxEncodedLen(Max)` after ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)) for the attempt that writes it, and at most
 `MaxDecodeLen(Max)` for any chain a stored block may have been written under, so:
 
-`per worker = Max + encoded bound + header cap`, where the encoded bound is
-`Chain.MaxEncodedLen(Max)` for the uploader and `MaxDecodeLen(Max)` for the fetcher
+`per worker = Max + MaxDecodeLen(Max) + header cap`, in both directions, fixed
+when the process starts
 
 `peak memory of a half = pool size × per worker + detached buffers`, with at most
 `pool size` detached buffers, so at most twice `pool size × per worker`
 
-- **The encoded bound is taken per direction.** An upload encodes under the
-  current chain, so the uploader uses that chain's `MaxEncodedLen`. A fetch
-  decodes whatever chain a block was written under, which may be any transform
-  still registered or named by a census ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)), so the fetcher uses
+- **The encoded bound is sized once, at start.** An upload encodes under the
+  chain its attempt pinned ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces), `Chain.Pin`), which may be older than the
+  current chain while the pin is held, and a store's chain changes on its next
+  write without a restart, so no figure taken from one chain bounds the uploader.
+  A fetch decodes whatever chain a block was written under, which may be any transform
+  still registered or named by a census ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)). Both halves therefore use
   `MaxDecodeLen`, the maximum over every registered transform
-  ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)), never the current chain's figure. A chain changed to a cheaper
-  one does not shrink the read side's bound.
+  ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)), which bounds every attempt's
+  `Attempt.MaxEncodedLen` too. Neither a chain changed to a cheaper one nor one
+  changed to a costlier one moves the bound.
 - **The header cap is derived, not measured.** A block holds at most `N` chunks,
   the format's chunk-count cap ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler), P4), so its header cap is `N` times
   one fixed-size index entry plus the fixed fields: a constant of the format
@@ -871,14 +855,15 @@ own ([RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20m
   takes no fresh buffer; it waits for the oldest detached buffer to be released,
   which its caller's next iteration or the end of its `ctx` does, and every `ctx`
   ends at a deadline ([RFC 0 §10.3](rfc-0-data-lifecycle.md#10.3%20Every%20wait%20on%20a%20request%20ends%20at%20a%20deadline)). The term is zero for the uploader, which has
-  no joined callers.
+  no joined callers, and whose cancelled tries drop their buffers when their
+  `ctx` ends ([§1.3](#1.3%20Interface)).
 
 Nothing on the path holds the whole block: not the store, whose put takes a
 stream ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)), and not a file on disk. A measuring pass encodes each
 chunk and discards it, so it adds CPU, not memory. Every size the syncer bounds,
 charges or budgets is an encoded size; the **largest encoded block** is the
 header cap plus the block target plus one chunk ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler), P2), each chunk at
-its encoded bound, taken per direction as above. The whole process's bound is
+its encoded bound, `MaxDecodeLen(Max)` as above. The whole process's bound is
 the uploader's number plus the fetcher's.
 
 Relocation reads its sources and then uploads a target, and what it holds
@@ -938,8 +923,9 @@ it, a put's `ErrCorrupt`, and a fetch's `ErrCorrupt` once (below), within a boun
 per transfer: **at most four attempts**, the first and three
 retries, not counting attempts ended by throttling, which have their own bound
 of eight (below; [§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)). Misclassification either way is recoverable, because both
-paths end in a report. A put calls `src` once per pass, and the passes per
-attempt depend on what the store needs before the first byte ([§3.4](#3.4%20One%20put%20per%20block)):
+paths end in a report. Each attempt of a put is one call of `attempt`. Inside
+it the codec calls `src` once per pass, and the passes per attempt depend on
+what the store needs before the first byte ([§3.4](#3.4%20One%20put%20per%20block), [RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)):
 
 | The store needs | Passes per attempt | Per `Upload`, four attempts |
 | --- | --- | --- |
@@ -949,15 +935,16 @@ attempt depend on what the store needs before the first byte ([§3.4](#3.4%20One
 
 Each pass reads the offered bytes again, usually from page cache.
 
-**A measured attempt's lengths and checksum outlive a throttled retry.** The
-measuring passes depend only on the offered bytes, which stay stable until
-`Upload` returns ([§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable)), so an attempt ended by `ErrThrottled` keeps the lengths
-and checksum it measured, and its retry runs only the sending pass. An error
-retry keeps them too, unless the attempt failed with `ErrCorrupt`, whose retry
-measures again. So the table's last column bounds every `Upload`, throttled
-attempts included: each of the up to eight throttled attempts adds one read of
-`src`, and an `Upload` reads `src` at most twelve times plus one per throttled
-attempt, at most 20.
+**A measured attempt's lengths and checksum outlive a retry, in the codec.**
+The measuring passes depend only on the offered bytes, which stay stable until
+`Upload` returns ([§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable)). So the closure `codec.Store.NewPut` returns keeps what
+its first complete measurement found, and each later call of it runs only the
+sending pass; a call that ends in `ErrCorrupt` drops it, and the next call
+measures again ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)). The syncer holds none of it: it calls `attempt`
+again and nothing else. So the table's last column bounds every `Upload`,
+throttled attempts included: each of the up to eight throttled attempts adds one
+read of `src`, and an `Upload` reads `src` at most twelve times plus one per
+throttled attempt, at most 20.
 
 **Retries draw on a budget per store and direction.** Every error retry — an
 attempt beyond the first after an `ErrTransient` other than `ErrThrottled`, or
@@ -1065,15 +1052,27 @@ again from the last body byte sent to the acknowledgement: a service that takes
 the whole body and then does not answer is stalled as surely as one that never
 starts.
 
+**Every bound measures wire bytes, which the transfer reports to a `Meter`.**
+The syncer does not see a put's body or a get's encoded bytes: the codec does.
+So the syncer passes a `remote.Meter` into every call of `attempt` and every
+`Store.Get`. The codec calls its `Moved` with each count of encoded body bytes
+sent to the store or read from it, and a put's `Sent` once its last body byte
+has been sent. The floor, the stall and trickle rules, the first-byte bound,
+the worker-time estimate ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) and `syncer_bytes_total` ([§2.12](#2.12%20What%20the%20syncer%20makes%20observable)) all read
+these counts. Decoded chunks are not wire bytes: a compressed body yields more
+than it moved, and judging the floor on them would let a stalled get pass it.
+
 Only the store's side counts. Time a caller spends not reading a fetched stream is
 the caller's, and never trips the floor: a consumer that stops reading is
 [§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)'s to handle, by detaching it, not a reason to fail the transfer for every
-caller joined to it. Likewise time a put spends waiting inside `src` is the
-caller's, and counts toward neither the floor nor the first-byte bound. A `src`
-therefore **MUST** read only local bytes: the journal's offered reader, or
-relocation staging that GC filled before calling `Upload` ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)). A `src` that
-waited on a remote fetch would hold a worker for as long as that fetch took,
-unbounded by anything here.
+caller joined to it. A put's `src` is different: the codec calls it inside
+`attempt`, where the syncer cannot tell its time from the network's, so the time
+a put spends inside `src`, its measuring passes included, counts toward the
+floor and the first-byte bound. A `src` therefore **MUST** read only local
+bytes: the journal's offered reader, or relocation staging that GC filled before
+calling `Upload` ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)). A local read of a block takes milliseconds, far inside
+the 10 s bound; a `src` that waited on a remote fetch would instead stall the
+put and fail it.
 
 **A fetch retry resumes.** Chunks already yielded were verified and stay
 delivered, so a retried fetch asks only for the chunks after the last one it
@@ -1088,8 +1087,9 @@ match, or a transform's own integrity check refused its body — the fetch **MUS
 get that chunk's range again, once, resuming as above, before it reports
 `ErrCorrupt`. The re-get counts toward the four-attempt bound and takes no budget
 token. A second failure is the stored bytes, and is reported. A recorded range
-the store rejected as past the end is reported at once: a byte flipped in
-transit cannot shorten the stored object.
+the store rejected as past the end, which the codec reports as
+`remote.ErrMalformed`, is reported at once: a byte flipped in transit cannot
+shorten the stored object.
 
 **A slow tail is retried, not waited out.** A transfer whose first byte is
 later than the 90th percentile of the store's first-byte times in that
@@ -1107,7 +1107,7 @@ latency asks for it.
 
 **The syncer is the only layer that retries a transfer** ([RFC 4 §4.9](rfc-4-remote-tier.md#4.9%20No%20state%20across%20calls)). A streamed
 body cannot be rewound by a client that has already sent part of it; only the
-syncer, which can call `src` again ([§1.3](#1.3%20Interface)), can retry one. That is transport:
+syncer, which can call `attempt` again ([§1.3](#1.3%20Interface)), can retry one. That is transport:
 the same attempt, the same name, the same bytes. What happens after an
 `Upload` reports failure is the engine's, and it is not a retry of the put: the
 engine re-offers the content later as a new put attempt under a new name
@@ -1188,89 +1188,85 @@ syncer calls it to decide each direction's state. Every rule below applies to
 each direction on its own:
 
 - the syncer **MUST** probe every registered store, in each direction its
-  registration probes ([§1.3](#1.3%20Interface)), at a fixed interval, and **SHOULD** probe that
-  direction at once when a transfer in it fails with an error that counts toward
-  health;
+  registration probes ([§1.3](#1.3%20Interface)), at a fixed interval, healthy or not and
+  whatever its traffic, and **SHOULD** probe that direction at once when a
+  transfer in it fails with an error that counts toward health;
+
+  > ponytail: probes run whatever the traffic, so a busy store is probed as
+  > often as an idle one: about one probe every 5 s per `ProbeKey` per
+  > direction, some half a million requests a month for each, and a put probe
+  > writes an object each time. Skip a direction's probe while its transfers
+  > succeed, as a successful transfer proves what the probe proves, if a
+  > service's request bill or rate limit shows the probes.
 - **a direction registered without a probe is judged by its transfers alone.**
   An immutable backup location has no put probe: each probe would add a
   compliance-locked version ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)). Its put direction turns
   unhealthy by the failure window below, and since no probe can observe its
-  recovery, **an unhealthy unprobed direction expires back to healthy after the
-  hold-down** below, so the next transfer tests it; a failure then turns it
-  unhealthy again, with the hold-down doubling as for any flap. The syncer
-  **MUST NOT** call `Health` in a direction its registration does not probe;
-- **a successful transfer stands in for the probe of its direction.** A store
-  that completed an upload within the last interval has just proved what the put
-  probe proves — reachable, credentials accepted, namespace writable — so the
-  syncer **MUST NOT** put-probe it that interval; a completed fetch likewise
-  stands in for the get probe. Neither stands in for the other;
+  recovery, **an unhealthy unprobed direction turns healthy once its
+  re-admission backoff has run** (below), so the next transfer tests it. The
+  syncer **MUST NOT** call `Health` in a direction its registration does not
+  probe;
 - stores registered under one `ProbeKey` ([§1.3](#1.3%20Interface)) — the engine gives one key to
   stores that share an endpoint, credential and bucket — **MUST** share one probe
   per direction for detecting an outage. A permission that differs by prefix is
-  not seen by the shared probe, and is caught by the failure window below;
+  not seen by the shared probe, and is caught by the failure window below. The
+  syncer runs at most one probe per `ProbeKey` and direction at a time, a
+  store's own re-admission probe included, so the client the stores share
+  carries at most two, which its limit counts ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers));
 - two consecutive failed probes make the direction unhealthy, and two
-  consecutive successful ones make it healthy again, except as the failure
-  window below restricts. After a failed probe, and after a first success while
-  unhealthy, the syncer probes again at once rather than waiting an interval, so
-  one spurious result costs a round trip, not an interval, and a dead or
-  recovered store is still seen within about one interval;
-- **a direction that flaps is held down.** One that turns unhealthy again within
-  60 s of turning healthy stays unhealthy for a hold-down before its probes may
-  clear it: one probe interval the first time, doubling on each further flap
-  within the minute, up to 60 s, and reset once it has stayed healthy for 60 s.
-  Without it, a store whose probe passes and fails alternately admits a burst of
-  transfers each time, and each burst fails;
+  consecutive successful ones make it healthy again, once its re-admission
+  backoff has run and except as the failure window below restricts. After a
+  failed probe, and after a first success while unhealthy, the syncer probes
+  again at once rather than waiting an interval, so one spurious result costs a
+  round trip, not an interval, and a dead or recovered store is still seen
+  within about one interval;
 - a direction also turns unhealthy when every transfer in it over a stated
   window ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) failed with an error that counts toward health ([§1.3](#1.3%20Interface)),
   although its probe passed — a store that answers the probe but refuses puts
-  after a permission change on its prefix. `ErrNotFound` and
-  `ErrMaterialUnavailable` say something about one block or its material,
-  `ErrThrottled` asks for less traffic ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)), a floor trip counts only when the
-  store's aggregate is below the floor ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)), and a local error is about this
-  host; none of them counts;
+  after a permission change on its prefix. This window is also the only thing
+  that turns an unprobed direction unhealthy. `ErrNotFound` and a material error
+  say something about one block or its material, `ErrThrottled` asks for less
+  traffic ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)), a floor trip counts only when the store's aggregate is
+  below the floor ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)), and a local error is about this host; none of
+  them counts;
 - **a direction made unhealthy by the failure window recovers only on evidence
   about that store in that direction:** a successful transfer, or a probe of that
   direction against the store's own namespace. The shared probe passed the whole
   time the window was failing, so its passing again proves nothing; letting it
   clear the state would flap the store between unhealthy and healthy once per
-  interval. Such a store is retried once per probe interval, by its own probe,
-  rather than continuously, and never latched;
-- **a direction failed again backs off further.** A failure the probe cannot
-  see — a policy denying the block prefix, a proxy refusing the body size, a
-  path that resets every maximum-size body while the small probe passes, a
-  backup folder whose prefix is denied while the location-level health object
-  its probe reads is not ([RFC 4 §4.7](rfc-4-remote-tier.md#4.7%20Health%20is%20one%20probe%20call)) — lets the probe pass and re-admit the
-  direction, and every re-admission then fails. So a direction made unhealthy
-  with `ErrDenied` (any cause), or by the failure window while its probe passed,
-  keeps a **denial count** until a transfer in that direction succeeds. While
-  the count is above zero, a re-admitted direction turns unhealthy again, and
-  the count rises, when its re-admission fails again: a direction made unhealthy
-  by `ErrDenied` on its first transfer failing with `ErrDenied`, without waiting
-  for the failure window; a direction made unhealthy by the failure window only
-  through the window again, or once more than a tenth of the transfers it has
-  dispatched since its re-admission have failed with an error that counts toward
-  health — the share past which the retry budget no longer breaks even
-  ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)). A blip that tripped the window drains the put bucket to its reserve,
-  so after it one ordinary transient failure among many puts is near certain
-  before any success; re-tripping on it would keep a store completing 97% of its
-  puts unhealthy for hours; and its own probe, or the expiry of an unprobed direction, may clear it
-  only once a **denial backoff** has run since it last turned unhealthy: one
-  probe interval at a count of one, doubling per count, up to 15 minutes
-  ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)). A successful transfer in that direction resets the count to zero. A
-  probe does not, since it passed throughout. The cap keeps it a backoff, not a
-  latch: an operator's fix is seen within 15 minutes, at the cost of the
-  transfers dispatched before the first denial returns, once per backoff;
+  interval. Such a store is retried once per re-admission backoff, by its own
+  probe, rather than continuously, and never latched;
+- **one backoff gates every re-admission.** Each direction keeps a count *n*,
+  which starts at one. A direction that turns unhealthy is re-admitted — by two
+  passing probes, or for an unprobed direction by the backoff running out — no
+  sooner than its **re-admission backoff** after it turned: the probe interval
+  × 2^(*n*−1), at most 15 minutes ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)). *n* rises by one each time the
+  direction turns unhealthy within 60 s of its last re-admission, or turns
+  unhealthy with `ErrDenied` of any cause. While *n* is above one, a re-admitted
+  direction's first transfer that fails with `ErrDenied` turns it unhealthy at
+  once, without waiting for the failure window. *n* returns to one once a
+  transfer in that direction succeeds; a probe does not reset it, since a probe
+  may pass throughout. One rule covers a probe that flaps and a failure the
+  probe cannot see — a policy denying the block prefix, a proxy refusing the
+  body size, a path that resets every maximum-size body while the small probe
+  passes, a backup folder whose prefix is denied while the location-level
+  health object its probe reads is not ([RFC 4 §4.7](rfc-4-remote-tier.md#4.7%20Health%20is%20one%20probe%20call)): each re-admission fails
+  again soon, so each waits twice as long as the last. The cap keeps it a
+  backoff, not a latch: an operator's fix is seen within 15 minutes, at the cost
+  of the transfers dispatched before the first failure returns, once per
+  backoff;
 
-  > decision: a persistent denial is re-tried at most every 15 minutes, never
-  > given up on. Giving up would latch, which [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) forbids, and a quota
-  > freed or a policy fixed would go unseen. The cost at the cap is one round of
-  > refused transfers per store and direction every 15 minutes. Lower the cap if operators
-  > report waiting on it after a fix; raise it if a denied store's re-admissions
-  > show up in a service's request bill or audit log.
+  > decision: a direction that keeps failing is re-tried at most every 15
+  > minutes, never given up on. Giving up would latch, which [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) forbids,
+  > and a quota freed or a policy fixed would go unseen. The cost at the cap is
+  > one round of refused transfers per store and direction every 15 minutes.
+  > Lower the cap if operators report waiting on it after a fix; raise it if a
+  > failing store's re-admissions show up in a service's request bill or audit
+  > log.
 - an unhealthy direction **MUST** keep being probed, where its registration
-  probes it, and otherwise expires after its hold-down (above). Once transfers
-  stop, the probe or the expiry is the only thing that can observe recovery, so
-  without them unhealthy would be a latch (below);
+  probes it, and otherwise turns healthy once its backoff has run (above). Once
+  transfers stop, the probe or the backoff is the only thing that can observe
+  recovery, so without them unhealthy would be a latch (below);
 - a probe **MUST** be bounded in time like any call, and one that does not
   return within its bound is a failed probe. A hung probe that left the store
   healthy would keep sending traffic to a dead store;
@@ -1342,14 +1338,14 @@ proportion to the traffic it refuses. So the syncer logs the store, not the call
 
 | When | Level | One line carrying |
 | --- | --- | --- |
-| the store turns unhealthy | error | the store's name, the probe's error, the last transfer error |
-| every configured interval while unhealthy | warn | the store's name, how long it has been unhealthy, the latest probe error, how many uploads and fetches were refused since the last line |
+| the store turns unhealthy | error | the store's name, the probe's error, the last transfer error, the re-admission backoff |
 | the store turns healthy | info | the store's name, how long it was unhealthy, how many calls were refused in total |
 
 Nothing else about it is logged at info or above: not each failed probe, not each
 refused call. Counts are counters, incremented without formatting anything, and
-read only when a line is written. The volume is two lines per outage plus one per
-interval, whatever the load.
+read only when a line is written; while the outage lasts, `syncer_refused_total`
+and the health series of [§2.12](#2.12%20What%20the%20syncer%20makes%20observable) show it. The volume is two lines per outage,
+whatever the load and however long it lasts.
 
 Each line also names the direction; a store unhealthy in both logs two outages.
 
@@ -1485,11 +1481,13 @@ The syncer exposes exactly two settings, both process-wide:
 
 | Setting | Sizes | Default |
 | --- | --- | --- |
-| `upload_workers` | the uploader's pool | proposal: 128, or the sizing tool's figure ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
-| `fetch_workers` | the fetcher's pool | proposal: 128, or the sizing tool's figure ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) |
+| `upload_workers` | the uploader's pool | proposal: 128 |
+| `fetch_workers` | the fetcher's pool | proposal: 128 |
 
-Unset, both are reduced in equal proportion to fit the node's transfers pool, at
-least eight each (RFC 24 §7.2).
+Once the node passes the syncer its transfers pool's size, unset counts are
+reduced in equal proportion to fit that pool, at least eight each, and counts set
+explicitly that do not fit are refused at start (RFC 24 §7.2). Until then neither
+is reduced nor refused ([§1.3](#1.3%20Interface), "What lands with its first caller").
 
 Neither default follows the CPU count. A transfer spends its time waiting on the
 network, so the count that keeps a link busy follows latency and bandwidth: by
@@ -1503,9 +1501,9 @@ Deriving it from cores would also scale memory with cores, and give a small VM
 on a fast link too few.
 
 Each is a memory budget as much as a concurrency limit ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), and the
-documentation of each **MUST** state the memory it implies at the largest chunk
-`Max` of any namespace the process serves ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)): under the current chain for uploads, and under the costliest
-registered chain for fetches ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)). Both are fixed for the life of the process ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)).
+documentation of each **MUST** state the memory it implies per worker,
+`Max + MaxDecodeLen(Max) + header cap` in both directions ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), at the
+default `Max` and at the ceiling `Max`. Both are fixed for the life of the process ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)).
 
 Everything else the syncer needs is derived or fixed, and **MUST NOT** be a
 setting:
@@ -1520,25 +1518,23 @@ setting:
 | waiter bound | eight times the pool per half, queued transfers and joined callers together, shared by every flow, each flow entitled to an equal share of it ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) | bounds bookkeeping whatever the number of flows; memory for detached callers has the detached-buffer cap |
 | class order | demand, then background, then speculation | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) |
 | header cap | fixed header fields plus one index entry per chunk, at the format's chunk-count cap | [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound); a constant of the block format version ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler), P4) |
-| probe interval | 5 s per direction, healthy or not; skipped while transfers in that direction succeed | about one interval: two consecutive failed probes, the second at once, are unhealthy; two consecutive successes, the second at once, are healthy ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
-| flap hold-down | one probe interval after a direction turns unhealthy within 60 s of recovering, doubling per further flap up to 60 s, reset after 60 s healthy | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) |
-| failure window | 30 s | a direction whose every transfer failed for this long, with its probe passing, turns unhealthy, and recovers only on its own evidence ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
+| probe interval | 5 s per direction, healthy or not, whatever the traffic | about one interval: two consecutive failed probes, the second at once, are unhealthy; two consecutive successes, the second at once, are healthy ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
+| re-admission backoff | the probe interval × 2^(*n*−1), at most 15 min, per store and direction; *n* starts at one, rises when the direction turns unhealthy within 60 s of its re-admission or with `ErrDenied`, and returns to one when a transfer in that direction succeeds | a direction that keeps failing is re-admitted ever more rarely, never latched; an unprobed direction turns healthy when it runs out ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
+| failure window | 30 s | a direction whose every transfer failed for this long, with its probe passing or with no probe, turns unhealthy, and recovers only on its own evidence ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | throughput floor | 64 KiB/s over 30 s, judged on the store's aggregate per direction; a transfer moving no byte for 30 s, or under a quarter of its store's mean per-transfer rate over 30 s, fails regardless | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
 | first-byte bound | 10 s: to the first body byte of a get; to the first body byte accepted of a put, and from its last byte sent to the acknowledgement | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
 | small-call bound | 30 s per `Small` attempt, for its one request or its one read-then-write pair | a small-object call, whose body bytes no floor can see, holds a worker for at most this long per attempt ([§1.3](#1.3%20Interface)) |
 | small-body cap | 256 KiB per `Small` body, in either direction; progress batches and listing pages are sized to fit | at 32 KiB/s, a working link's share for one of 32 transfers on 1 MiB/s ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)), a capped body takes 8 s, so with the first-byte bound one attempt fits the small-call bound ([§1.3](#1.3%20Interface)) |
 | detach bound | 5 s without taking the next chunk | a joined caller that falls behind is detached ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
-| unhealthy log interval | 60 s | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)'s summary line |
 | retry bound | four attempts per transfer: the first and three retries; attempts ended by `ErrThrottled` count apart, up to eight per transfer, and take no token | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
 | retry budget | a bucket per store and direction holding that half's pool size in tokens, a quarter of it a reserve only demand retries may spend (offload's puts, in the put direction); an error retry in that direction takes one, a transfer in it that succeeds without an error retry returns 0.1; throttled retries, slow-tail retries and verification re-gets take none | stays full below about 9% failed first attempts, keeps retries near a tenth of a store's traffic when it fails everything, one failing store or direction cannot spend another's, and background retries cannot spend a reader's ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | slow-tail retry | at most one per transfer, on a first byte later than the 90th percentile of the store's first-byte times in that direction over the last 60 s, and at most the larger of one and 5% of the store's transfers in that direction over the same window | a store slowing past its usual tail is sent at most 5% more requests, not one more per transfer ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | verification re-get | one per fetch transfer, of the chunk that failed verification | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
-| denial backoff | one probe interval at a denial count of one, doubling per count, up to 15 min; the count reset by a successful transfer in that direction | a store that keeps refusing is re-admitted ever more rarely, never latched ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | retry backoff | full jitter: uniform in [0, min(5 s, 100 ms × 2^attempt)] | transfers that failed together do not retry together ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 
-> decision: the time and rate values above — probe interval, hold-down, failure
-> window, throughput floor, first-byte and detach bounds, log interval, the two
-> backoffs, the small-call bound and the small-body cap — and the counts and ratios — the three-quarter cap, the queue and
+> decision: the time and rate values above — probe interval, failure
+> window, throughput floor, first-byte and detach bounds, the re-admission and
+> retry backoffs, the small-call bound and the small-body cap — and the counts and ratios — the three-quarter cap, the queue and
 > waiter multiples, four attempts, eight throttled attempts, the 0.1 refund,
 > the quarter reserve, the 90th percentile, the 5% slow-tail share and its 60 s
 > window — were
@@ -1547,8 +1543,9 @@ setting:
 > is a bug to fix here, not a knob to hand an operator. What would move them: a
 > healthy store's p99.9 first byte or stall under B5 nearing the first-byte
 > bound or the floor (raise the bound); a measured outage seen later than one
-> probe interval plus the bound, or a flap the hold-down lets through, in the
-> fault runs of [§8.3](#8.3%20Faults%20and%20outside%20interference) (shorten or lengthen the interval or hold-down); B3's
+> probe interval plus the bound, or a flap the re-admission backoff lets
+> through, in the fault runs of [§8.3](#8.3%20Faults%20and%20outside%20interference) (shorten or lengthen the interval, or
+> the 60 s that counts a re-trip as a flap); B3's
 > queue wait above one round (revisit the cap and multiples); the scripted
 > all-failing and partly failing runs of S21 spending the budget below a 9% failure rate (revisit
 > the refund and the bound). The small-call bound and the small-body cap move
@@ -1565,8 +1562,9 @@ Read-ahead depth, pre-warm pacing and when to offload are policy and belong to
 
 ### 2.11 Pool sizes are measured once, by a tool
 
-The pools do not adapt at runtime. The documented way to size them is a separate
-tool that measures a store and prints the two settings; the operator writes them
+The pools do not adapt at runtime. Until an operator needs pool sizes past the
+defaults, the tool is not built ([§1.3](#1.3%20Interface), "What lands with its first caller"),
+and the pools run at [§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)'s defaults. Once built, it measures a store and prints the two settings; the operator writes them
 into the configuration, and they hold for the life of the process ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)).
 A number printed once can be checked against a real bucket. A controller that
 resizes the pool while serving can only be judged by watching it, and its worst
@@ -1619,7 +1617,7 @@ shares it exports one by one. The syncer
 | Metric | Type | Answers |
 | --- | --- | --- |
 | `syncer_transfers_total` | counter | transfers ended, labelled `outcome` = `ok`, `failed` or `unknown` ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)) |
-| `syncer_bytes_total` | counter | encoded bytes transferred |
+| `syncer_bytes_total` | counter | encoded bytes transferred, as the transfer's `Meter` reports them ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | `syncer_transfer_duration_seconds` | histogram | time from dispatch to end |
 | `syncer_first_byte_seconds` | histogram | time to the first byte; the tail that slow-tail retries and hedging aim at ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | `syncer_retries_total` | counter | attempts beyond the first, labelled `reason` = `transient`, `throttled`, `slow_tail`, `verify`, `floor`, `stalled` or `trickle` ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
@@ -1643,7 +1641,7 @@ shares it exports one by one. The syncer
 | --- | --- | --- |
 | `syncer_store_healthy` | gauge (0/1) | the direction's current state ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | `syncer_store_unhealthy_seconds_total` | counter | time spent unhealthy |
-| `syncer_store_transitions_total` | counter | changes of state; a high rate is flapping, which the hold-down damps ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
+| `syncer_store_transitions_total` | counter | changes of state; a high rate is flapping, which the re-admission backoff damps ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | `syncer_probe_duration_seconds` | histogram | time per probe |
 
 `workers_busy` against throughput tells a slow store from a starved syncer,
@@ -1712,7 +1710,7 @@ billed and invisible to a listing. Revisit if a measurement shows one put of a
 maximum-size block cannot saturate the uplink even with the pool full.
 
 **The put streams.** The store needs the block's length, and on some services a
-checksum, before the first byte ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)). The engine's `Store` takes them
+checksum, before the first byte ([RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)). `codec.Store`'s attempt takes them
 from each transform's declared length when the chain allows it, and otherwise
 from a measuring pass that encodes each chunk, keeps its length and checksum, and
 discards it; then it sends the header and encodes each chunk again as it sends
@@ -1875,7 +1873,7 @@ keeps it from holding its share's flow at its cap while that share's reads wait.
 | # | Invariant |
 | --- | --- |
 | S1 | In-flight transfers per half never exceed that half's configured pool size. |
-| S2 | Peak memory per half is at most the pool size times the per-worker figure [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) states, plus at most pool-size detached buffers; the fetcher's figure is the maximum over every registered chain, at the largest `Max` of any namespace served. |
+| S2 | Peak memory per half is at most the pool size times the per-worker figure [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) states, plus at most pool-size detached buffers, a try cancelled by the slow-tail rule holding no chunk buffer once its `ctx` ends; both halves' encoded term is `MaxDecodeLen(Max)` over every registered transform, at the `Max` [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) sizes with when the process starts. |
 | S3 | Backpressure reaches the caller; no unbounded queue exists. |
 | S4 | Every transfer ends in a success or a reported failure, in bounded time. |
 | S5 | An unknown outcome is reported as not stored, and every retry within one `Upload` puts the same name with the same bytes. |
@@ -1888,20 +1886,20 @@ keeps it from holding its share's flow at its cap while that share's reads wait.
 | S12 | Concurrent demand for one chunk produces one fetch of it. |
 | S13 | No transfer is dispatched while a higher class has work waiting: demand before background, background before speculation. |
 | S14 | A call in a direction in which its store is unhealthy fails without taking a worker or calling the backend; a put failure never refuses a get. |
-| S15 | An unhealthy direction is probed until it is healthy; it turns healthy only on two consecutive successes and not within its hold-down; one made unhealthy by the failure window is cleared only by its own evidence. |
+| S15 | An unhealthy direction is probed until it is healthy, where its registration probes it; it turns healthy only on two consecutive successes and never within its re-admission backoff; one made unhealthy by the failure window is cleared only by its own evidence. |
 | S16 | Log volume while a store is unhealthy does not grow with traffic. |
 | S17 | No store holds more workers of a half than its cap while another store has work waiting in the half, nor more than its throttle limit; no flow more than its cap while another flow on its store does; and no store gets a worker beyond its fair share while another store with work waiting holds none. |
 | S18 | A transfer at the head of its flow's queue is dispatched within one round of the other waiting flows of its class, once no higher class has work waiting. |
-| S19 | Every `Store` error is one of the closed set; only `ErrTransient`, `ErrDenied` and a put's `ErrCorrupt` count toward health, `ErrThrottled` never does, and a floor trip only when the store's aggregate is below the floor. |
+| S19 | Every store error the syncer classifies is one of RFC 4's closed set, and any other error is returned as it is, unretried and uncounted; only `ErrTransient`, `ErrDenied` and a put's `ErrCorrupt` count toward health, `ErrThrottled` never does, and a floor trip only when the store's aggregate is below the floor. |
 | S20 | Waiters per half — queued transfers and joined callers — never exceed the waiter bound, whatever the number of flows, and a flow below its share of the bound is never refused for the bound being full. |
 | S21 | Error retries on a store and direction never exceed what that bucket holds, and never spend its reserve unless they are demand retries: in the get direction a `Fetch` on a flow that is not background, in the put direction an upload on a flow that is not background (offload's); throttled retries, slow-tail retries and verification re-gets take no token; slow-tail retries are at most one per transfer and the larger of one and 5% of the store's transfers in that direction over 60 s, verification re-gets at most one per transfer; no transfer makes more than four error attempts or eight throttled ones. |
 | S22 | Turns are charged in worker-time: over a round, flows of one class with work waiting hold workers for times within one quantum of each other. |
 | S23 | No transfer holds a worker while moving under a quarter of its store's mean per-transfer rate for the floor's interval. |
 | S24 | A raw transfer moves exactly the recorded size of opaque bytes, never decodes them, and an upload returns the version the store recorded. |
-| S25 | A direction registered without a probe is never probed; while unhealthy it expires to healthy after its hold-down, so it never latches. |
+| S25 | A direction registered without a probe is never probed; while unhealthy it turns healthy once its re-admission backoff has run, so it never latches. |
 | S26 | Every unhealthy direction reports the cause that turned it; a quota refusal is distinguishable from an access refusal and from an outage. |
 | S27 | Destroyed material is reported as itself, never as `ErrCorrupt`, and never counts toward health. |
-| S28 | A direction denied again, or failed again by the failure window while its probe passed, before any success in it is re-admitted no sooner than its denial backoff, which doubles per denial up to 15 minutes and resets on a successful transfer; it is never latched. |
+| S28 | A direction is re-admitted no sooner than its re-admission backoff, the probe interval × 2^(*n*−1) up to 15 minutes, where *n* rises each time it turns unhealthy within 60 s of re-admission or with `ErrDenied`, and returns to one on a successful transfer in that direction; it is never latched. |
 
 ## 7. Conformance
 
@@ -1913,14 +1911,13 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 
 | Requirement | Check |
 | --- | --- |
-| [§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success) unknown is failure | Drop the response of a put the backend committed; assert failure is reported, then that the retry inside the same `Upload` puts the same name with byte-identical content, and that the store holds one object under it. Assert the syncer never puts a name it was not handed, nor one after its `Upload` returned. |
+| [§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success) unknown is failure | Drop the response of a put the backend committed; assert failure is reported, then that the retry inside the same `Upload` puts the same name with byte-identical content, and that the store holds one object under it. Assert the syncer never calls `attempt` after its `Upload` returned. |
 | [§2.6](#2.6%20A%20stored%20block%20is%20observed%2C%20never%20inferred) no inference | Drive the real backend against a service that closes the connection after receiving the whole body and before responding; assert `Upload` returns an error. |
 | [§3.4](#3.4%20One%20put%20per%20block) partial put | Interrupt a transfer; assert the name is not retrievable and was not reported stored. |
 | [§3.3](#3.3%20The%20journal%20keeps%20referenced%20bytes%20stable), [§3.5](#3.5%20The%20bytes%20are%20stable%20for%20the%20duration) stability | Give `Upload` a `src` whose bytes change mid-stream; assert the put is refused and nothing is stored under the name. That the journal keeps offered bytes stable is [RFC 1](rfc-1-journal.md)'s check. |
 | [§4.1](#4.1%20One%20fetch%2C%20two%20consumers) verification | Corrupt the fetched bytes; assert no byte of the chunk is yielded and the error is `ErrCorrupt`. |
-| [§3.4](#3.4%20One%20put%20per%20block) measuring pass | Upload through a store in each checksum mode of [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)'s table; assert `src` is read once, twice and three times per attempt respectively, never more than twelve times per `Upload`; answer the MD5-mode store with `ErrThrottled` eight times as well: `src` is read at most 20 times, each throttled retry reading it once, that the bytes sent equal the bytes measured, and that a `src` that changes between any two passes fails the put. |
-| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) verification re-get | Flip one byte of a chunk on its first get only; assert the chunk is re-got once and yielded verified, no error is reported, and no budget token is taken. Flip it on every get; assert `ErrCorrupt` after exactly two gets of the range. Do the same to an encrypted body, so the transform's integrity check refuses it: the same two outcomes. Answer a recorded range with a past-the-end refusal; assert `ErrCorrupt` of kind `malformed` with no re-get. |
-| [§1.3](#1.3%20Interface) census | Put a block whose chunks use two transforms and two materials; assert `Upload` returns every distinct descriptor, and none on a failed put. |
+| [§3.4](#3.4%20One%20put%20per%20block) measuring pass | Upload through `codec.Store` in the MD5 checksum mode of [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)'s table, answering with `ErrThrottled` eight times and then success: assert `src` is read at most 20 times. Slow-tail-cancel an attempt and hold it until its retry has started, under `-race`: assert no race is reported and `Upload` returns only once both calls of `attempt` have. The passes inside one attempt, what a measurement keeps across attempts, and a cancelled call dropping its buffers are the codec's checks ([RFC 4 §7.3](rfc-4-remote-tier.md#7.3%20Codec%20tests)). |
+| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) verification re-get | Flip one byte of a chunk on its first get only; assert the chunk is re-got once and yielded verified, no error is reported, and no budget token is taken. Flip it on every get; assert `ErrCorrupt` after exactly two gets of the range. Do the same to an encrypted body, so the transform's integrity check refuses it: the same two outcomes. Answer a recorded range with a past-the-end refusal; assert `remote.ErrMalformed`, with no re-get. |
 | [§4.2](#4.2%20The%20reply%20neither%20waits%20on%20the%20fill%20nor%20fails%20with%20it) yield at once | Hold one caller mid-iteration; assert the chunk it holds is unchanged until its next iteration, and that each chunk is yielded before the next is read from the store. |
 
 ### 7.2 Group B — wedging and unbounded resource use
@@ -1928,30 +1925,28 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | Requirement | Check |
 | --- | --- |
 | [§2.1](#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control) one limiter | Saturate each half; assert in-flight never exceeds its pool size and that no other limit binds first. |
-| [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) memory bound | Stall the backend at full pools; assert peak bytes stay within pool size times the stated per-worker figure, per half and summed. Register a costlier transform than the current chain and fetch a block written under it; assert the fetcher's figure is the costlier one. Feed the codec a header declaring more entries than the chunk-count cap; assert it is refused before any allocation for it. |
+| [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) memory bound | Stall the backend at full pools; assert peak bytes stay within pool size times the stated per-worker figure, per half and summed. Register a transform costlier than the current chain and fetch a block written under it; assert both halves' per-worker figure is the costlier one's. Feed the codec a header declaring more entries than the chunk-count cap; assert it is refused before any allocation for it. |
 | [§2.3](#2.3%20Backpressure%20propagates%3B%20it%20does%20not%20buffer) backpressure | Stall the backend and keep submitting; assert callers block or are refused rather than queue. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) termination | Present a permanently unavailable backend; assert every transfer returns within its bound. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) refusal contained | Fail one store's probe under load; assert calls to it fail at once without a backend call, and transfers to a second store still start. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) recovery | Fail a store's probe, then restore the backend; assert it turns healthy after two consecutive successful probes and accepts calls without any other action. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) one spurious failure | Fail one probe and pass the next. Assert the store never turns unhealthy and no call is refused; fail two in a row and assert it turns unhealthy before the next interval. |
-| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) traffic stands in | Keep uploads succeeding for ten intervals; assert no probe is sent. Stop uploads; assert probing resumes within one interval. Keep only fetches succeeding; assert put probing continues and get probing does not. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) shared probe | Register 100 stores under one `ProbeKey`; assert one probe per interval, and that denying one store's prefix turns only that store unhealthy, through the failure window. Register two stores with the zero key; assert each is probed on its own. |
-| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) logging | Keep a store unhealthy under heavy load for several intervals; assert exactly one unhealthy line, one healthy line and one line per interval at info or above, and that a refused call's error names the store. |
+| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) logging | Keep a store unhealthy under heavy load for several intervals; assert exactly one unhealthy line and one healthy line at info or above, and that a refused call's error names the store. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) no starvation | Saturate flow A with uploads to a store whose puts take seconds; issue one fetch on flow B; assert it starts within one round and flow A never holds more than its cap. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) fair by worker-time | Run two flows on one store, one uploading maximum-size blocks and one small blocks; assert bytes per flow stay within one quantum of each other. Then make one flow's transfers take four times as long per byte; assert worker-time per flow, not bytes, stays within one quantum. A scheduler charging bytes gives the slow flow four times the workers. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) waiter share | Fill the half's waiter bound from two flows; issue one call on a third flow with an empty queue; assert it is accepted and the youngest waiter of the flow holding the most is refused as `displaced`. A shared bound with no share refuses the third flow. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) throttling lowers concurrency | Answer puts with `ErrThrottled` whenever more than 8 are in flight on a store with a cap of 96; assert the store's in-flight count falls to 8 or below within a few responses, stays near it, and climbs back toward the cap once throttling stops; that no transfer is reported failed and the store's put budget is still full. A design that only holds the flow returns to 96 after each backoff; one that charges throttled retries spends 96 of 128 tokens on the first burst. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) budget per store and direction | Fail every call on store A until its budget is empty; assert a transient failure on store B is still retried. Fail every put on store C until its put bucket is empty; assert a transient fetch failure on C is still retried. Fail one first fetch in ten on C from a background flow until its get bucket reaches the reserve; assert background fetches are then reported, not retried, while a demand fetch meeting one reset is retried and succeeds. Fail one first put in ten on C from a copy's background flow until its put bucket reaches the reserve; assert the copy's uploads are then reported, not retried, while an offload put meeting one reset is retried and succeeds. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) slow tail is not charged | Run 100,000 transfers on a store whose slowest tenth trips the slow-tail bound and which fails nothing; assert its budget is full at the end and the next `500` is retried. Fail 6% of first attempts as well, each an ordinary `500`; assert the budget stays near full and every one is retried. A design charging slow-tail retries, at their 5% cap, empties the budget after about 8,000 transfers and leaves later `500`s unretried. Assert slow-tail retries stay at or below the larger of one and 5% of transfers in every 60 s window. Then slow every transfer to four times its previous first-byte time; assert slow-tail retries in the next 60 s stay at or below the larger of one and 5% of transfers, where a per-transfer cap alone would re-send nearly all of them. |
-| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) denial backoff | Deny every put under the block prefix while the put probe passes; assert the direction turns unhealthy, then is re-admitted after one interval, two, four and so on up to 15 minutes, turning unhealthy on the first denied transfer each time, and that each re-admission sends the store only the transfers dispatched before its first denial returned. Lift the denial; assert the next re-admitted transfer succeeds and the count resets, so a later denial starts at one interval again. Repeat with every maximum-size put reset mid-body (`ErrTransient`) while the small put probe passes, and with a backup folder whose prefix is denied while the location's health object reads: each backs off the same way, rather than flapping once per hold-down. |
+| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) re-admission backoff | Deny every put under the block prefix while the put probe passes; assert the direction turns unhealthy and is re-admitted after two intervals, then four, eight and so on up to 15 minutes, turning unhealthy on the first denied transfer each time, and that each re-admission sends the store only the transfers dispatched before its first denial returned. Lift the denial; assert the next re-admitted transfer succeeds and *n* returns to one, so a later denial starts at two intervals again. Alternate a store's probe between pass and fail; assert it turns healthy only after two consecutive passes, that each turn within 60 s of re-admission doubles the backoff, and that its transitions per minute fall. Reset every maximum-size put mid-body (`ErrTransient`) while the small put probe passes, and deny a backup folder's prefix while the location's health object reads: each backs off the same way, through the failure window. Trip the failure window, then re-admit the direction with 96 puts in flight failing 3% transiently: it stays healthy, and its puts complete. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) trickle fails | Run 32 uploads sharing a healthy link, one of them trickling at 1 KiB/s; assert it fails within the interval as `trickle`, does not count toward health, and the other 31 complete. |
 | [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) detached-buffer cap | With a fetch pool of 4, join 40 callers to fetches and stall them all past the detach bound; assert detached buffers never exceed 4 and the fetches wait rather than take a fifth. |
-| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) flap hold-down | Alternate a store's probe between pass and fail; assert it turns healthy only after two consecutive passes, and that after it flaps within a minute its hold-down doubles and its transitions per minute fall. |
 | [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows) bounded queue | Fill flow A's queue; assert A's next call is refused while flow B's calls are still accepted. |
 | [§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch) single flight | Demand one cold chunk from N readers at once, at different offsets within it; assert one `Get`. |
 | [§4.4](#4.4%20Speculation%20does%20not%20delay%20demand) priority | Saturate the fetch pool with speculation, then demand a block; assert the demand is not queued behind it. |
 | [§4.4](#4.4%20Speculation%20does%20not%20delay%20demand) abandonable | Cancel a `Prefetch` mid-stream while a demand has joined it; assert the demand completes and nothing fails. |
-| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) failure window | Pass the probe while failing every put with `ErrTransient` for the window, then again with `ErrDenied`; assert the store turns put-unhealthy and stays get-healthy, that the shared probe passing does not clear it, that its own-namespace put probe passing does, and that puts are retried once per probe interval, not continuously. Fail every put with `ErrCorrupt` for the window; assert put-unhealthy. Fail every call for the window with `ErrNotFound`, `ErrThrottled`, a fetch's `ErrCorrupt`, `ErrMaterialUnavailable` or a local error instead; assert the store stays healthy. |
+| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) failure window | Pass the probe while failing every put with `ErrTransient` for the window, then again with `ErrDenied`; assert the store turns put-unhealthy and stays get-healthy, that the shared probe passing does not clear it, that its own-namespace put probe passing does, and that puts are retried once per probe interval, not continuously. Fail every put with `ErrCorrupt` for the window; assert put-unhealthy. Fail every call for the window with `ErrNotFound`, `ErrThrottled`, a fetch's `ErrCorrupt`, a material error or a local error instead; assert the store stays healthy. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) throughput floor | Trickle every put to a store below the floor; assert they fail within the interval and count toward health. Share a link just above the floor among the whole pool, so each transfer is below it and the aggregate is not; assert none fails. Stop one transfer's bytes entirely while the aggregate is healthy; assert it fails as stalled and does not count toward health. Stall a reader of a fetch instead; assert the transfer does not fail. Hold a put inside `src`; assert neither the floor nor the first-byte bound trips. |
 | [§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch) joining | Leave the loop as the first of three joined callers; assert the others complete. Fail the fetch; assert all callers see the error and the next demand starts a fresh fetch. Join a speculative fetch with a demand; assert it is promoted. Join after the needed chunk has passed; assert a new fetch. Stop reading as one caller; assert it is detached within the bound and the others continue. |
 | [§1.3](#1.3%20Interface) lifecycle | Call on a closed flow and after `Close`; assert both fail. Assert `Close` returns only when transfers have ended, and that `src` is never called after `Upload` returns. |
@@ -1964,19 +1959,19 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) throttling | Answer puts with `ErrThrottled`; assert the flow is held for the backoff, the transfer retries, other flows are dispatched meanwhile, and the store's health is unchanged. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) retry budget | Fail every call on one store; assert retries on it stay within its budget, no transfer makes more than four attempts, exhausted attempts are reported with the last error, and the backoffs of transfers that failed together are spread. |
 | [§1.3](#1.3%20Interface) partial prefetch | `Prefetch` two non-adjacent chunks of a block; assert the store is asked for those ranges only, and that an empty `want` asks for the whole block. |
-| [§1.3](#1.3%20Interface) error values are the syncer's | Build the syncer with an import test; assert it imports neither the remote tier nor the transforms, and that the in-memory store, its fault wrapper returning each of the syncer's own error values, gets the row of [§1.3](#1.3%20Interface)'s table it names. |
+| [§1.3](#1.3%20Interface) RFC 4's errors, as they are | Build the syncer with an import test that follows imports transitively; assert it reaches RFC 4's contract and no implementation: no codec, no store, no transforms. Answer through RFC 4's fault wrapper with each error of RFC 4's set, and with an error that wraps none of them; assert each gets the row of [§1.3](#1.3%20Interface)'s table it names, and that the last is returned as it is. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) first byte, per direction | Hold a get before its first body byte, and a put after its last body byte sent; assert both fail at the first-byte bound. |
+| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) wire bytes | Fetch a block of highly compressible chunks: assert `syncer_bytes_total` counts the encoded bytes the store sent, not the decoded ones. Trickle a get's encoded body below the floor while its chunks decode to more than the floor: assert it fails on the floor. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) fetch resume | Fail a whole-block fetch transiently after three chunks; assert the retry requests only the rest and no chunk is yielded twice. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) per direction | Fail every put probe and put; assert fetches from the store still run. Fail every get; assert uploads still run. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) drift condition | Raise a store's drift condition through `SetDrift` with both probes passing; assert uploads to it are refused at once and fetches still run. Clear it; assert uploads resume without waiting for a probe transition. A syncer that reads only its probes keeps putting into the drifted store. |
-| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) window re-trip | Trip a store's put direction by the failure window, drain its put bucket to the reserve, then re-admit it with 96 puts in flight failing 3% transiently: it stays healthy, and its puts complete. Fail more than a tenth of them: it turns unhealthy again and the denial backoff doubles. A design that re-trips on the first failure keeps the store unhealthy for hours. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) lone slow tail | On an idle store, give one fetch a first byte past the 90th percentile: it gets its one slow-tail retry, where a bare 5% share would round to none. |
-| [§1.3](#1.3%20Interface) raw transfer | `FetchRaw` a block whose store returns one byte fewer, or one more, than the recorded size: the call fails and nothing is written past the size. `UploadRaw` a staged block to the in-memory store set immutable: the bytes it holds equal the staged bytes, nothing decoded them, and the call returns the store's version. `FetchVersion` of that version returns verified chunks; of another version, that version's. A design that copies through `Fetch` and `Upload` asks for material here and fails without it. Reset a `FetchRaw` after 3 MiB: the retry asks for the range from 3 MiB, and the staged bytes equal the stored ones. Flip one staged byte before `UploadRaw`: the put fails on its checksum. Flip one byte of a whole-block get on a source returning a response checksum: `FetchRaw`'s retry asks for byte 0 onward, not for nothing, and the staged bytes equal the stored ones. Copy from a source whose stored checksum is the destination's kind, flipping one byte of a resumed range: `FetchRaw` returns the source's stored checksum and `UploadRaw` fails on it. Repeat from a CRC32C source to an MD5 destination: `FetchRaw` finds the staging against the source's CRC32C, re-fetches from byte 0, and returns the MD5 of correct bytes. To a destination with no up-front checksum, damage the staging after `FetchRaw`: the `ETag` the put returns mismatches the passed sum and `UploadRaw` fails `ErrCorrupt`. Hold a `Small` call's one request unanswered: the attempt fails at the small-call bound and is retried, never held for the copier's context. List 10⁴ versions through `Small`: one page per call, a retried page resuming after the last key returned. Answer a copier's retention extension with `503 SlowDown` through `Small`: it backs off and succeeds, counted as throttling, not failure. |
+| [§1.3](#1.3%20Interface) raw transfer | `FetchRaw` a block whose store returns one byte fewer, or one more, than the recorded size: the call fails and nothing is written past the size. `UploadRaw` a staged block to the in-memory store set immutable: the bytes it holds equal the staged bytes, nothing decoded them, and the attempt keeps the store's version. `FetchVersion` of that version returns verified chunks; of another version, that version's. A design that copies through `Fetch` and `Upload` asks for material here and fails without it. Reset a `FetchRaw` after 3 MiB: the retry asks for the range from 3 MiB, and the staged bytes equal the stored ones. Flip one staged byte before `UploadRaw`: the put fails on its checksum. Flip one byte of a whole-block get on a source returning a response checksum: `FetchRaw`'s retry asks for byte 0 onward, not for nothing, and the staged bytes equal the stored ones. Copy from a source whose stored checksum is the destination's kind, flipping one byte of a resumed range: `FetchRaw` returns the source's stored checksum and `UploadRaw` fails on it. Repeat from a CRC32C source to an MD5 destination: `FetchRaw` finds the staging against the source's CRC32C, re-fetches from byte 0, and returns the MD5 of correct bytes. To a destination with no up-front checksum, damage the staging after `FetchRaw`: the `ETag` the put returns mismatches the passed sum and `UploadRaw` fails `ErrCorrupt`. Hold a `Small` call's one request unanswered: the attempt fails at the small-call bound and is retried, never held for the copier's context. List 10⁴ versions through `Small`: one page per call, a retried page resuming after the last key returned. Answer a copier's retention extension with `503 SlowDown` through `Small`: it backs off and succeeds, counted as throttling, not failure. |
 | [§1.3](#1.3%20Interface) small-body cap | `Small` a get whose body is 256 KiB at 32 KiB/s: it completes inside the small-call bound. Over a 40 TiB copy, no progress object put and no listing page read through `Small` exceeds 256 KiB. Run a `Recheck` pass over a suspended store holding 10⁷ versions: every `Small` call reads one setting or one page and ends within the bound, and the pass resumes from its last page after a transient failure instead of restarting. |
 | [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) copy staging | Copy from a source at 200 MiB/s to a destination at 50 MiB/s: staging memory never exceeds the per-flow cap times the largest encoded block plus two parts, spill never exceeds its cap and never lands on a journal's device, and `FetchRaw` waits, holding no worker, once memory plus spill reach the cap. Run two such copies to different folders and a GC relocation at once: their staging together stays within the same one budget, and each still progresses. Restart mid-copy: the spill is empty before the copy resumes. A design with a budget per copy holds twice it here. |
-| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) no put probe | Register a store with `PutProbe` false: over an hour no put probe reaches it. Fail every upload for the failure window: put-unhealthy, uploads refused; with no probe and no transfer, it turns healthy after its hold-down and the next upload is sent; fail that one too: unhealthy again with the hold-down doubled. A design that waits for a put probe here latches it unhealthy for good. |
+| [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) no put probe | Register a store with `PutProbe` false: over an hour no put probe reaches it. Fail every upload for the failure window: put-unhealthy, uploads refused; with no probe and no transfer, it turns healthy once its re-admission backoff has run and the next upload is sent; fail uploads again for the window: unhealthy again with the backoff doubled. A design that waits for a put probe here latches it unhealthy for good. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) cause per direction | Turn a store put-unhealthy with `ErrDenied` of cause quota, then another with cause access, a third with cause size, a fourth with `ErrTransient`, and raise a fifth's drift condition: `Flow.Health(Put)` wraps the quota cause, the access cause, the size cause, `ErrTransient` and `ErrDrift` in turn, and `Flow.Healthy(Put)` is false for all five. |
-| [§1.3](#1.3%20Interface) destroyed material | The in-memory store, its fault wrapper returning `ErrMaterialDestroyed` on every fetch for the failure window: each call fails unretried with that error, never `ErrCorrupt`, and the store stays get-healthy. |
+| [§1.3](#1.3%20Interface) destroyed material | Fetch through `codec.Store` whose chain's material the transforms' in-memory provider reports destroyed, for the failure window: each call fails unretried with the transforms' `ErrMaterialDestroyed`, never `ErrCorrupt`, and the store stays get-healthy. |
 | [§1.3](#1.3%20Interface) unregister | `Unregister` a store with an open flow: refused. Close its flows and unregister it: its probes stop and its counters leave `Stats`. |
 | [§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch) re-home and close | Join a queued speculative fetch with a demand from another flow; assert it moves to the demanding flow in the demand class. Close the flow that owns a running joined fetch; assert the other flows' callers are detached, not failed. Detach a caller holding its chunk; assert its bytes are unchanged until its next iteration while the fetch continues. |
 
@@ -2003,12 +1998,12 @@ peak memory, and a result is recorded with the revision it measured.
 | B2 | scheduler cost | one transfer dispatched with 1, 10, 100 and 1,000 flows waiting | flat: DRR is O(1) per dispatch ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) |
 | B3 | fairness under load | one flow saturating uploads on a slow store; a second issuing fetches | the second flow's p99 wait within one round; the first never above its cap |
 | B4 | joined fetches | N readers on one cold chunk | one transfer, whatever N ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
-| B5 | the real link | the syncer over a local emulator of the remote service and over a real service, at the pool sizes the sizing tool printed ([§2.11](#2.11%20Pool%20sizes%20are%20measured%20once%2C%20by%20a%20tool)) | within a few percent of the tool's raw figure; the gap is what the syncer costs on a real link |
+| B5 | the real link | the syncer over a local emulator of the remote service and over a real service, and raw calls on the same store at the same pool size: `codec.Store`'s put attempt and `Get`, encoding and checksum included, called directly at the configured `upload_workers` and `fetch_workers` | within a few percent of the raw calls; the gap is what the syncer costs on a real link |
 
 Benchmarks run after a change merges and never gate one; what gates a change
 instead is in [§8.4](#8.4%20What%20CI%20checks%20instead%20of%20timing). B5 needs a real store and credentials, and runs where those are.
 
-B5 reports a fraction of the sizing tool's raw figure, with the pools' occupancy
+B5 reports a fraction of the raw calls' throughput, with the pools' occupancy
 beside it: a low fraction with a pool that is not full means the limit is
 upstream of the syncer ([RFC 8 §15.4](rfc-8-engine.md#15.4%20Benchmarks)).
 
@@ -2027,7 +2022,7 @@ section is the plan around it.
 | Memory | S2 | held-pool heap checks ([§1.4](#1.4%20It%20is%20testable%20on%20its%20own)) |
 | Structure | the dependency set of [§1.4](#1.4%20It%20is%20testable%20on%20its%20own) | an import test |
 | Benchmark | [§7.4](#7.4%20Benchmarks), B1–B5 | real time; B1–B4 on the in-memory store with a simulated link, B5 on a real store; after merge, never gating ([§8.4](#8.4%20What%20CI%20checks%20instead%20of%20timing)) |
-| Soak | leaks and drift | hours, nightly, against a local emulator of the remote service with outages injected on a cycle, asserting tasks, open connections, `inflight_bytes` and queue depth return to idle after each |
+| Soak | leaks and drift | hours, nightly, in the engine's soak on the composed node ([RFC 8 §15](rfc-8-engine.md#15.%20Conformance)), against a local emulator of the remote service with outages injected on a cycle, asserting tasks, open connections, `inflight_bytes` and queue depth return to idle after each |
 
 There is no crash test here. The syncer persists nothing (S7), so a crash leaves
 nothing of its own to recover; what a crash does to transfers in flight is the
@@ -2117,8 +2112,8 @@ benchmark:
 
 ### 8.5 Performance targets
 
-B1 is stated against raw calls on the same in-memory store, and B5 against the sizing
-tool's raw figure for the same store, so both hold on any link. Results are
+B1 is stated against raw calls on the same in-memory store, and B5 against raw calls
+on the same store at the same pool size, so both hold on any link. Results are
 recorded in absolute numbers.
 
 | # | Metric | Proposed target |
@@ -2126,7 +2121,7 @@ recorded in absolute numbers.
 | B1 | throughput through the syncer, same pool size | ≥ 97% of raw calls on the in-memory store |
 | B2 | one dispatch with 1,000 flows waiting | ≤ 1 µs, and flat from 1 flow |
 | B3 | a fetch's queue wait while another flow saturates uploads | p99 within one round |
-| B5 | throughput through the syncer on a real store | ≥ 95% of the sizing tool's raw figure; below 90% is a regression |
+| B5 | throughput through the syncer on a real store | ≥ 95% of raw calls on the same store at the same pool size; below 90% is a regression |
 | — | peak memory per half | ≤ pool × the per-transfer figure of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound), plus 10% |
 | — | a failed store refused | within one probe interval plus the probe's bound |
 | — | a recovered store accepting work | within one probe interval |
@@ -2136,13 +2131,17 @@ B4 is a count, not a speed, and is fully checked in CI.
 ### 8.6 Recording results
 
 Beside what [the RFC index](rfc-index.md#Test%20tiers) asks every result to record: the backend and its
-region, round-trip time, bandwidth, block size, the pool sizes and the sizing
-tool's raw figures; for B1–B4, the in-memory store's simulated latency and per-byte time.
+region, round-trip time, bandwidth, block size, the pool sizes and the raw
+calls' throughput (B5); for B1–B4, the in-memory store's simulated latency and per-byte time.
 
 **Suites.** §7's Group A and B checks against the in-memory store and its fault wrapper and §8's model, memory,
-import, fault-sweep and counted checks run in `unit`, an allocation count the race detector skews in
-`unit/nonrace`; §8.1's real-backend checks, against the local emulator behind a fault proxy, run in
-`integration`. No suite runs yet §7.4's benchmarks or §8.1's nightly soak.
+import, fault-sweep and counted checks run in `unit`, and an allocation count the race detector skews
+in an option of `unit` of its own, the syncer's allocation gate, on pull requests; §8.1's real-backend
+checks (the Group A checks and the lifecycle checks, over RFC 4's codec store on the real store against the local
+emulator behind a fault proxy) run in `integration`. The scheduler model's fuzz
+target joins the nightly fuzz suite every storage component shares. §7.4's benchmarks run in a manual
+suite of the syncer's own, B5 against a real service only where credentials are; §8.1's soak runs in
+the engine's soak suite ([RFC 8 §15](rfc-8-engine.md#15.%20Conformance)). None of these but `unit` and `integration` is registered yet.
 
 ## 9. Open questions
 
@@ -2161,10 +2160,12 @@ Settled:
    load misses its target while the store's pool is not full.
 2. **Probe flapping:** two consecutive failures turn a direction unhealthy and
    two consecutive successes turn it healthy, each second probe sent at once;
-   a direction that flaps within a minute is held down for a doubling interval
-   ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)). A healthy direction with traffic is not probed at all. A direction
-   made unhealthy by the failure window is cleared only by its own evidence, so
-   a passing shared probe cannot flip it back once per interval.
+   a direction that turns unhealthy again within a minute of re-admission, or
+   with a denial, waits twice as long before its next re-admission, up to 15
+   minutes, under the one re-admission backoff ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)). Probes run whatever
+   the traffic. A direction made unhealthy by the failure window is cleared only
+   by its own evidence, so a passing shared probe cannot flip it back once per
+   interval.
 
 **Deferred**, each until a measurement asks for it: hedged cold reads
 ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)); a bandwidth cap per direction, which [§2.1](#2.1%20A%20worker%20pool%20is%20the%20only%20concurrency%20control) permits only with its
@@ -2183,7 +2184,7 @@ integrity) are listed once, in [RFC 4 Appendix A](rfc-4-remote-tier.md#Appendix%
 | D1 | one syncer per process ([§1.3](#1.3%20Interface)) | one syncer per share |
 | D2 | two process-wide pool settings ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) | an upload window per store, adaptive by default |
 | D3 | `fetch_workers` is a setting ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) | derived from the CPU count and not settable |
-| D4 | health per direction; two consecutive failures, the second at once, turn a direction unhealthy; probes skipped while transfers in that direction succeed ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) | one health state for both directions; two intervals, three failures, and a separate demand timeout; probes run whatever the traffic |
+| D4 | health per direction; two consecutive failures, the second at once, turn a direction unhealthy; one re-admission backoff ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) | one health state for both directions; two intervals, three failures, and a separate demand timeout; no backoff |
 | D5 | the uploader streams a journal reference ([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy)) | the block is copied into memory before a slot is free, and again for the put |
 | D6 | a failed fill does not fail the read ([§4.2](#4.2%20The%20reply%20neither%20waits%20on%20the%20fill%20nor%20fails%20with%20it)) | a fill error fails the fetching caller and every joined one |
 | D7 | a retry within one `Upload` writes the same name; a later attempt's orphan is found by its put intent ([§2.5](#2.5%20An%20unknown%20outcome%20is%20not%20a%20success)) | block names are random per put and no intent is recorded, so a retry leaves an orphan only a listing finds |
@@ -2197,7 +2198,7 @@ integrity) are listed once, in [RFC 4 Appendix A](rfc-4-remote-tier.md#Appendix%
 | D15 | the syncer decides and persists nothing ([§1.1](#1.1%20Non-goals)) | the upload side decides when to carve and commits block records itself |
 | D16 | no store is declared to keep blocks less safely ([§2.6](#2.6%20A%20stored%20block%20is%20observed%2C%20never%20inferred)) | a per-store durability setting, and a commit rule that branches on it |
 | D17 | classes, then fair scheduling across stores and flows ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) | no class order across flows, per-flow queue, round robin, cap or waiter bound |
-| D18 | a closed `Store` error set, a streamed put, and the census returned by `Put` ([§1.3](#1.3%20Interface)) | none of these exists; callers interpret service errors |
+| D18 | RFC 4's closed error set, a streamed put, and the census the codec returns with a put ([§1.3](#1.3%20Interface)) | none of these exists; callers interpret service errors |
 | D19 | GC relocates through a background syncer flow ([§1.3](#1.3%20Interface)) | relocation calls the remote store directly |
 | D20 | a retry budget per store with full jitter; throttling holds the flow, lowers the store's throttle limit and is not failure ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) | retries live in the remote client, with no shared budget; throttling is an ordinary error |
 | D21 | a throughput floor judged on the store's aggregate ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) | per-request timeouts; no throughput floor |
