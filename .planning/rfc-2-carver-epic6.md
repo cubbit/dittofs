@@ -201,7 +201,12 @@ this epic's.
   Each run is a fresh composition: a non-encrypting namespace, so the unkeyed gear table; the empty
   transform chain; RFC 4's in-memory store; the fixture's metadata store and journal, under
   `t.TempDir()`; the engine's settings at their RFC 13 Appendix B
-  defaults (`offload.max_age`, the pass bound, the block target of 4 MiB). RFC 2 §3.2 says blocks
+  defaults (`offload.max_age`, the pass bound, the block target of 4 MiB); and the candidate
+  `Target` as the namespace's setting, which reaches the engine with the share at `Bind` (the RFC 8
+  offload plan's epic 12, D7, whose `TestRFC8C_Settings/the_pool_half` epic 16 turns green by S3).
+  The content wiring builds the carver's settings from it with `carve.NewSettings`, as for any
+  namespace, so the sweep never builds `carver.Settings` itself and needs no section registered
+  (epic 21). RFC 2 §3.2 says blocks
   pack to their own target, so the number and size of remote objects do not depend on `Target`; a
   chain compresses or seals whole blocks and would scale every candidate alike, so the empty chain
   measures what the carver changes. A keyed table moves boundaries but not their distribution,
@@ -427,6 +432,8 @@ pkg/carver/section/
 - **Acceptance criteria:**
   - Each run builds the carver through the content wiring as S3 does, with no option that changes
     the mask, the chain or the pipeline beyond D2's settings (R6, R8, R9).
+  - Each composition cuts at its candidate: the run fails when two candidates leave the same live
+    chunk sizes on one workload (D2).
   - The run fails a workload whose phase ends quiescent with dirty bytes left, or whose chunk
     records pass R13's ceiling (D4, D5).
   - `dt docs --check` passes with the suite named.
@@ -436,7 +443,9 @@ pkg/carver/section/
   bytes left and the run fails on that assertion, not on the timeout (catches a "clean" read from
   the wrong journal); with widening disabled in a local edit, the sustained workload at the 1 MiB
   and 4 MiB candidates passes R13's ceiling and fails on it (at 64 KiB and 256 KiB sixteen rounds of
-  pages stay under it, so those candidates do not show the break). A run on the smallest corpus file, at one candidate, is part of the pull request's evidence.
+  pages stay under it, so those candidates do not show the break); with the share bound without
+  the candidate in a local edit, every candidate cuts at the default and the run fails on the
+  same-sizes assertion (catches a `Target` that never reaches the carver). A run on the smallest corpus file, at one candidate, is part of the pull request's evidence.
   No test double: every component is the one S3 composes.
 - **Rules:** rule 5, D5; rule 8, the real path; rule 9, D2's `decision:`. Others as §2 says.
 
@@ -544,3 +553,7 @@ the programme's other RFC edits are.
    pipeline itself, such as a ceiling passed, is filed against the RFC 8 offload plan and blocks
    T6.4 until fixed; how many such findings the first full run surfaces cannot be known, which makes
    T6.4 the least certain estimate here.
+6. **The candidate's route into the carver is another plan's.** D2 binds the share with the
+   candidate `Target` as the namespace's setting, the route the RFC 8 offload plan's epic 12 fixes
+   (its D7) and its epic 16 makes real by S3. If epic 16 carries `Target` another way, D2 follows
+   it; T6.3's same-sizes assertion fails a run where the candidate never reaches the carver.
