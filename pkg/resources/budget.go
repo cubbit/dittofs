@@ -342,6 +342,24 @@ func (r *Reservation) Release() {
 	}
 }
 
+// Shrink lowers the reservation to n bytes and returns the rest to its
+// budget, as Release does; an n at or above what it holds changes nothing,
+// and a negative n is taken as zero, so a reservation never grows.
+func (r *Reservation) Shrink(n int64) {
+	n = max(n, 0)
+	if n >= r.n {
+		return
+	}
+	d := r.n - n
+	r.n = n
+	switch {
+	case r.b != nil:
+		r.b.release(d)
+	case r.w != nil:
+		r.w.release(d)
+	}
+}
+
 // Budgets is what an adapter is handed (RFC 20 section 3.4): the four budgets
 // on the request path, and the node's connection count.
 type Budgets struct {
