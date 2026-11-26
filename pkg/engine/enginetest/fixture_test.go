@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest/kit"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/kvtest"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -87,4 +89,38 @@ func (c *armGate) After(d time.Duration) <-chan struct{} {
 	close(c.arming)
 	<-c.release
 	return c.Waiter.After(d)
+}
+
+func TestACrashKeepsTheUnsyncedWritesItsVariantKeeps(t *testing.T) {
+	f := New(t, WithSegmentCap(4<<20))
+	_, file := f.FS.Create(t, f.FS.Admin, f.FS.Root, "f", kvstore.Regular(0o644))
+	write := func(off int64) {
+		t.Helper()
+
+		_, err := f.E.Write(t.Context(), f.Share.ID, file.ID, off, make([]byte, 512), engine.WriteOpts{})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write(0)
+	_, _, err := f.E.Commit(t.Context(), f.Share.ID, file.ID, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	write(512)
+	write(1024)
+	unsynced := f.Seam.Unsynced()
+
+	f.Crash(kit.Keeping(1<<unsynced - 1))
+
+	n, err := f.E.Read(t.Context(), f.Share.ID, file.ID, 0, make([]byte, 4096))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if n != 1536 {
+		t.Fatalf("after a crash that keeps all %d unsynced writes the file reads %d bytes, want 1536", unsynced, n)
+	}
 }
