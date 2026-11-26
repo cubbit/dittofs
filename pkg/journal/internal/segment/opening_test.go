@@ -3,6 +3,7 @@ package segment_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -197,4 +198,34 @@ func TestAHeadroomFirstRollKeepsTheOpeningSpare(t *testing.T) {
 
 	close(release)
 	settledSpares(t, pool, "after a headroom first roll", 2)
+}
+
+// TestTheFirstTakeLeavesNoSpareAboveTheTarget pauses a stream's first roll
+// just after its take and lets the pool settle there: the roll dropped the
+// opening spare before the take, so the refill sees the target met and makes
+// nothing, and once the roll is done the pool stands at the target alone. A
+// take made with the opening spare still in the goal sends the refill after
+// it, and the spare that make lands sits above the target for good.
+func TestTheFirstTakeLeavesNoSpareAboveTheTarget(t *testing.T) {
+	_, pool, s := openingRig(t, segment.Targets{Content: 1}, 8*openingCap)
+	pool.Start()
+	settledSpares(t, pool, "at open", 2)
+
+	var once sync.Once
+	var settled error
+	s.SetRollTakeHook(func() {
+		once.Do(func() {
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+			settled = pool.WaitSpares(ctx)
+		})
+	})
+	h, body := streamWriteHeader(streamFileID(1), 0, []byte("opening"), 1, core.Version{Counter: 1})
+	if _, err := s.Append(h, body); err != nil {
+		t.Fatalf("the first Append: %v", err)
+	}
+	if settled != nil {
+		t.Fatalf("WaitSpares between the first take and the install: %v", settled)
+	}
+	settledSpares(t, pool, "after the first roll", 1)
 }

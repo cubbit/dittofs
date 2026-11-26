@@ -79,3 +79,29 @@ func TestAJournalAtItsMaximumOpensWithoutTheOpeningSpare(t *testing.T) {
 		t.Fatalf("Spares = %d at open at the maximum, want %d: the target alone", got, want)
 	}
 }
+
+// TestACrashBeforeTheFirstWriteKeepsTheOpeningSpare crashes a journal whose
+// pool has made its opening spare and taken no write: the next open re-adopts
+// both spares as content and keeps the opening spare again, so the pool comes
+// back at the target and the opening spare, on the same footprint.
+func TestACrashBeforeTheFirstWriteKeepsTheOpeningSpare(t *testing.T) {
+	f := journaltest.NewWith(t, func(s *journal.Settings) {
+		s.Streams = 1
+		s.SpareTarget = 1
+	})
+	f.WaitSpares()
+	before := f.J.Stats()
+	if got, want := before.Spares, 2; got != want {
+		t.Fatalf("Spares = %d before the crash, want %d: the target's one and the opening spare", got, want)
+	}
+
+	f.Crash()
+	f.WaitSpares()
+	after := f.J.Stats()
+	if got, want := after.Spares, 2; got != want {
+		t.Fatalf("Spares = %d after the crash and reopen, want %d: the target's one and the opening spare", got, want)
+	}
+	if after.UsedBytes != before.UsedBytes {
+		t.Fatalf("UsedBytes = %d after the crash and reopen, want the %d before it: the opening spare is re-adopted, never made again", after.UsedBytes, before.UsedBytes)
+	}
+}
