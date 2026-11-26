@@ -80,6 +80,11 @@ var components = []struct {
 	{entity.ErrRehoming, answerOf{http.StatusConflict, "rehoming", true}},
 	// The installation's state refuses a new share, for good.
 	{entity.ErrTagsExhausted, answerOf{http.StatusConflict, "tags_exhausted", false}},
+	// Open state's conditional writes, which open state answers itself: a
+	// client record another write changed first, and an NSM state number
+	// another raise already passed.
+	{entity.ErrRecordChanged, answerOf{http.StatusConflict, "record_changed", true}},
+	{entity.ErrNSMNotRaised, answerOf{http.StatusConflict, "nsm_not_raised", false}},
 
 	{vfserr.ErrNotFound, answerOf{http.StatusNotFound, "not_found", false}},
 	{vfserr.ErrExist, answerOf{http.StatusConflict, "exist", false}},

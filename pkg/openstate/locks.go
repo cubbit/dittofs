@@ -1288,6 +1288,6 @@ func (t *Table) dropIdle(ctx context.Context, c entity.ClientID) {
 	}
 	t.idx.Unlock()
 	if idle {
-		_ = t.d.Records.Clients().Delete(ctx, c)
+		_ = t.d.Clients.Delete(ctx, c)
 	}
 }

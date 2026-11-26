@@ -12,9 +12,7 @@ import (
 )
 
 // Orphaned names the file an operation left with no entry; zero when none.
-// Its pending release is already written, and the filesystem service runs
-// the release once no open holds it.
-type Orphaned struct{ File entity.FileID }
+type Orphaned = entity.Orphaned
 
 // Unlink removes a name. Its file's Nlink falls by one in the same
 // transaction, and when it reaches zero a pending release is written. A

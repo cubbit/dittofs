@@ -26,7 +26,7 @@ func (t *Table) recordOf(e *entry, o *open) entity.OpenRecord {
 
 // persist writes o's record over its stored one, under e's step.
 func (t *Table) persist(ctx context.Context, e *entry, o *open) error {
-	err := t.d.Records.Opens().Put(ctx, o.share, t.recordOf(e, o))
+	err := t.d.Opens.Put(ctx, o.share, t.recordOf(e, o))
 	if err == nil {
 		o.unsaved = false
 	}
@@ -158,7 +158,7 @@ func (t *Table) persistOpen(ctx context.Context, e *entry, o *open) error {
 		err = t.persist(ctx, e, o)
 	}
 	if err != nil && o.persistent() {
-		_, _ = t.d.Records.Opens().Delete(ctx, o.share, o.opened(), o.ID)
+		_, _ = t.d.Opens.Delete(ctx, o.share, o.opened(), o.ID)
 	}
 	if err != nil {
 		t.uncover(e, o)
@@ -296,7 +296,7 @@ func (t *Table) leaveReach(ctx context.Context, c entity.ClientID, node entity.N
 	if leaveReachHook != nil {
 		leaveReachHook()
 	}
-	if cur, err := t.d.Records.Clients().DeleteUnreached(ctx, c); errors.Is(err, ErrRecordChanged) {
+	if cur, err := t.d.Clients.DeleteUnreached(ctx, c); errors.Is(err, ErrRecordChanged) {
 		return cur.Reach.GenOf(node), nil
 	} else if err != nil {
 		return 0, staleIfGone(err)
@@ -505,7 +505,7 @@ func (t *Table) unadopt(c entity.ClientID) {
 // is gone reads stale rather than bad. Mint under sh's instance if an
 // adapter is found telling the two apart for a FileId or a lease.
 func (t *Table) install(ctx context.Context, share entity.ShareID, s ShardID, sh *served, clients map[entity.ClientID]entity.ClientRecord, out *outbox) error {
-	ops := t.d.Records.Opens()
+	ops := t.d.Opens
 	for d, err := range ops.Durable(ctx, share, uint64(s)) {
 		if err != nil {
 			return err
@@ -678,7 +678,7 @@ func (t *Table) keepLocks(ctx context.Context, o *open, lo LockOwner, was, now [
 	if len(put)+len(del) == 0 && rec == nil {
 		return nil
 	}
-	return t.d.Records.Opens().SetLocks(ctx, o.share, o.opened(), o.ID, rec, put, del)
+	return t.d.Opens.SetLocks(ctx, o.share, o.opened(), o.ID, rec, put, del)
 }
 
 // lockName is a stored lock's key under its owner: its offset and its place,
@@ -760,9 +760,9 @@ func (t *Table) writePending(ctx context.Context, e *entry, p *entity.DeleteReco
 	case by == nil:
 		return nil
 	case p != nil:
-		return t.d.Records.Opens().SetDeletePending(ctx, by.share, e.file, by.ID, *p)
+		return t.d.Opens.SetDeletePending(ctx, by.share, e.file, by.ID, *p)
 	}
-	return t.d.Records.Opens().ClearDeletePending(ctx, by.share, e.file)
+	return t.d.Opens.ClearDeletePending(ctx, by.share, e.file)
 }
 
 // savePending is writePending of e's delete pending as it stands, for a
@@ -838,7 +838,7 @@ func (t *Table) serves(s ShardID, sh *served) bool {
 // closeShardRecords is closeUnreclaimed of shard s, served as sh.
 func (t *Table) closeShardRecords(ctx context.Context, sink Sink, s ShardID, sh *served) error {
 	share := sh.share
-	ops := t.d.Records.Opens()
+	ops := t.d.Opens
 	for d, err := range ops.Durable(ctx, share, uint64(s)) {
 		if err != nil {
 			return err
@@ -912,7 +912,7 @@ func (v opens) CloneOpen(ctx context.Context, src FileKey, c CloneSource) (entit
 	if _, begun := t.instance(src.Shard); !begun {
 		return 0, &DelayError{DelayFrozen}
 	}
-	recs, err := t.d.Records.Opens().Of(ctx, src.Share, src.ID)
+	recs, err := t.d.Opens.Of(ctx, src.Share, src.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -1001,7 +1001,7 @@ func (v opens) Channel(ctx context.Context, who Caller, id entity.OpenID, seq ui
 			if o.persistent() {
 				rec := t.recordOf(e, o)
 				rec.ChannelSeq = seq
-				if err := t.d.Records.Opens().Put(ctx, o.share, rec); err != nil {
+				if err := t.d.Opens.Put(ctx, o.share, rec); err != nil {
 					return err
 				}
 			}

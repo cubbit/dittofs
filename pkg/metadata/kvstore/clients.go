@@ -14,13 +14,11 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 )
 
-// ErrRecordChanged is a conditional client write whose expected record is no
-// longer the stored one: the call writes nothing and returns the current one.
-var ErrRecordChanged = errors.New("kvstore: client record changed")
+// ErrRecordChanged and MaxAdapter are the client records' contract, declared
+// with the records.
+var ErrRecordChanged = entity.ErrRecordChanged
 
-// MaxAdapter bounds a client record's Adapter bytes: a write over it is
-// refused as invalid.
-const MaxAdapter = 4 << 10
+const MaxAdapter = entity.MaxAdapter
 
 // Clients is open state's view of its durable client records: one per
 // client instance, found by ID or by its protocol and name, with one key per

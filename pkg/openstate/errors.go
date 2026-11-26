@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
 // The filesystem service maps each of these once to its own neutral errors.
@@ -57,7 +57,7 @@ var (
 
 	// ErrRecordChanged is the store's own: AddSession hands its refusal on
 	// as it is, with the current record.
-	ErrRecordChanged = kvstore.ErrRecordChanged
+	ErrRecordChanged = entity.ErrRecordChanged
 
 	// ErrLost is a flush through an open across a loss of the file's
 	// acknowledged writes; the service maps it to the content error it

@@ -13,7 +13,6 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
-	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/vfs/caps"
 )
 
@@ -240,7 +239,7 @@ func keyOf(rec entity.ClientRecord) nameKey { return nameKey{rec.Protocol, strin
 // callers the table can tell apart.
 func admit(c Client) (entity.ClientRecord, error) {
 	rec := c.ClientRecord
-	if len(rec.Name) == 0 || len(rec.Name) > maxName || len(rec.Adapter) > kvstore.MaxAdapter || rec.Recovery == 0 {
+	if len(rec.Name) == 0 || len(rec.Name) > maxName || len(rec.Adapter) > entity.MaxAdapter || rec.Recovery == 0 {
 		return entity.ClientRecord{}, ErrInvalid
 	}
 	if rec.Owner == entity.AnonymousPrincipal {
@@ -373,7 +372,7 @@ var connectListHook func()
 // decision: this node is listed under the zero node ID, as a session ref
 // names node zero on a single node. Name the node's own ID with the cluster.
 func (v clients) listNode(ctx context.Context, id entity.ClientID) (uint64, error) {
-	rec, err := v.t.d.Records.Clients().Get(ctx, id)
+	rec, err := v.t.d.Clients.Get(ctx, id)
 	for err == nil {
 		var cl Client
 		if cl, err = v.AddSession(ctx, id, entity.NodeID{}, rec.Adapter, rec.Adapter); err == nil {
@@ -451,8 +450,8 @@ func (t *Table) connect(ctx context.Context, rec *entity.ClientRecord, p *Propos
 		}
 		rec.ID = id
 		if !found {
-			err = t.d.Records.Clients().Create(ctx, *rec)
-		} else if err = t.d.Records.Clients().Reboot(ctx, cur.ID, *rec); err == nil {
+			err = t.d.Clients.Create(ctx, *rec)
+		} else if err = t.d.Clients.Reboot(ctx, cur.ID, *rec); err == nil {
 			ended = &cur
 		}
 		if err != nil {
@@ -495,7 +494,7 @@ func (t *Table) markDone(ctx context.Context, rec entity.ClientRecord) ([]entity
 			continue
 		}
 		marks[i].Done = sh.instance
-		if err := t.d.Records.Clients().MarkShard(ctx, rec.ID, marks[i]); err != nil {
+		if err := t.d.Clients.MarkShard(ctx, rec.ID, marks[i]); err != nil {
 			return nil, staleIfGone(err)
 		}
 	}
@@ -515,7 +514,7 @@ func (t *Table) putAdapter(ctx context.Context, cur entity.ClientRecord, adapter
 	for {
 		next := cur
 		next.Adapter = adapter
-		got, err := t.d.Records.Clients().Put(ctx, cur, next)
+		got, err := t.d.Clients.Put(ctx, cur, next)
 		if !errors.Is(err, ErrRecordChanged) {
 			return got, err
 		}
@@ -540,7 +539,7 @@ func (t *Table) leaseEnd(k entity.RecoveryKind) time.Duration {
 
 func (v clients) Record(ctx context.Context, c entity.ClientID) (Client, error) {
 	t := v.t
-	rec, err := t.d.Records.Clients().Get(ctx, c)
+	rec, err := t.d.Clients.Get(ctx, c)
 	if err != nil {
 		return Client{}, staleIfGone(err)
 	}
@@ -558,13 +557,13 @@ func (v clients) AddSession(ctx context.Context, c entity.ClientID, node entity.
 	if _, err := v.t.running(); err != nil {
 		return Client{}, err
 	}
-	if len(next) > kvstore.MaxAdapter {
+	if len(next) > entity.MaxAdapter {
 		return Client{}, ErrInvalid
 	}
 	v.t.cmu.Lock()
 	epoch := v.t.epoch
 	v.t.cmu.Unlock()
-	rec, err := v.t.d.Records.Clients().AddSession(ctx, c, entity.ReachNode{Node: node, Epoch: epoch}, prev, next)
+	rec, err := v.t.d.Clients.AddSession(ctx, c, entity.ReachNode{Node: node, Epoch: epoch}, prev, next)
 	if err != nil && !errors.Is(err, ErrRecordChanged) {
 		return Client{}, staleIfGone(err)
 	}
@@ -632,7 +631,7 @@ func (t *Table) status(c entity.ClientID) ClientStatus {
 func (t *Table) adopt(ctx context.Context, c entity.ClientID) error {
 	t.cstep.Lock()
 	defer t.cstep.Unlock()
-	rec, err := t.d.Records.Clients().Get(ctx, c)
+	rec, err := t.d.Clients.Get(ctx, c)
 	if err != nil {
 		return staleIfGone(err)
 	}
@@ -703,7 +702,7 @@ func (t *Table) expireLocked(ctx context.Context, c entity.ClientID, out *outbox
 	if !t.lapsed(c) {
 		return entity.ClientRecord{}, false, nil
 	}
-	rec, err := t.d.Records.Clients().Get(ctx, c)
+	rec, err := t.d.Clients.Get(ctx, c)
 	if merrs.IsNotFoundError(err) {
 		// an earlier delete answered an error may have landed: it ended all the same
 		t.cmu.Lock()
@@ -715,7 +714,7 @@ func (t *Table) expireLocked(ctx context.Context, c entity.ClientID, out *outbox
 	if err != nil {
 		return entity.ClientRecord{}, false, err
 	}
-	if err := t.d.Records.Clients().Delete(ctx, c); err != nil {
+	if err := t.d.Clients.Delete(ctx, c); err != nil {
 		return entity.ClientRecord{}, false, err
 	}
 	t.forget(ctx, c, out)
@@ -780,7 +779,7 @@ func (v clients) Revoke(ctx context.Context, c entity.ClientID) error {
 // no revoked set to be told by. Keep its record if such a protocol is found to
 // report revoked state.
 func (t *Table) revoke(ctx context.Context, c entity.ClientID, out *outbox) error {
-	rec, err := t.d.Records.Clients().Get(ctx, c)
+	rec, err := t.d.Clients.Get(ctx, c)
 	if merrs.IsNotFoundError(err) {
 		t.forget(ctx, c, out) // a delete answered an error may have landed: release what is held here all the same
 		return ErrStaleClient
@@ -789,13 +788,13 @@ func (t *Table) revoke(ctx context.Context, c entity.ClientID, out *outbox) erro
 		return err
 	}
 	if rec.Owner.IsZero() {
-		if err := t.d.Records.Clients().Delete(ctx, c); err != nil {
+		if err := t.d.Clients.Delete(ctx, c); err != nil {
 			return err
 		}
 		t.forget(ctx, c, out)
 		return nil
 	}
-	if err := t.d.Records.Clients().DropShards(ctx, c); err != nil {
+	if err := t.d.Clients.DropShards(ctx, c); err != nil {
 		return err
 	}
 	t.cmu.Lock()
@@ -834,14 +833,14 @@ func (v clients) ChannelDown(ctx context.Context, c entity.ClientID) error {
 // AddSession's bytes are kept: the write is retried over the record it
 // committed.
 func (t *Table) setReach(ctx context.Context, c entity.ClientID, set func(*entity.Reach)) (entity.ClientRecord, error) {
-	rec, err := t.d.Records.Clients().Get(ctx, c)
+	rec, err := t.d.Clients.Get(ctx, c)
 	if err != nil {
 		return entity.ClientRecord{}, staleIfGone(err)
 	}
 	for {
 		next := rec
 		set(&next.Reach)
-		got, err := t.d.Records.Clients().Put(ctx, rec, next)
+		got, err := t.d.Clients.Put(ctx, rec, next)
 		if errors.Is(err, ErrRecordChanged) {
 			rec = got
 			continue
@@ -866,7 +865,7 @@ func (v clients) Rebind(ctx context.Context, who Caller, node entity.NodeID) err
 	}
 	t.cstep.Lock()
 	defer t.cstep.Unlock()
-	rec, err := t.d.Records.Clients().Get(ctx, who.Client)
+	rec, err := t.d.Clients.Get(ctx, who.Client)
 	switch {
 	case err != nil:
 		return staleIfGone(err)
@@ -884,7 +883,7 @@ func (v clients) Destroy(ctx context.Context, who Caller) error {
 	}
 	t.cstep.Lock()
 	defer t.cstep.Unlock()
-	rec, err := t.d.Records.Clients().Get(ctx, who.Client)
+	rec, err := t.d.Clients.Get(ctx, who.Client)
 	switch {
 	case err != nil:
 		return staleIfGone(err)
@@ -893,7 +892,7 @@ func (v clients) Destroy(ctx context.Context, who Caller) error {
 	case t.liveReach(rec.Reach.Sessions) > 0 || t.holdsAny(who.Client):
 		return ErrClientBusy
 	}
-	if err := t.d.Records.Clients().Delete(ctx, who.Client); err != nil {
+	if err := t.d.Clients.Delete(ctx, who.Client); err != nil {
 		return err
 	}
 	t.cmu.Lock()
@@ -1080,13 +1079,13 @@ func (t *Table) uncharge(src netip.Prefix) {
 }
 
 func (t *Table) nextClientID(ctx context.Context) (entity.ClientID, error) {
-	n, err := t.d.Records.NextID(ctx, kvstore.IDClient)
+	n, err := t.d.Records.NextID(ctx, entity.IDClient)
 	return entity.ClientID(n), err
 }
 
 // byName finds the record rec's protocol and name, if there is one.
 func (t *Table) byName(ctx context.Context, rec entity.ClientRecord) (entity.ClientRecord, bool, error) {
-	cur, err := t.d.Records.Clients().ByName(ctx, rec.Protocol, rec.Name)
+	cur, err := t.d.Clients.ByName(ctx, rec.Protocol, rec.Name)
 	if merrs.IsNotFoundError(err) {
 		return entity.ClientRecord{}, false, nil
 	}

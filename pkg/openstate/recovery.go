@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
-	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
 // GraceRef names one grace instance of one shard.
@@ -173,7 +172,7 @@ func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID,
 	var told []Revocation
 	notice := false
 	named := map[entity.ClientID]entity.ClientRecord{}
-	for rec, err := range t.d.Records.Clients().ByShard(ctx, s) {
+	for rec, err := range t.d.Clients.ByShard(ctx, s) {
 		if err != nil {
 			return err
 		}
@@ -352,7 +351,7 @@ func (t *Table) raiseNotice(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err = t.d.Records.RaiseNSMState(ctx, n+1); !errors.Is(err, kvstore.ErrNSMNotRaised) {
+		if err = t.d.Records.RaiseNSMState(ctx, n+1); !errors.Is(err, entity.ErrNSMNotRaised) {
 			return err
 		}
 	}
@@ -513,7 +512,7 @@ func (v recovery) ReclaimComplete(ctx context.Context, who Caller, shown []Grace
 	}
 	t.cstep.Lock()
 	defer t.cstep.Unlock()
-	rec, err := t.d.Records.Clients().Get(ctx, who.Client)
+	rec, err := t.d.Clients.Get(ctx, who.Client)
 	switch {
 	case err != nil:
 		return staleIfGone(err)
@@ -531,7 +530,7 @@ func (v recovery) ReclaimComplete(ctx context.Context, who Caller, shown []Grace
 			continue
 		}
 		m := entity.ShardMark{Shard: g.Shard, Done: g.Instance}
-		if err := t.d.Records.Clients().MarkShard(ctx, who.Client, m); err != nil {
+		if err := t.d.Clients.MarkShard(ctx, who.Client, m); err != nil {
 			return staleIfGone(err)
 		}
 		t.cmu.Lock()

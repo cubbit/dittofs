@@ -10,7 +10,6 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
-	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/openstate/conflict"
 	"github.com/cubbit/dittofs/pkg/openstate/grantfsm"
 	"github.com/cubbit/dittofs/pkg/openstate/sequence"
@@ -862,7 +861,7 @@ func (t *Table) addOpen(ctx context.Context, e *entry, f FileKey, o *open, r Ope
 		}
 	}
 	if err == nil {
-		err = t.d.Records.Opens().Put(ctx, o.share, o.record())
+		err = t.d.Opens.Put(ctx, o.share, o.record())
 	}
 	if err != nil {
 		t.dropOpen(e, o)
@@ -1030,7 +1029,7 @@ func (t *Table) markShard(ctx context.Context, c entity.ClientID, s ShardID) err
 	case listed:
 		return nil
 	}
-	rec, err := t.d.Records.Clients().Get(ctx, c)
+	rec, err := t.d.Clients.Get(ctx, c)
 	if err != nil {
 		return staleIfGone(err)
 	}
@@ -1038,7 +1037,7 @@ func (t *Table) markShard(ctx context.Context, c entity.ClientID, s ShardID) err
 	m := entity.ShardMark{Shard: s, Done: inst}
 	if i := slices.IndexFunc(rec.Shards, func(m entity.ShardMark) bool { return m.Shard == s }); i >= 0 {
 		m = rec.Shards[i] // the record's own mark: one Done at this instance would forgive a reclaim the client still owes here
-	} else if err := t.d.Records.Clients().MarkShard(ctx, c, m); err != nil {
+	} else if err := t.d.Clients.MarkShard(ctx, c, m); err != nil {
 		return staleIfGone(err)
 	}
 	t.cmu.Lock()
@@ -1365,7 +1364,7 @@ func (t *Table) unrecord(ctx context.Context, o *open) (bool, error) {
 	if !o.durable {
 		return false, nil
 	}
-	orphaned, err := t.d.Records.Opens().Delete(ctx, o.share, o.opened(), o.ID)
+	orphaned, err := t.d.Opens.Delete(ctx, o.share, o.opened(), o.ID)
 	if merrs.IsNotFoundError(err) {
 		return false, nil // an earlier delete answered an error landed
 	}
@@ -1462,7 +1461,7 @@ func (v opens) Durable(ctx context.Context, f FileKey) ([]entity.OpenRecord, fun
 						// the next start's grace end closes the records nobody
 						// reclaimed. Report it to the service if a store outage
 						// is shown to strand files.
-						out, _ := t.d.Records.Opens().Delete(ctx, f.Share, recs[i].File, recs[i].ID)
+						out, _ := t.d.Opens.Delete(ctx, f.Share, recs[i].File, recs[i].ID)
 						late.Orphan = late.Orphan || !out.File.IsZero()
 					}
 					continue
@@ -1566,7 +1565,7 @@ func (t *Table) nameByID(o *open) {
 // nextOpenID issues an open's ID, unique across the installation and never
 // reused.
 func (t *Table) nextOpenID(ctx context.Context) (entity.OpenID, error) {
-	n, err := t.d.Records.NextID(ctx, kvstore.IDOpen)
+	n, err := t.d.Records.NextID(ctx, entity.IDOpen)
 	return entity.OpenID(n), err
 }
 
