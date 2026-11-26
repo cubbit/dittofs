@@ -1440,15 +1440,14 @@ func modelFailUpdates(m engineModel, a fuzz.Args, _ fuzz.Result) ([]engineModel,
 	return []engineModel{m}, nil
 }
 
-// modelFailWindow arms the window the real side did, over the same file: the
-// write it drops is the file's one pending data write, and the grows stay, a
-// mark in the journal's headers not the window. The arm bounds allow no grow,
-// so what is kept is empty; the rule is what the loop documents.
-// modelFailWindow drops the armed stream's unsynced data writes and breaks the
-// verifier chain at once: the arm step's own oracle read serves the loss the
-// fault made and consumes it, the loss record lands in the journal and raises
-// the generation the whole share hashes, so every answer from here, of any
-// file, carries the new value until a new process starts.
+// modelFailWindow arms the window the real side did, over the same file: it
+// drops that file's unsynced data writes and breaks the verifier chain at once.
+// The arm step's own oracle read serves the loss the fault made and consumes
+// it, the loss record lands in the journal and raises the generation the whole
+// share hashes, so every answer from here, of any file, carries the new value
+// until a new process starts. The grows stay: they are a mark in the journal's
+// headers, not the window. The arm bounds allow no grow, so what is kept is
+// empty; the rule is what the loop documents.
 // It takes the write's range and reach before the drop (probed 20/20): a read
 // of the armed file that meets the range answers lost while the window waits
 // for its seal and what the file synced does not cover the range, and a hole
