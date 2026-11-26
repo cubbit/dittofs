@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/journal"
-	"github.com/cubbit/dittofs/pkg/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/journal/journaltest/benchdir"
 )
@@ -215,18 +214,18 @@ func (jbClock) After(d time.Duration) <-chan struct{} {
 // waits for its first spares and returns the share's handle and the spare
 // pool's wait, which the large-file row's retry needs to tell a slow pool
 // from one that stopped; Open hands it out through WithSparesReady.
-func jbOpen(b *testing.B, streams int) (*journal.Handle, core.SparesWait) {
+func jbOpen(b *testing.B, streams int) (*journal.Handle, journaltest.SparesWait) {
 	b.Helper()
 
 	dir := filepath.Join(jbBase(b), "journal")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		b.Fatalf("bench: journal directory: %v", err)
 	}
-	var pool core.SparesWait
+	var pool journaltest.SparesWait
 	opts := []journal.Option{
 		journal.WithClock(jbClock{origin: time.Now()}),
 		journal.WithSettings(journal.Settings{Streams: streams}),
-		journal.WithSparesReady(func(w core.SparesWait) { pool = w }),
+		journaltest.WithSparesReady(&pool),
 	}
 	ctx := b.Context()
 	id, err := journal.Init(ctx, dir, jbInstall, opts...)
@@ -284,7 +283,7 @@ type jbSink interface {
 type jbJournal struct {
 	b    *testing.B
 	h    *journal.Handle
-	pool core.SparesWait
+	pool journaltest.SparesWait
 }
 
 // jbJournalOpen builds the journal sink, handle and pool wait together.
@@ -301,7 +300,7 @@ func jbJournalOpen(b *testing.B, streams int) jbJournal {
 // short in a row answers the first's retry, as the fixture's own RetrySpare
 // has it: the pass that settled short may have made the one spare the call
 // needed.
-func jbRetrySpareSustained(ctx context.Context, pool core.SparesWait, op func() error) error {
+func jbRetrySpareSustained(ctx context.Context, pool journaltest.SparesWait, op func() error) error {
 	var err error
 	short := 0
 	for {

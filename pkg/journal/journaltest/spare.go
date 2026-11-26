@@ -128,3 +128,16 @@ func spareRefusal(err error) bool {
 	var ns *journal.NoSpaceError
 	return errors.As(err, &ns) && ns.Limit == journal.LimitSpare
 }
+
+// SparesWait is the spare pool's wait as WithSparesReady hands it out. The
+// journal keeps the type off its public surface by design, a callback over an
+// internal type that only code inside the journal's tree can write; the alias
+// puts it in this test component's reach, so a caller that builds journals
+// without the Fixture — the conformance benchmarks — can hold a wait too.
+type SparesWait = core.SparesWait
+
+// WithSparesReady captures the spare-pool wait of the journal the option
+// opens into w: Fixture's takeSparesWait without the fixture.
+func WithSparesReady(w *SparesWait) journal.Option {
+	return journal.WithSparesReady(func(wait core.SparesWait) { *w = wait })
+}
