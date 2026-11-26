@@ -32,6 +32,8 @@ func (p *BufPool) TryGet(key netip.Addr, n int) (*Buf, bool)
 
 func (r *Reservation) Release()
 
+func (r *Reservation) Shrink(n int64)
+
 func Join(n int, bufs ...*Buf) *Buf
 
 func NewBudget(name string, ceiling int64) *Budget

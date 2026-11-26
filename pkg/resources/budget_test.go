@@ -95,6 +95,29 @@ func TestReleaseReturnsItsBytesOnce(t *testing.T) {
 	}
 }
 
+// Shrink returns what a reservation holds past n and keeps n, which its
+// Release then returns; a Shrink to more than it holds charges nothing.
+func TestShrinkReturnsTheExcess(t *testing.T) {
+	for _, k := range kinds {
+		t.Run(k.name, func(t *testing.T) {
+			reserve, reserved := k.new("b", 10, nil)
+			r := mustReserve(t, reserve, 8)
+			r.Shrink(3)
+			if got := reserved(); got != 3 {
+				t.Fatalf("after shrinking 8 to 3, %d reserved, want 3", got)
+			}
+			r.Shrink(5)
+			if got := reserved(); got != 3 {
+				t.Errorf("after a Shrink above what it holds, %d reserved, want 3", got)
+			}
+			r.Release()
+			if got := reserved(); got != 0 {
+				t.Errorf("after Release, %d reserved, want 0", got)
+			}
+		})
+	}
+}
+
 // A copy released after its original takes the count past zero: in a test
 // binary that panics, and the count reads zero after it.
 func TestReleasePastZeroPanicsInTests(t *testing.T) {
