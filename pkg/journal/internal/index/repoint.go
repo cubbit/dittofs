@@ -26,7 +26,9 @@ type RepointMove struct {
 // reader sees each piece at its old record or its new one, never neither. A
 // file with no entry, or none of whose moves names a record a piece sits at,
 // changes nothing and creates no entry. A nil or empty move list changes
-// nothing. It returns the number of pieces moved.
+// nothing. Every segment a move places pieces in joins the file's segments
+// and with them the registry, as a record noted there would. It returns the
+// number of pieces moved.
 func (ix *Index) RepointFile(id core.FileID, moves []RepointMove) (moved int, hd HeldDelta, err error) {
 	if len(moves) == 0 {
 		return 0, HeldDelta{}, nil
@@ -44,8 +46,12 @@ func (ix *Index) RepointFile(id core.FileID, moves []RepointMove) (moved int, hd
 	}
 	hd, err = ix.fs.update(id, func(f *file) error {
 		for _, m := range moves {
-			moved += f.held.repoint(m.Window, m.From, m.To, m.Skip, m.Seq)
-			moved += f.retained.repoint(m.Window, m.From, m.To, m.Skip, m.Seq)
+			n := f.held.repoint(m.Window, m.From, m.To, m.Skip, m.Seq)
+			n += f.retained.repoint(m.Window, m.From, m.To, m.Skip, m.Seq)
+			if n > 0 {
+				f.repointedTo(m.To.Segment)
+			}
+			moved += n
 		}
 		return nil
 	})
@@ -55,7 +61,9 @@ func (ix *Index) RepointFile(id core.FileID, moves []RepointMove) (moved int, hd
 // RepointRecord moves every held and retained piece of id that sits at record
 // from to record to, keeping each piece's extent, skip, version, sequence
 // number, offloaded bit and superseder: the record is the same one, read from
-// another place, and a copy carries its original's sequence number. It
+// another place, and a copy carries its original's sequence number. The
+// destination segment joins the file's segments and with them the registry,
+// as a record noted there would. It
 // returns the number of pieces moved, and runs as the one-step batch the
 // record's pieces spell out. It takes the file's lock exclusively. A
 // file with no entry, or none of whose pieces sit at from, changes nothing and
@@ -141,5 +149,31 @@ func (f *file) repointRecord(from, to RecordAt) int {
 	for _, a := range kept {
 		n += f.retained.repoint(a.e, from, to, a.skip, 0)
 	}
+	if n > 0 {
+		f.repointedTo(to.Segment)
+	}
 	return n
+}
+
+// repointedTo notes that seg now holds records of the file: a repoint moved
+// its pieces to the records the calling flow appended there, so the
+// destination joins the file's segments and, with them, the registry the
+// segment-to-files answer reads, whatever that flow's own note of the record
+// did — the entry this note adds keeps no drop ranges, the placement alone.
+// A segment the table already holds joins nothing, so a move within one
+// segment, and every move after the first to name the same destination,
+// change nothing.
+//
+// decision: the range-less entry a forget's emptying sweep drops goes with
+// the pieces the forget drops; the one residue is the surviving side of a
+// rivalled file, which a fault alone plants. Overturned by a flow that
+// repoints the two sides of one rivalled file apart.
+func (f *file) repointedTo(seg core.SegmentID) {
+	for i := range f.segs {
+		if f.segs[i].seg == seg {
+			return
+		}
+	}
+	f.segs = append(f.segs, segRecords{seg: seg})
+	f.fs.invAdd(seg, f.id)
 }

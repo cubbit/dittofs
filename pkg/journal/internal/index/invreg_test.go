@@ -115,6 +115,18 @@ func TestSegmentFilesMatchesTheEntries(t *testing.T) {
 	noteRec(t, fs, a, 3, ext(12, 4), nums(12, 12))
 	check("renote")
 
+	// A repoint into another segment: c's piece at rec(1,0) moves to a
+	// record in segment 5, so the destination answers with the file, and a
+	// move within one segment raises nothing new.
+	if _, _, err := ix.RepointRecord(c, rec(1, 0), rec(5, 32)); err != nil {
+		t.Fatalf("repoint over the entry: %v", err)
+	}
+	check("repoint into another segment")
+	if _, _, err := ix.RepointRecord(c, rec(5, 32), rec(5, 64)); err != nil {
+		t.Fatalf("repoint within one segment: %v", err)
+	}
+	check("repoint within one segment")
+
 	// A segment going from one file leaves it in the others.
 	change(t, fs, d, func(f *file) error { f.segmentGone(1); return nil })
 	check("segmentGone of one file")

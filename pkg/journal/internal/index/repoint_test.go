@@ -129,6 +129,52 @@ func TestRepointRecordAccountsSegments(t *testing.T) {
 	checkSegments(t, 0, &ix.fs, 1, 2, 3)
 }
 
+// TestRepointNotesTheDestination: a piece placed by WriteRetain in one segment
+// and moved by a repoint to a record in another makes the destination hold a
+// record of the file, so the segment-to-files answer must name the file — the
+// copier's read phase walks it instead of every file. A move within one
+// segment raises no second entry for the segment.
+func TestRepointNotesTheDestination(t *testing.T) {
+	ix := New(1 << 20)
+	if _, err := ix.WriteRetain(1, testFile, write(0, 4096, rec(1, 0), 5), 20); err != nil {
+		t.Fatalf("WriteRetain: %v", err)
+	}
+	if _, _, err := ix.RepointRecord(testFile, rec(1, 0), rec(2, 0)); err != nil {
+		t.Fatalf("RepointRecord: %v", err)
+	}
+	if got := ix.FilesOfSegment(2); !slices.Contains(got, testFile) {
+		t.Errorf("FilesOfSegment(2) = %v after the repoint, want it to name %v, whose piece the move placed there", got, testFile)
+	}
+	if moved, _, err := ix.RepointFile(testFile, []RepointMove{{
+		Window: ext(0, 4096),
+		From:   rec(2, 0),
+		To:     RecordAt{Segment: 2, Offset: 8192},
+	}}); err != nil || moved != 1 {
+		t.Fatalf("RepointFile within one segment = %d, %v; want 1, nil", moved, err)
+	}
+	named := 0
+	ix.fs.view(testFile, func(f *file) {
+		for _, s := range f.segs {
+			if s.seg == 2 {
+				named++
+			}
+		}
+	})
+	if named != 1 {
+		t.Errorf("the file's segment table names segment 2 %d times after the same-segment move, want once", named)
+	}
+	if moved, _, err := ix.RepointFile(testFile, []RepointMove{{
+		Window: ext(0, 4096),
+		From:   RecordAt{Segment: 2, Offset: 8192},
+		To:     rec(3, 64),
+	}}); err != nil || moved != 1 {
+		t.Fatalf("RepointFile into another segment = %d, %v; want 1, nil", moved, err)
+	}
+	if got := ix.FilesOfSegment(3); !slices.Contains(got, testFile) {
+		t.Errorf("FilesOfSegment(3) = %v after the move, want it to name %v, whose piece the move placed there", got, testFile)
+	}
+}
+
 // TestNamesReadsHeldAndRetainedPieces: a record is named while a held or a
 // retained piece sits at it, and not once nothing does, nor for a file with no
 // entry, for which no entry is created.
