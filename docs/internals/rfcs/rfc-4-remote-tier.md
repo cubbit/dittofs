@@ -1811,7 +1811,8 @@ in-memory store).
 | [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | For every failure the fault transport can produce, the error wraps exactly one sentinel and no native service error is reachable by unwrapping it. A cancelled context comes back as `context.Canceled`. | T |
 | [§4.9](#4.9%20No%20state%20across%20calls) | One failing call makes exactly one request. | T |
 | [§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers) | Construct with syncer pools of 8 and 8 and a GC bound of 4: every client limit is at least 21. | |
-| [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Against each fault profile of [§7.2](#7.2%20Fault%20transport), open fails and names the missing feature. A cleanup that fails does not fail the open. | T |
+| [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Against each fault profile [§7.2](#7.2%20Fault%20transport) says must refuse, open fails and names the missing feature. A cleanup that fails does not fail the open. | T |
+| [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Against the [§7.2](#7.2%20Fault%20transport) profile that ignores every put checksum, a mutable store's open succeeds with the ETag as its put integrity, and a put whose body the transport corrupts returns `ErrCorrupt`. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | A transport that corrupts or drops the integrity check only above a size threshold below the maximum block size: open fails. The check puts an object of the maximum encoded block size. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | A transport whose listing omits new keys for the first few pages: open succeeds within the profile's re-list bound, and fails past it. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Open, then turn on versioning or add a lifecycle rule whose filter could match the prefix: `Recheck` fails naming it; turn it off: `Recheck` passes. | T |
@@ -1876,8 +1877,8 @@ as it does on such a service in Appendix B; one whose bucket default encryption,
 set for real, also breaks the ETag proof **MUST** make it refuse (the [Appendix C.3](#C.3%20How%20the%20contract%20maps%20to%20S3)
 row of [§7.1](#7.1%20Conformance%20suite)). One with versioning or an expiring lifecycle rule (set for real on
 the fresh bucket) **MUST** make a mutable store's check refuse, and one lacking
-any requirement of [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) **MUST** make an immutable store's refuse. These profiles
-are the negative tests.
+any requirement of [§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes) **MUST** make an immutable store's refuse. The profiles
+that must refuse are the negative tests.
 
 ### 7.3 Codec tests
 
@@ -2183,8 +2184,10 @@ For every bucket-setting read — versioning, lifecycle, intelligent tiering and
 default encryption — "no configuration" (`404` with the service's not-found
 code) passes, `501 NotImplemented` passes (a service without the feature cannot
 have it enabled), and `403` refuses: the credential must be allowed to read each
-setting, or the check cannot tell. `Recheck` re-reads the same settings under
-the same rules.
+setting, or the check cannot tell. Those two pass only where the setting must
+be absent: an immutable store treats an absent setting it requires (versioning,
+object lock, the lifecycle rules) as missing, and refuses ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)).
+`Recheck` re-reads the same settings under the same rules.
 
 **When a put is stored** is cited per service from each service's own
 statement, and recorded in [Appendix B](#Appendix%20B%20%E2%80%94%20measurements) ([§8](#8.%20Decisions%20and%20open%20questions), item 7). A service is added there
