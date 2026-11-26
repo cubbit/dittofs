@@ -643,6 +643,9 @@ the same three methods as the engine's `Clock`, declared beside its `Deps`.**
   `ProbeKey` per direction, some half a million requests a month for each, and a put probe writes
   an object each time (RFC 3 §2.8). Skip a direction's probe while its transfers succeed if a
   service's request bill or rate limit shows the probes (§6.1).
+- **The scheduler's debt wheels cap a park at 63 rounds** (epic 3, D3). `ponytail:` when every flow
+  of a class is in debt past the cap, one `Next` re-parks each flow it reaches; upgrade to a
+  hierarchical wheel when a profile of `Next` shows those re-parks (§6.1).
 
 ## 5. The epics in detail
 

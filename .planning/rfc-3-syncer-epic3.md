@@ -16,7 +16,7 @@ D5 (the fault wrapper's `Hold` and `Link`, `syncertest`'s `Run`, `Env` and `Wait
 citation is `develop`'s text. The code lands on `feat/storage-v2`, and the paths below are paths
 there.
 **Track:** A.
-**Epic 3 estimate: 10 subtasks, 33 man-days.**
+**Epic 3 estimate: 10 subtasks, 33.25 man-days.**
 **Depends on:** **S1**, epic 1's `Syncer`, `Flow`, `pool.New`, `Config`, `Clock`, `Stats` and the
 import test, for T3.1 and T3.2. **S2**, epic 2's test foundations: the fault wrapper's `Inject`,
 `Hold` and `Link` over RFC 4's in-memory store and its record of calls in flight, and
@@ -245,16 +245,16 @@ already state with their two exceptions.
   - Deficits are per flow and class, so are debt and parking (R17). A flow whose deficit plus one
     quantum still does not cover its head's charge, after an overrun returned by `Done`, does not
     stay in the ring to be skipped: it is parked for the number of rounds that would cover it,
-    computed once, in a wheel per store and class of 64 slots, one round each, with one bit per slot
-    in a 64-bit occupancy mask. A flow is parked at most 63 rounds ahead; one needing more is parked
-    at the cap and, still short when it rejoins, parks again, so a debt of *r* rounds costs ⌈*r* /
-    63⌉ O(1) steps over its life, whatever the number of flows. A correction that large comes from a
-    slot held far past its charge, as under `Hold` or E4's floor of minutes against a quantum of
-    about 200 ms. Each slot holds its flows in an intrusive list, each with the round it parked at.
-    At a slot's round the list is spliced onto the store's ring in one step, and each flow is
-    credited the rounds it skipped, as the credit below says, only at its own turn, so *k* flows
-    parked to one round cost one step at that round and one at each of their turns, never *k* in one
-    `Next`.
+    computed at parking and again at each `Done` that shrinks its debt, in a wheel per store and
+    class of 64 slots, one round each, with one bit per slot in a 64-bit occupancy mask. A flow is
+    parked at most 63 rounds ahead; one needing more is parked at the cap and, still short when it
+    rejoins, parks again, so a debt of *r* rounds costs ⌈*r* / 63⌉ O(1) steps over its life,
+    whatever the number of flows. A correction that large comes from a slot held far past its
+    charge, as under `Hold` or E4's floor of minutes against a quantum of about 200 ms. Each slot
+    holds its flows in an intrusive list, each with the round it parked at. At a slot's round the
+    list is spliced onto the store's ring in one step, and each flow is credited the rounds it
+    skipped, as the credit below says, only at its own turn, so *k* flows parked to one round cost
+    one step at that round and one at each of their turns, never *k* in one `Next`.
   - A flow of a class is in its store's ring, in one wheel slot, or in neither: a flow with nothing
     queued, and a flow E4 holds (its T4.5) until its head is a released entry. A parked flow whose
     queue `Remove` or `CloseFlow` empties is unlinked from its slot in O(1), and its deficit is
@@ -272,22 +272,32 @@ already state with their two exceptions.
     with at least one parked, sits out in the store wheel. A store out of the ring for its cap or
     its per-store bound does not: it gets no store turn, so its own ring and flow wheel do not turn
     and its flows are credited nothing for those rounds.
-  - Rounds are counted by a round number per class at the store level and per store and class at
-    the flow level, each read lazily, and beside each a running sum of the quanta those rounds
-    gave. A store's flow wheel advances one slot per round of its own ring. A store that sits out
-    records the class's round number and quantum sum and is parked, for the distance to its flow
-    wheel's next occupied slot found in O(1) through the mask, in the store wheel, built as the flow
-    wheel is (64 slots, a mask, intrusive lists, the same cap). The class's store-level rounds
-    advance the store wheel, so no store is visited while it sits out. At a store slot's round its
-    list is spliced onto the store ring in one step; each store re-enters its quantum bucket, moves
-    its round number on by the class rounds that passed and splices its due flow slot at its own
-    store turn, each step counted by the operation counter, so stores sitting out to one round cost
-    one step at that round and one at each of their turns.
-  - A sitting-out store is unlinked from its slot in O(1) when a flow of the class gets work and is
-    not in debt (a new flow, or a flow with nothing queued that queues), and rejoins the store ring
-    as at a due rejoin; and when its flow wheel empties, as when `Remove` or `CloseFlow` empties its
-    last parked flow, it is unlinked and leaves the store wheel. `RemoveStore` therefore finds the
-    store, whose flows are all closed, off both wheels, and asserts it.
+  - Rounds are counted by a round number per class at the store level and per store and class at the
+    flow level, each read lazily, and beside each a running sum of the quanta those rounds gave, a
+    `uint64` that may wrap: sums are only ever subtracted modulo 2⁶⁴, never compared. A store's flow
+    wheel advances one slot per round of its own ring. A store that sits out records the class's
+    round number and quantum sum and is parked, for the distance to its flow wheel's next occupied
+    slot found in O(1) through the mask, in the store wheel, built as the flow wheel is (64 slots, a
+    mask, intrusive lists, the same cap). The class's store-level rounds advance the store wheel, so
+    no store is visited while it sits out. At a store slot's round its list is spliced onto the
+    store ring in one step; each store re-enters its quantum bucket and the fair share's *n*, moves
+    its round number and its quantum sum on by the class rounds that passed and the quanta they
+    gave, and splices its due flow slot at its own store turn, each step counted by the operation
+    counter, so stores sitting out to one round cost one step at that round and one at each of their
+    turns. Until their turns, *n* and the quantum can lag by up to one round: with pool 8, store A
+    holding 4 and four stores spliced behind it, A can take a fifth worker. The `decision:` marker
+    names that lag.
+  - Whenever a flow of a sitting-out store becomes runnable, the store is unlinked from its slot and
+    rejoins the store ring as at a due rejoin: new work on a flow not in debt, E4 releasing a held
+    flow's head, or a `Done` that clears a parked flow's debt. When a `Done` moves a parked flow to
+    an earlier slot, the store moves to the matching earlier slot of the store wheel. When its flow
+    wheel empties, as when `Remove` or `CloseFlow` empties its last parked flow, the store is
+    unlinked and leaves the store wheel. A store out of the ring for its cap or bound whose last
+    queued flow `Remove` empties, with a flow still parked, moves to the store wheel at once, as if
+    it had left the ring for that reason. Each of these is O(1). E3 has no held flow; E4's T4.5,
+    which adds `Release`, adds the case of a store sitting out behind one flow's debt whose held
+    flow is released: it is served within one round. `RemoveStore` therefore finds the store, whose
+    flows are all closed, off both wheels, and asserts it.
   - A flow or store released from a wheel is credited, at its own turn, the quantum sum now less
     the sum it recorded, capped at its debt plus one quantum: the quanta its rounds actually gave,
     so a slow store whose leaving its bucket lowered the quantum pays its debt in those smaller
@@ -295,8 +305,10 @@ already state with their two exceptions.
     still needed, one more O(1) step.
   - For class order, a class whose store wheel is not empty has work waiting. When its store ring is
     empty, its store wheel jumps to its next occupied slot through the mask before a lower class is
-    served, and the class's round number and quantum sum move on by the jump at the current
-    quantum. Each store and flow it releases is credited as above, at its own turn, so two stores
+    served. The stores it releases re-enter their quantum buckets at the jump, ahead of their turns,
+    and the class's round number and quantum sum then move on by the jump at the quantum those
+    buckets give, so a lone flow in debt is credited the rounds the jump skipped rather than
+    nothing. Each store and flow it releases is credited as above, at its own turn, so two stores
     both in debt keep their difference, and a lone flow in debt is served at once rather than
     waiting for rounds nobody makes.
   - One `Next` costs a fixed number of steps except in one case: when every flow of the class being
@@ -307,8 +319,14 @@ already state with their two exceptions.
     §6.1 ledger holds the row.
   - One dispatch therefore never walks past a flow or store in debt. A `decision:` marker names the
     wheels, their cap, the jump and when it runs, the credit at a flow's turn, that parked flows are
-    not work waiting, and that a queue emptying forgives its flow's debt. An overflow level was not
-    chosen: the cap costs one re-park per 63 rounds of debt and no overflow structure.
+    not work waiting, and that a queue emptying forgives its flow's debt. That forgiveness is RFC 3
+    §2.9's rule (R17), and its ceiling is that R23 holds only for flows that keep work queued: a
+    reader with one transfer outstanding at a time has every overrun forgiven and never parks. The
+    marker also names that a flow's slot is fixed by the quantum it parked at, so a quantum that
+    rises meanwhile can keep it parked past the round its debt was paid, until its slot. It names
+    the evidence that overturns the forgiveness: a profile or B3 run showing such readers taking
+    more than their share of worker-time. An overflow level was not chosen: the cap costs one
+    re-park per 63 rounds of debt and no overflow structure.
   - The fair-share rule tests only the store about to be served: if it holds *k* ≥ 1 workers and
     (*k* + 1) × *n* > the pool, *n* the stores holding or waiting in the class being served, and
     a store with work waiting in that class holds none, that store is served instead, from a list
@@ -496,8 +514,9 @@ already state with their two exceptions.
     share". §2.9's cap bullet opens "No store, and no flow, holds more than a fixed cap of the
     pool's workers at once", which becomes "No dispatch gives a store, or a flow, more than a fixed
     cap of the pool's workers while another has work waiting in the class being served"; its "the
-    cap binds from then on" stays, read as binding each later dispatch. Otherwise RFC 3 contradicts
-    itself.
+    cap binds from then on" stays, read as binding each later dispatch. §8.4's fairness bullet ("no
+    flow or store above its cap (B3)") becomes "no dispatch takes a flow or store past its cap while
+    another has work waiting (B3)". Otherwise RFC 3 contradicts itself.
   - S18 and §2.9's round, accepted text: "A round gives one turn to each store with work waiting in
     the class, and each store's turn to one of its flows in turn." With eight flows on store A and
     one on B, a flow on A waits 15 turns, where a flat round allows 8. And "unless its flow is in
@@ -588,7 +607,7 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
   func New(c Config) *Sched
   func (s *Sched) AddStore(st StoreKey, rate int64)      // bytes per second per worker, the default at first (D5)
   func (s *Sched) RemoveStore(st StoreKey)               // at Unregister; dropped once no entry is granted (D6)
-  func (s *Sched) SetRate(st StoreKey, rate int64)       // D5's mean, at least 1
+  func (s *Sched) SetRate(st StoreKey, rate int64)       // D5's mean, at least 1; re-buckets (D4)
   func (s *Sched) AddFlow(st StoreKey, f FlowKey)
   func (s *Sched) CloseFlow(f FlowKey) []*Entry          // its queued entries, Refused = Closed; parked or not
   func (s *Sched) Add(e *Entry) (victims []*Entry, err error) // T3.4 adds refusals and victims
@@ -674,7 +693,12 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
   when S returns, R23). A parked flow whose second running entry ends with `Done(e, 0)`: it is
   dispatched at the round its smaller debt covers, not at its first slot (catches a park computed
   once). A demand flow in debt with saturated background waiting: the demand is dispatched first
-  (catches a jump run after a lower class, R15). D4's
+  (catches a jump run after a lower class, R15). One store, one flow 3 rounds in debt, every
+  bucket empty at the jump: the flow is dispatched at the jump, not re-parked (catches a jump
+  credited at an empty bucket set). A parked flow whose debt a
+  `Done` clears: it and its store are served within one round (catches a flow put on a ring nobody
+  visits). A capped store whose last queued flow is removed, with a flow still parked: it is in the
+  store wheel at once. D4's
   buckets: the quantum is at least the largest estimate and at most twice it, for estimates across
   every bucket and at exact powers of two, and after a store leaves a bucket another still holds
   (catches a bit cleared too early, R19).
@@ -786,12 +810,12 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
   - `fixed.go`: the cap of R25, the queue and waiter multiples, the class order, with RFC 3
     §2.10's `decision:` note (D9).
   - `half.go`: a half per direction, each with its own `sched`, slot count and lock (R3); `admit`
-    (D10); a queued caller waiting on its entry's wake-up or its `ctx`, removed when `ctx` ends,
-    and giving its slot back through `Done(e, 0)` when `Remove` reports it already dispatched;
-    dispatch on every arrival and every slot returned; `Flow.Close` and `Close` as D6 says; D5's
-    estimate, and the largest encoded block as RFC 3 §2.2 defines it from `Config`'s `HeaderCap`,
-    `BlockTarget`, `Max` and `MaxDecodeLen`, which the quantum and a whole-block fetch's charge
-    read and E7's per-worker figure reuses.
+    (D10); a queued caller waiting on its entry's wake-up or its `ctx`, removed when `ctx` ends, and
+    giving its slot back through `Done(e, 0)` when `Remove` returns `false` and `e.Refused` is
+    `None`, so the entry was dispatched; dispatch on every arrival and every slot returned;
+    `Flow.Close` and `Close` as D6 says; D5's estimate, and the largest encoded block as RFC 3 §2.2
+    defines it from `Config`'s `HeaderCap`, `BlockTarget`, `Max` and `MaxDecodeLen`, which the
+    quantum and a whole-block fetch's charge read and E7's per-worker figure reuses.
   - `upload.go`: `Upload` in the background class, charged at `size`, running `attempt` once with
     a `remote.Meter` that counts moved bytes for D5, returning its error as it is (D1).
   - `stats.go`: D11's counters and `Stats`' walk.
@@ -805,9 +829,9 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
     `Upload` waits or is refused.
   - An `Upload` whose `ctx` ends while queued returns `ctx.Err()`, leaves its queue and holds no
     waiter slot; `Stats` shows the queue empty.
-  - A `ctx` ending just as its entry is dispatched loses no slot: when `Remove` reports the entry
-    already dispatched, the caller gives the slot back through `Done(e, 0)`, and with a pool of 1
-    the next caller is served.
+  - A `ctx` ending just as its entry is dispatched loses no slot: when `Remove` returns `false` with
+    `e.Refused` still `None`, the entry was dispatched, and the caller gives the slot back through
+    `Done(e, 0)`, and with a pool of 1 the next caller is served.
   - `Flow.Close` with three queued and two running uploads: the three fail with `remote.ErrInvalid`
     and count under `closed`, the two finish; `Close` returns only after the last caller leaves.
   - `Flow.Close` with two uploads running, then `Unregister`: it succeeds, the two finish and
@@ -905,7 +929,7 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
 
 ### T3.8 The reference model, its property test and `FuzzSched`
 
-**Subtask T3.8 estimate: 3.75 man-days.**
+**Subtask T3.8 estimate: 4 man-days.**
 
 - **Track:** A. **Depends on:** T3.3, T3.4, and RFC 2 plan epic 2's `fuzz` suite for its command.
 - **Covers:** R1, R4, R15, R17, R19, R22, R23, R26, R28, R29, R30, R31, R32, R33.
@@ -1025,7 +1049,7 @@ suite runs, and E4 and E6 add their rows to it.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T3.1, T3.3, T3.4 | 10.5 | S1 | the pure scheduler, whole, with its table tests |
-| 2 | T3.8 | 3.75 | PR 1, RFC 2 plan epic 2 | the model, the property test and the fuzz target; open beside PR 3 |
+| 2 | T3.8 | 4 | PR 1, RFC 2 plan epic 2 | the model, the property test and the fuzz target; open beside PR 3 |
 | 3 | T3.2, T3.5 | 7.5 | PR 1, S2 | the registry and the pools: the syncer accepts uploads |
 | 4 | T3.9, T3.10 | 5.75 | PR 3 | the §7.2 pool rows and §8.4's counts; open beside PR 5 |
 | 5 | T3.6, T3.7 | 5.5 | PR 3, RFC 4 plan epic 6 | everything that needs `codec.Store`: fetches, the opener, the lifecycle rows |
@@ -1041,6 +1065,12 @@ A suggestion only: one pull request per subtask works as well.
   Revisit when benchmarks show other flows' background fetches starved: `waiters_full` refusals
   under R38's `reason` while one flow's `syncer_waiters` holds most of the bound (R38 reports it
   per flow; the refusal counter has no flow label).
+- **One `Next` can cost more than O(1)** (D3, R20). When every flow of the class being served is
+  in debt past the wheel's 63-round cap, one `Next` re-parks each flow it reaches. RFC 3 §2.9 says
+  "Each dispatch costs O(1)" and §8.4 says the counts at 1 to 1,000 flows MUST be the same (B2).
+  Either RFC 3 names the exception in both places, or T3.1 builds the hierarchical wheel the D3
+  `ponytail:` defers (about 1 man-day more). This is the user's decision; until it is made, D13
+  lists no edit for it and T3.1 builds the capped wheel.
 - **B3 crossed halves; decided** (D13). RFC 3 §7.4's B3 saturated uploads on one flow and
   measured a second flow's fetches, which run in the other half, so its cap clause measured
   nothing. The user decided on 2026-11-26 that B3's second flow issues uploads, so the cap clause
@@ -1055,7 +1085,7 @@ A suggestion only: one pull request per subtask works as well.
   unexported registry and halves through `export_test.go`, and only T3.6 and T3.7 go through
   `Register`.
 - **The plan's epic 3 outline moved in four places**, which is why this epic has 10 subtasks and
-  33 man-days against the plan's 11 and 35. E3 writes only the fixed values it reads (D9); the
+  33.25 man-days against the plan's 11 and 35. E3 writes only the fixed values it reads (D9); the
   hook for E4's throttle limit is the per-store bound's gate, whose setter E4 adds; joins in the
   model are E6's (R33); and "§1.3 unregister"'s health state is E5's with its probes (R11), where
   the plan's epic 3 "Done when" lists it here.
