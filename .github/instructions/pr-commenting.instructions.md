@@ -72,7 +72,7 @@ Good:
 
 ## Review body
 
-The review state is the verdict: **Request changes** if any point is blocking (`REVIEW.md` §2), **Approve** if none is and none of your questions is open, **Comment** while a question of yours is still open. Nobody should have to dig the verdict out of the text.
+The review state is the verdict: **Request changes** if any point is blocking (`REVIEW.md` §2), **Approve** if none is, even with a question of yours still open, **Comment** only when you can't judge. Nobody should have to dig the verdict out of the text.
 
 A reader who skips the inline comments must still know whether the PR can merge and what blocks it. Write the body in this order, and skip any part that would be empty:
 

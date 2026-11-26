@@ -49,6 +49,8 @@ these two, *with the evidence quoted*:
    on the PR's head, checks what a §1 source or the PR itself claims, and
    either passes on the base, or checks behaviour the PR adds or a fix it
    claims to make.
+   A compatibility break (wire, on-disk, API or config) or a wrong result
+   on a named path is a break too, with or without a red test.
    A security hole, or a way to take a node down or exhaust its resources,
    names only its class in a public thread. Its path and evidence go to a
    maintainer privately, as `docs/guide/security.md` asks, never into a public
@@ -92,23 +94,22 @@ that every reference to the old path follows it.
   wherever its other side lives. Any other point outside the delta is a
   follow-up issue.
 - A push after an approval needs a new approval, and an open thread holds
-  the merge. Do not count on the ruleset to hold either: arm auto-merge only
-  once the last push is approved and every thread is resolved. The delta
-  round therefore happens before the merge, not after it.
+  the merge. The delta round therefore happens before the merge, not after
+  it.
 - If you approved text and now find a break in it, say so in those words:
   "my approval at `<sha>` missed this". The break blocks; nothing else
   reopens.
-- When no blocking point is open, old or new, and none of your questions is
-  open, the review is done: approve. If a question is still open, comment
-  instead, as `pr-commenting.instructions.md` says under "Review body".
+- When no blocking point is open, old or new, the review is done: approve.
+  A question of yours that is still open does not hold the approval, since
+  a question is not a blocking point (§2).
 - Cap: two reviewed heads per reviewer. After that, the author and that
   reviewer settle what is left in a quick live review, as
   `pr-commenting.instructions.md` proposes, or in a written summary of what
   is still open. What the live review does not
   settle goes to standup. The same reviewer reviews the head that carries
   what they settled, reviews any other change in that head as an ordinary
-  delta, and approves it unless a blocking point or a question of theirs is
-  still open, one sent to standup included.
+  delta, and approves it unless a blocking point of theirs is still open, one
+  sent to standup included.
 
 ## 4. Reviews never add scope to an open PR
 
