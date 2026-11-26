@@ -5,8 +5,12 @@ name: Storage-v2 build cache
 # one, so the race and coverage build cache that feat/storage-v2's pushes save
 # is out of its reach, and every queue run builds the whole module from
 # nothing. A workflow_run workflow always runs on the default branch, so the
-# entry this one saves, under the very key the unit job looks up, is one every
-# branch can restore.
+# entry this one saves is one every branch can restore.
+#
+# The key is the unit job's with -warm added. A lookup matches its key as a
+# prefix after an exact miss, so the queue's unit job restores this entry. A
+# push run's unit job never hits it exactly, so it still saves its own, fuller
+# entry for feat/storage-v2.
 #
 # decision: only the unit job's race and coverage build is warmed: it is the
 # longest job of a queue run. Go Checks and Integration still build cold in the
@@ -54,13 +58,13 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || 'feat/storage-v2' }}
           persist-credentials: false
 
-      # The checked-out tree's own action, so the key is built exactly as the
-      # unit job builds it.
+      # The checked-out tree's own action, so the key is built as the unit job
+      # builds it.
       - name: Set up Go
         id: go
         uses: ./.github/actions/go-cache
         with:
-          flavor: race-cover
+          flavor: race-cover-warm
 
       - name: Download modules
         if: steps.go.outputs.cache-hit != 'true'
@@ -83,6 +87,11 @@ jobs:
       - name: Vet the module
         if: steps.race.outcome == 'success'
         run: go vet ./...
+
+      # vet compiles only what vetted code imports, not the main packages.
+      - name: Build the module
+        if: steps.race.outcome == 'success'
+        run: go build ./...
 
       - name: Build the cells that run without -race
         if: steps.race.outcome == 'success'
