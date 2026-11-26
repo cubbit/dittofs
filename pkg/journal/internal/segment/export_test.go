@@ -49,3 +49,11 @@ func SeedRecordBufs(stale []byte, n int) [][]byte {
 	}
 	return out
 }
+
+// OpenedForTest drops the pool's opening spare from its goal, as a stream's
+// first roll does before its take, and reports whether it dropped it.
+func (p *Pool) OpenedForTest() bool { return p.opened() }
+
+// OpeningRefusedForTest gives the opening spare back, as a first roll that
+// installed no content segment does.
+func (p *Pool) OpeningRefusedForTest() { p.openingRefused() }

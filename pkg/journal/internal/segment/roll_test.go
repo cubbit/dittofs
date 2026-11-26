@@ -503,8 +503,23 @@ func TestRollSpareRefusalsRiseByOnePerRefusedRoll(t *testing.T) {
 	// class is emptied by its lack of a target, not by the journal — so the
 	// refusals stay the pool's own to refill and are answered `spare`.
 	e := rollBuild(t, streamCap, segment.Targets{Content: 0, Headroom: 1}, nil).withStream(t, 1)
-	awaitCounters(t, "the headroom spare ready", e.pool,
-		func(c segment.PoolCounters) bool { return c.HeadroomBytes == segCap && c.Spares == 0 })
+	// The pool keeps one opening spare in the content class until a stream
+	// installs its first content segment: a second stream's first write
+	// spends it, so the class this stream's rolls see is empty.
+	other := e.withStream(t, 2)
+	if err := e.pool.WaitSpares(t.Context()); err != nil {
+		t.Fatalf("WaitSpares with the opening spare: %v", err)
+	}
+	oh, ob := streamWriteHeader(streamFileID(3), 0, streamTestBody(64, 0x0f), 7, core.Version{Counter: 1})
+	if _, err := other.s.AppendRoll(oh, ob, segment.Roll{}); err != nil {
+		t.Fatalf("the second stream's first write onto the opening spare: %v", err)
+	}
+	if err := e.pool.WaitSpares(t.Context()); err != nil {
+		t.Fatalf("WaitSpares once the opening spare was spent: %v", err)
+	}
+	if c := e.pool.Counters(); c.HeadroomBytes != segCap || c.Spares != 0 {
+		t.Fatalf("the pool reports %+v, want the headroom spare ready and no content spare", c)
+	}
 
 	if got := e.pool.Counters().SpareRefusals; got != 0 {
 		t.Fatalf("a fresh pool already counts %d spare refusals, want 0", got)
@@ -671,8 +686,26 @@ func TestRollAHeadroomTakeTheLedgerRefusedIsNotAnsweredAsHeadroom(t *testing.T) 
 			t.Fatalf("pulling the adopted spare out of the ledger behind the pool's back: %v", derr)
 		}
 	}).withStream(t, 1)
-	awaitCounters(t, "the headroom spare the pool alone still counts", e.pool,
-		func(c segment.PoolCounters) bool { return c.HeadroomBytes == segCap && c.Spares == 0 })
+	// The drop's freed cap lets the pool make the opening spare it keeps for
+	// the stream's first segment, a content spare the roll would take before
+	// the headroom: it is taken out of the roll's reach by hand, and the
+	// make that would replace it is refused at the maximum, which drops the
+	// opening spare, so the content class the roll sees is empty.
+	if err := e.pool.WaitSpares(t.Context()); err != nil {
+		t.Fatalf("WaitSpares with the opening spare made: %v", err)
+	}
+	if got := e.pool.Counters().Spares; got != 1 {
+		t.Fatalf("Spares = %d with the drop's cap freed, want the opening spare's 1", got)
+	}
+	if _, err := e.pool.Take(segment.Content); err != nil {
+		t.Fatalf("the opening spare, held out of the roll's reach: %v", err)
+	}
+	if err := e.pool.WaitSpares(t.Context()); err != nil {
+		t.Fatalf("WaitSpares once the opening spare's replacement was refused: %v", err)
+	}
+	if c := e.pool.Counters(); c.HeadroomBytes != segCap || c.Spares != 0 {
+		t.Fatalf("the pool reports %+v, want the headroom spare the pool alone still counts and no content spare", c)
+	}
 
 	hdr := format.RecordHeader{Kind: format.KindStamp, File: streamFileID(1), Version: core.Version{Counter: 1}, Tag: 7}
 	_, err := e.s.AppendRoll(hdr, format.RecordBody{Cut: 4}, segment.Roll{})
@@ -1551,8 +1584,13 @@ func TestRollTheConstructorGuardsAndTheBadRollOptions(t *testing.T) {
 	}
 
 	// The bad roll options are refused before anything is reserved.
-	awaitCounters(t, "the content spare ready", e.pool,
-		func(c segment.PoolCounters) bool { return c.Spares == 4 })
+	// The target's four and the opening spare the stream has not taken.
+	if err := e.pool.WaitSpares(t.Context()); err != nil {
+		t.Fatalf("WaitSpares before the bad rolls: %v", err)
+	}
+	if got, want := e.pool.Counters().Spares, int64(5); got != want {
+		t.Fatalf("Spares = %d before the bad rolls, want %d: the target's four and the opening spare", got, want)
+	}
 	hold, err := e.pool.Hold(1)
 	if err != nil {
 		t.Fatalf("the Hold: %v", err)

@@ -152,7 +152,7 @@ func TestReserveAhead_PastTheIndexBound(t *testing.T) {
 // refused: the reservation was taken while the journal still had the room
 // Reserve charges an ask against the maximum.
 func TestReserveAhead_BelowHalfTheHeadroom(t *testing.T) {
-	const maxBytes = (5 + testHeadroomSpares) * testSegmentCap
+	const maxBytes = (5 + testOpeningSpares + testHeadroomSpares) * testSegmentCap
 	c, _ := newTestCore(t,
 		capacityCoreOption(maxBytes),
 		func(o *coreOptions) { o.headroomRecords = acceptanceRecords },
@@ -229,7 +229,7 @@ func TestReserveAhead_ReservedAndPlainWriters(t *testing.T) {
 	c, _ := newTestCore(t)
 	s := mustShare(t, c, 1)
 	const writes = 16
-	awaitSettledSpares(t, c, 2*testStreams)
+	awaitSettledSpares(t, c, 2*testStreams+testOpeningSpares)
 	r := reserve(t, c, s, writes*capacity.WriteCharge(4096, testSegmentCap), writes)
 	defer r.Release()
 

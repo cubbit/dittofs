@@ -104,7 +104,7 @@ func TestCore_EROFSTurnsJournalReadOnly(t *testing.T) {
 // in the pool states its ceiling.
 func TestCore_SecondRefusedSpareDirSyncTurnsJournalReadOnly(t *testing.T) {
 	c, seam := newTestCore(t)
-	awaitSettledSpares(t, c, 2*testStreams)
+	awaitSettledSpares(t, c, 2*testStreams+testOpeningSpares)
 	if err := seam.Schedule(kit.Failing(kit.OpSyncDir, "*", 0, syscall.EIO)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestCore_SecondRefusedSpareDirSyncTurnsJournalReadOnly(t *testing.T) {
 	// refill whose make meets the refused directory sync. Each make ends its
 	// pass at the failure, so at least one kicked make landed by the time
 	// the drained pool's first refused sync below is observed.
-	for range 2 * testStreams {
+	for range 2*testStreams + testOpeningSpares {
 		_, _ = c.pool.Take(segment.Content)
 	}
 	dirs := seam.Calls(kit.OpSyncDir)

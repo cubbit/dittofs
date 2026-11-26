@@ -200,6 +200,11 @@ func newRigConfigured(t *testing.T, n int, cfg func(*Config)) *rig {
 	})
 	t.Cleanup(func() { _ = streams.Close() })
 	t.Cleanup(d.Stop)
+	// The streams add the pool's opening spare to its goal: wait for its
+	// make, so no make is in flight when a test holds the next one.
+	if err := pool.WaitSpares(t.Context()); err != nil {
+		t.Fatalf("WaitSpares once the streams were built: %v", err)
+	}
 	r := newRigOver(d, streams, seam, clock, domains, pool, set, n, sinks, c, acct)
 	// The re-append of a held record is pinned to one that always fails, so a
 	// hold a test made stays held and its segment claimed while the test reads

@@ -703,10 +703,10 @@ func TestWriteAt_SpareThenRetrySucceeds(t *testing.T) {
 	// Gate the maker and hold the whole target, so no unreserved take
 	// reaches a spare and none is made to replace it.
 	waitIn(t, 5*time.Second, "the pool to reach its target", func() bool {
-		return c.pool.Counters().Spares >= 2*testStreams
+		return c.pool.Counters().Spares >= 2*testStreams+testOpeningSpares
 	})
 	gate(true)
-	hold, err := c.pool.Hold(2 * testStreams)
+	hold, err := c.pool.Hold(2*testStreams + testOpeningSpares)
 	if err != nil {
 		t.Fatalf("Hold: %v", err)
 	}
@@ -1129,10 +1129,11 @@ func TestWriteAt_SameStreamWritersNeverMeetMidWriteRefusal(t *testing.T) {
 		t.Fatal("the fixture's combined asks do not cross enough segments")
 	}
 	// Gate the maker at the seam: the refill makes nothing while the
-	// writers run, so the pool's four ready spares are all it has, an
-	// unreserved roll IS refused, and a write short of its pieces meets
-	// the refusal the moment its own hold runs out.
-	awaitSettledSpares(t, c, 2*testStreams)
+	// writers run, so the pool's five ready spares — the target's four and
+	// the opening spare — are all it has, an unreserved roll IS refused, and
+	// a write short of its pieces meets the refusal the moment its own hold
+	// runs out.
+	awaitSettledSpares(t, c, 2*testStreams+testOpeningSpares)
 	if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, errMakeSpares)); err != nil {
 		t.Fatalf("Schedule: %v", err)
 	}

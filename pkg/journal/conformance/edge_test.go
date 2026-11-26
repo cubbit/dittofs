@@ -1861,16 +1861,12 @@ func TestEdge_WriteLargerThanSegment(t *testing.T) {
 		f := journaltest.New(t)
 		h, id := f.Share(0), journaltest.File(0)
 
-		// The whole spare pool as it stands before anything the subtest
-		// writes takes from it: spares are made off the write path, and the
-		// count the head write finds here is the count its own roll's
-		// refill has to give back before the holds below are armed, so an
-		// in-flight refill is waited out, never parked behind them.
+		// The spare pool before anything the subtest writes takes from it:
+		// spares are made off the write path, so a whole one is waited for.
 		eventually(t, "the spare pool held no whole spare a roll could take", func() bool {
 			return len(spareNames(t, f)) > 0
 		})
 		wantAccounted(t, f, "before the head write")
-		pool := len(spareNames(t, f))
 
 		// A synced record, so the stream's active segment holds something
 		// and the large write's first piece lands in it with room to
@@ -1883,14 +1879,13 @@ func TestEdge_WriteLargerThanSegment(t *testing.T) {
 		seg := segmentOf(t, f, id, 0)
 
 		// The head's write may have rolled and taken a spare, leaving its
-		// refill in flight. The pool is waited back to the count the head
-		// found - reserve spares are never taken by a roll, so what fell
-		// is what the refill gives back - before the spare-making calls
-		// are held, so no refill the head started parks behind the holds
-		// for the rest of the subtest and leaves the pool empty.
-		eventually(t, "the spare pool did not return to the count the head write found", func() bool {
-			return len(spareNames(t, f)) >= pool
-		})
+		// refill in flight. The pool is waited to its own settle - which
+		// need not give back the count the head found: the spare the
+		// stream's first segment takes may be one the pool keeps only until
+		// then - before the spare-making calls are held, so no refill the
+		// head started parks behind the holds for the rest of the subtest
+		// and leaves the pool empty.
+		f.WaitSpares()
 		wantAccounted(t, f, "once the pool refilled what the head took")
 
 		// The spare-making calls are held before the pool is read again: a

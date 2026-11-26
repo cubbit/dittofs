@@ -22,6 +22,9 @@ const (
 	// testHeadroomSpares is the headroom spares a test core that names
 	// headroom records keeps: one per stream, its few records filling less.
 	testHeadroomSpares = testStreams
+	// testOpeningSpares is the opening spare a test core's pool keeps beside
+	// its content target until its first stream takes a first segment.
+	testOpeningSpares = 1
 )
 
 var testIdentity = core.JournalID{0xd, 0xa, 0x7, 0xa}
@@ -143,6 +146,12 @@ func awaitSpares(t testing.TB, c *Core, maxBytes int64) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the pool never readied its spares: %+v", c.pool.Counters())
 		}
+	}
+	// The pool settles, its opening spare made or refused at the maximum, so
+	// no make is in flight when the test starts; a pool the maximum leaves
+	// short answers its idle shortage.
+	if err := c.pool.WaitSpares(t.Context()); err != nil && !errors.Is(err, core.ErrNoSpace) {
+		t.Fatalf("WaitSpares once the spares were ready: %v", err)
 	}
 }
 

@@ -86,6 +86,10 @@ func TestACrashAfterItsSourcesRecycleKeepsTheCarriedRemoval(t *testing.T) {
 	}
 
 	crashDeferralJournal(t, seam, j)
+	// The parked make goes with the crashed journal: the reopen makes the
+	// opening spare its pool keeps until a stream takes a first segment, and
+	// its spares wait would park behind the hold.
+	spareHold.Release()
 
 	j2 := reopenDeferralJournal(t, seam, dir, id, clock)
 	th2, err := j2.Share(carryCycleTag, 0, Version{})

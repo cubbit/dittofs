@@ -193,6 +193,8 @@ type Pool struct {
 	// Counters reads it without the lock.
 	readyN    [Reserve + 1]atomic.Int64
 	pending   int              // the largest ask of a refused Hold the refill has not yet made up, a level not a sum; guarded by mu
+	opening   bool             // the goal keeps the opening spare: no stream of the pool has taken its first segment yet; guarded by mu
+	anyOpened bool             // a stream of the pool has taken its first segment, so no opening spare is kept again; guarded by mu
 	incoming  [Reserve + 1]int // recycles in flight, reserved per class; guarded by mu
 	holdTaken atomic.Int64     // the open's held takes: segments on disk the open did not re-adopt, standing in the headroom the pool must not re-fill; written under mu, read without it by HeadroomShort
 	// borrowed is the headroom spares an open's re-appends took, which the
@@ -1477,6 +1479,14 @@ func (p *Pool) refill() bool {
 			if errors.Is(err, syscall.ENOSPC) {
 				p.deviceFull = true
 			}
+			// The opening spare is kept only while the maker can afford it:
+			// a content make the journal's maximum or a full device refuses
+			// drops it, so the pool settles at its target as it did before
+			// the opening spare, and a wait does not read it short.
+			var limit *core.NoSpaceError
+			if c == Content && p.opening && (errors.Is(err, syscall.ENOSPC) || errors.As(err, &limit) && limit.Limit == core.LimitJournal) {
+				p.opening = false
+			}
 			// A device answering EROFS to a make enters the read-only state
 			// through the storage the journal wraps, but a device refusing
 			// only its directory syncs would meet each make the same way for
@@ -1545,8 +1555,85 @@ func (p *Pool) refill() bool {
 // finds the ask free beside the holds. The goal reads the live ready and held
 // counts against a level that does not move as spares land, so each landed
 // spare closes the gap by exactly one. The caller holds mu.
+//
+// Beside the target the goal also keeps one opening spare until the first of
+// the pool's streams takes its first segment, so that segment does not spend a
+// target spare and the stream's first roll finds the target in stock. The
+// holds ride inside that allowance rather than on top of it: the first write's
+// own hold is for the opening spare, and counting both would make a spare that
+// sits above the goal through the whole first segment.
+//
+// decision: one opening spare per pool, not one per stream, so a fresh or
+// reopened journal holds one segment cap more than its targets until its first
+// stream rolls, and the same footprint as before from then on. It cures the
+// refusal a stream's first roll otherwise meets every open where the target
+// leaves it one spare: its first segment takes that spare, and its first roll
+// races the make that replaces it, which a fill faster than one make loses.
+// The streams that open after the first draw on the target as every roll
+// does, which holds while fewer than half the target's spares open at once.
+// At the journal's maximum, or on a full device, the opening spare may not
+// fit: the make that is refused for it drops it, and it is not kept again for
+// that pool even once space is freed. Overturned by the owner of
+// RFC 1 §6 ruling that the pre-roll footprint must stay at the target, or by
+// refusals at the first roll of streams opening after the first, which would
+// ask for one opening spare per stream at the cost of a cap each.
 func (p *Pool) contentGoalLocked() int {
-	return int(p.held.Load()) + max(p.t.Content, p.pending)
+	opening := 0
+	if p.opening {
+		opening = 1
+	}
+	return max(p.t.Content, p.pending) + max(int(p.held.Load()), opening)
+}
+
+// addOpening keeps the opening spare in the content goal for a stream built
+// over the pool, unless a stream of the pool has already taken its first
+// segment, and kicks a started pool to make it.
+func (p *Pool) addOpening() {
+	p.mu.Lock()
+	if p.anyOpened || p.opening {
+		p.mu.Unlock()
+		return
+	}
+	p.opening = true
+	started := p.started
+	p.mu.Unlock()
+	if started {
+		p.Kick()
+	}
+}
+
+// opened drops the opening spare from the content goal, for a stream is about
+// to take its first segment, and reports whether this call dropped it. The
+// goal only falls, so nothing is kicked.
+func (p *Pool) opened() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	was := p.opening
+	p.opening = false
+	return was
+}
+
+// openingRefused gives the opening spare back to the content goal after the
+// roll that dropped it installed no content segment, unless another stream
+// has taken its first segment meanwhile, and kicks a started pool to make it:
+// the take's own kick may already have run a pass that settled at the target
+// alone.
+func (p *Pool) openingRefused() {
+	p.mu.Lock()
+	p.opening = !p.anyOpened
+	kick := p.opening && p.started
+	p.mu.Unlock()
+	if kick {
+		p.Kick()
+	}
+}
+
+// firstTaken records that a stream took its first segment: the pool keeps no
+// opening spare from then on.
+func (p *Pool) firstTaken() {
+	p.mu.Lock()
+	p.opening, p.anyOpened = false, true
+	p.mu.Unlock()
 }
 
 // settleDemandLocked clears the demand level once the ready content spares
