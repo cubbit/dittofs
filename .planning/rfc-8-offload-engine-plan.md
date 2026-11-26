@@ -1185,6 +1185,7 @@ proposed targets: the first real-service run does (§6.1).
 | RFC 8 §16 Q6: upload delay for young data, and manual sync | unspecified policy | unowned | a measurement shows re-uploads of soon-overwritten data |
 | Detecting bucket-setting drift: `Recheck` runs, raising the store's drift condition the engine reads (epic 20) | `Recheck`'s only caller is GC; drift goes undetected in v1.1 | RFC 9 | GC's `Recheck` lands |
 | §11.2's metadata-store-lost row and the salvage's recovery-import side (epic 20) | RFC 26's | RFC 26 | the recovery import is built |
+| A scratch path on a journal's thin pool: `salvage.path` sharing only an LVM thin pool with a journal is not detected as shared free space (epic 20's D6) | the check compares device, filesystem, btrfs device and ZFS pool; a thin pool needs the device mapper's volume group | unowned | a deployment puts a scratch path on a journal's thin pool |
 
 ## 7. RFC coverage
 
