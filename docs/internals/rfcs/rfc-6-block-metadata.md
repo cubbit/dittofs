@@ -1097,7 +1097,9 @@ whose keys would take the nearest block's commit past K ride in no block either
 zero refs, replacing what they overlap with the history moves and count changes
 that requires, and that makes the per-file checks below. It writes no block
 record, no chunk record and no intent delete, and it stays within K like any
-commit ([§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)). Without it a stretch of zeros would never leave the journal.
+commit ([§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)). A run of zero refs
+whose keys would pass K splits into several zero-ref commits, each counting its
+files' per-file keys. Without it a stretch of zeros would never leave the journal.
 
 **The first block to commit a chunk owns its record.** A later commit that carries
 the same chunk adopts it: it adds its refs and their counts, and leaves `block`

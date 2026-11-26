@@ -142,8 +142,8 @@ can cite them. Where the obligation's other half is the caller's, the row says s
 | R10 | Blocks are cut from the chunks of every file in the pass, one file after another, by P1 to P5 alone, so one block may hold the tail of one file, several files whole and the head of another | invariant | RFC 2 §5.3 | T5.2 |
 | R11 | A file's chunks within a block are contiguous and in offset order: the fold keeps the order it is given, which the caller supplies in file order, file after file | invariant | RFC 2 §5.1, §5.3, A5 | T5.2 |
 | R12 | A block holds only the chunks whose bytes it carries: no all-zero chunk is in a plan's carried chunks | invariant | RFC 2 P3, A2 | T5.3 |
-| R13 | Zero refs within no block's span, before a stretch's first carried chunk, after its last, or in a stretch that is all zeros, join the commit of the nearest block of the pass; which block is nearest is D1's. Zero refs that would take that commit past `K` close it and commit in a zero-ref commit, a plan with no carried chunk, in the middle of a pass as at its end (D2) | invariant | RFC 2 P2; RFC 6 §4.1 | T5.3, T5.4 |
-| R14 | A pass whose carved extents hold only all-zero chunks has no block: its zero refs commit in one zero-ref commit, within `K` like any commit, which the fold returns as a plan with no carried chunk | MUST | RFC 6 §4.1 ("Zero refs with no block commit alone"); RFC 8 §6.3 (Commit); E1's D3 | T5.3 |
+| R13 | Zero refs within no block's span, before a stretch's first carried chunk, after its last, or in a stretch that is all zeros, join the commit of the nearest block of the pass; which block is nearest is D1's. Zero refs that would take that commit past `K` close it and commit in zero-ref commits, plans with no carried chunk, each within `K`, in the middle of a pass as at its end (D2) | invariant | RFC 2 P2; RFC 6 §4.1 | T5.3, T5.4 |
+| R14 | A pass whose carved extents hold only all-zero chunks has no block: its zero refs commit in zero-ref commits, each within `K` like any commit and as many as `K` needs, which the fold returns as a plan with no carried chunk | MUST | RFC 6 §4.1 ("Zero refs with no block commit alone"); RFC 8 §6.3 (Commit); E1's D3 | | T5.3, T5.4 |
 | R15 | A chunk repeated within one pending block is carried once and referenced each time; one repeated across blocks is carried in each; nothing else is reused without a lookup | invariant | RFC 2 P6, A6; `kvstore.BlockCommit`, which refuses a chunk carried twice | T5.3 |
 
 **The key budget**
@@ -227,7 +227,8 @@ order (R11).
   delete, block record or GC index key), and charging them at open splits a pass of zeros that fits
   one commit (at `K` = 20, per-block keys 5 and per-file keys 1, 18 zero refs of one key each close
   at 14). The chunk that would take a plan of zero refs past `K` with the per-block keys closes it
-  as a zero-ref commit and starts the next. A zero-ref plan in the middle of a pass is routine, not
+  as a zero-ref commit and starts the next. A zero ref that would take a zero-ref plan past `K` closes it the same way:
+  a zero run longer than `K`'s worth folds to several zero-ref commits, each charged its files' keys. A zero-ref plan in the middle of a pass is routine, not
   a caller fault: at `K` = 100, per-block and per-file keys 1, a chunk of 90 keys, 20 zero refs and
   a chunk of 90 keys fold to [the first chunk and 8 zero refs], [12 zero refs] and [the second
   chunk], and no stretch end avoids it: two block commits hold at most 200 keys, and the chunks and
@@ -419,7 +420,7 @@ test/suites.yaml        T5.5  FuzzFold's line in the fuzz suite, its timeouts ra
 **Subtask T5.4 estimate: 1.75 man-days.**
 
 - **Track:** C. **Depends on:** T5.3.
-- **Covers:** R9, R13, R16 to R20, R23, R34.
+- **Covers:** R9, R13, R14, R16 to R20, R23, R34.
 - **Deliverables:** in `assembler.go`, the open plan's keys: the per-block keys when it gains its
   first carried chunk (D2's `decision:`), the per-file keys at its first ref and whenever a ref's
   file differs from the previous ref's (D3's `decision:`), each ref's `Keys`, zero refs and repeats
@@ -447,7 +448,9 @@ test/suites.yaml        T5.5  FuzzFold's line in the fuzz suite, its timeouts ra
     the middle one with no carried chunk (catches zero refs that fit no block merged into the next
     block's commit past `K`, R13); - 18 zero refs of one key each at `K` = 20, per-block keys 5 and
     per-file keys 1: one plan of 19 keys (catches the per-block keys charged to a plan with no
-    carried chunk, which splits it at 14, R14, R17);
+    carried chunk, which splits it at 14, R14, R17); and 45 zero refs of one key each in one file at
+    `K` = 20, per-file keys 1: three zero-ref plans of 20, 20 and 8 keys, each charged the file's key
+    (catches a zero run past `K` left in one plan, or a later plan missing its per-file key, R14, R17);
   - one chunk at exactly `K`: alone, keys `K` (catches an off-by-one that closes at `K` − 1 or lets
     `K` + 1 through, R18);
   - zero refs before the first carried chunk, after the last and in an all-zero stretch beside a
@@ -563,6 +566,6 @@ A suggestion only: one pull request per subtask works as well.
    per-block keys only when the plan carries a chunk, and refuses, with a count, a plan over `K`,
    which only a lone chunk its Carve state failed to end the stretch before can be (D4), so no
    object is put for a commit that cannot apply. What a pass returns for a file whose extents a held
-   plan kept is not settled: RFC 8 §6.3 returns `Retry` for anything unreported, which backs the
-   file off and counts toward O6's five failed passes, though holding back is not a failure. The
-   RFC 2 plan's ledger row "A held plan's outcome" holds it.
+   plan kept is decided: `Done`, its extents left Dirty, where RFC 8 §6.3 returns `Retry`, which
+   backs the file off and counts toward O6's five failed passes, though holding back is not a
+   failure. The RFC 2 plan's ledger row "A held plan's outcome" holds it for RFC 8.
