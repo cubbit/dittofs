@@ -153,9 +153,10 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 			continue
 		}
 
-		// A share Bind would refuse is refused here alone: it is not
-		// attached, and Stats names it, while the other shares are served.
-		if err := validShare(s); err != nil {
+		// A share whose settings Bind would refuse is refused here alone: it
+		// is not attached, Stats names it and Start logs it, while the other
+		// shares are served.
+		if err := validSettings(s); err != nil {
 			o.stats.Shares[s.ID] = ShareStats{Device: dir, Refused: err}
 
 			continue

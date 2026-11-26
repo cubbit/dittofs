@@ -48,16 +48,10 @@ var Settings = engine.Settings{
 	FillLowWater:            0.10,
 }
 
-// ShareSettings are the share settings every fixture share is bound with:
-// RFC 13 Appendix B's proposed values, as the node's content wiring passes
-// them. A test that needs another value copies this and overrides only that
-// field.
-var ShareSettings = engine.ShareSettings{
-	MaxAge:            5 * time.Second,
-	ReadaheadBlocks:   8,
-	ReadaheadBytes:    64 << 20,
-	SpeculationBudget: 256 << 20,
-}
+// ShareSettings are the share settings the node's content wiring binds every
+// share with, and so every share ShareOf and AddShare return: RFC 13 Appendix
+// B's proposed values. A test building a Share by hand starts from it.
+var ShareSettings = content.Binding(entity.Share{}, 0).Settings
 
 // fixtureStart is when the fixture's clock starts.
 var fixtureStart = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

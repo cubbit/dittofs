@@ -161,6 +161,10 @@ func (e *Engine) Bind(ctx context.Context, s Share) error {
 		e.mu.Unlock()
 
 		return errRemoved
+	case b == nil && len(e.journals) > 0 && e.health.Shares[s.ID].Refused != nil:
+		e.mu.Unlock()
+
+		return heldBack(s.ID)
 	case b != nil:
 		err := b.change(s)
 		e.mu.Unlock()
@@ -177,12 +181,6 @@ func (e *Engine) Bind(ctx context.Context, s Share) error {
 		// the journal up to the old one meanwhile.
 		if s.Limit != b.share.Limit {
 			e.d.Logger.Warn("journal limit change applies only when the share is bound again", "share", s.ID)
-		}
-
-		// A served share keeps the store it was attached with, as no flow
-		// is opened on a store yet.
-		if s.Store != b.share.Store {
-			e.d.Logger.Warn("store change applies only when the share is bound again", "share", s.ID)
 		}
 
 		return nil
@@ -204,8 +202,23 @@ func (e *Engine) Bind(ctx context.Context, s Share) error {
 	return e.attach(ctx, s, vl, raised)
 }
 
-// validShare refuses a share Bind and Start cannot attach: a zero ID or tag,
-// a negative limit, a state the engine does not know or a setting not
+// heldBack refuses a Bind of share id, which Start refused for its settings
+// over an open journal.
+//
+// decision: a share Start refused is not attached by a later Bind, even with
+// valid settings, because Start's replay, clone rebuild and removal
+// collection (RFC 8 §2.5 steps 3 and 4) never ran for it and Bind runs none
+// of them: attaching it would serve its files without the writes its journal
+// holds. It is served from the next start. Withdraw this once a Bind of such a
+// share runs those steps for it, or Start runs them and holds back only the
+// publish.
+func heldBack(id entity.ShareID) error {
+	return fmt.Errorf("engine: share %v: refused at start, so its journal was not replayed: served from the next start: %w",
+		id, vfserr.ErrUnavailable)
+}
+
+// validShare refuses a share Bind cannot attach: a zero ID or tag, a
+// negative limit, a state the engine does not know or a setting not
 // positive.
 func validShare(s Share) error {
 	var why string
@@ -219,6 +232,19 @@ func validShare(s Share) error {
 		why = "the journal limit is negative"
 	case s.State != Serving && s.State != Quiesced:
 		why = "the state is unknown"
+	default:
+		return validSettings(s)
+	}
+
+	return fmt.Errorf("engine: share %v: %s: %w", s.ID, why, vfserr.ErrInvalid)
+}
+
+// validSettings refuses share s's settings when one is not positive. Start
+// checks them alone, refusing that share and serving the rest.
+func validSettings(s Share) error {
+	var why string
+
+	switch {
 	case s.Settings.MaxAge <= 0:
 		why = fmt.Sprintf("offload.max_age %v is not positive", s.Settings.MaxAge)
 	case s.Settings.ReadaheadBlocks <= 0:
@@ -419,9 +445,6 @@ func (e *Engine) publish(b *binding) error {
 	t[b.share.ID] = b
 	e.shares.Store(&t)
 	e.raised[b.share.Shard] = struct{}{}
-	// A share Start refused for its settings is served now: Stats no longer
-	// names it refused.
-	delete(e.health.Shares, b.share.ID)
 
 	return nil
 }
