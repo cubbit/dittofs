@@ -919,7 +919,7 @@ material" (but its crash leg, epic 19's), §15.2's "§10 occupancy triggers evic
 stays green; RFC 8 E3, E11, E33 hold.
 
 **Expected content:**
-- The eviction loop per journal, started at start step 7, triggered by allocated occupancy, with
+- The eviction loop per journal, which epic 19's start step 7 starts, triggered by allocated occupancy, with
   `evict` by segment and RFC 8 §10.1's `ponytail:`; the loop's fixed tick (§4.3).
 - `repackDue` in the loop; the repack-at-refusal `ponytail:` and the dirty-bytes `decision:` deleted.
 - Steps 2 and 3 in the refusal's caller for the journal's own capacity: eviction by segment, then
@@ -936,7 +936,7 @@ stays green; RFC 8 E3, E11, E33 hold.
   attempt then abandoned and its extents offered again under current material (RFC 8 §10.4 as
   amended), with its `decision:` on an undeclared loss. The legs: a destroy between pin and
   Commit, a master key's destroy refusing a commit on a data key it wraps, between Commit and Mark, and with no replacement material (epic 15's Intent refusal).
-- Eviction never gated by locks, opens or snapshots; a retention pin honoured as policy; a
+- Eviction never gated by locks, opens or snapshots; a retention pin deferred (§6.1); a
   `decision:` at `evict` that it trusts the offloaded bit while bucket-setting drift goes undetected
   (§6.1's drift row), withdrawn when `Recheck` runs.
 - The counters of RFC 8 §14's local-space row.
