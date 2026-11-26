@@ -274,7 +274,8 @@ size to choose (RFC 2 §1.2, the RFC 8 offload plan's epic 15).
   inputs are several slices), and a 32-byte sum. A `Hasher` holds its chaining-value stack and a 16 KiB group buffer, about 18 KiB on its
   caller's stack, so it is started in place (`InitKeyed`, `InitDeriveKey`) rather than returned by value, which would copy
   them per chunk. `InitDeriveKey` copies its context into the group buffer and hashes it from
-  there, rather than converting it with `[]byte(context)`: the block-name context is 37 bytes, and
+  there, a group at a time when it is longer than the buffer, then resets the buffer and the stack
+  before any key material is written, rather than converting it with `[]byte(context)`: the block-name context is 37 bytes, and
   a conversion the compiler cannot make zero-copy allocates above Go's 32-byte stack buffer
   (`tmpStringBufSize`, checked in go1.26.10's `runtime/string.go`), once per `BlockName`. Whether it
   is zero-copy depends on the compiler proving the hasher never changes or keeps the slice, which
@@ -308,6 +309,8 @@ size to choose (RFC 2 §1.2, the RFC 8 offload plan's epic 15).
   `Max` bytes per chunk; a larger one moves less often, which is the caller's to size (RFC 2 §10.5,
   at most 2 × `Max`). A `decision:` at the loop says so. Prior art: `bufio.Reader.fill` (checked). Applied by T4.4,
   the loop, and T4.6, the count of empty reads, which lands with `stall`, the reader that tests it.
+  Until T4.6 the marker states the buffer sizing only, and says the loop has no bound on empty
+  reads yet; T4.6 replaces that sentence with the bound.
 
 - **D4, `consumed` is what `emit` accepted, and a reader's error stops `Cut` at once.**
   On every return, success or error, `consumed` is the end of the last chunk `emit` returned nil
@@ -510,7 +513,7 @@ test/suites.yaml           T4.1, T4.8  carver-allocs reaches ./internal/blake3; 
   with the chunk's length written before its bytes; the two keys and the unkeyed hash (catches a
   plaintext ID, R7), seen to fail with the key ignored; the zero value. Its allocations are counted
   by `TestAllocsHasher` and through `Cut` by `TestAllocsCut`; the import rows over a planted import
-of `pkg/settings` in `carve` (R1). No test double.
+  of `pkg/settings` in `carve` (R1). No test double.
 - **Rules:** rule 7, the rows; rule 9, D2's `decision:`. Others as §2 says.
 
 ### T4.3 The block name
@@ -528,20 +531,23 @@ of `pkg/settings` in `carve` (R1). No test double.
   - `BlockName` over `Vectors.Name`'s scope, nonce, chain ID and IDs gives `Vectors.Name.Name`.
   - Swapping two distinct IDs, changing one byte of the scope, the nonce or the chain ID each gives
     a name other than `BlockName` over the unchanged inputs. The golden name is not the reference
-    here: a `BlockName` that drops an input or sorts the IDs never gives it anyway, so a perturbed
-    name would differ from it even when the input is ignored.
+    here: a `BlockName` that drops an input never gives it anyway, nor one that sorts the IDs
+    unless the golden IDs are already sorted, so a perturbed name would differ from it even when
+    the input is ignored.
   - For the golden inputs and for a block of one chunk, `BlockName` equals the test's own
     `internal/blake3` key derivation under the context over `0x10` ‖ scope ‖ nonce ‖ `0x20` ‖ chain
-    ID ‖ IDs, and differs from the same hash with `0x11` for the scope's length byte.
+    ID ‖ IDs. It also differs from the same hash with `0x11` for the scope's length byte, which
+    restates RFC 2 §9's `name` row and cannot fail once the first check passes.
 - **Tests:** at `BlockName`, as the Intent state calls it: the golden name (catches a changed
   construction, which orphans every stored block, R8, R10), seen to fail with the context string
   changed; each perturbation against the unperturbed name (catches a name that ignores order or
   leaves an input out, R9, R10), each seen to fail on its own break: the IDs sorted before hashing,
-  the nonce not written, the chain ID not written; the hand-built input (catches the scope's
-  length byte left out or another prefix, and the context dropped for the keyed mode, R8, R9,
-  R10), seen to fail with the length byte left out and with the keyed mode used. A one-chunk name
-  never equals its chunk's ID whatever `BlockName` does, since its input has a 66-byte prefix, so
-  R9's domain separation is the hand-built check's, not a comparison with the ID. The vector's
+  the scope not written, the nonce not written, the chain ID not written; the hand-built input
+  (catches the scope's length byte left out or another prefix, and the context dropped for the
+  keyed mode, R8, R9, R10), seen to fail with the length byte left out and with the keyed mode
+  used. A one-chunk name differs from its chunk's ID in either mode while `BlockName` writes the
+  66-byte prefix, so a comparison with the ID cannot see the domain separation lost, and R9's is
+  the hand-built check's. The vector's
   chain ID is E2's, computed from RFC 5 §2.8's table. No test double.
 - **Rules:** as §2 says.
 
@@ -556,8 +562,8 @@ of `pkg/settings` in `carve` (R1). No test double.
     checks, the fill loop, `NextBoundary` from each chunk's start with `final` once the reader is
     done, the hash over `buf[start:end]`, `emit` handed `buf[start:end:end]`, so an `emit` that
     appends cannot write over the next chunk's bytes, and `consumed`. `Cut`'s doc comment gains
-    D4's sentence on `base`. Consumed by the RFC 8 offload plan's epic 15 at its Carve state, and by
-    T4.5 to T4.8.
+    D4's sentence on `base`. Consumed by the RFC 8 offload plan's epic 15 at its Carve state once
+    T4.5 adds the artificial end (CP3), and by T4.5 to T4.8.
   - `carve`'s row in E1's `imports_test.go` admits `internal/chunker`, and `section`'s row the
     same, since it reaches what `carve` reaches.
   - `TestAllocsCut`, which joins `carver-allocs` by its name.
@@ -588,7 +594,8 @@ of `pkg/settings` in `carve` (R1). No test double.
   slice (catches a copy per chunk, R16, R17), seen to fail with `emit` handed a copy; the refusals
   and the offset cases (R11, R12), seen to fail with the overflow check removed;
   `TestAllocsCut`, skipped under `prof.RaceEnabled` (catches an allocation, R18), seen to fail with
-  a per-chunk `make`; E1's walk over `Cut`'s import of `internal/chunker` (R1). The
+  a per-chunk `make`; E1's walk over `Cut`'s import of `internal/chunker` (R1), seen to fail with
+  `internal/chunker` left out of `carve`'s row. The
   benchmarks are run, not asserted: E7 holds them to §10.5. No test double.
 - **Rules:** rule 4, the count; rule 7, the rows; rule 9, D3's and D4's `decision:`. Others as §2
   says.
@@ -673,12 +680,16 @@ of `pkg/settings` in `carve` (R1). No test double.
   R31, R32), seen to fail with the refill moved by one byte and, for the shapes, with the last
   chunk padded to `Min`. The boundary-at-the-refill stretches are cut from one long seeded input, so
   no byte is planted. Searching seeds for one whose boundary sits at the refill point ± 1 would
-  cost about `Target`² bytes of reference cutting per case, some 16 TiB at a 4 MiB `Target`.
-  Instead the test cuts the long input once with the reference, takes two consecutive ends `e` and
-  `b`, and starts the stretch at `b` − the buffer's length ± 1, so `b` lands at the first refill
-  point or a byte to either side. It checks that the reference cut of the stretch itself ends a
-  chunk there, since a cut from a new start need not meet the old ends at once, and moves to the
-  next pair when it does not. That costs a few cuts of the input at any `Target`. No test double.
+  cost about `Target` × `Max` bytes of reference cutting per case, some 64 TiB at a 4 MiB `Target`.
+  Instead the test cuts the long input once with the reference, takes each end `b` in turn, and
+  starts the stretch at `b` − the buffer's length ± 1, so `b` lands at the first refill point or a
+  byte to either side. It checks that the reference cut of the stretch itself ends a chunk there,
+  since a cut from a new start need not meet the old ends at once, and moves to the next end when
+  it does not. The input is a fixed 64 × `Max` bytes, and the test fails, naming the buffer, the
+  offset and the `Target`, when no end qualifies, so a case never falls back to a plain reference
+  match. A chunk exactly the buffer's length is the `Max`-byte chunk `Zeros` gives under the
+  unkeyed table, in the `Max`-byte buffer; in the `Max` + 1 one no chunk is that long. That costs
+  a few cuts of the input at any `Target`. No test double.
 - **Rules:** rule 5, `Cut` as the Carve state calls it. Others as §2 says.
 
 ### T4.8 The fault sweep and the fuzzed properties
