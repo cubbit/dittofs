@@ -62,8 +62,8 @@ although the code is written by an agent.
 epic-level figure, and no subtask id. Where it depends on RFC 22's plan, it names that plan's epic
 and what the epic builds.
 **Defaults used from Step 0:** dashboards none (#9); output path the default (#10). The target
-branch is `feat/storage-v2`; the plan document lands on `develop` and is cherry-picked, as the
-other planning documents are. External dependencies: RFC 20's plan (its scaffold, landed; its epic
+branch is `feat/storage-v2`; the plan document lands there too, as the
+other planning documents do. External dependencies: RFC 20's plan (its scaffold, landed; its epic
 7 for S5 and S7), RFC 22's plan's epic 4 (`gss`, S6c), RFC 18's plan (#4058): its
 S2 for `Spell`, `Find` and resolution (S6a), its E5 for Kerberos (S6b); RFC 17's service on
 `feat/storage-v2`, with its plan's piece 13, the held clone wait, reaching the branch with the next

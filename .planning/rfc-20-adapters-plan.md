@@ -41,8 +41,8 @@ the `pkg/adapter` and `internal/adapter` paths, so no name carries a version.
 **Estimates** are human man-days on the shared scale of `rfc-to-epic-plan`, kept as they are
 although the code is written by an agent; a scale for agent-written work is proposed on #3524.
 **Defaults used from Step 0:** dashboards none (#9); output path the default (#10). The target
-branch is `feat/storage-v2`, on which RFC 17's plan has merged; the plan document itself lands on
-`develop` and is cherry-picked, as the other planning documents are.
+branch is `feat/storage-v2`, on which RFC 17's plan has merged; the plan document lands there
+too, as the other planning documents do.
 
 ## 1. Introduction
 
