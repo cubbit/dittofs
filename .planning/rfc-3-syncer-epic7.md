@@ -219,8 +219,9 @@ node passes the pool's size (D6).
   block's real share but no bound states it; changing to it later changes one computation and no
   caller. Prior art: `golang.org/x/sync/semaphore`'s weighted reservation, from memory.
 - **D2, the snapshot reads a published registry and takes no lock.** E3's D11 has `Stats` walk
-  the registry under the registry's lock, and E3's D6 takes that same lock at every call's entry
-  and exit, so a walk would stall calls on their way to dispatch. Instead the registry publishes an
+  the registry under the registry's lock, which no transfer call takes (E3's D6 counts callers in
+  an atomic) but `OpenFlow` and `Flow.Close` do, so a scrape over a thousand flows stalls every
+  flow opened or closed meanwhile. Instead the registry publishes an
   immutable list of its stores and their flows through an `atomic.Pointer`, replaced under the
   registry's lock at `Register`, `Unregister`, `OpenFlow` and `Flow.Close`, which no dispatch
   makes. `Stats` loads the list and the atomics E3 to E6 keep, and takes no lock at all. What is
@@ -237,7 +238,7 @@ node passes the pool's size (D6).
   publication says so, and that a check of the pool size reads the store's own record. Withdraw it
   if a consumer compares that sum with the pool. Not chosen: a seqlock or a two-copy latch over
   every gauge, whose reader retries while dispatches publish, so its cost grows with the dispatch
-  rate; and E3's walk under the registry's lock, which §9 asks E3 to change. Prior art: the
+  rate; and E3's walk under the registry's lock, which T7.1 replaces (§9). Prior art: the
   journal's `Stats`, a walk that takes no lock writes need (`TestStatsAfterOpenWalksNoLock`,
   `pkg/journal/conformance`); read-copy-update publication, from memory.
 - **D3, the heap check's figures.**
@@ -527,8 +528,8 @@ A suggestion only: one pull request per subtask works as well.
 - **RFC 3 §2.12's `syncer_inflight_bytes`, pending the user.** D1 reports the bytes reserved, which
   never exceed the bound by construction. Proposed text for its row: "bytes reserved by transfers
   in flight, the per-worker figure of §2.2 for each busy worker".
-- **E3's D11 changes under D2.** E3 walks the registry under its lock, which E3's D6 also takes at
-  every call's entry and exit; T7.1 replaces that walk with the published list. If E3's breakdown
+- **E3's D11 changes under D2.** E3 walks the registry under its lock, which `OpenFlow` and
+  `Flow.Close` also take; T7.1 replaces that walk with the published list, as E3's D11 says. If E3's breakdown
   adopts the list itself, T7.1 loses about 0.5 man-days.
 - **E6 is not broken down yet.** T7.3's detached case assumes E6 holds a detached caller's chunk in
   a buffer the fetch half owns until the caller's next iteration, counted in `DetachedBuffers`,
