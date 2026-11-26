@@ -61,7 +61,11 @@ func (k *kerberos) Step(ctx context.Context, in []byte) ([]byte, bool, error) {
 	if n := len(res.Keys.Session); n != 16 && n != 32 {
 		return nil, false, logonFailure(fmt.Errorf("a context key of %d bytes", n))
 	}
-	k.ctx = &Context{Evidence: res.Identity.Evidence, Keys: res.Keys}
+	c, err := KerberosContext(res.Identity.Evidence, res.Keys, false)
+	if err != nil {
+		return nil, false, logonFailure(err)
+	}
+	k.ctx = c
 	return frame(res.Keys.APRep, tokAPRep), true, nil
 }
 

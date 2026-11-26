@@ -129,7 +129,7 @@ suites:
         tier: pr
       # The adapters' allocation gates, which skip under -race.
       adapter-allocs:
-        cmd: go test -timeout=5m ./internal/adapter/adaptertest/testproto/ ./internal/adapter/core/ ./internal/adapter/nfs/protocol/ ./pkg/resources/ ./internal/adapter/nfs/wire/ ./internal/adapter/smb/protocol/ ./internal/adapter/smb/wire/
+        cmd: go test -timeout=5m ./internal/adapter/adaptertest/testproto/ ./internal/adapter/core/ ./internal/adapter/gss/ ./internal/adapter/nfs/protocol/ ./pkg/resources/ ./internal/adapter/nfs/wire/ ./internal/adapter/smb/protocol/ ./internal/adapter/smb/wire/
       # The architecture rules, the CLI reference check and the scan for environment names the
       # start refuses read the whole module, so a change anywhere can break them, and the OpenAPI
       # document check reads openapi.json, a file that is no Go package's; with no {packages},

@@ -93,12 +93,17 @@ func (i *KerberosInitiator) Step(_ context.Context, in []byte) ([]byte, bool, er
 	case len(i.auth.SubKey.KeyValue) > 0:
 		keys.Session = i.auth.SubKey.KeyValue
 	}
-	i.ctx = &gss.Context{Keys: keys}
+	c, err := gss.KerberosContext(vfs.Evidence{}, keys, true)
+	if err != nil {
+		return nil, false, fmt.Errorf("gsstest: %w", err)
+	}
+	i.ctx = c
 	return nil, true, nil
 }
 
 // Context is the initiator's context once the AP-REP checked: its Keys, the
-// same context key as the acceptor's, and no Evidence.
+// same context key as the acceptor's, no Evidence, and its MIC and VerifyMIC
+// under the initiator's key usages.
 func (i *KerberosInitiator) Context() *gss.Context { return i.ctx }
 
 func frame(inner []byte, id uint16) []byte {

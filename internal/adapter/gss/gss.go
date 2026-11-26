@@ -24,4 +24,10 @@ type Context struct {
 	// They key the context's per-message tokens and are never copied into an
 	// Identity.
 	Keys vfs.Keys
+	// MIC is RFC 4121 §4.2.6.1's MIC token over msg, read where it lies: the
+	// RPCSEC_GSS verifier and krb5i's checksum.
+	MIC func(msg []byte) ([]byte, error)
+	// VerifyMIC checks a peer's MIC token tok over msg: the RPCSEC_GSS
+	// verifier and krb5i's checksum a client sends.
+	VerifyMIC func(msg, tok []byte) error
 }

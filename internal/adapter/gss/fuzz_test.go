@@ -2,12 +2,17 @@ package gss
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"encoding/asn1"
 	"encoding/binary"
 	"testing"
 	"time"
 
+	"github.com/jcmturner/gokrb5/v8/crypto"
+	"github.com/jcmturner/gokrb5/v8/crypto/common"
+
 	"github.com/cubbit/dittofs/pkg/identity/identitytest"
+	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 // krb5 is the Kerberos V5 mechanism's OID as RFC 4121 §1 writes it.
@@ -64,6 +69,88 @@ func FuzzKrb5Token(f *testing.F) {
 		}
 		if again := frame(inner, tokAPReq); !bytes.Equal(again, tok) {
 			t.Fatalf("unframe(%x) frames back to %x", tok, again)
+		}
+	})
+}
+
+// refParseMIC reads RFC 4121 §4.2.6.1's MIC token as the RFC lays it out,
+// apart from parseMIC: octets 0-1 TOK_ID 04 04, octet 2 Flags, octets 3-7
+// Filler FF, octets 8-15 SND_SEQ big-endian, then SGN_CKSUM, 12 octets for
+// the two aes*-cts-hmac-sha1-96 types.
+func refParseMIC(tok []byte) (flags byte, seq uint64, sum []byte, ok bool) {
+	if len(tok) != 28 || tok[0] != 0x04 || tok[1] != 0x04 || !bytes.Equal(tok[3:8], []byte{0xff, 0xff, 0xff, 0xff, 0xff}) {
+		return 0, 0, nil, false
+	}
+	for _, b := range tok[8:16] {
+		seq = seq<<8 | uint64(b)
+	}
+	return tok[2], seq, tok[16:], true
+}
+
+// FuzzMICToken holds parseMIC to the second parser and VerifyMIC to an
+// independent checksum: parseMIC accepts exactly what the second parser
+// reads, with the same fields, which re-encode to the token's bytes; and an
+// acceptor's VerifyMIC accepts exactly the tokens the second parser reads
+// whose checksum is gokrb5's own HMAC-SHA1-96 under the initiator's sign
+// usage over the message and header. Catches a field read from the wrong
+// octets, a length or filler unchecked, a checksum over other bytes or
+// compared short, and a read past the token.
+func FuzzMICToken(f *testing.F) {
+	key := []byte("1234567887654321")
+	acc, err := KerberosContext(vfs.Evidence{}, vfs.Keys{Session: key}, false)
+	if err != nil {
+		f.Fatal(err)
+	}
+	init, err := KerberosContext(vfs.Evidence{}, vfs.Keys{Session: key}, true)
+	if err != nil {
+		f.Fatal(err)
+	}
+	// MIT krb5's published token over "message", from t_invalid.c.
+	f.Add([]byte("message"), []byte("\x04\x04\x00\xff\xff\xff\xff\xff\x00\x00\x00\x00\x00\x00\x00\x00\x97\xe9\x63\x3f\x9d\x82\x2b\x74\x67\x94\x8a\xd0"))
+	f.Add([]byte("message"), []byte("\x04\x04\x00\xff\xff\xfe\xff\xff\x00\x00\x00\x00\x00\x00\x00\x00\x97\xe9\x63\x3f\x9d\x82\x2b\x74\x67\x94\x8a\xd0")) // its filler altered
+	f.Add([]byte("message"), []byte("\x05\x04\x00\xff\xff\xff\xff\xff\x00\x00\x00\x00\x00\x00\x00\x00\x97\xe9\x63\x3f\x9d\x82\x2b\x74\x67\x94\x8a\xd0")) // a Wrap token's ID
+	for _, msg := range [][]byte{nil, []byte("a call's header"), bytes.Repeat([]byte{0x5a}, 1000)} {
+		tok, err := init.MIC(msg)
+		if err != nil {
+			f.Fatal(err)
+		}
+		f.Add(msg, tok)
+		reflected, err := acc.MIC(msg)
+		if err != nil {
+			f.Fatal(err)
+		}
+		f.Add(msg, reflected)
+	}
+	// Linux's and knfsd's tokens from the capture, each over its bytes.
+	for _, c := range capturedInits {
+		for _, m := range capturedMICs(f, c.name) {
+			f.Add(m.msg, m.tok)
+		}
+	}
+	f.Fuzz(func(t *testing.T, msg, tok []byte) {
+		flags, seq, sum, err := parseMIC(tok)
+		rflags, rseq, rsum, ok := refParseMIC(tok)
+		if (err == nil) != ok {
+			t.Fatalf("parseMIC(%x) = %v; the second parser reads it: %v", tok, err, ok)
+		}
+		if err == nil {
+			if flags != rflags || seq != rseq || !bytes.Equal(sum, rsum) {
+				t.Fatalf("parseMIC(%x) = flags %#02x, seq %d, sum %x; the second parser reads %#02x, %d, %x", tok, flags, seq, sum, rflags, rseq, rsum)
+			}
+			if again := append(appendMICHeader(nil, flags, seq), sum...); !bytes.Equal(again, tok) {
+				t.Fatalf("parseMIC(%x) re-encodes to %x", tok, again)
+			}
+		}
+		want := false
+		if ok {
+			ref, err := common.GetChecksumHash(append(bytes.Clone(msg), tok[:16]...), key, usageInitiatorSign, crypto.Aes128CtsHmacSha96{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want = hmac.Equal(ref, tok[16:]) && tok[2]&(flagSentByAcceptor|flagAcceptorSubkey) == 0
+		}
+		if err := acc.VerifyMIC(msg, tok); (err == nil) != want {
+			t.Fatalf("VerifyMIC(%x, %x) = %v; the independent checksum verifies: %v", msg, tok, err, want)
 		}
 	})
 }
