@@ -1098,12 +1098,20 @@ func TestASyncSnapshottingItsCorruptDebtRacesTheQueueNothing(t *testing.T) {
 	// The writer's steps run without the test's t helpers on its stack, each
 	// error relayed to the channel the test goroutine reads after the join:
 	// a t.Fatalf in the writer would end the wrong goroutine's run.
+	//
+	// The writer stops at a fixed number of drops, not only at done: every
+	// drop leaves a trace in structures the prof.Watch below reads at the
+	// test's end — the rig's account and lock order, the stream's corrupt
+	// debt — and how long the pairing runs for is the machine's timing, not
+	// the test's, so an unbounded writer made the watched footprint say
+	// whatever the runner's speed said.
+	const drops = 10000
 	var done atomic.Bool
 	syncs := new(atomic.Int64)
 	failing := make(chan error, 1)
 	go func() {
 		defer close(failing)
-		for !done.Load() {
+		for n := 0; !done.Load() && n < drops; n++ {
 			v, err := cr.d.counters.Draw()
 			if err != nil {
 				failing <- err

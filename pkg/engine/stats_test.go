@@ -75,7 +75,10 @@ func TestStatsReportsExistenceCommitFailing(t *testing.T) {
 func TestStatsReportsABatchFailingWhole(t *testing.T) {
 	on := new(atomic.Bool)
 	u := newUnit(t, onCommit(closedWhile(on)))
-	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 16, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Second
+	settings.GroupCommitMaxFiles = 16
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	f := u.create(t, "a")
@@ -142,7 +145,9 @@ func TestStatsReportsJournalSyncFailedForAnHour(t *testing.T) {
 	u := newUnit(t)
 	// No existence commit falls due within the test's clock jumps, so no
 	// group commit starts a store transaction a later jump would see stalled.
-	if err := u.e.Apply(engine.Settings{ExistenceAge: 24 * time.Hour, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = 24 * time.Hour
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	f := u.create(t, "a")
@@ -311,7 +316,10 @@ func TestStatsTakesNoFileStateLock(t *testing.T) {
 // Stats runs beside 100 writes and the group commit committing them.
 func TestStatsBesideWrites(t *testing.T) {
 	u := newUnit(t)
-	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Millisecond, GroupCommitMaxFiles: 8, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Millisecond
+	settings.GroupCommitMaxFiles = 8
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	stop := make(chan struct{})

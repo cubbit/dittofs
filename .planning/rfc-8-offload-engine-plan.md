@@ -633,7 +633,7 @@ test/engine/known.yaml                  E12
 - **D5 — the node's content wiring composes each store, with no adapter.** The syncer's `Store` is a
   get and a probe, and `Flow.Upload` takes the put as an attempt closure (the RFC 3 plan's D8). RFC
   4's `codec.Store` implements `Store` as it is: `Get` with a `remote.Meter`, `Health` passed through,
-  and `NewPut(name, src)` returning a `*Put` whose `Attempt(ctx, m)` is one try and whose `Stored()`
+  and `NewPut(name, nonce, pin, src)` returning a `*Put` whose `Attempt(ctx, m)` is one try and whose `Stored()`
   gives the ranges and census. So `internal/node/content` builds one `codec.Store` per store, with
   RFC 5's chain, registers it with its `ProbeKey`, and hands the pipeline a function that builds the
   attempt; epic 15 passes `put.Attempt` to `Flow.Upload(ctx, name, size, attempt)`. No error is
@@ -821,7 +821,7 @@ Its four §15.1 rows run a pass end to end, so they are epic 16's to turn green 
   material destroyed (RFC 8 §10.4), the chain pinned, the name minted once per attempt from a
   cryptographic nonce, `Intend`.
 - Put: `Flow.Upload(ctx, name, size, put.Attempt)`, where `put` is the `*Put` the binding's store
-  builds with `NewPut(name, src)` over a source streamed from the offer (D5); its `Stored()`, read
+  builds with `NewPut(name, nonce, pin, src)` over a source streamed from the offer (D5); its `Stored()`, read
   once `Upload` succeeds, gives Commit the ranges and the census. Hashes recomputed, one attempt
   closure per name, no second retry layer.
 - A zero-ref commit in `kvstore` and the pipeline: a pass whose chunks are all zeros records no
@@ -919,7 +919,7 @@ material" (but its crash leg, epic 19's), §15.2's "§10 occupancy triggers evic
 stays green; RFC 8 E3, E11, E33 hold.
 
 **Expected content:**
-- The eviction loop per journal, started at start step 7, triggered by allocated occupancy, with
+- The eviction loop per journal, which epic 19's start step 7 starts, triggered by allocated occupancy, with
   `evict` by segment and RFC 8 §10.1's `ponytail:`; the loop's fixed tick (§4.3).
 - `repackDue` in the loop; the repack-at-refusal `ponytail:` and the dirty-bytes `decision:` deleted.
 - Steps 2 and 3 in the refusal's caller for the journal's own capacity: eviction by segment, then
@@ -936,7 +936,7 @@ stays green; RFC 8 E3, E11, E33 hold.
   attempt then abandoned and its extents offered again under current material (RFC 8 §10.4 as
   amended), with its `decision:` on an undeclared loss. The legs: a destroy between pin and
   Commit, a master key's destroy refusing a commit on a data key it wraps, between Commit and Mark, and with no replacement material (epic 15's Intent refusal).
-- Eviction never gated by locks, opens or snapshots; a retention pin honoured as policy; a
+- Eviction never gated by locks, opens or snapshots; a retention pin deferred (§6.1); a
   `decision:` at `evict` that it trusts the offloaded bit while bucket-setting drift goes undetected
   (§6.1's drift row), withdrawn when `Recheck` runs.
 - The counters of RFC 8 §14's local-space row.
@@ -1055,8 +1055,8 @@ it after, as RFC 8 §2.6 orders.
   `codec.Store` over it, against LocalStack behind a fault proxy (S7).
 - The syncer built once and closed after the engine; remote stores registered per configuration, one
   client per store configuration, ref-counted, with their probe keys; until the RFC 4 plan's epic 8
-  derives it, each client is built with the limit `upload_workers + fetch_workers + 1` (the syncer's two
-  pools and the probe; GC's bound joins with RFC 9), never lower, and its constructor refuses a limit of
+  derives it, each client is built with the limit `upload_workers + fetch_workers + 2` (the syncer's two
+  pools and one probe per direction; GC's bound joins with RFC 9), never lower, and its constructor refuses a limit of
   0 or less. The syncer's per-worker encoded bound is computed once at start and
   passed for both halves: `MaxDecodeLen(Max)` over every registered transform, `Max` being the
   largest of the namespaces the process serves at start, never below the default 1 MiB; nothing
@@ -1177,9 +1177,12 @@ proposed targets: the first real-service run does (§6.1).
 | The node's upload drain calling `WaitOffloaded` (D12) | `drain` is RFC 30's, deferred by the RFC 23 plan | RFC 30's plan | that plan adds the verb |
 | The lost-journal acknowledgement's admin-only node action, writing the record epic 19 reads (§6 point 1) | RFC 23 §4 names no such action yet, and the RFC 23 plan gives `acknowledge-unreadable` itself to RFC 28's plan; until one lands an operator has no call that writes the record | RFC 28's plan | that plan adds `acknowledge-unreadable` |
 | RFC 16 §3 naming `Lifecycle`'s read of the lost-journal acknowledgement, which RFC 8 §2.1 marks a proposal (§6 point 1) | the read is named with the action that writes it | RFC 28's plan | that plan adds `acknowledge-unreadable` |
+| The unread-range acknowledgement at a refused open: `Deps.AcknowledgeUnreadable`, the retry running it, and the "acknowledging the range instead" leg of §15.1's "§2.5 unread range at start" (epic 19's D9) | its one trigger is RFC 23 §3.3's `acknowledge-unreadable`, which the RFC 23 plan gives RFC 28's plan; until it lands no acknowledgement reaches the engine, and a range that never reads keeps its journal's shares unattached | RFC 28's plan | that plan adds `acknowledge-unreadable` |
+| Placing a new share on one of several journal devices: the shard's journal identity written from a placement the control plane chooses (epic 19's D5) | no RFC says how a share's device is chosen; until one does, a share is created with no journal identity, which binds on a one-device node and is refused by name on a node with several | unowned | a node is deployed with more than one journal device |
 | The master-key destroy's check that no retained salvage export names the key (RFC 5 Appendix B.2), now that epic 20 writes exports | the destroy lands with its first caller | RFC 5's plan | the master-key destroy lands |
 | The benchmarks run per change against an emulator (§6 point 4) | a per-change cell needs a baseline, which epic 22 records first | unowned | the RFC 4 plan's epic 3 brings LocalStack into `integration` and epic 22 has recorded the baselines |
 | §15.4's daily runs against each real service, and the real-service baselines that replace its proposed targets (its `decision:`) | CI holds no real-service credentials and runs no daily cell | unowned | CI gains a daily cell with real-service credentials |
+| An operator's retention pin excluding a share from eviction (RFC 8 §10.4's MAY; §10.2's second row) | no setting or record names a pin; epic 18 evicts every share alike | unowned | a setting or record names a retention pin |
 | An eviction loop woken by the journal's occupancy crossing its target, not a fixed tick (§4.3) | the fixed tick's lag is covered by the inline refusal path | unowned | B3 shows refusals a sooner eviction would have avoided |
 | Fuzz or model targets for the queue's keys and the pacing law (rule 2, RFC 8 §15.3's `ponytail:`) | tables check them | unowned | a table check misses a bug a random input would have found |
 | RFC 8 §16 Q6: upload delay for young data, and manual sync | unspecified policy | unowned | a measurement shows re-uploads of soon-overwritten data |

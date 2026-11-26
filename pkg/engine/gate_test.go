@@ -7,9 +7,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
@@ -323,11 +323,9 @@ func TestAContentCallOnAnOpenShareLeavesItsGate(t *testing.T) {
 	other := u.bindShare(t, "other", u.share.Namespace)
 	id := u.share.ID
 
-	if err := u.e.Apply(engine.Settings{
-		ExistenceAge:        time.Minute,
-		GroupCommitMaxFiles: 1,
-		CloneMaxLen:         1 << 30,
-	}); err != nil {
+	settings := enginetest.Settings
+	settings.GroupCommitMaxFiles = 1
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 

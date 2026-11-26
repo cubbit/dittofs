@@ -15,12 +15,12 @@ chain's halves), and the §8.1 and §8.2 rows §3 names; [RFC 25](../docs/intern
 **Depends on:** S2. From E1: the root contract (`ID`, `Stage` and its constants, `Transform`,
 `Encoded`, `Factory`, `Config`, `Chain`, `Attempt`, `ErrMalformed`, `ErrTooLarge`), `keys`
 (`MaterialID`, `Provider`, the material errors), and `chain`'s `Register` and `NewChain` with stub
-bodies and the dependencies `NewChain` takes: a logger and a recorder for RFC 5 §6's series that
-can be resolved once per transform at build, `Require []string` and `Encrypts
+bodies and the dependencies `NewChain` takes: a logger and a recorder for RFC 5 §6's series whose
+`For` resolves one transform's `TransformRecorder` at build, `Require []string` and `Encrypts
 func(entity.NamespaceID) bool` (D11); `Transform.Version` and `Encoded.ID` (D12). From E2: the in-memory `keys.Provider` under `keystest`, whose current material a test can
 change, which can be told an ID is unknown or destroyed, and whose exported call count backs "the
 provider records no call"; RFC 5 §2.8's three chain-ID vectors and §2.4's envelope vectors (0, 1
-and 3 IDs, E2's R23) from the shared vector script.
+and 3 IDs, the plan's §1.4) from the shared vector script.
 **Blocks:** E4, partly: `Register` and the registry's `MaxDecodeLen` (T3.1) hold a compressor's
 registration; E8, partly: a data-key rotation's new chain ID is `Attempt.ID` (T3.3); E9: settings
 are validated by building the chain with `NewChain` (T3.2), and its `require` key and T15's
@@ -37,7 +37,8 @@ Epic 3 makes the chain real: any set of registered transforms composed in RFC 5'
 order, behind the self-describing envelope, with the bounds that size every buffer downstream,
 the pin that fixes one block's chain and material, the chain ID that names it, and the series a
 custom transform gets without writing any. It needs no shipped transform: every test runs on test
-transforms registered in the custom ID range.
+transforms, in the custom ID range except the vector test's, which declare the vectors' shipped IDs
+in a test's own registry (T3.3).
 
 **At the end of the epic:**
 
@@ -82,7 +83,8 @@ recorder, test transforms, the fuzz target, allocation tests, the overhead bench
 - The store configuration's settings rows, the bound `encrypts`, T15's refusals at a
   configuration change and the default chain: E9. T15's decode half runs through T3.5's check
   with E9's input (R30, D11).
-- `transform_census_blocks` and the census per material: E10. Encryption's own series: E5.
+- `transform_census_blocks` and the census per material: E10. Encryption's own series: E9's series
+  spec (E5's D6).
 - Through the codec and the engine: the ranged get of §2.4's row, T5's "the store does not open",
   T6, T7 and T8 end to end: E11.
 - `Provider.Remove`, its fence and its count of open pins, which `Attempt.Release` will feed: the
@@ -227,16 +229,21 @@ nothing.
   stage, so an absent or declining stage costs nothing; then the envelope, 2 + 2 × 3 bytes. Each
   transform's bound is taken at its default settings, which bounds a configured one only while no
   transform's bound grows with its settings (§1.2's ledger row); R5's test holds it for the test
-  transforms, and `transformtest` checks each bound grows with `n`. The per-stage maxima are found
-  once in `NewChain`. Prior art: none found.
+  transforms, and `transformtest` checks each bound grows with `n`. Only the grouping of the
+  registered transforms by stage is found once in `NewChain`: `MaxEncodedLen(x, nil)` depends on
+  `x`, so which transform bounds a stage can change with `n`, and each `MaxDecodeLen(n)` call takes
+  every stage's maximum over all of its registered transforms. Prior art: none found.
 - **D3, the chain returns its own decode errors.** Whatever a step or the provider returns, the
   chain returns a value of its own that wraps one sentinel with `%w`, two for unknown material, and carries the cause
   as text only, so no foreign type is reachable through `errors.As`, even one that itself wraps a
-  sentinel. A transform's `Decode` error that is no sentinel becomes `ErrMalformed`; a provider
-  error that is no sentinel, a cancelled context included, becomes `ErrMaterialUnavailable`, since
-  the material could not be reached now (§2.7); `ErrUnknownMaterial` becomes a value that is both
+  sentinel. Once the call's context has ended, any error from a step or the provider becomes
+  `ErrMaterialUnavailable` wrapping `ctx.Err()`, checked before the mapping below: a cancelled read
+  is retryable, and must not reach the `malformed` ticket (RFC 5 §6) on an intact body. Otherwise a
+  transform's `Decode` error that is no sentinel becomes `ErrMalformed`; a provider error that is no
+  sentinel becomes `ErrMaterialUnavailable`, since the material could not be reached now (§2.7);
+  `ErrUnknownMaterial` becomes a value that is both
   `ErrMaterialUnavailable` and `ErrUnknownMaterial` under `errors.Is`, so the codec treats it as
-  unavailable and T3.6's `material_unknown` label still tells it apart.
+  unavailable and T3.6's `ReasonUnknownMaterial`, labelled `material_unknown`, still tells it apart.
 - **D4, the census view hands the provider the census's `MaterialID`.** It matches a requested ID
   to a census entry on namespace, kind and ID, and calls the provider with the census entry, so the
   fingerprint the provider checks comes from block metadata: a body names a key by its ID alone
@@ -256,10 +263,13 @@ nothing.
   marker at the label. Prior art: none found.
 - **D8, buffers.** Each step but the last writes into a buffer allocated for it; `Chain.Decode`'s
   last step decodes into the caller's `dst`, and `Attempt.Encode` writes the envelope and the last
-  output into `dst`, one copy. So a step's `dst` never overlaps its input (R22), and a chain of one
-  applied transform allocates nothing with a caller's `dst`. A `ponytail:` marker names the
-  per-step allocation and the copy, and the upgrade: pooled scratch when a put or get profile shows
-  them. Prior art: none found.
+  output into `dst`, one copy. So a step's `dst` never overlaps its input (R22). With a caller's
+  `dst`, a chain of one applied transform allocates once per call, which RFC 5 §3.1's signatures
+  require: `Attempt.Encode` returns a fresh `[]Encoded`, and `Chain.Decode` hands each step a census
+  view holding that call's census and namespace as a `keys.Provider`, which escapes; a per-attempt
+  slice would break R33. A `ponytail:` marker names the per-step allocation, the copy and these
+  two, and the upgrade: pooled scratch, or a caller's buffer in the signatures, when a put or get
+  profile shows them. Prior art: none found.
 - **D9, `require` is resolved at build.** Each name in `require` must be registered, or `NewChain`
   fails; the check runs on the parsed envelope before any decode, against the resolved IDs and, for
   an encrypting namespace, any transform of the encrypt stage, so replacing one encryption
@@ -280,7 +290,9 @@ nothing.
   uint8`, the format version its `Encode` writes, which `Pin` reads for the chain ID before
   anything is encoded (§2.8), and `Encoded` gains `ID`, the transform that wrote the body, which
   `Attempt.Encode` fills so a transform cannot misreport it and the census records it (RFC 4
-  §3.2, RFC 5 §5.3). RFC 5 §3.1 is amended in this document's pull request; E1 declares both.
+  §3.2, RFC 5 §5.3). `Attempt.Encode` also fails the put when an `Encoded`'s `Version` differs from
+  the `Version()` the pin read, since the chain ID would then name another format than the census
+  records, and a retirement by census (§5.3) would move the wrong blocks. RFC 5 §3.1 is amended in this document's pull request; E1 declares both.
   Prior art: none found.
 
 ## 5. Target tree
@@ -327,12 +339,16 @@ docs/internals/rfcs/rfc-5-transforms.md  T3.4  §8.3's suites line names the fuz
   - A registered transform with a bad stage or a mismatched ID fails the decode set's build, and so
     does a failing default factory; a test transform declaring a `data-key` kind builds against a
     provider that holds no data key.
-- **Tests:** at `Register` and `Chain.MaxDecodeLen`, which E4 and the content wiring call: a
+- **Tests:** at `Register` and the registry's bound, which E4 and the content wiring reach, the
+  bound through an unexported function `export_test.go` exposes, since no `Chain` exists before
+  T3.2's `NewChain` (T3.2 repeats the comparison through `Chain.MaxDecodeLen`): a
   duplicate ID and a duplicate name each panic (catches a reused ID, R1); a test transform that
   declares stage 4 fails the build (catches R2), and one returning another ID (catches D7); a
   failing default factory fails it (catches D1); `MaxDecodeLen` over the 50% transform and an
   identity in another stage, compared with a hand-computed value, with the 50% transform not
-  configured (catches a bound taken from the configured chain, R4, R3).
+  configured (catches a bound taken from the configured chain, R4, R3); two transforms of one stage,
+  one adding 1000 bytes and one adding half, at a small and a large `n` (catches a stage's bound
+  chosen once, D2).
 - **Rules:** rule 9: D1's `decision:` marker at the decode set's build.
 
 ### T3.2 NewChain and its refusals
@@ -371,7 +387,7 @@ docs/internals/rfcs/rfc-5-transforms.md  T3.4  §8.3's suites line names the fuz
   provider's error unchanged (R12); the attempt holding the configured transforms and their pinned
   material, `ID`, `Release` (D6). `chainid.go`: §2.8's encoding and `blake3.DeriveKey` under
   `dittofs transform chain id v1`; it reads each transform's format version through `Version()`
-  (D12), and fills `Encoded.ID`. A test transform with a material kind, whose `Encode` writes the material ID it was
+  (D12). A test transform with a material kind, whose `Encode` writes the material ID it was
   given. Consumed by T3.4 (the attempt's bounds and `Encode`), E8 (a new data key's chain ID) and
   the RFC 8 offload plan's epic 15 (the pin).
 - **Acceptance criteria:**
@@ -403,14 +419,16 @@ docs/internals/rfcs/rfc-5-transforms.md  T3.4  §8.3's suites line names the fuz
   set's ID-to-stage lookup, returning the IDs and the payload's offset, refusing every case of R17
   with `ErrMalformed`. `codec.go`: `Attempt.MaxEncodedLen` and `Attempt.LengthOf` composed under
   the pinned material; `Attempt.Encode` running the configured transforms in stage order with
-  their pinned material, writing the envelope and returning one `Encoded` per applied transform;
+  their pinned material, writing the envelope and returning one `Encoded` per applied transform,
+  with `ID` filled by the chain and a `Version` other than the pinned `Version()` refused (D12);
   `Chain.Decode` parsing the envelope, looking each ID up in the decode set, giving each step its
   bound (R20) and returning `ErrTooLarge` for an output above it; the buffers of D8; the error
   discipline of D3. `FuzzChainDecode` over the test transforms with a census: no panic, every read
   offset inside the body, no output above `max`, only the five errors, and an accepted envelope
   re-encodes to its own bytes. RFC 5 §8.3's suites line naming the target (rule 2). Test
-  transforms: one that declines every chunk, and a fault wrapper whose `Decode` returns a foreign
-  error type, one that wraps `ErrMalformed` among them (kind 3). Consumed by T3.5, T3.6, T3.7 and
+  transforms: one that declines every chunk; a fault wrapper whose `Decode` returns a foreign
+  error type, one that wraps `ErrMalformed` among them; and one whose `Encode` reports another ID or
+  `Version` than its own (kind 3). Consumed by T3.5, T3.6, T3.7 and
   RFC 4's codec.
 - **Acceptance criteria:**
   - Round trips through every combination of the test transforms, from 1 byte to the chunk
@@ -438,7 +456,11 @@ docs/internals/rfcs/rfc-5-transforms.md  T3.4  §8.3's suites line names the fuz
   row, R16); encode twice and from two chains of one configuration, byte-equal, the length check,
   and a body naming the pinned key after a rotation (catch R10, R11, R23, R24, R25); the
   foreign-error wrappers surface `ErrMalformed` and `errors.As` finds no foreign type (catches R26,
-  D3); each step's `dst` shares no memory with its input (catches R22); 64 goroutines under `-race`
+  D3); a wrapper's `Decode` returning `ctx.Err()` after the test cancels gives
+  `ErrMaterialUnavailable`, recorded as `material_unavailable` (catches a cancel read as
+  corruption, D3); the wrapper reporting another ID gives an `Encoded` naming the real one, and one
+  reporting another `Version` fails the put (catch an ID or version taken from the transform,
+  D12); each step's `dst` shares no memory with its input (catches R22); 64 goroutines under `-race`
   against the sequential results (catches R33); T3.2's `slog` sink holds no line after the round
   trips (catches a line per chunk, R32).
 - **Rules:** rule 2: the target joins the nightly `fuzz` suite of the RFC 2 plan's epic 2. rule 9:
@@ -483,10 +505,10 @@ docs/internals/rfcs/rfc-5-transforms.md  T3.4  §8.3's suites line names the fuz
 
 - **Track:** A. **Depends on:** T3.5.
 - **Covers:** R31, R32.
-- **Deliverables:** `series.go`: one handle per transform name, resolved from the recorder at
-  build for the configured transforms and the decode set, plus the `envelope` handle (D7);
+- **Deliverables:** `series.go`: one `TransformRecorder` per transform name, from `Recorder.For`
+  at build for the configured transforms and the decode set, plus the `envelope` handle (D7);
   recording around each call in `Attempt.Encode` and `Chain.Decode`: chunks by `applied`, bytes
-  and time by direction, decode failures by error. Consumed by the content wiring, which
+  and time by direction, decode failures by `FailureReason`. Consumed by the content wiring, which
   implements the recorder over the root's registry, and by E9's series specs.
 - **Acceptance criteria:**
   - After a known sequence of encodes, declines and failures, each series holds exactly the
@@ -508,8 +530,9 @@ docs/internals/rfcs/rfc-5-transforms.md  T3.4  §8.3's suites line names the fuz
 - **Track:** A. **Depends on:** T3.6.
 - **Covers:** R32.
 - **Deliverables:** `allocs_test.go`: `TestAllocs…` asserting allocations per operation with a
-  caller's `dst`: none for the envelope parse, for recording, and for `Attempt.Encode` and
-  `Chain.Decode` through one applied transform, and one per further applied step (D8), skipping
+  caller's `dst`: none for the envelope parse and for recording, one for `Attempt.Encode` and one
+  for `Chain.Decode` through one applied transform (D8's `[]Encoded` and census view), and one per
+  further applied step (D8), skipping
   under `-race`; `unit`'s `transform-allocs` option in `test/suites.yaml` (`tier: pr`, D10);
   `bench_test.go`: the chain around two identity transforms against the transforms' own times,
   reported by hand as RFC 5 §8.3 says. Consumed by E4, E5 and E6, which add their allocation tests

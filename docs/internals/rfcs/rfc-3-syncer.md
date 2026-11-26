@@ -374,7 +374,7 @@ type Flow interface {
     // Upload runs the put attempt of block name: it calls attempt once per try, up
     // to §2.4's bounds, and returns nil only once a call of attempt returned nil.
     // attempt makes one put of the whole block and reports its wire bytes to m;
-    // RFC 4's codec.Store.NewPut(name, src) builds it (RFC 4 §4.3).
+    // RFC 4's codec.Store.NewPut(name, nonce, pin, src) builds it (RFC 4 §4.3).
     Upload(ctx context.Context, name remote.Name, size int64, attempt func(ctx context.Context, m remote.Meter) error) error
     Fetch(ctx context.Context, name remote.Name, want []remote.ChunkRange) iter.Seq2[remote.Chunk, error]
     Prefetch(ctx context.Context, name remote.Name, want []remote.ChunkRange) iter.Seq2[remote.Chunk, error]
@@ -507,7 +507,8 @@ therefore holds one chunk and one header, never the whole block, which is what
 sets the bound of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound).
 
 **`Upload`** runs the put of a block as a closure, `attempt`, which the caller
-builds with `codec.Store.NewPut(name, src)` over the `src` that yields the
+builds with `codec.Store.NewPut(name, nonce, pin, src)`, under the attempt's
+nonce and pinned chain, over the `src` that yields the
 block's chunks from the journal ([§3.2](#3.2%20It%20holds%20a%20reference%2C%20not%20a%20copy), [RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)). Each call of `attempt` is
 one try: it encodes and transforms each chunk beneath the syncer and puts the
 whole block. The syncer never sees a byte of it, transformed or not
@@ -1208,7 +1209,10 @@ each direction on its own:
 - stores registered under one `ProbeKey` ([§1.3](#1.3%20Interface)) — the engine gives one key to
   stores that share an endpoint, credential and bucket — **MUST** share one probe
   per direction for detecting an outage. A permission that differs by prefix is
-  not seen by the shared probe, and is caught by the failure window below;
+  not seen by the shared probe, and is caught by the failure window below. The
+  syncer runs at most one probe per `ProbeKey` and direction at a time, a
+  store's own re-admission probe included, so the client the stores share
+  carries at most two, which its limit counts ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers));
 - two consecutive failed probes make the direction unhealthy, and two
   consecutive successful ones make it healthy again, once its re-admission
   backoff has run and except as the failure window below restricts. After a
@@ -1585,14 +1589,20 @@ needs, and its cost **MUST NOT** grow with the number of transfers in flight.
 
 Metric names are shown without the deployment's prefix. Every metric is labelled with `half` (`upload` or `fetch`) and `store`; the half
 is also the direction the health metrics describe. Queue metrics also carry
-`class` (`demand`, `background` or `speculation`, [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)). Queue
+`class` (`demand`, `background` or `speculation`, [§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)). The queue
+metrics are `syncer_queue_depth`, `syncer_waiters` and `syncer_queue_wait_seconds`; no counter
+is one, so `syncer_refused_total` is labelled by `reason` alone, with no `class`. Queue
 gauges (`syncer_queue_depth`, `syncer_waiters`) are also reported per flow, which
 the engine exports by share under RFC 25's worst-n rule; the syncer knows a flow
 by its id, and the engine replaces it with the share when it exports
-([§1.3](#1.3%20Interface)). Queue histograms and counters are reported summed
+([§1.3](#1.3%20Interface)). The queue histogram is reported summed
 only. The syncer reports each queue gauge summed over all flows too, so the
 total needs no query across series and survives the engine capping how many
-shares it exports one by one. The syncer
+shares it exports one by one. Each bound a gauge below is read against is fixed by the
+half's pool size ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)): the waiter bound is eight times `syncer_workers`, the
+detached-buffer cap equals it, and the throttle limit's cap is three quarters of it, rounded
+down. So none is exported as a `_limit` series ([RFC 25 §2.2](rfc-25-observability.md#2.2%20Units)); a dashboard derives it
+from `syncer_workers`. The syncer
 **MUST** make every metric below observable:
 
 **Pools** — is the syncer the limit?

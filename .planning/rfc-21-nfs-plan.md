@@ -1079,11 +1079,18 @@ under `adapters.nfs`, its default and its check (#4059's D2, D3); `pjdfstest`, `
 `known.yaml` rewritten for v2 with each entry naming this plan's epic issue and RFC 21 §13's
 expected failures listed by name; D11's settings closed as decided. Two fixture fixes in
 `test/suites.yaml` come with the suites, so they fail none of their tests on the fixture: the
-`pjdfstest` fixture's `users` drops uid 65534 for another, since 65534 is anonymous (epic 7's R2) and
-the v2 store refuses a user record holding it, so a pjdfstest run as 65534 would lose its per-user
-grant; and the `pynfs` fixture's `users` gains uids 123 and 10000 to 10019, which pynfs `nfs4.0`
+`pjdfstest` fixture's `users` drops uid 65534, since 65534 is anonymous (epic 7's R2) and the v2
+store refuses a user record holding it, and its share grants `Anonymous` read-write, since pjdfstest's
+tests act as 65534 themselves (`chown/00.t`'s `-u 65534`), which no other fixture uid replaces, and
+reach that grant; and the `pynfs` fixture's `users` gains uids 123 and 10000 to 10019, which pynfs `nfs4.0`
 `ACL5` and `ACL10` name in the ACLs they set and which, held by no user record, answer
-`NFS4ERR_BADOWNER` (RFC 18 §4.5). The user guide's NFS pages are
+`NFS4ERR_BADOWNER` (RFC 18 §4.5). `pynfs` gains a minor-2 cell, `pynfs-4.1 --minorversion 2`, since the flake builds no
+`pynfs-4.2` for the cell's `pynfs-4.{minor}` command to call; it is the only minor at which its `XATT*`
+tests of E12's xattr operations run (its `ALLOC*` tests fail there as RFC 21 §13 expects). It also gains a Kerberos cell, `nfs4.0` with
+`--security krb5` and `all gss`, for the `GSS*` tests `--security sys` skips and `SEC7`, which `all`
+never names; like smbtorture's `kerberos` option, it is an option with its own command, runs on the
+`kerberos` fixture with `{krb5-conf}` mounted, and needs S6b and E13 for the server to accept a GSS
+context. The user guide's NFS pages are
 the cutover's (§6.6).
 
 **Owns:** RFC 20 §3.4's node build, §3.6's live settings; RFC 13 Appendix B's NFS settings; RFC 21

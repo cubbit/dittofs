@@ -73,7 +73,8 @@ suite; the memory check.
 - The block-target key in RFC 13's table and its startup check: the ledger row "The block-target
   key in RFC 13's table" (the RFC 4 plan's epic 7). `New`'s refusal is the fold's own defence.
 - Randomised assembly (RFC 2 §5.6): the ledger row "Randomised assembly".
-- `FuzzFold` at full size on the second architecture: E7.
+- `FuzzFold` on the second architecture: E7 runs its seeds there, and fuzzing past them stays on
+  amd64 (E7's D5).
 
 ### 1.3 Names used here
 

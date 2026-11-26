@@ -2658,6 +2658,12 @@ type Content interface {
     // Intend durably records a put intent for a freshly minted name (§7.6).
     Intend(ctx context.Context, name BlockName, epoch uint64) error
     Commit(ctx context.Context, c BlockCommit) (CommitResult, error)              // §4.1
+    // Abandon is Blocks' abandonment of the engine's own intents (§7.6), so the offload
+    // pipeline's one view holds it (RFC 8 §6.3, O4).
+    Abandon(ctx context.Context, ns NamespaceID, names []BlockName) error
+    // Budget is K and, at their worst case, the keys an offload commit writes per new ref, per
+    // ref it replaces, per block and per file, derived at open (§5.2).
+    Budget() Budget
     // Resume runs phase 2 of every removal, clone or restore not done, within K keys per
     // transaction (§6.2); a clone's from the spec its Removal record carries (§6.6).
     Resume(ctx context.Context, file FileID, epoch uint64) error
@@ -2672,6 +2678,15 @@ type Content interface {
     Cut(ctx context.Context, share ShareID) (SnapshotCut, error)                    // §6.5, behind the cut gate
     DropCut(ctx context.Context, share ShareID, k SnapshotCut) error                // §6.5, batched
     VersionFloor(ctx context.Context, shares []ShareID) (JournalVersion, error)          // §8.3
+}
+
+// Budget is K and the worst-case keys of each part of an offload commit (§5.2).
+type Budget struct {
+    K        int // the most keys one transaction may write
+    NewRef   int // a ref written: the ref, its reverse key, its chunk record
+    Replaced int // each existing ref replaced, at worst split, with what its count reaches
+    Block    int // a block commit's own: the intent's delete, the block record, its GC index keys
+    File     int // each file in the commit: the offload fence
 }
 
 // Blocks is RFC 9 §8's view of block records, satisfied here, one per namespace:

@@ -93,7 +93,7 @@ title and not copied.
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each compressor runs E2's `transformtest.Run`; the chain-level tests build a real chain with E3's `NewChain` and E2's `keystest.Memory` (kind 2). The libraries are real. No double |
 | rule 2, fuzz every decoder of bytes this component did not just write | T4.1, T4.2 | `FuzzZstdDecode` and `FuzzLZ4Decode`, each through E2's `FuzzDecode`, seeded with the fixtures and with crafted bodies, and each asserting on a successful decode that the output is exactly the header's declared length and that `Decode(Encode(out)) == out` whenever `Encode` applies, the re-encode check `CLAUDE.md`'s fuzz rule allows, since neither library has an independent decoder in the tree; both reach the shared header parse, and both join the nightly `fuzz` suite. T4.1 extends RFC 5 §8.3's suites line to name them |
 | rule 3, observability follows RFC 25 | none | a compressor records nothing of its own: the chain records RFC 5 §6's series around it (E3). It takes no logger and logs nothing. It holds no material, so the planted-key check of epics 5 to 8 does not apply |
-| rule 4, profiling | T4.1, T4.2 | every test under `internal/prof`'s `Watch`, which also shows the zstd codecs start no goroutine; `TestAllocs…` for each transform's `Encode` and `Decode` join `transform-allocs` by name |
+| rule 4, profiling | T4.1, T4.2, T4.3 | every test and benchmark under `internal/prof`'s `Watch`, which also shows the zstd codecs start no goroutine; the zstd package's `TestMain` and the benchmark file build and warm every codec before the first `Watch`, so its heap baseline already holds them (D3); `TestAllocs…` for each transform's `Encode` and `Decode` join `transform-allocs` by name |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T4.1, T4.2 | each transform is tested at `Transform`, through `transformtest`, and at the chain the codec calls: registration, refusal at build, decoding with the decode set's default build, and Appendix D's D1 run through `NewChain`, `Attempt.Encode` and `Chain.Decode`; `transformtest`'s 64 goroutines under `-race` |
 | rule 6, known failures shrink | none | `unit` keeps no `known.yaml`; every test lands green |
 | rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | all | the packages import the root, `keys`, `entity`, `chain` (to register), the shared `internal/body`, and one compression module each; nothing of v1 and no `pkg/metrics`, `pkg/health` or `pkg/settings`. E1's import test holds it |
@@ -177,6 +177,8 @@ round-trip input (E2's R2), and T4.3's corpus check reports it on real files.
   settings parse both use, so neither copies the other's format code and nothing outside
   `compress` can import it. The header's version is 1 for both, the first format each writes.
   The length is read with `binary.Uvarint`, which already refuses an overlong encoding, and
+  reports a 10-byte value of 2⁶⁴ or more as overflow, which the parse returns as `ErrMalformed`,
+  not R5's `ErrTooLarge`: such a header is not a length at all, and both map to `ErrCorrupt`. It is
   refused when `binary.AppendUvarint` of the value is shorter than what was read, which makes it
   minimal. Prior art: Go's `compress/flate`, `compress/gzip` and `compress/zlib`, one package per
   format under one parent, sharing nothing exported (from memory).
@@ -207,6 +209,9 @@ round-trip input (E2's R2), and T4.3's corpus check reports it on real files.
   library's default of 4, and one encoder per encoder speed a configured level maps to (D7), built
   on first use with `WithEncoderConcurrency(GOMAXPROCS)`. All of them are built with a nil reader or
   writer, which starts no goroutine, and `EncodeAll` and `DecodeAll` are safe for concurrent use.
+  They are never freed, and one `SpeedBestCompression` encoder slot alone holds a table of about 32 MiB, so
+  the first `prof.Watch` that built them would fail its heap check: the package's `TestMain`, and
+  the benchmarks before their first `Watch`, build every codec and warm each slot first.
   `feat/storage-v2` pins v1.20.3 as indirect, whose `DecodeAll` allocates the declared size up front
   and keeps the caller's buffer in a pooled decoder; T4.1 makes v1.20.4 direct. Prior art: the
   library's own advice to reuse one `Decoder` and one `Encoder` for `DecodeAll` and `EncodeAll`.
@@ -224,9 +229,11 @@ round-trip input (E2's R2), and T4.3's corpus check reports it on real files.
   consent, so `true` does not pass), or a level that is not an integer in −128 to 22 fails the
   `Factory`, so a misspelt `levle` fails at build rather than writing under a chain ID the operator
   did not mean. A level may arrive as a `float64`, as `encoding/json` gives it, and is range-checked
-  before conversion. Empty settings build, as E3's decode set needs (its D1). A level of 0 means
-  zstd's default, 3, as zstd itself defines it, and its `LengthKey` is 3's, so `level: 0` and an
-  absent level share a chain ID; a `decision:` marker says so. Prior art: `encoding/json`'s
+  before conversion. Empty settings build, as E3's decode set needs (its D1). A level of 0 encodes
+  as zstd's default, 3, as zstd itself defines it, but its `LengthKey` is `0x00`, the level as
+  given, as RFC 5 Appendix A defines the key: `level: 0` and `level: 3` write the same bodies under
+  two chain IDs, a missed dedup across that change only; a `decision:` marker says so. An absent
+  level is 3, keyed `0x03` (R22). Prior art: `encoding/json`'s
   `DisallowUnknownFields` (from memory); zstd's own level-0 convention.
 - **D6, the decline rule in integers.** A body applies when `16 × (n − len(body)) ≥ n`, `body`
   counting the header, and declines otherwise, so "saves less than 1/16" has no rounding case and a
@@ -239,7 +246,7 @@ round-trip input (E2's R2), and T4.3's corpus check reports it on real files.
   a level change. A `ponytail:` marker at the mapping names the ceiling and the upgrade: an encoder
   honouring each level, when the ratio benchmark shows a level an operator asks for compressing no
   better than its neighbour, which is a new format version (§5.4). A second `ponytail:` at the
-  encoder pool states the memory T4.1 measures for one best-speed encoder slot, times
+  encoder pool states the memory T4.1 measures for one `SpeedBestCompression` encoder slot, times
   `GOMAXPROCS`, and the upgrade: a lower encoder concurrency when that shows in a node's memory.
   Prior art: `klauspost/compress`'s own documented mapping, read in the module cache.
 - **D8, the registered names are `zstd` and `lz4`.** RFC 5 names the algorithms but not the names
@@ -247,8 +254,9 @@ round-trip input (E2's R2), and T4.3's corpus check reports it on real files.
   the first, so they are settled now. Prior art: `tar --zstd` and the `lz4` tool (from memory).
 - **D9, the ratio benchmark reads the corpus from the RFC 2 plan's cache, and makes random bytes
   itself.** A check may not fetch (RFC 2 §1.3), so the benchmark reads the directory the RFC 2
-  plan's corpus fetch fills, named by the environment variable that fetch documents, and skips,
-  naming the variable, when it is unset. Random bytes come from a seeded source (kind 1). Files
+  plan's corpus fetch fills, `$DITTOFS_CORPUS_DIR/<kind>/<name>` with the kinds `source`, `vm`
+  (a mixed Debian raw image) and `media` (the RFC 2 plan's epic 2, its D8), and skips, naming
+  the variable, when it is unset. Random bytes come from a seeded source (kind 1). Files
   are cut at fixed chunk sizes up to the chunk maximum, and the distribution is recorded with the
   result. Prior art: the RFC 2 plan's own `manual` corpus option.
 
@@ -279,6 +287,8 @@ pkg/transform/compress/
   bench_test.go         T4.3  per-transform, ratio and bound benchmarks (D9)
 go.mod, go.sum          T4.1  klauspost/compress v1.20.4 direct; T4.2  pierrec/lz4/v4 added
 docs/internals/rfcs/rfc-5-transforms.md  T4.1  §8.3's suites line names the fuzz targets
+test/suites.yaml        T4.1  FuzzZstdDecode's `fuzz` line, timeout.test and timeout.cell raised;
+                        T4.2  FuzzLZ4Decode's, likewise
 ```
 
 ## 6. Subtasks
@@ -287,7 +297,8 @@ docs/internals/rfcs/rfc-5-transforms.md  T4.1  §8.3's suites line names the fuz
 
 **Subtask T4.1 estimate: 4.25 man-days.**
 
-- **Track:** A. **Depends on:** S2, T3.4, T3.7.
+- **Track:** A. **Depends on:** S2, T3.4, T3.7. Outside this epic, the RFC 2 plan's epic 2 T2.4, which
+  creates the `fuzz` suite this subtask adds a line to.
 - **Covers:** R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15, R16, R17, R18, R21,
   R22.
 - **Deliverables:**
@@ -298,7 +309,7 @@ docs/internals/rfcs/rfc-5-transforms.md  T4.1  §8.3's suites line names the fuz
     Consumed by `zstd` here and `lz4` in T4.2.
   - `zstd`: the transform, ID `0x0001`, stage compress, `Kinds` empty, `Version` 1,
     `MaxEncodedLen(n, m) = n`, `LengthOf` false with RFC 5's double-compression `decision:` note,
-    `LengthKey` the effective level's signed byte, `Encode` declining by D6, `Decode` with the header
+    `LengthKey` the level's signed byte, 3's when none is given (D5), `Encode` declining by D6, `Decode` with the header
     parse and D2's walk, every library error returned as `ErrMalformed`; the codecs of D3; its
     `Factory` (D5) and `chain.Register(0x0001, "zstd", …)` at init (D8). Consumed by E9 and by the
     content wiring, which imports the package for its registration.
@@ -311,8 +322,10 @@ docs/internals/rfcs/rfc-5-transforms.md  T4.1  §8.3's suites line names the fuz
     the target asserts the output is exactly the header's declared length and, whenever `Encode`
     applies, that `Decode(Encode(out)) == out` (§2's rule 2 row).
   - `TestAllocsZstd…` for `Encode` and `Decode`. `go.mod`'s v1.20.4 bump (D3). RFC 5 §8.3's suites
-    line extended to name the fuzz targets, and the targets added to the nightly `fuzz` suite in the
-    form the RFC 2 plan's epic 2 registers it.
+    line extended to name the fuzz targets, and `FuzzZstdDecode` added to the nightly `fuzz` suite
+    in `test/suites.yaml` as one `go test -run=^$ -fuzz=^FuzzZstdDecode$ -fuzztime=10m` line,
+    raising its `timeout.test` and `timeout.cell` by ten minutes and the build (the RFC 2 plan's
+    epic 2, its D6).
 - **Acceptance criteria:**
   - `transformtest.Run` passes with `Settings` `{level: 3}`, `LengthAffecting` levels −5, 6 and 19,
     `WorstCase` seeded random bytes, and D2's `Scratch`, under `-race`.
@@ -322,9 +335,11 @@ docs/internals/rfcs/rfc-5-transforms.md  T4.1  §8.3's suites line names the fuz
   - `Encode` and `Decode` with a caller's `dst` stay within an allocation count measured when the
     test lands and stated in it with its reason, the codecs built and every decoder slot warmed
     first, since the library allocates internally.
-- **Tests:** at the header parse and the decline rule, which both transforms call: a length table
-  (0, 127, 128, 2⁶³, 2⁶⁴ − 1 round-trip through the reader; an 11-byte, a non-minimal `0x80 0x00`
-  and a truncated encoding refused; catches a length misread, R4); `max + 1` under
+- **Tests:** at the header parse and the decline rule, which both transforms call: a varint
+  table (0, 127, 128, 2⁶³ and 2⁶⁴ − 1 round-trip through the length reader; an 11-byte encoding,
+  a 10-byte one of 2⁶⁴, a non-minimal `0x80 0x00` and a truncated one refused as `ErrMalformed`;
+  catches a length misread, R4) and a header table (a declared 0 `ErrMalformed`, `max` accepted,
+  `max + 1` and 2⁶³ `ErrTooLarge`; catches a refusal dropped, R5); `max + 1` under
   `testing.AllocsPerRun` (catches an allocation before the bound, R5); the boundary pair at 1/16 for
   several `n` (catches a rounding that applies below the threshold, R3); the settings table: a
   level as an integer and as an integral `float64` accepted, 3.5, `"3"`, `with_encryption: true`
@@ -332,7 +347,7 @@ docs/internals/rfcs/rfc-5-transforms.md  T4.1  §8.3's suites line names the fuz
   `transformtest.Run`, over a `keystest.Memory` holding no material (catches a transform that asks
   the provider for anything, R15): its rows (catch a lossy, unbounded, racy or nondeterministic encoder and a
   foreign error, R7, R8, R9, R14, R16, R17, R21) and its fixture rows over `v1` (catch an encoder or
-  library change, R18). `LengthKey` for −128, −1, 0, 3 and 22 is `0x80`, `0xFF`, `0x03`, `0x03` and
+  library change, R18). `LengthKey` for −128, −1, 0, 3 and 22 is `0x80`, `0xFF`, `0x00`, `0x03` and
   `0x16`, from Appendix A's definition and D5 (catches an unsigned or wider key, R12, R22); with and
   without `with_encryption: accept`, the same `LengthKey` and the same body (catches a setting that
   leaks into the output, R13). At the chain the codec calls: the round trip and refusals above
@@ -351,7 +366,8 @@ docs/internals/rfcs/rfc-5-transforms.md  T4.1  §8.3's suites line names the fuz
 
 **Subtask T4.2 estimate: 1.5 man-days.**
 
-- **Track:** A. **Depends on:** T4.1.
+- **Track:** A. **Depends on:** T4.1. Outside this epic, the RFC 2 plan's epic 2 T2.4, which creates
+  the `fuzz` suite this subtask adds a line to.
 - **Covers:** R1, R2, R3, R5, R7, R8, R9, R10, R12, R13, R14, R15, R16, R17, R18, R21, R22.
 - **Deliverables:** `lz4`: the transform of D4, ID `0x0002`, stage compress, `Kinds` empty,
   `Version` 1, `MaxEncodedLen(n, m) = n`, `LengthOf` false with RFC 5's double-compression
@@ -361,7 +377,8 @@ docs/internals/rfcs/rfc-5-transforms.md  T4.1  §8.3's suites line names the fuz
   `v1` fixture: the zstd fixture's inputs. `FuzzLZ4Decode` with seeds: a body declaring 64 MiB, a
   block whose matches expand past the declared length, a block shorter than the declared length;
   on success, the same two assertions as `FuzzZstdDecode`.
-  `TestAllocsLZ4…`. `go.mod` adds `pierrec/lz4/v4`. Consumed by E9 and the content wiring.
+  `TestAllocsLZ4…`. `FuzzLZ4Decode`'s `fuzz` line in `test/suites.yaml`, with both timeouts
+  raised, as T4.1's. `go.mod` adds `pierrec/lz4/v4`. Consumed by E9 and the content wiring.
 - **Acceptance criteria:**
   - `transformtest.Run` passes with empty `Settings`, no `LengthAffecting`, `WorstCase` seeded
     random bytes, under `-race`.
@@ -430,20 +447,12 @@ A suggestion only: one pull request per subtask works as well.
   declined chunk, passed on unchanged, as reaching `MaxEncodedLen(n) = n`, since a compressor's
   applied body is always shorter (R9). D5 settles E2's open point on fixture numbers: a level
   arriving as `float64` is accepted, so the fixture loader needs no `UseNumber`.
-- **Needs on the RFC 2 plan's epic 2**, not yet broken down: the environment variable naming its
-  corpus cache (D9), and whether the corpus holds a mixed VM image, the third corpus RFC 5 §8.3
-  names. If it does not, R20's VM-image corpus is added to that fetch.
-- **The fuzz suite's form** is the RFC 2 plan's epic 2's; T4.1 adds its targets in whatever form
-  that suite takes, and extends RFC 5 §8.3's suites line, which E3's T3.4 adds first if it lands
-  first.
+- **RFC 5 §8.3's suites line** is extended by T4.1, or first by E3's T3.4 if it lands first.
 - **Refinements of the RFC 5 plan**, which is not edited: its §4.1 shows one
   `pkg/transform/compress/` directory, and D1 follows RFC 5 §3.1's one package per shipped
   transform; its D4 caps the zstd decoder's window and memory through the library, and D2 enforces
   the cap by checking the frame and its blocks before decoding, since one process-wide decoder
   cannot carry a per-call `max` and the library checks a block's size only after writing it.
-- **Refinement of RFC 5 Appendix A**, which defines zstd's `LengthKey` as "the level as one signed
-  byte": D5 gives `level: 0` the `LengthKey` `0x03`, not `0x00`, since zstd defines 0 as its
-  default, 3, and the two write the same bodies.
 - **The estimate** is 3 subtasks and 7 man-days, against the RFC 5 plan's 4 and 8.5: the shared
   body format lands with zstd, and LZ4 reuses it; the plan's fourth subtask, fixtures and fuzz
   targets, is split between T4.1 and T4.2, each landing its own transform's. The least certain is T4.1's, whose frame walk
