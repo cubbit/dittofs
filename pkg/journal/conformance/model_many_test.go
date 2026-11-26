@@ -126,7 +126,9 @@ func TestModelManySeeds(t *testing.T) {
 	// its removals emptied bare, so one seed cannot pin two live append
 	// streams at once and the two-stream assertion stays with the corpus run
 	// TestModel makes over committed sequences; and the bytes repacks freed
-	// are not in this alphabet, so no free is asserted either.
+	// are not asserted either: the alphabet draws a repack, but a seed's draw
+	// may hold none, or none that frees a byte, so no lower bound on the
+	// freed bytes holds for every seed.
 	if r := reached(); !t.Failed() {
 		if r.Files < 2 {
 			t.Errorf("reached: Files = %d, want at least 2: the draws name four files", r.Files)
