@@ -136,7 +136,7 @@ cited by number and title and not copied.
 | rule 6, known failures shrink | none | `unit` and `integration` keep no `known.yaml`; every test lands green in the subtask that makes it pass, and a T row waits for the E3 subtask (T3.2 to T3.5) that builds its fault |
 | rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | all | nothing from `develop`'s `pkg/block/remote/s3`; `pkg/remote/s3` imports `pkg/remote` (its own component's contract) and `aws-sdk-go-v2` only: no codec, transform, syncer or engine package, and none of `pkg/metrics`, `pkg/settings` and `pkg/health`, which amended RFC 0 §1.2 counts as implementations; its tests may import `s3fault`, `remotetest` and `internal/prof`, as amended RFC 0 §1.2 allows tests to. E1's import walk covers the new package without change |
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T4.3 to T4.8 | LocalStack 4.13.1 for what the service stores, refuses and reports; `httptest` TLS listeners for what the client itself does (TLS, HTTP/1.1, caps), since no service is needed to show it; E2's suite runs against the S3 store as well as the in-memory one |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T4.1, T4.3 | RFC 4's `decision:` notes at their code sites: the digest-only delayed duplicate at the ETag comparison (§4.3, T4.3) and a block put's size refusal as cause `size` at the table's size row (§4.8, T4.1); this epic's own markers of §4: D6 (T4.5) and D8 (T4.3) |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T4.1, T4.3, T4.5 | RFC 4's `decision:` notes at their code sites: the digest-only delayed duplicate at the ETag comparison (§4.3, T4.3) and a block put's size refusal as cause `size` at the table's size row (§4.8, T4.1); this epic's own markers of §4: D6 (T4.5) and D8 (T4.3) |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test names the break it catches; none asserts a fault's own answer, only the store's mapping of it |
 | rule 11, a symbol is exported only if the RFC's interface uses it | T4.2, T4.3 | exported: `NewClient`, `ClientConfig`, `Deps`, `Client` and `Close`, and `Open`, which returns `remote.Store` (RFC 4 §4.1's constructor, with the client it shares), and the `Recorder` interface, which E7's content wiring implements. Unexported: the error table, the layout, the integrity mode, the batch-delete choice, the `Content-Range` reader, the connection counters |
 | rule 12, each subtask creates only what it declares | all | `pkg/remote/s3` lands with the error table, its first file; the `Recorder` with the client that records through it; `s3-allocs` with `Put`'s allocation test; the `Content-MD5` middleware with `Delete`; no file before its first caller |
@@ -196,7 +196,7 @@ row's work is shared, the other part's owner is named.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R27 | A walk of `List` calls yields exactly once every block that exists for the whole walk, in ascending name order, each call starting after the `Cursor` `after`; `next` is the cursor the following call starts after, and `done` is true once the walk has passed the last block | MUST | §4.1, §4.6, §6 R8 | T4.7 |
+| R27 | A walk of `List` calls yields exactly once every block that exists for the whole walk, in ascending name order, each call starting after the `Cursor` `after`; `next` is the cursor the following call starts after, `after` itself on a page that listed no key, and `done` is true when the service reports no more keys under the block namespace | MUST | §4.1, §4.6, §6 R8 | T4.7 |
 | R28 | Each `List` call sends exactly one `ListObjectsV2` request with `prefix`, `max-keys` and `start-after`, and returns at most `n` blocks, each with its size and the time the service stored it | MUST | §4.6, C.1 | T4.7 |
 | R29 | A listing walks `<prefix>blocks/` only; a key there that is not a block name is skipped and counted in `remote_list_foreign_total`, never guessed at | MUST | §4.6, §4.12, C.2 | T4.7 |
 
@@ -694,7 +694,8 @@ test/suites.yaml        T4.3  integration's s3-allocs option
 - **Deliverables:** `list.go`: `List` sending one `ListObjectsV2` with `prefix` `<prefix>blocks/`,
   `max-keys` `n` and `start-after` the key `after` holds (none for the zero cursor), yielding each block
   key's name with `Size` and `LastModified`, skipping and counting a foreign key with a `Warn`
-  naming it, `next` the cursor of the page's last key (D5), and `done` from `IsTruncated`. Consumed by
+  naming it, `next` the cursor of the page's last key, `after` when it has none (D5), and `done`
+  from `IsTruncated`. Consumed by
   E5's check step 4, T4.8, E2's raw-namespace row and GC (RFC 9).
 - **Acceptance criteria:**
   - Every call sends one request; a walk of pages yields each block once in order.
@@ -702,8 +703,9 @@ test/suites.yaml        T4.3  integration's s3-allocs option
 - **Tests:** over LocalStack, at the walk GC runs: R64 and R65, the request count from T3.2's
   record and the reply's bytes from the reply it saw; 1,001 foreign keys followed by
   one block, listed with `n` 1,000 (catches a walk that never advances, D5); a pure table of the
-  page reading over reply values: an empty page marked truncated (`ErrTransient`, D5), a page
-  ending on `blocks/zz` (`next` holding that key, D5), and a
+  page reading over reply values: an empty page marked truncated (`ErrTransient`, D5), an empty
+  page not marked truncated (`done`, `next` equal to `after`), a page ending on `blocks/zz` not
+  marked truncated (`done`) and marked truncated (not `done`, `next` holding that key), D5, and a
   prefix holding non-ASCII and percent-encoded bytes, whose keys are matched byte for byte
   (catches a prefix stripped after a decoding the request never asked for); `remote_list_foreign_total`
   read from the sink `Recorder`'s foreign keys. `s3-allocs`: bytes allocated by one page of 1,000 at most a fixed bound.

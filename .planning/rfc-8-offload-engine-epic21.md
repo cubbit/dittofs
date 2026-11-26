@@ -168,7 +168,7 @@ epic's code must honour them.
 | R1 | A share whose configuration names no remote block store is refused, naming the share, and no binding is created, on a node whose stores are real; there is no local-only path | MUST | RFC 8 §2.1, §13 RFC 8 E5, §15.1 ("§2.1 remote required") | T21.5 |
 | R2 | Composition happens at construction: no capability is wired onto a serving engine by a setter, and a changed store configuration reaches a share only as a replaced binding | MUST, MUST NOT | RFC 8 §2.1 | T21.2, T21.3 |
 | R3 | No production path builds the in-memory remote store: a fixture supplies it whole, production never does (#4276) | MUST NOT | RFC 8 §2.1 (a production constructor accepting what tests omit); RFC 29 §4.11 | T21.2 |
-| R4 | The syncer's `Store` for each store is RFC 4's `codec.Store`, the block codec with the store's transform chain over the store, registered with the syncer under its `ProbeKey`; no error is mapped between them | MUST | RFC 8 §2.1's table; the offload plan's D5 | T21.4 |
+| R4 | The syncer's `Store` for each store is RFC 4's `codec.Store`, the block codec with the store's transform chain over the store, registered with the syncer under its `ProbeKey`, one non-zero key for every store opened from one store configuration (RFC 4 §4.10); no error is mapped between them | MUST | RFC 8 §2.1's table; the offload plan's D5; RFC 4 §4.10 | T21.4 |
 | R5 | The content wiring builds the concrete chain and injects it into the engine and the codec; the engine and the codec import only the `pkg/transform` root | MUST | RFC 8 §2.8 | T21.3, T21.4 |
 | R6 | `node.New` builds, in order, the metadata store, the remote stores, the syncer, open state, the engine; `Start` starts them in that order and `Stop` stops them in reverse, the engine before open state, then the syncer, then the remote stores | MUST | RFC 8 §2.6; RFC 23 §2.1's table, §2.2 stop step 8 | T21.5 |
 | R7 | The remote stores are ref-counted per store configuration, and the last storage binding to close one releases it; one client serves each store configuration | MUST | RFC 23 §2.1; RFC 4 §4.10 | T21.2 |
@@ -515,7 +515,10 @@ docs/internals/rfcs/rfc-0-data-lifecycle.md  T21.4's pull request: §10.2's rest
     it with both figures, and the next start opens it.
   - The token count is three quarters of the processor count read at start, at least one; a read
     completes while every token is held.
-- **Tests:** at `pool.Config` and the evaluator, which the node reads: two namespaces at start with
+  - Two namespaces opened from one store configuration register under one non-zero `ProbeKey` (R4).
+- **Tests:** at the syncer's registrations: two namespaces on one store configuration share one
+  non-zero `ProbeKey` (catches a zero key, or one per namespace, which RFC 4 §4.10's two probe slots
+  do not cover, R4). At `pool.Config` and the evaluator, which the node reads: two namespaces at start with
   `Max` 1 MiB and 4 MiB, the per-worker figure equal to the 4 MiB one (catches the first or the
   default taken, R10); a node started with only the empty chain in use and compression and
   encryption registered, the figure equal to `MaxDecodeLen` of the costliest registered transform

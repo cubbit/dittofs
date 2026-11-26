@@ -1324,6 +1324,9 @@ Collection has two sources:
 ([RFC 4 §4.6](rfc-4-remote-tier.md#4.6%20List%20is%20a%20complete%2C%20resumable%20walk)), and the `B‖ns‖` and `I‖ns‖` prefixes are in the same order, so the
 backstop streams the three together and needs a transaction only for a listed
 name found in neither: one sequential scan of each, not a point read per object.
+Each pass lists from the zero `Cursor` and keeps no walk cursor, so a pass that
+stops starts over: the `Names` scans follow the names the listing returns, and
+nothing has to be rebuilt from a `Cursor`, which GC never reads ([RFC 4 §4.6](rfc-4-remote-tier.md#4.6%20List%20is%20a%20complete%2C%20resumable%20walk)).
 
 ### 5.3 It runs only where the namespace is proven
 
