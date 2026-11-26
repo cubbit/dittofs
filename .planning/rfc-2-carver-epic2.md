@@ -627,7 +627,3 @@ A suggestion only: one pull request per subtask works as well.
    pull request. The `vm` image is about 2 GiB to download.
 4. **Where the code lands.** This document merges to `develop`; the code goes to `feat/storage-v2`,
    whose `test/suites.yaml` has the option form `carver-allocs` follows, where `develop`'s has none.
-5. **Epic 1's document says `carvetest` names the root's types** (its **Blocks:** line). This
-   epic's D9 says it names none, so `carvetest`'s import row stays the standard library. Epic 1's
-   pull request (#5874) is still open; its line is worth changing there, and this document does not
-   edit it.
