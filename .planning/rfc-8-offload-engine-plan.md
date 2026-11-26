@@ -205,11 +205,12 @@ and the pull request that does so closes #5757 (`Closes #5757`).
   succeeds once offload frees space, the store unreachable past the deadline, the store denying puts).
   2 rows.
 
-50 rows. Four of them extend a test the first part already has rather than add a second one: "§2.5
-clone resumed at a full limit" extends `TestRFC8A_CloneResumedAtAFullLimit` with its remote half,
-"§10.2 retry later" extends `TestRFC8A_RetryLaterAtTheShareLimit` with its store legs, "§2.4 settings"
+50 rows. Two of them extend a test the first part already has rather than add a second one: "§2.4 settings"
 extends `TestRFC8C_Settings` with `Min`, `Target` and the migration report, and V20 extends `TestV20`
-(`internal/vfs/integration`) with its offload half. A fifth extension is not a red row:
+(`internal/vfs/integration`) with its offload half. The remote halves of "§2.5 clone resumed at a
+full limit" and "§10.2 retry later" are new tests beside `TestRFC8A_CloneResumedAtAFullLimit` and
+`TestRFC8A_RetryLaterAtTheShareLimit`, not subtests: both assert in their own bodies, and a parent
+failing through known subtests is graded known whatever its body did (epic 12's D5). A third extension is not a red row:
 `TestRFC8A_UnbindThenDropLeavesNoEntryForTheTag`, green today, gains §15.2's "§2.3 unbind and drop"
 leg with an offload pass in flight from epic 16, in the change that runs passes, since a red leg would
 hide its green half; its hold-mark offloads are RFC 12's (D7). The "shard handed away and back" legs the first
@@ -451,7 +452,7 @@ flowchart TD
   E14 -. "tenants and Rebuild, start step 6" .-> E19
   E14 -. "scheduler stats, work_queue_stalled" .-> E20
   E16 -. "re-offers the reseed gates" .-> E19
-  E16 -. "a binding's flow, opened at Bind" .-> E17
+  E16 -. "a binding's flow, opened at Bind; E17's rows, after E15's options" .-> E17
   E18 -. "the eviction loop start step 7 starts" .-> E19
   E16 -. "pass outcomes, offload health" .-> E20
   E17 -. "speculation cancelled on pressure" .-> E18
@@ -543,6 +544,9 @@ What each point means for this plan's epics:
   once), and partly E17 (the carved row fetches through the flow a binding opens at `Bind`; until then
   epic 17's tests open a flow over RFC 4's in-memory store themselves), E19 (the reseed gates the
   re-offer) and E20 (pass outcomes feed offload health).
+- **E15 and E16 block E17's finish.** Its conformance rows ask the carver, chain and syncer options
+  and `FaultRemote`, which epics 15 and 16 make real, so epic 17 builds from S2 but turns its rows
+  green, and meets its "Done when", only after E16.
 - **E17** blocks E18 partly (speculation is cancelled on pressure), and E19 through track C's order
   only.
 - **E18** blocks E19 partly: start step 7 starts its eviction loop.
@@ -571,6 +575,8 @@ What each point means for this plan's epics:
   and epic 16's pass outcomes land about 20 man-days later; epic 20's drain metrics, its `WaitOffloaded`
   over the journal's dirty figures and the salvage export, which need no pass, fill that wait, and
   track A then takes the preparation of epic 21's store composition (D5) once S1c and S1d are agreed.
+  Track C finishes epic 17's code at about 23.5 man-days, but its rows turn green only after epic
+  16, at about 55 (§3.3), so track C moves on to epic 19 and comes back to close epic 17 then.
   Track C's epic 19 waits on epic 14's tenants, epic 16's passes and epic 18's eviction loop, which
   start step 7 starts; it starts with the reseed's marks and unmarks over the in-memory journal, which
   need none of them, and takes start step 7 last.
