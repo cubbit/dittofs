@@ -77,7 +77,7 @@ lines in the `fuzz` suite; RFC 4 §7.5's suites paragraph.
   the release check. No v1.1 release offers an immutable location.
 - **§7.1's first §4.10 row on a service:** E8 builds both rows in `internal/node/content`. The
   first is a table test of a function and reaches no service, so it has nothing to move. The
-  second runs on LocalStack; T9.3 moves it onto the target (§9, point 6).
+  second runs on LocalStack; T9.3 moves it onto the target, with a store count that follows it.
 - **The syncer's re-get of a corrupt ranged chunk:** the §6.1 ledger row owned by the RFC 3 plan's
   epic 6.
 - **Replacing §7.5's proposed targets** with measured values: the §6.1 ledger row on it, owned
@@ -407,9 +407,10 @@ docs/internals/testing.md  T9.3  remote-service's row in the suite list; T9.4 re
 - **Deliverables:**
   - E4's, E5's and E6's `*_integration_test.go` rows, and E4's run of E2's suite, on `Service(tb)`
     and `Target.New` (D2, D3), and E8's second §4.10 row, its `limit_integration_test.go`, on
-    `Service(tb)` when E8 has landed (otherwise E8 builds it there); the rows that pin a LocalStack
-    fact take `Emulator(tb)`, and E4's wrong-sum rows follow the check's mechanism on a production
-    target (D2), all listed in the pull request.
+    `Service(tb)` when E8 has landed (otherwise E8 builds it there), opening 1,000 stores on
+    LocalStack and about twice the client's limit on a production service; the rows that pin a
+    LocalStack fact take `Emulator(tb)`, and E4's wrong-sum rows follow the check's mechanism on a
+    production target (D2), all listed in the pull request.
   - A `remote_service` row opening the target with a wrong secret: `ErrDenied` of cause `access`,
     and the access key, the secret and the `SignatureProvided` the service echoes absent from the
     error and from every record of a test `slog` handler (R28), the real-service half of E5's
@@ -423,6 +424,12 @@ docs/internals/testing.md  T9.3  remote-service's row in the suite list; T9.4 re
   Consumed by T9.5, whose rows run in the cell, and T9.6.
 - **Acceptance criteria:**
   - `dt run integration` runs the same rows as before against LocalStack, none skipped.
+  - E8's second §4.10 row opens 1,000 stores on LocalStack and about twice the client's limit on
+    a production service. The connections opened stay within the limit plus 2 on LocalStack, as
+    T8.2 asserts, and within the limit plus the closes the service started on a production service
+    (E8's D4). Decided by the user: the row checks DittoFS's own connection sharing, which does not
+    depend on the service, and each open runs the capability check, about a dozen requests, so
+    1,000 opens at Cubbit DS3's 1.2 s round trip (Appendix B) take about 4 hours.
   - `dt run remote-service` without the variables exits 2 naming `DITTOFS_TEST_S3_ENDPOINT`.
   - With a service's variables it runs the switched rows against it, and fails when the access
     key, the secret or `Signature=` appears in any file under `{out}`, naming the file only and
@@ -625,8 +632,3 @@ requests (D3), the leftover-bucket sweep (D10) and the steady-load row's planted
    connection after every reply, the main row passes by the service's closes alone; the planted
    twin still breaches, since its surplus closes are the client's (D9). T9.4 records the service's
    close count with the result.
-6. **E8's 1,000-store row on a production service is slow.** It opens 1,000 stores, each running
-   the capability check, which is about a dozen requests; at Appendix B's 1.2 s round trip on
-   Cubbit DS3 that is hours. §7.4 asks for every §7.1 row, so T9.3 moves it as it is. If that run
-   is too long, the choice is the user's: amend §7.1 to fewer stores on a production service, or
-   keep the row on LocalStack and amend §7.4 to say so. The pull request asks.
