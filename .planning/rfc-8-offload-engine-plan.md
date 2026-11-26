@@ -949,7 +949,7 @@ stays green; RFC 8 E3, E11, E33 hold.
 
 ### Epic 19 — Restart and the metadata reconcile
 
-**Epic 19 estimate: 12 subtasks, 44 man-days.**
+**Epic 19 estimate: 12 subtasks, 41 man-days.**
 
 What a start adds once offload exists: the queue rebuilt, background work started, the reseed with the
 reconcile it runs when one is owed, and the shares of a lost journal served again. The reconcile needs
@@ -1194,6 +1194,7 @@ proposed targets: the first real-service run does (§6.1).
 | RFC 8 §16 Q6: upload delay for young data, and manual sync | unspecified policy | unowned | a measurement shows re-uploads of soon-overwritten data |
 | Detecting bucket-setting drift: `Recheck` runs, raising the store's drift condition the engine reads (epic 20) | `Recheck`'s only caller is GC; drift goes undetected in v1.1 | RFC 9 | GC's `Recheck` lands |
 | §11.2's metadata-store-lost row and the salvage's recovery-import side (epic 20) | RFC 26's | RFC 26 | the recovery import is built |
+| The census legs of relocation and import: RFC 6 §7.3's `Relocate` and a namespace or recovery import creating their block records through `kvstore`'s `newBlockRecord`, which writes the census delta (epic 19's D1), each with its leg of the census row (relocate, prune the sources, the material still counted) | neither writer exists in `kvstore` yet; epic 19's T19.1 covers the carrying commit's repoint, the one move `kvstore` has | RFC 9 (relocation); RFC 26 and RFC 27 (imports) | the first of those writers lands in `kvstore` |
 
 ## 7. RFC coverage
 
