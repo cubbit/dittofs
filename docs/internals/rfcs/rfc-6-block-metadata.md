@@ -1090,12 +1090,16 @@ refcount without its ref, or a chunk without its block each turns a later read o
 sweep into a guess.
 
 **Zero refs with no block commit alone.** A pass whose carved extents hold only
-all-zero chunks has no block, so no put intent and no block commit. Its zero refs
-**MUST** then commit in a **zero-ref commit**: one transaction that writes the
+all-zero chunks has no block, so no put intent and no block commit; and zero refs
+whose keys would take the nearest block's commit past K ride in no block either
+([RFC 2 §5.2](rfc-2-carver.md#5.2%20Packing%20rules), P2). Such zero refs
+**MUST** commit in a **zero-ref commit**: one transaction that writes the
 zero refs, replacing what they overlap with the history moves and count changes
 that requires, and that makes the per-file checks below. It writes no block
 record, no chunk record and no intent delete, and it stays within K like any
-commit ([§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)). Without it a stretch of zeros would never leave the journal.
+commit ([§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)). A run of zero refs
+whose keys would pass K splits into several zero-ref commits, each counting its
+files' per-file keys. Without it a stretch of zeros would never leave the journal.
 
 **The first block to commit a chunk owns its record.** A later commit that carries
 the same chunk adopts it: it adds its refs and their counts, and leaves `block`
