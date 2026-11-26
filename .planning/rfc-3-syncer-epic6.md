@@ -37,16 +37,14 @@ complete; S3; E9, whose B4 is T6.6's count. Outside RFC 3's epics, RFC 8
 offload plan epic 17 calls the complete `Fetch` and `Prefetch`, and epic 21 runs T6.8's rows over
 the S3 store.
 
-**Builds on the recommended answers of epics 3 and 4.** Epic 3's pull request waits on its D12 (each
-check in a `testing/synctest` bubble) and on its §2.9 sentence for a bound with nothing
-displaceable; epic 4's on its D3 (the backoff hashes the block name), its D2 text for RFC 3 S20 (a
-requeued throttled transfer beside the bound) and the "§2.4 throughput floor" row's last clause.
-This document assumes each is answered as recommended. A different D12 is known rework here, about
-1 man-day across T6.2 to T6.8, which would drive `pkg/sim`'s `TestClock` through epic 3's fallback
-idle wait. Epic 4's D3 as recommended makes two fetches of one block on one store share their
-backoff draws, which single flight makes rare (T6.4).
-
-**Pending the user's answer:** D1, `Chunk.Keep` and `Meter.Index` in RFC 4's contract (§9, first point).
+**Builds on decisions the user took on 2026-11-26.** Epic 3's D12: each check runs in a
+`testing/synctest` bubble, so T6.2 to T6.8 run in it under D12's rules. Epic 3's §2.9 sentence for
+a bound with nothing displaceable, accepted. Epic 4's D3: the backoff is `fnv64a(store, block name,
+retry kind, attempt)`, so two fetches of one block on one store share their backoff draws, which
+single flight makes rare (T6.4); its RFC 3 S20 text for a requeued throttled transfer, beside the
+bound; and its "§2.4 throughput floor" row. This epic's D1, `Chunk.Keep` and `Meter.Index` on RFC
+4's value types, as written. The RFC 3 §1.3 wording §9 names, accepted, lands with T6.2's pull
+request, and the "§2.2 detached-buffer cap" row's with T6.6's, not with this document.
 
 ---
 
@@ -143,7 +141,7 @@ title and not copied.
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T6.1, T6.8 | The codec, the in-memory store and E2's wrapper are real. What they cannot fail like, a byte flipped on a real connection, is RFC 8 offload plan epic 21's run of T6.8's rows over the S3 store. Nothing needs a disk: the syncer persists nothing |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T6.1 to T6.7 | RFC 3 §2.4's `decision:` on re-gets outside the budget is at E4's budget site already; this epic adds its three fixed values under RFC 3 §2.10's note in `fixed.go` (D10), and the `decision:` and `ponytail:` markers each §4 decision names |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | Each §7.2 row names the wrong design it catches and is checked by building it: one get per caller, a fetch cancelled with its first caller, a failure remembered, a reused buffer under a detached caller, a joiner left at speculative priority, a retry from the first chunk. The model is checked by planting a join that skips the waiter count |
-| rule 11, a symbol is exported only if the RFC's interface uses it | all | Nothing is added to `pkg/syncer` or `pool`'s exports: E1's frozen-exports test still passes. `internal/sched` gains only what `pool` calls. `syncertest` gains rows, which are unexported. T6.1 adds a field to each of RFC 4's `remote.Chunk` and `remote.Meter`, pending D1 |
+| rule 11, a symbol is exported only if the RFC's interface uses it | all | Nothing is added to `pkg/syncer` or `pool`'s exports: E1's frozen-exports test still passes. `internal/sched` gains only what `pool` calls. `syncertest` gains rows, which are unexported. T6.1 adds a field to each of RFC 4's `remote.Chunk` and `remote.Meter`, as the user decided (D1) |
 | rule 12, each subtask creates only what it declares | all | `Keep` and `Index` land with T6.1, consumed by T6.5 and T6.7. Each fixed value lands with the subtask that reads it, in E3's `fixed.go`. Joins enter `sched` with T6.3, whose consumer is T6.4 |
 
 ## 3. Requirements and invariants
@@ -231,15 +229,16 @@ T4.7), which this epic runs on the flight unchanged.
 
 ## 4. Decisions this epic takes
 
-- **D1, a chunk can be kept, and a whole-block get reports its index. Pending the user's
-  answer.** Two RFC 3 rules cannot be met over RFC 4's contract as it stands. "A detached caller
-  keeps its chunk; the fetch takes a fresh buffer" (§4.3): `codec.Store.Get` yields each chunk in a
-  buffer of its own, which it reuses for the next one, so a caller still reading chunk *k* when the
+- **D1, a chunk can be kept, and a whole-block get reports its index.** The user decided this on
+  2026-11-26, as written here. Two RFC 3 rules cannot be met over RFC 4's contract as it stands.
+  "A detached caller keeps its chunk; the fetch takes a fresh buffer" (§4.3): `codec.Store.Get`
+  yields each chunk in a buffer of its own, which it reuses for the next one, so a caller still
+  reading chunk *k* when the
   flight moves on would see chunk *k*+1's bytes under the old hash, exactly what §4.3 forbids, and
   copying on detach cannot redirect the slice the caller already holds. "A whole-block fetch whose
   header was read resumes the same way", as ranges (§2.4): only the header names the later chunks'
-  hashes and ranges, and only the codec reads it. This document writes the recommended option, one
-  field on each of two value types of RFC 4's contract:
+  hashes and ranges, and only the codec reads it. So one field goes on each of two value types of
+  RFC 4's contract:
 
   ```go
   type Chunk struct {
@@ -262,12 +261,16 @@ T4.7), which this epic runs on the flight unchanged.
   Neither changes a signature: `syncer.Store.Get` and `codec.Store.Get` already yield `Chunk` and
   take a `Meter`, and a caller that never calls `Keep` and leaves `Index` nil reads as today. The
   syncer clears `Keep` on the chunks it yields. T6.1 lands both in RFC 4's packages, as E2 landed its
-  faults, unless the RFC 4 plan's epic 6 (#5942) takes them first. A `decision:` marker at each says
+  faults, unless the RFC 4 plan's epic 6 (#5942) takes them first, and its pull request adds them
+  to RFC 4 §4.1's text for `Chunk` and `Meter`. A `decision:` marker at each says
   what the syncer relies on. Prior art: `bytes.Buffer`'s rule that a returned slice is valid only
   until the next call, which `Keep` lifts for one chunk (from memory); none found for an index
-  reported mid-stream. Not chosen, the alternatives in §9; and a `Buffer` func on `Meter` through
-  which the syncer hands the codec its own buffers, which costs the syncer a pool of twice the fetch
-  pool for what `Keep` gets with one allocation per detach.
+  reported mid-stream. Not chosen: no contract change, the flight copying every chunk into its own
+  buffer and a whole-block fetch resuming by getting the whole block again, which raises RFC 3
+  §2.2's per-worker figure for the fetcher and amends §2.4's whole-block sentence and its row;
+  `Keep` alone with that resume; and a `Buffer` func on `Meter` through which the syncer hands the
+  codec its own buffers, which costs the syncer a pool of twice the fetch pool for what `Keep` gets
+  with one allocation per detach.
 - **D2, every dispatched fetch runs as a flight on a goroutine of its own.** A joined fetch must
   outlive the caller that started it (R17), so once its entry is dispatched, a flight goroutine
   holds the slot, runs E4's get loop and hands each chunk to its callers, the starter included;
@@ -276,8 +279,10 @@ T4.7), which this epic runs on the flight unchanged.
   chunk, only once every attached caller has moved past the chunk or been detached (R21). The
   flight's `ctx` is cut from the starter's with `context.WithoutCancel` and cancelled once no caller
   is left, so no caller's deadline ends it. E4's get tries still run in turn (its D4), now on the
-  flight's goroutine, and E3's `Close` counts flights with callers (its D6). This changes E3's D1 for fetches. `ponytail:` a lone caller pays one
-  channel hand-off per chunk; upgrade to the caller driving the codec until a first join if B1
+  flight's goroutine. A flight adds one to E3's D6 count of callers inside the syncer, an atomic,
+  when its goroutine starts and takes it back when the goroutine ends, so `Close` waits for a
+  cancelled flight's get to return. This changes E3's D1 for fetches. `ponytail:` a lone caller
+  pays one channel hand-off per chunk; upgrade to the caller driving the codec until a first join if B1
   shows the hand-off. Prior art: Go's `singleflight.Group`, which runs the shared call apart from
   its callers (from memory).
 - **D3, a call's `want` is walked as segments, each joined or fetched.** Each half keeps a table of
@@ -294,19 +299,27 @@ T4.7), which this epic runs on the flight unchanged.
   call joins it; one that ends without a chunk a joiner wanted has that joiner fetch it on its own.
   This reads `want` for more than its lengths, against RFC 3 §1.3's "MUST NOT interpret them,
   except to sum the lengths of `want`" (E3's R14), because §2.4's resume and §4.3's joining need
-  each chunk's hash and range; a `decision:` marker says so and §9 proposes the RFC text.
+  each chunk's hash and range; a `decision:` marker says so, and T6.2's pull request amends RFC 3
+  §1.3 with the text §9 gives, which the user accepted on 2026-11-26.
   `ponytail:` a joining chunk is matched by a scan of the flight's positions, O(*n*) for *n* chunks
   of at most the format's cap; upgrade to a hash index per flight if a profile of a read storm on
   one block shows the scan. Prior art: none found for joining per chunk.
 - **D4, joins enter `sched` as waiters, never as entries.** `Join(f, c, to)` counts a caller of
   flow `f` and class `c` joined to entry `to`, through the same admission E3's `Add` makes for the
-  waiter bound, with displacement and eviction, never displacing or evicting `to` itself; `Leave`
-  drops it. A joined caller is never displaced (E3's D7); an entry displaced or evicted with callers
-  joined to it refuses every one of them with its reason. `Rehome(e, f)` moves a queued entry, and
-  its own waiter, to flow `f`'s demand queue at its tail, keeping a requeued entry's pass through a
-  hold (E4's D2), and is never refused for the queue's length, which it may pass by the entries it
-  moved in, as E3's D8 lets eviction. A running entry sits in no queue, so promoting one is the pool
-  setting its `Class` to demand under the half's lock, which E4's requeue and budget reserve read.
+  waiter bound, with displacement and eviction, never displacing or evicting `to` itself; like
+  `Add` it returns at most one victim, its reason in `Entry.Refused` (`Displaced` or `Evicted`),
+  taken only from flows other than the joiner's at or above their share (E3's D7), and its `err`
+  names the join's own refusal. `Leave` drops it. A joined caller is never displaced (E3's D7); an
+  entry displaced or evicted with callers joined to it refuses every one of them with the reason in
+  its `Refused`. `Rehome(e, f)` moves a queued entry, and its own waiter, to flow `f`'s demand queue
+  at its tail, where its charge falls on `f`'s demand deficit when it is dispatched, keeping a
+  requeued entry's pass through a hold (E4's D2), and is never refused for the queue's length, which
+  it may pass by the entries it moved in, as E3's D8 lets eviction. A running entry sits in no queue
+  but was charged to its flow's
+  deficit for its class at dispatch, and deficits are per flow and class (E3's D3), so promoting one
+  is `Promote(e)`, which sets its `Class` to demand and moves that charge to the flow's demand
+  deficit, so `Done` corrects the class it now holds; E4's requeue and budget reserve read the new
+  class.
   Only a demand re-homes or promotes; a background caller joining a speculative fetch only
   attaches, behind a `decision:` marker, since RFC 3 §4.3 names the demand alone and background is
   deferrable (§2.9). A queued entry already in the demand class is joined, never moved. Prior art:
@@ -329,7 +342,8 @@ T4.7), which this epic runs on the flight unchanged.
   detach says nothing about the store. A `decision:` marker says so. Prior art: none found.
 - **D7, a detach keeps the chunk, under a semaphore of the fetch pool's size.** Before it detaches
   a caller, the flight takes a slot of a channel semaphore holding as many slots as the fetch pool
-  has workers, waiting on it, under its own `ctx`, when every slot is taken (R27); it then calls the
+  has workers, waiting on it, under its own `ctx` and holding no lock (E3's D12), when every slot is
+  taken (R27); it then calls the
   chunk's `Keep` (D1), so the detached caller owns the bytes and the codec decodes the next chunk
   afresh. Callers detached at one chunk share its slot. The slot is returned once, at the detached
   caller's next iteration or by `context.AfterFunc` on its `ctx`; the bytes are then only the
@@ -390,7 +404,7 @@ pkg/syncer/
     join_rows_test.go      T6.6  the §7.2 join rows, §8.4's count, §8.2's join cases
     resume_test.go         T6.7  the resume and re-get, "§2.4 fetch resume", "§2.4 wire bytes"
     internal/sched/
-      join.go              T6.3  Join, Leave, Rehome
+      join.go              T6.3  Join, Leave, Rehome, Promote
       join_test.go         T6.3
       model_test.go        T6.3  the model's join steps
       fuzz_test.go         T6.3  FuzzSched's join steps; seeds
@@ -406,7 +420,7 @@ pkg/syncer/
 
 - **Track:** A. **Depends on:** RFC 4 plan epic 6's `codec.Store.Get`.
 - **Covers:** R9, R25.
-- **Deliverables:** in RFC 4's packages, pending D1: `remote.Chunk`'s `Keep` and `remote.Meter`'s
+- **Deliverables:** in RFC 4's packages (D1): `remote.Chunk`'s `Keep` and `remote.Meter`'s
   `Index` with their doc comments; `codec.Store.Get` setting `Keep` on each chunk it yields, a
   func bound once per `Get`, after which it decodes the next chunk into a fresh buffer and never
   writes the kept one again; on a whole-block read, calling `Index` once after the name check and
@@ -426,7 +440,8 @@ pkg/syncer/
   `Index` never called (catches an index reported before the name is checked). RFC 4's codec
   allocation test rerun unchanged. No test double.
 - **Rules:** rule 7, in RFC 4's packages and under that plan's import test; rule 11, both fields are
-  RFC 4's contract and wait on D1.
+  RFC 4's contract, which the user decided on 2026-11-26 (D1), and this subtask's pull request adds
+  them to RFC 4 §4.1's text.
 
 ### T6.2 The flight and the stream rules
 
@@ -459,7 +474,9 @@ pkg/syncer/
 
   - `fetch.go`: E3's T3.6 `Fetch` and `Prefetch` over one flight per call, every chunk handed off and
     released once the caller's loop body returns; an error yielded once; `ctx` ending or the loop
-    left removes the caller, and the last one leaving cancels the flight and returns its slot.
+    left removes the caller, and the last one leaving cancels the flight and returns its slot; a
+    fetch left while still queued is taken out with E3's `Remove`, and when `Remove` reports it
+    already dispatched, its flight is cancelled and gives the slot back.
   - `export_test.go`: the flight for tests.
 
   Consumed by T6.4, which attaches more callers; T6.5, which detaches them; T6.7, which resumes the
@@ -485,6 +502,9 @@ pkg/syncer/
   iteration (catches a buffer reused under a reader, R6). Each row verified by building its wrong
   design: a flight that decodes the next chunk before the caller returns, a stream that yields two
   errors, a read that runs on after the loop is left.
+- **Rules:** its pull request amends RFC 3 §1.3 to "…except to sum the lengths of `want` for
+  scheduling ([§2.9]), to resume a fetch ([§2.4]) and to join one ([§4.3])", as the user accepted
+  on 2026-11-26 (D3).
 
 ### T6.3 Joins in the scheduler and its model
 
@@ -498,9 +518,10 @@ pkg/syncer/
   func (s *Sched) Join(f FlowKey, c Class, to *Entry) (victims []*Entry, err error) // a waiter, never displacing or evicting to
   func (s *Sched) Leave(f FlowKey, c Class)
   func (s *Sched) Rehome(e *Entry, f FlowKey) // a queued entry and its waiter to f's demand queue, at its tail; never refused
+  func (s *Sched) Promote(e *Entry)           // a running entry to demand, its charge moved to the flow's demand deficit
   ```
 
-  The model of T3.8 gains the three steps, and checks RFC 3 S13 and S20 after each, joined callers
+  The model of T3.8 gains the four steps, and checks RFC 3 S13 and S20 after each, joined callers
   counted, D7's refused case and E4's requeued entries named as E3 and E4 name them; `FuzzSched`
   gains them, with seeds. Consumed by T6.4.
 - **Acceptance criteria:**
@@ -513,11 +534,16 @@ pkg/syncer/
     background or speculation, and its old flow's queue holds one fewer; the waiter count is
     unchanged.
   - `Rehome` into a full demand queue succeeds.
+  - A join that displaces returns one victim with `Refused` set to `Displaced`, and one that evicts
+    one with `Evicted`, as E3's `Add` does.
+  - After `Promote` of a running speculative entry, its `Done` with an overrun leaves the flow's
+    speculation deficit as it was before dispatch and the demand deficit in debt.
   - One join's operations, from E3's counter, are the same at 1, 10, 100 and 1,000 waiting flows.
 - **Tests:** at `Join`, `Rehome` and `Next`, as tables (no double). Each criterion, with the wrong
   design it catches: a join that skips the waiter count (a thousand joins pass the bound, R20), a
   re-home left in the speculation class (the demand waits behind a guess, R16, R19), a join that
-  evicts its own target. The model's property test and the fuzz seeds over the new steps, checked by
+  evicts its own target, a promotion whose `Done` corrects the speculation deficit it no longer
+  holds. The model's property test and the fuzz seeds over the new steps, checked by
   planting a `Join` that does not count and watching them fail (rule 10).
 
 ### T6.4 Single flight and joining
@@ -607,6 +633,8 @@ pkg/syncer/
   `Link` and `Hold`, in a bubble; gets at the in-memory store's record, the rest at `Stats` and the
   callers' loops. Each row verified by building its wrong design once (rule 10). `Link`, never an
   instant store (R36). Under the leak check.
+- **Rules:** its pull request amends RFC 3 §7.2's "§2.2 detached-buffer cap" row to "stall all but
+  one caller of each fetch", as the user accepted on 2026-11-26 (§9).
 
 ### T6.7 Fetch resume and the verification re-get
 
@@ -683,7 +711,7 @@ flowchart TD
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-T6.1 waits on the RFC 4 plan's codec and on D1; T6.3 is pure and needs only E3 and E4's scheduler
+T6.1 waits on the RFC 4 plan's codec; T6.3 is pure and needs only E3 and E4's scheduler
 work, so it runs beside T6.1 and T6.2. T6.7 needs only T6.2, and can run beside T6.4 to T6.6 on a
 second pair of hands. Checkpoint after T6.2: every fetch streams on a flight. Checkpoint after T6.6 and T6.8: every row of this epic is green, its share of S3.
 
@@ -691,7 +719,7 @@ second pair of hands. Checkpoint after T6.2: every fetch streams on a flight. Ch
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T6.1 | 1.5 | RFC 4 plan epic 6, D1 | `Keep` and `Index` in RFC 4's packages; can fold into that epic's pull request |
+| 1 | T6.1 | 1.5 | RFC 4 plan epic 6 | `Keep` and `Index` in RFC 4's packages; can fold into that epic's pull request |
 | 2 | T6.3 | 3 | E3's T3.8, E4's T4.5 | joins in `sched` and its model; open beside PR 1 |
 | 3 | T6.2 | 4 | E4's T4.7 | fetches on flights, with the stream rows; open beside PR 1 |
 | 4 | T6.4, T6.5, T6.6 | 10.5 | PR 1, PR 2, PR 3 | single flight end to end: joining, detaching and the §7.2 join rows |
@@ -701,42 +729,31 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **Decision needed: D1, `Chunk.Keep` and `Meter.Index` in RFC 4's contract, pending the user's
-  answer.** RFC 3 §4.3's detached caller keeping its chunk, and §2.4's whole-block resume, need the
-  codec's help, since only the codec owns the decode buffer and reads the header. This document
-  writes option A:
-  - **A (written, recommended):** `Chunk.Keep`, which hands one yielded chunk's buffer to the syncer
-    and makes the codec decode the next into a fresh one, and `Meter.Index`, a whole-block get
-    reporting its chunks' hashes and ranges once its name check passes. Both RFC 3 rules hold as
-    written, the fetcher's memory stays at RFC 3 §2.2's figure, and no signature changes. Cost: RFC
-    4 §4.1's `Chunk` and `Meter` text and about 1.5 man-days in the codec (T6.1), which the RFC 4
-    plan's epic 6 (#5942) could take.
-  - **B:** no contract change. The flight copies every chunk into its own buffer, so a detached
-    caller keeps the copy, and a whole-block fetch resumes by getting the whole block again and
-    skipping the chunks it delivered. RFC 3 §2.2's per-worker figure gains a `Max` for the fetcher
-    (about 2 MiB to 3 MiB a worker at the default), §2.4's whole-block sentence and the "§2.4 fetch
-    resume" row are amended to "yields only the rest", and a chunk call joins a whole-block flight
-    only while the bytes moved have not reached its offset. T6.1 goes, and a pool of twice the fetch
-    pool's buffers comes in; about the same total.
-  - **C:** A's `Keep` alone, with B's whole-block resume: memory as the RFC says, B's bandwidth cost
-    on a failed whole-block get, and RFC 3 §2.4's sentence and row amended as in B.
-- **RFC 3 §1.3's "MUST NOT interpret them, except to sum the lengths of `want`"** conflicts with
-  §2.4's resume and §4.3's joining, which read each chunk's hash and range (D3). Proposed text, for
-  the user to accept: "…except to sum the lengths of `want` for scheduling ([§2.9]), to resume a
-  fetch ([§2.4]) and to join one ([§4.3])." E3's R14 would cite it.
-- **The detach bound applies only with another caller attached** (D5), as RFC 3 §2.10 states it for
-  "a joined caller". The "§2.2 detached-buffer cap" row says to stall all 40 callers; T6.6 keeps one
-  reading caller per fetch, since a fetch whose callers are all detached ends and never asks for a
-  fresh buffer. A wording fix to the row, "stall all but one caller of each fetch", is proposed with
-  the pull request that settles D1.
+- **Decided by the user, 2026-11-26:** D1, `Chunk.Keep` and `Meter.Index` on RFC 4's value types
+  as written, which keeps both RFC 3 rules as written and the fetcher's memory at RFC 3 §2.2's
+  figure, at the cost of RFC 4 §4.1's text and T6.1's 1.5 man-days in the codec, which the RFC 4
+  plan's epic 6 (#5942) could take. Two RFC 3 wordings, accepted, each landing with its subtask's
+  pull request:
+  - RFC 3 §1.3's "MUST NOT interpret them, except to sum the lengths of `want`" conflicts with
+    §2.4's resume and §4.3's joining, which read each chunk's hash and range (D3). It reads
+    "…except to sum the lengths of `want` for scheduling ([§2.9]), to resume a fetch ([§2.4]) and
+    to join one ([§4.3])" (T6.2). E3's R14 should cite the amended text.
+  - The detach bound applies only with another caller attached (D5), as RFC 3 §2.10 states it for
+    "a joined caller". The "§2.2 detached-buffer cap" row says to stall all 40 callers; T6.6 keeps
+    one reading caller per fetch, since a fetch whose callers are all detached ends and never asks
+    for a fresh buffer. The row reads "stall all but one caller of each fetch" (T6.6).
+- **E3's per-flow and per-class deficits add `Promote` to T6.3** (D4). A running entry was charged
+  to its class's deficit at dispatch, so promoting it must move that charge, or `Done` would
+  correct the demand deficit for a charge the speculation deficit took.
 - **The engine must re-fetch after a detach.** D6 ends a detached stream with an error wrapping
   `remote.ErrTransient`; RFC 3 §4.3 says the caller "fetches again or reads what a fill left". RFC 8
   offload plan epic 17's draft (#6002) maps every transient error of a carved run to
   `vfserr.ErrUnavailable`, which would fail a read the syncer merely detached; its breakdown should
   re-fetch the detached part once.
 - **E3's D1 and E4's D4 change for fetches** (D2): a dispatched fetch runs on a flight goroutine,
-  not its caller's, and E4's get tries run in turn there. E3's `Close` counts flights; E4's
-  requeue of a throttled get keeps the flight and its callers. Both breakdowns should note it.
+  not its caller's, and E4's get tries run in turn there. E3's D6 count includes each flight's
+  goroutine; E4's requeue of a throttled get keeps the flight and its callers. Both breakdowns
+  should note it.
 - **E4's D9 is replaced** (D8) and its `classify` gains `verifyRetry` (D9), as its §1.2 expects.
 - **The least certain estimates** are T6.4 (the flight table, re-homes and promotions racing
   dispatch, leaves and `Close` under `-race`) and T6.5 (the detach timer, the buffer cap's wait and
