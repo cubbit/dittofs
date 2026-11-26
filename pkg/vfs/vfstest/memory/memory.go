@@ -42,8 +42,18 @@ type Service struct {
 // and stopped when the test ends. Its open state reads a test clock nothing
 // advances, so no lease expires; its Content stamps the wall clock, as the
 // store does, so a write's times are later than the file's creation and move
-// them.
+// them. Its SignIn holds no keytab.
 func New(t *testing.T) *Service {
+	t.Helper()
+	return WithKeytab(t, nil)
+}
+
+// WithKeytab is New whose SignIn holds keytab, in MIT's keytab format, such
+// as identitytest.Realm's, so it accepts that realm's tickets for the
+// identity server's clock, which reads time.Unix(0, 0) and nothing advances.
+// A ticket's client name binds as RFC 18 maps it: "admin" to the share's
+// administrator.
+func WithKeytab(t *testing.T, keytab []byte) *Service {
 	t.Helper()
 	clock := sim.NewTestClock(time.Unix(0, 0))
 	fs := kvstoretest.NewFS(t, memKV)
@@ -58,7 +68,7 @@ func New(t *testing.T) *Service {
 	must(t, err)
 	content := contenttest.NewOver(wallClock{}, fs.Store)
 	content.Bind(fs.Share.ID)
-	srv := identitymem.New(t, fs.Store)
+	srv := identitymem.WithKeytab(t, fs.Store, keytab)
 	f, err := ivfs.New(ivfs.Deps{Meta: fs.Store, Open: tab, Engine: content, Identity: srv, Auth: srv, Names: srv})
 	must(t, err)
 	must(t, tab.Start(t.Context(), f, f.Admission))
