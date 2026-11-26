@@ -10,24 +10,36 @@ import (
 )
 
 // entities is the metadata entities' contract, the namespace ID's home, with
-// the packages beneath it that only it imports.
+// the generators beneath it that only it can import.
 const entities = "pkg/metadata/entity/..."
 
-// treeReach is what every package under pkg/transform other than the two
-// contracts may reach of the module: the component itself, the entities'
-// contract, the remote tier's contract (the provider reads a census), and the
-// key file and KMIP transport the provider builds on.
+// treeReach is what a stage, the chain, the provider and the suites may reach
+// of the module: the component itself, the entities' contract, the remote
+// tier's contract (the provider reads a census), and the key file and KMIP
+// transport the provider builds on.
 var treeReach = []string{"pkg/transform/...", entities, "pkg/remote", "internal/keyfile", "internal/kmip"}
 
-// treeLibs is what every package under pkg/transform other than the two
-// contracts may reach outside the module: what the entities' contract brings,
-// with the stages' and the provider's libraries.
+// suiteReach is treeReach with internal/prof, whose leak check the
+// conformance suites run under.
+var suiteReach = append(slices.Clone(treeReach), "internal/prof")
+
+// treeLibs is what a stage, the chain, the provider and the suites may reach
+// outside the module, transitively, so each library's own dependencies are
+// listed with it.
 var treeLibs = archtest.EntityLibs(
 	"golang.org/x/crypto/...",           // the encrypt stage's ciphers and key derivation
+	"golang.org/x/sys/...",              // what x/crypto and the KMIP client's logger bring
 	"github.com/klauspost/compress/...", // the zstd stage
 	"github.com/pierrec/lz4/v4",         // the lz4 stage
 	"github.com/gemalto/kmip-go/...",    // the provider's KMIP client
-	"github.com/google/uuid",            // key and material IDs
+	"github.com/ansel1/merry/...",       // the KMIP client's errors
+	"github.com/gemalto/flume/...",      // the KMIP client's logger, and what it brings:
+	"go.uber.org/zap/...",
+	"go.uber.org/multierr/...",
+	"golang.org/x/text/...",
+	"github.com/mattn/go-colorable/...",
+	"github.com/mattn/go-isatty/...",
+	"github.com/mgutz/ansi/...",
 )
 
 // table is every package of the transform component, landed or not, and what
@@ -35,56 +47,42 @@ var treeLibs = archtest.EntityLibs(
 // root's row comes before the tree's: both name pkg/transform equally
 // closely, and the first wins.
 //
-//   - pkg/transform, the contract: pkg/transform/keys and the entities'
-//     contract, never chain, a stage or the provider.
-//   - pkg/transform/keys, the material contract: the entities' contract
-//     only, never pkg/transform.
-//   - every other package: treeReach and treeLibs.
-//   - pkg/transform/transformtest and pkg/transform/keystest besides reach
-//     internal/prof, whose leak check their suites run under.
+//   - pkg/transform, the contract, never reaches chain, a stage or the
+//     provider.
+//   - pkg/transform/keys, the material contract, never reaches pkg/transform.
+//   - production code never reaches the conformance suites.
 //
 // Left out on purpose, since each is or holds an implementation: pkg/settings,
 // pkg/metrics and pkg/health, which keep a contract and its implementation
-// together; pkg/keyprovider, v1's provider; pkg/metadata/kvstore, a store; and
-// pkg/remote/s3, the remote tier's implementation.
+// together; pkg/keyprovider, RFC 13's provider; pkg/metadata/kvstore, a store;
+// and pkg/remote/s3, the remote tier's implementation.
 //
 // A row is an upper bound: a package that reaches less passes.
 var table = []archtest.Row{
 	{Pkg: "pkg/transform", Reach: []string{"pkg/transform/keys", entities}, Libs: archtest.EntityLibs()},
 	{Pkg: "pkg/transform/keys", Reach: []string{entities}, Libs: archtest.EntityLibs()},
-	{Pkg: "pkg/transform/...", Reach: treeReach, Libs: treeLibs},
-	{Pkg: "pkg/transform/transformtest", Reach: append(slices.Clone(treeReach), "internal/prof"), Libs: treeLibs},
-	{Pkg: "pkg/transform/keystest", Reach: append(slices.Clone(treeReach), "internal/prof"), Libs: treeLibs},
+	{Pkg: "pkg/transform/...", Reach: treeReach, But: []string{"pkg/transform/transformtest/...", "pkg/transform/keystest/..."}, Libs: treeLibs},
+	{Pkg: "pkg/transform/transformtest", Reach: suiteReach, Libs: treeLibs},
+	{Pkg: "pkg/transform/keystest", Reach: suiteReach, Libs: treeLibs},
 }
 
-// contracts are the packages that import no library directly: what a
-// contract's caller reaches through it is the entities' contract and what that
-// brings, nothing the contract picked.
+// contracts import no library directly: what a contract's caller reaches
+// through it is the entities' contract and what that brings, nothing the
+// contract picked. A row's Libs are transitive, so this is checked apart.
 var contracts = []string{"pkg/transform", "pkg/transform/keys"}
 
 // violations returns every way graphs break the transform component's import
 // rule: a package reaching, transitively, what its row in table does not
 // allow, and a contract importing a library outside the standard library
 // directly.
-//
-// decision: only production files are held to the rule, since amended RFC 0
-// §1.2 binds production code and lets tests import implementations, and every
-// v1 package is deleted on this branch, so the compiler refuses a test that
-// imports one. Withdraw this if a v1 package is restored, or if RFC 0 starts
-// holding tests to the rule.
 func violations(graphs ...archtest.Graph) []string {
 	bad := archtest.Check(table, graphs...)
 
 	for _, g := range graphs {
-		for _, root := range g.Roots {
-			pkg := strings.TrimPrefix(root, archtest.Module)
-			if !slices.Contains(contracts, pkg) {
-				continue
-			}
-
-			for _, imp := range g.Imports[root] {
+		for _, c := range contracts {
+			for _, imp := range g.Imports[archtest.Module+c] {
 				if first, _, _ := strings.Cut(imp, "/"); strings.Contains(first, ".") && !strings.HasPrefix(imp, archtest.Module) {
-					bad = append(bad, fmt.Sprintf("%s imports %s directly, which a contract may not", pkg, imp))
+					bad = append(bad, fmt.Sprintf("%s imports %s directly, which a contract may not", c, imp))
 				}
 			}
 		}
@@ -98,6 +96,11 @@ func violations(graphs ...archtest.Graph) []string {
 // Every package under pkg/transform reaches, through its production code,
 // only what its row allows, on every platform the walk lists, and every file
 // under it is built for one of them.
+//
+// decision: the walk lists production files only, since amended RFC 0 §1.2
+// binds production code and lets tests import implementations, so a test here
+// may import pkg/keyprovider or a store. Withdraw this if RFC 0 starts holding
+// tests to the rule.
 func TestImportRule(t *testing.T) {
 	graphs, err := archtest.Walk(".", false)
 	if err != nil {
@@ -173,6 +176,17 @@ func TestImportRuleRefuses(t *testing.T) {
 		{"a stage reaching the test suites' leak check", m("pkg/transform/compress/zstd"), map[string][]string{
 			m("pkg/transform/compress/zstd"): {m("internal/prof")},
 		}, []string{"pkg/transform/compress/zstd reaches internal/prof, which row pkg/transform/... does not allow"}},
+		{"the chain importing a conformance suite", m("pkg/transform/chain"), map[string][]string{
+			m("pkg/transform/chain"): {m("pkg/transform"), m("pkg/transform/transformtest")},
+		}, []string{"pkg/transform/chain reaches pkg/transform/transformtest, which row pkg/transform/... does not allow"}},
+		{"a stage reaching pkg/metrics through a listed library", m("pkg/transform/compress/zstd"), map[string][]string{
+			m("pkg/transform/compress/zstd"):     {"github.com/klauspost/compress/zstd"},
+			"github.com/klauspost/compress/zstd": {m("pkg/metrics")},
+		}, []string{"pkg/transform/compress/zstd reaches pkg/metrics through github.com/klauspost/compress/zstd, which row pkg/transform/... does not allow"}},
+		{"a stage reaching a library off the list through a listed one", m("pkg/transform/compress/zstd"), map[string][]string{
+			m("pkg/transform/compress/zstd"):     {"github.com/klauspost/compress/zstd"},
+			"github.com/klauspost/compress/zstd": {"github.com/pierrec/lz4"},
+		}, []string{"pkg/transform/compress/zstd reaches github.com/pierrec/lz4 through github.com/klauspost/compress/zstd, which row pkg/transform/... does not allow"}},
 		{"the root importing BLAKE3 directly", m("pkg/transform"), map[string][]string{
 			m("pkg/transform"): {m("pkg/metadata/entity"), "lukechampine.com/blake3"},
 		}, []string{"pkg/transform imports lukechampine.com/blake3 directly, which a contract may not"}},
