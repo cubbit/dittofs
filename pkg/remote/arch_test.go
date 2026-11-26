@@ -36,6 +36,7 @@ var frozenExports = []string{
 	"const RoleClaim Role = 1",
 	"const RoleHealth Role = 2",
 	"const RoleKeys Role = 3",
+	"func (Role).String() string",
 	"type Mode uint8",
 	"const Mutable Mode = 1",
 	"const Immutable Mode = 2",
@@ -96,6 +97,14 @@ func exports(dir string, planted ...string) ([]string, error) {
 		f, err := parser.ParseFile(fset, p, nil, parser.SkipObjectResolution)
 		if err != nil {
 			return nil, err
+		}
+
+		// decision: a file of another package, such as a generator behind
+		// //go:build ignore, is not part of the contract and is skipped. Two
+		// files declaring one symbol for different platforms would still fail
+		// to type-check together; split the pin per platform when one appears.
+		if f.Name.Name != "remote" {
+			continue
 		}
 
 		files = append(files, f)
@@ -170,7 +179,9 @@ func exports(dir string, planted ...string) ([]string, error) {
 }
 
 // typeString prints t as types.TypeString does, but a struct with its
-// exported and embedded fields only and no tags, nested anonymous structs included.
+// exported and embedded fields only and no tags; a struct a field holds
+// directly is printed the same way. A struct under a pointer, slice, map or
+// array is printed whole, as types.TypeString does: the frozen types hold none.
 func typeString(t types.Type, qualify types.Qualifier) string {
 	st, ok := t.(*types.Struct)
 	if !ok {

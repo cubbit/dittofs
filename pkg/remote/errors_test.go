@@ -22,9 +22,9 @@ var sentinels = []struct {
 }
 
 // Each sentinel matches itself and, for the two that wrap, exactly the one
-// they wrap: a syncer that re-gets on ErrCorrupt and holds the flow on
-// ErrThrottled reads them this way, so ErrMalformed declared on its own would
-// be re-got, and a sentinel wrapping the wrong one would be retried wrongly.
+// they wrap: ErrMalformed is a kind of ErrCorrupt (RFC 4 §3.4) and ErrThrottled
+// a kind of ErrTransient, so a caller testing the wider one still classifies
+// them, and a caller that must treat them apart tests the narrower one first.
 func TestSentinelsMatchOnlyThemselvesAndWhatTheyWrap(t *testing.T) {
 	wraps := map[string]string{"ErrThrottled": "ErrTransient", "ErrMalformed": "ErrCorrupt"}
 
@@ -88,5 +88,29 @@ func TestUnknownCausePrintsItsNumber(t *testing.T) {
 func TestZeroStoredSumReportsNone(t *testing.T) {
 	if got := (StoredSum{}).Kind; got != ChecksumNone {
 		t.Errorf("zero StoredSum's Kind = %d, want ChecksumNone (%d)", got, ChecksumNone)
+	}
+}
+
+// A typed-nil *DeniedError returned as an error prints instead of panicking.
+func TestNilDeniedErrorPrints(t *testing.T) {
+	var e *DeniedError
+	if got := e.Error(); got != ErrDenied.Error() {
+		t.Errorf("(*DeniedError)(nil).Error() = %q, want %q", got, ErrDenied.Error())
+	}
+}
+
+// ErrMalformed names a block short at rest, never a fault in transit.
+func TestMalformedMessageNamesNoTransit(t *testing.T) {
+	if msg := ErrMalformed.Error(); strings.Contains(msg, "transit") {
+		t.Errorf("ErrMalformed.Error() = %q, want no mention of transit", msg)
+	}
+}
+
+// Each role prints RFC 4 §4.13's name, the key a store files it under.
+func TestRoleNames(t *testing.T) {
+	for r, want := range map[Role]string{RoleClaim: "claim", RoleHealth: "health", RoleKeys: "keys", 0: "Role(0)"} {
+		if got := r.String(); got != want {
+			t.Errorf("Role(%d).String() = %q, want %q", r, got, want)
+		}
 	}
 }

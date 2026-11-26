@@ -38,8 +38,8 @@ type Store interface {
 	// List reads one page, with one request, of at most n stored blocks in
 	// ascending name order, starting after the given name (the zero Name starts
 	// at the beginning); next is the last name of the page or, when the page
-	// ends on a key that is not a block, the smallest block name after that
-	// key, and done is true once the walk has passed the last block (RFC 4 §4.6).
+	// ends on a key that is not a block, the largest name that sorts at or
+	// before that key, so resuming after it skips no block; and done is true once the walk has passed the last block (RFC 4 §4.6).
 	List(ctx context.Context, after Name, n int) (page []Info, next Name, done bool, err error)
 
 	// Health makes one bounded probe round trip of direction d against the

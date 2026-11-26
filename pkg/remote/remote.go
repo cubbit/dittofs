@@ -5,7 +5,10 @@
 // every store live in packages beneath it and count as implementations.
 package remote
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
 
 // Name is a block's name (RFC 2 §4.2): derived from its chunk hashes, key
 // scope, the put attempt's nonce and chain ID.
@@ -18,13 +21,28 @@ type Role uint8
 // decision: the repair proof's role (RFC 4 §4.11) is not declared, since its one
 // caller is a Recheck pass that accepts the versioning repair proof, which has
 // not landed. A role's number is never persisted or sent (a control object is
-// keyed by the role's name), so declaring it then changes no stored value. Add
+// keyed by its String), so declaring it then changes no stored value. Add
 // it with the first Recheck pass that accepts a repair proof.
 const (
 	RoleClaim  Role = iota + 1 // the namespace claim (RFC 27)
 	RoleHealth                 // the health probe's object (RFC 4 §4.7)
 	RoleKeys                   // the namespace's key records, wrapped; a non-encrypting namespace's chunk-ID key in the clear (RFC 5 Appendix B.2)
 )
+
+// String is the role's name as RFC 4 §4.13 writes it. A store keys a control
+// object by this name, never by the role's number.
+func (r Role) String() string {
+	switch r {
+	case RoleClaim:
+		return "claim"
+	case RoleHealth:
+		return "health"
+	case RoleKeys:
+		return "keys"
+	}
+
+	return "Role(" + strconv.Itoa(int(r)) + ")"
+}
 
 // Mode is how a store treats versions and deletes (RFC 4 §4.14). Every
 // namespace's store is Mutable; a store refuses to open Immutable until the

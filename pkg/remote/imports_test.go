@@ -18,7 +18,7 @@ type row struct {
 	pkg   string
 	reach []string // the module's packages they may reach, transitively
 	but   []string // packages refused although reach names them
-	libs  []string // libraries outside the standard library they may import
+	libs  []string // libraries outside the standard library they may reach, transitively
 }
 
 // aws is the AWS SDK for Go v2 with its runtime.
@@ -41,16 +41,15 @@ var table = []row{
 
 // listed is one package as go list reports it, production files only.
 type listed struct {
-	path    string
-	deps    []string // every package it imports, transitively
-	imports []string // the packages it imports directly
+	path string
+	deps []string // every package it imports, transitively
 }
 
 // targets are the platforms the walk lists each package for, with cgo on, so a
 // file built for one of them only, or only with cgo, is checked too.
 //
-// decision: the walk lists Linux, macOS and Windows on amd64 and arm64, with
-// cgo on and no build tags. A file behind a custom tag, or built only for
+// decision: the walk lists each GOOS/GOARCH pair in targets, with cgo on and
+// no build tags. A file behind a custom tag, or built only for
 // another platform, is not walked; widen this when a package under pkg/remote
 // gains one.
 var targets = [][2]string{
@@ -69,7 +68,7 @@ func walk(dir string) ([]listed, error) {
 	for _, target := range targets {
 		goos, goarch := target[0], target[1]
 
-		cmd := exec.Command("go", "list", "-tags=", "-f", `{{.ImportPath}}|{{join .Deps " "}}|{{join .Imports " "}}`, "./...")
+		cmd := exec.Command("go", "list", "-tags=", "-f", `{{.ImportPath}}|{{join .Deps " "}}`, "./...")
 		cmd.Dir = dir
 		// The planted tree is a module of its own, outside any workspace.
 		cmd.Env = append(cmd.Environ(), "GOWORK=off", "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=1")
@@ -85,7 +84,7 @@ func walk(dir string) ([]listed, error) {
 
 		for line := range strings.Lines(string(out)) {
 			fields := strings.Split(strings.TrimSpace(line), "|")
-			if len(fields) != 3 {
+			if len(fields) != 2 {
 				return nil, fmt.Errorf("go list in %s: unexpected line %q", dir, line)
 			}
 
@@ -96,7 +95,6 @@ func walk(dir string) ([]listed, error) {
 			}
 
 			p.deps = append(p.deps, strings.Fields(fields[1])...)
-			p.imports = append(p.imports, strings.Fields(fields[2])...)
 		}
 	}
 
@@ -165,14 +163,14 @@ func check(pkgs []listed, table []row) []string {
 			}
 		}
 
-		for _, imp := range p.imports {
+		for _, imp := range p.deps {
 			first, _, _ := strings.Cut(imp, "/")
 			if !strings.Contains(first, ".") || strings.HasPrefix(imp, module) {
 				continue
 			}
 
 			if !slices.ContainsFunc(r.libs, func(pat string) bool { return matches(pat, imp) }) {
-				bad = append(bad, fmt.Sprintf("%s imports %s, which row %s does not allow", rel, imp, r.pkg))
+				bad = append(bad, fmt.Sprintf("%s reaches %s, which row %s does not allow", rel, imp, r.pkg))
 			}
 		}
 	}
@@ -230,23 +228,25 @@ func TestImportCheck(t *testing.T) {
 		want []string
 	}{
 		{"an allowed reach", listed{
-			path:    module + "pkg/remote/codec",
-			deps:    []string{module + "pkg/remote", module + "pkg/transform", module + "pkg/metadata/entity/internal", "context"},
-			imports: []string{module + "pkg/transform", "context"},
+			path: module + "pkg/remote/codec",
+			deps: []string{module + "pkg/remote", module + "pkg/transform", module + "pkg/metadata/entity/internal", "context"},
 		}, nil},
+		{"a library reached through an allowed package", listed{
+			path: module + "pkg/remote/codec",
+			deps: []string{module + "pkg/transform", "github.com/klauspost/compress/zstd"},
+		}, []string{"pkg/remote/codec reaches github.com/klauspost/compress/zstd, which row pkg/remote/codec does not allow"}},
 		{"a reach the row refuses", listed{
 			path: module + "pkg/remote/codec",
 			deps: []string{module + "pkg/remote", module + "pkg/transform/chain"},
 		}, []string{"pkg/remote/codec reaches pkg/transform/chain, which row pkg/remote/codec does not allow"}},
 		{"a package with no row", listed{path: module + "pkg/remote/gcs"}, []string{"pkg/remote/gcs has no row"}},
 		{"a library the contract imports", listed{
-			path:    module + "pkg/remote",
-			imports: []string{"github.com/aws/aws-sdk-go-v2/aws", "io"},
-		}, []string{"pkg/remote imports github.com/aws/aws-sdk-go-v2/aws, which row pkg/remote does not allow"}},
+			path: module + "pkg/remote",
+			deps: []string{"github.com/aws/aws-sdk-go-v2/aws", "io"},
+		}, []string{"pkg/remote reaches github.com/aws/aws-sdk-go-v2/aws, which row pkg/remote does not allow"}},
 		{"a library a store imports", listed{
-			path:    module + "pkg/remote/s3",
-			deps:    []string{module + "pkg/remote", module + "pkg/remote/s3/internal/sign"},
-			imports: []string{"github.com/aws/aws-sdk-go-v2/service/s3", "github.com/aws/smithy-go"},
+			path: module + "pkg/remote/s3",
+			deps: []string{module + "pkg/remote", module + "pkg/remote/s3/internal/sign", "github.com/aws/aws-sdk-go-v2/service/s3", "github.com/aws/smithy-go"},
 		}, nil},
 		{"a store reaching its fault transport", listed{
 			path: module + "pkg/remote/s3",
