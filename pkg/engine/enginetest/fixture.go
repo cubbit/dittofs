@@ -32,11 +32,20 @@ import (
 
 // Settings are the engine settings the fixture applies. The existence age is
 // far past the journal's sync bound, so a test that moves the clock by the
-// sync bound makes a write durable without making its group commit due.
+// sync bound makes a write durable without making its group commit due. The
+// offload keys are RFC 13 Appendix B's proposed values. A test that needs
+// another value copies this and overrides only that field.
 var Settings = engine.Settings{
-	ExistenceAge:        time.Minute,
-	GroupCommitMaxFiles: 64,
-	CloneMaxLen:         1 << 30,
+	ExistenceAge:            time.Minute,
+	GroupCommitMaxFiles:     64,
+	CloneMaxLen:             1 << 30,
+	OffloadRetryMin:         time.Second,
+	OffloadRetryMax:         time.Minute,
+	OffloadRetryMaxPressure: 5 * time.Second,
+	RemovalRescan:           time.Minute,
+	RepackThreshold:         0.10,
+	EvictionTarget:          0.85,
+	FillLowWater:            0.10,
 }
 
 // fixtureStart is when the fixture's clock starts.

@@ -216,8 +216,8 @@ which.
 | R34 | The reader fails at every byte offset of a stretch spanning several chunks and at least two buffer refills, and `emit` at every chunk; after each, the chunks delivered are exactly a prefix of the clean run's, byte for byte, none a shortened one, and a retry delivers the clean run | MUST | RFC 2 §10.3 | T4.8 |
 | R35 | The same input through two buffer sizes gives identical output | test row | RFC 2 §10.3 ("the property tests run the same input with two buffer sizes and require identical output") | T4.8 |
 | R36 | C1, C4 and C7 are fuzzed properties over random input and random valid settings, asserting on what `emit` saw; fuzzing past the seeds runs in the shared nightly fuzz suite and the seeds in `unit`. C2 and C3 are E3's | invariant | RFC 2 §10.1 (Properties), §10.6; RFC 2 plan, §1.4 (the `fuzz` suite), epic 4's expected content ("property fuzzing of C1, C4, C7") | T4.8 |
-| R38 | Two implementations over the same random input emit identical chunks: `Cut` and the reference chunker over E2's tables agree on every end | MUST | RFC 2 §10.1 (Differential), §1.3; RFC 2 plan, §1.4 | T4.4, T4.8 |
 | R37 | Only the fault sweep runs reduced in a per-change run: every chunk end and buffer refill, one byte either side, and a seeded sample of other offsets, at the smallest `Target`; the full sweep runs in no per-change run, only nightly | bound | RFC 2 plan, D8; RFC 2 §10.6 | T4.8 |
+| R38 | Two implementations over the same random input emit identical chunks: `Cut` and the reference chunker over E2's tables agree on every end | MUST | RFC 2 §10.1 (Differential), §1.3; RFC 2 plan, §1.4 | T4.4, T4.8 |
 
 How each row is enforced once this epic lands, where no test of this epic can break it: R1's
 transitive walk by E1's `imports_test.go`, which T4.4 extends, and `pkg/transform`'s admission of
@@ -274,8 +274,8 @@ size to choose (RFC 2 §1.2, the RFC 8 offload plan's epic 15).
   inputs are several slices), and a 32-byte sum. A `Hasher` holds its chaining-value stack and a 16 KiB group buffer, about 18 KiB on its
   caller's stack, so it is started in place (`InitKeyed`, `InitDeriveKey`) rather than returned by value, which would copy
   them per chunk. No extendable output: E3's gear tables keep
-  `lukechampine.com/blake3`, whose inputs are under one BLAKE3 chunk and whose allocations land in
-  the constructor (E3's D5). The marker's ceiling: withdraw the package, and call the library
+  `lukechampine.com/blake3`, read 1,024 bytes at a time so it starts no goroutine, with its
+  allocations in the constructor (E3's D5). The marker's ceiling: withdraw the package, and call the library
   directly, if a later `lukechampine.com/blake3` neither allocates nor starts a goroutine on a long
   write. Prior art: `internal/prof`, a shared internal package with its own import test (checked);
   Go's `crypto/internal` packages shared by the `crypto/...` tree (from memory). Applied by T4.1.

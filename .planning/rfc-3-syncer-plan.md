@@ -504,19 +504,21 @@ suite.**
   faults it can inject and the checksum modes it can select: RFC 4's fault wrapper here, the fault
   proxy in epic 21. A row needing a fault or mode the caller cannot give (a dropped response to a
   committed put, a byte flipped on the first get only, a past-the-end refusal) is skipped by name
-  and reported, never passed. Epic 2 lands its frame and lifecycle rows, and epics 3, 4 and 6 add
-  theirs.
+  and reported, never passed. Epic 2 lands its frame, and epics 3, 4 and 6 add their rows, the
+  lifecycle rows among epic 3's.
 - **Prior art.** The journal's conformance suite; Go's `testing/fstest.TestFS`.
 - **Applied by** epics 2, 3, 4 and 6.
 
 **D3. Time comes from a `Clock` the syncer declares: RFC 8 §2.1's `Now`, `Elapsed` and `After`,
 the same three methods as the engine's `Clock`, declared beside its `Deps`.**
-- Tests use `pkg/sim`'s `TestClock`, which moves only on `Advance`.
-- RFC 3 §1.4 says time "advances only when every task is blocked". To meet that, a test advances
-  only after the syncer reports itself idle, through a per-instance hook set from `export_test.go`.
-- **Prior art.** `pkg/sim.TestClock`, as the journal and the engine use it. Go's `testing/synctest`
-  was considered and not chosen, because its bubble cannot share `pkg/sim`'s clock with the other
-  components.
+- RFC 3 §1.4 says time "advances only when every task is blocked". A test of the syncer alone
+  meets that by running in a `testing/synctest` bubble, whose fake time moves only once every
+  goroutine in it is durably blocked; the `Clock` passed to `pool.New` reads the bubble's time
+  through a test adapter in `export_test.go` (epic 3's D12, the user's decision of 2026-11-26).
+- Where the syncer runs composed with other components, they share `pkg/sim`'s `TestClock`,
+  which moves only on `Advance`, since a bubble cannot share `pkg/sim`'s clock with them.
+- **Prior art.** `pkg/sim.TestClock`, as the journal and the engine use it; `testing/synctest`, as
+  `internal/adapter/core`'s tests use it on `feat/storage-v2`.
 - **Applied by** epics 1, 2 and 3.
 
 **D4. The collector, the conditions and the settings section live in the node's content wiring.**
@@ -546,15 +548,16 @@ the same three methods as the engine's `Clock`, declared beside its `Deps`.**
 - **Prior art.** None found.
 - **Applied by** epic 1.
 
-**D6. The fit to the transfers pool takes the pool's size as a configuration field.**
-- Epic 7 builds RFC 24 §7.2's two rules, the reduction and the refusal, and tests both with a
-  non-zero size. The fit counts the staging budget only once it lands (§6.1's first row; RFC 3
-  §1.3 binds an obligation on what lands later from its caller's release).
-- `pkg/resources` has no `Split` yet, so the root has no size to pass. A zero size reduces and
-  refuses nothing. That is a gap against RFC 24 §7.2 (§6.1), and the code site carries a
-  `decision:` marker naming it.
+**D6. The fit to the transfers pool lands with its first caller.**
+- RFC 24 §7.2's two rules, the reduction and the refusal, land once the node passes the syncer the
+  pool's size (RFC 3 §1.3, §2.10), by §6.1's row "RFC 24's transfers size"; the user's decision of
+  2026-11-26. `pkg/resources` has no `Split` yet, so no caller passes it, and epic 1's frozen
+  `Config` has no field for it.
+- Until then the counts are neither reduced nor refused, and a `decision:` marker at `New` says
+  so. Once the fit lands, it counts the staging budget only once that lands too (§6.1's first
+  row).
 - **Prior art.** None found.
-- **Applied by** epic 7.
+- **Applied by** epic 7, which carries the marker.
 
 **D7. The constructor takes the per-worker memory inputs as numbers.**
 - RFC 3 §2.2's figure needs values only RFC 2, 4 and 5 know. RFC 8 offload plan epic 21 passes
@@ -836,8 +839,9 @@ Epic 6 completes `Fetch` and `Prefetch`, and joins concurrent demand for a chunk
 
 Epic 7 delivers the checks that span both halves.
 
-**Owns:** RFC 3 §2.2; §2.7; §2.12; §8.3's systematic sweep; RFC 24 §7.2's fit to the transfers pool
-(D6).
+**Owns:** RFC 3 §2.2; §2.7; §2.12; §8.3's systematic sweep. RFC 24 §7.2's fit to the transfers
+pool (D6) is deferred to its first caller, the node passing the pool's size (RFC 3 §1.3; the
+user's decision of 2026-11-26), by §6.1's row "RFC 24's transfers size".
 
 **Done when:**
 - the syncer's part of RFC 3 §7.2's "§2.2 memory bound" row passes, with both halves' bound taken
@@ -846,10 +850,11 @@ Epic 7 delivers the checks that span both halves.
 - RFC 3 §8.4's "allocations" count passes in `unit/syncer-allocs`;
 - RFC 3 §8.3's sweep runs over RFC 4's fault wrapper, with §8.3's table of store changes;
 - RFC 3 §2.12's two snapshot rules pass;
-- D6's reduction and refusal pass.
+- the counts are neither reduced nor refused until the node passes the transfers pool's size, and
+  a `decision:` marker at `New` says so (D6's fit deferred).
 
 **Expected content:**
-- The per-worker figure and the fit (D6).
+- The per-worker figure (D6's fit deferred).
 - The consistent snapshot behind `Stats`.
 - The held-pool heap check.
 - The sweep and the store-change rows.
@@ -967,6 +972,8 @@ What this plan knowingly does not build. Each row names the section that defers 
 | RFC 25 §3.9's severity per cause on `store_put_unhealthy` and `store_get_unhealthy` (epic 5) | `health.Condition` carries no severity; the `ponytail:` on `pkg/health`'s `Evaluator` names RFC 25's plan as its upgrade | unowned | a plan takes RFC 25's registry, or `pkg/health` gains severity |
 | RFC 0 §1.4's single-node checks (§1.4): the composition root building and stopping the syncer in order | they run on the composed node | RFC 8 offload plan, epic 21 | RFC 8 offload plan epic 21 lands |
 | RFC 24's transfers size passed to the syncer (D6) | `pkg/resources` has no `Split` | unowned | a plan takes RFC 24 §7, or the root sizes its pools |
+| RFC 25 §2.4's cap on entity label values: at most 64 `store` values per syncer metric, the rest summed into `_other`, and `metrics_label_capped` raised (epic 8) | one rule for every collector the node exports, which none builds yet; v1.1 registers far fewer than 64 stores | unowned | a plan takes RFC 25's registry, or a node registers more than 64 stores |
+| Counting the node's series at RFC 25 §12's reference workload against §2.5's 50,000; the syncer's collector checks only its own metrics against 10,000 each (epic 8) | a count over the whole node, every component's collector registered | unowned | a plan takes RFC 25 §12, or RFC 8 offload plan epic 21 registers every collector |
 | Hedged cold reads (RFC 3 §9, "Deferred") | not measured | unowned | a cold-read latency measurement asks for it |
 | A bandwidth cap per direction (RFC 3 §9, "Deferred") | not measured | unowned | a measurement shows the pool cannot bound the link |
 | Weighted flows (RFC 3 §2.9) | no operator needs it | unowned | an operator names a workload that needs one flow weighted |

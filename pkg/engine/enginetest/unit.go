@@ -123,7 +123,9 @@ func NewUnit(t *testing.T, o UnitOptions) *Unit {
 		t.Fatal(err)
 	}
 	// An existence age no test reaches unless it applies its own.
-	if err := e.Apply(engine.Settings{ExistenceAge: 24 * time.Hour, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+	s := Settings
+	s.ExistenceAge = 24 * time.Hour
+	if err := e.Apply(s); err != nil {
 		t.Fatal(err)
 	}
 	// The cleanup drops its reference once run, so the profiler's heap check,

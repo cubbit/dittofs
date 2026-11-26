@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cubbit/dittofs/pkg/engine"
 	"github.com/cubbit/dittofs/pkg/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -76,7 +75,10 @@ func TestARetriedBatchCallsEachDoneOnce(t *testing.T) {
 // with two.
 func TestEveryAcceptedWriteGetsOneDone(t *testing.T) {
 	u := newUnit(t)
-	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Millisecond, GroupCommitMaxFiles: 4, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Millisecond
+	settings.GroupCommitMaxFiles = 4
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	res := enginetest.NewReservations(t)

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
@@ -29,7 +30,10 @@ func cloneUnit(t *testing.T, opts ...func(*engine.Deps)) *unit {
 func cloneUnitWith(t *testing.T, c unitConfig) *unit {
 	t.Helper()
 	u := newUnitWith(t, c)
-	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Minute, GroupCommitMaxFiles: 1, CloneMaxLen: 16 * mib}); err != nil {
+	settings := enginetest.Settings
+	settings.GroupCommitMaxFiles = 1
+	settings.CloneMaxLen = 16 * mib
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	return u
