@@ -164,10 +164,12 @@ func (f *file) repointRecord(from, to RecordAt) int {
 // segment, and every move after the first to name the same destination,
 // change nothing.
 //
-// decision: the range-less entry a forget's emptying sweep drops goes with
-// the pieces the forget drops; the one residue is the surviving side of a
-// rivalled file, which a fault alone plants. Overturned by a flow that
-// repoints the two sides of one rivalled file apart.
+// decision: a rangeless entry this note adds lives by the file's own kind:
+// over a plain file it goes with the pieces a forget's emptying sweep drops,
+// over a rivalled one it stays with the surviving side the sweep also keeps
+// — the entries of both kinds answer the segment-to-files query for
+// placements the range table cannot name. No exemption remains: the note
+// answers for its placements exactly as a forget's emptying sweep does.
 func (f *file) repointedTo(seg core.SegmentID) {
 	for i := range f.segs {
 		if f.segs[i].seg == seg {

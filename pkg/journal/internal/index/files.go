@@ -142,9 +142,10 @@ type files struct {
 	conflicts conflictSet
 
 	// inv maps each segment to the files whose entry names it in segs, kept at
-	// the three places a file's segs table changes, so segFiles answers from
-	// it without walking every file. The zero value works; the map is made on
-	// the first registration.
+	// the four places a file's segs table changes (recorded, forgetRanges,
+	// segmentGone, repointedTo), so segFiles answers from it without walking
+	// every file. The zero value works; the map is made on the first
+	// registration.
 	inv map[core.SegmentID]map[core.FileID]struct{}
 	// decision: invMu is a leaf, the inverted registry's own domain: it is
 	// taken inside a file's lock, with a shard's never held, nothing is
@@ -767,11 +768,10 @@ func (fs *files) retireSegment(seg core.SegmentID) (SegmentBytes, bool) { return
 // forgetRanges drops the ranges of the records the forget record covers —
 // every range whose lowest pair sits below its sequence number, the only
 // ones of the file a durable forget leaves drop queries to keep — and the
-// segment entries those ranges leave empty: a segment that no longer holds a
-// covered record of the file must not keep the entry alive, or an entry
-// whose tag the forget cleared would stay in the map holding nothing. The
-// caller holds the file's lock, inside the update whose gauges count the
-// change by the f.nranges movement here.
+// segment entries those ranges leave empty, except over a rivalled file,
+// whose entries stay behind as placements the emptying itself explains
+// below. The caller holds the file's lock, inside the update whose gauges
+// count the change by the f.nranges movement here.
 func (f *file) forgetRanges(below core.Seq) {
 	kept := f.segs[:0]
 	for _, s := range f.segs {
@@ -785,7 +785,17 @@ func (f *file) forgetRanges(below core.Seq) {
 		}
 		clear(s.ranges[len(rs):])
 		s.ranges = rs
-		if len(rs) == 0 {
+		if len(rs) == 0 && !f.rivalled {
+			// A segment that no longer holds a covered record of a plain
+			// file must not keep the entry alive, or an entry whose tag the
+			// forget cleared would stay in the map holding nothing. A
+			// rivalled file is not plain: its surviving side can still hold
+			// live pieces at the segment the forgotten side's ranges named,
+			// so the entry stays as the placement alone — the same rangeless
+			// shape a repoint's note makes — and answers the segment-to-files
+			// query for pieces the range table can no longer name. The stub
+			// leaves with the file's last segment (segmentGone) as any entry
+			// does.
 			f.fs.invDel(s.seg, f.id)
 			continue
 		}
@@ -871,8 +881,9 @@ func (fs *files) dropRangeCount() int64 { return fs.dropRanges.Load() }
 // a copy the caller may keep.
 //
 // ponytail: the registry is a second copy of each file's segs table, kept at
-// the table's three change points; a change point added without its upkeep
-// shows as a disagreement in TestSegmentFilesMatchesTheEntries. Derive the
+// the table's four change points (recorded, forgetRanges, segmentGone,
+// repointedTo); a change point added without its upkeep shows as a
+// disagreement in TestSegmentFilesMatchesTheEntries. Derive the
 // answer from the tables again only if that upkeep ever costs more than the
 // walk it replaced.
 func (fs *files) segFiles(seg core.SegmentID) []core.FileID {

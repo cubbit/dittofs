@@ -147,4 +147,64 @@ func TestSegmentFilesMatchesTheEntries(t *testing.T) {
 	// A rebuilt record for a forgotten file registers it afresh.
 	noteRec(t, fs, b, 2, ext(0, 4), nums(20, 20))
 	check("noted after forget")
+
+	// A rivalred pair, rebuilt as an open's recovery plants it, and a forget
+	// of one side: the survivor's segment must keep the file — its live pieces
+	// sit there, and the forget's emptying sweep has dropped the ranges that
+	// would otherwise name it — while the forgotten side leaves a placement
+	// stub of the same kind behind.
+	eO, eR := core.ShareTag(7), core.ShareTag(8)
+	e := fid(5)
+	rb := newRebuilder(fs, &Counters{})
+	own := recd(RecWrite, e, 5, 21, 4, 0, 0, 4)
+	own.Tag = eO
+	riv := recd(RecWrite, e, 6, 22, 6, 8, 8, 4)
+	riv.Tag = eR
+	if err := rb.Feed(own); err != nil {
+		t.Fatalf("feeding the rivalled owner: %v", err)
+	}
+	if err := rb.Feed(riv); err != nil {
+		t.Fatalf("feeding the rival: %v", err)
+	}
+	if err := rb.Finish(ver(23)); err != nil {
+		t.Fatalf("finishing the rivalred rebuild: %v", err)
+	}
+	check("rivalred pair rebuilt")
+	if _, _, err := ix.ForgetFile(e, 1<<30, eO); err != nil {
+		t.Fatalf("forgetting the rivalred owner: %v", err)
+	}
+	check("rivalled forget keeps the survivor's segment")
+}
+
+// TestASurvivorsSegmentStaysInTheSegmentToFilesAnswer checks the answer over
+// a rivalled file whose forgotten side's ranges name a segment its surviving
+// side still holds pieces at: the forget's emptying sweep drops the ranges
+// of the forgotten side, and the survivor's live pieces must keep the file
+// in the segment's answer — the copier asks it to find what to copy, so a
+// survivor the answer drops can never be repacked.
+func TestASurvivorsSegmentStaysInTheSegmentToFilesAnswer(t *testing.T) {
+	const owner, rival = core.ShareTag(7), core.ShareTag(8)
+	id := fid(4)
+	ix := New(1 << 20)
+	b := newRebuilder(&ix.fs, &Counters{})
+	a1 := recd(RecWrite, id, 1, 1, 1, 0, 0, 4) // the owner's piece, segment 1
+	a1.Tag = owner
+	r1a := recd(RecWrite, id, 2, 2, 2, 8, 8, 4) // the rival's piece, segment 2
+	r1a.Tag = rival
+	if err := b.Feed(a1); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Feed(r1a); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Finish(ver(3)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ix.ForgetFile(id, 1<<30, owner); err != nil {
+		t.Fatal(err)
+	}
+	// SegmentBytes(2) = {Held: 4}: the survivor's piece is still held there.
+	if got := ix.FilesOfSegment(2); !slices.Contains(got, id) {
+		t.Fatalf("FilesOfSegment(2) = %v lacks %v, whose held piece sits at the segment", got, id)
+	}
 }
