@@ -171,24 +171,26 @@ func TestServices(t *testing.T) {
 	}
 	defer func() { _ = l.Close() }()
 	port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
-	t.Setenv("DITTOFS_TEST_POSTGRES_DSN", "host=127.0.0.1 port="+port+" dbname=x")
-	t.Setenv("DITTOFS_TEST_KMIP", "")
+	t.Setenv("LOCALSTACK_ENDPOINT", "http://127.0.0.1:4566")
 	t.Setenv("DITTOFS_TEST_KMIP_ENDPOINT", "127.0.0.1:"+port)
-	for need, want := range map[string]string{
-		"service:postgres": "",
-		"service:kmip":     "DITTOFS_TEST_KMIP isn't 1",
+	for enabled, want := range map[string]string{
+		"1": "",
+		"":  "DITTOFS_TEST_KMIP isn't 1",
 	} {
-		if err := Check("", need); (err == nil) != (want == "") || err != nil && err.Error() != want {
-			t.Errorf("%s: %v, want %q", need, err, want)
+		t.Setenv("DITTOFS_TEST_KMIP", enabled)
+		if err := Check("", "service:kmip"); (err == nil) != (want == "") || err != nil && err.Error() != want {
+			t.Errorf("service:kmip with DITTOFS_TEST_KMIP=%q: %v, want %q", enabled, err, want)
 		}
 	}
-	t.Setenv("DITTOFS_TEST_POSTGRES_DSN", "host=127.0.0.1 port="+refusedPort+" dbname=x")
-	if err := Check("", "service:postgres"); err == nil || !strings.Contains(err.Error(), "nothing answers") {
-		t.Errorf("nothing listening: %v", err)
-	}
+	t.Setenv("DITTOFS_TEST_KMIP", "1")
 	env := ServiceEnv("", []string{"linux", "service:kmip"})
-	if !slices.Contains(env, "DITTOFS_TEST_KMIP_ENDPOINT=127.0.0.1:"+port) || slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "DITTOFS_TEST_POSTGRES") }) {
-		t.Errorf("service env %q", env)
+	if !slices.Contains(env, "DITTOFS_TEST_KMIP_ENDPOINT=127.0.0.1:"+port) || slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "LOCALSTACK") }) {
+		t.Errorf("service env %q: want KMIP's variables only", env)
+	}
+	t.Setenv("DITTOFS_TEST_KMIP", "1")
+	t.Setenv("DITTOFS_TEST_KMIP_ENDPOINT", "127.0.0.1:"+refusedPort)
+	if err := Check("", "service:kmip"); err == nil || !strings.Contains(err.Error(), "nothing answers") {
+		t.Errorf("nothing listening: %v", err)
 	}
 }
 
@@ -229,19 +231,16 @@ func TestLocalstackHealth(t *testing.T) {
 }
 
 // With its address unset, a service falls back to the local service's values,
-// as dt services starts it: written here for localstack and postgres, read
+// as dt services starts it: written here for localstack, read
 // from the file it writes for KMIP. None of them is dialled here but KMIP's,
 // which points at a listener of the test's own.
 func TestServiceFallback(t *testing.T) {
-	for _, k := range []string{"LOCALSTACK_ENDPOINT", "DITTOFS_TEST_POSTGRES_DSN", "DITTOFS_TEST_KMIP", "DITTOFS_TEST_KMIP_ENDPOINT"} {
+	for _, k := range []string{"LOCALSTACK_ENDPOINT", "DITTOFS_TEST_KMIP", "DITTOFS_TEST_KMIP_ENDPOINT"} {
 		t.Setenv(k, "")
 	}
 	root := t.TempDir()
 	if got, _ := serviceVars(root, "localstack"); !slices.Equal(got, []string{"LOCALSTACK_ENDPOINT=http://127.0.0.1:4566"}) {
 		t.Errorf("localstack: %q", got)
-	}
-	if got, _ := serviceVars(root, "postgres"); len(got) != 1 || !strings.Contains(got[0], "port=15432 dbname=dittofs_test") {
-		t.Errorf("postgres: %q", got)
 	}
 	if err := Check(root, "service:kmip"); err == nil || !strings.Contains(err.Error(), "test/harness/state/kmip.env") {
 		t.Errorf("kmip without its file: %v", err)

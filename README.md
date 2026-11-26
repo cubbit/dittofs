@@ -266,7 +266,7 @@ Full docs live in [`docs/`](docs/), split by audience.
 
 ```bash
 test/harness/bin/dt run unit                     # the Go tests
-test/harness/bin/dt services up postgres kmip localstack   # the services integration and e2e need
+test/harness/bin/dt services up kmip localstack   # the services integration and e2e need
 test/harness/bin/dt run integration
 test/harness/bin/dt run e2e                      # Linux and root; dt doctor says what else is missing
 ```
