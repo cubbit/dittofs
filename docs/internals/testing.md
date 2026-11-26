@@ -1007,7 +1007,7 @@ dt completion bash
 Flags:
 
 ```text
-      --no-descriptions   disable completion descriptions
+      --no-descriptions[=true|false]   disable completion descriptions
 ```
 
 ### `dt completion fish`
@@ -1021,7 +1021,7 @@ dt completion fish [flags]
 Flags:
 
 ```text
-      --no-descriptions   disable completion descriptions
+      --no-descriptions[=true|false]   disable completion descriptions
 ```
 
 ### `dt completion powershell`
@@ -1035,7 +1035,7 @@ dt completion powershell [flags]
 Flags:
 
 ```text
-      --no-descriptions   disable completion descriptions
+      --no-descriptions[=true|false]   disable completion descriptions
 ```
 
 ### `dt completion zsh`
@@ -1049,7 +1049,7 @@ dt completion zsh [flags]
 Flags:
 
 ```text
-      --no-descriptions   disable completion descriptions
+      --no-descriptions[=true|false]   disable completion descriptions
 ```
 
 ### `dt docs`
@@ -1063,7 +1063,7 @@ dt docs [--check] [flags]
 Flags:
 
 ```text
-      --check   only check the suite table, the command reference and the RFCs' suites paragraphs, and exit 1 on a difference
+      --check[=true|false]   only check the suite table, the command reference and the RFCs' suites paragraphs, and exit 1 on a difference
 ```
 
 ### `dt doctor`
@@ -1093,9 +1093,9 @@ dt history [SUITE[/TEST]] [flags]
 Flags:
 
 ```text
-      --branch string   with --ci, the branch whose runs of tests.yml are read (default "develop")
-      --ci              read the last N runs of tests.yml on --branch, from their artifacts through the GitHub API, with the token in GITHUB_TOKEN, instead of this checkout's runs
-      --last int        read the last N runs (default 10)
+      --branch string     with --ci, the branch whose runs of tests.yml are read (default "develop")
+      --ci[=true|false]   read the last N runs of tests.yml on --branch, from their artifacts through the GitHub API, with the token in GITHUB_TOKEN, instead of this checkout's runs
+      --last int          read the last N runs (default 10)
 ```
 
 ### `dt history diff`
@@ -1172,9 +1172,9 @@ dt known prune SUITE [flags]
 Flags:
 
 ```text
-      --branch string   with --ci, the branch whose runs of tests.yml are read (default "develop")
-      --ci              read the last N runs of tests.yml on --branch, from their artifacts through the GitHub API, with the token in GITHUB_TOKEN, instead of this checkout's runs
-      --last int        read the last N runs (default 10)
+      --branch string     with --ci, the branch whose runs of tests.yml are read (default "develop")
+      --ci[=true|false]   read the last N runs of tests.yml on --branch, from their artifacts through the GitHub API, with the token in GITHUB_TOKEN, instead of this checkout's runs
+      --last int          read the last N runs (default 10)
 ```
 
 ### `dt list`
@@ -1188,8 +1188,8 @@ dt list [flags]
 Flags:
 
 ```text
-      --json          print JSON
-      --tier string   only the suites tier T runs
+      --json[=true|false]   print JSON
+      --tier string         only the suites tier T runs
 ```
 
 ### `dt plan`
@@ -1205,10 +1205,10 @@ Flags:
 ```text
       --base string             compare the branch with REF: a docs-only change plans nothing, and suites with paths run only when touched
       --branch string           with --ci, the branch whose runs of tests.yml are read (default "develop")
-      --ci                      read the last N runs of tests.yml on --branch, from their artifacts through the GitHub API, with the token in GITHUB_TOKEN, instead of this checkout's runs
+      --ci[=true|false]         read the last N runs of tests.yml on --branch, from their artifacts through the GitHub API, with the token in GITHUB_TOKEN, instead of this checkout's runs
       --docs-only-base string   compare a merge queue group with REF, its parent: on the pr tier a docs-only pull request plans nothing, and any other plans every cell
-      --estimate                give each cell its p50 over the runs dt history reads, and the tier's runner-minutes, their sum
-      --json                    print JSON
+      --estimate[=true|false]   give each cell its p50 over the runs dt history reads, and the tier's runner-minutes, their sum
+      --json[=true|false]       print JSON
       --last int                read the last N runs (default 10)
       --shard string            only shard I of N of the cells, as I/N
       --tier string             the tier to plan: pr, merge, nightly or manual (required)
@@ -1225,11 +1225,11 @@ dt report [RUN...] [flags]
 Flags:
 
 ```text
-      --commit-status string   set the commit status NAME on a run of develop's merge or nightly tier: success, failure or error from its exit status, with its test counts, with the token in GITHUB_TOKEN
-      --failures               only the new failures
-      --format string          text, md or json (default "text")
-      --post strings           post the new failures of a tier run of develop, whose planned cells are CELL,..., to the develop-status issue, and give a test failing 2 runs in a row an issue of its own, with the token in GITHUB_TOKEN; a planned cell with no run didn't run
-      --results string         where the runs are, relative to the checkout's root (default test/harness/results)
+      --commit-status string    set the commit status NAME on a run of develop's merge or nightly tier: success, failure or error from its exit status, with its test counts, with the token in GITHUB_TOKEN
+      --failures[=true|false]   only the new failures
+      --format string           text, md or json (default "text")
+      --post strings            post the new failures of a tier run of develop, whose planned cells are CELL,..., to the develop-status issue, and give a test failing 2 runs in a row an issue of its own, with the token in GITHUB_TOKEN; a planned cell with no run didn't run
+      --results string          where the runs are, relative to the checkout's root (default test/harness/results)
 ```
 
 ### `dt run`
@@ -1243,36 +1243,36 @@ dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...] | --place P [flags]
 Flags:
 
 ```text
-      --ad-dc                        run the suite's ad-dc option
-      --adapter-allocs               run the suite's adapter-allocs option
-      --base string                  compare the branch with REF wherever a command uses {base}, instead of the base dt finds: origin/develop, or in CI the event's
-      --changed                      where a suite's packages gives patterns, test only the packages with a change committed since the base: every one without a base, when go.mod, go.sum or go.work changed, or when a changed file is in no package
-      --ci                           an unmet need fails the run instead of skipping the cell, and new failures are annotated
-      --cross-protocol               run the suite's cross-protocol option
-      --in string                    where the run happens: host, container (dtc) or auto, which moves it to dtc when a cell needs what only the container gives (default auto, host with --ci)
-      --journal-conformance-norace   run the suite's journal-conformance-norace option
-      --journal-index                run the suite's journal-index option
-      --journal-plant                run the suite's journal-plant option
-      --json                         print the run's results on stdout as dt report --format json does, once the run ends, and the rest on stderr
-      --kerberos                     run the suite's kerberos option
-      --knfsd                        run the suite's knfsd option
-      --macos                        run the suite's macos option
-      --no-color                     don't color the results, as NO_COLOR set does; without either, they're colored on a terminal
-      --only strings                 run only these suites of the group
-      --packages strings             test only these packages, where a suite's commands take {packages}: they replace the patterns and --changed's selection
-      --parallel int                 run up to N cells at once; cells that conflict, as two on one fixed port, still run one at a time (default 1)
-      --place string                 run the cells of the tier that dt plan gives place P, as the dedicated host does; that place's host need is met
-      --portmap                      run the suite's portmap option
-      --results string               where results go, relative to the checkout's root (default test/harness/results)
-      --retry int                    run each test that failed new again, up to N times: a pass on a retry is flaky
-      --second-user                  run the suite's second-user option
-      --skip strings                 skip these suites of the group
-      --smb                          run the suite's smb option
-      --smb21                        run the suite's smb21 option
-      --stress                       run the suite's stress option
-      --tier string                  run at tier T, or at a suite's own tier when wider: it sets args, env and select (default "pr")
-      --whole-tree                   run the suite's whole-tree option
-      --windows                      run the suite's windows option
+      --ad-dc[=true|false]                        run the suite's ad-dc option
+      --adapter-allocs[=true|false]               run the suite's adapter-allocs option
+      --base string                               compare the branch with REF wherever a command uses {base}, instead of the base dt finds: origin/develop, or in CI the event's
+      --changed[=true|false]                      where a suite's packages gives patterns, test only the packages with a change committed since the base: every one without a base, when go.mod, go.sum or go.work changed, or when a changed file is in no package
+      --ci[=true|false]                           an unmet need fails the run instead of skipping the cell, and new failures are annotated
+      --cross-protocol[=true|false]               run the suite's cross-protocol option
+      --in string                                 where the run happens: host, container (dtc) or auto, which moves it to dtc when a cell needs what only the container gives (default auto, host with --ci)
+      --journal-conformance-norace[=true|false]   run the suite's journal-conformance-norace option
+      --journal-index[=true|false]                run the suite's journal-index option
+      --journal-plant[=true|false]                run the suite's journal-plant option
+      --json[=true|false]                         print the run's results on stdout as dt report --format json does, once the run ends, and the rest on stderr
+      --kerberos[=true|false]                     run the suite's kerberos option
+      --knfsd[=true|false]                        run the suite's knfsd option
+      --macos[=true|false]                        run the suite's macos option
+      --no-color[=true|false]                     don't color the results, as NO_COLOR set does; without either, they're colored on a terminal
+      --only strings                              run only these suites of the group
+      --packages strings                          test only these packages, where a suite's commands take {packages}: they replace the patterns and --changed's selection
+      --parallel int                              run up to N cells at once; cells that conflict, as two on one fixed port, still run one at a time (default 1)
+      --place string                              run the cells of the tier that dt plan gives place P, as the dedicated host does; that place's host need is met
+      --portmap[=true|false]                      run the suite's portmap option
+      --results string                            where results go, relative to the checkout's root (default test/harness/results)
+      --retry int                                 run each test that failed new again, up to N times: a pass on a retry is flaky
+      --second-user[=true|false]                  run the suite's second-user option
+      --skip strings                              skip these suites of the group
+      --smb[=true|false]                          run the suite's smb option
+      --smb21[=true|false]                        run the suite's smb21 option
+      --stress[=true|false]                       run the suite's stress option
+      --tier string                               run at tier T, or at a suite's own tier when wider: it sets args, env and select (default "pr")
+      --whole-tree[=true|false]                   run the suite's whole-tree option
+      --windows[=true|false]                      run the suite's windows option
 ```
 
 ### `dt services`

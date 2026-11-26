@@ -417,7 +417,7 @@ dfs version --short
 Flags:
 
 ```
-      --short   Show only version number
+      --short[=true|false]   Show only version number
 ```
 
 Global flags:
@@ -541,9 +541,9 @@ Use "dfsctl [command] --help" for more information about a command.
 Flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl adapter`
@@ -576,9 +576,9 @@ dfsctl adapter set smb --enabled --setting port=1445
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl adapter get`
@@ -592,9 +592,9 @@ dfsctl adapter get <protocol> [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl adapter list`
@@ -608,9 +608,9 @@ dfsctl adapter list [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl adapter set`
@@ -628,17 +628,17 @@ dfsctl adapter set <protocol> [flags]
 Flags:
 
 ```
-      --enabled               Enable the adapter, or disable it with --enabled=false
-      --setting stringArray   A setting of the adapter, key=value (repeatable)
-      --unset stringArray     A setting of the adapter to remove (repeatable)
+      --enabled[=true|false]   Enable the adapter, or disable it with --enabled=false
+      --setting stringArray    A setting of the adapter, key=value (repeatable)
+      --unset stringArray      A setting of the adapter to remove (repeatable)
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl audit`
@@ -652,9 +652,9 @@ dfsctl audit [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl audit list`
@@ -695,9 +695,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl completion`
@@ -742,9 +742,9 @@ dfsctl completion powershell > dfsctl.ps1
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl context`
@@ -778,9 +778,9 @@ dfsctl context remove staging
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl context current`
@@ -808,9 +808,9 @@ dfsctl context current --output json
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl context list`
@@ -838,9 +838,9 @@ dfsctl context list -o json
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl context remove`
@@ -868,15 +868,15 @@ dfsctl context remove staging --force
 Flags:
 
 ```
-  -f, --force   Skip confirmation
+  -f, --force[=true|false]   Skip confirmation
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl context rename`
@@ -904,9 +904,9 @@ dfsctl context rename dev local-dev
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl context use`
@@ -934,9 +934,9 @@ dfsctl context use local-dev
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl domain`
@@ -969,9 +969,9 @@ dfsctl domain join --offline --account FILESRV --password-file machine.txt
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl domain join`
@@ -993,22 +993,22 @@ dfsctl domain join [flags]
 Flags:
 
 ```
-      --account string         The computer account's name (defaults to the installation's)
-      --dns-host-name string   The DNS host name of an online join's computer account
-      --offline                Take a computer account an administrator created
-      --ou string              The organisational unit of an online join's computer account
-      --password-file string   File holding the password (prompts without it)
-      --takeover               Replace a join the installation holds, and online an account of that name it did not create
-      --user string            The administrator an online join creates the computer account as
-      --wait                   Follow the operation the command starts to its end
+      --account string          The computer account's name (defaults to the installation's)
+      --dns-host-name string    The DNS host name of an online join's computer account
+      --offline[=true|false]    Take a computer account an administrator created
+      --ou string               The organisational unit of an online join's computer account
+      --password-file string    File holding the password (prompts without it)
+      --takeover[=true|false]   Replace a join the installation holds, and online an account of that name it did not create
+      --user string             The administrator an online join creates the computer account as
+      --wait[=true|false]       Follow the operation the command starts to its end
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl domain resolve`
@@ -1022,16 +1022,16 @@ dfsctl domain resolve [DOMAIN\name] [flags]
 Flags:
 
 ```
-      --sid string   The principal's SID, in place of its name
-      --wait         Follow the operation the command starts to its end
+      --sid string          The principal's SID, in place of its name
+      --wait[=true|false]   Follow the operation the command starts to its end
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl domain rotate-machine-password`
@@ -1045,15 +1045,15 @@ dfsctl domain rotate-machine-password [flags]
 Flags:
 
 ```
-      --wait   Follow the operation the command starts to its end
+      --wait[=true|false]   Follow the operation the command starts to its end
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl domain test`
@@ -1067,15 +1067,15 @@ dfsctl domain test [flags]
 Flags:
 
 ```
-      --wait   Follow the operation the command starts to its end
+      --wait[=true|false]   Follow the operation the command starts to its end
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl grant`
@@ -1109,9 +1109,9 @@ dfsctl grant list archive
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl grant list`
@@ -1131,9 +1131,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl grant remove`
@@ -1157,9 +1157,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl grant set`
@@ -1184,9 +1184,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl group`
@@ -1219,9 +1219,9 @@ dfsctl group delete editors --force --wait
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl group add-member`
@@ -1235,9 +1235,9 @@ dfsctl group add-member <group> <user> [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl group create`
@@ -1257,9 +1257,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl group delete`
@@ -1276,17 +1276,17 @@ dfsctl group delete <name> [flags]
 Flags:
 
 ```
-  -f, --force       Delete without asking
-      --id string   The group's ID, in place of its name
-      --wait        Follow the operation the command starts to its end
+  -f, --force[=true|false]   Delete without asking
+      --id string            The group's ID, in place of its name
+      --wait[=true|false]    Follow the operation the command starts to its end
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl group get`
@@ -1306,9 +1306,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl group list`
@@ -1322,9 +1322,9 @@ dfsctl group list [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl group remove-member`
@@ -1338,9 +1338,9 @@ dfsctl group remove-member <group> <user> [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl group update`
@@ -1364,9 +1364,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl installation`
@@ -1380,9 +1380,9 @@ dfsctl installation [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl installation rotate-signing-key`
@@ -1402,15 +1402,15 @@ dfsctl installation rotate-signing-key [flags]
 Flags:
 
 ```
-      --wait   Follow the operation the command starts to its end
+      --wait[=true|false]   Follow the operation the command starts to its end
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl login`
@@ -1464,9 +1464,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl logout`
@@ -1500,9 +1500,9 @@ dfsctl logout && dfsctl login --username operator
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl namespace`
@@ -1531,9 +1531,9 @@ dfsctl namespace list
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl namespace create`
@@ -1558,9 +1558,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl namespace delete`
@@ -1574,16 +1574,16 @@ dfsctl namespace delete <id> [flags]
 Flags:
 
 ```
-  -f, --force   Delete without asking for confirmation
-      --wait    Follow the operation the command starts to its end
+  -f, --force[=true|false]   Delete without asking for confirmation
+      --wait[=true|false]    Follow the operation the command starts to its end
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl namespace get`
@@ -1597,9 +1597,9 @@ dfsctl namespace get <id> [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl namespace list`
@@ -1613,9 +1613,9 @@ dfsctl namespace list [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl netgroup`
@@ -1645,9 +1645,9 @@ dfsctl netgroup update builders --member 10.1.0.0/16
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl netgroup create`
@@ -1667,9 +1667,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl netgroup delete`
@@ -1683,15 +1683,15 @@ dfsctl netgroup delete <name> [flags]
 Flags:
 
 ```
-  -f, --force   Delete without asking
+  -f, --force[=true|false]   Delete without asking
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl netgroup get`
@@ -1705,9 +1705,9 @@ dfsctl netgroup get <name> [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl netgroup list`
@@ -1721,9 +1721,9 @@ dfsctl netgroup list [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl netgroup update`
@@ -1745,9 +1745,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl node`
@@ -1764,9 +1764,9 @@ dfsctl node [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl node get`
@@ -1780,9 +1780,9 @@ dfsctl node get <id> [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl node list`
@@ -1796,9 +1796,9 @@ dfsctl node list [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl operation`
@@ -1829,9 +1829,9 @@ dfsctl operation wait 1a92dcf1-bdbb-49eb-acc1-a78ef6b4e5f1
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl operation cancel`
@@ -1845,9 +1845,9 @@ dfsctl operation cancel <id> [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl operation get`
@@ -1861,9 +1861,9 @@ dfsctl operation get <id> [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl operation list`
@@ -1883,9 +1883,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl operation wait`
@@ -1904,9 +1904,9 @@ dfsctl operation wait <id> [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl password`
@@ -1920,9 +1920,9 @@ dfsctl password [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl password change`
@@ -1961,9 +1961,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl quota`
@@ -1997,9 +1997,9 @@ dfsctl quota list archive
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl quota list`
@@ -2019,9 +2019,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl quota remove`
@@ -2044,9 +2044,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl quota set`
@@ -2079,9 +2079,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl setting`
@@ -2116,9 +2116,9 @@ dfsctl setting unset node:7f3a9c1e-0b2d-4e5f-8a6b-1c2d3e4f5a6b adapters.nfs.port
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl setting get`
@@ -2132,9 +2132,9 @@ dfsctl setting get <scope> <key> [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl setting set`
@@ -2148,15 +2148,15 @@ dfsctl setting set <scope> <key> <value> [flags]
 Flags:
 
 ```
-      --wait   Follow the operation the command starts to its end
+      --wait[=true|false]   Follow the operation the command starts to its end
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl setting unset`
@@ -2170,15 +2170,15 @@ dfsctl setting unset <scope> <key> [flags]
 Flags:
 
 ```
-      --wait   Follow the operation the command starts to its end
+      --wait[=true|false]   Follow the operation the command starts to its end
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl share`
@@ -2214,9 +2214,9 @@ dfsctl share delete archive --force --wait
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl share create`
@@ -2237,27 +2237,27 @@ dfsctl share create <name> [flags]
 Flags:
 
 ```
-      --case-insensitive             Fold the case of names; bound when the share is created
-      --client stringArray           A client rule, CIDR=access or @netgroup=access, access none, read or read-write; the first match decides, in order
-      --flavor strings               The flavours SECINFO answers, in preference order: none, sys or kerberos
-      --manage-gids                  Replace an AUTH_SYS caller's gids with the groups the store and directory hold for its user
-      --min-proof string             The proof every caller gives: none, claimed, secret or ticket
-      --min-protection string        The protection messages need: none, integrity or privacy
-      --namespace string             The ID of the namespace the share's content is counted in
-      --path string                  The share's path in the NFS namespace
-      --read-only                    Hold every caller to read-only
-      --smb-continuously-available   Make the share's SMB handles continuously available
-      --smb-encrypt                  Seal every SMB message
-      --smb-hidden                   Leave the share out of SMB share enumeration
-      --squash string                Whose identity is squashed: none, root or all
+      --case-insensitive[=true|false]             Fold the case of names; bound when the share is created
+      --client stringArray                        A client rule, CIDR=access or @netgroup=access, access none, read or read-write; the first match decides, in order
+      --flavor strings                            The flavours SECINFO answers, in preference order: none, sys or kerberos
+      --manage-gids[=true|false]                  Replace an AUTH_SYS caller's gids with the groups the store and directory hold for its user
+      --min-proof string                          The proof every caller gives: none, claimed, secret or ticket
+      --min-protection string                     The protection messages need: none, integrity or privacy
+      --namespace string                          The ID of the namespace the share's content is counted in
+      --path string                               The share's path in the NFS namespace
+      --read-only[=true|false]                    Hold every caller to read-only
+      --smb-continuously-available[=true|false]   Make the share's SMB handles continuously available
+      --smb-encrypt[=true|false]                  Seal every SMB message
+      --smb-hidden[=true|false]                   Leave the share out of SMB share enumeration
+      --squash string                             Whose identity is squashed: none, root or all
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl share delete`
@@ -2274,17 +2274,17 @@ dfsctl share delete [name] [flags]
 Flags:
 
 ```
-  -f, --force       Delete without asking
-      --id string   The share's ID, in place of its name
-      --wait        Follow the operation the command starts to its end
+  -f, --force[=true|false]   Delete without asking
+      --id string            The share's ID, in place of its name
+      --wait[=true|false]    Follow the operation the command starts to its end
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl share export-policy`
@@ -2314,9 +2314,9 @@ dfsctl share export-policy update archive --flavor kerberos --min-proof ticket -
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl share export-policy get`
@@ -2336,9 +2336,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl share export-policy set`
@@ -2352,25 +2352,25 @@ dfsctl share export-policy set [share] [flags]
 Flags:
 
 ```
-      --client stringArray           A client rule, CIDR=access or @netgroup=access, access none, read or read-write; the first match decides, in order
-      --flavor strings               The flavours SECINFO answers, in preference order: none, sys or kerberos
-      --id string                    The share's ID, in place of its name
-      --manage-gids                  Replace an AUTH_SYS caller's gids with the groups the store and directory hold for its user
-      --min-proof string             The proof every caller gives: none, claimed, secret or ticket
-      --min-protection string        The protection messages need: none, integrity or privacy
-      --read-only                    Hold every caller to read-only
-      --smb-continuously-available   Make the share's SMB handles continuously available
-      --smb-encrypt                  Seal every SMB message
-      --smb-hidden                   Leave the share out of SMB share enumeration
-      --squash string                Whose identity is squashed: none, root or all
+      --client stringArray                        A client rule, CIDR=access or @netgroup=access, access none, read or read-write; the first match decides, in order
+      --flavor strings                            The flavours SECINFO answers, in preference order: none, sys or kerberos
+      --id string                                 The share's ID, in place of its name
+      --manage-gids[=true|false]                  Replace an AUTH_SYS caller's gids with the groups the store and directory hold for its user
+      --min-proof string                          The proof every caller gives: none, claimed, secret or ticket
+      --min-protection string                     The protection messages need: none, integrity or privacy
+      --read-only[=true|false]                    Hold every caller to read-only
+      --smb-continuously-available[=true|false]   Make the share's SMB handles continuously available
+      --smb-encrypt[=true|false]                  Seal every SMB message
+      --smb-hidden[=true|false]                   Leave the share out of SMB share enumeration
+      --squash string                             Whose identity is squashed: none, root or all
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl share export-policy update`
@@ -2384,25 +2384,25 @@ dfsctl share export-policy update [share] [flags]
 Flags:
 
 ```
-      --client stringArray           A client rule, CIDR=access or @netgroup=access, access none, read or read-write; the first match decides, in order
-      --flavor strings               The flavours SECINFO answers, in preference order: none, sys or kerberos
-      --id string                    The share's ID, in place of its name
-      --manage-gids                  Replace an AUTH_SYS caller's gids with the groups the store and directory hold for its user
-      --min-proof string             The proof every caller gives: none, claimed, secret or ticket
-      --min-protection string        The protection messages need: none, integrity or privacy
-      --read-only                    Hold every caller to read-only
-      --smb-continuously-available   Make the share's SMB handles continuously available
-      --smb-encrypt                  Seal every SMB message
-      --smb-hidden                   Leave the share out of SMB share enumeration
-      --squash string                Whose identity is squashed: none, root or all
+      --client stringArray                        A client rule, CIDR=access or @netgroup=access, access none, read or read-write; the first match decides, in order
+      --flavor strings                            The flavours SECINFO answers, in preference order: none, sys or kerberos
+      --id string                                 The share's ID, in place of its name
+      --manage-gids[=true|false]                  Replace an AUTH_SYS caller's gids with the groups the store and directory hold for its user
+      --min-proof string                          The proof every caller gives: none, claimed, secret or ticket
+      --min-protection string                     The protection messages need: none, integrity or privacy
+      --read-only[=true|false]                    Hold every caller to read-only
+      --smb-continuously-available[=true|false]   Make the share's SMB handles continuously available
+      --smb-encrypt[=true|false]                  Seal every SMB message
+      --smb-hidden[=true|false]                   Leave the share out of SMB share enumeration
+      --squash string                             Whose identity is squashed: none, root or all
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl share get`
@@ -2422,9 +2422,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl share list`
@@ -2444,9 +2444,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl share mount`
@@ -2490,19 +2490,19 @@ dfsctl share mount archive Z: --protocol smb
 Flags:
 
 ```
-      --dry-run              Print the mount command instead of running it
-      --id string            The share's ID, in place of its name
-      --nfs-version string   The NFS version: 3, 4, 4.0, 4.1 or 4.2 (default "3")
-  -p, --protocol string      The protocol to mount over: nfs or smb
-  -u, --username string      The SMB user; the current context's account when not given
+      --dry-run[=true|false]   Print the mount command instead of running it
+      --id string              The share's ID, in place of its name
+      --nfs-version string     The NFS version: 3, 4, 4.0, 4.1 or 4.2 (default "3")
+  -p, --protocol string        The protocol to mount over: nfs or smb
+  -u, --username string        The SMB user; the current context's account when not given
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl share quiesce`
@@ -2522,9 +2522,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl share resume`
@@ -2544,9 +2544,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl share update`
@@ -2568,9 +2568,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl status`
@@ -2598,9 +2598,9 @@ dfsctl status -o json
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl store`
@@ -2636,9 +2636,9 @@ dfsctl store set-credential 0b5c1a7e-2f4d-4c8e-9a1b-3c5d7e9f1a2b
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl store create`
@@ -2663,9 +2663,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl store delete`
@@ -2679,16 +2679,16 @@ dfsctl store delete <id> [flags]
 Flags:
 
 ```
-  -f, --force   Delete without asking for confirmation
-      --wait    Follow the operation the command starts to its end
+  -f, --force[=true|false]   Delete without asking for confirmation
+      --wait[=true|false]    Follow the operation the command starts to its end
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl store get`
@@ -2702,9 +2702,9 @@ dfsctl store get <id> [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl store list`
@@ -2718,9 +2718,9 @@ dfsctl store list [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl store set-credential`
@@ -2744,9 +2744,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl store update`
@@ -2772,9 +2772,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl token`
@@ -2816,9 +2816,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl token create`
@@ -2842,10 +2842,10 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --user string     The account whose tokens to act on, by its name (defaults to the signed-in one)
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+      --user string             The account whose tokens to act on, by its name (defaults to the signed-in one)
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl token list`
@@ -2859,10 +2859,10 @@ dfsctl token list [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --user string     The account whose tokens to act on, by its name (defaults to the signed-in one)
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+      --user string             The account whose tokens to act on, by its name (defaults to the signed-in one)
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl token revoke`
@@ -2878,10 +2878,10 @@ dfsctl token revoke <id> [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --user string     The account whose tokens to act on, by its name (defaults to the signed-in one)
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+      --user string             The account whose tokens to act on, by its name (defaults to the signed-in one)
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl user`
@@ -2918,9 +2918,9 @@ dfsctl user delete alice --force --wait
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl user create`
@@ -2936,18 +2936,18 @@ dfsctl user create <name> [flags]
 Flags:
 
 ```
-      --disabled       Refuse the user on every protocol and on the API
-      --email string   E-mail address; empty clears it
-      --role string    Role in the management API (viewer|operator|admin); empty for none
-      --uid uint32     Unix user ID, which a create leaving it out allocates
+      --disabled[=true|false]   Refuse the user on every protocol and on the API
+      --email string            E-mail address; empty clears it
+      --role string             Role in the management API (viewer|operator|admin); empty for none
+      --uid uint32              Unix user ID, which a create leaving it out allocates
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl user delete`
@@ -2964,17 +2964,17 @@ dfsctl user delete <name> [flags]
 Flags:
 
 ```
-  -f, --force       Delete without asking
-      --id string   The user's ID, in place of its name
-      --wait        Follow the operation the command starts to its end
+  -f, --force[=true|false]   Delete without asking
+      --id string            The user's ID, in place of its name
+      --wait[=true|false]    Follow the operation the command starts to its end
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl user get`
@@ -2994,9 +2994,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl user list`
@@ -3010,9 +3010,9 @@ dfsctl user list [flags]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl user set-password`
@@ -3037,9 +3037,9 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl user update`
@@ -3057,19 +3057,19 @@ dfsctl user update <name> [flags]
 Flags:
 
 ```
-      --disabled       Refuse the user on every protocol and on the API
-      --email string   E-mail address; empty clears it
-      --id string      The user's ID, in place of its name
-      --role string    Role in the management API (viewer|operator|admin); empty for none
-      --uid uint32     Unix user ID, which a create leaving it out allocates
+      --disabled[=true|false]   Refuse the user on every protocol and on the API
+      --email string            E-mail address; empty clears it
+      --id string               The user's ID, in place of its name
+      --role string             Role in the management API (viewer|operator|admin); empty for none
+      --uid uint32              Unix user ID, which a create leaving it out allocates
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
 ### `dfsctl version`
@@ -3098,14 +3098,14 @@ dfsctl version --short
 Flags:
 
 ```
-      --short   Show only version number
+      --short[=true|false]   Show only version number
 ```
 
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-  -v, --verbose         Enable verbose output
+      --no-color[=true|false]   Disable colored output
+  -o, --output string           Output format (table|json|yaml) (default "table")
+  -v, --verbose[=true|false]    Enable verbose output
 ```
 
