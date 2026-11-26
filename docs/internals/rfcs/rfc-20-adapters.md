@@ -2422,6 +2422,14 @@ type ReplayCache interface {
 	// charges only NFSv4.1's slot cache. Charge them to the connection-state
 	// pool when a replay cache's size shows in a profile.
 	Store(h Header, reply *Buf)
+	// Drop tells the cache that a request whose Lookup returned nil, nil
+	// ended with nothing stored: refused at Route or before its handler,
+	// ended with no reply, answered with a reply Store is not handed, or its
+	// context ended. A cache that marks a looked-up call in progress, so a
+	// retransmission arriving while the first send runs is answered with no
+	// reply through Stages.Errors, clears the mark here; one that keeps no
+	// such mark does nothing.
+	Drop(h Header)
 }
 ```
 
@@ -2796,7 +2804,7 @@ if !send { if tbl.Holds { conn.write(interim(h, true, after)) }; freeReply(); re
 failed := st != 0 && !notFailure
 runner.after(h, failed) // the compound runner stops a compound, and fails a chain's related members, only after a failed member (§4.3)
 reply := encode(stages.Header, h, st, inv)
-if op.Cacheable && ran(err, st) { stages.Replay.Store(h, reply) } // a clear copy, before Wrap; ran: below
+if op.Cacheable && ran(err, st) { stages.Replay.Store(h, reply) } else { stages.Replay.Drop(h) } // a clear copy, before Wrap; ran: below. Every earlier return after Lookup's miss drops too
 err = stages.Security.Wrap(h, reply) // a chain's replies: once, joined (below)
 conn.write(reply) // the writer's queue (§6.2)
 ```
