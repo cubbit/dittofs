@@ -323,8 +323,9 @@ row's work is shared, the other part's owner is named.
   block per open, a few MiB at the defaults; prove once per client if opens of many namespaces on
   one configuration show it. Prior art: none needed.
 - **D7. The class read back.** A get that reports no class reads as `STANDARD`, since AWS sends no
-  `x-amz-storage-class` header for it. The reported class must equal the pinned one, and `GLACIER`
-  and `DEEP_ARCHIVE`, whose gets need a restore, refuse even when pinned. The failure domain R33
+  `x-amz-storage-class` header for it. The reported class must equal the pinned one and be on
+  E7's D4 allowlist of classes needing no restore (RFC 4 C.1), so `GLACIER`, `DEEP_ARCHIVE` and a
+  class on no list refuse even when pinned. The failure domain R33
   reports is one zone for `ONEZONE_IA` and `EXPRESS_ONEZONE`, and "as the service documents" for
   any other class, Appendix B recording per service what that is. Prior art: the S3 storage-class
   reference (from memory).
