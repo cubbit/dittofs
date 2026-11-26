@@ -154,9 +154,9 @@ func (s *shares) as(t *testing.T, uid uint32, at netip.Addr) vfs.Call {
 }
 
 // claimed is an AUTH_SYS call from at claiming uid, gid and gids, proving
-// nothing.
+// nothing, under NFSv3's profile, so a privileged claim counts on every call.
 func claimed(at netip.Addr, uid, gid uint32, gids ...uint32) vfs.Call {
-	return vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofClaimed, Claims: vfs.Claims{UID: uid, GID: gid, GIDs: gids}, Client: at}}
+	return vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofClaimed, Claims: vfs.Claims{UID: uid, GID: gid, GIDs: gids}, Client: at}, Caps: vfs.NFSv3Caps}
 }
 
 // Root finds a share by path or by name, folded, answers its root and the
