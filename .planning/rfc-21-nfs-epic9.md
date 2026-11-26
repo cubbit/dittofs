@@ -229,7 +229,7 @@ so that subtasks and tests can cite them.
 | --- | --- | --- | --- | --- |
 | R40 | A call with no session that names no client, is marked to be judged by the holder (D1) and presents a reference is judged as the client the reference's state belongs to, a revoked reference's included, so a row's `Resolve` sets `Client` only from an owner the request names; every other check, the session mark and the principal among them, is unchanged. Pending the RFC 17 §3.0 amendment D1 proposes | MUST | RFC 14 §2.2; RFC 17 §3.0 (`Call`); RFC 20 §4.4 | T9.1 |
 | R41 | A `Lock` or `Unlock` presenting a lock state's reference and marked to act for its owner (D1) acts for that lock state's owner, as `LOCK` with an existing lock owner and `LOCKU` name none. Pending the RFC 17 §3.1 amendment D1 proposes | MUST | RFC 14 §2.3; RFC 17 §3.1; RFC 21 §11.4 (`LockReq`) | T9.1 |
-| R60 | Every NFSv4.0 stateful operation made with a valid client ID or stateid renews its client's lease, in the lease owner's memory and never by a write: the client the call names, or the holder a sessionless call is judged by (R40), so a busy client that sends no `RENEW` is not expired mid-I/O. Valid means past the reference's and the principal's checks: a call refused `NotYours`, `BadState`, `StaleState`, `Revoked` or `StaleClient` renews nothing, while one answered later in the step, `NFS4ERR_DENIED` included, renews, as RFC 7530 §9.5 has any operation with a valid stateid. The step moves the lease's end itself, not through `Clients.Renew`, whose status scan would run on every I/O. E8 renews on `SEQUENCE` and `RENEW` only. Pending the user's answer on D1 | MUST | RFC 21 §5.1; RFC 14 §4.1; RFC 7530 §9.5 | T9.1 |
+| R60 | Every NFSv4.0 stateful operation made with a valid client ID or stateid renews its client's lease, in the lease owner's memory and never by a write: the client the call names, or the holder a sessionless call is judged by (R40), so a busy client that sends no `RENEW` is not expired mid-I/O. Valid means past the reference's and the principal's checks: a call refused `NotYours`, `BadState`, `StaleState`, `Revoked` or `StaleClient` renews nothing, while one answered later in the step, `NFS4ERR_DENIED` included, renews, as RFC 7530 §9.5 has any operation with a valid stateid. The step runs `Clients.Renew`'s lease step without its status scan, which would run on every I/O: a client this node holds no lease for is adopted, and a client whose lease has ended, or that must connect again, is refused `StaleClient` (for a stateid `NFS4ERR_BAD_STATEID`, R15) before the lease's end moves, so an expired client's I/O never revives it. E8 renews on `SEQUENCE` and `RENEW` only. Pending the user's answer on D1 | MUST | RFC 21 §5.1; RFC 14 §4.1; RFC 7530 §9.5 | T9.1 |
 
 **Translation, errors and the drain**
 
@@ -475,7 +475,7 @@ internal/vfs/
   reference, and `Locks.Lock` and `Locks.Unlock` taking a lock-state reference marked "the lock
   state's owner" as that lock state's owner, neither mark read from a zero value (D1); the lease of
   the client such a call is judged by, or names, renewed in the same step in the lease owner's
-  memory (R60); `internal/vfs`'s `Lock`, `Unlock`, `FreeState` and every other call taking a
+  memory, through `Clients.Renew`'s lease step without its status scan, an ended lease refused `StaleClient` (R60); `internal/vfs`'s `Lock`, `Unlock`, `FreeState` and every other call taking a
   reference passing the marks through; the doc comments of `vfs.Call`, `LockReq.Owner` and
   `Unlock`'s owner saying so; `seqErr`'s presented 0 taken as current only for a call with a
   session, NFSv4.0's 0 judged by distance as any other number (R4);
@@ -492,6 +492,8 @@ internal/vfs/
   - A sessionless `Write` judged by its holder, and an `Open` naming its client, each renew that
     client's lease and write nothing; a marked `Write` refused `NotYours` for another principal
     leaves the lease where it was.
+  - A marked `Write` from a client whose lease has ended is refused `StaleClient` and leaves the
+    lease's end where it was.
   - A sessionless reference presenting `seqid` 0 against a current 1 is `OldState`; with a
     session, it is the current one.
 - **Tests:** in `pkg/openstate`'s and `internal/vfs`'s own tests, on their real stores: each
@@ -500,7 +502,8 @@ internal/vfs/
   already pass `openstate.New` advanced most of a lease, one marked `Write`, then the rest of the
   lease, the client still live (catches a stateful operation that renews nothing, R60), and the same
   with the `Write` refused `NotYours`, the client expired (catches a refused call renewing its
-  holder); a sessionless and a sessioned reference at `seqid` 0 (catches the zero rule applied to
+  holder); the clock past the lease, one marked `Write`, `StaleClient` and the lease's end unmoved
+  (catches an expired client's I/O reviving it, R60); a sessionless and a sessioned reference at `seqid` 0 (catches the zero rule applied to
   NFSv4.0, R4); a marked `FreeState` of a revoked reference freeing it, and
   of another client's held reference, `NotYours` under a principal not its opener (catches the
   holder rule widening `FreeState`, R40). No test double.
