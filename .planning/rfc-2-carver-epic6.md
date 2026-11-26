@@ -205,15 +205,24 @@ this epic's.
   transform chain; RFC 4's in-memory store; the fixture's metadata store, badger in memory, and its
   journal under `t.TempDir()`; the engine's settings at their RFC 13 Appendix B
   defaults (`offload.max_age`, the pass bound, the block target of 4 MiB, fixed for every candidate
-  and never varied with `Target`, the user's decision of 2026-11-26, D7); a share journal limit of
-  `8 << 30`, `benchcompose`'s, above phase 0 and phase 1 held together (about 2.8 GB on the next
-  release); and the candidate `Target` as the namespace's setting, which reaches the engine with
+  and never varied with `Target`, the user's decision of 2026-11-26, D7); a share journal limit *L*
+  of `8 << 30`, `benchcompose`'s; and the candidate `Target` as the namespace's setting, which reaches the engine with
   the share at `Bind` (the RFC 8 offload plan's epic 12, D7, whose `TestRFC8C_Settings/the_pool_half`
   epic 16 turns green by S3). `compose`'s `shareLimit` of 8 MiB is set inside its closure, so no
   option overrides it, and at 8 MiB a phase's writes are refused `ErrDelay` (the journal's share
   limit), pressure offers files mid-burst and phase 0 is released from the journal, so widening,
   which reaches only held offloaded neighbours (RFC 8 §6.7), never happens: `compose` takes the
-  limit as a parameter, its existing callers passing `shareLimit`. The candidate is set by a
+  limit as a parameter, its existing callers passing `shareLimit`. *L* has to hold every held phase
+  (D4) below the share's soft threshold *S* = *L*/2, not only below *L*: with dispatch held, a write
+  that reaches the pacing path ([RFC 8 §10.2.1](../docs/internals/rfcs/rfc-8-engine.md#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it),
+  above *S*) or the refusal path (at *L*) waits for an offload that cannot start, and on the
+  stopped test clock the writer hangs. RFC 8's measure *M* is dirty plus unreclaimed bytes, and
+  everything it counts during a run was written by that run's held phases, so the condition is
+  that their bytes summed stay at or under *S*: 2.8 GB for the next release (the 1.4 GB tar and its
+  rewrite), the largest; 2 GiB plus the pages for the VM image's workloads; all under *S* = 4 GiB.
+  The fixture's journal has no maximum, so the share is the nearer limit. The sweep checks the sum
+  as an integer for each workload before its first write and fails naming the workload, so a
+  corpus file that outgrows *S* fails there and never hangs. The candidate is set by a
   fixture option, `enginetest.WithTarget`, which configures it in the fixture's settings table and
   records it in the namespace's `Bound` when `enginetest.New` creates the namespace, before the
   first `Start`: epic 16's D7 reads the recorded `Target` at `Bind`, and a `Target` changed after
@@ -265,20 +274,52 @@ this epic's.
   holds the engine's offload dispatch as `HoldNextCommit` holds a commit, and released once its
   last write returns, so the phase lands as one burst before offload. Without it the byte trigger
   offers a rewritten run mid-burst, the run ends real at the offloaded phase-0 bytes past the write
-  front (RFC 8 §6.7), and that forced cut falls where the scheduler happened to offer. The drain
-  then runs as the engine runs it, never by aging the files first: a clock moved past
+  front (RFC 8 §6.7), and that forced cut falls where the scheduler happened to offer. The control
+  meets four conditions:
+
+  1. **It holds dispatch, not posting.** Every post still reaches the scheduler and merges into
+     the file's one offload key (RFC 8 §6.1, "a post for a pending key merges into its entry"), so
+     the release dispatches each file once, and the hold covers all three of §6.2's triggers alike,
+     since each only posts: `Dirty` by bytes, `Pressure(on)` above the soft threshold, and the age
+     tick. A workload writes one file, so its one key always fits its shard's reservation (at least
+     one entry, §6.1.1) and no post is dropped.
+  2. **The share limit keeps a held phase below the soft threshold** (D2's *S* = *L*/2, checked
+     per workload before its first write), or a paced or refused writer waits for a dispatch the
+     hold refuses.
+  3. **A final flush follows the drain** (below).
+  4. **A held dispatch counts as neither a pass nor idle.** No pass runs while it holds, so
+     `Stats.OffloadPasses` (the RFC 8 offload plan's epic 16, T16.3) does not move, and D5's
+     blocks-per-pass denominator counts only passes that ran. The held entries are kept as a paused
+     tenant's are and are not due (that plan's epic 13, D7 and R23), so the scheduler withholds no
+     `Idle` for them and a hold of any length neither fails the watchdog's liveness nor raises
+     `work_queue_stalled` (epic 13, R21); the clock does not move while a phase writes, so epic
+     20's `offload_age_exceeded` does not stand either. The sweep never reads a hold as the drain's
+     quiescence, since its key stays queued.
+
+  The drain then runs as the engine runs it, never by aging the files first: a clock moved past
   `offload.max_age` before the drain makes every pass's artificial end old enough to be passed as
   real (RFC 8 §6.7), so no tail is held back, cuts fall at the pass limits, and the figures stop
   repeating. The sweep waits on the condition: no offload key queued and no pass in flight, read
   from the engine's `Stats` (whose fields the RFC 8 offload plan's epic 11 declares), polled with a
-  short pause. Dirty bytes left then are not a failure, since a drain of several passes goes idle
-  between them until the next age tick posts the file again (that plan's epic 14, R18): the sweep
-  takes `Clock.Armed` for the tick period, a quarter of `offload.max_age`, advances the clock by one
-  period, waits for the tick to re-arm, which it does only after it has posted what is due, and
-  polls again. The drain ends when the namespace's dirty bytes in the journal are zero. It fails
-  on its own assertion when the clock has passed `offload.max_age` plus one tick period since the
-  phase's last write with dirty bytes left, the bound epic 14's R41 holds the age tick to; one
-  generous timeout stays as the backstop. A `ponytail:` at the schedule names its ceiling: each phase's edits land
+  short pause. A pass that returns `Done` leaves its key absent, and the file is posted again only
+  by the age tick (epic 14, R18), so a file longer than one pass needs ticks: while quiescent the
+  sweep takes `Clock.Armed` for the tick period, a quarter of `offload.max_age`, advances the clock
+  by one period, waits for the tick to re-arm, which it does only after it has posted what is due,
+  and polls again, at most three times, so the clock stays under `offload.max_age` since the
+  phase's last write and every pass's end at its limit is held back. A pass offers at most
+  `upload_workers` block targets (RFC 8 §6.2), 128 × 4 MiB = 512 MiB at D2's defaults, so the
+  release and the three ticks consume at least 2 GiB less four held tails, each under `Max`, and
+  what a phase of at most 2.5 GiB less four `Max` leaves fits one pass. Then the **final flush**: once quiescent, each file's tail at its end of
+  file is still an artificial end, held back until its oldest byte reaches `offload.max_age`,
+  since the engine cannot know the file will not grow (the streaming append's case), so the sweep
+  advances the clock once past `offload.max_age` since the phase's last write. The age tick posts
+  every file, its pass offers what is left up to the end of file, and the end is passed as real,
+  so the forced cut lands at the end of file for every candidate, as the whole-file twin's last cut
+  does. The drain ends quiescent after the flush, and asserts the namespace's dirty bytes in the
+  journal are zero, failing on that assertion with the file and its dirty bytes named; one generous
+  timeout stays as the backstop. The largest held phase, the VM image's 2 GiB phase 0, fits these
+  five passes (2048 MiB against 2560 − 64 MiB at the 4 MiB candidate's `Max` of 16 MiB); a phase
+  that would not fails D2's per-workload check, which also asserts that bound. A `ponytail:` at the schedule names its ceiling: each phase's edits land
   as one burst before offload, so passes coalesce neighbouring edits that a slower writer would
   offer apart; the upgrade is a trace-driven schedule, once a trace of a real workload exists.
   Prior art: Appendix C's baseline workloads, which this table runs through the engine; fio's
@@ -318,8 +359,8 @@ this epic's.
   are controls and decide nothing. Each rewrites one run to the file's end from a boundary both
   cuts share: offset 0 for the next release, and for the inserts the start of the ref the first
   insertion falls in, where re-tiling widens the run. Artificial ends are held back, so each next
-  offer "cuts exactly as one long stretch would have" (RFC 2 §2.4), and the run ends real at the
-  file's end. Their real re-stored bytes equal the twin's at every candidate, so their real ratio
+  offer "cuts exactly as one long stretch would have" (RFC 2 §2.4), and the run's last cut is
+  forced at the file's end by D4's final flush, where the twin's last cut falls. Their real re-stored bytes equal the twin's at every candidate, so their real ratio
   equals the baseline ratio by construction, and only a forced cut can move it. The run fails
   when a candidate's real re-stored bytes on either differ from its twin's, which names a forced
   cut.
@@ -516,23 +557,36 @@ pkg/carver/section/
   `DITTOFS_CORPUS_DIR`, with a comment naming the host memory the in-memory store and the in-memory
   metadata store need and the temporary space the journal takes (§9 point 4); `compose`'s share
   limit as a parameter, `enginetest.WithTarget` and the fixture control that holds offload dispatch
-  (D2, D4); `target_sweep` added to lint-go's `go vet -tags=` list (D1); RFC 2 §10.6's suites paragraph names `carver-sweep`, and `docs/internals/testing.md`
+  under D4's four conditions: posts merge while dispatch is held, the per-workload check of the
+  held phases against *S* and of the five-pass bound, the final flush, and no pass or idle counted
+  for a hold (D2, D4); `target_sweep` added to lint-go's `go vet -tags=` list (D1); RFC 2 §10.6's suites paragraph names `carver-sweep`, and `docs/internals/testing.md`
   regenerated with `dt docs`. Consumed by T6.4, which runs it.
 - **Acceptance criteria:**
   - Each run builds the carver through the content wiring as S3 does, with no option that changes
     the mask, the chain or the pipeline beyond D2's settings (R6, R8, R9).
   - Each composition cuts at its candidate: the run fails when two candidates leave the same live
     chunk sizes on one workload (D2).
-  - The run fails a workload whose drain passes its bound with dirty bytes left, or whose chunk
-    records pass R13's ceiling (D4, D5).
+  - The run fails a workload whose dirty bytes are not zero once the final flush is quiescent, or
+    whose chunk records pass R13's ceiling (D4, D5).
+  - While a phase is held, its file's offload key is queued once whatever the phase wrote, and
+    `Stats.OffloadPasses` does not move; after the release it moves by the passes that ran (D4,
+    conditions 1 and 4).
+  - The run fails before a workload's first write, naming it, when its held phases' bytes pass *S*
+    or a held phase passes the five-pass bound (D2, D4, condition 2).
   - The run fails when a candidate's real re-stored bytes on the next release or the 64 inserts
     differ from its twin's (D7).
   - `dt docs --check` passes with the suite named.
 - **Tests:** the sweep is itself the check of R13 at the consumer, over the real path. Its own
   failure paths are seen before the pull request, as the RFC 2 plan's rule 6 asks of a test no
   suite holds red: with the age trigger disabled in a local edit, the 256 pages' phase 1 stays
-  dirty past the drain's bound and the run fails on that assertion, not on the timeout (catches a
-  "clean" read from the wrong journal); with the clock advanced past `offload.max_age` before the
+  dirty after the final flush and the run fails on that assertion, not on the timeout (catches a
+  "clean" read from the wrong journal); with the final flush removed in a local edit, the next
+  release's tail stays dirty and the run fails on the same assertion, naming the file (catches a
+  drain that ends before the end-of-file tail is cut); with *L* lowered to `2 << 30` in a local
+  edit, the run fails on the per-workload check before the next release's first write, not on a
+  hung writer (catches a limit the held phase passes); with the hold placed on posting in a local
+  edit, the held phase's key is not queued and the run fails on that assertion (catches a hold
+  that drops a trigger); with the clock advanced past `offload.max_age` before the
   drain in a local edit, the next release's cuts fall at the pass limits and the run fails on the
   control's assertion (catches a forced cut, D7); with widening disabled in a local edit, the sustained workload at the 1 MiB
   and 4 MiB candidates passes R13's ceiling and fails on it (at 64 KiB and 256 KiB sixteen rounds of

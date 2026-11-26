@@ -406,14 +406,14 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
 | 15 | **The offload pipeline** ⛔ | `offload/`: Capture to Mark over the store's existing calls; the chain pin; `encodings` at commit; O1 to O8 but O7, O1's crash leg over the real journal | 8 | 33.5 | B | 16 |
 | 16 | **Passes and the bindings' remote side** ⛔ | the pass registry, §8.3, a share's flow, namespace and pause, chunking settings; S3 | 6 | 20.25 | B | 17, 18, 19, 20 |
 | 17 | **Remote reads, fill and speculation** | the carved row, verified streaming, re-resolution, chunk or block, `fill`, read-ahead, clone adoption | 7 | 23.5 | C | 18 |
-| 18 | **Local space with offload** | eviction loop, `evict`, `repackDue`, refusal steps 2 and 3 with the share's pass, put-health causes, pacing and pressure, destroyed material, the commit under destroyed material | 8 | 30 | B | 19, 21 |
+| 18 | **Local space with offload** | eviction loop, `evict`, `repackDue`, refusal steps 2 and 3 with the share's pass, put-health causes, pacing and pressure, destroyed material, the commit under destroyed material | 9 | 31 | B | 19, 21 |
 | 19 | **Restart and the metadata reconcile** | start steps 6 and 7, the reseed and its gates, re-offer, a lost journal served again, the reconcile and `Bind`'s takeover, the `Census` view | 12 | 44 | C | 21 |
 | 20 | **Health, drain and salvage** | per-direction health and drift, the offload conditions, §11.4 and `WaitOffloaded`, the salvage export, `material_destroyed`'s `data_loss` | 7 | 20 | A | 21 |
 | 21 | **Integration: the node composes offload** | a `codec.Store` per store registered with its probe key, `syncertest`'s Group A suite against LocalStack, clients per store configuration, the components' collectors and health sources, settings sections, keys and alerts, the key-record suite, the CPU token, the restart-gated namespace, system scenarios; S7 | 10 | 36 | team | 22 |
 | 22 | **E2E green** 🔀 | burn `known.yaml` down, the soak with remote faults, B1 to B4, B6, B8, and B5, B7, B9 with offload; provisional (§6 point 2) | 7 | 21.5 | team | release |
-| | **Total** | | **90** | **297.25** | | |
+| | **Total** | | **91** | **298.25** | | |
 
-**Plan estimate: 90 subtasks, 297.25 man-days.**
+**Plan estimate: 91 subtasks, 298.25 man-days.**
 
 These are the plan's figures. Once an epic is broken down, its document's estimate supersedes its
 row here, and the rows and total are left as planned.
@@ -913,7 +913,7 @@ hold.
 
 ### Epic 18 — Local space with offload
 
-**Epic 18 estimate: 8 subtasks, 30 man-days.**
+**Epic 18 estimate: 9 subtasks, 31 man-days.**
 
 Eviction, pacing and the refusal table's first two rows whole, now that offload drains dirty bytes;
 the first part's capacity stand-ins go (D10). **Owns:** RFC 8 §3.1's `evict`, `repackDue` and
@@ -945,6 +945,11 @@ stays green; RFC 8 E3, E11, E33 hold.
   attempt then abandoned and its extents offered again under current material (RFC 8 §10.4 as
   amended), with its `decision:` on an undeclared loss. The legs: a destroy between pin and
   Commit, a master key's destroy refusing a commit on a data key it wraps, between Commit and Mark, and with no replacement material (epic 15's Intent refusal).
+- The commit also reading, tracked, the key records of the block each kept ref names (RFC 6 §4.4's
+  middle row): under destroyed or missing material it replaces that ref at its own `newest` and
+  refuses a new ref below it, so a re-offer after a destroy lands and no stale pass replaces newer
+  content (RFC 6 §4.4 and §5.4 as amended). A fill whose block's material is in the destroyed set
+  runs `Fill` then `Unmark` under the write lock.
 - Eviction never gated by locks, opens or snapshots; a retention pin deferred (§6.1); a
   `decision:` at `evict` that it trusts the offloaded bit while bucket-setting drift goes undetected
   (§6.1's drift row), withdrawn when `Recheck` runs.
@@ -952,7 +957,7 @@ stays green; RFC 8 E3, E11, E33 hold.
 
 ### Epic 19 — Restart and the metadata reconcile
 
-**Epic 19 estimate: 12 subtasks, 44 man-days.**
+**Epic 19 estimate: 12 subtasks, 41 man-days.**
 
 What a start adds once offload exists: the queue rebuilt, background work started, the reseed with the
 reconcile it runs when one is owed, and the shares of a lost journal served again. The reconcile needs
@@ -1199,6 +1204,7 @@ proposed targets: the first real-service run does (§6.1).
 | The relocation leg of §15.1's "§7.7 re-resolution", a chunk moved twice under a reader (epic 17's D2) | nothing moves a chunk while its refs are live before GC's relocation (RFC 6 §7.3); epic 17 tests the rule as a pure function meanwhile | RFC 9 | GC's relocation lands |
 | A read's span linking to the span of a fetch it joined (RFC 8 §14; epic 17's D9) | the syncer joins fetches internally and `Fetch` reports no join, so each read opens its own `engine.fetch` span | RFC 3 | RFC 3 reports a join from `Fetch` |
 | §11.2's metadata-store-lost row and the salvage's recovery-import side (epic 20) | RFC 26's | RFC 26 | the recovery import is built |
+| The census legs of relocation and import: RFC 6 §7.3's `Relocate` and a namespace or recovery import creating their block records through `kvstore`'s `newBlockRecord`, which writes the census delta (epic 19's D1), each with its leg of the census row (relocate, prune the sources, the material still counted) | neither writer exists in `kvstore` yet; epic 19's T19.1 covers the carrying commit's repoint, the one move `kvstore` has | RFC 9 (relocation); RFC 26 and RFC 27 (imports) | the first of those writers lands in `kvstore` |
 
 ## 7. RFC coverage
 

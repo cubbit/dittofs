@@ -1224,7 +1224,7 @@ new ref's `newest` with the existing ref's version range:
 | New `newest` | The commit |
 | --- | --- |
 | above the existing `newest` | replaces the ref |
-| inside the existing `[oldest, newest]` | treats the content as already committed: writes nothing for that ref and reports its extent offloaded |
+| inside the existing `[oldest, newest]` | treats the content as already committed: writes nothing for that ref and reports its extent offloaded — unless the block the existing ref's chunk record names has `encodings` naming a key record marked destroyed or missing: then a new `newest` equal to the existing `newest` replaces the ref as in the row above, and one below it refuses that ref as live and applies the rest, its extent left unreported |
 | below the existing `oldest` | refuses that ref as live, and applies the rest — unless it is a held version a live cut sees, which is recorded into history instead ([§6.5](#6.5%20Who%20owns%20a%20ref)) |
 
 Only strictly older content is refused, and only as a live ref: the table
@@ -1235,6 +1235,19 @@ ref's `born`, or is dropped when no live cut sees it. This suffices: content at 
 differs between two passes was written after the earlier pass was offered, so its
 version, and the later pass's `newest`, exceeds every version the earlier pass
 holds.
+
+The middle row's exception is what lets a re-offer after a destroy land
+([RFC 8 §10.4](rfc-8-engine.md#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable)): the engine offers the same content again, at the same
+version, under current material, and cuts its chunks afresh, so the new block
+need not carry the old ref's chunk. Kept, that ref would still name a body no
+key can read while the commit reports its extent offloaded, and the journal
+could release the only readable copy. The commit reads those key records with
+conflict tracking ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)). It
+replaces only at the existing ref's own `newest`, the version a re-offer of
+the same content carries, so it never replaces a ref with strictly older
+content ([M10](#9.%20Invariants)): a pass offered before the existing ref's
+commit, whose `newest` lies below, is refused instead, and its extent is
+neither kept as offloaded nor released.
 
 ## 5. Write sets
 
@@ -1474,7 +1487,7 @@ The gating reads in this document, and the key each conflicts on:
 | primary's node lease, every fenced commit **(cluster)** ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)) | `Node(primary)`, guarded | the claim of a takeover, which marks it lapsed; the node acquiring a new lease |
 | removals an offload commit honours ([§4.1](#4.1%20What%20one%20commit%20records)) | the removals scan, covered by `F_o(file)` | every removal writes `F_o` |
 | put intent ([§7.6](#7.6%20Put%20intents)) | `Intent(name)` | the commit and an abandonment both delete it |
-| material destroyed, offload commit ([RFC 8 §10.4](rfc-8-engine.md#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable)) | the key record of each material the block's `encodings` name, a tracked read, since the commit needs its `destroyed` mark | the destroy, which marks the record, and a master-key destroy, which marks every record its key wraps ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) |
+| material destroyed, offload commit ([RFC 8 §10.4](rfc-8-engine.md#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable)) | the key record of each material the block's `encodings` name, and of each material the `encodings` of a kept ref's block name (a ref the commit would keep as already committed, [§4.4](#4.4%20Commits%20for%20one%20file%20apply%20in%20order)), a tracked read, since the commit needs its `destroyed` mark | the destroy, which marks the record, and a master-key destroy, which marks every record its key wraps ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) |
 | the deleter's move, resurrection by adoption ([§7.1](#7.1%20Conditional%20retirement), [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)) | `Block(name)` | both transactions write it |
 | the deleter's check that no ref names a chunk ([§7.1](#7.1%20Conditional%20retirement)) | `Chunk(hash)`, guarded; the reverse prefix itself is not tracked | every transaction adding a ref writes `Chunk(hash)` |
 | audit lowering a count ([§7.5](#7.5%20Audit)) | `Chunk(hash)` stamp | every ref change writes it |

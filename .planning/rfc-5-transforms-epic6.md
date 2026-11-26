@@ -184,7 +184,7 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
 | R5 | The provider refuses to serve an ID whose material no longer matches its recorded fingerprint, as `ErrMaterialUnavailable`, and reports it for the `material_unavailable` condition | MUST | §2.5; §7 T12; §8.1 §2.5 row; Appendix B.4 | T6.5, T6.6 |
 | R6 | `Get` returns `ErrUnknownMaterial` for an ID the provider was never given, `ErrMaterialUnavailable` for one it cannot reach now or whose content no longer matches its fingerprint, and `ErrMaterialDestroyed` for one whose record is `destroyed` | MUST | §3.1 (`Provider.Get`); §2.7; Appendix B.2 ("the provider can tell a key it never had…") | T6.5 |
 | R7 | `Current` is the material new bodies of a kind use in a namespace, and is served only as `Get` would serve it: a kind the namespace was never given is `ErrUnknownMaterial`, current material that cannot be reached or no longer matches its fingerprint is `ErrMaterialUnavailable`, and destroyed current material `ErrMaterialDestroyed` | MUST | §3.1 (`Provider.Current`, `Provider.Get`); §2.5; E1 T1.1 (`Current`'s doc); E2 D3 | T6.5, T6.6 |
-| R8 | An `ErrUnknownMaterial` answer reports the ID for the `material_unknown` condition, until the key is loaded and a read of it succeeds | MUST | §2.7; Appendix B.4; §8.2 T7; RFC 25 §3.9 | T6.5, T6.6 |
+| R8 | A `Get`'s `ErrUnknownMaterial` answer reports the ID for the `material_unknown` condition, until the key is loaded and a read of it succeeds; a `Current` miss names a kind, not material the census lists, and reports nothing | MUST | §2.7; Appendix B.4; §8.2 T7; RFC 25 §3.9 | T6.5, T6.6 |
 | R9 | `encryption_keys_unavailable` is the count of keys the provider cannot currently return with a matching fingerprint, and the `material_unavailable` condition names them | MUST | Appendix B.6; Appendix B.4; RFC 5 plan §1.5 rule 3 | T6.6 |
 | R10 | `encryption_current_key_age_seconds`, labelled `namespace`, is how long the namespace's current data key has been current | MUST | Appendix B.6 | T6.5, T6.6 |
 | R11 | Each call of `Current` or `Get`, a failing one included, raises an exported count, so a test can assert that the provider records no call | test row | §8.2 T12, T14; RFC 5 plan §1.4; E2 R19 | T6.6 |
@@ -397,11 +397,18 @@ R22, the bucket gate (E8, §1.2) and R35.
   (R51): loading on first use would let a namespace open while its key service is unreachable, and
   fail only at the first write or read. Each namespace's
   rows are cached too, loaded on first use; after the provider's own `Update` succeeds they become
-  the rows `fn` saw plus the rows it returned, and after any `Update` error that namespace's rows
-  are dropped, since `kv.KV.Update` may report an error for a commit that happened. A `Get` or
-  `Current` that finds no row reloads the namespace once before answering `ErrUnknownMaterial`, so
-  a record another writer added (a recovery import, a second node) is found without a restart;
-  misses are rare, since a read asks only for IDs its census lists. A `Load` that fails is
+  the rows `fn` saw with each row it returned written over the one of the same kind and ID, or
+  added when there is none, as `Update` writes them, so a rewritten row is held once; after any
+  `Update` error that namespace's rows are dropped, since `kv.KV.Update` may report an error for a
+  commit that happened. A `Get` that finds no row reloads the namespace once before answering
+  `ErrUnknownMaterial`, so an ID another writer added (a recovery import) is found without a
+  restart; misses are rare, since a read asks only for IDs its census lists. A `Current` that finds
+  no `current` row of its kind answers `ErrUnknownMaterial` from the cache with no reload: a kind is
+  given only by key creation, which goes through the provider's own `Update`, and a
+  non-encrypting namespace's `chunking-key` is a miss on every call, so a reload there would cost a
+  `Load` each time and find nothing. A row another writer rewrites (a retire, a replace, a destroy)
+  is seen only at the namespace's next reload, a `Get` miss, or a restart: the one-provider,
+  one-node ceiling of E8's D12 covers every such row, not only a rotation's. A `Load` that fails is
   `ErrMaterialUnavailable` and caches nothing. A row's state is checked before its cached key, so a
   record the provider marks `destroyed` stops being served at once. `Get` returns the cached slice,
   which callers must not modify, so a cached `Get` allocates nothing (R44; §9). A `ponytail:` at the
@@ -741,6 +748,13 @@ docs/internals/rfcs/rfc-5-transforms.md  T6.3, T6.5  §8.3's suites line names F
     absence, or a failure cached, R42).
   - A row added through `Records` directly after a first read: `Get` of its ID succeeds on the same
     provider (catches a miss that never reloads, R8).
+  - A fault wrapper around `Records` fails every `Load` after `Open`: `Current` of a kind the
+    namespace was never given is `ErrUnknownMaterial`, not `ErrMaterialUnavailable`, and
+    `Status().Unknown` stays empty (catch a kind miss that reloads on every call, or that enters
+    `Unknown` with no ID and never leaves, D10, R8).
+  - The provider's own `Update` marks a row `destroyed`, then `Get` of its ID on the same provider,
+    with no reload, is `ErrMaterialDestroyed` (catches the rows `fn` saw kept beside the rows it
+    rewrote, D10).
   - One namespace's wrapped data key copied, as a row, into another namespace's records: `Get` there
     is `ErrMaterialUnavailable` and returns no bytes (catches an AAD checked at wrap time only, R21).
   - A chunking key's row rewritten with another key's wrap under the same ID and the old

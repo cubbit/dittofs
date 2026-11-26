@@ -122,8 +122,8 @@ them. `Source` is RFC 5.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R5 | `Decode` refuses a declared length above `max` before allocating, with `ErrTooLarge`: a body declaring `max + 1` fails so, and so does one declaring 64 MiB | MUST | Appendix A ("Its header"), §2.1, §2.7, §4 item 5, §8.1 T4, Appendix D D2 | T4.1, T4.2 |
-| R6 | zstd's decoder runs with its window capped at the chunk maximum: a frame asking for more is refused before it decodes, so no body makes it allocate more than one chunk | MUST | Appendix A ("Its header"), Appendix D D2 | T4.1 |
-| R7 | Fuzzed, `Decode` never panics and never produces or allocates more than `max`, however large a body claims its output to be | MUST NOT | §2.1, §7 T4, §8.1 T4 | T4.1, T4.2 |
+| R6 | zstd's decoder runs with its window capped at the chunk maximum: a frame asking for more is refused before it decodes, so no body makes it allocate more than one chunk and one block | MUST | Appendix A ("Its header"), Appendix D D2 | T4.1 |
+| R7 | Fuzzed, `Decode` never panics, never produces more than `max` and never allocates more than `max` plus D2's `Scratch`, however large a body claims its output to be | MUST NOT | §2.1, §7 T4, §8.1 T4 | T4.1, T4.2 |
 | R8 | `Decode` returns only RFC 5 §2.7's errors, so no error type of the libraries crosses it, and refuses as `ErrMalformed` a body this transform did not write; with every byte of a body flipped in turn it returns one of them or bytes the codec's hash check rejects, and never panics. A declined chunk is not an error | MUST NOT | §2.7, §4 item 6, §8.1 §2.7 | T4.1, T4.2 |
 
 **Bounds, length and settings**
@@ -189,8 +189,11 @@ round-trip input (E2's R2), and T4.3's corpus check reports it on real files.
   and no dictionary, through `EncodeAll` on a writer built with `WithSingleSegment(true)` and
   `WithEncoderCRC(false)`. The decoder grows its output while it writes a block and checks the size
   only afterwards, and it decodes every frame that follows the first, so the decoder's own caps are
-  not enough. `Decode` therefore reads the frame header with `zstd.Header` and walks the frame's
-  3-byte block headers, and refuses as `ErrMalformed`, before decoding:
+  not enough: `WithDecodeAllCapLimit` bounds a call by `cap(dst)`, per call, but v1.20.4 checks it
+  only after each block is decoded (`framedec.go`), and a raw or RLE block, or a block of literals
+  only, grows the buffer before that check. `Decode` therefore reads the frame header with
+  `zstd.Header` and walks the frame's 3-byte block headers, and refuses as `ErrMalformed`, before
+  decoding:
   - a skippable frame, a dictionary, a checksum, or a frame that is not single-segment;
   - a content size other than the declared length;
   - raw and RLE blocks whose sizes add up to more than the declared length;
@@ -451,8 +454,8 @@ A suggestion only: one pull request per subtask works as well.
 - **Refinements of the RFC 5 plan**, which is not edited: its §4.1 shows one
   `pkg/transform/compress/` directory, and D1 follows RFC 5 §3.1's one package per shipped
   transform; its D4 caps the zstd decoder's window and memory through the library, and D2 enforces
-  the cap by checking the frame and its blocks before decoding, since one process-wide decoder
-  cannot carry a per-call `max` and the library checks a block's size only after writing it.
+  the cap by checking the frame and its blocks before decoding, since the library checks a block's
+  size, against the per-call `cap(dst)` among others, only after writing it.
 - **The estimate** is 3 subtasks and 7 man-days, against the RFC 5 plan's 4 and 8.5: the shared
   body format lands with zstd, and LZ4 reuses it; the plan's fourth subtask, fixtures and fuzz
   targets, is split between T4.1 and T4.2, each landing its own transform's. The least certain is T4.1's, whose frame walk

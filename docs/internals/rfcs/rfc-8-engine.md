@@ -2218,10 +2218,11 @@ type Tenant struct {
 }
 
 type Stats struct { // per source and tenant
-	Pending, Backoff, Running, Overdue int
-	OldestPending                      time.Duration
-	Dropped, Expired                   uint64
-	LastDone                           time.Time
+	Pending, Backoff, Running, Runs, Overdue int // entries by state; Runs: runs in flight; Overdue: runs overdue now
+	OldestPending                            time.Duration
+	Dropped, Expired, OverdueRuns            uint64 // OverdueRuns: runs that passed twice RunTimeout, each counted once
+	Stalled                                  bool   // work_queue_stalled: a run of the tenant overdue, or the source's due entries undispatched for 5 minutes, the oldest the tenant's
+	LastDone                                 time.Time
 }
 
 // TenantID names a tenant: a namespace as it is, or a shard big-endian in the
@@ -2291,8 +2292,9 @@ The scheduler **MUST**:
   tenant, and keeps its slot, since the scheduler cannot reclaim a goroutine, only
   report it;
 - **turn its watchdog loop**: after each dispatch and each run's return. It reports
-  idle only while no entry is due, or while every slot it waits for holds a run
-  that is not overdue. So a lost wakeup, with entries due and a slot free, or a
+  idle unless an entry is due that its tenant's and its source's concurrency
+  bounds let it dispatch, or every slot of a source with entries due holds an
+  overdue run. So a lost wakeup, with entries due and a slot free, or a
   source whose slots are all held by overdue runs, fails liveness within the
   watchdog's bound ([RFC 25 §3.5](rfc-25-observability.md#3.5%20Liveness)), and `work_queue_stalled` is raised as
   well once entries have been due with none dispatched for 5 minutes;
@@ -2992,6 +2994,14 @@ which calls the journal's `Delete`, never its `Release`, which evicts
   retry channel first, and a truncate or deallocate whose phase 1 its call
   cannot commit answers `ErrDelay` first (below); each keeps the guard until
   its retried phase 1 commits or it ends.
+- Work a removal holds in memory, which no record re-derives (a phase-1 retry
+  holding the guard, a pending release, an existence commit's retry, a clone in
+  flight), is bounded per scheduler instance by the removal source's `Total`
+  ([RFC 24 §5.1](rfc-24-resources.md#5.1%20No%20queue%20is%20unbounded)): each phase 1 reserves one before its journal step, held
+  until that removal's in-memory work ends, and a removal finding none free
+  answers `ErrDelay` with `DelayResources`, holding no guard. Work the
+  unfinished-removal index re-derives is held only while its key holds a work
+  item; dropped, it is counted and the rescan ([§6.1](#6.1%20The%20work%20queue)) posts it again.
 - Its first transaction commits the file's pending existence with it, and syncs
   the file first ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)). It is admitted through the share's cut gate: behind a
   closed gate it waits for the gate to reopen, so no removal commits existence

@@ -21,7 +21,7 @@ Appendix B.2 (the salvage key) and B.4 (`material_destroyed`, with `data_loss`);
 [RFC 3](../docs/internals/rfcs/rfc-3-syncer.md) §2.8 (the flow's `Healthy` and `Health`, a cause
 per direction).
 **Track:** A.
-**Epic 20 estimate: 8 subtasks, 23 man-days.**
+**Epic 20 estimate: 8 subtasks, 24 man-days.**
 **Depends on:** sync point **S2**, red rows in CI (epic 12): the fixture's `SalvageTo`,
 `FaultRemote` and `BlockNextRun`, and the four rows this epic turns green; **epic 13**'s
 `workqueue.Stats` with `Stalled` (its D8, #5986) and T13.4's stall
@@ -190,7 +190,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 | R27 | Per tag, the extents keyed by `FileID` and offset, each with its content version, in a directory of mode 0700 owned by the service | MUST | RFC 1 §3 | T20.2 |
 | R28 | Never plaintext for a tag whose share encrypts or whose transforms the node cannot establish: sealed with a fresh salvage data key, one per export, under the AEAD that seals blocks, wrapped under the installation's current master key, the wrapped key written beside the export | MUST, MUST NOT | RFC 1 §3; RFC 5 Appendix B.2 (`salvage-key`) | T20.2 |
 | R29 | An export that cannot get the master key fails, never falling back to plaintext | MUST NOT | RFC 1 §3 | T20.2, T20.3 |
-| R30 | A failed export (no path, a refused one, a write error, no space, no master key) raises `stranded_export_failed` on the node naming the tag, is retried at every start and again while serving, and clears when the tag's export succeeds | MUST | RFC 1 §3; RFC 8 §11.1; RFC 25 §3.9 | T20.3 |
+| R30 | A failed export (no path, a refused one, a write error, no space, no master key, a held range that does not read) raises `stranded_export_failed` on the node naming the tag, is retried at every start and again while serving, and clears when the tag's export succeeds | MUST | RFC 1 §3; RFC 8 §11.1; RFC 25 §3.9 | T20.3 |
 | R31 | §11.1 `stranded_export_failed`: with `salvage.path` on a directory whose permissions refuse the process's writes, the condition names the tag and service continues; made writable while serving, the export succeeds on its retry and the condition clears with no restart | test row | RFC 8 §15.2 | T20.3 |
 | R32 | RFC 1's "§3 stranded tag salvaged after serving", its single-node legs without an import: the tag stranded and reported before serving, serving not waiting for the export, the export complete and sealed with a different key each time, failing without the master key, and an unset path, a misplaced path and a full device each a failed export that holds `Forget` back and completes once fixed; and RFC 13's "§2.2 scratch paths", its salvage leg: `salvage.path` refused at start the way a misplaced spill path is, the node serving, and the export a failed one reported as a condition | test row | RFC 1 §3; RFC 13 §9 | T20.1, T20.3 |
 
@@ -210,25 +210,34 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   carries into `offload_stalled` (D2). A share-scoped copy of the store's state was rejected: it is
   the second condition RFC 25 forbids, and at 300 shares on a store it pages 300 times. No marker.
   Prior art: Kubernetes conditions on a node, which pods read without copying (from memory).
-- **D2, `offload_stalled` stands while a share's dirty bytes have seen no `Done` for 5 minutes.**
-  RFC 8 §11.1's `health` is `offloadHealth` in `policy.go` (the name `health` is the first part's
-  `pkg/health` import in package `engine`). Per binding it keeps the start of the current run
-  without progress: the first age tick that finds the share holding dirty bytes with no pass `Done`
-  since the run's last end; a `Done` ends it, whatever started it. So passes failing on a commit
-  conflict, passes skipped for a put-unhealthy store, and passes never dispatched (a wedged
-  scheduler, a full syncer queue) all start a run, and a poison file, whose passes run alone while
-  the others report `Done`, does not (D3). Its cause, read at `Stats`, is the flow's `Health(Put)`
-  error, read at the age tick into the binding, while the store is put-unhealthy; otherwise the
-  latest pass error `observe(outcome)` was given, or "no pass dispatched". So an outage and a
-  metadata wedge raise one condition with different causes (R5). 5 minutes is RFC 8 §6.1.1's stall
-  bound for the work queue; a `decision:` at the constant says it is fixed, not a setting, withdrawn
-  if the offload-health row's journal fills before it at the reference profile. Prior art: RFC 25
-  §3.2's `offload_stalled` then `journal_full`, each raised by its own evidence.
+- **D2, `offload_stalled` stands while a share's dirty bytes have seen no byte offloaded for 5
+  minutes.** RFC 8 §11.1's `health` is `offloadHealth` in `policy.go` (the name `health` is the
+  first part's `pkg/health` import in package `engine`). Per binding it keeps the start of the
+  current run without progress: the first age tick that finds the share holding dirty bytes with
+  none offloaded since the run's last end. Progress is the binding's `offload.Stats.OffloadedBytes`
+  (D11) risen since the previous tick, never a pass outcome: a skipped pass, a file placed in no
+  pass, a wholly removed pass and a held plan all answer `Done` having offloaded nothing (epic 16's
+  D2, D3 and T16.3; the RFC 2 plan's "A held plan's outcome"). A tick that finds nothing dirty ends
+  the run too. So passes failing on a commit conflict, passes skipped for a put-unhealthy store,
+  and passes never dispatched (a wedged scheduler, a full syncer queue) all start a run. A file
+  backed off as failing (D3) is left out of the run's dirty bytes once the share has offloaded a
+  byte since the file's first counted failure, the tick that first saw its count above zero: it is
+  reported by its own condition, so a poison file whose batch-mates offload after it fails raises
+  no `offload_stalled`, even after they drain and it is the share's last dirty file. A file no
+  other file has offloaded past stays in, so a wedge where every pass fails still stands once every
+  file is backed off (R5, R12). Its cause, read at `Stats`, is the flow's `Health(Put)` error, read
+  at the age tick into the binding, while the store is put-unhealthy; otherwise the latest pass
+  error `observe(outcome)` was given, or "no pass dispatched". So an outage and a metadata wedge
+  raise one condition with different causes (R5). 5 minutes is RFC 8 §6.1.1's stall bound for the
+  work queue; a `decision:` at the constant says it is fixed, not a setting, withdrawn if the
+  offload-health row's journal fills before it at the reference profile. Prior art: RFC 25 §3.2's
+  `offload_stalled` then `journal_full`, each raised by its own evidence.
 - **D3, `file_offload_failing` is read from epic 15's `Failures`, while its file is dirty.** A file
   whose count reached O6's five, and which the binding's last age tick still found in `DirtyFiles`,
   is raised naming its `FileID`; it clears at its next `Done`, or once a removal, a release or an
   unbind takes it out of `DirtyFiles`. The `Warn` on backing off is logged where the count crosses
-  five, once per crossing. One condition per file: RFC 25 §13's cap on FileIDs per condition is its
+  five, once per crossing. The age tick also notes, per file, the tick that first saw its count
+  above zero, dropped when the count returns to zero, for D2. One condition per file: RFC 25 §13's cap on FileIDs per condition is its
   own open question, for the node-status record. No marker. Prior art: none found.
 - **D4, transitions are logged at the age tick.** Conditions are derived when read, so "entering or
   leaving" (RFC 8 §14) is detected where the engine already looks at each binding on its clock:
@@ -254,27 +263,39 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   drops the key with the `Seal`; the integration epic only passes it to the engine. `NewSeal`'s
   error is the provider's (no master key among them) and fails the export (R29). The wrapping
   configuration: a stranded tag has no share record (D8), so the RFC 5 plan's epic 6 §9 hands the
-  choice here. The wiring wraps under the store configuration of the shares the journal serves, the
-  lowest configuration ID when they span several, and refuses when none of them has a master key;
-  RFC 5 epic 6's D13 then reads "the configuration the content wiring names for the stranded tag's
-  journal". This needs no new setting and keeps the export readable by whoever holds that journal's
-  shares' key. Rejected: an installation-level salvage configuration named once in the bootstrap,
+  choice here. The wiring wraps under the store configuration of the shares the journal serves that
+  has a master key, the lowest configuration ID among them when several do. A journal that serves
+  no share any more (its last share deleted, or every share re-imported under a new identity), or
+  none of whose shares' configurations has a master key, takes the lowest-ID store configuration of
+  the installation that has one, so its stranded bytes can still be exported and forgotten; the
+  wiring refuses only when no configuration of the installation has a master key (D8). RFC 5 epic
+  6's D13 then reads "the configuration the content wiring names for the stranded tag's journal".
+  This needs no new setting and keeps the export readable by whoever holds that journal's shares'
+  key, or the installation's. Rejected: an installation-level salvage configuration named once in the bootstrap,
   explicit but a setting an operator must get right before any loss, which RFC 13 Appendix C would
   gain. Taking `journal` and `tag` keeps the choice in the wiring, so a later change rewrites one
   adapter, not the engine. A `decision:` at the wiring's choice.
   Prior art: a KMS envelope encryption client, which hands the caller an encryptor and never the
   data key (from memory).
-- **D6, the salvage path check compares device, mount source and the device mapper's leaves, on
-  Linux only.** At `Start`, before any export, the engine compares `salvage.path` with every
-  `Deps.Devices` entry, through a pure function over each path's identity: its `stat` device, its
-  mount source in `/proc/self/mountinfo` (one btrfs device, or one ZFS pool as the dataset's prefix),
-  and the set of leaf block devices its device-mapper device reaches through `/sys/block/*/slaves`,
-  which a thin volume shares with every other volume of its thin pool, and an LV with every LV on
-  its physical volumes. Any shared element refuses the path for this run, the refusal naming the
-  journal and what it shares. Two LVs on one physical volume but in no thin pool are refused too,
-  which is stricter than RFC 13 §2.2 asks, and safe. On every other OS the check refuses the path
-  as unsupported, so exports fail and are reported (R25): a `decision:` at the refusal, withdrawn
-  when a non-Linux node is a deployment target. The check is the engine's because it holds the
+- **D6, the salvage path check compares device, mount source and what shares free space, on each
+  platform the journal supports.** At `Start`, before any export, the engine compares
+  `salvage.path` with every `Deps.Devices` entry, through a pure function over each path's
+  identity. On Linux: its `stat` device, its mount source in `/proc/self/mountinfo` (one btrfs
+  device, or one ZFS pool as the dataset's prefix), and the set of leaf block devices its
+  device-mapper device reaches through `/sys/block/*/slaves`, which a thin volume shares with every
+  other volume of its thin pool, and an LV with every LV on its physical volumes. Two LVs on one
+  physical volume but in no thin pool are refused too, which is stricter than RFC 13 §2.2 asks, and
+  safe. On macOS: its `stat` device and its APFS container, the whole disk `diskN` of the mount
+  source `diskNsM` that `statfs` reports, since every volume of a container shares its free space.
+  On Windows: its volume serial and the disks `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS` names; a path
+  or journal on a Storage Spaces disk (bus type Spaces) is refused as unknown, since two thin spaces
+  of one pool name different disks, which is stricter and safe. Any shared element refuses the path
+  for this run, the refusal naming the journal and what it shares. RFC 28 Appendix A's platforms
+  are Linux, macOS and Windows, so refusing every path elsewhere would leave a stranded tag on those
+  two unexportable and never forgotten; a platform outside the three refuses the path as
+  unsupported, a `decision:` at that refusal, withdrawn when a platform joins that appendix. The
+  Storage Spaces refusal carries its own `decision:`, withdrawn if a Windows node must salvage onto
+  one. The check is the engine's because it holds the
   journal directories and is the export's only user; RFC 13 §2.2's node-level wording is met since
   the engine runs inside the node's start. Prior art: `lsblk`'s slave walk and `findmnt`'s source
   matching (from memory).
@@ -285,9 +306,13 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   wrap, length-prefixed) and a sequence of records, each the `FileID` (16 bytes), the offset and
   length (8 bytes each, big-endian), the content version as the journal's opaque bytes, and the body
   sealed with associated data `header ‖ FileID ‖ offset ‖ version`. A record covers at most 1 MiB
-  and one `Held` range of `ReadAt`, which is where the version comes from. A range `ReadAt` reports
-  `missing` becomes a record with no body, flagged unread, so the export completes and an operator
-  sees the gap. Each held extent has one version until RFC 12's holds retain older ones, which
+  and one `Held` range of `ReadAt`, which is where the version comes from. A range of a listed
+  extent that `ReadAt` reports `missing`, or a read error, fails the export, naming the file and the
+  range: an export with a gap is not one of "every held extent" (RFC 1 §3), and the `Forget` after
+  it would drop bytes a later read might still return, which may be the only copy. The next round
+  lists `Extents` again, so a range the journal has since dropped as lost (its loss event records
+  it) is no longer asked for, and one that reads again is exported; one that stays listed and never
+  reads keeps the tag stranded and the condition raised. Each held extent has one version until RFC 12's holds retain older ones, which
   RFC 8 §2.5's "older versions included" then needs; a `decision:` at the format names both, and is
   withdrawn when RFC 26's recovery import defines the reader, which then owns the format. The file
   is synced, renamed, and its directory synced, and a directory the export created is synced into
@@ -346,7 +371,10 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   and read at `Stats`, with no goroutine. The rate is the ring's sum over 10 s; the summed rate is
   the shares'. Time to drain is dirty bytes over that rate, zero with nothing dirty, and the largest
   `time.Duration` with dirty bytes and no drain, which the node's adapter exports as `+Inf`; a
-  `decision:` at that value. A drop in dirty bytes was rejected as the measure: a truncate or an
+  `decision:` at that value. A quotient past that largest value saturates at it. The summed time
+  to drain is the summed dirty bytes over the summed rate by the same rule, never a sum of the
+  shares' times: shares drain side by side, and two stuck shares' largest durations added wrap
+  negative. A drop in dirty bytes was rejected as the measure: a truncate or an
   overwrite moves it without offloading anything, which is also why epic 18's pacing ring, which
   samples that drop, is not reused. 10 s is RFC 8 §10.2.1's window. Prior art: Prometheus's `rate()`
   over a range (from memory).
@@ -366,7 +394,14 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   partly offloaded file whose next dirty run predates `t0` still holds it. Removed and released
   bytes leave `DirtyFiles` (RFC 1 §3.7), so they count as offloaded; a stranded tag's bytes leave
   with its `Forget` after the export (T20.3), so salvage drains it; an unattached journal's bytes
-  are on the node but unreachable, so they hold the wait, named "journal unattached". The wait is a
+  are on the node but unreachable, so they hold the wait, named "journal unattached". A write
+  stamped at `t0` itself counts as before the call, so the wait never returns ahead of a byte
+  written before it; the cost is liveness only. The journal keeps write times in one-second
+  buckets that never stamp a write later than it happened (`dirtySpan`), so a write after the call
+  into a file with a bucket opened within the second before it, or one made after the wall clock
+  steps back, can hold the wait until offloaded; and on the test clock, which moves only when a
+  test advances it, every write before the next advance is stamped `t0`. A test of a write after
+  the call therefore advances the clock past one bucket first. The wait is a
   loop on `Clock.After` of the age tick, `ctx.Done()` and `Stop`, re-reading `DirtyFiles` each
   round, and registers nothing. At `ctx`'s end it returns an error that unwraps to `ctx.Err()`,
   naming the oldest file left, its share and its cause from D2's and D3's state ("behind" when
@@ -400,7 +435,9 @@ pkg/engine/
   salvage.go              T20.2 the export writer and its format (D7, D8); T20.3 the export rounds, Forget after, stranded_export_failed (D14)
   salvagepath.go          T20.1 the path check's comparison (D6)
   salvagepath_linux.go    T20.1 stat, mountinfo and sysfs readers
-  salvagepath_other.go    T20.1 the refusal off Linux
+  salvagepath_darwin.go   T20.1 stat and the APFS container
+  salvagepath_windows.go  T20.1 the volume serial, its disks and the Storage Spaces refusal
+  salvagepath_other.go    T20.1 the refusal elsewhere
   background.go           T20.3 the 30 s loop (D14); T20.8 the material round
   health.go               T20.4 offload_stalled; T20.5 file_offload_failing, work_queue_stalled; T20.7 the drain figures and offload_age_exceeded; T20.8 ScopeNamespace, material_destroyed (the first part's file)
   drain.go                T20.6 WaitOffloaded (D13); T20.7 the drain ring and the share's age (D11, D12)
@@ -409,7 +446,7 @@ pkg/engine/
   removals_start.go       T20.3 strandUnclaimed's tags handed to the loop (the first part's file)
   queue.go                T20.4 the age tick feeds offloadHealth and reads Health(Put); T20.5 the transition logs (epic 14's file)
   pass.go                 T20.4 each pass outcome to observe (epic 16's file)
-  offload/stats.go        T20.7 OffloadedBytes (epic 15's file)
+  offload/stats.go        T20.4 OffloadedBytes (epic 15's file)
   close.go                T20.3 Stop joins the loop
   enginetest/salvage.go   T20.3 SalvageTo made real
   enginetest/fake.go      T20.2 FakeHandle.Extents
@@ -430,7 +467,7 @@ test/journal/trace.yaml   T20.3 "stranded tag salvaged after serving": its reaso
 
 ### T20.1 The salvage path check at start
 
-**Subtask T20.1 estimate: 2.5 man-days.**
+**Subtask T20.1 estimate: 3.5 man-days.**
 
 - **Track:** A. **Depends on:** S2.
 - **Covers:** R24, R25, R32 (RFC 13's salvage leg).
@@ -439,7 +476,9 @@ test/journal/trace.yaml   T20.3 "stranded tag salvaged after serving": its reaso
   error)) error`, a pure comparison of each journal's `pathID` (device, mount source, device-mapper
   leaves) against the path's, naming the journal it shares with and what it shares. In
   `salvagepath_linux.go`, the reader over an `fs.FS` rooted at `/`, so a test hands it a recorded
-  tree; in `salvagepath_other.go`, the refusal and D6's `decision:`. `Start` runs the check once,
+  tree; in `salvagepath_darwin.go` and `salvagepath_windows.go`, D6's readers on macOS and Windows,
+  each a thin call into the OS feeding a pure parse; in `salvagepath_other.go`, the refusal and
+  D6's `decision:`. `Start` runs the check once,
   after the journals are listed and before serving; a refusal is logged at `Warn` and kept on the
   engine as the export's failure for T20.3, and `Start` goes on. Consumed by T20.3.
 - **Acceptance criteria:**
@@ -447,17 +486,24 @@ test/journal/trace.yaml   T20.3 "stranded tag salvaged after serving": its reaso
     naming that journal; a path on its own device with no shared leaf is not.
   - A journal added to `Deps.Devices` on the path's filesystem is refused at the next start, so the
     check runs in both directions.
+  - On macOS a path on another volume of a journal's APFS container is refused; on Windows a path
+    on a journal's volume or disk, or on a Storage Spaces disk, is refused; a path on its own volume
+    and disk is not.
   - An unset path is refused as unset, and neither case fails `Start`.
 - **Tests:** at `checkSalvagePath`, table-driven over hand-built `pathID` values, one row per shared
   element and one with nothing shared (catches a comparison that misses one, R24); the Linux reader
   over recorded `mountinfo` and `/sys/block` trees in `testdata/` for two btrfs subvolumes, two ZFS
   datasets of one pool, two thin volumes of one pool and two LVs on separate disks (catches a reader
   that misses a pool or a thin volume's leaves); the reader over `t.TempDir()` and a journal
-  directory beneath it, so one device (catches a reader that returns a per-path ID); at `Start`
+  directory beneath it, so one device (catches a reader that returns a per-path ID), on Linux in
+  `unit` and on Windows in `unit/windows` (no suite runs Go tests on macOS yet); the macOS and
+  Windows parses, pure and run on every platform, over recorded mount sources for two volumes of
+  one container and of two (catches a reader that compares volumes only) and over recorded disk
+  extents and bus types (catches a Spaces disk accepted); at `Start`
   over the unit fixture, a path in a journal's directory: `Start` returns nil, the shares serve,
   and the kept refusal names the journal (catches a refusal that stops the node, R25, R32). No
   test double.
-- **Rules:** rule 8, the recorded trees; rule 9, D6's `decision:`.
+- **Rules:** rule 8, the recorded trees; rule 9, D6's `decision:` markers.
 
 ### T20.2 The export writer and its seal
 
@@ -484,7 +530,8 @@ test/journal/trace.yaml   T20.3 "stranded tag salvaged after serving": its reaso
   - No plaintext byte of the tag appears in the file; the wrap unwraps with the master key; two
     exports of one tag use different keys.
   - A `NewSeal` refused for a missing master key writes nothing and leaves no `.tmp-` file.
-  - The export's directory mode is 0700; a range `ReadAt` reports missing is an unread record.
+  - The export's directory mode is 0700; a held range `ReadAt` reports missing, or fails to read,
+    fails the export naming the file and the range, and leaves no `.tmp-` file.
 - **Tests:** over the unit fixture's in-memory journal with three files under the stranded tag and
   one under a served tag, a 3 MiB extent among them and two versions inside one 1 MiB piece: the
   reader's output against the written bytes and versions (catches a dropped or truncated extent, a
@@ -493,8 +540,9 @@ test/journal/trace.yaml   T20.3 "stranded tag salvaged after serving": its reaso
   (catches a wrap nobody checks, R28); two exports' keys differ (R28); the provider with no master
   key loaded, the directory empty after (catches a plaintext fallback or a partial export, R29); a
   body moved to another record's offset fails to unseal (catches associated data that omits the
-  offset, D7); a missing range from a `Seam.SetFault` rule on the file's segment (kind 3), an unread
-  record in its place; an allocation check that one export stays under 2 MiB at a 64 MiB extent
+  offset, D7); a missing range from a `Seam.SetFault` rule on the file's segment (kind 3): the
+  export fails naming it and the directory is empty, and with the rule lifted the next export holds
+  the range (catches a gap exported as complete, R26); an allocation check that one export stays under 2 MiB at a 64 MiB extent
   (catches an extent read whole). In `content`, the adapter's key never reachable from the `Seal`
   after `NewSeal` returns, read through `export_test.go`. Doubles: the seam's fault rule; the
   provider is RFC 5's own, through `keystest`.
@@ -523,15 +571,18 @@ test/journal/trace.yaml   T20.3 "stranded tag salvaged after serving": its reaso
   - `Start` returns and the shares serve before any export of a stranded tag begins.
   - `Forget` of a tag is never called before its export file, its directory and any directory the
     export created are synced.
-  - An unset or refused path, a write error, a full device and a missing master key each raise
+  - An unset or refused path, a write error, a full device, a missing master key and a held range
+    that does not read each raise
     `stranded_export_failed` naming the tag, never fail a request, and are retried; the tag's held
     bytes stay in `Stats().Shares` until the export succeeds.
   - Fixed while serving, the next round exports, forgets, and the condition is gone at the next
     `Stats` with no restart; a `Forget` refused after a complete export is retried alone.
 - **Tests:**
   - `TestRFC8B_StrandedExportFailed` green: `salvage.path` a directory made mode 0500, then 0700
-    while serving, the retry driven by advancing the test clock 30 s; it skips naming root when run
-    as root, which ignores the mode (R31).
+    while serving, the retry driven by advancing the test clock 30 s (R31). Root ignores the mode,
+    and the development container runs as root, so under root the refusal comes instead from the
+    fault wrapper around the filesystem interface answering `EACCES` (kind 3) and lifted at the same
+    point: the test never skips.
   - `TestRFC8A_StrandedTagSalvagedAfterServing` in `engine-conformance`, RFC 1's row without the
     import: the tag stranded and reported before serving, a read on a served share answered while
     the export is held by a per-instance hook (catches an export before serving, R22); the
@@ -539,7 +590,9 @@ test/journal/trace.yaml   T20.3 "stranded tag salvaged after serving": its reaso
     `Forget` before the export is durable, R23); an unset path, T20.1's refused path, the export's
     device full (a fault wrapper around the filesystem interface returning `ENOSPC`, kind 3) and no
     master key, each a raised condition, the tag's bytes still held, `Forget` not called, and each
-    completing once fixed (R25, R29, R30, R32).
+    completing once fixed (R25, R29, R30, R32); a held range that reports missing through the
+    seam's fault rule, the same, `Forget` not called while it stands (catches a tag forgotten with
+    a gap, R23).
   - A `Forget` refused once by a fault wrapper around the journal (kind 3): one export written,
     `Forget` retried alone at the next round.
   - Over the first part's real journal on a real directory: a crash after the rename and before
@@ -556,38 +609,45 @@ test/journal/trace.yaml   T20.3 "stranded tag salvaged after serving": its reaso
 
 **Subtask T20.4 estimate: 3 man-days.**
 
-- **Track:** A. **Depends on:** S2, epic 16 (T16.3, T16.4).
+- **Track:** A. **Depends on:** S2, epic 16 (T16.3, T16.4), epic 15 (its D11, D14).
 - **Covers:** R1, R2, R3, R4, R5, R7, R8, R9, R11, R12.
-- **Deliverables:** in `policy.go`, RFC 8 §3.1's `health` as `offloadHealth`: per binding,
-  `observe(outcome)` taking a pass outcome (`Done`, `Retry` with its error, `Throttled`, a skip),
-  `tick(dirty bool, put error)` at the age tick, and `of(share) shareHealth`, the run's start and
+- **Deliverables:** `offload.Stats.OffloadedBytes`, added at each report (D11). In `policy.go`,
+  RFC 8 §3.1's `health` as `offloadHealth`: per binding, `observe(outcome)` taking a pass outcome
+  (`Done`, `Retry` with its error, `Throttled`, a skip) for the cause only, `tick(dirty bool,
+  offloaded uint64, put error)` at the age tick, and `of(share) shareHealth`, the run's start and
   its cause (D2), under its own mutex, taken last and held across no call. Epic 14's age tick reads
-  the binding flow's `Health(Put)` and calls `tick`; epic 16's pass result calls `observe`; `Stats`
+  the binding flow's `Health(Put)` and the binding's `OffloadedBytes`, computes the dirty bytes
+  outside the files D2 leaves out (with each file's first-failure tick, D3), and calls `tick`; epic 16's pass result calls `observe`; `Stats`
   derives `offload_stalled` per share from `of`, at D2's constant and `decision:`. No condition here
   gates a pass or an eviction. The entries of `TestRFC8B_HealthPerDirection` and
   `TestRFC8B_OffloadHealth` removed. Consumed by T20.5, T20.6 and the integration epic.
 - **Acceptance criteria:**
   - A share whose passes all return `Retry` on commit conflicts with the store put-healthy reports
-    `offload_stalled` 5 minutes after the first tick that saw it dirty, its cause the conflict; one
-    `Done` clears it at the next `Stats`.
+    `offload_stalled` 5 minutes after the first tick that saw it dirty, its cause the conflict, and
+    still does once every file is backed off as failing; one pass that offloads a byte clears it
+    at the next tick, while passes answering `Done` with nothing offloaded (skipped, held back,
+    wholly removed) leave it standing.
   - A share on a put-unhealthy store with dirty bytes reports it after 5 minutes, its cause the
     flow's `Health(Put)` error; a get-unhealthy store raises nothing from the engine.
   - A share whose passes are never dispatched reports it after 5 minutes, cause "no pass
     dispatched"; a share with no dirty bytes never reports it.
 - **Tests:**
   - At `offloadHealth`, table-driven over tick and outcome sequences on the test clock (kind 1): the
-    5-minute edge a nanosecond short and past, a `Done` ending the run, a run with ticks and no
-    outcome, the dirty bytes gone (catches a run not started without outcomes, not ended by a
-    success, or kept with nothing dirty, R5, R7).
+    5-minute edge a nanosecond short and past, a risen `offloaded` ending the run, a `Done` with
+    `offloaded` unchanged not ending it, a run with ticks and no outcome, the dirty bytes gone
+    (catches a run ended by an outcome that offloaded nothing, not started without outcomes, or
+    kept with nothing dirty, R5, R7).
   - `TestRFC8B_HealthPerDirection` green over the fixture's `FaultRemote` failing every put while
     gets succeed: passes stop, a **Remote** read succeeds, and the share's conditions are one
     `offload_stalled` whose cause is the put error, none naming reads; the drift rule as a `Recheck`
     would raise it, the same with the drift's cause, then cleared (R3, R4, R11).
-  - `TestRFC8B_OffloadHealth` green: a writer at 1 MiB/s over a journal of 64 MiB, every offload
-    commit conflicting through the fixture's `kv.KV` fault wrapper (kind 3), the store healthy;
-    `offload_stalled` raised with the conflict as its cause before `journal_full`, and
-    `engine_offload_passes_total` still rising while it stands (catches a condition that gates the
-    passes, R5, R9, R12).
+  - `TestRFC8B_OffloadHealth` green: a writer at 64 KiB/s over a journal of 64 MiB, which fills it
+    in about 17 minutes on the test clock, against D2's 5 minutes plus one age tick (at 1 MiB/s it
+    would fill in about a minute, before any stall could stand), every offload commit conflicting
+    through the fixture's `kv.KV` fault wrapper (kind 3), the store healthy; `offload_stalled`
+    raised with the conflict as its cause before `journal_full`, and still raised after every file
+    is backed off, and `engine_offload_passes_total` still rising while it stands (catches a
+    condition that gates the passes, or one the backed-off files clear, R5, R9, R12).
   - RFC 3's syncer's probe count, read from its `Stats`, unchanged across 10³ `Stats` reads of the
     engine (catches a probe from health, R2).
   R1's "never folded, never calls another" is a review rule (rule 10); `offloadHealth` calls no
@@ -609,7 +669,9 @@ test/journal/trace.yaml   T20.3 "stranded tag salvaged after serving": its reaso
   long outage" check gains its condition legs. Consumed by T20.6 and the integration epic.
 - **Acceptance criteria:**
   - A poison file among 10³ others reports `file_offload_failing` naming its `FileID`, and the share
-    no `offload_stalled`; the condition clears at its next `Done`, or when the file is removed.
+    no `offload_stalled`, through O6's 10 simulated minutes, after the others have drained and it
+    is the share's only dirty file (D2); the condition clears at its next `Done`, or when the file
+    is removed.
   - Through 24 simulated hours of outage with 10⁴ dirty files: no `file_offload_failing`, one
     `store_put_unhealthy` from the syncer, `offload_stalled` with the put cause; all gone within one
     age tick of the store reporting healthy and the next `Done`.
@@ -618,7 +680,8 @@ test/journal/trace.yaml   T20.3 "stranded tag salvaged after serving": its reaso
     clears when the run returns.
 - **Tests:** epic 16's O2 test extended with the condition legs, the syncer's condition read from
   RFC 3's `health.Source` in `internal/node/content`, built in the test (R13); RFC 8 §6.3's O6
-  poison file, its condition read at `Stats`, then the file deleted and the condition gone at the
+  poison file, its condition read at `Stats`, the share's `offload_stalled` absent at every tick
+  through the 10 minutes (catches a stall raised once the others drain, D2), then the file deleted and the condition gone at the
   next tick (catches a poison file raising the share's stall, a count read from the wrong binding,
   or a condition outliving its file, R6, R7); the logs captured through the fixture's `slog`
   handler writing to a buffer, one line per transition across repeated `Stats` reads (catches a log
@@ -653,7 +716,9 @@ test/journal/trace.yaml   T20.3 "stranded tag salvaged after serving": its reaso
   past the deadline; the error names the failing file and `file_offload_failing` and not the
   truncated one (R20). At `WaitOffloaded` over the unit fixture: a file written after the call
   while older ones drain, the call returning once the older are offloaded (catches a wait on every
-  dirty byte, R18); a file with two pre-call runs and a pass held after the first (catches a file
+  dirty byte, R18), the clock advanced past one second between the call and that write, since
+  the held test clock stamps every write before the advance `t0` (D13); a write at `t0` itself
+  holding the wait (catches a tie read as after the call); a file with two pre-call runs and a pass held after the first (catches a file
   counted done by its moved oldest time, R18); a file whose last plan was held back returns `Done`
   with Dirty extents (the RFC 2 plan's ledger row "A held plan's outcome"), and a `WaitOffloaded`
   called after the write keeps waiting on the held tail: it returns once the clock passes the
@@ -671,8 +736,7 @@ test/journal/trace.yaml   T20.3 "stranded tag salvaged after serving": its reaso
 
 - **Track:** A. **Depends on:** T20.4, epic 14 (the age tick), epic 15 (its D14).
 - **Covers:** R7, R8, R14, R15, R16, R17.
-- **Deliverables:** `offload.Stats.OffloadedBytes`, added at each report; in `drain.go`, the
-  per-binding ring (D11) and the per-share oldest age (D12) with their markers; in `health.go`,
+- **Deliverables:** in `drain.go`, the per-binding ring over T20.4's `OffloadedBytes` (D11) and the per-share oldest age (D12) with their markers; in `health.go`,
   epic 11's `DirtyBytes`, `DrainBytesPerSecond`, `DrainTime` and `OldestUnoffloaded` filled per
   share and in `Stats` as the sum, or the worst for the age. `ShareSettings.OffloadAgeAlert` (D9)
   with `validShare`'s refusal and the fixture's and the wiring's 1 h; `offload_age_exceeded` per
@@ -682,7 +746,8 @@ test/journal/trace.yaml   T20.3 "stranded tag salvaged after serving": its reaso
   - Dirty bytes per share match the journal's `Stats().Shares` and sum to the journal's.
   - At a steady offload of 4 MiB/s on the test clock the rate reads 4 MiB/s within one bucket, and
     falls to zero 10 s after offload stops; time to drain is dirty bytes over it, the largest
-    duration with no drain.
+    duration with no drain; the summed time is the summed dirty bytes over the summed rate, the
+    largest duration with two shares stuck.
   - A share's oldest age is the age of its oldest dirty write, or after a restart the time since
     the journal's open; `offload_age_exceeded` stands while it is past `OffloadAgeAlert` and clears
     once the extent is offloaded.
@@ -691,7 +756,8 @@ test/journal/trace.yaml   T20.3 "stranded tag salvaged after serving": its reaso
   a report at the window's last nanosecond (catches an off-by-one bucket or a stale bucket kept,
   R14); at `Stats` over the unit fixture with two shares on one journal, one draining and one
   stuck: per-share rates and ages apart, the sum and the worst right (catches one share's figure
-  reported for another, R14, R15, R17); a truncate dropping dirty bytes leaving the rate unchanged
+  reported for another, R14, R15, R17); two shares both stuck, the summed time to drain the largest
+  duration and never negative (catches durations summed and wrapped, D11); a truncate dropping dirty bytes leaving the rate unchanged
   (catches a rate taken from dirty bytes falling, D11); `offload_age_exceeded` across its bound on
   the test clock (R16); a restart over the first part's real journal with a stuck file: no share
   raised at the open, the stuck one raised one bound later (catches a zero or a pre-restart age,
@@ -764,7 +830,7 @@ outcomes; T20.6 to T20.8 can run in any order once their inputs land.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T20.1, T20.2, T20.3 | 9 | S5 (the salvage-key wrap) | the salvage export end to end, from the path check to `Forget`, with its two rows |
+| 1 | T20.1, T20.2, T20.3 | 10 | S5 (the salvage-key wrap) | the salvage export end to end, from the path check to `Forget`, with its two rows |
 | 2 | T20.4, T20.5 | 5.5 | epic 16 | offload health and the scheduler's condition, with three rows; can be open beside PR 1 |
 | 3 | T20.6, T20.7 | 5.5 | PR 1, PR 2 | the drain figures and the wait that reads them, with one row |
 | 4 | T20.8 | 3 | PR 1, PR 2, epics 18 and 19 | `material_destroyed`, the one fail-closed evaluation |
@@ -787,6 +853,10 @@ A suggestion only: one pull request per subtask works as well.
   for "no namespace of the installation encrypts" too.
 - **RFC 8 §10.4** says "the provider's `material_destroyed`"; RFC 25 §3.9, as the RFC 5 plan
   amends it, has the engine evaluate it. §10.4's wording should follow when next revised.
+- **RFC 1 §3**: a held range that is listed by `Extents` and never reads fails every export (D7),
+  so its tag stays stranded with `stranded_export_failed` raised; RFC 1 names no way out short of
+  the journal dropping the range as lost. RFC 1's author may want an operator's acknowledgement
+  here, as RFC 28 §3.3 has for a range that never reads at open.
 - **RFC 8 §2.5 step 5** says a salvage export holds older versions; until RFC 12's holds, a held
   extent has only one (D7).
 - **Epic 15 and epic 16**: `offload.Stats` gains `OffloadedBytes` (D11), and epic 14's age tick
@@ -795,9 +865,9 @@ A suggestion only: one pull request per subtask works as well.
   sealed a block keeps `material_destroyed` raised for good, as RFC 25 §3.9 counts every census
   entry; that is fail closed, and clears once GC prunes.
 
-**Estimate.** 23 man-days in 8 subtasks against the plan's 20 in 7. Added: the salvage path check's
-Linux readers with the thin-pool walk (T20.1), the export's durability legs (T20.3), the content
-wiring's two adapters (T20.2, T20.8) and `material_destroyed`'s fail-closed states. Saved by
+**Estimate.** 24 man-days in 8 subtasks against the plan's 20 in 7. Added: the salvage path check's
+Linux readers with the thin-pool walk, and its macOS and Windows readers (T20.1), the export's
+durability legs (T20.3), the content wiring's two adapters (T20.2, T20.8) and `material_destroyed`'s fail-closed states. Saved by
 review: one background loop for salvage and material, one export file instead of a directory, a
 polled `WaitOffloaded`, and `work_queue_stalled` folded into T20.5. The least certain figures are
 T20.3, the first export over the real journal's stranded handle, and T20.8, which depends on how

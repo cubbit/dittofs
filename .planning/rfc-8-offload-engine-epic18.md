@@ -11,7 +11,7 @@ local-space series and the `engine.pace` span), §15.1's "§10.2 retry later", "
 a full limit" (its remote half) and "§10.4 destroyed material" (but its crash leg), §15.2's "§10
 occupancy triggers eviction", "§10.2 refusal loop", "§10.2 one pass per share", "§10.3 repack
 reserve" and "§10.2.1 pacing law";
-[RFC 6](../docs/internals/rfcs/rfc-6-block-metadata.md) §5.4 (the key-record row of the reads
+[RFC 6](../docs/internals/rfcs/rfc-6-block-metadata.md) §4.4 (the kept ref's row, as D17 amends it) and §5.4 (the key-record row of the reads
 that gate a commit); [RFC 5](../docs/internals/rfcs/rfc-5-transforms.md) §2.7 and Appendix B.2
 (destroyed material and the master key's marking); [RFC 1](../docs/internals/rfcs/rfc-1-journal.md)
 §3.5 (`Release`), §3.7 and §4.4 (the figures and the per-segment accounting eviction reads);
@@ -21,7 +21,7 @@ target, `eviction.repack_threshold` and the index excess row; [RFC 14](../docs/i
 §9.3 and §12's L9; [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §6's V20, its offload half; the
 offload plan's epic 18 "Done when", which names issue #5757's four rows.
 **Track:** B.
-**Epic 18 estimate: 9 subtasks, 29 man-days.**
+**Epic 18 estimate: 9 subtasks, 31 man-days.**
 **Depends on:**
 - epic 11's frozen surface: `Settings.EvictionTarget` and `RepackThreshold`, and the `Stats` fields
   `EvictedBytes` and `PacingSeconds` this epic fills;
@@ -77,7 +77,8 @@ refuses under it, and an extent committed or filled before it is made dirty agai
   four rows are green and the pull request that turns them green closes #5757;
 - every write is paced by RFC 8 §10.2.1's law and the journal's pressure follows its band;
 - an offload commit refuses a block whose `encodings` name a key record marked destroyed, and
-  repoints a chunk it would adopt from a block under destroyed material; the destroyed-material
+  repoints a chunk it would adopt from a block under destroyed material, and replaces a ref it would
+  keep as already committed whose block is under destroyed material; the destroyed-material
   notice unmarks every held extent a destroyed material's blocks cover, and neither Mark nor a fill
   marks after a destroy the engine has been told of.
 
@@ -153,7 +154,7 @@ cited by number and title and not copied.
 | rule 6, known failures shrink | T18.1, T18.3, T18.6, T18.7, T18.8, T18.9 | each row's entry leaves `test/engine/known.yaml` in the change that turns it green; a row still red over the real journal until S6 has its `message:` rewritten to the `ErrNotImplemented` it then meets; T18.1's real-journal legs land red in `test/journal/known.yaml` |
 | rule 7, v2 ignores v1, and the engine imports only what RFC 0 §1.2 allows | T18.4 | `Deps.Destroyed` answers `keys.DestroyedNotice`, the `pkg/transform/keys` contract epic 15 admits, keyed by the `pkg/syncer` root's `StoreID`, which epic 11 admits; `kvstore` imports nothing of `pkg/transform` (D11) |
 | rule 8, real dependencies for properties of those dependencies | T18.4, T18.5, T18.6 | the commit's conflict with a destroy and `Materials` run on `kvstore` over Badger, and FoundationDB where it runs, beside the in-memory `kv.KV`; rows over the real journal on a real directory |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T18.2, T18.3, T18.4, T18.5, T18.7, T18.8, T18.9 | RFC 8 §10.1's eviction `ponytail:` and D2's and D8's markers at `evict` (T18.2); the loop's fixed-tick `ponytail:` and D13's `decision:` (T18.3); D9's, D10's and D11's markers (T18.4); §10.4's undeclared-loss `decision:` and D15's (T18.5); §10.2.1's fixed-constants `decision:` and D3's, D4's and D5's markers (T18.7); §10's concurrent-refusal `ponytail:` and D6's `decision:` at the refusal path, the first part's repack-at-refusal `ponytail:` deleted (T18.8); §10.2's two-rows `decision:` kept at the table, D7's added and the first part's dirty-bytes `decision:` deleted (T18.9) |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T18.2, T18.3, T18.4, T18.5, T18.7, T18.8, T18.9 | RFC 8 §10.1's eviction `ponytail:` and D2's and D8's markers at `evict` (T18.2); the loop's fixed-tick `ponytail:` and D13's `decision:` (T18.3); D9's, D10's and D11's markers (T18.4); §10.4's undeclared-loss `decision:`, D15's and D17's (T18.5); §10.2.1's fixed-constants `decision:` and D3's, D4's and D5's markers (T18.7); §10's concurrent-refusal `ponytail:` and D6's `decision:` at the refusal path, the first part's repack-at-refusal `ponytail:` deleted (T18.8); §10.2's two-rows `decision:` kept at the table, D7's added and the first part's dirty-bytes `decision:` deleted (T18.9) |
 | rule 10, a test must be able to fail | all | each test names the break it catches |
 | rule 11, a symbol is exported only if the RFC's interface uses it | T18.3, T18.4, T18.5 | the exported engine additions are `Deps.Destroyed` and the declared journal calls with `Inspector`; `kvstore` exports `Content.Materials`, `MaterialSpan` and `ErrCommitUnderDestroyedMaterial` for the engine; the policy functions, the loop and the lock are unexported |
 | rule 12, each subtask creates only what it declares | all | `Release` and `Inspect` join the declared journal with their first caller (T18.3), `Unmark` with its (T18.4); `Content.Materials` and `unmarkCovered` with the notice (T18.4), which epic 19's reseed reuses; `startEviction` lands with the loop, which the fixture's start calls until epic 19's step 7 does (D16); the reseed's gate on eviction is epic 19's, built with the reseed |
@@ -241,6 +242,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 | R47 | The commit refuses only on a key record marked destroyed: a loss no operator has declared marks no record, and a commit under it lands | invariant | RFC 8 §10.4 (its `decision:`) | T18.5 |
 | R51 | A commit never lands a ref whose chunk record names a block under destroyed material: a chunk it would adopt from an older live block whose `encodings` name a destroyed key record is repointed to its own block | invariant | RFC 8 §13 E11; this document's D15 | T18.5 |
 | R53 | A fill never lands an extent offloaded once the engine has been told the material of the block it was fetched from is destroyed | invariant | RFC 8 §10, §13 E11; this document's D10 | T18.4 |
+| R54 | A commit never keeps, as already committed, a ref whose chunk record names a block whose `encodings` name a key record marked destroyed or missing: a new ref at that ref's own `newest` replaces it as if it were newer, and one below it is refused as live, its extent left unreported, so no ref is replaced with strictly older content (RFC 6 M10) | MUST | RFC 6 §4.4, §5.4 (as D17 amends them); RFC 8 §10.4 | T18.5 |
 | R48 | §10.4 destroyed material, but its crash leg: covered extents lose their bit, are not evicted, are offloaded again and read back; a remote-only chunk reads **Lost**; a master key destroyed, or a record marked destroyed, between pin and Commit refuses the commit and no block commits; a destroy between Commit and Mark leaves the extents unmarked; no replacement material refuses the pass at Intent | test row | RFC 8 §15.1 | T18.6 |
 
 **Observability**
@@ -336,13 +338,32 @@ R13 by epic 15's Mark-after-commit check (T15.9), since only Mark sets the bit e
   held while its destroy is unscanned.** RFC 5 §3.1 has one provider per store configuration, so
   `Deps` gains `Destroyed func(store syncer.StoreID) keys.DestroyedNotice`, the engine keeping one
   cursor per distinct notice the bindings' stores return (per incarnation, never persisted, as RFC
-  5 epic 8's D10 settles). **Reading** a notice is cheap and serialised by one mutex: the loop's
-  round and every refusal's step 2 and 3 read each notice the journal's bindings use, adding what it
-  reports to D10's set as unscanned, before they release anything. **Scanning** is the loop's alone:
+  5 epic 8's D10 settles: a cursor of another incarnation, the 0 each start begins with included,
+  reads the provider's list from its start, and what was destroyed before is the reseed's).
+  **Reading** a notice is cheap and serialised by one mutex: the loop's round and every refusal's
+  step 2 and 3 read each notice the journal's bindings use, calling `DestroyedSince` until a call
+  returns no ID, as `keys.DestroyedNotice` asks, or until 16 calls, and adding each batch to D10's set as unscanned before taking its cursor, before they
+  release anything. A call returns at most 256 IDs (RFC 5 epic 8's D10), so one call a round would
+  leave the rest unread while that round releases their namespaces' extents; a read that fails
+  part-way keeps the cursor of the last batch added and counts as failed, and so does one that
+  stops at its 16 calls, so a refusal under a mass destroy waits on at most 16 provider calls and
+  releases nothing under that notice until a later read drains it. **Scanning** is the loop's alone:
   its round runs the unmark scan (T18.4) over the unscanned IDs, marking an ID scanned only once
   every held file of its namespace has been scanned; a scan cut short by an error, a deadline or a
   closed journal leaves the ID unscanned, to be run again by the next round, which the scan's
-  idempotence makes safe. Each unit is released under D10's read lock, after checking that its
+  idempotence makes safe. The scan of an ID reads only the held files epic 19's reseed visited
+  before the ID was added: the provider marks the key records before it reports a destroy (RFC 8
+  §10.4), so a visit begun after the add reads the record destroyed and clears the file's extents
+  itself, and a file not yet visited cannot be evicted before its visit (epic 19's R14). D10's set
+  numbers its adds, and the reseed calls `reseedVisit(file)` as it begins a file's visit, before
+  its first read, which records the last number given for that file (T18.4). Without it every restart would scan again every
+  material ever destroyed, since the provider lists at each namespace's `Open` every record it finds
+  `destroyed` and the cursor restarts at 0, holding each namespace's eviction until its scans end;
+  with it, the IDs listed after a restart scan only the files the reseed visited before their
+  listing, and nothing is persisted (R3). A file with no recorded visit
+  is skipped only when `startEviction` was told the reseed gates eviction, which epic 19's step 7
+  says; until then a scan reads every held file, as it must with no reseed, and that runs only over
+  the in-memory journal, which a restart empties (D16). Each unit is released under D10's read lock, after checking that its
   namespace holds no unscanned ID and that its notice's last read succeeded; a unit of such a
   namespace is skipped, and other namespaces evict as before. A `decision:` at the read: a destroy
   the provider reports after a release's check loses that extent's local copy, content whose remote
@@ -354,7 +375,15 @@ R13 by epic 15's Mark-after-commit check (T15.9), since only Mark sets the bit e
   not, in one map behind a `sync.RWMutex`. Mark holds the read lock across its check of every
   material its refs depend on (the commit's answer, D15) and its `report`; a fill of epic 17 holds it at `fillExtent`, epic 17's one `Fill` site (its T17.5),
   across its check of the materials of the block it fetched from, read with `Materials`, and its
-  `Fill`, landing the bytes unmarked on a hit; a release holds it as D9 says. The notice's read takes
+  `Fill`; a release holds it as D9 says. On a hit, a material of that block in the set, the fill
+  releases the read lock, takes the write lock (a `sync.RWMutex` cannot be upgraded, and `Lock`
+  under its own `RLock` deadlocks), checks again, a hit staying a hit since the set only grows and
+  the block's materials are fixed, and runs `Fill` then `Unmark` over the filled extent under it: RFC 1
+  §3.4 sets a filled extent's bit and `Fill` takes no flag to leave it clear, so the bit is cleared
+  by the call the scan uses, and under the write lock no release or Mark runs between the two. An
+  `Unmark` that fails sets the ID back to unscanned, so D9 holds the namespace's eviction until a
+  scan clears the bit; a crash between the two leaves a bit set over a block whose key record reads
+  `destroyed`, which epic 19's reseed clears before the file can be evicted (RFC 8 §10.4). The notice's read takes
   the write lock only to add the IDs it read. A Mark or fill that checked before the add has
   reported before the add returns, so the scan after it finds its bits set and clears them; one that
   checks after sees the ID and leaves the extents Dirty. The set lives in memory (R3); epic 19's
@@ -365,7 +394,11 @@ R13 by epic 15's Mark-after-commit check (T15.9), since only Mark sets the bit e
   not blocks. `kvstore`'s `Content` gains
   `Materials(ctx, share, file, off, n) iter.Seq2[MaterialSpan, error]`, each carved span with the
   block its chunk record names, that block's namespace, and each `entity.MaterialRef` with its key
-  record's state byte, read in one snapshot. The engine factors the unmark as
+  record's state byte, read page by page through `kvstore`'s `pages`, one `View` per page of refs,
+  so no snapshot outlives `kv.TxnLimits.Age` (FoundationDB's five seconds, which `badgerkv` mirrors)
+  however many spans the extent holds. Pages may read different snapshots: a key record's
+  `destroyed` mark never clears, so a later page reads every mark an earlier one did, and a ref
+  replaced between pages names a block whose commit checked its own materials (R42). The engine factors the unmark as
   `unmarkCovered(ctx, b, file, extents)`, which clears the bit of each extent a span covers whose
   material reads `destroyed`; the provider marks the record before it reports the destroy (RFC 5
   Appendix B.2), so the notice's scan and epic 19's reseed run the same code, the notice only
@@ -409,13 +442,44 @@ R13 by epic 15's Mark-after-commit check (T15.9), since only Mark sets the bit e
   decides the rest, and the implementing pull request amends both sections to name the adopted
   blocks'. A `decision:` at the repoint. Prior art: none found.
 - **D16, `startEviction` is the loop's one start, and epic 19 calls it.** Start step 7 is
-  epic 19's, so T18.3 provides the unexported `startEviction(j)` and its join; until epic 19's
+  epic 19's, so T18.3 provides the unexported `startEviction(j, reseedGates bool)` and its join,
+  the flag saying whether the reseed gates each file's eviction (D9); until epic 19's
   step 7 lands, the fixture's start and the first part's `Start` call it where step 7's comment
   stands. The reseed's gate on eviction ("evicted only once the reseed has run for it", RFC 8 §2.5)
   is epic 19's, built with the reseed it reads. Until then eviction trusts the persisted bits, which
   is safe while only the in-memory journal can release, before S6; a `decision:` at
   `startEviction` says so, and the open points name the order S6 and epic 19 must land in. Prior
   art: none found.
+- **D17, a re-offer after a destroy replaces the ref it would keep.** RFC 6 §4.4 treats a new ref
+  whose `newest` lies inside an existing ref's version range as already committed: `replaceRefs`
+  keeps the existing ref and reports its extent offloaded. A re-offer after a destroy carries the
+  same content at the same version, so every extent it offers lands in that row, and the kept ref
+  still names the old chunk. D15's repoint reaches that chunk only when the new block carries it,
+  and it need not: the re-offer cuts its chunks afresh, and one can straddle the old chunk's bounds.
+  For example, block A under data key K1 holds chunk C1 over [0, 1 MiB) at version 5; K1 is
+  destroyed and the notice unmarks [0, 1 MiB); the re-offer, merged with dirty bytes written after
+  it beyond 1 MiB, cuts [0, 768 KiB) and [768 KiB, 2 MiB) into block B under K2. The second ref's
+  `newest` is above 5, so it replaces C1's ref over [768 KiB, 1 MiB); the first carries version 5
+  over [0, 768 KiB), so C1's ref is kept there, B carries nothing D15 can repoint, the commit
+  reports [0, 768 KiB) offloaded, Mark sets the bits, since D15's answer names B's materials and no
+  adopted block's, and eviction drops the only copy anyone can read: the next read of [0, 768 KiB)
+  is **Lost**. Widening Mark's check to
+  A would only stall it: the extent would be offered and kept for ever, and after a restart, with
+  the set empty, marked. So the commit reads,
+  tracked, the key records of the block each kept ref's chunk record names (the block records
+  `chunksOf` already loads), and, when any reads `destroyed`, replaces the ref as a newer one would
+  if the new ref's `newest` equals the kept ref's own, the version a re-offer of the same content
+  carries, and otherwise refuses the new ref as live and leaves its extent unreported. A pass
+  offered before the kept ref's commit has a `newest` below it, so replacing on any version inside
+  the range would serve its older bytes where the kept ref's newer ones were (RFC 6 M10). A missing
+  key record on a kept ref's block is judged as `destroyed`, not refused as D11 refuses the
+  commit's own: the replacement lands the content on a block whose material is current, while a
+  refusal would keep every later re-offer of the file's extent from landing. This amends RFC 6
+  §4.4's middle row and §5.4's key-record row, in this document's pull request, since the RFC's
+  text forbids the replacement. A `decision:` at the replacement names both, and a `ponytail:` its
+  ceiling: a kept ref spanning versions whose re-cut chunk holds only older ones is refused on every
+  re-offer, its extent Dirty and counted toward O6 (D12), until a version per byte range lets the
+  commit tell a re-offer from a stale pass. Prior art: none found.
 
 ## 5. Target tree
 
@@ -444,7 +508,7 @@ pkg/engine/
   enginetest/space.go     T18.7  MeasuredDrain made real
   conformance/            T18.3, T18.6, T18.7, T18.8, T18.9  the rows green, or their messages rewritten
 pkg/metadata/kvstore/
-  offload.go              T18.5  the commit's tracked key-record reads, the adopted blocks' read and repoint (D15), ErrCommitUnderDestroyedMaterial
+  offload.go              T18.5  the commit's tracked key-record reads, the adopted blocks' read and repoint (D15), replaceRefs' kept-ref key-record read, replacement and refusal (D17), ErrCommitUnderDestroyedMaterial
   materials.go            T18.4  Content.Materials, MaterialSpan
   offload_test.go materials_test.go  T18.4, T18.5
 internal/vfs/integration/rows_test.go  T18.9  TestV20's offload half green
@@ -540,7 +604,7 @@ test/journal/known.yaml   T18.1  the real journal's Release and Unmark legs, red
   `startEviction` from its step 7.
 - **Covers:** R3, R4, R5, R8, R9, R10, R11, R12, R14, R15, R16, R17, R18, R29, R49.
 - **Deliverables:** `Handle.Release` and `Journal.Inspect() Inspector` declared in `deps.go` (D1),
-  `journalOf` wrapping `Inspect`. In `evict.go`, `startEviction(j)` and its join (D16, its
+  `journalOf` wrapping `Inspect`. In `evict.go`, `startEviction(j, reseedGates)` and its join (D16, its
   `decision:`), one loop per open journal on the injected clock at a fixed 1 s tick (§4.3's
   `ponytail:`): each tick reads `Stats()` once and stores D3's snapshot, then, unless a round is in
   flight, starts one: when `UsedBytes` less `UnreclaimedBytes` passes `EvictionTarget` of the
@@ -589,7 +653,7 @@ test/journal/known.yaml   T18.1  the real journal's Release and Unmark legs, red
 
 ### T18.4 Destroyed material: the notice, Mark's and the fill's check, and `Unmark`
 
-**Subtask T18.4 estimate: 5 man-days.**
+**Subtask T18.4 estimate: 6 man-days.**
 
 - **Track:** B. **Depends on:** T18.1, T18.3. Epic 15's Mark and `encodings`; epic 17's fill (its T17.5's `fillExtent`); S5's
   `keys.DestroyedNotice` on `keystest`'s in-memory provider.
@@ -599,14 +663,19 @@ test/journal/known.yaml   T18.1  the real journal's Release and Unmark legs, red
   (D9); `kvstore`'s `Content.Materials` and `MaterialSpan` with each material's state (D11), with
   its `ponytail:`, and the engine's declared `Content` gaining it; in `material.go`, D10's map and
   lock with its `decision:`, the notices' read with D9's `decision:`, `unmarkCovered` (D11), and the
-  round's scan: for each unscanned ID, every held file of its namespace with offloaded entries,
-  `Materials` over those extents and `unmarkCovered`, the ID marked scanned once its scan completes.
+  round's scan: for each unscanned ID, every held file of its namespace with offloaded entries that
+  the reseed visited before the ID's add (D9), `Materials` over those extents and `unmarkCovered`,
+  the ID marked scanned once its scan completes; the add's number in D10's set, `reseedVisit(file)`
+  recording the last number given for the file, which epic 19's reseed calls as it begins a visit,
+  and `startEviction`'s flag saying the reseed gates eviction, so a file with no visit is skipped
+  (D9).
   A release skips a unit whose namespace holds an unscanned ID or whose notice's last read failed
-  (D9). In `offload/`, Mark takes the read lock, checks every material the commit's answer names
+  (D9), each notice read until a call returns none. In `offload/`, Mark takes the read lock,
+  checks every material the commit's answer names
   (D15) against the map, and reports only when none is in it, leaving the extents Dirty otherwise;
   epic 17's fill takes it the same way, at `fillExtent`, the one function every `Fill` call goes
-  through (epic 17's T17.5), over the materials `Materials` reads for the fetched extent,
-  landing a hit unmarked. Consumed by T18.6, T18.8 and epic 19, whose reseed calls `Materials` and
+  through (epic 17's T17.5), over the materials `Materials` reads for the fetched extent, a hit
+  running `Fill` then `Unmark` under the write lock (D10). Consumed by T18.6, T18.8 and epic 19, whose reseed calls `Materials` and
   `unmarkCovered`.
 - **Acceptance criteria:**
   - Once the notice reports a data key, no held extent its blocks cover is released, and each has
@@ -629,21 +698,45 @@ test/journal/known.yaml   T18.1  the real journal's Release and Unmark legs, red
   - a commit adopting a chunk from a live block whose material is destroyed between the commit and
     Mark: the extents end Dirty (catches a Mark checking only its own block's materials, R46);
   - a fill of an extent fetched under a material destroyed between the fetch and the fill: the
-    extent lands Dirty and is offered again (catches a fill outside the lock, R53);
+    extent lands Dirty and is offered again (catches a fill outside the lock, R53); with the fill
+    held by a hook between its `Fill` and `Unmark` and a round's release of that file started, the
+    release blocks on the lock and, once the fill resumes, finds the bit clear (catches the pair run
+    under the read lock); with `Unmark` failing once (kind 3), the
+    namespace releases nothing until the next scan clears the bit (D10);
+  - a notice holding 300 destroyed IDs: one read adds all 300 before the round releases anything,
+    and an extent under the 300th is not released (catches one batch a round, D9);
   - a round already releasing a namespace's units when its material is reported: the next unit is
     skipped (catches a check made once per round rather than per unit, D9);
   - a notice wrapper failing `DestroyedSince` once, and an `Unmark` failing midway through a scan
     (kind 3 each): that namespace releases nothing that round or the next, the ID stays unscanned,
     and the round after completes the scan and evicts (catches a cursor advanced past an unfinished
     scan, D9);
+  - `keystest`'s provider destroying 20 batches' worth of IDs before a refusal: the refusal makes 16
+    calls, releases nothing under that notice, and a later read drains the rest before any release
+    (catches an unbounded read, or a capped read counted as succeeded, D9);
+  - a fill whose block's material is in the set, with the run's `-race` and a timeout as backstop:
+    the fill returns, its extent's bit clear (catches a read lock upgraded in place, D10);
   - two shares on two store configurations with two notices: a destroy reported by one holds only
     its namespace's eviction and unmarks only its extents (catches one cursor for every provider,
     and a gate on the whole engine);
   - `Materials` over a file with three blocks under two materials, one marked destroyed, in
     `kvstore`'s tests over the in-memory `kv.KV` and Badger: each span names its block's materials
-    and the marked one's state (catches a lookup by the file's current material);
+    and the marked one's state (catches a lookup by the file's current material); and over a file
+    of more than one page of refs, on a `kv.KV` wrapper that fails as too old any `View` reading
+    more than one page (kind 3): every span is returned (catches one snapshot over the whole
+    extent);
   - a restart with the map empty: nothing is marked from memory, and no test relies on the map
-    surviving (R3).
+    surviving (R3);
+  - a restart over records holding 50 destroyed IDs, which the provider lists again at `Open`
+    before any held file's visit, `startEviction` told the reseed gates, then every file's visit
+    recorded through `reseedVisit` as the reseed would, with
+    `Materials` failing for those files through a kind 3 wrapper, and one more ID destroyed after
+    the listing: the first round releases the 50's namespaces, which a scan would have held on the
+    failing read, and the new ID's namespace releases nothing until its scan clears its bits; with
+    one file's visit recorded before the 50 were listed and the wrapper lifted, that file's bits
+    under them are cleared before its namespace releases (catches every material ever destroyed
+    scanned again after a restart, holding eviction, D9; and a scan skipping a file visited before
+    the destroy was listed);
   Doubles: kind 3 around the notice and the fake's `Unmark`; the Mark and fill hooks set from
   `export_test.go`.
 - **Rules:** rule 7: `keys.DestroyedNotice` is the RFC 5 contract; `kvstore` imports nothing of
@@ -653,18 +746,22 @@ test/journal/known.yaml   T18.1  the real journal's Release and Unmark legs, red
 
 ### T18.5 The offload commit refuses destroyed material
 
-**Subtask T18.5 estimate: 4 man-days.**
+**Subtask T18.5 estimate: 5 man-days.**
 
 - **Track:** B. **Depends on:** none. Epic 15's T15.2, T15.3 and T15.4; S5's key records in
   `kvstore`.
-- **Covers:** R42, R43, R44, R45, R47, R51.
+- **Covers:** R42, R43, R44, R45, R47, R51, R54.
 - **Deliverables:** in `kvstore`'s offload commit, for each `MaterialRef` of the block's
   `encodings`, a tracked read of the key record at `NS‖ns‖key‖kind‖keyID`, its state byte read
   without the provider; a `destroyed` state refuses the whole transaction with
   `ErrCommitUnderDestroyedMaterial` naming the material, and a missing record refuses it as
   `ErrInconsistent` (D11, its `decision:`). The same tracked read of each adopted block's
   `encodings`, repointing a chunk whose older block's material is destroyed, and `CommitResult`
-  gaining the materials of every block its refs read (D15, its `decision:`). RFC 8 §10.4's
+  gaining the materials of every block its refs read (D15, its `decision:`). In `replaceRefs`, the
+  same tracked read of the block each ref it would keep as already committed names, when any record
+  reads `destroyed` or is missing replacing that ref at its own `newest` and refusing a new ref
+  below it as live (D17, its `decision:` and `ponytail:`), with RFC 6 §4.4 and §5.4 as amended
+  here. RFC 8 §10.4's
   undeclared-loss `decision:` at the read. In `offload/`, both refusals answered as D12 says. The
   fixture's `WithChain` provider keeps its key records in the fixture's own `kvstore` through its
   `KeyRecords` view, in the same change, so no green row's commit finds its records missing.
@@ -676,6 +773,9 @@ test/journal/known.yaml   T18.1  the real journal's Release and Unmark legs, red
   - A material with an undeclared loss (no record marked) commits.
   - A commit adopting a chunk from a live block under destroyed material lands with the chunk
     repointed to its own block.
+  - A commit at a kept ref's own `newest`, over a ref whose block is under destroyed material or
+    names a missing key record, replaces that ref with its own; one below that `newest` is refused
+    for that ref and reports nothing over it.
   - Every green `engine-conformance` row stays green with the reads in place.
 - **Tests:** in `kvstore`, over the in-memory `kv.KV`, Badger, and FoundationDB where `fdbkvtest`
   runs (rule 8):
@@ -694,10 +794,25 @@ test/journal/known.yaml   T18.1  the real journal's Release and Unmark legs, red
   - block A live under a destroyed data key, then a commit of block B carrying one of A's chunks
     under current material: B lands, the chunk record names B, and a covering lookup of the new
     ref resolves to B (catches an adoption that reads only B's `encodings`, R51);
-  - a commit naming a material with no key record: refused `ErrInconsistent`.
+  - a commit naming a material with no key record: refused `ErrInconsistent`;
+  - the straddling chunk: block A under data key K1 with one chunk over [0, 1 MiB) at version 5, K1
+    marked destroyed, then block B under K2 at version 5 with chunks over [0, 768 KiB) and
+    [768 KiB, 2 MiB), neither A's: B lands, a covering lookup over [0, 1 MiB) resolves only to B,
+    and A's chunk count drops (catches the kept ref, R54); the same commit with K1 not marked keeps
+    A's ref (the row still holds for live material);
+  - the same, with K1 marked by another transaction after the commit's snapshot: the commit aborts
+    and its retry replaces (catches an untracked read of the kept ref's block, R54);
+  - A's ref over [0, 1 MiB) spanning versions [3, 7], K1 marked destroyed, then a commit at version
+    5 over [0, 1 MiB): that ref refused as live, A's ref still covering the range and nothing
+    reported over it (catches a stale pass replacing newer content, R54, RFC 6 M10);
+  - the straddling commit with A's key record deleted rather than marked: B lands and replaces A's
+    ref (catches a missing record on a kept ref's block refused, wedging the file, D17).
   In the engine, over the unit fixture: a pass whose commit is refused leaves its extents Dirty,
   its intent abandoned, and a second pass under the provider's current material commits (R44); a
-  missing record's refusal counts toward the file's failing count (D12). Doubles: kind 3 on the
+  missing record's refusal counts toward the file's failing count (D12); the straddling case end to
+  end, a destroy of the material of a file's offloaded extent, a write next to it, and the re-offer
+  committed with the gates' switch on (D14): after eviction the extent reads back its bytes from the
+  new block, never **Lost** (R54 at the read, its consumer). Doubles: kind 3 on the
   `kv.KV`.
 - **Rules:** rule 8: the conflict is a property of the store, run on the real backends; rule 9: the
   three markers.
@@ -928,7 +1043,7 @@ and runs beside the material path.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T18.1, T18.2, T18.3 | 7.5 | — | the eviction loop whole, with the journal calls it is the first caller of |
-| 2 | T18.5, T18.4, T18.6 | 10.5 | PR 1 | destroyed material on both sides of the commit and its row |
+| 2 | T18.5, T18.4, T18.6 | 11 | PR 1 | destroyed material on both sides of the commit and its row |
 | 3 | T18.7 | 4 | PR 1 | pacing and the pressure band; can be open beside PR 2 |
 | 4 | T18.8, T18.9 | 7 | PR 2, PR 3 | the refusal table's steps 2 and 3 and its causes, closing #5757 |
 
@@ -941,6 +1056,9 @@ beside PR 1.
   in-memory journal; over the real journal `Release` and `Unmark` answer `ErrNotImplemented` until
   the journal plan's epic 9b, so their entries stay with rewritten messages until then, and epic 22
   removes those left.
+- **Needs on epic 19's document.** Its reseed calls `reseedVisit(file)` as it begins each file's
+  visit, before its first read, and its step 7 calls `startEviction` with `reseedGates` true (D9),
+  so the notice's scan skips what the reseed covers. Not edited here: #6433 holds that document.
 - **S6 must not reach eviction before epic 19's reseed gate.** Eviction trusts the persisted bits
   until epic 19 gates it (D16), which is safe only while no real journal can release. If 9b lands
   before epic 19, the change that composes the real journal's `Release` keeps `startEviction` off
@@ -956,15 +1074,17 @@ beside PR 1.
   `t.TempDir()`, which T18.5's figure would not cover.
 - **RFC amendments the implementing pull requests make.** `Content.Materials` amends RFC 6 §10.1,
   `Deps.Destroyed` RFC 8 §2.1 and §2.6, and D15's adopted-block read and Mark's check over the
-  commit's materials amend RFC 8 §10.4 and RFC 6 §5.4.
+  commit's materials amend RFC 8 §10.4 and RFC 6 §5.4. D17's amendment of RFC 6 §4.4 and §5.4
+  lands with this document, since `replaceRefs` cannot replace a ref the RFC's text keeps.
 - **RFC 5 epic 8's notice must name every data key a master-key destroy marks**, not only the
   master key, since `encodings` name data keys; T18.4's master-key test holds it, and RFC 5 epic 8's
   D9 is read so ("adds the IDs to the notice"). If it names the master key alone, T18.4 maps it to
   the data keys through the key records it wraps.
 - **Epic 17's fill takes the destroyed-material lock (D10).** Epic 17 builds the fill with one
   `Fill` site, `fillExtent` (its T17.5, #6002); this epic adds the read lock and the materials check
-  there, landing a hit unmarked, and epic 17 builds no lock.
-- **Estimate.** 29 man-days in 9 subtasks against the offload plan's 30 in 8: the in-memory
-  journal's calls are a subtask of their own (T18.1), and the material path is three, with the
-  adopted-block repoint (D15) and the fill's check the plan did not foresee. T18.4 is the least
+  there, a hit running `Fill` then `Unmark` under the write lock, and epic 17 builds no lock.
+- **Estimate.** 31 man-days in 9 subtasks, which the offload plan now carries, against its 30 in
+  8 before the breakdown: the in-memory journal's calls are a subtask of their own (T18.1), and the
+  material path is three, with the adopted-block repoint (D15), the kept ref's replacement (D17)
+  and the fill's check the plan did not foresee. T18.4 is the least
   certain figure: the unmark scan over every held file of a namespace has not been measured.

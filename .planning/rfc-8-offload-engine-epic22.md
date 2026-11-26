@@ -17,14 +17,15 @@ that did not run is a failure, recording results, a proposed target replaced onc
 unexpected pass), §4.9 (a component's suites paragraph) and §4.10 (benchmarks and long runs). Every
 citation is `develop`'s text. The code lands on `feat/storage-v2`, and the paths below are paths there.
 **Track:** the team.
-**Epic 22 estimate: 7 subtasks, 25.25 man-days.**
+**Epic 22 estimate: 7 subtasks, 25.5 man-days.**
 **Depends on:** **S7**, node composition built (epic 21): `internal/node/content` builds a share's
 S3 store, `codec.Store` over it and the syncer from a store configuration, and `syncertest`'s Group A
 suite runs against LocalStack behind a fault proxy. **S6**, journal offload half built: every row, the
 soak and every benchmark run over the real journal. **S4**, offload complete in the fixture (epics 13
 to 20), with **S5**'s two halves. **Epic 12**: the rows in `engine-conformance` and
-`test/engine/known.yaml`, and `enginetest`'s `WithCarver`, `WithChain`, `WithSyncer` and `WithRefs`
-(no argument, E12's D1) and `(*Fixture).FaultRemote`, which epic 16 makes real. **The RFC 4 plan's
+`test/engine/known.yaml`, and `enginetest`'s `WithCarver`, `WithChain` and `WithRefs` (no argument,
+E12's D1) and `(*Fixture).FaultRemote`, which epic 16 makes real; the syncer the fixture composes for
+every engine (epic 16's D9), with no option, since epic 21 deletes `WithSyncer` (its D11). **The RFC 4 plan's
 epic 3**: `pkg/remote/s3/s3fault` (the transport under the S3 client, its `Inject` rules, its record of
 the requests that reached it, `FreshBucket`), the `service:localstack` needs entry and
 `LOCALSTACK_HTTPS_ENDPOINT`. **The first part's epic 10**: `engine-soak` with its oracle and fault log,
@@ -140,7 +141,7 @@ number and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, **Independent unit tests** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T22.2, T22.4, T22.6 | each engine fix the burn-down makes lands with a unit test over the first part's in-memory journal and the components' real implementations; the counted checks run over RFC 4's in-memory store; the soak's `excused` keeps its table test, extended for remote faults |
+| rule 1, **Independent unit tests** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T22.2, T22.4, T22.6 | each engine fix the burn-down makes lands with a unit test over the first part's in-memory journal and the components' real implementations; the counted checks run over RFC 4's in-memory store; the soak's `attribute` keeps its table test, extended for remote faults |
 | rule 2, **Fuzz the key and ref decoders the queue's rebuild reads** | none | no decoder is written here; the decoders are epics 14 to 16's, with their targets |
 | rule 3, **Observability follows RFC 25** | T22.1, T22.2, T22.4, T22.5 | the benchmarks and the soak read RFC 8 §14's and RFC 3's series only through `Stats` and the syncer's figures, by the names the RFCs give them (`engine_stage_busy_ratio`, `inflight_bytes`, the queue depths); nothing new is exported |
 | rule 4, **Profiling** | T22.1, T22.4, T22.5 | the soak runs under the fixture's `prof.Watch`, and its idle check reads goroutines and descriptors from `internal/prof`; the benchmark composition keeps the first part's heap slack. The allocation gate on the two hot paths is epic 15's `unit/engine-allocs` |
@@ -166,7 +167,7 @@ Every obligation the sources place on this epic. Where the check is another epic
 | R3 | The two Group C rows pass: §2.5 reseed, and §2.4 settings in the form epic 12 writes it | test row | RFC 8 §15.3; plan §1.4 | T22.6 |
 | R4 | The other plans' rows pass: L9 (an open and a lock never stop eviction or reclamation) and V20's offload half | test row | RFC 14 §12; RFC 17 §6; plan §1.4 | T22.6 |
 | R5 | "§3.2 no gate is safety" passes whole: every other Group A row passes with suspension, pins and health gating off and eviction as eager as possible | test row | RFC 8 §15.1 | T22.6 |
-| R6 | The four extensions pass in their offload halves: `TestRFC8A_CloneResumedAtAFullLimit`, `TestRFC8A_RetryLaterAtTheShareLimit`, `TestRFC8C_Settings` and `TestV20` | test row | plan §1.4 | T22.6 |
+| R6 | The two extensions pass in their offload halves, `TestRFC8C_Settings` and `TestV20`, and the remote halves of "§2.5 clone resumed at a full limit" and "§10.2 retry later" pass as the new tests epic 12 adds beside the first part's, `TestRFC8A_CloneResumedAtAFullLimitWithTheRemoteDown` and `TestRFC8A_RetryLaterAtTheStore` | test row | plan §1.4; epic 12 | T22.6 |
 | R7 | A sink that always succeeds never stands in for Group A or the pipeline's checks, and a single-file rig never stands in for §8.3 | MUST NOT | RFC 8 §15 (under §15.3) | T22.4, T22.6 |
 | R8 | Every check runs against the engine as production composes it: the rows and the soaks build the components through the node's content wiring; the benchmarks build the remote components through it, and the journal and store as the first part's benchmark composition does, beside the rows that run the fixture | invariant | RFC 8 §15 (opening paragraph); RFC index, "What must not stand in" | T22.1, T22.4, T22.5, T22.6 |
 | R9 | A known failure that passes fails the run, so an entry leaves `known.yaml` in the change that turns its test green, a journal or component change included | invariant | RFC 29 §4.7; plan rule 6 | T22.6 |
@@ -251,10 +252,11 @@ the emulator, by hand, which §1.2 records.
   so a flag replays it, and none delays (the first part's rule: a delay waits on the test clock only
   the writer moves). The journal is sized so the eviction loop evicts during a seed, and the restart's
   verification reads run with the remote rules paused, so they fetch and must read exact. During the
-  loop, bytes a read returns must be exact; `excused` keeps its rule, `ErrDelay` excused with no fault,
-  and accepts any other error only in a call the fault log shows a remote or store fault fired in. A
-  `decision:` beside `excused` names the rule and that a read answering another error with no fault
-  in its call would overturn it. After each partition the loop calls `WaitOffloaded`, moving the test
+  loop, bytes a read returns must be exact. `excused` keeps its rule unchanged, `ErrDelay` excused with
+  no fault and any other error only in a faulted call; the remote side is `attribute`'s, which marks a
+  call faulted when a remote fault failed or corrupted an operation in it, a corrupted get carrying
+  no error in the log. A `decision:` beside `attribute` names the rule and that a read answering
+  another error with no fault in its call would overturn it. After each partition the loop calls `WaitOffloaded`, moving the test
   clock as it waits, then asserts the syncer's `inflight_bytes`, waiters and queue depth, the engine's
   queue depths and the goroutine count are back at their values before the partition. Prior art: the
   first part's fault log and `excused` (`soak_test.go`, checked).
@@ -290,7 +292,13 @@ the emulator, by hand, which §1.2 records.
   which is what "again with offload composed" asks. `engine-bench` adds `needs: ["service:localstack"]`
   and refuses an unset `LOCALSTACK_HTTPS_ENDPOINT` before `go test` runs, exiting 2, as it refuses an
   unset `DITTOFS_BENCH_DIR`; after the run it fails unless `bench.txt` holds a result line for each of
-  `BenchmarkB1` to `BenchmarkB9`, as `journal-bench` checks for its own. Prior art: the first part's
+  `BenchmarkB1` to `BenchmarkB9`, as `journal-bench` checks for its own. The per-change smoke the first part's T10.5 registers
+  (`-benchtime=1x`, `tier: pr`) runs where no LocalStack is, and CI starts none, so `composeBench` takes
+  the S3 store only when `LOCALSTACK_HTTPS_ENDPOINT` is set and otherwise RFC 4's in-memory store,
+  through the same content wiring; `engine-bench`'s guard keeps the hand run from falling back. In the
+  smoke, B1's link and raw-put layers, which need the service's port, are not measured and report no
+  fraction, and the counts read the in-memory store's load record in place of `s3fault`'s; every
+  benchmark still runs and its asserted counts hold. Prior art: the first part's
   epic 10, D12, and `journal-bench`'s check (checked).
 - **D7, a cold read is proved at the store.** B4 and B8 read content the engine's own eviction loop
   evicted, waiting until the share's `Stats` shows the file's extent no longer held. B4's random reads
@@ -320,11 +328,18 @@ the emulator, by hand, which §1.2 records.
     at 100 % of the maximum footprint, fill-always at 0 %;
   - the scan threshold: the smallest value at which B4's sequential scan past the window fills
     nothing it does not read again, on B4's sequential workload;
-  - the dirty-byte threshold and `offload.max_age`: the largest age, and the smallest threshold, at
-    which B6's stream closes no block below target except a file's last;
-  - `offload.retry_min`, `offload.retry_max` and `offload.retry_max_pressure`: under an `s3fault`
-    outage in B1, the smallest caps whose requests to the failing store stay under one per second per
-    file, and whose idle time after the store returns stays under the cap itself;
+  - the dirty-byte threshold and `offload.max_age`: the smallest age, and the smallest threshold, at
+    which B6's stream closes no block below target except a file's last. A larger age fragments no
+    more than a smaller one, so the largest passing age is always the top of the sweep and selects
+    nothing;
+  - `offload.retry_min` and `offload.retry_max`: under an `s3fault` outage in B1, the smallest caps
+    whose requests to the failing store stay under one per second per file, and whose idle time after
+    the store returns stays under the cap itself;
+  - `offload.retry_max_pressure`: the same rule in B3's above-threshold leg, where pressure is on,
+    with `s3fault` failing a share of puts low enough that the store stays put-healthy. RFC 8 §6.1
+    lowers the cap to it only for a put-healthy store, so B1's outage, which makes the store
+    put-unhealthy, leaves `offload.retry_max` in force and cannot select it; the leg fails unless the
+    store stayed put-healthy and pressure stayed on through it, or it measured nothing;
   - the read-ahead cap: recorded, not selected, since B8's half is a first-byte latency; question 2's
     cap stays open until the first real-service run (§1.2).
   A `decision:` on the sweeps states these rules. Prior art: the RFC index's settling rule, which this
@@ -348,7 +363,7 @@ test/engine/
   soak-known.yaml                    T22.4          none kept; a flaky seed is quarantined
 test/suites.yaml                     T22.1, T22.5   engine-bench: service:localstack, the endpoint guard,
                                                     the ran-every-benchmark check (D6); engine-soak: the
-                                                    localstack option (D4)
+                                                    localstack option (D4), the pr cell's -skip
 .github/workflows/tests.yml          T22.5          the plan job's select names engine-soak/localstack
 pkg/engine/                          T22.6          fixes the real journal shows, each with its unit test
 pkg/engine/conformance/
@@ -376,7 +391,7 @@ docs/internals/testing.md            T22.1, T22.5   regenerated by dt docs
 
 ### T22.1 The benchmark composition with offload, B1, B3 and B6
 
-**Subtask T22.1 estimate: 5 man-days.**
+**Subtask T22.1 estimate: 5.25 man-days.**
 
 - **Track:** the team. **Depends on:** none. It needs S7 (E21's store composition), S6 and the RFC 4
   plan's epic 3.
@@ -384,7 +399,8 @@ docs/internals/testing.md            T22.1, T22.5   regenerated by dt docs
 - **Deliverables:**
   - `composeBench` with offload (D6): the content wiring's carver, chain, syncer and S3 store at
     `LOCALSTACK_HTTPS_ENDPOINT` behind `s3fault`, a bucket from `FreshBucket`, the journal capacity
-    as a parameter, seeded random data; its trace hook keeping the spans it is given, an output sink
+    as a parameter, seeded random data, RFC 4's in-memory store in its place when the endpoint is
+    unset, for the `pr` smoke; its trace hook keeping the spans it is given, an output sink
     B8 reads. Consumed by every benchmark of this epic and by B5, B7 and B9.
   - D9's wait in B5, B7 and B9, whose counts stay asserted. Consumed by T22.7's baseline.
   - The three layers of D8, and `printBox` extended with the round trip, the data size, the
@@ -402,6 +418,8 @@ docs/internals/testing.md            T22.1, T22.5   regenerated by dt docs
     fractions, the four stages' busy ratios, B3's latencies and B6's two tenths;
   - with `LOCALSTACK_HTTPS_ENDPOINT` unset the cell exits 2 naming it, and no `go test` runs;
   - with one benchmark skipped, the cell fails naming it;
+  - the first part's `pr` smoke, with `LOCALSTACK_HTTPS_ENDPOINT` unset, runs every benchmark and
+    passes;
   - every reported figure carries the unit `benchstat` reads, and the header carries R28's fields.
 - **Tests:** planted breaks, each seen to fail before the pull request opens: the pipeline's per-block
   report held until the pass ends (B6's count, RFC 8 §6.8); pacing disabled (B3's leg); a `b.Skip` in
@@ -471,24 +489,31 @@ docs/internals/testing.md            T22.1, T22.5   regenerated by dt docs
 - **Track:** the team. **Depends on:** none. It needs S4, S6 and E16's `FaultRemote`.
 - **Covers:** R7, R8, R12 to R14, R17.
 - **Deliverables:**
-  - `soak_test.go`: the fixture composed with `WithCarver`, `WithChain`, `WithSyncer` and `WithRefs`,
+  - `soak_test.go`: the fixture composed with `WithCarver`, `WithChain` and `WithRefs`, the syncer
+    composed with every engine (epic 16's D9),
     a journal small enough that each seed evicts, the remote rules and partitions of D3 in the seed's
     schedule, the paused remote rules for the verification reads, the idle check after each partition,
-    and `excused`'s remote case with D3's `decision:`.
+    and `attribute`'s remote side with D3's `decision:`.
   - `enginetest`: `(*Fixture).SyncerStats() syncer.Stats`, the composed syncer's figures, consumed by
     the idle check here and by T22.5.
   - The seed count set so `engine-soak` stays within the `pr` budget, from
     `dt plan --tier pr --estimate` (R17).
 - **Acceptance criteria:**
-  - every seed passes over the real journal, and the test asserts from each seed's fault log that
-    every partition fired and that the seed evicted and read remotely;
+  - every seed passes over the real journal but seeds 1 and 2, which `test/harness/quarantine.yaml`
+    lists under #3596 and #4771, the journal's issues and not this epic's: they still run with offload
+    composed and their results are recorded, graded quarantined, and are read by hand at acceptance
+    rather than counted as passes; their entries leave when those issues close. The test asserts from
+    each seed's fault log that every partition fired and that the seed evicted and read remotely;
   - after each partition the idle figures equal their values before it;
   - `soak-known.yaml` stays empty.
-- **Tests:** `TestSoakExcused` gains three cases, each failing when its rule is loosened: a non-delay
-  error excused in a call with no fault; wrong bytes accepted after an injected corruption; an error
-  refused in a call whose fault fired. Mutants run by hand once the soak is green: a failed put
-  reported offloaded, which the soak must fail on a read after eviction; a fetch leaking its buffer
-  past a cancelled read, which the idle check must fail. The faults are kind 3, wrappers on real
+- **Tests:** `TestSoakAttribute` gains the remote side, each case failing when `attribute` ignores it:
+  a failed remote put or get in the call marks it faulted; a corrupted get, logged with no error, marks
+  it faulted; a remote fault of an earlier call marks no later one. `TestSoakExcused` gains nothing:
+  `excused` sees only the faulted flag, and its two cases for that flag already exist, and wrong bytes
+  are the oracle's check, not `excused`'s. Mutants run by hand once the soak is green: a failed put
+  reported offloaded, which the soak must fail on a read after eviction; a fetch that skips
+  verification, which the soak must fail on wrong bytes after a corrupted get; a fetch leaking its
+  buffer past a cancelled read, which the idle check must fail. The faults are kind 3, wrappers on real
   implementations.
 - **Rules:** rule 4, the idle check's goroutines; rule 9, D3's `decision:`. Others as §2 says.
 
@@ -501,10 +526,14 @@ docs/internals/testing.md            T22.1, T22.5   regenerated by dt docs
 - **Deliverables:**
   - `enginetest`'s `WithStore`, the S3 store the content wiring builds from a store configuration,
     with a transport hook for `s3fault` (its argument follows E21's store configuration; §9 point 3),
-    since `WithSyncer` takes none. Consumed by the `localstack` run.
+    since the syncer the fixture composes for every engine runs over RFC 4's in-memory store and
+    takes none. Consumed by the `localstack` run.
   - `soak_test.go`: `TestSoakLocalStack`, the outage cycle of D4, the run bound by
     `DITTOFS_SOAK_DURATION`, the idle check with descriptors, its backstop printing the idle figures;
     D4's `decision:` at the driver.
+  - `engine-soak`'s `pr` command gains `-skip=^TestSoakLocalStack$`: its `-run=^(TestSoak|TestOracle)`
+    has no `$`, so it also matches the new test, which would fail every pull request on the unset
+    endpoint.
   - `engine-soak`'s `localstack` option: its own `cmd`, `go test -tags=engine_conformance,engine_soak
     -run=^TestSoakLocalStack$ -timeout=150m ./internal/vfs/integration/`, after the endpoint guard;
     `tier: nightly`, `needs: ["service:localstack"]`, `DITTOFS_SOAK_DURATION: "2h"`,
@@ -513,7 +542,8 @@ docs/internals/testing.md            T22.1, T22.5   regenerated by dt docs
 - **Acceptance criteria:**
   - a `workflow_dispatch` of `tests.yml` at the nightly tier on `feat/storage-v2` runs the option for
     its full duration and passes, every outage closed by K requests;
-  - with `LOCALSTACK_HTTPS_ENDPOINT` unset the option fails naming it (R16).
+  - with `LOCALSTACK_HTTPS_ENDPOINT` unset the option fails naming it (R16);
+  - the `pr` cell's `go test -json` output holds no event for `TestSoakLocalStack`.
 - **Tests:** mutants run by hand: a client that never closes an idle connection, which the descriptor
   check must fail over a few cycles; a retry loop that ignores its budget, which the idle check must
   show. The outage is `s3fault`'s, kind 3.
@@ -610,7 +640,7 @@ defaults and the burn-down's fixes in.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T22.1, T22.2 | 9.25 | — | the composition with offload, the six new benchmarks against LocalStack and their counted checks |
+| 1 | T22.1, T22.2 | 9.5 | — | the composition with offload, the six new benchmarks against LocalStack and their counted checks |
 | 2 | T22.3 | 2.5 | PR 1 | the sweeps, the settled RFC 13 rows and §16's answers |
 | 3 | T22.4, T22.5 | 6.5 | — | the soak with remote faults and its LocalStack option, one loop and one oracle |
 | 4.0 to 4d | T22.6 | 0.5, 2, 1.25, 1, 0.75 | each after what its slice waits on; 4d after PR 3 | the burn-down, one slice each; 4.0 open beside every other |
@@ -622,9 +652,10 @@ can be open at once.
 ## 9. Open points
 
 1. **Estimate against the plan's figure.** The plan says 7 subtasks and 21.5 man-days; this document
-   says 7 and 25.25. Added: the settling sweeps (in T22.3, 2.5), which the plan's "answered from those
+   says 7 and 25.5. Added: the settling sweeps (in T22.3, 2.5), which the plan's "answered from those
    runs" leaves inside the benchmarks; the counted checks in `engine-conformance` (in T22.2, 0.75); the
-   re-pointing slice (D2, 0.5), needed because the middle epics can close before S6. The burn-down's
+   re-pointing slice (D2, 0.5), needed because the middle epics can close before S6; the in-memory
+   store under the first part's `pr` benchmark smoke (in T22.1, 0.25). The burn-down's
    5.5 days is a guess (plan §6 point 2): its size is what S5 and S6 leave red, unknown until they
    land, and it is the least certain figure here, with T22.5, whose LocalStack run has not been timed.
 2. **No nightly runs on `feat/storage-v2`.** The schedule runs on `develop` only, so the `localstack`

@@ -206,7 +206,7 @@ suite" is `keystest.Run`.
 | R5 | A transform that authenticates returns `ErrMalformed` itself for every flip, decoded through D11's census view, so a flipped key ID is `ErrMalformed`, never `ErrUnknownMaterial` | MUST | §8.1 §2.7 | T2.3 |
 | R6 | A transform that authenticates: chunk A's body decoded with chunk B's hash is `ErrMalformed`; a body naming destroyed material is `ErrMaterialDestroyed`; both decode through D11's census view | test row | §2.7, §8.1 §2.7 | T2.1, T2.3 |
 | R7 | `Encode` of each input twice, and through two instances built by one `Factory` from the same settings, gives identical bodies. Where `LengthOf` answers, the body is applied and its length equals the answer | MUST, test row | §2.1 (deterministic, honest about length), §3.1 (`Factory`, `LengthOf`), §7 T9, §8.1 T9 | T2.3 |
-| R8 | `Decode` never allocates or produces more than `max`, however large a body claims its output to be; fuzzed, it never panics | MUST NOT, test row | §2.1, §4 item 5, §7 T4, §8.1 T4 | T2.4 |
+| R8 | `Decode` never produces more than `max`, nor allocates more than `max` plus its declared slack, however large a body claims its output to be; fuzzed, it never panics | MUST NOT, test row | §2.1, §4 item 5, §7 T4, §8.1 T4 | T2.4 |
 | R9 | A body declaring an output of `max + 1` fails with `ErrTooLarge` | test row | §2.7, §8.1 T4 | T2.3 |
 | R10 | Every body in every format version's fixture decodes to its recorded plaintext | MUST, test row | §2.5, §4 items 4 and 7, §8.1 T2 | T2.4 |
 | R11 | Every input of the fixture of the format version `Encode` writes, encoded with its recorded settings and material, gives exactly its recorded body; an older version's fixture is decoded only | MUST, test row | §4 item 7, §7 T9, §8.1 T9 | T2.4 |
@@ -289,9 +289,10 @@ suite" is `keystest.Run`.
   "Writing tests", outputs are not interactions). Prior art: the journal conformance suite's
   counted checks.
 - **D5, `FuzzDecode` bounds allocation in bytes.** It decodes into a `dst` of capacity `max`,
-  reads `runtime.MemStats.TotalAlloc` around one `Decode`, run alone, and fails above
-  `Subject.Scratch` plus 64 KiB: what a correct decoder allocates beyond `dst` is its declared
-  working memory (zstd's window, which E4 sets), never the size a body claims. The seeds include
+  reads `runtime.MemStats.TotalAlloc` around one `Decode`, run alone, and fails above `max` plus
+  `Subject.Scratch` plus 64 KiB: a correct decoder allocates at most an output of `max`, when it
+  cannot decode into `dst`, and its declared working memory, RFC 5 §2.1's slack (for zstd one block
+  and the decoder's own buffers, which E4 sets), never the size a body claims. The seeds include
   bodies whose header claims 4 × `max`. That catches the bug R8 exists for and holds under
   `-race`, so it runs in `unit` as it is. A `ponytail:` marker names the ceiling: the check
   covers the whole call, not only up to header validation, and an overrun under 64 KiB passes;

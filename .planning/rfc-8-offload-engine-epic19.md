@@ -22,7 +22,7 @@ view on `Blocks`), §2.3 (`encodings`), §7.6 (put intents);
 `Reconciled`); [RFC 11](../docs/internals/rfcs/rfc-11-ownership.md) §2.1 (one shard, one journal
 device).
 **Track:** C.
-**Epic 19 estimate: 12 subtasks, 39 man-days.**
+**Epic 19 estimate: 12 subtasks, 41 man-days.**
 **Depends on:** sync point **S2**, red rows in CI (epic 12): the fixture's `WithRefs`, `WithDevices`,
 `AcknowledgeLoss` and `ReopenOwingReconcile`, refusing by name, the proposed controls `HoldNextVisit`,
 `HoldReconcileAfterMarkCheck`, `HoldReconcileBeforeClose` and `ImportRef`, and the thirteen entries
@@ -31,7 +31,8 @@ whose rows this epic turns green; epic 11's frozen `Stats` fields `LedgerMismatc
 the late attach runs; epic 15's block record `entity.Encoding` (its D6, T15.3), which the census
 counts and the reseed's destroyed read follows; epic 16's passes (its T16.3), whose runs the reseed
 gates; epic 18's eviction loop and its destroyed-material notice with the lock Mark and `Unmark`
-take, which start step 7 starts and the reseed shares, with the RFC 5 plan's epics 6 and 8 (the
+take, which start step 7 starts and the reseed shares, and its `Content.Materials`, `unmarkCovered` and
+`Handle.Unmark` (its T18.4), which the reseed calls as the notice's scan does, with the RFC 5 plan's epics 6 and 8 (the
   key-record view in `kvstore` and `keystest`'s notice) that epic 18 brings in; **S6**: the journal plan's epic 9b for
 `MarkOffloaded` and `Unmark`, whose suite rows T19.3 waits on and whose real journal the rows of T19.4,
 T19.5, T19.7 and T19.8 run over, and its epic 7b for `DropOlder` and `Reconciled`, which gate T19.10 to
@@ -65,7 +66,7 @@ metadata reconcile drops, file by file, what metadata shows superseded, gating e
 
 ### 1.1 In scope
 
-`kvstore`'s `Census`, `Inspect.Refs`, `Existence.Versions`, the reseed's destroyed-material read, the
+`kvstore`'s `Census`, `Inspect.Refs`, `Existence.Versions`, the
 lost-journal acknowledgement record, the shard's journal identity; the engine's start step 7 reseed and
 reconcile, the late attach's steps 6 and 7, the restart's intent abandonment, one journal per device,
 the reconcile's handle ownership; the fixture controls epic 12 left refusing for this epic.
@@ -122,12 +123,12 @@ cited by number and title and not copied.
 | rule 4, **Profiling** | T19.3, T19.10, T19.12 | the reseed walk, the reconcile walk and the lost journal's retry are goroutines the fixture's `prof.Watch` checks across `Close`; no allocation assertion: neither is a hot path RFC 8 names |
 | rule 5, **Public interface and internals** ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | the reseed's bit is asserted at the journal's `Release` and an eviction, which consume it; a reconcile's drop at a read; the census at the view RFC 5 epic 10 reads; the acknowledgement at `Start`'s `Stats` |
 | rule 6, **Known failures shrink** | T19.2 to T19.5, T19.7, T19.8, T19.10 to T19.12 | each row's entry leaves `test/engine/known.yaml` in the change that turns it green; T19.2 rewrites every entry whose message was `WithRefs`'s refusal, T19.10 every one whose message was `ReopenOwingReconcile`'s |
-| rule 7, **v2 ignores v1, and the engine imports only what RFC 0 §1.2 allows** | T19.2, T19.3, T19.6, T19.8 | `Deps.Refs` and the reseed's destroyed read are engine-declared interfaces over `entity` types; the engine never imports `kvstore`, `keys`' implementation or the key records' codec, and holds no key material (D2) |
+| rule 7, **v2 ignores v1, and the engine imports only what RFC 0 §1.2 allows** | T19.2, T19.3, T19.6, T19.8 | `Deps.Refs` is an engine-declared interface over `entity` types, and the reseed's destroyed read is epic 18's `Content.Materials`; the engine never imports `kvstore`, `keys`' implementation or the key records' codec, and holds no key material (D2) |
 | rule 8, **Real dependencies for properties of those dependencies** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T19.3, T19.5, T19.10 to T19.12 | the crash legs and the reconcile rows run over the real journal with its crash seam once S6 lands; the census and the acknowledgement over `kvstore` on every backend `kvstoretest` runs |
 | rule 9, **Code comment conventions** ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T19.1, T19.5, T19.6, T19.8, T19.10, T19.11 | RFC 8 §2.5's four reconcile `decision:`s and its `newest` `ponytail:` at their sites; this epic's markers named in §4 |
 | rule 10, **A test must be able to fail** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test names the break that fails it on its assertion; each row is reverted to its red message once before its entry goes |
 | rule 11, **A symbol is exported only if the RFC's interface uses it** | T19.1, T19.2, T19.6, T19.8 | exported: RFC 6's `EncodingCount` and views, RFC 16's `Refs`, the store calls `Lifecycle` gains (D6), `entity`'s new fields; the reseed and the reconcile are unexported |
-| rule 12, **Each subtask creates only what it declares** | all | `Deps.Refs` and `Deps.Destroyed` join with T19.3, the reseed; `Handle.MarkOffloaded` and `Unmark` with T19.3, after their journal suite rows; `DropOlder` and `Reconciled` with T19.10, after 7b's rows |
+| rule 12, **Each subtask creates only what it declares** | all | `Deps.Refs` joins with T19.3, the reseed, which reuses epic 18's `Content.Materials`, `unmarkCovered` and `Handle.Unmark` and declares no second destroyed read; `Handle.MarkOffloaded` with T19.3, after its journal suite row; `DropOlder` and `Reconciled` with T19.10, after 7b's rows |
 
 ## 3. Requirements and invariants
 
@@ -138,12 +139,12 @@ rows' own assertions are RFC 8 §15's text; a row's requirement here names the l
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | The `Census` view of a namespace counts every block record until it is pruned, `retired` and `deleted` ones included, per transform, version and material, as the block record's `encodings` list them | MUST | RFC 5 §5.3; RFC 6 §2.3, §10.1 | T19.1 |
-| R2 | The census never depends on timing, and a block's entry in it never changes, since a block is never re-encoded in place (D1 counts its `encodings` once at commit and uncounts them once at prune) | invariant | RFC 5 §5.3; RFC 6 §2.3 | T19.1 |
+| R1 | The `Census` view of a namespace counts every block record until it is pruned, `retired` and `deleted` ones included, per transform, version and material, as the block record's `encodings` list them, whichever path wrote the record: the block commit, a relocation's target (RFC 6 §7.3) or an import's rebuilt record | MUST | RFC 5 §5.3; RFC 6 §2.3, §10.1 | T19.1 |
+| R2 | The census never depends on timing, and a block's entry in it never changes, since a block is never re-encoded in place (D1 counts its `encodings` once in the transaction that creates the record, whatever path creates it, and uncounts them once at prune) | invariant | RFC 5 §5.3; RFC 6 §2.3 | T19.1 |
 | R3 | No counter is read and rewritten by the transaction that changes it: a commit or a prune changing the census writes a record unique to it, which reads nothing | MUST | RFC 16 §4.4 | T19.1 |
 | R4 | `Versions` reports over `[off, off+n)` each run with the highest version metadata records over it (its overwrite record, the covering live ref's `newest`, a committed hole, a removal not done) and the file's committed size and `applied`, in one read; a file with no `File` record and no removal not done is `ErrNotFound` | MUST | RFC 6 §10.1; RFC 8 §2.5 | T19.9 |
 | R5 | `Refs` yields a file's live and history refs alike from an offset, each saying which | MUST | RFC 16 §3.1; RFC 8 §2.1, §2.5 | T19.2 |
-| R6 | The reseed reads whether a block's material is destroyed from the durable key records, a master-key destroy's marks included, never from the notice's cursor | MUST | RFC 8 §10.4 | T19.2, T19.3 |
+| R6 | The reseed reads whether a block's material is destroyed from the durable key records, a master-key destroy's marks included, never from the notice's cursor | MUST | RFC 8 §10.4 | T19.3 |
 
 **The reseed**
 
@@ -164,7 +165,7 @@ rows' own assertions are RFC 8 §15's text; a row's requirement here names the l
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R17 | Before serving, a restarted single node abandons every put intent its own shards hold, and none of a shard it does not restart | MUST | RFC 8 §2.5 ("Restart re-offers"); RFC 6 §7.6 | T19.5 |
+| R17 | Before serving, a restarted single node abandons every put intent its own shards hold, and none of a shard it does not restart | MUST | RFC 8 §2.5 ("Restart re-offers"); RFC 6 §7.6 | T19.5, T19.7 |
 | R18 | Each abandonment transaction stays within the key budget `K` | bound | RFC 6 §5.2, §7.6 | T19.5 |
 | R19 | §2.5 restart re-offer (but its collection leg), §5.1 durable commits, and §4.1 verifier inputs' offloaded loss | test row | RFC 8 §15.1 | T19.5 |
 
@@ -238,12 +239,18 @@ rows' own assertions are RFC 8 §15's text; a row's requirement here names the l
   	Blocks    int64
   }
   ```
-  A block commit that writes a block record with `encodings`, and `Prune` deleting one, write one
+  Every transaction that creates a block record with `encodings`, and `Prune` deleting one, writes one
   delta record `NS‖ns‖cd‖unique` (the node, its epoch and a sequence, as RFC 16 §4.4's usage deltas)
   holding ±1 per distinct (transform, version, material) the block names; it reads nothing. `Census`
   first folds every delta into the totals `NS‖ns‖ct‖entry`, at most `K` keys a transaction, then reads
   the totals in one view, so a read costs O(distinct entries) plus the deltas since the last read. A
-  block naming one entry twice counts once. The delta is one more key in a block commit, which RFC 6
+  block naming one entry twice counts once. The +1 delta is written by `kvstore`'s one function that
+  creates a block record, `newBlockRecord`, in the creating transaction, so the block commit today
+  and, when they are built, RFC 6 §7.3's relocation target and an import's rebuilt record count by
+  construction: a block written by any of them and not counted would let a census read a material
+  as unused while that block still names it, once the sources are pruned, and RFC 5 §5.3's
+  empty-census check would then let the material be erased. A state change of an existing record
+  (retired, deleted) writes no delta, since the census counts those states until prune. The delta is one more key in a block commit, which RFC 6
   §5.2's floor must count: epic 15's T15.2 counts it once this lands (§9). No backfill: installations are new ones only (the offload plan's transition), so no store holds blocks
   committed before this lands outside development, where `kvstore`'s `Check` reports the shortfall.
   Two readers folding at once conflict on the deltas each deletes, and one retries, so no delta is
@@ -253,23 +260,20 @@ rows' own assertions are RFC 8 §15's text; a row's requirement here names the l
   §10.1 and RFC 16 §4.2 are amended with the entry and the two key families in T19.1's pull request.
   Settled now because RFC 5 epic 10 and epic 20 read it. Prior art: RFC 16 §4.4's usage deltas and
   `kvstore`'s directory fold (`dirfold.go`), which this follows (checked).
-- **D2, the reseed's destroyed read is one store call per file, answered inside the store.** The
-  engine holds no key material, and the key-record view's `Load` returns a non-encrypting namespace's
-  chunk-ID key in the clear (the RFC 5 plan's epic 6, D1), so the engine never reads key records. It
-  declares, with T19.3:
-  ```go
-  // Destroyed reports which of chunks, all the file's, sit in blocks whose encodings name material
-  // whose key record is marked destroyed (RFC 8 §10.4), in one read.
-  Destroyed(ctx context.Context, share entity.ShareID, file entity.FileID, chunks []entity.ChunkHash) ([]entity.ChunkHash, error)
-  ```
-  on block metadata's `Content` view, which `kvstore` answers by reading each chunk's record, its
-  block's `encodings` and each named material's key-record state in one view, matching by namespace,
-  kind and ID. RFC 8 §2.1's row already holds every `Content` method; RFC 6 §10.1 is amended with
-  the call in T19.2's pull request. Prior art: none found.
+- **D2, the reseed's destroyed read is epic 18's, not a second one.** The engine holds no key
+  material and never reads key records (the RFC 5 plan's epic 6, D1). Epic 18's T18.4 already gives
+  the engine `Content.Materials(ctx, share, file, off, n)`, each carved span with its block's
+  materials and each key record's state read in one snapshot, and `unmarkCovered`, which clears
+  through `Handle.Unmark` the bit of each extent a span covers whose material reads `destroyed`
+  (its D11: "the notice's scan and epic 19's reseed run the same code"). The reseed calls both over
+  a file's held extents; it declares no `Content.Destroyed`, no second `Deps` field and no second
+  `Unmark`. Prior art: epic 18's D11 (checked).
 - **D3, the reseed marks under the notice's lock.** RFC 8 §10.4 makes Mark check, under the lock the
   notice's `Unmark` takes, that no pinned material has been reported destroyed; the reseed's
-  `MarkOffloaded` races the notice the same way. So the reseed takes epic 18's lock, drops from what it
-  marks every extent whose chunk's material is in the set the notice has reported, and marks; the
+  `MarkOffloaded` races the notice the same way. So the reseed holds epic 18's lock as Mark does (its
+  D10's read lock) across its check and its `MarkOffloaded`, drops from what it marks every extent
+  whose span `Materials` reads as `destroyed` or names material in the set the notice has reported,
+  and marks; the
   durable read of D2, made at each visit, covers what was destroyed before this process, and the
   notice's poll starts before the reseed's first visit. A destroy committed after a visit's durable
   read and before the notice has polled is in neither source, so the reseed may mark it; epic 18's
@@ -277,23 +281,37 @@ rows' own assertions are RFC 8 §15's text; a row's requirement here names the l
   it reports it, so that bit ends cleared (§9 asks epic 18's document to say so). A `decision:` at the reseed's mark
   says it relies on epic 18's lock. Prior art: RFC 8 §10.4's Mark rule (checked).
 - **D4, the reseed is one walk per journal in file order, with an asked-first queue.** At step 7 the
-  reseed walks the journal's held files in the order `Files` lists them, keeping a cursor and a small
-  set of the files visited ahead of it, so a file is visited when it is behind the cursor or in the
-  set: memory follows the files asked for out of order, not the 10⁸ files a journal can hold. Up to
-  eight workers take the next file, first from a queue of the files an offer, an eviction or a
-  reconcile gate asked for. An offload run handed an unvisited file runs its visit inline instead and
-  adds it to the set. Every visit first claims its file in the journal's in-flight set, and a second
-  caller waits for that visit rather than starting one, so a file is visited once and never twice at once. A file first written after the open has no offloaded
-  bit to reseed and counts as visited. The option of a visited bit per held file was rejected for that
-  memory. Prior art: none found.
+  reseed walks the journal's held files in the order `Files` lists them. It keeps a low-water cursor,
+  every file before which has **finished** its visit, and two small sets: the files a visit has
+  claimed and not finished (the in-flight set, at most eight plus the inline runs) and the files
+  finished ahead of the cursor (the done set). The cursor advances past a file only once its visit
+  finishes, dropping each file it passes from the done set. A file is visited when it is behind the
+  cursor or in the done set; a file in the in-flight set is not, so a caller waits for that visit
+  rather than trusting a walk that has passed the file but not finished it. Memory follows the files
+  in flight or asked for out of order, not the 10⁸ files a journal can hold. Up to eight workers
+  take the next file, first from a queue of the files an offer, an eviction or a reconcile gate asked
+  for. An offload run handed an unvisited file runs its visit inline instead. Every visit first
+  claims its file in the in-flight set, and a second caller waits for that visit rather than starting
+  one, so a file is visited once and never twice at once. **A visit whose `Refs` or `Materials` read
+  fails** leaves the file unvisited, so it stays gated: it leaves the in-flight set, its waiters get
+  the error (an offload run fails and its own backoff retries it; eviction skips the file that
+  round), and it goes back on the asked-first queue after 30 s on the injected clock, as the
+  reconcile retries its reads (R39). The cursor does not pass it, `engine_reseed_files_remaining`
+  keeps counting it, and the walk never gives up on it. A file first written after the open has no
+  offloaded bit to reseed and counts as visited. The option of a visited bit per held file was
+  rejected for that memory. Prior art: none found.
 - **D5, a share's journal is its shard's primary journal identity, as the first part's epic 6 D10
   decided.** `entity.Shard` gains `Journal [16]byte`, RFC 16 §2's `Shard.Primary` journal identity,
-  written where the store creates the shard; `entity.TagRecord` gains `Journal`, so `Tags` answers it.
+  written where the store creates the shard. A share has many shards and `entity.TagRecord` is one
+  per share, so one identity field could not show a share whose shards name two journals:
+  `entity.TagRecord` gains `Journals [][16]byte`, the distinct identities the share's shards name,
+  which `Tags` reads in the View that already reads each shard's `rm` row.
   `Start` matches it against the identity `JournalID` answers for each device. A zero identity is
   allowed only while `Deps.Devices` names one device, and binds to it, with no backfill since
   installations are new ones only, and a second device is added only once placement exists (the §6.1
   row); with several, a share whose
-  shard names no device's journal, zero included, is refused by name. The re-initialisation's
+  `Journals` lists no device's journal, zero included, is refused by name, and so is one whose
+  `Journals` lists more than one identity, whatever the device count. The re-initialisation's
   `RecordJournal` rewrites, as a compare-and-swap on each, the shards naming the replaced identity, in
   its one transaction. A `ponytail:` at `RecordJournal`: more shards on one device than `K` fail the
   rewrite; batch it, under the acknowledgement's guard, once a device holds that many. A `decision:` at
@@ -372,31 +390,32 @@ On `feat/storage-v2`.
 ```text
 pkg/metadata/entity/
   content.go              T19.1  EncodingCount; T19.6 Shard.Journal
-  control.go              T19.6  TagRecord.Journal
+  control.go              T19.6  TagRecord.Journals
 pkg/metadata/kvstore/
-  census.go               T19.1  Census, its deltas at commit and Prune, the fold, its codecs
-  offload.go, blocks.go   T19.1  the census delta written by the block commit and by Prune
+  census.go               T19.1  Census, newBlockRecord with its delta, the fold, its codecs
+  offload.go, blocks.go   T19.1  the block commit creating its record through newBlockRecord; Prune's delta
   check.go                T19.1  the census checked against a walk of block records
-  inspect.go              T19.2  the Inspect view and its Refs; Content.Destroyed
+  inspect.go              T19.2  the Inspect view and its Refs
   blocks.go               T19.5  AbandonShardIntents paged within K
   shards.go, shares.go    T19.6  the shard's journal identity, written at creation
-  lifecycle.go            T19.6  Tags' journal, RecordJournal's rewrite; T19.8 AcknowledgeLoss, LossAcknowledged, ConsumeLossAck
+  lifecycle.go            T19.6  Tags' journals, RecordJournal's rewrite; T19.8 AcknowledgeLoss, LossAcknowledged, ConsumeLossAck
   versions.go             T19.9  Existence.Versions
   kvstoretest/            T19.1, T19.2, T19.6, T19.8, T19.9  each view's rows over every backend
 pkg/engine/
-  deps.go                 T19.3  Refs, Content.Destroyed, Handle.MarkOffloaded and Unmark; T19.8 Lifecycle's two calls; T19.10 Handle.DropOlder, Journal.Reconciled
+  deps.go                 T19.3  Refs, Handle.MarkOffloaded; T19.8 Lifecycle's two calls; T19.10 Handle.DropOlder, Journal.Reconciled
   reseed.go               T19.3  the reseed walk; T19.4 the asked-first queue and the gates
-  recover.go              T19.5  intents abandoned; T19.6 every device; T19.7 steps 6 and 7 at a late attach; T19.8 the lost journal's retry and its acknowledgement
+  recover.go              T19.5  intents abandoned; T19.6 every device, the retry per refused device; T19.7 steps 6 and 7 at a late attach; T19.8 the lost journal's retry and its acknowledgement
   loss.go                 T19.8  the journal's loss floor at 1 while the reinit marker stands (D7)
   reconcile.go            T19.10 the visit and the gate; T19.11 retries and the end; T19.12 the handle's owner
+  engine.go, repack.go    T19.6  the journal state keyed by device, Stats per device, a journal's own device's FreeSpace
   share.go, unbind.go     T19.12 Bind's takeover, Unbind's cancel, Drop's wait
   close.go                T19.3  the reseed joined; T19.12 the closing handles joined
   health.go               T19.11 journal_unreconciled
-  enginetest/             T19.2  WithRefs; T19.6 WithDevices(n); T19.8 AcknowledgeLoss; T19.10 ReopenOwingReconcile, HoldNextVisit, ImportRef; T19.12 the two reconcile holds
-  enginetest/journal.go   T19.3  MarkOffloaded, Unmark; T19.10 DropOlder, Reconciled, each after its suite row
+  enginetest/             T19.2  WithRefs; T19.3 HoldNextVisit; T19.6 WithDevices(n); T19.8 AcknowledgeLoss; T19.10 ReopenOwingReconcile, ImportRef; T19.12 the two reconcile holds
+  enginetest/journal.go   T19.3  MarkOffloaded; T19.10 DropOlder, Reconciled, each after its suite row
   conformance/            the rows' entries removed, each with the subtask that turns it green
 test/engine/known.yaml    T19.2  messages rewritten; T19.4 to T19.12 entries removed
-.planning/rfc-8-offload-engine-plan.md  this pull request: the two §6.1 rows of D5 and D9
+.planning/rfc-8-offload-engine-plan.md  the two §6.1 rows of D5 and D9; the census row over relocation and import (D1)
 docs/internals/rfcs/rfc-8-engine.md     T19.8  §15.1's "§2.5 journal gone" row wording (D6)
 ```
 
@@ -415,27 +434,36 @@ metadata reconcile" (`TestRFC8A_MetadataReconcile`), T19.11; "§2.5 `Bind` takes
 handle" (`TestRFC8A_BindTakesOverTheReconcilesHandle`) and "§2.3 removal during a reconcile"
 (`TestRFC8B_RemovalDuringAReconcile`), T19.12.
 
-### T19.1 The `Census` view, counted at commit and prune
+### T19.1 The `Census` view, counted at a block record's creation and prune
 
-**Subtask T19.1 estimate: 3 man-days.**
+**Subtask T19.1 estimate: 3.5 man-days.**
 
 - **Track:** C. **Depends on:** none. Epic 15's T15.3 first, for `entity.Encoding`.
 - **Covers:** R1, R2, R3.
 - **Deliverables:** `entity.EncodingCount` (D1); in `kvstore`, `func (b Blocks) Census(ctx
-  context.Context) iter.Seq2[entity.EncodingCount, error]`, the delta written by the block commit and by
-  `Prune`, the fold within `K`, the delta and total codecs with their fuzz target; RFC 6 §5.2's floor
+  context.Context) iter.Seq2[entity.EncodingCount, error]`; `newBlockRecord`, the one function that
+  creates a block record and writes its +1 delta in the same transaction, which the block commit
+  calls (D1); `Prune`'s −1 delta; the fold within `K`, the delta and total codecs with their fuzz target; RFC 6 §5.2's floor
   raised by the delta's one key (D1); `Check` reporting a
   census that differs from a walk of the namespace's block records; D1's `ponytail:` at the fold; RFC 6
   §10.1 and RFC 16 §4.2 amended. Consumed by the RFC 5 plan's epic 10 (its T10.1 and T10.2) and epic 20.
 - **Acceptance criteria:**
   - After any sequence of commits, abandons and prunes, `Census` equals a walk of the namespace's block
     records grouped by entry, `retired` and `deleted` ones included.
+  - A material a surviving block names is counted after every block it was moved from is pruned.
+  - Every `kvstore` path that creates a block record does so through `newBlockRecord`; `Abandon`'s
+    retired record names no `encodings`, so it counts nothing.
   - A commit writes its delta without reading a census key: two commits in one namespace never conflict
     on the census.
   - A namespace's census never names another's blocks.
 - **Tests:** in `kvstoretest`, over every backend: a random sequence of commits under two chains, an
   abandon and prunes, `Census` compared after each with a walk (catches a missed delta at commit or
-  prune, R1, R2); two concurrent commits in one namespace, neither answering `kv.ErrConflict`, and `kv.Counting`'s
+  prune, R1, R2); a relocation, as `kvstore` has it today, a carrying commit that repoints a chunk
+  of block A under material M into block B under M (RFC 6 §7.2), then A retired, deleted and pruned,
+  with `Census` read after the prune still counting one block under M and `Check` agreeing (catches a
+  block record created without its delta, the census then empty while B names M, R1); `Check`'s
+  census comparison run at the end of every `kvstoretest` row that writes a block record, so a later
+  writer's rows (RFC 6 §7.3's `Relocate`, an import's rebuild) fail on a missed delta; two concurrent commits in one namespace, neither answering `kv.ErrConflict`, and `kv.Counting`'s
   pass-through record showing the census delta written with no census key read (catches a counter read
   in the commit, R3); a
   store with a planted block record and no delta, which `Check` reports; two concurrent `Census` reads
@@ -445,47 +473,48 @@ handle" (`TestRFC8A_BindTakesOverTheReconcilesHandle`) and "§2.3 removal during
 
 ### T19.2 The reseed's store reads, and `WithRefs`
 
-**Subtask T19.2 estimate: 2.5 man-days.**
+**Subtask T19.2 estimate: 2 man-days.**
 
-- **Track:** C. **Depends on:** none. Epic 15's T15.3 first, for the block record's `encodings`.
-- **Covers:** R5, R6.
+- **Track:** C. **Depends on:** none.
+- **Covers:** R5.
 - **Deliverables:** in `kvstore`, the `Inspect` view, which it does not have yet, with its first method,
   `func (i Inspect) Refs(ctx context.Context, share entity.ShareID, file entity.FileID, from int64)
   iter.Seq2[entity.ChunkRef, error]`, the share argument as `Covering` takes it, (live and history refs in offset order, a history ref
-  telling itself by its `Died`) and `Content.Destroyed` (D2), with their `kvstoretest` rows; RFC 6
-  §10.1 amended with `Destroyed`. In `enginetest`, `WithRefs()` made real: the fixture passes the store's
+  telling itself by its `Died`), with its `kvstoretest` rows. The reseed's destroyed read is epic
+  18's `Content.Materials` (D2), so nothing is added for it here. In `enginetest`, `WithRefs()` made real: the fixture passes the store's
   `Inspect` as `Refs`; every `known.yaml` entry whose message is `WithRefs`'s refusal rewritten to the
   failure it meets now. Consumed by T19.3 and T19.10.
 - **Acceptance criteria:**
   - `Refs` yields every live and history ref of the file from `from`, once each, in offset order.
-  - `Destroyed` names a chunk whose block's `encodings` name a key record marked `destroyed`, a
-    master-key destroy's mark included, and no other.
 - **Tests:** in `kvstoretest`: a file with live refs, a history ref and a ref past `from` (catches a
-  missing history ref or a wrong start, R5); a block under two materials with one record marked
-  `destroyed` through the store's key-record view (the RFC 5 plan's epic 6), and a block under the other
-  (catches a match on the wrong material or the notice's state, R6). No double.
-- **Rules:** rule 6, the messages rewritten; rule 7: `Destroyed` hands the engine no key record.
+  missing history ref or a wrong start, R5). No double.
+- **Rules:** rule 6, the messages rewritten.
 
 ### T19.3 The reseed's walk and its marks
 
-**Subtask T19.3 estimate: 4 man-days.**
+**Subtask T19.3 estimate: 4.5 man-days.**
 
-- **Track:** C. **Depends on:** T19.2. Epic 18's notice and its lock, and S6's 9b suite rows, first.
+- **Track:** C. **Depends on:** T19.2. Epic 18's notice, its lock, `Materials` and `unmarkCovered`
+  (its T18.4), and S6's 9b suite rows, first.
 - **Covers:** R6, R8, R9, R10, R11, R12, R13, R48 (the reseed's join).
-- **Deliverables:** `reseed.go`: one walk per journal (D4) with eight workers; a file's visit reads
-  `Refs`, marks with `MarkOffloaded` per ref at its `Oldest` and `Newest` under epic 18's lock less what
-  `Destroyed` names or the notice has reported (D3), clears with `Unmark` every set bit no ref covers and
-  every bit over a destroyed chunk, counting `LedgerMismatches` and logging each at `Warn`;
-  `ReseedFilesRemaining` per journal; the `engine.reseed` root span. `Deps` gains `Refs` and
-  `Content` gains `Destroyed`; `Handle` gains `MarkOffloaded` and `Unmark`, and the in-memory journal
-  both, passing their journal suite rows. `Close` cancels and joins the walk at its step 3. D3's
-  `decision:` at the mark. Consumed by T19.4 and T19.10.
+- **Deliverables:** `reseed.go`: one walk per journal (D4) with eight workers, its low-water cursor,
+  in-flight and done sets, and a failed read's retry after 30 s on the injected clock; a file's visit
+  reads `Refs` and epic 18's `Materials`, marks with `MarkOffloaded` per ref at its `Oldest` and
+  `Newest` under epic 18's lock less what `Materials` reads as destroyed or the notice has reported
+  (D3), clears with `Unmark` every set bit no ref covers, and calls epic 18's `unmarkCovered` for
+  every bit over destroyed material (D2), counting `LedgerMismatches` and logging each at `Warn`;
+  `ReseedFilesRemaining` per journal; the `engine.reseed` root span. `Deps` gains `Refs`; `Handle`
+  gains `MarkOffloaded`, and the in-memory journal it, passing its journal suite row. `HoldNextVisit`
+  made real in `enginetest`. `Close` cancels and joins the walk at its step 3. D3's `decision:` at
+  the mark. Consumed by T19.4 and T19.10.
 - **Acceptance criteria:**
   - After a reseed every held extent a ref covers has its bit, none other has, and none over a destroyed
     chunk has, whatever the bits were before.
   - No more than eight files' refs are read at once per journal.
   - A destroy the notice reports while a file's visit is between its read and its mark leaves the
     extents unmarked.
+  - A file whose walk visit has been taken but not finished is not treated as visited, and a file
+    whose read failed stays unvisited until a retried visit succeeds.
 - **Tests:** at the journal's `Release`, which consumes the bit, over the unit fixture: a file with a
   set bit no ref covers, released after the reseed and still held (catches an unjustified bit kept, R9);
   a ref's extent with no bit, released after the reseed (catches no mark, R8); a chunk whose block's
@@ -496,10 +525,15 @@ handle" (`TestRFC8A_BindTakesOverTheReconcilesHandle`) and "§2.3 removal during
   calls, never above eight (catches an unbounded walk, R12); `Stats` and the log after a mismatch
   (R13); `Close` during a held visit returning only after it (R48); a walk visit held by `HoldNextVisit`
   while an offload run is handed the same file, one visit counted and no mismatch (catches a double
-  visit, D4). Doubles: the injected clock, the
-  hook, the blocking wrapper.
-- **Rules:** rule 3, the gauge, the counter, the log and the span; rule 12, the four calls with their
-  caller.
+  visit, D4); the walk's visit of one file held by `HoldNextVisit` while the files after it finish,
+  so the walk has passed it, and an eviction asking for that file waits and releases nothing until the visit is
+  released (catches a cursor past an unfinished file counted as visited, D4); `Refs` failing for one
+  file through a kind 3 wrapper until the clock passes 30 s twice, the file not released meanwhile,
+  the gauge still counting it, and released once the third visit succeeds (catches a failed visit
+  dropped or counted visited, D4). Doubles: the injected clock, the hook, the blocking wrapper, the
+  fault wrapper.
+- **Rules:** rule 3, the gauge, the counter, the log and the span; rule 12, `Refs` and
+  `MarkOffloaded` with their caller.
 
 ### T19.4 The reseed gates offer and eviction
 
@@ -531,29 +565,36 @@ handle" (`TestRFC8A_BindTakesOverTheReconcilesHandle`) and "§2.3 removal during
 - **Covers:** R17, R18, R19.
 - **Deliverables:** `AbandonShardIntents(ctx, shards)` filtered by shard and paged within `K` (D10);
   `Start` calling it for each namespace its served shares write, after step 6 and before step 7's
-  dispatch, and a late attach for its journal's shards; the three rows' entries removed. Consumed by T19.7.
+  dispatch; the three rows' entries removed. Consumed by T19.7, whose late attach calls it for its
+  journal's shards.
 - **Acceptance criteria:**
   - No put intent of a served shard's namespace survives into serving.
   - Every abandonment transaction writes at most `K` keys.
 - **Tests:** the rows over the real journal; in `kvstoretest`, 3·`K` intents abandoned, with the keys
   per transaction read from `kv.Counting`'s `MostWrites` (catches one unbounded transaction, R18); at
-  the store's intents after `Start` returns (catches an abandon after serving begins, R17); a pass held
-  at Intent by the in-memory store's fault wrapper on one device while the other device's journal
-  attaches late, its intent still there and its commit landing (catches an abandon of another shard's
-  live intent, R17). Doubles: `kv.Counting` and the fault wrapper.
+  the store's intents after `Start` returns (catches an abandon after serving begins, R17); in
+  `kvstoretest`, intents written under two shards and `AbandonShardIntents` given one, the other's
+  intents still there (catches an abandon of another shard's intent, R17). The late attach's leg,
+  which needs two devices, is T19.7's. Doubles: `kv.Counting`.
 
 ### T19.6 One journal per device
 
-**Subtask T19.6 estimate: 5 man-days.**
+**Subtask T19.6 estimate: 6.5 man-days.**
 
 - **Track:** C. **Depends on:** none.
 - **Covers:** R20, R21.
-- **Deliverables:** `entity.Shard.Journal` and `entity.TagRecord.Journal`, written where `kvstore`
-  creates a shard and answered by `Tags` (D5); `RecordJournal`'s rewrite of the shards naming a replaced
+- **Deliverables:** `entity.Shard.Journal` and `entity.TagRecord.Journals`, written where `kvstore`
+  creates a shard and answered by `Tags` from every shard of the share (D5); `RecordJournal`'s rewrite of the shards naming a replaced
   identity, with D5's `ponytail:`; `Start` opening each device's journal and matching each share to
   one, the first part's one-device check in `startOver` and its two `ponytail:`s (there and at the conditions'
-  report), and the `Devices[0]` loop, deleted; a share whose
-  shards name no device's journal, or two, refused by name with D5's `decision:`; `WithDevices(n)` made
+  report), deleted, and every read of `Devices[0]` replaced by the device the journal or the share
+  lives on: `openJournal`'s, the retry's interval and failure log (`retryInterval`, `retryFailed`),
+  `Stats`' loop, and the repack's `FreeSpace` call, which reads its own journal's device. The
+  engine's journal state, single today, keyed by device: `journals` and `journalID`, which
+  `publishOpened` replaces rather than adds to, the `unsuitable` flag that gates `Bind`, `Unbind`
+  and `Drop`, now answered for the shares of a refused device only, and `retrying`, one retry per
+  refused device over that device's shares, each joined by `Close`; a share whose `Journals` lists
+  no device's journal, or more than one, refused by name with D5's `decision:`; `WithDevices(n)` made
   real, the fixture writing each share's journal identity; the shard record's fuzz target. Consumed by
   T19.7 and T19.8.
 - **Acceptance criteria:**
@@ -561,11 +602,19 @@ handle" (`TestRFC8A_BindTakesOverTheReconcilesHandle`) and "§2.3 removal during
     only, and its `Drop` forgets its tag there.
   - A refused device leaves the other device's shares serving.
   - The first part's single-device rows pass unchanged with zero identities.
+  - With one device refused and one served, a `Bind` of a served share is answered, and the refused
+    device's retry attaches only its own shares.
 - **Tests:** at `Stats` and a read, over the unit fixture with two in-memory journals: a write to each
   share read back after a restart, each journal's `Stats` naming its own tag only (catches a share on
   the wrong journal, R20); one device refused at the fake's `Open`, the other share serving (R21); a
-  share naming a third identity refused by name; in `kvstoretest`, `RecordJournal` replacing an identity
-  rewrites every shard naming it and no other. No double.
+  share naming a third identity refused by name, and a share whose two shards name the two devices'
+  journals refused by name (catches `Tags` reading one shard's identity, D5); with one device
+  refused, a `Bind` of the other device's share answered at once, and the refused device's open
+  succeeding on the clock's retry while the other device's journal stays the one it served (catches
+  an engine-wide `unsuitable` flag, a single retry, or a `publishOpened` that replaces the served
+  journal); `Stats` naming each device's figures under its own directory (catches a `Devices[0]`
+  read left); in `kvstoretest`, `RecordJournal` replacing an identity
+  rewrites every shard naming it and no other. Doubles: the injected clock.
 - **Rules:** rule 2, the shard record's fuzz target; rule 9, D5's two markers.
 
 ### T19.7 The late attach's steps 6 and 7
@@ -585,7 +634,10 @@ handle" (`TestRFC8A_BindTakesOverTheReconcilesHandle`) and "§2.3 removal during
   - The two rows pass but the moved leg.
 - **Tests:** the rows over the real journal; over the unit fixture, a late-attached journal whose dirty
   file reaches the offload source's run hook only after its visit (catches steps 6 and 7 skipped at a
-  late attach, R22). Doubles: the hook and the injected clock.
+  late attach, R22); a pass held at Intent by the in-memory store's fault wrapper on one device while
+  the other device's journal attaches late, its intent still there and its commit landing (catches
+  the late attach abandoning another shard's live intent, R17). Doubles: the hook, the fault wrapper
+  and the injected clock.
 - **Rules:** rule 6, the entries and the moved leg's new one.
 
 ### T19.8 The lost-journal acknowledgement
@@ -650,7 +702,7 @@ handle" (`TestRFC8A_BindTakesOverTheReconcilesHandle`) and "§2.3 removal during
   workers; step 4's clone re-make visiting its source first. `Handle` gains `DropOlder` and `Journal`
   gains `Reconciled`, and the in-memory journal both, after 7b's suite rows. RFC 8 §2.5's `decision:`s
   on a superseded piece found only where metadata keeps a version, on stranded tags, and on ungating once
-  dropped in memory, and its `newest` `ponytail:`, at their sites. `ReopenOwingReconcile`, `HoldNextVisit`
+  dropped in memory, and its `newest` `ponytail:`, at their sites. `ReopenOwingReconcile`
   and `ImportRef` made real in `enginetest`. Consumed by T19.11 and T19.12.
 - **Acceptance criteria:**
   - No file in the scope serves content before its visit; its metadata serves throughout.
@@ -721,7 +773,7 @@ handle" (`TestRFC8A_BindTakesOverTheReconcilesHandle`) and "§2.3 removal during
 ```mermaid
 flowchart TD
   T19_1["T19.1 Census view"]
-  T19_2["T19.2 Refs, Destroyed, WithRefs"] --> T19_3["T19.3 reseed walk and marks"] --> T19_4["T19.4 reseed gates"] --> T19_5["T19.5 re-offer and intents"]
+  T19_2["T19.2 Refs, WithRefs"] --> T19_3["T19.3 reseed walk and marks"] --> T19_4["T19.4 reseed gates"] --> T19_5["T19.5 re-offer and intents"]
   T19_6["T19.6 one journal per device"]
   T19_4 & T19_5 & T19_6 --> T19_7["T19.7 late attach"] --> T19_8["T19.8 lost-journal acknowledgement"]
   T19_9["T19.9 Versions"]
@@ -744,8 +796,8 @@ marks over the in-memory journal and takes start step 7 last.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T19.1, T19.2 | 5.5 | — | the store views the census listing and the reseed read; can be open beside PR 3 |
-| 2 | T19.3, T19.4, T19.5 | 9 | PR 1, S6's 9b | the reseed, its gates and the re-offer: a restart that marks, gates and re-offers |
-| 3 | T19.6, T19.7, T19.8 | 11 | PR 2 for T19.7 and T19.8 | every device started, a refused one attached late, a lost one acknowledged |
+| 2 | T19.3, T19.4, T19.5 | 9.5 | PR 1, S6's 9b | the reseed, its gates and the re-offer: a restart that marks, gates and re-offers |
+| 3 | T19.6, T19.7, T19.8 | 12.5 | PR 2 for T19.7 and T19.8 | every device started, a refused one attached late, a lost one acknowledged |
 | 4 | T19.9, T19.10, T19.11 | 9.5 | PR 2, S6's 7b | the reconcile's walk, gate, retries and end |
 | 5 | T19.12 | 4 | PR 3, PR 4 | the handle's owner, the only part racing `Bind`, `Unbind`, `Drop` and `Close` |
 
@@ -755,7 +807,7 @@ A suggestion only: one pull request per subtask works as well.
 
 - **The amendments the implementing pull requests carry:** RFC 8 §2.5's handle limit (D8, T19.12),
   RFC 8 §15.1's "§2.5 journal gone" row (D6, T19.8),
-  RFC 6 §10.1 (`EncodingCount`, `Destroyed`) and RFC 16 §4.2 (the census keys, `J‖journal‖ack`, the shard's journal identity), each with its
+  RFC 6 §10.1 (`EncodingCount`) and RFC 16 §4.2 (the census keys, `J‖journal‖ack`, the shard's journal identity), each with its
   subtask, as epic 11's open points have the adding epic amend RFC 8 §2.1.
 - **For epic 15:** the census delta is one more key in every block commit (D1), which its T15.2 floor
   and its "K floor" row must count; T19.1's pull request raises the floor by one key with it.
@@ -766,7 +818,8 @@ A suggestion only: one pull request per subtask works as well.
   can read the view rather than share RFC 5 epic 10's snapshot.
 - **For epic 16:** its T16.2 names this epic's reseed as the drain that clears the pass registry's
   entries; that drain is the read-only reopen's, unowned (§1.2), not this epic's.
-- **The estimate** is 12 subtasks and 39 man-days against the plan's 12 and 44: the reconcile is
+- **The estimate** is 12 subtasks and 41 man-days against the plan's 12 and 44: the reconcile is
   smaller than the plan sized once the reseed's visit is shared with it (D4), the unread-range
-  acknowledgement moves out (D9), and multi-device start (D5) comes in. The least certain are T19.6,
+  acknowledgement moves out (D9), and multi-device start (D5) comes in, with every single-device
+  piece of the engine's journal state (T19.6). The reseed reuses epic 18's destroyed read (D2). The least certain are T19.6,
   which touches every share creation path, and T19.10, whose size depends on 7b's `DropOlder`.
