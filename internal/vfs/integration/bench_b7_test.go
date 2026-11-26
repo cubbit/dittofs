@@ -607,8 +607,9 @@ func benchB7(b *testing.B) {
 
 			// decision: badger retries a conflict inside Update, so the engine
 			// never splits a batch here and this bound cannot fail through the
-			// split; the split's bound rests on TestTheSplitIsBounded until a store surfaces
-			// conflicts to the engine. A zero count is a classifier that no
+			// split; the split's bound rests on
+			// TestTheSplitIsBoundedOverAConflictingStore, whose store surfaces
+			// the conflict to the engine. A zero count is a classifier that no
 			// longer sees the existence key, never a pass.
 			if engine == 0 {
 				b.Fatalf(

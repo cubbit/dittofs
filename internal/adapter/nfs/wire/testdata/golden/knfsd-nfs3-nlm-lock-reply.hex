@@ -1,0 +1,5 @@
+# test/pcap-corpus/nlm/reference.pcap, frame 78, cut by test/pcap-corpus/cut-golden.sh with framing rpc:
+# tshark -r test/pcap-corpus/nlm/reference.pcap -Y frame.number==78 -T fields -e tcp.reassembled.data -e tcp.payload -e udp.payload
+ac0731ae 00000001 00000000 00000000
+00000000 00000000 00000004 45120000
+00000003

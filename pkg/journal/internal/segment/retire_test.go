@@ -97,6 +97,12 @@ func retirerBuilt(t *testing.T, targets segment.Targets, readOnly func() error, 
 		Durable:  dc.add,
 		Log:      log,
 	})
+	// A test that fails before its own Stops still joins both workers, so a
+	// leak check reports the failure rather than the workers it left.
+	t.Cleanup(r.Stop)
+	if p != nil {
+		t.Cleanup(p.Stop)
+	}
 	return &retireEnv{t: t, seam: seam, set: set, m: m, c: c, p: p, r: r}, dc
 }
 

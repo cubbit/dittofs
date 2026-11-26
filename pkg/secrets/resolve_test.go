@@ -665,7 +665,7 @@ func TestResolveRetiredKey(t *testing.T) {
 	var files []string
 
 	for _, name := range []string{"a.key", "b.key"} {
-		b, err := keyprovider.GenerateKeyFile(passphrase)
+		b, err := keyprovider.GenerateWeakKeyFile(passphrase)
 		if err != nil {
 			t.Fatalf("generate %s: %v", name, err)
 		}

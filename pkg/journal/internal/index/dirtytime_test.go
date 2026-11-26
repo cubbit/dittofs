@@ -101,6 +101,10 @@ func dirtyBuckets(t *testing.T, n int, at func(i int) time.Time) (buckets int, o
 // bucket per second of backlog, not a record per version, and reports a time
 // at or before the oldest write and less than a second before it.
 func TestDirtyTimeTableIsBoundedBySeconds(t *testing.T) {
+	// decision: the writes run in one goroutine and start none, so the race detector has nothing to check and only slows it.
+	if raceEnabled {
+		t.Skip("single-goroutine check; runs in the journal-index cell without -race")
+	}
 	const n = 100_000
 	for _, tc := range []struct {
 		name       string

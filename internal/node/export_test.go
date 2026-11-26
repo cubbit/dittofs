@@ -104,6 +104,9 @@ func (n *Node) Engine() *engine.Engine { return n.engine }
 // OpenState is the open state the node built.
 func (n *Node) OpenState() *openstate.Table { return n.open }
 
+// Meta is the metadata store the node opened.
+func (n *Node) Meta() *kvstore.Store { return n.meta }
+
 // Progress is op's progress, as the node's operation runner reads it.
 func (n *Node) Progress(ctx context.Context, op entity.Operation) apiv1.Progress {
 	return n.runner.steps[op.Kind].progress(ctx, op)

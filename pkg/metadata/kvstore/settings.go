@@ -9,7 +9,6 @@ import (
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
-	"github.com/cubbit/dittofs/pkg/settings"
 )
 
 // Netgroups lists netgroups in name order, resuming after the name after.
@@ -131,8 +130,9 @@ func (c controlTx) PutSetting(s entity.Setting, expect uint64) (uint64, error) {
 		return 0, merrs.NewInvalidArgumentError("a setting needs a key and a scope, with an ID below installation scope")
 	}
 
-	if s.Schema > settings.Versions()[entity.FormatSettings].Max {
-		return 0, fmt.Errorf("put setting %s: %w", s.Key, settings.ErrNewerSchema)
+	if s.Schema > c.settingSchema {
+		return 0, fmt.Errorf("put setting %s: schema %d, this node writes up to %d: %w",
+			s.Key, s.Schema, c.settingSchema, entity.ErrNewerSchema)
 	}
 	if s.Scope.Kind == entity.ScopeShare {
 		if err := liveShare(c.tx, entity.ShareID(s.Scope.ID)); err != nil {

@@ -3,8 +3,8 @@ package enginetest
 import (
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/node/content"
 	"github.com/cubbit/dittofs/pkg/engine"
-	"github.com/cubbit/dittofs/pkg/engine/enginewire"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
@@ -20,7 +20,7 @@ func ShareOf(tb testing.TB, s *kvstore.Store, id entity.ShareID, limit int64) en
 		tb.Fatalf("enginetest: read share %v: %v", id, err)
 	}
 
-	return enginewire.Binding(sh, limit)
+	return content.Binding(sh, limit)
 }
 
 // AddShare creates a share named name in s, at the path /name, and returns

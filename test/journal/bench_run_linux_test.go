@@ -69,3 +69,39 @@ func TestBenchRunDeadlinePassesDuringLockWait(t *testing.T) {
 	}
 	assertStillEmpty(t, root, "run root")
 }
+
+// TestBenchRunQuietWaitEndsAtLatestStart pins the deadline check inside the
+// quiet wait itself: the wait now runs under the host's lock, so it must
+// never sit past the latest start even when its own budget is far away —
+// the lock has to be free in time. The load never drops under the planted
+// threshold, so only the in-loop deadline check can end the wait; the
+// budget, set to an hour, would keep the loop going. The interval between
+// the wait's checks is BENCH_QUIET_POLL, the input the test advances time
+// with, so the case runs in seconds instead of sleeping real 300s ticks.
+func TestBenchRunQuietWaitEndsAtLatestStart(t *testing.T) {
+	root := t.TempDir()
+	checkout := t.TempDir()
+	// A load threshold of 0 against any real /proc/loadavg reading: the
+	// machine's own load, whatever it is, keeps the loop looping.
+	if load, err := os.ReadFile("/proc/loadavg"); err != nil || len(load) == 0 {
+		t.Skip("no readable /proc/loadavg to plant a busy host")
+	}
+	env := map[string]string{
+		"BENCH_RUN_ROOT":            root,
+		"BENCH_CHECKOUT":            checkout,
+		"BENCH_QUIET_LOAD":          "0",
+		"BENCH_QUIET_LOAD_MAX_WAIT": "3600",
+		"BENCH_QUIET_POLL":          "2",
+		// Three seconds out: the wait's first tick passes it, the second
+		// lands past it, so only the in-loop check can refuse.
+		"BENCH_NOT_AFTER": strconv.FormatInt(time.Now().Add(3*time.Second).Unix(), 10),
+	}
+	code, _, stderr := benchRun(t, env, "small")
+	if code != 2 {
+		t.Errorf("bench-run.sh small with the quiet wait outliving the latest start: exit status got %d, want 2 (stderr %q)", code, stderr)
+	}
+	if !strings.Contains(stderr, "too late to start before the nightly work") {
+		t.Errorf("bench-run.sh small with the quiet wait outliving the latest start: stderr got %q, want it to contain \"too late to start before the nightly work\" — the wait runs under the lock and must free it in time", stderr)
+	}
+	assertStillEmpty(t, root, "run root")
+}

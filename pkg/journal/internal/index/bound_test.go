@@ -809,6 +809,10 @@ func TestSplittingRemovalsRefusedAtTheCeiling(t *testing.T) {
 // content write until the count falls below the bound. Refusing the open
 // would turn the bound into a crash of the journal once it is reached.
 func TestOverBoundAtOpen(t *testing.T) {
+	// decision: the writes and releases run in one goroutine and start none, so the race detector has nothing to check and only slows it.
+	if raceEnabled {
+		t.Skip("single-goroutine check; runs in the journal-index cell without -race")
+	}
 	var fs files
 	const limit = 10000
 	fs.setExtentLimit(limit)

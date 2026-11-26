@@ -494,8 +494,9 @@ func (t *Tracker) relearnReleased(seg core.SegmentID) {
 // registry's map order is: one Rec per distinct record, whatever live
 // registrations count it — the copy a carry places registers one more, and
 // the next walk finds the record once either way. The walk stays scoped to
-// the segment's own files table — every registration path enters the
-// record's file there before the registry — so the scan grows with the
+// the segment's own files table — a registration entering its sole segment
+// and a class's re-hold entering its placements' files name the record's
+// file there before its weight can hold the segment — so the scan grows with the
 // segment's files, never with the whole ledger. A segment no state exists
 // for answers nothing.
 //

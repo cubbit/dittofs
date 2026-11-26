@@ -27,7 +27,8 @@ func Unsupported(f *registry.Fixture, goos string) string {
 // adapter status names no port a cell could reach; one on the S3 profile,
 // since dt seeds no remote store a share's blocks could reach; one naming a
 // shares file, since a share's settings are written only through the
-// settings API, which refuses them until the settings table is wired; and
+// settings API, which refuses them while the node's settings table declares
+// no section at a share's scope; and
 // one naming users, since without an adapter nothing they could be created
 // for is served. Each such cell would otherwise run against a server
 // answering none of its tests. Withdraw each refusal once its part serves.

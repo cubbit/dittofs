@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -18,7 +19,14 @@ import (
 // the end of its line a comment.
 func readGolden(t testing.TB, name string) []byte {
 	t.Helper()
-	data, err := os.ReadFile("testdata/golden/" + name + ".hex")
+	return readGoldenFile(t, "testdata/golden/"+name+".hex")
+}
+
+// readGoldenFile reads a golden file by its path.
+func readGoldenFile(t testing.TB, path string) []byte {
+	t.Helper()
+	name := filepath.Base(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read golden %s: %v", name, err)
 	}
@@ -175,6 +183,112 @@ func TestParseCaptured(t *testing.T) {
 			t.Error("the credential is a copy of the record's bytes")
 		}
 	})
+	t.Run("knfsd", func(t *testing.T) { checkKnfsdCaptures(t, "testdata/golden") })
+}
+
+// linuxCallback is the callback program number the Linux client names in
+// SETCLIENTID and CREATE_SESSION.
+const linuxCallback = 0x40000000
+
+// knfsdAreas are the capture areas of test/pcap-corpus: the programs and
+// versions each one's calls may name, and the COMPOUND minor version its NFSv4
+// and callback calls carry (-1 for none).
+var knfsdAreas = map[string]struct {
+	progs map[[2]uint32]bool
+	minor int
+}{
+	"nfs3":  {map[[2]uint32]bool{{100003, 3}: true, {100005, 3}: true}, -1},
+	"nlm":   {map[[2]uint32]bool{{100021, 4}: true, {100024, 1}: true}, -1},
+	"nfs40": {map[[2]uint32]bool{{100003, 4}: true, {linuxCallback, 1}: true}, 0},
+	"nfs41": {map[[2]uint32]bool{{100003, 4}: true, {linuxCallback, 1}: true}, 1},
+	"nfs42": {map[[2]uint32]bool{{100003, 4}: true, {linuxCallback, 1}: true}, 2},
+}
+
+// checkKnfsdCaptures checks every knfsd-<label>-<area>-<what>-{call,reply}.hex
+// in dir, the messages cut from knfsd's captures: each call parses, names one
+// of its area's programs and versions, minor version included, under its
+// label, and carries AUTH_SYS or AUTH_NONE; each reply answers its call's
+// transaction ID; and every program and version of every area has a call.
+func checkKnfsdCaptures(t *testing.T, dir string) {
+	files, err := filepath.Glob(filepath.Join(dir, "knfsd-*.hex"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no knfsd golden files in %s (%v)", dir, err)
+	}
+	reached := map[string]map[[2]uint32]bool{}
+	for _, f := range files {
+		name := strings.TrimSuffix(filepath.Base(f), ".hex")
+		parts := strings.SplitN(strings.TrimPrefix(name, "knfsd-"), "-", 3)
+		if len(parts) < 3 {
+			parts = append(parts, "", "")
+		}
+		area, ok := knfsdAreas[parts[1]]
+		if !ok {
+			t.Errorf("%s: no area of the corpus in its name", name)
+			continue
+		}
+		rec := readGoldenFile(t, f)
+		switch {
+		case strings.HasSuffix(name, "-reply"):
+			call := readGoldenFile(t, strings.TrimSuffix(f, "-reply.hex")+"-call.hex")
+			if len(rec) < 8 || len(call) < 4 || !bytes.Equal(rec[:4], call[:4]) || binary.BigEndian.Uint32(rec[4:8]) != 1 {
+				t.Errorf("%s: not a reply to its call's transaction ID %x", name, call[:min(4, len(call))])
+			}
+			continue
+		case !strings.HasSuffix(name, "-call"):
+			t.Errorf("%s: neither a call nor a reply", name)
+			continue
+		}
+		c, err := wire.ParseCall(rec)
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		pv := [2]uint32{c.Program(), c.Version()}
+		if !area.progs[pv] {
+			t.Errorf("%s: program %d version %d, not one of area %s's", name, pv[0], pv[1], parts[1])
+			continue
+		}
+		if label := map[bool]string{true: "nfs4", false: "nfs3"}[area.minor >= 0]; parts[0] != label {
+			t.Errorf("%s: labelled %s, want %s", name, parts[0], label)
+		}
+		if fl, _ := c.Credential(); fl != 0 && fl != 1 {
+			t.Errorf("%s: credential flavour %d, want AUTH_NONE or AUTH_SYS", name, fl)
+		}
+		if minor, ok := compoundMinor(c); ok && minor != area.minor {
+			t.Errorf("%s: minor version %d, want %d", name, minor, area.minor)
+		}
+		if reached[parts[1]] == nil {
+			reached[parts[1]] = map[[2]uint32]bool{}
+		}
+		reached[parts[1]][pv] = true
+	}
+	for name, area := range knfsdAreas {
+		for pv := range area.progs {
+			if !reached[name][pv] {
+				t.Errorf("area %s: no call of program %d version %d", name, pv[0], pv[1])
+			}
+		}
+	}
+}
+
+// compoundMinor is the minor version of a COMPOUND or CB_COMPOUND call: both
+// open their arguments with a tag and the minor version.
+func compoundMinor(c wire.Call) (int, bool) {
+	if minor, ok := c.MinorVersion(); ok {
+		return minor, true
+	}
+	if c.Program() != linuxCallback || c.Procedure() != 1 {
+		return 0, false
+	}
+	a := c.Args()
+	if len(a) < 4 {
+		return -1, true
+	}
+	at := 4 + (int(binary.BigEndian.Uint32(a))+3)&^3
+	if at < 4 || len(a) < at+4 {
+		return -1, true
+	}
+	return int(binary.BigEndian.Uint32(a[at:])), true
 }
 
 // ParseCall allocates nothing: the call is a view over the record (RFC 20

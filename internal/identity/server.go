@@ -124,6 +124,9 @@ type State struct {
 	// keytabNames is the name of each key of the versions keys holds,
 	// read at Apply; whatever the caller passes is replaced.
 	keytabNames []identity.KeytabName
+	// domain is the NFSv4 owner strings' domain Apply derives from
+	// Settings.NFS4Domain and Keytab; whatever the caller passes is replaced.
+	domain string
 	// Machine is the machine password's versions in force, opened, current
 	// first. While Join.Joined, Apply derives each one's keys for the names
 	// in Join.Names, but for a version marked HandedOver.
@@ -336,6 +339,7 @@ func (s *Server) Apply(st State) error {
 		return err
 	}
 	st.keys, st.keytabNames = buildRing(st.Keytab, s.logger)
+	st.domain = nfs4Domain(st.Settings.NFS4Domain, st.Keytab)
 	st.machine = buildMachineRing(&st, s.logger)
 	st.dropped = st.keys.dropMachineNames(&st.machine)
 	s.mu.Lock()

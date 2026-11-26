@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/identity/identitymem"
+	"github.com/cubbit/dittofs/internal/node/content"
 	"github.com/cubbit/dittofs/internal/prof"
 	filesystem "github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/engine"
@@ -25,7 +26,6 @@ import (
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
-	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
 	"github.com/cubbit/dittofs/pkg/openstate"
@@ -187,7 +187,7 @@ func (c *bench) start(b *testing.B, clock *wallClock, age time.Duration) {
 		Existence: meta.Existence(),
 		Content:   meta.Content(),
 		Lifecycle: meta.Lifecycle(),
-		Holds:     openstate.EngineHolds(opens, meta.Opens()),
+		Holds:     content.EngineHolds(opens, meta.Opens()),
 		Clock:     clock,
 		Logger:    logger,
 		Tracer:    noTrace,
@@ -295,7 +295,7 @@ func (c *bench) signIn(b *testing.B) {
 		b.Fatalf("bench: admin grant: %v", err)
 	}
 
-	c.admin = signedIn(p)
+	c.admin = signedInAdmin(p)
 }
 
 // fill writes size bytes to each writer's file and commits their existence
@@ -678,100 +678,4 @@ func togetherWithin(
 	}
 
 	return nil
-}
-
-// txnRecord passes every call through to the store's kv.KV and records, for
-// each Update that committed, whether its final attempt wrote an existence key
-// (an overwrite record, F‖share‖file‖ov), only other keys, or both. Earlier
-// attempts the backend retried count for nothing. It answers nothing in the
-// store's place: it is the pass-through record a test may assert on, beside
-// kv.Counting.
-//
-// decision: a transaction is classified by its keys' prefixes, from the key
-// layout of pkg/metadata/kv/keys; a change of that layout must change
-// existenceKey, or every transaction reads as the storm's. Only the overwrite
-// record marks an existence commit: a chmod writes the share's version floor
-// (S‖share‖vf) too, so that key would count every chmod as the engine's.
-type txnRecord struct {
-	kv.KV
-
-	mu            sync.Mutex
-	engine, mixed int
-}
-
-// recordTxn notes the keys one attempt of a transaction writes.
-type recordTxn struct {
-	kv.Txn
-
-	existence, other *bool
-}
-
-func (t recordTxn) Set(key, value []byte) error {
-	t.note(key)
-
-	return t.Txn.Set(key, value)
-}
-
-func (t recordTxn) Delete(key []byte) error {
-	t.note(key)
-
-	return t.Txn.Delete(key)
-}
-
-func (t recordTxn) note(key []byte) {
-	if existenceKey(key) {
-		*t.existence = true
-	} else {
-		*t.other = true
-	}
-}
-
-func (r *txnRecord) Update(ctx context.Context, fn func(kv.Txn) error) error {
-	var existence, other bool
-
-	err := r.KV.Update(ctx, func(t kv.Txn) error {
-		existence, other = false, false
-
-		return fn(recordTxn{
-			Txn:       t,
-			existence: &existence,
-			other:     &other,
-		})
-	})
-	if err != nil {
-		return err
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	switch {
-	case existence && other:
-		r.engine, r.mixed = r.engine+1, r.mixed+1
-	case existence:
-		r.engine++
-	}
-
-	return nil
-}
-
-// take returns the committed transactions since the last take, those that
-// wrote an existence key (mixed ones included) and those among them that also
-// wrote other keys, and resets the counts.
-func (r *txnRecord) take() (engine, mixed int) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	engine, mixed = r.engine, r.mixed
-	r.engine, r.mixed = 0, 0
-
-	return engine, mixed
-}
-
-// existenceKey reports whether key is an overwrite record, which only an
-// existence commit of an overwrite writes.
-func existenceKey(key []byte) bool {
-	const sub = 1 + 2*keys.IDLen
-
-	return len(key) > sub && key[0] == keys.KindF && key[sub] == keys.FOv
 }

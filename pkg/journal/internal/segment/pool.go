@@ -215,6 +215,9 @@ type Pool struct {
 	// between construction and Start.
 	enterReadOnly func(error)
 	retirer       *Retirer // the source of recycled spares, nil when none; guarded by mu
+	// classHook runs in refill once a pass has chosen its class and left mu,
+	// before it asks anything else; set only by tests, before Start.
+	classHook func()
 
 	// parked counts the WaitSpares calls sitting on the settle condition,
 	// for the test that sequences an event against a wait it must confirm is
@@ -1356,6 +1359,11 @@ func (p *Pool) worker() {
 // worker exits; true otherwise, whether or not the pass made a spare.
 func (p *Pool) refill() bool {
 	for {
+		// The queue is read before the class is chosen, not after: a recycle
+		// lands its spare before it leaves the queue, so a read after the
+		// choice can find the queue empty and the class short by a spare
+		// that has already landed, and make a second one for the slot.
+		toHand := p.retiredToHand()
 		p.mu.Lock()
 		if p.stopped {
 			p.settleLocked()
@@ -1394,6 +1402,9 @@ func (p *Pool) refill() bool {
 			return true
 		}
 		p.mu.Unlock()
+		if p.classHook != nil {
+			p.classHook()
+		}
 
 		// decision: a read-only journal makes no spare, because RFC 1 §5.4
 		// says it "takes no spare" and a read-only journal writes nothing it
@@ -1436,7 +1447,7 @@ func (p *Pool) refill() bool {
 		// Upgrade: queue the full ids ahead of the early ones.
 		// Withdrawn when spare refusals show rolls refused while a queued
 		// recycle stays stuck.
-		if p.retiredToHand() {
+		if toHand {
 			p.settle()
 			return true
 		}

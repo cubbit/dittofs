@@ -94,6 +94,69 @@ func TestChangedFilesKeepsBothSidesOfARename(t *testing.T) {
 	}
 }
 
+// In the merge queue, --docs-only-base plans nothing for a group whose
+// changes are all documentation, and every cell for any other, a suite with
+// paths the group does not touch included, which --base would drop.
+func TestPlanDocsOnlyBase(t *testing.T) {
+	gitless(t)
+	root := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		pre := []string{"-C", root, "-c", "user.name=dt", "-c", "user.email=dt@example.com", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"}
+		if out, err := exec.Command("git", append(pre, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	commit := func(path, body string) {
+		t.Helper()
+		writeFile(t, filepath.Join(root, path), body)
+		git("add", ".")
+		git("commit", "-q", "-m", path)
+	}
+	git("init", "-q")
+	writeFile(t, filepath.Join(root, "pkg", "y.go"), "package pkg\n")
+	commit(filepath.Join("test", "suites.yaml"), "version: 1\ndefaults: { format: exit, tier: pr, timeout: { test: 30m, cell: 60m } }\nsuites:\n"+
+		"  all: { cmd: \"true\" }\n"+
+		"  pathed: { cmd: \"true\", paths: [\"pkg/**\"] }\n")
+	t.Chdir(root)
+	cells := func(args ...string) []string {
+		t.Helper()
+		out, err := dt(t, append([]string{"plan", "--tier", "pr", "--json"}, args...)...)
+		if err != nil {
+			t.Fatalf("dt plan %v: %v\n%s", args, err, out)
+		}
+		var got struct {
+			Cells []plan.Cell `json:"cells"`
+		}
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, c := range got.Cells {
+			names = append(names, c.Name)
+		}
+		return names
+	}
+
+	commit(filepath.Join("docs", "a.md"), "a\n")
+	if got := cells("--docs-only-base", "HEAD~1"); len(got) != 0 {
+		t.Errorf("a docs-only group planned %q, want nothing", got)
+	}
+	commit(filepath.Join("cmd", "x.go"), "package main\n")
+	if got, want := cells("--docs-only-base", "HEAD~2"), []string{"all", "pathed"}; !slices.Equal(got, want) {
+		t.Errorf("a group with code planned %q, want every cell %q", got, want)
+	}
+	if got, want := cells("--base", "HEAD~2"), []string{"all"}; !slices.Equal(got, want) {
+		t.Errorf("--base over the same change planned %q, want %q: the fixture no longer tells the two apart", got, want)
+	}
+	if _, err := dt(t, "plan", "--tier", "pr", "--base", "HEAD~1", "--docs-only-base", "HEAD~1"); err == nil {
+		t.Error("--base with --docs-only-base accepted, want them refused together")
+	}
+	if _, err := dt(t, "plan", "--tier", "merge", "--docs-only-base", "HEAD~1"); err == nil {
+		t.Error("--docs-only-base on the merge tier accepted, want it refused: only the queue's pr-tier run has a group")
+	}
+}
+
 // checkout moves the test into a new checkout whose registry has a suite
 // with an option, one that fails, one that needs another platform, one with a
 // fixture dt can't set up yet, one that needs this platform and whose 9x

@@ -126,7 +126,7 @@ func (c *caching) admitCall(call vfs.Call) (entity.Identity, error) {
 }
 
 func (c *caching) admitIn(ctx context.Context, call vfs.Call) (entity.Identity, error) {
-	a, release, err := c.admit(ctx, call, c.share, true, false)
+	a, release, err := c.admit(ctx, call, c.share, 0)
 	release()
 	if err != nil {
 		return entity.Identity{}, err

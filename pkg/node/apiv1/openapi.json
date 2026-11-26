@@ -247,6 +247,10 @@
           "node": {
             "type": "string"
           },
+          "port": {
+            "minimum": 0,
+            "type": "integer"
+          },
           "state": {
             "type": "string"
           }

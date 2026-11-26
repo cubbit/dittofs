@@ -101,7 +101,7 @@ func benchClient(b *testing.B, tab *Table, name string) Caller {
 	if err != nil {
 		b.Fatal(err)
 	}
-	return Caller{Client: id, Principal: c.Owner, Protocol: c.Protocol}
+	return Caller{Client: id, Principal: c.Owner}
 }
 
 // liveHeap is the heap still reachable after a collection.

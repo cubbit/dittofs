@@ -86,12 +86,16 @@ func TestDirectoryCredentialUnresolvedDialsNothing(t *testing.T) {
 		"provider unbuilt": &secrets.Provider{},
 	} {
 		t.Run(name, func(t *testing.T) {
+			// The refused lookup raises the outage and starts the probe
+			// loop, which only Stop ends.
+			prof.Watch(t, prof.Options{})
 			f := passThrough(t, d)
 			s, err := identity.New(identity.Deps{Store: newStore(t), Clock: sim.NewTestClock(time.Unix(0, 0)),
 				Secrets: provider, Directory: f.Dial})
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
+			t.Cleanup(func() { _ = s.Stop(context.Background()) })
 			if err := s.Apply(dirState(d)); err != nil {
 				t.Fatal(err)
 			}

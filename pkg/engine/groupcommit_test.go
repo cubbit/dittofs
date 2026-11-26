@@ -754,6 +754,165 @@ func TestAFailingFileLeftAnotherWayIsCleared(t *testing.T) {
 	}
 }
 
+// conflictOnKV is a kv.KV whose writes of any key naming file f, once f is
+// set, conflict, as a file another writer keeps changing does: the store's
+// own retry runs the attempt again until the call's context ends.
+type conflictOnKV struct {
+	kv.KV
+	f *atomic.Pointer[entity.FileID]
+}
+
+func (c conflictOnKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
+	return c.KV.Update(ctx, func(tx kv.Txn) error {
+		return fn(conflictOnTxn{tx, c.f})
+	})
+}
+
+type conflictOnTxn struct {
+	kv.Txn
+	f *atomic.Pointer[entity.FileID]
+}
+
+func (t conflictOnTxn) Set(key, value []byte) error {
+	if f := t.f.Load(); f != nil && bytes.Contains(key, f[:]) {
+		return kv.ErrConflict
+	}
+
+	return t.Txn.Set(key, value)
+}
+
+// 64 files due at once, one of which the store keeps conflicting on, commit
+// in the few extra calls the split makes: it halves the batch, tries the
+// failing file's half beside it, leaves the marks with one half, and sends
+// them alone once the file fails by itself.
+func TestTheSplitIsBoundedOverAConflictingStore(t *testing.T) {
+	tests := []struct {
+		name    string
+		xFirst  bool
+		calls   int   // existence commits made, the marks' own included
+		xCalls  []int // the calls holding x
+		marks   []int // the calls carrying the marks
+		noFiles []int // the calls holding no file
+	}{
+		// 1 + 2 per halving over 6 halvings; the marks ride the batch and its
+		// first half, which commits.
+		{"x last", false, 13, []int{0, 2, 4, 6, 8, 10, 12}, []int{0, 1}, nil},
+		// The marks ride x's half down to its leaf, then go alone.
+		{"x first", true, 14, []int{0, 1, 2, 3, 4, 5, 6}, []int{0, 1, 2, 3, 4, 5, 6, 7}, []int{7}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			log := &callLog{}
+			bad := new(atomic.Pointer[entity.FileID])
+
+			u := newUnitWith(t, unitConfig{
+				deps: []func(*engine.Deps){onCommit(logCommits(log))},
+				kv: func(k kv.KV) kv.KV {
+					return conflictOnKV{k, bad}
+				},
+			})
+			if err := u.e.Apply(engine.Settings{
+				ExistenceAge:        time.Second,
+				GroupCommitMaxFiles: 64,
+				CloneMaxLen:         1 << 30,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			var others []entity.FileID
+			for i := range 63 {
+				others = append(others, u.create(t, string(rune('a'+i/26))+string(rune('a'+i%26))))
+			}
+
+			x := u.create(t, "x")
+			// x is staged at an instant of its own, first or last, so the
+			// batch sorts it there whatever the order of ties.
+			if tc.xFirst {
+				u.write(t, x, 0, []byte("x"))
+				u.clock.Advance(time.Millisecond)
+			}
+
+			for _, f := range others {
+				u.write(t, f, 0, []byte("o"))
+			}
+
+			if !tc.xFirst {
+				u.clock.Advance(time.Millisecond)
+				u.write(t, x, 0, []byte("x"))
+			}
+
+			bad.Store(&x)
+			eventually(t, "the group commit's timer is set", func() bool {
+				return u.clock.Pending() > 0
+			})
+			u.clock.Advance(time.Second) // all 64 are due now, so one batch takes them
+			// Each failing call is cut at the batch's 50 ms, a wall-clock
+			// context deadline no injected clock drives, so eventually's bounded
+			// wait is the assertion that the other files commit within the
+			// split's few calls. About 7 of them wait on x, so the correct split
+			// is done in about 350 ms, well inside the wait.
+			eventually(t, "the 63 other files commit and x is named failing", func() bool {
+				return u.e.Failing(u.rec, x) && !slices.ContainsFunc(others, u.e.HasEntry)
+			})
+			log.mu.Lock()
+			defer log.mu.Unlock()
+
+			var xCalls, marks, noFiles []int
+
+			commits := 0
+
+			for i, c := range log.commits {
+				switch {
+				case len(c) == 0:
+					noFiles = append(noFiles, i)
+				case slices.Contains(c, x):
+					xCalls = append(xCalls, i)
+				default:
+					commits++
+				}
+
+				if log.marks[i] != nil {
+					marks = append(marks, i)
+				}
+			}
+
+			if len(log.commits) != tc.calls {
+				t.Errorf("%d existence commits, want %d", len(log.commits), tc.calls)
+			}
+
+			if commits != 6 {
+				t.Errorf("%d calls without x commit, want 6 (the halves beside it)", commits)
+			}
+
+			if n := u.e.Stats().GroupCommitSplits; n != 6 {
+				t.Errorf("engine_group_commit_splits_total %d, want 6 (one per halving)", n)
+			}
+
+			if !slices.Equal(xCalls, tc.xCalls) {
+				t.Errorf("calls holding x %v, want %v", xCalls, tc.xCalls)
+			}
+
+			if !slices.Equal(noFiles, tc.noFiles) {
+				t.Errorf("calls holding no file %v, want %v", noFiles, tc.noFiles)
+			}
+
+			if !slices.Equal(marks, tc.marks) {
+				t.Errorf("calls carrying the marks %v, want %v", marks, tc.marks)
+			}
+
+			last := tc.marks[len(tc.marks)-1]
+			if last >= len(log.marks) || log.marks[last] == nil {
+				t.Fatalf("call %d carries no marks, so none can be recorded", last)
+			}
+
+			want := log.marks[last].Marks
+			if got := u.j.RecordedMarks(); len(got) == 0 || !slices.Equal(got, want) {
+				t.Errorf("the journal holds %v as recorded, want call %d's %v", got, last, want)
+			}
+		})
+	}
+}
+
 // corruptKV is a kv.KV whose reads of any key naming file f fail, as a
 // record of f the store cannot decode does: a whole-call error of the
 // existence commit that names no file.

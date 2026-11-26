@@ -251,7 +251,7 @@ Block metadata **MUST NOT**:
   [RFC 7](rfc-7-namespace-metadata.md)'s;
 - decide what to offload, evict or sweep — it supplies the atomic operations those
   decisions need and nothing more;
-- import another component in this set ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
+- import another component's implementation ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
 
 ### 1.2 Why it is a separate RFC from the namespace
 
@@ -1089,6 +1089,14 @@ Partial application **MUST NOT** be observable: a ref without its chunk, a
 refcount without its ref, or a chunk without its block each turns a later read or
 sweep into a guess.
 
+**Zero refs with no block commit alone.** A pass whose carved extents hold only
+all-zero chunks has no block, so no put intent and no block commit. Its zero refs
+**MUST** then commit in a **zero-ref commit**: one transaction that writes the
+zero refs, replacing what they overlap with the history moves and count changes
+that requires, and that makes the per-file checks below. It writes no block
+record, no chunk record and no intent delete, and it stays within K like any
+commit ([§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed)). Without it a stretch of zeros would never leave the journal.
+
 **The first block to commit a chunk owns its record.** A later commit that carries
 the same chunk adopts it: it adds its refs and their counts, and leaves `block`
 and `position` as they are. The copy the later block carries is dead weight, not
@@ -1281,7 +1289,7 @@ transaction. The symbols map to `TxnLimits` fields and to this RFC's encodings:
 | *T* | `TxnLimits.TxnBytes` | bytes one transaction may hold, keys, values and conflict ranges counted |
 | *E* | `TxnLimits.TxnEntries` | keys one transaction may write or delete; ∞ when it reports 0 (unbounded), so the second term drops |
 | *b* | derived: worst-case encoded key bytes + value bytes + the conflict-range bytes the backend charges for writing or guarding that key, over every key kind an item writes ([RFC 16 §4.2.1](rfc-16-metadata-store.md#4.2.1%20Key%20encoding)); its key and value terms are at most `TxnLimits.Key` and `TxnLimits.Value` | cost of one key |
-| *F*, *e* | derived the same way for the sub-transaction's fixed records (the removal or intent record, both fences, `Cut` and the `LiveCut` reads, with their conflict ranges) | their bytes and their entry count |
+| *F*, *e* | derived the same way for the sub-transaction's fixed records (the removal or intent record, both fences, `Cut` and the `LiveCut` reads, and an offload commit's tracked reads: `F_o(file)`, `Intent(name)`, `Node(primary)` and the key record of each material its block's `encodings` name, [§5.4](#5.4%20Reads%20that%20gate%20a%20commit); each with its conflict ranges) | their bytes and their entry count |
 
     K = min( ⌊(T − F) / b⌋ , E − e )
 
@@ -1318,6 +1326,24 @@ replace would pass it, and a commit that meets more than it planned for applies
 the files that fit and leaves the rest unreported, to be offered again
 ([RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline)). A removal's phase 1 reads at most K holes of its extent and takes
 the `holeCredit` path past them ([§6.2](#6.2%20Truncation%20and%20deallocation)), so its reads fit as its writes do.
+
+**A store whose K cannot hold one chunk's commit is refused at open.** The floor
+is the most keys an offload commit of one chunk of one byte, in a block of its
+own, can write ([§4.1](#4.1%20What%20one%20commit%20records)): its fixed keys — its ref, the ref's reverse key and its
+chunk record, and the delete of the ref it replaces, at worst one it lands
+inside and splits, with the reverse keys, history moves ([§6.5](#6.5%20Who%20owns%20a%20ref)) and count
+changes that replacement requires ([§6](#6.%20Reference%20counting)); the per-block keys — the put
+intent's delete, the block record and its GC index keys
+([RFC 9 §7.2](rfc-9-gc.md#7.2%20Every%20record%20GC%20stores%20names%20its%20reclamation)); and the per-file key, the offload fence `F_o(file)`. It also counts what
+the commit reads with conflict tracking, whose conflict ranges [RFC 16 §4.1](rfc-16-metadata-store.md#4.1%20One%20small%20interface%20per%20backend)
+charges to `TxnBytes`: `F_o(file)`, `Intent(name)`, `Node(primary)` and one key
+record per material the block's `encodings` name ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)). A zero-ref commit
+([§4.1](#4.1%20What%20one%20commit%20records)) writes and reads a subset of these, so it does not move the floor. The store
+**MUST** refuse to open, naming K and the floor, when K derived as above is below
+it, beside its refusal of a record that does not fit `TxnLimits.Key` or
+`TxnLimits.Value`. So no chunk's commit passes K alone: the engine can always end
+a stretch before a chunk that would ([RFC 2 §5.2](rfc-2-carver.md#5.2%20Packing%20rules), P2), and every offload
+commit makes progress, as the smallest removal item does.
 
 **Keys written per chunk are bounded.** Counting every put and every delete,
 from the offload commit that creates a chunk's record to the prune that deletes
@@ -1436,6 +1462,7 @@ The gating reads in this document, and the key each conflicts on:
 | primary's node lease, every fenced commit **(cluster)** ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)) | `Node(primary)`, guarded | the claim of a takeover, which marks it lapsed; the node acquiring a new lease |
 | removals an offload commit honours ([§4.1](#4.1%20What%20one%20commit%20records)) | the removals scan, covered by `F_o(file)` | every removal writes `F_o` |
 | put intent ([§7.6](#7.6%20Put%20intents)) | `Intent(name)` | the commit and an abandonment both delete it |
+| material destroyed, offload commit ([RFC 8 §10.4](rfc-8-engine.md#10.4%20Nothing%20but%20dirty%20content%20makes%20an%20extent%20unevictable)) | the key record of each material the block's `encodings` name, a tracked read, since the commit needs its `destroyed` mark | the destroy, which marks the record, and a master-key destroy, which marks every record its key wraps ([RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)) |
 | the deleter's move, resurrection by adoption ([§7.1](#7.1%20Conditional%20retirement), [§7.2](#7.2%20Adoption%20is%20conditional%20on%20existence)) | `Block(name)` | both transactions write it |
 | the deleter's check that no ref names a chunk ([§7.1](#7.1%20Conditional%20retirement)) | `Chunk(hash)`, guarded; the reverse prefix itself is not tracked | every transaction adding a ref writes `Chunk(hash)` |
 | audit lowering a count ([§7.5](#7.5%20Audit)) | `Chunk(hash)` stamp | every ref change writes it |
@@ -2848,6 +2875,7 @@ these. Shrink every failing sequence to a minimal one and keep it.
 | [§8.1](#8.1%20Covering%20lookup) lookup | Assert records **read** per covering lookup grow at most logarithmically in *N*, counting index iterator steps as well as row loads. |
 | [§8.3](#8.3%20A%20file%27s%20refs%20and%20the%20version%20floor) floor index | Assert `VersionFloor` reads *B* records per share, that no commit writes a per-share record, that no offload commit writes a floor entry, and that a File holds exactly one entry. Commit to many files of one share at once on a range-splitting backend; assert the index writes spread over the *B* buckets' key ranges, not one. |
 | [RFC 0 §9.1](rfc-0-data-lifecycle.md#9.1%20Records%20and%20their%20reclamation) (I7) | Store a file's refs across a range of sizes. Assert no stored value reaches the storage engine's inline threshold at the refs' worst-case encoding, not a fixture's. |
+| [§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) K floor | Open the store against limits that give K one below the floor of one 1-byte chunk's commit, its tracked reads and their conflict ranges counted. Assert the open is refused, naming K and the floor. Raise the limits by one key's cost; assert it opens, and that a one-chunk commit with every tracked read, a key record per material included, commits within *T*. |
 | [§5.2](#5.2%20Cost%20per%20commit%20is%20bounded%20by%20what%20changed) K | Truncate, release, clone and delete a snapshot of files of 10³ to 10⁷ refs. Assert every transaction stays within the backend's limits and writes at most K keys, and K is not a configuration key. Open the store against backends reporting different value, key, transaction-size and entry limits, and assert K equals `min(⌊(T − F)/b⌋, E − e)` for each, that a batch of K keys at worst-case encoding with its conflict ranges commits and one of K + 1 exceeds the size limit, and that a backend whose key or value limit is below a record's worst case is refused at open. Repeat at the worst case: every ref on its own block that the batch retires, every ref moved to history under a live snapshot, and an overwrite record over every ref. Then rewrite one 1 MiB ref with 256 scattered 4 KiB writes between offloads, and a 64 MiB ref with 10⁵, and truncate the file to 0: assert every batch commits within K keys, a batch's cursor falls inside the ref, and the removal completes. A budget counted in refs exceeds the limits on that ref and never commits. Overwrite one file at 10⁵ scattered runs between existence commits: assert its existence commit spans several transactions within K and `applied` ends at the newest version. |
 | [§6.2](#6.2%20Truncation%20and%20deallocation), [§6.5](#6.5%20Who%20owns%20a%20ref) overwrite record across batches | With K forced small, offload `[0, 4M)` as one ref, snapshot 1, overwrite `[0, 3M)` and commit existence, snapshot 2, truncate to 0 before the overwrite is offloaded, so phase 2's batches split the overwrite record. Assert snapshot 2 reads the overwrite throughout `[0, 3M)` and every history piece under the record dies at its `born`. A batch that drops the record whole when it reaches its start dates the later pieces at the removal's cut. |
 | [§3.3](#3.3%20Holes%2C%20not%20written%20extents) overwrite records under a removal | Overwrite one file at 10⁵ distinct runs between offloads, then truncate it to 0. Assert phase 1 writes O(1) records whatever the count, and every phase-2 transaction stays within K. |

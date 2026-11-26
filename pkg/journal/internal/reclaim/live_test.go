@@ -498,6 +498,13 @@ func TestTrackerSegmentUnlinkedReHoldsTheSurvivorBeforeTheDurableSignal(t *testi
 	if got := tr.Held(dst); !got {
 		t.Fatalf("Held of the survivor after the non-durable unlink of its mate = %v, want true: the class's surviving segment re-held on the report", got)
 	}
+	// The re-hold names the record's file under the survivor, so a pass's
+	// carry walk reaches it there; a raise that kept no file would answer
+	// held over a record no walk can enumerate, and the survivor could
+	// never drain.
+	if _, ok := tr.stateOf(dst).files[id]; !ok {
+		t.Fatalf("the re-held record's file was not kept under the survivor after the unlinked report")
+	}
 	// The registrations stay — the durable signal alone releases them.
 	if got, want := tr.recs[id][orig], 1; got != want {
 		t.Fatalf("the gone segment's registration after the unlinked report = %d, want %d: the re-hold releases nothing", got, want)
