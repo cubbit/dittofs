@@ -258,7 +258,7 @@ row's work is shared, the other part's owner is named.
 | R61 | §4.13: a control put through a byte flip is `ErrCorrupt` (T) | test row | §7.1 | T4.5 |
 | R62 | §4.5: a batch deleted twice, with a never-written name, all nil; a batch of 2,500, every block gone | test row | §7.1 | T4.6 |
 | R63 | §4.5: one key failed inside a batch: exactly that name's result is an error; a batch whose response is dropped: every result `ErrTransient` (T) | test row | §7.1 | T4.6 |
-| R64 | §4.6: 2,500 blocks listed in pages of 1,000, stopped after the second page and resumed, in a new walk, from the cursor it returned: each once, in order, with size and time; one request per call and at most `n`; with `n` 500 no page's reply exceeds the small-body cap | test row | §7.1, RFC 3 §2.10 | T4.7 |
+| R64 | §4.6: 2,500 blocks listed in pages of 1,000, stopped after the second page and resumed, on a store opened again over the same prefix, from the cursor it returned: each once, in order, with size and time; one request per call and at most `n`; with `n` 500 no page's reply exceeds the small-body cap | test row | §7.1, RFC 3 §2.10 | T4.7 |
 | R65 | §4.6: a key that is not a block name under the block namespace is skipped and counted; a cancel mid-page ends the call with the context's error | test row | §7.1 | T4.7 |
 | R66 | §4.2: after the whole suite the store's raw namespace holds only blocks, control objects and check objects, and every block key is the prefix followed directly by the name | test row | §7.1 | T4.8 |
 | R67 | §4.8: every failure the fault transport can produce wraps exactly one sentinel and reaches no native error; a cancelled context comes back as `context.Canceled` (T) | test row | §7.1 | T4.8 |
@@ -695,7 +695,8 @@ test/suites.yaml        T4.3  integration's s3-allocs option
   `max-keys` `n` and `start-after` the key `after` holds (none for the zero cursor), yielding each block
   key's name with `Size` and `LastModified`, skipping and counting a foreign key with a `Warn`
   naming it, `next` the cursor of the page's last key, `after` when it has none (D5), and `done`
-  from `IsTruncated`. Consumed by
+  from `IsTruncated`; a non-zero cursor whose key lies outside `<prefix>blocks/` refused with
+  `ErrInvalid` before any request. Consumed by
   E5's check step 4, T4.8, E2's raw-namespace row and GC (RFC 9).
 - **Acceptance criteria:**
   - Every call sends one request; a walk of pages yields each block once in order.
@@ -705,7 +706,9 @@ test/suites.yaml        T4.3  integration's s3-allocs option
   one block, listed with `n` 1,000 (catches a walk that never advances, D5); a pure table of the
   page reading over reply values: an empty page marked truncated (`ErrTransient`, D5), an empty
   page not marked truncated (`done`, `next` equal to `after`), a page ending on `blocks/zz` not
-  marked truncated (`done`) and marked truncated (not `done`, `next` holding that key), D5, and a
+  marked truncated (`done`) and marked truncated (not `done`, `next` holding that key), D5, a
+  cursor holding a key outside `<prefix>blocks/` (`ErrInvalid`, and T3.2's record shows no
+  request), and a
   prefix holding non-ASCII and percent-encoded bytes, whose keys are matched byte for byte
   (catches a prefix stripped after a decoding the request never asked for); `remote_list_foreign_total`
   read from the sink `Recorder`'s foreign keys. `s3-allocs`: bytes allocated by one page of 1,000 at most a fixed bound.
@@ -719,7 +722,8 @@ test/suites.yaml        T4.3  integration's s3-allocs option
 - **Covers:** R2, R3, R12, R34, R43, R47, R66–R73.
 - **Deliverables:** an `integration` test in `pkg/remote/s3` running E2's `remotetest` with an
   opener over a fresh random prefix of one LocalStack bucket, created once through the client under
-  test (`CreateBucket`, `BucketAlreadyOwnedByYou` accepted), and the integrity mode LocalStack 4.13.1 enforces
+  test (`CreateBucket`, `BucketAlreadyOwnedByYou` accepted), its `Reopen` opening a second store
+  over the same bucket and prefix, and the integrity mode LocalStack 4.13.1 enforces
   (CRC32C); a table running every call of `remote.Store` this epic built under each fault E3
   provides and every status from 100 to 599; the raw-namespace listing after the suite. Consumed by
   R4-S3.

@@ -15,7 +15,7 @@ reads. Cited, not owned: [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md)
 doubles). Every citation is `develop`'s text. The code lands on `feat/storage-v2`, and the paths
 below are paths there.
 **Track:** the team.
-**Epic 2 estimate: 5 subtasks, 8.5 man-days.**
+**Epic 2 estimate: 5 subtasks, 8.75 man-days.**
 **Depends on:** **S1**, E1's `pkg/remote` frozen: `Store` with the calls v1.1 has (`Checksum`,
 `Put`, `Get`, `Delete`, `List`, `Health`, `PutControl`, `GetControl`, `Close`), `Name`, `Range`,
 `Info`, `Cursor`, `Role`, `Checksum` with its kinds, `StoredSum`, `Version`, `Direction`, the sentinels,
@@ -153,7 +153,7 @@ subtasks and tests can cite them.
 | R5 | §4.3: put, then get whole: bytes equal | test row | §7.1 | T2.1 |
 | R6 | §4.4: a get of each range inside the block returns exactly its bytes; a range starting past the end fails with `ErrInvalid` | test row | §7.1 | T2.1 |
 | R7 | §4.5: a batch deleted twice, including a never-written name: every result is `nil`; a batch of 2,500: every block gone | test row | §7.1 | T2.2 |
-| R8 | §4.6: 2,500 blocks listed in pages of 1,000, stopped after the second page and resumed, in a new walk, from the cursor it returned: every block seen exactly once, in order, with size and time, and each call returns at most its `n`. The one request per call and the reply under the small-body cap are E4's | test row | §7.1 | T2.2 |
+| R8 | §4.6: 2,500 blocks listed in pages of 1,000, stopped after the second page and resumed, on a store opened again over the same namespace through `Subject.Reopen`, from the cursor it returned: every block seen exactly once, in order, with size and time, and each call returns at most its `n`; a cursor outside the block namespace is `ErrInvalid` with no request. The one request per call and the reply under the small-body cap are E4's | test row | §7.1 | T2.2 |
 | R9 | §4.6: a key under the block namespace that is not a block name is skipped; a cancel mid-page ends the call with the context's error. The S3 store's count is E4's; the in-memory store's is R20's | test row | §7.1 | T2.2 |
 | R10 | §4.2: after the suite's rows, the store's raw namespace holds nothing but blocks, control objects and check objects, and every block key is the prefix followed directly by the name | test row | §7.1 | T2.3 |
 | R11 | §4.13: put and get each role: bytes equal, a second put replaces the first, an absent role is `ErrNotFound`, and a block listing yields none of them. The health role is never absent on an opened store, so its absence is not asserted (§4.7) | test row | §7.1, §4.7 | T2.3 |
@@ -328,7 +328,7 @@ subtasks and tests can cite them.
 ```text
 pkg/remote/remotetest/
   suite.go        T2.1  Subject, Run, the leak check per row; the put and get rows
-                  T2.2  the delete and listing rows; Subject.PutRaw
+                  T2.2  the delete and listing rows; Subject.PutRaw, Subject.Reopen
                   T2.3  the control-object and raw-namespace rows; Subject.Raw
                   T2.4  the read-only probe row; Subject.ReadOnly
                   T2.5  the load row; Subject.Load, Load, CallRecord
@@ -427,25 +427,33 @@ pkg/remote/memory/
 
 ### T2.2 The delete and listing rows
 
-**Subtask T2.2 estimate: 2 man-days.**
+**Subtask T2.2 estimate: 2.25 man-days.**
 
 - **Track:** the team. **Depends on:** T2.1.
 - **Covers:** R2, R7–R9, R13, R19–R21.
 - **Deliverables:**
   - `remotetest`: `Subject.PutRaw func(ctx context.Context, key string, body []byte) error`, which
-    stores a body under a key relative to the prefix, beneath the store; the rows of R7, R8 and R9.
+    stores a body under a key relative to the prefix, beneath the store; `Subject.Reopen
+    func(ctx context.Context) (remote.Store, error)`, which opens a second store over the same
+    namespace, so a resumed walk proves the cursor holds no per-instance state; the rows of R7, R8
+    and R9.
   - `memory/list.go`: `Delete` and `List` with the signatures of RFC 4 §4.1. `List` walks the
     sorted keys under `blocks/` after the cursor's key, at most `n` keys a page as S3's `max-keys`
-    counts them, `next` holding the page's last key, or `after` when the page holds none; it skips a key whose remainder is not a name
+    counts them, `next` holding the page's last key, or `after` when the page holds none, and a
+    non-zero cursor outside `blocks/` refused with `ErrInvalid`; it skips a key whose remainder is not a name
     with D7's `decision:` marker, and reports `ModTime` from the clock at the put (R21). The unexported
-    `putRaw`, which the opener hands as `PutRaw`. Consumed by the rows, GC's tests (RFC 9) and the
+    `putRaw`, which the opener hands as `PutRaw`, and `reopen`, a second `*Store` over the first's
+    objects, which it hands as `Reopen`. Consumed by the rows, GC's tests (RFC 9) and the
     RFC 3 plan's checks.
 - **Acceptance criteria:**
   - The walk of 2,500 blocks yields each once, in ascending order, resumable from any `next` cursor.
   - A batch with a name repeated, a name never written and 2,500 names returns one `nil` per name,
     in order.
 - **Tests:**
-  - The suite's rows, at `remote.Store`: R7 (catches a delete of an absent name failing); R8, with
+  - The suite's rows, at `remote.Store`: R7 (catches a delete of an absent name failing); R8,
+    resumed on `Reopen`'s store (catches a cursor holding per-instance state, such as a service
+    token or an index), a cursor taken from a subject under another prefix refused `ErrInvalid`
+    (catches a foreign cursor sent as a starting point), and with
     a page asserting at most `n` and each `Info` checked against the size put and a non-zero time
     (catches a duplicated or dropped block at a page boundary, or a resume that restarts); R9 with
     a key `blocks/7f` planted through `PutRaw`, valid hex but too short for a name, so it sorts
@@ -459,7 +467,7 @@ pkg/remote/memory/
   - `store_test.go`, at `List`: the clock set to a fixed past instant before a put, `Info.ModTime`
     equal to it (catches `time.Now`, R21); `Delete` returning one result per name for a batch with
     duplicates (catches results collapsed by name, R19).
-- **Rules:** rule 9: D7's `decision:`. Rule 12: `PutRaw` lands with R9's row.
+- **Rules:** rule 9: D7's `decision:`. Rule 12: `PutRaw` lands with R9's row, `Reopen` with R8's.
 
 ### T2.3 Control objects and the raw namespace
 
@@ -618,7 +626,7 @@ flowchart TD
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T2.1, T2.2, T2.3 | 5.75 | — | the suite and the store it holds, every data and control row E4 runs |
+| 1 | T2.1, T2.2, T2.3 | 6 | — | the suite and the store it holds, every data and control row E4 runs |
 | 2 | T2.4, T2.5 | 2.75 | PR 1 | the probes, the wrapper and the record, which the RFC 3 plan reads |
 
 A suggestion only: one pull request per subtask works as well.
