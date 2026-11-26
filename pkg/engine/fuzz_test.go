@@ -751,32 +751,41 @@ func engineFailUpdates(_ *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 // option of the same name keeps. A restart, a process death, has no variant:
 // it keeps every accepted write.
 func engineCrash(env *fuzz.Env, w *engineWorld, _ fuzz.Args) fuzz.Result {
-	return w.crash(env, "")
+	w.fix.Crash()
+
+	return w.afterCrash(env, "")
 }
 
 func engineCrashKeeping(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 	mask := a.Int("mask")
 
-	return w.crash(env, fmt.Sprintf("keeping %#b", mask), enginetest.Keeping(uint64(mask)))
+	return w.crashVariant(env, fmt.Sprintf("keeping %#b", mask), enginetest.Keeping(uint64(mask)))
 }
 
 func engineCrashTorn(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 	n := int(a.Int("n"))
 
-	return w.crash(env, fmt.Sprintf("torn after %d bytes", n), enginetest.Torn(n))
+	return w.crashVariant(env, fmt.Sprintf("torn after %d bytes", n), enginetest.Torn(n))
 }
 
 func engineCrashReordered(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 	seed := a.Int("seed")
 
-	return w.crash(env, fmt.Sprintf("reordered by seed %d", seed), enginetest.Reordered(uint64(seed)))
+	return w.crashVariant(env, fmt.Sprintf("reordered by seed %d", seed), enginetest.Reordered(uint64(seed)))
 }
 
-func (w *engineWorld) crash(env *fuzz.Env, variant string, opts ...enginetest.CrashOption) fuzz.Result {
-	if refused := w.fix.CrashOrPlain(opts...); refused != nil {
+// crashVariant crashes with opt, or plain when the disk refuses it, which the
+// answer then says.
+func (w *engineWorld) crashVariant(env *fuzz.Env, variant string, opt enginetest.CrashOption) fuzz.Result {
+	if refused := w.fix.CrashOrPlain(opt); refused != nil {
 		variant += variantRefused
 	}
 
+	return w.afterCrash(env, variant)
+}
+
+// afterCrash is what the new process of a crash serves.
+func (w *engineWorld) afterCrash(env *fuzz.Env, variant string) fuzz.Result {
 	for _, write := range w.writes {
 		if write.done.Load() == 0 {
 			write.orphaned = true
