@@ -34,15 +34,15 @@ needs both halves' loops and whose bound counts T4.6's overlapping tries. Outsid
 RFC 8 offload plan epic 15 calls the complete `Upload`, and epic 21 runs T4.8's rows over the S3
 store, giving `Faults.Drop`.
 
-**Builds on epic 3's recommended answers.** Epic 3's pull request waits on two answers: its D12
-(each check in a `testing/synctest` bubble, rather than `pkg/sim`'s `TestClock` with an idle wait)
-and its §2.9 sentence on a waiter bound with nothing displaceable. This document assumes both are
-answered as epic 3 recommends. A different D12 answer is known rework here: every test of T4.6 to
-T4.10 would drive the `TestClock` through epic 3's fallback idle wait instead of a bubble, about
-1 man-day across them. The §2.9 sentence changes nothing here.
+**Builds on epic 3's decisions.** The user decided epic 3's D12 on 2026-11-26: each check runs in
+a `testing/synctest` bubble, not on `pkg/sim`'s `TestClock` with an idle wait, so every test of
+T4.6 to T4.10 runs in that bubble under D12's rules. The user also accepted epic 3's §2.9 sentence
+on a waiter bound with nothing displaceable, which changes nothing here.
 
-**Pending the user's answer:** D3's jitter inputs, the "§2.4 throughput floor" row's last
-clause, and RFC 3 S20's text for a requeued throttled transfer (§9, first three points).
+**Decided by the user, 2026-11-26:** D3's jitter inputs, the "§2.4 throughput floor" row's last
+clause and RFC 3 S20's text for a requeued throttled transfer. The two RFC 3 wordings land with the
+subtask pull requests that need them, not with this document: S20's with T4.5, the floor row's with
+T4.10.
 
 ---
 
@@ -198,7 +198,7 @@ cite them. Sections are RFC 3's unless named.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R26 | On `ErrThrottled` the flow's queue is dispatched nothing new until that transfer's backoff has run, and the transfer then retries; other flows are dispatched meanwhile | invariant | §2.4; §7.2, "§2.4 throttling" | T4.5, T4.6, T4.9 |
-| R27 | Each store and direction has a throttle limit, the most workers it may hold: it starts at the cap, halves to half of what the store holds, never below one, on each throttling reply, and rises by one per transfer completed without throttling, up to the cap. Below the cap the store never holds more than it; at the cap it binds as the cap does (D7); it is never above the cap | invariant | §2.4; §2.9; §2.10, "throttle limit"; §6, RFC 3 S17; §7.2, "§2.4 throttling lowers concurrency" | T4.5, T4.6, T4.9 |
+| R27 | Each store and direction has a throttle limit, the most workers it may hold: it starts at the cap, halves to half of what the store holds, never below one, on each throttling reply, and rises by one per transfer completed without throttling, up to the cap. Below the cap the store never holds more than it; at the cap it is inert and only the cap binds (D7); it is never above the cap | invariant | §2.4; §2.9; §2.10, "throttle limit"; §6, RFC 3 S17; §7.2, "§2.4 throttling lowers concurrency" | T4.5, T4.6, T4.9 |
 | R28 | Throttling says nothing about health: no throttling reply counts toward it, and no transfer fails on throttling before its eighth throttled attempt, a requeue at a full queue or waiter bound included (D2) | invariant | §1.3; §2.4; §6, RFC 3 S19 | T4.1, T4.5, T4.9 |
 
 **Time bounds**
@@ -254,14 +254,17 @@ field (E1's R18).
   queue, where it cannot be refused; an error retry keeps its slot.**
   - On `ErrThrottled` the half lowers the store's limit, returns the slot and holds the flow;
     once that transfer's own backoff has run, its entry goes back at the head of its flow's queue
-    for its class and is dispatched under the lowered limit. Returning the slot is what lets the
-    store's in-flight count fall to the lowered limit, which "§2.4 throttling lowers concurrency"
-    asserts; a throttled transfer that kept its slot would retry at the same concurrency.
+    for its class and is dispatched under the lowered limit, charged again to the flow's deficit
+    for that class (E3's D3). Returning the slot is what lets the store's in-flight count fall to
+    the lowered limit, which "§2.4 throttling lowers concurrency" asserts; a throttled transfer
+    that kept its slot would retry at the same concurrency.
   - A requeued entry was admitted once and keeps that admission: it is checked against neither
     the queue length nor the waiter bound, and never displaces, so a burst of throttling fails no
     transfer (RFC 3 §2.4, R28). Such entries are at most one per worker of the half, since each
     held a slot when it was throttled, so the waiters of a half are at most the bound plus the
-    pool. A `decision:` marker says so, and §9 proposes the RFC 3 S20 text.
+    pool. A `decision:` marker says so. The user decided 2026-11-26 that RFC 3 S20 reads "…never
+    exceed the waiter bound, beside at most one requeued throttled transfer per worker, whatever
+    the number of flows"; the amendment lands with T4.5's pull request.
   - The hold is what RFC 3 §2.4 says: "the flow's queue is dispatched nothing **new**". A held
     flow dispatches no entry that was never dispatched, and dispatches its requeued entries as
     each one's own backoff ends, so one transfer's retry never waits on another transfer's
@@ -281,22 +284,24 @@ field (E1's R18).
   Prior art: AWS SDKs' adaptive retry mode, which lowers a client-side send rate on throttling
   replies (from memory); Kubernetes API priority and fairness, whose seats go back on release
   (from memory).
-- **D3, the backoff's draw is a hash of the store, the block and the attempt. Pending the user's
-  answer.** The user decided the draw is deterministic, from a hash of the store ID and the
-  attempt number, with no random source, so RFC 3 §1.4's four dependencies stay four. With those
-  two inputs alone, every transfer of one store retrying its *k*th attempt waits the same time,
-  so transfers that failed together retry together, which RFC 3 §2.4 forbids and "§2.4 retry
-  budget" asserts against ("the backoffs of transfers that failed together are spread"). This
-  document therefore adds the transfer's block name to the hash: FNV-1a 64 (`hash/fnv`) over the
-  `StoreID`, the `remote.Name`, the retry's kind and its attempt number, reduced to [0, ceiling]
-  in nanoseconds. Still no random source, the same delays on every run, and spread across the
-  transfers of a store. The attempt number counts the retry's own kind: an error retry from its
-  error attempts (1 to 3, ceilings 200 to 800 ms), a throttled retry from its throttled attempts
-  (1 to 7, the ceiling reaching 5 s at the sixth). A `decision:` marker at the
-  site names the inputs and that two fetches of one block on one store, which E6's single flight
-  normally joins, share their delays. Prior art: AWS's "Exponential Backoff And Jitter" (Brooker,
+- **D3, the backoff's draw is a hash of the store, the block, the retry's kind and the attempt.**
+  The user decided on 2026-11-26 that the draw is `fnv64a(store, block name, retry kind,
+  attempt)`: deterministic, with no random source, so RFC 3 §1.4's four dependencies stay four.
+  The block name is what spreads it: with the store ID and the attempt alone, every transfer of
+  one store retrying its *k*th attempt would wait the same time, so transfers that failed
+  together would retry together, which RFC 3 §2.4 forbids and "§2.4 retry budget" asserts against
+  ("the backoffs of transfers that failed together are spread"). FNV-1a 64 (`hash/fnv`) runs over
+  the `StoreID`, the `remote.Name`, the retry's kind and its attempt number, reduced to
+  [0, ceiling] in nanoseconds. Still no random source, the same delays on every run, and spread
+  across the transfers of a store. The attempt number counts the retry's own kind: an error retry
+  from its error attempts (1 to 3, ceilings 200 to 800 ms), a throttled retry from its throttled
+  attempts (1 to 7, the ceiling reaching 5 s at the sixth). A `decision:` marker at the site names
+  the inputs and that two fetches of one block on one store, which E6's single flight normally
+  joins, share their delays. Prior art: AWS's "Exponential Backoff And Jitter" (Brooker,
   2015), whose full jitter is this distribution (from memory); none found for a hash-derived draw.
-  Not chosen, the alternatives in §9.
+  Not chosen: a sequence number the half mints per transfer, whose value depends on the order
+  concurrent calls arrive, so a run is not repeatable; the store ID and attempt alone, which
+  retries a failing store's burst in lockstep.
 - **D4, a put's try runs on a goroutine of its own; a get's tries run in turn on the caller's.**
   RFC 3 §7.1's measuring-pass row holds a slow-tail-cancelled `attempt` until its retry has
   started, so the retry cannot wait for the cancelled call: each put try is started on its own
@@ -329,15 +334,15 @@ field (E1's R18).
   is applied only when the try's error is that cancellation: a try that returns `nil` or
   `ErrDenied` as it is cut keeps its own outcome. Prior art:
   curl's `--speed-limit` and `--speed-time`, a floor judged over a window (from memory).
-- **D7, the throttle limit at the cap binds as the cap does.** RFC 3 §2.10 starts the limit at
-  the cap, and RFC 3 §2.9 lets a lone busy store hold the whole pool. So while a store's limit is
-  at its cap it binds only while another store has work waiting, as the cap does, and below the
-  cap it binds always. "Halves to half of what it holds" reads the store's held workers from
-  `sched`, and the bound becomes the smaller of itself and that, so replies arriving together
-  lower it toward what the store holds rather than collapsing it to one, as RFC 3 §2.10's bare
-  "halves on each throttling response" would. "Completed without throttling" is a transfer that
-  ended in success without a
-  throttling reply. Both live in `sched` (T4.5), so the model checks RFC 3 S17's throttle clause.
+- **D7, the throttle limit at the cap is inert, so only the cap binds.** RFC 3 §2.10 starts the
+  limit at the cap, and RFC 3 §2.9 lets a lone busy store hold the whole pool. So while a store's
+  limit is at its cap it adds nothing to the cap, which binds only while another store has work
+  waiting in the class being served, and once lowered below the cap it binds always: E3's T3.3
+  per-store bound, which `Throttle` lowers. "Halves to half of what it holds" reads the store's
+  held workers from `sched`, and the bound becomes the smaller of itself and that, so replies
+  arriving together lower it toward what the store holds rather than collapsing it to one, as RFC 3
+  §2.10's bare "halves on each throttling response" would. "Completed without throttling" is a
+  transfer that ended in success without a throttling reply. Both live in `sched` (T4.5), so the model checks RFC 3 S17's throttle clause.
   A `decision:` marker names both readings. Prior art: TCP's congestion window, halved on loss and
   grown by one per round trip (RFC 5681, from memory).
 - **D8, `unknown` is a put whose last try failed after its first body byte moved.** RFC 3 §2.5's
@@ -567,7 +572,8 @@ pkg/syncer/
     still holding 96, it stays at 48; throttled as it holds 48, 24, 12, 6 and 3 in turn, it falls
     to 24, 12, 6, 3 and 1, and at 1 stays at 1. `Recover` raises it one at a time back to the cap
     and no further.
-  - At its cap the bound binds only while another store has work waiting (D7); below it, always.
+  - At its cap the bound is inert and only the cap binds, while another store has work waiting in
+    the class being served (D7); below it, the bound binds always.
   - A held flow gets no dispatch while held and its first queued entry is next once released;
     other flows on its store are served meanwhile, within the bound.
   - `Requeue` at a full queue and a full waiter bound succeeds and displaces nothing; a held
@@ -581,6 +587,9 @@ pkg/syncer/
   flow's turn once; a hold that also blocks requeued entries, so one transfer's retry waits on
   another's backoff. The model's property test and the fuzz seeds over the new steps, each checked
   by planting a bound that `Next` ignores and watching them fail (rule 10).
+- **Rules:** its pull request amends RFC 3 S20 as the user decided on 2026-11-26 (D2): "…never
+  exceed the waiter bound, beside at most one requeued throttled transfer per worker, whatever the
+  number of flows".
 
 ### T4.6 The put attempt loop and the complete `Upload`
 
@@ -681,6 +690,9 @@ R38's counts for the get half. Consumed by E6, which adds the resume and
   store. Each verified by breaking the rule it guards: an `Upload` that returns on the first `nil`
   without waiting, one that returns `nil` after a `Lose`, a retry that rebuilds `attempt`. `src`
   counted through a wrapper that records and passes each call through.
+- **Rules:** its pull request amends RFC 3 §7.1's "§3.4 measuring pass" row to "seven throttled
+  replies and then success", the wording the user accepted on 2026-11-26 with every proposed RFC 3
+  wording (§9).
 
 ### T4.9 The retry rows
 
@@ -725,11 +737,15 @@ R38's counts for the get half. Consumed by E6, which adds the resume and
   `trickle` within the interval, uncounted, the other 31 completing; puts below the floor failing
   and counted, a shared link just above the floor failing none, a stalled transfer failing
   uncounted, a stalled fetch reader failing nothing; a get held before its first byte and a put
-  held after its last both failing at 10 s; the put-inside-`src` clause as §9 settles it.
+  held after its last both failing at 10 s; a put held inside `src` past the first-byte bound
+  failing at the bound, as a stalled network would (R35).
 - **Tests:** through `export_test.go`'s half over `codec.Store` on the in-memory store under `Link`
   and `Hold`, in a bubble (D13), the trip reasons at `Stats` and the counted flag at the outcome
   hook E5 consumes (D10). Each row verified by building its wrong design: a floor per transfer, a
   fixed per-transfer deadline, a floor read from decoded bytes. Under the leak check.
+- **Rules:** its pull request amends the last clause of RFC 3 §7.2's "§2.4 throughput floor" row,
+  as the user accepted on 2026-11-26, to "Hold a put inside `src` past the first-byte bound;
+  assert it fails at the bound, as a stalled network would."
 
 ## 7. Order of work
 
@@ -776,37 +792,15 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **Decision needed: D3's jitter inputs, pending the user's answer.** The decision as given, a
-  hash of the store ID and the attempt number, gives every transfer of a store the same delay at
-  one attempt, which breaks RFC 3 §2.4's "transfers that failed together do not retry together"
-  and §7.2 "§2.4 retry budget"'s spread assertion. This document writes the recommended option:
-  - **A (written, recommended):** add the block name, `fnv64a(StoreID, Name, kind, attempt)`; still
-    no random source, the same on every run, spread across a store's transfers.
-  - **B:** a sequence number the half mints per transfer instead of the name; spread as well,
-    but its value depends on the order concurrent calls arrive, so a run is not repeatable.
-  - **C:** the store ID and attempt only, as given, with RFC 3 §2.4 and the row amended to drop
-    the spread; the burst of a failing store then retries in lockstep, the herd full jitter
-    exists to break (Brooker, 2015, from memory).
-- **Decision needed: the "§2.4 throughput floor" row's last clause.** RFC 3 §2.4 says the time a
-  put spends inside `src` counts toward the floor and the first-byte bound, because the syncer
-  cannot tell it from the network's, and that `src` must therefore read only local bytes; the
-  row's last clause says "Hold a put inside `src`; assert neither the floor nor the first-byte
-  bound trips". The syncer sees only the `Meter`, so it cannot meet the clause. This document
-  follows §2.4 (R35, T4.6's test) and proposes the row read: "Hold a put inside `src` past the
-  first-byte bound; assert it fails at the bound, as a stalled network would." Not chosen: a third
-  `Meter` call from the codec marking `src`'s time, which changes RFC 4's contract for a case §2.4
-  already assigns to the engine.
-- **Decision needed: a requeued throttled transfer is outside the waiter bound (D2).** RFC 3 S20
-  says waiters never exceed the bound, and §2.4 that a burst of throttling fails no transfer; a
-  requeue refused at a full bound would break the second. This document keeps §2.4 and proposes S20
-  read: "…never exceed the waiter bound, beside at most one requeued throttled transfer per worker,
-  whatever the number of flows". Not chosen: refusing the requeue, which fails a busy offload flow's
-  transfers on its first throttling reply.
-- **The "§3.4 measuring pass" row says eight throttled replies "and then success".** RFC 3 §2.4
-  reports the eighth throttling reply as `ErrThrottled`, so no success follows it. T4.8 runs seven
-  then success, and eight reported, and asserts `src` read at most 20 times in both; the row's
-  "eight" should read "seven", a wording fix proposed with the pull request that settles the
-  points above.
+- **Decided by the user, 2026-11-26, and no longer open:** D3's jitter inputs
+  (`fnv64a(store, block name, retry kind, attempt)`, D3); RFC 3 S20's text for a requeued
+  throttled transfer (D2, amended with T4.5); the "§2.4 throughput floor" row's last clause,
+  which follows RFC 3 §2.4: the syncer sees only the `Meter`, so a put held inside `src` fails at
+  the first-byte bound as a stalled network would (R35, amended with T4.10; not chosen, a third
+  `Meter` call marking `src`'s time, which changes RFC 4's contract for a case §2.4 assigns to the
+  engine); and the "§3.4 measuring pass" row's "eight" read as "seven", since RFC 3 §2.4 reports
+  the eighth throttling reply as `ErrThrottled` (amended with T4.8, which runs seven then success,
+  and eight reported, and asserts `src` read at most 20 times in both).
 - **"§2.4 wire bytes" has no put half.** The RFC 3 plan's Done-when for this epic names "its put
   half", but RFC 3 §7.2's row fetches only, so the row is wholly E6's. T4.10 runs E4's own put
   check for R33 instead; the plan's wording should drop "its put half".
