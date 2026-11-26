@@ -1209,7 +1209,6 @@ func engineTarget() fuzz.Target[*engineWorld, engineModel] {
 	size := fuzz.Choice("size", 0, 1, 4096, 8192)
 	// 0 fails every update of the store, -1 clears that.
 	updates := fuzz.Choice("n", -1, 0)
-	// Bit i keeps the i-th unsynced device write, in the order issued.
 	mask := fuzz.Choice("mask", 0b1, 0b10, 0b11, 0b101)
 	torn := fuzz.Choice("n", 1, 8, 64)
 	seed := fuzz.Choice("seed", 1, 2, 3)
@@ -1279,6 +1278,9 @@ func engineTarget() fuzz.Target[*engineWorld, engineModel] {
 				Real:   engineFailUpdates,
 				Model:  modelFailUpdates,
 			},
+			// Each bit of the mask is one write to the disk that no sync covers,
+			// in the order issued, not one engine write: the first write of a new
+			// segment counts as two, the segment's header and then the record.
 			{
 				Name:   "crash_keeping",
 				Weight: 1,
@@ -1293,6 +1295,9 @@ func engineTarget() fuzz.Target[*engineWorld, engineModel] {
 				Real:   engineCrashTorn,
 				Model:  modelCrash,
 			},
+			// The parameter is a seed, not a mask: from it the disk draws whether
+			// each of those same disk writes is kept, so a new segment's header
+			// and its first record are drawn apart. It may keep none.
 			{
 				Name:   "crash_reordered",
 				Weight: 1,
