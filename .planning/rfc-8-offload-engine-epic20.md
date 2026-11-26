@@ -24,13 +24,13 @@ per direction).
 **Epic 20 estimate: 8 subtasks, 23 man-days.**
 **Depends on:** sync point **S2**, red rows in CI (epic 12): the fixture's `SalvageTo`,
 `FaultRemote` and `BlockNextRun`, and the four rows this epic turns green; **epic 13**'s
-`workqueue.Stats` with `Stalled` (its D8, pending the user's answer on #5986) and T13.4's stall
+`workqueue.Stats` with `Stalled` (its D8, #5986) and T13.4's stall
 test; **epic 14**'s age tick, which walks each binding's `DirtyFiles`; **epic 15**'s `Failures`
 (its D11) and `offload.Stats` (its D14); **epic 16**'s pass outcomes per binding (`Done`, `Retry`,
 `Throttled`, `result="skipped"`) and each binding's flow (its T16.3, T16.4); **epic 18**'s
 destroyed-material set (its D10, T18.4); **epic 19**'s reseed read of the destroyed key records and
 the `Census` view on `kvstore`; **S5**: RFC 5's salvage-key wrap (the RFC 5 plan's epic 6, T6.4,
-its D13 pending RFC 5's author) and the RFC 3 plan's epic 5, the syncer's `health.Source` in
+its D13, whose configuration D5 here names) and the RFC 3 plan's epic 5, the syncer's `health.Source` in
 `internal/node/content`.
 **Blocks:** epic 19's "§2.5 metadata reconcile" row, whose salvage leg needs T20.3; the
 integration epic, which adapts every condition this epic puts in `Stats` into the engine's
@@ -234,8 +234,8 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   leaving" (RFC 8 §14) is detected where the engine already looks at each binding on its clock:
   epic 14's age tick compares the binding's offload conditions with those it last logged, and logs
   each change once at `Warn`. No marker. Prior art: none found.
-- **D5, the content wiring seals the export; the engine holds no salvage key, pending the user's
-  answer on the configuration (§9).** The engine never holds key material, so it does not call
+- **D5, the content wiring seals the export; the engine holds no salvage key (the user's decision
+  on the configuration, 2026-11-26).** The engine never holds key material, so it does not call
   RFC 5's `WrapSalvageKey` itself, which returns the key. It declares:
   ```go
   // Salvage seals one salvage export (RFC 1 §3): a fresh salvage key per export, wrapped
@@ -254,11 +254,14 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   drops the key with the `Seal`; the integration epic only passes it to the engine. `NewSeal`'s
   error is the provider's (no master key among them) and fails the export (R29). The wrapping
   configuration: a stranded tag has no share record (D8), so the RFC 5 plan's epic 6 §9 hands the
-  choice here. Recommended, written in place: the wiring wraps under the store configuration of the
-  shares the journal serves, the lowest configuration ID when they span several, and refuses when
-  none of them has a master key; RFC 5 epic 6's D13 then reads "the configuration the content wiring
-  names for the stranded tag's journal". Taking `journal` and `tag` keeps the choice in the wiring,
-  so a later answer rewrites one adapter, not the engine. A `decision:` at the wiring's choice.
+  choice here. The wiring wraps under the store configuration of the shares the journal serves, the
+  lowest configuration ID when they span several, and refuses when none of them has a master key;
+  RFC 5 epic 6's D13 then reads "the configuration the content wiring names for the stranded tag's
+  journal". This needs no new setting and keeps the export readable by whoever holds that journal's
+  shares' key. Rejected: an installation-level salvage configuration named once in the bootstrap,
+  explicit but a setting an operator must get right before any loss, which RFC 13 Appendix C would
+  gain. Taking `journal` and `tag` keeps the choice in the wiring, so a later change rewrites one
+  adapter, not the engine. A `decision:` at the wiring's choice.
   Prior art: a KMS envelope encryption client, which hands the caller an encryptor and never the
   data key (from memory).
 - **D6, the salvage path check compares device, mount source and the device mapper's leaves, on
@@ -300,16 +303,19 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   master key fails every export and keeps its stranded tags until it has one. A `decision:` marker
   at the seal's call says so, withdrawn when RFC 26 records a stranded tag's chain identity.
   Prior art: none found.
-- **D9, the alert bound rides `ShareSettings`, pending the user's answer (§9).** RFC 8 §11.4 has the
+- **D9, the alert bound rides `ShareSettings` (the user's decision, 2026-11-26).** RFC 8 §11.4 has the
   engine "raise an alert when it passes a configured bound", RFC 25 §3.9 registers
   `offload_age_exceeded` as RFC 8's condition, and RFC 25 §7 alerts on conditions, so the engine
   needs the bound, which epic 11 left to an alert rule. `ShareSettings` gains `OffloadAgeAlert
   time.Duration` (RFC 13 Appendix B's "oldest unoffloaded extent alert", share scope, live,
   proposed 1 h), validated by `validShare` as the other fields are, with the fixture and the
   wiring passing 1 h until the integration epic loads it. Adding a field to epic 11's frozen
-  `ShareSettings` changes no existing one. No marker. Prior art: none found.
-- **D10, `material_destroyed`'s dependence is asked of the content wiring, read fresh, pending the
-  user's answer (§9).** The candidates are the materials epic 18's set holds as destroyed (the
+  `ShareSettings` changes no existing one. Rejected: dropping the condition from the engine and
+  letting the integration epic's alert rule read `engine_unoffloaded_oldest_seconds` against the
+  bound, as epic 11 assumed, which leaves RFC 25 §3.9's row with no raiser and goes against RFC 25
+  §7's "alert on conditions, not on raw metrics". No marker. Prior art: none found.
+- **D10, `material_destroyed`'s dependence is asked of the content wiring, read fresh (the user's
+  decision, 2026-11-26).** The candidates are the materials epic 18's set holds as destroyed (the
   notice in this incarnation, and the destroyed key records epic 19's reseed reads at start and at
   each attach). For each, the engine asks
   ```go
@@ -329,8 +335,11 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   under destroyed material (RFC 8 §10.4). A namespace whose destroyed key records the reseed has not
   yet read, at start or at the attach that binds it, raises it naming no material, cause "destroyed
   material not yet read", until the read completes. The condition's subject is the namespace
-  (`ScopeNamespace`), carried in `Stats.Node.Conditions`, so `Stats` gains no field. Prior art: none
-  found.
+  (`ScopeNamespace`), carried in `Stats.Node.Conditions`, so `Stats` gains no field. Rejected: the
+  engine declaring the `Census` view and walking it per candidate, which puts the walk in the engine
+  rather than in the composer that holds both readers; and the engine reading RFC 5 epic 10's
+  snapshot, which would have to exist before S4 though RFC 5 plans it after the integration epic,
+  and whose 5-minute lag would let a stale answer clear the condition. Prior art: none found.
 - **D11, the drain rate counts the bytes reported offloaded over 10 s.** The pipeline's report of a
   file's extents adds their bytes to `offload.Stats.OffloadedBytes`, a field epic 15's struct gains,
   and the binding keeps a ring of ten one-second buckets on `Clock.Elapsed`, filled at each report
@@ -760,43 +769,15 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-**Pending the user's answer** (the pull request is a draft until each is answered):
-
-- **D5, which master key wraps a salvage key.** A stranded tag has no share record, so RFC 5 epic
-  6's D13 ("the configuration's current master key") has no configuration to read. Options:
-  **A (recommended, written in place)** the wiring wraps under the store configuration of the
-  shares the stranded tag's journal serves, the lowest configuration ID when several, refusing when
-  none has a master key; **B** an installation-level salvage configuration named once in the
-  bootstrap, which RFC 13 Appendix C would gain. A needs no new setting and keeps the export
-  readable by whoever holds that journal's shares' key; B is explicit but adds a setting an operator
-  must get right before any loss. Either way the engine's `Salvage.NewSeal(ctx, journal, tag,
-  export)` is unchanged.
-- **D9, the alert bound.** Options: **A (recommended, written in place)** `ShareSettings` gains
-  `OffloadAgeAlert time.Duration`, and the engine raises `offload_age_exceeded`, which RFC 25 §3.9
-  registers as RFC 8's and §7 alerts on; **B** the condition is dropped from the engine and the
-  integration epic's alert rule reads `engine_unoffloaded_oldest_seconds` against the bound, as
-  epic 11 assumed, which leaves RFC 25 §3.9's row with no raiser and needs it amended. A follows
-  RFC 25 §7 ("alert on conditions, not on raw metrics") and costs one validated field.
-  ```go
-  type ShareSettings struct { /* epic 11's four */ OffloadAgeAlert time.Duration } // A
-  ```
-- **D10, where `material_destroyed` reads the census.** Options: **A (recommended, written in
-  place)** `Deps.MaterialInUse(ctx, id) (bool, error)`, answered by the content wiring from a fresh
-  read of the namespace's `Census` view, or from RFC 5 epic 10's snapshot only when taken after the
-  call; **B** the engine declares the `Census` view itself and walks it per candidate; **C** the
-  engine reads T10.1's snapshot, which then must exist before S4, though RFC 5 plans it after the
-  integration epic, and its 5-minute lag would let a stale answer clear the condition. A keeps the
-  engine's question narrow and the walk in the composer, which holds both readers.
-
 **For other plans:**
 
-- **RFC 5 epic 10 (#5997)**: under D10 A, its T10.1 snapshot sums away the material, so it cannot
+- **RFC 5 epic 10 (#5997)**: under D10, its T10.1 snapshot sums away the material, so it cannot
   answer `MaterialInUse` as it stands; the wiring reads the view fresh for each destroyed material,
   which is rare. If T10.1 kept per-material entries and a taken-at time, the two could share one
   walk.
 - **RFC 5 epic 6 (#5976)**: `WrapSalvageKey`'s caller is the content wiring's `Salvage` (D5), which
   also needs RFC 5's block AEAD over a raw key, exported by `pkg/transform/encrypt` for the wiring.
-  Its §9 point on the configuration is answered by D5 here, pending the user.
+  Its §9 point on the configuration is answered by D5 here, as the user decided on 2026-11-26.
 - **RFC 1 §3 and RFC 5 Appendix B.2**: with D8, an installation with no master key can never
   salvage a stranded tag, so the tag's bytes stay held; RFC 1's author may want the plaintext case
   for "no namespace of the installation encrypts" too.
@@ -804,8 +785,6 @@ A suggestion only: one pull request per subtask works as well.
   amends it, has the engine evaluate it. §10.4's wording should follow when next revised.
 - **RFC 8 §2.5 step 5** says a salvage export holds older versions; until RFC 12's holds, a held
   extent has only one (D7).
-- **Epic 13's D8 (#5986)**: T20.5 reads `Stalled`; under its option B it reads the fields that
-  option gives instead, with the same estimate.
 - **Epic 15 and epic 16**: `offload.Stats` gains `OffloadedBytes` (D11), and epic 14's age tick
   reads the binding flow's `Health(Put)` beside epic 16's `Healthy(Put)` (D2); both are additive.
 - **Without GC** (RFC 9 deferred), no block record is pruned, so a destroyed material that ever
