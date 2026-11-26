@@ -6,7 +6,7 @@ import "time"
 // field's comment names the series it carries, without the deployment's
 // prefix. Every series is labelled half, the field of Stats the value sits
 // under; a series under a StoreStats or a FlowStats is also labelled store,
-// its Store. A label value such as a reason, an outcome or a class is a named
+// its Name. A label value such as a reason, an outcome or a class is a named
 // field, so a series with no field is a missing field rather than a string
 // nobody emits.
 //
@@ -176,8 +176,8 @@ type Detached struct {
 // Histogram is a distribution of durations over the request bucket set.
 // Counts[0] counts the observations at most Bounds()[0], Counts[i] those above
 // Bounds()[i-1] and at most Bounds()[i], and the last count those above every
-// bound. The counts are
-// per bucket, not cumulative. Sum is the total of every observation.
+// bound. The counts are per bucket, not cumulative. Sum is the total of every
+// observation.
 type Histogram struct {
 	Counts [19]uint64
 	Sum    time.Duration

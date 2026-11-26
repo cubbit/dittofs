@@ -23,7 +23,7 @@ func (k kind) String() string { return [...]string{"gauge", "counter", "histogra
 // series is one labelled series the syncer must make observable, typed from
 // the syncer's metric list, with the path of the field that carries it in a
 // Half. A path element naming a slice steps into its element type. The half
-// label is the Half itself and the store label StoreStats.Store, so neither
+// label is the Half itself and the store label StoreStats.Name, so neither
 // appears here.
 type series struct {
 	name string
@@ -111,6 +111,9 @@ func resolve(t reflect.Type, path string) (reflect.Type, bool) {
 	for _, name := range strings.Split(path, ".") {
 		if t.Kind() == reflect.Slice {
 			t = t.Elem()
+		}
+		if t.Kind() != reflect.Struct {
+			return nil, false
 		}
 		f, ok := t.FieldByName(name)
 		if !ok {
