@@ -10,7 +10,7 @@ bind one gauge; [RFC 23](../docs/internals/rfcs/rfc-23-control-plane.md) §4.1, 
 they bind one read; [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §1.2 as amended by
 #5774. The code lands on `feat/storage-v2`, and the paths below are paths there.
 **Track:** the team.
-**Epic 10 estimate: 2 subtasks, 4.75 man-days.**
+**Epic 10 estimate: 2 subtasks, 5.25 man-days.**
 **Depends on:** **S7**: from the RFC 8 offload plan, the block commit that records each block's
 `encodings` (its epic 15), the per-namespace `Census` view on `kvstore` (its epic 19), and the
 node's registration of the collectors the content wiring builds, with the wiring's start and stop
@@ -86,7 +86,7 @@ title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | both subtasks run over the real `kvstore`, on the memory KV and on Badger under `t.TempDir()`, with blocks committed through its own block commit; the only doubles are the content wiring's injected clock (kind 1) and a fault wrapper around the real `Census` view (kind 3); the refresher's swaps reach the test through a per-instance hook set from `export_test.go` |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | both subtasks run over the real `kvstore` with blocks committed through its own block commit: T10.1 on the memory KV and on Badger under `t.TempDir()`, T10.2's HTTP tests on the memory KV, and `TestWiredRoleSweep` reaches T10.2's route on both, as it reaches every documented route; the only doubles are the content wiring's injected clock (kind 1) and a fault wrapper around the real `Census` view (kind 3); the refresher's swaps reach the test through a per-instance hook set from `export_test.go` |
 | rule 2, fuzz every decoder of bytes this component did not just write | none | nothing here decodes bytes: the view hands decoded records, and the listing's cursor is parsed by the RFC 23 plan's `listing` adapter |
 | rule 3, observability follows RFC 25 | T10.1 | the gauge is `transform_census_blocks`, the one series rule 3 gives this epic; its name, help and labels are a plain value beside E9's specs, and the content wiring builds the collector, so no package of `pkg/transform` imports `pkg/metrics`. The refresher logs a failed census read once at `Warn`. Nothing here holds key bytes: the census names material by ID and fingerprint only (RFC 6 §2.3) |
 | rule 4, profiling | T10.1 | the refresher's tests run under `internal/prof`'s leak check, which shows its goroutine gone after stop. No hot path: a scrape reads one pointer, and no allocation assertion is added |
@@ -140,8 +140,9 @@ dependency is the namespace's own view (D4), so it has no snapshot to serve and 
 namespace's records to show; T10.2's tests still assert both at the HTTP answer. R15 holds by
 construction: RFC 6 §2.3's `encodings` hold a material ID and a fingerprint and no key, so the view
 has none to hand on. R16 is held by E1's import test, which fails on the epic's first change if
-`chain` imports a metrics or metadata store implementation. R6 holds by D2's label set, the
-compiled-in registry plus one value.
+`chain` imports a metrics or metadata store implementation. R6 and R7 hold by D2's label set, the
+compiled-in registry plus one value, and T10.1's test that the build registers at most 38
+transforms.
 
 ## 4. Decisions this epic takes
 
@@ -173,18 +174,24 @@ compiled-in registry plus one value.
   is left off: RFC 5 §6 does not ask for it, the per-namespace figure is the listing's, and it would
   bring the 64-value cap into play at 10⁴ namespaces. A transform ID the registry does not hold, a
   body written by a transform since dropped from the build, is labelled `transform="unregistered"`
-  with its version, so a stale record cannot grow the `transform` values. The values are therefore
-  the registered names plus one, far under R6's 64, and the collector implements no `_other`; a
-  `decision:` marker says so, withdrawn if a build ever registers 63 transforms. The version is a
-  `uint8`, a closed set of 256, so the series are at most 256 times the values, inside R7. A
+  with its version, so a stale record cannot grow the `transform` values; the registry's name set
+  holds `unregistered` from the start, as it holds `envelope` (E3's D7), so no transform registers
+  it. The values are therefore the registered names plus one. The version is a `uint8`, a closed set
+  of 256, so the series are at most 256 times the values, and R7's 10,000 is the tighter bound: it
+  holds while the values number at most 39 (39 × 256 = 9,984), that is up to 38 registered
+  transforms, which is also under R6's 64. So the collector implements no `_other`; a `decision:`
+  marker says so, withdrawn if a build ever registers 39 transforms, and T10.1's test of the
+  process registry's count fails that build. A
   `ponytail:` at the sum: a block whose census names one transform with two pieces of material is
   counted twice; no shipped transform takes more than one piece per body (encryption takes its data
   key, compression none), so the sum is exact; count blocks per transform and version in the view
   when a transform declares two kinds. Prior art: RFC 25 §2.4's entity-label rule itself.
 - **D3, `chain.Name` is the registry's name of a transform ID.** The census holds IDs (RFC 6 §2.3)
   and the label takes names (R3), and only the registry, unexported in `chain`, holds both. A
-  package function, `func Name(id transform.ID) (string, bool)`, reads the process registry that
-  `Register` fills at init; it is exported because the content wiring, a composer, calls it, and
+  method on E3's registry type answers it, so a test asks a registry it built through
+  `export_test.go` and never registers into the process's (E3's T3.1); the exported package
+  function, `func Name(id transform.ID) (string, bool)`, is one line over the process registry that
+  `Register` fills at init. It is exported because the content wiring, a composer, calls it, and
   the root contract is not widened, since neither the codec nor the engine needs a name. Prior art:
   `database/sql.Drivers`, the registry's read-back beside `Register` (from memory).
 - **D4, the listing reads the namespace's view at each page.** RFC 23 §4.2 makes a read
@@ -209,7 +216,7 @@ compiled-in registry plus one value.
   // CensusEntry is one row of a namespace's census: the blocks whose census
   // names this transform, format version and piece of material.
   type CensusEntry struct {
-  	Transform    string `json:"transform"`     // registered name; "" when unregistered
+  	Transform    string `json:"transform"`     // registered name, or "unregistered" as in the gauge
   	TransformID  uint16 `json:"transform_id"`
   	Version      uint8  `json:"version"`
   	MaterialKind string `json:"material_kind"` // "" when the transform takes none
@@ -237,8 +244,10 @@ compiled-in registry plus one value.
 
 ```text
 pkg/transform/chain/
-  registry.go          T10.1  + Name, the registry's name of an ID (D3)
-  registry_test.go     T10.1  + Name of a registered and of an unknown ID
+  registry.go          T10.1  + Name, the registry's name of an ID, and `unregistered` in its
+                              name set (D2, D3)
+  registry_test.go     T10.1  + Name of a registered and of an unknown ID, the reserved name,
+                              the build's transform count
   <E9's series specs>  T10.1  + the transform_census_blocks name, help and labels (D2)
 internal/node/content/
   census.go            T10.1  the refresher, its snapshot and the collector (D1, D2, D6)
@@ -254,23 +263,27 @@ internal/node/api/
   openapi_test.go      T10.2  + the route's operation ID and role
 pkg/node/apiv1/
   census.go            T10.2  CensusEntry (D5)
+  openapi.json         T10.2  regenerated by cmd/genopenapi
+  wire_test.go         T10.2  + a CensusEntry row in TestWireBodies
 pkg/node/apiv1/client/
   resources.go         T10.2  + the namespace's census listing, over the generic list helper
 internal/node/
-  <the API's Deps>     T10.2  + Census, which the content wiring builds over kvstore's view and
-                              chain.Name, where the RFC 23 plan's epic 3 builds the API's Deps
+  node.go              T10.2  + Census in api.New's Deps, which the content wiring builds over
+                              kvstore's view and chain.Name
+  check_test.go        T10.2  + the route's viewer entry in leastRole
 ```
 
 ## 6. Subtasks
 
 ### T10.1 The census snapshot and `transform_census_blocks`
 
-**Subtask T10.1 estimate: 2.75 man-days.**
+**Subtask T10.1 estimate: 3 man-days.**
 
 - **Track:** the team. **Depends on:** S7, T3.1, T4.1, T5.2. Also E9's series specs.
 - **Covers:** R1, R2, R3, R4, R5, R6, R7, R8, R15, R16.
 - **Deliverables:**
-  - `chain.Name(id transform.ID) (string, bool)` over the process registry (D3). Consumed by the
+  - The registry's `Name` method and `chain.Name(id transform.ID) (string, bool)`, one line over the
+    process registry, with `unregistered` in the registry's name set (D2, D3). Consumed by the
     refresher here and by the content wiring's `Deps.Census` (T10.2).
   - The census spec: name `transform_census_blocks`, its help, labels `transform` and `version`, as
     a plain value in the form E9 gives this component's series specs. Consumed by the collector.
@@ -289,11 +302,15 @@ internal/node/
     `{transform="zstd",version="1"}`, `{transform="aes-gcm",version="1"}` and
     `{transform="unregistered",version="1"}` with their counts, and no other series of the metric.
   - A `retired` and a `deleted` block are counted; a pruned one is not, after the next read.
-  - Before the first read completes, the metric has no series; after the clock passes the period,
+  - Before the first read completes, the metric has no series, also while that read is held
+    mid-iteration; after the clock passes the period,
     the next snapshot shows a commit made since, and a namespace created since.
   - No series of the metric carries a material or key label, and a rotation to a second data key
     with blocks committed under it changes a value and adds no series.
   - A scrape while the view is held mid-read returns at once with the previous snapshot's values.
+  - A read that fails, or is cancelled by stop, leaves the previous snapshot: the scrape shows none
+    of its partial sum.
+  - The build registers at most 38 transforms, so the series stay within R7 (D2).
 - **Tests:**
   - At the registry's scrape, over the real `kvstore` on the memory KV and on Badger under
     `t.TempDir()`, blocks committed in two namespaces through its block commit with crafted
@@ -311,16 +328,25 @@ internal/node/
     iteration until released, with a scrape that returns the first snapshot's values before the
     release (catches a scrape that reads the view, R8); one that fails after the first entry, after
     which the scrape still shows the first snapshot and the captured log has one `Warn` (catches a
-    partial snapshot published, D1).
+    partial snapshot published, D1); one that holds the second read after its first entry until
+    the test stops the refresher, whose cancel ends the read, after which the scrape shows the
+    first snapshot (catches a cancelled read's partial sum published, D1).
+  - A fault wrapper (kind 3) that holds the first read after its first entry: a scrape before the
+    release shows no series of the metric (catches zeros, or a partial first sum, exported before
+    the first read completes, D1).
+  - The process registry's transform count is at most 38, read and never registered into
+    (catches a build past R7's series bound, D2).
   - `internal/prof`'s leak check around stop (catches a refresher left running).
-  - `chain.Name` for a registered and an unknown ID (catches a lookup that misses a registered
-    transform).
+  - The registry's `Name` for a registered and an unknown ID, on a registry the test builds through
+    `export_test.go` (catches a lookup that misses a registered transform), and registering the
+    name `unregistered` on it panics (catches a label shared by a real transform and a stale ID,
+    D2).
 - **Rules:** rule 3: the series and its spec. rule 7: the collector in the composer. rule 9: the
   markers of D1, D2 and D6.
 
 ### T10.2 The census per material through the management API
 
-**Subtask T10.2 estimate: 2 man-days.**
+**Subtask T10.2 estimate: 2.25 man-days.**
 
 - **Track:** the team. **Depends on:** T10.1. Also the RFC 23 plan's epic 3, which builds the
   API's `Deps` in the node, and the RFC 8 offload plan's epic 19 view answering from counts (§9).
@@ -338,10 +364,15 @@ internal/node/
 
     It also holds the route of D5 in the route table, with D4's `ponytail:` and D5's
     `decision:`. Consumed by the client accessor and any API client.
+  - `pkg/node/apiv1/openapi.json` regenerated by `go run ./cmd/genopenapi`, which
+    `TestOpenAPIMatchesRouteTable` compares with the route table; the route's `viewer` entry in
+    `internal/node/check_test.go`'s `leastRole`, which fails on a route it does not list; a
+    `CensusEntry` row in `pkg/node/apiv1/wire_test.go`'s `TestWireBodies`.
   - The client accessor in `pkg/node/apiv1/client/resources.go`, one line over its generic `list`
     helper. Consumed by this subtask's tests and any client.
   - The content wiring builds `Deps.Census` over `kvstore`'s per-namespace view and `chain.Name`,
-    and the node hands it to the API.
+    and `internal/node/node.go` hands it to `api.New`, so the wired node `TestWiredRoleSweep`
+    builds answers the route `200`, not `503`.
 - **Acceptance criteria:**
   - A `viewer`'s `GET /api/v1/namespaces/{id}/census` lists one row per transform, version and
     material the namespace's block records name, with the block count, `retired` and `deleted`
@@ -350,15 +381,21 @@ internal/node/
   - With `?limit=1` over three rows, the three rows each come back exactly once in key order, also
     when a block committed after the first page adds a row whose key sorts below that page's.
   - An ID with no namespace record answers `404`; a namespace with no block an empty page.
+  - A server whose `Deps.Census` is nil answers `503` unavailable for a namespace that exists, and
+    still `404` for an ID with no namespace record, before any read.
   - The generated OpenAPI document has the route as `namespaces_census_list` with role `viewer`.
 - **Tests:**
   - At the HTTP answer, through the client, over the real `kvstore` on the memory KV with committed
-    blocks: the rows and counts, with a block committed just before the read (catches a handler
-    that caches, R10; and a filter by state, R2); two namespaces (catches the wrong namespace's view
+    blocks, one of them retired by removing its last ref and one moved to `deleted` by `kvstore`'s
+    `MarkDeleted` once its trash time passes on the injected clock: the rows and counts, both of
+    those blocks counted, with a block committed just before the read (catches a handler that
+    caches, R10; and a filter by state, R2); two namespaces (catches the wrong namespace's view
     read, R14); `limit=1` paging with the insert below the cursor (catches an offset cursor, which
     repeats a row, R11); `limit=1001` refused as the adapter refuses it (R11); an unknown ID (catches
-    a missing existence check answering an empty page, D5); a `viewer`'s token (catches a stronger
-    right on the route, R13).
+    a missing existence check answering an empty page, D5); a server built with `Deps.Census` nil,
+    for a namespace that exists and for an unknown ID (catches a handler answering `200` with an
+    empty page while the node holds no view, and a `503` that hides the `404`, D5); a `viewer`'s
+    token (catches a stronger right on the route, R13).
   - In `openapi_test.go`, the route's operation ID and `x-dittofs-role` (catches a route outside the
     table or a wrong role, R12).
 - **Rules:** rule 5: tested at the HTTP answer. rule 9: the markers of D4 and D5.
@@ -383,7 +420,7 @@ fault tests are the higher risk.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T10.1, T10.2 | 4.75 | S7 | the census as an operator reads it, the gauge and the listing over one view |
+| 1 | T10.1, T10.2 | 5.25 | S7 | the census as an operator reads it, the gauge and the listing over one view |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -400,6 +437,6 @@ A suggestion only: one pull request per subtask works as well.
   T10.2's read follow it, and this document is revised before T10.2 starts.
 - **For the RFC 8 offload plan's epic 20**: its `material_destroyed` evaluation reads the same
   census. If the view walks block records, D1's snapshot is the one walk to share, rather than two.
-- **The estimate** is 2 subtasks and 4.75 man-days, against no plan figure: RFC 5's plan has
+- **The estimate** is 2 subtasks and 5.25 man-days, against no plan figure: RFC 5's plan has
   epic 10 "planned after S7". The least certain is T10.1's, whose wiring into the content wiring's
   start and stop depends on how the RFC 8 offload plan's epic 21 composes it.
