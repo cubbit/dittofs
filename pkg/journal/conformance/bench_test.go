@@ -53,9 +53,12 @@ type jbScale struct {
 	// segment caps at the full sizes, so the journal rolls mid-file.
 	largeStream int64
 	// lookups is how many point lookups one iteration of J3 times, and
-	// extents the sizes of the index it looks in.
+	// extents the sizes of the index it looks in: one point per decade of
+	// RFC 1's 10^3 to 10^6 at the full sizes, so the growth between them is
+	// measured, not just the endpoints' ratio; the small sizes keep the
+	// first two decades alone.
 	lookups int
-	extents [2]int
+	extents []int
 	// warmBytes is the file J3's warm read reads, a block at a time.
 	warmBytes int64
 	// blocks are the block sizes of J1's rows, and scalingBlock the block of
@@ -74,14 +77,14 @@ var (
 		// row's 256 MiB stream fills a whole segment, so its first iteration rolls
 		// beside the small writer, as RFC 1 §9.6's J1 sizing has it.
 		burstStreamed: 128 << 20, burstSynced: 16 << 20, mixedStream: 256 << 20,
-		lookups: 100_000, extents: [2]int{1_000, 1_000_000}, warmBytes: 64 << 20,
+		lookups: 100_000, extents: []int{1_000, 10_000, 100_000, 1_000_000}, warmBytes: 64 << 20,
 		blocks: []string{"4k", "64k", "256k", "1m"}, scalingBlock: 1 << 20,
 		largeStream: 30 << 30,
 	}
 	// jbSmall keeps every row and its twin, at blocks of 4 to 64 KiB.
 	jbSmall = jbScale{
 		burstStreamed: 8 << 20, burstSynced: 1 << 20, mixedStream: 8 << 20,
-		lookups: 10_000, extents: [2]int{1_000, 10_000}, warmBytes: 8 << 20,
+		lookups: 10_000, extents: []int{1_000, 10_000}, warmBytes: 8 << 20,
 		blocks: []string{"4k", "64k"}, scalingBlock: 64 << 10,
 		largeStream: 512 << 20,
 	}
@@ -435,7 +438,15 @@ func (r jbRaw) prepare(span int64) error {
 
 // jbSpec is one burst: writers each write span bytes in blocks of block, in
 // order or at random aligned offsets within the span, syncing after every
-// write, or once at the end of the writer's run.
+// write, or once at the end of the writer's run. An overwrite burst rewrites
+// the span a create pass has already written, so its first-write cost (the
+// index insertion and extent creation) is the other rows' and its own is
+// the update over live extents. Its rows hold their steady state at the
+// harnesses' one iteration per count: the journal only appends, so every
+// iteration puts another span on the stream, and in the nosync pattern a
+// later iteration rewrites the first's extents while they are still
+// unsynced — nothing in a bench ever drains them, only offload, release
+// and repack do, and none of the three runs here.
 type jbSpec struct {
 	writers  int
 	block    int
@@ -443,6 +454,15 @@ type jbSpec struct {
 	random   bool
 	syncEach bool
 	syncEnd  bool
+	// overwrite: the burst rewrites the span block for block, base never
+	// advancing, its random draws with replacement — any block, many
+	// times — where the create rows walk a permutation; a create pass
+	// writes and syncs each writer's span once untimed first. The raw twins
+	// of the overwrite rows take this too: their seed pass rewrites an
+	// already prepared, synced file, redundant but harmless, so one burst
+	// body serves journal and raw alike and the twin writes the same span
+	// and the same draw pattern as the row it twins.
+	overwrite bool
 }
 
 // jbParallel runs fn on n goroutines and fails b on the first error.
@@ -475,6 +495,9 @@ func jbBurst(b *testing.B, sink jbSink, spec jbSpec) {
 	b.ReportAllocs()
 
 	ops := int(spec.span) / spec.block
+	if ops == 0 {
+		b.Fatalf("bench: span %d is below one %d-byte block", spec.span, spec.block)
+	}
 	took := make([][]time.Duration, spec.writers)
 	for w := range took {
 		took[w] = make([]time.Duration, 0, ops*b.N)
@@ -488,26 +511,80 @@ func jbBurst(b *testing.B, sink jbSink, spec jbSpec) {
 	rngs := make([]*rand.Rand, spec.writers)
 	for w := range bufs {
 		bufs[w] = make([]byte, spec.block)
-		pcgs[w] = rand.NewPCG(0, 0)
+		pcgs[w] = rand.NewPCG(0, uint64(w))
 		rngs[w] = rand.New(pcgs[w])
 	}
 
+	// A raw file is grown to the span of every iteration — an overwrite
+	// burst never leaves the first span, so one span's prepare is enough
+	// for it.
+	prepped := spec.span * int64(b.N)
+	if spec.overwrite {
+		prepped = spec.span
+	}
 	if p, ok := sink.(interface{ prepare(span int64) error }); ok {
-		if err := p.prepare(spec.span * int64(b.N)); err != nil {
+		if err := p.prepare(prepped); err != nil {
 			b.Fatalf("bench: prepare the raw files: %v", err)
+		}
+	}
+
+	// The create rows' random offsets are a per-writer permutation, each
+	// block exactly once — a create row must create, so with-replacement
+	// draws are the overwrite rows' alone — shuffled before the timer and
+	// reused every iteration, so nothing is allocated in the timed loop.
+	perms := make([][]int, spec.writers)
+	if spec.random && !spec.overwrite {
+		for w := range perms {
+			perm := make([]int, ops)
+			for i := range perm {
+				perm[i] = i
+			}
+			rngs[w].Shuffle(len(perm), func(i, j int) { perm[i], perm[j] = perm[j], perm[i] })
+			perms[w] = perm
+		}
+	}
+	// The create pass of an overwrite burst — the journal's rows and their raw
+	// twins both, see jbSpec.overwrite: every writer's span written once and
+	// synced, untimed, over the journal's fresh files — its extents live and
+	// durable, its index built — or a raw twin's prepared file, which the pass
+	// merely rewrites. The sync keeps the timed pass a
+	// steady-state rewrite over durable extents, and in the sync pattern keeps
+	// the first timed sync from also having to make the create pass's writes
+	// durable.
+	if spec.overwrite {
+		for w := range spec.writers {
+			for i := range ops {
+				if _, err := sink.write(w, int64(i*spec.block), bufs[w]); err != nil {
+					b.Fatalf("bench: seed writer %d's span: %v", w, err)
+				}
+			}
+			if err := sink.sync(w); err != nil {
+				b.Fatalf("bench: seed writer %d's file durable: %v", w, err)
+			}
 		}
 	}
 
 	b.ResetTimer()
 	for iter := range b.N {
 		base := int64(iter) * spec.span
+		if spec.overwrite {
+			// The pass rewrites what the create pass wrote.
+			base = 0
+		}
 		jbParallel(b, spec.writers, func(w int) error {
-			p, rng := bufs[w], rngs[w]
+			p, rng, perm := bufs[w], rngs[w], perms[w]
 			pcgs[w].Seed(uint64(iter), uint64(w))
 			for i := range ops {
 				off := base + int64(i*spec.block)
 				if spec.random {
-					off = base + int64(rng.IntN(ops)*spec.block)
+					// With replacement — any block, many times — for the
+					// overwrite rows; the create rows walk their permutation
+					// and never hit a block twice.
+					if spec.overwrite {
+						off = base + int64(rng.IntN(ops)*spec.block)
+					} else {
+						off = base + int64(perm[i]*spec.block)
+					}
 				}
 				d, err := sink.write(w, off, p)
 				if err != nil {
@@ -583,6 +660,67 @@ func BenchmarkJ1_WriteRandom(b *testing.B) {
 	jbForEachMode(b, jbPatterns, func(b *testing.B, spec jbSpec) {
 		spec.random = true
 		jbBurst(b, jbJournalOpen(b, 1), spec)
+	})
+}
+
+// jbOverwrite is one overwrite row's spec from the create spec jbForEachMode
+// hands it — the one place the halving and the rewrite flags are set, so the
+// row and its raw twin can never drift apart in span: the journal only
+// appends, so the create pass and the rewrite each put the span on the one
+// stream, and create plus rewrite plus record headers must stay inside one
+// segment — the row times an overwrite, not a roll. The synced burst is
+// 16 MiB or 1 MiB, far below one segment already, and at the small sizes
+// halving its span would take it below one block, so only the streamed span
+// halves.
+func jbOverwrite(spec jbSpec, random bool) jbSpec {
+	if !spec.syncEach {
+		spec.span /= 2
+	}
+	spec.overwrite = true
+	spec.random = random
+	return spec
+}
+
+// J1's overwrite rows, the "create and overwrite reported apart" of RFC 1
+// §9.6's method: the same blocks and sync patterns as the sequential and
+// random rows, over extents the untimed create pass has written, so the
+// rewrite's cost — the index updated in place, the prior version superseded —
+// is measured apart from the first write's. They twin themselves in
+// RawOverwrite below, at the same halved span and, for the random rows, the
+// same with-replacement draws. The sequential sync rows could twin
+// RawSequential's, which write a prepared file in order — the same bytes —
+// so RawOverwriteSequential below runs the streamed pattern alone, where the
+// span halves and the like-for-like footing needs it; the sequential
+// overwrite sync rows read against RawSequential's same-named ones.
+func BenchmarkJ1_OverwriteSequential(b *testing.B) {
+	jbForEachMode(b, jbPatterns, func(b *testing.B, spec jbSpec) {
+		jbBurst(b, jbJournalOpen(b, 1), jbOverwrite(spec, false))
+	})
+}
+
+func BenchmarkJ1_OverwriteRandom(b *testing.B) {
+	jbForEachMode(b, jbPatterns, func(b *testing.B, spec jbSpec) {
+		jbBurst(b, jbJournalOpen(b, 1), jbOverwrite(spec, true))
+	})
+}
+
+// BenchmarkRawOverwriteSequential twins the sequential overwrite row's
+// streamed sub-row (the synced span never halves and its offsets are in
+// order, so RawSequential's sync rows are the same figure), and
+// BenchmarkRawOverwriteRandom the random rows: the same halved span and
+// with-replacement draws, so RFC 1 §9.6 holds — a row is read as a fraction
+// of a raw run with the same block size, queue depth and sync pattern. A raw
+// file is prepared zero-filled and synced, so the seed pass is a redundant
+// rewrite, kept so one burst body serves the row and its twin.
+func BenchmarkRawOverwriteSequential(b *testing.B) {
+	jbForEachMode(b, []string{"nosync"}, func(b *testing.B, spec jbSpec) {
+		jbBurst(b, jbOpenRaw(b, spec.writers), jbOverwrite(spec, false))
+	})
+}
+
+func BenchmarkRawOverwriteRandom(b *testing.B) {
+	jbForEachMode(b, jbPatterns, func(b *testing.B, spec jbSpec) {
+		jbBurst(b, jbOpenRaw(b, spec.writers), jbOverwrite(spec, true))
 	})
 }
 

@@ -15,7 +15,7 @@ block_rate=100000
 mutex_fraction=100
 
 case $group in
-j1) pattern='^Benchmark(J1_|RawSequential$|RawRandom$|RawLargeSequential$)' ;;
+j1) pattern='^Benchmark(J1_|RawSequential$|RawRandom$|RawLargeSequential$|RawOverwriteSequential$|RawOverwriteRandom$)' ;;
 j2) pattern='^Benchmark(J2_|RawScaling$)' ;;
 j3) pattern='^BenchmarkJ3_' ;;
 *) echo "bench-data.sh: unknown group $group" >&2; exit 2 ;;
