@@ -219,7 +219,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 | R43 | A block's report waits for no other block, and a failed block holds back none | MUST NOT | RFC 8 §6.3 (O5), §6.8 | T15.9 |
 | R44 | A `report` error leaves the block's extents unmarked and **Dirty** | MUST | RFC 8 §6.3 (Mark) | T15.9 |
 | R45 | An attempt the pipeline gives up has its intent abandoned at once through the abandonment transaction | SHOULD | RFC 8 §6.3 (O4); RFC 6 §7.6 | T15.9 |
-| R46 | A pass is done when every block is reported or abandoned; a file with anything unreported returns `Retry`, one with all reported `Done` | MUST | RFC 8 §6.3, §6.1.1 (`Outcome`) | T15.9 |
+| R46 | A pass is done when every block is reported or abandoned; a file with anything unreported returns `Retry`, one with all reported `Done`, and one whose only unreported extents are in a held last plan `Done`, those extents left **Dirty** | MUST | RFC 8 §6.3, §6.1.1 (`Outcome`) | T15.9 |
 
 **Deadlines and retries**
 
@@ -377,7 +377,11 @@ other row has a test here.
   8 §6.3 O6 keeps the count in the binding's policy state, off the queue's entry. `offload.Run`
   takes a `Failures` value the binding owns (epic 16 holds one per binding): `Run` increments a
   file's count when its pass returns `Retry` for a cause other than `remote.ErrThrottled`, and resets
-  it at `Done`; a `Throttled` outcome leaves it as it is. RFC 8 §6.3's five-failures `decision:` sits
+  it at `Done`; a `Throttled` outcome leaves it as it is. A file whose only unreported extents are in
+  the held last plan returns `Done`, its extents left **Dirty**, so it is not backed off or counted,
+  and `offloadDue` offers it again when its bytes reach the target or its age the maximum age (the
+  RFC 2 plan's ledger row "A held plan's outcome"). `WaitOffloaded` and the upload drain judge by
+  dirty bytes, never by `Done` (RFC 8 §11.4). RFC 8 §6.3's five-failures `decision:` sits
   at the threshold `offloadDue` reads. Prior art: none found.
 - **D12, RFC 8 §2.1 and §6.7, and RFC 6 §10.1, are amended in this pull request.** The carver row names "the carver's
   `Cut`, `ChunkID` and `BlockName`, a namespace's settings, which the content wiring builds and the engine holds sealed, reading only their `Max`; the
@@ -750,7 +754,8 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
 - **Deliverables:** `assemble.go`: one fold per pass, from `Carver.NewFold` with `AssemblerConfig`
   filled from `Budget` (`KeyBudget`, `BlockKeys`, `FileKeys`), the share's block target, the
   format's cap and `MaxAge`; each chunk added in file order, file after file; each plan's keys
-  recomputed from its `Refs`, `Block` and its files' `File`, and a plan over `K` refused before
+  recomputed from its `Refs` and its files' `File`, plus `Block` only for a plan that carries a
+  chunk (a zero-ref commit writes no per-block key), and a plan over `K` refused before
   Intent with its count, its extents left **Dirty**; `Finish`'s held plan dropped, its extents
   unreported. Consumed by T15.8, and T15.9 for a plan with no carried chunk.
 - **Acceptance criteria:**
@@ -762,7 +767,9 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   the second refused with its count and no put built (catches a lone over-`K` chunk put and refused
   on every pass, R26). Carve's end makes such a plan unreachable when Carve is right, so the check
   is a guard against a Carve bug, with a `decision:` saying so, withdrawn when the fold's `Add`
-  gains the error that would report it (RFC 2 plan's epic 5, its D4); a pass of two
+  gains the error that would report it (RFC 2 plan's epic 5, its D4); a zero-ref plan whose refs
+  and per-file keys sum to `K`, accepted (catches the per-block keys charged to a plan with no
+  carried chunk, R26); a pass of two
   files, each file's chunks contiguous (R24); a pass finished short with a young oldest chunk, its
   extents still dirty in the in-memory journal, then old, put (R25). The key counts' upper bound is
   T15.2's test at the backend (R23).
@@ -843,7 +850,10 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   The commit's `Encodings` read back from the block record equal the census `Stored()` returned,
   material fingerprints included (catches a census dropped at the conversion, R36); each ref's
   `born` read back equal to its extent's offered cut (R41); each file's result `Done` when all its
-  extents reported and `Retry` otherwise (R46).
+  extents reported and `Retry` otherwise (R46); a file whose only unreported extents are in a held
+  last plan returns `Done`, its extents stay Dirty, it is not backed off or counted toward O6, and
+  `offloadDue` offers it again when its bytes reach the target or its age the maximum age (catches
+  a held tail read as a failure, R46, D11).
 - **Rules:** rule 9, D9's `decision:`.
 
 ### T15.10 Deadlines, outcomes and the checks
