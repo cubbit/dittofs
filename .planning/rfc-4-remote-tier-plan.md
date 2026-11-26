@@ -67,7 +67,7 @@ v1 surface remains: the `remote.endpoint` and `remote.credential` keys of
 `internal/node/api/res_stores.go` (listed again in `pkg/bootstrap/keyspec.go`), which epic 7
 moves into `pkg/remote/s3` rather than declaring a second time.
 **Where the code lands:** `feat/storage-v2`, where the engine, `pkg/sim`, `pkg/metrics`'s
-registry, `pkg/settings` and `internal/prof` live; this plan lands on `develop`. Paths below are on
+registry, `pkg/settings` and `internal/prof` live; this plan is written on `develop` and carried to `feat/storage-v2`. Paths below are on
 `feat/storage-v2`.
 **Defaults used from the skill's inputs:** no dashboards; external dependencies are §3.3's.
 **How it was reviewed:** an independent architect pass proposed the tree and surface (D3,
@@ -363,7 +363,7 @@ fault transport is epic 3's.
 
 **Plan estimate: 48 subtasks, 85 man-days, not counting epic 8.**
 
-RFC 4 is 2,117 lines, which gives N = 5. Its cohesive areas in v1.1 are four: the codec (§3),
+RFC 4 was 2,117 lines when this plan was cut, which gives N = 5. Its cohesive areas in v1.1 are four: the codec (§3),
 the data path (§4.2 to §4.6, §4.8, §4.9, §4.13), the open (§4.7, §4.11), and the fault
 transport (§7.2), which the data path and the open consume and the RFC 3 and RFC 8 offload
 plans' tests reuse. The fifth and sixth, the backup location's calls and its admission (§4.14,
