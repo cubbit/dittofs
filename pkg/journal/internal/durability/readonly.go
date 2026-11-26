@@ -200,6 +200,20 @@ func (o *observedFile) Size() (int64, error) {
 func (o *observedFile) Close() error { return o.d.observe(o.f.Close()) }
 func (o *observedFile) Name() string { return o.f.Name() }
 
+// ReadAhead passes the hint to the wrapped file when it takes one, and does
+// nothing when it does not, as storage.ReadAheader reads a file without it.
+//
+// decision: the hint's error is returned unobserved, so an advisory call can
+// never move the journal to read-only; a filesystem that refuses writes
+// answers the next WriteAt or Sync with EROFS, which is observed. Withdraw it
+// if a hint is ever the first call a read-only filesystem refuses.
+func (o *observedFile) ReadAhead(off, n int64) error {
+	if r, ok := o.f.(storage.ReadAheader); ok {
+		return r.ReadAhead(off, n)
+	}
+	return nil
+}
+
 var (
 	_ storage.FS   = (*observedFS)(nil)
 	_ storage.File = (*observedFile)(nil)

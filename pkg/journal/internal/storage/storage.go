@@ -71,3 +71,12 @@ type File interface {
 	// Name returns the name the file was created or opened under.
 	Name() string
 }
+
+// ReadAheader is a File that takes a read-ahead hint: ReadAhead asks the
+// platform to bring the n bytes at off into the page cache ahead of their
+// use. It is advisory — it changes no byte, no size and no durability, and a
+// platform may ignore it — so a File that does not implement it is read as
+// taking the hint and doing nothing.
+type ReadAheader interface {
+	ReadAhead(off, n int64) error
+}

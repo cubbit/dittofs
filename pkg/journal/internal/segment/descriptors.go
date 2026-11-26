@@ -482,6 +482,16 @@ func (r Ref) WriteAt(p []byte, off int64) (int, error) {
 	return n, err
 }
 
+// ReadAhead passes a read-ahead hint over the n bytes at off to the
+// reference's file when it takes one (storage.ReadAheader), and does nothing
+// when it does not. It writes nothing, so it numbers no write.
+func (r Ref) ReadAhead(off, n int64) error {
+	if ra, ok := r.e.file.(storage.ReadAheader); ok {
+		return ra.ReadAhead(off, n)
+	}
+	return nil
+}
+
 // Truncate cuts the segment file to size through the reference's descriptor.
 // The cut is numbered as a write is, so the descriptor stays pinned until a
 // sync covers it, as for any other write through it.

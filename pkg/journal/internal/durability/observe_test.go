@@ -145,3 +145,42 @@ func TestObserveKeepsNameAndPassesFilesThrough(t *testing.T) {
 type errWrap struct{ error }
 
 func (e *errWrap) Unwrap() error { return e.error }
+
+// hintFaultFile is a faultFile that also takes the read-ahead hint, failing
+// it with the same error.
+type hintFaultFile struct{ faultFile }
+
+func (f hintFaultFile) ReadAhead(int64, int64) error { return f.err }
+
+type hintFaultFS struct{ faultFS }
+
+func (f hintFaultFS) Open(string) (storage.File, error) {
+	return hintFaultFile{faultFile(f.faultFS)}, nil
+}
+
+// TestObserveHintNeverEntersReadOnly checks the observed file's read-ahead
+// hint: it reaches a wrapped file that takes it and returns its error
+// unchanged, an EROFS included, without moving the journal to read-only; a
+// wrapped file that takes no hint answers nil.
+func TestObserveHintNeverEntersReadOnly(t *testing.T) {
+	r := newRigUnstarted(t, 1)
+
+	f, err := r.d.Observe(hintFaultFS{faultFS{syscall.EROFS}}).Open("a")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if got := f.(storage.ReadAheader).ReadAhead(0, 1); got != syscall.EROFS {
+		t.Fatalf("ReadAhead through the observed file = %v, want EROFS unchanged", got)
+	}
+	if st := r.d.ReadOnlyState(); st.ReadOnly {
+		t.Fatalf("ReadOnly after a refused hint = true, want false: a hint is advisory")
+	}
+
+	plain, err := r.d.Observe(fileOnlyFS{faultFS{syscall.EIO}}).Open("a")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if got := plain.(storage.ReadAheader).ReadAhead(0, 1); got != nil {
+		t.Fatalf("ReadAhead over a file that takes no hint = %v, want nil", got)
+	}
+}
