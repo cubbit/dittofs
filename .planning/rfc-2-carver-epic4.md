@@ -133,7 +133,7 @@ title and not copied.
 | rule 4, profiling | T4.1, T4.4 | `TestAllocsHasher` and `TestAllocsCut` in `carver-allocs`, skipped under `internal/prof.RaceEnabled`; no goroutine started, counted once, at the hasher, through `runtime/metrics`' `/sched/goroutines-created:goroutines` around the call by a test that never calls `t.Parallel` (D1), since the hasher is the only code on the path that could start one. `Cut` opens no descriptor |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T4.1, T4.4 | `internal/blake3` is checked where its consumer meets it: its allocation count again through `Cut`, at the smallest and largest `Target`. The chunk ID and the name carried into RFC 4's header, and a plan's chunks into the RFC 8 pipeline, are tested at those consumers. No concurrency test: RFC 2 §10.1 |
 | rule 6, known failures shrink | none | `unit` and `fuzz` keep no `known.yaml`; every test lands green, each seen to fail on its planted break before the pull request opens |
-| rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | T4.1, T4.4 | `internal/blake3` is a library outside the component set, imports the standard library and its chosen backing alone, and has its own import and structure tests (D1); `carve`'s row gains `internal/chunker`, `internal/blake3` and the backing's import path, and `section`'s row the same, since it reaches what `carve` does; `params` imports nothing new (D2), so the chunker's row is unchanged. v1's `pkg/block/carver` is not read |
+| rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | T4.1, T4.2, T4.4 | `internal/blake3` is a library outside the component set, imports the standard library and its chosen backing alone, and has its own import and structure tests (D1); `carve`'s row gains `internal/blake3` and the backing's import path in T4.2, where `ChunkID` first imports them, and `internal/chunker` in T4.4, where `Cut` does, and `section`'s row the same in each, since it reaches what `carve` does; `params` imports nothing new (D2), so the chunker's row is unchanged. v1's `pkg/block/carver` is not read |
 | rule 8, real dependencies for properties of those dependencies | T4.1 | the hasher is held to BLAKE3's published vectors through E2's `TestBLAKE3Modes`, not to a fake, and against `lukechampine.com/blake3` itself past their longest input; its cost is measured on amd64 and arm64 by T4.1, and its vectors run on arm64 nightly through E2's tests in E7's cell. The reference box is E7's |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T4.1, T4.2, T4.4, T4.5, T4.8 | `decision:` markers for D1 at `internal/blake3`'s package doc, D2 at `params.WithChunkIDKey`, D3 and D4 at `Cut`'s fill loop, D5 at the artificial-end stop, D6 at the `-carver.sweep-full` flag |
 | rule 10, a test must be able to fail | all | each test names its planted break: a key byte changed, two hashes swapped, a refill that drops a byte, an artificial end that cuts its tail, a short chunk emitted on error, a reader's empty reads unbounded |
@@ -150,7 +150,7 @@ which.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | The carver's dependencies are the standard library, a BLAKE3 implementation and the entity package, and an import test enforces that, transitively: the BLAKE3 implementation `carve` hashes with is D1's package, held to its own row | MUST | RFC 2 §1.1; RFC 0 §1.2 ("a per-component import-graph test that follows imports transitively") | T4.1, T4.4 |
+| R1 | The carver's dependencies are the standard library, a BLAKE3 implementation and the entity package, and an import test enforces that, transitively: the BLAKE3 implementation `carve` hashes with is D1's package, held to its own row | MUST | RFC 2 §1.1; RFC 0 §1.2 ("a per-component import-graph test that follows imports transitively") | T4.1, T4.2, T4.4 |
 | R2 | Hashing a chunk allocates nothing and starts no goroutine, at every length up to the largest `Max`, 16 MiB, so `Cut` can allocate nothing | bound | RFC 2 §10.4 (allocations), §3.7 (16 MiB `Max`); RFC 2 plan, §1.5 rule 4 ("No package starts a goroutine"); E1's §9 point 1 | T4.1 |
 | R3 | The keyed and key-derivation modes give BLAKE3's published values over inputs shorter and longer than one BLAKE3 chunk, on amd64 per change and arm64 nightly; past the published lengths, up to 16 MiB, they give what the library's own API gives, however the input is split into writes | test row | RFC 2 §10.1 (Architecture), §4.1, §4.2; E2's D2 | T4.1 |
 
@@ -220,7 +220,7 @@ which.
 | R38 | Two implementations over the same random input emit identical chunks: `Cut` and the reference chunker over E2's tables agree on every end | MUST | RFC 2 §10.1 (Differential), §1.3; RFC 2 plan, §1.4 | T4.4, T4.8 |
 
 How each row is enforced once this epic lands, where no test of this epic can break it: R1's
-transitive walk by E1's `imports_test.go`, which T4.4 extends, and `pkg/transform`'s admission of
+transitive walk by E1's `imports_test.go`, which T4.2 and T4.4 extend, and `pkg/transform`'s admission of
 `internal/blake3` by the RFC 5 plan's epic 5; R12's key lengths and R8's input
 types by the compiler, through E1's signatures; R13 by the package boundary, since `carve` can
 read no fingerprint from `NextBoundary`'s `int`, and by R20's goldens and R38's agreement, which a
@@ -273,7 +273,13 @@ size to choose (RFC 2 §1.2, the RFC 8 offload plan's epic 15).
   consumers need: keyed and key-derivation modes, streaming writes (the name's and RFC 5's nonce's
   inputs are several slices), and a 32-byte sum. A `Hasher` holds its chaining-value stack and a 16 KiB group buffer, about 18 KiB on its
   caller's stack, so it is started in place (`InitKeyed`, `InitDeriveKey`) rather than returned by value, which would copy
-  them per chunk. No extendable output: E3's gear tables keep
+  them per chunk. `InitDeriveKey` copies its context into the group buffer and hashes it from
+  there, a group at a time when it is longer than the buffer, then resets the buffer and the stack
+  before any key material is written, rather than converting it with `[]byte(context)`: the block-name context is 37 bytes, and
+  a conversion the compiler cannot make zero-copy allocates above Go's 32-byte stack buffer
+  (`tmpStringBufSize`, checked in go1.26.10's `runtime/string.go`), once per `BlockName`. Whether it
+  is zero-copy depends on the compiler proving the hasher never changes or keeps the slice, which
+  an assembly backing without `go:noescape` breaks, so the copy keeps the count from resting on it. No extendable output: E3's gear tables keep
   `lukechampine.com/blake3`, read 1,024 bytes at a time so it starts no goroutine, with its
   allocations in the constructor (E3's D5). The marker's ceiling: withdraw the package, and call the library
   directly, if a later `lukechampine.com/blake3` neither allocates nor starts a goroutine on a long
@@ -301,7 +307,10 @@ size to choose (RFC 2 §1.2, the RFC 8 offload plan's epic 15).
   (checked, `io/io.go`), and counts such reads instead: the RFC 2 plan's D5, 100 in a row, `io.ErrNoProgress`,
   the bound `bufio.Reader`'s fill uses (`maxConsecutiveEmptyReads`, checked). A buffer of exactly `Max` bytes moves up to
   `Max` bytes per chunk; a larger one moves less often, which is the caller's to size (RFC 2 §10.5,
-  at most 2 × `Max`). A `decision:` at the loop says so. Prior art: `bufio.Reader.fill` (checked). Applied by T4.4.
+  at most 2 × `Max`). A `decision:` at the loop says so. Prior art: `bufio.Reader.fill` (checked). Applied by T4.4,
+  the loop, and T4.6, the count of empty reads, which lands with `stall`, the reader that tests it.
+  Until T4.6 the marker states the buffer sizing only, and says the loop has no bound on empty
+  reads yet; T4.6 replaces that sentence with the bound.
 
 - **D4, `consumed` is what `emit` accepted, and a reader's error stops `Cut` at once.**
   On every return, success or error, `consumed` is the end of the last chunk `emit` returned nil
@@ -363,9 +372,10 @@ internal/blake3/
   imports_test.go          T4.1  the package's own import row (D1)
   arch_test.go             T4.1  no package-level variable, no interface
 pkg/carver/
-  imports_test.go          T4.1, T4.4  carvetest's test row admits internal/blake3 and its
-                                       backing; carve's and section's rows admit internal/chunker,
-                                       internal/blake3 and its backing
+  imports_test.go          T4.1, T4.2, T4.4  carvetest's test row admits internal/blake3 and its
+                                             backing (T4.1); carve's and section's rows admit
+                                             internal/blake3 and its backing (T4.2), then
+                                             internal/chunker (T4.4)
   internal/params/
     params.go              T4.2  idKey; WithChunkIDKey, ChunkIDKey; D2's decision:
   internal/carvetest/
@@ -398,7 +408,8 @@ test/suites.yaml           T4.1, T4.8  carver-allocs reaches ./internal/blake3; 
 - **Deliverables:**
   - The measurement (D1): both candidates, the tree hasher over `lukechampine.com/blake3/guts` and
     `github.com/zeebo/blake3` v0.2.4, in keyed mode at 0, 1, 1,023, 1,024, 1,025 and 16,384 bytes,
-    64 KiB, 256 KiB, 1 MiB, 4 MiB and 16 MiB, on amd64 and arm64: `testing.AllocsPerRun`, and the
+    64 KiB, 256 KiB, 1 MiB, 4 MiB and 16 MiB, and in key-derivation mode under the block-name
+    context over the same lengths, on amd64 and arm64: `testing.AllocsPerRun`, and the
     change in `/sched/goroutines-created:goroutines` over 100 calls after a `runtime.GC()`. The
     table goes into the pull request and its verdict into the `decision:`.
   - `internal/blake3`, backed by the winner. Consumed by T4.2's `ChunkID`, T4.3's `BlockName`, and
@@ -443,7 +454,8 @@ test/suites.yaml           T4.1, T4.8  carver-allocs reaches ./internal/blake3; 
     `lukechampine.com/blake3`'s `New(32, key)` and `DeriveKey` give, written whole and split at 1,
     1,023, 1,024, 1,025, 16,383, 16,384 and 16,385 bytes.
   - At every length of the measurement up to 16 MiB, `InitKeyed`, `Write` and `Sum256` together
-    make 0 allocations and start 0 goroutines.
+    make 0 allocations and start 0 goroutines, and so do `InitDeriveKey` under the 37-byte
+    block-name context, `Write` and `Sum256`.
   - Production files import the standard library and the chosen backing, nothing else, and declare
     no package-level variable and no interface.
 - **Tests:** at `internal/blake3`, which `ChunkID` and the RFC 5 nonce call: `TestBLAKE3Modes`
@@ -453,8 +465,9 @@ test/suites.yaml           T4.1, T4.8  carver-allocs reaches ./internal/blake3; 
   library (catches an answer that depends on how the input was split into writes, which the name
   and the RFC 5 nonce rely on, and a defect past the published 102,400 bytes, R3), seen to fail
   with a group buffered twice across a split; `TestAllocsHasher`, skipped under `prof.RaceEnabled`,
-  at each length (catches a chaining-value stack or a group buffer moved to the heap, R2), seen to
-  fail with the stack made a slice; the goroutine count at 16 MiB, in a test that never calls
+  at each length in both modes, `InitDeriveKey` included (catches a chaining-value stack or a group
+  buffer moved to the heap, and a context converted to a fresh slice, R2), seen to fail with the
+  stack made a slice and with the context passed through an escaping `[]byte(context)`; the goroutine count at 16 MiB, in a test that never calls
   `t.Parallel` (catches a backing that parallelises long inputs, as the library's top-level
   `Write` does, R2), seen to fail pointed at that `Write`; the import and structure rows over a
   planted import of `pkg/carver` and a planted package-level variable (catches the package turning
@@ -468,8 +481,12 @@ test/suites.yaml           T4.1, T4.8  carver-allocs reaches ./internal/blake3; 
 **Subtask T4.2 estimate: 0.75 man-days.**
 
 - **Track:** B. **Depends on:** T4.1, E3's T3.1.
-- **Covers:** R4, R6, R7.
+- **Covers:** R1, R4, R6, R7.
 - **Deliverables:**
+  - `carve`'s row in E1's `imports_test.go` admits `internal/blake3` and the backing's import
+    path, and `section`'s row the same, since it reaches what `carve` reaches. `ChunkID` is
+    `carve`'s first import of `internal/blake3`, so the rows widen here, or E1's walk fails this
+    subtask's pull request.
   - `internal/params`, with D2's `decision:`:
     ```go
     // Settings gains idKey [32]byte.
@@ -490,12 +507,14 @@ test/suites.yaml           T4.1, T4.8  carver-allocs reaches ./internal/blake3; 
   - Under two keys, the IDs of one input differ, and neither equals `lukechampine.com/blake3`'s
     unkeyed `Sum256` of it.
   - A zero settings value panics.
+  - E1's import walk passes with `carve` importing `internal/blake3`.
 - **Tests:** at `ChunkID`, as `Cut` and the codec call it: the vector (catches the wrong mode, the
   key read from the wrong field, or a length or offset fed into the hash, R4, R6), seen to fail
   with the chunk's length written before its bytes; the two keys and the unkeyed hash (catches a
   plaintext ID, R7), seen to fail with the key ignored; the zero value. Its allocations are counted
-  by `TestAllocsHasher` and through `Cut` by `TestAllocsCut`. No test double.
-- **Rules:** rule 9, D2's `decision:`. Others as §2 says.
+  by `TestAllocsHasher` and through `Cut` by `TestAllocsCut`; the import rows over a planted import
+  of `pkg/settings` in `carve` (R1). No test double.
+- **Rules:** rule 7, the rows; rule 9, D2's `decision:`. Others as §2 says.
 
 ### T4.3 The block name
 
@@ -510,18 +529,26 @@ test/suites.yaml           T4.1, T4.8  carver-allocs reaches ./internal/blake3; 
   check.
 - **Acceptance criteria:**
   - `BlockName` over `Vectors.Name`'s scope, nonce, chain ID and IDs gives `Vectors.Name.Name`.
-  - Swapping two IDs, changing one byte of the scope, the nonce or the chain ID each gives a name
-    other than the golden one; the same input hashed by the test through `internal/blake3` with
-    `0x11` for the scope's length byte gives another.
-  - The name of a block holding one chunk differs from that chunk's ID and from its keyed hash.
+  - Swapping two distinct IDs, changing one byte of the scope, the nonce or the chain ID each gives
+    a name other than `BlockName` over the unchanged inputs. The golden name is not the reference
+    here: a `BlockName` that drops an input never gives it anyway, nor one that sorts the IDs
+    unless the golden IDs are already sorted, so a perturbed name would differ from it even when
+    the input is ignored.
+  - For the golden inputs and for a block of one chunk, `BlockName` equals the test's own
+    `internal/blake3` key derivation under the context over `0x10` ‖ scope ‖ nonce ‖ `0x20` ‖ chain
+    ID ‖ IDs. It also differs from the same hash with `0x11` for the scope's length byte, which
+    restates RFC 2 §9's `name` row and cannot fail once the first check passes.
 - **Tests:** at `BlockName`, as the Intent state calls it: the golden name (catches a changed
   construction, which orphans every stored block, R8, R10), seen to fail with the context string
-  changed; each perturbation (catches a name that ignores order, an input left out, or a scope with
-  no length byte, R9, R10), each seen to fail on its own break: the IDs sorted before hashing, the
-  nonce not written, the chain ID not written, the scope's length byte left out; the one-chunk
-  block (catches a block that answers to its chunk's hash, R9), seen to fail with the context
-  dropped and the keyed mode used. The vector's chain ID is E2's, computed from RFC 5 §2.8's table.
-  No test double.
+  changed; each perturbation against the unperturbed name (catches a name that ignores order or
+  leaves an input out, R9, R10), each seen to fail on its own break: the IDs sorted before hashing,
+  the scope not written, the nonce not written, the chain ID not written; the hand-built input
+  (catches the scope's length byte left out or another prefix, and the context dropped for the
+  keyed mode, R8, R9, R10), seen to fail with the length byte left out and with the keyed mode
+  used. A one-chunk name differs from its chunk's ID in either mode while `BlockName` writes the
+  66-byte prefix, so a comparison with the ID cannot see the domain separation lost, and R9's is
+  the hand-built check's. The vector's
+  chain ID is E2's, computed from RFC 5 §2.8's table. No test double.
 - **Rules:** as §2 says.
 
 ### T4.4 `Cut` over a real end
@@ -535,10 +562,10 @@ test/suites.yaml           T4.1, T4.8  carver-allocs reaches ./internal/blake3; 
     checks, the fill loop, `NextBoundary` from each chunk's start with `final` once the reader is
     done, the hash over `buf[start:end]`, `emit` handed `buf[start:end:end]`, so an `emit` that
     appends cannot write over the next chunk's bytes, and `consumed`. `Cut`'s doc comment gains
-    D4's sentence on `base`. Consumed by the RFC 8 offload plan's epic 15 at its Carve state, and by
-    T4.5 to T4.8.
-  - `carve`'s rows in E1's `imports_test.go` admit `internal/chunker`, `internal/blake3` and the
-    backing's import path, and `section`'s row the same, since it reaches what `carve` reaches.
+    D4's sentence on `base`. Consumed by the RFC 8 offload plan's epic 15 at its Carve state once
+    T4.5 adds the artificial end (CP3), and by T4.5 to T4.8.
+  - `carve`'s row in E1's `imports_test.go` admits `internal/chunker`, and `section`'s row the
+    same, since it reaches what `carve` reaches.
   - `TestAllocsCut`, which joins `carver-allocs` by its name.
   - `BenchmarkCut`: per entry `t` of `carvetest.Targets`, a sub-benchmark named `strconv.Itoa(t)`,
     holding four named `Random` (K2), `BLAKE3` (the same bytes through `internal/blake3`'s keyed
@@ -567,7 +594,8 @@ test/suites.yaml           T4.1, T4.8  carver-allocs reaches ./internal/blake3; 
   slice (catches a copy per chunk, R16, R17), seen to fail with `emit` handed a copy; the refusals
   and the offset cases (R11, R12), seen to fail with the overflow check removed;
   `TestAllocsCut`, skipped under `prof.RaceEnabled` (catches an allocation, R18), seen to fail with
-  a per-chunk `make`; the import rows over a planted import of `pkg/settings` in `carve` (R1). The
+  a per-chunk `make`; E1's walk over `Cut`'s import of `internal/chunker` (R1), seen to fail with
+  `internal/chunker` left out of `carve`'s row. The
   benchmarks are run, not asserted: E7 holds them to §10.5. No test double.
 - **Rules:** rule 4, the count; rule 7, the rows; rule 9, D3's and D4's `decision:`. Others as §2
   says.
@@ -650,9 +678,18 @@ test/suites.yaml           T4.1, T4.8  carver-allocs reaches ./internal/blake3; 
   length of the buffer cut short, an offset that wraps, a padded last chunk, and a `NextBoundary`
   call under `Max` with `final` unset, which E3's panic turns into a test failure, R11, R14, R15,
   R31, R32), seen to fail with the refill moved by one byte and, for the shapes, with the last
-  chunk padded to `Min`. The boundary-at-the-refill stretches are found by cutting seeded input
-  with the reference and choosing the seed whose end sits at the offset wanted, so no byte is
-  planted; they are also `FuzzCut`'s seeds (T4.8). No test double.
+  chunk padded to `Min`. The boundary-at-the-refill stretches are cut from one long seeded input, so
+  no byte is planted. Searching seeds for one whose boundary sits at the refill point ± 1 would
+  cost about `Target` × `Max` bytes of reference cutting per case, some 64 TiB at a 4 MiB `Target`.
+  Instead the test cuts the long input once with the reference, takes each end `b` in turn, and
+  starts the stretch at `b` − the buffer's length ± 1, so `b` lands at the first refill point or a
+  byte to either side. It checks that the reference cut of the stretch itself ends a chunk there,
+  since a cut from a new start need not meet the old ends at once, and moves to the next end when
+  it does not. The input is a fixed 64 × `Max` bytes, and the test fails, naming the buffer, the
+  offset and the `Target`, when no end qualifies, so a case never falls back to a plain reference
+  match. A chunk exactly the buffer's length is the `Max`-byte chunk `Zeros` gives under the
+  unkeyed table, in the `Max`-byte buffer; in the `Max` + 1 one no chunk is that long. That costs
+  a few cuts of the input at any `Target`. No test double.
 - **Rules:** rule 5, `Cut` as the Carve state calls it. Others as §2 says.
 
 ### T4.8 The fault sweep and the fuzzed properties
@@ -666,7 +703,7 @@ test/suites.yaml           T4.1, T4.8  carver-allocs reaches ./internal/blake3; 
     `-carver.sweep-full` that runs it at full size, with D6's `decision:`. Consumed by E7's T7.4,
     whose nightly cell sets the flag.
   - `FuzzCut` (D7) with `f.Add` seeds covering every content kind of E2's, both tables, three
-    profiles, both ends, the three buffer sizes and T4.7's boundary-at-the-refill stretches; its
+    profiles, both ends and the three buffer sizes; its
     line of the `fuzz` suite, `go test -run=^$ -fuzz=^FuzzCut$ -fuzztime=10m ./pkg/carver/carve`,
     with the suite's timeouts raised by ten minutes and a build.
 - **Acceptance criteria:**
@@ -699,8 +736,8 @@ flowchart TD
   T4_3 --> CP2(["after T4.3: the Intent state can name a block"]):::sync
   E3_2(["E3's T3.2 boundary search"]):::sync --> T4_4["T4.4 Cut over a real end"]
   T4_2 --> T4_4
-  T4_4 --> CP3(["after T4.4: the Carve state can call Cut"]):::sync
   T4_4 --> T4_5["T4.5 The artificial end"]
+  T4_5 --> CP3(["after T4.5: the Carve state can call Cut"]):::sync
   T4_4 --> T4_6["T4.6 Errors and awkward readers"]
   T4_5 & T4_6 --> T4_7["T4.7 Stretch shapes and buffer edges"]
   T4_6 & T4_7 --> T4_8["T4.8 Fault sweep and fuzzed properties"]
@@ -710,11 +747,11 @@ flowchart TD
 
 T4.1 is the riskiest and the one another plan waits on, so it comes first, and it needs nothing of
 E3: track B builds it, the chunk ID and the name while E3's boundary search lands (T4.2 also reads
-E3's T3.1, which comes first in E3). T4.4 is the last blocker, the `Cut` every later subtask and the
-RFC 8 offload plan's epic 15 call. Then the path: the artificial end, the errors, the edge cases
+E3's T3.1, which comes first in E3). T4.4 is the last blocker, the `Cut` every later subtask calls, and
+T4.5 gives it the artificial end the RFC 8 offload plan's epic 15 offers with. Then the path: the artificial end, the errors, the edge cases
 that read both, and the sweep and the fuzz target over all of them. Checkpoints after T4.1 (the RFC 5
-plan's epic 5 can hash its nonce), after T4.3 (a block can be named) and after T4.4 (the Carve state
-can call `Cut`).
+plan's epic 5 can hash its nonce), after T4.3 (a block can be named) and after T4.5 (the Carve state
+can call `Cut`, both ends in place).
 
 ## 8. Suggested pull requests
 
@@ -754,7 +791,7 @@ A suggestion only: one pull request per subtask works as well.
    - E2's D5 says the golden hashes come from "the library E4's `Cut` will call". `Cut` calls
      `internal/blake3` instead; the values stay valid, since T4.1 holds the package to the same
      published vectors and to the library.
-   - E1's D7 row for `carve` names `lukechampine.com/blake3`; T4.4 adds the backing's import path
+   - E1's D7 row for `carve` names `lukechampine.com/blake3`; T4.2 adds the backing's import path
      beside it, which may be `lukechampine.com/blake3/guts`.
 6. **Needs on other plans.** The RFC 5 plan's epic 5 adds `internal/blake3` and its backing's
    import path to `pkg/transform`'s allowlist and hashes its nonce through it; the RFC 8 offload
