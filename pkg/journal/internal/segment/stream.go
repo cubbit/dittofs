@@ -340,12 +340,15 @@ type Stream struct {
 	// hinted front: the end of the last window asked for, the cap once
 	// nothing is left to ask or no worker is installed. [hintFrom, hintTo) is
 	// the part of it the worker has not taken yet, empty when they are equal.
-	// All guarded by appendMu, like every field of its block.
+	// hintLeft holds the untaken parts of the segments the stream rolled away
+	// from, oldest first, so a roll never drops a range the worker was asked
+	// for. All guarded by appendMu, like every field of its block.
 	hinter   *Hinter
 	hintStep int64
 	hinted   int64
 	hintFrom int64
 	hintTo   int64
+	hintLeft []hintRange
 
 	// sealState names where the stream's seal stands. The zero value is
 	// sealOpen: the stream is appending.
@@ -1366,6 +1369,11 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	if s.closed {
 		s.appendMu.Unlock()
 		return s.endTaken(id, ref, ErrStreamClosed)
+	}
+	// The old segment's range the worker has not taken yet is kept for it,
+	// named by the old segment's id, before the new segment's resets it.
+	if s.hintFrom != s.hintTo {
+		s.hintLeft = append(s.hintLeft, hintRange{id: s.id, off: s.hintFrom, to: s.hintTo})
 	}
 	s.id, s.ref = id, ref
 	s.next = format.SegmentHeaderSize

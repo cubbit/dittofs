@@ -156,20 +156,24 @@ func (h *Hinter) run() {
 // the call however the stream moves meanwhile. A reference the cache refuses
 // skips the hint, as its failure does.
 func (h *Hinter) hint(s *Stream) {
-	id, off, n := s.takeHint()
-	if n <= 0 {
-		return
+	for _, r := range s.takeHints() {
+		ref, err := s.cache.Acquire(r.id)
+		if err != nil {
+			h.log.Debug("segment: read-ahead hint skipped", "segment", r.id, "err", err)
+			continue
+		}
+		err = ref.ReadAhead(r.off, r.to-r.off)
+		ref.Release()
+		if err != nil {
+			h.log.Debug("segment: read-ahead hint refused", "segment", r.id, "off", r.off, "len", r.to-r.off, "err", err)
+		}
 	}
-	ref, err := s.cache.Acquire(id)
-	if err != nil {
-		h.log.Debug("segment: read-ahead hint skipped", "segment", id, "err", err)
-		return
-	}
-	err = ref.ReadAhead(off, n)
-	ref.Release()
-	if err != nil {
-		h.log.Debug("segment: read-ahead hint refused", "segment", id, "off", off, "len", n, "err", err)
-	}
+}
+
+// hintRange is [off, to) of segment id, a range the worker has yet to hint.
+type hintRange struct {
+	id      core.SegmentID
+	off, to int64
 }
 
 // hintAheadLocked moves the active segment's hinted front to a window past the
@@ -194,16 +198,31 @@ func (s *Stream) hintAheadLocked() {
 	}
 }
 
-// takeHint returns the range of the active segment the worker has yet to
-// hint, and marks it taken; n is zero when there is none or the stream is
-// closed.
-func (s *Stream) takeHint() (id core.SegmentID, off, n int64) {
+// takeHints returns every range the worker has yet to hint, the segments the
+// stream rolled away from first and the active segment's last, and marks them
+// all taken; it returns none when the stream is closed. Taking all of them
+// under one lock is what keeps the wake protocol whole: a range asked for
+// after the take sends a wake the sweep that took has already consumed, so the
+// next sweep takes it, and a range asked for before is in this take.
+//
+// decision: a range of a segment the stream rolled away from is hinted
+// although the roll followed that segment's seal, which drained every append
+// to it, or its end, whose writes the roll waits out, so the late hint helps no
+// write of this stream. It is kept so the worker answers every range a stream
+// asks for and none is lost to the order the two goroutines ran in; it costs
+// one small allocation per roll the worker fell behind on. Drop the carry-over
+// if a profile shows the late hints competing with the active segment's.
+func (s *Stream) takeHints() []hintRange {
 	s.appendMu.Lock()
 	defer s.appendMu.Unlock()
-	if s.closed || s.hintFrom == s.hintTo {
-		return 0, 0, 0
+	if s.closed {
+		return nil
 	}
-	id, off, n = s.id, s.hintFrom, s.hintTo-s.hintFrom
-	s.hintFrom = s.hintTo
-	return id, off, n
+	out := s.hintLeft
+	s.hintLeft = nil
+	if s.hintFrom != s.hintTo {
+		out = append(out, hintRange{id: s.id, off: s.hintFrom, to: s.hintTo})
+		s.hintFrom = s.hintTo
+	}
+	return out
 }

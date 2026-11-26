@@ -17,7 +17,8 @@ import (
 // hintFS wraps a filesystem so its files take the read-ahead hint: each
 // ReadAhead is recorded and passed to the wrapped file when it takes one,
 // and answered with fail instead when fail is set. When block is set, a hint
-// first reports on entered and then waits for block to close.
+// first reports on entered, unless a report is already waiting there, and then
+// waits for block to close.
 type hintFS struct {
 	storage.FS
 	fail    error
@@ -43,7 +44,10 @@ func (f *hintFile) ReadAhead(off, n int64) error {
 	f.fs.hints = append(f.fs.hints, hintCall{name: f.Name(), off: off, to: off + n})
 	f.fs.mu.Unlock()
 	if f.fs.block != nil {
-		f.fs.entered <- struct{}{}
+		select {
+		case f.fs.entered <- struct{}{}:
+		default:
+		}
 		<-f.fs.block
 	}
 	if f.fs.fail != nil {
@@ -183,6 +187,57 @@ func TestHinterHintsTheActiveSegmentAheadOfItsAppends(t *testing.T) {
 				t.Fatalf("no segment was hinted more than once, want the window re-asked as the appends advance")
 			}
 		})
+	}
+}
+
+// TestHinterRollKeepsTheUntakenRange checks that a range the worker has not
+// taken when the stream rolls is still hinted: with the worker held inside the
+// first segment's hint, the stream fills the second segment and rolls to a
+// third, and once released the worker hints the second segment before the
+// third, whose roll-in range it takes in the same sweep.
+func TestHinterRollKeepsTheUntakenRange(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	fs := &hintFS{entered: make(chan struct{}, 1), block: make(chan struct{})}
+	he := hintBuild(t, fs, 2*streamCap)
+	var release sync.Once
+	unblock := func() { release.Do(func() { close(fs.block) }) }
+	t.Cleanup(unblock)
+
+	first := he.appendRun(t, 1, 1)[0].Segment
+	select {
+	case <-fs.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the first segment's hint never reached the file")
+	}
+	locs := he.appendRun(t, 2, 149)
+	var segs []core.SegmentID
+	for _, l := range locs {
+		if l.Segment != first && !slices.Contains(segs, l.Segment) {
+			segs = append(segs, l.Segment)
+		}
+	}
+	if len(segs) < 2 {
+		t.Fatalf("the appends rolled into %d segments past the first, want at least 2 so a range is left untaken", len(segs))
+	}
+	left, active := segs[len(segs)-2], segs[len(segs)-1]
+	if got := fs.calls(left); len(got) != 0 {
+		t.Fatalf("segment %d was hinted %+v while the worker was held, want none", left, got)
+	}
+	unblock()
+
+	// The active segment's range is taken with the left one's and hinted
+	// after it, so its hint is the event the assertion waits on.
+	deadline := time.Now().Add(10 * time.Second)
+	for len(fs.calls(active)) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("segment %d: no hint after the worker was released", active)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	want := []hintCall{{name: format.SegmentName(left), off: format.SegmentHeaderSize, to: streamCap}}
+	if got := fs.calls(left); !slices.Equal(got, want) {
+		t.Fatalf("segment %d, left by the roll while the worker was held: got hints %+v, want %+v", left, got, want)
 	}
 }
 
