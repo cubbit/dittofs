@@ -117,11 +117,12 @@ type Chain interface {
 	// registry rather than the configured list, so it decodes what an older
 	// configuration wrote (RFC 5 §2.5). census is the block record's
 	// (RFC 5 §5.3): a body naming material outside it is ErrMalformed, and
-	// the provider is not asked. Its errors are ErrMalformed, ErrTooLarge,
-	// keys.ErrMaterialUnavailable and keys.ErrMaterialDestroyed: a
-	// census-listed ID the provider was never given is reported as
-	// keys.ErrMaterialUnavailable, never as ErrMalformed (RFC 5 §2.7). dst
-	// must not overlap body.
+	// the provider is not asked. Its errors are §2.7's five: ErrMalformed,
+	// ErrTooLarge and keys' three material errors. A census-listed ID the
+	// provider was never given reaches the caller as
+	// keys.ErrUnknownMaterial, never as ErrMalformed, which the codec reports
+	// as keys.ErrMaterialUnavailable with a configuration health condition
+	// naming the ID (RFC 5 §2.7). dst must not overlap body.
 	Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, hash [32]byte, body []byte, max int, census []Encoded) ([]byte, error)
 
 	// MaxDecodeLen is the largest body any registered transforms could have
