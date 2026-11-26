@@ -25,7 +25,7 @@ pull request #5998 gives them; RFC 4 plan epic 8's D6 and its §9 point 3, which
 Every citation is `develop`'s text. The code lands on `feat/storage-v2`, and the paths below are
 paths there.
 **Track:** C.
-**Epic 5 estimate: 5 subtasks, 14 man-days.**
+**Epic 5 estimate: 5 subtasks, 14.5 man-days.**
 **Depends on:** **S2**, epic 2's `Inject` with `Op: "health"`, `Fail` and `Hold` over RFC 4's
 in-memory store. **E3**: T3.2's registry (`Register`, `Unregister`, the group by `ProbeKey`),
 T3.5's `admit`, `fixed.go` and the half's counters, T3.7's in-memory opener and its D12's
@@ -62,8 +62,9 @@ before it queues.
   time, a store's own re-admission probe included.
 - A pure `next(state, event, now)` decides every transition: two failed probes, the failure
   window, the re-admission backoff and its count *n*, the `ErrDenied` re-trip, the cause.
-- `Upload`, `Fetch` and `Prefetch` in an unhealthy direction fail at `admit`, first, with that
-  direction's `Flow.Health` error, taking no waiter slot and calling no backend.
+- `Upload`, `Fetch` and `Prefetch` in an unhealthy direction fail at `admit`, right after its
+  closed check, with that direction's `Flow.Health` error, taking no waiter slot and calling no
+  backend.
 - An outage writes two log lines per direction, and `Stats` reports the §2.12 health series.
 - `internal/node/content` publishes `store_put_unhealthy` and `store_get_unhealthy` as a
   `health.Source` over `Flow.Health`.
@@ -251,17 +252,21 @@ the counters T5.5 keeps as E3's D11 does.
   the oldest store is unregistered the next one takes over.
   Since every probe reads a store's own namespace (RFC 4 §4.7), a failed shared pair may be the
   representative's prefix alone. So before a failed pair counts as shared, the slot probes the
-  next member once. If that probe passes, the pair was the representative's own evidence: the
-  representative alone turns unhealthy, as if tripped by its window, and the shared role moves
-  to the next member. Only when both fail does the failure count for the group. A whole key is
-  therefore never turned, or held, unhealthy by one store's prefix, at the cost of one probe per
-  suspected outage. A `decision:` marker says so. Prior art: none found.
+  next member, as a pair: a pass is followed by a second check probe at once. If both pass, the
+  failed pair was the representative's own evidence: the representative alone turns unhealthy,
+  as if tripped by its window, and the shared role moves to the next member. If either fails,
+  the failure counts for the group. One spurious pass therefore cannot blame the representative
+  during a key-wide outage, as two results are needed for any transition (R7). A check probe the
+  slot cannot send, because it still waits on a hung call, fails as D4 says, so a backend that
+  ignores `ctx` turns the group unhealthy rather than freezing it healthy. A whole key is
+  therefore never turned, or held, unhealthy by one store's prefix, at the cost of one or two
+  probes per suspected outage. A `decision:` marker says so. Prior art: none found.
 - **D3, one slot per group, ordered: the shared probe first, own probes only after a pass. This
   answers RFC 4 plan epic 8's §9 point 3.** The group's loop is its slot: it is the only
   goroutine that calls `Health` for the group, so at most one probe runs at a time (R6). Each
   time the slot frees, it runs, in this order:
-  1. the shared probe, when it is due: the interval has run, the last result differs from the
-     one before it (R8, D5), or a transfer failure asked for one (D6);
+  1. the shared probe, when it is due: the interval has run, D5 sends a pair's second probe at
+     once (R8), or a transfer failure asked for one (D6);
   2. the second own probe of a store whose first own probe just passed;
   3. own probes due, earliest due first: a window-tripped store's falls due when its backoff
      runs out, and again one backoff after each own probe that fails. They run only while the
@@ -297,22 +302,31 @@ the counters T5.5 keeps as E3's D11 does.
   The probe's `ctx` is cancelled at the bound through `Clock.After`, and the probe counts as
   failed then, with an error wrapping `remote.ErrTransient`, the class RFC 3 §2.8 gives a stalled
   store. The slot waits for the cancelled call to return before the next probe, so the client
-  never carries more than its two probes. A call that has still not returned one bound after its
-  cancel counts as the pair's second failure, without a new probe, so a backend ignoring `ctx`
-  turns the direction unhealthy rather than freezing it healthy; the next probe still waits for
-  it. A probe answered with `ErrThrottled` is neither a pass nor a failure (R11): it leaves the
-  run of results as it was, is not a pair's first result for D5, and the next probe is sent an
-  interval later. `ErrThrottled` wraps `ErrTransient` (RFC 4 §4.8), so it is tested first. A
-  `decision:` marker at the bound says all of this. How R32 reads: a probe that fails
-  at once is refused within one interval plus one round trip; one that hangs takes two bounds, one
-  per probe of the pair, plus at most one own probe in flight (D3), so one interval plus three
-  bounds. Prior art: none found.
+  never carries more than its two probes. While the slot waits on a cancelled call that has not
+  returned, each probe that falls due, a pair's second, D2's check or the shared probe behind an
+  own probe, is not sent and counts as failed one bound after it fell due. So a backend ignoring
+  `ctx` turns the direction unhealthy rather than freezing it healthy, and the client still
+  carries one probe per direction. A probe answered with `ErrThrottled` is neither a pass nor a
+  failure (R11): it leaves the run of results as it was, is not a pair's first result for D5,
+  and the next probe is sent an interval later. `ErrThrottled` wraps `ErrTransient` (RFC 4
+  §4.8), so it is tested first. A `decision:` marker at the bound says all of this. It also
+  says that `Unregister` and `Close` wait for a cancelled probe to return, relying on `Health`
+  returning once its `ctx` ends, as `Close` already does for transfers (RFC 3 §1.3; its D14
+  rejects waits that give up after a timeout); a backend that ignores `ctx` holds them as long
+  as it holds the call. How R32 reads:
+  after the interval, up to four probes run in turn before a shared key is refused: at most one
+  own probe in flight (D3), the pair, and D2's check probe. Probes that fail at once take four
+  round trips; probes that hang take a bound each, so one interval plus four bounds. A zero key
+  has no check probe. Prior art: none found.
 - **D5, the second probe of a pair is sent at once.** After a failed probe while healthy, and
   after a first pass while unhealthy, the next probe is sent at once; after anything else, an
   interval later. That is RFC 3 §2.8's "after a failed probe, and after a first success while
   unhealthy", read as completing a pair: a dead store is not probed back to back, and a probe
-  alternating pass and fail is sent at most twice per interval. A `decision:` marker says that a
-  failed probe while already unhealthy waits an interval. Prior art: none found.
+  alternating pass and fail is sent at most twice per interval. "While healthy" and "while
+  unhealthy" are each member's state, not the group's: a result completes a pair for any member
+  that takes it as evidence. So a store joining an unhealthy group (D8) gets its second failure at
+  once, not an interval later, at the cost of one extra probe per join. A `decision:` marker says
+  that a failed probe while already unhealthy waits an interval. Prior art: none found.
 - **D6, the immediate probe after a counting failure is at most one per interval.** A transfer
   failure that counts asks its group for a shared probe at once. The request is a send on a
   channel of one, and the loop honours it only if no request was honoured within the last probe
@@ -366,7 +380,7 @@ pkg/syncer/pool/
   log_test.go            T5.5  the logging row over slog.NewJSONHandler on a buffer
   pool.go                T5.2  Register and Unregister join and leave groups; Close stops loops (E3's)
                          T5.4  New sets each half's onOutcome to the health recorder (E4's D10)
-  half.go                T5.2  admit's health refusal, first, and the check at dispatch (E3's)
+  half.go                T5.2  admit's health refusal after closed, and the check at dispatch (E3's)
   stats.go               T5.2  Refused.Unhealthy, ProbeDuration (E3's)
                          T5.5  Healthy, Unhealthy, Transitions
 internal/node/content/
@@ -438,7 +452,7 @@ internal/node/content/
 
 ### T5.2 Probe loops, refusal and `Flow.Health`
 
-**Subtask T5.2 estimate: 5 man-days.**
+**Subtask T5.2 estimate: 5.5 man-days.**
 
 - **Track:** C. **Depends on:** T5.1, E3's T3.2, T3.5 and T3.7, and RFC 4 plan epic 6's
   `codec.Store`.
@@ -457,8 +471,10 @@ internal/node/content/
     `Close` stops every loop and waits for it on a channel, holding no lock (E3's D12), beside
     E3's D6 wait for callers.
   - `health.go`: D7's snapshot, `Flow.Health` and `Flow.Healthy` over it.
-  - `half.go`: `admit` refuses an unhealthy direction first, before the closed, queue and waiter
-    checks, returning the snapshot's error and counting `Refused.Unhealthy` (E3's D10); a queued
+  - `half.go`: `admit` refuses an unhealthy direction right after the closed check and before the
+    queue and waiter checks, returning the snapshot's error and counting `Refused.Unhealthy` (E3's
+    D10). The closed check stays first: after `Close` no probe runs, so the snapshot is frozen, and
+    a call after `Close` or `Flow.Close` must still get E3's `remote.ErrInvalid` (its R12); a queued
     caller woken with a slot checks the snapshot again before its call, and if its direction has
     turned, returns the slot and fails the same way.
 
@@ -490,9 +506,11 @@ internal/node/content/
     failure, R7, R8), "§2.8 per direction" for probes (catches one state, R1), and "§1.3
     unregister"'s probe half (catches a loop left running, R22, also under the leak check).
   - §8.2's hung probe: `Hold` on `Op: "health"` never released; it fails at 10 s, the next is
-    sent once it returns, and two such turn the direction unhealthy within one interval plus
-    three bounds (catches an unbounded probe, R9, R32). A probe that ignores its `ctx`, held by a
-    `Hold` whose release the test keeps, turns the direction unhealthy at two bounds (D4). A
+    sent once it returns, and on a shared key the pair and the check probe turn the direction
+    unhealthy within one interval plus four bounds (catches an unbounded probe, R9, R32). A probe
+    that ignores its `ctx`, held by a `Hold` whose release the test keeps, turns a zero-key store
+    unhealthy at two bounds and a two-store key at three, the check probe unsent (catches a check
+    probe waiting on the hung call, D2, D4). A
     direction flipping to unhealthy while an upload runs: the upload completes; one queued behind
     the pool fails at dispatch with no `put` entry (R23, R25).
   - Over 100 intervals one interval passes between entries while results do not change (R3); a
@@ -501,7 +519,13 @@ internal/node/content/
     gets one entry each per interval (R5); a get probe answered `ErrNotFound` twice turns get
     unhealthy, and one answered `ErrThrottled` changes nothing (R11).
   - The oldest store's prefix denied: only it turns unhealthy (catches a representative that
-    turns, or latches, the whole key, R5).
+    turns, or latches, the whole key, R5). Every probe failing but the check probe's first, which
+    passes once: the whole key turns unhealthy and the representative is not singled out
+    (catches an unpaired check probe, D2).
+  - A store joining a group while it is unhealthy, its probes failing at once: refused at the
+    group's next probe plus one round trip (catches D5 decided on the group's state, D8).
+  - A call after `Close` on a put-unhealthy store, and on a closed flow of one, wraps
+    `remote.ErrInvalid` and counts under `closed` (catches health checked before closed).
   - §8.5 on the clock, inside "§2.8 one spurious failure" and "§2.8 recovery": a probe failing at
     once is refused within one interval plus a round trip; a recovered store accepts work within
     one interval once its backoff has run (R32).
@@ -509,8 +533,9 @@ internal/node/content/
     failure turns nothing (R22).
   - `Flow.Health` and `Flow.Healthy` return while a test holds the half's lock (R20, D7).
 - **Rules:** its pull request amends RFC 3 §2.8 so that a refused call "wraps the direction's
-  cause" (R24), and RFC 3 §8.5 to "within one probe interval plus the probe's bound when probes
-  fail at once, and plus three bounds when they hang" (D4), as the user accepted on 2026-11-26.
+  cause" (R24), as the user accepted on 2026-11-26, and RFC 3 §8.5 to "within one probe interval
+  plus the probe's bound when probes fail at once, and plus four bounds when they hang" (D4). The
+  user accepted "three bounds" on 2026-11-26; four is pending their decision (§9).
 
 ### T5.3 The conditions' `health.Source`
 
@@ -649,15 +674,16 @@ is refused and reported. Checkpoint after T5.5: the epic's share of S3.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T5.1, T5.2, T5.3 | 8.5 | E3, RFC 4 plan epic 6 | probed health end to end: the step function, the loops, the refusal and the conditions |
+| 1 | T5.1, T5.2, T5.3 | 9 | E3, RFC 4 plan epic 6 | probed health end to end: the step function, the loops, the refusal and the conditions |
 | 2 | T5.4, T5.5 | 5.5 | PR 1, E4 | transfer outcomes, own re-admission, and what an outage logs and counts |
 
 A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-The estimate is 14 man-days against the plan's 13, over the same five subtasks: the extra day
-is D2's second-member probe and T5.2's wait for probes to end at shutdown and at `Unregister`.
+The estimate is 14.5 man-days against the plan's 13, over the same five subtasks: the extra
+1.5 days are D2's paired check probe, D4's probes counted failed behind a hung call, and T5.2's
+wait for probes to end at shutdown and at `Unregister`.
 
 - **The bubble is epic 3's D12, which the user chose on 2026-11-26.** The tests here run on
   E3's injected clock inside a `testing/synctest` bubble, under D12's rules: no wait while
@@ -684,10 +710,11 @@ is D2's second-member probe and T5.2's wait for probes to end at shutdown and at
   - What a refused call wraps. RFC 3 §2.8 says the probe's error; a direction the window turned
     has a transfer's error as its cause. This epic returns `Flow.Health`'s error, as E1's D1
     settled, and §2.8 reads "wraps the direction's cause" (T5.2).
-  - D4's reading of §8.5. A hung probe takes one interval plus three bounds: two for the pair, one
-    for an own probe in flight (D4); a second member's probe (D2) can add a fourth when only the
-    representative hangs. §8.5 reads "within one probe interval plus the probe's bound when probes
-    fail at once, and plus three bounds when they hang" (T5.2).
+  - D4's reading of §8.5. A hung outage on a shared key takes one interval plus four bounds: one
+    for an own probe in flight (D3), two for the pair, and one for D2's check probe, which hangs
+    too. §8.5 reads "within one probe interval plus the probe's bound when probes fail at once,
+    and plus four bounds when they hang" (T5.2). The user accepted "three bounds" on 2026-11-26,
+    which missed the check probe; four needs their decision.
 - **RFC 25 §5.2 and RFC 3 §2.8 disagree on a summary line** (D10). This epic follows RFC 3, the
   owner; RFC 25 §5.2's sentence would name RFC 3 §2.8's two lines as the exception.
 - **The plan's epic 5 outline names an unprobed direction re-admitted by its backoff.** That is row
