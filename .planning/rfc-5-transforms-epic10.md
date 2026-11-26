@@ -88,7 +88,7 @@ title and not copied.
 | --- | --- | --- |
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | both subtasks run over the real `kvstore` with blocks committed through its own block commit: T10.1 on the memory KV and on Badger under `t.TempDir()`, T10.2's HTTP tests on the memory KV, and `TestWiredRoleSweep` reaches T10.2's route on both, as it reaches every documented route; the only doubles are the content wiring's injected clock (kind 1) and a fault wrapper around the real `Census` view (kind 3); the refresher's swaps reach the test through a per-instance hook set from `export_test.go` |
 | rule 2, fuzz every decoder of bytes this component did not just write | none | nothing here decodes bytes: the view hands decoded records, and the listing's cursor is parsed by the RFC 23 plan's `listing` adapter |
-| rule 3, observability follows RFC 25 | T10.1 | the gauge is `transform_census_blocks`, the one series rule 3 gives this epic; its name, help and labels are a plain value beside E9's specs, and the content wiring builds the collector, so no package of `pkg/transform` imports `pkg/metrics`. The refresher logs a failed census read once at `Warn`. Nothing here holds key bytes: the census names material by ID and fingerprint only (RFC 6 §2.3) |
+| rule 3, observability follows RFC 25 | T10.1 | the gauge is `transform_census_blocks`, the one series rule 3 gives this epic; its name, help and labels are a plain value beside E9's specs, and the content wiring builds the collector, so no package of `pkg/transform` imports `pkg/metrics`. The refresher logs a failed census read once at `Warn`. Nothing here holds key bytes: the census names material by kind, ID and fingerprint only (RFC 6 §2.3) |
 | rule 4, profiling | T10.1 | the refresher's tests run under `internal/prof`'s leak check, which shows its goroutine gone after stop. No hot path: a scrape reads one pointer, and no allocation assertion is added |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | each is tested where its value is consumed: the gauge on the registry's scrape, the listing on the HTTP answer, never on the snapshot or the row structs alone |
 | rule 6, known failures shrink | none | `unit` keeps no `known.yaml`; both subtasks land green, after S7 |
@@ -132,13 +132,13 @@ subtasks and tests can cite them. `Source` is RFC 5 unless it names another RFC.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R15 | No secret reaches the gauge or the listing: material is shown by its ID and fingerprint only, and secrets are never read through the API | MUST NOT | RFC 25 §2.8; RFC 23 §4.2; RFC 6 §2.3 | T10.1, T10.2 |
+| R15 | No secret reaches the gauge or the listing: material is shown by its kind, ID and fingerprint only, and secrets are never read through the API | MUST NOT | RFC 25 §2.8; RFC 23 §4.2; RFC 6 §2.3 | T10.1, T10.2 |
 | R16 | A component imports another component's contract, never its implementation; a unit holding a contract and its implementation together is imported only by a composer | invariant | RFC 0 §1.2 as amended by #5774 | T10.1, T10.2 |
 
 **What enforces the rows no test can break.** R10 and R14 hold by construction: the listing's one
 dependency is the namespace's own view (D4), so it has no snapshot to serve and no other
 namespace's records to show; T10.2's tests still assert both at the HTTP answer. R15 holds by
-construction: RFC 6 §2.3's `encodings` hold a material ID and a fingerprint and no key, so the view
+construction: RFC 6 §2.3's `encodings` hold a material kind, ID and fingerprint and no key, so the view
 has none to hand on. R16 is held by E1's import test, which fails on the epic's first change if
 `chain` imports a metrics or metadata store implementation. R6 and R7 hold by D2's label set, the
 compiled-in registry plus one value, and T10.1's test that the build registers at most 38
@@ -434,7 +434,10 @@ A suggestion only: one pull request per subtask works as well.
   view that walks block records, at D1's lag. T10.2 does not: at a large namespace's 10⁸ blocks a
   walk per page breaks RFC 23 §4.2's listing, so it needs the view to answer from counts kept at
   commit and prune, O(distinct entries). If epic 19 settles another shape or cost, T10.1's sum and
-  T10.2's read follow it, and this document is revised before T10.2 starts.
+  T10.2's read follow it, and this document is revised before T10.2 starts. Epic 19, and the
+  commit that writes `encodings` (its epic 15), depend on RFC 6 §2.3 and Appendix B.2 recording
+  each piece of material as (kind, ID, fingerprint), which `CensusEntry.MaterialKind` and D4's
+  cursor key read; RFC 4 §3.2's header census carries the same kind.
 - **For the RFC 8 offload plan's epic 20**: its `material_destroyed` evaluation reads the same
   census. If the view walks block records, D1's snapshot is the one walk to share, rather than two.
 - **The estimate** is 2 subtasks and 5.25 man-days, against no plan figure: RFC 5's plan has
