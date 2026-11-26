@@ -24,7 +24,7 @@ remote outage on reads" row; and the journal plan's system scenario catalogue,
 second part. Every citation is `develop`'s text; the code lands on `feat/storage-v2`, and the paths
 below are paths there.
 **Track:** the team.
-**Epic 21 estimate: 12 subtasks, 38 man-days.**
+**Epic 21 estimate: 12 subtasks, 38.75 man-days.**
 **Depends on:** sync point **S4**, offload complete in the fixture (epics 13 to 20): `content.Compose`
 composes `Deps.Carver`, `Deps.Chain`, `Deps.Puts` (epic 15), `pool.New` over the stores it is given,
 each registered with its probe key, `Share.Store` and the share's refusal at `Bind` (epic 16),
@@ -43,7 +43,7 @@ the NFS and SMB adapters serving on the filesystem service (the RFC 21 and RFC 2
 **Blocks:** **S7**, and so the offload plan's epic 22, whose burn-down and benchmarks run over the
 composed node and whose soak puts `s3fault` on the transport T21.2 exposes; the RFC 4 plan's
 **epic 8, the client limit** (#6003, with its subtasks #6004 and #6005), which starts at S7, replaces
-the limit T21.2's S3 opener builds each client with, and runs its two rows over T21.2's holding; the
+the limit T21.2's holding passes the opener for each client, and runs its two rows over T21.2's holding; the
 RFC 3 plan's epic 9 (B5, which calls T21.4's two constructors from a content test); and the RFC 5
 plan's epics 10 and 11 (the census over a composed node, its engine rows).
 
@@ -243,10 +243,12 @@ epic's code must honour them.
 - **D2, `node.Config` gains `Remote`, the opener from a store configuration to a client; the host
   passes S3's.** RFC 23 §2.1's `Config` already takes the KV for the same reason: "the in-memory one,
   held to RFC 16's KV suite, in a multi-node test". `Remote func(ctx context.Context, cfg
-  StoreConfig) (content.Client, error)`, where `content.Client` is the wiring's two-call interface
+  StoreConfig, limit int) (content.Client, error)`, where `content.Client` is the wiring's two-call interface
   (`Open(ctx, ns) (remote.Store, error)`, `Close() error`); `cmd/dfs` passes
   `content.S3Opener(nil)`, `nodetest` the in-memory store's opener, and `New` refuses a nil `Remote`
-  naming it (RFC 8 §2.1). No record names an in-memory kind, and production has no code path to it
+  naming it (RFC 8 §2.1). The host builds the opener before `New` loads the settings, so the opener
+  holds no worker count: the client limit reaches it as `limit`, on each call, from the holding
+  (D4). No record names an in-memory kind, and production has no code path to it
   (R3). RFC 23 §2.1, whose `New` "alone names concrete component types" and whose `Config` is "what
   the host supplies and the node cannot build", is amended to let the host name the remote opener as
   it names the KV, in T21.2's pull request; `internal/node/arch_test.go`'s `configFields` and its
@@ -263,9 +265,11 @@ epic's code must honour them.
 - **D4, the store holding ref-counts clients per store configuration, over whatever `Remote`
   opens.** `acquire(cfg) (Client, release func(), error)` calls `Remote` on a configuration's first
   store and the last release closes the client; each namespace's store is opened on the held client.
-  `S3Opener(rt http.RoundTripper)` builds `s3.NewClient` with `Limit: uploadWorkers + fetchWorkers +
-  2` and the transport `rt` wraps, nil for the default: the hook epic 22's fixture puts `s3fault` on.
-  The RFC 4 plan's epic 8 replaces the sum inside `S3Opener`, behind a `ponytail:` naming it, at no
+  The holding is built in `New` after the settings load, with the two counts `New` also passes
+  `NewSyncer`, and passes `Remote` the limit `uploadWorkers + fetchWorkers + 2`;
+  `S3Opener(rt http.RoundTripper)` builds `s3.NewClient` with `Limit: limit` and the transport `rt`
+  wraps, nil for the default: the hook epic 22's fixture puts `s3fault` on. The RFC 4 plan's epic 8
+  replaces the sum at its one call site in the holding, behind a `ponytail:` naming it, at no
   migration since nothing persists it. Prior art: rclone's backend cache, one remote per
   configuration string, reference-counted (from memory).
 - **D5, the token is `golang.org/x/sync/semaphore`'s `Weighted`, passed to the codec's encode only.**
@@ -289,12 +293,21 @@ epic's code must honour them.
   the only resize, withdrawn if pools are ever resized live. Rejected: the restart-pending set alone,
   which RFC 3 §2.2's "raises a health condition" rules out. Prior art: none found.
 - **D7, an alert rule is a Prometheus rule in one checked-in file, `deploy/prometheus/alerts.yaml`,
-  rendered from Go values the components export as plain data.** Each value: `{Name, Expr, For,
-  Severity, Summary, Runbook}`, with `Expr` the component's own expression (RFC 4's `verifyAlert`,
-  RFC 5's four) or, for a condition, `health_conditions{condition="<name>"} > 0` with the `For` and
-  class of RFC 25 §3.9's row. `internal/node/alerts.go` holds the one list; a golden test renders it
-  and fails when the checked-in file differs, regenerated with `-update`, as
-  `internal/adapter/core/exports_test.go` holds its golden file. Settled now, because every
+  rendered from Go values the components give as plain data.** The one list is unexported, in
+  `internal/node/content/alerts.go`, beside RFC 4's `verifyAlert`, which the RFC 4 plan's epic 7
+  keeps unexported in that package, and importing `chain.Rules()`; nothing new is exported. Each
+  entry: `{Name, Expr, For, Severity, Summary, Runbook}`, with `Runbook` the troubleshooting entry
+  named by `Name`. RFC 4's rule is `verifyAlert` as its `Expr`, a ticket. RFC 5's four come in
+  `chain.Rule`'s shape (`Condition`, `Series`, `Match`, `Class`, `After`) and are converted:
+  `Class` is `Severity`, `After` is `For`, a `Condition` rule's `Expr` is
+  `health_conditions{condition="<name>"} > 0`, and its one `Series` rule
+  (`transform_decode_failures_total{error="malformed"}`) is rendered net of the syncer's recovered
+  re-gets, in `verifyAlert`'s raw-delta form, as RFC 5 §6 asks. The conditions this part, the syncer
+  and the node raise get the same condition expression with the `For` and class of RFC 25 §3.9's
+  row. One condition has one rule: `material_destroyed`, which the engine raises and RFC 5's
+  `Rules()` carries, takes RFC 5's rule only. A golden test renders the list and fails when the
+  checked-in file differs, regenerated with `-update`, as `internal/adapter/core/exports_test.go`
+  holds its golden file. Settled now, because every
   component's rule takes this form; changing it later rewrites each rule, at no data migration.
   `health_conditions` carries the condition and severity only (RFC 25 §10), so an alert names its
   subject, cause and `since` through its link to `/api/v1/health`, not as labels: one alert per
@@ -314,11 +327,15 @@ epic's code must honour them.
 - **D9, entity label values are the IDs the API spells (the user's decision, 2026-11-26).**
   No store or namespace record on `feat/storage-v2` holds a name (`entity.Namespace`,
   `apiv1.StoreSpec`); RFC 25 §2.4 allows an ID for the journal and for §2.5's `share` label only.
-  So the values are the IDs as the API writes them (`idString`); a registered store's `store` value is its
-  configuration's ID and its namespace's, `<store>/<namespace>`, so the value is unique among the
-  syncer's stores (two stores under one value fail `Gather`) and equal to the codec recorder's;
+  So the values are the IDs as the API writes them (`idString`). A store registered with the syncer,
+  one per namespace, takes `<store>/<namespace>`, its configuration's ID and its namespace's, in the
+  `codec_` and `syncer_` series, so the value is unique among the syncer's stores (two stores under
+  one value fail `Gather`) and the alert's join on `store` matches. The `remote_` series are the
+  client's, one per store configuration (the RFC 4 plan's epic 7, its D9), and a client shared by
+  every namespace of a configuration cannot tell them apart, so their `store` is the configuration's
+  ID alone; `remote_capability`'s `namespace` is the namespace's ID, given at its `bind`;
   RFC 25 §2.4's exceptions widened to stores and namespaces until their records gain a name, in
-  T21.6's pull request. Example: `remote_request_seconds{store="0f3a…/91c2…"}`. Rejected: adding
+  T21.6's pull request. Example: `codec_seconds{store="0f3a…/91c2…"}` and `remote_request_seconds{store="0f3a…"}`. Rejected: adding
   names to the store and namespace records first (RFC 16, RFC 23 and the API), a record change in
   three RFCs outside this epic. Prior
   art: Ceph's `ceph_pool_*` series keyed by `pool_id`, with an info metric mapping it to the name
@@ -336,6 +353,26 @@ epic's code must honour them.
 - **D11, `enginetest.WithSyncer` is deleted.** Epic 16's D9 composes the syncer for every engine and
   keeps the option, accepted and composing nothing, for this epic to decide. It has no effect, so it
   goes with its call sites, a mechanical change in T21.4. No marker. Prior art: none needed.
+- **D12, a share whose store is not open binds to that store's registration, which answers
+  unavailable until the store opens.** Epic 16's `Bind` refuses a share whose `Store` the syncer
+  does not know, so D10's shares, which attach and serve from the journal while their provider is
+  retried, need a `StoreID` before the store opens. The content wiring registers every namespace's
+  `codec.Store` with the syncer at start under its configuration's `ProbeKey`, whatever its open
+  state; until the open succeeds the `codec.Store` stands over a pending store, a `remote.Store`
+  answering every call `remote.ErrUnavailable` with no request sent, and the open swaps the opened
+  store in behind an `atomic.Pointer`. The open's own calls (the capability check) still go to the
+  service directly, outside the syncer, as RFC 4 says of every open. So a share's binding holds one
+  `StoreID` from start, no binding is replaced when the store opens (R2), and a failed open is
+  retried by D10's loop, RFC 4 having its caller retry any failed open. The same holds for the
+  three ways a store stays unopened: its provider failing (D10), its own checked `Open` failing, and
+  D6's larger `Max`, which stays pending until the next start. While pending, the syncer's probes
+  see `ErrUnavailable` and raise `store_put_unhealthy` and `store_get_unhealthy` beside
+  `material_unavailable`, as RFC 5 Appendix B.4 reads missing material as an unavailable remote. A
+  `decision:` at the pending store names the ceiling: the engine is told nothing, so a store that
+  never opens shows only as these conditions; withdrawn if a share must ever be refused while its
+  store is down. Rejected: refusing the share at `Bind` and binding it when the store opens, which
+  breaks D10's journal-served shares and replaces a binding on every recovery. Prior art: RFC 8
+  §2.5's retried open, which keeps a refused journal's shares named in `Stats` (read the RFC).
 
 ## 5. Target tree
 
@@ -352,13 +389,13 @@ internal/node/
   engine_settings.go             T21.1   the engine's section: node keys to engine.Settings, share keys to ShareSettings
   stats.go                       T21.6   the syncer's Stats in the snapshot; flow gauges by share (D8); work-queue series
   health.go                      T21.6   the sources added and removed; health_conditions exported
-  alerts.go, alerts_test.go      T21.7   Rules(), the one list, and its golden test (D7)
   order_test.go                  T21.5   build, start and stop order; R1 on real stores
   oneclock_test.go               T21.10  R29
   nodetest/                      T21.2   Config.Remote over pkg/remote/memory
 internal/node/content/
-  stores.go                      T21.2   Client, the holding (D4), S3Opener
-  provider.go                    T21.3   the provider and chain per store configuration; Destroyed; the retry (D10)
+  stores.go                      T21.2   Client, the holding (D4), S3Opener; T21.3 the pending store (D12)
+  alerts.go, alerts_test.go      T21.7   the one rule list and its golden test (D7)
+  provider.go                    T21.3   the provider and chain per store configuration; Destroyed; KeysObjects; the retry (D10)
   provider_test.go               T21.3   the key-record suite over kvstore (R17)
   codecstore.go                  T21.4   NewCodecStore, its census lookup; NewSyncer and the fixed inputs (D6); the token (D5)
   scenarios_test.go              T21.10  R30, the filesystem over the composed engine, tag integration
@@ -423,8 +460,9 @@ docs/internals/rfcs/rfc-0-data-lifecycle.md  T21.4's pull request: §10.2's rest
   - `node.Config.Remote` (D2), refused nil at `New`; `cmd/dfs` passes `content.S3Opener(nil)`,
     `nodetest` the in-memory store's opener; `arch_test.go`'s `configFields` and fixture updated;
     RFC 23 §2.1 amended.
-  - `content/stores.go`: `Client`, the holding (D4), and `S3Opener(rt http.RoundTripper)`, building
-    the client config with R9's limit (a `ponytail:` naming the RFC 4 plan's epic 8), the credential
+  - `content/stores.go`: `Client`, the holding (D4), passing `Remote` R9's limit from the counts
+    loaded at `New` (a `ponytail:` naming the RFC 4 plan's epic 8), and `S3Opener(rt
+    http.RoundTripper)`, building the client config with the limit it is passed, the credential
     unsealed through the RFC 4 plan's epic 7's parse, and opening each namespace's store through the
     checked `Open` on the held client, passing `MaxBlockSize` and handing the `Claim` on. A changed
     store configuration closes the old store after its bindings are replaced through `Bind` (R2).
@@ -435,20 +473,21 @@ docs/internals/rfcs/rfc-0-data-lifecycle.md  T21.4's pull request: §10.2's rest
 - **Acceptance criteria:**
   - Two namespaces on one store configuration share one client; the first namespace's close keeps
     it, the last closes it.
-  - The client config `S3Opener` builds carries `upload_workers + fetch_workers + 2` from the loaded
-    counts.
+  - The holding passes `Remote` `upload_workers + fetch_workers + 2` from the loaded counts, and the
+    client config `S3Opener` builds carries the limit it was passed.
   - No production file under `cmd/` or `internal/node` reaches `pkg/remote/memory`.
 - **Tests:** at the holding, which T21.4 calls, over the in-memory store's opener (kind 2): two
   stores, one configuration, one client handed out and closed only after both releases (catches a
-  client per store, or one closed under a live store, R7); the limit read from the `ClientConfig`
-  `S3Opener` builds, a unit check (catches a term dropped, R9); the arch test's planted import
+  client per store, or one closed under a live store, R7); the limit the holding passes the in-memory
+  opener, under counts other than the defaults, and the `ClientConfig` `S3Opener` builds from a
+  limit, a unit check each (catches a term dropped, or a count read before the settings load, R9); the arch test's planted import
   (catches R3); a store configuration's change replacing the share's binding, read back from the
   engine's bindings (R2).
 - **Rules:** rule 7, the arch test; rule 9, the `ponytail:` at the sum.
 
 ### T21.3 The provider and the chain per store configuration
 
-**Subtask T21.3 estimate: 4.5 man-days.**
+**Subtask T21.3 estimate: 5.25 man-days.**
 
 - **Track:** the team. **Depends on:** T21.2. Also the RFC 5 plan's epics 6, 8 and 9, and the
   offload plan's epic 18.
@@ -463,7 +502,13 @@ docs/internals/rfcs/rfc-0-data-lifecycle.md  T21.4's pull request: §10.2's rest
     answering each store with its configuration's provider's notice (the offload plan's epic 18). A
     store configuration reloaded rebuilds its provider and replaces the bindings that use it, as the
     RFC 5 plan's epic 8 asks.
-  - D10's retry of a store whose provider failed at start.
+  - D10's retry of a store whose provider failed at start, and of a store whose checked `Open`
+    failed; D12's pending store, registered at start and swapped for the opened store.
+  - `Deps.KeysObjects`, which resolves a namespace to its store's `keys` object, answering also a
+    namespace ID that the RFC 5 plan's epic 9 `Keys.CreateKeys` registered with its store while its
+    create runs, since the key records are written before the namespace record commits (that
+    epic's D6). The registration lasts until the record commits or the create fails; an ID with
+    neither a record nor a registration answers not found.
   - `provider_test.go`: RFC 5's key-record suite over `kvstore` on the memory KV, Badger under
     `t.TempDir()` and FoundationDB where it runs, unless the RFC 5 plan's epic 6 moves that run into
     `kvstore`'s own tests first (§9 point 1).
@@ -476,6 +521,10 @@ docs/internals/rfcs/rfc-0-data-lifecycle.md  T21.4's pull request: §10.2's rest
     read back, and nothing is put. Within 30 s of the key returning the store opens, the condition
     clears, and the write the journal held offloads (D10).
   - A destroyed material's notice reaches the engine for that store and no other.
+  - A share whose store is pending binds, and its binding's `Store` is the one the opened store
+    serves under, with no `Bind` between (D12).
+  - `KeysObjects` resolves a namespace registered by a create in flight, before its record commits,
+    and stops resolving it once the create fails.
 - **Tests:** at the engine's read, which the filesystem calls, over `nodetest` with the in-memory
   store: a block written, the node restarted, read back verified (catches a chain rebuilt from other
   material); a provider failed through the RFC 5 plan's fault wrapper around `keystest`'s provider
@@ -485,7 +534,13 @@ docs/internals/rfcs/rfc-0-data-lifecycle.md  T21.4's pull request: §10.2's rest
   put and read back after eviction (catches no retry, or a retry on a timer of its own, R16); two store configurations, material destroyed under one, the notice read
   through `Deps.Destroyed` for that store only (catches one provider's notice for every store); the
   key-record suite over three backends (R17).
-- **Rules:** rule 8, the backends; rule 9, D10's `decision:`.
+  The pending store and `KeysObjects`, at the engine's bindings: the store's checked `Open` failed
+  through RFC 4's fault wrapper, the share bound with the `Store` it keeps after the retry opens it, read from the
+  engine's bindings (catches a binding replaced on recovery, or a share refused while pending,
+  D12); a namespace create driven to its key put, `KeysObjects` answering the drawn ID with no
+  record, then the create failed and the ID answering not found (catches the create's key put
+  refused for a missing record, or a registration left behind).
+- **Rules:** rule 8, the backends; rule 9, D10's and D12's `decision:`s.
 
 ### T21.4 A `codec.Store` per store, the syncer's fixed inputs and the CPU token
 
@@ -511,8 +566,8 @@ docs/internals/rfcs/rfc-0-data-lifecycle.md  T21.4's pull request: §10.2's rest
     lookup answers the block's encodings.
   - The pools are sized once from the largest `Max` and block target served at start, at least the
     defaults, with `MaxDecodeLen` over every registered transform.
-  - A namespace created after start with a `Max` above the pools' is not opened, its condition names
-    it with both figures, and the next start opens it.
+  - A namespace created after start with a `Max` above the pools' is not opened, its shares bind to
+    its pending store (D12), its condition names it with both figures, and the next start opens it.
   - The token count is three quarters of the processor count read at start, at least one; a read
     completes while every token is held.
   - Two namespaces opened from one store configuration register under one non-zero `ProbeKey` (R4).
@@ -577,13 +632,15 @@ docs/internals/rfcs/rfc-0-data-lifecycle.md  T21.4's pull request: §10.2's rest
   Consumed by T21.7.
 - **Acceptance criteria:**
   - A scrape of a composed node holds every series RFC 3 §2.12, RFC 4 §4.12 and RFC 5 §6 name, each
-    store under one unique `store` value.
+    registered store under one unique `store` value in the `codec_` and `syncer_` series, and each
+    store configuration under its ID in the `remote_` series (D9).
   - The queue gauges carry the share, worst-n, and their sums match the syncer's own.
-  - Every condition named above reaches the evaluator's `Conditions` and `health_conditions` with its
-    subject and cause, and leaves both when cleared.
+  - Every condition named above reaches the evaluator's `Conditions` with its subject and cause, and
+    `health_conditions` with its name alone (D7), and leaves both when cleared.
 - **Tests:** at a scrape of the node's registry, the operator's view: the series list against each
   RFC's table (catches a collector never registered); two namespaces on one store configuration, two
-  distinct `store` values in the scrape and `Gather` succeeding (catches a value shared by two stores,
+  distinct `store` values in the `codec_` series, one in the `remote_` series, and `Gather`
+  succeeding (catches a value shared by two stores, or a namespace the shared client cannot know,
   R24); two shares with one flow held busy, the busy share first in the worst-n gauge (catches a flow
   joined to the wrong share, R23). At the evaluator's `Conditions`, which `/api/v1/health` reads: the
   store faulted for puts through the in-memory store's fault wrapper (kind 3), `store_put_unhealthy`
@@ -599,20 +656,23 @@ docs/internals/rfcs/rfc-0-data-lifecycle.md  T21.4's pull request: §10.2's rest
 
 - **Track:** the team. **Depends on:** T21.6.
 - **Covers:** R25, R26.
-- **Deliverables:** D7: `internal/node/alerts.go`'s `Rules()`, a rule per condition of RFC 25 §3.9
-  this part and its components raise, with the row's class and delay (`offload_age_exceeded` with
-  T21.1's oldest-unoffloaded bound), the syncer's `store_put_unhealthy` and `store_get_unhealthy`,
-  the RFC 4 plan's `verifyAlert` and the RFC 5 plan's four, each linking its troubleshooting entry;
+- **Deliverables:** D7: `internal/node/content/alerts.go`'s unexported list, a rule per condition of
+  RFC 25 §3.9 this part and its components raise, with the row's class and delay
+  (`offload_age_exceeded` with T21.1's oldest-unoffloaded bound), the syncer's `store_put_unhealthy`
+  and `store_get_unhealthy`, the RFC 4 plan's `verifyAlert` and the RFC 5 plan's four converted from
+  `chain.Rule`, `material_destroyed` once, each linking its troubleshooting entry;
   `deploy/prometheus/alerts.yaml` and its golden test; RFC 25 §7's amendment (D7).
 - **Acceptance criteria:**
-  - The checked-in file is what `Rules()` renders.
+  - The checked-in file is what the list renders.
+  - No condition has two rules.
   - Every metric and label every rule names is in a scrape of a composed node.
   - Every rule reads `health_conditions` or one of RFC 25 §7's named counters.
 - **Tests:** at the rendered file, which an operator loads: the golden comparison (catches a rule
   added without regenerating); the scrape check (catches a rule naming a series nothing exports);
   each rule's expression parsed for the metrics it reads, against `health_conditions`,
   `health_status` and §7's counters (catches a rule on a raw metric where a condition exists, R25,
-  R26).
+  R26); the rules grouped by the condition they read, one each (catches `material_destroyed` paging
+  twice, R25).
 
 ### T21.8 S7: the syncer's suite over S3
 
@@ -731,7 +791,7 @@ T21.8 and T21.9 need only T21.4.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T21.1, T21.2 | 6.5 | — | the settings and the store holding they configure: real stores in the node |
-| 2 | T21.3, T21.4 | 9 | PR 1 | the provider, the `codec.Store` per store over it and its token: offload to S3 |
+| 2 | T21.3, T21.4 | 9.75 | PR 1 | the provider, the `codec.Store` per store over it and its token: offload to S3 |
 | 3 | T21.5, T21.8, T21.9 | 6 | PR 2 | the order and the two suites that prove the composition |
 | 4 | T21.6, T21.7 | 6 | PR 3 | series, health and the alerts that read both; can be open beside PR 5 |
 | 5 | T21.10, T21.11, T21.12 | 10.5 | PR 3 | the system scenarios and outage rows |
@@ -748,7 +808,7 @@ A suggestion only: one pull request per subtask works as well.
    epic 11 did not freeze; `node.Config` gains `Remote` and RFC 23 §2.1 is amended (D2); RFC 25 §3.9
    gains `namespace_restart_needed`, with the RFC 25 §3.3, §3.4 and RFC 0 §10.2 exception (D6). The
    reviewers of each pull request approve these with the surface.
-3. **Estimate.** 38 man-days in 12 subtasks against the plan's 36 in 10. Added: the engine's own
+3. **Estimate.** 38.75 man-days in 12 subtasks against the plan's 36 in 10. Added: the engine's own
    settings section (the plan's figure has the engine's keys loaded but not declared), the provider's
    wiring per store configuration with `Deps.Destroyed` and the reload (the RFC 5 plan's epic 8 and
    the offload plan's epic 18 name them after the plan was written), and the system scenarios at two
@@ -757,7 +817,9 @@ A suggestion only: one pull request per subtask works as well.
    15's D2 (the user's decision, 2026-11-26) has the node first pass a provider and the stores to the
    content wiring in epic 15, about 1.5 man-days that epic 15's estimate does not count; they stay
    in T21.3's figure, which builds the per-configuration provider, its reload and D10's retry over
-   that composition. The least certain figures are T21.11, whose
+   that composition. T21.3 also gained 0.75 man-days after the breakdown merged: the pending store
+   (D12) and `KeysObjects`' in-flight namespace (the RFC 5 plan's epic 9, its D6). The least certain
+   figures are T21.11, whose
    rows wait on the adapters and grow with each bug they find, and T21.3, whose rotation inputs come
    from a breakdown not yet merged.
 4. **Plan and sibling text this document departs from.** The plan's epic 21 lists spreading
