@@ -1260,7 +1260,12 @@ how to test them: they are specific to each backend and live in its profile
   an object out of immediate reach — an archive class, or an automatic tier that
   archives objects nobody reads for a while — **MUST** refuse the open: a get of
   an archived block fails until a restore the store never requests, and blocks
-  that are rarely read are exactly the ones such a rule moves.
+  that are rarely read are exactly the ones such a rule moves. The class is also
+  refused when it is written: the remote store's settings validator
+  ([RFC 13 §6](rfc-13-configuration.md#6.%20Validation)) accepts only a class on a
+  list of classes whose gets need no restore, and the open's check reads that same
+  list, so an archive class never reaches a store and a class the list does not
+  name is refused rather than guessed at.
 
 The check runs whenever a store is opened, since an endpoint can be upgraded or
 repointed between runs. It cleans up what it wrote, except the health object
@@ -1822,6 +1827,7 @@ in-memory store).
 | [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer each request with every status from 100 to 599 but the 2xx successes ([§7.2](#7.2%20Fault%20transport)), with known and unknown error codes, and with a body that does not parse: each call wraps exactly one sentinel, and a response checksum mismatch on a get is `ErrTransient`, never `ErrCorrupt`. | T |
 | [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Truncate the body of a real 2xx reply so it does not parse, a `ListObjectsV2` reply to `List` and a `DeleteObjects` reply to `Delete`: `List` fails with `ErrTransient` and every name's result from `Delete` is `ErrTransient`, never `ErrInvalid` and never success, so `Delete` reports no name as deleted. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | A bucket that stores what the check wrote in an archive storage class, or holds a tiering rule with an archive tier whose filter could match the prefix: open fails naming it, and `Recheck` fails when either appears later. | T |
+| [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Write `remote.storage_class` as each class on [Appendix C.1](#C.1%20Required%20service%20features)'s list, as `GLACIER`, as `DEEP_ARCHIVE` and as a name on no list: each listed class is accepted, and each other is refused at write naming the key and the rule, before any store opens on it. | |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Turn versioning on after open: `Recheck` fails, GC issues no delete, and the syncer refuses puts while gets still succeed; turn it off: the next `Recheck` clears both. Count `Recheck` calls over an hour: exactly one per GC recheck period, none from a GC pass. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | A suspended store with an object version left behind: `Recheck` lists versions and fails; after the repair writes the proof, ten further `Recheck` calls list no versions and pass. Enable versioning again: the proof is emptied, and the next suspended `Recheck` lists again. | T |
 | [§4.7](#4.7%20Health%20is%20one%20probe%20call) | Delete the health object behind the store: the get probe fails with `ErrNotFound`; reopen the store: the check writes it again and the get probe passes. A store whose puts all succeed and whose put probes were skipped still passes the get probe. | T |
@@ -2152,7 +2158,7 @@ its capability check.
 | `PutObject`, single part | put, put probe | atomic replace; readers never see a partial object | from the service's documentation; it cannot be provoked |
 | Put integrity: an enforced `x-amz-checksum-crc32c` or `Content-MD5`, or else an ETag equal to the MD5 of the stored bytes | put | a corrupted body is rejected, or detected from the ETag — at the maximum encoded block size, not only on small objects | check step 1 |
 | `GetObject` after `PutObject` | get | strong read-after-write for a new key and an overwritten one: a get from any client after the put's `200` returns the new object ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | check step 2, by a get issued at once after the put; and from the service's documentation, since a lag that the check happens to miss cannot be provoked |
-| `x-amz-storage-class` on every put; the class each get reports | put, open | every object written in the remote store's configured class ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)), `STANDARD` when none is configured, never the service default; no archive class (one whose get needs a restore) | check step 2: the class reported for the check object |
+| `x-amz-storage-class` on every put; the class each get reports | put, open | every object written in the remote store's configured class ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)), `STANDARD` when none is configured, never the service default; no archive class (one whose get needs a restore). The class is one of `STANDARD`, `REDUCED_REDUNDANCY`, `STANDARD_IA`, `ONEZONE_IA`, `INTELLIGENT_TIERING`, `GLACIER_IR` and `EXPRESS_ONEZONE`, whose gets need no restore; `GLACIER` and `DEEP_ARCHIVE` need one, and any class not listed is refused until it is shown to need none. `INTELLIGENT_TIERING` is listed because its own tiers need no restore; its optional archive tiers are a bucket configuration, refused by the tiering row below | at write, by the remote store's settings validator; check step 2: the class reported for the check object |
 | `GetBucketIntelligentTieringConfiguration` (list) | open, `Recheck` | no configuration with an archive tier whose filter could match the prefix | check step 5 |
 | `GetObject` with `Range` | get | `206` with the bytes asked for; `416` when the range starts past the end. A clamped overlong range is tolerated: the store checks lengths itself ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | check step 2 |
 | `DeleteObjects` (batch, up to 1,000 keys) with `Content-MD5`, `Quiet` false | delete | every key, absent ones included, listed as deleted; per-key errors reported per key; a key missing from the reply is a failure ([§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent)) | check step 3 |
@@ -2263,7 +2269,8 @@ namespace, with the production client configuration of [Appendix C.3](#C.3%20How
    behaviour with size.
 2. Put a 10-byte object in the configured storage class; get it at once, and
    expect it back, with that class reported (no class reported reads as
-   `STANDARD`); get bytes 2–5 and expect exactly 4
+   `STANDARD`) and on [Appendix C.1](#C.1%20Required%20service%20features)'s list of classes
+   that need no restore; get bytes 2–5 and expect exactly 4
    bytes; get from offset 20 and expect `416`; get a key never written and
    expect `404`, not `403`.
 3. Batch-delete two keys that exist and one that was never written, and expect

@@ -57,7 +57,8 @@ definitions and the one alert expression.
   namespace's two (`remote.prefix`, `remote.block_format_version`), each key with RFC 13 Appendix
   B's scope, class and default, and RFC 13's Appendix B check passes over them;
 - a block target outside `carver.MinBlockTarget` to `carver.MaxBlockTarget`, an endpoint that is
-  not HTTPS, a prefix that does not end in `/`, an archive storage class, a trust-root value
+  not HTTPS, a prefix that does not end in `/`, a storage class off the list of classes needing
+  no restore, a trust-root value
   holding no certificate, or a plaintext in place of the credential's reference is refused at
   write and at start, naming the key and the rule;
 - a write of `remote.block_format_version` the codec does not know is refused;
@@ -175,7 +176,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 | R8 | A value out of range, of the wrong type or naming nothing is refused, naming the key and the rule, and never clamped, rounded or replaced by a default | MUST, MUST NOT | RFC 13 §6 | T7.1, T7.2 |
 | R9 | The control plane and the component run the same rules: each rule a key shares with the S3 client, its open or its check is one function all of them call | MUST | RFC 13 §6 ("Checked twice") | T7.1, T7.3 |
 | R10 | An endpoint that is not HTTPS is refused | MUST | RFC 4 C.3 | T7.1 |
-| R11 | Every object is written in one class the profile pins, `STANDARD` unless set, never the service's default; an archive class, whose get needs a restore, is refused | MUST | RFC 4 C.1; RFC 13 Appendix B | T7.1 |
+| R11 | Every object is written in one class the profile pins, `STANDARD` unless set, never the service's default; an archive class, whose get needs a restore, is refused when `remote.storage_class` is written, by accepting only a class on C.1's list of classes needing no restore | MUST | RFC 4 §4.11, C.1; RFC 13 Appendix B | T7.1 |
 | R12 | Trust roots replace the system's roots when set; a value holding no certificate, or any block that is not a certificate that parses, is refused | MUST | RFC 4 C.3; RFC 13 Appendix B | T7.1, T7.3 |
 | R13 | Requests are signed for the configured region, `us-east-1` unless `remote.region` sets another; the conversion carries it, and E4's `NewClient` signs for it | invariant | RFC 4 C.3 | T7.3 |
 | R14 | A block target outside 1 MiB to 64 MiB is refused when written and at start, never clamped; the bounds are the carver's constants | MUST | RFC 2 §5.2; RFC 13 Appendix B | T7.2 |
@@ -318,7 +319,16 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 - **D4. One rule per check, shared with the client.** `Settings.Validate` and `NewClient` call one
   unexported `checkEndpoint` (`https://` and a host); `NamespaceSettings.Validate` and `Open` call
   one `checkPrefix` (non-empty, ends in `/`, E4's D1); `Validate` and E5's `judgeClass` read one
-  unexported list of archive classes (`GLACIER`, `DEEP_ARCHIVE`, E5's D7). Whichever of T7.1, E4's
+  unexported allowlist of the classes whose gets need no restore (RFC 4 C.1): `STANDARD`,
+  `REDUCED_REDUNDANCY`, `STANDARD_IA`, `ONEZONE_IA`, `INTELLIGENT_TIERING`, `GLACIER_IR` and
+  `EXPRESS_ONEZONE`. `GLACIER` and `DEEP_ARCHIVE` are off it because a get of either needs a
+  restore the store never requests; `GLACIER_IR` is on it because it serves gets in milliseconds;
+  `INTELLIGENT_TIERING` is on it because its own tiers need no restore, and its optional archive
+  tiers are a bucket configuration E5's tiering rule refuses. An allowlist rather than a list of
+  archive classes, because a class a service adds or names its own way (`OUTPOSTS`, `SNOW`, a
+  provider's archive class) is then refused at write until someone shows it needs no restore,
+  rather than admitted and found archived at the first get. A `decision:` marker at the list says
+  so. This is the user's decision of 2026-11-26. Whichever of T7.1, E4's
   T4.2 and T4.3 or E5's T5.1 lands first writes the function and the others call it; T7.3's table
   through all three catches a drift. Trust roots go through one unexported `checkTrustRoots`,
   which `Validate` and the conversion call: it loops over `pem.Decode` and refuses a block that is
@@ -327,7 +337,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   it accepts a bundle once any block parses and drops the rest silently, so a mistyped CA would
   surface only as TLS errors E4 maps to `ErrTransient`. An
   empty region or storage class is refused, since each has a default and an explicit empty value is
-  neither it nor a value. Only the archive list is shared with `judgeClass`: it reads an empty
+  neither it nor a value. Only the class allowlist is shared with `judgeClass`: it reads an empty
   *reported* class as `STANDARD` (E5's D7) and E4's `ClientConfig` takes `""` as `STANDARD`,
   while `Validate` refuses an explicit empty one, a difference on purpose. Prior art: none needed.
 - **D5. The credential is a JSON object, parsed by one function the API and the conversion call.**
@@ -504,7 +514,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 ```text
 pkg/remote/s3/
   settings.go          T7.1  Settings, NamespaceSettings and their Validate; checkEndpoint, checkPrefix,
-                             the archive classes (D2, D4)
+                             the class allowlist (D2, D4)
   settings_test.go     T7.1  the validators' tables; T7.3 the same tables through NewClient, Open, judgeClass
 internal/node/content/
   remote_settings.go   T7.2  remoteSettings, formatVersion, Sections (D3); T7.3 ParseCredential, clientConfig (D5)
@@ -534,16 +544,19 @@ test/suites.yaml                 T7.4  unit's remote-allocs option widened to ./
 - **Track:** the team. **Depends on:** S1.
 - **Covers:** R1's `s3` fields, R8–R12.
 - **Deliverables:** `pkg/remote/s3/settings.go`: `Settings`, `NamespaceSettings` and their
-  `Validate`, over the unexported `checkEndpoint`, `checkPrefix`, `checkTrustRoots` and archive-class list of D4,
+  `Validate`, over the unexported `checkEndpoint`, `checkPrefix`, `checkTrustRoots` and class allowlist of D4,
   which `NewClient`, `Open` and E5's `judgeClass` call once they land. Consumed by T7.2 and T7.3.
 - **Acceptance criteria:**
-  - `Validate` refuses an `http://` or host-less endpoint, an empty region, bucket or storage class,
-    `GLACIER` and `DEEP_ARCHIVE`, and a trust-root value with no certificate, with a good
+  - `Validate` accepts each of D4's seven classes and refuses an `http://` or host-less endpoint, an
+    empty region, bucket or storage class, `GLACIER`, `DEEP_ARCHIVE` and a class on no list
+    (`OUTPOSTS`), and a trust-root value with no certificate, with a good
     certificate beside a corrupted one, with a block that is not a certificate, or with text left
     over, each error naming the field, the rule and, for a trust root, the block's position.
   - `NamespaceSettings.Validate` refuses `""` and `ns`, and accepts `ns/`.
 - **Tests:** tables over values, at `Validate`, the call the control plane makes: each refusal above
-  beside its accepted neighbour (catches a rule inverted or missing, R8, R10–R12). No double.
+  beside its accepted neighbour, and every listed class accepted beside `GLACIER`, `DEEP_ARCHIVE`
+  and `OUTPOSTS` refused (catches a rule inverted or missing, the allowlist turned back into a list
+  of archive classes, R8, R10–R12). No double.
 - **Rules:** rule 7: `crypto/x509`, `encoding/pem`, `net/url` and `strings` only.
 
 ### T7.2 The sections in the content wiring
@@ -619,7 +632,7 @@ test/suites.yaml                 T7.4  unit's remote-allocs option widened to ./
     `httptest.NewTLSServer`'s certificate completes a request to it; with `TrustRoots` empty it
     fails before the handler sees a request.
   - `s3`'s endpoint table refuses the same values through `Validate` and `NewClient`, its prefix
-    table through `NamespaceSettings.Validate` and `Open`, its archive classes, with an accepted neighbour, through
+    table through `NamespaceSettings.Validate` and `Open`, its storage classes, listed and refused, through
     `Validate` and `judgeClass` (`""` diverges on purpose, D4).
     - For every version from 0 to 255, `codec.MaxHeaderLen` answers known exactly when
     `settings.Versions()[entity.FormatBlock]` holds it.
