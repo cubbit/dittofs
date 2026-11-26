@@ -41,8 +41,8 @@ carried once; the last block of a pass is held back while it is short and young.
 - `Add` packs carried chunks across files by the target and the count cap, and `Finish` holds back
   a short last plan until its oldest byte reaches the maximum age (T5.2);
 - an all-zero chunk is a zero ref in the nearest plan's `Refs`, never in `Carried`, a pass of zeros
-  alone gives one plan with no carried chunk, and a chunk repeated within one block is carried once
-  and referenced each time (T5.3);
+  alone whose keys fit `K` gives one plan with no carried chunk, and a chunk repeated within one
+  block is carried once and referenced each time (T5.3);
 - no plan's keys pass `K`, the per-block and per-file keys counted, and a block closed at `K` is
   never held back (T5.4);
 - `FuzzFold` asserts A1 to A3, A5 to A7 and the key budget over random chunk streams, nightly past
@@ -67,7 +67,7 @@ suite; the memory check.
   chunk's all-zero flag" and "A time per extent for each chunk's age"; the fold takes both as
   given.
 - Counting each chunk's worst-case keys and a commit's per-block and per-file keys, and ending a
-  stretch before one chunk's keys, or the zero refs beside it, pass `K`: the ledger row "RFC 2
+  stretch before one chunk's keys pass `K`: the ledger row "RFC 2
   §2.4's real end at the key budget" (the RFC 8 offload plan's epic 15); the accessor for `K`, that
   epic too (the RFC 2 plan's D3).
 - The block-target key in RFC 13's table and its startup check: the ledger row "The block-target
@@ -113,7 +113,7 @@ title and not copied.
 | rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | all | `assembler` imports the root, `internal/params` with it, `pkg/metadata/entity` and the standard library, as E1's row allows; nothing widens it. Its tests add `internal/prof` (T5.6), which E2's row admits. v1's `pkg/block/carver` assembly is not read |
 | rule 8, real dependencies for properties of those dependencies | none | nothing here tests a property of BLAKE3, a disk or a host |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T5.1, T5.3, T5.4 | RFC 2 §5.2's `decision:` and D5's at `New`'s checks (T5.1); D1's at the lazy close (T5.3); D2's at the per-block charge, D3's at the per-file charge and D4's at the close before a chunk over `K` (T5.4) |
-| rule 10, a test must be able to fail | all | each test names its planted break: a target counted in all bytes, a block closed at a file's end, a zero chunk carried, a repeat carried twice, the per-file keys charged per chunk, a short last plan put while young |
+| rule 10, a test must be able to fail | all | each test names its planted break: a target counted in all bytes, a block closed at a file's end, a zero chunk carried, a repeat carried twice, the per-file keys charged per chunk, a short last plan put while young, a zero ref's age ignored, the per-block keys charged to a plan with no carried chunk |
 | rule 11, a symbol is exported only if the RFC's interface uses it | none | nothing joins S1's frozen surface; every helper is unexported |
 | rule 12, each subtask creates only what it declares | all | no new package; each test file lands with the subtask whose check it holds. T5.2's stream builders and `checkPlans` are test code its own tests use first |
 
@@ -143,8 +143,8 @@ can cite them. Where the obligation's other half is the caller's, the row says s
 | R10 | Blocks are cut from the chunks of every file in the pass, one file after another, by P1 to P5 alone, so one block may hold the tail of one file, several files whole and the head of another | invariant | RFC 2 §5.3 | T5.2 |
 | R11 | A file's chunks within a block are contiguous and in offset order: the fold keeps the order it is given, which the caller supplies in file order, file after file | invariant | RFC 2 §5.1, §5.3, A5 | T5.2 |
 | R12 | A block holds only the chunks whose bytes it carries: no all-zero chunk is in a plan's carried chunks | invariant | RFC 2 P3, A2 | T5.3 |
-| R13 | Zero refs within no block's span, before a stretch's first carried chunk, after its last, or in a stretch that is all zeros, join the commit of the nearest block of the pass; which block is nearest is D1's. The caller ends the stretch before they would take that commit past `K` | invariant | RFC 2 P2 | T5.3, T5.4 |
-| R14 | A pass whose carved extents hold only all-zero chunks has no block: its zero refs commit in one zero-ref commit, within `K` like any commit, which the fold returns as a plan with no carried chunk | MUST | RFC 6 §4.1 ("Zero refs with no block commit alone"); RFC 8 §6.3 (Commit); E1's D3 | T5.3 |
+| R13 | Zero refs within no block's span, before a stretch's first carried chunk, after its last, or in a stretch that is all zeros, join the commit of the nearest block of the pass; which block is nearest is D1's. Zero refs that would take that commit past `K` close it and commit in zero-ref commits, plans with no carried chunk, each within `K`, in the middle of a pass as at its end (D2) | invariant | RFC 2 P2; RFC 6 §4.1 | T5.3, T5.4 |
+| R14 | A pass whose carved extents hold only all-zero chunks has no block: its zero refs commit in zero-ref commits, each within `K` like any commit and as many as `K` needs, which the fold returns as a plan with no carried chunk | MUST | RFC 6 §4.1 ("Zero refs with no block commit alone"); RFC 8 §6.3 (Commit); E1's D3 | | T5.3, T5.4 |
 | R15 | A chunk repeated within one pending block is carried once and referenced each time; one repeated across blocks is carried in each; nothing else is reused without a lookup | invariant | RFC 2 P6, A6; `kvstore.BlockCommit`, which refuses a chunk carried twice | T5.3 |
 
 **The key budget**
@@ -152,7 +152,7 @@ can cite them. Where the obligation's other half is the caller's, the row says s
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R16 | A block ends early, at a chunk boundary, when the next chunk would take its commit past the key budget `K`, the keys of the zero refs its commit writes counted | MUST | RFC 2 P2, §5.1; RFC 8 §6.3 (Assemble); RFC 6 §5.2 | T5.4 |
-| R17 | The fold charges the per-block keys once to each plan and the per-file keys once for each file with a chunk or a zero ref in it | invariant | RFC 2 §5.1; RFC 8 §6.3 (Assemble) | T5.4 |
+| R17 | The fold charges the per-block keys once to each plan that carries a chunk, and none to a zero-ref commit, and the per-file keys once for each file with a chunk or a zero ref in it | invariant | RFC 2 §5.1; RFC 8 §6.3 (Assemble) | T5.4 |
 | R18 | No plan's keys exceed `K`; a chunk whose keys, with the per-block and per-file keys, are exactly `K` sits alone in its block, and the block after a close at `K` starts with the chunk that did not fit | bound | RFC 2 P2, §5.7 (P2 key budget) | T5.4 |
 | R19 | A block closed at `K` counts as a short block, which A3 does not limit, and is never held back | invariant | RFC 2 P2, A3, §5.4 | T5.4 |
 | R20 | The fold never splits a commit: a chunk's refs ride in one plan. No chunk passes `K` alone, because the caller ends its stretch first (the RFC 8 offload plan's epic 15); a chunk that would gets a plan of its own, the one plan over `K` (D4) | invariant | RFC 2 P2 ("the caller **MUST** end a stretch"; "the assembler never splits a commit") | T5.4 |
@@ -191,10 +191,11 @@ can cite them. Where the obligation's other half is the caller's, the row says s
 How each row is enforced once this epic lands: R4's "a plan records hashes and positions" and R32's
 "the slices `emit` handed over are not retained" by E1's `TestPlanHoldsNoBytes`, which walks
 `BlockPlan` and every `ChunkInfo` in it and fails on any byte slice, so the fold is handed none to
-keep; this epic measures the rest (T5.6). R13's and R20's caller halves by the RFC 8 offload plan's
+keep; this epic measures the rest (T5.6). R20's caller half by the RFC 8 offload plan's
 epic 15, whose Carve state ends the stretch, and RFC 6 §5.2's floor, checked at start by the same
 epic. R21's "its extents stay dirty" by that epic's Commit state, which E1's `Finish` doc comment
-holds to it. Every other row has a test here.
+holds to it; what the pass returns for a file whose extents a held plan kept is RFC 8 §6.3's, the
+RFC 2 plan's ledger row "A held plan's outcome". Every other row has a test here.
 
 The candidates of the owned sections that bind other components are theirs: §5.1's lookup error
 and §5.7's two rows "with the lookup" (the deferral-ledger row of the dedup lookup); §5.3's single
@@ -218,17 +219,21 @@ order (R11).
   end" a second carry. A `decision:` at the close says so, and that the choice changes only which
   commit a zero ref rides in, never a block's bytes, so it can change with no migration. Prior
   art: none found.
-- **D2, a plan with no carried chunk is the zero-ref commit, is never held back, and is charged the
-  per-block keys.** It is RFC 6 §4.1's zero-ref commit for a pass of zeros alone (R14). `Finish`
-  returns it with `held` false: holding back exists to spare a short put (RFC 2 §5.4), and this
-  plan has no put; RFC 8 §6.3's all-zero check wants its extents reported in the same pass. Every
-  plan is charged the per-block keys when it opens, since an open plan of zero refs may still gain
-  a carried chunk; a zero-ref commit writes none of them (no intent delete, block record or GC
-  index key), so its charge is an upper bound and costs at worst a close a few keys early, never a
-  commit past `K`. A zero-ref plan in the middle of a pass arises only when the caller let zero
-  refs pass `K` (R13's caller half): the fold closes it as a defence, as D4 does for a chunk, and
-  the Commit state commits it as a zero-ref commit. A `decision:` at the charge says both. Prior
-  art: none found.
+- **D2, a plan with no carried chunk is the zero-ref commit, is never held back, and is not charged
+  the per-block keys.** It is RFC 6 §4.1's zero-ref commit, for a pass of zeros alone (R14) and for
+  zero refs that fit no block's commit (R13). `Finish` returns it with `held` false: holding back
+  exists to spare a short put (RFC 2 §5.4), and this plan has no put; RFC 8 §6.3's all-zero check
+  wants its extents reported in the same pass. A plan is charged the per-block keys when it gains
+  its first carried chunk, not when it opens: a zero-ref commit writes none of them (no intent
+  delete, block record or GC index key), and charging them at open splits a pass of zeros that fits
+  one commit (at `K` = 20, per-block keys 5 and per-file keys 1, 18 zero refs of one key each close
+  at 14). The chunk that would take a plan of zero refs past `K` with the per-block keys closes it
+  as a zero-ref commit and starts the next. A zero ref that would take a zero-ref plan past `K` closes it the same way:
+  a zero run longer than `K`'s worth folds to several zero-ref commits, each charged its files' keys. A zero-ref plan in the middle of a pass is routine, not
+  a caller fault: at `K` = 100, per-block and per-file keys 1, a chunk of 90 keys, 20 zero refs and
+  a chunk of 90 keys fold to [the first chunk and 8 zero refs], [12 zero refs] and [the second
+  chunk], and no stretch end avoids it: two block commits hold at most 200 keys, and the chunks and
+  zero refs need 204. A `decision:` at the charge says both. Prior art: none found.
 - **D3, the open plan keeps a set of its hashes, and charges a file when the file changes.** P6
   needs to know whether a carried chunk is already in the open plan: a map keyed by
   `entity.ChunkHash`, cleared with `clear` when the plan closes, holding at most `N` hashes. The
@@ -327,10 +332,13 @@ test/suites.yaml        T5.5  FuzzFold's line in the fuzz suite, its timeouts ra
   - `stream_test.go`: builders of `[]carver.ChunkInfo` from a list of files, each a list of chunk
     lengths with gaps between them, every chunk's hash distinct unless a test asks for a repeat;
     `fold(t, cfg, stream, now)`, which runs `New`, `Add` over the stream and `Finish`, and returns
-    every plan in order with each chunk's disposition; and `checkPlans(t, cfg, stream, plans)`, a
-    pure check of what every fold must give: the plans' `Refs` tile the input in order, A1, A3 and
-    A5. T5.3 and T5.4 add A2, A6, A7 and the key budget to it. Test code, not a double: it drives
-    and reads the real fold. Consumed by every test of T5.2 to T5.6, and by T5.5's fuzz target.
+    every plan in order with each chunk's disposition and `Finish`'s `held`; and `checkPlans(t, cfg,
+    stream, plans, now, held)`, a pure check of what every fold must give: the plans' `Refs` tile
+    the input in order, A1, A3 and A5, A3's age half included (a held last plan is short and its
+    oldest ref, zero refs counted, is younger than `MaxAge` at `now`; a short last plan that is not
+    held has reached it). T5.3 and T5.4 add A2, A6, A7 and the key budget to it. Test code, not a
+    double: it drives and reads the real fold. Consumed by every test of T5.2 to T5.6, and by T5.5's
+    fuzz target.
 - **Acceptance criteria:**
   - Concatenating every plan's `Refs`, in the order the plans came back, gives the input exactly.
   - Every plan but the last has carried bytes at least the target with its last carried chunk, and
@@ -340,9 +348,12 @@ test/suites.yaml        T5.5  FuzzFold's line in the fuzz suite, its timeouts ra
     it at `MaxAge` exactly; it never holds a full one.
 - **Tests:** at `Add` and `Finish`, as the Assemble state calls them:
   - the P1, P2, P4 check, 5,000 chunks of 1 KiB with a gap between every two, at a 1 MiB target and
-    `N` = 1,024, and again at `N` = 100: every plan ends on a chunk, overshoots by less than its last
-    chunk and holds at most `N` (catches a target counted after the overshooting chunk is dropped,
-    and a missing cap, R5 to R7, R26). Random streams are T5.5's, whose seeds run in `unit`;
+    `N` = 1,024, and again at `N` = 100; and 5,000 chunks of 3 KiB at a 1 MiB target and
+    `N` = 1,024, which close at 342 chunks, 2 KiB over the target: every plan ends on a chunk,
+    overshoots by less than its last chunk and holds at most `N` (the 3 KiB run catches a block
+    closed before the chunk that would overshoot, which ends at 1,023 KiB; the 1 KiB runs cannot,
+    since 1,024 of them are the target exactly; the `N` = 100 run catches a missing cap, R5 to R7,
+    R26). Random streams are T5.5's, whose seeds run in `unit`;
   - one table for §5.3 packing and no short block mid-pass: 10³ files of four 16 KiB chunks at a
     4 MiB target, giving 16 plans with each file's chunks in one plan or split only at a plan's end;
     and files whose last chunk ends at every chunk position of a block in turn, no cap reached,
@@ -364,8 +375,9 @@ test/suites.yaml        T5.5  FuzzFold's line in the fuzz suite, its timeouts ra
 - **Deliverables:** in `assembler.go`:
   - the zero chunk: `carver.ZeroRef`, appended to the open plan's `Refs` and never to `Carried`,
     adding nothing to carried bytes or count; a zero chunk with no open plan opens one; a full plan
-    stays open for the zero refs after it (D1's `decision:`); `Finish` returns a plan with no carried
-    chunk, never held (D2);
+    stays open for the zero refs after it (D1's `decision:`); `Finish` returns a plan with no
+    carried chunk, never held (D2), and reads a short last plan's age from every ref's `Oldest`,
+    zero refs included (D6);
   - the open plan's hash set (D3): a carried chunk whose hash is in it is appended to `Refs` only,
     adding no carried bytes and no slot of `N`, with disposition `carver.Carried`; the set is cleared
     when the plan closes;
@@ -394,6 +406,8 @@ test/suites.yaml        T5.5  FuzzFold's line in the fuzz suite, its timeouts ra
     block of its own, R13);
   - an all-zero pass, finished young: one plan, no carried chunk, not held (catches a zero-ref
     commit held back, which would leave the pass's zeros dirty until the age ceiling, R14);
+  - a short last plan whose carried chunks are young and whose first ref is a zero ref at `MaxAge`:
+    put (catches an age read from `Carried` alone, D6, R22);
   - the P6 check, one hash three times within the first block's span and once after its end: the
     first plan carries it once with three refs, the second carries it once more (catches a repeat
     carried twice, which the store refuses, and a set kept across blocks, which leaves the second
@@ -407,17 +421,19 @@ test/suites.yaml        T5.5  FuzzFold's line in the fuzz suite, its timeouts ra
 **Subtask T5.4 estimate: 1.75 man-days.**
 
 - **Track:** C. **Depends on:** T5.3.
-- **Covers:** R9, R13, R16 to R20, R23, R34.
-- **Deliverables:** in `assembler.go`, the open plan's keys: the per-block keys when it opens (D2's
-  `decision:`), the per-file keys at its first ref and whenever a ref's file differs from the
-  previous ref's (D3's `decision:`), each ref's `Keys`, zero refs and repeats included. Before adding
-  a chunk, `Add` closes the open plan, if it holds a ref, when the chunk would take it past `K`, and
-  starts the next with that chunk; such a plan is short, and `Add` returns it. A chunk over `K`
+- **Covers:** R9, R13, R14, R16 to R20, R23, R34.
+- **Deliverables:** in `assembler.go`, the open plan's keys: the per-block keys when it gains its
+  first carried chunk (D2's `decision:`), the per-file keys at its first ref and whenever a ref's
+  file differs from the previous ref's (D3's `decision:`), each ref's `Keys`, zero refs and repeats
+  included. Before adding a chunk, `Add` closes the open plan, if it holds a ref, when the chunk
+  would take it past `K`, the per-block keys counted if it would be the plan's first carried chunk,
+  and starts the next with that chunk; such a plan is short, and `Add` returns it. A chunk over `K`
   alone therefore gets a plan of its own, with D4's `decision:` at the close. A7 and the key budget
   added to `checkPlans`: every plan but the last is full or closed by `K`, its keys with the next
-  ref's passing `K`, and no plan's keys, recomputed from its `Refs` and the configuration, pass `K`
-  unless it holds a single chunk that does. Consumed by T5.5, whose fuzz target asserts the budget,
-  and by the RFC 8 offload plan's epic 15, whose Commit state writes each plan in one transaction.
+  ref's passing `K`, and no plan's keys, recomputed from its `Refs` and the configuration, the
+  per-block keys only when it carries a chunk, pass `K` unless it holds a single chunk that does.
+  Consumed by T5.5, whose fuzz target asserts the budget, and by the RFC 8 offload plan's epic 15,
+  whose Commit state writes each plan in one transaction.
 - **Acceptance criteria:**
   - Every plan's keys are at most `K`; a plan closed at `K` would pass it with the next chunk.
   - A chunk at exactly `K` with the per-block and per-file keys is alone in its plan, whose keys are
@@ -428,7 +444,14 @@ test/suites.yaml        T5.5  FuzzFold's line in the fuzz suite, its timeouts ra
     `K`, and the next starts with the chunk that did not fit (catches a close after the chunk that
     passed `K`, R16, R18);
   - a few carried chunks between runs of 10⁴ zero chunks each replacing an existing ref: the zero
-    refs' keys close the plan before `K` (catches zero refs left out of the count, R13, R16);
+    refs' keys close the plan before `K` (catches zero refs left out of the count, R13, R16); and
+    D2's example, a chunk of 90 keys, 20 zero refs and a chunk of 90 keys at `K` = 100: three plans,
+    the middle one with no carried chunk (catches zero refs that fit no block merged into the next
+    block's commit past `K`, R13); - 18 zero refs of one key each at `K` = 20, per-block keys 5 and
+    per-file keys 1: one plan of 19 keys (catches the per-block keys charged to a plan with no
+    carried chunk, which splits it at 14, R14, R17); and 45 zero refs of one key each in one file at
+    `K` = 20, per-file keys 1: three zero-ref plans of 20, 20 and 8 keys, each charged the file's key
+    (catches a zero run past `K` left in one plan, or a later plan missing its per-file key, R14, R17);
   - one chunk at exactly `K`: alone, keys `K` (catches an off-by-one that closes at `K` − 1 or lets
     `K` + 1 through, R18);
   - zero refs before the first carried chunk, after the last and in an all-zero stretch beside a
@@ -476,15 +499,18 @@ test/suites.yaml        T5.5  FuzzFold's line in the fuzz suite, its timeouts ra
 **Subtask T5.6 estimate: 0.75 man-days.**
 
 - **Track:** C. **Depends on:** T5.4.
-- **Covers:** R4, R32.
-- **Deliverables:** `memory_test.go`: `TestAllocsFoldMemory`, skipped under
-  `internal/prof.RaceEnabled`, folds 1 GiB of carried chunks twice, once of 64 KiB chunks at a 1 MiB
-  target and once of 4 MiB chunks at a 64 MiB target, 16 chunks a block either way, dropping each
-  plan `Add` returns, and reads `prof.LiveHeap` before the fold and after its last `Add`, the fold
-  kept alive past the read. Consumed by `carver-allocs`, which runs it by its `TestAllocs` prefix.
+- **Covers:** R4, R32. - **Deliverables:** `memory_test.go`: `TestAllocsFoldMemory`, skipped under
+`internal/prof.RaceEnabled`, folds 1 GiB of carried chunks twice, once of 64 KiB chunks at a 1 MiB
+target and once of 4 MiB chunks at a 64 MiB target, 16 chunks a block either way, dropping each plan
+`Add` returns, and reads `prof.LiveHeap` before the fold and after its last `Add`, the fold kept
+alive past the read. The difference is taken signed, `int64(after) - int64(before)`: `LiveHeap` is a
+`uint64`, and the heap can end lower than it began. Consumed by `carver-allocs`, which runs it by
+its `TestAllocs` prefix.
 - **Acceptance criteria:**
-  - The heap the fold holds after 1 GiB is the same, within 4 KiB, for both chunk sizes, though the
-    first run folds 64 times as many chunks.
+  - The heap the fold holds after 1 GiB is the same, within 1 MiB, for both chunk sizes, though the
+    first run folds 64 times as many chunks. Two folds that hold constant memory differ by tens of
+    KiB in `LiveHeap`, often more than 4 KiB, while a fold that keeps every closed plan holds
+    about 3.5 MiB more at 64 KiB chunks than at 4 MiB.
 - **Tests:** the test itself: a fold that kept every closed plan, or a slice sized by chunk length,
   grows with the gigabyte or with the chunk size and fails (R4, R32). It counts only what the fold
   holds; that no byte slice reaches a plan is E1's `TestPlanHoldsNoBytes`. No test double.
@@ -534,9 +560,13 @@ A suggestion only: one pull request per subtask works as well.
      both read would be additive to S1's surface and cost no migration; it is the S1 reviewers' call
      if a second format version is ever planned.
 3. **Needs on other plans.** The RFC 8 offload plan's epic 15 commits a plan with an empty `Carried`
-   as the zero-ref commit, with no intent and no put, also in the middle of a pass when its own
-   stretch end let zero refs pass `K` (D2); keeps the per-block and per-file keys it hands the fold
-   an upper bound of what its commit writes, since the fold checks `K` against them alone; and,
-   since `BlockPlan` carries no key total, recomputes a plan's keys from its `Refs` before Intent and
-   refuses, with a count, a plan over `K`, which only a lone chunk its Carve state failed to end
-   the stretch before can be (D4), so no object is put for a commit that cannot apply.
+   as the zero-ref commit, with no intent and no put, also in the middle of a pass, where zero refs
+   fit no block's commit (D2); keeps the per-block and per-file keys it hands the fold an upper
+   bound of what its commit writes, since the fold checks `K` against them alone; and, since
+   `BlockPlan` carries no key total, recomputes a plan's keys from its `Refs` before Intent, the
+   per-block keys only when the plan carries a chunk, and refuses, with a count, a plan over `K`,
+   which only a lone chunk its Carve state failed to end the stretch before can be (D4), so no
+   object is put for a commit that cannot apply. What a pass returns for a file whose extents a held
+   plan kept is decided: `Done`, its extents left Dirty, where RFC 8 §6.3 returns `Retry`, which
+   backs the file off and counts toward O6's five failed passes, though holding back is not a
+   failure. The RFC 2 plan's ledger row "A held plan's outcome" holds it for RFC 8.
