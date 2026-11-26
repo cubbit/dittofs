@@ -19,7 +19,7 @@ change), §5.3 (the recorded `Target`) and §9's "§5.3 recorded" row;
 `Health` and `Close`); [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §2.1 and §2.5 (the
 series' names and labels).
 **Track:** B.
-**Epic 16 estimate: 10 subtasks, 24.5 man-days.**
+**Epic 16 estimate: 10 subtasks, 24 man-days.**
 **Depends on:** sync point **S2**, red rows in CI (epic 12): the fixture's `WithSyncer`,
 `FaultRemote`, `RunPass`, `PrimaryPair` and `WithoutGates`, each refusing by name; **epic 13**'s
 `Tenant.Paused`, `SetTenant`, `CancelTenant` and `WaitTenant`; **epic 14**'s offload source,
@@ -27,8 +27,8 @@ registered, rebuilt and posted, whose `Run` answers `Done` and offers nothing (i
 removal source this epic adds the prune kind to; **epic 15**'s `offload.Run(ctx, offload.Deps,
 offload.Pass) []workqueue.Result`, its ports, its capture and guard functions, `offloadDue`, the
 `Failures` value a binding owns and `offload.Stats` (its D1, D11, D14), with `Deps.Carver`,
-`Deps.Chain` and `Deps.Puts` and the node's stores added there (its D2, option A; §9 lists what
-moves here under option B), and the three changes to its `Pass` §9 asks of it; **S5's first half**
+`Deps.Chain` and `Deps.Puts` and the node's stores added there (its D2, as the user decided on
+2026-11-26), and the three changes to its `Pass` §9 asks of it; **S5's first half**
 (RFC 3's syncer, `pkg/syncer/pool`, over RFC 4's in-memory store through `codec.Store` under RFC
 4's fault wrapper) for T16.1; **S6** (the journal plan's epic 9b) for T16.10, whose rows run over
 the real journal.
@@ -55,7 +55,7 @@ committed and reported offloaded, end to end: S3.
   not attached;
 - the offload source's `Run` turns each batch into passes, and every file gets one result;
 - a removal under a pass in flight never waits for it, and the pass's commit drops what the removal
-  removed, a straddling ref whole;
+  removed, clipping a straddling ref to its part outside the removal;
 - a put-unhealthy store pauses its shards' offload without counting any failure, and the pause
   lifts at the next tick after the store answers;
 - a share whose namespace's chunking settings are invalid or changed is refused at `Bind`, the
@@ -67,7 +67,7 @@ committed and reported offloaded, end to end: S3.
 
 `Deps.Syncer`; a binding's flow at `Start`, `Bind`, `Drop` and `Close`; the node's shares naming
 their store; the offload source's `Run`; the pass registry and the removal prune's in-flight floor;
-the commit's drop of a straddler and the abort of a wholly removed pass; the overwrite prune on the
+the commit's clip of a straddler and the abort of a wholly removed pass; the overwrite prune on the
 removal source; the put-unhealthy pause, the put-healthy test under pressure and the one writer of a
 shard's offload tenant; `Unbind`'s and `Drop`'s joins of the offload source; the chunking settings at
 `Bind` and their migration report; the gates' switch and the §3.2 rerun; copying `offload.Stats`
@@ -130,7 +130,7 @@ cited by number and title and not copied.
 | rule 5, **Public interface and internals** ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | a flow's close at the syncer's open-flow count, which RFC 3's suite covers; a paused tenant at the scheduler's `Stats`; a dropped ref at `kvstore`'s covering lookup; an offloaded bit at the journal's held extents; a refused share at `Bind`'s error and the binding read back |
 | rule 6, **Known failures shrink** | T16.1, T16.3, T16.6, T16.9, T16.10 | each change that moves a red row past a refusal rewrites its `message:` in the same change; each row turned green leaves `known.yaml` there |
 | rule 7, **v2 ignores v1, and the engine imports only what RFC 0 §1.2 allows** | T16.1, T16.6 | the `pkg/syncer` root is already allowed (epic 11); `pkg/syncer/pool`, `pkg/remote/codec`, `pkg/settings` and every remote store stay refused in the engine's production code; `pkg/engine/internal/policy` (D6) is the engine's own |
-| rule 8, **Real dependencies for properties of those dependencies** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T16.7, T16.10 | the straddler's drop over `kvstore` on the memory KV and Badger under `t.TempDir()`; the rows over the real journal on a real directory |
+| rule 8, **Real dependencies for properties of those dependencies** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T16.7, T16.10 | the straddler's clip over `kvstore` on the memory KV and Badger under `t.TempDir()`; the rows over the real journal on a real directory |
 | rule 9, **Code comment conventions** ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T16.3 to T16.9 | RFC 8 §6.1's prune `ponytail:` at the prune's post (T16.8); this epic's `decision:` and `ponytail:` markers, each named in §4; epic 14's D7 `decision:` deleted with the body it marks (T16.3) |
 | rule 10, **A test must be able to fail** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | every test names the planted break it catches |
 | rule 11, **A symbol is exported only if the RFC's interface uses it** | T16.1, T16.3, T16.6 | the engine exports `Deps.Syncer` (RFC 8 §2.6) and `Stats.Carver` (epic 15 D14); `Deps.Gates` names a type of an internal package (D6) |
@@ -200,9 +200,9 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R31 | A removal that lands while a pass is uploading never waits for the pass and never cancels it | MUST NOT | RFC 8 §8.3 | T16.7 |
-| R32 | The pass's commit drops every ref it would write that overlaps a removal of higher version than the ref's `newest`, a straddling ref whole, reports none of their extents, and applies the rest; a straddler's part outside the removal stays **Dirty** and is offered again | MUST | RFC 8 §8.3, §13 E16; RFC 6 §4.1 (the file's removals) | T16.7 |
+| R32 | The pass's commit drops every ref it would write that lies inside a removal of higher version than the ref's `newest`, and reports none of their extents; a straddling ref is clipped to its part outside the removal, which is committed and reported; the commit applies the rest | MUST | RFC 8 §8.3, §13 E16, as T16.7's pull request amends them (D4); RFC 6 §4.1 (the file's removals) | T16.7 |
 | R33 | A pass whose offered content was entirely removed aborts before uploading, counted in `engine_passes_aborted_total` (§8.3's MAY, adopted by D3) | MUST | RFC 8 §8.3, §14 | T16.7 |
-| R34 | §8.3 transfer survives a removal: a stalled upload completes after a truncate below its extent; the commit drops the refs past the new size, drops a straddler whole and re-offers its outside part, applies the rest, and the truncated extent reads past end of file; both commit orders; again with deallocate, release and a clone onto the file | test row | RFC 8 §15.1 | T16.7, T16.10 |
+| R34 | §8.3 transfer survives a removal: a stalled upload completes after a truncate below its extent; the commit drops the refs past the new size, clips a straddler to its part inside the file and reports that part, applies the rest, and the truncated extent reads past end of file; both commit orders; again with deallocate, release and a clone onto the file | test row | RFC 8 §15.1, as T16.7's pull request amends it (D4) | T16.7, T16.10 |
 
 **The overwrite prune**
 
@@ -269,13 +269,16 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   removal of higher version. No plan is edited, so no short block is made mid-pass; a partial removal
   is left to the commit's drop (R32), the rule the abort only saves an upload for. No marker: the
   abort is never what keeps content safe. Prior art: none found.
-- **D4, a straddling ref is dropped whole in `kvstore`'s commit.** RFC 8 §8.3 and E16 drop a
-  straddler whole; `kvstore`'s `commitFile` today clips each new ref to its parts outside the
-  removals (`masks.visible`) and reports the outside part. The commit drops a new ref with any part
-  masked, as RFC 6 §4.1 reads, so its outside part stays **Dirty** and is offered again; refs already
-  stored keep `cutRef`'s clipping, which RFC 6 §6.2 specifies for them. `TestOffloadAfterTruncate`,
-  which pins the clip, is rewritten to the drop. Following the RFC as written; §9 asks whether to
-  amend it to the clip instead. No marker. Prior art: none found.
+- **D4, `kvstore`'s commit clips a straddling ref (the user's decision, 2026-11-26).** RFC 8 §8.3
+  and E16 drop a straddler whole; `kvstore`'s `commitFile` today clips each new ref to its parts
+  outside the removals (`masks.visible`) and reports the outside part. The clip is kept: it loses
+  nothing, since the part it keeps lies outside every removal, and it saves the re-upload of a chunk
+  per edge that the drop would cost. `TestOffloadAfterTruncate`, which pins the clip, stays as it
+  is; refs already stored keep `cutRef`'s clipping, which RFC 6 §6.2 specifies for them. RFC 8
+  §8.3's rule, E16 and §15.1's "§8.3 transfer survives a removal" row are amended to the clip in
+  T16.7's pull request, the subtask that needs them; until it lands they still say "whole".
+  Rejected: dropping the straddler whole, as the RFC reads today, which leaves its outside part
+  **Dirty** to be offered and uploaded again. No marker. Prior art: none found.
 - **D5, `Bind` refuses a new write namespace or a new store for a served share.** A namespace change
   is a re-home (RFC 27 §2.7), deferred. A store change is a change of a bound setting, which RFC 13
   §5.1 refuses while the share holds content; a new endpoint or a rotated credential for the same
@@ -285,7 +288,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   share, as the first part's `change` refuses a changed tag or shard. A `decision:` at `change`,
   withdrawn by the re-home, whose `Bind` joins the old namespace's passes (RFC 8 §2.3). Prior art:
   the first part's `change`.
-- **D6, the gates' switch is a `Deps` field of an internal type, pending the user's answer (§9).**
+- **D6, the gates' switch is a `Deps` field of an internal type (the user's decision, 2026-11-26).**
   RFC 8 §3.2 needs the engine run with its gates off, and §2.1 forbids a setter. `Deps.Gates
   policy.Gates`, a struct with one unexported field, declared in `pkg/engine/internal/policy` with
   `policy.Ungated()` its only non-zero constructor: only code under `pkg/engine` can build one, so
@@ -295,8 +298,11 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   `enginetest` in production code, the one route the switch would have past Go's `internal` rule. A
   `decision:` at the field: the one `Deps` member that is not a capability, safe in either value by
   §3.2, withdrawn if anything outside `pkg/engine` needs it. RFC 8 §2.6's `Deps` gains the field in
-  T16.6's pull request. Prior art: Go's `internal` package rule; FoundationDB's simulation knobs,
-  which randomise policy only in simulation (from memory).
+  T16.6's pull request. Rejected: a second suite, `engine-ungated`, built with a tag that sets an
+  unexported constant, which answers §15.1's row by a suite rather than by
+  `TestRFC8A_NoGateIsSafety` and adds a tag to lint-go's list; and no switch, approximating "gates
+  off" with extreme settings, which leaves health gating on. Prior art: Go's `internal` package
+  rule; FoundationDB's simulation knobs, which randomise policy only in simulation (from memory).
 - **D7, the content wiring compares the recorded `Target`; the engine asks at `Bind`.** The engine
   imports neither `pkg/settings` nor the namespace records (RFC 0 §1.2), and the RFC 2 plan's §6.1
   row "Recording which settings produced a namespace's content" gives the record to the namespace's
@@ -377,15 +383,13 @@ pkg/engine/
   flow_test.go, pass_test.go, pause_test.go, prune_test.go, settings_test.go  T16.1 to T16.9  the unit tests
   export_test.go          T16.1 to T16.8  the registry's, the tenants' and the flows' accessors
 pkg/metadata/kvstore/
-  offload.go              T16.7  commitFile drops a masked new ref whole (D4)
-  removal_internal_test.go  T16.7  TestOffloadAfterTruncate rewritten to the drop
-  offload_removal_test.go T16.7  the straddler over the memory KV and Badger
+  offload_removal_test.go T16.7  the straddler's clip over the memory KV and Badger (D4)
 internal/node/
   node.go                 T16.1  every share's Store from the wiring's registration
   arch_test.go            T16.6  enginetest refused in production code
   content/content.go      T16.1  the syncer built over the stores (pool.New, Register); T16.9 Params.Settings, Settings(ns) compares the recorded Target
   content/content_test.go T16.9  the comparison's table
-docs/internals/rfcs/rfc-8-engine.md  T16.6  §2.6's Deps gains Gates (D6); §2.4 and §15.3's row are amended by this document's pull request (D11)
+docs/internals/rfcs/rfc-8-engine.md  T16.6  §2.6's Deps gains Gates (D6); T16.7 §8.3's rule, E16 and §15.1's row clip a straddler (D4); §2.4 and §15.3's row are amended by this document's pull request (D11)
 test/engine/known.yaml    T16.1, T16.3, T16.6, T16.9, T16.10  messages rewritten, entries removed, the rerun's entries added
 ```
 
@@ -629,26 +633,28 @@ test/engine/known.yaml    T16.1, T16.3, T16.6, T16.9, T16.10  messages rewritten
 
 ### T16.7 A pass in flight survives a removal
 
-**Subtask T16.7 estimate: 2.5 man-days.**
+**Subtask T16.7 estimate: 2 man-days.**
 
 - **Track:** B. **Depends on:** T16.3.
 - **Covers:** R31, R32, R33, R34 (unit legs), R48 (the aborts).
-- **Deliverables:** in `kvstore`'s `commitFile`, a new ref with any part masked by a removal of
-  higher version than its `newest` is dropped whole and not reported (D4), and
-  `TestOffloadAfterTruncate` rewritten to it; refs already stored keep `cutRef`. In `pass.go`, a
+- **Deliverables:** `kvstore`'s `commitFile` unchanged: a new ref with any part masked by a removal
+  of higher version than its `newest` keeps only its parts outside the removal, and reports them
+  (D4); RFC 8 §8.3's rule, E16 and §15.1's "§8.3 transfer survives a removal" row amended to say so.
+  In `pass.go`, a
   removal's journal step adds its version and extent to the file's registry entry under the entry's
   mutex, and goes on (R31); `Removed()`, which epic 15's pass calls once before its first Intent
   (§9), reports whether every offered extent is covered, and such a pass returns `Done` with nothing
   put, counted in `PassesAborted` and `result="aborted"` (D3, D12). Consumed by T16.10.
 - **Acceptance criteria:**
   - A truncate below a stalled pass's extent completes without waiting for it; the pass commits,
-    drops the refs past the new size and a straddler whole, and the straddler's part inside the file
-    is offered again and offloaded by the next pass.
+    drops the refs past the new size, and commits and reports the straddler's part inside the file,
+    which no later pass offers again.
   - With the commit first, the removal's phase 2 drops the refs it wrote.
   - A file released while its pass is held before Intent ends that pass with nothing put.
 - **Tests:** in `kvstore`, over the memory KV and Badger under `t.TempDir()`: a commit with refs
-  before, across and after a removal's edge, the covering lookup showing only the first (catches the
-  clip, R32). In the engine, over the in-memory journal and store: RFC 8 §15.1's "§8.3 transfer
+  before, across and after a removal's edge, the covering lookup showing the first whole and the
+  second's part before the edge, and nothing after it (catches a straddler dropped whole or kept
+  whole, R32). In the engine, over the in-memory journal and store: RFC 8 §15.1's "§8.3 transfer
   survives a removal" as a unit table, truncate, deallocate, release and a clone onto the file, each
   in both commit orders (the order set by holding the store's put), asserting the truncate returned
   before the put was released (catches a removal waiting on the pass, R31), the covering lookup's
@@ -762,7 +768,7 @@ other; T16.9 needs only T16.1. Only T16.10 waits on S6.
 | --- | --- | --- | --- | --- |
 | 1 | T16.1, T16.2, T16.3 | 7.75 | — | the flow, the registry and the source that uses both: passes run |
 | 2 | T16.4, T16.5, T16.6 | 8 | PR 1 | the tenant writer, the joins it serves, and the switch that turns its gate off |
-| 3 | T16.7, T16.8 | 4 | PR 1 | what a removal and a prune do around a pass in flight; can be open beside PR 2 |
+| 3 | T16.7, T16.8 | 3.5 | PR 1 | what a removal and a prune do around a pass in flight; can be open beside PR 2 |
 | 4 | T16.9 | 2.25 | PR 1 | the chunking settings; can be open beside PRs 2 and 3 |
 | 5 | T16.10 | 2.5 | PRs 2, 3, 4 | the rows over the real journal, once S6 lands |
 
@@ -770,38 +776,11 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **D6, the gates' switch, is pending the user's answer.** It is a contract epics 17 and 18 build on,
-  since their fill and eviction gates read it. The options:
-  - **A (recommended, written in place):** `Deps.Gates policy.Gates` of
-    `pkg/engine/internal/policy`, zero meaning gated; only code under `pkg/engine` can build
-    `Ungated()`, and the node's import walk refuses `enginetest`. One field, and RFC 8 §2.6 gains it.
-    ```go
-    d := engine.Deps{ /* … */ Gates: policy.Ungated() } // compiles only under pkg/engine
-    ```
-  - **B:** a second suite, `engine-ungated`, running `engine-conformance`'s command with an extra
-    build tag that sets an unexported `const ungated = true`, with its own `known:` file. No `Deps`
-    field and no rewrite of the rows into functions (about 1.5 man-days less), but §15.1's row is
-    answered by a suite rather than by `TestRFC8A_NoGateIsSafety`, which changes epic 12's catalogue,
-    and the tag joins lint-go's `go vet -tags=` list.
-  - **C:** no switch: the rerun approximates "gates off" with extreme settings (the shortest
-    `MaxAge`, the lowest eviction target). Cheapest, but health gating stays on, which the row names.
-- **D4 follows the RFC; the alternative is to amend it.** `kvstore` clips a straddling new ref and
-  reports its outside part, which loses nothing and saves a chunk's re-upload per edge. If the clip
-  is preferred, RFC 8 §8.3, E16 and the "§8.3 transfer survives a removal" row are amended instead,
-  and T16.7 loses its `kvstore` change (0.5 man-days).
 - **What epic 15's `Pass` offers this epic.** Epic 15's T15.5 has taken the three fields this
   document needs: `Register func(offers []journalc.Offer) (release func())`, called inside
   `OffloadMany`'s callback before the guards are released (R17); `Removed func() bool`, called once
   before the first block's Intent (D3); and the carver settings the binding checked at `Bind`
   (T16.9). Its T15.1 also carries the pass bound in `journalStats.Workers` (D8).
-- **Under epic 15's D2 option B**, `Deps.Carver`, `Deps.Chain` and `Deps.Puts` join `Deps` here,
-  with T16.3, their first engine caller, and about 1.5 man-days move into this epic: the three
-  members and their refusal at `New`; the content wiring's `Carver`, `Chain` and `Puts` (the
-  `offload.Puts` interface over `codec.Store.NewPut`); the node's composition of the provider and the
-  stores, which T16.1 then needs for `Share.Store`; `enginetest`'s `WithCarver` and `WithChain` made
-  real; and the rewrite of the 41 entries whose message is `fixture: the carver is not composed`,
-  which T16.1 then rewrites once, straight to `fixture: RunPass is not built`. Under option A, as
-  written, none of that is this epic's.
 - **"§3.2 no gate is safety" turns green with the last Group A row, not with this epic.** R42 holds
   this epic's half: the rerun, and the rerun of each row green here. The parent passes once every row
   it reruns does, in the epic that turns the last one green, epic 22 at the latest; the offload
@@ -815,9 +794,9 @@ A suggestion only: one pull request per subtask works as well.
 - **RFC 2's Target sweep (its epic 6, #5991) counts passes from `Stats`, not the registry.** The
   registry holds only passes in flight and is unexported; the count is `engine_offload_passes_total`,
   `Stats.OffloadPasses` summed over its results, which T16.3 fills. RFC 2's T6.3 names that field.
-- **Estimate.** 24.5 man-days in 10 subtasks against the offload plan's 20.25 in 6. Added: the §3.2
+- **Estimate.** 24 man-days in 10 subtasks against the offload plan's 20.25 in 6. Added: the §3.2
   rerun and its switch, which epic 12 moved here (T16.6, 3); the overwrite prune, moved from epic 14
   (T16.8, 1.5); the long-outage, pressure-band and starvation legs and the tenant writer, from epics
-  14 and 15 (in T16.4); the straddler's change in `kvstore` (D4). Saved: a backend change is a
-  refusal (D5). The least certain figures are T16.6, whose rerun's failures cannot be counted before
+  14 and 15 (in T16.4). Saved: a backend change is a refusal (D5), and `kvstore` keeps its clip
+  (D4). The least certain figures are T16.6, whose rerun's failures cannot be counted before
   it runs, and T16.10, the first contact with the real journal's offload half.
