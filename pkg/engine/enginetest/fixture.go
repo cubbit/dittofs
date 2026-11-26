@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -131,6 +130,10 @@ type Fixture struct {
 	// opens in place of the one in Dir.
 	fake *FakeJournal
 
+	// watch, the seam's one fault for the fixture's life, records the
+	// segment written last, so FailNextWindow fails one segment alone.
+	watch *seamFaults
+
 	// cloneGate, once set by HoldNextClone, holds the next clone's phase 1.
 	cloneGate atomic.Pointer[gate]
 	// commitGate, once set by HoldNextCommit, holds the next existence commit.
@@ -227,38 +230,123 @@ func pass(ctx context.Context, p *atomic.Pointer[gate]) error {
 	}
 }
 
+// seamFaults is the seam's one fault for the fixture's life: it records which
+// segment the journal wrote last, so FailNextWindow fails one segment alone,
+// and carries the behavior faults the fixture's methods set, each over the
+// last, as Seam.Schedule installs them. Installed before the journal opens, it
+// sees every write the journal makes, and an install never resets another
+// fault's counts.
+type seamFaults struct {
+	mu       sync.Mutex
+	last     string         // the ".seg" name written last, "" once no one was
+	written  map[string]int // how many writes each ".seg" name has had
+	behavior sim.Fault      // nil passes every call through
+}
+
+func newSeamFaults() *seamFaults {
+	return &seamFaults{written: map[string]int{}}
+}
+
+// At records a segment write, then hands the call to the behavior fault.
+func (w *seamFaults) At(op string, key []byte) (time.Duration, int, error) {
+	name := string(key)
+
+	w.mu.Lock()
+	if op == kit.OpWrite && sim.Match("*.seg", name) {
+		w.last = name
+		w.written[name]++
+	}
+	behavior := w.behavior
+	w.mu.Unlock()
+
+	if behavior == nil {
+		return 0, 0, nil
+	}
+
+	return behavior.At(op, key)
+}
+
+// rules replaces the behavior fault with a schedule of rules, as
+// Seam.Schedule installs them over the seam's fault.
+func (w *seamFaults) rules(rules ...kit.Rule) error {
+	behavior, err := sim.NewSchedule(1, nil, rules...)
+	if err != nil {
+		return err
+	}
+
+	w.mu.Lock()
+	w.behavior = behavior
+	w.mu.Unlock()
+
+	return nil
+}
+
+// target is the segment written last: the one that holds the journal's most
+// recent record append.
+func (w *seamFaults) target() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.last
+}
+
+// segments is how many distinct segments the journal has ever written, spares
+// made by the pool included: a write that raises it took a segment no write
+// had touched, and the pool refills one in the real time of the background.
+func (w *seamFaults) segments() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.written)
+}
+
 // FailNextSync makes the journal's next fsync of a segment fail, so the sync
 // window it belongs to fails. A spare's sync as it is made is not one.
 func (f *Fixture) FailNextSync() {
 	f.t.Helper()
 	f.journalOnly("FailNextSync")
-	if err := f.Seam.Schedule(kit.Failing(kit.OpSync, "*.seg", 1, errors.New("fixture: an injected sync failure"))); err != nil {
+	if err := f.watch.rules(kit.Failing(kit.OpSync, "*.seg", 1, errors.New("fixture: an injected sync failure"))); err != nil {
 		f.t.Fatalf("fixture: schedule a sync failure: %v", err)
 	}
 }
 
-// FailNextWindow makes the journal's next fsync of a segment fail and every
-// segment in the journal's directory serve its durable image to a read, so
-// the window's read-back does not verify and the window fails with loss
-// records instead of being re-appended. The stale reads last for the
-// fixture's life; segments created after the call read as written. Over the
-// fake journal it is the fake's FailNextWindow.
+// FailNextWindow makes the segment that holds the journal's most recent write
+// fail its next fsync and serve its durable image to every later read, so the
+// failed sync's window does not verify and fails with loss records instead of
+// being re-appended. Exactly one stream's sync fails, the one written to, and
+// the stale reads end with the window's consumption: the failure ends that
+// segment, which takes no record after and whose durable image is exactly its
+// synced bytes, so every later write of the stream lands on a segment made
+// after, which reads as written. Over the fake journal it is the fake's
+// FailNextWindow. It fails the test, refusing, before the journal wrote any
+// segment.
 func (f *Fixture) FailNextWindow() {
 	f.t.Helper()
 	if f.fake != nil {
 		f.fake.FailNextWindow()
 		return
 	}
-	f.FailNextSync()
-	names, err := f.Seam.List()
-	if err != nil {
-		f.t.Fatalf("fixture: list the journal's directory: %v", err)
+
+	f.journalOnly("FailNextWindow")
+
+	target := f.watch.target()
+	if target == "" {
+		f.t.Fatalf("fixture: FailNextWindow before the journal wrote a segment")
 	}
-	for _, name := range names {
-		if strings.HasSuffix(name, ".seg") {
-			f.Seam.StaleReads(name)
-		}
+
+	f.Seam.StaleReads(target)
+
+	if err := f.watch.rules(kit.Failing(kit.OpSync, target, 1, errors.New("fixture: an injected sync failure"))); err != nil {
+		f.t.Fatalf("fixture: schedule a sync failure: %v", err)
 	}
+}
+
+// SegmentsWritten is how many distinct segments the journal has ever written,
+// spares made by the pool included: a write step that raises it made its
+// stream take a segment no write had touched, whose spare the pool refills in
+// the real time of the background.
+func (f *Fixture) SegmentsWritten() int {
+	f.journalOnly("SegmentsWritten")
+
+	return f.watch.segments()
 }
 
 // HoldFirstRepack holds the first repack pass mid-way, its segments selected
@@ -694,6 +782,8 @@ func newFixture(t *testing.T, wrap func(kv.KV) kv.KV, opts ...Option) *Fixture {
 	if err != nil {
 		t.Fatalf("fixture: seam: %v", err)
 	}
+	watch := newSeamFaults()
+	seam.SetFault(watch)
 	clock := sim.NewTestClock(fixtureStart)
 	f := &Fixture{
 		Seam:     seam,
@@ -704,6 +794,7 @@ func newFixture(t *testing.T, wrap func(kv.KV) kv.KV, opts ...Option) *Fixture {
 		logger:   slog.New(slog.NewTextHandler(t.Output(), nil)),
 		ended:    make(chan struct{}, 64),
 		settings: fixtureSettings,
+		watch:    watch,
 	}
 	for _, o := range opts {
 		o(f)
