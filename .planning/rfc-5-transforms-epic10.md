@@ -92,7 +92,7 @@ title and not copied.
 | rule 4, profiling | T10.1 | the refresher's tests run under `internal/prof`'s leak check, which shows its goroutine gone after stop. No hot path: a scrape reads one pointer, and no allocation assertion is added |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | each is tested where its value is consumed: the gauge on the registry's scrape, the listing on the HTTP answer, never on the snapshot or the row structs alone |
 | rule 6, known failures shrink | none | `unit` keeps no `known.yaml`; both subtasks land green, after S7 |
-| rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | all | the refresher and the collector are in `internal/node/content`, a composer, which may import `kvstore`, the Prometheus client and `chain`; the API takes the view through an interface it declares; `chain` gains one exported function and no import, so no package of `pkg/transform` imports `pkg/metrics`. E1's import test holds it |
+| rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | all | the refresher and the collector are in `internal/node/content`, a composer, which may import `kvstore`, the Prometheus client and `chain`; the API takes the census as `Deps.Census`, a function returning `apiv1.CensusEntry` rows that the content wiring builds over the view and `chain.Name`, so the API imports neither `chain`, `kvstore` nor RFC 5's types; `chain` gains one exported function and no import, so no package of `pkg/transform` imports `pkg/metrics`. `internal/node`'s `TestImportRules` and `TestAPIClosure` hold the API's side; E1's import test holds `chain`'s |
 | rule 8, real dependencies for properties of those dependencies | all | the census comes from the real `kvstore`'s view over real block records; no object store or key service is involved |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | all | the `ponytail:` markers of D1, D2 and D4 and the `decision:` markers of D2, D5 and D6, at the sites §4 names |
 | rule 10, a test must be able to fail | all | each test in §6 names the bug it catches |
@@ -160,7 +160,10 @@ compiled-in registry plus one value.
   the next period retries. The period runs on the wiring's injected clock. A `ponytail:` at the
   refresher: a fixed 5-minute period, so the gauge lags commits by up to one period plus one read;
   make it a setting, or read at scrape, when the view answers from counts in O(distinct entries)
-  and an operator needs the gauge closer than that. Prior art: Prometheus's guidance that a
+  and an operator needs the gauge closer than that. Until then each read costs what the view
+  costs, O(blocks) for a walking view, about 10⁸ block records at the customer scale, every period;
+  reads never overlap, since the next starts a period after the last ends, so a read that outlasts
+  the period widens the lag and adds no load. Prior art: Prometheus's guidance that a
   collector be cheap at scrape, and exporters such as `postgres_exporter` that cache an expensive
   query on an interval (from memory).
 - **D2, two labels, `transform` and `version`, summed over namespaces and material.** RFC 5 §6
@@ -246,7 +249,7 @@ internal/node/content/
 internal/node/api/
   res_census.go        T10.2  the census listing under a namespace (D4, D5)
   routes.go            T10.2  + GET /api/v1/namespaces/{id}/census
-  server.go            T10.2  + Deps.Census, the per-namespace view as the API declares it
+  server.go            T10.2  + Deps.Census, a function returning apiv1.CensusEntry rows
   census_test.go       T10.2
   openapi_test.go      T10.2  + the route's operation ID and role
 pkg/node/apiv1/
@@ -254,8 +257,8 @@ pkg/node/apiv1/
 pkg/node/apiv1/client/
   resources.go         T10.2  + the namespace's census listing, over the generic list helper
 internal/node/
-  <the API's Deps>     T10.2  + Census, kvstore's per-namespace view, where the RFC 23 plan's
-                              epic 3 builds the API's Deps
+  <the API's Deps>     T10.2  + Census, which the content wiring builds over kvstore's view and
+                              chain.Name, where the RFC 23 plan's epic 3 builds the API's Deps
 ```
 
 ## 6. Subtasks
@@ -268,7 +271,7 @@ internal/node/
 - **Covers:** R1, R2, R3, R4, R5, R6, R7, R8, R15, R16.
 - **Deliverables:**
   - `chain.Name(id transform.ID) (string, bool)` over the process registry (D3). Consumed by the
-    refresher here and by T10.2's rows.
+    refresher here and by the content wiring's `Deps.Census` (T10.2).
   - The census spec: name `transform_census_blocks`, its help, labels `transform` and `version`, as
     a plain value in the form E9 gives this component's series specs. Consumed by the collector.
   - `internal/node/content/census.go`: the refresher (D1), which takes the namespace listing and the
@@ -325,12 +328,20 @@ internal/node/
 - **Deliverables:**
   - `pkg/node/apiv1/census.go`: `CensusEntry` (D5). Consumed by the server and the client.
   - `internal/node/api/res_census.go`: the listing of D4 under a namespace through the `listing`
-    adapter's `under`, its key of D4, wrapped by D5's `404` and `503`; `Deps.Census`, the
-    per-namespace view as an interface the API declares; the route of D5 in the route table, with
-    D4's `ponytail:` and D5's `decision:`. Consumed by the client accessor and any API client.
+    adapter's `under`, its key of D4, wrapped by D5's `404` and `503`; `Deps.Census`, declared by
+    the API over plain rows:
+
+    ```go
+    // internal/node/api, Deps
+    Census func(ctx context.Context, ns entity.NamespaceID) ([]apiv1.CensusEntry, error)
+    ```
+
+    It also holds the route of D5 in the route table, with D4's `ponytail:` and D5's
+    `decision:`. Consumed by the client accessor and any API client.
   - The client accessor in `pkg/node/apiv1/client/resources.go`, one line over its generic `list`
     helper. Consumed by this subtask's tests and any client.
-  - The node fills `Deps.Census` with `kvstore`'s per-namespace view.
+  - The content wiring builds `Deps.Census` over `kvstore`'s per-namespace view and `chain.Name`,
+    and the node hands it to the API.
 - **Acceptance criteria:**
   - A `viewer`'s `GET /api/v1/namespaces/{id}/census` lists one row per transform, version and
     material the namespace's block records name, with the block count, `retired` and `deleted`
