@@ -213,8 +213,8 @@ epic's code must honour them.
 | R21 | Each component is a `Source` the node adds to the health evaluator with `Add` and removes with `Remove`: the engine, the syncer's two store conditions, the provider's two material conditions and R12's condition | MUST | RFC 25 §8.1, §3.9 | T21.6 |
 | R22 | `material_destroyed` is unhealthy with `data_loss` while a census entry or a journal-held chunk depends on the material, or while that is not yet known, and the node adapts it from the engine, which alone evaluates it | MUST | RFC 25 §3.9 | T21.6 |
 | R23 | Per-share figures follow §2.5's worst-n rule: the syncer's per-flow queue gauges are exported by share, never one series per flow | MUST | RFC 25 §2.5 | T21.6 |
-| R24 | An entity label takes the object's name, not an internal ID, the journal and §2.5's `share` label excepted; a store's value is unique among the stores the syncer registers | MUST | RFC 25 §2.4 | T21.6 |
-| R25 | Alerts are on conditions wherever a condition exists, with the class and delay of RFC 25 §3.9's row; an alert names the condition, the subject, the cause and `since` and links the troubleshooting entry; one condition is one alert however many shares inherit it | MUST | RFC 25 §7 | T21.7 |
+| R24 | An entity label takes the object's name, not an internal ID, the journal and §2.5's `share` label excepted, and stores and namespaces until their records gain a name (D9); a store's value is unique among the stores the syncer registers | MUST | RFC 25 §2.4, as T21.6's pull request amends it (D9) | T21.6 |
+| R25 | Alerts are on conditions wherever a condition exists, with the class and delay of RFC 25 §3.9's row; an alert names the condition and links the troubleshooting entry, its subject, cause and `since` read through its link to `/api/v1/health` (D7); one condition is one alert however many shares inherit it | MUST | RFC 25 §7, as T21.7's pull request amends it (D7) | T21.7 |
 | R26 | The only alerts that read metrics directly are the scraper's stopped-exporting, `health_status{scope="installation"}` away from `healthy`, and the bug counters §7 names, `codec_verify_failures_total` and `transform_decode_failures_total{error="malformed"}` net of the syncer's recovered re-gets among them | MUST | RFC 25 §7 | T21.7 |
 
 **Rows only a composed node passes**
@@ -297,8 +297,11 @@ epic's code must honour them.
   `internal/adapter/core/exports_test.go` holds its golden file. Settled now, because every
   component's rule takes this form; changing it later rewrites each rule, at no data migration.
   `health_conditions` carries the condition and severity only (RFC 25 §10), so an alert names its
-  subject, cause and `since` through its link to `/api/v1/health`, not as labels, narrower than R25
-  reads, pending the user's answer (§9 point 3). Prior art: the Prometheus "mixin" convention
+  subject, cause and `since` through its link to `/api/v1/health`, not as labels: one alert per
+  condition, so `store_put_unhealthy` fires once while two stores are unhealthy and its link lists
+  both. The user decided this on 2026-11-26, and T21.7's pull request amends RFC 25 §7 to say so.
+  Rejected: a `subject` label on `health_conditions` for store and namespace subjects only, which
+  costs an RFC 25 §10 amendment and a series per subject per condition. Prior art: the Prometheus "mixin" convention
   (kubernetes-mixin, etcd's alerts), rule groups shipped as YAML beside the binary (from memory).
 - **D8, the per-flow gauges reach a share through the flow the engine's binding holds.** Epic 16
   opens one flow per share inside `attach`, so only the engine knows which flow is whose:
@@ -308,22 +311,28 @@ epic's code must honour them.
   the RFC 3 plan's epic 8 asks), and joins each flow's gauges to the share whose `ShareStats` names
   it, feeding the existing `shareGaugeSpec` worst-n path. A flow no share names is summed only. Prior
   art: the node's own `journalShareGauges` (read the code).
-- **D9, entity label values are the IDs the API spells — pending the user's answer (§9 point 2).**
+- **D9, entity label values are the IDs the API spells (the user's decision, 2026-11-26).**
   No store or namespace record on `feat/storage-v2` holds a name (`entity.Namespace`,
   `apiv1.StoreSpec`); RFC 25 §2.4 allows an ID for the journal and for §2.5's `share` label only.
-  Recommended: the IDs as the API writes them (`idString`); a registered store's `store` value is its
+  So the values are the IDs as the API writes them (`idString`); a registered store's `store` value is its
   configuration's ID and its namespace's, `<store>/<namespace>`, so the value is unique among the
   syncer's stores (two stores under one value fail `Gather`) and equal to the codec recorder's;
-  RFC 25 §2.4's exceptions widened to stores and namespaces until their records gain a name. Prior
+  RFC 25 §2.4's exceptions widened to stores and namespaces until their records gain a name, in
+  T21.6's pull request. Example: `remote_request_seconds{store="0f3a…/91c2…"}`. Rejected: adding
+  names to the store and namespace records first (RFC 16, RFC 23 and the API), a record change in
+  three RFCs outside this epic. Prior
   art: Ceph's `ceph_pool_*` series keyed by `pool_id`, with an info metric mapping it to the name
   (from memory).
-- **D10, a store whose provider fails at start is retried every 30 s, without a restart — pending
-  the user's answer (§9 point 1).** RFC 5 Appendix B.4 has a read recover when the key returns;
-  nothing names who reopens the store. Recommended, as the RFC 5 plan's epic 11 recommends: the
-  content wiring retries the provider's open for that store every 30 s on the node's clock, as RFC 8
-  §2.5 retries a refused journal, `material_unavailable` naming the namespace meanwhile, and the
-  namespace's shares attach once it opens. A `decision:` at the retry. Prior art: RFC 8 §2.5's
-  retried open (read the RFC).
+- **D10, a store whose provider fails at start is retried every 30 s, without a restart (the user's
+  decision, 2026-11-26).** RFC 5 Appendix B.4 has a read recover when the key returns; nothing
+  names who reopens the store. The content wiring retries the provider's open for that store every
+  30 s on the node's clock, as RFC 8 §2.5 retries a refused journal, `material_unavailable` naming
+  the namespace meanwhile. The store's shares attach and keep serving from the journal throughout:
+  writes are accepted while capacity allows and read back locally, and nothing is put for the
+  namespace; once the provider answers and the store opens, the journal-held content offloads. This
+  is what the RFC 5 plan's epic 11 asserts (its D2 and T11.1, #6000). A `decision:` at the retry.
+  Rejected: opening the store at the next start only, which turns a key server's outage into a
+  restart. Prior art: RFC 8 §2.5's retried open (read the RFC).
 - **D11, `enginetest.WithSyncer` is deleted.** Epic 16's D9 composes the syncer for every engine and
   keeps the option, accepted and composing nothing, for this epic to decide. It has no effect, so it
   goes with its call sites, a mechanical change in T21.4. No marker. Prior art: none needed.
@@ -388,7 +397,7 @@ docs/internals/rfcs/rfc-0-data-lifecycle.md  T21.4's pull request: §10.2's rest
     when RFC 13 names them; until then the node passes RFC 13's proposed values, as it does today.
   - `upload_workers` read into the engine's pass bound, withdrawing epic 16's `uploadWorkers = 128`
     constant and its D8 `ponytail:`; `engine.Settings` gains `UploadWorkers`, additive to epic 11's
-    frozen set (§9 point 5).
+    frozen set (§9 point 2).
   - `docs/guide/configuration.md`: the engine's keys with their scope and class.
   Consumed by T21.2 (the remote sections), T21.4 (the two counts), T21.7 (the alert bound).
 - **Acceptance criteria:**
@@ -457,19 +466,23 @@ docs/internals/rfcs/rfc-0-data-lifecycle.md  T21.4's pull request: §10.2's rest
   - D10's retry of a store whose provider failed at start.
   - `provider_test.go`: RFC 5's key-record suite over `kvstore` on the memory KV, Badger under
     `t.TempDir()` and FoundationDB where it runs, unless the RFC 5 plan's epic 6 moves that run into
-    `kvstore`'s own tests first (§9 point 4).
+    `kvstore`'s own tests first (§9 point 1).
   Consumed by T21.4 (the chain for each `codec.Store`), T21.6 (the provider's health source).
 - **Acceptance criteria:**
   - Every namespace of a composed node encodes under its store configuration's chain, and a block
     written by it is read back through it after a restart.
-  - A provider that fails at start leaves its namespaces' shares unattached with
-    `material_unavailable` naming the namespace, and they attach within 30 s of the key returning.
+  - A provider that fails at start leaves its store unopened with `material_unavailable` naming the
+    namespace, while the store's shares attach and serve from the journal: a write is accepted and
+    read back, and nothing is put. Within 30 s of the key returning the store opens, the condition
+    clears, and the write the journal held offloads (D10).
   - A destroyed material's notice reaches the engine for that store and no other.
 - **Tests:** at the engine's read, which the filesystem calls, over `nodetest` with the in-memory
   store: a block written, the node restarted, read back verified (catches a chain rebuilt from other
   material); a provider failed through the RFC 5 plan's fault wrapper around `keystest`'s provider
-  (kind 3), then restored, the test clock advanced past 30 s, the share attached and its read served
-  (catches no retry, R16); two store configurations, material destroyed under one, the notice read
+  (kind 3): the share attached and a write read back from the journal with no put on the store's load
+  record (catches a provider failure that fails the share or its journal); the provider restored,
+  the test clock short of 30 s with nothing put, then past it, the store opened and the held write
+  put and read back after eviction (catches no retry, or a retry on a timer of its own, R16); two store configurations, material destroyed under one, the notice read
   through `Deps.Destroyed` for that store only (catches one provider's notice for every store); the
   key-record suite over three backends (R17).
 - **Rules:** rule 8, the backends; rule 9, D10's `decision:`.
@@ -557,7 +570,7 @@ docs/internals/rfcs/rfc-0-data-lifecycle.md  T21.4's pull request: §10.2's rest
     `data_loss`), the syncer's `content.StoreHealth` over the node's one flow per store (the RFC 3
     plan's epic 5), the provider's `material_unavailable` and `material_unknown` source (the RFC 5
     plan's epic 9) and T21.4's condition; each source removed with the component that owns it.
-  - RFC 25 §2.4's amendment (D9), pending §9 point 2.
+  - RFC 25 §2.4's amendment (D9).
   Consumed by T21.7.
 - **Acceptance criteria:**
   - A scrape of a composed node holds every series RFC 3 §2.12, RFC 4 §4.12 and RFC 5 §6 name, each
@@ -587,7 +600,7 @@ docs/internals/rfcs/rfc-0-data-lifecycle.md  T21.4's pull request: §10.2's rest
   this part and its components raise, with the row's class and delay (`offload_age_exceeded` with
   T21.1's oldest-unoffloaded bound), the syncer's `store_put_unhealthy` and `store_get_unhealthy`,
   the RFC 4 plan's `verifyAlert` and the RFC 5 plan's four, each linking its troubleshooting entry;
-  `deploy/prometheus/alerts.yaml` and its golden test; RFC 25 §7's amendment, pending §9 point 3.
+  `deploy/prometheus/alerts.yaml` and its golden test; RFC 25 §7's amendment (D7).
 - **Acceptance criteria:**
   - The checked-in file is what `Rules()` renders.
   - Every metric and label every rule names is in a scrape of a composed node.
@@ -667,7 +680,7 @@ docs/internals/rfcs/rfc-0-data-lifecycle.md  T21.4's pull request: §10.2's rest
   directory refused; `SIGKILL` and a power cut kept distinct.
 - **Acceptance criteria:** each row passes in `e2e`, which keeps no known list.
 - **Tests:** the rows. This subtask's estimate is the least certain: the rows depend on the adapters
-  serving on the filesystem service, and a row that finds a bug grows (§9 point 6).
+  serving on the filesystem service, and a row that finds a bug grows (§9 point 3).
 - **Rules:** rule 8, a real `dfs`; rule 6, no known list.
 
 ### T21.12 The remote-outage rows
@@ -724,54 +737,27 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-1. **Pending the user's answer: is a store whose provider failed at start opened again without a
-   restart (D10)?** The RFC 5 plan's epic 11 asks the same question and names this epic as the one
-   that opens stores.
-   - **(a) Recommended: retried every 30 s, no restart**, as RFC 8 §2.5 retries a refused journal;
-     `material_unavailable` names the namespace meanwhile and its shares attach once it opens. Cost: a
-     retry loop in `content/provider.go` and one test leg (in T21.3's figure).
-   - **(b) Opened at the next start only**, as a namespace with too large a `Max` is (D6): the
-     condition says a restart is needed. Cost: none; the store stays unavailable until an operator
-     restarts.
-   This document is written for (a).
-2. **Pending the user's answer: the label value of a store and a namespace (D9).** RFC 25 §2.4 has an
-   entity label take the object's name, and neither record holds one.
-   - **(a) Recommended: the IDs as the API spells them**, a registered store's `store` value
-     `<store>/<namespace>`, with RFC 25 §2.4's exceptions widened to stores and namespaces until their
-     records gain a name; the amendment lands in T21.6's pull request. Example:
-     `remote_request_seconds{store="0f3a…/91c2…"}`.
-   - **(b) Names added to the store and namespace records** (RFC 16, RFC 23 and the API), then used as
-     labels. Cost: a record and API change in three RFCs, outside this epic.
-   This document is written for (a).
-3. **Pending the user's answer: what an alert names (D7).** RFC 25 §7 has an alert name the subject,
-   the cause and `since`, while §10's `health_conditions` carries only the condition and severity, and
-   a subject label would break §2.4's bound (a file ID is a subject).
-   - **(a) Recommended: one alert per condition, its subject, cause and `since` read through the
-     alert's link to `/api/v1/health`**, RFC 25 §7 amended to say so. Example: `store_put_unhealthy`
-     firing once while two stores are unhealthy, the link listing both.
-   - **(b) `health_conditions` gains a `subject` label for store and namespace subjects only**, each
-     under §2.4's cap of 64, file subjects reached through the link. Cost: an RFC 25 §10 amendment and
-     a per-subject series per condition.
-   This document is written for (a).
-4. **Where RFC 5's key-record suite runs against `kvstore`.** The RFC 5 plan's D7 runs it from the
+1. **Where RFC 5's key-record suite runs against `kvstore`.** The RFC 5 plan's D7 runs it from the
    content wiring's tests; the RFC 5 plan's epic 6 breakdown moves it into `kvstore`'s own tests.
    T21.3 runs it unless that move has landed, and then drops the leg (0.5 man-days).
-5. **Departures from what other documents wrote, all additive, each landing with its subtask:**
+2. **Departures from what other documents wrote, all additive, each landing with its subtask:**
    `engine.Settings` gains `UploadWorkers` (T21.1) and `engine.ShareStats` gains `Flow` (D8), which
    epic 11 did not freeze; `node.Config` gains `Remote` and RFC 23 §2.1 is amended (D2); RFC 25 §3.9
    gains `namespace_restart_needed`, with the RFC 25 §3.3, §3.4 and RFC 0 §10.2 exception (D6). The
    reviewers of each pull request approve these with the surface.
-6. **Estimate.** 38 man-days in 12 subtasks against the plan's 36 in 10. Added: the engine's own
+3. **Estimate.** 38 man-days in 12 subtasks against the plan's 36 in 10. Added: the engine's own
    settings section (the plan's figure has the engine's keys loaded but not declared), the provider's
    wiring per store configuration with `Deps.Destroyed` and the reload (the RFC 5 plan's epic 8 and
    the offload plan's epic 18 name them after the plan was written), and the system scenarios at two
    tiers. Removed: spreading connections (D3), the syncer's construction, registration and `Deps`
-   members, which epics 14 to 16 build (D1), and the alert generator a golden test replaces. If epic
-   15's D2 resolves to its option A, part of T21.3's provider work lands in epic 15, which did not
-   count it, and this figure drops by about 1.5 man-days. The least certain figures are T21.11, whose
+   members, which epics 14 to 16 build (D1), and the alert generator a golden test replaces. Epic
+   15's D2 (the user's decision, 2026-11-26) has the node first pass a provider and the stores to the
+   content wiring in epic 15, about 1.5 man-days that epic 15's estimate does not count; they stay
+   in T21.3's figure, which builds the per-configuration provider, its reload and D10's retry over
+   that composition. The least certain figures are T21.11, whose
    rows wait on the adapters and grow with each bug they find, and T21.3, whose rotation inputs come
    from a breakdown not yet merged.
-7. **Plan and sibling text this document departs from.** The plan's epic 21 lists spreading
+4. **Plan and sibling text this document departs from.** The plan's epic 21 lists spreading
    connections (D3), which the RFC 3 plan's §2 also gives this epic, "`Deps.Carver`, `Syncer`,
    `Refs`, `Watchdog` from the root" and the syncer's construction (D1), a decoder token (D5), and
    "#4276's row closed by the registry refusing the in-memory remote kind", which D2 meets with no
