@@ -45,7 +45,18 @@ const stopBound = 30 * time.Second
 
 // engineDefaults are the engine's settings until the settings records carry
 // them: RFC 13 Appendix B's proposed values.
-var engineDefaults = engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 256, CloneMaxLen: 1 << 30}
+var engineDefaults = engine.Settings{
+	ExistenceAge:            time.Second,
+	GroupCommitMaxFiles:     256,
+	CloneMaxLen:             1 << 30,
+	OffloadRetryMin:         time.Second,
+	OffloadRetryMax:         time.Minute,
+	OffloadRetryMaxPressure: 5 * time.Second,
+	RemovalRescan:           time.Minute,
+	RepackThreshold:         0.10,
+	EvictionTarget:          0.85,
+	FillLowWater:            0.10,
+}
 
 // lifecycle is the node's start and stop state.
 type lifecycle struct {

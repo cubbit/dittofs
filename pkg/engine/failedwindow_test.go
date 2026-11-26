@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -24,7 +25,9 @@ func (u *unit) failWindow(f entity.FileID, off, n int64) {
 // after a new write answers that write's verifier.
 func TestAFailedWindowReachesTheNextCommit(t *testing.T) {
 	u := newUnit(t)
-	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Second
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	h, made := u.fs.Create(t, u.fs.Admin, u.fs.Root, "a", kvstore.Regular(0o644))
