@@ -851,7 +851,7 @@ docs/internals/rfcs/
 - **Covers:** R37–R39, R45–R47, R50.
 - **Deliverables:** `internal/node/nfs_identity_test.go`, on `nodetest`, with `identitytest`'s
   directory as the installation's directory (§9, point 6). It drives E3's scripted client (T3.2:
-  `nfsclient.DialFrom` from `127.0.0.1` to `127.0.0.4`, then `Do` with
+  `nfsclient.DialFrom` from `127.0.0.1` to `127.0.0.5`, then `Do` with
   `nfsclient.AuthSys`, the arguments and replies coded by E4's generated structs): `MNT`, then E4's `GETATTR`, `SETATTR`,
   `CREATE`, `READ` and `WRITE`. No later subtask consumes it: it ends the epic.
 - **Acceptance criteria:** each row's `AUTH_SYS` steps get the NFSv3 status that E4's table gives

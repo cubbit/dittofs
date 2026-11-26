@@ -1208,6 +1208,7 @@ Flags:
       --base string             compare the branch with REF: a docs-only change plans nothing, and suites with paths run only when touched
       --branch string           with --ci, the branch whose runs of tests.yml are read (default "develop")
       --ci[=true|false]         read the last N runs of tests.yml on --branch, from their artifacts through the GitHub API, with the token in GITHUB_TOKEN, instead of this checkout's runs
+      --docs-only-base string   compare a merge queue group with REF, its parent: on the pr tier a docs-only pull request plans nothing, and any other plans every cell
       --estimate[=true|false]   give each cell its p50 over the runs dt history reads, and the tier's runner-minutes, their sum
       --json[=true|false]       print JSON
       --last int                read the last N runs (default 10)

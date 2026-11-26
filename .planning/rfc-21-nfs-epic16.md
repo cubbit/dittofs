@@ -649,9 +649,9 @@ in a subtask (§9, gap 8).
   subtask adds, `node-clone`, `go test -timeout=30m -run ^TestNFSCloneLarge ./internal/node/`,
   nightly, as RFC 29 §4.10 places the gates that skip under `-race`. Before the first large step the
   test reads the free bytes under `t.TempDir()` and fails, naming them, below 12 GiB (the 4 GiB `COPY`'s
-  source and destination, the 512 MiB clone's two, and the journal's room), rather than skip, and the cell declares `needs: [disk:12]` so the harness refuses a short runner
+  source and destination, the 512 MiB clone's two, and the journal's room), rather than skip, and the cell declares `needs: [disk:12, host:dedicated]`, `disk:12` so the harness refuses a short runner
   before the build (the test's own check stays, since `disk:` measures the working directory and the
-  test writes under `t.TempDir()`); the figure is provisional, measured on the cell's first run and revised then, and the cell runs on ditto, the team's dedicated test box (16 cores, 61 GB), until a CI runner is chosen; a `decision:` marker there names that ceiling. Their wall time is not measured yet: the
+  test writes under `t.TempDir()`); the figure is provisional, measured on the cell's first run and revised then, and `host:dedicated` places the cell on ditto, the team's dedicated test box (16 cores, 61 GB), until a CI runner is chosen, since `disk:12` alone is under a hosted runner's disk and leaves it there; a `decision:` marker there names that ceiling. Their wall time is not measured yet: the
   option's first nights give it. Split from T16.5, since clones and locks share no code. No later
   subtask consumes it.
 - **Acceptance criteria:**
@@ -1092,10 +1092,9 @@ Gaps, not questions:
    (T16.7, T16.8), so a runner without one fails rather than skips. knfsd is `nfs-night`'s need, on
    the dedicated host (D4). T16.14's large clones
    need 12 GiB free under the nightly `unit/node-clone` cell's temporary directory, and fail
-   naming the free bytes when it is not there; the figure is provisional, measured on the cell's first run and revised then. The cell runs on ditto until a CI runner is chosen (rif, 25 Nov). `tests.yml`'s `schedule` trigger runs on the default
-   branch only, so the hosted nightly cells this epic adds on `feat/storage-v2` (`unit/node-clone`,
-   the soak) run nothing until the cutover brings them to `develop`; the dedicated host's cron runs
-   `develop` too (`bench/ditto/README.md`), so `nfs-night` waits for the cutover the same way.
+   naming the free bytes when it is not there; the figure is provisional, measured on the cell's first run and revised then. The cell runs on ditto, through its `host:dedicated` need, until a CI runner is chosen (rif, 25 Nov). `tests.yml`'s `schedule` trigger runs on the default
+   branch only, so the hosted nightly cells this epic adds on `feat/storage-v2` (the soak) run nothing until the cutover brings them to `develop`; the dedicated host's cron runs
+   `develop` too (`bench/ditto/README.md`), so `nfs-night` and `unit/node-clone` wait for the cutover the same way.
 8. **Which pull request carries which RFC amendment.** D1's sentence for RFC 21 §13's suites
    paragraph (Q1) goes in batch two's one RFC 21 pull request, opened with E8's document pull
    request. Q3's RFC 20 §6.10 change joins the programme's one RFC 20 pull request, opened by E3's

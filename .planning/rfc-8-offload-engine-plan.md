@@ -205,11 +205,12 @@ and the pull request that does so closes #5757 (`Closes #5757`).
   succeeds once offload frees space, the store unreachable past the deadline, the store denying puts).
   2 rows.
 
-50 rows. Four of them extend a test the first part already has rather than add a second one: "§2.5
-clone resumed at a full limit" extends `TestRFC8A_CloneResumedAtAFullLimit` with its remote half,
-"§10.2 retry later" extends `TestRFC8A_RetryLaterAtTheShareLimit` with its store legs, "§2.4 settings"
+50 rows. Two of them extend a test the first part already has rather than add a second one: "§2.4 settings"
 extends `TestRFC8C_Settings` with `Min`, `Target` and the migration report, and V20 extends `TestV20`
-(`internal/vfs/integration`) with its offload half. A fifth extension is not a red row:
+(`internal/vfs/integration`) with its offload half. The remote halves of "§2.5 clone resumed at a
+full limit" and "§10.2 retry later" are new tests beside `TestRFC8A_CloneResumedAtAFullLimit` and
+`TestRFC8A_RetryLaterAtTheShareLimit`, not subtests: both assert in their own bodies, and a parent
+failing through known subtests is graded known whatever its body did (epic 12's D5). A third extension is not a red row:
 `TestRFC8A_UnbindThenDropLeavesNoEntryForTheTag`, green today, gains §15.2's "§2.3 unbind and drop"
 leg with an offload pass in flight from epic 16, in the change that runs passes, since a red leg would
 hide its green half; its hold-mark offloads are RFC 12's (D7). The "shard handed away and back" legs the first
@@ -451,7 +452,7 @@ flowchart TD
   E14 -. "tenants and Rebuild, start step 6" .-> E19
   E14 -. "scheduler stats, work_queue_stalled" .-> E20
   E16 -. "re-offers the reseed gates" .-> E19
-  E16 -. "a binding's flow, opened at Bind" .-> E17
+  E16 -. "a binding's flow, opened at Bind; E17's rows, after E15's options" .-> E17
   E18 -. "the eviction loop start step 7 starts" .-> E19
   E16 -. "pass outcomes, offload health" .-> E20
   E17 -. "speculation cancelled on pressure" .-> E18
@@ -543,6 +544,9 @@ What each point means for this plan's epics:
   once), and partly E17 (the carved row fetches through the flow a binding opens at `Bind`; until then
   epic 17's tests open a flow over RFC 4's in-memory store themselves), E19 (the reseed gates the
   re-offer) and E20 (pass outcomes feed offload health).
+- **E15 and E16 block E17's finish.** Its conformance rows ask the carver, chain and syncer options
+  and `FaultRemote`, which epics 15 and 16 make real, so epic 17 builds from S2 but turns its rows
+  green, and meets its "Done when", only after E16.
 - **E17** blocks E18 partly (speculation is cancelled on pressure), and E19 through track C's order
   only.
 - **E18** blocks E19 partly: start step 7 starts its eviction loop.
@@ -571,6 +575,8 @@ What each point means for this plan's epics:
   and epic 16's pass outcomes land about 20 man-days later; epic 20's drain metrics, its `WaitOffloaded`
   over the journal's dirty figures and the salvage export, which need no pass, fill that wait, and
   track A then takes the preparation of epic 21's store composition (D5) once S1c and S1d are agreed.
+  Track C finishes epic 17's code at about 23.5 man-days, but its rows turn green only after epic
+  16, at about 55 (§3.3), so track C moves on to epic 19 and comes back to close epic 17 then.
   Track C's epic 19 waits on epic 14's tenants, epic 16's passes and epic 18's eviction loop, which
   start step 7 starts; it starts with the reseed's marks and unmarks over the in-memory journal, which
   need none of them, and takes start step 7 last.
@@ -1178,10 +1184,10 @@ proposed targets: the first real-service run does (§6.1).
 
 | Deferred | Why | Owner | Trigger |
 | --- | --- | --- | --- |
-| GC composed in the node, a namespace added to GC, GC's scheduler instance (header; D3; #4276's GC half) | GC is planned later. Ceiling while it is: orphaned objects (§8.3's dropped refs, the abandoned intents of a restart, an `Abandon` after a put that landed) and dead blocks stay in the bucket and only grow, and no metric reports their rate; bucket-setting drift goes undetected while epic 18 evicts (the drift row below), so a loss it causes is permanent | RFC 9 | GC is built |
-| Snapshot-hold ordering in the pipeline, `Unbind`'s `keepHolds` offload, the cut's `PrepareCut` and `CommitCut`, `Deps.Gate` (RFC 8 §16 Q7), the clone across a cut and between batches (D7) | no snapshot exists before RFC 12 | RFC 12 | snapshots are built |
+| GC composed in the node, a namespace added to GC, GC's scheduler instance, the collection of the first object in §15.1's "§2.5 restart re-offer" (header; D3; #4276's GC half) | GC is planned later. Ceiling while it is: orphaned objects (§8.3's dropped refs, the abandoned intents of a restart, an `Abandon` after a put that landed) and dead blocks stay in the bucket and only grow, and no metric reports their rate; bucket-setting drift goes undetected while epic 18 evicts (the drift row below), so a loss it causes is permanent | RFC 9 | GC is built |
+| Snapshot-hold ordering in the pipeline, `Unbind`'s `keepHolds` offload, the cut's `PrepareCut` and `CommitCut`, `Deps.Gate` (RFC 8 §16 Q7), the clone across a cut and between batches (D7), the snapshot-capture visit of §15.1's "§2.5 metadata reconcile" | no snapshot exists before RFC 12 | RFC 12 | snapshots are built |
 | A re-home `Bind` joining the old namespace's passes, `State: Closing`'s clone counting, a re-home's switch, a copied image's `Fenced` state and §11.2's copied-image row (D8) | re-homes and namespace claims are RFC 27's | RFC 27 | RFC 27 is built |
-| The cluster rules: handover and lease-loss drains, O7 stale epoch, the replica filter, the reconcile's replica clauses, cross-shard clone rows, RFC 8 E26, the "shard handed away and back" legs of §15.1's "§4.1 verifier inputs" and RFC 17's V25 (D9; the first part's handover) | single node | the cluster stage (RFC 10, RFC 11) | the cluster stage |
+| The cluster rules: handover and lease-loss drains, O7 stale epoch, the replica filter, the reconcile's replica clauses (the promotion leg of §15.1's "§2.5 metadata reconcile" and the replicated rejoin of "§2.5 journal gone"), cross-shard clone rows, RFC 8 E26, the "shard handed away and back" legs of §15.1's "§4.1 verifier inputs" and RFC 17's V25 (D9; the first part's handover) | single node | the cluster stage (RFC 10, RFC 11) | the cluster stage |
 | Per-share budget values for capacity, transfers and pacing (D13) | no setting or record carries one | RFC 24 | RFC 24 is built |
 | `PreWarm` and the speculator's pre-warm, and the pre-warm legs of §15.1's "§9.1 no pre-clone fill" and §7.4's S2, S4's pre-warm half and S5 (D12; RFC 8 §12.1 as amended) | no caller in v1.1 | unowned (no RFC specifies a pre-warm action) | a pre-warm action is specified |
 | Positive-rate pacing in `pkg/workqueue`, and the pace a `Throttled` result lowers (D12; RFC 8 §6.1.1 as amended) | the engine's sources register `Rate` 0, and GC is planned later | RFC 9 | GC's sources land |

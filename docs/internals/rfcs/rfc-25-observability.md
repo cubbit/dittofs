@@ -609,7 +609,7 @@ or the disk.
 > decision: an idle loop is live. The watchdog catches a loop stuck mid-turn, not one
 > that never wakes: a lost wakeup with work queued passes liveness and shows as a queue
 > that only grows. The work scheduler is the one loop that already reports more: it
-> is idle only with nothing due ([RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler)), so a lost wakeup there fails
+> is idle only with nothing it could dispatch ([RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler)), so a lost wakeup there fails
 > liveness. Overturned by an incident where a lost wakeup needed a restart;
 > then the loop reports its queue's oldest entry, and an old entry fails liveness.
 

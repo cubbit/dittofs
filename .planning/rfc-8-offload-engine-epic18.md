@@ -866,10 +866,11 @@ test/journal/known.yaml   T18.1  the real journal's Release and Unmark legs, red
     next retry, not at the deadline.
 - **Tests:**
   - **§10.2 retry later, the store legs** (R27, R22, R25),
-    `TestRFC8A_RetryLaterAtTheShareLimit/the_remote_tier's_half`, over `FaultRemote`'s outage,
+    `TestRFC8A_RetryLaterAtTheStore`, over `FaultRemote`'s outage,
     quota, `413` and `403` rules: green over the in-memory journal;
   - **§2.5 clone resumed at a full limit, the remote half** (R27),
-    `TestRFC8A_CloneResumedAtAFullLimit/the_remote_tier's_half`: green, as above;
+    `TestRFC8A_CloneResumedAtAFullLimitWithTheRemoteDown`, its restart handing `Start` both shares
+    through the fixture's `CrashAll`, made real here: green, as above;
   - **V20, the offload half** (R27), `TestV20/the_offload_half`: green;
   - #5757's four rows, `TestRFC8A_RetryLaterAtTheShareLimit`, `TestRFC8A_CloneResumedAtAFullLimit`,
     `TestRFC8A_CloneRetryLaterAtTheDestinationLimit` and `TestRFC8B_SharedJournalRetryLaterAtTheLimit`:
@@ -884,8 +885,9 @@ test/journal/known.yaml   T18.1  the real journal's Release and Unmark legs, red
   - a writer retrying with the store's fault switched from outage to quota mid-way: the next retry
     answers `ErrNoSpace` (R25).
   Doubles: `FaultRemote`, RFC 4's fault wrapper (kind 3).
-- **Rules:** rule 6: the entries of `TestRFC8A_RetryLaterAtTheShareLimit`, its subtest,
-  `TestRFC8A_CloneResumedAtAFullLimit`, its subtest, `TestRFC8A_CloneRetryLaterAtTheDestinationLimit`,
+- **Rules:** rule 6: the entries of `TestRFC8A_RetryLaterAtTheShareLimit`,
+  `TestRFC8A_RetryLaterAtTheStore`, `TestRFC8A_CloneResumedAtAFullLimit`,
+  `TestRFC8A_CloneResumedAtAFullLimitWithTheRemoteDown`, `TestRFC8A_CloneRetryLaterAtTheDestinationLimit`,
   `TestRFC8B_SharedJournalRetryLaterAtTheLimit` and `TestV20/the_offload_half` removed, or a row over
   the real journal rewritten until S6 if any still fails there; rule 9: the deleted and kept
   markers.

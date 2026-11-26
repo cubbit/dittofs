@@ -314,7 +314,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | NFS surface | request state; `ops/v4`'s handler set, `COMPOUND` row and members' table | 3 | 3.75 | team | all |
 | E2 ⛔ | Test foundations | the shared test pieces (S0); the handler runner and NFS's harness over it; knfsd captures; the service's `NoGrace` | 6 | 13.5 | team | E3 to E14 |
-| E3 | The RPC layer | credentials to `Identity` and `Call`, `NULL`, NFS over TLS, the stages' and programs' tables, status layers, the scripted client, the `Replay` stage and its duplicate-request cache (D10) | 6 | 20.5 | A | E8, E13, E14; S3 and S4 |
+| E3 | The RPC layer | credentials to `Identity` and `Call`, `NULL`, NFS over TLS, the stages' and programs' tables, status layers, the scripted client, the `Replay` stage and its duplicate-request cache (D10) | 6 | 22 | A | E8, E13, E14; S3 and S4 |
 | E4 | NFSv3 and MOUNT | every NFSv3 procedure, `fattr3`, `sattr3` and WCC, cookies, stability, `FSINFO`, MOUNT; A3's service half after S2b | 10 | 26 | B | S3; E11, partly; E16 |
 | E5 | NFSv4 namespace, attributes and data | file-handle operations, the pseudo-filesystem, `SECINFO`, `fattr4` and Appendix B, `ACCESS`, name operations, `READDIR`, stateless I/O | 8 | 23 | C | E6, E9; E12, partly; S4 |
 | E6 | NFSv4 ACL attributes | `translate`'s NFSv4 functions, `acl`, `dacl`, `sacl`, `aclsupport`, `who`, `mode_umask` | 5 | 12 | C | E16 |
@@ -322,15 +322,15 @@ the second because this plan takes over rows of two other plans' ledgers.
 | E8 🔀 | Clients and sessions | the callbacks value and the `Adapter` bytes first; `EXCHANGE_ID`, `SETCLIENTID`, confirms, `CREATE_SESSION`, `SEQUENCE`'s slots and reply cache, the session registry, lease and reclaim signals; A1's runner change after S2b | 10 | 31 | A | E10; E9, E11 and E12, partly; S4 |
 | E9 | Opens, stateids and locks | `OPEN` and its claims, stateid rules, NFSv4.0 owner sequences, `LOCK`, `LOCKT`, `LOCKU`, `TEST_STATEID`, `FREE_STATEID`, drain roles per request | 11 | 31.25 | C | E10 and E12, partly; E16 |
 | E10 | Delegations and the back channel | the back channel's calls, delegations offered, recalled, returned and revoked, administrator's revoke, path down with A2's service half after S2b, the drain test | 9 | 28.75 | A | E16 |
-| E11 🔀 | NLM, NSM and the datagram path | `core`'s datagram listener, NLM v4, NSM, grants resent, `SM_NOTIFY`, `DialClient`'s network | 7 | 22 | B | E16 |
+| E11 🔀 | NLM, NSM and the datagram path | `core`'s datagram listener, NLM v4, NSM, grants sent, `SM_NOTIFY`, `DialClient`'s network | 12 | 36.75 | B | E16 |
 | E12 | NFSv4.2 operations | `DEALLOCATE`, `SEEK`, `READ_PLUS`, `COPY`, `CLONE`, xattrs, the hold budget | 8 | 20.5 | C | E16 |
 | E13 🔀 | RPCSEC_GSS | `gss`'s Kerberos side (S6c); the context table as NFS's `Security` stage over it, `krb5`, `krb5i`, `krb5p` | 12 | 28 | B | E16; RFC 22's plan's epic 4 |
-| E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries | 4 | 11.5 | A | E16 |
+| E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries; the two-client conflict captures, from a recording host with client namespaces, deferred in §6.6 | 4 | 11.5 | A | E16 |
 | E15 🔀 | Integration with the node | settings, the NFS suites turned on | none | planned after S7 | team | E16, partly |
 | E16 🔀 | E2E green | in-process and restart rows, cross-protocol rows, e2e, benchmarks, soak, the totality test, pins; the burn-down after E15 | 8 | 25.5 | team | none |
-| | **Total** | | **97** | **270.25** | | |
+| | **Total** | | **109** | **304** | | |
 
-**Plan estimate: 97 subtasks, 270.75 man-days, not counting epic 15.**
+**Plan estimate: 109 subtasks, 304 man-days, not counting epic 15.**
 
 Nor E16's burn-down of the four NFS and POSIX suites, which waits for E15 as E15 waits for S7 (§6.2, point
 6), nor the rows parked in §6.6's deferral ledger.
@@ -476,19 +476,18 @@ Figures are man-days from S2.
   man-days in, at 21, before track C's E9 needs them and well before track B's E11 at 42. E10 starts
   at 45, as track C's E9 brings `OPEN`. E14's scripts use E3's scripted client against knfsd and its
   DittoFS side waits for S5; the track ends at 71, nine before track B, and fills with E16's
-  in-process rows as their epics allow. 74.5 man-days, the 3.5 E3's breakdown added not yet moved
-  into the figures above: moved, they put E8's callbacks value at about 24.5, after track C's E9
-  starts at 23, and the track's end at 74.5, five and a half before track B.
+  in-process rows as their epics allow. 88.75 man-days by its epics' rows; the start and end
+  figures above predate the epic breakdowns and are not yet moved.
 - **Track B: E4, E7, E11, E13.** NFSv3 and MOUNT, then identity's NFS side, then NLM and NSM, then
   RPCSEC_GSS. E4 comes first so S3 holds at 26 (D12); E7 follows, ending at 42, before track C reaches
   E6 at 48; E13 starts at 64, builds S6c, `gss`'s Kerberos side, itself, and needs S6b for its signed-in rows,
-  which, if late, leave E13's table and refusals done and its sign-in rows waiting. 80 man-days.
+  which, if late, leave E13's table and refusals done and its sign-in rows waiting. 92 man-days.
 - **Track C: E5, E9, E6, E12.** The NFSv4 namespace and data path, then opens, stateids and locks on
   it, then ACL attributes, then NFSv4.2. E9 runs on `memory.New` from 23, after E8's callbacks value
   at 21, and its loopback rows wait for S4 at 45; E6 starts at 48 with E7 done; E12 last, with E8's
-  slot count and E9's stateids in. 73 man-days.
+  slot count and E9's stateids in. 80.5 man-days.
 - **The team.** E1 and E2 before the tracks; E15 at S7; E16 after the tracks. E1, E2 and E16, 42.75
-  man-days, are the difference between the tracks' 227.5 and the plan's 270.25.
+  man-days, are the difference between the tracks' 261.25 and the plan's 304.
 
 **The first mount.** By D12, an NFSv3 mount over `AUTH_SYS` comes first: E1 to E4 and E7, about 76.25
 man-days of plan work, the critical path E1 → E2 → E4 → E7, 59.25 man-days in series, then S5, S7 and
@@ -637,9 +636,13 @@ for body types two procedures share) are in RFC 20 §2.5 by amendment A4; §6.2,
 
 ### 4.3 Knowingly simple implementations
 
-- **NLM grants resent by one timer each** (E11): a `time.AfterFunc` per granted lock awaiting its
-  acknowledgement (RFC 21 §6.1's resend). Ceiling: thousands of unacknowledged grants at once.
-  Upgrade to one timing wheel per adapter when a profile shows timer churn.
+- **One `GETPORT` per NLM grant** (E11): the host's port mapper is asked before every `GRANTED`,
+  nothing cached per host (the service, not the adapter, resends a grant). Ceiling: a port mapper
+  round trip per grant. Upgrade to a cache per host when a profile shows them.
+- **E11's other shortcuts** are listed with their ceilings in its document's §4: the outbound queue
+  of 256 with 4 workers (D9), the notices' own 4 workers, a round's first sends taking ⌈*s*/4⌉ × 2 s
+  behind *s* silent hosts, and the notice resent for at most 15 minutes (D11), the per-node host and
+  share tables (D5, D10), a `GetAttr` per blocking `LOCK` (D6) and the datagram queue (D13).
 - **The reply cache keeps whole reply copies** (E8): a slot's cached reply is copied out of the
   pooled reply buffer, at most 8 KiB (RFC 21 §3.1), rather than holding a reference. Ceiling: 512 KiB
   per session copied. Upgrade to a held `resources.Buf` when a profile shows the copy.
@@ -703,7 +706,7 @@ cuts both corpus captures to the bytes of the golden files already cut from them
 
 ### Epic 3 — The RPC layer
 
-**Epic 3 estimate: 6 subtasks, 20.5 man-days.**
+**Epic 3 estimate: 6 subtasks, 22 man-days.**
 
 Everything a call meets before a handler: its credential as an `Identity` and a `vfs.Call`, `NULL`
 and the TLS upgrade, the replay check, and the status every error of the stages and of `core` is
@@ -995,7 +998,7 @@ scripted client; N6's single-node half, N14's NFSv4 half.
 
 ### Epic 11 — NLM, NSM and the datagram path 🔀
 
-**Epic 11 estimate: 7 subtasks, 22 man-days.**
+**Epic 11 estimate: 12 subtasks, 36.75 man-days.**
 
 NFSv3's locking side protocols, over TCP and UDP, and the calls the server makes to an NLM host.
 
@@ -1014,13 +1017,13 @@ through NLM; N1's UDP half, N15, N21.
 - NLM v4's codecs and procedures: `TEST`, `LOCK`, `CANCEL`, `UNLOCK`, `SHARE`, `UNSHARE`, `FREE_ALL`,
   their `*_MSG` forms; the host bound to its address; `StaleClient` connected afresh; admission at
   `Claimed` through E4's half of A3, after S2b.
-- Blocking locks: `LockWaitOver`, `GRANTED` resent until answered, a cancel answered after
-  `CancelLock`.
+- Blocking locks: `LockWaitOver`, one `GRANTED` sent per call (the service resends it until
+  answered), a cancel answered after `CancelLock`.
 - `rpcclient` (D1): `GETPORT` at the host's port mapper, a connection from the floating address
   through `Deps.DialClient`, its network argument added to `pkg/adapter/deps.go` as RFC 20 §3.4 has
   it, `*_RES` replies.
-- NSM: `SM_NOTIFY` received as `HostRestarted`; sent by UDP on a `Revoked` report, from the
-  `Adapter` bytes' `mon_name` and `priv`.
+- NSM: `SM_NOTIFY` received as `HostRestarted`; sent by UDP on a `Revoked` report, to the
+  `Adapter` bytes' host address from their floating address, naming that address.
 - Loopback rows after S3; the restart row on the composed node after S5.
 
 ### Epic 12 — NFSv4.2 operations
@@ -1360,7 +1363,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 
 | Deferred | Why | Owner | Trigger |
 | --- | --- | --- | --- |
-| RFC 21's (cluster) parts: `Rebind` on another node (§3.4), session trunking and `BADSESSION` across nodes (§3.3), the pNFS flags and layouts (§3.3), NFSv4.0 owner sequences across shards (§4.2), a stateid carried by a batch move (§5.2), `fs_locations` naming another gateway on a drain (§7.4), `CLONE` across shards (§11.5), the cross-node steps of RFC 21 §13 (header; §1.4), and E10's two single-node shortcuts there: `Rebind` refusing a stranger only under `Protect` rather than with RFC 17's `ClientInUse`, and `ChannelDown`'s node check read apart from its write | a single node has no second node; RFC 21 §13 defers a row's cross-node steps with the cluster | the cluster stage | a share served by more than one node |
+| RFC 21's (cluster) parts: `Rebind` on another node (§3.4), session trunking and `BADSESSION` across nodes (§3.3), the pNFS flags and layouts (§3.3), NFSv4.0 owner sequences across shards (§4.2), a stateid carried by a batch move (§5.2), `fs_locations` naming another gateway on a drain (§7.4), `CLONE` across shards (§11.5), NLM's per-node host and share tables lost with a gateway node while a primary elsewhere keeps the host's locks and opens (epic 11's D5, D10), the cross-node steps of RFC 21 §13 (header; §1.4), and E10's two single-node shortcuts there: `Rebind` refusing a stranger only under `Protect` rather than with RFC 17's `ClientInUse`, and `ChannelDown`'s node check read apart from its write | a single node has no second node; RFC 21 §13 defers a row's cross-node steps with the cluster | the cluster stage | a share served by more than one node |
 | The layout stateid's type tag (§6.1, point 5; #5090 (c)) | `pkg/vfs`'s codec tags open, lock state and delegation only, and layouts are (cluster) | the cluster stage, with pNFS (RFC 15 §5.1) | pNFS layouts are built |
 | rquota (RFC 21 Appendix D's `GETQUOTA`; header) | the user's decision: no supported use needs it; a call stays `PROG_UNAVAIL` | unowned | a deployment needs `quota` reporting on NFS clients |
 | `MNT` below a share's root: `MNT` of a path under a share's path, which knfsd mounts (E4's §9, point 6) | `Root` matches a share's path exactly, so the path is `MNT3ERR_NOENT` | unowned | a deployment mounting below a share's root |
@@ -1372,6 +1375,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | A suite running E14's capture diffs (E14; RFC 21 §13's suites paragraph) | the paragraph names none, so the diffs are run by hand and fail no pull request | RFC 21, by a pull request to §13's suites paragraph, which registers the suite with it | a diff's divergence is seen regress unnoticed, or the cutover's suites go back on (stage 7) |
 | A capture-diff script for Kerberos's security exchange (E14's §9, point 3) | it needs S6b, S6c and a scripted client that speaks `RPCSEC_GSS` | unowned | E13's T13.5 adds `RPCSEC_GSS` to `nfsclient` |
 | A capture diff of the TLS handshake after the `AUTH_TLS` probe (E14's §9, point 3) | its fields are each side's TLS library's, not NFS's, so a difference has no RFC 21 rule to cite | unowned | a TLS interop failure with a supported client |
+| The two-client conflict captures: a second client's `OPEN` answered `NFS4ERR_DELAY` on knfsd, recorded from a host with client namespaces (E2's §1.2; E14's §1.2) | E14 records from client 1's namespace alone, and the scripted client answers no back channel, so no second client's conflicting `OPEN` is sent | unowned | E10's T10.2 gives the scripted client a back channel |
 | A capture-diff script for delegation grants (E14's §9, point 3) | the scripted client answers no back channel | unowned | E10's T10.2 gives the scripted client a back channel |
 | A capture-diff script for NLM and NSM (E14's §9, point 3) | the scripted client has no NLM host | unowned | E11's T11.2 adds `nfsclient.Host` |
 | A capture-diff script for NFSv4.2's operations (E14's §9, point 3) | the operations' loopback rows come first | unowned | E12's T12.8 lands |
@@ -1383,6 +1387,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | A batched `Spell` (§4.3) | one call per owner and group is enough until measured | RFC 17 | a benchmark shows `READDIRPLUS` bound by `Spell` calls |
 | RFC 18 §10's "`AUTH_SYS` from the directory", "mint from a claim, guarded" and "`ManageGIDs`" over NFSv4 (E7, its §9, point 9) | E7's T7.6 runs them over NFSv3 on the composed node and resolution is the same for every NFS version, so E16 declines a second run over NFSv4, and E7 cannot run one without waiting for E5's compound and E8's sessions | unowned | an NFSv4 path that resolves or answers a claimed caller apart from NFSv3's |
 | A request ID from NFS's retry identity, `vfs.WithRequestID` (RFC 21 §11.2) | its reader is the gateway, which RFC 20's plan's ledger gives the cluster stage | the cluster stage | the gateway is built |
+| One goroutine per unanswered NLM grant, resent every 10 s while the host's record lives (`internal/vfs/sink.go`'s `ponytail:`; E11's §1.2 and D18) | the resend is the service's, not the adapter's; RFC 24 §6.1 forbids a goroutine per pending callback, and E11's R61 bounds the connections the resends hold, not the goroutines | RFC 17 | NLM hosts that stay down, or forged ones (E11's D18), seen holding goroutines |
 | The user guide's NFS pages (E15) | they describe v1 until the adapter serves through `dfs` | cutover (stage 7), as RFC 20's plan's ledger has the docs | stage 7 |
 
 ## 7. RFC coverage

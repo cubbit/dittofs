@@ -184,7 +184,7 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
 | R5 | The provider refuses to serve an ID whose material no longer matches its recorded fingerprint, as `ErrMaterialUnavailable`, and reports it for the `material_unavailable` condition | MUST | §2.5; §7 T12; §8.1 §2.5 row; Appendix B.4 | T6.5, T6.6 |
 | R6 | `Get` returns `ErrUnknownMaterial` for an ID the provider was never given, `ErrMaterialUnavailable` for one it cannot reach now or whose content no longer matches its fingerprint, and `ErrMaterialDestroyed` for one whose record is `destroyed` | MUST | §3.1 (`Provider.Get`); §2.7; Appendix B.2 ("the provider can tell a key it never had…") | T6.5 |
 | R7 | `Current` is the material new bodies of a kind use in a namespace, and is served only as `Get` would serve it: a kind the namespace was never given is `ErrUnknownMaterial`, current material that cannot be reached or no longer matches its fingerprint is `ErrMaterialUnavailable`, and destroyed current material `ErrMaterialDestroyed` | MUST | §3.1 (`Provider.Current`, `Provider.Get`); §2.5; E1 T1.1 (`Current`'s doc); E2 D3 | T6.5, T6.6 |
-| R8 | An `ErrUnknownMaterial` answer reports the ID for the `material_unknown` condition, until the key is loaded and a read of it succeeds | MUST | §2.7; Appendix B.4; §8.2 T7; RFC 25 §3.9 | T6.5, T6.6 |
+| R8 | A `Get`'s `ErrUnknownMaterial` answer reports the ID for the `material_unknown` condition, until the key is loaded and a read of it succeeds; a `Current` miss names a kind, not material the census lists, and reports nothing | MUST | §2.7; Appendix B.4; §8.2 T7; RFC 25 §3.9 | T6.5, T6.6 |
 | R9 | `encryption_keys_unavailable` is the count of keys the provider cannot currently return with a matching fingerprint, and the `material_unavailable` condition names them | MUST | Appendix B.6; Appendix B.4; RFC 5 plan §1.5 rule 3 | T6.6 |
 | R10 | `encryption_current_key_age_seconds`, labelled `namespace`, is how long the namespace's current data key has been current | MUST | Appendix B.6 | T6.5, T6.6 |
 | R11 | Each call of `Current` or `Get`, a failing one included, raises an exported count, so a test can assert that the provider records no call | test row | §8.2 T12, T14; RFC 5 plan §1.4; E2 R19 | T6.6 |
@@ -397,11 +397,18 @@ R22, the bucket gate (E8, §1.2) and R35.
   (R51): loading on first use would let a namespace open while its key service is unreachable, and
   fail only at the first write or read. Each namespace's
   rows are cached too, loaded on first use; after the provider's own `Update` succeeds they become
-  the rows `fn` saw plus the rows it returned, and after any `Update` error that namespace's rows
-  are dropped, since `kv.KV.Update` may report an error for a commit that happened. A `Get` or
-  `Current` that finds no row reloads the namespace once before answering `ErrUnknownMaterial`, so
-  a record another writer added (a recovery import, a second node) is found without a restart;
-  misses are rare, since a read asks only for IDs its census lists. A `Load` that fails is
+  the rows `fn` saw with each row it returned written over the one of the same kind and ID, or
+  added when there is none, as `Update` writes them, so a rewritten row is held once; after any
+  `Update` error that namespace's rows are dropped, since `kv.KV.Update` may report an error for a
+  commit that happened. A `Get` that finds no row reloads the namespace once before answering
+  `ErrUnknownMaterial`, so an ID another writer added (a recovery import) is found without a
+  restart; misses are rare, since a read asks only for IDs its census lists. A `Current` that finds
+  no `current` row of its kind answers `ErrUnknownMaterial` from the cache with no reload: a kind is
+  given only by key creation, which goes through the provider's own `Update`, and a
+  non-encrypting namespace's `chunking-key` is a miss on every call, so a reload there would cost a
+  `Load` each time and find nothing. A row another writer rewrites (a retire, a replace, a destroy)
+  is seen only at the namespace's next reload, a `Get` miss, or a restart: the one-provider,
+  one-node ceiling of E8's D12 covers every such row, not only a rotation's. A `Load` that fails is
   `ErrMaterialUnavailable` and caches nothing. A row's state is checked before its cached key, so a
   record the provider marks `destroyed` stops being served at once. `Get` returns the cached slice,
   which callers must not modify, so a cached `Get` allocates nothing (R44; §9). A `ponytail:` at the
@@ -425,9 +432,11 @@ R22, the bucket gate (E8, §1.2) and R35.
 - **D13, a salvage key is wrapped under the provider's own configuration's current master key.**
   Appendix B.2 says "the installation's current master key", but master keys belong to a store
   configuration and an installation may have several. The provider serves one configuration, so
-  `WrapSalvageKey` wraps under that configuration's current master key, and which provider the
-  engine is handed is the content wiring's choice. A `decision:` marker at `WrapSalvageKey` names
-  the reading, pending the RFC author's answer (§9). Prior art: none found.
+  `WrapSalvageKey` wraps under that configuration's current master key, and that configuration is
+  the one the content wiring names for the stranded tag's journal: the store configuration of the
+  shares that journal serves, the lowest configuration ID when they span several, and refused when
+  none of them has a master key (the RFC 8 offload plan's epic 20, its D5; the user's decision,
+  2026-11-26). A `decision:` marker at `WrapSalvageKey` names the reading. Prior art: none found.
 
 - **D14, `internal/keyfile` takes the whole format, not the file's publication.** It holds the
   encoding and decoding of the key file: `Generate(passphrase string, weak bool)` and
@@ -739,6 +748,13 @@ docs/internals/rfcs/rfc-5-transforms.md  T6.3, T6.5  §8.3's suites line names F
     absence, or a failure cached, R42).
   - A row added through `Records` directly after a first read: `Get` of its ID succeeds on the same
     provider (catches a miss that never reloads, R8).
+  - A fault wrapper around `Records` fails every `Load` after `Open`: `Current` of a kind the
+    namespace was never given is `ErrUnknownMaterial`, not `ErrMaterialUnavailable`, and
+    `Status().Unknown` stays empty (catch a kind miss that reloads on every call, or that enters
+    `Unknown` with no ID and never leaves, D10, R8).
+  - The provider's own `Update` marks a row `destroyed`, then `Get` of its ID on the same provider,
+    with no reload, is `ErrMaterialDestroyed` (catches the rows `fn` saw kept beside the rows it
+    rewrote, D10).
   - One namespace's wrapped data key copied, as a row, into another namespace's records: `Get` there
     is `ErrMaterialUnavailable` and returns no bytes (catches an AAD checked at wrap time only, R21).
   - A chunking key's row rewritten with another key's wrap under the same ID and the old
@@ -919,17 +935,14 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **Which master key wraps a salvage key, for RFC 5's author.** Appendix B.2 says "the
-  installation's current master key", but a master key belongs to a store configuration (B.2's
-  table, RFC 13 §4.2) and an installation may have several. The recommendation, which D13 builds:
-  the current master key of the store configuration of the stranded tag's share, so the salvage key
-  is held off the host exactly where that share's data keys are; when the node cannot establish the
-  share's configuration at all, no provider exists to wrap under, which RFC 1 §3 and the RFC 8
-  offload plan's epic 20 decide. The wording to propose: "wrapped under the current master key of
-  its share's store configuration". E6's code does not change with the answer: only which provider
-  the content wiring hands the engine does. E1's open point asks for the answer before E6 builds
-  the wrap; T6.4 departs from that and builds on D13's reading, because the wrap's code is the
-  same under every answer, and D13's `decision:` marker holds the reading until RFC 5 states it.
+- **Which master key wraps a salvage key: settled** (D13). The current master key of the store
+  configuration the content wiring names for the stranded tag's journal: that of the shares the
+  journal serves, the lowest configuration ID when they span several, refused when none has a
+  master key (the RFC 8 offload plan's epic 20, D5; the user's decision, 2026-11-26). Appendix
+  B.2's "the installation's current master key" is still to be reworded to match, as RFC 5's
+  author's edit. E6's code does not change: only which provider the content wiring hands the
+  engine does. E1's open point asks for the answer before E6 builds the wrap; T6.4 builds on D13,
+  and D13's `decision:` marker holds the reading until RFC 5 states it.
 - **The salvage AAD as RFC text (D12).** Proposed for Appendix B.1's joined-inputs table: "salvage
   key wrap AAD | namespace ID (4-byte length 0) ‖ `salvage-key` (4-byte length, ASCII) ‖ the export's
   name (4-byte length, its bytes)", so a recovery tool can rebuild it, with a golden vector beside

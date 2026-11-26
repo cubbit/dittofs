@@ -60,29 +60,92 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || 'feat/storage-v2' }}
           persist-credentials: false
 
-      # The checked-out tree's own action, so the key is built as the unit job
-      # builds it.
+      # decision: the key is built here, from this file, and not by the
+      # checked-out tree's go-cache action. This job runs in the default
+      # branch's cache scope, which every branch and tag run restores from, so
+      # nothing the checked-out tree holds may run here with the job's cache
+      # access: an action in it could hold any step, a save under any key
+      # among them. The formula copies feat/storage-v2's go-cache action with
+      # flavor race-cover-warm. If that action changes its key, the queue's
+      # unit job stops matching this entry and builds cold, which is slower
+      # but safe; the next step fails the job when that happens.
+      #
+      # Reads the checked-out formula as text and runs none of it. Each
+      # expression's braces are stripped first, so the lines below hold no
+      # expression for this workflow to evaluate.
+      - name: Check the key formula against feat/storage-v2's
+        run: |
+          set -euo pipefail
+          check() {
+            if ! sed -E 's/\$\{\{ ?//g; s/ ?\}\}//g; s/^[[:space:]]+//' "$1" | grep -qxF -- "$2"; then
+              echo "::error file=$1::no line '$2': the go-cache key changed, update the key built below to match"
+              exit 1
+            fi
+          }
+          # shellcheck disable=SC2016 # the line is matched as text, never expanded
+          check .github/actions/go-cache/action.yml 'echo "shared=go-runner.os-runner.arch-${ImageOS:-}-steps.go.outputs.go-version-hashFiles('"'go.sum'"')"'
+          check .github/actions/go-cache/action.yml "key: steps.paths.outputs.sharedinputs.flavor != '' && format('-{0}', inputs.flavor) || ''"
+          check .github/workflows/tests.yml 'flavor: race-cover'
+
       - name: Set up Go
-        id: go
-        uses: ./.github/actions/go-cache
+        id: setup
+        uses: actions/setup-go@v7
         with:
-          flavor: race-cover-warm
+          go-version-file: go.mod
+          cache: false
+
+      # Only a key of the shape below is ever saved. setup-go's own entries
+      # (setup-go-...) never start with it, so the release and develop runs
+      # that restore those cannot pick this one up.
+      - name: Build the cache key
+        id: go
+        env:
+          GO_VERSION: ${{ steps.setup.outputs.go-version }}
+          SUM_HASH: ${{ hashFiles('go.sum') }}
+        run: |
+          set -euo pipefail
+          key="go-${RUNNER_OS}-${RUNNER_ARCH}-${ImageOS:-}-${GO_VERSION}-${SUM_HASH}-race-cover-warm"
+          if ! [[ $key =~ ^go-Linux-X64-[a-z0-9]+-[0-9]+\.[0-9]+(\.[0-9]+)?-[0-9a-f]{64}-race-cover-warm$ ]]; then
+            echo "::error::unexpected cache key: $key"
+            exit 1
+          fi
+          {
+            echo "key=$key"
+            echo 'path<<EOF'
+            go env GOMODCACHE
+            go env GOCACHE
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      # Saved once per key and never updated, so a hit means nothing to do.
+      - name: Look up the cache entry
+        id: lookup
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.go.outputs.path }}
+          key: ${{ steps.go.outputs.key }}
+          lookup-only: true
 
       - name: Download modules
-        if: steps.go.outputs.cache-hit != 'true'
+        if: steps.lookup.outputs.cache-hit != 'true'
         run: go mod download -x
 
-      # The unit job's compiles. No test runs: -run matches no name. A coverage
-      # build leaves no plain -race compile of a module package, so the
-      # whole-tree cell's packages build again without it. The cells built
+      # The unit job's compiles, and nothing of the checked-out tree runs:
+      # -exec true runs true in place of each test binary, so no package's
+      # init and no TestMain executes (-run='^$' alone still starts every
+      # binary). The compiles are the ones go test would run, so the cache
+      # entries are the same. go test -c would build them too, but refuses
+      # several packages whose binaries share a name, as the handlers ones do.
+      # A coverage build leaves no plain -race compile of a module package, so
+      # the whole-tree cell's packages build again without it. The cells built
       # with extra tags stay cold.
       - name: Build the race and coverage test binaries
         id: race
-        if: steps.go.outputs.cache-hit != 'true'
+        if: steps.lookup.outputs.cache-hit != 'true'
         run: |
           go build -o "$RUNNER_TEMP/dt" ./cmd/dt
-          go test -race -count=1 -run='^$' -coverprofile="$RUNNER_TEMP/coverage.txt" ./pkg/... ./internal/... ./cmd/... ./test/...
-          go test -race -count=1 -run='^$' ./internal/node/ ./internal/node/api/ ./cmd/gendocs/ ./pkg/identity/ ./pkg/bootstrap/
+          go test -race -count=1 -exec true -coverprofile="$RUNNER_TEMP/coverage.txt" ./pkg/... ./internal/... ./cmd/... ./test/...
+          go test -race -count=1 -exec true ./internal/node/ ./internal/node/api/ ./cmd/gendocs/ ./pkg/identity/ ./pkg/bootstrap/
 
       # Separate steps, so a package list that drifts from the unit job fails
       # here, visibly, and the race build above is still saved.
@@ -97,7 +160,7 @@ jobs:
 
       - name: Build the cells that run without -race
         if: steps.race.outcome == 'success'
-        run: go test -count=1 -run='^$' ./pkg/journal/... ./internal/prof/ ./internal/adapter/... ./pkg/resources/
+        run: go test -count=1 -exec true ./pkg/journal/... ./internal/prof/ ./internal/adapter/... ./pkg/resources/
 
       - name: Save the Go caches
         if: ${{ !cancelled() && steps.race.outcome == 'success' && steps.go.outputs.key != '' }}

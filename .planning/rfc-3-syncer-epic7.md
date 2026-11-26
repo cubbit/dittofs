@@ -134,7 +134,7 @@ number and title, not copied.
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T7.2, T7.3 | The heap check and the allocation gate run the real codec and chain, since the memory they bound is partly theirs. Nothing needs a disk: the syncer persists nothing (RFC 3 §2.7) |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T7.1, T7.2, T7.3, T7.4 | `decision:` markers at `InflightBytes` (D1), at the snapshot's publication (D2), at the heap check's slack (D3), at the allocation gate's subtraction and the cost check's ceiling (D4), at the sweep's script (D5), and at `New` for the fit not applied (D6). Each names RFC sections only |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | Each test names the wrong design it catches and is verified against it: a stored store total, a `Stats` taking a lock, a slow-tail try left running, a fetch gathering a whole block, a buffer allocated per chunk, an `Upload` reported stored on a lost reply, a flipped chunk yielded, state kept in a package variable |
-| rule 11, a symbol is exported only if the RFC's interface uses it | all | No symbol is exported. `InflightBytes` is a field of E1's frozen `Stats`, and E1's frozen-exports test still passes |
+| rule 11, a symbol is exported only if the RFC's interface uses it | all | No symbol is exported but the four `_limit` fields of `syncer.Half`, which RFC 3 §2.12's series need; `Stats` only gains fields, as its doc allows. `InflightBytes` is a field of E1's `Stats` |
 | rule 12, each subtask creates only what it declares | all | The option lands with its first tests (T7.2), and T7.3 adds its test to it. The store changes reuse the sweep's script. No helper package is added |
 
 ## 3. Requirements and invariants
@@ -153,7 +153,7 @@ them.
 | R5 | A try cancelled by the slow-tail rule holds no chunk buffer once its `ctx` ends; the syncer's part is that the `ctx` ends, the codec's that the call then drops its buffers | invariant | §6 S2; §1.3 | T7.1 |
 | R6 | With every call held and every pool full, the heap in use above the idle baseline stays within §2.2's bound plus a stated slack; the test chooses the chunk `Max` and the pool size large enough that the runtime's own noise stays under the slack | MUST | §1.4; §8.1, "Memory" | T7.3 |
 | R7 | RFC 3 §7.2's row "§2.2 memory bound", the syncer's part: the backend stalled at full pools, peak bytes within pool size times the per-worker figure, per half and summed; a transform costlier than the current chain registered and a block written under it fetched, both halves' figure is the costlier one's. The header refusal is the codec's (this epic's §1.2) | test row | §7.2 | T7.3 |
-| R8 | A check of §2 or §4.4 never runs over a backend that returns instantly | MUST NOT | §7.3 | T7.3, T7.4 |
+| R8 | A check of §2 or §4.4 never runs over a backend that returns instantly | MUST NOT | §7.3 | T7.1, T7.3, T7.4 |
 | R9 | `syncer_inflight_bytes` makes observable, by half and store, the bytes held by transfers in flight, against §2.2's bound (D1 reads it as the bytes reserved) | MUST | §2.12 | T7.1 |
 
 **The snapshot**
@@ -242,12 +242,18 @@ node passes the pool's size (D6).
 - **D3, the heap check's figures.**
   - Pools of 16 in each half; `Max` 1 MiB, the default whose per-worker figure the settings
     document; `MaxDecodeLen` from RFC 5's chain over the transforms the test registers;
-    `HeaderCap` the `n` of `codec.MaxHeaderLen(1)` (D7). Blocks of four 1 MiB chunks.
+    blocks of four 1 MiB chunks. `InflightBytes` counts the header at `codec.MaxHeaderLen(1)`'s
+    `n` (D7), but the heap bound counts the header the test's blocks carry, read from their
+    encoding: a four-chunk block's header is far below the cap's 1,036,381 bytes, and a bound
+    with the cap's header in it leaves about 1 MiB a worker spare, enough to pass a design that
+    double-buffers a chunk.
   - **Fetch half:** every block it reads is in the in-memory store before the baseline. Each get
     is held at the start of its last chunk's body, after three chunks were served, so a fetch that
-    gathers a block before yielding holds three chunks and a correct one holds one. The store adds
-    nothing during the hold, so the fetch half also asserts a floor: heap above baseline at least
-    half of 16 × `Max`, which a hold before anything was decoded fails.
+    gathers a block before yielding holds three chunks and a correct one holds one. After the heap
+    is read, each caller must have been yielded three chunks, which a hold placed before anything
+    was decoded fails. No floor on the heap is asserted: whether a chunk is still live at the hold
+    depends on whether the codec reuses its buffer or allocates one per chunk (D4), so a floor
+    could fail a correct syncer.
   - **Upload half:** each put is held before its first body byte. The in-memory store keeps what a
     put has sent, so no floor is asserted here, and a put held later would measure the fixture. The
     upload half's bound catches what the syncer adds: a queued transfer holding bytes, a try beyond
@@ -306,9 +312,10 @@ node passes the pool's size (D6).
   found.
 - **D7, the header cap is the codec's bound, `codec.MaxHeaderLen(1)`.** RFC 4 §3.2 puts the
   census in the header, and RFC 4 plan epic 6's breakdown (#5942) puts the bound at 1,036,381 bytes,
-  where RFC 3 §2.2's derivation from the chunk index alone gives about 41 KB. T7.3 sizes its bound
-  from the codec's figure, which is what a worker's codec can hold; a bound sized from the smaller
-  one would fail on a header the codec accepts. The user accepted the RFC text (2026-11-26), which
+  where RFC 3 §2.2's derivation from the chunk index alone gives about 41 KB. The per-worker figure,
+  and so `InflightBytes`, uses the codec's figure, which is what a worker's codec can hold; a figure
+  sized from the smaller one would fail on a header the codec accepts. T7.3's heap bound counts the
+  header its own blocks carry (D3). The user accepted the RFC text (2026-11-26), which
   lands with T7.3's pull request: RFC 3 §2.2 reads "its header cap is `N` times one fixed-size
   index entry, plus the census at its bound, plus the fixed fields: a constant of the format
   version ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout))", and the per-worker figures in RFC 3
@@ -340,7 +347,7 @@ docs/internals/testing.md T7.2  regenerated by dt docs
 **Subtask T7.1 estimate: 2.5 man-days.**
 
 - **Track:** B. **Depends on:** none in this epic; E4, E5 and E6 landed.
-- **Covers:** R1, R5, R9, R10, R11, R12.
+- **Covers:** R1, R5, R8, R9, R10, R11, R12.
 - **Deliverables:**
   - `pool.go`: the per-worker figure, `Max + MaxDecodeLen + HeaderCap`, computed once in `New`
     and held by both halves; D6's `decision:` marker at `New`.
@@ -349,18 +356,24 @@ docs/internals/testing.md T7.2  regenerated by dt docs
     `decision:` marker.
   - `stats.go`: `Stats` over the list, with no lock; `StoreStats.InflightBytes` as `WorkersBusy`
     times the figure, from the same load (D1); each store's `QueueDepth` and `Waiters` summed from
-    its flows in the pass (D2); D1's `decision:` marker.
+    its flows in the pass (D2); D1's `decision:` marker. `syncer.Half` gains `WaitersLimit`,
+    `DetachedBuffersLimit`, `ThrottleWindowLimit` and `InflightBytesLimit`, filled from the fixed
+    table and the figure, the four `_limit` series of RFC 3 §2.12 (E8's D10).
 
-  Consumed by E8's collector, which exports `InflightBytes`; T7.2, which counts `Stats`' cost;
+  Consumed by E8's collector, which exports `InflightBytes` and the four limits; T7.2, which counts `Stats`' cost;
   T7.3, which reads `WorkersBusy`; T7.4, which asserts idle and busy workers at `Stats`.
 - **Acceptance criteria:**
   - With a pool of 8 in each half and every call held, `InflightBytes` summed over stores is 8 ×
-    the figure in each half, the same figure in both, and zero once the calls are released and the
-    transfers end.
+    the figure in each half, the same figure in both, equal to `InflightBytesLimit`, and zero once
+    the calls are released and the transfers end. `WaitersLimit` is 64, `DetachedBuffersLimit` 8
+    and `ThrottleWindowLimit` 6 in each half.
   - In every snapshot taken while transfers start and end on four flows of two stores, each
     store's `QueueDepth` and `Waiters` per class equal the sum of its flows' in that snapshot, its
     `InflightBytes` equals its `WorkersBusy` times the figure, and no counter (never a gauge) is
-    lower than in the snapshot before.
+    lower than in the snapshot before. Every call runs under `Link` with a per-call latency on the
+    bubble's clock (R8) and three times the pool is submitted on each store, so queues form; at
+    least one snapshot shows a non-zero `QueueDepth` and `Waiters` on each store, or the sums
+    were compared only at zero and the test fails.
   - `Stats` returns while a test holds the registry's lock and both halves' locks.
   - An upload whose first try is cancelled by the slow-tail rule: that try's `ctx` is done once
     its retry is dispatched, its call of `attempt` has returned `ctx.Err()` before `Upload`
@@ -368,15 +381,17 @@ docs/internals/testing.md T7.2  regenerated by dt docs
 - **Tests:** at `Stats`, where E8's collector reads it, through `Flow` over `codec.Store` on the
   in-memory store under E2's `Hold` (kind 2 under kind 3), in E3's bubble. The held-pool count
   (catches bytes counted per try, R9). A reader calling `Stats` in a loop beside concurrent
-  uploads and fetches under `-race`, asserting the sums and the product in each snapshot (catches
-  a stored store total updated apart from its flows', R10; verified by keeping a per-store copy).
+  uploads and fetches under `Link` and `-race`, one snapshot per step of the bubble's clock,
+  asserting the sums and the product in each snapshot (catches a stored store total updated apart
+  from its flows', R10; verified by keeping a per-store copy).
   The lock check runs outside the bubble, where a goroutine blocked on a mutex would stop the
   bubble's clock: it holds every lock through `export_test.go` and waits for `Stats` on a channel
   with a generous real-time bound, the bound being the assertion since nothing here waits on a
   clock (catches a snapshot taking a lock, R11; verified by walking under the registry's lock).
   The slow-tail case seeds E4's T4.3 window through `export_test.go`, holds each first try at
-  `End`, and wraps `attempt` in the recording pass-through wrapper `CLAUDE.md` allows (catches a
-  cancelled try left running, R5).
+  byte 0, before its first body byte is accepted, so its first byte is later than the seeded 90th
+  percentile and the slow-tail retry fires, and wraps `attempt` in the recording pass-through
+  wrapper `CLAUDE.md` allows (catches a cancelled try left running, R5).
 
 ### T7.2 The allocation gate and its option
 
@@ -416,10 +431,11 @@ docs/internals/testing.md T7.2  regenerated by dt docs
 - **Deliverables:** `heap_test.go`, `TestHeldPoolHeap`, with D3's figures and its `decision:`
   marker at the slack; its name added to the `syncer-allocs` option. Consumed by S3, and by E9,
   whose B1 and B3 record the same peak against RFC 3 §8.5.
-- **Acceptance criteria:** with D3's setup, heap above the baseline read by `prof.LiveHeap`:
+- **Acceptance criteria:** with D3's setup, the figure counting the blocks' own header (D3), heap
+  above the baseline read by `prof.LiveHeap`:
   - the upload half alone held: at most 16 × the figure plus slack;
-  - the fetch half alone held: at most 16 × the figure plus slack, and at least half of 16 ×
-    `Max`;
+  - the fetch half alone held: at most 16 × the figure plus slack, and every caller yielded
+    three chunks;
   - both held: at most the two summed plus their slacks (R2's process bound);
   - the fetch half held with every detached buffer held, 16 joined callers stalled past E6's
     detach bound on the clock: at most twice 16 × the figure plus slack;
@@ -428,9 +444,10 @@ docs/internals/testing.md T7.2  regenerated by dt docs
 - **Tests:** at the heap, the memory the bound is about, over the real codec, chain and in-memory
   store (rule 8), every call held by E2's `Hold`, so no backend answers at once (R8). The fetch
   case catches a fetch that holds a whole block (R4; verified by making E6's fetch gather a
-  block's chunks before yielding them). The floor catches a hold placed before anything was
-  decoded, which passes any bound. The detached case catches a detached buffer not counted
-  against the cap (R2). The upload case catches a queued upload holding bytes (verified by copying
+  block's chunks before yielding them). The yielded count catches a hold placed before anything
+  was decoded, which passes any bound. Counting the blocks' own header rather than the cap catches
+  a chunk double-buffered (verified by keeping a second copy of each chunk). The detached case
+  catches a detached buffer not counted against the cap (R2). The upload case catches a queued upload holding bytes (verified by copying
   `src` into the queue entry).
 
 ### T7.4 The fault sweep and the store changes
@@ -520,7 +537,8 @@ A suggestion only: one pull request per subtask works as well.
   and that a joined caller stalled past the detach bound on the bubble's clock is detached. If
   E6's breakdown detaches differently, T7.3's detached case follows it.
 - **The heap check's figures are the least certain estimate.** D3's slack is stated, not measured;
-  the in-memory store's copy of a put's body is why the upload half asserts no floor.
+  neither half asserts a floor: the in-memory store's copy of a put's body, and a codec that may
+  allocate per chunk, would each make one measure the fixture.
 - **The sweep's size.** With *P* + *G* about 12 and seven effect forms, the sweep is about seventy
   runs in a bubble, each in virtual time. If it grows past `unit`'s budget, the script shrinks; the
   kinds and every *n* stay.

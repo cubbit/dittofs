@@ -24,7 +24,7 @@ get loop, a get retried only while it has yielded nothing); epic 5's refusal at 
 citation is `develop`'s text, epics 3, 4 and 5 that of their open pull requests (#5940, #5998,
 #6001). The code lands on `feat/storage-v2`, and the paths below are paths there.
 **Track:** A.
-**Epic 6 estimate: 8 subtasks, 24 man-days.**
+**Epic 6 estimate: 8 subtasks, 24.5 man-days.**
 **Depends on:** **S2**, epic 2's fault wrapper and `syncertest`'s frame. **Epic 3**: T3.4's
 waiter count and T3.8's model, for T6.3; T3.5's halves, `admit` and `fixed.go`, T3.6's
 single-attempt `Fetch` and `Prefetch` and T3.7's in-memory opener, for T6.2 onward. **Epic 4**:
@@ -279,9 +279,11 @@ T4.7), which this epic runs on the flight unchanged.
   chunk, only once every attached caller has moved past the chunk or been detached (R21). The
   flight's `ctx` is cut from the starter's with `context.WithoutCancel` and cancelled once no caller
   is left, so no caller's deadline ends it. E4's get tries still run in turn (its D4), now on the
-  flight's goroutine. A flight adds one to E3's D6 count of callers inside the syncer, an atomic,
-  when its goroutine starts and takes it back when the goroutine ends, so `Close` waits for a
-  cancelled flight's get to return. This changes E3's D1 for fetches. `ponytail:` a lone caller
+  flight's goroutine. The goroutine that dispatches a flight, itself counted, adds one to E3's D6
+  count of callers inside the syncer, an atomic, before its `go` statement, and the flight's
+  goroutine takes it back when it ends. Counting inside the new goroutine would let the starter
+  leave between `go` and its first instruction, the count reach zero and `Close` return before
+  the get starts; counted before `go`, `Close` waits for a cancelled flight's get to return. This changes E3's D1 for fetches. `ponytail:` a lone caller
   pays one channel hand-off per chunk; upgrade to the caller driving the codec until a first join if B1
   shows the hand-off. Prior art: Go's `singleflight.Group`, which runs the shared call apart from
   its callers (from memory).
@@ -309,26 +311,41 @@ T4.7), which this epic runs on the flight unchanged.
   waiter bound, with displacement and eviction, never displacing or evicting `to` itself; like
   `Add` it returns at most one victim, its reason in `Entry.Refused` (`Displaced` or `Evicted`),
   taken only from flows other than the joiner's at or above their share (E3's D7), and its `err`
-  names the join's own refusal. `Leave` drops it. A joined caller is never displaced (E3's D7); an
-  entry displaced or evicted with callers joined to it refuses every one of them with the reason in
-  its `Refused`. `Rehome(e, f)` moves a queued entry, and its own waiter, to flow `f`'s demand queue
+  names the join's own refusal. `Leave` drops it. Each attached caller is one waiter on its own flow
+  and class, whatever entry it waits on; a queued entry's own waiter is its starter's caller. A
+  joined caller is never displaced (E3's D7), and so neither is the entry it waits on: displacement
+  passes over every entry with a caller joined to it, since refusing the entry would refuse its
+  joined callers for the bound, from flows that may be below their share (RFC 3 S20). Eviction
+  takes only queued speculation, whose callers are all speculative (below), as RFC 3 §2.9 lets it
+  refuse. A starter that leaves a queued entry others still wait on drops its own waiter with
+  `Leave` and the entry stays queued; `Remove` is for the last caller only. `Rehome(e, f)` moves
+  a queued entry to flow `f`'s demand queue
   at its tail, where its charge falls on `f`'s demand deficit when it is dispatched, keeping a
   requeued entry's pass through a hold (E4's D2), and is never refused for the queue's length, which
-  it may pass by the entries it moved in, as E3's D8 lets eviction. A running entry sits in no queue
+  it may pass by the entries it moved in, as E3's D8 lets eviction. No waiter moves: the entry's
+  stays on its starter's flow and the demanding caller's join on `f`, so `Rehome` changes no
+  flow's count, where moving the entry's waiter with it would count `f` twice and the starter's
+  caller, still attached, nowhere. A running entry sits in no queue
   but was charged to its flow's
   deficit for its class at dispatch, and deficits are per flow and class (E3's D3), so promoting one
   is `Promote(e)`, which sets its `Class` to demand and moves that charge to the flow's demand
   deficit, so `Done` corrects the class it now holds; E4's requeue and budget reserve read the new
   class.
-  Only a demand re-homes or promotes; a background caller joining a speculative fetch only
-  attaches, behind a `decision:` marker, since RFC 3 §4.3 names the demand alone and background is
-  deferrable (§2.9). A queued entry already in the demand class is joined, never moved. Prior art:
+  A demand joining a running background entry promotes it too: RFC 3 §4.3 names speculation, but
+  left in its class the entry would be requeued as background by a throttle (E4's D2), the reader
+  attached, which §4.3's re-home rule exists to prevent; a `decision:` marker says so.
+  Only a demand re-homes or promotes. A background caller joins a running speculative fetch
+  without promoting it, and never a queued speculative one, which eviction may refuse: it queues
+  its own fetch. Both behind a `decision:` marker, since RFC 3 §4.3 names the demand alone and
+  background is deferrable (§2.9). A queued entry already in the demand class is joined, never moved. Prior art:
   none found.
 - **D5, the detach bound runs only where another caller waits.** A flight with one attached caller
   never detaches it: there is nobody to hold back, and §2.10 states the bound for "a joined caller".
   With two or more, E4's per-second floor watchdog (its D6) also scans the half's flights and
-  detaches every caller that has held a chunk for the detach bound, 5 s, so no timer is made per
-  chunk; `ponytail:` a detach comes up to a second late, upgrade to a timer per flight if a stalled
+  detaches a caller that has held a chunk for the detach bound, 5 s, only while another caller of
+  that flight has moved past the chunk and waits for the next, so no timer is made per chunk.
+  Callers that are all slow hold nobody back: detaching every one would cancel the flight and have
+  each fetch again; `ponytail:` a detach comes up to a second late, upgrade to a timer per flight if a stalled
   reader's extra second shows in a read's latency. A speculative caller is detached at once, at the
   join or release that leaves it the only one holding a waiting demand back (R23), counted under both
   `behind` and `syncer_speculation_preempted_total`. A flight whose callers are all detached has
@@ -345,9 +362,11 @@ T4.7), which this epic runs on the flight unchanged.
   has workers, waiting on it, under its own `ctx` and holding no lock (E3's D12), when every slot is
   taken (R27); it then calls the
   chunk's `Keep` (D1), so the detached caller owns the bytes and the codec decodes the next chunk
-  afresh. Callers detached at one chunk share its slot. The slot is returned once, at the detached
-  caller's next iteration or by `context.AfterFunc` on its `ctx`; the bytes are then only the
-  garbage collector's, so a caller still reading them after its `ctx` ended reads what it was
+  afresh. Callers detached at one chunk share its slot and its buffer, and the slot counts them:
+  each lets go at its next iteration or by `context.AfterFunc` on its `ctx`, and the last one
+  returns the slot. Returned by the first, it would let a fresh buffer be taken while another
+  detached caller still reads the old one, past the cap with the gauge under it. The bytes are
+  then only the garbage collector's, so a caller still reading them after its `ctx` ended reads what it was
   given. `syncer_detached_buffers` is the slots taken. The one allocation once warm is the codec's
   fresh buffer after a `Keep`. No buffer is sized here by the header cap: the index copy of D8 is
   at most the format's chunk-count cap of `remote.ChunkRange` values, below the codec's header
@@ -475,8 +494,9 @@ pkg/syncer/
   - `fetch.go`: E3's T3.6 `Fetch` and `Prefetch` over one flight per call, every chunk handed off and
     released once the caller's loop body returns; an error yielded once; `ctx` ending or the loop
     left removes the caller, and the last one leaving cancels the flight and returns its slot; a
-    fetch left while still queued is taken out with E3's `Remove`, and when `Remove` reports it
-    already dispatched, its flight is cancelled and gives the slot back.
+    fetch whose last caller leaves while it is still queued is taken out with E3's `Remove`, and
+    when `Remove` reports it already dispatched, its flight is cancelled and gives the slot back;
+    the dispatching goroutine counts the flight before `go` (D2).
   - `export_test.go`: the flight for tests.
 
   Consumed by T6.4, which attaches more callers; T6.5, which detaches them; T6.7, which resumes the
@@ -493,6 +513,8 @@ pkg/syncer/
     `want` for the whole block.
   - A warm fetch of 64 chunks allocates no more than one of 4, from `testing.AllocsPerRun`, ahead
     of E7's `unit/syncer-allocs` gate.
+  - With the flight's goroutine paused at its start by an `export_test.go` hook, the starter
+    leaving and `Close` called: `Close` returns only after the flight's get has returned.
 - **Tests:** through `export_test.go`'s half over `codec.Store` on the in-memory store under E2's
   `Hold`, `Cut` and `Link`, in a bubble. RFC 3 §7.2's "§1.3 stream rules" and "§1.3 partial
   prefetch" rows, the ranges asked read at the in-memory store's record (catches `want` rewritten,
@@ -508,7 +530,7 @@ pkg/syncer/
 
 ### T6.3 Joins in the scheduler and its model
 
-**Subtask T6.3 estimate: 3 man-days.**
+**Subtask T6.3 estimate: 3.5 man-days.**
 
 - **Track:** A. **Depends on:** E3's T3.4 and T3.8, E4's T4.5.
 - **Covers:** R16, R19, R20.
@@ -517,8 +539,8 @@ pkg/syncer/
   ```go
   func (s *Sched) Join(f FlowKey, c Class, to *Entry) (victims []*Entry, err error) // a waiter, never displacing or evicting to
   func (s *Sched) Leave(f FlowKey, c Class)
-  func (s *Sched) Rehome(e *Entry, f FlowKey) // a queued entry and its waiter to f's demand queue, at its tail; never refused
-  func (s *Sched) Promote(e *Entry)           // a running entry to demand, its charge moved to the flow's demand deficit
+  func (s *Sched) Rehome(e *Entry, f FlowKey) // a queued entry to f's demand queue, at its tail; never refused; no waiter moves
+  func (s *Sched) Promote(e *Entry)           // a running speculative or background entry to demand, its charge moved to the flow's demand deficit
   ```
 
   The model of T3.8 gains the four steps, and checks RFC 3 S13 and S20 after each, joined callers
@@ -531,19 +553,26 @@ pkg/syncer/
   - A demand join evicts the youngest queued speculation, but never `to`; with none other queued
     it is refused.
   - After `Rehome`, the entry is dispatched as a demand of its new flow, before any queued
-    background or speculation, and its old flow's queue holds one fewer; the waiter count is
-    unchanged.
+    background or speculation, and its old flow's queue holds one fewer; each flow's waiter count
+    is unchanged, the entry's waiter still on its starter's flow.
+  - At a full bound, a call under its share never displaces an entry another caller has joined;
+    when only such entries qualify, it is refused as E3's D7 refuses a call with nothing
+    displaceable.
+  - A starter's `Leave` from a queued entry another caller joined drops one waiter of its flow and
+    leaves the entry queued.
   - `Rehome` into a full demand queue succeeds.
   - A join that displaces returns one victim with `Refused` set to `Displaced`, and one that evicts
     one with `Evicted`, as E3's `Add` does.
   - After `Promote` of a running speculative entry, its `Done` with an overrun leaves the flow's
-    speculation deficit as it was before dispatch and the demand deficit in debt.
+    speculation deficit as it was before dispatch and the demand deficit in debt; the same for a
+    background entry and the background deficit.
   - One join's operations, from E3's counter, are the same at 1, 10, 100 and 1,000 waiting flows.
 - **Tests:** at `Join`, `Rehome` and `Next`, as tables (no double). Each criterion, with the wrong
   design it catches: a join that skips the waiter count (a thousand joins pass the bound, R20), a
   re-home left in the speculation class (the demand waits behind a guess, R16, R19), a join that
   evicts its own target, a promotion whose `Done` corrects the speculation deficit it no longer
-  holds. The model's property test and the fuzz seeds over the new steps, checked by
+  holds, a re-home that moves the entry's waiter (the demanding flow counted twice, R20), a
+  displacement that takes a joined entry (a joined caller refused for the bound, R20). The model's property test and the fuzz seeds over the new steps, checked by
   planting a `Join` that does not count and watching them fail (rule 10).
 
 ### T6.4 Single flight and joining
@@ -555,9 +584,10 @@ pkg/syncer/
 - **Deliverables:** `join.go` (D3, D4): the half's flight table; a call split into joined and own
   positions; each join passing `admit`, E5's health refusal first, then `sched.Join`; a demand
   joining a queued speculative or background entry `Rehome`s it, one joining a running speculative
-  flight promotes it (D4); a late caller's passed chunks in its own fetch; a flight removed from the
-  table before its callers see its error, so the next demand starts afresh; the starter leaving a
-  flight others wait on cancels nothing; `Stats`' `Joined`, `Rehomed` and joined `Waiters` (D11).
+  or background flight promotes it (D4); a late caller's passed chunks in its own fetch; a flight
+  removed from the table before its callers see its error, so the next demand starts afresh; the
+  starter leaving a flight others wait on, queued or running, cancels nothing and removes no entry,
+  only its own waiter (`Leave`); `Stats`' `Joined`, `Rehomed` and joined `Waiters` (D11).
   Consumed by T6.5, T6.6 and T6.7.
 - **Acceptance criteria:**
   - Eight concurrent `Fetch` calls of one chunk at eight offsets within it make one get at the
@@ -569,13 +599,17 @@ pkg/syncer/
     demand makes a new get.
   - A demand from flow B joining A's queued `Prefetch` moves it to B's demand queue, and it is
     dispatched before A's queued background work; a demand joining A's running `Prefetch` promotes
-    it, and a throttled requeue of it waits in the demand queue, its callers attached.
+    it, and a throttled requeue of it waits in the demand queue, its callers attached; the same for
+    A's running background fetch.
+  - A's queued `Prefetch` re-homed by B's demand, then cancelled while still queued: the entry
+    stays in B's demand queue, B is yielded its chunks, and A's waiters drop by one.
   - A join in an unhealthy get direction is refused before anything is attached.
 - **Tests:** through `export_test.go`'s half over `codec.Store` on the in-memory store under E2's
   `Hold`, `Fail` and `Link`, in a bubble; gets at the in-memory store's record, joins and re-homes at
   `Stats`. Each criterion, with the wrong design it catches: one get per caller (R13), a fetch on
-  its starter's `ctx` (R17), a failure kept for the next caller (R18), a whole-block flight joined
-  after it passed the chunk, which never yields it (R14).
+  its starter's `ctx` (R17), a starter's leave that removes a queued entry others joined (R17,
+  R29), a failure kept for the next caller (R18), a whole-block flight joined after it passed the
+  chunk, which never yields it (R14).
 
 ### T6.5 Detaching, detached buffers and a flow's close
 
@@ -585,27 +619,34 @@ pkg/syncer/
 - **Covers:** R6, R21, R22, R23, R24, R25, R26, R27, R31.
 - **Deliverables:** `detach.go` (D5, D6, D7): the detach scan on E4's per-second watchdog; the
   speculative caller detached at once; the semaphore of the fetch pool's size, taken before a
-  detach and waited on at the cap, then the chunk's `Keep`; the slot returned at the caller's next
-  iteration or by `context.AfterFunc` on its `ctx`; `Flow.Close` detaching other flows' callers from its flights and
+  detach and waited on at the cap, then the chunk's `Keep`; the slot shared by the callers
+  detached at one chunk, returned at the last one's next iteration or by `context.AfterFunc` on
+  its `ctx`; `Flow.Close` detaching other flows' callers from its flights and
   refusing its own callers joined elsewhere as closed; `fixed.go`'s detach bound (D10); `Stats`'
   `Detached`, `SpeculationPreempted` and `DetachedBuffers`. Consumed by T6.6 and E7.
 - **Acceptance criteria:**
   - Of two callers, one not returning for 5 s on the clock is detached: its bytes are unchanged
     until it iterates, its stream then ends with an error wrapping `remote.ErrTransient`, and the
     other caller gets every chunk.
-  - A lone caller holding a chunk for 60 s is never detached.
+  - A lone caller holding a chunk for 60 s is never detached, nor are two callers both holding
+    one chunk for 60 s.
+  - A loop body holding chunk 0 that fetches chunk 3 of the same block (RFC 3 §1.3): at the detach
+    bound the outer caller is detached and its stream ends with an error wrapping
+    `remote.ErrTransient`; the inner call is yielded chunk 3, and one get is made.
   - A `Prefetch` caller holding a chunk a demand caller has moved past is detached at once, counted
     `behind` and preempted.
   - With a fetch pool of 2 and two detached buffers held, a third detach waits until one is
     released, by an iteration or a `ctx` ending, and `DetachedBuffers` never passes 2.
+  - Two callers detached at one chunk: once the first iterates, `DetachedBuffers` is still 1, and
+    a detach at a full cap still waits until the second iterates.
   - Closing the flow that owns a running flight: another flow's caller is detached as
     `flow_closed`, not failed; the closing flow's own caller of another flow's flight is refused as
     closed.
 - **Tests:** through `export_test.go`'s half over `codec.Store` on the in-memory store under E2's
   `Link`, in a bubble, the clock moved by the bubble only. Each criterion, with the wrong design it
   catches: a buffer reused under a detached caller (its copy differs, R25), a detach that fails the
-  transfer (R22), a detach of a lone caller, detached buffers counted per caller rather than capped
-  (R27), a close that fails the other flow's caller (R24). Under the leak check, no `AfterFunc` or
+  transfer (R22), a detach of a lone caller or of callers holding nobody back, a nested fetch that never returns (the flight waits on itself), detached buffers
+  counted per caller rather than capped, a shared slot returned by its first caller (R27), a close that fails the other flow's caller (R24). Under the leak check, no `AfterFunc` or
   scan outlives its flight.
 
 ### T6.6 The join rows
@@ -720,7 +761,7 @@ second pair of hands. Checkpoint after T6.2: every fetch streams on a flight. Ch
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T6.1 | 1.5 | RFC 4 plan epic 6 | `Keep` and `Index` in RFC 4's packages; can fold into that epic's pull request |
-| 2 | T6.3 | 3 | E3's T3.8, E4's T4.5 | joins in `sched` and its model; open beside PR 1 |
+| 2 | T6.3 | 3.5 | E3's T3.8, E4's T4.5 | joins in `sched` and its model; open beside PR 1 |
 | 3 | T6.2 | 4 | E4's T4.7 | fetches on flights, with the stream rows; open beside PR 1 |
 | 4 | T6.4, T6.5, T6.6 | 10.5 | PR 1, PR 2, PR 3 | single flight end to end: joining, detaching and the §7.2 join rows |
 | 5 | T6.7, T6.8 | 5 | PR 1, PR 3 | resume, the re-get and the Group A rows; open beside PR 4 |
@@ -755,10 +796,22 @@ A suggestion only: one pull request per subtask works as well.
   goroutine; E4's requeue of a throttled get keeps the flight and its callers. Both breakdowns
   should note it.
 - **E4's D9 is replaced** (D8) and its `classify` gains `verifyRetry` (D9), as its §1.2 expects.
+- **Decided by the user, 2026-11-26: a loop body must not fetch from the block it iterates.** A
+  caller holding chunk 0 of block X that, before its loop body returns, fetches chunk 3 of X joins
+  the flight it is itself holding back (D3). The flight cannot pass chunk 0 until the body returns
+  (R21), and nothing can tell the two calls belong to one goroutine. RFC 3 §1.3 now forbids it and
+  defines the outcome, which D5 gives with no code of its own: after the detach bound the outer
+  caller is detached and its stream fails, and the inner call gets its chunk. T6.5 pins it.
+- **E3's accepted §2.9 sentence should name displaceable entries.** D4 passes over an entry a
+  caller has joined, so a flow at its share may hold a queued transfer of the call's class and
+  still offer no victim. E3's D7 already counts joined callers as nothing displaceable, and S20's
+  "unless no waiter can be displaced" covers it; the §2.9 sentence T3.4 lands, "holds a queued
+  transfer of the call's class or a lower one", would read true only with "that no caller has
+  joined" after it.
 - **The least certain estimates** are T6.4 (the flight table, re-homes and promotions racing
   dispatch, leaves and `Close` under `-race`) and T6.5 (the detach timer, the buffer cap's wait and
   a `ctx` ending under a detached caller).
-- **The RFC 3 plan's epic 6 outline moved in three places.** Its nine subtasks are eight here, 24
+- **The RFC 3 plan's epic 6 outline moved in three places.** Its nine subtasks are eight here, 24.5
   man-days against 30: the codec seam is a subtask of its own (D1), joins in `sched` and its model
   are this epic's (E3's R33), and the counters land with the subtask that counts each rather than
   apart.
