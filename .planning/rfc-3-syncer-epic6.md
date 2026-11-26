@@ -28,7 +28,8 @@ citation is `develop`'s text, epics 3, 4 and 5 that of their open pull requests 
 **Depends on:** **S2**, epic 2's fault wrapper and `syncertest`'s frame. **Epic 3**: T3.4's
 waiter count and T3.8's model, for T6.3; T3.5's halves, `admit` and `fixed.go`, T3.6's
 single-attempt `Fetch` and `Prefetch` and T3.7's in-memory opener, for T6.2 onward. **Epic 4**:
-T4.1's `classify`, T4.5's requeue and T4.7's get loop, for T6.2 and T6.7. **Epic 5**: T5.2's
+T4.1's `classify`, T4.5's requeue and T4.7's get loop, for T6.2 and T6.7; T4.6's floor watchdog, for
+T6.5. **Epic 5**: T5.2's
 health refusal at `admit`, which a join passes too (T6.4). **RFC 4 plan epic 6**, `codec.Store.Get`
 with working bodies, for T6.1, whose `Chunk.Keep` and `Meter.Index` (D1) T6.5 and T6.7 read.
 **Blocks:** E7, whose memory bound counts T6.5's detached buffers and whose sweep needs both halves
@@ -133,7 +134,7 @@ title and not copied.
 | Rule | Subtasks | How |
 | --- | --- | --- |
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | T6.3 extends `internal/sched`, pure, and its reference model. T6.1 tests the codec in RFC 4's package over RFC 4's in-memory store. T6.2 and T6.4 to T6.7 test the pool's unexported flight through `export_test.go`, each get `codec.Store.Get` over the in-memory store (kind 2) under E2's wrapper (kind 3), in E3's `testing/synctest` bubble (kind 1). T6.8 runs through `syncertest` over the same. No test double is written |
-| rule 2, fuzz tests where relevant ([`CLAUDE.md`, "Writing tests", "By kind"](../CLAUDE.md#writing-tests)) | T6.3 | E3's `FuzzSched` gains the join, leave, re-home and promote steps, against the model, with seeds. Nothing else here reads bytes |
+| rule 2, fuzz tests where relevant ([`CLAUDE.md`, "Writing tests", "By kind"](../CLAUDE.md#writing-tests)) | T6.3 | E3's `FuzzSched` gains the join, leave and re-home steps, against the model, with seeds. Nothing else here reads bytes |
 | rule 3, observability follows RFC 25, with RFC 3's own exception | T6.4, T6.5, T6.7 | `Stats` gains R33's counts in E1's fields, as atomics read without the half's lock (E3's D11). No log line and no span |
 | rule 4, profiling | T6.2, T6.5, T6.6 | Every test runs under `internal/prof`'s leak check, which catches a flight left running after its last caller or `Close`. No allocation per chunk: the codec's buffer is reused unless a detach keeps it, and each caller's hand-off channel is made once per call; E7's `unit/syncer-allocs` gate measures it. One join adds a fixed number of queue operations whatever the number of flows, from E3's operation counter (T6.3) |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T6.2, T6.4 to T6.8 | Under `-race`. Gets and the ranges they asked, at RFC 4's in-memory store's record of calls, where single flight is counted; bytes a caller reads, at the caller's loop; detached buffers, joins, re-homes, detaches and re-gets at `Stats`, where E8's collector reads them; refusals at the error the caller gets |
@@ -209,7 +210,7 @@ cite them. Sections are RFC 3's unless named.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R31 | `Stats` makes observable, by half and store, `syncer_fetch_joined_total`, `syncer_fetch_detached_total` by `reason` (`behind`, `flow_closed`), `syncer_fetch_rehomed_total`, `syncer_speculation_preempted_total`, `syncer_detached_buffers`, the joined callers in `syncer_waiters` per flow and class and summed, and `syncer_retries_total`'s `verify` reason | MUST | §2.12 | T6.4, T6.5, T6.7 |
+| R31 | `Stats` makes observable, by half and store, `syncer_fetch_joined_total`, `syncer_fetch_detached_total` by `reason` (`behind`, `flow_closed`), `syncer_fetch_rehomed_total` and `syncer_speculation_preempted_total`; by half, `syncer_detached_buffers` (E1's D3); the joined callers in `syncer_waiters` per flow and class and summed, and `syncer_retries_total`'s `verify` reason | MUST | §2.12 | T6.4, T6.5, T6.7 |
 | R32 | Reading these counters takes no lock a dispatch needs, and costs nothing per transfer in flight; the consistent snapshot across them is E7's | MUST NOT | §2.12 | T6.4 |
 | R33 | A get's bounds and `syncer_bytes_total` count the encoded bytes the codec reports to the `Meter`, never decoded ones: a compressible block's bytes are what the store sent, and a get trickling encoded bytes below the floor fails on it while its chunks decode to more | invariant | §2.4; §7.2, "§2.4 wire bytes" | T6.7 |
 
@@ -219,7 +220,7 @@ cite them. Sections are RFC 3's unless named.
 | --- | --- | --- | --- | --- |
 | R34 | The Group A rows of §4.1, the verification re-get and §4.2 run in the suite over any remote store its caller opens; a row whose fault or mode the caller cannot give is skipped by name | test row | §7.1; §8.1, "Real backend"; E2's D4 | T6.8 |
 | R35 | The checks reach §8.2's fetch cases: `want` empty, one range, every range, adjacent ranges, ranges not adjacent, the same range twice and a range ending at the block's last byte; `ctx` cancelled while transferring and after the store answered but before the call returned; `Close` while a `Prefetch` is joined by a demand; a demand joining a queued fetch at the moment it is dispatched; a flow closed while another flow's caller is joined to its fetch; the detached-buffer cap reached with a demand waiting on a fresh buffer | test row | §8.2 | T6.2, T6.6 |
-| R36 | A backend that returns instantly is not used for §4.4's checks: "§4.4 priority" and "§4.4 abandonable" run over E2's `Link` | MUST NOT | §7.3 | T6.6 |
+| R36 | A backend that returns instantly is not used for §4.4's checks: "§4.4 priority" and "§4.4 abandonable" run over E2's `Link` | MUST NOT | §7.3; E2's D1, D3 | T6.6 |
 
 RFC 3 §4's other sentences belong elsewhere: §4.2's rule that the reply neither waits on the fill
 nor fails with it is the engine's (RFC 8 §7.2), and so is §4.5's pre-warm capacity rule (RFC 8
@@ -300,20 +301,23 @@ T4.7), which this epic runs on the flight unchanged.
 - **D4, joins enter `sched` as waiters, never as entries.** `Join(f, c, to)` counts a caller of
   flow `f` and class `c` joined to entry `to`, through the same admission E3's `Add` makes for the
   waiter bound, with displacement and eviction, never displacing or evicting `to` itself; `Leave`
-  drops it. A joined caller is never displaced (E3's D7). `Rehome(e, f)` moves a queued entry to
-  flow `f`'s demand queue at its tail, counted there, and is never refused for the queue's length,
-  which it may pass by the entries it moved in, as E3's D8 lets eviction; `Promote(e)` sets a
-  dispatched entry's class to demand, which E4's requeue reads. Only a demand re-homes or promotes;
-  a background caller joining a speculative fetch only attaches, behind a `decision:` marker, since
-  RFC 3 §4.3 names the demand alone and background is deferrable (§2.9). A queued entry already
-  in the demand class is joined, never moved. Prior art: none found.
+  drops it. A joined caller is never displaced (E3's D7); an entry displaced or evicted with callers
+  joined to it refuses every one of them with its reason. `Rehome(e, f)` moves a queued entry, and
+  its own waiter, to flow `f`'s demand queue at its tail, keeping a requeued entry's pass through a
+  hold (E4's D2), and is never refused for the queue's length, which it may pass by the entries it
+  moved in, as E3's D8 lets eviction. A running entry sits in no queue, so promoting one is the pool
+  setting its `Class` to demand under the half's lock, which E4's requeue and budget reserve read.
+  Only a demand re-homes or promotes; a background caller joining a speculative fetch only
+  attaches, behind a `decision:` marker, since RFC 3 §4.3 names the demand alone and background is
+  deferrable (§2.9). A queued entry already in the demand class is joined, never moved. Prior art:
+  none found.
 - **D5, the detach bound runs only where another caller waits.** A flight with one attached caller
   never detaches it: there is nobody to hold back, and §2.10 states the bound for "a joined caller".
   With two or more, E4's per-second floor watchdog (its D6) also scans the half's flights and
   detaches every caller that has held a chunk for the detach bound, 5 s, so no timer is made per
   chunk; `ponytail:` a detach comes up to a second late, upgrade to a timer per flight if a stalled
   reader's extra second shows in a read's latency. A speculative caller is detached at once, at the
-  release that leaves it the only one holding a waiting demand back (R23), counted under both
+  join or release that leaves it the only one holding a waiting demand back (R23), counted under both
   `behind` and `syncer_speculation_preempted_total`. A flight whose callers are all detached has
   none left and is cancelled. A `decision:` marker names both rules. Prior art: Linux's
   `fq_codel`, which drops from the flow that holds the queue, not the one that arrived (from memory).
@@ -386,7 +390,7 @@ pkg/syncer/
     join_rows_test.go      T6.6  the §7.2 join rows, §8.4's count, §8.2's join cases
     resume_test.go         T6.7  the resume and re-get, "§2.4 fetch resume", "§2.4 wire bytes"
     internal/sched/
-      join.go              T6.3  Join, Leave, Rehome, Promote
+      join.go              T6.3  Join, Leave, Rehome
       join_test.go         T6.3
       model_test.go        T6.3  the model's join steps
       fuzz_test.go         T6.3  FuzzSched's join steps; seeds
@@ -493,11 +497,10 @@ pkg/syncer/
   ```go
   func (s *Sched) Join(f FlowKey, c Class, to *Entry) (victims []*Entry, err error) // a waiter, never displacing or evicting to
   func (s *Sched) Leave(f FlowKey, c Class)
-  func (s *Sched) Rehome(e *Entry, f FlowKey) // a queued entry to f's demand queue, at its tail; never refused
-  func (s *Sched) Promote(e *Entry)           // a dispatched entry's class to demand
+  func (s *Sched) Rehome(e *Entry, f FlowKey) // a queued entry and its waiter to f's demand queue, at its tail; never refused
   ```
 
-  The model of T3.8 gains the four steps, and checks RFC 3 S13 and S20 after each, joined callers
+  The model of T3.8 gains the three steps, and checks RFC 3 S13 and S20 after each, joined callers
   counted, D7's refused case and E4's requeued entries named as E3 and E4 name them; `FuzzSched`
   gains them, with seeds. Consumed by T6.4.
 - **Acceptance criteria:**
@@ -526,7 +529,7 @@ pkg/syncer/
 - **Deliverables:** `join.go` (D3, D4): the half's flight table; a call split into joined and own
   positions; each join passing `admit`, E5's health refusal first, then `sched.Join`; a demand
   joining a queued speculative or background entry `Rehome`s it, one joining a running speculative
-  flight `Promote`s it; a late caller's passed chunks in its own fetch; a flight removed from the
+  flight promotes it (D4); a late caller's passed chunks in its own fetch; a flight removed from the
   table before its callers see its error, so the next demand starts afresh; the starter leaving a
   flight others wait on cancels nothing; `Stats`' `Joined`, `Rehomed` and joined `Waiters` (D11).
   Consumed by T6.5, T6.6 and T6.7.
@@ -645,7 +648,7 @@ pkg/syncer/
     `ErrCorrupt`;
   - "§2.4 verification re-get" over `Faults.Flip` once and on every get, and in
     `Mode{Encrypt: true}`, the gets counted by a `syncer.Store` the row wraps around `Env.Store`
-    that records each call and passes it through; and a past-the-end refusal over
+    that records each call and passes it through; and, on a ranged fetch, a past-the-end refusal over
     `Faults.Fail(remote.DirGet, remote.ErrInvalid, 1)`, which the codec reports as `ErrMalformed`,
     with one get;
   - "§4.2 yield at once" over `Faults.Hold` at chunk 2's first body byte: chunk 1 yielded while
@@ -663,7 +666,7 @@ pkg/syncer/
 ```mermaid
 flowchart TD
   C6(["RFC 4 plan epic 6 codec.Store.Get"]):::sync --> T6_1["T6.1 Chunk.Keep and Meter.Index"]:::blocker
-  E3(["E3 T3.5 to T3.7, E4 T4.7: halves, Fetch, get loop"]):::sync --> T6_2
+  E3(["E3 T3.5 to T3.7, E4 T4.1, T4.6, T4.7: halves, Fetch, classify, watchdog, get loop"]):::sync --> T6_2
   T6_2["T6.2 The flight and the stream rules"]:::blocker
   M(["E3 T3.4, T3.8, E4 T4.5: waiters and the model"]):::sync --> T6_3["T6.3 Joins in the scheduler and its model"]
   T6_2 & T6_3 --> T6_4["T6.4 Single flight and joining"]:::blocker
