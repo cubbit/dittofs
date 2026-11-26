@@ -403,8 +403,15 @@ func (n *Node) adaptersHeld() (map[string]adapter.Adapter, time.Duration) {
 // (RFC 23 §3.4). Start step 9 calls every slot before the status writer's
 // first turn, so a call has always left last. The port is the one the slot's
 // last call read from the adapter, and a reader sees it once a status turn
-// has written it; step 10 commits the first turn before the node reads
-// ready, so a ready node's status never names the port the last start bound.
+// has written it.
+//
+// decision: step 10 commits the first status turn before the node reads
+// ready, so a reader that waits on this node's /health/ready reads only the
+// ports this start bound. That is the whole gate: another node's
+// API, or this one's once it serves calls before ready, reads the last
+// start's status until step 10 commits, as the status names no run.
+// Overturned when such a reader must tell the runs apart, and then by the
+// status naming its run.
 //
 // decision: a drain under way reports draining, the old adapter's, as RFC 20
 // §3.1 names that state, for a disable's drain and a rebuild's alike, so the

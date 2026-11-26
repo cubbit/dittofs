@@ -44,7 +44,8 @@ func countersOf(c kvstore.Counters) [len(counterKinds)]uint64 {
 	return [...]uint64{kindSettings: c.Settings, kindShares: c.ShareList, kindPrincipals: c.Principals}
 }
 
-// statusWriter is the status writer's state, which only its loop touches.
+// statusWriter is the status writer's state, which Start step 10 touches
+// and then only its loop.
 type statusWriter struct {
 	fault storeFault
 	// last is the canonical bytes of the status last committed.
@@ -59,8 +60,9 @@ type statusWriter struct {
 
 // statusLoop runs a status turn whenever next fires, and then one every
 // statusInterval on the node's clock, counted from the start of the turn
-// before, until ctx ends, reporting each to loop. Start step 10 has run the
-// first turn and set next from its start.
+// before, until ctx ends, reporting each to loop. Start step 10 runs the
+// first turn and hands next, set as that turn started, so a clock moved
+// once Start returns releases the second.
 //
 // ponytail: a pass that moves the positions is reported at the next turn,
 // up to statusInterval later, rather than waking the writer; the rate limit
@@ -76,7 +78,7 @@ func (n *Node) statusLoop(ctx context.Context, loop *health.Loop, next <-chan st
 		}
 		loop.Idle()
 		next = n.cfg.Clock.After(statusInterval)
-		_ = n.statusTurn(ctx) // the fault it reports is the turn's own, and the next turn retries it
+		_ = n.statusTurn(ctx) // statusTurn logs its own fault; the next turn retries the write
 	}
 }
 

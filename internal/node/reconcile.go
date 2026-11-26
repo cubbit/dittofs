@@ -640,10 +640,16 @@ func (n *Node) firstReconcile(ctx context.Context) error {
 //
 // decision: a first status write that fails, or does not answer within the
 // store bound, fails the start rather than being retried at the status
-// writer's interval, as step 3's registration write fails it: a store the
-// node cannot write is no store to serve from. Overturned if a start must
-// ride out a store fault, and then by readiness waiting on the first
-// write's commit.
+// writer's interval, as step 8's bounded counters read fails it on a store
+// fault: a store the node cannot write is no store to serve from. Overturned
+// if a start must ride out a store fault, and then by retrying the write at
+// the writer's interval while readiness stays starting.
+//
+// decision: the first turn prunes the old secret versions as every turn
+// does, so after a rotation readiness waits on those deletes too, each
+// bounded and only logged on failure. Overturned if a restart after a
+// rotation shows in the time to ready, and then by leaving the prune to the
+// loop's first turn.
 func (n *Node) startReconcile(ctx context.Context) error {
 	next := n.cfg.Clock.After(statusInterval)
 	if err := n.statusTurn(ctx); err != nil {

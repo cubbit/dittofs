@@ -1228,12 +1228,8 @@ func TestARestartedNodeReadsReadyOnlyOnceItsStatusIsThisStarts(t *testing.T) {
 	setFault(t, f, write, sim.Rule{Op: kvtest.OpSet, Key: statusKey(h), Count: 1, Action: sim.FaultAction{Delay: time.Hour}})
 	defer write.Advance(time.Hour) // a failed test's Stop finds no write held
 	done := make(chan error, 1)
+	// The first start's cleanup stops h.Node(), by then this node.
 	go func() { done <- h.Node().Start(t.Context()) }()
-	t.Cleanup(func() {
-		if err := h.Node().Stop(context.Background()); err != nil {
-			t.Errorf("Stop: %v", err)
-		}
-	})
 	deadline := time.Now().Add(20 * time.Second)
 	for write.Pending() == 0 {
 		if time.Now().After(deadline) {
