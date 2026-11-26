@@ -2,8 +2,9 @@
 # pass is an unexpected pass: remove its entry in the fix.
 # Until the node's settings table declares the store, namespace and adapter sections, every scenario
 # stops in setup, where the first store create is refused: its remote.* keys are unknown. setup.sh
-# exits 3 for a run that stopped in setup and 1 for a scenario's own failure, so each entry is known
-# only with the message "exited 3", and a scenario that gets past setup and fails is a new failure.
+# exits 3 only for a run that stopped at that store create, and 1 for any earlier setup failure and
+# for a scenario's own failure, so each entry is known only with the message "exited 3", and any
+# other failure is a new one.
 # A scenario with a bug of its own has a reason that names where its run stops past setup, which the
 # change that makes setup pass turns into the entry's message and issue; that change removes the
 # others' entries, which then pass.

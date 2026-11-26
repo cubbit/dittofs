@@ -123,6 +123,11 @@ dfs-server start
 
 # Share test (path /test, namespace prefix test/ on bucket dittofs) for user tester (uid and group
 # 1000), SMB on 445 and NFS on 2049. smbclient defaults to SMB3 and, through USER, to tester.
+# decision: setup exits 3 only from here on, where the first store create is refused while the
+# settings table does not declare the store's keys. A failure before it (the build, a package, the
+# server's start) keeps exiting 1, so the known entries that match "exited 3" never excuse it.
+# Tracing stops in the trap, so the failing command stays the trace's last line.
+trap '{ set +x; } 2>/dev/null; exit 3' ERR
 S="$(dfs-store dittofs)"
 N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=test/ -o json | jq -r .id)"
 dfsctl share create test --path /test --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
@@ -157,12 +162,15 @@ fi
 exec 9<"$CACHE"
 flock -n 9 || { echo "not run: another run holds $CACHE" >&2; exit 75; }
 
-# A scenario runs after the same setup, which exits 3 when it fails, so a run that stopped in setup
-# is told apart from a scenario's own failure. Each of the scenario's commands is traced as
+# A scenario runs after the same setup, which exits 3 when it stops at its refused store create,
+# so such a run is told apart from a scenario's own failure. Tracing is off before the run line,
+# so a failure's last trace line is its own check. Each of the scenario's commands is traced as
 # "+ <epoch seconds> <line> <command>".
-NODE="set -E; trap 'exit 3' ERR
+# decision: the run line maps every scenario exit to 1, so no code from 30 to 39 reaches the
+# batch and "exited 3" matches only setup's 3. Keep the "|| exit 1" while the entries match it.
+NODE="set -E
 $SETUP
-trap - ERR; set +E
+trap - ERR; set +E; { set +x; } 2>/dev/null
 $(cat <<'RUN'
 USER=tester%tester-secret bash -c 'PS4="+ \$EPOCHREALTIME \$LINENO "; set -euxo pipefail; . /scenario.sh' || exit 1
 RUN

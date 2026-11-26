@@ -90,8 +90,9 @@ takes no lock, so it does not block a scheduled run.
 - A run is capped at `SCENARIO_TIMEOUT` (900) seconds.
 - One batch run at a time per cache. A second one prints `not run: another run holds …` and
   exits 75 without running anything, so a scheduled run that tested nothing never reads as a pass.
-- A batch exits 0 when every scenario passed, 3 when every failed one stopped in the shared setup,
-  before its own first line, and 1 otherwise.
+- A batch exits 0 when every scenario passed, 3 when every failed one stopped at the shared
+  setup's refused store create, before its own first line, and 1 otherwise. A setup that fails
+  earlier, hangs to `SCENARIO_TIMEOUT` (124) or is killed (137) exits 1.
 
 ## Writing one
 
