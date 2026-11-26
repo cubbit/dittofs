@@ -274,8 +274,8 @@ size to choose (RFC 2 §1.2, the RFC 8 offload plan's epic 15).
   inputs are several slices), and a 32-byte sum. A `Hasher` holds its chaining-value stack and a 16 KiB group buffer, about 18 KiB on its
   caller's stack, so it is started in place (`InitKeyed`, `InitDeriveKey`) rather than returned by value, which would copy
   them per chunk. No extendable output: E3's gear tables keep
-  `lukechampine.com/blake3`, whose inputs are under one BLAKE3 chunk and whose allocations land in
-  the constructor (E3's D5). The marker's ceiling: withdraw the package, and call the library
+  `lukechampine.com/blake3`, read 1,024 bytes at a time so it starts no goroutine, with its
+  allocations in the constructor (E3's D5). The marker's ceiling: withdraw the package, and call the library
   directly, if a later `lukechampine.com/blake3` neither allocates nor starts a goroutine on a long
   write. Prior art: `internal/prof`, a shared internal package with its own import test (checked);
   Go's `crypto/internal` packages shared by the `crypto/...` tree (from memory). Applied by T4.1.
