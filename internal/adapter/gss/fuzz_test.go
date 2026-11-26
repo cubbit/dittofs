@@ -10,6 +10,8 @@ import (
 
 	"github.com/jcmturner/gokrb5/v8/crypto"
 	"github.com/jcmturner/gokrb5/v8/crypto/common"
+	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
+	"github.com/jcmturner/gokrb5/v8/types"
 
 	"github.com/cubbit/dittofs/pkg/identity/identitytest"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -142,6 +144,110 @@ func FuzzMICToken(f *testing.F) {
 		}
 		if err := acc.VerifyMIC(msg, tok); (err == nil) != want {
 			t.Fatalf("VerifyMIC(%x, %x) = %v; the independent checksum verifies: %v", msg, tok, err, want)
+		}
+	})
+}
+
+// refParseWrap reads RFC 4121 §4.2.6.2's Wrap token header as the RFC lays
+// it out, apart from parseWrap: octets 0-1 TOK_ID 05 04, octet 2 Flags,
+// octet 3 Filler FF, octets 4-5 EC and 6-7 RRC big-endian, octets 8-15
+// SND_SEQ big-endian.
+func refParseWrap(tok []byte) (flags byte, ec, rrc uint16, seq uint64, ok bool) {
+	if len(tok) < 16 || tok[0] != 0x05 || tok[1] != 0x04 || tok[3] != 0xff {
+		return 0, 0, 0, 0, false
+	}
+	for _, b := range tok[8:16] {
+		seq = seq<<8 | uint64(b)
+	}
+	return tok[2], uint16(tok[4])<<8 | uint16(tok[5]), uint16(tok[6])<<8 | uint16(tok[7]), seq, true
+}
+
+// refUnwrap is RFC 4121 §4.2.4's sealed token opened by gokrb5's RFC 3961
+// decryption, apart from unwrap: the body rotated back by RRC, decrypted
+// and checked under the initiator's seal usage, the header's copy matching
+// the clear header but for RRC, and the message what precedes EC bytes of
+// filler and the copy.
+func refUnwrap(key, tok []byte) ([]byte, bool) {
+	flags, ec, rrc, _, ok := refParseWrap(tok)
+	if !ok || flags&0x02 == 0 || flags&0x01 != 0 || len(tok) < 16+16+16+12 {
+		return nil, false
+	}
+	body := tok[16:]
+	k := int(rrc) % len(body)
+	rot := append(bytes.Clone(body[k:]), body[:k]...)
+	plain, err := crypto.DecryptMessage(rot, types.EncryptionKey{KeyType: etypeID.AES128_CTS_HMAC_SHA1_96, KeyValue: key}, 24)
+	if err != nil || len(plain) < 16+int(ec) {
+		return nil, false
+	}
+	hdrCopy := plain[len(plain)-16:]
+	if !bytes.Equal(hdrCopy[:6], tok[:6]) || !bytes.Equal(hdrCopy[8:], tok[8:16]) {
+		return nil, false
+	}
+	return plain[:len(plain)-16-int(ec)], true
+}
+
+// FuzzWrapToken holds parseWrap to the second parser and unwrap to gokrb5's
+// decryption: parseWrap accepts exactly the headers the second parser reads,
+// with the same fields, which re-encode to the header's bytes; and an
+// acceptor's Unwrap accepts exactly the tokens refUnwrap opens, to the same
+// message. Catches a field read from the wrong octets, the Sealed flag, a
+// length, EC or the header copy unchecked, a rotation undone otherwise, and
+// a read past the token.
+func FuzzWrapToken(f *testing.F) {
+	key := []byte("1234567887654321")
+	acc, err := KerberosContext(vfs.Evidence{}, vfs.Keys{Session: key}, false)
+	if err != nil {
+		f.Fatal(err)
+	}
+	init, err := KerberosContext(vfs.Evidence{}, vfs.Keys{Session: key}, true)
+	if err != nil {
+		f.Fatal(err)
+	}
+	seal := func(c *Context, msg []byte) []byte {
+		buf := make([]byte, WrapHeadroom+len(msg), WrapHeadroom+len(msg)+WrapTailroom)
+		copy(buf[WrapHeadroom:], msg)
+		tok, err := c.Wrap(buf)
+		if err != nil {
+			f.Fatal(err)
+		}
+		return tok
+	}
+	// MIT krb5's published tokens over "message", from t_invalid.c: one
+	// sealed, one with integrity only.
+	f.Add([]byte("\x05\x04\x02\xff\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x72\xbb\xd7\xcf\xde\xb0\xf9\x20\xe2\x9a\x98\xa7\xa4\xe7\xc9\x9b\x30\xd3\xfe\x61\x51\x2e\x1b\x56\x88\xb7\x8a\xf5\xa9\xbf\x8f\x82\xb1\xeb\xcc\x88\xe6\x33\x13\xbf\x52\x4b\xc0\x3b\x24\x3f\x3e\xf5\xf1\xe0\x64"))
+	f.Add([]byte("\x05\x04\x00\xff\x00\x0c\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x6d\x65\x73\x73\x61\x67\x65\xdf\x57\xb9\x5e\xa2\xb1\x73\x31\xdb\xce\x61\x62"))
+	f.Add([]byte("\x05\x04\x02\xfe\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")) // a header whose filler is altered
+	f.Add([]byte("\x04\x04\x02\xff\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")) // a MIC token's ID
+	f.Add([]byte("\x05\x04\x02\xff\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"))     // a header cut short
+	for _, msg := range [][]byte{nil, []byte("a krb5p call's arguments"), bytes.Repeat([]byte{0x5a}, 1000)} {
+		tok := seal(init, msg)
+		f.Add(tok)
+		rotated := bytes.Clone(tok)
+		body := rotated[16:]
+		k := 28 % len(body)
+		copy(body, append(bytes.Clone(tok[len(tok)-k:]), tok[16:len(tok)-k]...))
+		binary.BigEndian.PutUint16(rotated[6:], 28)
+		f.Add(rotated)
+		f.Add(seal(acc, msg))
+	}
+	f.Fuzz(func(t *testing.T, tok []byte) {
+		flags, ec, rrc, seq, err := parseWrap(tok)
+		rflags, rec, rrrc, rseq, ok := refParseWrap(tok)
+		if (err == nil) != ok {
+			t.Fatalf("parseWrap(%x) = %v; the second parser reads it: %v", tok, err, ok)
+		}
+		if err == nil {
+			if flags != rflags || ec != rec || rrc != rrrc || seq != rseq {
+				t.Fatalf("parseWrap(%x) = %#02x, %d, %d, %d; the second parser reads %#02x, %d, %d, %d", tok, flags, ec, rrc, seq, rflags, rec, rrrc, rseq)
+			}
+			if again := appendWrapHeader(nil, flags, ec, rrc, seq); !bytes.Equal(again, tok[:16]) {
+				t.Fatalf("parseWrap(%x) re-encodes to %x", tok, again)
+			}
+		}
+		want, wantOK := refUnwrap(key, tok)
+		got, err := acc.Unwrap(bytes.Clone(tok))
+		if (err == nil) != wantOK || !bytes.Equal(got, want) {
+			t.Fatalf("Unwrap(%x) = %x, %v; gokrb5 opens it to %x, %v", tok, got, err, want, wantOK)
 		}
 	})
 }

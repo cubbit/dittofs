@@ -106,11 +106,13 @@ func TestVerifyMICRefusesAlteredTokens(t *testing.T) {
 }
 
 // For each type the mechanism accepts, a context made through the exchange
-// round-trips MIC and VerifyMIC both ways, under the context key RFC 18 §3.1
-// names, and each side's sequence numbers count up from 0. Catches a type
-// the mechanism accepts that the tokens cannot protect, the two sides keyed
-// apart, and a sequence number not taken per token.
-func TestMICRoundTripsPerType(t *testing.T) {
+// round-trips MIC and VerifyMIC, then Wrap and Unwrap, both ways, under the
+// context key RFC 18 §3.1 names, and each side's sequence numbers count up
+// from 0 across both kinds of token. Catches a type the mechanism accepts
+// that the tokens cannot protect, the two sides keyed apart, a token of the
+// sender's own direction accepted, and a sequence number not taken per
+// token.
+func TestTokensRoundTripPerType(t *testing.T) {
 	f := newFixture(t)
 	for _, tc := range []struct {
 		name   string
@@ -148,6 +150,19 @@ func TestMICRoundTripsPerType(t *testing.T) {
 					}
 					if err := side.from.VerifyMIC(msg, tok); err == nil {
 						t.Errorf("%s: the sender's own VerifyMIC of its token = nil, want refused", side.name)
+					}
+				}
+				for seq := uint64(2); seq < 4; seq++ {
+					msg := []byte(side.name)
+					tok := wrap(t, side.from, msg)
+					if got := binary.BigEndian.Uint64(tok[8:16]); got != seq {
+						t.Errorf("%s: Wrap token %d's sequence number = %d, want %d", side.name, seq, got, seq)
+					}
+					if _, err := side.from.Unwrap(bytes.Clone(tok)); err == nil {
+						t.Errorf("%s: the sender's own Unwrap of its token = nil, want refused", side.name)
+					}
+					if got, err := side.to.Unwrap(tok); err != nil || !bytes.Equal(got, msg) {
+						t.Errorf("%s: Unwrap = %q, %v; want %q", side.name, got, err, msg)
 					}
 				}
 			}

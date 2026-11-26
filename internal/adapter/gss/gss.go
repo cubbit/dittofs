@@ -30,4 +30,11 @@ type Context struct {
 	// VerifyMIC checks a peer's MIC token tok over msg: the RPCSEC_GSS
 	// verifier and krb5i's checksum a client sends.
 	VerifyMIC func(msg, tok []byte) error
+	// Wrap is RFC 4121 §4.2.6.2's sealed Wrap token, krb5p's, built in
+	// msg's array: the message follows WrapHeadroom reserved bytes, and
+	// WrapTailroom more lie within msg's capacity.
+	Wrap func(msg []byte) ([]byte, error)
+	// Unwrap unseals a peer's Wrap token in place: the message is a slice
+	// of tok.
+	Unwrap func(tok []byte) ([]byte, error)
 }
