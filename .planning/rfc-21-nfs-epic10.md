@@ -513,16 +513,16 @@ internal/adapter/adaptertest/nfsclient/
   - `wire/call.go`, moved from `nfsclient` (D12):
     ```go
     type Auth struct {
-    	Flavour uint32
-    	Body    []byte
+        Flavour uint32
+        Body    []byte
     }
     type Reply struct {
-    	XID       uint32
-    	Denied    bool
-    	Stat      uint32
-    	Verf      Auth
-    	Low, High uint32
-    	Body      []byte
+        XID       uint32
+        Denied    bool
+        Stat      uint32
+        Verf      Auth
+        Low, High uint32
+        Body      []byte
     }
     func AppendCall(dst []byte, xid, prog, vers, proc uint32, cred, verf Auth) []byte // the header; the arguments follow
     func ParseReply(rec []byte) (Reply, error)                                     // one record's reply; ErrNotReply for a call

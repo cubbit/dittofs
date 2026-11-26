@@ -724,9 +724,9 @@ internal/vfs/
   func NewOwners(b *resources.Budget, ceiling int64) *Owners
   // OwnerKey is an open owner (Client, Owner) or a stateid's Other.
   type OwnerKey struct {
-  	Client vfs.ClientID
-  	Owner  string
-  	Other  [12]byte
+      Client vfs.ClientID
+      Owner  string
+      Other  [12]byte
   }
   // Last is the reply kept for k at seqid with the arguments' hash sum, sent
   // by principal p.

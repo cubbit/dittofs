@@ -522,22 +522,22 @@ internal/adapter/adaptertest/nfsclient/
   ```go
   type Client struct{ /* one TCP connection, its next XID */ }
   type Auth struct {
-  	Flavour uint32
-  	Body    []byte
+      Flavour uint32
+      Body    []byte
   }
   type Call struct {
-  	XID              *uint32 // nil: the client's next; set to send any XID, 0 included
-  	Prog, Vers, Proc uint32
-  	Cred, Verf       Auth
-  	Args             []byte
+      XID              *uint32 // nil: the client's next; set to send any XID, 0 included
+      Prog, Vers, Proc uint32
+      Cred, Verf       Auth
+      Args             []byte
   }
   type Reply struct {
-  	XID       uint32
-  	Denied    bool   // MSG_DENIED
-  	Stat      uint32 // the accept state, or the reject state's auth_stat or RPC_MISMATCH
-  	Verf      Auth   // an accepted reply's verifier
-  	Low, High uint32 // PROG_MISMATCH's or RPC_MISMATCH's range
-  	Body      []byte // an accepted success's results
+      XID       uint32
+      Denied    bool   // MSG_DENIED
+      Stat      uint32 // the accept state, or the reject state's auth_stat or RPC_MISMATCH
+      Verf      Auth   // an accepted reply's verifier
+      Low, High uint32 // PROG_MISMATCH's or RPC_MISMATCH's range
+      Body      []byte // an accepted success's results
   }
   func Dial(ctx context.Context, addr netip.AddrPort) (*Client, error)
   func DialFrom(ctx context.Context, from netip.Addr, addr netip.AddrPort) (*Client, error) // binds the source address

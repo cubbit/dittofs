@@ -537,10 +537,10 @@ test/pcap-corpus/
   credential:
   ```go
   type GSSCred struct {
-  	Proc    uint32 // RPCSEC_GSS_DATA, _INIT, _CONTINUE_INIT, _DESTROY
-  	Seq     uint32
-  	Service uint32 // rpc_gss_svc_none, _integrity, _privacy
-  	Handle  []byte // into the record, at most 400 bytes with the rest of the body
+      Proc    uint32 // RPCSEC_GSS_DATA, _INIT, _CONTINUE_INIT, _DESTROY
+      Seq     uint32
+      Service uint32 // rpc_gss_svc_none, _integrity, _privacy
+      Handle  []byte // into the record, at most 400 bytes with the rest of the body
   }
   func DecodeGSSCred(body []byte) (GSSCred, error)
   func AppendGSSCred(dst []byte, c GSSCred) []byte
@@ -577,13 +577,13 @@ test/pcap-corpus/
   Kerberos context needs it (D14):
   ```go
   type Mechanism interface {
-  	Step(ctx context.Context, in []byte) (out []byte, done bool, err error)
-  	Context() *Context // once done
+      Step(ctx context.Context, in []byte) (out []byte, done bool, err error)
+      Context() *Context // once done
   }
   type Context struct {
-  	Evidence vfs.Evidence
-  	Keys     vfs.Keys // what SignIn returned; never in an Identity
-  	// MIC and VerifyMIC: T13.12; Wrap and Unwrap: T13.3
+      Evidence vfs.Evidence
+      Keys     vfs.Keys // what SignIn returned; never in an Identity
+      // MIC and VerifyMIC: T13.12; Wrap and Unwrap: T13.3
   }
   // Kerberos accepts one initial context token: the AP-REQ inside it goes to svc.SignIn
   // with step's Service, Transport and Client, and the AP-REP comes back framed.
