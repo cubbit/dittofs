@@ -386,6 +386,14 @@ type Span struct {
 	Ref            ChunkRef       // the covering ref, when Carved
 	Overwrite      JournalVersion // when an overwrite record made it Uncarved, that record's version (§8.1)
 	Applied        JournalVersion // the file's applied when the lookup read it, on every Span (§8.1)
+	Loc            Location       // when Carved, but a zero ref: where the chunk Ref names is; zero when its record is gone, names a deleted block or a block with no record; set by the covering lookup only, never by Allocation or SnapshotCovering (§8.1)
+}
+
+// Location: where a chunk's body is, as a covering lookup joins it (§8.1): its
+// block, the body's position and length there, and the block's encoded size.
+type Location struct {
+	Block                       BlockName
+	Position, Length, BlockSize int64
 }
 
 // Pure methods: no I/O, no store. Each states one rule of this document once,
@@ -2444,6 +2452,23 @@ saw — and the bytes may be in the journal still
 overwrite record, and a pending existence committed over several transactions
 writes overwrite records for versions `applied` has not yet reached.
 
+**A carved span names where its chunk is.** Every carved span the lookup
+returns, but a zero ref's, **MUST** carry its `Location`, read in the same
+transaction from the chunk record its ref names, in the namespace the ref's
+generation names ([§2.1](#2.1%20ChunkRef), [§2.2](#2.2%20Chunk)), and from that record's block: the
+block, the body's position and length there, and the block's encoded size. A
+span whose chunk record is gone, names a `deleted` block, or names a block with
+no record carries none. The ref still names only its hash ([§2.5](#2.5%20Refs%20name%20hashes%2C%20never%20blocks)): the
+location is joined at the lookup, one point read per chunk and per block the
+results name, so the cost stays O(log *n* + results). A clone's batches,
+`Allocation` and `SnapshotCovering` read the same runs without the join, so
+their spans carry no location, and a reader of carved data through them joins
+it itself. A reader whose get finds the
+object absent runs the lookup again and compares the location it names
+([RFC 8 §7.7](rfc-8-engine.md#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)); a second lookup for the location would let a relocation slip
+between the two, and a reader holding the ref alone could not ask for the chunk
+at all.
+
 It applies the file's removals that are not done ([§6.2](#6.2%20Truncation%20and%20deallocation)): a ref inside such a
 removal's extent whose `newest` is below its version is absent, and so is an
 overwrite record there below its version; a straddler is clipped at the extent's
@@ -2799,6 +2824,7 @@ the tiers and under the rules of the [index](rfc-index.md).
 | [§3.3](#3.3%20Holes%2C%20not%20written%20extents) pruning against an older pass | Write `[0, 4M)` at v1, commit, and offer it, holding the pass before its commit. Overwrite `[1M, 2M)` at v2 and commit existence, so no ref covers the record's extent. Run pruning, then commit the held pass. Assert the record survived the prune, and `[1M, 2M)` then reads v2 from the journal, or fails as **Lost** with the journal's copy dropped — never v1. A prune that counts an uncovered extent as covered deletes the record, and the pass's commit makes v1 current. |
 | [§3.5](#3.5%20Operations%20that%20make%20holes) zero ref under an overwrite | Offload an all-zero extent, overwrite part of it with nonzero bytes and commit existence, without offloading. Assert `SEEK_HOLE`, `READ_PLUS` and the allocated-range answer report the overwritten part as data, and a sparse-aware copy carries its bytes. |
 | [§8.1](#8.1%20Covering%20lookup) overwrite after the journal lookup | Hold a read between its journal miss and its covering lookup; commit an overwrite of the extent and keep its bytes in the journal. Assert the lookup's uncarved run carries the overwrite's version and the file's `applied`, and the read re-asks the journal and returns the new bytes rather than failing as **Lost**. Repeat with a write that fills a hole the read saw, and one that grows the file past it: assert the same. A re-ask keyed on overwrite records alone fails both as **Lost**. |
+| [§8.1](#8.1%20Covering%20lookup) a carved span names where its chunk is | Commit a block and refs into it, then run the covering lookup. Assert each carved span's `Loc` names the block, the body's position and length and the block's encoded size the commit recorded. Delete one chunk's record and mark another's block `deleted`: assert those spans carry no `Loc`, and a zero ref's span none either. |
 | [§3.4](#3.4%20Ordering%20against%20the%20journal) recovery replay | Write, crash before the stability point. Assert recovery re-applies existence from the journal and the write reads back. Then commit, crash, drop the journal extent. Assert the read fails as **Lost**. |
 | [§3.4](#3.4%20Ordering%20against%20the%20journal) group commit | Write to 64 files, fewer than [RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)'s `G` and within `K`, then `COMMIT` one. Assert one transaction covered every file with pending existence. |
 | [§3.5](#3.5%20Operations%20that%20make%20holes) allocate | Allocate an extent with nothing staged. Assert it reads zeros, not a failure. |

@@ -415,6 +415,9 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
 
 **Plan estimate: 90 subtasks, 297.25 man-days.**
 
+These are the plan's figures. Once an epic is broken down, its document's estimate supersedes its
+row here, and the rows and total are left as planned.
+
 RFC 8 is 4,291 lines, which gives N = 11, clamped to 8. This part covers about half of it in eight
 cohesive areas, matching N: the scheduler, the queue, the pipeline, passes, remote reads, local space,
 restart with its reconcile, and health.
@@ -885,7 +888,7 @@ carved run, and its row, are replaced by the fetch. Refs for these tests are wri
 §3.1's `fill`, §7.1's carved row, §7.2, §7.3, §7.4, §7.5, §7.7, §7.8, §9.1's adoption and fill
 exclusion. **Done when:** RFC 8 §15.1's "§7.1 stale ref", "§7.1 the order", "§7.2
 streaming, verified", "§7.2 fill cannot fail a read", "§7.2 fill loses to a write", "§7.7
-re-resolution", "§7.6 zero ref under an overwrite", "§9.1 no pre-clone fill" (the demand-read leg
+re-resolution" (but its relocation leg, which waits on RFC 9, §6.1), "§7.6 zero ref under an overwrite", "§9.1 no pre-clone fill" (the demand-read leg
 this plan adds),
 "§9.1 Lost source run carried", "§9.1 one source state" and "§9.1 clone keeps writes outside its
 extent" (offload half), and §15.2's "§1.1 no cross-share slowdown" (cold reads), turn green; §7.4's
@@ -1193,6 +1196,8 @@ proposed targets: the first real-service run does (§6.1).
 | Fuzz or model targets for the queue's keys and the pacing law (rule 2, RFC 8 §15.3's `ponytail:`) | tables check them | unowned | a table check misses a bug a random input would have found |
 | RFC 8 §16 Q6: upload delay for young data, and manual sync | unspecified policy | unowned | a measurement shows re-uploads of soon-overwritten data |
 | Detecting bucket-setting drift: `Recheck` runs, raising the store's drift condition the engine reads (epic 20) | `Recheck`'s only caller is GC; drift goes undetected in v1.1 | RFC 9 | GC's `Recheck` lands |
+| The relocation leg of §15.1's "§7.7 re-resolution", a chunk moved twice under a reader (epic 17's D2) | nothing moves a chunk while its refs are live before GC's relocation (RFC 6 §7.3); epic 17 tests the rule as a pure function meanwhile | RFC 9 | GC's relocation lands |
+| A read's span linking to the span of a fetch it joined (RFC 8 §14; epic 17's D9) | the syncer joins fetches internally and `Fetch` reports no join, so each read opens its own `engine.fetch` span | RFC 3 | RFC 3 reports a join from `Fetch` |
 | §11.2's metadata-store-lost row and the salvage's recovery-import side (epic 20) | RFC 26's | RFC 26 | the recovery import is built |
 
 ## 7. RFC coverage
@@ -1217,7 +1222,7 @@ proposed targets: the first real-service run does (§6.1).
 | RFC 8 §6.2, §6.3, §6.5 to §6.8 | 15 (snapshot-hold ordering: RFC 12; O7: cluster) |
 | RFC 8 §6.4 | 15 (Capture), 16 (registry, guard rows) |
 | RFC 8 §7.1 | the first part; 17 (the carved row, the re-ask with remote) |
-| RFC 8 §7.2 to §7.5, §7.7, §7.8 | 17 |
+| RFC 8 §7.2 to §7.5, §7.7, §7.8 | 17 (§7.7's relocation leg: RFC 9, §6.1) |
 | RFC 8 §7.6 | the first part; 17 (the zero-ref row with offload) |
 | RFC 8 §8, §8.1, §8.2 | the first part; 14 (phase 2 and prune on the scheduler) |
 | RFC 8 §8.3 | 16 |

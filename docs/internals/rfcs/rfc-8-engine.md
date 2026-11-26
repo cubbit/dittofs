@@ -2927,7 +2927,9 @@ says the file ends at or before that offset, as a short read does there.
   engine asks the journal again, as [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata) does: keyed on `applied` alone it misses
   a pending existence split over several transactions.
 - It **MUST** fail the read as **Lost** when an answer names a location that
-  already missed, or names a chunk with no chunk record.
+  already missed, or names a chunk with no chunk record or whose record names a
+  deleted block or a block with no record: such a span carries no location
+  ([RFC 6 §8.1](rfc-6-block-metadata.md#8.1%20Covering%20lookup)).
 - A ranged read that fails verification is **corrupt**, not stale, and **MUST
   NOT** trigger re-resolution; neither does a transport error or a timeout.
 
@@ -2960,7 +2962,11 @@ spent for nothing.
 **Proposal:** a read asks for **only the chunks it covers** when its missing bytes
 are at most a quarter of the block **and** it is not sequential — it neither
 starts at the block's beginning nor continues where the file's previous read
-ended. Otherwise it asks for **the whole block**. Read-ahead and pre-warm follow
+ended. Otherwise it asks for **the whole block**, unless the read's fill will be
+declined ([§7.3](#7.3%20Filling%20is%20a%20decision)): the block's other chunks would then be fetched and
+dropped, and a long scan, which continues every read and fills none, would fetch
+each block once per read over it, so such a read asks for only its chunks.
+Read-ahead and pre-warm follow
 the same rule over the bytes the journal does not hold, and skip a block it holds
 whole (S5, [§7.4](#7.4%20The%20speculator)).
 
@@ -4085,7 +4091,7 @@ remote, cold, or pinned. Residency is computed ([RFC 0 §4.2](rfc-0-data-lifecyc
 | E11 | Only the offloaded bit — set after the offload commit, cleared when the remote body's material is destroyed — decides whether an extent may be evicted; journal durability never does. |
 | E12 | Sustained offload failure is a health condition, distinct from an unreachable remote. |
 | E13 | No background work outlives a component it uses. |
-| E14 | A get that finds its object absent re-runs the covering lookup while the location changes, and fails as **Lost** only when a location misses twice or a named chunk has no record. |
+| E14 | A get that finds its object absent re-runs the covering lookup while the location changes, and fails as **Lost** only when a location misses twice or a named chunk has no record, or no live block ([RFC 6 §8.1](rfc-6-block-metadata.md#8.1%20Covering%20lookup)). |
 | E15 | Existence is answered from the journal until committed — before the stability reply for an overwrite, lazily otherwise, up to the cut points behind a closed gate — always after the sync that made it recoverable, and re-applied at recovery before a file is served, except an unread file, which takes writes before its re-apply and serves no read ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal), [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). |
 | E16 | An upload survives a removal under it; its commit drops every ref overlapping a removal of higher version than the ref's `newest`, straddlers whole, and reports none of their extents. |
 | E17 | Correctness never depends on the per-file guard; the metadata store's conflicts order commits. |
@@ -4145,7 +4151,7 @@ pipeline states, `count` for operations per commit.
 | stability points, the operations each committed, and group-commit splits ([§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)) | `engine_stability_points_total`, `engine_pending_existence_ops`, `engine_group_commit_splits_total` | counter, histogram, counter |
 | reads, labelled `class` = `journal`, `hole`, `remote`, `lost`, `corrupt` or `unavailable`; read latency ([§7.2](#7.2%20The%20reply%20holds%20only%20verified%20chunks%2C%20in%20file%20order)) | `engine_reads_total`, `engine_read_seconds` | counter, histogram |
 | fetches, labelled `shape` = `chunks` or `block` ([§7.8](#7.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)), and bytes fetched against bytes read | `engine_fetches_total`, `engine_fetch_bytes_total` | counter |
-| fills, labelled `result` = `done`, `declined` or `refused` ([§7.3](#7.3%20Filling%20is%20a%20decision)) | `engine_fills_total` | counter |
+| fills, labelled `result` = `done`, `declined` or `refused`, and a declined fill also `reason` = `low_water` (free capacity below the fill low-water mark), `scan` (a sequential scan past the read-ahead window) or `bound` (the share's fills in flight at their bound); the other results carry no `reason` ([§7.3](#7.3%20Filling%20is%20a%20decision)) | `engine_fills_total` | counter |
 | speculative bytes fetched, and those read before eviction ([§7.4](#7.4%20The%20speculator)) | `engine_speculation_bytes_total`, `engine_speculation_used_bytes_total` | counter |
 | re-resolutions after an absent object ([§7.7](#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) | `engine_reresolves_total` | counter |
 | evictions and bytes freed; pacing delays; refusals ([§10](#10.%20Local%20space)) | `engine_evicted_bytes_total`, `engine_pacing_seconds`, `engine_write_refusals_total` | counter, histogram, counter |
