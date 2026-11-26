@@ -33,9 +33,10 @@ to T3.7's opener. Outside RFC 3's epics, RFC 8 offload plan epics 15 to 17 call 
 and `Prefetch`, and epic 16 opens and closes flows; RFC 8 offload plan epic 21's opener calls
 `syncertest.Run`, whose signature D12 changes.
 
-**Decided by the user, 2026-11-26:** D12, the idle wait, and D7's RFC 3 §2.9 text. This pull
-request amends the plan's D2 and D3 and epic 2's D5 and T2.3 to match D12. **Proposed since, from
-review:** the RFC 3 text §9 gives for S17, S18, S22 and the "§2.9 no starvation" row.
+**Decided by the user, 2026-11-26:** D12, the idle wait; D7's RFC 3 §2.9 text; and D13's RFC 3
+text for S17, S18, S22 and §7.2's "§2.9 no starvation" row, raised in review and landing with
+T3.8's pull request. This pull request amends the plan's D2 and D3 and epic 2's D5 and T2.3 to
+match D12.
 
 ---
 
@@ -163,15 +164,15 @@ them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R15 | Every transfer has one class: demand (`Fetch` on a flow that is not background), background (every `Upload`, and `Fetch` on a background flow), speculation (`Prefetch`). A freed worker serves the highest class with work waiting, and the rounds, the caps, the per-store bound's peers and the fair share are reckoned only among that class's flows and stores: "work waiting" in R22, R26 and R28 means work waiting in the class being served (D3, §9) | invariant | §1.3; §2.9; §6, RFC 3 S13; §2.10, "class order" | T3.1, T3.5, T3.6, T3.8, T3.9 |
+| R15 | Every transfer has one class: demand (`Fetch` on a flow that is not background), background (every `Upload`, and `Fetch` on a background flow), speculation (`Prefetch`). A freed worker serves the highest class with work waiting, and the rounds, the caps, the per-store bound's peers and the fair share are reckoned only among that class's flows and stores: "work waiting" in R22, R26 and R28 means work waiting in the class being served (D3, D13) | invariant | §1.3; §2.9; §6, RFC 3 S13; §2.10, "class order" | T3.1, T3.5, T3.6, T3.8, T3.9 |
 | R16 | One queue per flow and class, never a global one | invariant | §2.9 | T3.1 |
 | R17 | Turns are in worker-time. A visited flow's deficit gains a quantum, and the head of its queue is dispatched while its charge fits the deficit, each charge subtracted. A transfer is charged at dispatch, never at enqueue, an estimate, its encoded size divided by its store's recent per-worker throughput in that direction, and at its end the difference between the worker-time it held and the estimate is subtracted from or returned to its flow's deficit. A flow whose queue empties has its deficit reset to zero, after its running transfers' corrections. The deficit, its debt and its parking are kept per flow and class, so a flow's speculation never delays its own demand (§4.4) | invariant | §2.9; §4.4; §6, RFC 3 S22 | T3.1, T3.5 |
 | R18 | The size charged is an upload's `size`, the sum of a fetch's `want` lengths, and for a whole-block fetch the largest encoded block; no charge exceeds the largest encoded block's, so a `want` naming one range twice charges no more than the whole block | invariant | §2.9; §2.2 | T3.5, T3.6 |
 | R19 | The quantum is at least the estimate of the largest encoded block on the slowest store with work waiting, so every flow with work waiting dispatches at least once per round; it is derived, never a setting | invariant | §2.9; §2.10, "DRR quantum" | T3.1, T3.5 |
 | R20 | Each dispatch costs O(1): the queue operations of one dispatch are the same at 1, 10, 100 and 1,000 waiting flows | bound | §2.9; §8.4, "scheduler work per dispatch" | T3.1 |
 | R21 | Two levels: the scheduler picks a store by round robin over stores with work waiting, then a flow on that store | invariant | §2.9 | T3.1, T3.9 |
-| R22 | A transfer at the head of its flow's queue is dispatched within one round of its class, once no higher class has work waiting, unless its flow or store is at its cap or bound, or its flow is in debt from a correction (R17). A round is counted per level (D3): one turn per store with work waiting in the class, and on its store one turn per flow with work waiting there, so a flow waits at most one turn of each other store and of each other flow on its own store between its turns (§9) | invariant | §2.9; §6, RFC 3 S18 | T3.1, T3.8, T3.9 |
-| R23 | Over a round, counted per level as R22 does, stores of one class with work waiting hold workers for times within one quantum of each other, and so do the flows on one store; bytes dispatched per flow of one store stay within one quantum; a flow in debt is held to it once its debt is paid. The quantum is the one used, at most twice §2.10's figure (D4, §9) | invariant | §6, RFC 3 S22; §8.4, "fairness" | T3.1, T3.8, T3.9 |
+| R22 | A transfer at the head of its flow's queue is dispatched within one round of its class, once no higher class has work waiting, unless its flow or store is at its cap or bound, or its flow is in debt from a correction (R17). A round is counted per level (D3): one turn per store with work waiting in the class, and on its store one turn per flow with work waiting there, so a flow waits at most one turn of each other store and of each other flow on its own store between its turns (D13, §9) | invariant | §2.9; §6, RFC 3 S18 | T3.1, T3.8, T3.9 |
+| R23 | Over a round, counted per level as R22 does, stores of one class with work waiting hold workers for times within one quantum of each other, and so do the flows on one store; bytes dispatched per flow of one store stay within one quantum; a flow in debt is held to it once its debt is paid. The quantum is the one used, at most twice §2.10's figure (D4, D13, §9) | invariant | §6, RFC 3 S22; §8.4, "fairness" | T3.1, T3.8, T3.9 |
 | R24 | All flows have equal weight: `sched` takes no weight, and two flows with equal charges get equal turns | invariant | §2.9 | T3.1 |
 
 **Caps and shares**
@@ -181,7 +182,7 @@ them.
 | R25 | The per-store and per-flow cap is three quarters of the pool, rounded down, at least one worker, and with a pool of more than one at most the pool less one | invariant | §2.10, "per-store and per-flow cap" | T3.5 |
 | R26 | No dispatch gives a store more workers than its cap while another store has work waiting in the class being served, nor a flow more than its cap while another flow on its store has; a store or flow that only holds workers, with nothing queued, only has work in a lower class, or is only registered, binds nothing. A store already above its cap when another arrives is not preempted: it gets no further worker until it is below. A lone busy flow on a lone busy store uses the whole pool, and no worker idles while work of the class being served waits | invariant | §2.9; §6, RFC 3 S17 | T3.3, T3.8, T3.9 |
 | R27 | A store's dispatch is also gated by its per-store bound, which is inert while it equals the cap and, once lowered below the cap, binds whatever else waits. In E3 it always equals the cap; E4 lowers it to the throttle limit, never above the cap | invariant | §2.1; §2.9; §6, RFC 3 S17 | T3.3 |
-| R28 | No store gets a worker beyond its fair share, the pool divided by the stores holding or waiting for workers in the class being served, while another store with work waiting in that class holds none; a store holding no worker may always take its first, so a pool smaller than the waiting stores is served by the round robin (§9) | invariant | §2.9; §6, RFC 3 S17 | T3.3, T3.8, T3.9 |
+| R28 | No store gets a worker beyond its fair share, the pool divided by the stores holding or waiting for workers in the class being served, while another store with work waiting in that class holds none; a store holding no worker may always take its first, so a pool smaller than the waiting stores is served by the round robin (D13) | invariant | §2.9; §6, RFC 3 S17 | T3.3, T3.8, T3.9 |
 
 **Queues and the waiter bound**
 
@@ -244,21 +245,30 @@ already state with their two exceptions.
   - Deficits are per flow and class, so are debt and parking (R17). A flow whose deficit plus one
     quantum still does not cover its head's charge, after an overrun returned by `Done`, does not
     stay in the ring to be skipped: it is parked for the number of rounds that would cover it,
-    computed once, in a wheel of rounds per store and class, and rejoins at that round's start.
-    When a store's ring of a class is empty and its wheel is not, the wheel jumps to its next
-    occupied slot, found in O(1) through a 64-bit occupancy mask, so a lone flow in debt is served
-    again at once rather than waiting for rounds nobody makes. A rejoining flow is credited the
-    rounds it skipped at the quantum current when it rejoins; if the quantum fell meanwhile and
-    that leaves it short, it parks again for the rounds still needed, one more O(1) step. One
-    dispatch therefore never walks past a flow in debt. A `decision:` marker names the wheel, the
-    jump and the credit at rejoin.
+    computed once, in a wheel per store and class of 64 slots, one round each, with one bit per
+    slot in a 64-bit occupancy mask. A flow is parked at most 63 rounds ahead; one needing more is
+    parked at the cap and, still short when it rejoins, parks again, so a debt of *r* rounds costs
+    ⌈*r* / 63⌉ O(1) steps over its life, whatever the number of flows. A correction that large
+    comes from a slot held far past its charge, as under `Hold` or E4's floor of minutes against
+    a quantum of about 200 ms. Each slot holds its flows in an intrusive list, each with the round
+    it parked at. At a slot's round the list is spliced onto the store's ring in one step, and
+    each flow is credited the rounds it skipped, at the quantum current then, only at its own
+    turn, so *k* flows parked to one round cost one step at that round and one at each of their
+    turns, never *k* in one `Next`. When a store's ring of a class is empty and its wheel is not,
+    the wheel jumps to its next occupied slot, found in O(1) through the mask, so a lone flow in
+    debt is served again at once rather than waiting for rounds nobody makes. If the quantum fell
+    meanwhile and the credit leaves a flow short, it parks again for the rounds still needed, one
+    more O(1) step. One dispatch therefore never walks past a flow in debt. A `decision:` marker
+    names the wheel, its cap, the jump and the credit at a flow's turn. An overflow level, a
+    hierarchical wheel, was not chosen: the cap costs one re-park per 63 rounds of debt and no
+    second structure.
   - The fair-share rule tests only the store about to be served: if it holds *k* ≥ 1 workers and
     (*k* + 1) × *n* > the pool, *n* the stores holding or waiting in the class being served, and
     a store with work waiting in that class holds none, that store is served instead, from a list
     of such stores per class. A store holding no worker is never redirected (R28). Shares are
     compared exactly, never rounded.
   - A round is counted per level: the store ring gives one turn per store, and each store's turn
-    gives one flow on it its turn (R22, R23, §9).
+    gives one flow on it its turn (R22, R23, D13, §9).
   - Each operation on a queue, ring or wheel adds one to an unexported counter `sched` keeps as its
     own output, which its package's tests read (rule 4, RFC 3 §8.4).
 
@@ -268,14 +278,17 @@ already state with their two exceptions.
   estimate of the largest encoded block on the slowest store with work waiting, which changes as
   stores start and stop waiting. Keeping an exact maximum costs O(log s) per change. Instead each
   waiting store's estimate is bucketed by its highest set bit, a 64-bit mask holds the buckets in
-  use, and the quantum is the top bucket's upper bound: O(1), at least the RFC's figure, at most
+  use beside a count of waiting stores per bucket, so a store leaving a shared bucket clears its
+  bit only when the count falls to zero, and the quantum is the top bucket's upper bound: O(1), at least the RFC's figure, at most
   twice it. A `decision:` marker at the site names the rounding and that it keeps R19; R23 is
   judged against the quantum used (§9). Prior art: Linux's timer wheel buckets by magnitude (from
   memory).
 - **D5, the estimate is a running mean per store and direction.** Each ended transfer that held
   its slot for a positive time and moved at least one byte, whatever its outcome, folds its bytes,
   from the `Meter` T3.5 passes in (E1's surface, RFC 3 §2.4), and its worker-time, from the
-  injected clock, into a mean with weight one eighth; a transfer that ended in no time, as under
+  injected clock, into two means with weight one eighth, one of bytes and one of worker-time,
+  divided to give the rate; a mean of per-transfer rates would let small ranged fetches inflate
+  the quantum; a transfer that ended in no time, as under
   `Hold` in a bubble, or moved no byte, as one failing before its first, is not folded. The rate
   is integer bytes per second, at least one; `sched` computes a transfer's charge at dispatch as
   its size, capped at the largest encoded block, over its store's rate, at least one nanosecond,
@@ -300,7 +313,13 @@ already state with their two exceptions.
   ranged after `Close` yields one `remote.ErrInvalid` and ends. Counting callers rather than
   slots is what makes it wait for E4's slow-tail try, which outlives its slot, and for a stream
   its caller is still reading. A call racing `Close` either enters before it and is waited for,
-  or is refused. No marker. Prior art: `net/http.Server.Shutdown`, which refuses new work and waits for active
+  or is refused. A flow's closed flag is set by `Flow.Close` and read by `admit` under the half's
+  lock, so a call racing `Flow.Close` is either queued first and then refused by it, or refused in
+  `admit`; `sched`'s `Add` on an unknown or closed `FlowKey` refuses as `closed`. `Unregister`
+  drops the store from the registry at once and does not wait for the transfers `Flow.Close` let
+  finish: each one's `Done` returns its slot and folds nothing into the dropped store's rate, and
+  the last calls `RemoveStore`. The store's owner, which closed the flows, waits for its own
+  callers to return before it drops the `Store`. No marker. Prior art: `net/http.Server.Shutdown`, which refuses new work and waits for active
   connections (from memory).
 - **D7, displacement scans, and takes the lowest class first.** RFC 3 §2.9 names the youngest
   queued transfer of the flow holding the most waiters, of the same class or a lower one than the
@@ -311,7 +330,8 @@ already state with their two exceptions.
   - Victims come only from flows other than the caller's that are at or above their share, so no
     flow below its share is ever refused for the bound (RFC 3 S20). The RFC's fullest flow is
     always one of them, since the caller is below its share and the bound is full. Among them the
-    fullest one holding a displaceable entry is chosen, ties to the lowest `FlowKey`; within it
+    fullest one holding a displaceable entry is chosen, ties to the first `FlowKey` after the last
+    victim's, wrapping, so no one flow is always displaced first; within it
     the lowest class first (speculation, then background, then demand), the youngest within that.
   - A call under its share for which no such flow holds a displaceable entry (each holds only
     waiters of a higher class or, from E6, joined callers) is refused as `waiters_full`. RFC 3
@@ -335,7 +355,15 @@ already state with their two exceptions.
   or when its own queue is full. `Add` reports why: a refused call gets its reason (`queue_full`
   or `waiters_full`), and `sched` sets the reason on each entry it refuses in the call's place
   (`displaced` or `evicted`) or at `CloseFlow` (`closed`), so `pool` counts each under R38's
-  `reason` and names it in the victim's error. Prior art: none found.
+  `reason` and names it in the victim's error. One flow can reach D7's refused case on its own:
+  in the fetch half, a flow at or above its share whose demand queue is full evicts speculation,
+  its own included, until its demand fills the bound; every other flow's background call is then
+  refused as `waiters_full`, since no flow at its share holds anything of background's class or
+  lower. A demand under its share still finds a same-class victim, and uploads run in the other
+  half, so what is refused is background fetches, relocation reads among them. The `decision:`
+  marker names this. Limiting eviction past a full own queue to flows under their waiter share
+  would close it, and narrows RFC 3 §4.4, so §9 leaves it to the RFC's owner. Prior art: none
+  found.
 - **D9, the fixed values live in one table, each landing with its consumer.** `pool/fixed.go`
   holds RFC 3 §2.10's table with the RFC's `decision:` note above it. E3 writes the values it
   reads: the cap, the queue multiple, the waiter multiple and the class order, and the quantum's
@@ -387,12 +415,39 @@ already state with their two exceptions.
   The test clock adapter lives in `export_test.go`; production keeps E1's real-clock ban. The plan's
   D3 chose `pkg/sim`'s `TestClock` and rejected `synctest` because "its bubble cannot share
   `pkg/sim`'s clock with the other components"; that holds for the composed node, not for a
-  syncer row over the in-memory store, which composes nothing else. Prior art: the repository's
-  `internal/adapter/core`, whose tests use `synctest` on `feat/storage-v2`. Not chosen: the
+  syncer row over the in-memory store, which composes nothing else. Prior art:
+  `pkg/engine/close_bubble_test.go` on `feat/storage-v2`, which runs the engine's `Close` checks
+  in a `synctest` bubble beside `pkg/sim`'s clock, and `internal/adapter/core`, whose tests use
+  `synctest` too. Not chosen: the
   `TestClock` with an idle wait counting the pool's parked goroutines and a parked count on the
   wrapper, which had three holes to close (a wait woken by its context, a goroutine not yet
   inside the syncer, a goroutine blocked outside both counts) at about 2 man-days more. No
   marker.
+- **D13, RFC 3's S17, S18, S22 and the "§2.9 no starvation" row read as this epic checks them.
+  Accepted by the user, 2026-11-26; the text lands with T3.8's pull request.** Each literal text
+  is false in a reachable state of the design §2.9 itself states (R15, R22, R23, R26, R28):
+  - S17: "No dispatch gives a store more workers of a half than its cap while another store has
+    work waiting in the class being served, nor more than its throttle limit; …; and no store
+    holding a worker gets another beyond its fair share while another store with work waiting in
+    that class holds none." Without the class, a store with only speculation waiting caps a store
+    whose demand it cannot overtake, and workers idle (pool 8, cap 6: 2 idle). Without "holding a
+    worker", a pool of 1 with two stores waiting breaks it on every dispatch. Checked at dispatch,
+    since a lone store above its cap when another arrives is not preempted (§2.9: "the cap binds
+    from then on").
+  - S18 and §2.9's round: "A round gives one turn to each store with work waiting in the class,
+    and each store's turn to one of its flows in turn." With eight flows on store A and one on B,
+    a flow on A waits 15 turns, where a flat round allows 8. And "unless its flow is in debt",
+    since a correction larger than a quantum (§2.9) keeps a flow from dispatching for more than
+    one round.
+  - S22: "over a round, stores of one class with work waiting, and the flows on one store, hold
+    workers for times within one quantum of each other." Over a flat round, store B's lone flow
+    holds about eight quanta against one for each of A's eight flows.
+  - §7.2's "§2.9 no starvation" row crosses halves: it saturates flow A with uploads and issues a
+    fetch on flow B, which runs in the fetch half and starts at once whatever the upload scheduler
+    does, while A, alone in its half, holds the whole pool by §2.9's lone-flow rule rather than
+    its cap. The row gains its one-half form, which T3.9 also runs: "Saturate flow A with uploads
+    to a store whose puts take seconds; issue one upload on flow B; assert it starts within one
+    round and that from then on flow A never holds more than its cap."
 
 ## 5. Target tree
 
@@ -495,7 +550,9 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
     flow or store left with nothing waiting leaves its ring; `RemoveStore` drops a store with no
     flow.
   - Operations per `Next` are the same with 1, 10, 100 and 1,000 flows waiting, with every flow
-    fresh and with every flow in debt.
+    fresh and with every flow in debt, and with 1, 10, 100 and 1,000 stores of one flow each.
+  - Flows parked to one round rejoin in one step at that round, each credited at its own turn; a
+    flow needing more than 63 rounds is parked at the cap and parks again until its debt is paid.
   - `sched` imports only the standard library; E1's import test holds it.
 - **Tests:** at `Next`, which T3.5's dispatch consumes, as table tests of `Add`, `Next` and `Done`
   sequences (no double). A demand queued behind a thousand background entries comes first
@@ -511,9 +568,15 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
   `Next` returns `false`, and a second `Remove` of a refused entry changes no count (catches a
   double unlink). Eight flows on store A and one on B: B is served every other turn (catches
   no store level, R21). The counter's operations for one `Next` at 1, 10, 100 and 1,000 waiting
-  flows, fresh and in debt, equal (catches a scan or a skip past indebted flows, R20). D4's
+  flows, fresh and in debt, and at 1, 10, 100 and 1,000 stores, equal (catches a scan or a skip
+  past indebted flows, R20). Five hundred flows parked to one round: the operations of the `Next`
+  at that round equal those with one parked flow (catches a rejoin that walks the slot, R20). One
+  flow whose overrun needs 200 rounds beside a second flow with work: it parks at the cap, parks
+  again, and is next dispatched at the round its debt is paid (catches a wheel indexed past its 64
+  slots, R17). D4's
   buckets: the quantum is at least the largest estimate and at most twice it, for estimates across
-  every bucket and at exact powers of two (R19).
+  every bucket and at exact powers of two, and after a store leaves a bucket another still holds
+  (catches a bit cleared too early, R19).
 
 ### T3.2 The registry and the lifecycle
 
@@ -558,6 +621,8 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
     empties again, the first is given the next free slot at once.
   - With a store holding 6 of 8 and a second store waiting with none, the next free slot goes to
     the second.
+  - Store A holds 5 of 8, above its share of 4 and below its cap of 6, store B waits with none, and
+    A is next in the ring: the next free slot goes to B.
   - A pool of 1: the cap is 1, and a second flow waits for the one slot.
   - Pool 8, cap 6: store A holds 8 demand fetches with more demand queued, and store B queues
     only a `Prefetch`. Each slot A frees goes to A's demand; none idles, and B's speculation waits
@@ -567,8 +632,8 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
 - **Tests:** at `Next`, as tables (no double). Each criterion above as a case, each with the wrong
   design it catches: a cap keyed on registered stores, or on stores holding a worker, which idles a
   quarter of the pool (R26); a capped store that rejoins only when its own transfer ends, which
-  idles a slot after the other store drains (R26); a cap alone, which lets the slow store keep
-  three quarters while the other waits (R28); caps and shares counted across classes, which idles
+  idles a slot after the other store drains (R26); a cap alone, which gives A its sixth slot in
+  the 5-of-8 case (R28); caps and shares counted across classes, which idles
   2 of 8 workers in the case of a lower class waiting (R26). The bound read both ways: as a gate
   only while another store waits, which lets a throttled lone store run the whole pool, and as a
   gate always equal to the cap, which stops a lone store at 6 of 8 (R27).
@@ -644,6 +709,8 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
     the next caller is served.
   - `Flow.Close` with three queued and two running uploads: the three fail with `remote.ErrInvalid`
     and count under `closed`, the two finish; `Close` returns only after the last caller leaves.
+  - `Flow.Close` with two uploads running, then `Unregister`: it succeeds, the two finish and
+    return their slots, and the store leaves the half's `sched` after the last.
   - `Upload` returns `attempt`'s error unwrapped and calls it exactly once.
   - Every wait the half makes is on `Config.Clock`; E1's real-clock scan still passes.
   - `Stats` reports R38's counts, read without the half's lock: a `Stats` call returns while a
@@ -660,8 +727,11 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
   fake instant its entry is dispatched, over many seeds of which wake-up the `select` takes: the
   pool's busy count returns to zero every time (catches a `Remove` that drops a granted slot). An
   upload under `Hold` ending at the instant it started: the rate is unchanged and no charge is
-  zero (catches D5's divide by zero). Under `internal/prof`'s leak check, no queued caller
-  outlives `Close`.
+  zero (catches D5's divide by zero). `Flow.Close` racing a thousand `Upload`s under `-race`: each
+  is refused as `closed` or runs, and none is left queued (catches a closed flag read outside the
+  half's lock). `Unregister` after `Flow.Close` with uploads running, then their `Done`: no slot
+  is lost and `RemoveStore` runs after the last (catches a store removed with entries running).
+  Under `internal/prof`'s leak check, no queued caller outlives `Close`.
 
 ### T3.6 The single-attempt `Fetch` and `Prefetch`
 
@@ -739,12 +809,15 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
 - **Deliverables:** `model_test.go`, package `sched_test`: a reference written from RFC 3 §2.9 as
   plain loops over slices, O(n) per step, importing only the standard library and `sched`; a
   property test over seeded sequences (kind 1) of arrivals, classes, charges, cancellations, ends
-  with their held time, and flow closes; after every step the two agree on the entry dispatched,
+  with their held time, and flow closes. The model derives the quantum as D4 does and credits a
+  parked flow as D3 does, its 63-round cap included; everything else is written from §2.9. After
+  every step the two agree on the entry dispatched,
   and RFC 3 S1, S3, S13, S17, S18, S20 and S22 hold as this epic reads them: S17 but its throttle
   clause, checked at each dispatch rather than after an arrival, per class, with a store's first
   worker exempt from the fair share (R26, R28); S18 and S22 with a round counted per level, and a
-  flow in debt exempt until its debt is paid (R22, R23); S20 with D7's refused case named. §9
-  proposes the RFC text for S17, S18 and S22; S20's was accepted (D7). `fuzz_test.go`'s `FuzzSched` over the same steps, its seeds committed. Its command
+  flow in debt exempt until its debt is paid (R22, R23); S20 with D7's refused case named. This
+  pull request lands D13's accepted RFC text for S17, S18, S22 and the "§2.9 no starvation" row,
+  and S20's (D7) lands with T3.4's. `fuzz_test.go`'s `FuzzSched` over the same steps, its seeds committed. Its command
   in the `fuzz` suite in `test/suites.yaml` and a line in RFC 3's suites paragraph. Consumed by
   every later change to `sched`, E4's bound and E6's joins among them.
 - **Acceptance criteria:**
@@ -753,9 +826,10 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
   - A failing sequence is shrunk by `go test -fuzz`, and its input committed under
     `testdata/fuzz/FuzzSched/`.
   - The fuzz target runs in the nightly `fuzz` suite and its seeds in `unit`.
-- **Tests:** at `sched`'s API, which `pool` consumes. Each of six faults planted in `sched` for the
-  check, one per rule (class order, store level, deficit reset, per-flow cap, fair share,
-  displacement), fails the property test within the seeded runs, and is reverted (rule 10). No
+- **Tests:** at `sched`'s API, which `pool` consumes. Each of eight faults planted in `sched` for
+  the check, one per rule (class order, store level, deficit reset, per-flow cap, fair share,
+  displacement, the waiter bound, the pool limit), fails the property test within the seeded runs,
+  and is reverted (rule 10). No
   double: the model is a second implementation the test compares against, never answering for
   `sched`.
 
@@ -773,7 +847,7 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
   - "No starvation", in both forms. As RFC 3 states it, B's fetch starts at once, since it runs in
     the fetch half, which A's uploads do not touch (R3). Within one half, where the row has its
     force: A saturating the upload half alone holds the whole pool (R26); B's one upload then
-    starts within one round, and from B's arrival no dispatch takes A past its cap (§9).
+    starts within one round, and from B's arrival no dispatch takes A past its cap (D13).
   - Worker-time per flow within one quantum when one flow's transfers take four times as long per
     byte, and bytes per flow within one quantum when they do not.
   - The healthy store's flow within one round and the slow store at its cap; with the slow store
@@ -854,33 +928,10 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **RFC 3 S17, S18 and S22 read narrower here than they are written** (R15, R22, R23, R26, R28),
-  each because the literal text is false in a reachable state of the design §2.9 itself states.
-  Proposed RFC 3 text, raised in review after the user's rulings of 2026-11-26, to be confirmed
-  in T3.8's pull request, with which it lands:
-  - S17: "No dispatch gives a store more workers of a half than its cap while another store has
-    work waiting in the class being served, nor more than its throttle limit; …; and no store
-    holding a worker gets another beyond its fair share while another store with work waiting in
-    that class holds none." Without the class, a store with only speculation waiting caps a store
-    whose demand it cannot overtake, and workers idle (pool 8, cap 6: 2 idle). Without "holding a
-    worker", a pool of 1 with two stores waiting breaks it on every dispatch. Checked at dispatch,
-    since a lone store above its cap when another arrives is not preempted (§2.9: "the cap binds
-    from then on").
-  - S18 and §2.9's round: "A round gives one turn to each store with work waiting in the class,
-    and each store's turn to one of its flows in turn." With eight flows on store A and one on B,
-    a flow on A waits 15 turns, where a flat round allows 8. And "unless its flow is in debt",
-    since a correction larger than a quantum (§2.9) keeps a flow from dispatching for more than
-    one round.
-  - S22: "over a round, stores of one class with work waiting, and the flows on one store, hold
-    workers for times within one quantum of each other." Over a flat round, store B's lone flow
-    holds about eight quanta against one for each of A's eight flows.
-- **RFC 3 §7.2's "§2.9 no starvation" row crosses halves.** It saturates flow A with uploads and
-  issues a fetch on flow B, which runs in the fetch half and starts at once whatever the upload
-  scheduler does, while A, alone in its half, holds the whole pool by §2.9's lone-flow rule rather
-  than its cap. T3.9 runs it as written and in one half; proposed row text: "Saturate flow A with
-  uploads to a store whose puts take seconds; issue one upload on flow B; assert it starts within
-  one round and that from then on flow A never holds more than its cap."
-
+- **One flow can fill a fetch half's waiter bound with demand** (D8). Limiting eviction past a
+  full own queue to flows under their waiter share would keep background fetches admitted, and
+  narrows RFC 3 §4.4's "a demand that finds its queue full evicts"; it is the RFC owner's call.
+  Until then D8 follows §4.4 and its marker names the case.
 - **The quantum may be up to twice RFC 3 §2.10's figure** (D4), and R23's "within one quantum" is
   judged against the quantum used. §2.10 says nothing is gained above the figure, not that more is
   wrong; an exact maximum costs O(log s) per change of the waiting set.
@@ -889,9 +940,11 @@ A suggestion only: one pull request per subtask works as well.
   RFC 4 plan epic 1's stub `codec.New` builds none. So T3.2, T3.5, T3.9 and T3.10 test the
   unexported registry and halves through `export_test.go`, and only T3.6 and T3.7 go through
   `Register`.
-- **The plan's epic 3 outline moved in three places.** E3 writes only the fixed values it reads
-  (D9); the hook for E4's throttle limit is the per-store bound's gate, whose setter E4 adds; joins
-  in the model are E6's (R33). The plan's D2 still says epic 2 lands the lifecycle rows, which
+- **The plan's epic 3 outline moved in four places**, which is why this epic has 10 subtasks and
+  32.25 man-days against the plan's 11 and 35. E3 writes only the fixed values it reads (D9); the
+  hook for E4's throttle limit is the per-store bound's gate, whose setter E4 adds; joins in the
+  model are E6's (R33); and "§1.3 unregister"'s health state is E5's with its probes (R11), where
+  the plan's epic 3 "Done when" lists it here. The plan's D2 still says epic 2 lands the lifecycle rows, which
   E2's D7 moved to T3.7.
 - **The least certain estimates** are T3.5 (the lock between dispatch, `ctx` ends and `Close`
   under `-race`) and T3.8 (a model whose agreement on "who runs next" needs `sched`'s tie-breaks
@@ -899,5 +952,5 @@ A suggestion only: one pull request per subtask works as well.
 - **The store level's round robin is one flow turn per store visit.** RFC 3 §2.9 says the store
   level uses "the same round robin" without a deficit of its own. Each visit gives one flow on the
   store its turn, so a store's share is one turn per round whatever its number of flows, which is
-  what the "§2.9 store level" row asserts, and why a round is counted per level (R22, above).
+  what the "§2.9 store level" row asserts, and why a round is counted per level (R22, D13).
   T3.1 writes this at the site.
