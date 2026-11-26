@@ -489,8 +489,11 @@ already state with their two exceptions.
     upload runs, B has nothing queued and A's cap binds nothing (R26). §7.2's "§2.9 store level" and
     "§2.9 lone flow" rows carry the same false clause ("the slow store never holds more than its
     cap", "from then on neither flow holds more than its cap") and are narrowed the same way: "while
-    the other store (flow) has work waiting, no dispatch takes it past its cap". So is §7.4's B3,
-    "the first never above its cap"; whether B3 keeps crossing halves is open (§9).
+    the other store (flow) has work waiting, no dispatch takes it past its cap". §7.4's B3 stops
+    crossing halves (the user's decision, 2026-11-26): its second flow issues uploads, so the cap
+    clause tests the upload scheduler, narrowed the same way ("while the second flow has work
+    waiting, no dispatch takes the first past its cap"); the fetch wait beside upload load stays as
+    a separate reported figure.
 
 ## 5. Target tree
 
@@ -995,10 +998,11 @@ A suggestion only: one pull request per subtask works as well.
   Revisit when benchmarks show other flows' background fetches starved: `waiters_full` refusals
   under R38's `reason` while one flow's `syncer_waiters` holds most of the bound (R38 reports it
   per flow; the refusal counter has no flow label).
-- **B3 crosses halves** (D13). RFC 3 §7.4's B3 saturates uploads on one flow and measures a
-  second flow's fetches, which run in the other half, so its cap clause measures nothing and its
-  wait reads the fetch half alone. Whether B3 moves into one half, or keeps measuring a fetch
-  beside upload load and drops its cap clause, is the user's to decide; E9 owns the benchmark.
+- **B3 crossed halves; decided** (D13). RFC 3 §7.4's B3 saturated uploads on one flow and
+  measured a second flow's fetches, which run in the other half, so its cap clause measured
+  nothing. The user decided on 2026-11-26 that B3's second flow issues uploads, so the cap clause
+  tests the upload scheduler, and the fetch wait beside upload load stays as a separate reported
+  figure. The RFC 3 text lands with T3.8's pull request; E9 owns the benchmark.
 - **The quantum may be up to twice RFC 3 §2.10's figure** (D4), and R23's "within one quantum" is
   judged against the quantum used. §2.10 says nothing is gained above the figure, not that more is
   wrong; an exact maximum costs O(log s) per change of the waiting set.
