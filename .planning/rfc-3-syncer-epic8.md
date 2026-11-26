@@ -417,4 +417,4 @@ A suggestion only: one pull request for both works as well, once E1's T1.3 has l
 - **The least certain estimate is T8.2.** `settings.SelfKey` has one production user on
   `feat/storage-v2`, and the node's `tableKeys` probe has never read a node-scoped section; either
   may need a fix in `pkg/settings` or in the probe.
-- **The plan's figure for this epic is 2 subtasks, 5 man-days**; this document finds 4 man-days.
+- **The RFC 3 plan's figure for this epic is 2 subtasks, 5 man-days**; this document finds 4 man-days.
