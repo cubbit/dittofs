@@ -157,23 +157,30 @@ fi
 exec 9<"$CACHE"
 flock -n 9 || { echo "not run: another run holds $CACHE" >&2; exit 75; }
 
-# A scenario runs after the same setup. Each of its commands is traced as
+# A scenario runs after the same setup, which exits 3 when it fails, so a run that stopped in setup
+# is told apart from a scenario's own failure. Each of the scenario's commands is traced as
 # "+ <epoch seconds> <line> <command>".
-NODE="$SETUP
+NODE="set -E; trap 'exit 3' ERR
+$SETUP
+trap - ERR; set +E
 $(cat <<'RUN'
-USER=tester%tester-secret bash -c 'PS4="+ \$EPOCHREALTIME \$LINENO "; set -euxo pipefail; . /scenario.sh'
+USER=tester%tester-secret bash -c 'PS4="+ \$EPOCHREALTIME \$LINENO "; set -euxo pipefail; . /scenario.sh' || exit 1
 RUN
 )"
 
 FAILED=0
+SETUP_FAILED=0
 for SCENARIO in "${SCENARIOS[@]}"; do
     rm -rf "$CACHE/run"
     mkdir -p "$CACHE/run/logs"
     timeout "${SCENARIO_TIMEOUT:-900}" "${P[@]}" run --rm -i --log-driver k8s-file "${IMAGES[@]}" \
         -v "$HERE/$SCENARIO:/scenario.sh:ro" -e LOGS=run/logs \
         --name "dittofs-${SCENARIO%.sh}" --replace \
-        docker.io/library/ubuntu:26.04 bash -s <<<"$NODE" >"$CACHE/run/run.log" 2>&1 && RESULT=pass || RESULT=fail
+        docker.io/library/ubuntu:26.04 bash -s <<<"$NODE" >"$CACHE/run/run.log" 2>&1 && CODE=0 || CODE=$?
+    if test "$CODE" -eq 0; then RESULT=pass; else RESULT=fail; fi
     report "$SCENARIO" "$RESULT"
     test "$RESULT" = pass || FAILED=$((FAILED + 1))
+    test "$CODE" -ne 3 || SETUP_FAILED=$((SETUP_FAILED + 1))
 done
-test "$FAILED" -eq 0
+# 0 when every scenario passed, 3 when every failure stopped in setup, 1 otherwise.
+test "$FAILED" -eq 0 || { test "$SETUP_FAILED" -eq "$FAILED" && exit 3; exit 1; }
