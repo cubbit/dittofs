@@ -14,17 +14,22 @@ import (
 )
 
 // storeRows are the rows of the remote store, namespace, adapter and
-// setting commands. Until the settings table declares the remote store's,
-// namespace's and adapters' sections, the server refuses every write of
-// them, so a row reads what the test wrote through the store, and the
-// writes are rows of their refusal.
+// setting commands. Until the settings table declares the remote store's and
+// namespace's sections, the server refuses every write of them, so a row
+// reads what the test wrote through the store, and the writes are rows of
+// their refusal. It declares the adapters' sections, so their write is taken.
 func storeRows() []row {
 	return []row{
 		{name: "setting set of a key the settings table does not declare prints the refusal and exits non-zero", run: func(t *testing.T, run Runner, _ Server, _ *client.Client) {
 			refused(t, run, "unknown_key", "clisuite.undeclared", "setting", "set", "installation", "clisuite.undeclared", "1")
 		}},
-		{name: "adapter set prints the refusal until the settings table declares the adapters", run: func(t *testing.T, run Runner, _ Server, _ *client.Client) {
-			refused(t, run, "unknown_key", "adapters.nfs.enabled", "adapter", "set", "nfs", "--enabled")
+		// The adapter stays disabled, so the node binds no port for the write.
+		{name: "adapter set writes a setting the settings table declares", run: func(t *testing.T, run Runner, _ Server, c *client.Client) {
+			mustRun(t, run, "adapter", "set", "nfs", "--setting", "port=23049")
+			got, err := c.Adapters().Get(t.Context(), "nfs")
+			if err != nil || got.Spec.Enabled || string(got.Spec.Settings["port"]) != "23049" {
+				t.Errorf("adapter set nfs --setting port=23049: read back %+v (%v), want port 23049, disabled", got.Spec, err)
+			}
 		}},
 		{name: "store create prints the refusal until the settings table declares the remote store", run: func(t *testing.T, run Runner, _ Server, _ *client.Client) {
 			refused(t, run, "unknown_key", "remote.credential", "store", "create", "--setting", "remote.endpoint=https://s3.example.com", "--credential-file", secretFile(t, "a password\n"))

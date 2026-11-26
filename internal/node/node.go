@@ -104,6 +104,10 @@ type Node struct {
 	// adapting is set by start step 9: from then on apply calls the slots.
 	// Written before reconcile's loop starts, and read by apply alone.
 	adapting bool
+	// limited is set once the connection count was set from the published
+	// connection_limit: until then apply gives no slot an adapter to run.
+	// Written and read by apply alone.
+	limited bool
 	// snap is the one deadlined, single-flight engine.Stats fetch the engine
 	// series, the journal series and the health evaluator read.
 	snap *snapshot
@@ -250,8 +254,9 @@ func build(cfg Config, in seams) (_ *Node, err error) {
 	// table refuses both count on the node itself, RFC 13 §8's series, never
 	// in a registry the exporter does not scrape.
 	n := &Node{
-		cfg:   cfg,
-		rec:   newReconciler(newTable().WithMetrics(cfg.Metrics), newReaches()),
+		cfg: cfg,
+		rec: newReconciler(
+			newTable(cfg.Bootstrap.Node.ID).WithMetrics(cfg.Metrics), newReaches()),
 		sweep: newSweeper(),
 	}
 	if n.meta, err = kvstore.Open(context.Background(), cfg.KV, settingSchema()); err != nil {

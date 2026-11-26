@@ -16,7 +16,6 @@ import (
 	"github.com/cubbit/dittofs/internal/sidecar"
 	"github.com/cubbit/dittofs/internal/vfs"
 	"github.com/cubbit/dittofs/pkg/adapter"
-	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/engine"
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/identity"
@@ -328,18 +327,6 @@ func (n *Node) AppliedIdentity() iidentity.State {
 // version, as node status reports it.
 func (n *Node) AppliedKeytab() (entity.SecretRef, uint64, []identity.KeytabName) {
 	return n.identity.AppliedKeytab()
-}
-
-// SetNFS has apply hand the NFS slot enabled and s, as the adapter's
-// settings section will. Safe while the node runs: a pass reads it once a
-// counter moves or a retry is due.
-func (n *Node) SetNFS(enabled bool, s settings.NFS) {
-	n.nfs.want.Store(&desired[settings.NFS]{enabled, s})
-}
-
-// SetSMB has apply hand the SMB slot enabled and s, as SetNFS does NFS's.
-func (n *Node) SetSMB(enabled bool, s settings.SMB) {
-	n.smb.want.Store(&desired[settings.SMB]{enabled, s})
 }
 
 // SetSidecar has the node's runner drive sc, and no other sidecar. Call it
