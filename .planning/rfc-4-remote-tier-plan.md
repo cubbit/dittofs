@@ -7,12 +7,12 @@ fault transport, and the tests and benchmarks of §7. What waits for its first c
 location's calls and the `immutable` mode, for RFC 26; the `Recheck` calls, for RFC 9) is
 deferred, and RFC 4 §4.1 is amended in this plan's pull request to say so (§6.1); the same
 pull request amends §4.3 for RFC 3's put (D3; its follow-up gives §1.2, §4.1, §4.3 and §4.8 the
-syncer's seam, `codec.Store`, `Chunk`, `ChunkRange`, `Meter` and `ErrMalformed`) and §7.1, §7.2 and §7.4 so the fault
-transport never pretends a setting (D7), and §7.4's in-memory row for the rows that store can
-run (epic 2), and Appendix C.1 and C.3 to name the pinned class, HTTP/1.1 and the trust roots
-(epics 4 and 5); RFC 13 Appendix B's storage-class default becomes `STANDARD`, pinned by the S3
-profile, Appendix B gains the remote store's trust roots (epic 7), and RFC 13 §9's suites
-paragraph follows amended §7.2. Related RFCs,
+syncer's seam, `codec.Store`, `Chunk`, `ChunkRange`, `Meter` and `ErrMalformed`) and §7.1, §7.2
+and §7.4 so the fault transport never pretends a setting (D7), and §7.4's in-memory row for the
+rows that store can run (epic 2), and Appendix C.1 and C.3 to name the configured class, HTTP/1.1
+and the trust roots (epics 4 and 5); RFC 13 Appendix B's storage-class default becomes
+`STANDARD`, sent explicitly when none is configured (RFC 4 §4.11), Appendix B gains the remote
+store's trust roots (epic 7), and RFC 13 §9's suites paragraph follows amended §7.2. Related RFCs,
 each **constraints only**, and each of RFC 2, 3 and 5 with a plan of its own written at the same
 time:
 - [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md), the data lifecycle: the vocabulary,
@@ -835,8 +835,9 @@ scrape; the alert rule names a series that exists; the import walk shows no pack
   refused there (RFC 13 §6); the carver's constructor keeps its own refusal as a defence (RFC 2
   §5.2, the RFC 2 plan's epic 5), which cites this epic for the setting, moved from
   `internal/node/api/res_stores.go`, the block format version's key marked with the RFC 13
-  plan's `FormatVersion` option (its epic 3's D6); the storage class's default
-  `STANDARD`, sent explicitly when none is configured (RFC 4 §4.11), as RFC 13 Appendix B, amended in this pull request, says;
+  plan's `FormatVersion` option (its epic 3's D6); the storage class's default `STANDARD`, sent
+  explicitly when none is configured (RFC 4 §4.11), as RFC 13 Appendix B, amended in this pull
+  request, says;
   `remote.trust_roots`, the certificates that replace the system's roots for the endpoint (D9),
   with no key that skips verification; `remote.region`, the signing region, `us-east-1` when
   unset, as RFC 13 Appendix B, amended in this pull request, says. RFC 8 offload plan epic 21 registers them.

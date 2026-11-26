@@ -588,8 +588,9 @@ type ChunkRange struct {
 
 // Meter receives a transfer's wire bytes (RFC 3 §2.4): Moved with each count of
 // the encoded block's bytes sent or read, header and index included when the
-// transfer carries them, and Sent once a put's last byte has been sent. A nil func is skipped, so the
-// zero Meter meters nothing. It is two funcs and carries no behaviour of its own.
+// transfer carries them, and Sent once a put's last byte has been sent. A nil
+// func is skipped, so the zero Meter meters nothing. It is two funcs and carries
+// no behaviour of its own.
 type Meter struct {
 	Moved func(n int64)
 	Sent  func()
@@ -926,8 +927,9 @@ type Put struct{ /* ... */ }
 
 // Attempt is one try: it measures when it must, then sends the header and each
 // chunk encoded as it goes, in one remote Put. It calls m.Moved with each count
-// of the block's bytes sent, header and index included, and m.Sent after the last, and
-// returns nil only once the block is stored. Its method value is the attempt the syncer's Upload runs.
+// of the block's bytes sent, header and index included, and m.Sent after the
+// last, and returns nil only once the block is stored. Its method value is the
+// attempt the syncer's Upload runs.
 func (p *Put) Attempt(ctx context.Context, m remote.Meter) error
 
 // Stored returns each chunk's range in the encoded block and the census the
