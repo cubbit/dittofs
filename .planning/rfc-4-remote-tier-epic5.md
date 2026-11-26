@@ -2,13 +2,13 @@
 
 **Sources:** [RFC 4](../docs/internals/rfcs/rfc-4-remote-tier.md) §4.7 for a namespace's store
 (both probes and the health object), §4.11's open (the requirements on a backend's check, the
-claim read and handed back, the bounded re-list, the configured storage class and the archive rule),
-§4.12's `remote_capability` and the refused open's log, §5, §4.3's conditional put (measured,
-never used), §4.15's `decision:` note on the open calling the service outside the syncer, §6's
-R12 (its mutable half), §8 items 1 to 4 and 7, Appendix C.1's mutable rows, C.2's check and
-health keys, and C.4 steps 1 to 7 with its `decision:` note; the §7.1 rows named in §3 below,
-§7.2's measured-service profiles as the check must judge them, and §7.4's emulator row for the
-check. Cited, not owned: [RFC 3](../docs/internals/rfcs/rfc-3-syncer.md) §2.2 (the largest
+claim read and handed back, the bounded re-list, the configured storage class and the archive
+rule), §4.12's `remote_capability` and the refused open's log, §5, §4.3's conditional put
+(measured, never used), §4.15's `decision:` note on the open calling the service outside the
+syncer, §6's R12 (its mutable half), §8 items 1 to 4 and 7, Appendix C.1's mutable rows, C.2's
+check and health keys, and C.4 steps 1 to 7 with its `decision:` note; the §7.1 rows named in §3
+below, §7.2's measured-service profiles as the check must judge them, and §7.4's emulator row for
+the check. Cited, not owned: [RFC 3](../docs/internals/rfcs/rfc-3-syncer.md) §2.2 (the largest
 encoded block) and §2.8 (the syncer derives health from the probes' outcomes);
 [RFC 27](../docs/internals/rfcs/rfc-27-namespace-migration.md) §2.1 (what is done with the
 claim); [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §2.4 (entity labels);
