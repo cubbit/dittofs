@@ -28,17 +28,14 @@ transforms of different cost, for T7.3's costlier-transform case.
 collector exports T7.1's `InflightBytes`. Outside RFC 3's epics, RFC 8 offload plan epic 21
 passes the per-worker inputs T7.1 reads and registers the collector that reads them.
 
-**Builds on the recommended answers of the open breakdowns.** Epic 3 (#5940) waits on its D12
-(every check in a `testing/synctest` bubble) and its §2.9 sentence on a waiter bound with nothing
-displaceable; epic 4 (#5998) on its D3 jitter inputs, its floor row's last clause and S20's text
-for a requeued throttled transfer; epic 5 (#6001) waits only on epic 3's D12. This document
-assumes each is answered as its document recommends. A different answer to epic 3's D12 is known
-rework here: T7.3's detached case and T7.4 would drive `pkg/sim`'s `TestClock` through epic 3's
-fallback idle wait instead of a bubble, about 0.5 man-days across them. The other answers change
-nothing here.
+**Builds on the user's rulings of 2026-11-26 on the open breakdowns,** each as its document
+recommended: epic 3's D12 (every check in a `testing/synctest` bubble) and its §2.9 sentence on a
+waiter bound with nothing displaceable; epic 4's D3 jitter inputs, its floor row's last clause and
+S20's text for a requeued throttled transfer.
 
-**Pending the user's answer:** D6, whether the fit to the transfers pool is built here; and three
-RFC wordings, the header cap, §8.6's place for the heap check, and §2.12's "bytes held" (§9).
+**Decided by the user, 2026-11-26:** D6 defers the fit to the transfers pool, and this pull
+request amends the plan's D6 and its epic 7 to match; the three RFC 3 wordings of D1, D3 and D7
+are accepted, each landing with the subtask pull request that needs it.
 
 ---
 
@@ -189,7 +186,7 @@ them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R20 | No upload and no fetch allocates per chunk once warm, buffers being reused; the count, taken against the in-memory store, gives the same answer on any machine | bound | §8.4, "allocations"; §7.4, B1 | T7.2 |
-| R21 | The allocation count the race detector skews runs in an option of `unit` of its own, the syncer's allocation gate, on pull requests; the memory and fault-sweep checks run in `unit`. The heap check, which the race detector also skews, runs in the allocation gate's option instead, and §9 proposes the RFC text (D3) | invariant | §8.6 | T7.2, T7.3, T7.4 |
+| R21 | The allocation count the race detector skews runs in an option of `unit` of its own, the syncer's allocation gate, on pull requests; the memory and fault-sweep checks run in `unit`. The heap check, which the race detector also skews, runs in the allocation gate's option instead, and the user accepted the RFC 3 §8.6 text for it (D3) | invariant | §8.6 | T7.2, T7.3, T7.4 |
 
 RFC 3's other obligations in these sections belong elsewhere. The header cap's refusal before
 allocation, and a cancelled call dropping its buffers, are the codec's (RFC 4 plan epic 6). The
@@ -214,8 +211,9 @@ node passes the pool's size (D6).
   reported by E6's `DetachedBuffers`, not here: it belongs to a caller, not to a transfer. By
   construction the gauge never exceeds the bound, so it shows how much of the bound is in use, not
   a breach; T7.3's heap check is what ties the reservation to the heap. A `decision:` marker at
-  the computation says both. RFC 3 §2.12's "bytes held" reads as a measurement, so §9 proposes
-  "bytes reserved". Not chosen: each transfer charged `min(figure, its size)`, which shows a small
+  the computation says both. RFC 3 §2.12's "bytes held" reads as a measurement, so its row
+  reads, as the user accepted (2026-11-26), "bytes reserved by transfers in flight, the
+  per-worker figure of §2.2 for each busy worker"; it lands with T7.1's pull request. Not chosen: each transfer charged `min(figure, its size)`, which shows a small
   block's real share but no bound states it; changing to it later changes one computation and no
   caller. Prior art: `golang.org/x/sync/semaphore`'s weighted reservation, from memory.
 - **D2, the snapshot reads a published registry and takes no lock.** E3's D11 has `Stats` walk
@@ -260,7 +258,9 @@ node passes the pool's size (D6).
     slack.
   - It skips under the race detector, which changes how much heap the runtime keeps
     (`prof.RaceEnabled`), and runs in `unit/syncer-allocs` (R21). A `decision:` marker at the slack
-    names each term.
+    names each term. RFC 3 §8.6 then reads, as the user accepted (2026-11-26), "…and an
+    allocation count and a heap check the race detector skews in an option of `unit` of its own,
+    the syncer's allocation gate, on pull requests"; it lands with T7.3's pull request.
 
   Prior art: `internal/prof`'s own heap check, which skips under the race detector for the same
   reason.
@@ -294,22 +294,26 @@ node passes the pool's size (D6).
 
   A `decision:` marker at the script says so. Prior art: SQLite's fault-injection loop, which fails
   the *n*th allocation or I/O for every *n* (from memory).
-- **D6, the fit to the transfers pool is not built. Pending the user's answer.** The RFC 3 plan's
+- **D6, the fit to the transfers pool is not built. The user's decision, 2026-11-26.** The RFC 3 plan's
   D6 has this epic build RFC 24 §7.2's reduction and refusal behind a pool-size field of `Config`,
   zero reducing nothing. RFC 3 §2.10 and RFC 24 §7.2 apply both rules only once the node passes the
   syncer the pool's size, RFC 3 §1.3 lands what has no caller with its first one, "never before",
   and no caller passes it: `pkg/resources` has no `Split`. E1's `Config` declares no such field,
   and its frozen-exports test fails on one added. So this epic follows the RFC: the counts are
   neither reduced nor refused, and a `decision:` marker at `New` says so and that the fit applies
-  once the node passes the transfers pool's size (RFC 24 §7.2). Building it now would cost about 1
-  man-day: an unexported pure `fit` of the pool size, the counts set and the per-worker figure,
-  with a table test, plus an amendment of E1's frozen `Config` and of RFC 3 §1.3's table. Prior
-  art: none found.
+  once the node passes the transfers pool's size (RFC 24 §7.2). Not chosen: building it now, about
+  1 man-day plus an amendment of E1's frozen `Config` and of RFC 3 §1.3's table. Prior art: none
+  found.
 - **D7, the header cap is the codec's bound, `codec.MaxHeaderLen(1)`.** RFC 4 §3.2 puts the
   census in the header, and RFC 4 plan epic 6's breakdown (#5942) puts the bound at 935,005 bytes,
   where RFC 3 §2.2's derivation from the chunk index alone gives about 41 KB. T7.3 sizes its bound
   from the codec's figure, which is what a worker's codec can hold; a bound sized from the smaller
-  one would fail on a header the codec accepts. The RFC text this leaves wrong is in §9. Prior art:
+  one would fail on a header the codec accepts. The user accepted the RFC text (2026-11-26), which
+  lands with T7.3's pull request: RFC 3 §2.2 reads "its header cap is `N` times one fixed-size
+  index entry, plus the census at its bound, plus the fixed fields: a constant of the format
+  version ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout))", and the per-worker figures in RFC 3
+  §2.2, §2.10 and RFC 24 §7.2 are recomputed from it (about 2.9 MiB per worker at the default
+  `Max`, nearer 1.6 GiB for 128 workers in each half with staging). Prior art:
   none found.
 
 ## 5. Target tree
@@ -506,28 +510,6 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **D6 is pending the user's answer: build the fit now, or follow the RFC and defer it.** The RFC
-  3 plan's D6 and its epic 7 **Done when** ("D6's reduction and refusal pass") ask for the fit;
-  RFC 3 §1.3 and §2.10, RFC 24 §7.2 and E1's frozen `Config` defer it to its first caller.
-  Recommended: defer (D6), as E1 already did, and amend the plan's **Done when** line once
-  answered. If the user keeps it, T7.1 gains about 1 man-day and this pull request amends E1's
-  surface and RFC 3 §1.3's table.
-- **RFC 3 §2.2, §2.10 and RFC 24 §7.2 understate the header cap, pending the user.** RFC 3 §2.2 and
-  §2.10 derive the cap from the chunk index alone, about 41 KB, while RFC 4 §3.2 puts the census in
-  the header and the codec's bound is 935,005 bytes (D7). RFC 3 §2.2's "about 2 MiB" at the default
-  `Max`, and RFC 24 §7.2's "about 2 MiB" and "about 1.2 GiB" for 128 workers in each half with
-  staging, then read about 2.9 MiB and nearer 1.6 GiB. Proposed text for RFC 3 §2.2: "its header cap
-  is `N` times one fixed-size index entry, plus the census at its bound, plus the fixed fields: a
-  constant of the format version ([RFC 4 §3.2](rfc-4-remote-tier.md#3.2%20Layout))", and the
-  figures recomputed in both RFCs. This pull request does not amend either.
-- **RFC 3 §8.6 puts the memory checks in `unit`, pending the user.** `unit` runs under `-race`,
-  which changes how much heap the runtime keeps, so the heap check skips there and runs in the
-  allocation gate's option (D3). Proposed text: "…and an allocation count and a heap check the
-  race detector skews in an option of `unit` of its own, the syncer's allocation gate, on pull
-  requests".
-- **RFC 3 §2.12's `syncer_inflight_bytes`, pending the user.** D1 reports the bytes reserved, which
-  never exceed the bound by construction. Proposed text for its row: "bytes reserved by transfers
-  in flight, the per-worker figure of §2.2 for each busy worker".
 - **E3's D11 changes under D2.** E3 walks the registry under its lock, which `OpenFlow` and
   `Flow.Close` also take; T7.1 replaces that walk with the published list, as E3's D11 says. If E3's breakdown
   adopts the list itself, T7.1 loses about 0.5 man-days.
