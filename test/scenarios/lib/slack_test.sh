@@ -100,6 +100,16 @@ check "a scenario run's messages are the bodies they always were" \
 {"channel":"C0TEST","text":":warning: *a.sh passed but was slow*","attachments":[{"color":"#ECB22E","text":"31 s (usually 3 s) line 12: x","mrkdwn_in":["text"]}]}
 {"channel":"C0TEST","text":":white_check_mark: *a.sh passes again*","attachments":[{"color":"#2EB67D","text":"host · commit `abc`","mrkdwn_in":["text"]}],"thread_ts":"2.000000","reply_broadcast":true}'
 
+# A one-line text is its title alone, with no attachment to repeat it.
+(
+    # shellcheck source-path=SCRIPTDIR source=slack.sh
+    . "$HERE/lib/slack.sh"
+    slack ":x: Nightly performance: scoring failed" 3.000000 >/dev/null
+)
+take
+check "a one-line message posts its text once" \
+    '{"channel":"C0TEST","text":":x: Nightly performance: scoring failed","thread_ts":"3.000000"}'
+
 # The day's thread: its parent is posted with the day's first result and reused all day; the next
 # day gets a parent of its own.
 # shellcheck source-path=SCRIPTDIR source=slack.sh

@@ -209,7 +209,7 @@ HELMIFY ?= $(LOCALBIN)/helmify
 KUSTOMIZE_VERSION ?= v5.7.1
 CONTROLLER_TOOLS_VERSION ?= v0.19.0
 
-#ENVTEST_VERSION is the setup-envtest tag to install: controller-runtime's version in go.mod (i.e. v0.25.2).
+#ENVTEST_VERSION is the setup-envtest tag to install: controller-runtime's version in go.mod.
 # decision: a tag, not controller-runtime's release branch. A branch is resolved again on every
 # install, and a moment after upstream tags a patch the module proxy can resolve it to the main
 # module, which holds no setup-envtest, so the install fails. A tag is one fixed version.

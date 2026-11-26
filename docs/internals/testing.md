@@ -556,7 +556,7 @@ test/harness/bin/dt hooks status
 | `pre-push` | builds the changed packages, and runs `dt run unit --packages` on those with tests | `DITTOFS_SKIP_PREPUSH=1` |
 
 `git commit --no-verify` and `git push --no-verify` skip them all. The pre-push hook compares
-with `DITTOFS_PREPUSH_BASE` (default `origin/develop`); on a branch based on another branch, set
+with `DITTOFS_PREPUSH_BASE` (default `origin/feat/storage-v2`); on a branch based on another branch, set
 it to that branch.
 
 ## Writing tests

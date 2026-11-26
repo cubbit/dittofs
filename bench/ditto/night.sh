@@ -435,12 +435,13 @@ finish() {
     rm -rf "$WORK/build" "$RUN"
     if ! python3 "$HERE/score.py" "$NIGHT" "$REPO" >"$NIGHT/slack.txt"; then
         echo ":x: Nightly performance: scoring failed, see $NIGHT/night.log" >"$NIGHT/slack.txt"
-        # A failure that repeats the last night's is not new: it replies in the open alert's thread.
+        # A failure that repeats the last posted night's is not new: it replies in the open alert's
+        # thread. Only a night that posts keeps the marker, so a smoke run cannot hide a failure.
         if test -e "$WORK/scoring-failed"; then echo same; else echo new; fi >"$NIGHT/alert"
-        touch "$WORK/scoring-failed"
+        test "$CALIBRATION" = yes || test "$SMOKE" = yes || touch "$WORK/scoring-failed"
         test "$rc" -ne 0 || rc=1
     else
-        rm -f "$WORK/scoring-failed"
+        test "$CALIBRATION" = yes || test "$SMOKE" = yes || rm -f "$WORK/scoring-failed"
     fi
     if test "$SMOKE" = no && test -s "$NIGHT/points.csv"; then
         test -s "$WORK/trend.csv" || head -1 "$NIGHT/points.csv" >"$WORK/trend.csv"

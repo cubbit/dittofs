@@ -66,8 +66,8 @@ jobs:
             } | sort -u | grep -xF -f <(printf '%s\n' $known) | grep -vx "$AUTHOR" | paste -sd, - || true)
             if [ -n "$inherited" ]; then
               echo "Stacked on #$lower_pr: requesting $inherited"
-              gh pr edit "$PR" --repo "$REPO" --add-reviewer "$inherited"
-              exit 0
+              # GitHub refuses the whole list if it refuses one login: fall through to the pool.
+              if gh pr edit "$PR" --repo "$REPO" --add-reviewer "$inherited"; then exit 0; fi
             fi
           fi
 
