@@ -18,7 +18,7 @@ constraints. The [RFC index](../docs/internals/rfcs/rfc-index.md), "Test tiers" 
 per change; recording results; the reference box). Every citation is the RFCs' text on `develop`;
 the code lands on `feat/storage-v2`, and the paths below are paths there.
 **Track:** the team.
-**Epic 11 estimate: 6 subtasks, 8.5 man-days.**
+**Epic 11 estimate: 6 subtasks, 9 man-days.**
 **Depends on:**
 - **The RFC 8 offload plan's S7**, store adapter and node composition built: the node's content
   wiring (`internal/node/content`) builds one `codec.Store` per store with RFC 5's chain and opens
@@ -102,9 +102,9 @@ two rows in the codec's `chains_test.go`, a `chain` dimension in the codec's S3 
   the largest body, its transforms' rates) and E5 (encryption's rate and its split). Replacing the
   put and get row's proposed target with a measured value: the RFC index's rule, by the first run
   on the reference box, which no cell runs on (§9).
-- What happens to a store whose provider failed at start once the provider answers again: the RFC
-  8 offload plan's epic 21, which opens stores and namespaces, pending the user's answer (§9,
-  point 1).
+- The retry that opens a store whose provider failed at start once the provider answers again
+  (every 30 s, D2): the RFC 8 offload plan's epic 21, which opens stores and namespaces (#6063, its
+  D10). T11.1 asserts it at the node.
 
 ### 1.3 Names used here
 
@@ -137,7 +137,7 @@ title and not copied.
 | rule 6, known failures shrink | T11.3, T11.4 | the rows run after S7 in `engine-conformance`, which keeps `test/engine/known.yaml`, and land green: a row that fails is a defect fixed in its subtask, so no `known.yaml` entry is added |
 | rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | all | only test files: they may import implementations (`chain`, `encrypt`, `compress`, `keystest`, `provider`). No v1 path |
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T11.2, T11.6 | the harness's KMIP server (`service:kmip`) for the key-management row; LocalStack for the benchmark, and a real service by hand |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | none | no production code, so no `decision:` or `ponytail:` marker; D2's, once the user answers, sits at the RFC 8 offload plan's epic 21's open path |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | none | no production code, so no `decision:` or `ponytail:` marker; D2's retry carries its `decision:` at the RFC 8 offload plan's epic 21's open path (#6063) |
 | rule 10, a test must be able to fail | all | each test in §6 names the break that makes it fail, and is shown failing on it before its pull request opens |
 | rule 11, a symbol is exported only if RFC 5's interface or a consumer outside the package uses it | none | nothing is exported; T11.1 and T11.2 each write their own store-open assertions rather than share a helper across packages |
 | rule 12, each subtask creates only what it declares | all | each helper lands with its first test |
@@ -153,7 +153,7 @@ Every obligation RFC 5 places on this epic, numbered so that subtasks and tests 
 | --- | --- | --- | --- | --- |
 | R1 | A store whose chain cannot be built, because a transform's factory fails, does not open: no body reaches its remote, and it never writes without its chain | MUST NOT | §2.7 (a chain that cannot be built), §7 T5, §8.2 T5 | T11.1 |
 | R2 | A store whose material cannot be loaded at start, the provider unreachable or a key it needs missing, does not open and puts nothing; a store configured to encrypt never falls back to a body without the encrypt stage | MUST NOT | §2.7, Appendix B.4 (unreachable at start), Appendix D D9 | T11.1, T11.2 |
-| R3 | A provider failure at start fails the store it serves, not the journal: the journal keeps serving its shares | invariant | Appendix D D10, Appendix B.4 (a key failure is the remote being unavailable) | T11.1 |
+| R3 | A provider failure at start fails the store it serves, not the journal: the journal keeps serving its shares; once the provider answers again, the store opens within 30 s with no restart, and its journal-held content offloads (D2) | invariant | Appendix D D10 ("recovers"), Appendix B.4 (a key failure is the remote being unavailable); the user's decision, 2026-11-26 | T11.1 |
 | R4 | Against a real key-management server, a store configured on it opens and a body round-trips through the codec; a missing key, an unreachable server and an invalid certificate each leave the store unopened, and none falls back to another provider or to writing without encryption | test row | §8.1's Appendix B.2 row, its store half | T11.2 |
 
 **Material failures through the engine**
@@ -223,13 +223,19 @@ key-management row's provider half, and its decode leg ("or the decode returns
   after the material returns and asserts success, with no restart. At start, Appendix D D10 calls
   v1's failure of "the share's whole block store, journal included" the bug, and Appendix B.4 says
   the store does not open; read together, the store's remote is unavailable as in RFC 8 §11.2's
-  remote-unavailable row, and the journal keeps serving. Whether that store opens later without a
-  restart is not stated by any RFC, and is §9's point 1, pending the user's answer. Appendix B.4's
+  remote-unavailable row, and the journal keeps serving. No RFC says when that store opens again:
+  the user decided on 2026-11-26 that its provider's open is retried every 30 s on the node's
+  clock, with no restart, as RFC 8 §2.5 retries a refused journal, `material_unavailable` naming
+  the namespace meanwhile, and that once it opens its journal-held content offloads. The retry and
+  its `decision:` are the RFC 8 offload plan's epic 21's (#6063, its D10); T11.1 holds it at the
+  node. Rejected: opening it at the next start only, which turns a key server's outage into a
+  restart. A chain that cannot build is a configuration defect and is not what the retry covers;
+  T11.1's chain leg is unchanged by it. Appendix B.4's
   "the namespace takes no new write" is read as RFC 8 §10.4 implements it: the journal still stages
   a write, and the Intent step refuses every plan of the namespace, so nothing is put for it and its
   content stays dirty and held (R7). Prior art:
   NFSv3's `NFS3ERR_JUKEBOX`, which hands the retry to the client (from memory); RFC 8 §2.5's refused
-  share, retried on a period (checked). No marker here.
+  share, retried on a period (checked). No marker here: the retry's is epic 21's.
 - **D3, the engine rows land green in `engine-conformance`, in a file of their own.** They need the
   composed engine (the carver, the chain, the syncer over the in-memory store, `Refs`), which only
   `enginetest`'s fixture builds, and they run after S7, so each passes when written or exposes a
@@ -274,7 +280,7 @@ docs/internals/rfcs/rfc-5-transforms.md
 
 ### T11.1 A store that cannot start writes nothing
 
-**Subtask T11.1 estimate: 2 man-days.**
+**Subtask T11.1 estimate: 2.5 man-days.**
 
 - **Track:** the team. **Depends on:** S7, E9.
 - **Covers:** R1, R2, R3.
@@ -284,7 +290,8 @@ docs/internals/rfcs/rfc-5-transforms.md
   failures of B at start: its stored `transforms` record edited underneath to a `zstd` level outside
   Appendix A's range, which the settings validator would have refused, so the factory fails at
   `NewChain` (R1); and, with B configured `[{name: aes-gcm}]`, its key file replaced by one under
-  another passphrase, so the provider cannot load (R2, Appendix D D9).
+  another passphrase, so the provider cannot load (R2, Appendix D D9). The recovery leg: the
+  original key file put back, and the node's injected clock advanced past 30 s (D2).
 - **Acceptance criteria:**
   - In both cases, B's remote store's load record shows no put, ever; no other provider and no
     empty chain is built for B (R1, R2).
@@ -293,10 +300,17 @@ docs/internals/rfcs/rfc-5-transforms.md
   - With the key file replaced, `material_unavailable` names B's namespace; with the chain-build
     failure no material condition is raised, and the build's `Error` line names `zstd` and the
     reason (RFC 5 §6) (R2, R1).
+  - Recovery, with no restart: with the key file put back and the clock short of 30 s, B is still
+    unopened and nothing is put; past 30 s, B's store opens, `material_unavailable` clears, the
+    write B's journal held offloads (a put on B's remote's load record, encrypted under B's chain),
+    and reads back after eviction (R3, D2).
 - **Tests:** at the node, where a share is served. Each names its break: a wiring that builds B's
   store with the chain it could build, or with none, puts to B's remote (R1); a wiring that falls
   back to a store without encryption when the provider fails puts a body (R2, D9); a failure that
-  fails the engine's `Start` or closes the journal stops both shares' reads (R3, D10). No test
+  fails the engine's `Start` or closes the journal stops both shares' reads (R3, D10); a node with
+  no retry, or one that retries without rebuilding the provider, leaves B unopened past 30 s, and
+  one that retries on a timer of its own rather than the node's clock never fires under the test
+  (R3, D2). No test
   double: editing B's record is the RFC 13 rows' way of planting a record the validator would
   refuse.
 
@@ -451,7 +465,7 @@ flowchart TD
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-T11.1 goes first: it is the row D2's open question bears on, so it fails fast if the composed node
+T11.1 goes first: it is the row D2's retry bears on, so it fails fast if the composed node
 does not keep the journal serving. T11.5 and T11.6 wait on nothing past E5 and E9 and can run at
 any point.
 
@@ -459,7 +473,7 @@ any point.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T11.1, T11.2 | 3.25 | — | a store that cannot start, with a key file and with a key server |
+| 1 | T11.1, T11.2 | 3.75 | — | a store that cannot start, with a key file and with a key server |
 | 2 | T11.3, T11.4 | 3.5 | — | RFC 5's rows in `engine-conformance`, in one new file |
 | 3 | T11.5, T11.6 | 1.75 | — | the codec's rows and the benchmark, both in `pkg/remote/codec` |
 
@@ -468,35 +482,20 @@ subtask works as well.
 
 ## 9. Open points
 
-1. **Pending the user's answer: does a store whose provider failed at start open later without a
-   restart (D2)?** Appendix B.4 says "the store does not open" and "recovers when the key returns"
-   only for a read; Appendix D D10 says a key failure "is the remote being unavailable, and
-   recovers". No RFC says when that store is opened again, and the RFC 8 offload plan's epic 21,
-   which opens stores, names no retry; for a namespace with too large a `Max` it waits for the next
-   start.
-   - **(a) Recommended: opened again on a period, with no restart**, as RFC 8 §2.5 retries a refused
-     journal every 30 s: `material_unavailable` names the namespace meanwhile, and once the provider
-     answers the store opens and its journal-held content offloads. T11.1 then gains that leg.
-   - **(b) Opened at the next start only**, as epic 21 treats a namespace whose `Max` is too large:
-     the condition says a restart is needed. T11.1 stays as written.
-
-   Either way the open path, its `decision:` marker and, for (a), its retry are the RFC 8 offload
-   plan's epic 21's, which needs the answer through a pull request against that plan; this
-   document asserts only what both readings share.
-2. **Needs on the RFC 8 offload plan.** Epic 12's fixture must let a test restart onto a fresh
+1. **Needs on the RFC 8 offload plan.** Epic 12's fixture must let a test restart onto a fresh
    `keystest.Memory` over the same stores, wrap the provider it is given, turn read-ahead off, and
    give the codec a `Recorder` whose outputs a test reads (T11.3, T11.4). Epic 15's Intent refusal
    under destroyed current material must cover the chunk-ID key as well as the data key (T11.3,
    R7), which RFC 8 §10.4's "current material" reads as including.
-3. **Needs on the corpora.** No cell sets `DITTOFS_CORPUS_DIR`, so `remote-bench` runs only the
+2. **Needs on the corpora.** No cell sets `DITTOFS_CORPUS_DIR`, so `remote-bench` runs only the
    random corpus after a merge, and the three corpora R15 names run by hand. Providing the corpora
    to the cell is the RFC 2 plan's epic 2's corpus, once a runner holds it.
-4. **The burn-down is the least certain part.** Each row lands green after S7 or exposes a defect
+3. **The burn-down is the least certain part.** Each row lands green after S7 or exposes a defect
    in the code it tests, which its subtask fixes; T11.1 (a composed node with two shares) and T11.3
    (five legs through the whole offload path) are the estimates most likely to grow.
-5. **The 10% target is proposed.** It is replaced by the first run on the reference box, as the RFC
+4. **The 10% target is proposed.** It is replaced by the first run on the reference box, as the RFC
    index says; no cell runs there, and the result attached to T11.6's pull request is a real
    service's, not the reference link's.
-6. The estimate is 6 subtasks and 8.5 man-days against the plan's 6 and 10: T8's main leg, the
+5. The estimate is 6 subtasks and 9 man-days against the plan's 6 and 10: T8's main leg, the
    codec halves (D1) and T20's journal legs (RFC 8 §15.1) are run elsewhere, and the key-management
-   row's store half reuses E7's failure setups.
+   row's store half reuses E7's failure setups, while T11.1 gains D2's recovery leg.
