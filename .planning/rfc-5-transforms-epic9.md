@@ -253,7 +253,7 @@ tests can cite them. Where another epic does the rest, the row says so.
   (E8's D6), and a removal is refused, since dropping a file that still unwraps records is a
   master-key destroy, the deferral ledger's destroy row. `rotate-master-key` then names a file
   already retired: its first turn swaps it with the current `key_file` with `tx.PutSetting`, and its
-  failure hook swaps them back if `RotateMasterKey` refuses (T9.5). Endpoint, certificates and
+  failure hook swaps them back if `RotateMasterKey` refuses (T9.5). Endpoint, server name, certificates and
   timeout stay writable (D12). A `decision:` marker at the check names the route. Prior art: the store's own `remote.credential`, written only by its route
   (checked, `internal/node/api/res_settings.go`'s `ownKeys`).
 
@@ -356,7 +356,7 @@ tests can cite them. Where another epic does the rest, the row says so.
   live, and `internal/node/settings.go` requires every section with live keys to have an entry in
   `newReaches()`, or a change of it fails. The remote section's apply hands each store's provider its
   new `Config` through E6's `Reconfigure` (its D16); with D2 refusing a new master key, the apply changes only a KMIP endpoint,
-  certificates and timeout, the escrow passes, and a retired key file added (which it opens) or the
+  server name, certificates and timeout, the escrow passes, and a retired key file added (which it opens) or the
   swap a rotation makes. E7 adds the KMIP fields to it, and E8 the retired files and the swap (E6's
   D16; §9). A
   `decision:` marker at the apply says it refuses nothing D2 has not. Prior art: the identity
@@ -422,8 +422,8 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
     recorder (T9.6).
   - `internal/node/content/remote.go`, unexported but for the section and its conversion: the
     fields `transforms` (`[]{name, settings}`, class next write, default empty), `require` (next
-    write), `materials` (live: `key_file` with `retired_files`, or `kmip` with `endpoint`, `key`, `client_cert`,
-    `server_ca`, `timeout`), `kmip_client_key` (`entity.SecretRef`, kind `SecretKey`) and
+    write), `materials` (live: `key_file` with `retired_files`, or `kmip` with `endpoint`, `server_name`, `key`,
+    `client_cert`, `server_ca`, `timeout`), `kmip_client_key` (`entity.SecretRef`, kind `SecretKey`) and
     `escrowed` (live, a list of `Escrow`); `Required("Materials")`; `Validate` building the chain
     with no material (D1) and refusing a `materials` with neither or both of `key_file` and
     `kmip.endpoint`, or a KMIP block missing its key or certificates, through E6's `ValidateConfig`, with E7's key-service rules, each refusal naming the field; `CheckTx` refusing a changed master key and a removed retired
@@ -447,7 +447,9 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
     (R3).
   - A store created without `remote.materials` is `400` `required` (R2).
   - On an existing store, a changed key file or KMIP key name is refused naming the route, and a
-    changed KMIP endpoint, or a retired file added, is accepted and reaches the provider (R4, R8); a
+    changed KMIP endpoint or server name, or a retired file added, is accepted and reaches the
+    provider (R4, R8); a `kmip` block with no `server_name` converts to an empty
+    `KMIPConfig.ServerName`, which E7's custody reads as the endpoint (E7's D3); a
     retired file removed is refused; `remote.escrowed` written by
     `PATCH`, the generic route or a provisioning reload is refused.
   - Adding `aes-gcm` to, or removing it from, a store a namespace names is `409` `bound_setting`,
@@ -784,7 +786,7 @@ A suggestion only: one pull request per subtask works as well.
   pass and recording nothing, so the gate opens only from the passes `New` and `Reconfigure` are
   given (D4); `keys.ErrWrapLimit`, which T9.3's table answers `409` `wrap_limit`.
 - **Needs on E7.** The key-service fields' rules in `ValidateConfig` and their change in
-  `Reconfigure` (endpoint, certificates, timeout), which E6's D16 leaves to it; and
+  `Reconfigure` (endpoint, server name, certificates, timeout), which E6's D16 leaves to it; and
   `KMIPConfig.ClientKey` filled from the resolved `remote.kmip_client_key`, in whatever form E7's
   transport reads.
 - **What E8 already provides.** `RotateDataKey` and `RotateMasterKey`, each refusing
