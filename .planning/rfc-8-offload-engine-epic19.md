@@ -25,13 +25,14 @@ device).
 **Epic 19 estimate: 12 subtasks, 39 man-days.**
 **Depends on:** sync point **S2**, red rows in CI (epic 12): the fixture's `WithRefs`, `WithDevices`,
 `AcknowledgeLoss` and `ReopenOwingReconcile`, refusing by name, the proposed controls `HoldNextVisit`,
-`HoldReconcileAfterMarkCheck`, `HoldReconcileBeforeClose` and `ImportRef`, and the fourteen entries
+`HoldReconcileAfterMarkCheck`, `HoldReconcileBeforeClose` and `ImportRef`, and the thirteen entries
 whose rows this epic turns green; epic 11's frozen `Stats` fields `LedgerMismatches` and
 `JournalStats.ReseedFilesRemaining`; epic 14's tenants and rebuilds (its T14.1, T14.2, T14.5), which
 the late attach runs; epic 15's block record `entity.Encoding` (its D6, T15.3), which the census
 counts and the reseed's destroyed read follows; epic 16's passes (its T16.3), whose runs the reseed
 gates; epic 18's eviction loop and its destroyed-material notice with the lock Mark and `Unmark`
-take, which start step 7 starts and the reseed shares; **S6**: the journal plan's epic 9b for
+take, which start step 7 starts and the reseed shares, with the RFC 5 plan's epics 6 and 8 (the
+  key-record view in `kvstore` and `keystest`'s notice) that epic 18 brings in; **S6**: the journal plan's epic 9b for
 `MarkOffloaded` and `Unmark` over the real journal, and its epic 7b for `DropOlder` and `Reconciled`,
 which gate T19.10 to T19.12.
 **Blocks:** the RFC 5 plan's epic 10, whose census listing reads T19.1's view; epic 20, whose
@@ -59,7 +60,7 @@ metadata reconcile drops, file by file, what metadata shows superseded, gating e
 - a journal owing a reconcile serves every file only once visited, drops what metadata shows
   superseded, settles through `Reconciled`, and keeps one owner per handle under every interleaving of
   `Bind`, `Unbind`, `Drop` and `Close`;
-- the fourteen rows of §6's catalogue are green and out of `test/engine/known.yaml`.
+- the thirteen rows of §6's catalogue are green and out of `test/engine/known.yaml`.
 
 ### 1.1 In scope
 
@@ -114,12 +115,12 @@ cited by number and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, **Independent unit tests** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | engine tests over the first part's unit fixture and its in-memory journal, `kvstore` over the in-memory `kv.KV`; store views over `kvstoretest`'s backends; RFC 5's `keystest` for key records; no double but the injected clock, kind 3 faults and per-instance hooks set from `export_test.go` |
+| rule 1, **Independent unit tests** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | engine tests over the first part's unit fixture and its in-memory journal, `kvstore` over the in-memory `kv.KV`; store views over `kvstoretest`'s backends; the store's key-record view (the RFC 5 plan's epic 6) for key records and `keystest`'s provider for the notice (its epic 8); no double but the injected clock, kind 3 faults and per-instance hooks set from `export_test.go` |
 | rule 2, **Fuzz the key and ref decoders the queue's rebuild reads** | T19.1, T19.6 | the census delta and total records and the shard record with its journal identity each gain a decode fuzz target in the nightly `fuzz` suite, seeded with a record written without the new field where one existed |
 | rule 3, **Observability follows RFC 25** | T19.3, T19.10, T19.11 | `engine_reseed_files_remaining` into `JournalStats.ReseedFilesRemaining`, `engine_ledger_mismatches_total` into `Stats.LedgerMismatches`, a ledger mismatch logged at `Warn` with its file and extent, a reseed's root span; `journal_unreconciled` per share or per journal in `Stats` |
 | rule 4, **Profiling** | T19.3, T19.10, T19.12 | the reseed walk, the reconcile walk and the lost journal's retry are goroutines the fixture's `prof.Watch` checks across `Close`; no allocation assertion: neither is a hot path RFC 8 names |
 | rule 5, **Public interface and internals** ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | the reseed's bit is asserted at the journal's `Release` and an eviction, which consume it; a reconcile's drop at a read; the census at the view RFC 5 epic 10 reads; the acknowledgement at `Start`'s `Stats` |
-| rule 6, **Known failures shrink** | T19.2 to T19.5, T19.7, T19.8, T19.10 to T19.12 | each row's entry leaves `test/engine/known.yaml` in the change that turns it green; T19.2 rewrites every entry whose message was `WithRefs`'s refusal |
+| rule 6, **Known failures shrink** | T19.2 to T19.5, T19.7, T19.8, T19.10 to T19.12 | each row's entry leaves `test/engine/known.yaml` in the change that turns it green; T19.2 rewrites every entry whose message was `WithRefs`'s refusal, T19.10 every one whose message was `ReopenOwingReconcile`'s |
 | rule 7, **v2 ignores v1, and the engine imports only what RFC 0 §1.2 allows** | T19.2, T19.3, T19.6, T19.8 | `Deps.Refs` and the reseed's destroyed read are engine-declared interfaces over `entity` types; the engine never imports `kvstore`, `keys`' implementation or the key records' codec, and holds no key material (D2) |
 | rule 8, **Real dependencies for properties of those dependencies** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T19.3, T19.5, T19.10 to T19.12 | the crash legs and the reconcile rows run over the real journal with its crash seam once S6 lands; the census and the acknowledgement over `kvstore` on every backend `kvstoretest` runs |
 | rule 9, **Code comment conventions** ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T19.1, T19.5, T19.6, T19.8, T19.10, T19.11 | RFC 8 §2.5's four reconcile `decision:`s and its `newest` `ponytail:` at their sites; this epic's markers named in §4 |
@@ -137,7 +138,7 @@ rows' own assertions are RFC 8 §15's text; a row's requirement here names the l
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R1 | The `Census` view of a namespace counts every block record until it is pruned, `retired` and `deleted` ones included, per transform, version and material, as the block record's `encodings` list them | MUST | RFC 5 §5.3; RFC 6 §2.3, §10.1 | T19.1 |
-| R2 | The census never depends on timing and never changes for a block: a block's `encodings` are counted once at its commit and uncounted once at its prune | invariant | RFC 5 §5.3 | T19.1 |
+| R2 | The census never depends on timing, and a block's entry in it never changes, since a block is never re-encoded in place (D1 counts its `encodings` once at commit and uncounts them once at prune) | invariant | RFC 5 §5.3; RFC 6 §2.3 | T19.1 |
 | R3 | No counter is read and rewritten by the transaction that changes it: a commit or a prune changing the census writes a record unique to it, which reads nothing | MUST | RFC 16 §4.4 | T19.1 |
 | R4 | `Versions` reports over `[off, off+n)` each run with the highest version metadata records over it (its overwrite record, the covering live ref's `newest`, a committed hole, a removal not done) and the file's committed size and `applied`, in one read; a file with no `File` record and no removal not done is `ErrNotFound` | MUST | RFC 6 §10.1; RFC 8 §2.5 | T19.9 |
 | R5 | `Refs` yields a file's live and history refs alike from an offset, each saying which | MUST | RFC 16 §3.1; RFC 8 §2.1, §2.5 | T19.2 |
@@ -151,7 +152,7 @@ rows' own assertions are RFC 8 §15's text; a row's requirement here names the l
 | R8 | The reseed reads each held file's refs, live and history alike, and marks through `MarkOffloaded` every held extent a committed ref covers, at the ref's versions | MUST | RFC 8 §2.5 step 7; RFC 1 §3.3 | T19.3 |
 | R9 | A bit no ref justifies is reported as a ledger mismatch and cleared with `Unmark`, so the extent is offered again; the reseed never clears a bit through `MarkOffloaded` | MUST | RFC 8 §2.5 step 7; RFC 1 §3.3 | T19.3 |
 | R10 | The reseed clears the offloaded bit of each extent whose block's `encodings` name material whose key record is marked destroyed, before that file can be evicted | MUST | RFC 8 §10.4 | T19.3, T19.4 |
-| R11 | A destroy reported while the reseed runs never leaves an extent marked: the reseed's mark is taken under the lock the notice's `Unmark` takes, against the material reported destroyed | MUST NOT | RFC 8 §10.4 ("A destroy racing Mark, or a crash, never leaves an extent marked") | T19.3 |
+| R11 | A destroy reported while the reseed runs never leaves an extent marked: the reseed marks under the lock Mark and the notice's `Unmark` take, against the material reported destroyed, as RFC 8 §10.4 binds Mark (D3) | invariant | RFC 8 §10.4 (Mark's rule), applied by D3 | T19.3 |
 | R12 | The reseed reads at most eight files' refs at a time per journal, beside the runs that reseed their own file | bound | RFC 8 §2.5 step 7 | T19.3 |
 | R13 | `engine_reseed_files_remaining`, labelled by journal, reports the held files the reseed has yet to visit; `engine_ledger_mismatches_total` counts the bits it cleared; a mismatch logs the file and extent at `Warn`; a reseed opens a root span | MUST | RFC 8 §2.5 step 7, §14 | T19.3 |
 | R14 | A file is offered and evicted after a restart only once the reseed has run for it | invariant | RFC 8 §2.5 step 7, §13 E30 | T19.4 |
@@ -405,10 +406,11 @@ handle" (`TestRFC8A_BindTakesOverTheReconcilesHandle`) and "§2.3 removal during
   - A namespace's census never names another's blocks.
 - **Tests:** in `kvstoretest`, over every backend: a random sequence of commits under two chains, an
   abandon and prunes, `Census` compared after each with a walk (catches a missed delta at commit or
-  prune, R1, R2); two concurrent commits with the store's conflict counter read through the in-memory
-  `kv.KV`'s exported counter, which its suite covers (catches a counter read in the commit, R3); a
+  prune, R1, R2); two concurrent commits in one namespace, neither answering `kv.ErrConflict`, and `kv.Counting`'s
+  pass-through record showing the census delta written with no census key read (catches a counter read
+  in the commit, R3); a
   store with a planted block record and no delta, which `Check` reports (catches the walk and the counts
-  disagreeing unseen); the fuzz target on both codecs. No double but the counter.
+  disagreeing unseen); the fuzz target on both codecs. No double but `kv.Counting`, a pass-through recorder.
 - **Rules:** rule 2, the codecs' fuzz target; rule 9, D1's marker.
 
 ### T19.2 The reseed's store reads, and `WithRefs`
@@ -430,7 +432,7 @@ handle" (`TestRFC8A_BindTakesOverTheReconcilesHandle`) and "§2.3 removal during
     master-key destroy's mark included, and no other.
 - **Tests:** in `kvstoretest`: a file with live refs, a history ref and a ref past `from` (catches a
   missing history ref or a wrong start, R5); a block under two materials with one record marked
-  `destroyed` through RFC 5's `keystest` key-record suite's writer, and a block under the other
+  `destroyed` through the store's key-record view (the RFC 5 plan's epic 6), and a block under the other
   (catches a match on the wrong material or the notice's state, R6). No double.
 - **Rules:** rule 6, the messages rewritten; rule 7: `Destroyed` hands the engine no key record.
 
@@ -502,7 +504,7 @@ handle" (`TestRFC8A_BindTakesOverTheReconcilesHandle`) and "§2.3 removal during
   - No put intent of a served shard's namespace survives into serving.
   - Every abandonment transaction writes at most `K` keys.
 - **Tests:** the rows over the real journal; in `kvstoretest`, 3·`K` intents abandoned, with the keys
-  per transaction read from the in-memory `kv.KV`'s counter (catches one unbounded transaction, R18); at
+  per transaction read from `kv.Counting`'s `MostWrites` (catches one unbounded transaction, R18); at
   the store's intents after `Start` returns (catches an abandon after serving begins, R17). No double
   but the counter.
 
@@ -515,7 +517,8 @@ handle" (`TestRFC8A_BindTakesOverTheReconcilesHandle`) and "§2.3 removal during
 - **Deliverables:** `entity.Shard.Journal` and `entity.TagRecord.Journal`, written where `kvstore`
   creates a shard and answered by `Tags` (D5); `RecordJournal`'s rewrite of the shards naming a replaced
   identity, with D5's `ponytail:`; `Start` opening each device's journal and matching each share to
-  one, the first part's one-device check and its `ponytail:` in `startOver` deleted; a share whose
+  one, the first part's one-device check in `startOver` and its two `ponytail:`s (there and at the conditions'
+  report), and the `Devices[0]` loop, deleted; a share whose
   shards name no device's journal, or two, refused by name with D5's `decision:`; `WithDevices(n)` made
   real, the fixture writing each share's journal identity; the shard record's fuzz target. Consumed by
   T19.7 and T19.8.
