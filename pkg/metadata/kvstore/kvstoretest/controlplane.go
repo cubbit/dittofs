@@ -714,6 +714,56 @@ func testNetgroupsAndSettings(t *testing.T, kvo Opener) {
 	}
 }
 
+// One key of a scope reads as the row the scope's listing holds for it, in its
+// own scope, and a key never written is not found.
+func testSettingOneKey(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp := s.ControlPlane()
+	a := entity.SettingScope{Kind: entity.ScopeNode, ID: uuid.New()}
+	b := entity.SettingScope{Kind: entity.ScopeNode, ID: uuid.New()}
+
+	const n = 40
+
+	for i := range n {
+		key := fmt.Sprintf("key-%02d", i)
+		sa := entity.Setting{Scope: a, Key: key, Value: []byte("a-" + key)}
+		sb := entity.Setting{Scope: b, Key: key, Value: []byte("b-" + key)}
+
+		must(t, errOf(cp.PutSetting(ctx, sa, 0)))
+		must(t, errOf(cp.PutSetting(ctx, sb, 0)))
+	}
+
+	listed := all(t, cp.Settings(ctx, a))
+	if len(listed) != n {
+		t.Fatalf("%d settings listed, want %d", len(listed), n)
+	}
+
+	for _, want := range listed {
+		got, ok, err := cp.Setting(ctx, a, want.Key)
+		must(t, err)
+
+		if !ok || got.Key != want.Key || got.Scope != a || string(got.Value) != "a-"+want.Key ||
+			got.Generation != want.Generation || got.Position != want.Position {
+			t.Errorf("Setting(%s) = %+v, %v; listing has %+v", want.Key, got, ok, want)
+		}
+	}
+
+	got, ok, err := cp.Setting(ctx, a, "key-99")
+	must(t, err)
+
+	if ok || got.Key != "" || got.Value != nil {
+		t.Errorf("Setting of a key never written = %+v, %v", got, ok)
+	}
+
+	other := entity.SettingScope{Kind: entity.ScopeNode, ID: uuid.New()}
+	got, ok, err = cp.Setting(ctx, other, "key-00")
+	must(t, err)
+
+	if ok || got.Key != "" {
+		t.Errorf("Setting at a scope with none = %+v, %v", got, ok)
+	}
+}
+
 // A listing longer than one page resumes where the page ended.
 func testListingPages(t *testing.T, kvo Opener) {
 	s, _ := newStore(t, kvo)

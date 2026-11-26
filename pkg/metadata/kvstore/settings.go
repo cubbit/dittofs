@@ -96,6 +96,41 @@ func (c ControlPlane) Settings(ctx context.Context, scope entity.SettingScope) i
 	})
 }
 
+// Setting reads one setting, found false when the scope holds none at key.
+func (c ControlPlane) Setting(
+	ctx context.Context,
+	scope entity.SettingScope,
+	key string,
+) (entity.Setting, bool, error) {
+	var (
+		s  entity.Setting
+		ok bool
+	)
+
+	err := c.s.kv.View(ctx, func(r kv.Reader) (err error) {
+		s, ok, err = settingIn(r, scope, key)
+
+		return err
+	})
+	if err != nil {
+		return entity.Setting{}, false, err
+	}
+
+	return s, ok, nil
+}
+
+// settingIn reads one setting, found false when the scope holds none at key.
+func settingIn(r kv.Reader, scope entity.SettingScope, key string) (entity.Setting, bool, error) {
+	b, ok, err := get(r, settingKey(scope, key))
+	if err != nil || !ok {
+		return entity.Setting{}, false, err
+	}
+
+	s, err := decodeSetting(scope, key, b)
+
+	return s, err == nil, err
+}
+
 // raiseCfgGen raises the one settings generation every write of a setting, a
 // secret or the installation's Join moves in its own transaction, and every
 // node polls to re-read settings, so each such write costs every node one
