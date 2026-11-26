@@ -7,6 +7,11 @@
 // wiring hands it the chain, the name derivation, the chunk-ID function and a
 // census lookup (RFC 4 §1.2, §4.3). It declares no error of its own and returns
 // RFC 4 §4.8's set, and the transforms' material errors, as they are.
+//
+// The surface is fixed ahead of its bodies: every body refuses with
+// remote.ErrInvalid, and each doc states the contract the body keeps once
+// written. New refuses every configuration, so no caller holds a Store whose
+// stub could answer in a real one's place, Health's included.
 package codec
 
 import (
@@ -36,10 +41,10 @@ type Config struct {
 	// Name is a block's name from its nonce, its chain ID and its chunk IDs,
 	// the key scope bound in (RFC 2 §4.2).
 	Name func(nonce [16]byte, chain [32]byte, ids [][32]byte) remote.Name
-	// Census returns block name's census from its block record (RFC 6 §2.3),
-	// for Get to pass to Chain.Decode (RFC 4 §3.4, §4.3). An absent record is
-	// remote.ErrNotFound; any other failure is returned as itself, a local
-	// failure that counts against no store's health.
+	// Census returns the census in the record of the block called name
+	// (RFC 6 §2.3), for Get to pass to Chain.Decode (RFC 4 §3.4, §4.3). An
+	// absent record is remote.ErrNotFound; any other failure is returned as
+	// itself, a local failure that counts against no store's health.
 	//
 	// ponytail: Get reads one block record per call through this lookup.
 	// Upgrade to the census passed in with Get if a read-path profile shows
@@ -47,7 +52,8 @@ type Config struct {
 	//
 	// decision: a reader with no block record, such as a read at a backup
 	// location or one made before a recovery import publishes, has no census
-	// source, and Get answers it remote.ErrNotFound (RFC 4 §4.3). Give the
+	// source, and Get answers it remote.ErrNotFound (RFC 4 §4.3). No such
+	// reader exists yet, so no read a census would serve is refused. Give the
 	// codec a second census source, or pass the census in with Get, when the
 	// first such reader is built.
 	Census func(ctx context.Context, name remote.Name) ([]transform.Encoded, error)
