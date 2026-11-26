@@ -574,8 +574,9 @@ handle" (`TestRFC8A_BindTakesOverTheReconcilesHandle`) and "§2.3 removal during
 
 - **Track:** C. **Depends on:** T19.4, T19.5, T19.6. Epic 14's T14.1 first.
 - **Covers:** R21, R22, R23.
-- **Deliverables:** `attachLate` adding the journal's shards as tenants of both sources and rebuilding
-  them, abandoning its namespaces' intents and running its reseed before it clears the condition; the
+- **Deliverables:** `attachLate`, whose publish already adds the journal's shards as tenants of both
+  sources and rebuilds them (epic 14's T14.1), abandoning its namespaces' intents and running its
+  reseed before it clears the condition; the
   two rows' entries removed, the acknowledged-range leg moved to a subtest of its own with an entry
   naming D9's row's issue. Consumed by T19.8.
 - **Acceptance criteria:**
