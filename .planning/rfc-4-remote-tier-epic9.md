@@ -425,9 +425,11 @@ docs/internals/testing.md  T9.3  remote-service's row in the suite list; T9.4 re
 - **Acceptance criteria:**
   - `dt run integration` runs the same rows as before against LocalStack, none skipped.
   - E8's second §4.10 row opens 1,000 stores on LocalStack and about twice the client's limit on
-    a production service, and on both the connections opened stay within the limit. Decided by the
-    user: the row checks DittoFS's own connection sharing, which does not depend on the service,
-    and 1,000 checked opens at Cubbit DS3's 1.2 s round trip (Appendix B) take hours.
+    a production service. The connections opened stay within the limit plus 2 on LocalStack, as
+    T8.2 asserts, and within the limit plus the closes the service started on a production service
+    (E8's D4). Decided by the user: the row checks DittoFS's own connection sharing, which does not
+    depend on the service, and each open runs the capability check, about a dozen requests, so
+    1,000 opens at Cubbit DS3's 1.2 s round trip (Appendix B) take about 4 hours.
   - `dt run remote-service` without the variables exits 2 naming `DITTOFS_TEST_S3_ENDPOINT`.
   - With a service's variables it runs the switched rows against it, and fails when the access
     key, the secret or `Signature=` appears in any file under `{out}`, naming the file only and
