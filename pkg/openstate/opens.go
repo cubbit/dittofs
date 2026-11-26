@@ -10,7 +10,6 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
-	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/openstate/conflict"
 	"github.com/cubbit/dittofs/pkg/openstate/grantfsm"
 	"github.com/cubbit/dittofs/pkg/openstate/sequence"
@@ -62,19 +61,6 @@ type DurableKeys struct {
 	Create   [16]byte      // the create's own ID, which a reconnect or a replayed create must name; zero: none
 	Instance AppInstance   // an open of the same file under the same ID by another client replaces this one; zero: none
 	LockSeq  [64]uint8     // lock replay: per index, a valid bit (0x10) and a 4-bit sequence
-}
-
-// AppInstance names the application instance an open belongs to.
-type AppInstance struct {
-	ID      [16]byte
-	Version [2]uint64 // high, low; zero: unversioned
-}
-
-// LockSequence is a lock request's place in its open's lock replay: an index
-// from 1 to 64, any other naming none, and a 4-bit sequence.
-type LockSequence struct {
-	Index uint8
-	Seq   uint8
 }
 
 // ReconnectMatch is what a reconnect presents beside its Caller.
@@ -134,13 +120,6 @@ type OpenRequest struct {
 	Channel    uint16            // the create's channel sequence, the open's first
 }
 
-// Seqs is the owner sequence numbers a request presents; zero where the
-// protocol has none. A reference's own sequence travels in OpenRef.
-type Seqs struct {
-	Owner    *uint32 // the owner's number: the owner of locks', or the owner of opens' for an open, a downgrade, a close or a lock introducing a new owner of locks
-	NewOwner uint32  // a lock introducing a new owner of locks: that owner's first number
-}
-
 // OpenResult is what an open answers.
 type OpenResult struct {
 	Open     Open
@@ -165,31 +144,9 @@ type OpenUpdate struct {
 	Suspend, Resume entity.TimeMask
 }
 
-// OpenRef names what a call acts through, by Kind: an open, a lock state, a
-// delegation, or the anonymous open of NFSv3 I/O and of NFSv4's anonymous
-// stateid. An NFS reference names it by State, with the sequence presented;
-// an SMB one by Open, its FileId's ID, at its current sequence. Handle is
-// the file handle the request carried, whose file must be the state's.
-type OpenRef struct {
-	Kind   RefKind
-	State  StateRef      // NFS: the open, lock state or delegation; SMB: only the shard
-	Open   entity.OpenID // SMB: the open; zero for NFS
-	Handle entity.Handle // nil: none; an anonymous open's file is the FileKey's
-}
-
-// RefKind is what an OpenRef names.
-type RefKind uint8
-
-const (
-	RefOpened RefKind = iota + 1
-	RefLocked
-	RefDelegated
-	RefAnonymous
-)
-
-// file is the file r's handle names; zero when it carries none, and
+// fileOf is the file r's handle names; zero when it carries none, and
 // ErrBadState for a handle that names no file.
-func (r OpenRef) file() (entity.FileID, error) {
+func fileOf(r OpenRef) (entity.FileID, error) {
 	if len(r.Handle) == 0 {
 		return entity.FileID{}, nil
 	}
@@ -862,7 +819,7 @@ func (t *Table) addOpen(ctx context.Context, e *entry, f FileKey, o *open, r Ope
 		}
 	}
 	if err == nil {
-		err = t.d.Records.Opens().Put(ctx, o.share, o.record())
+		err = t.d.Opens.Put(ctx, o.share, o.record())
 	}
 	if err != nil {
 		t.dropOpen(e, o)
@@ -1030,7 +987,7 @@ func (t *Table) markShard(ctx context.Context, c entity.ClientID, s ShardID) err
 	case listed:
 		return nil
 	}
-	rec, err := t.d.Records.Clients().Get(ctx, c)
+	rec, err := t.d.Clients.Get(ctx, c)
 	if err != nil {
 		return staleIfGone(err)
 	}
@@ -1038,7 +995,7 @@ func (t *Table) markShard(ctx context.Context, c entity.ClientID, s ShardID) err
 	m := entity.ShardMark{Shard: s, Done: inst}
 	if i := slices.IndexFunc(rec.Shards, func(m entity.ShardMark) bool { return m.Shard == s }); i >= 0 {
 		m = rec.Shards[i] // the record's own mark: one Done at this instance would forgive a reclaim the client still owes here
-	} else if err := t.d.Records.Clients().MarkShard(ctx, c, m); err != nil {
+	} else if err := t.d.Clients.MarkShard(ctx, c, m); err != nil {
 		return staleIfGone(err)
 	}
 	t.cmu.Lock()
@@ -1054,7 +1011,7 @@ func (t *Table) findOpen(who Caller, ref OpenRef) (entity.FileID, refKey, error)
 	if ref.Kind != RefOpened {
 		return entity.FileID{}, refKey{}, ErrBadState
 	}
-	f, err := ref.file()
+	f, err := fileOf(ref)
 	if err != nil {
 		return entity.FileID{}, refKey{}, err
 	}
@@ -1365,7 +1322,7 @@ func (t *Table) unrecord(ctx context.Context, o *open) (bool, error) {
 	if !o.durable {
 		return false, nil
 	}
-	orphaned, err := t.d.Records.Opens().Delete(ctx, o.share, o.opened(), o.ID)
+	orphaned, err := t.d.Opens.Delete(ctx, o.share, o.opened(), o.ID)
 	if merrs.IsNotFoundError(err) {
 		return false, nil // an earlier delete answered an error landed
 	}
@@ -1462,7 +1419,7 @@ func (v opens) Durable(ctx context.Context, f FileKey) ([]entity.OpenRecord, fun
 						// the next start's grace end closes the records nobody
 						// reclaimed. Report it to the service if a store outage
 						// is shown to strand files.
-						out, _ := t.d.Records.Opens().Delete(ctx, f.Share, recs[i].File, recs[i].ID)
+						out, _ := t.d.Opens.Delete(ctx, f.Share, recs[i].File, recs[i].ID)
 						late.Orphan = late.Orphan || !out.File.IsZero()
 					}
 					continue
@@ -1566,7 +1523,7 @@ func (t *Table) nameByID(o *open) {
 // nextOpenID issues an open's ID, unique across the installation and never
 // reused.
 func (t *Table) nextOpenID(ctx context.Context) (entity.OpenID, error) {
-	n, err := t.d.Records.NextID(ctx, kvstore.IDOpen)
+	n, err := t.d.Records.NextID(ctx, entity.IDOpen)
 	return entity.OpenID(n), err
 }
 

@@ -2411,7 +2411,9 @@ are checked against; an SMB session carries no claims.
 - **Capabilities.** The `Call` the router builds for every SMB request carries
   `SMBCaps`, which sets `OpenFilesKeepNames` (§13), `WantOpenID`,
   `GrantBelongsToOpen` and `ClientIsMachine`, and leaves `PrivilegeOnEveryCall`
-  unset (§11) ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)). An adapter that left `OpenFilesKeepNames` unset would get NFS's rule
+  unset (§11), and `SpellsReservedNames` and `ListsEveryEntry` too, so a reserved
+  character in a name is refused and a share asking access-based enumeration
+  filters every listing ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)). An adapter that left `OpenFilesKeepNames` unset would get NFS's rule
   without an error, so §18's row for §13 is what catches it.
 
 ### 16.2 Request identity

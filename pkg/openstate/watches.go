@@ -7,28 +7,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
-// WatchID names a watch by its shard, grace instance bits and token, as a
-// StateRef does, so Unwatch resolves it from the ID alone.
-type WatchID struct {
-	Shard    ShardID
-	Instance uint8
-	Token    uint64
-}
-
-func (w WatchID) ref() StateRef {
+func watchRef(w WatchID) StateRef {
 	return StateRef{Type: StateWatch, Shard: w.Shard, Instance: w.Instance, Token: w.Token}
-}
-
-// Change is one change a watch reports.
-type Change struct {
-	What   ChangeMask // the kind of change, matched against a watch's filter; ChangeEnumerate: changes were dropped, and the client lists the directory again
-	Name   []byte     // the entry changed, as its path from the directory Changed names
-	To     []byte     // a rename's new path; nil otherwise
-	Nested bool       // made below the directory Changed names, not in it: only a recursive watch reports it
-	// Dirs is a nested change's path by identity, as it stood when the
-	// change committed: each directory below the one Changed names, down to
-	// the one the change was made in. Nil for a change in that directory.
-	Dirs []entity.FileID
 }
 
 // Watches is the view of change notifications on directories; it runs at the
@@ -113,7 +93,7 @@ func (v watches) Watch(ctx context.Context, who Caller, dir FileKey, recursive b
 		if err != nil {
 			return err
 		}
-		id = WatchID{ref.Shard, ref.Instance, ref.Token}
+		id = WatchID{Shard: ref.Shard, Instance: ref.Instance, Token: ref.Token}
 		if e.watches == nil {
 			e.watches = map[uint64]*watch{}
 		}
@@ -128,12 +108,12 @@ func (v watches) Unwatch(ctx context.Context, who Caller, id WatchID) error {
 	if _, err := t.running(); err != nil {
 		return err
 	}
-	h, err := t.resolve(who, entity.FileID{}, id.ref())
+	h, err := t.resolve(who, entity.FileID{}, watchRef(id))
 	if err != nil {
 		return err
 	}
 	return t.step(h.file, func(e *entry) error {
-		if _, err := t.resolve(who, e.file, id.ref()); err != nil {
+		if _, err := t.resolve(who, e.file, watchRef(id)); err != nil {
 			return err
 		}
 		t.dropWatch(e, e.watches[id.Token])
@@ -144,7 +124,7 @@ func (v watches) Unwatch(ctx context.Context, who Caller, id WatchID) error {
 // dropWatch drops w from e, under its step, with what it holds.
 func (t *Table) dropWatch(e *entry, w *watch) {
 	delete(e.watches, w.id.Token)
-	t.release(e, w.id.ref())
+	t.release(e, watchRef(w.id))
 	_ = t.charge(w.client, cappedWatches, -1, false)
 }
 

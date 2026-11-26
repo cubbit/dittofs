@@ -44,6 +44,12 @@ type reads interface {
 	PrincipalQuotas(ctx context.Context, share entity.ShareID, after entity.PrincipalID) iter.Seq2[entity.Quota, error]
 	Quota(ctx context.Context, share entity.ShareID, p entity.Principal) (entity.Quota, bool, error)
 	Settings(ctx context.Context, scope entity.SettingScope) iter.Seq2[entity.Setting, error]
+	// Setting is the one setting at key, found false when the scope holds none.
+	Setting(
+		ctx context.Context,
+		scope entity.SettingScope,
+		key string,
+	) (entity.Setting, bool, error)
 	// Share is one share with its state and its export policy, a share
 	// with none stored having the default one; a share never created, or
 	// whose removal has ended, is not found.

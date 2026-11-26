@@ -343,6 +343,13 @@ const (
 	matchNetgroup = 2
 )
 
+// encodePolicy is p's record at codec version 1.
+//
+// decision: ManageGIDs, the last field, was appended to version 1 in place,
+// so a policy written before it fails to decode, closed. That holds while
+// store format 1 is not frozen (store.go): no release has created a store.
+// The release that first creates one freezes the format, and from then on a
+// new field takes a new codec version that decodes the old one.
 func encodePolicy(p entity.ExportPolicy) []byte {
 	w := codec.NewWriter(v1).Len(len(p.Flavors))
 	for _, f := range p.Flavors {
@@ -359,7 +366,7 @@ func encodePolicy(p entity.ExportPolicy) []byte {
 		w.Uint8(uint8(c.Access))
 	}
 	w.Uint8(uint8(p.Squash))
-	return putPrincipal(w, p.Anonymous).Uint8(uint8(p.SMB)).Uint64(p.Version).Encode()
+	return putPrincipal(w, p.Anonymous).Uint8(uint8(p.SMB)).Uint64(p.Version).Bool(p.ManageGIDs).Encode()
 }
 
 func decodePolicy(share entity.ShareID, b []byte) (entity.ExportPolicy, error) {
@@ -401,6 +408,7 @@ func decodePolicy(share entity.ShareID, b []byte) (entity.ExportPolicy, error) {
 	}
 	p.SMB = entity.SMBShareFlags(r.Uint8())
 	p.Version = r.Uint64()
+	p.ManageGIDs = r.Bool()
 	return p, r.Done()
 }
 

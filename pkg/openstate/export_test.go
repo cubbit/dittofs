@@ -183,7 +183,7 @@ func (t *Table) check() error {
 			if !o.durable || o.unsaved || err != nil {
 				continue
 			}
-			rec, gerr := t.d.Records.Opens().Get(ctx, o.share, o.opened(), o.ID)
+			rec, gerr := t.d.Opens.Get(ctx, o.share, o.opened(), o.ID)
 			want := t.recordOf(e, o)
 			// The reference naming it is minted afresh at each install.
 			rec.Nonce, rec.StateSeq = want.Nonce, want.StateSeq

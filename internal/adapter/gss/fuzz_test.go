@@ -57,6 +57,9 @@ func FuzzKrb5Token(f *testing.F) {
 	f.Add(append(frame(apReq, tokAPReq), 0))                                                                      // a trailing byte
 	f.Add([]byte{0x60, 0x81, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x12, 0x01, 0x02, 0x02, 0x01, 0x00}) // a non-minimal length
 	f.Add([]byte{0x60, 0x80, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x12, 0x01, 0x02, 0x02, 0x01, 0x00, 0x00, 0x00})
+	for _, c := range capturedInits {
+		f.Add(capturedInitToken(f, c.name))
+	}
 	f.Fuzz(func(t *testing.T, tok []byte) {
 		inner, err := unframe(tok, tokAPReq)
 		oid, id, refInner, ok := refUnframe(tok)
@@ -124,6 +127,12 @@ func FuzzMICToken(f *testing.F) {
 		}
 		f.Add(msg, reflected)
 	}
+	// Linux's and knfsd's tokens from the capture, each over its bytes.
+	for _, c := range capturedInits {
+		for _, m := range capturedMICs(f, c.name) {
+			f.Add(m.msg, m.tok)
+		}
+	}
 	f.Fuzz(func(t *testing.T, msg, tok []byte) {
 		flags, seq, sum, err := parseMIC(tok)
 		rflags, rseq, rsum, ok := refParseMIC(tok)
@@ -144,7 +153,7 @@ func FuzzMICToken(f *testing.F) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want = hmac.Equal(ref, tok[16:])
+			want = hmac.Equal(ref, tok[16:]) && tok[2]&(flagSentByAcceptor|flagAcceptorSubkey) == 0
 		}
 		if err := acc.VerifyMIC(msg, tok); (err == nil) != want {
 			t.Fatalf("VerifyMIC(%x, %x) = %v; the independent checksum verifies: %v", msg, tok, err, want)

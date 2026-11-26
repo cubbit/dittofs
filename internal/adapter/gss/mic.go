@@ -52,16 +52,17 @@ func KerberosContext(ev vfs.Evidence, keys vfs.Keys, initiator bool) (*Context, 
 func kerberosContext(ev vfs.Evidence, keys vfs.Keys, initiator bool, random io.Reader) (*Context, error) {
 	sendUsage, recvUsage := usageAcceptorSign, usageInitiatorSign
 	sealUsage, unsealUsage := usageAcceptorSeal, usageInitiatorSeal
-	flags := flagSentByAcceptor
+	flags, peer := flagSentByAcceptor, byte(0)
 	if initiator {
 		sendUsage, recvUsage = recvUsage, sendUsage
 		sealUsage, unsealUsage = unsealUsage, sealUsage
-		flags = 0
+		flags, peer = peer, flags
 	}
-	// RFC 4121 §4.2.2: the acceptor flags its tokens when its subkey, sent in
-	// the AP-REP, is the context key.
-	if len(keys.Subkey) > 0 && !initiator {
+	// RFC 4121 §2: once the acceptor asserts a subkey in the AP-REP, every
+	// per-message token, either side's, carries AcceptorSubkey.
+	if len(keys.Subkey) > 0 {
 		flags |= flagAcceptorSubkey
+		peer |= flagAcceptorSubkey
 	}
 	send, err := newChecksummer(keys.Session, common.GetUsageKc(sendUsage))
 	if err != nil {
@@ -79,17 +80,18 @@ func kerberosContext(ev vfs.Evidence, keys vfs.Keys, initiator bool, random io.R
 	if err != nil {
 		return nil, err
 	}
-	m := &tokenKeys{send: send, recv: recv, seal: seal, unseal: unseal, flags: flags, rand: random}
+	m := &tokenKeys{send: send, recv: recv, seal: seal, unseal: unseal, flags: flags, peer: peer, rand: random}
 	return &Context{Evidence: ev, Keys: keys, MIC: m.mic, VerifyMIC: m.verify, Wrap: m.wrap, Unwrap: m.unwrap}, nil
 }
 
 // tokenKeys is one side's per-message state: its checksum and sealing keys
-// for each direction, its flags, the source of its confounders, and its sent
-// tokens' sequence numbers, one count for MIC and Wrap tokens alike.
+// for each direction, its flags and the peer's, the source of its
+// confounders, and its sent tokens' sequence numbers, one count for MIC and
+// Wrap tokens alike.
 type tokenKeys struct {
 	send, recv   *checksummer
 	seal, unseal *sealer
-	flags        byte
+	flags, peer  byte
 	rand         io.Reader
 	seq          atomic.Uint64
 }
@@ -101,16 +103,21 @@ func (m *tokenKeys) mic(msg []byte) ([]byte, error) {
 	return m.send.appendSum(tok, msg, tok), nil
 }
 
-// verify checks the peer's MIC token tok over msg. A token of this side's
-// own direction is refused by its checksum, under the other key usage.
+// verify checks the peer's MIC token tok over msg: its SentByAcceptor and
+// AcceptorSubkey flags are the peer's, as RFC 4121 §4.2.2 has a receiver
+// check, and its checksum verifies. A token of this side's own direction is
+// refused by both.
 //
 // decision: the token's sequence number is not checked. RPCSEC_GSS keeps its
 // own window over its calls, and its clients ask for no GSS replay or
 // sequence detection. Overturned if a client is ever seen asking for either.
 func (m *tokenKeys) verify(msg, tok []byte) error {
-	_, _, sum, err := parseMIC(tok)
+	flags, _, sum, err := parseMIC(tok)
 	if err != nil {
 		return err
+	}
+	if got := flags & (flagSentByAcceptor | flagAcceptorSubkey); got != m.peer {
+		return fmt.Errorf("gss: a MIC token flagged %#02x, want the peer's %#02x", got, m.peer)
 	}
 	var buf [20]byte // the HMAC-SHA1 before its truncation
 	if !hmac.Equal(m.recv.appendSum(buf[:0], msg, tok[:micHeaderLen]), sum) {

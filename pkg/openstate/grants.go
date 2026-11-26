@@ -10,57 +10,8 @@ import (
 	"github.com/cubbit/dittofs/pkg/openstate/grantfsm"
 )
 
-// GrantKind is what a caching grant lets its holder cache: read, write and
-// handle, in any combination holding read, or none.
-type GrantKind = grantfsm.Kind
-
-const (
-	GrantNone   = grantfsm.None
-	GrantRead   = grantfsm.Read
-	GrantWrite  = grantfsm.Write
-	GrantHandle = grantfsm.Handle
-)
-
-// LeaseKey is an SMB lease's key, the client's own: one grant per client,
-// key and file covers every open of the file under it.
-type LeaseKey [16]byte
-
-// GrantID names a caching grant by its shard, grace instance bits and token,
-// as a StateRef does, so a call naming it with no file handle resolves from
-// the ID alone, and one naming a grant a loss took is stale. An NFS
-// delegation's stateid is its reference, of type StateGrant.
-type GrantID struct {
-	Shard    ShardID
-	Instance uint8
-	Token    uint64
-}
-
-func (g GrantID) ref() StateRef {
+func grantRef(g GrantID) StateRef {
 	return StateRef{Type: StateGrant, Shard: g.Shard, Instance: g.Instance, Token: g.Token}
-}
-
-// CachingGrant is a promise that no other holder is using the file in a way
-// that conflicts with its Kind, so its holder may cache. It covers every open
-// of its client under its Key, an oplock's one open, or, a delegation, none.
-//
-// decision: what the adapter keeps with a lease is its parent key, typed as
-// Parent, as the stored lease's ParentKey is, rather than opaque Adapter
-// bytes. Add Adapter if an adapter needs other bytes kept with a lease.
-type CachingGrant struct {
-	ID     GrantID
-	Client entity.ClientID
-	File   entity.FileID
-	Kind   GrantKind
-	Key    LeaseKey // zero: it covers one open, or none
-	Epoch  uint16   // a v2 lease's: starts at its request's, raised by every change of Kind sent to the holder
-	V2     bool     // a v2 lease, whose Epoch is counted and sent; fixed when the lease is made
-	Parent LeaseKey // a v2 lease's parent key, as its first request named it; never read here
-	Recall *Recall  // a recall in flight; nil: none
-}
-
-// Recall is a recall in flight.
-type Recall struct {
-	To GrantKind // the kind it goes to; none: a return
 }
 
 // Grants is the view of caching grants; it runs at the primary of the shard a
@@ -442,7 +393,7 @@ func (t *Table) offer(e *entry, f FileKey, who Caller, o *open, r OpenRequest, o
 	if err != nil {
 		return nil // a grant is offered, never owed: the open stands without one
 	}
-	g := &grant{id: GrantID{ref.Shard, ref.Instance, ref.Token}, client: who.Client, key: r.Lease, parent: r.Parent, fsm: grantfsm.New(k, epoch), counted: true, sessioned: o.sessioned()}
+	g := &grant{id: GrantID{Shard: ref.Shard, Instance: ref.Instance, Token: ref.Token}, client: who.Client, key: r.Lease, parent: r.Parent, fsm: grantfsm.New(k, epoch), counted: true, sessioned: o.sessioned()}
 	if who.grantsBelongToOpen() && r.Lease == (LeaseKey{}) {
 		g.open = o
 	}
@@ -551,7 +502,7 @@ func (t *Table) dropGrant(e *entry, g *grant) {
 	g.fsm.Kind = GrantNone
 	t.recount(g)
 	delete(e.grants, g.id.Token)
-	t.release(e, g.id.ref())
+	t.release(e, grantRef(g.id))
 }
 
 // recount keeps g in its client's budget while it caches anything: a grant cut
@@ -672,13 +623,13 @@ func (v grants) AckRecall(ctx context.Context, who Caller, id GrantID, to GrantK
 	if err != nil {
 		return err
 	}
-	h, err := t.resolve(who, entity.FileID{}, id.ref())
+	h, err := t.resolve(who, entity.FileID{}, grantRef(id))
 	if err != nil {
 		return err
 	}
 	out := outbox{timer: true}
 	err = t.step(h.file, func(e *entry) error {
-		if _, err := t.resolve(who, e.file, id.ref()); err != nil {
+		if _, err := t.resolve(who, e.file, grantRef(id)); err != nil {
 			return err
 		}
 		g := e.grants[id.Token]
@@ -746,7 +697,7 @@ func (v grants) Openers(ctx context.Context, id GrantID) ([]Open, error) {
 	if _, err := t.running(); err != nil {
 		return nil, err
 	}
-	h, err := t.resolveAny(id.ref())
+	h, err := t.resolveAny(grantRef(id))
 	if err != nil {
 		return nil, err
 	}

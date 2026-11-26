@@ -12,7 +12,9 @@ type ExportPolicy = Resource[ExportPolicySpec, struct{}]
 // the first match deciding and none matching refusing, which a write must
 // state, an empty list admitting every client and an absent or null one
 // refused; whose identity is squashed, none, root or all, root when empty;
-// and the share's SMB flags.
+// the share's SMB flags; and whether a claimed caller's gids are replaced by
+// the groups the store and directory hold for its uid's principal, off by
+// default.
 type ExportPolicySpec struct {
 	Flavors       []string     `json:"flavors"`
 	MinProof      string       `json:"min_proof"`
@@ -21,6 +23,7 @@ type ExportPolicySpec struct {
 	Clients       []ClientRule `json:"clients"`
 	Squash        string       `json:"squash"`
 	SMB           SMBShare     `json:"smb"`
+	ManageGIDs    bool         `json:"manage_gids"`
 }
 
 // ClientRule admits clients by a CIDR or by a netgroup, exactly one of them,

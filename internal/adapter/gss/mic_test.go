@@ -170,20 +170,24 @@ func TestTokensRoundTripPerType(t *testing.T) {
 	}
 }
 
-// The flags byte names the sender's side, and the acceptor's subkey when the
-// AP-REP sent one. MIT's clients refuse an acceptor token whose
-// AcceptorSubkey flag disagrees with the AP-REP. Catches either flag lost.
+// The flags byte names the sender's side, and, once the AP-REP sent the
+// acceptor's subkey, carries AcceptorSubkey on either side's tokens (RFC 4121
+// §2). Each side's token verifies at its peer, and a peer that disagrees about
+// the subkey refuses it, though the key is the same. MIT's acceptor picks its
+// key by the flag. Catches either flag lost on either side, and a receiver
+// that leaves the flags unchecked.
 func TestMICFlags(t *testing.T) {
+	without, with := vfs.Keys{Session: mitKey}, vfs.Keys{Session: mitKey, Subkey: mitKey}
 	for _, tc := range []struct {
-		name      string
-		keys      vfs.Keys
-		initiator bool
-		want      byte
+		name            string
+		keys, otherKeys vfs.Keys
+		initiator       bool
+		want            byte
 	}{
-		{"initiator", vfs.Keys{Session: mitKey}, true, 0x00},
-		{"initiator, an acceptor subkey", vfs.Keys{Session: mitKey, Subkey: mitKey}, true, 0x00},
-		{"acceptor", vfs.Keys{Session: mitKey}, false, 0x01},
-		{"acceptor, its subkey", vfs.Keys{Session: mitKey, Subkey: mitKey}, false, 0x05},
+		{"initiator", without, with, true, 0x00},
+		{"initiator, an acceptor subkey", with, without, true, 0x04},
+		{"acceptor", without, with, false, 0x01},
+		{"acceptor, its subkey", with, without, false, 0x05},
 	} {
 		tok, err := kerberosContext(t, tc.keys, tc.initiator).MIC(mitMsg)
 		if err != nil {
@@ -191,6 +195,12 @@ func TestMICFlags(t *testing.T) {
 		}
 		if tok[2] != tc.want {
 			t.Errorf("%s: flags = %#02x, want %#02x", tc.name, tok[2], tc.want)
+		}
+		if err := kerberosContext(t, tc.keys, !tc.initiator).VerifyMIC(mitMsg, tok); err != nil {
+			t.Errorf("%s: the peer's VerifyMIC = %v, want nil", tc.name, err)
+		}
+		if err := kerberosContext(t, tc.otherKeys, !tc.initiator).VerifyMIC(mitMsg, tok); err == nil {
+			t.Errorf("%s: VerifyMIC at a peer that disagrees about the acceptor's subkey = nil, want refused", tc.name)
 		}
 	}
 }

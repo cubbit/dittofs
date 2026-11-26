@@ -132,14 +132,25 @@ func (ss secretSetting) writing(kind entity.ResourceKind) writing[apiv1.Credenti
 func (ss secretSetting) seal(ctx context.Context, rq request[apiv1.Credential]) (sealedSecret, error) {
 	v := rq.Body.Spec.Value
 	defer clear(v)
-	all, err := scopeSettings(ctx, rq.d.Store, ss.scope(rq.ID))
+
+	scope := ss.scope(rq.ID)
+	if ss.record != "" {
+		_, ok, err := rq.d.Store.Setting(ctx, scope, ss.record)
+		if err != nil {
+			return sealedSecret{}, err
+		}
+
+		if !ok {
+			return sealedSecret{}, errNotFound
+		}
+	}
+
+	_, held, err := rq.d.Store.Setting(ctx, scope, ss.key)
 	if err != nil {
 		return sealedSecret{}, err
 	}
-	if _, ok := all[ss.record]; ss.record != "" && !ok {
-		return sealedSecret{}, errNotFound
-	}
-	if _, ok := all[ss.key]; ok {
+
+	if held {
 		return sealedSecret{}, ss.rotation()
 	}
 	if len(v) == 0 {
@@ -279,11 +290,11 @@ var keytabs = secretSetting{
 		if err != nil {
 			return nil, err
 		}
-		all, err := scopeSettings(ctx, d.Store, installation)
+
+		s, ok, err := d.Store.Setting(ctx, installation, directoryRealm)
 		if err != nil {
 			return nil, err
 		}
-		s, ok := all[directoryRealm]
 		if err := accountHolds(in.Join, s, ok, names); err != nil {
 			return nil, err
 		}

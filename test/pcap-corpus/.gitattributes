@@ -1,3 +1,4 @@
 *.pcap binary
 *.skel text eol=lf
 *.md text eol=lf
+*.keytab binary

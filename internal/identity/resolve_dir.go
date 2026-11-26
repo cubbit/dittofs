@@ -91,8 +91,11 @@ func (s *Server) dirRead(ctx context.Context, st *State, entryID []byte, ch *cha
 // call ErrUnavailable, counted directory_unavailable, never a caller without
 // what it would have read. oldest is when the oldest answer it used was
 // given. The step opens the 20-second bound once, which each of its queries,
-// mints and waits inherits. The entry read is charged to ch, a Claimed
-// caller's, as dirRead charges it.
+// mints and waits inherits. With ch, a Claimed caller's, the entry read and
+// the closure query are charged to its lookup cap, as dirRead charges a read,
+// and the groups minted to the node's mint cap (see mintDir), so a closure
+// that does not fit refuses the call rather than resolving it with part of
+// its groups.
 func (s *Server) dirStep(ctx context.Context, st *State, p entity.Principal, entryID []byte, ev identity.Evidence, groups bool, ch *charges) (dir []entity.Principal, oldest time.Time, err error) {
 	ctx, cancel := directory.Bounded(ctx, s.deps.Clock, directoryBound, errDirectoryBound)
 	defer cancel()
@@ -114,7 +117,10 @@ func (s *Server) dirStep(ctx context.Context, st *State, p entity.Principal, ent
 	if !groups {
 		return nil, oldest, nil
 	}
-	g, groupsQueried, err := st.dir.groupsOf(ctx, e.ans, st.Settings.DirectoryStaleGrace, nil)
+	g, groupsQueried, err := st.dir.groupsOf(ctx, e.ans, st.Settings.DirectoryStaleGrace, ch.lookupFn())
+	if r := (*refusal)(nil); errors.As(err, &r) {
+		return nil, time.Time{}, err
+	}
 	if err != nil {
 		return nil, time.Time{}, dirRefusal(err)
 	}
@@ -135,7 +141,7 @@ func (s *Server) dirStep(ctx context.Context, st *State, p entity.Principal, ent
 		oldest = earliest(oldest, at)
 		entries = append(entries, s.mintableGroups(domain, more)...)
 	}
-	ps, bound, err := s.mintDir(ctx, st, entries, false, nil)
+	ps, bound, err := s.mintDir(ctx, st, entries, false, ch)
 	if err != nil {
 		var r *refusal
 		if !errors.As(err, &r) && errors.Is(err, vfserr.ErrUnavailable) {

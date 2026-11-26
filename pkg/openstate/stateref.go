@@ -12,31 +12,6 @@ import (
 // low 24 bits are usable, so an installation numbers at most 2^24 shards.
 type ShardID = entity.ShardID
 
-// StateType is what a state reference names.
-type StateType uint8
-
-const (
-	StateOpen StateType = iota + 1
-	StateLock
-	StateGrant
-	StateWatch
-)
-
-// StateRef names one piece of state without a file handle: its type, its
-// shard, the low bits of the grace instance it was minted under, and a token
-// of 64 random bits unique within the shard. It resolves by shard, then token.
-// A client that sees one cannot derive another's, so it is a bearer ID with
-// room: it carries no counter. Seq is the sequence presented with it, judged
-// against the state's own: zero is the current one, an older one ErrOldState,
-// a newer one ErrBadState.
-type StateRef struct {
-	Type     StateType
-	Shard    ShardID
-	Instance uint8
-	Token    uint64
-	Seq      uint32
-}
-
 type refKey struct {
 	shard ShardID
 	token uint64

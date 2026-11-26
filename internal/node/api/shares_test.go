@@ -516,14 +516,14 @@ func TestExportPolicy(t *testing.T) {
 	}
 	old, version := r.header.Get("ETag"), p.Version
 	next := policy
-	next.ReadOnly, next.Flavors = true, []string{"kerberos"}
+	next.ReadOnly, next.Flavors, next.ManageGIDs = true, []string{"kerberos"}, true
 	body := jsonOf(t, map[string]any{"spec": next})
 	put := s.do(t, http.MethodPut, path, body, "If-Match", old)
 	if put.status != http.StatusOK || put.header.Get("ETag") == old {
 		t.Fatalf("PUT export-policy: answered %d ETag %s, want 200 with a new ETag", put.status, put.header.Get("ETag"))
 	}
-	if _, p = s.share(t, id); !p.ReadOnly || !slices.Equal(p.Flavors, []entity.AuthFlavor{entity.FlavorKerberos}) {
-		t.Errorf("after PUT: read-only %v flavours %v, want true and [kerberos]", p.ReadOnly, p.Flavors)
+	if _, p = s.share(t, id); !p.ReadOnly || !slices.Equal(p.Flavors, []entity.AuthFlavor{entity.FlavorKerberos}) || !p.ManageGIDs {
+		t.Errorf("after PUT: read-only %v flavours %v manage_gids %v, want true, [kerberos] and true", p.ReadOnly, p.Flavors, p.ManageGIDs)
 	}
 	want := apiv1.ExportPolicy{ID: id.String(), Generation: p.Version, Spec: next}
 	if err := json.Unmarshal(put.body, &got); err != nil || !reflect.DeepEqual(got, want) {
@@ -531,7 +531,7 @@ func TestExportPolicy(t *testing.T) {
 	}
 	recs := s.audits(t)
 	a := recs[len(recs)-1]
-	if wantChange := `{"export_policy.flavors":[["kerberos","sys"],["kerberos"]],"export_policy.read_only":[false,true]}`; string(a.Change) != wantChange ||
+	if wantChange := `{"export_policy.flavors":[["kerberos","sys"],["kerberos"]],"export_policy.manage_gids":[false,true],"export_policy.read_only":[false,true]}`; string(a.Change) != wantChange ||
 		a.Before != version || a.After != p.Version || a.Target.Kind != entity.ResourceShare {
 		t.Errorf("PUT's audit record: change %s, versions %d to %d, kind %v, want %s, %d to %d, share", a.Change, a.Before, a.After, a.Target.Kind, wantChange, version, p.Version)
 	}
