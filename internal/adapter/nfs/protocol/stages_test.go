@@ -734,7 +734,7 @@ func TestHeaderStageAllocs(t *testing.T) {
 	out := &resources.Buf{B: make([]byte, 0, s.ReplyLen(h))}
 	if n := testing.AllocsPerRun(100, func() {
 		h1, _ := s.Decode(buf, 0)
-		if err := checkAuth(h1.(header).call()); err != nil {
+		if _, _, err := checkAuth(h1.(header).call()); err != nil {
 			t.Fatal(err)
 		}
 		out.B = out.B[:0]
@@ -748,6 +748,34 @@ func TestHeaderStageAllocs(t *testing.T) {
 		}
 	}); n != 1 {
 		t.Errorf("routing a COMPOUND allocates %v per call, want its request and state as one", n)
+	}
+	// The groups of the credential's Identity are in the request's own
+	// allocation, 16 of them, a COMPOUND's and any other call's.
+	sixteen := []uint32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	cred := authSys("host", 1000, 100, sixteen...)
+	compound := nullCall(
+		wire.ProgNFS, wire.VersNFS4, 1, wire.AuthSys, cred, wire.AuthNone, nil, nil)
+	compound = opaque(compound, []byte("abcde"))
+	compound = binary.BigEndian.AppendUint32(compound, 0)
+
+	compound = binary.BigEndian.AppendUint32(compound, 1)
+	for name, body := range map[string][]byte{
+		"a COMPOUND of 16 groups": compound,
+		"an NFSv3 call of 16 groups": nullCall(
+			wire.ProgNFS, wire.VersNFS3, 0, wire.AuthSys, cred, wire.AuthNone, nil, nil),
+	} {
+		h, err := s.Decode(&resources.Buf{B: body}, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if n := testing.AllocsPerRun(100, func() {
+			if _, _, err := s.Route(h, nil); err != nil {
+				t.Fatal(err)
+			}
+		}); n != 1 {
+			t.Errorf("routing %s allocates %v per call, want 1", name, n)
+		}
 	}
 }
 
