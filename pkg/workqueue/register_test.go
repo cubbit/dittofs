@@ -13,7 +13,12 @@ import (
 	"github.com/cubbit/dittofs/pkg/workqueue"
 )
 
-// noWork is a source with nothing to do: Register never calls it.
+// noWork is a source with nothing to do.
+//
+// decision: noWork is not a stub of a collaborator. Register never calls a
+// Source, so no test reads an answer from it; it is the null implementation
+// the rules allow, there only so Register has a value to take. Replace it with
+// a verified in-memory Source once tests drive dispatch.
 type noWork struct{}
 
 func (noWork) Rebuild(context.Context, workqueue.TenantID, func(workqueue.Item)) error { return nil }
@@ -80,6 +85,26 @@ func newScheduler(t *testing.T) *workqueue.Scheduler {
 	t.Cleanup(loop.Close)
 
 	return workqueue.New(clk, loop)
+}
+
+// New refuses a nil Clock or Loop, which the first dispatch would dereference.
+func TestNewRefusesNilArguments(t *testing.T) {
+	clk := sim.NewTestClock(time.Unix(0, 0))
+	loop := health.NewWatchdog(clk).Loop("workqueue")
+	t.Cleanup(loop.Close)
+
+	for _, c := range []struct {
+		name string
+		clk  workqueue.Clock
+		loop workqueue.Loop
+	}{
+		{"nil Clock", nil, loop},
+		{"nil Loop", clk, nil},
+	} {
+		if got := panicOf(func() { workqueue.New(c.clk, c.loop) }); !strings.Contains(got, "nil Clock or Loop") {
+			t.Errorf("New with %s: panic = %q, want one naming the nil argument", c.name, got)
+		}
+	}
 }
 
 // Register refuses a nil Source, which it could never run.
