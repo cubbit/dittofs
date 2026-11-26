@@ -92,7 +92,10 @@ type Stats struct {
 	// DirtyBytes is engine_dirty_bytes and DrainBytesPerSecond
 	// engine_drain_bytes_per_second, each summed over the shares; DrainTime
 	// is engine_drain_seconds, the node's dirty bytes at its drain rate, not
-	// a sum of the shares' times, as they drain at once; OldestUnoffloaded is
+	// a sum of the shares' times, as they drain at once. DrainTime is zero
+	// only with no dirty bytes; dirty bytes at a zero rate, an idle drain or
+	// a remote that takes nothing, are the largest time.Duration, so a
+	// stalled offload never reads as drained. OldestUnoffloaded is
 	// engine_unoffloaded_oldest_seconds, the largest of the shares'.
 	DirtyBytes          int64
 	DrainBytesPerSecond float64

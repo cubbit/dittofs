@@ -454,13 +454,17 @@ var valuePointees = []reflect.Type{
 // anywhere, and a pointer to any type but a snapshot's, the engine's own
 // included, since a component's struct shows no exported field. A value type
 // is walked, whatever its package; a struct's unexported fields are its own
-// implementation and are not walked.
+// implementation and are not walked, but an embedded one is, since Go
+// promotes its exported fields. seen holds the types on the path being
+// walked, so a recursive type ends and a type met in two fields is walked,
+// and refused, at each.
 func componentFields(t reflect.Type, path string, seen map[reflect.Type]bool) []string {
 	if seen[t] {
 		return nil
 	}
 
 	seen[t] = true
+	defer delete(seen, t)
 
 	switch t.Kind() {
 	case reflect.Interface:
@@ -483,7 +487,7 @@ func componentFields(t reflect.Type, path string, seen map[reflect.Type]bool) []
 		var out []string
 
 		for f := range t.Fields() {
-			if f.IsExported() {
+			if f.IsExported() || f.Anonymous {
 				out = append(out, componentFields(f.Type, path+"."+f.Name, seen)...)
 			}
 		}
@@ -515,23 +519,35 @@ func TestStatsAndShareHoldNoComponent(t *testing.T) {
 // slice, and names the field it refused.
 func TestComponentFieldsRefusesAComponent(t *testing.T) {
 	for _, c := range []struct {
-		name, field string
-		typ         reflect.Type
+		name   string
+		fields []string
+		typ    reflect.Type
 	}{
-		{"a scheduler", "x.S", reflect.TypeFor[struct{ S *workqueue.Scheduler }]()},
-		{"the engine", "x.E", reflect.TypeFor[struct{ E *engine.Engine }]()},
-		{"a journal", "x.J", reflect.TypeFor[struct{ J engine.Journal }]()},
-		{"a func", "x.F", reflect.TypeFor[struct{ F func() }]()},
-		{"a channel in a map", "x.M[]", reflect.TypeFor[struct{ M map[string]chan int }]()},
-		{"a scheduler in a slice", "x.S[]", reflect.TypeFor[struct{ S []*workqueue.Scheduler }]()},
-		{"a scheduler as a map key", "x.M[key]", reflect.TypeFor[struct{ M map[*workqueue.Scheduler]int }]()},
+		{"a scheduler", []string{"x.S"}, reflect.TypeFor[struct{ S *workqueue.Scheduler }]()},
+		{"the engine", []string{"x.E"}, reflect.TypeFor[struct{ E *engine.Engine }]()},
+		{"a journal", []string{"x.J"}, reflect.TypeFor[struct{ J engine.Journal }]()},
+		{"a func", []string{"x.F"}, reflect.TypeFor[struct{ F func() }]()},
+		{"a channel in a map", []string{"x.M[]"}, reflect.TypeFor[struct{ M map[string]chan int }]()},
+		{"a scheduler in a slice", []string{"x.S[]"}, reflect.TypeFor[struct{ S []*workqueue.Scheduler }]()},
+		{"a scheduler as a map key", []string{"x.M[key]"}, reflect.TypeFor[struct{ M map[*workqueue.Scheduler]int }]()},
+		{"a scheduler promoted from an unexported embedded struct", []string{"x.offloadFigures.Sched"}, reflect.TypeFor[struct{ offloadFigures }]()},
+		{"a scheduler in two fields", []string{"x.A", "x.B"}, reflect.TypeFor[struct{ A, B *workqueue.Scheduler }]()},
+		{"one struct holding a scheduler, in two fields", []string{"x.A.Sched", "x.B.Sched"}, reflect.TypeFor[struct{ A, B offloadFigures }]()},
 	} {
 		got := componentFields(c.typ, "x", map[reflect.Type]bool{})
-		if len(got) != 1 || !strings.HasPrefix(got[0], c.field+":") {
-			t.Errorf("the walk over %s reported %q, want one refusal at %s", c.name, got, c.field)
+		ok := len(got) == len(c.fields)
+		for i := 0; ok && i < len(got); i++ {
+			ok = strings.HasPrefix(got[i], c.fields[i]+":")
+		}
+		if !ok {
+			t.Errorf("the walk over %s reported %q, want one refusal at each of %q", c.name, got, c.fields)
 		}
 	}
 }
+
+// offloadFigures is an unexported struct holding a component, for the walk to
+// find through an embedding that promotes its field.
+type offloadFigures struct{ Sched *workqueue.Scheduler }
 
 // frozenStatsFields is every offload field of Stats and its parts, with its
 // type: the readers of each, the node's adapter and the red rows, compile
