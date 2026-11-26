@@ -5,8 +5,9 @@ package integration
 import (
 	"context"
 	"fmt"
-	"math"
 	"math/rand/v2"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -17,19 +18,14 @@ import (
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
-// B7's storm: b7Rate chmods a second, each on a file drawn at random from all
-// b7Files files of the share's journal, the first benchWriters of which the
-// writers overwrite.
+// B7's storm, sized in storm_test.go.
 const (
-	b7Files = 100000
-	b7Rate  = 1000
 	b7Log2G = 6 // log₂ of benchMaxFiles
 
 	// The storm's workers, at most this many chmods at once: b7WarmWorkers for
 	// the warm-up burst, then b7Rate × the last burst's chmod latency, up to
 	// b7MaxWorkers.
 	b7WarmWorkers = 256
-	b7MaxWorkers  = 4096
 
 	// b7MinK and b7MaxK are the fewest and the most conflicting files a burst
 	// may have and still be evaluated: below 2 the bound is under the batches a
@@ -37,10 +33,6 @@ const (
 	// transactions of a batch committed file by file.
 	b7MinK = 2
 	b7MaxK = 10
-
-	// b7WantK is the expected k the storm's pool is sized for, before each
-	// burst, from the length of the burst before it.
-	b7WantK = 4
 
 	// decision: B7's heap slack is the profiler's default plus what the
 	// benchmark itself keeps until the check, each term measured, never a
@@ -68,7 +60,9 @@ const (
 // journal. The engine's transactions per stability point, the storm's own
 // taken out, are at most 1 + conflicting files × log₂ G (RFC 8 §5.2), and a
 // burst that breaks the bound fails the run; the fsync p99 is reported, to
-// compare with B5's overwriting run.
+// compare with B5's overwriting run. Like B5's, it is the 6th slowest of the
+// run's 512 fsyncs, about the slowest burst's commit, under the name
+// fsync-p99-µs that the v1 baseline uses.
 //
 // decision: B7 runs B5's overwriting run, not its appending one: an append's
 // fsync commits no existence, so with the long existence age no transaction
@@ -97,13 +91,14 @@ const (
 // each on a writer's file with chance 64 / N, so N = 64 × b7Rate × D / 4,
 // within [64, 100 000], with D the last burst's length and a warm-up burst,
 // not evaluated, to measure the first. The rate in it is the median of the
-// last three bursts' measured rates, and from the second burst on N stays
-// between half and twice the N before it: one burst whose chmods stalled
-// measured 21 chmods a second against 251 to 950 for the others, and a raw
-// rate swung N from 560 to 44 896 within a run, so k left 2 to 10 in more
-// than half the bursts. Overturned if the measured k drifts far
-// from 4 while D is steady (chmods outlasting a burst would push it up), or
-// when the key layout changes (the classifier must follow it).
+// last three bursts' measured rates, the warm-up's counting for burst 1 only,
+// and from the second burst on N stays between half and twice the N before
+// it: one burst whose chmods stalled measured 21 chmods a second against 251
+// to 950 for the others, and a raw rate swung N from 560 to 44 896 within a
+// run, so k left 2 to 10 in more than half the bursts. Overturned if the
+// measured k drifts far from 4 while D is steady (chmods outlasting a burst
+// would push it up), or when the key layout changes (the classifier must
+// follow it).
 //
 // The storm is a pool of workers paced by a ticker at b7Rate, never one
 // goroutine per chmod: the Go runtime never frees a goroutine's descriptor,
@@ -113,13 +108,17 @@ const (
 // passes 10³ chmods a second. A chmod takes seconds under the bursts' fsyncs,
 // so a fixed pool of 256 reached 23 to 165 chmods a second: before each burst
 // the pool is set to b7Rate × the median of the last three bursts' mean chmod
-// latencies, from 1 up to b7MaxWorkers, starting from b7WarmWorkers for the
-// warm-up. Each burst
-// reports its workers, its rate and its chmod latency, and a burst at the cap
-// still under b7Rate is counted. Overturned if bursts reach the cap and stay
-// well under 10³ (the cap, and the descriptors it costs, would have to grow),
-// or if chmods return fast enough that a fixed handful of workers holds the
-// rate.
+// latencies, the warm-up's counting for burst 1 only, from 1 up to
+// b7MaxWorkers, starting from b7WarmWorkers for the warm-up. A line a burst,
+// the warm-up as burst 0, goes to b7-bursts.txt in b.ArtifactDir(): its
+// workers, rate and chmod latency, its pool and k, and the storm's window.
+// The file is for reading burst by burst, not for benchstat, since some of its
+// values are often 0; the run's totals benchstat compares are the benchmark's
+// own metrics. Without -artifacts Go makes the directory in a temporary place
+// and removes it. A burst at the cap still under b7Rate is logged. Overturned
+// if bursts reach the cap and stay well under 10³ (the cap, and the
+// descriptors it costs, would have to grow), or if chmods return fast enough
+// that a fixed handful of workers holds the rate.
 //
 // The profiler's heap slack for B7 is derived at b7HeapSlack.
 func BenchmarkB7(b *testing.B) {
@@ -382,14 +381,6 @@ func (s *storm) window(from, to time.Time) stormWindow {
 	return w
 }
 
-// workersFor is the pool that keeps b7Rate chmods a second in flight when
-// each takes latency, at least one and at most b7MaxWorkers.
-func workersFor(latency time.Duration) int64 {
-	n := int64(math.Ceil(b7Rate * latency.Seconds()))
-
-	return min(max(n, 1), b7MaxWorkers)
-}
-
 // end stops the storm and waits for its last chmod, at most
 // benchBurstDeadline.
 func (s *storm) end() error {
@@ -446,12 +437,20 @@ func benchB7(b *testing.B) {
 
 	var fsyncs []time.Duration
 
-	most, evaluated, touchedAll, mixedAll, stormTotal := 0, 0, 0, 0, 0
+	most, evaluated, touchedAll, stormTotal := 0, 0, 0, 0
 
 	var stormed time.Duration
 
 	slowest := float64(b7Rate)
-	capped := 0
+
+	burstFile, err := os.Create(filepath.Join(b.ArtifactDir(), "b7-bursts.txt"))
+	if err != nil {
+		b.Fatalf("the per-burst file: %v", err)
+	}
+
+	b.Cleanup(func() {
+		_ = burstFile.Close()
+	})
 
 	b.ResetTimer()
 
@@ -464,35 +463,17 @@ func benchB7(b *testing.B) {
 
 		stormFrom := time.Now()
 
-		var last time.Duration
-
-		var (
-			rates []float64       // the last three bursts' measured rates
-			lats  []time.Duration // and their chmod latencies, none of them 0
-			prevN int64           // the N of the burst before, 0 before the first
-		)
+		var z stormSizer
 
 		// Burst -1 is the warm-up: it measures the first burst's length, and
 		// is not evaluated.
 		for k := -1; k < b5Bursts; k++ {
 			if k >= 0 {
-				rate := float64(b7Rate)
-				if len(rates) > 0 {
-					rate = median(rates)
-				}
-
-				n := stormPool(last, rate)
-				if prevN > 0 {
-					n = min(max(n, prevN/2, benchWriters), 2*prevN, b7Files)
-				}
-
-				prevN = n
+				n, w := z.next()
 				s.pool.Store(n)
 
-				// A latency of 0 means no chmod started in the window: it is
-				// left out, and with none measured the target stays.
-				if len(lats) > 0 {
-					s.setWorkers(workersFor(median(lats)))
+				if w > 0 {
+					s.setWorkers(w)
 				}
 			}
 
@@ -524,20 +505,14 @@ func benchB7(b *testing.B) {
 			}
 
 			engine, mixed := c.txns.take()
-			last = time.Since(from)
+			last := time.Since(from)
 			now := time.Now()
 			touched := s.touched(from, now)
 			rate := float64(s.started(from, now)) / last.Seconds()
 			lat := s.latency(from, now)
 			win := s.window(from, now)
 
-			if rate > 0 {
-				rates = lastThree(append(rates, min(rate, b7Rate)))
-			}
-
-			if lat > 0 {
-				lats = lastThree(append(lats, lat))
-			}
+			z.measured(k, last, rate, lat)
 
 			if k >= 0 {
 				slowest = min(slowest, rate)
@@ -545,7 +520,6 @@ func benchB7(b *testing.B) {
 
 			if k >= 0 {
 				fsyncs = append(fsyncs, took...)
-				mixedAll += mixed
 			}
 
 			b.Logf(
@@ -562,33 +536,27 @@ func benchB7(b *testing.B) {
 				mixed,
 			)
 
+			// A line a burst, written as it goes: a run that fails in burst 5 still
+			// leaves bursts 0 to 5. Burst 0 is the warm-up.
+			if _, err := burstFile.WriteString(burstLine(b.Name(), k+1, burstMetrics{
+				workers:       float64(workers),
+				rate:          rate,
+				chmodMs:       milliseconds(lat),
+				pool:          float64(s.pool.Load()),
+				k:             float64(touched),
+				windowMs:      milliseconds(last),
+				running:       float64(win.running),
+				oldestMs:      milliseconds(win.oldest),
+				writerChmods:  float64(win.onWriters),
+				writerChmodMs: milliseconds(win.writersLat),
+				otherChmodMs:  milliseconds(win.othersLat),
+				mixedTxns:     float64(mixed),
+			})); err != nil {
+				b.Fatalf("burst %d of run %d: the per-burst file: %v", k+1, i+1, err)
+			}
+
 			if k >= 0 {
-				b.ReportMetric(float64(workers), fmt.Sprintf("b%d-workers", k+1))
-				b.ReportMetric(rate, fmt.Sprintf("b%d-chmods/s", k+1))
-				b.ReportMetric(
-					float64(lat)/float64(time.Millisecond),
-					fmt.Sprintf("b%d-chmod-ms", k+1),
-				)
-				// Metrics rather than log lines: go test cuts a benchmark's log
-				// after a few lines, and these must survive for every burst.
-				b.ReportMetric(float64(s.pool.Load()), fmt.Sprintf("b%d-pool", k+1))
-				b.ReportMetric(float64(touched), fmt.Sprintf("b%d-k", k+1))
-				b.ReportMetric(milliseconds(last), fmt.Sprintf("b%d-window-ms", k+1))
-				b.ReportMetric(float64(win.running), fmt.Sprintf("b%d-running", k+1))
-				b.ReportMetric(milliseconds(win.oldest), fmt.Sprintf("b%d-oldest-ms", k+1))
-				b.ReportMetric(float64(win.onWriters), fmt.Sprintf("b%d-writer-chmods", k+1))
-				b.ReportMetric(
-					milliseconds(win.writersLat),
-					fmt.Sprintf("b%d-writer-chmod-ms", k+1),
-				)
-				b.ReportMetric(
-					milliseconds(win.othersLat),
-					fmt.Sprintf("b%d-other-chmod-ms", k+1),
-				)
-
 				if workers == b7MaxWorkers && rate < b7Rate {
-					capped++
-
 					b.Logf(
 						"burst %d of run %d: the pool is at its cap of %d workers and the storm "+
 							"reached %.1f chmods/s, under %d",
@@ -652,10 +620,8 @@ func benchB7(b *testing.B) {
 	b.ReportMetric(float64(most), "txn/stability-point")
 	b.ReportMetric(float64(evaluated), "evaluated-bursts")
 	b.ReportMetric(float64(touchedAll)/float64(max(evaluated, 1)), "k/evaluated-burst")
-	b.ReportMetric(float64(mixedAll), "mixed-txns")
 	b.ReportMetric(float64(stormTotal)/stormed.Seconds(), "chmods/s")
 	b.ReportMetric(slowest, "slowest-burst-chmods/s")
-	b.ReportMetric(float64(capped), "capped-slow-bursts")
 
 	if bursts := b.N * (b5Bursts - 1); 2*evaluated < bursts {
 		b.Fatalf(
@@ -670,35 +636,7 @@ func benchB7(b *testing.B) {
 	}
 }
 
-// stormPool is how many of the pool's files the storm draws from for a burst
-// expected to last as long as last did, with the storm running at rate chmods
-// a second as the burst before measured it: enough that about b7WantK of the
-// writers' files are touched.
-func stormPool(last time.Duration, rate float64) int64 {
-	n := int64(float64(benchWriters) * rate * last.Seconds() / b7WantK)
-
-	return min(max(n, benchWriters), b7Files)
-}
-
 // milliseconds is d in milliseconds, as a metric value.
 func milliseconds(d time.Duration) float64 {
 	return float64(d) / float64(time.Millisecond)
-}
-
-// median is the middle of xs, or the mean of the two middle values when their
-// count is even; xs is not changed.
-func median[T float64 | time.Duration](xs []T) T {
-	sorted := slices.Sorted(slices.Values(xs))
-	m := len(sorted) / 2
-
-	if len(sorted)%2 == 0 {
-		return (sorted[m-1] + sorted[m]) / 2
-	}
-
-	return sorted[m]
-}
-
-// lastThree is the last three of xs, or all of them when fewer.
-func lastThree[T any](xs []T) []T {
-	return xs[max(len(xs)-3, 0):]
 }
