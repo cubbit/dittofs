@@ -86,17 +86,20 @@ The issue names three. Measured against the repository:
 live decision.** v1 and v2 never share a branch, so (a) is always a develop
 line against a `feat/storage-v2` line. Where a component moved, the paths tell
 it apart: v2 `pkg/engine`, `pkg/journal`, `pkg/remote`, `pkg/syncer`,
-`pkg/carver`, `pkg/transform`, `pkg/workqueue` replace v1's `pkg/block` tree.
-`pkg/metadata` and the control plane were rewritten **in place**, so their v1
-and v2 halves are split by subdirectory instead (`store`/`lock`/`acl` against
-`entity`/`kv`/`kvstore`; `pkg/controlplane` against `pkg/node`/`pkg/settings`).
-§8.1 encodes that split; the comparison is read across the two branches' rows on
-the dashboard. This is the one decision worth a dashboard, and it recurs with
+`pkg/carver`, `pkg/transform`, `pkg/workqueue` replace v1's `pkg/block` tree, and
+the control plane moved the same way (`pkg/controlplane`/`internal/controlplane`
+against `pkg/node`/`pkg/settings`/`internal/node`). `pkg/metadata` is the one
+rewritten in place, so its v1 and v2 halves split by subdirectory
+(`store`/`lock`/`acl` plus the root service package against `entity`/`kv`/
+`kvstore`). §8.1 encodes that split; the comparison is read across the two
+branches' cards. This is the one decision worth a dashboard, and it recurs with
 every component cutover.
 
 **(b) Which packages have no tests? — measurable, but not by subtracting.** At the
 profile's commit, **32 directories under `pkg/`, `internal/` and `cmd/` hold Go
-files and no `_test.go`**: the whole `cmd/dfsctl` command wiring (17), the
+files and no `_test.go`**: cmd wiring (17: 15 `cmd/dfsctl` directories
+including the root command, plus `cmd/dfs` and `cmd/bench`; several `dfsctl`
+directories do carry tests), the
 adapters' wire-format and type helpers (`nlm`'s dispatch, `nlm/types`,
 `nsm/types`, `nsm/xdr`, `portmap/sysreg`, `portmap/types`, `xdr/core`,
 `v3/handlers/testing`), `internal/cli/prompt`, `internal/cli/timeutil`,
@@ -174,7 +177,7 @@ scope.** Recorded as deferred work in §12.
 | Unit upload | 4.3 s, 2.4 MB, on a 20.9 min cell | passes; keep |
 | Plan limits | public repo, free Codecov tier; no seat or private-repo cost | passes |
 | Integration `-coverprofile` | integration cell 3.4 min baseline; profiling re-instruments and recompiles the packages under test (separate build-cache keys), so cost is **estimated** at seconds to ~1 min, not the baseline | measure with the flag in the trial |
-| e2e `go build -cover` | instrumented build **14.9 s** vs 0.74 s cached normal build, this host; binary 78.3 MB vs 76.3 MB | passes alone |
+| e2e `go build -cover` | binary 78.3 MB vs 76.3 MB; build cost measured like for like on this host: warm **+0.06 s** (0.34 vs 0.28), cold **+2.9 s** (70.5 vs 67.6), separate GOCACHEs | passes: ~3 s of the build, once per cell |
 | e2e runtime instrumentation | e2e cell **13.1 min**; rule-of-thumb coverage overhead is 5–15% CPU (no benchmark source), and e2e is dominated by mount/setup/IO, so **≈0.7–2.0 min estimated** | borderline: measure in the trial; if > 2–3 min, nightly-only or drop |
 | `GOCOVERDIR` collection | mechanism verified: built `dfs -cover`, ran a command, `go tool covdata percent` read the data; 581 KB meta per run | passes |
 
@@ -237,8 +240,9 @@ component_management:
       paths: [pkg/block/carver/**]
     - component_id: metadata-v1
       name: metadata (v1)
-      paths: [pkg/metadata/store/**, pkg/metadata/lock/**, pkg/metadata/acl/**,
-              pkg/metadata/backup/**, pkg/metadata/storetest/**]
+      paths: [pkg/metadata/*.go, pkg/metadata/store/**, pkg/metadata/lock/**,
+              pkg/metadata/acl/**, pkg/metadata/backup/**,
+              pkg/metadata/storetest/**, pkg/metadata/errors/**]
     - component_id: controlplane-v1
       name: control plane (v1)
       paths: [pkg/controlplane/**, internal/controlplane/**]
@@ -263,18 +267,19 @@ component_management:
       paths: [pkg/openstate/**]
     - component_id: metadata-v2
       name: metadata (v2)
-      paths: [pkg/metadata/entity/**, pkg/metadata/kv/**, pkg/metadata/kvstore/**]
+      paths: [pkg/metadata/entity/**, pkg/metadata/kv/**, pkg/metadata/kvstore/**,
+              pkg/metadata/errors/**]   # errors is the shared leaf: on both cards
     - component_id: controlplane-v2
       name: control plane (v2)
       paths: [pkg/node/**, pkg/settings/**, internal/node/**]
     - component_id: setup-v2
       name: bootstrap + keys (v2)
       paths: [pkg/bootstrap/**, pkg/secrets/**, pkg/keyprovider/**]
-    - component_id: identity-v2
-      name: identity + adapter core (v2)
+    # shared paths while the migration runs: pkg/identity and the adapters
+    # exist on both branches, so these cards are read per branch
+    - component_id: identity
+      name: identity + adapter core
       paths: [pkg/identity/**, internal/identity/**, internal/adapter/core/**]
-    # shared paths while the migration runs (RFC 17 §9 moves the adapters onto
-    # the VFS service, so both branches carry these paths today)
     - component_id: adapters-nfs
       name: adapters/nfs
       paths: [internal/adapter/nfs/**, pkg/adapter/nfs/**]
@@ -312,9 +317,10 @@ Deliberate omissions:
   zero; verify the rendering during the trial before relying on it.
 - **`develop` and `feat/storage-v2` write to different cards, one set of
   flags.** The v1 cards are populated by develop's pushes and the v2 cards by
-  `feat/storage-v2`'s, because v1 and v2 never share a branch; read decision (a)
-  as one card against the other, with per-branch filtering a dashboard query, not
-  a config split.
+  `feat/storage-v2`'s, because v1 and v2 never share a branch; the shared cards
+  (adapters, identity, `pkg/metadata/errors`) carry both branches' paths and are
+  read per branch. Decision (a) is one card against the other, with per-branch
+  filtering a dashboard query, not a config split.
 
 ### 8.2 CI changes
 
@@ -333,23 +339,29 @@ Deliberate omissions:
    — not copy the unit step's `unit` path; the matrix name there is `integration`
    and its options (`ad-dc`, `kerberos`, `portmap`) write their own cell
    directories.
-3. **e2e upload (conditional).** `dt` builds the fixture's `dfs`; the e2e cell
-   builds it with `-cover` and sets `GOCOVERDIR` for the server, then
-   `go tool covdata textfmt` writes `{out}/coverage.txt`, uploaded with
+3. **e2e upload (conditional).** The plumbing goes through `dt`, not the
+   workflow: `buildBin` builds the cell's programs from one list, so it gains a
+   cover flag that builds `dfs` (and only `dfs`) with `-cover`; and the e2e
+   suite's `env:` in `test/suites.yaml` carries `GOCOVERDIR`, because the suite
+   runs as root through dt's `sudo -n env …` wrapper, which resets the
+   environment and passes only the suite's own env and the service variables —
+   a `GOCOVERDIR` set in the workflow step never reaches the server. After the
+   run, `go tool covdata textfmt` writes `{out}/coverage.txt`, uploaded with
    `flags: e2e`. Landed only if the trial's measurement keeps the cell within
    ~2–3 min of its 13.1 min baseline; otherwise the flag uploads from nightly
-   alone. This is the only `dt` code in the reshape. One measurement the trial
-   runs first, because a `-cover` binary flushes its counters only on a clean
-   exit: the fixture stops the server with SIGTERM and falls back to SIGKILL
-   (`test/e2e/helpers/server.go` `ForceKill`), so the trial confirms that a
-   normal teardown leaves data in `GOCOVERDIR`; a server that has to be
-   hard-killed loses its counters for that run.
-4. Unit step's condition narrows, on both branches: it already excludes pull
-   requests and retries, and it must also exclude `merge_group` — the merge
-   queue runs the `pr` tier, where the unit cell adds `-short`, so a queued
-   commit uploads a reduced profile under `unittests` today. With `merge_group`
-   excluded and `patch: off`, no reduced profile is uploaded at all and no
-   per-commit delta is computed from one.
+   alone. One measurement the trial runs first, because a `-cover` binary
+   flushes its counters only on a clean exit: the fixture stops the server with
+   SIGTERM and falls back to SIGKILL (`test/e2e/helpers/server.go` `ForceKill`),
+   so the trial confirms that a normal teardown leaves data in `GOCOVERDIR`; a
+   server that has to be hard-killed loses its counters for that run.
+4. The unit step's upload condition keys on the tier and the ref, not on event
+   names: `env.TIER != 'pr' && matrix.name == 'unit' && hashFiles(…retry…) == ''`
+   and the ref is `develop` or `feat/storage-v2`. Excluding event names is not
+   enough — `workflow_dispatch` with the default `tier` input runs the `pr`
+   tier on any branch, and the merge queue runs the `pr` tier on the merged
+   result; both would upload a `-short` profile under `unittests` and read as a
+   real drop on the cards. With the tier-gated condition, no reduced profile is
+   uploaded at all.
 
 ## 9. Trial (what makes this a recommendation rather than a guess)
 
@@ -457,12 +469,14 @@ for line in open("coverage.txt"):
 
 GROUPS = ["pkg/block", "pkg/metadata", "pkg/controlplane",
           "pkg/adapter", "internal/adapter/nfs", "internal/adapter/smb",
-          "internal/adapter/common", "cmd"]
+          "cmd"]
 for g in GROUPS:
     t = h = 0
     for d, (st, hit) in cov.items():
         if d.startswith(g):
             t, h = t + st, h + hit
+    if t == 0:                       # the group does not exist on this commit
+        continue
     print(f"{100*h/t:6.2f}%  {h:6}/{t:<6} {g}")
 t = sum(v[0] for v in cov.values()); h = sum(v[1] for v in cov.values())
 print(f"TOTAL {100*h/t:.2f}% ({h}/{t}) over {len(cov)} packages")
@@ -474,9 +488,9 @@ The §3(b) count (directories with Go files and no `_test.go`, excluding
 ```bash
 git ls-tree -r --name-only d219266ac | grep '\.go$' | grep -v '_test\.go$' \
   | sed 's![^/]*\.go$!!' | sort -u > /tmp/dirs
-git ls-tree -r --name-only d219266ac | grep '\_test\.go$' \
+git ls-tree -r --name-only d219266ac | grep '_test\.go$' \
   | sed 's![^/]*_test\.go$!!' | sort -u > /tmp/testdirs
-comm -23 /tmp/dirs /tmp/testdirs | grep -v '^k8s/\|^scripts/\|^bench/'
+comm -23 /tmp/dirs /tmp/testdirs | grep '^\(pkg\|internal\|cmd\)/'
 ```
 
 
