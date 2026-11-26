@@ -996,6 +996,12 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 		c.sealer.Start()
 		c.addStop(c.sealer.Stop)
 	}
+	// The read-ahead worker's stop, like every registered stop, runs before
+	// the group's close, so a hint in flight has released its descriptor
+	// reference before the cache's Shutdown waits on the last one.
+	hinter := segment.NewHinter(c.streams, segment.ReadAheadWindow, deps.Log)
+	hinter.Start()
+	c.addStop(hinter.Stop)
 	c.pool.Start()
 	c.addStop(c.pool.Stop)
 	d.Start(c.streams)

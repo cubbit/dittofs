@@ -334,6 +334,19 @@ type Stream struct {
 	// appendMu, like every field of its block.
 	lastAppend time.Duration
 
+	// hinter is the read-ahead worker NewHinter installed, nil before one is;
+	// hintStep is half its window, the distance from the hinted front at which
+	// a reservation asks for the next window. hinted is the active segment's
+	// hinted front: the end of the last window asked for, the cap once
+	// nothing is left to ask or no worker is installed. [hintFrom, hintTo) is
+	// the part of it the worker has not taken yet, empty when they are equal.
+	// All guarded by appendMu, like every field of its block.
+	hinter   *Hinter
+	hintStep int64
+	hinted   int64
+	hintFrom int64
+	hintTo   int64
+
 	// sealState names where the stream's seal stands. The zero value is
 	// sealOpen: the stream is appending.
 	sealState sealState
@@ -953,6 +966,9 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 
 		slot := s.tracker.reserve(h.Offset, h.Offset+size)
 		s.next += size
+		if s.next+s.hintStep > s.hinted && s.hinted < s.set.cap {
+			s.hintAheadLocked()
+		}
 		// The arrival time read before the lock becomes the stream's last
 		// append. Only a reservation stamps: a refused append — a closed
 		// stream, a segment with no room, a failed roll — wrote nothing, so
@@ -1367,6 +1383,12 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	// §5.4), which endLocked reads through this pair.
 	s.leftFailed = leftEnded
 	s.syncedOnce = false
+	// The new segment's first window is asked of the read-ahead worker
+	// before its first record is reserved, so the fill starts at the
+	// header the records follow.
+	s.hintFrom, s.hintTo = 0, 0
+	s.hinted = format.SegmentHeaderSize
+	s.hintAheadLocked()
 	s.appendMu.Unlock()
 
 	// The old ref is released only outside the lock, and never before a
