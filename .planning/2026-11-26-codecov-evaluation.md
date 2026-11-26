@@ -61,7 +61,8 @@ action still authenticates against the old repo slug, the upload is accepted
 asynchronously, and no commit is indexed. The only data that exists is a
 **22-day-old, pre-migration snapshot** whose history covers nine days
 (2026-10-27 to 2026-11-04): 1,127 files, 110,976 lines, **54.34%**, one flag, no
-components. Every develop run since has uploaded 2.4 MB into a void.
+components. Every develop run since has uploaded a 4.6 MB profile (2.4 MB
+compressed) into a void.
 
 Consequences for the issue:
 
@@ -69,8 +70,9 @@ Consequences for the issue:
   keep.
 - Any trial must first make the data land (§8.2), then starts from zero; the stale
   snapshot is only useful as a sanity check on aggregation.
-- The upload itself is healthy: 4.3 s for a 2.4 MB profile, `continue-on-error:
-  true`, on a 20.9-minute unit cell — 0.3% of that cell.
+- The upload itself is healthy: 4.3 s for a 4.6 MB profile (2.4 MB compressed
+  on the wire), `continue-on-error: true`, on a 20.9-minute unit cell — 0.3% of
+  that cell.
 - The `decision:` header in `codecov.yml` ("the coverage history is there") is
   false today and stays false under any verdict; the config change that fixes
   ingestion, or the drop, corrects it in the same PR.
@@ -113,9 +115,10 @@ nothing catches them. A one-line `git ls-tree` scan answers the question
 (appendix), so Codecov still adds nothing here — but the guard's gap is recorded
 in §12.
 
-**(c) Did a deletion take its tests with it? — partially covered.** The two
-scripts above catch a new package with no test and a deleted named gate test, but
-not "this rewrite removed a test file along with the code it guarded". A
+**(c) Did a deletion take its tests with it? — partially covered.**
+`test/new-package-tests.sh` catches a new package with no test and
+`test/required-tests.sh` catches the deletion of a named gate test, but neither
+catches "this rewrite removed a test file along with the code it guarded". A
 per-component line that steps down is a hint, not a proof, and it only exists if
 the component is mapped and the data lands. Keep this as a secondary use, not a
 reason on its own.
@@ -155,9 +158,12 @@ rate, failed tests with stack traces, and flaky-test detection. `dt` already
 provides all of it from its own results: `dt report` (text/md/json) gives the
 run's tests and grades, `dt history` gives pass/fail/skip/flaky counts with p50
 and p90 durations per suite and per test, and `quarantine.yaml` + `dt doctor`
-make a flake an owned, expiring entry rather than a statistic. Uploading a second
-copy adds a credential, a schema conversion in `dt`, and a second place where
-"flaky" means something different from RFC 29 §4.7. **Verdict: not adopted.**
+make a flake an owned, expiring entry rather than a statistic. The upload itself
+is nearly free — `dt report` already writes a JUnit XML per cell, and the same
+`CODECOV_TOKEN` carries it — so the cost is not plumbing but a second place where
+"flaky" means something different from RFC 29 §4.7, with no question a developer
+asks that `dt history` and the quarantine do not already answer. **Verdict: not
+adopted.**
 
 ## 6. Finding 5: duplicate tests are not detectable from what we upload
 
@@ -174,7 +180,7 @@ scope.** Recorded as deferred work in §12.
 
 | Item | Measured / estimated | Gate |
 | --- | --- | --- |
-| Unit upload | 4.3 s, 2.4 MB, on a 20.9 min cell | passes; keep |
+| Unit upload | 4.3 s, 2.4 MB sent (4.6 MB profile), on a 20.9 min cell | passes; keep |
 | Plan limits | public repo, free Codecov tier; no seat or private-repo cost | passes |
 | Integration `-coverprofile` | integration cell 3.4 min baseline; profiling re-instruments and recompiles the packages under test (separate build-cache keys), so cost is **estimated** at seconds to ~1 min, not the baseline | measure with the flag in the trial |
 | e2e `go build -cover` | binary 78.3 MB vs 76.3 MB; build cost measured like for like on this host: warm **+0.06 s** (0.34 vs 0.28), cold **+2.9 s** (70.5 vs 67.6), separate GOCACHEs | passes: ~3 s of the build, once per cell |
@@ -203,7 +209,8 @@ coverage:
   range: "50...80"
 
   status:
-    project: off                # repo-wide % averages v1 next to v2: no signal
+    project: off                # a repo-wide % hides per-component moves, and a
+                                # test landing before its code reads as a drop
     patch: off                  # push runs upload whole reports; a per-commit
                                 # delta is the signal this config keeps off
 
@@ -211,7 +218,8 @@ flags:
   unittests:
     carryforward: true          # reuses the last flag upload when a run skips it
   integration:
-    carryforward: true          # e.g. the flag is absent from a PR-tier run
+    carryforward: true          # a push whose upload the retry check skipped,
+                                # or while e2e is nightly-only
   e2e:
     carryforward: true
 
@@ -221,20 +229,14 @@ component_management:
     - component_id: block-v1
       name: block (v1)
       paths: [pkg/block/**]
-    # the fine-grained v1 cards overlap block-v1: pairing them with the v2
-    # cards below makes decision (a) like for like, engine against engine
+    # the fine-grained v1 cards overlap block-v1 and mirror the v2 cards'
+    # grouping, so decision (a) is one number against one number
     - component_id: block-engine-v1
-      name: block engine (v1)
-      paths: [pkg/block/engine/**]
-    - component_id: block-journal-v1
-      name: block journal (v1)
-      paths: [pkg/block/journal/**]
+      name: engine + journal (v1)
+      paths: [pkg/block/engine/**, pkg/block/journal/**]
     - component_id: block-remote-v1
-      name: remote tier (v1)
-      paths: [pkg/block/remote/**]
-    - component_id: block-syncer-v1
-      name: syncer (v1)
-      paths: [pkg/block/syncer/**]
+      name: remote tier + syncer (v1)
+      paths: [pkg/block/remote/**, pkg/block/syncer/**]
     - component_id: block-carver-v1
       name: carver (v1)
       paths: [pkg/block/carver/**]
@@ -248,7 +250,7 @@ component_management:
       paths: [pkg/controlplane/**, internal/controlplane/**]
     # v2 cards, populated by feat/storage-v2's runs
     - component_id: engine-v2
-      name: engine (v2)
+      name: engine + journal (v2)
       paths: [pkg/engine/**, pkg/journal/**]
     - component_id: remote-v2
       name: remote tier + syncer (v2)
@@ -321,47 +323,67 @@ Deliberate omissions:
   (adapters, identity, `pkg/metadata/errors`) carry both branches' paths and are
   read per branch. Decision (a) is one card against the other, with per-branch
   filtering a dashboard query, not a config split.
+- **Decision (a) is compared on the `unittests` flag.** A component's card
+  merges every flag by default, and §8.2 lands the `integration` and `e2e` flags
+  on develop first, where those tests largely cover v1 paths — an unfiltered
+  comparison would favour v1. Read the comparison flag-filtered to `unittests`
+  until `feat/storage-v2` uploads the same flags, or skip the flag comparison
+  entirely.
 
 ### 8.2 CI changes
 
 1. **Fix ingestion (prerequisite), on both branches.** Activate
    `cubbit/dittofs` on Codecov and update `CODECOV_TOKEN`; confirm the upload log
    prints the `cubbit` slug and the commit appears in the API. `feat/storage-v2`
-   carries its **own** `codecov.yml` and its own upload step (which is missing the
-   `matrix.name == 'unit'` guard), and the v2 half of decision (a) comes only
-   from that branch's runs — so the same activation, token and reshaped config
-   must land there too, or the trial has nothing v2 to compare against. Without
-   this the rest is unobservable.
+   carries its **own** `codecov.yml` and its own upload step, and the v2 half of
+   decision (a) comes only from that branch's runs — so the same activation,
+   token and reshaped config must land there too, or the trial has nothing v2 to
+   compare against. That branch's upload step lives in a dedicated `unit:` job
+   (no matrix, unlike develop's), so its condition needs no `matrix.name` guard
+   and reads `env.TIER != 'pr' && hashFiles('…/unit/go-test-*-retry-*.json') == ''
+   && github.ref == 'refs/heads/feat/storage-v2'`. Without this the rest is
+   unobservable.
 2. **Integration upload.** `test/suites.yaml` integration `cmd` gains
    `-coverprofile={out}/coverage.txt`; a Codecov step uploads it with
-   `flags: integration` on non-PR runs. Its retry guard must name the integration
-   cell — `hashFiles('test/harness/results/*/integration/go-test-*-retry-*.json') == ''`
-   — not copy the unit step's `unit` path; the matrix name there is `integration`
-   and its options (`ad-dc`, `kerberos`, `portmap`) write their own cell
-   directories.
+   `flags: integration` under the same gate as the unit step — `env.TIER != 'pr'`,
+   a `develop` or `feat/storage-v2` ref, and its own retry guard,
+   `hashFiles('test/harness/results/*/integration/go-test-*-retry-*.json') == ''`
+   — not a bare "not on PRs", which would let the merge queue and manual runs on
+   feature branches upload. Its options (`ad-dc`, `kerberos`, `portmap`) write
+   their own cell directories.
 3. **e2e upload (conditional).** The plumbing goes through `dt`, not the
-   workflow: `buildBin` builds the cell's programs from one list, so it gains a
-   cover flag that builds `dfs` (and only `dfs`) with `-cover`; and the e2e
-   suite's `env:` in `test/suites.yaml` carries `GOCOVERDIR`, because the suite
-   runs as root through dt's `sudo -n env …` wrapper, which resets the
-   environment and passes only the suite's own env and the service variables —
-   a `GOCOVERDIR` set in the workflow step never reaches the server. After the
-   run, `go tool covdata textfmt` writes `{out}/coverage.txt`, uploaded with
-   `flags: e2e`. Landed only if the trial's measurement keeps the cell within
-   ~2–3 min of its 13.1 min baseline; otherwise the flag uploads from nightly
-   alone. One measurement the trial runs first, because a `-cover` binary
-   flushes its counters only on a clean exit: the fixture stops the server with
-   SIGTERM and falls back to SIGKILL (`test/e2e/helpers/server.go` `ForceKill`),
-   so the trial confirms that a normal teardown leaves data in `GOCOVERDIR`; a
-   server that has to be hard-killed loses its counters for that run.
+   workflow:
+   - `buildBin` gains a cover flag that builds `dfs` (and only `dfs`) with
+     `-cover`, and only when the cell's tier asks for e2e coverage.
+   - `GOCOVERDIR` goes in the e2e suite's **tier-scoped** env (`Env.ByTier`,
+     merge and nightly — the suite's shared `env:` would leak into the `pr`-tier
+     options like `e2e/kerberos`, and a tier-scoped value is what makes the
+     nightly-only fallback expressible), pointing at a directory dt creates under
+     `{out}`. The suite runs as root through dt's `sudo -n env …` wrapper, which
+     resets the environment and passes only the suite's env, so a
+     workflow-level `GOCOVERDIR` never reaches the server, and a missing
+     directory means the runtime writes nothing.
+   - `go tool covdata textfmt` runs **as `dt` work after the cell's `go test`
+     commands** — the registry rejects a go-json suite command that does not
+     begin with `go test` — writing `{out}/coverage.txt`, uploaded with
+     `flags: e2e` under item 2's gate.
+   - The fixture's teardown is the first thing the trial fixes: `ForceKill`
+     waits **2 s** after SIGTERM before SIGKILL, less than `dfs`'s own shutdown
+     limit, so the trial lengthens that wait (or switches to `StopGracefully`'s
+     wait) whenever GOCOVERDIR is set — a `-cover` binary flushes its counters
+     only on a clean exit, so a normal teardown losing the race loses the
+     coverage, and the cell's data looking near-empty would be a teardown
+     artifact, not a test result.
+   Landed only if the trial's measurement keeps the cell within ~2–3 min of
+   its 13.1 min baseline; otherwise the flag uploads from nightly alone.
 4. The unit step's upload condition keys on the tier and the ref, not on event
    names: `env.TIER != 'pr' && matrix.name == 'unit' && hashFiles(…retry…) == ''`
    and the ref is `develop` or `feat/storage-v2`. Excluding event names is not
-   enough — `workflow_dispatch` with the default `tier` input runs the `pr`
-   tier on any branch, and the merge queue runs the `pr` tier on the merged
-   result; both would upload a `-short` profile under `unittests` and read as a
-   real drop on the cards. With the tier-gated condition, no reduced profile is
-   uploaded at all.
+   enough — `workflow_dispatch` that **picks** the `pr` tier (its default is
+   `merge`) runs the `pr` tier on any branch, and the merge queue runs the `pr`
+   tier on the merged result; both would upload a `-short` profile under
+   `unittests` and read as a real drop on the cards. With the tier-gated
+   condition, no reduced profile is uploaded at all.
 
 ## 9. Trial (what makes this a recommendation rather than a guess)
 
@@ -384,12 +406,16 @@ left assumed; §12 holds the deferred work that would bring PR signals back.
   or a real signal, and each is judged as actionable or noise by the trial's
   last day.
 - Measure the e2e cell with and without `-cover` on the same runner tier, and
-  confirm `GOCOVERDIR` holds data after a normal e2e teardown (§8.2, item 3).
+  confirm `GOCOVERDIR` holds data after a normal e2e teardown (§8.2, item 3,
+  including the lengthened shutdown wait).
 
 **Pass:** data lands on both branches; the component view answers (a) without
-manual profile aggregation and is used in at least one decision; e2e overhead
-≤ 3 min (else the e2e flag moves to nightly). **Fail any of these → drop**, with
-the `dt` floors in §10 as the alternative if decision (a) still needs a number.
+manual profile aggregation, compares like-shaped cards and is used in at least
+one decision. **Fail either of those → drop**, with the `dt` floors in §10 as
+the alternative if decision (a) still needs a number. e2e overhead is a
+placement decision, not a pass/fail: ≤ 3 min keeps the flag on merge runs,
+more moves it to nightly (§11's third bullet), and nothing in that choice
+drops the reshape.
 
 PR-side coverage signals return only if full, non-partial PR uploads become
 affordable; that is deferred in §12, not assumed here. The `comment: false` in
@@ -401,7 +427,7 @@ merge-queue run would be noise.
 | | Drop | Reshape (chosen) | Replace with `dt` |
 | --- | --- | --- | --- |
 | Work | delete step + `codecov.yml`, document the `dt` recipe | fix token/slug, config, integration upload, conditional e2e | per-package floors in `test/suites.yaml`, a `dt` coverage check over its own profile, trend in `dt history`; profile-diff for duplicates |
-| Cost | ~zero | ~1 day config + 1–2 days e2e collection (estimates) | new Go in the harness (Go 1.26), floors that must not fire while a component is half-built, and a trend view that does not exist in `dt history` today; an estimate of 1–2 weeks |
+| Cost | ~zero | ~1 day config + 1–2 days e2e collection **in `dt`** (the `-cover` build flag, the tier-scoped `GOCOVERDIR`, the lengthened teardown wait, and the post-cell `covdata textfmt` step) — estimates | new Go in the harness (Go 1.26), floors that must not fire while a component is half-built, and a trend view that does not exist in `dt history` today; an estimate of 1–2 weeks |
 | Keeps | nothing | per-component trend, third party, no repo code | everything in-repo, one tool, one registry (RFC 29's shape) |
 | Loses | the only cheap answer to (a) | a dependency and a second place coverage is defined | the cheapest route to (a) now; duplicates still need the O(tests) scan |
 | When it wins | the trial fails | decision (a) stays live through the rewrites | the team wants coverage defined beside the suites and is willing to build it |
@@ -455,9 +481,10 @@ Per-package aggregation, with the prefix rollup and percentages that build the
 current tip — the provenance line above names both):
 
 ```python
-import collections, os
+import collections, glob, os, sys
+path = (sys.argv[1:] or glob.glob("*-*/unit/coverage.txt"))[0]
 cov = collections.defaultdict(lambda: [0, 0])   # statements, hit
-for line in open("coverage.txt"):
+for line in open(path):
     if line.startswith("mode:") or not line.strip():
         continue
     f, rest = line.rsplit(":", 1)
