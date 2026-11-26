@@ -510,7 +510,7 @@ suites:
     cmd: go test -tags=integration -p 1 -timeout=20m {packages}
     packages: { tag: integration }      # the packages whose tests the tag changes, from `go list`
     tier: pr
-    needs: [docker, "service:postgres", "service:kmip"]
+    needs: [docker, "service:kmip"]
     options:
       portmap:  { cmd: go test -tags=portmap_system -timeout=2m ./test/integration/portmap/..., needs: [linux, rpcbind] }
       kerberos: { cmd: go test -tags=kerberos -timeout=5m ./test/integration/kerberos/, needs: [docker] }
@@ -1254,7 +1254,7 @@ alert in §4.8 treats them differently, which is the main defence against anothe
 - **hosts:** `host:dedicated`, met only by the dedicated test host, which says it is one by running
   `dt run --place dedicated`;
 - **infrastructure:** `cloud:<provider>` (credentials and provisioned infrastructure), and
-  `service:<name>` for the services `dt services` starts (`localstack`, `postgres`, `kmip`).
+  `service:<name>` for the services `dt services` starts (`localstack`, `kmip`).
 
 `dt doctor` reports which are met. For an unmet need, `dt run` either moves the whole run to the
 `dtc` container (when it provides it and `--in` allows, §4.4), or reports the suite as not run, with the reason. It is
@@ -1800,7 +1800,7 @@ One workflow, `tests.yml`, runs every registered suite:
   `Integration Tests (1.26.x)`, until the ruleset requires the gate, except that each waits for
   `plan` and is skipped when the plan has no cell of its suite, which passes the required check.
   When `plan` fails they run, so a required check never passes on a plan that wasn't made.
-  `Integration Tests (1.26.x)` starts its services with `dt services up postgres kmip`, and runs
+  `Integration Tests (1.26.x)` starts its services with `dt services up kmip`, and runs
   `integration`'s Kerberos and portmap options as steps after the suite, each even when one
   before it failed, as the old job ran them, rather than as `run` cells, which only `gate` waits
   for. `Unit Tests (1.26.x)` uploads the coverage profile `unit` writes to its `{out}` to Codecov, as
