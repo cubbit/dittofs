@@ -1055,9 +1055,9 @@ starts.
 **Every bound measures wire bytes, which the transfer reports to a `Meter`.**
 The syncer does not see a put's body or a get's encoded bytes: the codec does.
 So the syncer passes a `remote.Meter` into every call of `attempt` and every
-`Store.Get`. The codec calls its `Moved` with each count of encoded body bytes
-sent to the store or read from it, and a put's `Sent` once its last body byte
-has been sent. The floor, the stall and trickle rules, the first-byte bound,
+`Store.Get`. The codec calls its `Moved` with each count of the encoded block's bytes,
+header and index included, sent to the store or read from it, and a put's
+`Sent` once its last byte has been sent. The floor, the stall and trickle rules, the first-byte bound,
 the worker-time estimate ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) and `syncer_bytes_total` ([§2.12](#2.12%20What%20the%20syncer%20makes%20observable)) all read
 these counts. Decoded chunks are not wire bytes: a compressed body yields more
 than it moved, and judging the floor on them would let a stalled get pass it.
