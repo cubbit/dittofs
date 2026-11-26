@@ -2983,6 +2983,14 @@ which calls the journal's `Delete`, never its `Release`, which evicts
   retry channel first, and a truncate or deallocate whose phase 1 its call
   cannot commit answers `ErrDelay` first (below); each keeps the guard until
   its retried phase 1 commits or it ends.
+- Work a removal holds in memory, which no record re-derives (a phase-1 retry
+  holding the guard, a pending release, an existence commit's retry, a clone in
+  flight), is bounded per scheduler instance by the removal source's `Total`
+  ([RFC 24 §5.1](rfc-24-resources.md#5.1%20No%20queue%20is%20unbounded)): each phase 1 reserves one before its journal step, held
+  until that removal's in-memory work ends, and a removal finding none free
+  answers `ErrDelay` with `DelayResources`, holding no guard. Work the
+  unfinished-removal index re-derives is held only while its key holds a work
+  item; dropped, it is counted and the rescan ([§6.1](#6.1%20The%20work%20queue)) posts it again.
 - Its first transaction commits the file's pending existence with it, and syncs
   the file first ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal)). It is admitted through the share's cut gate: behind a
   closed gate it waits for the gate to reopen, so no removal commits existence
