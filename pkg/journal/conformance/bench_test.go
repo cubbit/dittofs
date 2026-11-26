@@ -292,6 +292,20 @@ func jbJournalOpen(b *testing.B, streams int) jbJournal {
 	return jbJournal{b: b, h: h, pool: pool}
 }
 
+// jbSpareWait bounds one write's whole wait for a spare: a full-size spare
+// is a 256 MiB zero-fill and a directory sync, so even a slow device answers
+// well inside it, and a pool whose pass never settles — the wait parks until
+// the pool stops — hits the deadline instead of outlasting the run. One
+// generous backstop, per the contributor rules.
+const jbSpareWait = 5 * time.Minute
+
+// jbSpareGrants caps the loop a nil settle could spin: WaitSpares answers
+// nil when every class holds its goal, which does not promise the next roll
+// lands, so a healthy sustained stream reaches nil-and-refused a few times,
+// but one that is refused again a whole jbSpareGrants settles running has
+// failed on its own terms.
+const jbSpareGrants = 8
+
 // jbRetrySpareSustained retries an op refused for want of a spare, blocking
 // on the pool's own word between attempts instead of spinning: WaitSpares
 // settles nil once the targets are made, and ends the wait — and here the
@@ -301,8 +315,13 @@ func jbJournalOpen(b *testing.B, streams int) jbJournal {
 // has it: the pass that settled short may have made the one spare the call
 // needed.
 func jbRetrySpareSustained(ctx context.Context, pool journaltest.SparesWait, op func() error) error {
+	// The context b.Context hands in carries no deadline; the row's own
+	// generous one bounds even a park without a settle.
+	ctx, cancel := context.WithTimeout(ctx, jbSpareWait)
+	defer cancel()
+
 	var err error
-	short := 0
+	short, granted := 0, 0
 	for {
 		err = op()
 		var ns *journal.NoSpaceError
@@ -313,11 +332,15 @@ func jbRetrySpareSustained(ctx context.Context, pool journaltest.SparesWait, op 
 		var refused *journal.NoSpaceError
 		if wait == nil {
 			short = 0
+			if granted++; granted == jbSpareGrants {
+				return fmt.Errorf("the pool settled at its targets %d times in a row and still refused: %w", jbSpareGrants, err)
+			}
 			continue
 		}
+		granted = 0
 		if errors.As(wait, &refused) && refused.Limit == journal.LimitSpare {
 			if short++; short == 2 {
-				return fmt.Errorf("the pool settled short twice in a row; the spare never came: %w", err)
+				return fmt.Errorf("the pool settled short twice in a row; the spare never came: %w (pool: %v)", err, wait)
 			}
 			continue
 		}
@@ -622,11 +645,10 @@ func BenchmarkJ1_MixedDurability(b *testing.B) {
 // p99-write-waited-µs is the whole call including every spare refusal's wait,
 // and spare-refusals counts them. The MB/s is the average over the whole
 // stream, cache-absorbed start included; the rate past the device's write
-// cache is a separate figure no row reports yet.
-//
-// ponytail: the whole-call figure counts the timed retry's yield spin, not a
-// wait on a point the journal reports; upgrade as spare.go's own note names,
-// if the seam ever carries such a point.
+// cache is a separate figure no row reports yet. The waited figure parks on
+// WaitSpares, which returns once every class of spare holds its goal, not
+// only the one segment the roll needed, so it over-counts the roll's own
+// wait — the ceiling the seam itself sets.
 func BenchmarkJ1_LargeSequential(b *testing.B) {
 	jbLarge(b, jbJournalOpen(b, 1), jbSizes(b).scalingBlock, jbLargeStream(b))
 }
