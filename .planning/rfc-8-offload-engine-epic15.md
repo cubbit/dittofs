@@ -129,7 +129,7 @@ cited by number and title and not copied.
 | rule 9, **Code comment conventions** ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T15.6, T15.10 | RFC 8 §6.3's five-failures `decision:` at the count (T15.10); the chunk-age `ponytail:` (T15.6); this epic's own markers, each named in §4 |
 | rule 10, **A test must be able to fail** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | every test names the planted break it catches; the floor is shown one key below and at the floor; the pipeline's checks run with the fault cleared and set |
 | rule 11, **A symbol is exported only if the RFC's interface uses it** | T15.5, T15.6 | `offload`'s states and `offloadDue` are unexported; `offload` exports its entry point and the ports the engine fills (D1); the engine adds three `Deps` members and the `Stats.Carver` field (D14) |
-| rule 12, **Each subtask creates only what it declares** | all | each port, `Deps` member and in-memory journal call lands with its first caller; `offloadDue`'s production caller is epic 16's offload source, and `offload.Run`'s too, each named |
+| rule 12, **Each subtask creates only what it declares** | all | each port, `Deps` member and in-memory journal call lands with its first caller; `offloadDue`'s first production caller is epic 14's `Dirty` handler and age tick (its T14.3), and `offload.Run`'s is epic 16's offload source, each named |
 
 ## 3. Requirements and invariants
 
@@ -417,10 +417,10 @@ pkg/metadata/kvstore/            (its contract types in #5775's metadata contrac
   offload_test.go          T15.3, T15.4
   fuzz_test.go             T15.3  the block record's decode
 pkg/engine/
-  policy.go                T15.1  offloadDue
+  policy.go                T15.1  offloadDue; journalStats.Workers
   policy_test.go           T15.1
   deps.go                  T15.5  Deps.Carver, Chain, Puts; Handle and Content embed offload's ports
-  engine.go                T15.5  New refuses each missing one by name
+  engine.go                T15.1  uploadWorkers set in New; T15.5  New refuses each missing one by name
   types.go                 T15.6  Stats.Carver, CarverStats
   imports_test.go          T15.5  offload/'s row; pkg/carver root and internal/params admitted
   conformance/arch_test.go T15.5  the declared-interfaces check over every production package
@@ -437,8 +437,8 @@ pkg/engine/
     stats.go               T15.6, T15.10
     *_test.go              T15.5 to T15.10  package offload_test
   enginetest/
-    fake.go                T15.5  OffloadMany and report on the in-memory journal
-    components.go          T15.5  WithCarver, WithChain composed; their refusals withdrawn
+    fake.go                T15.5  OffloadMany and report on the in-memory journal; the Offered fault wrapper
+    components.go          T15.5  WithCarver, WithChain composed, RestartWithFreshKeys, WrapKeys; their refusals withdrawn
 internal/node/content/
   content.go               T15.5  Carver, Chain, Puts in Deps (D2)
   carver.go                T15.5  Settings(ns) over carve.NewSettings, BlockName, the fold's constructor
@@ -460,7 +460,10 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   which exists yet, and `offloadDue(now time.Time, s journalStats, shares []shareView)
   []offloadPass`, RFC 8 §3.1's signature; `shareView` holds each dirty file's dirty bytes, oldest
   dirty write (D10) and failure count (D11), the share's `MaxAge` and block target; `offloadPass`
-  names its share, its files with their oldest dirty write, `limit` and `widen`. RFC 8 §6.3's
+  names its share, its files with their oldest dirty write, `limit` and `widen`. `journalStats`
+  carries the pass bound, `Workers`, in block targets: the engine fills it from its per-instance
+  `uploadWorkers`, set to 128 (RFC 3's proposed `upload_workers`) in `New` and per instance from
+  `export_test.go`, until epic 16 loads the key (its D8). RFC 8 §6.3's
   five-failures `decision:` at the threshold. The file state's staged-bytes count (D15): `Write`
   adds its length after staging, a pass's `Done` zeroes it. A file whose oldest dirty write is the
   zero time, as `DirtyFiles` answers after a rebuild, is due at once. Consumed by epic 14's `Dirty`
@@ -471,7 +474,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   - No pass offers more than `upload_workers` block targets; small files share passes up to it.
   - A file with five or more consecutive failures is alone in its pass.
   - A file reported with a zero oldest dirty write is due.
-- **Tests:** a table at `offloadDue`, the function epic 16 calls: a row per trigger, a row per
+- **Tests:** a table at `offloadDue`, the function epic 14's T14.3 calls: a row per trigger, a row per
   non-trigger (a durability request, a file one byte short of the target, one a second short of
   the age), the pressure row with every dirty file eligible (each catches a missing or extra
   trigger, R7); a thousand small files gathered into passes each within the bound (catches an
@@ -653,6 +656,13 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
     `WithChain` composed through it, over `keystest`'s provider; every entry of
     `test/engine/known.yaml` whose message is `fixture: the carver is not composed`, 41 of them,
     rewritten to `fixture: the syncer is not composed`, the refusal they now meet.
+  - Epic 12's D8 controls for RFC 5's engine rows, made real with `WithChain`:
+    `RestartWithFreshKeys()`, a restart over the same metadata store, journal directory and remote
+    store onto a new `keystest` provider, and `WrapKeys(wrap)`, the chain's provider wrapped by the
+    test's fault wrapper (kind 3), its parameter typed `keys.Provider`.
+  - In `enginetest`, a fault wrapper (kind 3) over the in-memory journal's offers, set per file:
+    one flips a byte of what the offer's `Offered` reader returns, one fails every read. T15.8's
+    R35 and T15.10's R60 run on it.
 - **Acceptance criteria:**
   - Two captures over the same files in opposite orders never deadlock; a pass commits their existence, and is
     offered nothing above each file's `Through`.
@@ -665,6 +675,8 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   - The engine's walk refuses a planted import of `pkg/carver/carve` in `offload/`; the declared-
     interfaces check reports a planted uncalled method of `offload.Store`.
   - Every first-part row grades as before; the 41 rows grade known at the new message.
+  - `RestartWithFreshKeys` and `WrapKeys` no longer refuse; the `Offered` wrapper changes or fails
+    only the file it is set on.
 - **Tests:** the engine's `capture` and `guard`, built here over the first part's per-file guard
   and group commit and handed to `Run`, are tested in `package engine` over the unit fixture: two
   captures of files {a, b} and {b, a} started together a thousand times under `-race`, none
@@ -679,7 +691,10 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   an existence commit failed through `FailUpdatesSetting`'s kind 3 wrapper, nothing offered and
   `Retry` returned (R13). The import walk and the declared-interfaces check with their planted
   violations (R1, R2). `New`'s refusal table (R4). The run of `engine-conformance`, every entry
-  graded as listed (rule 6).
+  graded as listed (rule 6). After `RestartWithFreshKeys`, `Current` answers a material ID the first
+  start never saw; a `WrapKeys` wrapper failing `Current` refuses the next pass before any intent;
+  the `Offered` wrapper set on one of two files, the other file's reads unchanged (each catches a
+  control that does nothing, or one that reaches every file).
 - **Rules:** rule 6, the 41 messages; rule 7, the walk; rule 12, each port with its first caller.
 
 ### T15.6 Carve
@@ -786,7 +801,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   equal to `BlockName` over the captured namespace, its nonce, the pin's chain ID and the carried IDs
   in order, and different from each other (catches a name over the wrong inputs or a reused nonce,
   R30); an offered chunk changed under the source by
-  the in-memory journal's corruption control, the put failed (R35). The allocation test: bytes
+  T15.5's `Offered` wrapper flipping a byte, the put failed (R35). The allocation test: bytes
   allocated per put, read from `testing.Benchmark`'s B/op, flat from 1 MiB to 64 MiB blocks (R34).
 - **Rules:** rule 4, `unit/engine-allocs`.
 
@@ -850,7 +865,8 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   clock, never slept) and a crash (the pass abandoned mid-state and a fresh `Run` over the same
   state), each asserting every extent offloaded after the fault clears, none reported without its
   commit, every orphaned object named by an intent later abandoned (R47, R48, R53); the O6 poison
-  file among 10³ files over 10 simulated minutes, the scheduler of epic 13 dispatching and backing
+  file, every read of its offer failed by T15.5's `Offered` wrapper, among 10³ files over 10
+  simulated minutes, the scheduler of epic 13 dispatching and backing
   off, the other files offloaded, the failing one's passes within the bound, its count at five and
   more (R9, R60); the crash legs above, whose fresh `Run` starts from no state of the first and
   offloads everything (R5); each series read from `offload.Stats`
