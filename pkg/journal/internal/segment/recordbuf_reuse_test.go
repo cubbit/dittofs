@@ -14,10 +14,9 @@ import (
 // encoded into a recycled buffer reaches the disk with none of the earlier
 // record's bytes the buffer still holds: an earlier, larger record with a
 // 0xFF payload is read back off the segment and seeded into its class, a
-// smaller record is appended, and its bytes on the segment — its payload,
-// its padding and the earlier record's span past its end — are read back
-// raw. It catches a buffer handed out unemptied and an encode that leaves
-// any byte in its range unwritten.
+// smaller record is appended, and its bytes on the segment — its payload and
+// its padding — are read back raw. It catches a buffer handed out unemptied
+// and an encode that leaves any byte in its range unwritten.
 func TestStreamAPooledBufferPutsNoStaleByteOnDisk(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
@@ -45,6 +44,9 @@ func TestStreamAPooledBufferPutsNoStaleByteOnDisk(t *testing.T) {
 		h, body := streamWriteHeader(streamFileID(2+round), 0, payload, 7, core.Version{Counter: uint64(2 + round)})
 		p := streamAppendWrite(t, e, h, body)
 		end := format.RecordHeaderSize + 8 + len(payload)
+		if want := int64(end+7) &^ 7; p.Loc.Len != want {
+			t.Fatalf("round %d: the record's length is %d, want %d, its payload's end padded to the 8-byte grid", round, p.Loc.Len, want)
+		}
 
 		raw := make([]byte, staleLen)
 		if _, err := e.s.ReadAt(p.Loc.Segment, raw, p.Loc.Off); err != nil {
@@ -53,8 +55,8 @@ func TestStreamAPooledBufferPutsNoStaleByteOnDisk(t *testing.T) {
 		if got := raw[format.RecordHeaderSize+8 : end]; !bytes.Equal(got, payload) {
 			t.Errorf("round %d: the payload on disk holds %d stale 0xFF bytes, want none", round, bytes.Count(got, []byte{0xFF}))
 		}
-		if n := bytes.Count(raw[end:], []byte{0xFF}); n != 0 {
-			t.Errorf("round %d: %d of the %d bytes past the payload, padding and the earlier record's span, are its stale 0xFF, want 0", round, n, len(raw)-end)
+		if got := raw[end:p.Loc.Len]; !bytes.Equal(got, make([]byte, len(got))) {
+			t.Errorf("round %d: the padding on disk is %x, want %d zero bytes", round, got, len(got))
 		}
 		streamReadRecord(t, e, p.Loc)
 

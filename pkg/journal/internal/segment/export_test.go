@@ -30,20 +30,22 @@ func (r *Retirer) SetPassHook(f func()) { r.passHook = f }
 // one-slot channel, so a test knows no further pass is owed.
 func (r *Retirer) KickPendingForTest() bool { return len(r.kick) > 0 }
 
-// SeedRecordBufs hands n buffers to the pool class of a record of len(stale)
-// bytes, each holding stale at its head as an earlier record's encode leaves
-// it. It first draws one buffer out and drops it, so the class's next draw on
+// SeedRecordBufs hands n distinct buffers to the pool class of a record of
+// len(stale) bytes, each holding stale at its head as an earlier record's
+// encode leaves it. It draws all n before putting any back, since a put and
+// the next draw on one P trade the same buffer, so the class's next draw on
 // this goroutine is one of these. It returns each buffer's whole backing
 // array, so a test sees what an append that drew one encoded there.
 func SeedRecordBufs(stale []byte, n int) [][]byte {
-	_ = getRecordBuf(int64(len(stale)))
-	var out [][]byte
-	for range n {
-		p := getRecordBuf(int64(len(stale)))
-		b := append((*p)[:0], stale...)
-		*p = b
+	ps := make([]*[]byte, n)
+	out := make([][]byte, n)
+	for i := range ps {
+		ps[i] = getRecordBuf(int64(len(stale)))
+		*ps[i] = append((*ps[i])[:0], stale...)
+		out[i] = (*ps[i])[:cap(*ps[i])]
+	}
+	for _, p := range ps {
 		putRecordBuf(p)
-		out = append(out, b[:cap(b)])
 	}
 	return out
 }
