@@ -3095,6 +3095,11 @@ func (c *Conn) Established()
 // every release is called (§6.4).
 func (c *Conn) Keep() (release func())
 
+// Remote is the client's address as it reached this node, unmapped and
+// without its port: what NFS's router puts in the Identity and its
+// duplicate-request cache keys on.
+func (c *Conn) Remote() netip.Addr
+
 // Settings is the settings snapshot this connection loaded at accept, the
 // protocol's whole shape (§3.6); NewConn reads its own from it.
 func (c *Conn) Settings() settings.Settings
@@ -3839,11 +3844,20 @@ were it added, it is another unwrap/wrap pair.
 today and stays: a client sends a `NULL` call with the `AUTH_TLS` flavour, the
 server answers, and the same TCP connection is upgraded to TLS before any
 other request. `core.Conn` offers that upgrade once, to the stage that asked —
-`StartTLS(cfg)`, called by NFS's `Header` stage after the reply is sent — and
-from then on the reader and writer read and write through TLS; frame and every
-stage above it are unchanged. `StartTLS` is not in §4.7's list: it is added to
+`StartTLS(cfg)`, asked by NFS's `Header` stage when it decodes the probe, and
+performed by `core` once the probe's reply is sent, if the router admitted it
+and its row answered with success — and from then on the reader and writer
+read and write through TLS; frame and every stage above it are unchanged. It
+is asked at decode, on the reader, because by the time the reply is sent the
+reader may already be reading the client's `ClientHello` as a record: once it
+is asked, the reader reads no further record until the probe's call has ended,
+and bytes it already holds past the probe are the first the handshake reads,
+never cut as records. A probe the router refuses, one answered from an error
+table and one that ends with no reply withdraw the request, and the reader
+reads on in plaintext. `StartTLS` is not in §4.7's list: it is added to
 `Conn` with RFC 21's `NULL` handler, a method on a concrete type that changes
-no existing signature.
+no existing signature. `Remote`, which the RPC router reads for the
+`Identity`'s address, is in it.
 
 It is configured on the NFS adapter, as today:
 
