@@ -181,7 +181,7 @@ func TestRevokedRefKeepsMark(t *testing.T) {
 		if err := f.Revoke(ctx, a.Client); err != nil {
 			t.Fatal(err)
 		}
-		revoked(t, f, a, o.Ref, d.ID.ref())
+		revoked(t, f, a, o.Ref, grantRef(d.ID))
 	})
 	t.Run("recall deadline", func(t *testing.T) {
 		f := newFixture(t)
@@ -198,6 +198,6 @@ func TestRevokedRefKeepsMark(t *testing.T) {
 		}
 		f.pass(t, leasePeriod, a.Client, b.Client)
 		f.mustOpen(t, b, file, OpenRequest{Access: rd})
-		revoked(t, f, a, d.ID.ref())
+		revoked(t, f, a, grantRef(d.ID))
 	})
 }

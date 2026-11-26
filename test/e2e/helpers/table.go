@@ -56,9 +56,9 @@ func Admission() []Case {
 			}
 		}},
 		{"§3.5 grants", func(t *testing.T) (Share, []Step) {
-			sh, alice, finance := NewShare(t, "finance"), NewAccount(t, "alice", "", 0), Group(t, "finance")
-			Member(t, finance, alice.ID)
-			Grant(t, sh, finance, Read)
+			sh, alice, finance := NewShare(t, "finance"), NewAccount(t, "alice", "", 0), NewGroup(t, "finance")
+			Member(t, finance, &alice)
+			Grant(t, sh, finance.ID, Read)
 			Grant(t, sh, alice.ID, Refused)
 			return sh, []Step{
 				{"alice granted none is refused though Finance holds read", nil, []Expect{{alice, Refused}}},
@@ -66,10 +66,9 @@ func Admission() []Case {
 			}
 		}},
 		{"§5.1 roles grant nothing", func(t *testing.T) (Share, []Step) {
-			// Another account holds read, so the share is not one nobody
+			// The mount group holds read, so the share is not one nobody
 			// is admitted to: a refusal shows that the role gave nothing.
 			sh := NewShare(t, "roles")
-			Grant(t, sh, NewAccount(t, "bystander", "", 0).ID, Read)
 			want := []Expect{{Admin(), Refused}}
 			for _, r := range []apiv1.Role{apiv1.RoleViewer, apiv1.RoleOperator, apiv1.RoleAdmin} {
 				want = append(want, Expect{NewAccount(t, string(r), r, 0), Refused})

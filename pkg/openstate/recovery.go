@@ -8,14 +8,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
-	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
-
-// GraceRef names one grace instance of one shard.
-type GraceRef struct {
-	Shard    ShardID
-	Instance uint64
-}
 
 // Recovery is the view of the shards this table serves, their grace after a
 // loss, and a client's references with no file handle; it runs at the
@@ -173,7 +166,7 @@ func (t *Table) beginShard(ctx context.Context, share entity.ShareID, s ShardID,
 	var told []Revocation
 	notice := false
 	named := map[entity.ClientID]entity.ClientRecord{}
-	for rec, err := range t.d.Records.Clients().ByShard(ctx, s) {
+	for rec, err := range t.d.Clients.ByShard(ctx, s) {
 		if err != nil {
 			return err
 		}
@@ -352,7 +345,7 @@ func (t *Table) raiseNotice(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err = t.d.Records.RaiseNSMState(ctx, n+1); !errors.Is(err, kvstore.ErrNSMNotRaised) {
+		if err = t.d.Records.RaiseNSMState(ctx, n+1); !errors.Is(err, entity.ErrNSMNotRaised) {
 			return err
 		}
 	}
@@ -424,7 +417,7 @@ func (t *Table) owedLocked(c entity.ClientID) []GraceRef {
 	var owed []GraceRef
 	for _, m := range t.known[c].shards {
 		if sh := t.shards[m.Shard]; sh != nil && m.Done < sh.instance {
-			owed = append(owed, GraceRef{m.Shard, sh.instance})
+			owed = append(owed, GraceRef{Shard: m.Shard, Instance: sh.instance})
 		}
 	}
 	return owed
@@ -513,7 +506,7 @@ func (v recovery) ReclaimComplete(ctx context.Context, who Caller, shown []Grace
 	}
 	t.cstep.Lock()
 	defer t.cstep.Unlock()
-	rec, err := t.d.Records.Clients().Get(ctx, who.Client)
+	rec, err := t.d.Clients.Get(ctx, who.Client)
 	switch {
 	case err != nil:
 		return staleIfGone(err)
@@ -531,7 +524,7 @@ func (v recovery) ReclaimComplete(ctx context.Context, who Caller, shown []Grace
 			continue
 		}
 		m := entity.ShardMark{Shard: g.Shard, Done: g.Instance}
-		if err := t.d.Records.Clients().MarkShard(ctx, who.Client, m); err != nil {
+		if err := t.d.Clients.MarkShard(ctx, who.Client, m); err != nil {
 			return staleIfGone(err)
 		}
 		t.cmu.Lock()

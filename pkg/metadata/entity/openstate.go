@@ -2,6 +2,7 @@ package entity
 
 import (
 	"encoding/binary"
+	"errors"
 	"time"
 )
 
@@ -285,3 +286,36 @@ type DeleteRecord struct {
 	Access     AccessMask // the marking open's grant
 	Privileged bool
 }
+
+// ErrRecordChanged is a conditional client write whose expected record is no
+// longer the stored one: the call writes nothing and returns the current one.
+var ErrRecordChanged = errors.New("metadata: client record changed")
+
+// ErrNSMNotRaised is a raise of the NSM state number to one not above the
+// number held: it never goes down, or an NLM host would not see the restart.
+var ErrNSMNotRaised = errors.New("metadata: NSM state number not raised")
+
+// MaxAdapter bounds a client record's Adapter bytes: a write over it is
+// refused as invalid.
+const MaxAdapter = 4 << 10
+
+// IDKind names one server-wide ID allocator. Its byte keys the allocator in
+// the store, so a value once given is never changed or reused.
+type IDKind byte
+
+const (
+	IDClient IDKind = 1
+	IDOpen   IDKind = 2
+	IDLock   IDKind = 3
+)
+
+// DurableOpen is one entry of a share's durable-open index.
+type DurableOpen struct {
+	File FileID
+	Open OpenID
+}
+
+// Orphaned names the file an operation left with no entry; zero when none.
+// Its pending release is already written, and the filesystem service runs
+// the release once no open holds it.
+type Orphaned struct{ File FileID }

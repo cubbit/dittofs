@@ -6,33 +6,6 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/openstate/conflict"
-	"github.com/cubbit/dittofs/pkg/openstate/ranges"
-)
-
-// ByteRange is Length bytes from Offset, ending at Offset+Length-1, a zero
-// Length's included; a length of all ones reaches the last byte.
-type ByteRange = ranges.Range
-
-// ChangeMask names what a change does to a file or directory: what
-// CheckChange judges, and what a watch filters on.
-type ChangeMask uint16
-
-const (
-	ChangeRemove    ChangeMask = 1 << iota // a name of the file goes
-	ChangeRename                           // the file is renamed, or a rename replaces it
-	ChangeAddEntry                         // a name is added to the directory
-	ChangeAttrs                            // the file's attributes are set
-	ChangeSetID                            // a mode change sets the setuid or setgid bit
-	ChangeSize                             // the file's size changes
-	ChangeTimes                            // the file's times are set; through an open, on that open's grant (CheckChange)
-	ChangeSecurity                         // the file's owner, group or ACL changes
-	ChangeStreams                          // a named stream of the file is added, removed or written
-	ChangeEnumerate                        // a watch's changes were dropped: its client lists the directory again
-	// ChangeReplace: a rename replaces the file. An SMB adapter passes it,
-	// with ChangeRename, for the target of a rename asking ReplaceIfExists,
-	// which the renamer holds no open of; an NFS one need not, as ChangeRename
-	// already judges an NFS caller against every open.
-	ChangeReplace
 )
 
 // Checks is the view the service asks before I/O and before a change.
@@ -175,7 +148,7 @@ func (v checks) CheckIO(ctx context.Context, who Caller, f FileKey, o OpenRef, r
 // found under its file's step: one without write caching is ErrAccess for a
 // write, and a revoked one ErrRevoked.
 func (t *Table) throughGrant(who Caller, ref OpenRef, write bool, fn func(e *entry, own func(*grant) bool) error) error {
-	f, err := ref.file()
+	f, err := fileOf(ref)
 	if err != nil {
 		return err
 	}
@@ -315,7 +288,7 @@ func (v checks) CheckChange(ctx context.Context, who Caller, f FileKey, via *Ope
 // names was taken under, once that open is found and who may use it. A lock
 // state taken under no open names nothing I/O runs through.
 func (t *Table) throughLockState(who Caller, ref OpenRef, fn func(e *entry, op *open) error) error {
-	f, err := ref.file()
+	f, err := fileOf(ref)
 	if err != nil {
 		return err
 	}

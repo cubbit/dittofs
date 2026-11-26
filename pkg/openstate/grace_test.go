@@ -205,7 +205,7 @@ func TestAnonymousIOFreedOnceDenyHoldersFinish(t *testing.T) {
 	if err := write(); !errors.Is(err, ErrGrace) {
 		t.Errorf("an anonymous write before c completes: %v, want ErrGrace", err)
 	}
-	if err := g.Recovery().ReclaimComplete(ctx, c, []GraceRef{{5, g.shards[5].instance}}); err != nil {
+	if err := g.Recovery().ReclaimComplete(ctx, c, []GraceRef{{Shard: 5, Instance: g.shards[5].instance}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := write(); err != nil {
@@ -241,7 +241,7 @@ func TestReclaimCompleteEndsOnlyWhatWasShown(t *testing.T) {
 		t.Fatal(err)
 	}
 	shown := st.Reclaim
-	want := []GraceRef{{5, g.shards[5].instance}, {7, g.shards[7].instance}}
+	want := []GraceRef{{Shard: 5, Instance: g.shards[5].instance}, {Shard: 7, Instance: g.shards[7].instance}}
 	slices.SortFunc(shown, func(x, y GraceRef) int { return int(x.Shard) - int(y.Shard) })
 	if !st.ReclaimNeeded || !reflect.DeepEqual(shown, want) {
 		t.Fatalf("after the restart: %+v, want ReclaimNeeded for %v", st, want)
@@ -256,7 +256,7 @@ func TestReclaimCompleteEndsOnlyWhatWasShown(t *testing.T) {
 	if err := g.Recovery().ReclaimComplete(ctx, stranger, shown); !errors.Is(err, ErrNotYours) {
 		t.Errorf("another principal's completion: %v, want ErrNotYours", err)
 	}
-	if err := g.Recovery().ReclaimComplete(ctx, c, []GraceRef{{5, shown[0].Instance + 1}}); err != nil {
+	if err := g.Recovery().ReclaimComplete(ctx, c, []GraceRef{{Shard: 5, Instance: shown[0].Instance + 1}}); err != nil {
 		t.Fatal(err)
 	}
 	if st, _ := g.Renew(ctx, c.Client); len(st.Reclaim) != 2 {
@@ -283,10 +283,10 @@ func TestReclaimCompleteEndsOnlyWhatWasShown(t *testing.T) {
 	}
 	// A completion naming the instance c joined under, which it finished,
 	// takes nothing back.
-	if err := g.Recovery().ReclaimComplete(ctx, c, []GraceRef{{5, f.shards[5].instance}}); err != nil {
+	if err := g.Recovery().ReclaimComplete(ctx, c, []GraceRef{{Shard: 5, Instance: f.shards[5].instance}}); err != nil {
 		t.Fatal(err)
 	}
-	if st, _ := g.Renew(ctx, c.Client); !reflect.DeepEqual(st.Reclaim, []GraceRef{{7, g.shards[7].instance}}) {
+	if st, _ := g.Renew(ctx, c.Client); !reflect.DeepEqual(st.Reclaim, []GraceRef{{Shard: 7, Instance: g.shards[7].instance}}) {
 		t.Errorf("after the completion: %+v, want the later instance of shard 7 alone", st)
 	}
 }
@@ -306,7 +306,7 @@ func TestReclaimCompleteOnlyByStatus(t *testing.T) {
 		s   ShardID
 	}{{h, 5}, {c40, 7}} {
 		s := c.s
-		if err := g.Recovery().ReclaimComplete(ctx, c.who, []GraceRef{{s, g.shards[s].instance}}); err != nil {
+		if err := g.Recovery().ReclaimComplete(ctx, c.who, []GraceRef{{Shard: s, Instance: g.shards[s].instance}}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := g.lock(z, in(s), LockReq{Owner: owner(z, "lo"), Ranges: []LockRange{x(0, 1)}}); !errors.Is(err, ErrGrace) {
@@ -332,7 +332,7 @@ func TestRefusalClientConnectsAgain(t *testing.T) {
 
 	g := f.restart(t)
 	g.renew(t, done)
-	if err := g.Recovery().ReclaimComplete(ctx, done, []GraceRef{{5, g.shards[5].instance}}); err != nil {
+	if err := g.Recovery().ReclaimComplete(ctx, done, []GraceRef{{Shard: 5, Instance: g.shards[5].instance}}); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 { // the first adopts the client after the restart
@@ -559,14 +559,14 @@ func TestNoGraceOnceEveryInstanceIsFinished(t *testing.T) {
 
 	g := f.restart(t)
 	g.renew(t, c, d)
-	if err := g.Recovery().ReclaimComplete(ctx, c, []GraceRef{{5, g.shards[5].instance}}); err != nil {
+	if err := g.Recovery().ReclaimComplete(ctx, c, []GraceRef{{Shard: 5, Instance: g.shards[5].instance}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := g.open(c, a, OpenRequest{Access: rd, Owner: owner(c, "oo"), Reclaim: true}); !errors.Is(err, ErrNoReclaim) {
 		t.Errorf("a reclaim in the shard c finished, owing another: %v, want ErrNoReclaim", err)
 	}
 	g.mustLock(t, c, b, LockReq{Owner: owner(c, "lo"), Ranges: []LockRange{x(0, 10)}, Reclaim: true})
-	if err := g.Recovery().ReclaimComplete(ctx, c, []GraceRef{{7, g.shards[7].instance}}); err != nil {
+	if err := g.Recovery().ReclaimComplete(ctx, c, []GraceRef{{Shard: 7, Instance: g.shards[7].instance}}); err != nil {
 		t.Fatal(err)
 	}
 	for what, err := range map[string]error{
@@ -605,7 +605,7 @@ func TestNoGraceNeverForRefusalOrNotice(t *testing.T) {
 	g := f.restart(t)
 	g.connect(t, cl)
 	g.renew(t, c, h)
-	inst := []GraceRef{{5, g.shards[5].instance}}
+	inst := []GraceRef{{Shard: 5, Instance: g.shards[5].instance}}
 	for _, who := range []Caller{c, h} {
 		if err := g.Recovery().ReclaimComplete(ctx, who, inst); err != nil {
 			t.Fatal(err)

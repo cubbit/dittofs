@@ -2460,8 +2460,13 @@ Open state takes only neutral requests and returns neutral results and errors
 ([RFC 14 §1.1](rfc-14-open-state.md#1.1%20Non-goals)). Every NFS → neutral
 mapping it needs is here. Each call states its protocol's profile
 ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)): `NFSv3Caps`,
-`PrivilegeOnEveryCall` alone, so root's privilege counts on every call and no
-SMB rule applies; `NFSv4Caps`, which adds `SeesPseudoFS`, so `LOOKUPP` at a
+`PrivilegeOnEveryCall`, `SpellsReservedNames` and `ListsEveryEntry`, so root's
+privilege counts on every call, a reserved character in a name on a `windows`
+share is stored in its private-use spelling rather than refused
+([RFC 7 §3.8](rfc-7-namespace-metadata.md#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use)),
+a listing is never filtered by access-based enumeration
+([RFC 19 §3.7](rfc-19-authorization.md#3.7%20Listings%20hide%20what%20the%20caller%20cannot%20read)),
+and no SMB rule applies; `NFSv4Caps`, the same plus `SeesPseudoFS`, so `LOOKUPP` at a
 share's root walks up into the pseudo-filesystem; and each request's context
 carries its protocol label, which no rule reads; `NLMCaps` for NLM and NSM, which adds `HostCall` (§6.1) and
 `ClientIsMachine` for the host's record; `MountCaps` for `MNT` and `EXPORT`,

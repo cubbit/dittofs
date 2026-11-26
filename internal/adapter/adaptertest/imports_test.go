@@ -186,7 +186,7 @@ func forbiddenToAnAdapter(dir, name string, test bool, imp string) string {
 	// adapter's build. It stays held to the standard library and to no network.
 	// Withdraw it if wire/gen stops being a main package.
 	generator := dir == "internal/adapter/"+name+"/wire/gen" && imp == "os"
-	if why, ruled := forbiddenByGSS(dir, name, test, imp); ruled {
+	if why, ruled := forbiddenByGSS(dir, name, test, wire, imp); ruled {
 		return why
 	}
 	switch {
@@ -255,10 +255,14 @@ func forbiddenToAnAdapter(dir, name string, test bool, imp string) string {
 // SMB and their harnesses and scripted clients import it. It alone decodes
 // Kerberos messages, with gokrb5, and its tests mint tickets with
 // identitytest.
-func forbiddenByGSS(dir, name string, test bool, imp string) (why string, ruled bool) {
+func forbiddenByGSS(dir, name string, test, wire bool, imp string) (why string, ruled bool) {
 	p, local := strings.CutPrefix(imp, module)
 	if name != "gss" {
-		if local && under(p, "internal/adapter/gss") && (name == "nfs" || name == "smb" || harnessOf(dir) != "") {
+		// A wire package and serving code are left to the rules below: wire
+		// imports no gss, and gsstest, test-only, reaches no serving file.
+		if local && !wire && (test || !under(p, "internal/adapter/gss/gsstest")) &&
+			under(p, "internal/adapter/gss") &&
+			(name == "nfs" || name == "smb" || harnessOf(dir) != "") {
 			return "", true
 		}
 		return "", false
@@ -545,6 +549,8 @@ func TestImportCheckReportsEachSeededViolation(t *testing.T) {
 		"internal/adapter/gss/nfs.go: imports github.com/cubbit/dittofs/internal/adapter/nfs/wire: gss imports no protocol package",
 		"internal/adapter/gss/gsstest/realm.go: imports github.com/cubbit/dittofs/pkg/identity/identitytest: gss holds no secret: it imports no identity component",
 		"internal/adapter/nfs/krb5.go: imports github.com/jcmturner/gokrb5/v8/types: an adapter imports, from outside the module, only what its list names",
+		"internal/adapter/nfs/gsstest.go: imports github.com/cubbit/dittofs/internal/adapter/gss/gsstest: an adapter never imports another adapter",
+		"internal/adapter/nfs/wire/gss.go: imports github.com/cubbit/dittofs/internal/adapter/gss: a wire package imports only the standard library and pkg/resources",
 		"internal/adapter/nfs/identity.go: imports github.com/cubbit/dittofs/pkg/identity: an adapter imports, of the module, only pkg/vfs, pkg/adapter, pkg/adapter/settings, pkg/resources, pkg/metrics, internal/tlsconfig, core and its own packages",
 		"internal/adapter/nfs/mount/wire/gen/main.go: imports os: a wire package does no file or network I/O",
 		"internal/adapter/nfs/ops/v3/binary.go: imports encoding/binary: an ops file reads and writes no bytes: its codec is generated",

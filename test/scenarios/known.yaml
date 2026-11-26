@@ -1,83 +1,276 @@
-# The system scenarios that fail today, each at its first failing check, with the issue it
-# reproduces. A scenario that starts to pass is an unexpected pass: remove its entry in the fix.
-# Until the node's settings table declares the remote and namespace sections, every scenario stops
-# in setup, where the first store create is refused: its remote.* keys are unknown. Each reason
-# names where its run stops past that.
+# The system scenarios that fail today, with the issue each reproduces. A scenario that starts to
+# pass is an unexpected pass: remove its entry in the fix.
+# Until the node's settings table declares the store, namespace and adapter sections, every scenario
+# stops in setup, where the first store create is refused: its remote.* keys are unknown. setup.sh
+# exits 3 only for a run that stopped at that store create, and 1 for any earlier setup failure and
+# for a scenario's own failure, so each entry is known only with the message "exited 3", and any
+# other failure is a new one.
+# A scenario with a bug of its own has a reason that names where its run stops past setup, which the
+# change that makes setup pass turns into the entry's message and issue; that change removes the
+# others' entries, which then pass.
 - test: test/scenarios/10-smb-store-options-xs.sh
   status: fail
   fix: planned
   category: bug
-  reason: 'An unknown key is refused, so the misspelt "remote.compresion" is no longer the failure; the issue''s open part is that a used namespace''s bucket and prefix edits must be refused, at `test -e /tmp/e1.rc`.'
-  issue: '#3048'
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare. Past setup, an unknown key is refused, so the misspelt "remote.compresion" is no longer the failure; the issue''s open part is that a used namespace''s bucket and prefix edits must be refused, at `test -e /tmp/e1.rc`, unless a key the settings table still lacks fails the `unknown_key` check at line 56 first. (#3048)'
+  issue: '#6102'
+  message: exited 3
 - test: test/scenarios/11-smb-2stores-same-bucket-xs.sh
   status: fail
   fix: planned
   category: bug
-  reason: 'A second store and namespace on the same bucket and prefix must be refused, at `test "$Y" = refused`.'
-  issue: '#3036'
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare. Past setup, a second namespace on the same bucket and prefix, on a store of its own, is accepted, at `test "$Y" = refused`. (#3036)'
+  issue: '#6102'
+  message: exited 3
 - test: test/scenarios/13-smb-compression-frame-magic-xs.sh
   status: fail
   fix: planned
   category: bug
-  reason: 'With compression, a file starting with the DFCMP magic reads back wrong once evicted, at `cmp /tmp/z/magic.bin /tmp/back/magic.bin`.'
-  issue: '#2897'
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare. Past setup, with compression, a file starting with the DFCMP magic reads back wrong once evicted, at `cmp /tmp/z/magic.bin /tmp/back/magic.bin`. (#2897)'
+  issue: '#6102'
+  message: exited 3
 - test: test/scenarios/20-smb-nfs-case-across-adapters-xs.sh
   status: fail
   fix: planned
   category: bug
-  reason: 'NFS is case-sensitive and SMB is not on the same share, and an SMB create of Readme overwrites README, at the name count check.'
-  issue: '#3037'
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare. Past setup, NFS is case-sensitive and SMB is not on the same share, and an SMB create of Readme overwrites README, at the name count check. (#3037)'
+  issue: '#6102'
+  message: exited 3
 - test: test/scenarios/22-smb-share-modes-s.sh
   status: fail
   fix: planned
   category: bug
-  reason: 'The share root lets an add-file open past a lister that shares only reading, where every other directory refuses it, at the status comparison.'
-  issue: '#3038'
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare. Past setup, the share root lets an add-file open past a lister that shares only reading, where every other directory refuses it, at the status comparison. (#3038)'
+  issue: '#6102'
+  message: exited 3
 - test: test/scenarios/23-smb-notify-durable-s.sh
   status: fail
   fix: planned
   category: bug
-  reason: 'An SMB change notify watch never reports changes made over NFS, at `grep -qx ''0001 n.txt'' /tmp/notify.txt`.'
-  issue: '#3039'
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare. Past setup, an SMB change notify watch never reports changes made over NFS, at `grep -qx ''0001 n.txt'' /tmp/notify.txt`. (#3039)'
+  issue: '#6102'
+  message: exited 3
 - test: test/scenarios/32-smb-nfs-trash-two-users-xs.sh
   status: fail
   fix: planned
   category: bug
-  reason: 'The new CLI has no recycle bin, so a delete creates no #recycle, at `nfs-ls ''nfs://127.0.0.1/shared?version=4&uid=1000&gid=1000'' | grep recycle`. With it back, the first user to delete owns #recycle and the second user''s delete fails.'
-  issue: '#2920'
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare. Past setup, the new CLI has no recycle bin, so a delete creates no #recycle, at `nfs-ls ''nfs://127.0.0.1/shared?version=4&uid=1000&gid=1000'' | grep recycle`. With it back, the first user to delete owns #recycle and the second user''s delete fails. If the unguarded `del t1.txt` (line 22) is refused, the run stops a line earlier. (#2920)'
+  issue: '#6102'
+  message: exited 3
 - test: test/scenarios/33-nfs-mount-identity-xs.sh
   status: fail
   fix: planned
   category: bug
-  reason: 'NFSv3 mounts a share with default permission none for root, where NFSv4 refuses, at `grep -q ''Failed to mount'' /tmp/v3-0.out`.'
-  issue: '#3040'
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare. Past setup, NFSv3 mounts a share with default permission none for root, where NFSv4 refuses, at `grep -q ''Failed to mount'' /tmp/v3-0.out`. (#3040)'
+  issue: '#6102'
+  message: exited 3
 - test: test/scenarios/43-smb-nfs-open-unlinked-gc-xs.sh
   status: fail
   fix: planned
   category: bug
-  reason: 'A file deleted while open over NFS reads back as zeros through its open handle once evicted, at `cmp /tmp/held /tmp/f`.'
-  issue: '#2927'
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare. Past setup, a file deleted while open over NFS reads back as zeros through its open handle once evicted, at `cmp /tmp/held /tmp/f`. (#2927)'
+  issue: '#6102'
+  message: exited 3
 - test: test/scenarios/45-smb-snapshot-survives-gc-xs.sh
   status: fail
   fix: planned
   category: bug
-  reason: 'A share that still has a snapshot is removed, at `test "$R" = refused`.'
-  issue: '#2973'
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare. Past setup, a share that still has a snapshot is removed, at `test "$R" = refused`. (#2973)'
+  issue: '#6102'
+  message: exited 3
 - test: test/scenarios/51-smb-2shares-same-content-xs.sh
   status: fail
   fix: planned
   category: bug
-  reason: 'Content already stored through one share is never uploaded to the second share''s block store, at its bucket count check.'
-  issue: '#3041'
-- test: test/scenarios/53-smb-2shares-share-scoped-views-xs.sh
-  status: fail
-  fix: planned
-  category: bug
-  reason: 'An empty share''s stats count the files of another share on the same metadata store, at the file and block count check.'
-  issue: '#2906'
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare. Past setup, content already stored through one share is never uploaded to the second share''s block store, at its bucket count check. (#3041)'
+  issue: '#6102'
+  message: exited 3
 - test: test/scenarios/72-smb-snapshot-s3-down-s.sh
   status: fail
   fix: planned
   category: bug
-  reason: 'A snapshot taken with S3 down restores content written after it, at the restore comparison.'
-  issue: '#2928'
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare. Past setup, a snapshot taken with S3 down restores content written after it, at the restore comparison. (#2928)'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/00-smb-nfs-roundtrip-gc-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/01-smb-rename-in-share-root-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/12-smb-encryption-roundtrip-s.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/21-smb-nfs-concurrent-creates-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/24-smb-nfs-truncate-during-upload-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/25-smb-nfs-truncate-same-content-s.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/26-smb-truncate-same-content-s.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/30-smb-nfs-permission-revoke-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/31-smb-nfs-owner-gid-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/40-smb-dedup-same-content-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/41-smb-dedup-delete-original-gc-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/42-smb-1share-small-large-gc-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/44-smb-unlink-crash-gc-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/46-smb-truncate-gc-frees-tail-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/50-smb-2shares-one-store-gc-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/52-smb-2shares-small-large-gc-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/55-smb-extra-share-gc-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/56-smb-extra-share-gc-minimal-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/57-smb-2shares-compaction-l.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/62-smb-remote-block-damaged-xs.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/70-smb-s3-down-reads-fail-m.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/71-smb-s3-stalled-deadline-m.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/73-smb-nfs-crash-restart-m.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/90-smb-hour-holds-xxl.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/91-smb-125gb-file-sync-xxl.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
+- test: test/scenarios/92-smb-fslogix-container-xl.sh
+  status: fail
+  fix: planned
+  category: bug
+  reason: 'Stops in setup, where the store create is refused for keys the settings table does not declare.'
+  issue: '#6102'
+  message: exited 3
