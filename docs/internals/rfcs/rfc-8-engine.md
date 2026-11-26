@@ -2962,7 +2962,11 @@ spent for nothing.
 **Proposal:** a read asks for **only the chunks it covers** when its missing bytes
 are at most a quarter of the block **and** it is not sequential — it neither
 starts at the block's beginning nor continues where the file's previous read
-ended. Otherwise it asks for **the whole block**. Read-ahead and pre-warm follow
+ended. Otherwise it asks for **the whole block**, unless the read's fill will be
+declined ([§7.3](#7.3%20Filling%20is%20a%20decision)): the block's other chunks would then be fetched and
+dropped, and a long scan, which continues every read and fills none, would fetch
+each block once per read over it, so such a read asks for only its chunks.
+Read-ahead and pre-warm follow
 the same rule over the bytes the journal does not hold, and skip a block it holds
 whole (S5, [§7.4](#7.4%20The%20speculator)).
 

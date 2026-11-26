@@ -14,7 +14,7 @@ location), §2.2, §2.5, §6.6 and §7.2; [RFC 3](../docs/internals/rfcs/rfc-3-s
 [RFC 4](../docs/internals/rfcs/rfc-4-remote-tier.md) §4.1 (`Name`, `ChunkRange`, `ErrNotFound`);
 [RFC 5](../docs/internals/rfcs/rfc-5-transforms.md) §2.7 (the material errors).
 **Track:** C.
-**Epic 17 estimate: 9 subtasks, 25.75 man-days.**
+**Epic 17 estimate: 9 subtasks, 26 man-days.**
 **Depends on:** sync point **S2, red rows in CI**: epic 12's rows and the fixture's component
 options; **epic 11's frozen surface**: `Settings.FillLowWater`, `ShareSettings`' read-ahead caps and
 speculation budget, the `Stats` fields `Fetches`, `FetchBytes`, `Fills`, `SpeculationBytes`,
@@ -173,7 +173,7 @@ can cite them. Rows of §15 the epic turns green are listed last.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R24 | A read asks for only its chunks when its missing bytes are at most a quarter of the block and it is not sequential (it neither starts at the block's beginning nor continues where the file's previous read ended); otherwise for the whole block | SHOULD | RFC 8 §7.8 | T17.4 |
+| R24 | A read asks for only its chunks when its missing bytes are at most a quarter of the block and it is not sequential (it neither starts at the block's beginning nor continues where the file's previous read ended), or when its fill will be declined; otherwise for the whole block | SHOULD | RFC 8 §7.8, as amended here | T17.4, T17.5 |
 | R25 | A fetch's ranges are whole chunks, each by its hash and recorded range, each distinct chunk once however many of the read's spans name it | invariant | RFC 3 §1.3 | T17.2, T17.4 |
 
 **Fill**
@@ -335,12 +335,14 @@ Each is green in whichever change lands last of this epic, S3 and, where the row
   cap, `readahead.max_blocks` and `readahead.max_bytes`, the most the window can be. No marker: the
   ledger row records it. The speculator issues no hint for a file whose scan rule 2 would decline:
   its fetched chunks could not fill, so read-ahead would fetch each block once more. Past that point
-  the scan is served by demand fetches, as RFC 8 §7.3's backup example says, and each of those asks
-  for the whole block (§7.8: it continues the last read) and copies only its own chunks, so the scan
-  fetches each block about block size ÷ read size times: 4 with 4 MiB blocks and 1 MiB reads, about
-  8 TB of egress for §7.3's 2 TB backup. The `decision:` at the hint states that multiplier,
-  withdrawn if B4 shows long scans need read-ahead held in memory or the egress matters; T17.6
-  measures it.
+  the scan is served by demand fetches, as RFC 8 §7.3's backup example says. As RFC 8 §7.8 stood,
+  each of those asked for the whole block (it continues the last read) and copied only its own
+  chunks, so the scan fetched each block about block size ÷ read size times: 4 with 4 MiB blocks and
+  1 MiB reads, about 8 TB of egress for §7.3's 2 TB backup. This pull request amends §7.8 so a read
+  whose fill `fill` declines asks for only its chunks (T17.4): the scan fetches each block's bytes
+  once, at one round trip per read instead of per block. The user decided this on 2026-11-26. The
+  `decision:` at the hint says so, withdrawn if B4 shows long scans need read-ahead held in memory
+  or the extra round trips cost more than the egress saved; T17.6 measures it.
 - **D8, the missing-chunk backstop is logged by `kvstore`.** The batch that finds a source ref with
   no chunk record, or one naming a deleted block, runs inside `kvstore`'s `Resume`, which already
   carries it as **Lost** and which the engine does not see into. `Content` gains `WithLogger`, as
@@ -593,13 +595,15 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
 
 ### T17.4 Chunks or the whole block
 
-**Subtask T17.4 estimate: 1.75 man-days.**
+**Subtask T17.4 estimate: 2 man-days.**
 
 - **Track:** C. **Depends on:** T17.2.
 - **Covers:** R15, R16, R24, R25, R34, R42, R65.
 - **Deliverables:** `readstate.go`, the speculator's per-file read table (D5, its `ponytail:`), its
   first fields the end of the last read and the length of the scan it continues;
-  `blockShape(missing, blockSize int64, startsBlock, continues bool) shape`, pure, `startsBlock`
+  `blockShape(missing, blockSize int64, startsBlock, continues, fills bool) shape`, pure, answering
+  chunks whenever `fills` is false (RFC 8 §7.8 as amended here, D7), `fills` passed true until
+  T17.5 passes `fill`'s answer for the read's extent; `startsBlock`
   true when the read's first wanted span starts at its ref's `Skip` 0 and is the file's first span
   in that block: the read starts at file offset 0, or the lookup, run from one byte before the
   read, answers that byte under another block or none (a block holds other files' chunks too, so
@@ -614,10 +618,12 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
   T17.5's `fill` and T17.6, which adds its fields.
 - **Acceptance criteria:**
   - A 4 KiB random read of a 4 MiB block asks for its chunk; a read starting the block, or
-    continuing the last, asks for the block; a read missing more than a quarter asks for the block.
+    continuing the last, asks for the block; a read missing more than a quarter asks for the block;
+    any of these whose fill will be declined asks for its chunks.
   - A file only ever read, with no pending work, keeps its read state between reads.
-- **Tests:** `blockShape` by table at the quarter's edge, one byte either side (catches an
-  off-by-one or a swapped condition, R24); at `Read`, the shape counters for a random and a
+- **Tests:** `blockShape` by table at the quarter's edge, one byte either side, and each row again
+  with `fills` false, answering chunks (catches an off-by-one, a swapped condition or a declined
+  fill fetching the whole block, R24); at `Read`, the shape counters for a random and a
   sequential pair of reads of a file the journal holds nothing of (catches state kept on the file
   entry, which such a file lacks, R24); a whole-block fetch whose `dst` holds only the read's bytes
   (catches neighbouring chunks copied, R15); a whole-block fetch with a chunk the read does not want
@@ -637,9 +643,10 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
 **Subtask T17.5 estimate: 2.5 man-days.**
 
 - **Track:** C. **Depends on:** T17.4.
-- **Covers:** R13, R16, R18, R26 to R29, R41, R42.
+- **Covers:** R13, R16, R18, R24, R26 to R29, R41, R42.
 - **Deliverables:** `fill(r readInfo, s journalStats) bool` in `policy.go`, pure (R27), rules 1 and
-  2 (D7), the low-water mark from `Settings.FillLowWater` and the scan length from T17.4's state;
+  2 (D7), the low-water mark from `Settings.FillLowWater` and the scan length from T17.4's state,
+  asked once per demanded extent before its fetch, its answer passed to `blockShape` as `fills`;
   `Handle.Fill` joins `Deps`, its first caller here; `fill.go`'s hand-off (D3): a copy of each
   demanded carved span's verified bytes, with the `asOf` R28 names and that span's ref's `Newest`,
   filled in its own goroutine under the binding's 4 MiB byte semaphore, each span taking its own
@@ -728,8 +735,9 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
   block's chunks (catches a whole-block refetch of a held file, or a covering lookup run before
   `Extents`, R35, R49); a sequential scan past the window's cap, `Stats.SpeculationBytes` unchanged
   by the reads after it (catches hints whose chunks `fill` declines, D7), and its `FetchBytes`
-  asserted equal to each block's encoded size once per read that touches it, the multiplier D7's
-  `decision:` states, so B4 has a figure to compare; a hint held between its
+  asserted equal to the scanned blocks' chunk bytes, each fetched once, and `Fetches` by shape all
+  `chunks` (catches a declined read that still asks for the whole block, the multiplier D7 removes,
+  R24), so B4 has a figure to compare; a hint held between its
   covering lookup and its fill while the file is written, the fill counted `refused` (catches a
   hint's `asOf` read after its lookup, R28); that refusal leaving no queued hint and the window
   reset (catches hints that keep fetching what can never fill); a whole-block prefetch of a block
@@ -895,7 +903,7 @@ before it waits on epic 16, since T17.2's tests open their own flow until T16.1.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T17.1, T17.2, T17.3 | 10.75 | — | carved reads end to end: the location, the fetch and its failures, re-resolution |
-| 2 | T17.4, T17.5, T17.6, T17.7 | 9.75 | PR 1 | what a read fetches and keeps: the shape, the fill and the speculator, which reads both |
+| 2 | T17.4, T17.5, T17.6, T17.7 | 10 | PR 1 | what a read fetches and keeps: the shape, the fill and the speculator, which reads both |
 | 3 | T17.8, T17.9 | 5.25 | PR 2, epic 16's T16.6 | the clone's adoption and the rows that check the whole epic |
 
 A suggestion only: one pull request per subtask works as well. PR 3's T17.8 may open beside PR 2
