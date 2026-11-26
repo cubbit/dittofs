@@ -260,7 +260,10 @@ nothing.
   the registry's name set from the start, so a refused envelope, which belongs to no transform, is
   recorded under that label and RFC 25 §7's ticket on
   `transform_decode_failures_total{error="malformed"}` sees a planted envelope. A `decision:`
-  marker at the label. Prior art: none found.
+  marker at the label. The name `unregistered` is in the name set from the start too, so no
+  transform registers it: epic 10's census gauge labels a block written by a transform since
+  dropped from the build with it, and `Register` of either reserved name panics. Prior art: none
+  found.
 - **D8, buffers.** Each step but the last writes into a buffer allocated for it; `Chain.Decode`'s
   last step decodes into the caller's `dst`, and `Attempt.Encode` writes the envelope and the last
   output into `dst`, one copy. So a step's `dst` never overlaps its input (R22). With a caller's
