@@ -163,7 +163,7 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; "(as amen
 | --- | --- | --- | --- | --- |
 | R27 | An instance holds a fixed total of entries, all of it reserved: each source its `Total`, and within it each tenant max(1, ⌊`Total` × its weight ÷ the source's weights⌋) | MUST | §6.1.1; RFC 24 §5.1 | T13.5 |
 | R28 | A post for an absent key whose tenant holds its reservation is dropped and counted in `Dropped`; it never takes another tenant's entry, and no tenant borrows another's reservation | MUST NOT | §6.1.1 | T13.5 |
-| R29 | The total also bounds the tenants a source serves: a `SetTenant` that would take its source's reservations past `Total` is refused with a named cause | MUST | RFC 24 §5.1; §6.1.1 | T13.5 |
+| R29 | The total also bounds the tenants a source serves: a `SetTenant` that would take its source's reservations past `Total` is refused with a named cause; a `SetTenant` that shrinks a tenant's reservation below the entries it holds drops the excess not in a run (D13), so the source's entries stay within `Total` plus its runs in flight | MUST | RFC 24 §5.1; §6.1.1 | T13.5 |
 | R30 | A `Paused` tenant has none of its entries dispatched, keeps them, so pausing loses no work, and grows no backoff | MUST | §6.1.1, §6.3 | T13.3 |
 
 **Sources and tenants**
@@ -171,7 +171,7 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; "(as amen
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R31 | A source is registered before `Start`, its `Limits` fixed for its life, and dispatch begins at `Start` | MUST | §6.1.1 | T13.1 |
-| R32 | `SetTenant` adds a tenant, running its source's `Rebuild` for it, whose posts take the tenant's reservation, so a tenant the node gains has its work rebuilt; or changes a tenant live, its weight, backoff and pause applying without a restart | MUST | §6.1.1, §13 E23 | T13.1, T13.3 |
+| R32 | `SetTenant` adds a tenant, running its source's `Rebuild` for it, whose posts take the tenant's reservation, so a tenant the node gains has its work rebuilt; or changes a tenant live, its weight, backoff and pause applying without a restart; it refuses a `Weight` below 1, a `BackoffMin` not positive and a `BackoffMax` below `BackoffMin` with an error naming the field (D10) | MUST | §6.1.1, §13 E23 | T13.1, T13.3 |
 | R33 | `CancelTenant` drops the tenant's entries and cancels its runs, so no entry of the tenant is dispatched once it returns, and refuses the tenant's posts until `SetTenant`; a cancel during the tenant's `Rebuild` wins | MUST | §6.1.1, §2.3 | T13.5 |
 | R34 | A `StopTenant` result acts as `CancelTenant` for its item's tenant | MUST | §6.1.1 | T13.5 |
 | R35 | `WaitTenant` returns once every run of the tenant in flight at the call has returned | MUST | §6.1.1, §2.3 | T13.5 |
@@ -274,11 +274,16 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; "(as amen
 - **D10, what `SetTenant` and `Post` refuse, and when a `Rebuild` runs.** `Post` answers false for
   an unknown source or tenant, a cancelled tenant and a stopped scheduler, and for a drop; nothing
   else refuses. `SetTenant` adding a tenant runs `Rebuild` without the scheduler's lock, so posts to
-  other tenants never wait on it; the tenant's own posts during it are staged and take effect when
-  `Rebuild` returns nil. A `Rebuild` error leaves the tenant absent, its staged entries dropped, so
+  other tenants never wait on it; the tenant's own posts during it, its `Rebuild`'s and any other,
+  are staged as entries are held: a post for a staged key merges into it, and a post for a new key
+  past the tenant's reservation is dropped and counted, so staging holds at most the reservation; the
+  staged entries take effect when `Rebuild` returns nil. A `Rebuild` error leaves the tenant absent, its staged entries dropped, so
   the caller sees one state for one answer and retries the whole call; a `CancelTenant` during the
   `Rebuild` marks it cancelled, and `SetTenant` then returns `context.Canceled` and adds nothing.
-  No marker. Prior art: none found.
+  `SetTenant` refuses, before any change, a `Weight` below 1 (a reservation and a stride pass divide
+  by it), a `BackoffMin` not positive (a delay doubling from 0 stays 0 and retries a failing key in a
+  hot loop) and a `BackoffMax` below `BackoffMin`, with an error naming the field rather than a
+  panic, since the backoff comes from settings (`offload.retry_*`). No marker. Prior art: none found.
 - **D11, `Result.Err` is the source's to report.** `New` takes a clock and a loop, no logger or
   sink, so the scheduler reads only the outcome (R12) and drops `Err`; the source that set it holds
   its own logs and conditions, as the engine's do. `decision:` at `done`, withdrawn if a consumer
@@ -294,10 +299,18 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; "(as amen
   reservations past its `Total` when weights are uneven, which RFC 24 §5.1's "all of it reserved"
   forbids, so `SetTenant` refuses an addition or a reweighting that would, naming the source and its
   total (R29): the strict total holds, and with equal weights any number of tenants up to `Total`
-  fits. A reweighting that shrinks the others' reservations evicts nothing: a tenant above its new
-  reservation keeps its entries and drops new posts until under. `decision:` at the reservation,
-  beside §6.1.1's no-borrowing one, withdrawn if a consumer needs more tenants than the formula
-  fits. Prior art: none found.
+  fits. An addition or a reweighting that shrinks a tenant's reservation below the entries it holds
+  drops the excess at once, counted in `Dropped` as a post past the reservation is: pending entries
+  first, then entries in backoff, latest due first, never an entry in a run; an entry in a run whose
+  tenant is still above its reservation leaves when its run returns, its redo mark dropped and
+  counted. Evicting nothing would let the entries grow past `Total`: with equal weights, each tenant
+  added after the others filled their reservations keeps them full, so `Total` × (1 + ½ + … + 1/N)
+  entries for N tenants, about 25 for a `Total` of 12 and four tenants, against RFC 24 §5.1's fixed
+  total. The sources re-derive what is dropped (§6.1.1); an evicted key in backoff loses its backoff,
+  so its re-derived post is due at once, the one case where a post brings a retry earlier. Ceiling:
+  the source holds at most `Total` plus its runs in flight, at most `Concurrency`, the excess only
+  until those runs return. `decision:` at the reservation, beside §6.1.1's no-borrowing one,
+  withdrawn if a consumer needs more tenants than the formula fits. Prior art: none found.
 - **D14, an entry waits for its source's slots (the user's decision, 2026-11-26).** R23 lets the
   scheduler report idle "while every slot it waits for holds a run that is not overdue". Read as
   the entry's tenant's slots, one tenant whose runs all hang withholds `Idle` for the whole
@@ -311,8 +324,11 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; "(as amen
   source reaches every slot overdue, which fails liveness under either reading. One hung tenant is
   spared only while another tenant holds work. The ceiling is recorded and R25's bound is not
   changed to lift it. Rejected: the tenant's slots, under which a single shard whose store hangs
-  every run restarts the node once the other shards drain. This pull request amends RFC 8 §6.1.1's
-  idle sentence to say "every slot of the entry's source". `decision:` at the idle rule. Prior
+  every run restarts the node once the other shards drain. RFC 8 §6.1.1's idle sentence, and RFC
+  25 §3.5's restatement of it, say R23's rule: idle unless an entry is due that its tenant's and its
+  source's bounds let it dispatch, or every slot of a source with entries due is overdue; the
+  earlier wording, "every slot of the entry's source", withheld `Idle` for a tenant at its own bound
+  while its source had a slot free. `decision:` at the idle rule. Prior
   art: none found.
 
 ## 5. Target tree
@@ -337,7 +353,7 @@ pkg/workqueue/
   liveness_test.go    T13.4  run deadlines, overdue, stall, the watchdog rules and §15.2's stuck run
   tenant_test.go      T13.5  totals, drops, the tenant bound, cancel, StopTenant, wait
 docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains Runs, OverdueRuns and Stalled (D8);
-                                      its idle sentence names the entry's source's slots (D14)
+                                      its idle sentence states R23's rule (D14)
 ```
 
 ## 6. Subtasks
@@ -378,6 +394,10 @@ docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains R
   goroutines post the same keys while the workload records each key's concurrent runs, failing on
   two at once (catches R5's violation, RFC 8 E41; epic 14 relies on it and does not repeat it); a batch with one item blocked and the rest done, whose keys
   are posted again and dispatched while it blocks (catches done applied at the run's return, R10);
+  a tenant's `Rebuild` held while its source posts the same key twice and then twice its
+  reservation in new keys: once released, one entry for the repeated key and the tenant at its
+  reservation, the rest counted in `Dropped` (catches staging that neither merges nor holds the
+  reservation, D10);
   a batch of 3 items counted in `Runs` as 1 and in `Running` as 3 (catches the two counts merged,
   R38); a post with a future `NotBefore`, dispatched only once the clock passes it (R8); `Post` from
   64 goroutines while every run is blocked and another tenant's `Rebuild` is held, each call
@@ -452,7 +472,9 @@ docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains R
   entries across ten heartbeat periods, then unpaused (catches an entry dropped or dispatched while
   paused, R30), and a key in backoff paused across its retry time whose next delay after the pause
   is the one before it (catches backoff grown while paused, R30); `SetTenant` changing `BackoffMin`
-  live, the next failure using it (R32). No test double.
+  live, the next failure using it (R32); a table of `SetTenant` calls with `Weight` 0 and −1,
+  `BackoffMin` 0 and a `BackoffMax` below `BackoffMin`, each refused naming its field and the
+  tenant unchanged (catches a division by zero or a hot-loop retry, R32, D10). No test double.
 - **Rules:** rule 9: D3's, D4's and D7's `decision:` markers.
 
 ### T13.4 Overdue runs, stalls and the watchdog loop
@@ -466,7 +488,8 @@ docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains R
   source's last dispatch, paused ones excluded (D7), set on the tenant with the oldest due entry.
   In `dispatch.go`, `Turn` from the dispatcher after each dispatch and each run's return it
   handles, `Idle` by R23's rule as D14 reads it, with its `decision:`, and the 30-second heartbeat
-  that reports only (D6), with its `decision:`. `workqueue.go`'s `Stats` gains `OverdueRuns` and
+  that reports only (D6), with its `decision:`; `workqueue.go`'s `Loop.Idle` comment, now "waiting,
+  with no entry due", says R23's rule. `workqueue.go`'s `Stats` gains `OverdueRuns` and
   `Stalled` with their comments (D8); `Stats` fills `Overdue`, `OverdueRuns` and `Stalled`. The
   fault-injecting clock of D9 in `clock_test.go`. Consumed by epic 14, which hands each journal's
   instance its loop and runs the row over the engine's instances, and epic 20.
@@ -505,9 +528,11 @@ docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains R
     | every slot overdue | `TestEverySlotOverdueFailsLiveness` | every slot of the source held by overdue runs: `Live` false past 60 s | an `Idle` reported while every slot is overdue |
     | a lost wakeup | `TestLostWakeupFailsLiveness` | the clock wrapper loses the `After` of the dispatcher's wait for a due entry with a slot free: nothing dispatched, `Live` false past 60 s | a heartbeat that reports idle with work due, or that dispatches it (D6) |
 
-  - two tenants holding work: one whose runs all ignore their ctx, holding due entries at its R25
-    bound, below `Concurrency`; the other's entries in backoff past the test's window; the source
-    has free slots and no entry is dispatchable: `Live` true past 60 s (catches D14's reading
+  - two tenants holding work, `Concurrency` 4 and `RunTimeout` 10 min so no run is overdue: one
+    whose two runs ignore their ctx, holding due entries at its R25 bound of 2; the other with one
+    run in flight blocked on a channel and no entry due, so it still counts as a tenant with work
+    (D13) and the first's bound stays 2; one slot free and no entry dispatchable: `Live` true past
+    60 s (catches D14's reading
     reversed, which withholds `Idle` for the stuck tenant's due entries).
 
   The wrapper is kind 3, around the real test clock.
@@ -523,7 +548,8 @@ docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains R
 - **Covers:** R7, R27, R28, R29, R33, R34, R35, R38.
 - **Deliverables:** in `tenant.go`, each tenant's reservation by R27, recomputed when a tenant is
   added, changed or cancelled; a post for an absent key past it dropped and counted in `Dropped`;
-  `SetTenant` refusing what D13 refuses; §6.1.1's no-borrowing `decision:` and D13's beside it.
+  `SetTenant` refusing what D13 refuses and evicting what it shrinks; §6.1.1's no-borrowing
+  `decision:` and D13's beside it.
   `CancelTenant` dropping the tenant's entries, cancelling its runs' contexts and refusing its posts
   until `SetTenant`, winning over a `Rebuild` in progress (D10); the `StopTenant` outcome taking the
   same path; `WaitTenant` joining the runs in flight at the call; a tenant generation, so a `done`
@@ -535,7 +561,8 @@ docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains R
     merges posts for keys it holds; a full tenant never takes an entry of another, even while the
     other's reservation is empty.
   - The sum of a source's reservations never exceeds its `Total`; a `SetTenant` that would is
-    refused naming the source; a reweighting evicts no entry.
+    refused naming the source; a tenant whose reservation shrinks below its entries drops the excess
+    not in a run, and with no run in flight the source never holds more than `Total`.
   - After `CancelTenant` returns, no item of the tenant is dispatched, its posts answer false, and
     each of its runs sees its ctx cancelled; `SetTenant` adds it back, rebuilt, with a fresh
     reservation; a cancel during its `Rebuild` leaves it absent.
@@ -548,7 +575,9 @@ docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains R
   reservation while another is empty, `Dropped` counting the excess and the other's room unchanged
   (catches borrowing, R28); a post for a held key at a full tenant, merged and answered true (R7);
   `Total` + 1 tenants of equal weight, and a reweighting whose floors would pass `Total`, each
-  refused (catches reservations past the total, R29); a tenant with entries and runs in flight,
+  refused (catches reservations past the total, R29); `Total` 12 and four tenants of equal weight
+  added one at a time, each filled before the next is added, no run in flight: the source's entries
+  never above 12 and the dropped excess counted (catches an eviction left out, R29, D13); a tenant with entries and runs in flight,
   cancelled, then posted to and advanced past every not-before (catches an entry dispatched after
   the cancel, R33); a `CancelTenant` while the tenant's `Rebuild` blocks, then the `Rebuild`
   released, the tenant absent (catches a cancel lost to a rebuild, R33); a late `done` from a
