@@ -2084,10 +2084,26 @@ Authentication and principal mapping are
 - a context is keyed by its handle, not by the TCP connection that created it,
   so a reconnect or a trunked connection keeps using it;
 - the context table is bounded: at most 10 000 contexts per gateway node,
-  charged to [RFC 24](rfc-24-resources.md#5.1%20No%20queue%20is%20unbounded)'s
-  connection-state pool. When it is full, the same principal's least recently
-  used context is evicted first, then the least recently used overall, so one
-  principal looping `INIT` evicts only its own. A context idle 8 hours is
+  each charged to
+  [RFC 24 §5.1](rfc-24-resources.md#5.1%20No%20queue%20is%20unbounded)'s
+  connection-state pool on its own, outside any connection's fixed cost. An
+  `INIT` token past 64 KiB is `RPCSEC_GSS_CREDPROBLEM` before anything is
+  charged, and stays refused: the client's next `INIT` carries the same
+  ticket, so the mount fails rather than waits. No supported client sends
+  one, since a Kerberos token is at most 64 KiB (Windows' `MaxTokenSize`);
+  this is overturned if one is seen to. Otherwise the context is charged
+  before the ticket is decoded, at an upper bound from the token's length,
+  and once built the charge is trimmed with `Reservation.Shrink`
+  ([RFC 24 §2.5](rfc-24-resources.md#2.5%20Memory%20is%20reserved%20before%20it%20is%20used))
+  to the lesser of that bound and what the context holds: a context larger
+  than the bound, its name or AP-REP past what the token allowed, keeps the
+  bound and holds the excess uncharged, since a context `SignIn` accepted is
+  not refused afterwards; overturned if `SignIn`'s evidence is seen
+  outgrowing the token it came from. An `INIT` the pool refuses is
+  `RPCSEC_GSS_CREDPROBLEM` and evicts nothing, since no principal is known
+  before `SignIn`; the client's next `INIT`, a fresh AP-REQ, succeeds once
+  the pool frees. When the table holds 10 000 contexts, the same principal's least recently used context is
+  evicted first, then the least recently used overall, so one principal looping `INIT` evicts only its own. A context idle 8 hours is
   evicted; only a call whose header MIC verified touches its idle time;
 - `RPCSEC_GSS_DESTROY` needs a valid header MIC and an in-window sequence
   number, since handles travel in the clear;
@@ -2927,7 +2943,7 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 | §6.3 `MNT` on a Kerberos-only share *(1 node)* | `MNT` over `AUTH_UNIX` of a share whose `MinProof` is `Ticket`: the flavours and the root handle returned; a `GETATTR` with that handle over `AUTH_SYS`: refused `AUTH_TOOWEAK`; over `sec=krb5`: answered. | NFSv3 Kerberos mounts refused; or a handle that skips the minimum |
 | §6.1 NLM on a Kerberos-only share *(1 node)* | On a share whose `MinProof` is `Ticket`, an NLM `LOCK` over `AUTH_SYS` as a uid that can read the file: granted; as a uid that can neither read nor own a 0600 file: refused. A store error resolving the caller: the lock refused, never granted as anonymous. | every NFSv3 lock on a Kerberos share failing; locks on files the caller cannot read |
 | §6.1 `HostCall` only from NLM, NSM and MOUNT *(1 node)* | On a share whose `MinProof` is `Ticket`, an NFSv4 `OPEN` over `AUTH_SYS`: refused `NFS4ERR_WRONGSEC`; an `OPEN` over `sec=krb5`, then a `LOCK` on its stateid over `AUTH_SYS`: refused `NFS4ERR_WRONGSEC`. | an NFSv4 adapter setting `HostCall`, which admits its `OPEN` and `LOCK` at `Claimed` ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)) |
-| §10 context table *(1 node)* | `RPCSEC_GSS_DESTROY` with a corrupted header MIC: refused, the context still usable. A call above the window whose verifier fails: `RPCSEC_GSS_CREDPROBLEM`, and the window unchanged, so a call at the old window's top still runs. A call at sequence `MAXSEQ`: `RPCSEC_GSS_CTXPROBLEM`, and the context gone. With the table's share sized to four contexts, one principal opening a fifth evicts its own oldest, never another principal's. A reconnect on a new TCP connection keeps its context. | an unauthenticated teardown; one principal evicting everyone |
+| §10 context table *(1 node)* | `RPCSEC_GSS_DESTROY` with a corrupted header MIC: refused, the context still usable. A call above the window whose verifier fails: `RPCSEC_GSS_CREDPROBLEM`, and the window unchanged, so a call at the old window's top still runs. A call at sequence `MAXSEQ`: `RPCSEC_GSS_CTXPROBLEM`, and the context gone. With the table's count cap set to four contexts and a roomy pool, one principal opening a fifth evicts its own oldest, never another principal's. With the pool sized to one `INIT`'s bound, a second `INIT` sent while the first is still being built is `RPCSEC_GSS_CREDPROBLEM` and evicts nothing. With the pool sized to four `INIT`s' bounds, four contexts are built and, their charges trimmed, a fifth `INIT` fits too. A context whose evidence outgrows its bound keeps the bound's charge, never more: the lesser of its bound and its size. An `INIT` token past 64 KiB is `RPCSEC_GSS_CREDPROBLEM` with nothing charged. A reconnect on a new TCP connection keeps its context. | an unauthenticated teardown; one principal evicting everyone; a pool refusal evicting a context, or a charge never trimmed |
 | §8.1 ctime | An SMB client sets −1 on all four times of an open and writes through it; assert an NFSv3 `GETATTR` shows `ctime` moved. | SMB suspension freezing the NFS ctime |
 | §9.1 stability | Write `DATA_SYNC`, crash the primary, read back. Assert the data and its `size` and `mtime`. Append 10^4 `FILE_SYNC` writes to a new file with the metadata store stalled; assert every reply arrives. Overwrite committed bytes `FILE_SYNC` with the store stalled; assert no success reply until the store commits — `NFS4ERR_DELAY` within the deadline — and that the reply follows that write's existence commit. Same with unstable overwrites and `COMMIT`. | an append waiting on a metadata transaction, or an overwrite answered stable before its existence commit |
 | §9.1 loss verifier | Write unstable, then fail the sync window holding the writes; `COMMIT`. Assert the `COMMIT` succeeds with a verifier different from the writes', the client resends, and the data reads back. | a loss reported as a `COMMIT` error, or a `COMMIT` answered under the old verifier |
