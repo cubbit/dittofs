@@ -187,6 +187,7 @@ reply returned.
 against its name: `RPCSEC_GSS`, `gss_proc` `INIT`, `DESTROY` or `DATA`, the
 service of its mount's level (`none` for every `INIT`), and a context handle
 on every call but an `INIT`; and each reply's `RPCSEC_GSS` verifier.
-`ParseCall` reads a COMPOUND's tag and minor version from a `krb5i` or
-`krb5p` call's protected body, and refuses the two `krb5p` NFSv4 `write`
-calls there, so the test reads those calls' credentials by hand.
+A `krb5i` or `krb5p` data call's arguments are a protected body, so
+`ParseCall` reads no COMPOUND tag or minor version from them; `TestGSSCaptured`
+in `gss_test.go` decodes each credential, `INIT` token, integrity body and
+checksum, and privacy body to the fields `tshark` reads in them.
