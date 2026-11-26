@@ -1,12 +1,14 @@
 package enginetest
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"sync/atomic"
 
 	"github.com/cubbit/dittofs/pkg/engine"
 	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
 // wrapJournal returns j, handing each handle its Share returns to opened.
@@ -28,7 +30,26 @@ func (j *wrappedJournal) Share(tag journal.ShareTag, limit int64, floor journal.
 		return nil, err
 	}
 	j.opened(tag, h)
-	return h, nil
+	return wrappedHandle{h, j.crashed}, nil
+}
+
+type wrappedHandle struct {
+	engine.Handle
+	crashed *atomic.Bool
+}
+
+// Sync does nothing once crashed is set: a dead process syncs nothing, and the
+// store never sees what the dead engine commits after the crash. A sync that
+// reaches the crashed journal fails its records, which the journal remembers
+// for the life of this process, so the next open would drop the unsynced writes
+// the crash kept. An error here instead would hold the dead engine's close on
+// its last group commit up to the stop bound.
+func (h wrappedHandle) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
+	if h.crashed.Load() {
+		return nil, nil
+	}
+
+	return h.Handle.Sync(ctx, ids...)
 }
 
 // Close closes the journal. After a crash, the seam has closed every file the
