@@ -33,8 +33,9 @@ to T3.7's opener. Outside RFC 3's epics, RFC 8 offload plan epics 15 to 17 call 
 and `Prefetch`, and epic 16 opens and closes flows; RFC 8 offload plan epic 21's opener calls
 `syncertest.Run`, whose signature D12 changes.
 
-**Pending the user's answer:** D12, the idle wait (§9, first point), and the RFC 3 text §9
-proposes for S17, S18, S20, S22 and the "§2.9 no starvation" row.
+**Decided by the user, 2026-11-26:** D12, the idle wait, and D7's RFC 3 §2.9 text. This pull
+request amends the plan's D2 and D3 and epic 2's D5 and T2.3 to match D12. **Proposed since, from
+review:** the RFC 3 text §9 gives for S17, S18, S22 and the "§2.9 no starvation" row.
 
 ---
 
@@ -126,7 +127,7 @@ number and title, not copied.
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T3.7 | The in-memory store, the codec and E2's wrapper are real. What they cannot fail like is RFC 8 offload plan epic 21's run of the lifecycle rows over the S3 store. Nothing needs a disk: the syncer persists nothing |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T3.1, T3.2, T3.3, T3.4, T3.5 | RFC 3 §2.10's `decision:` note on its fixed values at the table T3.5 writes (D9). The `decision:` and `ponytail:` markers each decision in §4 names |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | Each §7.2 row names the wrong design it catches. Each is checked by building that design: a global arrival queue, a byte-charging scheduler, caps that bind for a lone flow or for a merely configured store, a shared waiter bound with no share, eviction off, no store level. The model is checked by planting one rule broken in `sched`, uncommitted, and watching the property test and the fuzz seeds fail |
-| rule 11, a symbol is exported only if the RFC's interface uses it | all | No symbol is added to `pkg/syncer` or `pool`. `syncertest`'s frozen list in E1's surface test changes only by D12's `Run` parameter, in T3.7 and only if the user accepts D12. `internal/sched` exports only what `pool` calls; its operation counter is unexported |
+| rule 11, a symbol is exported only if the RFC's interface uses it | all | No symbol is added to `pkg/syncer` or `pool`. `syncertest`'s frozen list in E1's surface test changes only by D12's `Run` parameter, in T3.7. `internal/sched` exports only what `pool` calls; its operation counter is unexported |
 | rule 12, each subtask creates only what it declares | all | Each fixed value lands with the subtask that reads it (D9). The per-store bound has no setter here: in E3 it is the cap, and E4 adds the throttle limit and its caller. Joins land in `sched`, its model and the pool with E6, their first caller. The admission step E5 extends and the waiter count E6 adds to are shapes E3's own rules already read (D10) |
 
 ## 3. Requirements and invariants
@@ -205,7 +206,7 @@ them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R38 | `Stats` makes observable, by half and store, `syncer_workers_busy`; `syncer_queue_depth` and `syncer_waiters` by class, per flow and summed; `syncer_queue_wait_seconds` by class; and `syncer_refused_total` with `reason` `queue_full`, `waiters_full`, `displaced`, `evicted` and `closed`. `syncer_workers` is E1's, `unhealthy` E5's, the joined callers in `syncer_waiters` E6's, `syncer_inflight_bytes` E7's | MUST | §2.12 | T3.5 |
+| R38 | `Stats` makes observable, by half and store, `syncer_workers_busy`; `syncer_queue_depth` and `syncer_waiters` by class, per flow and summed; `syncer_queue_wait_seconds` by class; and `syncer_refused_total` with `reason` `queue_full`, `waiters_full`, `displaced`, `evicted` and `closed`, and no class label (the user's decision, 2026-11-26). `syncer_workers` is E1's, `unhealthy` E5's, the joined callers in `syncer_waiters` E6's, `syncer_inflight_bytes` E7's | MUST | §2.12 | T3.5 |
 | R39 | Reading the counters takes no lock a dispatch needs, and costs nothing per transfer in flight. E3's counters are kept so; the consistent snapshot across them is E7's | MUST NOT | §2.12 | T3.5 |
 
 RFC 3 §1.3's other obligations belong to E4 (`Upload`'s tries, the error table), E5
@@ -313,8 +314,10 @@ already state with their two exceptions.
     the lowest class first (speculation, then background, then demand), the youngest within that.
   - A call under its share for which no such flow holds a displaceable entry (each holds only
     waiters of a higher class or, from E6, joined callers) is refused as `waiters_full`. RFC 3
-    S20 does not allow for that case; the model's S20 check exempts it by name, and §9 proposes
-    the RFC text.
+    S20 does not allow for that case; the model's S20 check exempts it by name. The user accepted
+    the RFC 3 text for it (2026-11-26): §2.9 gains "If no other flow at or above its share holds
+    a queued transfer of the call's class or a lower one, the call is refused.", and S20's second
+    clause "unless no waiter can be displaced". It lands with T3.4's pull request.
 
   `ponytail:` the scan is O(flows holding waiters), at most eight times the pool, and runs only at
   a full bound, never on dispatch; upgrade to buckets by waiter count per class when a profile of
@@ -350,7 +353,8 @@ already state with their two exceptions.
   `atomic.Pointer`, which `Stats` loads with no lock at all. A refusal of a call naming no
   registered store is not counted (E1's D3). No marker. Prior art:
   the journal's `Stats`, read by the node (`journalSeries`, `internal/node/stats.go`).
-- **D12, the opener runs each row in a `testing/synctest` bubble. Pending the user's answer.**
+- **D12, the opener runs each row in a `testing/synctest` bubble. The user's decision,
+  2026-11-26.**
   RFC 3 §1.4 lets virtual time advance only when every task is blocked, and E2's D5 leaves the
   in-memory opener to do it.
   - Each check of `pool`, and each row over the in-memory opener, runs inside
@@ -374,28 +378,26 @@ already state with their two exceptions.
     time and catches the probe-loop case.
   - `syncertest.Run` gains one parameter, how to run a row: the in-memory caller passes
     `synctest.Test`, RFC 8 offload plan epic 21 a plain call over the S3 store, which a bubble
-    cannot hold. That is a change to E2's frame, which merged with `Run(t, Opener)` (#5881), so
-    it needs a follow-up planning PR if the user accepts D12 (§9).
+    cannot hold. That changes E2's frame, which merged with `Run(t, Opener)` (#5881): this pull
+    request amends epic 2's D5 and T2.3 and the plan's D2 and D3, and T3.7 changes `Run` and
+    `syncertest`'s frozen list.
 
   The test clock adapter lives in `export_test.go`; production keeps E1's real-clock ban. The plan's
   D3 chose `pkg/sim`'s `TestClock` and rejected `synctest` because "its bubble cannot share
   `pkg/sim`'s clock with the other components"; that holds for the composed node, not for a
   syncer row over the in-memory store, which composes nothing else. Prior art: the repository's
-  `internal/adapter/core`, whose tests use `synctest` on `feat/storage-v2`. Not chosen, and the
-  fallback if the user declines: the `TestClock` with an idle wait counting the pool's parked
-  goroutines and a parked count on the wrapper. The reviews found three holes it must close: a
-  wait woken by its context counts as parked until the pool records every wait with its context;
-  a goroutine started but not yet inside the syncer is invisible unless `Env` starts the calls;
-  a goroutine blocked outside both counts spins `Wait` without a real-time backstop. Closing them
-  costs about 2 man-days more in T3.5 and T3.7, a `TestClock.Next` in `pkg/sim` and a `Parked`
-  on RFC 4's wrapper. No marker.
+  `internal/adapter/core`, whose tests use `synctest` on `feat/storage-v2`. Not chosen: the
+  `TestClock` with an idle wait counting the pool's parked goroutines and a parked count on the
+  wrapper, which had three holes to close (a wait woken by its context, a goroutine not yet
+  inside the syncer, a goroutine blocked outside both counts) at about 2 man-days more. No
+  marker.
 
 ## 5. Target tree
 
 ```text
 pkg/syncer/
   imports_test.go          T3.1  internal/sched's allowlist (standard library only); pool's gains it
-  surface_test.go          T3.7  syncertest's frozen Run gains its row runner, if D12 is accepted
+  surface_test.go          T3.7  syncertest's frozen Run gains its row runner (D12)
   pool/
     internal/sched/              the scheduler, a pure package
       sched.go             T3.1  Sched, Config, StoreKey, FlowKey, Class, Reason, Entry; the active
@@ -693,10 +695,10 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
 - **Deliverables:**
   - `opener_test.go`: a `syncertest.Opener` building `pool.New` over RFC 4's in-memory store under
     E2's wrapper, with `codec.Store` over it, filling every `Faults` field the wrapper can give,
-    `Drop` left nil (E2's §9); `Wait` as `<-done`; `syncertest.Run(t, opener, synctest.Test)` in
+    `Drop` left nil (E2's §9); `Wait` as D12 says; `syncertest.Run(t, opener, synctest.Test)` in
     `unit` (D12). "§1.3 unregister"'s flows and counters half through `Register`.
   - `syncertest/suite.go`: `Run`'s row-runner parameter (D12), a change to E2's frame, and its
-    entry in `syncertest`'s frozen list in `surface_test.go`, if the user accepts D12.
+    entry in `syncertest`'s frozen list in `surface_test.go`.
   - `syncertest/lifecycle.go`: the "§1.3 lifecycle" rows (a call on a closed flow and after `Close`
     fails; `Close` returns only once transfers have ended; `src` is never called after `Upload`
     returns), with `Flow.Close` while transfers are queued and running, so RFC 8 offload plan epic
@@ -737,7 +739,7 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
   clause, checked at each dispatch rather than after an arrival, per class, with a store's first
   worker exempt from the fair share (R26, R28); S18 and S22 with a round counted per level, and a
   flow in debt exempt until its debt is paid (R22, R23); S20 with D7's refused case named. §9
-  proposes the RFC text for each reading. `fuzz_test.go`'s `FuzzSched` over the same steps, its seeds committed. Its command
+  proposes the RFC text for S17, S18 and S22; S20's was accepted (D7). `fuzz_test.go`'s `FuzzSched` over the same steps, its seeds committed. Its command
   in the `fuzz` suite in `test/suites.yaml` and a line in RFC 3's suites paragraph. Consumed by
   every later change to `sched`, E4's bound and E6's joins among them.
 - **Acceptance criteria:**
@@ -847,26 +849,10 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **Decision needed: D12, a `testing/synctest` bubble per row, pending the user's answer.** It
-  departs from the plan's D3, which chose `pkg/sim`'s `TestClock`, and changes E2's frame:
-  `syncertest.Run` gains a row-runner parameter, and E2's D5 parenthetical naming
-  `TestClock.Pending` as what counts a linked worker blocked no longer applies. The bubble sees
-  channel and timer waits, not a mutex wait or a channel made outside it, and its deadlock panic
-  needs a child process to be checked (D12 states the rules that follow). E2 merged (#5881) with
-  `Run(t, Opener)` frozen in `syncertest`'s list, which RFC 8 offload plan epic 21 consumes. If the
-  user agrees, a follow-up planning PR amends epic 2 (T2.3's `Run` and D5), the plan's D2 and D3,
-  and the frozen list, and T3.7 changes `Run`; if not, D12's fallback is built, at about 2
-  man-days more, and E2's D5 parenthetical still changes, since `Pending` counts deadlines nobody
-  waits on.
-- **RFC 3 S20 does not allow for an undisplaceable bound** (D7). A call under its share, at a full
-  bound where every flow at or above its share holds only waiters of a higher class or joined
-  callers, can only be refused. Victims never come from the caller's flow or a below-share flow,
-  so S20's first clause holds. Proposed RFC 3 §2.9 text, for the user to accept: "If no other flow
-  at or above its share holds a queued transfer of the call's class or a lower one, the call is
-  refused." S20's second clause would gain "unless no waiter can be displaced".
 - **RFC 3 S17, S18 and S22 read narrower here than they are written** (R15, R22, R23, R26, R28),
   each because the literal text is false in a reachable state of the design §2.9 itself states.
-  Proposed RFC 3 text, for the user to accept:
+  Proposed RFC 3 text, raised in review after the user's rulings of 2026-11-26, to be confirmed
+  in T3.8's pull request, with which it lands:
   - S17: "No dispatch gives a store more workers of a half than its cap while another store has
     work waiting in the class being served, nor more than its throttle limit; …; and no store
     holding a worker gets another beyond its fair share while another store with work waiting in
