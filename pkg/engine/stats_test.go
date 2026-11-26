@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/workqueue"
 )
 
 // shareCondition is the condition named name that Stats reports for share s
@@ -434,4 +436,166 @@ func TestStatsClearsRemovalStalledOnDrop(t *testing.T) {
 		_, ok := shareCondition(u.e.Stats(), u.share.ID, "removal_stalled", f)
 		return !ok
 	})
+}
+
+// errorType is the one interface a returned value may hold.
+var errorType = reflect.TypeFor[error]()
+
+// valuePointees are the types a returned value may point to: snapshots the
+// caller owns, never a component.
+var valuePointees = []reflect.Type{
+	reflect.TypeFor[journal.Stats](),
+	reflect.TypeFor[journal.SyncFailure](),
+}
+
+// componentFields reports every place in t, reached through struct fields,
+// pointers, map keys and values, and slice and array elements, that could hand
+// the caller a component: an interface but error, a func or a channel
+// anywhere, and a pointer to any type but a snapshot's, the engine's own
+// included, since a component's struct shows no exported field. A value type
+// is walked, whatever its package; a struct's unexported fields are its own
+// implementation and are not walked, but an embedded one is, since Go
+// promotes its exported fields. seen holds the types on the path being
+// walked, so a recursive type ends and a type met in two fields is walked,
+// and refused, at each.
+func componentFields(t reflect.Type, path string, seen map[reflect.Type]bool) []string {
+	if seen[t] {
+		return nil
+	}
+
+	seen[t] = true
+	defer delete(seen, t)
+
+	switch t.Kind() {
+	case reflect.Interface:
+		if t != errorType {
+			return []string{path + ": interface " + t.String()}
+		}
+	case reflect.Func, reflect.Chan, reflect.UnsafePointer:
+		return []string{path + ": " + t.Kind().String() + " " + t.String()}
+	case reflect.Pointer:
+		if !slices.Contains(valuePointees, t.Elem()) {
+			return []string{path + ": pointer to " + t.Elem().String()}
+		}
+
+		return componentFields(t.Elem(), path+".*", seen)
+	case reflect.Map:
+		return append(componentFields(t.Key(), path+"[key]", seen), componentFields(t.Elem(), path+"[]", seen)...)
+	case reflect.Slice, reflect.Array:
+		return componentFields(t.Elem(), path+"[]", seen)
+	case reflect.Struct:
+		var out []string
+
+		for f := range t.Fields() {
+			if f.IsExported() || f.Anonymous {
+				out = append(out, componentFields(f.Type, path+"."+f.Name, seen)...)
+			}
+		}
+
+		return out
+	}
+
+	return nil
+}
+
+// Share, Stats and their parts hold values and identifiers, never a flow, a
+// store, a scheduler or a journal (RFC 8 §12.1), so nothing the node reads
+// or hands in reaches a component through them.
+func TestStatsAndShareHoldNoComponent(t *testing.T) {
+	for _, typ := range []reflect.Type{
+		reflect.TypeFor[engine.Share](),
+		reflect.TypeFor[engine.Stats](),
+		reflect.TypeFor[engine.ShareStats](),
+		reflect.TypeFor[engine.JournalStats](),
+	} {
+		for _, bad := range componentFields(typ, typ.Name(), map[reflect.Type]bool{}) {
+			t.Errorf("%s could hand the caller a component", bad)
+		}
+	}
+}
+
+// The walk refuses each way a component could be returned: a scheduler, the
+// engine, a journal, a func and a channel, at a field, behind a map and in a
+// slice, and names the field it refused.
+func TestComponentFieldsRefusesAComponent(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		fields []string
+		typ    reflect.Type
+	}{
+		{"a scheduler", []string{"x.S"}, reflect.TypeFor[struct{ S *workqueue.Scheduler }]()},
+		{"the engine", []string{"x.E"}, reflect.TypeFor[struct{ E *engine.Engine }]()},
+		{"a journal", []string{"x.J"}, reflect.TypeFor[struct{ J engine.Journal }]()},
+		{"a func", []string{"x.F"}, reflect.TypeFor[struct{ F func() }]()},
+		{"a channel in a map", []string{"x.M[]"}, reflect.TypeFor[struct{ M map[string]chan int }]()},
+		{"a scheduler in a slice", []string{"x.S[]"}, reflect.TypeFor[struct{ S []*workqueue.Scheduler }]()},
+		{"a scheduler as a map key", []string{"x.M[key]"}, reflect.TypeFor[struct{ M map[*workqueue.Scheduler]int }]()},
+		{"a scheduler promoted from an unexported embedded struct", []string{"x.offloadFigures.Sched"}, reflect.TypeFor[struct{ offloadFigures }]()},
+		{"a scheduler in two fields", []string{"x.A", "x.B"}, reflect.TypeFor[struct{ A, B *workqueue.Scheduler }]()},
+		{"one struct holding a scheduler, in two fields", []string{"x.A.Sched", "x.B.Sched"}, reflect.TypeFor[struct{ A, B offloadFigures }]()},
+	} {
+		got := componentFields(c.typ, "x", map[reflect.Type]bool{})
+		ok := len(got) == len(c.fields)
+		for i := 0; ok && i < len(got); i++ {
+			ok = strings.HasPrefix(got[i], c.fields[i]+":")
+		}
+		if !ok {
+			t.Errorf("the walk over %s reported %q, want one refusal at each of %q", c.name, got, c.fields)
+		}
+	}
+}
+
+// offloadFigures is an unexported struct holding a component, for the walk to
+// find through an embedding that promotes its field.
+type offloadFigures struct{ Sched *workqueue.Scheduler }
+
+// frozenStatsFields is every offload field of Stats and its parts, with its
+// type: the readers of each, the node's adapter and the red rows, compile
+// against them before offload fills them.
+var frozenStatsFields = map[reflect.Type][]string{
+	reflect.TypeFor[engine.ShareStats](): {
+		"DirtyBytes int64", "DrainBytesPerSecond float64", "DrainTime time.Duration",
+		"OldestUnoffloaded time.Duration", "RemovalsPending int64", "OldestRemoval time.Duration",
+	},
+	reflect.TypeFor[engine.Stats](): {
+		"DirtyBytes int64", "DrainBytesPerSecond float64", "DrainTime time.Duration",
+		"OldestUnoffloaded time.Duration", "RemovalsPending int64", "OldestRemoval time.Duration",
+		"OffloadPasses map[string]int64", "PipelineStateSeconds map[string]engine.Series",
+		"PipelineRetries map[string]int64", "AttemptsAbandoned int64", "IntentsAbandoned int64",
+		"FailingFiles int64", "PassesAborted int64", "IntentMissing int64",
+		"StageBusy map[string]float64", "Fetches map[string]int64", "FetchBytes int64",
+		"Fills map[string]int64", "SpeculationBytes int64", "SpeculationUsedBytes int64",
+		"Reresolves int64", "EvictedBytes int64", "PacingSeconds engine.Series",
+		"LedgerMismatches int64", "ShareTableLockWaits engine.Series", "WorkQueueLockWaits engine.Series",
+	},
+	reflect.TypeFor[engine.JournalStats](): {
+		"Work map[string]map[entity.ShardID]workqueue.Stats", "WorkLimits map[string]workqueue.Limits",
+		"QueueEvents map[string]int64", "ReseedFilesRemaining int64",
+	},
+}
+
+// Each offload field of Stats and its parts, and WaitOffloaded's signature,
+// is as frozen: one renamed, dropped or retyped fails here.
+func TestOffloadStatsSurfaceIsFrozen(t *testing.T) {
+	for typ, fields := range frozenStatsFields {
+		for _, want := range fields {
+			name, _, _ := strings.Cut(want, " ")
+
+			f, ok := typ.FieldByName(name)
+			if !ok {
+				t.Errorf("%s has no field %s, want %q", typ, name, want)
+
+				continue
+			}
+
+			if got := f.Name + " " + f.Type.String(); got != want {
+				t.Errorf("%s field %q, want %q", typ, got, want)
+			}
+		}
+	}
+
+	const wait = "func(*engine.Engine, context.Context) error"
+	if got := reflect.TypeOf((*engine.Engine).WaitOffloaded).String(); got != wait {
+		t.Errorf("WaitOffloaded is %s, want %s", got, wait)
+	}
 }

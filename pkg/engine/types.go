@@ -87,6 +87,67 @@ type Stats struct {
 	// RemovalRuns is engine_removal_runs_total by its result label, over
 	// every journal.
 	RemovalRuns map[string]int64
+
+	// The offload figures, every one zero or nil until offload records it.
+	// DirtyBytes is engine_dirty_bytes and DrainBytesPerSecond
+	// engine_drain_bytes_per_second, each summed over the shares; DrainTime
+	// is engine_drain_seconds, the node's dirty bytes at its drain rate, not
+	// a sum of the shares' times, as they drain at once. DrainTime is zero
+	// only with no dirty bytes; dirty bytes at a zero rate, an idle drain or
+	// a remote that takes nothing, are the largest time.Duration, so a
+	// stalled offload never reads as drained. OldestUnoffloaded is
+	// engine_unoffloaded_oldest_seconds, the largest of the shares'.
+	DirtyBytes          int64
+	DrainBytesPerSecond float64
+	DrainTime           time.Duration
+	OldestUnoffloaded   time.Duration
+	// RemovalsPending is engine_removals_pending summed over the shares, and
+	// OldestRemoval engine_removals_oldest_seconds, the largest of the
+	// shares'.
+	RemovalsPending int64
+	OldestRemoval   time.Duration
+	// OffloadPasses is engine_offload_passes_total by its result label.
+	OffloadPasses map[string]int64
+	// PipelineStateSeconds is engine_pipeline_state_seconds, and
+	// PipelineRetries engine_pipeline_retries_total, by their state label.
+	PipelineStateSeconds map[string]Series
+	PipelineRetries      map[string]int64
+	// AttemptsAbandoned is engine_attempts_abandoned_total, and
+	// IntentsAbandoned engine_intents_abandoned_total.
+	AttemptsAbandoned int64
+	IntentsAbandoned  int64
+	// FailingFiles is engine_failing_files: the files backed off as failing.
+	FailingFiles int64
+	// PassesAborted is engine_passes_aborted_total, and IntentMissing
+	// engine_intent_missing_total.
+	PassesAborted int64
+	IntentMissing int64
+	// StageBusy is engine_stage_busy_ratio by its stage: carve, assemble,
+	// put or commit.
+	StageBusy map[string]float64
+	// Fetches is engine_fetches_total by its shape label, and FetchBytes
+	// engine_fetch_bytes_total.
+	Fetches    map[string]int64
+	FetchBytes int64
+	// Fills is engine_fills_total by its result label.
+	Fills map[string]int64
+	// SpeculationBytes is engine_speculation_bytes_total, and
+	// SpeculationUsedBytes engine_speculation_used_bytes_total.
+	SpeculationBytes     int64
+	SpeculationUsedBytes int64
+	// Reresolves is engine_reresolves_total.
+	Reresolves int64
+	// EvictedBytes is engine_evicted_bytes_total, and PacingSeconds
+	// engine_pacing_seconds.
+	EvictedBytes  int64
+	PacingSeconds Series
+	// LedgerMismatches is engine_ledger_mismatches_total.
+	LedgerMismatches int64
+	// ShareTableLockWaits is engine_lock_wait_seconds{area="share_table"}, and
+	// WorkQueueLockWaits engine_lock_wait_seconds{area="work_queue"}, beside
+	// FileStateLockWaits.
+	ShareTableLockWaits Series
+	WorkQueueLockWaits  Series
 }
 
 // Series is a duration series as a count and a sum.

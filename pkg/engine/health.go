@@ -2,9 +2,11 @@ package engine
 
 import (
 	"cmp"
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/health"
 	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/workqueue"
 )
 
 // conditionJournalLost is RFC 25 §3.9's condition for a journal found
@@ -92,6 +95,28 @@ type JournalStats struct {
 	// every per-share figure.
 	TagShares  map[journal.ShareTag]entity.ShareID
 	Conditions []Condition
+	// Work is the journal's work scheduler's figures, keyed by each source's
+	// name as the engine registers it (offload, and removal, which runs
+	// removal batches and prunes), and then by shard: engine_queue_entries
+	// (Pending, Backoff and Running, by state),
+	// engine_queue_oldest_pending_seconds,
+	// engine_queue_last_done_timestamp_seconds, engine_work_runs_inflight
+	// (Running), engine_work_runs_overdue_total (Overdue),
+	// engine_work_items_dropped_total (Dropped) and
+	// engine_work_items_expired_total (Expired). The three counters keep the
+	// scheduler's own types. Overdue is an int beside its gauges, but RFC 8
+	// §14 makes engine_work_runs_overdue_total a counter, so Overdue counts
+	// every run that has passed twice its run timeout and never falls;
+	// Dropped and Expired are uint64. The node adapter converts each to its
+	// counter. WorkLimits is the limits each source registered: their
+	// Total is engine_queue_entries_limit and their Concurrency
+	// engine_work_runs_inflight_limit.
+	Work       map[string]map[entity.ShardID]workqueue.Stats
+	WorkLimits map[string]workqueue.Limits
+	// QueueEvents is engine_queue_events_total by its event label.
+	QueueEvents map[string]int64
+	// ReseedFilesRemaining is engine_reseed_files_remaining.
+	ReseedFilesRemaining int64
 }
 
 // NodeStats is this node, as Stats reports it.
@@ -105,6 +130,25 @@ type ShareStats struct {
 	Device     string
 	Refused    error
 	Conditions []Condition
+	// The share's offload figures, zero until offload records them:
+	// DirtyBytes is engine_dirty_bytes, DrainBytesPerSecond
+	// engine_drain_bytes_per_second, DrainTime engine_drain_seconds,
+	// OldestUnoffloaded engine_unoffloaded_oldest_seconds, RemovalsPending
+	// engine_removals_pending and OldestRemoval
+	// engine_removals_oldest_seconds. DrainTime at a zero rate is as Stats's.
+	DirtyBytes          int64
+	DrainBytesPerSecond float64
+	DrainTime           time.Duration
+	OldestUnoffloaded   time.Duration
+	RemovalsPending     int64
+	OldestRemoval       time.Duration
+}
+
+// WaitOffloaded returns once every byte written to the node before the call
+// is offloaded; at ctx's end, an error naming the oldest file left and why
+// (RFC 8 §11.4). Offload is not built, so it answers unbuilt.
+func (e *Engine) WaitOffloaded(ctx context.Context) error {
+	return errUnbuilt
 }
 
 // newStats is an empty Stats, its maps made.
@@ -116,15 +160,23 @@ func newStats() Stats {
 }
 
 // clone is a copy of s that shares no map or slice with it, so a caller
-// keeps what Stats returns. Only recover's refusal shape writes a
-// JournalStats into health — a snapshot of nil, a nil TagShares — so the
-// journals carry nothing to clone here: Stats fills a fresh entry from the
-// live values it reads, wholesale, after this copy.
+// keeps what Stats returns. Each journal's maps are copied, the nested Work
+// maps included, so a caller's edit never reaches the engine's record.
 func (s Stats) clone() Stats {
 	out := newStats()
 
 	for dev, j := range s.Journals {
 		j.Conditions = slices.Clone(j.Conditions)
+		j.TagShares = maps.Clone(j.TagShares)
+		j.WorkLimits = maps.Clone(j.WorkLimits)
+		j.QueueEvents = maps.Clone(j.QueueEvents)
+		if j.Work != nil {
+			work := make(map[string]map[entity.ShardID]workqueue.Stats, len(j.Work))
+			for src, shards := range j.Work {
+				work[src] = maps.Clone(shards)
+			}
+			j.Work = work
+		}
 		out.Journals[dev] = j
 	}
 
