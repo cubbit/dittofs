@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -17,8 +18,9 @@ import (
 
 // Register makes a transform available for configuration, by name, and for
 // decoding, by ID (RFC 5 §2.5, §3.1). It is called at init; a duplicate ID
-// panics, since an ID is assigned once and never reused (RFC 5 §4). Until the
-// registry is built it records nothing.
+// panics, since an ID is assigned once and never reused (RFC 5 §4), and so does
+// a duplicate name, since a configuration names its transform by name. Until
+// the registry is built it records nothing.
 func Register(id transform.ID, name string, f transform.Factory) {}
 
 // NewChain builds the configured transforms, each through its registered
@@ -26,9 +28,11 @@ func Register(id transform.ID, name string, f transform.Factory) {}
 // §2.5). It refuses, rather than building a chain without it (RFC 5 §2.7): an
 // unregistered name, in cfg or in deps.Require; a factory's failure; a
 // duplicate, two transforms of one stage, or a list out of stage order
-// (RFC 5 §2.3); and an encrypt stage beside a compress stage whose settings do
-// not carry with_encryption: accept (RFC 5 §3.2). Until the chain is built it
-// refuses every configuration with errors.ErrUnsupported.
+// (RFC 5 §2.3); a transform, configured or registered, whose Stage is not one
+// of StageCompress, StageEncrypt and StageRedundancy; and an encrypt stage
+// beside a compress stage whose settings do not carry with_encryption: accept
+// (RFC 5 §3.2). Until the chain is built it refuses every configuration with
+// errors.ErrUnsupported.
 func NewChain(ctx context.Context, cfg []transform.Config, m keys.Provider, deps Deps) (transform.Chain, error) {
 	return nil, errors.ErrUnsupported
 }
@@ -40,7 +44,7 @@ type Deps struct {
 	// and the reason (RFC 5 §6). A transform logs nothing per chunk.
 	Logger *slog.Logger
 
-	// Recorder receives RFC 5 §6's per-transform series, which the chain
+	// Recorder resolves RFC 5 §6's per-transform series, which the chain
 	// records around each transform's call.
 	Recorder Recorder
 
@@ -57,21 +61,57 @@ type Deps struct {
 	Encrypts func(ns entity.NamespaceID) bool
 }
 
-// Recorder records RFC 5 §6's series, one call per moment the chain observes.
-// name is the transform's registered name, the series' label. The
-// content wiring implements it over the node's metrics.
+// Recorder resolves RFC 5 §6's series for one transform, labelled by its
+// registered name. NewChain calls For once for every transform it builds, so a
+// chunk's recording is an add on a series resolved at build, with no label
+// lookup and no allocation (RFC 25 §2.9). The content wiring implements it over
+// the node's metrics.
 type Recorder interface {
-	// Encoded records one transform's encode of one chunk:
-	// transform_chunks_total by applied, and transform_bytes_total and
-	// transform_seconds with direction encode.
-	Encoded(name string, applied bool, in, out int, took time.Duration)
+	For(name string) TransformRecorder
+}
 
-	// Decoded records one transform's successful decode of one body:
+// TransformRecorder records one transform's series, one call per moment the
+// chain observes.
+type TransformRecorder interface {
+	// Encoded records one encode of one chunk: transform_chunks_total by
+	// applied, and transform_bytes_total and transform_seconds with direction
+	// encode.
+	Encoded(applied bool, in, out int, took time.Duration)
+
+	// Decoded records one successful decode of one body:
 	// transform_bytes_total and transform_seconds with direction decode.
-	Decoded(name string, in, out int, took time.Duration)
+	Decoded(in, out int, took time.Duration)
 
-	// DecodeFailed records one transform_decode_failures_total. reason is its
-	// error label, one of malformed, material_unavailable, material_unknown,
-	// material_destroyed or too_large.
-	DecodeFailed(name, reason string)
+	// DecodeFailed records one transform_decode_failures_total under reason's
+	// error label.
+	DecodeFailed(reason FailureReason)
+}
+
+// FailureReason is a decode failure's error label (RFC 5 §6). It is a small
+// integer rather than the label itself, so a TransformRecorder resolves one
+// series per reason in For and indexes it per call.
+type FailureReason uint8
+
+const (
+	ReasonMalformed FailureReason = iota
+	ReasonMaterialUnavailable
+	ReasonUnknownMaterial
+	ReasonMaterialDestroyed
+	ReasonTooLarge
+)
+
+var reasonLabels = [...]string{
+	ReasonMalformed:           "malformed",
+	ReasonMaterialUnavailable: "material_unavailable",
+	ReasonUnknownMaterial:     "unknown_material",
+	ReasonMaterialDestroyed:   "material_destroyed",
+	ReasonTooLarge:            "too_large",
+}
+
+// String is the reason's error label, as RFC 5 §6 spells it.
+func (r FailureReason) String() string {
+	if int(r) < len(reasonLabels) {
+		return reasonLabels[r]
+	}
+	return "FailureReason(" + strconv.Itoa(int(r)) + ")"
 }

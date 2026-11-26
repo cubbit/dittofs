@@ -51,7 +51,9 @@ type Transform interface {
 
 	// MaxEncodedLen is the largest body Encode can produce from n bytes under
 	// material m, the pinned material of this transform's kinds. A nil m asks
-	// for the bound under any material, which Chain.MaxDecodeLen uses.
+	// for the bound under any material and every setting the transform
+	// accepts, since a decoder is built with default settings but meets bodies
+	// any configuration wrote; Chain.MaxDecodeLen uses it (RFC 5 §3.1).
 	MaxEncodedLen(n int, m []keys.MaterialID) int
 
 	// LengthOf is the exact body length for n bytes under material m, and
@@ -123,9 +125,9 @@ type Chain interface {
 	Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, hash [32]byte, body []byte, max int, census []Encoded) ([]byte, error)
 
 	// MaxDecodeLen is the largest body any registered transforms could have
-	// written from n bytes under any material, one per stage, plus the
-	// envelope, answered from the chain's registry. It sizes reads, and the put
-	// side's buffers (RFC 5 §3.1).
+	// written from n bytes under any material and settings, one per stage,
+	// plus the envelope, answered from the chain's registry. It sizes reads,
+	// and the put side's buffers (RFC 5 §3.1).
 	MaxDecodeLen(n int) int
 }
 

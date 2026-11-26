@@ -3,6 +3,7 @@ package chain_test
 import (
 	"context"
 	"log/slog"
+	"testing"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/transform"
@@ -22,3 +23,22 @@ var (
 		Encrypts: func(entity.NamespaceID) bool { return false },
 	}
 )
+
+// An alert rule is written from RFC 5 §6's labels, so each reason must carry
+// exactly the label the RFC spells.
+func TestFailureReasonLabels(t *testing.T) {
+	for _, tc := range []struct {
+		reason chain.FailureReason
+		want   string
+	}{
+		{chain.ReasonMalformed, "malformed"},
+		{chain.ReasonMaterialUnavailable, "material_unavailable"},
+		{chain.ReasonUnknownMaterial, "unknown_material"},
+		{chain.ReasonMaterialDestroyed, "material_destroyed"},
+		{chain.ReasonTooLarge, "too_large"},
+	} {
+		if got := tc.reason.String(); got != tc.want {
+			t.Errorf("FailureReason(%d).String() = %q, want %q", tc.reason, got, tc.want)
+		}
+	}
+}
