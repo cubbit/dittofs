@@ -243,3 +243,8 @@ metadataStore.CheckPermissions(authCtx, handle, requested)
 Follow [`pr-commenting.instructions.md`](pr-commenting.instructions.md) for what to check, the
 review body, the comments and the replies, and [`REVIEW.md`](../../REVIEW.md) for what may block a
 merge and what a later round reviews.
+
+What may block, in short (`REVIEW.md` §2): only a point tagged `issue (blocking)` that quotes a
+contradiction with an RFC, a plan, `CLAUDE.md` or a protocol spec, or that names a break (lost data,
+a crash, a security hole, a race, a red test, a compatibility break, a wrong result on a named path).
+Every WRONG list in this file is a checklist: a hit that is neither of those is a suggestion.

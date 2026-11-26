@@ -54,7 +54,8 @@ these two, *with the evidence quoted*:
    A security hole, or a way to take a node down or exhaust its resources,
    names only its class in a public thread. Its path and evidence go to a
    maintainer privately, as `docs/guide/security.md` asks, never into a public
-   issue. It still blocks.
+   issue. It still blocks: it blocks on a maintainer's private confirmation
+   instead of on quoted evidence. A maintainer is a repository admin.
 
 Only `issue (blocking)` blocks. Other tags in use, such as `must:`,
 `should:` or `[important]`, do not. A reviewer who means to block uses
