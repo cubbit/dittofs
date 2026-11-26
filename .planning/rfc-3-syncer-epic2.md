@@ -103,9 +103,9 @@ number and title, not copied.
 | rule 6, known failures shrink | none | No suite this epic's tests run in keeps a `known.yaml`: every test lands green |
 | rule 7, v2 ignores v1 | T2.3 | `syncertest` joins E1's import test with its own allowlist: `pkg/syncer`, `pkg/remote` and `internal/prof` (D5). The wrapper lives in RFC 4's package and follows that plan's import test |
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T2.1, T2.2 | The wrapper wraps the real in-memory store, and `remotetest` holds it to RFC 4's contract. What the in-memory store cannot fail like is RFC 8 offload plan epic 21's run of the suite over the S3 store |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T2.1, T2.2 | A `decision:` marker where a tear, a loss or a flip on the wrong operation panics (D1), and one at the timing that runs inside the store's call (D2) |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T2.1, T2.2 | A `decision:` marker where `Inject` panics on an effect named for an operation it cannot apply to (D1), and one at the timing that runs inside the store's call (D2) |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | Each fault's test is checked by disabling that fault and watching the assertion fail; the frame's skip test by making a missing fault pass |
-| rule 11, a symbol is exported only if the RFC's interface uses it | T2.3 | `syncertest` exports only the suite: `Run`, `Opener`, `Env`, `Put`, `Mode` and `Faults` (D4). Its rows are unexported. E1's frozen-exports test gains its list |
+| rule 11, a symbol is exported only if the RFC's interface uses it | T2.3 | `syncertest` exports only the suite: `Run`, `Opener`, `Env`, `Put`, `Mode`, `Faults` and `End` (D4). Its rows are unexported. E1's frozen-exports test gains its list |
 | rule 12, each subtask creates only what it declares | all | Each fault names the row that first uses it (§6). The frame lands before its rows because three epics on two tracks and RFC 8 offload plan epic 21 write against it (D4). The log handler and the heap measurement are not built (D6) |
 
 ## 3. Requirements and invariants
@@ -157,9 +157,13 @@ which E3 to E7 write over T2.2's `Link`, and a lifetime count as the source of h
   wrapper gains `Inject(Rule, Effect) (remove func())`. A `Rule` selects calls by operation,
   probe direction, block name, and the *n*th to the (*n*+*k*−1)th matching call counted from the
   injection (R8). An `Effect` is one of six sealed constructors: `Fail`, `Lose`, `Cut`, `Flip`,
-  `Hold` and `Link`. `Lose` on anything but a put, and `Flip` on anything but a get, panic naming
-  the operation, because that is a mistake in the test, not a fault the code under test should
-  see. `From` and `Count` count matching calls as `pkg/sim`'s `Rule` does. Prior art: RFC 4's
+  `Hold` and `Link`. Each effect applies to some operations only: `Fail` to every call; `Lose`
+  and `Hold` at `End` to a put; `Flip` to a get; `Cut`, `Link` and `Hold` at a byte to a put or a
+  get; `Hold` at 0 also to a probe, which it holds before the store's call (D2). `Inject` panics,
+  naming the effect and the operation, when the rule's `Op` names one the effect cannot apply to,
+  because that is a mistake in the test, not a fault the code under test should see; a rule with
+  `Op: ""` matches only the operations its effect applies to. `From` and `Count` count matching
+  calls as `pkg/sim`'s `Rule` does. Prior art: RFC 4's
   `s3fault`, whose effects are injected the same way (`Inject(Rule, Effect)`, D2 of
   `rfc-4-remote-tier-epic3.md`), although its errors, delays and tears come from a `sim.Fault`
   (its D1) and its `Rule` selects by key prefix and a count from the next request;
@@ -183,8 +187,8 @@ which E3 to E7 write over T2.2's `Link`, and a lifetime count as the source of h
 - **D3, each effect carries what it waits on.** `Link` takes its clock and `Hold` a release
   channel, so the wrapper's constructor, which is the RFC 4 plan's, keeps its signature. The
   clock is a one-method `Waiter` the wrapper declares, `After(d) <-chan struct{}`: `pkg/sim`'s
-  `Waiter`, redeclared because RFC 4's package imports no `pkg/sim`; the package's `Clock` is the
-  store's `Now` (the RFC 4 plan's epic 2, its D4). `TestClock`
+  `Waiter`, redeclared because RFC 4's package imports no `pkg/sim`. The package declares no
+  `Clock`: the store takes a `now func() time.Time` (the RFC 4 plan's epic 2, its D4). `TestClock`
   satisfies it; E9's benchmarks pass the real clock. A test learns that *n* calls are held from
   the in-memory store's record of calls in flight (D2), the condition itself, so no gate type is
   added beside it. Not chosen: a `Gate` with a `Reached(n)` event, which duplicates that record.
@@ -273,11 +277,13 @@ pkg/syncer/surface_test.go    T2.3  syncertest's frozen exports
   ```
 
   Effects whose rules match one call apply in injection order; the first that ends the call
-  wins. `From` and `Count` count the calls that match `Op`, `Dir`, `Name` and `When`. A row
+  wins. `From` and `Count` count the calls that match `Op`, `Dir`, `Name` and `When`, and, for
+  `Flip`, whose get covers its offset; a call the effect cannot apply to does not match. A row
   wanting a seeded fraction draws inside `When` from a source it seeds (kind 1). A row whose
   condition is the load reads it inside `When` from the in-memory store it built,
-  `func(Match) bool { return st.Load().InFlight > 8 }`: the wrapper wraps any `remote.Store`
-  and never reaches the record itself (the RFC 4 plan's epic 2, its D8). A `Fail` never
+  `func(Match) bool { return st.Load().InFlight >= 8 }`: `Wrap` takes the in-memory `*Store`
+  (the RFC 4 plan's epic 2, its D8), but the wrapper never reads its record; the row does, in
+  `When`. A `Fail` never
   reaches the store, so the store's record does not count it. Consumed by T2.2, which adds the other three effects; by E3's lifecycle rows and opener;
   E4's §2.5, §3.4 and retry rows and its error table; E5's probe and failure-window rows; E6's
   fetch resume, and its past-the-end row, which injects `Fail(remote.ErrInvalid)` on a recorded
@@ -289,11 +295,14 @@ pkg/syncer/surface_test.go    T2.3  syncertest's frozen exports
     *n*th matching call; `remove` stops it and leaves later rules counting.
   - `Lose` leaves the block stored and the put failed; `Cut` leaves nothing stored under the
     name, and a cut get's reader fails after exactly `after` bytes.
-  - Under `When` reading the store's `Load().InFlight > 8`, a ninth concurrent put fails and an
-    eighth does not; under `When` on `Attempt == 1`, only a name's first put fails.
+  - Under `When` reading the store's `Load().InFlight >= 8`, checked as the call enters, a ninth
+    concurrent put fails and an eighth does not; under `When` on `Attempt == 1`, only a name's first put fails.
   - `Op: "health"` with `Dir` fails one direction's probe and passes the other's; removing the
     rule passes both.
-  - `Lose` on a get or a probe panics naming the operation, with the `decision:` marker of D1.
+  - `Inject` panics, naming the effect and the operation, for each pair D1 refuses: `Lose` or
+    `Hold` at `End` on a get or a probe, `Flip` on a put or a probe, `Cut` or `Link` on a probe,
+    `Hold` at a byte past 0 on a probe; with the `decision:` marker of D1. Under `Op: ""`, a
+    `Flip` lets a put through untouched and uncounted, and flips the next get covering its offset.
 - **Tests:** at the in-memory store's surface, where `codec.Store` and E3 to E7 meet the faults.
   Each effect over a fresh in-memory store, asserting what `Get` and `List` return afterwards
   (catches a `Lose` that drops the block, R3, and a `Cut` that stores a prefix, R4). The *n*th
@@ -301,7 +310,7 @@ pkg/syncer/surface_test.go    T2.3  syncertest's frozen exports
   Twenty concurrent calls under `Count: 3` under `-race`, exactly three failing (catches a count
   taken outside its lock). Sixteen puts held by body readers that block until the test closes them, as
   the RFC 4 plan's epic 2 holds them in its T2.5, then one more under `When` on the store's
-  `Load().InFlight > 8` (catches a condition read from the wrapper's own count, R18). `remotetest` over the wrapper with nothing injected (catches a wrapper
+  `Load().InFlight >= 8` (catches a condition read from the wrapper's own count, R18). `remotetest` over the wrapper with nothing injected (catches a wrapper
   that changes what it passes through, R10). No test double is written: the store is kind 2, the
   wrapper kind 3.
 
@@ -319,7 +328,7 @@ pkg/syncer/surface_test.go    T2.3  syncertest's frozen exports
   const End int64 = -1 // a put's position after its last body byte is sent, before the store answers
   func Hold(at int64, release <-chan struct{}) Effect       // waits at body byte at (0 is the start; End), until release closes
   func Link(c Waiter, perCall, perByte time.Duration) Effect // a get waits perCall before its first body byte, a put after its last;
-                                                            // each waits perByte per body byte, on c
+                                                            // each waits len(p)*perByte after each body read of p, on c
   // Every wait of Hold and Link also ends with ctx.Err() once the call's context ends.
   ```
 
@@ -329,8 +338,8 @@ pkg/syncer/surface_test.go    T2.3  syncertest's frozen exports
   `Hold`); E9's B1 to B4, `Link` on the real clock.
 - **Acceptance criteria:**
   - A get under `Flip` with `Count: 1` returns one flipped byte at `off` and the stored bytes on
-    the next get; with `Count: 0`, on every get. A get whose range does not cover `off` is
-    neither changed nor counted.
+    the next get; with `Count: 0`, on every get. A get whose range does not cover `off` does not
+    match the rule (D1), so it is neither changed nor counted.
   - A test waits for *n* held calls on the in-memory store's record of calls in flight reaching
     *n*, never on time.
   - A put held at `End` has handed the store every body byte and has not returned; a get held
@@ -338,15 +347,18 @@ pkg/syncer/surface_test.go    T2.3  syncertest's frozen exports
   - A held put, get or probe returns only after `release` closes, or with `ctx.Err()` once its
     context ends; nothing waits on the real clock.
   - Under `Link` on a `TestClock`, a put of *n* bytes returns only once the clock has moved
-    `perCall + n*perByte`, its last body byte read before the `perCall` wait.
+    `perCall + n*perByte`, its last body byte read before the `perCall` wait. Each wait is one
+    `After` from the clock's time when it starts, so a test advances once per wait.
   - While a put or get is held or slowed, the in-memory store's record shows it in flight and
     its peak counts it.
 - **Tests:** at the in-memory store's record of calls in flight, which E3 and E4 assert pool and
   throttle limits on: eight calls held, the record's in-flight count and peak at eight (catches
   a hold applied before the store's call, R11). At the bytes a caller reads: the flipped byte,
   and the next get's clean bytes (catches a flip that sticks, or a stored copy changed, R5). On a
-  `TestClock` (kind 1): a linked put still pending after advancing one nanosecond short of its
-  time, returned after the last (catches a per-byte time not charged, R1, R9). A put held at
+  `TestClock` (kind 1): a linked put whose body is read in one `Read` of *n* bytes; the test
+  advances `n*perByte` once `Pending()` shows that wait, then `perCall` less one nanosecond once
+  it shows the next; the put is still pending, and returns after one more nanosecond (catches a
+  per-byte time not charged, R1, R9). A put held at
   `End` and one held at 0, asserting how many body bytes the store read in each (catches a hold
   at the wrong position, which leaves a put's first-byte bound untestable, R6). A held call whose
   context is cancelled returns, under `internal/prof`'s leak check (catches a goroutine parked
@@ -386,6 +398,10 @@ pkg/syncer/surface_test.go    T2.3  syncertest's frozen exports
       Faults Faults
   }
 
+  // End is Hold's position after a put's last body byte, the value of remote/memory's End,
+  // which syncertest may not import.
+  const End int64 = -1
+
   type Put struct {
       Attempt func(ctx context.Context, m remote.Meter) error
       Stored  func() []remote.ChunkRange // once an Attempt has returned nil
@@ -398,7 +414,7 @@ pkg/syncer/surface_test.go    T2.3  syncertest's frozen exports
       Lose func(times int) (undo func(), ok bool)                 // a put committed, its reply lost
       Cut  func(d remote.Direction, after int64, times int) (undo func(), ok bool)
       Flip func(off int64, times int) (undo func(), ok bool)       // one byte of a get
-      Hold func(d remote.Direction, at int64, times int) (release func(), ok bool) // at as remote/memory's Hold
+      Hold func(d remote.Direction, at int64, times int) (release func(), ok bool) // at as remote/memory's Hold; End after a put's last byte
       Link func(perCall, perByte time.Duration) (undo func(), ok bool)
       Drop func(times int) (undo func(), ok bool) // a put's whole body received, the connection closed before any reply
   }
