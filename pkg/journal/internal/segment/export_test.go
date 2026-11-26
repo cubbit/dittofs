@@ -29,3 +29,21 @@ func (r *Retirer) SetPassHook(f func()) { r.passHook = f }
 // KickPendingForTest reports whether a kick sits unconsumed in the worker's
 // one-slot channel, so a test knows no further pass is owed.
 func (r *Retirer) KickPendingForTest() bool { return len(r.kick) > 0 }
+
+// SeedRecordBufs hands n buffers to the pool class of a record of len(stale)
+// bytes, each holding stale at its head as an earlier record's encode leaves
+// it. It first draws one buffer out and drops it, so the class's next draw on
+// this goroutine is one of these. It returns each buffer's whole backing
+// array, so a test sees what an append that drew one encoded there.
+func SeedRecordBufs(stale []byte, n int) [][]byte {
+	_ = getRecordBuf(int64(len(stale)))
+	var out [][]byte
+	for range n {
+		p := getRecordBuf(int64(len(stale)))
+		b := append((*p)[:0], stale...)
+		*p = b
+		putRecordBuf(p)
+		out = append(out, b[:cap(b)])
+	}
+	return out
+}

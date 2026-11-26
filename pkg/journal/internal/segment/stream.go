@@ -1004,9 +1004,28 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 		if placed < int64(len(body.Payload)) {
 			body.Payload = body.Payload[:placed]
 		}
-		// ponytail: a buffer per append is allocated, whole-record sized.
-		// Upgrade to a pool when Append's allocations show in a profile.
-		buf := make([]byte, 0, size)
+		// A content record encodes into a pooled buffer, handed back below
+		// once the write and the payload CRC have read it. A header-only
+		// record's buffer goes to the sink, which keeps it, so it is
+		// allocated per call.
+		//
+		// ponytail: records above 1 MiB of payload bypass the pool and
+		// allocate per call; add classes when a profile of larger writes shows
+		// the allocation. The payload is still copied into the buffer, which
+		// only a vectored write would avoid. What else a warm write allocates
+		// is the deferred leaveDrain below (a defer in a loop), the capacity
+		// Grant, Share.enter's exit method value, and the file lock's entry
+		// and unlock closure, rebuilt per write when one writer holds the file.
+		var pooled *[]byte
+		if hasPayload {
+			pooled = getRecordBuf(size)
+		}
+		var buf []byte
+		if pooled != nil {
+			buf = *pooled
+		} else {
+			buf = make([]byte, 0, size)
+		}
 		buf = format.AppendRecord(buf, s.identity, h, body)
 		n, werr := ref.WriteAt(buf, off)
 		if werr == nil && n != len(buf) {
@@ -1026,12 +1045,19 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 				PayloadCRC: format.RecordPayloadCRC(buf),
 			}
 			if !hasPayload {
-				// decision: the sink keeps buf without a copy, because
-				// the append allocates its buffer per call and never reuses
-				// it. Withdraw this and copy here if the ponytail buffer-pool
-				// upgrade at the encode is ever made.
+				// decision: the sink keeps buf without a copy, because a
+				// header-only record's buffer is allocated per call and never
+				// reused; only content records draw from the pool, and their
+				// buffers never reach the sink. Withdraw this and copy here if
+				// header-only records are ever pooled.
 				written.Bytes = buf
 			}
+		}
+		// The one return of a pooled buffer, on every path past the write —
+		// success, a short write and a failed one — and nothing above keeps
+		// a slice of it.
+		if pooled != nil {
+			putRecordBuf(pooled)
 		}
 
 		s.appendMu.Lock()
