@@ -18,7 +18,7 @@ below are paths there.
 **Epic 2 estimate: 5 subtasks, 8.5 man-days.**
 **Depends on:** **S1**, E1's `pkg/remote` frozen: `Store` with the calls v1.1 has (`Checksum`,
 `Put`, `Get`, `Delete`, `List`, `Health`, `PutControl`, `GetControl`, `Close`), `Name`, `Range`,
-`Info`, `Role`, `Checksum` with its kinds, `StoredSum`, `Version`, `Direction`, the sentinels,
+`Info`, `Cursor`, `Role`, `Checksum` with its kinds, `StoredSum`, `Version`, `Direction`, the sentinels,
 `Cause` and `DeniedError`. `pkg/sim`'s `TestClock` and `internal/prof`'s `Watch`, both already on
 `feat/storage-v2`, drive the tests.
 **Blocks:** **R4-S2**, which E3 and E4 start from: E4's T4.8 runs this suite against the S3 store,
@@ -153,7 +153,7 @@ subtasks and tests can cite them.
 | R5 | §4.3: put, then get whole: bytes equal | test row | §7.1 | T2.1 |
 | R6 | §4.4: a get of each range inside the block returns exactly its bytes; a range starting past the end fails with `ErrInvalid` | test row | §7.1 | T2.1 |
 | R7 | §4.5: a batch deleted twice, including a never-written name: every result is `nil`; a batch of 2,500: every block gone | test row | §7.1 | T2.2 |
-| R8 | §4.6: 2,500 blocks listed in pages of 1,000, stopped after 1,200 and resumed from the last name: every block seen exactly once, in order, with size and time, and each call returns at most its `n`. The one request per call and the reply under the small-body cap are E4's | test row | §7.1 | T2.2 |
+| R8 | §4.6: 2,500 blocks listed in pages of 1,000, stopped after the second page and resumed, in a new walk, from the cursor it returned: every block seen exactly once, in order, with size and time, and each call returns at most its `n`. The one request per call and the reply under the small-body cap are E4's | test row | §7.1 | T2.2 |
 | R9 | §4.6: a key under the block namespace that is not a block name is skipped; a cancel mid-page ends the call with the context's error. The S3 store's count is E4's; the in-memory store's is R20's | test row | §7.1 | T2.2 |
 | R10 | §4.2: after the suite's rows, the store's raw namespace holds nothing but blocks, control objects and check objects, and every block key is the prefix followed directly by the name | test row | §7.1 | T2.3 |
 | R11 | §4.13: put and get each role: bytes equal, a second put replaces the first, an absent role is `ErrNotFound`, and a block listing yields none of them. The health role is never absent on an opened store, so its absence is not asserted (§4.7) | test row | §7.1, §4.7 | T2.3 |
@@ -423,12 +423,13 @@ pkg/remote/memory/
   - `remotetest`: `Subject.PutRaw func(ctx context.Context, key string, body []byte) error`, which
     stores a body under a key relative to the prefix, beneath the store; the rows of R7, R8 and R9.
   - `memory/list.go`: `Delete` and `List` with the signatures of RFC 4 §4.1. `List` walks the
-    sorted keys under `blocks/` after `after`, skips a key whose remainder is not a name with D7's
-    `decision:` marker, and reports `ModTime` from the clock at the put (R21). The unexported
+    sorted keys under `blocks/` after the cursor's key, at most `n` keys a page as S3's `max-keys`
+    counts them, `next` holding the page's last key; it skips a key whose remainder is not a name
+    with D7's `decision:` marker, and reports `ModTime` from the clock at the put (R21). The unexported
     `putRaw`, which the opener hands as `PutRaw`. Consumed by the rows, GC's tests (RFC 9) and the
     RFC 3 plan's checks.
 - **Acceptance criteria:**
-  - The walk of 2,500 blocks yields each once, in ascending order, resumable from any `next`.
+  - The walk of 2,500 blocks yields each once, in ascending order, resumable from any `next` cursor.
   - A batch with a name repeated, a name never written and 2,500 names returns one `nil` per name,
     in order.
 - **Tests:**
@@ -438,7 +439,8 @@ pkg/remote/memory/
     a key `blocks/7f` planted through `PutRaw`, valid hex but too short for a name, so it sorts
     between a name beginning `00` and one beginning `ff`, both put; the walk lists both names and
     the R10 check leaves the key out (D1) (catches a foreign key yielded as a block, or the walk
-    stopping at it), and a context cancelled before the call (catches a listing that
+    stopping at it), and walked again with `n` 1, so one page ends on the key (catches a `next`
+    that does not advance past a foreign key), and a context cancelled before the call (catches a listing that
     ignores its context).
   - `store_test.go`, at `List`: the clock set to a fixed past instant before a put, `Info.ModTime`
     equal to it (catches `time.Now`, R21); `Delete` returning one result per name for a batch with
