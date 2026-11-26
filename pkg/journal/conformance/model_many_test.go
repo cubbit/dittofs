@@ -16,10 +16,10 @@ import (
 
 // modelOpsWithoutOffload is the operation set the many-seed model draws from:
 // every operation the generator's weights table names except the offload and
-// the release, the two calls the remote-data path owns, and the repack. A
-// sequence over it still makes reclaimable space as the soak's scope does
-// without the pair: overwrites, deletes and truncates — and the crashes
-// and reopens around all of it.
+// the release, the two calls the remote-data path owns. A sequence over it
+// still makes reclaimable space as the soak's scope does without the pair:
+// overwrites, deletes and truncates — and the crashes and reopens around all
+// of it.
 //
 // decision: OpOffload and OpRelease stay out of the alphabet until the
 // offload and the release are wired into the journal, which is the change
@@ -28,21 +28,10 @@ import (
 // only their wiring answers. The two weights stay in the table, so
 // GenerateWithin renormalises the rest exactly as the full alphabet will
 // draw them once the wiring restores the pair.
-//
-// decision: OpRepack stays out too, because the repack pass's per-unit work
-// grows with the segment count — its copy reads a full snapshot of the
-// segment set per copied unit and its retire scan walks the ledger once per
-// tick, both ceilings the pass's own markers name. Over the model rig's
-// segment caps a 200-step draw with a repack in it makes the journal mint
-// thousands of empty 2 KiB segments and the pass then does not answer in
-// minutes, well past the suite's budget on most seeds drawn, so the nightly
-// sweep cannot carry the operation. Restore it the day the pass's scans stop
-// growing with the segment count, which the repack test's own marker names
-// as the trigger that widens that test's seed bound with it.
 var modelOpsWithoutOffload = []model.Op{
 	model.OpWrite, model.OpSync, model.OpRead, model.OpFill, model.OpStaleFill,
 	model.OpTruncate, model.OpDeallocate, model.OpDelete, model.OpSettle,
-	model.OpCrash, model.OpReopen, model.OpForget,
+	model.OpCrash, model.OpReopen, model.OpForget, model.OpRepack,
 }
 
 // modelSeeds is how many seeds TestModelManySeeds draws: DITTOFS_MODEL_SEEDS
@@ -137,7 +126,9 @@ func TestModelManySeeds(t *testing.T) {
 	// its removals emptied bare, so one seed cannot pin two live append
 	// streams at once and the two-stream assertion stays with the corpus run
 	// TestModel makes over committed sequences; and the bytes repacks freed
-	// are not in this alphabet, so no free is asserted either.
+	// are not asserted either: the alphabet draws a repack, but a seed's draw
+	// may hold none, or none that frees a byte, so no lower bound on the
+	// freed bytes holds for every seed.
 	if r := reached(); !t.Failed() {
 		if r.Files < 2 {
 			t.Errorf("reached: Files = %d, want at least 2: the draws name four files", r.Files)

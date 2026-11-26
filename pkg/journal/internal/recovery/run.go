@@ -354,6 +354,7 @@ func Run(ctx context.Context, deps Deps, floor core.Version, expect core.Journal
 	defer func() { endOpen(err) }()
 
 	rd := newReader(ctx, deps.FS, deps.Clock, deps.Log)
+	defer func() { _ = rd.Close() }()
 	for _, ph := range phases {
 		if err := ctx.Err(); err != nil {
 			return State{}, err
@@ -432,6 +433,7 @@ func startSpan(ctx context.Context, deps Deps, op core.SpanOp, attrs ...slog.Att
 // headers that do not agree.
 func ReadFormat(ctx context.Context, deps Deps, expect core.JournalID) (format.FormatFile, error) {
 	rd := newReader(ctx, deps.FS, deps.Clock, deps.Log)
+	defer func() { _ = rd.Close() }()
 	// One byte past the format's size is read as well, so a file holding a
 	// whole format file and anything after it is handed to the decoder
 	// whole: the decoder judges length strictly, and a read that stopped at
@@ -549,6 +551,7 @@ func agreeingIdentity(ctx context.Context, deps Deps, rd *reader) core.JournalID
 // whichever journal it names.
 func TakenSegment(ctx context.Context, deps Deps, names []string) bool {
 	rd := newReader(ctx, deps.FS, deps.Clock, deps.Log)
+	defer func() { _ = rd.Close() }()
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			return false

@@ -1020,12 +1020,12 @@ func TestAnUnprovenTailRecordsFirstReadRefusedRefusesTheOpen(t *testing.T) {
 func TestTheProofsOpenOfASegmentTakesTheReadersBound(t *testing.T) {
 	seg, _, name := proveSeg()
 
-	// The fault arms at the twelfth open of this fixture's segment — the
-	// marker flow's own, the attach pass's, the rebuild's reads and the
-	// kinds fold's four over the sealed segment's two records having made
-	// the first eleven. The from is the count of those opens over this
-	// fixture's two records, not a measured number anywhere else.
-	const proofOpen = 12
+	// The fault arms at the fourth open of this fixture's segment — the
+	// attach pass's header read, the rebuild worker's size and its own read
+	// having made the first three, the kinds fold taking the reader's held
+	// handle. The from is the count of those opens over this fixture's two
+	// records, not a measured number anywhere else.
+	const proofOpen = 4
 	t.Run("twice refused, the third attempt opens", func(t *testing.T) {
 		r := newRig(t)
 		r.writeFormat()
@@ -1036,7 +1036,7 @@ func TestTheProofsOpenOfASegmentTakesTheReadersBound(t *testing.T) {
 		st := runTails(t, r)
 
 		if calls := r.seam.CallsFor(kit.OpOpen, name); calls != proofOpen+2 {
-			t.Errorf("opens of the segment got %d, want %d: the eleven earlier opens and the bound's three, the third opening", calls, proofOpen+2)
+			t.Errorf("opens of the segment got %d, want %d: the earlier opens and the bound's three, the third opening", calls, proofOpen+2)
 		}
 		if calls := r.seam.CallsFor(kit.OpSync, name) - synced; calls != 1 {
 			t.Errorf("the open's syncs of the segment got %d, want 1: the open the third attempt made reached the sync it was opened for", calls)

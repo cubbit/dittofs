@@ -1050,6 +1050,21 @@ func (s *Set) Snapshot() []Row {
 	return rows
 }
 
+// Row reads the one segment named, in the set or not — a segment outside
+// the set answers false, spares among them — as Snapshot reads one row: one
+// lock, a copy of the row with its Tags cloned. A caller that acts on the
+// row must still re-check the segment, as every claim does.
+func (s *Set) Row(id core.SegmentID) (Row, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	e, ok := s.segs[id]
+	if !ok {
+		return Row{}, false
+	}
+	return Row{ID: id, State: e.state, Size: e.size, Stream: e.stream, Tags: maps.Clone(e.tags)}, true
+}
+
 // Claim takes a retirement's claim on a segment of the set that no stream
 // can still append to. It is held until Release clears it, or until the
 // segment is retired, in which case the claim is gone: a release or a new

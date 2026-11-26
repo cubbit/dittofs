@@ -311,12 +311,14 @@ func (ix *Index) Settle(id core.FileID, v core.Version) {
 	ix.fs.settleRemovals(id, v)
 }
 
-// FilesOfSegment returns the ids of the files whose records seg held,
-// content and header-only alike, in no order. A retired segment's caller
-// relays them into SegmentGone, one per file; the registry-built lists
-// name only files the liveness tracker registered, so the index is the
-// one place a segment's whole set of files answers from. It creates no
-// entry and holds no lock across the walk.
+// FilesOfSegment returns the ids of the files whose records seg holds — every
+// file with an entry naming it, content and header-only records alike — in no
+// order, as a copy; nil when none does. The copier's read phase asks it which
+// files to read for a repack, and a retired segment's caller relays them into
+// SegmentGone, one per file; the registry-built lists name only files the
+// liveness tracker registered, so the index is the one place a segment's
+// whole set of files answers from. It reads the inverted registry under its
+// lock alone, no file's, and creates no entry.
 func (ix *Index) FilesOfSegment(seg core.SegmentID) []core.FileID {
 	return ix.fs.segFiles(seg)
 }

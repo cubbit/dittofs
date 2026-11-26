@@ -212,6 +212,17 @@ type Tracker struct {
 	// record's registration does, and a retired segment leaves every
 	// snapshot that names it.
 	forgets map[Rec]map[core.SegmentID]struct{}
+	// forgetSegs is forgets indexed by snapshot segment: for each segment,
+	// the live forget records whose snapshot names it, so a retirement
+	// walks its own bucket instead of the whole registry. RegisterForget
+	// fills one entry per snapshot segment its member re-check left —
+	// never one for a segment the re-check pruned — and every path that
+	// drops a forget record's snapshot prunes the record from the buckets
+	// that snapshot named. A re-registration replaces a snapshot without
+	// pruning the replaced snapshot's buckets, so a bucket keeps ghost
+	// entries the bucket walk's re-read of the current snapshot skips.
+	// Guarded by rm, like forgets.
+	forgetSegs map[core.SegmentID]map[Rec]struct{}
 	// marks is each live unsynced loss record's presence marks, keyed by
 	// the whole Rec of the loss itself: the segments still holding copies
 	// of the record it names, the only thing that keeps the loss from
@@ -429,16 +440,17 @@ func (t *Tracker) fireCrossed(crossed []core.SegmentID) {
 	}
 }
 
-// count raises rec's segment count and files table: the half of a
-// registration that precedes its registry entry. The raise errs on the held
-// side — a Held read before the registry holds the registration must answer
-// by what is held — and runs only for the registrations the class hold rule
-// gives weight to, so a registration of a placement in one class of two or
-// more raises nothing it would have to take back.
+// count raises rec's segment count: the half of a registration that
+// precedes its registry entry. The raise errs on the held side — a Held read
+// before the registry holds the registration must answer by what is held —
+// and runs only for the registrations the class hold rule gives weight to, so
+// a registration of a placement in one class of two or more raises nothing it
+// would have to take back. The segment's files table is not raised here:
+// addLocked enters it for every registration, so the table is complete over
+// registered records while the weight is not.
 func (t *Tracker) count(rec Rec) {
 	st := t.entry(rec.Seg)
 	st.mu.Lock()
-	st.files[rec.File] = struct{}{}
 	st.live.Add(1)
 	st.mu.Unlock()
 }
@@ -467,6 +479,12 @@ func (t *Tracker) addLocked(rec Rec) (crossed []core.SegmentID) {
 	if t.identities == nil {
 		t.identities = make(map[recId]map[core.SegmentID]map[Rec]struct{})
 	}
+	// The files table names every file the segment holds a registered record
+	// of, weightless or not, so a walk scoped to it reaches them all.
+	st := t.entry(rec.Seg)
+	st.mu.Lock()
+	st.files[rec.File] = struct{}{}
+	st.mu.Unlock()
 	id := identityOf(rec)
 	if t.identities[id] == nil {
 		t.identities[id] = make(map[core.SegmentID]map[Rec]struct{})
@@ -656,13 +674,13 @@ func (t *Tracker) raiseDeferred(class map[core.SegmentID]map[Rec]struct{}, seg c
 	st := t.stateOf(seg)
 	if st == nil {
 		// A class collapses only over records its segments registered, and
-		// a raise is the sole path that counts weight a segment carries
-		// while holding no state: the doubling branch registers a carried
-		// copy onto a class two segments wide without creating state, so
-		// a survivor whose placements all arrived as copies reaches the
-		// raise with no state to name its files or count. This branch is
-		// that survivor's state ever, not a fallback for a drifted
-		// registry.
+		// every registration enters its segment's files table — the head
+		// of addLocked, before the doubling branch — so the survivor
+		// reaches the raise holding the state its own registrations made.
+		// No path a live class stands on meets this branch: it stays for a
+		// registry that has drifted, weight standing over a segment no
+		// registration created state for, and makes that segment's state
+		// here rather than losing the class's weight with the raise.
 		st = t.entry(seg)
 	}
 	st.mu.Lock()
@@ -1054,16 +1072,39 @@ func (t *Tracker) RegisterForget(rec Rec, segs []core.SegmentID) {
 		t.retest(rec.File)
 		return
 	}
+	// The index entries name only what the snapshot still does, so a
+	// bucket answers no forget a segment's retirement has already taken.
+	if t.forgetSegs == nil {
+		t.forgetSegs = make(map[core.SegmentID]map[Rec]struct{})
+	}
+	for s := range snap {
+		if t.forgetSegs[s] == nil {
+			t.forgetSegs[s] = make(map[Rec]struct{})
+		}
+		t.forgetSegs[s][rec] = struct{}{}
+	}
 	t.rm.Unlock()
 	t.fireCrossed(crossed)
 }
 
 // forgetTaken drops a forget record's snapshot once the registry has given
 // up its registration, so the snapshot exists only while the record counts
-// live. The caller holds rm.
+// live, and with it the index entries the snapshot filled — a segment whose
+// bucket holds a record no registration backs would meet a ghost at its own
+// retirement otherwise. The caller holds rm.
 func (t *Tracker) forgetTaken(rec Rec) {
-	if rec.Kind == format.KindForget {
-		delete(t.forgets, rec)
+	if rec.Kind != format.KindForget {
+		return
+	}
+	snap := t.forgets[rec]
+	delete(t.forgets, rec)
+	for s := range snap {
+		if rs := t.forgetSegs[s]; rs != nil {
+			delete(rs, rec)
+			if len(rs) == 0 {
+				delete(t.forgetSegs, s)
+			}
+		}
 	}
 }
 
