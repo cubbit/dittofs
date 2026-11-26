@@ -127,7 +127,7 @@ cited by number and title and not copied.
 | Rule | Subtasks | How |
 | --- | --- | --- |
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | the layout, the bound, the gate and the CRC32C combine are pure functions with table and property tests; `codec.Store` runs over E2's in-memory store (kind 2), in each checksum mode, with real chains built by `chain.NewChain` over RFC 5's registered transforms and `keystest`'s in-memory provider (kind 2, D11). Fault wrappers around the in-memory store stall, fail or flip a call on cue (kind 3); pass-through wrappers record what reached the store, the `src` and the CPU token (D11); the `Recorder` and the logger are sinks of outputs. No double answers in a dependency's place |
-| rule 2, fuzz tests where relevant ([`CLAUDE.md`, "By kind"](../CLAUDE.md#by-kind)) | T6.1, T6.6 | `FuzzHeader` (T6.1), `FuzzBlock` and `FuzzBody` (T6.6): no panic, every length read inside the buffer, no allocation past the header bound before the header is validated and none past `MaxDecodeLen(Max)` for a body, and a parsed header re-encodes to the bytes it came from; the golden block and header agree with the independent script (T6.7). Planted seeds are `f.Add` calls built in code; crashers go in `testdata/fuzz/<FuzzName>/`; E9 joins the targets to the nightly `fuzz` suite |
+| rule 2, fuzz tests where relevant ([`CLAUDE.md`, "By kind"](../CLAUDE.md#by-kind)) | T6.1, T6.6 | `FuzzHeader` (T6.1), `FuzzBlock` and `FuzzBody` (T6.6): no panic, every length read inside the buffer, no allocation past the header bound before the header is validated and none past `MaxDecodeLen(MaxChunk)` for a body, and a parsed header re-encodes to the bytes it came from; the golden block and header agree with the independent script (T6.7). Planted seeds are `f.Add` calls built in code; crashers go in `testdata/fuzz/<FuzzName>/`; E9 joins the targets to the nightly `fuzz` suite |
 | rule 3, observability follows RFC 25 | T6.2, T6.3, T6.4 | `New` narrows `Deps.Logger` with `With("component", "codec")`; the four series go through `Deps.Recorder` (D7) and no package here imports `pkg/metrics`; a verification failure logs at `Warn` with the block name, an unknown write version once at `Error` from `New`, nothing else per call; no span |
 | rule 4, profiling | T6.2, T6.3, T6.8 | every test runs under `internal/prof`'s goroutine and heap checks; T6.8 registers `unit`'s `remote-allocs` option (no `-race`) for the per-chunk encode and verify counts and the bytes allocated per `Attempt` and per `Get` at two block sizes |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | the internal functions are tested directly, and the behaviour through `codec.Store` under `-race`; a checksum is asserted where the in-memory store checks it and refuses a mismatch, not where the codec computes it; a whole-block read's name check is asserted through `Get` |
@@ -152,7 +152,7 @@ whose.
 | R1 | A block is a header followed by the chunk bodies in order; the header's first bytes are the format marker, the version and the header length, and it holds the block name, nonce, chain ID, a chunk index of one entry per chunk (its chunk ID and its body's offset and length, in the clear) and the census | invariant | §3.2, §6 R1 | T6.1 |
 | R2 | The header length is bounded by a constant of the format version: `N` times one index entry, plus the census at its bound (at most `N` × the stage count entries, each a fixed-width transform ID and version, a material ID of at most 255 bytes with its length, and a 32-byte fingerprint), plus the fixed fields | MUST | §3.2, RFC 2 §5 P4 | T6.1 |
 | R3 | The codec refuses a header that declares a larger length than the bound, more than `N` index entries, more census entries than their bound, or a census material ID longer than 255 bytes, before allocating for it | MUST | §3.2, §7.1 (§3.2 census row), §7.3 (fuzz row), RFC 3 §7 (§2.2 memory-bound row) | T6.1, T6.6 |
-| R4 | Each body's length is at most `MaxDecodeLen(Max)` of the chain the codec is handed, checked before allocating for the body; the read side never uses the current chain's `MaxEncodedLen` | MUST | §3.2, §7.3 (fuzz row) | T6.3, T6.6 |
+| R4 | Each body's length is at most `MaxDecodeLen(MaxChunk)` of the chain the codec is handed, `MaxChunk` being RFC 2's `Max` as `Config` carries it, checked before allocating for the body; the read side never uses the current chain's `MaxEncodedLen` | MUST | §3.2, §7.3 (fuzz row) | T6.3, T6.6 |
 | R5 | Each body decodes on its own: one corrupt body loses one chunk, not the block, and a ranged get of one body decodes without the header | MUST | §3.2, §7.3 (corrupt-body and ranged rows) | T6.3 |
 | R6 | The name is written into the header and known before encoding starts; the put encodes every body under the pinned chain whose ID the header carries | MUST | §3.2, §4.3 (`NewPut`) | T6.2 |
 | R7 | The header's census is the distinct (transform ID, version, material ID, fingerprint) its bodies were encoded under, the set `Stored` returns for the block record | invariant | §3.2, §4.3 (`Stored`) | T6.2, T6.4 |
@@ -202,7 +202,7 @@ whose.
 | R30 | An `Attempt` whose `ctx` ends drops its chunk buffers before it returns | MUST | §4.3, §7.3 (`codec.Store` row) | T6.2 |
 | R31 | `Attempt` calls `m.Moved` with each count of bytes sent, which sum to the encoded bytes the store received, and `m.Sent` once, after the last; it returns nil only once the block is stored; a zero `Meter` is skipped | MUST | §4.3 (`Attempt`), §4.1 (`Meter`), §7.3 (`codec.Store` row) | T6.2 |
 | R32 | `Stored` returns each chunk's range in the encoded block and the header's census, with nil bodies, once an `Attempt` has returned nil | MUST | §4.3 (`Stored`), E1 D5 | T6.2 |
-| R33 | `Attempt` checks each chunk of `src` against its hash through `Config.ChunkID`, recomputes the name through `Config.Name` from the nonce, the pin's chain ID and the chunks' hashes, and refuses a mismatch of either with `ErrInvalid` before any byte is sent | MUST | E1 D5, E1 D9, §3.2 | T6.2 |
+| R33 | `Attempt` checks each chunk of `src` against its hash through `Config.ChunkID`, recomputes the name through `Config.Name` from the nonce, the pin's chain ID and the chunks' hashes, and refuses a mismatch of either with `ErrInvalid`. The `Attempt` that builds the plan does so before any byte is sent; one that reuses a kept plan reads `src` only to send (R27), so it checks each chunk against the plan's hash as it sends it, and a mismatch aborts the put as the body reader's error (D6) | MUST | E1 D5, E1 D9, §3.2 | T6.2, T6.4 |
 | R34 | The codec takes RFC 24 §6.2's CPU token once per chunk it encodes or hashes on the put path, measuring passes included, and returns it before its next network write | MUST | RFC 24 §6.2, E1 D5 | T6.2, T6.4 |
 | R35 | `New` refuses a nil store, chain, `ChunkID`, `Name`, `Census`, `Logger`, `Recorder` or `CPU`, or a `MaxChunk` below 1, rather than defaulting it; it does not refuse an unknown `Version` | MUST | E1 D5, RFC 0 §1.2 | T6.2 |
 
@@ -213,7 +213,7 @@ whose.
 | R36 | Every failure the codec returns wraps exactly one error of §4.8's set, or is a local failure returned as itself (the `ctx`'s, `src`'s, the census lookup's), or a material error; a transform's `ErrMalformed` or `ErrTooLarge` is `ErrCorrupt`, and neither, nor any other transform error type, is reachable by unwrapping | MUST | §4.8, §4.3, §6 R9, RFC 5 §2.7, E1 D10 | T6.2, T6.3 |
 | R37 | `ErrMaterialUnavailable` and `ErrMaterialDestroyed` are returned as they are, neither wrapped in one of §4.8's errors nor mapped to one, and a destroyed material is not counted as a verification failure | MUST | §4.8, RFC 5 §2.7 | T6.5 |
 | R43 | `ErrUnknownMaterial` from the provider, for material the census lists, is reported as `ErrMaterialUnavailable`, never as `ErrCorrupt` | MUST | RFC 5 §2.7, RFC 5 §3.1 | T6.5 |
-| R38 | The codec counts, once and only here, each chunk it returned verified (`codec_chunks_verified_total`), each block encoded with a measuring pass (`codec_measuring_passes_total`), each chunk that failed verification by `kind` = `hash`, `name`, `version` or `malformed` (`codec_verify_failures_total`), and the encode and decode time per block by direction (`codec_seconds`), through the `Recorder` it declares | MUST | §4.12, §1.2, E1 D5 | T6.2, T6.3, T6.4 |
+| R38 | The codec counts, once and only here, each chunk it returned verified (`codec_chunks_verified_total`), each block encoded with a measuring pass (`codec_measuring_passes_total`), each verification failure by `kind` (`codec_verify_failures_total`): `hash`, and a body's `malformed`, once per chunk; `name`, `version` and a header's `malformed` once per block, and the encode and decode time per block by direction (`codec_seconds`), through the `Recorder` it declares | MUST | §4.12, §1.2, E1 D5 | T6.2, T6.3, T6.4 |
 | R39 | A verification failure logs at `Warn` with the block name; every other per-call outcome is a metric, not a log line. A put's `ErrCorrupt` is the store's to log (E4) | MUST | §4.12 | T6.3 |
 
 **Tests**
@@ -385,21 +385,25 @@ test/suites.yaml      T6.8  unit's remote-allocs option
   and `parseHeader`, the second taking a reader and an allocator (D13) and refusing, in this
   order and before allocating the rest, a wrong marker, an unknown version, a length below the
   fixed part or above the bound, a chunk count of 0 or above 1,024, a census count above 3,072;
-  then, inside the buffer, an index that does not fit, a kind length that runs past its entry, or
-  a census that does not end at the header length. `MaxHeaderLen`'s body: 935,005 and true for 1,
+  then, inside the buffer, an index that does not fit, a kind length that runs past its entry, a
+  census that does not end at the header length, or a census not in D1's canonical form: entries
+  out of order or repeated, an entry with no material but a non-zero fingerprint, or a non-zero
+  material length whose kind length is 0. `MaxHeaderLen`'s body: 935,005 and true for 1,
   else 0 and false. `export_test.go`'s allocator hook. Consumed by T6.2 (the header it writes),
   T6.3 (the parse), T6.6 and T6.7, and by RFC 8 offload plan epic 21 (`MaxHeaderLen`).
 - **Acceptance criteria:**
   - A header with each field at its bound parses, and its re-encoding equals its bytes (R1, R2).
-  - Each refusal above is reported with the field that failed, and the allocator saw no request
-    for it (R3); an unknown version's error names the version, distinct from a parse error's
+  - Each refusal above is reported with the field that failed (R3). A refusal of the fixed part
+    leaves the allocator no request past the fixed part; a refusal inside the buffer, exactly one
+    request, the header length, of at most `MaxHeaderLen(1)`, as T6.6 asserts (R3); an unknown version's error names the version, distinct from a parse error's
     (R23).
-- **Tests:** a table of headers, one per refusal, each built by hand and asserted refused with
-  the allocator's record empty past the fixed part (catches a parse that allocates the declared
-  length first, R3); a header at every bound at once accepted (catches an off-by-one bound, R2);
+- **Tests:** a table of headers, one per refusal, each built by hand and asserted refused: those
+  of the fixed part with the allocator's record empty past the fixed part (catches a parse that
+  allocates the declared length first, R3), those inside the buffer with one request of the
+  header length and none after it (catches a census read that allocates per entry, R3); a header at every bound at once accepted (catches an off-by-one bound, R2);
   `MaxHeaderLen(1)` equal to the literal 935,005 (catches a bound that forgets the census, R2).
   `FuzzHeader`, seeded with `f.Add` calls for an over-long length, 1,025 entries, 3,073 census
-  entries and a kind length past its entry: no panic, every read inside the buffer, and an
+  entries, a kind length past its entry and two census entries in reverse order and repeated: no panic, every read inside the buffer, and an
   accepted header re-encodes to the bytes it came from (R40). No test double.
 - **Rules:** rule 2: `FuzzHeader`. Rule 11: nothing exported but `MaxHeaderLen`'s body.
 
@@ -491,7 +495,9 @@ test/suites.yaml      T6.8  unit's remote-allocs option
   A transform's `ErrMalformed` on decode, from a body with its envelope's bytes flipped:
   `errors.Is` finds `ErrCorrupt` and not `transform.ErrMalformed` (catches `%w`, R36). The `Warn`
   line names the block, and a clean read logs nothing (R39); the `Recorder` sink's `Verified`
-  equals the chunks yielded and one `Took(DirGet, …)` is recorded (R38). A fault wrapper (kind 3)
+  equals the chunks yielded and one `Took(DirGet, …)` is recorded (R38); a 4-chunk block fetched
+  under another name records one `name` failure, and a block with two flipped bodies two `hash`
+  failures (catches a per-block kind counted per chunk, or the reverse, R38). A fault wrapper (kind 3)
   returning a distinct error for each direction's `Health`: each comes back unchanged (catches a
   `Health` that answers itself, R21).
 - **Rules:** rule 5: the name check asserted through `Get`, not on the parsed header. Rule 9:
@@ -502,7 +508,7 @@ test/suites.yaml      T6.8  unit's remote-allocs option
 **Subtask T6.4 estimate: 3 man-days.**
 
 - **Track:** A. **Depends on:** T6.2; the RFC 5 plan's epic 4.
-- **Covers:** R7, R25–R29, R34, R38.
+- **Covers:** R7, R25–R29, R33, R34, R38.
 - **Deliverables:** `crc32c.go`: `crc32cCombine(a, b uint32, lenB int64) uint32`, the GF(2)
   matrix combination over the Castagnoli polynomial (D10); it needs nothing but S1, so it is
   built first, while the RFC 5 plan's epic 4 is awaited. `put.go`: the measuring pass (each chunk
@@ -538,7 +544,9 @@ test/suites.yaml      T6.8  unit's remote-allocs option
   A first `Attempt` paused after it sent, a second that drops nothing and stores, then the first
   ending in `ErrCorrupt` from a fault wrapper: a third `Attempt` does not measure (catches a drop
   that removes a plan it did not send, D8). D11's token recorder shows one acquire per chunk on
-  each measuring pass (R34).
+  each measuring pass (R34). A second `Attempt` whose `src` yields another chunk than the plan
+  holds: `ErrInvalid` as the body reader's error, and the in-memory store holds no object for the
+  name (catches a retry that trusts its kept plan, R33).
 - **Rules:** rule 1: the combine is a pure function. Rule 9: D8's marker at the drop.
 
 ### T6.5 Every transform configuration
@@ -698,7 +706,8 @@ A suggestion only: one pull request per subtask works as well.
    stands in (rule 8). It gives the decoder an optional CPU token; E1 kept the token on the put
    path, and the ledger row this pull request adds hands the background read's token to RFC 9.
    Its §4.1 tree shows `testdata/fuzz/` and `testdata/v1/` beneath `internal/node/content`; they
-   are `pkg/remote/codec`'s.
+   are `pkg/remote/codec`'s. This pull request leaves the plan's outline as merged, its baseline,
+   and reports the differences here, as the sibling breakdowns do.
 2. **A census without a measuring pass.** D2 learns the header census by encoding the first chunk
    once more, because RFC 5 §3.1's `Attempt` lists no descriptors. An `Attempt` method returning
    them would remove that encode and D2's per-chunk comparison, and changes no stored byte; it is
@@ -710,5 +719,15 @@ A suggestion only: one pull request per subtask works as well.
    offload plan epic 21 compute from `MaxHeaderLen` is about 0.9 MiB larger than that text
    suggests. RFC 3's text is for its owner to amend; a tighter census bound (fewer stages per
    chunk, or a shorter material ID) is an RFC 4 change and a new format version.
-4. **Least certain estimates:** T6.2, whose hashing, streaming reader, CPU token and cancellation
+4. **The census material field's width, for the user (D1).** D1 counts the kind's length byte,
+   the kind and the ID inside RFC 4 §3.2's 255-byte bound, so a material whose kind and ID exceed
+   254 bytes is refused at the put. RFC 5 Appendix B allows a data key ID of 255 bytes, so a legal
+   key ID under any kind cannot be written, and the refusal holds on every retry. With a one-byte
+   length, RFC 4 §7.1's "census material ID of 256 bytes" row cannot be written either; its
+   reachable form is a kind length that runs past its entry. Either RFC 4 §3.2 counts the ID alone
+   against 255 and the kind gets its own length byte (the header bound grows by the kind's
+   bound per entry, on top of point 3), or RFC 5 caps the data key ID below 255 by the longest kind
+   and its byte. Recommended: the first, with §7.1's row reworded to the ID's length running past
+   its entry; both are RFC changes, so D1 stands until the user picks one.
+5. **Least certain estimates:** T6.2, whose hashing, streaming reader, CPU token and cancellation
    meet in one loop, and T6.4, whose overlapping tries and plan drop are the epic's concurrency.
