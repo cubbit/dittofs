@@ -45,8 +45,9 @@ with a fixed backoff, is moved onto the removal source and deleted.
   body epic 16's pass replaces;
 - every removal obligation the first part's loop ran, durable or in memory, runs as the file's
   removal key on the removal source, backed off between `offload.retry_min` and `offload.retry_max`,
-  rebuilt from the unfinished-removal index and re-derived by a rescan from a per-shard cursor, an
-  undecodable entry stalling only its own file;
+  rebuilt from the unfinished-removal index and re-derived by a rescan from a per-shard cursor; an
+  index entry whose removal record is missing or does not decode fails start (fail closed), and an
+  undecodable ref or clone-source record stalls only its own file;
 - the decoders the rebuild and a removal batch read are fuzzed;
 - §15.2's "§6.1.1 a stuck run" passes over the engine's instances and "§8.1 removal wedge" is green
   with the undecodable ref.
@@ -177,7 +178,7 @@ the scheduler itself guarantees is epic 13's, held by its tests; a row here stat
 | --- | --- | --- | --- | --- |
 | R25 | Whenever the node gains a shard, its entries are rebuilt: an offload key for every file the journal holds with a held or retained extent whose offloaded bit is unset | MUST | RFC 8 §6.1, §2.5 step 6, §6.1.1 | T14.2 |
 | R26 | and a removal key for every file with a removal not done or not yet pruned, read from the shard's unfinished-removal index, never by a scan of its files | MUST | RFC 8 §6.1, §2.5 steps 4 and 6 | T14.5 |
-| R27 | A removal whose own record does not decode is its file's failure: the rebuild and the rescan post its file and go on past it, and its runs retry and stall it, while the shard's other removals complete | MUST | RFC 8 §11.2, §8.1; §15.2 "§8.1 removal wedge" | T14.5, T14.7 |
+| R27 | A removal whose run fails on a ref record of its file, or on a clone's source record, that does not decode is its file's failure: its runs retry and stall it while the shard's other removals complete. An index entry whose own removal record is missing or does not decode fails start step 4, closed, since a clone's protection is rebuilt from that record; the rescan, while serving, posts that file and goes on, and its run fails on the record and stalls it | MUST | RFC 8 §11.2, §8.1, §2.5 step 4; §15.2 "§8.1 removal wedge" | T14.5, T14.7 |
 | R28 | The work queue is rebuilt from durable state for every shard the node gains; a lost event delays an offer by at most the maximum age plus one age tick, and a removal by at most the rescan bound, each plus the time its shard takes to drain the entries ahead of it | invariant | RFC 8 §13 E23, §6.1 | T14.3, T14.7, T14.10 |
 
 **Removals on the scheduler**
@@ -284,13 +285,21 @@ the scheduler itself guarantees is epic 13's, held by its tests; a row here stat
   instance's totals down from `export_test.go` before `Start`, so a check that fills the instance
   writes hundreds of files, not 10⁵. A `decision:` at the registration names them proposals and cites
   RFC 24 for the weights. Prior art: none found.
-- **D6, the unfinished-removal listing takes a start bound and reports a bad entry and goes on.** The
+- **D6, the unfinished-removal listing takes a start bound and reports a bad entry and goes on;
+  start step 4 fails on one.** The
   rescan resumes at a per-shard cursor, and `kvstore`'s listing starts at the shard's first entry. It
   gains a (file, version) to start after, through the `after` key `pages` already takes, and the
   engine's declared `Content` follows. And an entry whose record is missing or does not decode no
-  longer ends the listing: it is yielded with its error and the listing goes on, so the rebuild and the
-  rescan post that file, whose run then fails on the record and stalls it (R27), while start step 4
-  and every later entry go on. The offload plan keeps this call "as it is"; this decision is the one
+  longer ends the listing: it is yielded with its error and the listing goes on. Start step 4 fails
+  on such an entry, closed, as it does today (`removals_start.go`): on one node a clone's source
+  registration is rebuilt from its destination's removal record (`rebuildRemoval`), so serving past
+  an undecodable one would leave the source extent unprotected, and a missing one would be read as no
+  removal at all. The rescan, which runs only while serving, posts that file and goes on, and the
+  file's list records the entry's error, so its run answers `Retry`, counted, and stalls it (R27)
+  rather than answering `Done` over a removal its prefix read cannot see; the file's other entries and
+  the shard's other removals go on. The user decided the fail-closed start on 2026-11-26, in #5992's
+  review. A `decision:` at step 4 names it, withdrawn if a clone's protection is ever rebuilt from a
+  record other than the destination's removal. The offload plan keeps this call "as it is"; this decision is the one
   change, which its two callers, the rebuild and the rescan, absorb. No marker. Prior art: a range read
   from a begin key, as every ordered key-value store offers (from memory).
 - **D7, until epic 16 the offload source's `Run` offers nothing.** It answers every item `Done`,
@@ -550,7 +559,8 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
   removal key per file (staged as T14.2's are, the rest re-posted by the rescan) and creating the
   file's list (D2) with the newest version, the removals not done and the time the source first saw
   each; clones not done are still rebuilt at step 4, before serving. `kvstore`'s listing yields a
-  bad entry with its error and goes on (D6), and the rebuild posts that file. `Run` runs each key's
+  bad entry with its error and goes on (D6), and start step 4 fails on it, naming the share, the
+  file and the version. `Run` runs each key's
   durable part, a bounded `Resume` and the prune of the newest done removal, under the
   `engine.removal_batch` root span, counting `RemovalRuns` by result, and answers as D2 says. A
   removal's phase 1 posts `RemovalPending` through the post function. The first part's phase-2 and
@@ -563,8 +573,9 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
     run, never by a scan of the shard's files.
   - A failed run answers `Retry` and runs again after the tenant's backoff; ten truncates of one file
     are one entry.
-  - An index entry whose record does not decode leaves start and every other removal of the shard
-    running.
+  - An index entry whose removal record does not decode, or is missing, fails `Start`, naming the
+    file; a ref record that does not decode stalls only its file's removal, while start and every
+    other removal of the shard run.
 - **Tests:** over `kvstore` on the in-memory `kv.KV` and the unit fixture, on the injected clock: the
   first part's phase-2 and prune tests in `removals_test.go` and `removals_start_test.go` moved onto
   the source, each still failing on its own planted break (rule 10); a store failing a file's
@@ -575,8 +586,10 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
   recorded through a pass-through recording wrapper on the `kv.KV`, none a range read over the
   shard's file-record prefix (catches a scan, R26; a dispatched `Resume`'s point read of its own
   file record is not one); with the source filled to its reservation so some posts drop, the
-  removals still count in `RemovalsPending` (catches gauges read from accepted posts, R39); start with one entry's removal record undecodable, which starts, completes the other removals
-  and retries that file (R27). Doubles: kind 3 on the `kv.KV`, and the recording wrapper.
+  removals still count in `RemovalsPending` (catches gauges read from accepted posts, R39); start with one entry's removal record undecodable, and with one entry's record deleted, each of
+  which `Start` refuses naming the file (catches step 4 going on past a clone's lost protection, R27,
+  D6); start with one file's ref record undecodable under a truncate, which starts, completes the
+  other removals and retries that file (R27). Doubles: kind 3 on the `kv.KV`, and the recording wrapper.
 - **Rules:** rule 9: the removal-key `decision:`; rule 3: the span and the run counter keep their
   names.
 
@@ -654,19 +667,22 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
   on the injected clock, re-armed every `RemovalRescan` as `Settings` holds it at that moment, and at
   once when the removal source's `Dropped` has risen since the last scan: it first re-posts every work
   list whose key is absent (D2), then reads each served shard's index from its cursor, posting until a
-  post is refused, a bad entry posted and passed like any other, resuming there and wrapping at the
+  post is refused, a bad entry posted with its error recorded on the file's list (D6) and passed,
+  resuming there and wrapping at the
   end; it starts at step 7, skips a shut share (D3), and `Close` cancels and joins it. `QueueEvents`
   counts `removal_pending`. Consumed by T14.10.
 - **Acceptance criteria:**
   - A removal whose post was dropped is dispatched within ⌈the shard's index entries ÷ its
-    reservation⌉ rescans, an undecodable entry before it included.
+    reservation⌉ rescans, an entry before it whose record stopped decoding while serving included,
+    which stalls only its own file.
   - A scan resumes where the last one stopped, and wraps; a changed `removal.rescan` sets the next
     period.
 - **Tests:** **lost events, the removal half** (R41): the removal source sized down and filled to its
   reservation, so `RemovalPending` posts drop, and D11's seam dropping each `RemovalPending` with
   probability ½ from a seeded source; assert every removal reaches done within the rescan
   bound, with no restart (catches a rescan from the start each time and one that never wraps, R23);
-  the same with one undecodable entry early in the index (R27); a dropped post triggers a scan before
+  the same with one entry early in the index made undecodable while serving, whose file raises
+  `removal_stalled` and whose neighbours reach done (R27); a dropped post triggers a scan before
   the next period (R14); an `Apply` halving `RemovalRescan` makes the next scan come at the new period
   (R24); a `kvstore` test over the in-memory `kv.KV` that the start bound lists only the entries after
   it. No double but the clock.
