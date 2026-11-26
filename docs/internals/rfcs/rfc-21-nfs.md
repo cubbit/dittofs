@@ -2468,9 +2468,10 @@ a listing is never filtered by access-based enumeration
 ([RFC 19 §3.7](rfc-19-authorization.md#3.7%20Listings%20hide%20what%20the%20caller%20cannot%20read)),
 and no SMB rule applies; `NFSv4Caps`, the same plus `SeesPseudoFS`, so `LOOKUPP` at a
 share's root walks up into the pseudo-filesystem; and each request's context
-carries its protocol label, which no rule reads; `NLMCaps` for NLM and NSM, which adds `HostCall` (§6.1) and
-`ClientIsMachine` for the host's record; `MountCaps` for `MNT` and `EXPORT`,
-which adds `HostCall` (§6.3).
+carries its protocol label, which no rule reads; `NLMCaps` for NLM and NSM,
+`PrivilegeOnEveryCall`, `HostCall` (§6.1) and `ClientIsMachine` for the host's
+record; `MountCaps` for `MNT` and `EXPORT`, `PrivilegeOnEveryCall` and `HostCall`
+(§6.3).
 
 **Clients.** Every node answers `EXCHANGE_ID`, `SETCLIENTID` and
 `DESTROY_CLIENTID` for any client (§3.3), so each field those calls decide is

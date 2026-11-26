@@ -675,8 +675,9 @@ listed directory, holds read data, read attributes, read extended attributes or
 read the ACL. Each entry's answer is an ordinary `Granted`, run at the chokepoint
 and keyed as RFC 7 §7.5 says; no adapter decides it.
 
-> decision: access-based enumeration filters SMB listings only; both NFS profiles
-> state `ListsEveryEntry`, so an NFS listing is never filtered. The capability's
+> decision: access-based enumeration filters every listing except one from a
+> profile stating `ListsEveryEntry`; both NFS profiles state it, so an NFS
+> listing is never filtered. The capability's
 > zero value filters, so an adapter that leaves it unset hides names rather than
 > shows them. A hidden name still exists, so an NFS client's create of it
 > fails with "exists" and `rm -r` of its parent with "not empty", with nothing the
