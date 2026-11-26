@@ -919,7 +919,7 @@ material" (but its crash leg, epic 19's), §15.2's "§10 occupancy triggers evic
 stays green; RFC 8 E3, E11, E33 hold.
 
 **Expected content:**
-- The eviction loop per journal, started at start step 7, triggered by allocated occupancy, with
+- The eviction loop per journal, which epic 19's start step 7 starts, triggered by allocated occupancy, with
   `evict` by segment and RFC 8 §10.1's `ponytail:`; the loop's fixed tick (§4.3).
 - `repackDue` in the loop; the repack-at-refusal `ponytail:` and the dirty-bytes `decision:` deleted.
 - Steps 2 and 3 in the refusal's caller for the journal's own capacity: eviction by segment, then
@@ -936,7 +936,7 @@ stays green; RFC 8 E3, E11, E33 hold.
   attempt then abandoned and its extents offered again under current material (RFC 8 §10.4 as
   amended), with its `decision:` on an undeclared loss. The legs: a destroy between pin and
   Commit, a master key's destroy refusing a commit on a data key it wraps, between Commit and Mark, and with no replacement material (epic 15's Intent refusal).
-- Eviction never gated by locks, opens or snapshots; a retention pin honoured as policy; a
+- Eviction never gated by locks, opens or snapshots; a retention pin deferred (§6.1); a
   `decision:` at `evict` that it trusts the offloaded bit while bucket-setting drift goes undetected
   (§6.1's drift row), withdrawn when `Recheck` runs.
 - The counters of RFC 8 §14's local-space row.
@@ -1180,6 +1180,7 @@ proposed targets: the first real-service run does (§6.1).
 | The master-key destroy's check that no retained salvage export names the key (RFC 5 Appendix B.2), now that epic 20 writes exports | the destroy lands with its first caller | RFC 5's plan | the master-key destroy lands |
 | The benchmarks run per change against an emulator (§6 point 4) | a per-change cell needs a baseline, which epic 22 records first | unowned | the RFC 4 plan's epic 3 brings LocalStack into `integration` and epic 22 has recorded the baselines |
 | §15.4's daily runs against each real service, and the real-service baselines that replace its proposed targets (its `decision:`) | CI holds no real-service credentials and runs no daily cell | unowned | CI gains a daily cell with real-service credentials |
+| An operator's retention pin excluding a share from eviction (RFC 8 §10.4's MAY; §10.2's second row) | no setting or record names a pin; epic 18 evicts every share alike | unowned | a setting or record names a retention pin |
 | An eviction loop woken by the journal's occupancy crossing its target, not a fixed tick (§4.3) | the fixed tick's lag is covered by the inline refusal path | unowned | B3 shows refusals a sooner eviction would have avoided |
 | Fuzz or model targets for the queue's keys and the pacing law (rule 2, RFC 8 §15.3's `ponytail:`) | tables check them | unowned | a table check misses a bug a random input would have found |
 | RFC 8 §16 Q6: upload delay for young data, and manual sync | unspecified policy | unowned | a measurement shows re-uploads of soon-overwritten data |
