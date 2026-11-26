@@ -55,8 +55,8 @@ review and declined there.
 §7's row map needs them.
 **Defaults used from Step 0:** dashboards none (#9); output path the default (#10). Where v2 lives
 is RFC 20's plan §4's layout, its differences flagged in §6.2. The target branch is
-`feat/storage-v2`; the plan document itself lands on `develop` and is cherry-picked, as the other
-planning documents are. External dependencies: RFC 20's plan's S1, S2 and S3, its epic 6's SMB half,
+`feat/storage-v2`; the plan document lands there too, as the other
+planning documents do. External dependencies: RFC 20's plan's S1, S2 and S3, its epic 6's SMB half,
 and its S4 (`internal/node`, #4050's S2) for anything node-level; RFC 18's plan (#4058), its S2
 and E5 to E8, for sign-in (§3.2).
 

@@ -620,8 +620,9 @@ the same three methods as the engine's `Clock`, declared beside its `Deps`.**
 **D10. A transfer reports its wire bytes to a `remote.Meter`.**
 - RFC 3 §2.4's floor, stall and trickle rules, first-byte bound and worker-time estimate, and §2.12's
   `syncer_bytes_total`, measure encoded bytes, which only the codec sees. So the syncer passes a
-  `remote.Meter` into every call of `attempt` and every `Store.Get`: `Moved(n)` per count of body
-  bytes sent or read, and `Sent()` once a put's last body byte has gone, from which the first-byte
+  `remote.Meter` into every call of `attempt` and every `Store.Get`: `Moved(n)` per count of the
+  encoded block's bytes sent or read, header and index included when the transfer carries them,
+  and `Sent()` once a put's last byte has gone, from which the first-byte
   bound runs again to the acknowledgement. `FetchRaw` reads the body itself and needs none.
 - `Meter` is a value type of `pkg/remote`'s contract (two func fields, no behaviour), so the codec
   needs no edge to the syncer.

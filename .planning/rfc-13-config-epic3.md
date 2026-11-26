@@ -318,7 +318,8 @@ leaves the `decision:` note only.
   exception less. The plan's rule 3 and epic 3 content dropped it in #4696, and E1's doc, rule 11
   row and T1.7 caller list included, in #4773, both merged. No marker.
 - **D6, the block format version's key rides an option on `Of`.** RFC 13 Appendix B's "block
-  format version to write" row names no key, and no RFC 4 plan declares one yet, but the gate
+  format version to write" row named no key, and no RFC 4 plan declared one when this was written
+  (the RFC 4 plan's epic 7 now declares `remote.block_format_version`), but the gate
   needs its key anchored the same way S1 anchors the rest of the surface: `Of` gains one option,
   `FormatVersion(field)`, naming the field whose key holds the block format version, and
   `Check`, keeping the signature S1 freezes, runs the gate on the key that option marks, reading

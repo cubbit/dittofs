@@ -609,8 +609,7 @@ Checkpoint after T6.3: the sweep runs by hand on any host with the corpus. T6.1 
 
 A suggestion only: one pull request per subtask works as well. The code lands on `feat/storage-v2`;
 the RFC text each pull request edits (§10.6's suites line, Appendix C, §3.2, §11, RFC 13 Appendix
-B) goes to `develop` in a pull request of its own and is cherry-picked onto `feat/storage-v2`, as
-the programme's other RFC edits are.
+B) goes to `feat/storage-v2` in a pull request of its own, as the programme's other RFC edits do.
 
 ## 9. Open points
 

@@ -116,7 +116,7 @@ already done, and what remains is smaller and different:
   as `TestInitRefusesAV1Store` does, never from v1's code, so E2 can delete that code in either
   order.
 - E3 T3.3 waits for Marco's answer to D4, because it changes `node.Preflight`, RFC 23 §2.1's
-  surface. The RFC edit lands on `develop` first and is then cherry-picked.
+  surface. The RFC edit lands on `feat/storage-v2` directly.
 - E3 T3.3 also needs E1 T1.1. Its row "a key that is not the installation's answers
   unidentifiable" needs T1.1's `Open`: today `Open` answers `ErrNotInitialised` whenever the
   format record is missing (`store.go:139-140`). E1 and E3 may go to different people (below), so
@@ -208,7 +208,7 @@ already done, and what remains is smaller and different:
      KV branch only receives a KV that was already written to. The deferral ledger holds the row
      that would retire the write.
    - `decide` is unchanged.
-   - The RFCs are edited in four places, on `develop` before T3.3 and then cherry-picked:
+   - The RFCs are edited in four places, on `feat/storage-v2` before T3.3:
      - §2.1's signature, and the whole `Preflight` description above it (:473-479). That includes
        "before it opens the metadata store's KV", "creates nothing", and the "**(cluster)**: a
        cluster node's store has no directory" sentence, which described the rejected alternative.
