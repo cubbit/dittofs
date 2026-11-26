@@ -1919,9 +1919,17 @@ type Context struct {
 	Keys    vfs.Keys        // RFC 18 §3.1's Session, Subkey and APRep; Session is NTLM's exported session key, or RFC 4121 §2's context key (the authenticator's subkey when present, since the acceptor sends none); never in an Identity
 	MIC     func(msg []byte) ([]byte, error)            // RFC 4121: krb5i, the RPCSEC_GSS verifier
 	VerifyMIC func(msg, tok []byte) error               // RFC 4121: a peer's MIC token, the RPCSEC_GSS verifier and krb5i
-	Wrap    func(msg []byte) ([]byte, error)            // RFC 4121: krb5p
-	Unwrap  func(tok []byte) ([]byte, error)
+	Wrap    func(msg []byte) ([]byte, error)            // RFC 4121 §4.2.6.2's sealed Wrap token, krb5p's: built in msg's array, the message after WrapHeadroom reserved bytes and WrapTailroom more within msg's capacity
+	Unwrap  func(tok []byte) ([]byte, error)            // RFC 4121: krb5p, a peer's Wrap token unsealed in place; the message is a slice of tok
 }
+
+// WrapHeadroom and WrapTailroom are the room Wrap seals a message in: the
+// token header and the confounder before it, the header's copy and the
+// checksum after it, so a krb5p reply is sealed where it was encoded.
+const (
+	WrapHeadroom = 16 + 16 // header, AES confounder
+	WrapTailroom = 16 + 12 // header's copy, HMAC-SHA1-96
+)
 
 // Exchanges holds exchanges in progress, keyed by the protocol's handle for
 // one — an SMB session ID, an RPCSEC_GSS context handle — each bounded by the
