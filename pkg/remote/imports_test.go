@@ -134,9 +134,7 @@ func rowOf(table []row, pkg string) (row, bool) {
 
 // check returns each violation of table by pkgs: a package with no row, a
 // module package its row does not let it reach, and a library outside the
-// standard library its row does not let it import. Libraries are checked where
-// they are imported only, since no library imports one of the module's
-// packages.
+// standard library its row does not let it reach, transitively.
 func check(pkgs []listed, table []row) []string {
 	var bad []string
 

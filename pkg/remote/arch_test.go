@@ -302,6 +302,11 @@ func impurities(dir string, planted ...string) ([]string, error) {
 			return nil, err
 		}
 
+		// A file of another package is skipped, as exports skips it.
+		if f.Name.Name != "remote" {
+			continue
+		}
+
 		for _, decl := range f.Decls {
 			switch d := decl.(type) {
 			case *ast.FuncDecl:
@@ -372,6 +377,7 @@ func TestRemoteExports(t *testing.T) {
 			return slices.Replace(want, slices.Index(want, storeExport), slices.Index(want, storeExport)+1, changedStore)
 		}, []string{"extra export: " + storeExport, "missing export: " + changedStore}},
 		{"behind a build tag", hiddenCase, nil, []string{"extra export: func Hidden()"}},
+		{"a file of another package", "generator.go", nil, nil},
 	} {
 		dir := "."
 
@@ -416,6 +422,7 @@ func TestRemoteIsPure(t *testing.T) {
 		{"free function", "free_func.go", []string{"func helper is not a method"}},
 		{"init", "init.go", []string{"func init is not a method"}},
 		{"behind a build tag", hiddenCase, []string{"func Hidden is not a method"}},
+		{"a file of another package", "generator.go", nil},
 	} {
 		dir := "."
 
