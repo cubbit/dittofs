@@ -2927,7 +2927,9 @@ says the file ends at or before that offset, as a short read does there.
   engine asks the journal again, as [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata) does: keyed on `applied` alone it misses
   a pending existence split over several transactions.
 - It **MUST** fail the read as **Lost** when an answer names a location that
-  already missed, or names a chunk with no chunk record.
+  already missed, or names a chunk with no chunk record or whose record names a
+  deleted block or a block with no record: such a span carries no location
+  ([RFC 6 §8.1](rfc-6-block-metadata.md#8.1%20Covering%20lookup)).
 - A ranged read that fails verification is **corrupt**, not stale, and **MUST
   NOT** trigger re-resolution; neither does a transport error or a timeout.
 
@@ -4085,7 +4087,7 @@ remote, cold, or pinned. Residency is computed ([RFC 0 §4.2](rfc-0-data-lifecyc
 | E11 | Only the offloaded bit — set after the offload commit, cleared when the remote body's material is destroyed — decides whether an extent may be evicted; journal durability never does. |
 | E12 | Sustained offload failure is a health condition, distinct from an unreachable remote. |
 | E13 | No background work outlives a component it uses. |
-| E14 | A get that finds its object absent re-runs the covering lookup while the location changes, and fails as **Lost** only when a location misses twice or a named chunk has no record. |
+| E14 | A get that finds its object absent re-runs the covering lookup while the location changes, and fails as **Lost** only when a location misses twice or a named chunk has no record, or no live block ([RFC 6 §8.1](rfc-6-block-metadata.md#8.1%20Covering%20lookup)). |
 | E15 | Existence is answered from the journal until committed — before the stability reply for an overwrite, lazily otherwise, up to the cut points behind a closed gate — always after the sync that made it recoverable, and re-applied at recovery before a file is served, except an unread file, which takes writes before its re-apply and serves no read ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal), [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). |
 | E16 | An upload survives a removal under it; its commit drops every ref overlapping a removal of higher version than the ref's `newest`, straddlers whole, and reports none of their extents. |
 | E17 | Correctness never depends on the per-file guard; the metadata store's conflicts order commits. |

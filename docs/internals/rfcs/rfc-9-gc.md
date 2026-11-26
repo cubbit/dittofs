@@ -1170,7 +1170,8 @@ is in flight.
 When the remote store reports a block absent, the read path **MUST** resolve the
 chunk again and retry **while the resolved block name keeps changing**, bounded
 by the read's deadline, and **MUST** report **Lost** only when the same block name
-misses twice or no chunk record for the chunk exists ([RFC 8 §7.7](rfc-8-engine.md#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)). A fixed retry
+misses twice, or no chunk record for the chunk exists or its record names a deleted block or
+a block with no record ([RFC 8 §7.7](rfc-8-engine.md#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)). A fixed retry
 count turns two compactions in a row into a spurious error; retrying a name that
 did not change turns a lost chunk into a hung read.
 
