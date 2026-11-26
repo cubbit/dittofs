@@ -1508,6 +1508,8 @@ func TestRefusedSectionKeepsRunning(t *testing.T) {
 
 	h.Node().OnApply(func(kvstore.Counters) { applies.Add(1) })
 
+	armed := armWaits(h)
+
 	port := freePort(t)
 
 	putSettings(t, h, adapterRows("adapters.smb", true, port))
@@ -1531,15 +1533,7 @@ func TestRefusedSectionKeepsRunning(t *testing.T) {
 	refusedAt, settled := refused[0].Generation, applies.Load()
 
 	for range 3 {
-		moved := h.Node().Moved()
-
-		h.Clock().Advance(time.Second)
-
-		select {
-		case <-moved:
-		case <-time.After(10 * time.Second):
-			t.Fatal("no reconcile pass within 10 s of the clock advancing 1 s")
-		}
+		walkTurn(t, h, armed)
 	}
 
 	if got := applies.Load(); got != settled {
