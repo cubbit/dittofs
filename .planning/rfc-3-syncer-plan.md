@@ -302,8 +302,8 @@ entries, so it binds nothing here.
      - `pkg/syncer/pool`, the implementation: `pkg/syncer`, `pkg/syncer/pool/internal/sched` and
        `pkg/remote`'s contract;
      - `pkg/syncer/pool/internal/sched`: nothing more;
-     - `pkg/syncer/syncertest`: `pkg/syncer`, `pkg/remote`'s contract, `pkg/sim` and
-       `internal/prof`; it imports no codec and no store, since its caller opens both (D2).
+     - `pkg/syncer/syncertest`: `pkg/syncer`, `pkg/remote`'s contract and `internal/prof`; it
+       imports no codec, no store and no `pkg/sim`, since its caller opens both and moves time (D2).
 
      Every package also has the standard library, and a package missing from the list fails the
      test. It names no exception, and checks production code only: tests import what they need,
@@ -334,7 +334,7 @@ entries, so it binds nothing here.
 | # | Epic | Content | Subtasks | Man-days | Track | Blocks |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | **Interfaces** ⛔ | RFC 3 §1.3's surface for v1.1 in `pkg/remote`'s types, `Stats`, the configuration, `Clock`, the transitive import test | 4 | 5 | team | **everything** |
-| 2 | **Test foundations** ⛔ | per-call faults on RFC 4's fault wrapper, the Group A suite's frame | 4 | 8 | team | **all testing** in 3 to 7 and 9 |
+| 2 | **Test foundations** ⛔ | per-call faults on RFC 4's fault wrapper, the Group A suite's frame | 3 | 8.5 | team | **all testing** in 3 to 7 and 9 |
 | 3 | **Registration, flows and the fair scheduler** ⛔ | registry, flows, lifecycle, two pools, classes, two-level DRR, caps, queues, the waiter bound, the reference model; a minimal single-attempt `Upload`, `Fetch` and `Prefetch` | 11 | 35 | A | 4, 5, 6 |
 | 4 | **Termination, retries and the uploader** ⛔ | both halves' attempt loop, the wire-byte meter, the retry budget, throttling, the floor, the first-byte bound, slow tail, unknown outcomes; `Upload` complete | 7 | 23 | B | 5, 6, 7 |
 | 5 | **Store health** | the step function and its one backoff, probe loops, the failure window, causes, refusal, the two log lines, the `health.Source` | 5 | 13 | C | 7, RFC 8 offload plan epic 21 |
@@ -342,9 +342,9 @@ entries, so it binds nothing here.
 | 7 | **Memory bound, `Stats` and the fault sweep** | the per-worker bound, the fit to the transfers pool, the consistent snapshot, the held-pool heap check, the systematic sweep and the store changes, `unit/syncer-allocs` | 4 | 11.5 | B | 9 |
 | 8 | **Integration: the syncer's own** | the two settings; the collector in `internal/node/content` | 2 | 5 | C | RFC 8 offload plan epic 21 |
 | 9 | **E2E green** | B1 to B5 in `syncer-bench`, RFC 3 §8.5's targets recorded | 4 | 10 | team | — |
-| | **Total** | | **50** | **140.5** | | |
+| | **Total** | | **49** | **141** | | |
 
-**Plan estimate: 50 subtasks, 140.5 man-days.**
+**Plan estimate: 49 subtasks, 141 man-days.**
 
 RFC 3 is about 2,220 lines, which gives N = 6. Its cohesive areas are six:
 - the scheduler and its registry;
@@ -504,8 +504,8 @@ suite.**
   faults it can inject and the checksum modes it can select: RFC 4's fault wrapper here, the fault
   proxy in epic 21. A row needing a fault or mode the caller cannot give (a dropped response to a
   committed put, a byte flipped on the first get only, a past-the-end refusal) is skipped by name
-  and reported, never passed. Epic 2 lands its frame, and epics 3, 4 and 6 add their rows, the
-  lifecycle rows among epic 3's.
+  and reported, never passed. Epic 2 lands only its frame, and epics 3, 4 and 6 add their rows,
+  the lifecycle rows and the in-memory opener among epic 3's.
 - **Prior art.** The journal's conformance suite; Go's `testing/fstest.TestFS`.
 - **Applied by** epics 2, 3, 4 and 6.
 
@@ -673,7 +673,7 @@ set.
 
 ### Epic 2 — Test foundations ⛔
 
-**Epic 2 estimate: 4 subtasks, 8 man-days.**
+**Epic 2 estimate: 3 subtasks, 8.5 man-days.**
 
 Epic 2 delivers the harness every check shares (§1.4) over RFC 4's in-memory store; it builds no
 store of its own (D2). It starts at S1 and RFC 4 plan R4-S2.
