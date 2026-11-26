@@ -357,15 +357,17 @@ stack_dev_user() {
     bin="$STATE/bin/$(uname -s)-$(uname -m)${DT_IN_CONTAINER:+-dtc}/dfsctl"
     (cd "$REPO" && go build -o "$bin" ./cmd/dfsctl)
     export XDG_CONFIG_HOME="$STATE/dfsctl"
-    "$bin" login --server "http://$STACK_HOST:8080" --username admin --password "$STACK_ADMIN_PW" >/dev/null
+    "$bin" login --server "http://$STACK_HOST:8080" --username admin --password-file <(printf '%s\n' "$STACK_ADMIN_PW") >/dev/null
     if ! "$bin" user get "$STACK_USER" >/dev/null 2>&1; then
         # The host's uid, which dtc passes in, so files made through the host's
         # mounts are the caller's.
         uid="${DT_HOST_UID:-$(id -u)}"
-        "$bin" user create --username "$STACK_USER" --password "$STACK_USER_PW" --uid "$uid" >/dev/null
+        "$bin" user create "$STACK_USER" --uid "$uid" >/dev/null
         info "created SMB user '$STACK_USER' (uid $uid)"
     fi
-    "$bin" share permission grant /export --user "$STACK_USER" --level read-write >/dev/null 2>&1 || true
+    # Set each time, so a user a failed earlier run created without one gets it.
+    "$bin" user set-password "$STACK_USER" --password-file <(printf '%s\n' "$STACK_USER_PW") >/dev/null
+    "$bin" grant set export --user "$STACK_USER" --access read-write >/dev/null
 }
 
 # --- cleanup -------------------------------------------------------------------------

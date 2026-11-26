@@ -27,7 +27,7 @@ echo '!touch /tmp/m1' >&3
 for _ in $(seq 1 100); do test -e /tmp/m1 && break; sleep 0.1; done
 cmp /tmp/r/before /tmp/f
 
-dfsctl share permission revoke /test --user tester
+dfsctl grant remove test --user tester
 echo 'get f revoked' >&3
 echo 'put /tmp/w/w w-revoked' >&3
 echo '!touch /tmp/m2' >&3
@@ -39,7 +39,7 @@ smbclient //127.0.0.1/test -c 'lcd /tmp/r; get f revoked-new' && SN='read' || SN
 nfs-cp "nfs://127.0.0.1/test/f$N" /tmp/r/nfs-revoked && NN='read' || NN=refused
 nfs-cp /tmp/w/w "nfs://127.0.0.1/test/n-revoked$N" && NW=written || NW=refused
 
-dfsctl share permission grant /test --user tester --level read
+dfsctl grant set test --user tester --access read
 echo 'get f granted' >&3
 echo 'put /tmp/w/w w-granted' >&3
 echo '!touch /tmp/m3' >&3
@@ -50,7 +50,7 @@ smbclient //127.0.0.1/test -c 'lcd /tmp/r; get f granted-new' && SGN='read' || S
 smbclient //127.0.0.1/test -c 'lcd /tmp/w; put w w-granted-new' && SGW=written || SGW=refused
 nfs-cp "nfs://127.0.0.1/test/f$N" /tmp/r/nfs-granted && NGR='read' || NGR=refused
 nfs-cp /tmp/w/w "nfs://127.0.0.1/test/n-granted$N" && NGW=written || NGW=refused
-dfsctl share permission grant /test --user tester --level read-write
+dfsctl grant set test --user tester --access read-write
 cat /tmp/smb.out
 smbclient //127.0.0.1/test -c 'ls' | tee /tmp/ls
 command ls -l /tmp/r
@@ -58,8 +58,8 @@ echo "revoked: smb open read $(test -s /tmp/r/revoked && echo read || echo refus
 echo "read: smb open read $(test -s /tmp/r/granted && echo read || echo refused), smb open write $(grep -q 'w-granted ' /tmp/ls && echo written || echo refused), smb new read $SGN, smb new write $SGW, nfs new read $NGR, nfs new write $NGW"
 
 test ! -s /tmp/r/revoked
-! grep -q w-revoked /tmp/ls
+if grep -q w-revoked /tmp/ls; then exit 1; fi
 test "$NH/$SN/$NN/$NW" = refused/refused/refused/refused
 test ! -s /tmp/r/granted
-! grep -q 'w-granted ' /tmp/ls
+if grep -q 'w-granted ' /tmp/ls; then exit 1; fi
 test "$SGN/$SGW/$NGR/$NGW" = read/refused/read/refused

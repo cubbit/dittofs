@@ -4,13 +4,13 @@
   status: fail
   fix: planned
   category: bug
-  reason: 'A misspelt block-store config key ("compresion") is accepted and ignored, at `test -e /tmp/b4.rc`. Past it, a used store''s bucket and prefix edits are accepted too.'
+  reason: 'A misspelt store setting ("remote.compresion") is accepted and ignored, at `test -e /tmp/b4.rc`. Past it, a used namespace''s bucket and prefix edits are accepted too.'
   issue: '#3048'
 - test: test/scenarios/11-smb-2stores-same-bucket-xs.sh
   status: fail
   fix: planned
   category: bug
-  reason: 'A second block store on the same bucket and prefix is accepted, at `test "$Y" = refused`.'
+  reason: 'A second namespace on the same bucket and prefix is accepted, at `test "$Y" = refused`.'
   issue: '#3036'
 - test: test/scenarios/13-smb-compression-frame-magic-xs.sh
   status: fail
