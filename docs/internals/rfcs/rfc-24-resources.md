@@ -425,6 +425,9 @@ var ErrTooLarge = errors.New("resources: charge past the ceiling")
 // WaitBudget, then zeroes the Reservation, so a second Release does nothing.
 type Reservation struct{ /* unexported: the budget it came from, the key, the bytes */ }
 func (r *Reservation) Release()
+// Shrink lowers the Reservation to n bytes and returns the rest as Release does;
+// an n at or above what it holds changes nothing, so a Reservation never grows.
+func (r *Reservation) Shrink(n int64)
 
 // Budgets is what an adapter is handed (RFC 20 §3.4): the four budgets on the
 // request path, and the node's connection count.
