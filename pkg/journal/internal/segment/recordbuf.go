@@ -24,6 +24,11 @@ const (
 // shared by every stream, for a buffer never outlives the append that drew
 // it, and sync.Pool is already per-P; Close needs no teardown, since it
 // waits out every append in flight, and idle buffers go back to the GC.
+//
+// ponytail: power-of-two classes let an append in flight hold up to about
+// twice its record's size, and an idle buffer, up to maxPooledRecord, stays
+// in its P's pool until two collections pass. Add half-step classes when a
+// heap profile shows the pooled buffers.
 var recordBufs [maxRecordClass - minRecordClass + 1]sync.Pool
 
 // recordClass is the index into recordBufs of the smallest class whose
@@ -55,10 +60,12 @@ func getRecordBuf(size int64) *[]byte {
 }
 
 // putRecordBuf hands a buffer from getRecordBuf back to its class, emptied.
-// The caller keeps no slice of it.
+// The caller keeps no slice of it. A buffer whose capacity is not exactly its
+// class's, one an encode grew for instance, is dropped, so every buffer a class
+// hands out holds what the class promises.
 func putRecordBuf(p *[]byte) {
 	c, ok := recordClass(int64(cap(*p)))
-	if !ok {
+	if !ok || cap(*p) != 1<<(c+minRecordClass)+recordOverhead {
 		return
 	}
 	*p = (*p)[:0]

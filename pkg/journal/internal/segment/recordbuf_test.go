@@ -44,3 +44,15 @@ func TestRecordClassIsTheSmallestThatHoldsTheRecord(t *testing.T) {
 		putRecordBuf(p)
 	}
 }
+
+// TestPutRecordBufDropsABufferOffItsClass checks that a buffer whose capacity
+// is not exactly its class's never comes back from the pool: a 5000-byte one,
+// below class 1's 8320, would otherwise be handed out for a record it cannot
+// hold.
+func TestPutRecordBufDropsABufferOffItsClass(t *testing.T) {
+	b := make([]byte, 0, 5000)
+	putRecordBuf(&b)
+	if p := getRecordBuf(8000); cap(*p) < 8000 {
+		t.Fatalf("getRecordBuf(8000) after a 5000-byte put = capacity %d, want at least 8000", cap(*p))
+	}
+}

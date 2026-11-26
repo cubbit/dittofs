@@ -1009,13 +1009,10 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 		// record's buffer goes to the sink, which keeps it, so it is
 		// allocated per call.
 		//
-		// ponytail: records above 1 MiB of payload bypass the pool and
-		// allocate per call; add classes when a profile of larger writes shows
-		// the allocation. The payload is still copied into the buffer, which
-		// only a vectored write would avoid. What else a warm write allocates
-		// is the deferred leaveDrain below (a defer in a loop), the capacity
-		// Grant, Share.enter's exit method value, and the file lock's entry
-		// and unlock closure, rebuilt per write when one writer holds the file.
+		// ponytail: records above maxPooledRecord, 1 MiB + 128 bytes whole,
+		// bypass the pool and allocate per call; add classes when a profile of
+		// larger writes shows the allocation. The payload is still copied into
+		// the buffer, which only a vectored write would avoid.
 		var pooled *[]byte
 		if hasPayload {
 			pooled = getRecordBuf(size)
