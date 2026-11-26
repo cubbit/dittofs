@@ -2,10 +2,14 @@ package gss
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"sync/atomic"
+
+	"github.com/jcmturner/gokrb5/v8/crypto/common"
 
 	"github.com/cubbit/dittofs/pkg/vfs"
 )
@@ -22,12 +26,14 @@ const (
 // RFC 4121 §4.2.2's flags.
 const (
 	flagSentByAcceptor byte = 0x01
+	flagSealed         byte = 0x02
 	flagAcceptorSubkey byte = 0x04
 )
 
 // KerberosContext is a Kerberos context under keys for the side that holds
 // it: the acceptor's, or with initiator the initiator's. The side picks the
-// key usages and flags its tokens carry, and the key usage of its peer's.
+// key usages and flags its MIC and Wrap tokens carry, and the key usages of
+// its peer's.
 // keys.Session is the context key, of one of the two types the tokens are
 // built for.
 //
@@ -38,10 +44,18 @@ const (
 // gokrb5 derives once here. Overturned if gokrb5 gains a checksum over a
 // message in place.
 func KerberosContext(ev vfs.Evidence, keys vfs.Keys, initiator bool) (*Context, error) {
+	return kerberosContext(ev, keys, initiator, rand.Reader)
+}
+
+// kerberosContext is KerberosContext drawing its Wrap tokens' confounders
+// from random.
+func kerberosContext(ev vfs.Evidence, keys vfs.Keys, initiator bool, random io.Reader) (*Context, error) {
 	sendUsage, recvUsage := usageAcceptorSign, usageInitiatorSign
+	sealUsage, unsealUsage := usageAcceptorSeal, usageInitiatorSeal
 	flags, peer := flagSentByAcceptor, byte(0)
 	if initiator {
 		sendUsage, recvUsage = recvUsage, sendUsage
+		sealUsage, unsealUsage = unsealUsage, sealUsage
 		flags, peer = peer, flags
 	}
 	// RFC 4121 §2: once the acceptor asserts a subkey in the AP-REP, every
@@ -50,29 +64,41 @@ func KerberosContext(ev vfs.Evidence, keys vfs.Keys, initiator bool) (*Context, 
 		flags |= flagAcceptorSubkey
 		peer |= flagAcceptorSubkey
 	}
-	send, err := newChecksummer(keys.Session, sendUsage)
+	send, err := newChecksummer(keys.Session, common.GetUsageKc(sendUsage))
 	if err != nil {
 		return nil, err
 	}
-	recv, err := newChecksummer(keys.Session, recvUsage)
+	recv, err := newChecksummer(keys.Session, common.GetUsageKc(recvUsage))
 	if err != nil {
 		return nil, err
 	}
-	m := &micKeys{send: send, recv: recv, flags: flags, peer: peer}
-	return &Context{Evidence: ev, Keys: keys, MIC: m.mic, VerifyMIC: m.verify}, nil
+	seal, err := newSealer(keys.Session, sealUsage)
+	if err != nil {
+		return nil, err
+	}
+	unseal, err := newSealer(keys.Session, unsealUsage)
+	if err != nil {
+		return nil, err
+	}
+	m := &tokenKeys{send: send, recv: recv, seal: seal, unseal: unseal, flags: flags, peer: peer, rand: random}
+	return &Context{Evidence: ev, Keys: keys, MIC: m.mic, VerifyMIC: m.verify, Wrap: m.wrap, Unwrap: m.unwrap}, nil
 }
 
-// micKeys is one side's MIC state: its checksum keys for each direction, its
-// flags and the peer's, and its sent tokens' sequence numbers.
-type micKeys struct {
-	send, recv  *checksummer
-	flags, peer byte
-	seq         atomic.Uint64
+// tokenKeys is one side's per-message state: its checksum and sealing keys
+// for each direction, its flags and the peer's, the source of its
+// confounders, and its sent tokens' sequence numbers, one count for MIC and
+// Wrap tokens alike.
+type tokenKeys struct {
+	send, recv   *checksummer
+	seal, unseal *sealer
+	flags, peer  byte
+	rand         io.Reader
+	seq          atomic.Uint64
 }
 
 // mic is msg's MIC token. It reads msg where it lies; the token is the one
 // allocation, room for the HMAC's whole sum before its truncation.
-func (m *micKeys) mic(msg []byte) ([]byte, error) {
+func (m *tokenKeys) mic(msg []byte) ([]byte, error) {
 	tok := appendMICHeader(make([]byte, 0, micHeaderLen+20), m.flags, m.seq.Add(1)-1)
 	return m.send.appendSum(tok, msg, tok), nil
 }
@@ -85,7 +111,7 @@ func (m *micKeys) mic(msg []byte) ([]byte, error) {
 // decision: the token's sequence number is not checked. RPCSEC_GSS keeps its
 // own window over its calls, and its clients ask for no GSS replay or
 // sequence detection. Overturned if a client is ever seen asking for either.
-func (m *micKeys) verify(msg, tok []byte) error {
+func (m *tokenKeys) verify(msg, tok []byte) error {
 	flags, _, sum, err := parseMIC(tok)
 	if err != nil {
 		return err
