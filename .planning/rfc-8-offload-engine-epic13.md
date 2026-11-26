@@ -147,7 +147,7 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; "(as amen
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R22 | The scheduler turns its loop (`Turn`) after each dispatch and each run's return, from the dispatcher, so a dispatcher that stops turns no loop however many runs return | MUST | §6.1.1 (as amended); RFC 25 §3.5 | T13.4 |
-| R23 | It reports `Idle` only while no entry is due, or while every slot a due entry waits for holds a run that is not overdue (D14 reads "waits for"), and while it waits it repeats `Idle` at least every 30 s; so a lost wakeup with entries due and a slot free, or a source whose slots all hold overdue runs, fails liveness within the watchdog's 60 s | MUST | §6.1.1 (as amended); RFC 25 §3.5 | T13.4 |
+| R23 | It withholds `Idle` only while an entry is dispatchable now (due, and its tenant and source under their bounds), or while a source with entries due has every slot held by an overdue run (D14's reading of "the slots it waits for"); otherwise it reports `Idle`, and while it waits it repeats `Idle` at least every 30 s; so a lost wakeup with entries due and a slot free, or a source whose slots all hold overdue runs, fails liveness within the watchdog's 60 s | MUST | §6.1.1 (as amended); RFC 25 §3.5 | T13.4 |
 | R24 | §15.2's "§6.1.1 a stuck run", over one instance: with two tenants holding work, a `Run` of one that ignores its ctx in every slot that tenant may hold makes `work_queue_stalled` (`Stalled`) name its source and tenant within twice `RunTimeout`, `engine_work_runs_overdue_total` (`OverdueRuns`) rise, and the other tenant's work still run; every slot of a source held by overdue runs, and separately one dispatch wakeup lost with entries due and a slot free, each fail liveness within 60 s | test row | §15.2; §6.1.1 (as amended) | T13.4 |
 
 **Concurrency and fairness**
@@ -201,8 +201,9 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; "(as amen
   it, so the delay of a key's n-th consecutive failure is drawn in [d/2, d], d = `BackoffMin`
   doubled n − 1 times and stopped at `BackoffMax` (doubling stops at the cap, so no failure count
   overflows it), from an FNV-1a hash of the key and n. Two keys failing together spread apart, a
-  test knows every delay exactly, and no global state is read. The RFC 3 plan takes the same rule
-  for the syncer's retries (a hash of the store and the attempt). `decision:` at the delay
+  test knows every delay exactly, and no global state is read. RFC 3's epic 4 breakdown (#5998, its
+  D3) takes the same kind of rule for the syncer's retries, as the user decided: an FNV-1a hash of
+  the store, the block name, the retry's kind and its attempt. `decision:` at the delay
   function, withdrawn if a measurement shows keys of one tenant retrying in lockstep. Prior art:
   "equal jitter" in AWS's "Exponential Backoff And Jitter" (from memory).
 - **D4, a `Deadline` counts from the key's first failure since it last left.** The clock starts at
@@ -301,7 +302,11 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; "(as amen
   shard, against §6.1.1's "a slow or throttled tenant holds only its own slots" and RFC 25 §3.5's
   "no dependency fails liveness". Read as the source's slots, the idle rule withholds `Idle` only
   for a lost wakeup or a source whose every slot is overdue, which is exactly §15.2's row; one
-  tenant's stuck runs raise `Stalled` (R20) and stay visible. Written as the source's slots; RFC 8
+  tenant's stuck runs raise `Stalled` (R20) and stay visible. Ceiling, named in the `decision:`:
+  R25's bound divides by the tenants with work, so once the others drain the hung tenant's bound
+  grows to the whole `Concurrency`, its next due keys take the free slots and hang too, and the
+  source reaches every slot overdue, which fails liveness under either reading. One hung tenant is
+  spared only while another tenant holds work. Written as the source's slots; RFC 8
   §6.1.1's sentence is amended to say so once the user agrees. `decision:` at the idle rule. Prior
   art: none found.
 
@@ -494,8 +499,10 @@ docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains R
     | every slot overdue | `TestEverySlotOverdueFailsLiveness` | every slot of the source held by overdue runs: `Live` false past 60 s | an `Idle` reported while every slot is overdue |
     | a lost wakeup | `TestLostWakeupFailsLiveness` | the clock wrapper loses the `After` of the dispatcher's wait for a due entry with a slot free: nothing dispatched, `Live` false past 60 s | a heartbeat that reports idle with work due, or that dispatches it (D6) |
 
-  - one tenant's runs all overdue while the source has free slots and no other work, `Live` true
-    past 60 s (catches D14's reading reversed).
+  - two tenants holding work: one whose runs all ignore their ctx, holding due entries at its R25
+    bound, below `Concurrency`; the other's entries in backoff past the test's window; the source
+    has free slots and no entry is dispatchable: `Live` true past 60 s (catches D14's reading
+    reversed, which withholds `Idle` for the stuck tenant's due entries).
 
   The wrapper is kind 3, around the real test clock.
 - **Rules:** rule 9: D6's and D14's `decision:` markers; rule 11: `OverdueRuns` and `Stalled` are
@@ -597,7 +604,8 @@ A suggestion only: one pull request per subtask works as well.
 - **D14, pending the user's answer: which slots an entry "waits for" in the idle rule.** Options:
   - **A (recommended, written in place):** its source's slots. Liveness fails for a lost wakeup or a
     source whose every slot is overdue, §15.2's two cases; one tenant's hung runs show as `Stalled`
-    and never restart the node. RFC 8 §6.1.1's idle sentence gains "of its source" once agreed.
+    and never restart the node while another tenant holds work (D14's ceiling). RFC 8 §6.1.1's
+    idle sentence gains "of its source" once agreed.
   - **B:** its tenant's slots, the sentence as written: a single shard whose store hangs every run
     restarts the node once the other shards drain, which RFC 25 §3.5's "no dependency fails
     liveness" argues against.
@@ -612,7 +620,7 @@ A suggestion only: one pull request per subtask works as well.
   serves, or `SetTenant` refuses a shard (D13), and the two sources' `Total`s sum to RFC 13's fixed
   262,144 entries per instance. `engine_lock_wait_seconds{area="work queue"}` has no scheduler
   figure: epic 14 times its `Post` calls, or asks for a `Stats` field in its own pull request. A lost
-  wakeup over the engine's instances (epic 12's proposed `DropNextWakeup`) needs no scheduler hook:
+  wakeup over the engine's instances needs no scheduler hook:
   the engine fixture's clock wrapped as T13.4's is loses the dispatcher's wait. Epic 14 (#5992)
   takes the lost-wakeup leg as T13.4's `TestLostWakeupFailsLiveness` over one instance, and one run
   per key and the backoff as T13.1's and T13.3's named tests.
