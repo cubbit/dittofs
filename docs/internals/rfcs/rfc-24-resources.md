@@ -304,7 +304,7 @@ sixteenth. It is not reserved by anyone and nothing waits for it.
 | **receive** | request buffers from frame until the call returns, writes' payloads included (§3.2) | 1/16 | 16 MiB | the connection's reader waits; the socket is not read, and TCP pushes back on the client |
 | **reply** | reply buffers from before the call until the writer has sent them (§3.3) | 1/16 | 16 MiB | the call waits, within its deadline; at the deadline `ErrDelay` with `DelayResources` |
 | **hold** | held requests' bytes past their connection's floor ([RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests)) | 1/16 | none | the adapter answers a request whose hold starts on an error the service returned at once, holding nothing: `STATUS_INSUFFICIENT_RESOURCES` over SMB (§4.3); a call still in the service is never refused |
-| **connection state** | each connection's fixed cost; sessions and their reply caches; security contexts (§4.4, §4.5) | 1/16 | 4 MiB | new connections closed at accept; a new session refused retry-later or granted fewer slots |
+| **connection state** | each connection's fixed cost; sessions and their reply caches (§4.4, §4.5); RPCSEC_GSS contexts (§2.5, [RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)) | 1/16 | 4 MiB | new connections closed at accept; a new session refused retry-later or granted fewer slots |
 | **open state** | opens, byte-range locks, lock waiters, caching grants, quota reservations; **(cluster)** the routed-request dedup table (§4.6) | 1/16 | 4 MiB | new state refused with `ErrDelay` and `DelayResources`; no caching grant offered; never a close or unlock; a reclaim only past its allowance |
 | **metadata store** | the store's in-process memory: caches, write buffers, compaction (§7.3) | 3/16 | 64 MiB | the store evicts; it never refuses |
 | **journal index** | the placement index of every journal ([RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) (§7.1) | 1/8 | none | the index's own refusal ([RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)), answered as [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s table does |
@@ -425,11 +425,13 @@ var ErrTooLarge = errors.New("resources: charge past the ceiling")
 // WaitBudget, then zeroes the Reservation, so a second Release does nothing.
 type Reservation struct{ /* unexported: the budget it came from, the key, the bytes */ }
 func (r *Reservation) Release()
-// Shrink lowers a Budget's Reservation to n bytes and returns the rest to its
+// Shrink lowers the Reservation to n bytes and returns the rest to its
 // budget; a negative n is taken as zero, and an n at or above what it holds
-// changes nothing, so a Reservation never grows. It applies to a Budget's
-// Reservation only, so neither a WaitBudget's waiters nor §4.2's share count
-// is involved. Release is still required; after Shrink(0) it returns nothing.
+// changes nothing, so a Reservation never grows. Its caller holds a Budget's
+// Reservation; on a WaitBudget's it also returns the bytes to its key's count
+// and grants waiters as Release does, but §4.2's share count keeps the call's
+// charge until the call ends. Release is still required; after Shrink(0) it
+// returns nothing.
 func (r *Reservation) Shrink(n int64)
 
 // Budgets is what an adapter is handed (RFC 20 §3.4): the four budgets on the
@@ -512,7 +514,7 @@ func Join(n int, bufs ...*Buf) *Buf // a chain's record (RFC 20 §4.7): an empty
   > memory past *L*.
 - **Charged, not measured.** No pool reads the heap to decide. A charge is
   exact for buffers, and a fixed per-kind cost for state (§4.4, §4.6), which
-  §8 measures. An RPCSEC_GSS context is the one exception: the node's context
+  §8 measures. An RPCSEC_GSS context is the one charged at a bound and then trimmed: the node's context
   table, not a connection, holds it, so it is charged per context to the
   connection-state pool, outside any connection's fixed cost, at an upper
   bound from its `INIT` token's length, and trimmed with `Shrink` once the
