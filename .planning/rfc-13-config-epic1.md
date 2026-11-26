@@ -102,7 +102,7 @@ title and not copied.
 | rule 8, real dependencies for properties of those dependencies | none | no property of a store, a key file or a journal directory is tested here; E2 and E4 test them on real ones |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T1.4, T1.6 | RFC 13 §7's `decision:` note (two wrapping keys) at `secrets.Role`, the site that declares the two roles; RFC 13's plan's D9 `decision:` note at `secrets.ErrUnproven` and `settings.ErrUnproven`; RFC 13's plan's D11 note is E3's, at `Check`'s body, and T1.6's own note on a secret's rotation sits at `Check`'s declaration |
 | rule 10, a test must be able to fail | T1.2 to T1.7 | each test fails on a planted break: a bootstrap key missing from RFC 13's table, a role swapped in the kind table, a `Value` printed by `%v`, an extra export, a symbol with no caller listed |
-| rule 11, a symbol is exported only if RFC 13's interfaces use it, or a component declares through it | T1.3 to T1.7 | the surface frozen here is R5 to R18; T1.7 pins each package's exports and lists each symbol's first caller, `Of`'s `FormatVersion(field)` option (E3's D6, first caller the section of RFC 4's plan that declares the block format version's key) and `(Table).WithMetrics` (E3's T3.9, first caller E5's T5.9, on the table T5.1 builds); these are the two exports added after the freeze |
+| rule 11, a symbol is exported only if RFC 13's interfaces use it, or a component declares through it | T1.3 to T1.7 | the surface frozen here is R5 to R18; T1.7 pins each package's exports and lists each symbol's first caller, `Of`'s `FormatVersion(field)` option (E3's D6, first caller the section of RFC 4's plan that declares the block format version's key) and `(Table).WithMetrics` (E3's T3.9, first caller E5's T5.9, on the table T5.1 builds) and `Advance` with its `Pass` (E3's T3.10, first caller E5's reconcile in `walkSettings` and `routeSettings`); these are the three exports added after the freeze |
 | rule 12, each subtask creates only what it declares | all | each package lands with the subtask that declares its whole surface; a stub is declared only where T1.7 names its caller in a later epic or plan (D4); no test helper lands without the test that uses it |
 
 ## 3. Requirements and invariants
@@ -127,7 +127,7 @@ declaration is another epic's, the row says which.
 | R5 | `Bootstrap` holds RFC 13 §2.2's facts but its scratch paths and the memory limit, each under Appendix C's key (#4486): the node's identity, the metadata store's backend, location and credential files, the journal devices and their paths, the adapters', the API's and the metrics listener's addresses, the API's TLS certificate and key, the log's destination, format, rotation and level, the roles, each role's wrapping key, and the API's local socket path `api.socket` (`dfs.sock` in the runtime directory by default, #4486). No key names the runtime directory itself, which R22's rules give | MUST | RFC 13 §2.2 (its table), Appendix C | T1.3 |
 | R6 | A bootstrap fact is not a record field, and a record field is not overridable from the host: `Bootstrap` declares no field a setting also holds. E2 refuses the host's other names | MUST NOT | RFC 13 §2.2 | T1.3, T1.7 |
 | R7 | The roles flag names `protocol` and `storage`; both is the only accepted value, which E2 enforces | MUST | RFC 13 §2.2 (roles row); RFC 15 §2.1, §2.2 | T1.3 |
-| R8 | Each role names a sealing key and its retired keys (`local.file` and `retired_files`, or `kmip.key_uid` and `retired_key_uids`). `keys.<role>.kind` is required for both roles, and the two roles name two different keys, different as `keyprovider` reports their IDs once loaded, not as paths compare, since a copied key file or a symbolic link to one is the same key (RFC 13's plan, epic 2); one key for both voids the split of RFC 13 §7. E2 refuses a file that breaks either, and `dfs config validate` with it, since it refuses what `Load` refuses and so loads the keys to compare the IDs | MUST | RFC 13 §2.2 (wrapping-key row), §7 ("Two wrapping keys, one per role", "A wrapping key rotates the same way"), Appendix C; RFC 13 plan, epic 2 | T1.3 |
+| R8 | Each role names a sealing key and its retired keys (`local.file` and `retired_files`, or `kmip.key_uid` and `retired_key_uids`). `keys.<role>.kind` is required for both roles, and the two roles name two different keys, different as their key IDs tell them, compared without unwrapping the keys: a local key file's `master_key_id`, a KMIP key's `KeyUID` with its endpoint, since a uid is scoped to its server (RFC 13's plan, epic 2); not as paths compare, since a copied key file or a symbolic link to one is the same key; one key for both voids the split of RFC 13 §7. E2 refuses a file that breaks either, and `dfs config validate` with it, since it refuses what `Load` refuses and so compares the two key IDs, with no key unwrapped and no key server called | MUST | RFC 13 §2.2 (wrapping-key row), §7 ("Two wrapping keys, one per role", "A wrapping key rotates the same way"), Appendix C; RFC 13 plan, epic 2 | T1.3 |
 | R9 | The node identity has three entry points: `NodeID`, which reads and compares every copy before the store opens and writes none; `InitNodeID`, for the initialisation step and a recovery import; `WriteMissingNodeIDs`, which writes a missing copy only beside a journal the store records for this node and device. E2 fills them | MUST | RFC 13 §2.2 (node identity row) | T1.3 |
 | R21 | An `api.listen` or `metrics.listen` address that is not loopback, without `api.tls.cert_file` and `api.tls.key_file`, refuses the start, whether it comes from the file or the environment. Loopback is `127.0.0.0/8` and `::1` only: `localhost`, `0.0.0.0` and `::` do not count. E2 enforces it, and `dfs config validate` with it | MUST | RFC 13 Appendix C (#4486); RFC 23 §5.3 | T1.1, E2 |
 | R22 | The runtime directory that holds `dfs.sock` is `$RUNTIME_DIRECTORY`, else `$XDG_RUNTIME_DIR/dittofs`, else a directory under the state directory that only the process's user owns (mode `0700`), and a caller on that socket is exempt from the sign-in throttle's source count. E2 makes the fallback directory with that mode, and the exemption is RFC 23's | MUST | RFC 13 Appendix C (#4486); RFC 23 §5.3 | T1.1, E2 |
@@ -583,14 +583,20 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
   `OverrideOnly(fields ...string)` (D9), with `OverrideOnly`'s exact signature frozen as part of `pkg/settings`' surface. `Of`'s sixth option, `FormatVersion(field)`, naming the field whose key holds the block
   format version, so that `Check` refuses a version past this node's range with
   `ErrFormatVersion`, is not this subtask's: E3's T3.6 adds it with its gate and to this pin, the
-  one of the two exceptions to the freeze (E3's D6; the other is `(Table).WithMetrics`, E3's T3.9);
+  one of the three exceptions to the freeze, with `(Table).WithMetrics` (E3's T3.9) and `Advance`
+  (E3's T3.10), which are E3's other two;
   - `Table`, `Snapshot`, `Read(ctx, r entity.SettingsReader, table, node)` returning the snapshot and
     the sections it refused, `Change`, and
     `Get[T any](snap *Snapshot, section string, node entity.NodeID) (T, error)` (an error for a
     section the snapshot holds no value of, such as one held at start),
     `Diff(prev, cur *Snapshot) []Change` (a nil `prev` makes every key a change) and
-    `(*Snapshot).Keep(section string, prev *Snapshot) *Snapshot` (the section's values from `prev`,
-    the rest from the receiver);
+    `(*Snapshot).Keep(section string, prev *Snapshot) *Snapshot` (`prev`'s values for what the
+    receiver refuses: in a section with one value per instance or per thing, only the refused
+    instance or thing, and the whole section only when its own value is refused, since a record that
+    does not validate stops only what it configures (RFC 13 §6). When the whole section is refused,
+    the whole section keeps its previous values, and an instance the previous snapshot does not hold
+    stays refused, with no value and no default, as in the new read (`Keep` in `diff.go`); the rest
+    from the receiver);
   - a `Table` built from two sections that declare one key panics and names both sections, so
     keys stay unique across sections and the table's first test fails on a clash;
   - `Write`, `Put(s)`, `Delete(scope, key)`, `HoldsContent` (`func(scope entity.SettingScope) (bool, error)`, so that a write that is not
@@ -646,7 +652,9 @@ pkg/{bootstrap,settings,secrets}/arch_test.go   T1.7  each package's exports pin
     listed with the section of RFC 4's plan that declares the block format version's key
     as its first caller, and `(Table).WithMetrics(*metrics.Registry) Table`, which E3's T3.9 adds after the freeze, is
     listed with E5's T5.9, whose call is on the table T5.1 builds, as its first caller. `OverrideOnly(fields ...string)` is listed with the node's table (plan §4.4), which
-    declares the adapters' sections, as its first caller.
+    declares the adapters' sections, as its first caller. `Advance` and its `Pass`, which E3's T3.10
+    adds after the freeze, are listed with the swap T3.10 itself makes in E5's reconcile, in
+    `walkSettings` and `routeSettings`, as their first caller.
 - **Acceptance criteria:**
   - Every symbol T1.3 to T1.6 deliver is exported (they are RFC 13's plan's S1 list), and nothing
     else is but D7's `New` and the `pkg/bootstrap` exports kept above, each with its caller.
@@ -696,7 +704,7 @@ so PR 3 starts once PR 2 is there. A suggestion only: one pull request per subta
   quote is re-read against the merged text. Pending #4486.
 - **`WriteMissingNodeIDs` differs from its caller.** RFC 23's epic 3 (T3.10) calls it with the
   store's `JournalID`, while T1.3's stub takes `recorded func(dir string) (bool, error)`, a
-  callback the caller builds from that read. The stub keeps the callback until T3.10 and E2 agree
+  callback the caller builds from that read. The stub keeps the callback until RFC 23's T3.10 and E2 agree
   on one form.
 - **`kmip_fake_test.go` moves with `keyprovider`.** It is a canned-response KMIP server, which
   `CLAUDE.md`'s "Writing tests" bans for a new or changed test. The move changes no line of it, so
