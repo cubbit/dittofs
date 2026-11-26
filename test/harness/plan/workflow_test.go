@@ -15,7 +15,7 @@ var (
 )
 
 // reach is what tests.yml says about the plan's cells: the suites and cell
-// names its plan filter keeps, those its storage-v2 skip leaves out on
+// names its plan filter keeps, those its skip leaves out on
 // purpose, and the cells a step runs by name.
 type reach struct {
 	kept, skipped, stepped map[string]bool
@@ -28,11 +28,11 @@ func readWorkflow(t *testing.T) reach {
 		t.Fatal(err)
 	}
 	s := string(b)
-	skip := strings.Index(s, `select($v2 != "true"`)
+	skip := strings.Index(s, `select((IN(.suite;`)
 	keep := strings.Index(s, `select(.job or`)
 	end := strings.Index(s[max(keep, 0):], `| .slug`)
 	if skip < 0 || keep < skip || end < 0 {
-		t.Fatal("tests.yml's plan filter no longer reads as its storage-v2 skip, then its keep, then .slug")
+		t.Fatal("tests.yml's plan filter no longer reads as its skip, then its keep, then .slug")
 	}
 	r := reach{kept: terms(s[keep : keep+end]), skipped: terms(s[skip:keep]), stepped: map[string]bool{}}
 	for _, m := range stepRun.FindAllStringSubmatch(s, -1) {
@@ -63,7 +63,7 @@ func (r reach) runs(c Cell) bool {
 }
 
 // Every pr and merge cell reaches tests.yml: it names a job, the plan
-// filter keeps it, a step runs it by name, or the filter's storage-v2 skip
+// filter keeps it, a step runs it by name, or the filter's skip
 // leaves it out on purpose. A cell none of these reach never runs at its
 // tier, so a suite or option registered without a way into the workflow
 // fails here rather than enforcing nothing.

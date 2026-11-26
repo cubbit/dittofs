@@ -134,9 +134,9 @@ jobs:
           # have moved in (the header), so a new suite runs only once it is
           # named there.
           jq -c --arg suite "$SUITE" '[(.cells // [])[] | select($suite == "" or .suite == $suite)
-              | select(((IN(.suite; "pjdfstest", "pynfs", "wpts", "smbtorture", "cthon04",
+              | select((IN(.suite; "pjdfstest", "pynfs", "wpts", "smbtorture", "cthon04",
                   "nfstest", "clients", "fio-verify", "bench-smoke", "system")
-                  or IN(.name; "unit/windows", "e2e", "e2e/kerberos", "e2e/cross-protocol", "e2e/stress")) | not))
+                  or IN(.name; "unit/windows", "e2e", "e2e/kerberos", "e2e/cross-protocol", "e2e/stress")) | not)
               | select(.job or .suite == "pynfs" or .suite == "pjdfstest" or .suite == "wpts" or .suite == "operator" or .suite == "e2e"
                 or .suite == "smbtorture" or (.suite == "system" and .place != "dedicated")
                 or .suite == "clients" or .suite == "cthon04" or .suite == "nfstest" or .suite == "fio-verify"
