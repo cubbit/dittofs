@@ -72,9 +72,9 @@ Part of: RFC 1 T7.2
 
 ### Out of scope
 
-The body carries an `Out of scope` section, a table with one row per thing a reviewer
-would reasonably have expected this PR to do and that it does not, and the reason it
-was left out:
+When the PR leaves something out, the body carries an `Out of scope` section, a table
+with one row per thing a reviewer would reasonably have expected this PR to do and that
+it does not, and the reason it was left out:
 
 ```markdown
 ## Out of scope
@@ -84,7 +84,7 @@ was left out:
 | Retry on a transient S3 error in the syncer | Changes the failure contract; needs its own review |
 ```
 
-- A row is only something that was in reach at the start: part of the issue, the
+- A row is only something that was in reach of the change: part of the issue, the
   subtask or the original ask, a case the change visibly leaves unhandled, or a
   follow-up a reviewer would otherwise ask for. Not a list of everything the PR does not
   touch.
