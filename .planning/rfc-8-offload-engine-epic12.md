@@ -79,13 +79,15 @@ controls the rows call; the §3.2 row's first form (D4).
 - "§2.1 remote required": the RFC 23 plan's epic 3, through the node.
 - The journal plan's system scenarios and the RFC 21 and RFC 22 remote-outage rows: `e2e`, which
   keeps no known list, so the integration epic writes them green.
-- Legs already deferred elsewhere: the "shard handed away and back" leg of "§4.1 verifier inputs",
-  the replica and promotion legs of "§2.5 metadata reconcile" and the replicated rejoin of "§2.5
-  journal gone" (the cluster stage); the snapshot-capture visit of "§2.5 metadata reconcile" (RFC
-  12); the pre-warm leg of "§9.1 no pre-clone fill" (unowned, with `PreWarm`); the store's
-  `Recheck` (RFC 9), for which "§11.1 health per direction" raises the store's drift as `Recheck`
-  would; "§2.5 restart re-offer"'s collection of the first object and intent once the epoch is
-  superseded (RFC 9, GC).
+- Legs already deferred elsewhere, each under its row of the offload plan's §6.1 ledger: the "shard
+  handed away and back" leg of "§4.1 verifier inputs", the replica and promotion legs of "§2.5
+  metadata reconcile" and the replicated rejoin of "§2.5 journal gone" (the cluster stage, row "The
+  cluster rules"); the snapshot-capture visit of "§2.5 metadata reconcile" (RFC 12, row
+  "Snapshot-hold ordering in the pipeline"); the pre-warm leg of "§9.1 no pre-clone fill" (unowned,
+  row "`PreWarm` and the speculator's pre-warm"); the store's `Recheck` (RFC 9, row "Detecting
+  bucket-setting drift"), for which "§11.1 health per direction" raises the store's drift as
+  `Recheck` would; "§2.5 restart re-offer"'s collection of the first object and intent once the
+  epoch is superseded (RFC 9, row "GC composed in the node").
 
 ### 1.3 Names used here
 
@@ -93,6 +95,7 @@ controls the rows call; the §3.2 row's first form (D4).
 - **S2**, red rows in CI: the end of this epic; epics 13, 15 and 17 start there.
 - **S5**, offload components built: the RFC 2 to RFC 5 plans' implementation epics.
 - **S6**, journal offload half built: the journal plan's epics 9b and 7b.
+- **S7**, node composition built: the end of epic 21.
 - **The first part**: the journal-only engine, epics 1 to 10 of RFC 8's first plan, whose fixture
   and rows this epic extends.
 - **The integration epic**, epic 21: the node composes offload.
@@ -287,7 +290,9 @@ catalogue makes it pass. The behaviour each row checks is that epic's to build.
   engine rows on this fixture after S7, and asks for a restart onto fresh key material, a wrapped
   provider, read-ahead off and the codec's recorded outputs (T12.1). They are listed here so the
   epic building each component builds its control with it, rather than RFC 5's rows growing a
-  second fixture. Each refuses by name until then (D1), and each takes its final signature from
+  second fixture: `RestartWithFreshKeys` and `WrapKeys` in epic 15's T15.5, with `WithChain`;
+  `Recorder` in epic 16's T16.1, with `WithSyncer`; `WithoutReadahead` in epic 17's T17.6, with
+  read-ahead. Each refuses by name until then (D1), and each takes its final signature from
   the epic that builds it (D2). Prior art: none found.
 
 ## 5. Target tree
