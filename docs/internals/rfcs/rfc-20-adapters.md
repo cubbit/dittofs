@@ -2423,8 +2423,11 @@ type ReplayCache interface {
 	Lookup(ctx context.Context, h Header) (*Buf, error)
 	// Store keeps its own clear copy of a cacheable row's encoded reply, taken
 	// before Wrap; the caller's reply is then wrapped in place. It is called
-	// only for a call that ran (§4.7), so a delay or a fault is never replayed
-	// to a retransmission of a call that did not run.
+	// only where a Cacheable row ran (§4.7): NFSv3's and NFSv4.0's
+	// duplicate-request cache so never replays a delay or a fault to a
+	// retransmission of a call that did not run, and NFSv4.1's slot, reached
+	// through SEQUENCE's Cacheable row, commits its sequence here and keeps
+	// the reply as RFC 21 §3.1 says.
 	//
 	// ponytail: the copies Store keeps for NFSv3's and NFSv4.0's duplicate
 	// request cache and for SMB's replay are charged to no pool; RFC 24 §4.5
@@ -2865,12 +2868,21 @@ results, so no result is copied.
 A call **ran** when its handler was called and returned no error, or one its
 table maps to a status other than the fault; `ErrDelay` does not count, and
 neither does a refusal before the handler, `core`'s `ErrDecode` among them. A
-single call's reply is stored when its row is `Cacheable` and it ran. A
-compound row's own `Cacheable` column is not read: the runner stores the
-compound's reply when a member that ran has a `Cacheable` row, so a compound
+single call's reply is handed to `Store` when its row is `Cacheable` and it
+ran. A compound row's own `Cacheable` column is not read: the runner hands
+`Store` the compound's reply when a member that ran has a `Cacheable` row.
+The rule is the duplicate-request cache's, NFSv3's and NFSv4.0's: a compound
 whose `CREATE` ran before a later member's delay is stored, and one of reads
 alone never is, and cannot turn the cache over and evict the replies it is
-kept for. A chain encodes each member's reply, joins them with
+kept for. NFSv4.1's slot cache keeps what [RFC 21
+§3.1](rfc-21-nfs.md#3.1%20Slot%20tables) says, the whole reply of a
+slot asked to cache (`sa_cachethis`), and reaches it through the same rule:
+NFS marks `SEQUENCE`'s row `Cacheable`, so every compound whose `SEQUENCE`
+ran is handed to `Store` whatever its later members answered, a
+`GETATTR`-only one and one whose later member answered a delay included, and
+`Store` commits the slot's sequence whether or not it keeps the reply (RFC
+8881 §2.10.6.1.3). A compound whose `SEQUENCE` did not run changed no slot,
+and `Drop` is its end. A chain encodes each member's reply, joins them with
 `HeaderCodec.Chain`, which `core` calls between members only, and calls `Wrap`
 once on the joined record: SMB's `Wrap` pads the chain's last reply to 8
 (MS-SMB2 3.3.4.1.3, a SHOULD), signs each member over its own bytes,
