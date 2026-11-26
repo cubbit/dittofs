@@ -97,9 +97,10 @@ s3 start
 rclone mkdir s3:dittofs
 echo '{"access_key_id":"test","secret_access_key":"test-secret"}' >/etc/dittofs-s3.credential
 
-# DittoFS: its configuration, an API on a port the kernel picks (dfs-server reads it from the log), no
-# metrics listener, and its two wrapping keys under one passphrase, which stays out of the trace. dfs
-# init prints the administrator's password, which dfs-server's first start signs in with and changes.
+# DittoFS: its configuration, an API and a metrics listener each on a port the kernel picks (dfs-server
+# reads the API's from the log), and its two wrapping keys under one passphrase, which stays out of the
+# trace. dfs init prints the administrator's password, which dfs-server's first start signs in with
+# and changes.
 mkdir -p /etc/dittofs /var/lib/dittofs/journal ~/.config/dittofs
 (umask 077 && head -c 24 /dev/urandom | base64 >/etc/dittofs/passphrase)
 { set +x; } 2>/dev/null

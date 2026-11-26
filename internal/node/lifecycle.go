@@ -76,7 +76,7 @@ func (l *lifecycle) readiness() string { return l.ready.Load().(string) }
 // rebuilt unready for up to its drain_timeout: a load balancer would then
 // steer the other adapter's clients away, which RFC 23 §3.4's one adapter at
 // a time is there to spare. Start's own gate is the step order, which turns
-// the node ready only once step 9 has run. Overturned if RFC 25 §3.6 gives
+// the node ready only once step 10 has written its status. Overturned if RFC 25 §3.6 gives
 // a rebuild a row of its own.
 func (n *Node) readiness() string {
 	w := n.life.readiness()
@@ -166,7 +166,7 @@ func (n *Node) Start(ctx context.Context) error {
 		{stepRunner, n.startRunner},
 		// ponytail: the management API's calls are served from the
 		// listeners' step, refused 503 starting until readiness turns
-		// ready after the first full reconcile rather than from here, and
+		// ready after the first status write rather than from here, and
 		// they stop with the listeners, after the engine, rather than
 		// before the runner. The API writes only to the store, which
 		// outlives every part, and reads stopped parts only through their

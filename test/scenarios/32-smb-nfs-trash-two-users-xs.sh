@@ -2,9 +2,9 @@
 # Issues #2920 and #2921: the recycle bin with two users. The first delete creates #recycle owned by the
 # deleting user, mode 0700, and a delete that cannot be recycled is refused, so every other user's delete
 # then fails. dfsctl trash empty must refuse bob, who is no admin, but over SMB a non-admin can still
-# delete from #recycle. The share's trash flags (--enable-trash, --trash-restrict-empty-to-admin) have
-# no setting in the new CLI, nor has dfsctl trash a command: the refusal is checked to be the trash's,
-# not an unknown command, so the scenario fails there until the trash returns.
+# delete from #recycle. The new CLI has no recycle bin: no share setting for it and no dfsctl trash
+# command, so a delete creates no #recycle and the run stops at the nfs-ls check for it. The last check,
+# that trash empty's refusal is not an unknown command, cannot run until the recycle bin returns.
 
 dfsctl user create bob --uid 2002 --role viewer
 dfsctl group create bob --gid 2002

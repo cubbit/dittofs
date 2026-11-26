@@ -651,7 +651,8 @@ listener clients are sent to is down.
 | watchdog stalled | no | no | — |
 
 Every node runs both roles, so readiness has one rule: a node is ready once each
-enabled adapter accepts clients or was refused at configured, the share list is loaded and, **(cluster)**, it has
+enabled adapter accepts clients or was refused at configured, the share list is loaded, its
+status naming those adapters is written ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop), step 10) and, **(cluster)**, it has
 joined the store. Once that start is passed, the adapters end readiness only
 through a lost listener: an adapter rebuilt for a restart-class change, or one
 enabled after start, keeps the node ready, its readiness ending only if the

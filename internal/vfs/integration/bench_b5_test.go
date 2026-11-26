@@ -19,6 +19,11 @@ const b5Bursts = 8
 // an fsync every 1 MiB, appending, then overwriting committed content. The
 // counts follow from RFC 8 §5.1 and §5.2, so a run that breaks one fails; the
 // latency is reported.
+//
+// The fsync p99 is the nearest rank over the 8 × 64 = 512 fsyncs of a run,
+// the 6th slowest, and the 64 fsyncs of a burst wait on one commit, so it is
+// about the slowest burst's commit, not the latency of one fsync among many.
+// Its name, fsync-p99-µs, is the v1 baseline's, so benchstat pairs the two.
 func BenchmarkB5(b *testing.B) {
 	b.Run("append/writers=64", benchB5Append)
 	b.Run("append-interval/writers=64", benchB5AppendInterval)
