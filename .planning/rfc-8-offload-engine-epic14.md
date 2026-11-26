@@ -282,8 +282,8 @@ the scheduler itself guarantees is epic 13's, held by its tests; a row here stat
   from a begin key, as every ordered key-value store offers (from memory).
 - **D7, until epic 16 the offload source's `Run` offers nothing.** It answers every item `Done`,
   leaving the file dirty for the next age tick, and calls the per-instance run hook tests set from
-  `export_test.go`, which delivers each batch and may return a scripted `Result` in its place (a fault,
-  kind 3). Epic 16 replaces the body with the pass; the signature, the registration and the rebuild are
+  `export_test.go`, which delivers each batch the run reached; a second per-instance hook delivers
+  each `SetTenant` the engine sends the scheduler. Neither answers in the code's place. Epic 16 replaces the body with the pass; the signature, the registration and the rebuild are
   final. A `decision:` at the body names epic 16's pass as what withdraws it. Prior art: none found.
 - **D8, a binding with no flow is put-healthy.** Pressure lowers the cap of a shard whose store is
   put-healthy, and no binding opens a flow before epic 16, so every shard's offload cap is lowered
@@ -315,9 +315,8 @@ the scheduler itself guarantees is epic 13's, held by its tests; a row here stat
   marker. Prior art: the first part's `withRetryingOwner`.
 - **D13, the lost-wakeup leg is epic 13's.** RFC 8 §15.2's "§6.1.1 a stuck run" also loses one
   dispatch wakeup and asserts liveness fails. No engine input reaches the scheduler's wakeup, so that
-  leg runs over a scheduler instance alone in epic 13's test of the row. Epic 12 writes the leg into
-  `TestRFC8B_AStuckRun` through a proposed `DropNextWakeup`; T14.9 removes the leg there, naming epic
-  13's test in its place, and `DropNextWakeup` is not built. No marker. Prior art: none found.
+  leg runs over a scheduler instance alone in epic 13's test of the row. Epic 12 writes
+  `TestRFC8B_AStuckRun` without that leg (its T12.6), so no wakeup-dropping control is built. No marker. Prior art: none found.
 
 ## 5. Target tree
 
@@ -336,7 +335,7 @@ pkg/engine/
   remove.go clone.go rebuild.go recover.go loss.go  T14.6  obligations posted onto the work list
   write.go                T14.3  Dirty after staging
   health.go               T14.1  Work, WorkLimits; T14.3 QueueEvents; T14.5 removals pending; T14.6 WorkQueueLockWaits
-  export_test.go          T14.1 to T14.7  the loop's accessors rewritten onto the source; the run hook, the drop seam, the totals
+  export_test.go          T14.1 to T14.7  the loop's accessors rewritten onto the source; the run and tenant hooks, the drop seam, the totals
   queue_test.go removals_test.go removals_internal_test.go removals_start_test.go  T14.1 to T14.7
   start_test.go close_bubble_test.go  T14.1  their Deps literals gain Watch
   enginetest/fake.go      T14.2  FakeHandle.DirtyFiles
@@ -433,7 +432,9 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
 
 **Subtask T14.3 estimate: 2.5 man-days.**
 
-- **Track:** A. **Depends on:** T14.2. Epic 15's `offloadDue`.
+- **Track:** A. **Depends on:** T14.2. Epic 15's `offloadDue`, which its T15.1 ships first: a zero
+  oldest write counts as due, and `Dirty`'s bytes are the staged-bytes count on the engine's file
+  state (its D15).
 - **Covers:** R4, R5, R13, R14, R15, R16, R17, R18, R19, R28, R37, R41, R42.
 - **Deliverables:** `Write` posts `Dirty(file)` after staging, before acknowledging: the handler
   calls `offloadDue` over the file's journal statistics and posts the file's offload key when it is
@@ -482,13 +483,16 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
   epic 16, which reads the flow's health in place of D8.
 - **Acceptance criteria:**
   - A thousand `pressure(true)` in a row make one change and one immediate tick.
-  - Under pressure an offload key in backoff at the normal cap runs within
-    `offload.retry_max_pressure`.
+  - Pressure on sends each put-healthy shard's offload tenant `BackoffMax` =
+    `OffloadRetryMaxPressure`, and off sends `OffloadRetryMax` back. That a lowered cap pulls in
+    keys in backoff is epic 13's R15; the leg where a failing file re-runs within
+    `offload.retry_max_pressure` is epic 16's, over a real pass failing through `FaultRemote`.
 - **Tests:** through an `export_test.go` accessor of `pressure`: the repeated-on case counts one
-  `pressure` event and one tick (catches a toggle per call, R20, R45); the run hook answering `Retry`
-  for one file (a scripted fault, D7) until its backoff reaches the 60 s cap, then pressure on, and the
-  file re-runs within 5 s on the injected clock (catches a cap not lowered, R21); off restores the cap.
-  No double but the clock and the hook.
+  `pressure` event and one tick (catches a toggle per call, R20, R45); through the tenant hook (D7),
+  `pressure(true)` delivers `BackoffMax` = `OffloadRetryMaxPressure` for each put-healthy shard's
+  offload tenant and none for a removal tenant, and `pressure(false)` delivers `OffloadRetryMax`
+  (catches a cap not lowered or not restored, R21). No double but the clock and the hooks, which
+  deliver what the engine sent.
 
 ### T14.5 The removal source: phase 2 and the prune, rebuilt from the index
 
@@ -631,8 +635,7 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
 - **Track:** A. **Depends on:** T14.6.
 - **Covers:** R46, R47.
 - **Deliverables:** `BlockNextRun` in `enginetest/work.go` made real for `"removal"` (D10);
-  `TestRFC8B_AStuckRun` run over the removal source with its lost-wakeup leg removed and epic 13's
-  test of that leg named in its place (D13), green, and its `known.yaml` entry removed;
+  `TestRFC8B_AStuckRun` run over the removal source, whose lost-wakeup leg is epic 13's (D13), green, and its `known.yaml` entry removed;
   `TestRFC8B_RemovalWedgeUndecodableRef` green over the removal source, its entry removed if epic 12
   left one; the first part's `TestRFC8B_RemovalWedge` kept green.
 - **Acceptance criteria:**
@@ -702,20 +705,13 @@ also ship on its own beside any of them.
 
 ## 9. Open points
 
-- **Epic 15 places `offloadDue` early.** T14.3 calls it; if epic 15's document schedules it late, PR 3
-  waits, and epic 18's pressure with it, though not epic 16's source. `offloadDue` takes each file's
-  oldest dirty write from `DirtyFiles`, whose zero time after a rebuild should count as due at once,
-  and `Dirty` asks it about one file's dirty bytes, which `DirtyFiles` does not carry: the journal's
-  per-file figures or a staged-bytes count on the file's entry. Epic 15 decides both with
-  `offloadDue`'s inputs. The offload plan's dependency graph draws no edge from epic 15 to epic 14.
 - **The offload plan's "Done when" names checks this epic runs only in part.** "pressure band" needs
   `admit`'s *M* and *S* (epic 18) and a put-unhealthy store (epic 16); "starvation" has a leg over a
   throttling store (epic 16); "one run per key" asserts puts (epic 16); "lost events" drops `Pressure`
   (epic 18). This epic runs their queue halves (§1.2); those epics' documents take the rest.
 - **Hand-offs other documents must take.** Epic 16 takes the overwrite prune kind and RFC 8 §6.1's
-  prune `ponytail:` (D9), which the offload plan placed here. Epic 12's document proposes
-  `DropNextWakeup`, which is not built, and its `TestRFC8B_AStuckRun` loses the lost-wakeup leg to
-  epic 13's test (D13).
+  prune `ponytail:` (D9), which the offload plan placed here. Epic 16 also takes T14.4's leg where a
+  file failing through `FaultRemote` re-runs within `offload.retry_max_pressure` once pressure is on.
 - **Estimate.** 21.75 man-days in 10 subtasks against the offload plan's 15 in 6: the first part's
   removal loop runs six kinds of item, five held in memory, the clones stateful and some retrying
   uncounted, and its tests (32 in the three removal files, and accessors used by eight more files)
