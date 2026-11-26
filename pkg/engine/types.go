@@ -89,9 +89,10 @@ type Stats struct {
 	RemovalRuns map[string]int64
 
 	// The offload figures, every one zero or nil until offload records it.
-	// DirtyBytes is engine_dirty_bytes, DrainBytesPerSecond
-	// engine_drain_bytes_per_second and DrainTime engine_drain_seconds, each
-	// summed over the shares; OldestUnoffloaded is
+	// DirtyBytes is engine_dirty_bytes and DrainBytesPerSecond
+	// engine_drain_bytes_per_second, each summed over the shares; DrainTime
+	// is engine_drain_seconds, the node's dirty bytes at its drain rate, not
+	// a sum of the shares' times, as they drain at once; OldestUnoffloaded is
 	// engine_unoffloaded_oldest_seconds, the largest of the shares'.
 	DirtyBytes          int64
 	DrainBytesPerSecond float64

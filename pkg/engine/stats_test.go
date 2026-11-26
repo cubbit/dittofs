@@ -441,8 +441,8 @@ func TestStatsClearsRemovalStalledOnDrop(t *testing.T) {
 // errorType is the one interface a returned value may hold.
 var errorType = reflect.TypeFor[error]()
 
-// valuePointees are the other packages' types a returned value may point to:
-// snapshots the caller owns, never a component.
+// valuePointees are the types a returned value may point to: snapshots the
+// caller owns, never a component.
 var valuePointees = []reflect.Type{
 	reflect.TypeFor[journal.Stats](),
 	reflect.TypeFor[journal.SyncFailure](),
@@ -451,9 +451,10 @@ var valuePointees = []reflect.Type{
 // componentFields reports every place in t, reached through struct fields,
 // pointers, map keys and values, and slice and array elements, that could hand
 // the caller a component: an interface but error, a func or a channel
-// anywhere, and a pointer to another package's type but a snapshot's. Another
-// package's value type is walked as the engine's own; a struct's unexported
-// fields are its own implementation and are not walked.
+// anywhere, and a pointer to any type but a snapshot's, the engine's own
+// included, since a component's struct shows no exported field. A value type
+// is walked, whatever its package; a struct's unexported fields are its own
+// implementation and are not walked.
 func componentFields(t reflect.Type, path string, seen map[reflect.Type]bool) []string {
 	if seen[t] {
 		return nil
@@ -469,12 +470,11 @@ func componentFields(t reflect.Type, path string, seen map[reflect.Type]bool) []
 	case reflect.Func, reflect.Chan, reflect.UnsafePointer:
 		return []string{path + ": " + t.Kind().String() + " " + t.String()}
 	case reflect.Pointer:
-		el := t.Elem()
-		if el.PkgPath() != "" && el.PkgPath() != reflect.TypeFor[engine.Stats]().PkgPath() && !slices.Contains(valuePointees, el) {
-			return []string{path + ": pointer to " + el.String()}
+		if !slices.Contains(valuePointees, t.Elem()) {
+			return []string{path + ": pointer to " + t.Elem().String()}
 		}
 
-		return componentFields(el, path+".*", seen)
+		return componentFields(t.Elem(), path+".*", seen)
 	case reflect.Map:
 		return append(componentFields(t.Key(), path+"[key]", seen), componentFields(t.Elem(), path+"[]", seen)...)
 	case reflect.Slice, reflect.Array:
@@ -510,22 +510,25 @@ func TestStatsAndShareHoldNoComponent(t *testing.T) {
 	}
 }
 
-// The walk refuses each way a component could be returned: a scheduler, a
-// journal, a func and a channel, at a field, behind a map and in a slice.
+// The walk refuses each way a component could be returned: a scheduler, the
+// engine, a journal, a func and a channel, at a field, behind a map and in a
+// slice, and names the field it refused.
 func TestComponentFieldsRefusesAComponent(t *testing.T) {
 	for _, c := range []struct {
-		name string
-		typ  reflect.Type
+		name, field string
+		typ         reflect.Type
 	}{
-		{"a scheduler", reflect.TypeFor[struct{ S *workqueue.Scheduler }]()},
-		{"a journal", reflect.TypeFor[struct{ J engine.Journal }]()},
-		{"a func", reflect.TypeFor[struct{ F func() }]()},
-		{"a channel in a map", reflect.TypeFor[struct{ M map[string]chan int }]()},
-		{"a scheduler in a slice", reflect.TypeFor[struct{ S []*workqueue.Scheduler }]()},
-		{"a scheduler as a map key", reflect.TypeFor[struct{ M map[*workqueue.Scheduler]int }]()},
+		{"a scheduler", "x.S", reflect.TypeFor[struct{ S *workqueue.Scheduler }]()},
+		{"the engine", "x.E", reflect.TypeFor[struct{ E *engine.Engine }]()},
+		{"a journal", "x.J", reflect.TypeFor[struct{ J engine.Journal }]()},
+		{"a func", "x.F", reflect.TypeFor[struct{ F func() }]()},
+		{"a channel in a map", "x.M[]", reflect.TypeFor[struct{ M map[string]chan int }]()},
+		{"a scheduler in a slice", "x.S[]", reflect.TypeFor[struct{ S []*workqueue.Scheduler }]()},
+		{"a scheduler as a map key", "x.M[key]", reflect.TypeFor[struct{ M map[*workqueue.Scheduler]int }]()},
 	} {
-		if len(componentFields(c.typ, c.name, map[reflect.Type]bool{})) == 0 {
-			t.Errorf("the walk took %s", c.name)
+		got := componentFields(c.typ, "x", map[reflect.Type]bool{})
+		if len(got) != 1 || !strings.HasPrefix(got[0], c.field+":") {
+			t.Errorf("the walk over %s reported %q, want one refusal at %s", c.name, got, c.field)
 		}
 	}
 }
