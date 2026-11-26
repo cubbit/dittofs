@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
@@ -307,7 +308,9 @@ func TestTheGuardKeepsACloneOutOfEveryBatch(t *testing.T) {
 	case err := <-answer:
 		t.Fatalf("the clone answered %v before its phase 1", err)
 	}
-	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Nanosecond, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Nanosecond
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	u.clock.Advance(time.Second) // the destination is due

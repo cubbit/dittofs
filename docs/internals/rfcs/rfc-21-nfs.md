@@ -2468,9 +2468,10 @@ a listing is never filtered by access-based enumeration
 ([RFC 19 §3.7](rfc-19-authorization.md#3.7%20Listings%20hide%20what%20the%20caller%20cannot%20read)),
 and no SMB rule applies; `NFSv4Caps`, the same plus `SeesPseudoFS`, so `LOOKUPP` at a
 share's root walks up into the pseudo-filesystem; and each request's context
-carries its protocol label, which no rule reads; `NLMCaps` for NLM and NSM, which adds `HostCall` (§6.1) and
-`ClientIsMachine` for the host's record; `MountCaps` for `MNT` and `EXPORT`,
-which adds `HostCall` (§6.3).
+carries its protocol label, which no rule reads; `NLMCaps` for NLM and NSM,
+`PrivilegeOnEveryCall`, `HostCall` (§6.1) and `ClientIsMachine` for the host's
+record; `MountCaps` for `MNT` and `EXPORT`, `PrivilegeOnEveryCall` and `HostCall`
+(§6.3).
 
 **Clients.** Every node answers `EXCHANGE_ID`, `SETCLIENTID` and
 `DESTROY_CLIENTID` for any client (§3.3), so each field those calls decide is
@@ -2951,7 +2952,11 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 
 **Release goal.** Four suites are the end-to-end layer over §11.6's rows and
 this section's: pjdfstest, POSIX semantics through a kernel mount at NFSv3,
-v4.0 and v4.1; pynfs, its `nfs4.0` and `nfs4.1` trees; cthon04; and nfstest.
+v4.0 and v4.1; pynfs, its `nfs4.0` tree and its `nfs4.1` tree at minor
+versions 1 and 2, the second running the NFSv4.2 tests (`XATT*`, `ALLOC*`),
+and its `nfs4.0` tree again over `krb5`, which runs the RPCSEC_GSS tests
+(`GSS*`, §10) that `--security sys` skips and `SEC7`, which `all` never names;
+cthon04; and nfstest.
 Each, and any other NFS or POSIX conformance suite the harness registers, is
 green when this RFC's implementation is done: every test passes except those
 listed in "Tests expected to fail". A failure outside that list is a defect, or
@@ -2999,7 +3004,7 @@ harness. §13's rows that name pynfs, cthon04 or nfstest run in `pynfs`,
 its other single-node rows against a real server in
 `e2e`, those reaching one file over NFS and SMB in `e2e/cross-protocol` and
 those under Kerberos in `e2e/kerberos`. No suite runs yet xfstests (§9.3),
-pynfs's reboot tests, the wire tests against a reference NFS server, or any
+pynfs's reboot tests, pynfs at minor 2, pynfs over Kerberos, the wire tests against a reference NFS server, or any
 row's cluster steps.
 
 ## 14. Observability

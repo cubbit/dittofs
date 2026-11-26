@@ -2114,8 +2114,8 @@ open such a name through their own path parsing, so one made over SMB would
 be a file its own creator cannot reach. A name holding the private-use code
 points of Appendix B is not refused. **On a `posix` share** it is case 2's
 spelling of a reserved character, and is stored with that character. **On a
-`windows` share**, whose rule stores a reserved character arriving over NFS in
-this spelling and refuses it from any other protocol
+`windows` share**, whose rule stores a reserved character given by a call that
+states `SpellsReservedNames` in this spelling and refuses it from one that does not
 ([RFC 7 §3.8](rfc-7-namespace-metadata.md#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use)),
 cases 2 and 3's mapping is not applied: such a name, like any holding the
 private-use code points U+F001–U+F07F, is stored and shown with the code points
@@ -2411,9 +2411,9 @@ are checked against; an SMB session carries no claims.
 - **Capabilities.** The `Call` the router builds for every SMB request carries
   `SMBCaps`, which sets `OpenFilesKeepNames` (§13), `WantOpenID`,
   `GrantBelongsToOpen` and `ClientIsMachine`, and leaves `PrivilegeOnEveryCall`
-  unset (§11), and `SpellsReservedNames` and `ListsEveryEntry` too, so a reserved
-  character in a name is refused and a share asking access-based enumeration
-  filters every listing ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)). An adapter that left `OpenFilesKeepNames` unset would get NFS's rule
+  (§11), `SpellsReservedNames` and `ListsEveryEntry` unset, so on a `windows`
+  share a reserved character in a name is refused, and a share asking
+  access-based enumeration filters every listing ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)). An adapter that left `OpenFilesKeepNames` unset would get NFS's rule
   without an error, so §18's row for §13 is what catches it.
 
 ### 16.2 Request identity

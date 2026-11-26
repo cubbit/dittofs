@@ -709,7 +709,7 @@ const (
 	HostCall                              // the call comes from a host's lock or mount service, which proves no user
 	SeesPseudoFS                          // the client sees a pseudo-filesystem above the shares; LOOKUPP at a share's root goes up to it
 	SpellsReservedNames                   // on a windows-rule share, a reserved character or trailing space or dot in a name is stored in its private-use spelling, not refused
-	ListsEveryEntry                       // a listing is never filtered by access-based enumeration
+	ListsEveryEntry                       // a listing is never filtered by access-based enumeration; without it, a share asking that filter hides what the caller cannot read
 )
 
 func (c Caps) Has(x Caps) bool // every bit of x is set

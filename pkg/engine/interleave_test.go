@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
@@ -58,7 +58,9 @@ func TestAReadBetweenATruncateAndItsInsertIsNeverLost(t *testing.T) {
 // version order says.
 func TestRemovalsInterleavedWithWritesReadTheirOrder(t *testing.T) {
 	u := newUnit(t)
-	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Nanosecond, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Nanosecond
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	f := u.create(t, "a")

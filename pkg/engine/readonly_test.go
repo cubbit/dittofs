@@ -193,7 +193,9 @@ func TestCommitExistenceOverAReadOnlyJournal(t *testing.T) {
 // unchanged.
 func TestTheGroupCommitCommitsNothingOverAReadOnlyJournal(t *testing.T) {
 	u := newUnit(t)
-	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Second
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	f := u.create(t, "a")
