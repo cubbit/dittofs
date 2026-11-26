@@ -476,7 +476,7 @@ func sealSetting(
 		return settingStep{}, errNoSealer
 	}
 
-	all, err := scopeSettings(ctx, rq.d.Store, scope)
+	row, held, err := rq.d.Store.Setting(ctx, scope, rq.Sub)
 	if err != nil {
 		return settingStep{}, err
 	}
@@ -485,7 +485,7 @@ func sealSetting(
 
 	step.fresh = true
 
-	if row, held := all[rq.Sub]; held {
+	if held {
 		stored, err := refFrom(row.Value)
 		if err != nil {
 			return settingStep{}, &componentError{
@@ -616,11 +616,11 @@ func settingRead(scope func([16]byte) entity.SettingScope) watching[apiv1.Settin
 			if d.Nodes == nil {
 				return apiv1.Setting{}, errNoStore
 			}
-			all, err := scopeSettings(ctx, d.Store, scope(rq.ID))
+
+			s, ok, err := d.Store.Setting(ctx, scope(rq.ID), rq.Sub)
 			if err != nil {
 				return apiv1.Setting{}, err
 			}
-			s, ok := all[rq.Sub]
 			if !ok {
 				return apiv1.Setting{}, errNotFound
 			}

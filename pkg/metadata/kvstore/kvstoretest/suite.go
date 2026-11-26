@@ -107,6 +107,7 @@ func Run(t *testing.T, open Opener) {
 		{"ModeBitRights", testModeBitRights},
 		{"ExportPolicy", testExportPolicy},
 		{"NetgroupsAndSettings", testNetgroupsAndSettings},
+		{"SettingOneKey", testSettingOneKey},
 		{"ListingPages", testListingPages},
 		{"ShareBoundSettings", testShareBoundSettings},
 		{"Costs", testCosts},

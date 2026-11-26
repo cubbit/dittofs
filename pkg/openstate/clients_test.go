@@ -14,7 +14,6 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
-	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 )
 
 var addr = netip.MustParseAddr("192.0.2.1")
@@ -322,7 +321,7 @@ func TestProposalBounds(t *testing.T) {
 	}
 
 	big := nfs("big", 1, owner)
-	big.Adapter = make([]byte, kvstore.MaxAdapter+1)
+	big.Adapter = make([]byte, entity.MaxAdapter+1)
 	norecovery := nfs("norecovery", 1, owner)
 	norecovery.Recovery = 0
 	for name, c := range map[string]Client{
@@ -354,7 +353,7 @@ func TestAddSessionWritesOverWhatItRead(t *testing.T) {
 	if !errors.Is(err, ErrRecordChanged) || !bytes.Equal(cur.Adapter, []byte{1}) {
 		t.Errorf("over bytes no longer stored: Adapter %v, %v; want ErrRecordChanged with the first's [1]", cur.Adapter, err)
 	}
-	if _, err := f.AddSession(ctx, id, n2, []byte{1}, make([]byte, kvstore.MaxAdapter+1)); !errors.Is(err, ErrInvalid) {
+	if _, err := f.AddSession(ctx, id, n2, []byte{1}, make([]byte, entity.MaxAdapter+1)); !errors.Is(err, ErrInvalid) {
 		t.Errorf("an Adapter past 4 KiB: %v, want ErrInvalid", err)
 	}
 	rec, err := reopen(t, f.fs, f.clock).Record(ctx, id)

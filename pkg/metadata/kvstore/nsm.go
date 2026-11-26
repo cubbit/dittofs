@@ -2,15 +2,14 @@ package kvstore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 )
 
-// ErrNSMNotRaised is a raise of the NSM state number to one not above the
-// number held: it never goes down, or an NLM host would not see the restart.
-var ErrNSMNotRaised = errors.New("kvstore: NSM state number not raised")
+// ErrNSMNotRaised is entity's: a raise to a number not above the one held.
+var ErrNSMNotRaised = entity.ErrNSMNotRaised
 
 // NSMState is the installation's NSM state number: zero before the first
 // raise. An NLM host recognises a server restart only by a higher number.
