@@ -14,7 +14,7 @@ and removal series, the work-queue lock, the removal batch's span), §15.2's "§
 [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §1.2, which keeps `pkg/health` out of what
 the queue adds.
 **Track:** A.
-**Epic 14 estimate: 10 subtasks, 21.75 man-days.**
+**Epic 14 estimate: 10 subtasks, 22.5 man-days.**
 **Depends on:** epic 13, `pkg/workqueue` built behind the surface epic 11 froze (S1): every rule of
 RFC 8 §6.1.1 holds over a scheduler instance alone, its single run per key, its backoff and the
 lost-wakeup leg of "§6.1.1 a stuck run" among them; epic 11's `Settings` retry and rescan keys,
@@ -23,8 +23,8 @@ lost-wakeup leg of "§6.1.1 a stuck run" among them; epic 11's `Settings` retry 
 two red rows this epic turns green, at S2.
 **Blocks:** epic 16, whose passes are the offload source's `Run` (T14.2) and which builds the prune
 kind on the removal source (D9); epic 18, which posts `Pressure` from `admit` and the refusal path's
-step 3 (T14.4); epic 19, which adds a late-attached journal's shards as tenants and reads the removal
-source's rebuild (T14.1, T14.5); epic 20, which reads the scheduler's figures for `work_queue_stalled`
+step 3 (T14.4); epic 19, whose late attach and reseed build on the tenants a late attach gains here and read the
+removal source's rebuild (T14.1, T14.5); epic 20, which reads the scheduler's figures for `work_queue_stalled`
 and the drain (T14.1).
 
 ---
@@ -79,7 +79,9 @@ checks.
   the in-flight floor the removal prune reads from the pass registry.
 - The lost-wakeup leg of "§6.1.1 a stuck run": epic 13, over a scheduler instance alone (D13).
 - The reseed, its gate on offer and eviction, `engine_reseed_files_remaining`, a late-attached
-  journal's steps 6 and 7 and the takeover's rebuild: epic 19, and the takeover the cluster stage.
+  journal's reseed and intent abandonment, and the takeover's rebuild: epic 19, and the takeover the
+  cluster stage. A late attach's tenants and dispatch are this epic's (T14.1), since the removal loop
+  they replace runs for it today.
 - `work_queue_stalled` as an engine condition in `Stats`, and the drain figures: epic 20.
 - `Drop`'s and `Unbind`'s join of a pass in flight on the offload source: epic 16.
 - The primary-only post filter for replica shards and RFC 8 §6.1's "(cluster) primary only" check:
@@ -122,7 +124,7 @@ cited by number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | T14.10 | the rebuild check crashes the real journal on a real directory beside `kvstore`, since it asserts what a restart re-derives from durable state |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T14.3, T14.5, T14.6, and as §4 names | RFC 8 §6.1's removal-key `decision:` at the removal source (T14.5); §15.3's `ponytail:` at the work queue's keys (T14.3); the first part's loop `ponytail:` deleted with the loop, and its `decision:`s kept at the sites they move to (T14.6); each §4 decision's marker. The prune `ponytail:` is epic 16's (D9) |
 | rule 10, a test must be able to fail | all | each test names the break it catches; the moved removal tests keep failing on their own planted breaks, each run against the source before the loop is deleted |
-| rule 11, a symbol is exported only if the RFC's interface uses it | T14.1 | the one exported addition is `Deps.Watch` with the `Loop` it returns, RFC 8 §2.6 as amended; the sources, events and work list are unexported |
+| rule 11, a symbol is exported only if the RFC's interface uses it | T14.1, T14.7 | the one exported addition is `Deps.Watch` with the `Loop` it returns, RFC 8 §2.6 as amended; the one exported change is D6's start bound on `Content.UnfinishedRemovals`, a signature the offload plan froze at S1; the sources, events and work list are unexported |
 | rule 12, each subtask creates only what it declares | all | `Handle.DirtyFiles` joins with its first caller (T14.2); the listing's start bound with the rescan that reads it (T14.7); `Existence.PruneOverwrites` is not declared here, since its caller is epic 16's (D9) |
 
 ## 3. Requirements and invariants
@@ -198,18 +200,18 @@ the scheduler itself guarantees is epic 13's, held by its tests; a row here stat
 | R37 | The queue's entries by journal, source and state and per share, the instance's total, and events posted by `event` (`dirty`, `age_tick`, `pressure`, `removal_pending`) | MUST | RFC 8 §14 | T14.1, T14.3, T14.4, T14.7 |
 | R38 | Per journal and source, the scheduler's own figures, reported by shard: the oldest pending entry's age, the last run's return, runs in flight and their bound, runs overdue, items dropped and items expired | MUST | RFC 8 §14, §6.1.1 | T14.1 |
 | R39 | Per share: removals not done and the oldest one's age; phase-2 runs by `result` (`done`, `advanced`, `conflict`, `error`) | MUST | RFC 8 §14 | T14.5, T14.6 |
-| R40 | Time waiting on the work queue's lock, not labelled by share | MUST | RFC 8 §14, §1.1 | T14.6 |
+| R40 | Time waiting on the work queue's lock, not labelled by share: the scheduler's, which every post takes, and the work lists' | MUST | RFC 8 §14, §1.1 | T14.3, T14.6 |
 
 **Checks**
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R41 | lost events, the queue's half: with `Dirty` and `RemovalPending` events and every third age tick dropped at random and the removal source filled to its reservation, every dirty file is dispatched within the maximum age plus one tick of the last tick that ran, and every removal reaches done within the rescan bound, with no restart | test row | RFC 8 §6.1 Checks | T14.3, T14.7 |
+| R41 | lost events, the queue's half: with `Dirty` and `RemovalPending` events and every third age tick dropped at random with probability ½ and the removal source filled to its reservation, every dirty file is dispatched within the maximum age plus one tick of the last tick that ran, and every removal reaches done within the rescan bound, with no restart | test row | RFC 8 §6.1 Checks | T14.3, T14.7 |
 | R42 | growth, the queue's half: with the consumer stalled and more files written than the instance's total, no write waits on the queue, and every file is dispatched within the age bound once the consumer runs | test row | RFC 8 §6.1 Checks | T14.3 |
 | R43 | starvation, its legs without puts: one share's single due file beside another's many is dispatched within the age bound, and a new file is dispatched within it while many released files run with the metadata store slowed and only `source="removal"` counts drops | test row | RFC 8 §6.1 Checks | T14.10 |
 | R44 | rebuild, the queue's half: after a crash with dirty files, files in backoff, removals between batches, done removals not pruned and a clone between phase-2 batches, every dirty file is dispatched, every removal resumes, every done one is pruned and the clone is answered | test row | RFC 8 §6.1 Checks | T14.10 |
 | R45 | pressure band, the queue's half: pressure set on many times in a row turns it on once | test row | RFC 8 §6.1 Checks | T14.4 |
-| R46 | §6.1.1 a stuck run, over the engine's instances: with two tenants holding work and a run of one ignoring its ctx in every slot it may hold, `work_queue_stalled` names the source and tenant within twice `RunTimeout`, the overdue count rises, the other tenant's work runs, and with every slot of the source overdue liveness fails within the watchdog's 60 s | test row | RFC 8 §15.2 | T14.9 |
+| R46 | §6.1.1 a stuck run, over the engine's instances: with two tenants holding work and a run of one ignoring its ctx in every slot it may hold, the scheduler's figures in `JournalStats.Work` name the source and tenant stalled within twice `RunTimeout` (the `work_queue_stalled` condition built on them is epic 20's T20.5), the overdue count rises, the other tenant's work runs, and with every slot of the source overdue liveness fails within the watchdog's 60 s | test row | RFC 8 §15.2 | T14.9 |
 | R47 | §8.1 removal wedge: a truncate over an undecodable ref record and a clone from an undecodable source record retry at the backoff cap, `removal_stalled` names each, other removals complete, and both finish once repaired | test row | RFC 8 §15.2 | T14.6, T14.9 |
 
 ## 4. Decisions this epic takes
@@ -230,18 +232,27 @@ the scheduler itself guarantees is epic 13's, held by its tests; a row here stat
   that no durable record re-derives: the phase-1 retry with the guard held, the release behind a clone
   and the pending release's retry, the existence commit after a terminal failure, a clone's run with
   its hold, its wait for the source's shard, its batches, its outcome and its `Release`. Each
-  obligation keeps its first-part answer, counted or not: a wait the removal does not own (a shard not
-  yet served, space for a clone, a clone it is held behind) retries uncounted, as the first part's
-  `decision:`s at those sites say, and those markers move with the code. A key's run takes the file's
-  list under the work-queue lock, runs each obligation in removal-version order, each one attempt
-  under the engine's conflict bound, then the durable part (a bounded `Resume`, the prune of the newest
-  done removal). It answers one `Result` for the key: `Retry` when a counted obligation or the durable
-  part failed, `Retry` too when only uncounted ones remain, and otherwise `Done`, after re-posting its
-  own key when a `Resume` advanced or obligations remain (the scheduler's redo mark, so it is pending
-  again at once). The list is created for an accepted post or an in-memory obligation, so it holds at
-  most one entry per file that has a removal call, a pending release or a clone in flight, as the
-  first part's loop items did; the rescan re-posts every list whose key is absent before it reads the
-  index (T14.7). Once `Close` has begun the lists are closed: a new obligation is ended at once, as an
+  obligation keeps its first-part answer, counted or not: a wait the removal does not own (a hold
+  refused because the source's shard is not served yet, space for a clone, a clone it is held behind)
+  retries uncounted, as the first part's `decision:`s at those sites say, and those markers move with
+  the code; the wait for `Holds.Served` is counted, as `awaitServed`'s is (T14.6). A key's run takes
+  the file's list under the work-queue lock, runs each obligation in removal-version order, each one
+  attempt under the engine's conflict bound, then the durable part (a bounded `Resume`, the prune of
+  the newest done removal). The durable part is skipped while the file's list holds a clone
+  obligation not finished (its hold, its wait for `Holds.Served` or its batches): the store's
+  `Resume` takes the file's oldest removal not done, a clone's included, so it would run the clone's
+  batches without its hold and before `Served` (R33); the clone's own batches run the file's
+  removals in version order, as the first part's start step 4 gives such a file no item. It answers
+  one `Result` for the key: a durable part that advanced is `Done` whatever its error, after the redo
+  mark below, uncounted, as the first part's `phase2Result` answers a run its bound cut after a batch
+  committed; otherwise `Retry` when a counted obligation or the durable part failed, `Retry` too when
+  only uncounted ones remain, and else `Done`, after re-posting its own key when a `Resume` advanced
+  or obligations remain (the scheduler's redo mark, so it is pending again at once). The list is
+  created when a removal's phase 1 commits, for each file the rebuild lists and for an in-memory
+  obligation, whether or not the key's post is accepted, so it holds one entry per file with a
+  removal not done or not pruned, a pending release or a clone in flight, as the first part's loop
+  items and its start step 4 did; the gauges are read from it (T14.5). The rescan re-posts every
+  list whose key is absent before it reads the index (T14.7). Once `Close` has begun the lists are closed: a new obligation is ended at once, as an
   enqueue on the stopped loop was. A `decision:` at the list says a file's obligations run in one run,
   in version order, overturned if one must run apart from the others. Prior art: client-go's
   workqueue keeps only keys and its informer's store holds the objects a worker reads by key (from
@@ -257,8 +268,10 @@ the scheduler itself guarantees is epic 13's, held by its tests; a row here stat
 - **D4, one age tick per journal, at a quarter of the smallest `offload.max_age` among its bound
   shares.** RFC 8 §6.1 runs one timer per journal while `offload.max_age` is a share's setting
   (`ShareSettings.MaxAge`). The smallest keeps every share within its own bound, a larger share's
-  files being offered no later. The tick reads the bound shares' values each time it re-arms, so no
-  `Bind`, `Drop` or settings change has to reach it. A `decision:` at the tick, overturned if a
+  files being offered no later. The tick reads the bound shares' values each time it re-arms, so a
+  `Drop` or a larger `max_age` takes effect at the next tick; a `Bind` or an `Apply` that lowers the
+  smallest re-arms it at once, since RFC 13 makes `offload.max_age` live and a tick armed for a
+  larger value would hold the new share past R17's bound. A `decision:` at the tick, overturned if a
   short-`max_age` share's ticks are shown costing another share's offload. Prior art: none found.
 - **D5, the engine's limits are constants.** Each source registers `Total` 131 072, half of RFC 13's
   262 144 entries per instance, `Weight` 1, `Rate` 0 and `Deadline` 0, and each tenant weighs 1, since
@@ -303,8 +316,10 @@ the scheduler itself guarantees is epic 13's, held by its tests; a row here stat
 - **D11, dropped events come through the engine's existing seams.** §6.1's "lost events" check drops
   posts at random. The engine's one post function reads one more hook in `e.seams`, beside `joining`
   and `refused`, set per instance from `export_test.go` and answering from a seeded random source
-  (kind 1) whether to drop the post (kind 3). The removal half needs none: the check fills the removal
-  source to its reservation, so its drops are real. No marker beyond the seam's comment. Prior art:
+  (kind 1) whether to drop the post (kind 3). The removal half uses it for `RemovalPending` too,
+  beside filling the removal source to its reservation: a seam drop happens before the scheduler, so
+  it raises no `Dropped` and only the periodic rescan recovers it, while the scheduler's own drops
+  also trigger the early scan. No marker beyond the seam's comment. Prior art:
   the first part's `seams`.
 - **D12, one retrying owner per instance.** The self-fence counts a retrying owner's failing items
   (RFC 8 §11.2). The first part had one owner per loop, released when the loop's goroutine ended. Each
@@ -314,7 +329,10 @@ the scheduler itself guarantees is epic 13's, held by its tests; a row here stat
   engine's conflict bound, so a bound cut counts as a failure and a run's deadline never hides one. No
   marker. Prior art: the first part's `withRetryingOwner`.
 - **D13, the lost-wakeup leg is epic 13's.** RFC 8 §15.2's "§6.1.1 a stuck run" also loses one
-  dispatch wakeup and asserts liveness fails. No engine input reaches the scheduler's wakeup, so that
+  dispatch wakeup and asserts liveness fails. The engine hands the scheduler its clock
+  (`workqueue.New(e.d.Clock, loop)`), but that clock also drives the engine's other timers, so a
+  wakeup lost there loses theirs too, and the dispatch hook that can drop one is in
+  `pkg/workqueue`'s own `export_test.go` (epic 13's T13.4), out of an engine test's reach; so that
   leg runs over a scheduler instance alone in epic 13's test of the row. Epic 12 writes
   `TestRFC8B_AStuckRun` without that leg (its T12.6), so no wakeup-dropping control is built. No marker. Prior art: none found.
 
@@ -325,7 +343,7 @@ On `feat/storage-v2`.
 ```text
 pkg/engine/
   deps.go                 T14.1  Watch, Loop; T14.2 Handle.DirtyFiles; T14.7 the listing's start bound
-  engine.go               T14.1  New refuses a nil Watch; Apply's SetTenant; T14.3 the post seam
+  engine.go               T14.1  New refuses a nil Watch; Apply's SetTenant; publishOpened's tenants and Start; T14.3 the post seam; T14.5 publishOpened posts the rebuilt keys; T14.6 its loopItems and Stats' run counts moved to the source
   queue.go                T14.1  the instance per journal, limits, tenants, the TenantID conversion, the owner; T14.2 the offload source; T14.3 Dirty and the age tick; T14.4 pressure
   removals.go             T14.5  the removal source, phase 2 and prune; T14.6 the work list, the loop deleted; T14.7 the rescan
   removals_start.go       T14.5  start step 4's listing becomes the removal source's Rebuild; clones still rebuilt at step 4
@@ -337,7 +355,10 @@ pkg/engine/
   health.go               T14.1  Work, WorkLimits; T14.3 QueueEvents; T14.5 removals pending; T14.6 WorkQueueLockWaits
   export_test.go          T14.1 to T14.7  the loop's accessors rewritten onto the source; the run and tenant hooks, the drop seam, the totals
   queue_test.go removals_test.go removals_internal_test.go removals_start_test.go  T14.1 to T14.7
-  start_test.go close_bubble_test.go  T14.1  their Deps literals gain Watch
+  start_test.go close_bubble_test.go engine_test.go  T14.1  their Deps literals and fullDeps gain Watch; T14.6 close_bubble_test.go's loop accessors
+  capacity_test.go cloned_test.go clonehold_test.go close_clone_test.go drop_test.go fence_test.go
+  rebuild_test.go release_test.go start_replay_test.go stats_test.go close_test.go close_review_test.go
+  unbind_loop_test.go groupcommit_test.go  T14.6  their loop accessors rewritten onto the source
   enginetest/fake.go      T14.2  FakeHandle.DirtyFiles
   enginetest/journal_test.go  T14.2  DirtyFiles agrees with the journal
   enginetest/fixture.go enginetest/unit.go  T14.1  Watch over a real watchdog
@@ -349,6 +370,9 @@ pkg/metadata/kvstore/
 internal/node/
   node.go                 T14.1  the watchdog built before content.Compose
   content/content.go      T14.1  Params gains the watchdog; Deps.Watch from it
+  content/content_test.go T14.1  its Params carry a real watchdog
+internal/vfs/integration/
+  benchcompose_test.go    T14.1  its Deps literal gains Watch
 test/engine/known.yaml    T14.9  two entries removed
 docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (D1)
 ```
@@ -357,7 +381,7 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
 
 ### T14.1 Each journal's scheduler instance, watched
 
-**Subtask T14.1 estimate: 2.5 man-days.**
+**Subtask T14.1 estimate: 2.75 man-days.**
 
 - **Track:** A. **Depends on:** none. Epic 13's `pkg/workqueue` first.
 - **Covers:** R1, R2, R3, R4, R5, R6, R8, R10, R11, R37, R38.
@@ -380,23 +404,36 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
   journal's removal loop today, so `Start`, `Bind` and the reopens in `recover.go` and `loss.go` reach
   it as they do now; each bound shard is added with `SetTenant` (weight 1, backoff from
   `OffloadRetryMin` and `OffloadRetryMax`) at start step 6 and at `Bind`, and `Start` is called at
-  step 7, so nothing is dispatched before it. `Apply` re-sends every tenant's `Tenant` when a retry
-  setting changes. `Close` calls `Stop` within the stop bound, then the loop's `Close` and the owner's
+  step 7, so nothing is dispatched before it. A late attach runs both from `publishOpened`, which
+  `Start` and `attachLate` share, so a late-attached journal's removals run from this epic on, as the
+  loop `groupCommitFor` starts for it runs them today; epic 19 adds its reseed. `Apply` re-sends
+  every tenant's `Tenant` when a retry setting changes, an offload tenant's `BackoffMax` the one the
+  pressure state calls for (T14.4). Every `SetTenant` the engine sends after a tenant was added,
+  `Apply`'s and the pressure re-sends, is sent under the journal queue's lock and skipped for a
+  binding `Drop` has marked dropped, which `Drop` does under that lock before its `CancelTenant`
+  (D3), since `SetTenant` adds back a tenant it does not hold and runs its `Rebuild`; epic 16's D13
+  then routes the offload tenants' writes through `retune`. `Close` calls `Stop` within the stop bound, then the loop's `Close` and the owner's
   release, a failed join reported and the journal and loop left open. `JournalStats.Work` and
   `WorkLimits` filled from `Stats(src)` and the registered limits, tenants converted to shards.
   `internal/node/node.go` builds its watchdog before `content.Compose`, and `content.Params` carries
-  it into `Deps.Watch`; the fixture, `enginetest/unit.go` and the `Deps` literals of `start_test.go`
-  and `close_bubble_test.go` pass a real `*health.Watchdog`'s loops on the injected clock. Consumed by
+  it into `Deps.Watch`; the fixture, `enginetest/unit.go`, `engine_test.go`'s `fullDeps`, the `Deps`
+  literals of `start_test.go`, `close_bubble_test.go` and `internal/vfs/integration/benchcompose_test.go`,
+  and `internal/node/content/content_test.go`'s `Params` pass a real `*health.Watchdog`'s loops on
+  the injected clock. Consumed by
   T14.2, T14.5 and epics 19 and 20.
 - **Acceptance criteria:**
   - Each journal opened has one instance with two sources registered, every bound shard a tenant of
-    both; a `Bind` adds the share's tenants and a `Drop` removes them.
+    both; a `Bind` and a late attach add the shares' tenants and a `Drop` removes them, and no
+    `Apply` racing the `Drop` adds them back.
   - The watchdog's `Live` counts the instance's loop while serving and stops counting it after a
     clean `Close`, and still counts it after one whose `Stop` timed out.
   - `JournalStats.Work` reports per source and shard, and `WorkLimits` the totals and concurrency.
 - **Tests:** at `Stats()` and the watchdog, over the unit fixture: a journal's `Work` after `Bind`
   names the share's shard under both sources and after `Drop` none (catches a tenant not added or left
-  behind, R2); `Live` after a clean `Close` with the injected clock advanced past 60 s answers true
+  behind, R2); a late-attached journal's truncate reaches done (catches a late attach left with no
+  dispatch, R4); an `Apply` held through the tenant hook (D7) across a `Drop`'s `CancelTenant` sends
+  no `SetTenant` for the dropped share, and `Work` names none of its shards after (catches a tenant
+  brought back, R2); `Live` after a clean `Close` with the injected clock advanced past 60 s answers true
   (catches a loop never closed, R6), and after a `Close` whose stop bound ends with a run held by the
   run hook answers false, the failed join reported and the journal left open (catches a loop closed
   under a live run, R5, R6); `New` with a nil `Watch` is refused. No test double but the injected
@@ -410,7 +447,9 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
 - **Track:** A. **Depends on:** T14.1.
 - **Covers:** R1, R7, R12, R25.
 - **Deliverables:** the offload source in `queue.go`: `Rebuild(ctx, t, post)` posting an offload key
-  for every file of the tenant's binding's `Handle.DirtyFiles`, until a post is refused; `Run`
+  for every file of the tenant's binding's `Handle.DirtyFiles`; `post` answers nothing, and the
+  scheduler stages a tenant's rebuild posts and keeps what its reservation holds once `Rebuild`
+  returns (epic 13's D10), the rest re-derived by the age tick (R14); `Run`
   answering each item `Done` through the per-instance run hook (D7, its `decision:`). `Handle` in
   `deps.go` gains `DirtyFiles() iter.Seq2[journal.FileID, time.Time]`, as `*journal.Handle` has it;
   `FakeHandle` gains it, and `enginetest/journal_test.go` a `DirtyFiles` test over the fake and the
@@ -435,14 +474,17 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
 - **Track:** A. **Depends on:** T14.2. Epic 15's `offloadDue`, which its T15.1 ships first: a zero
   oldest write counts as due, and `Dirty`'s bytes are the staged-bytes count on the engine's file
   state (its D15).
-- **Covers:** R4, R5, R13, R14, R15, R16, R17, R18, R19, R28, R37, R41, R42.
+- **Covers:** R4, R5, R13, R14, R15, R16, R17, R18, R19, R28, R37, R40, R41, R42.
 - **Deliverables:** `Write` posts `Dirty(file)` after staging, before acknowledging: the handler
   calls `offloadDue` over the file's journal statistics and posts the file's offload key when it is
   due, never waiting. The age tick, one timer per journal on the injected clock at the period of D4
   with its `decision:`, calls `offloadDue` with the journal's fresh statistics (every file's oldest
   dirty write from `DirtyFiles`) and posts the due files oldest first per shard until the shard's post
   is refused; it starts at step 7 and `Close` cancels and joins it. `QueueEvents` counts `dirty` and
-  `age_tick`. The engine's one post function, with D11's seam. The key's construction, (shard, kind,
+  `age_tick`. The engine's one post function, with D11's seam, timing each `Post` on the engine's
+  clock into `Stats.WorkQueueLockWaits`, since every post waits on the scheduler's lock, a write's
+  `Dirty` and each tick's posts included (R40, epic 13's hand-off). A `Bind` or an `Apply` that
+  lowers the smallest `MaxAge` re-arms the tick (D4). The key's construction, (shard, kind,
   file) with nothing else, with RFC 8 §15.3's `ponytail:` there. Consumed by T14.4 and epic 16.
 - **Acceptance criteria:**
   - A write returns while the offload source holds its whole reservation.
@@ -462,7 +504,10 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
     rebuild give one key, and its offload and removal keys differ (catches a version or attempt in the
     key, which would defeat E41, R13);
   - a share with `MaxAge` 4 s beside one with 60 s ticks every second, and every 15 s once the first
-    is dropped (D4).
+    is dropped; one bound with `MaxAge` 4 s while the tick is armed at 15 s ticks within 1 s (catches
+    a tick that waits out its armed period, D4, R17);
+  - each `Dirty` post and each tick's post adds one to `WorkQueueLockWaits`' count (catches an
+    untimed post, R40).
   No double but the clock, the seeded source, the seam and the hook.
 - **Rules:** rule 9: §15.3's `ponytail:` and D4's `decision:`.
 
@@ -502,14 +547,16 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
 - **Covers:** R1, R3, R7, R8, R9, R12, R13, R22, R26, R27, R29, R30, R36, R39.
 - **Deliverables:** the removal source in `removals.go`, keyed (shard, removal, file): `Rebuild`
   lists the shard's unfinished-removal index, as start step 4's `collectRemovals` does now, posting a
-  removal key per file and recording on the file's list the newest version and whether a removal is
-  not done; clones not done are still rebuilt at step 4, before serving. `kvstore`'s listing yields a
+  removal key per file (staged as T14.2's are, the rest re-posted by the rescan) and creating the
+  file's list (D2) with the newest version, the removals not done and the time the source first saw
+  each; clones not done are still rebuilt at step 4, before serving. `kvstore`'s listing yields a
   bad entry with its error and goes on (D6), and the rebuild posts that file. `Run` runs each key's
   durable part, a bounded `Resume` and the prune of the newest done removal, under the
   `engine.removal_batch` root span, counting `RemovalRuns` by result, and answers as D2 says. A
   removal's phase 1 posts `RemovalPending` through the post function. The first part's phase-2 and
   prune loop items go; the loop still runs the in-memory items until T14.6, which ships with this
-  subtask (§8). `ShareStats.RemovalsPending` and `OldestRemoval` from the lists. RFC 8 §6.1's
+  subtask (§8). `ShareStats.RemovalsPending` and `OldestRemoval` from the lists, which hold every
+  removal not done whether or not its post was accepted (D2). RFC 8 §6.1's
   removal-key `decision:` at the key. Consumed by T14.6, T14.7 and epic 19.
 - **Acceptance criteria:**
   - A removal posted, or found at start in the index, reaches done and is pruned from the source's
@@ -525,41 +572,52 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
   `OffloadRetryMax` reaching a key in backoff (catches a fixed backoff or settings not reaching
   tenants surviving the move, R3, R30); ten truncates of one file, whose `Work` shows one pending key
   and whose records all reach done (R9); start over 10⁴ unfinished removals with the store's reads
-  counted through a pass-through recording wrapper on the `kv.KV`, none a file record (catches a scan,
-  R26); start with one entry's removal record undecodable, which starts, completes the other removals
+  recorded through a pass-through recording wrapper on the `kv.KV`, none a range read over the
+  shard's file-record prefix (catches a scan, R26; a dispatched `Resume`'s point read of its own
+  file record is not one); with the source filled to its reservation so some posts drop, the
+  removals still count in `RemovalsPending` (catches gauges read from accepted posts, R39); start with one entry's removal record undecodable, which starts, completes the other removals
   and retries that file (R27). Doubles: kind 3 on the `kv.KV`, and the recording wrapper.
 - **Rules:** rule 9: the removal-key `decision:`; rule 3: the span and the run counter keep their
   names.
 
 ### T14.6 The removal source's in-memory work, and the loop deleted
 
-**Subtask T14.6 estimate: 5 man-days.**
+**Subtask T14.6 estimate: 5.5 man-days.**
 
 - **Track:** A. **Depends on:** T14.5.
-- **Covers:** R12, R30, R31, R32, R33, R34, R35, R39, R40, R47.
+- **Covers:** R9, R12, R30, R31, R32, R33, R34, R35, R39, R40, R47.
 - **Deliverables:** the file's work list of D2 with its `decision:`: `retryLater`, `behindClone` and
   the pending release's retry, the existence commit's retry, and `clonePhase2`'s hold, served wait,
   batches, `settleClone` and `Release` become obligations on the list, each counted or uncounted as
   its first-part answer was, posted through the post function; the wait for `Holds.Served` is one
-  bounded round per run, answered uncounted, where `servedRound` waited `loopBackoff`; the run keeps
-  each removal's failure count and raises and clears `removal_stalled` as `step` and `waiting` did;
+  bounded round per run, where `servedRound` waited `loopBackoff`, raising `removal_stalled` for the
+  destination at its fifth round and clearing it once served, as `awaitServed` does; while a clone
+  obligation is not finished the run skips the file's durable part (D2); the run keeps each
+  removal's failure count and raises and clears `removal_stalled` as `step` and `waiting` did;
   every run's context carries D12's owner, and the fence forgets a file once its list is empty.
   `Unbind` joins with `WaitTenant` and `Drop` cancels with `CancelTenant` and ends the share's lists
   (D3, its `decision:`); `Close` closes the lists and, after `Stop`, ends every one left, each end
-  checking the stop bound as `halt` did. `Stats.WorkQueueLockWaits` times the lists' lock.
+  checking the stop bound as `halt` did. `Stats.WorkQueueLockWaits` also times the lists' lock
+  (T14.3 times the posts). `engine.go`'s `publishOpened` posts keys in place of `loopItem`s, and
+  `Stats` reads the run counts from the source.
   `removalLoop`, `loopItem`, `loopBackoff` and the loop's `ponytail:` are deleted, the first part's
   `decision:`s kept at the sites they move to, and the remaining loop tests and `export_test.go`
   accessors (`LoopSteps`, `LoopParked`, `HoldRemovalLoop`, `StopRemovalLoops`, `RemovalStalled`,
-  `RemovalsPending`) rewritten onto the source. Consumed by T14.7 and epic 19.
+  `RemovalsPending`, `EnqueueHeld`, `EnqueueKind`, `DropShare`, `CloseGroupCommits`) rewritten onto
+  the source, with the 15 test files beyond the three removal files that call them (§5). Consumed by
+  T14.7 and epic 19.
 - **Acceptance criteria:**
   - Every first-part test of a removal, a release, a clone, an unbind, a drop and a close passes with
     no removal loop in the tree.
   - A phase-1 retry keeps the file's guard until it commits, and one cancelled by `Close` leaves the
     file's pending operations for recovery.
-  - A clone waiting for `Holds.Served` or for space holds no goroutine and no slot between rounds,
-    raises no `removal_stalled`, and is cancelled by `Stop`.
-- **Tests:** the first part's tests in `removals_test.go`, `removals_internal_test.go` and the clone,
-  close, unbind and drop files moved onto the source, each run once against the source before the
+  - A clone waiting for `Holds.Served` or for space holds no goroutine and no slot between rounds
+    and is cancelled by `Stop`; one waiting for space, or on a hold refused `DelayFrozen`, raises no
+    `removal_stalled`, and one waiting for `Holds.Served` raises it at its fifth round and clears it
+    once served (`TestARebuiltCloneWaitsForItsSourcesShard` keeps passing).
+  - No `Resume` runs for a file while its clone waits for its hold or for `Holds.Served`.
+- **Tests:** the first part's tests in `removals_test.go`, `removals_internal_test.go` and the 15
+  files of §5 moved onto the source, each run once against the source before the
   loop is deleted and each failing on its planted break; then:
   - a truncate's phase 1 conflicting after its journal step, then a synced write above it: the guard
     is held and no capture takes the file until the retry commits (R32, at the guard's consumer);
@@ -567,6 +625,9 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
     absent from the last group commit (R34);
   - five failed runs raise `removal_stalled` naming the file and kind and an advancing run clears it
     (R31); a clone waiting for space for ten runs raises nothing (catches an uncounted wait counted);
+  - a rebuilt clone whose source's shard is not served, its file's key posted a second time: no
+    batch of the file commits before `Served` returns (catches the durable part run past a clone,
+    R33);
   - five clones waiting on `Holds.Served` with the removal source's `Concurrency` at 4: a truncate of
     another file still completes and the watchdog stays live (catches a wait holding a slot, R33);
     `Close` meanwhile returns within its bound;
@@ -602,7 +663,8 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
   - A scan resumes where the last one stopped, and wraps; a changed `removal.rescan` sets the next
     period.
 - **Tests:** **lost events, the removal half** (R41): the removal source sized down and filled to its
-  reservation, so `RemovalPending` posts drop; assert every removal reaches done within the rescan
+  reservation, so `RemovalPending` posts drop, and D11's seam dropping each `RemovalPending` with
+  probability ½ from a seeded source; assert every removal reaches done within the rescan
   bound, with no restart (catches a rescan from the start each time and one that never wraps, R23);
   the same with one undecodable entry early in the index (R27); a dropped post triggers a scan before
   the next period (R14); an `Apply` halving `RemovalRescan` makes the next scan come at the new period
@@ -635,7 +697,10 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
 - **Track:** A. **Depends on:** T14.6.
 - **Covers:** R46, R47.
 - **Deliverables:** `BlockNextRun` in `enginetest/work.go` made real for `"removal"` (D10);
-  `TestRFC8B_AStuckRun` run over the removal source, whose lost-wakeup leg is epic 13's (D13), green, and its `known.yaml` entry removed;
+  `TestRFC8B_AStuckRun` run over the removal source, whose lost-wakeup leg is epic 13's (D13), its
+  condition assertion rewritten to read the stalled source and tenant from `JournalStats.Work` (R46),
+  since `work_queue_stalled` is raised only from epic 20's T20.5, which adds the condition's
+  assertion back; green, and its `known.yaml` entry removed;
   `TestRFC8B_RemovalWedgeUndecodableRef` green over the removal source, its entry removed if epic 12
   left one; the first part's `TestRFC8B_RemovalWedge` kept green.
 - **Acceptance criteria:**
@@ -694,8 +759,8 @@ and can run at any point.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T14.1, T14.2 | 4.25 | — | the instance and the offload source epic 16 builds on |
-| 2 | T14.5, T14.6, T14.9 | 10 | PR 1 | the removal source whole, so the loop is deleted in the change that replaces it, and the rows it turns green |
+| 1 | T14.1, T14.2 | 4.5 | — | the instance and the offload source epic 16 builds on |
+| 2 | T14.5, T14.6, T14.9 | 10.5 | PR 1 | the removal source whole, so the loop is deleted in the change that replaces it, and the rows it turns green |
 | 3 | T14.3, T14.4 | 3.5 | PR 1, epic 15's `offloadDue` | the events; can be open beside PR 2 |
 | 4 | T14.7, T14.8, T14.10 | 4 | PR 2, PR 3 | the rescan, the fuzz targets and the checks over both sources |
 
@@ -712,7 +777,7 @@ also ship on its own beside any of them.
 - **Hand-offs other documents must take.** Epic 16 takes the overwrite prune kind and RFC 8 §6.1's
   prune `ponytail:` (D9), which the offload plan placed here. Epic 16 also takes T14.4's leg where a
   file failing through `FaultRemote` re-runs within `offload.retry_max_pressure` once pressure is on.
-- **Estimate.** 21.75 man-days in 10 subtasks against the offload plan's 15 in 6: the first part's
+- **Estimate.** 22.5 man-days in 10 subtasks against the offload plan's 15 in 6: the first part's
   removal loop runs six kinds of item, five held in memory, the clones stateful and some retrying
-  uncounted, and its tests (32 in the three removal files, and accessors used by eight more files)
-  all move (T14.6); the listing changes (D6). T14.6 is the least certain figure.
+  uncounted, and its tests (32 in the three removal files, and loop accessors used by 15 more files)
+  all move (T14.6); the listing changes (D6); a late attach gains its tenants here (T14.1). T14.6 is the least certain figure.
