@@ -1216,7 +1216,7 @@ new ref's `newest` with the existing ref's version range:
 | New `newest` | The commit |
 | --- | --- |
 | above the existing `newest` | replaces the ref |
-| inside the existing `[oldest, newest]` | treats the content as already committed: writes nothing for that ref and reports its extent offloaded — unless the block the existing ref's chunk record names has `encodings` naming a key record marked destroyed, when it replaces the ref as in the row above |
+| inside the existing `[oldest, newest]` | treats the content as already committed: writes nothing for that ref and reports its extent offloaded — unless the block the existing ref's chunk record names has `encodings` naming a key record marked destroyed or missing: then a new `newest` equal to the existing `newest` replaces the ref as in the row above, and one below it refuses that ref as live and applies the rest, its extent left unreported |
 | below the existing `oldest` | refuses that ref as live, and applies the rest — unless it is a held version a live cut sees, which is recorded into history instead ([§6.5](#6.5%20Who%20owns%20a%20ref)) |
 
 Only strictly older content is refused, and only as a live ref: the table
@@ -1234,7 +1234,12 @@ version, under current material, and cuts its chunks afresh, so the new block
 need not carry the old ref's chunk. Kept, that ref would still name a body no
 key can read while the commit reports its extent offloaded, and the journal
 could release the only readable copy. The commit reads those key records with
-conflict tracking ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)).
+conflict tracking ([§5.4](#5.4%20Reads%20that%20gate%20a%20commit)). It
+replaces only at the existing ref's own `newest`, the version a re-offer of
+the same content carries, so it never replaces a ref with strictly older
+content ([M10](#9.%20Invariants)): a pass offered before the existing ref's
+commit, whose `newest` lies below, is refused instead, and its extent is
+neither kept as offloaded nor released.
 
 ## 5. Write sets
 

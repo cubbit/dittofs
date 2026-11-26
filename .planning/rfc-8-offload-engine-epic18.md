@@ -242,7 +242,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 | R47 | The commit refuses only on a key record marked destroyed: a loss no operator has declared marks no record, and a commit under it lands | invariant | RFC 8 §10.4 (its `decision:`) | T18.5 |
 | R51 | A commit never lands a ref whose chunk record names a block under destroyed material: a chunk it would adopt from an older live block whose `encodings` name a destroyed key record is repointed to its own block | invariant | RFC 8 §13 E11; this document's D15 | T18.5 |
 | R53 | A fill never lands an extent offloaded once the engine has been told the material of the block it was fetched from is destroyed | invariant | RFC 8 §10, §13 E11; this document's D10 | T18.4 |
-| R54 | A commit never keeps, as already committed, a ref whose chunk record names a block whose `encodings` name a key record marked destroyed: it replaces that ref as if the new one were newer | MUST | RFC 6 §4.4, §5.4 (as D17 amends them); RFC 8 §10.4 | T18.5 |
+| R54 | A commit never keeps, as already committed, a ref whose chunk record names a block whose `encodings` name a key record marked destroyed or missing: a new ref at that ref's own `newest` replaces it as if it were newer, and one below it is refused as live, its extent left unreported, so no ref is replaced with strictly older content (RFC 6 M10) | MUST | RFC 6 §4.4, §5.4 (as D17 amends them); RFC 8 §10.4 | T18.5 |
 | R48 | §10.4 destroyed material, but its crash leg: covered extents lose their bit, are not evicted, are offloaded again and read back; a remote-only chunk reads **Lost**; a master key destroyed, or a record marked destroyed, between pin and Commit refuses the commit and no block commits; a destroy between Commit and Mark leaves the extents unmarked; no replacement material refuses the pass at Intent | test row | RFC 8 §15.1 | T18.6 |
 
 **Observability**
@@ -342,10 +342,12 @@ R13 by epic 15's Mark-after-commit check (T15.9), since only Mark sets the bit e
   reads the provider's list from its start, and what was destroyed before is the reseed's).
   **Reading** a notice is cheap and serialised by one mutex: the loop's round and every refusal's
   step 2 and 3 read each notice the journal's bindings use, calling `DestroyedSince` until a call
-  returns no ID and adding each batch to D10's set as unscanned before taking its cursor, before they
+  returns no ID, as `keys.DestroyedNotice` asks, or until 16 calls, and adding each batch to D10's set as unscanned before taking its cursor, before they
   release anything. A call returns at most 256 IDs (RFC 5 epic 8's D10), so one call a round would
   leave the rest unread while that round releases their namespaces' extents; a read that fails
-  part-way keeps the cursor of the last batch added and counts as failed. **Scanning** is the loop's alone:
+  part-way keeps the cursor of the last batch added and counts as failed, and so does one that
+  stops at its 16 calls, so a refusal under a mass destroy waits on at most 16 provider calls and
+  releases nothing under that notice until a later read drains it. **Scanning** is the loop's alone:
   its round runs the unmark scan (T18.4) over the unscanned IDs, marking an ID scanned only once
   every held file of its namespace has been scanned; a scan cut short by an error, a deadline or a
   closed journal leaves the ID unscanned, to be run again by the next round, which the scan's
@@ -374,7 +376,9 @@ R13 by epic 15's Mark-after-commit check (T15.9), since only Mark sets the bit e
   material its refs depend on (the commit's answer, D15) and its `report`; a fill of epic 17 holds it at `fillExtent`, epic 17's one `Fill` site (its T17.5),
   across its check of the materials of the block it fetched from, read with `Materials`, and its
   `Fill`; a release holds it as D9 says. On a hit, a material of that block in the set, the fill
-  takes the write lock instead and runs `Fill` then `Unmark` over the filled extent under it: RFC 1
+  releases the read lock, takes the write lock (a `sync.RWMutex` cannot be upgraded, and `Lock`
+  under its own `RLock` deadlocks), checks again, a hit staying a hit since the set only grows and
+  the block's materials are fixed, and runs `Fill` then `Unmark` over the filled extent under it: RFC 1
   §3.4 sets a filled extent's bit and `Fill` takes no flag to leave it clear, so the bit is cleared
   by the call the scan uses, and under the write lock no release or Mark runs between the two. An
   `Unmark` that fails sets the ID back to unscanned, so D9 holds the namespace's eviction until a
@@ -453,18 +457,29 @@ R13 by epic 15's Mark-after-commit check (T15.9), since only Mark sets the bit e
   still names the old chunk. D15's repoint reaches that chunk only when the new block carries it,
   and it need not: the re-offer cuts its chunks afresh, and one can straddle the old chunk's bounds.
   For example, block A under data key K1 holds chunk C1 over [0, 1 MiB) at version 5; K1 is
-  destroyed and the notice unmarks [0, 1 MiB); the re-offer, merged with dirty bytes after it, cuts
-  [0, 768 KiB) and [768 KiB, 2 MiB) into block B under K2. Both new refs carry version 5 over [0,
-  1 MiB), so C1's ref is kept, B carries nothing D15 can repoint, the commit reports [0, 1 MiB)
-  offloaded, Mark sets the bits, since D15's answer names B's materials and no adopted block's, and
-  eviction drops the only copy anyone can read: the next read is **Lost**. Widening Mark's check to
+  destroyed and the notice unmarks [0, 1 MiB); the re-offer, merged with dirty bytes written after
+  it beyond 1 MiB, cuts [0, 768 KiB) and [768 KiB, 2 MiB) into block B under K2. The second ref's
+  `newest` is above 5, so it replaces C1's ref over [768 KiB, 1 MiB); the first carries version 5
+  over [0, 768 KiB), so C1's ref is kept there, B carries nothing D15 can repoint, the commit
+  reports [0, 768 KiB) offloaded, Mark sets the bits, since D15's answer names B's materials and no
+  adopted block's, and eviction drops the only copy anyone can read: the next read of [0, 768 KiB)
+  is **Lost**. Widening Mark's check to
   A would only stall it: the extent would be offered and kept for ever, and after a restart, with
   the set empty, marked. So the commit reads,
   tracked, the key records of the block each kept ref's chunk record names (the block records
-  `chunksOf` already loads), and replaces the ref as a newer one would when any reads `destroyed`.
-  This amends RFC 6 §4.4's middle row and §5.4's key-record row, in this document's pull request,
-  since the RFC's text forbids the replacement. A `decision:` at the replacement. Prior art: none
-  found.
+  `chunksOf` already loads), and, when any reads `destroyed`, replaces the ref as a newer one would
+  if the new ref's `newest` equals the kept ref's own, the version a re-offer of the same content
+  carries, and otherwise refuses the new ref as live and leaves its extent unreported. A pass
+  offered before the kept ref's commit has a `newest` below it, so replacing on any version inside
+  the range would serve its older bytes where the kept ref's newer ones were (RFC 6 M10). A missing
+  key record on a kept ref's block is judged as `destroyed`, not refused as D11 refuses the
+  commit's own: the replacement lands the content on a block whose material is current, while a
+  refusal would keep every later re-offer of the file's extent from landing. This amends RFC 6
+  §4.4's middle row and §5.4's key-record row, in this document's pull request, since the RFC's
+  text forbids the replacement. A `decision:` at the replacement names both, and a `ponytail:` its
+  ceiling: a kept ref spanning versions whose re-cut chunk holds only older ones is refused on every
+  re-offer, its extent Dirty and counted toward O6 (D12), until a version per byte range lets the
+  commit tell a re-offer from a stale pass. Prior art: none found.
 
 ## 5. Target tree
 
@@ -493,7 +508,7 @@ pkg/engine/
   enginetest/space.go     T18.7  MeasuredDrain made real
   conformance/            T18.3, T18.6, T18.7, T18.8, T18.9  the rows green, or their messages rewritten
 pkg/metadata/kvstore/
-  offload.go              T18.5  the commit's tracked key-record reads, the adopted blocks' read and repoint (D15), ErrCommitUnderDestroyedMaterial
+  offload.go              T18.5  the commit's tracked key-record reads, the adopted blocks' read and repoint (D15), replaceRefs' kept-ref key-record read, replacement and refusal (D17), ErrCommitUnderDestroyedMaterial
   materials.go            T18.4  Content.Materials, MaterialSpan
   offload_test.go materials_test.go  T18.4, T18.5
 internal/vfs/integration/rows_test.go  T18.9  TestV20's offload half green
@@ -696,6 +711,11 @@ test/journal/known.yaml   T18.1  the real journal's Release and Unmark legs, red
     (kind 3 each): that namespace releases nothing that round or the next, the ID stays unscanned,
     and the round after completes the scan and evicts (catches a cursor advanced past an unfinished
     scan, D9);
+  - `keystest`'s provider destroying 20 batches' worth of IDs before a refusal: the refusal makes 16
+    calls, releases nothing under that notice, and a later read drains the rest before any release
+    (catches an unbounded read, or a capped read counted as succeeded, D9);
+  - a fill whose block's material is in the set, with the run's `-race` and a timeout as backstop:
+    the fill returns, its extent's bit clear (catches a read lock upgraded in place, D10);
   - two shares on two store configurations with two notices: a destroy reported by one holds only
     its namespace's eviction and unmarks only its extents (catches one cursor for every provider,
     and a gate on the whole engine);
@@ -738,8 +758,9 @@ test/journal/known.yaml   T18.1  the real journal's Release and Unmark legs, red
   `ErrInconsistent` (D11, its `decision:`). The same tracked read of each adopted block's
   `encodings`, repointing a chunk whose older block's material is destroyed, and `CommitResult`
   gaining the materials of every block its refs read (D15, its `decision:`). In `replaceRefs`, the
-  same tracked read of the block each ref it would keep as already committed names, replacing that
-  ref when any record reads `destroyed` (D17, its `decision:`), with RFC 6 §4.4 and §5.4 as amended
+  same tracked read of the block each ref it would keep as already committed names, when any record
+  reads `destroyed` or is missing replacing that ref at its own `newest` and refusing a new ref
+  below it as live (D17, its `decision:` and `ponytail:`), with RFC 6 §4.4 and §5.4 as amended
   here. RFC 8 §10.4's
   undeclared-loss `decision:` at the read. In `offload/`, both refusals answered as D12 says. The
   fixture's `WithChain` provider keeps its key records in the fixture's own `kvstore` through its
@@ -752,8 +773,9 @@ test/journal/known.yaml   T18.1  the real journal's Release and Unmark legs, red
   - A material with an undeclared loss (no record marked) commits.
   - A commit adopting a chunk from a live block under destroyed material lands with the chunk
     repointed to its own block.
-  - A commit at the version a kept ref's range holds, over a ref whose block is under destroyed
-    material, replaces that ref with its own.
+  - A commit at a kept ref's own `newest`, over a ref whose block is under destroyed material or
+    names a missing key record, replaces that ref with its own; one below that `newest` is refused
+    for that ref and reports nothing over it.
   - Every green `engine-conformance` row stays green with the reads in place.
 - **Tests:** in `kvstore`, over the in-memory `kv.KV`, Badger, and FoundationDB where `fdbkvtest`
   runs (rule 8):
@@ -779,7 +801,12 @@ test/journal/known.yaml   T18.1  the real journal's Release and Unmark legs, red
     and A's chunk count drops (catches the kept ref, R54); the same commit with K1 not marked keeps
     A's ref (the row still holds for live material);
   - the same, with K1 marked by another transaction after the commit's snapshot: the commit aborts
-    and its retry replaces (catches an untracked read of the kept ref's block, R54).
+    and its retry replaces (catches an untracked read of the kept ref's block, R54);
+  - A's ref over [0, 1 MiB) spanning versions [3, 7], K1 marked destroyed, then a commit at version
+    5 over [0, 1 MiB): that ref refused as live, A's ref still covering the range and nothing
+    reported over it (catches a stale pass replacing newer content, R54, RFC 6 M10);
+  - the straddling commit with A's key record deleted rather than marked: B lands and replaces A's
+    ref (catches a missing record on a kept ref's block refused, wedging the file, D17).
   In the engine, over the unit fixture: a pass whose commit is refused leaves its extents Dirty,
   its intent abandoned, and a second pass under the provider's current material commits (R44); a
   missing record's refusal counts toward the file's failing count (D12); the straddling case end to

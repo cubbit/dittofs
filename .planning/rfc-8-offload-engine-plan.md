@@ -942,6 +942,11 @@ stays green; RFC 8 E3, E11, E33 hold.
   attempt then abandoned and its extents offered again under current material (RFC 8 §10.4 as
   amended), with its `decision:` on an undeclared loss. The legs: a destroy between pin and
   Commit, a master key's destroy refusing a commit on a data key it wraps, between Commit and Mark, and with no replacement material (epic 15's Intent refusal).
+- The commit also reading, tracked, the key records of the block each kept ref names (RFC 6 §4.4's
+  middle row): under destroyed or missing material it replaces that ref at its own `newest` and
+  refuses a new ref below it, so a re-offer after a destroy lands and no stale pass replaces newer
+  content (RFC 6 §4.4 and §5.4 as amended). A fill whose block's material is in the destroyed set
+  runs `Fill` then `Unmark` under the write lock.
 - Eviction never gated by locks, opens or snapshots; a retention pin deferred (§6.1); a
   `decision:` at `evict` that it trusts the offloaded bit while bucket-setting drift goes undetected
   (§6.1's drift row), withdrawn when `Recheck` runs.
