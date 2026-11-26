@@ -425,8 +425,10 @@ var ErrTooLarge = errors.New("resources: charge past the ceiling")
 // WaitBudget, then zeroes the Reservation, so a second Release does nothing.
 type Reservation struct{ /* unexported: the budget it came from, the key, the bytes */ }
 func (r *Reservation) Release()
-// Shrink lowers the Reservation to n bytes and returns the rest as Release does;
-// an n at or above what it holds changes nothing, so a Reservation never grows.
+// Shrink lowers the Reservation to n bytes and returns the rest to its budget,
+// and to its key's count on a WaitBudget; a negative n is taken as zero, and an
+// n at or above what it holds changes nothing, so a Reservation never grows. It
+// stays live, Shrink(0) included, until its Release.
 func (r *Reservation) Shrink(n int64)
 
 // Budgets is what an adapter is handed (RFC 20 §3.4): the four budgets on the
@@ -477,6 +479,12 @@ func Join(n int, bufs ...*Buf) *Buf // a chain's record (RFC 20 §4.7): an empty
   at the ceiling and so also while restored state holds the pool above it.
 - A reservation is in bytes of memory held, rounded up to the buffer class
   (§3.1) where a pooled buffer backs it.
+- **A charge taken at an upper bound is trimmed in place.** `Shrink` is for a
+  caller that must reserve before it knows the size and learns it after: RFC
+  21's RPCSEC_GSS context table charges a new context at its largest size, then
+  trims the charge to what the context holds. A `Release` followed by a
+  `Reserve` could not do this, since the second charge can be refused or wait
+  after the first is gone, losing a context the table already admitted.
 - **A chain's replies become one record without a new charge.** `Join` moves
   every reservation of `bufs` onto an empty buffer with room for `n` bytes,
   which carries them to its last `Release`; it neither reserves nor waits, so
