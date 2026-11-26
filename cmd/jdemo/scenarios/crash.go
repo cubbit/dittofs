@@ -28,11 +28,11 @@ func CrashStory() ([]jdemo.Beat, journal.Settings) {
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
 				v, werr := h.WriteAt(context.Background(), jdemo.StoryFile, 0, []byte("hello world"), 0)
-				d.Codef("    v, err := h.WriteAt(id=FILE, off=0, p=\"hello world\", mtime=0)")
+				d.Codef("    v, err := h.WriteAt(ctx, FILE, offset_0, []byte(\"hello world\"), mtimeNone)")
 				d.Stash(v, werr)
 				var serr error
 				marks, serr = h.Sync(context.Background(), jdemo.StoryFile)
-				d.Codef("    marks, err := h.Sync(ids=FILE)")
+				d.Codef("    marks, err := h.Sync(ctx, FILE)")
 				if serr != nil {
 					d.Yellowf("    // → %v", serr)
 					return
@@ -54,7 +54,7 @@ func CrashStory() ([]jdemo.Beat, journal.Settings) {
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
 				v, werr := h.WriteAt(context.Background(), jdemo.StoryFile, 2, []byte("XY"), 0)
-				d.Codef("    v, err := h.WriteAt(id=FILE, off=2, p=\"XY\", mtime=0)")
+				d.Codef("    v, err := h.WriteAt(ctx, FILE, offset_2, []byte(\"XY\"), mtimeNone)")
 				d.Stash(v, werr)
 			},
 		},
@@ -68,7 +68,7 @@ func CrashStory() ([]jdemo.Beat, journal.Settings) {
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
 				v, terr := h.Truncate(context.Background(), jdemo.StoryFile, 32)
-				d.Codef("    v, err := h.Truncate(id=FILE, size=32)")
+				d.Codef("    v, err := h.Truncate(ctx, FILE, newSize_32B)")
 				d.Stash(v, terr)
 			},
 		},
@@ -77,7 +77,7 @@ func CrashStory() ([]jdemo.Beat, journal.Settings) {
 			Caption: "Since yields everything a recovering caller needs from the journal: held extents and unsettled markers, version by version",
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
-				d.Codef("    for ch := range h.Since(id=FILE, from=Version()) {")
+				d.Codef("    for ch := range h.Since(ctx, FILE, fromStart) {")
 				for ch, serr := range h.Since(context.Background(), jdemo.StoryFile, journal.Version{}) {
 					if serr != nil {
 						d.Yellowf("    // → %v", serr)
@@ -104,8 +104,8 @@ func CrashStory() ([]jdemo.Beat, journal.Settings) {
 					d.Yellowf("    // → %v", lerr)
 					return
 				}
-				d.Codef("    j, err = journal.Open(dir=dir, floor=floor, expect=id, marks=marks)")
-				d.Codef("    j.SetVersionLimit(mark=limit)    // the window, raised again before any write")
+				d.Codef("    j, err = journal.Open(ctx, dir, floor, expectedID, syncMarks, opts...)")
+				d.Codef("    j.SetVersionLimit(versionLimit)  // the window, raised again before any write")
 				j, oerr := journal.Open(context.Background(), d.Dir, d.Stashed,
 					st.ID, marks, d.OpenOptions()...)
 				if oerr != nil {
@@ -130,7 +130,7 @@ func CrashStory() ([]jdemo.Beat, journal.Settings) {
 				}
 				d.Yellowf("    // → reopened: %d index entries before the close, %d after", len(before), len(after))
 				p := make([]byte, 11)
-				d.Codef("    h.ReadAt(id=FILE, off=0, p=buf11)")
+				d.Codef("    h.ReadAt(ctx, FILE, offset_0, readBuf_11B)")
 				if _, _, _, _, rerr := h.ReadAt(context.Background(), jdemo.StoryFile, 0, p); rerr != nil {
 					d.Yellowf("    // → %v", rerr)
 					return

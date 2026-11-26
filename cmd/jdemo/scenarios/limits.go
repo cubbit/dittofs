@@ -33,7 +33,7 @@ func LimitsStory() ([]jdemo.Beat, journal.Settings) {
 			Caption: "the share limit is the per-share record-byte budget: writes into this share answer to it before they answer to anything else — basic's story passed zero for the same call",
 			Run: func(d *jdemo.Demo) {
 				h, err := d.J.Share(d.Tag, limitsShareEach, journal.Version{})
-				d.Codef("    h, err := j.Share(tag=%d, limit=%s, floor=Version())", d.Tag, jdemo.Bytes(limitsShareEach))
+				d.Codef("    h, err := j.Share(shareTag_%d, shareLimit_%s, floor)", d.Tag, jdemo.Bytes(limitsShareEach))
 				if err != nil {
 					d.Yellowf("    // → %v", err)
 					return
@@ -52,7 +52,7 @@ func LimitsStory() ([]jdemo.Beat, journal.Settings) {
 				// exactly-payload reservation cannot hold the very write
 				// it was made for.
 				res, err := h.Reserve(2*limitsFillEach, 1)
-				d.Codef("    res, err := h.Reserve(n=%s, writes=1)", jdemo.Bytes(2*limitsFillEach))
+				d.Codef("    res, err := h.Reserve(reserveBytes_%s, writes_1)", jdemo.Bytes(2*limitsFillEach))
 				if err != nil {
 					d.Yellowf("    // → %v  // the reserve is charged the budget too", err)
 					return
@@ -66,7 +66,7 @@ func LimitsStory() ([]jdemo.Beat, journal.Settings) {
 			Caption: "40 MiB writes, one at a time, until the share's budget refuses one: the journal's own words, counting what is missing",
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
-				d.Codef("    for { v, err := h.WriteAt(id=FILE, off=off, p=fill%s, mtime=0) }", jdemo.Bytes(limitsFillEach))
+				d.Codef("    for { v, err := h.WriteAt(ctx, FILE, offset, payload_%s, mtimeNone) }", jdemo.Bytes(limitsFillEach))
 				off := int64(0)
 				n := 0
 				for {
@@ -108,7 +108,7 @@ func LimitsStory() ([]jdemo.Beat, journal.Settings) {
 					payload[i] = pattern[i%len(pattern)]
 				}
 				v, err := res.WriteAt(context.Background(), jdemo.StoryFile, limitsShareEach, payload, 0)
-				d.Codef("    v, err := res.WriteAt(id=FILE, off=%s, p=fill%s, mtime=0)", jdemo.Bytes(limitsShareEach), jdemo.Bytes(limitsFillEach))
+				d.Codef("    v, err := res.WriteAt(ctx, FILE, offset_%s, payload_%s, mtimeNone)", jdemo.Bytes(limitsShareEach), jdemo.Bytes(limitsFillEach))
 				if err != nil {
 					d.Yellowf("    // → %v", err)
 					return
@@ -139,7 +139,7 @@ func LimitsStory() ([]jdemo.Beat, journal.Settings) {
 				h := d.H[d.Tag]
 				before := d.J.Stats()
 				v, terr := h.Truncate(context.Background(), jdemo.StoryFile, 32)
-				d.Codef("    v, err := h.Truncate(id=FILE, size=32)")
+				d.Codef("    v, err := h.Truncate(ctx, FILE, newSize_32B)")
 				if terr != nil {
 					d.Yellowf("    // → %v", terr)
 					return
@@ -159,7 +159,7 @@ func LimitsStory() ([]jdemo.Beat, journal.Settings) {
 			Run: func(d *jdemo.Demo) {
 				before := d.J.Stats()
 				freed, err := d.J.Repack(context.Background(), limitsRepackBudget, journal.RepackScope{})
-				d.Codef("    freed, err := j.Repack(budget=%s, scope=RepackScope())", jdemo.Bytes(limitsRepackBudget))
+				d.Codef("    freed, err := j.Repack(ctx, budgetBytes_%s, journal.RepackScope{})", jdemo.Bytes(limitsRepackBudget))
 				if err != nil {
 					d.Yellowf("    // → %v", err)
 					return
@@ -174,7 +174,7 @@ func LimitsStory() ([]jdemo.Beat, journal.Settings) {
 			Title:   "the honesty ledger",
 			Caption: "the share limit, the escape hatch and repack are live wiring; the offload drain to the remote tier is not built in this journal yet, and the journal says so in its own words",
 			Run: func(d *jdemo.Demo) {
-				d.Codef("    err := h.Offload(id=FILE, through=v, limit=0, widen=0, fn=sink)")
+				d.Codef("    err := h.Offload(ctx, FILE, throughVersion, limitBytes_none, widenBytes_none, sink)")
 				d.Yellowf("    // → journal: not implemented")
 			},
 		},

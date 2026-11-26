@@ -28,9 +28,9 @@ func basicBeats() []jdemo.Beat {
 				st := d.J.Stats()
 				d.Printf("    dir:            %s\n", d.Dir)
 				d.Printf("    state file:     %s\n", jdemo.StatePath(d.Dir))
-				d.Codef("      id, _ := journal.Init(dir=dir, install=install)            // ran only on a fresh dir")
-				d.Codef("      j, _ := journal.Open(dir=dir, floor=floor, expect=id, marks=nil)")
-				d.Codef("      j.SetVersionLimit(mark=Version(counter=%d))            // spares ready: %d", st.VersionLimit.Counter, st.Spares)
+				d.Codef("      id, _ := journal.Init(ctx, dir, installID, opts...)            // ran only on a fresh dir")
+				d.Codef("      j, _ := journal.Open(ctx, dir, floor, expectedID, noMarks, opts...)")
+				d.Codef("      j.SetVersionLimit(journal.Version{Counter: %d})            // spares ready: %d", st.VersionLimit.Counter, st.Spares)
 			},
 		},
 		{
@@ -38,7 +38,7 @@ func basicBeats() []jdemo.Beat {
 			Caption: "the engine works through one handle per share; every record it writes carries the share's tag",
 			Run: func(d *jdemo.Demo) {
 				h, err := d.J.Share(d.Tag, 0, journal.Version{})
-				d.Codef("    h, err := j.Share(tag=%d, limit=0, floor=Version())      // limit 0: no share limit", d.Tag)
+				d.Codef("    h, err := j.Share(shareTag_%d, shareLimit_none, floor)      // 0: no limit below the journal's own", d.Tag)
 				if err != nil {
 					d.Yellowf("    // → %v", err)
 					return
@@ -60,7 +60,7 @@ func basicBeats() []jdemo.Beat {
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
 				v, err := h.WriteAt(context.Background(), jdemo.StoryFile, 0, []byte("hello world"), 0)
-				d.Codef("    v, err := h.WriteAt(id=FILE, off=0, p=\"hello world\", mtime=0)")
+				d.Codef("    v, err := h.WriteAt(ctx, FILE, offset_0, []byte(\"hello world\"), mtimeNone)")
 				d.Stash(v, err)
 			},
 		},
@@ -75,7 +75,7 @@ func basicBeats() []jdemo.Beat {
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
 				v, err := h.WriteAt(context.Background(), jdemo.StoryFile, 2, []byte("XY"), 0)
-				d.Codef("    v, err := h.WriteAt(id=FILE, off=2, p=\"XY\", mtime=0)")
+				d.Codef("    v, err := h.WriteAt(ctx, FILE, offset_2, []byte(\"XY\"), mtimeNone)")
 				d.Stash(v, err)
 			},
 		},
@@ -96,7 +96,7 @@ func basicBeats() []jdemo.Beat {
 					payload[i] = pattern[i%len(pattern)]
 				}
 				v, err := h.WriteAt(context.Background(), jdemo.StoryFile, 4096, payload, 0)
-				d.Codef("    v, err := h.WriteAt(id=FILE, off=4KiB, p=pattern300MB, mtime=0)   // 300,000,000 bytes")
+				d.Codef("    v, err := h.WriteAt(ctx, FILE, offset_4KiB, payload_300MB, mtimeNone)   // 300,000,000 bytes")
 				d.Stash(v, err)
 			},
 		},
@@ -106,7 +106,7 @@ func basicBeats() []jdemo.Beat {
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
 				marks, err := h.Sync(context.Background(), jdemo.StoryFile)
-				d.Codef("    marks, err := h.Sync(ids=FILE)")
+				d.Codef("    marks, err := h.Sync(ctx, FILE)")
 				if err != nil {
 					d.Yellowf("    // → %v", err)
 					return
@@ -124,7 +124,7 @@ func basicBeats() []jdemo.Beat {
 				h := d.H[d.Tag]
 				p := make([]byte, 16)
 				n, missing, held, asOf, err := h.ReadAt(context.Background(), jdemo.StoryFile, 0, p)
-				d.Codef("    n, missing, held, asOf, err := h.ReadAt(id=FILE, off=0, p=buf16)")
+				d.Codef("    n, missing, held, asOf, err := h.ReadAt(ctx, FILE, offset_0, readBuf_16B)")
 				if err != nil {
 					d.Yellowf("    // → err %v", err)
 				}
@@ -143,7 +143,7 @@ func basicBeats() []jdemo.Beat {
 			Caption: "Since walks the versions above the floor: every held extent and removal marker, version by version — the journal's own changelog",
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
-				d.Codef("    for ch := range h.Since(id=FILE, from=Version()) {")
+				d.Codef("    for ch := range h.Since(ctx, FILE, fromStart)       // journal.Version{} {")
 				for ch, err := range h.Since(context.Background(), jdemo.StoryFile, journal.Version{}) {
 					if err != nil {
 						d.Yellowf("    // → %v", err)
@@ -166,7 +166,7 @@ func basicBeats() []jdemo.Beat {
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
 				v, err := h.Truncate(context.Background(), jdemo.StoryFile, 32)
-				d.Codef("    v, err := h.Truncate(id=FILE, size=32)")
+				d.Codef("    v, err := h.Truncate(ctx, FILE, newSize_32B)")
 				d.Stash(v, err)
 			},
 		},
@@ -179,9 +179,9 @@ func basicBeats() []jdemo.Beat {
 			},
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
-				d.Codef("    h.Settle(id=FILE, v=Version(counter=%d))      // the truncate's version", d.Stashed.Counter)
+				d.Codef("    h.Settle(FILE, truncateVersion)      // journal.Version{Counter: %d}      // the truncate's version", d.Stashed.Counter)
 				h.Settle(jdemo.StoryFile, d.Stashed)
-				d.Codef("    for ch := range h.Since(id=FILE, from=Version()) {")
+				d.Codef("    for ch := range h.Since(ctx, FILE, fromStart)       // journal.Version{} {")
 				any := false
 				for ch, err := range h.Since(context.Background(), jdemo.StoryFile, journal.Version{}) {
 					if err != nil {
@@ -210,12 +210,12 @@ func basicBeats() []jdemo.Beat {
 				h := d.H[d.Tag]
 				res, err := h.Reserve(8192, 2)
 				if err != nil {
-					d.Codef("    res, err := h.Reserve(8192, 2)")
+					d.Codef("    res, err := h.Reserve(reserveBytes_8KiB, writes_2)")
 					return
 				}
 				v, werr := res.WriteAt(context.Background(), jdemo.StoryFile, 65536, []byte("reserved"), 0)
-				d.Codef("    res, _ := h.Reserve(n=8KiB, writes=2)")
-				d.Codef("    v, err := res.WriteAt(id=FILE, off=64KiB, p=\"reserved\", mtime=0)")
+				d.Codef("    res, _ := h.Reserve(reserveBytes_8KiB, writes_2)")
+				d.Codef("    v, err := res.WriteAt(ctx, FILE, offset_64KiB, []byte(\"reserved\"), mtimeNone)")
 				d.Stash(v, werr)
 				_ = res.Close()
 			},
@@ -229,7 +229,7 @@ func basicBeats() []jdemo.Beat {
 					func(context.Context, journal.Offer, func([]journal.Extent) error) error {
 						return nil
 					})
-				d.Codef("    err := h.Offload(id=FILE, through=v, limit=0, widen=0, fn=sink)")
+				d.Codef("    err := h.Offload(ctx, FILE, throughVersion, limitBytes_none, widenBytes_none, sink)")
 				d.Yellowf("    // → %v", err)
 			},
 		},
@@ -238,7 +238,7 @@ func basicBeats() []jdemo.Beat {
 			Caption: "the index checked against the segments, the report rather than the repair; the journal's own answer names what this build still owes",
 			Run: func(d *jdemo.Demo) {
 				rep, err := d.J.Inspect().Verify(context.Background())
-				d.Codef("    rep, err := j.Inspect().Verify()")
+				d.Codef("    rep, err := j.Inspect().Verify(ctx)")
 				if err != nil {
 					d.Yellowf("    // → %v", err)
 					return
