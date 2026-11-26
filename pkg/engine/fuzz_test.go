@@ -48,6 +48,10 @@ const (
 	// over: with less, a write could be refused for room, or old segments
 	// repacked, and the model allows neither.
 	fuzzMinJournal = 2 << 30
+
+	// variantRefused ends what a trace prints for a crash variant the disk
+	// refused, so the crash kept no unsynced write.
+	variantRefused = " refused, nothing unsynced kept"
 )
 
 // fuzzFileIDs are fixed, because the journal picks a file's append stream by a
@@ -770,7 +774,7 @@ func engineCrashReordered(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Resul
 
 func (w *engineWorld) crash(env *fuzz.Env, variant string, opts ...enginetest.CrashOption) fuzz.Result {
 	if refused := w.fix.CrashOrPlain(opts...); refused != nil {
-		variant += " refused, nothing unsynced kept"
+		variant += variantRefused
 	}
 
 	for _, write := range w.writes {
@@ -2071,8 +2075,23 @@ func FuzzEngine(f *testing.F) {
 	fuzz.Fuzz(f, target)
 }
 
+// TestEngineSeedsRunTheSameTwice holds every seed to the same trace in two
+// runs, and every crash variant in a seed to being applied: a refused one runs
+// as a plain crash, so the seed would no longer reach what it is there for.
 func TestEngineSeedsRunTheSameTwice(t *testing.T) {
 	target := engineTarget()
+	for i := range target.Ops {
+		call := target.Ops[i].Real
+		target.Ops[i].Real = func(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
+			answer := call(env, w, a)
+			if strings.Contains(answer.String(), variantRefused) {
+				env.T.Errorf("step #%02d of a seed: the crash variant was refused: %s", env.Step, answer)
+			}
+
+			return answer
+		}
+	}
+
 	for _, seed := range engineSeeds {
 		t.Run(seed.name, func(t *testing.T) {
 			fuzz.Deterministic(t, target, fuzz.Seed(target, strings.Join(seed.calls, "\n")))
