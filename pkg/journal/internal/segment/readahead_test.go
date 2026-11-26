@@ -1,6 +1,7 @@
 package segment_test
 
 import (
+	"math"
 	"slices"
 	"sync"
 	"syscall"
@@ -121,10 +122,13 @@ func (he hintEnv) appendRun(t *testing.T, first, n int) []segment.Location {
 }
 
 // TestHinterHintsTheActiveSegmentAheadOfItsAppends checks the ranges the
-// read-ahead worker asks for: per segment they run contiguously from the end
-// of the header, never past the cap, and reach past every record the segment
-// took. A window at or above the cap asks for the whole segment in one hint
-// at the roll; a smaller one asks again as the appends advance.
+// read-ahead worker asks for. Every segment's hints run contiguously from the
+// end of the header and never past the cap; the active segment's reach past
+// every record it took. A window at or above the cap asks for the whole
+// segment in one hint at the roll; a smaller one asks only a window past the
+// appends. A segment the stream rolled away from is not checked for coverage:
+// a roll drops its untaken range, so how far it got depends on when the worker
+// ran.
 func TestHinterHintsTheActiveSegmentAheadOfItsAppends(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -132,7 +136,7 @@ func TestHinterHintsTheActiveSegmentAheadOfItsAppends(t *testing.T) {
 		whole  bool
 	}{
 		{"window below the cap", 16 << 10, false},
-		{"window above the cap", 2 * streamCap, true},
+		{"window above the cap", math.MaxInt64, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			prof.Watch(t, prof.Options{})
@@ -148,23 +152,28 @@ func TestHinterHintsTheActiveSegmentAheadOfItsAppends(t *testing.T) {
 			if len(ends) < 3 {
 				t.Fatalf("the appends landed in %d segments, want at least 3 so the roll is crossed", len(ends))
 			}
+			active := locs[len(locs)-1].Segment
+			end := ends[active]
+			if !c.whole && end+c.window >= streamCap {
+				t.Fatalf("the active segment's records end at %d, want below %d so a window short of the cap shows", end, streamCap-c.window)
+			}
 
-			reissued := false
-			for id, end := range ends {
-				// The worker runs on its own goroutine: wait for the front
-				// to pass the segment's last record, with one backstop.
-				deadline := time.Now().Add(10 * time.Second)
-				var calls []hintCall
-				for {
-					calls = he.fs.calls(id)
-					if len(calls) > 0 && calls[len(calls)-1].to >= end || time.Now().After(deadline) {
-						break
-					}
-					time.Sleep(time.Millisecond)
+			// The worker runs on its own goroutine: wait for the active
+			// segment's front to pass its last record, with one backstop.
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				calls := he.fs.calls(active)
+				if len(calls) > 0 && calls[len(calls)-1].to >= end {
+					break
 				}
-				if len(calls) == 0 {
-					t.Fatalf("segment %d: no hint, want one from the header", id)
+				if time.Now().After(deadline) {
+					t.Fatalf("segment %d (active): got hints %+v, want them past its last record's end %d", active, calls, end)
 				}
+				time.Sleep(time.Millisecond)
+			}
+
+			for id := range ends {
+				calls := he.fs.calls(id)
 				front := int64(format.SegmentHeaderSize)
 				for i, h := range calls {
 					if h.off != front {
@@ -175,27 +184,25 @@ func TestHinterHintsTheActiveSegmentAheadOfItsAppends(t *testing.T) {
 					}
 					front = h.to
 				}
-				if front < end {
-					t.Fatalf("segment %d: hinted through %d, want at least its last record's end %d", id, front, end)
-				}
-				if c.whole && (len(calls) != 1 || front != streamCap) {
-					t.Fatalf("segment %d: got hints %+v, want one over [%d, %d)", id, calls, format.SegmentHeaderSize, streamCap)
-				}
-				reissued = reissued || len(calls) > 1
 			}
-			if !c.whole && !reissued {
-				t.Fatalf("no segment was hinted more than once, want the window re-asked as the appends advance")
+			calls := he.fs.calls(active)
+			front := calls[len(calls)-1].to
+			if c.whole && (len(calls) != 1 || front != streamCap) {
+				t.Fatalf("segment %d (active): got hints %+v, want one over [%d, %d)", active, calls, format.SegmentHeaderSize, streamCap)
+			}
+			if !c.whole && front >= streamCap {
+				t.Fatalf("segment %d (active): hinted through %d, want a window short of the cap %d past records ending at %d", active, front, streamCap, end)
 			}
 		})
 	}
 }
 
-// TestHinterRollKeepsTheUntakenRange checks that a range the worker has not
-// taken when the stream rolls is still hinted: with the worker held inside the
+// TestHinterRollDropsTheUntakenRange checks that a range the worker has not
+// taken when the stream rolls is dropped: with the worker held inside the
 // first segment's hint, the stream fills the second segment and rolls to a
-// third, and once released the worker hints the second segment before the
-// third, whose roll-in range it takes in the same sweep.
-func TestHinterRollKeepsTheUntakenRange(t *testing.T) {
+// third, and once released the worker hints the third and nothing more of the
+// segments the stream left.
+func TestHinterRollDropsTheUntakenRange(t *testing.T) {
 	prof.Watch(t, prof.Options{})
 
 	fs := &hintFS{entered: make(chan struct{}, 1), block: make(chan struct{})}
@@ -211,23 +218,24 @@ func TestHinterRollKeepsTheUntakenRange(t *testing.T) {
 		t.Fatalf("the first segment's hint never reached the file")
 	}
 	locs := he.appendRun(t, 2, 149)
-	var segs []core.SegmentID
+	segs := []core.SegmentID{first}
 	for _, l := range locs {
-		if l.Segment != first && !slices.Contains(segs, l.Segment) {
+		if !slices.Contains(segs, l.Segment) {
 			segs = append(segs, l.Segment)
 		}
 	}
-	if len(segs) < 2 {
-		t.Fatalf("the appends rolled into %d segments past the first, want at least 2 so a range is left untaken", len(segs))
+	if len(segs) < 3 {
+		t.Fatalf("the appends landed in %d segments, want at least 3 so a range is left untaken", len(segs))
 	}
-	left, active := segs[len(segs)-2], segs[len(segs)-1]
-	if got := fs.calls(left); len(got) != 0 {
-		t.Fatalf("segment %d was hinted %+v while the worker was held, want none", left, got)
+	left, active := segs[:len(segs)-1], segs[len(segs)-1]
+	held := map[core.SegmentID][]hintCall{}
+	for _, id := range left {
+		held[id] = fs.calls(id)
 	}
 	unblock()
 
-	// The active segment's range is taken with the left one's and hinted
-	// after it, so its hint is the event the assertion waits on.
+	// The worker takes the active segment's range in the sweep that would
+	// take a carried one, so its hint is the event the assertion waits on.
 	deadline := time.Now().Add(10 * time.Second)
 	for len(fs.calls(active)) == 0 {
 		if time.Now().After(deadline) {
@@ -235,9 +243,10 @@ func TestHinterRollKeepsTheUntakenRange(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	want := []hintCall{{name: format.SegmentName(left), off: format.SegmentHeaderSize, to: streamCap}}
-	if got := fs.calls(left); !slices.Equal(got, want) {
-		t.Fatalf("segment %d, left by the roll while the worker was held: got hints %+v, want %+v", left, got, want)
+	for _, id := range left {
+		if got := fs.calls(id); !slices.Equal(got, held[id]) {
+			t.Fatalf("segment %d, left by a roll while the worker was held: got hints %+v, want only those before the release %+v", id, got, held[id])
+		}
 	}
 }
 
@@ -252,9 +261,20 @@ func TestHinterFailingHintChangesNothing(t *testing.T) {
 		locs []segment.Location
 		seal segment.SealResult
 	}
-	run := func(fail error) (outcome, *hintFS) {
+	run := func(fail error) outcome {
 		he := hintBuild(t, &hintFS{fail: fail}, 16<<10)
-		locs := he.appendRun(t, 1, 150)
+		locs := he.appendRun(t, 1, 1)
+		// The worker runs on its own goroutine: wait for the first segment's
+		// hint, so the failure is injected before the run goes on, with one
+		// backstop.
+		deadline := time.Now().Add(10 * time.Second)
+		for len(he.fs.calls(locs[0].Segment)) == 0 {
+			if time.Now().After(deadline) {
+				t.Fatalf("no hint reached the first segment with hints failing with %v, so no failure was injected", fail)
+			}
+			time.Sleep(time.Millisecond)
+		}
+		locs = append(locs, he.appendRun(t, 2, 149)...)
 		if err := he.s.Sync(); err != nil {
 			t.Fatalf("Sync with hints failing with %v: %v", fail, err)
 		}
@@ -262,19 +282,16 @@ func TestHinterFailingHintChangesNothing(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Seal with hints failing with %v: %v", fail, err)
 		}
-		return outcome{locs: locs, seal: seal}, he.fs
+		return outcome{locs: locs, seal: seal}
 	}
 
-	want, _ := run(nil)
-	got, fs := run(syscall.EIO)
+	want := run(nil)
+	got := run(syscall.EIO)
 	if !slices.Equal(got.locs, want.locs) {
 		t.Fatalf("locations with every hint failing: got %v, want %v", got.locs, want.locs)
 	}
 	if got.seal != want.seal {
 		t.Fatalf("seal with every hint failing: got %+v, want %+v", got.seal, want.seal)
-	}
-	if len(fs.calls(got.locs[0].Segment)) == 0 {
-		t.Fatalf("no hint reached the first segment, so no failure was injected")
 	}
 }
 

@@ -340,15 +340,12 @@ type Stream struct {
 	// hinted front: the end of the last window asked for, the cap once
 	// nothing is left to ask or no worker is installed. [hintFrom, hintTo) is
 	// the part of it the worker has not taken yet, empty when they are equal.
-	// hintLeft holds the untaken parts of the segments the stream rolled away
-	// from, oldest first, so a roll never drops a range the worker was asked
-	// for. All guarded by appendMu, like every field of its block.
+	// All guarded by appendMu, like every field of its block.
 	hinter   *Hinter
 	hintStep int64
 	hinted   int64
 	hintFrom int64
 	hintTo   int64
-	hintLeft []hintRange
 
 	// sealState names where the stream's seal stands. The zero value is
 	// sealOpen: the stream is appending.
@@ -1370,11 +1367,6 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 		s.appendMu.Unlock()
 		return s.endTaken(id, ref, ErrStreamClosed)
 	}
-	// The old segment's range the worker has not taken yet is kept for it,
-	// named by the old segment's id, before the new segment's resets it.
-	if s.hintFrom != s.hintTo {
-		s.hintLeft = append(s.hintLeft, hintRange{id: s.id, off: s.hintFrom, to: s.hintTo})
-	}
 	s.id, s.ref = id, ref
 	s.next = format.SegmentHeaderSize
 	s.count = 0
@@ -1394,6 +1386,16 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	// The new segment's first window is asked of the read-ahead worker
 	// before its first record is reserved, so the fill starts at the
 	// header the records follow.
+	//
+	// decision: the reset drops the old segment's range the worker has not
+	// taken yet. That segment takes no record after the roll, whose wait
+	// above drained every write to it: the range's bytes were written, so
+	// their pages are resident, or lie past its last record, which nothing
+	// reads, so a late hint buys nothing.
+	// Carrying it would hold a descriptor slot through a synchronous hint on
+	// a segment the retirer wants to close, and keep a list that grows past a
+	// stopped worker. Carry the range again if a roll ever stops waiting out
+	// the old segment's writes, so some could land after it.
 	s.hintFrom, s.hintTo = 0, 0
 	s.hinted = format.SegmentHeaderSize
 	s.hintAheadLocked()

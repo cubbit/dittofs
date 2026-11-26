@@ -15,7 +15,8 @@ import (
 //
 // decision: one window is 256 MiB, the default segment cap, so at that cap the
 // hint is the single whole-segment hint a roll asks for, the form measured at
-// 2.06× the large sequential row on darwin and 5.4× its small-write control.
+// 2.06× the large sequential row and 5.4× its small-write control on the one
+// platform file that takes the hint.
 // A smaller window was measured only outside the journal, an 8 MiB hint every
 // 4 MiB reaching a quarter of the resident speed with its p99 still near a
 // millisecond, so no smaller figure carries evidence at the default cap. Above
@@ -33,19 +34,18 @@ const ReadAheadWindow = int64(256 << 20)
 // One per journal, over the journal's own streams, as the idle sealer is: a
 // stream names the range it wants under its own append lock and wakes the
 // worker, and the worker takes the range and makes the call outside every
-// lock, so no append waits on a hint. darwin's F_RDADVISE over never-written
-// space returns only once its pages are resident, tens of milliseconds for a
-// 256 MiB window, which is why the call runs here rather than on the writer.
+// lock, so no append waits on a hint. The platform's hint over never-written
+// space can return only once its pages are resident, tens of milliseconds for
+// a 256 MiB window, which is why the call runs here rather than on the writer.
 //
 // decision: the hint is advisory and its failure is logged at Debug and
 // dropped. It changes no byte, no ordering and no durability, so nothing reads
 // its answer and no refusal path waits on it. Only a platform file that
-// implements storage.ReadAheader takes it, which is darwin's alone: Linux's
-// spares are made by writing zeros over the whole segment, so their pages are
-// resident unless the cache evicted them since, and Windows' spares carry no
-// measurement of the cost. Give Linux posix_fadvise(WILLNEED), and Windows its
-// own, when a measurement on either shows record writes paying for
-// non-resident pages.
+// implements storage.ReadAheader acts on it; a platform whose spares are made
+// by writing zeros over the whole segment has their pages resident unless the
+// cache evicted them since, and one whose spares carry no measurement of the
+// cost has no evidence the hint pays. Give a platform file ReadAhead when a
+// measurement on it shows record writes paying for non-resident pages.
 type Hinter struct {
 	streams *Streams
 	window  int64
@@ -156,24 +156,20 @@ func (h *Hinter) run() {
 // the call however the stream moves meanwhile. A reference the cache refuses
 // skips the hint, as its failure does.
 func (h *Hinter) hint(s *Stream) {
-	for _, r := range s.takeHints() {
-		ref, err := s.cache.Acquire(r.id)
-		if err != nil {
-			h.log.Debug("segment: read-ahead hint skipped", "segment", r.id, "err", err)
-			continue
-		}
-		err = ref.ReadAhead(r.off, r.to-r.off)
-		ref.Release()
-		if err != nil {
-			h.log.Debug("segment: read-ahead hint refused", "segment", r.id, "off", r.off, "len", r.to-r.off, "err", err)
-		}
+	id, off, n := s.takeHint()
+	if n <= 0 {
+		return
 	}
-}
-
-// hintRange is [off, to) of segment id, a range the worker has yet to hint.
-type hintRange struct {
-	id      core.SegmentID
-	off, to int64
+	ref, err := s.cache.Acquire(id)
+	if err != nil {
+		h.log.Debug("segment: read-ahead hint skipped", "segment", id, "err", err)
+		return
+	}
+	err = ref.ReadAhead(off, n)
+	ref.Release()
+	if err != nil {
+		h.log.Debug("segment: read-ahead hint refused", "segment", id, "off", off, "len", n, "err", err)
+	}
 }
 
 // hintAheadLocked moves the active segment's hinted front to a window past the
@@ -190,7 +186,8 @@ func (s *Stream) hintAheadLocked() {
 	if s.hintFrom == s.hintTo {
 		s.hintFrom = s.hinted
 	}
-	s.hinted = min(s.set.cap, s.next+s.hinter.window)
+	// The window is capped before the add, so no window overflows the front.
+	s.hinted = s.next + min(s.hinter.window, s.set.cap-s.next)
 	s.hintTo = s.hinted
 	select {
 	case s.hinter.wake <- struct{}{}:
@@ -198,31 +195,16 @@ func (s *Stream) hintAheadLocked() {
 	}
 }
 
-// takeHints returns every range the worker has yet to hint, the segments the
-// stream rolled away from first and the active segment's last, and marks them
-// all taken; it returns none when the stream is closed. Taking all of them
-// under one lock is what keeps the wake protocol whole: a range asked for
-// after the take sends a wake the sweep that took has already consumed, so the
-// next sweep takes it, and a range asked for before is in this take.
-//
-// decision: a range of a segment the stream rolled away from is hinted
-// although the roll followed that segment's seal, which drained every append
-// to it, or its end, whose writes the roll waits out, so the late hint helps no
-// write of this stream. It is kept so the worker answers every range a stream
-// asks for and none is lost to the order the two goroutines ran in; it costs
-// one small allocation per roll the worker fell behind on. Drop the carry-over
-// if a profile shows the late hints competing with the active segment's.
-func (s *Stream) takeHints() []hintRange {
+// takeHint returns the range of the active segment the worker has yet to
+// hint, and marks it taken; n is zero when there is none or the stream is
+// closed. A roll drops the range it leaves untaken (Stream.roll says why).
+func (s *Stream) takeHint() (id core.SegmentID, off, n int64) {
 	s.appendMu.Lock()
 	defer s.appendMu.Unlock()
-	if s.closed {
-		return nil
+	if s.closed || s.hintFrom == s.hintTo {
+		return 0, 0, 0
 	}
-	out := s.hintLeft
-	s.hintLeft = nil
-	if s.hintFrom != s.hintTo {
-		out = append(out, hintRange{id: s.id, off: s.hintFrom, to: s.hintTo})
-		s.hintFrom = s.hintTo
-	}
-	return out
+	id, off, n = s.id, s.hintFrom, s.hintTo-s.hintFrom
+	s.hintFrom = s.hintTo
+	return id, off, n
 }
