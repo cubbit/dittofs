@@ -486,7 +486,9 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
     result codes; never `ErrMaterialDestroyed`, D4); the wrap's `decision:` that it raises no wrap
     count (R7).
   - `FuzzKMIPWrap` over the wrap-bytes reader, seeded with the vector's bytes and truncations of
-    them; it joins the nightly `fuzz` suite; RFC 5 §8.3's suites line names it and
+    them: no panic; the IV, tag and data it returns lie inside the input; and an accepted input
+    re-encodes through D2's writer to exactly the input bytes, since the join has no padding or
+    reserved bytes. It joins the nightly `fuzz` suite; RFC 5 §8.3's suites line names it and
     `FuzzReadMessage`.
   - The key-service stored-wrap vector: a row of the RFC 2 plan's vector script with a fixed
     endpoint, UID, IV, tag and data, its output in `vectors.json`, its field in `LoadVectors` and
