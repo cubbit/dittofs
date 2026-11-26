@@ -171,6 +171,12 @@ func (f *retireFixture) gate(t *testing.T) *durability.Durability {
 			t.Fatalf("the rig's pool never readied a spare: %+v", pool.Counters())
 		}
 	}
+	// The pool settles, its opening spare made or refused at the maximum, so
+	// no make is in flight when the test starts; a pool the maximum leaves
+	// short answers its idle shortage.
+	if err := pool.WaitSpares(t.Context()); err != nil && !errors.Is(err, core.ErrNoSpace) {
+		t.Fatalf("WaitSpares once the rig's spare was ready: %v", err)
+	}
 	f.dur, f.streams, f.counters = d, streams, counters
 	d.Start(streams)
 	return d
