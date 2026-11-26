@@ -130,8 +130,18 @@ type Scheduler struct {
 }
 
 // New returns a scheduler reading clk, the subset of the node's clock it
-// needs, and reporting its turns on loop.
+// needs, and reporting its turns on loop. It panics on a nil clk or loop, as
+// Register does on a nil Source.
+//
+// decision: until dispatch lands New keeps neither argument and nothing turns
+// or idles loop, so a watchdog loop handed to this stub fails liveness after
+// RFC 25 §3.5's bound. No node may build a scheduler before dispatch exists;
+// withdraw this once Start reports on loop.
 func New(clk Clock, loop Loop) *Scheduler {
+	if clk == nil || loop == nil {
+		panic("workqueue: New: nil Clock or Loop")
+	}
+
 	return &Scheduler{}
 }
 

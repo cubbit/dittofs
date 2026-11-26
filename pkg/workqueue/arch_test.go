@@ -124,12 +124,14 @@ func exports(pkg *types.Package) []string {
 		case *types.Const:
 			got = append(got, types.ObjectString(obj, qualify)+" = "+obj.Val().ExactString())
 		case *types.TypeName:
-			decl := "type " + name + " "
 			if obj.IsAlias() {
-				decl = "type " + name + " = "
+				// An alias declares no type of its own, so neither methods.
+				got = append(got, "type "+name+" = "+types.TypeString(types.Unalias(obj.Type()), qualify))
+
+				continue
 			}
 
-			got = append(got, decl+typeString(obj.Type().Underlying(), qualify))
+			got = append(got, "type "+name+" "+typeString(obj.Type().Underlying(), qualify))
 
 			if _, isIface := obj.Type().Underlying().(*types.Interface); !isIface {
 				for sel := range types.NewMethodSet(types.NewPointer(obj.Type())).Methods() {
