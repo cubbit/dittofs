@@ -890,10 +890,21 @@ nothing maps its errors. The node's content wiring builds one per store, with
 the chain, the name derivation, the chunk-ID function and a census lookup it
 hands the codec. The lookup returns a block's census from its block record
 ([RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block)) by name, for `Get` to pass
-to `Chain.Decode` ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)),
-and an absent record is `ErrNotFound`, so the engine re-resolves the chunk
-([§4.8](#4.8%20Errors%20are%20a%20closed%20set)). Neither the engine nor the
+to `Chain.Decode` ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)).
+`codec.Store.Get` therefore reads a recorded block: with no block record the
+lookup answers `ErrNotFound`, even when the block is stored, so the engine
+re-resolves the chunk ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)) and fails the read as lost when the same
+location misses again ([RFC 8 §7.7](rfc-8-engine.md#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)). [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)'s rule that a get after a
+successful put returns the block binds the remote store. No read of the engine's
+falls between `Upload`'s return and the block's commit, because a chunk's
+location reaches a reader only through that commit ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)). Neither the engine nor the
 syncer passes a census on a read.
+
+> decision: a reader with no block record, such as a read at a backup location
+> or one made before a recovery import publishes ([RFC 26 §3.2](rfc-26-catalog-backups.md#3.2%20Import%20is%20staged%20and%20published%20atomically)), has no
+> census source, and `codec.Store.Get` answers it `ErrNotFound`. Give the codec a
+> second census source, or pass the census in with `Get`, when the first such
+> reader is built.
 
 ```go
 // package codec
@@ -918,8 +929,9 @@ func (s *Store) Health(ctx context.Context, d remote.Direction) error
 // pin, the chain the engine pinned for this attempt (RFC 8 §6.6, RFC 5 §3.1); the
 // header carries both, and every body is encoded under pin. Each range over src
 // yields the block's chunks again from the first; a measuring pass and each
-// Attempt start one. Attempt recomputes the name from nonce, pin's chain ID and
-// the chunk IDs before it sends a byte, and a name that differs is ErrInvalid.
+// Attempt start one. Attempt recomputes the name from nonce, pin's chain ID, the
+// chunk IDs and the key scope (§3.4) before it sends a byte, and a name that
+// differs is ErrInvalid.
 func (s *Store) NewPut(name remote.Name, nonce [16]byte, pin transform.Attempt, src iter.Seq2[remote.Chunk, error]) *Put
 
 // Put is one block's put across the syncer's tries.
@@ -1166,7 +1178,7 @@ is `ErrInvalid` for that put alone, since those bodies have bounds of their own
 
 | Error | Meaning | What the caller does |
 | --- | --- | --- |
-| `ErrNotFound` | this block is absent; the store itself is fine | fails the read; the engine re-resolves the chunk ([RFC 8 §7.7](rfc-8-engine.md#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) |
+| `ErrNotFound` | this block is absent, or, from `codec.Store.Get`, its block record is ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)); the store itself is fine | fails the read; the engine re-resolves the chunk ([RFC 8 §7.7](rfc-8-engine.md#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) |
 | `ErrInvalid` | the request was wrong: a range past the end, an operation the service does not support, a size refusal of a put that is not a block's, or a block put whose name does not match its nonce, chain and chunks (§4.3); never a quota refusal | fails the call; not retried |
 | `ErrDenied` | the store refused, or does not exist: credentials, permissions, a missing bucket (cause `access`); a quota or storage limit of the service is reached (cause `quota`); a body-size limit refused a block put (cause `size`) | fails the call; the syncer's health rules decide what follows, and it reports the cause per direction ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | `ErrTransient` | retrying may help: network, timeout, a server error, a short body | the syncer retries within its bound ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |

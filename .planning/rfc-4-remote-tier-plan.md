@@ -425,8 +425,8 @@ same numbers for other points.
   RFC 4 §1.2, §4.1 and §4.3 give it as RFC 3 §1.3 at #5530 uses it, so S1 waits on nothing
   outside this plan but that pull request's text and the root `pkg/transform`: the codec's
   surface (epic 1's T1.3) names its `Chain`, `Attempt` and `Encoded`, so S1 follows RFC 8
-  offload plan S1d, the RFC 5 plan's epic 1. The follow-up that amends RFC 4 merges with #5530
-  or after it. Epics 6 and the keys half of epic 7 start here. Epic 2 and the RFC 3 plan's
+  offload plan S1d, the RFC 5 plan's S1. The follow-up that amends RFC 4 merges with #5530
+  or after it. Epic 6 and the keys half of epic 7 start here. Epic 2 and the RFC 3 plan's
   syncer need only `pkg/remote`'s contract (epic 1's T1.1), so they start once it lands, without
   waiting for S1d.
 - **R4-S2 🔀 Suite and in-memory store in CI** (end of epic 2). The conformance suite runs green
