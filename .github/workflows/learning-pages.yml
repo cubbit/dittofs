@@ -1,7 +1,9 @@
 # Publishes the learning decks (docs/guide/learning/learn-dittofs) to the
 # dittofs-learning bucket on Cubbit DS3 on every push to feat/storage-v2 that
-# changes them, or by hand. Only that branch publishes: the bucket is one
-# mirror, so a second publishing branch would overwrite it. The bucket mirrors
+# changes them, or by hand. The bucket is one mirror, so only this branch is meant to publish.
+# Until develop drops its copy of this workflow, develop publishes too, from a
+# deck tree identical to this branch's, so either run leaves the same pages.
+# The bucket mirrors
 # the directory: cubbit-pages deletes objects the directory no longer has.
 # Every object is uploaded public-read, since Cubbit has no bucket policies;
 # pages are reached at https://dittofs-learning.s3.cubbit.eu/index.html.
