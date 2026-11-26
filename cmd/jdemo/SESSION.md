@@ -58,14 +58,15 @@ go run ./cmd/jdemo --dir talk-journal        # name the directory (a used one is
   on return, the Since feed a recovery replays, and a real restart: the
   journal closes, `Open` rebuilds the index from the segments and the
   marks, and the bytes read back.
-- **limits** (7 beats) — space's half: a 2 GiB world and a 512 MiB share
+- **limits** (9 beats) — space's half: a 2 GiB world and a 512 MiB share
   budget, a reservation taken before the burst, a filler that walks 40 MB
   writes until the share's own refusal, the reserved write served through
-  it, the headroom math, and truncate's unchanged `used`.
+  it, the headroom math, truncate's unchanged `used`, and a repack pass
+  that finally frees it.
 
 ## What answers "not implemented" today, and why
 
-The offload family, holds/stamps, `repack` and `Inspect().Verify`
+The offload family, holds/stamps and `Inspect().Verify`
 answer the journal's own `journal: not implemented` verbatim, and the
 story walks on — the tool never claims a layer beneath the built ones.
 `(i)` and `(s)` show the journal's real index and segment rows, and a used

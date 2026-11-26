@@ -19,7 +19,7 @@ func TestLimitsRefusalIsTheShares(t *testing.T) {
 	}
 
 	// The filler loops until refused; every beat run by Enter.
-	script := strings.Repeat("\n\n", 8) + "q\n"
+	script := strings.Repeat("\n\n", 9) + "q\n"
 	d2, out2 := newStoryDemo(t, filepath.Join(base, "journal"), script)
 	d2.StoryID = "limits"
 	if err := d2.Run(); err != nil {
@@ -40,7 +40,7 @@ func TestReserveEscapesTheRefusal(t *testing.T) {
 	// The escape order is the story's lesson: the reservation held
 	// BEFORE the fill serves a write AFTER the filler was refused.
 	base := t.TempDir()
-	script := strings.Repeat("\n\n", 8) + "q\n"
+	script := strings.Repeat("\n\n", 9) + "q\n"
 	d, out := newStoryDemo(t, filepath.Join(base, "journal"), script)
 	d.StoryID = "limits"
 	if err := d.Run(); err != nil {
@@ -59,7 +59,7 @@ func TestReserveEscapesTheRefusal(t *testing.T) {
 
 func TestLimitsStoryRunsToQuit(t *testing.T) {
 	base := t.TempDir()
-	script := strings.Repeat("\n\n", 8) + "q\n"
+	script := strings.Repeat("\n\n", 9) + "q\n"
 	d, out := newStoryDemo(t, filepath.Join(base, "journal"), script)
 	d.StoryID = "limits"
 	if err := d.Run(); err != nil {
@@ -67,12 +67,13 @@ func TestLimitsStoryRunsToQuit(t *testing.T) {
 	}
 	screen := out.String()
 	for _, want := range []string{
-		"2 GiB",                      // the world, in the banner or the attach
-		"512 MiB",                    // the budget
-		"refused by the share limit", // the refusal
-		"served through the refusal", // the escape
-		"unchanged; repack frees",    // truncate's divergence
-		"journal: not implemented",   // the honesty ledger's stub
+		"2 GiB",                          // the world, in the banner or the attach
+		"512 MiB",                        // the budget
+		"refused by the share limit",     // the refusal
+		"served through the refusal",     // the escape
+		"unchanged; a repack pass frees", // truncate's divergence
+		"freed 256 MiB",                  // the repack pass really returns a segment
+		"journal: not implemented",       // the honesty ledger's stub
 	} {
 		if !strings.Contains(screen, want) {
 			t.Errorf("limits story: screen lacks %q:\n%s", want, tailOf(screen, 700))

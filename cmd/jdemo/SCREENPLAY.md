@@ -322,8 +322,8 @@ the numbers below assume empty.
 
 # SCENARIO 3 — limits (--story limits)
 
-*An eight-beat story about space: the share budget, the reserve that must
-come first, and what truncate does not give back. The throughline: **a full
+*A nine-beat story about space: the share budget, the reserve that must
+come first, and what truncate does not give back and repack does. The throughline: **a full
 journal must still be able to make room.***
 
 Setup: fresh `--dir`, removed between runs (a used dir keeps the old 440 MiB
@@ -410,21 +410,33 @@ tall enough for the stats look.
 - Checks: `held -439 MiB`, `removal markers +1`. Line:
   `used before 2 GiB, after 2 GiB — unchanged; repack frees`.
 - **"The data is logically gone. The segments are not. Segment files are only
-  freed when REPACK rewrites them — and repack is not wired in this journal
-  yet. So `used` does not move."**
+  freed when REPACK rewrites them — so `used` does not move on a truncate."**
 - **"That is why space needs a reservation and not just a delete button: the
   space returns on repack's schedule, not the caller's."**
 - Open `+`: `held` is 32 B now, `removal markers 1`, and `unreclaimed`
   jumped from 0 to about 440 MiB — the gauge for what the truncate left
   behind for repack. `used` is still 2 GiB.
 
-## STEP 8 — the honesty ledger
+## STEP 8 — repack gives the space back
+
+- **"Now repack's turn. It copies the still-live records out of the segments
+  with the least live payload, repoints the index, retires the originals —
+  and only when that is durable does `used` fall."** `⏎`.
+- Line: `freed 256 MiB; used before 2 GiB, after 1.75 GiB; unreclaimed before
+  440 MiB, after 184 MiB` (measured on a fresh dir; the figures are the same
+  each run).
+- **"One pass, a budget of 1 GiB, one segment retired. A second pass would
+  take the rest of the 440 MiB. It copied the 32 live bytes and nothing
+  else — held does not move, repack discards nothing live."**
+- **"Notice who asked: the caller. The journal never decides on its own to
+  rewrite your segments mid-burst."**
+
+## STEP 9 — the honesty ledger
 
 - **"What is NOT here: the drain. Offload would hand the dirty bytes to the
-  remote tier; repack would reclaim the segments. This journal says so
-  itself."** `⏎`: `journal: not implemented`.
-- **"Live wiring: the share limit, the reservation, the refusal. Pending:
-  the drain. The tool never claims more."**
+  remote tier. This journal says so itself."** `⏎`: `journal: not implemented`.
+- **"Live wiring: the share limit, the reservation, the refusal, repack.
+  Pending: the offload drain. The tool never claims more."**
 
 ### Limits-story Q&A
 

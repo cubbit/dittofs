@@ -18,7 +18,7 @@ func TestStoryShapes(t *testing.T) {
 	}{
 		{"basic", 13, "make it durable"},
 		{"crash", 7, "close, then restart — recovery rebuilds it"}, // online + attach borrowed + 5 own
-		{"limits", 8, "fill the budget — until the share says no"}, // online borrowed + 7 declared
+		{"limits", 9, "fill the budget — until the share says no"}, // online borrowed + 8 declared
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

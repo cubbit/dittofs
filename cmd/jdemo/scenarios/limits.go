@@ -145,12 +145,33 @@ func LimitsStory() ([]jdemo.Beat, journal.Settings) {
 				}
 				after := d.J.Stats()
 				d.Stash(v, nil)
-				d.Yellowf("    // → used before %s, after %s — unchanged; repack frees", jdemo.HumanSize(before.UsedBytes), jdemo.HumanSize(after.UsedBytes))
+				d.Yellowf("    // → used before %s, after %s — unchanged; a repack pass frees", jdemo.HumanSize(before.UsedBytes), jdemo.HumanSize(after.UsedBytes))
+			},
+		},
+		{
+			Title:   "repack gives the space back",
+			Caption: "Repack copies the still-live records out of the best segments, repoints the index and retires the originals: only then does used fall — the space comes back on repack's pass, not on the truncate",
+			Mutates: true,
+			Watch: []jdemo.Watching{
+				{Kind: jdemo.WatchHeld, Hint: "held does not move: repack discards nothing live"},
+			},
+			Run: func(d *jdemo.Demo) {
+				before := d.J.Stats()
+				freed, err := d.J.Repack(context.Background(), 1<<30, journal.RepackScope{})
+				d.Codef("    freed, err := j.Repack(ctx, 1<<30, journal.RepackScope{})")
+				if err != nil {
+					d.Yellowf("    // → %v", err)
+					return
+				}
+				after := d.J.Stats()
+				d.Yellowf("    // → freed %s; used before %s, after %s; unreclaimed before %s, after %s",
+					jdemo.HumanSize(freed), jdemo.HumanSize(before.UsedBytes), jdemo.HumanSize(after.UsedBytes),
+					jdemo.HumanSize(before.UnreclaimedBytes), jdemo.HumanSize(after.UnreclaimedBytes))
 			},
 		},
 		{
 			Title:   "the honesty ledger",
-			Caption: "the share limit and the escape hatch are live wiring; the drain — offload, release, repack — is not built in this journal yet, and the journal says so in its own words",
+			Caption: "the share limit, the escape hatch and repack are live wiring; the offload drain to the remote tier is not built in this journal yet, and the journal says so in its own words",
 			Run: func(d *jdemo.Demo) {
 				d.Codef("    err := h.Offload(ctx, FILE, through, limit, widen, sink)")
 				d.Yellowf("    // → journal: not implemented")
