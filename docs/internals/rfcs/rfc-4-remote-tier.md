@@ -594,6 +594,11 @@ type Meter struct {
 	Sent  func()
 }
 
+// Cursor is where a walk of List resumes: the last service key the previous
+// page listed, block or not. It is opaque to callers, who hold one and pass it
+// back to the store that returned it; the zero Cursor starts at the beginning.
+type Cursor string
+
 // Info describes one stored block, as a listing reports it.
 type Info struct {
 	Name    Name
@@ -640,12 +645,11 @@ type Store interface {
 	DeleteVersions(ctx context.Context, names []Name) []error
 
 	// List reads one page, with one request, of at most n stored blocks in
-	// ascending name order, starting after the given name (the zero Name starts
-	// at the beginning); next is the last name of the page or, when the page
-	// ends on a key that is not a block, the smallest block name after that key,
-	// and done is true
-	// once the walk has passed the last block (§4.6).
-	List(ctx context.Context, after Name, n int) (page []Info, next Name, done bool, err error)
+	// ascending name order, starting after the cursor (the zero Cursor starts
+	// at the beginning); next holds the last key the page listed, a block's or
+	// a skipped foreign key's, and done is true once the walk has passed the
+	// last block (§4.6).
+	List(ctx context.Context, after Cursor, n int) (page []Info, next Cursor, done bool, err error)
 
 	// Health makes one bounded probe round trip of direction d against the
 	// store's own namespace (§4.7): a probe put for Put, a probe get for Get.
@@ -1031,8 +1035,9 @@ A listing:
 - **MUST** yield exactly once every block that exists for the whole walk. A block
   put or deleted during the walk may or may not appear;
 - **MUST** yield blocks in ascending name order and accept a starting point
-  (`after`), so a walk interrupted by a crash or a cancelled context resumes where
-  it stopped instead of restarting over millions of blocks;
+  (`after`, a `Cursor` an earlier page returned), so a walk interrupted by a crash
+  or a cancelled context resumes where it stopped instead of restarting over
+  millions of blocks;
 - **MUST** report each block's size and the time the service stored it;
 - **MUST** make exactly one request per call and return at most `n` blocks;
 - **MUST** skip an entry under the block namespace whose key is not a block name,
@@ -1040,7 +1045,16 @@ A listing:
 
 A walk is a sequence of `List` calls, each one page, the next starting after the
 `next` the previous returned, so the caller holds at most one page and decides
-the page size. A caller that runs a page as one `Small` call
+the page size. `next` is a `Cursor`, not a `Name`, because a page can end on a
+key that is not a block. A name cannot stand for that key: resuming after the
+smallest name sorting past it would skip a block of exactly that name, and
+resuming after the largest name sorting at or before it would list the same
+foreign keys again, forever when a page holds nothing else. The cursor holds the
+last key the service listed, so the next request resumes after exactly that key.
+A caller **MUST NOT** build a cursor or read one; it may keep one, across a
+restart too, and pass it back to the store that returned it. A page the service
+marks truncated that holds no key cannot advance and is `ErrTransient`, never
+`done` false with `next` equal to `after`. A caller that runs a page as one `Small` call
 ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) — a backup folder's sweep — asks for at most 500 blocks, which
 keeps the reply under the small-body cap: a page of 1,000 keys with sizes and
 times is roughly 250–350 KB of listing on the S3 profile, an estimate.
@@ -1789,7 +1803,7 @@ in-memory store).
 | [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | A transport that truncates a body under a `Content-Range` matching the request: the get fails with `ErrTransient`. | T |
 | [§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent) | Delete a batch twice, including a never-written name: every result is `nil`. A batch of 2,500 (above the service's limit): every block gone. | |
 | [§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent) | A transport that fails one key inside a batch: exactly that name's result is an error, the others `nil`. A batch whose response is dropped: every result is `ErrTransient`. | T |
-| [§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | Write 2,500 blocks; list with pages of 1,000; stop after 1,200 and resume from the last name: every block seen exactly once, in order, with size and time, and each `List` call sends one request and returns at most its `n`. With `n` 500, no page's reply exceeds the small-body cap. | |
+| [§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | Write 2,500 blocks; list with pages of 1,000; stop after the second page and resume, in a new walk, from the cursor it returned: every block seen exactly once, in order, with size and time, and each `List` call sends one request and returns at most its `n`. With `n` 500, no page's reply exceeds the small-body cap. | |
 | [§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | Put a key that is not a block name under the block namespace: the listing skips it and counts it. Cancel mid-page: the call ends with the context's error. | |
 | [§4.2](#4.2%20Names%20in%2C%20locations%20kept%20inside) | After the whole suite, list the store's raw namespace: nothing but blocks, control objects and check objects, and every block key is the prefix followed directly by the name. | |
 | [§4.13](#4.13%20Control%20objects) | Put and get each role: bytes equal, a second put replaces the first, an absent role is `ErrNotFound`, and a block listing yields none of them. | |
@@ -2207,6 +2221,7 @@ Several stores may share a bucket under different prefixes, never one prefix
 | connection pool ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) | one HTTP client per store configuration: its per-host connection cap, its idle connections per host and its total idle connections all set to the derived limit, over HTTP/1.1 only, since these caps bind no HTTP/2 stream |
 | put integrity ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)) | send the checksum header chosen by the check, computed by the measuring pass. If the service enforces none, `Checksum` is `None`: compute the MD5 while streaming, compare the returned ETag with it, and return `ErrCorrupt` on a mismatch; the retry puts the same bytes again |
 | exact get ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | compare `Content-Range` with the request, then the body's length with `Content-Range` |
+| listing resume ([§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk)) | `ListObjectsV2`'s `start-after` set to the cursor's key, the last key of the previous reply, block or not; none for the zero cursor |
 | `ErrNotFound` | `404 NoSuchKey`; `404 NoSuchVersion` on `GetVersion`, `GetControlVersion`, `GetObject` and every retention read or extension naming a version |
 | `ErrInvalid` | `416`; a `Content-Range` that differs from the request (a clamp); `400` codes not listed elsewhere; `501` |
 | `ErrDenied`, cause `access` | `401`, `403`, `404 NoSuchBucket`, `400 InvalidToken`; any `3xx`, which on this service means the endpoint or region is wrong, never a block's state |
