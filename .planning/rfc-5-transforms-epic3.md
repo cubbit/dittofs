@@ -15,8 +15,8 @@ chain's halves), and the §8.1 and §8.2 rows §3 names; [RFC 25](../docs/intern
 **Depends on:** S2. From E1: the root contract (`ID`, `Stage` and its constants, `Transform`,
 `Encoded`, `Factory`, `Config`, `Chain`, `Attempt`, `ErrMalformed`, `ErrTooLarge`), `keys`
 (`MaterialID`, `Provider`, the material errors), and `chain`'s `Register` and `NewChain` with stub
-bodies and the dependencies `NewChain` takes: a logger and a recorder for RFC 5 §6's series that
-can be resolved once per transform at build, `Require []string` and `Encrypts
+bodies and the dependencies `NewChain` takes: a logger and a recorder for RFC 5 §6's series whose
+`For` resolves one transform's `TransformRecorder` at build, `Require []string` and `Encrypts
 func(entity.NamespaceID) bool` (D11); `Transform.Version` and `Encoded.ID` (D12). From E2: the in-memory `keys.Provider` under `keystest`, whose current material a test can
 change, which can be told an ID is unknown or destroyed, and whose exported call count backs "the
 provider records no call"; RFC 5 §2.8's three chain-ID vectors and §2.4's envelope vectors (0, 1
@@ -243,7 +243,7 @@ nothing.
   sentinel becomes `ErrMaterialUnavailable`, since the material could not be reached now (§2.7);
   `ErrUnknownMaterial` becomes a value that is both
   `ErrMaterialUnavailable` and `ErrUnknownMaterial` under `errors.Is`, so the codec treats it as
-  unavailable and T3.6's `material_unknown` label still tells it apart.
+  unavailable and T3.6's `ReasonUnknownMaterial`, labelled `material_unknown`, still tells it apart.
 - **D4, the census view hands the provider the census's `MaterialID`.** It matches a requested ID
   to a census entry on namespace, kind and ID, and calls the provider with the census entry, so the
   fingerprint the provider checks comes from block metadata: a body names a key by its ID alone
@@ -505,10 +505,10 @@ docs/internals/rfcs/rfc-5-transforms.md  T3.4  §8.3's suites line names the fuz
 
 - **Track:** A. **Depends on:** T3.5.
 - **Covers:** R31, R32.
-- **Deliverables:** `series.go`: one handle per transform name, resolved from the recorder at
-  build for the configured transforms and the decode set, plus the `envelope` handle (D7);
+- **Deliverables:** `series.go`: one `TransformRecorder` per transform name, from `Recorder.For`
+  at build for the configured transforms and the decode set, plus the `envelope` handle (D7);
   recording around each call in `Attempt.Encode` and `Chain.Decode`: chunks by `applied`, bytes
-  and time by direction, decode failures by error. Consumed by the content wiring, which
+  and time by direction, decode failures by `FailureReason`. Consumed by the content wiring, which
   implements the recorder over the root's registry, and by E9's series specs.
 - **Acceptance criteria:**
   - After a known sequence of encodes, declines and failures, each series holds exactly the
