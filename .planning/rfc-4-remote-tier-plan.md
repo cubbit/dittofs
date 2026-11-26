@@ -52,9 +52,9 @@ content wiring (`internal/node/content`): a `codec.Store` per store, which is RF
 with nothing adapting it and no error mapping (D3), one client per store configuration,
 ref-counted, a namespace's store opened in the node, the in-memory store refused
 outside tests (#4276), and the registration of this component's keys, collectors and alert
-rules. This plan's integration keeps only what is the component's own: its settings rows, metric
-definitions and alert rules as plain values in its implementation packages, the recorders and
-the conversions the content wiring builds from them (epic 7), and the client limit's derivation (epic 8,
+rules. This plan's integration keeps only what is the component's own: its settings rows as plain
+values in `pkg/remote/s3`, the metric definitions, alert rule and the rows `s3` may not type in the
+content wiring beside the recorders and conversions it builds (epic 7, its D2, D3 and D7), and the client limit's derivation (epic 8,
 planned after RFC 8 offload plan S7). GC (RFC 9, roadmap #3620) is planned later.
 **Naming:** **v1** is the block tier under `pkg/block` (`pkg/block/remote`, `remote/memory`,
 `remote/s3`, `pkg/block/blockcodec`, `pkg/block/blockstoretest`), which #3119's stage 4 (#5484)
@@ -95,7 +95,7 @@ fail on cue (§7.2).
 | `pkg/block/blockcodec` | `pkg/remote/codec`: the codec and `codec.Store` (epic 6) |
 | `pkg/block/blockstoretest` (`RemoteBlockStoreConformance`) | `pkg/remote/remotetest` (epic 2) |
 | no fault transport | `pkg/remote/s3/s3fault` (epic 3) |
-| `remote.endpoint`, `remote.credential`, still declared in `internal/node/api/res_stores.go` | plain values in `pkg/remote/s3`, with the region, trust roots, bucket, storage class, prefix and block target, and the block format version to write in `pkg/remote/codec`, which the node's content wiring registers in `pkg/settings` (epic 7, D12); RFC 8 offload plan epic 21 calls it |
+| `remote.endpoint`, `remote.credential`, still declared in `internal/node/api/res_stores.go` | plain values in `pkg/remote/s3`, with the region, trust roots, bucket, storage class and prefix; the block target and the block format version to write in `internal/node/content`, which registers them all in `pkg/settings` (epic 7, D12 and its D2, D3); RFC 8 offload plan epic 21 calls it |
 
 **Dependency limits** (RFC 0 §1.2, as amended by #5774; RFC 4 §1.2). The root `pkg/remote` is a
 pure contract: types, constants, `Store`, errors, `Cause`, `DeniedError`, `Chunk`,
@@ -104,9 +104,10 @@ behaviour is an implementation and lives beneath it: the codec with `codec.Store
 stores. `pkg/settings`, `pkg/metrics` and `pkg/health` each hold a contract and its
 implementation together, so under amended RFC 0 §1.2 they count as implementations, and only
 the composers import them (the split is tracked in #5775): no package here does. The S3 store
-and the codec record through a recorder each declares (D12), and offer their settings rows,
-metric definitions and alert rule as plain values, which the node's content wiring
-(`internal/node/content`) builds into settings, collectors and rules, handing each package its
+and the codec record through a recorder each declares (D12); the S3 store offers its settings
+rows as plain values, and the node's content wiring (`internal/node/content`) holds the metric
+definitions and the alert rule beside its recorders (epic 7's D7) and builds settings, collectors
+and rules, handing each package its
 configuration struct (epic 7). The codec imports `pkg/remote` and the root `pkg/transform`,
 RFC 5's contract, and no transform package: the chain and the name derivation are handed to it
 by the content wiring, and it asks the chain for `MaxDecodeLen` (a method of the root
@@ -273,8 +274,8 @@ fault transport is epic 3's.
    opens no span. Logs are §4.12's: a refused open once at `Error`, `ErrCorrupt`, a
    verification failure and a foreign entry at `Warn`, nothing per call. The metric
    definitions and the one alert rule, on `codec_verify_failures_total` net of the syncer's
-   recovered re-gets (RFC 25 §7, RFC 4 §4.12), are plain values in this component's packages,
-   which the node's content wiring builds into collectors and a rule (epic 7); RFC 8 offload
+   recovered re-gets (RFC 25 §7, RFC 4 §4.12), sit in the node's content wiring beside the
+   recorders, which builds them into collectors and a rule (epic 7, its D7); RFC 8 offload
    plan epic 21 registers them in the node. The access key, the secret and a request's
    signature never appear in a log, an error, a metric label or the field error epic 7 hands
    the API: a wrong-secret open's log and error, which wrap the SDK's `SignatureDoesNotMatch`
@@ -498,16 +499,13 @@ pkg/remote/memory/                     E2: the in-memory store, its constructor 
 pkg/remote/s3/                         E4: client, constructor, data path, error table, layout
   check.go settings.go health.go       E5: Appendix C.4, C.1's judgements, probes
   record.go                            E4: the recorder it declares (D12)
-  settings.go config.go metrics.go     E7: the store configuration's rows and Config, the remote_
-                                       definitions, all plain values
+  settings.go                          E7: the store configuration's rows, plain values
   *_test.go                            E4, E5: the rows marked T, over s3fault and LocalStack
 pkg/remote/s3/s3fault/                 E3: the fault transport, around the client's http.RoundTripper
 pkg/remote/codec/                      E1: surface (S1); E6: format, encode, decode, codec.Store, gate
   record.go                            E6: the recorder it declares (D12)
-  settings.go metrics.go alerts.go     E7: the format version's row, the codec_ definitions and
-                                       the alert rule, all plain values
-internal/node/content/remote.go        E7: the recorders over the registry, and the plain values
-                                       built into settings rows, collectors and the rule
+internal/node/content/remote_*.go      E7: the block target's and format version's rows, the
+                                       remote_ and codec_ definitions, the alert, the recorders
 internal/node/content/limit.go         E8: the client limit derived from its callers, unexported
   testdata/fuzz/ testdata/v1/          E6: fuzz seeds; the golden block of each released version
 test/suites.yaml                       E3: service:localstack in integration; E6: unit/remote-allocs;
@@ -631,14 +629,14 @@ test/suites.yaml                       E3: service:localstack in integration; E6
 - **D11. The S3 store refuses `immutable` at open, behind a `decision:` marker**, naming the
   missing caller, as amended RFC 4 §4.1 says, until the backup location's calls land with RFC
   26's copier. Prior art: none needed beyond the RFC. Applied by epic 5.
-- **D12. The S3 store and the codec record through recorders they declare, and offer their
-  settings rows, metric definitions and alert rule as plain values.** Amended RFC 0 §1.2 counts
+- **D12. The S3 store and the codec record through recorders they declare, and the S3 store
+  offers its settings rows as plain values.** Amended RFC 0 §1.2 counts
   `pkg/settings`, `pkg/metrics` and `pkg/health` as implementations, since each holds a
   contract and its implementation together, and names no exception, so only the composers
   import them. Each package declares a small recorder, named for its series, which the node's
-  content wiring implements over the root's registry; the rows, definitions and rule are plain
-  values the content wiring builds into settings, collectors and a rule, handing each package
-  its `Config` struct. Prior art: the RFC 5 plan's D2 and epic 9 (#5532), the same shape for
+  content wiring implements over the root's registry; the S3 store's rows are plain values
+  the content wiring builds into settings, and the definitions and the rule sit in the content
+  wiring beside the recorders (epic 7's D7), handing each package its `Config` struct. Prior art: the RFC 5 plan's D2 and epic 9 (#5532), the same shape for
   the chain and the provider; RFC 25 §8.1's injection from the root. Applied by epics 1 (the
   recorder interfaces), 4 and 6 (recording through them) and 7 (the values and the content
   wiring's builders).
@@ -831,8 +829,8 @@ scrape; the alert rule names a series that exists; the import walk shows no pack
 `pkg/remote` importing `pkg/settings`, `pkg/metrics` or `pkg/health`.
 
 **Expected content:**
-- The settings rows as plain values, the store configuration's in `pkg/remote/s3` and the block
-  format version's in `pkg/remote/codec`, with the `Config` structs the content wiring hands
+- The settings rows, the store configuration's as plain values in `pkg/remote/s3`, the block
+  target's and the block format version's in the content wiring (epic 7's D2, D3), with the `Config` structs the content wiring hands
   back; the content wiring registers the rows in `pkg/settings`' table, the block target's range
   refused there (RFC 13 §6); the carver's constructor keeps its own refusal as a defence (RFC 2
   §5.2, the RFC 2 plan's epic 5), which cites this epic for the setting, moved from
@@ -842,11 +840,10 @@ scrape; the alert rule names a series that exists; the import walk shows no pack
   `remote.trust_roots`, the certificates that replace the system's roots for the endpoint (D9),
   with no key that skips verification; `remote.region`, the signing region, `us-east-1` when
   unset, as RFC 13 Appendix B, amended in this pull request, says. RFC 8 offload plan epic 21 registers them.
-- The `remote_` and `codec_` metric definitions as plain values in `pkg/remote/s3` and
-  `pkg/remote/codec`, and in `internal/node/content` the recorders over the registry and the
-  collectors built from those definitions, for RFC 8 offload plan epic 21 to register.
-- The alert rule as a plain value in `pkg/remote/codec`, net of the syncer's recovered re-gets as
-  RFC 25 §7 words it, built into a rule by the content wiring.
+- The `remote_` and `codec_` metric definitions, the recorders over the registry and the
+  collectors built from them, all in `internal/node/content` (epic 7's D7), for RFC 8 offload plan epic 21 to register.
+- The alert expression in the content wiring, net of the syncer's recovered re-gets as RFC 25 §7
+  words it, built into a rule there.
 - A refused open's error naming the missing features, for the API to report as a field error.
 - `docs/guide/configuration.md`'s remote store section.
 
@@ -942,8 +939,9 @@ recorded by hand; the codec's and the `Content-Range` reader's fuzz targets runn
 | A namespace's store opened in the node; the in-memory store refused outside tests (#4276); the engine's read and write tests with and without transforms (RFC 4 §7.3) | the node's and the engine's composition | RFC 8 offload plan epic 21 | that epic starts |
 | What is done with the namespace claim the open reads and returns (epic 5) | GC's `Claim` decides | RFC 27 | RFC 27's plan starts |
 | §7.1's §3.2 census row, its recovery half: a header census entry naming material no key record holds is malformed at recovery import | recovery import is a restore's (RFC 26 §2.3) | RFC 26 | RFC 26's plan starts |
-| RFC 13 §9's "§5.4 format version" row, its two-node half (epic 7 takes the single-node part) | v1.1 runs one node | RFC 15, as the RFC 13 plan's ledger has it | a second node |
-| A remote store's credential set through the API running the capability check, and its proven endpoint (the RFC 13 plan's D9 row) | API wiring of the check epic 5 builds | RFC 23 | epic 5 lands |
+| RFC 13 §9's "§5.4 format version" row, its two-node half (epic 7 takes the single-node part); and RFC 13 §5.4's refusal to start or join while a namespace writes a block format version the node cannot read, which the RFC 13 plan's ledger deferred to this plan once it declared the key (epic 7, §1.2) | v1.1 runs one node, and with one block format version, which epic 7's gate holds, no namespace can write one the node cannot read | RFC 15, as the RFC 13 plan's ledger has it | a second node, or a second block format version |
+| A remote store's credential set through the API running the capability check, and its proven endpoint (the RFC 13 plan's D9 row); with them the refused open as the API's field error, and the no-content half of RFC 13 §9's "§5.1 bound" row for `remote.bucket` and `remote.prefix`, which the store-location gate refuses until then (epic 7, D13) | API wiring of the check epic 5 builds; the gate is withdrawn only with RFC 27's claim too (the RFC 13 plan's row on store-location changes), and for `remote.prefix` only once the API's `contentIn` answers per namespace | RFC 23 | epic 5 lands, RFC 27's claim is built, and `contentIn` answers per namespace |
+| RFC 25 §2.4's cap of 64 values per entity label on the `remote_` and `codec_` series, with their `_other` series and `metrics_label_capped` (epic 7, §1.2) | `pkg/metrics` caps no label yet (its `ponytail:` on `Spec`); the recorders take whatever value they are handed | unowned | `pkg/metrics` implements RFC 25 §2.4's cap |
 | The nightly service row and §7.5's daily run against a service, in CI rather than by hand (§6 point 1) | CI holds no service credentials | unowned | a credential per service allowed to create and delete buckets, or a pool of fresh buckets, exists as CI secrets (§6 point 1) |
 | §7.1's T rows on a bucket setting LocalStack cannot hold (§6 point 2: the archive storage class, the archive tiering rule and a KMS or customer-key default encryption, as measured in epic 3), run in CI rather than by hand against a real bucket (RFC 4 §7.2 and §7.4 as amended; D7) | CI holds no service credentials, and the transport never pretends a setting | unowned | a credential per service allowed to create and delete buckets, or a pool of fresh buckets, exists as CI secrets (§6 point 1), or a LocalStack release holds the setting |
 | §7.1's real-bucket rows on a setting neither Cubbit DS3 nor Scaleway holds (epic 9's D7: an archive tiering rule, an archive class, a default encryption breaking the ETag, as its runs find them) | no measured service holds the setting, so the row skips on every run | unowned | a measured service holds the setting, or AWS S3 or MinIO is measured |
