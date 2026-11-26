@@ -49,6 +49,8 @@ type Provider interface {
 	// service reports the master key destroyed, and with
 	// ErrMaterialUnavailable for every other state, a state the provider does
 	// not know included. A failed state read leaves the last state in force.
+	// Until a state read of that master key succeeds there is no last state,
+	// and Current of KindDataKey for ns fails with ErrMaterialUnavailable.
 	// This stops new writes only: Get, and so a decode, is unchanged by it
 	// (RFC 5 Appendix B.1). A chain's pin returns these unchanged.
 	Current(ctx context.Context, ns entity.NamespaceID, kind string) (MaterialID, error)
