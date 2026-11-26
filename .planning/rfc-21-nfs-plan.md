@@ -489,9 +489,9 @@ Figures are man-days from S2.
 - **The team.** E1 and E2 before the tracks; E15 at S7; E16 after the tracks. E1, E2 and E16, 42.75
   man-days, are the difference between the tracks' 267.5 and the plan's 310.25.
 
-**The first mount.** By D12, an NFSv3 mount over `AUTH_SYS` comes first: E1 to E4 and E7, about 76.25
+**The first mount.** By D12, an NFSv3 mount over `AUTH_SYS` comes first: E1 to E4 and E7, about 79.75
 man-days of plan work, the critical path E1 → E2 → E4 → E7, 59.25 man-days in series, then S5, S7 and
-E15 for `dfs`. An NFSv4.1 mount, Linux's default, needs E1, E2, E3, E5, E7, E8 and E9, about 126.25
+E15 for `dfs`. An NFSv4.1 mount, Linux's default, needs E1, E2, E3, E5, E7, E8 and E9, about 136
 man-days, E7 included since a `Claimed` caller answers `ErrAccess` on the composed node without it
 (§6.3, point 2); its critical path runs through track A to S4 at 45 and track C's E9 to 48, from S2.
 

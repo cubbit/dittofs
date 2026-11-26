@@ -9,6 +9,9 @@ and B9 and the decision on their targets), §5.1 and §5.2 (the counts B5 and B7
 tier runs in `unit`, and the `Content` suite over the journal); the
 [RFC index](../docs/internals/rfcs/rfc-index.md)'s "Test tiers" (what must not stand in for a check).
 **Track:** the team.
+**Paths:** this epic names `develop`'s tree. On `feat/storage-v2` the engine is `pkg/engine`,
+and v1's `pkg/block/syncer`, `pkg/block/carver`, `pkg/block/remote` and `pkg/block/journal`
+are deleted, so the import rule that refuses them holds there by construction.
 **Epic 10 estimate: 5 subtasks, 19.75 man-days.**
 **Depends on:** S3, through which epics 3 to 8 give the engine every content method and epic 9
 composes it with the filesystem service: T9.3's composition, which T10.1 runs over and T10.2's

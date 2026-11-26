@@ -67,7 +67,7 @@ Part of: RFC 1 T7.2
   subtasks once across them. Never the bare `3.4` or `E3-4`.
 - If an RFC ever has more than one plan, the plan's slug, from its file name
   `rfc-<n>-<slug>-plan.md`, follows the number: `RFC 8 journal-only-engine T3.4`. With one
-  plan, as every RFC has today, leave it out.
+  plan, leave it out.
 - One PR may carry both `Closes #<N>` lines and one `Closes:` line.
 - A subtask with an issue that this PR finishes only in part is named `Part of #<N>`, on a
   line of its own, never on the `Part of:` line.
