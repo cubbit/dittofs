@@ -1,0 +1,22 @@
+{
+  "rfc": {
+    "number": 2,
+    "title": "the carver",
+    "path": "docs/internals/rfcs/rfc-2-carver.md",
+    "commit": "bc7aa998636cd2b1080d934496893911facc7ba2",
+    "status": "draft"
+  },
+  "terms": {
+    "known": [
+      "share", "node", "engine", "journal", "offer", "offload", "dirty", "extent", "hole",
+      "chunk", "block", "remote-tier", "syncer", "namespace", "ref", "put-intent", "deduplication"
+    ],
+    "new": [
+      "carver", "chunker", "stretch", "artificial-end",
+      "rolling-fingerprint", "chunk-target", "chunk-id", "chunk-id-key",
+      "block-assembler", "block-plan", "block-target", "zero-ref",
+      "put-attempt", "block-name", "chunking-key"
+    ],
+    "conflicts": ["block", "chunk"]
+  }
+}

@@ -165,7 +165,7 @@
     "c2": "Registra quem mantém cada arquivo aberto, com lock ou em cache. A maior parte vive em memória, no nó que é o [[primary]] do arquivo.",
     "c3Title": "Engine",
     "c3": "Move o conteúdo dos arquivos. Comanda o [[journal]], onde toda escrita chega primeiro, o [[carver]], que empacota os bytes para o envio, e o [[syncer]], que os envia ao bucket e os busca de volta. Decide quando cada uma dessas coisas acontece.",
-    "footer": "Cada um tem a sua própria seção: [[metadata-store|metadata store]], [[open-state|open state]], [[engine]], [[journal]].",
+    "footer": "Cada um tem a sua própria seção: [[metadata-store|metadata store]], [[open-state|open state]], [[engine]], [[journal]], [[carver]].",
     "notes": "RFC 0 §1.3 (a terceira camada; o GC faz parte do content subsystem mas é um irmão do engine, executado por namespace remoto — RFC 8 §1, §10.5), linhas do Glossary para metadata store, open state e engine; RFC 14 'In plain words' ('a maior parte da mesa vive em memória'). Hoje, architecture.md: metadados no BadgerDB por meio do pkg/metadata (que também tem um lock manager por share), conteúdo num engine.Store por share (pkg/block/engine) que compõe journal, syncer e block store daquela share. As frases sobre carver e syncer: RFC 0 Glossary ('carver', 'syncer'), §5.2 (o offload corta, empacota e faz o put)."
   },
   "units": {
@@ -463,7 +463,7 @@
   },
   "next": {
     "kicker": "Para onde ir depois",
-    "title": "Sete seções, do cliente ao disco",
+    "title": "Oito seções, do cliente ao disco",
     "lead": "Cada uma é um cartão da home page, nesta ordem.",
     "table": [
       [
@@ -493,6 +493,10 @@
       [
         "[[journal|O journal]] · RFC 1",
         "o log local onde toda escrita chega primeiro"
+      ],
+      [
+        "[[carver|O carver]] · RFC 2",
+        "como os bytes são cortados em chunks e juntados em blocos para o bucket"
       ],
       [
         "O harness de testes · RFC 29",

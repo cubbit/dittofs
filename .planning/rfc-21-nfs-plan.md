@@ -18,8 +18,9 @@ again. This plan deletes nothing. Related RFCs, with how far each is in scope:
   test's call sites, the scripted client, the cross-protocol and end-to-end rows, the wire tests
   against knfsd, the benchmarks, the three `adapter_*` record and translation series, the
   `required-tests.json` pins, the `FlowControl` conformance check, `core`'s datagram listener, NFS
-  over TLS, the NFS callbacks, `gss`'s `Wrap` and `Unwrap`. §6.4 maps each row. The pieces that
-  serve both adapters are priced once in this plan's E2 (§6.2, point 1).
+  over TLS, the NFS callbacks, `gss`'s Kerberos side (S6c, §6.2 point 2) with `Wrap` and `Unwrap`.
+  §6.4 maps each row. The pieces that serve both adapters are priced once in this plan's E2 (§6.2,
+  point 1).
 - [RFC 18](../docs/internals/rfcs/rfc-18-identity.md), identity, and [RFC 19](../docs/internals/rfcs/rfc-19-authorization.md),
   authorization: **NFS's parts only**: an `AUTH_SYS` or `AUTH_NONE` credential as an `Identity`,
   and, which RFC 18's plan (#4058) defers to this plan by its O2, identity's NFS side: `AUTH_SYS`
@@ -30,9 +31,10 @@ again. This plan deletes nothing. Related RFCs, with how far each is in scope:
 - [RFC 14](../docs/internals/rfcs/rfc-14-open-state.md), open state: **NFS's wire side only**: client IDs,
   sessions' records, stateids, delegations, grace and NLM locks against the state the service
   holds, and the one kind it lacks, `NoGrace` (E2). RFC 14 itself is constraints.
-- [RFC 22](../docs/internals/rfcs/rfc-22-smb.md), SMB: **out**, but RPCSEC_GSS builds on [RFC 22's
-  plan](rfc-22-smb-plan.md)'s epic 4, `gss`, for the Kerberos acceptor (S6c), and this plan's E2
-  builds the three test pieces both adapters share (S0), which that plan's epic 2 was to build.
+- [RFC 22](../docs/internals/rfcs/rfc-22-smb.md), SMB: **out**, but E13 builds the `gss` pieces
+  RPCSEC_GSS needs (S6c), which [RFC 22's plan](rfc-22-smb-plan.md)'s epic 4 was to build, and this
+  plan's E2 builds the three test pieces both adapters share (S0), which that plan's epic 2 was to
+  build.
 - [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md), [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md),
   [RFC 24](../docs/internals/rfcs/rfc-24-resources.md), [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) and
   [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md): constraints, or the rules every epic follows (§1.5).
@@ -64,7 +66,7 @@ and what the epic builds.
 **Defaults used from Step 0:** dashboards none (#9); output path the default (#10). The target
 branch is `feat/storage-v2`; the plan document lands on `develop` and is cherry-picked, as the
 other planning documents are. External dependencies: RFC 20's plan (its scaffold, landed; its epic
-7 for S5 and S7), RFC 22's plan's epic 4 (`gss`, S6c), RFC 18's plan (#4058): its
+7 for S5 and S7), RFC 18's plan (#4058): its
 S2 for `Spell`, `Find` and resolution (S6a), its E5 for Kerberos (S6b); RFC 17's service on
 `feat/storage-v2`, with its plan's piece 13, the held clone wait, reaching the branch with the next
 sync (#4239); RFC 13's settings (#4059).
@@ -180,8 +182,8 @@ namespace-move rows of §7.4, the rows no suite runs yet (xfstests, pynfs's rebo
 keeping each call's reference and answer, the script that cuts captures into golden files through
 `tshark`, and the import test's call-site and file-size rules. SMB's handler harness, over E2's runner, stays RFC 22's plan's epic 2. Here also:
 NFS's handler harness and knfsd's captures (E2), the import test's NFS
-entry files (E4 and E5, with the calls they name), the scripted client (E3); `gsstest`'s initiators
-come with RFC 22's plan's `gss` (S6c).
+entry files (E4 and E5, with the calls they name), the scripted client (E3); `gsstest`'s Kerberos
+initiator comes with `gss`'s Kerberos side (S6c), in E13.
 
 ### 1.5 General rules for each epic
 
@@ -266,8 +268,8 @@ come with RFC 22's plan's `gss` (S6c).
    suite's `known.yaml` in the same change (`CLAUDE.md`, "Writing tests", "By kind"); those suites
    stay off on `feat/storage-v2` until E15 turns them on.
 7. **v2 ignores v1.** Nothing is copied from `develop`'s NFS adapter except what RFC 20
-   Appendix B keeps: the TLS upgrade through `Conn.StartTLS`, and the GSS per-message code, which RFC 22's plan
-   moves to `gss`. Behaviour comes from RFC 21 and the NFS RFCs, never from what v1 did, and RFC 20's
+   Appendix B keeps: the TLS upgrade through `Conn.StartTLS`, and the GSS per-message and Kerberos mechanism code,
+   which E13 lifts into `gss` (S6c). Behaviour comes from RFC 21 and the NFS RFCs, never from what v1 did, and RFC 20's
    import test fails any import of a path v1 used, checking each package on its own.
 8. **Real dependencies for properties of those dependencies** (`CLAUDE.md`, "Writing tests"). RFC
    5531's, RFC 1813's, RFC 8881's and RFC 2203's encodings and knfsd captures for bytes, never vectors
@@ -312,7 +314,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | NFS surface | request state; `ops/v4`'s handler set, `COMPOUND` row and members' table | 3 | 3.75 | team | all |
 | E2 ⛔ | Test foundations | the shared test pieces (S0); the handler runner and NFS's harness over it; knfsd captures; the service's `NoGrace` | 6 | 13.5 | team | E3 to E14 |
-| E3 | The RPC layer | credentials to `Identity` and `Call`, `NULL`, NFS over TLS, the stages' and programs' tables, status layers, the scripted client, the `Replay` stage and its duplicate-request cache (D10) | 7 | 17 | A | E8, E13, E14; S3 and S4 |
+| E3 | The RPC layer | credentials to `Identity` and `Call`, `NULL`, NFS over TLS, the stages' and programs' tables, status layers, the scripted client, the `Replay` stage and its duplicate-request cache (D10) | 6 | 20.5 | A | E8, E13, E14; S3 and S4 |
 | E4 | NFSv3 and MOUNT | every NFSv3 procedure, `fattr3`, `sattr3` and WCC, cookies, stability, `FSINFO`, MOUNT; A3's service half after S2b | 10 | 26 | B | S3; E11, partly; E16 |
 | E5 | NFSv4 namespace, attributes and data | file-handle operations, the pseudo-filesystem, `SECINFO`, `fattr4` and Appendix B, `ACCESS`, name operations, `READDIR`, stateless I/O | 8 | 23 | C | E6, E9; E12, partly; S4 |
 | E6 | NFSv4 ACL attributes | `translate`'s NFSv4 functions, `acl`, `dacl`, `sacl`, `aclsupport`, `who`, `mode_umask` | 5 | 12 | C | E16 |
@@ -322,13 +324,13 @@ the second because this plan takes over rows of two other plans' ledgers.
 | E10 | Delegations and the back channel | the back channel's calls, delegations offered, recalled, returned and revoked, administrator's revoke, path down with A2's service half after S2b, the drain test | 8 | 22 | A | E16 |
 | E11 🔀 | NLM, NSM and the datagram path | `core`'s datagram listener, NLM v4, NSM, grants resent, `SM_NOTIFY`, `DialClient`'s network | 7 | 22 | B | E16 |
 | E12 | NFSv4.2 operations | `DEALLOCATE`, `SEEK`, `READ_PLUS`, `COPY`, `CLONE`, xattrs, the hold budget | 5 | 13 | C | E16 |
-| E13 🔀 | RPCSEC_GSS | the context table as NFS's `Security` stage over `gss`, `krb5`, `krb5i`, `krb5p` | 6 | 16 | B | E16 |
-| E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries | 2 | 4 | A | E16 |
+| E13 🔀 | RPCSEC_GSS | `gss`'s Kerberos side (S6c); the context table as NFS's `Security` stage over it, `krb5`, `krb5i`, `krb5p` | 12 | 28 | B | E16; RFC 22's plan's epic 4 |
+| E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries; the two-client conflict captures, from a recording host with client namespaces | 2 | 4 | A | E16 |
 | E15 🔀 | Integration with the node | settings, the NFS suites turned on | none | planned after S7 | team | E16, partly |
 | E16 🔀 | E2E green | in-process and restart rows, cross-protocol rows, e2e, benchmarks, soak, the totality test, pins; the burn-down after E15 | 8 | 25.5 | team | none |
-| | **Total** | | **98** | **266.75** | | |
+| | **Total** | | **97** | **270.25** | | |
 
-**Plan estimate: 98 subtasks, 266.75 man-days, not counting epic 15.**
+**Plan estimate: 97 subtasks, 270.25 man-days, not counting epic 15.**
 
 Nor E16's burn-down of the four NFS and POSIX suites, which waits for E15 as E15 waits for S7 (§6.2, point
 6), nor the rows parked in §6.6's deferral ledger.
@@ -388,7 +390,7 @@ flowchart TD
   S6a(["S6a Spell, Find and resolution: RFC 18 plan S2"]):::sync -. "rows where they answer" .-> E6 & E7
   S6b(["S6b Kerberos sign-in: RFC 18 plan E5"]):::sync -. "rows where SignIn succeeds" .-> E13
   S6b -. "e2e/kerberos" .-> E16
-  S6c(["S6c gss: RFC 22 plan E4"]):::sync --> E13
+  E13 --> S6c(["S6c gss's Kerberos side, built in E13"]):::sync -. "NTLM, SPNEGO" .-> R22E4(["RFC 22 plan E4"]):::sync
   S7(["S7 the node serves NFS: #4050 S3, RFC 20 E7"]):::sync --> E15["E15 Integration 🔀"]:::sync
   E15 -. "suites on" .-> E16
   E4 & E6 & E7 & E9 & E10 & E11 & E12 & E13 & E14 --> E16
@@ -429,8 +431,12 @@ test runs, and NFS's scaffold answers every procedure over loopback through `cor
   `Spell` and `Find` answer `ErrAccess`; E6's and E7's rows where they answer wait, the rest do not.
 - **🔀 S6b Kerberos sign-in** (outside: RFC 18's plan's E5, Kerberos and the PAC, behind `SignIn`).
   Unblocks E13's rows where an `RPCSEC_GSS` `INIT` succeeds, and E16's `e2e/kerberos` rows.
-- **🔀 S6c `gss`** (outside: RFC 22's plan's epic 4: `Exchanges`, the Kerberos mechanism, `Identity`,
-  `gsstest`). E13 builds its context table on it; if RFC 22's plan has not started, E13 waits.
+- **S6c `gss`'s Kerberos side** (in E13, for both adapters). `gss`'s `Context`, the Kerberos
+  mechanism, `Exchanges` over one leg, `Identity`, RFC 4121's MIC token and `gsstest`'s Kerberos
+  initiator, built here because RFC 22's plan's epic 4, which was to build them, is on the v1.1
+  roadmap and nobody builds them first; agreed with Marco on 25 Nov (§6.2, point 2). NTLM, SPNEGO,
+  `Exchanges`' second leg and `Identity`'s `Secret` arm stay in that epic, which builds on S6c.
+  E13 builds its context table on it.
 - **🔀 S7 the node serves NFS** (outside: #4050's S3 for NFS, RFC 20's epic 7 on #4050's S2).
   Reconcile builds the NFS adapter through `nfs.New` while its record enables it, and `dfs` serves
   it. Unblocks E15.
@@ -442,7 +448,7 @@ test runs, and NFS's scaffold answers every procedure over loopback through `cor
 | ⛔ E1 | E2, and through it every epic | the request state and `COMPOUND` row every NFSv4 epic writes against |
 | S0 | S2 | the call record, cut script and import-test rules every NFS test uses |
 | ⛔ E2 | E3, E4, E5, E7, E11 and E12 through S2, and through them the rest | NFS's handler harness, knfsd's golden files, `NoGrace` |
-| E3 | E8, E13, E14; S3 and S4 | E8 extends E3's `Replay` stage; the `Security` stage RPCSEC_GSS joins; the scripted client every loopback row and capture script needs |
+| E3 | E8, E13, E14; S3 and S4 | E8 extends E3's `Replay` stage; RPCSEC_GSS joins the credentials `Route` builds an `Identity` from; the scripted client every loopback row and capture script needs |
 | E4 | S3; E11, partly; E16 | an NFSv3 mount over loopback needs its procedures and MOUNT; A3's admission exemption |
 | E5 | E6, E9; E12, partly; S4 | ACL attributes ride `GETATTR` and `SETATTR`'s `fattr4`; `OPEN` resolves the current file handle; `READ_PLUS` uses the `READ` hook |
 | E6 | E16 | its rows end to end |
@@ -456,7 +462,7 @@ test runs, and NFS's scaffold answers every procedure over loopback through `cor
 | 🔀 S5 | E7, E11, E14 and E16, partly | Tier 2 rows, restart rows, the DittoFS side of a diff and every in-process row need the composed node |
 | 🔀 S6a | E6 and E7, partly | `Spell` and `Find` that answer |
 | 🔀 S6b | E13 and E16, partly | a ticket `SignIn` accepts |
-| 🔀 S6c | E13 | the Kerberos acceptor and `Exchanges` the context table drives |
+| S6c | the rest of E13; RFC 22's plan's epic 4 | the Kerberos acceptor and `Exchanges` the context table drives; the package NTLM and SPNEGO join |
 | 🔀 S7 | E15 | no node to wire into, no `dfs` serving NFS |
 | 🔀 E15 | E16, partly | the NFS suites run only once `dfs` serves NFS and the V2 filter lets them |
 
@@ -470,17 +476,19 @@ Figures are man-days from S2.
   man-days in, at 21, before track C's E9 needs them and well before track B's E11 at 42. E10 starts
   at 45, as track C's E9 brings `OPEN`. E14's scripts use E3's scripted client against knfsd and its
   DittoFS side waits for S5; the track ends at 71, nine before track B, and fills with E16's
-  in-process rows as their epics allow. 71 man-days.
+  in-process rows as their epics allow. 74.5 man-days, the 3.5 E3's breakdown added not yet moved
+  into the figures above: moved, they put E8's callbacks value at about 24.5, after track C's E9
+  starts at 23, and the track's end at 74.5, five and a half before track B.
 - **Track B: E4, E7, E11, E13.** NFSv3 and MOUNT, then identity's NFS side, then NLM and NSM, then
   RPCSEC_GSS. E4 comes first so S3 holds at 26 (D12); E7 follows, ending at 42, before track C reaches
-  E6 at 48; E13 starts at 64 and needs S6c, RFC 22's plan's `gss`, and S6b for its signed-in rows,
+  E6 at 48; E13 starts at 64, builds S6c, `gss`'s Kerberos side, itself, and needs S6b for its signed-in rows,
   which, if late, leave E13's table and refusals done and its sign-in rows waiting. 80 man-days.
 - **Track C: E5, E9, E6, E12.** The NFSv4 namespace and data path, then opens, stateids and locks on
   it, then ACL attributes, then NFSv4.2. E9 runs on `memory.New` from 23, after E8's callbacks value
   at 21, and its loopback rows wait for S4 at 45; E6 starts at 48 with E7 done; E12 last, with E8's
   slot count and E9's stateids in. 73 man-days.
 - **The team.** E1 and E2 before the tracks; E15 at S7; E16 after the tracks. E1, E2 and E16, 42.75
-  man-days, are the difference between the tracks' 224 and the plan's 266.75.
+  man-days, are the difference between the tracks' 227.5 and the plan's 270.25.
 
 **The first mount.** By D12, an NFSv3 mount over `AUTH_SYS` comes first: E1 to E4 and E7, about 76.25
 man-days of plan work, the critical path E1 → E2 → E4 → E7, 59.25 man-days in series, then S5, S7 and
@@ -499,6 +507,7 @@ pkg/adapter/
   nfs/                        RFC 20's E1 and E6: New
 internal/adapter/
   translate/                  E6: RFC 19 §5.1's NFSv4 ACL functions; created by whichever of E6 and RFC 22's plan's descriptor epic lands first
+  gss/                        E13: Context, the Kerberos mechanism, Exchanges, Identity, MIC, Wrap and Unwrap; gsstest/'s Kerberos initiator (S6c); NTLM and SPNEGO RFC 22's plan's E4
   adaptertest/
     nfsclient/                E3: the scripted client (RFC 20 §8.2)
     imports_test.go           RFC 20's E2; E2: entry call sites and file sizes; E4 and E5: NFS's entry files
@@ -508,11 +517,10 @@ internal/adapter/
     callbacks.go              E8 type, reached by ops/ through a Handlers field New sets (D13); E9 (Revoked for state), E10 (RecallGrant, RecallAny, Revoked for grants), E11 (LockWaitOver, Revoked for NLM)
     wire/                     RFC 20's E6: record framer, RPC header, program constants, AUTH_SYS, XDR generator and runtime; E8: the header codec reads SEQUENCE's session, slot and sequence (D15)
       gen/                    E4 (unions whose cases share an arm), E5 (linked-list replies)
-      call.go                 E3: a call's header and a reply's decoder, for the scripted client, rpcclient and the back channel
+      call.go                 E10: a call's header and a reply's decoder, moved from E3's scripted client when the back channel first sends a call; rpcclient uses them
       clientrec.go            E8: the Adapter bytes codec (RFC 21 §11.4), XDR-tagged, versioned
-    protocol/                 RFC 20's E6: Router, Tables, stages; E1: State; E3 drops served.go's copies of wire's constants; E10: the Router's demux of replies on a back channel
-      auth.go                 E3: credentials to Identity, the AUTH_SYS and AUTH_NONE Security stage
-      tls.go                  E3: the AUTH_TLS probe and StartTLS
+    protocol/                 RFC 20's E6: Router, Tables, stages; E1: State; E3: the AUTH_TLS probe in stages.go; E10: the Router's demux of replies on a back channel
+      auth.go                 E3: AUTH_NONE and AUTH_SYS credentials to Identity at route, and each call's Caps by program and procedure; no Security stage
       replay.go               E3: the Replay stage and its NFSv3 and NFSv4.0 duplicate-request cache (D10); E8 extends it with sessions' slot tables and reply caches
       sessions.go             E8: the session registry, Pending proposals (D7)
       owners.go               E9: NFSv4.0 owners' last replies (D8)
@@ -565,7 +573,7 @@ for body types two procedures share) are in RFC 20 §2.5 by amendment A4; §6.2,
   loopback rows; every later epic's loopback rows, E14's scripts and E16's benchmarks reuse it.
   Prior art: pynfs's own RPC client, a scripted client of the same kind (from memory). Applied in
   E3.
-- **D6. Reference captures come from knfsd** in a network namespace on the test host, recorded per
+- **D6. Reference captures come from knfsd** over a loopback mount on a throwaway host, recorded per
   program area into `test/pcap-corpus/`, beside `nfsv4-acl/`, which already holds a knfsd capture,
   and diffed by the existing `pcap-diff.sh` and `normalize.py`. Prior art: RFC 20 Appendix C names a
   Linux server as the NFS reference. Applied in E2, E14.
@@ -620,7 +628,10 @@ for body types two procedures share) are in RFC 20 §2.5 by amendment A4; §6.2,
   constant of the share, fixed at its creation; `vfs.File.Share` carries the `ShareID`, which a
   share keeps for its life (RFC 16 §2.3), so the adapter derives the verifier from the listed
   directory's `File` with no `pkg/vfs` change and no handle parsed; `vfs.Page` carries no directory
-  `File`, so a listing whose entries carry none costs a `GetAttr` of the directory (§4.3). Overturned if a share's ID can ever change while
+  `File`, so an NFSv4 listing costs a `GetAttr` of the directory per page, since a pseudo
+  directory's entries carry other shares' `File`s (E5's D9; §4.3); NFSv3 lists no pseudo directory,
+  so E4 takes the share from the directory attributes its `READDIR` and `READDIRPLUS` replies
+  already read. Overturned if a share's ID can ever change while
   its listings persist, or two shares' IDs can fold to one verifier a client compares across them.
   Prior art: knfsd's verifier is a constant of the export (from memory). Applied in E4, E5.
 
@@ -633,8 +644,7 @@ for body types two procedures share) are in RFC 20 §2.5 by amendment A4; §6.2,
   pooled reply buffer, at most 8 KiB (RFC 21 §3.1), rather than holding a reference. Ceiling: 512 KiB
   per session copied. Upgrade to a held `resources.Buf` when a profile shows the copy.
 - **A `GetAttr` of the directory per listing for its cookie verifier** (E4, E5; D16): `vfs.Page`
-  carries no directory `File`. Ceiling: one extra service call per `READDIR` page whose entries
-  carry no `File`. Upgrade by a directory `File` on `vfs.Page`, an RFC 17 change, when a benchmark
+  carries no directory `File`. Ceiling: one extra service call per `READDIR` page. Upgrade by a directory `File` on `vfs.Page`, an RFC 17 change, when a benchmark
   shows the extra call.
 - **One `Spell` call per owner and group in a `GETATTR`** (E5, E6): no adapter cache, as RFC 21 §11.1
   forbids one; the service's caches answer. Ceiling: a `READDIRPLUS` of 10^4 entries is 2·10^4 calls.
@@ -693,7 +703,7 @@ cuts both corpus captures to the bytes of the golden files already cut from them
 
 ### Epic 3 — The RPC layer
 
-**Epic 3 estimate: 7 subtasks, 17 man-days.**
+**Epic 3 estimate: 6 subtasks, 20.5 man-days.**
 
 Everything a call meets before a handler: its credential as an `Identity` and a `vfs.Call`, `NULL`
 and the TLS upgrade, the replay check, and the status every error of the stages and of `core` is
@@ -701,7 +711,7 @@ answered with in each program.
 
 **Owns:** RFC 21 §2.2's TLS paragraph, §11's decoding paragraph (the credential with the RPC
 header), §11.1, §11.5's `core` refusals, status layers, malformed calls and fault statuses; §11.6's
-golden vectors for §11.1 and those §11.5 rows; §15 question 5 by D10; RFC 20 §4.4's `Identity` and
+golden vectors for §11.1 and those §11.5 rows; §11.2's duplicate-request cache (D10); RFC 20 §4.4's `Identity` and
 `Call` per request, §4.5, §5.5.
 
 **Done when:** RFC 21 §13's "§11.1 refused credentials *(1 node)*" row; §11.6's "§11.1–§11.5 golden
@@ -711,9 +721,10 @@ from the reply stored for its first send, on header vectors without a socket (D1
 over loopback being E4's.
 
 **Expected content:**
-- The `AUTH_NONE` and `AUTH_SYS` `Security` stage: each call's `Identity` and `vfs.Call`, the
-  source address, refused credentials and verifiers; the scaffold's interim `AUTH_BADCRED` for an
-  `RPCSEC_GSS` credential (`protocol/stages.go`'s `checkAuth`) kept until E13 withdraws it.
+- `AUTH_NONE` and `AUTH_SYS` built into an `Identity` at route, with no `Security` stage since
+  nothing is verified: each call's `Identity` and `vfs.Call`, the source address, refused
+  credentials and verifiers; the scaffold's interim `AUTH_BADCRED` for an `RPCSEC_GSS` credential
+  (`protocol/stages.go`'s `checkAuth`) kept until E13 withdraws it.
 - Each call's `Caps` from its program and procedure (RFC 17 §3.0): `NFSv3Caps`, `NFSv4Caps`,
   `MountCaps` on `MNT` and `EXPORT` and `NFSv3Caps` on MOUNT's other procedures, `NLMCaps` for
   NLM and NSM; and `vfs.WithProtocol` on each request's context, `nfs3` or `nfs4`. A test asserts
@@ -725,10 +736,10 @@ over loopback being E4's.
   each a golden vector; every handler epic adds its operations' rows, and the totality test lands in
   E16, once every table is complete.
 - Malformed calls: `RPC_MISMATCH` before the credential, `GARBAGE_ARGS`, `PROG_MISMATCH` with the
-  range; `protocol/served.go`'s copies of `wire`'s program constants removed.
+  range.
 - NFS's `Replay` stage, with D10's duplicate-request cache, which E8 extends with sessions' slots.
-- `wire`'s call header and reply decoder; the scripted client (D5), with loopback rows of all the
-  above.
+- The scripted client (D5), holding the call encoder and reply decoder until E10 moves them into
+  `wire`, with loopback rows of all the above; NFS's `AUTH_TOOWEAK` row for `ErrWrongSecurity`.
 
 ### Epic 4 — NFSv3 and MOUNT
 
@@ -774,26 +785,31 @@ The NFSv4 operations that need no client state: the file handle, the pseudo-file
 names, listings and I/O under the anonymous stateids.
 
 **Owns:** RFC 21 §2.3's NFSv4 sizes and the `READ` hook, §7.1, §7.2 and §7.3 for NFSv4, §7.4's
-single-node part, §8 other than §11.3's ACL attributes, §9.2's NFSv4 rules, §11.3's NFSv4 column
-and rules other than exclusive create and delete pending, Appendix B; Appendix D's file-handle, name,
+single-node part, §8 other than §11.3's ACL attributes, §5.2's two special stateids that name no
+open, §9.1's and §9.2's NFSv4 rules, §11.3's NFSv4 column and rules other than exclusive create,
+with delete pending and the read-only marker as its own operations meet them, Appendix B; Appendix D's file-handle, name,
 attribute, listing and I/O rows; RFC 20 §4.10's NFS entry files for `PUTROOTFH` and `SecInfo`.
 
 **Done when:** RFC 21 §13's "§2.3 a compound's reply under the record cap"'s NFSv4.0 steps, "§8
-attributes"'s single-node steps, "App. B directory link count *(1 node)*"'s NFSv4 half, "§8.1
-ctime", "§9.2 change info"'s NFSv4 steps on one node; §11.6's golden vectors for the NFSv4 attribute
+attributes"'s single-node steps, "App. B directory link count *(1 node)*"'s NFSv4 half, "§9.2
+change info"'s NFSv4 steps on one node; §11.6's golden vectors for the NFSv4 attribute
 table; N7, N9, N16's ctime half, N19's NFSv4 half.
 
 **Expected content:**
-- The generator's linked-list replies (`READDIR`), as `wire/gen/gen.go` names them.
+- `READDIR`'s linked-list reply, through E4's generator kind (E4's T4.6).
 - `PUTFH`, `PUTROOTFH`, `PUTPUBFH`, `GETFH`, `SAVEFH`, `RESTOREFH`, `LOOKUP`, `LOOKUPP`, the pseudo
   filesystem's attributes, `SECINFO`, `SECINFO_NO_NAME`; their import-test entry files.
 - `fattr4`'s `attrlist4` decoded into one optional field per attribute (RFC 20's plan's ledger) and
   every Appendix B attribute encoded, owner strings through `Spell`, `fs_charset_cap`.
 - `GETATTR`, `SETATTR`, `VERIFY`, `NVERIFY`, `ACCESS`, with the 0-allocation gate on `GETATTR`.
 - `CREATE`, `LINK`, `REMOVE`, `RENAME`, `READLINK`, with `change_info4`.
-- `READDIR`: cookies, `maxcount` unclamped, the verifier (D16).
+- `READDIR`: cookies, `maxcount` unclamped, the verifier (D16), from the directory's `GetAttr` on
+  every page.
 - `READ`, `WRITE`, `COMMIT` under the all-zeros and all-ones stateids; the `READ` row's `Bound`
   hook; the not-supported rows (D14).
+- Each member row's `Cacheable` column, which E3's NFSv4.0 duplicate-request cache reads: set on the
+  non-idempotent members it adds, `SETATTR`, `WRITE`, `CREATE`, `LINK`, `REMOVE`, `RENAME`, as E4's
+  D13 sets NFSv3's.
 - Over loopback, each NFSv4.1 code this epic adds a row for (`SECINFO_NO_NAME` among them) sent
   under NFSv4.0 answered `NFS4ERR_OP_ILLEGAL`, as RFC 21 §11.5 has it.
 - S4's namespace half over loopback.
@@ -911,8 +927,9 @@ signal, N18, N20, N27; the `FlowControl` conformance check; RFC 20 §10.1's
 The state a client takes through an open: open stateids and their sequence, NFSv4.0 owners,
 byte-range locks, and the rules a stateid is checked by.
 
-**Owns:** RFC 21 §4.2, §5.2 other than `RECLAIM_COMPLETE`, §5.5, §11.3's exclusive create and delete
-pending, §11.4's opens, access and deny, locks and sequences rows; §11.5's drain roles of the
+**Owns:** RFC 21 §4.2, §5.2 other than `RECLAIM_COMPLETE` and E5's two special stateids that name no
+open, §5.5, §11.3's exclusive create and the `OPEN` halves of delete pending and the read-only
+marker, §11.4's opens, access and deny, locks and sequences rows; §11.5's drain roles of the
 operations it builds, per request; Appendix D's open, lock and stateid rows; D8.
 
 **Done when:** RFC 21 §13's "§4.2 v4.0 owners *(1 node)*" and "§5.2 stateids *(1 node)*" by the
@@ -927,10 +944,14 @@ reboot racing renew *(1 node)*", the "§3.5 confirm" step of a rebooted client h
 - `OPEN`: claim types, create modes and exclusive verifiers, access and deny, `Confirm`; NFSv4.0's
   `Record` read first.
 - `OPEN_CONFIRM`, `OPEN_DOWNGRADE`, `CLOSE`.
-- Stateids: the six rules, the special stateids, the current stateid, `TEST_STATEID`,
+- Stateids: the six rules, the special stateids within an open's context, extending E5's stateid
+  function, the current stateid, `TEST_STATEID`,
   `FREE_STATEID`, `FreeState` on an NFSv4.0 client's behalf.
 - NFSv4.0 owner sequences and owners' last replies (D8); the lease renewed by NFSv4.0's stateful
   operations (RFC 21 §5.1), `SEQUENCE` and `RENEW` renewing it in E8.
+- Each member row's `Cacheable` column, which E3's NFSv4.0 duplicate-request cache reads: set on
+  each non-idempotent member it adds whose retransmission the owners' last replies do not already
+  answer.
 - `LOCK`, `LOCKT`, `LOCKU`, `RELEASE_LOCKOWNER`: one range, `LOCK4denied`, blocking polls.
 - `READ`, `WRITE`, `SETATTR` under open and lock stateids, the principal check, the drain role per
   request; the callbacks value's `Revoked` for opens and locks.
@@ -1026,13 +1047,15 @@ step; N22. The held clone wait's rows need RFC 17's plan's piece 13 on the branc
 
 ### Epic 13 — RPCSEC_GSS 🔀
 
-**Epic 13 estimate: 6 subtasks, 16 man-days.**
+**Epic 13 estimate: 12 subtasks, 28 man-days.**
 
-Kerberos on NFS: a context table as NFS's `Security` stage over RFC 22's plan's `gss`, which
-withdraws E3's interim `AUTH_BADCRED` for `RPCSEC_GSS`.
+Kerberos on NFS: `gss`'s Kerberos side (S6c), then a context table as NFS's `Security` stage over
+it, which withdraws E3's interim `AUTH_BADCRED` for `RPCSEC_GSS`.
 
 **Owns:** RFC 21 §10, §11.1's `RPCSEC_GSS` rows, §8.1's privilege over Kerberos; RFC 20 §4.4's
-`Wrap` and `Unwrap` (RFC 20's plan's ledger); RFC 18 §3.3's NFS wire half.
+`gss` for a Kerberos context: `Context`, the Kerberos mechanism, `Exchanges` over one leg,
+`Identity`, `MIC`, `Wrap` and `Unwrap` and `gsstest`'s Kerberos initiator (RFC 20's plan's ledger);
+RFC 18 §3.3's NFS wire half.
 
 **Done when:** RFC 21 §13's "§10 context table *(1 node)*", "§8.1 privilege *(1 node)*"'s Kerberos
 steps, "§6.3 `MNT` on a Kerberos-only share *(1 node)*"'s `sec=krb5` step (after S6b); RFC 18 §10's
@@ -1041,13 +1064,16 @@ steps, "§6.3 `MNT` on a Kerberos-only share *(1 node)*"'s `sec=krb5` step (afte
 **Expected content:**
 - The context table: keyed by handle, window 128, the cap and LRU by principal, the idle eviction,
   charged to the connection-state pool.
+- S6c: `gss`'s `Context`, the Kerberos mechanism with `gsstest`'s initiator, `Exchanges` over one
+  leg, `Identity` and RFC 4121's MIC token.
 - `INIT` and `CONTINUE_INIT` through `gss`'s Kerberos acceptor and `SignIn`, driven in tests by
-  `gsstest`'s initiator (S6c).
+  `gsstest`'s initiator.
 - `krb5i` and `krb5p` through RFC 4121's `Wrap` and `Unwrap`, added to `gss`.
 - Header MIC verification, `DESTROY`, `CREDPROBLEM`, `CTXPROBLEM`, `MAXSEQ`, ticket expiry.
-- `ErrWrongSecurity` as `NFS4ERR_WRONGSEC` and NFSv3's `AUTH_TOOWEAK`; the `require_kerberos` boot
-  refusal (RFC 20's plan's ledger); the `ErrNotNegotiated`, `ErrNoSession` and `ErrExpired` rows.
-- Rows on `memory.New` with injected sign-in errors from S6c; rows where `SignIn` succeeds after S6b.
+- `ErrWrongSecurity` driven with a Kerberos caller through E3's `AUTH_TOOWEAK` row and E5's
+  `NFS4ERR_WRONGSEC` row; the `require_kerberos` boot refusal (RFC 20's plan's ledger); the
+  `ErrNotNegotiated`, `ErrNoSession`, `ErrNoTree` and `ErrExpired` rows.
+- Rows on `memory.New` with injected sign-in errors; rows where `SignIn` succeeds after S6b.
 - knfsd's captures of `RPCSEC_GSS` exchanges at `krb5`, `krb5i` and `krb5p` against a KDC, cut into
   golden files as E2's are, which E2 leaves out.
 
@@ -1121,7 +1147,7 @@ failed stable write *(1 node)*" on the composed node (E4 runs its adapter half),
 close-to-open and WCC *(1 node)*", "§5.4 single-node restart", "§5.2, §5.4 lock across a restart *(1
 node)*", "§5.4 NFSv4.0 signal" on a restart of the one node, "§5.1 revoke across a restart *(1
 node)*"'s NFSv4 steps, "§6.1 NLM grace" and "§6"'s
-`SM_NOTIFY` step on a restart of the one node, "§5.3 lock recall", "§5.3 handle-cached deny mode",
+`SM_NOTIFY` step on a restart of the one node, "§5.3 lock recall", "§5.3 handle-cached deny mode", "§8.1 ctime",
 "§9.3 NFSv4.2"'s non-xfstests steps; after E15, `pjdfstest`, `pynfs`, `cthon04` and `nfstest` at their expected
 failures, the pynfs steps of "§3.1, §3.2 sessions *(1 node)*", "§3.2 reply cache", "§4.2 v4.0
 owners *(1 node)*" and "§5.2 stateids *(1 node)*" among them.
@@ -1222,9 +1248,14 @@ follows the RFC as written.
    its wire-test epic (the differential runner, which E14 does without, over `pcap-diff.sh`). If
    this plan starts first, the epic here that needs one of those builds it and that plan's figure
    moves with it; pending a decision on #3119 if both start at once.
-2. **`gss`'s owner** (RFC 22's plan, its §6.2 point 2; RFC 20's plan's risk 5). E13 depends on RFC
-   22's plan's epic 4 (S6c) and adds RFC 4121's `Wrap` and `Unwrap` to `gss`, a row RFC 20's plan's
-   ledger gives this plan. If `gss` gets an RFC of its own, `Wrap` and `Unwrap` move with it.
+2. **`gss`'s owner** (RFC 22's plan, its §6.2 point 2; RFC 20's plan's risk 5). E13 builds S6c,
+   `gss`'s Kerberos side (`Context`, the Kerberos mechanism, `Exchanges` over one leg, `Identity`,
+   RFC 4121's MIC token, `gsstest`'s Kerberos initiator), which RFC 22's plan's epic 4 was to build:
+   that plan is on the v1.1 roadmap and nobody builds them first, agreed with Marco on 25 Nov. It
+   also adds RFC 4121's `Wrap` and `Unwrap`, a row RFC 20's plan's ledger gives this plan. NTLM,
+   SPNEGO, `Exchanges`' second leg and `Identity`'s `Secret` arm stay in that epic, which keeps its
+   figure until standup, so the programme counts S6c twice until then. If `gss` gets an RFC of its
+   own, these move with it.
 3. **The authenticator and resolution** (S6a, S6b; RFC 18's plan). `SignIn`, `Spell`, `Find` and
    resolution are RFC 18's plan's; E7 adds identity's NFS side on top of its E2, E3 and E6, whose
    remaining subtasks wait on RFC 13's secret provider (#3119, stage 6). If S6a slips, E6's and E7's
@@ -1271,6 +1302,8 @@ Each row is one of [RFC 20's plan](rfc-20-adapters-plan.md)'s deferral ledger (i
 | NFS over TLS: `Conn.StartTLS`, `tlsconfig` reload, the modes, certificate loading | E3 |
 | NFS callbacks: `CB_RECALL`, `CB_NOTIFY`, `CB_RECALL_ANY`, NLM `GRANTED` through `Deps.DialClient` | E10; NLM in E11; `CB_NOTIFY` never sent (RFC 21 §5.3) |
 | `ConnInfo.Session` | E8 |
+| `gss`: Kerberos, NTLM, SPNEGO, `Exchanges`, `Identity`, `gsstest` | E13: the Kerberos side (S6c: Kerberos, `Exchanges` over one leg, `Identity` from a Kerberos context, the Kerberos initiator); NTLM, SPNEGO and the rest RFC 22's plan's epic 4 |
+| `gss`: RFC 4121 MIC token (`Context.MIC`) | E13 (S6c) |
 | `gss`: RFC 4121 `Wrap`, `Unwrap` | E13 |
 | `translate`, for what NFS calls, RFC 19 §5.1's NFSv4 functions | E6 |
 | each protocol's error-table rows and its totality test | rows in E3 and each handler epic; the test in E16; the helper RFC 22's plan's (§6.2, point 1) |
@@ -1352,7 +1385,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | §4.1 (`SETCLIENTID`) | E8 |
 | §4.2 (owner sequences) | E9; across shards: §6.6 |
 | §5.1 (lease, expiry, revoke) | E8 (signals, `DESTROY_*`), E9 (no courtesy, destroy with an open), E10 (administrator's revoke), E11 and E16 (revoke across a restart) |
-| §5.2 (stateids) | E9; `RECLAIM_COMPLETE`: E8; delegation stateids: E10; the batch move and layout tag: §6.6 |
+| §5.2 (stateids) | E9; the all-zeros and all-ones stateids, which name no open: E5; `RECLAIM_COMPLETE`: E8; delegation stateids: E10; the batch move and layout tag: §6.6 |
 | §5.3 (delegations) | E10; the lock recall and handle-cached deny mode: E16 |
 | §5.4 (grace) | E8 (signals), E9 (reclaims, stale stateids), E16 (restart rows, the NFSv4.0 signal) |
 | §5.5 (lock conflicts) | E9 (NFSv4), E11 (NLM's holder) |
@@ -1370,12 +1403,12 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | §11 (decoding) | E1 (compound row), E3 (credential), E4 and E5 (generator) |
 | §11.1 (identity) | E3; `RPCSEC_GSS`: E13; resolution: E7 |
 | §11.2 (request identity) | E3 (D10's key); the request ID: §6.6 |
-| §11.3 (namespace) | E4 (NFSv3), E5 (NFSv4), E6 (ACLs), E9 (exclusive create, delete pending, read-only marker) |
+| §11.3 (namespace) | E4 (NFSv3), E5 (NFSv4, delete pending and the read-only marker on its operations), E6 (ACLs), E9 (exclusive create; delete pending and the read-only marker on `OPEN`) |
 | §11.4 (open state) | E8 (clients, `Adapter` bytes), E9 (opens, locks), E10 (grants), E11 (NLM) |
 | §11.5 (errors) | E3 (`core`'s refusals, status layers), each handler epic (its rows), E10 (drain), E16 (totality); D4 in E4 |
 | §11.6 (testing) | golden vectors: E3, E4, E5; fuzz targets: E6, E8, E9, E11; drain test: E10; total mapping and cross-protocol: E16 |
 | §11.7, §14 (monitoring, observability) | rule 3; the recorder of §14's series and §11.7's three: §6.1, point 4 |
-| §12 (invariants) | N1: E3, E11; N2: E8 (one node); N3: E8, E13; N4: E9; N5: E8; N6: E10 (one node); N7: E4, E5; N8: E4, E5; N9: E5; N10: rule 13, E8; N11: E8; N12: E9; N13: E8, E16; N14: E10, E16; N15: E11; N16: E5, E6; N17: E4, E16; N18: E8; N19: E4, E5; N20: E8; N21: E11; N22: E12; N23: E4, E16; N24: E9, E10, E16; N25: §6.6 (RFC 27); N26: E3, every translation; N27: E8 |
+| §12 (invariants) | N1: E3, E11; N2: E8 (one node); N3: E8, E13; N4: E9; N5: E8; N6: E10 (one node); N7: E4, E5; N8: E4, E5; N9: E5; N10: rule 13, E8; N11: E8; N12: E9; N13: E8, E16; N14: E10, E16; N15: E11; N16: E5, E6, E16 (§8.1 ctime); N17: E4, E16; N18: E8; N19: E4, E5; N20: E8; N21: E11; N22: E12; N23: E4, E16; N24: E9, E10, E16; N25: §6.6 (RFC 27); N26: E3, every translation; N27: E8 |
 | §13 (conformance) | each row in the epic whose **Done when** names it; cluster steps: §6.6 |
 | §15 (open questions) | q5: D10 (§6.1, point 6); the others not planned |
 | Appendix A | non-normative |
@@ -1388,7 +1421,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | RFC 20 §3.3 (NFS callbacks) | E8, E9, E10, E11 |
 | RFC 20 §3.4 (`DialClient`'s network) | E11 |
 | RFC 20 §4.3, §4.7 (compound row, `Bound`) | E1, E5, E8 (D15, A1) |
-| RFC 20 §4.4 (`Identity`, `Call`; `Wrap`, `Unwrap`) | E3, E13 |
+| RFC 20 §4.4 (`Identity`, `Call`; `gss`'s Kerberos side, `Wrap`, `Unwrap`) | E3, E13 |
 | RFC 20 §4.5 (error tables) | E3, each handler epic |
 | RFC 20 §7.3 (totality) | E16 |
 | RFC 20 §5.3, §5.4, §6.10 (codecs, gates) | E4, E5; benchmarks E16 |

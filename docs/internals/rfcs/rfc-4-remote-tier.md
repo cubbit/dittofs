@@ -205,8 +205,8 @@ versions behind GC's back. A `Recheck` that merely could not read is not drift.
 2. The service clamps the range and sends fewer bytes. The store compares what
    was sent with what was asked and returns `ErrInvalid`
    ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)).
-3. The codec knows the range came from a record, so it reports `ErrCorrupt` of
-   kind `malformed` ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)).
+3. The codec knows the range came from a record, so it reports `ErrMalformed`,
+   which wraps `ErrCorrupt` ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)).
 4. The syncer reports it at once, without a re-get: a flipped bit cannot shorten
    a stored object ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)).
 
@@ -263,16 +263,39 @@ This document **MUST NOT** be read as specifying:
 
 ### 1.2 A contract, not a component
 
-Each consumer declares, on its own side, the few methods it needs
-([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)). The syncer needs put, get and health; GC needs delete, list
-and the settings re-check, since its relocation reads and puts go through the syncer
-([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)). This document fixes what those methods *mean*, once, so a narrow
-interface never silently drops a guarantee. A backend implements the full
-interface of [§4.1](#4.1%20Interface) and satisfies every narrow one structurally.
+Each consumer declares, on its own side, the few methods it needs, and imports
+this document's contract for the types and errors they carry, never an
+implementation ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)). The syncer needs a verified get and a probe, which
+`codec.Store` offers ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)), and runs each put as a closure, the `Attempt` of the put
+`codec.Store.NewPut` builds; it uses `Name`, `Range`, `Chunk`, `ChunkRange`,
+`Direction`, `Meter` and the error set of [§4.8](#4.8%20Errors%20are%20a%20closed%20set) as they are, and declares none of
+them again ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)). GC needs delete, list and the settings re-check, since its
+relocation reads and puts go through the syncer. This document fixes what those
+methods *mean*, once, so a narrow interface never silently drops a guarantee. A
+backend implements the full interface of [§4.1](#4.1%20Interface) and satisfies every narrow one
+structurally.
+
+**The contract is a package of its own.** Package `remote` holds the types,
+constants, interface and errors of [§4.1](#4.1%20Interface) and nothing else: no state, no
+behaviour beyond methods over its own values, and no import but the standard
+library. Everything that carries behaviour lives in a package beneath it and
+counts as an implementation: the codec, `remote/codec`, with `codec.Store`; and
+each backend, such as `remote/s3` and the in-memory `remote/memory`. In
+production only the node, through its content wiring, imports an
+implementation; tests may import any. The settings, metrics and health
+packages hold a contract and its implementation together, so they count as
+implementations too, and neither the codec nor a backend imports them: each
+records its series through a small recorder interface it declares, and offers
+its settings rows, metric definitions and alert rules as plain values, which
+the content wiring builds into settings, collectors and rules and hands back as
+configuration structs. The codec imports the contract and RFC 5's contract, the
+root `transform` package; the chain it encodes under and the name derivation
+are handed to it by the node's content wiring, never imported.
 
 **Two components, one document.** The block codec ([§3](#3.%20The%20block%20format)) and the remote block
-store ([§4](#4.%20The%20store%20contract)) are separate components with no call between them: the codec
-never calls a store, and a store never parses a block. Each is implemented and
+store ([§4](#4.%20The%20store%20contract)) are separate components: the codec's encoder and decoder never
+call a store, and a store never parses a block. `codec.Store` is the one place
+that joins them, over the store's contract ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)). Each is implemented and
 tested alone ([§7.1](#7.1%20Conformance%20suite), [§7.3](#7.3%20Codec%20tests)). Neither calls the syncer, GC or the engine, but
 several rules here are split with them — health is probed here and derived in
 [RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work), a body's bounds come from [RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces), the settings re-check is
@@ -324,7 +347,7 @@ half-completes ([§7.2](#7.2%20Fault%20transport)).
 
 The **block codec** encodes and decodes blocks. The engine uses it when it
 assembles a block ([RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler), [RFC 8 §6.3](rfc-8-engine.md#6.3%20The%20offload%20pipeline)), and GC uses it, through the syncer, when it relocates chunks
-([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)). The store receives the encoded bytes and returns them unchanged.
+([RFC 9 §4.2](rfc-9-gc.md#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)), both through `codec.Store` ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)). The store receives the encoded bytes and returns them unchanged.
 
 ### 3.2 Layout
 
@@ -349,7 +372,8 @@ Five requirements on the layout:
   length, more than `N` index entries, more census entries than its bound, or a
   census material ID longer than 255 bytes, before allocating for it.
 - Each body's declared length **MUST** be at most `MaxDecodeLen(Max)`, the
-  largest body any registered transform could have written ([RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)), and
+  largest body any registered transform could have written, which the codec asks
+  of the chain it is handed (`Chain.MaxDecodeLen`, [RFC 5 §3.1](rfc-5-transforms.md#3.1%20Interfaces)), and
   the codec checks it before allocating for the body. The read side never uses
   the current chain's `MaxEncodedLen`: a block written under an older chain must
   stay readable.
@@ -429,8 +453,8 @@ checksum ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exac
 flipped at rest; the syncer therefore gets a chunk that failed verification once
 more before it reports it corrupt
 ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)). The codec itself never re-reads. When the store rejects a recorded range
-as past the end (`ErrInvalid`), the codec reports `ErrCorrupt` of kind
-`malformed`, which is not re-got: the range came from a record, not from a caller's mistake, so the
+as past the end (`ErrInvalid`), the codec reports `ErrMalformed`, which wraps
+`ErrCorrupt` and is not re-got: the range came from a record, not from a caller's mistake, so the
 stored block is shorter than its record says. `ErrNotFound` passes through
 unchanged, for the engine to re-resolve ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)).
 
@@ -546,6 +570,30 @@ const (
 // Range is a byte range in an encoded block. The zero Range means the whole block.
 type Range struct{ Off, Len int64 }
 
+// Chunk is what a transfer carries: a chunk's plaintext hash and its bytes,
+// verified against that hash on a get (§3.4). It has no file offset, and is not
+// the carver's chunk (RFC 2 §1.2).
+type Chunk struct {
+	Hash  [32]byte
+	Bytes []byte
+}
+
+// ChunkRange asks for one chunk of a block: the hash it is verified against
+// and its range in the encoded block, as block metadata records it (RFC 6 §2.2).
+type ChunkRange struct {
+	Hash  [32]byte
+	Range Range
+}
+
+// Meter receives a transfer's wire bytes (RFC 3 §2.4): Moved with each count of
+// encoded body bytes sent or read, and Sent once a put's last body byte has
+// been sent. A nil func is skipped, so the zero Meter meters nothing. It is
+// two funcs and carries no behaviour of its own.
+type Meter struct {
+	Moved func(n int64)
+	Sent  func()
+}
+
 // Info describes one stored block, as a listing reports it.
 type Info struct {
 	Name    Name
@@ -593,7 +641,9 @@ type Store interface {
 
 	// List reads one page, with one request, of at most n stored blocks in
 	// ascending name order, starting after the given name (the zero Name starts
-	// at the beginning); next is the last name of the page, and done is true
+	// at the beginning); next is the last name of the page or, when the page
+	// ends on a key that is not a block, the smallest block name after that key,
+	// and done is true
 	// once the walk has passed the last block (§4.6).
 	List(ctx context.Context, after Name, n int) (page []Info, next Name, done bool, err error)
 
@@ -670,12 +720,22 @@ var (
 	ErrCorrupt   = errors.New("remote: corrupt in transit")
 	// ErrThrottled wraps ErrTransient: the service asked to be sent less.
 	ErrThrottled = fmt.Errorf("remote: throttled: %w", ErrTransient)
+	// ErrMalformed wraps ErrCorrupt: a recorded range the store refused as past
+	// the end, which a re-get cannot cure (§3.4).
+	ErrMalformed = fmt.Errorf("remote: malformed: %w", ErrCorrupt)
 )
 ```
 
 A backend is opened by its own constructor, which takes its settings, its mode
 ([§4.14](#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)), the client it shares ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) and a context, and runs the
-capability check ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)) before it returns. On a mutable store, `Delete` and
+capability check ([§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens)) before it returns. The S3 profile's are
+`NewClient(ClientConfig, Deps)`, the client one store configuration shares, and
+`Open(ctx, *Client, prefix, remote.Mode) (remote.Store, Claim, error)`, which
+returns the namespace claim it read ([Appendix C.4](#C.4%20The%20capability%20check)) for its caller to
+judge. `ClientConfig` carries `Region`, the signing region, and `MaxBlockSize`,
+the largest encoded block a put may carry; sized as RFC 3 §2.2 sizes the pools ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)). `Put` refuses a larger block
+locally with `ErrInvalid`, before sending a byte: that is the client's refusal,
+distinct from [§4.8](#4.8%20Errors%20are%20a%20closed%20set)'s `ErrDenied` of cause `size`, which is the service's. On a mutable store, `Delete` and
 `DeleteVersions` do what [§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent) says; on an immutable one they return
 `ErrInvalid` for every name without sending a request.
 
@@ -755,14 +815,10 @@ store opened from one configuration shares that configuration's client
   once every length is known: a checksum that can be combined from parts
   (CRC32C) is taken per body and joined to the header's, and one that cannot
   (MD5) needs a second measuring pass when the lengths also had to be measured.
-  The measured lengths and checksum are kept across the syncer's retries of one
-  `Upload` in RFC 3's `Measure` (`type Measure struct{ State any }`), handed to
-  each `Put(ctx, name, src, m *Measure) (Stored, error)` of the syncer's `Store`
-  ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)): the syncer allocates one per `Upload`, never reads `State`,
-  and sets it to nil after an attempt ending in `ErrCorrupt`; the engine's
-  `Store`, the adapter over this codec and a remote store, owns `State`. So a
-  retry runs only the sending pass ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)). The remote store's own `Put`
-  ([§4.1](#4.1%20Interface)) is unchanged and still keeps nothing across calls ([§4.9](#4.9%20No%20state%20across%20calls)).
+  The measured lengths and checksum are kept across the syncer's retries by
+  `codec.Store`'s put (below), so a retry runs only the sending pass
+  ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)). The remote store's own `Put` ([§4.1](#4.1%20Interface)) keeps nothing across calls
+  ([§4.9](#4.9%20No%20state%20across%20calls)).
 - **A put is verified in transit.** Either the service checks the body against a
   checksum the store sends and refuses a mismatch, or the service reports a digest
   of what it stored and the store compares it with the one it computed while
@@ -820,6 +876,68 @@ carry a rule that needs one.
 > ([RFC 0 §1.4](rfc-0-data-lifecycle.md#1.4%20The%20single-node%20profile)).
 
 ![A put streams: body lengths come from each transform's declared length, or from a measuring pass that encodes and discards; the header goes first, then each chunk encoded as it is sent, in one request with the profile's integrity check](img/rfc4r-put-path.svg)
+
+**`codec.Store` joins the codec to one remote store.** It lives in the codec's
+package, holds a `remote.Store` through the contract, and is the one production
+implementation of the syncer's `Store` ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)); nothing adapts it and
+nothing maps its errors. The node's content wiring builds one per store, with
+the chain, the name derivation, the chunk-ID function and a census lookup it
+hands the codec. The lookup returns a block's census from its block record
+([RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block)) by name, for `Get` to pass
+to `Chain.Decode` ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)),
+and an absent record is `ErrNotFound`, so the engine re-resolves the chunk
+([§4.8](#4.8%20Errors%20are%20a%20closed%20set)). Neither the engine nor the
+syncer passes a census on a read.
+
+```go
+// package codec
+
+// Store is the block codec over one remote store.
+type Store struct{ /* ... */ }
+
+// Get reads the chunks named in want, or the whole block when want is empty.
+// Ranges adjacent in the block are read with one request. Each chunk comes back
+// decoded and verified against its own hash (§3.4). m receives the encoded
+// bytes as they arrive.
+func (s *Store) Get(ctx context.Context, name remote.Name, want []remote.ChunkRange, m remote.Meter) iter.Seq2[remote.Chunk, error]
+
+// GetVersion is Get of one recorded version, on an immutable store (§4.14).
+// It lands with the remote store's GetVersion and its first caller (§4.1).
+func (s *Store) GetVersion(ctx context.Context, name remote.Name, v remote.Version, want []remote.ChunkRange, m remote.Meter) iter.Seq2[remote.Chunk, error]
+
+// Health is the remote store's probe of direction d, passed straight through (§4.7).
+func (s *Store) Health(ctx context.Context, d remote.Direction) error
+
+// NewPut builds the put of block name, minted from nonce and the chain ID of
+// pin, the chain the engine pinned for this attempt (RFC 8 §6.6, RFC 5 §3.1); the
+// header carries both, and every body is encoded under pin. Each range over src
+// yields the block's chunks again from the first; a measuring pass and each
+// Attempt start one. Attempt recomputes the name from nonce, pin's chain ID and
+// the chunk IDs before it sends a byte, and a name that differs is ErrInvalid.
+func (s *Store) NewPut(name remote.Name, nonce [16]byte, pin transform.Attempt, src iter.Seq2[remote.Chunk, error]) *Put
+
+// Put is one block's put across the syncer's tries.
+type Put struct{ /* ... */ }
+
+// Attempt is one try: it measures when it must, then sends the header and each
+// chunk encoded as it goes, in one remote Put. It calls m.Moved with each count
+// of body bytes sent and m.Sent after the last, and returns nil only once the
+// block is stored. Its method value is the attempt the syncer's Upload runs.
+func (p *Put) Attempt(ctx context.Context, m remote.Meter) error
+
+// Stored returns each chunk's range in the encoded block and the census the
+// header carries, once an Attempt has returned nil.
+func (p *Put) Stored() (ranges []remote.ChunkRange, census []transform.Encoded)
+```
+
+A `Put` keeps the measured lengths and checksum across its `Attempt`s, so a
+retry only sends, and drops them after an `Attempt` that ends in `ErrCorrupt`,
+so the next one measures again. Two `Attempt`s of one `Put` can overlap, when
+the syncer retries a slow try before the first has returned, and **MUST** be
+safe when they do. An `Attempt`
+whose `ctx` has ended drops its chunk buffers before it returns. The syncer sees
+none of this: it runs `Attempt` and reads only what it reports to its `Meter`
+([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)).
 
 ### 4.4 Get: a whole block or one range, exactly
 
@@ -1032,17 +1150,21 @@ is `ErrInvalid` for that put alone, since those bodies have bounds of their own
 | Error | Meaning | What the caller does |
 | --- | --- | --- |
 | `ErrNotFound` | this block is absent; the store itself is fine | fails the read; the engine re-resolves the chunk ([RFC 8 §7.7](rfc-8-engine.md#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) |
-| `ErrInvalid` | the request was wrong: a range past the end, an operation the service does not support, or a size refusal of a put that is not a block's; never a quota refusal | fails the call; not retried |
+| `ErrInvalid` | the request was wrong: a range past the end, an operation the service does not support, a size refusal of a put that is not a block's, or a block put whose name does not match its nonce, chain and chunks (§4.3); never a quota refusal | fails the call; not retried |
 | `ErrDenied` | the store refused, or does not exist: credentials, permissions, a missing bucket (cause `access`); a quota or storage limit of the service is reached (cause `quota`); a body-size limit refused a block put (cause `size`) | fails the call; the syncer's health rules decide what follows, and it reports the cause per direction ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | `ErrTransient` | retrying may help: network, timeout, a server error, a short body | the syncer retries within its bound ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | `ErrThrottled` (wraps `ErrTransient`) | the service asked to be sent less: a throttling or slow-down reply | the syncer holds the flow and retries after backoff; it is backpressure and **MUST NOT** count toward health ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-| `ErrCorrupt` | a put's checksum or digest mismatched in transit, or the codec's verification of a chunk failed, including a recorded range the store rejected ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)) | a put is retried; a chunk that failed verification is re-got once, then reported corrupt; a recorded range the store rejected is reported at once ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `ErrCorrupt` | a put's checksum or digest mismatched in transit, or the codec's verification of a chunk failed ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)) | a put is retried; a chunk that failed verification is re-got once, then reported corrupt ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `ErrMalformed` (wraps `ErrCorrupt`) | the store rejected a recorded range as past the end, so the stored block is shorter than its record ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)) | reported at once, never re-got ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 
 A local failure (the context cancelled, the body's reader failing) is returned
 as itself. It is not the service's fault and does not count against the store's
 health. A mismatching checksum the service returns with a get is
 `ErrTransient`: the codec's hash check is the one that decides ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)). The
-syncer uses this set as it is, plus one error for material ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)).
+syncer uses this set as it is ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)); material errors pass through unchanged.
+The transforms' `ErrMaterialUnavailable` and `ErrMaterialDestroyed` ([RFC 5 §2.7](rfc-5-transforms.md#2.7%20Failures)) are
+not in it: the codec returns them as they are, neither wrapped in one of these
+nor mapped to one, and the engine tells them apart.
 
 ### 4.9 No state across calls
 
@@ -1075,7 +1197,7 @@ caller can see it. So:
   of everything that calls stores on it: the syncer's
   `upload_workers + fetch_workers` ([RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) — which also run every call at a
   backup location, as raw or small-object transfers ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) — GC's delete and list bound
-  ([RFC 9 §7.1](rfc-9-gc.md#7.1%20GC%20bounds%20its%20own%20work)), and one for the probe — once, not per store, since those pools are
+  ([RFC 9 §7.1](rfc-9-gc.md#7.1%20GC%20bounds%20its%20own%20work)), and one for each probe direction, two, since the syncer runs at most one probe per `ProbeKey` and direction at a time ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)) — once, not per store, since those pools are
   shared across the stores they serve. A store has no connection setting of its
   own. Set below its callers it is a hidden second limit; set above them it is
   never reached;
@@ -1229,10 +1351,13 @@ count it again ([RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20make
 `list_objects` and `delete_objects` on the counter, where every `op` keeps its
 own value; the histogram counts them all as `other`, so a store's histogram
 stays at six `op` values times its buckets. An `ErrDenied` result is labelled with
-its cause; a drifted `Recheck`
+its cause, and a local failure, a call its caller cancelled or a body reader
+that failed, is labelled `result="local"`: it is not the service's ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)); a drifted `Recheck`
 sets the drifted setting's `remote_capability` to 0. The gauge also
 carries `conditional_put`, whether the service honoured one at the last check
 ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)); it is reported, and no rule reads it.
+`remote_capability` also carries `namespace`, since a check's lifecycle and
+tiering verdicts depend on the store's prefix.
 
 Logs: a refused open, and a drifted `Recheck`, log every missing feature at
 `Error`, once. `ErrCorrupt`,
@@ -1752,11 +1877,13 @@ are the negative tests.
 | [§3.2](#3.2%20Layout) | Get one body by range alone: its envelope's version byte is read and the chunk decodes without the header. |
 | [§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec) | Plant a material ID in a body that the block record's census does not list: the read fails as malformed and the provider is never asked for it. |
 | [§3.2](#3.2%20Layout) | Encode a block of an encrypting namespace: no unkeyed hash of its chunks appears anywhere in its bytes, and the header's chunk IDs equal block metadata's; a whole-block read still recomputes and verifies its name without material, and verifies every chunk; scanning the block for the clear envelope finds every body's offset and length, equal to the index's; a ranged read at block metadata's range verifies without reading the header. |
-| [§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec) | A recorded range the store rejects as past the end: the codec returns `ErrCorrupt` of kind `malformed`. |
+| [§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec) | A recorded range the store rejects as past the end: the codec returns `ErrMalformed`, and `errors.Is` finds `ErrCorrupt` in it. |
 | [§3.5](#3.5%20Format%20changes%20are%20migrations) | With the namespace's write version below the newest the codec knows, blocks are written at the namespace's version; a write version the binary does not know refuses writes and still reads. |
 | [§3.3](#3.3%20Transforms) | Run the engine's read and write tests with and without transforms: no difference observable apart from offsets and timing. |
 | [§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec) | A ranged read at a wrong offset or length fails with `ErrCorrupt`, and nothing re-reads the header. |
 | [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | Encode the same block twice, once from declared lengths and once after a measuring pass, under every transform configuration: the bytes, the header and the checksum are identical, and the declared size equals the bytes streamed. |
+| [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | Through `codec.Store` on the in-memory store, in a mode that needs a measuring pass: a second `Attempt` of one `Put` reads `src` once, only to send; after an `Attempt` ending in `ErrCorrupt` the next measures again. Two `Attempt`s of one `Put` overlap under `-race`: no race is reported. An `Attempt` whose `ctx` ends mid-body has released its chunk buffers when it returns. The `Meter`'s `Moved` counts sum to the encoded bytes the store received, and `Sent` is called once, after the last. A zero `Meter{}` passed to `Get` and to `Attempt` is skipped: both complete without a panic. |
+| [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | Through `codec.Store` on the in-memory store, `NewPut` with a name minted from another nonce, and with one minted over other chunks: `Attempt` returns `ErrInvalid`, and the store received no put. |
 | [§3.5](#3.5%20Format%20changes%20are%20migrations) | A stored fixture of every released version decodes. |
 
 ### 7.4 Services
@@ -1881,7 +2008,8 @@ Settled with them:
    loss after acknowledgement ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)). [Appendix B](#Appendix%20B%20%E2%80%94%20measurements) records, per measured service, when a
    put is acknowledged and across which failure domains. A storage class that
    keeps data in one failure domain is allowed: the capability check reports the
-   class's failure domain at open and through health, and a deployment that
+   class's failure domain in the open's log line (the store keeps no health
+   status, [§4.9](#4.9%20No%20state%20across%20calls)), and a deployment that
    configures such a class accepts what it promises.
 
 Open:
@@ -2036,11 +2164,12 @@ these, and drops `DeleteObjects`:
 | `ListObjectVersions` under the location's `exports/`, `progress/` and `keys/` prefixes for the namespace | `ListObjects`: every version, delete markers skipped, resumable by key and version marker | check step 4, once per location record |
 | `DeleteObject` without `versionId`, on the location health object | refused (`403`); a delete with `versionId` is not sent, since the lock refuses it whatever the credential may do | check step 7 |
 
-For the two bucket-setting calls, "no configuration" (`404` with the service's
-not-found code) passes, `501 NotImplemented` passes (a service without the
-feature cannot have it enabled), and `403` refuses: the credential must be
-allowed to read both settings, or the check cannot tell. `Recheck` re-reads the
-same two settings under the same rules.
+For every bucket-setting read — versioning, lifecycle, intelligent tiering and
+default encryption — "no configuration" (`404` with the service's not-found
+code) passes, `501 NotImplemented` passes (a service without the feature cannot
+have it enabled), and `403` refuses: the credential must be allowed to read each
+setting, or the check cannot tell. `Recheck` re-reads the same settings under
+the same rules.
 
 **When a put is stored** is cited per service from each service's own
 statement, and recorded in [Appendix B](#Appendix%20B%20%E2%80%94%20measurements) ([§8](#8.%20Decisions%20and%20open%20questions), item 7). A service is added there
@@ -2072,7 +2201,7 @@ Several stores may share a bucket under different prefixes, never one prefix
 | Contract | S3 |
 | --- | --- |
 | one attempt per call ([§4.9](#4.9%20No%20state%20across%20calls)) | SDK retries off (maximum attempts 1) |
-| client configuration | the request and response checksum modes set explicitly to `WhenRequired`, never left at the SDK's default, which has changed between releases; the store sends exactly the integrity header its profile chose and nothing else. A whole-block get sends `x-amz-checksum-mode: ENABLED`, and the store compares a returned checksum of the object with the bytes received ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)); a ranged get asks for none, since an object checksum does not cover a range. The payload-signing mode is pinned too: every request is signed with `x-amz-content-sha256: UNSIGNED-PAYLOAD`, over HTTPS only, and an endpoint that is not HTTPS refuses the open. The service's certificate is verified against the system's roots, or against the store configuration's trust roots in their place, and no setting skips verification. A signed payload hash is not an integrity check here — two measured services store a body whose signed hash is wrong ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)) — and signing it would need a pass over the body before the first byte. The capability check runs with this same configuration |
+| client configuration | the request and response checksum modes set explicitly to `WhenRequired`, never left at the SDK's default, which has changed between releases; the store sends exactly the integrity header its profile chose and nothing else. A whole-block get sends `x-amz-checksum-mode: ENABLED`, and the store compares a returned checksum of the object with the bytes received ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)); a ranged get asks for none, since an object checksum does not cover a range. The payload-signing mode is pinned too: every request is signed with `x-amz-content-sha256: UNSIGNED-PAYLOAD`, over HTTPS only, and an endpoint that is not HTTPS refuses the open. The service's certificate is verified against the system's roots, or against the store configuration's trust roots in their place, and no setting skips verification. A signed payload hash is not an integrity check here — two measured services store a body whose signed hash is wrong ([Appendix B](#Appendix%20B%20%E2%80%94%20measurements)) — and signing it would need a pass over the body before the first byte. Requests are signed for `ClientConfig.Region`, which defaults to `us-east-1`, the region most S3-compatible services accept, and is set by `remote.region` where a service needs another. The capability check runs with this same configuration |
 | connection pool ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) | one HTTP client per store configuration: its per-host connection cap, its idle connections per host and its total idle connections all set to the derived limit, over HTTP/1.1 only, since these caps bind no HTTP/2 stream |
 | put integrity ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)) | send the checksum header chosen by the check, computed by the measuring pass. If the service enforces none, `Checksum` is `None`: compute the MD5 while streaming, compare the returned ETag with it, and return `ErrCorrupt` on a mismatch; the retry puts the same bytes again |
 | exact get ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | compare `Content-Range` with the request, then the body's length with `Content-Range` |
@@ -2082,7 +2211,7 @@ Several stores may share a bucket under different prefixes, never one prefix
 | `ErrDenied`, cause `quota` | `507` with any code; and any reply whose error code the profile's quota list names — each service's own bucket-quota-exceeded and storage-full codes, recorded per service in [Appendix B](#Appendix%20B%20%E2%80%94%20measurements), measured or taken from the service's documented error table. Such a reply is matched first, and a size refusal next, before the rows below, so a quota or size refusal answered with `400` or `403` is never `ErrInvalid` |
 | `ErrDenied`, cause `size` | to a block put (`Put`, `PutVersion`): `413` with any code, and `EntityTooLarge` with any status, a size refusal ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)); to any other put the same replies are `ErrInvalid` |
 | `ErrThrottled` | `429`, `503 SlowDown` |
-| `ErrTransient` | `400 ExpiredToken`, since the client refreshes a session credential itself and the cause clears by itself ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)); `400 RequestTimeout`, `408`, `409 OperationAborted`, `500`, `502`, `503` other than `SlowDown`, `504`, network errors, timeouts, a body shorter than a `Content-Range` that matches the request, a mismatching response checksum on a get ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)), a response body that does not parse |
+| `ErrTransient` | `400 ExpiredToken`, since the client refreshes a session credential itself and the cause clears by itself ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)); `400 RequestTimeout`, `408`, `409 OperationAborted`, `500`, `502`, `503` other than `SlowDown`, `504`, network errors, timeouts, a body shorter than a `Content-Range` that matches the request, a mismatching response checksum on a get ([§4.8](#4.8%20Errors%20are%20a%20closed%20set)); a 2xx reply whose body does not parse. A response body that does not parse is classified by its status, as a reply with no code; only a 2xx one is `ErrTransient`, so a proxy's HTML `403` stays `ErrDenied` and its HTML `413` to a block put stays cause `size` |
 | `ErrCorrupt` | `400 BadDigest`, `400 InvalidDigest`, `400 XAmzContentSHA256Mismatch`; the exact status and code the check recorded for its chosen checksum, only on puts that carried that checksum; an ETag mismatch on a put |
 | everything else | the rest of its class: any other `4xx` (including `404` with another code) is `ErrInvalid`, any other `5xx` is `ErrTransient`, and a status outside `100`–`599`, or any other reply, is `ErrTransient`. The table is total: a reply this row does not catch cannot exist |
 
