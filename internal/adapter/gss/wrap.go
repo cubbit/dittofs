@@ -65,9 +65,10 @@ func (m *tokenKeys) wrap(msg []byte) ([]byte, error) {
 
 // unwrap unseals the peer's Wrap token tok in place and returns the message,
 // a slice of tok. tok's bytes are not kept: it is decrypted where it lies,
-// its rotation undone first. A token of this side's own direction is refused
-// by its checksum, under the other key usage. Its sequence number is not
-// checked, as verify's is not.
+// its rotation undone first. Its SentByAcceptor and AcceptorSubkey flags
+// must be the peer's, as verify checks a MIC token's, so a token of this
+// side's own direction is refused by them and by its checksum, under the
+// other key usage. Its sequence number is not checked, as verify's is not.
 func (m *tokenKeys) unwrap(tok []byte) ([]byte, error) {
 	flags, ec, rrc, _, err := parseWrap(tok)
 	if err != nil {
@@ -78,6 +79,9 @@ func (m *tokenKeys) unwrap(tok []byte) ([]byte, error) {
 	// unencrypted while the call is taken as private.
 	if flags&flagSealed == 0 {
 		return nil, errors.New("gss: a Wrap token not sealed")
+	}
+	if got := flags & (flagSentByAcceptor | flagAcceptorSubkey); got != m.peer {
+		return nil, fmt.Errorf("gss: a Wrap token flagged %#02x, want the peer's %#02x", got, m.peer)
 	}
 	if len(tok) < wrapMinLen {
 		return nil, fmt.Errorf("gss: a sealed Wrap token of %d bytes, want at least %d", len(tok), wrapMinLen)

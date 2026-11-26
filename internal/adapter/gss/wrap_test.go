@@ -4,19 +4,14 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"os"
-	"path/filepath"
 	"runtime"
 	"runtime/debug"
-	"strings"
 	"testing"
 
 	"github.com/jcmturner/gokrb5/v8/crypto"
 	"github.com/jcmturner/gokrb5/v8/crypto/common"
 	"github.com/jcmturner/gokrb5/v8/crypto/rfc3962"
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
-	"github.com/jcmturner/gokrb5/v8/keytab"
-	"github.com/jcmturner/gokrb5/v8/messages"
 
 	"github.com/cubbit/dittofs/internal/adapter/gss"
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -163,6 +158,28 @@ func TestUnwrapRefusesAlteredTokens(t *testing.T) {
 	}
 }
 
+// A token whose AcceptorSubkey flag is not the peer's is refused though it
+// is sealed and checksummed whole, both ways: RFC 4121 §2 has every token of
+// a context whose acceptor asserted a subkey carry the flag, and none of one
+// whose acceptor did not. Catches the flag unread.
+func TestUnwrapRefusesAnotherSubkeyFlag(t *testing.T) {
+	plain := vfs.Keys{Session: mitKey}
+	subkey := vfs.Keys{Session: mitKey, Subkey: mitKey}
+	for _, tc := range []struct {
+		name     string
+		from, to *gss.Context
+	}{
+		{"an initiator token without it, to an acceptor that asserted a subkey", kerberosContext(t, plain, true), kerberosContext(t, subkey, false)},
+		{"an initiator token with it, to an acceptor that asserted none", kerberosContext(t, subkey, true), kerberosContext(t, plain, false)},
+		{"an acceptor token without it, to an initiator that was sent a subkey", kerberosContext(t, plain, false), kerberosContext(t, subkey, true)},
+		{"an acceptor token with it, to an initiator that was sent none", kerberosContext(t, subkey, false), kerberosContext(t, plain, true)},
+	} {
+		if got, err := tc.to.Unwrap(wrap(t, tc.from, mitMsg)); err == nil {
+			t.Errorf("Unwrap of %s = %q, nil; want refused", tc.name, got)
+		}
+	}
+}
+
 // A token whose body is rotated right by its RRC, as a Windows peer rotates
 // it, unwraps to the message, whatever the count. Catches a rotation unread,
 // undone the wrong way, or not reduced modulo the body's length.
@@ -252,163 +269,5 @@ func TestWrapAllocatesNoCopy(t *testing.T) {
 		if b[0] != b[1] {
 			t.Errorf("%s allocates %d bytes per call at 4 KiB and %d at 1 MiB, want equal", name, b[0], b[1])
 		}
-	}
-}
-
-// golden is a capture's cut file: hex words, '#' lines its provenance.
-func golden(t *testing.T, name string) []byte {
-	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("..", "nfs", "wire", "testdata", "golden", name+".hex"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var h strings.Builder
-	for line := range strings.Lines(string(raw)) {
-		if !strings.HasPrefix(line, "#") {
-			h.WriteString(strings.Join(strings.Fields(line), ""))
-		}
-	}
-	return mustHex(h.String())
-}
-
-// xdrReader reads RFC 4506's unsigned integers and variable-length opaques.
-type xdrReader struct {
-	t *testing.T
-	b []byte
-}
-
-func (r *xdrReader) u32() uint32 {
-	r.t.Helper()
-	if len(r.b) < 4 {
-		r.t.Fatalf("an XDR integer past the message's end")
-	}
-	v := binary.BigEndian.Uint32(r.b)
-	r.b = r.b[4:]
-	return v
-}
-
-func (r *xdrReader) opaque() []byte {
-	r.t.Helper()
-	n := int(r.u32())
-	pad := (n + 3) &^ 3
-	if len(r.b) < pad {
-		r.t.Fatalf("an XDR opaque of %d bytes past the message's end", n)
-	}
-	v := r.b[:n]
-	r.b = r.b[pad:]
-	return v
-}
-
-// callBody splits an RPC call (RFC 5531 §9) into its RPCSEC_GSS credential's
-// body and what follows the verifier.
-func callBody(t *testing.T, msg []byte) (cred, body []byte) {
-	r := &xdrReader{t: t, b: msg}
-	for range 6 { // xid, CALL, rpcvers, prog, vers, proc
-		r.u32()
-	}
-	if f := r.u32(); f != 6 {
-		t.Fatalf("a call's credential flavour = %d, want RPCSEC_GSS's 6", f)
-	}
-	cred = r.opaque()
-	r.u32()
-	r.opaque()
-	return cred, r.b
-}
-
-// replyBody is what follows an accepted RPC reply's verifier and status.
-func replyBody(t *testing.T, msg []byte) []byte {
-	r := &xdrReader{t: t, b: msg}
-	r.u32() // xid
-	if r.u32() != 1 || r.u32() != 0 {
-		t.Fatal("not an accepted reply")
-	}
-	r.u32()
-	r.opaque()
-	if s := r.u32(); s != 0 {
-		t.Fatalf("a reply's accept_stat = %d, want SUCCESS", s)
-	}
-	return r.b
-}
-
-// captureContextKey is the context key of a captured INIT: the ticket in its
-// AP-REQ decrypted under the capture's committed keytab, then its
-// authenticator under the ticket's session key, whose subkey is the context
-// key, as knfsd sends no AP-REP (RFC 18 §3.1's choice, the capture's
-// CAPTURE.md).
-func captureContextKey(t *testing.T, initCall []byte) []byte {
-	t.Helper()
-	cred, body := callBody(t, initCall)
-	if proc := binary.BigEndian.Uint32(cred[4:]); proc != 1 {
-		t.Fatalf("gss_proc = %d, want INIT", proc)
-	}
-	tok := (&xdrReader{t: t, b: body}).opaque()
-	// RFC 2743 §3.1's framing: 0x60, a DER length, the Kerberos OID, then
-	// RFC 4121 §4.1's AP-REQ token ID.
-	n := 1
-	if tok[1]&0x80 != 0 {
-		n += int(tok[1] & 0x7f)
-	}
-	inner := tok[2+n-1+11:]
-	if binary.BigEndian.Uint16(inner) != 0x0100 {
-		t.Fatalf("the INIT token's token ID = %#04x, want an AP-REQ's", binary.BigEndian.Uint16(inner))
-	}
-	var req messages.APReq
-	if err := req.Unmarshal(inner[2:]); err != nil {
-		t.Fatal(err)
-	}
-	kt, err := keytab.Load(filepath.Join("..", "..", "..", "test", "pcap-corpus", "nfs-gss", "nfs.keytab"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := req.Ticket.DecryptEncPart(kt, nil); err != nil {
-		t.Fatalf("the captured ticket under the committed keytab: %v", err)
-	}
-	if err := req.DecryptAuthenticator(req.Ticket.DecryptedEncPart.Key); err != nil {
-		t.Fatal(err)
-	}
-	if k := req.Authenticator.SubKey; k.KeyType != etypeID.AES256_CTS_HMAC_SHA1_96 {
-		t.Fatalf("the authenticator's subkey is of type %d, want aes256-cts-hmac-sha1-96's", k.KeyType)
-	}
-	return req.Authenticator.SubKey.KeyValue
-}
-
-// The Linux client's krb5p WRITE calls in knfsd's capture unwrap at the
-// acceptor under the context key read from the INIT beside each, and knfsd's
-// sealed replies unwrap at the initiator; each body starts with the
-// credential's sequence number, as RFC 2203 §5.3.2.2 has rpc_gss_data_t.
-// Catches a token Linux or knfsd sends that gss refuses: a rotation,
-// filler or flag laid out otherwise than gss expects, and a context key
-// chosen otherwise.
-func TestUnwrapCapturedTokens(t *testing.T) {
-	for _, mount := range []string{"knfsd-nfs3-gss3-krb5p", "knfsd-nfs4-gss40-krb5p", "knfsd-nfs4-gss41-krb5p"} {
-		t.Run(mount, func(t *testing.T) {
-			key := captureContextKey(t, golden(t, mount+"-init-call"))
-			acc := kerberosContext(t, vfs.Keys{Session: key}, false)
-			init := kerberosContext(t, vfs.Keys{Session: key}, true)
-
-			cred, body := callBody(t, golden(t, mount+"-write-call"))
-			if svc := binary.BigEndian.Uint32(cred[12:]); svc != 3 {
-				t.Fatalf("the call's service = %d, want privacy", svc)
-			}
-			seq := cred[8:12]
-			for _, side := range []struct {
-				name string
-				c    *gss.Context
-				body []byte
-			}{
-				{"the client's call at the acceptor", acc, body},
-				{"knfsd's reply at the initiator", init, replyBody(t, golden(t, mount+"-write-reply"))},
-			} {
-				tok := (&xdrReader{t: t, b: side.body}).opaque()
-				got, err := side.c.Unwrap(bytes.Clone(tok))
-				if err != nil {
-					t.Errorf("%s: Unwrap = %v, want nil", side.name, err)
-					continue
-				}
-				if len(got) < 4 || !bytes.Equal(got[:4], seq) {
-					t.Errorf("%s: the body starts %x, want the credential's sequence number %x", side.name, got[:min(4, len(got))], seq)
-				}
-			}
-		})
 	}
 }

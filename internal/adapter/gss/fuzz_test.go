@@ -5,10 +5,6 @@ import (
 	"crypto/hmac"
 	"encoding/asn1"
 	"encoding/binary"
-	"encoding/hex"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -176,13 +172,15 @@ func refParseWrap(tok []byte) (flags byte, ec, rrc uint16, seq uint64, ok bool) 
 }
 
 // refUnwrap is RFC 4121 §4.2.4's sealed token opened by gokrb5's RFC 3961
-// decryption, apart from unwrap: the body rotated back by RRC, decrypted
+// decryption, apart from unwrap, at an acceptor that asserted no subkey: an
+// initiator's token, flagged neither SentByAcceptor nor AcceptorSubkey
+// (RFC 4121 §2, §4.2.2), its body rotated back by RRC, decrypted
 // and checked under the initiator's seal usage, the header's copy matching
 // the clear header but for RRC, and the message what precedes EC bytes of
 // filler and the copy.
 func refUnwrap(key, tok []byte) ([]byte, bool) {
 	flags, ec, rrc, _, ok := refParseWrap(tok)
-	if !ok || flags&0x02 == 0 || flags&0x01 != 0 || len(tok) < 16+16+16+12 {
+	if !ok || flags&0x02 == 0 || flags&0x05 != 0 || len(tok) < 16+16+16+12 {
 		return nil, false
 	}
 	body := tok[16:]
@@ -233,27 +231,11 @@ func FuzzWrapToken(f *testing.F) {
 	f.Add([]byte("\x04\x04\x02\xff\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")) // a MIC token's ID
 	f.Add([]byte("\x05\x04\x02\xff\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"))     // a header cut short
 	// The Linux client's and knfsd's krb5p tokens in knfsd's capture, under
-	// another key: each body ends with its token, after its 4-byte length.
-	for _, name := range []string{"knfsd-nfs3-gss3-krb5p-write-call", "knfsd-nfs3-gss3-krb5p-write-reply", "knfsd-nfs4-gss41-krb5p-write-call", "knfsd-nfs4-gss41-krb5p-write-reply"} {
-		raw, err := os.ReadFile(filepath.Join("..", "nfs", "wire", "testdata", "golden", name+".hex"))
-		if err != nil {
-			f.Fatal(err)
-		}
-		var h strings.Builder
-		for line := range strings.Lines(string(raw)) {
-			if !strings.HasPrefix(line, "#") {
-				h.WriteString(strings.Join(strings.Fields(line), ""))
-			}
-		}
-		msg, err := hex.DecodeString(h.String())
-		if err != nil {
-			f.Fatal(err)
-		}
-		i := bytes.LastIndex(msg, []byte{0x05, 0x04})
-		if i < 4 || int(binary.BigEndian.Uint32(msg[i-4:])) != len(msg)-i {
-			f.Fatalf("%s: no Wrap token closes the message", name)
-		}
-		f.Add(msg[i:])
+	// another key.
+	for _, name := range []string{"knfsd-nfs3-gss3-krb5p-write", "knfsd-nfs4-gss40-krb5p-write", "knfsd-nfs4-gss41-krb5p-write"} {
+		call, reply := capturedWrapTokens(f, name)
+		f.Add(call)
+		f.Add(reply)
 	}
 	for _, msg := range [][]byte{nil, []byte("a krb5p call's arguments"), bytes.Repeat([]byte{0x5a}, 1000)} {
 		tok := seal(init, msg)
