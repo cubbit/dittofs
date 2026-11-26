@@ -163,7 +163,7 @@ cite them. `Source` is RFC 5 unless it names another source.
 | --- | --- | --- | --- | --- |
 | R8 | The custody reads the service's current primary version of a master key, as its version-qualified ID. A service that rotates the key in place, or a name retargeted to another key, makes the next read and the next wrap report the new ID, while records wrapped under the old one still unwrap | MUST | Appendix B.1 ("The provider does not wait for a wrap to notice it"), §8.2's Appendix B.1 in-place rotation row, its custody half | T7.2, T7.3 |
 | R9 | A read that finds more than one current version for a master key (a Locate returning two UIDs) fails, with an error naming the master key, and fails again on the next read with the same answer; a read that fails reports no version, and a wrap that needs it wraps nothing | MUST | Appendix B.1 (the ambiguous answer), §8.2's Appendix B.1 ambiguous-Locate row, its custody half | T7.2, T7.3 |
-| R10 | The custody reads the state of a master key the service holds. Destroyed and Destroyed Compromised report it destroyed; Active reports it active; every other state, a state value the provider does not know, Item Not Found and a failed read report it unavailable, so a misconfigured endpoint never reports a key destroyed. Compromised still decrypts and is not destroyed | MUST | Appendix B.1 ("A master key the service holds in any state but active stops new writes"), Appendix B.4; RFC 5 plan D17; E2's catalogue (KMIP rows) | T7.1, T7.2, T7.3 |
+| R10 | The custody reads the state of a master key the service holds. Destroyed and Destroyed Compromised report it destroyed; Active reports it active; every other state, a state value the provider does not know and Item Not Found report it unavailable, so a misconfigured endpoint never reports a key destroyed; a read that gets no answer reports no state, so E8 keeps the last one (Appendix B.1, "a read that fails changes nothing"). Compromised still decrypts and is not destroyed | MUST | Appendix B.1 ("A master key the service holds in any state but active stops new writes"), Appendix B.4; RFC 5 plan D17; E2's catalogue (KMIP rows) | T7.1, T7.2, T7.3 |
 
 **Custody through the real server**
 
@@ -254,7 +254,10 @@ exposure is and binds no code here. B.4's rows past the first two are E6's and E
   Both reads join the unexported `custody` interface T7.2 extracts, as E6's D3 names
   it: `kind`, `wrap`, `unwrap`, `primary(ctx) (masterKeyID []byte, err error)` and `state(ctx,
   masterKeyID []byte) error`, the last nil for active and `keys.ErrMaterialDestroyed` or
-  `keys.ErrMaterialUnavailable` otherwise, so the interface needs no type of `internal/kmip`; the
+  `keys.ErrMaterialUnavailable` for any other state the service answers, Item Not Found included,
+  and, for a read that gets no answer (a dial, TLS or timeout failure, or a failed status other
+  than Item Not Found), an error wrapping neither, so E8 tells a timeout from an inactive key and
+  keeps the last state; the interface needs no type of `internal/kmip`; the
   key file answers its one master key ID and nil, and `runCustody` holds both custodies to the same
   rows. An interface lands now, not in E6, because the key service is its second implementation. A
   `decision:` marker at the Locate check names the rule, and one at the ID's writer names the
@@ -498,7 +501,7 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
   - The wrap-bytes writer and reader of D2, with its `decision:` marker; the Locate answer's check
     as a function of the UIDs returned, with its `decision:` marker; the `storage`-key comparison
     of D8 with its `decision:` marker; the error mapping (any failure of a wrap, an unwrap or a read
-    is `keys.ErrMaterialUnavailable`, wrapped with the master-key ID, the endpoint and the KMIP
+    other than the state read's unanswered one (D3) is `keys.ErrMaterialUnavailable`, wrapped with the master-key ID, the endpoint and the KMIP
     result codes; never `ErrMaterialDestroyed`, D4); the wrap's `decision:` that it raises no wrap
     count (R7); the ID's writer with D3's `decision:` on the name's default and its collision
     ceiling.
@@ -540,7 +543,9 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
   - The Locate check over zero, one and two UIDs (catches a read that picks the first of two, R9).
   - The error mapping: a failed status, a dial error and a cancelled context each map to
     `ErrMaterialUnavailable` under `errors.Is`, never `ErrMaterialDestroyed` (catches a
-    misconfigured endpoint reported as lost material, R10, D4).
+    misconfigured endpoint reported as lost material, R10, D4); for `state`, the dial error and the
+    cancelled context map to neither, and Item Not Found to `ErrMaterialUnavailable` (catches a
+    timeout read as an inactive key, which would refuse `Pin`, R10).
   - The `storage`-key comparison: the same UID refused at the same endpoint and at another
     spelling of it (catches a comparison that lets a respelled endpoint through, R15).
   - `runCustody` on the key file: its AAD rows (catch a wrap that binds nothing behind the

@@ -40,8 +40,8 @@ paths below are paths there.
   key-service fields of `ValidateConfig` and `Reconfigure`.
 - **E8**: `(*Provider).RotateDataKey(ctx, ns) (keys.MaterialID, error)` and
   `RotateMasterKey(ctx) error`, both refusing `ErrNotEscrowed` where the key-file gate is shut;
-  `Deps.RotationNeeded func(masterKeyID []byte)`, which its check calls on a new primary version and
-  at the first read after every open; `Config.RetiredKeyFiles`, with `VerifyEscrow` accepting a copy
+  `Deps.RotationNeeded func(masterKeyID []byte)`, which its check calls at every read, at open and
+  each period, while a record is under a master key other than the primary; `Config.RetiredKeyFiles`, with `VerifyEscrow` accepting a copy
   of any held master key (its D6); `Status.MasterKeysUnavailable` and `MasterKeysDestroyed` (its
   D8). Its `Deps.KeysObjects`, `Deps.After` and `Run` are the RFC 8 offload plan's epic 21's to pass
   and run, not this epic's (§9, "Needs on E8").
@@ -615,9 +615,10 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
   - `Deps.RotationNeeded` for each store's provider, which the content wiring builds and the RFC 8
     offload plan's epic 21 passes: on a master key's ID, one control-plane `Write` creating an
     `OpRotateMasterKey` operation on that store with the zero `Account` and its audit record whose
-    actor is the schedule, creating none while one of that kind runs on the store. E8 calls it at the
-    first read after every open too (its D7), so each start runs one rotation that re-wraps nothing
-    when nothing changed.
+    actor is the schedule, creating none while one of that kind runs on the store. E8 calls it at every
+    read, at open and each period, while a record is under a master key other than the primary (its
+    D7), so a failed rotation is started again at the next period and a store with every record
+    under the primary starts none.
   - `dfsctl namespace rotate-data-key <ns>` and `dfsctl store rotate-master-key <store> [--key-file
     <path>]`, each with `--wait`; `rotate-data-key`'s help says the old key stays held and readable,
     and that stopping a leaked key needs the relocation and removal that have not landed (R24);
@@ -792,7 +793,7 @@ A suggestion only: one pull request per subtask works as well.
 - **What E8 already provides.** `RotateDataKey` and `RotateMasterKey`, each refusing
   `ErrNotEscrowed` where the gate is shut, `RotateMasterKey` safe to repeat (its T8.6), so D7 needs
   no token; `Deps.RotationNeeded`, a callback rather than a report to poll, which T9.5 implements
-  and the RFC 8 offload plan's epic 21 passes, called at every open as well (its D7);
+  and the RFC 8 offload plan's epic 21 passes, called at every read while a record is under another master key (its D7);
   `Config.RetiredKeyFiles` and `VerifyEscrow` accepting a copy of any held master key, which give the
   key-file rotation its order (its D6, this document's D2); `Status.MasterKeysUnavailable` and
   `MasterKeysDestroyed` (its D8). Its `Deps.KeysObjects`, `Deps.After`, `Run` and the
