@@ -3,7 +3,7 @@
 **Sources:** [RFC 3](../docs/internals/rfcs/rfc-3-syncer.md) §2.10's two settings and the
 documentation of the memory each implies, with §2.2's per-worker figure it states; §2.12's metrics,
 exported, with the two sentences this pull request adds to it (the queue metrics, and the bounds
-fixed by the pool size); §1.3's "What lands with its first caller" table, its `SetDrift` row, for the guide's
+exported as `_limit` series); §1.3's "What lands with its first caller" table, its `SetDrift` row, for the guide's
 warning. [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md) Appendix B's `upload_workers`,
 `fetch_workers` row, with §4.2, §5 and §6, which that row's cells mean.
 [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §2.1 to §2.8, for the collector.
@@ -228,14 +228,17 @@ and tests can cite them.
   computes both, and the pool's total at 128 workers, from the constants the code holds when it
   lands: RFC 5's `MaxDecodeLen` over the transforms the release registers and RFC 2's header cap. A
   constant not yet in code is replaced by RFC 3 §2.2's figure, marked "about".
-- **D10, no `_limit` series: the user's decision, 2026-11-26.** RFC 25 §2.2 exports a value that
-  bounds a measured metric under its name with `_limit`, and RFC 3 §2.12 reads three gauges against
-  such a bound (the waiter bound, the detached-buffer cap, the throttle limit's cap). Each is fixed
-  by `syncer_workers` (RFC 3 §2.10: eight times it, equal to it, three quarters of it with §2.10's
-  floor and ceiling), so a dashboard derives it, and the collector exports exactly RFC 3's list
-  (R1). This pull request adds the sentence saying so to RFC 3 §2.12. A `decision:` marker at the descriptors names it. Not
-  chosen: `syncer_waiters_limit`, `syncer_detached_buffers_limit` and `syncer_throttle_limit_limit`,
-  with three `Stats` fields.
+- **D10, each bound is a `_limit` series: decided by the user, 2026-11-26, reversing the
+  earlier decision of the same day to export none.** RFC 25 §2.2 exports a value that bounds a
+  measured metric under its name with `_limit`. RFC 3 §2.12 reads four gauges against such a
+  bound and now exports each: `syncer_waiters_limit`, `syncer_detached_buffers_limit`,
+  `syncer_throttle_window_limit` and `syncer_inflight_bytes_limit`, each labelled `half` alone.
+  The last depends on `Max`, so no dashboard could derive it from `syncer_workers`. The throttle
+  limit's gauge is renamed `syncer_throttle_window`, so its bound is not `…_limit_limit`. The
+  syncer computes the four, and `syncer.Half` gains a field for each (E7's T7.1 fills them), so
+  the collector repeats none of RFC 3 §2.10's rules. This pull request adds the sentence and the
+  rows to RFC 3 §2.12. Not chosen: no `_limit` series and a dashboard deriving three of them,
+  the earlier decision, which left the bytes-in-flight bound unexported and broke RFC 25 §2.2.
 - **D11, `syncer_refused_total` carries no `class`: the user's decision, 2026-11-26.** Its reasons
   are mostly queue refusals, but RFC 3 §2.12's queue metrics are the two queue gauges and the wait
   histogram, which this pull request's sentence in §2.12 names, and E1's `Refused` counts by
@@ -276,7 +279,7 @@ docs/guide/
   8 offload plan epic 21, which registers it in `internal/node` over the node's deadlined snapshot,
   and by RFC 4 plan epic 7's T7.5, whose test scrapes it beside the codec's recorder.
 - **Acceptance criteria:**
-  - A scrape over a `Stats` holding two stores in each half yields exactly RFC 3 §2.12's 25 names,
+  - A scrape over a `Stats` holding two stores in each half yields exactly RFC 3 §2.12's 29 names,
     each with its type, and each store's series labelled by its `Name`.
   - Every leaf field of `syncer.StoreStats` but `Store` and `Name`, and every leaf of `syncer.Half`
     but `Stores` and `Flows`, set alone, moves the one metric and label set its comment names; a
@@ -398,7 +401,7 @@ A suggestion only: one pull request for both works as well, once E1's T1.3 has l
 - **For E3: should `Register` refuse a name already registered?** The name is the `store` label
   (E1's D2), and two stores under one name break D5's assumption. Refusing it is one check with a
   `remote.ErrInvalid` error, as E1's D1 refuses misuse; it is E3's to take or decline.
-- **The syncer's share of the node's series budget.** At 64 stores the collector exports 20,868
+- **The syncer's share of the node's series budget.** At 64 stores the collector exports 20,876
   series, 42% of RFC 25 §2.5's 50,000 for the whole node. Counting
   the node's total is the second §6.1 row this pull request adds.
 - **The least certain estimate is T8.2.** `settings.SelfKey` has one production user on

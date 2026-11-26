@@ -219,7 +219,7 @@ cite them. Sections are RFC 3's unless named.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R38 | `Stats` makes observable, by half and store, `syncer_transfers_total` by `outcome` (`ok`, `failed`, `unknown`), `syncer_bytes_total` from the `Meter`, `syncer_transfer_duration_seconds`, `syncer_first_byte_seconds`, `syncer_retries_total` by `reason` (`transient`, `throttled`, `slow_tail`, `floor`, `stalled`, `trickle`; `verify` is E6's), `syncer_retry_budget_exhausted_total`, `syncer_throttle_limit`, `syncer_throttled_seconds_total` and `syncer_store_throughput_bytes_per_second` | MUST | §2.12 | T4.6, T4.7 |
+| R38 | `Stats` makes observable, by half and store, `syncer_transfers_total` by `outcome` (`ok`, `failed`, `unknown`), `syncer_bytes_total` from the `Meter`, `syncer_transfer_duration_seconds`, `syncer_first_byte_seconds`, `syncer_retries_total` by `reason` (`transient`, `throttled`, `slow_tail`, `floor`, `stalled`, `trickle`; `verify` is E6's), `syncer_retry_budget_exhausted_total`, `syncer_throttle_window`, `syncer_throttled_seconds_total` and `syncer_store_throughput_bytes_per_second` | MUST | §2.12 | T4.6, T4.7 |
 | R39 | Reading these counters takes no lock a dispatch needs, and costs nothing per transfer in flight; the consistent snapshot across them is E7's | MUST NOT | §2.12 | T4.6 |
 
 **The checks**
