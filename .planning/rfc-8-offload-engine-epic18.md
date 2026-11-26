@@ -20,7 +20,7 @@ that gate a commit); [RFC 5](../docs/internals/rfcs/rfc-5-transforms.md) §2.7 a
 target and `eviction.repack_threshold`; [RFC 14](../docs/internals/rfcs/rfc-14-open-state.md) §9.3
 and §12's L9; [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §6's V20, its offload half.
 **Track:** B.
-**Epic 18 estimate: 11 subtasks, 28.5 man-days.**
+**Epic 18 estimate: 11 subtasks, 30.5 man-days.**
 **Depends on:**
 - epic 11's frozen surface: `Settings.EvictionTarget` and `RepackThreshold`, and the `Stats` fields
   `EvictedBytes` and `PacingSeconds` this epic fills;
@@ -44,9 +44,9 @@ and §12's L9; [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §6's V20, its off
 - sync point **S6**, the journal plan's epic 9b: `Release` and `Unmark` on the real journal. Until it
   lands the in-memory journal carries both (T18.1) and every row over the real journal stays red at
   their `ErrNotImplemented`.
-**Blocks:** epic 19, whose start step 7 starts this eviction loop (T18.3) and whose reseed reads
-`Content.Materials` and unmarks through the same path (T18.4), and adds the reseed's gate on
-eviction to the loop; epic 21, which wires `Deps.Destroyed` from the node's key provider (T18.4);
+**Blocks:** epic 19, whose start step 7 calls `startEviction` (T18.3, D16), whose reseed fills the
+loop's `eligible` gate and reads `Content.Materials` and unmarks through `unmarkCovered` (T18.4);
+epic 21, which wires `Deps.Destroyed` from each store configuration's key provider (T18.4, D9);
 epic 22, which burns the rows down over the real journal once S6 lands.
 
 ---
@@ -137,12 +137,12 @@ cited by number and title and not copied.
 | rule 4, profiling | T18.3, T18.4, T18.7 | tests under the fixture's `prof.Watch`, which fails a loop or a notice poll left running after `Close`; `admit` reads no `Stats()` per write (D3), and no allocation gate, since neither of the rule's two hot paths is touched |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | each rule asserted where its value is consumed: an eviction at the journal's held bytes and a later read, a cause at the refusal's answer to the writer, a pacing delay at the write's return on the test clock, a destroyed material at the offloaded bit `Release` reads and at the block record a read finds absent |
 | rule 6, known failures shrink | T18.3, T18.6, T18.7, T18.9, T18.11 | each row's entry leaves `test/engine/known.yaml` in the change that turns it green; a row still red over the real journal until S6 has its `message:` rewritten to the `ErrNotImplemented` it then meets |
-| rule 7, v2 ignores v1, and the engine imports only what RFC 0 §1.2 allows | T18.4 | `Deps.Destroyed` is `keys.DestroyedNotice`, the `pkg/transform/keys` contract epic 15 admits; `kvstore` imports nothing of `pkg/transform` (D11); no new import otherwise |
+| rule 7, v2 ignores v1, and the engine imports only what RFC 0 §1.2 allows | T18.4 | `Deps.Destroyed` answers `keys.DestroyedNotice`, the `pkg/transform/keys` contract epic 15 admits; `kvstore` imports nothing of `pkg/transform` (D11); no new import otherwise |
 | rule 8, real dependencies for properties of those dependencies | T18.5, T18.6 | the commit's conflict with a destroy runs on `kvstore` over Badger, and FoundationDB where it runs, beside the in-memory `kv.KV`; rows over the real journal on a real directory |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T18.3, T18.5, T18.7, T18.9, T18.11 | RFC 8 §10's concurrent-refusal `ponytail:` at the refusal path (T18.9), §10.1's eviction `ponytail:` at `evict` (T18.2), §10.2.1's fixed-constants `decision:` at the law (T18.7), §10.4's undeclared-loss `decision:` at the commit's read (T18.5), §10.2's two-rows `decision:` kept at the table (T18.11); the loop's fixed-tick `ponytail:` (T18.3); the first part's repack-at-refusal `ponytail:` (T18.9) and dirty-bytes `decision:` (T18.11) deleted; each §4 decision's marker |
 | rule 10, a test must be able to fail | all | each test names the break it catches |
-| rule 11, a symbol is exported only if the RFC's interface uses it | T18.1, T18.4, T18.5 | the one exported engine addition is `Deps.Destroyed` with the declared journal calls and `Inspector`; `kvstore` exports `Content.Materials` and `ErrMaterialDestroyed` for the engine; the policy functions, the loop and the lock are unexported |
-| rule 12, each subtask creates only what it declares | all | `Release`, `Unmark` and `Inspect` join the declared journal with their first callers (T18.3, T18.4); `Content.Materials` with the notice (T18.4); no state the reseed needs is built ahead of epic 19 |
+| rule 11, a symbol is exported only if the RFC's interface uses it | T18.1, T18.4, T18.5 | the one exported engine addition is `Deps.Destroyed` with the declared journal calls and `Inspector`; `kvstore` exports `Content.Materials` and `ErrCommitUnderDestroyedMaterial` for the engine; the policy functions, the loop and the lock are unexported |
+| rule 12, each subtask creates only what it declares | all | `Release` and `Inspect` join the declared journal with their first caller (T18.3), `Unmark` with its (T18.4); `Content.Materials` and `unmarkCovered` with the notice (T18.4), which epic 19's reseed reuses; `startEviction` and `eligible` land with the loop, epic 19 their second caller (D16) |
 
 ## 3. Requirements and invariants
 
@@ -224,6 +224,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 | R45 | A destroyed master key is covered the same way: the commit refuses a data key it wraps, whose record the provider marked | invariant | RFC 8 §10.4; RFC 5 Appendix B.2 | T18.5 |
 | R46 | The engine never marks an attempt's extents offloaded once any material the attempt pinned has been reported destroyed: Mark checks under the lock the notice's `Unmark` takes and leaves the extents Dirty | MUST NOT | RFC 8 §10.4 | T18.4 |
 | R47 | The commit refuses only on a key record marked destroyed: a loss no operator has declared marks no record, and a commit under it lands | invariant | RFC 8 §10.4 (its `decision:`) | T18.5 |
+| R51 | A commit never lands a ref whose chunk record names a block under destroyed material: a chunk it would adopt from an older live block whose `encodings` name a destroyed key record is repointed to its own block | invariant | RFC 8 §10.4, §13 E11; RFC 6 §5.4 (both as D15 amends them) | T18.5 |
 | R48 | §10.4 destroyed material, but its crash leg: covered extents lose their bit, are not evicted, are offloaded again and read back; a remote-only chunk reads **Lost**; a master key destroyed, or a record marked destroyed, between pin and Commit refuses the commit and no block commits; a destroy between Commit and Mark leaves the extents unmarked; no replacement material refuses the pass at Intent | test row | RFC 8 §15.1 | T18.6 |
 
 **Observability**
@@ -240,45 +241,62 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   `Inspect()` returning a concrete `journal.Inspector`, and the in-memory journal cannot build one.
   The engine declares `type Inspector interface { Segments() []journal.SegmentInfo; All()
   iter.Seq2[journal.FileID, []journal.IndexEntry] }` and `Journal.Inspect() Inspector`;
-  `journalOf` returns the journal's own value, which satisfies it, as it wraps `Share` and
-  `Reserve` today. No marker. Prior art: the first part's `journalOf`; the Go FAQ on covariant
+  since Go has no covariant results, `journalOf` wraps `Inspect` to return the journal's own value
+  as the interface, as it wraps `Share` and `Reserve` today. No marker. Prior art: the first part's `journalOf`; the Go FAQ on covariant
   result types (from memory).
-- **D2, an extent's age is its segment's place in the append order.** RFC 8 §10.1 dates an extent by
-  its latest write, fill or repack copy, and the journal records no time per extent or segment
-  (RFC 1 §4.4). A write, a fill and a repack copy all append to an active segment, and segments are
-  numbered in the order they open, so a lower `SegmentID` holds older bytes. `evict` orders the
-  segments holding offloaded bytes oldest first by ID and skips a segment whose held bytes left
-  after eviction (its dirty and retained ones) pass half its allocation, since repack would copy
-  more than it frees; it takes whole segments until the bytes it would release cover the need. A
-  `ponytail:` at `evict`, beside RFC 8 §10.1's own: segment order is the age of a segment's oldest
-  byte, not its newest; upgrade to a per-segment last-append time kept in memory when B3 shows
-  repack bytes per byte freed above §10.1's 5.7. Prior art: the log-structured file system's
-  cleaner, which picks segments by age and live fraction (Rosenblum and Ousterhout, from memory).
+- **D2, an extent's age is its segment's place in the append order, and only ended segments are
+  evicted from.** RFC 8 §10.1 dates an extent by its latest write, fill or repack copy, and the
+  journal records no time per extent or segment (RFC 1 §4.4). A write, a fill and a repack copy all
+  append to an active segment, and segments are numbered as they open, so a lower `SegmentID` holds
+  older bytes. `evict` considers only sealed segments, never an active, failed, damaged, retired or
+  suspect one: releasing from an active segment frees nothing, since RFC 1's `Repack` does not seal
+  yet (RFC 8 §10.2). It ranks them by the fraction of their allocation still held after eviction
+  (dirty and retained bytes), lowest first, then by ID, oldest first, so repack copies least, and
+  takes whole segments until the bytes it would release cover the need. The caller frees down to
+  the target less a band of one segment's allocation, so a journal hovering at its target does not
+  run a round every tick. For a share's limit the caller gathers `s` over the segments holding that
+  share's records only, so the RFC's `evict(now, s, need)` keeps its signature. A `ponytail:` at
+  `evict`, beside RFC 8 §10.1's own: segment order is the age of a segment's oldest byte, and a slow
+  stream's open segment holds new bytes under a low ID; per-segment offloaded bytes come from
+  walking `Inspect().All()`, which copies the index, once per round. Upgrade to a per-segment
+  last-append time kept in memory when B3 shows repack bytes per byte freed above §10.1's 5.7, and to
+  a `SegmentInfo.OffloadedBytes` (an RFC 1 §4.4 amendment) when the walk shows in a profile. Prior
+  art: the log-structured file system's cleaner, which picks segments by age and live fraction
+  (Rosenblum and Ousterhout, from memory).
 - **D3, `admit` reads a snapshot, not `Stats()`.** `Stats()` copies the journal's maps on every
-  call, and the write path calls none today. The eviction loop's tick, one per second (fixed),
-  stores the journal's and each share's dirty, unreclaimed and limit figures in an atomic snapshot,
-  and each admitted write adds its length to a per-journal and per-share counter since that tick;
+  call, and the write path calls none today. The eviction loop's tick, one per second (fixed), first
+  stores the journal's and each share's dirty, unreclaimed and limit figures in an atomic snapshot
+  and feeds D4's ring, then starts an eviction round in its own goroutine, skipping the round while
+  the last one is still in flight, so a slow `Release` or `Repack` never freezes pacing or pressure.
+  Each admitted write adds its length to a per-journal and per-share counter since that tick;
   `admit` reads the snapshot plus the counter. A `ponytail:` at the snapshot: the figures lag up to a
   tick, so a write may be paced a tick late; upgrade to journal-served atomic gauges when B3 shows
   refusals the lag let through. Prior art: none found.
-- **D4, *r* is measured from consecutive snapshots.** At each tick, *M* fell by the previous *M*
-  plus the bytes admitted since, less the new *M*. A ring of the last ten ticks' falls, those whose
-  previous *M* was zero skipped (no work pending), gives *r* over 10 s, floored at 1 MiB/s, per
-  journal and per share. The wait reads the *r* computed when the delay was, never a later one
-  (R33). No marker beyond §10.2.1's. Prior art: Linux's `balance_dirty_pages`, which estimates a
-  device's write bandwidth over a short period and pauses a writer in proportion to how far the
-  dirty count is past its setpoint (from memory).
+- **D4, *r* is the journal's drain counters over elapsed time.** *M* is dirty plus unreclaimed
+  bytes, and what lowers it is offload marking dirty bytes and storage freed by repack or
+  retirement, so *r* is the rise of the journal's monotone `Counters.MarkedBytes` plus
+  `Counters.FreedBytes` over the last 10 s of `Clock.Elapsed`, from a ring of the tick's samples,
+  samples taken while *M* was zero skipped (no work pending), floored at 1 MiB/s. A difference of *M*
+  itself would be wrong: a `Release` raises *M* (clean bytes become unreclaimed) and an overwrite of
+  clean bytes raises it twice, so the ticks in which the loop evicts would read a drain near zero.
+  `ShareStats` keeps no such counters, so a share's measure is paced at the journal's *r*; a
+  `ponytail:` says so, upgraded to per-share counters when B3 shows one share paced by another's
+  drain. The wait reads the *r* computed when the delay was, never a later one (R33). Prior art:
+  Linux's `balance_dirty_pages`, which estimates a device's write bandwidth over a short period and
+  pauses a writer in proportion to how far the dirty count is past its setpoint (from memory).
 - **D5, pressure follows the measure nearest its limit.** RFC 8 §10.2.1 takes *M* of the journal or
-  of the write's share. `admit` turns the journal's pressure on when the journal's or any bound
-  share's *M* passes its *S*, and off once every one of them is below 0.9 of its *S*, as the loop's
-  tick re-reads them; the state call is epic 14's, which ignores a repeat. A `decision:` at the
-  post. Prior art: none found.
-- **D6, step 3 waits for the next offload report, bounded.** After pressure turns on, the refusal
-  waits for the journal's next offload report, a channel every Mark closes and replaces, for at most
-  a tenth of the time left to its deadline (3 s with none, as the share's pass waits), then evicts
-  and repacks what is now offloaded, and retries. A refusal whose wait ends with nothing reported
-  answers from the figures as the first part does. A `decision:` at the wait. Prior art: the first
-  part's `awaitPass`.
+  of the write's share. `admit` reports, as `nearS`, whether the journal's or the write's share's *M*
+  is past its *S*; its caller, and the loop's tick over every bound share, post `Pressure(on)` when
+  any is, and `Pressure(off)` once every one is below 0.9 of its *S*; the state call is epic 14's,
+  which ignores a repeat. A `decision:` at the post. Prior art: none found.
+- **D6, step 3 waits for the next offload report in the caller's path only.** After pressure turns
+  on, a refusal of the journal's own capacity waits for the journal's next offload report, a channel
+  every Mark closes and replaces, for at most a tenth of the time left to its deadline (3 s with
+  none), then evicts and repacks what is now offloaded, and retries; one whose wait ends with
+  nothing reported answers from the figures as the first part does. Inside the share's pass, which
+  has no caller deadline and whose joiners wait at most a tenth of theirs, step 3 turns pressure on
+  and evicts what is offloaded at that moment, with no wait, so the pass reaches its sync inside its
+  joiners' wait. A `decision:` at each. Prior art: the first part's `awaitPass`.
 - **D7, a cause the table does not name answers retry-later, and a binding with no flow is
   put-healthy.** RFC 3 §2.8 also names `ErrCorrupt` (puts failing in transit), which neither row
   lists; it, and any cause not named, answers `ErrDelay`, as the first part's `unknownRow` answers a
@@ -290,50 +308,80 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   `ErrNoSpace` once the value exists; `evict` carries the `decision:` the offload plan asks for, that
   it trusts the offloaded bit while bucket-setting drift goes undetected, withdrawn when `Recheck`
   runs. Prior art: none found.
-- **D9, the notice is drained before every eviction, and a failed read stops eviction.** `Deps`
-  gains `Destroyed keys.DestroyedNotice`. Each eviction loop tick, and each refusal's step 2 and 3,
-  first calls `DestroyedSince` from the engine's cursor (per incarnation, never persisted, as RFC 5
-  epic 8's D10 settles) and unmarks what it reports (T18.4) before it calls `evict`. A
-  `DestroyedSince` that fails skips that eviction and logs; the refusal then answers from its
-  figures. A `decision:` at the drain: a destroy the provider reports after the drain and before
-  `Release` loses that extent's local copy, content whose remote copy the destroy already made
-  unreadable (RFC 5 Appendix B.4); overturned if a destroy must never lose a held copy, which would
-  need eviction to read the key records it releases under. Prior art: none found.
+- **D9, one notice per store configuration, drained by the loop alone, and eviction held while a
+  destroy is not yet scanned.** RFC 5 §3.1 has one provider per store configuration, so `Deps`
+  gains `Destroyed func(store syncer.StoreID) keys.DestroyedNotice`, the engine keeping one cursor
+  per distinct notice the bindings' stores return (per incarnation, never persisted, as RFC 5 epic
+  8's D10 settles). Only the eviction loop drains: at each tick, before any round, it calls
+  `DestroyedSince` from each cursor and adds what it reports to a **pending** set, then runs the
+  unmark scan (T18.4) over the pending IDs, removing an ID only once every held file of its
+  namespace has been scanned; a scan cut short by an error, a deadline or a closed journal leaves
+  the ID pending and is run again at the next tick, which the scan's idempotence makes safe. While
+  the pending set is not empty, or a `DestroyedSince` failed at the last tick, no eviction runs:
+  not the loop's round, and not a refusal's step 2 or 3, which read the set, wake the loop and
+  answer from their figures. A `decision:` at the drain: a destroy the provider reports after a
+  tick's drain and before that tick's `Release` loses that extent's local copy, content whose remote
+  copy the destroy already made unreadable (RFC 5 Appendix B.4); overturned if a destroy must never
+  lose a held copy, which would need eviction to read the key records it releases under. Prior art:
+  none found.
 - **D10, one lock orders the notice against Mark.** The engine keeps the material IDs reported
-  destroyed in this incarnation (namespace, kind, ID) in a set behind a `sync.RWMutex`. Mark holds
+  destroyed in this incarnation (namespace, kind, ID), pending or scanned, in a set behind a `sync.RWMutex`. Mark holds
   the read lock across its check of the block's `encodings` against the set and its `report`; the
   notice holds the write lock only to add the IDs it read, then runs its unmark scan unlocked. A
   Mark that checked before the add has reported before the add returns, so the scan after it finds
   its bits set and clears them; one that checks after sees the ID and leaves the extents Dirty. The
   set lives in memory (R3); epic 19's reseed covers a restart. A `decision:` at the lock. Prior art:
   none found.
-- **D11, `kvstore` answers which materials cover a file's extent, and refuses by its own error.**
-  The notice needs, for each held offloaded extent, the materials the covering blocks' `encodings`
-  name; refs name chunks, not blocks. `kvstore`'s `Content` gains
-  `Materials(ctx, share, file, off, n) iter.Seq2[MaterialSpan, error]`, each carved span with its
-  block's namespace and `[]entity.MaterialRef`, read through the chunk's block record as the
-  commit's own reads find it; epic 19's reseed calls it too. The commit refuses with
-  `kvstore.ErrMaterialDestroyed`, naming the material, since `kvstore` imports nothing of
-  `pkg/transform`; a material the `encodings` name with no key record refuses as `ErrInconsistent`,
-  failing closed. The implementing pull request amends RFC 6 §10.1's `Content` sketch with
-  `Materials` and RFC 8 §2.1's table and §2.6's `Deps` with `Destroyed`. `decision:` markers at the
-  missing-record refusal and at `Materials`, the latter a `ponytail:` that it reads one block record
-  per carved span, upgraded to a material-to-block index when a destroy over a large journal shows
-  in a profile. Prior art: none found.
+- **D11, `kvstore` answers which materials cover a file's extent, with their state, and refuses by
+  its own error.** The notice and epic 19's reseed both need, for each held offloaded extent, the
+  materials the covering blocks' `encodings` name and whether each key record is `destroyed`; refs
+  name chunks, not blocks. `kvstore`'s `Content` gains
+  `Materials(ctx, share, file, off, n) iter.Seq2[MaterialSpan, error]`, each carved span with the
+  block its chunk record names, that block's namespace, and each `entity.MaterialRef` with its key
+  record's state byte, read in one snapshot. The engine factors the unmark as
+  `unmarkCovered(ctx, b, file, extents, destroyed func(entity.NamespaceID, entity.MaterialRef) bool)`,
+  which the notice calls with its pending set and epic 19's reseed with the state `Materials`
+  returned. The commit refuses with `kvstore.ErrCommitUnderDestroyedMaterial`, naming the material,
+  since `kvstore` imports nothing of `pkg/transform` and a second `ErrMaterialDestroyed` beside
+  `keys.ErrMaterialDestroyed` would invite a wrong `errors.Is`; a material the `encodings` name with
+  no key record refuses as `ErrInconsistent`, failing closed. The implementing pull request amends
+  RFC 6 §10.1's `Content` sketch with `Materials` and RFC 8 §2.1's table and §2.6's `Deps` with
+  `Destroyed`. `decision:` markers at the missing-record refusal and a `ponytail:` at `Materials`,
+  which reads one block record per carved span, upgraded to a material-to-block index when a
+  destroy over a large journal shows in a profile. Prior art: none found.
 - **D12, a refused commit is abandoned like an over-`K` one.** The pipeline answers
-  `kvstore.ErrMaterialDestroyed` as epic 15 answers an over-`K` or intent-missing commit: `Abandon`,
-  the extents left Dirty and the file's offload key posted again, so the next pass pins current
-  material; it is not counted toward O6's failing file, since the file did nothing wrong. No marker.
-  Prior art: none found.
+  `ErrCommitUnderDestroyedMaterial` as epic 15 answers an over-`K` or intent-missing commit:
+  `Abandon`, the extents left Dirty and the file's offload key posted again, so the next pass pins
+  current material; it is not counted toward O6's failing file, since the file did nothing wrong. A
+  missing key record's `ErrInconsistent` is abandoned the same way but counted toward O6, so a store
+  whose records are missing surfaces as `file_offload_failing` rather than re-offering silently for
+  ever. No marker. Prior art: none found.
 - **D13, RFC 8 §10.4's two MAYs are not adopted.** No setting or record names an operator's
-  retention pin, so there is nothing to honour; suspending eviction while the remote is unreachable
-  would keep cached content readable during an outage, but it is an availability policy no row asks
-  for, and §3.2 forbids it to matter for safety. A `decision:` at the loop names both. Prior art:
-  none found.
+  retention pin, so there is nothing to honour; this pull request adds the pin to the offload plan's
+  §6.1 deferral ledger, and §10.2's second row keeps naming it for when one exists. Suspending
+  eviction while the remote is unreachable would keep cached content readable during an outage, but
+  it is an availability policy no row asks for, and §3.2 forbids it to matter for safety. A
+  `decision:` at the loop names both. Prior art: none found.
 - **D14, the gates' switch makes eviction eager.** RFC 8 §15.1's "§3.2 no gate is safety" evicts as
   eagerly as possible; under epic 16's switch, read per instance from the engine's seams, the loop
   evicts every offloaded extent at every tick regardless of the target. No marker beyond the seam's
   comment. Prior art: the first part's `seams`.
+- **D15, a commit that adopts a chunk from a block under destroyed material repoints it.** Today
+  `kvstore`'s `commitBlock` leaves a chunk record naming an older live block as it is, so the new
+  refs read the older block's copy. If that block's material is destroyed while the block is still
+  live, the commit's read of its own block's `encodings` sees nothing destroyed and lands refs no copy
+  can read, and Mark makes them evictable: RFC 8 E11's failure. So the commit also reads, tracked,
+  the key records of each adopted block's `encodings` (whose records `chunksOf` already loads), and
+  repoints a chunk to the new block when any is `destroyed`, as it repoints one whose block is not
+  live; the commit then lands on its own copy under current material. RFC 8 §10.4 and RFC 6 §5.4
+  name only the block's own `encodings`; the implementing pull request amends both to name the
+  adopted blocks'. A `decision:` at the repoint. Prior art: none found.
+- **D16, epic 19 starts the loop and gates it.** T18.3 provides the unexported
+  `startEviction(j)` and its join; epic 19's step 7 and its late attach call it, as the plan gives
+  start step 7 to epic 19. `evict` stays pure: the loop filters its units through an
+  `eligible(journal.FileID) bool` that epic 19 fills with the reseed's visited state. Until then it
+  answers true, with a `decision:` that eviction trusts the persisted bits, safe while only the
+  in-memory journal can release (before S6). Prior art: none found.
 
 ## 5. Target tree
 
@@ -341,8 +389,8 @@ On `feat/storage-v2`.
 
 ```text
 pkg/engine/
-  deps.go                 T18.1  Handle.Release, Handle.Unmark, Journal.Inspect, Inspector; T18.4 Deps.Destroyed, Content.Materials
-  journalof.go            T18.1  journalOf.Inspect
+  deps.go                 T18.3  Handle.Release, Journal.Inspect, Inspector; T18.4 Handle.Unmark, Deps.Destroyed, Content.Materials
+  journalof.go            T18.3  journalOf.Inspect
   policy.go               T18.2  evict, repackDue, evictUnit; T18.7 admit, admission, the law
   evict.go                T18.3  the eviction loop per journal, its snapshot (D3) and eager mode (D14); T18.4 the drain before evict
   material.go             T18.4  the destroyed set and its lock (D10), the notice's drain and unmark scan
@@ -352,18 +400,18 @@ pkg/engine/
   write.go                T18.7  admit before WriteAt, the engine.pace span
   close.go                T18.3  the loop joined at stop step 3
   recover.go              T18.3  the loop started at step 7
-  offload/                T18.4  Mark under the read lock; T18.5 ErrMaterialDestroyed abandoned (D12)
+  offload/                T18.4  Mark under the read lock; T18.5 ErrCommitUnderDestroyedMaterial abandoned (D12)
   health.go               T18.3  EvictedBytes; T18.7 PacingSeconds
   export_test.go          T18.3 to T18.11  accessors of the snapshot, the ring, the set, the loop's tick
   policy_test.go evict_test.go material_test.go capacity_test.go repack_test.go  T18.2 to T18.11
   enginetest/fake.go      T18.1  FakeHandle.Release and Unmark, FakeJournal.Inspect
   enginetest/fake_segments.go  T18.1  per-segment held and offloaded bytes for Inspect
   enginetest/journal_test.go  T18.1  the three calls agree with the journal
-  enginetest/material.go  T18.6  the material controls made real
+  enginetest/material.go  T18.5  WithChain's provider over kvstore's KeyRecords; T18.6  the material controls made real
   enginetest/space.go     T18.7  MeasuredDrain made real
   conformance/            T18.3, T18.6, T18.7, T18.9, T18.11  the rows green, or their messages rewritten
 pkg/metadata/kvstore/
-  offload.go              T18.5  the commit's tracked key-record reads, ErrMaterialDestroyed
+  offload.go              T18.5  the commit's tracked key-record reads, the adopted blocks' read and repoint (D15), ErrCommitUnderDestroyedMaterial
   materials.go            T18.4  Content.Materials
   offload_test.go materials_test.go  T18.4, T18.5
 internal/vfs/integration/rows_test.go  T18.11  TestV20's offload half green
@@ -372,43 +420,43 @@ test/engine/known.yaml    T18.3, T18.6, T18.7, T18.9, T18.11  entries removed or
 
 ## 6. Subtasks
 
-### T18.1 The journal calls eviction makes
+### T18.1 The in-memory journal's eviction calls
 
 **Subtask T18.1 estimate: 2.5 man-days.**
 
 - **Track:** B. **Depends on:** none. Epic 15's in-memory journal with its per-extent offloaded
   bits.
-- **Covers:** none of R1 to R50 on its own: consumed by T18.2 and T18.3 (`Inspect`, `Release`) and
+- **Covers:** none of R1 to R51 on its own: consumed by T18.2 and T18.3 (`Inspect`, `Release`) and
   T18.4 (`Unmark`), which cover R8, R13 and R41.
-- **Deliverables:** in `deps.go`, `Handle` gains `Release(ctx, id journal.FileID, extents
-  []journal.Extent) error` and `Unmark(ctx, id journal.FileID, extents []journal.Extent) error`, as
-  `*journal.Handle` has them; `Journal` gains `Inspect() Inspector`, with D1's interface, and
-  `journalOf` returns the journal's own. The in-memory journal gains each, held to the journal's
-  suite rows for them (`TestRFC28A_UnmarkClears` among the `stub:` entries of
-  `test/journal/known.yaml`) through `enginetest/journal_test.go`'s "agrees with the journal" form
-  over the fake and the real journal: `Release` all or nothing, refusing with a `NotOffloadedError`
-  listing every extent whose bit is unset, turning held bytes into unreclaimed ones in the segment
-  model and freeing nothing; `Unmark` clearing the bits named; `Inspect`'s `Segments` with held and
-  retained bytes per segment and `All` with each entry's segment and bit. Each declaration joins
-  `Handle` and `Journal` only in the change that adds its first caller (T18.3, T18.4), so the first
-  part's architecture test stays green. Consumed by T18.2, T18.3, T18.4.
+- **Deliverables:** the in-memory journal only: `FakeHandle.Release` and `Unmark`, with the
+  signatures `*journal.Handle` has, and `FakeJournal.Inspect` returning a value with D1's
+  `Segments` and `All`, held to the journal's suite rows for them through
+  `enginetest/journal_test.go`'s "agrees with the journal" form over the fake and the real journal:
+  `Release` all or nothing, refusing with a `NotOffloadedError` listing every extent whose bit is
+  unset, turning held bytes into unreclaimed ones in the segment model and freeing nothing; `Unmark`
+  clearing the bits named; `Segments` with held and retained bytes and the seal, failed and suspect
+  flags per segment, and `All` with each entry's segment and bit. The engine's declarations join
+  `Handle` and `Journal` with their first callers, `Release` and `Inspect` in T18.3, `Unmark` in
+  T18.4, so the first part's architecture test stays green. Consumed by T18.2, T18.3, T18.4.
 - **Acceptance criteria:**
   - The fake's `Release` of a set naming one Dirty extent releases nothing and lists it.
-  - A released extent's bytes appear in `UnreclaimedBytes` and its segment's held bytes fall; `UsedBytes`
-    is unchanged until a repack.
+  - A released extent's bytes appear in `UnreclaimedBytes` and its segment's held bytes fall;
+    `UsedBytes` is unchanged until a repack.
   - `Unmark` then `Release` of the same extent is refused.
-- **Tests:** the agreement tests, each run over both journals (the real one's rows for `Release`
-  and `Unmark` skip with S6's issue named until 9b lands; `Inspect` runs over both now): a release
-  that would make partial progress (catches a fake that releases the offloaded half), an unmark
-  that a later `Release` refuses (catches a fake that keeps the bit), segment figures after a
-  release (catches a fake that frees bytes on release, which would make every eviction test pass
-  without repack). No double: the fake is the verified in-memory journal.
+- **Tests:** the agreement tests, each run over both journals: a release that would make partial
+  progress (catches a fake that releases the offloaded half), an unmark that a later `Release`
+  refuses (catches a fake that keeps the bit), segment figures after a release (catches a fake that
+  frees bytes on release, which would make every eviction test pass without repack). Over the real
+  journal the `Release` and `Unmark` legs land red until S6, each a `known:` entry in
+  `test/journal/known.yaml` naming the journal plan's epic 9b issue, beside the existing `stub:`
+  rows (`TestRFC28A_UnmarkClears` among them); `Inspect`'s legs pass over both now. No double: the
+  fake is the verified in-memory journal.
 - **Rules:** rule 1: the fake passes the journal's rows before any engine test reads it; rule 12:
-  each call joins the declared interface with its first caller.
+  no declaration lands here.
 
 ### T18.2 `evict` and `repackDue`
 
-**Subtask T18.2 estimate: 2 man-days.**
+**Subtask T18.2 estimate: 2.5 man-days.**
 
 - **Track:** B. **Depends on:** T18.1.
 - **Covers:** R1, R2, R5, R6, R7, R8, R16.
@@ -423,36 +471,44 @@ test/engine/known.yaml    T18.3, T18.6, T18.7, T18.9, T18.11  entries removed or
   func repackDue(s journalStats) bool
   ```
   `journalStats` gains the inspection's segments and each segment's offloaded extents, gathered by
-  the caller. `evict` takes segments as D2 orders them, units of offloaded extents only, until the
-  released bytes cover `need`; stranded tags and suspect segments are left out. `repackDue` answers
-  true when unreclaimed bytes pass `RepackThreshold` of the journal's maximum, or when the journal is
-  at its maximum. RFC 8 §10.1's eviction `ponytail:` and D2's at `evict`; D8's drift `decision:` at
-  `evict`. Consumed by T18.3 and T18.9.
+  the caller over the refusal's scope (a share's segments for its limit, D2). `evict` considers
+  sealed segments only, ranks and takes them as D2 says, units of offloaded extents only, until the
+  released bytes cover `need`; stranded tags, failed, damaged, retired and suspect segments are left
+  out. `repackDue` answers true when unreclaimed bytes pass `RepackThreshold` of the journal's
+  maximum, or when the journal is at its maximum. RFC 8 §10.1's eviction `ponytail:` and D2's at
+  `evict`; D8's drift `decision:` at `evict`. Consumed by T18.3 and T18.9.
 - **Acceptance criteria:**
-  - No unit names a Dirty or Offered extent, whatever `need` is.
-  - Segments are taken oldest first, the half-held-after-eviction rule skipping one, and a
-    segment's offloaded extents are taken together.
+  - No unit names a Dirty or Offered extent, or an extent of an active segment, whatever `need` is.
+  - Segments are taken by the live fraction left after eviction, then oldest first, and a segment's
+    offloaded extents are taken together.
+  - A journal whose every sealed segment is more than half dirty still evicts its offloaded bytes.
 - **Tests:** tables over plain inputs: a segment of only dirty bytes never yields a unit (catches
-  R8); three segments with offloaded bytes and a need two of them cover yield the two oldest, whole
-  (catches a per-extent pick that scatters, R6); a segment whose dirty bytes would stay above half
-  is skipped (D2); `repackDue` false just below the threshold, true at it and at capacity with no
-  unreclaimed bytes (catches R16's capacity half). No double.
-- **Rules:** rule 9: the two markers above.
+  R8); an active segment of offloaded bytes yields none (catches a release that frees nothing);
+  three sealed segments with offloaded bytes and a need two of them cover yield the two emptiest,
+  whole (catches a per-extent pick that scatters, R6); every segment two-thirds dirty still yields
+  units (catches the live fraction used as an exclusion); `repackDue` false just below the
+  threshold, true at it and at capacity with no unreclaimed bytes (catches R16's capacity half). No
+  double.
+- **Rules:** rule 9: the markers above.
 
 ### T18.3 The eviction loop
 
 **Subtask T18.3 estimate: 3.5 man-days.**
 
-- **Track:** B. **Depends on:** T18.2. Epic 16's gates' switch for the eager mode.
+- **Track:** B. **Depends on:** T18.2. Epic 16's gates' switch for the eager mode; epic 19 calls
+  `startEviction` from its step 7.
 - **Covers:** R3, R4, R5, R8, R9, R10, R11, R12, R13, R14, R15, R16, R17, R18, R29, R49.
-- **Deliverables:** in `evict.go`, one loop per open journal, started at start step 7 and at a late
-  attach's step 7, on the injected clock at a fixed 1 s tick (§4.3's `ponytail:`): each tick reads
-  `Stats()` once, stores D3's snapshot, and when `UsedBytes` passes `EvictionTarget` of the
-  journal's maximum, or a share's used bytes its limit's, gathers the inspection and calls `evict`
-  for the bytes over the target, `Release`s each unit (a refusal by the headroom or the index bound
+- **Deliverables:** `Handle.Release` and `Journal.Inspect() Inspector` declared in `deps.go` (D1),
+  `journalOf` wrapping `Inspect`. In `evict.go`, `startEviction(j)` and its join (D16), one loop per
+  open journal on the injected clock at a fixed 1 s tick (§4.3's `ponytail:`): each tick reads
+  `Stats()` once and stores D3's snapshot, then, unless a round is in flight, starts a round: when
+  `UsedBytes` passes `EvictionTarget` of the journal's maximum, or a share's used bytes its limit's,
+  it gathers the inspection and calls `evict` for the bytes over the target less D2's band, filters
+  the units through `eligible` (D16, its `decision:`), `Release`s each unit (a refusal by the headroom or the index bound
   ends the round, logged), and `Repack`s exactly the segments it released from at the journal's
   `RepackReserveBytes`; then, if `repackDue`, an unscoped `Repack`. `EvictedBytes` counts what each
-  release named. No call takes a file guard, an open, a lock or a snapshot hold (R12). D13's and
+  release named; the bytes freed are the journal's own `Counters.FreedBytes`, which the node
+  adapts beside it for RFC 8 §14's row. No call takes a file guard, an open, a lock or a snapshot hold (R12). D13's and
   D14's `decision:`s at the loop. `Close` cancels it with the other loops at stop step 3 and joins
   it within the stop bound, a failed join reported and the journal left open. Consumed by T18.4,
   T18.7, T18.9 and epic 19.
@@ -477,66 +533,87 @@ test/engine/known.yaml    T18.3, T18.6, T18.7, T18.9, T18.11  entries removed or
     file still reads back from the remote store (R4, the half the loop owns).
   - `Close` with the loop's round held by the `AtRepackSelected` hook past the stop bound: the
     failure is reported and the journal stays open (R11).
+  - a round held by the same hook for ten ticks: the snapshot still advances every tick and no
+    second round starts (catches pacing frozen by a slow round, D3).
   Doubles: the recording pass-through wrapper and the fixture's kind-3 hooks.
 - **Rules:** rule 4: `prof.Watch` fails a leaked loop; rule 6: the three rows' entries rewritten.
 
 ### T18.4 Destroyed material: the notice, Mark's check and `Unmark`
 
-**Subtask T18.4 estimate: 4 man-days.**
+**Subtask T18.4 estimate: 4.5 man-days.**
 
 - **Track:** B. **Depends on:** T18.1, T18.3. Epic 15's Mark and `encodings`; S5's
   `keys.DestroyedNotice` on `keystest`'s in-memory provider.
 - **Covers:** R3, R41, R43, R46.
-- **Deliverables:** `Deps.Destroyed keys.DestroyedNotice` (nil refused by `New`, as `Clock` is);
-  `kvstore`'s `Content.Materials` and `MaterialSpan` (D11) with its `ponytail:`, and the engine's
-  declared `Content` gaining it; in `material.go`, D10's set and lock with its `decision:`, and
-  `drainDestroyed(ctx)`: `DestroyedSince` from the cursor, the IDs added under the write lock, then
-  for each journal's files with offloaded entries in a destroyed ID's namespace, `Materials` over
-  those extents and `Unmark` of every extent a destroyed material covers. The loop's tick calls it
-  before `evict`, and a failed read skips the round (D9, its `decision:`). In `offload/`, Mark takes
-  the read lock, checks the block's `encodings` against the set, and reports only when none is in
-  it, leaving the extents Dirty otherwise. Consumed by T18.6, T18.9 and epic 19.
+- **Deliverables:** `Handle.Unmark` declared; `Deps.Destroyed func(syncer.StoreID)
+  keys.DestroyedNotice` (nil refused by `New`, as `Clock` is) and a cursor per distinct notice
+  (D9); `kvstore`'s `Content.Materials` and `MaterialSpan` with each material's state (D11) with
+  its `ponytail:`, and the engine's declared `Content` gaining it; in `material.go`, D10's set and
+  lock with its `decision:`, the pending set, `unmarkCovered` (D11), and the loop's drain at the top
+  of each tick (D9, its `decision:`): each notice's `DestroyedSince`, the IDs added to the set under
+  the write lock and to the pending set, then for each pending ID every held file of its namespace
+  with offloaded entries, `Materials` over those extents and `unmarkCovered`, an ID leaving the
+  pending set once its scan completes. No eviction, the loop's or a refusal's, runs while the
+  pending set is not empty or the last drain failed. In `offload/`, Mark takes the read lock,
+  checks the block's `encodings` against the set, and reports only when none is in it, leaving the
+  extents Dirty otherwise. Consumed by T18.6, T18.9 and epic 19, whose reseed calls `Materials` and
+  `unmarkCovered`.
 - **Acceptance criteria:**
   - Once the notice reports a data key, every held extent its blocks cover has its bit clear before
-    the next eviction round, and is offered again by the next age tick.
+    any later eviction, and is offered again by the next age tick.
   - A Mark after the notice's add leaves its extents Dirty; one before has them cleared by the scan.
-  - A failed `DestroyedSince` evicts nothing that round.
+  - A drain that fails, or a scan cut short, evicts nothing until a later tick completes it.
 - **Tests:** over the unit fixture with `keystest`'s provider and `kvstore` on the in-memory
   `kv.KV`, on the injected clock:
   - destroy a data key covering half of a file's offloaded extents: after one tick those extents
     are refused by `Release` and the others are not (catches an unmark by file rather than by
     material, R41, at `Release`, the bit's consumer);
+  - destroy a master key: the held extents under every data key it wraps lose their bit (catches a
+    notice naming the master key, which no `encodings` entry names, R41);
   - Mark held between its check and its report by a per-instance hook, the notice's add run, then
     released: the extents end clear (the scan found them), and with the order reversed they end
     Dirty and are never reported offloaded (catches a check outside the lock, R46, R43);
-  - a notice wrapper failing `DestroyedSince` once (kind 3): that tick releases nothing (D9);
-  - `Materials` over a file with three blocks under two materials, in `kvstore`'s tests over the
-    in-memory `kv.KV` and Badger: each span names its block's materials (catches a lookup by the
-    file's current material);
+  - a notice wrapper failing `DestroyedSince` once, and an `Unmark` failing midway through a scan
+    (kind 3 each): that tick and the next release nothing, the ID stays pending, and the tick after
+    completes the scan and evicts (catches a cursor advanced past an unfinished scan, D9);
+  - a refusal's step 2 while an ID is pending: it releases nothing and answers from its figures;
+  - two shares on two store configurations with two notices: a destroy reported by one unmarks only
+    its namespace's extents (catches one cursor for every provider);
+  - `Materials` over a file with three blocks under two materials, one marked destroyed, in
+    `kvstore`'s tests over the in-memory `kv.KV` and Badger: each span names its block's materials
+    and the marked one's state (catches a lookup by the file's current material);
   - a restart with the set empty: nothing is marked from memory, and no test relies on the set
     surviving (R3).
-  Doubles: kind 3 around the notice; the Mark hook set from `export_test.go`.
+  Doubles: kind 3 around the notice and the fake's `Unmark`; the Mark hook set from
+  `export_test.go`.
 - **Rules:** rule 7: `keys.DestroyedNotice` is the RFC 5 contract; `kvstore` imports nothing of
   `pkg/transform`. Rule 11: `Materials` is exported for the engine and the reseed.
 
 ### T18.5 The offload commit refuses destroyed material
 
-**Subtask T18.5 estimate: 3 man-days.**
+**Subtask T18.5 estimate: 4 man-days.**
 
 - **Track:** B. **Depends on:** none. Epic 15's T15.2, T15.3 and T15.4; S5's key records in
   `kvstore`.
-- **Covers:** R42, R43, R44, R45, R47.
-- **Deliverables:** in `kvstore`'s offload commit, for each `MaterialRef` of the block's `encodings`,
-  a tracked read of the key record at `NS‖ns‖key‖kind‖keyID`, its state byte read without the
-  provider; a `destroyed` state refuses the whole transaction with `ErrMaterialDestroyed` naming
-  the material, and a missing record refuses it as `ErrInconsistent` (D11, its `decision:`).
-  RFC 8 §10.4's undeclared-loss `decision:` at the read. In `offload/`, a commit refused with
-  `ErrMaterialDestroyed` is abandoned as D12 says. Consumed by T18.6.
+- **Covers:** R42, R43, R44, R45, R47, R51.
+- **Deliverables:** in `kvstore`'s offload commit, for each `MaterialRef` of the block's
+  `encodings`, a tracked read of the key record at `NS‖ns‖key‖kind‖keyID`, its state byte read
+  without the provider; a `destroyed` state refuses the whole transaction with
+  `ErrCommitUnderDestroyedMaterial` naming the material, and a missing record refuses it as
+  `ErrInconsistent` (D11, its `decision:`). The same tracked read of each adopted block's
+  `encodings`, repointing a chunk whose older block's material is destroyed (D15, its `decision:`).
+  RFC 8 §10.4's undeclared-loss `decision:` at the read. In `offload/`, both refusals answered as
+  D12 says. The fixture's `WithChain` provider keeps its key records in the fixture's own `kvstore`
+  through its `KeyRecords` view, in the same change, so no green row's commit finds its records
+  missing. Consumed by T18.6.
 - **Acceptance criteria:**
   - A record marked destroyed before the commit refuses it; nothing of the block is written and its
     intent is abandoned.
   - A destroy committed after a commit's snapshot and before its commit aborts it (the conflict).
   - A material with an undeclared loss (no record marked) commits.
+  - A commit adopting a chunk from a live block under destroyed material lands with the chunk
+    repointed to its own block.
+  - Every green `engine-conformance` row stays green with the read in place.
 - **Tests:** in `kvstore`, over the in-memory `kv.KV`, Badger, and FoundationDB where `fdbkvtest`
   runs (rule 8):
   - a record marked destroyed, then a commit naming it: refused, `Block(name)` absent (catches R42);
@@ -546,14 +623,19 @@ test/engine/known.yaml    T18.3, T18.6, T18.7, T18.9, T18.11  entries removed or
   - the reverse order: the commit lands, the later mark commits, and the block stays (R43's second
     half, which T18.4 then clears);
   - a block whose `encodings` name a data key wrapped by a master key whose records the provider
-    marked through `kvstore`'s key-record view: refused (R45, the commit reading what the
-    provider wrote);
+    marked through `kvstore`'s key-record view: refused (R45, the commit reading what the provider
+    wrote);
   - a commit naming material the caller's list omits but the `encodings` name: refused (catches a
     read of the caller's list);
-  - a record with no `destroyed` mark under a lost key: commits (R47).
+  - a record with no `destroyed` mark under a lost key: commits (R47);
+  - block A live under a destroyed data key, then a commit of block B carrying one of A's chunks
+    under current material: B lands, the chunk record names B, and a covering lookup of the new
+    ref resolves to B (catches an adoption that reads only B's `encodings`, R51);
+  - a commit naming a material with no key record: refused `ErrInconsistent`.
   In the engine, over the unit fixture: a pass whose commit is refused leaves its extents Dirty,
-  its intent abandoned, and a second pass under the provider's current material commits (R44).
-  Doubles: kind 3 on the `kv.KV`.
+  its intent abandoned, and a second pass under the provider's current material commits (R44); a
+  missing record's refusal counts toward the file's failing count (D12). Doubles: kind 3 on the
+  `kv.KV`.
 - **Rules:** rule 8: the conflict is a property of the store, run on the real backends.
 
 ### T18.6 The destroyed-material row
@@ -655,7 +737,8 @@ test/engine/known.yaml    T18.3, T18.6, T18.7, T18.9, T18.11  entries removed or
 - **Track:** B. **Depends on:** T18.3, T18.4, T18.8. Epic 16's binding health.
 - **Covers:** R14, R15, R17, R19, R20, R21, R26, R28, R37, R49.
 - **Deliverables:** `relieve`'s steps become RFC 8 §10.2's four for the journal's own capacity:
-  after step 1's repack, step 2 drains the notice, calls `evict`, releases and repacks exactly
+  after step 1's repack, step 2, unless T18.4's pending set holds an ID (then it wakes the loop and
+  goes on to step 4), calls `evict`, releases and repacks exactly
   those segments; step 3, when held bytes are dirty and the binding is put-healthy, calls
   `pressure(true)`, waits as D6 says with its `decision:`, then evicts and repacks what that
   offloaded; then the first part's step 4. Each step retries the write between steps, as the first
@@ -686,7 +769,8 @@ test/engine/known.yaml    T18.3, T18.6, T18.7, T18.9, T18.11  entries removed or
 - **Track:** B. **Depends on:** T18.9.
 - **Covers:** R17, R19, R20, R21, R30.
 - **Deliverables:** `sharePass` runs step 2 over the share's offloaded extents and step 3 for its
-  dirty bytes before its sync, under the engine's lifetime, the pass's `syncing` flag set only when
+  dirty bytes, turning pressure on and evicting what is offloaded at that moment with no wait (D6),
+  before its sync, under the engine's lifetime, the pass's `syncing` flag set only when
   the sync begins, so a later refusal still joins through both steps; its bounded wait and its
   answer from the figures afterwards unchanged.
 - **Acceptance criteria:**
@@ -696,7 +780,9 @@ test/engine/known.yaml    T18.3, T18.6, T18.7, T18.9, T18.11  entries removed or
   that evicts; a refusal arriving while the pass is in step 3, held by the run hook, joins it and
   is answered by the same pass (catches `syncing` set too early); a share at its limit with
   offloaded bytes relieved without its sync, the share's `Files` sync counted at the fake (catches
-  steps run after the sync). No double but the hook.
+  steps run after the sync); a share at its limit over dirty content with a no-deadline joiner: the
+  pass reaches its sync before the joiner's 3 s wait ends (catches a step-3 wait in the pass, D6).
+  No double but the hook.
 
 ### T18.11 The put-health causes in the refusal table
 
@@ -769,8 +855,8 @@ loop's snapshot, and runs beside the material path.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T18.1, T18.2, T18.3 | 8 | — | the eviction loop whole, with the journal calls it is the first caller of |
-| 2 | T18.4, T18.5, T18.6 | 8.5 | PR 1 | destroyed material on both sides of the commit and its row |
+| 1 | T18.1, T18.2, T18.3 | 8.5 | — | the eviction loop whole, with the journal calls it is the first caller of |
+| 2 | T18.4, T18.5, T18.6 | 10 | PR 1 | destroyed material on both sides of the commit and its row |
 | 3 | T18.7, T18.8 | 4.5 | PR 1 | pacing and the pressure band; can be open beside PR 2 |
 | 4 | T18.9, T18.10, T18.11 | 7.5 | PR 2, PR 3 | the refusal table's steps 2 and 3 and its causes, closing #5757 |
 
@@ -783,13 +869,18 @@ beside PR 1.
   in-memory journal; over the real journal `Release` and `Unmark` answer `ErrNotImplemented` until
   the journal plan's epic 9b, so their entries stay with rewritten messages until then, and epic 22
   removes those left.
-- **The fixture's provider must write its key records through `kvstore`'s view.** T18.5's commit
-  reads the key records in the fixture's own store, so `WithChain`'s `keystest` provider must keep
-  them there, not in `keystest.Records`; if S5's in-memory provider cannot, the fixture builds RFC
-  5's provider over `kvstore`'s view with its key-file custody under `t.TempDir()`.
-- **`Content.Materials` and `Deps.Destroyed` amend RFC 6 §10.1 and RFC 8 §2.1 and §2.6** in the pull
-  requests that add them (D11); epic 19's reseed is their second caller.
-- **Estimate.** 28.5 man-days in 11 subtasks against the offload plan's 30 in 8: the journal calls
-  and the in-memory journal's copies are a subtask of their own (T18.1), and the material path is
-  three. T18.4 is the least certain figure: the unmark scan over every held file of a namespace has
-  not been measured.
+- **The fixture's provider over `kvstore`'s view.** T18.5 moves `WithChain`'s provider's key records
+  into the fixture's `kvstore`; if S5's in-memory provider cannot take a `KeyRecords` view, the
+  fixture builds RFC 5's provider over `kvstore`'s view with its key-file custody under
+  `t.TempDir()`, which T18.5's figure would not cover.
+- **`Content.Materials` and `Deps.Destroyed` amend RFC 6 §10.1 and RFC 8 §2.1 and §2.6**, and D15's
+  adopted-block read amends RFC 8 §10.4 and RFC 6 §5.4, in the pull requests that add them; epic
+  19's reseed is `Materials`' second caller.
+- **RFC 5 epic 8's notice must name every data key a master-key destroy marks**, not only the
+  master key, since `encodings` name data keys; T18.4's master-key test holds it, and RFC 5 epic 8's
+  D9 is read so ("adds the IDs to the notice"). If it names the master key alone, T18.4 maps it to
+  the data keys through the key records it wraps.
+- **Estimate.** 30.5 man-days in 11 subtasks against the offload plan's 30 in 8: the in-memory
+  journal's calls are a subtask of their own (T18.1), and the material path is three, with the
+  adopted-block repoint (D15) the plan did not foresee. T18.4 is the least certain figure: the
+  unmark scan over every held file of a namespace has not been measured.
