@@ -29,7 +29,7 @@ func TestIdentityFromKerberosContext(t *testing.T) {
 		t.Fatalf("the exchange = done %v, %v; want a context", done, err)
 	}
 	c := mech.Context()
-	id, err := gss.Identity(c, vfs.Protocol(0), clientAddr)
+	id, err := gss.Identity(c, clientAddr)
 	if err != nil {
 		t.Fatalf("Identity = %v, want an Identity", err)
 	}
@@ -59,7 +59,7 @@ func TestIdentityFromKerberosContext(t *testing.T) {
 // A nil context is the logon failure, never an anonymous Identity. Catches
 // a missing context turned into a caller.
 func TestIdentityNilContext(t *testing.T) {
-	id, err := gss.Identity(nil, vfs.Protocol(0), clientAddr)
+	id, err := gss.Identity(nil, clientAddr)
 	if !errors.Is(err, vfs.ErrLogonFailure) {
 		t.Errorf("Identity of no context = %v, want ErrLogonFailure", err)
 	}
