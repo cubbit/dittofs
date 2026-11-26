@@ -4,7 +4,7 @@
 remote store's `remote.endpoint`, `remote.credential`, `remote.region`, `remote.trust_roots`,
 `remote.bucket`, `remote.storage_class` and `remote.block_target`, and for the namespace's
 `remote.prefix` and `remote.block_format_version` (the last five named, and the region's and trust
-roots' class corrected to plain live, by this pull request's amendment of Appendix B, §9 point 1),
+roots' class corrected to plain live, by this pull request's amendment of Appendix B, D1),
 with §4.2 (a default or required), §5 (the binding classes), §5.1 (bound), §5.2 (reaching the same
 content another way), §5.4 (a format version written only once every reader reads it) and §5.5's
 single-node paragraph, §6 (refused, never replaced; checked twice) and §7 (no secret value), and
@@ -84,7 +84,7 @@ their deletion and the alert expression; the configuration guide's remote store 
   change of each key reaches the client or the codec), unsealing the credential, the holding of
   one client per store configuration, the largest encoded block it passes as `MaxBlockSize`, the
   namespace's `codec.Config.Version` read from its section, registering the collectors and the
-  alert rule in the node, the label value each entity takes (§9 point 2), and the alert rules' form
+  alert rule in the node, the label value each entity takes (§9 point 1), and the alert rules' form
   (the RFC 3 plan's O7).
 - **E8:** the limit passed to `clientConfig`; until then epic 21 passes its own sum.
 - **E4, E5, E6:** the client, the open and the codec that consume these values, and the mapping of
@@ -215,7 +215,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 
 ## 4. Decisions this epic takes
 
-- **D1. The five unnamed rows take keys under `remote.`, pending the user's answer.** RFC 13
+- **D1. The five unnamed rows take keys under `remote.` (the user's decision, 2026-11-26).** RFC 13
   Appendix B named no key for the bucket, the storage class, the block target, the prefix or the
   block format version, and the Appendix B check (`internal/node/appendixb_test.go`) fails a table
   key the appendix lacks, so the keys must be in RFC 13 before epic 21 adds the sections. This pull
@@ -223,17 +223,17 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   `remote.prefix` and `remote.block_format_version`, and §6's example refusal with
   `remote.prefix`. Every key this component reads then sits under one word, whichever scope holds
   it, and an operator reading `remote.prefix` beside `remote.bucket` sees one location. The
-  alternative is a prefix per package (`codec.format_version`, `namespace.prefix`), which follows
-  the code rather than what an operator configures. `feat/storage-v2` already ships
+  rejected alternative is a prefix per package (`codec.format_version`, `namespace.prefix`), which
+  follows the code rather than what an operator configures. `feat/storage-v2` already ships
   `namespace.prefix` as the documented spelling, though no table declares it yet: `dfsctl namespace
   create`'s help (`cmd/dfsctl/commands/namespace/namespace.go`) and the generated
   `docs/guide/cli.md`, the CLI suite's and the route sweep's waiting rows
   (`cmd/dfsctl/internal/clisuite/stores.go`, `internal/node/routesweep_test.go`) and the API's
   tests (`internal/node/api/stores_test.go`, `store_routes_test.go`). `remote.prefix` replaces that
-  spelling, and T7.2 then moves those sites to it; `namespace.prefix` would keep them. Prior art: rclone's S3 backend names its
+  spelling, and T7.2 renames those sites to it. Prior art: rclone's S3 backend names its
   options `endpoint`, `region`, `bucket` and `storage_class` under the remote's name (from memory).
   Changing a name once epic 21 registers it means editing the RFC row, the struct tag and every
-  provisioning file that uses it. §9 point 1.
+  provisioning file that uses it, which is why it is settled before epic 21 registers it.
 - **D2. The S3 store's settings are a plain tagged struct in `pkg/remote/s3`; what `s3` may not
   type is the content wiring's.** `pkg/settings`' `Of` reads a Go struct whose fields carry
   `json`, `class` and `location` tags and whose `Validate` it calls; tags are strings, so
@@ -434,7 +434,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   for `remote.DirGet`, on the `request` buckets, since a decode is what a demand read waits on.
   These are E4's D3 labels, which E4 left to this epic to declare. The `codec_` series' `store` is the name the syncer's `Register` gets for that `codec.Store`, so
   the alert's join matches; the `remote_` series' `store` names the store configuration. Epic 21
-  chooses both strings (§9 point 2). Prior art: none needed.
+  chooses both strings (§9 point 1). Prior art: none needed.
 - **D10. The alert is one unexported expression; its form is epic 21's.**
 
   ```go
@@ -458,7 +458,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   than the hour has no `offset` sample, so a restart silences the ticket for an hour. The upgrade
   is a counter of unrecovered failures kept by whoever sees both, if any of these shows. No test
   in the tree evaluates PromQL, so the `or` branch and the arithmetic are reasoned, not tested
-  (§9 point 3). Epic 21 owns the rules' form (the RFC 3 plan's O7) and exports the expression in it
+  (§9 point 2). Epic 21 owns the rules' form (the RFC 3 plan's O7) and exports the expression in it
   when it registers the rule. Prior art: the Prometheus alerting rule's `expr` (read the documentation).
 - **D11. A refused open needs nothing exported for the API.** E5's refusal wraps `remote.ErrInvalid`
   and its text names every missing feature and no credential (E5's D4, R31). The API's field error,
@@ -481,9 +481,9 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   (`cmd/dfsctl/internal/clisuite/stores.go`) runs on the node's own table, so it changes in epic
   21's change that adds `Sections` to `newTable`. So do the other rows waiting on these keys: the
   CLI suite's `store create` row (`unknown_key remote.credential`), the route sweep's `POST
-  /stores` and `PATCH` `remote.region` rows (`internal/node/routesweep_test.go`), and, if D1 keeps
-  `remote.prefix`, the `namespace.prefix` rows D1 lists, which would otherwise wait forever on a
-  key nothing declares. Prior art: none needed.
+  /stores` and `PATCH` `remote.region` rows (`internal/node/routesweep_test.go`), and the
+  `namespace.prefix` rows D1 lists, renamed to `remote.prefix` by T7.2, which would otherwise wait
+  forever on a key nothing declares. Prior art: none needed.
 - **D13. The bucket and the prefix keep the store-location tag; the region and the trust roots do
   not.** RFC 13 §5.2 names "a store's endpoint, and its credential" as ways to reach content; the
   bucket and the prefix are where it is (§5.1). `pkg/settings` tags all four as the store's
@@ -561,8 +561,9 @@ test/suites.yaml                 T7.4  unit's remote-allocs option widened to ./
   section names, as its `decision:` asks once a section at a per-instance scope is declared, which
   then loses that clause. `internal/node/appendixb_remote_test.go`. D12's `settingKeys` lines and
   RFC 13 Appendix B's remote rows reach `feat/storage-v2` with this document's cherry-pick, before
-  this subtask. If D1 keeps `remote.prefix`, `dfsctl namespace create`'s help, `docs/guide/cli.md`
-  (regenerated) and the API tests D1 lists move to it. Consumed by T7.3 and by
+  this subtask. The shipped `namespace.prefix` sites D1 lists are renamed to `remote.prefix`:
+  `dfsctl namespace create`'s help, `docs/guide/cli.md` (regenerated with `go run ./cmd/gendocs`),
+  the CLI suite's and the route sweep's rows and the API tests. Consumed by T7.3 and by
   RFC 8 offload plan epic 21, which adds `Sections` to `newTable`.
 - **Acceptance criteria:**
   - `compareAppendixB` over a table of `Sections()` reports no failure, its `reported` list holds
@@ -743,22 +744,17 @@ paths and the credential fixtures (T7.3), the strict credential parse and the tr
 (T7.1, T7.3), the recorders' counted sharing, copy-on-write binding and lazy capability series
 (T7.4), and the per-`codec.Store` recorder with the alert's raw deltas (T7.5).
 
-1. **The key names, pending the user's answer (D1).** Recommended: the five unnamed rows under
-   `remote.` (`remote.bucket`, `remote.storage_class`, `remote.block_target`, `remote.prefix`,
-   `remote.block_format_version`), as this pull request amends RFC 13 Appendix B. The other
-   option is a prefix per package (`codec.format_version`, `namespace.prefix`), and
-   `namespace.prefix` is the spelling `feat/storage-v2` already documents (D1). The RFC 2 plan's
-   open point 2 waits on the same kind of answer for `Target`.
-2. **The entity label values, epic 21's.** RFC 25 §2.4 has `store` and `namespace` take the
+1. **The entity label values, epic 21's.** RFC 25 §2.4 has `store` and `namespace` take the
    object's name, but neither a remote store nor a namespace record holds a name on
    `feat/storage-v2` (`entity.Namespace`, `apiv1.StoreSpec`), only an ID, which §2.4 allows for a
-   journal alone. The recorders take whatever string they are given; epic 21 chooses it, hands the
-   same one to the syncer's collector so the alert's subtraction matches (D10), and a value other
-   than a name needs RFC 25 §2.4 amended.
-3. **The alert rules' form, epic 21's (D10).** The expression is the content; epic 21 wraps it in
+   journal alone. The recorders take whatever string they are given; epic 21 chooses it and hands
+   the same one to the syncer's collector so the alert's subtraction matches (D10). Its breakdown
+   (#6063, its D9) takes IDs, as the user decided on 2026-11-26, and widens RFC 25 §2.4's
+   exceptions to allow them.
+2. **The alert rules' form, epic 21's (D10).** The expression is the content; epic 21 wraps it in
    the form it settles with its first rule. No test evaluates it: the tree holds no PromQL engine,
    and adding one is a dependency this epic does not take, so whoever registers the first rule is
    where an evaluating test belongs.
-4. **Estimates least certain: T7.2 and T7.3.** T7.2 rests on `tableKeys` seeding a remote-store and
+3. **Estimates least certain: T7.2 and T7.3.** T7.2 rests on `tableKeys` seeding a remote-store and
    a namespace instance cleanly, which no section has needed yet; T7.3 on the API's three seal paths
    taking a check before the seal without restructuring their transactions.
