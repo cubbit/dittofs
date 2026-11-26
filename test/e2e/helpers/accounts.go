@@ -14,16 +14,25 @@ import (
 )
 
 // Account is a user as a test presents it: its ID, its name, the password
-// set on it, and the uid it presents over AUTH_SYS.
+// set on it, and the uid and the gids of its groups it presents over
+// AUTH_SYS, where the gids sent are the caller's groups.
 type Account struct {
 	ID       string
 	Name     string
 	Password string
 	UID      uint32
+	GIDs     []uint32
+}
+
+// Group is a group as a test names it: its ID, which grants and memberships
+// name, and its gid, which a member presents over AUTH_SYS.
+type Group struct {
+	ID  string
+	GID uint32
 }
 
 // Admin is the bootstrap administrator, which holds no uid: it presents uid
-// 0 over AUTH_SYS, the uid a root bypass would key on.
+// 0 over AUTH_SYS, the uid a root bypass would key on, with no group.
 func Admin() Account { return Account{Name: "admin", UID: 0} }
 
 // NewAccount creates a user named after prefix, unique on the server, with
@@ -68,35 +77,36 @@ func NewAccount(t *testing.T, prefix string, role apiv1.Role, uid uint32) Accoun
 	return a
 }
 
-// Group creates a group named after prefix, unique on the server, and
-// returns its ID. The test's end deletes it.
-func Group(t *testing.T, prefix string) string {
+// NewGroup creates a group named after prefix, unique on the server, with a
+// gid the server allocates. The test's end deletes it.
+func NewGroup(t *testing.T, prefix string) Group {
 	t.Helper()
 	c := Start(t).API
 	ctx, cancel := call()
 	defer cancel()
 	name := unique(prefix)
 	g, err := c.Groups().Create(ctx, apiv1.GroupSpec{Name: name})
-	if err != nil {
-		t.Fatalf("creating the group %s: %v", name, err)
+	if err != nil || g.Spec.GID == nil {
+		t.Fatalf("creating the group %s: answered %+v, %v; want the group with a gid", name, g.Spec, err)
 	}
 	t.Cleanup(func() { remove(t, "group "+name, Start(t).API.Groups(), g.ID, "") })
-	return g.ID
+	return Group{ID: g.ID, GID: *g.Spec.GID}
 }
 
-// Member adds the user whose ID is user to the group whose ID is group. The
-// test's end removes it.
-func Member(t *testing.T, group, user string) {
+// Member adds the account a to the group g, and g's gid to the gids a
+// presents. The test's end removes the membership.
+func Member(t *testing.T, g Group, a *Account) {
 	t.Helper()
 	c := Start(t).API
 	ctx, cancel := call()
 	defer cancel()
-	m, err := c.Members(group).Put(ctx, user, struct{}{}, "*")
+	m, err := c.Members(g.ID).Put(ctx, a.ID, struct{}{}, "*")
 	if err != nil {
-		t.Fatalf("adding %s to the group %s: %v", user, group, err)
+		t.Fatalf("adding %s to the group %s: %v", a.Name, g.ID, err)
 	}
+	a.GIDs = append(a.GIDs, g.GID)
 	// A membership has no Get, so its removal is tagged with the put's ETag.
-	t.Cleanup(func() { remove(t, "member "+user+" of "+group, Start(t).API.Members(group), user, m.ETag) })
+	t.Cleanup(func() { remove(t, "member "+a.ID+" of "+g.ID, Start(t).API.Members(g.ID), a.ID, m.ETag) })
 }
 
 // remove deletes the resource id names, whose tag is etag or, when etag is

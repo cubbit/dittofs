@@ -16,13 +16,20 @@ type Share struct {
 }
 
 // NewShare creates a share named after prefix, unique on the server, in the
-// fixture's namespace, holding no grant, whose export policy offers AUTH_SYS
-// and then Kerberos to every client and squashes nobody, and waits until the
-// node applied it. The test's end deletes it.
+// fixture's namespace, whose export policy offers AUTH_SYS and then Kerberos
+// to every client and squashes nobody, and waits until the node applied it.
+// Its one grant gives the mount group read, so MountNFS's own calls are
+// admitted. The test's end deletes it.
 //
-// decision: nobody is squashed, so a mount as uid 0 reaches admission as
+// decision: nobody is squashed, so Admin()'s uid 0 reaches admission as
 // root rather than as nobody, and a root bypass, which squashing would hide,
-// shows as an admitted mount.
+// shows as root reaching the share with no group.
+//
+// decision: a share is never one that admits nobody, as the mount, which
+// runs as root, needs a grant, and the API grants root nothing. A row's
+// "refused" therefore means refused to the accounts the row creates, which
+// never hold the mount group. Grant root's mount another way, and drop this
+// grant, if the API comes to name a share's anonymous principal or root.
 func NewShare(t *testing.T, prefix string) Share {
 	t.Helper()
 	c := Start(t).API
@@ -40,7 +47,9 @@ func NewShare(t *testing.T, prefix string) Share {
 	if err := served.WaitApplied(ctx, sh.ID); err != nil {
 		t.Fatalf("waiting for the share %s: %v", name, err)
 	}
-	return Share{ID: sh.ID, Name: name}
+	share := Share{ID: sh.ID, Name: name}
+	Grant(t, share, mounter.ID, Read)
+	return share
 }
 
 // Grant gives the principal whose ID is principal access on share, through a put that creates the grant, refused

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -660,9 +661,12 @@ func SkipIfNoSMBMount(t *testing.T) {
 // MountAt mounts source as fstype with options at a new mount point, in one
 // attempt of at most two minutes, and returns the mount, or the client's
 // error with its output without failing t: a refused mount is an answer some
-// tests assert on. The caller unmounts it. The error leaves options out,
-// which may hold a password.
-func MountAt(t *testing.T, fstype, source, options string) (*Mount, error) {
+// tests assert on. mount runs as the harness's uid with gid as its primary
+// and only group, so a client that sends the mounting process's credential,
+// as NFS over AUTH_SYS does, sends that gid and none of the harness's own
+// groups. The caller unmounts it. The error leaves options out, which may
+// hold a password.
+func MountAt(t *testing.T, fstype, source, options string, gid uint32) (*Mount, error) {
 	t.Helper()
 	mountPath, err := makeTraversableMountPoint("dittofs-e2e-" + fstype + "-")
 	if err != nil {
@@ -670,7 +674,9 @@ func MountAt(t *testing.T, fstype, source, options string) (*Mount, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	if out, err := exec.CommandContext(ctx, "mount", "-t", fstype, "-o", options, source, mountPath).CombinedOutput(); err != nil {
+	cmd := exec.CommandContext(ctx, "mount", "-t", fstype, "-o", options, source, mountPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(os.Getuid()), Gid: gid, Groups: []uint32{gid}}}
+	if out, err := cmd.CombinedOutput(); err != nil {
 		_ = os.RemoveAll(mountPath)
 		return nil, fmt.Errorf("mount -t %s %s: %w: %s", fstype, source, err, strings.TrimSpace(string(out)))
 	}
