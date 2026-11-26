@@ -967,6 +967,7 @@ What this plan knowingly does not build. Each row names the section that defers 
 | RFC 25 §3.9's severity per cause on `store_put_unhealthy` and `store_get_unhealthy` (epic 5) | `health.Condition` carries no severity; the `ponytail:` on `pkg/health`'s `Evaluator` names RFC 25's plan as its upgrade | unowned | a plan takes RFC 25's registry, or `pkg/health` gains severity |
 | RFC 0 §1.4's single-node checks (§1.4): the composition root building and stopping the syncer in order | they run on the composed node | RFC 8 offload plan, epic 21 | RFC 8 offload plan epic 21 lands |
 | RFC 24's transfers size passed to the syncer (D6) | `pkg/resources` has no `Split` | unowned | a plan takes RFC 24 §7, or the root sizes its pools |
+| RFC 25 §2.4's cap on entity label values: at most 64 `store` values per syncer metric, the rest summed into `_other`, and `metrics_label_capped` raised (epic 8) | one rule for every collector the node exports, which none builds yet; v1.1 registers far fewer than 64 stores | unowned | a plan takes RFC 25's registry, or a node registers more than 64 stores |
 | Hedged cold reads (RFC 3 §9, "Deferred") | not measured | unowned | a cold-read latency measurement asks for it |
 | A bandwidth cap per direction (RFC 3 §9, "Deferred") | not measured | unowned | a measurement shows the pool cannot bound the link |
 | Weighted flows (RFC 3 §2.9) | no operator needs it | unowned | an operator names a workload that needs one flow weighted |
