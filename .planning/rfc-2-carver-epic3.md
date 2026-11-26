@@ -113,12 +113,12 @@ title and not copied.
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | every check is a byte slice, a settings value and an answer: E2's vectors, its reference chunker, its seeded inputs, hand-built gear tables. No test double, and nothing to stand in for |
 | rule 2, fuzz tests where relevant ([`CLAUDE.md`, "Writing tests", "By kind"](../CLAUDE.md#writing-tests)) | T3.4, T3.6 | `FuzzNextBoundary`: fuzzed input, table, profile and buffer size into the chunker, asserting agreement with the reference, C4's bounds and the tiling; `FuzzNewSettings`: fuzzed settings into the constructor, asserting §3.7's refusals. Each is one command of the `fuzz` suite (D7) |
 | rule 3, observability follows RFC 25, with RFC 2's exception | none | no logger, registry or tracer; the chunker reports nothing, and the `carver_` series are the RFC 8 offload plan's epic 15's |
-| rule 4, profiling | T3.2 | `TestAllocsNextBoundary` in `carver-allocs`, skipped under `internal/prof.RaceEnabled`. No goroutine and no descriptor: the table derivation's input is under one BLAKE3 chunk, so the library starts none (E1's §9 point 1) |
+| rule 4, profiling | T3.1, T3.2 | `TestAllocsNextBoundary` in `carver-allocs`, skipped under `internal/prof.RaceEnabled`. No descriptor, and no goroutine: `lukechampine.com/blake3` starts goroutines on an output read of two 1,024-byte blocks or more, not on its input, so the tables are read 1,024 bytes at a time (D5), and T3.1 counts `/sched/goroutines-created:goroutines` around `NewSettings` |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T3.1 to T3.5 | the chunker is tested as `Cut` will call it, a buffer of at least `Max` bytes or a final one, and its §9 rows through settings `NewSettings` built, the value E4 and the engine receive (D6). The section is tested by its own `Validate`; the table it joins is the RFC 8 offload plan's epic 21's, tested there |
 | rule 6, known failures shrink | none | `unit` and `fuzz` keep no `known.yaml`; every test lands green, each seen to fail on its planted break before the pull request opens |
 | rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | T3.2, T3.3 | `internal/chunker`'s production files import `internal/params` alone, no standard-library package either, which its `arch_test.go` row checks (R13); `section` imports the root and `carve`, and reaches what they do, `internal/params` among them; neither `pkg/settings`, `pkg/metrics` nor `pkg/health` is on any row. v1's `pkg/block/chunker` is not read |
 | rule 8, real dependencies for properties of those dependencies | T3.1 | the gear tables are BLAKE3's output and are checked against E2's vectors, which BLAKE3's own binding computed; the second architecture is E7's |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T3.1, T3.2, T3.3 | RFC 2 §6's `ponytail:` at the keyed table's construction; `decision:` markers for D1 and D2 at `params.New`, D4 at `NextBoundary`'s precondition and D8 at the section's `Prefix` |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T3.1, T3.2, T3.3 | RFC 2 §6's `ponytail:` at the keyed table's construction; `decision:` markers for D1 and D2 at `params.New`, D5 at the table derivation, D4 at `NextBoundary`'s precondition and D8 at the section's `Prefix` |
 | rule 10, a test must be able to fail | all | each test names its planted break: a table word changed, *m* moved by one, a boundary at `Min` − 1 missed, the warm-up window shortened, a refusal dropped, fixed-size cuts |
 | rule 11, a symbol is exported only if the RFC's interface uses it | T3.2, T3.3 | none joins S1's frozen surface. `NextBoundary` is exported from an internal package for E4's `Cut`; `section`'s `Prefix`, `Settings` with its `Validate` method, and `Default` are exported after S1 for one consumer, the RFC 8 offload plan's epic 21, as the RFC 2 plan's rule 7 places the section in this epic |
 | rule 12, each subtask creates only what it declares | all | `internal/chunker` lands with its tests (T3.2) for E4's `Cut`; `section` with the wiring that registers it named; `params` grows only the fields the chunker reads |
@@ -250,19 +250,25 @@ fingerprint (RFC 5); §10.2's stretch-shape and reader cases and §10.3 (E4); §
   one-byte-reader cases of RFC 2 §10.2 exercise, so reaching it is a bug in the carver, not in its
   input. Its ceiling: a panic on the offload path stops the node, every share with it, where an
   error would fail one pass. A `decision:` at the check says so, and that it becomes an error
-  return if the chunker ever gains a second caller, or if E4's cases ever reach it. Prior art: Go's
+  return if the chunker ever gains a second caller, or if the carver's buffer-edge cases ever
+  reach it, worded without naming an epic. Prior art: Go's
   slice expressions and `bytes.Buffer.Truncate` panic on an out-of-range argument rather than
   return a value (from memory).
 - **D5, both tables are derived at each `NewSettings`, and nothing is cached.** The unkeyed table
   is the same for every namespace, but deriving it is 2,048 bytes of BLAKE3 output once per
   namespace at each apply, and a package-level table would be the state E1's R8 keeps out of
-  `carve`. The derivation calls `lukechampine.com/blake3` (`DeriveKey` into a 2,048-byte slice;
-  `New(2048, key)` then `XOF`), already on `carve`'s row; its allocations land in the constructor,
-  which RFC 2 §10.4 does not count, and its input is under one BLAKE3 chunk, so it starts no
-  goroutine. If E4 moves the chunk hash to another implementation (its choice, E1's §9 point 1),
-  the tables follow only if that implementation offers both modes with extendable output; R10's
-  vectors hold either. Prior art: restic's chunker builds its polynomial tables when a chunker is
-  made, per polynomial (from memory).
+  `carve`. `lukechampine.com/blake3` v1.4.1's `OutputReader.Read` starts goroutines when one read
+  asks for two or more of its 1,024-byte buffers (read the code, `blake3.go`), and `DeriveKey`
+  reads its whole output in one call. So the keyed table is `New(2048, key)`, then `XOF` read in
+  two 1,024-byte reads, which compress inline; and the unkeyed table drives
+  `lukechampine.com/blake3/guts` in key-derivation mode, the context and the empty key material
+  each one block, its root output compressed 1,024 bytes at a time with `guts.CompressBlocks`. Both
+  start no goroutine, as the RFC 2 plan's rule 4 requires, and R10's vectors check both. Their
+  allocations land in the constructor, which RFC 2 §10.4 does not count. E4's D1 gives
+  `internal/blake3` no extendable output, so the tables stay on `lukechampine.com/blake3`; a
+  `decision:` at the derivation says the reads are split to keep goroutines out, and is withdrawn
+  if the library stops starting them. Prior art: restic's chunker builds its polynomial tables when
+  a chunker is made, per polynomial (from memory).
 - **D6, §9's rows run through real settings, in the chunker's external test package, with one
   shared cut loop.** The average, keyed, repetitive and edit-stability rows build their settings
   with `NewSettings`, the value E4 and the engine receive, in `package chunker_test`, which may
@@ -298,7 +304,8 @@ fingerprint (RFC 5); §10.2's stretch-shape and reader cases and §10.3 (E4); §
   key form, and naming the key is pending the user's answer in the RFC 2 plan's §6 point 2; the
   section uses `carver.target` meanwhile, and a `decision:` at `Prefix` says the key is
   provisional, that it changes in one line to whatever RFC 13 names, and that no namespace can
-  have bound it before the RFC 8 offload plan's epic 21 registers the section. Prior art:
+  have bound it before the section is registered in the node's settings table (the RFC 8 offload
+  plan's epic 21). Like every marker here, it is worded by behaviour, naming no plan or epic. Prior art:
   `apisettings.Defaults()`, a plain value `newTable` hands to `settings.Of` in
   `internal/node/settings.go` on `feat/storage-v2` (checked); `internal/identity`'s `Section`,
   which calls `settings.Of` itself and imports `pkg/settings` (checked), is the shape D8 avoids.
@@ -356,6 +363,7 @@ test/suites.yaml           T3.4, T3.6  two lines of the fuzz suite, its timeouts
     Consumed by `NewSettings`, T3.2's chunker and its tests.
   - `carve`'s bodies, consumed by T3.3's validator, E4's `Cut` tests, and the RFC 8 offload plan's
     epic 21, which calls `NewSettings` once per namespace:
+    - `carve`'s production row in `imports_test.go` gains `lukechampine.com/blake3/guts` (D5).
     - `CheckTarget(target int) error`: refuses, wrapping `ErrInvalidSettings` with the value and
       the rule, a `Target` that is not a power of two, under 64 KiB or over 4 MiB.
     - `NewSettings(target int, encrypting bool, chunkingKey, chunkIDKey [32]byte)
@@ -374,6 +382,7 @@ test/suites.yaml           T3.4, T3.6  two lines of the fuzz suite, its timeouts
     encryption off is accepted.
   - A non-encrypting value's table is `Vectors.GearUnkeyed`; an encrypting value under
     `Vectors.ChunkingKey` has `Vectors.GearKeyed`.
+  - `NewSettings` starts no goroutine, keyed or unkeyed.
 - **Tests:** at `carve`, as the wiring calls it: a table of `Target`s at, under and over each
   limit, non-powers of two among them (catches a floor at 32 KiB, a ceiling at 8 MiB, a rounding
   instead of a refusal, R2, R4); the key cases (catches a keyed table built for a namespace that
@@ -381,10 +390,13 @@ test/suites.yaml           T3.4, T3.6  two lines of the fuzz suite, its timeouts
   `carvetest.LoadVectors` through `params.Gear`, in `package carve` (catches a wrong context
   string, a big-endian decode, a table built from the wrong mode, R8 to R10); the bit counts at
   every `Target`, *t* + 1 and *t* − 3 through `params.Bits`, and seven distinct pairs across the
-  seven profiles (catches Appendix A.1's fixed pair, and *m* off by one either side, R7, R11).
-  Each is seen to fail on its planted break before the pull request opens. No test double.
+  seven profiles (catches Appendix A.1's fixed pair, and *m* off by one either side, R7, R11);
+  the change in `runtime/metrics`' `/sched/goroutines-created:goroutines` over 100 calls of each
+  kind, in a test that never calls `t.Parallel`, since the count is process-wide (catches a table
+  read in one 2,048-byte call, which starts one). Each is seen to fail on its planted break before
+  the pull request opens. No test double.
 - **Rules:** rule 8, the tables against BLAKE3's own binding's output; rule 9, the `ponytail:` and
-  D1's and D2's `decision:`. Others as §2 says.
+  D1's, D2's and D5's `decision:`. Others as §2 says.
 
 ### T3.2 The boundary search
 
@@ -400,13 +412,13 @@ test/suites.yaml           T3.4, T3.6  two lines of the fuzz suite, its timeouts
     // older byte has left the 64-bit fingerprint.
     const window = 64
 
-    // NextBoundary returns where the first chunk of buf ends under s: the first byte from index
-    // Min−1 whose fingerprint has its top Bits zero, else Max, else, when final is set and buf is
+    // NextBoundary returns where the first chunk of buf ends under s: just after the first byte
+    // from index Min−1 whose fingerprint has its top Bits zero, else Max, else, when final is set and buf is
     // shorter than Max, len(buf). buf holds at least s.Max() bytes unless final is set; it panics
-    // otherwise (D4). It never hashes, reads, allocates or keeps anything.
+    // otherwise. It never hashes, reads, allocates or keeps anything.
     func NextBoundary(s params.Settings, buf []byte, final bool) int
 
-    // warm is the fingerprint over the 64 bytes ending at the first tested byte (D3).
+    // warm is the fingerprint over the 64 bytes ending at the first tested byte.
     func warm(g *[256]uint64, w *[window]byte) uint64
     ```
   - `Ends` in `export_test.go` (D6), consumed by every chunker test.
@@ -422,19 +434,25 @@ test/suites.yaml           T3.4, T3.6  two lines of the fuzz suite, its timeouts
 - **Acceptance criteria:**
   - Every golden of `carvetest.LoadBoundaries`, unkeyed and keyed, is reproduced end for end
     through `Ends` with a window of `Max` bytes.
-  - With every `G[b]` zero every chunk is exactly `Min`; with every `G[b]` 2⁶³ every chunk is
-    exactly `Max`; with `G[1]` = 2⁶³, `G[x]` zero and a run of byte 1, an `x` at index `Min` − 1 ends
+  - With every `G[b]` zero every chunk but the last of a `final` buffer is exactly `Min`; with
+    every `G[b]` 2⁶³ every chunk but that last one is exactly `Max`; with `G[1]` = 2⁶³, `G[x]` zero and a run of byte 1, an `x` at index `Min` − 1 ends
     the chunk there, and one at `Min` − 2 does not.
   - A buffer of exactly `Max` bytes with no boundary returns `Max`; a `final` buffer of 1,
     `Min` − 1, `Min`, `Max` and `Max` + 1 bytes returns its length, or `Max`, when no boundary
     comes first; a non-empty buffer never returns 0; a buffer under `Max` with `final` unset
     panics.
+  - With `G[1]` = 1, every other entry zero, and byte 1 at index `Min` − 64 of an otherwise zero
+    buffer, the fingerprint at `Min` − 1 is 2⁶³, so the chunk does not end there and ends at
+    `Min` + 1.
   - `NextBoundary` makes 0 allocations.
 - **Tests:** at `NextBoundary`, as `Cut` will call it, written in `chunker_test.go`: the goldens at
   every profile under both tables (catches any clause of R15 moved, and E4 meeting another answer
   than the reference's, R15, R17, R19, R29's "one fixed profile"); the zero and 2⁶³ tables and the
   planted `x` at `Min` − 1 and `Min` − 2 (catches the first test at `Min`, which the goldens see only
-  when a boundary falls exactly there, and a missing `Max` end, R15, R18); the buffer edges and the
+  when a boundary falls exactly there, and a missing `Max` end, R15, R18); the `G[1]` = 1 case
+  (catches a warm-up over 63 bytes, whose fingerprint at `Min` − 1 is 0 and ends the chunk at
+  `Min`, R16; random input changes that decision only at odds of about 2⁻ᵐ per chunk, so the
+  goldens and T3.4's seeds do not); the buffer edges and the
   panic (catches the "not yet" answer of Appendix A's sixth row, R14); `TestAllocsNextBoundary`,
   `testing.AllocsPerRun` over `Max` bytes, skipped under `prof.RaceEnabled` (catches an
   allocation, R13, R20); the import and structure rows over planted imports of `io` and
@@ -452,14 +470,14 @@ test/suites.yaml           T3.4, T3.6  two lines of the fuzz suite, its timeouts
 - **Covers:** R5, R31 to R33.
 - **Deliverables:** `pkg/carver/section`, with D8's `decision:` at `Prefix`, and its row in E1's
   `imports_test.go`: production the root and `carve`, and what they reach (`internal/params`,
-  `pkg/metadata/entity`, `lukechampine.com/blake3`, `github.com/google/uuid`; E4 adds
+  `pkg/metadata/entity`, `lukechampine.com/blake3` and its `guts`, `github.com/google/uuid`; E4 adds
   `internal/chunker` when `carve` imports it); test files the same, with `internal/carvetest`.
   Consumed by the RFC 8 offload plan's epic 21, which passes `section.Prefix`,
   `settings.At(entity.ScopeNamespace)` and `section.Default()` to `settings.Of` in `newTable`, and
   each namespace's `Target` to `NewSettings`; and by E6, which sets the default to the value its
   sweep freezes:
   ```go
-  // Prefix is the section's prefix in the settings table: the key carver.target (D8).
+  // Prefix is the section's prefix in the settings table: the key carver.target.
   const Prefix = "carver"
 
   // Settings is a namespace's Target, bound once the namespace holds content (RFC 2 §3.6).
@@ -509,8 +527,9 @@ test/suites.yaml           T3.4, T3.6  two lines of the fuzz suite, its timeouts
 - **Tests:** the fuzz target, its seeds run by `unit` (catches a clause the goldens' two tables do
   not exercise, a carry the hand-built cases miss, a chunker that looks past `Max` and so cuts
   differently in a wider window, R15, R17, R18, R22); the seeds as R23's warm-up equivalence,
-  seen to fail with `warm`'s window shortened by its oldest byte, which changes the top bit of
-  every first tested fingerprint, before the pull request opens (R16, R23). The fuzz cell's red
+  whose planted break is T3.2's `G[1]` = 1 case: a window shortened by its oldest byte drops only
+  `G[b] << 63`, bit 63 of the first tested fingerprint and only for an odd `G[b]`, so random
+  input rarely shows it (R16, R23). The fuzz cell's red
   on a crasher is `go test`'s own exit status (R24).
 - **Rules:** rule 2, the target; rule 10, the property is what makes agreement worth more than the
   goldens. Others as §2 says.
@@ -527,13 +546,15 @@ test/suites.yaml           T3.4, T3.6  two lines of the fuzz suite, its timeouts
   - Over 256 MiB of `Random` at every profile, the mean chunk length is within 10 % of `Target`
     under the unkeyed table and under each of two chunking keys, `Vectors.ChunkingKey` and a
     second fixed key.
-  - Under those two keys and none, the same 64 MiB of `Random` gives three pairwise different sets
-    of ends, and a second cut under each the same ends.
+  - Under those two keys and none, the same 64 MiB of `Random`, generated once and held as one
+    slice for every profile, gives three pairwise different sets of ends, and a second cut under
+    each the same ends.
   - 64 MiB of `Zeros` under the unkeyed table cuts only chunks of exactly `Max` at every profile;
     64 MiB of `Period64`, unkeyed and under `Vectors.ChunkingKey`, ends with every chunk at most
     `Max`.
-  - `Text44` cuts no chunk over `Max`; every `Period4K` chunk is within `Min` and `Max`, and two
-    chunks starting at the same offset modulo 4,096 have the same length; `RandomRepeat` cuts every
+  - `Text44` cuts no chunk over `Max`; every `Period4K` chunk but the stream's last is within
+    `Min` and `Max`, and two such chunks starting at the same offset modulo 4,096 have the same
+    length; `RandomRepeat` cuts every
     chunk within C4's bounds.
   - Over 8 × `Max` bytes of `Random` with one byte inserted 1 KiB in, every chunk of the edited
     input that starts more than 2 × `Max` past the edit has the same length and the same bytes as
@@ -615,13 +636,15 @@ A suggestion only: one pull request per subtask works as well.
 3. **`Target`'s key is provisional.** D8 uses `carver.target` until RFC 13 names the key, which is
    pending the user's answer in the RFC 2 plan's §6 point 2; the RFC 8 offload plan's epic 21 waits
    on that name before registering the section, and T3.3 does not.
-4. **What E4 brings to the chunker's reach.** E1's D1 lets E4 keep a pre-keyed hash state in the
-   settings value, which would make `internal/params` import BLAKE3. The chunker reaches `params`,
-   so its import row would then reach BLAKE3 too, and R13's "never hashes" would hold only by the
-   chunker's own imports in `arch_test.go`, not by its reach. E4 chooses, and widens the chunker's
-   row in the same change if it puts the state there.
+4. **What E4 brings to the chunker's reach: settled.** E4's D2 stores the chunk-ID key in the
+   settings value as bytes, so `internal/params` imports nothing new and the chunker's row is not
+   widened; E4's D1 gives `internal/blake3` no extendable output, so the gear tables stay on
+   `lukechampine.com/blake3` (D5). Nothing here waits on E4's choice.
 5. **The raced cost of the 256 MiB rows.** `unit` runs with `-race` on every pull request, and
-   T3.5 generates about 5.5 GiB of ChaCha8 output across its rows, tables and profiles, 5.25 GiB
-   of it for R25. It is measured when T3.5 lands. The rows keep RFC 2's sizes under `-short`, so if
+   T3.5 generates about 6 GiB of ChaCha8 output across its rows, tables and profiles: 5.25 GiB for
+   R25 (256 MiB, seven profiles, three tables), about 0.5 GiB for edit stability (8 × `Max` at
+   each profile, original and edited, 254 MiB each), 64 MiB for R26, whose one input is held and
+   cut 42 times (about 2.6 GiB more if it were re-streamed per cut), and the content cases'
+   few MiB. It is measured when T3.5 lands. The rows keep RFC 2's sizes under `-short`, so if
    the cost is too high the answer is an RFC 2 §10.4 amendment, not a smaller input chosen in the
    test.
