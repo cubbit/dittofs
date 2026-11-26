@@ -103,7 +103,7 @@ To see what CI will run for your branch, `test/harness/bin/dt plan --tier pr --b
 | `settings-scan-smoke` | the reconcile scan benchmark once per change at `-benchtime=1x`, non-blocking | pr | any machine |
 | `reconcile-settings-smoke` | the reconcile benchmark's settings case, the whole settings reconcile, once per change at `-benchtime=1x`, non-blocking | pr | any machine |
 | `adapter-conformance` | the adapters' conformance specifications, behind their own tag | pr | any machine |
-| `integration` | `-tags=integration` tests against real services | pr | Docker with Postgres and KMIP up; `integration/portmap` needs a Linux host with rpcbind |
+| `integration` | `-tags=integration` tests against real services | pr | Docker with KMIP up; `integration/portmap` needs a Linux host with rpcbind |
 | `operator` | the Kubernetes operator: `make test`, `make lint`, manifests, kustomize | pr | any machine with `make` and `kubectl` |
 | `e2e` | `-tags=e2e` tests through real kernel NFS and SMB mounts, as root | merge | Linux, or dtc |
 | `pjdfstest` | POSIX semantics over an NFS mount, on NFSv3, v4 and v4.1 | pr | Linux, or dtc |
@@ -173,19 +173,18 @@ first:
 
 ```bash
 test/harness/bin/dt services up localstack           # S3 for the badger-s3 profile and e2e
-test/harness/bin/dt services up postgres kmip        # for integration
-test/harness/bin/dt services status                  # all three
+test/harness/bin/dt services up kmip                 # for integration
+test/harness/bin/dt services status                  # both
 test/harness/bin/dt services down
 ```
 
 | Service | Address | Used by |
 |---|---|---|
 | `localstack` | `127.0.0.1:4566`, S3 only | `e2e`, and every `badger-s3` cell: pjdfstest, pynfs, wpts, smbtorture, cthon04, nfstest, clients, fio-verify |
-| `postgres` | `127.0.0.1:15432`, database `dittofs_test` | `integration` |
 | `kmip` | `127.0.0.1:5696`, with throwaway certificates under `test/harness/state/` | `integration` |
 
-To use services of your own instead, set `LOCALSTACK_ENDPOINT`, `DITTOFS_TEST_POSTGRES_DSN` or
-the `DITTOFS_TEST_KMIP*` variables.
+To use services of your own instead, set `LOCALSTACK_ENDPOINT` or the
+`DITTOFS_TEST_KMIP*` variables.
 
 ### dtc, the Linux container
 
@@ -208,7 +207,7 @@ test/harness/bin/dtc clean                        # remove the image and its cac
   suite can start containers beside it; and three volumes that keep the Go module, build and lint
   caches between runs.
 - **Network:** on Docker Desktop the container reaches the services you started on the host
-  through forwarders for ports 4566, 15432 and 5696. On a Linux engine it uses the host network.
+  through forwarders for ports 4566 and 5696. On a Linux engine it uses the host network.
 - **Mounts it makes** stay inside the container: a program on the host can't see them.
 - **Limits:** Docker Desktop's kernel has no `rpcsec_gss_krb5` and no `dm-flakey`, and dtc refuses
   `cthon04` and `nfstest`.
@@ -342,7 +341,7 @@ run can exit 0 having skipped most of what you asked for. Read the table it prin
 
 | Variable | Effect |
 |---|---|
-| `LOCALSTACK_ENDPOINT`, `DITTOFS_TEST_POSTGRES_DSN`, `DITTOFS_TEST_KMIP*` | Use these services instead of the local ones |
+| `LOCALSTACK_ENDPOINT`, `DITTOFS_TEST_KMIP*` | Use these services instead of the local ones |
 | `GITHUB_TOKEN` | Lets `dt history --ci`, `dt plan --estimate --ci` and `dt known prune --ci` read CI's results |
 | `DITTOFS_REPO` | Points `dtc` and the environment commands at another checkout |
 | `DITTOFS_E2E_*`, `DT_*` | Passed through into dtc |
@@ -680,7 +679,7 @@ go test ./pkg/metadata/...                        # plain go test works for a qu
 **Integration.**
 
 ```bash
-test/harness/bin/dt services up postgres kmip
+test/harness/bin/dt services up kmip
 test/harness/bin/dt run integration
 test/harness/bin/dt run integration --kerberos    # against a real KDC, in Docker
 test/harness/bin/dt run integration --portmap     # Linux, with rpcbind running
@@ -1277,7 +1276,7 @@ Flags:
 
 ### `dt services`
 
-Start, stop or show the services the suites use: localstack, postgres, kmip
+Start, stop or show the services the suites use: localstack, kmip
 
 ```text
 dt services [ARGS]

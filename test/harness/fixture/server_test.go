@@ -86,7 +86,7 @@ func TestStartRefusesUnsupported(t *testing.T) {
 		{registry.Fixture{Profile: "badger-s3"}, "no remote store"},
 		{registry.Fixture{Profile: "memory", Shares: "shares.yaml"}, "no shares file"},
 		{registry.Fixture{Profile: "memory", Users: []string{"1"}}, "creates no fixture users"},
-		{registry.Fixture{Profile: "postgres-s3"}, `the "postgres-s3" profile`},
+		{registry.Fixture{Profile: "badger-gcs"}, `the "badger-gcs" profile`},
 	} {
 		out := t.TempDir()
 		_, err := Start(t.Context(), tc.f, t.TempDir(), out, &strings.Builder{})

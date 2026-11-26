@@ -628,8 +628,8 @@ jobs:
 
       # The services its needs name, which dt run checks answer before the
       # tests start.
-      - name: Start PostgreSQL and PyKMIP
-        run: '"$RUNNER_TEMP/dt" services up postgres kmip'
+      - name: Start PyKMIP
+        run: '"$RUNNER_TEMP/dt" services up kmip'
 
       - *suite
 

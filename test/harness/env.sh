@@ -2,7 +2,7 @@
 # The environment commands, which dt hands to this script with their arguments.
 # They start and stop the containers the suites use, so they stay shell.
 #
-#   dt services up|down|status [localstack|postgres|kmip]
+#   dt services up|down|status [localstack|kmip]
 #   dt stack up [--memory]|down [-v]|status|logs|mount|umount
 #   dt cleanup [--volumes]
 #   dt hooks install [--container]|uninstall|status
@@ -32,15 +32,12 @@ $IN_CONTAINER && [[ "${DT_HOSTNET:-}" != 1 ]] && HOSTNET=false
 # resolves short names only through registries.conf and refuses them without it.
 LOCALSTACK_NAME=dittofs-localstack
 LOCALSTACK_IMAGE=docker.io/localstack/localstack:4.13.1
-PG_NAME=dittofs-harness-pg-it         # the integration tests' postgres/postgres on 15432
-PG_IMAGE=docker.io/library/postgres:16
-PG_PORT=15432
 KMIP_NAME=dittofs-pykmip
 # Pinned: an unpinned server would let a PyKMIP release change what the KMIP
 # tests assert about without any change on this side.
 KMIP_IMAGE=docker.io/library/python:3.11-slim
 KMIP_VERSION=0.10.0
-SERVICES=(localstack postgres kmip)
+SERVICES=(localstack kmip)
 
 # --- output ----------------------------------------------------------------------
 if [[ -t 1 ]]; then C_G=$'\033[0;32m' C_Y=$'\033[1;33m' C_R=$'\033[0;31m' C_0=$'\033[0m'
@@ -114,19 +111,6 @@ svc_localstack_up() {
 }
 localstack_ready() { curl -s http://127.0.0.1:4566/_localstack/health | grep -Eq '"s3": "(available|running)"'; }
 
-svc_postgres_up() {
-    if container_running "$PG_NAME"; then info "postgres already running"; return; fi
-    docker rm -f "$PG_NAME" >/dev/null 2>&1 || true
-    if dockerhost_port_busy "$PG_PORT"; then die "port $PG_PORT is taken by something else"; fi
-    docker_pull "$PG_IMAGE"
-    docker run -d --name "$PG_NAME" -p "127.0.0.1:${PG_PORT}:5432" \
-        -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=dittofs_test \
-        "$PG_IMAGE" >/dev/null
-    # Over TCP: the init-time server answers on its Unix socket before the port is up.
-    wait_for "postgres" 30 docker exec "$PG_NAME" pg_isready -h 127.0.0.1 -U postgres
-    info "postgres on 127.0.0.1:${PG_PORT} postgres/postgres db dittofs_test"
-}
-
 # PyKMIP for the KMIP interop tests: its certificates, the pinned server, its
 # readiness, the keys the tests read, and their environment file. The port is
 # published on 127.0.0.1 only, never on every interface of a laptop's network.
@@ -197,7 +181,7 @@ kmip_cert() {
 }
 
 svc_name() { # the container of service $1
-    case "$1" in localstack) echo "$LOCALSTACK_NAME" ;; postgres) echo "$PG_NAME" ;; kmip) echo "$KMIP_NAME" ;; esac
+    case "$1" in localstack) echo "$LOCALSTACK_NAME" ;; kmip) echo "$KMIP_NAME" ;; esac
 }
 
 svc_status() {
@@ -212,7 +196,7 @@ svc_status() {
 }
 
 cmd_services() {
-    local usage="usage: dt services up|down|status [localstack|postgres|kmip]"
+    local usage="usage: dt services up|down|status [localstack|kmip]"
     local action="${1:-status}"; shift || true
     case "$action" in up|down|status) ;; *) die "$usage" ;; esac
     local which=("$@") s

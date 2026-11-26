@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Entry point of the dtc container. The suites talk to their services on
-# localhost (Localstack :4566, the integration Postgres :15432,
-# PyKMIP :5696). Those services are sibling containers publishing on the Docker host.
+# localhost (Localstack :4566, PyKMIP :5696). Those services are sibling
+# containers publishing on the Docker host.
 # On a bridge network (Docker Desktop) the host is host.docker.internal, so forward
 # each port; sharing the host's network (DT_HOSTNET=1, a Linux engine), they are
 # already on localhost.
@@ -21,7 +21,7 @@ forward() {
     exit 2
 }
 if [[ "${DT_HOSTNET:-}" != 1 ]]; then
-    for p in 4566 15432 5696; do forward "$p"; done
+    for p in 4566 5696; do forward "$p"; done
 fi
 # A Linux engine keeps uid 0 on files a root container writes into bind mounts,
 # so hand what the run created in the checkout (results, state, git index

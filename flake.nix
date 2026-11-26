@@ -294,7 +294,7 @@
             perl
             # POSIX filesystem compliance testing (C version - authoritative)
             pjdfstest
-            # Docker client for PostgreSQL testing (daemon must be running on host)
+            # Docker client for the test services (daemon must be running on host)
             docker-client
             # FoundationDB's client library and headers: builds with the
             # foundationdb tag compile the fdbkv backend, which links libfdb_c.
@@ -355,8 +355,8 @@
               echo "  test/harness/bin/dt run e2e [TestName]"
               echo ""
             fi
-            echo "PostgreSQL for the integration tests:"
-            echo "  test/harness/bin/dt services up postgres"
+            echo "PyKMIP for the integration tests:"
+            echo "  test/harness/bin/dt services up kmip"
             echo ""
             echo "NFSv4 protocol conformance (no mount, no root):"
             echo "  pynfs-4.0 / pynfs-4.1       pynfs test client"

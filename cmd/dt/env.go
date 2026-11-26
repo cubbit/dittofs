@@ -11,7 +11,7 @@ import (
 // envCommands are the environment commands, which stay shell: dt hands each,
 // with its arguments, to test/harness/env.sh.
 var envCommands = []struct{ name, short string }{
-	{"services", "Start, stop or show the services the suites use: localstack, postgres, kmip"},
+	{"services", "Start, stop or show the services the suites use: localstack, kmip"},
 	{"stack", "Start, stop, show or mount the compose stack: a server with its S3 on Localstack"},
 	{"cleanup", "Stop everything the harness can leave running"},
 	{"hooks", "Run git's hooks through the harness, on this machine or in the dtc container"},

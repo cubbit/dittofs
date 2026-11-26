@@ -86,7 +86,7 @@ func fakeFixture(t *testing.T, start func(ctx context.Context) (fixtureServer, e
 const fixtureSuite = `suites:
   f:
     cmd: ["echo {server}:{nfs-port} {user}", "test {password} = s3cret"]
-    matrix: { p: [memory, badger-s3, postgres-s3] }
+    matrix: { p: [memory, badger-s3, badger-gcs] }
     fixture: { profile: "{p}", nfs: export, lease: 30s }
 `
 
@@ -108,8 +108,8 @@ func TestFixtureCell(t *testing.T) {
 	if len(rep.Outcomes) != 3 || rep.Outcomes[0].Result != report.Passed || rep.Outcomes[1].Result != report.Passed {
 		t.Fatalf("outcomes %+v\n%s", rep.Outcomes, out)
 	}
-	if o := rep.Outcomes[2]; o.Result != report.NotRun || o.Note != `dt doesn't set up the "postgres-s3" profile yet` {
-		t.Errorf("postgres-s3: %+v", o)
+	if o := rep.Outcomes[2]; o.Result != report.NotRun || o.Note != `dt doesn't set up the "badger-gcs" profile yet` {
+		t.Errorf("badger-gcs: %+v", o)
 	}
 	a := *asked
 	if len(a) != 2 || a[0].Profile != "memory" || a[0].Lease != "30s" || a[1].Profile != "badger-s3" || server.stops != 2 || server.resets != 0 {
