@@ -76,6 +76,55 @@ func TestRefillWaitsForQueuedRecycle(t *testing.T) {
 	e.p.Stop()
 }
 
+// TestRefillMakesNoSpareARecycleLandedMidPass: a recycle that lands, and
+// leaves the retirement queue, after a refill pass chose its class leaves that
+// pass nothing to make. It catches a pass that reads the queue only after
+// choosing the class: it finds the queue empty, misses the spare the recycle
+// landed, and makes a second one for the same slot.
+func TestRefillMakesNoSpareARecycleLandedMidPass(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	e, _ := retirer(t, segment.Targets{Content: 1}, nil)
+	id := e.segment(true)
+	// The worker is held in its first pass, so the queued segment is retired
+	// only where the pool's pass is held below.
+	inPass, release := make(chan struct{}), make(chan struct{})
+	var held sync.Once
+	e.r.SetPassHook(func() { held.Do(func() { close(inPass); <-release }) })
+	e.r.Start()
+	<-inPass
+	e.r.Enqueue(id, segment.NotHeld)
+	used := e.set.Counters().UsedBytes
+	creates := e.seam.Calls(kit.OpCreate)
+
+	retired := make(chan error, 1)
+	var once sync.Once
+	e.p.SetRefillClassHook(func() {
+		once.Do(func() {
+			_, err := e.r.Retire(id, segment.NotHeld)
+			retired <- err
+		})
+	})
+	e.p.Start()
+	if err := <-retired; err != nil {
+		t.Fatalf("Retire of the queued segment: %v", err)
+	}
+	// Stop joins the worker, so the pass the hook held has finished.
+	e.p.Stop()
+	close(release)
+	e.r.Stop()
+
+	if got := e.seam.Calls(kit.OpCreate); got != creates {
+		t.Fatalf("the pass made %d files beside the recycled spare, want none", got-creates)
+	}
+	if got := e.p.Counters().Spares; got != 1 {
+		t.Fatalf("spares ready = %d, want 1, the recycled one", got)
+	}
+	if got := e.set.Counters().UsedBytes; got != used {
+		t.Fatalf("the footprint moved from %d to %d, want it unchanged", used, got)
+	}
+}
+
 // TestRefillMakesOnceQueueDrains: a content class short by two with one
 // full-sealed segment queued gets exactly one recycle and one make: the
 // recycle fills a slot, and the queue's emptying wakes the pool for the slot

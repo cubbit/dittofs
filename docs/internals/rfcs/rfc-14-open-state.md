@@ -2871,8 +2871,9 @@ the close that left the file no persistent open has deleted its
 `LockRange` and `LockWaiter` are declared here and aliased by `pkg/vfs`
 ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), since open state cannot
 import vfs; `LockReq` is open state's own, and the service copies `pkg/vfs`'s
-request's ranges into it whole. The import rule — only the filesystem service
-imports this package — is held by the architecture test
+request's ranges into it whole. The import rule — only the two composers of
+[RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy) import this package: the node with its content wiring, which builds
+open state, and the filesystem service — is held by the architecture test
 ([RFC 20](rfc-20-adapters.md)), as is the count of `*Table`'s exported methods.
 
 **The store views open state writes through.** `Deps.Records` is the metadata
@@ -3527,24 +3528,28 @@ runs yet, alongside the multi-node simulation, the rows marked cluster, and §13
 
 ## 14. Observability
 
-Metric names are shown without the deployment's prefix. `protocol` takes
-RFC 25's values: `nfs3` (NLM included), `nfs4`, `smb`.
+Metric names are shown without the deployment's prefix. A series on state
+carries no `protocol` label: the file's primary sees no protocol, only the
+caller's capabilities, and holds no client record to read a kind from, so the
+per-protocol counts are the adapters' own metrics. A series on client records keeps `protocol`, read from the record's
+kind, in RFC 25's values: `nfs3` (NLM included), `nfs4`, `smb`.
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| state held | `openstate_held{kind, protocol}`, `kind` = `client`, `pending`, `open`, `lock`, `lock_state`, `waiter`, `grant`, `watch`, `delete_pending`, `revoked` | gauge |
-| grants offered and declined | `openstate_grants_total{protocol, result}`, `result` = `offered`, `conflict`, `no_callback`, `budget`, `fenced`, `setuid`, `pool`, `shared`, `recalling` | counter |
-| recalls, by outcome and cause | `openstate_recalls_total{protocol, outcome, reason}`, `outcome` = `returned`, `revoked`, `downgraded`; `reason` = `conflict`, `budget`, `setuid` | counter |
+| client records held | `openstate_clients{protocol, record}`, `record` = `confirmed`, `proposal`; a confirmed client with a pending proposal counts once under each | gauge |
+| state held | `openstate_held{kind}`, `kind` = `open`, `lock`, `lock_state`, `waiter`, `grant`, `watch`, `delete_pending`, `revoked` | gauge |
+| grants offered and declined | `openstate_grants_total{result}`, `result` = `offered`, `conflict`, `no_callback`, `budget`, `fenced`, `setuid`, `pool`, `shared`, `recalling` | counter |
+| recalls, by outcome and cause | `openstate_recalls_total{outcome, reason}`, `outcome` = `returned`, `revoked`, `downgraded`; `reason` = `conflict`, `budget`, `setuid` | counter |
 | recalls not yet sent | `openstate_recalls_queued` | gauge |
-| recall time, from send | `openstate_recall_seconds{protocol, outcome}` | histogram (`request`) |
+| recall time, from send | `openstate_recall_seconds{outcome}` | histogram (`request`) |
 | conflicts refused | `openstate_conflicts_total{reason}`, `reason` = `deny_mode`, `lock`, `mandatory_io`, `delete_pending`, `open_children`, `open_target`, `grace`, `reclaim` | counter |
-| lock waits | `openstate_lock_wait_seconds{protocol, outcome}`, `outcome` = `granted`, `cancelled`, `replaced`, `poll_missed`, `ended` | histogram (`background`) |
+| lock waits | `openstate_lock_wait_seconds{outcome}`, `outcome` = `granted`, `cancelled`, `replaced`, `poll_missed`, `ended` | histogram (`background`) |
 | grants not yet acknowledged by their lock-waiter's host, and the oldest | `openstate_lock_grants_unacknowledged`, `openstate_lock_grant_unacknowledged_oldest_seconds` | gauge |
 | clients fenced from grants ([§5.3](#5.3%20A%20recall%20MUST%20end%20within%20a%20bounded%20time)) | `openstate_grant_fenced_clients` | gauge |
 | change notifications | `openstate_notify_total{result}`, `result` = `delivered`, `enumerate` | counter |
 | shards in grace | `openstate_grace_shards` | gauge |
 | grace duration | `openstate_grace_seconds{reason}`, `reason` = `complete`, `timeout`, `move` | histogram (`background`) |
-| reclaims | `openstate_reclaims_total{protocol, kind, result}`, `kind` = `open`, `lock`, `grant`, `persistent`; `result` = `accepted`, `no_record`, `more_than_held`, `conflict`, `pool` | counter |
+| reclaims | `openstate_reclaims_total{kind, result}`, `kind` = `open`, `lock`, `grant`, `persistent`; `result` = `accepted`, `no_record`, `more_than_held`, `conflict`, `pool` | counter |
 | SMB reconnects | `openstate_reconnects_total{result}`, `result` = `matched`, `refused_key`, `refused_principal`, `timed_out` | counter |
 | clients ended | `openstate_clients_ended_total{protocol, reason}`, `reason` = `lease`, `reboot`, `admin`, `destroy`, `share` | counter |
 | proposals replaced by another principal ([§2.9](#2.9%20Clients%20pending%20confirmation)) | `openstate_proposals_replaced_total{protocol}` | counter |
@@ -3564,11 +3569,11 @@ defined here only; other RFCs link to this table. No share or client label.
 — at a remote primary, the server-side span that is the child of the
 forwarded call ([RFC 25](rfc-25-observability.md)) — sets the step's neutral
 `op`, shard, `result` and whether it waited on that span, and adds events to it:
-`openstate.conflict` (`reason`), `openstate.recall_started` (holder `protocol`,
-number of grants), `openstate.waiter_recorded`, `openstate.grace_refused`, and
+`openstate.conflict` (`reason`), `openstate.recall_started` (number of
+grants), `openstate.waiter_recorded`, `openstate.grace_refused`, and
 `openstate.step_wait` with the time waited. Work that outlives a request opens
 a root span that links to the request that started it: `openstate.recall`
-(grant kind, `protocol`, `outcome`, deadline), `openstate.grace` per shard
+(grant kind, `outcome`, deadline), `openstate.grace` per shard
 (shard ID, grace instance, recorded clients, `reason`), and
 `openstate.client_end` (client ID, `reason`, counts released). A renewal opens
 no span; at 10⁵ clients one per lease period would be most of the export

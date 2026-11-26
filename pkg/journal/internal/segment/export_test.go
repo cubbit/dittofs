@@ -16,6 +16,11 @@ func (s *Stream) SetRollWaitHook(f func()) { s.rollWaitHook = f }
 // drain with its record pinned, holding no lock: where a seal can first run.
 func (s *Stream) SetPinnedHook(f func()) { s.pinnedHook = f }
 
+// SetRefillClassHook sets the instance's hook that runs once a refill pass
+// has chosen the class it fills and left the pool's mutex. It must run before
+// Start.
+func (p *Pool) SetRefillClassHook(f func()) { p.classHook = f }
+
 // SetPassHook sets the instance's hook the retirement worker runs at the end
 // of every pass, so a test knows a pass finished and what it left. It must run
 // before Start.

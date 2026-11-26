@@ -73,7 +73,7 @@ func BenchmarkAdmissionCallers(b *testing.B) {
 			c.raise(b)
 			ctx := context.Background()
 			admit := func(i int) error {
-				_, release, err := c.admit(ctx, calls[i], shares[i], true, false)
+				_, release, err := c.admit(ctx, calls[i], shares[i], 0)
 				release()
 				return err
 			}

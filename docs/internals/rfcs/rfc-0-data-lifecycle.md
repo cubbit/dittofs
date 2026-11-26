@@ -406,7 +406,7 @@ Two families of unit. The **bytes** units say where content is; the
 | **version** | the number ordering every write and removal of one file: 128 bits, an epoch half (zero in this format) and a counter half drawn from the journal serving the file. Where two cover the same byte, the higher wins, whatever order they arrived in. A journal issues versions only below a durable **version limit** the caller raises ahead of use, and at every open and every attach raises its counter above both the share's version floor and that limit, so no version it reported before a crash or a device loss is issued again. Not a sequence number (per journal) nor a cut number (per share) | [§2.1](#2.1%20Entities), [RFC 1 §4.3](rfc-1-journal.md#4.3%20Versions) |
 | **chunk** | a run of one file's bytes, about 256 KiB, cut at a content-defined boundary and named by its **chunk ID**, a keyed hash of its content under the namespace's chunk-ID key; shared by every ref that names it. An all-zero chunk is never stored: the file records a **zero ref** instead, which reads as zeros with no fetch | [§2.1](#2.1%20Entities) |
 | **Target**, **Min**, **Max** | the one chunking setting, default 256 KiB, and the boundary bounds derived from it, Target ÷ 4 and 4 × Target | [RFC 2 §3.2](rfc-2-carver.md#3.2%20One%20setting%2C%20and%20the%20bounds%20derived%20from%20it) |
-| **stretch** | one unbroken run of a file's bytes handed to the carver in one call; an end the offer imposed, not a hole or the file's end, leaves its tail uncut for the next offer | [RFC 2 §2.4](rfc-2-carver.md#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut) |
+| **stretch** | one unbroken run of a file's bytes handed to the carver in one call; an end the offer imposed, not a hole or the file's end, leaves its tail uncut for the next offer; an end the engine sets before an extent whose replaced refs would pass the key budget is real, and the next stretch starts there | [RFC 2 §2.4](rfc-2-carver.md#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut) |
 | **block** | the object the remote tier stores: a whole number of chunks, written by one put. It targets a configured size — 4 MiB by default, settable from 1 MiB to 64 MiB — and passes it by at most one chunk, because a chunk never spans two blocks; it falls short only at the format's chunk cap or at the end of an offload pass | [§2.1](#2.1%20Entities) |
 | **block plan** | the assembler's list of the chunk hashes for one block and where their bytes sit, from which the block is streamed | [RFC 2 §5](rfc-2-carver.md#5.%20The%20block%20assembler) |
 | **block name** | a block's 32-byte identity, minted afresh for each put attempt and never reused, so one name is always one byte sequence | [RFC 4 §4.3](rfc-4-remote-tier.md#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) |
@@ -614,17 +614,49 @@ it owns no component's internals.
 
 ### 1.2 Component autonomy
 
-A component **MUST NOT** import another component in this set. The composition
-root, the node (`node.New`), is the one exception: it builds the components,
-imports them, and is imported by none of them ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)).
+A component has two parts. Its **contract** is the interfaces it offers, the
+value types and constants they carry, and its error values. Its
+**implementation** is everything else.
 
-Where a component requires a capability it does not own, it **MUST** declare an
-interface for that capability in its own package, named for the need rather than
-for the provider. The composition root supplies an implementation at composition
-time.
+A component **MUST NOT** import another component's implementation. Two
+composers are the only exceptions, and each is imported only by the layer above
+it:
+
+- **The composition root**, the node (`node.New`), with the wiring it delegates
+  the building of the content components to. It builds the components, imports
+  them, and is imported by none of them ([RFC 23 §2.1](rfc-23-control-plane.md#2.1%20The%20node%20builds%20its%20components)).
+- **The filesystem service**, which composes the metadata store, open state,
+  identity and the engine into the one API the adapters call. It holds a
+  component concretely where only one implementation exists
+  ([RFC 17](rfc-17-vfs.md)), and its implementation is imported only by the
+  node; the adapters import its contract.
+
+A component **MAY** import another component's contract. A contract holds no
+behaviour beyond pure functions and methods over its own value types and
+constructors that mint a new value of one, such as a random identifier; it
+keeps no state, and imports only the standard library, libraries outside this
+set and other contracts, so importing one brings in no component's behaviour
+and no cycle. A component that offers a contract keeps it in a unit of its
+own, apart from its implementation. A unit that holds a contract and an
+implementation together counts as an implementation, and no exception is named:
+until its contract is split out, only the composers import it, and a component
+that needs what it holds gets plain values or an interface from the composer.
+
+Where a component requires a capability it does not own, it **MUST** take it as
+an interface: the provider's contract interface, or, where it needs less than
+the provider offers, an interface it declares itself, named for the need. It
+**MUST NOT** copy a provider's value types or error values only to avoid
+importing the provider's contract. The composition root supplies an
+implementation at composition time.
+
 Each component **MUST** build and pass its tests with every such interface
 supplied by a verified in-memory implementation, or a fault wrapper around one
-([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)).
+([RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)). The in-memory
+implementation of a contract ships with its provider, beside the contract's
+conformance suite, so every consumer tests against the one implementation the
+suite holds to the real one. The import rule binds production code only: a
+component's tests **MAY** import other components' implementations, to run
+against real collaborators rather than doubles.
 
 A capability **MUST NOT** be negotiated by type assertion on an interface the
 provider does not declare it satisfies. A capability that is absent **MUST**
@@ -635,7 +667,20 @@ behaviour — an unindexed lookup, a disabled guard — that no test observes; a
 declared parameter cannot fail this way. The same holds for configuration: an
 invalid setting **MUST** be refused, never replaced by a default.
 
-Conformance is checked by a per-component import-graph test.
+Conformance is checked by a per-component import-graph test that follows
+imports transitively, so a library a component imports cannot carry another
+component's implementation in. It fails when a component's production code
+reaches another component's implementation, and when a contract imports another
+component's implementation.
+
+> decision: a contract may be shared. A rule that forbade every import made each
+> consumer copy the provider's types and errors, map between the copies, and
+> build a second in-memory implementation with its own suite; that cost more
+> than the coupling it avoided, and the copies could drift unseen. Sharing a
+> contract makes a change to it reach every consumer at compile time, which is
+> the intended effect. Withdraw this if a contract starts to carry behaviour or
+> state, or if contract changes start to force churn across components that a
+> consumer-declared interface would have absorbed.
 
 ### 1.3 The layers
 
@@ -1257,8 +1302,9 @@ offers the same stretch of bytes converges on the same chunk identities. An offe
 cut at a byte limit does not move boundaries: the carver leaves the tail after
 its last content-chosen boundary uncut, and the next offer starts there
 ([RFC 2 §2.4](rfc-2-carver.md#2.4%20An%20artificial%20end%20leaves%20the%20tail%20uncut)). A retry whose stretch starts elsewhere — after the
-age-forced final cut of a tail that waited the pass's maximum age, or a partial
-report that moved the start of what remains dirty — cuts its first chunks
+age-forced final cut of a tail that waited the pass's maximum age, an end the
+engine set before an extent whose replaced refs would pass the key budget
+([RFC 8 §6.7](rfc-8-engine.md#6.7%20A%20run%20is%20what%20the%20journal%20offers%2C%20widened%20only%20to%20re-tile)), or a partial report that moved the start of what remains dirty — cuts its first chunks
 differently until its boundaries rejoin the earlier ones. Those few chunks are stored again under
 new hashes and the earlier ones are left to sweep: a cost in space and transfer,
 never in correctness.
@@ -1480,7 +1526,7 @@ These hold across components. No component can enforce any of them alone.
 | **I3** | A remote block is never deleted while a referenced chunk's record locates the chunk in it. |
 | **I4** | Fill never overwrites content the journal holds. |
 | **I5** | That content is offloaded is reported, never inferred. |
-| **I6** | No component imports another component in this set, except the composition root, the node, which composes them ([§1.2](#1.2%20Component%20autonomy)). Adapters import only the filesystem service ([RFC 17](rfc-17-vfs.md)). |
+| **I6** | No component imports another component's implementation, except the two composers, the composition root and the filesystem service; a component may import another's contract ([§1.2](#1.2%20Component%20autonomy)). Adapters import only the filesystem service ([RFC 17](rfc-17-vfs.md)). |
 | **I7** | Every stored record has a named reclamation path that holds at the record's maximum size. |
 | **I8** | A serialization conflict is retried within the caller's deadline, never surfaced as an I/O error; one still unresolved at the deadline answers retry-later ([§9.2](#9.2%20Conflicts%20and%20their%20retries)). |
 | **I9** | A block name is minted by one put attempt and put by no other; a remote object is deleted only when no block record not yet `deleted` and no put intent names it. |

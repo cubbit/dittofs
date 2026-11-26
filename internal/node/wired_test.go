@@ -54,6 +54,13 @@ func onBackends(t *testing.T, row func(t *testing.T, memory bool)) {
 // a viewer.
 func newWired(t *testing.T, memory bool, build func(node.Config) (*node.Node, error)) *wired {
 	t.Helper()
+	return newWiredThen(t, memory, build, nil)
+}
+
+// newWiredThen is newWired calling prep, when set, on the harness after the
+// node is built and before it starts, where a hook or a section is set.
+func newWiredThen(t *testing.T, memory bool, build func(node.Config) (*node.Node, error), prep func(*nodetest.Harness)) *wired {
+	t.Helper()
 	if build == nil {
 		build = node.New
 	}
@@ -67,6 +74,9 @@ func newWired(t *testing.T, memory bool, build func(node.Config) (*node.Node, er
 		opts = append(opts, nodetest.InMemory())
 	}
 	h := nodetest.New(t, opts...)
+	if prep != nil {
+		prep(h)
+	}
 	started(t, h)
 	addr, _ := h.Node().Addrs()
 	w.authNode = &authNode{h: h, addr: addr}
@@ -123,7 +133,8 @@ func (w *wired) shareIDs(t *testing.T) []string {
 }
 
 // namespaceOn writes a namespace on store through the store, as the
-// installation's namespaces are seeded until the API writes them.
+// installation's namespaces are seeded while the node's settings table
+// declares no namespace section, and the API refuses their create.
 func namespaceOn(t *testing.T, h *nodetest.Harness, store [16]byte) entity.NamespaceID {
 	t.Helper()
 	ns := entity.Namespace{ID: entity.NewNamespaceID(), Store: store}

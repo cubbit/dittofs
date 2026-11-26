@@ -1,9 +1,11 @@
 package adaptertest
 
 import (
+	"bytes"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"io/fs"
 	"os"
 	"path"
@@ -51,6 +53,36 @@ var retired = []string{
 	"internal/adapter/smb/handlers",     // handlers, now rows of the protocol's tables
 }
 
+// entryMethods are the service's entry methods, by which a client reaches a
+// share (RFC 20 §4.10).
+var entryMethods = []string{"Root", "SecInfo", "ListShares"}
+
+// entryFiles are the entry handlers' files, the only adapter files that may
+// call an entry method (RFC 20 §4.10).
+var entryFiles = []string{
+	"internal/adapter/nfs/ops/mount/mnt.go",
+	"internal/adapter/nfs/ops/mount/export.go",
+	"internal/adapter/nfs/ops/v4/putrootfh.go",
+	"internal/adapter/nfs/ops/v4/putpubfh.go",
+	"internal/adapter/nfs/ops/v4/secinfo.go",
+	"internal/adapter/smb/ops/tree_connect.go",
+	"internal/adapter/smb/dcerpc/srvsvc/netshareenum.go",
+	"internal/adapter/smb/dcerpc/srvsvc/netsharegetinfo.go",
+}
+
+// maxLines is the most lines a hand-written adapter file has unless long
+// lists it (RFC 20 §2.5).
+const maxLines = 800
+
+// long is the hand-written adapter files over maxLines. It only shrinks: a
+// file brought under the limit, or gone, fails the test until its entry is
+// dropped.
+var long = []string{
+	"internal/adapter/core/chain.go",
+	"internal/adapter/core/hold.go",
+	"internal/adapter/core/pipeline.go",
+}
+
 // under reports whether p is root or a package below it.
 func under(p, root string) bool { return p == root || strings.HasPrefix(p, root+"/") }
 
@@ -74,6 +106,23 @@ func adapterOf(dir string) string {
 		return path.Base(dir)
 	}
 
+	return ""
+}
+
+// harnessOf names the protocol whose handler harness or scripted client the
+// package at dir is, adaptertest/<protocol>harness or
+// adaptertest/<protocol>client and the packages below it; "" for any other.
+func harnessOf(dir string) string {
+	rest, ok := strings.CutPrefix(dir, "internal/adapter/adaptertest/")
+	if !ok {
+		return ""
+	}
+	name, _, _ := strings.Cut(rest, "/")
+	for _, suffix := range []string{"harness", "client"} {
+		if proto, ok := strings.CutSuffix(name, suffix); ok && proto != "" {
+			return proto
+		}
+	}
 	return ""
 }
 
@@ -164,6 +213,19 @@ func forbiddenToAnAdapter(dir, name string, test bool, imp string) string {
 	case under(p, "internal/adapter/"+name), p == "internal/adapter/core" && !under(dir, "pkg"):
 		return ""
 	case under(p, "internal/adapter"):
+		// decision: a protocol's harness or scripted client,
+		// adaptertest/<protocol>harness or adaptertest/<protocol>client, may
+		// import that protocol's packages and no other's, since it decodes
+		// and lays out that protocol's messages for its tests. It is
+		// test-only: the rule above already refuses adaptertest to a non-test
+		// file outside it, so no serving package reaches a protocol through
+		// it. Withdraw it if a serving package ever imports one.
+		if proto := harnessOf(dir); proto != "" {
+			if under(p, "internal/adapter/"+proto) {
+				return ""
+			}
+			return "a protocol's harness or scripted client imports only its own protocol's packages"
+		}
 		if name == "core" {
 			return "core imports no protocol"
 		}
@@ -261,6 +323,30 @@ func usesRuntime(rel, wire string, funcs map[string]bool, f *ast.File) []string 
 	return found
 }
 
+// entryCalls names each call of an entry method in f, the adapter file rel,
+// unless rel is an entry handler's file.
+//
+// ponytail: the match is by method name, so a method of another type sharing
+// one of those names is reported too, and a method value taken without a call
+// is not. Type-check the adapter packages, in this test alone, if either is
+// ever needed.
+func entryCalls(rel string, f *ast.File) []string {
+	if slices.Contains(entryFiles, rel) {
+		return nil
+	}
+	var found []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		if c, ok := n.(*ast.CallExpr); ok {
+			if s, ok := c.Fun.(*ast.SelectorExpr); ok && slices.Contains(entryMethods, s.Sel.Name) {
+				found = append(found, rel+": calls "+types.ExprString(s)+", an entry method, outside the entry handlers' files")
+			}
+		}
+		return true
+	})
+
+	return found
+}
+
 // declaredFuncs is the names of the functions, methods aside, that the
 // package in dir declares in its files other than tests; none where dir
 // holds no package.
@@ -290,17 +376,20 @@ func declaredFuncs(t *testing.T, dir string) map[string]bool {
 
 // violations walks every Go file under root, test files and files behind a
 // build tag included, and names each import the adapters' architecture
-// forbids, each use of a wire runtime in an ops file and each package at a
-// retired path. It leaves out what go builds no package of this module from:
+// forbids, each use of a wire runtime in an ops file, each package at a
+// retired path, each call of an entry method outside the entry handlers'
+// files, each hand-written adapter file over maxLines that long, the
+// allowlist, does not hold, and each entry of long that is no such file. It leaves out what go builds no package of this module from:
 // a directory below root named testdata or beginning with . or _, and another
 // module, a directory holding a go.mod.
 //
 // ponytail: a package's path is read from its directory under root, so an
 // import a replace directive or a vendored copy redirects would be missed.
 // Load the packages, inside this test alone, if the module ever has either.
-func violations(t *testing.T, root string) []string {
+func violations(t *testing.T, root string, long []string) []string {
 	t.Helper()
 	var found []string
+	over := map[string]bool{}             // the hand-written adapter files over maxLines
 	funcs := map[string]map[string]bool{} // by wire package, its declared functions
 	err := filepath.WalkDir(root, func(file string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -331,11 +420,21 @@ func violations(t *testing.T, root string) []string {
 		}
 		name := path.Base(rel)
 		held := ops(dir, name) && name != "codec_gen.go"
+		// decision: an adapter's test files are held to neither the entry
+		// call sites nor the file size. A handler test reaches a share
+		// through the service it sets up, which is no second path a client
+		// can take, and a test's length is no handler's. Withdraw it if a
+		// test helper in an adapter starts serving requests.
+		adapterFile := adapterOf(dir) != "" && !strings.HasSuffix(name, "_test.go")
 		mode := parser.ImportsOnly
-		if held {
-			mode = parser.SkipObjectResolution
+		if adapterFile {
+			mode = parser.SkipObjectResolution | parser.ParseComments
 		}
-		parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, mode)
+		src, err := os.ReadFile(file)
+		if err != nil {
+			return err
+		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), file, src, mode)
 		if err != nil {
 			found = append(found, rel+": its imports cannot be read: "+err.Error())
 			return nil
@@ -356,10 +455,30 @@ func violations(t *testing.T, root string) []string {
 			}
 			found = append(found, usesRuntime(rel, wire, funcs[wire], parsed)...)
 		}
+		if adapterFile {
+			found = append(found, entryCalls(rel, parsed)...)
+			// decision: a generated file, recognised by Go's "// Code
+			// generated ... DO NOT EDIT." header and not by its name, is not
+			// counted: its generator's check holds it, failing a change whose
+			// code differs from a fresh run, and an entry for it could never
+			// be dropped. Withdraw it if a generated file is ever edited by
+			// hand.
+			if n := bytes.Count(src, []byte("\n")); n > maxLines && !ast.IsGenerated(parsed) {
+				over[rel] = true
+				if !slices.Contains(long, rel) {
+					found = append(found, rel+": "+strconv.Itoa(n)+" lines, over "+strconv.Itoa(maxLines)+" and not on the allowlist")
+				}
+			}
+		}
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, f := range long {
+		if !over[f] {
+			found = append(found, f+": on the allowlist, and no hand-written adapter file over "+strconv.Itoa(maxLines)+" lines: drop its entry")
+		}
 	}
 	sort.Strings(found)
 
@@ -373,7 +492,7 @@ func TestImports(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
 		t.Fatalf("the walk's root is not the module's: %v", err)
 	}
-	for _, v := range violations(t, root) {
+	for _, v := range violations(t, root, long) {
 		t.Error(v)
 	}
 }
@@ -385,6 +504,7 @@ func TestImportCheckReportsEachSeededViolation(t *testing.T) {
 	want := []string{
 		"internal/adapter/auth/doc.go: a package at internal/adapter/auth, a path the first adapters used",
 		"internal/adapter/common/doc.go: a package at internal/adapter/common, a path the first adapters used",
+		"internal/adapter/adaptertest/nfsharness/smb.go: imports github.com/cubbit/dittofs/internal/adapter/smb/wire: a protocol's harness or scripted client imports only its own protocol's packages",
 		"internal/adapter/core/metadata.go: imports github.com/cubbit/dittofs/pkg/metadata: an adapter imports, of the module, only pkg/vfs, pkg/adapter, pkg/adapter/settings, pkg/resources, pkg/metrics, internal/tlsconfig, core and its own packages",
 		"internal/adapter/core/protocol.go: imports github.com/cubbit/dittofs/internal/adapter/nfs: core imports no protocol",
 		"internal/adapter/core/protocol_test.go: imports github.com/cubbit/dittofs/internal/adapter/nfs: core imports no protocol",
@@ -434,8 +554,17 @@ func TestImportCheckReportsEachSeededViolation(t *testing.T) {
 		"pkg/controlplane/runtime/adapters/doc.go: a package at pkg/controlplane/runtime/adapters, a path the first adapters used",
 		"pkg/other/core.go: imports github.com/cubbit/dittofs/internal/adapter/core: no package under pkg/ but the two constructors imports an adapter's implementation",
 		"pkg/other/core_test.go: imports github.com/cubbit/dittofs/internal/adapter/core: no package under pkg/ but the two constructors imports an adapter's implementation",
+		"internal/adapter/nfs/ops/v4/lookup.go: calls svc.Root, an entry method, outside the entry handlers' files",
+		"internal/adapter/nfs/ops/v4/lookup.go: calls svc.SecInfo, an entry method, outside the entry handlers' files",
+		"internal/adapter/nfs/ops/v4/lookup.go: calls svc.ListShares, an entry method, outside the entry handlers' files",
+		"internal/adapter/core/server.go: 801 lines, over 800 and not on the allowlist",
+		"internal/adapter/core/hold.go: on the allowlist, and no hand-written adapter file over 800 lines: drop its entry",
+		"internal/adapter/core/gone.go: on the allowlist, and no hand-written adapter file over 800 lines: drop its entry",
 	}
-	got := violations(t, filepath.Join("testdata", "imports"))
+	// The seeds' own allowlist: pipeline.go is over the limit, hold.go is at
+	// it and gone.go is no file.
+	long := []string{"internal/adapter/core/pipeline.go", "internal/adapter/core/hold.go", "internal/adapter/core/gone.go"}
+	got := violations(t, filepath.Join("testdata", "imports"), long)
 	for _, g := range got {
 		if !slices.Contains(want, g) {
 			t.Errorf("reported, and not a seeded violation:\n  %s", g)

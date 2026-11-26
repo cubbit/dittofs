@@ -350,7 +350,7 @@ func TestAUserTheAPICreatedSignsInByNTLMAndOpens(t *testing.T) {
 	if err != nil || res.Identity.Evidence.Principal != alice {
 		t.Fatalf("alice's NTLM sign-in with the password :set-password set: bound %v, %v; want %v, nil", res.Identity.Evidence.Principal, err, alice)
 	}
-	call := vfs.Call{Identity: res.Identity, Protocol: entity.ProtocolSMB}
+	call := vfs.Call{Identity: res.Identity, Caps: vfs.SMBCaps}
 	info := vfs.ClientInfo{Protocol: entity.ProtocolSMB, Name: []byte("alice-pc"), Boot: [8]byte{1}, Recovery: entity.RecoverReconnect}
 	if call.Client, _, err = s.h.Node().Service().Connect(t.Context(), call, info, &vfstest.Callbacks{}); err != nil {
 		t.Fatalf("connect alice's client: %v", err)

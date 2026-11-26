@@ -27,6 +27,12 @@
 # type in `Revert "docs(x): y"` describes the commit being undone, not this
 # diff, and it does not parse as a conventional type anyway.
 #
+# The merge queue squashes a pull request into one commit under the pull
+# request's title, so the title is the subject that lands. With PR_TITLE set,
+# as pr-title.yml sets it, the title is judged too, against the branch's whole
+# diff: a pull request titled docs: whose commits are typed right but whose
+# diff carries code then fails on the pull request, not in the queue.
+#
 # Usage: test/commit-type-matches-diff.sh [base-ref]   (default: origin/develop)
 
 set -euo pipefail
@@ -44,6 +50,26 @@ is_doc_path() {
 	docs/* | .planning/* | *.md | README*) return 0 ;;
 	*) return 1 ;;
 	esac
+}
+
+# The changes of commit $1 to path $2, or the branch's when $1 is empty, with
+# no context lines.
+diff_of() {
+	if [ -n "$1" ]; then
+		git show --format='' --unified=0 "$1" -- "$2"
+	else
+		git diff --unified=0 "$merge_base" HEAD -- "$2"
+	fi
+}
+
+# The paths commit $1 changes, or the branch when $1 is empty, as
+# status<TAB>path[<TAB>renamed-to] lines.
+changes_of() {
+	if [ -n "$1" ]; then
+		git show --name-status --format='' "$1"
+	else
+		git diff --name-status "$merge_base" HEAD
+	fi
 }
 
 # True when every changed line in this file is a // comment or blank. Context
@@ -64,8 +90,10 @@ is_doc_path() {
 # named. A comment written without the space reads as code and fails closed,
 # which costs an author one retyped commit subject.
 go_comments_only() {
-	local code
-	code=$(git show --format='' --unified=0 "$1" -- "$2" |
+	local diff code
+	# A diff git can't produce fails closed: the file counts as code.
+	diff=$(diff_of "$1" "$2") || return 1
+	code=$(printf '%s\n' "$diff" |
 		grep -E '^[+-]' |
 		grep -Ev '^(\+\+\+|---)' |
 		sed -E 's/^[+-][[:space:]]*//' |
@@ -80,18 +108,14 @@ go_comments_only() {
 	[ "${code:-0}" -eq 0 ]
 }
 
-status=0
-
-for sha in $(git rev-list --no-merges "${merge_base}..HEAD"); do
-	# First physical line only. %s folds a subject that wraps before the
-	# first blank line into one line, which would hide a second line. sed
-	# rather than head: head closes the pipe early, and on a long message
-	# pipefail turns git's SIGPIPE into exit 141.
-	subject=$(git show -s --format=%B "$sha" | sed -n 1p)
-
+# judge SUBJECT SHA LABEL: fails, naming the paths, when SUBJECT claims docs:
+# or chore(release): and commit SHA (the branch when empty) changes a path
+# outside what that type allows.
+judge() {
+	local subject=$1 sha=$2 label=$3 type scope release offenders st path rename_to changes
 	# Conventional type and optional scope: "type(scope)!: summary".
 	if [[ ! "$subject" =~ ^([a-z]+)(\(([^\)]*)\))?!?: ]]; then
-		continue
+		return 0
 	fi
 	type="${BASH_REMATCH[1]}"
 	scope="${BASH_REMATCH[3]:-}"
@@ -100,9 +124,15 @@ for sha in $(git rev-list --no-merges "${merge_base}..HEAD"); do
 	if [ "$type$scope" = "chorerelease" ]; then
 		release=true
 	elif [ "$type" != "docs" ]; then
-		continue
+		return 0
 	fi
 
+	# Read before the loop, so a git failure fails the check instead of
+	# reading as no changes.
+	if ! changes=$(changes_of "$sha"); then
+		echo "${label} ${subject}: git could not list its changes" >&2
+		return 2
+	fi
 	offenders=""
 	while IFS=$'\t' read -r st path rename_to; do
 		[ -n "$path" ] || continue
@@ -117,14 +147,31 @@ for sha in $(git rev-list --no-merges "${merge_base}..HEAD"); do
 			continue
 		fi
 		offenders+="  ${st}  ${path}"$'\n'
-	done < <(git show --name-status --format='' "$sha")
+	done <<<"$changes"
 
 	if [ -n "$offenders" ]; then
-		echo "${sha:0:9} ${subject}" >&2
+		echo "${label} ${subject}" >&2
 		printf '%s' "$offenders" >&2
-		status=1
+		return 1
 	fi
+}
+
+status=0
+
+for sha in $(git rev-list --no-merges "${merge_base}..HEAD"); do
+	# First physical line only. %s folds a subject that wraps before the
+	# first blank line into one line, which would hide a second line. sed
+	# rather than head: head closes the pipe early, and on a long message
+	# pipefail turns git's SIGPIPE into exit 141.
+	subject=$(git show -s --format=%B "$sha" | sed -n 1p)
+	judge "$subject" "$sha" "${sha:0:9}" || status=1
 done
+
+title_failed=false
+if [ -n "${PR_TITLE:-}" ] && ! judge "$PR_TITLE" "" "the pull request's title:"; then
+	status=1
+	title_failed=true
+fi
 
 if [ "$status" -ne 0 ]; then
 	echo >&2
@@ -133,7 +180,15 @@ if [ "$status" -ne 0 ]; then
 	echo "only // comment and blank lines, and chore(release): may bump flake.nix." >&2
 	echo >&2
 	echo "Retype the commit for what it actually changes, or split the code out of it." >&2
+	if [ "$title_failed" = true ]; then
+		echo "The merge queue squashes the pull request under its title: retitle it for what" >&2
+		echo "the branch changes, and this check runs again on the edit." >&2
+	fi
 	exit 1
 fi
 
-echo "every docs: and chore(release): commit stays inside its allowed paths"
+if [ -n "${PR_TITLE:-}" ]; then
+	echo "every docs: and chore(release): commit, and the pull request's title, stays inside its allowed paths"
+else
+	echo "every docs: and chore(release): commit stays inside its allowed paths"
+fi

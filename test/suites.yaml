@@ -52,9 +52,15 @@ suites:
       - test/nfs-mount/nfstest/parse-results_test.sh   # the grader the knfsd baseline keeps
       - test/new-package-tests.sh {base}       # a new package carries a test of its own
       # A docs: commit changes only documentation, and no commit credits an AI tool. Both run
-      # on pushes too, since planning commits reach develop without a pull request.
+      # on pushes too, since planning commits reach develop without a pull request. The PR title
+      # workflow runs the first on a pull request's title, which the merge queue squashes under.
+      - test/commit-type-matches-diff_test.sh
       - test/commit-type-matches-diff.sh {base}
       - test/no-ai-attribution.sh {base}
+      # The tests that read the docs and the RFCs. A docs-only change plans no unit cell, on its
+      # pull request or in the merge queue, so they run here, on every change. A test renamed in
+      # its package drops out of this list without a word: rename it here too.
+      - go test -timeout=5m -run=^(TestReferenceMatchesCommandTrees|TestDocsCommandReferences|TestPagesNameNoDeletedPath|TestGuideDocumentsEveryKey|TestSettingKeysMatchAppendixB|TestRetiredKeysMatchAppendixC|TestNoTableRowForTypedRefusals|TestRepositoryNamesNoRefusedVariable|TestAppendixBMatchesTheTable|TestAppendixBRFC23Rows|TestAppendixBScopeForms|TestAppendixBDriftFails|TestKindRolesMatchRFC|TestSchemaPropertiesAreAppendixC)$ ./cmd/gendocs/ ./pkg/bootstrap/ ./internal/node/ ./pkg/secrets/ ./cmd/dfs/commands/config/
       - test/go-cache-push-only.sh             # only a push run saves to the Actions cache
       # Plans moved to .planning/; a change cut before the move would recreate the old folder.
       - { sh: 'f=$(git ls-files docs/internals/planning | grep -vxF docs/internals/planning/README.md); test -z "$f" || { echo "move to .planning/: $f"; exit 1; }; git ls-files --error-unmatch docs/internals/planning/README.md >/dev/null' }
@@ -91,12 +97,16 @@ suites:
         cmd: go test -short -race -p 2 -timeout=25m ./...
         needs: [windows]
         blocking: { pr: false }
-      # The journal's allocation and memory checks — the index's, the data path's, durability's
-      # and the record codec's — and the profiler's heap checks, which skip under -race.
+      # The journal's allocation and memory checks — the index's, the data path's, durability's,
+      # the record codec's, the segment cache's and reclaim's — and the profiler's heap checks,
+      # which skip under -race. The large packages run only their checks, by name, since unit
+      # already runs the rest of them under -race.
       journal-index:
         cmd:
           - go test -timeout=5m ./pkg/journal/internal/index/ ./pkg/journal/internal/durability/ ./pkg/journal/internal/format/ ./internal/prof/
           - go test -timeout=5m -run=^(TestReadOfALargeRecordAllocatesFlat|TestRFC1D_StatsCostIsFlat)$ ./pkg/journal/internal/datapath/
+          - go test -timeout=5m -run=^(TestDescriptorsHitAllocatesNothing|TestStreamReservationAllocatesNothing)$ ./pkg/journal/internal/segment/
+          - go test -timeout=5m -run=^TestRegisterUnregisterAllocations$ ./pkg/journal/internal/reclaim/
       # The index built with a bug planted in its split and the truncate marker with one planted
       # past its size, which the model fuzz and the model's runs must find. The planted builds
       # break the packages' other tests by design, so only these tests run.

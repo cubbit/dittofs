@@ -142,16 +142,19 @@ const (
 	TransportNFS = identity.TransportNFS
 	TransportSMB = identity.TransportSMB
 
-	SchemeUID       = identity.SchemeUID
-	SchemeGID       = identity.SchemeGID
-	SchemeSID       = identity.SchemeSID
-	SchemeKrb       = identity.SchemeKrb
-	SchemeDir       = identity.SchemeDir
-	SchemeUserName  = identity.SchemeUserName
-	SchemeGroupName = identity.SchemeGroupName
-	SchemeOIDC      = identity.SchemeOIDC
-	SchemeOwner     = identity.SchemeOwner
-	SchemeQualified = identity.SchemeQualified
+	SchemeUID        = identity.SchemeUID
+	SchemeGID        = identity.SchemeGID
+	SchemeSID        = identity.SchemeSID
+	SchemeKrb        = identity.SchemeKrb
+	SchemeDir        = identity.SchemeDir
+	SchemeUserName   = identity.SchemeUserName
+	SchemeGroupName  = identity.SchemeGroupName
+	SchemeOIDC       = identity.SchemeOIDC
+	SchemeOwner      = identity.SchemeOwner
+	SchemeQualified  = identity.SchemeQualified
+	SchemeOwnerGroup = identity.SchemeOwnerGroup
+	SchemeWho        = identity.SchemeWho
+	SchemeWhoGroup   = identity.SchemeWhoGroup
 )
 
 // Call is one call's caller: the Identity it proved and, beside it, never in
@@ -174,7 +177,7 @@ const (
 // the open's principal.
 type Call struct {
 	Identity Identity
-	Protocol Protocol
+	Caps     Caps       // the adapter's profile (SMBCaps, NFSv4Caps, ...): every rule that differs between clients reads one of its bits
 	Client   ClientID   // the client the adapter proved the call came from; zero: none, as NFSv3 has
 	Session  SessionRef // the SMB or NFSv4.1 session; zero: none, as NFSv4.0 and NFSv3 have
 	Channel  struct {
@@ -268,7 +271,7 @@ type ShareInfo struct {
 	Flavors       []AuthFlavor
 	Comment       string
 	Hidden        bool
-	MaximalAccess Access   // the caller's at the share's root
+	MaximalAccess Access   // the caller's at the share's root, as an open's is: without what only privilege grants unless the call states PrivilegeOnEveryCall
 	SMB           SMBFlags // encrypt, continuously available
 }
 
@@ -301,7 +304,7 @@ type SnapshotInfo struct{}
 // ClientInfo is what Propose and Connect register. Proposal is the proposal
 // Connect confirms; nil for a client that confirms in one step.
 type ClientInfo struct {
-	Protocol Protocol
+	Protocol Protocol // the record's kind, which keys its name; no rule reads it
 	Name     []byte
 	Boot     [8]byte
 	Protect  bool   // state protection: only the client's owner may act on its state

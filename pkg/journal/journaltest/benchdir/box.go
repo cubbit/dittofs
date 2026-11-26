@@ -94,14 +94,40 @@ func FsyncProbe(dir string) (string, error) {
 }
 
 // gitCommit is the checkout's HEAD, with "-dirty" after it when the tree has
-// changes, or "unknown" outside a checkout.
+// changes, untracked files included, or "unknown" outside a checkout.
 func gitCommit() string {
-	out, err := exec.Command("git", "describe", "--always", "--dirty").Output()
+	return commitIn("")
+}
+
+// commitIn is gitCommit for the checkout at dir, the working directory when
+// dir is empty.
+//
+// decision: the tree is dirty by `git status --porcelain`, not by `git describe
+// --dirty`, which does not see an untracked file, and one in the package is
+// still compiled.
+func commitIn(dir string) string {
+	describe := exec.Command("git", "describe", "--always")
+	describe.Dir = dir
+
+	out, err := describe.Output()
 	if err != nil {
 		return "unknown"
 	}
 
-	return strings.TrimSpace(string(out))
+	status := exec.Command("git", "status", "--porcelain")
+	status.Dir = dir
+
+	changes, err := status.Output()
+	if err != nil {
+		return "unknown"
+	}
+
+	commit := strings.TrimSpace(string(out))
+	if len(changes) > 0 {
+		commit += "-dirty"
+	}
+
+	return commit
 }
 
 // percentile is the p-th percentile of took, nearest rank; zero when empty.

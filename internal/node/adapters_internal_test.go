@@ -445,6 +445,12 @@ func TestAPortChangeRebuildsThatAdapterAlone(t *testing.T) {
 	if got := portOf(t, rg.smb.running, "smb"); got != port {
 		t.Errorf("after the change smb serves at port %d, want %d", got, port)
 	}
+	if got := rg.smb.status().Port; got != port {
+		t.Errorf("after the change smb's status names port %d, want %d", got, port)
+	}
+	if got, want := rg.nfs.status().Port, portOf(t, rg.nfs.running, "nfs"); got != want {
+		t.Errorf("nfs's status names port %d, want %d, the one it serves on", got, want)
+	}
 	c := dial(t, port)
 	if err := negotiate(c, 1); err != nil {
 		t.Errorf("a NEGOTIATE on the new port: %v", err)
@@ -512,6 +518,28 @@ func TestAPortChangeOntoAHeldPortFallsBack(t *testing.T) {
 	free()
 	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(held)); r != nil {
 		t.Errorf("smb to port %d once freed: %s, want applied", held, describe(r))
+	}
+}
+
+// SMB at port 0 moved to a port the test holds fails the new adapter's start,
+// and the last settings, port 0, serve again on a port the system picks
+// anew: the status names that port, not the one the drained adapter bound
+// (RFC 23 §2.3, §3.4).
+func TestAFallbackAtPortZeroNamesThePortItBound(t *testing.T) {
+	rg := newRig(t)
+	held, _ := heldPort(t)
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(0)); r != nil {
+		t.Fatalf("enable smb at port 0: refused %s", r.rec.Error)
+	}
+	first := rg.smb.running
+	if r := rg.smb.apply(t.Context(), rg.loop, 0, true, smbAt(held)); r == nil {
+		t.Fatalf("smb to the held port %d: applied, want refused", held)
+	}
+	if rg.smb.running == first {
+		t.Fatal("after the fallback smb still runs the first adapter, want one started again")
+	}
+	if got, want := rg.smb.status().Port, portOf(t, rg.smb.running, "smb"); got != want {
+		t.Errorf("after the fallback smb's status names port %d, want %d, the one it serves on", got, want)
 	}
 }
 

@@ -72,7 +72,7 @@ func dirStore(t testing.TB) (*kvstore.Store, uuid.UUID) {
 func protocolSecrets(t testing.TB, st *kvstore.Store) *secrets.Provider {
 	t.Helper()
 	t.Setenv("DITTOFS_ENCRYPTION_PASSPHRASE", "directory test passphrase")
-	b, err := keyprovider.GenerateKeyFile("directory test passphrase")
+	b, err := keyprovider.GenerateWeakKeyFile("directory test passphrase")
 	if err != nil {
 		t.Fatal(err)
 	}

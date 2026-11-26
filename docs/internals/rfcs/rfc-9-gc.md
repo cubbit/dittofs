@@ -260,7 +260,7 @@ GC **MUST NOT**:
 - restate what a put, a read or a delete means. That is [RFC 4](rfc-4-remote-tier.md)'s ([RFC 4 §1.2](rfc-4-remote-tier.md#1.2%20A%20contract%2C%20not%20a%20component));
 - name a block by any means other than [RFC 2 §4.2](rfc-2-carver.md#4.2%20A%20block), or frame, seal or parse an
   object ([RFC 4 §3](rfc-4-remote-tier.md#3.%20The%20block%20format));
-- import another component in this set ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
+- import another component's implementation ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
 
 ### 1.2 Words this document uses
 
@@ -1998,7 +1998,7 @@ package gc // internal/gc
 // Deps is everything GC is built from (§2.5). The composition root fills it;
 // the node then drives Start, Add, Remove, Drain and Close (RFC 23 §2.2).
 type Deps struct {
-	Sched    *sched.Scheduler           // RFC 8 §6.1.1: GC's own instance, one per process
+	Sched    *workqueue.Scheduler       // RFC 8 §6.1.1: GC's own instance, one per process
 	Syncer   Syncer                     // RFC 3 §1.3, through the root's adapter
 	Settings func(NamespaceID) Settings // live namespace gc.* settings (RFC 13 App. B), read at each pass
 	Clock    Clock                      // the package's own subset of RFC 8 §2.1's Clock
@@ -2300,7 +2300,7 @@ adoption, `Relocate`, `Abandon` and the gates are `Blocks` conformance cases in
 RFC 6's store suite (`pkg/metadata/kvstore/kvstoretest`), run against every backend. GC's
 own package tests its sources over `gctest`'s verified in-memory implementations ([§2.6](#2.6%20Package%20layout),
 [RFC 29 §4.11](rfc-29-test-harness.md#4.11%20Test%20doubles)).
-`arch_test.go` asserts that GC imports no component of the set ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
+`arch_test.go` asserts that GC imports no other component's implementation ([RFC 0 §1.2](rfc-0-data-lifecycle.md#1.2%20Component%20autonomy)).
 
 ### 11.1 Group A — adversarial interleavings
 

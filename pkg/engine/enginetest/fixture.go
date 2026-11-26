@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/internal/node/content"
 	"github.com/cubbit/dittofs/internal/prof"
 	"github.com/cubbit/dittofs/pkg/engine"
-	"github.com/cubbit/dittofs/pkg/engine/enginewire"
 	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/journal/journaltest/kit"
@@ -605,9 +605,7 @@ type failingKV struct {
 }
 
 func (k *failingKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
-	if k.left.Load() >= 0 && k.left.Add(-1) < 0 {
-		k.left.Store(0)
-
+	if k.fails() {
 		return errors.New("fixture: an injected store failure")
 	}
 
@@ -627,6 +625,24 @@ func (k *failingKV) Update(ctx context.Context, fn func(kv.Txn) error) error {
 
 		return nil
 	})
+}
+
+// fails takes one Update from left and reports whether it fails. The take is
+// one compare-and-swap, so an Update racing FailUpdatesAfter never writes a
+// count over the one the call set: a restore to none stays none.
+func (k *failingKV) fails() bool {
+	for {
+		n := k.left.Load()
+		if n < 0 {
+			return false
+		}
+		if n == 0 {
+			return true
+		}
+		if k.left.CompareAndSwap(n, n-1) {
+			return false
+		}
+	}
 }
 
 // settingTxn is a transaction that notes whether it set a key match accepts.
@@ -907,7 +923,7 @@ func (f *Fixture) start() {
 	}
 
 	f.crashed = new(atomic.Bool)
-	opens, d, err := enginewire.Compose(enginewire.Params{
+	opens, d, err := content.Compose(content.Params{
 		Node:    f.Node,
 		Devices: []string{f.Dir},
 		Store:   f.FS.Store,
@@ -974,7 +990,7 @@ func (f *Fixture) start() {
 	if err := e.Apply(Settings); err != nil {
 		t.Fatalf("fixture: engine settings: %v", err)
 	}
-	if err := enginewire.Start(ctx, f.Opens, e, sink, order, []engine.Share{f.Share}); err != nil {
+	if err := content.Start(ctx, f.Opens, e, sink, order, []engine.Share{f.Share}); err != nil {
 		t.Fatalf("fixture: start: %v", err)
 	}
 	f.E = e
@@ -1026,7 +1042,7 @@ func (f *Fixture) stop(clean bool) {
 		}
 		ctx, cancel := context.WithTimeout(parent, closeDeadline)
 		defer cancel()
-		if err := enginewire.Stop(ctx, f.Opens, f.E); err != nil {
+		if err := content.Stop(ctx, f.Opens, f.E); err != nil {
 			if clean {
 				f.t.Errorf("fixture: stop: %v", err)
 			} else {

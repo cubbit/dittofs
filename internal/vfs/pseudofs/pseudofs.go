@@ -86,6 +86,19 @@ func (t *Tree) node(install [16]byte, parent *Node, path, name string) *Node {
 // change attribute.
 func (t *Tree) Version() uint64 { return t.version }
 
+// Mount is the node share is mounted at, or nil when the tree holds none.
+//
+// ponytail: it scans every node, O(nodes) per lookup of ".." at a share's
+// root. Index the mounts by share in Build if that lookup shows in a profile.
+func (t *Tree) Mount(share [16]byte) *Node {
+	for _, n := range t.nodes {
+		if n.Share != nil && *n.Share == share {
+			return n
+		}
+	}
+	return nil
+}
+
 // Root is the pseudo-root.
 func (t *Tree) Root() *Node { return t.root }
 

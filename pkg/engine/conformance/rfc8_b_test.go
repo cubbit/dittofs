@@ -26,9 +26,33 @@ func secondFile(t *testing.T, f *enginetest.Fixture, name string) entity.FileID 
 }
 
 // TestRFC8B_SharedJournal: two shares on one device journal, one filled to
-// its journal limit, and the other's writes are not refused.
+// its journal limit, and the other's writes are not refused. The half left: the
+// filling write answers retry-later, never no space, while another share is
+// healthy; that is TestRFC8B_SharedJournalRetryLaterAtTheLimit's, which waits
+// on the offload part. Here the filling write may answer either.
 func TestRFC8B_SharedJournal(t *testing.T) {
 	f := enginetest.New(t)
+	fillSecond(t, f, false)
+
+	_, id := f.File("other")
+	write(t, f, id, 0, []byte("the other share is served"))
+}
+
+// TestRFC8B_SharedJournalRetryLaterAtTheLimit: the one share filled to its
+// journal limit is refused with retry-later, ErrDelay(DelayCapacity), and
+// never with no space while another share is healthy. The row assumes a
+// put-healthy store behind the dirty bytes (RFC 8 §10.2), which the
+// offload part composes; until then the settled answer is no space.
+func TestRFC8B_SharedJournalRetryLaterAtTheLimit(t *testing.T) {
+	fillSecond(t, enginetest.New(t), true)
+}
+
+// fillSecond binds the second share at a 64 KiB journal limit and writes into
+// it until a write is refused. The refusal must be retry-later when strict,
+// and may be no space otherwise; any other error fails.
+func fillSecond(t *testing.T, f *enginetest.Fixture, strict bool) {
+	t.Helper()
+
 	ctx := t.Context()
 	second := f.Second
 	second.Limit = 64 << 10
@@ -39,7 +63,6 @@ func TestRFC8B_SharedJournal(t *testing.T) {
 
 	full := secondFile(t, f, "full")
 	p := make([]byte, 16<<10)
-	filled := false
 
 	for i := range 16 {
 		_, err := f.E.Write(ctx, second.ID, full, int64(i*len(p)), p, engine.WriteOpts{Done: func() {}})
@@ -49,21 +72,20 @@ func TestRFC8B_SharedJournal(t *testing.T) {
 
 		var d *vfserr.Delay
 
-		if !errors.As(err, &d) || d.Cause != vfserr.DelayCapacity {
-			t.Fatalf("the filling write: %v, want ErrDelay(DelayCapacity) at the limit", err)
+		retry := errors.As(err, &d) && d.Cause == vfserr.DelayCapacity
+		if retry || (!strict && errors.Is(err, vfserr.ErrNoSpace)) {
+			return
 		}
 
-		filled = true
+		want := "ErrDelay(DelayCapacity) or ErrNoSpace"
+		if strict {
+			want = "ErrDelay(DelayCapacity)"
+		}
 
-		break
+		t.Fatalf("the filling write: %v, want %s at the limit", err, want)
 	}
 
-	if !filled {
-		t.Fatal("the second share never reached its journal limit")
-	}
-
-	_, id := f.File("other")
-	write(t, f, id, 0, []byte("the other share is served"))
+	t.Fatal("the second share never reached its journal limit")
 }
 
 // p99 is the 99th percentile of ds.
