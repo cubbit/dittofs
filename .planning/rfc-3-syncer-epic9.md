@@ -74,7 +74,8 @@ paragraph; the reference-box run, its record, and the RFC 3 amendments it suppor
 - **Building a `codec.Store` per store and the root's syncer:** the §6.1 row owned by RFC 8
   offload plan epic 21. B5 calls what that epic builds.
 - **The pool sizing tool** (RFC 3 §2.11), whose put and get curve the reference box must record
-  before a decision on numbers: the §6.1 row owned `unowned` (§9).
+  before a decision on numbers: the §6.1 row owned `unowned`, whose trigger this epic's pull
+  request extends to T9.5's start (§9).
 - **Making a fixed value a setting:** the §6.1 row owned `unowned`, which this epic's run can
   trigger but does not act on (D7).
 - **Measuring the fixed values no benchmark here bears on,** the throttle limit's halving and the
@@ -157,8 +158,7 @@ can cite them.
 | R9 | B1: the syncer's own overhead, at one pool size, once through the syncer and once as raw calls on the in-memory store; target throughput through the syncer at least 97% of raw, read on D1's `fast` link | bound | RFC 3 §7.4, B1; §8.5, B1 | T9.1 |
 | R10 | B1: no allocation per chunk once warm, buffers being reused, reported beside the raw twin's allocations | bound | RFC 3 §7.4, B1; §8.4, "allocations" | T9.1 |
 | R11 | B2: one transfer dispatched with 1, 10, 100 and 1,000 flows waiting; target at most 1 µs at 1,000, and flat from 1 | bound | RFC 3 §7.4, B2; §8.5, B2; §2.9 | T9.2 |
-| R12 | B3: one flow saturating uploads on a slow store while a second uploading to it wants fewer workers than the first's cap leaves free, so only the cap holds the first back (D3); target the second flow's p99 queue wait within one round, and the first given no worker while it holds its cap and the second has work waiting, counted at
-  each dispatch (`a-over-cap`, 0 on a correct syncer). A round in time is ceil(flows waiting / pool) transfers of the largest encoded block, retries excluded (D3), so one transfer for B3's two flows. The cross-half shape of RFC 3 §7.4 is B5's mixed shape (R23) | bound | RFC 3 §7.4, B3; §8.5, B3; §2.9 | T9.2 |
+| R12 | B3: one flow saturating uploads on a slow store while a second uploading to it wants fewer workers than the first's cap leaves free, so only the cap holds the first back (D3); target the second flow's p99 queue wait within one round, and the first given no worker while it holds its cap and the second has work waiting, counted at each dispatch (`a-over-cap`, 0 on a correct syncer). A round in time is ceil(flows waiting / pool) transfers of the largest encoded block, retries excluded (D3), so one transfer for B3's two flows. The cross-half shape of RFC 3 §7.4 is B5's mixed shape (R23) | bound | RFC 3 §7.4, B3; §8.5, B3; §2.9 | T9.2 |
 | R13 | B4: N readers on one cold chunk make one transfer, whatever N | bound | RFC 3 §7.4, B4; §8.5 ("B4 is a count") | T9.2 |
 | R14 | B5: the syncer over the store, and raw calls on the same store at the same pool size: `codec.Store`'s put attempt and `Get`, encoding and checksum included, called directly at the configured `upload_workers` and `fetch_workers`; target at least 95% of raw, below 90% a regression | bound | RFC 3 §7.4, B5; §8.5, B5 | T9.4 |
 | R15 | B5 reports its throughput as a fraction of the raw calls', with the pools' occupancy beside it | invariant | RFC 3 §7.4 | T9.4 |
@@ -204,8 +204,10 @@ a schedule, which is RFC 4's (§1.2).
   - No two fetches in flight at once name one chunk, so single flight (RFC 3 §4.3) joins none and the syncer makes as many `Get`s as its raw twin, slow-tail retries aside (below): each fetching caller owns one block of its
     own (B1), stored before the timer, and fetches it again only after its last fetch returned.
     B1's fetch half so stores one block per caller, 64 MiB at 16 workers and 512 MiB at 128, not
-    the 4 GiB 1,024 distinct blocks would hold. B3 fetches nothing: both its flows upload, each
-    block deleted once its `Upload` returns, as B1's upload half does.
+    the 4 GiB 1,024 distinct blocks would hold. B3 fetches nothing: both its flows upload, each block deleted once its `Upload` returns, as
+    B1's upload half does. Every upload of B1 and B3 reads one shared, read-only 4 MiB source
+    under a block name of its own, as B5's do, so the callers' bodies add one block to the heap,
+    not one per queued upload (about 2.5 GiB for B3's queue).
   - B1 runs two configurations, each with name keys `half=upload|fetch` and `impl=syncer|raw`:
     `link=fast/workers=16`, 1 ms per call and a per-byte time of a tenth of the working link's,
     where the syncer's own CPU is not hidden behind the wait, and against which R9's 97% is read;
@@ -221,8 +223,8 @@ a schedule, which is RFC 4's (§1.2).
     constant and jitter alone puts a tenth of them past the 90th percentile: up to the larger of
     one and 5% of transfers are retried. That is production behaviour and part of the syncer's
     cost, so B1 keeps it and reports `slow-tail/op`, the rise of `Stats`' `Retries.SlowTail` per
-    workload, beside its throughput; the raw twin has no such retry. B3 and B4 take it out of
-    what they read (D3, T9.2).
+    workload, beside its throughput; the raw twin has no such retry. B3 takes it out of what it reads (D3), and B4 reports it beside `gets/op`
+    (T9.2).
 
   Prior art: RFC 4 plan epic 9's raw twins on the store's own transport (its T9.4);
   `engine-bench`'s one workload per iteration (`test/suites.yaml`, checked).
@@ -253,8 +255,7 @@ a schedule, which is RFC 4's (§1.2).
     answers R23. Here both of B3's flows upload, so they compete in one half
     and B3 tests the upload scheduler's cap: fetches would run in the other half and bear on it
     not at all. Flow A keeps the upload half's queue full on a slow store while flow B keeps P/8
-    uploads outstanding on the same store, P the upload pool at the default `upload_workers` of
-    128 (16 outstanding; B3 fails before the timer, naming P, if P/8 is below 1), below the P − cap that
+    uploads outstanding on the same store, P the upload pool, pinned at 128, the default `upload_workers` (as B4 pins its pool, T9.2), (16 outstanding; B3 fails before the timer, naming P, if P/8 is below 1), below the P − cap that
     A's cap leaves free (at least P/4, RFC 3 §2.10's table). Turns are charged in worker-time
     (§2.9), so fair share alone would give A every worker B does not hold, more than its cap:
     only the cap stops A taking a freed worker while it holds its cap and B has work waiting. With B at P/2, fair share would settle both near P/2,
@@ -312,7 +313,9 @@ a schedule, which is RFC 4's (§1.2).
 - **D4, peak memory is the most live heap seen at the end of a collection.** `prof.PeakLiveHeap`
   reads `runtime/metrics`' `/gc/heap/live:bytes`, the heap marked live at the last collection, in
   a finalizer re-armed on each collection, and `stop` forces one last collection and reads it
-  too. `stop` also clears the re-arm, so no finalizer runs after it. It is the live heap without
+  too. `stop` clears the re-arm and forces one last collection, whose sentinel's finalizer, seeing
+  the re-arm cleared, closes a channel instead of arming another; `stop` waits on that channel
+  before it returns, so no finalizer runs after it. It is the live heap without
   the garbage a sampled `HeapAlloc` counts, and reads without
   stopping the world as `runtime.ReadMemStats` does. A collection that ends before the finalizer
   is re-armed is missed, so the figure is a lower bound: `ponytail:` it misses collections closer
@@ -360,7 +363,8 @@ a schedule, which is RFC 4's (§1.2).
     `go test -count=$n -run=^$ -bench=^BenchmarkB2$ ./pkg/syncer/pool/internal/sched/` at Go's
     default `-benchtime`, since one of its iterations is one dispatch and a benchmark cannot
     override the command line's `-benchtime`: at `1x`, B2's figure would be one cold dispatch.
-    `n` is 10 unless `SYNCER_BENCH_COUNT` says otherwise, as `ENGINE_BENCH_COUNT` does. The
+    `n` is 10, 5 for the `content` test (D6), unless `SYNCER_BENCH_COUNT` says otherwise, as
+    `ENGINE_BENCH_COUNT` does. The
     explicit `-timeout`, since `go test` stops a benchmark binary at ten minutes, sits under the
     cell's `timeout: { test: 120m, cell: 130m }`.
   - The script's guard counts result lines per sub-benchmark name, a result line being one that
@@ -372,6 +376,10 @@ a schedule, which is RFC 4's (§1.2).
     name is matched whole, its `-GOMAXPROCS` suffix stripped, since `waiting=1` is a prefix of
     `waiting=10`. `SYNCER_BENCH_COUNT` is checked as `engine-bench` checks `ENGINE_BENCH_COUNT`: a
     number of 1 or more without a leading zero, or the test exits 2 naming it.
+    `SYNCER_BENCH_SKIP`, unset by default, is passed as `go test -skip`, so a check can drop one
+    sub-benchmark through `dt run` without editing the script; the guard still expects every
+    name, which is the point. The script never empties `{out}`, so a check can plant a file in
+    it before a hand run, `test/syncer/bench.sh content <dir>`.
   - B5 is the cell's option `real-link`, `tests: [content]`, the same script and guard, `n` lines
     for each of its 5 names (`upload` and `fetch`, each through the syncer and raw, and `mixed`),
     and no `needs`: a need `dt` checks would skip the cell before `go test` starts, and would skip
@@ -437,6 +445,13 @@ a schedule, which is RFC 4's (§1.2).
     production's and only what the metadata store would hold is the benchmark's. A `decision:`
     marker at the lookup says so. They are exported because
     `node.New` calls them from its own package, so B5 is an external test of `content`.
+  - B5 is sized for a real link, not B1's in-memory one: a workload of each plain half moves 256
+    blocks of 4 MiB, 1 GiB, and the mixed shape's 1,000 fetches read the first chunk of 1,000
+    single-chunk blocks of 256 KiB, 500 idle and 500 loaded, written before the timer and deleted
+    after it on every count, so each count's reads are cold and a count writes about 250 MiB
+    for them. A count moves about 4.5 GiB plus the uploads that load the mixed pass, so the
+    `real-link` option runs 5 counts unless `SYNCER_BENCH_COUNT` says otherwise, about 25 GiB a
+    run, within its `-timeout=110m` on a link of 100 Mbit/s or more.
   - The raw twin calls the same `codec.Store`'s `NewPut(…).Attempt` and `Get` directly, from as
     many goroutines as each half's worker count, ranging over `Get`'s chunks as D1's twin does.
   - The upload half deletes each block once its upload returns, as B1 does, so the store holds
@@ -445,13 +460,12 @@ a schedule, which is RFC 4's (§1.2).
     never deleted through `remote.Store` (RFC 4 §4.7), so B5 opens its store under the fresh namespace prefix of `_BUCKET` that `s3fault.Service`
     hands it, which RFC 4 plan epic 9's sweep (its D10) deletes, with whatever a killed run
     left, once older than the cell's timeout.
-  - `half=mixed` is RFC 3 §7.4's cross-half B3 shape on this store, which D3 moves here: uploads
-    saturate the upload half while one flow issues 1,000 cold fetches. RFC 3 §9's settled point 1
+  - `half=mixed` is RFC 3 §7.4's cross-half B3 shape on this store, which D3 moves here: uploads saturate the upload half while one flow issues 500 cold fetches. RFC 3 §9's settled point 1
     is overturned by a cold read's *latency* under full upload load missing its target while the
     store's connection pool is not full, and the halves share no worker, so the contention shows
     in latency, not in the fetch half's queue wait. The mixed shape therefore reports:
     - `cold-p99-ns`, the p99 from `Fetch` to its first chunk under the upload load, and
-      `idle-p99-ns`, 1,000 fetches of other blocks run first with no upload load; the two passes
+      `idle-p99-ns`, 500 fetches of other blocks run first with no upload load; the two passes
       read disjoint sets, written before the timer, so no block either reads was served moments
       before by the other and a cache at the service favours neither;
     - `round-ns`, a round from measured figures, since no `Link` is set here: the largest encoded
@@ -572,8 +586,8 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
   kept across a forced collection, the test waiting until the sampler's current most, read
   through `export_test.go`, reaches it, polled with a short pause, then the slice dropped before
   `stop`: `stop` must report at least 64 MiB (catches a sampler that reads once at `stop`, D4).
-  After `stop`, the sampler's count of finalizer runs, read through `export_test.go`, stays the
-  same across several `runtime.GC()` calls (catches a `stop` that never clears the re-arm, which
+  After `stop` returns, the sampler's count of finalizer runs, read through `export_test.go`
+  then, stays the same across several `runtime.GC()` calls (catches a `stop` that never clears the re-arm, which
   `internal/prof`'s leak check cannot see: the finalizer goroutine is hidden from its goroutine
   dump, opens no descriptor and holds a few bytes). No test double: the store is kind 2, the
   wrapper kind 3.
@@ -598,28 +612,33 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
       the link as configuration lines printed once by a parent benchmark; the peak heap as in B1;
       D3's `decision:` marker.
     - `BenchmarkB4`: N of 1, 10, 100 and 1,000 readers on one cold chunk of a stored block, each
-      a `Fetch` on its own flow, at the default fetch pool of 128, whose waiter bound of 1,024
-      holds the 1,000 joined readers (RFC 3 §2.10), on D1's working link (R2), whose per-call and
-      per-byte times, `block:` and `chunk:` are configuration lines (R19). The bound is read from
-      `fixed.go` at run time: a later default pool that puts it below 1,000 fails B4 before the
-      timer, naming the bound, rather than refusing joins mid-run. Per iteration a fresh block is stored and the
-      flows opened between `b.StopTimer()` and `b.StartTimer()`. The first `Get` is held after its first body byte, `Env.Faults.Hold(1, …)`, so its first byte
-      arrives on time and the slow-tail rule does not retry it, until `Stats`' `Joined` for the
+      a `Fetch` on its own flow, at a fetch pool pinned at 128, RFC 13 Appendix B's default when this was written, since
+      `pool`'s tests cannot read E8's section, whose waiter bound of 1,024 holds the 1,000 joined
+      readers (RFC 3 §2.10), on D1's working link (R2), whose per-call and
+      per-byte times, `block:` and `chunk:` are configuration lines (R19). The bound is computed at run time from `fixed.go`'s waiter multiple and the pinned pool: a
+      later multiple that puts it below 1,000 fails B4 before the timer, naming the bound, rather
+      than refusing joins mid-run. A changed default pool is not followed: B3's and B4's pinned
+      128 is a configuration line, and a `decision:` marker at the constant names RFC 13
+      Appendix B as what to re-read when it changes. Per iteration a fresh block is stored and the
+      flows opened between `b.StopTimer()` and `b.StartTimer()`. Every `Get` of the block's name is held after its first body byte, `Env.Faults.Hold(1, …)`,
+      so a slow-tail retry of the transfer, which `Link`'s jitter can still cause (D1), is held
+      too and the joined readers stay joined to the transfer across it, until `Stats`' `Joined` for the
       store has risen by N−1, polled with a short pause under a 10 s backstop, below the throughput floor's 30 s without a
       byte (RFC 3 §2.10), that fails B4 naming `Joined`'s value, then released, so every reader has joined before the chunk passes:
       a reader arriving after it would rightly start a fetch of its own. The timer stays stopped while the N readers' goroutines start and
       join, and restarts at the release, so the MB/s times the chunk reaching N
       joined readers, not the deliberate hold; how many joined is `gets/op`'s to say. The `Get`s that
       reached the in-memory store, read from its load record, are reported as `gets/op`, beside
-      the readers' throughput (`b.SetBytes` of N chunks, R4) and the peak heap as in B1, and `Stats`' `Retries.SlowTail` rise beside it, which reads 0
-      on a correct run.
+      the readers' throughput (`b.SetBytes` of N chunks, R4) and the peak heap as in B1, and `Stats`' `Retries.SlowTail` rise beside it as
+      `slow-tail/op`: `gets/op` less `slow-tail/op` is the transfers made, 1 on a correct run.
 - **Acceptance criteria:**
   - B2 prints eight results in ns per dispatch, read against R11's 1 µs and against each other
     for flatness, with no allocation per dispatch once the flows exist; none asserted (R5).
   - B3 prints the second flow's p99 upload wait against the round, `b-retried` beside it, and
     `a-over-cap` with the upload pool's cap printed as a configuration line (R12). It issues no
     fetch.
-  - B4 prints `gets/op`, MB/s and the peak heap at every N, with its link's lines.
+  - B4 prints `gets/op`, `slow-tail/op`, MB/s and the peak heap at every N, with its link's
+    lines.
 - **Tests:** none of their own: B2's flatness is E3's operation count in `unit` (its T3.1), and
   B4's one `Get` is E6's single-flight count, which these benchmarks stand on (§1.2). Under the
   leak check.
@@ -658,7 +677,8 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
   - `dt run syncer-bench` runs B1, B3 and B4 at `-benchtime=1x` and B2 at the default
     `-benchtime`, and writes `{out}/pool.txt` and `{out}/sched.txt`, whose figures `dt`'s go-bench
     reader records for each test.
-  - Run with one B1 sub-benchmark filtered out, the `pool` test exits 2 naming B1 (R6).
+  - Run with `SYNCER_BENCH_SKIP` naming one B1 sub-benchmark, the `pool` test exits 2 naming B1
+    (R6).
   - `dt run syncer-bench-smoke` runs every benchmark of the two packages once and passes; a
     planted panic in one fails it, and so does a dropped sub-benchmark.
   - The pull request's own workflow run shows the `syncer-bench-smoke` cell.
@@ -676,14 +696,14 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
   T21.3 and T21.4) and RFC 4 plan epic 3;
   for a real service, RFC 4 plan epic 9's `s3fault.Service`, until which B5 uses
   `s3fault.LocalStack` and runs against LocalStack only.
-- **Covers:** R1, R3, R4, R6, R8, R14, R15, R16, R18, R20, R23.
+- **Covers:** R1, R3, R4, R6, R7, R8, R14, R15, R16, R18, R20, R23.
 - **Deliverables:**
   - `internal/node/content/syncer_bench_test.go` (D6): `BenchmarkB5` with name keys
     `half=upload|fetch|mixed` and `impl=syncer|raw` (raw for the two plain halves), on
     `s3fault.Service(b)`'s target, the store opened through `content.S3Opener` with the
     connection-counting transport on its hook, its `codec.Store` from `content.NewCodecStore` and
     the syncer from `content.NewSyncer` at the section's default worker counts (D6); one workload
-    per iteration as in D1; the configuration lines and metrics of D6, the mixed shape's loaded
+    per iteration, sized for a real link as D6 says; the configuration lines and metrics of D6, the mixed shape's loaded
     and idle latencies, measured round and `conns-max` beside `limit:`, D6's `decision:` marker,
     and the peak heap per half beside its bound and the raw twin's, each half on its own syncer
     and baseline (D4). The upload half deletes each block once its upload returns; a delete of
@@ -723,7 +743,8 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
   - First, a check that the reference box holds the RFC index's three measurements; without
     them, the run below is recorded on whatever box it ran on and replaces no target, and the
     pull request says which are missing (R24, §9).
-  - One `dt run syncer-bench` with its `real-link` option on the reference box at `-count=10`,
+  - One `dt run syncer-bench` with its `real-link` option on the reference box, B1 to B4 at
+    `-count=10` and B5 at the option's 5 counts (D6),
     recorded with the commit, the box's CPU and memory and the operating system, beside the RFC 3
     §8.6 fields of each benchmark; one B5 run by hand against a real service where credentials
     are, recorded the same way.
