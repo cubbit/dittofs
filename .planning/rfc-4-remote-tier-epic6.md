@@ -150,8 +150,8 @@ whose.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R1 | A block is a header followed by the chunk bodies in order; the header's first bytes are the format marker, the version and the header length, and it holds the block name, nonce, chain ID, a chunk index of one entry per chunk (its chunk ID and its body's offset and length, in the clear) and the census | invariant | §3.2, §6 R1 | T6.1 |
-| R2 | The header length is bounded by a constant of the format version: `N` times one index entry, plus the census at its bound (at most `N` × the stage count entries, each a fixed-width transform ID and version, the material's kind with its own length byte, its ID of at most 255 bytes with its length, and a 32-byte fingerprint), plus the fixed fields | MUST | §3.2, RFC 2 §5 P4 | T6.1 |
-| R3 | The codec refuses a header that declares a larger length than the bound, more than `N` index entries, more census entries than their bound, or a census material ID longer than 255 bytes, its kind not counted, before allocating for it | MUST | §3.2, §7.1 (§3.2 census row), §7.3 (fuzz row), RFC 3 §7 (§2.2 memory-bound row) | T6.1, T6.6 |
+| R2 | The header length is bounded by a constant of the format version: `N` times one index entry, plus the census at its bound (at most `N` × the stage count entries, each a fixed-width transform ID and version, the material's kind of at most 32 bytes and its ID of at most 255 bytes, each with its own length byte, and a 32-byte fingerprint), plus the fixed fields | MUST | §3.2, RFC 2 §5 P4 | T6.1 |
+| R3 | The codec refuses a header that declares a larger length than the bound, more than `N` index entries, more census entries than their bound, or a census material kind longer than 32 bytes or ID longer than 255 bytes, before allocating for it | MUST | §3.2, §7.1 (§3.2 census row), §7.3 (fuzz row), RFC 3 §7 (§2.2 memory-bound row) | T6.1, T6.6 |
 | R4 | Each body's length is at most `MaxDecodeLen(MaxChunk)` of the chain the codec is handed, `MaxChunk` being RFC 2's `Max` as `Config` carries it, checked before allocating for the body; the read side never uses the current chain's `MaxEncodedLen` | MUST | §3.2, §7.3 (fuzz row) | T6.3, T6.6 |
 | R5 | Each body decodes on its own: one corrupt body loses one chunk, not the block, and a ranged get of one body decodes without the header | MUST | §3.2, §7.3 (corrupt-body and ranged rows) | T6.3 |
 | R6 | The name is written into the header and known before encoding starts; the put encodes every body under the pinned chain whose ID the header carries | MUST | §3.2, §4.3 (`NewPut`) | T6.2 |
@@ -244,20 +244,22 @@ above by the row named in its `Source`.
   | 45 | nonce | 16 |
   | 61 | chain ID | 32 |
   | 93 | index: per chunk, its chunk ID (32), its body's offset from the block's first byte (4) and its body's length (4) | 40 each |
-  | then | census: per entry, transform ID (2), transform version (1), fingerprint (32), the material's kind length (1, 0 to 255) and kind, and its ID length (1, 0 to 255) and ID | 37 + 510 at most |
+  | then | census: per entry, transform ID (2), transform version (1), fingerprint (32), the material's kind length (1, 0 to 32) and kind, and its ID length (1, 0 to 255) and ID | 37 + 287 at most |
   | header length | the bodies, in index order, each starting with RFC 5's envelope | |
 
   The material fields hold `keys.MaterialID`'s kind and ID, the namespace being the block's. RFC
-  4 §3.2's 255-byte bound counts the ID alone and the kind has its own length byte (the user's
-  decision), so every data key ID RFC 5 Appendix B allows can be written. A kind or ID longer than
-  255 bytes is refused at the put with `ErrInvalid` (D6); with one-byte lengths the read side
-  cannot meet a longer one, so its reachable refusal is a kind or ID length that runs past the
-  census. An entry with no material has kind length 0, ID length 0 and a zero fingerprint.
+  4 §3.2 bounds the kind at 32 bytes and the ID at 255, each with its own length byte (the
+  user's decisions of 2026-11-26), so every data key ID RFC 5 Appendix B allows can be written.
+  RFC 5 sets no length for a kind; the kinds its Appendix B.2 names are fixed ASCII names, the
+  longest 12 bytes (`chunk-id-key`, `chunking-key`). A kind longer than 32 bytes or an ID longer
+  than 255 is refused at the put with `ErrInvalid` (D6). On read a kind length above 32 is
+  malformed; with one-byte lengths no ID is longer than 255, so the ID's reachable refusal is a
+  length that runs past the census. An entry with no material has kind length 0, ID length 0 and a zero fingerprint.
   The transform ID is `Encoded.ID`, which the chain fills (RFC 5 §3.1 as #5851 amends it).
   Entries are distinct and sorted by transform ID, version, kind, ID and fingerprint, so a census
   collected over every chunk and one learned from the first (D2) write the same bytes; the read
   side parses them as views into the header buffer, with no allocation of their own. The bound is
-  `MaxHeaderLen(1)` = 93 + 1,024 × 40 + 3,072 × 547 = 1,721,437 bytes, a constant. On read, the
+  `MaxHeaderLen(1)` = 93 + 1,024 × 40 + 3,072 × (37 + 32 + 255) = 1,036,381 bytes, a constant. On read, the
   index's bodies tile the block: the first starts at the header length, each next where the last
   ended, and the stream ends where the last ends; anything else is malformed. A 4-byte offset
   bounds a block at 4 GiB, past any block RFC 2 §5.2's 64 MiB target allows. Prior art (from
@@ -298,7 +300,7 @@ above by the row named in its `Source`.
 - **D6. The codec's own refusals are `ErrInvalid`.** At `New`: each nil field and a `MaxChunk`
   below 1, naming the field. At the put: an unknown write version, a chunk whose bytes do not
   match its hash, a name that does not match its inputs, no chunk or more than 1,024, a chunk
-  longer than `MaxChunk`, a material kind or ID longer than 255 bytes, a transform encoding a
+  longer than `MaxChunk`, a material kind longer than 32 bytes or ID longer than 255, a transform encoding a
   length other than it declared, a `src` that yields other chunks on a later pass, and an `Encode`
   error that is not a material error. Each is a caller's or a configuration's fault that a retry
   cannot cure, and none counts toward health (RFC 4 §4.8). Each put refusal is returned before the
@@ -386,10 +388,10 @@ test/suites.yaml      T6.8  unit's remote-allocs option
   and `parseHeader`, the second taking a reader and an allocator (D13) and refusing, in this
   order and before allocating the rest, a wrong marker, an unknown version, a length below the
   fixed part or above the bound, a chunk count of 0 or above 1,024, a census count above 3,072;
-  then, inside the buffer, an index that does not fit, a kind or ID length that runs past the census, a
+  then, inside the buffer, an index that does not fit, a kind length above 32, a kind or ID length that runs past the census, a
   census that does not end at the header length, or a census not in D1's canonical form: entries
   out of order or repeated, an entry with no material but a non-zero fingerprint, or a non-zero
-  ID length whose kind length is 0. `MaxHeaderLen`'s body: 1,721,437 and true for 1,
+  ID length whose kind length is 0. `MaxHeaderLen`'s body: 1,036,381 and true for 1,
   else 0 and false. `export_test.go`'s allocator hook. Consumed by T6.2 (the header it writes),
   T6.3 (the parse), T6.6 and T6.7, and by RFC 8 offload plan epic 21 (`MaxHeaderLen`).
 - **Acceptance criteria:**
@@ -402,10 +404,10 @@ test/suites.yaml      T6.8  unit's remote-allocs option
   of the fixed part with the allocator's record empty past the fixed part (catches a parse that
   allocates the declared length first, R3), those inside the buffer with one request of the
   header length and none after it (catches a census read that allocates per entry, R3); a header at every bound at once accepted (catches an off-by-one bound, R2);
-  `MaxHeaderLen(1)` equal to the literal 1,721,437 (catches a bound that forgets the census, R2).
+  `MaxHeaderLen(1)` equal to the literal 1,036,381 (catches a bound that forgets the census, R2).
   `FuzzHeader`, seeded with `f.Add` calls for an over-long length, 1,025 entries, 3,073 census
-  entries, a kind length and an ID length each past the census, a 255-byte ID under a 255-byte kind
-  accepted, and two census entries in reverse order and repeated: no panic, every read inside the buffer, and an
+  entries, a kind length of 33, a kind length and an ID length each past the census, a 255-byte ID
+  under a 32-byte kind accepted, and two census entries in reverse order and repeated: no panic, every read inside the buffer, and an
   accepted header re-encodes to the bytes it came from (R40). No test double.
 - **Rules:** rule 2: `FuzzHeader`. Rule 11: nothing exported but `MaxHeaderLen`'s body.
 
@@ -714,18 +716,19 @@ A suggestion only: one pull request per subtask works as well.
    once more, because RFC 5 §3.1's `Attempt` lists no descriptors. An `Attempt` method returning
    them would remove that encode and D2's per-chunk comparison, and changes no stored byte; it is
    the RFC 5 plan's to take or decline, and D2 stands until it does.
-3. **The header bound is dominated by the census.** D1's widths give 1,721,437 bytes for version
-   1, of which the census at RFC 4 §3.2's bound is 1,680,384, against RFC 2's default 1 MiB `Max`.
+3. **The header bound is dominated by the census.** D1's widths give 1,036,381 bytes for version
+   1, of which the census at RFC 4 §3.2's bound is 995,328, against RFC 2's default 1 MiB `Max`.
    RFC 3 §2.2 and its constants table still describe the header cap as the fixed fields and the
    index only (40,960 bytes and the fixed part); the per-worker figure the RFC 3 plan's syncer and
-   RFC 8 offload plan epic 21 compute from `MaxHeaderLen` is about 1.6 MiB larger than that text
+   RFC 8 offload plan epic 21 compute from `MaxHeaderLen` is about 0.95 MiB larger than that text
    suggests. RFC 3's text is for its owner to amend; a tighter census bound (fewer stages per
    chunk, or a shorter kind or material ID) is an RFC 4 change and a new format version.
-4. **The census material field's width, resolved by the user (D1).** RFC 4 §3.2's 255-byte bound
-   counts the material ID alone and the kind has its own length byte, so a 255-byte data key ID
-   (RFC 5 Appendix B) can be written under any kind. This pull request amends RFC 4 §3.2 and
-   §7.1's row, whose read-side form is an ID length running past its entry and whose put-side
-   form is a 256-byte ID refused. The header bound grows by 256 bytes per census entry, which
-   point 3's figures include.
+4. **The census material field's width, resolved by the user (D1).** RFC 4 §3.2 bounds the
+   material ID at 255 bytes and the kind at 32, each with its own length byte (the user's
+   decisions of 2026-11-26), so a 255-byte data key ID (RFC 5 Appendix B) can be written under
+   any kind RFC 5 names. This pull request amends RFC 4 §3.2 and §7.1's row, whose read-side
+   form is a kind of 33 bytes or a kind or ID length running past its entry, and whose put-side
+   form is a 33-byte kind or a 256-byte ID refused. The kind adds 33 bytes per census entry to
+   the bound, which point 3's figures include.
 5. **Least certain estimates:** T6.2, whose hashing, streaming reader, CPU token and cancellation
    meet in one loop, and T6.4, whose overlapping tries and plan drop are the epic's concurrency.
