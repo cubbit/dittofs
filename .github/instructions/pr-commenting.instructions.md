@@ -79,7 +79,7 @@ A reader who skips the inline comments must still know whether the PR can merge 
 1. **Summary**: the first sentence names what blocks the merge, or says nothing does.
 2. **Critical issues**: what blocks the merge, each a point that `REVIEW.md` §2 lets block.
 3. **Suggestions**: improvements to performance or maintainability.
-4. **Questions**: what you need to know before you can judge.
+4. **Questions**: what you want to know. An open question does not change the verdict; if you cannot judge without its answer, the verdict is **Comment**.
 5. **Praise**: what was done well, named specifically enough that nobody changes it later by mistake.
 
 Order points by importance: correctness, then performance, then style. In parts 2–4, give each point one line that names its thread; the detail lives in the inline comment, so do not repeat it here.

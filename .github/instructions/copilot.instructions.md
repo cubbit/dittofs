@@ -245,6 +245,9 @@ review body, the comments and the replies, and [`REVIEW.md`](../../REVIEW.md) fo
 merge and what a later round reviews.
 
 What may block, in short (`REVIEW.md` §2): only a point tagged `issue (blocking)` that quotes a
-contradiction with an RFC, a plan, `CLAUDE.md` or a protocol spec, or that names a break (lost data,
-a crash, a security hole, a race, a red test, a compatibility break, a wrong result on a named path).
-Every WRONG list in this file is a checklist: a hit that is neither of those is a suggestion.
+contradiction with a source in `REVIEW.md` §1 (an RFC, a plan, `CLAUDE.md`, `pr-opening` or
+`pr-commenting`, a protocol spec, the base branch's code), or that names a break (lost data, a crash,
+a security hole, a race, a red test that is not a registered known failure, a compatibility break, a
+wrong result on a named path). Name a security hole, or a way to take a node down or exhaust its
+resources, by its class only: never post its path or evidence in a public thread. The Review Focus
+Areas above and the WRONG examples are checklists: a hit that is neither of those is a suggestion.

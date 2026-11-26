@@ -10,9 +10,10 @@ body, is in `.github/instructions/pr-commenting.instructions.md`.
 
 A point may block only against the repository's own record, read on the PR's
 base branch. A passage the PR itself edits is under review, not authority for
-it, and a base passage the PR replaces on purpose, saying so in its
-description, is not a contradiction: review the new text against the rest of
-§1 instead. Cite the file and line:
+it, and a base passage the PR replaces on purpose is not a contradiction
+when the PR edits that passage in the same change and its description says
+so: review the new text against the rest of §1 instead. A description
+sentence alone replaces nothing. Cite the file and line:
 
 - **`docs/internals/rfcs/*.md`**: the RFCs are the design authority. When a
   PR changes behavior or a ruling, an RFC section it makes false is in
@@ -41,8 +42,8 @@ A disagreement already on the base is a follow-up issue (§4).
 A point blocks only when it is tagged `issue (blocking)` and shows one of
 these two, *with the evidence quoted*:
 
-1. **A contradiction**: the PR says or does something a source in §1 does
-   not. Quote the passage, or name the code path, beside your point.
+1. **A contradiction**: the PR says or does something a source in §1 says
+   otherwise about. Where the sources are silent, §5 applies. Quote the passage, or name the code path, beside your point.
 2. **A break**: lost data, a crash, a security hole, a race, or a red test
    that is not a registered known failure (`CLAUDE.md`, "Writing tests").
    Name the failing path. A test the reviewer wrote is a break when it fails
@@ -94,11 +95,15 @@ that every reference to the old path follows it.
   still block: a break (§2.2), and a contradiction the delta creates,
   wherever its other side lives. Any other point outside the delta is a
   follow-up issue.
-- A push after an approval needs a new approval, and an open thread holds
-  the merge. This is a convention: branch protection does not enforce it, so
-  an approval at an older head still counts and auto-merge can take a pushed
-  head before any delta round. An author who pushes after an approval
-  disarms auto-merge and arms it again after the delta round.
+- A push after an approval needs a new approval, and an open
+  `issue (blocking)` thread holds the merge. The author resolves a
+  suggestion or question thread once it is answered. A push whose
+  `git range-diff` shows no change to the PR's own commits, such as a
+  rebase, keeps the approval. This is a convention: branch protection does
+  not enforce it, so an approval at an older head still counts and
+  auto-merge can take a pushed head before any delta round. So an author
+  disarms auto-merge before a push that changes an approved PR's own
+  commits, and arms it again after the delta round.
 - If you approved text and now find a break in it, say so in those words:
   "my approval at `<sha>` missed this". The break blocks; nothing else
   reopens.
