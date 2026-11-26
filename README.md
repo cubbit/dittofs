@@ -31,6 +31,12 @@ one metadata store and an on-disk journal per node, managed through an API.
 > been performed. APIs and on-disk formats may change without notice. Do not use for
 > data you cannot afford to lose. See [Security](#security) and [FAQ](docs/guide/faq.md).
 
+> [!NOTE]
+> **This is the development branch.** It holds the next storage design, and it changes every
+> day. Some features of the released versions do not work here yet. For the code you can run
+> today, use the [latest release](https://github.com/cubbit/dittofs/releases/latest) or the
+> [`main`](https://github.com/cubbit/dittofs/tree/main) branch.
+
 ## What is DittoFS?
 
 Traditional file servers are welded to one storage layer and one access protocol.
