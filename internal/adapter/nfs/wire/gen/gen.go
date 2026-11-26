@@ -73,6 +73,7 @@ type gen struct {
 	byName  map[string]*strct
 	named   map[string]kind // the types named over a basic kind
 	errs    []error
+	q       string // the runtime's qualifier: "wire.", empty inside package wire itself
 }
 
 func (g *gen) errorf(pos token.Pos, format string, args ...any) {
@@ -91,7 +92,24 @@ func generate(dir string, files []string) ([]byte, error) {
 		return nil, err
 	}
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "%s%s; DO NOT EDIT.\n\npackage %s\n\nimport (\n%q\n%q\n)\n", header, strings.Join(files, " "), pkg, wirePath, resourcesPath)
+	fmt.Fprintf(
+		&b,
+		"%s%s; DO NOT EDIT.\n\npackage %s\n\nimport (\n",
+		header,
+		strings.Join(files, " "),
+		pkg,
+	)
+	// Inside package wire the runtime is the package itself: an import of it
+	// would be a package importing itself.
+	if pkg == "wire" {
+		g.q = ""
+	} else {
+		g.q = "wire."
+
+		fmt.Fprintf(&b, "%q\n", wirePath)
+	}
+
+	fmt.Fprintf(&b, "%q\n)\n", resourcesPath)
 	for _, s := range g.structs {
 		g.methods(&b, s)
 	}
