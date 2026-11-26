@@ -498,7 +498,10 @@ docs/internals/rfcs/rfc-0-data-lifecycle.md  T21.4's pull request: §10.2's rest
     D12), built with `kvstore`'s key-record view, the store's `keys` object put and get, the `storage`
     key's ID and fingerprint, and the rotation inputs the RFC 5 plan's epic 8 names (`KeysObjects`,
     `After`, `RotationNeeded`), its `Run` started with the stores and stopped before them; the chain
-    built over it with `chain.NewChain`, `Require` and `Encrypts` from the transforms' section; both
+    built over it with `chain.NewChain`, `Require` and `Encrypts` from the transforms' section,
+    `Encrypts` being the RFC 5 plan's epic 9 lookup (its D9), whose map the content wiring fills at
+    the chain's build and at each namespace's create and open, before a binding serves it, and
+    refills in the background after a failed fill; both
     handed to `content.Compose` in place of the fixture's `keystest` provider, with `Deps.Destroyed`
     answering each store with its configuration's provider's notice (the offload plan's epic 18). A
     store configuration reloaded rebuilds its provider and replaces the bindings that use it, as the

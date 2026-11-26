@@ -310,7 +310,7 @@ tests can cite them. Where another epic does the rest, the row says so.
   rotation needs its next key's pass recorded first (D2). The provider learns of it only through the section's reach (D12), after the commit,
   so a pass whose transaction failed opens no gate: E6's `VerifyEscrow` records nothing, and its gate
   opens only from the passes `Reconfigure` is given (its D16). A `decision:` marker
-  at the refusal says why, to be withdrawn if RFC 16 gains a row for the pass. Prior art: RFC 13
+  at the refusal says why, and that `verify-escrow` is the one writer of `remote.escrowed`, to be withdrawn if RFC 16 gains a row for the pass. Prior art: RFC 13
   §2.5's system fields of a backup location, which the record holds and the operator never writes
   (checked).
 
@@ -383,7 +383,9 @@ tests can cite them. Where another epic does the rest, the row says so.
   and nothing is stored for it. A fill that fails is retried in the background, with backoff on the
   content wiring's clock, until it succeeds, and an absent ID answered `true` wakes that retry
   without waiting for it (a non-blocking signal, so the decode path still reads nothing), so the
-  map is corrected with no new open: its plaintext bodies are refused
+  map is corrected with no new open. The map is an `atomic.Pointer` to a map each fill copies and
+  replaces, so the decode path reads it with no lock and never sees one half written. Its
+  plaintext bodies are refused
   rather than trusted until then, since failing closed costs a refused read that should not happen
   and failing open admits a planted body. A `decision:` marker at the lookup says so, and that a
   failed read is never cached.
@@ -402,7 +404,8 @@ tests can cite them. Where another epic does the rest, the row says so.
   `ErrUnknownMaterial` `503` `unknown_material`, both retryable; `ErrMaterialDestroyed` is `409`
   `material_destroyed` and `ErrNotEscrowed` `409` `not_escrowed`, codes by the errors' names as RFC
   23 §4.7 says. A rotation step answers the same errors through the same rows, as a
-  `*apiv1.Problem`, because the runner retries any other error with no end (`step.Failure`): a plain
+  `*apiv1.Problem`, because the runner retries with no end any other error that does not wrap
+  `step.ErrStepFailed` (`step.Failure`): a plain
   `ErrNotEscrowed` would spin a key-file rotation and never run its failure hook. Only
   `ErrMaterialUnavailable` and store errors stay retried inside a step, and so does
   `ErrUnknownMaterial`, since material the provider was not given yet, a key service's new version
@@ -446,6 +449,9 @@ internal/node/
   arch_test.go        T9.3  componentAllowed admits pkg/transform/keys' error values
   keyops.go           T9.5  the two step rows and Deps.RotationNeeded's start
   runner.go           T9.5  stepRow.failed takes the operation
+  node.go             T9.5  the machine-password row's failed hook takes the operation
+internal/identity/
+  rotate.go           T9.5  RotateFailed takes the operation and ignores it
 internal/node/api/
   res_settings.go     T9.1  ownKeys rows for remote.materials and remote.escrowed
   problems.go         T9.3  rows for pkg/transform/keys' errors
@@ -673,7 +679,9 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
     `spec.settings.encrypts`, on a key-file store with or without a pass, and no key record exists
     afterwards (D6).
   - The namespace's `keys` object holds its records when its record commits; with the bucket's put
-    failing, the create fails and no namespace record exists (D6).
+    failing, `CreateKeys` retries it with backoff (E8's R9), so the create waits: a request whose
+    context ends first fails and leaves no namespace record, and once the put succeeds the create
+    commits (D6).
   - After a create that commits and one whose transaction fails for good, `Keys` holds no
     registration, and the committed namespace's `KeysObjects` answers from its record (D6).
 - **Tests:** through the API, with the real provider over `kvstore` on Badger under `t.TempDir()`
@@ -685,8 +693,11 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
   under the drawn ID are those D6's marker names (catches an orphan larger than it states); the
   read's field compared with `Current`'s answer; the mismatched `encrypts` rows, the key records
   listed afterwards (catch keys made before the check); the bucket put failed by a fault wrapper
-  around the memory remote store, and the `keys` object read back at the record's commit (catch a
-  record committed before its keys reach the bucket, or a put with no store to resolve); the
+  around the memory remote store, on the injected clock: with the request's context bounded and ended
+  while the put still fails, no namespace record; with the fault lifted and the clock advanced, the
+  create commits and the `keys` object is read back at the record's commit (catch a record committed
+  before its keys reach the bucket, a create that fails at the first refused put rather than waiting
+  on E8's retry, or a put with no store to resolve); the
   registrations, read through a per-instance hook from `export_test.go`, empty after the committed
   and the failed create (catches a map that grows with every create, D6).
 - **Rules:** rule 8: the provider and its records are real. rule 9: D6's `ponytail:` at the
@@ -731,6 +742,7 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
     commits the swap of `key_file` and the named retired file in that same control-plane write, with
     the raw `tx.PutSetting`, never through the settings table, whose `CheckTx` refuses a swap (D2),
     and records the swap's time in its cursor; a later turn
+    leaves `More` unset, so the runner waits a period between turns rather than spinning, and
     answers neither `Done` nor an error until `Keys.CurrentKeyFile` names the named file, which the
     section's reach hands to the provider after the commit (D12), and only then calls
     `RotateMasterKey` (D2); if 5 minutes pass on the injected clock from the recorded time first, as
@@ -921,7 +933,7 @@ A suggestion only: one pull request per subtask works as well.
 - **No RFC names the escrow pass's setting, nor the KMIP client key's (D3, D4).** RFC 13 §4.2 lists
   a key file's verified escrow among the store configuration's values, and E6's D6 records the pass
   there, but Appendix B has no row and no key. This epic proposes `remote.escrowed`, written only by
-  `verify-escrow` and a key-file rotation, and `remote.kmip_client_key`, a secret reference; RFC 13
+  `verify-escrow` (a key-file rotation only reads it, D2), and `remote.kmip_client_key`, a secret reference; RFC 13
   Appendix B should gain both rows ("verified escrow passes | RFC 5 Appendix B.2 | remote store |
   live, written by `verify-escrow` only | none"). Not edited here; for RFC 13's
   author.
