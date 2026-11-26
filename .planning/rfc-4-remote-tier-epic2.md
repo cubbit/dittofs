@@ -171,7 +171,7 @@ subtasks and tests can cite them.
 | R18 | A get returns exactly the bytes of its range, or of the whole block for the zero `Range`, or an error: a range that extends past the end is `ErrInvalid`, an absent block is `ErrNotFound`, and a get after a put of the name returned `nil` returns the block | MUST | §4.1, §4.4, §6 R6 | T2.1 |
 | R19 | `Delete` returns one result per name, in order; an absent name's is `nil`; a batch of any size is accepted | MUST | §4.5, §6 R7 | T2.2 |
 | R20 | A listing yields every block that exists for the whole walk exactly once, in ascending name order from `after`, with its size and the time it was stored, at most `n` per call, and skips a key under the block namespace that is not a block name and counts it, in the load record (D7) | MUST | §4.6, §6 R8 | T2.2, T2.5 |
-| R21 | The store reads time only through a clock interface it declares in its own package, which the node's one clock and a test's virtual clock satisfy as they are; it defines no private clock | MUST | RFC index "Test harness" item 1; RFC 3 §1.4 | T2.1, T2.2 |
+| R21 | The store reads time only through the clock it is given, a `now func() time.Time` (D4) that the node's one clock and a test's virtual clock supply as they are; it defines no private clock and never calls `time.Now` | MUST | RFC index "Test harness" item 1; RFC 3 §1.4 | T2.1, T2.2 |
 | R22 | Each role reaches one fixed location outside the block namespace; a control put replaces the whole object; an absent object is `ErrNotFound`; a body is bounded by a constant of the store and read into memory, a larger one `ErrInvalid`; the roles are a closed set | MUST | §4.13, §4.8, §6 R16 | T2.3 |
 | R23 | The health object exists from the moment the store is returned; the put probe writes it, the get probe reads it, and a get probe that finds it absent fails with `ErrNotFound`; the store keeps no health status | MUST | §4.7 | T2.3, T2.4 |
 | R24 | Every failure wraps exactly one sentinel of §4.1; a local failure, a context ended or a body reader failing, is returned as itself | MUST | §4.8, §6 R9 | T2.1 |
@@ -211,7 +211,8 @@ subtasks and tests can cite them.
     the standard library (`hash/crc32`'s Castagnoli table, `crypto/md5`): the raw digest, as
     `Hash.Sum(nil)` returns it, 4 bytes for CRC32C and 16 for MD5. E4's store encodes it into
     its header. No hook carries it, so the S3 opener supplies nothing for it, and the in-memory
-    store's modes (D5) are exercised by the same rows.
+    store's three modes (D5) are exercised by the same rows: its suite test calls `Run` once per
+    mode.
   - Prior art: the Go CDK's `blob/drivertest.RunConformanceTests`, which takes a harness maker
     and runs every row against each driver, `memblob` among them (from memory); Go's
     `testing/fstest.TestFS` (from memory).
@@ -268,10 +269,12 @@ subtasks and tests can cite them.
     that a test switches on if a benchmark over this store shows it in its heap.
   - The counts RFC 3 §1.4 names (calls in flight and their peak, the order calls reached the
     store, puts per name, the bytes held) are held by the suite's load row (T2.5), as RFC 29 §4.11
-    asks of a count a test asserts on. The row reads an optional `Subject.Load` hook: the
-    in-memory opener backs it with `Load`, and E4's opener with E3's pass-through request record
-    (its D11), so the counts are held against a real store too. A subject without the hook skips
-    the row by name.
+    asks of a count a test asserts on. The row reads an optional `Subject.Load` hook, which only
+    the in-memory opener backs, with `Load`: RFC 3 §1.4 asks the record of the in-memory store
+    alone, and E3's request record (its D11) has no in-flight count, peak or bytes held. E4's
+    opener leaves the hook nil, so the row skips on the S3 store by name.
+  - `Puts` counts every put that reached the store, at its entry, whether it then fails or not,
+    so a put retried after a failed attempt counts twice.
   - `remotetest` cannot import `memory` (rule 7), so it declares the hook's `Load` and
     `CallRecord` with the same fields, and the in-memory opener copies one into the other.
   - `Foreign` stays with the store's own tests: the S3 store counts a skipped key through §4.12's
@@ -330,7 +333,8 @@ pkg/remote/remotetest/
                   T2.4  the read-only probe row; Subject.ReadOnly
                   T2.5  the load row; Subject.Load, Load, CallRecord
 pkg/remote/memory/
-  store.go        T2.1  New, Store, Checksum, Put, Get, Close; the C.2 keys (D2)
+  store.go        T2.1  New, Store, Checksum, Put, Get, Close; the C.2 keys (D2); placeholder
+                        bodies for the other methods, which T2.2 to T2.4 replace
   list.go         T2.2  Delete, List; putRaw
   control.go      T2.3  PutControl, GetControl, the 256 KiB bound; the health object New puts; rawKeys
   health.go       T2.4  Health
@@ -373,6 +377,10 @@ pkg/remote/memory/
     func (s *Store) Close() error
     ```
 
+    and every other method of `remote.Store` (`Delete`, `List`, `PutControl`, `GetControl`,
+    `Health`) with a body that returns an error wrapping `ErrInvalid`, so `*Store` is a
+    `remote.Store` from this subtask on; T2.2 to T2.4 replace those bodies.
+
     One map under one mutex holds every object by its C.2 key (D2). `Put` refuses a negative `size`
     with `ErrInvalid`, reads the body through `io.LimitReader(body, size+1)` into a buffer that
     grows as it reads (never allocated from `size` up front), checking the context between reads,
@@ -381,8 +389,9 @@ pkg/remote/memory/
     flight when it is closed (D6). D5's `ponytail:` at `Get`.
     Consumed by the RFC 3 plan's epic 2, the RFC 5 plan's epic 8, the RFC 8 offload plan's epics
     15, 17 and 21, and E6.
-  - `memory/suite_test.go`: the opener over `New(sim.NewTestClock(…).Now, remote.ChecksumCRC32C)`. The None and MD5
-    modes are covered by `store_test.go`, and E4 runs the rows against LocalStack's own mode.
+  - `memory/suite_test.go`: `remotetest.Run` once per mode, over
+    `New(sim.NewTestClock(…).Now, sum)` for `remote.ChecksumNone`, `ChecksumCRC32C` and
+    `ChecksumMD5` (D1); E4 runs the rows against LocalStack's own mode.
 - **Acceptance criteria:**
   - Every row of this subtask passes against the in-memory store, under `-race`, with no leak.
   - A put that fails for any reason leaves a get of its name as it was before the put.
@@ -400,8 +409,10 @@ pkg/remote/memory/
     - In CRC32C and MD5 modes, a `sum` for other bytes: `ErrCorrupt`, nothing stored; a retry
       with the right sum stores it (catches the sum ignored, R16). A put over an existing name with
       a wrong sum leaves the first bytes readable (catches a replace before the check, R14).
-    - A context cancelled while the body reader blocks: the put returns `context.Canceled` and
-      stores nothing; a reader failing with its own error: that error, unwrapped (catches a local
+    - A context cancelled while the body reader blocks: the reader, blocked in `Read` until the
+      context ends, then returns one more byte, and the put's check before its next read returns
+      `context.Canceled` and stores nothing. `Put` cannot interrupt a `Read` the caller's reader
+      is blocked in, so the reader ending is what lets the check run; a reader failing with its own error: that error, unwrapped (catches a local
       failure wrapped as `ErrTransient`, R24).
     - A table of every failure path, asserting `errors.Is` matches its sentinel and no other of the
       set, `ErrThrottled` counting as one with `ErrTransient` (catches a double wrap, R24).
@@ -411,7 +422,8 @@ pkg/remote/memory/
   - Doubles: `pkg/sim`'s `TestClock` (kind 1). Leak checks through `Run` (rule 4); under `-race`
     `internal/prof` skips its heap check, so a heap leak shows only in the run without it.
 - **Rules:** rule 9: D5's `ponytail:`. Rule 12: `remotetest` and `memory` both land here with
-  their first consumer, each other.
+  their first consumer, each other; the placeholder bodies let `*Store` be a `remote.Store` before
+  its later methods' rows land.
 
 ### T2.2 The delete and listing rows
 
@@ -440,8 +452,10 @@ pkg/remote/memory/
     between a name beginning `00` and one beginning `ff`, both put; the walk lists both names and
     the R10 check leaves the key out (D1) (catches a foreign key yielded as a block, or the walk
     stopping at it), and walked again with `n` 1, so one page ends on the key (catches a `next`
-    that does not advance past a foreign key), and a context cancelled before the call (catches a listing that
-    ignores its context).
+    that does not advance past a foreign key), and a page of 1,000 blocks listed under a context
+    that reports itself ended from its second check on, `Err` or `Done` (a fault-injecting context,
+    kind 3): the call returns `context.Canceled` (catches a listing that checks its context only at
+    entry, R9).
   - `store_test.go`, at `List`: the clock set to a fixed past instant before a put, `Info.ModTime`
     equal to it (catches `time.Now`, R21); `Delete` returning one result per name for a batch with
     duplicates (catches results collapsed by name, R19).
@@ -537,7 +551,7 @@ pkg/remote/memory/
   type Load struct {
       InFlight, Peak int
       Calls          []CallRecord
-      Puts           map[remote.Name]int
+      Puts           map[remote.Name]int // every put that reached the store, failed ones too (D6)
       Bytes          int64 // of the blocks held
       Foreign        int   // keys a listing skipped (D7)
   }
@@ -551,27 +565,31 @@ pkg/remote/memory/
   - `remotetest`: `Subject.Load func() Load`, with `remotetest.Load` and `remotetest.CallRecord`
     declaring the same fields as `memory`'s, `Foreign` left out (D6); the load row, which a subject
     without the hook skips by name. The in-memory opener backs it by copying `(*Store).Load()`.
-    Consumed by E4's T4.8 opener, over E3's request record.
 - **Acceptance criteria:**
   - The load row passes against the in-memory store under `-race`.
   - With 64 puts held open by blocking body readers, `InFlight` and `Peak` are 64; once released
     `InFlight` is 0 and `Peak` stays 64.
   - `Calls` lists the calls in the order they reached the store; `Puts` counts a name put three
-    times as 3; `Bytes` equals the sizes of the blocks still held after puts, replacements and
+    times as 3, and a put that fails on its reader as 1; `Bytes` equals the sizes of the blocks still held after puts, replacements and
     deletes.
 - **Tests:** the suite's load row, at `remote.Store`, reading the counts through `Subject.Load`,
   the record the RFC 3 plan's checks read:
-  - 64 puts whose body readers each block after signalling their first `Read`: once all 64 have
-    signalled, `InFlight` is 64; then half released with a reader error and half to their end,
+  - 64 puts whose body readers each block after signalling their first `Read`: the test waits for
+    the 64 signals with one bounded backstop, then asserts `InFlight` is 64 and reports how many
+    readers signalled, so a limit fails on the count rather than on a timeout (the bound is the
+    assertion, since nothing here takes a clock); then half released with a reader error and half to their end,
     `InFlight` is 0 and `Peak` 64 (catches a
     concurrency limit or queue, which would hold a put back before its first read, R25, and
-    `InFlight` not decremented, R29). The test waits on the signals, never on time;
+    `InFlight` not decremented, R29);
   - a get whose reader is left open: `InFlight` is 1 until it is closed (catches a get counted
     only until it returns, R29);
   - a put whose body reader fails: one `put` in `Calls`, and the reader's error returned (catches
     a retry inside the store, R25);
   - a sequence of put, get, delete, list and control calls from one goroutine, compared with
-    `Calls` (catches a call left out or recorded at return instead of entry, R29);
+    `Calls` (catches a call left out, R29); then a put whose body reader blocks after signalling
+    its first `Read`, a get of another name from a second goroutine that returns, and the put
+    released: `Calls` lists the put before the get (catches a call recorded at return instead of
+    entry, R29);
   - a replaced block and a deleted one, compared with `Bytes` (catches bytes counted per put
     instead of per block held, R29);
   - `store_test.go`: a listing over a planted foreign key, then `Load().Foreign` is 1 (catches a key skipped uncounted,
@@ -614,9 +632,8 @@ A suggestion only: one pull request per subtask works as well.
 - **What later documents owe this epic.**
   - E4's T4.8 opener supplies `PutRaw` and `Raw` over its admin client, or R9's foreign-key half
     and R10 skip on the S3 store by name; and its cleanup leaves no idle connection behind (D1).
-    E4's T4.8 opener also backs `Subject.Load` with E3's
-    request record (its D11), or the load row skips on the S3 store by name (D6). E4's document
-    names none of these yet.
+    E4's T4.8 opener leaves `Subject.Load` nil, so the load row skips on the S3 store by name
+    (D6). E4's document names none of these yet.
   - The RFC 3 plan's epic 2 adds its time-taking faults through the bodies, as D8 says, so the
     store's record sees the pool bind.
 - **How `sum` is encoded.** RFC 4 §4.1 gives `Put` a `sum []byte` and does not say its form. D1
