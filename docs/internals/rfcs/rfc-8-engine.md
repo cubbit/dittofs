@@ -1206,10 +1206,18 @@ type Deps struct {
 	Gate      Gate      // RFC 12 §2.3: the per-shard cut gate every existence commit passes
 	Clock     Clock     // Now, Elapsed, After: the subset of the node's clock the engine reads
 	FreeSpace func(dir string) (int64, error) // free bytes of the filesystem holding journal directory dir, for journal_full's clear after a full device (§11.1); nil asks the filesystem
-	Watchdog  *health.Watchdog // RFC 25 §3.5: each journal's scheduler takes Loop("engine.sched." + journal)
+	Watch     func(loop string) Loop // RFC 25 §3.5: each journal's scheduler takes Watch("engine.sched." + dir), dir the journal's directory; the engine closes it once that scheduler's Stop has returned with every run joined, and leaves it open after a Stop that timed out
 	Metrics   *metrics.Registry
 	Tracer    trace.Tracer // RFC 25 §8.1: spans; the no-op tracer when tracing is off
 	Logger    *slog.Logger
+}
+
+// Loop is a watched loop as the work scheduler turns it, and its close. The
+// engine declares it so it imports no pkg/health (RFC 0 §1.2); RFC 25's
+// *health.Loop satisfies it, and the root passes its watchdog's Loop as Watch.
+type Loop interface {
+	workqueue.Loop // Turn, Idle (§6.1.1)
+	Close()
 }
 
 // CloneHold is the part of open state a clone calls, in the engine's own
