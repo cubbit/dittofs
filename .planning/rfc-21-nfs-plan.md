@@ -323,7 +323,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 | E9 | Opens, stateids and locks | `OPEN` and its claims, stateid rules, NFSv4.0 owner sequences, `LOCK`, `LOCKT`, `LOCKU`, `TEST_STATEID`, `FREE_STATEID`, drain roles per request | 8 | 25 | C | E10 and E12, partly; E16 |
 | E10 | Delegations and the back channel | the back channel's calls, delegations offered, recalled, returned and revoked, administrator's revoke, path down with A2's service half after S2b, the drain test | 8 | 22 | A | E16 |
 | E11 🔀 | NLM, NSM and the datagram path | `core`'s datagram listener, NLM v4, NSM, grants resent, `SM_NOTIFY`, `DialClient`'s network | 7 | 22 | B | E16 |
-| E12 | NFSv4.2 operations | `DEALLOCATE`, `SEEK`, `READ_PLUS`, `COPY`, `CLONE`, xattrs, the hold budget | 5 | 13 | C | E16 |
+| E12 | NFSv4.2 operations | `DEALLOCATE`, `SEEK`, `READ_PLUS`, `COPY`, `CLONE`, xattrs, the hold budget | 8 | 20.5 | C | E16 |
 | E13 🔀 | RPCSEC_GSS | `gss`'s Kerberos side (S6c); the context table as NFS's `Security` stage over it, `krb5`, `krb5i`, `krb5p` | 12 | 28 | B | E16; RFC 22's plan's epic 4 |
 | E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries | 4 | 11.5 | A | E16 |
 | E15 🔀 | Integration with the node | settings, the NFS suites turned on | none | planned after S7 | team | E16, partly |
@@ -1022,20 +1022,22 @@ through NLM; N1's UDP half, N15, N21.
 
 ### Epic 12 — NFSv4.2 operations
 
-**Epic 12 estimate: 5 subtasks, 13 man-days.**
+**Epic 12 estimate: 8 subtasks, 20.5 man-days.**
 
 RFC 21 §9.3's subset of NFSv4.2: holes, server-side copy and clone, extended attributes.
 
 **Owns:** RFC 21 §9.3, §9.4, Appendix C; the hold budget per session.
 
-**Done when:** RFC 21 §13's "§9.3 copy and clone" single-node steps, "§9.3 hold budget *(1 node)*",
-"§9.4 copies are synchronous", "§2.3 a compound's reply under the record cap"'s NFSv4.2 `READ_PLUS`
-step; N22. The held clone wait's rows need RFC 17's plan's piece 13 on the branch (§6.2, point 5).
+**Done when:** RFC 21 §13's "§9.3 copy and clone" single-node steps that need no running clone,
+"§9.3 hold budget *(1 node)*"'s adapter half with the clone's wait staged, "§9.4 copies are
+synchronous", "§2.3 a compound's reply under the record cap"'s NFSv4.2 `READ_PLUS` step; N22's
+translations. The steps that need a clone the engine runs, and N22's held I/O, are E16's.
 
 **Expected content:**
 - `DEALLOCATE`, `SEEK`, `READ_PLUS` with its `Bound` hook.
-- `COPY`: chunks, a short count at the deadline, count 0, range checks; `CLONE`.
-- The hold budget per session through `vfs.WithHold`, from E8's slot count.
+- `COPY`: the service's short count at the deadline answered, count 0 through a `GetAttr` of the
+  source, the service's range refusals answered, none judged in the handler; `CLONE`.
+- The hold budget per session: the session's wait gate beside `vfs.WithHold`, from E8's slot count.
 - `GETXATTR`, `SETXATTR`, `LISTXATTRS`, `REMOVEXATTR`.
 - The `NFS4ERR_NOTSUPP` set (D14); `OFFLOAD_STATUS` and `OFFLOAD_CANCEL` answered
   `NFS4ERR_BAD_STATEID`.
@@ -1148,7 +1150,9 @@ close-to-open and WCC *(1 node)*", "§5.4 single-node restart", "§5.2, §5.4 lo
 node)*", "§5.4 NFSv4.0 signal" on a restart of the one node, "§5.1 revoke across a restart *(1
 node)*"'s NFSv4 steps, "§6.1 NLM grace" and "§6"'s
 `SM_NOTIFY` step on a restart of the one node, "§5.3 lock recall", "§5.3 handle-cached deny mode", "§8.1 ctime",
-"§9.3 NFSv4.2"'s non-xfstests steps; after E15, `pjdfstest`, `pynfs`, `cthon04` and `nfstest` at their expected
+"§9.3 NFSv4.2"'s non-xfstests steps, "§9.3 copy and clone"'s steps that need a clone the engine runs
+and its Linux `cp` step, "§9.3 hold budget *(1 node)*" on a running `CLONE`, N22's held I/O (the held
+clone wait needs RFC 17's plan's piece 13 on the branch, §6.2, point 5); after E15, `pjdfstest`, `pynfs`, `cthon04` and `nfstest` at their expected
 failures, the pynfs steps of "§3.1, §3.2 sessions *(1 node)*", "§3.2 reply cache", "§4.2 v4.0
 owners *(1 node)*" and "§5.2 stateids *(1 node)*" among them.
 
@@ -1263,8 +1267,8 @@ follows the RFC as written.
    answering rows wait.
 4. **The composed node and the cutover** (S5, S7; RFC 20's plan's epic 7, #4050). Until S5, no
    in-process or restart row runs; until S7, no client reaches NFS through `dfs`.
-5. **The held clone wait** (RFC 17's plan's piece 13, on `develop` as #4239). E12's hold rows need it
-   on `feat/storage-v2`, which the next sync brings.
+5. **The held clone wait** (RFC 17's plan's piece 13, on `develop` as #4239). E16's running-clone
+   rows, which E12 hands it, need it on `feat/storage-v2`, which the next sync brings.
 6. **The burn-down's size.** v2's failures in `pjdfstest`, `pynfs`, `cthon04` and `nfstest` are known only once
    E15 turns them on, so E16's burn-down is planned after E15 and counted in no figure; `develop`'s 58
    pynfs entries are a floor.
@@ -1406,7 +1410,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | §7.4 (pseudo-filesystem, `SECINFO`, locations) | E5; the drain's answers: E3 and E10; the move and another gateway: §6.6 |
 | §8 (attributes) | E5; ACL attributes: E6; privilege: E7, E13 |
 | §9.1, §9.2 (stability, close-to-open) | E4, E5; end to end: E16 |
-| §9.3, §9.4, Appendix C | E12 |
+| §9.3, §9.4, Appendix C | E12; the running-clone steps on the composed node: E16 |
 | §10 (RPCSEC_GSS) | E13 |
 | §11 (decoding) | E1 (compound row), E3 (credential), E4 and E5 (generator) |
 | §11.1 (identity) | E3; `RPCSEC_GSS`: E13; resolution: E7 |
@@ -1416,7 +1420,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | §11.5 (errors) | E3 (`core`'s refusals, status layers), each handler epic (its rows), E10 (drain), E16 (totality); D4 in E4 |
 | §11.6 (testing) | golden vectors: E3, E4, E5; fuzz targets: E6, E8, E9, E11; drain test: E10; total mapping and cross-protocol: E16 |
 | §11.7, §14 (monitoring, observability) | rule 3; the recorder of §14's series and §11.7's three: §6.1, point 4 |
-| §12 (invariants) | N1: E3, E11; N2: E8 (one node); N3: E8, E13; N4: E9; N5: E8; N6: E10 (one node); N7: E4, E5; N8: E4, E5; N9: E5; N10: rule 13, E8; N11: E8; N12: E9; N13: E8, E16; N14: E10, E16; N15: E11; N16: E5, E6, E16 (§8.1 ctime); N17: E4, E16; N18: E8; N19: E4, E5; N20: E8; N21: E11; N22: E12; N23: E4, E16; N24: E9, E10, E16; N25: §6.6 (RFC 27); N26: E3, every translation; N27: E8 |
+| §12 (invariants) | N1: E3, E11; N2: E8 (one node); N3: E8, E13; N4: E9; N5: E8; N6: E10 (one node); N7: E4, E5; N8: E4, E5; N9: E5; N10: rule 13, E8; N11: E8; N12: E9; N13: E8, E16; N14: E10, E16; N15: E11; N16: E5, E6, E16 (§8.1 ctime); N17: E4, E16; N18: E8; N19: E4, E5; N20: E8; N21: E11; N22: E12, E16; N23: E4, E12, E16; N24: E9, E10, E16; N25: §6.6 (RFC 27); N26: E3, every translation; N27: E8 |
 | §13 (conformance) | each row in the epic whose **Done when** names it; cluster steps: §6.6 |
 | §15 (open questions) | q5: D10 (§6.1, point 6); the others not planned |
 | Appendix A | non-normative |
