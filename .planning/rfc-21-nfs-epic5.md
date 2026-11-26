@@ -438,7 +438,7 @@ snapshots (§1.2).
   pseudo handle, which `admitHandleFor` admits to no share and which would let `GETATTR`, `READDIR`
   and `SECINFO` run on a share that is disabled or excludes the client (CLAUDE.md's invariant 2). `SecInfo` with an
   empty name answers the directory's own flavours, and with `..` at a share's root the pseudo
-  directory's. A pseudo directory's `File` reports `Subdirs` as its children, so `numlinks` is 2 +
+  directory's, or, where the node above is an enclosing share's mount, that share's `Flavors`. A pseudo directory's `File` reports `Subdirs` as its children, so `numlinks` is 2 +
   `Subdirs` there with no branch. Changing `MountedOn`'s shape once E5 and RFC 22's adapter read it
   costs both adapters' encoders; no marker, since the amended RFCs state the rule.
 - **D13. One not-supported handler.** `OPENATTR`, `DELEGPURGE`, `SET_SSV` and the layout and
@@ -661,7 +661,7 @@ internal/vfs/
   through its admission where that node is a share's mount (D12), and at the pseudo-root
   `ErrNotFound`; `SecInfo` with
   an empty name answering the directory's own flavours, and with `..` at a share's root the pseudo
-  directory's, both styles admitted as today's `SecInfo` is, without the share's minimums
+  directory's, or the enclosing share's `Flavors` where that node is a share's mount, both styles admitted as today's `SecInfo` is, without the share's minimums
   (`secure` false), so `SECINFO_NO_NAME` never meets `ErrWrongSecurity`. RFC 17 §3.0's value-type table names the two fields, and RFC 17 §4.9's and RFC 20
   §4.10's sentences on the `File` name `StatFS`, in the RFC pull request §9, point 7 names. Consumed by T5.4's
   encoder (`mounted_on_fileid`, `numlinks`, `fs_charset_cap`, a pseudo directory's attributes),
@@ -683,7 +683,8 @@ internal/vfs/
   - With shares at `/a` and `/a/b`, `Lookup` of `..` at `/a/b`'s root under `NFSv4Caps` answers
     `/a`'s share root handle, `entity.NewHandle` of share `a`, when share `a` admits the caller, and
     share `a`'s admission error when it is disabled (`ErrDelay`) or its client rules exclude the
-    caller (`ErrAccess`); never `/a`'s pseudo handle.
+    caller (`ErrAccess`); never `/a`'s pseudo handle. `SecInfo` with `..` at `/a/b`'s root answers
+    share `a`'s `Flavors`, never `/a`'s pseudo directory's.
 - **Tests:** in `internal/vfs`, beside the pseudo-filesystem's tests: each criterion above, each
   failing with its change reverted (catch a crossing not reported, R13, a name rule ignored, R26, a
   pseudo directory's zero capabilities, R38, `SECINFO_NO_NAME` failing at the pseudo-root, R11,

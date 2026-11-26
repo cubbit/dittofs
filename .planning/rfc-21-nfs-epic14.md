@@ -74,6 +74,9 @@ script, committed.
 - Areas with no script here, listed in §9 point 3: Kerberos's security exchange, the TLS handshake
   after `tls-probe`'s `AUTH_TLS` probe, delegation grants, NLM and NSM, NFSv4.2 (§9 point 3); a script per
   status of every error table (§9 point 4).
+- The two-client conflict captures E2 hands here, a second client's `OPEN` answered
+  `NFS4ERR_DELAY`: a row of the RFC 21 implementation plan's §6.6 deferral ledger ("The two-client
+  conflict captures"), unowned, since every script records from client 1's namespace alone.
 
 ### 1.3 Names used here
 
