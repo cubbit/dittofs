@@ -397,10 +397,10 @@ pkg/syncer/
     floor.go               T4.4  the floor judge (D6)
     floor_test.go          T4.4
     attempt.go             T4.6  the put loop, the Meter, the timers, the watchdog, the outcome hook
-    upload.go              T4.6  Upload over the loop
-    fetch.go               T4.7  the get loop under Fetch and Prefetch
-    stats.go               T4.6  the transfer series (T4.7 adds the get side)
-    export_test.go         T4.6  the outcome hook, the loop's inputs for tests
+    upload.go              T4.6  extends E3's file: Upload over the loop
+    fetch.go               T4.7  extends E3's file: the get loop under Fetch and Prefetch
+    stats.go               T4.6  extends E3's file: the transfer series (T4.7 adds the get side)
+    export_test.go         T4.6  extends E3's file: the outcome hook, the loop's inputs for tests
     attempt_test.go        T4.6
     fetch_retry_test.go    T4.7
     retry_rows_test.go     T4.9  the §7.2 retry rows, §8.4's retries count, §8.2's retry cases
@@ -478,7 +478,7 @@ pkg/syncer/
   - Ten refunds restore one take; a refund never passes capacity.
 - **Tests:** at `take` and `refund`, which the loops call, as tables (no double): the reserve
   refused to a background take and granted to a demand one (catches a reserve not held, R23); the
-  ten thousand clean refunds from empty, exactly a thousand takes back (catches a refund that drifts
+  1,280 clean refunds from empty, exactly 128 takes back, the capacity (catches a refund that drifts
   or a refill off by ten, R22); the 6%-failure run of RFC 3 §2.4's arithmetic is T4.9's "§2.4 slow
   tail is not charged" row (R25); two buckets of one store, one per half, draining one leaves the
   other full (catches one bucket per store, R24).
@@ -814,7 +814,9 @@ A suggestion only: one pull request per subtask works as well.
   checks run before `codec.Store` lands, with `attempt` a closure over the in-memory store's
   `Put`; that closure would invent the `Meter` counts every bound here reads. So T4.6 onward waits
   for the codec, and track B fills the wait with T4.1 to T4.5. The plan's rule 1 should drop that
-  sentence.
+  sentence, and the same amendment should put E4 behind RFC 4 plan epic 6 where the plan still
+  says upload checks need no codec: §3.1's graph (its edge is labelled "fetch checks" and reaches
+  only E3 and E6), §3.2 ("upload checks need only R4-S2"), §3.3's RFC 4 epic 6 blocker and O9.
 - **E5 owns the floor's health case at `Flow.Health`.** T4.10 asserts the counted flag at the
   outcome hook; E5's "§2.8 failure window" row should add a floor trip with the aggregate below
   the floor, read at `Flow.Health`, so the value is also checked where it is consumed.
