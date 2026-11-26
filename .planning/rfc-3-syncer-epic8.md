@@ -231,9 +231,9 @@ and tests can cite them.
 - **D10, no `_limit` series: the user's decision, 2026-11-26.** RFC 25 §2.2 exports a value that
   bounds a measured metric under its name with `_limit`, and RFC 3 §2.12 reads three gauges against
   such a bound (the waiter bound, the detached-buffer cap, the throttle limit's cap). Each is fixed
-  by `syncer_workers` (RFC 3 §2.10: eight times it, equal to it, three quarters of it), so a
-  dashboard derives it, and the collector exports exactly RFC 3's list (R1). This pull request adds
-  the sentence saying so to RFC 3 §2.12. A `decision:` marker at the descriptors names it. Not
+  by `syncer_workers` (RFC 3 §2.10: eight times it, equal to it, three quarters of it with §2.10's
+  floor and ceiling), so a dashboard derives it, and the collector exports exactly RFC 3's list
+  (R1). This pull request adds the sentence saying so to RFC 3 §2.12. A `decision:` marker at the descriptors names it. Not
   chosen: `syncer_waiters_limit`, `syncer_detached_buffers_limit` and `syncer_throttle_limit_limit`,
   with three `Stats` fields.
 - **D11, `syncer_refused_total` carries no `class`: the user's decision, 2026-11-26.** Its reasons
