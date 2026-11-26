@@ -31,6 +31,7 @@ pcap-corpus/
   nfsv4-acl/          # fattr4_acl get/set reference
   nfs3/ nlm/          # knfsd: NFSv3 with MOUNT; NLM with NSM
   nfs40/ nfs41/ nfs42/  # knfsd: NFSv4.0, NFSv4.1, NFSv4.2, with callbacks
+  nfs-gss/            # knfsd: RPCSEC_GSS at krb5, krb5i, krb5p, with its test keytab
   smb-sd/             # SMB2 SECURITY_DESCRIPTOR query/set reference
 ```
 
@@ -78,6 +79,7 @@ server (or Windows) for SMB security descriptors. Capture with `tcpdump -i any
 | NFSv4 `fattr4_acl` | Linux client ↔ `knfsd` | `tcpdump port 2049` while `nfs4_getfacl` / `nfs4_setfacl` on a krb5 mount | `nfs` |
 | SMB SECURITY_DESCRIPTOR | `smbcacls` / Windows `icacls` ↔ Samba member / Windows share | `tcpdump port 445` while `smbcacls //srv/share file` | `smb2` |
 | NFS program areas (`nfs3`, `nlm`, `nfs40`, `nfs41`, `nfs42`) | Linux client ↔ `knfsd` over loopback, on a throwaway host | `sudo NFS_RECORD_THROWAWAY_HOST=1 test/pcap-corpus/nfs-record.sh <outdir> [area...]` | `nfs`, `mount`, `nlm`, `stat` |
+| `RPCSEC_GSS` (`nfs-gss`, area `gss`) | Linux client ↔ `knfsd` over loopback with a throwaway KDC, on a throwaway host | `sudo NFS_RECORD_THROWAWAY_HOST=1 test/pcap-corpus/nfs-record.sh <outdir> gss` | `rpc`, `nfs` |
 
 See each feature's `CAPTURE.md` for the exact commands used.
 

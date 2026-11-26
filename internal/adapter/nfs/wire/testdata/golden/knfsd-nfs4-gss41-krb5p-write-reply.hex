@@ -1,0 +1,20 @@
+# test/pcap-corpus/nfs-gss/reference.pcap, frame 517, cut by test/pcap-corpus/cut-golden.sh with framing rpc:
+# tshark -r test/pcap-corpus/nfs-gss/reference.pcap -Y frame.number==517 -T fields -e tcp.reassembled.data -e tcp.payload -e udp.payload
+08509565 00000001 00000000 00000006
+0000001c 040401ff ffffffff 00000000
+03f7a30d d45f0df6 b626eee7 e4d5a85b
+00000000 000000e0 050403ff 00000000
+00000000 03f7a30e 875cd59e 6b76990b
+efa1c897 e00deff4 3732d44f e0ad8f4a
+8293a000 60585df9 0344693f de9d31ee
+dfa0a4db 518165da b5ab063c 5d6a9da5
+7c6a10b1 caa06a81 41258ac7 cedbf2f2
+8313e96c 605e42cd 97ce0058 2b7e7e74
+fe718f1d 12172481 db40b62f c71df72e
+8382037f 9804c5aa 602c8b32 2945cac2
+b84c8c0a b7412904 8dd38b5a 2d6ac9e1
+ef375466 3f21ae6e e29edc5b d8a8ded5
+5bf9c99f ee986394 64726b97 e00b041b
+02f5375e 79900ddb f788b5ed 22598f5e
+f6867b95 94c44260 3ec59428 4b64625c
+aaacc960 6be1fa50
