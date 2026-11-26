@@ -18,12 +18,12 @@ with its attempt, stable bytes); [RFC 4](../docs/internals/rfcs/rfc-4-remote-tie
 `Attempt`, `Stored`); [RFC 5](../docs/internals/rfcs/rfc-5-transforms.md) §2.7, §3.1 and Appendix B.2
 (the pin, its release, a destroyed current material, a plan keyed under another namespace).
 **Track:** B.
-**Epic 15 estimate: 10 subtasks, 34.25 man-days.**
+**Epic 15 estimate: 10 subtasks, 35 man-days.**
 **Depends on:** sync point **S2**, red rows in CI (epic 12): the fixture's `WithCarver` and
 `WithChain`, refusing by name, and the 41 entries whose message is the carver's refusal; **S5's
 first half** for the finish: RFC 2's carver and fold, RFC 3's syncer over RFC 4's in-memory store
-through `codec.Store` under RFC 4's fault wrapper, RFC 5's chain over `keystest`'s in-memory
-`keys.Provider`; #5775's journal and metadata contract packages, which `offload/` imports instead of
+through `codec.Store` under RFC 4's fault wrapper, RFC 5's chain per store configuration, each over its own
+`keystest` in-memory `keys.Provider` (D16); #5775's journal and metadata contract packages, which `offload/` imports instead of
 `pkg/journal` and `kvstore`; the RFC 2 to RFC 5 plans' epic 1 contracts landed on
 `feat/storage-v2` (`pkg/carver`, `pkg/transform` and `keys`, `pkg/syncer`, `pkg/remote`), which
 T15.5's ports are typed over; epic 11's frozen surface (`ShareSettings.MaxAge`, the `Stats` fields
@@ -46,7 +46,7 @@ it needs: the floor `K` must hold, the block's `encodings`, and the zero-ref com
 **At the end of the epic:**
 
 - a pass over a set of files, driven in `unit` over the in-memory journal, the real carver and fold,
-  RFC 5's chain over `keystest`'s provider, RFC 3's syncer over RFC 4's in-memory store and `kvstore`
+  RFC 5's chain per store configuration over that configuration's `keystest` provider (D16), RFC 3's syncer over RFC 4's in-memory store and `kvstore`
   over the in-memory `kv.KV`, offloads every byte it was offered, block by block, and reports exactly
   what committed;
 - every failure of every state, injected through the components' fault wrappers, ends with each
@@ -59,7 +59,7 @@ it needs: the floor `K` must hold, the block's `encodings`, and the zero-ref com
 ### 1.1 In scope
 
 `offloadDue`; the `offload/` package and the ports it declares; the engine's `Deps.Carver`,
-`Deps.Chain` and `Deps.Puts`; the content wiring's carver, fold and chain for the fixture; the
+`Deps.Chain` and `Deps.Puts`; the content wiring's carver, fold, and chain per store configuration for the fixture; the
 in-memory journal's `OffloadMany`; `kvstore`'s floor check, key-budget accessor, block `encodings`
 and zero-ref commit, and its commit's over-`K` path; the pipeline's series, its `carver_` series and
 its pass span; the `unit/engine-allocs` option; the block record's fuzz target; O1's crash leg, red;
@@ -257,7 +257,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 | R61 | A commit applied with its reply lost leaves the ref and its object both present, whatever the pass then does | MUST | RFC 16 §4.1 (an unknown outcome); RFC 8 §6.3 (Commit) | T15.9 |
 | R62 | K floor: limits giving `K` one below the floor are refused, naming `K` and the floor; one key's cost more opens, and a one-chunk commit with every tracked read, a key record per material included, commits within `T` | test row | RFC 6 §11.2 | T15.2 |
 | R63 | O1's crash leg: a process crash in each state, over the real journal on a real directory and `kvstore`, leaves every extent offloaded or **Dirty** and readable after restart | test row | RFC 8 §6.3 (checks); plan rule 8 | T15.10 |
-| R64 | The failure counts a binding's concurrent passes update and `offloadDue`'s inputs read are reached only under their lock | invariant | RFC 8 §6.3 O6 (the count in the binding's policy state); D11 | T15.10 |
+| R64 | The failure counts and the staged-bytes counts that a binding's concurrent passes and writes update and `offloadDue`'s inputs read are reached only under their lock | invariant | RFC 8 §6.3 O6 (the count in the binding's policy state); D11 | T15.10 |
 | R65 | A pass pins the chain and reads the material of its namespace's store configuration, never another's, and puts only to a store of that configuration; a namespace whose configuration the content wiring was not given, or a pass whose store is not one of its namespace's configuration's stores, is refused before any intent | MUST | RFC 5 §3.2, §2.5; RFC 8 §2.1 (the store's transform chain); D16 | T15.5, T15.8 |
 
 Enforced elsewhere once this epic lands: R3's "never builds settings" by the compiler, since
@@ -299,8 +299,8 @@ other row has a test here.
   RFC 5 plan's epic 8 builds one provider per configuration (D16); the content wiring builds one
   chain per configuration over that configuration's provider, and `Carver`, `Chain`, `Material` and
   `Puts` over them, and the node passes the providers and the stores the integration epic would, pulled forward
-  into this epic (about 1.5 man-days of the integration epic, not counted in this estimate). The
-  fixture composes all three whatever a row asks, and `Puts` resolves a store only when a put is
+  into this epic (about 2 man-days of the integration epic, one provider per configuration, not counted in this estimate). The
+  fixture composes all four whatever a row asks, and `Puts` resolves a store only when a put is
   built, so the first part's rows still bind. This departs from plan rule 12, since nothing in
   `pkg/engine` calls the members before epic 16's offload source: a `decision:` at `New`'s refusal
   names epic 16 as the first caller. Rejected: the members joining `Deps` with epic 16, which meets
@@ -385,7 +385,9 @@ other row has a test here.
   binding in a goroutine of its own and reads the counts for `offloadDue` while passes run, and Go
   aborts the process on a concurrent map write, so `Failures` is a type `offload/` declares, a
   `sync.Mutex` beside the map, reached only through its methods (`Failed(file)`, `Reset(file)`,
-  `Count(file) int`), each taking the lock (R64). Rejected: one owner goroutine receiving the
+  `Count(file) int`), each taking the lock (R64). The binding holds it only through a pointer
+  from `NewFailures()`, which makes the map, so a zero value is never used and the mutex never
+  copied; `go vet`'s copylocks check holds the second. Rejected: one owner goroutine receiving the
   changes, a goroutine and a channel per binding for three map operations. `Run` increments a
   file's count when its pass returns `Retry` for a cause other than `remote.ErrThrottled`, and resets
   it at `Done`; a `Throttled` outcome leaves it as it is. A file whose only unreported extents are in
@@ -410,7 +412,9 @@ other row has a test here.
   `Dirty` post a file's key once `offloadDue` finds its dirty bytes due, and the journal reports
   dirty bytes per journal (`Stats.DirtyBytes`) and each file's oldest dirty write (`DirtyFiles`),
   never one file's bytes. The engine's file state, memory only (RFC 8 §3.3), keeps a staged-bytes
-  count: `Write` adds the bytes it staged, a pass's `Done` for the file zeroes it, and a restart
+  count: `Write` adds the bytes it staged, a pass's `Done` for the file zeroes it, both under the
+  file state's lock, which `offloadDue`'s read of the count takes too (R64), since epic 16 runs a
+  binding's passes concurrently with writes and with `Dirty`; and a restart
   starts it at zero, when `DirtyFiles`' zero oldest-write time makes every rebuilt file due at once.
   Overwrites count twice, so a file can be offered before its dirty bytes truly reach the target:
   an early offer, never a lost one (RFC 8 §3.2). A `ponytail:` at the count names that ceiling and
@@ -436,7 +440,9 @@ other row has a test here.
   provider; a namespace whose store names no configuration the wiring was given is refused with an
   error naming it, never answered from another, so the plan is refused before any intent and its
   content stays **Dirty**. The lookup is cached by namespace, since a namespace's store and whether
-  it encrypts are bound at its creation (RFC 5 §3.2). The integration epic's T21.3 then changes only
+  it encrypts are bound at its creation (RFC 5 §3.2). Only a resolved configuration is cached: a
+  metadata read error or a refusal is answered and not kept, so the next pass looks up again, and
+  an entry is dropped when its namespace is dropped. The integration epic's T21.3 then changes only
   where each configuration's provider comes from, `keystest`'s for the real one, as its D1 says.
   Rejected: a store argument on `Pin` and `Current`, which `Settings(ns)` at `Bind` would need too
   and which lets a caller pair a namespace with another configuration's store. Prior art: the RFC 5
@@ -615,7 +621,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
 
 ### T15.5 The pipeline's ports and Capture
 
-**Subtask T15.5 estimate: 4.5 man-days.**
+**Subtask T15.5 estimate: 5 man-days.**
 
 - **Track:** B. **Depends on:** T15.1.
 - **Covers:** R1, R2, R3 (the declaration), R4, R5, R10 (capture), R11, R12, R13, R65 (the wiring).
@@ -829,7 +835,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
 **Subtask T15.8 estimate: 4.75 man-days.**
 
 - **Track:** B. **Depends on:** T15.7.
-- **Covers:** R27 to R35, R54, R55, R58, R65 (the put's store).
+- **Covers:** R27 to R35, R54, R55, R58, R65 (the put's store, and a namespace with no configuration refused before any intent).
 - **Deliverables:** `intent.go`: the namespace check against the pass's current-namespace function
   (D8, its `decision:`); `Chain.Pin`, and `Material.Current(ctx, ns, "chunk-id-key")`, a
   `keys.ErrMaterialDestroyed` from either refusing the plan before any intent with its extents left
@@ -861,7 +867,9 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   any intent and nothing at the store (catches a check of the data key alone, R28); a pass whose
   store belongs to another configuration than its namespace's, no intent recorded, nothing at
   either store and the extents **Dirty** (catches a put built after the intent, or not checked,
-  R65); the store's intent records read
+  R65); a pass whose namespace names a configuration the wiring was not given, `Pin` refusing it
+  before `Store.Intend`, no intent recorded and the extents **Dirty** (catches the refusal retried
+  in the step or run after the intent, R65); the store's intent records read
   back with both epochs before the object exists, and nothing at the store when `Intend` fails
   past its bound, the attempt abandoned (R31); two attempts over one plan's chunks, their names each
   equal to `BlockName` over the captured namespace, its nonce, the pin's chain ID and the carried IDs
@@ -911,7 +919,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
 
 ### T15.10 Deadlines, outcomes and the checks
 
-**Subtask T15.10 estimate: 4.5 man-days.**
+**Subtask T15.10 estimate: 4.75 man-days.**
 
 - **Track:** B. **Depends on:** T15.9.
 - **Covers:** R5, R9 (the count), R47, R48, R51, R52, R53, R60, R63, R64.
@@ -940,7 +948,9 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   more (R9, R60); one `Failures` shared by eight concurrent `Run`s over disjoint files, each pass
   failing, and a reader calling `Count` in a loop meanwhile, run under `-race` in `unit`, every
   file's count exactly its passes after the joins (catches a map written without the lock: the race
-  detector reports it, or Go aborts on the concurrent write, R64); the crash legs above, whose fresh `Run` starts from no state of the first and
+  detector reports it, or Go aborts on the concurrent write, R64); under `-race` too, writes adding to
+  one file's staged count while passes' `Done` zero it and `offloadDue` reads it (catches the count
+  reached outside the file state's lock, R64); the crash legs above, whose fresh `Run` starts from no state of the first and
   offloads everything (R5); each series read from `offload.Stats`
   after a pass (R51); an unsampled pass's span allocating nothing (R52). O1's crash leg, red (R63).
 - **Rules:** rule 6, the new entry; rule 8, the crash leg's real journal.
@@ -978,10 +988,10 @@ joins them.
 | --- | --- | --- | --- | --- |
 | 1 | T15.1 | 2.5 | — | `offloadDue` and the staged count, which epic 14's events call: ship it first |
 | 2 | T15.2, T15.3, T15.4 | 8 | — | `kvstore`'s three changes: the floor, the record's `encodings`, the commit's two shapes; can be open beside PR 1 |
-| 3 | T15.5 | 4.5 | PR 1 | the ports, Capture, and the fixture's carver and chain with the 41 messages |
+| 3 | T15.5 | 5 | PR 1 | the ports, Capture, and the fixture's carver and chain with the 41 messages |
 | 4 | T15.6, T15.7 | 6.5 | PR 2, PR 3 | the pass from the offer to its plans |
 | 5 | T15.8, T15.9 | 8.25 | PR 4 | the plan from its intent to its report: a pass end to end in `unit` |
-| 6 | T15.10 | 4.5 | PR 5 | the deadlines, the outcomes and the §6.3 check table |
+| 6 | T15.10 | 4.75 | PR 5 | the deadlines, the outcomes and the §6.3 check table |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -1008,6 +1018,7 @@ takes the namespace (D16); the `Carver` port
   so epic 16 carries it, though the plan's epic 15 lists it.
 - **The §6.3 check table's O6 leg "a source with `Deadline` 10 s"** checks the scheduler's
   `Expired` dispatch, epic 13's and epic 14's, not the pipeline's.
-- **Estimate.** 34.25 man-days in 10 subtasks against the plan's 33.5 in 8: `kvstore`'s three changes
-  are subtasks of their own (8 man-days), and the long-outage row moved to epic 16. The least
+- **Estimate.** 35 man-days in 10 subtasks against the plan's 33.5 in 8: `kvstore`'s three changes
+  are subtasks of their own (8 man-days), the long-outage row moved to epic 16, and D16's lookup
+  per configuration and D11's `Failures` type add 0.75 to T15.5 and T15.10. The least
   certain figures are T15.6's key-budget end over dense refs and T15.10's per-state fault table.
