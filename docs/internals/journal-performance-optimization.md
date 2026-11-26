@@ -78,42 +78,49 @@ the row at ~250 MB/s against its raw twin's ~1300–1500, J2 writer-scaling flat
   landing inside the timed window when a stream's first roll kicks it, with the writers' closing
   `Sync` queueing behind it (~200 ms/iteration floor; this also explains J1 64k-sync's bimodal
   17/90–192 ms).
-- **The per-append record buffer was 94.6% of all allocation** (`stream.go:993`'s
-  whole-record `make`), but only 1 of ~9.6 allocations per write — exactly 6 of the 9.6 are
+- **The per-append record buffer was 94.6% of all allocation** (the whole-record `make` at the
+  stream's encode site), but only 1 of ~9.6 allocations per write — exactly 6 of the 9.6 are
   production (buffer, `leaveDrain` defer, the capacity `Grant`, `Share.enter`'s method value,
   the file lock's entry and closure), the rest are harness.
 
 ### Implemented
 
-Both changes were measured in isolated worktrees first, then stacked; all narrow test cells,
-`-race` on segment/platform/journal, and tagged `go vet` green.
+Each change lands on its own pull request, P2 stacked on P1a; each was measured in an isolated
+worktree first and then stacked, with the narrow test cells, `-race` on segment/platform/journal
+and tagged `go vet` green.
 
-1. **P1a — segment read-ahead hint.** A one-shot `F_RDADVISE` (via the platform call table,
-   args pinned with `runtime.Pinner`) issued over the adopted segment's extent at the roll site,
-   on a journal-owned worker (not a per-roll goroutine). Linux/Windows are decisions-marked
-   no-ops (Linux's zero-fill makes the pages resident). **Large row 293 → 603 MB/s (2.06×),
-   p99 1388 → 120 µs; the 64k-nosync control *rose* 5.4×** (284 → 1545 MB/s) — the inline form
-   regressed that control and the async form fixed it: `F_RDADVISE` over never-written space is
-   *synchronous* (34–60 ms for 256 MiB), so it must not sit on any writer's path. A
-   whole-segment hint **does nothing at a 1 GiB cap** (only ~60% stays resident, pages-first
-   evicted): the production form hints a window.
-2. **P2 — content-record buffer pool.** A journal-wide `sync.Pool`, 9 classes of `1<<k + 128`,
-   content records only — **header-only records' buffers stay un-pooled** (the durability
-   ledger retains them and re-decodes for re-append; a pooled buffer there would corrupt
-   recovery). One inline recycle point after the payload CRC, before `appendMu` is retaken;
-   `maxWriteAllocs` 10 → 9 in the same change. **B/op −97.3% (619 → 16.8 MB), allocs exactly
-   −8,236 with GC off** (the overshoot in profiled runs was per-GC-cycle allocations no longer
-   built), MB/s +1.5% alone.
-3. **Stacked, the two are super-additive**: P1a removes the page-fault stall, then the write
-   loop is CPU-and-GC bound and P2's churn reduction counts — **large row 292 → 732 MB/s
-   (2.50×), p99 92–96 µs, control 5.9–8.1×**; ~24% above P1a alone (its isolated gain is the
-   honest +1.5%). Quote P2's stacked gain only when stacked.
+1. **P1a — segment read-ahead hint (#6472).** A windowed `F_RDADVISE` (via the platform call
+   table, args pinned with `runtime.Pinner`): the stream asks for `ReadAheadWindow` (256 MiB)
+   past its append position, first at the roll from the header, and again each time the
+   position passes half of the last window, and a journal-owned worker (not a per-roll
+   goroutine) makes the call outside every lock. At the default 256 MiB cap that is one
+   whole-segment hint per roll. Linux/Windows are decisions-marked no-ops (Linux's zero-fill
+   makes the pages resident). Prototype pairs: **large row 293 → 603 MB/s (2.06×), p99 1388 →
+   120 µs; the 64k-nosync control *rose* 5.4×** (284 → 1545 MB/s) — the inline form regressed
+   that control and the async form fixed it: `F_RDADVISE` over never-written space is
+   *synchronous* (34–60 ms for 256 MiB), so it must not sit on any writer's path. The production
+   form's own pairs, in #6472's description: 1.98–2.01×, p99 111–126 µs. A whole-segment hint
+   **does nothing at a 1 GiB cap** (only ~60% stays resident, pages-first evicted): hence the
+   window.
+2. **P2 — content-record buffer pool (#6473, stacked on #6472).** A journal-wide `sync.Pool`, 9
+   classes of `1<<k + 128`, content records only — **header-only records' buffers stay
+   un-pooled** (the durability ledger retains them and re-decodes for re-append; a pooled buffer
+   there would corrupt recovery). One inline recycle point after the payload CRC, before
+   `appendMu` is retaken. The counted-allocation pin `maxWriteAllocs` goes 10 → 9 in the same
+   change. **B/op −97.3% (619 → 16.8 MB), allocs exactly −8,236 with GC off** (the overshoot in
+   profiled runs was per-GC-cycle allocations no longer built), MB/s +1.5% alone.
+3. **The pair, stacked, is super-additive** (measured on the prototype stack of P1a and P2; it
+   describes the tree once both have merged): P1a removes the page-fault stall, then the write loop is
+   CPU-and-GC bound and P2's churn reduction counts — **large row 292 → 732 MB/s (2.50×), p99
+   92–96 µs, control 5.9–8.1×**; ~24% above P1a alone (P2's isolated gain is the honest +1.5%).
+   Quote P2's stacked gain only when stacked; #6473's own production pair is one same-hour pair,
+   +15% over P1a alone.
 
 ### Parked, with triggers
 
 - **Empty-`Release` `c.mu` skip** (no-op holds were 21.5% of J1's lock delay) and **fold
   Claimed+Release into one settle**: both fail closed, ~0.5 and 1.5–3.5 half-days. Trigger: the
-  **re-profile after P1a** (now unmasked: seals ≤20%, locks 2–4% of a 2.5× faster path ≈ 3×
+  **re-profile after P1a** (now unmasked: seals ≤20%, locks 2–4% of a 2–2.5× faster path ≈ 2–3×
   relative share) or a real >=128-writer server workload on the reference box.
 - **ContentBand (P1b)** — a refill band above the RFC target so a burst of rolls kicks no make:
   J2-floor evidence (150–200 ms/iteration) justifies it; on Linux each make zeroes 256 MiB of
@@ -157,9 +164,9 @@ Both changes were measured in isolated worktrees first, then stacked; all narrow
 
 ## Open levers, ranked (as of iteration 1)
 
-1. Post-P1a **residual ≈ 55% of the twin** (732 vs ~1300–1500 MB/s, unprofiled): the now-unmasked
-   inline seal drains are the likeliest share; the next round opens with a block-scoped profile
-   of the post-P1a stack and an honest read of item 4 above.
+1. Post-P1a+P2 **residual ≈ 55% of the twin** (the stacked 732 vs ~1300–1500 MB/s, unprofiled):
+   the now-unmasked inline seal drains are the likeliest share; the next round opens with a
+   block-scoped profile of the post-P1a+P2 stack and an honest read of item 4 above.
 2. **ContentBand**, once throughput makes the pool binding (see trigger above) — reference box.
 3. Lock micro-costs, gated on the post-P1a re-profile or a >=128-writer Linux workload.
 4. The J2 floor's other half: writer `Sync` queueing behind the make's flush — addressed by
@@ -172,7 +179,7 @@ pre-read, pre-roll diagnostic), which is what makes them transferable; the *amou
 the dedicated reference host at full scale (`JOURNAL_BENCH_LARGE_BYTES=30g`) before any
 constant anywhere is changed on their word.
 
-**Where the PRs from this round said things**: the pull requests list their measured pairs in
-their descriptions and link this file; the J1 rows they measure come from the bench rows that
-landed with the large-sequential-write line, so a future round running after merge gets its
-before numbers from `journal-bench-results.md`, not from these developer-box figures.
+**Where the PRs from this round said things**: #6472 and #6473 list their measured pairs in
+their descriptions; the J1 rows they measure come from the bench rows that landed with the
+large-sequential-write line, so a future round running after merge gets its before numbers
+from `journal-bench-results.md`, not from these developer-box figures.
