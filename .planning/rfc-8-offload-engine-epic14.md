@@ -140,7 +140,7 @@ the scheduler itself guarantees is epic 13's, held by its tests; a row here stat
 | R1 | One work queue per device journal, one instance of the shared work scheduler with the engine's two sources, offload and removal; a node holds one instance per journal | invariant | RFC 8 §6.1, §6.1.1, §2.6 | T14.1, T14.2, T14.5 |
 | R2 | Each shard bound on the journal is a tenant of both sources, weighted by its share's budget divided among the share's shards on the journal | invariant | RFC 8 §6.1, §2.5 step 6 | T14.1 |
 | R3 | A tenant's backoff runs from `offload.retry_min` to `offload.retry_max`, and a change of either reaches every tenant through `SetTenant` without a restart | MUST | RFC 8 §6.1.1, §8.1; RFC 13 Appendix B | T14.1, T14.5 |
-| R4 | The queue's tenants are rebuilt at start step 6, and its dispatch, the age tick and the removal rescan start at step 7; a share bound to a running engine gains its tenants at once | MUST | RFC 8 §2.5 steps 6 and 7, §2.6, §6.1 | T14.1, T14.3, T14.7 |
+| R4 | The queue's tenants are rebuilt at start step 6, and its dispatch, the age tick and the removal rescan start at step 7; a share bound to a running engine gains its tenants at once, and an instance first built after step 7 is started where it is built | MUST | RFC 8 §2.5 steps 6 and 7, §2.6, §6.1 | T14.1, T14.3, T14.7 |
 | R5 | `Close` stops the work queue first, with the scheduler's `Stop`, then cancels and joins the age tick and the rescan; a join past its bound leaves what it depends on open and is reported | MUST | RFC 8 §2.5 stop steps 2, 3 and 5 | T14.1, T14.3, T14.7 |
 | R6 | Each instance turns the watchdog loop the node gives it, named for its journal, and the engine closes that loop only once the instance's `Stop` has returned with every run joined | MUST | RFC 8 §2.6 (as amended here), §6.1.1; RFC 25 §3.5 | T14.1 |
 | R7 | The queue holds no state a restart needs: every event is a hint about state the journal, the intents and the records hold durably | MUST NOT | RFC 8 §6.1, §6.1.1, §3.3 | T14.2, T14.5, T14.10 |
@@ -272,7 +272,9 @@ the scheduler itself guarantees is epic 13's, held by its tests; a row here stat
   files being offered no later. The tick reads the bound shares' values each time it re-arms, so a
   `Drop` or a larger `max_age` takes effect at the next tick; a `Bind` or an `Apply` that lowers the
   smallest re-arms it at once, since RFC 13 makes `offload.max_age` live and a tick armed for a
-  larger value would hold the new share past R17's bound. A `decision:` at the tick, overturned if a
+  larger value would hold the new share past R17's bound. With no share bound the tick is not armed,
+  since the smallest `max_age` of no share is no period: at step 7 with none bound it waits, the first
+  `Bind` arms it, and the `Drop` of the last share disarms it. A `decision:` at the tick, overturned if a
   short-`max_age` share's ticks are shown costing another share's offload. Prior art: none found.
 - **D5, the engine's limits are constants.** Each source registers `Total` 131 072, half of RFC 13's
   262 144 entries per instance, `Weight` 1, `Rate` 0 and `Deadline` 0, and each tenant weighs 1, since
@@ -415,7 +417,11 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
   journal's removal loop today, so `Start`, `Bind` and the reopens in `recover.go` and `loss.go` reach
   it as they do now; each bound shard is added with `SetTenant` (weight 1, backoff from
   `OffloadRetryMin` and `OffloadRetryMax`) at start step 6 and at `Bind`, and `Start` is called at
-  step 7, so nothing is dispatched before it. Neither runs under `e.mu`, which is never held across
+  step 7, so nothing is dispatched before it. An instance built after step 7, at a runtime `Bind`
+  that is the first share on its journal (a node that started with no share bound builds its first
+  one there) or at a reopen in `recover.go` or `loss.go`, has its `Start` called where it is built,
+  after its tenants are added: step 7 has passed, and an instance never started turns no loop, so
+  60 s later liveness fails and the node restarts. Neither runs under `e.mu`, which is never held across
   I/O while `SetTenant` runs the source's `Rebuild` (the index read, `DirtyFiles`) synchronously:
   `Start` and a late attach each send them once `publishOpened` has returned and `mu` is released, as
   `attachLate` already runs its unwind, so a late-attached journal's removals run from this epic on,
@@ -444,7 +450,9 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
 - **Tests:** at `Stats()` and the watchdog, over the unit fixture: a journal's `Work` after `Bind`
   names the share's shard under both sources and after `Drop` none (catches a tenant not added or left
   behind, R2); a late-attached journal's truncate reaches done (catches a late attach left with no
-  dispatch, R4); a `Drop` held between its mark and its `CancelTenant` by a per-instance hook set
+  dispatch, R4); an engine started with no share bound, then one share bound at runtime, its truncate
+  reaching done and `Live` true with the clock advanced past 60 s (catches an instance first built at
+  `Bind` never started, R4, R6); a `Drop` held between its mark and its `CancelTenant` by a per-instance hook set
   from `export_test.go`, an `Apply` run meanwhile delivers no `SetTenant` for the dropped share
   through the tenant hook (D7), and once the `Drop` is released `Work` names none of its shards
   (catches a tenant brought back, R2); `Live` after a clean `Close` with the injected clock advanced past 60 s answers true
@@ -519,7 +527,9 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
     key, which would defeat E41, R13);
   - a share with `MaxAge` 4 s beside one with 60 s ticks every second, and every 15 s once the first
     is dropped; one bound with `MaxAge` 4 s while the tick is armed at 15 s ticks within 1 s (catches
-    a tick that waits out its armed period, D4, R17);
+    a tick that waits out its armed period, D4, R17); started with no share bound, no tick in 10
+    minutes, and one share bound with `MaxAge` 4 s ticks within 1 s (catches a tick armed with no
+    period, D4);
   - each `Dirty` post and each tick's post adds one to `WorkQueueLockWaits`' count (catches an
     untimed post, R40).
   No double but the clock, the seeded source, the seam and the hook.
@@ -672,7 +682,8 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
 - **Deliverables:** `kvstore`'s `UnfinishedRemovals` gains a (file, version) to start after, through
   `pages`' `after` key (D6), the declared `Content` and the rebuild following. The rescan per journal
   on the injected clock, re-armed every `RemovalRescan` as `Settings` holds it at that moment, and at
-  once when the removal source's `Dropped` has risen since the last scan: it first re-posts every work
+  once when the removal source's `Dropped` has risen past the count read when the last scan ended,
+  so the post that stops a scan, refused and counted at a full shard, never starts the next: it first re-posts every work
   list whose key is absent (D2), then reads each served shard's index from its cursor, posting until a
   post is refused, a bad entry posted with its error recorded on the file's list (D6) and passed,
   resuming there and wrapping at the
@@ -691,7 +702,9 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
   the same with one entry early in the index made undecodable while serving, whose file raises
   `removal_stalled` and whose neighbours reach done, then the record repaired, after which the next
   rescan clears the recorded error and the file's removal reaches done (R27, D6); a dropped post triggers a scan before
-  the next period (R14); an `Apply` halving `RemovalRescan` makes the next scan come at the new period
+  the next period (R14), and with the shard still full that scan, stopped by its own refused post,
+  is followed by none before the next period or the next drop (catches a rescan that triggers itself
+  in a loop); an `Apply` halving `RemovalRescan` makes the next scan come at the new period
   (R24); a `kvstore` test over the in-memory `kv.KV` that the start bound lists only the entries after
   it. No double but the clock.
 
