@@ -27,8 +27,9 @@ the checkout over `file://` does not work: decks load their strings and
 glossary with `fetch`, which browsers refuse there.
 
 The decks describe the code on `develop`, as of the RFC commit each `deck.json`
-records, and the glossary's code links open files on `develop`. On
-`feat/storage-v2` many of those paths do not exist: that branch deleted the v1
+records. The glossary's source links open `develop`, and most of its code paths
+name that branch's tree; a few, such as `pkg/engine`, name this branch's. On
+`feat/storage-v2` many of the others do not exist: that branch deleted the v1
 packages and moved the rest. Read a deck as a guide to the RFC, not to this
 branch's tree.
 
