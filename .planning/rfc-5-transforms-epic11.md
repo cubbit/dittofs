@@ -224,7 +224,10 @@ key-management row's provider half, and its decode leg ("or the decode returns
   v1's failure of "the share's whole block store, journal included" the bug, and Appendix B.4 says
   the store does not open; read together, the store's remote is unavailable as in RFC 8 §11.2's
   remote-unavailable row, and the journal keeps serving. Whether that store opens later without a
-  restart is not stated by any RFC, and is §9's point 1, pending the user's answer. Prior art:
+  restart is not stated by any RFC, and is §9's point 1, pending the user's answer. Appendix B.4's
+  "the namespace takes no new write" is read as RFC 8 §10.4 implements it: the journal still stages
+  a write, and the Intent step refuses every plan of the namespace, so nothing is put for it and its
+  content stays dirty and held (R7). Prior art:
   NFSv3's `NFS3ERR_JUKEBOX`, which hands the retry to the client (from memory); RFC 8 §2.5's refused
   share, retried on a period (checked). No marker here.
 - **D3, the engine rows land green in `engine-conformance`, in a file of their own.** They need the
@@ -286,8 +289,10 @@ docs/internals/rfcs/rfc-5-transforms.md
   - In both cases, B's remote store's load record shows no put, ever; no other provider and no
     empty chain is built for B (R1, R2).
   - Share A writes, offloads and reads back throughout (R3).
-  - Share B accepts a write while capacity allows and reads it back from its journal, and
-    `material_unavailable` names B's namespace (R3, D2).
+  - Share B accepts a write while capacity allows and reads it back from its journal (R3, D2).
+  - With the key file replaced, `material_unavailable` names B's namespace; with the chain-build
+    failure no material condition is raised, and the build's `Error` line names `zstd` and the
+    reason (RFC 5 §6) (R2, R1).
 - **Tests:** at the node, where a share is served. Each names its break: a wiring that builds B's
   store with the chain it could build, or with none, puts to B's remote (R1); a wiring that falls
   back to a store without encryption when the provider fails puts a body (R2, D9); a failure that
@@ -386,8 +391,9 @@ docs/internals/rfcs/rfc-5-transforms.md
 - **Track:** the team. **Depends on:** E5.
 - **Covers:** R8, R9.
 - **Deliverables:** two rows in the RFC 4 plan's epic 6's `pkg/remote/codec/chains_test.go`, over
-  its in-memory store, with a fault wrapper (kind 3) around the real `aes-gcm`, registered in the
-  test's own registry under a custom ID in the encrypt stage: its `Encode` is `aes-gcm`'s, and its
+  its in-memory store, with a fault wrapper (kind 3) around the real `aes-gcm`, registered with
+  `chain.Register` under a custom-range ID in the encrypt stage at the test file's `init`, since
+  E3's per-test registry lives in `chain`'s `export_test.go`, which `pkg/remote/codec` cannot reach: its `Encode` is `aes-gcm`'s, and its
   `Decode`, per instance and on cue, returns `aes-gcm`'s output with one byte changed and no error,
   or `transform.ErrTooLarge`.
 - **Acceptance criteria:**
@@ -408,8 +414,9 @@ docs/internals/rfcs/rfc-5-transforms.md
 - **Covers:** R14, R15, R16.
 - **Deliverables:** in the RFC 4 plan's epic 9's `pkg/remote/codec/bench_s3_test.go`, behind
   `integration`: a whole-block `codec.Store` get beside its put, both keyed per D5, over the S3 store
-  on `s3fault.Service(tb)`'s target, `b.ReportAllocs()` in each; `remote-bench` already runs the
-  file's test, so its registry entry does not change. On `develop`, RFC 5 §8.3's suites paragraph
+  on `s3fault.Service(tb)`'s target, `b.ReportAllocs()` in each. Both are named under the `codec`
+  test's `-bench=` pattern of `remote-bench` (the RFC 4 plan's epic 9, its T9.4), so its registry
+  entry does not change; a name outside that pattern would never run in the cell. On `develop`, RFC 5 §8.3's suites paragraph
   names `remote-bench` for this row.
 - **Acceptance criteria:**
   - `dt run remote-bench` reports, for each corpus that ran, both chains' put and get in MB/s, with
