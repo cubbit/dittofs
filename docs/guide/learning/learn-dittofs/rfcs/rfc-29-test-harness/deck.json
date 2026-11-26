@@ -1,0 +1,51 @@
+{
+  "rfc": {
+    "number": 29,
+    "title": "the test harness",
+    "path": "docs/internals/rfcs/rfc-29-test-harness.md",
+    "commit": "9255091ca5856e4e219f5bf041311e5ed5834a88",
+    "status": "reviewed"
+  },
+  "terms": {
+    "known": [
+      "share",
+      "adapter",
+      "lease"
+    ],
+    "new": [
+      "dt",
+      "registry",
+      "suite",
+      "suite-option",
+      "suite-group",
+      "cell",
+      "store-profile",
+      "fixture",
+      "needs",
+      "dtc",
+      "dedicated-host",
+      "system-scenario",
+      "tier",
+      "blocking",
+      "gate",
+      "result-format",
+      "ctrf",
+      "grade",
+      "known-failure",
+      "expected-skip",
+      "unexpected-pass",
+      "not-run",
+      "quarantine",
+      "flaky",
+      "retry",
+      "develop-red"
+    ],
+    "conflicts": [
+      "tier",
+      "fixture",
+      "gate",
+      "store-profile",
+      "lease"
+    ]
+  }
+}

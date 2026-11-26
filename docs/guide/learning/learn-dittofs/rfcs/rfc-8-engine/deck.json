@@ -1,0 +1,24 @@
+{
+  "rfc": {
+    "number": 8,
+    "title": "the engine",
+    "path": "docs/internals/rfcs/rfc-8-engine.md",
+    "commit": "e22639da68030a4729ac63339d097e2a7f6b73b4",
+    "status": "draft"
+  },
+  "terms": {
+    "known": [
+      "journal", "share", "node", "primary", "filesystem-service", "metadata-store", "extent", "chunk",
+      "block", "ref", "carved", "namespace", "remote-tier", "remote-block-store", "carver", "syncer",
+      "dirty", "hole", "lost", "offer", "report", "release", "fill", "evict", "repack",
+      "offloaded-bit", "write-verifier", "retry-later"
+    ],
+    "new": [
+      "engine", "storage-binding", "policy-component", "residency",
+      "stability-point", "existence", "group-commit", "work-queue",
+      "offload-pipeline", "offload-guard", "put-intent", "block-name",
+      "speculator", "pacing", "self-fence"
+    ],
+    "conflicts": ["release", "stability-point", "offload-guard", "namespace", "offload", "sync"]
+  }
+}

@@ -583,8 +583,9 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   - A content call never waits on the lifecycle mutex.
   - A `Bind` that fails at any step leaves no handle open that it opened, and the table
     unchanged; a handle it took over from the metadata reconcile is handed back to it
-    (RFC 8 §2.5), closed outside the lifecycle mutex. It leaves the set of shares with a
-    lifecycle call in progress in the hold of the mutex where it clears the mark (and,
+    (RFC 8 §2.5), closed outside the lifecycle mutex; this epic has no reconcile to take
+    over from, so that case waits for the reconcile task (see Tests). It leaves the set of
+    shares with a lifecycle call in progress in the hold of the mutex where it clears the mark (and,
     if the visit has ended, marks the handle closing), so a retried `Bind` waits for that
     `Close` rather than answering `ErrDelay` (RFC 8 §2.3).
   - A share bound above a floor of 9·10⁸ gets a first version above it from the real
@@ -612,9 +613,9 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   write latency stays within its baseline and no `engine_lock_wait_seconds` area grows with
   the loaded share's rate (§15.2's "no cross-share slowdown", the write half); §15.1's
   "`Bind` takes over the reconcile's handle", a retried `Bind` after a failed one waiting
-  for its handle's `Close` rather than answering `ErrDelay` included, written with T6.2 or
-  the engine subtask that builds the metadata reconcile, whichever lands last, since no
-  engine epic plans the reconcile yet.
+  for its handle's `Close` rather than answering `ErrDelay` included, is written with the
+  reconcile task of epic 6 in the engine plus offload plan, not before, since the
+  journal-only engine plan leaves the metadata reconcile out.
 
 ### T6.3 Start step 1: open the journals
 
@@ -900,8 +901,9 @@ test/engine/known.yaml    T6.2 to T6.10  each new red row, naming this epic's is
   `Close` returns, and the handle is closed once (catches a `Close` that joins only the
   lifecycle set, R42), and the same with the hook never releasing the handle's `Close`:
   `Close` returns its error within the stop bound with that handle and its journal still
-  open (catches an unbounded wait on a handle marked closing, R43), written with T6.8 or the subtask that builds the metadata
-  reconcile, whichever lands last; `prof.Watch` finds no goroutine left.
+  open (catches an unbounded wait on a handle marked closing, R43), is written with the
+  reconcile task of epic 6 in the engine plus offload plan, not before; `prof.Watch` finds
+  no goroutine left.
 
 ### T6.9 `Unbind` and `Drop`
 

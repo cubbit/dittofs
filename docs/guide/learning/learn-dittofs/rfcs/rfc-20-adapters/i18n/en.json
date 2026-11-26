@@ -1,0 +1,554 @@
+{
+  "title": "RFC 20 — the adapter model",
+  "cover": {
+    "kicker": "Learn DittoFS · RFC 20",
+    "title": "The [[adapter]] model",
+    "lead": "How the code for one wire protocol talks to the filesystem, and why it must do nothing more than translate.",
+    "built": "Built from RFC 20 at {commit}",
+    "notes": "Source: docs/internals/rfcs/rfc-20-adapters.md, commit {commit}. The RFC specifies behaviour, not the current code; its Appendix B says where the code differs. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition."
+  },
+  "intro": {
+    "twoTitle": "RFC 20 in two sentences",
+    "two": "An [[adapter]] is the code for one wire protocol: it turns bytes into calls on the [[filesystem-service]] and answers back into bytes, deciding nothing about files. RFC 20 fixes the shape every adapter shares — lifecycle, request [[pipeline]], encoding, concurrency — and how tests prove an adapter only translates, and translates correctly.",
+    "twoNotes": "From 'Start here · In plain words' and §1 Purpose. RFC 17 fixes what the service offers; RFCs 21 and 22 fix each protocol's own choices; RFC 20 is the part between.",
+    "knownLead": "Terms from the RFCs this one builds on, defined in the shared glossary. If one is new to you, click it for its definition.",
+    "knownNotes": "Every definition is a plain restatement of RFC 0's glossary row, which is the definition of record.",
+    "newNotes": "From 'Start here · The words you need' (RFC 20), plus core, the operation table, compound, callback, the error table, held request, the in-memory service and the recording wrapper from §2.5, §4.2, §4.3, §3.3, §4.5, §4.6 and §7.2.",
+    "clashNotes": "Adapter: RFC 0's glossary row for the remote block store calls it one backend's adapter; RFC 20 §2.4 uses Adapter bytes. RPC: §3.1 says DCE/RPC shares only a name with ONC RPC. Lease: RFC 0 separates client, node and SMB leases. Handle and FileId: RFC 0 and §2.2."
+  },
+  "problem": {
+    "title": "A rule is worth what the [[adapter|adapters]] let through",
+    "notes": "'Start here · The problem, with one example'. RFC 17 decides, in one place, that build01's write is a sharing violation. If the NFSv3 handler — written for a protocol with no opens — checked permissions itself and called the content engine directly, the service's check would never run: the NFS suite passes, the SMB suite passes, and the service suite tests a path the NFS adapter does not take."
+  },
+  "guards": {
+    "title": "With RFC 20, four guards",
+    "items": [
+      "**Imports are checked.** The NFS adapter may import only the service and its own code, so a [[handler]] that reached for the [[engine]] would not build.",
+      "**One call.** NFSv3 has no opens, so its `WRITE` [[handler]] builds an [[anonymous-open]] from the caller's identity and calls the service's `Write` once.",
+      "**One [[error-table]].** The service refuses with `ErrShareViolation`, the adapter's table turns it into `NFS3ERR_ACCES`, and a test proves every service error has a row.",
+      "**A nightly [[wire-test]]** sends the same requests to a [[reference-server]] and to DittoFS, and compares the replies field by field."
+    ],
+    "promise": "Because every adapter shares one request [[pipeline]], a fix to one of its stages fixes both protocols. A slow client delays only its own connection, never another client's requests.",
+    "notes": "'Start here', steps 1–4 and 'What this RFC promises'. Imports: §2.3 and §7.1. One call: §4.3. Error table: §4.5 and §7.3; the NFS status is RFC 21 §11.5's. Wire tests: §8. Slow client: §6.1, invariant A10."
+  },
+  "boundary": {
+    "kicker": "The boundary"
+  },
+  "questions": {
+    "title": "Two questions place every piece of logic",
+    "q1": "Could another protocol observe it?",
+    "q1Body": "A [[deny-mode]], a [[lease]], a lock, a pending delete or a DOS attribute must be visible to the other protocol too, so it is decided where both protocols can see it.",
+    "q2": "Can the client present it back later?",
+    "q2Body": "A [[handle|file handle]], a stateid, a durable handle or a create verifier is a name the client keeps and sends again after it reconnects, so what it names must outlive the connection.",
+    "rule": "If the answer to either question is yes, the detail belongs to the service. Only when both answers are no may the [[adapter]] keep it, and then only in memory.",
+    "not": "The question is not whether it must survive a [[node]] failure. NFSv4.1 reply caches and SMB [[session|sessions]] are lost on a restart by design, because the protocol itself tells the client to rebuild them.",
+    "notes": "§2.1. Decision recorded in the RFC: move a feature into an adapter only when both questions answer no, and say so in that protocol's RFC. What the client-held name refers to is RFC 7's or RFC 14's, never the adapter's memory."
+  },
+  "placed": {
+    "title": "Six details, and where each one lives",
+    "table": [
+      [
+        "Detail",
+        "Other protocol sees it?",
+        "Client presents it back?",
+        "Where it lives"
+      ],
+      [
+        "alice-pc's deny-write on `ODFC_alice.vhdx`",
+        "yes",
+        "—",
+        "the service (RFC 14)"
+      ],
+      [
+        "a [[named-stream|named stream]] `report.docx:summary`, a second content of the file",
+        "yes",
+        "—",
+        "the service (RFC 7)"
+      ],
+      [
+        "build01's exclusive create verifier",
+        "no",
+        "yes",
+        "the service (RFC 7)"
+      ],
+      [
+        "the reply cached in slot 7 of build01's NFSv4.1 session",
+        "no",
+        "no",
+        "the [[adapter]], in memory"
+      ],
+      [
+        "the 512 credits granted to alice-pc's connection",
+        "no",
+        "no",
+        "the adapter, in memory"
+      ],
+      [
+        "a file named `a:b`, shown to SMB as `a` U+F022 `b`, because Windows forbids `:` in a name and the [[private-use-mapping|private-use mapping]] replaces it",
+        "no",
+        "no",
+        "the adapter's [[codec]], which computes it each time"
+      ]
+    ],
+    "notes": "§2.1, the worked example table. The stream: removing the file over NFS removes its streams. The verifier: the NFSv3 CREATE or NFSv4 OPEN is resent after a reconnect. The reply cache: after node loss the client is told NFS4ERR_BADSESSION. The name mapping is computed; nothing is held. Named stream: RFC 7; the private-use mapping is RFC 22 §12.3 (':' is U+F022), listed in §2.4 as a reversible mapping of a stored name."
+  },
+  "hold": {
+    "title": "What an [[adapter]] may hold, and what never",
+    "mayTitle": "It may hold, in memory only:",
+    "may": [
+      "the state of the transport and of TLS",
+      "security contexts and [[session]] keys",
+      "the protocol's [[flow-control]], such as NFSv4.1 slots and SMB credits",
+      "the NFSv4.1 reply cache, which makes a retried request run only once",
+      "ID tables, the state passed between a [[compound|compound's]] operations, and requests in progress"
+    ],
+    "neverTitle": "It must never:",
+    "never": [
+      "write any of that state to the [[metadata-store|metadata store]], the database where DittoFS keeps what it knows about files, or copy it to another node",
+      "keep a cache of what the service returned, such as attributes, permission decisions or directory listings, beyond the request that read it"
+    ],
+    "why": "A cached attribute is the most common way for one protocol's client to see another protocol's change late. The clients' own caching rules are the only caching there is.",
+    "notes": "§2.2 (what an adapter may hold) and invariants A2 and A3. The exactly-once state also covers the NFSv4.1 slot sequence and SMB message IDs; SMB ChannelSequence and replay detection are the open's, checked at the primary. A ponytail marker records that there is deliberately no adapter-side attribute cache, and when one would be added. Metadata store: RFC 0's glossary. 'Copy it to another node' is §2.2's 'none is replicated'."
+  },
+  "imports": {
+    "title": "What an [[adapter]] may import, and what never",
+    "mayTitle": "It may import only:",
+    "may": [
+      "`pkg/vfs` (the service) and the adapter's own public surface: `pkg/adapter` for its contract and settings, `pkg/resources` for budgets and buffers, and `pkg/metrics`",
+      "its own codecs, session and connection code",
+      "[[core]], the code all adapters share",
+      "a shared translation package, such as the ACL translation both adapters need",
+      "the standard library, the tracing API, `internal/tlsconfig` for certificates, and wire-format libraries that do no file I/O"
+    ],
+    "neverTitle": "It must never import:",
+    "never": [
+      "a [[metadata-store|metadata store]], or the [[open-state]] tables",
+      "the content [[engine]]",
+      "the topology or routing code, which says which node serves which files",
+      "the identity component, which signs users in, or the configuration store, which holds the server's settings",
+      "another adapter"
+    ],
+    "test": "A test reads the import graph of every adapter package and fails, naming the package and the forbidden import. A rule nobody checks drifts the first week someone is in a hurry.",
+    "notes": "§2.3 (what an adapter may import), §7.1 (the import test) and invariant A1. pkg/adapter holds the contract the node drives and Deps, and pkg/adapter/config the settings shapes (§2.5, §3.4, §3.6). pkg/resources is RFC 24's budgets and pooled buffers, shared by every component (§6.8); pkg/metrics is the registry Deps carries (§10). internal/tlsconfig is the shared certificate loading and reload (§5.5), and the tracing API is the one Deps.Tracer names. The identity types an adapter names reach it as pkg/vfs aliases; neither pkg/identity nor internal/identity may be imported. The health package is forbidden too: liveness reaches an adapter as Deps.Watch (§3.7). The shared translation package itself imports only neutral types. Topology and routing: RFC 15; identity component: RFC 18 (pkg/identity, internal/identity); configuration store: RFC 13."
+  },
+  "quizBoundary": {
+    "question": "An SMB client reconnects and presents its durable handle, which no NFS client sees. Where must the open it names live?",
+    "options": [
+      "In the SMB adapter's memory, because no other protocol can observe it.",
+      "In the service, because the client presents the handle back after reconnecting.",
+      "In the SMB adapter, saved to the metadata store to outlive the connection."
+    ],
+    "why": [
+      "An [[adapter]] may keep a detail only when both questions answer no. Here the second answers yes, because the client keeps the handle and sends it again.",
+      "The handle is a [[client-held-name|name the client holds]] and sends after reconnecting, so the open it names must outlive the connection, in the service.",
+      "An adapter keeps its state in memory only and never writes it to the metadata store. What a client can present back belongs to the service."
+    ],
+    "notes": "§2.1: a durable or persistent handle is a client-held name; whatever it names MUST outlive the connection, so it is RFC 7's or RFC 14's, never the adapter's memory. An adapter keeps a detail only when both questions answer no. §2.2: nothing an adapter holds is written to the metadata store or replicated."
+  },
+  "lifecycle": {
+    "kicker": "Lifecycle",
+    "title": "One lifecycle for every [[adapter]]",
+    "notes": "§3.1, §3.4 and §3.6. The node drives the states (RFC 23 §2.3) through Start, Reconfigure and Stop. The node starts an adapter last, after its first reconcile has opened the shares, so no request arrives before the service can answer. Stop's context deadline is the drain deadline. A stopped adapter is never started again: the node builds a new one with New (§3.4). Every adapter setting is live but port; for a changed port the node builds a new adapter with New, then stops the old one and starts the new (§3.6, RFC 23 §2.3). Listen addresses are not settings: the node hands them in, and Reconfigure adds or removes one only for a namespace move's release or a floating-address takeover (§3.6). A connection reads the settings once, at accept, and a session at setup (§3.6, invariant A20)."
+  },
+  "drain": {
+    "title": "A [[drain]] in the middle of `tar`",
+    "lead": "build01 is unpacking a tarball onto its NFS mount, with dozens of requests in flight, when an operator drains the [[node]] to upgrade it.",
+    "steps": [
+      "The adapter accepts no new connections but keeps reading the open ones. A new `CREATE` or `WRITE` is not run. NFSv4 answers it `NFS4ERR_MOVED` when another node can serve the share. Otherwise it gets no reply (over SMB, only a provisional `STATUS_PENDING` that gives back its credits), so the client sends it again after reconnecting.",
+      "It still serves requests that end something the service is waiting for, such as a [[lease]] acknowledgement, a flush or a `CLOSE`, and those that only set context or read attributes, such as `SEQUENCE`, `PUTFH` and `GETATTR`, so a `CLOSE` sent behind them gets through. A request already waiting, such as a lock waiting for another client to unlock, is ended at once instead of at the deadline."
+    ],
+    "endTitle": "How the [[drain]] ends",
+    "end": [
+      "Requests already handed to the service run to their answer and their replies are sent, so a `WRITE` the client saw acknowledged has really been applied.",
+      "Then each connection is closed. NFS clients on hard mounts retry until a node answers at the server's address again, this one once restarted or, in a cluster, another that took over the [[floating-address|floating address]]. SMB clients reconnect and reclaim their durable opens."
+    ],
+    "notes": "'Start here · Scenarios', the tar scenario, and §3.1 draining. What a request does to state (its Role, §4.7) decides whether it runs. Served: a request that releases state the service is waiting on (a break or lease acknowledgement, DELEGRETURN, a callback reply, CLOSE, an unlock) or flushes it (the writes that flush a recalled cache), and one that sets a compound's context or only reads attributes (SEQUENCE, PUTFH, GETATTR, an NFSv4.0 RENEW), so the CLOSE or DELEGRETURN Linux sends behind a GETATTR runs and a moved client can read fs_locations (§3.1's decision). Any other new request gets ErrMoved when the service's MoveTarget names another gateway node for its share, and ErrDraining otherwise; until RFC 15's topology exists MoveTarget names none. ErrMoved maps to NFS4ERR_MOVED with fs_locations where the operation can carry it (RFC 21 §7.4; Witness CLIENT_MOVE first for SMB, in a cluster). Where the operation carries no move signal, or the service names no other node, the request is read and gets no reply (NFSv3, MOUNT, NLM, SMB); SMB sends an interim STATUS_PENDING that grants the request's credits back and no final response, so the client can still send the releases and flushes the drain serves (RFC 22 §16.5). An error would be final to the application, while an unanswered request is replayed after the reconnect (§3.1's decision). An NFSv4 COMPOUND with any operation the drain refuses runs none of them (§4.7). A parked request (a waiting lock, a change notification) is cancelled as draining begins and answered as its table answers the drain's error, or success if it took effect (§4.7's Park).",
+    "endNotes": "'Start here · Scenarios', the tar scenario, steps 2 and 3, and §3.1 (draining and stopped). Draining ends when no request is left or at the drain deadline, whichever is first; then every connection is closed, its state dropped, and Disconnect called for each SMB session that ended. NFS clients on hard mounts retry against whichever node next answers the address; the address taken over is the floating address (RFC 21 §6.1, RFC 27 §2.2). SMB clients reconnect and reclaim their durable opens (RFC 14 §8). The ceiling of §3.1's no-reply decision: when the only node stops, an SMB open that is not persistent does not survive the restart (RFC 14 §8.1), so a write refused through it and replayed after finds no open unless the client opens the file again by name."
+  },
+  "abandon": {
+    "title": "What the [[drain]] guarantees, and where it stops",
+    "outcome": "`tar` pauses while build01 retries, then carries on once a [[node]] answers again, and no write that was acknowledged is lost.",
+    "abandoned": "A client usually has 35 s to give back a [[caching-grant]] being [[recall|recalled]], and each attempt at a request may run for 30 s, so the drain deadline is at least 65 s. A request still running when it expires is abandoned. The client gets no reply, and never an error it would treat as final, so it retries as after a lost reply. The retry arrives on a new connection, where usually nothing recognises it as a repeat, so the request may be applied twice, as after a node loss.",
+    "notes": "'Start here · Scenarios', the tar scenario's outcome, and §3.1, with Appendix B's row for §3.1 for today's Stop. The drain deadline is at least the break deadline (35 s) plus the request deadline, so a request held on a break can finish. Applied twice: over NFSv4.1 or SMB, and over NFSv3 on a single node; an NFSv3 or NFSv4.0 retry meets the service's dedup only where the gateway forwarded the call, in a cluster. 65 s = the 35 s break deadline plus the 30 s request deadline (§3.1, §6.4). 35 s: the break deadline for a grant that covers opens (§3.1; RFC 14). 30 s: the per-attempt request deadline (§6.4). Applied twice: §3.1, exactly-once is lost for abandoned requests as on a node loss (RFC 21 §3.2), except where RFC 22 §6.5's open-state replay rules apply or, in a cluster, an NFSv3/NFSv4.0 retry meets the dedup table. Today's Stop: Appendix B, row §3.1. 'Usually': 35 s is the break deadline for a grant that covers opens; one covering none has the 90 s client lease (RFC 14 §5.3, §4.1).",
+    "today": "DittoFS's adapters exist already, and RFC 20 sets the shape they must take. Today's `Stop` differs here: it cancels every request at once instead of letting them finish."
+  },
+  "dispatch": {
+    "kicker": "Dispatch"
+  },
+  "pipeline": {
+    "title": "One [[pipeline]], every request",
+    "notes": "§4.1. One implementation, parameterised per protocol by its framer, header codec, flow control, replay check and error table; two adapters must not each write their own. Admit is never a refusal: the connection is simply not read until a request completes. A compound's next operation and a held SMB request re-enter at resolve IDs. Admit charges the connection's flow control (§4.1, §6.3); the service's per-share admission runs inside every service call naming a handle or an open (§4.10, RFC 17 §4.9)."
+  },
+  "optable": {
+    "title": "The [[operation-table]] carries the rules",
+    "lead": "Each protocol registers one table that maps every operation code to its [[handler]]. Each row also carries the checks the [[pipeline]] makes before the handler runs.",
+    "table": [
+      [
+        "Column",
+        "Meaning",
+        "Example"
+      ],
+      [
+        "needs",
+        "what must already exist, such as a finished negotiation, a [[session]], a tree or a filehandle",
+        "SMB `READ` needs a tree"
+      ],
+      [
+        "versions",
+        "the first and the last version that serve the operation",
+        "NFSv4.2 `SEEK` is served from minor version 2"
+      ],
+      [
+        "cacheable",
+        "whether its reply is stored in the replay cache",
+        "NFSv4.1 `CREATE` and `REMOVE`"
+      ],
+      [
+        "reply bound",
+        "the largest reply the operation can produce, known before it runs",
+        "for `READ`, the count asked, clamped to the transfer size"
+      ]
+    ],
+    "rules": [
+      "An operation missing from the table is answered not-supported before its arguments are decoded.",
+      "The version or dialect in use selects which rows apply, so no handler branches on the version.",
+      "If a handler panics, its request is answered with server fault, and the connection's other requests carry on."
+    ],
+    "rulesTitle": "What the table spares every handler",
+    "notes": "§4.2 and §4.8; invariants A15 and A17. An operator can switch operations off by name, a live setting; the pipeline answers a switched-off operation as one the table lacks. Tracing, metrics, deadlines and panic recovery wrap every handler as middleware (§4.7).",
+    "rulesNotes": "§4.2 and §4.8; invariants A15 and A17. An operator can switch operations off by name, a live setting; the pipeline answers a switched-off operation as one the table lacks, so no handler checks the setting. Tracing, metrics, deadlines and panic recovery wrap every handler as middleware (§4.7). A panicking handler is logged at error with the operation and the stack."
+  },
+  "onecall": {
+    "title": "A [[handler]] makes at most one mutating call",
+    "rules": [
+      "Operations that belong to the protocol alone, such as `NULL`, `NEGOTIATE` and `SEQUENCE`, may make no service call at all.",
+      "A handler makes at most **one** call that changes state. If one call cannot do the job, the service is missing an operation.",
+      "It may add read-only calls, but only to fill reply fields that the mutating call does not already return.",
+      "It never branches on a file's mode, ACL or type to decide whether the operation is allowed. That decision is the service's."
+    ],
+    "caption": "This is the whole NFSv3 `WRITE` handler. It looks up no [[share]], checks no permission, tests no lock and never calls the [[engine]].",
+    "notes": "§4.3, the example handler: code verbatim, comments shortened; and invariant A5. Pre- and post-operation attributes come from the write's own result (its WCC), never from a GetAttr after it, which could include another client's write. The service is a field of the handler set, given once by node.New. §4.3 places a few calls outside the one-call rule: SignIn and Find in the requests that need them, the client-record calls of a request that sets up a session, SMB SESSION_SETUP or NFSv4.1 CREATE_SESSION (Connect, AddSession, Disconnect), a Disconnect with Last repeated, in any handler, at the newer Gen the previous one returned, withdrawing a waiter whose Park was refused (CancelLock, Unwatch), and FreeState after a Revoked answer. Each signs in, sets up a session, or undoes or frees state, and changes no file; §7.2's test exempts each by the request it came in, never by its operation alone. A handler that composes fails the import and call-site test (§7.1) or a handler test against the in-memory service (§7.2)."
+  },
+  "compound": {
+    "title": "[[compound|Compounds]]: a sequence of [[handler|handlers]]",
+    "c1Title": "An SMB `CREATE` with `FILE_OPEN_IF` and deny-write",
+    "c1": "`FILE_OPEN_IF` asks to open the file, or to create it if it does not exist. The handler could look the name up, create the file if absent, then open it, but that is three calls and another client could act between them. Instead it builds one `OpenRequest` carrying the disposition, the access, the [[deny-mode]] and the [[lease]] wanted, and calls `Open` once.",
+    "c2Title": "Explorer sends `CREATE`, `QUERY_INFO` and `CLOSE` together",
+    "c2": "To show a file's properties, Explorer sends three related requests in one compound. They run as three handlers: `CREATE` calls `Open`, `QUERY_INFO` calls `GetAttr` and `CLOSE` calls `Close`, and each call passes the service's [[admission]] checks on its own. If `Open` fails, the other two get the same status and never reach the service.",
+    "footer": "The adapter holds no lock between two operations of a compound. In NFSv4.1, before each operation runs, its largest possible reply is compared with what is left of the [[session|session's]] maximum reply size, and the operation is refused if it would not fit.",
+    "notes": "'Start here · A handler is tempted to compose', and §4.3, 'A compound is a sequence of handlers' and 'Example: an SMB compound'. If the service could not express an operation atomically, the fix is a service operation (RFC 17 §4.1), never a sequence in the adapter. Each call admitted separately: invariant A6 and §4.10 (RFC 17 §4.9)."
+  },
+  "quizCompound": {
+    "question": "An SMB `LOCK` asks for three byte ranges at once, all or none. How does its [[handler]] ask the service for them?",
+    "options": [
+      "It calls `Lock` for each range, and unlocks the ones it took if a later one fails.",
+      "It holds a lock in the adapter while it calls `Lock` once for each range.",
+      "It makes one `Lock` call carrying all three ranges, and the service does the rest."
+    ],
+    "why": [
+      "That is three calls that change state, and a [[handler]] may make at most one. Another client could also take a range between two of them.",
+      "Three calls would still break the one-call rule, and the other protocol cannot see a lock held inside one adapter. Atomicity is the service's to keep.",
+      "A [[handler]] makes at most one mutating call, so the ranges travel in one `Lock` call. If a later range fails, the service releases the ones it already took."
+    ],
+    "notes": "§4.3: a handler makes at most one mutating call; an SMB LOCK of several elements is one Lock call whose LockReq carries every element's range and mode, and the service, not the handler, releases the ranges it took when a later one fails. §2.1: a lock is observable by the other protocol, so it is the service's to decide. 'Start here · A handler is tempted to compose': two clients could interleave between separate calls."
+  },
+  "identity": {
+    "title": "[[identity]]: the [[adapter]] proves, the service decides",
+    "items": [
+      "The adapter runs the protocol's security handshake, whether AUTH_SYS, RPCSEC_GSS, NTLM or Kerberos.",
+      "It hands the service an [[identity]] that records what the handshake proved and how the messages are protected, and nothing more.",
+      "It never maps a user to numeric IDs or SIDs, never squashes, that is, swaps a user such as a remote root for an unprivileged one, and never decides who is privileged. The service does that for each [[share]].",
+      "A failed handshake is answered as a logon failure, and never turns into a guest or anonymous [[session]]."
+    ],
+    "authTitle": "One `gss` package for both",
+    "auth": "Both adapters run the Kerberos, NTLM and SPNEGO exchanges through one package, `internal/adapter/gss`. When a handshake needs a keytab, an NT hash or a directory server, the adapter calls the service's `SignIn`, so no adapter reads a keytab or talks to a directory itself.",
+    "notes": "§4.4 and invariant A12. Proof: None < Claimed < Secret < Ticket. Protection: None < Integrity < Privacy. An Identity is built afresh for each request, and any cache keyed on identity carries every field. Nothing in an adapter opens a connection to a KDC, a domain controller or an LDAP server, or reads a keytab. Mapping, squashing and privilege are the service's per share by RFC 18 §6's resolution. SignIn: §4.4, delegated to RFC 18 §3.1's authentication interface. internal/adapter/gss is the wire side only and holds no secret: the keytab, the PAC and NETLOGON stay with the authenticator behind SignIn, internal/identity (RFC 18 §2.7). An expired credential runs only what releases state, re-authenticates or logs off (§4.4, RFC 18 §3.8)."
+  },
+  "callbacks": {
+    "title": "[[callback|Callbacks]]: the service calls the client",
+    "lead": "Sometimes the service needs a client to do something it did not ask for. So when a client registers with the service (its `Connect`, not the TCP accept), the [[adapter]] hands the service a `Callbacks` value to reach it through.",
+    "table": [
+      [
+        "Callback",
+        "Why",
+        "SMB",
+        "NFS"
+      ],
+      [
+        "`RecallGrant`",
+        "a [[caching-grant]] must be broken",
+        "[[lease]] break",
+        "`CB_RECALL`, NFSv4.1 only"
+      ],
+      [
+        "`Notify`",
+        "a directory the client watches has changed",
+        "`CHANGE_NOTIFY` reply",
+        "`CB_NOTIFY` (optional)"
+      ],
+      [
+        "`LockWaitOver`",
+        "a lock someone is waiting for has been released",
+        "the pending `LOCK` is finally answered",
+        "`NLMPROC4_GRANTED`"
+      ],
+      [
+        "`Revoked`",
+        "the client was silent past its [[client-lease|client lease]], an administrator revoked the client, or the [[share]] was removed or [[namespace-move|handed to another DittoFS installation]]",
+        "pending requests answered with an error",
+        "the same, with the protocol's own errors"
+      ]
+    ],
+    "footer": "A callback returns as soon as its message is queued, within the deadline the service gives it, even if the client never answers. The client's answer arrives later as an ordinary request.",
+    "notes": "§3.3, and §3.2: the service learns of a client at the protocol's own moment, its Connect, not at accept, since an NFS client's identity spans connections and an SMB client's spans sessions. Also RecallAny: CB_RECALL_ANY on NFSv4.1 when a client reaches 4096 delegations at one primary; nothing on SMB. NFSv4.0 has no callback path. NLM callbacks are RPCs the server makes to the host's own NLM service. A failed callback is handled by the service as the client not answering. Revoked row: build01's lease expired (the client lease, RFC 14), an administrator revoked its client, the share was removed or moved (a namespace move, RFC 27 §2.2; RevokedShare with Addr). A callback MUST return within its context's deadline whether or not the client answers."
+  },
+  "errors": {
+    "title": "One [[error-table]] per protocol",
+    "table": [
+      "Every error the service can return has a row, and a test enumerates them all.",
+      "An error without a row is a bug. It is answered with server fault and logged at error level.",
+      "A [[retry-later]] error is mapped by the cause it carries, never by the operation. SMB holds a write waiting on a [[recall]] until the recall ends, but answers one refused for lack of memory at once.",
+      "Expected refusals, such as not found or access denied, are logged at debug level only."
+    ],
+    "notes": "§4.5 (error table, invariant A7). Which statuses make a client retry, reclaim or give up are RFC 21 §11.5's and RFC 22 §16.5's rows; the rest follow from each protocol's specification and live only in the adapter's table. Example: RFC 22 §16.5 holds an ErrDelay for a break or recall until it ends, and answers DelayResources (a node memory pool spent) STATUS_INSUFFICIENT_RESOURCES at once, never held; RFC 21 §11.5 answers both NFS4ERR_DELAY.",
+    "heldTitle": "SMB requests that wait",
+    "holdTitle": "SMB cannot tell a client to retry, so the adapter keeps some requests waiting as [[held-request|held requests]].",
+    "hold": [
+      "When the service answers [[retry-later]] with a cause SMB waits out, such as a [[recall]] in progress, or a call is still unanswered after a short interval, the [[adapter|adapter's]] own timer sends the client an interim `STATUS_PENDING`.",
+      "Code in `core/hold.go`, not the handler, then re-drives the request. It resolves the wire IDs again and gives each attempt a fresh 30 s deadline.",
+      "Between attempts, a held request is only a timer and its decoded arguments, and it occupies no worker.",
+      "Each connection can hold up to 256 requests and 32 MiB of write data on its own. Past that, held requests draw on the [[node|node's]] shared hold pool, and at most 511 of a connection's requests may wait at once."
+    ],
+    "heldNotes": "§4.6 (held requests) and §6.4. The floor counts requests held in the service under WithHold or between re-drives, not a parked waiting lock or change notification, which holds no write data and no worker. Every request pending on a connection, held past its interim or parked, counts toward one ceiling, Stages.MaxPending, 511 for SMB (RFC 22 §3.3); past it a request is answered at once with ErrTooManyPending. A request whose hold starts on an error the service returned, and that neither the floor nor the hold pool can take, is answered STATUS_INSUFFICIENT_RESOURCES at once; a call still in the service when its interim goes out is counted and never refused. A client CANCEL or a closed connection ends a hold. How long a request is held is its error-table row's Hold, which SMB builds over the adapter's live settings (pending_timeout, recall_timeout), so a held request follows the latest bound rather than its connection's snapshot (§4.6's decision). Which causes are held is RFC 22 §16.5's: a break or recall in progress is held until it ends."
+  },
+  "concurrency": {
+    "kicker": "Concurrency"
+  },
+  "slow": {
+    "title": "A slow client costs only its own connection",
+    "notes": "§6.1–§6.3, invariant A10. A worker must not wait on a client — not for a callback's answer, not for a socket a slow client does not drain. Where the protocol has no flow control, and on every NFS connection, the adapter caps a connection at 64 requests in flight at admit."
+  },
+  "speed": {
+    "title": "Fast by what it does not do",
+    "items": [
+      "**Many requests per connection.** They run concurrently, and each gets its reply as soon as it completes.",
+      "**Many connections per client.** Each has its own reader and writer, so one client's connections run on different cores.",
+      "**Buffers pooled by size class.** Payloads are never copied, except to sign or encrypt them.",
+      "**Coalesced sends.** Replies waiting in the queue leave in one gathered write, which is why Nagle's algorithm can be off.",
+      "**No shared lock on the request path.** Each connection or [[session]] has its own ID tables, so two connections never contend for one."
+    ],
+    "ponytail": "This is deliberately simple: each request gets its own goroutine, and there is no worker pool. A pool will be added only if profiling on the machines set aside for benchmarks shows that per-request scheduling limits the rate of small operations.",
+    "notes": "§6.6 in its own order of what each buys, §5.3 (no payload copies, A9), §6.7 (TCP, A14). The ponytail marker in §6.6 records the no-worker-pool decision and what would overturn it. 'The machines set aside for benchmarks' is the reference box of the RFC index's Test tiers, a pair of machines for the benchmark series."
+  },
+  "quizSlow": {
+    "question": "Client A stops reading its socket, while client B keeps sending requests on its own connection. What happens?",
+    "options": [
+      "A's replies wait in its writer until A is disconnected, and B carries on.",
+      "A's replies keep their workers busy, so B waits until one of them is free.",
+      "The adapter answers A's next requests with an error telling A to retry later."
+    ],
+    "why": [
+      "No worker waits on a client. Once A's writer queue is full the reader stops reading A, and past the write deadline the adapter closes A's connection.",
+      "A reply that cannot be sent waits in the writer of A's connection, not in a worker, so no worker is ever left waiting for a slow client.",
+      "A full queue is not answered with an error. The reader simply stops reading A's connection, and TCP's own window makes A wait before sending more."
+    ],
+    "notes": "§6.1: one reader, workers, one writer; a worker MUST NOT wait on a client; a reply that cannot be written waits in the connection's writer; once its queue is full the reader stops reading that connection, and past the write deadline the connection is closed. A slow client costs its own connection and nothing else. §6.3: a connection that is not read lets TCP's window push back. Invariant A10."
+  },
+  "numbers": {
+    "n1": "30 s",
+    "w1": "the deadline for each attempt at a service call",
+    "n2": "≥ 35 s + 30 s",
+    "w2": "the shortest allowed [[drain]] deadline, so that a request that waited up to 35 s for a [[recall]] can still run for its own 30 s",
+    "n3": "64",
+    "w3": "the most requests in flight on one connection, for every NFS connection and any other without its own [[flow-control]]",
+    "n4": "256 · 32 MiB",
+    "w4": "the SMB [[held-request|held requests]] and write data each connection may hold before drawing on the [[node|node's]] pool",
+    "n5": "4 KiB",
+    "w5": "the most [[adapter-bytes|Adapter bytes]] an [[adapter]] may hand the service to keep in one [[open-state]] record",
+    "n6": "500 lines",
+    "w6": "the size a non-test adapter file should stay under. Past 800 lines a test fails, unless the file is on an allowlist.",
+    "notes": "30 s: §6.4. 35 s break deadline: §3.1. 64: §6.3 (with a ponytail marker). 256 and 32 MiB: §4.6, beside the 511 ceiling on a connection's pending requests (§4.6, RFC 22 §3.3). 4 KiB: §2.4, Across nodes. 500 and 800 lines: §2.5, with an allowlist that may only shrink. The drain deadline is at least the break deadline plus the request deadline so a request held on a break can finish (§3.1); drain_timeout defaults to 90 s (§3.6). Adapter bytes are handed to the service and stored by open state (§2.4, RFC 14 §2.1)."
+  },
+  "sidecar": {
+    "title": "Auxiliary service, or sidecar?",
+    "table": [
+      [
+        "",
+        "[[auxiliary-service|Auxiliary service]]",
+        "[[sidecar|Sidecar]]"
+      ],
+      [
+        "Reaches the service, or holds client state?",
+        "yes",
+        "no"
+      ],
+      [
+        "Belongs to",
+        "one [[adapter]], built by its `New`",
+        "the [[node]], built by `node.New`"
+      ],
+      [
+        "Runs through",
+        "the adapter's [[pipeline]] and tables",
+        "its own code"
+      ],
+      [
+        "If it fails",
+        "the adapter fails to start",
+        "only the sidecar fails, reported as `sidecar_failed`"
+      ],
+      [
+        "Examples today",
+        "MOUNT, NLM, NSM",
+        "mDNS, WS-Discovery, port mapper, rpcbind"
+      ]
+    ],
+    "footer": "They are two kinds on purpose. Folded into one, every rule in this table would become a flag whose two values behave in opposite ways.",
+    "notes": "§3.1 (auxiliary services) and §3.5 (sidecars), with the decision recorded in §3.5. NSM's restart notice reads client state, so it stays with the NFS adapter. In the code only Sidecar is a type; an auxiliary service is more operation tables on its adapter's core.Server."
+  },
+  "tests": {
+    "kicker": "Tests",
+    "title": "Tested in layers, cheapest first",
+    "layers": [
+      "**[[codec]]** — bytes to fields and back, against golden vectors (fixed bytes from the specification or a reference server), round trips and fuzzing",
+      "**stages** — each protocol stage tested alone, without a socket",
+      "**[[core]]** — lifecycle, drain and flow control, on a test-only protocol over the [[in-memory-service|in-memory service]]",
+      "**[[handler]]** — the right service call and the one-call rule, against the real [[in-memory-service|in-memory service]]",
+      "**boundary** — imports and complete [[error-table|error tables]]",
+      "**in-process** — an adapter on the real service, with in-memory stores",
+      "**conformance** — test suites written by others, such as pynfs for NFS, and smbtorture and Microsoft's WPTS for SMB",
+      "**end to end** — kernel clients against a real [[node]]",
+      "**wire diff** — a nightly comparison with a [[reference-server]]"
+    ],
+    "recording": "Handler tests run on the real [[in-memory-service|in-memory service]]. If a handler drops the [[deny-mode]] on its way into `OpenRequest`, the file still opens, but a second, conflicting open that succeeds shows the field is missing. A [[recording-service|recording wrapper]] passes each call through and counts the mutating ones.",
+    "notes": "§7, the layer table. Each layer catches something the ones above it cannot. The core layer runs a test-only protocol (adaptertest/testproto: length-prefixed frames, an echo, a delay, an operation that panics, one that holds) over the in-memory service, so a drain bug found there is core's, neither a store's nor a protocol's, and both adapters share the fix; core is proven before either adapter exists. The null service serves only the allocation gate and the benchmarks (§6.10); nothing asserts on its answers. §7.2: the in-memory service is memory.New, the real *vfs.Filesystem over memory stores, passing the service's conformance suite (RFC 17 §8); error answers and reply edges come from vfstest's fault wrapper, which fails a named method on cue (RFC 29 §4.11). A handler test asserts the encoded reply and the state the service holds afterwards. The one-call rule is read from a recording wrapper around the filesystem that records each call and passes it through, never answering in its place; read-only calls are not asserted. Golden vectors: §5.4, fixed bytes from the specifications' examples or from reference-server captures, never only from the codec under test. Conformance suites: §7 (pynfs, cthon04, nfstest, smbtorture, WPTS, pjdfstest)."
+  },
+  "wire": {
+    "title": "[[wire-test|Wire tests]]: compare with a [[reference-server]]",
+    "notes": "§8.2–§8.4 and the QUERY_DIRECTORY scenario in 'Start here'. Scripts drive the protocol, not a kernel client, and are written, not replayed. A recorded divergence names the script, the field, the two values and the protocol-RFC rule that makes DittoFS differ; an entry with no rule is not accepted. A run that cannot reach a reference server is a failure, never a skip. The recorded divergence: §8.4."
+  },
+  "whom": {
+    "kicker": "What changes",
+    "devTitle": "[[adapter|Adapter]] developers",
+    "dev": "Each operation gets its own file, each [[handler]] makes one call, and tables replace branches on the version. The build tells you when you cross the boundary.",
+    "svcTitle": "Service and store authors",
+    "svc": "Semantics live once, in the service. No adapter can bypass them, so a fix is a fix for both protocols.",
+    "opsTitle": "Operators and users",
+    "ops": "What a client sees should not change, because the goal is feature parity with today's adapters. A [[drain]] lets requests in flight finish, and the node's health reports a lost listener or a failed [[sidecar]].",
+    "notes": "Deck's own framing, drawn from 'What this RFC promises', Appendix B ('the goal is feature parity, not a port'), §3.1 and §3.7 (conditions adapter_listener_lost, adapter_refused, sidecar_failed). 'Today's adapters': Appendix B."
+  },
+  "rules": {
+    "items": [
+      "An [[adapter]] imports no store, no [[engine]] and no other adapter. It reaches files only through the service, and caches nothing the service returned.",
+      "Every request passes the same stages, in the same order, through one shared implementation.",
+      "A [[handler]] makes at most one mutating call, and decides nothing on a file's mode or ACL.",
+      "No worker waits on a client, so a slow client blocks only its own connection.",
+      "The adapter maps no identity, applies no squash and grants no privilege."
+    ],
+    "footer": "RFC 20 lists twenty invariants, A1 to A20, and this slide gives five of them in plain words.",
+    "notes": "A1 and A3, A4, A5, A10, A12 from §9. First item: §2.3 and A1 (no store, engine or other adapter), A3 (no cache)."
+  },
+  "nongoals": {
+    "title": "What RFC 20 does not decide",
+    "items": [
+      "The service's operations, their order and their errors are decided by RFC 17.",
+      "Each protocol's own choices, such as versions, sizes, slots and credits, are left to RFCs 21 and 22.",
+      "How a principal is authenticated, and mapped to numeric IDs and SIDs, is for RFC 18 to say.",
+      "Memory budgets and buffer pool sizes are RFC 24's. RFC 20 only says where the bounds apply.",
+      "The test runner, its tiers and its grading belong to RFC 29."
+    ],
+    "notes": "§1.1 Non-goals. RFC 20 fixes only that the adapter runs the protocol's handshake and hands the service what it proved, and where the memory bounds apply, not their values."
+  },
+  "openQuestions": {
+    "questions": [
+      "Should the SMB [[codec|codecs]] be generated from the structure tables in MS-SMB2, or stay hand-written with golden vectors? The cost of each has not been measured.",
+      "NFSv3 and NFSv4.0 keep recent replies in the [[adapter]] so a retried request is not run twice. In a cluster the service has a [[dedup-table|dedup table]] that answers a resent call with its first result, but only for calls forwarded between nodes. Should it cover this too? RFC 21 will settle it.",
+      "NLM and NSM, the NFS locking services, are also served over UDP today, because some clients send lock requests only over UDP. RFC 21 forbids UDP, so they stay until RFC 21 decides which of those clients lose locking."
+    ],
+    "notes": "§11 Open questions. Question 2: the service's dedup table covers forwarded calls (RFC 17 §4.7), not a single node's. Question 3: clients that send lock requests only over UDP; RFC 21 §2.2 forbids UDP."
+  },
+  "scenes": {
+    "bypass": {
+      "smbClient": "SMB client",
+      "nfsClient": "NFSv3 client",
+      "smbAdapter": "SMB adapter",
+      "nfsAdapter": "NFS adapter",
+      "service": "filesystem service",
+      "engine": "content engine",
+      "markDeny": "deny-write held",
+      "markWritten": "written anyway",
+      "steps": [
+        "alice-pc opens `ODFC_alice.vhdx` over SMB with [[deny-mode|deny-write]], so that no one else may write the file while her open lasts. The [[filesystem-service]] records the open.",
+        "build01 then writes to the same file over NFSv3. The NFS adapter passes the write to the service, which refuses it as a sharing violation, and build01 gets `NFS3ERR_ACCES`.",
+        "Now suppose the NFSv3 [[handler]] called the content [[engine]] directly instead of the service. The write would land despite the deny-write, and the NFS, SMB and service test suites would all still pass, because none of them tests that path."
+      ]
+    },
+    "lifecycle": {
+      "noSocket": "no socket yet",
+      "bound": "every listener bound",
+      "noNew": "no new connections",
+      "dropped": "state dropped",
+      "steps": [
+        "**configured:** the adapter has validated its settings but opened no socket yet. A setting it cannot apply makes it fail here, not at the first request.",
+        "**serving:** `Start` succeeds only once every configured listener is bound. If one cannot bind, the start fails and closes the listeners it had opened.",
+        "While the adapter is serving, **Reconfigure** adds or removes listeners and changes its settings, without a restart. Only a new port is different: the node builds a new adapter, drains the old one and starts the new.",
+        "**[[drain|draining]]:** after `Stop`, the adapter accepts no new connections, and the requests already handed to the service run to their answer.",
+        "**stopped:** every connection is closed, and the state the adapter kept for it is dropped."
+      ]
+    },
+    "pipeline": {
+      "g1": "1 · protocol only",
+      "g2": "2 · the call",
+      "g3": "3 · the answer",
+      "reachesFile": "the only stage that reaches a file",
+      "steps": [
+        "**Protocol only.** The adapter reads one message, decodes its header, decrypts it or checks its signature, and counts it against the connection's [[flow-control]]. That count is the stage labelled admit, not the service's [[admission]]. It then checks for a replay, decodes the arguments and turns wire IDs into service values. None of this touches a file.",
+        "**The call.** The [[handler]] makes its one call to the service, where the service's own [[admission]] checks run. This is the only stage that reaches a file.",
+        "**The answer.** The adapter maps any error to the protocol's status, encodes the reply, signs or encrypts it, and hands it to the connection's writer to send.",
+        "A request whose arguments cannot be decoded is refused with the protocol's own answer (`GARBAGE_ARGS` over RPC, `STATUS_INVALID_PARAMETER` over SMB) before any service call is made, so it leaves no trace at the [[primary]]."
+      ]
+    },
+    "slow": {
+      "clientA": "client A",
+      "clientB": "client B",
+      "service": "service",
+      "notReading": "stopped reading",
+      "queueFull": "queue full",
+      "notRead": "A not read",
+      "closed": "write deadline: closed",
+      "unaffected": "unaffected",
+      "steps": [
+        "Each connection has one reader, a number of workers bounded by the protocol's [[flow-control]], and one writer that sends the replies.",
+        "Client A stops reading its socket. Its replies wait in the queue of A's writer, so no worker is left waiting for A.",
+        "Once A's writer queue is full, the reader stops reading A's requests, and TCP's own window makes A wait before sending more.",
+        "When a reply has waited past the write deadline, the adapter closes A's connection.",
+        "Client B, on its own connection, was served normally throughout and never noticed."
+      ]
+    },
+    "wire": {
+      "script": "script",
+      "reference": "reference server",
+      "capture": "capture",
+      "normalise": "dissect · normalise",
+      "compare": "compare",
+      "red": "red: no recorded divergence",
+      "steps": [
+        "A script sends the same SMB `QUERY_DIRECTORY` request to a [[reference-server]] and to DittoFS, with a reply buffer larger than an entry's fixed part but too small for the first file name.",
+        "Both conversations are captured on the wire. The reference answers `STATUS_BUFFER_OVERFLOW` with one partial entry, while DittoFS answers `STATUS_INVALID_PARAMETER`.",
+        "A dissector splits both captures into fields. Values that differ between any two correct servers, such as [[handle|handles]], times and IDs, are replaced by matching tokens.",
+        "The statuses still differ. A difference is accepted only through a recorded divergence, an entry naming the script, the field, the two values and the rule that makes DittoFS answer differently on purpose. None names this one, so the run is red, and both captures are kept with the failure."
+      ]
+    }
+  },
+  "adapterBytes": {
+    "title": "What a reconnect must find: [[adapter-bytes|Adapter bytes]]",
+    "lead": "Some protocol details must outlive a lost connection or a restart, although no other protocol reads them, such as the address the server sends a client's [[callback|callbacks]] to.",
+    "items": [
+      "The [[adapter]] stores them nowhere itself. It passes them to the service as opaque `Adapter` bytes, in the call that makes the change they belong to.",
+      "[[open-state|Open state]] keeps them in that client's or that open's record, written in the same step as the change, and never reads them.",
+      "They are at most 4 KiB, and their first byte is a version number the adapter defines."
+    ],
+    "footer": "So both rules hold. The adapter's own state stays in its memory, and the adapter imports no open-state table, because these bytes reach storage only through the service.",
+    "notes": "RFC 20 §2.4 ('Adapters translate; open state decides' and 'Across nodes') and RFC 14 §2.1 ('An adapter's record is written with the change it belongs to', 'An adapter's record is bounded and versioned'). The examples in RFC 14 §2.1 are a one-slot replay of a setup call, a callback address and a restart-notice address. Open state writes the bytes only over the bytes the adapter last read; a write that lost the race is answered ErrRecordChanged, and the adapter rereads and decides again. A node that cannot read a version refuses the call with ErrAdapterVersion, and an adapter keeps reading every version it ever wrote. In a cluster only neutral calls and Adapter bytes cross between gateway and primary (RFC 15 §4.3). §2.2: the adapter's own state is never written to the metadata store or replicated; §2.3: an adapter never imports the open-state tables."
+  }
+}

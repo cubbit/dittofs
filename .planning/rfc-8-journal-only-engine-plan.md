@@ -95,6 +95,10 @@ ships in a release. It sets no offloaded bit, because its journal interface hold
 | §12.1 interface | the content methods, `New`, `Apply`, `Start`, `Close`, `Bind`, `Unbind`, `Drop`, `Stats` | `PrepareCut`, `CommitCut`, `PreWarm`, `WaitOffloaded` |
 | §12.2 retried mutation | none | single node: no route envelope (RFC 15 §4.3) |
 
+The metadata reconcile, which the reseed (step 7) runs when a crash leaves one owed (RFC 8
+§2.5), is left out of this plan on purpose: its owner is epic 19, restart and reconcile, of the
+[offload engine plan](rfc-8-offload-engine-plan.md).
+
 **Capacity without offload.** Nothing is released, so the only space that returns is what
 repack frees: records superseded by an overwrite, and extents a truncate, deallocate or
 delete removed (RFC 1 §7.1, §7.2). Content written and kept is never freed; a share's
@@ -403,10 +407,10 @@ harness (`journaltest/prof`) wired to the fixture.
 | 7 | **Capacity, self-fence and health** | the refusal table without offload, repack scoped by the refusal, the self-fence, conditions and `Stats` | 5 | 18.5 | C | 9 |
 | 8 | **Clone and copy, journal-held** | admission, registration, copy, phase 1 and the clone-kind open through `Deps.Holds`, `Copy` as bounded clones, rebuild at start | 7 | 19.75 | A | 5, 9 |
 | 9 | **Integration: the filesystem service over the engine** | `internal/vfs` aliases, the `Content` check over the in-memory `Content` and the engine, `suite.Run` at the integration tier, RFC 17's V-rows | 5 | 11.5 | team | 10 |
-| 10 | **E2E green** 🔀 | burn `known.yaml` down as the journal's calls land; soak, benchmarks B5, B7, B9 (adapted), the nightly tier | 4 | 12.5 | team | the second part |
-| | **Total** | | **65** | **191.5** | | |
+| 10 | **E2E green** 🔀 | burn `known.yaml` down as the journal's calls land; soak, benchmarks B5, B7, B9 (adapted), the nightly tier | 5 | 12.5 | team | the second part |
+| | **Total** | | **66** | **191.5** | | |
 
-**Plan estimate: 65 subtasks, 191.5 man-days.**
+**Plan estimate: 66 subtasks, 191.5 man-days.**
 
 RFC 8 is 3,627 lines, which gives N = 8. This part covers about half of it, and its cohesive
 areas are six: the data path, the stability point, removals, the lifecycle, capacity and
@@ -1070,21 +1074,28 @@ owned: RFC 17 §8's integration tier for the engine's side; RFC 8 §12.1's singl
 
 ### Epic 10 — E2E green 🔀
 
-**Epic 10 estimate: 4 subtasks, 12.5 man-days.**
+**Epic 10 estimate: 5 subtasks, 12.5 man-days.**
 
-`test/engine/known.yaml` burnt down to empty, as each journal call of §3.3 lands. Its size
+`test/engine/known.yaml` burnt down to the deferred rows that R9 of
+`rfc-8-engine-epic10.md` names, which stay listed under #5757, as each journal call of §3.3
+lands. Its size
 follows the journal's, not this part's (§6 point 7).
 
-- T10.1 The burn-down: each remaining row green over the real journal, its entry removed;
-  an adapted row leaves once the half this part runs passes, its other half named in the
-  second part. At S3 the entries still red are re-pointed from their middle epic's issue to
-  epic 10's. At S4 it drops the rows' runs over the in-memory journal that rule 8 allows until
-  then, T9.3's start order and T9.4's rows among them.
-- T10.2 A soak: crash and restart in a loop at the integration tier under fault schedules,
-  asserting every acknowledged synced write reads back or reads **Lost**.
-- T10.3 B5, B7 and B9 at the service tier (B9 adapted: stable overwrites through `vfs.Service`
+- T10.1 A soak: crash and restart in a loop at the integration tier under fault schedules,
+  asserting every acknowledged synced write reads back or reads **Lost**. It runs on every
+  push to `feat/storage-v2` with a short list of seeds (the `pr` tier, which `merge` contains),
+  since `nightly` runs only on `develop`, and in `nightly` with the long list.
+- T10.2 B5, B7 and B9 at the service tier (B9 adapted: stable overwrites through `vfs.Service`
   rather than SMB), baselines recorded.
-- T10.4 The `nightly` tier for the soak, and profiling baselines.
+- T10.3 Re-point the known failures that name a closed issue, then at S3 the table of rows
+  against tests.
+- T10.4 The burn-down: each remaining row green over the real journal, its entry removed,
+  except the deferred rows of R9 of `rfc-8-engine-epic10.md`; an adapted row leaves once
+  the half this part runs passes, its other half named in the second part. The entries that
+  name a closed issue are re-pointed to epic 10's as soon as it has an issue (T10.3), not at
+  S3. At S4 it drops the rows' runs over the in-memory journal that rule 8 allows until then,
+  T9.3's start order and T9.4's rows among them.
+- T10.5 The baselines, profiling baselines and the comparison of B5 and B9 with v1.
 
 ## 6. Risks and open points
 
@@ -1232,6 +1243,7 @@ What this part knowingly does not build. Each row indexes the section that defer
 | The cut (`PrepareCut`, `CommitCut`) and the stamp after a group commit; clone's snapshot cases (§1.1, §7) | snapshots | RFC 12 | snapshots are built |
 | Clone's adoption of carved refs (§1.1, epic 8) | this part writes no carved ref | RFC 8 second part plan | offload |
 | Eviction, pacing, the pressure flag; RFC 8 §10.1, §10.2.1, §10.4 (§1.1, epic 7) | nothing is released without offload | RFC 8 second part plan | offload |
+| The metadata reconcile: the visit of each held file, `DropOlder`, the loss sequence's raise and `Reconciled`, with `Bind` taking over its handle (§1.1, RFC 8 §2.5 step 7) | the reseed is out of this part, and the reconcile runs inside it | [RFC 8 offload engine plan](rfc-8-offload-engine-plan.md), epic 19 (restart and reconcile) | epic 19 starts |
 | Repack run from the eviction loop, not only at a refusal (epic 7's `ponytail:`) | repack runs only when a write is refused | RFC 8 second part plan | offload adds the eviction loop, or refusals show repack time on the write path |
 | Removal phase 2 and its prune on the shared work scheduler (epic 5's `ponytail:`; §6 point 5) | one loop per journal stands in | RFC 8 second part plan | offload adds the first work that needs fairness between shares |
 | Offload health, put and get health, `stranded_export_failed` with the salvage export of stranded tags, `PreWarm`, `WaitOffloaded` (§1.1, §1.4, §6 point 7) | need offload | RFC 8 second part plan | offload |

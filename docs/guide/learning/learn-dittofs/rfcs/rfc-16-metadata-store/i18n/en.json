@@ -1,0 +1,587 @@
+{
+  "title": "RFC 16 — the metadata store",
+  "cover": {
+    "kicker": "Learn DittoFS · RFC 16",
+    "title": "The [[metadata-store|metadata store]]",
+    "lead": "Where DittoFS remembers everything except the bytes — and why creates in one busy folder still run in parallel.",
+    "built": "Built from RFC 16 at {commit}",
+    "notes": "Source: docs/internals/rfcs/rfc-16-metadata-store.md, commit {commit}. The RFC specifies behaviour, not the current code. What each record means is owned by RFC 6 (content), RFC 7 (files and names) and RFC 14 (open state); this deck covers how they are stored together. Rules marked (cluster) bind only once a second node can serve a share. Keys: → next, S speaker notes, ? help. Click any underlined term for its definition."
+  },
+  "intro": {
+    "twoTitle": "RFC 16 in two sentences",
+    "two": "The [[metadata-store|metadata store]] is DittoFS's one transactional database for everything except file bytes: files and names, where content went, durable [[open-state|open state]], users, [[share|shares]], nodes and settings. RFC 16 fixes the [[entity|entities]] callers read, the narrow [[view]] each caller holds, and how both are laid out as keys behind one small transactional interface, the [[kv|KV]].",
+    "twoNotes": "From 'Start here · In plain words' and §1 Purpose. The RFC calls itself the one place where the whole metadata layer can be read at once. It owns the rules of §1.2, the entity map, identity and control-plane entities, the views no narrower RFC owns, the KV contract, key layout, codecs, counters and store format, plus testing, benchmarks and observability.",
+    "knownLead": "These terms come from RFC 0's glossary and from RFCs 1, 6, 7, 11, 12 and 14, which define them. Click a term to see its definition.",
+    "knownNotes": "Every definition restates RFC 0's glossary row, which is the definition of record. RFC 16 depends on RFC 0, 6, 7, 13, 14 and 15 (its front matter).",
+    "newNotes": "From 'Start here · The words you need' (entity, record, KV, guard, delta and fold, view, format record), plus group commit, store time, change sequence and the key budget (§4.1), the store codec (§4.3), the fold rule (§4.6), principal (§2.2) and Inspect (§3.1).",
+    "clashNotes": "Record: RFC 1's journal record vs a KV record. Fold: §4.4 folds deltas into totals, §4.6 folds names by case — the RFC uses one word for both. Codec: RFC 20's adapter codec vs §4.3's value codec. Namespace: RFC 0's remote-tier namespace vs RFC 7's Namespace view (§3). Snapshot: §4.1's transaction snapshot vs RFC 12's share snapshot."
+  },
+  "problem": {
+    "title": "Everything but the bytes",
+    "analogyTitle": "Analogy",
+    "analogy": "A library's card catalogue: the books sit in the stacks, and the cards say what exists and where to find it. File bytes are the books; the [[metadata-store|metadata store]] is the cards.",
+    "stopsTitle": "Where it stops holding",
+    "stops": "Unlike a drawer of cards, every change is a transaction: all of its records land, or none do. And each caller sees only the drawer it needs.",
+    "split": "File bytes go first to the [[journal]] and later, packed into [[block|blocks]], to the bucket. Everything else DittoFS must remember lives in **one** transactional store.",
+    "notes": "'Start here · In plain words', including the analogy and the two-line diagram. What a record means is owned elsewhere: files and names by RFC 7, content by RFC 6, opens and locks by RFC 14 (§1, §1.1)."
+  },
+  "promises": {
+    "items": [
+      "One database holds every kind of metadata, so there is only one thing to run, back up, replicate and test.",
+      "Reading a file's attributes is one read, however large the file or its directory grows. A directory adds only its recent time changes not yet merged into it. No record holds a list that grows: each entry of a directory is a record of its own.",
+      "No counter is a single value that every writer must rewrite in turn. Space usage and directory times are written as small [[delta-fold|delta records]], so parallel creates in one directory do not have to wait for each other.",
+      "When two transactions conflict, the losing one is retried within its caller's deadline. The conflict is never returned as an error.",
+      "A store opens only under a binary that knows its format and its [[fold-rule|fold rules]]. A value written with a [[value-codec|codec]] version the binary does not know is refused, never guessed at."
+    ],
+    "notes": "'Start here · What this RFC promises', backed by §2.3 (one database), §4.2 and §1.2 rule 2 (bounded reads: a file's attributes are one record, and a directory's entries are records of their own, so no read grows with the directory), §4.4 (counters), §4.1 (retries under RFC 0 §9.2), §4.3 and §4.6 (codecs and format). The RFC words the second promise as 'costs what §4.2 states'; the key layout itself comes later, on 'Where every key lives'. A directory's attributes also need a scan of its unfolded time deltas (§1.2 rule 2's consequences: Files.Get costs one read of the File's one key, plus, for a directory, a scan of its unfolded time deltas; RFC 7 §2.5)."
+  },
+  "model": {
+    "kicker": "The model"
+  },
+  "views": {
+    "title": "One store, a narrow [[view]] per consumer",
+    "notes": "§3 (what each consumer holds), §3.2 (one concrete store built from a KV; transaction-level helpers such as unlinkTx and chargeUsageTx), §1.2 rule 3, and the figure rfc16-views. The full list: the filesystem service holds Namespace, Files, Capacity, ShareIndex and Principals.User; open state holds OpenRecords; the engine Existence, Content, Lifecycle and Inspect.Refs for the reseed only; GC Blocks; identity Principals, Records and Minter; the management API ControlPlane. The store is a leaf: it never calls the engine. What each view covers is §3's table: Namespace, Files, Capacity hold names, attributes, ACLs, xattrs, streams, statfs and usage (RFC 7); Existence, Content, Blocks the write path, the engine's commits and refs, GC (RFC 6); Lifecycle a device's journal identity and sync marks, the version limits, the incarnations (RFC 8 §2.1)."
+  },
+  "rules3": {
+    "title": "Three rules that keep the model honest",
+    "c1Title": "One [[entity]] is not one record",
+    "c1": "A read returns a whole File, but the operation decides which records a write touches. There is no `Put(File)`. Writes are operations such as `SetAttrs`, `Truncate` or `Rename`, and each names the fields it changes.",
+    "c2Title": "Collections are iterators",
+    "c2": "No entity holds a list that grows with its file or its directory, such as `File.Refs` or `Directory.Entries`. Such lists are read through an iterator. A list inside an entity is an O(N) read hidden in a struct, and every change to the list re-reads and rewrites all of it.",
+    "c3Title": "Interfaces follow consumers",
+    "c3": "Each caller declares the narrow [[view]] it needs. There is no per-entity CRUD interface, and no interface with one method per record.",
+    "notes": "§1.2, rules 1–3. Rule 1's reason: a caller able to write the whole struct would read-modify-write it, and every write would conflict with every attribute change. Rule 2 cites RFC 6 §5.2. Rule 3 cites RFC 0 §1.2 (component autonomy). Rule 2's measured case, a 160 GB sequential write that slowed down because each commit rewrote the file's whole list of refs, is on the next slide but one (Start here · The problem, in one example)."
+  },
+  "example": {
+    "kicker": "Running example",
+    "title": "alice's morning, in keys",
+    "notes": "'Start here · The problem, in one example' and the figure rfc16-keys. Node N1; share profiles; alice's folder profiles/alice/ is directory d1, her profile disk ODFC_alice.vhdx is file f7. The write itself touches no metadata: only the journal holds it. The flush waits for its transaction because it overwrites committed content; an append would have been left to the next group commit. The entry key is the keyed digest of the folded name, then the folded name, holding the original 'Downloads'. Fences: (shard, epoch) records guarded so a takeover after the snapshot fails the transaction. Captions are short; the full sequence: the flush rewrites f7's one File record (times, change counter; size unchanged), moves its version-floor entry to the new counter, adds an overwrite record, and guards f7's fence record and N1's node record. The offload commit writes the ref, chunk record, block record and the index entries beside them. mkdir writes d9's File, one Entry under d1 keyed by the keyed digest of the folded name, a delta for d1's times and a usage delta, and guards d1's record. Added for the cold read: version index is §4.2 S‖id‖vf (one entry per File at its stored Version, moved by every transaction that raises it) and RFC 6 §8.3 (the journal is opened with the floor, so it cannot reissue a version metadata already holds; it is an index, never a counter every commit rewrites). Guarding N1's record: §4.1 'Every fenced commit guards its primary's node record' (refused unless the record holds the commit's node epoch, unmarked; a takeover marks it). Put intent: §4.2 I‖ns‖name and RFC 6 §7.6 (recorded before every put; the commit creating the block record deletes it and fails without it; no object an intent names is deleted; a start abandons the intents of the previous run). Reverse ref: §4.2 CR‖ns‖hash‖ShareID‖FileID‖offset‖died and RFC 6 §6.1 (the reverse ref index is the authority, the refcount its cache). The later fold of d1's time deltas into its record: §4.4. The keys, for reference: F‖profiles‖f7 (File, ov‖start, ref‖offset, fx and fo), F‖profiles‖d1 (e‖digest‖downloads, t‖unique), F‖profiles‖d9, S‖profiles‖vf‖…, S‖profiles‖ud‖…, N‖N1, I‖ns‖name, C‖ns‖hash, B‖ns‖name, CR‖…. Which fence: the flush is an existence commit, so it guards F_x(f7) only (RFC 6 §5.4, 'Existence commits check F_x(file)'); the offload commit writes F_o(f7), which serialises a file's offload commits (RFC 6 §5.4 table)."
+  },
+  "measured": {
+    "title": "Two designs the RFC avoids, both measured",
+    "n1": "111k/s",
+    "w1": "creates per second in one directory, with the directory's times written as deltas",
+    "n2": "28k/s",
+    "w2": "the same creates, with the directory's times rewritten in place",
+    "n3": "160 GB",
+    "w3": "a sequential write that slowed down because each commit rewrote the file's whole list of refs",
+    "footer": "Writing one small delta per transaction and folding the deltas in later kept the full rate. Storing each [[ref]] under its own key keeps a commit's cost down to what it changed.",
+    "notes": "'Start here · The problem, in one example', §1.2 rule 2 (RFC 6 §5.2), §4.4 and Appendix A. Measured on the embedded store on an Apple M1 Max; parallel rows varied about ±30%, so only differences of 2× or more are claimed."
+  },
+  "keys": {
+    "title": "Where every key lives",
+    "table": [
+      [
+        "Scope",
+        "Prefix",
+        "Holds"
+      ],
+      [
+        "Per file",
+        "`F‖share‖file`",
+        "File, ACL, xattrs, entries under their directory, refs, holes, fences, durable opens"
+      ],
+      [
+        "Per share",
+        "`S‖share`",
+        "share info and state, grants, export policy, snapshots, usage, version index"
+      ],
+      [
+        "Per namespace",
+        "`C‖` `B‖` `CR‖` `I‖` `NS‖` …",
+        "chunks, blocks, reverse refs, put intents, GC state"
+      ],
+      [
+        "Server-wide",
+        "`U‖` `G‖` `NX‖` `N‖` `SH‖` `CFG‖` …",
+        "users, groups, name indexes, nodes, shards, settings, secrets"
+      ],
+      [
+        "Store",
+        "`\\x00format`",
+        "the format record, read first"
+      ]
+    ],
+    "footer": "A client's operation on a file stays inside one or two `F‖` prefixes. The table groups the kinds of key by scope; §4.2 has the full list, so a new kind of record needs a new store format.",
+    "notes": "§4.2 (every key starts with a one-byte kind code; the labels stand for bytes, §4.2.1) and its consequences. Each File is one key: a second key cost 25% on GETATTR, 60% on READDIRPLUS and 30% on serial creates, to avoid a rare, cheap-to-retry conflict (ponytail marker). The share in every per-file key makes export a prefix scan and lets a restore into a new share get new keys, so it never aliases a handle; deleting a share still walks the prefix in batches, because the counts its refs name live outside it. Only the offload commit, removal batches and GC reach the content-addressed keys."
+  },
+  "kv": {
+    "kicker": "How it works",
+    "title": "The [[kv|KV]]: all a backend implements",
+    "items": [
+      "The [[entity]] layer is written only once, on top of this interface.",
+      "`Update` may run `fn` more than once, because it retries on a conflict.",
+      "The embedded and the replicated backend differ only below it."
+    ],
+    "notes": "§4.1. Update runs fn in one transaction and retries on a serialisation conflict under ctx's deadline (RFC 0 §9.2). Limits reports the largest key and value, transaction bytes with conflict ranges, entries written and the age past which a transaction aborts. The RFC's backends are an embedded store on one node and a replicated one in a cluster; product names appear only in labelled evidence (§1.1, §5 decision 10). One KV conformance suite plus one entity suite covers both."
+  },
+  "guards": {
+    "title": "Two creates, one directory",
+    "notes": "'Start here · Scenarios', first two; §4.1 (guards), §4.4 (directory-time deltas), §4.6 (fold rules). In the scene build01 commits second; the RFC says only that whichever commits second aborts. The fold of the deltas happens later, by the primary of the directory's shard, while no create there is in flight."
+  },
+  "guardrules": {
+    "title": "A [[guard]] binds only its own transaction",
+    "table": [
+      [
+        "What commits, in which order",
+        "Outcome"
+      ],
+      [
+        "W, which writes the key, commits before G, which guards it",
+        "G aborts"
+      ],
+      [
+        "G commits before W",
+        "Both commit, and W is ordered after G"
+      ],
+      [
+        "Two transactions guard the same key and write nothing the other tracks, in either order",
+        "Both commit"
+      ],
+      [
+        "G guards every key under prefix P with one range guard, `GuardRange(P)`, and another transaction creates a key under P after G's snapshot",
+        "G aborts"
+      ]
+    ],
+    "footer": "No rule assumes that W fails. Where W decides something from what G wrote, W itself reads a key that G writes, with a `Get` or a guard, so that W's own commit fails if that key changed. A guard in a transaction that writes nothing guarantees nothing, so no caller relies on one.",
+    "notes": "§4.1 'Guards bind their own transaction, and are shared', and §5 decision 10. A backend whose guard is a shared lock, so that a guard taken after another guarding transaction committed fails, does not meet the rule: measured, it queued one-directory creates at 26–85/s. The KV conformance suite commits two guards in both orders (§6.1). The footer's tracked read is §4.1's isolation rule (every Get, Guard and key under a GuardRange registers itself, and the commit aborts if another transaction wrote it after the snapshot), shown on the snapshot-isolation slide two slides on. Row 3: §4.1, 'Two transactions that guard one key, and write nothing the other tracks, both commit'. The footer's rules are MUST and MUST NOT in §4.1."
+  },
+  "quizGuards": {
+    "question": "alice-pc creates `notes.txt` and build01 creates `build.log` in directory d1 at the same moment. What happens?",
+    "options": [
+      "The second to commit aborts and retries, because both touch d1's record.",
+      "The second waits for the first one's lock on d1's record, then commits.",
+      "Both commit, because each only guards d1's record and writes its own keys."
+    ],
+    "why": [
+      "Each create only [[guard|guards]] d1's record, and two guards never conflict. One aborts only when both write one key, such as two names that fold alike.",
+      "A [[guard]] is not a lock that the other transaction waits for. Two guards on one key commit in either order, so neither create holds up the other.",
+      "Each create writes only its own Entry and its own [[delta-fold|delta]] for d1's times. Its claim on d1's record is a guard, and two guards never conflict."
+    ],
+    "notes": "§4.1 (a guard binds only its own transaction; two guards MUST NOT conflict, whatever their commit order; a backend whose guard is a shared lock does not meet the rule), §4.4 (directory-time deltas), 'Start here · Scenarios', the first two."
+  },
+  "isolation": {
+    "title": "Snapshot isolation, plus tracked reads",
+    "items": [
+      "Each `Update` runs against one consistent snapshot of the store.",
+      "The store detects every write-write conflict, including a blind write that read nothing first. It also tracks every `Get`, every `Guard` and every key under a guarded range.",
+      "So a lost update (both read and write one key) or write skew (each reads the key the other writes) aborts whichever transaction commits second, and `Update` retries it.",
+      "`Scan`, which lists the keys under a prefix, and `Before`, which finds the last key below a given one, are not tracked. So a range read does not notice a key that another transaction adds to that range."
+    ],
+    "rule": "A decision taken over a range, such as “the directory is empty, so remove it”, is safe only when each side tracks a key the other writes. That is why removing a directory runs `GuardRange` over its entries.",
+    "notes": "§4.1 'Isolation: snapshot isolation plus conflict-tracked reads' and 'Where the store's own transactions fall short, the backend supplies the rest' (an embedded store whose transactions track less keeps its own log of recently committed keys and checks it at commit). RFC 7 §3.6 for the directory removal. Here 'snapshot' is the transaction's consistent read view, not a share snapshot. Before is defined in §4.1's Reader: the last record under a prefix whose key sorts below a given key, untracked like Scan. The range rule is a MUST in §4.1."
+  },
+  "durable": {
+    "title": "Reported only once it cannot be lost",
+    "footer": "An `Update` that returned an error can still have committed, so callers treat its outcome as unknown, never as a refusal. A replicated store returns success once a quorum of its replicas holds the write durably.",
+    "notes": "§4.1 'A commit is reported only once durable' and 'The embedded store shares one sync among concurrent commits'; 'Start here · Scenarios', the power loss. Synced one commit at a time, a store reaches only a few hundred commits/s on consumer NVMe (about 400 measured, §5 decision 10). A mode that acknowledges before the sync is unsupported under any setting, because what the journal releases and GC deletes on the strength of an Update cannot be put back. The journal may already have released bytes on the strength of a returned Update; that is safe because the commit cannot be lost."
+  },
+  "time": {
+    "title": "Time, versions and limits come from the store",
+    "c1Title": "[[store-time|Now]]",
+    "c1": "Every time the store keeps for a later comparison is taken from `Now` and compared with `Now`. `Now` never goes backward between transactions that commit in order.",
+    "c2Title": "[[change-sequence|Change sequence]]",
+    "c2": "Every committed write carries the version the store assigned to it at commit. No transaction has to write a counter to get one.",
+    "c3Title": "[[key-budget|Limits]]",
+    "c3": "The largest key and value, and the bytes, keys and age one transaction may reach, are properties of the backend, never settings. The [[key-budget|key budget]] of a batched operation is derived from them.",
+    "footer": "Some stores have a timestamp oracle, a service that hands out ordered times. Without one, `Now` keeps its order only within one node. It is the node's clock, never below the last value it returned and never past a ceiling the node stores and raises once a second, so a clock set back across a restart cannot carry `Now` backward.",
+    "notes": "§4.1 'Now is store time', 'Every committed write carries a change sequence', 'Transaction limits are the backend's'. The clock ceiling is N‖node‖clk, one write per second per node, never one per transaction. Across nodes on a store without an oracle, two readings in commit order may differ by up to σ (RFC 0 §1.4). Conflict ranges count toward the budget because some backends charge them against the same limit as writes. A timestamp oracle and the clamped clock: §4.1 'Now is store time'. The key budget K is RFC 6 §5.2's, derived from Limits (§4.1, 'Transaction limits are the backend's'). No transaction holds a snapshot across remote I/O or a wait (RFC 6 §5.4), so a batch of K items commits well inside Age."
+  },
+  "counters": {
+    "title": "Why counters are [[delta-fold|deltas]]",
+    "lead": "Creates per second on the embedded store, depending on how the usage counter is kept. The number in brackets is the retries per create.",
+    "table": [
+      [
+        "How usage is counted",
+        "16 writers",
+        "64 writers"
+      ],
+      [
+        "no counter",
+        "109k",
+        "107k"
+      ],
+      [
+        "one counter, read and rewritten by every create",
+        "27k (11)",
+        "15k (20)"
+      ],
+      [
+        "16 counter stripes, each read and rewritten",
+        "90k (0.66)",
+        "44k (3.1)"
+      ],
+      [
+        "a delta record per transaction",
+        "104k (0)",
+        "113k (0)"
+      ]
+    ],
+    "footer": "Stripes spread the conflicts over several keys, while deltas remove them. A delta reads nothing, so it conflicts with nothing.",
+    "notes": "§4.4 and Appendix A, last table; §5 decision 3. The replicated store serialises writes to one key outright, so a hot counter there caps a share's create rate."
+  },
+  "fold": {
+    "title": "Who folds, and how a reader adds up",
+    "items": [
+      "Every delta's key is unique across all writers. It is built from the writing primary's node ID and [[node-epoch|node epoch]], then a sequence number. A delta written under another delta's key would replace it, and one of the two would be lost.",
+      "The [[primary]] of each [[shard]] folds that shard's deltas in batches into totals kept per shard, so no two folds ever write the same key.",
+      "A reader such as `statfs` or a quota check adds up the per-shard totals and the deltas that have not been folded yet.",
+      "Directory times are written as deltas too, and the primary folds them into the directory's own record. Every create, link or rename into the directory guards that record, so a fold starts only while none is in progress, and new ones wait until it commits. This is [[fold-admission|fold admission]].",
+      "Each delta commits in the same transaction as the change it records, so a crash loses nothing and nothing has to be rebuilt."
+    ],
+    "notes": "§4.4. A fold guards SH‖shard, so a former primary's fold conflicts with the takeover. metadata_unfolded_deltas is the alert when the fold falls behind. Ponytail markers: a usage read scans one total per shard (O(shards)); fold throughput caps the sustained rate of charge-changing transactions per shard. A directory-time delta also carries the cut it was written after, so snapshots see the right directory times. The delta key's unique part is the primary's node ID and epoch, then a sequence (§4.4, and §4.2.1: the writer's NodeID, node epoch and sequence, 32 bytes). Directory-time folds and their admission: §4.4 'Directory times are the same problem' and RFC 7 §9.2."
+  },
+  "quizFold": {
+    "question": "Some transactions just changed a share's usage, and the [[primary]] has not folded their deltas. What does `statfs` show?",
+    "options": [
+      "Usage without those changes, until the primary's next fold adds them in.",
+      "Usage with those changes, from the per-shard totals plus the unfolded deltas.",
+      "Usage with those changes, read from one counter that each of them rewrote."
+    ],
+    "why": [
+      "A reader does not wait for the fold. `statfs` adds the [[delta-fold|deltas]] not folded yet to the per-shard totals, so a change counts as soon as it commits.",
+      "Each delta commits with the change it records, and a reader sums the totals kept per [[shard]] and the deltas not yet folded, so no committed change is missing.",
+      "No transaction reads or rewrites a shared counter, since that hot key cut creates to 15k per second with 64 writers. Each writes its own [[delta-fold|delta]] instead."
+    ],
+    "notes": "§4.4 (a counter is never read and rewritten by the transaction that changes it; deltas commit in the same transaction as the change; a reader such as statfs sums the per-shard totals plus the deltas not yet folded) and Appendix A, last table (one shared counter: 15k creates/s at 64 writers)."
+  },
+  "quota": {
+    "title": "Quota: charged at commit, reserved at write",
+    "items": [
+      "A file is charged its full logical size, excluding holes, even when a clone or deduplication shares its content with another file.",
+      "Bytes are charged when their [[existence|existence commit]] lands, but the write was admitted long before that.",
+      "So each [[primary]] keeps in memory a reservation per [[principal]], per project (a directory tree with a [[quota]] of its own) and per share. A write reserves the bytes it may add before it is acknowledged."
+    ],
+    "decisionTitle": "A quota can be overshot, but only by a stated bound",
+    "decision": "Each primary sees only its own reservations, the bytes it admitted that are not yet committed. When one quota is written through several shards at once, usage can pass it by at most the reservations those primaries may hold, added together. With one shard it cannot, except while a file removal is still running, which makes usage read low until it ends.",
+    "notes": "§4.4 'Charging is logical bytes per file' and 'Quota is enforced by reservation', with its decision marker. Each primary's slack is min(S, f × Hard) (RFC 17 §5.6). A crash drops reservations; recovery commits every re-applied write's existence before the file is served. A removal still running under a hole credit reads usage low until it is done. Upgrade path: lease each primary a slice of the remaining quota. Cold-read wording: each primary's reservations are capped by the bytes it has admitted whose existence has not yet committed; with one shard the overshoot is zero once every removal is done, and a removal still running under a hole credit reads usage low until it is done (§4.4 decision marker; RFC 6 §6.2). Project: a quota target (§4.2 S‖id‖qt, RFC 7 §2.8)."
+  },
+  "entities": {
+    "kicker": "Entities",
+    "title": "The [[entity]] map: who defines what",
+    "table": [
+      [
+        "Entities",
+        "What they are",
+        "Defined in"
+      ],
+      [
+        "`File` `Entry` `ACL` `Xattr`",
+        "files, names, permissions, attributes",
+        "RFC 7"
+      ],
+      [
+        "`ChunkRef` `Chunk` `Block`",
+        "the content map and where it lives",
+        "RFC 6"
+      ],
+      [
+        "`ClientRecord` `OpenRecord` `LockRecord`",
+        "open state's durable records",
+        "RFC 14"
+      ],
+      [
+        "`User` `Group` `Share` `Node` `Shard` `Setting` `Secret`",
+        "identity, plus server-wide and control-plane records",
+        "RFC 16"
+      ]
+    ],
+    "footer": "Holes, removals, fences, cuts and put intents are stored as records but are not entities. They stay hidden behind the [[view|views]].",
+    "notes": "§2.1, abbreviated. Also ShareGrant and Snapshot (§2.3), the management API's records (RFC 23) and the identity types FileID, ShareID, Principal (§2.2). §1.1: this RFC MUST NOT restate the semantics of an entity owned elsewhere. Every entity is a plain struct with pure methods only (§2.4)."
+  },
+  "identity": {
+    "title": "[[principal|Principals]]: IDs minted, never reissued",
+    "items": [
+      "A principal is a user, a group, a machine or a well-known principal. Every principal except the well-known ones gets a 16-byte ID minted when it is created.",
+      "So when a later account reuses a UID, GID or SID, it cannot inherit the old principal's files, ACE grants or quota charge.",
+      "Protocol identifiers such as a UID or a SID are stored only on the User or Group record and in the index that leads back to it. No file, ACL or usage record holds one.",
+      "Well-known principals have fixed IDs: fifteen zero bytes followed by one byte, from 0x01 for the owner to 0x0D for root.",
+      "Deleting a user leaves its principal in file ownership and ACLs, where it shows as an unknown principal. Renaming a user touches no file."
+    ],
+    "notes": "§2.2 (identity types and the well-known table; uid and gid 0 are root's and 65534 anonymous's by rule, never stored as PX rows), §2.3 (User and Group), §5 decision 8 (deleted principals; a reassign job moves files and their charge through chown). Which principal each well-known ID is, is RFC 18 §2.1's."
+  },
+  "controlplane": {
+    "title": "Users and shares live in the same database",
+    "lead": "The control plane persists through the same [[kv|KV]] and codecs as file metadata: one thing to run, back up, replicate and make highly available, one conformance suite.",
+    "table": [
+      [
+        "Scope",
+        "Entities",
+        "Copied into an export of the share's metadata, for a backup or a move"
+      ],
+      [
+        "Per share",
+        "Share, grants, export policy, snapshots",
+        "Yes"
+      ],
+      [
+        "Server-wide",
+        "users, groups, netgroups, nodes, shards, settings, API records",
+        "No. An export carries only the principals and netgroups that the share's files and policies reference."
+      ]
+    ],
+    "notes": "§2.3 and its scope table (RFC 26 for export and import). An import MUST refuse, before publishing anything, a share name or path, principal or netgroup that collides (§2.3.1, §4.2 consequences). Secrets are envelope-encrypted under a key held outside the KV (§2.3, §5 decision 9). Here 'export' is RFC 26's: the sealed stream of a share's metadata that a catalog backup and a namespace move both write. It is not serving the share over NFS. The export policy in the per-share row is the share's access policy."
+  },
+  "shares": {
+    "title": "Share names, paths and state",
+    "lead": "Share names are compared without regard to case, are unique, and are at most 80 characters long. Shares are disjoint trees, so no [[share]]'s path lies inside another share's path.",
+    "table": [
+      [
+        "State",
+        "What a call into the share gets"
+      ],
+      [
+        "`enabled`",
+        "It is admitted."
+      ],
+      [
+        "`quiesced`",
+        "An administrator has paused the share. The call gets `ErrDelay`, and the client retries it."
+      ],
+      [
+        "`being removed`",
+        "The call gets `ErrStale`, so the client's handles go stale instead of turning into access errors."
+      ],
+      [
+        "`retired`",
+        "The share was deleted but its snapshots were detached, that is, kept on their own. The call gets `ErrStale`, and the records those snapshots need stay until the last of them is deleted."
+      ]
+    ],
+    "footer": "Renaming a share or changing its path keeps existing handles, open state and tree connects working, because they refer to the share's ID rather than its name.",
+    "notes": "§2.3.1. Names: no \\ / : * ? \" < > | or control character, not IPC$; a name ending in $ is reachable but not enumerated. A share has its own shard, drawn from IDS‖shard, never reused. A snapshot cut is not a state: its own gate holds writes briefly (RFC 12 §2.3). Retired and detached snapshots: §2.3.1 (records, FileIDs, Cut record and detached snapshots stay until the last detached snapshot is deleted; RFC 12 §2.8)."
+  },
+  "removal1": {
+    "kicker": "When things go away",
+    "title": "Removing a [[share]]: gone at once",
+    "steps": [
+      "If a snapshot cut is running, `DeleteShare` answers [[retry-later|retry later]]. If the share has [[snapshot|snapshots]], the request says whether to delete them or to detach them, which keeps them after the share is gone.",
+      "Otherwise one transaction marks the share `being removed` and frees its name and path.",
+      "From that commit on, every call into the share is answered with `ErrStale`, and a new share may take the name.",
+      "The rest of the cleanup runs in the background. Each of its steps is idempotent and recorded, so after a crash the removal resumes where its record says it stopped."
+    ],
+    "footer": "`DeleteShare` is also refused while GC is paused on a [[namespace]] the share names. A request to delete the snapshots is refused while one of them is locked or in use by a backup, clone, restore, copy or move.",
+    "notes": "'Start here · Scenarios', the operator removing 'profiles'; §2.3.2 and its state table. Removal is one-way. Step 1 reads with tracking, and range-guards the share's snapshot and use records, so every racing gate (a namespace pause, a cut's announce, a re-home, a new use record, control-plane writes) holds in both commit orders. A running re-home does not refuse it: the removal ends the re-home. Detaching snapshots keeps them after the share is removed (§2.3.2, RFC 12 §2.8)."
+  },
+  "removal2": {
+    "title": "Seven steps, each resumable",
+    "steps": [
+      "**Mark.** One transaction marks the share `being removed`. From then on the share answers `ErrStale`.",
+      "**Snapshots.** They are deleted, or kept if the request asked to detach them.",
+      "**Live state and journal**, on each [[shard]]. Calls in flight are waited for, opens and locks are dropped, and the journal forgets the share's [[share-tag|tag]].",
+      "**Files**, on each shard. They are dropped in bounded batches, reference counts fall, and [[gc|GC]] retires the blocks in the usual way.",
+      "**Server-wide rows** that name the share are deleted: its grants, settings and client rows.",
+      "**The share's own records, then its shards**, are deleted. If snapshots were detached, the share becomes `retired` instead and keeps what they need.",
+      "**The [[namespace]]** is drained once nothing names it any more."
+    ],
+    "decision": "The share's name is freed at once, and its space only later. Clients see the share gone at the first commit, but its bytes stay in the bucket until [[gc|GC]] has deleted them.",
+    "notes": "§2.3.2, steps 1–7 and the decision marker. One coordinator, the primary of the shard holding the share's root, drives it; steps 3 and 4 run on every shard, recorded in SH‖shard‖rm, advanced in batches within K. With detach, step 3 first offloads what a kept snapshot's hold covers. Step 4 is not a range drop: the counts and reverse refs a ref names live outside the prefix. The share's ID and journal tag are never reused. The keys survive wrapped under a master key in every export and location keys object. The RFC suggests a `shred` disposition, which refuses while any backup names the namespace and destroys the master key wrapping its keys, if a deployment must make deleted data unreadable (§2.3.2 decision)."
+  },
+  "format": {
+    "kicker": "Versions",
+    "title": "Opening a store never upgrades it",
+    "steps": [
+      "A newer binary reads the [[format-record|format record]] before any other key, and finds a format it can read.",
+      "It keeps writing in that older format, and records the range of formats it supports in its node record.",
+      "To roll back, an operator reinstalls the old binary, which can still open the store.",
+      "Only once an operator raises the format through the control plane does the old binary refuse to open the store, and it says why. The control plane refuses that raise while any registered node cannot read the new format."
+    ],
+    "footer": "Each stored value starts with its [[value-codec|codec]]'s version byte. A binary writes only the codec versions the active format allows, and refuses a version it does not know rather than guess.",
+    "notes": "'Start here · Scenarios', the upgrade and rollback; §4.6 and §4.3. The gate refuses while any registered node's range lacks the new version (RFC 13 §5.5). A new record kind, a key-encoding change or a new codec version is a format bump. A change that would let a newer binary read only a store it rewrote is a migration, its own operator step. The control plane's gate is the step that raises the format by rewriting \\x00format in a transaction that checks every registered node's range (§4.6)."
+  },
+  "foldrules": {
+    "title": "One [[fold-rule|fold rule]], frozen for good",
+    "lead": "On a case-insensitive share, an entry's key is built from its name folded to one case. A binary that folded names differently would miss existing entries and let duplicates in.",
+    "items": [
+      "The first rule's table is the `$UpCase` mapping set that Windows 7 writes to a new NTFS volume, with 973 mappings.",
+      "It equals Unicode's simple uppercase mapping over the Basic Multilingual Plane, minus 225 mappings that Windows does not make.",
+      "The table is checked into the code as data and pinned by a hash. It is never regenerated from a Unicode release.",
+      "Under this table, `Straße` and `STRASSE` stay two different names, and so do the Kelvin sign and the letter `K`."
+    ],
+    "footer": "Any other table, including one from a later Windows version, gets a new rule ID.",
+    "notes": "§4.6 'Fold rules' and its decision marker. The 225: 18 folds Windows omits on purpose (µ, ı, ſ, ς, Greek symbol variants, titlecase digraphs, ẛ, two iota forms) and 207 letters newer than the table. The table MUST be frozen, with its hash, before the first release that creates a store. A case-insensitive share refuses any name that is not valid UTF-8 (RFC 7 §3.8)."
+  },
+  "quizFormat": {
+    "question": "N1 has run a newer binary for a day, and no operator has raised the format. Can N1 go back to the old binary?",
+    "options": [
+      "Yes, because the newer binary kept writing the format the old one reads.",
+      "No, because the newer binary upgraded the store's format when it opened it.",
+      "Only by restoring a backup taken before the newer binary first ran."
+    ],
+    "why": [
+      "Opening a store never upgrades it. The newer binary keeps writing the format it found in the [[format-record|format record]], so reinstalling the old binary is the rollback.",
+      "Opening a store never changes its format. Only an operator raising it through the control plane does, and only then does the old binary refuse the store.",
+      "No restore is needed. The newer binary writes only the codec versions the active format allows, so the old binary can still read every value in the store."
+    ],
+    "notes": "§4.6 'A store is never upgraded by being opened' (rolling back a single node is reinstalling the old binary; format n names the codec versions a binary may write, so no value is written that an older reader of format n cannot decode) and 'Start here · Scenarios', the upgrade and rollback. The raise through the control plane's gate: §4.6."
+  },
+  "inspect": {
+    "kicker": "Debugging",
+    "title": "Reading without a client: Inspect and dump",
+    "items": [
+      "[[inspect|Inspect]] reads files, entries, refs, chunks and blocks by their ID, without any authorisation check.",
+      "Only trusted internal consumers are given it: snapshots, metadata backups and moves, audit, repair, the management API and the debug tool. An adapter never is.",
+      "`dump file <id>` prints a File as JSON with its ACL, xattrs, entries, holes and refs. `dump chunk` checks a chunk's reference count against a fresh recount.",
+      "`Secret` records are envelope-encrypted under a key held outside the store, and are never dumped or copied into an export."
+    ],
+    "notes": "§3.1 (Inspect; handing it to an adapter would bypass RFC 7 §7.1's chokepoint), §4.5 (dump; no other debug path should read raw keys), §2.3 (Secret), §5 decision 9. Export here is RFC 26's metadata export (catalog backups, namespace moves), as on the control-plane slide."
+  },
+  "testing": {
+    "kicker": "Tests",
+    "title": "How it is tested",
+    "c1Title": "Two suites",
+    "c1": "The **KV conformance** suite runs against every backend. It checks guards committed in both orders, lost updates, write skew, limits, time, and that a returned `Update` survives a power loss. The **entity conformance** suite runs the store over each real [[kv|KV]], through the views only, and never reads a key.",
+    "c2Title": "Beyond them",
+    "c2": "A reference model built on plain Go maps runs the same random operations as the store, and the two must agree after every step. Golden vectors pin the encoding of every codec and key. A fault-injecting KV makes calls fail, delays them and loses their replies.",
+    "footer": "The in-memory KV records the keys each transaction reads and writes, and the suite fails any method that exceeds its stated bound.",
+    "notes": "§6.1–§6.4 and §7.3. The model checks Nlink, refcounts, usage, snapshot reads and released entities after every sequence, and with concurrent clients requires a serial explanation. The share removal is killed after each of its seven steps and resumed. Metrics are internal to the store under metadata_*, with no share label on per-operation metrics (§8.1). Cost bounds: §6.3, the in-memory KV keeps its own record of the keys each transaction read and wrote, its Counts, and the suite fails when a method exceeds its bound; passing the KV conformance suite makes the in-memory KV a verified in-memory implementation other suites' unit tests may use (§6.1, RFC 29 §4.11)."
+  },
+  "footprint": {
+    "kicker": "Concrete numbers",
+    "title": "Metadata for 2 PiB of content",
+    "n1": "8.6×10⁹",
+    "w1": "chunks, at the default target chunk size of 256 KiB",
+    "n2": "3.5–5.1 TB",
+    "w2": "of raw keys and values, from 10⁸ files without snapshots to 10⁹ files with them",
+    "n3": "79%",
+    "w3": "of the total is content records (refs, chunks, reverse refs), at 10⁹ files",
+    "n4": "0.9 TB",
+    "w4": "for the reverse-ref index alone, a quarter of the total",
+    "n5": "×3",
+    "w5": "with three replicas, for 10.5–15.2 TB in all",
+    "n6": "1 MiB",
+    "w6": "a suggested chunk target for large sequential files, which cuts the metadata to a quarter",
+    "footer": "These are raw bytes only. The backend's own overhead comes on top, and is measured rather than assumed.",
+    "notes": "§7.4. Assumptions: 2 PiB logical, mean chunk 256 KiB, no deduplication, 10⁸–10⁹ files, 4 MiB blocks, 30 daily snapshots with 1% rewritten per day. The 1 MiB Target is a non-normative recommendation for media, checkpoints and backups: content records drop from 3.1 TB to 0.76 TB, at the cost of a larger cold fetch per small random read (about 1.2 MiB instead of 0.3 MiB) and coarser deduplication. Target is a namespace setting chosen at creation."
+  },
+  "rules": {
+    "items": [
+      "`Update` reports success only once the transaction's writes are durable.",
+      "The embedded backend groups ready commits into one sync, and acknowledges none of them before that sync.",
+      "A [[guard]] aborts its own transaction if another one wrote the key after its snapshot. Two guards never conflict, whatever order they commit in.",
+      "A backend runs each `Update` on one snapshot and detects every write-write conflict, blind writes included.",
+      "Opening a store reads the [[format-record|format record]] before any other key, and refuses a format outside the range the binary supports."
+    ],
+    "footer": "Two setups are unsupported under any setting: an embedded store with its sync turned off, and a replicated store that answers from its leader's memory.",
+    "notes": "§4.1 (durability, group commit, guards, isolation), §4.6 (format). Also MUST: a delta's unique key is unique across writers (§4.4); an import refuses colliding names (§2.3.1); a copied store is given a new installation ID (§2.3). The RFC states each of these as MUST or MUST NOT."
+  },
+  "nongoals": {
+    "title": "What RFC 16 leaves to others",
+    "items": [
+      "It does not restate what an [[entity]] means. A File is defined by RFC 7, a ChunkRef by RFC 6 and an Open by RFC 14.",
+      "It names no storage product in its rules. The [[kv|KV]] contract is what a backend has to meet.",
+      "It does not define authorisation, identity mapping or the management API's behaviour. RFC 19, RFC 18 and RFC 23 own those, and this RFC only stores their entities."
+    ],
+    "footer": "No entity has a `Save` or `Reload` method or a pointer back to the store. Entities are plain values that can be freely copied and printed.",
+    "notes": "§1.1 Non-goals (MUST NOT). The footer: §2.4."
+  },
+  "openQuestions": {
+    "questions": [
+      "The throughput the fold can sustain for one share on the replicated store.",
+      "Whether reading a directory's entries with their attributes in batches closes enough of the performance gap on NFS's `READDIRPLUS`.",
+      "The exact calls of `Lifecycle`, the view the engine reads when it starts, are proposed and will be settled when that start-up is built.",
+      "The store records which journal lives on each device of a node. When a device is wiped and set up again, no rule says yet who rewrites the shards' record of that journal.",
+      "The pass marks of the benchmark for durable commits are proposed, not measured: at least 10× as many commits per second as the device's syncs, and p99 latency within three sync times."
+    ],
+    "notes": "§5 (still open, for measurement on the replicated store), §3 (Lifecycle shapes are a proposal), §3.2 (two proposals around RecordJournal), §7.1 (the durability gate's decision marker), §7.4 'Suites'. Wording for the cold read: EntriesPlus is the batched entries-with-attributes call behind READDIRPLUS (§5); Lifecycle is the engine's start-up view (§3); RecordJournal writes J‖journal and JD‖node‖device, and who rewrites the shards' journal identity when a device is re-initialised is open (§3.2); the durability gate is §7.1 and its decision marker."
+  },
+  "scenes": {
+    "cast": {
+      "client": "SMB client",
+      "build": "build server"
+    },
+    "views": {
+      "adapters": "adapters",
+      "fs": "filesystem service",
+      "engine": "engine",
+      "mgmt": "management API",
+      "store": "metadata store",
+      "storeSub": "entities · codecs · key layout · transaction helpers",
+      "embedded": "embedded store",
+      "replicated": "replicated store",
+      "oneNode": "one node",
+      "cluster": "a cluster",
+      "noView": "no store view",
+      "steps": [
+        "The NFS and SMB adapters hold only `vfs.Service`, the filesystem service's interface. They never reach the store directly.",
+        "The filesystem service, the engine, GC and the management API are each handed only the [[view]] they declared, a narrow interface onto the store.",
+        "Each view is named for what it covers. `Namespace`, `Files` and `Capacity` cover names, attributes and space used. The engine's `Existence`, `Content` and `Lifecycle` cover that a write happened, which [[chunk|chunks]] hold its bytes, and what the engine reads when it starts. GC's `Blocks` covers the blocks it may delete.",
+        "Behind all those views there is a single metadata store, and it reaches its database only through one small interface, the [[kv|KV]].",
+        "Under the KV runs either an embedded database, on a single node, or a replicated one, in a cluster."
+      ]
+    },
+    "example": {
+      "perShare": "per share: profiles",
+      "serverWide": "server-wide",
+      "perNamespace": "per namespace",
+      "fileF7": "f7's attributes",
+      "overwrite": "overwrite record",
+      "ref": "ref",
+      "fence": "existence fence",
+      "fileD1": "d1's record",
+      "newDir": "new folder",
+      "entry": "“Downloads” → d9",
+      "timeDelta": "time delta",
+      "versionFloor": "version index",
+      "usageDelta": "usage delta",
+      "nodeRecord": "node record",
+      "putIntent": "put intent",
+      "chunk": "chunk",
+      "block": "block",
+      "reverseRef": "reverse ref",
+      "guarded": "guarded",
+      "untouched": "not touched",
+      "steps": [
+        "**Flush.** alice-pc overwrites 64 KiB of her profile disk, file f7, and flushes. One transaction rewrites f7's File record, with its times and change counter, and adds an overwrite record saying which 64 KiB were replaced.",
+        "The same transaction moves f7's entry in the share's version index to the new change counter. The index keeps one entry per file, so when the [[journal]] opens it can find the highest counter any file holds, and it never hands out one that is already used.",
+        "The transaction also [[guard|guards]] f7's existence fence, the one of its two [[fence-records|fence records]] that a flush checks, and the record of node N1, which holds N1's [[node-epoch|node epoch]]. If another node has taken the file over since, one of those records has changed, and the transaction fails.",
+        "**Upload.** Minutes later the new bytes are uploaded to the bucket as a new [[block]]. Just before the upload, a [[put-intent|put intent]] records the block's name. GC never deletes an object an intent names, and if the node crashes before the next commit, it abandons the intent when it restarts so that the object can be deleted.",
+        "**Offload commit.** After the upload, one transaction writes a [[ref]] saying which [[chunk]] now holds those bytes of f7, a chunk record saying which block holds the chunk, and the block's own record. It deletes the put intent in the same transaction.",
+        "It also writes a reverse ref, a key filed under the chunk that names f7 and the offset. The reverse refs say which files use a chunk, and the chunk's reference count is a cached tally of them. None of this touches f7's File record, so uploads and alice's writes never compete for one key.",
+        "**mkdir Downloads.** alice-pc creates the folder `Downloads`, d9, in her folder d1. One transaction writes d9's File record, an Entry under d1 that maps the name to d9, a [[delta-fold|delta]] for d1's times and a usage delta. d1's own record is only guarded, and a later fold adds the time deltas into it."
+      ],
+      "groupF7": "file f7",
+      "groupDir": "folders d1 and d9",
+      "overwriteSub": "64 KiB replaced",
+      "refSub": "bytes → chunk",
+      "fenceSub": "F_x: shard and epoch",
+      "timeDeltaSub": "for d1’s times",
+      "versionFloorSub": "f7’s newest change",
+      "usageDeltaSub": "space used",
+      "putIntentSub": "names the block",
+      "chunkSub": "which block holds it",
+      "blockSub": "the uploaded object",
+      "reverseRefSub": "chunk → f7"
+    },
+    "guards": {
+      "dir": "d1's record",
+      "twoGuards": "two guards, no conflict",
+      "commit": "commit ✓",
+      "conflict": "write-write conflict",
+      "taken": "name taken",
+      "steps": [
+        "alice-pc and build01 each create a file in `profiles/alice/`, directory d1, at the same moment. Each create [[guard|guards]] d1's record: it claims the key without writing it.",
+        "Two guards on one key never conflict, so both transactions commit. Each writes its own Entry and its own [[delta-fold|delta]] for d1's times.",
+        "On a case-insensitive [[share]], the names `Report.docx` and `REPORT.DOCX` [[fold-rule|fold]] to the same key. Both creates write that key, so the one that commits second aborts.",
+        "`Update` retries the aborted create on a fresh snapshot, and the retry finds the name already taken. No client ever sees the raw conflict."
+      ]
+    },
+    "commit": {
+      "t1": "alice's flush",
+      "t2": "a create",
+      "t3": "an offload commit",
+      "group": "group commit",
+      "oneSync": "one sync for all ready",
+      "device": "the store's device",
+      "waiting": "waiting for the sync",
+      "synced": "3 commits, 1 sync",
+      "returned": "all three returned",
+      "restart": "power loss, restart: all there",
+      "steps": [
+        "Three transactions are ready to commit at the same moment: alice's flush, a create and an offload commit.",
+        "The embedded store writes all three to its device with **one** sync. This is called [[store-group-commit|group commit]].",
+        "None of the three `Update` calls returns until that sync has completed.",
+        "Then the power fails. When the node restarts, every transaction whose `Update` returned success is in the store."
+      ]
+    }
+  }
+}

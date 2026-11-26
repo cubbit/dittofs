@@ -245,11 +245,11 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; "(as amen
   minutes does not mean nothing was dispatched for 5 minutes. This pull request amends §6.1.1:
   ```go
   type Stats struct { // per source and tenant
-  	Pending, Backoff, Running, Runs, Overdue int // entries by state; Runs: runs in flight; Overdue: runs overdue now
-  	OldestPending                            time.Duration
-  	Dropped, Expired, OverdueRuns            uint64 // OverdueRuns: runs that passed twice RunTimeout, each counted once
-  	Stalled                                  bool   // work_queue_stalled: a run of the tenant overdue, or the source's due entries undispatched for 5 minutes, the oldest the tenant's
-  	LastDone                                 time.Time
+      Pending, Backoff, Running, Runs, Overdue int // entries by state; Runs: runs in flight; Overdue: runs overdue now
+      OldestPending                            time.Duration
+      Dropped, Expired, OverdueRuns            uint64 // OverdueRuns: runs that passed twice RunTimeout, each counted once
+      Stalled                                  bool   // work_queue_stalled: a run of the tenant overdue, or the source's due entries undispatched for 5 minutes, the oldest the tenant's
+      LastDone                                 time.Time
   }
   ```
   The scheduler decides the stall, the engine's epic 20 and GC turning `Stalled` into their

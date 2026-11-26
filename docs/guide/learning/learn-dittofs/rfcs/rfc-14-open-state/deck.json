@@ -1,0 +1,58 @@
+{
+  "rfc": {
+    "number": 14,
+    "title": "open state and locks",
+    "path": "docs/internals/rfcs/rfc-14-open-state.md",
+    "commit": "b0d540b2db9c5b2358e7f838ef07960fb6f612b0",
+    "status": "draft"
+  },
+  "terms": {
+    "known": [
+      "open-state",
+      "deny-mode",
+      "caching-grant",
+      "lease",
+      "primary",
+      "shard",
+      "shard-incarnation",
+      "node",
+      "anonymous-open",
+      "filesystem-service",
+      "adapter",
+      "retry-later",
+      "handle"
+    ],
+    "new": [
+      "client-id",
+      "open",
+      "lock-owner",
+      "byte-range-lock",
+      "lock-waiter",
+      "state-reference",
+      "open-state-step",
+      "client-lease",
+      "lease-owner",
+      "grace-period",
+      "grace-instance",
+      "open-reclaim",
+      "recall",
+      "delegation",
+      "oplock",
+      "revoked-set",
+      "grant-budget",
+      "delete-pending",
+      "smb-durable-open",
+      "persistent-open",
+      "nlm",
+      "watch"
+    ],
+    "conflicts": [
+      "lease",
+      "smb-durable-open",
+      "open-reclaim",
+      "grace-period",
+      "handle",
+      "session"
+    ]
+  }
+}

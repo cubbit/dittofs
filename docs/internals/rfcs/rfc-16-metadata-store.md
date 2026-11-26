@@ -664,15 +664,15 @@ type Namespace struct {
 	Generation uint64   // raised by every PutNamespace (RFC 23 §4.4)
 }
 
-// Snapshot is a named, user-visible cut of a share. SnapshotCut, and the
+// Snapshot is a cut of a share, named to clients by its token (RFC 12 §2.5). SnapshotCut, and the
 // born/died rule every versioned record follows, are RFC 6 §6.5's.
 type Snapshot struct {
 	Share   ShareID
 	Cut     SnapshotCut
-	Name     string
+	Label    string        // administration only: not unique, never in a client path (RFC 12 §3.1)
 	State    SnapshotState // cutting, holding, complete, failed, deleting (RFC 12 §2.2)
 	Deadline time.Time     // UTC, store time: a cut not committed by then is aborted (RFC 12 §2.3)
-	CutAt    time.Time     // UTC, stamped by the cut transaction; names its Previous Versions token (RFC 12 §2.5)
+	CutAt    time.Time     // UTC, stamped by the cut transaction; names its token, over NFS and SMB (RFC 12 §2.5)
 	Ordinal  uint16        // below 2^15, unique among the snapshots visible at any one path, unusable for 24 h after its snapshot is deleted; in its file ids and SMB volume serial (RFC 12 §2.5)
 	Locked   time.Time     // UTC lock expiry: no deletion before it; raised, never lowered (RFC 12 §2.7)
 	Expires  time.Time     // zero: kept until deleted

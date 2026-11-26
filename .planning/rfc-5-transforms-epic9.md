@@ -833,19 +833,19 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
     ```go
     // Spec is one series this component exports, named without the deployment's prefix.
     type Spec struct {
-    	Name   string
-    	Help   string
-    	Type   string   // "counter", "gauge" or "histogram"
-    	Labels []string
+        Name   string
+        Help   string
+        Type   string   // "counter", "gauge" or "histogram"
+        Labels []string
     }
 
     // Rule is one alert rule, RFC 25 §7: on a condition, or on a series filtered by labels.
     type Rule struct {
-    	Condition string
-    	Series    string
-    	Match     map[string]string
-    	Class     string        // "page" or "ticket"
-    	After     time.Duration // how long it lasts before it alerts; 0 is at once
+        Condition string
+        Series    string
+        Match     map[string]string
+        Class     string        // "page" or "ticket"
+        After     time.Duration // how long it lasts before it alerts; 0 is at once
     }
 
     func Series() []Spec        // RFC 5 §6 but the census gauge, and Appendix B.6
