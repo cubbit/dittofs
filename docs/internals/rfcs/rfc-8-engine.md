@@ -2218,10 +2218,11 @@ type Tenant struct {
 }
 
 type Stats struct { // per source and tenant
-	Pending, Backoff, Running, Overdue int
-	OldestPending                      time.Duration
-	Dropped, Expired                   uint64
-	LastDone                           time.Time
+	Pending, Backoff, Running, Runs, Overdue int // entries by state; Runs: runs in flight; Overdue: runs overdue now
+	OldestPending                            time.Duration
+	Dropped, Expired, OverdueRuns            uint64 // OverdueRuns: runs that passed twice RunTimeout, each counted once
+	Stalled                                  bool   // work_queue_stalled: a run of the tenant overdue, or the source's due entries undispatched for 5 minutes, the oldest the tenant's
+	LastDone                                 time.Time
 }
 
 // TenantID names a tenant: a namespace as it is, or a shard big-endian in the
@@ -2291,8 +2292,8 @@ The scheduler **MUST**:
   tenant, and keeps its slot, since the scheduler cannot reclaim a goroutine, only
   report it;
 - **turn its watchdog loop**: after each dispatch and each run's return. It reports
-  idle only while no entry is due, or while every slot it waits for holds a run
-  that is not overdue. So a lost wakeup, with entries due and a slot free, or a
+  idle only while no entry is due, or while every slot of the entry's source
+  holds a run that is not overdue. So a lost wakeup, with entries due and a slot free, or a
   source whose slots are all held by overdue runs, fails liveness within the
   watchdog's bound ([RFC 25 §3.5](rfc-25-observability.md#3.5%20Liveness)), and `work_queue_stalled` is raised as
   well once entries have been due with none dispatched for 5 minutes;
