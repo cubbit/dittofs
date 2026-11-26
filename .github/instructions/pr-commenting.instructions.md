@@ -41,7 +41,7 @@ Format: [Conventional Comments](https://conventionalcomments.org/).
 
 The labels used most:
 
-- **issue (blocking)** — must change before merge (bug, data loss, security, broken contract).
+- **issue (blocking)** — must change before merge. What may block is in [`REVIEW.md`](../../REVIEW.md) §2: a contradiction with the repository's record, or a break.
 - **suggestion (non-blocking)** — would improve it, author decides.
 - **nitpick (non-blocking)** — style/naming, never blocks.
 - **question** — you need information, not a change. Ask whenever the intent is unclear rather than guessing it.
@@ -52,7 +52,7 @@ Rules:
 - Prefer GitHub `suggestion` blocks when the fix is local to the commented lines, so the author can apply it in one click.
 - Link the RFC, spec section or doc that backs a point instead of re-explaining it.
 - Do not repeat the same comment on every occurrence: comment once and say "same in X and Y".
-- If a point needs more than a short paragraph to argue, or the thread goes past two rounds, propose a quick live review instead of writing more.
+- If a point needs more than a short paragraph to argue, or the thread goes past two rounds, propose a quick live review instead of writing more. [`REVIEW.md`](../../REVIEW.md) §3 caps each reviewer at two reviewed heads.
 
 ### Example
 
@@ -72,14 +72,14 @@ Good:
 
 ## Review body
 
-The review state is the verdict: **Request changes** if any comment is blocking, **Approve** if none is, **Comment** only when you can't judge. Nobody should have to dig the verdict out of the text.
+The review state is the verdict: **Request changes** if any point is blocking (`REVIEW.md` §2), **Approve** if none is, even with a question of yours still open, **Comment** only when you can't judge. Nobody should have to dig the verdict out of the text.
 
 A reader who skips the inline comments must still know whether the PR can merge and what blocks it. Write the body in this order, and skip any part that would be empty:
 
 1. **Summary**: the first sentence names what blocks the merge, or says nothing does.
-2. **Critical issues**: what blocks the merge (correctness, security, breaking changes).
+2. **Critical issues**: what blocks the merge, each a point that `REVIEW.md` §2 lets block.
 3. **Suggestions**: improvements to performance or maintainability.
-4. **Questions**: what you need to know before you can judge.
+4. **Questions**: what you want to know. An open question does not change the verdict; if you cannot judge without its answer, the verdict is **Comment**.
 5. **Praise**: what was done well, named specifically enough that nobody changes it later by mistake.
 
 Order points by importance: correctness, then performance, then style. In parts 2–4, give each point one line that names its thread; the detail lives in the inline comment, so do not repeat it here.
@@ -100,5 +100,5 @@ Use this list to guide the review. Do not paste it into the review: report only 
 
 - If you applied the change: `Done in <short sha>.` Nothing else.
 - To add to or correct something you already posted, edit that comment in place rather than posting a new one: one notification instead of two.
-- If you did not: one or two sentences on why, plus a link if relevant. If you still disagree after one round, suggest talking live.
+- If you did not: one or two sentences on why, plus a link if relevant. If you still disagree after two rounds, suggest talking live, as under "Rules" above.
 - A top-level comment in the Conversation tab cannot be threaded. Answer it in a single thread: one file comment on the most relevant file that links the comment and answers its points one by one, however many there are.
