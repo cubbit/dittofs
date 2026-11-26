@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // defaultVersionBlock is the version block of an engine whose Deps leave it
@@ -146,6 +148,24 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 		tags:    tags,
 	}
 
+	// A share Bind would refuse is refused here alone: it is not attached,
+	// Stats names it and Start logs it, while the other shares are served.
+	refused := map[entity.ShareID]error{}
+
+	for _, s := range shares {
+		if _, removed := o.table[s.ID]; !removed {
+			if err := validShare(s); err != nil {
+				refused[s.ID] = err
+			}
+		}
+	}
+
+	if len(refused) > 0 {
+		if err := e.holdBackClones(ctx, j, shares, o.table, refused, floor); err != nil {
+			return opened{}, err
+		}
+	}
+
 	var served []Share
 
 	for _, s := range shares {
@@ -153,10 +173,7 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 			continue
 		}
 
-		// A share Bind would refuse is refused here alone: it is not
-		// attached, Stats names it and Start logs it, while the other shares
-		// are served.
-		if err := validShare(s); err != nil {
+		if err := refused[s.ID]; err != nil {
 			o.stats.Shares[s.ID] = ShareStats{Device: dir, Refused: err}
 
 			continue
@@ -193,6 +210,135 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 	return o, nil
 }
 
+// cloneEdge is a clone not done between two shares Start was handed: into a
+// file of dst, from a file of src.
+type cloneEdge struct{ dst, src entity.ShareID }
+
+// holdBackClones adds to refused every share an unfinished clone ties to a
+// refused one, until none is added: the destination of a clone whose source
+// is refused, which cannot be rebuilt without its source, and the source of a
+// clone whose destination is refused, whose registration only the
+// destination's rebuild installs, so a write into its cloned range would
+// otherwise be admitted before the clone is done. Each stays refused until
+// the next start, as a share refused for its settings does. The clones are
+// read as start steps 3 and 4 read them: each share's clone markers above its
+// applied version in the journal, and its clone removals not done in the
+// store.
+//
+// ponytail: the read is a second pass over every handed share's journal
+// changes above applied and its unfinished-removal index, run only when a
+// share is refused. Fold it into steps 3 and 4 if a start with a refused share
+// is seen taking twice as long.
+//
+// decision: a share refused for a zero tag or a negative limit has no journal
+// handle to open, so only its removals are read, not its markers: a clone
+// before its phase 1 into such a share leaves its source served. Read its
+// markers too once the journal can list a tag's files without a handle.
+func (e *Engine) holdBackClones(
+	ctx context.Context,
+	j Journal,
+	shares []Share,
+	removed bindings,
+	refused map[entity.ShareID]error,
+	floor journal.Version,
+) error {
+	handed := map[entity.ShareID]bool{}
+	var edges []cloneEdge
+
+	for _, s := range shares {
+		if _, gone := removed[s.ID]; gone {
+			continue
+		}
+
+		handed[s.ID] = true
+
+		srcs, err := e.cloneSources(ctx, j, s, floor)
+		if err != nil {
+			return err
+		}
+
+		for _, src := range srcs {
+			edges = append(edges, cloneEdge{dst: s.ID, src: src})
+		}
+	}
+
+	for added := true; added; {
+		added = false
+
+		for _, c := range edges {
+			if !handed[c.dst] || !handed[c.src] || (refused[c.dst] == nil) == (refused[c.src] == nil) {
+				continue
+			}
+
+			if refused[c.src] != nil {
+				refused[c.dst] = fmt.Errorf("engine: share %v: an unfinished clone into it reads share %v, refused at start: %w",
+					c.dst, c.src, vfserr.ErrUnavailable)
+			} else {
+				refused[c.src] = fmt.Errorf("engine: share %v: the source of an unfinished clone into share %v, refused at start: %w",
+					c.src, c.dst, vfserr.ErrUnavailable)
+			}
+
+			added = true
+		}
+	}
+
+	return nil
+}
+
+// cloneSources is the source share of every clone not done into a file of
+// share s: from its journal markers above the file's applied version, and
+// from its clone removals not done.
+func (e *Engine) cloneSources(ctx context.Context, j Journal, s Share, floor journal.Version) ([]entity.ShareID, error) {
+	var out []entity.ShareID
+
+	for u, err := range e.d.Content.UnfinishedRemovals(ctx, s.ID, uint64(s.Shard)) {
+		if err != nil {
+			return nil, fmt.Errorf("engine: start: list the unfinished removals of share %v: %w", s.ID, err)
+		}
+
+		if u.Removal.Kind == entity.RemoveClone && !u.Removal.Done && u.Removal.Clone != nil {
+			out = append(out, u.Removal.Clone.SrcShare)
+		}
+	}
+
+	if s.Tag == 0 || s.Limit < 0 {
+		return out, nil
+	}
+
+	h, err := j.Share(s.Tag, s.Limit, floor)
+	if err != nil {
+		return nil, fmt.Errorf("engine: start: open share %v to read its clones: %w", s.ID, err)
+	}
+
+	defer func() { _ = h.Close() }()
+
+	for id := range h.Files() {
+		f := entity.FileID(id.Bytes())
+
+		applied, err := e.d.Existence.Applied(ctx, s.ID, f)
+		if errors.Is(err, entity.ErrStale) {
+			continue
+		}
+
+		if err != nil {
+			return nil, fmt.Errorf("engine: start: read the applied version of file %v: %w", f, err)
+		}
+
+		changes, err := changesSince(ctx, h, id, journal.VersionFromBytes(applied))
+		if err != nil {
+			return nil, fmt.Errorf("engine: start: read the journal's changes of file %v: %w", f, err)
+		}
+
+		for _, c := range changes {
+			if c.Kind == journal.ChangeCloneTarget && c.Clone != nil {
+				out = append(out, entity.ShareID(c.Clone.SrcShare))
+			}
+		}
+	}
+
+	return out, nil
+}
+
 // retryUnsuitable is the retried open of a journal Start refused — as
 // unsuitable, or with the journal's own refusal at recovery — one goroutine
 // for the journal: every retryInterval it runs
@@ -209,10 +355,31 @@ func (e *Engine) retryUnsuitable(shares []Share) {
 			return
 		}
 
-		if e.attachLate(e.retrying.ctx, shares) {
+		if e.attachLate(e.retrying.ctx, e.latestShares(shares)) {
 			return
 		}
 	}
+}
+
+// latestShares is shares with each replaced by the newest Share a Bind
+// carried for it while the retry waited.
+//
+// decision: a Bind during the retry replaces only a share Start was handed;
+// a share Start was not handed is not attached by the retry, and its Bind
+// after the attach binds it as any Bind does. Widen it if a node is seen
+// waiting on a share that only the attach could bind.
+func (e *Engine) latestShares(shares []Share) []Share {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	out := slices.Clone(shares)
+	for i, s := range out {
+		if l, ok := e.retrying.latest[s.ID]; ok {
+			out[i] = l
+		}
+	}
+
+	return out
 }
 
 // retryInterval is the wait before the next retried open: that of the

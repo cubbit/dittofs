@@ -150,6 +150,11 @@ func (e *Engine) Bind(ctx context.Context, s Share) error {
 
 		return &vfserr.Delay{Cause: vfserr.DelayFrozen}
 	case e.unsuitable && b.holdsNoJournal():
+		if e.retrying.latest == nil {
+			e.retrying.latest = map[entity.ShareID]Share{}
+		}
+
+		e.retrying.latest[s.ID] = s
 		e.mu.Unlock()
 
 		return &vfserr.Delay{Cause: vfserr.DelayFrozen}
@@ -209,8 +214,9 @@ func (e *Engine) Bind(ctx context.Context, s Share) error {
 	return e.attach(ctx, s, vl, raised)
 }
 
-// heldBack refuses a Bind of share id, which Start refused for its settings
-// over an open journal, or which a failed retried open left unattached;
+// heldBack refuses a Bind of share id, which Start refused over an open
+// journal, for its settings or for an unfinished clone tying it to a share
+// so refused, or which a failed retried open left unattached;
 // cause is that refusal, named in the text so the caller's record keeps the
 // setting at fault, and not wrapped, so ErrUnavailable is the one sentinel.
 //

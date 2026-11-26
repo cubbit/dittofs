@@ -10,6 +10,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/sim"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // A pass acts on the shares when the share list or the settings moved, on
@@ -146,5 +147,27 @@ func TestBoundedEndsWithItsContext(t *testing.T) {
 	// wait is the assertion: an answer that needs the bound never comes.
 	case <-time.After(10 * time.Second):
 		t.Fatal("bounded did not answer within 10 s of its context ending, with the store call hung and the clock short of storeBound")
+	}
+}
+
+// A Bind's ErrUnavailable for a share the engine names refused at start is
+// final until the next start; any other refusal, or the same error for a
+// share not named refused, is retried.
+func TestHeldBackAtStart(t *testing.T) {
+	t.Parallel()
+	start := errors.New("engine: share x: offload.max_age 0s is not positive")
+	for _, tc := range []struct {
+		name         string
+		err, refusal error
+		want         bool
+	}{
+		{"held back at start", vfserr.ErrUnavailable, start, true},
+		{"unavailable, not refused at start", vfserr.ErrUnavailable, nil, false},
+		{"waiting for the retried open", &vfserr.Delay{Cause: vfserr.DelayFrozen}, start, false},
+		{"invalid", vfserr.ErrInvalid, start, false},
+	} {
+		if got := heldBackAtStart(tc.err, tc.refusal); got != tc.want {
+			t.Errorf("%s: heldBackAtStart = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

@@ -213,6 +213,20 @@ type refusal struct {
 	retry bool
 }
 
+// heldBackAtStart reports whether err, a Bind's refusal, is final until the
+// next start: ErrUnavailable for a share the engine's Stats names refused at
+// start (startRefusal), which no retry clears. Such a refusal is recorded
+// not to retry, so the share is bound again only once the share list moves.
+//
+// decision: the node still binds such a share once per share-list change,
+// rather than leaving it out by Stats alone, because a share Stats names
+// refused while its journal waits for a retried open must reach the engine,
+// which answers that one ErrDelay, so the late attach takes its newest
+// settings. Withdraw this once Stats tells the two refusals apart.
+func heldBackAtStart(err, startRefusal error) bool {
+	return startRefusal != nil && errors.Is(err, vfserr.ErrUnavailable)
+}
+
 // refused is a refusal of share s, its generation the share list version
 // its last change raised.
 func refused(s entity.Share, retry bool, err error) refusal {
@@ -537,8 +551,11 @@ func (n *Node) reconcileShares(ctx context.Context) error {
 			continue
 		}
 		if err != nil {
-			r.errors[kindShares].Add(1)
-			refusals = append(refusals, refused(s, true, err))
+			final := heldBackAtStart(err, n.engine.Stats().Shares[s.ID].Refused)
+			if !final {
+				r.errors[kindShares].Add(1)
+			}
+			refusals = append(refusals, refused(s, !final, err))
 			continue
 		}
 		if r.bound != nil {

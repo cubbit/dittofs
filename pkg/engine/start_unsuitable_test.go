@@ -744,3 +744,36 @@ func TestALateAttachRecordsMarksUnderItsOwnOpenGeneration(t *testing.T) {
 		t.Errorf("the late attach's open recorded %v, want its sync's %v, under its own open generation", rec, sync)
 	}
 }
+
+// A share whose settings a Bind corrected while the journal waited for its
+// retried open is attached by the retry with the corrected settings, not
+// refused on those Start was handed, and a Bind after the attach is served.
+func TestARetriedOpenAttachesWithTheSettingsTheLatestBindCarried(t *testing.T) {
+	s := newStarter(t, withOpens(unsuitable()))
+	s.closeAtEnd(t)
+	good := s.two
+	s.two.Settings.MaxAge = 0
+
+	if err := s.start(t); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.e.Bind(t.Context(), good); !isDelay(err, vfserr.DelayFrozen) {
+		t.Fatalf("Bind while the retry waits = %v, want ErrDelay(DelayFrozen)", err)
+	}
+
+	s.retry(t, retryEvery)
+	s.attached(t)
+
+	if got, ok := s.e.SettingsOf(good.ID); !ok || got != good.Settings {
+		t.Errorf("share two's settings after the attach = %+v (bound %v), want the corrected %+v", got, ok, good.Settings)
+	}
+
+	if err := s.write(t, good.ID); err != nil {
+		t.Errorf("a write on share two after the attach = %v, want it served", err)
+	}
+
+	if err := s.e.Bind(t.Context(), good); err != nil {
+		t.Errorf("Bind of share two after the attach = %v, want nil", err)
+	}
+}
