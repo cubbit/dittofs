@@ -31,6 +31,10 @@ func fuzzByte(step int, off int64) byte {
 const (
 	fuzzFiles = 3
 
+	// fuzzStreams is the count of append streams the files share out: the first
+	// two share one, the third holds the other alone, as streamOf puts them.
+	fuzzStreams = 2
+
 	// fuzzMaxSteps and fuzzMaxWrite are the longest program and the longest
 	// write.
 	fuzzMaxSteps = 64
@@ -99,6 +103,27 @@ type faultState struct {
 	// armed is that every update of the store fails.
 	armed bool
 
+	// window is that a failed window waits for its seal: FailNextWindow armed
+	// it over the stream written last, whose unsynced data write it drops, and
+	// the armed file's own commit reports it once.
+	window bool
+
+	// windowFile is the file whose window is armed, windowLoss the data
+	// writes it drops, and lost the loss sequence the commits of each file
+	// answer, which a seal raises once by what it lost and a new process
+	// starts over from zero. The window bounds the
+	// write it drops: windowLostLo to windowLostHi is its range, and
+	// windowTail how far its file reached with it. A read that meets the
+	// range answers lost until the seal clears it, when what the file last
+	// synced does not cover the range, and until then a hole below the range
+	// reads as zeros as far as the tail alone, not as the end of the file.
+	windowFile   int
+	windowLoss   int
+	windowLostLo int
+	windowLostHi int
+	windowTail   int
+	loss         [fuzzFiles]int
+
 	// owed marks a file with a removal whose first transaction has not
 	// committed: the engine holds the file's guard until it does. With the
 	// engine's clock never advanced, it does only after a crash.
@@ -113,6 +138,158 @@ type faultState struct {
 	// and is not counted, so the guard may skip more than it has to.
 	size     [fuzzFiles]int
 	recorded [fuzzFiles]int
+
+	// pending is the data writes of each file a sync has not taken, and
+	// pendingGrow its grows, which stay through a failed window: they are what
+	// the arm of a window needs settled, and what its drop leaves behind.
+	// syncSize is what each file fell back to at its last sync, the fallback a
+	// failed window reads.
+	pending     [fuzzFiles]int
+	pendingGrow [fuzzFiles]int
+	syncSize    [fuzzFiles]int
+
+	// lastWriteFile, lastWriteStep and lastWriteFresh take the write applied
+	// last: the record a window armed now would fail. lastWriteFile is -1
+	// once none ran. lastSealStep and lastStartStep take the seal and the new
+	// process before them, whose follow-up records are still in flight, so
+	// the write right after each is no anchor.
+	lastWriteFile  int
+	lastWriteStep  int
+	lastWriteFresh bool
+	lastSealStep   int
+	lastStartStep  int
+	// lastRemovalStep is the step of the removal applied last: its record is
+	// the one a window would fail in place of the write, and the fault it
+	// arms then never consumes, so an arm holds only over a write newer than
+	// it (probed 20/20 over a deallocate, a shrink and a delete, each before
+	// and after the write).
+	lastRemovalStep int
+	// lastSyncStep is the step of each stream's latest sync. A commit fsyncs
+	// the whole segment its file shares, taking the sibling's parked write
+	// along, so a sync of a stream after its write makes the write durable
+	// and no window holds over it: an arm of that stream skips. A sync of
+	// the other stream fsyncs its own segment only (probed 20/20 every which
+	// way: same-stream sync after the write leaves the write alive, the
+	// other stream's sync after and every sync before stay canonical).
+	lastSyncStep [fuzzStreams]int
+}
+
+// newFaultState is a fresh world's: no write, no seal, no start.
+func newFaultState() faultState {
+	return faultState{
+		lastWriteFile:   -1,
+		lastSealStep:    -1,
+		lastStartStep:   -1,
+		lastRemovalStep: -1,
+		lastSyncStep:    [fuzzStreams]int{-1, -1},
+	}
+}
+
+// streamOf is the append stream a file belongs to: the first two files share
+// the journal's first segment, the third holds the other alone, as fuzzFileIDs
+// put them. Sharing a segment makes the stream's files race one sync, which
+// the window rules skip on, but a commit still makes durable its own file's
+// writes alone (probed 20/20: a sibling commit leaves the other file's write
+// to die at the crash and to survive a restart).
+func streamOf(file int) int {
+	return file / 2
+}
+
+// wrote takes an applied write of file at step: its record is the one a window
+// armed now would fail, and fresh says it opened a segment no write had
+// touched, whose spare the pool refills behind it.
+func (s *faultState) wrote(file, step int, fresh bool) {
+	s.lastWriteFile, s.lastWriteStep, s.lastWriteFresh = file, step, fresh
+	s.pending[file]++
+}
+
+// removed takes an applied removal at step: its record, a truncate that took
+// away, a deallocate or a release, is in the journal until a sync takes it,
+// and a window armed over it instead of a write never fails the write's syncs.
+func (s *faultState) removed(step int) {
+	s.lastRemovalStep = step
+}
+
+// grown takes an accepted truncate that made file longer: its mark in the
+// journal is header-only, so no sync holds it back, and a failed window keeps
+// it.
+func (s *faultState) grown(file int) {
+	s.pendingGrow[file]++
+}
+
+// synced takes what a sync of file alone made durable: its parked writes are
+// gone from the sync's reach, and the size it holds becomes what a later
+// window's fallback serves. The step is the sync's own: a window armed over
+// the stream after it no longer holds.
+func (s *faultState) synced(file, step int) {
+	s.pending[file] = 0
+	s.pendingGrow[file] = 0
+	s.syncSize[file] = s.size[file]
+	s.lastSyncStep[streamOf(file)] = step
+}
+
+// committed takes what a successful commit did: the sync of the file's own
+// parked writes, its sibling's left out, and, over the file whose window
+// waits, the seal, which answers its loss and takes where the stream's
+// records go on from.
+func (s *faultState) committed(file, step int) {
+	s.synced(file, step)
+
+	if s.window && file == s.windowFile {
+		s.loss[file] += s.windowLoss
+		s.lastSealStep = step
+		s.window = false
+	}
+}
+
+// armedWindow takes FailNextWindow's call: the armed window fails the stream
+// written last, and drops nothing but its write, the only record a sync has
+// not taken, so the file falls back to what its own last sync served.
+func (s *faultState) armedWindow() {
+	s.windowFile = s.lastWriteFile
+	s.windowLoss = s.pending[s.windowFile]
+	s.window = true
+	s.pending[s.windowFile] = 0
+	s.size[s.windowFile] = s.syncSize[s.windowFile]
+}
+
+// canArm is whether FailNextWindow, called now, arms a window whose loss one
+// run holds to. The written-last record must be one plain data write, the
+// only record in the world a sync has not taken, on a segment an earlier write
+// opened: everything around it is settled, so no in-flight record or spare can
+// change what the failed window touches. Its write must not be the one right
+// after a seal or a start, whose follow-up records still land, nor newer than
+// a removal, whose record the fault would fail in its place. And no sync of
+// its stream may have taken it: a commit fsyncs the whole segment the
+// stream's files share, so a write a sync followed is already durable, and
+// no window can drop it.
+func (s faultState) canArm() bool {
+	switch {
+	case s.window || s.armed || s.anyOwed():
+		return false
+	case s.lastWriteFile < 0, s.lastWriteFresh:
+		return false
+	case s.pending[s.lastWriteFile] != 1, s.pendingGrow[s.lastWriteFile] != 0:
+		return false
+	case s.lastWriteStep == s.lastSealStep+1, s.lastWriteStep == s.lastStartStep+1:
+		return false
+	case s.lastRemovalStep > s.lastWriteStep:
+		return false
+	case s.lastSyncStep[streamOf(s.lastWriteFile)] > s.lastWriteStep:
+		return false
+	}
+
+	for i := range fuzzFiles {
+		if i == s.lastWriteFile {
+			continue
+		}
+
+		if s.pending[i] != 0 || s.pendingGrow[i] != 0 {
+			return false
+		}
+	}
+
+	return true
 }
 
 // truncated is an accepted truncate to size. One that takes bytes away records
@@ -129,14 +306,35 @@ func (s *faultState) truncated(file, size int, owed bool) {
 func (s *faultState) released(file int) {
 	s.size[file] = 0
 	s.recorded[file] = 0
+	s.pending[file] = 0
+	s.pendingGrow[file] = 0
+	s.syncSize[file] = 0
 }
 
 // started takes what a new process serves, whose sizes its start committed.
-func (s *faultState) started(files [fuzzFiles]string) {
+func (s *faultState) started(files [fuzzFiles]string, step int) {
 	for i, content := range files {
 		s.size[i] = len(content)
 		s.recorded[i] = len(content)
+		s.syncSize[i] = len(content)
+		s.pending[i] = 0
+		s.pendingGrow[i] = 0
 	}
+
+	s.lastWriteFile = -1
+	s.lastStartStep = step
+	s.lastRemovalStep = -1
+	// The new process committed every size it serves: its start is a sync of
+	// every stream, so an arm holds only over a write of the new process.
+	for i := range s.lastSyncStep {
+		s.lastSyncStep[i] = step
+	}
+	s.window = false
+	// The loss sequence a seal answered dies with the process: the next open
+	// serves the record it kept of it, if it kept any, without raising the
+	// file again, so every commit of the new process answers the sequence from
+	// zero (probed 20/20 over each new-process route).
+	s.loss = [fuzzFiles]int{}
 }
 
 func (s faultState) anyOwed() bool {
@@ -149,6 +347,29 @@ func (s faultState) anyOwed() bool {
 // the store would wait: telling the two apart takes the file's content. A
 // removal is skipped then only once one is owed, so one can be owed at all.
 func (s faultState) noEffect(op string, file int) bool {
+	// The steps that could race the seal, or whose records a failed window
+	// drops besides its own write, call nothing while the window waits for
+	// it: everything the arm settled stays as it is until one commit of the
+	// armed file answers the loss. What the armed stream's loss never touches
+	// still runs: reads of any file, and the writes and commits of the other
+	// stream.
+	if s.window {
+		switch op {
+		case "read":
+			// A read writes nothing: every file answers whatever it holds.
+		case "commit":
+			if file != s.windowFile && streamOf(file) == streamOf(s.windowFile) {
+				return true
+			}
+		case "write":
+			if streamOf(file) == streamOf(s.windowFile) {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+
 	switch op {
 	case "restart":
 		return s.armed || s.anyOwed()
@@ -161,6 +382,13 @@ func (s faultState) noEffect(op string, file int) bool {
 		return s.gone[file] && s.owed[file]
 	case "commit":
 		return s.armed || s.gone[file] || s.owed[file]
+	case "crash", "crash_keeping", "crash_torn", "crash_reordered", "fail_updates_after":
+		// A host loss and a store fault always run.
+		return false
+	case "fail_next_window":
+		// Only a window that covers its stream's one pending write alone
+		// holds to a decided loss.
+		return !s.canArm()
 	}
 
 	return s.gone[file] || s.owed[file] || (s.armed && s.anyOwed())
@@ -208,9 +436,11 @@ func (s faultState) skips(op string, a fuzz.Args) (skippedAnswer, bool) {
 	return skippedAnswer{unrecordedTail: tail}, tail
 }
 
-// fileOf is the file op names, or -1 for one that names none.
+// fileOf is the file op names, or -1 for one that names none: a new process
+// and a fault step own the whole engine, not one file.
 func fileOf(op string, a fuzz.Args) int {
-	if op == "restart" {
+	switch op {
+	case "restart", "crash", "crash_keeping", "crash_torn", "crash_reordered", "fail_updates_after", "fail_next_window":
 		return -1
 	}
 
@@ -269,6 +499,7 @@ func newEngineWorld(env *fuzz.Env) (*engineWorld, error) {
 	}
 
 	w := &engineWorld{ctx: env.T.Context()}
+	w.faults = newFaultState()
 
 	// Registered before the fixture, so it runs after the fixture has closed
 	// the engine, which calls the Done of what its last group commit takes.
@@ -492,9 +723,12 @@ func describeFiles(contents [fuzzFiles]string) string {
 	return strings.Join(parts, " | ")
 }
 
-// writeAnswer is what a write answered.
+// writeAnswer is what a write answered. fresh is that its record landed in a
+// segment no earlier write opened: its own activation, and the spare the pool
+// refills behind it, float what a window armed over it would touch.
 type writeAnswer struct {
 	step     int
+	fresh    bool
 	err      error
 	verifier vfserr.Verifier
 }
@@ -509,6 +743,7 @@ func (a writeAnswer) String() string {
 
 // commitAnswer is what a commit answered.
 type commitAnswer struct {
+	step     int
 	err      error
 	verifier vfserr.Verifier
 	lossSeq  uint64
@@ -542,6 +777,7 @@ func (a readAnswer) String() string {
 type removalAnswer struct {
 	err     error
 	pending bool
+	step    int
 }
 
 func (a removalAnswer) String() string {
@@ -568,6 +804,7 @@ func (faultAnswer) String() string {
 type restartedAnswer struct {
 	// variant is empty for a plain crash and for a restart.
 	variant string
+	step    int
 	err     error
 	files   [fuzzFiles]string
 	gone    [fuzzFiles]bool
@@ -632,33 +869,42 @@ func engineWrite(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 		step: env.Step,
 		file: a.Int("file"),
 	}
+	before := w.fix.SegmentsWritten()
 	verifier, err := w.fix.E.Write(env.T.Context(), w.fix.Share.ID, w.files[a.Int("file")], off, data, engine.WriteOpts{
 		Done: func() {
 			write.done.Add(1)
 		},
 	})
+	fresh := err == nil && w.fix.SegmentsWritten() != before
 	if err == nil {
 		w.writes = append(w.writes, write)
+		w.faults.wrote(write.file, env.Step, fresh)
 		w.faults.size[write.file] = max(w.faults.size[write.file], int(off)+len(data))
 	}
 
 	return writeAnswer{
 		step:     env.Step,
+		fresh:    fresh,
 		err:      err,
 		verifier: verifier,
 	}
 }
 
 func engineCommit(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
+	file := a.Int("file")
 	verifier, lossSeq, err := w.fix.E.Commit(
 		env.T.Context(),
 		w.fix.Share.ID,
-		w.files[a.Int("file")],
+		w.files[file],
 		int64(a.Int("off")),
 		int64(a.Int("len")),
 	)
+	if err == nil {
+		w.faults.committed(file, env.Step)
+	}
 
 	return commitAnswer{
+		step:     env.Step,
 		err:      err,
 		verifier: verifier,
 		lossSeq:  lossSeq,
@@ -679,36 +925,55 @@ func engineRead(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 }
 
 func engineTruncate(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
-	file := a.Int("file")
-	err := w.fix.E.Truncate(env.T.Context(), w.fix.Share.ID, w.files[file], int64(a.Int("size")))
+	file, size := a.Int("file"), a.Int("size")
+	tookAway := size < w.faults.size[file]
+	err := w.fix.E.Truncate(env.T.Context(), w.fix.Share.ID, w.files[file], int64(size))
 	owed := err != nil && errorClass(err) == "retry later"
 
 	if err == nil || owed {
-		w.faults.truncated(file, a.Int("size"), owed)
+		w.faults.truncated(file, size, owed)
+
+		// A removal syncs the stream before its first transaction, so what
+		// the file keeps after it is what a window would fall back to.
+		if tookAway {
+			w.faults.synced(file, env.Step)
+			w.faults.removed(env.Step)
+		} else {
+			w.faults.grown(file)
+		}
 	}
 
-	return w.removed(file, err)
+	return w.removed(env, file, err)
 }
 
 func engineDeallocate(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 	file := a.Int("file")
 	err := w.fix.E.Deallocate(env.T.Context(), w.fix.Share.ID, w.files[file], int64(a.Int("off")), int64(a.Int("len")))
+	owed := err != nil && errorClass(err) == "retry later"
+
+	if err == nil || owed {
+		// The removal's first transaction syncs the stream, even one that
+		// is owed: the file was synced before it, whatever the store then did.
+		w.faults.synced(file, env.Step)
+		w.faults.removed(env.Step)
+	}
+
 	if err == nil {
 		w.faults.recorded[file] = w.faults.size[file]
 	}
 
-	return w.removed(file, err)
+	return w.removed(env, file, err)
 }
 
 // removed records what a truncate or a deallocate answered.
-func (w *engineWorld) removed(file int, err error) fuzz.Result {
+func (w *engineWorld) removed(env *fuzz.Env, file int, err error) fuzz.Result {
 	if err != nil && errorClass(err) == "retry later" {
 		w.faults.owed[file] = true
 	}
 
 	w.awaitRemovalLoop()
 
-	return removalAnswer{err: err}
+	return removalAnswer{err: err, step: env.Step}
 }
 
 // engineDelete releases a file as the filesystem service does: its only name
@@ -729,7 +994,7 @@ func engineDelete(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 	}
 
 	if err != nil {
-		return removalAnswer{err: fmt.Errorf("unlink: %w", err)}
+		return removalAnswer{err: fmt.Errorf("unlink: %w", err), step: env.Step}
 	}
 
 	retry, err := w.fix.E.Delete(env.T.Context(), w.fix.Share.ID, w.files[file])
@@ -737,6 +1002,7 @@ func engineDelete(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 		w.faults.released(file)
 		w.faults.gone[file] = true
 		w.faults.owed[file] = retry != nil
+		w.faults.removed(env.Step)
 	}
 
 	w.awaitRemovalLoop()
@@ -744,6 +1010,7 @@ func engineDelete(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 	return removalAnswer{
 		err:     err,
 		pending: retry != nil,
+		step:    env.Step,
 	}
 }
 
@@ -751,6 +1018,16 @@ func engineFailUpdates(_ *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 	n := a.Int("n")
 	w.fix.FailUpdatesAfter(n)
 	w.faults.armed = n == 0
+
+	return faultAnswer{}
+}
+
+// engineFailWindow arms a failed window over the stream written last: the next
+// commit's fsync of the journal's segment fails, the unsynced data write of
+// that one stream drops, and the armed file's own commit answers the loss.
+func engineFailWindow(_ *fuzz.Env, w *engineWorld, _ fuzz.Args) fuzz.Result {
+	w.fix.FailNextWindow()
+	w.faults.armedWindow()
 
 	return faultAnswer{}
 }
@@ -806,10 +1083,11 @@ func (w *engineWorld) afterCrash(env *fuzz.Env, variant string) fuzz.Result {
 
 	w.faults.crashed()
 	files, gone, err := w.contents(env.T.Context())
-	w.faults.started(files)
+	w.faults.started(files, env.Step)
 
 	return restartedAnswer{
 		variant: variant,
+		step:    env.Step,
 		err:     err,
 		files:   files,
 		gone:    gone,
@@ -831,7 +1109,10 @@ func engineRestart(env *fuzz.Env, w *engineWorld, _ fuzz.Args) fuzz.Result {
 	if !restart.WaitParked(entered) {
 		restart.Finish()
 
-		return restartedAnswer{err: errors.New("the restart ended before its start raised the incarnations")}
+		return restartedAnswer{
+			step: env.Step,
+			err:  errors.New("the restart ended before its start raised the incarnations"),
+		}
 	}
 
 	replay, replayErr := w.leftToReplay(env.T.Context())
@@ -839,9 +1120,10 @@ func engineRestart(env *fuzz.Env, w *engineWorld, _ fuzz.Args) fuzz.Result {
 	restart.Finish()
 
 	files, gone, err := w.contents(env.T.Context())
-	w.faults.started(files)
+	w.faults.started(files, env.Step)
 
 	return restartedAnswer{
+		step:    env.Step,
 		err:     errors.Join(replayErr, err),
 		files:   files,
 		gone:    gone,
@@ -864,6 +1146,11 @@ type engineModel struct {
 	verifier   vfserr.Verifier
 	answered   bool
 	newProcess bool
+
+	// lossBroken says a window lost a write and no verifier was answered since:
+	// the next one must be another value, the loss changed the generation the
+	// whole share hashes.
+	lossBroken bool
 }
 
 // modelFile is one file: the content that survives a crash, and over it the
@@ -943,23 +1230,35 @@ func (f modelFile) afterCrash(found string) (modelFile, error) {
 }
 
 func newEngineModel() engineModel {
-	return engineModel{}
+	return engineModel{faults: newFaultState()}
 }
 
 // sawVerifier checks a verifier: one value for as long as a process runs with
-// no loss, and another in a new one. Nothing these operations do is a loss.
+// no loss, another in a new one, and a third the moment a window lost a write.
 func (m engineModel) sawVerifier(got vfserr.Verifier) (engineModel, error) {
 	switch {
 	case !m.answered:
 	case m.newProcess && got == m.verifier:
 		return m, fmt.Errorf("the verifier is still %x after a new process started", got)
-	case !m.newProcess && got != m.verifier:
+	case m.lossBroken && got == m.verifier:
+		return m, fmt.Errorf("the verifier is still %x after a window lost a write", got)
+	case !m.newProcess && got != m.verifier && !m.lossBroken:
 		return m, fmt.Errorf("the verifier went from %x to %x with no loss and no new process", m.verifier, got)
 	}
 
-	m.verifier, m.answered, m.newProcess = got, true, false
+	m.verifier, m.answered, m.newProcess, m.lossBroken = got, true, false, false
 
 	return m, nil
+}
+
+// syncedFile folds what a sync of one file made durable: its own parked
+// writes are now part of what survives a crash. Folding changes no content: a
+// read of the file holds the same either way.
+func (m engineModel) syncedFile(file int) engineModel {
+	f := &m.files[file]
+	*f = modelFile{synced: apply(f.synced, f.unsynced)}
+
+	return m
 }
 
 // one is the single state a model step allows, or why it allows none.
@@ -986,26 +1285,33 @@ func modelWrite(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, err
 		off:    int64(a.Int("off")),
 		length: a.Int("len"),
 	})
+	m.faults.wrote(a.Int("file"), answer.step, answer.fresh)
 	size := &m.faults.size[a.Int("file")]
 	*size = max(*size, a.Int("off")+a.Int("len"))
 
 	return one(m.sawVerifier(answer.verifier))
 }
 
-// modelCommit makes every write of the file synced, whatever the extent: the
-// journal's sync takes the file whole.
+// modelCommit makes the file's own parked writes synced, whatever their
+// extent: the sync of a commit takes its file whole, and no other file's,
+// not even the sibling sharing its segment (probed 20/20: a sibling commit
+// leaves the other file's write to die at the crash). Over the armed file it
+// is the seal too: the commit answers the writes the window dropped as a
+// raised loss sequence.
 func modelCommit(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, error) {
 	answer := got.(commitAnswer)
 	if answer.err != nil {
 		return nil, fmt.Errorf("the commit failed, and nothing allows it: %w", answer.err)
 	}
 
-	if answer.lossSeq != 0 {
-		return nil, fmt.Errorf("the loss sequence is %d, and no operation loses a write", answer.lossSeq)
-	}
+	file := a.Int("file")
+	m.faults.committed(file, answer.step)
+	m = m.syncedFile(file)
 
-	file := &m.files[a.Int("file")]
-	*file = modelFile{synced: apply(file.synced, file.unsynced)}
+	if seq, want := answer.lossSeq, uint64(m.faults.loss[file]); seq != want {
+		return nil, fmt.Errorf("the loss sequence of the commit of file %d is %d, and the losses the model holds are %d",
+			file, seq, want)
+	}
 
 	return one(m.sawVerifier(answer.verifier))
 }
@@ -1021,7 +1327,12 @@ func modelRead(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, erro
 	}
 
 	if answer.err != nil {
-		return nil, fmt.Errorf("the read failed, and nothing allows it: %w", answer.err)
+		if !m.windowReadsLost(a.Int("file"), a.Int("off"), a.Int("off")+a.Int("len")) ||
+			errorClass(answer.err) != "lost" {
+			return nil, fmt.Errorf("the read failed, and nothing allows it: %w", answer.err)
+		}
+
+		return []engineModel{m}, nil
 	}
 
 	file := m.files[a.Int("file")]
@@ -1029,7 +1340,9 @@ func modelRead(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, erro
 	start := min(a.Int("off"), len(view))
 	end := min(a.Int("off")+a.Int("len"), len(view))
 
-	if want := view[start:end]; answer.data != want {
+	want := view[start:end] +
+		m.windowHoleBelow(a.Int("file"), a.Int("off"), a.Int("off")+a.Int("len"))
+	if answer.data != want {
 		return nil, fmt.Errorf("read %s, the model holds %s", answer, describe(answer.off, want))
 	}
 
@@ -1065,6 +1378,11 @@ func modelTruncate(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, 
 	view := apply(file.synced, file.unsynced)
 	size := a.Int("size")
 	if size < len(view) {
+		m.faults.truncated(a.Int("file"), size, m.faults.armed)
+		m.faults.synced(a.Int("file"), answer.step)
+		m.faults.removed(answer.step)
+		m = m.syncedFile(a.Int("file"))
+
 		return m.reachedFirstTransaction(a.Int("file"), answer, view[:size])
 	}
 
@@ -1078,6 +1396,7 @@ func modelTruncate(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, 
 		off:  int64(size),
 	})
 	m.faults.truncated(a.Int("file"), size, false)
+	m.faults.grown(a.Int("file"))
 
 	return []engineModel{m}, nil
 }
@@ -1087,6 +1406,10 @@ func modelDeallocate(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel
 	after := []byte(apply(file.synced, file.unsynced))
 	start := min(a.Int("off"), len(after))
 	clear(after[start:min(a.Int("off")+a.Int("len"), len(after))])
+
+	m.faults.synced(a.Int("file"), got.(removalAnswer).step)
+	m.faults.removed(got.(removalAnswer).step)
+	m = m.syncedFile(a.Int("file"))
 
 	return m.reachedFirstTransaction(a.Int("file"), got.(removalAnswer), string(after))
 }
@@ -1106,6 +1429,7 @@ func modelDelete(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, er
 	m.faults.released(file)
 	m.faults.gone[file] = true
 	m.faults.owed[file] = answer.pending
+	m.faults.removed(answer.step)
 
 	return []engineModel{m}, nil
 }
@@ -1114,6 +1438,104 @@ func modelFailUpdates(m engineModel, a fuzz.Args, _ fuzz.Result) ([]engineModel,
 	m.faults.armed = a.Int("n") == 0
 
 	return []engineModel{m}, nil
+}
+
+// modelFailWindow arms the window the real side did, over the same file: the
+// write it drops is the file's one pending data write, and the grows stay, a
+// mark in the journal's headers not the window. The arm bounds allow no grow,
+// so what is kept is empty; the rule is what the loop documents.
+// modelFailWindow drops the armed stream's unsynced data writes and breaks the
+// verifier chain at once: the arm step's own oracle read serves the loss the
+// fault made and consumes it, the loss record lands in the journal and raises
+// the generation the whole share hashes, so every answer from here, of any
+// file, carries the new value until a new process starts.
+// It takes the write's range and reach before the drop (probed 20/20): a read
+// of the armed file that meets the range answers lost while the window waits
+// for its seal and what the file synced does not cover the range, and a hole
+// below the range reads as zeros as far as the write reached, not as the end
+// of the file.
+func modelFailWindow(m engineModel, _ fuzz.Args, _ fuzz.Result) ([]engineModel, error) {
+	m.faults.armedWindow()
+	m.lossBroken = true
+
+	file := &m.files[m.faults.windowFile]
+	view := apply(file.synced, file.unsynced)
+
+	lo, hi := -1, 0
+	for _, write := range file.unsynced {
+		if !write.grow {
+			if lo < 0 || int(write.off) < lo {
+				lo = int(write.off)
+			}
+
+			hi = max(hi, int(write.off)+write.length)
+		}
+	}
+
+	if lo < 0 {
+		lo, hi = 0, 0
+	}
+
+	m.faults.windowLostLo, m.faults.windowLostHi = lo, hi
+	m.faults.windowTail = len(view)
+
+	kept := make([]unsyncedWrite, 0, len(file.unsynced))
+	for _, write := range file.unsynced {
+		if write.grow {
+			kept = append(kept, write)
+		}
+	}
+
+	file.unsynced = kept
+
+	return []engineModel{m}, nil
+}
+
+// windowReadsLost says whether a read of file at [off, end) answers lost: the
+// armed window waits for its seal, the read meets the write it dropped, and
+// under that write the file holds no synced byte of its own (a hole is no
+// answer: a lost range covered by real writes falls back to them from the
+// first read that consumed the loss, probed 20/20; every write's byte is
+// non-zero, so a zero byte is a hole).
+func (m engineModel) windowReadsLost(file, off, end int) bool {
+	s := m.faults
+	if !s.window || file != s.windowFile {
+		return false
+	}
+
+	if s.windowLostLo >= end || s.windowLostHi <= off {
+		return false
+	}
+
+	covered := s.windowLostHi <= len(m.files[file].synced)
+	for i := s.windowLostLo; covered && i < s.windowLostHi; i++ {
+		covered = m.files[file].synced[i] != 0
+	}
+
+	return !covered
+}
+
+// windowHoleBelow answers the zeros a read of the armed file serves past its
+// own content while the window waits: the dropped write still reaches the
+// file, so a hole below the lost range reads as zeros to the tail it set
+// (probed 20/20), not as the end of the file, which only the seal answers. A
+// read that answers lost serves no content to compare, so it answers none.
+func (m engineModel) windowHoleBelow(file, off, end int) string {
+	s := m.faults
+	if !s.window || file != s.windowFile || off >= s.windowTail {
+		return ""
+	}
+
+	if m.windowReadsLost(file, off, end) {
+		return ""
+	}
+
+	view := apply(m.files[file].synced, m.files[file].unsynced)
+	if fill := min(end, s.windowTail) - max(off, len(view)); fill > 0 {
+		return strings.Repeat("\x00", fill)
+	}
+
+	return ""
 }
 
 func modelCrash(m engineModel, _ fuzz.Args, got fuzz.Result) ([]engineModel, error) {
@@ -1141,7 +1563,7 @@ func modelCrash(m engineModel, _ fuzz.Args, got fuzz.Result) ([]engineModel, err
 		return nil, err
 	}
 
-	m.faults.started(answer.files)
+	m.faults.started(answer.files, answer.step)
 	m.newProcess = true
 
 	return []engineModel{m}, nil
@@ -1177,7 +1599,7 @@ func modelRestart(m engineModel, _ fuzz.Args, got fuzz.Result) ([]engineModel, e
 		return nil, err
 	}
 
-	m.faults.started(answer.files)
+	m.faults.started(answer.files, answer.step)
 	m.newProcess = true
 
 	return []engineModel{m}, nil
@@ -1185,10 +1607,65 @@ func modelRestart(m engineModel, _ fuzz.Args, got fuzz.Result) ([]engineModel, e
 
 // compareFiles reads every file after each step, so a wrong byte fails at the
 // step that made it wrong.
-func compareFiles(_ fuzz.Step, _ fuzz.Result, w *engineWorld, m engineModel) error {
+func compareFiles(step fuzz.Step, _ fuzz.Result, w *engineWorld, m engineModel) error {
 	got, gone, err := w.contents(w.ctx)
 	if err != nil {
-		return err
+		// While the armed window waits for its seal, the armed file answers
+		// lost to a read that meets the write it dropped and what it synced
+		// does not cover (probed 20/20): each whole read then errs, over a
+		// covered drop only the arm step's own, which serves the loss and
+		// falls back. Read every file alone and hold each to what the model
+		// keeps: the armed file errs where its drop can serve nothing, and
+		// every other file answers its content whatever the armed one answers.
+		if !errors.Is(err, vfserr.ErrLost) || !m.faults.window {
+			return err
+		}
+
+		covered := !m.windowReadsLost(m.faults.windowFile, 0, fuzzMaxFile+1)
+		if covered && step.Name != "fail_next_window" {
+			return err
+		}
+
+		for i := range m.files {
+			// A release not yet committed is not read.
+			if m.faults.gone[i] && m.faults.owed[i] {
+				continue
+			}
+
+			want := apply(m.files[i].synced, m.files[i].unsynced)
+			buf := make([]byte, fuzzMaxFile+1)
+			n, rerr := w.fix.E.Read(w.ctx, w.fix.Share.ID, w.files[i], 0, buf)
+
+			if errors.Is(rerr, vfserr.ErrStale) && m.faults.gone[i] {
+				continue
+			}
+
+			if i == m.faults.windowFile && !covered {
+				if !errors.Is(rerr, vfserr.ErrLost) {
+					answer := errorClass(rerr)
+					if rerr == nil {
+						answer = describe(0, string(buf[:n]))
+					}
+
+					return fmt.Errorf("the armed file %d answers %s, want the lost range [%d, %d)",
+						i, answer, m.faults.windowLostLo, m.faults.windowLostHi)
+				}
+
+				continue
+			}
+
+			if rerr != nil {
+				return fmt.Errorf("file %d reads %v while a window waits, the model keeps %s",
+					i, rerr, describe(0, want))
+			}
+
+			if string(buf[:n]) != want {
+				return fmt.Errorf("file %d reads %s while a window waits, the model keeps %s",
+					i, describe(0, string(buf[:n])), describe(0, want))
+			}
+		}
+
+		return nil
 	}
 
 	for i, file := range m.files {
@@ -1265,8 +1742,8 @@ func engineTarget() fuzz.Target[*engineWorld, engineModel] {
 			{
 				Name:   "crash",
 				Weight: 1,
-				Real:   engineCrash,
-				Model:  modelCrash,
+				Real:   realUnless("crash", engineCrash),
+				Model:  modelUnless("crash", modelCrash),
 			},
 			{
 				Name:   "restart",
@@ -1299,8 +1776,18 @@ func engineTarget() fuzz.Target[*engineWorld, engineModel] {
 				Name:   "fail_updates_after",
 				Weight: 2,
 				Params: []fuzz.Param{updates},
-				Real:   engineFailUpdates,
-				Model:  modelFailUpdates,
+				Real:   realUnless("fail_updates_after", engineFailUpdates),
+				Model:  modelUnless("fail_updates_after", modelFailUpdates),
+			},
+			// The next commit's sync of the journal fails over the stream
+			// written last, the records it did not sync come back as loss
+			// records, and the write of the armed stream that no sync covered
+			// is the one that went missing.
+			{
+				Name:   "fail_next_window",
+				Weight: 1,
+				Real:   realUnless("fail_next_window", engineFailWindow),
+				Model:  modelUnless("fail_next_window", modelFailWindow),
 			},
 			// Each bit of the mask is one write to the disk that no sync covers,
 			// in the order issued, not one engine write: the first write of a new
@@ -1309,15 +1796,15 @@ func engineTarget() fuzz.Target[*engineWorld, engineModel] {
 				Name:   "crash_keeping",
 				Weight: 1,
 				Params: []fuzz.Param{mask},
-				Real:   engineCrashKeeping,
-				Model:  modelCrash,
+				Real:   realUnless("crash_keeping", engineCrashKeeping),
+				Model:  modelUnless("crash_keeping", modelCrash),
 			},
 			{
 				Name:   "crash_torn",
 				Weight: 1,
 				Params: []fuzz.Param{torn},
-				Real:   engineCrashTorn,
-				Model:  modelCrash,
+				Real:   realUnless("crash_torn", engineCrashTorn),
+				Model:  modelUnless("crash_torn", modelCrash),
 			},
 			// The parameter is a seed, not a mask: from it the disk draws whether
 			// each of those same disk writes is kept, so a new segment's header
@@ -1326,8 +1813,8 @@ func engineTarget() fuzz.Target[*engineWorld, engineModel] {
 				Name:   "crash_reordered",
 				Weight: 1,
 				Params: []fuzz.Param{seed},
-				Real:   engineCrashReordered,
-				Model:  modelCrash,
+				Real:   realUnless("crash_reordered", engineCrashReordered),
+				Model:  modelUnless("crash_reordered", modelCrash),
 			},
 		},
 		// The engine's methods are not listed here yet: this holds only what
@@ -1337,6 +1824,18 @@ func engineTarget() fuzz.Target[*engineWorld, engineModel] {
 				"deallocate_of_an_unrecorded_tail",
 				"while the store fails, a deallocate that takes a file's last byte is skipped unless the store is "+
 					"known to hold the file's size: a crash after it leaves the file shorter",
+			),
+			fuzz.Skipped(
+				"window_over_one_settled_write",
+				"a failed window is armed only over the stream written last, whose one unsynced data write is the "+
+					"only record no sync has taken, in a segment an earlier write opened, not the write right after "+
+					"a seal or a new process: a window over anything else floats what it touches",
+			),
+			fuzz.Skipped(
+				"window_pending_leaves_the_armed_stream_alone",
+				"while a window waits for its seal, the steps that could race the drop or land inside it call "+
+					"nothing: removals, truncates, the store faults, a new process, a second window, and the "+
+					"writes and commits of the armed stream's own files",
 			),
 		},
 		NewReal:    newEngineWorld,
@@ -1581,6 +2080,23 @@ var engineSeeds = []struct {
 			"crash_keeping(mask=1)",
 			"read(file=0, off=0, len=512)",
 			"read(file=1, off=0, len=512)",
+		},
+	},
+	{
+		// A failed window drops the unsynced write as a loss record: the read
+		// serves what it superseded, the loss the arm step's own read consumes
+		// breaks the verifier chain for every answer that follows, and the
+		// seal answers one raised loss sequence.
+		name: "a failed window, then a write over the loss",
+		calls: []string{
+			"write(file=0, off=0, len=4096)",
+			"commit(file=0, off=0, len=0)",
+			"write(file=0, off=0, len=512)",
+			"fail_next_window()",
+			"commit(file=0, off=0, len=0)",
+			"write(file=0, off=0, len=512)",
+			"commit(file=0, off=0, len=0)",
+			"read(file=0, off=0, len=8192)",
 		},
 	},
 }
