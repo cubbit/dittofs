@@ -23,6 +23,10 @@ func (r Record) filter(by Key, value []byte) (string, error) {
 		return "(&(objectClass=" + user + ")(" + r.UserAttr() + "=" + ldap.EscapeFilter(string(value)) + "))", nil
 	case ByGroupName:
 		return "(&(objectClass=" + group + ")(" + r.GroupAttr() + "=" + ldap.EscapeFilter(string(value)) + "))", nil
+	case ByUID:
+		return "(&(objectClass=" + user + ")(uidNumber=" + ldap.EscapeFilter(string(value)) + "))", nil
+	case ByGID:
+		return "(&(objectClass=" + group + ")(gidNumber=" + ldap.EscapeFilter(string(value)) + "))", nil
 	case BySID:
 		return "(objectSid=" + escapeBinary(value) + ")", nil
 	case ByEntryID:

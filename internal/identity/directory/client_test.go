@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -445,6 +446,71 @@ func TestCloseWaitsForQuestionsInFlight(t *testing.T) {
 	})
 }
 
+// A connect its question stopped waiting for is ended by Close, which
+// returns only once it has: nothing reads the bind password after Close.
+func TestCloseEndsAbandonedConnect(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t)
+		var resolving, returned atomic.Bool
+		password := func(ctx context.Context) ([]byte, error) {
+			resolving.Store(true)
+			<-ctx.Done() // held until Close, or the query timeout, ends it
+			returned.Store(true)
+			return nil, ctx.Err()
+		}
+		c := directory.NewClient(e.rec, e.d.Dial, password, e.clock, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { _, _, err := c.Lookup(ctx, directory.ByUserName, []byte("alice")); done <- err }()
+		synctest.Wait()
+		if !resolving.Load() {
+			t.Fatal("the lookup is not resolving the bind password")
+		}
+		cancel()
+		if err := <-done; !errors.Is(err, vfserr.ErrUnavailable) {
+			t.Errorf("Lookup its caller left = %v, want ErrUnavailable", err)
+		}
+		c.Close()
+		if !returned.Load() {
+			t.Error("Close returned while the abandoned connect still resolved the bind password")
+		}
+		e.clock.Advance(time.Minute) // lets a connect Close left running end, so the bubble does
+	})
+}
+
+// A connect whose question stops waiting only after Close ran is ended at
+// once: Close has already returned and will not end it.
+func TestAbandonedAfterCloseEndsAtOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t)
+		var resolving, returned atomic.Bool
+		password := func(ctx context.Context) ([]byte, error) {
+			resolving.Store(true)
+			<-ctx.Done() // held until it is ended, or the query timeout ends it
+			returned.Store(true)
+			return nil, ctx.Err()
+		}
+		c := directory.NewClient(e.rec, e.d.Dial, password, e.clock, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { _, _, err := c.Lookup(ctx, directory.ByUserName, []byte("alice")); done <- err }()
+		synctest.Wait()
+		if !resolving.Load() {
+			t.Fatal("the lookup is not resolving the bind password")
+		}
+		c.Close() // the question still waits, so Close leaves its connect running
+		cancel()
+		if err := <-done; !errors.Is(err, vfserr.ErrUnavailable) {
+			t.Errorf("Lookup its caller left = %v, want ErrUnavailable", err)
+		}
+		synctest.Wait()
+		if !returned.Load() {
+			t.Error("a connect abandoned after Close still resolves the bind password")
+		}
+		e.clock.Advance(time.Minute) // lets a connect left running end, so the bubble does
+	})
+}
+
 // The test call binds and reads the record's base entry, and refuses a
 // bind that fails.
 func TestTestCall(t *testing.T) {
@@ -633,5 +699,63 @@ func TestLookupFreshConnectionClosedIsNotRetried(t *testing.T) {
 	}
 	if got := f.Dials(); len(got) != 1 {
 		t.Errorf("%d dials, want 1: a fresh connection's failure is not retried", len(got))
+	}
+}
+
+// A uidNumber or gidNumber finds the one entry of its kind holding exactly
+// that number, in either schema: a user's uidNumber answers no group
+// question and a user's gidNumber, its primary group's, none either; a
+// number that is a prefix of another's matches only its own; a number no
+// entry holds is no entry; and two holders are ambiguous.
+func TestLookupByNumberIsExact(t *testing.T) {
+	for _, schema := range []string{directory.SchemaAD, directory.SchemaRFC2307} {
+		t.Run(schema, func(t *testing.T) {
+			ctx := context.Background()
+			e := newEnv(t)
+			e.rec.Schema = schema
+			user := func(name string, uid, gid string) string {
+				attrs := map[string][][]byte{"uidNumber": {[]byte(uid)}, "gidNumber": {[]byte(gid)}}
+				if schema == directory.SchemaRFC2307 {
+					attrs["objectClass"] = [][]byte{[]byte("top"), []byte("posixAccount")}
+					attrs["uid"] = [][]byte{[]byte(name)}
+				}
+				return e.d.AddUser(t, name, attrs)
+			}
+			group := func(name, gid string) string {
+				attrs := map[string][][]byte{"gidNumber": {[]byte(gid)}}
+				if schema == directory.SchemaRFC2307 {
+					attrs["objectClass"] = [][]byte{[]byte("top"), []byte("posixGroup")}
+				}
+				return e.d.AddGroup(t, name, attrs)
+			}
+			alice := user("alice", "1500", "3000")
+			user("al", "15001", "3000")
+			eng := group("eng", "1500")
+			staff := group("staff", "3000")
+			user("dup1", "2000", "3000")
+			user("dup2", "2000", "3000")
+			c := e.client(e.d.Dial)
+			for _, row := range []struct {
+				by    directory.Key
+				value string
+				want  string // the DN found; "" for none
+			}{
+				{directory.ByUID, "1500", alice},
+				{directory.ByGID, "1500", eng},
+				{directory.ByGID, "3000", staff},
+				{directory.ByUID, "3000", ""},
+				{directory.ByUID, "150", ""},
+				{directory.ByUID, "4242", ""},
+				{directory.ByGID, "15001", ""},
+			} {
+				a, ok, err := c.Lookup(ctx, row.by, []byte(row.value))
+				if err != nil || ok != (row.want != "") || a.DN != row.want {
+					t.Errorf("Lookup(%v, %s) = %q, %v, %v; want %q", row.by, row.value, a.DN, ok, err, row.want)
+				}
+			}
+			if _, _, err := c.Lookup(ctx, directory.ByUID, []byte("2000")); !errors.Is(err, directory.ErrAmbiguous) {
+				t.Errorf("Lookup of a uidNumber two users hold: %v, want ErrAmbiguous", err)
+			}
+		})
 	}
 }

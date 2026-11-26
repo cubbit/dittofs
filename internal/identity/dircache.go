@@ -17,7 +17,6 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
-	"golang.org/x/sync/singleflight"
 
 	"github.com/cubbit/dittofs/internal/identity/directory"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -122,7 +121,6 @@ type dirCache struct {
 	seconds prometheus.Observer
 	evicted prometheus.Counter
 
-	flight  singleflight.Group
 	slots   chan struct{}   // the queries running, dirInFlight at most
 	waiting atomic.Int32    // the queries waiting for a slot
 	out     outage          // directory_unreachable
@@ -132,6 +130,10 @@ type dirCache struct {
 	mu      sync.Mutex
 	entries map[dirKey]*list.Element // of *dirEntry
 	asking  map[string]*sidQuery     // the SID queries in flight, by SID
+	flights map[string]*lookupCall   // the other queries in flight, by key
+	calls   map[*call]struct{}       // every query running
+	settled *sync.Cond               // on mu, broadcast as a query returns
+	closed  bool                     // Close ran
 	recent  *list.List               // most recently used first
 	sid     []byte                   // the domain SID, once read
 }
@@ -144,7 +146,7 @@ func newDirCache(c *directory.Client, d Deps) *dirCache {
 		tracer = noop.NewTracerProvider().Tracer("")
 	}
 	life, end := context.WithCancel(context.Background())
-	return &dirCache{
+	dc := &dirCache{
 		life:    life,
 		end:     end,
 		client:  c,
@@ -156,8 +158,12 @@ func newDirCache(c *directory.Client, d Deps) *dirCache {
 		slots:   make(chan struct{}, dirInFlight),
 		entries: map[dirKey]*list.Element{},
 		asking:  map[string]*sidQuery{},
+		flights: map[string]*lookupCall{},
+		calls:   map[*call]struct{}{},
 		recent:  list.New(),
 	}
+	dc.settled = sync.NewCond(&dc.mu)
+	return dc
 }
 
 // histogram is spec registered on reg, or an unregistered one for a nil reg.
@@ -168,12 +174,96 @@ func histogram(reg *metrics.Registry, spec metrics.Spec) *prometheus.HistogramVe
 	return prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: spec.Name, Help: spec.Help}, spec.Labels)
 }
 
-// Close ends the probe loop and waits for it, then closes the client once
-// the lookups running on it return.
+// Close ends each query no lookup waits for any more and the probe loop,
+// and waits for them, then closes the client once the lookups running on it
+// return. A query a lookup still waits for runs on, as the client's
+// questions do, and is ended at once if every lookup leaves it.
 func (c *dirCache) Close() {
+	c.mu.Lock()
+	c.closed = true
+	for w := range c.calls {
+		if w.waiters == 0 {
+			w.cancel()
+		}
+	}
+	for c.abandoned() {
+		c.settled.Wait()
+	}
+	c.mu.Unlock()
 	c.end()
 	c.out.close()
 	c.client.Close()
+}
+
+// abandoned reports whether a query no lookup waits for is running; under mu.
+func (c *dirCache) abandoned() bool {
+	for w := range c.calls {
+		if w.waiters == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// call is one query the cache runs for the lookups waiting on it, which
+// count themselves in waiters, under the cache's mu; done closes once its
+// result is set. It runs on its opener's context without the cancellation,
+// so a lookup that stops waiting leaves it to the others; the client's query
+// timeout ends it, or Close once no lookup waits for it.
+type call struct {
+	done    chan struct{}
+	waiters int
+	cancel  context.CancelFunc
+}
+
+// spawn runs f, the query w, on a goroutine of its own, on ctx without its
+// cancellation.
+func (c *dirCache) spawn(ctx context.Context, w *call, f func(context.Context)) {
+	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	c.mu.Lock()
+	w.cancel = cancel
+	c.calls[w] = struct{}{}
+	if c.closed && w.waiters == 0 {
+		cancel()
+	}
+	c.mu.Unlock()
+	go func() {
+		defer cancel()
+		f(ctx)
+		c.mu.Lock()
+		delete(c.calls, w)
+		c.settled.Broadcast()
+		c.mu.Unlock()
+	}()
+}
+
+// await is nil once w is done, or ErrUnavailable once ctx ends first; the
+// query runs on for the lookups still waiting.
+func await(ctx context.Context, w *call) error {
+	select {
+	case <-w.done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("%w: identity: directory lookup: %w", vfserr.ErrUnavailable, ctx.Err())
+	}
+}
+
+// leave is a lookup no longer waiting for w: after Close, the last one to
+// leave ends it.
+func (c *dirCache) leave(w *call) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	w.waiters--
+	if w.waiters == 0 && c.closed && w.cancel != nil {
+		w.cancel()
+	}
+}
+
+// lookupCall is a query answer shares: its entry, or err.
+type lookupCall struct {
+	call
+	e   *dirEntry
+	err error
 }
 
 // question is k's question label.
@@ -190,6 +280,10 @@ func question(k dirKey) string {
 		return "sid"
 	case directory.ByEntryID:
 		return "entry_id"
+	case directory.ByUID:
+		return "uid"
+	case directory.ByGID:
+		return "gid"
 	}
 	return "unknown"
 }
@@ -223,6 +317,14 @@ func (c *dirCache) lookup(ctx context.Context, by directory.Key, value []byte, g
 // lookupEntry is lookup's entry, which also says when its answer was given,
 // and whether a query this call sent or joined gave it.
 func (c *dirCache) lookupEntry(ctx context.Context, by directory.Key, value []byte, grace time.Duration, fresh bool) (*dirEntry, bool, error) {
+	return c.lookupCharged(ctx, by, value, grace, fresh, nil)
+}
+
+// lookupCharged is lookupEntry, calling charge, when it is set, just before
+// the lookup sends or joins a query: an answer the cache holds fresh, or an
+// outage that sends nothing, costs nothing. charge's error fails the lookup
+// unsent and is not counted as the directory's.
+func (c *dirCache) lookupCharged(ctx context.Context, by directory.Key, value []byte, grace time.Duration, fresh bool, charge func() error) (*dirEntry, bool, error) {
 	// The client answers an empty value without the directory, since LDAP
 	// holds none, so it is answered here, before the outage is consulted: it
 	// is no probe and neither raises nor clears directory_unreachable.
@@ -233,7 +335,7 @@ func (c *dirCache) lookupEntry(ctx context.Context, by directory.Key, value []by
 	if by == directory.ByUserName || by == directory.ByGroupName {
 		k.value = entity.FoldPrincipalName(k.value)
 	}
-	return c.answer(ctx, k, grace, fresh, c.lookupAsk(by, value))
+	return c.answer(ctx, k, grace, fresh, charge, c.lookupAsk(by, value))
 }
 
 // lookupAsk asks the directory who holds value by by, on a copy of value of
@@ -249,22 +351,24 @@ func (c *dirCache) lookupAsk(by directory.Key, value []byte) asker {
 // groupsOf is user's closure, under a closure's key, its entry ID, answered as lookup answers: fresh for the positive TTL, then from one
 // query shared by every concurrent caller, a failed one served stale within
 // the grace and otherwise ErrUnavailable. A closure the directory cannot
-// finish fails whole, never as a shorter one.
-func (c *dirCache) groupsOf(ctx context.Context, user directory.Answer, grace time.Duration) (*dirEntry, bool, error) {
+// finish fails whole, never as a shorter one. charge is called as
+// lookupCharged calls it.
+func (c *dirCache) groupsOf(ctx context.Context, user directory.Answer, grace time.Duration, charge func() error) (*dirEntry, bool, error) {
 	if len(user.EntryID) == 0 {
 		return nil, false, fmt.Errorf("%w: identity: the directory answered an entry with no ID", vfserr.ErrUnavailable)
 	}
 	k := dirKey{closure: true, value: string(user.EntryID)}
-	return c.answer(ctx, k, grace, false, func(ctx context.Context) (directory.Answer, []directory.Answer, bool, error) {
+	return c.answer(ctx, k, grace, false, charge, func(ctx context.Context) (directory.Answer, []directory.Answer, bool, error) {
 		groups, err := c.client.Groups(ctx, user)
 		return directory.Answer{}, groups, true, err
 	})
 }
 
 // answer is lookup's rule for the question k, which ask puts to the
-// directory. queried says the entry came from a query this call sent or
-// joined, not from the cache, fresh or stale.
-func (c *dirCache) answer(ctx context.Context, k dirKey, grace time.Duration, fresh bool, ask asker) (e *dirEntry, queried bool, err error) {
+// directory, charge, when set, called before a query is sent or joined.
+// queried says the entry came from a query this call sent or joined, not
+// from the cache, fresh or stale.
+func (c *dirCache) answer(ctx context.Context, k dirKey, grace time.Duration, fresh bool, charge func() error, ask asker) (e *dirEntry, queried bool, err error) {
 	q := question(k)
 	e = c.get(k)
 	now := c.clock.Now()
@@ -272,7 +376,7 @@ func (c *dirCache) answer(ctx context.Context, k dirKey, grace time.Duration, fr
 		c.lookups.WithLabelValues(q, "fresh").Inc()
 		return e, false, nil
 	}
-	var r singleflight.Result
+	var n *dirEntry
 	// decision: while directory_unreachable is raised, the probe is a
 	// lookup, not a goroutine: the first lookup dirProbeEvery after the last
 	// probe asks the directory and every other is answered from the grace or
@@ -286,24 +390,22 @@ func (c *dirCache) answer(ctx context.Context, k dirKey, grace time.Duration, fr
 	// if a quiet node's 20 seconds to clear ever delays a recovery an
 	// operator watches for.
 	if skip, _ := c.out.skip(now); skip {
-		r.Err = errDirUnreachable
-	} else {
-		// The query runs on the first caller's context without its
-		// cancellation, so a caller that stops waiting leaves it to the
-		// others; the client's query timeout bounds it.
-		ch := c.flight.DoChan(strconv.Itoa(int(k.by))+":"+strconv.FormatBool(k.closure)+":"+k.value, func() (any, error) {
-			return c.query(context.WithoutCancel(ctx), k, q, ask)
-		})
-		r = await(ctx, ch)
+		err = errDirUnreachable
+	} else if charge != nil {
+		if err := charge(); err != nil {
+			return nil, false, err
+		}
 	}
-	if r.Err == nil {
-		n := r.Val.(*dirEntry)
+	if err == nil {
+		n, err = c.share(ctx, k, q, ask)
+	}
+	if err == nil {
 		c.answered(q, n.found)
 		return n, true, nil
 	}
-	if errors.Is(r.Err, directory.ErrAmbiguous) {
+	if errors.Is(err, directory.ErrAmbiguous) {
 		c.lookups.WithLabelValues(q, "ambiguous").Inc()
-		return nil, false, r.Err
+		return nil, false, err
 	}
 	// decision: serve stale for a bounded grace, then fail closed. Failing
 	// closed at once turns every directory blip into a sign-in storm of
@@ -319,7 +421,37 @@ func (c *dirCache) answer(ctx context.Context, k dirKey, grace time.Duration, fr
 	}
 	c.lookups.WithLabelValues(q, "refused").Inc()
 	c.out.refuse()
-	return nil, false, r.Err
+	return nil, false, err
+}
+
+// share is the entry of one query of k, shared by every concurrent lookup
+// of it, or ErrUnavailable once ctx ends first.
+func (c *dirCache) share(ctx context.Context, k dirKey, q string, ask asker) (*dirEntry, error) {
+	key := strconv.Itoa(int(k.by)) + ":" + strconv.FormatBool(k.closure) + ":" + k.value
+	c.mu.Lock()
+	f := c.flights[key]
+	open := f == nil
+	if open {
+		f = &lookupCall{call: call{done: make(chan struct{})}}
+		c.flights[key] = f
+	}
+	f.waiters++
+	c.mu.Unlock()
+	defer c.leave(&f.call)
+	if open {
+		c.spawn(ctx, &f.call, func(ctx context.Context) {
+			e, err := c.query(ctx, k, q, ask)
+			c.mu.Lock()
+			delete(c.flights, key)
+			c.mu.Unlock()
+			f.e, f.err = e, err
+			close(f.done)
+		})
+	}
+	if err := await(ctx, &f.call); err != nil {
+		return nil, err
+	}
+	return f.e, f.err
 }
 
 // query asks the directory k once, through ask, in a slot of its own, and
@@ -362,35 +494,13 @@ func (c *dirCache) answered(q string, found bool) {
 	c.lookups.WithLabelValues(q, result).Inc()
 }
 
-// await is a shared query's result, or ErrUnavailable once ctx ends first;
-// the query runs on for the callers still waiting.
-func await(ctx context.Context, ch <-chan singleflight.Result) singleflight.Result {
-	select {
-	case r := <-ch:
-		return r
-	case <-ctx.Done():
-		return singleflight.Result{Err: fmt.Errorf("%w: identity: directory lookup: %w", vfserr.ErrUnavailable, ctx.Err())}
-	}
-}
-
 // sidQuery is one SID batch query, shared by every concurrent lookup that
 // asks one of its SIDs: done closes once got, an entry per SID, or err is set.
 type sidQuery struct {
+	call
 	batch [][]byte
-	done  chan struct{}
 	got   map[string]*dirEntry
 	err   error
-}
-
-// wait is q's result, or ErrUnavailable once ctx ends first; q runs on for
-// the lookups still waiting.
-func (q *sidQuery) wait(ctx context.Context) error {
-	select {
-	case <-q.done:
-		return q.err
-	case <-ctx.Done():
-		return fmt.Errorf("%w: identity: directory lookup: %w", vfserr.ErrUnavailable, ctx.Err())
-	}
 }
 
 // lookupSIDs answers "who holds this SID" for each of sids: from fresh
@@ -413,6 +523,7 @@ func (c *dirCache) lookupSIDs(ctx context.Context, sids [][]byte, grace time.Dur
 	held := map[string]*dirEntry{}
 	from := map[string]*sidQuery{} // each SID not fresh, and the query answering it
 	var asked, miss [][]byte
+	joined := map[*sidQuery]bool{} // the queries this lookup waits for
 	fresh, stale := 0, 0
 	now := c.clock.Now()
 	// The entries and the queries in flight are read, and this lookup's own
@@ -435,28 +546,39 @@ func (c *dirCache) lookupSIDs(ctx context.Context, sids [][]byte, grace time.Dur
 		asked = append(asked, s)
 		if f := c.asking[string(s)]; f != nil {
 			from[string(s)] = f
+			if !joined[f] {
+				joined[f] = true
+				f.waiters++
+			}
 		} else {
 			miss = append(miss, s)
 		}
 	}
 	var mine []*sidQuery
 	for batch := range slices.Chunk(miss, directory.SIDBatch) {
-		f := &sidQuery{batch: batch, done: make(chan struct{})}
+		f := &sidQuery{batch: batch, call: call{done: make(chan struct{}), waiters: 1}}
 		for _, s := range batch {
 			c.asking[string(s)] = f
 			from[string(s)] = f
 		}
 		mine = append(mine, f)
+		joined[f] = true
 	}
 	c.mu.Unlock()
+	defer func() {
+		for f := range joined {
+			c.leave(&f.call)
+		}
+	}()
 	if fresh > 0 {
 		c.lookups.WithLabelValues(q, "fresh").Add(float64(fresh))
 	}
 	// This lookup's queries start before it waits on any, and none waits on
 	// another, so two lookups waiting on each other's queries both finish.
 	// A query runs without the opener's cancellation, so a caller that stops
-	// waiting leaves it to the others; the client's timeout bounds it.
-	c.startSIDs(context.WithoutCancel(ctx), mine)
+	// waiting leaves it to the others; the client's timeout bounds it, or
+	// Close once none waits.
+	c.startSIDs(ctx, mine)
 	own := map[*sidQuery]bool{}
 	for _, f := range mine {
 		own[f] = true
@@ -464,12 +586,15 @@ func (c *dirCache) lookupSIDs(ctx context.Context, sids [][]byte, grace time.Dur
 	for i := 0; i < len(asked); i++ {
 		s := asked[i]
 		f := from[string(s)]
-		err := f.wait(ctx)
+		err := await(ctx, &f.call)
+		if err == nil {
+			err = f.err
+		}
 		if errors.Is(err, directory.ErrAmbiguous) && !own[f] {
 			// A joined query's ambiguity is the SID its opener asked, which
 			// may not be one of this lookup's: this lookup's SIDs it held are
 			// asked again in a query of this lookup's own, unregistered.
-			r := &sidQuery{done: make(chan struct{})}
+			r := &sidQuery{call: call{done: make(chan struct{}), waiters: 1}}
 			for _, t := range asked[i:] {
 				if from[string(t)] == f {
 					r.batch = append(r.batch, t)
@@ -477,7 +602,8 @@ func (c *dirCache) lookupSIDs(ctx context.Context, sids [][]byte, grace time.Dur
 				}
 			}
 			own[r] = true
-			go c.querySIDs(context.WithoutCancel(ctx), r)
+			joined[r] = true
+			c.spawn(ctx, &r.call, func(ctx context.Context) { c.querySIDs(ctx, r) })
 			i--
 			continue
 		}
@@ -528,13 +654,13 @@ func (c *dirCache) startSIDs(ctx context.Context, fs []*sidQuery) {
 			continue
 		}
 		if probe {
-			go func() {
+			c.spawn(ctx, &f.call, func(ctx context.Context) {
 				c.querySIDs(ctx, f)
 				c.startSIDs(ctx, fs[i+1:])
-			}()
+			})
 			return
 		}
-		go c.querySIDs(ctx, f)
+		c.spawn(ctx, &f.call, func(ctx context.Context) { c.querySIDs(ctx, f) })
 	}
 }
 
