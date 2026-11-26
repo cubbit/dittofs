@@ -149,7 +149,7 @@ title and not copied.
 | rule 6, **known failures shrink** | none | `unit` and `integration` keep no `known.yaml` for this component; every test lands green |
 | rule 7, **v2 ignores v1, and imports only what RFC 0 §1.2 allows** | T8.1, T8.4 | the provider gains `pkg/remote`, RFC 4's contract, for `Role`, `RoleKeys`, `Version` and `ErrNotFound`, as RFC 5's plan's rule allows; never `pkg/remote/memory` outside its tests, never `kvstore`. `kvstore` imports nothing of `pkg/transform`. E1's import test holds both |
 | rule 8, **real dependencies for properties of those dependencies** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T8.1, T8.4, T8.5, T8.6, T8.8 | the key lock's conflict runs in `RunKeyRecords` over `kvstore` on Badger and FoundationDB; each ordering claim (a record current only after the put, a crash beneath a rotation, a re-wrap resumed) runs on `kvstore` over `badgerkv` under `t.TempDir()` with `kvtest.FaultKV` failing or crashing the commit; key states and the primary version against `service:kmip` |
-| rule 9, **code comment conventions** ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T8.2, T8.3, T8.4, T8.6, T8.7 | `decision:` markers at the bucket ahead of its counter (D4), the object's bound (D3), the escrow refusal at rotation (D6), the report at the first read (D7), the put-less mark and the switch (D9), the notice's incarnation (D10) and one provider per configuration (D12); `ponytail:` at the walk of every namespace (D5) |
+| rule 9, **code comment conventions** ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T8.2, T8.3, T8.4, T8.6, T8.7 | `decision:` markers at the bucket ahead of its counter (D4), the object's bound (D3), the escrow refusal at rotation (D6), the put-less mark and the switch (D9), the notice's incarnation (D10) and one provider per configuration (D12); `ponytail:` at the walk of every namespace (D5) |
 | rule 10, **a test must be able to fail** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test in §6 names the bug it catches; the keys MAC is checked against E2's vector, computed by an independent implementation; the object's layout against a checked-in fixture |
 | rule 11, **a symbol is exported only if RFC 5's interface or a consumer outside the package uses it** | T8.1, T8.2, T8.4, T8.5, T8.6, T8.7 | `ControlStore`, the new `Deps` and `Config` fields and `Status` fields for the content wiring and E9; `RotateDataKey`, `RotateMasterKey` and `Run` for E9 and the content wiring; `DestroyedSince` for E1's interface; `Records.Namespaces` and the widened `Update` for the provider's tests and `kvstore`'s. The check itself stays unexported |
 | rule 12, **each subtask creates only what it declares** | all | the `keyseq` subtag lands with the view's sequence, which T8.4 consumes; the namespace listing with T8.6 and T8.7 as consumers; the notice lands with its feed from loads and is extended by the marking; nothing for backup locations, which have no writer in v1.1 |
@@ -211,7 +211,7 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
 | R26 | The marking is idempotent: a record already marked is left as it is, so a later read that finds the master key still destroyed writes nothing and reports nothing twice, and a marking cut short by a crash is completed by the next read, with `Pin` refused throughout | MUST, test row | Appendix B.2; §8.2's Appendix B.2 master-key destroy row | T8.7 |
 | R27 | A destroyed material ID is one whose key record is `destroyed`, lost for good: an unavailable or unknown key, and a master key the service reports compromised, are never reported destroyed | MUST NOT | Appendix B.4; RFC 5 plan D17 | T8.2, T8.7 |
 | R28 | The notice returns the material IDs the provider has found destroyed after a cursor, and the cursor to pass next, possibly as a bounded batch; a cursor from before a restart skips no ID found destroyed since | MUST | E1 R14, D5; RFC 5 plan D17; RFC 8 §10.4 | T8.2 |
-| R29 | The notice reports a destroyed key record on `keystest.Memory` and on the provider, under `keystest.Run`, and a master key reported destroyed on the provider | test row | RFC 5 plan §1.4, §5 (epic 8, "Done when"); E2 T2.1 | T8.2, T8.7 |
+| R29 | The notice reports a destroyed key record on `keystest.Memory` and on the provider, under `keystest.Run`, and, on the provider, every data key and chunking key a master key reported destroyed wraps | test row | RFC 5 plan §1.4, §5 (epic 8, "Done when"); E2 T2.1 | T8.2, T8.7 |
 
 **Concurrency and secrecy**
 
@@ -370,11 +370,10 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
   current data key; the content wiring runs it. `Current(ns, data-key)` refuses
   `ErrMaterialUnavailable` while the master key wrapping that data key has no state read, so a key
   this provider has not read never pins. The check calls `Deps.RotationNeeded(masterKeyID)` when
-  `primary` differs from the last answer, and at the first read after open, since nothing durable
-  records which version the records were last re-wrapped under and a rotation made while the node
-  was down would go unseen; E9 starts `rotate-master-key` unless one runs, and a rotation that finds
-  every record under the primary re-wraps nothing. A `decision:` marker at the first read says so.
-  A failed read leaves the last answer in force (R22, R23). Prior art: RFC 9 §7.5's own fixed
+  `primary` differs from the last answer, and at open when any record D5's walk found names a
+  master key other than `primary`, so a rotation made while the node was down is still seen and an
+  open with every record under the primary starts nothing (Appendix B.1); E9 starts
+  `rotate-master-key` unless one runs. A failed read leaves the last answer in force (R22, R23). Prior art: RFC 9 §7.5's own fixed
   period; AWS KMS's automatic rotation, which leaves re-encryption to the caller (from memory).
 
 - **D8, a master key's state reaches `Pin` through `Current`.** `Pin` reads `Current` for each kind
@@ -394,8 +393,10 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
   `ErrMaterialUnavailable`, then walks every namespace (D5), marking in one `Update` per namespace
   each record that names the key and claiming the next sequence, with no put first: a bucket that
   lags by a destroyed mark loses nothing, since the key it names cannot be unwrapped anyway. Once
-  every namespace has committed, it switches `Pin` to `ErrMaterialDestroyed`, adds the IDs to the
-  notice and to `Status.MasterKeysDestroyed`. Until that switch, while any marking is in progress, a
+  every namespace has committed, it switches `Pin` to `ErrMaterialDestroyed`, adds to the notice
+  the material ID of every record the marking covers, each data key and chunking key that master
+  key wraps, since a block's `encodings` name those and never the master key, and adds the master
+  key's ID to `Status.MasterKeysDestroyed`. Until that switch, while any marking is in progress, a
   row read `destroyed` is answered `ErrMaterialUnavailable` by `Get` and fed to no notice, so no
   report outruns a mark (R25). Each marked namespace's bucket then lags its claim, and the check
   starts, in a goroutine `Run` owns, a pass with an empty change per marked namespace (D4 step 2's
@@ -528,8 +529,11 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
     feed, filled by every `Open` that finds a row `destroyed`; T8.7 adds the marking's switch.
   - `(*keystest.Memory).DestroyedSince`, fed by `Destroy`, consumed by the RFC 8 offload plan's
     epic 18 and E11.
-  - `keystest.Harness` gains `keys.DestroyedNotice`; `keystest.Run` gains the notice's rows; E6's
-    adapter returns its newest provider's notice.
+  - `keystest.Harness` gains `keys.DestroyedNotice`; `keystest.Run` gains the notice's rows. E6's
+    adapter keeps one provider for the run: after each write through `Records` it calls the
+    provider's per-instance reload hook (`export_test.go`, E6's T6.6), which drops the cache and
+    re-opens each namespace the provider held, so a row `Destroy` marks feeds the notice as `Open`
+    does (D10) and the notice keeps one incarnation.
 - **Acceptance criteria:**
   - `keystest.Run` passes on `Memory` and on the provider, each broken provider of E2's rows still
     failing its own row, and a broken `Memory` that reports a replaced key as destroyed failing the
@@ -541,7 +545,7 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
     given are never named (catch a notice that repeats, skips, or reports a missing key as lost,
     R27, R28, R29).
   - On the provider: a cursor taken, then a fresh provider over the same records, a row marked
-    `destroyed` while it was down, and a `Get` of it: the old cursor names it (catches a cursor whose
+    `destroyed` while it was down, and an `Open` of its namespace: the old cursor names it (catches a cursor whose
     index is read against another incarnation's list, skipping IDs, R28).
   - 300 destroyed IDs: two batches, 256 and 44, the second cursor naming nothing more (catches a
     batch that drops the remainder).
@@ -717,8 +721,9 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
   - Advancing the clock by the check period runs the check once, with no restart.
 - **Tests** (on the key-file custody, wrapped where named):
   - Records under A, a provider opened on B with A retired: `RotationNeeded` receives B once at the
-    first read and not at the next period; a fresh provider receives it again (catch a report lost
-    or repeated, R20, R21).
+    open and not at the next period; a fresh provider receives it again, and a provider opened on B
+    with every record under B receives nothing (catch a report lost or repeated, or a rotation
+    started at every open, R20, R21).
   - The wrapper's `primary` failing, and failing as ambiguous, for two periods: nothing reported,
     no row rewritten, `Status.MasterKeysUnavailable` naming the key each period (catches a re-wrap
     on an ambiguous answer, R22).
@@ -730,7 +735,8 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
   - A master key reported destroyed, with records under it in two namespaces, one record of a third
     already re-wrapped under another key: after one period every record naming the key reads
     `destroyed` from `kvstore`'s state byte, the re-wrapped one does not; `Pin` and `Get` are
-    `ErrMaterialDestroyed`; the notice names each ID once; once the repair passes end, each
+    `ErrMaterialDestroyed`; the notice names once each data key and chunking key the marked records
+    hold, and neither the master key nor the re-wrapped record's key; once the repair passes end, each
     namespace's `keys` object holds its marks (catch a report before the marks, a mark left out of
     the bucket or a record wrongly marked, R12, R23, R24, R25, R27, R29).
   - The same with the bucket refusing puts: the switch to `ErrMaterialDestroyed` still happens at
@@ -745,8 +751,8 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
     R26).
   - 64 goroutines of `Current` and `Get` across a period's check and a marking, under `-race`
     (R31).
-- **Rules:** rule 5: the refusal at `Pin`, the mark at `kvstore`'s state byte. rule 9: D7's and
-  D9's `decision:` markers.
+- **Rules:** rule 5: the refusal at `Pin`, the mark at `kvstore`'s state byte. rule 9: D9's
+  `decision:` markers.
 
 ### T8.8 The live rows against `service:kmip`, and the planted key
 
@@ -756,7 +762,8 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
 - **Covers:** R21, R22, R23, R30.
 - **Deliverables:** `kmip_rotate_integration_test.go` under `-tags=integration`, over E7's custody
   and `service:kmip`, with `kvstore` over `badgerkv` and the memory store; the planted-key helper,
-  also called from T8.5 to T8.7's unit tests.
+  also called from T8.5 to T8.7's unit tests. With `DITTOFS_TEST_KMIP` unset the file skips, naming
+  the variable, as E7's T7.3 does.
 - **Acceptance criteria:** each row below passes against the harness's server with no restart of
   the provider, and `dt run integration` runs it.
 - **Tests:**
