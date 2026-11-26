@@ -10,9 +10,8 @@ written, with a line at the top of each noting what a later round overturned.
 Where the numbers live: reference benchmark runs and keep-or-change decisions live in
 [`journal-bench-results.md`](journal-bench-results.md); a developer machine's figures never feed
 those and this ledger says so wherever one of its own figures came from one. The 2026-11-26
-round's raw artifacts (pprof profiles, bench outputs, per-finding reports) were kept on the
-author's machine and in the git-excluded `docs/superpowers/plans/2026-11-26-journal-perf-*.md`;
-the *conclusions* those artifacts supported are all repeated here, so this file stands alone.
+round's raw artifacts (pprof profiles, bench outputs) are not in the repository; the
+*conclusions* they supported are all repeated here, so this file stands alone.
 
 ## How to run a round (the measurement rules)
 
@@ -82,6 +81,9 @@ the row at ~250 MB/s against its raw twin's ~1300–1500, J2 writer-scaling flat
   stream's encode site), but only 1 of ~9.6 allocations per write — exactly 6 of the 9.6 are
   production (buffer, `leaveDrain` defer, the capacity `Grant`, `Share.enter`'s method value,
   the file lock's entry and closure), the rest are harness.
+- **Two unreproduced reds**: `TestSealRefusesAnAppendResumedFromTheRollGate` and
+  `TestSoakRemovalChurnDrains` each went red once in an unprofiled parallel full pass and never
+  again; neither sits on a path this round changed.
 
 ### Implemented
 
@@ -114,9 +116,10 @@ and tagged `go vet` green.
    CPU-and-GC bound and P2's churn reduction counts — **large row 292 → 732 MB/s (2.50×), p99
    92–96 µs, control 5.9–8.1×**; ~24% above P1a alone (P2's isolated gain is the honest +1.5%).
    Quote P2's stacked gain only when stacked; #6473's own production pair is one same-hour pair,
-   +15% over P1a alone.
+   +15% over P1a alone. The stacked large row still sits at ≈ 55% of the raw twin (732 vs
+   ~1300–1500 MB/s), unprofiled; the inline seal drains, unmasked by P1a, are the likeliest share.
 
-### Parked, with triggers
+### Not built, with the evidence that would reopen it
 
 - **Empty-`Release` `c.mu` skip** (no-op holds were 21.5% of J1's lock delay) and **fold
   Claimed+Release into one settle**: both fail closed, ~0.5 and 1.5–3.5 half-days. Trigger: the
@@ -131,10 +134,6 @@ and tagged `go vet` green.
   (Linux), and more in flight makes it worse.
 - **Linux `posix_fadvise(WILLNEED)` half of P1a**: mechanism probably absent (spares are
   zero-filled); measure on the reference box before believing either way.
-- **Parked test-flake watch**: `TestSealRefusesAnAppendResumedFromTheRollGate` and
-  `TestSoakRemovalChurnDrains` each went red once in an unprofiled parallel full pass, never
-  reproduced; not on any prototype path. File issues if they recur rather than quarantining
-  unseen.
 
 ### Dead ends — checked, do not retry without new evidence
 
@@ -161,16 +160,6 @@ and tagged `go vet` green.
 8. **Unwritten-extent write penalty**: rejected by aligned micro-benchmark, then superseded by
    the page-fault finding — the two are distinct; the fault story, not the extent story, is
    what the journal has.
-
-## Open levers, ranked (as of iteration 1)
-
-1. Post-P1a+P2 **residual ≈ 55% of the twin** (the stacked 732 vs ~1300–1500 MB/s, unprofiled):
-   the now-unmasked inline seal drains are the likeliest share; the next round opens with a
-   block-scoped profile of the post-P1a+P2 stack and an honest read of item 4 above.
-2. **ContentBand**, once throughput makes the pool binding (see trigger above) — reference box.
-3. Lock micro-costs, gated on the post-P1a re-profile or a >=128-writer Linux workload.
-4. The J2 floor's other half: writer `Sync` queueing behind the make's flush — addressed by
-   ContentBand's roll-kick change, re-measure with it.
 
 **Figures caveat.** Every number in this iteration came from a MacBook/APFS developer box under
 daytime load; its absolute values mean nothing outside it (the runs' own twin gate held each
