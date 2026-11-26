@@ -314,7 +314,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 | --- | --- | --- | --- | --- | --- | --- |
 | E1 ⛔ | NFS surface | request state; `ops/v4`'s handler set, `COMPOUND` row and members' table | 3 | 3.75 | team | all |
 | E2 ⛔ | Test foundations | the shared test pieces (S0); the handler runner and NFS's harness over it; knfsd captures; the service's `NoGrace` | 6 | 13.5 | team | E3 to E14 |
-| E3 | The RPC layer | credentials to `Identity` and `Call`, `NULL`, NFS over TLS, the stages' and programs' tables, status layers, the scripted client, the `Replay` stage and its duplicate-request cache (D10) | 6 | 21.25 | A | E8, E13, E14; S3 and S4 |
+| E3 | The RPC layer | credentials to `Identity` and `Call`, `NULL`, NFS over TLS, the stages' and programs' tables, status layers, the scripted client, the `Replay` stage and its duplicate-request cache (D10) | 6 | 22 | A | E8, E13, E14; S3 and S4 |
 | E4 | NFSv3 and MOUNT | every NFSv3 procedure, `fattr3`, `sattr3` and WCC, cookies, stability, `FSINFO`, MOUNT; A3's service half after S2b | 10 | 26 | B | S3; E11, partly; E16 |
 | E5 | NFSv4 namespace, attributes and data | file-handle operations, the pseudo-filesystem, `SECINFO`, `fattr4` and Appendix B, `ACCESS`, name operations, `READDIR`, stateless I/O | 8 | 23 | C | E6, E9; E12, partly; S4 |
 | E6 | NFSv4 ACL attributes | `translate`'s NFSv4 functions, `acl`, `dacl`, `sacl`, `aclsupport`, `who`, `mode_umask` | 5 | 12 | C | E16 |
@@ -702,7 +702,7 @@ cuts both corpus captures to the bytes of the golden files already cut from them
 
 ### Epic 3 — The RPC layer
 
-**Epic 3 estimate: 6 subtasks, 21.25 man-days.**
+**Epic 3 estimate: 6 subtasks, 22 man-days.**
 
 Everything a call meets before a handler: its credential as an `Identity` and a `vfs.Call`, `NULL`
 and the TLS upgrade, the replay check, and the status every error of the stages and of `core` is
