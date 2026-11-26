@@ -63,19 +63,6 @@ type DurableKeys struct {
 	LockSeq  [64]uint8     // lock replay: per index, a valid bit (0x10) and a 4-bit sequence
 }
 
-// AppInstance names the application instance an open belongs to.
-type AppInstance struct {
-	ID      [16]byte
-	Version [2]uint64 // high, low; zero: unversioned
-}
-
-// LockSequence is a lock request's place in its open's lock replay: an index
-// from 1 to 64, any other naming none, and a 4-bit sequence.
-type LockSequence struct {
-	Index uint8
-	Seq   uint8
-}
-
 // ReconnectMatch is what a reconnect presents beside its Caller.
 type ReconnectMatch struct {
 	Share  entity.ShareID // the share of the tree the reconnect arrived on
@@ -133,13 +120,6 @@ type OpenRequest struct {
 	Channel    uint16            // the create's channel sequence, the open's first
 }
 
-// Seqs is the owner sequence numbers a request presents; zero where the
-// protocol has none. A reference's own sequence travels in OpenRef.
-type Seqs struct {
-	Owner    *uint32 // the owner's number: the owner of locks', or the owner of opens' for an open, a downgrade, a close or a lock introducing a new owner of locks
-	NewOwner uint32  // a lock introducing a new owner of locks: that owner's first number
-}
-
 // OpenResult is what an open answers.
 type OpenResult struct {
 	Open     Open
@@ -164,31 +144,9 @@ type OpenUpdate struct {
 	Suspend, Resume entity.TimeMask
 }
 
-// OpenRef names what a call acts through, by Kind: an open, a lock state, a
-// delegation, or the anonymous open of NFSv3 I/O and of NFSv4's anonymous
-// stateid. An NFS reference names it by State, with the sequence presented;
-// an SMB one by Open, its FileId's ID, at its current sequence. Handle is
-// the file handle the request carried, whose file must be the state's.
-type OpenRef struct {
-	Kind   RefKind
-	State  StateRef      // NFS: the open, lock state or delegation; SMB: only the shard
-	Open   entity.OpenID // SMB: the open; zero for NFS
-	Handle entity.Handle // nil: none; an anonymous open's file is the FileKey's
-}
-
-// RefKind is what an OpenRef names.
-type RefKind uint8
-
-const (
-	RefOpened RefKind = iota + 1
-	RefLocked
-	RefDelegated
-	RefAnonymous
-)
-
-// file is the file r's handle names; zero when it carries none, and
+// fileOf is the file r's handle names; zero when it carries none, and
 // ErrBadState for a handle that names no file.
-func (r OpenRef) file() (entity.FileID, error) {
+func fileOf(r OpenRef) (entity.FileID, error) {
 	if len(r.Handle) == 0 {
 		return entity.FileID{}, nil
 	}
@@ -1053,7 +1011,7 @@ func (t *Table) findOpen(who Caller, ref OpenRef) (entity.FileID, refKey, error)
 	if ref.Kind != RefOpened {
 		return entity.FileID{}, refKey{}, ErrBadState
 	}
-	f, err := ref.file()
+	f, err := fileOf(ref)
 	if err != nil {
 		return entity.FileID{}, refKey{}, err
 	}

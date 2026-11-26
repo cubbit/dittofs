@@ -10,12 +10,6 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
-// GraceRef names one grace instance of one shard.
-type GraceRef struct {
-	Shard    ShardID
-	Instance uint64
-}
-
 // Recovery is the view of the shards this table serves, their grace after a
 // loss, and a client's references with no file handle; it runs at the
 // primary of the shard each names.
@@ -423,7 +417,7 @@ func (t *Table) owedLocked(c entity.ClientID) []GraceRef {
 	var owed []GraceRef
 	for _, m := range t.known[c].shards {
 		if sh := t.shards[m.Shard]; sh != nil && m.Done < sh.instance {
-			owed = append(owed, GraceRef{m.Shard, sh.instance})
+			owed = append(owed, GraceRef{Shard: m.Shard, Instance: sh.instance})
 		}
 	}
 	return owed

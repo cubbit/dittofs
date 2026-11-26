@@ -36,38 +36,6 @@ const (
 	maxPerSource = 16
 )
 
-// Client is a client's record and what the table holds for it in memory.
-type Client struct {
-	entity.ClientRecord
-	Expires time.Duration // the Deps.Clock.Elapsed reading its lease ends at, at this node; zero: no lease
-	Pending *Pending      // a proposed instance awaiting its confirm
-}
-
-// Pending is a proposed client instance awaiting its confirm. It is held only
-// by the node that answered, and never written.
-type Pending struct {
-	ID      entity.ClientID  // the ID a confirm makes current: this client's, or a new one for a new Boot
-	Boot    [8]byte          // the instance proposed
-	Owner   entity.Principal // who proposed it; only it may confirm
-	Confirm [8]byte          // what the confirm must present: 64 bits from Deps.Rand
-	Expires time.Duration    // Deps.Clock.Elapsed one lease period after the proposal; then it is gone
-	Adapter []byte           // becomes the record's Adapter at the confirm; never read here
-}
-
-// Proposal is what Propose answers and Connect confirms.
-type Proposal struct {
-	Client  entity.ClientID // Pending.ID
-	Confirm [8]byte         // Pending.Confirm
-}
-
-// ClientStatus is what a renewal reports beside the lease.
-type ClientStatus struct {
-	AdminRevoked      bool       // a reference an administrator revoked is in the client's revoked set
-	RecallableRevoked bool       // a grant revoked at its recall deadline is
-	ReclaimNeeded     bool       // a shard of its state is in a grace instance it has not finished
-	Reclaim           []GraceRef // those instances, which the adapter keeps per session for ReclaimComplete
-}
-
 // Caller is the client a call acts for, as the adapter proved it, and the
 // principal it runs as, mapped and never squashed. Sessioned is whether the
 // call has a session: a call without one is refused state created on one,
@@ -172,13 +140,6 @@ type Clients interface {
 	// file's admission lock, which the table takes itself: the service must
 	// not hold one when calling.
 	Disconnect(ctx context.Context, c entity.ClientID, s entity.SessionRef, end SessionEnd) (gen uint64, err error)
-}
-
-// SessionEnd is how Disconnect ends one session.
-type SessionEnd struct {
-	Logoff bool   // a logoff or a failed re-authentication's teardown: every open of the session closes
-	Last   bool   // the node's last session of the client: the node leaves Reach.Sessions in the same call, at Gen
-	Gen    uint64 // with Last: the node's entry's Gen when its last session was decided; a later listing's keeps the entry, and Disconnect returns its Gen
 }
 
 // nodeOf is the node a session ref names, as Reach.Sessions lists it: its
@@ -324,7 +285,7 @@ func (v clients) Propose(ctx context.Context, c Client, from netip.Addr) (Propos
 	t.sources[src]++
 	p.Expires = t.d.Clock.Elapsed() + leasePeriod
 	t.pending[key] = pending{p, src, known}
-	return Proposal{p.ID, p.Confirm}, nil
+	return Proposal{Client: p.ID, Confirm: p.Confirm}, nil
 }
 
 func (v clients) Connect(ctx context.Context, c Client, p *Proposal) (entity.ClientID, uint64, error) {

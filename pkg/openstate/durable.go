@@ -562,7 +562,7 @@ func (t *Table) reinstate(ctx context.Context, share entity.ShareID, s ShardID, 
 		Delete:     DeleteMark{OnClose: rec.DeleteOnClose, By: rec.DeleteBy},
 		Suspended:  rec.Suspended,
 		Durability: rec.Durability, Session: rec.Session, Channel: Channel{Seq: rec.ChannelSeq},
-		Durable: DurableKeys{Timeout: rec.Timeout, Create: rec.CreateGUID, Instance: AppInstance{rec.AppInstance, rec.AppVersion}, LockSeq: rec.LockSeq},
+		Durable: DurableKeys{Timeout: rec.Timeout, Create: rec.CreateGUID, Instance: AppInstance{ID: rec.AppInstance, Version: rec.AppVersion}, LockSeq: rec.LockSeq},
 	}}
 	if cl.Recovery == entity.RecoverReconnect {
 		o.owedTo = sh
@@ -585,7 +585,7 @@ func (t *Table) reinstate(ctx context.Context, share entity.ShareID, s ShardID, 
 			if err != nil {
 				return err
 			}
-			ls.locks = append(ls.locks, LockRange{ByteRange{Offset: l.Offset, Length: l.Length}, l.Exclusive})
+			ls.locks = append(ls.locks, LockRange{ByteRange: ByteRange{Offset: l.Offset, Length: l.Length}, Exclusive: l.Exclusive})
 			_ = t.charge(o.Client, cappedRanges, 1, false)
 		}
 		if e.pending == nil {
@@ -626,7 +626,7 @@ func (t *Table) reinstateLease(e *entry, o *open, s ShardID, l *entity.Lease, ou
 	if err != nil {
 		return err
 	}
-	g := &grant{id: GrantID{s, ref.Instance, ref.Token}, client: o.Client, key: o.lease, parent: LeaseKey(l.ParentKey),
+	g := &grant{id: GrantID{Shard: s, Instance: ref.Instance, Token: ref.Token}, client: o.Client, key: o.lease, parent: LeaseKey(l.ParentKey),
 		fsm: grantfsm.Grant{Kind: k, Epoch: l.Epoch, V2: l.V2}, counted: k != GrantNone, sessioned: o.sessioned()}
 	if e.grants == nil {
 		e.grants = map[uint64]*grant{}

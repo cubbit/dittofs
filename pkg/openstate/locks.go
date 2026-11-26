@@ -20,46 +20,6 @@ import (
 // cannot split.
 const maxRanges = 64
 
-// Lock is one byte-range lock, held against the file.
-type Lock struct {
-	Owner LockOwner
-	Open  uint64 // the token of the open it was taken under, whose close releases it; zero: none
-	Range LockRange
-}
-
-// LockOwner is who holds a lock. Two owners are one when their Client and
-// Name are, so two owners of one client conflict like two clients.
-type LockOwner struct {
-	Client entity.ClientID
-	Name   []byte // the owner the client names, at most 1,024 bytes, compared and never interpreted
-
-	// Stack: its locks stack, an exclusive one conflicts with its own, and
-	// they are mandatory; else they merge, never conflict with each other,
-	// and are advisory.
-	//
-	// ponytail: one flag carries two rules that go together in every protocol
-	// served, as SMB's locks are the only ones that stack and the only ones
-	// that are mandatory. Split it into two flags when a protocol is served
-	// whose locks stack but are advisory, or merge but are mandatory.
-	Stack bool
-}
-
-// LockRange is one range of a lock request; one request may mix shared and
-// exclusive ranges.
-type LockRange struct {
-	ByteRange
-	Exclusive bool
-}
-
-// WaitKind is how a conflicting lock request waits.
-type WaitKind uint8
-
-const (
-	WaitNone     WaitKind = iota
-	WaitPoll              // the client asks again; a freed range is reserved for its next request
-	WaitCallback          // granted in the step that frees the range, and reported through Sink.LockWaitOver
-)
-
 // LockReq is one lock request: every range in one step, all or none.
 type LockReq struct {
 	Owner   LockOwner
@@ -79,18 +39,6 @@ type LockReq struct {
 type LockResult struct {
 	Waiting bool     // a callback waiter was recorded: granted later through Sink.LockWaitOver
 	Ref     StateRef // the lock state the owner's locks are held under; Seq is its sequence as of the answer
-}
-
-// LockWaiter is a lock request that conflicted and asked to wait.
-type LockWaiter struct {
-	File     entity.FileID
-	Owner    LockOwner
-	Open     uint64 // the open's token; zero: the lock names no open
-	Range    LockRange
-	Wait     WaitKind
-	Deadline time.Duration // poll only: one lease period after the owner's last poll, or after its range freed
-	Reserved bool          // poll only: the range is free and held for this owner until Deadline
-	Replay   *LockSequence // the request's place in its open's lock replay, stored when it is granted; nil: none
 }
 
 // Locks is the view of byte-range locks and their waiters; it runs at the
@@ -343,7 +291,7 @@ func (ls *lockState) cut(b ByteRange) {
 	var kept []LockRange
 	for _, l := range ls.locks {
 		for _, p := range ranges.Minus(l.ByteRange, b) {
-			kept = append(kept, LockRange{p, l.Exclusive})
+			kept = append(kept, LockRange{ByteRange: p, Exclusive: l.Exclusive})
 		}
 	}
 	ls.locks = kept
@@ -945,7 +893,7 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 		t.serve(ctx, e, out)
 		return LockResult{Ref: ls.ref}, nil
 	case r.Wait == WaitNone:
-		return LockResult{}, &LockedError{*held}
+		return LockResult{}, &LockedError{Holder: *held}
 	case repeat:
 		if w := e.waiters[prev]; w.Wait == WaitPoll {
 			w.Deadline = now + leasePeriod
@@ -963,7 +911,7 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 		}
 		w := &LockWaiter{File: e.file, Owner: ls.owner, Open: id, Range: r.Ranges[0], Wait: r.Wait}
 		if q := r.Replay; q != nil {
-			w.Replay = &LockSequence{q.Index, q.Seq}
+			w.Replay = &LockSequence{Index: q.Index, Seq: q.Seq}
 		}
 		if w.Wait == WaitPoll {
 			w.Deadline = now + leasePeriod
@@ -979,7 +927,7 @@ func (t *Table) lock(ctx context.Context, e *entry, s ShardID, r LockReq, op *op
 		}
 	}
 	if r.Wait == WaitPoll {
-		return LockResult{}, &LockedError{*held}
+		return LockResult{}, &LockedError{Holder: *held}
 	}
 	res := LockResult{Waiting: true}
 	if ls := e.lockState(r.Owner, id); ls != nil { // a grant just refused past the client's ranges drops it
@@ -1086,7 +1034,7 @@ func (v locks) TestLock(ctx context.Context, who Caller, f FileKey, o LockOwner,
 		if err := ownerOnSession(e, who, o); err != nil {
 			return err
 		}
-		held = e.blocker(o, LockRange{r, exclusive}, len(e.waiters))
+		held = e.blocker(o, LockRange{ByteRange: r, Exclusive: exclusive}, len(e.waiters))
 		return nil
 	})
 	return held, err

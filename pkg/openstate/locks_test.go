@@ -28,8 +28,8 @@ func (f *fixture) host(t *testing.T, name string, boot byte) Caller {
 }
 
 func br(off, n uint64) ByteRange { return ByteRange{Offset: off, Length: n} }
-func x(off, n uint64) LockRange  { return LockRange{br(off, n), true} }
-func sh(off, n uint64) LockRange { return LockRange{br(off, n), false} }
+func x(off, n uint64) LockRange  { return LockRange{ByteRange: br(off, n), Exclusive: true} }
+func sh(off, n uint64) LockRange { return LockRange{ByteRange: br(off, n), Exclusive: false} }
 
 func owner(who Caller, name string) LockOwner {
 	return LockOwner{Client: who.Client, Name: []byte(name)}
@@ -76,7 +76,7 @@ func (f *fixture) holder(t *testing.T, file FileKey, r ByteRange) *Lock {
 	t.Helper()
 	var h *Lock
 	if err := f.step(file.ID, func(e *entry) error {
-		h = e.blocker(LockOwner{Name: []byte("tester")}, LockRange{r, true}, len(e.waiters))
+		h = e.blocker(LockOwner{Name: []byte("tester")}, LockRange{ByteRange: r, Exclusive: true}, len(e.waiters))
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -387,7 +387,7 @@ func TestWaitersFirstInFirstOut(t *testing.T) {
 		hs[n] = f.host(t, n, 1)
 	}
 	req := func(n string, exclusive bool, wait WaitKind) LockReq {
-		return LockReq{Owner: owner(hs[n], n), Ranges: []LockRange{{all, exclusive}}, Wait: wait}
+		return LockReq{Owner: owner(hs[n], n), Ranges: []LockRange{{ByteRange: all, Exclusive: exclusive}}, Wait: wait}
 	}
 	f.mustLock(t, hs["h"], file, req("h", false, WaitNone))
 	for _, n := range []string{"a", "b", "c"} {
@@ -932,7 +932,7 @@ func TestRefusalsOfOverlappingGrants(t *testing.T) {
 			file := anyFile()
 			grant := func(blocker Caller, held ByteRange, r LockRange) LockWaiter {
 				t.Helper()
-				f.mustLock(t, blocker, file, LockReq{Owner: owner(blocker, "blocker"), Ranges: []LockRange{{held, true}}})
+				f.mustLock(t, blocker, file, LockReq{Owner: owner(blocker, "blocker"), Ranges: []LockRange{{ByteRange: held, Exclusive: true}}})
 				f.mustLock(t, h, file, LockReq{Owner: owner(h, "h"), Ranges: []LockRange{r}, Wait: WaitCallback})
 				f.unlock(t, blocker, file, owner(blocker, "blocker"), held)
 				ws := f.sink.takeWaits()
@@ -1006,7 +1006,7 @@ func overlappingGrants(t *testing.T, f *fixture, file FileKey, h Caller, ho Lock
 func callbackGrant(t *testing.T, f *fixture, file FileKey, h Caller, ho LockOwner, name string, held ByteRange, r LockRange) LockWaiter {
 	t.Helper()
 	blocker := f.host(t, name, 1)
-	f.mustLock(t, blocker, file, LockReq{Owner: owner(blocker, "blocker"), Ranges: []LockRange{{held, true}}})
+	f.mustLock(t, blocker, file, LockReq{Owner: owner(blocker, "blocker"), Ranges: []LockRange{{ByteRange: held, Exclusive: true}}})
 	f.mustLock(t, h, file, LockReq{Owner: ho, Ranges: []LockRange{r}, Wait: WaitCallback})
 	f.unlock(t, blocker, file, owner(blocker, "blocker"), held)
 	ws := f.sink.takeWaits()
@@ -1099,7 +1099,7 @@ func TestStackingLockLeavesItsGrantWholeToRefuse(t *testing.T) {
 			ho := LockOwner{Client: h.Client, Name: []byte("h"), Stack: true}
 			file := anyFile()
 			g := callbackGrant(t, f, file, h, ho, "b", br(15, 5), sh(10, 10))
-			f.mustLock(t, h, file, LockReq{Owner: ho, Ranges: []LockRange{{own, false}}})
+			f.mustLock(t, h, file, LockReq{Owner: ho, Ranges: []LockRange{{ByteRange: own, Exclusive: false}}})
 			if err := f.Locks().WaitAnswered(ctx, h, g, true); err != nil {
 				t.Fatal(err)
 			}
@@ -1118,7 +1118,7 @@ func regrant(t *testing.T, f *fixture, file FileKey, h Caller, ho LockOwner, r L
 	t.Helper()
 	d, c := f.host(t, "d", 1), f.host(t, "c", 1)
 	f.mustLock(t, d, file, LockReq{Owner: owner(d, "d"), Ranges: []LockRange{r}})
-	f.mustLock(t, c, file, LockReq{Owner: owner(c, "c"), Ranges: []LockRange{{r.ByteRange, true}}, Wait: WaitCallback})
+	f.mustLock(t, c, file, LockReq{Owner: owner(c, "c"), Ranges: []LockRange{{ByteRange: r.ByteRange, Exclusive: true}}, Wait: WaitCallback})
 	f.mustLock(t, h, file, LockReq{Owner: ho, Ranges: []LockRange{r}, Wait: WaitCallback})
 	if _, err := f.Locks().CancelLock(ctx, c, file, owner(c, "c"), r.ByteRange); err != nil {
 		t.Fatal(err)
