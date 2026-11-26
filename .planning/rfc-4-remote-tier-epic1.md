@@ -55,8 +55,7 @@ or maps an error.
 
 ### 1.1 In scope
 
-`pkg/remote`'s v1.1 contract (D1 to D4), the codec's exported surface (D5, D6 and D11, and D9 and D10,
-both pending the user's answer), the import walk (D7), the contract's purity check and both export
+`pkg/remote`'s v1.1 contract (D1 to D4), the codec's exported surface (D5, D6, D9, D10 and D11), the import walk (D7), the contract's purity check and both export
 pins (D8), and the review that freezes them at S1. Epic 1's subtask ids are its own, cited
 nowhere else yet.
 
@@ -209,7 +208,7 @@ cite them. Where an owned section's obligation is another epic's to carry out, t
   	Chain     transform.Chain    // the configured chain, built by the content wiring
   	ChunkID   func(plain []byte) [32]byte                                       // RFC 2 §4.1, under the namespace's chunk-ID key
   	Name      func(nonce [16]byte, chain [32]byte, ids [][32]byte) remote.Name  // RFC 2 §4.2, the key scope bound in
-  	Census    func(ctx context.Context, name remote.Name) ([]transform.Encoded, error) // D10, pending
+  	Census    func(ctx context.Context, name remote.Name) ([]transform.Encoded, error) // D10
   	MaxChunk  int   // RFC 2 §3.2's Max; a body is bounded by Chain.MaxDecodeLen(MaxChunk)
   	Version   uint8 // the block format version to write (RFC 4 §3.5), E7's setting
   }
@@ -306,25 +305,28 @@ cite them. Where an owned section's obligation is another epic's to carry out, t
   behaviour beyond methods over its own values", which the import walk cannot see. The pin's
   `exports` helper is copied as `pkg/settings` and `pkg/secrets` copy it. Prior art: those two
   `arch_test.go` files (read the code).
-- **D9. `NewPut` takes the pinned chain and the nonce. Pending the user's answer.** RFC 4 §4.3
-  writes `NewPut(name, src)`, but the header carries the nonce and the chain ID (RFC 4 §3.2), and
+- **D9. `NewPut` takes the pinned chain and the nonce.** RFC 4 §4.3 wrote `NewPut(name, src)`,
+  but the header carries the nonce and the chain ID (RFC 4 §3.2), and
   the encoder must encode under the attempt the engine pinned before it minted the name (RFC 5
   §3.1's `Pin`, RFC 8 §6.6): neither can be recovered from the name, which is a hash of them. The
-  recommended signature, written into T1.3:
+  signature, as RFC 4 §4.3 now gives it:
 
   ```go
   func (s *Store) NewPut(name remote.Name, nonce [16]byte, pin transform.Attempt, src iter.Seq2[remote.Chunk, error]) *Put
   ```
 
-  On the user's agreement, RFC 4 §4.3's block and RFC 3 §1.3's two mentions of `NewPut(name, src)`
-  (`Upload`'s doc comment and the prose under the interface) are amended in the same pull request.
+  This pull request amends RFC 4 §4.3's block, RFC 3 §1.3's two mentions (`Upload`'s doc comment
+  and the prose under the interface), RFC 8 §2.1's row that spells it, and the spellings in the RFC 4,
+  RFC 3 and RFC 8 offload plans. The engine passes only the nonce and the pinned `Attempt`, which carries material IDs,
+  never key material: the chunk-ID and name functions that need the namespace's key come from
+  the content wiring (D5), as the RFC 2 and RFC 8 offload breakdowns have it.
   A caller could pass a name that does not match the nonce, the pin and the chunks; E6's
   `Attempt` recomputes it through `Config.Name` on its first pass and returns `ErrInvalid` on a
-  mismatch, before any byte is sent. The other options are §9's.
-- **D10. `codec.Store` finds a block's census through a lookup it is handed. Pending the user's
-  answer.** `Chain.Decode` takes the block record's census (RFC 4 §3.4, RFC 5 §3.1), and RFC 4
-  §4.3's `Get(ctx, name, want, m)` carries none. The recommendation keeps every signature of
-  RFC 3 §1.3 and RFC 4 §4.3 as written: `Config.Census`, a function the content wiring builds over
+  mismatch, before any byte is sent, as RFC 4 §4.3's doc comment, §4.8's `ErrInvalid` row and a
+  §7.3 row now say. The other options are §9's.
+- **D10. `codec.Store` finds a block's census through a lookup it is handed.** `Chain.Decode` takes the block record's census (RFC 4 §3.4, RFC 5 §3.1), and RFC 4
+  §4.3's `Get(ctx, name, want, m)` carries none. The lookup keeps every signature of
+  RFC 3 §1.3 and RFC 4 §4.3 as written, and this pull request names it in RFC 4 §4.3: `Config.Census`, a function the content wiring builds over
   the metadata store's block record (RFC 6 §2.3), which `Get` calls once per block read. Its cost
   is one block-record read per get, which the engine would otherwise make to pass the census in.
   The lookup's contract keeps `Get` inside §4.8: an absent block record is `remote.ErrNotFound`,
@@ -460,7 +462,7 @@ pkg/remote/codec/
     ```go
     func (s *Store) Get(ctx context.Context, name remote.Name, want []remote.ChunkRange, m remote.Meter) iter.Seq2[remote.Chunk, error]
     func (s *Store) Health(ctx context.Context, d remote.Direction) error
-    func (s *Store) NewPut(name remote.Name, nonce [16]byte, pin transform.Attempt, src iter.Seq2[remote.Chunk, error]) *Put // D9, pending
+    func (s *Store) NewPut(name remote.Name, nonce [16]byte, pin transform.Attempt, src iter.Seq2[remote.Chunk, error]) *Put // D9
     func (p *Put) Attempt(ctx context.Context, m remote.Meter) error
     func (p *Put) Stored() (ranges []remote.ChunkRange, census []transform.Encoded)
     func MaxHeaderLen(v uint8) (n int, ok bool) // D11
@@ -470,7 +472,7 @@ pkg/remote/codec/
     `Attempt`s of one `Put` may overlap and `Stored`'s that its census entries carry a nil
     `Body`. The stubs return an error and never panic; no test reads their answers.
   - `arch_test.go`, D8's pin.
-  - The review that reaches S1: the surface, with D9 and D10 as the user settles them, put to the
+  - The review that reaches S1: the surface, with D9 and D10 as decided, put to the
     RFC 3 and RFC 8 offload plans' authors, and in the pull request's description each exported
     symbol of both packages with its first caller.
 
@@ -518,20 +520,13 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-1. **D9, `NewPut`'s inputs: pending the user's answer.** Options:
-   - (a), recommended: `NewPut(name, nonce, pin, src)`, as T1.3 writes it; RFC 4 §4.3 and RFC 3
-     §1.3's two mentions are amended to it.
-   - (b) a value, `NewPut(b codec.Block, src)` with `Block{Name remote.Name; Nonce [16]byte;
-     Pin transform.Attempt}`: one parameter, the same amendment, and one more type to export.
-   - (c) the codec mints: `NewPut(pin, src) (*Put, remote.Name)`, drawing the nonce and deriving
-     the name itself. It moves minting from the engine (RFC 8 §6.6, the RFC 2 plan's D9) into the
-     codec, ahead of the put intent the engine records, so it amends three RFCs.
-2. **D10, the census on a read: pending the user's answer.** Options:
-   - (a), recommended: `Config.Census`, a lookup by name the content wiring builds over the
-     metadata store, with D10's error contract; no signature changes.
-   - (b) `Get(ctx, name, want, census, m)`: the census travels from the engine through the
-     syncer's `Fetch`, `Prefetch` and `Store.Get`, which amends RFC 3 §1.3 and makes the syncer
-     carry `transform.Encoded`, a type RFC 3 says it does not import.
+1. **D9, decided:** `NewPut(name, nonce, pin, src)`, with RFC 4 §4.3 and RFC 3 §1.3 amended in
+   this pull request. Not taken: a `codec.Block{Name, Nonce, Pin}` value (one more exported type),
+   and the codec minting the name, which would move minting out of the engine and ahead of its
+   put intent (RFC 8 §6.6).
+2. **D10, decided:** `Config.Census`, a lookup by name the content wiring builds, `ErrNotFound`
+   for an absent record, with its `ponytail:` marker. Not taken: a census parameter on `Get`,
+   which would make the syncer carry `transform.Encoded` (RFC 3 §1.3).
 3. **The background decode's CPU token.** RFC 24 §6.2 puts GC's verification and relocation under
    the token, and `codec.Store.Get` carries no per-call input to say a read is background. No
    caller of v1.1 makes one; how a background read asks for the token is settled when RFC 9's plan
@@ -543,8 +538,7 @@ A suggestion only: one pull request per subtask works as well.
    since the pins fold into the subtasks that create each package and the declaration work weighs
    at the scale's lower end. Its rule 7 list is corrected by the follow-up that also fixes the
    `keys` contract's import (`keys/provider`, not `keys`), not here.
-5. **S1 now waits on S1d, and E2 need not.** T1.3 names `pkg/transform`'s types, so S1, the RFC 8
-   offload plan's S1c, follows that plan's S1d rather than running beside it. E2 and the RFC 3
-   plan's syncer use only T1.1's contract, so they can start at the checkpoint after T1.1 rather
-   than at S1. The plan's §3.2 says S1 waits on nothing outside it; the follow-up that corrects
-   rule 7 can record both.
+5. **S1 waits on S1d, and E2 does not.** T1.3 names `pkg/transform`'s types, so S1, the RFC 8
+   offload plan's S1c, follows that plan's S1d. E2 and the RFC 3 plan's syncer use only T1.1's
+   contract, so they start at the checkpoint after T1.1. This pull request records both in the
+   plan's §3.2, S1.
