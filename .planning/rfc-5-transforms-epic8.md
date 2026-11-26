@@ -27,7 +27,7 @@ and provider, E7's custody reads (its D3), and the RFC 4 plan's deferral row on 
 pass, which leaves each writer's own read-back to this epic. Every citation is the text on
 `develop`; the code lands on `feat/storage-v2`, and the paths below are paths there.
 **Track:** C.
-**Epic 8 estimate: 8 subtasks, 16 man-days.**
+**Epic 8 estimate: 8 subtasks, 17.25 man-days.**
 **Depends on:** **S2**: from E2, `keystest.Memory`, `keystest.Harness` and `keystest.Run`, and
 `transformtest.LoadVectors` with the keys key and keys MAC vector. From E1, `keys.MaterialID`,
 `keys.Provider`, `keys.DestroyedNotice` and the material errors. From E6, the whole provider:
@@ -179,7 +179,7 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
 | R9 | The call that rotates or re-wraps makes the bucket's put itself, retries it with backoff, and returns once it has succeeded | MUST | Appendix B.2 | T8.4 |
 | R10 | Under the lock, a writer reads back the object before its own change, and when the sequence found is below the last one recorded it writes the whole object again at the next sequence first; a put of sequence 7 landing after sequence 8 is repaired at 9 by the next writer | MUST, test row | Appendix B.2 ("The lock orders writers, not puts"); §8.2's Appendix B.2 row (late put), bucket half | T8.4 |
 | R11 | After its own `keys` put, a writer reads back once more and requires its own sequence before it puts any version sealed under a key that put added; this epic also requires it before its change commits (D4) | MUST | Appendix B.2 | T8.4 |
-| R12 | A destroy owns its puts as a rotation does: it makes the bucket's put, retried until it succeeds; a destroy marking's put runs beside the check rather than holding it (D9) | MUST | Appendix B.2 | T8.7 |
+| R12 | A destroy owns its puts as a rotation does: it makes the bucket's put, retried until it succeeds; a destroy marking's put runs beside the check rather than holding it (D9); a destroy that marks the namespace's current export key makes no put, since no version could be authenticated | MUST | Appendix B.2 | T8.7 |
 
 **Rotation**
 
@@ -190,7 +190,7 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
 | R15 | The chunk-ID key and the chunking key never rotate: no rotation changes either | MUST NOT | Appendix B.3 (last paragraph) | T8.5, T8.6 |
 | R16 | A crash torn beneath a rotation leaves the old key current, and the rotation can be run again | invariant, test row | RFC 5 plan §1.5 rule 8, §5 (epic 8, "Done when") | T8.5 |
 | R17 | Rotating a master key makes a new master key current and re-wraps every namespace key wrapped under the old one, in every namespace, rewriting its key record; no stored body changes and no block is relocated; each re-wrap counts as a wrap | MUST | Appendix B.3; Appendix B.1 ("Every wrap counts") | T8.6 |
-| R18 | A key-file master key becomes current, by rotation as at creation, only once its own escrow check has passed, where any namespace of the configuration encrypts (the catalog-backup half lands with RFC 26, §1.2); a key-file rotation without it is refused with `ErrNotEscrowed` | MUST, test row | Appendix B.2 ("The check is per key"); Appendix B.3; §8.2's Appendix B.2 row (rotation without escrow) | T8.6 |
+| R18 | A key-file master key becomes current, by rotation as at creation, only once its own escrow check has passed, where any namespace of the configuration encrypts (the catalog-backup half lands with RFC 26, §1.2); a key-file rotation without it is refused with `ErrNotEscrowed`, and no wrap of any kind is made under such a key while the rule applies (D6) | MUST, test row | Appendix B.2 ("The check is per key"); Appendix B.3; §8.2's Appendix B.2 row (rotation without escrow) | T8.6 |
 | R19 | A master-key re-wrap of 10⁴ records cut short by a crash is completed by running it again, and re-wraps none twice | test row | RFC 5 plan §1.4 | T8.6 |
 
 **The primary version and the master key's state**
@@ -206,7 +206,7 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R24 | A master key the provider finds destroyed marks `destroyed`, in the metadata store, every key record whose stored wrap names that master key's ID, in every namespace and of every kind; a record already re-wrapped under another master key is not marked | MUST, test row | Appendix B.2 ("A destroyed master key destroys the key records it wraps"); §8.2's Appendix B.2 master-key destroy row | T8.7 |
+| R24 | A master key the provider finds destroyed marks `destroyed`, in the metadata store, every key record whose stored wrap names that master key's ID, in every namespace of the configuration and of every kind; a record already re-wrapped under another master key is not marked; a marked record keeps that master key's ID (RFC 16 §4.2) | MUST, test row | Appendix B.2 ("A destroyed master key destroys the key records it wraps"); §8.2's Appendix B.2 master-key destroy row | T8.7 |
 | R25 | The marking commits before the provider reports that master key, or any key it wraps, as destroyed by any other means: a decode's `ErrMaterialDestroyed`, the `material_destroyed` condition, or the notice; a block pinned under such a key then fails its commit | MUST | Appendix B.2; RFC 8 §10.4 | T8.7 |
 | R26 | The marking is idempotent: a record already marked is left as it is, so a later read that finds the master key still destroyed writes nothing and reports nothing twice, and a marking cut short by a crash is completed by the next read, with `Pin` refused throughout | MUST, test row | Appendix B.2; §8.2's Appendix B.2 master-key destroy row | T8.7 |
 | R27 | A destroyed material ID is one whose key record is `destroyed`, lost for good: an unavailable or unknown key, and a master key the service reports compromised, are never reported destroyed | MUST NOT | Appendix B.4; RFC 5 plan D17 | T8.2, T8.7 |
@@ -229,16 +229,19 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
   the target empty) with a tracked `Get` and writes it when it changes. Every writer of key records
   is a writer of the `keys` object (R8), so no caller of the old signature remains: E6's
   `CreateKeys` moves onto the writer (T8.4) and its `Harness` adapter passes the sequence through. The
-  view also gains `Namespaces`, every namespace that has a namespace record, which `kvstore` answers
-  from the namespace records (`NS‖ns‖info`) and `Records` from the namespaces a test added to it, so
-  a re-wrap and a destroy marking can reach every namespace (R17, R24). In production every key row
+  view also gains `Namespaces(ctx, store)`, every namespace whose namespace record names that remote
+  store, the store configuration the provider serves (`Deps.Store`, its scope ID), which `kvstore`
+  answers from RFC 16 §4.2's reverse index `NSR‖store‖ns` and `Records` from the namespaces a test
+  added to it under that store, so a re-wrap and a destroy marking reach every namespace of the
+  configuration and none of another's, whose records name master keys this provider does not hold
+  and must never re-wrap under its own (R17, R24). In production every key row
   sits under a namespace record, since E9 creates a namespace's keys in its create, except the rows
   of a create whose transaction failed after `CreateKeys`; those name no block and no namespace, so
   a re-wrap or a mark that skips them loses nothing, and a retried create that reuses one fails to
   unwrap, closed. A `decision:` marker at `Namespaces` says so, withdrawn if keys are ever created
   outside a namespace's create. `RunKeyRecords` therefore takes, beside the view, a hook that
-  creates a namespace's record: `kvstore`'s writes `NS‖ns‖info` through `ControlPlane`, `Records`'
-  adds the ID. Prior art: E6's D1, the guard this rides on; RFC 16
+  creates a namespace's record on a store: `kvstore`'s writes `NS‖ns‖info` and its `NSR` key through
+  `ControlPlane`'s `PutNamespace`, `Records`' adds the ID under the store. Prior art: E6's D1, the guard this rides on; RFC 16
   §4.2's row, which names the row as both lock and sequence (checked).
 
   ```go
@@ -250,8 +253,8 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
   	// once and must have no other effect.
   	Update(ctx context.Context, ns entity.NamespaceID, fn func(seq uint64, rows []Row) (uint64, []Row, error)) error
   	RaiseWrapCount(ctx context.Context, masterKeyID []byte, n, limit uint64) (bool, error)
-  	// Namespaces returns every namespace that has a namespace record.
-  	Namespaces(ctx context.Context) ([]entity.NamespaceID, error)
+  	// Namespaces returns every namespace whose namespace record names store.
+  	Namespaces(ctx context.Context, store [16]byte) ([]entity.NamespaceID, error)
   }
   ```
 
@@ -289,19 +292,24 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
 
   The rows are written in the order of their kind byte and then ID, so one set of records is one
   byte string. A decode refuses an unknown version, a namespace other than the one asked for, a
-  length past the end and trailing bytes; it checks the MAC only where the export key is held,
-  which the writer's read-back needs only for the sequence (D4). The object is at most 256 KiB (R6):
-  a write that would exceed it is refused before any put, naming the namespace and the count, and
+  length past the end and trailing bytes; it checks the MAC where the export key is given, which
+  the writer always gives, so it trusts no sequence it cannot authenticate (D4). The object is at
+  most 256 KiB (R6): a write that would exceed it is refused before any put, naming the namespace and the count, and
   changes nothing. At about 150 bytes a record that is about 1,700 records, and since no record is
   ever deleted, a namespace that rotates its data key daily reaches it in about four years; a
   `decision:` marker at the check names that ceiling and §9 raises it with RFC 5's author. Prior
   art: RFC 5's plan's D8; RFC 4 §3.5's versioned block format (checked).
 
 - **D4, one writer for every change of key records, with its claim and its change in two
-  transactions around the put.** Under one mutex per provider, so a process never races itself
-  (the key lock orders the processes), for a namespace:
+  transactions around the put.** Under one mutex per namespace, so a process never races itself
+  on a namespace (the key lock orders the processes) and a namespace whose bucket refuses its puts
+  holds no other namespace's writer, for a namespace:
 
-  1. `GetControl` the object and decode its sequence `f` (0 when `ErrNotFound`).
+  1. `GetControl` the object, decode it and verify its MAC under the namespace's current export
+     key, and take its sequence `f`: 0 when `ErrNotFound`, and 0 too, logged at `Error` naming the
+     namespace, when it does not decode or its MAC does not verify, so a version this writer cannot
+     authenticate is taken as lagging and step 2's repair puts over it, and no planted sequence is
+     ever adopted.
   2. In `Update`, read the recorded sequence `r`. If `f > r`, a claim's commit was lost after its
      put landed, the one way the bucket gets ahead in v1.1: take `f` as `r`. If `f < r`, a put
      landed late or a writer died after its claim: run a pass with an empty change first, which
@@ -309,13 +317,19 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
   3. Compute the change against the rows `Update` saw, drawing and wrapping any new key once,
      with one raise of the wrap count for the wraps it makes; a restart reuses those wraps for the
      records it still writes, so a restart never wraps or counts twice. Record `r + 1`, the claim,
-     and build the object of the rows with the change applied. Nothing else is written here, so no
+     a checked add that refuses, naming the namespace and putting nothing, at r = 2⁶⁴ − 1, and
+     build the object of the rows with the change applied. A change never rewrites a `destroyed`
+     record, which stays destroyed (Appendix B.2), and a namespace whose current export key is
+     `destroyed` is refused `ErrMaterialDestroyed` before anything is claimed: no version of it
+     could be authenticated. A wrap under a master key with no state read yet (D7) reads its state
+     here, once. Nothing else is written here, so no
      record becomes current before the put (R8).
   4. `PutControl` the object, retrying with backoff on `Deps.After`, doubling from 1 s to the
      check period, until it succeeds or the context ends (R9). Before each retry, re-read the
      recorded sequence: once another writer has moved it past `r + 1`, drop this put and start
      again from 1, so a stale put never retries over a newer one.
-  5. `GetControl` again and require `r + 1` (R11); anything else starts again from 1.
+  5. `GetControl` again and require `r + 1` under a MAC that verifies (R11); anything else starts
+     again from 1.
   6. In `Update`, require the recorded sequence to still be `r + 1` and write the change; another
      writer having moved it starts again from 1, recomputing the change against what is then
      current.
@@ -332,10 +346,12 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
   the claim in "the transaction that decides the put" (checked).
 
 - **D5, a re-wrap, a destroy marking and the check at open walk every namespace.**
-  `RotateMasterKey` and the marking call `Namespaces` and run the writer per namespace, changing
+  `RotateMasterKey` and the marking call `Namespaces` on the provider's own store and run the
+  writer per namespace, changing
   only the records whose stored wrap names the master key in question; the check at open loads
   every namespace once to learn every master key a record names (D7). A `ponytail:` at the walk
-  names its ceiling, one `Load` per namespace of the configuration per open, rotation or destroy,
+  names its ceiling, one `Load` per namespace of the configuration per open, rotation, destroy or
+  `Reconfigure` that swaps the key file,
   and the upgrade, an index of records by master key ID, when an open or a rotation over the
   namespaces shows the walk in a profile. Prior art: none found.
 
@@ -359,9 +375,12 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
   swap every wrap is made under the new `KeyFile` and the check's next
   read reports the new primary (D7). A swap handed back, as E9's failure hook does, is one more
   `Reconfigure`. A wrap in flight finishes under the key it started with.
-  `RotateMasterKey` first loads every namespace, and if any holds a data key while the current
-  key-file master key's escrow gate is shut it returns `ErrNotEscrowed`, naming the key, before it
-  re-wraps anything (R18); `RotateDataKey` refuses the same way in an encrypting namespace. A
+  While any namespace of the configuration holds a data key, which the provider learns from the
+  walk at open (D7) and keeps from every writer's change since, a key-file master key whose escrow
+  gate is shut wraps nothing: `CreateKeys` of any namespace, a non-encrypting one included,
+  `WrapSalvageKey`, `RotateDataKey` and `RotateMasterKey` each return `ErrNotEscrowed`, naming the
+  key, before they wrap anything (R18): a `Reconfigure` may swap `KeyFile` to an unescrowed file,
+  but nothing is wrapped under it, so it never becomes current in Appendix B.2's sense. A
   re-wrap the new key's wrap count refuses returns E6's `keys.ErrWrapLimit`, the namespaces not
   reached staying under the old key, which still unwraps them. A
   `decision:` marker at the check says the gate is the namespace's encrypting, and that catalog
@@ -369,18 +388,27 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
 
 - **D7, the check runs at open over every master key a record names, then on `Deps.After`.** At
   `New` the check walks every namespace (D5) and reads the custody's `primary` and the `state` of
-  every master key any record names, so a marking cut short under a key that is not the primary is
+  the primary and of every master key any record names, a `destroyed` record's kept ID included
+  (D9), so a marking cut short under a key that is not the primary is
   resumed at open too (R26). `New` fails if a state read fails, as a provider unreachable at start
   fails (Appendix B.4); a failed primary-version read at open is reported in `Status`, not fatal,
   since every record still unwraps. `Run(ctx)` repeats the reads every `checkPeriod`, 5 minutes,
-  RFC 9 §7.5's proposal, until `ctx` ends, for the primary and for every master key that wraps a
-  current data key; the content wiring runs it. `Current(ns, data-key)` refuses
+  RFC 9 §7.5's proposal, until `ctx` ends, for the primary, for every master key that wraps a
+  current data key, and for every master key whose marking has not completed (D9), so a marking cut
+  short resumes at the next period even where the key wraps no current data key; the content
+  wiring runs it. `Current(ns, data-key)` refuses
   `ErrMaterialUnavailable` while the master key wrapping that data key has no state read, so a key
-  this provider has not read never pins. The check calls `Deps.RotationNeeded(masterKeyID)` when
-  `primary` differs from the last answer, and at open when any record D5's walk found names a
-  master key other than `primary`, so a rotation made while the node was down is still seen and an
-  open with every record under the primary starts nothing (Appendix B.1); E9 starts
-  `rotate-master-key` unless one runs. A failed read leaves the last answer in force (R22, R23). Prior art: RFC 9 §7.5's own fixed
+  this provider has not read never pins; since every read takes the primary's state and a writer
+  reads the state of a key it wraps under that has none (D4 step 3), a key first used after `New`,
+  an empty install's first `CreateKeys` or the first wrap under B after a swap, pins as soon as its
+  change commits, with or without `Run`. The check calls `Deps.RotationNeeded(masterKeyID)` at every
+  read, at open and each period, while any record names a wrapping master key other than
+  `primary`, a set kept from D5's walk and every writer's change since, so a rotation made while
+  the node was down is seen, one that failed is started again at the next period, and a read with
+  every record under the primary starts nothing (Appendix B.1); E9 starts `rotate-master-key`
+  unless one runs. A failed read leaves the last answer in force (R22, R23): a failed state read is
+  an error of the custody's `state` that is neither material error (E7's D3), so a timeout never
+  refuses `Pin`. Prior art: RFC 9 §7.5's own fixed
   period; AWS KMS's automatic rotation, which leaves re-encryption to the caller (from memory).
 
 - **D8, a master key's state reaches `Pin` through `Current`.** `Pin` reads `Current` for each kind
@@ -398,26 +426,33 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
 - **D9, a destroy marking commits every mark before any destroyed answer, and its puts do not
   hold the check.** When a read finds a master key destroyed, the check first refuses `Pin` with
   `ErrMaterialUnavailable`, then walks every namespace (D5), marking in one `Update` per namespace
-  each record that names the key and claiming the next sequence, with no put first: a bucket that
+  each record that names the key, keeping the key's ID in the mark (RFC 16 §4.2), and claiming the
+  next sequence, with no put first: a bucket that
   lags by a destroyed mark loses nothing, since the key it names cannot be unwrapped anyway. Once
   every namespace has committed, it switches `Pin` to `ErrMaterialDestroyed`, adds to the notice
   the material ID of every record the marking covers, each data key and chunking key that master
   key wraps, since a block's `encodings` name those and never the master key, and adds the master
-  key's ID to `Status.MasterKeysDestroyed`. Until that switch, while any marking is in progress, a
-  row read `destroyed` is answered `ErrMaterialUnavailable` by `Get` and fed to no notice, so no
-  report outruns a mark (R25). Each marked namespace's bucket then lags its claim, and the check
+  key's ID to `Status.MasterKeysDestroyed`. Until that switch, a row read `destroyed` whose kept master key ID
+  is one with a marking in progress is answered `ErrMaterialUnavailable` by `Get` and fed to no
+  notice, so no report outruns a mark (R25), while a key an earlier marking already reported stays
+  destroyed. Each marked namespace's bucket then lags its claim, and the check
   starts, in a goroutine `Run` owns, a pass with an empty change per marked namespace (D4 step 2's
   repair), retried until it succeeds or the provider stops: that pass owns the destroy's bucket put
-  (R12), and the check goes on reading other keys meanwhile. A marking cut short leaves the
+  (R12), and the check goes on reading other keys meanwhile. A namespace whose current export key
+  the marking destroyed gets no pass: the writer refuses it (D4 step 3), since its bucket's last
+  version is sealed under that export key, which only the destroyed master key unwraps, so no
+  reader could authenticate a version holding the marks, and a pass retried there would never end. A marking cut short leaves the
   refusal at unavailable; the next read, at the next period or the next open, walks again, marks
   what is left, and runs the repair pass on every namespace holding a record marked under that
-  key, so a crash between a mark and its put still reaches the bucket. A record already
+  key, which the mark's kept ID finds, so a crash between a mark and its put still reaches the
+  bucket and a restart still reports the master key in `Status.MasterKeysDestroyed`. A record already
   `destroyed`, or wrapped under another master key, is skipped, so a repeat writes nothing.
   `decision:` markers at the switch and at the put-less mark say why. Prior art: none found.
 
 - **D10, the notice is per incarnation, fed only by what is reported destroyed.** The provider
   appends, once each, every material ID the switch of D9 reports and every ID `Open` finds
-  `destroyed` with no marking in progress; a writer's own cache refresh feeds nothing. The cursor is
+  `destroyed` whose kept master key ID has no marking in progress; a writer's own cache refresh
+  feeds nothing. The cursor is
   a 32-bit incarnation, drawn from `Deps.Rand` at `New`, then the 32-bit index into that list; a
   cursor of another incarnation, 0 included, reads from the start, and so does an index past the
   list's end, which this incarnation never returned. So a cursor from before a restart skips
@@ -434,7 +469,8 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
   new `current` data-key record and rewrites the old one `retired`, through the writer; it relocates
   nothing and records no retiring set, which RFC 5's plan's D9 leaves to RFC 9. It returns
   `ErrUnknownMaterial` for a namespace with no data key, so a non-encrypting namespace never gains
-  one. Prior art: RFC 5's plan's D9.
+  one, and `ErrMaterialDestroyed` for one whose data key is `destroyed`, which it never rewrites as
+  `retired` (D4 step 3): that would hand RFC 8 §10.4's commit check a live state for a lost key. Prior art: RFC 5's plan's D9.
 
 - **D12, one provider per store configuration on a node.** A rotation reaches another provider's
   cache only at a miss (E6's D10), so two providers of one configuration could serve two current
@@ -491,7 +527,7 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
 
 ### T8.1 The key lock and the namespace listing in the view
 
-**Subtask T8.1 estimate: 1.5 man-days.**
+**Subtask T8.1 estimate: 1.75 man-days.**
 
 - **Track:** C. **Depends on:** E6's T6.2.
 - **Covers:** R1.
@@ -500,11 +536,12 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
     `keys_test.go`'s list, as RFC 16 §4.2.1's table gives it. Consumed by `kvstore` below.
   - The widened `KeyRecords` of D1, in the provider, and the same signatures on
     `*keystest.Records` and `*kvstore.KeyRecords`; `RunKeyRecords` takes the four methods. Consumed
-    by T8.4 (the sequence) and by T8.6 and T8.7 (`Namespaces`). E6's callers of `Update`, the
+    by T8.4 (the sequence) and by T8.6 and T8.7 (`Namespaces`). `Deps.Store [16]byte`, the scope ID
+    of the remote store whose configuration the provider serves, consumed by the content wiring. E6's callers of `Update`, the
     `Harness` adapter and `CreateKeys`, pass the sequence through unchanged until T8.4.
   - `kvstore`: `NS‖ns‖keyseq‖` with an empty target, read with a tracked `Get` and written when
     `fn` returns another value, its value a version byte and the store's counter codec;
-    `Namespaces` over `ControlPlane.Namespaces`, which already pages the namespace records.
+    `Namespaces` over a range read of `NSR‖store‖`, RFC 16 §4.2's reverse index.
   - `Records` keeps running `Update` optimistically, as E6 built it: `fn` on a snapshot, the
     conflict found at commit, so the lock row's barrier can hold two first runs at once.
 - **Acceptance criteria:**
@@ -519,10 +556,11 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
     tracking, so two writers claim one sequence, R1).
   - A sequence written survives a fresh view over the same store, and starts at 0 for a namespace
     that never had one (catches a sequence kept in memory).
-  - `Namespaces` lists every namespace the suite's hook created, those an `Update` then wrote
-    included, and `Load` of each returns its own rows
-    (catches a listing that misses a namespace, which a re-wrap would then leave under the old
-    master key).
+  - `Namespaces` lists every namespace the suite's hook created on the store, those an `Update`
+    then wrote included, and `Load` of each returns its own rows, and lists none created on another
+    store (catch a listing that misses a namespace, which a re-wrap would then leave under the old
+    master key, or one that reaches another configuration's records, which a re-wrap would wrap
+    under this provider's key).
 - **Rules:** rule 7: `kvstore` still imports nothing of `pkg/transform`. rule 8: the real backends. rule 9: D1's `decision:` at
   `Namespaces`.
 
@@ -594,7 +632,7 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
 
 ### T8.4 The writer, and key creation on it
 
-**Subtask T8.4 estimate: 3.5 man-days.**
+**Subtask T8.4 estimate: 3.75 man-days.**
 
 - **Track:** C. **Depends on:** T8.1, T8.3. Outside this epic, S1c.
 - **Covers:** R1, R2, R3, R6, R8, R9, R10, R11.
@@ -612,10 +650,10 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
   - E6's creation rows still pass, now through the writer.
 - **Tests** (on `Records` and `memory.Store`, unless named):
   - With `memory.Wrap(store).SetReadOnly(true)`, `CreateKeys` keeps retrying: once `TestClock.Armed`
-    shows its backoff timer set, `Current` of the new namespace is `ErrUnknownMaterial` and a `Pin`
-    of another namespace succeeds; the fault cleared and the clock advanced, it returns, and
+    shows its backoff timer set, `Current` of the new namespace is `ErrUnknownMaterial`, a `Pin`
+    of another namespace succeeds and `CreateKeys` of a third, whose store accepts puts, returns; the fault cleared and the clock advanced, it returns, and
     `Current` serves the key (catches a record made current before its put, or a writer that holds
-    readers, R8, R9).
+    readers or another namespace's writer, R8, R9).
   - The late put: after a write at sequence 7 and one at 8, the bytes read back at 7 put again
     through the store directly; the next writer reads back 7 below the recorded 8, puts the whole
     object at 9, and its own change at 10 (catches a writer that trusts the bucket's sequence or
@@ -630,6 +668,11 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
     itself: the next writer takes the bucket's sequence and writes above it (catches a namespace
     locked for good by a bucket ahead of its counter).
   - An object over the bound: refused, nothing put, nothing committed (R6).
+  - An object put through the store directly at sequence 2⁶⁴ − 1 under a MAC that does not verify,
+    and then one that does not decode: each time the next writer logs it, puts the whole object at
+    one above the recorded sequence and its change above that (catch a writer that adopts an
+    unauthenticated sequence, which wedges the namespace at 2⁶⁴ − 1, or loops on an object it
+    cannot read, R10).
 - **Rules:** rule 8: the faults beneath `kvstore`. rule 9: D4's `decision:` at `f > r`. rule 11:
   `ControlStore` and the two `Deps` fields for the content wiring.
 
@@ -659,6 +702,9 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
     R14, R31).
   - With the bucket's put refused, the old key stays current until the call returns an error at
     the context's end (§8.2's failed-put row, R8).
+  - A namespace whose data key a destroyed master key's marking left `destroyed`:
+    `RotateDataKey` is `ErrMaterialDestroyed` and the row stays `destroyed` (catches a lost key
+    rewritten `retired`, which RFC 8 §10.4's commit check would then pass, R25).
   - On `kvstore` over `badgerkv` under `t.TempDir()`: `kvtest.FaultKV` failing the writer's final
     `Update`, then a reopened store and a fresh provider: the old key current, and a second rotation
     succeeds (catches a torn rotation that leaves no current key, R16).
@@ -666,7 +712,7 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
 
 ### T8.6 Master-key rotation and the re-wrap
 
-**Subtask T8.6 estimate: 2.75 man-days.**
+**Subtask T8.6 estimate: 3 man-days.**
 
 - **Track:** C. **Depends on:** T8.4.
 - **Covers:** R8, R15, R17, R18, R19.
@@ -707,6 +753,10 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
   - B current without its escrow check: `ErrNotEscrowed` naming B, and no record changed; with only
     non-encrypting namespaces, the rotation succeeds (catch a rotation under an unescrowed key, or a
     gate on the wrong namespaces, R18).
+  - `KeyFile` swapped to an unescrowed B through `Reconfigure` while an encrypting namespace exists:
+    `CreateKeys` of a non-encrypting namespace and `WrapSalvageKey` are `ErrNotEscrowed` naming B,
+    and B's wrap count is unchanged; with only non-encrypting namespaces, both wrap under B (catch a
+    wrap under an unescrowed key by a path other than rotation, R18).
   - On `kvstore` over `badgerkv` under `t.TempDir()`, 2,500 encrypting namespaces, 10⁴ records:
     `kvtest.FaultKV` failing the final `Update` of the 1,000th namespace, then a reopened store, a
     fresh provider and `RotateMasterKey` again: every record under B, and B's count risen by 10⁴ plus
@@ -717,7 +767,7 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
 
 ### T8.7 The check: primary version, state, `Pin` refusal and destroy marking
 
-**Subtask T8.7 estimate: 3.5 man-days.**
+**Subtask T8.7 estimate: 4 man-days.**
 
 - **Track:** C. **Depends on:** T8.2, T8.6. Outside this epic, E7's T7.2.
 - **Covers:** R12, R20, R21, R22, R23, R24, R25, R26, R27, R29 (the master key), R31.
@@ -733,25 +783,34 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
     `Status` reports.
   - Advancing the clock by the check period runs the check once, with no restart.
 - **Tests** (on the key-file custody, wrapped where named):
-  - Records under A, a provider opened on B with A retired: `RotationNeeded` receives B once at the
-    open and not at the next period; a fresh provider receives it again, and a provider opened on B
-    with every record under B receives nothing (catch a report lost or repeated, or a rotation
-    started at every open, R20, R21).
+  - Records under A, a provider opened on B with A retired: `RotationNeeded` receives B at the open
+    and again at the next period, a rotation having failed between; after `RotateMasterKey` succeeds,
+    nothing more; a provider opened on B with every record under B receives nothing (catch a report
+    lost, a failed rotation left until the next start, or a rotation started at every open, R20,
+    R21).
+  - A provider opened on an empty `Records` with no `Run`: `CreateKeys`, then `Pin` of the new
+    namespace pins; the same after a `Reconfigure` swap to an escrowed B (catches a key first used
+    after `New` left without a state read, refused until the period).
   - The wrapper's `primary` failing, and failing as ambiguous, for two periods: nothing reported,
     no row rewritten, `Status.MasterKeysUnavailable` naming the key each period (catches a re-wrap
     on an ambiguous answer, R22).
-  - The wrapper's `state` answering nil, then failing with `ErrMaterialUnavailable`, then failing
-    as an unreadable answer: after each period `Pin` through E3's chain pins, then refuses
-    `ErrMaterialUnavailable`, then keeps that refusal; `Get` of the cached data key serves
-    throughout (catch a refusal not reaching `Pin`, a failed read clearing it, or a decode refused,
-    R23).
-  - A master key reported destroyed, with records under it in two namespaces, one record of a third
-    already re-wrapped under another key: after one period every record naming the key reads
-    `destroyed` from `kvstore`'s state byte, the re-wrapped one does not; `Pin` and `Get` are
+  - The wrapper's `state` answering nil, then failing as a timed-out read, then answering
+    `ErrMaterialUnavailable`, then timing out again: after each period `Pin` through E3's chain
+    pins, still pins, refuses `ErrMaterialUnavailable`, then keeps that refusal; `Get` of the cached data key serves
+    throughout (catch a refusal not reaching `Pin`, a failed read setting or clearing it, or a decode
+    refused, R23).
+  - A master key reported destroyed, with records under it in two namespaces, and in a third whose
+    export key and one other record are already re-wrapped under another key: after one period every
+    record naming the key reads `destroyed` from `kvstore`'s state byte, keeping the key's ID, the
+    re-wrapped ones do not; `Pin` and `Get` are
     `ErrMaterialDestroyed`; the notice names once each data key and chunking key the marked records
-    hold, and neither the master key nor the re-wrapped record's key; once the repair passes end, each
-    namespace's `keys` object holds its marks (catch a report before the marks, a mark left out of
-    the bucket or a record wrongly marked, R12, R23, R24, R25, R27, R29).
+    hold, and neither the master key nor the re-wrapped records' keys; the first two namespaces, whose export key
+    is marked, get no put and no pass left running, and once the third's repair pass ends its `keys`
+    object holds its marks (catch a report before the marks, a mark left out of the bucket, a repair
+    that spins on a destroyed export key, or a record wrongly marked, R12, R23, R24, R25, R27, R29).
+  - A second master key found destroyed while the first's marking above has been reported: `Get` of
+    the first's data keys stays `ErrMaterialDestroyed` throughout the second's marking (catches a
+    hold-back that takes back what was already reported).
   - The same with the bucket refusing puts: the switch to `ErrMaterialDestroyed` still happens at
     that period, and the next period's reads of another key still run (catches a check held by a
     bucket, R12, R20).
@@ -759,9 +818,13 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
   - The marking's `Update` in the second namespace failed by `kvtest.FaultKV`, where the destroyed
     key is not the primary: `Pin` and `Get` refuse `ErrMaterialUnavailable`, never destroyed, the
     notice names nothing and `Status.MasterKeysDestroyed` is empty; a fresh provider's check at open
-    marks the rest, switches to `ErrMaterialDestroyed` and brings every namespace's object up to date
-    (catches a marking not resumed at open, or a destroyed answer before every mark commits, R25,
-    R26).
+    marks the rest, switches to `ErrMaterialDestroyed` and brings every namespace's object up to date,
+    and a third provider, opened after that, still names the key in `Status.MasterKeysDestroyed`
+    (catches a marking not resumed at open, a destroyed answer before every mark commits, or a
+    destroyed master key forgotten at restart, R25, R26).
+  - A master key wrapping only a non-encrypting namespace's export key, found destroyed at open, its
+    marking's `Update` failed: the next period completes it, with no restart (catches a cut marking
+    left until the next open because its key wraps no current data key, R26).
   - 64 goroutines of `Current` and `Get` across a period's check and a marking, under `-race`
     (R31).
 - **Rules:** rule 5: the refusal at `Pin`, the mark at `kvstore`'s state byte. rule 9: D9's
@@ -828,10 +891,10 @@ it. After T8.4, T8.5 and T8.6 run in parallel. T8.8 closes the epic.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T8.1, T8.2 | 2.5 | — | the view's lock and listing, and the notice the engine polls: both change E6's surfaces and nothing else |
-| 2 | T8.3, T8.4 | 4.25 | PR 1 | the `keys` object and the writer that puts it, with creation moved onto it |
-| 3 | T8.5, T8.6 | 4.25 | PR 2 | the two rotations over the writer |
-| 4 | T8.7, T8.8 | 5 | PR 3 | the periodic check with its refusal and marking, and the live rows that exercise it |
+| 1 | T8.1, T8.2 | 2.75 | — | the view's lock and listing, and the notice the engine polls: both change E6's surfaces and nothing else |
+| 2 | T8.3, T8.4 | 4.5 | PR 1 | the `keys` object and the writer that puts it, with creation moved onto it |
+| 3 | T8.5, T8.6 | 4.5 | PR 2 | the two rotations over the writer |
+| 4 | T8.7, T8.8 | 5.5 | PR 3 | the periodic check with its refusal and marking, and the live rows that exercise it |
 
 A suggestion only: one pull request per subtask works as well.
 
@@ -857,8 +920,10 @@ A suggestion only: one pull request per subtask works as well.
 - **Needs on E9.** A key-file rotation is two configuration changes and an operation (D6): E9's
   `materials` row takes `retired_files`, the operation runs `RotateMasterKey` and, on success,
   nothing more is recorded, since the next open reports from the key file it is given. E9 starts
-  `rotate-master-key` from `Deps.RotationNeeded` unless one runs, which now includes every open
-  (D7); a rotation at open that finds nothing to re-wrap costs one walk of the namespaces (D5).
+  `rotate-master-key` from `Deps.RotationNeeded` unless one runs, which is called at every read,
+  open and period, while a record is under a master key other than the primary (D7), so a failed
+  rotation is started again at the next period; a read with every record under the primary starts
+  nothing.
 - **Needs on the RFC 8 offload plan's epic 21.** It passes `Deps.KeysObjects` (each namespace's
   RFC 4 store), `Deps.After` and `Deps.RotationNeeded`, runs `Run` for the provider's life, and
   builds one provider per store configuration for the engine's life, rebuilding both together on
@@ -877,8 +942,16 @@ A suggestion only: one pull request per subtask works as well.
   here (E6's D1). RFC 5's plan's catalogue row "the notice's cursor survives a restart" is met as R28
   states it, no ID skipped, rather than by a durable cursor (D10). The master-key destroy check over
   locations stays the ledger's (§1.2).
-- **Estimate.** 8 subtasks and 16 man-days, against RFC 5's plan's 5 and 11. The key lock and listing
+- **A destroy with no bucket put, and a mark that keeps its master key's ID, for RFC 5's author
+  (D9).** Appendix B.2 has a destroy make the bucket's put; where the marking destroys a namespace's
+  current export key, no version could be authenticated, so this epic puts nothing there, and RFC 5
+  says so in this change. RFC 16 §4.2 had a destroyed key keep only ID, fingerprint and state; a mark
+  by a destroyed master key now also keeps that key's ID, so a marking cut short is found again and
+  the master key is still reported destroyed after a restart.
+- **Estimate.** 8 subtasks and 17.25 man-days, against RFC 5's plan's 5 and 11. The key lock and listing
   moved here from E6 (T8.1), the notice gained rows in `keystest` and on `Memory` (T8.2), and key
-  creation moved onto the writer (T8.4). The least certain are T8.4, whose retries, read-backs and
+  creation moved onto the writer (T8.4). Folding a review added 1.25: the store-scoped
+  listing, the authenticated read-back, the escrow gate on every wrap, and the check's state reads
+  and resumed marking. The least certain are T8.4, whose retries, read-backs and
   crash seams meet in one loop, and T8.7, where the marking's ordering against every report, its
   repair passes and the walk at open meet.

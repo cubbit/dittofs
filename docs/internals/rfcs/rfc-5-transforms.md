@@ -1759,7 +1759,9 @@ writer, which reads it back first; after that, within one recheck period. At an
 immutable location it is only an older version, which the ordering below
 passes over. A destroy owns its puts as a rotation does: it makes the bucket's
 put and returns once it has succeeded, leaving each location's put to the next
-writer of a version there.
+writer of a version there. A destroy that marks the namespace's current export key
+makes no put: no version of the object could then be authenticated, and its last one is
+sealed under that export key, which nothing the installation holds unwraps any more.
 A recovery import loads key records from there as well as from the export
 ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)), taking the union by key ID of every version it finds that
 **authenticates**: its export key unwraps under a master key the installation
@@ -1883,7 +1885,11 @@ seeing the destroy and the engine hearing of it. The marking is idempotent: a
 record already marked is left as it is, so a later read that finds the master
 key still destroyed writes nothing and reports nothing twice, and a marking cut
 short by a crash is completed by the next read. A record already re-wrapped
-under another master key does not name the destroyed one and is not marked.
+under another master key does not name the destroyed one and is not marked. A record
+marked this way keeps the destroyed master key's ID
+([RFC 16 §4.2](rfc-16-metadata-store.md#4.2%20Keys%3A%20per-file%2C%20per-share%2C%20content-addressed)),
+so a marking cut short is found again, and the master key still reported destroyed,
+after a restart.
 
 ### B.3 Rotation
 
