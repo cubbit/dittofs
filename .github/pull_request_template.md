@@ -77,6 +77,18 @@ by the behavior they protect. Do not paste test output or logs. -->
 
 Add screenshots to help explain your changes.
 
+## Out of scope
+
+<!-- What a reviewer would reasonably have expected this PR to do, and it does not: one
+row per item, with the reason. Only things that were in reach of the original ask, the
+issue or the subtask, not everything the PR does not touch. Delete the section when
+nothing was left out. See pr-opening.instructions.md "Out of scope". -->
+
+| Out of scope | Reason |
+| --- | --- |
+|  |  |
+
 ## Additional Notes
 
-<!-- Risks, known limitations, follow-ups, things deliberately left out. -->
+<!-- Risks, known limitations, other follow-ups. Things deliberately left out go under
+Out of scope. -->
