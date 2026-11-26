@@ -63,3 +63,19 @@ func TestFirstRollTakesTheTargetSpare(t *testing.T) {
 		})
 	}
 }
+
+// TestAJournalAtItsMaximumOpensWithoutTheOpeningSpare opens a journal whose
+// maximum holds its spares' targets and no more: the opening spare does not
+// fit, so the pool settles at its target and the fixture's wait for the
+// spares at open is answered, not refused one short.
+func TestAJournalAtItsMaximumOpensWithoutTheOpeningSpare(t *testing.T) {
+	f := journaltest.NewWith(t, func(s *journal.Settings) {
+		s.Streams = 1
+		s.SpareTarget = 1
+		// The content target's one, the headroom's one and the reserve's one.
+		s.MaxBytes = 3 * journaltest.FixtureSegmentCap
+	})
+	if got, want := f.J.Stats().Spares, 1; got != want {
+		t.Fatalf("Spares = %d at open at the maximum, want %d: the target alone", got, want)
+	}
+}

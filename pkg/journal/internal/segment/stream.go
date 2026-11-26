@@ -398,8 +398,8 @@ type Stream struct {
 	// cannot be registered anymore.
 	onEnd   func(EndEvent)
 	started bool
-	// opened says the stream has taken its first segment from the pool, so
-	// its rolls no longer ask the pool for the opening spare.
+	// opened says the stream has installed its first content segment, so its
+	// rolls no longer ask the pool for the opening spare.
 	opened bool
 
 	// leftFailed says the active segment was taken to leave an ended one:
@@ -556,11 +556,11 @@ var ErrNoSegmentForTheRoll = errors.New("segment: no segment can be had for the 
 //
 // It runs with no lock held and makes no I/O: the takes go to the pool and
 // the hold, which reach the ledger alone, so a roll costs only the take
-// (R15, R17).
-func (s *Stream) takeSpare(hasPayload bool, r Roll) (core.SegmentID, error) {
-	id, err := s.drawSpare(hasPayload, r)
+// (R15, R17). The class it returns is the one drawSpare took from.
+func (s *Stream) takeSpare(hasPayload bool, r Roll) (core.SegmentID, Class, error) {
+	id, c, err := s.drawSpare(hasPayload, r)
 	if err == nil {
-		return id, nil
+		return id, c, nil
 	}
 
 	// The full device, answered as itself rather than as a limit, unless a
@@ -568,7 +568,7 @@ func (s *Stream) takeSpare(hasPayload bool, r Roll) (core.SegmentID, error) {
 	var spare *core.NoSpaceError
 	if errors.As(err, &spare) && spare.Limit == core.LimitSpare {
 		if full := s.pool.fullDeviceAnswer(); full != nil {
-			return 0, full
+			return 0, 0, full
 		}
 	}
 	// The journal's own maximum, answered as itself for a roll that carries
@@ -585,7 +585,7 @@ func (s *Stream) takeSpare(hasPayload bool, r Roll) (core.SegmentID, error) {
 	// roll the pool itself can refill.
 	if errors.As(err, &spare) && spare.Limit == core.LimitSpare && hasPayload && r.Hold == nil && !r.Repack && !s.pool.retiredToHand() {
 		if ns := s.pool.journalRefuses(); ns != nil {
-			return 0, fmt.Errorf("%w: %w", ErrNoSegmentForTheRoll, ns)
+			return 0, 0, fmt.Errorf("%w: %w", ErrNoSegmentForTheRoll, ns)
 		}
 	}
 
@@ -593,13 +593,14 @@ func (s *Stream) takeSpare(hasPayload bool, r Roll) (core.SegmentID, error) {
 	if errors.As(err, &spare) && spare.Limit == core.LimitSpare {
 		s.pool.countSpareRefusal()
 	}
-	return 0, err
+	return 0, 0, err
 }
 
 // drawSpare draws the spare the roll options name: a repack copy from the
 // reserve, a reserved roll from its hold, and everything else from the
 // content class, where a header-only record falls back to the headroom once
-// the content miss names `spare`.
+// the content miss names `spare`. It returns the class the spare came from, a
+// hold's being Content.
 //
 // A header-only roll that takes a headroom spare makes it an ordinary
 // segment: the stream finishes it with whatever records follow, content
@@ -619,14 +620,17 @@ func (s *Stream) takeSpare(hasPayload bool, r Roll) (core.SegmentID, error) {
 // kind; withdraw it when repack copies run on a stream of their own, or when
 // the stream remembers the class of its active segment and rolls a record
 // of the other kind out of it.
-func (s *Stream) drawSpare(hasPayload bool, r Roll) (core.SegmentID, error) {
+func (s *Stream) drawSpare(hasPayload bool, r Roll) (core.SegmentID, Class, error) {
 	switch {
 	case r.Repack:
-		return s.pool.Take(Reserve)
+		id, err := s.pool.Take(Reserve)
+		return id, Reserve, err
 	case r.Hold != nil:
-		return r.Hold.Take()
+		id, err := r.Hold.Take()
+		return id, Content, err
 	case hasPayload:
-		return s.pool.Take(Content)
+		id, err := s.pool.Take(Content)
+		return id, Content, err
 	}
 	// The header-only record, the only kind the switch above passes by: a
 	// content spare by the unreserved take, so holds keep theirs, and only
@@ -641,20 +645,20 @@ func (s *Stream) drawSpare(hasPayload bool, r Roll) (core.SegmentID, error) {
 	// word to the caller, never a capacity label that reads as drainable.
 	id, err := s.pool.Take(Content)
 	if err == nil {
-		return id, nil
+		return id, Content, nil
 	}
 	var ns *core.NoSpaceError
 	if !errors.As(err, &ns) || ns.Limit != core.LimitSpare {
-		return 0, err
+		return 0, 0, err
 	}
 	hid, herr := s.pool.Take(Headroom)
 	if herr == nil {
-		return hid, nil
+		return hid, Headroom, nil
 	}
 	if errors.As(herr, &ns) && ns.Limit == core.LimitSpare {
-		return 0, &core.NoSpaceError{Limit: core.LimitHeadroom, Missing: 1, Unit: core.UnitSegments}
+		return 0, 0, &core.NoSpaceError{Limit: core.LimitHeadroom, Missing: 1, Unit: core.UnitSegments}
 	}
-	return 0, herr
+	return 0, 0, herr
 }
 
 // endTaken unwinds a take that failed past Take: the member segment is ended
@@ -1185,22 +1189,28 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 // the ref released when one was held — and the stream stays on its old
 // segment, so the next append rolls again. The first segment is a roll from
 // nothing, with predecessor 0.
-func (s *Stream) roll(hasPayload bool, r Roll, opening bool) error {
+func (s *Stream) roll(hasPayload bool, r Roll, opening bool) (err error) {
 	// The take, before any seam call: a refusal names the spare pool and
 	// nothing moved. The stream's first take drops the pool's opening spare
 	// from its goal before the take, so the take leaves no gap the refill
-	// would fill with one spare too many, gives it back when the take is
-	// refused, and once the take lands keeps none for any stream again.
+	// would fill with one spare too many. Only a content segment the roll
+	// installs spends it, and the pool then keeps none for any stream again;
+	// a refused take, a take from another class, or a roll that unwinds the
+	// taken segment gives it back.
 	dropped := opening && s.pool.opened()
-	id, err := s.takeSpare(hasPayload, r)
-	if err != nil {
-		if dropped {
-			s.pool.openingRefused()
-		}
-		return err
-	}
+	id, class, err := s.takeSpare(hasPayload, r)
 	if opening {
-		s.pool.firstTaken()
+		defer func() {
+			switch {
+			case err == nil && class == Content:
+				s.pool.firstTaken()
+			case dropped:
+				s.pool.openingRefused()
+			}
+		}()
+	}
+	if err != nil {
+		return err
 	}
 	if s.rollTakeHook != nil {
 		s.rollTakeHook()
@@ -1232,7 +1242,6 @@ func (s *Stream) roll(hasPayload bool, r Roll, opening bool) error {
 	// drain; a seal this read still finds is a seal still mid-flight, and
 	// this wait keeps the predecessor off a footer still being written.
 	s.appendMu.Lock()
-	s.opened = true
 	old := s.id
 	state := s.sealState
 	for state == sealSealing {
@@ -1410,6 +1419,7 @@ func (s *Stream) roll(hasPayload bool, r Roll, opening bool) error {
 		return s.endTaken(id, ref, ErrStreamClosed)
 	}
 	s.id, s.ref = id, ref
+	s.opened = s.opened || class == Content
 	s.next = format.SegmentHeaderSize
 	s.count = 0
 	s.failedAt = -1

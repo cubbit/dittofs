@@ -1479,6 +1479,14 @@ func (p *Pool) refill() bool {
 			if errors.Is(err, syscall.ENOSPC) {
 				p.deviceFull = true
 			}
+			// The opening spare is kept only while the maker can afford it:
+			// a content make the journal's maximum or a full device refuses
+			// drops it, so the pool settles at its target as it did before
+			// the opening spare, and a wait does not read it short.
+			var limit *core.NoSpaceError
+			if c == Content && p.opening && (errors.Is(err, syscall.ENOSPC) || errors.As(err, &limit) && limit.Limit == core.LimitJournal) {
+				p.opening = false
+			}
 			// A device answering EROFS to a make enters the read-only state
 			// through the storage the journal wraps, but a device refusing
 			// only its directory syncs would meet each make the same way for
@@ -1563,8 +1571,9 @@ func (p *Pool) refill() bool {
 // races the make that replaces it, which a fill faster than one make loses.
 // The streams that open after the first draw on the target as every roll
 // does, which holds while fewer than half the target's spares open at once.
-// At the journal's maximum the opening spare may not fit; the pool then
-// stands one short until the first stream opens. Overturned by the owner of
+// At the journal's maximum, or on a full device, the opening spare may not
+// fit: the make that is refused for it drops it, and it is not kept again for
+// that pool even once space is freed. Overturned by the owner of
 // RFC 1 §6 ruling that the pre-roll footprint must stay at the target, or by
 // refusals at the first roll of streams opening after the first, which would
 // ask for one opening spare per stream at the cost of a cap each.
@@ -1605,12 +1614,18 @@ func (p *Pool) opened() bool {
 }
 
 // openingRefused gives the opening spare back to the content goal after the
-// take that dropped it was refused, unless another stream has taken its first
-// segment meanwhile.
+// roll that dropped it installed no content segment, unless another stream
+// has taken its first segment meanwhile, and kicks a started pool to make it:
+// the take's own kick may already have run a pass that settled at the target
+// alone.
 func (p *Pool) openingRefused() {
 	p.mu.Lock()
 	p.opening = !p.anyOpened
+	kick := p.opening && p.started
 	p.mu.Unlock()
+	if kick {
+		p.Kick()
+	}
 }
 
 // firstTaken records that a stream took its first segment: the pool keeps no
