@@ -22,10 +22,13 @@ const module = "github.com/cubbit/dittofs/"
 // starts and stops it with the engine, are the fixture's and the unit
 // tests', which run them for real.
 var allowed = map[string][]string{
-	module + "pkg/journal":           {"*"},
-	module + "pkg/health":            {"*"},
-	module + "pkg/metadata/entity":   {"*"},
-	module + "pkg/metadata/kvstore":  {"*"},
+	module + "pkg/journal":          {"*"},
+	module + "pkg/health":           {"*"},
+	module + "pkg/metadata/entity":  {"*"},
+	module + "pkg/metadata/kvstore": {"*"},
+	// The syncer's contract alone, for the store a share names: never its
+	// implementation.
+	module + "pkg/syncer":            {"*"},
 	module + "pkg/openstate":         {"enginetest", unitTests},
 	module + "internal/node/content": {"enginetest", unitTests},
 	module + "pkg/vfs/vfserr":        {"*"},
@@ -104,9 +107,10 @@ func TestImportRule(t *testing.T) {
 }
 
 // TestImportRuleRefusesFilesystemAndOpenState pins the rule's edges: the
-// filesystem's packages, the journal's test kit, open state and the node's
-// content wiring are refused, while the metadata packages the engine needs
-// and the filesystem's errors are allowed.
+// filesystem's packages, the journal's test kit, open state, the node's
+// content wiring and the syncer's implementation are refused, while the
+// metadata packages the engine needs, the syncer's contract and the
+// filesystem's errors are allowed.
 func TestImportRuleRefusesFilesystemAndOpenState(t *testing.T) {
 	for _, c := range []struct {
 		path    string
@@ -123,10 +127,24 @@ func TestImportRuleRefusesFilesystemAndOpenState(t *testing.T) {
 		{module + "pkg/openstate", false},
 		{module + "internal/node/content", false},
 		{module + "pkg/vfs/vfserr", true},
+		{module + "pkg/syncer", true},
+		{module + "pkg/syncer/pool", false},
 		{"context", true},
 	} {
 		if got := forbidden(".", c.path) == ""; got != c.allowed {
 			t.Errorf("importing %s: allowed %v, want %v", c.path, got, c.allowed)
+		}
+	}
+}
+
+// The syncer's contract, which the engine may import, imports nothing but
+// the standard library, so the allowance never reaches the syncer's
+// implementation through it.
+func TestSyncerContractImportsOnlyTheStandardLibrary(t *testing.T) {
+	imports, _, _ := packageImports(t, filepath.Join("..", "syncer"))
+	for _, imp := range imports {
+		if first, _, _ := strings.Cut(imp, "/"); strings.Contains(first, ".") {
+			t.Errorf("pkg/syncer imports %q, want the standard library only", imp)
 		}
 	}
 }

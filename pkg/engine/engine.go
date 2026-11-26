@@ -127,6 +127,10 @@ type Engine struct {
 		ctx    context.Context
 		cancel context.CancelFunc
 		wg     sync.WaitGroup
+		// latest is the newest Share each Bind carried while the retry
+		// waits, which it answered ErrDelay, so the late attach binds
+		// what the node last asked for. Guarded by mu.
+		latest map[entity.ShareID]Share
 	}
 
 	// cloneRemoval, a test's stand-in for the clone's rebuild, is called by

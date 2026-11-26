@@ -6,6 +6,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/syncer"
 )
 
 // Settings are the engine's node-level settings, handed to Apply. Every one
@@ -33,6 +34,21 @@ type Share struct {
 	Namespace entity.NamespaceID // the share's write namespace: a clone's two shares must share it
 	Limit     int64              // the share's journal limit, in bytes
 	State     ShareState
+	// Store is the share's remote block store, as the syncer registered it
+	// (RFC 8 §12.1); zero while no flow is opened, and not validated, since
+	// nothing reads it yet. A served share's Bind logs a change and keeps
+	// the Store it was bound with.
+	Store    syncer.StoreID
+	Settings ShareSettings // validated by Start and Bind (RFC 8 §2.4)
+}
+
+// ShareSettings are one share's settings, carried on its Share. Every one is
+// required and must be positive.
+type ShareSettings struct {
+	MaxAge            time.Duration // offload.max_age: the longest a file's dirty bytes wait below the dirty-byte threshold before it is offered
+	ReadaheadBlocks   int           // readahead.max_blocks: the read-ahead cap, in blocks ahead of one reader
+	ReadaheadBytes    int64         // readahead.max_bytes: the read-ahead cap, in bytes ahead of one reader
+	SpeculationBudget int64         // the speculation budget: the bytes of speculative fetches in flight for the share
 }
 
 // ShareState is what a bound share admits.

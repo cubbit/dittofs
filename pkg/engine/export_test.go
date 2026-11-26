@@ -157,6 +157,17 @@ func (e *Engine) StateOf(s entity.ShareID) ShareState {
 	return ShareState(b.state.Load())
 }
 
+// SettingsOf is share s's settings in force, false when it has no binding.
+func (e *Engine) SettingsOf(s entity.ShareID) (ShareSettings, bool) {
+	b := e.table()[s]
+
+	if b == nil || b.removed || b.settings.Load() == nil {
+		return ShareSettings{}, false
+	}
+
+	return *b.settings.Load(), true
+}
+
 // LifecycleFree reports whether the lifecycle mutex is free now.
 func (e *Engine) LifecycleFree() bool {
 	if !e.mu.TryLock() {
@@ -254,6 +265,7 @@ func (e *Engine) SetPrimary(s entity.ShareID, node entity.NodeID, nodeEpoch, inc
 		gc:          old.gc,
 	}
 	b.state.Store(old.state.Load())
+	b.settings.Store(old.settings.Load())
 	t[s] = b
 	e.shares.Store(&t)
 }
