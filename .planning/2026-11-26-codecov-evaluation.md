@@ -351,3 +351,46 @@ tells us whether the question is still being asked.
 
 Test Analytics is declined, not deferred: §5 records why it adds nothing over
 `dt history` and quarantine.
+
+## Appendix: reproducing the measurements
+
+```bash
+# Unit profile from the merge run cited in §4 (artifact dt-run-unit-1).
+gh run download 45796112142 -R cubbit/dittofs -n dt-run-unit-1
+# -> <timestamp>-<sha>/unit/coverage.txt
+```
+
+Per-package aggregation (the §4 table; package = directory of each profile line):
+
+```python
+import collections, os
+cov = collections.defaultdict(lambda: [0, 0])   # statements, hit
+for line in open("coverage.txt"):
+    if line.startswith("mode:") or not line.strip():
+        continue
+    f, rest = line.rsplit(":", 1)
+    stmts, count = rest.split()[-2:]
+    cov[os.path.dirname(f)][0] += int(stmts)
+    if int(count) > 0:
+        cov[os.path.dirname(f)][1] += int(stmts)
+```
+
+The dashboard state in §2:
+
+```bash
+curl -s https://api.codecov.io/api/v2/github/cubbit/repos/dittofs/
+curl -s 'https://api.codecov.io/api/v2/github/marmos91/repos/dittofs/commits?branch=develop&page_size=100'
+curl -s https://api.codecov.io/api/v2/github/marmos91/repos/dittofs/flags
+```
+
+The e2e cost in §7:
+
+```bash
+go build -cover -o /tmp/dfs-cover ./cmd/dfs
+mkdir -p /tmp/cov && GOCOVERDIR=/tmp/cov /tmp/dfs-cover version
+go tool covdata percent -i=/tmp/cov | head
+```
+
+The unit upload's own cost is in the unit job log: the Codecov step reports the
+profile size and the time between its start and its `end-action` line.
+
