@@ -2,7 +2,7 @@
 
 **Sources:** [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §6.1.1 (the scheduler, whole, as
 #5877 amended it with `Key.ID`, `TenantID`, `Clock` and `Loop`, and as this pull request amends
-its `Stats`), the rules of §6.1 it carries out (posting never blocks, a key in at most one run),
+its `Stats` and its idle sentence), the rules of §6.1 it carries out (posting never blocks, a key in at most one run),
 §6.3's paused tenant and O2, §2.3's `CancelTenant` and `WaitTenant` at `Drop` and `Unbind`, §2.5's
 stop step 2 (`Stop`), §13's E41 and the scheduler's half of E23, §14's `engine_queue_*` and
 `engine_work_*` series, §15.2's "§6.1.1 a stuck run" over one instance, and §15.3's `ponytail:` on
@@ -35,7 +35,7 @@ epic 14 can put the engine's sources on it.
 ### 1.1 In scope
 
 Every behaviour behind `pkg/workqueue`'s exported surface; the `Stats` fields this pull request
-adds to §6.1.1 (D8, pending the user's answer); the package's tests, its test workload and its
+adds to §6.1.1 (D8); the package's tests, its test workload and its
 fault-injecting clock; the markers of §6.1.1 and §15.3 at their code sites.
 
 ### 1.2 Out of scope
@@ -87,14 +87,14 @@ cited by number and title and not copied.
 | rule 8, real dependencies for properties of those dependencies | none | the package has no dependency: its clock and loop are inputs, and the watchdog in its tests is RFC 25's real one |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T13.1 to T13.5 | §6.1.1's no-borrowing `decision:` at the reservation (T13.5); §15.3's `ponytail:` at the state table (T13.1); epic 11's D3 `decision:` at `Register` kept (T13.1); this document's markers as §4 names them |
 | rule 10, a test must be able to fail | all | each test names the break it catches; none asserts a stub's answer |
-| rule 11, a symbol is exported only if the RFC's interface uses it | T13.1, T13.4 | nothing is exported but §6.1.1's surface and D8's three `Stats` fields, pending the user's answer; the run context, the heaps and the stride passes are unexported |
+| rule 11, a symbol is exported only if the RFC's interface uses it | T13.1, T13.4 | nothing is exported but §6.1.1's surface and D8's three `Stats` fields; the run context, the heaps and the stride passes are unexported |
 | rule 12, each subtask creates only what it declares | all | each `Stats` field lands with the subtask that fills it; the test workload and the fault-injecting clock land with their first tests |
 
 ## 3. Requirements and invariants
 
 Every obligation RFC 8, RFC 25, RFC 24 and RFC 0 place on the scheduler, numbered so subtasks and
 tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; "(as amended)" means as
-#5877 and this pull request (D8) amend it.
+#5877 and this pull request (D8, D14) amend it.
 
 **The library**
 
@@ -147,7 +147,7 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; "(as amen
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R22 | The scheduler turns its loop (`Turn`) after each dispatch and each run's return, from the dispatcher, so a dispatcher that stops turns no loop however many runs return | MUST | §6.1.1 (as amended); RFC 25 §3.5 | T13.4 |
-| R23 | It withholds `Idle` only while an entry is dispatchable now (due, and its tenant and source under their bounds), or while a source with entries due has every slot held by an overdue run (D14's reading of "the slots it waits for"); otherwise it reports `Idle`, and while it waits it repeats `Idle` at least every 30 s; so a lost wakeup with entries due and a slot free, or a source whose slots all hold overdue runs, fails liveness within the watchdog's 60 s | MUST | §6.1.1 (as amended); RFC 25 §3.5 | T13.4 |
+| R23 | It withholds `Idle` only while an entry is dispatchable now (due, and its tenant and source under their bounds), or while a source with entries due has every slot held by an overdue run (D14: the slots of the entry's source); otherwise it reports `Idle`, and while it waits it repeats `Idle` at least every 30 s; so a lost wakeup with entries due and a slot free, or a source whose slots all hold overdue runs, fails liveness within the watchdog's 60 s | MUST | §6.1.1 (as amended); RFC 25 §3.5 | T13.4 |
 | R24 | §15.2's "§6.1.1 a stuck run", over one instance: with two tenants holding work, a `Run` of one that ignores its ctx in every slot that tenant may hold makes `work_queue_stalled` (`Stalled`) name its source and tenant within twice `RunTimeout`, `engine_work_runs_overdue_total` (`OverdueRuns`) rise, and the other tenant's work still run; every slot of a source held by overdue runs, and separately one dispatch wakeup lost with entries due and a slot free, each fail liveness within 60 s | test row | §15.2; §6.1.1 (as amended) | T13.4 |
 
 **Concurrency and fairness**
@@ -235,7 +235,7 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; "(as amen
   consumer's answer to an outage that its own condition reports, and a deliberate pause must not
   fail liveness or raise `work_queue_stalled`. `decision:` at the due test, withdrawn if a pause ever
   outlives the outage that caused it unnoticed. Prior art: none found.
-- **D8, `Stats` gains `Runs`, `OverdueRuns` and `Stalled` (pending the user's answer).** The
+- **D8, `Stats` gains `Runs`, `OverdueRuns` and `Stalled` (the user's decision, 2026-11-26).** The
   frozen `Stats` cannot feed three of the things §14 and §6.1.1 ask of it. `Running` is one count,
   but §14 reports both the entries in the running state (`engine_queue_entries{state}`) and the runs
   in flight (`engine_work_runs_inflight`), which differ once a run holds a batch. `Overdue` is a
@@ -253,8 +253,11 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; "(as amen
   }
   ```
   The scheduler decides the stall, the engine's epic 20 and GC turning `Stalled` into their
-  `work_queue_stalled`, and the rule stays in one place. Alternatives and the recommendation are in
-  §9. Changing it after epic 14 fills `JournalStats.Work` would touch each reader. No marker.
+  `work_queue_stalled`, and the rule stays in one place. Rejected: a per-source `LastDispatch` that
+  each consumer turns into the condition, which copies the 5 minutes and the rule into the engine
+  and GC; and turning `Overdue` into the counter with `Running` counting runs, one field smaller but
+  losing §14's running entries and a reader's way to tell one stuck run from five. Changing it after
+  epic 14 fills `JournalStats.Work` would touch each reader. No marker.
 - **D9, the tests drive the scheduler with a workload, not a double.** The scheduler calls a
   `Source`; it relies on it for nothing but the work. The package's one test workload,
   `source_test.go`, delivers each batch it is handed on a channel (the scheduler's output) and
@@ -295,7 +298,7 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; "(as amen
   reservation keeps its entries and drops new posts until under. `decision:` at the reservation,
   beside §6.1.1's no-borrowing one, withdrawn if a consumer needs more tenants than the formula
   fits. Prior art: none found.
-- **D14, an entry waits for its source's slots (pending the user's answer).** R23 lets the
+- **D14, an entry waits for its source's slots (the user's decision, 2026-11-26).** R23 lets the
   scheduler report idle "while every slot it waits for holds a run that is not overdue". Read as
   the entry's tenant's slots, one tenant whose runs all hang withholds `Idle` for the whole
   instance, and once the other tenants drain, liveness fails and the node restarts for one stuck
@@ -306,8 +309,10 @@ tests can cite them. "§6.1.1" is RFC 8's unless another RFC is named; "(as amen
   R25's bound divides by the tenants with work, so once the others drain the hung tenant's bound
   grows to the whole `Concurrency`, its next due keys take the free slots and hang too, and the
   source reaches every slot overdue, which fails liveness under either reading. One hung tenant is
-  spared only while another tenant holds work. Written as the source's slots; RFC 8
-  §6.1.1's sentence is amended to say so once the user agrees. `decision:` at the idle rule. Prior
+  spared only while another tenant holds work. The ceiling is recorded and R25's bound is not
+  changed to lift it. Rejected: the tenant's slots, under which a single shard whose store hangs
+  every run restarts the node once the other shards drain. This pull request amends RFC 8 §6.1.1's
+  idle sentence to say "every slot of the entry's source". `decision:` at the idle rule. Prior
   art: none found.
 
 ## 5. Target tree
@@ -331,7 +336,8 @@ pkg/workqueue/
   backoff_test.go     T13.3  backoff, deadlines, pausing
   liveness_test.go    T13.4  run deadlines, overdue, stall, the watchdog rules and §15.2's stuck run
   tenant_test.go      T13.5  totals, drops, the tenant bound, cancel, StopTenant, wait
-docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains Runs, OverdueRuns and Stalled (D8)
+docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains Runs, OverdueRuns and Stalled (D8);
+                                      its idle sentence names the entry's source's slots (D14)
 ```
 
 ## 6. Subtasks
@@ -506,7 +512,7 @@ docs/internals/rfcs/rfc-8-engine.md   this pull request: §6.1.1's Stats gains R
 
   The wrapper is kind 3, around the real test clock.
 - **Rules:** rule 9: D6's and D14's `decision:` markers; rule 11: `OverdueRuns` and `Stalled` are
-  D8's, exported only once the user agrees; rule 3: `OverdueRuns` is
+  D8's; rule 3: `OverdueRuns` is
   `engine_work_runs_overdue_total`.
 
 ### T13.5 Reservations and the tenant lifecycle
@@ -583,35 +589,6 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **D8, pending the user's answer: what `Stats` adds so §14's series and `work_queue_stalled` can
-  leave the scheduler.** The frozen `Stats` cannot carry the runs in flight beside the running
-  entries, nor the overdue counter, and has no field from which a reader could raise the
-  condition's 5-minute half. Options:
-  - **A (recommended, written in place, D8's struct):** `Stats` gains `Runs int`, `OverdueRuns
-    uint64` and `Stalled bool`; the scheduler alone decides a stall, and both consumers, the engine
-    and GC, read a flag.
-  - **B:** `Stats` gains `Runs int`, `OverdueRuns uint64` and a per-source `LastDispatch
-    time.Time`; each consumer raises the condition as `Overdue > 0`, or due entries with
-    `LastDispatch` more than 5 minutes ago, copying the 5 minutes and the rule into the engine and GC.
-  - **C:** `Running` counts runs and `Overdue` becomes the counter (`uint64`, beside `Dropped` and
-    `Expired`), with `Stalled bool` for the condition: one field added, but §14's running entries and
-    a reader's way to tell one stuck run from five are lost.
-
-  A keeps the RFC's "the scheduler raises `work_queue_stalled`" where the RFC puts it, at three
-  fields; B is as large and copies a rule into two components; C is smallest and drops two figures
-  §14 names. Checked: §14's series and §6.1.1's `Stats`; Prometheus's convention of a `_total`
-  counter beside a gauge is from memory.
-- **D14, pending the user's answer: which slots an entry "waits for" in the idle rule.** Options:
-  - **A (recommended, written in place):** its source's slots. Liveness fails for a lost wakeup or a
-    source whose every slot is overdue, §15.2's two cases; one tenant's hung runs show as `Stalled`
-    and never restart the node while another tenant holds work (D14's ceiling). RFC 8 §6.1.1's
-    idle sentence gains "of its source" once agreed.
-  - **B:** its tenant's slots, the sentence as written: a single shard whose store hangs every run
-    restarts the node once the other shards drain, which RFC 25 §3.5's "no dependency fails
-    liveness" argues against.
-
-  Checked: §6.1.1's idle sentence and R25's "a slow or throttled tenant holds only its own slots";
-  RFC 25 §3.5's two decisions.
 - **A cancelled tenant's counters leave `Stats` with it**, so a reader summing a source's tenants
   sees `Dropped`, `Expired` and `OverdueRuns` fall when a share is dropped. The integration epic,
   which adapts `Stats` into `engine_work_items_dropped_total` and its siblings labelled by source,

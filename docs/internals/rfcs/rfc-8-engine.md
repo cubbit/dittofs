@@ -2274,8 +2274,8 @@ The scheduler **MUST**:
   tenant, and keeps its slot, since the scheduler cannot reclaim a goroutine, only
   report it;
 - **turn its watchdog loop**: after each dispatch and each run's return. It reports
-  idle only while no entry is due, or while every slot it waits for holds a run
-  that is not overdue. So a lost wakeup, with entries due and a slot free, or a
+  idle only while no entry is due, or while every slot of the entry's source
+  holds a run that is not overdue. So a lost wakeup, with entries due and a slot free, or a
   source whose slots are all held by overdue runs, fails liveness within the
   watchdog's bound ([RFC 25 §3.5](rfc-25-observability.md#3.5%20Liveness)), and `work_queue_stalled` is raised as
   well once entries have been due with none dispatched for 5 minutes;
