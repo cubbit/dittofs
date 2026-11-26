@@ -37,6 +37,9 @@ cat /tmp/wrong.out
 cat /tmp/*.rc 2>/dev/null || true
 grep 'the storage key' /logs/dfs.log || true
 jq -e '.spec.settings["namespace.encrypts"] == true' /tmp/namespace.json
+# No marker counts only if the upload reached the bucket: at least m.bin's 16 MiB of random bytes
+test "$(jq .count /tmp/enc0.json)" -gt 0
+test "$(jq .bytes /tmp/enc0.json)" -ge 16777216
 test "$(cat /tmp/marker.count)" -eq 0
 cmp /tmp/back1.bin /tmp/m.bin
 cmp /tmp/back2.bin /tmp/m.bin

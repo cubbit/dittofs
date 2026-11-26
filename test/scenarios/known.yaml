@@ -1,16 +1,19 @@
 # The system scenarios that fail today, each at its first failing check, with the issue it
 # reproduces. A scenario that starts to pass is an unexpected pass: remove its entry in the fix.
+# Until the node's settings table declares the remote and namespace sections, every scenario stops
+# in setup, where the first store create is refused: its remote.* keys are unknown. Each reason
+# names where its run stops past that.
 - test: test/scenarios/10-smb-store-options-xs.sh
   status: fail
   fix: planned
   category: bug
-  reason: 'A misspelt store setting ("remote.compresion") is accepted and ignored, at `test -e /tmp/b4.rc`. Past it, a used namespace''s bucket and prefix edits are accepted too.'
+  reason: 'An unknown key is refused, so the misspelt "remote.compresion" is no longer the failure; the issue''s open part is that a used namespace''s bucket and prefix edits must be refused, at `test -e /tmp/e1.rc`.'
   issue: '#3048'
 - test: test/scenarios/11-smb-2stores-same-bucket-xs.sh
   status: fail
   fix: planned
   category: bug
-  reason: 'A second namespace on the same bucket and prefix is accepted, at `test "$Y" = refused`.'
+  reason: 'A second store and namespace on the same bucket and prefix must be refused, at `test "$Y" = refused`.'
   issue: '#3036'
 - test: test/scenarios/13-smb-compression-frame-magic-xs.sh
   status: fail
@@ -40,7 +43,7 @@
   status: fail
   fix: planned
   category: bug
-  reason: 'The first user to delete owns #recycle, so the second user''s delete fails, at `test -z "$(grep ''b1\.txt'' /tmp/root.ls)"`.'
+  reason: 'The new CLI has no recycle bin, so a delete creates no #recycle, at `nfs-ls ''nfs://127.0.0.1/shared?version=4&uid=1000&gid=1000'' | grep recycle`. With it back, the first user to delete owns #recycle and the second user''s delete fails.'
   issue: '#2920'
 - test: test/scenarios/33-nfs-mount-identity-xs.sh
   status: fail
