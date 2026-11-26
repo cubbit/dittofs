@@ -14,7 +14,7 @@ location), §2.2, §2.5, §6.6 and §7.2; [RFC 3](../docs/internals/rfcs/rfc-3-s
 [RFC 4](../docs/internals/rfcs/rfc-4-remote-tier.md) §4.1 (`Name`, `ChunkRange`, `ErrNotFound`);
 [RFC 5](../docs/internals/rfcs/rfc-5-transforms.md) §2.7 (the material errors).
 **Track:** C.
-**Epic 17 estimate: 9 subtasks, 23.5 man-days.**
+**Epic 17 estimate: 9 subtasks, 24 man-days.**
 **Depends on:** sync point **S2, red rows in CI**: epic 12's rows and the fixture's component
 options; **epic 11's frozen surface**: `Settings.FillLowWater`, `ShareSettings`' read-ahead caps and
 speculation budget, the `Stats` fields `Fetches`, `FetchBytes`, `Fills`, `SpeculationBytes`,
@@ -25,8 +25,8 @@ stores, with `FaultRemote` real (its D9, D10), which T17.2's tests stand in for 
 themselves until it lands (the offload plan's §3.3); **epic 16's T16.6**, the gates' switch
 `Deps.Gates policy.Gates` (its D6), which `fill` reads from T17.9;
 **S5's first half, partly**: RFC 3's syncer (`pkg/syncer/pool`) over RFC 4's in-memory store through
-`codec.Store`, and RFC 5's material errors in the `pkg/transform` root (epic 15 admits that root into
-the engine's import walk). The conformance rows also wait on epics 15 and 16 (the carver, chain and
+`codec.Store`, and RFC 5's material errors in the `pkg/transform` root (epic 15 admits that root for
+`offload/` only; T17.2 admits it, and the `pkg/remote` root, for the engine's own package). The conformance rows also wait on epics 15 and 16 (the carver, chain and
 syncer options made real) and on **S6** for the rows that evict through the real journal's
 `Release`.
 **Blocks:** epic 18, which calls T17.7's cancellation of queued speculation from `admit` and the
@@ -112,14 +112,14 @@ cited by number and title and not copied.
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | tests run over the first part's in-memory journal and `kvstore` over the in-memory `kv.KV`, refs and blocks written through `kvstore`'s `Intend` and `Commit` and `codec.Store`'s put into RFC 4's in-memory store (kind 2, RFC 4's suite), fetched through RFC 3's real syncer, faults from RFC 4's fault wrapper (kind 3); a carved extent is one the journal never held, so no pass and no `Release` is needed; no engine-side double is written |
 | rule 2, fuzz the key and ref decoders the queue's rebuild reads | none | no decoder: the chunk location arrives decoded by `kvstore`, and the block body is RFC 4's codec's |
 | rule 3, observability follows RFC 25 | T17.2, T17.3, T17.4, T17.5, T17.7 | `engine_reads_total`'s `remote` class, `engine_fetches_total` by `shape`, `engine_fetch_bytes_total`, `engine_fills_total` by `result`, `engine_speculation_bytes_total`, `engine_speculation_used_bytes_total` and `engine_reresolves_total`, as `Stats` fields with no share label; the `engine.fetch` span |
-| rule 4, profiling | T17.2, T17.5, T17.6 | every test runs under `prof.Watch`; a read's fetch goroutines are joined before it returns, and the fills and prefetch consumers at `Close`, so a leak fails the run; the first part's allocation assertion on a read of held content stays green (no path here runs for held bytes) |
+| rule 4, profiling | T17.2, T17.5, T17.6, T17.7 | every test runs under `prof.Watch`; a read's fetch goroutines are joined before it returns, and each fill and prefetch consumer runs inside its binding's gate, so `Unbind` and `Close` wait for it and a leak fails the run; a read of held content still updates the read table (R30, R49) and counts used speculative bytes (D11), and that work must not allocate, asserted under `unit/engine-allocs` |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | asserted at `Read`'s reply and error, which the filesystem service consumes; a fill at the journal's next `ReadAt`; a location at the engine's re-resolution, not at the store; `-race` on every concurrent leg |
 | rule 6, known failures shrink | T17.2, T17.9 | each row of §15.1 and §15.2 this epic owns leaves `known.yaml` in the change that turns it green, or has its `message:` rewritten in the change that moves its first failing check |
-| rule 7, v2 ignores v1, and the engine imports only what RFC 0 §1.2 allows | T17.2 | the read path calls the flow through the `pkg/syncer` root and reads RFC 4's errors from the `pkg/remote` root and the material errors from the `pkg/transform` root, all contracts; tests may import `pkg/syncer/pool`, `pkg/remote/memory` and `pkg/remote/codec` |
+| rule 7, v2 ignores v1, and the engine imports only what RFC 0 §1.2 allows | T17.2 | the read path calls the flow through the `pkg/syncer` root, already allowed (epic 11), and reads RFC 4's errors from the `pkg/remote` root and the material errors from the `pkg/transform` root, all contracts, which `imports_test.go`'s `allowed` gains for the engine's own package (epic 15 admits them for `offload/` only); tests may import `pkg/syncer/pool`, `pkg/remote/memory` and `pkg/remote/codec` |
 | rule 8, real dependencies for properties of those dependencies | T17.1, T17.5, T17.9 | the location join is tested in `kvstore` over each backend RFC 6's suite runs; the in-memory journal's `Fill` and `Extents` are held to the real journal by the fixture's agreement tests; T17.9's rows run over the real journal |
-| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T17.2, T17.4, T17.8 | `read.go`'s carved-run `decision:` deleted (T17.2); §7.8's quarter `decision:` at the choice (T17.4); §9.1's clone-copies `decision:` kept and reworded for the narrowed copies (T17.8); each §4 decision leaves the marker it names |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T17.2, T17.4, T17.8 | `read.go`'s carved-run `decision:` deleted, its read-class `decision:` reworded for D13, and `allocation.go`'s `ponytail:` on `paint` deleted once carved pieces are clipped (T17.2); §7.8's quarter `decision:` at the choice (T17.4); §9.1's clone-copies `decision:` kept and reworded for the narrowed copies (T17.8); each §4 decision leaves the marker it names |
 | rule 10, a test must be able to fail | all | each test names the break it catches; none asserts a stub's answer |
-| rule 11, a symbol is exported only if the RFC's interface uses it | T17.1, T17.5, T17.6, T17.8, T17.9 | the only exported additions are RFC 6's `Location` and `Span.Loc`, `kvstore`'s `Content.WithLogger`, the in-memory journal's `Fill`, `Extents` and `FailNextFill`, and epic 12's proposed fixture controls; `fill` and the speculator are unexported |
+| rule 11, a symbol is exported only if the RFC's interface uses it | T17.1, T17.5, T17.6, T17.8, T17.9 | the only exported additions are RFC 6's `Location` and `Span.Loc`, `kvstore`'s `Content.WithLogger`, the in-memory journal's `Fill` and `Extents`, and epic 12's proposed fixture controls, `FailNextFill` among them; `fill` and the speculator are unexported |
 | rule 12, each subtask creates only what it declares | all | `Handle.Fill` joins `Deps` with T17.5 and `Handle.Extents` with T17.6, each with its first caller; each fixture control lands with its first test; the read state lands with T17.4, its first reader |
 
 ## 3. Requirements and invariants
@@ -137,11 +137,11 @@ can cite them. Rows of §15 the epic turns green are listed last.
 | R4 | A fetch per missing extent, never per window: an extent over *n* blocks costs one fetch per block, whatever the window | invariant | RFC 8 §7.1; RFC 3 §1.3 | T17.2 |
 | R5 | A carved span names its chunk's location, the block and the body's position and length with the block's encoded size, read in the same transaction in the namespace the ref's generation names; a span whose chunk record is gone, names a deleted block or names a block with no record names none | MUST | RFC 6 §8.1 (as amended here), §2.1, §2.2; RFC 8 §7.1 | T17.1 |
 | R6 | The covering lookup still costs O(log *n* + results) with the locations joined | bound | RFC 6 §8.1 | T17.1 |
-| R7 | A ref under an overwrite at or below `asOf` is never fetched: the run reads **Lost** | MUST NOT | RFC 8 §7.1, E9 | T17.2 |
+| R7 | A ref under an overwrite, in a file whose `applied` and whose run's overwrite version are both at or below `asOf`, is never fetched: the run reads **Lost** | MUST NOT | RFC 8 §7.1, E9 | T17.2 |
 | R8 | A **Remote** extent whose fetch cannot complete, the remote unreachable or the demand deadline expired, fails the read with an error distinct from **Lost** | MUST | RFC 8 §7.5, §11.2, E9 | T17.2 |
 | R9 | A material unavailable or unknown fails the read as the remote being unavailable; a material destroyed makes the chunk **Lost**, never corrupt | MUST | RFC 3 §1.3; RFC 5 §2.7 | T17.2 |
 | R10 | A chunk that fails verification fails the read as corrupt | invariant | RFC 8 §7.7, E9 | T17.2 |
-| R64 | A part whose stream the syncer ends by detaching the caller, an error wrapping `remote.ErrTransient`, is fetched again once for the chunks it did not yield, or read from what a fill left; only a second such end fails the read unavailable | MUST | RFC 3 §4.3, §4.2 point 4 | T17.2 |
+| R64 | A part whose stream the syncer ends by detaching the caller, an error wrapping `remote.ErrTransient` but not `remote.ErrThrottled`, is fetched again once for the chunks it did not yield, or read from what a fill left; only a second such end fails the read unavailable (D14) | MUST | RFC 3 §4.3, §4.2 point 4 | T17.2 |
 
 **The reply**
 
@@ -163,7 +163,7 @@ can cite them. Rows of §15 the epic turns green are listed last.
 | R19 | A get that finds its object absent runs the covering lookup for the extent again and acts on the new answer | MUST | RFC 8 §7.7, E14 | T17.3 |
 | R20 | It keeps doing so while each answer names a different location, bounded by the read's deadline | MUST | RFC 8 §7.7, E14 | T17.3 |
 | R21 | A new answer of a hole or past end of file is answered as such; an uncarved run of a file whose `applied` or whose run's overwrite version is above `asOf` asks the journal again | MUST | RFC 8 §7.7, §7.1 | T17.3 |
-| R22 | The read fails as **Lost** when an answer names a location that already missed, or a chunk with no chunk record | MUST | RFC 8 §7.7, E14 | T17.3 |
+| R22 | The read fails as **Lost** when an answer names a location that already missed, or a chunk with no chunk record; a carved span whose first resolution carries no `Loc` reads **Lost** without a fetch | MUST | RFC 8 §7.7, E14 | T17.2, T17.3 |
 | R23 | A verification failure, a transport error or a timeout never triggers re-resolution | MUST NOT | RFC 8 §7.7 | T17.3 |
 
 **Chunks or the block**
@@ -180,7 +180,7 @@ can cite them. Rows of §15 the epic turns green are listed last.
 | R26 | `fill` decides per demanded extent: fill unless the journal's free capacity is below the fill low-water mark, or the read is part of a sequential scan longer than the read-ahead window | SHOULD | RFC 8 §7.3, §3.1 | T17.5 |
 | R27 | `fill` takes plain inputs, does no I/O, holds no component, and calls no other policy function | MUST NOT | RFC 8 §3.1 | T17.5 |
 | R63 | `fill` is a gate, never what keeps a read correct: with the gates' switch off it fills every demanded extent, and the Group A rows still pass | MUST NOT | RFC 8 §3.2, E3; epic 16, D6 | T17.9 |
-| R28 | `Fill` is passed exactly the verified bytes fetched for that extent, with step 1's `asOf` and the ref's version | MUST | RFC 8 §7.2; RFC 1 §3.4 | T17.5 |
+| R28 | `Fill` is passed exactly the verified bytes fetched for one carved span, with that span's ref's `Newest` and the `asOf` the journal answered before the covering lookup that produced the fetched resolution: step 1's for a demand read and for its R64 re-fetch, the triggering read's step 1 for a hint, never one read after that lookup | MUST | RFC 8 §7.2; RFC 1 §3.4 | T17.5, T17.6 |
 | R29 | A refused fill is not an error, and a fill never delays or fails the reply | MUST NOT | RFC 8 §7.2, E10; RFC 3 §4.2 | T17.5 |
 
 **The speculator**
@@ -208,7 +208,7 @@ can cite them. Rows of §15 the epic turns green are listed last.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R41 | No lock, queue or other serialisation point shared by more than one file or share is held across a fetch, a fill or a speculative hint | MUST NOT | RFC 8 §1.1 | T17.2, T17.5, T17.7 |
+| R41 | No lock, queue or other serialisation point shared by more than one file or share is held across I/O or a wait on a read's path: its fetch, and its hand-off to a fill and to the speculator; a fill and a hint run off that path (D3) | MUST NOT | RFC 8 §1.1 | T17.2, T17.5, T17.7 |
 | R42 | `engine_reads_total` counts a read served from the remote under `remote`; `engine_fetches_total` by `shape` `chunks` or `block`; `engine_fetch_bytes_total`; `engine_fills_total` by `result` `done`, `declined` or `refused`; `engine_speculation_bytes_total` and `engine_speculation_used_bytes_total`; `engine_reresolves_total`; none share-labelled | MUST | RFC 8 §14 | T17.2, T17.3, T17.4, T17.5, T17.7 |
 | R43 | A content call opens an `engine.fetch` child span per fetch it waits on, carrying the share, the file, the bytes and the outcome | MUST | RFC 8 §14 | T17.2 |
 | R44 | A **Lost** or corrupt read logs the file and extent at `Error`, once per extent, on the remote path as on the journal's | MUST | RFC 8 §14 | T17.2, T17.3 |
@@ -253,12 +253,15 @@ Each is green in whichever change lands last of this epic, S3 and, where the row
   block's encoded size, never the refcount, so two answers compare by where the chunk is) and
   `Span.Loc`, set on a carved span in `Content.Covering`'s own transaction and zero when the chunk
   record is gone, names a deleted block or names a block with no record. The join is in
-  `Content.Covering` only: a clone batch's `adopt` and `Allocation` share the lookup and pay
-  nothing for it. A second call for the location would let a relocation slip between the two reads.
-  The ref still names only its hash (RFC 6 §2.5). Changing it later costs a field and the join,
-  nothing persisted. A `ponytail:` at the join says the block size decodes the whole block record,
-  whose carried list grows with its chunks, and names the upgrade, the size kept on the chunk
-  record, if lookups over many-chunk blocks show in a profile. Prior art: none found.
+  `Content.Covering` only: a clone batch's `adopt`, `Allocation` and `SnapshotCovering` share the
+  lookup, pay nothing for it and return no `Loc`, which the amended comment says, so a later reader
+  of carved data through them adds the join. A second call for the location would let a relocation
+  slip between the two reads. The ref still names only its hash (RFC 6 §2.5). Changing it later
+  costs a field and the join, nothing persisted. The join decodes the block record only up to its
+  `Size`, which the record stores before its carried list, so its CPU does not grow with the block's
+  chunks; a `ponytail:` at the join says the point read still fetches the whole record, up to 1,024
+  carried entries, and names the upgrade, the size kept on the chunk record, if lookups over
+  many-chunk blocks show in a profile. Prior art: none found.
 - **D2, re-resolution is a pure function of the locations seen.** The loop of RFC 8 §7.7 keeps the
   locations that missed and calls `reresolve(missed []entity.Location, next entity.Span, asOf
   entity.JournalVersion) step`, answering fetch, re-ask the journal, zeros, past end of file or
@@ -273,11 +276,20 @@ Each is green in whichever change lands last of this epic, S3 and, where the row
   fetch no longer, but `dst` is the caller's once `Read` returns, so a fill copies the extent's
   verified bytes and runs in its own goroutine, beside the reply. RFC 8 §1.1 forbids a payload
   copied through engine state: the copy is a buffer in flight to the journal, as a write's `p` is,
-  kept by nothing and released when `Fill` returns (R18). Each binding holds a byte semaphore of 4
-  MiB of fills in flight, taken with a try-acquire; a fill that does not fit is declined, counted
-  `declined`, so no fill waits and no share's fills hold another's (R41). A `decision:` at the
-  hand-off names both rules and the ceiling, fills declined under a burst of cold reads, withdrawn if
-  B4 shows declined fills costing re-fetches. Prior art: Linux's page cache inserts read pages
+  kept by nothing and released when `Fill` returns (R18). A fill is one carved span: its verified
+  bytes, at most one chunk (RFC 2's `Max`, 1 MiB by default), filled with that span's ref's `Newest`
+  and the `asOf` R28 names, so a read of any size fills span by span and one `Fill` never mixes
+  versions. Each binding holds a byte semaphore of 4 MiB of fills in flight, each span taking its
+  size by try-acquire; a span that does not fit is declined, counted `declined`, so no fill waits and
+  no share's fills hold another's. Speculative fills do not take it: their bytes stay charged to the
+  speculation budget until their `Fill` returns (T17.7). Each fill runs inside its binding's gate,
+  entered before the goroutine starts, so `Unbind` and `Drop` wait for it and a shut gate declines it
+  (RFC 8 E13). A fill runs beside the reply, off the request path RFC 8 §1.1 constrains, so epic 18's
+  engine-wide destroyed-material read lock at `fillExtent` breaks no rule of R41. A `decision:` at the
+  hand-off names these rules and the ceiling, fills declined under a burst of cold reads, withdrawn if
+  B4 shows declined fills costing re-fetches; a `ponytail:` says one `Fill` per span writes a record
+  per chunk, and names the upgrade, adjacent spans of one version filled together, if journal record
+  counts show in a profile. Prior art: Linux's page cache inserts read pages
   asynchronously and drops readahead under memory pressure (from memory).
 - **D4, one flow per share serves every carved read of the share.** A ref of an older namespace
   generation is fetched through the share's one flow, on the share's store. In v1.1 every
@@ -291,10 +303,15 @@ Each is green in whichever change lands last of this epic, S3 and, where the row
   read-ahead window, the cancel function of its queued hints and its speculatively filled extents
   not yet read, in a table sharded by file like the file table, each shard's lock held for the
   update only, never across I/O. The table holds at most 10⁴ files; the least recently read is
-  dropped first. That meets §1.1 (keyed by file) and §3.3 (memory). A `ponytail:` names the ceiling,
-  a file dropped from the table relearns its window, and the upgrade, a cap from RFC 24's memory
-  budget once it sets one. Prior art: Linux keeps readahead state per open file (`struct
-  file_ra_state`, from memory).
+  dropped first. That meets §1.1 (keyed by file) and §3.3 (memory). RFC 8 §7.4 keeps this state per
+  open file, but the engine sees no open (NFSv3 has none), so it keeps it per file: two readers
+  streaming one file at different offsets reset each other's window on every read (R36), and neither
+  is read ahead. A `ponytail:` names both ceilings, that one and a file dropped from the table
+  relearning its window, and the upgrades: a few streams per file, each matched by where a read
+  continues, which needs §7.4's reset rule reworded, if B4 or a user shows concurrent readers of one
+  file; a cap from RFC 24's memory budget once it sets one. Prior art: Linux keeps readahead state
+  per open file (`struct file_ra_state`), which the engine cannot; ZFS's prefetcher keeps several
+  streams per file (from memory).
 - **D6, §7.4 S5's held check is the journal's `Extents`.** The handle already answers `Extents`
   (RFC 1 §3.7) on `feat/storage-v2`; the engine's `Handle` gains it with T17.6, its first caller,
   and the in-memory journal with it. No marker. Prior art: none found.
@@ -302,12 +319,16 @@ Each is green in whichever change lands last of this epic, S3 and, where the row
   with `PreWarm` (the offload plan's §6.1 row); the function takes no pre-warm input, and adding one
   later changes an unexported signature only. Rule 2 compares the scan's length with the window's
   cap, `readahead.max_blocks` and `readahead.max_bytes`, the most the window can be. No marker: the
-  ledger row records it.
+  ledger row records it. The speculator issues no hint for a file whose scan rule 2 would decline:
+  its fetched chunks could not fill, so read-ahead would fetch each block twice. Past that point the
+  scan is served by demand fetches, as RFC 8 §7.3's backup example says; a `decision:` at the hint
+  says so, withdrawn if B4 shows long scans need read-ahead held in memory.
 - **D8, the missing-chunk backstop is logged by `kvstore`.** The batch that finds a source ref with
   no chunk record, or one naming a deleted block, runs inside `kvstore`'s `Resume`, which already
   carries it as **Lost** and which the engine does not see into. `Content` gains `WithLogger`, as
-  `Lifecycle` has, and the batch logs the destination file, the extent and a running count at
-  `Error`. RFC 6 §10.2 names no series for it, so the count lives in the log line; a `decision:` at
+  `Lifecycle` has, and each batch collects the refs it carries and, once its transaction has
+  committed, logs the destination file, the extent and a running count at `Error`, so a batch that
+  `kv.Update` retries on a conflict logs and counts once. RFC 6 §10.2 names no series for it, so the count lives in the log line; a `decision:` at
   the log says so, withdrawn when RFC 6 names a series. Reporting it through `Resume`'s result
   instead would change RFC 6's surface and epic 14's removal source for a case a correct store never
   reaches. Prior art: none found.
@@ -325,9 +346,21 @@ Each is green in whichever change lands last of this epic, S3 and, where the row
   extent dropped with its file's state, or evicted unread, is counted neither way, at most D5's 10⁴
   files' worth, and names the upgrade, a count from the journal's eviction report, if B4 needs the
   figure exact. Prior art: none found.
-- **D12, §7.8's quarter compares plaintext with the encoded block.** The missing bytes are
-  plaintext and `Location`'s size is encoded, so a compressible block takes the whole-block shape
-  sooner. The quarter's `decision:` (rule 9) gains that sentence. Prior art: none found.
+- **D12, §7.8's quarter compares encoded bytes.** The missing bytes are counted as the sum of the
+  wanted chunks' `Loc.Length` and compared with `Loc.BlockSize`, both encoded, so the quarter holds
+  like for like whatever the block compresses to. The quarter's `decision:` (rule 9) says so. Prior
+  art: none found.
+- **D13, a read that fetched counts as `remote`.** `engine_reads_total` counts a successful read
+  `remote` when any part was fetched, else `hole` when any part read as zeros, else `journal`; a
+  failed read keeps its failing part's class. The fetch is the costly path the series exists to
+  show. `read.go`'s read-class `decision:` is reworded to that order (rule 9). Prior art: none found.
+- **D14, a detach and an outage both end in `ErrTransient`.** RFC 3 epic 6's D6 (#6008) ends a
+  detached stream with a plain wrap of `remote.ErrTransient`, which an outage past the syncer's
+  retry bound also returns, so the engine cannot tell them apart and fetches either once more (R64).
+  An outage therefore waits through the retry bound twice, at most the read's deadline. The order
+  of the checks is fixed: `ErrThrottled`, which wraps `ErrTransient`, is tested first
+  and fails the read `ErrUnavailable` with no second fetch. A `decision:` at the check names
+  the doubled wait, withdrawn if RFC 3 gives a detach an error of its own. Prior art: none found.
 
 ## 5. Target tree
 
@@ -338,7 +371,9 @@ pkg/metadata/entity/content.go      T17.1  Location, Span.Loc
 pkg/metadata/kvstore/covering.go    T17.1  the location join in Content.Covering
 pkg/metadata/kvstore/clone.go       T17.8  the backstop's log; Content.WithLogger
 pkg/engine/
-  read.go                           T17.2  the carved row's reply in file order, the remote class
+  read.go                           T17.2  the carved row's reply in file order, the remote class (D13)
+  allocation.go                     T17.2  carved pieces clipped; paint's ponytail deleted
+  imports_test.go                   T17.2  the pkg/remote and pkg/transform roots allowed for "."
   fetch.go                          T17.2  the fetch per carved part, its errors; T17.3 reresolve and its loop; T17.4 blockShape
   readstate.go                      T17.4  the speculator's per-file read table (D5)
   fill.go                           T17.5  the per-share fill hand-off beside the reply
@@ -348,7 +383,8 @@ pkg/engine/
   capacity.go                       T17.7  the refusal path's cancelQueued
   clone.go                          T17.8  copies narrowed to runs no live chunk covers
   types.go, health.go               T17.2 to T17.7  the Stats fields filled
-  read_test.go                      T17.2  the stub-backed "carved after a hole" row rewritten over kvstore
+  read_test.go                      T17.2  the stub-backed "carved after a hole" row rewritten over kvstore;
+                                           TestReadResolutionTable's "carved" row reads Lost
 pkg/engine/enginetest/
   fake.go                           T17.5  the in-memory journal's Fill and the Fill fault wrapper; T17.6 its Extents
   journal_test.go                   T17.5, T17.6  Fill and Extents agreement with the real journal
@@ -378,12 +414,13 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
   }
   // Span gains:
   	Loc Location // when Carved, but a zero ref: where the chunk is; zero when its record is gone,
-  	             // names a deleted block or names a block with no record
+  	             // names a deleted block or names a block with no record. Set by Covering only:
+  	             // Allocation and SnapshotCovering return none.
   ```
   `kvstore`'s `Content.Covering` fills `Loc` inside its one `View`: one point read of the chunk
   record per distinct hash the results name, in the namespace `Ref.NSGen` names, and one of the
-  block record per distinct block; `adopt` and `Allocation`, which share `covering`, do not. D1's
-  `ponytail:`. Consumed by T17.2 (the fetch), T17.3 (the location compare), T17.4 (the quarter) and
+  block record per distinct block, decoded up to its `Size`; `adopt` and `Allocation`, which share
+  `covering`, do not. D1's `ponytail:`. Consumed by T17.2 (the fetch), T17.3 (the location compare), T17.4 (the quarter) and
   T17.8 (the narrowed copies).
 - **Acceptance criteria:**
   - A carved span over a committed block names that block and the body's position and length the
@@ -403,28 +440,35 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
 
 ### T17.2 The carved row: fetch, verified reply, distinguishable failures
 
-**Subtask T17.2 estimate: 5 man-days.**
+**Subtask T17.2 estimate: 5.5 man-days.**
 
 - **Track:** C. **Depends on:** T17.1.
-- **Covers:** R1 to R4, R7 to R18, R41 to R44, R64.
+- **Covers:** R1 to R4, R7 to R18, R22, R41 to R44, R64.
 - **Deliverables:** in `read.go` and `fetch.go`, `resCarved` fetches: each carved part of a missing
   extent, one per block, is one `Fetch(ctx, name, want)` on the binding's `syncer.Flow`, `name` the
   span's block as RFC 4's `remote.Name`, `want` its chunks as `remote.ChunkRange`s from `Loc`; the
   parts of one read run at once, one goroutine per part joined before `Read` returns; each yielded
   chunk is copied into `dst` at its file offsets (the ref's `Skip` and length) before the next
-  iteration; the first failing part sets `n` and the error. `remote.ErrNotFound` hands the part to
-  T17.3; `remote.ErrCorrupt` and `ErrMalformed` fail it as `vfserr.ErrCorrupt`;
-  `ErrMaterialDestroyed` as `vfserr.ErrLost`; a stream ended by an error wrapping
+  iteration; the first failing part sets `n` and the error. A carved span with no `Loc` reads
+  **Lost**, logged, with no fetch (R22). A carved run `paint` split around a pending deallocate or
+  truncate has each piece's span and `Ref` clipped to that piece, so its bytes come from the right
+  offset of the chunk; `allocation.go`'s `ponytail:` on `paint` is deleted (rule 9).
+  `remote.ErrNotFound` hands the part to T17.3; `remote.ErrCorrupt` and `ErrMalformed` fail it as
+  `vfserr.ErrCorrupt`; `ErrMaterialDestroyed` as `vfserr.ErrLost`; `remote.ErrThrottled`, tested
+  before `ErrTransient`, which it wraps, as `vfserr.ErrUnavailable`; any other end wrapping
   `remote.ErrTransient`, which is how the syncer detaches a caller (RFC 3 epic 6's D6, #6008), is
   fetched again once for the chunks it did not yield, after re-asking the journal for what a fill
-  left (R64); `ErrMaterialUnavailable`, `ErrUnknownMaterial`, `remote.ErrInvalid`, a second
-  transient end, every throttled or denied error and the context's deadline as
-  `vfserr.ErrUnavailable`. The `decision:` that a carved run fails unavailable is deleted (rule 9);
-  D4's `decision:` at the fetch. The tests that pinned it go with it: the conformance test
-  `TestRFC8A_CarvedRunFailsUnavailable` becomes the carved row's own test, fetching what it carves,
-  and `read_test.go`'s "carved after a hole" row, which runs over a stub covering lookup, is
-  rewritten over `kvstore` (`CLAUDE.md`: a touched test is brought in line). `readClass` gains
-  `classRemote`; `Stats.Fetches` and `FetchBytes` filled; an `engine.fetch` child span per fetch
+  left (R64, D14's `decision:`); `ErrMaterialUnavailable`, `ErrUnknownMaterial`,
+  `remote.ErrInvalid`, `ErrDenied`, a second transient end, the context's deadline and any error
+  not listed here as `vfserr.ErrUnavailable`. The `decision:` that a carved run fails unavailable is
+  deleted (rule 9); D4's `decision:` at the fetch. The tests that pinned it go with it: the
+  conformance test `TestRFC8A_CarvedRunFailsUnavailable` becomes the carved row's own test,
+  fetching what it carves; `read_test.go`'s "carved after a hole" row, which runs over a stub
+  covering lookup, is rewritten over `kvstore` (`CLAUDE.md`: a touched test is brought in line); and
+  `TestReadResolutionTable`'s "carved" row, a span with no `Loc`, now expects `ErrLost` and the
+  `lost` class. `imports_test.go`'s `allowed` gains the `pkg/remote` and `pkg/transform` roots for
+  the engine's own package (rule 7). `readClass` gains `classRemote`, counted as D13 orders it;
+  `Stats.Fetches` and `FetchBytes` filled; an `engine.fetch` child span per fetch
   with share, file, bytes and outcome (D9's `decision:`). The fetch runs on the binding's `flow`
   epic 16's T16.1 opens. Until T16.1 lands, T17.2's tests set that field per instance from
   `export_test.go` to a flow they open over RFC 4's in-memory store themselves (the offload plan's
@@ -438,7 +482,9 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
     returns each in file order.
   - With the fifth of eight chunks corrupt, `n` covers the first four exactly, `dst` past them holds
     no byte of the fifth, and the error is `ErrCorrupt`.
-  - A stale ref under a committed overwrite reads **Lost** and no fetch is counted.
+  - A stale ref under a committed overwrite reads **Lost** and no fetch is counted; so does a carved
+    span whose chunk record is gone.
+  - A carved run split by a pending deallocate reads each piece from its own offset in the chunk.
   - With the store unreachable, the read fails `ErrUnavailable`, never `ErrLost`; past the read's
     deadline likewise; a destroyed material reads `ErrLost`, an unavailable or unknown one
     `ErrUnavailable`.
@@ -446,8 +492,13 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
   RFC 3's syncer over RFC 4's in-memory store: the mixed read (catches a part written out of order,
   or zeros for a carved part, R3, R11); the fifth-chunk corruption through RFC 4's fault wrapper,
   kind 3, asserting `n`, the untouched tail of `dst` and the error (catches a copy before
-  verification or a wrong `n`, R12, R14); the stale ref with `Stats.Fetches` 0 (catches a fetch of a
-  superseded chunk, R7); the unreachable store and the expired deadline on the injected clock
+  verification or a wrong `n`, R12, R14); the mixed read's `Stats` after it, the read counted
+  `remote` and `FetchBytes` equal to the encoded bytes fetched (catches a remote read counted `hole`
+  or `journal`, D13, R42); the stale ref with `Stats.Fetches` 0 (catches a fetch of a superseded
+  chunk, R7); a carved span whose chunk record was pruned, **Lost** with `Stats.Fetches` 0 and the
+  loss logged (catches a get of block name zero answered `ErrUnavailable`, R22); a 12 KiB carved
+  file with an uncommitted punch-hole over `[4 KiB, 8 KiB)`, its `[8 KiB, 12 KiB)` read equal to the
+  chunk's bytes there (catches a piece copied from the chunk's start, R11); the unreachable store and the expired deadline on the injected clock
   (catch `Lost` reported for an outage, R8); the material errors raised by RFC 5's in-memory
   `keys.Provider` (catch a destroyed material read as corrupt, R9); a cold read over two blocks with
   every get held at the fault wrapper until both blocks' gets have arrived, then released (catches
@@ -464,7 +515,9 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
   per instance from `export_test.go` past the syncer's detach bound, its read returning every byte
   with one more fetch counted (catches a detach mapped to `ErrUnavailable`, R64); every get of a
   block failing past the syncer's retry bound, the read `ErrUnavailable` after exactly two fetches
-  (catches an unbounded re-fetch, R64).
+  (catches an unbounded re-fetch, R64); every get throttled past the bound, the read
+  `ErrUnavailable` after exactly one fetch (catches the transient check run before the throttled
+  one, D14).
 - **Rules:** rule 4: the per-part goroutines are joined before `Read` returns; rule 6: the pinning
   test's entry, if any, follows it; rule 7: imports through contracts only.
 
@@ -476,7 +529,8 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
 - **Covers:** R2, R19 to R23, R42, R44.
 - **Deliverables:** in `fetch.go`, `reresolve(missed []entity.Location, next entity.Span, asOf
   entity.JournalVersion) step`, pure (D2), answering fetch, re-ask, zeros, past end of file or lost,
-  and its loop on `remote.ErrNotFound`: covering lookup again for the part, the step applied, the
+  and its loop on `remote.ErrNotFound`: covering lookup again for the part, the step applied to
+  each span of the new answer, the
   journal re-asked for an uncarved run above `asOf`, bounded by the read's deadline; no
   re-resolution on corrupt, transport or timeout errors. `Stats.Reresolves` filled. Consumed by
   T17.2's fetch path and T17.9's "§7.7 re-resolution" row.
@@ -499,13 +553,17 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
 
 **Subtask T17.4 estimate: 1.5 man-days.**
 
-- **Track:** C. **Depends on:** T17.3.
+- **Track:** C. **Depends on:** T17.2.
 - **Covers:** R15, R24, R25, R34, R42.
 - **Deliverables:** `readstate.go`, the speculator's per-file read table (D5, its `ponytail:`), its
   first fields the end of the last read and the length of the scan it continues;
-  `blockShape(missing, blockSize int64, startsBlock, continues bool) shape`, pure, with RFC 8
-  §7.8's quarter `decision:` at it, D12's sentence included; a whole-block fetch passes an empty
-  `want` and copies only the read's chunks. `Stats.Fetches` by shape. Consumed by T17.2's fetch,
+  `blockShape(missing, blockSize int64, startsBlock, continues bool) shape`, pure, `missing` the sum
+  of the wanted chunks' `Loc.Length` (D12), with RFC 8 §7.8's quarter `decision:` at it; a
+  whole-block fetch passes an empty `want` and picks the read's chunks out of the stream by
+  `Ref.Hash`, copying only those. A whole-block stream that ends with `ErrCorrupt`, `ErrMalformed`
+  or `ErrMaterialDestroyed`, which may be a chunk the read does not want, is not mapped: the wanted
+  chunks not yet yielded are fetched again once by range, and that fetch's end is mapped as T17.2
+  says. `Stats.Fetches` by shape. Consumed by T17.2's fetch,
   T17.5's `fill` and T17.6, which adds its fields.
 - **Acceptance criteria:**
   - A 4 KiB random read of a 4 MiB block asks for its chunk; a read starting the block, or
@@ -515,7 +573,9 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
   off-by-one or a swapped condition, R24); at `Read`, the shape counters for a random and a
   sequential pair of reads of a file the journal holds nothing of (catches state kept on the file
   entry, which such a file lacks, R24); a whole-block fetch whose `dst` holds only the read's bytes
-  (catches neighbouring chunks copied, R15); `want` ranges equal to the spans' locations (catches a
+  (catches neighbouring chunks copied, R15); a whole-block fetch with a chunk the read does not want
+  corrupted through the fault wrapper, the read returning its bytes after one ranged fetch more
+  (catches a read failed by a chunk it never wanted, R15); `want` ranges equal to the spans' locations (catches a
   range splitting a chunk, R25); the table past 10⁴ files dropping the least recently read (catches
   an unbounded table, R34).
 
@@ -528,8 +588,9 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
 - **Deliverables:** `fill(r readInfo, s journalStats) bool` in `policy.go`, pure (R27), rules 1 and
   2 (D7), the low-water mark from `Settings.FillLowWater` and the scan length from T17.4's state;
   `Handle.Fill` joins `Deps`, its first caller here; `fill.go`'s hand-off (D3): a copy of each
-  demanded extent's verified bytes, with step 1's `asOf` and the ref's `Newest`, filled in its own
-  goroutine under the binding's 4 MiB byte semaphore, joined at `Close`; a `journal.ErrStaleFill`
+  demanded carved span's verified bytes, with the `asOf` R28 names and that span's ref's `Newest`,
+  filled in its own goroutine under the binding's 4 MiB byte semaphore, each span taking its own
+  size, inside the binding's gate, so `Unbind`, `Drop` and `Close` wait for it; a `journal.ErrStaleFill`
   or a capacity refusal counted `refused`, never returned; `Stats.Fills` by result; D3's
   `decision:`. Every `Fill` call goes through one function, `fillExtent`, the site where epic 18's
   T18.4 holds its destroyed-material read lock (its D10) across the check of the fetched block's
@@ -543,33 +604,46 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
 - **Acceptance criteria:**
   - A cold read with `Fill` failing returns the fetched bytes and no error.
   - A write landing between the fetch and its fill survives: the next read returns the write.
-  - A fill makes the next read of the extent local (`Stats.Fetches` unchanged by it).
+  - A fill makes the next read of the extent local (`Stats.Fetches` unchanged by it), and the
+    journal holds each filled span at its ref's `Newest`.
+  - An 8 MiB cold read fills every span the semaphore has room for as earlier fills return.
+  - A share unbound while one of its fills is held returns only once the fill has.
   - Below the low-water mark, or in a sequential scan past the window's cap, the fill is `declined`.
 - **Tests:** `fill` by table over free capacity at and either side of the mark and scan lengths
   either side of the cap (each row catches one inverted rule, R26); at `Read`: `FailNextFill`,
   asserting the bytes and no error (catches a reply that waits on or fails with the fill, R29); a
   fill held before its `Fill` call while the extent is written, then released, asserting the write
   reads back and the fill counted `refused` (catches a fill that overwrites, R28, R29); a second
-  read after a done fill with `Fetches` unchanged (catches a fill of the wrong extent or version,
-  R28); the reply's bytes asserted while the fill is still held (catches a reply answered by
+  read after a done fill with `Fetches` unchanged, and the journal's `ReadAt` answering each filled
+  span's `Held.Version` equal to its ref's `Newest`, over an extent of two refs of different
+  `Newest` (catches a fill of the wrong extent or version, R28); an 8 MiB cold read whose fills,
+  released one by one, are all counted `done` (catches a bound no read over 4 MiB can fit, D3);
+  the read held after its covering lookup while the file is written, then released, the fill counted
+  `refused` (catches an `asOf` read after the lookup, R28); the reply's bytes asserted while the fill is still held (catches a reply answered by
   re-reading the journal, R13); a share's semaphore filled by held fills, a further fill of that
   share declined while another share's fill is done (catches an unbounded hand-off or one shared
-  across shares, R18, R41); the agreement test (catches the in-memory `Fill` drifting from the
-  real one).
-- **Rules:** rule 4: fills are joined at `Close`; rule 8: the agreement test.
+  across shares, R18, R41); `Unbind` of a share with a fill held before its `Fill`, returning only
+  after its release, and no `Fill` reaching the dropped handle (catches a fill outliving its share,
+  E13); the agreement test (catches the in-memory `Fill` drifting from the real one).
+- **Rules:** rule 4: fills run inside the binding's gate and are joined at `Unbind` and `Close`;
+  rule 8: the agreement test.
 
 ### T17.6 Read-ahead windows and hints
 
 **Subtask T17.6 estimate: 2.5 man-days.**
 
 - **Track:** C. **Depends on:** T17.5.
-- **Covers:** R30, R31, R33 to R36, R45, R47 to R49.
+- **Covers:** R28, R30, R31, R33 to R36, R45, R47 to R49.
 - **Deliverables:** `speculate.go`: the unexported `speculator`, one per engine, over T17.4's table:
-  each read's `(file, off, len, time)` updates the window as R36 says; each hint is a `(file,
-  block)` resolved through the covering lookup, checked against the journal's `Extents` (D6), and
-  issued as `Prefetch(ctx, name, want)` with `want` empty or the missing chunks by T17.4's rule;
-  its stream is consumed by a bounded set of consumers that hand each chunk to `fill`; a read that
-  does not continue cancels the file's queued hints. `Handle.Extents` joins `Deps`, its first
+  each read's `(file, off, len, time)` updates the window as R36 says, the only work on `Read`'s
+  goroutine; each hint is a `(file, block)` carrying the triggering read's step-1 `asOf` (R28),
+  resolved and issued off `Read`'s goroutine by the speculator's consumers: checked first against
+  the journal's `Extents` (D6), so a block held whole costs no covering lookup, then resolved
+  through the covering lookup and issued as `Prefetch(ctx, name, want)` with `want` empty or the
+  missing chunks by T17.4's rule; its stream is consumed by a bounded set of consumers that hand
+  each span to `fill`, each consumer inside the binding's gate, so `Unbind` and `Drop` wait for it;
+  no hint is issued for a file whose scan `fill`'s rule 2 would decline (D7's `decision:`); a read
+  that does not continue cancels the file's queued hints. `Handle.Extents` joins `Deps`, its first
   caller here; the in-memory journal gains `Extents`, held to the real journal's by the agreement
   test. In `enginetest`, `WithoutReadahead() Option`, epic 12's D8 control for RFC 5's engine
   rows, made real: read-ahead off for every share the fixture binds. Consumed by `Read`, and by
@@ -579,18 +653,26 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
   - A held file read sequentially twice issues no prefetch; with one block never written to the
     journal, only that block's chunks are prefetched.
   - After a restart the window starts at zero and opens on the first read that continues the last.
+  - A scan longer than the window's cap issues no further hint.
 - **Tests:** RFC 8 §7.4's checks, `unit`, over RFC 3's syncer and RFC 4's in-memory store: §7.4 S3's
   window row, a sequential, a random and a strided replay with the hints asserted per read (catches
   a window opened for a stride or not reset, R36, R47); §7.4 S5's read leg over a file whose
   blocks the journal holds but one, which is only carved, with the fetch and speculation counters 0
-  on the held reads, then exactly that block's chunks (catches a whole-block refetch of a held file,
-  R35, R49); §7.4 S4's read-ahead half, the engine closed and reopened over the same journal and
+  and `kv`'s counting wrapper seeing no read from a hint on the held reads, then exactly that
+  block's chunks (catches a whole-block refetch of a held file, or a covering lookup run before
+  `Extents`, R35, R49); a sequential scan past the window's cap, `Stats.SpeculationBytes` unchanged
+  by the reads after it (catches hints whose chunks `fill` declines, D7); a hint held between its
+  covering lookup and its fill while the file is written, the fill counted `refused` (catches a
+  hint's `asOf` read after its lookup, R28); §7.4 S4's read-ahead half, the engine closed and reopened over the same journal and
   store, asserting `kvstore`'s key count unchanged by the reads and the window reopening (R34, R48);
-  §7.4 S1, every prefetch get held at the fault wrapper, which records arrival order and passes each
-  call through, while a demand read of another file is issued, asserting its get reaches the store
-  before any held prefetch is released (catches a hint issued through `Fetch`, R31, R45); the
-  agreement test for `Extents`; a sequential read under `WithoutReadahead`, no prefetch issued
-  (catches a control that leaves read-ahead on). The replays use the injected clock for `time`.
+  §7.4 S1, the fetch pool saturated by prefetch gets held at the fault wrapper, which records
+  arrival order and passes each call through, with more hints queued behind them; a demand read of
+  another file is issued, one held prefetch released, and the next get to reach the store is the
+  demand read's, not a queued hint's (catches a hint issued through `Fetch`, which would queue as
+  demand ahead of it, R31, R45); `Unbind` of a share with a consumer held mid-stream, returning only
+  after its release (catches a consumer outliving its share, E13); the agreement test for
+  `Extents`; a sequential read under `WithoutReadahead`, no prefetch issued (catches a control that
+  leaves read-ahead on). The replays use the injected clock for `time`.
 
 ### T17.7 Speculation budget, cancellation and its counters
 
@@ -598,8 +680,11 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
 
 - **Track:** C. **Depends on:** T17.6.
 - **Covers:** R32, R33, R37, R41, R42, R46.
-- **Deliverables:** a per-binding atomic of speculative bytes in flight, a hint issued only while it
-  fits `ShareSettings.SpeculationBudget`, released as its stream ends; speculative fills skipped
+- **Deliverables:** a per-binding atomic of speculative bytes in flight, a hint charged at its
+  transfer's size (the wanted chunks' `Loc.Length` summed, or the block's `Loc.BlockSize` for a
+  whole-block prefetch) and issued only while that fits `ShareSettings.SpeculationBudget`, released
+  once its stream has ended and its last fill has returned or been declined, so the budget also
+  bounds the copies speculative fills hold (D3); speculative fills skipped
   below the low-water mark; `cancelQueued(j)` (D10), called from `capacity.go`'s refusal path;
   `Stats.SpeculationBytes` and `SpeculationUsedBytes` (D11, its `ponytail:`). Consumed by epic 18,
   which calls `cancelQueued` from `admit`.
@@ -610,11 +695,15 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
   - A speculatively filled extent read later counts its bytes as used.
 - **Tests:** §7.4 S3's budget row, 10³ files read sequentially at once with every prefetch held at
   the fault wrapper, asserting the sum of the held prefetches' requested bytes never passes the
-  budget (catches a check after the issue or a release before the stream ends, R33, R46); a refusal
+  budget, and `Stats.SpeculationBytes` equal to the bytes the released prefetches carried (catches a
+  check after the issue, a release before the stream ends, or a whole-block prefetch charged at its
+  wanted chunks only, R33, R42, R46); a prefetch whose fills are held after its stream ended, still
+  charged until they return (catches a release before the fills, D3); a refusal
   through the first part's capacity fixture while hints are held, asserting each cancelled and every
   concurrent demand read answered (catches cancellation that fails a read or misses a share, R32,
-  R37); free capacity below the mark with a hint's chunks arriving, asserting no fill (R32); a
-  used-bytes count after a demand read of a speculated extent (R42); two shares speculating with one
+  R37); free capacity below the mark with a hint's chunks arriving, asserting no fill (R32);
+  `Stats.SpeculationUsedBytes` equal to the overlap after a demand read of a speculated extent
+  (catches the count missed or taken twice, R42); two shares speculating with one
   share's prefetches held, the other's still issued (catches a lock shared across shares, R41).
 
 ### T17.8 Clone: narrowed copies and the backstop's log
@@ -623,18 +712,22 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
 
 - **Track:** C. **Depends on:** T17.5.
 - **Covers:** R38 to R40.
-- **Deliverables:** in `clone.go`, `size` keeps a held run unless a carved span over it, from the
-  source's covering lookup at `asOf`, has a `Loc` and a ref `Newest` at or above the run's version,
-  so `copyRuns` copies only those and the adoption takes the rest; a held run over a ref whose chunk
-  is gone is still copied, never left to the backstop. §9.1's clone-copies `decision:` reworded to
+- **Deliverables:** in `clone.go`, `size` cuts each held run at the span edges of the source's
+  covering lookup at `asOf`, and keeps every piece not covered by a carved span with a `Loc` and a
+  ref `Newest` at or above the run's version, so `copyRuns` copies only those pieces and the
+  adoption takes the rest (RFC 8 §9.1 applies per span, never per whole held run); a piece over a
+  ref whose chunk is gone, or under no ref, is still copied, never left to the backstop. §9.1's clone-copies `decision:` reworded to
   say so. In `kvstore`, `Content.WithLogger(log *slog.Logger) Content` and the clone batch's log of
-  each source ref it carries as **Lost** with a running count (D8's `decision:`); the carrying itself
+  each source ref it carries as **Lost** with a running count, after the batch's transaction
+  commits (D8's `decision:`); the carrying itself
   is the first part's. The fixture passes its logger. Consumed by the first part's clone path and
   T17.9's clone rows; `WithLogger` by the integration epic.
 - **Acceptance criteria:**
   - Cloning a source held whole and offloaded whole copies nothing and reads the source's bytes
     from the adopted refs; one held newer than its ref copies exactly that run.
   - A held source run over a ref whose chunk record is gone is copied, and reads its bytes.
+  - A held run of `[0, 8 MiB)` at v5 with only `[0, 4 MiB)` under a qualifying ref copies exactly
+    `[4, 8 MiB)`; one straddling a qualifying span and a stale one copies the stale part.
   - A source ref, not held, whose chunk record is gone or whose block is deleted reads **Lost** in
     the destination and logs once at `Error`.
   - A demand read's fill of the destination, held across the clone's journal step and released,
@@ -642,9 +735,13 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
 - **Tests:** at `Clone` and the destination's `Read`, over the in-memory journal and `kvstore`: the
   two copy cases, asserting the reservation's byte count (catches every held run still copied, or a
   newer run adopted from a stale ref, R38); the held run over a gone chunk (catches a narrowing that
-  drops it to the backstop, reading **Lost** for bytes the journal has, R38); the two backstop legs,
-  record gone and block deleted, asserting **Lost** and the captured log line, the carry a
-  regression check of the first part's (catches a silent carry, R39); the held fill, with
+  drops it to the backstop, reading **Lost** for bytes the journal has, R38); the half-covered and
+  the straddling held runs, asserting the reservation's byte count and the destination's bytes over
+  the uncovered part (catches a whole held run dropped when one span over it qualifies, R38); the
+  two backstop legs, record gone and block deleted, asserting **Lost** and the captured log line,
+  the carry a regression check of the first part's (catches a silent carry, R39), and the same batch
+  forced through two conflicts by the fault-injecting `kv.KV`, one line and a count of 1 (catches a
+  log inside the retried transaction, D8); the held fill, with
   `Stats.Fills` counting it `refused` (catches a fill installed over the removal, R40); the remote
   unavailable throughout the first case, asserting the clone completes (catches a clone that
   fetches, R38).
@@ -685,7 +782,8 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
 ```mermaid
 flowchart TD
   S2(["S2 red rows in CI"]):::sync --> T17_1["T17.1 Location in the covering lookup"]
-  T17_1 --> T17_2["T17.2 The carved row"] --> T17_3["T17.3 Re-resolution"] --> T17_4["T17.4 Chunks or block"]
+  T17_1 --> T17_2["T17.2 The carved row"] --> T17_3["T17.3 Re-resolution"]
+  T17_2 --> T17_4["T17.4 Chunks or block"]
   T17_4 --> T17_5["T17.5 Fill"] --> T17_6["T17.6 Read-ahead"] --> T17_7["T17.7 Budget and cancellation"]
   T17_5 --> T17_8["T17.8 Clone"]
   T17_2 & T17_3 & T17_5 & T17_7 & T17_8 --> T17_9["T17.9 Conformance rows"]
@@ -697,13 +795,13 @@ flowchart TD
 
 Checkpoint after T17.3: a carved read is correct, whatever it fetches. Checkpoint after T17.7: the
 entry point epic 18 calls exists. T17.9 also waits on epic 16's T16.6, the gates' switch; nothing
-before it waits on epic 16, since T17.2's tests open their own flow until T16.1. T17.8 needs only T17.5 and can run beside T17.6 and T17.7.
+before it waits on epic 16, since T17.2's tests open their own flow until T16.1. T17.4 needs only T17.2 and can run beside T17.3; T17.8 needs only T17.5 and can run beside T17.6 and T17.7.
 
 ## 8. Suggested pull requests
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T17.1, T17.2, T17.3 | 9.5 | — | carved reads end to end: the location, the fetch and its failures, re-resolution |
+| 1 | T17.1, T17.2, T17.3 | 10 | — | carved reads end to end: the location, the fetch and its failures, re-resolution |
 | 2 | T17.4, T17.5, T17.6, T17.7 | 9 | PR 1 | what a read fetches and keeps: the shape, the fill and the speculator, which reads both |
 | 3 | T17.8, T17.9 | 5 | PR 2, epic 16's T16.6 | the clone's adoption and the rows that check the whole epic |
 

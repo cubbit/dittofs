@@ -386,7 +386,7 @@ type Span struct {
 	Ref            ChunkRef       // the covering ref, when Carved
 	Overwrite      JournalVersion // when an overwrite record made it Uncarved, that record's version (§8.1)
 	Applied        JournalVersion // the file's applied when the lookup read it, on every Span (§8.1)
-	Loc            Location       // when Carved, but a zero ref: where the chunk Ref names is; zero when its record is gone, names a deleted block or a block with no record (§8.1)
+	Loc            Location       // when Carved, but a zero ref: where the chunk Ref names is; zero when its record is gone, names a deleted block or a block with no record; set by the covering lookup only, never by Allocation or SnapshotCovering (§8.1)
 }
 
 // Location: where a chunk's body is, as a covering lookup joins it (§8.1): its
@@ -2460,8 +2460,10 @@ block, the body's position and length there, and the block's encoded size. A
 span whose chunk record is gone, names a `deleted` block, or names a block with
 no record carries none. The ref still names only its hash ([§2.5](#2.5%20Refs%20name%20hashes%2C%20never%20blocks)): the
 location is joined at the lookup, one point read per chunk and per block the
-results name, so the cost stays O(log *n* + results). A clone's batches and
-`Allocation` read the same runs without the join. A reader whose get finds the
+results name, so the cost stays O(log *n* + results). A clone's batches,
+`Allocation` and `SnapshotCovering` read the same runs without the join, so
+their spans carry no location, and a reader of carved data through them joins
+it itself. A reader whose get finds the
 object absent runs the lookup again and compares the location it names
 ([RFC 8 §7.7](rfc-8-engine.md#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)); a second lookup for the location would let a relocation slip
 between the two, and a reader holding the ref alone could not ask for the chunk

@@ -885,7 +885,7 @@ carved run, and its row, are replaced by the fetch. Refs for these tests are wri
 §3.1's `fill`, §7.1's carved row, §7.2, §7.3, §7.4, §7.5, §7.7, §7.8, §9.1's adoption and fill
 exclusion. **Done when:** RFC 8 §15.1's "§7.1 stale ref", "§7.1 the order", "§7.2
 streaming, verified", "§7.2 fill cannot fail a read", "§7.2 fill loses to a write", "§7.7
-re-resolution", "§7.6 zero ref under an overwrite", "§9.1 no pre-clone fill" (the demand-read leg
+re-resolution" (but its relocation leg, which waits on RFC 9, §6.1), "§7.6 zero ref under an overwrite", "§9.1 no pre-clone fill" (the demand-read leg
 this plan adds),
 "§9.1 Lost source run carried", "§9.1 one source state" and "§9.1 clone keeps writes outside its
 extent" (offload half), and §15.2's "§1.1 no cross-share slowdown" (cold reads), turn green; §7.4's
