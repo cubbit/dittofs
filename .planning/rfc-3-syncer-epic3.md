@@ -157,7 +157,7 @@ them.
 | R11 | `Unregister` on a store with an open flow fails. Once its flows are closed it drops the store, whose counters leave `Stats` (its probes and health state are E5's) | MUST | §1.3; §7.2, "§1.3 unregister" | T3.2, T3.7 |
 | R12 | A refused call wraps an error of RFC 4's set: a full queue, the waiter bound, a displaced or an evicted entry `remote.ErrThrottled`; a call after `Flow.Close` or `Close`, a `StoreID` not registered and `Unregister` with a flow open `remote.ErrInvalid` | invariant | §1.3; E1's D1 | T3.2, T3.4, T3.5 |
 | R13 | `Upload` returns `nil` only once a call of `attempt` returned `nil`, returns only once every call of `attempt` it made has returned, and never calls `attempt` after it returns. E3 makes one call; E4 owns the rest | MUST | §1.3; §7.2, "§1.3 lifecycle" | T3.5, T3.7 |
-| R14 | The syncer passes `name` and `want` through and reads `want` only to sum its lengths for scheduling | MUST NOT | §1.3 | T3.6 |
+| R14 | The syncer passes `name` and `want` through and, in this epic, reads `want` only to sum its lengths for scheduling; E6 also reads it to resume and join a fetch, under the RFC 3 §1.3 text the user accepted on 2026-11-26, which lands with E6's T6.2 | MUST NOT | §1.3 | T3.6 |
 
 **Classes and turns**
 
@@ -221,8 +221,9 @@ already state with their two exceptions.
   waiting caller a slot; the caller runs `attempt`, or pulls `Store.Get`'s stream, itself, and
   returns the slot when it ends. No worker goroutine is started, so `Upload` returns only once
   its one `attempt` call has (R13), and a transfer whose caller leaves releases its slot then.
-  E4's slow-tail try outlives its slot, not its caller, since `Upload` waits for it; E6's joined
-  fetch runs on a goroutine of its own from the slot it holds. No marker: nothing is skipped.
+  E4's slow-tail try outlives its slot, not its caller, since `Upload` waits for it; E6 changes this
+  for fetches: a fetch runs on a flight goroutine of its own from the slot it holds, which its
+  callers join, and D6 counts the flight. No marker: nothing is skipped.
   Prior art: Kubernetes API priority and fairness, where a request waits in its flow's queue for a
   seat and runs on its own goroutine (from memory). Not chosen: a pool of worker goroutines fed by
   a channel, which adds a hand-off per transfer.
@@ -471,7 +472,10 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
   for every entry `pool` holds: it unlinks a queued entry, from a parked flow too, and reports
   `true`; for an entry already returned by `Next` it changes nothing and reports `false`, and the
   caller, which lost the race between its `ctx` and the dispatch, calls `Done(e, 0)` to give the
-  slot back; for one already refused it changes nothing and reports `false`. Consumed by T3.3 and T3.4, which add caps and
+  slot back; for one already refused it changes nothing and reports `false`. The charge `Next`
+  computes is kept by `sched` with the dispatched entry, unexported, and `Done` corrects against
+  that charge and that class, so a `SetRate` between dispatch and `Done` changes nothing, and E6's
+  `Promote` moves it with the entry. Consumed by T3.3 and T3.4, which add caps and
   waiters; T3.5, whose halves call it; T3.8, whose model drives it; E4, which adds the throttle
   limit to the per-store bound; E6, which adds joins, re-homes and promotes entries.
 - **Acceptance criteria:**
