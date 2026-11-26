@@ -239,8 +239,14 @@ func TestStreamsUnderRecorder(t *testing.T) {
 	watchdog(t, 60*time.Second)
 
 	e := recordedStreams(t)
-	awaitCounters(t, "the two content spares ready", e.pool,
-		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+	// The pool settles at the target's two and the opening spare it keeps
+	// until a stream's first segment, so no make runs beside the fan.
+	if err := e.pool.WaitSpares(t.Context()); err != nil {
+		t.Fatalf("WaitSpares before the fan: %v", err)
+	}
+	if got, want := e.pool.Counters().Spares, int64(3); got != want {
+		t.Fatalf("Spares = %d before the fan, want %d: the target's two and the opening spare", got, want)
+	}
 
 	// The locations the appenders publish, read as they land by both
 	// readers, so a reader's acquire races the writer's roll of the same
