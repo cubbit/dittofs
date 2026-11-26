@@ -781,7 +781,8 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
   the provider, and `dt run integration` runs it.
 - **Tests:**
   - The Name retargeted to a second key while nothing is written: at the next period
-    `RotationNeeded` names the new UID, `RotateMasterKey` re-wraps every record under it, and each
+    `RotationNeeded` names the new key's ID, `<name>/<uid>` with the server name defaulting to the
+    endpoint (E7's D3), `RotateMasterKey` re-wraps every record under it, and each
     still unwraps, under the old UID before and the new one after (catches a rotation unseen without
     a write, R21; §8.2's in-place and alias rows, read and re-wrap halves, as E7's §9 finds PyKMIP
     has no ReKey).
