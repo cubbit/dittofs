@@ -2086,12 +2086,21 @@ Authentication and principal mapping are
   [RFC 24 §5.1](rfc-24-resources.md#5.1%20No%20queue%20is%20unbounded)'s
   connection-state pool on its own, outside any connection's fixed cost. An
   `INIT` token past 64 KiB is `RPCSEC_GSS_CREDPROBLEM` before anything is
-  charged; otherwise the context is charged before the ticket is decoded, at
-  an upper bound from the token's length, and once built the charge is
-  trimmed to what it holds with `Reservation.Shrink`
-  ([RFC 24 §2.5](rfc-24-resources.md#2.5%20Memory%20is%20reserved%20before%20it%20is%20used)).
-  An `INIT` the pool refuses is `RPCSEC_GSS_CREDPROBLEM`, evicting nothing.
-  When it is full, the same principal's least recently used context is
+  charged, and stays refused: the client's next `INIT` carries the same
+  ticket, so the mount fails rather than waits. No supported client sends
+  one, since a Kerberos token is at most 64 KiB (Windows' `MaxTokenSize`);
+  this is overturned if one is seen to. Otherwise the context is charged
+  before the ticket is decoded, at an upper bound from the token's length,
+  and once built the charge is trimmed with `Reservation.Shrink`
+  ([RFC 24 §2.5](rfc-24-resources.md#2.5%20Memory%20is%20reserved%20before%20it%20is%20used))
+  to the lesser of that bound and what the context holds: a context larger
+  than the bound, its name or AP-REP past what the token allowed, keeps the
+  bound and holds the excess uncharged, since a context `SignIn` accepted is
+  not refused afterwards; overturned if `SignIn`'s evidence is seen
+  outgrowing the token it came from. An `INIT` the pool refuses is
+  `RPCSEC_GSS_CREDPROBLEM` and evicts nothing, since no principal is known
+  before `SignIn`; the client's next `INIT`, a fresh AP-REQ, succeeds once
+  the pool frees. When the table holds 10 000 contexts, the same principal's least recently used context is
   evicted first, then the least recently used overall, so one principal looping `INIT` evicts only its own. A context idle 8 hours is
   evicted; only a call whose header MIC verified touches its idle time;
 - `RPCSEC_GSS_DESTROY` needs a valid header MIC and an in-window sequence

@@ -518,7 +518,8 @@ func Join(n int, bufs ...*Buf) *Buf // a chain's record (RFC 20 §4.7): an empty
   table, not a connection, holds it, so it is charged per context to the
   connection-state pool, outside any connection's fixed cost, at an upper
   bound from its `INIT` token's length, and trimmed with `Shrink` once the
-  context is built ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS), §5.1).
+  context is built to the lesser of that bound and its size
+  ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS), §5.1).
 - Every reservation **MUST** be released on every path, a cancelled context and
   a panic included. A pool's reserved bytes are exported (§10), and a pool that
   reads above zero on an idle node is a leak.
@@ -1050,7 +1051,8 @@ three-quarter cap per key.
 **Each connection is charged a fixed cost** to the connection-state pool at
 accept — its reader's and writer's state, the reader's small-class read buffer
 ([RFC 20 §6.8](rfc-20-adapters.md#6.8%20Buffer%20pools%2C%20in%20code)) included, its ID tables when empty, its
-transport encryption — proposed at 64 KiB and settled by §8's M2. An
+security state (transport encryption, an SMB session's keys and signing
+state, a handshake in progress) — proposed at 64 KiB and settled by §8's M2. An
 RPCSEC_GSS context is not in it: a context outlives the connection that made
 it and several may use it, so the node's context table charges each one to
 this pool on its own (§2.5, [RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)). A connection that
@@ -1181,7 +1183,7 @@ from here. The inventory, from the socket down:
 | --- | --- | --- | --- |
 | listen backlog | the system's maximum | [RFC 20 §6.7](rfc-20-adapters.md#6.7%20TCP) | the kernel refuses |
 | connections | `connection_limit`, a quarter per address | §4.4 | closed at accept |
-| RPCSEC_GSS contexts | 10,000 per node, each charged to the connection-state pool, at an upper bound trimmed once built (§2.5) | [RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS) | the same principal's least recently used context is evicted, else the least recently used overall; an `INIT` the pool refuses is `RPCSEC_GSS_CREDPROBLEM` |
+| RPCSEC_GSS contexts | 10,000 per node, each charged to the connection-state pool, at an upper bound trimmed to the lesser of the bound and its size once built (§2.5) | [RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS) | the same principal's least recently used context is evicted, else the least recently used overall; an `INIT` the pool refuses is `RPCSEC_GSS_CREDPROBLEM` |
 | socket receive buffer | the kernel's autotuning | [RFC 20 §6.7](rfc-20-adapters.md#6.7%20TCP) | TCP window closes |
 | requests read on one connection | its flow control: slots, credits, 64 | [RFC 20 §6.3](rfc-20-adapters.md#6.3%20Flow%20control%20is%20the%20protocol%27s%20own), [§3.4](#3.4%20The%20per-connection%20cap%20for%20protocols%20without%20flow%20control) | not read |
 | readers waiting for receive bytes | one per connection | §3.2, §4.1 | turns |
