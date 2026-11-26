@@ -53,7 +53,7 @@ paths below are paths there.
   declares the remote store's section (`remote`), which this epic's fields join (D3).
 
 **Blocks:**
-- E10, whose census per material joins the namespace read this epic extends (T9.4).
+- E10, whose census listing sits beside the namespace read (its T10.2).
 - E11, whose codec and engine rows run through the settings and the chain this epic validates.
 - Outside RFC 5's plan, the RFC 8 offload plan's epic 21, which registers in the node the
   collectors, the health source and the alert rules this epic builds (T9.6), and builds each store
@@ -151,10 +151,10 @@ title and not copied.
 | rule 1, **independent unit tests** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | real chains from E3's `NewChain` over E4's and E5's registered transforms; the real provider over `kvstore` and Badger under `t.TempDir()`, or E2's in-memory `keys.Provider` (kind 2) where the provider is not the subject; the real API over an in-memory control-plane store, called through `pkg/node/apiv1/client`; the operation runner on an injected clock (kind 1); a fault wrapper around the control-plane store (kind 3, T9.4). The sections run through the real `settings.Table`. No double answers in a dependency's place |
 | rule 2, **fuzz every decoder of bytes this component did not just write** | none | no new decoder: settings are decoded by `pkg/settings`' strict decode, transform settings by E4's and E5's factories, the API body by its strict JSON decode |
 | rule 3, **observability follows RFC 25** | T9.6, T9.3 | the series, conditions and rules as plain values in `chain` (D8), built by the content wiring over the root's registry and health evaluator (R32); the planted-key check on `verify-escrow`'s body and on every series, condition and audit record (R35) |
-| rule 4, **profiling** | T9.6 | the recorder is on the encode and decode path: `TestAllocsRecorder` holds it at zero allocations per call after a transform's first, in `transform-allocs` |
+| rule 4, **profiling** | T9.6 | the recorder is on the encode and decode path: `TestAllocsRecorder` holds it at zero allocations per call, in `transform-allocs`, whose command T9.6 extends to `internal/node/content` |
 | rule 5, **public interface and internals** ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | each rule is asserted where its consumer meets it: a refusal through the API's write and the generic setting route, not only through `Validate`; T15's plant through a chain built with the content wiring's `Encrypts`; a series read back from a scrape of the registry, not from the recorder's state; an escrow pass read by a provider the node built after the commit |
 | rule 6, **known failures shrink** | none | every test here lands green in `unit` or `integration`, neither of which keeps a `known.yaml` |
-| rule 7, **v2 ignores v1, and imports only what RFC 0 §1.2 allows** | T9.1, T9.6 | `chain` gains plain values only and imports nothing new; `pkg/settings`, `pkg/metrics` and `pkg/health` are imported by the content wiring and the node alone; the API reaches the provider only through an interface it declares. E1's import test holds it. The API imports `pkg/transform/keys`, a contract, for its error values |
+| rule 7, **v2 ignores v1, and imports only what RFC 0 §1.2 allows** | T9.1, T9.6 | `chain` gains plain values only and imports nothing new; `pkg/settings`, `pkg/metrics` and `pkg/health` are imported by the content wiring and the node alone; the API reaches the provider and the chain only through `Deps` it declares, over plain values (`Deps.Keys`, `Deps.Encrypting`), so it imports neither `provider` nor `chain`. The API imports `pkg/transform/keys`, a contract, for its error values only, which T9.3 adds to `internal/node`'s `componentAllowed`. E1's import test holds `chain`'s side and `internal/node`'s `TestImportRules` and `TestAPIClosure` the API's |
 | rule 8, **real dependencies for properties of those dependencies** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T9.4, T9.5 | key creation through the API runs the real provider over `kvstore` on Badger; the in-place rotation row runs against the harness's `service:kmip` in `integration`, retargeting the key's Name (§9, O9) |
 | rule 9, **code comment conventions** ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T9.1, T9.2, T9.3, T9.4, T9.5, T9.6 | `decision:` markers for D2, D4, D5, D7, D9, D10, D11 and D12; `ponytail:` for D6. RFC 5 §3.2's own note is E3's, at its `with_encryption` check. `SelfKey`'s existing `decision:` marker, which names its one user, gains `encrypts` |
 | rule 10, **a test must be able to fail** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test names the change that turns it red |
@@ -329,9 +329,12 @@ tests can cite them. Where another epic does the rest, the row says so.
   values in its packages (checked).
 
 - **D9, a namespace the lookup does not know encrypts.** `Deps.Encrypts` answers from the bound
-  `encrypts` of each namespace the content wiring has opened. A namespace it has not seen is answered
-  `true`, so its plaintext bodies are refused rather than trusted: failing closed costs a read that
-  should not happen, failing open admits a planted body. A `decision:` marker at the lookup says so.
+  `encrypts` of each namespace the content wiring has opened. A namespace it has not seen is read
+  once from the control plane, its bound setting cached, so a decode that comes before the open does
+  not report a non-encrypting namespace's plaintext bodies as `malformed`. Only when that read fails
+  is it answered `true`, so its plaintext bodies are refused rather than trusted: failing closed
+  costs a read that should not happen, failing open admits a planted body. A `decision:` marker at
+  the lookup says so.
   Prior art: none found.
 
 - **D10, `transform_bytes_total` carries `side` (`in`, `out`) beside `direction`.** RFC 5 §6 counts
@@ -370,13 +373,15 @@ internal/node/content/
   remote.go           T9.1  the remote section's fields, Validate (D1), CheckTx (D2, D4, D5),
                             the reach's apply (D12); the conversion to transform.Config and
                             provider.Config
-  encrypts.go         T9.2  the encrypts section; the Encrypts lookup (D9)
+  encrypts.go         T9.2  the encrypts section, in Sections(); the Encrypts lookup (D9) and
+                            Deps.Encrypting over StageOf
   keys.go             T9.3  Keys: VerifyEscrow; T9.4 CreateKeys, CurrentDataKey;
                       T9.5  RotateDataKey, RotateMasterKey, the primary-version reader
   observe.go          T9.6  the recorder, the gauges and the health source
   remote_test.go, encrypts_test.go, keys_test.go, observe_test.go
 internal/node/
-  settings.go         T9.1  the remote section's reach; T9.2 the encrypts section in newTable()
+  settings.go         T9.1  the remote section's reach
+  arch_test.go        T9.3  componentAllowed admits pkg/transform/keys' error values
   keyops.go           T9.5  the two step rows and Deps.RotationNeeded's start
 internal/node/api/
   res_settings.go     T9.1  ownKeys rows for remote.materials and remote.escrowed
@@ -471,11 +476,14 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
 - **Deliverables:**
   - `internal/node/content/encrypts.go`: the namespace section `encrypts`, `SelfKey`, class
     `bound`, `Required`; the `Encrypts` lookup the chain's `Deps` take, answered from each opened
-    namespace's bound `encrypts`, and `true` for one not seen (D9). Joins `newTable()`. `SelfKey`'s
+    namespace's bound `encrypts`, an unseen one read once from the control plane and `true` when
+    that read fails (D9). Declared in `content.Sections()`, beside the RFC 4 plan's epic 7's
+    sections. `SelfKey`'s
     `decision:` marker names its second user.
   - `res_namespaces.go`: `createNamespace` reads the store's `remote.transforms` tracked and refuses
     an `encrypts` that differs from whether they hold an encrypt-stage transform, naming
-    `spec.settings.encrypts` (D5).
+    `spec.settings.encrypts` (D5). It asks `Deps.Encrypting(transforms json.RawMessage) (bool,
+    error)`, which the content wiring builds over `chain.StageOf`, so the API imports no `chain`.
   - Every existing namespace create made to state `encrypts`: the API's and the client's tests, the
     fixtures under `internal/node/testdata`, `clisuite`'s rows, and `dfsctl namespace create`, which
     gains `--encrypts`; `go run ./cmd/gendocs`; `docs/guide/configuration.md`'s entry.
@@ -496,7 +504,9 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
     the encrypt stage, planted through a chain built from a non-encrypting configuration, decoded by
     a chain whose `Encrypts` is the content wiring's lookup over the namespace's bound setting, is
     `ErrMalformed` (catches a lookup read from the chain rather than the namespace, R11, R13).
-  - An unknown namespace answered `true` (catches D9 failing open).
+  - A namespace not yet opened answered from its bound setting, and `true` with that read failed by
+    a fault wrapper around the control-plane store (catch a false `malformed` before the open, and
+    D9 failing open).
 - **Rules:** rule 5: each refusal asserted at the API's write and at the decode that consumes the
   lookup. rule 9: D5's and D9's markers.
 
@@ -507,15 +517,20 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
 - **Track:** the team. **Depends on:** T9.1; E6's `VerifyEscrow` and `ErrNotEscrowed`.
 - **Covers:** R16, R20, R25 (`verify-escrow`), R26, R27, R35.
 - **Deliverables:**
+  - `internal/node/arch_test.go`: `componentAllowed` gains `pkg/transform/keys`, and `onlyNames`
+    admits only its `Err` names, with the reason: a contract, for the error table.
   - `internal/node/api/problems.go`: `pkg/transform/keys` added to the packages the totality test
     covers, with D11's four rows and `ErrWrapLimit` `409` `wrap_limit`, so a spent master key asks
     for a rotation rather than answering a `500`. The chain's refusals reach the API only as `settings.ErrInvalid`
     from the section's `Validate`, so `pkg/transform`'s errors take no row.
   - `internal/node/content/keys.go`: `Keys`, one per node over its stores' providers, which the API
     reaches through an interface it declares (`Deps.Keys`), first with
-    `VerifyEscrow(ctx, store [16]byte, copy []byte) (provider.Escrow, error)`.
+    `VerifyEscrow(ctx, store [16]byte, copy []byte) (masterKeyID string, fingerprint [32]byte, err
+    error)`, plain values, so the API imports no `provider`; the section decodes the entry into
+    `provider.Escrow`.
   - The route `POST /stores/{id}:verify-escrow`, `admin`'s, body `{"copy": <base64>}`: its pre-write
-    step calls `Keys.VerifyEscrow`, and on a pass the transaction appends the `Escrow` to
+    step calls `Keys.VerifyEscrow`, and on a pass the transaction appends the master key's ID and
+    fingerprint to
     `remote.escrowed` with `tx.PutSetting`, with its audit record naming the master key's ID and
     fingerprint and never the copy (D4).
   - `dfsctl store verify-escrow <store> --copy <file>`, its `clisuite` row, and `go run
@@ -534,8 +549,8 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
   `not_escrowed` and nothing written; the planted key: a known key file, passphrase and copy, then
   the captured log, the audit records, every error and problem body searched for their bytes, raw,
   hex and base64 (catches the copy logged or audited, R35); the role row (R20).
-- **Rules:** rule 3: the planted key. rule 7: the API imports `keys`, a contract, and reaches the
-  provider only through `Deps.Keys`. rule 9: D11's marker.
+- **Rules:** rule 3: the planted key. rule 7: the API imports `keys`' error values, a contract,
+  and reaches the provider only through `Deps.Keys`; `TestImportRules` holds it. rule 9: D11's marker.
 
 ### T9.4 Keys at a namespace's creation, and its current data key
 
@@ -551,8 +566,8 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
     and calls `CreateKeys` before the transaction, which writes the record under that ID (D6); the
     read adds the current data key's ID and fingerprint to the namespace's status, absent for a
     namespace that does not encrypt (Appendix B.6's "the key ID itself is read through the management
-    API"). `apiv1.NamespaceStatus` gains the field. Consumed by E10, whose census per material joins
-    the same read.
+    API"). `apiv1.NamespaceStatus` gains the field. E10's census listing sits beside this read, at
+    its own route (its T10.2).
 - **Acceptance criteria:**
   - An encrypting namespace on a key-file store without a pass is `409` `not_escrowed`, naming the
     key; no namespace record and no key record exist afterwards (R15, R17).
@@ -672,9 +687,13 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
     `transform_bytes_total` labelled `transform`, `direction` and `side` (D10);
     `encryption_chunks_total` with no label. Consumed by the content wiring and its tests.
   - `internal/node/content/observe.go`, over the root's `*metrics.Registry` and logger:
-    - the `chain.Recorder` the chain's `Deps` take, resolving a transform's series at its first call
-      into a copy-on-write table, so every later call is a load and an atomic add; an encode by an
-      encrypt-stage transform (`chain.StageOf`) with `applied` also adds to `encryption_chunks_total`;
+    - the `chain.Recorder` the chain's `Deps` take: its `For`, which `NewChain` calls for every
+      registered transform when a store's chain is built (E3's T3.6), resolves that transform's
+      series and creates its `transform_decode_failures_total` series at zero for each `error`
+      value, so the alerting counter exists at zero from the store's open (RFC 25 §2.3); the other
+      series appear on first use. Every call on the `TransformRecorder` it returns is an atomic
+      add or an observe; an encode by an encrypt-stage transform (`chain.StageOf`) with `applied`
+      also adds to `encryption_chunks_total`;
     - a collector reading each provider's `Status` at scrape: `encryption_keys_unavailable` as
       `len(Unavailable)`, `encryption_current_key_age_seconds{namespace}` as now minus
       `CurrentSince`;
@@ -699,10 +718,14 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
   gauge and the conditions from the real provider with a replaced key and an unknown one (catch a
   gauge read from a stale copy, R30, R33); a master-key material in `Status` raised on each opened
   namespace (catches a condition with no namespace to carry it, R33); the rule test, each rule's
-  name looked up in the two lists (catches a rule on a series that does not exist, R34);
-  `TestAllocsRecorder` at zero allocations per call after the first (R32); the planted key, searched
-  for in every label, condition and detail (R35). R31 holds by construction: the one per-namespace
-  series has one label, so 10⁴ namespaces give 10⁴ series, which the spec's comment states.
+  name looked up in the two lists (catches a rule on a series that does not exist, R34); a scrape
+  after a chain with `aes-gcm` is built and before any decode holds the five `error` series of
+  `transform_decode_failures_total{transform="aes-gcm"}` at 0 (catches a counter an alert reads
+  that first appears at 1, R29); `TestAllocsRecorder` at zero allocations per call, which T9.6 adds
+  `internal/node/content` to `transform-allocs`' package list to run (R32); the planted key,
+  searched for in every label, condition and detail (R35). R31 holds by construction:
+  `encryption_current_key_age_seconds{namespace}` is the one per-namespace series, and `namespace`
+  is an entity label RFC 25 §2.4 caps at 64 values per metric; §9 names who applies the cap.
 - **Rules:** rule 3: values in `chain`, builders in the composer. rule 4: the allocation test. rule
   9: D10's marker at the series.
 
@@ -780,8 +803,10 @@ A suggestion only: one pull request per subtask works as well.
 - **O9 (the RFC 5 plan's), settled by E7 and E8:** PyKMIP 0.10.0 cannot rotate a key in place but
   can retarget a Name, the alias case. T9.5's end-to-end row retargets, and no row moves to the
   cloud-key-service ledger row.
-- **`apiv1.NamespaceStatus`.** T9.4 adds the current data key; E10's census per material joins the
-  same status. The field's name is T9.4's; E10 should extend rather than add a second read.
+- **RFC 25 §2.4's cap on `encryption_current_key_age_seconds`.** `namespace` is an entity label
+  capped at 64 values per metric, the rest summed into `_other`, and `pkg/metrics` does not enforce
+  it yet. Summing ages makes little sense, so RFC 25's author should say whether the gauge exports the
+  worst 64 namespaces' ages and the worst of the rest as `_other`, and who applies the cap.
 - **Refinements of the RFC 5 plan,** which is not edited: it places `settings.go` with the three rows
   in `chain`, and here the rows are the content wiring's (D3), since `pkg/transform` may not carry
   `pkg/settings`' tags and `transform.Config` is frozen; it lists five subtasks and 12 man-days, and
