@@ -501,14 +501,18 @@ pkg/carver/internal/carvetest/  T2.5  RFC 5's vectors added to the RFC 2 plan's 
     `testdata/fixtures`.
   - `transformtest.FuzzDecode(f *testing.F, s Subject)`, consumed by E4's and E5's fuzz
     targets: seeds from the fixtures, from round-trip bodies and from bodies claiming 4 × `max`;
-    decodes through D11's census view over the seeds' material, as R5 does; asserts no panic, an error of §2.7's five or at most `max` bytes, and D5's allocation bound.
+    decodes through D11's census view over the seeds' material, as R5 does; asserts no panic, an error of §2.7's five or at most `max` bytes, and D5's allocation bound;
+    on a successful decode, `Encode`s the output under the seed's material, `Decode`s that body
+    through the view again, and asserts the result equals the first decode's output. This one
+    re-encode check covers compression and encryption, so E4's and E5's targets need no copy.
   - The test transform's fixture under `testdata/fixtures/v1/`.
 - **Acceptance criteria:**
   - The test transform passes the fixture rows and a seed run of `FuzzDecode`.
   - A transform whose encoder changed one byte fails R11; one that stopped decoding a `v1` body
     fails R10; one with no fixture for the version it writes fails R12; one that allocates a
-    body's claimed size fails R8.
-- **Tests:** at `Run` and `FuzzDecode`, which E4 and E5 call: the passing runs and the four
+    body's claimed size fails R8; one whose re-encode decodes to other bytes fails the re-encode
+    check.
+- **Tests:** at `Run` and `FuzzDecode`, which E4 and E5 call: the passing runs and the five
   broken ones above. A `Fuzz` function in the package's tests calls `FuzzDecode` on the test
   transform; plain `go test` runs its seeds.
 - **Rules:** as §2; rule 9, the `ponytail:` marker of D5.
