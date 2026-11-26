@@ -1273,7 +1273,7 @@ Gaps and assumptions, not questions:
   plan did not list: the two service halves, T11.8 (2.5) and T11.12 (1.5); the outbound queue and
   connection count RFC 24 §6.1 asks for (D9, D11, about 1); the notices' own workers and rounds
   (D11, 0.5); the notice path that never adopts nor creates (T11.12, 0.5); the outbound cap, the
-  2 s bounds and the per-host result (R61, D9, 0.5); the back-off and the 16 slots for failed hosts
+  2 s bounds and the per-host result (R61, D9, 0.5); the back-off
   (D9, T11.2, 0.5); records made only by a lock or a share reservation, and `Restarted` raising
   `ClientEnded` (D5, T11.3, T11.12, 0.75); the `UNSHARE` miss through the service (D10, T11.6, 0.25);
   the fault store and positive notice of T11.11 (0.25); the 16 slots shared by every unproven host
