@@ -15,10 +15,9 @@ import (
 // byte of 0xff, EC, RRC and the sender's 64-bit sequence number, then, when
 // sealed, RFC 3961's encryption of a confounder, the message, EC bytes of
 // filler and a copy of the header with RRC 0, and the checksum over those.
-const (
-	tokWrap       uint16 = 0x0504
-	wrapHeaderLen        = 16
-)
+const tokWrap uint16 = 0x0504
+
+const wrapHeaderLen = 16
 
 // WrapHeadroom and WrapTailroom are the room Wrap seals a message in: the
 // token header and the confounder before it, and the header's copy and the
