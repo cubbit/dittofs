@@ -1934,7 +1934,7 @@ func (x *Exchanges) Step(ctx context.Context, key Key, newMech func() Mechanism,
 // either protocol builds one from a security context (§4.4). An AUTH_SYS or
 // AUTH_NONE credential, which proves nothing (RFC 18 §3.2), is no context:
 // only NFS has one, and NFS translates it itself (RFC 21 §11.1).
-func Identity(c *Context, proto vfs.Protocol, addr netip.Addr) (vfs.Identity, error)
+func Identity(c *Context, addr netip.Addr) (vfs.Identity, error)
 ```
 
 | Piece | Where | NFS | SMB | Why there |
