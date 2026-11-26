@@ -1336,7 +1336,7 @@ count it again ([RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20make
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| calls, labelled `op` (`put`, `get`, `delete`, `list`, `health`) and `result` (`ok` or the error of [§4.8](#4.8%20Errors%20are%20a%20closed%20set)) | `remote_requests_total` | counter |
+| calls, labelled `op` (`put`, `get`, `delete`, `list`, `health`) and `result` (`ok`, the error of [§4.8](#4.8%20Errors%20are%20a%20closed%20set), or `local` for a local failure, below) | `remote_requests_total` | counter |
 | time per call, by `op` folded to the five data calls (`put`, `get`, `delete`, `list`, `health`) and `other` for every other `op` | `remote_request_seconds` | histogram |
 | bytes moved, by `op` | `remote_bytes_total` | counter |
 | connections opened; against requests, how well the pool reuses them ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) | `remote_connections_opened_total` | counter |
