@@ -408,7 +408,7 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
 | 18 | **Local space with offload** | eviction loop, `evict`, `repackDue`, refusal steps 2 and 3 with the share's pass, put-health causes, pacing and pressure, destroyed material, the commit under destroyed material | 8 | 30 | B | 19, 21 |
 | 19 | **Restart and the metadata reconcile** | start steps 6 and 7, the reseed and its gates, re-offer, a lost journal served again, the reconcile and `Bind`'s takeover, the `Census` view | 12 | 44 | C | 21 |
 | 20 | **Health, drain and salvage** | per-direction health and drift, the offload conditions, §11.4 and `WaitOffloaded`, the salvage export, `material_destroyed`'s `data_loss` | 7 | 20 | A | 21 |
-| 21 | **Integration: the node composes offload** | a `codec.Store` per store registered with its probe key, `syncertest`'s Group A suite against LocalStack, clients per store configuration, the components' collectors and health sources, settings sections, keys and alerts, the key-record suite, the CPU token, the restart-gated namespace, system scenarios; S7 | 10 | 36 | team | 22 |
+| 21 | **Integration: the node composes offload** | a `codec.Store` per store registered with its probe key, `syncertest`'s Group A suite against LocalStack, clients per store configuration, the components' collectors and health sources, settings sections, keys and alerts, the retry of a store whose key provider failed at start, the CPU token, the restart-gated namespace, system scenarios; S7 | 10 | 36 | team | 22 |
 | 22 | **E2E green** 🔀 | burn `known.yaml` down, the soak with remote faults, B1 to B4, B6, B8, and B5, B7, B9 with offload; provisional (§6 point 2) | 7 | 21.5 | team | release |
 | | **Total** | | **90** | **297.25** | | |
 
@@ -1042,7 +1042,7 @@ engine's read and write tests run with and without transforms (the RFC 4 plan's 
 "§11.5 full journal with the store unreachable" and the RFC 22 plan's "§16.5 remote outage on reads"
 rows pass on a composed node in `e2e`; the journal plan's system scenarios left to this part run in
 `e2e`; #4276's row is closed by the registry refusing the in-memory remote kind outside tests;
-RFC 5's key-record suite passes against `kvstore`; the node builds the syncer before the engine and stops
+a store whose key provider failed at start reopens on a 30 s period of the node's clock with no restart, as RFC 5 Appendix D's D10 "recovers" reads, its journal serving meanwhile and its journal-held content offloading once it opens; the node builds the syncer before the engine and stops
 it after, as RFC 8 §2.6 orders.
 
 **Expected content:**
@@ -1095,12 +1095,23 @@ it after, as RFC 8 §2.6 orders.
   and `material_unknown`, which the RFC 5 plan's A1 adds to RFC 25 §3.9, and the engine's
   `material_destroyed` source with its `data_loss` severity (epic 20), adapted from `Stats` like the
   engine's other conditions;
-  RFC 5's key-record suite run from `internal/node/content`'s tests against `kvstore` over Badger
-  under `t.TempDir()`, the memory KV and FoundationDB where it runs, since `kvstore` may not import
-  `pkg/transform` (the RFC 5 plan's D7); the provider wired in `internal/node/content` with the
+  the key-record suite is not run here: it moved to RFC 5's epic 6 (its D2), which runs it over
+  `kvstore` on Badger and FoundationDB; the provider wired in `internal/node/content` with the
   key-record view `kvstore` implements beside that store, and with each namespace's remote store for
   its `keys` object (the RFC 5 plan's D8, whose suite RFC 5 runs over RFC 4's in-memory store). The
   namespace is `entity.NamespaceID` throughout, which the transforms import as a contract.
+- A store whose key provider failed at start retried every 30 s on the node's clock, with no restart,
+  as RFC 8 §2.5 retries a refused journal (RFC 5 Appendix D's D10 "recovers"; the decision was taken
+  in #6000's review, option (a)): its journal keeps serving its shares meanwhile, the store is
+  unavailable as in RFC 8 §11.2's remote-unavailable row, and `material_unavailable` names the
+  namespace; once the provider answers, the store opens and its journal-held content offloads. A
+  `decision:` marker at the retry names the period and the rejected alternative, opening at the next
+  start only, which turns a key server's outage into a restart. A chain that cannot build is a
+  configuration defect and is not retried. Test row: on the composed node over a fault wrapper
+  around `keystest.Memory` that fails at start, the journal serves, the store is unopened and
+  `material_unavailable` is raised; the injected clock advanced past 30 s with the provider answering
+  again opens the store with no restart, clears the condition and offloads the held content; a
+  clock short of 30 s opens nothing.
 - The engine's read and write tests with and without transforms.
 - The RFC 21 and RFC 22 remote-outage rows and the journal plan's system scenarios on the composed
   node: cold reads after eviction and a restart, its reference workloads, capacity and durability
@@ -1232,7 +1243,7 @@ proposed targets: the first real-service run does (§6.1).
 | RFC 2 §2, §2.4, §3.6, §3.7, §4.2, §4.3, §5.1, §5.3, §10.1 | 11 (S1a), 15 (Carve, Assemble, minting, consumer checks), 16 (§3.6, §3.7, D11) |
 | RFC 3 §1.3, §2.8 | 11 (S1b), 15 (`Upload` with an attempt), 16 (flows), 17 (fetch, prefetch), 20 (health), 21 (registration) |
 | RFC 4 §3, §4.1, §4.3, §4.7, §4.8, §4.11 | 11 (S1c), 15 (`NewPut`'s attempt through `Upload`), 21 (a `codec.Store` per store, registered with its `ProbeKey`) |
-| RFC 5 §2.7, §2.8, Appendix B.2 | 11 (S1d), 15 (the pin over the in-memory `keys.Provider`, the refusal at Intent), 17 (destroyed material read Lost), 18 (`Unmark`, Mark's check, the commit's tracked read), 19 (the reseed's unmark), 20 (salvage sealing), 21 (chain, the key-record suite against `kvstore`, each namespace's store for the `keys` object) |
+| RFC 5 §2.7, §2.8, Appendix B.2 | 11 (S1d), 15 (the pin over the in-memory `keys.Provider`, the refusal at Intent), 17 (destroyed material read Lost), 18 (`Unmark`, Mark's check, the commit's tracked read), 19 (the reseed's unmark), 20 (salvage sealing), 21 (chain, the retry of a store whose provider failed at start, each namespace's store for the `keys` object) |
 | RFC 1 §3 (offload calls, salvage), §3.3, §3.4, §3.5, §7.2 | constraints: 15 to 20 call them |
 | RFC 6 §5.2 (the `K` floor at open) | 15 |
 | RFC 6 §7.6, §8.1, §10.1; RFC 16 §3.1 | constraints: 15 (intents, commits), 17 (covering), 19 (`Refs`, `Versions`) |
