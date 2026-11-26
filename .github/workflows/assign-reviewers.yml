@@ -59,11 +59,11 @@ jobs:
             *) lower_pr=$(gh api -X GET "repos/$REPO/pulls" -f head="$OWNER:$BASE" -f state=open --jq '.[0].number // empty' || true) ;;
           esac
           if [ -n "$lower_pr" ]; then
-            inherited=$( {
-              gh api "repos/$REPO/pulls/$lower_pr" --jq '.user.login'
-              gh api "repos/$REPO/pulls/$lower_pr/requested_reviewers" --jq '.users[].login'
-              gh api "repos/$REPO/pulls/$lower_pr/reviews" --paginate --jq '.[].user.login'
-            } | sort -u | grep -xF -f <(printf '%s\n' $known) | grep -vx "$AUTHOR" | paste -sd, - || true)
+            # All three lookups or none: a partial set would skip the pool.
+            people=$(gh api "repos/$REPO/pulls/$lower_pr" --jq '.user.login' &&
+              gh api "repos/$REPO/pulls/$lower_pr/requested_reviewers" --jq '.users[].login' &&
+              gh api "repos/$REPO/pulls/$lower_pr/reviews" --paginate --jq '.[].user.login') || people=""
+            inherited=$(printf '%s\n' "$people" | sort -u | grep -xF -f <(printf '%s\n' $known) | grep -vx "$AUTHOR" | paste -sd, - || true)
             if [ -n "$inherited" ]; then
               echo "Stacked on #$lower_pr: requesting $inherited"
               # GitHub refuses the whole list if it refuses one login: fall through to the pool.
