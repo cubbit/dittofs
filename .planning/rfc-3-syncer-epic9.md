@@ -239,9 +239,8 @@ a schedule, which is RFC 4's (§1.2).
   after one pass. Under `flows=debt`, each flow is
   put one quantum in debt before `b.ResetTimer()`, and `Done` reports a held time of the charge
   plus one quantum, so every pass leaves the flow about one quantum in debt and parks it in its
-  wheel again, whatever `b.N`. An overrun of twice the charge would grow
-  the debt with `b.N` where the quantum is near the charge, and leave no debt where it is twice
-  the charge or more. It needs no store and no link. B1 measures the whole path, so the goroutine hand-off is still measured, where it
+  wheel again, whatever `b.N`. Tying the overrun to the quantum, not to the charge, keeps
+  every row in debt whatever the ratio of charge to quantum. It needs no store and no link. B1 measures the whole path, so the goroutine hand-off is still measured, where it
   belongs. A `decision:` marker at the benchmark says so; withdraw it if a profile of B1 shows
   dispatch, not transfer, dominating. Prior art: none found for a fair scheduler's own benchmark;
   E3's operation count (its D3) is the same split.
@@ -254,7 +253,8 @@ a schedule, which is RFC 4's (§1.2).
     answers R23. Here both of B3's flows upload, so they compete in one half
     and B3 tests the upload scheduler's cap: fetches would run in the other half and bear on it
     not at all. Flow A keeps the upload half's queue full on a slow store while flow B keeps P/8
-    uploads outstanding on the same store, P the upload pool, below the P − cap that
+    uploads outstanding on the same store, P the upload pool at the default `upload_workers` of
+    128 (16 outstanding; B3 fails before the timer, naming P, if P/8 is below 1), below the P − cap that
     A's cap leaves free (at least P/4, RFC 3 §2.10's table). Turns are charged in worker-time
     (§2.9), so fair share alone would give A every worker B does not hold, more than its cap:
     only the cap stops A taking a freed worker while it holds its cap and B has work waiting. With B at P/2, fair share would settle both near P/2,
@@ -275,10 +275,11 @@ a schedule, which is RFC 4's (§1.2).
     first, and `benchstat` drops those samples.
   - The wait is timed where a caller sees it: from B's `Upload` call to its
     return, less the link's time for that block's put, which the benchmark set. It therefore includes any of
-    B's own entries queued ahead, which §2.9's bound of one round does not cover; with B's
-    outstanding uploads below P − cap, a correct syncer has a worker free for each of them once
-    A is at its cap, and while A is still above it every worker A frees goes to B, so each of B's
-    entries reaches a worker within one round and the p99 is read against one round as it is. `Stats` counts busy workers per
+    B's own entries queued ahead, which §2.9's bound of one round does not cover; a correct syncer keeps A above its cap, since §2.9 lets A take a worker whenever B has nothing
+    queued and takes none back, but while A holds its cap or more and B has an upload queued,
+    every worker that frees goes to B. B's P/8 outstanding uploads are fewer than the P − cap
+    workers A's cap would leave, so each of B's queued uploads takes the next worker that frees,
+    within one round, and the p99 is read against one round as it is. `Stats` counts busy workers per
     store, not per flow, so A's are counted by a `syncer.Store` the benchmark registers in place
     of `codec.Store`, passing every call through and keeping each put attempt's open and
     close, A's blocks and B's having names of their own (the pass-through recording wrapper
@@ -317,8 +318,9 @@ a schedule, which is RFC 4's (§1.2).
   is re-armed is missed, so the figure is a lower bound: `ponytail:` it misses collections closer
   together than a finalizer's turn; upgrade to counting collections through
   `/gc/cycles/total:gc-cycles` beside the finalizer's runs and reporting those missed, when a
-  benchmark's peak moves between runs of one commit by more than its noise. Polling
-  `/gc/heap/live:bytes` itself would gain nothing, since it changes only when a collection ends. B1, B3, B4 and B5 report it, less
+  benchmark's peak moves between runs of one commit by more than its noise. A goroutine polling
+  `/gc/heap/live:bytes` would also recover the end-of-collection values a late re-arm misses,
+  at a CPU cost per sample inside the timed region. B1, B3, B4 and B5 report it, less
   the live heap read, after a `runtime.GC()` so the figure does not still count the previous
   count's bodies, before the syncer and the store are built, and at zero where the peak is
   below that, as `peak-heap-B`, beside `bound-B`, the pool size times
@@ -335,7 +337,8 @@ a schedule, which is RFC 4's (§1.2).
   `runtime/metrics` documentation of `/gc/heap/live:bytes` (from memory); the re-armed finalizer
   pattern of GC notifiers (from memory). Not chosen: E7's held-pool heap check, a unit check that
   holds the pool and reads `LiveHeap` once, which RFC 3 §7.2's memory-bound row already is.
-- **D5, `syncer-bench` is a manual `exit` cell that fails only when a result is missing, and
+- **D5, `syncer-bench` is a manual `exit` cell that fails only when a result is missing or, for
+  B5, a secret is found, and
   `syncer-bench-smoke` keeps the benchmarks running: accepted by the user, 2026-11-26.**
   - RFC 3 §8.6 puts the benchmarks in a manual suite of the syncer's own, while §7.4 says they run
     after a change merges; the suites paragraph is the one that registers, so the cell is `tier:
@@ -360,7 +363,9 @@ a schedule, which is RFC 4's (§1.2).
     `n` is 10 unless `SYNCER_BENCH_COUNT` says otherwise, as `ENGINE_BENCH_COUNT` does. The
     explicit `-timeout`, since `go test` stops a benchmark binary at ten minutes, sits under the
     cell's `timeout: { test: 120m, cell: 130m }`.
-  - The script's guard counts result lines per sub-benchmark name: each must print `n` lines,
+  - The script's guard counts result lines per sub-benchmark name, a result line being one that
+    carries an iteration count and `ns/op`, as `dt`'s go-bench reader parses it, so a `--- FAIL`
+    line under the name is not counted: each must print `n` lines,
     for 8 names under B1, 1 under B3 and 4 under B4 in `pool`, and 8 under B2 in `sched`, or the
     test exits 2 naming the benchmark short of it, so a skipped or dropped sub-benchmark fails
     too (R6). A total alone would pass a run that lost one name's lines to another's surplus. A
@@ -373,11 +378,18 @@ a schedule, which is RFC 4's (§1.2).
     a run aimed at a real service whenever LocalStack is down. B5 itself skips naming the variable
     when no target is reachable, the content test runs `go test -v` so the skip and its reason
     are printed, and the guard fails on the missing lines and prints those skip lines (R6).
-    It runs with the `DITTOFS_TEST_S3_*` secrets set, and T9.5 attaches `{out}`, so after the run
-    the `content` test greps `{out}` with `grep -rlF` for the access key, the secret, `Signature=`
-    and `SignatureProvided`, printing only the file names, and fails on a hit, as RFC 4 plan epic
-    9's service cell does (its R8, from RFC 25 §5.4): an SDK error a `b.Fatal` prints would
-    otherwise reach the attached record.
+    It runs with the `DITTOFS_TEST_S3_*` secrets set, and T9.5 attaches `{out}`, so the `content`
+    test greps `{out}` as RFC 4 plan epic 9's service cell does (its R8, from RFC 25 §5.4): an SDK
+    error a `b.Fatal` prints would otherwise reach the attached record. The grep runs whatever
+    the guard found, before the script exits, and the script exits with the worse of the two
+    codes, since a `b.Fatal` that leaks a key also leaves its sub-benchmark short of lines. Its
+    patterns are `Signature=` and `SignatureProvided` always, and the access key, the secret, the
+    endpoint and the bucket only when set, so a LocalStack run with none set greps no empty
+    pattern that matches every file; they go to `grep -rlF -f -` on stdin, never on the command
+    line, and only file names are printed. `content`'s `go test` output goes to
+    `{out}/content.txt` alone, not to stdout, since `dt` tees stdout to the cell's log outside
+    `{out}`, where nothing scans it; the script prints the guard's verdict and, once the grep is
+    clean, B5's skip lines.
   - The varying conditions are name keys (`half=upload/impl=syncer/workers=128`), so
     `benchstat -col /impl` reads B1's and B5's ratio from one run; the fixed ones are Go benchmark
     configuration lines, printed once by a parent benchmark as D3 says, in B1, B3, B4 and B5
@@ -428,9 +440,8 @@ a schedule, which is RFC 4's (§1.2).
   - The raw twin calls the same `codec.Store`'s `NewPut(…).Attempt` and `Get` directly, from as
     many goroutines as each half's worker count, ranging over `Get`'s chunks as D1's twin does.
   - The upload half deletes each block once its upload returns, as B1 does, so the store holds
-    no more than the pool's blocks rather than about 4 GiB per upload sub-benchmark. A cleanup
-    registered with `b.Cleanup` before the first write stays as the backstop, deleting whatever
-    is left, so a `b.Fatal` mid-run leaves no block behind. The store's health object and key records are
+    no more than the pool's blocks rather than about 4 GiB per upload sub-benchmark. A cleanup registered with `b.Cleanup` before the first write stays as the backstop, deleting
+    whatever a listing of B5's prefix still shows, so a `b.Fatal` mid-run leaves no block behind. The store's health object and key records are
     never deleted through `remote.Store` (RFC 4 §4.7), so B5 opens its store under the fresh namespace prefix of `_BUCKET` that `s3fault.Service`
     hands it, which RFC 4 plan epic 9's sweep (its D10) deletes, with whatever a killed run
     left, once older than the cell's timeout.
@@ -444,7 +455,8 @@ a schedule, which is RFC 4's (§1.2).
       read disjoint sets, written before the timer, so no block either reads was served moments
       before by the other and a cache at the service favours neither;
     - `round-ns`, a round from measured figures, since no `Link` is set here: the largest encoded
-      block over the raw twin's per-worker get throughput, which already holds the round trip;
+      block over the per-worker get throughput of `mixed`'s own idle pass, which already holds
+      the round trip, so no other sub-benchmark a `-bench` filter could drop feeds it;
     - `wait-p99/round`, `cold-p99-ns` less `idle-p99-ns` over `round-ns`, read against §8.5's B3
       target of one round, which D3's amendment moves under B5;
     - `conns-max`, the most connections of the store's client in use at once during the loaded
@@ -595,8 +607,8 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
       arrives on time and the slow-tail rule does not retry it, until `Stats`' `Joined` for the
       store has risen by N−1, polled with a short pause under a 10 s backstop, below the throughput floor's 30 s without a
       byte (RFC 3 §2.10), that fails B4 naming `Joined`'s value, then released, so every reader has joined before the chunk passes:
-      a reader arriving after it would rightly start a fetch of its own. The timer stops once the
-      readers are started and restarts at the release, so the MB/s times the chunk reaching N
+      a reader arriving after it would rightly start a fetch of its own. The timer stays stopped while the N readers' goroutines start and
+      join, and restarts at the release, so the MB/s times the chunk reaching N
       joined readers, not the deliberate hold; how many joined is `gets/op`'s to say. The `Get`s that
       reached the in-memory store, read from its load record, are reported as `gets/op`, beside
       the readers' throughput (`b.SetBytes` of N chunks, R4) and the peak heap as in B1, and `Stats`' `Retries.SlowTail` rise beside it, which reads 0
@@ -630,7 +642,8 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
     group, its last sentence rewritten to name only the suites still unregistered when this
     lands; §7.4's sentence on when the benchmarks run (D5); and §8.1's "Benchmark" row, "real
     time; B1, B3 and B4 on the in-memory store with a simulated link, B2 on the scheduler alone,
-    B5 on a real store; by hand in the syncer's manual suite, never gating", which D2 and D5
+    B5 on a real store; by hand in the syncer's manual suite, and once per pull request in its smoke cell; never gated
+    on a figure", which D2 and D5
     would otherwise contradict. The same pull request also amends: §7.4's intro, "B1, B3 and B4
     use the in-memory store with a simulated link, B2 the scheduler alone and B5 a real store",
     where it now binds every benchmark to the simulated link; after D5's accepted §7.4 sentence,
@@ -677,8 +690,8 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
     whatever is left is registered with `b.Cleanup` before the first write (D6).
   - `test/syncer/bench.sh`: the `content` test, `go test -v -count=$n -benchtime=1x -run=^$
     -bench=^BenchmarkB5$ -timeout=110m ./internal/node/content/`, the pool test's flags with
-    `-v` (D5), its guard `n` lines for each of 5 names, then the secret grep over
-    `{out}` (D5).
+    `-v` (D5), written to `{out}/content.txt` and not printed, its guard `n` lines for each of 5
+    names and the secret grep over `{out}`, both always run, the worse exit code kept (D5).
   - `test/suites.yaml`: `syncer-bench`'s `real-link` option, `tests: [content]` (D5).
 - **Acceptance criteria:**
   - Against LocalStack, B5 prints both halves through the syncer and raw, with every field of
@@ -690,8 +703,10 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
     naming it.
   - With neither LocalStack nor a service reachable, B5 skips naming the variable it needs and
     `dt run syncer-bench/real-link` fails on the missing lines (R6).
-  - With the access key planted in a file under `{out}`, the `content` test fails naming that
-    file and printing no key (D5).
+  - With the access key planted in a file under `{out}` in a run that also drops one name's lines,
+    the `content` test fails naming that file and printing no key, so the grep runs past the
+    guard's failure; with no `DITTOFS_TEST_S3_*` variable set, a clean LocalStack run passes the
+    grep (D5).
 - **Tests:** B5 is checked by one run against LocalStack in the pull request, and by the
   option's guard (T9.3). The connection count is checked in that run: `conns-max` is at least 1
   and at most `limit:` (catches a transport that is not the client's, or that never decrements). The raw twin and the syncer share one `codec.Store`, so a twin that
