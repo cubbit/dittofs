@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/internal/vfs/contenttest"
-	"github.com/cubbit/dittofs/pkg/engine"
 	"github.com/cubbit/dittofs/pkg/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -22,7 +21,10 @@ import (
 func TestContentSuite(t *testing.T) {
 	contenttest.Run(t, func(t *testing.T) contenttest.Subject {
 		u := enginetest.NewUnit(t, enginetest.UnitOptions{OpenState: true})
-		if err := u.E.Apply(engine.Settings{ExistenceAge: time.Minute, GroupCommitMaxFiles: 1, CloneMaxLen: 16 << 20}); err != nil {
+		settings := enginetest.Settings
+		settings.GroupCommitMaxFiles = 1
+		settings.CloneMaxLen = 16 << 20
+		if err := u.E.Apply(settings); err != nil {
 			t.Fatal(err)
 		}
 		var n atomic.Int64

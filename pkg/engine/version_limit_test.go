@@ -80,11 +80,9 @@ func withBlock(n uint64) starterOption {
 func applyAge(t *testing.T, s *starter, age time.Duration) {
 	t.Helper()
 
-	err := s.e.Apply(engine.Settings{
-		ExistenceAge:        age,
-		GroupCommitMaxFiles: 64,
-		CloneMaxLen:         1 << 30,
-	})
+	settings := enginetest.Settings
+	settings.ExistenceAge = age
+	err := s.e.Apply(settings)
 	if err != nil {
 		t.Fatal(err)
 	}

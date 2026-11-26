@@ -16,9 +16,9 @@ for the type `Share` carries and the declarations recorded here, and
 **Depends on:** sync points **S1a to S1d**, the RFC 2 to RFC 5 plans' S1: their epic 1 surfaces
 agreed, the RFC 3 plan's epic 1 merged on `feat/storage-v2`, since T11.3 types `Share.Store`
 with the `pkg/syncer` root's `StoreID`, and the RFC 4 plan's epic 1 T1.1, which lands `pkg/remote`
-as a pure contract, since that root comes with it; #5775, which makes the engine's import walk
-transitive and moves `pkg/engine/enginewire` to `internal/node/content` (T11.3 edits whichever of the
-two holds the share build when it starts).
+as a pure contract, since that root comes with it. The share build T11.3 edits is
+`internal/node/content`'s `content.Binding` (#5828 moved it there). The engine's import walk is
+still direct-only; #5775 tracks making it transitive.
 **Blocks:** every later epic through S1: epic 12, whose fixture builds `Share` and `Settings` with
 the fields frozen here; epic 13, which fills `pkg/workqueue`'s stubs (T11.1); epics 14 to 20, which
 fill the `Settings`, `Share` and `Stats` fields and add each recorded declaration with its first
@@ -104,7 +104,7 @@ cited by number and title and not copied.
 | rule 4, profiling | none | nothing here starts a goroutine or holds a resource |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T11.2, T11.3 | the refusals are asserted where the node and the fixture meet them: `Apply`'s error and the stored settings, read through an `export_test.go` accessor, `Bind`'s error and the binding left as it was |
 | rule 6, known failures shrink | none | no row turns green or red here |
-| rule 7, v2 ignores v1, and the engine imports only what RFC 0 §1.2 allows | T11.1, T11.3, T11.4 | `pkg/workqueue`'s own walk allows the standard library only (T11.1); the engine's walk gains the `pkg/syncer` root, for `Share.Store`, with the `pkg/remote` root it brings, earlier than the epic that first calls it (D5), and `pkg/workqueue`, a library of this RFC, for `Stats`, and refuses `pkg/syncer/pool` (T11.3, T11.4) |
+| rule 7, v2 ignores v1, and the engine imports only what RFC 0 §1.2 allows | T11.1, T11.3, T11.4 | `pkg/workqueue`'s own walk allows the standard library only (T11.1); the engine's walk gains the `pkg/syncer` root, for `Share.Store`, earlier than the epic that first calls it (D5), and `pkg/remote` waits for the walk to turn transitive or its first direct importer, and `pkg/workqueue`, a library of this RFC, for `Stats`, and refuses `pkg/syncer/pool` (T11.3, T11.4) |
 | rule 8, real dependencies for properties of those dependencies | none | no property of a journal, a store or a remote store is tested here |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T11.1, T11.2 | RFC 8 §6.1.1's no-borrowing `decision:` is epic 13's, at the reservation code; this epic leaves D3's `decision:` at `Register` and D4's at `Apply` |
 | rule 10, a test must be able to fail | T11.1 to T11.4 | each test fails on a planted break: an import the walk must refuse, a setting `Apply` must refuse, a share `Bind` must refuse, a component-typed field in `Stats` or `Share` |
@@ -133,7 +133,7 @@ can cite them. Behaviour behind the stubs is listed in §1.2 with its epic.
 | R6 | `Apply` refuses an invalid setting, NaN included, with an error naming it, and keeps the settings it already had; it never substitutes a default | MUST | RFC 8 §2.4, §12.1; RFC 0 §1.2 | T11.2 |
 | R7 | withdrawn: a fixed RFC 13 row never becoming a field is a review rule no test can check; D4 states it | — | RFC 13 Appendix B; RFC 8 §12.1 | — |
 | R8 | A share's settings travel on its `Share` and are validated at `Bind`: `offload.max_age`, `readahead.max_blocks`, `readahead.max_bytes` and the speculation budget, the share-scope keys | MUST | RFC 8 §2.3, §2.4, §12.1; RFC 13 Appendix B | T11.3 |
-| R9 | A `Start` or `Bind` handed invalid share settings is refused with an error naming the share and the setting; a refused `Bind` leaves a served binding's settings as they were | MUST | RFC 8 §2.3, §2.4, §12.1; RFC 0 §1.2 | T11.3 |
+| R9 | A `Bind` handed invalid share settings is refused, and a `Start` refuses that share at step 1 without failing, each with an error naming the share and the setting; a refused `Bind` leaves a served binding's settings as they were | MUST | RFC 8 §2.3, §2.4, §12.1; RFC 0 §1.2 | T11.3 |
 
 **The share's backends**
 
@@ -212,10 +212,10 @@ can cite them. Behaviour behind the stubs is listed in §1.2 with its epic.
   syncer does not know when it opens the share's flow. The chunking parameters are not a `Share`
   field: RFC 2 §3.2 makes `Target` a namespace's setting, its `carver.Settings` carries the namespace's keys,
   and RFC 8 §12.1's `Share` names none. They reach the pipeline through the carver's declaration,
-  which T11.5 records for S1a to settle (a per-namespace lookup the wiring implements, so the engine
-  never holds key material), and which epics 15 and 16 add with their callers. The option of a
-  `Chunking carver.Settings` field on `Share` was rejected: it puts keys in a value the node copies and
-  logs, and it freezes a choice S1a has not made. Prior art: none found.
+  which T11.5 records: a per-namespace lookup, `Settings(ns)`, that the wiring answers by calling
+  `NewSettings`, so the engine never holds key material; epics 15 and 16 add it with their callers.
+  The option of a `Chunking carver.Settings` field on `Share` was rejected: it puts keys in a value
+  the node copies and logs. Prior art: none found.
 - **D6, the `Stats` fields carry each series as the first part's do.** A counter is an `int64`, a
   labelled counter a `map[string]int64` keyed by the label's value, a histogram a `Series`, a gauge
   its plain value; per-share gauges go in `ShareStats` and their sums in `Stats`; the queue and work
@@ -263,7 +263,7 @@ pkg/engine/
   enginetest/unit.go      T11.2  the unit fixture's Settings
 internal/node/
   lifecycle.go            T11.2  engineDefaults gains the new keys' proposed values
-  content/                T11.3  (or pkg/engine/enginewire before #5775) the share build fills ShareSettings
+  content/                T11.3  content.Binding fills ShareSettings
 ```
 
 ## 6. Subtasks
@@ -279,7 +279,7 @@ internal/node/
   blocks; `Limits` fixed per source; `Tenant` live; `Throttled` backing off as `Retry` until `Rate`
   pacing lands), and:
   ```go
-  type TenantID [16]byte // a namespace as it is, or a shard big-endian in the last four bytes (D2)
+  type TenantID [16]byte // a namespace as it is, or a shard big-endian in the last four bytes
   type SourceID int      // the index of a source's registration
   type Clock interface {
   	Now() time.Time
@@ -292,9 +292,11 @@ internal/node/
   }
   type Scheduler struct{ /* unexported */ }
   func New(clk Clock, loop Loop) *Scheduler
-  func (s *Scheduler) Register(src Source, l Limits) SourceID // panics on limits it cannot honour (D3)
+  func (s *Scheduler) Register(src Source, l Limits) SourceID // panics on limits it cannot honour
   ```
-  Every body is a stub: `New` returns an empty scheduler, `Register` a counter, `Post` false,
+  Every body is a stub but `Register`'s check: `New` returns an empty scheduler, `Register`
+  refuses D3's limits with a panic naming the field, with D3's `decision:` marker, and otherwise
+  returns a counter, `Post` false,
   `SetTenant`, `WaitTenant` and `Stop` `errors.ErrUnsupported`, `Stats` nil. Consumed by epic 13,
   which fills them, epic 14, which registers the engine's two sources, and T11.4. The import walk
   `imports_test.go`, after the journal's `TestImportRule` on `feat/storage-v2`: the package's
@@ -307,9 +309,11 @@ internal/node/
     test file, which imports them as tests may).
   - The walk passes on the package.
 - **Tests:** the import walk, which fails when a planted `pkg/health` or `pkg/metadata/entity`
-  import is added to `workqueue.go` (catches R1); the compile-time assertions `var _ workqueue.Loop
-  = (*health.Loop)(nil)` and `var _ workqueue.Clock = (*sim.TestClock)(nil)`, which fail to build if a method's
-  signature drifts from RFC 25's or RFC 8 §2.1's (catches R3); an export pin that reads the
+  import is added to `workqueue.go` (catches R1); a table at `Register`, one row per field D3
+  refuses, each asserting the panic names the field, and one valid `Limits` registering (catches
+  a missing or wrong check, D3). The `var _ workqueue.Loop = (*health.Loop)(nil)` and `var _
+  workqueue.Clock = (*sim.TestClock)(nil)` lines stay as build checks of R3, not tests, since the
+  compiler is what catches a drifted signature (the parent plan's rule 10); an export pin that reads the
   package's scope with `go/types` and compares it, name and kind, with the frozen list, and asserts
   `TenantID`'s underlying type is `[16]byte` and `Key.ID`'s too (catches a symbol added, dropped or
   reshaped, R2, R4). No test double.
@@ -360,32 +364,39 @@ internal/node/
   	SpeculationBudget int64         // the speculation budget, bytes in flight
   }
   // Share gains, beside the first part's fields:
-  	Store    syncer.StoreID // its remote block store, as the syncer registered it (RFC 8 §12.1); zero until epic 16 opens flows (D5)
+  	Store    syncer.StoreID // its remote block store, as the syncer registered it (RFC 8 §12.1); zero while no flow is opened
   	Settings ShareSettings  // validated by Start and Bind (RFC 8 §2.4)
   ```
   `validShare` refuses a non-positive `ShareSettings` field, naming the share and the key; `Bind`
-  already calls it, and `Start` now calls it over every share before step 1 and is refused whole,
-  attaching nothing, since RFC 8 §12.1 makes `Start` all or nothing; a `Bind` changing a served share's `Settings` passes the
-  same check before `change` applies anything, and `change` keeps the new settings on the binding.
-  The engine's `imports_test.go` allows the `pkg/syncer` root to `"*"` and nothing under it, and
-  the `pkg/remote` root it imports (RFC 3 §1.3 uses RFC 4's contract as it is), since the walk is
-  transitive once #5775 lands; T11.3 waits for the RFC 4 plan's epic 1 T1.1, which lands
-  `pkg/remote` as a pure contract and holds it there with an arch test (D5, rule 7). Every `engine.Share` literal the repository builds gains `Settings` from one
+  already calls it, and `Start` now calls it at step 1, where a share it refuses is not attached
+  and `Stats` names it with the error in its `Refused`, as a share refused at step 1 already is
+  (RFC 8 §2.5): `Start` does not fail for it, and serves the others. A `Bind` changing a served
+  share's `Settings` passes the same check before `change` applies anything, and `change`
+  publishes the new settings through an `atomic.Pointer[ShareSettings]` on the binding, which the
+  lock-free readers of the copy-on-write table (epics 15 and 17) load, so no reader sees a value
+  half written. The engine's `imports_test.go` allows the `pkg/syncer` root to `"*"` and nothing
+  under it. `pkg/remote`, which that root imports, needs no entry while the walk is direct-only,
+  and is allowed with the change that makes the walk transitive (#5775) or with its first direct
+  importer, epic 15, whichever comes first (rule 7). T11.3 waits for the RFC 4 plan's epic 1 T1.1,
+  which lands `pkg/remote` as a pure contract and holds it there with an arch test (D5). Every `engine.Share` literal the repository builds gains `Settings` from one
   `enginetest.ShareSettings` value (RFC 13's proposed defaults: 5 s, 8 blocks, 64 MiB, 256 MiB), and
-  the share build in the node's content wiring (`enginewire.Binding`, or its successor in
-  `internal/node/content` after #5775) passes the same defaults until the integration epic loads
-  them. Consumed by epic 12's fixture, epic 15 (`MaxAge`), epic 16 (`Store`), epic 17 (read-ahead,
+  the share build in the node's content wiring (`content.Binding` in `internal/node/content`)
+  passes the same defaults until the integration epic loads them. Consumed by epic 12's fixture, epic 15 (`MaxAge`), epic 16 (`Store`), epic 17 (read-ahead,
   speculation) and the integration epic.
 - **Acceptance criteria:**
-  - A `Start` or `Bind` with any `ShareSettings` field zero or negative is refused with the share and
-    the key named; a refused `Bind` of a served share leaves its earlier settings in force.
+  - A `Bind` with any `ShareSettings` field zero or negative is refused with the share and the key
+    named; a refused `Bind` of a served share leaves its earlier settings in force. A `Start` over
+    such a share and a valid one serves the valid one, and `Stats` names the other with the key
+    in its `Refused`.
   - A share with a zero `Store` binds, as the first part's rows need.
   - The engine's walk refuses a planted import of `pkg/syncer/pool`, and passes with `Share.Store`
-    in place, `pkg/remote` reached through the `pkg/syncer` root.
+    in place.
   - No exported method sets `Store` or `Settings` on a binding: `Bind` is the one way (the first
     part's architecture test, which seeds a setter, stays green).
 - **Tests:** at `Bind` and `Start`, which the node calls: a table of invalid settings, each refused
-  by name at both calls (catches a missing check, R9); a refused change of a served share whose
+  by name at `Bind` and named in `Stats`'s `Refused` after `Start`, which serves the valid share
+  beside it (catches a missing check, R9, and one bad share stopping every share); `change` under
+  `-race` beside a reader loading the settings (catches settings written in place); a refused change of a served share whose
   earlier settings are read back through an `export_test.go` accessor of the binding (catches a
   partial apply); the import walk with a planted `pkg/syncer/pool` import (catches R11). No test
   double.
@@ -404,7 +415,7 @@ internal/node/
   - `ShareStats`: `DirtyBytes`, `DrainBytesPerSecond`, `DrainTime`, `OldestUnoffloaded`,
     `RemovalsPending`, `OldestRemoval` (epics 14 and 20);
   - `Stats`, the sums and node-wide series: `DirtyBytes`, `DrainBytesPerSecond`, `DrainTime`,
-    `OldestUnoffloaded` (the largest); `OffloadPasses`, `PipelineStateSeconds`, `PipelineRetries`,
+    `OldestUnoffloaded` (the largest), `RemovalsPending`, `OldestRemoval` (the largest); `OffloadPasses`, `PipelineStateSeconds`, `PipelineRetries`,
     `AttemptsAbandoned`, `IntentsAbandoned`, `FailingFiles`, `PassesAborted`, `IntentMissing`,
     `StageBusy` (epics 15 and 16); `Fetches`, `FetchBytes`, `Fills`, `SpeculationBytes`,
     `SpeculationUsedBytes`, `Reresolves` (epic 17); `EvictedBytes`, `PacingSeconds` (epic 18);
@@ -424,14 +435,16 @@ internal/node/
   - No field of `Share`, `Stats`, `ShareStats` or `JournalStats` has an interface (other than
     `error`), func or channel type (R13).
 - **Tests:** at `Stats()`, which the node's adapter reads: a reflection walk over the four types,
-  recursive through struct, pointer, map, slice and array elements, that fails on an interface
-  (but `error`), func or channel kind, and on a named type of a component's or library's package
-  other than an allowlisted value type (`journal.Stats`, `workqueue.Stats`, `workqueue.Limits`,
-  `entity`'s), with a planted `*workqueue.Scheduler` field as the case it must refuse (catches a component
-  returned to the caller, R13). The copy test of a map lands with the epic that first fills it, since
-  an always-empty map cannot be shared wrongly. An external test (`package engine_test`) names every
-  new field and calls `WaitOffloaded`, so a field renamed or dropped, or the method's signature
-  changed, fails to compile (R14 to R16); it asserts nothing of the stub's answer. No test double.
+  recursive through struct, pointer, map, slice and array elements and map keys, that fails on an
+  interface (but `error`), func or channel kind anywhere it reaches, and on a pointer to another
+  package's named type; another package's value type (`journal.ShareTag`, `journal.JournalID`,
+  `health.Condition`, `syncer.StoreID`, `workqueue.Stats`) is walked like the engine's own, with a
+  planted `*workqueue.Scheduler` field as the case it must refuse (catches a component returned to
+  the caller, R13); the walk passes on today's tree before the new fields are added. The copy test of a map lands with the epic that first fills it, since
+  an always-empty map cannot be shared wrongly. An export pin, as T11.1's, reads the engine
+  package's scope with `go/types` and compares every new field's name and type, and
+  `WaitOffloaded`'s signature, with the frozen list, failing on its assertion when one is renamed,
+  dropped or retyped (R14 to R16); it asserts nothing of the stub's answer. No test double.
 - **Rules:** rule 3: the fields mirror RFC 8 §14's series; no series is recorded here.
 
 ### T11.5 The S1 review and the recorded declarations
@@ -452,9 +465,8 @@ internal/node/
   // wiring hands them in as this one interface (epic 15, with its first caller, Carve). Every call
   // the engine makes is here, beyond RFC 8 §2.1's "Cut and the fold": a namespace's settings,
   // BlockName and the fold's construction; Max is a method of the Settings value and needs no
-  // declaration. Proposed (D5): the wiring calls carve.NewSettings with the namespace's Target and
-  // keys and answers Settings(ns), so the engine never holds key material; the RFC 2 plan's epic 1
-  // breakdown has the engine call NewSettings itself, which S1a reconciles.
+  // declaration. The wiring calls carve.NewSettings with the namespace's Target and keys and
+  // answers Settings(ns), so the engine never holds key material.
   type Carver interface {
   	Settings(ns entity.NamespaceID) (carver.Settings, error) // the namespace's, built by carve.NewSettings in the wiring
   	Cut(r io.Reader, base int64, s carver.Settings, buf []byte, realEnd bool,
@@ -484,7 +496,8 @@ internal/node/
   // once called (R17), so Offload joins only if epic 15's Capture calls it beside OffloadMany:
   //   OffloadMany (epic 15), MarkOffloaded (epic 15), DirtyFiles (epic 14),
   //   Fill (epic 17), Release, Unmark (epic 18), DropOlder (epic 19, once the journal's epic 7b adds it).
-  // Journal gains Reconciled, and Deps AcknowledgeUnreadable (epic 19), as RFC 1 §3 writes them.
+  // Journal gains Reconciled, and Deps AcknowledgeUnreadable (epic 19), as RFC 1 §3 writes them;
+  // the journal on feat/storage-v2 has no Reconciled yet: journal work epic 19 depends on (§9).
   // Not added by this part: Hold and Stamp (RFC 12's, with snapshots); Acknowledge and
   // DropSuperseded, an operator's acknowledgement of an unread range (RFC 28 §3.3), whose action
   // RFC 28's plan adds; each joins with that caller.
@@ -505,9 +518,11 @@ internal/node/
   // offload commit and the reseed read (epics 18, 19) and the salvage-key wrap (epic 20); each is
   // declared by its epic in RFC 5's contract types as S1d agrees them.
 
-  // Block metadata's views gain, as kvstore has them on feat/storage-v2: Intend, Commit with the
-  // block's encodings, Abandon (epic 15); AbandonShardIntents, Existence.Versions and the Census
-  // view (epic 19), RFC 6 §10.
+  // Block metadata's views gain, RFC 6 §10: Intend, Commit with the block's encodings, Abandon
+  // (epic 15); AbandonShardIntents, Existence.Versions and the Census view (epic 19). kvstore on
+  // feat/storage-v2 has Intend, Abandon and AbandonShardIntents; BlockCommit carries no encodings,
+  // and Existence.Versions and the Census view do not exist: kvstore work epics 15 and 19 depend
+  // on (§9).
   ```
   `Deps` gains nothing here.
 - **Acceptance criteria:**
@@ -547,8 +562,12 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **How a namespace's chunking parameters reach the pipeline (D5)** is S1a's to settle in T11.5;
-  epic 15 adds the declaration it agrees.
+- **Calls the later epics need that the components lack on `feat/storage-v2`** (T11.5): kvstore's
+  `BlockCommit` with the block's encodings (epic 15), `Existence.Versions` and the Census view
+  (epic 19), and the journal's `Reconciled` (epic 19). Each is the owning component's work, as
+  `DropOlder` is the journal's epic 7b; no plan owns them yet, and the epic that calls one first
+  names it as a dependency when it is broken down.
+
 - **RFC 8 §15.3's "§2.4 settings" row configures `Min ≥ Target`**, which RFC 2 §3.2 makes
   unconfigurable (`Min` is `Target / 4`, and `Target` is a namespace's setting the carver's
   constructor checks, RFC 2 §3.7). The row's first half needs rewording to a `Target` the carver
@@ -562,8 +581,8 @@ A suggestion only: one pull request per subtask works as well.
   `workqueue.Loop` the node fills, plus a way to close the loop when a journal's scheduler stops,
   since the scheduler's `Loop` has no `Close`) and amends §2.6 with it.
 - **RFC 8 §2.1's carver row names only `Cut` and the fold**, while the engine also calls
-  `NewSettings`, `BlockName` and the fold's constructor (T11.5, from the RFC 2 plan's epic 1
-  breakdown). Epic 15, which adds the declaration, amends the row in its pull request.
+  `Settings(ns)`, `BlockName` and the fold's constructor (T11.5, from the RFC 2 plan's epic 1
+  breakdown); the wiring, not the engine, calls `NewSettings`. Epic 15, which adds the declaration, amends the row in its pull request.
 - **RFC 8 §2.1 lists `Offload` beside `OffloadMany`** in the handle row; if epic 15's Capture calls
   only `OffloadMany`, epic 15 amends the row so §15.3's declared-interfaces check stays honest.
 - **The oldest-unoffloaded alert bound** (RFC 13 Appendix B, share scope, RFC 8 §11.4) is an alert

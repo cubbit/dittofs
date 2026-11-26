@@ -43,8 +43,10 @@ type Call []byte
 // ParseCall parses the call at the start of rec, a record's body: the
 // transaction ID and message type, the RPC version, the program, version and
 // procedure, the credential and the verifier, and, for procedure 1 of program
-// 100003 version 4, the COMPOUND prefix's tag and minor version (RFC 5531
-// section 9, RFC 20 section 4.7). Every credential and verifier body is at most
+// 100003 version 4 whose arguments are in the clear, the COMPOUND prefix's tag
+// and minor version (RFC 5531 section 9, RFC 20 section 4.7). An RPCSEC_GSS
+// call at integrity or privacy is parsed up to its verifier: its arguments are
+// a protected body, left for the GSS stage to unwrap. Every credential and verifier body is at most
 // 400 bytes (RFC 5531 section 8.2) and lies inside the record with its padding.
 //
 // A record too short for its transaction ID and message type is refused with
@@ -102,7 +104,7 @@ func walk(c []byte) (fields, error) {
 	}
 	f.verfOK = true
 	f.argsAt = r.off
-	if isCompound(f) {
+	if isCompound(f) && clearArgs(f.credFlavour, c[f.credAt:f.credAt+f.credLen]) {
 		// The flag is set before the prefix is read: a COMPOUND cut past its
 		// tag still reports the tag it read.
 		f.compound = true
@@ -119,7 +121,8 @@ func walk(c []byte) (fields, error) {
 }
 
 // isCompound reports whether f is an NFSv4 COMPOUND call, the only one whose
-// tag and minor version the parse reads (RFC 20 section 4.7).
+// tag and minor version the parse reads, where its arguments are in the clear
+// (RFC 20 section 4.7).
 func isCompound(f fields) bool {
 	return f.prog == ProgNFS && f.vers == VersNFS4 && f.proc == ProcCompound
 }
@@ -205,8 +208,9 @@ func (c Call) Args() []byte {
 	return c[f.argsAt:]
 }
 
-// Tag is a COMPOUND's tag, as a slice of the record; nil for any other call
-// and for one whose tag the record did not hold. A COMPOUND read whole with
+// Tag is a COMPOUND's tag, as a slice of the record; nil for any other call,
+// for one whose arguments RPCSEC_GSS protects, and for one whose tag the
+// record did not hold. A COMPOUND read whole with
 // no tag is not nil: its empty slice is the record's own.
 func (c Call) Tag() []byte {
 	f, _ := c.fields()
@@ -216,7 +220,9 @@ func (c Call) Tag() []byte {
 	return c[f.tagAt : f.tagAt+f.tagLen]
 }
 
-// MinorVersion is a COMPOUND's minor version; ok is false for any other call.
+// MinorVersion is a COMPOUND's minor version; ok is false for any other call,
+// and for a COMPOUND whose arguments RPCSEC_GSS protects, which the parse does
+// not read.
 func (c Call) MinorVersion() (minor int, ok bool) {
 	f, _ := c.fields()
 	return int(f.minor), f.minorOK

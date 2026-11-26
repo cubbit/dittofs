@@ -193,7 +193,7 @@ which E3 to E7 write over T2.2's `Link`, and a lifetime count as the source of h
   closure it writes. Prior art: `pkg/sim`'s `Waiter`.
 - **D4, the suite's frame is settled now, before its rows.** E3 and E6 on track A, E4 on track
   B, and RFC 8 offload plan epic 21 write against it; four authors growing it by need would race
-  on its shape. `Run(t, Opener)` opens an `Env` per row. `Env` carries the syncer, the store it
+  on its shape. `Run(t, Opener, run)` opens an `Env` per row and runs it through `run`. `Env` carries the syncer, the store it
   was built over, the remote store to read back, a way to build a put's attempt without
   importing the codec (`NewPut`, which the opener backs with `codec.Store.NewPut`), the chunk
   maker whose hash the codec verifies, `Wait`, and `Faults`. `Faults` is a struct of function
@@ -204,10 +204,10 @@ which E3 to E7 write over T2.2's `Link`, and a lifetime count as the source of h
   is one field, which changes no caller that sets fields by name. Prior art: Go's
   `testing/fstest.TestFS`; the journal's conformance suite.
 - **D5, time is the opener's.** A row never moves time: it starts its call and waits on the
-  outcome through `Env.Wait(done)`. The in-memory opener (E3) moves the `TestClock` whenever
-  E3's idle hook reports every task blocked; the opener over the S3 store blocks on `done`, as
-  real time passes. E3's hook must count a worker waiting on the `TestClock` inside a `Link`
-  (`TestClock.Pending`) as blocked, or time never moves under a linked store (§9). So `syncertest` imports no `pkg/sim`, and its allowlist is `pkg/syncer`,
+  outcome through `Env.Wait(done)`. The in-memory opener (E3) runs each row in a
+  `testing/synctest` bubble, whose time moves once every goroutine in it is durably blocked, a
+  worker waiting inside a `Link` included (E3's D12, the user's decision of 2026-11-26); the
+  opener over the S3 store blocks on `done`, as real time passes. So `syncertest` imports no `pkg/sim`, and its allowlist is `pkg/syncer`,
   `pkg/remote` and `internal/prof`. Not chosen: the suite advancing a `TestClock` itself, which
   cannot know when the syncer is idle and has nothing to advance against a real backend.
 - **D6, no recording log handler and no heap helper.** `slog.NewJSONHandler` over a buffer
@@ -364,7 +364,9 @@ pkg/syncer/surface_test.go    T2.3  syncertest's frozen exports
   // Run runs every Group A row over the stores open opens, one subtest each,
   // each under internal/prof's leak check. A row whose fault or mode the
   // opener cannot give is skipped, naming the row and what it lacks.
-  func Run(t *testing.T, open Opener)
+  // run runs one row: synctest.Test for the in-memory opener, a plain call
+  // over a real store (E3's D12).
+  func Run(t *testing.T, open Opener, run func(*testing.T, func(*testing.T)))
 
   // Opener builds a syncer over a fresh remote store in mode m, through the
   // codec, as production builds it, and cleans up with t.Cleanup. ok is false
@@ -467,9 +469,9 @@ A suggestion only: one pull request per subtask works as well.
   frame to this epic, its surface is frozen at S2 for RFC 8 offload plan epic 21 and for E4 and
   E6 on the other track, and its skip rule is tested on its own. Moving it would cut this epic to
   5.5 man-days and add about 1.5 to E3.
-- **E3's idle hook must count a worker parked in `Link` as blocked** (D5). A worker waiting on
-  the `TestClock` inside a store call is blocked on time, which only the hook can move; a hook
-  that watches only the pools' states never sees it idle. E3's breakdown states this contract.
+- **A worker parked in `Link` counts as blocked** (D5). E3's D12 runs each in-memory row in a
+  `testing/synctest` bubble, which sees that wait as durably blocked, and adds `Run`'s `run`
+  parameter.
 - **E3 owns what the frame needs to run.** Its in-memory opener is the first `Env`, so R15's
   read-back check and R16's idle wait first run there, and the opener needs `codec.Store` from
   the RFC 4 plan's epic 6, a dependency E3's breakdown adds.

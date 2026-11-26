@@ -699,6 +699,8 @@ var settingKeys = []string{
 	"rehome.rate",
 	"remote.credential",
 	"remote.endpoint",
+	"remote.region",
+	"remote.trust_roots",
 	"removal.rescan",
 	"shard.dwell",
 	"shard.follow_writer",

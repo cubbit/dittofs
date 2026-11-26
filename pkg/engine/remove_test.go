@@ -222,7 +222,9 @@ func TestAGroupCommitSkipsAGuardedFile(t *testing.T) {
 	f, g := u.create(t, "f"), u.create(t, "g")
 	u.write(t, f, 0, fill(8, 'f'))
 	u.write(t, g, 0, fill(8, 'g'))
-	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Nanosecond, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Nanosecond
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	blocked, unblock := make(chan struct{}), make(chan struct{})
