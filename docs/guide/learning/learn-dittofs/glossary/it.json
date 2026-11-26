@@ -201,12 +201,14 @@
   "chunk": {
     "name": "chunk",
     "short": "Una porzione dei byte di un file, circa 256 KiB, tagliata a un confine scelto dal contenuto e identificata da un hash con chiave del contenuto.",
-    "long": "Una porzione dei byte di un file, circa 256 KiB, tagliata a un confine scelto dal contenuto e identificata dal suo chunk ID, un hash con chiave del contenuto. Il journal non sa nulla dei chunk: un [[record]] non è un chunk."
+    "long": "Una porzione dei byte di un file, circa 256 KiB, tagliata a un confine scelto dal contenuto e identificata dal suo chunk ID, un hash con chiave del contenuto. Il journal non sa nulla dei chunk: un [[record]] non è un chunk.",
+    "clash": "Non è una parte di un upload multipart S3, né un pezzo di un trasferimento HTTP chunked, le cui dimensioni le sceglie il mittente. Gli estremi di un chunk li sceglie il contenuto del file."
   },
   "block": {
     "name": "block",
     "short": "L'oggetto che il remote tier memorizza. Contiene un numero intero di chunk scritti con un unico upload, 4 MiB per default.",
-    "long": "L'oggetto che il [[remote-tier]] memorizza: un numero intero di [[chunk]], scritto con un solo put. Ha una dimensione obiettivo configurabile, 4 MiB di default, da 1 a 64 MiB; un chunk non sta mai a cavallo di due blocchi."
+    "long": "L'oggetto che il [[remote-tier]] memorizza: un numero intero di [[chunk]], scritto con un solo put. Ha una dimensione obiettivo configurabile, 4 MiB di default, da 1 a 64 MiB; un chunk non sta mai a cavallo di due blocchi.",
+    "clash": "Non è il blocco di pochi KiB di un filesystem o di un disco, cioè l'unità che un volume ext4 o NTFS alloca. Un block di DittoFS è un oggetto nel bucket, di circa 4 MiB, che contiene molti [[chunk]]."
   },
   "remote-tier": {
     "name": "remote tier",
@@ -215,8 +217,8 @@
   },
   "carver": {
     "name": "carver",
-    "short": "Il componente che taglia in [[chunk]] i byte di un file in attesa di caricamento, dà a ciascuno un nome ricavato dall'hash del suo contenuto e raccoglie i chunk in [[block|blocchi]].",
-    "long": "Il componente (RFC 2) che taglia una sequenza di byte in [[chunk]] definiti dal contenuto, calcola l'hash di ciascuno e li impacchetta in blocchi. Lavora sugli extent che il journal [[offer|offre]]."
+    "short": "Il componente che taglia in [[chunk]] i byte di un file in attesa di caricamento, scegliendo ogni taglio dal contenuto, e dà a ciascuno un nome ricavato da un hash con chiave del suo contenuto. Raccogliere i chunk in [[block|blocchi]] è compito del [[block-assembler|block assembler]].",
+    "long": "Il componente (RFC 2) che taglia una sequenza di byte in [[chunk]] definiti dal contenuto e calcola l'hash di ciascuno. Dove finisce ogni chunk lo dice il [[chunker]]. Lavora sugli extent che il journal [[offer|offre]] e non costruisce blocchi: quello è un fold separato sul suo risultato."
   },
   "syncer": {
     "name": "syncer",
@@ -1020,7 +1022,7 @@
   },
   "deduplication": {
     "name": "deduplicazione",
-    "short": "Conservare una sola volta un contenuto identico quando lo portano più file. La prima release non deduplica fra file diversi: l'offload carica ogni chunk che taglia.",
+    "short": "Conservare una sola volta un contenuto identico quando lo portano più file. La prima release non deduplica fra file diversi: l'offload non chiede mai se un chunk è già memorizzato, e trasporta ogni chunk che taglia tranne quelli di soli zeri.",
     "long": "Conservare una sola volta il contenuto che più file portano. La prima release non deduplica fra file diversi: l'offload non chiede mai se un [[chunk]] è già memorizzato. I chunk restano nominati da un hash con chiave del loro contenuto, e i refcount restano, perché [[clone]] e snapshot condividono i chunk.",
     "clash": "Non è la [[dedup-table|tabella di dedup]] di una chiamata inoltrata, che risponde a una richiesta ripetuta con il suo primo risultato."
   },
@@ -1114,5 +1116,70 @@
     "name": "in-memory service",
     "short": "Il vero filesystem service che gira su store in memoria (`memory.New`), tenuto alla stessa suite di conformità di quello di produzione. I test degli handler girano su di esso e controllano lo stato che conserva dopo.",
     "long": "`memory.New`: il vero `*vfs.Filesystem` su store in memoria, che supera la suite di conformità del service. Un test di handler controlla la risposta codificata e lo stato che il service conserva dopo: un `CREATE` SMB che perde per strada il deny mode apre comunque il file, ma un secondo open in conflitto che riesce mostra che il campo manca. Le risposte di errore vengono da un fault wrapper attorno a esso, che fa fallire un metodo indicato al momento voluto."
+  },
+  "chunker": {
+    "name": "chunker",
+    "short": "La funzione che il [[carver]] usa per trovare i confini. Dato un buffer di byte, dice dove finisce il prossimo [[chunk]]. Non legge nulla, non calcola hash e non conserva nulla fra una chiamata e l'altra.",
+    "long": "Dice soltanto dove finisce un chunk, in base ai byte e alle impostazioni, usando un [[rolling-fingerprint|rolling fingerprint]] degli ultimi 64 byte (RFC 2 §1.2, §3). Non calcola hash, non legge da nessuna fonte, non tiene un offset nel file e non alloca memoria."
+  },
+  "stretch": {
+    "name": "stretch",
+    "short": "Una sequenza ininterrotta dei byte di un file, passata al [[carver]] in una sola chiamata. Un chunk non sta mai a cavallo di due stretch, e quindi nemmeno di un [[hole|buco]].",
+    "long": "La sua fine è reale (un buco, la fine ormai stabile del file o un tratto vicino già registrato come chunk) oppure artificiale, dove l'[[offer]] ha smesso di leggere. Una [[artificial-end|fine artificiale]] lascia la coda non tagliata per l'offer successiva. Solo l'ultimo chunk prima di una fine reale può essere più corto del minimo."
+  },
+  "artificial-end": {
+    "name": "fine artificiale",
+    "short": "La fine di uno [[stretch]] nel punto in cui l'offer ha smesso di leggere, non dove finiscono i byte del file. I byte dopo l'ultimo taglio scelto dal contenuto restano [[dirty|Dirty]] per l'offer successiva.",
+    "long": "Su una fine artificiale il carver non consegna nulla dopo l'ultimo taglio scelto dal contenuto, così l'offer successiva parte da un confine vero e taglia come avrebbe fatto un unico stretch lungo (RFC 2 §2.4). La coda trattenuta è sempre più corta della lunghezza massima di un chunk. Quando il suo byte più vecchio raggiunge l'età massima che l'engine fissa per i byte in attesa di upload, l'engine può dire al carver che la fine è reale, e la coda viene tagliata come ultimo chunk."
+  },
+  "rolling-fingerprint": {
+    "name": "rolling fingerprint",
+    "short": "Un numero che il [[chunker]] aggiorna a ogni byte e che dipende solo dagli ultimi 64 byte. Dove supera un test, il [[chunk]] finisce.",
+    "long": "Un fingerprint gear, come in FastCDC: a ogni byte si sposta il numero di un bit a sinistra e si somma un valore preso da una tabella (RFC 2 §3.2). Dopo 64 spostamenti il contributo di un byte è uscito del tutto dal numero a 64 bit, quindi un taglio dipende solo dai 64 byte che lo precedono (§3.4). Per questo una modifica sposta solo i tagli vicini."
+  },
+  "chunk-target": {
+    "name": "Target, Min, Max",
+    "short": "L'unica impostazione di chunking di un [[namespace]], `Target`, 256 KiB di default, e i due limiti che ne derivano: `Min` è un quarto di `Target` e `Max` il quadruplo.",
+    "long": "`Target` è la lunghezza media che il [[chunker]] deve produrre davvero, una potenza di due fra 64 KiB e 4 MiB. Nessun chunk supera `Max`, e nessuno è più corto di `Min` tranne l'ultimo di uno [[stretch]] che finisce davvero. Si sceglie quando si crea il namespace, e cambiarlo in seguito è una migrazione (RFC 2 §3.2, §3.6, §3.7)."
+  },
+  "chunk-id": {
+    "name": "chunk ID",
+    "short": "Il nome di un [[chunk]]: un hash BLAKE3 di 32 byte calcolato sui suoi byte, e su nient'altro, con la [[chunk-id-key|chunk-ID key]] del suo [[namespace]] come chiave.",
+    "long": "Si calcola esattamente sui byte del chunk così come è stato tagliato, senza mescolarvi un offset, una lunghezza, l'identità di un file o una versione (RFC 2 §4.1). Gli stessi byte nello stesso namespace hanno lo stesso ID, ovunque e in qualunque momento siano stati tagliati."
+  },
+  "chunk-id-key": {
+    "name": "chunk-ID key",
+    "short": "Una chiave di 32 byte che ogni [[namespace]] genera quando viene creato e con cui calcola tutti i suoi [[chunk-id|chunk ID]]. Non cambia mai.",
+    "long": "Ogni namespace ne ha una, che cifri o no. In un namespace che cifra è cifrata con una master key, perciò chi legge il bucket senza poter provocare scritture non può riconoscere un file noto dai suoi chunk ID. In uno che non cifra sta in chiaro accanto ai blocchi e non nasconde nulla. Una chiave nuova rinominerebbe ogni chunk, perciò non viene mai ruotata."
+  },
+  "block-assembler": {
+    "name": "block assembler",
+    "short": "Uno strato separato, guidato dall'[[engine]], che raccoglie [[chunk]] interi, di un file dopo l'altro, in [[block-plan|block plan]] di circa 4 MiB. Non spezza mai un chunk.",
+    "long": "Un fold puro sui chunk che il carver consegna, guidato dalla pipeline di offload dell'engine (RFC 2 §5). Il glossario dell'RFC 0 lo chiama parte del carver; l'RFC 2 §1.2 non lo assegna né al chunker né al carver. Ogni chunk diventa uno [[zero-ref|zero ref]], viene adottato (quando esisterà la deduplicazione) oppure viene trasportato nel piano in preparazione. Non copia byte e non conserva nulla dopo il suo passaggio."
+  },
+  "block-plan": {
+    "name": "block plan",
+    "short": "L'elenco, preparato dal [[block-assembler|block assembler]], dei [[chunk-id|chunk ID]] di un [[block|blocco]], con la posizione dei byte di ciascun chunk nell'offer. L'upload trasmette il blocco seguendo questo elenco.",
+    "long": "Un piano contiene hash e posizioni, mai i byte dei chunk, quindi occupa qualche centinaio di byte per blocco, qualunque sia la dimensione del blocco (RFC 2 §5.5). L'upload legge i byte dall'offer mentre trasmette il blocco."
+  },
+  "block-target": {
+    "name": "block target",
+    "short": "La dimensione fino a cui il [[block-assembler|block assembler]] riempie un [[block|blocco]], contando solo i byte dei chunk che il blocco contiene davvero: 4 MiB di default, impostabile fra 1 MiB e 64 MiB.",
+    "long": "Si imposta insieme al remote store del namespace. Un blocco lo supera al massimo di un chunk, oppure si ferma prima a 1.024 chunk o alla fine di un passaggio (RFC 2 §5.2). Un valore fuori intervallo viene rifiutato all'avvio. A differenza di `Target`, cambiarlo non ritaglia nulla e non richiede migrazioni."
+  },
+  "zero-ref": {
+    "name": "zero ref",
+    "short": "Ciò che un file registra per un [[chunk]] fatto solo di zeri: un [[ref]] che non indica alcun chunk e si legge come zeri. Il chunk non finisce mai in un [[block|blocco]] e non viene mai caricato.",
+    "long": "Il carver consegna un chunk di soli zeri come qualunque altro, e il block assembler lo trasforma in uno zero ref (RFC 2 §5.1, RFC 6 §3.5). Gli zero ref non contano per il block target, che conta solo i byte che un blocco trasporta."
+  },
+  "put-attempt": {
+    "name": "put attempt",
+    "short": "La decisione di memorizzare un [[block-plan|block plan]] con un [[block-name|block name]] coniato apposta. Ogni ripetizione dell'upload dentro quel tentativo riusa lo stesso nome e scrive gli stessi byte.",
+    "long": "Un nuovo tentativo sugli stessi chunk, dopo che il primo è stato abbandonato o da parte di un secondo writer, genera un nuovo nonce casuale e quindi conia un nome nuovo (RFC 2 §4.2). Prima del primo put di un nome viene registrato in modo durevole un [[put-intent|put intent]]."
+  },
+  "chunking-key": {
+    "name": "chunking key",
+    "short": "Una chiave segreta che esiste solo in un [[namespace]] che cifra. Le sue share tagliano con un fingerprint derivato da essa, perciò il punto in cui cadono i tagli dipende dalla chiave.",
+    "long": "Viene generata a caso quando si crea un namespace che cifra e non viene mai ruotata, perché una chiave nuova ritaglierebbe tutto (RFC 2 §6). Nasconde a quale file appartiene una serie di lunghezze di chunk solo a chi legge il bucket senza poter provocare scritture nel namespace e senza conoscere nulla del contenuto memorizzato. Un namespace che non cifra non ne ha, e taglia con la tabella pubblica."
   }
 }

@@ -19,7 +19,7 @@ it needs only this epic's issue (D4). T10.4 goes in slices, each after the journ
 names (T10.4), and the green runs of T10.1 and T10.2 and the baselines wait for S4;
 everything else does not.
 **Blocks:** nothing in this part. The engine's second part builds on a suite whose known
-failures are empty, and on the soak and the benchmarks as its baseline.
+failures hold no entry of this part, and on the soak and the benchmarks as its baseline.
 
 ---
 
@@ -34,7 +34,7 @@ the RFCs rather than restating them.
 
 At the end of the epic:
 
-- `test/engine/known.yaml` holds no entry for a row of this part, and `engine-conformance`
+- `test/engine/known.yaml` holds no entry for a row of this part (R9), and `engine-conformance`
   runs green on every pull request;
 - the tests of `internal/vfs/integration` whose entries went run in `unit`, as RFC 17 §8 has
   the integration tier run;
@@ -72,6 +72,8 @@ comparison.
   (R27); v1 has no soak and no counterpart of B7's `chmod` storm to compare with.
 - A real remote service, and RFC 8 §15.4's "each real service daily": there is no remote
   store in this part.
+- The deferred rows named in R9. They need a store that answers puts, which only offload
+  composes, so their entries stay in `known.yaml` naming #5757 and do not hold this epic open.
 - Every case of a row that needs offload, the remote tier, a cluster or snapshots: each row's
   test names what it leaves and who owns it (§3, R5).
 - The engine-cost benchmark (a 4 KiB `Write` and `Read` against the journal handle): RFC 8
@@ -188,7 +190,7 @@ comparison.
 | 3 Observability | T10.1, T10.2 | no new counter, condition or span name. The soak reads conditions and the verifier through `Stats` and the service; B5, B7 and B9 count transactions through the store's `kv.Counting` wrapper (`FS.Counts`), the pass-through record RFC 29 §4.11 allows, and read nothing else of the engine |
 | 4 Profiling | all | the fixture already runs `prof.Watch` over each test, so a goroutine or descriptor left by a restart fails it; the soak adds no second watch (two overlap and both fail). The heap check does not run under `-race`, so the soak measures live heap itself with `prof.LiveHeap` in a build without it (D9) |
 | 5 Public and internal | all | every assertion is read where the value is consumed: what a client of `vfs.Service` is answered, and what `kvstore` committed. No test reads the engine's internals. `engine-conformance` runs under `-race`; the soak and the benchmarks do not, since the race detector hides the heap check and changes latency, and D10 gives the reason |
-| 6 Known failures | T10.3, T10.4, T10.1 | this epic is the rule's end point: T10.3 re-points the entries the middle epics leave, T10.4 removes the last, and the soak's own suite starts with a known file of its own, emptied by the change that turns its tests green |
+| 6 Known failures | T10.3, T10.4, T10.1 | this epic is the rule's end point: T10.3 re-points the entries the middle epics leave, T10.4 removes the last of this part's entries, and the soak's own suite starts with a known file of its own, emptied by the change that turns its tests green |
 | 7 v2 ignores v1 | T10.1, T10.2, T10.5 | the soak and the benchmarks import `internal/vfs`, so they live in `internal/vfs/integration`, outside `pkg/block/engine`, and the import walk and its allowlist do not change. T10.5's v1 benchmark (R27) is a file in v1's own tree on `develop`, built and run apart from v2: nothing is imported or copied either way, and only the two result files meet, in `benchstat`. It does touch v1, which the rule's last sentence says is not done, so §9 point 11 proposes that the plan's rule say so |
 | 8 Real dependencies | all | durability, recovery and loss over the real journal on a real directory with its crash seam; transaction counts and store faults over the real `kvstore` on the in-memory `kv.KV`. The in-memory journal appears in this epic's tests only in the soak's early variant (T10.1), under D11 until S4, which T10.4 drops with the other runs over it; the oracle's unit test uses no journal |
 | 9 Comments | T10.1, T10.2 | a `decision:` marker at the oracle's site: **Lost** is accepted only for a synced record the schedule faulted (D2). A `ponytail:` marker on the soak's fixed seed list (D5). No epic, subtask or requirement ids in any comment |
@@ -207,7 +209,7 @@ the next free number in its group's table, and a withdrawn one keeps its row.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | Every Group A row this part can pass runs over the real journal and passes, at least these (D1): incarnation at start (the engine's half), recovery through `Since`, journal gone, attach above the floor, attach after a device loss, clone resumed at a full limit, the version limit, journal authority, the verifier, verifier inputs, verifier after a loss, sync before existence, stable write and lazy existence, overwrite waits for existence, stalled store, failed window, the join, existence above `asOf`, deallocate, clone keeps writes outside its extent, overlapping clone, failure leaves the destination, removals of a cloning destination, source registration rebuilt, clone never waits, and clone refusals | test row | RFC 8 §15.1 | T10.3, T10.4 |
+| R1 | Every Group A row this part can pass runs over the real journal and passes, at least these (D1): incarnation at start (the engine's half), recovery through `Since`, journal gone, attach above the floor, attach after a device loss, clone resumed at a full limit, the version limit, journal authority, the verifier, verifier inputs, verifier after a loss, sync before existence, stable write and lazy existence, overwrite waits for existence, stalled store, failed window, the join, existence above `asOf`, deallocate, clone keeps writes outside its extent, overlapping clone, failure leaves the destination, removals of a cloning destination, source registration rebuilt, clone never waits, and clone refusals, except the row R9 defers | test row | RFC 8 §15.1 | T10.3, T10.4 |
 | R2 | Every Group B row this part can pass runs over the real journal and passes, at least these (D1): no cross-share slowdown (the write half), one clock, shared journal, unbind and drop, the version limit under sustained load, the burst at a stall's start, group commit, removal wedge, scoped repack, `journal_full` at the maximum and on a full device, `journal_sync_failed`, self-fence threshold, self-fence on an erroring store | test row | RFC 8 §15.2 | T10.3, T10.4 |
 | R3 | The three Group C rows run and pass: declared interfaces, no assertions, settings | test row | RFC 8 §15.3 | T10.3, T10.4 |
 | R4 | The capacity rows of this part pass over the real journal: a carved run fails `ErrUnavailable`; a refusal on a full journal answers `ErrDelay` while the refusal's scope holds unreclaimed bytes and `ErrNoSpace` only when its sealed segments hold none; two refusals racing for the only unreclaimed segments never answer `ErrNoSpace`; an unsynced overwrite at the limit is served after the scope's sync; a refusal while a failed window is unresolved answers `ErrDelay` | test row | RFC 8 §7.5, §10.2, §10.3, as the first part words them | T10.3, T10.4 |
@@ -215,7 +217,7 @@ the next free number in its group's table, and a withdrawn one keeps its row.
 | R6 | A sink that always succeeds never stands in for Group A or for the pipeline's checks: the rows run over the real journal and `kvstore`. (A single-file rig standing in for §8.3 is a second-part row.) | MUST NOT | RFC 8 §15.3 | T10.4, T10.1, T10.2 |
 | R7 | A known failure that passes fails the run, so an entry leaves `test/engine/known.yaml` in the change that turns its test green, a journal change included | invariant | RFC 29 §4.7 | T10.3, T10.4 |
 | R8 | A planned entry names its issue | invariant | RFC 29 §4.7 | T10.3 |
-| R9 | When the epic is done, `test/engine/known.yaml` holds no entry for a row of this part | invariant | RFC 8 §15.1 to §15.3; RFC 29 §4.7 | T10.4 |
+| R9 | When the epic is done, `test/engine/known.yaml` holds no entry for a row of this part, except the deferred rows named here. Those are the offload part's (the engine's second part, roadmap #5487), under #5757, per the ruling on #4892: they need a store that answers puts, which only offload composes (RFC 8 §10.2's first row; the CTO's ruling: no space until offload is composed). Their entries stay in `known.yaml` naming #5757 until offload is composed, and they do not hold this epic open. The deferred rows are, named here and nowhere else in this document: `TestRFC8A_RetryLaterAtTheShareLimit`, whole (RFC 8 §10.2 retry later at the share limit); `TestRFC8A_CloneResumedAtAFullLimit`, whole (RFC 8 §2.5 clone resumed at a full limit), which does not cover the resume today: a clone resumes at Start, not at Bind, and after the restart Start binds only the fixture's first share while the clone is on the second, which the row then binds with Bind, so the resume never runs; and, in `TestRFC8A_Clone` and `TestRFC8B_SharedJournal`, only the retry-later assertion (`ErrDelay` with `DelayCapacity` at the journal limit), which moves to two new tests, `TestRFC8A_CloneRetryLaterAtTheDestinationLimit` and `TestRFC8B_SharedJournalRetryLaterAtTheLimit`, listed red under #5757 (added in a paired PR on feat/storage-v2). The rest of `TestRFC8A_Clone` and `TestRFC8B_SharedJournal` stays a row of this part and must pass. The row "clone resumed at a full limit" (RFC 8 §2.5, R1) has no green test in this part: its only test is deferred whole with `TestRFC8A_CloneResumedAtAFullLimit` | invariant | RFC 8 §15.1 to §15.3; RFC 29 §4.7 | T10.4 |
 | R10 | The integration tier's tests run in-process in `unit` | invariant | RFC 17 §8 (Suites) | T10.4 |
 | R28 | Every row epic 9 registers passes over the real journal, with its entry removed: RFC 17 §6's V19, V20, V22, V25 and V26, §8's `Content` suite over the journal (`TestContentSuiteOverTheJournal`) and the integration tests of the composition. Epic 9 writes them and this epic burns them down | test row | RFC 17 §6, §8 | T10.3, T10.4 |
 
@@ -258,12 +260,13 @@ of §15.4's decision block is R23.
 
 ## 4. Decisions this epic takes
 
-- **D1, the burn-down ends at an empty file, not at a row count.** The catalogue of rows the
+- **D1, the burn-down ends at a file with no entry of this part, not at a row count.**
+  The catalogue of rows the
   first part passes (26 of Group A, 14 of Group B, 3 of Group C and 5 of its own) was counted
   when the rows were chosen, and the epics that wrote them since added rows of their own, such
   as the unsuitable journal at start. A count would let a row without a test pass unseen. So
   T10.3 lists every row of R1 to R4 against the suite's tests and writes the missing ones,
-  and T10.4 ends when the known file is empty (R9).
+  and T10.4 ends when the known file holds no entry of this part but the deferred rows of R9.
 - **D2, the oracle has three cases and accepts Lost in one.** R11 says "reads back or reads
   **Lost**". Read as written, a build that answers **Lost** for every restarted range passes.
   RFC 8 §5.1 gives three outcomes. (a) A write answered stable and intact reads its own bytes.
@@ -292,9 +295,10 @@ of §15.4's decision block is R23.
   already: entries of `test/engine/known.yaml` on `feat/storage-v2` name #3587, #3588, #3589
   and #3700, all closed, while the others name #3590, #3591 and #4052. The file changes with
   every engine pull request, so this document counts none of it: read the file. T10.3 moves
-  them in one change once this epic has its issue (§9 point 4), and runs again at S3 for any entry
-  whose middle epic closed since, so the file always names an open owner. Nothing in it waits
-  for the journal.
+  them in one change once this epic has its issue (§9 point 4), and runs again at S3 for any
+  entry whose middle epic closed since, so the file always names an open owner. Nothing in it
+  waits for the journal. The deferred entries of R9 are the exception: they name #5757,
+  the offload part's issue, since their rows wait on offload, not on this epic.
 - **D5, the soak is a fixed list of seeds.** Each seed builds its fault schedules with
   `sim.NewSchedule(seed, clock, rules...)`, which gives the same actions over the same
   calls; the soak runs a short fixed list on every pull request and every push to `feat/storage-v2`
@@ -415,7 +419,8 @@ of §15.4's decision block is R23.
 ## 5. Target tree
 
 ```text
-test/engine/known.yaml                     T10.3, T10.4  entries re-pointed, then removed
+test/engine/known.yaml                     T10.3, T10.4  entries re-pointed, then removed,
+                                                         the deferred rows of R9 stay, naming #5757
 test/engine/soak-known.yaml                T10.1           the soak's known failures, emptied at S4
 test/suites.yaml                           T10.1, T10.2,   engine-soak (pr), engine-bench (manual), the tags
                                            T10.5           in lint-go's go vet -tags= line; T10.5: engine-soak-long
@@ -571,14 +576,16 @@ The v1 benchmark itself sits in v1's tree on `develop` (T10.5), outside this tre
   then at S3 a second one for any entry whose middle epic closed since, with the table.
 - **Covers:** R1 to R5, R7, R8, R28.
 - **Deliverables:** one change to `test/engine/known.yaml` that moves every entry naming a
-  closed issue to this epic's issue (D4), keeping each entry's `message` and replacing its `reason`'s
-  first clause with the journal call it waits for; and, at S3, a table, in the change's description,
-  of every row of R1 to R4 and R28 against the test that checks it, and of every test the suite holds
-  against the row it checks. A row with no test gets one,
-  written over E2's fixture and listed red with this epic's issue. A row the first part
-  passes only in part names, in its test's doc comment, the half it leaves and its owner (R5).
+  closed issue to this epic's issue (D4), except the deferred entries of R9, which keep #5757,
+  keeping each entry's `message` and replacing its `reason`'s first clause with the journal
+  call it waits for; and, at S3, a table, in the change's description, of every row of R1 to
+  R4 and R28 against the test that checks it, and of every test the suite holds against the
+  row it checks. A row with no test gets one, written over E2's fixture and listed red with
+  this epic's issue. A row the first part passes only in part names, in its test's doc
+  comment, the half it leaves and its owner (R5).
 - **Acceptance criteria:**
-  - no entry of the file names a closed issue, or an issue of an epic that has closed (D4);
+  - no entry of the file names a closed issue, or an issue of an epic that has closed (D4).
+    The deferred entries of R9 name #5757, which is open under the open roadmap #5487;
   - at S3, every row of R1 to R4 and R28 is covered by a named test, and the table says which;
   - no entry's `reason` states a journal call that exists.
 - **Tests:** none of its own; the file is graded by `dt`. The check that catches a wrong
@@ -611,9 +618,10 @@ The v1 benchmark itself sits in v1's tree on `develop` (T10.5), outside this tre
   | d | `Repack` and `UnreclaimedEndedBytes`, for R4's capacity rows; the move to `unit`; the end of the runs over the in-memory journal | 1.0 |
 
 - **Covers:** R1 to R7, R9, R10, R28.
-- **Deliverables:** for each entry left in `test/engine/known.yaml`, the change that turns its
-  test green and removes the entry. A journal change removes its own (R7); this subtask does
-  the rest. Where the real journal shows the engine wrong, the engine fix with a unit test
+- **Deliverables:** for each entry left in `test/engine/known.yaml` except the deferred
+  rows of R9, the change that turns its test green and removes the entry. A journal change
+  removes its own (R7); this subtask does the rest. Where the real journal shows the engine
+  wrong, the engine fix with a unit test
   over E2's in-memory journal and the conformance row that found it. Where a row cannot pass
   in this part for want of a journal state (the read-only journal), the row is adapted (R5)
   and its dropped half named in the test's doc comment. The tests of
@@ -626,7 +634,8 @@ The v1 benchmark itself sits in v1's tree on `develop` (T10.5), outside this tre
 - **Acceptance criteria:**
   - `test/engine/known.yaml` holds no entry for a row of this part (R9); a forgotten entry
     for a test that passes fails the run as an unexpected pass (R7);
-  - `engine-conformance` passes under `-race` with that file empty;
+  - `engine-conformance` passes under `-race` with no entry left in that file but the
+    deferred rows of R9;
   - `git grep -n -E 'engine_conformance' -- internal/vfs/integration` prints nothing, and
     `unit` runs the package and stays green (R10);
   - no conformance row and no soak runs over the in-memory journal (R6, rule 8).
@@ -695,7 +704,7 @@ flowchart TD
   T1a --> T1b
   S4(["S4 the journal's calls built"]):::sync -.-> T4
   T2 & T3 --> T4["T10.5 Baselines and the v1 comparison"]
-  T1b & T4 --> done(["epic 10: known.yaml empty, baselines recorded"]):::sync
+  T1b & T4 --> done(["epic 10: deferred rows only in known.yaml, baselines recorded"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 

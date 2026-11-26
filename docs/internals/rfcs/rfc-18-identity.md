@@ -2099,7 +2099,7 @@ and the entries they match are §2.1's.
   management-API role **MUST NOT** set it: any client's root can assert the
   admin's uid, so a claimed identity gains nothing from an `admin` grant.
 - Where a caller confines privilege to a handle opened with backup or restore
-  intent, as every SMB call does by setting `PrivilegeOnlyForBackup`
+  intent, as every SMB call does by leaving `PrivilegeOnEveryCall` unset
   ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), that confinement is the open's
   ([RFC 19 §3.5](rfc-19-authorization.md#3.5%20Privilege%20and%20the%20system-security%20right)),
   not the identity's: the caller's flag is the same for every protocol.

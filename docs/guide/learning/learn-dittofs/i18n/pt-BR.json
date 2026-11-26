@@ -60,6 +60,10 @@
       "name": "O journal",
       "blurb": "Onde uma escrita chega primeiro: o log local que guarda cada byte até ele chegar ao bucket e depois devolve o espaço."
     },
+    "carver": {
+      "name": "O carver",
+      "blurb": "Como os bytes que esperam envio são cortados em pedaços onde o conteúdo manda, nomeados por um hash do que contêm e juntados inteiros nos objetos que o bucket guarda."
+    },
     "test-harness": {
       "name": "O harness de testes",
       "blurb": "Um único comando que roda toda suíte de testes do mesmo jeito, no notebook ou na CI, e nunca conta como aprovado um teste que não rodou."

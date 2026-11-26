@@ -1362,7 +1362,7 @@ client, are RFC 14's.
 - **NLM is admitted at `Claimed`.** `LOCK`, `TEST`, `UNLOCK`, `CANCEL`,
   `SHARE`, `UNSHARE`, `FREE_ALL` and their `*_MSG` forms are admitted on a share
   whose `MinProof` is higher than `Claimed`: every NLM and NSM call sets
-  `Call.HostCall` ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); the claimed caller is still
+  `HostCall` ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)); the claimed caller is still
   resolved and gated as above.
 - **Replies leave from the address the client used.** Callbacks to the host —
   `NLMPROC4_GRANTED`, `NLMPROC4_GRANTED_MSG`, the `NLMPROC4_*_RES` replies — **MUST** be sent
@@ -1503,7 +1503,7 @@ shares [RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)
 lets the caller see.
 
 `MNT` and `EXPORT` are admitted on the share's state and its client rules only,
-without the `MinProof` and `MinProtection` step, as they set `Call.HostCall`
+without the `MinProof` and `MinProtection` step, as they set `HostCall`
 ([RFC 17 §4.9](rfc-17-vfs.md#4.9%20Shares%2C%20mounts%20and%20trees)), so a Kerberos-only share can
 return its flavours to a client whose mount daemon sends `MNT` as `AUTH_UNIX`.
 The handle `MNT` returns is gated like any other on every later call.
@@ -2456,12 +2456,14 @@ principal that matches no caller, `acl` with `dacl` or `sacl` — is
 
 Open state takes only neutral requests and returns neutral results and errors
 ([RFC 14 §1.1](rfc-14-open-state.md#1.1%20Non-goals)). Every NFS → neutral
-mapping it needs is here. It sets none of `PrivilegeOnlyForBackup`,
-`OpenFilesKeepNames`, `WantOpenID` and `GrantBelongsToOpen`
-([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), so every NFS and NLM call
-takes the service's plain rules, and the `Call`'s `Protocol` is a label no rule
-reads; NLM, NSM, `MNT` and `EXPORT` set `Call.HostCall` (§6.1, §6.3), and an NLM
-host's `Connect` sets `ClientInfo.ClientIsMachine`.
+mapping it needs is here. Each call states its protocol's profile
+([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)): `NFSv3Caps`,
+`PrivilegeOnEveryCall` alone, so root's privilege counts on every call and no
+SMB rule applies; `NFSv4Caps`, which adds `SeesPseudoFS`, so `LOOKUPP` at a
+share's root walks up into the pseudo-filesystem; and each request's context
+carries its protocol label, which no rule reads; `NLMCaps` for NLM and NSM, which adds `HostCall` (§6.1) and
+`ClientIsMachine` for the host's record; `MountCaps` for `MNT` and `EXPORT`,
+which adds `HostCall` (§6.3).
 
 **Clients.** Every node answers `EXCHANGE_ID`, `SETCLIENTID` and
 `DESTROY_CLIENTID` for any client (§3.3), so each field those calls decide is
@@ -2473,7 +2475,7 @@ in RFC 14's durable client record
 | `Name`, indexed by (protocol, name) | the owner string: `co_ownerid` (`EXCHANGE_ID`), the `nfs_client_id4` id (`SETCLIENTID`); for an NLM host its `caller_name` with the source address it sends from (§6.1) | an `EXCHANGE_ID` / `SETCLIENTID` from a client that rebooted or reconnected through another node finds its record, and `Boot` tells which |
 | `Boot` | the boot verifier; for an NLM host its NSM state number, big-endian in the low four bytes, so the bytes order as the numbers do | a new `Boot` under the same name is a new client instance |
 | `Pending` | an unconfirmed `SETCLIENTID` or `EXCHANGE_ID`: nothing durable, held at the node that answered, `Confirm` sent as the NFSv4.0 confirm verifier or, low 32 bits, as the NFSv4.1 `eir_sequenceid` ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation)) | `SETCLIENTID_CONFIRM`, or NFSv4.1's first `CREATE_SESSION`, at that node (§3.5) |
-| `Owner` | the principal that created the client ID, mapped before squashing; zero for an NLM host, whose `Connect` sets `ClientInfo.ClientIsMachine` | an `EXCHANGE_ID` or `SETCLIENTID` for the same name from another principal is `NFS4ERR_CLID_INUSE` (RFC 8881 §18.35.5) and leaves no `Pending` |
+| `Owner` | the principal that created the client ID, mapped before squashing; zero for an NLM host, whose `Connect` sets `ClientIsMachine` | an `EXCHANGE_ID` or `SETCLIENTID` for the same name from another principal is `NFS4ERR_CLID_INUSE` (RFC 8881 §18.35.5) and leaves no `Pending` |
 | `Protect` | set for `SP4_MACH_CRED`, false for `SP4_NONE`; `spo_must_allow` stays in the adapter's bytes, and the adapter refuses a machine-credential call outside it before calling the service | each node admits the machine principal the same way |
 | `Reach.Callback`, `Reach.Down` | the node holding the back channel, and whether it is lost (§3.4) | callbacks, `SEQ4_STATUS_CB_PATH_DOWN` |
 | `Reach.Sessions` | one entry per node holding a session, added at `CREATE_SESSION` through `AddSession` and again through it at each new node epoch, removed by the node's last `DESTROY_SESSION`'s `Disconnect`, or with the node's loss or restart | `DESTROY_CLIENTID` is `NFS4ERR_CLIENTID_BUSY` while any entry remains (§5.1), so a clean unmount's, after its `DESTROY_SESSION`, finds none |
@@ -2684,8 +2686,14 @@ header codec writes the reply each layer takes.
 `HeaderCodec.Encode`): the RPC reply header, with `mismatch_info`'s lowest and
 highest versions for `PROG_MISMATCH`, those the connection serves, and for
 `RPC_MISMATCH`, 2 and 2 (RFC 5531 §9), and for an NFSv4 `COMPOUND` its status,
-its tag and an empty results array. A procedure's encoder handed no reply writes
-only what its result carries beside the status.
+its tag and an empty results array.
+
+**For every program status, success included,** the header codec also writes what
+the procedure's result holds before its body: the status word, where the result
+begins with one (every NFSv3 procedure but NULL, and MOUNT's MNT and NSM's SM_STAT
+and SM_MON; a COMPOUND's only on a refusal); NLM's cookie, echoed from the call, before its stat; and nothing for a
+result with no status. The procedure's encoder writes the rest, so one handed no
+reply writes only what its result carries beside those.
 
 **The `COMPOUND` tag** has no cap of its own: it is a `utf8str_cs`, an
 `opaque<>` (RFC 8881 §3.2, RFC 7530 §2.1), whose definition RFC 8881 §16.2.3
@@ -2942,7 +2950,11 @@ UDP (§2.2), no courtesy clients (§5.1), no referrals (§7.4).
 
 **Release goal.** Four suites are the end-to-end layer over §11.6's rows and
 this section's: pjdfstest, POSIX semantics through a kernel mount at NFSv3,
-v4.0 and v4.1; pynfs, its `nfs4.0` and `nfs4.1` trees; cthon04; and nfstest.
+v4.0 and v4.1; pynfs, its `nfs4.0` tree and its `nfs4.1` tree at minor
+versions 1 and 2, the second running the NFSv4.2 tests (`XATT*`, `ALLOC*`),
+and its `nfs4.0` tree again over `krb5`, which runs the RPCSEC_GSS tests
+(`GSS*`, §10) that `--security sys` skips and `SEC7`, which `all` never names;
+cthon04; and nfstest.
 Each, and any other NFS or POSIX conformance suite the harness registers, is
 green when this RFC's implementation is done: every test passes except those
 listed in "Tests expected to fail". A failure outside that list is a defect, or
@@ -2990,7 +3002,7 @@ harness. §13's rows that name pynfs, cthon04 or nfstest run in `pynfs`,
 its other single-node rows against a real server in
 `e2e`, those reaching one file over NFS and SMB in `e2e/cross-protocol` and
 those under Kerberos in `e2e/kerberos`. No suite runs yet xfstests (§9.3),
-pynfs's reboot tests, the wire tests against a reference NFS server, or any
+pynfs's reboot tests, pynfs at minor 2, pynfs over Kerberos, the wire tests against a reference NFS server, or any
 row's cluster steps.
 
 ## 14. Observability
