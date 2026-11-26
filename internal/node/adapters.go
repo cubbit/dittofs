@@ -335,6 +335,11 @@ func (s *slot[S]) stop(ctx context.Context, loop *health.Loop) error {
 // retried on reconcile's backoff only while nothing serves the adapter (RFC
 // 23 §2.3). Its Generation is the caller's, which read the settings
 // generation.
+//
+// decision: a slot's refusal of what its section asks, such as New refusing a
+// port or the new adapter failing to bind it, names the adapter's record, not
+// the setting's, so the setting reads applied, though no adapter runs it.
+// Overturned once the slot can name the section's rows it was handed.
 func (s *slot[S]) refuse(err error) *refusal {
 	p := apiv1.Problem{Status: http.StatusUnprocessableEntity, Title: "the adapter was refused", Detail: err.Error()}
 	b, _ := json.Marshal(p) // a Problem holds strings, ints and bools, which always marshal

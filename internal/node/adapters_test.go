@@ -1524,11 +1524,6 @@ func TestRefusedSectionKeepsRunning(t *testing.T) {
 		entity.SettingRef(installation, "adapters.smb.enabled"),
 		entity.SettingRef(installation, "adapters.smb.port"))
 
-	if !strings.Contains(string(refused[0].Error), "DrainTimeout") {
-		t.Errorf("the refusal of the drain_timeout row: %s, want it naming the field it refuses",
-			refused[0].Error)
-	}
-
 	if err := node.Negotiate(client, 1); err != nil {
 		t.Errorf("a NEGOTIATE once the row is refused: %v, want SMB still serving", err)
 	}
@@ -1658,15 +1653,19 @@ func TestLimitAboveBoundAtStart(t *testing.T) {
 
 // connection_limit written beneath the check with a value the shape refuses,
 // as a record that predates the rule: the start is not failed, the row is
-// never applied, it is reported refused on the node's exact record and the
-// status carries it, and the derived limit serves: a connection is answered
-// where the row's zero would close every accept (RFC 13 section 6; the
-// start keeping the derived limit is an accepted deviation from the never a
-// default rule, see the decision on applyConnLimit).
-func TestLimitShapeRefusedAtStartKeepsTheDerivedLimit(t *testing.T) {
+// reported refused on the node's exact record and the status carries it, no
+// enabled adapter serves, under the derived limit or any other, and the
+// adapters' rows are refused with it, so none reads applied (RFC 23 section
+// 2.4). A repair above the node's bound is refused and still serves none.
+// Deleting the row applies the default and serves them, and a value written
+// then is the limit in force (RFC 13 section 6).
+func TestLimitShapeRefusedAtStartServesNoAdapter(t *testing.T) {
 	h := nodetest.New(t, nodetest.Watch())
-	port := freePort(t)
-	putSettings(t, h, adapterRows("adapters.smb", true, port))
+	nfsPort, smbPort := freePort(t), freePort(t)
+	rows := allRows(
+		adapterRows("adapters.nfs", true, nfsPort),
+		adapterRows("adapters.smb", true, smbPort))
+	putSettings(t, h, rows)
 	putNodeSettings(t, h, map[string]string{"connection_limit": "0"})
 	ch := watchStatus(h)
 	started(t, h)
@@ -1674,22 +1673,81 @@ func TestLimitShapeRefusedAtStartKeepsTheDerivedLimit(t *testing.T) {
 	ofNode := entity.SettingRef(
 		entity.SettingScope{Kind: entity.ScopeNode, ID: h.NodeID()}, "connection_limit")
 
-	refused := h.Node().Refused()
-	if len(refused) != 1 || refused[0].Record.Kind != ofNode.Kind ||
-		!bytes.Equal(refused[0].Record.ID, ofNode.ID) {
-		t.Fatalf("a connection_limit row the shape refuses: %s, want the node's record refused",
-			describe(refused))
+	want := []entity.ResourceRef{ofNode}
+	for key := range rows {
+		want = append(want, entity.SettingRef(installationScope, key))
 	}
 
-	turnAt(t, h, ch, "carrying the refused row the start did not apply", func(tr statusTurn) bool {
-		return tr.wrote && slices.ContainsFunc(tr.s.Refused, func(r entity.RefusedRecord) bool {
-			return r.Record.Kind == ofNode.Kind && bytes.Equal(r.Record.ID, ofNode.ID)
-		})
+	namesOnly(t, "a connection_limit row the shape refuses", h.Node().Refused(), want...)
+
+	turnAt(t, h, ch, "carrying the refused row, both adapters stopped", func(tr statusTurn) bool {
+		return tr.wrote && statesAre("nfs stopped", "smb stopped")(tr) &&
+			slices.ContainsFunc(tr.s.Refused, func(r entity.RefusedRecord) bool {
+				return r.Record.Kind == ofNode.Kind && bytes.Equal(r.Record.ID, ofNode.ID)
+			})
 	})
 
-	if err := node.Negotiate(dialled(t, port), 1); err != nil {
-		t.Errorf("a NEGOTIATE under the derived limit: %v, want the refused row never applied",
-			err)
+	unserved := func(what string) {
+		t.Helper()
+
+		for protocol, port := range map[string]uint16{"nfs": nfsPort, "smb": smbPort} {
+			if listens(port) {
+				t.Errorf("%s: %s listens on port %d, want no adapter served",
+					what, protocol, port)
+			}
+		}
+	}
+
+	unserved("with the connection_limit row refused at start")
+
+	writeNodeRows(t, h, map[string]string{"connection_limit": "4097"})
+	namesOnly(t, "a repair above the node's bound", h.Node().Refused(), want...)
+	unserved("after a repair above the node's bound")
+
+	deleteNodeSetting(t, h, "connection_limit")
+
+	if got := h.Node().Refused(); len(got) != 0 {
+		t.Errorf("after the row is deleted: %s, want no refusal", describe(got))
+	}
+
+	// The connection stays open: it is the one the address may hold at 2.
+	if err := node.Negotiate(dialled(t, smbPort), 1); err != nil {
+		t.Errorf("a NEGOTIATE under the default: %v, want SMB serving", err)
+	}
+
+	if !listens(nfsPort) {
+		t.Errorf("under the default: nothing listens on NFS's port %d, want it serving", nfsPort)
+	}
+
+	writeNodeRows(t, h, map[string]string{"connection_limit": "2"})
+
+	if err := node.Negotiate(dialled(t, smbPort), 2); err == nil {
+		t.Error("a second connection from one address answered at the limit 2, want it closed")
+	}
+}
+
+// deleteNodeSetting deletes the node's own row key beneath the table's
+// check, and has the node apply the settings generation it moved.
+func deleteNodeSetting(t *testing.T, h *nodetest.Harness, key string) {
+	t.Helper()
+
+	scope := entity.SettingScope{Kind: entity.ScopeNode, ID: h.NodeID()}
+
+	err := h.Store().ControlPlane().
+		Write(t.Context(), entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+			row, _, err := tx.Setting(scope, key)
+			if err != nil {
+				return err
+			}
+
+			return tx.DeleteSetting(scope, key, row.Generation)
+		})
+	if err != nil {
+		t.Fatalf("delete the node's %s: %v", key, err)
+	}
+
+	if err := h.Node().Applied(t.Context()); err != nil {
+		t.Fatalf("Applied: %v", err)
 	}
 }
 

@@ -1,6 +1,7 @@
 package node
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/cubbit/dittofs/internal/identity"
@@ -58,23 +59,48 @@ func settingSchema() kvstore.Option {
 // its slot's want. A section the node refused keeps there what was last
 // published, so its slot is asked for that again; one refused since the node started has no value,
 // and leaves its adapter disabled, never run on defaults a row refuses. The
-// settings walk reports the refused rows (keepSettings).
-func (n *Node) wantAdapters(snap *settings.Snapshot) {
+// settings walk reports the refused rows (keepSettings). Until applyConnLimit
+// has set the count it sets no slot's want, so no adapter is built or listens
+// under a limit the settings did not give, and it returns as refused the rows
+// of each section that enables an adapter.
+func (n *Node) wantAdapters(snap *settings.Snapshot, wk settingsRead) []refusal {
 	node := n.cfg.Bootstrap.Node.ID
+	nfs, nfsErr := settings.Get[nfsSection](snap, adaptersNFS, node)
+	smb, smbErr := settings.Get[smbSection](snap, adaptersSMB, node)
 
-	if nfs, err := settings.Get[nfsSection](snap, adaptersNFS, node); err == nil {
+	if !n.limited {
+		return append(wk.unserved(adaptersNFS, nfsErr == nil && nfs.Enabled),
+			wk.unserved(adaptersSMB, smbErr == nil && smb.Enabled)...)
+	}
+
+	if nfsErr == nil {
 		n.nfs.want.Store(&desired[asettings.NFS]{
 			enabled:  nfs.Enabled,
 			settings: nfs.NFS,
 		})
 	}
 
-	if smb, err := settings.Get[smbSection](snap, adaptersSMB, node); err == nil {
+	if smbErr == nil {
 		n.smb.want.Store(&desired[asettings.SMB]{
 			enabled:  smb.Enabled,
 			settings: smb.SMB,
 		})
 	}
+
+	return nil
+}
+
+var errNoLimit = errors.New("no connection_limit is applied, so this node serves no adapter")
+
+// unserved is the refusal of the rows of the adapter section prefix when it
+// enables an adapter no connection limit lets serve. The walk has named the
+// rows of a section it refused itself.
+func (wk settingsRead) unserved(prefix string, enabled bool) []refusal {
+	if !enabled || wk.refused[prefix] != nil {
+		return nil
+	}
+
+	return wk.walk.holdRefusals(prefix, wk.at.Settings, false, errNoLimit, nil)
 }
 
 // connLimitSection is the node's connection_limit row of the settings table:
@@ -107,12 +133,16 @@ func (s connLimitSection) Validate() error {
 // walk's to report, once: the section keeps what was last published, which
 // may be a value above the bound, so it is not judged again.
 //
-// decision: a row the shape refuses at start does not fail the start, as no
-// refused section does: the section holds no value, so the derived limit the
-// count was built with serves, and the status carries the refused row until
-// the store is repaired. This is an accepted deviation from RFC 13 section
-// 6's never a default, taken over failing the start on a corrupt stored row.
-// Overturned if a node must fail its start on such a row.
+// decision: a row the shape refuses at start does not fail the start, since a
+// refused record stops only what it configures, and the derived limit does
+// not stand in for it, since a refused value is never replaced by a default
+// (RFC 13 section 6). The section holds no value, so no adapter serves, and
+// the status carries the refused row until a value is applied to the count.
+// The adapters then read stopped, and the rows of each one enabled are
+// refused with it, so none reads applied. The node still turns ready, since a
+// refused setting is not readiness and an unready node would take down the
+// management API that can fix it (RFC 20 section 3.7). Overturned if a node
+// must fail its start on such a row.
 //
 // decision: the router publishes a value above the bound, as it publishes
 // every section read at use, so the snapshot holds it while the count keeps
@@ -139,6 +169,7 @@ func (n *Node) applyConnLimit(snap *settings.Snapshot, wk settingsRead) ([]refus
 	}
 
 	n.budgets.Conns.SetLimit(v.Limit)
+	n.limited = true
 
 	return nil, nil
 }
