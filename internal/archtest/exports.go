@@ -88,7 +88,9 @@ func load(imp types.Importer, path, dir string, planted []string, redeclared boo
 // through imp, and prints each exported declaration on one line: a function
 // or method with its signature and receiver, a constant with its value, a
 // struct with its exported and embedded fields only, since an opaque struct
-// may gain unexported fields.
+// may gain unexported fields. Two files declaring one symbol for different
+// platforms fail to type-check together; split the pin per platform when one
+// appears.
 func Exports(imp types.Importer, path, dir string, planted ...string) ([]string, error) {
 	pkg, _, err := load(imp, path, dir, planted, false)
 	if err != nil {

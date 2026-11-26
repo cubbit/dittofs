@@ -340,7 +340,9 @@ func Unwalked(dir string) ([]string, error) {
 			return err
 		}
 
-		if d.IsDir() && d.Name() == "testdata" {
+		// go list ignores testdata and a directory whose name starts with _
+		// or . wholesale; dir itself may be ".".
+		if d.IsDir() && path != dir && (d.Name() == "testdata" || strings.HasPrefix(d.Name(), "_") || strings.HasPrefix(d.Name(), ".")) {
 			return filepath.SkipDir
 		}
 

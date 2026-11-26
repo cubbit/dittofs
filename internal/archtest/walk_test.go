@@ -115,3 +115,18 @@ func TestCheckTestLibs(t *testing.T) {
 		}
 	}
 }
+
+// Unwalked skips what go list ignores, a directory whose name starts with _
+// or ., but not the directory it is given, even when that is ".".
+func TestUnwalkedSkipsIgnoredDirectories(t *testing.T) {
+	t.Chdir("testdata/unwalked")
+
+	got, err := Unwalked(".")
+	if err != nil {
+		t.Fatalf("Unwalked over testdata/unwalked: %v", err)
+	}
+
+	if want := []string{"tagged.go is built for no platform the walk lists"}; !slices.Equal(got, want) {
+		t.Errorf("unwalked files: got %q, want %q", got, want)
+	}
+}
