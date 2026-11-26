@@ -436,7 +436,7 @@ pkg/remote/memory/
     stores a body under a key relative to the prefix, beneath the store; the rows of R7, R8 and R9.
   - `memory/list.go`: `Delete` and `List` with the signatures of RFC 4 §4.1. `List` walks the
     sorted keys under `blocks/` after the cursor's key, at most `n` keys a page as S3's `max-keys`
-    counts them, `next` holding the page's last key; it skips a key whose remainder is not a name
+    counts them, `next` holding the page's last key, or `after` when the page holds none; it skips a key whose remainder is not a name
     with D7's `decision:` marker, and reports `ModTime` from the clock at the put (R21). The unexported
     `putRaw`, which the opener hands as `PutRaw`. Consumed by the rows, GC's tests (RFC 9) and the
     RFC 3 plan's checks.
