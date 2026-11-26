@@ -2816,7 +2816,7 @@ if !send { if tbl.Holds { conn.write(interim(h, true, after)) }; freeReply(); re
 failed := st != 0 && !notFailure
 runner.after(h, failed) // the compound runner stops a compound, and fails a chain's related members, only after a failed member (§4.3)
 reply := encode(stages.Header, h, st, inv)
-if op.Cacheable && ran(err, st) { stages.Replay.Store(h, reply) } else { stages.Replay.Drop(h) } // a clear copy, before Wrap; ran: below. Every earlier return after Lookup's miss drops too
+if stored(op, inv, err, st) { stages.Replay.Store(h, reply) } else { stages.Replay.Drop(h) } // a clear copy, before Wrap; stored: op Cacheable and it ran, or for a compound row a member that ran is Cacheable (below). Every earlier return after Lookup's miss drops too
 err = stages.Security.Wrap(h, reply) // a chain's replies: once, joined (below)
 conn.write(reply) // the writer's queue (§6.2)
 ```
