@@ -436,7 +436,8 @@ at S2 (D3) and the epic whose issue its entry names. "c, ch, s" stands for `With
   | §7.2 streaming, verified | `TestRFC8A_StreamingVerified` | c, ch, s | carver | 17 |
   | §7.2 fill cannot fail a read | `TestRFC8A_FillCannotFailARead` | c, ch, s | carver | 17 |
   | §7.2 fill loses to a write | `TestRFC8A_FillLosesToAWrite` | c, ch, s | carver | 17 |
-  | §7.7 re-resolution | `TestRFC8A_Reresolution` | c, ch, s | carver | 17, but the relocation leg: RFC 9 |
+  | §7.7 re-resolution | `TestRFC8A_Reresolution` | c, ch, s | carver | 17 |
+  | §7.7 re-resolution, relocation leg | `TestRFC8A_ReresolutionRelocation`, split out by epic 17's T17.9, not one of this epic's tests | c, ch, s | carver | RFC 9 (epic 17's D2) |
   | §7.6 zero ref under an overwrite | `TestRFC8A_ZeroRefUnderAnOverwrite` | c, ch, s | carver | 17 |
   | §9.1 clone keeps writes outside its extent, offload half | `TestRFC8A_CloneKeepsWritesOutsideItsExtentOffloaded` | c, ch, s | carver | 17 |
   | §9.1 no pre-clone fill, demand read | `TestRFC8A_NoPreCloneFill` | c, ch, s | carver | 17 |

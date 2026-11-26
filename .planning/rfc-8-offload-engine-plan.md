@@ -415,6 +415,9 @@ In this plan E1 and E2 are epics 11 and 12, and the integration epic is epic 21 
 
 **Plan estimate: 90 subtasks, 297.25 man-days.**
 
+These are the plan's figures. Once an epic is broken down, its document's estimate supersedes its
+row here, and the rows and total are left as planned.
+
 RFC 8 is 4,291 lines, which gives N = 11, clamped to 8. This part covers about half of it in eight
 cohesive areas, matching N: the scheduler, the queue, the pipeline, passes, remote reads, local space,
 restart with its reconcile, and health.
