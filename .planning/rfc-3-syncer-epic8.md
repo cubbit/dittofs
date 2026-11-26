@@ -169,8 +169,9 @@ and tests can cite them.
   `syncer_fetch_joined_total`, `syncer_fetch_detached_total`, `syncer_fetch_rehomed_total`,
   `syncer_speculation_preempted_total`) is exported under `half="upload"` at zero, as `Stats` holds
   it, so one code path serves both halves and every metric carries `half` as RFC 3 §2.12 says. It
-  costs 321 series at 64 stores (R13's count). Not chosen: a branch per half, which a test must then
-  pin both ways. A `decision:` marker at the half loop.
+  costs 321 series at 64 stores (R13's count). Not chosen, from the independent architect proposal:
+  the fetch-only series under `half="fetch"` alone, 321 series fewer for a branch per half that a
+  test must pin both ways. A `decision:` marker at the half loop.
 - **D4, every closed-label value of every counter is exported for each store, zero included.**
   RFC 25 §2.3 requires it of a counter an alert reads, and lets the others appear on first use; the
   collector reads a value in which every field is present, so emitting all of them is the shorter
@@ -182,8 +183,10 @@ and tests can cite them.
   recorder carries (RFC 4 plan epic 7, its D9). Two stores registered under one name would emit the
   same series twice, which the registry's `Gather` reports as an error naming the series while it
   serves the rest. Merging them would need a rule per gauge (a sum for throughput, a minimum for
-  health), for a case no caller has. A `decision:` marker at the store loop names the ceiling:
-  withdraw it, and merge, if a composer ever registers a store configuration twice.
+  health), for a case no caller has; the architect proposal's merge (gauges summed, health as
+  AND) was not chosen for that reason. A `decision:` marker at the store loop names the ceiling:
+  withdraw it, and merge, if a composer ever registers a store configuration twice. §9 asks E3
+  whether `Register` should refuse a name already registered, which would remove the case.
 - **D6, RFC 25 §2.4's 64-value cap on `store` is not built here.** The cap, its `_other` series and
   the `metrics_label_capped` condition are one rule for every collector the node exports (the
   journal's `journal` label, the engine's `store`), and no component builds them on `feat/storage-v2`;
@@ -414,6 +417,10 @@ has landed.
   series, 42% of RFC 25 §2.5's 50,000 for the whole node, before any other component's; 22,404 with
   `class` on refusals. Each metric fits its own 10,000 (R13). The node's total is counted at RFC 25
   §12's reference workload, which no plan owns yet.
+- **For E3: should `Register` refuse a name already registered?** The name is the `store` label
+  (E1's D2), and two stores under one name break D5's assumption. Refusing it at `Register` is
+  one check with a `remote.ErrInvalid` error, as E1's D1 refuses misuse; it is E3's to take or
+  decline, and this epic does not depend on it.
 - **The least certain estimate is T8.2.** `settings.SelfKey` has no production user on
   `feat/storage-v2`, and the node's `tableKeys` probe has never read a node-scoped section; either
   may need a fix in `pkg/settings` or in the probe.
