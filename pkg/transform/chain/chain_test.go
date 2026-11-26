@@ -33,7 +33,7 @@ func TestFailureReasonLabels(t *testing.T) {
 	}{
 		{chain.ReasonMalformed, "malformed"},
 		{chain.ReasonMaterialUnavailable, "material_unavailable"},
-		{chain.ReasonUnknownMaterial, "unknown_material"},
+		{chain.ReasonMaterialUnknown, "material_unknown"},
 		{chain.ReasonMaterialDestroyed, "material_destroyed"},
 		{chain.ReasonTooLarge, "too_large"},
 	} {

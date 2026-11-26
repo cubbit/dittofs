@@ -95,7 +95,7 @@ type FailureReason uint8
 const (
 	ReasonMalformed FailureReason = iota
 	ReasonMaterialUnavailable
-	ReasonUnknownMaterial
+	ReasonMaterialUnknown
 	ReasonMaterialDestroyed
 	ReasonTooLarge
 )
@@ -103,7 +103,7 @@ const (
 var reasonLabels = [...]string{
 	ReasonMalformed:           "malformed",
 	ReasonMaterialUnavailable: "material_unavailable",
-	ReasonUnknownMaterial:     "unknown_material",
+	ReasonMaterialUnknown:     "material_unknown",
 	ReasonMaterialDestroyed:   "material_destroyed",
 	ReasonTooLarge:            "too_large",
 }
