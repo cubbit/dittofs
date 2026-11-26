@@ -18,6 +18,8 @@ name: Storage-v2 build cache
 # own pushes then save in the default branch's scope. The two branches never
 # meet with this file: feat/storage-v2's guard requires every cache save to run
 # on push only, so the merge that lands feat/storage-v2 on develop deletes it.
+# A carry of develop's changes onto feat/storage-v2 leaves it out for the same
+# reason, or that branch's lint-repo job fails on its save step.
 #
 # decision: a queue job with no flavor (Go Checks, Integration) looks up the
 # shared key, and the lookup also matches it as a prefix, so it restores this
