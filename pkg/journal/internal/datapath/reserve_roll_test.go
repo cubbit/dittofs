@@ -97,9 +97,9 @@ func TestReserveAhead_OwnRollTakesNoReplacement(t *testing.T) {
 func TestReserveAhead_UnreservedRollRefusedWhileASpareIsHeld(t *testing.T) {
 	cost := capacity.WriteCharge(512, testSegmentCap)
 	_, spares := capacity.PiecesFor(cost, 1, testSegmentCap)
-	// The pool readies the reservation's spares beside the one the warm
-	// write's first roll takes.
-	c, seam := newTestCore(t, func(o *coreOptions) { o.contentSpares = spares + 1 })
+	// The pool readies the reservation's spares, and beside them the opening
+	// spare the warm write's first roll takes.
+	c, seam := newTestCore(t, func(o *coreOptions) { o.contentSpares = spares })
 	s := mustShare(t, c, 1)
 
 	// One stream, three files: the warm record, the room-spender and the
@@ -402,13 +402,13 @@ func TestReserveAhead_ReplacementBeatsACompetingUnreservedTake(t *testing.T) {
 	payload := int64(4096)
 	cost := capacity.WriteCharge(payload, testSegmentCap)
 	_, spares := capacity.PiecesFor(int64(writes)*cost, writes, testSegmentCap)
-	// The pool readies the reservation's spares and two beyond them: the one the
-	// warm write below rolls onto, and then, after it, exactly one more — the one
+	// The pool readies the reservation's spares and two beyond them: the opening
+	// spare the warm write below rolls onto, and then, after it, exactly one more — the one
 	// spare an unreserved take could reach and the one a replacement takes for an
 	// interleaved roll. The maker is gated before the warm write, so that spare is
 	// never replaced: the pool settles at the figure the scenario needs, without a
 	// refill the test would have to race.
-	c, seam := newTestCore(t, func(o *coreOptions) { o.contentSpares = spares + 2 })
+	c, seam := newTestCore(t, func(o *coreOptions) { o.contentSpares = spares + 1 })
 	s := mustShare(t, c, 1)
 	// newTestCore awaited the pool at its target; the gate makes that figure the
 	// last one, so the warm write's roll takes exactly one and no make follows.

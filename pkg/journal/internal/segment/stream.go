@@ -398,6 +398,9 @@ type Stream struct {
 	// cannot be registered anymore.
 	onEnd   func(EndEvent)
 	started bool
+	// opened says the stream has taken its first segment from the pool, so
+	// its rolls no longer ask the pool for the opening spare.
+	opened bool
 
 	// leftFailed says the active segment was taken to leave an ended one:
 	// a failure in it before any sync of it has succeeded is the second
@@ -463,6 +466,10 @@ func NewStream(no uint32, identity core.JournalID, set *Set, pool *Pool, cache *
 	}
 	s := &Stream{no: no, identity: identity, set: set, pool: pool, cache: cache, sink: sink, failedAt: -1}
 	s.drained = sync.NewCond(&s.appendMu)
+	// The pool keeps an opening spare beside its target until its first
+	// stream takes a first segment, so that stream's first roll still finds
+	// the target in stock.
+	pool.addOpening()
 	return s
 }
 
@@ -943,8 +950,9 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 			// through the one flag: a consumer registered while a roll
 			// is in flight would miss the segment the roll's seal ends.
 			s.started = true
+			opening := !s.opened
 			s.appendMu.Unlock()
-			rerr := s.roll(hasPayload, r)
+			rerr := s.roll(hasPayload, r, opening)
 			s.appendMu.Lock()
 			s.rollSettle()
 			if rerr != nil {
@@ -1177,12 +1185,22 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 // the ref released when one was held — and the stream stays on its old
 // segment, so the next append rolls again. The first segment is a roll from
 // nothing, with predecessor 0.
-func (s *Stream) roll(hasPayload bool, r Roll) error {
+func (s *Stream) roll(hasPayload bool, r Roll, opening bool) error {
 	// The take, before any seam call: a refusal names the spare pool and
-	// nothing moved.
+	// nothing moved. The stream's first take drops the pool's opening spare
+	// from its goal before the take, so the take leaves no gap the refill
+	// would fill with one spare too many, gives it back when the take is
+	// refused, and once the take lands keeps none for any stream again.
+	dropped := opening && s.pool.opened()
 	id, err := s.takeSpare(hasPayload, r)
 	if err != nil {
+		if dropped {
+			s.pool.openingRefused()
+		}
 		return err
+	}
+	if opening {
+		s.pool.firstTaken()
 	}
 	if s.rollTakeHook != nil {
 		s.rollTakeHook()
@@ -1214,6 +1232,7 @@ func (s *Stream) roll(hasPayload bool, r Roll) error {
 	// drain; a seal this read still finds is a seal still mid-flight, and
 	// this wait keeps the predecessor off a footer still being written.
 	s.appendMu.Lock()
+	s.opened = true
 	old := s.id
 	state := s.sealState
 	for state == sealSealing {

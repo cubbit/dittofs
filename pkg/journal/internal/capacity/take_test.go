@@ -156,7 +156,13 @@ func newRig(t *testing.T, o rigOpts) *rig {
 		r.pool.Stop()
 		_ = cache.Shutdown()
 	})
-	r.awaitSpares(t, target)
+	// An unprimed rig whose maker can afford it also readies the opening spare
+	// the pool keeps until a stream takes its first segment.
+	ready := target
+	if o.unprimed {
+		ready = min(target+1, int(makerMax/testCap))
+	}
+	r.awaitSpares(t, ready)
 
 	if !o.unprimed {
 		r.prime(t, o.room)
@@ -781,9 +787,11 @@ func TestTake_MultiSegmentAskHoldsEveryPiece(t *testing.T) {
 	o.unprimed, o.spares = true, 0 // a fresh stream: every piece rolls
 	r := newRig(t, o)
 
+	// The pool's one ready spare is its opening spare, so the hold of the
+	// three pieces misses two.
 	ns := r.refused(t, q, core.LimitSpare)
-	if ns.Missing != 3 || ns.Unit != core.UnitSegments {
-		t.Fatalf("the hold asked for %d segments, want the 3 pieces a payload of %d bytes rolls into", ns.Missing, q.Payload)
+	if ns.Missing != 2 || ns.Unit != core.UnitSegments {
+		t.Fatalf("the hold missed %d segments, want the 3 pieces a payload of %d bytes rolls into less the ready opening spare", ns.Missing, q.Payload)
 	}
 }
 
@@ -1162,13 +1170,14 @@ func TestGrant_WroteBeyondReservation(t *testing.T) {
 // second is refused by LimitJournal there, whichever way the first's hold
 // lands.
 func TestTake_JournalMaximumIsAtomic(t *testing.T) {
-	// The footprint is the one ready spare's cap, the maximum holds exactly
-	// one more, and the first admitted take's hold is parked before the pool
-	// answers it, so nothing but the count can mark how many takes have
-	// claimed the room while their holds are still pending. The pool's
-	// maker may make that second spare when a refused hold asks for it.
+	// The footprint is the one ready spare's cap — the opening spare, beside
+	// a target of none — the maximum holds exactly one more, and the first
+	// admitted take's hold is parked before the pool answers it, so nothing
+	// but the count can mark how many takes have claimed the room while their
+	// holds are still pending. The pool's maker may make that second spare
+	// when a refused hold asks for it.
 	o := std()
-	o.unprimed, o.spares = true, 1
+	o.unprimed, o.spares = true, 0
 	o.makerMax, o.maxBytes = 2*testCap, 2*testCap
 	r := newRig(t, o)
 	started, release := r.parkFirstHold()

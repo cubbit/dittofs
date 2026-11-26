@@ -254,9 +254,12 @@ func TestReserve_JournalMaximumChargedOnce(t *testing.T) {
 			t.Fatalf("the pool never made up its target beside %d held spares: %+v", held, r.pool.Counters())
 		}
 	}
+	// One held spare is the opening spare the pool already kept ready beside
+	// its target, for no stream has taken a first segment: the holds ride
+	// inside it, so the footprint grows by the others alone.
 	growth := r.set.Counters().UsedBytes - foot0
-	if want := held * testCap; growth != want {
-		t.Fatalf("the footprint grew by %d, want the %d held spares' %d", growth, held, want)
+	if want := (held - 1) * testCap; growth != want {
+		t.Fatalf("the footprint grew by %d, want the %d held spares' %d less the opening spare's cap", growth, held, want)
 	}
 	if got := r.c.reservedAsk; got != 0 {
 		t.Fatalf("the journal-side ask = %d beside a footprint that grew by %d, want 0: the held spares are charged once, when made", got, growth)
@@ -340,9 +343,11 @@ func TestReserve_SpareRefusalHoldsNothing(t *testing.T) {
 	o.unprimed, o.spares = true, 0
 	r := newRig(t, o)
 
+	// The pool's one ready spare is its opening spare, beside a target of
+	// none, so the refusal misses the ask's spares less that one.
 	ns := r.refusedReserve(t, rq(), core.LimitSpare)
-	if _, spares := PiecesFor(4096, 1, testCap); ns.Missing != int64(spares) {
-		t.Fatalf("the spare refusal = %d segments, want the ask's %d", ns.Missing, spares)
+	if _, spares := PiecesFor(4096, 1, testCap); ns.Missing != int64(spares)-1 {
+		t.Fatalf("the spare refusal = %d segments, want the ask's %d less the ready opening spare", ns.Missing, spares)
 	}
 	if got := r.c.heldEntries; got != 0 {
 		t.Fatalf("after the spare refusal, heldEntries = %d, want 0", got)

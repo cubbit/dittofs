@@ -22,6 +22,9 @@ const (
 	// testHeadroomSpares is the headroom spares a test core that names
 	// headroom records keeps: one per stream, its few records filling less.
 	testHeadroomSpares = testStreams
+	// testOpeningSpares is the opening spare a test core's pool keeps beside
+	// its content target until its first stream takes a first segment.
+	testOpeningSpares = 1
 )
 
 var testIdentity = core.JournalID{0xd, 0xa, 0x7, 0xa}

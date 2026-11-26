@@ -248,18 +248,20 @@ func jbOpen(b *testing.B, streams int) (*journal.Handle, journaltest.SparesWait)
 	// spares and the repack reserve ready, so no pool work competes with the
 	// timed region. Stats names no ready headroom spare, but the pool makes
 	// the headroom's before either of the others, and a fresh journal's
-	// footprint is its spares alone: the streams' content spares, the
-	// headroom's one per stream and the reserve's one at the default settings.
+	// footprint is its spares alone: the streams' content spares, two per
+	// stream — the target's one and the opening spare its first segment takes —
+	// the headroom's one per stream and the reserve's one at the default
+	// settings.
 	deadline := time.Now().Add(30 * time.Minute)
-	want := int64(2*streams+1) * journaltest.SegmentCap
+	want := int64(3*streams+1) * journaltest.SegmentCap
 	for {
 		st := j.Stats()
-		if st.Spares >= streams && st.RepackReserveBytes >= journaltest.SegmentCap && st.UsedBytes >= want {
+		if st.Spares >= 2*streams && st.RepackReserveBytes >= journaltest.SegmentCap && st.UsedBytes >= want {
 			break
 		}
 		if time.Now().After(deadline) {
 			b.Fatalf("bench: the pool made %d of %d spares and reserve %d of %d bytes, footprint %d of %d",
-				st.Spares, streams, st.RepackReserveBytes, int64(journaltest.SegmentCap), st.UsedBytes, want)
+				st.Spares, 2*streams, st.RepackReserveBytes, int64(journaltest.SegmentCap), st.UsedBytes, want)
 		}
 		time.Sleep(time.Millisecond)
 	}

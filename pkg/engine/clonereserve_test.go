@@ -14,8 +14,10 @@ import (
 // A clone of journal-held bytes reserves their record bytes, not their
 // payload. The unaligned length needs both a record header and padding.
 func TestACloneReservesItsCopiesRecordBytes(t *testing.T) {
-	// The source's first write takes one spare, the clone's reservation two
-	// more, and one spare of tolerance beside them: a journal working in real
+	// The source's first write takes the pool's opening spare, kept beside
+	// the target until a stream takes its first segment, so no refill follows
+	// it; the clone's reservation takes two more, and one spare of tolerance
+	// beside them: a journal working in real
 	// time can roll one more of its own records onto a spare in the window
 	// between the write and the reservation, and with the refill held the
 	// pool can never make that spare up before the reservation asks — the
@@ -27,18 +29,15 @@ func TestACloneReservesItsCopiesRecordBytes(t *testing.T) {
 	_, src := f.File("src")
 	_, dst := f.File("dst")
 	want := bytes.Repeat([]byte{'s'}, n)
-	// Stop the refill so the clone has to finish with the spares it started with.
-	refill := f.Seam.HoldFirst(t, "allocate", "*")
+	// Stop the refill so the clone has to finish with the spares it started
+	// with: the first make, the one the clone's hold kicks, parks here, and
+	// the pool's one worker makes nothing past it.
+	f.Seam.HoldFirst(t, "allocate", "*")
 	if _, err := f.E.Write(t.Context(), f.Share.ID, src, 0, want, engine.WriteOpts{Done: func() {}}); err != nil {
 		t.Fatalf("write the source: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	select {
-	case <-refill.Reached():
-	case <-ctx.Done():
-		t.Fatalf("source write did not start a spare refill: %v", ctx.Err())
-	}
 	if err := f.E.Clone(ctx, f.Share.ID, src, f.Share.ID, dst, vfserr.Extent{Len: n}); err != nil {
 		t.Fatalf("Clone of %d journal-held bytes: %v, want nil", n, err)
 	}

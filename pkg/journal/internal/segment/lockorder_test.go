@@ -807,8 +807,10 @@ func TestStreamRollsTwiceUnderRecorder(t *testing.T) {
 	e := recordedStreams(t)
 	rec := e.rec
 	s := e.ss.Stream(0)
+	// At least the target's two: the opening spare the pool keeps until the
+	// stream's first segment may land beside them.
 	awaitCounters(t, "the two content spares ready", e.pool,
-		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+		func(c segment.PoolCounters) bool { return c.Spares >= 2 })
 
 	// reported counts the violations already failed for, so the first one
 	// names the append that caused it and none is printed twice.
