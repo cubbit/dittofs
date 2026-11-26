@@ -362,8 +362,10 @@ already state with their two exceptions.
   lower. A demand under its share still finds a same-class victim, and uploads run in the other
   half, so what is refused is background fetches, relocation reads among them. The `decision:`
   marker names this. Limiting eviction past a full own queue to flows under their waiter share
-  would close it, and narrows RFC 3 §4.4, so §9 leaves it to the RFC's owner. Prior art: none
-  found.
+  would close it, but narrows RFC 3 §4.4, and the user decided on 2026-11-26 to keep §4.4 as
+  written for v1.1: one flow may fill the fetch half's waiter bound. The marker names the case and
+  the trigger to revisit it, benchmarks showing other flows' background fetches starved. Prior
+  art: none found.
 - **D9, the fixed values live in one table, each landing with its consumer.** `pool/fixed.go`
   holds RFC 3 §2.10's table with the RFC's `decision:` note above it. E3 writes the values it
   reads: the cap, the queue multiple, the waiter multiple and the class order, and the quantum's
@@ -929,9 +931,11 @@ A suggestion only: one pull request per subtask works as well.
 ## 9. Open points
 
 - **One flow can fill a fetch half's waiter bound with demand** (D8). Limiting eviction past a
-  full own queue to flows under their waiter share would keep background fetches admitted, and
-  narrows RFC 3 §4.4's "a demand that finds its queue full evicts"; it is the RFC owner's call.
-  Until then D8 follows §4.4 and its marker names the case.
+  full own queue to flows under their waiter share would keep background fetches admitted, but
+  narrows RFC 3 §4.4's "a demand that finds its queue full evicts". The user decided on
+  2026-11-26 to keep §4.4 as written for v1.1, so D8 follows it and its marker names the case.
+  Revisit when benchmarks show other flows' background fetches starved, counted as
+  `waiters_full` refusals under R38's `reason`.
 - **The quantum may be up to twice RFC 3 §2.10's figure** (D4), and R23's "within one quantum" is
   judged against the quantum used. §2.10 says nothing is gained above the figure, not that more is
   wrong; an exact maximum costs O(log s) per change of the waiting set.
