@@ -279,9 +279,10 @@ A transform **MUST** be:
   from **material** held outside it: a key, a dictionary, any versioned input the
   transform names by ID ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material));
 - **size-bounded**: it declares `MaxEncodedLen(n)`, the largest body it can
-  produce from `n` bytes, and never exceeds it. `Decode` **MUST NOT** allocate or
-  produce more than the `max` it is given, however large a body claims its output
-  to be;
+  produce from `n` bytes, and never exceeds it. `Decode` **MUST NOT** produce
+  more than the `max` it is given, nor allocate more than `max` plus a fixed
+  slack the transform declares, such as one block of its format, however large
+  a body claims its output to be;
 - **stateless per call**: safe to call concurrently, with no memory between calls
   other than read-only configuration and material;
 - **deterministic**: `Encode` of the same input, with the same settings,
@@ -425,9 +426,10 @@ matches its recorded fingerprint — a key file replaced under the same ID, a ke
 service returning a different key — and reports it as `ErrMaterialUnavailable`
 with a health condition: the right material may come back, and decoding with the
 wrong one would only turn every body under it into a verification failure.
-Everything that names material outside the provider names it by (ID,
-fingerprint): the chain ID ([§2.8](#2.8%20The%20chain%20ID)), the census ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) and a namespace
-export.
+Everything that names material outside the provider names it with its
+fingerprint: the chain ID ([§2.8](#2.8%20The%20chain%20ID)) by (ID, fingerprint), and the census
+([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)) and a namespace export by (kind, ID, fingerprint), as the provider
+holds it ([RFC 6 §2.3](rfc-6-block-metadata.md#2.3%20Block)).
 
 **A read asks only for material its block recorded.** The codec hands the chain
 the block record's census ([§5.3](#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)), and `Decode` **MUST** check that every
@@ -1052,7 +1054,7 @@ never moves.
 | T1 | A transform never changes a chunk's hash or a block's name, and never sees more than one chunk. |
 | T2 | `Decode(Encode(p)) == p` for every input. |
 | T3 | Every body lists the transforms applied to it; reading needs the registry and material, never the configured chain. The one exception is `require` ([§2.5](#2.5%20Reading%20needs%20no%20configuration%2C%20only%20material)), which can only refuse a body, never change how one decodes. |
-| T4 | No body exceeds its transform's `MaxEncodedLen`, and no step of `Decode` produces or allocates more than the bound the chain gives it. |
+| T4 | No body exceeds its transform's `MaxEncodedLen`, and no step of `Decode` produces more than the bound the chain gives it, or allocates more than that bound plus the transform's declared slack. |
 | T5 | A store whose chain cannot be built does not open, and never writes without its chain. |
 | T6 | The plaintext hash is checked after the whole chain is undone, before any byte is returned. |
 | T7 | A material failure is never zeros and never an absent chunk: unavailable or unknown material is the remote being unavailable, destroyed material makes the chunk Lost, and only material outside the census is malformed. |
@@ -1216,7 +1218,7 @@ and no stored overhead.
 unsigned LEB128 integer of at most 10 bytes; a longer or non-minimal one is malformed.
 `Decode` refuses a declared length above `max` before allocating, and runs the
 decoder with its window capped at the chunk maximum, so a body cannot make it
-allocate more than one chunk however it was crafted.
+allocate more than one chunk and one block however it was crafted.
 
 **Bound.** `MaxEncodedLen(n) = n`: a chunk that would not shrink, header included, is declined.
 
