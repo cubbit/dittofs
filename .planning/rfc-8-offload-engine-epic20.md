@@ -655,9 +655,10 @@ test/journal/trace.yaml   T20.3 "stranded tag salvaged after serving": its reaso
   while older ones drain, the call returning once the older are offloaded (catches a wait on every
   dirty byte, R18); a file with two pre-call runs and a pass held after the first (catches a file
   counted done by its moved oldest time, R18); a file whose last plan was held back returns `Done`
-  with Dirty extents, and a `WaitOffloaded` called before the write keeps waiting until the held
-  tail is offloaded, and at its deadline names that file (catches a drain judged by the `Done`
-  result, R18); a file truncated to zero during the wait (catches a
+  with Dirty extents (the RFC 2 plan's ledger row "A held plan's outcome"), and a `WaitOffloaded`
+  called after the write keeps waiting on the held tail: it returns once the clock passes the
+  maximum age and the tail is offloaded, and with the clock held, it names that file at its
+  deadline (catches a drain judged by the `Done` result, R18); a file truncated to zero during the wait (catches a
   removal not counted as offloaded, R18); the store put-unhealthy at the deadline, the error naming
   it (R19); a stranded tag holding the wait until T20.3 forgets it; a journal held unsuitable at
   start holding the wait and named (catches dirty bytes on an unattached journal reported drained,
