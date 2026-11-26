@@ -88,6 +88,8 @@ func TestNoCallBesideTheTable(t *testing.T) {
 		"F_ALLOCATEALL":            true,
 		"F_PEOFPOSMODE":            true,
 		"Fstore_t":                 true,
+		"F_RDADVISE":               true,
+		"Radvisory_t":              true,
 		"Stat_t":                   true,
 		"O_NOFOLLOW":               true,
 		"O_NONBLOCK":               true,
