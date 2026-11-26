@@ -383,26 +383,30 @@ tall enough for the stats look.
 
 ## STEP 6 — the headroom math
 
-- `⏎`. Three lines: `max 2 GiB`, `used 2 GiB (2 segments written, 3 spares…)`,
-  `share budget 512 MiB (held 440 MiB)`.
+- `⏎`. Three lines: `max bytes 2 GiB`, `used … (N segments written, M
+  spares, each at the segment cap)`, `share budget 512 MiB (held 440 MiB)`.
+  **Read N, M and `used` off the screen — they differ run to run.** The
+  background refill races the writes, so one run shows 2 written + 3 spares
+  at 2 GiB and another 3 written + 2 spares at 1 GiB. Only `held` (440 MiB:
+  ten fills plus the reserved write) is stable.
 - **"Held is 440 MiB: ten fills plus the reserved write. The share has not
-  hit its 512 — but `used` HAS hit the world's 2 GiB."**
+  hit its 512."**
 - **"`used` counts every segment, written or spare, at the 256 MiB cap. The
   pool's spares are the journal's own overhead — headroom, the repack
   reserve, the content spares. The world has to hold them AND the budget."**
-- Open `+`: the full picture. `used` read 1.25 GiB when the story began (five
-  segments, all spares) and has climbed to 2 GiB: **"every time a content
-  spare is taken, the pool makes a replacement, and the replacement is
-  counted too. Three more spares, three more segments, and the journal is
-  at its ceiling — with 440 MiB of actual data."** Compare with `reserved`:
-  it was 80 MiB after beat 3 and is 0 now; the reservation was spent and
+- Say what is on screen, whatever it is: **"Segments written plus spares,
+  times 256 MiB, is `used` — and it is far above the 440 MiB of actual data."**
+  `used` starts at 1.25 GiB (five spares) and rises 256 MiB each time a
+  spare is taken and replaced, up to the 2 GiB ceiling. Compare with
+  `reserved`: 80 MiB after beat 3, 0 now — the reservation was spent and
   closed.
 
 ## STEP 7 — truncate gives back nothing, yet
 
 - **"Drop everything past 32 bytes."** `⏎`.
 - Checks: `held -439 MiB`, `removal markers +1`. Line:
-  `used before 2 GiB, after 2 GiB — unchanged; repack frees`.
+  `used before X, after X — unchanged; repack frees` (X is whatever beat 6
+  showed).
 - **"The data is logically gone. The segments are not. Segment files are only
   freed when REPACK rewrites them — and repack is not wired in this journal
   yet. So `used` does not move."**
@@ -410,7 +414,7 @@ tall enough for the stats look.
   space returns on repack's schedule, not the caller's."**
 - Open `+`: `held` is 32 B now, `removal markers 1`, and `unreclaimed`
   jumped from 0 to about 440 MiB — the gauge for what the truncate left
-  behind for repack. `used` is still 2 GiB.
+  behind for repack. `used` has not moved.
 
 ## STEP 8 — the honesty ledger
 
