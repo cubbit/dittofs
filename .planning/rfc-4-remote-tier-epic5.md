@@ -29,8 +29,8 @@ client and the `s3-allocs` option (T4.2, T4.3), `Open` with its unexported `open
 conformance run (T4.8); and the recorder `pkg/remote/s3` declares in place of a
 `*metrics.Registry`, as #5795 gives it and #5803 states it. **E2**,
 `remotetest` and its opener. Until E4's calls land, T5.1 needs only the SDK's types.
-**Blocks:** **E7**, which reports a refused open as a field error and backs `remote_capability`
-with its definition; **R4-S3**, and through it RFC 8 offload plan epic 21, which opens a
+**Blocks:** **E7**, which backs `remote_capability` with its definition and implements the
+recorder's `Capability`; **R4-S3**, and through it RFC 8 offload plan epic 21, which opens a
 namespace's store in the node and hands the claim on, and whose `codec.Store.Health` passes this
 epic's `Health` straight through (RFC 4 §4.3 as #5795 amends it); **E9**, whose real-bucket rows
 run this check against the settings LocalStack cannot hold.
@@ -81,9 +81,9 @@ E3's faults.
   to E4's surface only what D2 names.
 - **E7:** the `remote.*` settings rows (the storage class and block target among them, which this
   epic reads from the client's configuration), `remote_capability`'s metric definition and the
-  content wiring's recorder behind it, and the refused open reported to the API as a field error.
-  A credential set through the API running this check is the RFC 4 plan's §6.1 deferral ledger
-  row owned by RFC 23.
+  content wiring's recorder behind it. A credential set through the API running this check, and
+  with it the refused open reported to the API as a field error, is the RFC 4 plan's §6.1
+  deferral ledger row owned by RFC 23.
 - **E9:** §7.1's §4.7 prefix-revoke half, and the rows on a bucket setting LocalStack 4.13.1
   cannot hold (as E3's T3.5 measures them: an archive class read back, an archive tiering rule, a
   KMS default encryption), run against a real bucket by hand until CI holds credentials: the §6.1
@@ -294,8 +294,8 @@ row's work is shared, the other part's owner is named.
 - **D4. A refused open wraps `ErrInvalid` and names every missing feature; a failing call keeps
   its own sentinel.** §4.8 files "an operation the service does not support" under `ErrInvalid`,
   and no seventh sentinel exists. The error's text lists the missing features in check order
-  (`s3: open refused: service lacks put_integrity, versioning`), held by an unexported type; E7
-  decides what the API's field error needs from it. A call that fails rather than answers (a network
+  (`s3: open refused: service lacks put_integrity, versioning`), held by an unexported type; the
+  API's field error reads that text (E7's D11). A call that fails rather than answers (a network
   error, a `5xx`, a throttle) fails the open with that call's error as E4's table maps it,
   `ErrTransient` or `ErrThrottled`, so the caller retries the open; a refused credential is
   `ErrDenied` of cause `access`. Only a `403` that C.1 makes a verdict, on a bucket-setting read
@@ -587,7 +587,7 @@ flowchart TD
   T5_1 --> T5_2["T5.2 Put integrity"]
   T5_2 --> T5_3["T5.3 Reads, deletes, listings"]
   T5_1 & T5_3 --> T5_4["T5.4 The open"]
-  T5_4 --> C1(["after T5.4: E7's refusal and RFC 8 offload plan epic 21's Open"]):::sync
+  T5_4 --> C1(["after T5.4: RFC 8 offload plan epic 21's Open"]):::sync
   T5_4 --> T5_5["T5.5 Health"]
   T5_5 --> S3(["R4-S3 with E3, E4 and E6"]):::sync
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
@@ -596,7 +596,7 @@ flowchart TD
 T5.1 needs no service and fills the wait for E4's calls. From T5.2 on, work runs against a local
 LocalStack, and a row marked T lands once the E3 fault it names has. T5.2 and T5.3 are tested at
 their own functions, so each lands green before `Open` calls them. The checkpoint after T5.4 is
-the blocker: E7 and RFC 8 offload plan epic 21 can call the checked `Open` from there.
+the blocker: RFC 8 offload plan epic 21 can call the checked `Open` from there.
 
 ## 8. Suggested pull requests
 
@@ -610,8 +610,10 @@ their own until T5.4 calls them.
 
 ## 9. Open points
 
-1. **The refusal's shape for the API, E7's.** D4 keeps the missing features in an unexported type
-   and the error's text; E7 exports what its field error needs, the only consumer.
+1. **The refusal's shape for the API.** D4 keeps the missing features in an unexported type and
+   the error's text. E7's D11 needs nothing more: the API's call of `Open` is the RFC 4 plan's §6.1
+   deferral ledger row owned by RFC 23, which exports what its field error needs if the text is not
+   enough.
 2. **What LocalStack 4.13.1 holds decides where R37's tiering half and R42 run.** E3's T3.5
    measures an archive tiering rule and a KMS default encryption; each it does not hold runs in E9
    by hand, and T5.4's estimate falls by the tests not written here.
