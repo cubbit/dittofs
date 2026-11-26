@@ -153,6 +153,14 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 			continue
 		}
 
+		// A share Bind would refuse is refused here alone: it is not
+		// attached, and Stats names it, while the other shares are served.
+		if err := validShare(s); err != nil {
+			o.stats.Shares[s.ID] = ShareStats{Device: dir, Refused: err}
+
+			continue
+		}
+
 		// The journal's floor is at least the share's floor and limit.
 		h, err := j.Share(s.Tag, s.Limit, floor)
 		if err != nil {
@@ -169,6 +177,7 @@ func (e *Engine) openJournal(ctx context.Context, shares []Share, u *undo) (open
 			seq:   e.opened.Add(1),
 		}
 		b.state.Store(uint32(s.State))
+		b.settings.Store(&s.Settings)
 		o.table[s.ID] = b
 		served = append(served, s)
 	}

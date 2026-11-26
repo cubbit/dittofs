@@ -25,14 +25,18 @@ var errRemoved = fmt.Errorf("engine: the share is being removed: %w", vfserr.Err
 // is a share being removed that start found past its offload step: it holds
 // the share's ID and tag and no journal or handle.
 type binding struct {
-	share       Share // as attached: Limit is the limit the handle uses
-	j           Journal
-	vl          *versionLimit
-	h           Handle
-	state       atomic.Uint32 // a ShareState: a state change stores it and swaps nothing
-	incarnation uint64        // the incarnation the start or attach raise wrote, for the verifier
-	primary     primary       // the verifier's other inputs from the shard's primary
-	gc          *groupCommit  // the group commit of j
+	share Share // as attached: Limit is the limit the handle uses
+	j     Journal
+	vl    *versionLimit
+	h     Handle
+	state atomic.Uint32 // a ShareState: a state change stores it and swaps nothing
+	// settings are the share's settings in force: a change stores new ones
+	// whole, so a reader of the table, which takes no lock, never sees one
+	// half written. share.Settings stays as attached.
+	settings    atomic.Pointer[ShareSettings]
+	incarnation uint64       // the incarnation the start or attach raise wrote, for the verifier
+	primary     primary      // the verifier's other inputs from the shard's primary
+	gc          *groupCommit // the group commit of j
 	removed     bool
 	gate        gate
 	files       []entity.FileID // the files Drop took off the loops and has not settled
@@ -175,6 +179,12 @@ func (e *Engine) Bind(ctx context.Context, s Share) error {
 			e.d.Logger.Warn("journal limit change applies only when the share is bound again", "share", s.ID)
 		}
 
+		// A served share keeps the store it was attached with, as no flow
+		// is opened on a store yet.
+		if s.Store != b.share.Store {
+			e.d.Logger.Warn("store change applies only when the share is bound again", "share", s.ID)
+		}
+
 		return nil
 	}
 
@@ -194,8 +204,9 @@ func (e *Engine) Bind(ctx context.Context, s Share) error {
 	return e.attach(ctx, s, vl, raised)
 }
 
-// validShare refuses a share Bind cannot attach: a zero ID or tag, a
-// negative limit or a state the engine does not know.
+// validShare refuses a share Bind and Start cannot attach: a zero ID or tag,
+// a negative limit, a state the engine does not know or a setting not
+// positive.
 func validShare(s Share) error {
 	var why string
 
@@ -208,6 +219,14 @@ func validShare(s Share) error {
 		why = "the journal limit is negative"
 	case s.State != Serving && s.State != Quiesced:
 		why = "the state is unknown"
+	case s.Settings.MaxAge <= 0:
+		why = fmt.Sprintf("offload.max_age %v is not positive", s.Settings.MaxAge)
+	case s.Settings.ReadaheadBlocks <= 0:
+		why = fmt.Sprintf("readahead.max_blocks %d is not positive", s.Settings.ReadaheadBlocks)
+	case s.Settings.ReadaheadBytes <= 0:
+		why = fmt.Sprintf("readahead.max_bytes %d is not positive", s.Settings.ReadaheadBytes)
+	case s.Settings.SpeculationBudget <= 0:
+		why = fmt.Sprintf("speculation budget %d is not positive", s.Settings.SpeculationBudget)
 	default:
 		return nil
 	}
@@ -215,9 +234,10 @@ func validShare(s Share) error {
 	return fmt.Errorf("engine: share %v: %s: %w", s.ID, why, vfserr.ErrInvalid)
 }
 
-// change applies s to the served share's binding: its state alone. A share's
-// shard is drawn once and never reused (RFC 16 §2.3.1), and its tag is never
-// given twice (RFC 16 §4.2), so a Bind naming others is refused.
+// change applies s, which validShare took, to the served share's binding: its
+// state and its settings. A share's shard is drawn once and never reused (RFC
+// 16 §2.3.1), and its tag is never given twice (RFC 16 §4.2), so a Bind
+// naming others is refused, and changes nothing.
 func (b *binding) change(s Share) error {
 	var why string
 
@@ -228,6 +248,7 @@ func (b *binding) change(s Share) error {
 		why = "a served share's shard never changes"
 	default:
 		b.state.Store(uint32(s.State))
+		b.settings.Store(&s.Settings)
 
 		return nil
 	}
@@ -354,6 +375,7 @@ func (e *Engine) limitAndPublish(
 		seq:         e.opened.Add(1),
 	}
 	b.state.Store(uint32(s.State))
+	b.settings.Store(&s.Settings)
 
 	return e.publish(b)
 }
@@ -397,6 +419,9 @@ func (e *Engine) publish(b *binding) error {
 	t[b.share.ID] = b
 	e.shares.Store(&t)
 	e.raised[b.share.Shard] = struct{}{}
+	// A share Start refused for its settings is served now: Stats no longer
+	// names it refused.
+	delete(e.health.Shares, b.share.ID)
 
 	return nil
 }

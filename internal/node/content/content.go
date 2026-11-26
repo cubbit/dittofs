@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/engine"
 	"github.com/cubbit/dittofs/pkg/journal"
@@ -196,11 +197,20 @@ func Stop(ctx context.Context, open *openstate.Table, e interface{ Close(context
 	return nil
 }
 
+// shareDefaults are a share's engine settings until the settings records
+// carry them: RFC 13 Appendix B's proposed values.
+var shareDefaults = engine.ShareSettings{
+	MaxAge:            5 * time.Second,
+	ReadaheadBlocks:   8,
+	ReadaheadBytes:    64 << 20,
+	SpeculationBudget: 256 << 20,
+}
+
 // Binding is share s as the engine binds it, with journal limit limit: its
 // namespace the one its write generation names, serving or quiesced as its
-// record says.
+// record says, and the proposed share settings.
 func Binding(s entity.Share, limit int64) engine.Share {
-	b := engine.Share{ID: s.ID, Tag: journal.ShareTag(s.Tag), Shard: s.Shard, Limit: limit, State: engine.Serving}
+	b := engine.Share{ID: s.ID, Tag: journal.ShareTag(s.Tag), Shard: s.Shard, Limit: limit, State: engine.Serving, Settings: shareDefaults}
 	for _, ns := range s.Namespaces {
 		if ns.Generation == s.Write {
 			b.Namespace = ns.Namespace

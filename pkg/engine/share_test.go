@@ -891,3 +891,185 @@ func TestBindTakesOverTheTagsOpenHandle(t *testing.T) {
 		t.Errorf("the first version drawn after the takeover is %d, want above the imported %d", d.Counter(), imported.Counter())
 	}
 }
+
+// shareSettingsRefusals is every invalid share setting, each with the key the
+// refusal names.
+var shareSettingsRefusals = []struct {
+	key string
+	bad func(*engine.ShareSettings)
+}{
+	{"offload.max_age", func(s *engine.ShareSettings) { s.MaxAge = 0 }},
+	{"offload.max_age", func(s *engine.ShareSettings) { s.MaxAge = -time.Second }},
+	{"readahead.max_blocks", func(s *engine.ShareSettings) { s.ReadaheadBlocks = 0 }},
+	{"readahead.max_blocks", func(s *engine.ShareSettings) { s.ReadaheadBlocks = -1 }},
+	{"readahead.max_bytes", func(s *engine.ShareSettings) { s.ReadaheadBytes = 0 }},
+	{"readahead.max_bytes", func(s *engine.ShareSettings) { s.ReadaheadBytes = -1 }},
+	{"speculation budget", func(s *engine.ShareSettings) { s.SpeculationBudget = 0 }},
+	{"speculation budget", func(s *engine.ShareSettings) { s.SpeculationBudget = -1 }},
+}
+
+// otherShareSettings differs from the fixture's in every field, so a share
+// changed to them shows which settings are in force.
+var otherShareSettings = engine.ShareSettings{
+	MaxAge:            10 * time.Second,
+	ReadaheadBlocks:   16,
+	ReadaheadBytes:    128 << 20,
+	SpeculationBudget: 512 << 20,
+}
+
+// refusesNaming reports whether err is an ErrInvalid refusal naming share id
+// and key.
+func refusesNaming(err error, id entity.ShareID, key string) bool {
+	return errors.Is(err, vfserr.ErrInvalid) &&
+		strings.Contains(err.Error(), id.String()) &&
+		strings.Contains(err.Error(), key)
+}
+
+// A Bind with an invalid share setting is refused naming the share and the
+// key: a share not served stays unbound, and a served one keeps the state and
+// the settings it had, so a refused change applies no part of itself.
+func TestBindRefusesInvalidShareSettings(t *testing.T) {
+	u := newUnit(t)
+	b := enginetest.AddShare(t, u.fs.Store, "b", 0)
+	a := u.share
+
+	for _, c := range shareSettingsRefusals {
+		s := b
+		c.bad(&s.Settings)
+
+		if err := u.e.Bind(t.Context(), s); !refusesNaming(err, s.ID, c.key) {
+			t.Errorf("Bind of an unbound share with %+v = %v; want ErrInvalid naming %v and %s", s.Settings, err, s.ID, c.key)
+		}
+
+		if err := u.e.BindingOf(s.ID); !isDelay(err, vfserr.DelayFrozen) {
+			t.Errorf("the share refused for %s is bound: %v", c.key, err)
+		}
+
+		change := a
+		change.State = engine.Quiesced
+		change.Settings = otherShareSettings
+		c.bad(&change.Settings)
+
+		if err := u.e.Bind(t.Context(), change); !refusesNaming(err, a.ID, c.key) {
+			t.Errorf("Bind of the served share with %+v = %v; want ErrInvalid naming %v and %s", change.Settings, err, a.ID, c.key)
+		}
+
+		if got, _ := u.e.SettingsOf(a.ID); got != a.Settings {
+			t.Errorf("after a change refused for %s: settings %+v, want the earlier %+v", c.key, got, a.Settings)
+		}
+
+		if got := u.e.StateOf(a.ID); got != engine.Serving {
+			t.Errorf("after a change refused for %s: state %v, want it kept serving", c.key, got)
+		}
+	}
+
+	// A share naming no store binds: no flow is opened on one yet.
+	if b.Store != 0 {
+		t.Fatalf("the share's store is %v, want none", b.Store)
+	}
+
+	if err := u.e.Bind(t.Context(), b); err != nil {
+		t.Fatalf("Bind of a share with no store = %v", err)
+	}
+
+	if got, ok := u.e.SettingsOf(b.ID); !ok || got != b.Settings {
+		t.Errorf("the bound share's settings are %+v (bound %v), want %+v", got, ok, b.Settings)
+	}
+}
+
+// A Bind of a served share with valid new settings puts them in force.
+func TestBindOfAServedShareChangesItsSettings(t *testing.T) {
+	u := newUnit(t)
+	s := u.share
+	s.Settings = otherShareSettings
+
+	if err := u.e.Bind(t.Context(), s); err != nil {
+		t.Fatalf("Bind = %v", err)
+	}
+
+	if got, _ := u.e.SettingsOf(s.ID); got != otherShareSettings {
+		t.Errorf("settings %+v after the change, want %+v", got, otherShareSettings)
+	}
+}
+
+// A change of a served share's settings stores them whole beside a reader of
+// the table, which takes no lock: under -race, settings written in place are
+// reported.
+func TestASettingsChangeRacesNoReader(t *testing.T) {
+	u := newUnit(t)
+	id := u.share.ID
+	stop := make(chan struct{})
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+
+			if got, _ := u.e.SettingsOf(id); got != u.share.Settings && got != otherShareSettings {
+				t.Errorf("a reader saw settings %+v, neither the old nor the new", got)
+
+				return
+			}
+		}
+	}()
+
+	for i := range 100 {
+		s := u.share
+		if i%2 == 0 {
+			s.Settings = otherShareSettings
+		}
+
+		if err := u.e.Bind(t.Context(), s); err != nil {
+			t.Errorf("Bind %d = %v", i, err)
+		}
+	}
+
+	close(stop)
+	<-done
+}
+
+// A Start handed a share with an invalid setting refuses that share alone: it
+// is not attached and Stats names it with the key, while the other share is
+// served. Once bound with valid settings it is served, and Stats no longer
+// names it refused.
+func TestStartRefusesOnlyTheShareWithInvalidSettings(t *testing.T) {
+	for _, c := range shareSettingsRefusals {
+		t.Run(c.key, func(t *testing.T) {
+			s := newStarter(t)
+			s.closeAtEnd(t)
+			good := s.two
+			c.bad(&s.two.Settings)
+
+			if err := s.start(t); err != nil {
+				t.Fatalf("Start = %v, want nil: one share's settings do not stop the others", err)
+			}
+
+			if err := s.write(t, s.one.ID); err != nil {
+				t.Errorf("a write on the valid share = %v, want it served", err)
+			}
+
+			if got := s.e.Stats().Shares[s.two.ID]; got.Device != startDevice || !refusesNaming(got.Refused, s.two.ID, c.key) {
+				t.Errorf("the invalid share's stats: device %q, refused %v; want %q and ErrInvalid naming %v and %s",
+					got.Device, got.Refused, startDevice, s.two.ID, c.key)
+			}
+
+			if err := s.write(t, s.two.ID); !isDelay(err, vfserr.DelayFrozen) {
+				t.Errorf("a write on the refused share = %v, want ErrDelay(DelayFrozen)", err)
+			}
+
+			if err := s.e.Bind(t.Context(), good); err != nil {
+				t.Fatalf("Bind of the share with valid settings = %v", err)
+			}
+
+			if got, ok := s.e.Stats().Shares[s.two.ID]; ok && got.Refused != nil {
+				t.Errorf("the share bound since is still named refused: %v", got.Refused)
+			}
+		})
+	}
+}

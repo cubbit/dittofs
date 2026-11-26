@@ -1678,11 +1678,12 @@ func TestStartRaisesEveryServedShard(t *testing.T) {
 		},
 	} {
 		sh := engine.Share{
-			ID:    entity.NewShareID(),
-			Tag:   c.tag,
-			Shard: c.shard,
-			Limit: 1 << 30,
-			State: engine.Serving,
+			ID:       entity.NewShareID(),
+			Tag:      c.tag,
+			Shard:    c.shard,
+			Limit:    1 << 30,
+			State:    engine.Serving,
+			Settings: enginetest.ShareSettings,
 		}
 
 		if err := s.e.Bind(t.Context(), sh); err != nil {
