@@ -252,15 +252,19 @@ tests can cite them. Where another epic does the rest, the row says so.
   there and runs `verify-escrow` with its copy, which E8's `VerifyEscrow` accepts for any held key
   (E8's D6), and a removal is refused, since dropping a file that still unwraps records is a
   master-key destroy, the deferral ledger's destroy row. A file the store's provider never opened
-  wraps nothing, so its removal passes (`Keys.Opened`, T9.1): `ValidateConfig` reads no file, so a
+  wraps nothing, so its removal passes (`Keys.Opened`, T9.1, which reads the last `Config` the
+  provider accepted, below): `ValidateConfig` reads no file, so a
   mistyped path commits, and E8's `Reconfigure` then refuses the whole `Config`, which would hold
   every later live change of the section, and the store's next start, until the path could go.
   `rotate-master-key` then names a file already retired, and swaps it in over separate turns
-  (T9.5): one commits the swap of it and the current `key_file` in its own control-plane write, and
-  only a later turn, once the provider reports the named file's key current, calls `RotateMasterKey`,
+  (T9.5): one commits the swap of it and the current `key_file` in its own control-plane write,
+  with the raw `tx.PutSetting`, which no section's `CheckTx` judges, since that check refuses the
+  changed `key_file` and the opened file leaving `retired_files` that a swap is; only a later turn,
+  once the provider has taken the named file as its key file, calls `RotateMasterKey`,
   since the reach hands the swap to the provider only after the commit and a call in the same turn
   would run under the old key, pass, and leave the new one current unchecked. Its failure hook
-  swaps them back (T9.5). Endpoint, server name, certificates and
+  swaps them back with the same raw write (T9.5). Those two writes are the only ones the check does
+  not see, and the `decision:` marker at the check names them. Endpoint, server name, certificates and
   timeout stay writable (D12). A `decision:` marker at the check names the route. Prior art: the store's own `remote.credential`, written only by its route
   (checked, `internal/node/api/res_settings.go`'s `ownKeys`).
 
@@ -356,7 +360,10 @@ tests can cite them. Where another epic does the rest, the row says so.
   context, off that path: every namespace naming the store, read when the store's chain is built,
   then each namespace at its create and its open, before a binding serves it. `encrypts` is bound,
   so a value read is kept for the namespace's life. A namespace not in the map is answered `true`
-  and nothing is stored for it, so the next fill corrects it: its plaintext bodies are refused
+  and nothing is stored for it. A fill that fails is retried in the background, with backoff on the
+  content wiring's clock, until it succeeds, and an absent ID answered `true` wakes that retry
+  without waiting for it (a non-blocking signal, so the decode path still reads nothing), so the
+  map is corrected with no new open: its plaintext bodies are refused
   rather than trusted until then, since failing closed costs a refused read that should not happen
   and failing open admits a planted body. A `decision:` marker at the lookup says so, and that a
   failed read is never cached.
@@ -377,8 +384,13 @@ tests can cite them. Where another epic does the rest, the row says so.
   23 §4.7 says. A rotation step answers the same errors through the same rows, as a
   `*apiv1.Problem`, because the runner retries any other error with no end (`step.Failure`): a plain
   `ErrNotEscrowed` would spin a key-file rotation and never run its failure hook. Only
-  `ErrMaterialUnavailable` and store errors stay retried inside a step; `ErrUnknownMaterial` fails
-  it, since a rotation has nothing to wait for. A `decision:` marker at the rows says why `503` reaches past §4.7's list. Prior art:
+  `ErrMaterialUnavailable` and store errors stay retried inside a step, and so does
+  `ErrUnknownMaterial`, since material the provider was not given yet, a key service's new version
+  or a file just after the reach, arrives without the client; but bounded: the step records in its
+  cursor the injected clock's time it first met the error, and fails `unknown_material` once that
+  is 5 minutes old, `material_unknown`'s page delay, so a material never given ends rather than
+  spins. The `400` on a non-encrypting namespace's `rotate-data-key` keeps the one known permanent
+  case from starting. A `decision:` marker at the rows says why `503` reaches past §4.7's list. Prior art:
   RFC 7231's `503` for a dependency that is temporarily unavailable (from memory).
 
 - **D12, the material provider is live through the section's reach.** RFC 13 Appendix B makes it
@@ -405,7 +417,7 @@ internal/node/content/
   encrypts.go         T9.2  the encrypts section, in Sections(); the Encrypts lookup (D9) and
                             Deps.Encrypting over StageOf
   keys.go             T9.1  Keys: Opened; T9.3 VerifyEscrow; T9.4 CreateKeys, CurrentDataKey;
-                      T9.5  RotateDataKey, RotateMasterKey, CurrentMasterKey, the
+                      T9.5  RotateDataKey, RotateMasterKey, CurrentKeyFile, the
                             primary-version reader
   observe.go          T9.6  the recorder, the gauges and the health source
   remote_test.go, encrypts_test.go, keys_test.go, observe_test.go
@@ -439,7 +451,8 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
 **Subtask T9.1 estimate: 3.75 man-days.**
 
 - **Track:** the team. **Depends on:** E3's T3.1 and T3.2; E4's and E5's registrations; E6's
-  `Config` and `Escrow`; E7's `KMIPConfig`.
+  `Config` and `Escrow`; E7's `KMIPConfig`; E8's `Reconfigure` refusing a whole `Config` it cannot
+  open, which `Keys.Opened` reads (§9).
 - **Covers:** R1, R2, R3, R4, R5, R6, R7, R8, R9 (the store's side).
 - **Deliverables:**
   - `pkg/transform/chain/stage.go`:
@@ -520,7 +533,8 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
 - **Deliverables:**
   - `internal/node/content/encrypts.go`: the namespace section `encrypts`, `SelfKey`, class
     `bound`, `Required`; the `Encrypts` lookup the chain's `Deps` take, a map read only, filled off
-    the decode path at the chain's build and at each namespace's create and open, an absent ID
+    the decode path at the chain's build and at each namespace's create and open, a failed fill
+    retried in the background with backoff and woken by an absent ID's lookup, an absent ID
     answered `true` and never stored (D9). Declared in `content.Sections()`, beside the RFC 4 plan's epic 7's
     sections. `SelfKey`'s
     `decision:` marker names its second user.
@@ -549,9 +563,10 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
     a chain whose `Encrypts` is the content wiring's lookup over the namespace's bound setting, is
     `ErrMalformed` (catches a lookup read from the chain rather than the namespace, R11, R13).
   - A namespace of the store not yet opened answered from the fill at the chain's build; the fill
-    failed by a fault wrapper around the control-plane store, the namespace answered `true`, then
-    `false` after the next fill (catch a false `malformed` before the open, D9 failing open, and a
-    failure cached); a decode under a control-plane read that blocks returns at once (catches a
+    failed by a fault wrapper around the control-plane store, the namespace answered `true`, then,
+    with the fault lifted and no open or create, `false` once the background retry runs on the
+    injected clock (catch a false `malformed` before the open, D9 failing open, a failure cached,
+    and a fill nothing retries); a decode under a control-plane read that blocks returns at once (catches a
     read on the decode path).
 - **Rules:** rule 5: each refusal asserted at the API's write and at the decode that consumes the
   lookup. rule 9: D5's and D9's markers.
@@ -650,13 +665,19 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
 **Subtask T9.5 estimate: 4.25 man-days.**
 
 - **Track:** the team. **Depends on:** T9.3; E8's `RotateDataKey`, `RotateMasterKey`,
-  `Deps.RotationNeeded` and `Config.RetiredKeyFiles`.
+  `Deps.RotationNeeded` and `Config.RetiredKeyFiles`; E8's `Reconfigure` taking a swap whole,
+  which `Keys.CurrentKeyFile` reads (§9).
 - **Covers:** R18, R19, R21, R22, R23, R24, R25.
 - **Deliverables:**
   - `pkg/node/apiv1/opkind.go`: `OpRotateDataKey OpKind = "namespace.rotate-data-key"` and
     `OpRotateMasterKey OpKind = "store.rotate-master-key"`, in the closed set.
   - `res_domain.go`: `action` and `noneRunning` take the target's kind and reference, so an action
     starts an operation on a namespace or a store as it does on the installation.
+  - `Keys.CurrentKeyFile(store [16]byte) string` and T9.1's `Keys.Opened` read no provider:
+    `Keys` keeps, per store, the last `Config` that `provider.New` or `Reconfigure` accepted, and
+    E8's `Reconfigure` refuses a whole `Config`, changing nothing, if one file cannot be opened (its
+    D6), so that `Config`'s `KeyFile` is the file the provider wraps under and it and its
+    `RetiredKeyFiles` are the files it opened. No epic declares a provider query for either (§9).
   - Routes `POST /namespaces/{id}:rotate-data-key` (no body) and `POST /stores/{id}:rotate-master-key`
     (`{"key_file": <path>}` naming a file already in `retired_files` for a key file; no body for a key
     service, whose primary version E8's check reads), both `admin`'s, refused `409`
@@ -664,24 +685,26 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
     `retired_files` refused `400` naming it. `rotate-data-key` on a namespace whose bound
     `encrypts` is `false` is refused `400` naming `encrypts`, before any operation: such a namespace
     has no data key, and E8 answers its rotation `ErrUnknownMaterial`.
-  - `Keys.RotateDataKey`, `Keys.RotateMasterKey` and `Keys.CurrentMasterKey(ctx, store [16]byte)
-    (keyID string, err error)` over E8's calls; `internal/node/keyops.go`: their step rows in the
+  - `Keys.RotateDataKey` and `Keys.RotateMasterKey` over E8's calls; `internal/node/keyops.go`: their step rows in the
     runner (D7). Each step answers `keys`' errors as T9.3's rows do, as a `*apiv1.Problem`, so
-    `ErrNotEscrowed`, `ErrUnknownMaterial`, `ErrMaterialDestroyed` and `ErrWrapLimit` fail the
-    operation and only `ErrMaterialUnavailable` and store errors are retried (D11). The data-key
+    `ErrNotEscrowed`, `ErrMaterialDestroyed` and `ErrWrapLimit` fail the operation,
+    `ErrMaterialUnavailable` and store errors are retried, and `ErrUnknownMaterial` is retried until
+    5 minutes after the step first met it, recorded in its cursor, then fails (D11). The data-key
     step's first turn records the current data key ID and calls nothing; a later turn calls
     `RotateDataKey` while that key is still current (D7). The key-file master-key step's first turn
     records the current `key_file` in its cursor and writes nothing else; the next commits the swap
-    of it and the named retired file in its own control-plane write, unless `key_file` already
+    of it and the named retired file in its own control-plane write with the raw `tx.PutSetting`,
+    never through the settings table, whose `CheckTx` refuses a swap (D2), unless `key_file` already
     names that file; a later turn
-    answers neither `Done` nor an error until `Keys.CurrentMasterKey` reports the named file's key,
-    which the section's reach hands to the provider after the commit (D12), and only then calls
+    answers neither `Done` nor an error until `Keys.CurrentKeyFile` names the named file, which the
+    section's reach hands to the provider after the commit (D12), and only then calls
     `RotateMasterKey` (D2). A key-service step calls `RotateMasterKey` alone.
   - `internal/node/runner.go`: `stepRow.failed` takes the operation,
     `func(tx entity.ControlPlaneTx, op entity.Operation) error`, since a kind's hook otherwise
     cannot find the target it must repair; `identity.RotateFailed` ignores it. The key-file step's
     hook reads the store from `op.Target` and both files from `op.Params` and `op.Step`, and swaps
-    them back only while `key_file` names the new file, so a failure before the swap writes nothing
+    them back with the raw `tx.PutSetting` only while `key_file` names the new file, so a failure
+    before the swap writes nothing
     and an unescrowed key never stays current (D2).
   - `Deps.RotationNeeded` for each store's provider, which the content wiring builds and the RFC 8
     offload plan's epic 21 passes: on a master key's ID, one control-plane `Write` creating an
@@ -702,10 +725,12 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
   - A key-file rotation to a file with no recorded pass, on a store with an encrypting namespace,
     ends `failed` with `not_escrowed`, `key_file` names the old file again and the old key stays
     current; on a store with none, the same rotation succeeds (R19). `RotateMasterKey` is called
-    only after the provider reports the new key current.
+    only after the provider has taken the new key file. The swap commits on a store whose
+    section has a `CheckTx`, and the swap back too.
   - `rotate-data-key` on a namespace that does not encrypt is `400` naming `encrypts`, and no
-    operation is created; an operation whose call answers `ErrUnknownMaterial` or `ErrWrapLimit`
-    ends `failed` with that code rather than retrying (R18, D11).
+    operation is created; an operation whose call answers `ErrWrapLimit` ends `failed` with that
+    code rather than retrying; one answered `ErrUnknownMaterial` succeeds once the material is
+    given within 5 minutes, and ends `failed` `unknown_material` when it is not (R18, D11).
   - A call of `RotationNeeded` starts one operation with no account, its audit record naming the
     schedule; one while it runs starts none (R22, R23).
 - **Tests:**
@@ -717,10 +742,15 @@ docs/guide/configuration.md  T9.1, T9.2  the remote store's transform and materi
     (D7); the same stop after the data-key step's first turn but before its commit, then a new
     runner: one new data key (catches a first turn that calls); the master-key step's swap
     committed and the runner stopped before its cursor's commit: the rerun swaps nothing more (D2);
-    the concurrent request (R21); the escrow rows and the swap back, the swap's reach delayed until
+    the concurrent request (R21); the swap and the swap back committed through the real settings
+    table with the remote section's `CheckTx` declared, the stored `key_file` and `retired_files`
+    read back (catches a swap routed through the check, which refuses it, D2); the escrow rows and
+    the swap back, the swap's reach delayed until
     after the step's next turn (catch an unescrowed key left current, a call made under the old
     key, a hook with no store, a `not_escrowed` retried forever, or escrow demanded where Appendix
-    B.2 asks none, R19, D2, D11); the non-encrypting namespace row (D11); the role rows (R18,
+    B.2 asks none, R19, D2, D11); the non-encrypting namespace row, and `ErrUnknownMaterial` met
+    by a key-service step whose material is given 1 minute later on the injected clock, and never
+    given, advanced past 5 minutes (catch an unknown that fails at once, or spins, D11); the role rows (R18,
     R19); the help text read from the command tree (catches a help that promises revocation, R24).
   - The start, driven by the real provider as E8's T8.7 does: records under key file A, a provider
     opened on B with A retired, so its first read calls `RotationNeeded` with B; one operation
@@ -883,6 +913,13 @@ A suggestion only: one pull request per subtask works as well.
   rotation's swap of `key_file`, as `New` does for both, which E6's D16 leaves to E8; without it,
   `retired_files` and the swap reach the provider only at the next start, and T9.5's key-file step
   would have to restart the store's provider.
+- **Which key files a provider opened, and which it wraps under: no query on E6 or E8.** E6's
+  `Status` reports unavailable, unknown and destroyed material only, and E8 adds no query.
+  `Keys.Opened` (T9.1) and `Keys.CurrentKeyFile` (T9.5) derive both from the last `Config`
+  `provider.New` or `Reconfigure` accepted, which holds only because E8's `Reconfigure` refuses a
+  `Config` whole, changing nothing, when a file cannot be opened (its D6). That atomicity is the
+  need on E8. If E8 ever applies a `Config` in part, it should add a provider query, such as
+  `Status` gaining `KeyFile` and `OpenedKeyFiles`, and `Keys` should read that instead.
 - **Needs on the RFC 8 offload plan's epic 21.** Its T21.3 passes E8's `Deps.KeysObjects`, which
   resolves a namespace's remote store; at a create no record names it yet, so the function it
   passes answers an ID `Keys.CreateKeys` registered with its store, until the record commits or the
