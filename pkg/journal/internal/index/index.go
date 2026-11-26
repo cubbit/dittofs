@@ -261,6 +261,11 @@ func (ix *Index) SegmentBytes(seg core.SegmentID) SegmentBytes { return ix.fs.se
 // segment→records registry the copier would read instead.
 func (ix *Index) FileEntries(id core.FileID) []Entry { return ix.fs.inspect(id) }
 
+// SegmentFiles returns the ids of the files whose records seg holds, in no
+// order, as a copy; nil when none does. It takes the registry's lock alone,
+// no file's, and creates no entry.
+func (ix *Index) SegmentFiles(seg core.SegmentID) []core.FileID { return ix.fs.segFiles(seg) }
+
 // AsOf returns the change version a read of id reports.
 //
 // It takes the file's lock shared and creates no entry. A caller that needs

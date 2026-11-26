@@ -2,6 +2,7 @@ package index
 
 import (
 	"encoding/binary"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 
@@ -139,6 +140,42 @@ type files struct {
 	// workers feed it as many files in parallel as there are shards, and a
 	// reader takes the list without waiting on any file's lock.
 	conflicts conflictSet
+
+	// inv maps each segment to the files whose entry names it in segs, kept at
+	// the three places a file's segs table changes, so segFiles answers from
+	// it without walking every file. The zero value works; the map is made on
+	// the first registration.
+	inv map[core.SegmentID]map[core.FileID]struct{}
+	// invMu guards inv and is a leaf: it is taken inside a file's lock, with
+	// a shard's never held, nothing is acquired under it, and its readers
+	// hold nothing else.
+	invMu sync.Mutex
+}
+
+// invAdd enters id under seg in the registry.
+func (fs *files) invAdd(seg core.SegmentID, id core.FileID) {
+	fs.invMu.Lock()
+	defer fs.invMu.Unlock()
+	if fs.inv == nil {
+		fs.inv = make(map[core.SegmentID]map[core.FileID]struct{})
+	}
+	m := fs.inv[seg]
+	if m == nil {
+		m = make(map[core.FileID]struct{})
+		fs.inv[seg] = m
+	}
+	m[id] = struct{}{}
+}
+
+// invDel takes id out from under seg, dropping the segment's set once empty.
+func (fs *files) invDel(seg core.SegmentID, id core.FileID) {
+	fs.invMu.Lock()
+	defer fs.invMu.Unlock()
+	m := fs.inv[seg]
+	delete(m, id)
+	if len(m) == 0 {
+		delete(fs.inv, seg)
+	}
 }
 
 type fileShard struct {
@@ -179,6 +216,10 @@ type file struct {
 	// gone is set, under mu, when the entry leaves the map. A caller that
 	// finds a gone entry after taking its lock looks the file up again.
 	gone bool
+	// fs and id name the registry the file's segs table is mirrored in and
+	// the key it is mirrored under; set where the entry is made.
+	fs *files
+	id core.FileID
 
 	tagged bool
 	tag    core.ShareTag
@@ -218,7 +259,7 @@ type file struct {
 // recorder's store so its lock is Init'ed with the file index rank before the
 // entry is published under the shard lock.
 func newFile(acct *segments, fs *files) *file {
-	f := &file{held: heldSet{acct: acct}, retained: retainedSet{acct: acct}}
+	f := &file{fs: fs, held: heldSet{acct: acct}, retained: retainedSet{acct: acct}}
 	f.held.times, f.retained.times = &f.dirtyAt, &f.dirtyAt
 	f.held.of = f
 	f.mu.Init(lockorder.FileIndex, fs.recorder())
@@ -483,6 +524,7 @@ func (fs *files) commit(id core.FileID, admitted int64, fn func(*file) error) (H
 				s.m = make(map[core.FileID]*file)
 			}
 			f = newFile(&fs.segs, fs)
+			f.id = id
 			s.m[id] = f
 		}
 		s.mu.Unlock()
@@ -694,6 +736,7 @@ func (f *file) recorded(seg core.SegmentID, e core.Extent, n Numbers, tag core.S
 	if s == nil {
 		f.segs = append(f.segs, segRecords{seg: seg})
 		s = &f.segs[len(f.segs)-1]
+		f.fs.invAdd(seg, id)
 	}
 	f.nranges += s.note(e, n)
 	err := f.claim(tag, id)
@@ -743,6 +786,7 @@ func (f *file) forgetRanges(below core.Seq) {
 		clear(s.ranges[len(rs):])
 		s.ranges = rs
 		if len(rs) == 0 {
+			f.fs.invDel(s.seg, f.id)
 			continue
 		}
 		kept = append(kept, s)
@@ -765,6 +809,7 @@ func (f *file) segmentGone(seg core.SegmentID) {
 	for i := range f.segs {
 		if f.segs[i].seg == seg {
 			f.nranges -= len(f.segs[i].ranges)
+			f.fs.invDel(seg, f.id)
 			last := len(f.segs) - 1
 			f.segs[i] = f.segs[last]
 			// The vacated slot is cleared, not just cut off: the backing
@@ -822,22 +867,25 @@ func (fs *files) dropRangeCount() int64 { return fs.dropRanges.Load() }
 // with an entry naming it, content and header-only records alike — in no
 // order. It is the list a retirement relays into SegmentGone per file, which
 // the callers built from the liveness registry alone cannot name for
-// content-only files. Each file's own lock guards its segment records.
+// content-only files. It answers from the registry under its own lock alone,
+// a copy the caller may keep.
 //
-// ponytail: the query walks every file entry, O(files) once per retiring
-// segment, beside a retirement whose registry walk is already O(registers).
-// Upgrade to a segment->files registry when a retirement of a busy journal
-// shows in a profile.
+// ponytail: the registry is a second copy of each file's segs table, kept at
+// the table's three change points; a change point added without its upkeep
+// shows as a disagreement in TestSegmentFilesMatchesTheEntries. Derive the
+// answer from the tables again only if that upkeep ever costs more than the
+// walk it replaced.
 func (fs *files) segFiles(seg core.SegmentID) []core.FileID {
-	var out []core.FileID
-	fs.walk(func(id core.FileID, f *file) {
-		for k := range f.segs {
-			if f.segs[k].seg == seg {
-				out = append(out, id)
-				break
-			}
-		}
-	})
+	fs.invMu.Lock()
+	defer fs.invMu.Unlock()
+	m := fs.inv[seg]
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]core.FileID, 0, len(m))
+	for id := range m {
+		out = append(out, id)
+	}
 	return out
 }
 
