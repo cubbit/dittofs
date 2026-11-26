@@ -119,8 +119,8 @@ type Chain interface {
 	// (RFC 5 §5.3): a body naming material outside it is ErrMalformed, and
 	// the provider is not asked. Its errors are §2.7's five: ErrMalformed,
 	// ErrTooLarge and keys' three material errors. A census-listed ID the
-	// provider was never given reaches the caller as
-	// keys.ErrUnknownMaterial, never as ErrMalformed, which the codec reports
+	// provider was never given reaches the caller as the provider's
+	// *keys.UnknownMaterialError, never as ErrMalformed, which the codec reports
 	// as keys.ErrMaterialUnavailable with a configuration health condition
 	// naming the ID (RFC 5 §2.7). dst must not overlap body.
 	Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, hash [32]byte, body []byte, max int, census []Encoded) ([]byte, error)
