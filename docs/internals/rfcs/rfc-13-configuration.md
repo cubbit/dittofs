@@ -1028,7 +1028,8 @@ Conventions and tiers are the index's ([Test tiers](rfc-index.md#Test%20tiers)).
 **Suites.** §9's single-node rows run in `unit`, and the rows that provoke an immutable location's
 lock in `integration`, on a bucket whose lock is set for real, never pretended by RFC 4's fault
 transport ([RFC 4 §7.2](rfc-4-remote-tier.md#7.2%20Fault%20transport)); where the local emulator cannot hold the
-lock, against a real bucket ([RFC 4 §7.4](rfc-4-remote-tier.md#7.4%20Services)). No suite runs yet the rows that need two or
+lock, they run instead in RFC 4's production-service row against a real bucket ([RFC 4 §7.4](rfc-4-remote-tier.md#7.4%20Services)),
+by hand until that run holds credentials, so meanwhile they guard no change. No suite runs yet the rows that need two or
 more nodes.
 
 ## 10. Edits this document asks of other RFCs

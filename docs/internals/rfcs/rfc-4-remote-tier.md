@@ -587,9 +587,9 @@ type ChunkRange struct {
 }
 
 // Meter receives a transfer's wire bytes (RFC 3 §2.4): Moved with each count of
-// encoded body bytes sent or read, and Sent once a put's last body byte has
-// been sent. A nil func is skipped, so the zero Meter meters nothing. It is
-// two funcs and carries no behaviour of its own.
+// the encoded block's bytes sent or read, its header and index included, and
+// Sent once a put's last byte has been sent. A nil func is skipped, so the
+// zero Meter meters nothing. It is two funcs and carries no behaviour of its own.
 type Meter struct {
 	Moved func(n int64)
 	Sent  func()
@@ -926,8 +926,8 @@ type Put struct{ /* ... */ }
 
 // Attempt is one try: it measures when it must, then sends the header and each
 // chunk encoded as it goes, in one remote Put. It calls m.Moved with each count
-// of body bytes sent and m.Sent after the last, and returns nil only once the
-// block is stored. Its method value is the attempt the syncer's Upload runs.
+// of the block's bytes sent, header included, and m.Sent after the last, and
+// returns nil only once the block is stored. Its method value is the attempt the syncer's Upload runs.
 func (p *Put) Attempt(ctx context.Context, m remote.Meter) error
 
 // Stored returns each chunk's range in the encoded block and the census the
@@ -1170,7 +1170,7 @@ is `ErrInvalid` for that put alone, since those bodies have bounds of their own
 | `ErrTransient` | retrying may help: network, timeout, a server error, a short body | the syncer retries within its bound ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | `ErrThrottled` (wraps `ErrTransient`) | the service asked to be sent less: a throttling or slow-down reply | the syncer holds the flow and retries after backoff; it is backpressure and **MUST NOT** count toward health ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | `ErrCorrupt` | a put's checksum or digest mismatched in transit, or the codec's verification of a chunk failed ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)) | a put is retried; a chunk that failed verification is re-got once, then reported corrupt ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-| `ErrMalformed` (wraps `ErrCorrupt`) | the store rejected a recorded range as past the end, so the stored block is shorter than its record ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)) | reported at once, never re-got ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `ErrMalformed` (wraps `ErrCorrupt`) | the store rejected a recorded range as past the end, so the stored block is shorter than its record ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)) | reported at once, never re-got ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)); since `errors.Is` also finds `ErrCorrupt` in it, a caller tests for `ErrMalformed` first |
 
 A local failure (the context cancelled, the body's reader failing) is returned
 as itself. It is not the service's fault and does not count against the store's
@@ -1253,8 +1253,9 @@ how to test them: they are specific to each backend and live in its profile
 - where a service's listings lag its writes, a check that lists what it just
   wrote **MAY** re-list a bounded number of times, over a bounded time the
   profile states, before refusing to open;
-- every object the store puts is written in one storage class the profile pins
-  explicitly, never the service's default, and the check reads back the class
+- every object the store puts is written in one storage class, the remote
+  store's configured class (`STANDARD` when none is configured), sent explicitly
+  and never left to the service's default, and the check reads back the class
   the service reports for what it wrote. A class or a tiering rule that can move
   an object out of immediate reach — an archive class, or an automatic tier that
   archives objects nobody reads for a while — **MUST** refuse the open: a get of
@@ -1350,7 +1351,7 @@ count it again ([RFC 3 §2.12](rfc-3-syncer.md#2.12%20What%20the%20syncer%20make
 
 | Answers | Metric | Type |
 | --- | --- | --- |
-| calls, labelled `op` (`put`, `get`, `delete`, `list`, `health`) and `result` (`ok` or the error of [§4.8](#4.8%20Errors%20are%20a%20closed%20set)) | `remote_requests_total` | counter |
+| calls, labelled `op` (`put`, `get`, `delete`, `list`, `health`) and `result` (`ok`, the error of [§4.8](#4.8%20Errors%20are%20a%20closed%20set), or `local` for a local failure, below) | `remote_requests_total` | counter |
 | time per call, by `op` folded to the five data calls (`put`, `get`, `delete`, `list`, `health`) and `other` for every other `op` | `remote_request_seconds` | histogram |
 | bytes moved, by `op` | `remote_bytes_total` | counter |
 | connections opened; against requests, how well the pool reuses them ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) | `remote_connections_opened_total` | counter |
@@ -1820,6 +1821,7 @@ in-memory store).
 | [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer every request with the service's throttling reply: each call fails with `ErrThrottled`, which also matches `ErrTransient`. | |
 | [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | A transport that answers `404` to the first get after a successful put of the name: the get fails, and the capability check of a service that does so refuses the open. | T |
 | [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer each request with every status from 100 to 599 but the 2xx successes ([§7.2](#7.2%20Fault%20transport)), with known and unknown error codes, and with a body that does not parse: each call wraps exactly one sentinel, and a response checksum mismatch on a get is `ErrTransient`, never `ErrCorrupt`. | T |
+| [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Truncate the body of a real 2xx reply so it does not parse, a `ListObjectsV2` reply to `List` and a `DeleteObjects` reply to `Delete`: each call fails with `ErrTransient`, never `ErrInvalid` and never success, and `Delete` reports no name as deleted. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | A bucket that stores what the check wrote in an archive storage class, or holds a tiering rule with an archive tier whose filter could match the prefix: open fails naming it, and `Recheck` fails when either appears later. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Turn versioning on after open: `Recheck` fails, GC issues no delete, and the syncer refuses puts while gets still succeed; turn it off: the next `Recheck` clears both. Count `Recheck` calls over an hour: exactly one per GC recheck period, none from a GC pass. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | A suspended store with an object version left behind: `Recheck` lists versions and fails; after the repair writes the proof, ten further `Recheck` calls list no versions and pass. Enable versioning again: the proof is emptied, and the next suspended `Recheck` lists again. | T |
@@ -1898,7 +1900,7 @@ that must refuse are the negative tests.
 | [§3.3](#3.3%20Transforms) | Run the engine's read and write tests with and without transforms: no difference observable apart from offsets and timing. |
 | [§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec) | A ranged read at a wrong offset or length fails with `ErrCorrupt`, and nothing re-reads the header. |
 | [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | Encode the same block twice, once from declared lengths and once after a measuring pass, under every transform configuration: the bytes, the header and the checksum are identical, and the declared size equals the bytes streamed. |
-| [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | Through `codec.Store` on the in-memory store, in a mode that needs a measuring pass: a second `Attempt` of one `Put` reads `src` once, only to send; after an `Attempt` ending in `ErrCorrupt` the next measures again. Two `Attempt`s of one `Put` overlap under `-race`: no race is reported. An `Attempt` whose `ctx` ends mid-body has released its chunk buffers when it returns. The `Meter`'s `Moved` counts sum to the encoded bytes the store received, and `Sent` is called once, after the last. A zero `Meter{}` passed to `Get` and to `Attempt` is skipped: both complete without a panic. |
+| [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | Through `codec.Store` on the in-memory store, in a mode that needs a measuring pass: a second `Attempt` of one `Put` reads `src` once, only to send; after an `Attempt` ending in `ErrCorrupt` the next measures again. Two `Attempt`s of one `Put` overlap under `-race`: no race is reported. An `Attempt` whose `ctx` ends mid-body has released its chunk buffers when it returns. The `Meter`'s `Moved` counts sum to the encoded bytes the store received, header and index included, and `Sent` is called once, after the last. A zero `Meter{}` passed to `Get` and to `Attempt` is skipped: both complete without a panic. |
 | [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | Through `codec.Store` on the in-memory store, `NewPut` with a name minted from another nonce, and with one minted over other chunks: `Attempt` returns `ErrInvalid`, and the store received no put. |
 | [§3.5](#3.5%20Format%20changes%20are%20migrations) | A stored fixture of every released version decodes. |
 
@@ -2151,7 +2153,7 @@ its capability check.
 | `PutObject`, single part | put, put probe | atomic replace; readers never see a partial object | from the service's documentation; it cannot be provoked |
 | Put integrity: an enforced `x-amz-checksum-crc32c` or `Content-MD5`, or else an ETag equal to the MD5 of the stored bytes | put | a corrupted body is rejected, or detected from the ETag — at the maximum encoded block size, not only on small objects | check step 1 |
 | `GetObject` after `PutObject` | get | strong read-after-write for a new key and an overwritten one: a get from any client after the put's `200` returns the new object ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | check step 2, by a get issued at once after the put; and from the service's documentation, since a lag that the check happens to miss cannot be provoked |
-| `x-amz-storage-class` on every put; the class each get reports | put, open | every object written in the class the profile names, `STANDARD`, never the service default; no archive class (one whose get needs a restore) | check step 2: the class reported for the check object |
+| `x-amz-storage-class` on every put; the class each get reports | put, open | every object written in the remote store's configured class ([RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)), `STANDARD` when none is configured, never the service default; no archive class (one whose get needs a restore) | check step 2: the class reported for the check object |
 | `GetBucketIntelligentTieringConfiguration` (list) | open, `Recheck` | no configuration with an archive tier whose filter could match the prefix | check step 5 |
 | `GetObject` with `Range` | get | `206` with the bytes asked for; `416` when the range starts past the end. A clamped overlong range is tolerated: the store checks lengths itself ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | check step 2 |
 | `DeleteObjects` (batch, up to 1,000 keys) with `Content-MD5`, `Quiet` false | delete | every key, absent ones included, listed as deleted; per-key errors reported per key; a key missing from the reply is a failure ([§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent)) | check step 3 |
@@ -2262,7 +2264,7 @@ namespace, with the production client configuration of [Appendix C.3](#C.3%20How
    — a correct put, and one with a wrong checksum or a known body whose ETag must
    match — since services change checksum, ETag and server-side encryption
    behaviour with size.
-2. Put a 10-byte object in the profile's storage class; get it at once, and
+2. Put a 10-byte object in the configured storage class; get it at once, and
    expect it back, with that class reported; get bytes 2–5 and expect exactly 4
    bytes; get from offset 20 and expect `416`; get a key never written and
    expect `404`, not `403`.
