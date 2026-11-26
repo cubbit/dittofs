@@ -530,7 +530,7 @@ A suggestion only: one pull request per subtask works as well, with S1 on the la
    first exercised.
 2. **RFC 8 §2.1's carver row names only `Cut` and the fold.** The engine also reads `Max` and
    mints names with `BlockName` at its Intent state; RFC 4's codec gets `ChunkID` and `BlockName`
-   from it. The engine never calls `NewSettings` and never holds key material: the node's content
+   from the content wiring (RFC 4 §4.3). The engine never calls `NewSettings` and never holds key material: the node's content
    wiring calls `NewSettings` for each namespace and answers the engine's `Settings(ns)` with the
    value (the RFC 8 offload plan's epic 11, D5). The RFC 8
    offload plan's epic 11 writes the engine's declared interface over this surface at S1, and
