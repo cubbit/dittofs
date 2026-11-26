@@ -504,19 +504,21 @@ suite.**
   faults it can inject and the checksum modes it can select: RFC 4's fault wrapper here, the fault
   proxy in epic 21. A row needing a fault or mode the caller cannot give (a dropped response to a
   committed put, a byte flipped on the first get only, a past-the-end refusal) is skipped by name
-  and reported, never passed. Epic 2 lands its frame and lifecycle rows, and epics 3, 4 and 6 add
-  theirs.
+  and reported, never passed. Epic 2 lands its frame, and epics 3, 4 and 6 add their rows, the
+  lifecycle rows among epic 3's.
 - **Prior art.** The journal's conformance suite; Go's `testing/fstest.TestFS`.
 - **Applied by** epics 2, 3, 4 and 6.
 
 **D3. Time comes from a `Clock` the syncer declares: RFC 8 §2.1's `Now`, `Elapsed` and `After`,
 the same three methods as the engine's `Clock`, declared beside its `Deps`.**
-- Tests use `pkg/sim`'s `TestClock`, which moves only on `Advance`.
-- RFC 3 §1.4 says time "advances only when every task is blocked". To meet that, a test advances
-  only after the syncer reports itself idle, through a per-instance hook set from `export_test.go`.
-- **Prior art.** `pkg/sim.TestClock`, as the journal and the engine use it. Go's `testing/synctest`
-  was considered and not chosen, because its bubble cannot share `pkg/sim`'s clock with the other
-  components.
+- RFC 3 §1.4 says time "advances only when every task is blocked". A test of the syncer alone
+  meets that by running in a `testing/synctest` bubble, whose fake time moves only once every
+  goroutine in it is durably blocked; the `Clock` passed to `pool.New` reads the bubble's time
+  through a test adapter in `export_test.go` (epic 3's D12, the user's decision of 2026-11-26).
+- Where the syncer runs composed with other components, they share `pkg/sim`'s `TestClock`,
+  which moves only on `Advance`, since a bubble cannot share `pkg/sim`'s clock with them.
+- **Prior art.** `pkg/sim.TestClock`, as the journal and the engine use it; `testing/synctest`, as
+  `internal/adapter/core`'s tests use it on `feat/storage-v2`.
 - **Applied by** epics 1, 2 and 3.
 
 **D4. The collector, the conditions and the settings section live in the node's content wiring.**
