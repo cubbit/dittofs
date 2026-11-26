@@ -639,9 +639,14 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
    only from here, so no client reaches a node that has not reconciled or has
    no node epoch to stamp, and no call is answered retry-later while the node
    starts.
-10. **Reconcile** (§2.3) until `Stop`.
+10. **The node's status** (§2.4) is written once, naming what step 9 started,
+    the port each adapter bound included; a write that fails fails the start.
+    Then **reconcile** (§2.3) until `Stop`.
 
-Readiness turns true once every adapter the records enable is serving or was refused at configured ([RFC 20 §3.7](rfc-20-adapters.md#3.7%20Health%20and%20probes)); a refused one raises `adapter_refused` and the others serve.
+Readiness turns true once every adapter the records enable is serving or was refused at configured ([RFC 20 §3.7](rfc-20-adapters.md#3.7%20Health%20and%20probes)), and step 10 has written the node's status; a refused one raises `adapter_refused` and the others serve.
+Until that write commits, the store holds the last start's status, whose ports
+a restart may have released, so a reader that waits on `/health/ready` reads
+this start's.
 
 **Stop.** `Node.Stop` stops the components in reverse build order, each step
 completing before the next, except that the node's shards are handed over
@@ -748,8 +753,8 @@ it discards the walk and starts it again at the next poll.
 
 ### 2.4 What a node reports
 
-Each node writes, in its own node-status record, at most once a second and only
-when a value changed:
+Each node writes, in its own node-status record, once at start step 10 (§2.2)
+and then at most once a second and only when a value changed:
 
 - the **settings generation**, **share list version** and **principals
   generation** it has reconciled through: the highest value of each counter
@@ -2136,7 +2141,7 @@ builds a node any other way, and an architecture test fails on a caller of
 | Requirement | Check | Catches |
 | --- | --- | --- |
 | §2.1 API writes only records | Fault the metadata store's commit of a share create; assert `503`, no storage binding exists, and none appears after the store recovers and a full reconcile runs. Then let the commit succeed and kill the node before it reads the share list; restart: assert the share serves. | a handler calling the engine directly |
-| §2.2 order | Record each component's start and stop. Assert the order of §2.2, that the health endpoints answered `starting` before step 5 ended, that a refused registration started no component, that no adapter listened before the first reconcile completed, that **(cluster)** the shards were handed over before `vfs.Serve` stopped, and that an operation readable before stop is readable through the API until step 3. | an API that stops before the drain it reports |
+| §2.2 order | Record each component's start and stop. Assert the order of §2.2, that the health endpoints answered `starting` before step 5 ended, that a refused registration started no component, that no adapter listened before the first reconcile completed, that readiness turned ready only once the node's status naming each adapter's port this start bound had committed, that **(cluster)** the shards were handed over before `vfs.Serve` stopped, and that an operation readable before stop is readable through the API until step 3. | an API that stops before the drain it reports |
 | §2.3 reconcile | Change a live share setting while the store is unreachable to the node's reads but not its writes; restore reads: assert the change applies at the next read, not at the next generation move. | a missed generation lost for good |
 | §2.4 applied | Freeze one node's reconcile after a share setting changes. Assert the resource's status names that node as behind and, after 5 s, a health condition names it. Change a setting whose own generation is 2 while the settings generation stands at 100, and freeze a node at 100: assert the setting reads not applied there. Change a node-scoped restart-class setting, then a live one: assert the first reads not applied and the second applied on that node until it restarts. | "applied" inferred from the writing node, from a record's own generation, or past a pending restart |
 | §2.5 health | Call the unauthenticated endpoints during start, serving, drain and stop: assert `live` from the live endpoint and one of the four readiness words from the ready one, and nothing else, and that `GET /api/v1/health` without a token is `401`. Assert the metrics listener answers without a token. | grace state or names leaked to anonymous callers |
