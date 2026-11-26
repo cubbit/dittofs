@@ -142,14 +142,21 @@ func proven(p entity.Principal, at netip.Addr) vfs.Call {
 	return vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofTicket, Protection: vfs.ProtectionPrivacy, Evidence: vfs.Evidence{Principal: p}, Client: at}, Caps: vfs.NFSv4Caps}
 }
 
-// as is a call proven by a ticket as the user holding uid, from at.
-// Resolution refuses a claimed identity, so a test of a user's calls signs it
-// in instead.
+// as is a call proven by a ticket as the user holding uid, from at. A
+// proven caller is authenticated and holds its store groups, which a claimed
+// one does not (see claimed), so a test of what a user may do as itself
+// signs it in.
 func (s *shares) as(t *testing.T, uid uint32, at netip.Addr) vfs.Call {
 	t.Helper()
 	p, err := s.fs.Store.Principals().ByProtocolID(t.Context(), entity.ProtocolID{Scheme: entity.SchemeUID, Value: strconv.FormatUint(uint64(uid), 10)})
 	s.must(t, err)
 	return proven(p, at)
+}
+
+// claimed is an AUTH_SYS call from at claiming uid, gid and gids, proving
+// nothing, under NFSv3's profile, so a privileged claim counts on every call.
+func claimed(at netip.Addr, uid, gid uint32, gids ...uint32) vfs.Call {
+	return vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofClaimed, Claims: vfs.Claims{UID: uid, GID: gid, GIDs: gids}, Client: at}, Caps: vfs.NFSv3Caps}
 }
 
 // Root finds a share by path or by name, folded, answers its root and the

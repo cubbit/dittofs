@@ -28,7 +28,9 @@ const (
 // second through Apply, as a settings change anywhere does. Ticket callers
 // are cached and resolve again only after a raise; Secret callers carry no
 // freshness, so every call resolves, which is admission's cost without the
-// cache.
+// cache; Claimed callers, AUTH_SYS claims of a local user's uid and gid, are
+// never cached either, and every call maps the claim through the uid and
+// gid indexes besides.
 //
 // Beside ns/op and allocs/op it reports the store's read transactions per
 // second (reads/s) and per admission (reads/op), both store-wide: the Apply
@@ -49,10 +51,11 @@ const (
 func BenchmarkAdmissionCallers(b *testing.B) {
 	for _, proof := range []struct {
 		name string
-		call func(c *caching, p entity.Principal) vfs.Call
+		call func(c *caching, p entity.Principal, uid uint32) vfs.Call
 	}{
-		{"proof=Ticket", func(c *caching, p entity.Principal) vfs.Call { return c.ticket(p, inLab, 0) }},
-		{"proof=Secret", func(_ *caching, p entity.Principal) vfs.Call { return withSIDs(p, vfs.ProofSecret, nil, nil) }},
+		{"proof=Ticket", func(c *caching, p entity.Principal, _ uint32) vfs.Call { return c.ticket(p, inLab, 0) }},
+		{"proof=Secret", func(_ *caching, p entity.Principal, _ uint32) vfs.Call { return withSIDs(p, vfs.ProofSecret, nil, nil) }},
+		{"proof=Claimed", func(_ *caching, _ entity.Principal, uid uint32) vfs.Call { return claimed(inLab, uid, uid) }},
 	} {
 		b.Run(proof.name, func(b *testing.B) {
 			c := newCaching(b)
@@ -65,7 +68,7 @@ func BenchmarkAdmissionCallers(b *testing.B) {
 			for i := range calls {
 				shares[i] = ids[i%benchShares]
 				u := c.user(b, "u"+strconv.Itoa(i), strconv.Itoa(100_000+i), shares[i], entity.AccessReadWrite)
-				calls[i] = proof.call(c, u.Principal)
+				calls[i] = proof.call(c, u.Principal, uint32(100_000+i))
 			}
 			c.raise(b)
 			ctx := context.Background()

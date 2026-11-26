@@ -45,8 +45,11 @@ func grantTo(p entity.Principal, a entity.ShareAccess) entity.ShareGrant {
 // grant, admission's narrowing and a principal with no file spelling,
 // asserting every Caller field. alice is a file user in Readers and
 // Writers; m is a machine principal, with no uid, in the same two groups;
-// the Anonymous nobody is in Guests, which no grant names. Each case
-// resolves under every protection alike.
+// the Anonymous nobody is in Guests, which no grant names. A claimed caller
+// claims alice's uid with Readers' gid and Writers' and an unmapped gid as
+// its supplementary gids, so its groups are the two mapped ones; with no
+// file spelling it claims a uid no principal holds. Each case resolves under
+// every protection alike.
 func TestResolveTable(t *testing.T) {
 	ctx := context.Background()
 	r := newResolving(t)
@@ -69,32 +72,35 @@ func TestResolveTable(t *testing.T) {
 
 	type access = entity.ShareAccess
 	const none, read, rw, admin = entity.AccessNone, entity.AccessRead, entity.AccessReadWrite, entity.AccessAdmin
-	// proven is what alice, signed in, finds; anon what nobody finds,
-	// unauthenticated.
+	readersGID, writersGID := gidOf(t, r, readers), gidOf(t, r, writers)
+
+	// proven is what alice, signed in, finds; claimed what alice's claimed
+	// uid finds unsquashed, unauthenticated with its claimed groups; anon
+	// what nobody finds, unauthenticated.
 	grants := []struct {
-		name         string
-		grants       []entity.ShareGrant
-		proven, anon access
+		name                  string
+		grants                []entity.ShareGrant
+		proven, claimed, anon access
 	}{
-		{"own read", []entity.ShareGrant{grantTo(alice.Principal, read)}, read, none},
-		{"own read-write", []entity.ShareGrant{grantTo(alice.Principal, rw)}, rw, none},
-		{"own admin", []entity.ShareGrant{grantTo(alice.Principal, admin)}, admin, none},
-		{"own none under everyone's read-write", []entity.ShareGrant{grantTo(alice.Principal, none), grantTo(entity.Everyone, rw)}, none, rw},
-		{"two groups, read and read-write", []entity.ShareGrant{grantTo(readers, read), grantTo(writers, rw)}, rw, none},
-		{"two groups, read-write and read", []entity.ShareGrant{grantTo(readers, rw), grantTo(writers, read)}, rw, none},
-		{"a group's read under authenticated users' read-write", []entity.ShareGrant{grantTo(readers, read), grantTo(entity.AuthenticatedUsers, rw)}, read, none},
-		{"authenticated users' read", []entity.ShareGrant{grantTo(entity.AuthenticatedUsers, read)}, read, none},
-		{"authenticated users' read-write", []entity.ShareGrant{grantTo(entity.AuthenticatedUsers, rw)}, rw, none},
-		{"authenticated users' read under everyone's read-write", []entity.ShareGrant{grantTo(entity.AuthenticatedUsers, read), grantTo(entity.Everyone, rw)}, read, rw},
-		{"everyone's read", []entity.ShareGrant{grantTo(entity.Everyone, read)}, read, read},
-		{"everyone's read-write", []entity.ShareGrant{grantTo(entity.Everyone, rw)}, rw, rw},
-		{"anonymous's own read", []entity.ShareGrant{grantTo(nobody.Principal, read)}, none, read},
-		{"none", nil, none, none},
+		{"own read", []entity.ShareGrant{grantTo(alice.Principal, read)}, read, read, none},
+		{"own read-write", []entity.ShareGrant{grantTo(alice.Principal, rw)}, rw, rw, none},
+		{"own admin", []entity.ShareGrant{grantTo(alice.Principal, admin)}, admin, admin, none},
+		{"own none under everyone's read-write", []entity.ShareGrant{grantTo(alice.Principal, none), grantTo(entity.Everyone, rw)}, none, none, rw},
+		{"two groups, read and read-write", []entity.ShareGrant{grantTo(readers, read), grantTo(writers, rw)}, rw, rw, none},
+		{"two groups, read-write and read", []entity.ShareGrant{grantTo(readers, rw), grantTo(writers, read)}, rw, rw, none},
+		{"a group's read under authenticated users' read-write", []entity.ShareGrant{grantTo(readers, read), grantTo(entity.AuthenticatedUsers, rw)}, read, read, none},
+		{"authenticated users' read", []entity.ShareGrant{grantTo(entity.AuthenticatedUsers, read)}, read, none, none},
+		{"authenticated users' read-write", []entity.ShareGrant{grantTo(entity.AuthenticatedUsers, rw)}, rw, none, none},
+		{"authenticated users' read under everyone's read-write", []entity.ShareGrant{grantTo(entity.AuthenticatedUsers, read), grantTo(entity.Everyone, rw)}, read, rw, rw},
+		{"everyone's read", []entity.ShareGrant{grantTo(entity.Everyone, read)}, read, read, read},
+		{"everyone's read-write", []entity.ShareGrant{grantTo(entity.Everyone, rw)}, rw, rw, rw},
+		{"anonymous's own read", []entity.ShareGrant{grantTo(nobody.Principal, read)}, none, none, read},
+		{"none", nil, none, none, none},
 	}
 	expires := time.Unix(1_900_000_000, 0)
 	for _, g := range grants {
 		share := r.sharing(t, g.grants...)
-		for _, proof := range []pid.ProofKind{pid.ProofNone, pid.ProofSecret, pid.ProofTicket} {
+		for _, proof := range []pid.ProofKind{pid.ProofNone, pid.ProofClaimed, pid.ProofSecret, pid.ProofTicket} {
 			for _, noFile := range []bool{false, true} {
 				if proof == pid.ProofNone && noFile {
 					continue // a None caller names no principal at all
@@ -110,6 +116,12 @@ func TestResolveTable(t *testing.T) {
 							}
 							id.Evidence = pid.Evidence{Name: who.Name, Principal: who.Principal, Expires: expires}
 						}
+						if proof == pid.ProofClaimed {
+							id.Claims = pid.Claims{UID: 1000, GID: readersGID, GIDs: []uint32{writersGID, 4242}}
+							if noFile {
+								id.Claims.UID = 4343
+							}
+						}
 						policy := entity.SharePolicy{Share: share, Squash: squash, Anonymous: nobody.Principal}
 
 						// What §6.1 to §6.5 say this caller is.
@@ -120,6 +132,17 @@ func TestResolveTable(t *testing.T) {
 						}
 						if asItself {
 							want.Access = g.proven
+						}
+						claimsAlice := proof == pid.ProofClaimed && !noFile
+						switch {
+						case proof == pid.ProofClaimed && noFile:
+							want.Mapped = entity.AnonymousPrincipal
+						case claimsAlice:
+							want.Mapped = alice.Principal
+						}
+						if claimsAlice && squash == entity.SquashNone {
+							want.Principal, want.Group, want.Groups = alice.Principal, readers, sorted(readers, writers)
+							want.Access = g.claimed
 						}
 						if asItself && squash == entity.SquashNone {
 							want.Principal, want.Groups = alice.Principal, sorted(readers, writers)
@@ -159,6 +182,16 @@ func TestResolveTable(t *testing.T) {
 			}
 		}
 	}
+}
+
+// gidOf is the gid g holds.
+func gidOf(t *testing.T, r *resolving, g entity.Principal) uint32 {
+	t.Helper()
+	sp, err := r.srv.Spell(context.Background(), g, pid.SchemeGID)
+	if err != nil {
+		t.Fatalf("Spell(%v, gid): %v", g, err)
+	}
+	return sp.Num
 }
 
 func callersEqual(a, b pid.Caller) bool {

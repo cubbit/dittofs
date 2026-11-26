@@ -77,30 +77,36 @@ var noSpan = trace.SpanFromContext(context.Background())
 // step: a proven identity maps to the principal sign-in bound its evidence
 // to, never to its name again, and that principal's user or machine record is
 // re-read, one disabled or deleted refused ErrAccess; a well-known principal,
-// root or anonymous, has no record and none is read. A ProofNone identity
-// maps to the share's Anonymous, the well-known anonymous where the policy
-// names none, a call naming no share included. A call naming no share stops
-// there, with Mapped set.
+// root or anonymous, has no record and none is read. A ProofClaimed identity
+// maps by its claimed uid (see claimedUID): to the user holding it, refused
+// ErrAccess when disabled, to root for 0, else to the well-known anonymous.
+// A ProofNone identity maps to the share's Anonymous, the well-known
+// anonymous where the policy names none, a call naming no share included. A
+// call naming no share stops there, with Mapped set.
 //
-// On a share, a caller the policy squashes, a ProofNone one, or a proven one
-// whose user holds no uid acts as the policy's Anonymous, with that
-// principal's closure for its groups, no deny-only principal and no flag; a
-// deleted or disabled Anonymous refuses it. A caller mapped to the
-// well-known root holds uid 0: a root squash replaces it, and unsquashed it
-// is privileged.
+// On a share, a caller the policy squashes, a ProofNone one, a claimed one
+// mapped to anonymous, or a proven one whose user holds no uid acts as the
+// policy's Anonymous, with that principal's closure for its groups, no
+// deny-only principal and no flag; a deleted or disabled Anonymous refuses
+// it. A caller mapped to the well-known root holds uid 0: a root squash
+// replaces it, and unsquashed it is privileged.
 // Otherwise a proven caller's groups are its closure unioned with those of
-// its evidence's SIDs, its deny-only SIDs mapped apart. A caller in more than
-// groupCap groups is refused.
+// its evidence's SIDs, its deny-only SIDs mapped apart, and a claimed
+// caller's are its claimed gids, each mapped, with Group the holder of its
+// primary gid (see claimedGroups). A caller in more than groupCap groups is
+// refused.
 //
 // Access is the share's grant (see grant): for a proven caller with a uid,
 // read for the principal it mapped to, with that principal's own groups,
-// authenticated, before any squash; for any other caller, for the Anonymous
-// it acts as, with Anonymous's groups, unauthenticated. A squashed proven
-// caller whose grant is none is refused. Access is then narrowed to read
-// where admission narrowed the call, and ReadOnly says why it is read. An
-// unsquashed proven caller is authenticated, admin where its grant is admin,
-// and privileged where it is admin or holds uid 0; no other caller holds a
-// flag.
+// authenticated, before any squash; for an unsquashed claimed caller, for
+// the principal its uid mapped to, with its claimed groups, unauthenticated;
+// for any other caller, for the Anonymous it acts as, with Anonymous's
+// groups, unauthenticated. A squashed proven caller whose grant is none is
+// refused. Access is then narrowed to read where admission narrowed the
+// call, and ReadOnly says why it is read. An unsquashed proven caller is
+// authenticated, admin where its grant is admin, and privileged where it is
+// admin or holds uid 0; an unsquashed claimed caller is privileged where it
+// holds uid 0; no other caller holds a flag.
 //
 // A store error is ErrUnavailable, never a caller.
 //
@@ -141,14 +147,6 @@ func (s *Server) resolveAll(ctx context.Context, id identity.Identity, p entity.
 	if err := forwarded(id); err != nil {
 		return nil, err
 	}
-	// ponytail: a claimed identity is refused, never made anonymous, since
-	// mapping a claimed uid and gid to principals is not built. Upgrade to
-	// RFC 18 §4.3's mapping, with its groups and root by a claimed uid 0,
-	// when the NFS side needs claimed callers resolved.
-	if id.Proof == identity.ProofClaimed {
-		return nil, fmt.Errorf("%w: a claimed identity is not resolved", vfserr.ErrAccess)
-	}
-
 	// The State is loaded once per pass, before its first store read, and the
 	// caller stamped with it. A pass overtaken by an Apply runs once more under
 	// the State then current, and that second answer is served whatever was
@@ -182,6 +180,7 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 	}
 	pr := s.deps.Store.Principals()
 	proven := id.Proof >= identity.ProofSecret
+	claimed := id.Proof == identity.ProofClaimed
 	// decision: a zero Anonymous is the well-known anonymous, never the zero
 	// principal, which owns every share's root. The store already defaults a
 	// share's policy to it, so in production only a call naming no share
@@ -194,11 +193,17 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 		p.Anonymous = entity.AnonymousPrincipal
 	}
 	mapped := p.Anonymous
-	if proven {
+	var u entity.User
+	switch {
+	case proven:
 		mapped = id.Evidence.Principal
+	case claimed:
+		mapped, u, err = s.claimedUID(ctx, pr, id.Claims.UID)
 	}
 	span.SetAttributes(attribute.String("identity.principal", mapped.ID.String()))
-	var u entity.User
+	if err != nil {
+		return nil, err
+	}
 	if proven {
 		if u, err = live(ctx, pr, mapped, reasonDisabled); err != nil {
 			return nil, err
@@ -223,18 +228,22 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 	// that link yet: Kerberos, local NTLM and pass-through all refuse a
 	// principal that is not a user or machine, so this waits for a sign-in
 	// that binds a linked name to root. Overturned if root on one client
-	// must be told apart from root on another.
-	root := proven && mapped == entity.RootPrincipal
-	fileUser := root || proven && slices.ContainsFunc(u.IDs, func(i entity.ProtocolID) bool { return i.Scheme == entity.SchemeUID })
+	// must be told apart from root on another. A claimed uid 0 maps to root
+	// by the reserved uid alone, unprivileged on a share that squashes root.
+	named := proven || claimed
+	root := named && mapped == entity.RootPrincipal
+	fileUser := root || named && slices.ContainsFunc(u.IDs, func(i entity.ProtocolID) bool { return i.Scheme == entity.SchemeUID })
 
 	// A directory principal's enabled state and groups are the directory's,
 	// read on every resolution; a local principal's step sends no query. Its
-	// groups are read only where they are used, on a share for a file user.
+	// groups are read only where they are used, on a share for a proven file
+	// user: a claimed caller's groups are its claimed gids, so its step reads
+	// the entry alone, refusing it once the directory disables it.
 	var dirClosure []entity.Principal
-	if entryID, ok := dirEntryID(u); proven && ok {
+	if entryID, ok := dirEntryID(u); named && ok {
 		now := s.deps.Clock.Now()
 		var oldest time.Time
-		if dirClosure, oldest, err = s.dirStep(ctx, st, mapped, entryID, id.Evidence, fileUser && p.Share != (entity.ShareID{})); err != nil {
+		if dirClosure, oldest, err = s.dirStep(ctx, st, mapped, entryID, id.Evidence, proven && fileUser && p.Share != (entity.ShareID{})); err != nil {
 			return nil, err
 		}
 		c.Fresh = freshUntil(now, oldest, c.Fresh, st.Settings.DirectoryStaleGrace)
@@ -249,6 +258,12 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 	}
 
 	squashed := !fileUser || p.Squash == entity.SquashAll || root && p.Squash == entity.SquashRoot
+	// decision: a root squash replaces only a caller mapped to root, as RFC
+	// 18 §6.2 has it, so a claimed non-root uid claiming gid 0 keeps root's
+	// group on a root-squashed share, where Linux's root_squash also squashes
+	// gid 0. root's group grants only what an ACL or a group grant gives it.
+	// Overturned if gid 0 is to be squashed with uid 0: drop root from an
+	// unsquashed claimed caller's groups on a root share then.
 	// decision: a claimed identity is squashed before its grant is read, a
 	// proven one after. A grant on a claimed uid has no security value, since
 	// any client can claim an administrator's uid; a proven principal's grant
@@ -256,7 +271,8 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 	// squashed share. Overturned if a proof kind between Claimed and Secret
 	// is added; it then needs its own order.
 	var groups, deny []entity.Principal
-	if fileUser {
+	switch {
+	case proven && fileUser:
 		if groups, deny, err = collect(ctx, pr, mapped, id.Evidence, dirClosure); err != nil {
 			return nil, err
 		}
@@ -278,6 +294,20 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 		if squashed && c.Access == entity.AccessNone {
 			return nil, fmt.Errorf("%w: the share grants the caller none", vfserr.ErrAccess)
 		}
+	case claimed && !squashed:
+		// An unsquashed claim's groups are its claimed gids, each mapped
+		// (RFC 18 §6.3), and its grant is read for the principal its uid
+		// mapped to, unauthenticated, so the grant to authenticated users
+		// never matches it.
+		if c.Group, groups, err = s.claimedGroups(ctx, pr, id.Claims); err != nil {
+			return nil, err
+		}
+		if err := s.capped(ctx, mapped, groups); err != nil {
+			return nil, err
+		}
+		if c.Access, err = grant(ctx, pr, p.Share, mapped, groups, false); err != nil {
+			return nil, err
+		}
 	}
 	// decision: squashing replaces the whole principal. A squashed caller
 	// acts as the policy's Anonymous with that principal's groups alone, no
@@ -297,15 +327,15 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 		if err := s.capped(ctx, c.Principal, c.Groups); err != nil {
 			return nil, err
 		}
-		if !fileUser {
+		if !proven || !fileUser {
 			if c.Access, err = grant(ctx, pr, p.Share, c.Principal, c.Groups, false); err != nil {
 				return nil, err
 			}
 		}
 	} else {
 		c.Principal, c.Groups, c.DenyOnly = mapped, groups, deny
-		c.Authenticated = true
-		c.Admin = c.Access == entity.AccessAdmin
+		c.Authenticated = proven
+		c.Admin = proven && c.Access == entity.AccessAdmin
 		c.Privileged = c.Admin || root
 	}
 	slices.SortFunc(c.Groups, comparePrincipals)

@@ -558,36 +558,41 @@ func TestResolveSquashedCallerKeepsNothingOfItsOwn(t *testing.T) {
 	}
 }
 
-// A caller with no principal to act as fails closed, refused ErrAccess and
-// never the zero principal, which owns every share's root: a claimed
-// identity, which resolution maps to no principal, under a policy naming no
-// Anonymous and under one naming a live Anonymous that everyone's read would
-// admit.
+// A claimed caller with no principal to act as fails closed: with the
+// policy's Anonymous deleted, a claim of a uid no principal holds, which
+// acts as anonymous, and a claim of alice's uid on an all-squash share are
+// refused ErrAccess, counted anonymous_missing, though everyone's read would
+// admit them and alice holds an admin grant.
 func TestNoAnonymousPrincipalFailsClosed(t *testing.T) {
 	ctx := context.Background()
 	r := newResolving(t)
 	alice := entity.User{Principal: entity.NewUser(), Name: "alice", IDs: fileIDs("1000")}
 	r.user(t, alice, 0)
 	nobody := entity.User{Principal: entity.NewUser(), Name: "nobody", IDs: fileIDs("60000")}
-	r.user(t, nobody, 0)
-	none := r.grantedShare(t, entity.SquashAll, entity.Principal{}, alice.Principal, entity.AccessAdmin)
-	if _, err := r.cp.SetGrant(ctx, entity.ShareGrant{Share: none.Share, Principal: entity.Everyone, Access: entity.AccessRead}, 0); err != nil {
+	gen := r.user(t, nobody, 0)
+	all := r.grantedShare(t, entity.SquashAll, nobody.Principal, alice.Principal, entity.AccessAdmin)
+	if _, err := r.cp.SetGrant(ctx, entity.ShareGrant{Share: all.Share, Principal: entity.Everyone, Access: entity.AccessRead}, 0); err != nil {
 		t.Fatalf("SetGrant: %v", err)
 	}
-	named := none
-	named.Squash, named.Anonymous = entity.SquashNone, nobody.Principal
-	claimed := pid.Identity{Proof: pid.ProofClaimed, Claims: pid.Claims{UID: 1000, GID: 1000}}
-	for _, c := range []struct {
+	if err := r.cp.DeleteUser(ctx, nobody.Principal, gen); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+	unsquashed := all
+	unsquashed.Squash = entity.SquashNone
+	for i, c := range []struct {
 		name  string
 		id    pid.Identity
 		share entity.SharePolicy
 	}{
-		{"claimed, no Anonymous", claimed, none},
-		{"claimed, a live Anonymous", claimed, named},
+		{"an unmapped uid", pid.Identity{Proof: pid.ProofClaimed, Claims: pid.Claims{UID: 4242, GID: 4242}}, unsquashed},
+		{"alice's uid, all-squashed", pid.Identity{Proof: pid.ProofClaimed, Claims: pid.Claims{UID: 1000, GID: 1000}}, all},
 	} {
 		got, err := r.srv.Resolve(ctx, c.id, c.share, pid.ReadOnlyNotNarrowed)
 		if !errors.Is(err, vfserr.ErrAccess) || got != nil {
 			t.Errorf("%s: Resolve = %+v, %v; want nil, ErrAccess", c.name, got, err)
+		}
+		if got, want := r.refusals(t, "anonymous_missing"), float64(i+1); got != want {
+			t.Errorf("refusals{anonymous_missing} after %s = %v, want %v", c.name, got, want)
 		}
 	}
 }
