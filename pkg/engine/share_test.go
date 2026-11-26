@@ -1019,6 +1019,41 @@ func TestBindChangesASharesSettingsWhole(t *testing.T) {
 	}
 }
 
+// A Start handed a share Bind refuses for other than its settings, an
+// unknown state or a negative limit, refuses that share alone as well, and
+// serves the other.
+func TestStartRefusesOnlyTheShareBindWouldRefuse(t *testing.T) {
+	for _, c := range []struct {
+		key string
+		bad func(*engine.Share)
+	}{
+		{"the state is unknown", func(s *engine.Share) { s.State = 7 }},
+		{"the journal limit is negative", func(s *engine.Share) { s.Limit = -1 }},
+	} {
+		t.Run(c.key, func(t *testing.T) {
+			s := newStarter(t)
+			s.closeAtEnd(t)
+			c.bad(&s.two)
+
+			if err := s.start(t); err != nil {
+				t.Fatalf("Start = %v, want nil: one invalid share does not stop the others", err)
+			}
+
+			if err := s.write(t, s.one.ID); err != nil {
+				t.Errorf("a write on the valid share = %v, want it served", err)
+			}
+
+			if got := s.e.Stats().Shares[s.two.ID]; !refusesNaming(got.Refused, s.two.ID, c.key) {
+				t.Errorf("the invalid share's stats: refused %v, want ErrInvalid naming %v and %q", got.Refused, s.two.ID, c.key)
+			}
+
+			if err := s.write(t, s.two.ID); !isDelay(err, vfserr.DelayFrozen) {
+				t.Errorf("a write on the refused share = %v, want ErrDelay(DelayFrozen)", err)
+			}
+		})
+	}
+}
+
 // A Start handed a share with an invalid setting refuses that share alone: it
 // is not attached and Stats names it with the key, while the other share is
 // served. A later Bind with valid settings is refused too, since Start never
@@ -1048,9 +1083,9 @@ func TestStartRefusesOnlyTheShareWithInvalidSettings(t *testing.T) {
 				t.Errorf("a write on the refused share = %v, want ErrDelay(DelayFrozen)", err)
 			}
 
-			if err := s.e.Bind(t.Context(), good); !errors.Is(err, vfserr.ErrUnavailable) ||
-				!strings.Contains(err.Error(), "not replayed") {
-				t.Errorf("Bind of the refused share with valid settings = %v, want ErrUnavailable: its journal was not replayed", err)
+			if err := s.e.Bind(t.Context(), good); !errors.Is(err, vfserr.ErrUnavailable) || errors.Is(err, vfserr.ErrInvalid) ||
+				!strings.Contains(err.Error(), c.key) {
+				t.Errorf("Bind of the refused share with valid settings = %v, want ErrUnavailable alone, naming the start refusal's %s", err, c.key)
 			}
 
 			if err := s.write(t, s.two.ID); !isDelay(err, vfserr.DelayFrozen) {

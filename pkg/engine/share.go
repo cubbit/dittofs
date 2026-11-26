@@ -164,7 +164,7 @@ func (e *Engine) Bind(ctx context.Context, s Share) error {
 	case b == nil && len(e.journals) > 0 && e.health.Shares[s.ID].Refused != nil:
 		e.mu.Unlock()
 
-		return heldBack(s.ID)
+		return heldBack(s.ID, e.health.Shares[s.ID].Refused)
 	case b != nil:
 		err := b.change(s)
 		e.mu.Unlock()
@@ -181,6 +181,13 @@ func (e *Engine) Bind(ctx context.Context, s Share) error {
 		// the journal up to the old one meanwhile.
 		if s.Limit != b.share.Limit {
 			e.d.Logger.Warn("journal limit change applies only when the share is bound again", "share", s.ID)
+		}
+		// decision: a served share's Store is not changed by a Bind, only
+		// logged, because no flow is opened on it yet and so nothing reads
+		// the binding's Store: the next start binds the new one. Refuse or
+		// apply the change once offload opens a flow on a share's Store.
+		if s.Store != b.share.Store {
+			e.d.Logger.Warn("store change applies only when the share is bound again", "share", s.ID)
 		}
 
 		return nil
@@ -203,18 +210,21 @@ func (e *Engine) Bind(ctx context.Context, s Share) error {
 }
 
 // heldBack refuses a Bind of share id, which Start refused for its settings
-// over an open journal.
+// over an open journal, or which a failed retried open left unattached;
+// cause is that refusal, named in the text so the caller's record keeps the
+// setting at fault, and not wrapped, so ErrUnavailable is the one sentinel.
 //
 // decision: a share Start refused is not attached by a later Bind, even with
 // valid settings, because Start's replay, clone rebuild and removal
-// collection (RFC 8 §2.5 steps 3 and 4) never ran for it and Bind runs none
-// of them: attaching it would serve its files without the writes its journal
-// holds. It is served from the next start. Withdraw this once a Bind of such a
+// collection (RFC 8 §2.5 steps 3 and 4) did not complete for it, whether
+// Start refused it or a retried open failed after replaying, and Bind runs
+// none of them: attaching it would serve its files without the state its
+// journal holds. It is served from the next start. Withdraw this once a Bind of such a
 // share runs those steps for it, or Start runs them and holds back only the
 // publish.
-func heldBack(id entity.ShareID) error {
-	return fmt.Errorf("engine: share %v: refused at start, so its journal was not replayed: served from the next start: %w",
-		id, vfserr.ErrUnavailable)
+func heldBack(id entity.ShareID, cause error) error {
+	return fmt.Errorf("engine: share %v: refused at start (%v), and Bind does not attach a share start refused: served from the next start: %w",
+		id, cause, vfserr.ErrUnavailable)
 }
 
 // validShare refuses a share Bind cannot attach: a zero ID or tag, a

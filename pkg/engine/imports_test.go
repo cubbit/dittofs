@@ -137,6 +137,18 @@ func TestImportRuleRefusesFilesystemAndOpenState(t *testing.T) {
 	}
 }
 
+// The syncer's contract, which the engine may import, imports nothing but
+// the standard library, so the allowance never reaches the syncer's
+// implementation through it.
+func TestSyncerContractImportsOnlyTheStandardLibrary(t *testing.T) {
+	imports, _, _ := packageImports(t, filepath.Join("..", "syncer"))
+	for _, imp := range imports {
+		if first, _, _ := strings.Cut(imp, "/"); strings.Contains(first, ".") {
+			t.Errorf("pkg/syncer imports %q, want the standard library only", imp)
+		}
+	}
+}
+
 // forbidden returns why the package at rel, a slash-separated path relative
 // to this directory, may not import path, or "" when it may.
 func forbidden(rel, path string) string {

@@ -161,7 +161,7 @@ func (e *Engine) StateOf(s entity.ShareID) ShareState {
 func (e *Engine) SettingsOf(s entity.ShareID) (ShareSettings, bool) {
 	b := e.table()[s]
 
-	if b == nil || b.removed {
+	if b == nil || b.removed || b.settings.Load() == nil {
 		return ShareSettings{}, false
 	}
 
@@ -265,6 +265,7 @@ func (e *Engine) SetPrimary(s entity.ShareID, node entity.NodeID, nodeEpoch, inc
 		gc:          old.gc,
 	}
 	b.state.Store(old.state.Load())
+	b.settings.Store(old.settings.Load())
 	t[s] = b
 	e.shares.Store(&t)
 }

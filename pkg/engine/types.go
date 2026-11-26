@@ -35,7 +35,9 @@ type Share struct {
 	Limit     int64              // the share's journal limit, in bytes
 	State     ShareState
 	// Store is the share's remote block store, as the syncer registered it
-	// (RFC 8 §12.1); zero while no flow is opened, and not validated.
+	// (RFC 8 §12.1); zero while no flow is opened, and not validated, since
+	// nothing reads it yet. A served share's Bind logs a change and keeps
+	// the Store it was bound with.
 	Store    syncer.StoreID
 	Settings ShareSettings // validated by Start and Bind (RFC 8 §2.4)
 }
