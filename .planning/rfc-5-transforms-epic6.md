@@ -17,7 +17,8 @@ meets them; §8.1's §2.5, T18, T22 (the key file), wrap-count and golden-vector
 `MKW‖masterKeyID`, §4.2.1's encoding of key kinds, key IDs and master key IDs, and §4.3's codecs.
 [RFC 13](../docs/internals/rfcs/rfc-13-configuration.md) §4.2 (a key file's verified escrow), §7 (the
 key rules), §9's rows "§7 namespace keys", "§7 chunk-ID key" and "§7 key table" (its
-non-encrypting-namespace and escrow clauses), and Appendix C (the key file's passphrase, the
+non-encrypting-namespace and escrow clauses; the key-record half of the non-encrypting clause, E8
+its key-object half), and Appendix C (the key file's passphrase, the
 `storage` role's retired keys). [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §1.2
 (component imports as amended, and a verified in-memory implementation of every interface a
 component takes). Every citation is the RFCs' text on `develop`; the code lands on
@@ -157,7 +158,7 @@ title and not copied.
 | rule 6, **known failures shrink** | none | `unit` and `integration` keep no `known.yaml` for this component; every test lands green |
 | rule 7, **v2 ignores v1, and imports only what RFC 0 §1.2 allows** | T6.1, T6.2, T6.3 | the provider imports `keys`, `entity`, `internal/keyfile`, `golang.org/x/crypto`, `github.com/google/uuid` and the standard library; never `kvstore`, `pkg/keyprovider`, `pkg/settings`, `pkg/metrics` or `pkg/health`. It declares the key-record view in plain types, which `kvstore` and `keystest` satisfy without importing it (D1). `internal/keyfile` imports no module-internal package (D14). E1's import test holds both |
 | rule 8, **real dependencies for properties of those dependencies** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T6.2, T6.8 | the view's suite runs on `kvstore` over the Badger and FoundationDB openers its own suite uses; key creation's ordering claim is tested with `kvtest.FaultKV` failing the commit beneath `kvstore`, and with a committed creation found again by a fresh provider |
-| rule 9, **code comment conventions** ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T6.2, T6.3, T6.4, T6.5, T6.7, T6.8 | RFC 5's `decision:` note on the clear chunk-ID key at key creation (R27); D1's at the view's `Update`, D5's at the wrap count, D6's at `VerifyEscrow`, D11's at the failure mapping, D13's at `WrapSalvageKey`, D15's at the `storage`-key check; D10's `ponytail:` at the cache |
+| rule 9, **code comment conventions** ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T6.2, T6.3, T6.4, T6.5, T6.7, T6.8 | RFC 5's `decision:` note on the clear chunk-ID key at key creation (R27); D1's at the view's `Update`, D5's at the wrap count, D6's at `VerifyEscrow`, D11's at the failure mapping, D13's at `WrapSalvageKey`, D15's at the `storage`-key check, D16's at `Reconfigure`'s master-key refusal; D10's `ponytail:` at the cache |
 | rule 10, **a test must be able to fail** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test in §6 names the bug it catches; the fingerprint and wrap vectors are E2's, computed by an independent implementation, never by this code |
 | rule 11, **a symbol is exported only if RFC 5's interface or a consumer outside the package uses it** | T6.2, T6.3, T6.5, T6.6, T6.7, T6.8 | each export names its consumer in §6: `New`, `Open`, `Reconfigure`, `ValidateConfig`, `ErrWrapLimit`, `Config`, `Deps`, `StorageKey`, `Row`, `KeyRecords` for the content wiring, `kvstore` and `keystest`; `Calls` for `keystest.Harness`; `Status` for the content wiring; `CreateKeys`, `VerifyEscrow`, `Escrow` and `ErrNotEscrowed` for E9; `keystest.Records` and `RunKeyRecords` for the provider's tests, `kvstore`'s tests and the RFC 8 offload plan's. They are frozen when E9 first calls them |
 | rule 12, **each subtask creates only what it declares** | all | the view lands with its first consumer, the custody (T6.3); the key file's custody is concrete code, and the interface E7 needs lands with E7's second implementation (D3); the `keyseq` subtag is not added: this epic writes no `keys` object, and its writers conflict through a range guard (D1), so the key lock lands with E8's first writer of one |
@@ -483,7 +484,8 @@ pkg/transform/keystest/
   records_test.go       T6.2  Records passes; each broken view fails its row
 pkg/metadata/kvstore/
   keyrecords.go         T6.2  KeyRecords: Load, the guarded Update, RaiseWrapCount; kinds and states as bytes
-  keyrecords_test.go    T6.2  RunKeyRecords over the suite's Badger and FoundationDB openers
+  keyrecords_test.go    T6.2  RunKeyRecords over the suite's Badger opener
+  keyrecords_fdb_test.go  T6.2  RunKeyRecords over the FoundationDB opener, behind foundationdb
 pkg/transform/keys/
   keys.go               T6.3  ErrWrapLimit
                         T6.7  ErrNotEscrowed
@@ -507,6 +509,7 @@ pkg/transform/keys/provider/
   escrow_test.go        T6.7  the escrow rows
   create_test.go        T6.8  the key table, concurrency, the failed and committed creations
   testdata/fuzz/        T6.3, T6.5  crashers, when found
+docs/internals/rfcs/rfc-5-transforms.md  T6.3, T6.5  §8.3's suites line names FuzzStoredWrap and FuzzKeyRecord
 ```
 
 ## 6. Subtasks
@@ -544,7 +547,7 @@ pkg/transform/keys/provider/
 
 **Subtask T6.2 estimate: 3.5 man-days.**
 
-- **Track:** C. **Depends on:** none.
+- **Track:** C. **Depends on:** S2 (E2's T2.1, which creates `keystest`).
 - **Covers:** R1, R13, R15, R16, R22 (the conditional raise), R28 (the conflict), R50.
 - **Deliverables:**
   - `pkg/metadata/kv/keys`: `KindMKW byte = 0x4D`, its name in `format.go`, and the kind in
@@ -837,7 +840,7 @@ pkg/transform/keys/provider/
   with another key file's `Config`: refused naming both IDs, and the provider still serves and wraps
   under its own key; with a new passphrase and an added pass: accepted, the gate open (catch a
   master key swapped at run time, or a live change that needs a restart, R53).
-- **Rules:** rule 9: D6's `decision:`.
+- **Rules:** rule 9: D6's `decision:`, and D16's at `Reconfigure`'s master-key refusal.
 
 ### T6.8 Namespace key creation
 
@@ -855,7 +858,8 @@ pkg/transform/keys/provider/
   - An encrypting namespace has four `current` rows, each served by `Current` and `Get`; a
     non-encrypting one has two, its chunk-ID key in the clear with no master key ID, and `Current`
     of `chunking-key` is `ErrUnknownMaterial`.
-  - A second `CreateKeys` of a namespace changes nothing and makes no row.
+  - A second `CreateKeys` of a namespace writes no row and keeps the existing IDs; the wrap count
+    may rise, an overcount Appendix B.1 allows (D7).
   - With the gate shut, creating an encrypting namespace is `ErrNotEscrowed` naming the key, and
     nothing is written or counted; a non-encrypting one succeeds.
 - **Tests:**
@@ -884,6 +888,7 @@ pkg/transform/keys/provider/
 ```mermaid
 flowchart TD
   S2(["S2 suites and vectors in"]):::sync --> T6_3
+  S2 --> T6_2
   T6_1["T6.1 internal/keyfile"] --> T6_3["T6.3 Stored wrap, key-file custody, count"]
   T6_2["T6.2 Key-record view, its suite, Records and kvstore's"] --> T6_3
   T6_2 --> C0(["after T6.2: the RFC 8 offload plan's epic 18 can read key-record states"]):::sync
@@ -897,7 +902,7 @@ flowchart TD
   classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
 ```
 
-T6.1 and T6.2 run in parallel. After T6.3, T6.4, T6.5 and T6.7 can run in parallel; T6.6 and T6.8
+T6.1 and T6.2 run in parallel, T6.2 once S2 is in. After T6.3, T6.4, T6.5 and T6.7 can run in parallel; T6.6 and T6.8
 close the epic.
 
 ## 8. Suggested pull requests
@@ -905,7 +910,7 @@ close the epic.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T6.1 | 0.75 | — | the moved format alone, a refactor `pkg/keyprovider`'s tests check |
-| 2 | T6.2 | 3.5 | — | the key-record view's suite and both implementations, with the `MKW` kind; open beside PR 1 |
+| 2 | T6.2 | 3.5 | S2 | the key-record view's suite and both implementations, with the `MKW` kind; open beside PR 1 |
 | 3 | T6.3, T6.4, T6.7 | 5.5 | PR 1, PR 2 | the provider's constructor and everything that wraps: the key-file custody and its count, the salvage key and the escrow check, which `Config` and `New` name |
 | 4 | T6.5, T6.6 | 5.5 | PR 3 | the read path and the suite that holds it: records, `Open`, `Current`, `Get`, `Status`, `keystest.Run` |
 | 5 | T6.8 | 3 | PR 4 | key creation, the provider's last writer, with its failure rows |
@@ -922,7 +927,9 @@ A suggestion only: one pull request per subtask works as well.
   share's configuration at all, no provider exists to wrap under, which RFC 1 §3 and the RFC 8
   offload plan's epic 20 decide. The wording to propose: "wrapped under the current master key of
   its share's store configuration". E6's code does not change with the answer: only which provider
-  the content wiring hands the engine does.
+  the content wiring hands the engine does. E1's open point asks for the answer before E6 builds
+  the wrap; T6.4 departs from that and builds on D13's reading, because the wrap's code is the
+  same under every answer, and D13's `decision:` marker holds the reading until RFC 5 states it.
 - **The salvage AAD as RFC text (D12).** Proposed for Appendix B.1's joined-inputs table: "salvage
   key wrap AAD | namespace ID (4-byte length 0) ‖ `salvage-key` (4-byte length, ASCII) ‖ the export's
   name (4-byte length, its bytes)", so a recovery tool can rebuild it, with a golden vector beside
