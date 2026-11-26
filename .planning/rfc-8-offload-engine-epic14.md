@@ -14,7 +14,7 @@ and removal series, the work-queue lock, the removal batch's span), §15.2's "§
 [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §1.2, which keeps `pkg/health` out of what
 the queue adds.
 **Track:** A.
-**Epic 14 estimate: 10 subtasks, 22.5 man-days.**
+**Epic 14 estimate: 10 subtasks, 23 man-days.**
 **Depends on:** epic 13, `pkg/workqueue` built behind the surface epic 11 froze (S1): every rule of
 RFC 8 §6.1.1 holds over a scheduler instance alone, its single run per key, its backoff and the
 lost-wakeup leg of "§6.1.1 a stuck run" among them; epic 11's `Settings` retry and rescan keys,
@@ -156,6 +156,8 @@ the scheduler itself guarantees is epic 13's, held by its tests; a row here stat
 | R12 | No engine source re-posts at a deadline of its own, and a source's `Run` answers one result per item; nothing re-runs a step after its run returned | MUST NOT | RFC 8 §6.1, §6.1.1 | T14.2, T14.5, T14.6 |
 | R13 | One file's work of one kind is one key, carrying no version and no attempt, so E41's single run per key and its never-shortened backoff, which the scheduler holds, hold for the file | invariant | RFC 8 §13 E41, §6.1 | T14.3, T14.5 |
 | R14 | A source re-derives dropped work from its durable records within its own bound: offload by the age tick, removals by the rescan | MUST | RFC 8 §6.1.1, §6.1 | T14.3, T14.7 |
+| R48 | A file's work list holding only durable work exists only while its removal key holds a scheduler entry; a refused post or a dropped entry drops the list, counted in the removal source's drop count, and the rescan re-derives it | MUST | RFC 24 §5.1; RFC 8 §6.1 | T14.6, T14.7 |
+| R49 | The removals holding in-memory work are at most the removal source's `Total`, 131,072, per instance: each phase 1 reserves one slot before its journal step until its in-memory obligations end, and at the cap a new phase 1 answers `ErrDelay` with `DelayResources`, holding no guard | MUST | RFC 24 §5.1; RFC 8 §8.1 | T14.6 |
 
 **Events**
 
@@ -250,10 +252,17 @@ the scheduler itself guarantees is epic 13's, held by its tests; a row here stat
   only uncounted ones remain, and else `Done`, after re-posting its own key when a `Resume` advanced
   or obligations remain (the scheduler's redo mark, so it is pending again at once). The list is
   created when a removal's phase 1 commits, for each file the rebuild lists and for an in-memory
-  obligation, whether or not the key's post is accepted, so it holds one entry per file with a
-  removal not done or not pruned, a pending release or a clone in flight, as the first part's loop
-  items and its start step 4 did; the gauges are read from it (T14.5). The rescan re-posts every
-  list whose key is absent before it reads the index (T14.7). Once `Close` has begun the lists are closed: a new obligation is ended at once, as an
+  obligation. Lists are bounded two ways (RFC 24 §5.1, the user's decision of 2026-11-26). A list
+  holding only durable work, a removal not done or not pruned, exists only while its key holds a
+  scheduler entry: when the post is refused, or the entry is dropped, the list goes with it, counted
+  in the removal source's drop count, and the rescan re-derives the work from the index (R48). A
+  list holding in-memory work, which no record re-derives, is kept whether or not its key's post is
+  accepted, and the removals holding such work are capped at the removal source's `Total`, 131,072:
+  each removal's phase 1 reserves one slot before its journal step and holds it until that
+  removal's in-memory obligations end, and at the cap a new phase 1 answers `ErrDelay` with
+  `DelayResources` before its journal step (R49). The gauges are read from the lists and the index
+  (T14.5). The rescan re-posts every in-memory list whose key is absent before it reads the index
+  (T14.7). Once `Close` has begun the lists are closed: a new obligation is ended at once, as an
   enqueue on the stopped loop was. A `decision:` at the list says a file's obligations run in one run,
   in version order, overturned if one must run apart from the others. Prior art: client-go's
   workqueue keeps only keys and its informer's store holds the objects a worker reads by key (from
@@ -301,7 +310,10 @@ the scheduler itself guarantees is epic 13's, held by its tests; a row here stat
   the entry's error, so its run answers `Retry`, counted, and stalls it (R27) rather than answering
   `Done` over a removal its prefix read cannot see; the file's other entries and the shard's other
   removals go on. The recorded error clears when a later rescan reads the entry cleanly or finds it
-  gone, and the file's next run goes on from there. A `decision:` at step 4 names the fail-closed
+  gone, and the file's next run goes on from there. An orphan entry, one whose removal record is
+  missing, is never removed by the engine: its file stalls, `removal_stalled` names the file (R31),
+  and start step 4 keeps failing closed on it until an operator repairs it, the user's decision of
+  2026-11-26. A `decision:` at step 4 names the fail-closed
   start, withdrawn if a clone's protection is ever rebuilt from a record other than the destination's
   removal. The offload plan keeps this call "as it is"; this decision is the one change, which its
   three callers, start step 4, the rebuild at a runtime `Bind` and the rescan, absorb. Prior art: a
@@ -612,10 +624,10 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
 
 ### T14.6 The removal source's in-memory work, and the loop deleted
 
-**Subtask T14.6 estimate: 5.5 man-days.**
+**Subtask T14.6 estimate: 6 man-days.**
 
 - **Track:** A. **Depends on:** T14.5.
-- **Covers:** R9, R12, R30, R31, R32, R33, R34, R35, R39, R40, R47.
+- **Covers:** R9, R12, R30, R31, R32, R33, R34, R35, R39, R40, R47, R48, R49.
 - **Deliverables:** the file's work list of D2 with its `decision:`: `retryLater`, `behindClone` and
   the pending release's retry, the existence commit's retry, and `clonePhase2`'s hold, served wait,
   batches, `settleClone` and `Release` become obligations on the list, each counted or uncounted as
@@ -663,6 +675,12 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
     `Close` meanwhile returns within its bound;
   - a `Clone` call in flight across `Close` returns (catches an obligation added after the lists'
     end, D2);
+  - with the removal source's `Total` sized down to 4 from `export_test.go` and four pending
+    releases held: a fifth unlink answers `ErrDelay` with `DelayResources` and holds no guard, and
+    succeeds once one release ends (catches an uncapped or leaked slot, R49); with the source's
+    tenant reservation full, a truncate whose key is refused leaves no list behind, the drop count
+    rises, and the next rescan completes the truncate (catches a durable-only list kept past its
+    entry, R48);
   - an `Unbind` with a clone in flight waits for it while a truncate of the same share stays parked,
     and `Drop` then frees the destination's guard (D3);
   - a removal's prune failing at the store at every retry fences the node after 30 s, and the fence
@@ -713,7 +731,7 @@ docs/internals/rfcs/rfc-8-engine.md  this pull request: §2.6's Watch and Loop (
 **Subtask T14.8 estimate: 1 man-days.**
 
 - **Track:** A. **Depends on:** none.
-- **Covers:** none of R1 to R47: plan rule 2 and `CLAUDE.md`'s fuzz rule, consumed by T14.5's and
+- **Covers:** none of R1 to R49: plan rule 2 and `CLAUDE.md`'s fuzz rule, consumed by T14.5's and
   T14.7's reads and by "§8.1 removal wedge" (T14.9).
 - **Deliverables:** in `pkg/metadata/kvstore/removal_fuzz_test.go`, `FuzzRemovalIndexKey` (the
   index key's file and version after its prefix), `FuzzRemovalRecord` (`decodeRemoval`) and
@@ -797,7 +815,7 @@ and can run at any point.
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T14.1, T14.2 | 4.5 | — | the instance and the offload source epic 16 builds on |
-| 2 | T14.5, T14.6, T14.9 | 10.5 | PR 1 | the removal source whole, so the loop is deleted in the change that replaces it, and the rows it turns green |
+| 2 | T14.5, T14.6, T14.9 | 11 | PR 1 | the removal source whole, so the loop is deleted in the change that replaces it, and the rows it turns green |
 | 3 | T14.3, T14.4 | 3.5 | PR 1, epic 15's `offloadDue` | the events; can be open beside PR 2 |
 | 4 | T14.7, T14.8, T14.10 | 4 | PR 2, PR 3 | the rescan, the fuzz targets and the checks over both sources |
 
@@ -814,7 +832,7 @@ also ship on its own beside any of them.
 - **Hand-offs other documents must take.** Epic 16 takes the overwrite prune kind and RFC 8 §6.1's
   prune `ponytail:` (D9), which the offload plan placed here. Epic 16 also takes T14.4's leg where a
   file failing through `FaultRemote` re-runs within `offload.retry_max_pressure` once pressure is on.
-- **Estimate.** 22.5 man-days in 10 subtasks against the offload plan's 15 in 6: the first part's
+- **Estimate.** 23 man-days in 10 subtasks against the offload plan's 15 in 6: the first part's
   removal loop runs six kinds of item, five held in memory, the clones stateful and some retrying
   uncounted, and its tests (32 in the three removal files, and loop accessors used by 17 more files)
   all move (T14.6); the listing changes (D6); a late attach gains its tenants here (T14.1). T14.6 is the least certain figure.
