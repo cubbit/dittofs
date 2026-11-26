@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/workqueue"
 )
 
 // shareCondition is the condition named name that Stats reports for share s
@@ -434,4 +436,147 @@ func TestStatsClearsRemovalStalledOnDrop(t *testing.T) {
 		_, ok := shareCondition(u.e.Stats(), u.share.ID, "removal_stalled", f)
 		return !ok
 	})
+}
+
+// errorType is the one interface a returned value may hold.
+var errorType = reflect.TypeFor[error]()
+
+// valuePointees are the other packages' types a returned value may point to:
+// snapshots the caller owns, never a component.
+var valuePointees = []reflect.Type{
+	reflect.TypeFor[journal.Stats](),
+	reflect.TypeFor[journal.SyncFailure](),
+}
+
+// componentFields reports every place in t, reached through struct fields,
+// pointers, map keys and values, and slice and array elements, that could hand
+// the caller a component: an interface but error, a func or a channel
+// anywhere, and a pointer to another package's type but a snapshot's. Another
+// package's value type is walked as the engine's own; a struct's unexported
+// fields are its own implementation and are not walked.
+func componentFields(t reflect.Type, path string, seen map[reflect.Type]bool) []string {
+	if seen[t] {
+		return nil
+	}
+
+	seen[t] = true
+
+	switch t.Kind() {
+	case reflect.Interface:
+		if t != errorType {
+			return []string{path + ": interface " + t.String()}
+		}
+	case reflect.Func, reflect.Chan, reflect.UnsafePointer:
+		return []string{path + ": " + t.Kind().String() + " " + t.String()}
+	case reflect.Pointer:
+		el := t.Elem()
+		if el.PkgPath() != "" && el.PkgPath() != reflect.TypeFor[engine.Stats]().PkgPath() && !slices.Contains(valuePointees, el) {
+			return []string{path + ": pointer to " + el.String()}
+		}
+
+		return componentFields(el, path+".*", seen)
+	case reflect.Map:
+		return append(componentFields(t.Key(), path+"[key]", seen), componentFields(t.Elem(), path+"[]", seen)...)
+	case reflect.Slice, reflect.Array:
+		return componentFields(t.Elem(), path+"[]", seen)
+	case reflect.Struct:
+		var out []string
+
+		for f := range t.Fields() {
+			if f.IsExported() {
+				out = append(out, componentFields(f.Type, path+"."+f.Name, seen)...)
+			}
+		}
+
+		return out
+	}
+
+	return nil
+}
+
+// Share, Stats and their parts hold values and identifiers, never a flow, a
+// store, a scheduler or a journal (RFC 8 §12.1), so nothing the node reads
+// or hands in reaches a component through them.
+func TestStatsAndShareHoldNoComponent(t *testing.T) {
+	for _, typ := range []reflect.Type{
+		reflect.TypeFor[engine.Share](),
+		reflect.TypeFor[engine.Stats](),
+		reflect.TypeFor[engine.ShareStats](),
+		reflect.TypeFor[engine.JournalStats](),
+	} {
+		for _, bad := range componentFields(typ, typ.Name(), map[reflect.Type]bool{}) {
+			t.Errorf("%s could hand the caller a component", bad)
+		}
+	}
+}
+
+// The walk refuses each way a component could be returned: a scheduler, a
+// journal, a func and a channel, at a field, behind a map and in a slice.
+func TestComponentFieldsRefusesAComponent(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		typ  reflect.Type
+	}{
+		{"a scheduler", reflect.TypeFor[struct{ S *workqueue.Scheduler }]()},
+		{"a journal", reflect.TypeFor[struct{ J engine.Journal }]()},
+		{"a func", reflect.TypeFor[struct{ F func() }]()},
+		{"a channel in a map", reflect.TypeFor[struct{ M map[string]chan int }]()},
+		{"a scheduler in a slice", reflect.TypeFor[struct{ S []*workqueue.Scheduler }]()},
+		{"a scheduler as a map key", reflect.TypeFor[struct{ M map[*workqueue.Scheduler]int }]()},
+	} {
+		if len(componentFields(c.typ, c.name, map[reflect.Type]bool{})) == 0 {
+			t.Errorf("the walk took %s", c.name)
+		}
+	}
+}
+
+// frozenStatsFields is every offload field of Stats and its parts, with its
+// type: the readers of each, the node's adapter and the red rows, compile
+// against them before offload fills them.
+var frozenStatsFields = map[reflect.Type][]string{
+	reflect.TypeFor[engine.ShareStats](): {
+		"DirtyBytes int64", "DrainBytesPerSecond float64", "DrainTime time.Duration",
+		"OldestUnoffloaded time.Duration", "RemovalsPending int64", "OldestRemoval time.Duration",
+	},
+	reflect.TypeFor[engine.Stats](): {
+		"DirtyBytes int64", "DrainBytesPerSecond float64", "DrainTime time.Duration",
+		"OldestUnoffloaded time.Duration", "RemovalsPending int64", "OldestRemoval time.Duration",
+		"OffloadPasses map[string]int64", "PipelineStateSeconds map[string]engine.Series",
+		"PipelineRetries map[string]int64", "AttemptsAbandoned int64", "IntentsAbandoned int64",
+		"FailingFiles int64", "PassesAborted int64", "IntentMissing int64",
+		"StageBusy map[string]float64", "Fetches map[string]int64", "FetchBytes int64",
+		"Fills map[string]int64", "SpeculationBytes int64", "SpeculationUsedBytes int64",
+		"Reresolves int64", "EvictedBytes int64", "PacingSeconds engine.Series",
+		"LedgerMismatches int64", "ShareTableLockWaits engine.Series", "WorkQueueLockWaits engine.Series",
+	},
+	reflect.TypeFor[engine.JournalStats](): {
+		"Work map[string]map[entity.ShardID]workqueue.Stats", "WorkLimits map[string]workqueue.Limits",
+		"QueueEvents map[string]int64", "ReseedFilesRemaining int64",
+	},
+}
+
+// Each offload field of Stats and its parts, and WaitOffloaded's signature,
+// is as frozen: one renamed, dropped or retyped fails here.
+func TestOffloadStatsSurfaceIsFrozen(t *testing.T) {
+	for typ, fields := range frozenStatsFields {
+		for _, want := range fields {
+			name, _, _ := strings.Cut(want, " ")
+
+			f, ok := typ.FieldByName(name)
+			if !ok {
+				t.Errorf("%s has no field %s, want %q", typ, name, want)
+
+				continue
+			}
+
+			if got := f.Name + " " + f.Type.String(); got != want {
+				t.Errorf("%s field %q, want %q", typ, got, want)
+			}
+		}
+	}
+
+	const wait = "func(*engine.Engine, context.Context) error"
+	if got := reflect.TypeOf((*engine.Engine).WaitOffloaded).String(); got != wait {
+		t.Errorf("WaitOffloaded is %s, want %s", got, wait)
+	}
 }

@@ -28,7 +28,10 @@ var allowed = map[string][]string{
 	module + "pkg/metadata/kvstore": {"*"},
 	// The syncer's contract alone, for the store a share names: never its
 	// implementation.
-	module + "pkg/syncer":            {"*"},
+	module + "pkg/syncer": {"*"},
+	// The work scheduler, a library every component instantiates, whose
+	// figures Stats reports.
+	module + "pkg/workqueue":         {"*"},
 	module + "pkg/openstate":         {"enginetest", unitTests},
 	module + "internal/node/content": {"enginetest", unitTests},
 	module + "pkg/vfs/vfserr":        {"*"},
@@ -129,6 +132,7 @@ func TestImportRuleRefusesFilesystemAndOpenState(t *testing.T) {
 		{module + "pkg/vfs/vfserr", true},
 		{module + "pkg/syncer", true},
 		{module + "pkg/syncer/pool", false},
+		{module + "pkg/workqueue", true},
 		{"context", true},
 	} {
 		if got := forbidden(".", c.path) == ""; got != c.allowed {
