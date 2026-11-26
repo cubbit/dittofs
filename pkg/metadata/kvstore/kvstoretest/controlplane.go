@@ -454,7 +454,7 @@ func testShareReadsPolicyAndGrantsTogether(t *testing.T, kvo Opener) {
 }
 
 // The share's identity policy comes from one ShareIndex.Share read through
-// ExportPolicy.SharePolicy: the stored squash, the anonymous principal a
+// ExportPolicy.SharePolicy: the stored squash and ManageGIDs, the anonymous principal a
 // policy naming none reads back as, the policy's version and the grant-list
 // version the share's last grant write set.
 func testSharePolicyFromOneRead(t *testing.T, kvo Opener) {
@@ -463,7 +463,7 @@ func testSharePolicyFromOneRead(t *testing.T, kvo Opener) {
 	sh, u := share("photos", "/photos"), user("alice")
 	must(t, errOf(CreateShare(ctx, cp, sh)))
 	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
-	polVersion, err := cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: sh.ID, Squash: entity.SquashRoot}, 0)
+	polVersion, err := cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: sh.ID, Squash: entity.SquashRoot, ManageGIDs: true}, 0)
 	must(t, err)
 	v, err := cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, 0)
 	must(t, err)
@@ -476,6 +476,9 @@ func testSharePolicyFromOneRead(t *testing.T, kvo Opener) {
 	}
 	if sp.Squash != entity.SquashRoot {
 		t.Errorf("SharePolicy.Squash = %v, want %v", sp.Squash, entity.SquashRoot)
+	}
+	if !sp.ManageGIDs {
+		t.Errorf("SharePolicy.ManageGIDs = false, want the stored true")
 	}
 	if sp.Anonymous == (entity.Principal{}) {
 		t.Errorf("SharePolicy.Anonymous is zero, want the anonymous principal")
@@ -635,10 +638,11 @@ func testExportPolicy(t *testing.T, kvo Opener) {
 	sh := share("photos", "/photos")
 	must(t, errOf(CreateShare(ctx, cp, sh)))
 	pol := entity.ExportPolicy{
-		Share:   sh.ID,
-		Flavors: []entity.AuthFlavor{entity.FlavorSys},
-		Clients: []entity.ClientRule{{Match: entity.ClientMatch{CIDR: netip.MustParsePrefix("10.0.0.0/8")}, Access: entity.AccessRead}},
-		Squash:  entity.SquashRoot,
+		Share:      sh.ID,
+		Flavors:    []entity.AuthFlavor{entity.FlavorSys},
+		Clients:    []entity.ClientRule{{Match: entity.ClientMatch{CIDR: netip.MustParsePrefix("10.0.0.0/8")}, Access: entity.AccessRead}},
+		Squash:     entity.SquashRoot,
+		ManageGIDs: true,
 	}
 	must(t, errOf(cp.PutExportPolicy(ctx, pol, 0)))
 	got, err := cp.ExportPolicy(ctx, sh.ID)
@@ -649,8 +653,8 @@ func testExportPolicy(t *testing.T, kvo Opener) {
 		t.Errorf("versions %d then %d", got.Version, again.Version)
 	}
 	got.Version = 0
-	if !slices.Equal(got.Clients, pol.Clients) || got.Squash != pol.Squash {
-		t.Errorf("policy %+v", got)
+	if !slices.Equal(got.Clients, pol.Clients) || got.Squash != pol.Squash || !got.ManageGIDs {
+		t.Errorf("policy %+v, want clients %v, squash %v and ManageGIDs on", got, pol.Clients, pol.Squash)
 	}
 	pol.Clients[0].Access = entity.AccessAdmin
 	if _, err := cp.PutExportPolicy(ctx, pol, 0); err == nil {
