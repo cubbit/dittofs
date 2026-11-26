@@ -27,26 +27,30 @@ func Register(id transform.ID, name string, f transform.Factory) {}
 // NewChain builds the configured transforms, each through its registered
 // Factory with m, and the decoders of every registered transform (RFC 5
 // §2.5). It refuses, rather than building a chain without it (RFC 5 §2.7): a
-// deps without its Logger, Recorder or Encrypts, with an error naming the
-// member, so a missing one never makes a check fail open; an unregistered
-// name, in cfg or in deps.Require; a factory's failure; a duplicate, two
-// transforms of one stage, or a list out of stage order (RFC 5 §2.3); a
-// transform, configured or registered, whose Stage is not one of
-// StageCompress, StageEncrypt and StageRedundancy; and an encrypt stage beside
-// a compress stage whose settings do not carry with_encryption: accept
-// (RFC 5 §3.2). Until the chain is built it refuses every configuration it
-// does not refuse otherwise with errors.ErrUnsupported.
+// deps without its Logger, Recorder or Encrypts, or a nil m, with an error
+// naming the member, so a nil Encrypts never makes the implicit encrypt-stage
+// check fail open and a nil Logger, Recorder or m fails here rather than
+// panicking at its first use; an unregistered name, in cfg or in
+// deps.Require; a factory's failure; a duplicate, two transforms of one
+// stage, or a list out of stage order (RFC 5 §2.3); a transform, configured
+// or registered, whose Stage is not one of StageCompress, StageEncrypt and
+// StageRedundancy; and an encrypt stage beside a compress stage whose
+// settings do not carry with_encryption: accept (RFC 5 §3.2). Only an
+// untyped nil Recorder is refused: a Recorder holding a nil pointer is the
+// caller's bug. Until the chain is built, a configuration that passes every
+// check above gets errors.ErrUnsupported.
 func NewChain(ctx context.Context, cfg []transform.Config, m keys.Provider, deps Deps) (transform.Chain, error) {
 	for _, d := range []struct {
 		name    string
 		missing bool
 	}{
-		{"Logger", deps.Logger == nil},
-		{"Recorder", deps.Recorder == nil},
-		{"Encrypts", deps.Encrypts == nil},
+		{"Deps.Logger", deps.Logger == nil},
+		{"Deps.Recorder", deps.Recorder == nil},
+		{"Deps.Encrypts", deps.Encrypts == nil},
+		{"the keys provider", m == nil},
 	} {
 		if d.missing {
-			return nil, fmt.Errorf("chain: Deps.%s is missing", d.name)
+			return nil, fmt.Errorf("chain: %s is missing", d.name)
 		}
 	}
 	return nil, errors.ErrUnsupported

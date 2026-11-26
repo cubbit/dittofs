@@ -3,6 +3,7 @@ package chain_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -46,21 +47,33 @@ func TestFailureReasonLabels(t *testing.T) {
 	}
 }
 
-// discard is a Recorder that keeps nothing: no test here reaches a transform.
-type discard struct{}
+// sink is a Recorder that keeps what the chain delivers to it, as text.
+type sink struct{ got *[]string }
 
-func (discard) For(string) chain.TransformRecorder    { return discard{} }
-func (discard) Encoded(bool, int, int, time.Duration) {}
-func (discard) Decoded(int, int, time.Duration)       {}
-func (discard) DecodeFailed(chain.FailureReason)      {}
+func (s sink) For(name string) chain.TransformRecorder {
+	*s.got = append(*s.got, "for "+name)
+	return s
+}
+func (s sink) Encoded(applied bool, in, out int, _ time.Duration) {
+	*s.got = append(*s.got, fmt.Sprint("encoded ", applied, in, out))
+}
+func (s sink) Decoded(in, out int, _ time.Duration) {
+	*s.got = append(*s.got, fmt.Sprint("decoded ", in, out))
+}
+func (s sink) DecodeFailed(r chain.FailureReason) {
+	*s.got = append(*s.got, "decode failed "+r.String())
+}
 
-// A chain built without a member of Deps would fail open where it uses it, a
-// nil Encrypts most of all, so NewChain refuses it and names the member.
+// A chain built without a member of Deps, or without its provider, would fail
+// open (a nil Encrypts) or panic at first use, so NewChain refuses it, names
+// the member, and records nothing. The cases pass a nil provider: NewChain
+// checks Deps first, and no provider implementation exists here to pass.
 func TestNewChainRefusesMissingDeps(t *testing.T) {
+	var got []string
 	full := func() chain.Deps {
 		return chain.Deps{
 			Logger:   slog.New(slog.DiscardHandler),
-			Recorder: discard{},
+			Recorder: sink{&got},
 			Encrypts: func(entity.NamespaceID) bool { return true },
 		}
 	}
@@ -68,15 +81,19 @@ func TestNewChainRefusesMissingDeps(t *testing.T) {
 		member string
 		drop   func(*chain.Deps)
 	}{
-		{"Logger", func(d *chain.Deps) { d.Logger = nil }},
-		{"Recorder", func(d *chain.Deps) { d.Recorder = nil }},
-		{"Encrypts", func(d *chain.Deps) { d.Encrypts = nil }},
+		{"Deps.Logger", func(d *chain.Deps) { d.Logger = nil }},
+		{"Deps.Recorder", func(d *chain.Deps) { d.Recorder = nil }},
+		{"Deps.Encrypts", func(d *chain.Deps) { d.Encrypts = nil }},
+		{"keys provider", func(*chain.Deps) {}},
 	} {
 		deps := full()
 		tc.drop(&deps)
 		_, err := chain.NewChain(context.Background(), nil, nil, deps)
-		if err == nil || errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), "Deps."+tc.member) {
-			t.Errorf("NewChain without Deps.%s: err = %v, want a refusal naming Deps.%s", tc.member, err, tc.member)
+		if err == nil || errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), tc.member) {
+			t.Errorf("NewChain without %s: err = %v, want a refusal naming %s", tc.member, err, tc.member)
 		}
+	}
+	if len(got) != 0 {
+		t.Errorf("refused NewChain calls recorded %q, want nothing", got)
 	}
 }

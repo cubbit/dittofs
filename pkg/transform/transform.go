@@ -109,8 +109,8 @@ type Chain interface {
 	// the current material changes meanwhile (RFC 5 §2.8). It reads
 	// keys.Provider.Current once for each kind a transform declares, and fails
 	// with the provider's error, unchanged, when the current material cannot
-	// be read, or when a key service holds the master key that wraps it in any
-	// state but active (RFC 5 Appendix B.1).
+	// be read, or when a key service holds the master key that wraps ns's
+	// current data key in any state but active (RFC 5 Appendix B.1).
 	Pin(ctx context.Context, ns entity.NamespaceID) (Attempt, error)
 
 	// Decode undoes the transforms a body's envelope lists, looked up in the
@@ -119,10 +119,10 @@ type Chain interface {
 	// (RFC 5 §5.3): a body naming material outside it is ErrMalformed, and
 	// the provider is not asked. Its errors are §2.7's five: ErrMalformed,
 	// ErrTooLarge and keys' three material errors. A census-listed ID the
-	// provider was never given reaches the caller as the provider's
-	// *keys.UnknownMaterialError, never as ErrMalformed, which the codec reports
-	// as keys.ErrMaterialUnavailable with a configuration health condition
-	// naming the ID (RFC 5 §2.7). dst must not overlap body.
+	// provider was never given is never ErrMalformed: it reaches the caller as
+	// keys.ErrUnknownMaterial, and the codec reports that error as
+	// keys.ErrMaterialUnavailable, with a configuration health condition naming
+	// the ID (RFC 5 §2.7). dst must not overlap body.
 	Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, hash [32]byte, body []byte, max int, census []Encoded) ([]byte, error)
 
 	// MaxDecodeLen is the largest body any registered transforms could have
