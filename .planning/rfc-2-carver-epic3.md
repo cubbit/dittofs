@@ -294,18 +294,17 @@ fingerprint (RFC 5); §10.2's stretch-shape and reader cases and §10.3 (E4); §
   only crashers the nightly runs find (`CLAUDE.md`, "By kind"). Each target is one command of the
   `fuzz` suite (E2's D6), and both raise its `timeout.test` and `timeout.cell` by ten minutes and a
   build each. Prior art: E2's D6 and D7 (the suite and its lines).
-- **D8, the section is a plain struct the settings package reads, under a provisional key.**
+- **D8, the section is a plain struct the settings package reads, under the key `carver.target`.**
   `pkg/settings`' `Of` declares a section from a type with `json` and `class` tags and a `Validate`
   method, and its defaults as a value (`settings.Of(prefix, scope, def, opts…)`), so the section
   states exactly that with no import: `section.Prefix`, `section.Settings{Target int}` tagged
   `json:"target" class:"bound"`, and `section.Default()`. The scope, namespace, is the wiring's
   argument (`settings.At(entity.ScopeNamespace)`), since the section imports neither
   `pkg/settings` nor `entity` directly. RFC 13 Appendix B writes the row as `Target`, not in its
-  key form, and naming the key is pending the user's answer in the RFC 2 plan's §6 point 2; the
-  section uses `carver.target` meanwhile, and a `decision:` at `Prefix` says the key is
-  provisional, that it changes in one line to whatever RFC 13 names, and that no namespace can
-  have bound it before the section is registered in the node's settings table (the RFC 8 offload
-  plan's epic 21). Like every marker here, it is worded by behaviour, naming no plan or epic. Prior art:
+  key form; the key is `carver.target`, the user's decision of 2026-11-26, which closes the RFC 2
+  plan's §6 point 2. A `decision:` at `Prefix` says the section's key is `carver.target`, that
+  Appendix B's row takes that name when the section is registered in the node's settings table
+  (the RFC 8 offload plan's epic 21), and that no namespace can have bound it before then. Like every marker here, it is worded by behaviour, naming no plan or epic. Prior art:
   `apisettings.Defaults()`, a plain value `newTable` hands to `settings.Of` in
   `internal/node/settings.go` on `feat/storage-v2` (checked); `internal/identity`'s `Section`,
   which calls `settings.Of` itself and imports `pkg/settings` (checked), is the shape D8 avoids.
@@ -633,9 +632,9 @@ A suggestion only: one pull request per subtask works as well.
    amended to size the row by chunk count. Running E2's reference over the fixed seeds settles it
    before this epic starts. This is computed, not measured, and is the least certain figure here
    (T3.5).
-3. **`Target`'s key is provisional.** D8 uses `carver.target` until RFC 13 names the key, which is
-   pending the user's answer in the RFC 2 plan's §6 point 2; the RFC 8 offload plan's epic 21 waits
-   on that name before registering the section, and T3.3 does not.
+3. **`Target`'s key: settled.** The key is `carver.target`, the user's decision of 2026-11-26 (D8),
+   which closes the RFC 2 plan's §6 point 2; the RFC 8 offload plan's epic 21 registers the section
+   under it and renames RFC 13 Appendix B's `Target` row to match.
 4. **What E4 brings to the chunker's reach: settled.** E4's D2 stores the chunk-ID key in the
    settings value as bytes, so `internal/params` imports nothing new and the chunker's row is not
    widened; E4's D1 gives `internal/blake3` no extendable output, so the gear tables stay on
