@@ -1599,10 +1599,11 @@ by its id, and the engine replaces it with the share when it exports
 ([§1.3](#1.3%20Interface)). The queue histogram is reported summed
 only. The syncer reports each queue gauge summed over all flows too, so the
 total needs no query across series and survives the engine capping how many
-shares it exports one by one. Each bound a gauge below is read against is fixed by the
+shares it exports one by one. The bounds three gauges below are read against are fixed by the
 half's pool size ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)): the waiter bound is eight times `syncer_workers`, the
-detached-buffer cap equals it, and the throttle limit's cap is three quarters of it, rounded
-down. So none is exported as a `_limit` series ([RFC 25 §2.2](rfc-25-observability.md#2.2%20Units)); a dashboard derives it
+detached-buffer cap equals it, and the throttle limit's cap is §2.10's per-store cap, three
+quarters of it rounded down, at least one and, with a pool of more than one, at most the pool
+less one. So none of the three is exported as a `_limit` series ([RFC 25 §2.2](rfc-25-observability.md#2.2%20Units)); a dashboard derives it
 from `syncer_workers`. The syncer
 **MUST** make every metric below observable:
 
