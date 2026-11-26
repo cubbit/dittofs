@@ -149,7 +149,7 @@ title and not copied.
 | rule 6, **known failures shrink** | none | `unit` and `integration` keep no `known.yaml` for this component; every test lands green |
 | rule 7, **v2 ignores v1, and imports only what RFC 0 §1.2 allows** | T8.1, T8.4 | the provider gains `pkg/remote`, RFC 4's contract, for `Role`, `RoleKeys`, `Version` and `ErrNotFound`, as RFC 5's plan's rule allows; never `pkg/remote/memory` outside its tests, never `kvstore`. `kvstore` imports nothing of `pkg/transform`. E1's import test holds both |
 | rule 8, **real dependencies for properties of those dependencies** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T8.1, T8.4, T8.5, T8.6, T8.8 | the key lock's conflict runs in `RunKeyRecords` over `kvstore` on Badger and FoundationDB; each ordering claim (a record current only after the put, a crash beneath a rotation, a re-wrap resumed) runs on `kvstore` over `badgerkv` under `t.TempDir()` with `kvtest.FaultKV` failing or crashing the commit; key states and the primary version against `service:kmip` |
-| rule 9, **code comment conventions** ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T8.2, T8.3, T8.4, T8.6, T8.7 | `decision:` markers at the bucket ahead of its counter (D4), the object's bound (D3), the escrow refusal at rotation (D6), the put-less mark and the switch (D9), the notice's incarnation (D10) and one provider per configuration (D12); `ponytail:` at the walk of every namespace (D5) |
+| rule 9, **code comment conventions** ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T8.1, T8.2, T8.3, T8.4, T8.6, T8.7 | `decision:` markers at `Namespaces` (D1), at the bucket ahead of its counter (D4), the object's bound (D3), the escrow refusal at rotation (D6), the put-less mark and the switch (D9), the notice's incarnation (D10) and one provider per configuration (D12); `ponytail:` at the walk of every namespace (D5) |
 | rule 10, **a test must be able to fail** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test in §6 names the bug it catches; the keys MAC is checked against E2's vector, computed by an independent implementation; the object's layout against a checked-in fixture |
 | rule 11, **a symbol is exported only if RFC 5's interface or a consumer outside the package uses it** | T8.1, T8.2, T8.4, T8.5, T8.6, T8.7 | `ControlStore`, the new `Deps` and `Config` fields and `Status` fields for the content wiring and E9; `RotateDataKey`, `RotateMasterKey` and `Run` for E9 and the content wiring; `DestroyedSince` for E1's interface; `Records.Namespaces` and the widened `Update` for the provider's tests and `kvstore`'s. The check itself stays unexported |
 | rule 12, **each subtask creates only what it declares** | all | the `keyseq` subtag lands with the view's sequence, which T8.4 consumes; the namespace listing with T8.6 and T8.7 as consumers; the notice lands with its feed from loads and is extended by the marking; nothing for backup locations, which have no writer in v1.1 |
@@ -229,9 +229,16 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
   the target empty) with a tracked `Get` and writes it when it changes. Every writer of key records
   is a writer of the `keys` object (R8), so no caller of the old signature remains: E6's
   `CreateKeys` moves onto the writer (T8.4) and its `Harness` adapter passes the sequence through. The
-  view also gains `Namespaces`, every namespace that may hold key records, which `kvstore` answers
-  from the namespace records (`NS‖ns‖info`) and `Records` from its map, so a re-wrap and a destroy
-  marking can reach every namespace (R17, R24). Prior art: E6's D1, the guard this rides on; RFC 16
+  view also gains `Namespaces`, every namespace that has a namespace record, which `kvstore` answers
+  from the namespace records (`NS‖ns‖info`) and `Records` from the namespaces a test added to it, so
+  a re-wrap and a destroy marking can reach every namespace (R17, R24). In production every key row
+  sits under a namespace record, since E9 creates a namespace's keys in its create, except the rows
+  of a create whose transaction failed after `CreateKeys`; those name no block and no namespace, so
+  a re-wrap or a mark that skips them loses nothing, and a retried create that reuses one fails to
+  unwrap, closed. A `decision:` marker at `Namespaces` says so, withdrawn if keys are ever created
+  outside a namespace's create. `RunKeyRecords` therefore takes, beside the view, a hook that
+  creates a namespace's record: `kvstore`'s writes `NS‖ns‖info` through `ControlPlane`, `Records`'
+  adds the ID. Prior art: E6's D1, the guard this rides on; RFC 16
   §4.2's row, which names the row as both lock and sequence (checked).
 
   ```go
@@ -243,7 +250,7 @@ Every obligation the sources place on this epic, numbered so that subtasks and t
   	// once and must have no other effect.
   	Update(ctx context.Context, ns entity.NamespaceID, fn func(seq uint64, rows []Row) (uint64, []Row, error)) error
   	RaiseWrapCount(ctx context.Context, masterKeyID []byte, n, limit uint64) (bool, error)
-  	// Namespaces returns every namespace that may hold key records.
+  	// Namespaces returns every namespace that has a namespace record.
   	Namespaces(ctx context.Context) ([]entity.NamespaceID, error)
   }
   ```
@@ -446,7 +453,7 @@ pkg/metadata/kvstore/
   keyrecords.go         T8.1  Update with the keyseq row read and written tracked; Namespaces
   keyrecords_test.go    T8.1  RunKeyRecords' new rows over Badger and FoundationDB
 pkg/transform/keystest/
-  records.go            T8.1  Records: the sequence, Namespaces
+  records.go            T8.1  Records: the sequence, Namespaces, the namespace hook
   recordsuite.go        T8.1  RunKeyRecords: the lock and listing rows
   records_test.go       T8.1  the two broken views
   memory.go             T8.2  Memory.DestroyedSince; Destroy feeds it
@@ -512,16 +519,19 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
     tracking, so two writers claim one sequence, R1).
   - A sequence written survives a fresh view over the same store, and starts at 0 for a namespace
     that never had one (catches a sequence kept in memory).
-  - `Namespaces` lists every namespace an `Update` wrote, and `Load` of each returns its own rows
+  - `Namespaces` lists every namespace the suite's hook created, those an `Update` then wrote
+    included, and `Load` of each returns its own rows
     (catches a listing that misses a namespace, which a re-wrap would then leave under the old
     master key).
-- **Rules:** rule 7: `kvstore` still imports nothing of `pkg/transform`. rule 8: the real backends.
+- **Rules:** rule 7: `kvstore` still imports nothing of `pkg/transform`. rule 8: the real backends. rule 9: D1's `decision:` at
+  `Namespaces`.
 
 ### T8.2 The destroyed-material notice
 
 **Subtask T8.2 estimate: 1 man-days.**
 
-- **Track:** C. **Depends on:** E6's T6.3, T6.6.
+- **Track:** C. **Depends on:** E6's T6.3, T6.6 (its `Harness` adapter keeping one provider through
+  the reload hook in `export_test.go`, which re-opens every namespace the provider held, #6067).
 - **Covers:** R27, R28, R29 (the destroyed record).
 - **Deliverables:**
   - `(*Provider).DestroyedSince(ctx context.Context, cursor uint64) ([]keys.MaterialID, uint64,
@@ -544,8 +554,11 @@ docs/internals/rfcs/rfc-5-transforms.md  T8.3  §8.3's suites line names FuzzKey
     `Destroy` is named after it and the first is not named again; a replaced key and an ID never
     given are never named (catch a notice that repeats, skips, or reports a missing key as lost,
     R27, R28, R29).
-  - On the provider: a cursor taken, then a fresh provider over the same records, a row marked
-    `destroyed` while it was down, and an `Open` of its namespace: the old cursor names it (catches a cursor whose
+  - On the provider: two rows destroyed and reported, a cursor taken after the first so its index
+    is 1, then a fresh provider over the same records with its own `Deps.Rand` stream, so it draws
+    another incarnation, three rows `destroyed` while it was down, and an `Open` of their namespace:
+    the old cursor names all three, where one that ignores the incarnation reads from index 1 and
+    skips one (catches a cursor whose
     index is read against another incarnation's list, skipping IDs, R28).
   - 300 destroyed IDs: two batches, 256 and 44, the second cursor naming nothing more (catches a
     batch that drops the remainder).
