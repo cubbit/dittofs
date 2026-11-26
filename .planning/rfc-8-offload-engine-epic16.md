@@ -159,7 +159,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R10 | The offload source's `Run` runs its batch as passes of the pipeline, and returns one result per file; only the pipeline's steps retry inside a pass | MUST | RFC 8 §6.1 (Retries are the scheduler's), §6.3 | T16.3 |
-| R11 | A pass offers at most `upload_workers` block targets of dirty bytes; this epic hands the number to `offloadDue`, which bounds the pass | bound | RFC 8 §6.2 | T16.3 |
+| R11 | A pass offers at most `upload_workers` block targets of dirty bytes; the engine hands the number to `offloadDue` in `journalStats.Workers`, which bounds the pass | bound | RFC 8 §6.2 | T16.3 |
 | R12 | An upload's outcome stays inside its pass: only the pass's result per file reaches the scheduler | invariant | RFC 8 §6.1 (What does not post here) | T16.3 |
 | R13 | A pass refused by a full syncer queue (`Throttled`), or skipped for a put-unhealthy store, is not a failed pass and never counts toward the five | MUST NOT | RFC 8 §6.3 O6 | T16.3, T16.4 |
 | R14 | A binding carries its share's write namespace as its key scope, and a pass is handed the binding's current one, which its Intent step compares with the namespace it captured | invariant | RFC 8 §2.1, §2.3, §6.6, §13 E39 | T16.3 |
@@ -180,7 +180,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R21 | The engine reads `Healthy(Put)` on the share's flow at each age tick and before each pass, and never probes the store itself | MUST, MUST NOT | RFC 8 §6.3, §11.1; RFC 3 §2.8 | T16.4 |
-| R22 | While the store is put-unhealthy each of its shards is a paused tenant: its entries stay, none is dispatched, no file's backoff grows, and a pass it meets is skipped and its files returned, not failed; the pause lifts at the next tick after the flow reports healthy | MUST | RFC 8 §6.3, O2; §6.1.1 (`Paused`) | T16.4 |
+| R22 | While the store is put-unhealthy each of its shards is a paused tenant: its entries stay, none is dispatched, no file's backoff grows, and a pass it meets is skipped and its files returned, not failed; the pause lifts at the next tick after the flow reports healthy, which the syncer's probe (RFC 3 §2.8) drives back while no pass runs, so offload never stops without something independent observing recovery | MUST, MUST NOT | RFC 8 §6.3, O2; §6.1.1 (`Paused`); §11.1 | T16.4 |
 | R23 | Offload is gated on `Healthy(Put)` and nothing else: a get-unhealthy store pauses no pass | invariant | RFC 8 §11.1 | T16.4 |
 | R24 | Under pressure, only a shard whose store is put-healthy at that tick has its cap lowered to `offload.retry_max_pressure`; one whose store is put-unhealthy keeps `offload.retry_max` | MUST | RFC 8 §6.1, §6.3 O2 | T16.4 |
 | R25 | O2 long outage, the pause half: the remote unavailable for 24 simulated hours with 10⁴ dirty files; the share's passes are paused while the store is put-unhealthy, no file reaches five failures, and offload resumes within one age tick of the store reporting healthy | test row | RFC 8 §6.3 (Checks) | T16.4 |
@@ -310,10 +310,11 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   registers `pkg/carver/section` now, so the rows have a recorded `Target` to change. Prior art:
   restic's repository config records the chunker polynomial at `init` and never changes it (from
   memory).
-- **D8, the pass bound is a constant until the key is loaded.** `offloadDue` takes `upload_workers`
-  as a number (epic 15 T15.4), and the key reaches the engine only once the integration epic loads
-  it. Until then the bound is an unexported `uploadWorkers = 128`, RFC 3's proposal, which tests set
-  from `export_test.go`, with a `ponytail:` naming the integration epic's `Settings` field as the
+- **D8, the pass bound is a per-engine default until the key is loaded.** `offloadDue` reads the
+  bound from `journalStats.Workers` (epic 15's T15.1), which the engine fills from its unexported
+  per-instance `uploadWorkers`, which epic 15's T15.1 adds, set to 128 (RFC 3's proposal) in
+  `New` and per instance from `export_test.go`, never a package variable. The key reaches the engine only once the integration
+  epic loads it; a `ponytail:` at the field names the integration epic's `Settings` field as the
   upgrade, at no migration since nothing persists it. Prior art: none found.
 - **D9, the fixture composes the syncer for every engine, over two stores.** `Deps.Syncer` is
   refused nil at `New` (R4), so every engine the fixture, the unit fixture and the in-package tests
@@ -360,13 +361,13 @@ pkg/engine/
   engine.go               T16.1  New refuses a nil Syncer
   types.go                T16.3  Stats.Carver (epic 15 D14)
   file.go                 T16.2  fileEntry.pass, the registry's entry (the first part's file)
-  pass.go                 T16.2  the registry's register and release, the in-flight floor; T16.3 the offload source's Run, uploadWorkers; T16.7 the removal marks and Removed
+  pass.go                 T16.2  the registry's register and release, the in-flight floor; T16.3 the offload source's Run; T16.7 the removal marks and Removed
   pause.go                T16.4  retune (D13), the put-health read, the skip (D2)
   queue.go                T16.4  the age tick calls retune (epic 14's file); T16.8 the prune kind's post
   removals.go             T16.2  the prune reads the floor; T16.8 the prune kind's run (epic 14's files)
   health.go               T16.1  the binding table's lock waits; T16.3 offload.Stats copied into Stats
   internal/policy/        T16.6  Gates, Ungated (D6)
-  enginetest/components.go  T16.1  WithSyncer composing nothing more (D9)
+  enginetest/components.go  T16.1  WithSyncer composing nothing more (D9); Recorder
   enginetest/material.go  T16.6  WithoutGates made real
   enginetest/remote.go    T16.1  FaultRemote made real, over RFC 4's fault wrapper, two stores
   enginetest/offload.go   T16.3  RunPass made real; T16.10 PrimaryPair made real
@@ -374,7 +375,7 @@ pkg/engine/
   enginetest/fixture.go, unit.go  T16.1  the syncer and its stores on every engine; T16.9 the settings table with Target's section
   conformance/rfc8_*_test.go  T16.6  every TestRFC8A_* row a function of the fixture's options, rerun under the §3.2 row; T16.10 the rows' legs corrected
   flow_test.go, pass_test.go, pause_test.go, prune_test.go, settings_test.go  T16.1 to T16.9  the unit tests
-  export_test.go          T16.1 to T16.8  the registry's, the tenants' and the flows' accessors, uploadWorkers
+  export_test.go          T16.1 to T16.8  the registry's, the tenants' and the flows' accessors
 pkg/metadata/kvstore/
   offload.go              T16.7  commitFile drops a masked new ref whole (D4)
   removal_internal_test.go  T16.7  TestOffloadAfterTruncate rewritten to the drop
@@ -425,6 +426,8 @@ test/engine/known.yaml    T16.1, T16.3, T16.6, T16.9, T16.10  messages rewritten
     over RFC 4's fault wrapper. In-package tests that build `Deps` by hand get one from
     `export_test.go`. Every `known.yaml` entry whose message is `fixture: the syncer is not composed`
     rewritten to the refusal it meets now, `fixture: RunPass is not built`, in the same change.
+    `Recorder()`, epic 12's D8 control for RFC 5's engine rows, made real: what the codec under the
+    syncer recorded (RFC 4's outputs, such as its verification failures), read after the fact.
   Consumed by T16.3 (the flow a pass puts through), T16.4 (`Healthy`), T16.5 (the close order),
   epic 17 (`Fetch`, `Prefetch`).
 - **Acceptance criteria:**
@@ -434,6 +437,7 @@ test/engine/known.yaml    T16.1, T16.3, T16.6, T16.9, T16.10  messages rewritten
   - A `Bind` failing after its flow opened leaves no flow open.
   - `Drop` closes the share's flow only after `Forget` returned, and a `Drop` retried after a
     `Forget` failure closes it once.
+  - `Recorder` no longer refuses.
 - **Tests:** at `Bind`, `Start` and `Drop`, which the node calls, reading open flows from the
   syncer's `Stats` (RFC 3's suite covers the count): a zero and an unknown store refused at `Bind`,
   and at `Start` beside a valid share, neither attached (catches a share attached with no store, R3,
@@ -441,7 +445,8 @@ test/engine/known.yaml    T16.1, T16.3, T16.6, T16.9, T16.10  messages rewritten
   with a `Forget` fault leaving the flow open and a retried `Drop` closing it once (catches a flow
   closed before its tag is forgotten, or lost with the binding, R5); `New` refused naming `Syncer`
   (R4); the lock-wait histogram rising under two `Bind`s held by a hook set from `export_test.go`
-  (R48). Doubles: RFC 4's in-memory store (kind 2, RFC 4's suite) under its fault wrapper (kind 3).
+  (R48); a read through the codec's verification failing on a corrupted object, then `Recorder`
+  naming that failure (catches a recorder that records nothing). Doubles: RFC 4's in-memory store (kind 2, RFC 4's suite) under its fault wrapper (kind 3).
 - **Rules:** rule 6, the rewrite; rule 7, `pool` imported by the wiring and tests only.
 
 ### T16.2 The pass registry and the in-flight floor
@@ -482,12 +487,12 @@ test/engine/known.yaml    T16.1, T16.3, T16.6, T16.9, T16.10  messages rewritten
 - **Deliverables:**
   - In `pass.go`, the offload source's `Run`, replacing epic 14's D7 body and its `decision:`: it
     reads the batch's shard binding, gathers each file's dirty figures, calls `offloadDue` with
-    `uploadWorkers` (D8) and runs each pass it returns through `offload.Run`, one goroutine per pass
+    `uploadWorkers` in `journalStats.Workers` (D8) and runs each pass it returns through `offload.Run`, one goroutine per pass
     (D1), with the binding's flow and store, its `Failures`, `register` and `release` (T16.2), the
     settings `Bind` checked (§9) and `func() entity.NamespaceID` reading the binding's current write
     namespace (R14). Each file's result goes to `done` as its pass returns; a file `offloadDue`
-    placed in no pass answers `Done`, since the age tick re-posts it when due. Epic 14's scripted run
-    hook is kept, now around the pass.
+    placed in no pass answers `Done`, since the age tick re-posts it when due. Epic 14's run hook, which
+    delivers each batch, is kept, now around the pass.
   - In `health.go`, `offload.Stats` copied into epic 11's fields and into `Stats.Carver
     map[entity.NamespaceID]CarverStats` (epic 15 D14).
   - In `enginetest`: `RunPass(ctx, share)` made real, posting every dirty file of the share and
@@ -510,7 +515,7 @@ test/engine/known.yaml    T16.1, T16.3, T16.6, T16.9, T16.10  messages rewritten
   poison file's pass held by the store's delay while the other two report (catches a batch run as one
   pass, D1); the store throttling every attempt past the syncer's own throttle bound, so `Upload`
   itself returns `ErrThrottled`, and the file's count read through `offload.Stats` (catches a
-  throttled pass counted, R13); `uploadWorkers` 2 with four block targets dirty, the offer read from
+  throttled pass counted, R13); `uploadWorkers` set to 2 on the instance with four block targets dirty, the offer read from
   the in-memory journal's offer record (catches an unbounded pass, R11); RFC 8 §6.1's "one run per
   key" with puts, over the store's object listing (each block put once) and the commit results (no
   `ErrInconsistent`) (R15); its "rebuild" pass half, the engine restarted over the in-memory journal
@@ -546,7 +551,10 @@ test/engine/known.yaml    T16.1, T16.3, T16.6, T16.9, T16.10  messages rewritten
   RFC 8 §6.3's "O2 long outage", the pause half: 10⁴ dirty files, the store's fault wrapper failing
   every put and probe for 24 simulated hours, the tenant paused, its entries held, nothing
   dispatched, every count below five, and every file offered within one age tick of the faults
-  clearing (R22, R25); a pass dispatched just as the store turns unhealthy, skipped, then the store
+  clearing, with no pass dispatched before the probe turned the store healthy (R22, R25);
+  the pressure leg epic 14's T14.4 hands over, one file failing every put through `FaultRemote`
+  until its backoff reaches the 60 s cap, then pressure on, and the file re-run within
+  `offload.retry_max_pressure` on the test clock (catches a cap the scheduler never applies, R24); a pass dispatched just as the store turns unhealthy, skipped, then the store
   healthy and one tick, and the files dispatched (catches a pause the tick never lifts, D2); a
   get-only fault pausing nothing (catches a get gate, R23); the "pressure band" put-unhealthy leg
   with cause `ErrTransient`, every cap at `offload.retry_max` (R24, R26); the "starvation" throttling
@@ -781,13 +789,11 @@ A suggestion only: one pull request per subtask works as well.
   reports its outside part, which loses nothing and saves a chunk's re-upload per edge. If the clip
   is preferred, RFC 8 §8.3, E16 and the "§8.3 transfer survives a removal" row are amended instead,
   and T16.7 loses its `kvstore` change (0.5 man-days).
-- **What epic 15's `Pass` must offer this epic**, three additions to its document:
-  `Register func(offers []journalc.Offer) (release func())`, called inside `OffloadMany`'s callback
-  before the guards are released, so the registry is set under them (R17; its Capture now releases
-  them as the callback starts); `Removed func() bool`, called once before the first block's Intent
-  (D3); and the carver settings the binding checked at `Bind`, so a record edited while the share
-  serves does not fail every pass toward the five (T16.9). Each is a field of a value epic 15 already
-  defines.
+- **What epic 15's `Pass` offers this epic.** Epic 15's T15.5 has taken the three fields this
+  document needs: `Register func(offers []journalc.Offer) (release func())`, called inside
+  `OffloadMany`'s callback before the guards are released (R17); `Removed func() bool`, called once
+  before the first block's Intent (D3); and the carver settings the binding checked at `Bind`
+  (T16.9). Its T15.1 also carries the pass bound in `journalStats.Workers` (D8).
 - **Under epic 15's D2 option B**, `Deps.Carver`, `Deps.Chain` and `Deps.Puts` join `Deps` here,
   with T16.3, their first engine caller, and about 1.5 man-days move into this epic: the three
   members and their refusal at `New`; the content wiring's `Carver`, `Chain` and `Puts` (the

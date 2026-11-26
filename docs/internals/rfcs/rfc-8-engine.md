@@ -595,9 +595,10 @@ share's, its namespace's chunking settings among them, at `Bind`
 ([§2.3](#2.3%20One%20engine%20per%20node%3B%20a%20share%20is%20a%20storage%20binding)), and **MUST**
 refuse an invalid one with an error rather than substitute a default, keeping
 the settings it already had
-([RFC 2 §3.7](rfc-2-carver.md#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)). It **MUST** record which chunking settings produced a namespace's content,
-with the namespace ([RFC 13 §5.3](rfc-13-configuration.md#5.3%20What%20content%20was%20written%20with%20is%20recorded%20with%20it)),
-and **MUST** report a change to them as a migration rather than apply it
+([RFC 2 §3.7](rfc-2-carver.md#3.7%20Bad%20settings%20must%20be%20refused%2C%20not%20replaced)). The namespace's record **MUST** hold which chunking settings produced its content,
+written by the node when it creates the namespace and compared by the content wiring
+([RFC 13 §5.3](rfc-13-configuration.md#5.3%20What%20content%20was%20written%20with%20is%20recorded%20with%20it)),
+and a change to them **MUST** be reported as a migration, which the engine refuses at `Bind`, rather than applied
 ([RFC 2 §3.6](rfc-2-carver.md#3.6%20Changing%20any%20of%20this%20is%20a%20migration)).
 
 ### 2.5 Start in order, stop in reverse, and join before closing
