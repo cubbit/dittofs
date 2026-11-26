@@ -517,6 +517,11 @@ already state with their two exceptions.
     cap binds from then on" stays, read as binding each later dispatch. §8.4's fairness bullet ("no
     flow or store above its cap (B3)") becomes "no dispatch takes a flow or store past its cap while
     another has work waiting (B3)". Otherwise RFC 3 contradicts itself.
+  - O(1) dispatch, the user's decision of 2026-11-26: §2.9's "Each dispatch costs O(1)" gains
+    "except when every flow of a class is in debt past the 63-round cap of the scheduler's debt
+    wheel, when one `Next` takes ⌈*r* / 63⌉ steps for a debt of *r* rounds", and §8.4's B2 bullet
+    ("queue operations counted at 1, 10, 100 and 1,000 waiting flows **MUST** be the same") gains
+    "except in §2.9's one case, every flow of the class in debt past the wheel's cap" (D3, R20).
   - S18 and §2.9's round, accepted text: "A round gives one turn to each store with work waiting in
     the class, and each store's turn to one of its flows in turn." With eight flows on store A and
     one on B, a flow on A waits 15 turns, where a flat round allows 8. And "unless its flow is in
@@ -1065,12 +1070,11 @@ A suggestion only: one pull request per subtask works as well.
   Revisit when benchmarks show other flows' background fetches starved: `waiters_full` refusals
   under R38's `reason` while one flow's `syncer_waiters` holds most of the bound (R38 reports it
   per flow; the refusal counter has no flow label).
-- **One `Next` can cost more than O(1)** (D3, R20). When every flow of the class being served is
-  in debt past the wheel's 63-round cap, one `Next` re-parks each flow it reaches. RFC 3 §2.9 says
-  "Each dispatch costs O(1)" and §8.4 says the counts at 1 to 1,000 flows MUST be the same (B2).
-  Either RFC 3 names the exception in both places, or T3.1 builds the hierarchical wheel the D3
-  `ponytail:` defers (about 1 man-day more). This is the user's decision; until it is made, D13
-  lists no edit for it and T3.1 builds the capped wheel.
+- **One `Next` can cost more than O(1); decided** (D3, R20). When every flow of the class being
+  served is in debt past the wheel's 63-round cap, one `Next` re-parks each flow it reaches, against
+  RFC 3 §2.9's "Each dispatch costs O(1)" and §8.4's equal counts (B2). The user decided on
+  2026-11-26 to amend RFC 3 to name the exception in both places; D13 lists the two edits, which
+  land with T3.8's pull request. T3.1 keeps the capped wheel and its `ponytail:` marker.
 - **B3 crossed halves; decided** (D13). RFC 3 §7.4's B3 saturated uploads on one flow and
   measured a second flow's fetches, which run in the other half, so its cap clause measured
   nothing. The user decided on 2026-11-26 that B3's second flow issues uploads, so the cap clause
