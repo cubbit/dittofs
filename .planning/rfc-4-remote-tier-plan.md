@@ -507,10 +507,10 @@ pkg/remote/s3/                         E4: client, constructor, data path, error
 pkg/remote/s3/s3fault/                 E3: the fault transport, around the client's http.RoundTripper
 pkg/remote/codec/                      E1: surface (S1); E6: format, encode, decode, codec.Store, gate
   record.go                            E6: the recorder it declares (D12)
+  testdata/fuzz/ testdata/v1/          E6: fuzz seeds; the golden block of each released version
 internal/node/content/remote_*.go      E7: the block target's and format version's rows, the
                                        remote_ and codec_ definitions, the alert, the recorders
 internal/node/content/limit.go         E8: the client limit derived from its callers, unexported
-  testdata/fuzz/ testdata/v1/          E6: fuzz seeds; the golden block of each released version
 test/suites.yaml                       E3: service:localstack in integration; E6: unit/remote-allocs;
                                        E9: the remote group's service and benchmark cells
 ```
