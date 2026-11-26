@@ -688,6 +688,10 @@ Both return a stream of chunks, and:
   valid**, because each was verified on its own;
 - **leaving the loop, or cancelling `ctx`, detaches the caller** — from its own
   fetch, or only from a joined one ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)). There is no `Close` to forget.
+- **a loop body MUST NOT fetch from the block it is iterating.** Such a fetch
+  can join the caller's own fetch ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)), which cannot pass the chunk the body
+  holds. A caller that breaks this rule is detached at the detach bound
+  ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) and its stream ends with an error; the inner call gets its chunks.
 
 The syncer's **`Close`** stops accepting work and returns once every transfer in
 flight has ended, which [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) bounds. `Flow.Close` refuses the flow's queued
@@ -1212,8 +1216,9 @@ each direction on its own:
   per direction for detecting an outage. A permission that differs by prefix is
   not seen by the shared probe, and is caught by the failure window below. The
   syncer runs at most one probe per `ProbeKey` and direction at a time, a
-  store's own re-admission probe included, so the client the stores share
-  carries at most two, which its limit counts ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers));
+  store's own re-admission probe included, and the engine registers every store
+  opened from one store configuration under one non-zero key, so the client the
+  stores share carries at most two, which its limit counts ([RFC 4 §4.10](rfc-4-remote-tier.md#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers));
 - two consecutive failed probes make the direction unhealthy, and two
   consecutive successful ones make it healthy again, once its re-admission
   backoff has run and except as the failure window below restricts. After a
@@ -1602,12 +1607,14 @@ by its id, and the engine replaces it with the share when it exports
 ([§1.3](#1.3%20Interface)). The queue histogram is reported summed
 only. The syncer reports each queue gauge summed over all flows too, so the
 total needs no query across series and survives the engine capping how many
-shares it exports one by one. The bounds three gauges below are read against are fixed by the
-half's pool size ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)): the waiter bound is eight times `syncer_workers`, the
-detached-buffer cap equals it, and the throttle limit's cap is §2.10's per-store cap, three
-quarters of it rounded down, at least one and, with a pool of more than one, at most the pool
-less one. So none of the three is exported as a `_limit` series ([RFC 25 §2.2](rfc-25-observability.md#2.2%20Units)); a dashboard derives it
-from `syncer_workers`. The syncer
+shares it exports one by one. Each bound a gauge below is read against is exported under
+that gauge's name with `_limit`, labelled `half` alone ([RFC 25 §2.2](rfc-25-observability.md#2.2%20Units)): the waiter bound, eight times
+`syncer_workers`; the detached-buffer cap, equal to it; the throttle limit's cap, §2.10's
+per-store cap, three quarters of it rounded down, at least one and, with a pool of more than
+one, at most the pool less one; and the bound on bytes in flight, `syncer_workers` times the
+per-worker figure of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound), which depends on `Max` and so cannot be derived from
+`syncer_workers`. The throttle limit is exported as `syncer_throttle_window`, so its cap is
+`syncer_throttle_window_limit`. The syncer
 **MUST** make every metric below observable:
 
 **Pools** — is the syncer the limit?
@@ -1617,11 +1624,14 @@ from `syncer_workers`. The syncer
 | `syncer_workers` | gauge | the pool size ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) |
 | `syncer_workers_busy` | gauge | workers transferring. A full pool while throughput is low means the store is slow; a pool that is not full while writes back up means the limit is upstream ([§7.4](#7.4%20Benchmarks)) |
 | `syncer_inflight_bytes` | gauge | bytes held by transfers in flight, against the bound of [§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound) |
+| `syncer_inflight_bytes_limit` | gauge | that bound: `syncer_workers` times the per-worker figure ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)) |
 | `syncer_queue_depth` | gauge | transfers waiting, per flow and in total ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) |
 | `syncer_queue_wait_seconds` | histogram | time from call to dispatch; a flow whose wait exceeds one round is being starved (S18) |
 | `syncer_refused_total` | counter | calls refused, labelled `reason` = `unhealthy`, `queue_full`, `waiters_full`, `displaced` (a queued transfer refused for a flow below its share of the waiter bound), `evicted` (speculation evicted for a demand) or `closed` |
 | `syncer_detached_buffers` | gauge | chunk buffers held by detached callers, against the detached-buffer cap ([§2.2](#2.2%20The%20pool%20size%20is%20a%20memory%20bound)) |
+| `syncer_detached_buffers_limit` | gauge | the detached-buffer cap ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) |
 | `syncer_waiters` | gauge | queued transfers plus joined callers, against the half's waiter bound ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) |
+| `syncer_waiters_limit` | gauge | the half's waiter bound ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) |
 
 **Transfers** — what moved, and how it ended?
 
@@ -1633,7 +1643,8 @@ from `syncer_workers`. The syncer
 | `syncer_first_byte_seconds` | histogram | time to the first byte; the tail that slow-tail retries and hedging aim at ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | `syncer_retries_total` | counter | attempts beyond the first, labelled `reason` = `transient`, `throttled`, `slow_tail`, `verify`, `floor`, `stalled` or `trickle` ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | `syncer_retry_budget_exhausted_total` | counter | failed attempts reported rather than retried because the store's budget was empty ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-| `syncer_throttle_limit` | gauge | the store's throttle limit per direction, against its cap ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `syncer_throttle_window` | gauge | the store's throttle limit per direction, against its cap ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `syncer_throttle_window_limit` | gauge | the throttle limit's cap ([§2.10](#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) |
 | `syncer_throttled_seconds_total` | counter | time flows spent held after a throttling response, summed over flows; a store asking to be sent less ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | `syncer_store_throughput_bytes_per_second` | gauge | the store's aggregate throughput per direction, the figure the floor is judged on ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 

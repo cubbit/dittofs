@@ -304,7 +304,7 @@ sixteenth. It is not reserved by anyone and nothing waits for it.
 | **receive** | request buffers from frame until the call returns, writes' payloads included (§3.2) | 1/16 | 16 MiB | the connection's reader waits; the socket is not read, and TCP pushes back on the client |
 | **reply** | reply buffers from before the call until the writer has sent them (§3.3) | 1/16 | 16 MiB | the call waits, within its deadline; at the deadline `ErrDelay` with `DelayResources` |
 | **hold** | held requests' bytes past their connection's floor ([RFC 20 §4.6](rfc-20-adapters.md#4.6%20Held%20requests)) | 1/16 | none | the adapter answers a request whose hold starts on an error the service returned at once, holding nothing: `STATUS_INSUFFICIENT_RESOURCES` over SMB (§4.3); a call still in the service is never refused |
-| **connection state** | each connection's fixed cost; sessions and their reply caches; security contexts (§4.4, §4.5) | 1/16 | 4 MiB | new connections closed at accept; a new session refused retry-later or granted fewer slots |
+| **connection state** | each connection's fixed cost; sessions and their reply caches (§4.4, §4.5); RPCSEC_GSS contexts (§2.5, [RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)) | 1/16 | 4 MiB | new connections closed at accept; a new session refused retry-later or granted fewer slots; a new RPCSEC_GSS context refused `RPCSEC_GSS_CREDPROBLEM` ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)) |
 | **open state** | opens, byte-range locks, lock waiters, caching grants, quota reservations; **(cluster)** the routed-request dedup table (§4.6) | 1/16 | 4 MiB | new state refused with `ErrDelay` and `DelayResources`; no caching grant offered; never a close or unlock; a reclaim only past its allowance |
 | **metadata store** | the store's in-process memory: caches, write buffers, compaction (§7.3) | 3/16 | 64 MiB | the store evicts; it never refuses |
 | **journal index** | the placement index of every journal ([RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)) (§7.1) | 1/8 | none | the index's own refusal ([RFC 1 §4.2](rfc-1-journal.md#4.2%20The%20index%20is%20bounded%20by%20extent%20count%2C%20not%20by%20bytes)), answered as [RFC 8 §10.2](rfc-8-engine.md#10.2%20A%20capacity%20refusal%20comes%20back%20here)'s table does |
@@ -425,6 +425,14 @@ var ErrTooLarge = errors.New("resources: charge past the ceiling")
 // WaitBudget, then zeroes the Reservation, so a second Release does nothing.
 type Reservation struct{ /* unexported: the budget it came from, the key, the bytes */ }
 func (r *Reservation) Release()
+// Shrink lowers the Reservation to n bytes and returns the rest to its
+// budget; a negative n is taken as zero, and an n at or above what it holds
+// changes nothing, so a Reservation never grows. It MUST be called only on a
+// Budget's Reservation, never on the request path's WaitBudgets: there it
+// would return the bytes and grant waiters as Release does, but §4.2's share
+// count would keep the call's whole charge until the call ends. Release is
+// still required; after Shrink(0) it returns nothing.
+func (r *Reservation) Shrink(n int64)
 
 // Budgets is what an adapter is handed (RFC 20 §3.4): the four budgets on the
 // request path, and the node's connection count.
@@ -474,6 +482,12 @@ func Join(n int, bufs ...*Buf) *Buf // a chain's record (RFC 20 §4.7): an empty
   at the ceiling and so also while restored state holds the pool above it.
 - A reservation is in bytes of memory held, rounded up to the buffer class
   (§3.1) where a pooled buffer backs it.
+- **A charge taken at an upper bound is trimmed in place.** `Shrink` is for a
+  caller that must reserve before it knows the size and learns it after: RFC
+  21's RPCSEC_GSS context table charges a new context at its largest size, then
+  trims the charge to what the context holds ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)). A `Release` followed by a
+  `Reserve` could not do this, since the second charge can be refused or wait
+  after the first is gone, losing a context the table already admitted.
 - **A chain's replies become one record without a new charge.** `Join` moves
   every reservation of `bufs` onto an empty buffer with room for `n` bytes,
   which carries them to its last `Release`; it neither reserves nor waits, so
@@ -500,7 +514,12 @@ func Join(n int, bufs ...*Buf) *Buf // a chain's record (RFC 20 §4.7): an empty
   > memory past *L*.
 - **Charged, not measured.** No pool reads the heap to decide. A charge is
   exact for buffers, and a fixed per-kind cost for state (§4.4, §4.6), which
-  §8 measures.
+  §8 measures. An RPCSEC_GSS context is the one charged at a bound and then trimmed: the node's context
+  table, not a connection, holds it, so it is charged per context to the
+  connection-state pool, outside any connection's fixed cost, at an upper
+  bound from its `INIT` token's length, and trimmed with `Shrink` once the
+  context is built to the lesser of that bound and its size
+  ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS), §5.1).
 - Every reservation **MUST** be released on every path, a cancelled context and
   a panic included. A pool's reserved bytes are exported (§10), and a pool that
   reads above zero on an idle node is a leak.
@@ -1032,7 +1051,11 @@ three-quarter cap per key.
 **Each connection is charged a fixed cost** to the connection-state pool at
 accept — its reader's and writer's state, the reader's small-class read buffer
 ([RFC 20 §6.8](rfc-20-adapters.md#6.8%20Buffer%20pools%2C%20in%20code)) included, its ID tables when empty, its
-security context — proposed at 64 KiB and settled by §8's M2. A connection that
+security state (transport encryption, an SMB session's keys and signing
+state, a handshake in progress) — proposed at 64 KiB and settled by §8's M2. An
+RPCSEC_GSS context is not in it: a context outlives the connection that made
+it and several may use it, so the node's context table charges each one to
+this pool on its own (§2.5, [RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)). A connection that
 cannot be charged is closed at accept, before any byte is read
 ([RFC 20 §3.2](rfc-20-adapters.md#3.2%20A%20connection%27s%20lifecycle)).
 
@@ -1160,6 +1183,7 @@ from here. The inventory, from the socket down:
 | --- | --- | --- | --- |
 | listen backlog | the system's maximum | [RFC 20 §6.7](rfc-20-adapters.md#6.7%20TCP) | the kernel refuses |
 | connections | `connection_limit`, a quarter per address | §4.4 | closed at accept |
+| RPCSEC_GSS contexts | 10,000 per node, each charged to the connection-state pool, at an upper bound trimmed to the lesser of the bound and its size once built (§2.5) | [RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS) | the same principal's least recently used context is evicted, else the least recently used overall; an `INIT` the pool refuses is `RPCSEC_GSS_CREDPROBLEM` |
 | socket receive buffer | the kernel's autotuning | [RFC 20 §6.7](rfc-20-adapters.md#6.7%20TCP) | TCP window closes |
 | requests read on one connection | its flow control: slots, credits, 64 | [RFC 20 §6.3](rfc-20-adapters.md#6.3%20Flow%20control%20is%20the%20protocol%27s%20own), [§3.4](#3.4%20The%20per-connection%20cap%20for%20protocols%20without%20flow%20control) | not read |
 | readers waiting for receive bytes | one per connection | §3.2, §4.1 | turns |
@@ -1176,6 +1200,7 @@ from here. The inventory, from the socket down:
 | a write paced before capacity | the caller's deadline | [RFC 8 §10.2.1](rfc-8-engine.md#10.2.1%20Writes%20are%20paced%20before%20the%20limit%2C%20not%20stopped%20at%20it) | `ErrDelay` |
 | group commit | `G` files | [RFC 8 §5.2](rfc-8-engine.md#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict) | the next group |
 | background work items | one entry per key, and a fixed total per scheduler instance ([RFC 13](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings)'s figure), all of it reserved: each source its part, and within it each tenant at least one entry, so the total also bounds the tenants one instance serves | [RFC 8 §6.1.1](rfc-8-engine.md#6.1.1%20The%20shared%20work%20scheduler) | coalesced; past the tenant's reservation, dropped, counted and re-derived by its source |
+| removals holding work no record re-derives (a phase-1 retry holding its guard, a pending release, an existence commit's retry, a clone in flight), and the per-file work lists of a removal key | the removal source's `Total` removals per scheduler instance, 131,072, each phase 1 reserving one before its journal step; a list holding only durable work exists only while its key holds a work item, so the row above bounds it | [RFC 8 §8.1](rfc-8-engine.md#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches) | a new removal `ErrDelay` with `DelayResources`, before its journal step and holding no guard; a durable-only list dropped with its item, counted and re-derived by the rescan |
 | transfers waiting for a worker | four times the pool per flow and class, eight times per half | [RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed) | refused |
 | staging reservations | the staging budget in memory ([RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound)), then `backups.spill_max` on disk | [RFC 3 §2.2](rfc-3-syncer.md#2.2%20The%20pool%20size%20is%20a%20memory%20bound) | spills, then waits, holding no worker |
 | background CPU | three quarters of the cores (§6.2) | §6.2 | waits, holding its worker |

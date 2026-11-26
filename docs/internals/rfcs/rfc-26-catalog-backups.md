@@ -364,7 +364,7 @@ carries:
   records, and per file the refs the snapshot sees, as plain refs;
 - the chunk and block records of every chunk they name, as **location hints**
   only ([§2.3](#2.3%20Restore));
-- the material in those blocks' census, each as (material ID, fingerprint)
+- the material in those blocks' census, each as (kind, material ID, fingerprint)
   ([RFC 5 §5.3](rfc-5-transforms.md#5.3%20Retiring%20material%20or%20a%20transform%20needs%20a%20census)), and the namespace's key records, each held as
   [RFC 5 Appendix B.2](rfc-5-transforms.md#B.2%20Keys)'s table says for its kind — wrapped under a master key,
   never unwrapped, or in the clear for a non-encrypting namespace's chunk-ID key
@@ -824,7 +824,7 @@ namespace's folder is gone. Restoring from them always makes a new namespace
 - **The folder record** `NS‖ns‖bk‖location`, in the namespace's metadata, names the
   copy or sweep running at the folder, with a deadline its holder renews and a
   **lease number** raised at every take. It keeps the folder's **census**: every
-  (material ID, fingerprint) in the census of a block in the folder's **mark
+  (kind, material ID, fingerprint) in the census of a block in the folder's **mark
   set** — the blocks the manifests of its retained backups and the progress
   objects it still keeps list ([§2.4.4](#2.4.4%20Expiry%20and%20the%20sweep), step 1). This is the one
   definition; settle recomputes it from that set. It also keeps the **count of
@@ -1384,7 +1384,7 @@ clear    = magic ‖ format version ‖ kind ‖ namespace id(s) ‖ export salt
 header   = (sealed) prefix, key scope and every other bound setting ‖
            per share: fold rule and entry-digest hash key ‖
            source installation ‖ share and snapshot ids ‖ cuts ‖ base digest
-           (move-delta only) ‖ (material ID, fingerprint) of every census
+           (move-delta only) ‖ (kind, material ID, fingerprint) of every census
            material ‖ incomplete files (backup kinds) ‖
            digests of retained exports sealed under older (retiring or retired) export keys ‖
            record counts per section ‖ header MAC

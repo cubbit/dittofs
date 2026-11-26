@@ -53,6 +53,13 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    env:
+      # The Go release comes from this file, not from the checked-out go.mod's
+      # toolchain line, and local stops the go command from fetching another.
+      # It is the release that line names, so the key below matches the queue's
+      # unit job, whose setup-go reads it; the check step fails when they part.
+      GO_RELEASE: 1.26.10
+      GOTOOLCHAIN: local
     steps:
       - name: Checkout feat/storage-v2
         uses: actions/checkout@v7
@@ -63,17 +70,41 @@ jobs:
       # decision: the key is built here, from this file, and not by the
       # checked-out tree's go-cache action. This job runs in the default
       # branch's cache scope, which every branch and tag run restores from, so
-      # nothing the checked-out tree holds may run here with the job's cache
-      # access: an action in it could hold any step, a save under any key
-      # among them. The formula copies feat/storage-v2's go-cache action with
-      # flavor race-cover-warm. If that action changes its key, the queue's
-      # unit job stops matching this entry and builds cold, which is slower
-      # but safe; change both together.
+      # no code the checked-out tree holds is executed here with the job's
+      # cache access: an action in it could hold any step, a save under any key
+      # among them. The tree still feeds the build what a build reads: its
+      # modules, which go.sum checksums, and any cgo package's #cgo and
+      # pkg-config directives, of which the go command passes only the
+      # compiler and linker flags on its allowlist. Withdraw this if a step
+      # here ever runs a tree script, test binary or go generate. The formula
+      # copies feat/storage-v2's go-cache action with flavor race-cover-warm.
+      # If that action changes its key, the queue's unit job stops matching
+      # this entry and builds cold, which is slower but safe; the next step
+      # fails the job when that happens.
+      #
+      # Reads the checked-out formula as text and runs none of it. Each
+      # expression's braces are stripped first, so the lines below hold no
+      # expression for this workflow to evaluate.
+      - name: Check the key formula against feat/storage-v2's
+        run: |
+          set -euo pipefail
+          check() {
+            if ! sed -E 's/\$\{\{ ?//g; s/ ?\}\}//g; s/^[[:space:]]+//' "$1" | grep -qxF -- "$2"; then
+              echo "::error file=$1::no line '$2': feat/storage-v2 changed what the cache key is built from, update this workflow to match"
+              exit 1
+            fi
+          }
+          # shellcheck disable=SC2016 # the line is matched as text, never expanded
+          check .github/actions/go-cache/action.yml 'echo "shared=go-runner.os-runner.arch-${ImageOS:-}-steps.go.outputs.go-version-hashFiles('"'go.sum'"')"'
+          check .github/actions/go-cache/action.yml "key: steps.paths.outputs.sharedinputs.flavor != '' && format('-{0}', inputs.flavor) || ''"
+          check .github/workflows/tests.yml 'flavor: race-cover'
+          check go.mod "toolchain go${GO_RELEASE}"
+
       - name: Set up Go
         id: setup
         uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: ${{ env.GO_RELEASE }}
           cache: false
 
       # Only a key of the shape below is ever saved. setup-go's own entries

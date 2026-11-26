@@ -1,0 +1,1337 @@
+# Epic 11: NFS adapter v2 NLM, NSM and the datagram path
+
+**Sources:** [RFC 21](../docs/internals/rfcs/rfc-21-nfs.md) §2.1's rule that NFS v3, MOUNT v3, NLM v4
+and NSM v1 are served together, §2.2's UDP exception and its sentence on `SM_NOTIFY`, §5.1's paragraph
+on an administrator's revoke of an NLM host, §5.5's one-range rule for `NLMPROC4_LOCK` and
+`NLMPROC4_UNLOCK`, §6.1, §6.2, §11.4's NLM cells (the client table's `Name`, `Boot` and `Owner` rows,
+the `Adapter` bytes' restart-notice fields, the `LockReq`, `LockOwner` and `ErrBlocked` rows), §11.5's
+NLM column and its paragraph on what runs while draining, §11.6's golden vectors and fuzz target for
+NLM, §12's N1 for UDP, N15 and N21, §13's rows "§2.2 TCP only", "§6.1 host binding", "§6.1 waiter
+lifetime", "§6.1 NLM on a Kerberos-only share *(1 node)*", the NLM steps of "§5.5, §6.1 conflict
+holder" and of "§5.1 revoke across a restart *(1 node)*", and Appendix D's NLM and NSM rows;
+[RFC 20](../docs/internals/rfcs/rfc-20-adapters.md) §3.1's datagram listener, §3.3's NLM and NSM
+callbacks, §3.4's `DialClient` with its network and its `Serving` sockets, §4.4's `Call.Client` for
+NLM, §4.7's `Protocol` and `Listener` for a datagram, §4.8's UDP listener and §11's question 3;
+[RFC 14](../docs/internals/rfcs/rfc-14-open-state.md) §2.3's ranges, §2.10's waiters and §4.5, for
+what the adapter does with them; [RFC 17](../docs/internals/rfcs/rfc-17-vfs.md) §3.0's `Call.HostCall` and
+`ClientInfo.ClientIsMachine` as NLM states them, and its rule that no rule of the service reads the
+protocol, §3.2's
+`LockWaitOver` and `Revoked`; [RFC 19](../docs/internals/rfcs/rfc-19-authorization.md) §3.8 and its §9
+row, run over NLM. Every citation is `develop`'s text, which reaches `feat/storage-v2` with the
+cherry-pick of RFC changes.
+Cited, not owned: RFC 1813's NLM v4 appendix and the Open Group's XNFS, the only source of NSM's, for
+the wire structures, RFC 1833 for the port mapper's `GETPORT`, RFC 17 §4.9's admission (amendment A3, keyed on
+`Call.HostCall`, built by E4), RFC 18 §5.4, RFC 24 §6.1's goroutine and connection bounds.
+**Track:** B.
+**Epic 11 estimate: 12 subtasks, 36.75 man-days.**
+**Depends on:** **S2**, NFS's test foundations in CI: E2's `nfsharness` on `memory.New` and knfsd's
+NLM and NSM captures (`test/pcap-corpus/nlm/`) cut into golden files. From the epics on other tracks,
+before the subtasks that name them: E3's T3.2, the scripted client and its call encoder, and T3.4,
+the `ops/nlm` and `ops/nsm` packages with their `NULL` rows; E8's first content, the per-client
+callbacks value (T8.1) and the `Adapter` bytes codec with an NLM host's fields, `wire.ClientRecNLM`
+(T8.2); E10's T10.1, the call encoder and reply decoder moved into `wire/call.go`; E4's T4.1,
+admission at `Claimed` for a lock call, the `GetAttr` before a blocking `LOCK`, or a share
+reservation that sets `Call.HostCall` (A3); E7's
+T7.1, without which `memory.New` refuses every `Claimed` caller. **S3** for the loopback rows, and
+**S5** for the restart row.
+**Blocks:** E13's T13.7, which adds rows to T11.1's NLM and NSM tables; E16, which runs NLM against SMB, the lock recall with NLM, NLM grace and `SM_NOTIFY` on a
+restart of the one node, cthon04's lock tests, and the totality test over NLM's and NSM's tables.
+
+---
+
+## 1. Goal
+
+Epic 11 serves NFSv3's locking: NLM v4's procedures as RFC 14 locks and share reservations held by a
+client record per NLM host, blocking locks granted later by a call to the host, NSM's restart notices
+in both directions, and both programs over UDP as well as TCP. It adds `core`'s datagram listener, the
+local address a callback leaves from, `DialClient`'s network, and `nfs/rpcclient`, the package for the
+calls the server makes to a client.
+
+**At the end of the epic:**
+
+- an NLM `LOCK`, `TEST`, `UNLOCK`, `CANCEL`, `SHARE`, `UNSHARE` and `FREE_ALL`, and their `*_MSG`
+  forms, reach `memory.New` as one service call each, for a client record keyed by the host's
+  `caller_name` and source address, and are answered with RFC 21 §11.5's NLM statuses;
+- a blocked lock is answered `NLM4_BLOCKED` at once, and `NLMPROC4_GRANTED` reaches the host on a
+  connection the server opens from the address the host used, once per `LockWaitOver`, with the
+  host's answer handed back to the service; a `CANCEL` is answered only once `CancelLock` returns;
+- a received `SM_NOTIFY` or `FREE_ALL` expires the host's old client only from the address its record
+  holds, and a lost shard's report sends `SM_NOTIFY` by UDP to every NLM host the report names;
+- over UDP on the adapter's port, NLM and NSM answer and NFS and MOUNT answer nothing;
+- the NLM rows of RFC 21 §13 and RFC 19 §9 pass over loopback, and the revoke-across-a-restart row's
+  NLM steps on the composed node.
+
+### 1.1 In scope
+
+`internal/adapter/core`'s datagram listener and `Conn.Local`; `pkg/adapter/deps.go`'s `DialClient`
+network argument; `nfs/rpcclient`; `nlm.Handlers`' callbacks field; `ops/nlm`'s and `ops/nsm`'s procedures past `NULL`, their structs, error tables and
+translations; `nfs/callbacks.go`'s `LockWaitOver` and `Revoked` for an NLM host; `nfs.go`'s UDP
+listener; the scripted NLM host and the UDP sender in `adaptertest/nfsclient`; the service halves of the
+NSM notice amendment (D11, Q1) and of an NLM record's first state (D5, Q4); the golden files and fuzz target of each.
+
+### 1.2 Out of scope
+
+- Admission at `Claimed` for a lock call, the `GetAttr` before a blocking `LOCK` (D6), or a share
+  reservation that sets `Call.HostCall` (A3's service half): E4's T4.1. `HostCall` on every NLM and NSM call: E3's route (T3.1). This epic's
+  rows drive both.
+- What a `Claimed` caller resolves to: E7's T7.1. The share's flavour policy is the service's
+  admission (RFC 17 §4.9), with A3's `HostCall` exemption in E4's T4.1.
+- The per-client callbacks value and `v4.Handlers`' field that reaches it (E8's T8.1), and the
+  `Adapter` bytes codec, NLM's fields included (E8's T8.2), which builds the encoding whole (RFC 21
+  §11.4). `nlm.Handlers`' own field is this epic's (T11.3), with its first row that calls `Connect`.
+- The call encoder and reply decoder in `wire/call.go`, moved out of the scripted client with their
+  fuzz target: E10's T10.1, which T11.2 uses.
+- The recall an NLM lock starts on a delegated file, and the NFSv4 side of a conflict's holder: the
+  service and E9; this epic maps only the answers the service gives (R33).
+- The resend schedule of an unanswered grant: the service's, already built (`internal/vfs/sink.go`
+  calls `LockWaitOver` again every 10 s while the host gives no answer); this epic sends once per call.
+  That resend holds one goroutine per unanswered grant for as long as an NLM host's record lives
+  (`sink.go`'s own `ponytail:`), which RFC 24 §6.1 forbids for a pending callback and D18's forged
+  calls make reachable; R61 bounds the connections those resends hold, not the goroutines. The RFC 21
+  implementation plan's deferral ledger carries it as a row, this pull request adding it.
+- Rows that need both adapters, a kernel client or a restart of the one node with its grace: E16, as
+  "§6.1 NLM against SMB" (T16.6), "§5.3 lock recall" (T16.5), "§6.1 NLM grace" and "§6 NLM"'s
+  `SM_NOTIFY` step (T16.4), "§6 NLM" with cthon04 (its burn-down, planned after E15), and "§2.2 TCP
+  only"'s `proto=udp` mount (T16.7). The totality test over NLM's and NSM's tables: E16's T16.11.
+- `nfs_nlm_waiters` (RFC 21 §14), and the counters of a dropped `*_RES` (D9), an abandoned notice
+  (D11) and a received `SM_NOTIFY` matching no host (D2): their producers are T11.4, T11.5 and T11.7,
+  but nothing here records them while who records
+  the series only NFS code can count is open with the RFC's author (the RFC 21 implementation plan's
+  §6.1, point 4). If that settles before T11.4 lands, each producer adds its own, about 0.5 man-days
+  inside T11.4's figure; after, the epic the decision names.
+- The port mapper answering on UDP and TCP, and rpcbind registration: the RFC 21 implementation plan's
+  deferral ledger, its port-mapper row, owned by the cutover. Until it lands no host can reach this
+  epic's NLM through its rpcbind, so cthon04's `lock/tlocklfs` and `lock/tlock64` and nfstest's
+  `lock` module over NFSv3, which find NLM there (`test/suites.yaml`, `rpcbind: host`), cannot run:
+  E15 turns those cells on after the cutover's registration, never before.
+- `SM_NOTIFY` after a failover between nodes, from a node holding a moved address, or for a moved
+  namespace (RFC 21 §6.2, §7.4): the same ledger's rows for RFC 21's (cluster) parts and for the
+  namespace move.
+- MOUNT over UDP: never served (RFC 20 §11, question 3).
+
+### 1.3 Names used here
+
+- **E2**, epic 2, test foundations: `adaptertest/nfsharness` and knfsd's captures cut into golden
+  files.
+- **E3**, epic 3, the RPC layer: the `Identity` with its source address, `Call.HostCall` on every
+  NLM and NSM call (E3's R48), with `Protocol` a label no rule reads, the scripted client,
+  `protocol.ErrorTable`, and the `ops/nlm` and `ops/nsm` packages with `NULL`.
+- **E4**, epic 4, NFSv3 and MOUNT, with A3's admission in its T4.1. **E7**, identity's NFS side, with
+  `Claimed` callers resolved in its T7.1. **E8**, clients and sessions, which lands the callbacks
+  value and the `Adapter` bytes first. **E9**, opens, stateids and locks. **E10**, delegations and the
+  back channel. **E16**, E2E green: the suites, the totality test and the end-to-end rows.
+- **S2**, NFS's test foundations in CI, after E1, E2 and the shared test pieces: what this epic starts
+  from.
+- **S3**, an NFSv3 mount over loopback, after E3 and E4: what this epic's loopback rows start from.
+- **S5**, the composed in-process node, built outside this programme by RFC 23's implementation
+  plan's epic 3 with RFC 20's epic 7: what the restart row runs on.
+- **A3**, the amendment to RFC 17 §4.9 agreed in #5166 and restated by #5726: a lock call or a share
+  reservation's `Open` or `Close` whose `Call` sets `HostCall`, as every NLM call does, meets a
+  share's `MinProof` lowered to `Claimed` and no `MinProtection`; no rule reads `Call.Protocol`.
+  The `GetAttr` a blocking `LOCK` makes first (D6) meets the same lowered minimums only once RFC 17
+  §4.9 step 2 lists it, as `develop`'s does since #5735 and #5736 merged; `feat/storage-v2`'s code
+  admits it since #5734 merged (`internal/vfs/attrs.go`'s `GetAttr`), so nothing here waits on it.
+- **E11**, this epic. **E12**, the NFSv4.2 operations. **E13**, RPCSEC_GSS, whose T13.7 adds rows
+  to T11.1's NLM and NSM tables. **E15**, the integration with the node, which turns the NFS suites on.
+
+## 2. How the general rules apply
+
+The rules are those of [the RFC 21 implementation plan's §1.5](rfc-21-nfs-plan.md#15-general-rules-for-each-epic),
+cited by number and title and not copied.
+
+| Rule | Subtasks | How |
+| --- | --- | --- |
+| rule 1, independent unit tests, under `-race` ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | handlers through `nfsharness` on `memory.New` (kind 2), errors through `vfstest.Faults` (kind 3), the one-call rule from `vfstest.Mutations`; `core`'s datagram listener on `testproto` over real UDP; callbacks against the scripted NLM host (T11.2), a peer on `127.0.0.1:0` that keeps the calls it received and answers as its script says, its refusals and silences injected by that script (kind 3); `DialClient` supplied by the test, as RFC 20 §3.4 allows, dialling the real loopback listener; no other double |
+| rule 2, fuzz tests where relevant | T11.1 | `FuzzNLMLock` over an NLM lock request's translation into a `LockReq`, RFC 21 §11.6's target (R49); the call reply decoder with which `rpcclient` reads a host's bytes is E10's T10.1's, fuzzed there against a second decoder written from RFC 5531. NLM's and NSM's codecs join the XDR codec's one target over every program |
+| rule 3, observability follows RFC 25 and RFC 20 §10 | T11.4, T11.9 | no recorder in NFS code; `nfs_nlm_waiters` and the NLM and NSM drop counters wait on the recorder decision (§1.2); the datagram listener's drops need a `core` series RFC 20 §10 lacks, proposed with Q2; no log line or attribute carries an owner handle or `priv`, and a `caller_name` or `mon_name` appears at `Debug` only; a host address is a client address, which RFC 25 §5.4 lets any level log |
+| rule 4, profiling: leaks, allocations and contention | T11.2, T11.4, T11.9 | every loopback test ends with `adaptertest.CheckLeaks`, including the goroutines of the datagram queue and of `rpcclient`'s per-host connections, whose count stays flat under a flood of `*_MSG` calls (R59); the waiting-request table (T11.4) is a change to "the NLM grant timers" the rule names, so T11.4 reports its mutex and block profiles under 64 hosts blocking at once |
+| rule 5, public interface and internals, at the layer that consumes a value ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | each translation asserted on the reply bytes a host reads, through `nfsharness` or over loopback; a grant on the `NLMPROC4_GRANTED` the scripted host receives, its source address included; a notice on the `SM_NOTIFY` datagram the host receives; the host binding on the lock `memory.New` still holds after another address's `UNLOCK` |
+| rule 6, known failures shrink | none | no `cthon04` or `nfstest` test runs before the cutover; E16 burns them down |
+| rule 7, v2 ignores v1 | all | nothing from `develop`'s `nlm`, `nsm` or `portmap` packages; behaviour from RFC 21 §6, RFC 1813's appendices and RFC 1833 |
+| rule 8, real dependencies for properties of those dependencies | T11.1, T11.2, T11.9, T11.10, T11.11 | golden files cut from knfsd's NLM and NSM captures (E2) or written by hand from RFC 1813 and RFC 1833, never vectors the encoder under test made; real TCP and UDP over loopback, on `127.0.0.2` and `127.0.0.3` where an address is asserted; the composed node for the restart row |
+| rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | all | RFC 21 §6.1's two `decision:` notes at their code sites, the host binding at the `Name` encoding (T11.1) and the `Claimed` admission at E3's route, which sets `Call.HostCall` on every NLM and NSM call, and at E4's admission check (kept as E3 and E4 wrote it); the markers of §4 at theirs; `nfs.go`'s comment that no listener reads UDP rewritten (T11.10) |
+| rule 10, a test must be able to fail | all | each test names the break it catches; none asserts the scripted host's own answer, only what the adapter did with it; the absence of a reply over UDP is a bounded wait, the one assertion no clock can make, and says so |
+| rule 11, a symbol is exported only if an interface uses it | T11.1, T11.2, T11.9, T11.10 | `core.Conn.Local` and the datagram `Listener` through an RFC 20 pull request first (Q2); `adapter.Deps.DialClient`'s network, already RFC 20 §3.4's text; `rpcclient`'s functions for `nfs/callbacks.go` and `ops/nlm`; `wire`'s call encoder and reply decoder for `rpcclient` and the scripted client; `nlm.Handlers` and `nsm.Handlers` for `nfs.go`; `nfsclient.Host` and `nfsclient.DialUDP` for this epic's and E16's tests |
+| rule 12, each subtask creates only what it declares | all | `rpcclient` arrives with `GETPORT` and its first caller's test; the waiting-request table with the first blocking lock; the share table with `SHARE`; the scripted host with the first callback it receives |
+| rule 13, translate, never decide | all | every NLM field maps to a neutral value or a named refusal by a pure function (R47); a handler makes one service call, beside the `Connect` its row's `Resolve` makes; whether a lock conflicts, is granted, waits or is authorised is the service's, and so is when a grant is sent again |
+| rule 14, nothing deferred is lost | all | §1.2 names the owner of each part of an obligation this epic leaves out; §9 the gaps, with the RFC each needs |
+
+## 3. Requirements and invariants
+
+Every MUST and MUST NOT that RFC 21, RFC 20, RFC 14, RFC 17 and RFC 19 place on this epic, numbered so
+that subtasks and tests can cite them.
+
+**The datagram path**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R1 | NFS and MOUNT are never served over UDP: a call to either sent by UDP is answered nothing | MUST NOT | RFC 21 §2.2, §12 (N1) | T11.10 |
+| R2 | NLM and NSM are served over UDP as well as TCP, on the port the TCP listener binds, while RFC 20 §11's UDP question stands | MUST | RFC 21 §2.2; RFC 20 §4.8, §11 (question 3) | T11.10 |
+| R3 | NFS v3, MOUNT v3, NLM v4 and NSM v1 are served together or not at all, over UDP as over TCP: under a range of only 4.x, NLM and NSM are not served by UDP either | MUST | RFC 21 §2.1; RFC 20 §4.8 | T11.10 |
+| R4 | A datagram listener reads into a bounded queue and drops a datagram that arrives at a full one | MUST | RFC 20 §3.1 | T11.9 |
+| R5 | A datagram listener runs the same stages as a connection, one record per datagram | MUST | RFC 20 §4.7 (`Protocol`) | T11.9 |
+| R6 | A datagram listener starts with its adapter, all or none: one that cannot bind fails the adapter's start, and it stops with the adapter | MUST | RFC 20 §3.1 | T11.9 |
+| R7 | `Addrs` reports `nlm` and `nsm` over `udp` as `Socket`s of their own, each bound address at its port; an address `Reconfigure` adds binds the port the listener already holds, and a taken one is a refusal | MUST | RFC 20 §3.4 (`Serving`, `Socket`), §4.7 (`Listener`) | T11.9 |
+| R8 | Apart from the port mapper's answers and NLM and NSM replies over UDP, `SM_NOTIFY` is the only UDP the server sends, and it carries no file operation | invariant | RFC 21 §6.2 | T11.2, T11.7 |
+
+**Calls the server makes**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R9 | `DialClient` takes its network, `"tcp"` or `"udp"`, and the local address the client reached; nil is a `net.Dialer` bound to that address, dialling that network | MUST | RFC 20 §3.4 (`DialClient`) | T11.2 |
+| R10 | An NLM callback (`NLMPROC4_GRANTED`, a `*_RES` reply) is a call to the host's NLM service on a connection the server opens, never a reply on the request's connection; its port is found through the host's port mapper, `GETPORT` for NLM version 4 over TCP | MUST | RFC 21 §6.1, §12 (N15); RFC 20 §3.3 | T11.2, T11.4, T11.5 |
+| R11 | Every call to a host leaves from the floating address its requests arrived on, never a node's own address | MUST | RFC 21 §6.1, §6.2, §12 (N15) | T11.2, T11.3 |
+| R12 | One connection is kept per host while it has a grant or reply to send, and closed after; `SM_NOTIFY` keeps none | MUST | RFC 20 §3.3 | T11.2 |
+| R13 | A host whose port mapper or NLM service cannot be reached is a callback that failed | MUST | RFC 21 §6.1; RFC 20 §3.3 | T11.2, T11.4 |
+| R14 | A callback returns within its context's deadline whether or not the host answers | MUST | RFC 20 §3.3; RFC 17 §3.2 | T11.2, T11.4, T11.7 |
+| R59 | A pending `*_RES` or `SM_NOTIFY` has no goroutine of its own: each is a record run by a fixed set of workers; an outbound NLM callback connection is counted in `connection_limit` | MUST NOT | RFC 24 §6.1 | T11.2, T11.5, T11.7 |
+| R61 | Outbound connections to hosts, one per host shared by its calls in flight, are capped by `rpcclient`'s own count, 32, besides `connection_limit`, and each takes both before its `GETPORT`, so callbacks to unreachable or forged hosts never hold more than 32 of the slots inbound clients use; a host that has not answered a call in the last 10 minutes, one never seen included, holds one of at most 16 slots, and one whose last call failed is backed off for 30 s first, so silent or forged hosts, however many and however new, never take more than half the slots from hosts that answer | invariant | RFC 24 §5.1, §6.1; RFC 20 §3.3 | T11.2 |
+
+**Hosts as clients**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R15 | An NLM host's client record is keyed by its `caller_name` together with the source address of the request that created it, both its `Name`; its `Boot` is its NSM state number, big-endian in the low four bytes | MUST | RFC 21 §6.1, §11.4 (`Name`, `Boot`) | T11.1, T11.3 |
+| R16 | A request naming a host's `caller_name` from another address is another client, and can neither test, unlock nor free the first host's locks | MUST | RFC 21 §6.1 | T11.3, T11.11 |
+| R17 | `NLMPROC4_FREE_ALL` and a received `SM_NOTIFY` expire a host's client only when they come from the address its record holds | MUST | RFC 21 §6.1, Appendix D (`FREE_ALL`) | T11.3, T11.7 |
+| R18 | A host's first lock or share reservation registers it for restart notification (a call that leaves nothing held writes no record, D5): `Connect` with its `caller_name` as the monitor name, its `mon_name` and `priv` kept in the record's `Adapter` bytes, written by a lock or share call through this node even when the record already exists under the same state (the host's calls may arrive on another floating address); `SM_MON` and `SM_UNMON` are never served to a peer | MUST | RFC 21 §6.2, §11.4 (the `Adapter` bytes), Appendix D (`SM_MON`) | T11.3, T11.7, T11.8, T11.12 |
+| R19 | A lock request carrying a new NSM state number is a `Connect` under the host's name with a new `Boot`: a reboot, which expires the old client | MUST | RFC 14 §4.5; RFC 21 §11.4 (`Boot`) | T11.3, T11.12 |
+| R20 | An NLM row's `Resolve` sets `Client` on its `r.Call` to the ID of the host's client record | MUST | RFC 20 §4.4 (the `Call`) | T11.3 |
+| R21 | A `StaleClient` refusal makes the adapter `Connect` the host afresh, with `ClientInfo.Existing` set for every call but `LOCK` and `SHARE` (D5), and send the request once more; it never reaches the host as `NLM4_DENIED`, and one met again on the retry is `NLM4_DENIED_GRACE_PERIOD` | MUST | RFC 21 §6.1, §11.5 (`StaleClient`); RFC 14 §4.5 | T11.3, T11.12 |
+| R22 | An NLM host's `Connect` sets `ClientInfo.ClientIsMachine`, so its record has no `Owner` and two callers' uids on one host lock under one client | MUST | RFC 21 §11.4 (`Owner`); RFC 14 §2.1; RFC 17 §3.0 (`ClientIsMachine`) | T11.3 |
+| R60 | Every NLM and NSM call reaches the service with `Call.HostCall` set, as E3's route sets it, so admission lowers NLM's minimums by it, the `GetAttr` before a blocking `LOCK` (D6) among them; no rule this epic adds to the service reads `Call.Protocol` or a record's kind: those that pick NLM hosts' records read `Recovery` notice | MUST NOT | RFC 17 §3.0, §4.9 (step 2); RFC 21 §6.1, §11.4; RFC 14 §4.4 | T11.4, T11.8, T11.11, T11.12 |
+
+**Locks**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R23 | An NLM lock is an RFC 14 lock under the file's anonymous open: it names no open, and is passed with the request's file handle | MUST | RFC 21 §6.1, Appendix D (`TEST`) | T11.3 |
+| R24 | `NLMPROC4_LOCK` and `NLMPROC4_UNLOCK` each name one range, passed to the service as a one-element list | MUST | RFC 21 §5.5 | T11.3 |
+| R25 | An NLM length of 0 is a range to end of file, held as reaching 2⁶⁴−1 and never computed as offset plus length; any other range's last byte is offset + length − 1 | MUST | RFC 14 §2.3 | T11.1 |
+| R26 | An NLM lock owner is its `svid` and `oh`, and its locks merge and split (`LockOwner.Stack` false) | MUST | RFC 21 §11.4 (`LockOwner`) | T11.1 |
+| R27 | An `NLMPROC4_UNLOCK` of a range the owner holds in part or not at all releases what it holds and succeeds; `ErrRangeNotLocked` is never answered | MUST | RFC 21 §5.5, §11.5 (`ErrRangeNotLocked`) | T11.3 |
+| R28 | A lock outside an open needs read access or ownership, and a write lock no more than a read lock; the service decides it, and the adapter neither checks nor widens it | MUST | RFC 21 §6.1; RFC 19 §3.8 | T11.3, T11.11 |
+| R29 | A store error resolving the caller fails the lock, never authorises it as anonymous | MUST NOT | RFC 21 §6.1; RFC 18 §5.4 | T11.11 |
+| R30 | Every NLM procedure and `*_MSG` form is admitted at `Claimed` on a share whose `MinProof` is higher, its caller still resolved and gated | MUST | RFC 21 §6.1; RFC 17 §4.9 | T11.11 |
+| R31 | During grace a lock that is no reclaim is `NLM4_DENIED_GRACE_PERIOD`, and a request with `reclaim` set is a reclaim | MUST | RFC 21 §6.1, §5.4 (the table) | T11.1, T11.3 |
+| R32 | An `NLMPROC4_TEST` refused by an NFSv4 or SMB lock reports a holder with `svid` 0 and an empty `oh`: an internal owner never reaches the wire (D15 does the same for another NLM host's lock) | MUST NOT | RFC 21 §6.1, §5.5 | T11.3 |
+| R33 | An NLM lock on a file under another client's delegation, while the recall runs, is `NLM4_BLOCKED` with a waiter if blocking, and `NLM4_DENIED_GRACE_PERIOD` if not and for an `NLMPROC4_TEST`, never `NLM4_DENIED` | MUST | RFC 21 §6.1, §5.3 | T11.1, T11.4 |
+
+**Blocking locks and grants**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R34 | An `NLMPROC4_LOCK` with `block` set that conflicts or meets a recall is answered `NLM4_BLOCKED` at once, as a callback waiter (`ErrBlocked`); no worker waits | MUST | RFC 21 §6.1, §11.4 (`LockReq`); RFC 14 §2.10 | T11.4 |
+| R35 | The adapter never drops a waiter on a timer of its own, and the waiting request is exempt from the per-call deadline | MUST NOT | RFC 21 §6.1, §12 (N21); RFC 14 §2.10 | T11.4, T11.11 |
+| R36 | A waiter ended by its share's removal or move, reported through `Revoked` or `LockWaitOver` not granted, is answered nothing, NLM having no message that withdraws `NLM4_BLOCKED`; the host's next request on the share's handles is `NLM4_STALE_FH` | MUST | RFC 21 §6.1, §11.5 (`ErrStale`, the share row); RFC 20 §3.3 (`Revoked`) | T11.4, T11.11 |
+| R37 | `NLMPROC4_CANCEL` calls `CancelLock` and is answered only once it returns; if the lock was granted first, it stands and `NLMPROC4_GRANTED` is sent as for any grant | MUST | RFC 21 §6.1, §12 (N21); RFC 14 §2.10 | T11.4 |
+| R38 | Each `LockWaitOver` granting a lock sends one `NLMPROC4_GRANTED`, bounded by its context, and returns `refused` false for an acknowledgement, `refused` true for `NLM4_DENIED` only, and an error for any other status (`NLM4_DENIED_GRACE_PERIOD`, `NLM4_DENIED_NOLOCKS`, `NLM4_FAILED` among them) and when the host said nothing by the deadline, so the service sends it again (D21) | MUST | RFC 21 §6.1, §11.4 (`ErrBlocked`); RFC 17 §3.2 | T11.4 |
+| R39 | A granted lock is never released for a silence: no answer is reported as an error, never as a refusal | invariant | RFC 21 §6.1, §12 (N21) | T11.4 |
+
+**Asynchronous procedures and share reservations**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R40 | The `*_MSG` procedures are served as their synchronous forms and answered by the matching `*_RES` call on the host's NLM callback service, from the floating address | MUST | RFC 21 §6.1, Appendix D (`*_MSG`) | T11.5 |
+| R41 | NLM `SHARE` and `UNSHARE` are an `Open` and a `Close` of an anonymous-owner open with a deny mode, so they conflict with SMB and NFSv4 deny modes; `ErrShareViolation` is `NLM4_DENIED` for `SHARE` | MUST | RFC 21 §6.1, §11.5 (`ErrShareViolation`), Appendix D (`SHARE`) | T11.6, T11.12 |
+
+**NSM**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R42 | A received `SM_NOTIFY` is `HostRestarted` for the host it names, which expires its old client, one held under state 0 included, and writes no record for a host that has none | MUST | RFC 21 Appendix D (`SM_NOTIFY`); RFC 14 §4.5; Q4 (b)'s RFC 14 §11.3 and RFC 17 §3.5 change | T11.7, T11.12 |
+| R43 | When a shard in which an NLM host held locks loses its open state, a restart of the one node included, `SM_NOTIFY` is sent by UDP to the host's NSM service, at the address its `Adapter` bytes hold, from the floating address, naming the server name the client monitored and carrying the new state number; the name sent is the floating address in text form (D22) | MUST | RFC 21 §6.2, §2.2; RFC 20 §3.3; RFC 14 §4.5 | T11.7, T11.8 |
+| R44 | An administrator's revoke of an NLM host is an expiry: no `SM_NOTIFY` is sent to it at a later restart, a reclaim it sends is `NLM4_DENIED` (`NoGrace`) in grace and after, and its next ordinary lock creates a new client record | MUST | RFC 21 §5.1, §11.5 (`NoGrace`) | T11.1, T11.11 |
+
+**Errors and translation**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R45 | NLM's table answers RFC 21 §11.5's NLM cells: `ErrDelay` and `DelayResources`, `ErrGrace` and `NoReclaim` `NLM4_DENIED_GRACE_PERIOD`; `ErrBlocked` `NLM4_BLOCKED`; the share's `ErrStale` `NLM4_STALE_FH`; `NoGrace`, `ReclaimConflict`, `ErrLocked` and `SHARE`'s `ErrShareViolation` `NLM4_DENIED`; `ErrLogonFailure` `SYSTEM_ERR` | MUST | RFC 21 §11.5 | T11.1 |
+| R46 | Every neutral error in `vfs.Errors()` maps to one status in NLM's table, the rows RFC 21 §11.5 gives no NLM cell included | MUST | RFC 21 §11.6, §12 (N26); RFC 20 §4.5 | T11.1 |
+| R47 | Every NLM → neutral translation is total and pure: each wire value maps to one neutral value or a named refusal, never a default | invariant | RFC 21 §11, §12 (N26) | T11.1 |
+| R48 | Golden files for NLM's `svid` and `oh` table and for NLM's §11.5 rows assert NLM → neutral → NLM gives the golden neutral value and back the golden wire value | test row | RFC 21 §11.6 ("§11.1–§11.5 golden vectors") | T11.1 |
+| R49 | The translation of an NLM lock request into a `LockReq` is fuzzed, seeded with truncated and corrupt requests: no panic, and a valid request or a refusal | test row | RFC 21 §11.6 ("§11.4 decoders fuzzed") | T11.1 |
+| R50 | While draining, NLM's `UNLOCK` and `CANCEL` run as releases and every other NLM procedure is refused with the drain's error, `ErrDraining`, which NLM answers with no reply | MUST | RFC 21 §11.5 ("What runs while draining", `ErrDraining`) | T11.3, T11.4, T11.5 |
+| R58 | A retransmitted or duplicated NLM request, which no duplicate-request cache answers, runs again and leaves the state one delivery leaves: a repeated blocking `LOCK` keeps its one waiter and its place, so the host is sent one `NLMPROC4_GRANTED` | invariant | RFC 21 §11.2 (the cache is NFSv3's and NFSv4.0's), §6.1; RFC 14 §2.10 (a repeat keeps the waiter's place) | T11.4, T11.10 |
+
+**RFC 21 §13's rows, and RFC 19's**
+
+| # | Requirement | Kind | Source | Subtasks |
+| --- | --- | --- | --- | --- |
+| R51 | "§2.2 TCP only": NFS and MOUNT probed by UDP get no reply; NLM and NSM answer there | test row | RFC 21 §13 | T11.10 |
+| R52 | "§6.1 host binding": `FREE_ALL` and `UNLOCK` naming host A from another address leave A's lock held; `NLMPROC4_GRANTED` comes from the floating address A used, and still arrives, on a connection the server opened, after the blocking request's connection closed | test row | RFC 21 §13 | T11.11 |
+| R53 | "§6.1 waiter lifetime": a waiter outlives a 5-minute hold and is granted; `CANCEL` racing the unlock 10³ times leaves either no lock and a cancel answered or a grant told; unacknowledged grants are resent for 5 minutes with the lock kept and host C's conflicting lock still `NLM4_BLOCKED`, and stop at the acknowledgement; a refused grant releases the lock to the next waiter; a removed share ends the waiter and its next request is `NLM4_STALE_FH` | test row | RFC 21 §13 | T11.11 |
+| R54 | "§6.1 NLM on a Kerberos-only share *(1 node)*": over `AUTH_SYS` on a `Ticket` share, a lock by a uid that can read the file granted, one that can neither read nor own a 0600 file refused, a store error resolving the caller refused | test row | RFC 21 §13 | T11.11 |
+| R55 | "§5.5, §6.1 conflict holder", its NLM step: an `NLMPROC4_TEST` against an NFSv4 lock decodes `svid` 0 and `oh` of length 0 | test row | RFC 21 §13 | T11.11 |
+| R56 | "§5.1 revoke across a restart *(1 node)*", its NLM steps: host H revoked, its lock taken by another, the node restarted: no `SM_NOTIFY` to H, a reclaim from H's name and address `NLM4_DENIED` in grace and after, an ordinary lock from H granted under a new record | test row | RFC 21 §13 | T11.11 |
+| R57 | RFC 19's "§3.8 locks outside an open" over NLM: bob's read and write locks on alice's 0600 file refused, both allowed on a 0644 file, alice's write lock on her own 0200 file allowed | test row | RFC 19 §9 | T11.11 |
+
+## 4. Decisions this epic takes
+
+- **D1. One outbound package, `nfs/rpcclient`.** NLM's `GRANTED` and `*_RES`, the port mapper's
+  `GETPORT` and `SM_NOTIFY` go through it, over `Deps.DialClient`; E10's back channel sends on the
+  session's own connection and shares only `wire`'s call header. The call encoder and reply decoder
+  are E10's T10.1's, moved from `adaptertest/nfsclient` into `wire/call.go` with a fuzz target on the
+  reply decoder (E3's D11); `rpcclient` uses them.
+  A host's connection is kept while a grant or reply to it is pending and closed when none is, as RFC
+  20 §3.3 says, by a per-host count of the calls in flight. Prior art: knfsd and NFS-Ganesha each use
+  one sunrpc client for lockd callbacks and statd (from memory, not checked). No marker: it is the
+  layout RFC 20 §2.5 gives.
+- **D2. An NLM host's `Name` is its source address, then its `caller_name`.** The record is durable and
+  indexed by (protocol, name), so the encoding is settled now: the 16 bytes of the source address in
+  its IPv6 form, an IPv4 address mapped, then the `caller_name` bytes as sent. The service refuses a
+  `Name` over 1,024 bytes (`pkg/openstate/clients.go`'s `maxName`) and NLM's `caller_name` may hold
+  1,024 (`LM_MAXSTRLEN`), so `NLMHostName` refuses one over 1,008 bytes as a named refusal, answered
+  `NLM4_FAILED` as D3's long `oh` is; a received `SM_NOTIFY` whose `mon_name` is that long matches no
+  host and is answered as a miss. A `SM_NOTIFY` and a
+  `FREE_ALL` build the same `Name` from their own source address, so one from elsewhere names another
+  client (R17). Changing it once records exist strands every host's record until its next reboot.
+  RFC 21 §6.1's `decision:` on the host binding sits here, at the encoder. A received notice
+  therefore matches a host only when its `mon_name` equals the `caller_name` the host locked with,
+  byte for byte. On Linux both come from `gethostname`, but a short name against a fully qualified
+  one, or `sm-notify -v`, leaves the old locks held; a `decision:` marker at T11.7's `SM_NOTIFY` row
+  names that assumption, and a notice whose `Name` is in no entry of D5's table is counted (§1.2),
+  overturned by a looser match if such misses are counted. Prior art: knfsd's `nlm_host` lookup
+  matches name and address (from memory).
+- **D3. An owner's `Name` is `svid` big-endian, then `oh`.** RFC 14 caps an owner at 1,024 bytes and an
+  `oh` may hold 1,024, so an `oh` over 1,020 bytes is a named refusal, answered `NLM4_FAILED`, never
+  truncated. Not durable: locks are volatile, so the encoding may change with no migration. A
+  `decision:` marker at the check, overturned if a client is seen sending an `oh` that long. Prior
+  art: none found; Linux's own `oh` is a short host-and-pid string (from memory).
+- **D4. The NLM cells RFC 21 §11.5 does not give.** NLM v4 has ten statuses; for a neutral error whose
+  row names only NFSv3's status, NLM's table answers `NLM4_ROFS` for `ErrReadOnly`, `NLM4_STALE_FH` for
+  a released file's `ErrStale`, `NLM4_FBIG` for a range past 2⁶⁴−1 (a translation refusal), and
+  `NLM4_FAILED` for every other, `ErrAccess` included, so a refused permission is never read by the
+  client as a conflict to wait out. **Pending the user's answer** (Q3), with the RFC 21 §11.5 cells
+  this document's pull request proposes. Prior art: knfsd's lockd answers `nlm_failed` for a file it
+  cannot open and `nlm_stale_fh` for a stale handle under NLM v4 (from memory). A `decision:` marker at
+  the table.
+- **D5. A call with no NSM state finds its client in a per-node host table.** Only `nlm4_lockargs`
+  carries the state, and `Connect` with another `Boot` is a reboot (R19), so `TEST`, `UNLOCK`,
+  `CANCEL`, `SHARE` and `UNSHARE` cannot `Connect` with a guessed one. Each `Connect` the adapter
+  makes records the host's `Name` with the `ClientID` and state it got, in memory; a call naming no
+  state looks the host up there and connects afresh on `StaleClient` (R21). The table is not the
+  record: a miss is any host this adapter has not connected since it started, which includes a host
+  whose locks the service kept across an adapter stop and start or a `Reconfigure`, so a miss never
+  runs with a zero `Client` (an `UNLOCK` would find nothing, be answered `NLM4_GRANTED` and leave
+  the lock held). Every miss connects under state 0, which a live host never sends, but only a
+  `SHARE`'s may create a record: a `TEST`, `UNLOCK`, `CANCEL` or `UNSHARE` miss connects with
+  `ClientInfo.Existing` set, which finds the name's current record and writes nothing when it has
+  none, answered `ErrNotFound`; the host then holds nothing here, so `TEST` runs `TestLock` with a
+  zero `Client`, which `feat/storage-v2` refuses `ErrStaleClient` (`pkg/openstate/locks.go`'s
+  `TestLock` runs `staleClient`, whose `adopt` reads record 0) and T11.12 makes a read that
+  needs no record, and `UNLOCK`, `CANCEL` and `UNSHARE` are answered `NLM4_GRANTED` with no further call.
+  The table also holds IDs open state has since deleted: `dropIdle` deletes an idle NLM record and
+  raises nothing (`pkg/openstate/locks.go`; `internal/vfs/sink.go`'s `register` says so), so the
+  table learns on use. A call naming such an ID meets `StaleClient`, and R21's retry `Connect`s with
+  `Existing` set for every call but `LOCK` and `SHARE`: its new ID replaces the entry, and an
+  `ErrNotFound` drops it and is answered as the miss with no record above, so an `UNLOCK` then a
+  `TEST` writes nothing.
+  Records are therefore made only by a lock or a share reservation, which a released lock's
+  `dropIdle` then ends, never by a call that leaves nothing held: an NLM record has no
+  lease and `Connect` skips `Propose`'s per-source caps, so one made by a `TEST` would stay for good.
+  A lock still makes one record per (source address, `caller_name`), so one host locking under many
+  names grows durable, lease-less records that only a notice or `FREE_ALL` for that exact name
+  ends; a `decision:` marker at `hosts.go`'s `Connect` names that growth as the ceiling, which D18's
+  forged sources multiply over UDP, overturned if record counts are seen growing so, then by
+  `Connect` applying `Propose`'s per-source caps to a client whose `Recovery` is notice, answered
+  `NLM4_DENIED_NOLOCKS` (an RFC 14 change). Linux sends one `caller_name` per host (from memory).
+  On `feat/storage-v2` only `CancelLock`, `WaitAnswered`, `Unlock` and `ReleaseLockOwner` run
+  `dropIdle`, and `Close` does not, so a host that sends `SHARE` then `UNSHARE`, or whose first `LOCK`
+  is refused, would keep a durable record with no lease: T11.12 has the service run `dropIdle` after a
+  `Close` and after a refused lock too.
+  Under `Connect` as it stands a state-0 miss is unsafe twice: it is a
+  reboot of a record held under a real state, and a record it creates is expired by the host's next
+  `LOCK` with its real state (`pkg/openstate/clients.go` keeps a record only on an equal `Boot`), so
+  `SHARE` then `LOCK` loses the deny mode (R41). This document therefore recommends Q4's option (b),
+  with adoption: `Connect` of a `Name` whose `ClientInfo` has `Recovery` notice, an NLM host's, under
+  a zero `Boot` returns its current record, the
+  durable one, created under 0 if none unless `Existing` is set, and a record held under `Boot` 0
+  takes the first nonzero one it is connected with, without a reboot; T11.12 builds it. Only a
+  `Connect` adopts: `HostRestarted`, a received notice's or `FREE_ALL`'s, ends a record held under 0
+  as any other, raising `ClientEnded` as `Connect`'s reboot does, and writes none for a host that has
+  none (T11.12). **Pending the user's answer** (Q4).
+  RFC 21 §11.4 has the adapter read the record through the service "on every decision that needs it
+  and never answer from a copy it holds"; the table keeps no `Adapter` bytes and answers nothing on
+  its own: it names the `ClientID` a call passes, which the service refuses with `StaleClient` once
+  stale (R21), and a miss reads the durable record through `Connect`. It is a cache of the name's
+  current ID, not an exception to that sentence.
+  An adoption in the adapter alone, the state-0 client kept and the real state remembered in the
+  table, was weighed and left: the durable record keeps `Boot` 0, so after a node restart the
+  host's reclaim `LOCK` reads as a reboot and loses its grace. A `ponytail:` marker at the table: one
+  entry per host connected, dropped by the `Revoked` that ends the client, which a reboot, a
+  notice or `FREE_ALL` that ends it and an expiry raise, or by the retry above when `dropIdle`
+  deleted the record, never by a notice that keeps the record (D19); an idle host's entry lasts
+  until its next call, so bound it if host churn shows. A `decision:` marker on the miss, naming the adapter restart
+  it covers, overturned when a node can be reached by a host whose locks another node took (the
+  cluster stage). Prior art: knfsd keeps
+  NLM hosts in an in-memory table keyed by name and address (from memory).
+- **D6. The waiting request's wire form, kept until its waiter ends.** `LockWaitOver` hands back a
+  `LockWaiter` naming the file by `FileID` and no handle, while `NLMPROC4_GRANTED` must carry the
+  handle. Before a blocking `LOCK`, the handler reads the handle's `File` through `GetAttr` and keeps
+  the request's handle, cookie, floating address, and `l_offset` and `l_len` as sent under (`FileID`, owner,
+  range), so a grant names the range the host asked for: a to-end-of-file `l_len` 0, held by the
+  service as reaching 2⁶⁴−1, goes back as 0; `LockWaitOver`
+  takes the entry, and a grant, a refusal, a share's `Revoked`, or `CancelLock` returning false removes
+  it. `CancelLock` returns true when the lock was granted first, and the grant's `LockWaitOver` comes on a
+  background goroutine (`internal/vfs/sink.go`) that may run after the `CANCEL` is answered, so that
+  entry stays for it, which finds the handle and cookie.
+  The `GetAttr` sets `HostCall` like every NLM call (R60), and RFC 17 §4.9 admits it at `Claimed`,
+  as it does the lock calls, and `feat/storage-v2` builds that since #5734 merged (A3). A
+  `ponytail:` marker: one extra `GetAttr` per blocking `LOCK`; upgrade to a handle carried on RFC 14's
+  `LockWaiter` when a profile shows it (Q7). Prior art: knfsd keeps the blocked request in its
+  `nlm_block` list (from memory).
+- **D7. A grant is always the synchronous `NLMPROC4_GRANTED`.** RFC 21 §6.1 allows either form; the
+  synchronous call's reply is the host's answer, so no `GRANTED_RES` needs matching to a pending
+  grant, and `LockWaitOver` returns with it (R38). Prior art: knfsd sends `GRANTED_MSG` (from memory);
+  Linux's client lock manager serves both. A `decision:` marker at the send, overturned if a supported
+  client is shown to serve only `GRANTED_MSG`.
+- **D8. A `CANCEL` is answered `NLM4_GRANTED`** once `CancelLock` returns, whether it dropped the
+  waiter or reported the lock granted first, in which case the grant follows through `LockWaitOver`
+  (R37). Prior art: knfsd answers a cancel it found `nlm_granted` (from memory). A `decision:` marker at
+  the handler.
+- **D9. A `*_MSG` call is answered with an empty reply, and its `*_RES` queued.** The handler makes
+  its one service call and the call's RPC reply carries no result; the result is a record on one
+  per-adapter outbound queue of 256 entries, run by a fixed pool of 4 workers that send it through
+  `rpcclient`, whose dial and reply wait are bounded at 2 s each on both of a call's connections, the
+  port mapper's for `GETPORT` and the NLM service's (T11.2), well inside the callback deadline, so no
+  pending result has a goroutine of its own (R59) and a silent host holds a worker for at most 8 s per
+  result. A host has at most one result queued or in flight. A result that finds its
+  host's already there, or the queue full, or cannot be delivered, is dropped and counted (§1.2), the
+  host's own timer resending its `*_MSG`. Each host's connection, which every call to that host in
+  flight shares, takes one of `rpcclient`'s 32 outbound slots and a slot of the node's
+  `connection_limit` (`resources.ConnLimit.Take` for the host's address) before its `GETPORT`, and
+  gives both back when it closes; a call that finds either spent fails as an unreachable host (R13,
+  R61). Slots are not first come, first served for a host that has not proved it answers: a host
+  is *proven* while a call to it was answered in the last 10 minutes on `rpcclient`'s clock, and
+  every other host, one never seen included, takes a slot only while fewer than 16 are held by
+  unproven hosts. A host whose last call failed also has its next calls fail at once, dialling
+  nothing, until 30 s after that failure; a call refused by the back-off or by the full unproven
+  half re-arms nothing and writes nothing, so a host that failed once, resent to every 10 s by the
+  service, is dialled again by the first resend 30 s after its failure. Proven hosts therefore always
+  have 16 slots, and forged sources (D18), however many and however new, share the other 16: the
+  ceiling, in a `decision:` at the slot, is a rate, at most 16 dials to silent hosts per 8 s, a call's
+  longest hold, about 2 a second, every further call to an unproven host failing at once, which
+  costs a responsive host the first call after 10 minutes of silence when it lands while forgers
+  fill that half. `rpcclient` keeps one record per host only while it means something: a back-off
+  record for 30 s after the failure that made it, a proven record for 10 minutes after the answer
+  that made it, each dropped by the same clock's sweep, with at most 4,096 back-off records, the
+  oldest dropped first (losing a back-off only lets a host dial inside the 16); proven records are
+  bounded by the hosts that really answer, since a forger off the path receives no reply. A
+  `decision:` marker at the drop; a `ponytail:` marker on the queue's length, the pool's size and the
+  records' bounds, raised by setting if drops are counted. Prior art: knfsd's lockd sends `*_RES` from its own fixed threads (from memory).
+- **D10. A share reservation's open is kept in a per-node table, and found through the service on a
+  miss.** The open's owner is the host's client with the `oh` as its `Name`: `nlm4_share` carries
+  no `svid` (RFC 1813's NLM appendix, from memory), so unlike D3's lock owner the name is the `oh`
+  alone, under the same 1,024-byte cap, and two `oh`s on one file are two opens, each with its own
+  deny mode; RFC 21's "anonymous-owner" reads as an open that names no NFSv4 open-owner.
+  `UNSHARE` names the handle and `oh`, not the open, so `SHARE` keeps the `StateRef` `Open`
+  returned under (`ClientID`, handle, `oh`), dropped by `UNSHARE` and by the `Revoked` that ends the
+  client, never by a notice that keeps it (D19). The table is lost with an adapter stop and start or a
+  `Reconfigure` while the service keeps the open, which has no lease, so an `UNSHARE` that misses it
+  reaches the open through the service: its client found as D5's misses are (`Existing`), it makes
+  an `Open` of the same owner on the handle with the `UNSHARE`'s own mode and access, which RFC 14
+  answers with the one open that owner holds on the file (`pkg/openstate/opens.go`: "its second open
+  of it upgrades the first"), and `Close`s it. A client with no record is answered `NLM4_GRANTED`
+  with no call; an `Open` refused, by another's deny mode, holds nothing to close and is answered
+  `NLM4_GRANTED` too. A `decision:` marker at the miss: when the owner holds no open there, the
+  `Open` makes one for the instant before its `Close`, which may recall a delegation it conflicts
+  with; overturned if such recalls are seen, then by an RFC 14 lookup of an owner's open by file. A
+  `ponytail:` marker: the table per node; upgrade when a host can reach another node with its opens
+  kept (the cluster stage). Prior art: none found.
+- **D11. `SM_NOTIFY` is resent until the host's monitor answers, by its own workers.** A `Revoked`
+  naming a lost shard puts each host's notice, a record, in the adapter's notice table and returns
+  at once (R14, R59). The table holds at most one notice per host, a later report for the same host
+  replacing the state number of the one pending, so it is bounded by the hosts the adapter knows
+  and has no fixed length to fill. Notices never go on D9's queue: 4 notice workers of their own
+  send them, so a silent host never holds a worker a `*_RES` needs. The table takes a clock at
+  construction, as E8's D13 gives `protocol.NewSessions` its own: `nfs.go` passes the host clock, a
+  test its own (kind 1). A report hands its new notices to the workers at once, ahead of any resend.
+  One timer for the whole table, on that clock, starts a round every 10 s; a round hands each pending notice with no send
+  in flight to the workers, those never sent before ahead of resends, and passes over one whose last
+  send has not ended, so a silent host has at most one send in flight and a round never queues a
+  second behind it. A notice asks `GETPORT` once and keeps the port for its resends; each send, its
+  `GETPORT` included, runs under one 2 s deadline in all, unlike D9's `Call`, whose dial and reply
+  wait are 2 s each per connection: `Notify` holds no connection open and a notice worker must come
+  back within the 2 s the round arithmetic below counts. The 15 minutes count on the table's clock from the
+  report that made the notice, rounds passed over included, and restart when a later report replaces
+  its state number, since the host has not yet been told that one; a notice still unanswered then is dropped and
+  counted (§1.2), as is every pending notice when the adapter stops. The bound this leaves: in a
+  round, a host behind *s* silent ones waits up to ⌈*s*/4⌉ × 2 s for its send, about 20 s behind 40
+  silent hosts, inside the 90 s grace a told host reclaims in (RFC 21 §5.1). A `ponytail:` marker at
+  the workers: 4 of them, so a round's first sends take ⌈*s*/4⌉ × 2 s behind *s* silent hosts;
+  upgrade to sends that do not wait for their reply, one socket whose replies are matched by `xid`,
+  when a deployment's silent hosts make a round approach the grace period. The state number and the
+  report after a restart need an RFC 17 change (Q1): this document writes option (a), a `State` field
+  on `Revocation` and the reports of a start held for the NLM `Callbacks` the adapter registers when
+  it starts, whose service half is T11.8. A `ponytail:` marker at the sender: a host silent for 15
+  minutes is never told; upgrade to the node's retrier if one is seen coming back later. Prior art:
+  nfs-utils' `sm-notify` retries for 15 minutes by default (from memory).
+- **D12. `GETPORT` goes over TCP to port 111.** R8 leaves UDP to `SM_NOTIFY` and replies, so the port
+  mapper is asked over TCP, version 2's `PMAPPROC_GETPORT`, from the floating address, once per call
+  the adapter makes and once per notice (D11); nothing else is cached. A `ponytail:` marker: one
+  `GETPORT` per grant, upgrade to a cache per host if a profile shows them. A host whose NLM is
+  registered over UDP only answers the TCP `GETPORT` with port 0: an unreachable host (R13), whose
+  grant the service resends until its record ends and which is never delivered. A `decision:` marker
+  at that check, overturned if a supported client registers NLM over UDP only. Prior art: RFC 1833
+  §3.2.
+- **D13. A datagram is a connection of one record.** `core`'s datagram listener reads each datagram
+  into one 64 KiB scratch buffer per socket, then takes a buffer for its real length from the node's
+  request pool with `TryGet(src, n)`, keyed by its source, and copies it there. It drops a datagram
+  past 4 KiB, one the pool refuses, and one that finds the queue of 256 full. `TryGet` refuses
+  whenever a waiter is queued on the pool (`pkg/resources/budget.go`'s `chargeLocked`), so while TCP
+  requests wait for receive buffers every datagram is dropped, the hosts' own retransmissions
+  carrying the call once the pool drains. A pooled buffer is
+  charged its class plus the 8 KiB request overhead (`pkg/resources/buf.go`): 12 KiB for a datagram
+  in the 4 KiB class. That class does not hold every NLM call: an `nlm4_lockargs` whose cookie, `fh`,
+  `oh` and `caller_name` are each at 1,024 bytes is about 4.6 KiB with its header and an `AUTH_SYS`
+  credential, and is dropped. A `decision:` marker at the 4 KiB check: the calls clients send are far
+  smaller (an NFSv3 handle is at most 64 bytes, and Linux's names and `oh` are short, from memory),
+  overturned if oversized drops are counted, then by taking the 8 KiB class. The queue is therefore
+  bounded at 256 × 12 KiB, 3 MiB, under the 8 MiB receive
+  pool of `adaptertest.Budgets()`. Each datagram queued becomes a `Conn` of one record, from the socket's settings snapshot and with its source as `Remote` and the address it
+  arrived on as `Local` (on an unspecified bind, read from the packet's information), whose stages are
+  built by `NewConn`, whose reply is one `WriteTo` from that address, and which takes no connection
+  count and no connection-state charge. Two `ponytail:` markers: the queue's length and buffer size,
+  upgrade by setting if drops are seen with the pool not spent; and the stages built per datagram,
+  upgrade to stages per socket if a profile shows them. Prior art: knfsd's `svc_udp_recvfrom` hands
+  each datagram to a request of its own and replies from the destination address it read with
+  `IP_PKTINFO` (from memory). RFC 20 §4.7 gains `Conn.Local` and the datagram `Listener` (Q2).
+- **D14. A program a UDP listener does not serve is answered nothing.** The UDP listener's protocol
+  holds only NLM's and NSM's tables, and its stages' table maps a program it lacks to no reply, so NFS
+  and MOUNT by UDP see what a host with no UDP NFS shows (R1). A `decision:` marker at the row,
+  overturned if a client is found that waits on a `PROG_UNAVAIL` over UDP before trying TCP. RFC 20
+  §4.8's table answers an unknown program `PROG_UNAVAIL` on every listener, which RFC 21 §2.2, §12
+  (N1) and §13's "§2.2 TCP only" row contradict for UDP; the one-sentence amendment of §4.8's row, a
+  UDP listener answers a program it does not serve with nothing, joins Q2's RFC 20 pull request.
+- **D15. An NLM holder's `svid` and `oh` reach the wire only for the asking host's own owners.** A
+  conflicting lock of another client, NLM or not, is reported `svid` 0 and an empty `oh`, so no owner
+  name is ever decoded from another client's bytes (R32). A `decision:` marker at the reply, overturned
+  if a client is shown to act on another host's `svid`. Prior art: knfsd reports the holding host's
+  `svid` (from memory).
+- **D16. `NM_LOCK` is not served.** RFC 21 lists it nowhere, so it is answered `PROC_UNAVAIL` as every
+  procedure NLM's table lacks; **pending the user's answer** (Q6). A `decision:` marker at the table,
+  overturned if a supported client sends it.
+
+- **D17. NLM has no duplicate-request cache, over UDP as over TCP.** RFC 21 §11.2's cache holds
+  NFSv3's and NFSv4.0's replies only (E3's D5 stores nothing else), so a datagram the network
+  duplicates or the host retransmits runs again. `TEST`, `UNLOCK`, `CANCEL` and a repeated `LOCK` of
+  one owner over one range are idempotent, and a repeated blocking `LOCK` keeps the service's one
+  waiter (RFC 14 §2.10) and overwrites its own entry of D6, so one `GRANTED` goes out (R58). A
+  repeated `SHARE` is idempotent, the owner's second open of the file upgrading its first to the same
+  mode; a repeated `UNSHARE` misses D10's table and is answered `NLM4_GRANTED` after D10's `Open` and
+  `Close` leave nothing held. What is
+  not idempotent is a `LOCK` delayed past the host's own `UNLOCK` of that range, which takes the lock
+  again for an owner that no longer thinks it holds it, until the host's next `FREE_ALL`, `SM_NOTIFY`
+  or `UNLOCK`. A `LOCK` delayed past the host's own reboot carries its old state, which `Connect` reads
+  as a reboot as it does any state other than the record's (R19), so it ends the new instance's
+  locks. A `SHARE` delayed past its `UNSHARE` takes the deny mode again, as the delayed `LOCK` does.
+  A `decision:` marker at the UDP listener's row names all three, overturned if such a lock is seen
+  outliving its owner, or a delayed `LOCK` ending a host's locks, then answered by an NLM entry in the cache. Prior art: knfsd's reply cache is
+  nfsd's alone and lockd keeps none (from memory).
+- **D18. Over UDP the host binding stops no forger.** No handshake proves a datagram's source, so one
+  forged from anywhere that reaches the port, on the path or off it, can name any address: a
+  `FREE_ALL`, an `SM_NOTIFY`, an `UNLOCK`, or a `LOCK` carrying a new state (a reboot, R19) frees that
+  host's locks; and since RFC 17 §4.9's client rules check only the call's address and its
+  netgroups, a forged source also takes locks and `SHARE` deny modes on a netgroup-restricted share.
+  A forged blocking `LOCK` from B, then a forged `UNLOCK` of the holder, has the service resend
+  `GRANTED` to B every 10 s while B's record lives, which with no lease and no notice from B is
+  forever; R61 caps the connections such sends hold. A forged blocking `LOCK` or `*_MSG` also has the
+  node connect, from the floating address, to port 111 of whatever address it names, a third party's
+  included. That is wider than RFC 21 §6.1's own
+  `decision:` ceiling, a sender forging the source on the same network. A `decision:` marker at
+  T11.10's UDP listener names that whole reach, overturned when an operator reports a lock or a deny
+  mode taken or freed that its host never sent, then answered by Q8's option (b).
+- **D19. `FREE_ALL` passes its `nlm4_notify.state` to `HostRestarted`.** A host sends `FREE_ALL` when it
+  restarts, carrying its new state (XNFS, from memory). `HostRestarted` expires the record only when
+  that state differs from its `Boot` (`internal/vfs/clients.go`). An equal state means the record is
+  already the new instance, connected by a `LOCK` that carried that state; a notice for a host with
+  no record writes nothing (T11.12). Its locks are the new instance's, which the notice is not about, so R17 holds either way.
+  Any other state ends the record, an older one included: a duplicated or delayed `SM_NOTIFY` or
+  `FREE_ALL` from before the host's last reboot, arriving after its `LOCK` under the new state, ends
+  the live instance's locks, as D17's delayed `LOCK` does. States are not compared as newer, because
+  a host whose statd state file is lost starts again from a low number, and its notice must still
+  end the old record. A `decision:` marker at the row names both cases, overturned if a client is
+  seen sending `FREE_ALL` with an unchanged state to free its current locks, or a stale notice is seen
+  ending a live host's locks, then by comparing as newer within a window.
+- **D20. `UNLOCK_MSG` and `CANCEL_MSG` run as releases while draining.** RFC 21 §11.5 names NLM's
+  `UNLOCK` and `CANCEL`; their asynchronous forms are the same releases, so they run too, and every
+  other procedure is refused with no reply (R50). The sentence joins batch two's RFC 21 pull request
+  with Q3's cells.
+- **D21. Only `NLM4_DENIED` refuses a grant.** A refusal hands the lock to the next waiter, so a
+  status that means "not now", `NLM4_DENIED_GRACE_PERIOD` from a host in its own grace,
+  `NLM4_DENIED_NOLOCKS` or `NLM4_FAILED`, is an error, as a silence is (R39), and the service sends
+  the grant again on its 10 s cadence. `NLM4_DENIED` is what a host answers for a grant it has no
+  blocked request for (from memory, Linux's `nlmclnt_grant`). A `decision:` marker at the mapping,
+  overturned if a host is seen answering another status for a grant it will never take.
+- **D22. The outgoing `SM_NOTIFY` names the floating address, in text form.** The client's statd
+  matches a notice against the name its lock manager monitored, the name the client mounted by, which
+  the server never sees; the record keeps only addresses (`ClientRecNLM`'s `Host` and `Server`), and
+  `mon_name` and `priv` are the client's own name and cookie, for received notices (R18). nfs-utils'
+  statd compares a notice's name with a monitored one by resolving both to addresses (its
+  `statd_matchhostname`, from memory), so the floating address in dotted or colon form matches a
+  hostname that resolves to it. A `decision:` marker at the sender, overturned if a client is seen
+  ignoring such a notice, then by a server name set per floating address. RFC 21 §6.2's "the
+  floating address's name" does not say where the adapter learns a name: a gap, §9.
+
+## 5. Target tree
+
+```text
+internal/adapter/core/
+  conn.go                        T11.2  Local; T11.9  a datagram's Conn
+  datagram.go                    T11.9  the datagram listener (RFC 20 §3.1)
+  datagram_linux.go, _other.go   T11.9  the destination address of a datagram on an unspecified bind
+  server.go                      T11.9  binding, Addrs and Reconfigure for "udp"
+  datagram_test.go               T11.9  on testproto over UDP
+  testdata/surface/core.golden   T11.2, T11.9
+internal/adapter/adaptertest/
+  testproto/                     T11.9  a datagram case
+  nfsclient/
+    host.go, host_test.go        T11.2  Host: a scripted port mapper, NLM and NSM service on loopback
+    udp.go                       T11.10 DialUDP
+pkg/adapter/deps.go              T11.2  DialClient's network
+internal/adapter/nfs/
+  nfs.go                         T11.3  nlm.Handlers and nsm.Handlers; T11.10  the UDP listener
+  callbacks.go                   T11.4  LockWaitOver for an NLM host; T11.7  Revoked for an NLM host
+  wire/
+    nlm.go                       T11.1  NLMHostName (D2)
+    testdata/golden/             T11.1 to T11.7  NLM and NSM calls and replies
+  protocol/
+    stages.go                    T11.10 the UDP listener's stages' row for a program it lacks (D14)
+  ops/nlm/
+    types.go                     T11.1  NLM v4's structs and statuses
+    translate.go                 T11.1  Name, owner, range, share mode: pure functions
+    errors.go                    T11.1  NLM's error table
+    fuzz_test.go                 T11.1  FuzzNLMLock
+    hosts.go                     T11.3  the per-node host table (D5) and Resolve
+    test.go, lock.go, unlock.go, free_all.go   T11.3
+    waiting.go                   T11.4  the waiting-request table (D6)
+    cancel.go                    T11.4
+    msg.go                       T11.5  the *_MSG rows and *_RES sends
+    share.go, unshare.go         T11.6  the share table (D10)
+  ops/nsm/
+    notify.go                    T11.7  SM_NOTIFY received
+    notice.go                    T11.7  SM_NOTIFY sent, its resend (D11)
+  rpcclient/
+    rpcclient.go                 T11.2  Call, by TCP from the floating address; Notify, by UDP
+    queue.go                     T11.5  the outbound queue and its fixed workers (D9)
+    notices.go                   T11.7  the notice table, its round timer and its workers (D11)
+    getport.go                   T11.2  GETPORT over TCP (D12)
+pkg/vfs/, pkg/openstate/, internal/vfs/   T11.8  Revocation.State; a start's reports held for NLM Callbacks (Q1)
+pkg/openstate/clients.go         T11.12 an NLM record's zero Boot and its first state adopted (Q4)
+```
+
+## 6. Subtasks
+
+### T11.1 NLM's and NSM's codecs, error tables and translations
+
+**Subtask T11.1 estimate: 3 man-days.**
+
+- **Track:** B. **Depends on:** S2, E3's T3.4.
+- **Covers:** R15, R25, R26, R31, R33, R44, R45, R46, R47, R48, R49.
+- **Deliverables:**
+  - `ops/nlm/types.go`: NLM v4's argument and result structs, `xdr`-tagged for the generator, its
+    procedure numbers and its ten statuses; `ops/nsm`'s `SM_NOTIFY` argument. Consumed by every later
+    subtask and by T11.2's scripted host.
+  - `wire.NLMHostName(caller []byte, src netip.Addr) ([]byte, error)` (D2), exported because `ops/nsm` builds
+    the same `Name` for `HostRestarted`. Consumed by T11.3 and T11.7.
+  - `ops/nlm/translate.go`, unexported pure functions: `owner(svid uint32, oh []byte) (vfs.LockOwner, error)` (D3); `lockRange(off, n
+    uint64) (vfs.ByteRange, error)` (R25, `NLM4_FBIG` past 2⁶⁴−1); `lockReq(args *nlm4LockArgs, wait
+    bool) (vfs.LockReq, error)`; the share mode and access to `Access` and `Deny`. Consumed by T11.3,
+    T11.4, T11.6 and T11.7.
+  - `ops/nlm/errors.go`: NLM's table on E3's `protocol.ErrorTable`, with R45's cells and D4's (Q3).
+    Consumed by every NLM row.
+  - Golden files of NLM's `svid` and `oh` table and NLM's §11.5 rows, hand-written from RFC 1813
+    where E2's captures do not hold them; `FuzzNLMLock`.
+- **Acceptance criteria:**
+  - Each golden row goes NLM → neutral → NLM and gives its golden value both ways.
+  - A length of 0 holds to 2⁶⁴−1; an offset of 2⁶⁴−1 with length 2 is `NLM4_FBIG`, never wrapped.
+  - Every error of `vfs.Errors()` maps to a row of NLM's table, none by the fault's fallback.
+  - An `oh` of 1,021 bytes is refused, never truncated; so is a `caller_name` of 1,009 bytes, and
+    one of 1,008 gives a `Name` of 1,024 bytes the service takes.
+- **Tests:** at the functions every NLM handler calls: the golden table (catches a field mapped
+  differently, R48); a property test over generated `nlm4_lockargs` that each maps to a `LockReq` or a
+  named refusal (catches a default, R47); the range cases (catch an overflow or a to-end-of-file
+  length computed as a sum, R25); a loop over `vfs.Errors()` asserting a matched row and `core`'s
+  `adapter_unmapped_errors_total` at 0 through `nfsharness` (catches a missing cell, R46); the R45
+  cells each asserted by status (catch `ErrDelay` answered `NLM4_DENIED`, R33, and `NoGrace` as
+  anything but `NLM4_DENIED`, R44); `FuzzNLMLock` seeded with truncated and corrupt requests (R49);
+  `NLMHostName` of an IPv4 address and of its mapped form equal, and state 5 as the `Boot` bytes
+  0,0,0,0,0,0,0,5 (catch a host split in two or states misordered, R15); the owner golden rows (R26).
+  No test double.
+- **Rules:** rule 9's `decision:` markers of D2, D3 and D4.
+
+### T11.2 `rpcclient`, `DialClient`'s network and `Conn.Local`
+
+**Subtask T11.2 estimate: 4.5 man-days.**
+
+- **Track:** B. **Depends on:** S2, T3.2, T10.1.
+- **Covers:** R8, R9, R10, R11, R12, R13, R14, R59, R61.
+- **Deliverables:**
+  - `pkg/adapter/deps.go`: `DialClient func(ctx context.Context, network string, from netip.Addr, to
+    netip.AddrPort) (net.Conn, error)`, as RFC 20 §3.4 has it; its nil default a `net.Dialer` bound to
+    `from` for `network`. Consumed by `rpcclient`.
+  - `core`: `func (c *Conn) Local() netip.Addr`, the address the client reached, unmapped, through
+    an RFC 20 pull request first (Q2), with `core.golden` updated. Consumed by T11.3, which keeps it
+    with the host, and T11.9's datagram `Conn`.
+  - `rpcclient`: `type DialFunc func(ctx context.Context, network string, from netip.Addr, to
+    netip.AddrPort) (net.Conn, error)`, the type of `adapter.Deps.DialClient`; a `Client` built with a
+    clock (kind 1) and the dial; its `Call(ctx context.Context, from netip.Addr, host netip.Addr, prog,
+    vers, proc uint32, args []byte) ([]byte, error)`, which fails at once, dialling nothing, for a host
+    in its 30 s back-off, then takes one of its 32 outbound slots, within the 16 for unproven hosts
+    unless this one answered in the last 10 minutes (D9, R61), and a slot of the node's `connection_limit`, then asks `GETPORT` over
+    TCP on that slot (D12), dials the host's port from `from`, sends one call and reads its reply, the
+    dial and the reply wait of each connection bounded at 2 s under the context's deadline, keeping one
+    connection per host while calls to it are in flight; `Notify(ctx context.Context, dial DialFunc, from, host netip.Addr, args
+    []byte) error`, one `SM_NOTIFY` datagram to the port the host's port mapper names for NSM version 1
+    over UDP, `GETPORT` included, under one 2 s deadline (D11). Consumed by T11.4, T11.5 and T11.7.
+  - `adaptertest/nfsclient.Host`: a port mapper, NLM callback service and NSM service on
+    `127.0.0.1:0` or a given loopback address, keeping each call it received with its source address,
+    answering by a script whose refusals and silences are fault injection (kind 3). Consumed by this
+    subtask's tests, T11.4, T11.5, T11.7, T11.11 and E16.
+- **Acceptance criteria:**
+  - A call leaves from `from` and reaches the host's NLM port that `GETPORT` named, over TCP.
+  - A host whose port mapper refuses, or whose service is silent, is an error by the context's
+    deadline.
+  - Two calls to one host in flight share one connection, which closes once neither is, and gives
+    back its `connection_limit` slot.
+  - With no `connection_limit` slot free, or `rpcclient`'s 32 outbound connections open, `Call`
+    fails as an unreachable host and dials nothing, its `GETPORT` included.
+  - A host whose call failed has its next `Call` within 30 s fail with nothing dialled, and a call
+    refused by the back-off re-arms nothing: one failure, then a call every 10 s, and the call at
+    30 s dials.
+  - Hosts never seen before, each silent, hold at most 16 slots: with 16 such calls held, a 17th new
+    host's `Call` fails with nothing dialled while a proven host's call still reaches `Host`.
+  - Back-off and proven records are gone once their 30 s and 10 minutes pass on the clock, and the
+    back-off records never exceed 4,096.
+  - `Local` is the address the connection was accepted on, for a listener bound to `127.0.0.3` and
+    for one bound to the unspecified address.
+- **Tests:** at what the host receives: calls from a server bound to `127.0.0.3` arrive at `Host` on
+  `127.0.0.2` from `127.0.0.3` (catches a node address, R11); `GETPORT` arrives over TCP and the call
+  on the named port (catches a callback on the request's connection or a fixed port, R10, and UDP
+  for `GETPORT`, R8); a silent `Host` makes `Call` return by its deadline (catches a send that blocks
+  past it, R14, or that is reported as anything but an error, R13); the open connections counted
+  through `Host` before and after (catches a connection kept with nothing pending, R12); the test's
+  `resources.ConnLimit` set to its in-use count, and `Call` refused with no dial reaching `Host`, port
+  mapper included, and the same with 32 calls held open at `Host` to 32 hosts on distinct loopback
+  addresses, `127.0.0.10` to `127.0.0.41`, each proven by one answered call first so the 16 for
+  unproven hosts do not refuse them, since calls to one host share one connection and one slot
+  (catches an outbound connection left uncounted, or a `GETPORT` taken before the slot, R59, R61);
+  a stream of fresh silent hosts, `127.0.0.10` upward, each called once and never answering, with a
+  proven `Host` (one call answered first) called after every sixteenth: at most 16 connections reach
+  the silent hosts at once, every further new host's call fails with nothing dialled, and every call
+  to the proven `Host` is received (catches never-seen hosts served from the ordinary slots, D9, R61);
+  a silent host's second call before 30 s on the clock, no connection reaching it (catches the
+  back-off skipped); one failure, then calls at 10 s, 20 s and 30 s on the clock, only the last
+  reaching `Host` (catches a refusal that re-arms the back-off, which under the service's 10 s
+  resends never dials again); 5,000 hosts failing at once on a closed port, the back-off records
+  read through an `export_test.go` count at 4,096, and every record gone once the clock passes 30 s
+  and 10 minutes (catches records with no expiry or bound); the reply
+  decoder's own fuzz target is E10's T10.1's; with `DialClient` nil, `Notify` reaches `Host` over UDP
+  from `from` (catches a default that ignores the network or the address, R9). No test double but
+  `Host` and the test's `DialClient`.
+- **Rules:** rule 11's exports above, `Conn.Local` through the RFC first.
+
+### T11.3 An NLM host as a client: `TEST`, `LOCK`, `UNLOCK` and `FREE_ALL`
+
+**Subtask T11.3 estimate: 4 man-days.**
+
+- **Track:** B. **Depends on:** T11.1, T11.2, T8.1, T8.2.
+- **Covers:** R11, R15, R16, R17, R18, R19, R20, R21, R22, R23, R24, R27, R28, R31, R32, R50.
+- **Deliverables:**
+  - `ops/nlm/hosts.go`: the host table of D5 (Q4), its miss connecting under state 0, with
+    `Existing` set but for a `SHARE`, once T11.12 lands. Until then a miss connects nothing: a
+    `TEST`, an `UNLOCK` and a `CANCEL` are answered `NLM4_DENIED_GRACE_PERIOD`, since open state
+    refuses a `TestLock` with no `Client` until T11.12 (D5), which a host that held locks across an
+    adapter restart retries without end; PR 3 lands T11.12 before E15 serves NLM, so no node
+    runs with that gap; and the rows' `Resolve`, which `Connect`s an NLM host
+    with `ClientInfo{Protocol: ProtocolNLM, Name, Boot, Adapter, ClientIsMachine: true, Recovery: entity.RecoverNotice}` and E8's
+    callbacks value, its `Adapter` bytes a `wire.ClientRecNLM` (T8.2) holding the `caller_name` as
+    `MonName`, `Priv`, the host's address as `Host` and the floating address from `Conn.Local` as
+    `Server`, and sets `r.Call.Client`.
+  - `nlm.Handlers{VFS vfs.Service; Callbacks func(vfs.ClientID) vfs.Callbacks; …}`, the callbacks
+    field E8 left to this epic's first row that calls `Connect` (rule 12), set by `nfs.go` to the
+    constructor T8.1 sets on `v4.Handlers`.
+  - Rows `TEST`, `LOCK` without `block`, `UNLOCK` and `FREE_ALL`, each one service call on the
+    anonymous open with the request's handle (`TestLock`, `Lock`, `Unlock`, `HostRestarted`); the
+    `StaleClient` retry (R21), whose new ID replaces the table's entry and whose `ErrNotFound`, once
+    T11.12 gives `Existing`, drops it (D5); `UNLOCK` with the release role; a `TEST` holder as D15.
+  - `free_all.go`'s `decision:` marker of D19 on the state it passes to `HostRestarted`.
+  - Consumed by T11.4 to T11.7 and T11.11.
+- **Acceptance criteria:**
+  - `LOCK`, `UNLOCK` and `FREE_ALL` each make one service call besides `Resolve`'s `Connect`, of
+    the row's `vfs.Op` as `vfstest.Mutations` records it; `TEST`'s `TestLock` mutates nothing, so
+    `Mutations` keeps no entry for it and the row is read by its answer alone. `Mutations` keeps the op alone, so the arguments are read from
+    `memory.New`'s resulting lock state: the lock a `LOCK` took is reported as a conflict to a
+    `TestLock` by another client over its range and to none just past it (R24), is gone after the
+    host's own `FREE_ALL` and held after another host's (R16, R17), and conflicts on the request's file and
+    no other (R23).
+  - `LOCK` with a new state ends the old client: its locks are gone from `memory.New`.
+  - A `StaleClient` injected once through `vfstest.Faults` is answered after a second `Connect`; twice,
+    `NLM4_DENIED_GRACE_PERIOD`.
+  - Locks by two uids from one host are one client's.
+- **Tests:** through `nfsharness` on `memory.New`: `UNLOCK` and `FREE_ALL` naming host A's
+  `caller_name` from another address leave A's lock held (catch a host keyed by name alone, R16, R17);
+  the reboot case (catches a state ignored, R19); the `StaleClient` cases (catch `NLM4_DENIED`, R21);
+  the two-uid case (catches an owner on the record, `ClientIsMachine` left unset among the causes, R22); an `UNLOCK` of a range held in part
+  answered `NLM4_GRANTED` with the held part released (catches `ErrRangeNotLocked` answered, R27); a
+  `TEST`, after a `LOCK` of the asking host's own so it is no miss, against an NFSv4 lock and
+  against another host's lock decoding `svid` 0 and an empty `oh`
+  (catches an internal owner on the wire, R32); a reclaim `LOCK` during grace, after `memory.New` is restarted over its
+  store with the host's lock held (on a fresh one a reclaim is `NoGrace`), granted and an ordinary
+  one `NLM4_DENIED_GRACE_PERIOD` (catches `reclaim` dropped, R31); the drain's error refusing `LOCK`
+  and not `UNLOCK` (R50); the `Adapter` bytes `Record` returns, decoded by E8's codec, holding the
+  floating address (catches the notice address lost, R18, R11). Kind 2 and kind 3 only.
+- **Rules:** rule 13: `Resolve`'s `Connect` is the one call outside the handler's, as RFC 20 §4.4
+  gives `Resolve` the client.
+
+### T11.4 Blocking locks, `CANCEL` and `NLMPROC4_GRANTED`
+
+**Subtask T11.4 estimate: 3.5 man-days.**
+
+- **Track:** B. **Depends on:** T11.3, T11.2; E4's T4.1 using RFC 17 §4.9's admission of a
+  `HostCall` `GetAttr` at `Claimed`, which `feat/storage-v2` already builds (A3).
+- **Covers:** R10, R13, R14, R33, R34, R35, R36, R37, R38, R39, R50, R58, R60.
+- **Deliverables:**
+  - `ops/nlm/waiting.go`: the waiting-request table of D6, with its `GetAttr` before a blocking
+    `LOCK`, sent with `HostCall` set; `LOCK` with `block` set as a callback waiter; `cancel.go`, `CancelLock` then the answer of
+    D8, with the release role.
+  - `nfs/callbacks.go`'s `LockWaitOver` for an NLM host: granted, one synchronous `GRANTED` through
+    `rpcclient.Call` (D7), its reply mapped to `refused`, no reply an error; not granted, the entry
+    dropped and nothing sent. `Revoked` of a share or of the client drops its entries. Consumed by
+    the service.
+- **Acceptance criteria:**
+  - A blocked `LOCK` is answered `NLM4_BLOCKED` before the conflict ends, and the adapter holds no
+    goroutine for it until `LockWaitOver`.
+  - `GRANTED` names the request's handle, `svid`, `oh` and range.
+  - A `CANCEL` is answered only after `CancelLock` returns: with `CancelLock` held by
+    `vfstest.Faults.Hold(vfs.OpCancelLock)`, no reply leaves until it is released.
+  - A `CANCEL` that finds the lock granted (`CancelLock` true) with the adapter's `LockWaitOver`
+    held, before it reads the waiting-request table, until after the reply: the `GRANTED` it then
+    sends still names the request's handle and cookie. The hold is a hook in `nfs/callbacks.go` set
+    per instance from `export_test.go`, since `vfstest.CallbackFaults` runs `Inner` before its own
+    hold and so cannot hold the adapter's arm first.
+  - A host answering `NLM4_DENIED` to `GRANTED` gets the lock released to the next waiter; a host
+    answering `NLM4_DENIED_GRACE_PERIOD`, and one that closes the connection after reading the call,
+    keep it, and the next `LockWaitOver` sends again.
+  - `LockWaitOver` called on the callbacks value with a 1 s context, against a `Host` that never
+    answers, returns an error by that deadline, never `refused`.
+  - On a share whose `MinProof` is `Ticket`, an `AUTH_SYS` blocking `LOCK` at `Claimed` is answered
+    `NLM4_BLOCKED` and later granted, not refused at its `GetAttr`.
+- **Tests:** through `nfsharness` and `Host`, on `memory.New`: a conflicting blocking `LOCK`, then the
+  holder's `UNLOCK`, and `GRANTED` received by `Host` with the request's handle, `svid`, `oh`, range
+  and cookie (catches a grant on the request's connection or with another handle or cookie, R10,
+  R38); the same with `l_len` 0, to end of file, and `GRANTED` at `Host` carrying `l_len` 0 (catches
+  the service's 2⁶⁴−1 end sent back, which the client matches against nothing and refuses, D6); the held `CancelLock` (catches a cancel answered first, R37); a `Host` scripted to refuse,
+  then to close after reading, the resend driven on `memory.New`'s clock, and the direct call against
+  a silent `Host` (catch a failure or a silence reported as a refusal, R39, and a refusal ignored,
+  R38); none of these waits out `internal/vfs`'s 35 s real-time callback deadline; the drain's error leaving `CANCEL` to run
+  (R50); a waiter `memory.New` ends with `LockWaitOver(granted=false)`, its entry dropped and
+  nothing sent to `Host` (R36); on a delegated file, a blocking `LOCK` answered `NLM4_BLOCKED` and
+  granted when the recall ends, a non-blocking `LOCK` and a `TEST` each `NLM4_DENIED_GRACE_PERIOD`
+  (R33, R34); a blocking `LOCK` sent twice before its grant, one `GRANTED` at `Host` (catches a
+  second waiter or a second entry, R58); on a `Ticket` share, an `AUTH_SYS` blocking `LOCK` at
+  `Claimed`, then the holder's `UNLOCK`, and `GRANTED` at `Host` (catches the `GetAttr` refused or
+  sent without `HostCall`, R60); `-race` with 64 hosts blocking on one range
+  and released in turn, its mutex and block profiles reported (rule 4). That no adapter timer drops a
+  waiter is checked in T11.11's 5-minute step on the composed node's clock (R35).
+- **Rules:** rule 9's markers of D6, D7, D8 and D21; rule 4's profiles.
+
+### T11.5 The asynchronous procedures
+
+**Subtask T11.5 estimate: 2.25 man-days.**
+
+- **Track:** B. **Depends on:** T11.4.
+- **Covers:** R10, R40, R50, R59.
+- **Deliverables:** `ops/nlm/msg.go`: `TEST_MSG`, `LOCK_MSG`, `CANCEL_MSG` and `UNLOCK_MSG` rows,
+  each the synchronous handler's service call, answered with an empty reply, the matching `*_RES` a
+  record on `rpcclient`'s outbound queue (`rpcclient/queue.go`, D9), its length a constructor
+  argument, at most one per host, sent by its fixed workers under `rpcclient`'s 2 s bounds; `UNLOCK_MSG` and `CANCEL_MSG` with the release role (D20). Consumed by hosts
+  that lock asynchronously, and by T11.7's notices.
+- **Acceptance criteria:**
+  - Each `*_MSG` gets its `*_RES` at `Host`, from the floating address, with the result its
+    synchronous form would have answered and the request's cookie.
+  - With the workers held and the queue, its length set to 4 in the test, full with 4 hosts'
+    results, a fifth host's `*_MSG` is answered and its `*_RES` dropped; a host's second `*_MSG`
+    while its first result is queued is answered and its `*_RES` dropped; the adapter's goroutine
+    count does not grow with the calls.
+- **Tests:** through `nfsharness` and `Host`: each of the four, and a `LOCK_MSG` that blocks, then
+  is granted (catches a result sent on the request's connection, R10, or with another cookie, R40);
+  1,000 `TEST_MSG` from one host to a `Host` that holds every call, the goroutine count read before
+  the first and again once all 1,000 are answered, while `Host` still holds the one send, equal, one
+  `TEST_RES` sent and 999 dropped, and the open connections at most the workers' (catches a goroutine
+  or a connection per result, R59, and a host's results not capped, D9);
+  the drain's error refusing `LOCK_MSG` and running `UNLOCK_MSG` (R50).
+- **Rules:** rule 9's markers of D9 and D20; rule 4's leak check on the workers.
+
+### T11.12 An NLM record adopts its host's first state
+
+**Subtask T11.12 estimate: 3 man-days.**
+
+- **Track:** B. **Depends on:** T11.3, Q4 agreed with option (b) and its RFC 17 and RFC 14 pull request.
+- **Covers:** R18, R19, R21, R41, R42, R60.
+- **Deliverables:** `pkg/openstate`'s `Connect` for a `ClientInfo` whose `Recovery` is notice, as an
+  NLM host's is, never chosen by its kind (RFC 17 §3.0): a zero `Boot` returns the
+  current record of its `Name`, created under 0 if none, with no reboot, and with
+  `ClientInfo.Existing` set creates none and answers `ErrNotFound`, writing nothing; a record held under `Boot` 0
+  connected with a nonzero one takes it, with no reboot; any other change of `Boot` stays a reboot;
+  and a `Connect` that keeps the record writes the `Adapter` bytes it carries when they are nonempty
+  and differ from the record's, so a host whose calls arrive on another floating address is told
+  from that one. Only `Connect` adopts: `internal/vfs`'s `HostRestarted` stops calling `Connect` and
+  calls `openstate`'s `Clients.Restarted(ctx, name, state)`, which ends the named record when its
+  `Boot` differs from the state, `Boot` 0 included, raising `ClientEnded` as `Connect`'s reboot does
+  (`pkg/openstate/clients.go`), so the adapter's `Revoked` drops D5's and D10's entries and the
+  registry the host's path; it never adopts, and writes nothing when the name has no record, a later
+  lock call creating it. `pkg/openstate`'s `Close` and a lock refused with no lock left held run `dropIdle`, so a `SHARE` then `UNSHARE`, or a first `LOCK` that is refused, leaves no record (D5).
+  `pkg/openstate`'s `TestLock` for a `Caller` and owner whose `Client` is zero, and `internal/vfs`'s
+  passing it through, a read that needs no record: it skips `staleClient` and `ownerOnSession`,
+  reports any lock over the range as another's, since no lock is held by client 0, still meets
+  grace's refusal (`admit`), and writes nothing; RFC 17's `TestLock` comment gains "a zero `Client`
+  is a caller that holds nothing", in Q4's RFC 17 pull request. `internal/vfs`'s
+  `TestAHostRestartConnectsItWithTheNotice`, which asserts that a restart of an unknown host
+  creates a record, is rewritten to assert none; `pkg/openstate`'s `TestPollReservationLapses`,
+  whose NLM host `r` is refused twice and whose record the first refusal's `dropIdle` now deletes,
+  is rewritten to connect `r` again before its second lock. A `decision:` marker at the adoption: a host that
+  reboots while its record is held under 0, and whose notice is lost, has its first `LOCK` adopted,
+  so the old instance's share reservations survive; overturned if one is seen doing so. RFC 17's
+  suite rows for both. `ops/nlm/hosts.go`'s
+  miss connects under `Boot` 0 through it (D5). Consumed by T11.6 and T11.8.
+- **Acceptance criteria:**
+  - A record created under 0 and connected under 5 keeps its ID and its opens, and holds 5.
+  - A record under 5 connected under 6 is a reboot, as before; connected under 0, it is returned
+    unchanged.
+  - A record connected under 5 with one floating address's `Adapter` bytes, then under 5 with
+    another's, holds the second's.
+  - An `UNSHARE` of a host's only `SHARE`, and a first `LOCK` refused, each leave the name with no
+    record.
+  - A `TestLock` with a zero `Client` reports another host's conflicting lock, `nil` past its range,
+    and leaves the store's client record count unchanged.
+  - Through the adapter, a host's `LOCK`, `UNLOCK` and then `TEST` against another host's lock: the
+    `TEST` reports the conflict and the host has no record after the `UNLOCK` or after the `TEST`.
+  - A record under 0 holding an open that denies write, as a `SHARE` makes, then `HostRestarted`
+    with state *s*, as an `SM_NOTIFY` or a `FREE_ALL` calls it: the open is gone and the name has no
+    record.
+  - A notice or a `FREE_ALL` for a name with no record leaves the store's client record count
+    unchanged, and so does an `Existing` `Connect`, answered `ErrNotFound`.
+  - A `HostRestarted` that ends a record calls the client's `Revoked`.
+  - After the NFS adapter is stopped and started over the same `memory.New`, the host's `UNLOCK`
+    releases the lock it took before.
+- **Tests:** on `pkg/openstate` over the real store, records counted before and after each: an NLM
+  host's `Open` then `Close` with nothing else held, no record left (catches `Close` not running
+  `dropIdle`, D5); an NLM host's first `Lock` refused by another's, no record left (catches a refused
+  lock not running it, D5); a zero-`Client` `TestLock` against an NLM host's lock, the holder
+  reported and no record written (catches `staleClient` run for it, which refuses it, or a lookup
+  that creates); the three transitions (catch an adoption that
+  also swallows a real reboot, R19, and the state-0 record expired by its first `LOCK`, R41); the
+  equal-state write (catches a moved floating address left unrecorded, R18); the record under 0
+  holding the deny-write open, then `HostRestarted`, then an SMB-protocol open for write granted (catches the adoption also
+  applied to `HostRestarted`, R42); the notice for an unknown name, the store's records counted
+  before and after (catches a notice writing a record, R42); the same count around an `Existing`
+  `Connect` of an unknown name (catches a lookup that creates, D5); a `HostRestarted` ending a
+  record, its `vfstest.Callbacks` holding the `Revoked` (catches `ClientEnded` not raised, so D5's and
+  D10's entries outlive the client); the adapter
+  restart then `UNLOCK`, through `nfsharness` (catches a miss run with a zero `Client`, D5); through
+  `nfsharness`, a `TEST` under a name never seen against another host's lock, its conflict reported
+  and `memory.New`'s client records counted before and after (catches a miss that writes a record,
+  D5); and a host's `LOCK`, `UNLOCK`, `TEST`, records counted after each (catches the `TEST`'s retry
+  on the ID `dropIdle` deleted connecting without `Existing` and writing a record, R21, D5); the
+  state-0 adoption for a `ClientInfo` of `Recovery` notice under another kind, and none for one of
+  `Recovery` status under the NLM kind (catches the rule keyed on the kind, R60); after a
+  service restart over the same store, a reclaim `LOCK` under the adopted state is a reclaim (catches
+  the adoption kept in memory only). No test double.
+- **Rules:** rule 13: whether a `Boot` change is a reboot is the service's; the adapter passes what
+  the request carries.
+
+### T11.6 Share reservations
+
+**Subtask T11.6 estimate: 2.25 man-days.**
+
+- **Track:** B. **Depends on:** T11.3, T11.12.
+- **Covers:** R41.
+- **Deliverables:** `ops/nlm/share.go` and `unshare.go`: `Open` of an anonymous-owner open with the
+  deny mode `SHARE` names, its `reclaim` as a reclaim, and `Close` of it, through the share table of
+  D10, with its miss found through the service. Consumed by hosts using DOS-era share modes.
+- **Acceptance criteria:**
+  - A `SHARE` denying write refuses an SMB open for write on `memory.New`, and an `UNSHARE` lifts it.
+  - A second `SHARE` that the first denies is `NLM4_DENIED`.
+  - A `SHARE` from a host that has locked nothing, then its `LOCK` with its real state, still refuses
+    the SMB open for write.
+  - After the NFS adapter is stopped and started over the same `memory.New`, the host's `UNSHARE`
+    lifts the deny mode its `SHARE` took before.
+  - An `SM_NOTIFY` under the record's own state, which keeps it, then an `UNSHARE`, lifts the deny
+    mode through D10's entry.
+- **Tests:** through `nfsharness` on `memory.New`, with an SMB-protocol `Call` opening the file
+  directly on the service: the deny in both directions (catches a deny mode held for NLM only, R41);
+  `SHARE` then `LOCK` then the SMB open (catches the state-0 client replaced by the `LOCK`, D5);
+  `FREE_ALL` releases the share (catches a share table left behind); the adapter restart then
+  `UNSHARE`, and the equal-state notice then `UNSHARE`, each followed by the SMB open for write
+  granted (catch an `UNSHARE` miss answered with the deny mode left, D10); an `UNSHARE` from a host
+  with no record, the client records counted before and after (catches a miss that creates, D5).
+- **Rules:** rule 9's marker of D10.
+
+### T11.7 NSM: `SM_NOTIFY` received and sent
+
+**Subtask T11.7 estimate: 3.25 man-days.**
+
+- **Track:** B. **Depends on:** T11.3, T11.2, T11.5, T11.6.
+- **Covers:** R8, R14, R17, R18, R42, R43, R59.
+- **Deliverables:**
+  - `ops/nsm/notify.go`: the `SM_NOTIFY` row, `HostRestarted` with `wire.NLMHostName` from the
+    datagram's or connection's source; `nsm.Handlers{VFS vfs.Service}`. A notice that ends the
+    record reaches `ops/nlm` as the `Revoked` `Clients.Restarted`'s `ClientEnded` raises, which drops
+    the host's entries of D5 and D10 (T11.12), so a call after it never reconnects under the old
+    state; one that keeps the record (D19) drops nothing.
+  - `ops/nsm/notice.go` and `nfs/callbacks.go`'s `Revoked` for an NLM host: on `RevokedShardState`,
+    the notice put in the notice table and sent by its own workers as D11 says, sent through `rpcclient.Notify` from the
+    floating address in the `Adapter` bytes, naming that address in text form (D22), with the
+  report's state number; a
+    `Revoked` that ends the client drops its entries of D5 and D10.
+  - The `decision:` marker of D2 on matching `mon_name` byte for byte, at the `SM_NOTIFY` row, and
+    D22's at the sender.
+    Consumed by the service's report, and after a restart by T11.8's.
+- **Acceptance criteria:**
+  - A `SM_NOTIFY` received from the host's address expires its client; from another, nothing.
+  - A report of a lost shard sends one datagram per host at once, resent every 10 s on the table's clock
+    until `Host`'s NSM service replies, with one `GETPORT` per notice, and `Revoked` returns before
+    the first send ends.
+  - A silent host holds only a notice worker, never one of D9's: a `*_RES` is sent while every
+    notice worker waits on a silent host.
+  - A silent host has at most one send in flight: a round that finds its last send not ended passes
+    it over, and its 15 minutes still run.
+  - In a round, a host's first notice goes ahead of every resend, and behind *s* silent hosts it is
+    sent within ⌈*s*/4⌉ send bounds of 2 s.
+  - `SM_MON` and `SM_UNMON` from a peer are `PROC_UNAVAIL`.
+- **Tests:** through `nfsharness` and `Host`: the two `SM_NOTIFY` sources (catch a host freed from
+  another address, R17); an `SM_NOTIFY` naming a host that never locked, the client records
+  `memory.New` holds counted before and after (catches a notice writing a record, R42); `Revoked` called on the callbacks value with an `Adapter` bytes value E8's
+  codec wrote, and the datagram `Host` receives from `127.0.0.3`, its state and server name decoded
+  (catch a notice from a node address or to the wrong host, R43); `Host` silent for two resends, then
+  answering, the silence scripted as `Host`'s NSM port closed so each send fails at once and only the
+  injected clock paces the resends (catches a single send, D11); nine `Host`s silent, more than twice
+  the 4 notice workers, their silence scripted as an NSM port and port mapper that read and never
+  answer, and one answering, reported in that order: a `*_RES` queued while all 4 notice workers wait
+  is received by its host before any of those sends ends (catches notices sharing D9's workers), the
+  answering host's notice is received within ⌈9/4⌉ send bounds, a bounded wait that is the assertion
+  since the 2 s is a socket deadline no clock drives (catches notices queued behind every silent host's
+  full wait twice over), and with the clock advanced 10 s twice while the first round's sends are
+  still waiting, each silent host has received one send per round it was not passed over in and never
+  two at once, while a host reported in the second round receives its first notice before any
+  silent host's resend (catch resends crowding the round, and a first notice queued behind them, D11);
+  the clock advanced past 15 minutes in 10 s rounds with one host's monitor never answering, its notice
+  dropped and counted at 15 minutes from its report (catches a cap counting only the rounds sent);
+  `Revoked`'s
+  return timed against a silent `Host` (catches a callback past its deadline, R14).
+- **Rules:** rule 9's marker of D11.
+
+### T11.8 The NSM notice's service half
+
+**Subtask T11.8 estimate: 2.5 man-days.**
+
+- **Track:** B. **Depends on:** T11.7, T11.12.
+- **Covers:** R18, R43, R60.
+- **Deliverables:** once Q1 is agreed, as its option (a): `pkg/openstate` and `pkg/vfs`'s
+  `Revocation.State`, the NSM state number a `RevokedShardState` carries, set where the number is
+  raised; `internal/vfs` holding a start's `RevokedShardState` reports of clients whose `Recovery`
+  is notice, NLM hosts', picked by that capability and never by the record's kind (RFC 17 §3.0),
+  until a `Callbacks` for them is registered at the node, and delivering them to it; `memory.New` the same,
+  with RFC 17's suite row. `nfs.New`'s `Start` registers its NLM callbacks value. Consumed by T11.7's
+  sender and E16's restart rows.
+- **Acceptance criteria:**
+  - On `memory.New` restarted over its store with an NLM host holding a lock, the adapter started
+    after the restart sends that host one `SM_NOTIFY` carrying the raised number.
+  - The same after the host's own `SM_NOTIFY` with state N, then its `LOCK` with state N:
+    `memory.New` holds no record of the host between the notice and the `LOCK`, and after the
+    restart the record the `LOCK` created is told at `Host`, the host's only record.
+- **Tests:** on `memory.New` over a store kept across two services, the restart case at the datagram
+  `Host` receives (catches a report dropped for want of `Callbacks`, R43); the notice-then-`LOCK`
+  case, the records counted between the notice and the `LOCK` (catches a notice writing a record of
+  its own, which the `LOCK` under an equal state would keep, R42, or the `LOCK`'s record left without its
+  notice address, R18); RFC 17's suite row on the
+  service alone, its held report reaching a record of `Recovery` notice under another kind (catches
+  the reports picked by kind, R60). No test double.
+- **Rules:** rule 13: the service decides which hosts are told and with what number; the adapter only
+  sends.
+
+### T11.9 `core`'s datagram listener
+
+**Subtask T11.9 estimate: 4 man-days.**
+
+- **Track:** B. **Depends on:** T11.2.
+- **Covers:** R4, R5, R6, R7.
+- **Deliverables:** `core/datagram.go` and its per-OS files: a `Listener` with `Network: "udp"` bound
+  on each of `Addrs`, all or none at `Start`, D13's queue and per-datagram `Conn`, replies by
+  `WriteTo` from the address the datagram arrived on; `Addrs` and `Serving` reporting `udp` sockets;
+  `Reconfigure` adding and removing its addresses at the port it holds; `NewServer`'s refusal of a
+  non-TCP listener removed. RFC 20 §4.7's `Listener` comment amended (Q2). Consumed by T11.10.
+- **Acceptance criteria:**
+  - On `testproto` over UDP, one datagram is one request, answered once, to its source, from its
+    destination address.
+  - With the queue full, a datagram is dropped and the next one after a drain is answered.
+  - A taken UDP port fails `Start`, and the TCP listener it was started with is closed again.
+- **Tests:** on `testproto` over real UDP on loopback: request and reply (R5); a test hook pausing the
+  workers, set per instance from `export_test.go`, the hook reporting how many datagrams the paused
+  workers took, then the queue filled with 1 KiB datagrams, each charged 12 KiB, 3 MiB in all under
+  `adaptertest.Budgets()`'s 8 MiB receive pool: the first datagram past those and the queue's 256 is
+  never answered once the workers resume, every earlier one is, and the server serves after (catches
+  an unbounded queue, R4); with a receive pool set to 64 charges, the 65th held datagram dropped
+  (catches a datagram queued without its charge, D13); a `Get` held waiting on the receive pool,
+  then a datagram dropped though the pool has room for it, and answered once the waiter is served
+  (catches a datagram queued ahead of a waiting TCP request, D13); the taken port (catches a
+  partial start, R6); `Addrs` and a `Reconfigure` adding `127.0.0.2` (R7); leak checks after `Stop`.
+  No test double.
+- **Rules:** rule 9's markers of D13; rule 4's leak check on the queue's goroutines.
+
+### T11.10 NFS's UDP listener
+
+**Subtask T11.10 estimate: 1.75 man-days.**
+
+- **Track:** B. **Depends on:** T11.9, T11.3.
+- **Covers:** R1, R2, R3, R51, R58.
+- **Deliverables:** `nfs.go`'s second listener, `nlm` and `nsm` over `udp` on the TCP listener's port,
+  over `protocol.New` with NLM's and NSM's tables only, the `*_MSG` rows included, whose `*_RES`
+  still leaves by TCP (R10); the stages' row of D14; `nfsclient.DialUDP`.
+  Consumed by hosts locking over UDP and E16.
+- **Acceptance criteria:**
+  - Over UDP, NLM's and NSM's `NULL` and an NLM `TEST` are answered; NFS's and MOUNT's `NULL` get
+    nothing.
+  - Under a range of `4.1` only, NLM's `NULL` by UDP gets nothing either.
+  - A `LOCK` datagram sent twice leaves the lock held, read before any `UNLOCK`; an `UNLOCK` then
+    sent twice leaves none.
+  - A `TEST_MSG` datagram gets its `TEST_RES` at `Host` over TCP.
+- **Tests:** over loopback by `DialUDP`: the four `NULL`s and `TEST` (catch a listener left serving
+  NFS, R1, or not serving NLM, R2); the 4.x range (catches the unit split, R3). An absent reply is a
+  bounded wait, the comment saying so, since no clock can be injected into a socket; the duplicated
+  `LOCK` datagrams, the state read from `memory.New` before the duplicated `UNLOCK`s and again after (catches a duplicate refused or
+  taken as a second owner, R58).
+- **Rules:** rule 9: `nfs.go`'s comment rewritten, and D17's `decision:` at the row.
+
+### T11.11 RFC 21 §13's NLM rows, and RFC 19's
+
+**Subtask T11.11 estimate: 2.75 man-days.**
+
+- **Track:** B. **Depends on:** T11.4, T11.5, T11.6, T11.7, T11.8, T11.10, E4's T4.1, E7's T7.1. S3 for
+  the loopback rows, S5 for the restart row and the waiter lifetime's holds and resends.
+- **Covers:** R16, R28, R29, R30, R35, R36, R44, R52, R53, R54, R55, R56, R57, R60.
+- **Deliverables:** the rows over loopback through `core` on `memory.New`, by `nfsclient` and `Host`,
+  and the restart row on the composed node. No later subtask consumes it: E16's document runs none
+  of these rows again through a kernel client.
+- **Acceptance criteria:** each row's assertions as R52 to R57 state them.
+- **Tests:** "§6.1 host binding" (R52, R16); "§6.1 waiter lifetime" (R53): its holds and resends on the
+  composed node's injected clock after S5, each unacknowledged grant scripted as `Host` closing the
+  connection after reading the call, so the send fails at once and only the clock paces the resends,
+  never `internal/vfs`'s 35 s real-time callback deadline; the 10³ cancel races and the share removal
+  on `memory.New` (catch a waiter dropped on a timer, R35, and the share's waiter answered, R36); "§6.1
+  NLM on a Kerberos-only share" with the store error injected by `kvtest.FaultKV` beneath the real
+  identity server, as E7's rule 1 does, so caller resolution runs and fails (`memory.New` gains an
+  option taking the KV, if E7 has not added one), and an `AUTH_SYS` uid 0 lock on the `Ticket` share
+  run as the share's squashed identity (R54, R29, R30), the lock admitted at `Claimed` only because
+  E3's route set `HostCall` on it (catches `HostCall` unset on an NLM procedure, R60); the conflict holder's NLM step (R55); the
+  revoke across a restart's NLM steps on the composed node, which also assert that host B, the NLM
+  host that took H's lock, is sent `SM_NOTIFY` with the raised state, so the absence at H cannot pass
+  on a notice path that sends nothing (R56, R44); RFC 19's "§3.8 locks outside an open" (R57, R28).
+  Kind 2 and kind 3 only.
+- **Rules:** rule 8: the composed node for the restart.
+
+## 7. Order of work
+
+```mermaid
+flowchart TD
+  S2(["S2 NFS test foundations in CI"]):::sync --> T11_1["T11.1 Codecs, error tables, translations"]
+  S2 --> T11_2["T11.2 rpcclient, DialClient's network, Conn.Local"]
+  E8(["E8 T8.1 callbacks value, T8.2 Adapter bytes"]):::sync --> T11_3
+  E10(["E10 T10.1 wire/call.go"]):::sync --> T11_2
+  E3(["E3 T3.2 scripted client, T3.4 ops/nlm and ops/nsm"]):::sync --> T11_1
+  E3 --> T11_2
+  E4E7(["E4 T4.1 admission, E7 T7.1 Claimed callers"]):::sync --> T11_11
+  T11_1 & T11_2 --> T11_3["T11.3 Host as client: TEST, LOCK, UNLOCK, FREE_ALL"]
+  T11_3 --> T11_4["T11.4 Blocking locks, CANCEL, GRANTED"]
+  T11_2 --> T11_4
+  T11_4 --> T11_5["T11.5 Asynchronous procedures"]
+  T11_3 --> T11_12["T11.12 NLM record adopts its first state"]
+  Q4(["Q4 agreed"]):::sync --> T11_12
+  T11_3 & T11_12 --> T11_6["T11.6 Share reservations"]
+  T11_3 & T11_2 & T11_5 & T11_6 --> T11_7["T11.7 SM_NOTIFY received and sent"]
+  T11_7 & T11_12 --> T11_8["T11.8 The notice's service half"]
+  Q1(["Q1 agreed"]):::sync --> T11_8
+  T11_2 --> T11_9["T11.9 core's datagram listener"]
+  T11_9 & T11_3 --> T11_10["T11.10 NFS's UDP listener"]
+  T11_4 & T11_5 & T11_6 & T11_7 & T11_8 & T11_10 --> T11_11["T11.11 §13's NLM rows, RFC 19's row"]
+  S3(["S3 NFSv3 mount over loopback"]):::sync --> T11_11
+  S5(["S5 composed node"]):::sync --> T11_11
+  T11_4 --> C1(["after T11.4: an NLM lock waits and is granted"]):::sync
+  T11_10 --> C2(["after T11.10: NLM and NSM over UDP"]):::sync
+  classDef sync stroke:#2c5aa0,stroke-width:3px,stroke-dasharray:4 2
+```
+
+T11.1 and T11.2 are the blockers: every handler reads T11.1's translations, and the grant, the
+asynchronous replies and the notice all call through T11.2. The lock path follows, T11.3 to T11.6,
+then NSM, T11.7 and T11.8; T11.12, the service's adoption of an NLM record's first state, goes before
+T11.6 once Q4 is agreed. The datagram listener, T11.9 and T11.10, is a path of its own that needs
+only T11.2's `Conn.Local` and a served NLM row; it is the riskiest subtask and can run beside the lock
+path. T11.11 closes the epic once S3 holds, its restart row once S5 does.
+
+## 8. Suggested pull requests
+
+| PR | Subtasks | Man-days | After | Why together |
+| --- | --- | --- | --- | --- |
+| 1 | T11.1, T11.2 | 7.5 | E3's T3.2 and T3.4; E10's T10.1 | the NLM translations and the outbound client every handler and callback builds on |
+| 2 | T11.3, T11.4, T11.5 | 9.75 | PR 1 | NLM locking end to end: a host's client, its locks, a blocked lock granted, the asynchronous forms |
+| 3 | T11.12, T11.6, T11.7, T11.8 | 11 | PR 2 | share reservations and NSM's notices, the service halves once Q4 and Q1 are agreed |
+| 4 | T11.9 | 4 | PR 1 | `core`'s datagram listener, which needs only `Conn.Local`; open beside PR 2 |
+| 5 | T11.10, T11.11 | 4.5 | PR 3, PR 4; E4's T4.1, E7's T7.1, S3, S5 | NLM and NSM over UDP, which serves T11.3's rows, and the RFC's rows over loopback and on the composed node |
+
+A suggestion only: one pull request per subtask works as well; PR 2 and PR 4 can be open at once.
+
+## 9. Open points
+
+Questions pending the user's answer. Each recommended option is written in place above.
+
+- **Q1. How a restart's `SM_NOTIFY` learns its state number and reaches the adapter** (D11, T11.8;
+  RFC 17 §3.2, RFC 14 §4.5). `Revocation` carries no NSM state number, and a report raised while a
+  shard begins after a restart finds no `Callbacks` registered, so `internal/vfs` drops it: on one
+  node no `SM_NOTIFY` is ever sent.
+  - (a) **Recommended:** `Revocation`, RFC 14 §11.1's type that RFC 17 §3.2 aliases, gains
+    `State uint32`, the NSM state number of a `RevokedShardState`, amended in RFC 14 §11.1 and RFC 17
+    §3.2's comment together; `pkg/openstate`'s `TestShardLossToldToHosts`, whose wanted revocations
+    carry no state, is rewritten; and the service holds the reports of a start for NLM clients until the node's
+    NFS adapter registers its NLM `Callbacks` at `Start`, delivering them then. The push path stays
+    the one a failover between nodes uses. T11.8 builds the service half after the RFC pull request.
+  - (b) A read, `Clients.Notices(ctx, c) (state uint32, hosts []Revocation, err error)`, the adapter
+    calls at `Start`; a second path beside `Revoked` for one case.
+  - (c) No notice on a single node's restart, a hole RFC 21 §6.2 forbids; listed only to say why not.
+- **Q2. `Conn.Local` and the datagram listener in RFC 20 §4.7** (D13, T11.2, T11.9). Rule 11 adds a
+  symbol `core` lacks to RFC 20 first.
+  - (a) **Recommended:** one RFC 20 pull request adding `func (c *Conn) Local() netip.Addr // the
+    address the client reached, unmapped: a callback leaves from it` to §4.7's `Conn` list, and to
+    §3.1's datagram bullet that each datagram is a `Conn` of one record replied to from its
+    destination address; joined to E3's Q2 pull request (`Conn.Remote`) if that is still open.
+  - (b) `core` sets the local address on `r.Call` or a field of `Request`; nothing in RFC 17's `Call`
+    names it, so it would be a second change to RFC 17.
+- **Q3. NLM's cells for the rows RFC 21 §11.5 leaves without one** (D4). This document's pull request
+  proposes them in the "NFSv3 / NLM" column.
+  - (a) **Recommended:** `NLM4_ROFS` for `ErrReadOnly`, `NLM4_STALE_FH` for any `ErrStale`,
+    `NLM4_FBIG` for a range past 2⁶⁴−1, `NLM4_FAILED` for the rest, `ErrAccess` included; knfsd
+    answers `nlm_failed` where it cannot open a file (from memory).
+  - (b) `NLM4_DENIED` for `ErrAccess` and `ErrPerm`, the rest `NLM4_FAILED`: a client reads a refused
+    permission as a conflict and, for a blocking lock, may loop.
+- **Q4. How a call that carries no NSM state finds its host's client** (D5).
+  - (a) The per-node host table of D5 alone, with no RFC change. Its miss is not safe on one node: a
+    `SHARE` on a miss connects under state 0, and the host's next `LOCK`, carrying its real state, is
+    a reboot that expires the share reservation (`pkg/openstate/clients.go`); and an `UNLOCK` after an
+    adapter restart has no record to find its lock by. And a received `SM_NOTIFY` writes a record for
+    any name it carries, unauthenticated, which nothing ever removes.
+  - (b) **Recommended:** D5's table kept for the client ID, and RFC 17 §3.1's `Connect` amended for a
+    `ClientInfo` whose `Recovery` is notice, an NLM host's (RFC 17 §3.0: by the capability, never the kind): a zero `Boot` returns the current record of its `Name`, created under 0 if none,
+    and a record held under `Boot` 0 takes the first nonzero `Boot` it is connected with, with no
+    reboot; a `Connect` that keeps the record writes the nonempty `Adapter` bytes it carries.
+    `ClientInfo.Existing` (RFC 17 §3.0) makes such a `Connect` find without creating, `ErrNotFound`
+    for a name with no record, so a call that leaves nothing held writes nothing.
+    `HostRestarted` never adopts and never creates: it ends a record whose `Boot` differs from the
+    notice's state, 0 included, raising `ClientEnded`, and writes nothing for a name with no record.
+    "A new `Boot` is a reboot" is RFC 14's rule too, so the pull request amends RFC 14 §2.1 (the
+    `Boot` comment and the sentence on a known name), §4.5, §11.3 (`Clients` gains `Restarted`, and
+    `Connect`'s comment stops saying "a restart notice included") and §12's rows for both, with RFC 17
+    §3.0 (`Existing`), §3.1 (`Connect`'s comment) and §3.5's `HostRestarted` row. One more
+    rule in open state, durable, so a reclaim after a restart still finds its
+    record; T11.12 builds it after the RFC 17 pull request.
+
+A second batch, after those:
+
+- **Q5. `priv`** (R18; RFC 21 §6.2, §11.4). RFC 21 keeps an NLM host's `priv` cookie in the `Adapter`
+  bytes, but `priv` travels only between a host's lock manager and its own monitor (`SM_MON`), never
+  between peers, so no NLM call carries it. Recommended: RFC 21 drops it from §6.2 and §11.4, and E8's
+  codec stores no `priv`; until then T11.3 writes it empty.
+- **Q6. `NM_LOCK`** (D16): not served, as written, or served as `LOCK` with no monitoring.
+- **Q7. The handle a grant names** (D6): the `GetAttr` per blocking `LOCK`, as written, or RFC 14 §2.10's
+  `LockWaiter` carrying the request's handle, which it does not keep today: `LockWaiter.Open` is the
+  open's token, zero for NLM, and the handle lives in `openstate.LockReq.Open.Handle` only until the
+  `Lock` call returns (`vfs.LockReq` has no `Open`; the handle reaches the service as the call's
+  `OpenRef`). Only a cost question: admission no longer decides it, since RFC 17 §4.9 on `develop`
+  admits the `GetAttr` with `HostCall` at `Claimed` (D6).
+- **Q8. NLM and NSM over UDP by default** (D18). Over UDP the host binding stops an on-path forger
+  only. (a) Recommended: served by default, as RFC 21 §2.2 says, with D18's `decision:` naming the
+  reach; (b) an adapter setting, off by default, serving them over UDP, which makes RFC 21 §2.2's
+  exception conditional and joins batch two's RFC 21 pull request.
+
+- **Q9. A reserved source port for NLM and NSM calls over TCP** (R16, R17). The host binding keys
+  on the source address alone, so over TCP, where nothing is forged, any unprivileged process on
+  host A can connect from A's real address and send `FREE_ALL` or `SM_NOTIFY` under A's `caller_name`
+  with a new state, ending all of A's locks, or `UNLOCK` and `TEST` as A. RFC 21 §6.1's `decision:`
+  covers only a forged source. (a) Recommended: no port check, NLM's trust unit being the host, as
+  `AUTH_SYS`'s is for NFSv3, with a `decision:` at R17's check naming the unprivileged process on the
+  host as its ceiling; (b) refuse a call from a source port above 1023, as knfsd's `secure` export
+  option does for NFS (Linux lockd taking `SM_NOTIFY` from the local statd only is from memory), for
+  `FREE_ALL` and `SM_NOTIFY` or for every NLM call, a sentence joining batch two's RFC 21 pull request.
+  (b) costs about 0.25 man-days in T11.3 and T11.7.
+
+Gaps and assumptions, not questions:
+
+- **The estimate is 36.75 man-days against the plan's 22 for 7 subtasks**, +14.75, and this pull request
+  updates the plan's two lines for the epic (its §2 row and its epic estimate line); the
+  programme totals reconcile when the breakdown pull requests merge. The difference is mostly work the
+  plan did not list: the two service halves, T11.8 (2.5) and T11.12 (1.5); the outbound queue and
+  connection count RFC 24 §6.1 asks for (D9, D11, about 1); the notices' own workers and rounds
+  (D11, 0.5); the notice path that never adopts nor creates (T11.12, 0.5); the outbound cap, the
+  2 s bounds and the per-host result (R61, D9, 0.5); the back-off
+  (D9, T11.2, 0.5); records made only by a lock or a share reservation, and `Restarted` raising
+  `ClientEnded` (D5, T11.3, T11.12, 0.75); the `UNSHARE` miss through the service (D10, T11.6, 0.25);
+  the fault store and positive notice of T11.11 (0.25); the 16 slots shared by every unproven host
+  and the records' expiry and bound (D9, T11.2, 0.5); the retry with `Existing` and the table
+  learning from `StaleClient` (D5, T11.3, 0.25); `TestLock` with no record, and the no-record rows
+  on `pkg/openstate` (T11.12, 0.5). The remaining 5.25 is the plan's own content priced subtask by subtask, `core`'s
+  datagram listener (T11.9, 4) chief among it.
+- The plan's §4.3 listed "NLM grants resent by one timer each" for this epic, and its expected content
+  "`GRANTED` resent until answered", but the service already resends an unanswered grant every 10 s
+  (`internal/vfs/sink.go`), so the adapter sends once per `LockWaitOver` (§1.2) and carries no timer.
+  This pull request rewrites both lines: §4.3's entry is now D12's one `GETPORT` per grant.
+- E8's document gives the NLM `LockWaitOver` and `Revoked` arms to T11.3, and E10's the same; here
+  they are T11.4's and T11.7's, which hold the waiting-request table and the notice sender those arms
+  use. E8's one callbacks value also needs to tell an NLM client from an NFSv4 one, which the adapter knows from
+  the `ClientInfo` it built for that `Connect`; no rule of the service reads that kind (RFC 17 §3.0); both documents are corrected in their own pull requests.
+- E8's T8.2 holds, for an NLM host, `ClientRecNLM`'s `MonName`, `Priv` (Q5), `Host`, the host's
+  address, and `Server`, the floating address its requests arrived on, which RFC 21 §6.2 has the
+  notice sent to and from; the encoding is settled whole there (RFC 21 §11.4).
+- E8's T8.1 value is one type per client; this epic writes its `LockWaitOver` (T11.4) and NLM
+  `Revoked` (T11.7) arms for a client connected through `nlm.Handlers`' field, and adds that field
+  (T11.3). E10's T10.1 moves `wire/call.go`, which T11.2 uses; T11.2's figure is 0.5 man-days lower
+  for it.
+- T11.11's 5-minute steps of "§6.1 waiter lifetime" run here, on the composed node's
+  `Harness.Clock`, never in real time, as E16's document also has it. The node's clock already
+  reaches the waiter on `feat/storage-v2`: `nodetest` hands its clock to the node, and the node to
+  open state (`enginewire.Compose`'s `Clock`) and to the service, whose grant resends it paces
+  (`vfs.Deps.Clock`, `internal/vfs/sink.go`). So E16's T16.5, which would take the steps only if
+  the clock did not reach the waiter, receives none. Should S5 ever stop carrying the clock that
+  far, putting it back is S5's fix, made before T11.11 runs; the steps stay here, on the clock,
+  rather than move to E16 or to real time.
+- D5's and D10's per-node tables are lost with a gateway node while a primary elsewhere keeps the
+  host's locks and opens. That is a (cluster) case, under the RFC 21 implementation plan's deferral
+  row for RFC 21's cluster parts, which this pull request extends to name them.
+- RFC 21 §6.2 names "the floating address's name" in an outgoing `SM_NOTIFY` and says nowhere how
+  the adapter learns it; D22 sends the address in text form. A sentence saying so, or a server name
+  per floating address, joins batch two's RFC 21 pull request.
+- D21 narrows RFC 21 §6.1's "refuses it (`NLM4_DENIED` or another error in the reply)" to
+  `NLM4_DENIED` alone; the sentence joins batch two's RFC 21 pull request with Q3's cells.
+- RFC 21 §6.1 says the `*_MSG` procedures are "accepted over TCP", while §2.2 and RFC 20 §4.8 serve
+  NLM's whole table over UDP; T11.10 answers them over UDP too, their `*_RES` by TCP. "over TCP and
+  UDP" joins batch two's RFC 21 pull request.
+- This document depends on E3's T3.2 and T3.4, E7's T7.1 and E10's T10.1, and E13's T13.7 on T11.1;
+  the plan's §3.3 blockers table and §3.1 graph have no E3, E7 or E10 edge into E11 and no E11 edge
+  into E13. They go with the plan's next edit, with E8's.
+- Which pull request carries which RFC amendment, once answered: Q2's `Conn.Local` and datagram
+  sentence join the programme's one RFC 20 pull request, with D14's sentence for §4.8's row and §10's
+  series for a dropped datagram by reason (queue, pool, size), which rule 3 needs, which E3's Q2 opens for `Conn.Remote` and
+  which also carries E8's `Deps.Server`, `Invocation.Bound` and `Conn.SetSession`; Q1's RFC 17 §3.2
+  `Revocation.State` goes in batch two's one RFC 17 pull request, with RFC 14 §11.1's `Revocation`, with E9's D1, E10's Q1 and E12's
+  D1, and T11.8's service half waits for it; Q3's cells in RFC 21 §11.5 and Q5's removal in RFC 21
+  §6.2 and §11.4 go in batch two's one RFC 21 pull request, opened with E8's document pull request.
+  Q4's option (b) adds RFC 17 §3.0's `ClientInfo.Existing`, §3.1's `Connect` comment and §3.5's
+  `HostRestarted` row, and RFC 14 §2.1, §4.5, §11.3's `Clients.Restarted` and `Connect` comment and
+  §12's rows, and RFC 17's `TestLock` comment on a zero `Client` (D5), to the RFC 17 one, and T11.12
+  waits for it. R18's wording, a host registered by its first lock or share reservation rather than
+  its first NLM call, rewrites RFC 21 §6.2's first sentence and Appendix D's `SM_MON` row in batch
+  two's RFC 21 pull request. Q9's (b), if chosen, joins the RFC 21 one. RFC 24 §5.1's inventory gains two rows, as it requires of
+  a new queue: NLM results not yet sent (256, one per host, dropped and counted, the host resends)
+  and NSM notices not yet answered (one per known host, dropped and counted at 15 minutes); they
+  join batch two's RFC 21 pull request, which owns NLM and NSM. D20's `*_MSG` releases
+  and, if chosen, Q8's (b) join the RFC 21 one.

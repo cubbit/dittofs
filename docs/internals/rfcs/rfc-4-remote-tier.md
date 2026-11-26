@@ -649,8 +649,8 @@ type Store interface {
 	// List reads one page, with one request, of at most n stored blocks in
 	// ascending name order, starting after the cursor (the zero Cursor starts
 	// at the beginning); next holds the last key the page listed, a block's or
-	// a skipped foreign key's, and done is true once the walk has passed the
-	// last block (§4.6).
+	// a skipped foreign key's, or after when the page listed none, and done is
+	// true when the service reports no more keys under the block namespace (§4.6).
 	List(ctx context.Context, after Cursor, n int) (page []Info, next Cursor, done bool, err error)
 
 	// Health makes one bounded probe round trip of direction d against the
@@ -1067,9 +1067,15 @@ resuming after the largest name sorting at or before it would list the same
 foreign keys again, forever when a page holds nothing else. The cursor holds the
 last key the service listed, so the next request resumes after exactly that key.
 A caller **MUST NOT** build a cursor or read one; it may keep one, across a
-restart too, and pass it back to the store that returned it. A page the service
+restart too, and pass it back to the store that returned it, or to a store
+opened again over the same namespace. The cursor keeps the full key, and `List`
+**MUST** refuse a non-zero cursor whose key lies outside `<prefix>blocks/` with
+`ErrInvalid` and send no request, so a cursor kept across a change of prefix
+never goes out as a starting point that ends the walk early. A page the service
 marks truncated that holds no key cannot advance and is `ErrTransient`, never
-`done` false with `next` equal to `after`. A caller that runs a page as one `Small` call
+`done` false with `next` equal to `after`. A page that holds no key and is not
+truncated — an empty store, or a walk resumed at its end — is `done` with `next`
+equal to `after`, so a caller that keeps it stays at the end. A caller that runs a page as one `Small` call
 ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) — a backup folder's sweep — asks for at most 500 blocks, which
 keeps the reply under the small-body cap: a page of 1,000 keys with sizes and
 times is roughly 250–350 KB of listing on the S3 profile, an estimate.
@@ -1226,7 +1232,7 @@ caller can see it. So:
   of everything that calls stores on it: the syncer's
   `upload_workers + fetch_workers` ([RFC 3 §2.10](rfc-3-syncer.md#2.10%20Two%20settings%2C%20and%20everything%20else%20fixed)) — which also run every call at a
   backup location, as raw or small-object transfers ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) — GC's delete and list bound
-  ([RFC 9 §7.1](rfc-9-gc.md#7.1%20GC%20bounds%20its%20own%20work)), and one for each probe direction, two, since the syncer runs at most one probe per `ProbeKey` and direction at a time ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)) — once, not per store, since those pools are
+  ([RFC 9 §7.1](rfc-9-gc.md#7.1%20GC%20bounds%20its%20own%20work)), and one for each probe direction, two, since the syncer runs at most one probe per `ProbeKey` and direction at a time ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)) and the engine **MUST** register every store opened from one store configuration under one non-zero `ProbeKey`, a zero key being a probe group of its own ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) — once, not per store, since those pools are
   shared across the stores they serve. A store has no connection setting of its
   own. Set below its callers it is a hidden second limit; set above them it is
   never reached;
@@ -1824,14 +1830,14 @@ in-memory store).
 | [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | A transport that truncates a body under a `Content-Range` matching the request: the get fails with `ErrTransient`. | T |
 | [§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent) | Delete a batch twice, including a never-written name: every result is `nil`. A batch of 2,500 (above the service's limit): every block gone. | |
 | [§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent) | A transport that fails one key inside a batch: exactly that name's result is an error, the others `nil`. A batch whose response is dropped: every result is `ErrTransient`. | T |
-| [§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | Write 2,500 blocks; list with pages of 1,000; stop after the second page and resume, in a new walk, from the cursor it returned: every block seen exactly once, in order, with size and time, and each `List` call sends one request and returns at most its `n`. With `n` 500, no page's reply exceeds the small-body cap. | |
+| [§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | Write 2,500 blocks; list with pages of 1,000; stop after the second page and resume, on a store opened again over the same namespace, from the cursor it returned: every block seen exactly once, in order, with size and time, and each `List` call sends one request and returns at most its `n`. With `n` 500, no page's reply exceeds the small-body cap. A cursor outside the block namespace is `ErrInvalid` with no request. | |
 | [§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | Put a key that is not a block name under the block namespace: the listing skips it and counts it. Cancel mid-page: the call ends with the context's error. | |
 | [§4.2](#4.2%20Names%20in%2C%20locations%20kept%20inside) | After the whole suite, list the store's raw namespace: nothing but blocks, control objects and check objects, and every block key is the prefix followed directly by the name. | |
 | [§4.13](#4.13%20Control%20objects) | Put and get each role: bytes equal, a second put replaces the first, an absent role is `ErrNotFound`, and a block listing yields none of them. | |
 | [§4.13](#4.13%20Control%20objects) | A control put through a transport that flips one byte fails with `ErrCorrupt`. | T |
 | [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | For every failure the fault transport can produce, the error wraps exactly one sentinel and no native service error is reachable by unwrapping it. A cancelled context comes back as `context.Canceled`. | T |
 | [§4.9](#4.9%20No%20state%20across%20calls) | One failing call makes exactly one request. | T |
-| [§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers) | Construct with syncer pools of 8 and 8 and a GC bound of 4: every client limit is at least 21. | |
+| [§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers) | Construct with syncer pools of 8 and 8 and a GC bound of 4: every client limit is 22. | |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Against each fault profile [§7.2](#7.2%20Fault%20transport) says must refuse, open fails and names the missing feature. A cleanup that fails does not fail the open. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Against the [§7.2](#7.2%20Fault%20transport) profile that ignores every put checksum, a mutable store's open succeeds with the ETag as its put integrity, and a put whose body the transport corrupts returns `ErrCorrupt`. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | A transport that corrupts or drops the integrity check only above a size threshold below the maximum block size: open fails. The check puts an object of the maximum encoded block size. | T |

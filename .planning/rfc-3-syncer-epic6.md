@@ -630,6 +630,9 @@ pkg/syncer/
     other caller gets every chunk.
   - A lone caller holding a chunk for 60 s is never detached, nor are two callers both holding
     one chunk for 60 s.
+  - A loop body holding chunk 0 that fetches chunk 3 of the same block (RFC 3 §1.3): at the detach
+    bound the outer caller is detached and its stream ends with an error wrapping
+    `remote.ErrTransient`; the inner call is yielded chunk 3, and one get is made.
   - A `Prefetch` caller holding a chunk a demand caller has moved past is detached at once, counted
     `behind` and preempted.
   - With a fetch pool of 2 and two detached buffers held, a third detach waits until one is
@@ -642,7 +645,7 @@ pkg/syncer/
 - **Tests:** through `export_test.go`'s half over `codec.Store` on the in-memory store under E2's
   `Link`, in a bubble, the clock moved by the bubble only. Each criterion, with the wrong design it
   catches: a buffer reused under a detached caller (its copy differs, R25), a detach that fails the
-  transfer (R22), a detach of a lone caller or of callers holding nobody back, detached buffers
+  transfer (R22), a detach of a lone caller or of callers holding nobody back, a nested fetch that never returns (the flight waits on itself), detached buffers
   counted per caller rather than capped, a shared slot returned by its first caller (R27), a close that fails the other flow's caller (R24). Under the leak check, no `AfterFunc` or
   scan outlives its flight.
 
@@ -793,15 +796,12 @@ A suggestion only: one pull request per subtask works as well.
   goroutine; E4's requeue of a throttled get keeps the flight and its callers. Both breakdowns
   should note it.
 - **E4's D9 is replaced** (D8) and its `classify` gains `verifyRetry` (D9), as its §1.2 expects.
-- **Open, for the user: a fetch from inside a loop body can join its own flight.** A caller
-  holding chunk 0 of block X that, before its loop body returns, fetches chunk 3 of X joins the
-  flight it is itself holding back (D3). The flight cannot pass chunk 0 until the body returns
-  (R21), and the body waits for chunk 3, so after the detach bound the outer caller is detached
-  (D5): the inner call gets its chunk, the outer stream fails, 5 s late. Nothing can tell the two
-  calls belong to one goroutine. Either RFC 3 §1.3 forbids it, "a loop body MUST NOT fetch from
-  the block it is iterating", a contract change; or a call never joins a flight on which a caller
-  of its own flow holds a chunk, and fetches on its own, which costs single flight between
-  concurrent readers of one share. Until decided, T6.4 does neither.
+- **Decided by the user, 2026-11-26: a loop body must not fetch from the block it iterates.** A
+  caller holding chunk 0 of block X that, before its loop body returns, fetches chunk 3 of X joins
+  the flight it is itself holding back (D3). The flight cannot pass chunk 0 until the body returns
+  (R21), and nothing can tell the two calls belong to one goroutine. RFC 3 §1.3 now forbids it and
+  defines the outcome, which D5 gives with no code of its own: after the detach bound the outer
+  caller is detached and its stream fails, and the inner call gets its chunk. T6.5 pins it.
 - **E3's accepted §2.9 sentence should name displaceable entries.** D4 passes over an entry a
   caller has joined, so a flow at its share may hold a queued transfer of the call's class and
   still offer no victim. E3's D7 already counts joined callers as nothing displaceable, and S20's

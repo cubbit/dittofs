@@ -534,8 +534,10 @@ internal/node/content/
   - `Flow.Health` and `Flow.Healthy` return while a test holds the half's lock (R20, D7).
 - **Rules:** its pull request amends RFC 3 §2.8 so that a refused call "wraps the direction's
   cause" (R24), as the user accepted on 2026-11-26, and RFC 3 §8.5 to "within one probe interval
-  plus the probe's bound when probes fail at once, and plus four bounds when they hang" (D4). The
-  user accepted "three bounds" on 2026-11-26; four is pending their decision (§9).
+  plus the probe's bound when probes fail at once, and plus four bounds when they hang" (D4), with
+  §2.8's "a dead or recovered store is still seen within about one interval" reading "within
+  §8.5's bounds", the user's decision of 2026-11-26. The user accepted "three bounds" on
+  2026-11-26; four is pending their decision (§9).
 
 ### T5.3 The conditions' `health.Source`
 
@@ -714,7 +716,9 @@ wait for probes to end at shutdown and at `Unregister`.
     for an own probe in flight (D3), two for the pair, and one for D2's check probe, which hangs
     too. §8.5 reads "within one probe interval plus the probe's bound when probes fail at once,
     and plus four bounds when they hang" (T5.2). The user accepted "three bounds" on 2026-11-26,
-    which missed the check probe; four needs their decision.
+    which missed the check probe; four needs their decision. §2.8's "a dead or recovered store is
+    still seen within about one interval" reads "within §8.5's bounds" in the same amendment, so
+    the two sections agree (T5.2, the user's decision of 2026-11-26).
 - **RFC 25 §5.2 and RFC 3 §2.8 disagree on a summary line** (D10). This epic follows RFC 3, the
   owner; RFC 25 §5.2's sentence would name RFC 3 §2.8's two lines as the exception.
 - **The plan's epic 5 outline names an unprobed direction re-admitted by its backoff.** That is row

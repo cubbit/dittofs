@@ -122,7 +122,7 @@ This section lists every MUST and MUST NOT that RFC 4 places on this epic, with 
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R1 | A client's limit is derived when the client is built, from the concurrency of everything that calls stores on it: the syncer's `upload_workers + fetch_workers`, GC's delete and list bound, and one for each probe direction, two, since the syncer runs at most one probe per `ProbeKey` and direction at a time | MUST | RFC 4 §4.10, §2's table (connection pool size), §6 R11; RFC 3 §2.8 | T8.1 |
+| R1 | A client's limit is derived when the client is built, from the concurrency of everything that calls stores on it: the syncer's `upload_workers + fetch_workers`, GC's delete and list bound, and one for each probe direction, two, since the syncer runs at most one probe per `ProbeKey` and direction at a time and every store opened from one store configuration is registered under one non-zero `ProbeKey` | MUST | RFC 4 §4.10, §2's table (connection pool size), §6 R11; RFC 3 §2.8 | T8.1 |
 | R2 | The limit is derived once per client, not per store: every store opened from one store configuration runs under that one client's limit, and opening more stores neither raises it nor adds a pool | MUST | RFC 4 §4.10, §6 R19 (its limit half) | T8.2 |
 | R3 | The worker counts the derivation reads are the ones the syncer runs with: fixed for the life of the process, and, once the node passes the syncer its transfers pool's size, the counts reduced to fit it. The reduced half lands with that caller (§1.2, D3) | MUST | RFC 4 §4.10 ("the concurrency of everything that calls stores"), RFC 3 §2.10, RFC 24 §7.2 | T8.1 |
 | R4 | A store has no connection setting of its own: no key sets a client's limit | invariant | RFC 4 §4.10 | T8.1 (the one call site); E7 (its key table) |
@@ -131,7 +131,7 @@ This section lists every MUST and MUST NOT that RFC 4 places on this epic, with 
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R5 | Construct with syncer pools of 8 and 8 and a GC bound of 4: every client limit is at least 21 | test row | RFC 4 §7.1, §4.10 | T8.1 |
+| R5 | Construct with syncer pools of 8 and 8 and a GC bound of 4: every client limit is 22 | test row | RFC 4 §7.1, §4.10 | T8.1 |
 | R6 | Open 1,000 stores from one store configuration: one client exists, its limit equals the callers' total concurrency, and connections opened under a steady load do not grow with the number of stores | test row | RFC 4 §7.1, §4.10 | T8.2 |
 
 R1's two probe slots are D6's, amended into RFC 4 §4.10 and RFC 3 §2.8 in this epic's pull request.
@@ -183,11 +183,15 @@ limit and the idle connections sized the same, E4's T4.2 test (its R44).
   that client with, read the same way, since E4's T4.2 test already shows the client's caps equal
   it; the connections are `remote_connections_opened_total` for the configuration, read from a
   scrape. The load runs `clientLimit`'s value of concurrent callers, each a `Get` of a block put
-  beforehand. First, 1,000 requests over one store: the counter must grow by at most the limit
-  plus 2, or the test fails naming LocalStack's connection reuse, since a comparison over a
-  service that closes connections proves nothing. Then 1,000 requests over all 1,000 stores, one
-  each in turn: the counter grows by at most the limit plus 2 again. A client per store opens one
-  connection per store it touches, about 1,000, so the two outcomes stand far apart. The exact
+  beforehand. The opens leave each client they used holding its check puts' idle connections, so
+  before the load the test closes every client's idle connections through `export_test.go`;
+  otherwise a client per store would serve its one `Get` on the connection its open left, and
+  the counter would not tell it apart. First, 1,000 requests over one store: the counter must
+  grow by at most the limit plus 2, or the test fails naming LocalStack's connection reuse, since
+  a comparison over a service that closes connections proves nothing. Then 1,000 requests over
+  all 1,000 stores, one each in turn: the counter grows by at most the limit plus 2 again. A
+  client per store opens one connection per store it touches, about 1,000, so the two outcomes
+  stand far apart. The exact
   bound, the pool size plus one per close the service started, is §7.5's and E9's. The architect
   pass proposed a fault that holds each reply's body, so that `2L` held requests show exactly `L`
   connections; it was not taken, since E4's T4.2 test already shows the client never opens more
@@ -209,7 +213,10 @@ limit and the idle connections sized the same, E4's T4.2 test (its R44).
   can outlast the probe's bound and count as a failed probe. So `clientLimit` counts two, RFC 4
   §4.10 is amended to count one per probe direction, and RFC 3 §2.8 to run at most one probe per
   `ProbeKey` and direction at a time, a store's own re-admission probe included; RFC 8 offload plan
-  epic 21's interim sum and the plan's D6 become `+ 2`. R5's "at least 21" holds (22 with GC's 4).
+  epic 21's interim sum and the plan's D6 become `+ 2`, and R5 and RFC 4 §7.1's row read 22. The
+  two slots hold only while every store on one client shares one probe group, so RFC 4 §4.10 also
+  requires the engine to register every store opened from one store configuration under one
+  non-zero `ProbeKey`.
   Decided by the user on this epic's pull request. Prior art: none needed.
 
 ## 5. Target tree
@@ -235,12 +242,13 @@ docs/guide/configuration.md       T8.1  one line in the remote store section
   the two counts it passed the syncer and a GC bound of 0, under one `decision:` marker holding D2's
   and D3's clauses, in place of RFC 8 offload plan epic 21's inline sum; `export_test.go`: the
   holding's clients per store configuration and the `ClientConfig` each was built with, read by
-  T8.1's and T8.2's tests; `docs/guide/configuration.md`'s remote store section: a store
+  T8.1's and T8.2's tests, and a call closing each client's idle connections, for T8.2 (D4); `docs/guide/configuration.md`'s remote store section: a store
   configuration's client holds at most `upload_workers + fetch_workers + 2` connections to its
   endpoint open at once, and no key sets it. Consumed by: the holding's client build (here), T8.2,
   and RFC 9, which passes GC's bound.
 - **Acceptance criteria:**
-  - `clientLimit(8, 8, 4)` is at least 21 (R5), and each term moves the result by its own value.
+  - `clientLimit(8, 8, 4)` is 22 and `clientLimit(0, 0, 0)` is 2 (R5, D6), and each term moves
+    the result by its own value.
   - A holding whose syncer is built with `upload_workers` 8 and `fetch_workers` 8 builds the
     configuration's client with `ClientConfig.Limit` equal to `clientLimit(8, 8, 0)`, and with 16
     and 4, `clientLimit(16, 4, 0)` (R1, R3).
@@ -305,10 +313,9 @@ A suggestion only: one pull request per subtask works as well, T8.1 first.
 2. **Estimate least certain: T8.2**, on LocalStack's throughput for 1,000 checked opens (about 2
    GiB of check puts, D5), on whether LocalStack 4.13.1 keeps HTTPS connections alive (D4's
    precondition measures it), and on the holding's surface, which epic 21 settles.
-3. **Serialised re-admission is unchecked against RFC 3's health.** D6's amendment to RFC 3 §2.8
-   runs a store's own re-admission probe behind the shared probe of its `ProbeKey` and direction.
-   An outage the shared probe sees re-admits every store of the key with that one probe, but
-   stores the failure window tripped wait for their own probes one at a time: a round trip each
-   once the service answers, the probe's bound each while it is still slow. The RFC 3 plan's
-   epic 5 has no breakdown yet; its breakdown checks that wait against many stores on one
-   configuration.
+3. **Serialised re-admission is answered by the RFC 3 plan's epic 5, D3.** D6's amendment to RFC 3
+   §2.8 runs a store's own re-admission probe in the one slot of its `ProbeKey` and direction.
+   Epic 5's D3 runs the shared probe first and own probes only while the group's last shared
+   result passed, so stores the failure window tripped queue at about 2·*K* round trips for *K* of
+   them, and own probes do not run while the shared probe fails; its `ponytail:` names the
+   ceiling.
