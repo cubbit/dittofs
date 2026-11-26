@@ -329,8 +329,9 @@ epic's code must honour them.
   30 s on the node's clock, as RFC 8 §2.5 retries a refused journal, `material_unavailable` naming
   the namespace meanwhile. The store's shares attach and keep serving from the journal throughout:
   writes are accepted while capacity allows and read back locally, and nothing is put for the
-  namespace; once the provider answers and the store opens, the journal-held content offloads. This
-  is what the RFC 5 plan's epic 11 asserts (its D2 and T11.1, #6000). A `decision:` at the retry.
+  namespace; once the provider answers and the store opens, the journal-held content offloads. The
+  RFC 5 plan's epic 11 asserts the store unopened and its journal serving (its D2 and T11.1, #6000);
+  the recovery is asserted here, in T21.3, and only here. A `decision:` at the retry.
   Rejected: opening the store at the next start only, which turns a key server's outage into a
   restart. Prior art: RFC 8 §2.5's retried open (read the RFC).
 - **D11, `enginetest.WithSyncer` is deleted.** Epic 16's D9 composes the syncer for every engine and
@@ -481,7 +482,8 @@ docs/internals/rfcs/rfc-0-data-lifecycle.md  T21.4's pull request: §10.2's rest
   material); a provider failed through the RFC 5 plan's fault wrapper around `keystest`'s provider
   (kind 3): the share attached and a write read back from the journal with no put on the store's load
   record (catches a provider failure that fails the share or its journal); the provider restored,
-  the test clock short of 30 s with nothing put, then past it, the store opened and the held write
+  the test clock advanced to short of 30 s past the open that failed at start, with nothing put,
+  then past it, the store opened and the held write
   put and read back after eviction (catches no retry, or a retry on a timer of its own, R16); two store configurations, material destroyed under one, the notice read
   through `Deps.Destroyed` for that store only (catches one provider's notice for every store); the
   key-record suite over three backends (R17).
