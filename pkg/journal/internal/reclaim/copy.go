@@ -182,35 +182,22 @@ func (c *Copier) read(ctx context.Context, set *segment.Set, seg core.SegmentID)
 	// files whose entries name a record of seg, and the distinct records
 	// behind them.
 	//
-	// ponytail: a full per-file walk per unit — Files(tag) then every file's
-	// entries, once per segment the row names — which is O(files of the
-	// scope's tags × their entries) per segment to find the few entries that
-	// name seg. Upgrade to a segment→records registry the index keeps, when a
-	// profile shows the walk above the copies' own cost.
+	// ponytail: per-file entry walks of the segment's own files only — the
+	// registry admits a file, not a record, so each file's entries are
+	// scanned for the ones naming seg. Upgrade to a records-level registry
+	// when a profile shows these walks above the copies' own cost.
+	if _, ok := set.Row(seg); !ok {
+		return nil, fmt.Errorf("reclaim: segment %d is not in the set", seg)
+	}
 	fileOf := make(map[index.RecordAt]core.FileID)
-	var found bool
-	for _, row := range set.Snapshot() {
-		if row.ID != seg {
-			continue
-		}
-		found = true
-		for tag, n := range row.Tags {
-			if n == 0 {
-				continue
-			}
-			for _, file := range c.ix.Files(tag) {
-				for _, e := range c.ix.FileEntries(file) {
-					if e.Record.Segment == seg {
-						if _, ok := fileOf[e.Record]; !ok {
-							fileOf[e.Record] = file
-						}
-					}
+	for _, file := range c.ix.SegmentFiles(seg) {
+		for _, e := range c.ix.FileEntries(file) {
+			if e.Record.Segment == seg {
+				if _, ok := fileOf[e.Record]; !ok {
+					fileOf[e.Record] = file
 				}
 			}
 		}
-	}
-	if !found {
-		return nil, fmt.Errorf("reclaim: segment %d is not in the set", seg)
 	}
 	recs := make([]index.RecordAt, 0, len(fileOf))
 	for r := range fileOf {
