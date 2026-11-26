@@ -186,6 +186,11 @@ func TestKerberosRefusals(t *testing.T) {
 			if !errors.Is(err, vfs.ErrLogonFailure) {
 				t.Errorf("Step = %v, want ErrLogonFailure", err)
 			}
+			for _, other := range []error{vfs.ErrInvalid, vfs.ErrUnavailable} {
+				if errors.Is(err, other) {
+					t.Errorf("Step = %v, which also matches %v; want only ErrLogonFailure", err, other)
+				}
+			}
 			if out != nil || done || mech.Context() != nil {
 				t.Errorf("Step refused left token %x, done %v, context %+v; want none", out, done, mech.Context())
 			}
