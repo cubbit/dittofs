@@ -2,7 +2,7 @@
 
 **Sources:** [RFC 4](../docs/internals/rfcs/rfc-4-remote-tier.md) §4.7 for a namespace's store
 (both probes and the health object), §4.11's open (the requirements on a backend's check, the
-claim read and handed back, the bounded re-list, the pinned storage class and the archive rule),
+claim read and handed back, the bounded re-list, the configured storage class and the archive rule),
 §4.12's `remote_capability` and the refused open's log, §5, §4.3's conditional put (measured,
 never used), §4.15's `decision:` note on the open calling the service outside the syncer, §6's
 R12 (its mutable half), §8 items 1 to 4 and 7, Appendix C.1's mutable rows, C.2's check and
@@ -170,8 +170,8 @@ row's work is shared, the other part's owner is named.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R12 | A 10-byte object put in the profile's storage class is got at once and comes back, with that class reported; bytes 2–5 come back exactly 4 bytes; a get from offset 20 answers `416`; a get of a key never written answers `404`, not `403` | MUST | C.1, C.4 step 2 | T5.3 |
-| R13 | Every object is written in one class the profile pins, never the service's default, and the check reads back the class the service reports for what it wrote; a class or tiering rule that can move an object out of immediate reach, such as an archive class whose get needs a restore, refuses the open | MUST | §4.11, C.1 | T5.1, T5.3 |
+| R12 | A 10-byte object put in the configured storage class is got at once and comes back, with that class reported; bytes 2–5 come back exactly 4 bytes; a get from offset 20 answers `416`; a get of a key never written answers `404`, not `403` | MUST | C.1, C.4 step 2 | T5.3 |
+| R13 | Every object is written in the remote store's configured class (`STANDARD` when none is configured), never the service's default, and the check reads back the class the service reports for what it wrote; a class or tiering rule that can move an object out of immediate reach, such as an archive class whose get needs a restore, refuses the open | MUST | §4.11, C.1 | T5.1, T5.3 |
 | R14 | Two existing keys and one never written, batch-deleted with `Content-MD5` and `Quiet` false, are all three reported deleted and the two gone from a listing; a service that rejects the batch operation is recorded, and the store then deletes one key per `DeleteObject` | MUST | C.1, C.4 step 3 | T5.3 |
 | R15 | Three keys listed with `max-keys=1` and `start-after` come back each once, in order, with `LastModified` | MUST | C.1, C.4 step 4 | T5.3 |
 | R16 | Where a listing lags, the check re-lists up to 5 times over at most 30 s before refusing; the bound is fixed, not a setting | MAY (adopted), bound | §4.11, C.4 step 4 and its `decision:` | T5.3 |

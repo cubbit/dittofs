@@ -538,8 +538,8 @@ A suggestion only: one pull request per subtask works as well, with S1 on the la
    `NewSettings` and never holds key material: the node's content wiring calls `NewSettings` for
    each namespace and answers the engine's `Settings(ns)` with the value (the RFC 8 offload plan's
    epic 11 breakdown, [`rfc-8-offload-engine-epic11.md`](rfc-8-offload-engine-epic11.md), its D5).
-   That breakdown writes the engine's declared interface over this surface at S1, and its epic 15
-   amends §2.1's row with every call above.
+   That breakdown writes the engine's declared interface over this surface at S1, and the plan's
+   epic 15 amends §2.1's row with every call above.
 3. **The engine's import walk reaches `pkg/carver/internal/params` through the root** (D1). It is
    the carver's own value package, part of the contract; the RFC 8 offload plan's epic 15, which
    adds the root to that walk, allows it with the root.

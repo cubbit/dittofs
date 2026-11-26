@@ -149,7 +149,7 @@ tests can cite them.
 | --- | --- | --- | --- | --- |
 | R9 | §4.7: revoke access to the store's own prefix only: both probes of that direction fail although a neighbouring prefix stays accessible | test row | RFC 4 §7.1 | T9.5 |
 | R10 | §4.11: a bucket holding a tiering rule with an archive tier whose filter could match the prefix: open fails naming it, on a service that holds such a rule (T); the `Recheck` half is RFC 9's | test row | RFC 4 §7.1, Appendix C.1 | T9.5 |
-| R11 | §4.11: every object is written in the class the profile names, never the service's default, and no archive class; a bucket that stores what the check wrote in an archive storage class: open fails naming it (T). It runs where LocalStack holds no archive class: on a service with one, the store configured for it, and on any service found to ignore the class header; each service's reported class is recorded | test row | RFC 4 §7.1, Appendix C.1 | T9.5, T9.6 |
+| R11 | §4.11: every object is written in the remote store's configured class, never the service's default, and no archive class; a bucket that stores what the check wrote in an archive storage class: open fails naming it (T). It runs where LocalStack holds no archive class: on a service with one, the store configured for it, and on any service found to ignore the class header; each service's reported class is recorded | test row | RFC 4 §7.1, Appendix C.1 | T9.5, T9.6 |
 | R12 | Appendix C.3: a bucket default encryption under which the ETag is not the content MD5, set before open on a store whose check chose the ETag: open fails naming it, on a real bucket where LocalStack holds no such default (T); the drift half is RFC 9's | test row | RFC 4 §7.1, Appendix C.1 | T9.5 |
 
 **Benchmarks**
