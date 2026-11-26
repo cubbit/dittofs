@@ -256,7 +256,7 @@ rows' own assertions are RFC 8 §15's text; a row's requirement here names the l
   ```go
   // Destroyed reports which of chunks, all the file's, sit in blocks whose encodings name material
   // whose key record is marked destroyed (RFC 8 §10.4), in one read.
-  Destroyed(ctx context.Context, file entity.FileID, chunks []entity.ChunkHash) ([]entity.ChunkHash, error)
+  Destroyed(ctx context.Context, share entity.ShareID, file entity.FileID, chunks []entity.ChunkHash) ([]entity.ChunkHash, error)
   ```
   on block metadata's `Content` view, which `kvstore` answers by reading each chunk's record, its
   block's `encodings` and each named material's key-record state in one view, matching by namespace,
@@ -344,7 +344,7 @@ pkg/metadata/kvstore/
   census.go               T19.1  Census, its deltas at commit and Prune, the fold, its codecs
   offload.go, blocks.go   T19.1  the census delta written by the block commit and by Prune
   check.go                T19.1  the census checked against a walk of block records
-  refs.go                 T19.2  Inspect.Refs; Content.Destroyed
+  inspect.go              T19.2  the Inspect view and its Refs; Content.Destroyed
   blocks.go               T19.5  AbandonShardIntents paged within K
   shards.go, shares.go    T19.6  the shard's journal identity, written at creation
   lifecycle.go            T19.6  Tags' journal, RecordJournal's rewrite; T19.8 AcknowledgeLoss, LossAcknowledged, ConsumeLossAck
@@ -413,8 +413,9 @@ handle" (`TestRFC8A_BindTakesOverTheReconcilesHandle`) and "§2.3 removal during
 
 - **Track:** C. **Depends on:** none. Epic 15's T15.3 first, for the block record's `encodings`.
 - **Covers:** R5, R6.
-- **Deliverables:** in `kvstore`, `func (i Inspect) Refs(ctx context.Context, file entity.FileID,
-  from int64) iter.Seq2[entity.ChunkRef, error]` (live and history refs in offset order, a history ref
+- **Deliverables:** in `kvstore`, the `Inspect` view, which it does not have yet, with its first method,
+  `func (i Inspect) Refs(ctx context.Context, share entity.ShareID, file entity.FileID, from int64)
+  iter.Seq2[entity.ChunkRef, error]`, the share argument as `Covering` takes it, (live and history refs in offset order, a history ref
   telling itself by its `Died`) and `Content.Destroyed` (D2), with their `kvstoretest` rows; RFC 6
   §10.1 amended with `Destroyed`. In `enginetest`, `WithRefs()` made real: the fixture passes the store's
   `Inspect` as `Refs`; every `known.yaml` entry whose message is `WithRefs`'s refusal rewritten to the
@@ -578,8 +579,8 @@ handle" (`TestRFC8A_BindTakesOverTheReconcilesHandle`) and "§2.3 removal during
 
 - **Track:** C. **Depends on:** none.
 - **Covers:** R4.
-- **Deliverables:** `func (e Existence) Versions(ctx context.Context, file entity.FileID, off, n int64)
-  (runs []entity.VersionRun, size int64, applied entity.JournalVersion, err error)` in `kvstore`, with
+- **Deliverables:** `func (e Existence) Versions(ctx context.Context, share entity.ShareID, file
+  entity.FileID, off, n int64) (runs []entity.VersionRun, size int64, applied entity.JournalVersion, err error)` in `kvstore`, with
   `entity.VersionRun` as RFC 6 §10.1 writes it, and its `kvstoretest` rows. Consumed by T19.10.
 - **Acceptance criteria:**
   - Each run reports the highest of its overwrite record, the covering live ref's `newest`, a committed
