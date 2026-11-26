@@ -1219,7 +1219,8 @@ type Deps struct {
 
 // Loop is a watched loop as the work scheduler turns it, and its close. The
 // engine declares it so it imports no pkg/health (RFC 0 §1.2); RFC 25's
-// *health.Loop satisfies it, and the root passes its watchdog's Loop as Watch.
+// *health.Loop satisfies it, and the root adapts its watchdog's Loop as Watch:
+// func(n string) engine.Loop { return wd.Loop(n) }.
 type Loop interface {
 	workqueue.Loop // Turn, Idle (§6.1.1)
 	Close()
