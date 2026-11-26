@@ -23,7 +23,7 @@ speculation budget, the `Stats` fields `Fetches`, `FetchBytes`, `Fills`, `Specul
 every engine the fixture and the in-package tests build composing RFC 3's syncer over two in-memory
 stores, with `FaultRemote` real (its D9, D10), which T17.2's tests stand in for with a flow they open
 themselves until it lands (the offload plan's §3.3); **epic 16's T16.6**, the gates' switch
-`Deps.Gates` (its D6, pending the user's answer there), which `fill` reads from T17.9;
+`Deps.Gates policy.Gates` (its D6), which `fill` reads from T17.9;
 **S5's first half, partly**: RFC 3's syncer (`pkg/syncer/pool`) over RFC 4's in-memory store through
 `codec.Store`, and RFC 5's material errors in the `pkg/transform` root (epic 15 admits that root into
 the engine's import walk). The conformance rows also wait on epics 15 and 16 (the carver, chain and
@@ -76,7 +76,7 @@ series and span of these paths; the fixture controls epic 12 proposed for these 
 - Opening a binding's flow at attach and closing it at `Drop`, composing the syncer in every
   fixture, and the gates' switch itself: epic 16 (its T16.1, D6, D9).
 - Relocating a chunk (RFC 6 §7.3): RFC 9's, with GC; the relocation leg of "§7.7 re-resolution"
-  waits on it (the offload plan's §6.1 row this pull request adds; §9's first point).
+  waits on it (the offload plan's §6.1 row this pull request adds; D2).
 - A read's span linking to a joined fetch's span (RFC 8 §14): unowned until RFC 3 reports a join
   (D9; the §6.1 row this pull request adds).
 - Reading a carved chunk of an older namespace generation on another store: RFC 27, with the re-home
@@ -235,7 +235,7 @@ Each is green in whichever change lands last of this epic, S3 and, where the row
 | R52 | "§7.2 streaming, verified", `TestRFC8A_StreamingVerified` | test row | RFC 8 §15.1; epic 12, T12.3 | T17.9 |
 | R53 | "§7.2 fill cannot fail a read", `TestRFC8A_FillCannotFailARead` | test row | RFC 8 §15.1; epic 12, T12.3 | T17.9 |
 | R54 | "§7.2 fill loses to a write", `TestRFC8A_FillLosesToAWrite` | test row | RFC 8 §15.1; epic 12, T12.3 | T17.9 |
-| R55 | "§7.7 re-resolution", `TestRFC8A_Reresolution`, but its relocation leg (§9) | test row | RFC 8 §15.1; epic 12, T12.3 | T17.9 |
+| R55 | "§7.7 re-resolution", `TestRFC8A_Reresolution`, but its relocation leg (D2) | test row | RFC 8 §15.1; epic 12, T12.3 | T17.9 |
 | R56 | "§7.6 zero ref under an overwrite", `TestRFC8A_ZeroRefUnderAnOverwrite` | test row | RFC 8 §15.1; epic 12, T12.3 | T17.9 |
 | R57 | "§9.1 clone keeps writes outside its extent", offload half, `TestRFC8A_CloneKeepsWritesOutsideItsExtentOffloaded` | test row | RFC 8 §15.1; epic 12, T12.3 | T17.9 |
 | R58 | "§9.1 no pre-clone fill", the demand read's leg, `TestRFC8A_NoPreCloneFill` | test row | RFC 8 §15.1; epic 12, T12.3 | T17.9 |
@@ -263,8 +263,12 @@ Each is green in whichever change lands last of this epic, S3 and, where the row
   locations that missed and calls `reresolve(missed []entity.Location, next entity.Span, asOf
   entity.JournalVersion) step`, answering fetch, re-ask the journal, zeros, past end of file or
   **Lost**. It is table-tested on its own (`CLAUDE.md`, "Put the logic in a function of its
-  inputs"), so a location moving twice is tested here although nothing in v1.1 moves a chunk (§9).
-  Prior art: none found.
+  inputs"), so a location moving twice is tested here although nothing in v1.1 moves a chunk.
+  The row's relocation leg is a subtest of its own, red with a `known.yaml` entry until RFC 9's
+  relocation lands, since nothing moves a chunk while its refs are live before GC's (RFC 6 §7.3),
+  and the offload plan's §6.1 gains that row in this pull request. The user decided this on
+  2026-11-26. Rejected: building `kvstore`'s `Blocks.Relocate` here, about 3 man-days ahead of GC,
+  a GC mechanism whose only caller would be a test. Prior art: none found.
 - **D3, a fill copies its bytes, bounded per share.** Once a chunk is in `dst` the reply needs the
   fetch no longer, but `dst` is the caller's once `Read` returns, so a fill copies the extent's
   verified bytes and runs in its own goroutine, beside the reply. RFC 8 §1.1 forbids a payload
@@ -658,7 +662,7 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
   `HoldBetweenReadSteps() (entered <-chan struct{}, release func())`, the per-instance hook T17.2
   added; `HoldNextRelease() (entered <-chan struct{}, release func())` on a clone's
   `CloneHold.Release`; `Evict(id entity.FileID)` through the real journal's `Release`, refused by the
-  journal until S6. `Relocate` stays refused by name (§9). "§7.1 the join"'s carved and stale rows
+  journal until S6. `Relocate` stays refused by name (D2). "§7.1 the join"'s carved and stale rows
   as a test of their own beside `TestRFC8A_TheJoin`, with refs written as
   `TestRFC8A_CarvedRunFailsUnavailable` writes them. Every row of R50 to R62 runs past its controls;
   each that passes leaves `test/engine/known.yaml`, and each still red has its `message:` rewritten
@@ -708,20 +712,12 @@ once T17.5 is in.
 
 ## 9. Open points
 
-- **The relocation leg of "§7.7 re-resolution" (pending the user's answer).** The row relocates a
-  chunk twice between resolution and get, but nothing in the repository moves a chunk while its
-  refs are live: RFC 6 §7.3's relocation is GC's (RFC 9), and `kvstore` has no `Relocate`. Written
-  in place (recommended): D2 tests the rule as a pure function, the row's relocation leg becomes a
-  subtest of its own whose `known.yaml` entry waits on RFC 9's relocation, and the offload plan's
-  §6.1 gains that row in this pull request. The other option builds `kvstore`'s `Blocks.Relocate`
-  here, as RFC 6 §7.3 specifies it with its checks, as a T17.10 of about 3 man-days, ahead of GC; it
-  lands a GC mechanism whose only caller is a test.
 - **Rows that need the real journal's `Release`** ("§7.1 the order", "§7.2 streaming, verified",
   the fill rows, "§9.1 no pre-clone fill", the cold-read row) stay red after this epic until S6;
   whichever of this epic and the journal plan's epic 9b lands second removes their entries.
-- **The gates' switch** (epic 16's D6) is pending the user's answer there; `fill` reads whatever
-  form it settles on in T17.9, which waits on epic 16's T16.6, and R63's test follows it. T17.5
-  lands gated only, so track C waits on no subtask of epic 16 before T17.9.
+- **The gates' switch** is epic 16's D6, `Deps.Gates policy.Gates`; `fill` reads it in T17.9, which
+  waits on epic 16's T16.6, and R63's test follows it. T17.5 lands gated only, so track C waits on
+  no subtask of epic 16 before T17.9.
 - **Hand-offs from other documents.** Epic 18 (#6010, its D10 and T18.4) adds the
   destroyed-material read lock at T17.5's `fillExtent`. RFC 3 epic 6 (#6008, its D6) ends a
   detached stream with an error wrapping `remote.ErrTransient`, which T17.2 fetches again once
