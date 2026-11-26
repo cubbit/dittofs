@@ -423,10 +423,11 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   the node's table. The API's write-path tests keep `writeTable`'s test section: their bound
   `remote.target` must change on an empty store, which the real section's bound keys, both store
   locations, cannot (D13). `pkg/bootstrap/keyspec.go`'s `settingKeys` is Appendix B's list, held to
-  it by `TestSettingKeysMatchAppendixB`, so it gains the seven keys `feat/storage-v2` lacks
-  (`remote.region`, `remote.trust_roots`, `remote.bucket`, `remote.storage_class`,
-  `remote.block_target`, `remote.prefix`, `remote.block_format_version`) when the appendix reaches
-  that branch. The CLI suite's refusal of `remote.region` as an unknown key
+  it by `TestSettingKeysMatchAppendixB`, which reads RFC 13 on `feat/storage-v2`. So the
+  cherry-pick that carries this document's Appendix B amendment to that branch adds, in the same
+  change, the keys `settingKeys` lacks there, as #5785 does for `remote.region` and
+  `remote.trust_roots`: once #5785 has merged, the five `remote.bucket`, `remote.storage_class`,
+  `remote.block_target`, `remote.prefix` and `remote.block_format_version`. The CLI suite's refusal of `remote.region` as an unknown key
   (`cmd/dfsctl/internal/clisuite/stores.go`) runs on the node's own table, so it changes in epic
   21's change that adds `Sections` to `newTable`. Prior art: none needed.
 - **D13. The bucket and the prefix keep the store-location tag; the region and the trust roots do
@@ -461,8 +462,6 @@ internal/node/
   appendixb_remote_test.go  T7.2  Appendix B and the refusal-leak checks over Sections
 internal/node/api/
   res_stores.go, res_secrets.go  T7.3  ParseCredential before a remote credential is sealed
-pkg/bootstrap/keyspec.go         T7.2  settingKeys with Appendix B's remote keys
-docs/internals/rfcs/rfc-13-configuration.md  T7.2  Appendix B's remote rows, as develop has them
 docs/guide/configuration.md      T7.3  the remote store section
 test/suites.yaml                 T7.4  unit's remote-allocs option widened to ./internal/node/content
 ```
@@ -498,8 +497,9 @@ test/suites.yaml                 T7.4  unit's remote-allocs option widened to ./
   with D6's `decision:` at the format version's default and D13's at the location tags.
   `internal/node/appendixb_test.go`'s `tableKeys` seeding one instance row for each scope a
   section names, as its `decision:` asks once a section at a per-instance scope is declared, which
-  then loses that clause. `internal/node/appendixb_remote_test.go`. D12's `settingKeys`, and RFC
-  13 Appendix B's remote rows brought to `feat/storage-v2` from `develop`. Consumed by T7.3 and by
+  then loses that clause. `internal/node/appendixb_remote_test.go`. D12's `settingKeys` lines and
+  RFC 13 Appendix B's remote rows reach `feat/storage-v2` with this document's cherry-pick, before
+  this subtask. Consumed by T7.3 and by
   RFC 8 offload plan epic 21, which adds `Sections` to `newTable`.
 - **Acceptance criteria:**
   - `compareAppendixB` over a table of `Sections()` reports no failure, its `reported` list holds
@@ -655,6 +655,10 @@ collector.
 A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
+
+The estimate is 5 subtasks and 7.5 man-days against the plan's 6 and 8: the refused open's field
+error moved to the RFC 23 ledger row (D11), and the metric definitions and the alert expression
+sit beside their recorders (D7), so no subtask builds them on their own.
 
 1. **The key names, pending the user's answer (D1).** Recommended: the five unnamed rows under
    `remote.` (`remote.bucket`, `remote.storage_class`, `remote.block_target`, `remote.prefix`,
