@@ -778,6 +778,11 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 	}
 	if r != nil {
 		r.trace = tr.id
+		if r.Protocol != 0 {
+			// The request's one context takes the label, so every call it makes,
+			// each member of a compound's included, carries it.
+			tr.req.Context = vfs.WithProtocol(tr.req.Context, r.Protocol)
+		}
 	}
 	if err == nil {
 		op = tb.Ops[h.Op()]
