@@ -1226,7 +1226,9 @@ func engineTarget() fuzz.Target[*engineWorld, engineModel] {
 	// 0 fails every update of the store, -1 clears that.
 	updates := fuzz.Choice("n", -1, 0)
 	mask := fuzz.Choice("mask", 0b1, 0b10, 0b11, 0b101)
-	torn := fuzz.Choice("n", 1, 8, 64)
+	// Up to 64 bytes the cut falls inside a record's header. At 300 the header
+	// of a longer record is whole and its payload is not.
+	torn := fuzz.Choice("n", 1, 8, 64, 300)
 	seed := fuzz.Choice("seed", 1, 2, 3)
 
 	return fuzz.Target[*engineWorld, engineModel]{
@@ -1536,6 +1538,18 @@ var engineSeeds = []struct {
 			"crash_torn(n=8)",
 			"read(file=0, off=0, len=8192)",
 			"read(file=0, off=8192, len=512)",
+		},
+	},
+	{
+		// The cut keeps the whole record header and part of the payload of an
+		// overwrite, which a read must not see.
+		name: "a crash that tears an overwrite past its record header",
+		calls: []string{
+			"write(file=0, off=0, len=512)",
+			"commit(file=0, off=0, len=0)",
+			"write(file=0, off=0, len=512)",
+			"crash_torn(n=300)",
+			"read(file=0, off=0, len=512)",
 		},
 	},
 	{
