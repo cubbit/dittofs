@@ -126,10 +126,10 @@ cited by number and title and not copied.
 | rule 6, **Known failures shrink** | T15.5, T15.10 | T15.5 makes the carver and chain options real and rewrites the 41 entries' `message:` to the syncer's refusal in the same change; T15.10 adds O1's crash leg with its entry, red until S6 |
 | rule 7, **v2 ignores v1, and the engine imports only what RFC 0 §1.2 allows** | T15.5 | `offload/`'s production files import the standard library, `entity`, the `pkg/carver`, `pkg/transform`, `pkg/remote` and `pkg/syncer` roots, the journal's and metadata's contract packages and `pkg/workqueue`; the engine's transitive walk admits `pkg/carver/internal/params` with the carver root and refuses `carve`, `assembler`, the chain's subpackages and `pkg/remote/codec` in production code |
 | rule 8, **Real dependencies for properties of those dependencies** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T15.2, T15.4, T15.10 | the floor and the commit's key counts are checked over the memory KV, Badger under `t.TempDir()` and FoundationDB where it runs; O1's crash leg runs over the real journal on a real directory with its crash seam, in `engine-conformance` |
-| rule 9, **Code comment conventions** ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T15.6, T15.10 | RFC 8 §6.3's five-failures `decision:` at the count (T15.10); the chunk-age `ponytail:` (T15.6); this epic's own markers, each named in §4 |
+| rule 9, **Code comment conventions** ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T15.5, T15.6, T15.10 | RFC 8 §6.3's five-failures `decision:` at the count (T15.10); the chunk-age `ponytail:` (T15.6); this epic's own markers, each named in §4 |
 | rule 10, **A test must be able to fail** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | every test names the planted break it catches; the floor is shown one key below and at the floor; the pipeline's checks run with the fault cleared and set |
 | rule 11, **A symbol is exported only if the RFC's interface uses it** | T15.5, T15.6 | `offload`'s states and `offloadDue` are unexported; `offload` exports its entry point and the ports the engine fills (D1); the engine adds three `Deps` members and the `Stats.Carver` field (D14) |
-| rule 12, **Each subtask creates only what it declares** | all | each port, `Deps` member and in-memory journal call lands with its first caller; `offloadDue`'s first production caller is epic 14's `Dirty` handler and age tick (its T14.3), and `offload.Run`'s is epic 16's offload source, each named |
+| rule 12, **Each subtask creates only what it declares** | all | each port, `Deps` member and in-memory journal call lands with its first caller; `offloadDue`'s first production caller is epic 14's `Dirty` handler and age tick (its T14.3), and `offload.Run`'s is epic 16's offload source, each named; the one departure is D2's three `Deps` members, which join here before epic 16 calls them, under a `decision:` at `New` |
 
 ## 3. Requirements and invariants
 
@@ -287,15 +287,21 @@ other row has a test here.
   Prior art: the first part's `CloneHold`,
   which the root adapts from open state, an interface the consumer declares (checked).
 - **D2, `Deps` gains `Carver`, `Chain` and `Puts`, refused by name at `New`; the content wiring
-  builds them; the node supplies them from this epic — pending the user's answer (§9).** RFC 8 §2.1
+  builds them; the node supplies them from this epic (the user's decision, 2026-11-26).** RFC 8 §2.1
   makes an absent capability fail construction, and the first engine code that holds them is this
   epic's. The carver's settings need the namespace's chunk-ID key, and the chain a
   `keys.Provider`, which the node builds only in the integration epic, so between this epic and
-  that one `node.New` would be refused. Recommended: `content.Params` gains `Keys keys.Provider` and
+  that one `node.New` would be refused. So `content.Params` gains `Keys keys.Provider` and
   the stores (by `syncer.StoreID`), the content wiring builds `Carver`, `Chain` and `Puts` over
   them, and the node passes the provider and the stores the integration epic would, pulled forward
-  into this epic (about 1.5 man-days of the integration epic, not counted in this estimate).
-  The two other options and their costs are in §9. Prior art: the first part's `Deps`, every member
+  into this epic (about 1.5 man-days of the integration epic, not counted in this estimate). The
+  fixture composes all three whatever a row asks, and `Puts` resolves a store only when a put is
+  built, so the first part's rows still bind. This departs from plan rule 12, since nothing in
+  `pkg/engine` calls the members before epic 16's offload source: a `decision:` at `New`'s refusal
+  names epic 16 as the first caller. Rejected: the members joining `Deps` with epic 16, which meets
+  rule 12 exactly but moves the node's gap and T15.5's fixture and wiring into epic 16; and `New`
+  accepting them nil until the node composes them, which departs from RFC 8 §2.1's MUST and makes
+  "no offload" a reachable state of a live share. Prior art: the first part's `Deps`, every member
   refused by name when missing (read the code).
 - **D3, the zero-ref commit is a `BlockCommit` with no block.** RFC 6 §4.1 commits zero refs alone
   when no block carries them, and the RFC 2 plan's epic 1 D3 hands such a commit over as a plan with
@@ -644,7 +650,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
     here.
   - The engine: `Deps.Carver offload.Carver`, `Deps.Chain offload.Chain`, `Deps.Puts offload.Puts`
     (with `Deps.Material offload.Material`, which T15.8 adds with its call),
-    refused by name at `New` (D2); `Handle` embeds `offload.Offers`, `Content` embeds
+    refused by name at `New` (D2, with its `decision:` naming epic 16 as the first caller); `Handle` embeds `offload.Offers`, `Content` embeds
     `offload.Store`; the engine's walk gains
     `offload/`'s row, refusing `os` beside every implementation, and admits the `pkg/carver` root
     with `pkg/carver/internal/params`;
@@ -695,7 +701,7 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   start never saw; a `WrapKeys` wrapper failing `Current` refuses the next pass before any intent;
   the `Offered` wrapper set on one of two files, the other file's reads unchanged (each catches a
   control that does nothing, or one that reaches every file).
-- **Rules:** rule 6, the 41 messages; rule 7, the walk; rule 12, each port with its first caller.
+- **Rules:** rule 6, the 41 messages; rule 7, the walk; rule 9, D2's `decision:` at `New`; rule 12, each port with its first caller, D2's members excepted.
 
 ### T15.6 Carve
 
@@ -915,24 +921,6 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **D2 is pending the user's answer: how `node.New` keeps building once `Deps` requires `Carver`,
-  `Chain` and `Puts`.** The carver's settings and the chain need RFC 5's `keys.Provider`, which the
-  node composes only in the integration epic. The options:
-  - **A (recommended):** this epic adds the three members, refused at `New`, and pulls the node's
-    composition of the provider and the stores forward from the integration epic, about 1.5
-    man-days moved, not added; the node then builds each with what it ships. The fixture composes
-    all three whatever a row asks, and `Puts` resolves a store only when a put is built, so the
-    first part's rows still bind. Its cost is plan rule 12: nothing in `pkg/engine` calls the
-    members before epic 16. It is recommended because the programme asked this epic to add the
-    three declarations to `Deps`.
-  - **B:** the three members join `Deps` with epic 16, whose offload source is the first engine
-    code to hand them to `Run`; this epic tests `offload/` through `offload.Deps` alone, and the
-    node's gap moves to epic 16 unchanged. It meets rule 12 exactly and moves T15.5's fixture and
-    wiring work, and the 41 messages' rewrite, into epic 16 (about 1.5 man-days out of this epic),
-    so the messages are rewritten once. The review passes recommended it.
-  - **C:** the members join here, and `New` accepts them nil until the node composes them, a nil
-    member running no pass, with a `decision:` at `New`: a departure from RFC 8 §2.1's MUST, which
-    makes "no offload" a reachable state of a live share.
 - **The in-memory journal's `OffloadMany` and the journal's suite.** §1.4 of the offload plan has the
   in-memory journal pass the journal suite's offload rows, while the suite runs over the real
   journal only (`enginetest.FakeJournal` is held by agreement tests, as #5775 notes). T15.5 runs the
