@@ -922,7 +922,7 @@ signal, N18, N20, N27; the `FlowControl` conformance check; RFC 20 §10.1's
 
 ### Epic 9 — Opens, stateids and locks
 
-**Epic 9 estimate: 8 subtasks, 25 man-days.**
+**Epic 9 estimate: 11 subtasks, 31.25 man-days.**
 
 The state a client takes through an open: open stateids and their sequence, NFSv4.0 owners,
 byte-range locks, and the rules a stateid is checked by.
