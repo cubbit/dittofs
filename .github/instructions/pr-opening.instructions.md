@@ -15,6 +15,10 @@ Branch from a fresh `origin/<target>` and rebase onto it before pushing; never m
 target in. When the target is not `develop`, set `DITTOFS_PREPUSH_BASE=origin/<target>` and
 pass `dt run --base origin/<target>`.
 
+Storage-v2 docs (its RFCs, plans and epic breakdowns under `.planning/`, and their follow-ups)
+target `feat/storage-v2` directly. They do not go to `develop` first, and nothing is
+cherry-picked from `develop` to `feat/storage-v2` for them.
+
 ## Title and description
 
 Follow [`.github/pull_request_template.md`](../pull_request_template.md), including the
