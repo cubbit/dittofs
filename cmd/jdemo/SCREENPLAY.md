@@ -190,12 +190,19 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
   everything else is rebuilt from it on open. The mark from STEP 6 is what
   recovery checks the scanned tails against; the version window means no
   version is ever drawn twice.
-- **"Where does `Stats()` come from if the index says 'not implemented'?"** —
-  `Stats` is measured by the journal as it runs; the `Inspect` read-outs are
-  the same internals behind a public window that lands with a later subtask.
-  The numbers are the journal's own, the *view* is what's pending.
+- **"Is `Inspect` real, or a stub?"** — Real. `Inspect().File` and
+  `Inspect().Segments` read the live index and the live segment accounting —
+  the `i` and `s` looks are exactly those calls. `Stats()` is the totals, the
+  same internals summed. Only `Inspect().Verify` (the index checked against
+  the segments) still answers `not implemented`.
 - **"Why does `used` say 1.25 GB?"** — Segments are accounted at the 256 MB
   cap they can reach, not the bytes they hold.
+- **"What does the index cost in memory?"** — One entry per disjoint piece of
+  one record: a few dozen bytes each. The ruler's `cells` come from those
+  entries, not from the file's size — a 300 MB write is still one piece.
+- **"Is a write durable when `WriteAt` returns?"** — No: it is in the journal
+  and readable. Durable is what `Sync` (STEP 6) promises, or a truncate's own
+  fsync (STEP 9). Basic shows both on purpose.
 - **"Can the journal reopen right now?"** — Yes: the crash story's last beat
   does it live — close, `Open` with the marks, same four entries, same bytes.
 
@@ -204,55 +211,226 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
 # SCENARIO 2 — crash (--story crash)
 
 *A seven-beat story about durability: what survives, in what order, and a
-real restart. Runs after a basic run if the room wants the safety half.*
+real restart. Runs after a basic run if the room wants the safety half. The
+whole story is about ONE sentence: **nothing is lost that a synced version
+might still name.** Say it at the start and again at the end.*
 
-## the beats
+Setup: a fresh `--dir` (`go run ./cmd/jdemo --story crash --dir /tmp/crash`).
+If the dir already has data the story still runs — the open recovers it — but
+the numbers below assume empty.
 
-1. journal online (same opening)
-2. attach the share (same as basic)
-3. **write + sync mark — THE receipt beat.** Run, then read the mark out
-   loud: stream, segment, offset, sequence. *"Durability has a name. The
-   engine records THIS and hands it to the next Open."*
-4. **overwrite, retained.** Open `i` right after. The ruler splits and a
-   retained lane appears under the new piece: *"the old bytes are kept until
-   the new write is synced — if a crash loses the new bytes, the old ones are
-   still there."*
-5. **truncate, durable on return.** Watch the marker arrive unsettled. Its
-   fsync also makes the overwrite durable, so the retained lane disappears:
-   *"synced now — the old bytes are no longer needed."*
-6. **the Since feed.** *"Everything a recovering caller replays — this is
-   the journal's side of the contract."*
-7. **close, restart.** The journal closes, `journal.Open` runs against the
-   state file's identity with the marks from beat 1 — recovery rebuilds the
-   index: *"same entries before and after, and the bytes read back. Nothing
-   synced was lost."*
+## STEP 1–2 — online, attach (same as basic)
+
+- Skip fast: **"Same opening as before — a real journal, one handle for the
+  share, tag 1."** Do not re-explain the spare pool; this room has seen it, or
+  will on the `f` look in beat 3.
+
+## STEP 3 — write, then name its durability
+
+- `⏎`. Two calls print: the `WriteAt` (`v1`) and the `Sync`.
+- Read the mark OUT LOUD, field by field:
+  `{Stream:0 Segment:4 Through:168 Offset:168 Sequence:1}`
+  - **"Stream 0, segment 4 — the file the record is in."**
+  - **"Through 168 — durable up to byte 168 of that segment. That is 48 bytes
+    of header, the record, its padding: exactly the end of `hello world`."**
+  - **"Sequence 1 — the first sync of this stream. Sequences only go up."**
+- **"This is the receipt. The engine writes it down somewhere that survives a
+  crash — and hands it back at the next Open. Keep it in mind: beat 7 uses
+  this very mark."**
+- Checks that print: index +1 entry, dirty +11 B, versions +1. *Dirty* means
+  "not yet handed to the remote tier" — it stays dirty here; offload is a
+  stub.
+- Open `i`: the ruler is one piece, `├────v1────┤`, offsets 0 to 11.
+
+## STEP 4 — overwrite: retention is the crash story
+
+- **"Now overwrite bytes 2–4 with `XY`. Watch what the journal does NOT do:
+  it does not destroy the old bytes."**
+- `⏎`, then `i`. The ruler splits into three, and a second lane appears:
+  `held  ├v1┤├v2┤├──v1──┤` and `retained  ├ v1 by v2 ┤` under the middle.
+  - **"Held is what a read serves: v1 0–2, the new v2 2–4, v1 4–11. Retained is
+    the superseded v1 2–4 — kept, never served."**
+  - **"Why keep it? The new write is NOT synced yet. If we crash right now and
+    the XY never reached the disk, the old two bytes are still the truth."**
+- Point at the check lines: `index +3 entries` — the one entry became three
+  held pieces and a retained one, minus the original.
+- If asked "when does retained go?": **"When a sync covers the overwrite. The
+  journal syncs in the background, so it may vanish by itself while you talk —
+  that is not a bug, that is the lifting."**
+- Open `d` if the room likes bytes: the second record, `record 4@168`, holds
+  `XY`; the first is untouched. Append-only: an overwrite is a NEW record.
+
+## STEP 5 — truncate: durable the moment it returns
+
+- **"Drop everything past 32. Look at what we're truncating: the file is 11
+  bytes long. A truncate past the end still counts — the marker is the
+  record that says 'the size is now 32'."**
+- `⏎`: `v3`, and `✓ removal markers +1`.
+- **"Truncate is a record, fsynced BEFORE it answers. Crash one nanosecond
+  later and the truncate still happened."**
+- **"And that fsync is the same fsync that makes the XY durable — so the
+  retained lane just vanished. Open `i`: the marker row says
+  `32 ─ end  v3`, an arrow off the right edge of the ruler: 'to the end of
+  the file, whatever that is'."** Say it: *one fsync, two promises.*
+
+## STEP 6 — the feed a recovery replays
+
+- `⏎`. Four lines, in version order:
+  `write off=0 len=2 v1`, `write off=4 len=7 v1`, `write off=2 len=2 v2`,
+  `truncate off=32 len=9223372036854775775 v3`.
+- **"This is what metadata reads after a crash to catch up. Three things to
+  notice:"**
+  - **"The first write is two lines, not one — the overwrite cut it. The feed
+    shows what is HELD, not what was once written."**
+  - **"The truncate is last, v3 — still unsettled, so it is still reported. If
+    metadata had settled it, it would be gone."**
+  - **"The retained bytes are NOT here. A feed is the truth, and the retained
+    range is only insurance."**
+- The `len=9223372036854775775` is "to the end of the file" (max int64 minus
+  the offset); the index view draws it as `end`.
+
+## STEP 7 — close, then restart: recovery rebuilds it
+
+- **"Now the proof. I close the journal. The process keeps only three
+  things: the directory, the identity beside it, and that mark from beat
+  3."**
+- `⏎`. Four lines print:
+  - `// → journal closed; only the directory, the identity and the marks remain`
+  - `journal.Open(ctx, dir, floor, id, marks, opts...)` — **"Open scans every
+    segment, replays the records, rebuilds the index, and checks the tails it
+    found against the mark. A tail shorter than the mark would be a
+    reported loss."**
+  - `j.SetVersionLimit(limit)` — **"A reopened journal has no version window
+    until the caller raises it. Without it, a write has no version to draw —
+    check `+` on this beat and `versions left` reads 4.29 billion, not zero."**
+  - `reopened: 4 index entries before the close, 4 after` and
+    `"heXYo world"`.
+- **"Same four entries, same bytes — including the XY, which was never
+  explicitly synced by a write. The truncate's fsync did it."**
+- Close: **"Nothing synced was lost. That is the whole contract."**
+- If asked "what about the marker?" — it survived too: open `i` and the
+  `32 ─ end v3` row is back. Markers are records; recovery rebuilds them.
+
+### Crash-story Q&A
+
+- **"What if the crash lands between the write and the sync?"** — The write
+  may or may not be on disk. Recovery keeps what is whole: a record whose
+  checksum verifies, and discards a torn tail. The mark tells it how far
+  durability reached; bytes past the mark are unguaranteed, not lost.
+- **"Why a mark per stream?"** — Streams fsync independently. Each reports
+  where its own durability reached.
 
 # SCENARIO 3 — limits (--story limits)
 
 *An eight-beat story about space: the share budget, the reserve that must
-come first, and what truncate does not give back.*
+come first, and what truncate does not give back. The throughline: **a full
+journal must still be able to make room.***
 
-## the beats
+Setup: fresh `--dir`. This story writes about 440 MiB in total and is the
+slowest: expect a couple of seconds on the fill beat, and keep the terminal
+tall enough for the stats look.
 
-1. journal online — note the **2 GiB world** in the banner.
-2. **attach with a 512 MiB budget.** Basic passed zero for this same
-   call — the share IS the budget here.
-3. **reserve BEFORE the burst.** 80 MiB — two fills' worth. *"The
-   reservation is charged the budget too — you take it while budget remains
-   or the hatch is gone."*
-4. **fill until the share says no.** 40 MiB at a time; ten fit, the eleventh
-   is refused by the SHARE (512 MiB minus the 80 MiB held for the
-   reservation), with the bytes it's missing. Read it verbatim. The index
-   ruler lines the ten pieces up: 0 to 400 MiB.
-5. **the reserved write walks through it.** v-late, served — the escape
-   hatch in the only order that works.
-6. **headroom math.** The beat prints the real numbers: used vs the 2 GiB,
-   counting every segment — written or spare — at the cap. *"The world has
-   to hold the pool's spares as well as the share's budget."*
-7. **truncate gives back nothing — yet.** held falls, used doesn't:
-   *"reclaimed space is repack's to free."*
-8. **the honesty ledger.** Offload answers `not implemented`: the drain is
-   not built, and the journal says so itself.
+## STEP 1 — journal online (note the 2 GiB world)
+
+- Point at `MaxBytes`: **"This journal is capped at two gibibytes in total.
+  That cap covers everything it holds: the data, AND the spare files it
+  keeps ready."**
+
+## STEP 2 — attach, with a budget
+
+- **"Basic passed zero here. Now the second argument is real: 512 MiB. That
+  is this SHARE's budget for record bytes, and it is checked before anything
+  else."**
+- `⏎`: `h, err := j.Share(1, 536870912, journal.Version{})`, handle attached.
+
+## STEP 3 — reserve BEFORE the burst
+
+- **"Before we write anything, we reserve 80 MiB: two fills' worth. Why
+  80 and not 40? Each write costs a little more than its payload — entries,
+  a footer — so a reservation of exactly the payload cannot hold the write
+  it was made for."**
+- `⏎`: `res, err := h.Reserve(83886080, 1)`.
+- **"The reservation is charged against the 512. Take it while there is
+  budget — the escape hatch has to be built BEFORE the room is full. Reserve
+  after, and it is refused with everything else."**
+- Open `+`: `reserved` is now 80 MiB. This is the number to point at later.
+
+## STEP 4 — fill the budget, until the share says no
+
+- **"Forty MiB at a time, same file, next offset. I will not narrate ten
+  writes — watch the screen."** `⏎` (a few seconds).
+- The last line is the point, read it verbatim:
+  `write 11: journal: no space: refused by the share limit, 8389856 bytes
+  missing`.
+  - **"Ten fit. The eleventh asked for 40 MiB and was refused by the SHARE —
+    not by the disk, not by the journal. 512 minus 80 held for the
+    reservation is 432 MiB; ten fills are 400; the eleventh needs 40 more
+    than the 32 left. It even tells us how many bytes it was short."**
+- Open `i`: the ruler lines the ten pieces up, 0 to 400 MiB. **"Ten held
+  pieces, one record each — not 400 million of anything."** Open `s`: two
+  segments, the first sealed, the second active: the stream rolled once.
+
+## STEP 5 — the reserved write walks through the refusal
+
+- **"Same share, same file — a refused write a second ago. Now the same bytes
+  through the RESERVATION."** `⏎`.
+- `res.WriteAt(ctx, FILE, 536870912, fill40MiB, 0)` answers `v31`, served.
+- **"Its bytes were set aside up front. No limit refuses it. That is the
+  hatch: the engine uses it for the records that FREE space — forget,
+  release. If it had to ask for room first, a full journal could never
+  recover."**
+- The reservation closes on return; its unused bytes go back.
+
+## STEP 6 — the headroom math
+
+- `⏎`. Three lines: `max 2 GiB`, `used 2 GiB (2 segments written, 3 spares…)`,
+  `share budget 512 MiB (held 440 MiB)`.
+- **"Held is 440 MiB: ten fills plus the reserved write. The share has not
+  hit its 512 — but `used` HAS hit the world's 2 GiB."**
+- **"`used` counts every segment, written or spare, at the 256 MiB cap. The
+  pool's spares are the journal's own overhead — headroom, the repack
+  reserve, the content spares. The world has to hold them AND the budget."**
+- Open `+`: the full picture. `used` read 1.25 GiB when the story began (five
+  segments, all spares) and has climbed to 2 GiB: **"every time a content
+  spare is taken, the pool makes a replacement, and the replacement is
+  counted too. Three more spares, three more segments, and the journal is
+  at its ceiling — with 440 MiB of actual data."** Compare with `reserved`:
+  it was 80 MiB after beat 3 and is 0 now; the reservation was spent and
+  closed.
+
+## STEP 7 — truncate gives back nothing, yet
+
+- **"Drop everything past 32 bytes."** `⏎`.
+- Checks: `held -439 MiB`, `removal markers +1`. Line:
+  `used before 2 GiB, after 2 GiB — unchanged; repack frees`.
+- **"The data is logically gone. The segments are not. Segment files are only
+  freed when REPACK rewrites them — and repack is not wired in this journal
+  yet. So `used` does not move."**
+- **"That is why space needs a reservation and not just a delete button: the
+  space returns on repack's schedule, not the caller's."**
+- Open `+`: `held` is 32 B now, `removal markers 1`, and `unreclaimed`
+  jumped from 0 to about 440 MiB — the gauge for what the truncate left
+  behind for repack. `used` is still 2 GiB.
+
+## STEP 8 — the honesty ledger
+
+- **"What is NOT here: the drain. Offload would hand the dirty bytes to the
+  remote tier; repack would reclaim the segments. This journal says so
+  itself."** `⏎`: `journal: not implemented`.
+- **"Live wiring: the share limit, the reservation, the refusal. Pending:
+  the drain. The tool never claims more."**
+
+### Limits-story Q&A
+
+- **"Why 512 MiB and a 2 GiB world — what is the rest?"** — The pool: spare
+  segments at the cap are permanently charged, so the world holds roughly a
+  quarter of itself as overhead before a byte of content.
+- **"What is the difference between the share limit and the world?"** — The
+  share's budget is per-share, in record bytes, checked first. The world is
+  the journal's whole local storage. A share refusal is polite; a world
+  refusal means the journal is full.
+- **"Could the reservation run out?"** — Yes: it is exactly what you asked
+  for. Beyond it, the write is an ordinary one again and meets the limits.
 
 ---
 
