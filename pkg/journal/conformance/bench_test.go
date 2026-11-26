@@ -4,13 +4,13 @@ package conformance
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"math"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/journal/journaltest"
 	"github.com/cubbit/dittofs/pkg/journal/journaltest/benchdir"
 )
@@ -70,7 +71,9 @@ var (
 		// on the one stream never rolls and no write waits on a spare; a run of more
 		// than one iteration (-benchtime=Nx) rolls and the wait's spin shows in
 		// allocs/op. Upgrade to a wait for the pool before each roll when a run needs
-		// more than one iteration per journal.
+		// more than one iteration per journal. The streamed burst alone: the mixed
+		// row's 256 MiB stream fills a whole segment, so its first iteration rolls
+		// beside the small writer, as RFC 1 §9.6's J1 sizing has it.
 		burstStreamed: 128 << 20, burstSynced: 16 << 20, mixedStream: 256 << 20,
 		lookups: 100_000, extents: [2]int{1_000, 1_000_000}, warmBytes: 64 << 20,
 		blocks: []string{"4k", "64k", "256k", "1m"}, scalingBlock: 1 << 20,
@@ -209,17 +212,21 @@ func (jbClock) After(d time.Duration) <-chan struct{} {
 }
 
 // jbOpen builds a journal with streams append streams in a fresh directory,
-// waits for its first spares and returns the share's handle.
-func jbOpen(b *testing.B, streams int) *journal.Handle {
+// waits for its first spares and returns the share's handle and the spare
+// pool's wait, which the large-file row's retry needs to tell a slow pool
+// from one that stopped; Open hands it out through WithSparesReady.
+func jbOpen(b *testing.B, streams int) (*journal.Handle, core.SparesWait) {
 	b.Helper()
 
 	dir := filepath.Join(jbBase(b), "journal")
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		b.Fatalf("bench: journal directory: %v", err)
 	}
+	var pool core.SparesWait
 	opts := []journal.Option{
 		journal.WithClock(jbClock{origin: time.Now()}),
 		journal.WithSettings(journal.Settings{Streams: streams}),
+		journal.WithSparesReady(func(w core.SparesWait) { pool = w }),
 	}
 	ctx := b.Context()
 	id, err := journal.Init(ctx, dir, jbInstall, opts...)
@@ -263,7 +270,7 @@ func jbOpen(b *testing.B, streams int) *journal.Handle {
 		b.Fatalf("bench: share: %v", err)
 	}
 	b.Cleanup(func() { _ = h.Close() })
-	return h
+	return h, pool
 }
 
 // jbSink is where a burst's writes go: the journal, or a file of the raw twin.
@@ -275,33 +282,47 @@ type jbSink interface {
 }
 
 type jbJournal struct {
-	b *testing.B
-	h *journal.Handle
+	b    *testing.B
+	h    *journal.Handle
+	pool core.SparesWait
 }
 
-// jbSpareWait bounds one write's whole wait for a spare in the large-file
-// row: a full-size spare is a 256 MiB zero-fill and a directory sync, so even
-// a slow device answers in seconds, and no wait on a spare outlasts minutes.
-// RetrySpare's own bound is a count of yields, gone in a few seconds, and the
-// sustained stream of the large row is refused on every roll, so a correct
-// journal on a slow device would run it out and fail the row; this bound
-// names the wait instead of misreporting it as a pool that never delivered.
-const jbSpareWait = 5 * time.Minute
+// jbJournalOpen builds the journal sink, handle and pool wait together.
+func jbJournalOpen(b *testing.B, streams int) jbJournal {
+	h, pool := jbOpen(b, streams)
+	return jbJournal{b: b, h: h, pool: pool}
+}
 
-// jbRetrySpareTimed retries an op refused for want of a spare until
-// jbSpareWait passes with none delivered.
-func jbRetrySpareTimed(op func() error) error {
-	deadline := time.Now().Add(jbSpareWait)
+// jbRetrySpareSustained retries an op refused for want of a spare, blocking
+// on the pool's own word between attempts instead of spinning: WaitSpares
+// settles nil once the targets are made, and ends the wait — and here the
+// row — with the pool's refusal once it settled short, so a slow pool is
+// waited out and one that stopped says so, in its own error. A second settle
+// short in a row answers the first's retry, as the fixture's own RetrySpare
+// has it: the pass that settled short may have made the one spare the call
+// needed.
+func jbRetrySpareSustained(ctx context.Context, pool core.SparesWait, op func() error) error {
+	var err error
+	short := 0
 	for {
-		err := op()
+		err = op()
 		var ns *journal.NoSpaceError
 		if !errors.As(err, &ns) || ns.Limit != journal.LimitSpare {
 			return err
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("no spare for over %v, last refusal: %w", jbSpareWait, err)
+		wait := pool.WaitSpares(ctx)
+		var refused *journal.NoSpaceError
+		if wait == nil {
+			short = 0
+			continue
 		}
-		runtime.Gosched()
+		if errors.As(wait, &refused) && refused.Limit == journal.LimitSpare {
+			if short++; short == 2 {
+				return fmt.Errorf("the pool settled short twice in a row; the spare never came: %w", err)
+			}
+			continue
+		}
+		return fmt.Errorf("the spare pool's wait ended: %w (last refusal: %v)", wait, err)
 	}
 }
 
@@ -314,7 +335,7 @@ func jbRetrySpareTimed(op func() error) error {
 // the write's, and waited is the wait's own measure.
 func (s jbJournal) writeAll(w int, off int64, p []byte) (took, waited time.Duration, refusals int64, err error) {
 	start := time.Now()
-	err = jbRetrySpareTimed(func() error {
+	err = jbRetrySpareSustained(s.b.Context(), s.pool, func() error {
 		attempt := time.Now()
 		_, e := s.h.WriteAt(s.b.Context(), journaltest.File(w), off, p, 0)
 		took = time.Since(attempt)
@@ -532,14 +553,14 @@ var jbPatterns = []string{"nosync", "sync"}
 // J1: the write path, 16 writers on the one append stream.
 func BenchmarkJ1_WriteSequential(b *testing.B) {
 	jbForEachMode(b, jbPatterns, func(b *testing.B, spec jbSpec) {
-		jbBurst(b, jbJournal{b, jbOpen(b, 1)}, spec)
+		jbBurst(b, jbJournalOpen(b, 1), spec)
 	})
 }
 
 func BenchmarkJ1_WriteRandom(b *testing.B) {
 	jbForEachMode(b, jbPatterns, func(b *testing.B, spec jbSpec) {
 		spec.random = true
-		jbBurst(b, jbJournal{b, jbOpen(b, 1)}, spec)
+		jbBurst(b, jbJournalOpen(b, 1), spec)
 	})
 }
 
@@ -553,7 +574,7 @@ func BenchmarkJ1_WriteRandom(b *testing.B) {
 func BenchmarkJ1_MixedDurability(b *testing.B) {
 	b.ReportAllocs()
 
-	sink := jbJournal{b, jbOpen(b, 1)}
+	sink := jbJournalOpen(b, 1)
 	stream := jbSizes(b).mixedStream
 	b.SetBytes(stream)
 
@@ -608,7 +629,7 @@ func BenchmarkJ1_MixedDurability(b *testing.B) {
 // wait on a point the journal reports; upgrade as spare.go's own note names,
 // if the seam ever carries such a point.
 func BenchmarkJ1_LargeSequential(b *testing.B) {
-	jbLarge(b, jbJournal{b, jbOpen(b, 1)}, jbSizes(b).scalingBlock, jbLargeStream(b))
+	jbLarge(b, jbJournalOpen(b, 1), jbSizes(b).scalingBlock, jbLargeStream(b))
 }
 
 // jbLarge streams span bytes in block through one writer over sink, synced once
@@ -673,7 +694,7 @@ func jbLarge(b *testing.B, sink jbSink, block int, span int64) {
 // each synced at its end, on the journal's default streams.
 func jbScaling(b *testing.B, n int) {
 	sc := jbSizes(b)
-	jbBurst(b, jbJournal{b, jbOpen(b, 16)}, jbSpec{
+	jbBurst(b, jbJournalOpen(b, 16), jbSpec{
 		writers: n, block: sc.scalingBlock, span: sc.burstStreamed / int64(n), syncEnd: true,
 	})
 }
@@ -700,9 +721,9 @@ func jbPointLookup(b *testing.B, n int) {
 	b.ReportAllocs()
 
 	lookups := jbSizes(b).lookups
-	h := jbOpen(b, 16)
+	sink := jbJournalOpen(b, 16)
+	h := sink.h
 	id := journaltest.File(0)
-	sink := jbJournal{b, h}
 	p := make([]byte, jbPointExtent)
 	for i := range n {
 		if _, err := sink.write(0, int64(i)*jbPointStride, p); err != nil {
@@ -743,9 +764,9 @@ func BenchmarkJ3_WarmRead1m(b *testing.B) {
 
 	warm := jbSizes(b).warmBytes
 
-	h := jbOpen(b, 16)
+	h, _ := jbOpen(b, 16)
 	id := journaltest.File(0)
-	sink := jbJournal{b, h}
+	sink := jbJournal{b: b, h: h}
 	p := make([]byte, 1<<20)
 	for off := int64(0); off < warm; off += int64(len(p)) {
 		if _, err := sink.write(0, off, p); err != nil {

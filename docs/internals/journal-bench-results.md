@@ -39,20 +39,21 @@ passes the check, so name the real device. The mount options are empty on macOS.
 
 Free space: a 16-stream journal makes about 8.25 GiB of spares when it opens (16 content, 16
 headroom, one per stream, and one reserve, each a 256 MiB segment), and J2 and J3 open one per
-count, so each needs that much free on the device besides the bytes it writes. The large-file row
-needs its span besides the spares, and its twin prepares the same again zero-filled. Every row
-also stays under the journal's capacity, `MaxBytes`, 80% of the filesystem by default: writes
-past it are refused with the journal's limit, not retried, and nothing in a row offloads,
-releases or repacks — so the 100 GiB override needs a filesystem whose 80% exceeds the span plus
-the spares (well over 140 GiB free at the minimum).
+count, so each needs that much free on the device besides the bytes it writes. The large-file
+row needs its span besides its own journal's three spares (one content spare, one headroom
+segment, one reserve, about 768 MiB at one stream), and its twin prepares the span again
+zero-filled. The bench journal carries no capacity maximum: it names only the streams, the
+settings' `MaxBytes` default — 80% of the filesystem — is not derived for a journal opened
+without one, and zero passes through unbounded, so the real ceiling on every row is free disk,
+not a journal limit.
 
 The large-file row streams 30 GiB at the full sizes, 512 MiB at the small ones. `JOURNAL_BENCH_LARGE_BYTES`
 sizes it for a bigger customer-shaped file instead — `100g` for a 100 GiB one; the value is a
-multiple of 1 MiB and a typo fails the row rather than running a size nobody asked for. Each
-count writes the span through the journal and prepares and writes it again for the twin, so the
-default ten counts carry about 90 GiB of I/O for the 30 GiB row and ten times the span for an
-override — past the suite's 290-minute timeout on a slow device, so run overrides with
-`JOURNAL_BENCH_COUNT=1`.
+multiple of 1 MiB and a typo fails the run rather than running a size nobody asked for. Each
+count writes the span through the journal and then prepares and writes it again zero-filled for
+the twin, three times the span per count: about 900 GiB of I/O over the default ten counts for
+the 30 GiB row, about 3 TiB for a `100g` override — past the suite's 290-minute timeout on a
+slow device, so run overrides with `JOURNAL_BENCH_COUNT=1`.
 
 Notes on what a row measures:
 
@@ -107,11 +108,12 @@ That run is the precondition for any keep-or-change decision below:
 - Write-cache exhaustion, and the rate after it. The large-file row's span is far past any write
   cache, but its MB/s averages the whole stream, cache-absorbed start included, so the rate with
   the cache exhausted is still unreported.
-- More data than the journal holds. No row reaches it: nothing in a row offloads, releases or
-  repacks, and writes past the journal's capacity are refused, not timed. What the large-file
+- More data than the journal holds. No row reaches it: the bench journal sets no capacity
+  maximum, so no write is ever refused for the journal's own limit, and nothing in a row
+  offloads, releases or repacks, so the data one run writes simply grows. What the large-file
   row does time in is the spare refusals of its rolls, `p99-write-waited-µs` and
-  `spare-refusals/iter`; the capacity refusal is a different limit, refused for the whole
-  journal, not retried by any row.
+  `spare-refusals/iter`; a run past a capacity needs a journal opened with one, which no row
+  here is.
 - Submission and completion latency reported apart.
 - Create and overwrite reported apart. The random rows overwrite within a burst and the
   sequential rows create.
