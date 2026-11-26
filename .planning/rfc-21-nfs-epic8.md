@@ -517,7 +517,7 @@ internal/adapter/nfs/
   nfs.go                         T8.1  Handlers.Callbacks; T8.3  the server identity; T8.4  the registry to protocol.New
   callbacks.go, callbacks_test.go T8.1
   wire/
-    clientrec.go                 T8.2  ClientRec, its two arms, EncodeClientRec, DecodeClientRec
+    clientrec.go                 T8.2  ClientRec, its two arms, AppendClientRec, DecodeClientRec
     rpc.go                       T8.5  SEQUENCE's fields in the COMPOUND header
     fuzz_test.go                 T8.2  FuzzClientRec
     testdata/golden/rfc-nfs4-*.hex, knfsd-nfs4-*.hex  T8.2 to T8.10
@@ -574,10 +574,14 @@ internal/adapter/nfs/
 - **Deliverables:** `wire/clientrec.go`:
   ```go
   const ClientRecVersion = 1
-  type ClientRec struct { // xdr union on Kind
-  	Kind uint32 // ClientRecNFS4 or ClientRecNLM
-  	NFS4 *ClientRecNFS4
-  	NLM  *ClientRecNLM
+  const (
+  	ClientRecKindNFS4 = 2
+  	ClientRecKindNLM  = 3
+  )
+  type ClientRec struct { // xdr union on Kind; only the arm Kind names is read
+  	Kind uint32        // ClientRecKindNFS4 or ClientRecKindNLM
+  	NFS4 ClientRecNFS4 // a value, not a pointer: the generator's optional data is a struct only
+  	NLM  ClientRecNLM
   }
   type ClientRecNFS4 struct {
   	Minor        uint32   // 0 or 1: the minor version that confirmed the record
@@ -586,7 +590,10 @@ internal/adapter/nfs/
   	MustEnforce  []uint32 // spo_must_enforce, as sent
   	MustAllow    []uint32 // spo_must_allow, as sent
   	Callback     *CBClient4 // NFSv4.0: cb_client4 and callback_ident
-  	Confirm      *[8]byte   // NFSv4.0: the adapter's confirm (D3), written at the proposal, for a repeated confirm
+  	Confirm      *ClientRecConfirm // NFSv4.0: the adapter's confirm (D3), written at the proposal, for a repeated confirm
+  }
+  type ClientRecConfirm struct {
+  	Verifier [8]byte
   }
   type CBClient4 struct {
   	Program uint32
@@ -600,7 +607,7 @@ internal/adapter/nfs/
   	Server  []byte   // the address its calls arrived on, 4 or 16 bytes: SM_NOTIFY leaves from it
   }
   var ErrRecTruncated, ErrRecCorrupt, ErrRecVersion error // §11.7's reasons
-  func AppendClientRec(dst []byte, r *ClientRec) []byte
+  func AppendClientRec(dst []byte, r *ClientRec) ([]byte, error) // refuses what DecodeClientRec refuses
   func DecodeClientRec(b []byte) (ClientRec, error)
   ```
   with the generated codec, golden files written by hand from the layout, and `FuzzClientRec`
@@ -612,6 +619,8 @@ internal/adapter/nfs/
     over, a kind outside the two, a `mon_name` past 1024 bytes, a `SessionReply` past 256 bytes, a `NetID` past 16 bytes, an `Addr`
     past 64, a bitmap past 3 words, or a `Host` or `Server` of a length other than 4 or 16
     `ErrRecCorrupt`.
+  - `AppendClientRec` refuses, with the same error, a value `DecodeClientRec` would refuse, so no
+    node writes a record another cannot read.
 - **Tests:** at `DecodeClientRec`, which every reader of a record calls: the golden table (catches
   a field moved or dropped, R3); a version 2 byte before a valid body refused (catches a newer
   version read as this one, R2); `FuzzClientRec`, seeded with the golden files, each cut short, one
