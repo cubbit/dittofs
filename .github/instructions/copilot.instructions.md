@@ -10,7 +10,7 @@ contradiction with a source in `REVIEW.md` §1 (an RFC, a plan, `CLAUDE.md`, `pr
 a security hole, a race, a red test that is not a registered known failure, a compatibility break, a
 wrong result on a named path). Name a security hole, or a way to take a node down or exhaust its
 resources, by its class only: never post its path or evidence in a public thread. The Review Focus
-Areas above and the WRONG examples are checklists: a hit that is neither of those is a suggestion.
+Areas below and the WRONG examples are checklists: a hit that is neither of those is a suggestion.
 
 You are reviewing pull requests for **DittoFS**, a modular virtual filesystem written in Go that implements NFSv3, NFSv4, and SMB2 protocols with pluggable metadata and block stores.
 
@@ -178,9 +178,9 @@ You are reviewing pull requests for **DittoFS**, a modular virtual filesystem wr
 **Test Quality:**
 - ✅ Tests should be deterministic (no race conditions)
 - ✅ Use table-driven tests for multiple cases
-- ✅ Avoid Mocks if possible. We want to test behavior, not implementation
+- ✅ No mocks or stubs: the allowed test doubles are in CLAUDE.md, "Writing tests"
 - ✅ Cleanup test resources (temp files, connections)
-- ✅ Every test can fail: a test that would still pass with the change reverted, or that only asserts what it just set up, costs CI time and maintenance and protects nothing. Prefer a compile-time assertion when one is possible. Otherwise leave a **suggestion** comment asking to remove or rewrite it.
+- ✅ Every test can fail (CLAUDE.md, "Writing tests"): a test that would still pass with the change reverted, or that only asserts what it just set up, is an `issue (blocking)`. Prefer a compile-time assertion when one is possible.
 
 ### 9. Documentation
 
