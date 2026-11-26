@@ -2438,7 +2438,7 @@ type ReplayCache interface {
 | --- | --- | --- | --- |
 | Header | RPC call and reply header | RPC header | SMB2 header (and transform header) |
 | Router | (program, version) to table; AUTH_SYS or GSS to `Identity` | version 4 to its one table; the minor version selects each row's `Versions`, and one not served is refused with `ErrVersion` (§4.8) | its one table, the dialect selecting each row's `Versions` (§4.8); session to `Identity` |
-| Security | GSS where the flavour is `RPCSEC_GSS`, else nil | GSS, else nil | signing and encryption |
+| Security | GSS on every connection, passing a call of another flavour unchanged | GSS on every connection, as for NFSv3 | signing and encryption |
 | Flow | nil: the cap of 64 | 4.0: nil; 4.1: the session's slots | credits |
 | Replay | NFSv3: a duplicate-request cache (§11 question 2); the others nil | 4.0: the same cache; 4.1: the slot's reply cache | channel sequence and replay |
 
