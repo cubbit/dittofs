@@ -379,6 +379,32 @@ func TestTrackerIdentityClassOpenBothPlacementsHoldNothing(t *testing.T) {
 	}
 }
 
+// TestRegisteredInAnswersARecordRegisteredBesideItsClass: the class key
+// (identityOf) is Kind, File, Ext, Pair, Seq, Named, Tag, Synced and
+// Superseded — not the segment, not the location — so rec1, which differs
+// from rec0 only by Seg and Loc, is one record in two places. A copy landed
+// while its original still lives elsewhere is a registered record of its own
+// segment, weightless as it is, and the walk that scopes to the segment's
+// files table must reach it.
+func TestRegisteredInAnswersARecordRegisteredBesideItsClass(t *testing.T) {
+	f := newFixture(t)
+	tr := New(f.ix, nil)
+	a, b := f.seg, f.takeIn(t)
+	rec0 := Rec{
+		Kind: format.KindDelete, File: fid(31), Seg: a,
+		Pair: index.Numbers{Version: ver(5), Seq: 6}, Seq: 6, Tag: tag,
+		Loc: at64(a),
+	}
+	rec1 := rec0
+	rec1.Seg, rec1.Loc = b, at64(b)
+	tr.Register(rec0)
+	tr.Register(rec1)
+	got := tr.registeredIn(b)
+	if len(got) != 1 || got[0] != rec1 {
+		t.Fatalf("registeredIn(B) = %v, want [%v]: the copy registered beside its class's original", got, rec1)
+	}
+}
+
 // TestTrackerIdentityClassOnePlacementTwice: two registrations of the same
 // Rec — one placement registered twice — are one placement by identity, so
 // the class's weight is the placement's registration count and the segment

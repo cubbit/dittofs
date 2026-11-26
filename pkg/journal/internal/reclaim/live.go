@@ -429,16 +429,17 @@ func (t *Tracker) fireCrossed(crossed []core.SegmentID) {
 	}
 }
 
-// count raises rec's segment count and files table: the half of a
-// registration that precedes its registry entry. The raise errs on the held
-// side — a Held read before the registry holds the registration must answer
-// by what is held — and runs only for the registrations the class hold rule
-// gives weight to, so a registration of a placement in one class of two or
-// more raises nothing it would have to take back.
+// count raises rec's segment count: the half of a registration that
+// precedes its registry entry. The raise errs on the held side — a Held read
+// before the registry holds the registration must answer by what is held —
+// and runs only for the registrations the class hold rule gives weight to, so
+// a registration of a placement in one class of two or more raises nothing it
+// would have to take back. The segment's files table is not raised here:
+// addLocked enters it for every registration, so the table is complete over
+// registered records while the weight is not.
 func (t *Tracker) count(rec Rec) {
 	st := t.entry(rec.Seg)
 	st.mu.Lock()
-	st.files[rec.File] = struct{}{}
 	st.live.Add(1)
 	st.mu.Unlock()
 }
@@ -467,6 +468,12 @@ func (t *Tracker) addLocked(rec Rec) (crossed []core.SegmentID) {
 	if t.identities == nil {
 		t.identities = make(map[recId]map[core.SegmentID]map[Rec]struct{})
 	}
+	// The files table names every file the segment holds a registered record
+	// of, weightless or not, so a walk scoped to it reaches them all.
+	st := t.entry(rec.Seg)
+	st.mu.Lock()
+	st.files[rec.File] = struct{}{}
+	st.mu.Unlock()
 	id := identityOf(rec)
 	if t.identities[id] == nil {
 		t.identities[id] = make(map[core.SegmentID]map[Rec]struct{})
