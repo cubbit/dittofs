@@ -551,9 +551,9 @@ the programme's other RFC edits are.
    5, 8, 9 and 16, the FAQ and the RFC 2 learning deck. Restating them is about three more
    man-days, a contingency not in the total, and the §5.2 choice is the user's when it arises. At 256 KiB none of
    this applies.
-3. **`Target`'s key is not this epic's.** E3's D8 uses the provisional `carver.target`, pending the
-   user's answer in the RFC 2 plan's §6 point 2; this epic changes the section's default, never its
-   key.
+3. **`Target`'s key is not this epic's.** E3's D8 names it `carver.target`, the user's decision of
+   2026-11-26, which closes the RFC 2 plan's §6 point 2; this epic changes the section's default,
+   never its key.
 4. **The sweep's host.** The in-memory store holds each run's objects, about the largest corpus file
    per composition with one composition alive at a time: the 1.4 GB tar, or the VM image if it is
    larger (its zero runs become zero refs and store nothing, but the journal takes the whole file).
