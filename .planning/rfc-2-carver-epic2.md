@@ -86,7 +86,8 @@ the corpus fetch, cache and its layout; the import-test rows of the packages thi
   Track B.
 - **E5**, epic 5, the block assembler. Track C.
 - **E7**, epic 7, E2E green: the benchmarks on the reference box, the second architecture and the
-  full-size runs, in the `carver` group's `carver-bench` suite.
+  full-size fault sweep, in the `carver` group's `carver-bench` and `carver-fault-sweep` suites
+  (E7's D8).
 - **S1**, the carver interface agreed: the end of E1.
 - **S2**, reference and goldens in place: the end of this epic, where E3, E4 and E5 start.
 - **The RFC 5 plan**, [`rfc-5-transforms-plan.md`](rfc-5-transforms-plan.md): its epic 2 adds
