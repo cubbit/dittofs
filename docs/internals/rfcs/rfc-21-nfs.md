@@ -2082,10 +2082,17 @@ Authentication and principal mapping are
 - a context is keyed by its handle, not by the TCP connection that created it,
   so a reconnect or a trunked connection keeps using it;
 - the context table is bounded: at most 10 000 contexts per gateway node,
-  charged to [RFC 24](rfc-24-resources.md#5.1%20No%20queue%20is%20unbounded)'s
-  connection-state pool. When it is full, the same principal's least recently
-  used context is evicted first, then the least recently used overall, so one
-  principal looping `INIT` evicts only its own. A context idle 8 hours is
+  each charged to
+  [RFC 24 §5.1](rfc-24-resources.md#5.1%20No%20queue%20is%20unbounded)'s
+  connection-state pool on its own, outside any connection's fixed cost. An
+  `INIT` token past 64 KiB is `RPCSEC_GSS_CREDPROBLEM` before anything is
+  charged; otherwise the context is charged before the ticket is decoded, at
+  an upper bound from the token's length, and once built the charge is
+  trimmed to what it holds with `Reservation.Shrink`
+  ([RFC 24 §2.5](rfc-24-resources.md#2.5%20Memory%20is%20reserved%20before%20it%20is%20used)).
+  An `INIT` the pool refuses is `RPCSEC_GSS_CREDPROBLEM`, evicting nothing.
+  When it is full, the same principal's least recently used context is
+  evicted first, then the least recently used overall, so one principal looping `INIT` evicts only its own. A context idle 8 hours is
   evicted; only a call whose header MIC verified touches its idle time;
 - `RPCSEC_GSS_DESTROY` needs a valid header MIC and an in-window sequence
   number, since handles travel in the clear;

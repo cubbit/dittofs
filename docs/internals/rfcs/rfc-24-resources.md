@@ -425,10 +425,11 @@ var ErrTooLarge = errors.New("resources: charge past the ceiling")
 // WaitBudget, then zeroes the Reservation, so a second Release does nothing.
 type Reservation struct{ /* unexported: the budget it came from, the key, the bytes */ }
 func (r *Reservation) Release()
-// Shrink lowers the Reservation to n bytes and returns the rest to its budget,
-// and to its key's count on a WaitBudget; a negative n is taken as zero, and an
-// n at or above what it holds changes nothing, so a Reservation never grows. It
-// stays live, Shrink(0) included, until its Release.
+// Shrink lowers a Budget's Reservation to n bytes and returns the rest to its
+// budget; a negative n is taken as zero, and an n at or above what it holds
+// changes nothing, so a Reservation never grows. It applies to a Budget's
+// Reservation only, so neither a WaitBudget's waiters nor §4.2's share count
+// is involved. Release is still required; after Shrink(0) it returns nothing.
 func (r *Reservation) Shrink(n int64)
 
 // Budgets is what an adapter is handed (RFC 20 §3.4): the four budgets on the
@@ -482,7 +483,7 @@ func Join(n int, bufs ...*Buf) *Buf // a chain's record (RFC 20 §4.7): an empty
 - **A charge taken at an upper bound is trimmed in place.** `Shrink` is for a
   caller that must reserve before it knows the size and learns it after: RFC
   21's RPCSEC_GSS context table charges a new context at its largest size, then
-  trims the charge to what the context holds. A `Release` followed by a
+  trims the charge to what the context holds ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)). A `Release` followed by a
   `Reserve` could not do this, since the second charge can be refused or wait
   after the first is gone, losing a context the table already admitted.
 - **A chain's replies become one record without a new charge.** `Join` moves
@@ -511,7 +512,11 @@ func Join(n int, bufs ...*Buf) *Buf // a chain's record (RFC 20 §4.7): an empty
   > memory past *L*.
 - **Charged, not measured.** No pool reads the heap to decide. A charge is
   exact for buffers, and a fixed per-kind cost for state (§4.4, §4.6), which
-  §8 measures.
+  §8 measures. An RPCSEC_GSS context is the one exception: the node's context
+  table, not a connection, holds it, so it is charged per context to the
+  connection-state pool, outside any connection's fixed cost, at an upper
+  bound from its `INIT` token's length, and trimmed with `Shrink` once the
+  context is built ([RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS), §5.1).
 - Every reservation **MUST** be released on every path, a cancelled context and
   a panic included. A pool's reserved bytes are exported (§10), and a pool that
   reads above zero on an idle node is a leak.
@@ -1043,7 +1048,10 @@ three-quarter cap per key.
 **Each connection is charged a fixed cost** to the connection-state pool at
 accept — its reader's and writer's state, the reader's small-class read buffer
 ([RFC 20 §6.8](rfc-20-adapters.md#6.8%20Buffer%20pools%2C%20in%20code)) included, its ID tables when empty, its
-security context — proposed at 64 KiB and settled by §8's M2. A connection that
+transport encryption — proposed at 64 KiB and settled by §8's M2. An
+RPCSEC_GSS context is not in it: a context outlives the connection that made
+it and several may use it, so the node's context table charges each one to
+this pool on its own (§2.5, [RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS)). A connection that
 cannot be charged is closed at accept, before any byte is read
 ([RFC 20 §3.2](rfc-20-adapters.md#3.2%20A%20connection%27s%20lifecycle)).
 
@@ -1171,6 +1179,7 @@ from here. The inventory, from the socket down:
 | --- | --- | --- | --- |
 | listen backlog | the system's maximum | [RFC 20 §6.7](rfc-20-adapters.md#6.7%20TCP) | the kernel refuses |
 | connections | `connection_limit`, a quarter per address | §4.4 | closed at accept |
+| RPCSEC_GSS contexts | 10,000 per node, each charged to the connection-state pool, at an upper bound trimmed once built (§2.5) | [RFC 21 §10](rfc-21-nfs.md#10.%20RPCSEC_GSS) | the same principal's least recently used context is evicted, else the least recently used overall; an `INIT` the pool refuses is `RPCSEC_GSS_CREDPROBLEM` |
 | socket receive buffer | the kernel's autotuning | [RFC 20 §6.7](rfc-20-adapters.md#6.7%20TCP) | TCP window closes |
 | requests read on one connection | its flow control: slots, credits, 64 | [RFC 20 §6.3](rfc-20-adapters.md#6.3%20Flow%20control%20is%20the%20protocol%27s%20own), [§3.4](#3.4%20The%20per-connection%20cap%20for%20protocols%20without%20flow%20control) | not read |
 | readers waiting for receive bytes | one per connection | §3.2, §4.1 | turns |
