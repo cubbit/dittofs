@@ -356,7 +356,7 @@ fault transport is epic 3's.
 | 4 | **S3 data path, errors and client** ⛔ | the client and constructor, put, get, delete, list, control objects, the total error table, `remote_` metrics | 7 | 15.5 | B | 5, 6 (last subtask) |
 | 5 | **Capability check and health** ⛔ | Appendix C.4 at open, the setting judgements, both probes, `immutable` refused | 6 | 12 | C | 7, RFC 8 offload plan epic 21 |
 | 6 | **Block codec** ⛔ | format, encode with declared lengths or a measuring pass, verified reads, `codec.Store`, the version gate, fuzz, `codec_` metrics | 8 | 16.5 | A | RFC 8 offload plan epic 21 |
-| 7 | **Integration: keys and observability** | RFC 13's settings rows, metric definitions and the alert rule as plain values; the recorders and conversions the content wiring builds; the refusal as a field error | 6 | 8 | team | 9 |
+| 7 | **Integration: keys and observability** | RFC 13's settings rows, metric definitions and the alert rule as plain values; the recorders and conversions the content wiring builds; the refusal as a field error | 6 | 8 | team | 9, RFC 8 offload plan epic 21 |
 | 8 | **Integration: the client limit** 🔀 | the limit derived from the callers, on RFC 8's client holding | planned after S7 | planned after S7 | team | — |
 | 9 | **E2E green** | the nightly service row, the real-bucket rows, §7.5's benchmarks, fuzz targets in the `fuzz` suite | 6 | 10.5 | team | — |
 | | **Total** | | **48** | **85** | | |
@@ -401,6 +401,7 @@ flowchart TD
   E4 & E5 & E6 --> RS3(["R4-S3 store and codec complete"]):::sync
   RS3 -- "observability half" --> E7
   RS3 --> R8(["RFC 8 offload plan epic 21"]):::sync
+  E7 --> R8
   S7(["RFC 8 offload plan S7 store adapter and node composition built"]):::sync --> E8["E8 Integration: the client limit 🔀"]:::sync
   RS3 --> E8
   E7 --> E9["E9 E2E green"]
@@ -453,6 +454,8 @@ same numbers for other points.
   node's content wiring and composes the S3 store: epic 4's constructor runs no capability check
   until epic 5 inserts it (D10), so epic 21 waits for E5 as well as E6. Its epic 15 runs over the
   in-memory components and does not wait.
+- **E7** blocks RFC 8 offload plan epic 21, which registers the remote-store sections,
+  recorders, collectors and alert rule epic 7 builds (§1.5 rule 3).
 - **E7** blocks E9. E8 blocks nothing of this plan: the §4.10 rows are its own.
 - **RFC 5 plan epic 3 (external):** the codec cannot round-trip a body until RFC 5's chain
   writes the envelope, even for an empty chain (RFC 5 §3.1's `Attempt.Encode`, as the RFC 5
@@ -497,7 +500,7 @@ pkg/remote/                            E1: RFC 4 §4.1's contract for v1.1, pure
 pkg/remote/remotetest/                 E2: the conformance suite (§7.1's shared rows), leak checks
 pkg/remote/memory/                     E2: the in-memory store, its constructor (D4), its load record
 pkg/remote/s3/                         E4: client, constructor, data path, error table, layout
-  check.go settings.go health.go       E5: Appendix C.4, C.1's judgements, probes
+  check.go judge.go health.go          E5: Appendix C.4, C.1's judgements, probes
   record.go                            E4: the recorder it declares (D12)
   settings.go                          E7: the store configuration's rows, plain values
   *_test.go                            E4, E5: the rows marked T, over s3fault and LocalStack
