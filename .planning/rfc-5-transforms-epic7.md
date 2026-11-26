@@ -15,7 +15,7 @@ transport moved out of `pkg/keyprovider`), its §1.4 catalogue's KMIP rows, its 
 13 plan's deferral-ledger row on `kmip_fake_test.go`, which this epic owns. The code lands on
 `feat/storage-v2`, and the paths below are paths there.
 **Track:** B.
-**Epic 7 estimate: 3 subtasks, 9.25 man-days.**
+**Epic 7 estimate: 3 subtasks, 9.5 man-days.**
 **Depends on:** **S2**: from E2, `transformtest.LoadVectors` and its vector file with the key
 wrap AAD vector (its R27), and the vector script's Go recompute test. From E1, `keys.MaterialID`,
 `keys.Provider`, the material errors and the import allowlist naming `internal/kmip` and
@@ -52,8 +52,8 @@ KMIP through one transport, and the canned KMIP server its tests used goes.
 - a provider over the KMIP custody opens against the harness's server, unwrapping each namespace
   key through it, and a body sealed under one of them round-trips through the chain; the server's
   own log shows no Get during the open (T7.3);
-- every stored wrap of a key service is `0x02` ‖ the master-key ID `<endpoint>/<uid>` ‖ the wrap
-  bytes of D2, and equals the golden vector for the vector's inputs; the wrap bytes open under
+- every stored wrap of a key service is `0x02` ‖ the master-key ID `<name>/<uid>` ‖ the wrap
+  bytes of D2, `<name>` the configured server name or, when none is set, the endpoint (D3), and equals the golden vector for the vector's inputs; the wrap bytes open under
   the master key with exactly the key wrap AAD (T7.2, T7.3);
 - a missing key, an unreachable server, an invalid or expired certificate and a revoked key each
   fail the open with `ErrMaterialUnavailable`, never destroyed, never a fallback (T7.3);
@@ -229,8 +229,9 @@ exposure is and binds no code here. B.4's rows past the first two are E6's and E
   and is withdrawn if a profile ever returns its wrap as one opaque blob. Prior art: Vault's
   transit ciphertexts, prefixed `vault:v1:` so a format change is a new version (from memory);
   AWS KMS's opaque ciphertext blob (from memory).
-- **D3, a master key is configured by its KMIP Name; its version-qualified ID is `<endpoint>/<uid>`
-  (pending the user's answer, §9).** `KMIPConfig.Key` is a KMIP Name attribute value, the alias a
+- **D3, a master key is configured by its KMIP Name; its version-qualified ID is `<name>/<uid>`,
+  `<name>` a configured server name that defaults to the endpoint (the user's decision,
+  2026-11-26).** `KMIPConfig.Key` is a KMIP Name attribute value, the alias a
   rotation retargets. The primary-version read is a Locate for an Active symmetric key of that
   Name: one UID is the primary version; none, or more than one, fails the read, naming the key
   and the count. A wrap reads the primary version first, so a wrap after a retarget reports the
@@ -238,17 +239,27 @@ exposure is and binds no code here. B.4's rows past the first two are E6's and E
   is immutable in KMIP (a ReKey makes a new object), but it is unique only within one server, and
   PyKMIP numbers them `1`, `2`, …: E8's marking of "every key record whose stored wrap names that
   master key's ID, in every namespace" would then mark another configuration's records under
-  another server's key `1`. So the ID is the configured endpoint, `/`, and the UID, the full
-  resource name of the key version that RFC 5 asks for. An endpoint respelled (`localhost` for
-  `127.0.0.1`) makes the primary version differ from the records' IDs, which E8 treats as a
-  rotation and re-wraps under the same key: a cost, not a loss. Both reads join the unexported `custody` interface T7.2 extracts, as E6's D3 names
+  another server's key `1`. So the ID is a server name, `/`, and the UID, the full resource name
+  of the key version that RFC 5 asks for: `KMIPConfig.ServerName`, filled from E9's
+  `kmip.server_name`, or the configured endpoint when it is empty. Example: `kms-a/3` with the
+  name set, `127.0.0.1:5696/3` without. The name exists so that an endpoint change that reaches the
+  same server's keys, a DNS rename or a failover to another node of a KMIP cluster holding the same
+  UIDs, leaves every record's ID as it is; with no name set, such a change, or an endpoint respelled
+  (`localhost` for `127.0.0.1`), makes the primary version differ from the records' IDs, which E8
+  treats as a rotation and re-wraps under the same key: a cost, not a loss. A name is the
+  operator's claim that the endpoints it is given reach one server's key set: two servers given one
+  name collide as bare UIDs would, so the `decision:` marker at the ID's writer says so. A changed
+  name is a rotation too (D10). Rejected: the bare UID, as RFC 13's `KeyUID` names it, unique
+  within one server only; and the endpoint alone, which re-wraps every record on any failover.
+  Both reads join the unexported `custody` interface T7.2 extracts, as E6's D3 names
   it: `kind`, `wrap`, `unwrap`, `primary(ctx) (masterKeyID []byte, err error)` and `state(ctx,
   masterKeyID []byte) error`, the last nil for active and `keys.ErrMaterialDestroyed` or
   `keys.ErrMaterialUnavailable` otherwise, so the interface needs no type of `internal/kmip`; the
   key file answers its one master key ID and nil, and `runCustody` holds both custodies to the same
   rows. An interface lands now, not in E6, because the key service is its second implementation. A
-  `decision:` marker at the Locate check names the rule. Prior art: KMIP 1.4's ReKey and Locate
-  (from memory); AWS KMS's key ARN, a key ID qualified by region and account (from memory).
+  `decision:` marker at the Locate check names the rule, and one at the ID's writer names the
+  name's default and its collision ceiling. Prior art: KMIP 1.4's ReKey and Locate (from memory);
+  AWS KMS's key ARN, a key ID qualified by region and account (from memory).
 - **D4, the key-state table has three classes, and only the state read reports destroyed.**
   `internal/kmip` maps a state and the error of its read to active, destroyed or unavailable
   (R10), as one table both providers use: `pkg/keyprovider`'s retired-key loader takes its
@@ -299,19 +310,21 @@ exposure is and binds no code here. B.4's rows past the first two are E6's and E
 
 - **D9, the client key arrives as PEM bytes; the certificate and the CA stay paths.** E9 (#5993)
   resolves the client key from `remote.kmip_client_key`, a secret reference of kind `SecretKey`
-  (pending the user's answer on E9's key names), into bytes, so `KMIPConfig.ClientKey` holds the
+  (E9's key, which RFC 13 Appendix B does not list yet, E9's §9), into bytes, so `KMIPConfig.ClientKey` holds the
   key's PEM and never a path to a file left on disk. `internal/kmip.TLSConfig` takes the three PEMs
   as bytes, built with `tls.X509KeyPair`; `pkg/keyprovider` reads its files and passes their bytes,
   its exported surface unchanged. The certificate and the CA are not secret, so they stay paths
   read at construction and at `reconfigure`. No marker: nothing is skipped. Prior art: Go's
   `tls.X509KeyPair`, the in-memory form of `LoadX509KeyPair` (checked).
-- **D10, a running custody takes a new endpoint, certificates and timeout, never a new key.** E9's
+- **D10, a running custody takes a new endpoint, server name, certificates and timeout, never a new
+  key.** E9's
   remote section is live (RFC 13 Appendix B), and its apply calls each provider's `Reconfigure`
   (E6's R53); a new master key is refused there (E9's D2), so `reconfigure` refuses a
   changed `Key` too and changes only how the server is reached. It builds and checks the new
   client before the swap, so a bad certificate leaves the running one serving. A `decision:` marker
   at the swap says a call in flight finishes on the old client and that the change of master-key
-  ID an endpoint change causes is a rotation E8 runs, not a loss. Prior art: Go's
+  ID a changed server name, or an endpoint change with no name set, causes is a rotation E8 runs,
+  not a loss. Prior art: Go's
   `tls.Config.GetClientCertificate`, which swaps a certificate on a live client (from memory).
 
 ## 5. Target tree
@@ -424,7 +437,7 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
 
 ### T7.2 The key-service custody
 
-**Subtask T7.2 estimate: 3.75 man-days.**
+**Subtask T7.2 estimate: 4 man-days.**
 
 - **Track:** B. **Depends on:** T7.1, T6.3.
 - **Covers:** R1, R2, R3, R4, R6 (the vector), R7 (the marker), R8, R9, R10 (the read), R11, R15,
@@ -434,6 +447,7 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
     ```go
     type KMIPConfig struct {
         Endpoint   string        // host:port
+        ServerName string        // qualifies the master-key ID (D3); empty: Endpoint
         Key        string        // the KMIP Name of the master key (D3)
         ClientCert string        // path to the client certificate's PEM
         ClientKey  []byte        // the client key's PEM, resolved from remote.kmip_client_key (D9)
@@ -453,12 +467,14 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
     refuses a changed `Key`, a missing field, or a certificate, key or CA that does not load,
     leaving the running client in force; otherwise it builds the new `*kmip.Client` and swaps it in
     under the custody's lock, so a call in flight finishes on the old one and the next uses the new.
-    An endpoint changed this way changes the master-key ID the next primary-version read reports
-    (D3), which E8 treats as a rotation. Consumed by `Reconfigure` and, through it, E9.
+    A changed `ServerName`, or an endpoint changed with no `ServerName` set, changes the
+    master-key ID the next primary-version read reports (D3), which E8 treats as a rotation; an
+    endpoint changed under a set `ServerName` does not. Consumed by `Reconfigure` and, through it, E9.
   - The KMIP rules of E6's `ValidateConfig(cfg Config) error` (its R52), which reads no file and
     dials nothing: a configuration naming both a key file and `KMIP.Endpoint` is refused; with
     `KMIP.Endpoint` set, an endpoint that is not `host:port`, an empty `Key`, `ClientCert` or
-    `ClientKey`, a `ClientKey` that is not one PEM block, and a negative `Timeout` are each refused,
+    `ClientKey`, a `ClientKey` that is not one PEM block, a `ServerName` that is not printable
+    ASCII, and a negative `Timeout` are each refused,
     naming the field. `reconfigure` and the custody's constructor run the same rules first, then
     load the files. Consumed by E9's settings validation.
   - `custody.go`: the unexported `custody` interface of D3, extracted over E6's key-file wrap and
@@ -473,8 +489,8 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
   - The custody, unexported, implementing that interface with `kind` `0x02`: wrap (the
     primary-version read, then an Encrypt under that UID with AES, GCM, a 16-byte tag, Random IV
     and the key wrap AAD as KMIP 1.4's Authenticated Encryption Additional Data, R4), the stored
-    wrap through E6's codec with the master-key ID `<endpoint>/<uid>` of the UID the response
-    names, refused if not ASCII or too long (R1, R3); unwrap (the UID taken from after the last `/`
+    wrap through E6's codec with the master-key ID `<name>/<uid>` of the UID the response
+    names, `<name>` the `ServerName` or, when empty, the `Endpoint`, refused if not ASCII or too long (R1, R3); unwrap (the UID taken from after the last `/`
     of the stored ID, a Decrypt under it with the fields of D2, R2); the primary-version read (D3,
     D8); the state read (`internal/kmip.State` and `Classify`, R10).
   - The Encrypt, Decrypt and Locate request and response payloads, unexported structs with `ttlv`
@@ -484,7 +500,8 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
     of D8 with its `decision:` marker; the error mapping (any failure of a wrap, an unwrap or a read
     is `keys.ErrMaterialUnavailable`, wrapped with the master-key ID, the endpoint and the KMIP
     result codes; never `ErrMaterialDestroyed`, D4); the wrap's `decision:` that it raises no wrap
-    count (R7).
+    count (R7); the ID's writer with D3's `decision:` on the name's default and its collision
+    ceiling.
   - `FuzzKMIPWrap` over the wrap-bytes reader, seeded with the vector's bytes and truncations of
     them: no panic; the IV, tag and data it returns lie inside the input; and an accepted input
     re-encodes through D2's writer to exactly the input bytes, since the join has no padding or
@@ -505,11 +522,17 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
     endpoint (D8).
   - `reconfigure` refuses a changed `Key`, an empty endpoint and a client key that does not parse,
     and the custody's client is the old one after each refusal.
+  - The master-key ID is `kms-a/3` for `ServerName` `kms-a` and UID `3`, and `127.0.0.1:5696/3`
+    for an empty `ServerName` at that endpoint; after a `reconfigure` to another endpoint it is
+    still `kms-a/3` with the name set, and the new endpoint's without it.
   - `ValidateConfig` refuses each KMIP rule's case, naming its field, with no file present and no
     listener (catches a check that reads or dials, R52's "without reading a file or dialling").
 - **Tests:**
   - The vector (catches a field order, a length width or a byte order apart from D2 and RFC 5's
-    layout, a missing kind byte, an ID without its endpoint, R1, R3, R6).
+    layout, a missing kind byte, an ID without its qualifier, R1, R3, R6).
+  - The ID's qualifier over a set and an empty `ServerName`, before and after an endpoint change
+    (catches a default not applied, a name ignored, or a failover that re-qualifies every record,
+    D3).
   - The reader over a truncated join, an IV length past the end, a body shorter than its tag, an
     unknown version: each refused, no panic, under the fuzzer too (catches a decoder sized by a
     claim, R2).
@@ -524,8 +547,8 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
     interface), and `primary` the ID every wrap reports with `state` nil (catches a key file that
     answers no primary, which E8's ticker would read as a rotation, R16).
   - No double: the round trips are T7.3's, against the real server.
-- **Rules:** rule 2: `FuzzKMIPWrap` and the suites line. rule 9: D2's, D3's, D4's and D8's markers,
-  and R7's. rule 11: `KMIPConfig` and the `Config.KMIP` field are the only new exports.
+- **Rules:** rule 2: `FuzzKMIPWrap` and the suites line. rule 9: D2's, D3's (the Locate check and
+  the ID's writer), D4's and D8's markers, and R7's. rule 11: `KMIPConfig` and the `Config.KMIP` field are the only new exports.
 
 ### T7.3 The custody against the real server
 
@@ -580,7 +603,10 @@ docs/internals/rfcs/rfc-5-transforms.md  T7.2  §8.3's suites line names the two
     key (signed by the harness CA) and a new timeout; the next unwrap succeeds over the new client,
     and a reconfigure to a certificate the server refuses is itself refused, with unwraps still
     succeeding on the old client (catches a swap applied before it is checked, or one that drops
-    the running client, D10).
+    the running client, D10). With `ServerName` set, a reconfigure from `127.0.0.1` to `localhost`
+    at the same port leaves the primary-version read's ID unchanged and the records unwrapping;
+    with it empty, the read reports the new endpoint's ID (catches a name that does not hold the ID
+    across a failover, D3).
   - After the three namespaces' creation, the `badgerkv` store's keys under the `MKW` kind scanned:
     none for the KMIP master key (catches a key-service wrap counted against the key file's bound,
     R7).
@@ -627,21 +653,16 @@ waits on E6's key-file wrap, which it moves behind the interface. T7.3 holds the
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
 | 1 | T7.1 | 2 | S2 | the move and the canned server's retirement, which touch RFC 13's package and nothing of RFC 5's; open alongside E6's work |
-| 2 | T7.2, T7.3 | 7.25 | PR 1, E6's T6.3, T6.5, T6.7 and T6.8 | the custody and every row that holds it to the real server: the custody lands with its tests |
+| 2 | T7.2, T7.3 | 7.5 | PR 1, E6's T6.3, T6.5, T6.7 and T6.8 | the custody and every row that holds it to the real server: the custody lands with its tests |
 
 A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **`remote.kmip_client_key` is E9's proposed key name, pending the user's answer on E9's key
-  names (#5993).** D9 reads the resolved bytes whatever the key is called; only E9's row and the
-  content wiring change if the name does.
-- **The master-key ID format, pending the user's answer.** D3 writes `<endpoint>/<uid>` in place,
-  the recommended option, since every stored wrap carries it from the first namespace and a change
-  later is a re-wrap of every record. The other option is the bare UID, which RFC 13's `KeyUID`
-  uses: shorter, but unique only within one server, so E8's destroy marking across every
-  namespace could mark another configuration's records under another server's key of the same
-  UID (PyKMIP numbers them from 1). Example: `127.0.0.1:5696/3` against `3`.
+- **`remote.kmip_client_key` and `kmip.server_name` are E9's keys (#5993)**, which RFC 13
+  Appendix B does not list yet (E9's §9). D9 reads the resolved bytes and D3 the name whatever the
+  keys are called; only E9's rows and the content wiring change if a name does. E9's
+  `materials.kmip` block gains `server_name` for D3, in #5993.
 - **Which side owns what, with E6** (#5976). E6 owns the stored-wrap codec, the key-file wrap
   and unwrap as concrete code, `Config`, `Deps`, `New`, `Open` and every provider-level rule, its
   escrow rule and its `storage`-key check keyed on the stored wrap's kind so that kind `0x02` skips
@@ -671,8 +692,8 @@ A suggestion only: one pull request per subtask works as well.
 - **For RFC 5's author:** Appendix B.1 says "a profile for a service MUST name which of the two it
   uses", and that the wrap bytes are "exactly what the service returned, never parsed". The KMIP
   profile here (associated data as bytes, the wrap bytes as D2's join of the Encrypt response's
-  three fields, a master key named by its Name and identified by `<endpoint>/<uid>`) is written at
-  `kmip.go`; whether RFC 5 carries it in Appendix B.1 is the author's call, as is whether D6's
+  three fields, a master key named by its Name and identified by `<name>/<uid>`, the name
+  defaulting to the endpoint) is written at `kmip.go`; whether RFC 5 carries it in Appendix B.1 is the author's call, as is whether D6's
   local open meets §8.1 T22's "a fake service that records the authenticated data it is sent"
   (the RFC 5 plan's O5).
 - **The RFC 13 plan's ledger row** on `kmip_fake_test.go` is discharged by D5 when T7.1 lands:
@@ -682,10 +703,10 @@ A suggestion only: one pull request per subtask works as well.
   whole ambiguous-Locate row, and the "no record is re-wrapped" and `material_unavailable` clauses
   need E8's ticker (above); its §4.3 simplification on one TLS connection per call is carried at
   `internal/kmip`'s `Do`, not in the provider; its O5's recording wrapper is replaced by D6.
-- **The estimate** is 3 subtasks and 9.25 man-days, against the RFC 5 plan's 4 and 7: the canned
+- **The estimate** is 3 subtasks and 9.5 man-days, against the RFC 5 plan's 4 and 7: the canned
   server's cases are split into pure tests and integration rows rather than moved as they are
   (D5), the harness gains the server's log and the CA key, the custody interface and its suite are
   extracted here over both custodies rather than taken from E6, the KMIP part of the running
-  provider's reconfiguration is added for E9 (D10), and the live rows of the plan's two last subtasks are one subtask. The
+  provider's reconfiguration is added for E9 (D10), the master-key ID's server name is added (D3), and the live rows of the plan's two last subtasks are one subtask. The
   least certain is T7.3, whose certificate rows depend on how PyKMIP's TLS layer reports an expired
   client certificate, and whose audit depends on PyKMIP's log lines.
