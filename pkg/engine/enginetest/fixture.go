@@ -813,17 +813,47 @@ func (f *Fixture) Reinit() journal.JournalID {
 // variants.
 func (f *Fixture) Crash(opts ...kit.CrashOption) {
 	f.t.Helper()
+
+	if refused := f.CrashOrPlain(opts...); refused != nil {
+		f.t.Fatalf("fixture: crash: %v", refused)
+	}
+}
+
+// CrashOption is a variant of a crash.
+type CrashOption = kit.CrashOption
+
+// The variants a crash takes, which choose the unsynced writes it keeps: the
+// disk kit's options of the same names, for tests that may not import the kit.
+var (
+	Keeping   = kit.Keeping
+	Torn      = kit.Torn
+	Reordered = kit.Reordered
+)
+
+// CrashOrPlain is Crash, except that when the disk refuses opts it crashes
+// with none, which keeps no unsynced write, and returns the refusal.
+func (f *Fixture) CrashOrPlain(opts ...kit.CrashOption) (refused error) {
+	f.t.Helper()
 	if len(opts) > 0 {
 		f.journalOnly("a crash variant")
 	}
 	f.crashed.Store(true) // before the crash, so nothing the old engine runs meanwhile reaches the store
 	f.kv.left.Store(-1)
 	f.kv.setting.Store(nil)
-	if err := f.Seam.Crash(opts...); err != nil {
+	err := f.Seam.Crash(opts...)
+	if errors.Is(err, kit.ErrCrashRefused) {
+		refused = err
+		err = f.Seam.Crash()
+	}
+
+	if err != nil {
 		f.t.Fatalf("fixture: crash: %v", err)
 	}
+
 	f.stop(false)
 	f.start()
+
+	return refused
 }
 
 // File creates a regular file in the share's root and returns its handle and

@@ -556,11 +556,13 @@ func (faultAnswer) String() string {
 // size the store has committed for each, and, after a clean stop, what that
 // stop had left for a replay.
 type restartedAnswer struct {
-	err    error
-	files  [fuzzFiles]string
-	gone   [fuzzFiles]bool
-	sizes  [fuzzFiles]int64
-	replay [fuzzFiles]int
+	// variant is empty for a plain crash and for a restart.
+	variant string
+	err     error
+	files   [fuzzFiles]string
+	gone    [fuzzFiles]bool
+	sizes   [fuzzFiles]int64
+	replay  [fuzzFiles]int
 }
 
 func (a restartedAnswer) String() string {
@@ -568,8 +570,13 @@ func (a restartedAnswer) String() string {
 		return a.err.Error()
 	}
 
-	return fmt.Sprintf("%s, released %v, committed sizes %v, left to replay %v",
+	answer := fmt.Sprintf("%s, released %v, committed sizes %v, left to replay %v",
 		describeFiles(a.files), a.gone, a.sizes, a.replay)
+	if a.variant != "" {
+		return a.variant + ": " + answer
+	}
+
+	return answer
 }
 
 // checkSizes holds the new process to having committed the existence of what
@@ -734,8 +741,38 @@ func engineFailUpdates(_ *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 
 // engineCrash is a power loss with no variant: the simulated device keeps no
 // write that was not synced, and a new process starts on what is left.
+//
+// The crash operations are host losses that differ in which of the writes no
+// sync covered survive: engineCrash none, the others those the disk kit's
+// option of the same name keeps. A restart, a process death, has no variant:
+// it keeps every accepted write.
 func engineCrash(env *fuzz.Env, w *engineWorld, _ fuzz.Args) fuzz.Result {
-	w.fix.Crash()
+	return w.crash(env, "")
+}
+
+func engineCrashKeeping(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
+	mask := a.Int("mask")
+
+	return w.crash(env, fmt.Sprintf("keeping %#b", mask), enginetest.Keeping(uint64(mask)))
+}
+
+func engineCrashTorn(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
+	n := int(a.Int("n"))
+
+	return w.crash(env, fmt.Sprintf("torn after %d bytes", n), enginetest.Torn(n))
+}
+
+func engineCrashReordered(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
+	seed := a.Int("seed")
+
+	return w.crash(env, fmt.Sprintf("reordered by seed %d", seed), enginetest.Reordered(uint64(seed)))
+}
+
+func (w *engineWorld) crash(env *fuzz.Env, variant string, opts ...enginetest.CrashOption) fuzz.Result {
+	if refused := w.fix.CrashOrPlain(opts...); refused != nil {
+		variant += " refused, nothing unsynced kept"
+	}
+
 	for _, write := range w.writes {
 		if write.done.Load() == 0 {
 			write.orphaned = true
@@ -747,10 +784,11 @@ func engineCrash(env *fuzz.Env, w *engineWorld, _ fuzz.Args) fuzz.Result {
 	w.faults.started(files)
 
 	return restartedAnswer{
-		err:   err,
-		files: files,
-		gone:  gone,
-		sizes: w.committedSizes(),
+		variant: variant,
+		err:     err,
+		files:   files,
+		gone:    gone,
+		sizes:   w.committedSizes(),
 	}
 }
 
@@ -1167,6 +1205,10 @@ func engineTarget() fuzz.Target[*engineWorld, engineModel] {
 	size := fuzz.Choice("size", 0, 1, 4096, 8192)
 	// 0 fails every update of the store, -1 clears that.
 	updates := fuzz.Choice("n", -1, 0)
+	// Bit i keeps the i-th unsynced device write, in the order issued.
+	mask := fuzz.Choice("mask", 0b1, 0b10, 0b11, 0b101)
+	torn := fuzz.Choice("n", 1, 8, 64)
+	seed := fuzz.Choice("seed", 1, 2, 3)
 
 	return fuzz.Target[*engineWorld, engineModel]{
 		Name:     "engine",
@@ -1232,6 +1274,27 @@ func engineTarget() fuzz.Target[*engineWorld, engineModel] {
 				Params: []fuzz.Param{updates},
 				Real:   engineFailUpdates,
 				Model:  modelFailUpdates,
+			},
+			{
+				Name:   "crash_keeping",
+				Weight: 1,
+				Params: []fuzz.Param{mask},
+				Real:   engineCrashKeeping,
+				Model:  modelCrash,
+			},
+			{
+				Name:   "crash_torn",
+				Weight: 1,
+				Params: []fuzz.Param{torn},
+				Real:   engineCrashTorn,
+				Model:  modelCrash,
+			},
+			{
+				Name:   "crash_reordered",
+				Weight: 1,
+				Params: []fuzz.Param{seed},
+				Real:   engineCrashReordered,
+				Model:  modelCrash,
 			},
 		},
 		// The engine's methods are not listed here yet: this holds only what
@@ -1424,6 +1487,55 @@ var engineSeeds = []struct {
 			"deallocate(file=0, off=4096, len=4096)",
 			"crash()",
 			"read(file=0, off=0, len=8192)",
+		},
+	},
+	{
+		name: "a crash that keeps the first unsynced write",
+		calls: []string{
+			"write(file=0, off=0, len=512)",
+			"commit(file=0, off=0, len=0)",
+			"write(file=0, off=4096, len=512)",
+			"write(file=0, off=8192, len=512)",
+			"crash_keeping(mask=1)",
+			"read(file=0, off=0, len=8192)",
+			"read(file=0, off=8192, len=512)",
+		},
+	},
+	{
+		name: "a crash that tears the last unsynced write",
+		calls: []string{
+			"write(file=0, off=0, len=512)",
+			"commit(file=0, off=0, len=0)",
+			"write(file=0, off=4096, len=512)",
+			"write(file=0, off=8192, len=512)",
+			"crash_torn(n=8)",
+			"read(file=0, off=0, len=8192)",
+			"read(file=0, off=8192, len=512)",
+		},
+	},
+	{
+		name: "a crash that keeps a later unsynced write alone",
+		calls: []string{
+			"write(file=0, off=0, len=512)",
+			"commit(file=0, off=0, len=0)",
+			"write(file=0, off=4096, len=512)",
+			"write(file=0, off=8192, len=512)",
+			"crash_reordered(seed=1)",
+			"read(file=0, off=0, len=8192)",
+			"read(file=0, off=8192, len=512)",
+		},
+	},
+	{
+		name: "a removal not yet stored, then a crash that keeps a later write",
+		calls: []string{
+			"write(file=0, off=0, len=512)",
+			"restart()",
+			"fail_updates_after(n=0)",
+			"truncate(file=0, size=0)",
+			"write(file=1, off=0, len=512)",
+			"crash_keeping(mask=1)",
+			"read(file=0, off=0, len=512)",
+			"read(file=1, off=0, len=512)",
 		},
 	},
 }
@@ -1620,6 +1732,8 @@ func TestModelAllowsWhatACrashMayLeave(t *testing.T) {
 		unsynced []unsyncedWrite
 		found    string
 		allowed  bool
+		// removed is how many bytes a synced removal cut off the end.
+		removed int
 	}{
 		{
 			name:     "none kept",
@@ -1657,6 +1771,11 @@ func TestModelAllowsWhatACrashMayLeave(t *testing.T) {
 			found:    with(second)[:10],
 		},
 		{
+			name:    "a removal that came back",
+			removed: 4,
+			found:   base,
+		},
+		{
 			name:     "a synced write lost",
 			unsynced: []unsyncedWrite{first},
 			found:    "",
@@ -1681,7 +1800,7 @@ func TestModelAllowsWhatACrashMayLeave(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			file := modelFile{
-				synced:   base,
+				synced:   base[:len(base)-c.removed],
 				unsynced: c.unsynced,
 			}
 
@@ -1838,6 +1957,95 @@ func TestNoProgramFillsASegment(t *testing.T) {
 
 			if got := err == nil; got != c.fits {
 				t.Fatalf("checkOneSegment(%d, %d, %d) = %v, want fits %v", c.steps, fuzzMaxWrite, c.segmentCap, err, c.fits)
+			}
+		})
+	}
+}
+
+func TestACrashVariantKeepsTheUnsyncedWritesItNames(t *testing.T) {
+	// Two writes after the commit: neither is synced at the crash.
+	writes := []string{
+		"write(file=0, off=0, len=512)",
+		"commit(file=0, off=0, len=0)",
+		"write(file=0, off=4096, len=512)",
+		"write(file=0, off=8192, len=512)",
+	}
+
+	cases := []struct {
+		crash  string
+		first  bool
+		second bool
+	}{
+		{
+			crash: "crash()",
+		},
+		{
+			crash: "crash_keeping(mask=1)",
+			first: true,
+		},
+		{
+			crash:  "crash_keeping(mask=2)",
+			second: true,
+		},
+		{
+			crash:  "crash_keeping(mask=3)",
+			first:  true,
+			second: true,
+		},
+		{
+			// The mask names a third write, which there is not.
+			crash: "crash_keeping(mask=5)",
+		},
+		{
+			crash: "crash_torn(n=64)",
+		},
+		{
+			// This seed drops the earlier write and keeps the later one.
+			crash:  "crash_reordered(seed=1)",
+			second: true,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.crash, func(t *testing.T) {
+			target := engineTarget()
+			program, err := fuzz.Parse(target, strings.Join(append(slices.Clone(writes), c.crash), "\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			env := &fuzz.Env{
+				T:       t,
+				Cleanup: t.Cleanup,
+			}
+			w, err := newEngineWorld(env)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var answer fuzz.Result
+			for i, step := range program {
+				env.Step = i
+				answer = target.Ops[step.Op].Real(env, w, step.Args)
+				t.Logf("#%02d %s -> %s", i, step, answer)
+			}
+
+			found := answer.(restartedAnswer).files[0]
+			var holds [3]bool
+			for i, off := range []int{0, 4096, 8192} {
+				holds[i] = len(found) >= off+512 && found[off] != 0
+			}
+
+			if !holds[0] {
+				t.Errorf("the synced write at 0 is gone: %s", answer)
+			}
+
+			if holds[1] != c.first {
+				t.Errorf("the first unsynced write survived: %v, want %v", holds[1], c.first)
+			}
+
+			if holds[2] != c.second {
+				t.Errorf("the second unsynced write survived: %v, want %v", holds[2], c.second)
 			}
 		})
 	}
