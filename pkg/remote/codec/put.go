@@ -14,15 +14,18 @@ import (
 // over src yields the block's chunks again from the first; a measuring pass
 // and each Attempt start one. Attempt recomputes the name from nonce, pin's
 // chain ID, the chunk IDs and the key scope (RFC 4 §3.4) before it sends a
-// byte, and a name that differs is remote.ErrInvalid (RFC 4 §4.3).
+// byte, and a name that differs is remote.ErrInvalid (RFC 4 §4.3). A chunk's
+// Bytes from src is borrowed until the Put's next iteration over it.
 func (s *Store) NewPut(name remote.Name, nonce [16]byte, pin transform.Attempt, src iter.Seq2[remote.Chunk, error]) *Put {
 	return &Put{}
 }
 
 // Put is one block's put across the syncer's tries (RFC 4 §4.3). It keeps the
-// measured lengths and checksum across its Attempts, so a retry only sends,
-// and drops them after an Attempt that ends in remote.ErrCorrupt, so the next
-// one measures again.
+// measured lengths, the checksum and the chunk IDs across its Attempts, so a
+// retry only sends: it recomputes the name from the kept IDs, and a chunk it
+// sends whose ID differs from the kept one is remote.ErrInvalid. It drops them
+// after an Attempt that ends in remote.ErrCorrupt, so the next one measures
+// again.
 type Put struct{}
 
 // Attempt is one try: it measures when it must, then sends the header and each
@@ -39,9 +42,10 @@ func (p *Put) Attempt(ctx context.Context, m remote.Meter) error {
 }
 
 // Stored returns each chunk's range in the encoded block and the census the
-// header carries, once an Attempt has returned nil (RFC 4 §4.3). The census
-// entries carry a nil Body: the census records what was applied, not the
-// bytes.
+// header carries, once an Attempt has returned nil (RFC 4 §4.3). From then on
+// its answer is fixed: an Attempt that fails later, an overlapping one
+// included, drops nothing Stored returns. The census entries carry a nil Body:
+// the census records what was applied, not the bytes.
 func (p *Put) Stored() (ranges []remote.ChunkRange, census []transform.Encoded) {
 	return nil, nil
 }

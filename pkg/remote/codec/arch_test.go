@@ -1,10 +1,8 @@
 package codec
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -118,50 +116,18 @@ func TestCodecExports(t *testing.T) {
 	}
 }
 
-// errorTypes names each type that declares an Error method in the package's
-// non-test files in dir, whatever their build tags, plus planted ones: an
-// error type of the codec's own, which a constant or a return site can carry
-// with no variable declared.
-func errorTypes(dir string, planted ...string) ([]string, error) {
-	paths, err := archtest.GoFiles(dir)
-	if err != nil {
-		return nil, err
-	}
-
-	var names []string
-
-	for _, p := range append(paths, planted...) {
-		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.SkipObjectResolution)
-		if err != nil {
-			return nil, err
-		}
-
-		if f.Name.Name != filepath.Base(path) {
-			continue
-		}
-
-		for _, d := range f.Decls {
-			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv != nil && fn.Name.Name == "Error" {
-				recv := fn.Recv.List[0].Type
-				if star, ok := recv.(*ast.StarExpr); ok {
-					recv = star.X
-				}
-
-				if id, ok := recv.(*ast.Ident); ok {
-					names = append(names, "type "+id.Name+" is an error")
-				}
-			}
-		}
-	}
-
-	return names, nil
-}
-
 // The codec declares no error of its own: it returns RFC 4 §4.8's set and the
 // transforms' material errors as they are (RFC 4 §4.3). So it holds no
 // package-level variable, which would be the home of an error value, and no
-// type with an Error method. A table the encoder needs is named in the Vars
-// of the purity rule when it lands. Each planted error is caught.
+// type that is an error. The rule refuses every package-level variable, not
+// only errors: a table the encoder needs is named in the Vars of the purity
+// rule when it lands, and a var _ X = ... assertion belongs in a test file.
+// Each planted error is caught.
+//
+// decision: an error made where it is returned, an inline errors.New or a
+// fmt.Errorf wrapping none of RFC 4 §4.8's set, declares nothing at package
+// level, and this check cannot see it. No body exists yet to make one. Add a
+// check over the package's return sites when the bodies land.
 func TestCodecDeclaresNoError(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -174,6 +140,8 @@ func TestCodecDeclaresNoError(t *testing.T) {
 		{"a table", "state.go", []string{"var table is state"}},
 		{"an error type and its constant", "error_type.go", []string{"type codecError is an error"}},
 		{"an error type behind a build tag", "hidden_error.go", []string{"type taggedError is an error"}},
+		{"an error type by embedding", "error_embedded.go", []string{"type wrapErr is an error"}},
+		{"a generic error type", "error_generic.go", []string{"type kindErr is an error"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, extra := source(t, tc.planted)
@@ -183,7 +151,7 @@ func TestCodecDeclaresNoError(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			types, err := errorTypes(dir, extra...)
+			types, err := archtest.ErrorTypes(exportImporter, path, dir, extra...)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -192,5 +160,30 @@ func TestCodecDeclaresNoError(t *testing.T) {
 				t.Errorf("errors declared %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// frozenStore is the method set of store, what New requires of the store it is
+// handed. The export pin prints New's parameter only as store, so a method
+// added to store changes New's surface without changing the pin; this holds it.
+var frozenStore = []string{
+	"Checksum func() remote.Checksum",
+	"Get func(context.Context, remote.Name, remote.Range) (io.ReadCloser, remote.StoredSum, error)",
+	"Health func(context.Context, remote.Direction) error",
+	"Put func(context.Context, remote.Name, io.Reader, int64, []uint8) error",
+}
+
+// New requires exactly frozenStore of its store.
+func TestCodecStoreMethods(t *testing.T) {
+	st := reflect.TypeFor[store]()
+
+	got := make([]string, st.NumMethod())
+	for i := range got {
+		m := st.Method(i)
+		got[i] = m.Name + " " + m.Type.String()
+	}
+
+	if !slices.Equal(got, frozenStore) {
+		t.Errorf("store's methods %q, want %q", got, frozenStore)
 	}
 }

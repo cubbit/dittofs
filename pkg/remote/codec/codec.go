@@ -8,10 +8,12 @@
 // census lookup (RFC 4 §1.2, §4.3). It declares no error of its own and returns
 // RFC 4 §4.8's set, and the transforms' material errors, as they are.
 //
-// The surface is fixed ahead of its bodies: every body refuses with
-// remote.ErrInvalid, and each doc states the contract the body keeps once
-// written. New refuses every configuration, so no caller holds a Store whose
-// stub could answer in a real one's place, Health's included.
+// The surface is fixed ahead of its bodies, and each doc states the contract
+// the body keeps once written. Until then New, Get, Health and Attempt refuse
+// with remote.ErrInvalid, NewPut returns a Put whose Attempt refuses, Stored
+// returns nothing and MaxHeaderLen knows no version. New refuses every
+// configuration, so no caller holds a Store whose stub could answer in a real
+// one's place, Health's included.
 package codec
 
 import (
@@ -118,8 +120,18 @@ func New(st store, cfg Config, d Deps) (*Store, error) {
 
 // Get reads the chunks named in want, or the whole block when want is empty.
 // Ranges adjacent in the block are read with one request. Each chunk comes back
-// decoded and verified against its own hash (RFC 4 §3.4). m receives the
-// encoded bytes as they arrive (RFC 4 §4.3, §4.4).
+// decoded and verified against its own hash (RFC 4 §3.4). A whole-block read
+// also recomputes the block's name from the header's nonce, chain ID and index
+// and the key scope, and refuses the block when it differs from name (RFC 4
+// §3.4, §4.4). m receives the encoded bytes as they arrive (RFC 4 §4.3, §4.4).
+//
+// A chunk's Bytes is borrowed until the caller's next iteration; a caller that
+// keeps them copies them (RFC 3 §1.3).
+//
+// remote.ErrNotFound means the block is absent or its block record is (Config.Census).
+// Either way it says nothing against the store's health: the caller re-resolves
+// the chunk, and does not take it for a block the store lost (RFC 4 §4.8,
+// RFC 8 §7.7).
 func (s *Store) Get(ctx context.Context, name remote.Name, want []remote.ChunkRange, m remote.Meter) iter.Seq2[remote.Chunk, error] {
 	return func(yield func(remote.Chunk, error) bool) {
 		yield(remote.Chunk{}, unimplemented("Get"))
