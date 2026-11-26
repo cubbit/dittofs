@@ -26,7 +26,7 @@ value.
 v1.1 release gate in the programme, #5488). E7 closes once the default is frozen, and nothing else
 in it waits. Outside RFC 2, the RFC 8 offload plan's epic 21 registers the section with the default
 this epic freezes; a default other than 256 KiB moves RFC 2 §5.2's derived upper block target, which
-E1's `carver.MaxBlockTarget` holds and the RFC 4 plan's epic 7 validates against (§9 point 3).
+E1's `carver.MaxBlockTarget` holds and the RFC 4 plan's epic 7 validates against (§9 point 2).
 
 ---
 
@@ -201,7 +201,8 @@ this epic's.
   Each run is a fresh composition: a non-encrypting namespace, so the unkeyed gear table; the empty
   transform chain; RFC 4's in-memory store; the fixture's metadata store and journal, under
   `t.TempDir()`; the engine's settings at their RFC 13 Appendix B
-  defaults (`offload.max_age`, the pass bound, the block target of 4 MiB); and the candidate
+  defaults (`offload.max_age`, the pass bound, the block target of 4 MiB, fixed for every candidate
+  and never varied with `Target`, the user's decision of 2026-11-26, D7); and the candidate
   `Target` as the namespace's setting, which reaches the engine with the share at `Bind` (the RFC 8
   offload plan's epic 12, D7, whose `TestRFC8C_Settings/the_pool_half` epic 16 turns green by S3).
   The content wiring builds the carver's settings from it with `carve.NewSettings`, as for any
@@ -269,10 +270,11 @@ this epic's.
   apart.** Every candidate's `Min`, `Target` and
   `Max` are powers of two, so each falls on a bucket edge at every candidate. Prior art: RFC 25
   §2.6's `size` bucket set, also powers of two (RFC 25).
-- **D7, the selection rule, written as a function before the run — pending the user's answer.**
-  R3's "the whole-file baseline's margins" has more than one reading, and with no deduplication in
-  the first release bytes stored alone cannot show what the baseline's columns showed (D5). The
-  recommended reading, which T6.1 writes: 256 KiB was chosen accepting the baseline's trade-off,
+- **D7, the selection rule, written as a function and into RFC 2 §11 before the run (the user's
+  decision, 2026-11-26).** R3's "the whole-file baseline's margins" has more than one reading, and
+  with no deduplication in the first release bytes stored alone cannot show what the baseline's
+  columns showed (D5). The reading the user chose, which T6.1 writes as `selectDefault` and states
+  in RFC 2 §11: 256 KiB was chosen accepting the baseline's trade-off,
   and a candidate replaces it only if the real path moves that trade-off in the candidate's
   favour. For each of the baseline's three workloads, the baseline ratio is the candidate's
   re-stored bytes over 256 KiB's on the whole-file twin (D3), and the real ratio is the same with
@@ -282,7 +284,15 @@ this epic's.
   workloads and the other figures are reported and decide nothing. The chunk and byte figures leave
   no room for noise: the corpus is pinned, the workloads seeded and boundaries a function of the
   bytes, so they repeat to the byte. Blocks per pass may not, since how offers group into passes can
-  depend on the scheduler; they decide nothing.
+  depend on the scheduler; they decide nothing. The block target stays at 4 MiB for every candidate
+  (D2), also the user's decision: it does not co-vary with `Target`, so at a 4 MiB `Target` a block
+  often holds one chunk, which the short-block and blocks-per-pass figures report and which decides
+  nothing. Rejected: one cost per candidate (bytes stored plus a metadata cost per chunk record,
+  lowest wins), which needs a price per record no RFC states; and an absolute bound (at least 10 %
+  fewer re-stored bytes on all three workloads), whose 10 % nothing derives. Example: if 1 MiB re-stores r
+  times 256 KiB's bytes on the next release's whole-file twin, it is adopted only if its real-path
+  ratio there is below r, likewise on the other two workloads, and its records stay under the
+  ceiling.
   The rule is written and reviewed before the run, so the run cannot choose its own test. Prior
   art: a pre-registered analysis, the usual guard against choosing a criterion after seeing the
   data (from memory); none found for chunk sizes.
@@ -312,6 +322,7 @@ test/suites.yaml             T6.3  carver-sweep, tier manual; target_sweep in li
 docs/internals/rfcs/rfc-2-carver.md
                              T6.3  §10.6's suites paragraph names carver-sweep
                              T6.4  Appendix C, the real-path table
+                             T6.1  §11 states D7's rule and the fixed 4 MiB block target
                              T6.5  §3.2's Target row, §11; derived figures if the value moves
 docs/internals/rfcs/rfc-13-configuration.md
                              T6.5  Appendix B, the Target row
@@ -364,12 +375,17 @@ pkg/carver/section/
   // selectDefault applies D7 to the rows of the baseline's three workloads; it takes no time.
   func selectDefault(rows []row) int64
   ```
+  RFC 2 §11 amended to state D7's rule and the block target fixed at 4 MiB for every candidate,
+  so the rule is in the RFC before T6.3's run produces a figure; the edit goes to `develop` in a
+  pull request of its own (§8).
 - **Acceptance criteria:**
   - `summarise` gives Appendix C's definition of the cold-read fetch, and the §3.2 ceiling at each
     candidate's `Min`.
   - `restoredWholeFile` is zero for a file against itself, and counts an appended chunk's bytes.
   - `selectDefault` returns 256 KiB on a report whose ratios equal the baseline's, and a candidate
     only when D7's condition holds for it.
+  - RFC 2 §11 states the rule `selectDefault` applies and the fixed 4 MiB block target, merged on
+    `develop` before T6.4's run (held by review).
 - **Tests:** at the functions T6.3 calls: a hand-built size list whose Σs²/Σs is worked out in the
   test (catches Σs² summed as Σs, R15); sizes on each bucket edge, at `Min`, `Target` and `Max`
   (catches an edge moved by one, R14); a list one record over the ceiling (catches a ceiling built
@@ -477,10 +493,10 @@ pkg/carver/section/
   13 Appendix B's `Target` row, "proposed" dropped and "settled by" naming that table;
   `section.Default()`, its doc comment ("proposed" dropped) and its test in `pkg/carver/section`
   returning it. If the value is not 256 KiB, every RFC figure derived from the default is restated
-  from it, from the list in §9 point 3, and the pull request lists each one.
+  from it, from the list in §9 point 2, and the pull request lists each one.
 - **Acceptance criteria:**
   - RFC 2, RFC 13 and the section name one value, the one T6.4's report selected.
-  - If the value moved, each figure of §9 point 3's list is found by its own search and reads the
+  - If the value moved, each figure of §9 point 2's list is found by its own search and reads the
     new value; `rg -n '256 KiB' docs/internals/rfcs/` then lists only candidates, measurements and
     other quantities (RFC 3's small-body cap is one).
   - The pull request lands before any release writes content (R2), as #5488's gate holds it.
@@ -520,19 +536,11 @@ the programme's other RFC edits are.
 
 ## 9. Open points
 
-1. **D7's reading of "the whole-file baseline's margins" is pending the user's answer.** The
-   recommended rule is written in place; the alternatives are a single cost per candidate (bytes
-   stored plus a metadata cost per chunk record, lowest wins) or an absolute bound (adopt a
-   candidate that re-stores at least 10 % less on all three baseline workloads with records under
-   the ceiling). The block target stays at 4 MiB for every candidate (D2), so at a 4 MiB `Target` a
-   block often holds one chunk; whether it should co-vary is part of the same answer. Whichever
-   reading is chosen, RFC 2 §11 is amended to state it in T6.1's pull request, before the run, so
-   the rule is fixed before the data. Until then the pull request of this document stays a draft.
-2. **The estimate against the RFC 2 plan's figure.** The plan says "planned after S3" and gives no
+1. **The estimate against the RFC 2 plan's figure.** The plan says "planned after S3" and gives no
    figure, so there is none to compare with; this document gives 5 subtasks and 10 man-days, broken
    down before S3 at the programme's request. T6.3 builds on the composition the RFC 8 offload
    plan's epics 15, 16 and 21 shape, none of it written yet, so its 4 man-days may move.
-3. **A default other than 256 KiB moves figures in other RFCs and one constant.** RFC 2 §5.2 derives
+2. **A default other than 256 KiB moves figures in other RFCs and one constant.** RFC 2 §5.2 derives
    the 64 MiB upper block target from P4's 1,024 chunks and the default's 64 KiB `Min`; at a 64 KiB
    default that product is 16 MiB, at 1 MiB 256 MiB and at 4 MiB 1 GiB, so `carver.MaxBlockTarget` (E1), E5's range check and the RFC 4
    plan's epic 7, which validates the block target against it, would follow, or §5.2's `decision:`
@@ -543,17 +551,17 @@ the programme's other RFC edits are.
    5, 8, 9 and 16, the FAQ and the RFC 2 learning deck. Restating them is about three more
    man-days, a contingency not in the total, and the §5.2 choice is the user's when it arises. At 256 KiB none of
    this applies.
-4. **`Target`'s key is not this epic's.** E3's D8 uses the provisional `carver.target`, pending the
+3. **`Target`'s key is not this epic's.** E3's D8 uses the provisional `carver.target`, pending the
    user's answer in the RFC 2 plan's §6 point 2; this epic changes the section's default, never its
    key.
-5. **The sweep's host.** The in-memory store holds each run's objects, about the largest corpus file
+4. **The sweep's host.** The in-memory store holds each run's objects, about the largest corpus file
    per composition with one composition alive at a time: the 1.4 GB tar, or the VM image if it is
    larger (its zero runs become zero refs and store nothing, but the journal takes the whole file).
    T6.3's comment gives the figure once E2 pins the image. A finding about the
    pipeline itself, such as a ceiling passed, is filed against the RFC 8 offload plan and blocks
    T6.4 until fixed; how many such findings the first full run surfaces cannot be known, which makes
    T6.4 the least certain estimate here.
-6. **The candidate's route into the carver is another plan's.** D2 binds the share with the
+5. **The candidate's route into the carver is another plan's.** D2 binds the share with the
    candidate `Target` as the namespace's setting, the route the RFC 8 offload plan's epic 12 fixes
    (its D7) and its epic 16 makes real by S3. If epic 16 carries `Target` another way, D2 follows
    it; T6.3's same-sizes assertion fails a run where the candidate never reaches the carver.
