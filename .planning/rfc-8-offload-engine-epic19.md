@@ -115,7 +115,7 @@ cited by number and title and not copied.
 | Rule | Subtasks | How |
 | --- | --- | --- |
 | rule 1, **Independent unit tests** ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | engine tests over the first part's unit fixture and its in-memory journal, `kvstore` over the in-memory `kv.KV`; store views over `kvstoretest`'s backends; RFC 5's `keystest` for key records; no double but the injected clock, kind 3 faults and per-instance hooks set from `export_test.go` |
-| rule 2, **Fuzz the key and ref decoders the queue's rebuild reads** | T19.1, T19.6, T19.8 | the census delta and total records, the shard record with its journal identity and the acknowledgement record each gain a decode fuzz target in the nightly `fuzz` suite, seeded with a record written without the new field where one existed |
+| rule 2, **Fuzz the key and ref decoders the queue's rebuild reads** | T19.1, T19.6 | the census delta and total records and the shard record with its journal identity each gain a decode fuzz target in the nightly `fuzz` suite, seeded with a record written without the new field where one existed |
 | rule 3, **Observability follows RFC 25** | T19.3, T19.10, T19.11 | `engine_reseed_files_remaining` into `JournalStats.ReseedFilesRemaining`, `engine_ledger_mismatches_total` into `Stats.LedgerMismatches`, a ledger mismatch logged at `Warn` with its file and extent, a reseed's root span; `journal_unreconciled` per share or per journal in `Stats` |
 | rule 4, **Profiling** | T19.3, T19.10, T19.12 | the reseed walk, the reconcile walk and the lost journal's retry are goroutines the fixture's `prof.Watch` checks across `Close`; no allocation assertion: neither is a hot path RFC 8 names |
 | rule 5, **Public interface and internals** ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | the reseed's bit is asserted at the journal's `Release` and an eviction, which consume it; a reconcile's drop at a read; the census at the view RFC 5 epic 10 reads; the acknowledgement at `Start`'s `Stats` |
@@ -213,7 +213,7 @@ rows' own assertions are RFC 8 §15's text; a row's requirement here names the l
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R43 | A tag not yet attached is visited through a handle `Share` opens with the share's journal limit and, as floor, the larger of its version floor and version limit as step 1 read them, closed once that tag's visit ends unless a `Bind` took it over | MUST | RFC 8 §2.5 step 7 | T19.12 |
+| R43 | A tag not yet attached is visited through a handle `Share` opens (its limit as D8 decides) with, as floor, the larger of its version floor and version limit as step 1 read them, closed once that tag's visit ends unless a `Bind` took it over | MUST | RFC 8 §2.5 step 7 | T19.12 |
 | R44 | The handle has one owner at a time, decided under the lock that serializes the share table's swaps: the takeover marks it bound under that lock before `Share`; the reconcile, in one hold, records the visit's end, checks the mark and marks it closing, and calls `Close` after releasing the lock | MUST | RFC 8 §2.5 step 7 | T19.12 |
 | R45 | A `Bind` taking it over does everything `Bind` does: reads the floor and limit again, raises the counter through `Share` on the open handle, writes the limit before it publishes; the share's unvisited files stay gated; a `Bind` finding the handle closing waits outside the lock for that `Close` and attaches afresh | MUST | RFC 8 §2.5 step 7 | T19.12 |
 | R46 | A `Bind` failing after the takeover undoes its other steps but not the handle: in one hold it clears the mark, reads whether the visit ended and ends its lifecycle call, and closes the handle itself only if the visit had ended | MUST | RFC 8 §2.5 step 7 | T19.12 |
@@ -292,15 +292,17 @@ rows' own assertions are RFC 8 §15's text; a row's requirement here names the l
   `Device` field on RFC 8 §12.1's `Share`, #3708's (1b), was rejected as the first part's D10 rejected
   it: the node would have to know a placement the store already records. Prior art: the first part's
   epic 6 D10 and #3708 (checked).
-- **D6, the acknowledgement is `J‖journal‖ack`, consumed with its journal's records.** The record
-  holds the node and device and lives under the lost journal's `J‖journal`. `Lifecycle` gains
+- **D6, the acknowledgement is `J‖journal‖ack`, consumed with its journal's records.** The key is
+  empty, a presence marker under the lost journal's `J‖journal`, whose value already names the node
+  and device. `Lifecycle` gains
   `LossAcknowledged(ctx, id [16]byte) (bool, error)` and `ConsumeLossAck(ctx, id [16]byte) error`;
   `Store` gains `AcknowledgeLoss(ctx, node entity.NodeID, device entity.JournalDir, expect [16]byte)
   error`, refused unless `JD‖node‖device` names `expect`, as `acknowledge-unreadable` takes its
   `expect JournalID`. The re-initialisation's `RecordJournal` deletes it with the old journal's records,
   which it already deletes by prefix; a retried open of the recorded journal that succeeds consumes it.
-  A lost journal's open is retried every 30 s, as unsuitable storage is, so the acknowledgement is read
-  at each retried open (R24) and a reattached journal is found. An acknowledged loss clears
+  A lost journal's open is retried every 30 s by the first part's retry loop (`retryUnsuitable`, which
+  `Close` already joins), widened to a missing or foreign journal, so the acknowledgement is read at
+  each retried open (R24) and a reattached journal is found. An acknowledged loss clears
   `journal_lost`; its shares serve once a journal is recorded for the device and opens, since only the
   initialisation step creates one (RFC 1 §3). RFC 8 §15.1's "journal gone" leg reads as if the
   acknowledgement alone served; T19.8 re-initialises the device in that leg as the operator's step, and
@@ -314,11 +316,13 @@ rows' own assertions are RFC 8 §15's text; a row's requirement here names the l
   an imported share's files fail one flush at most, the safe direction. A `decision:` at the floor says
   it is wider than "past an acknowledged loss", withdrawn if a spurious flush failure is reported.
   Prior art: none found.
-- **D8, an unattached tag's handle is opened at the share's recorded limits.** `Share` needs the
-  share's journal limit and floor, and a tag not attached belongs to a share `Start` was not handed, so
-  the engine reads its floor and limit through `Lifecycle` as step 1 does, and passes the journal's
-  maximum as the handle's limit, since the handle stages no write (R43). A `decision:` at the open says
-  so. Prior art: none found.
+- **D8, an unattached tag's handle is opened at the share's recorded floor and the journal's
+  maximum.** `Share` needs the share's journal limit and floor, and a tag not attached belongs to a
+  share `Start` was not handed, so the engine reads its floor and version limit through `Lifecycle` as
+  step 1 does. RFC 8 §2.5 names the share's journal limit, a share setting the engine is not handed for
+  such a tag; the handle stages no write (R43), so the limit bounds nothing, and the engine passes the
+  journal's maximum. T19.12's pull request amends §2.5's sentence to say so. A `decision:` at the open
+  says so. Prior art: none found.
 - **D9, the unread-range acknowledgement waits for its trigger (pending the user's answer).** RFC 8
   §2.5 has a refused open's retry run `AcknowledgeUnreadable` once an operator acknowledges the range,
   and RFC 23 §3.3's `acknowledge-unreadable` is that trigger, which the RFC 23 plan gives RFC 28's
@@ -553,12 +557,13 @@ handle" (`TestRFC8A_BindTakesOverTheReconcilesHandle`) and "§2.3 removal during
 - **Track:** C. **Depends on:** T19.7.
 - **Covers:** R24, R25, R26, R27, R28, R29, R30.
 - **Deliverables:** in `kvstore`, `AcknowledgeLoss`, `LossAcknowledged` and `ConsumeLossAck` (D6), the
-  record's codec and fuzz target, the record deleted by `RecordJournal` with its journal's records;
-  `Lifecycle` in `deps.go` gains the two reads; a lost journal's open retried every 30 s, reading the
+  marker key deleted by `RecordJournal` with its journal's records;
+  `Lifecycle` in `deps.go` gains the two reads; a lost journal's open retried every 30 s by the first
+  part's retry loop, widened to a missing or foreign journal, reading the
   acknowledgement at each retry, `journal_lost` cleared once acknowledged, the acknowledgement consumed
   when the recorded journal opens; the journal's loss floor at 1 (D7) with its `decision:`;
   `AcknowledgeLoss(dir)` in `enginetest` made real; the two rows' entries removed, the "journal gone"
-  leg re-initialising the device as the operator's step (D6). Consumed by T19.12's `Close` joins.
+  leg re-initialising the device as the operator's step (D6). `Close` joins the retry as it does today.
 - **Acceptance criteria:**
   - Without an acknowledgement, no directory is opened as a new journal and `journal_lost` stays; with
     one for another `JournalID`, the same.
@@ -571,7 +576,7 @@ handle" (`TestRFC8A_BindTakesOverTheReconcilesHandle`) and "§2.3 removal during
   `Stats`, an acknowledgement naming another journal keeping the shares refused (catches a device-wide
   acknowledgement, R25); at `Commit`, the loss sequence after the re-initialised attach (catches a floor
   left at 0, R28). Doubles: the injected clock.
-- **Rules:** rule 2, the record's fuzz target; rule 9, D7's marker.
+- **Rules:** rule 9, D7's marker.
 
 ### T19.9 `Existence.Versions`
 
@@ -581,7 +586,9 @@ handle" (`TestRFC8A_BindTakesOverTheReconcilesHandle`) and "§2.3 removal during
 - **Covers:** R4.
 - **Deliverables:** `func (e Existence) Versions(ctx context.Context, share entity.ShareID, file
   entity.FileID, off, n int64) (runs []entity.VersionRun, size int64, applied entity.JournalVersion, err error)` in `kvstore`, with
-  `entity.VersionRun` as RFC 6 §10.1 writes it, and its `kvstoretest` rows. Consumed by T19.10.
+  `entity.VersionRun` as RFC 6 §10.1 writes it, a second fold over the scan `Covering` already makes
+  of refs, overwrite records, holes and unfinished removals, reporting the highest version per run
+  instead of masking, and its `kvstoretest` rows. Consumed by T19.10.
 - **Acceptance criteria:**
   - Each run reports the highest of its overwrite record, the covering live ref's `newest`, a committed
     hole and a removal not done; a file with no `File` record and no removal not done is `ErrNotFound`.
@@ -713,11 +720,13 @@ A suggestion only: one pull request per subtask works as well.
   "Done when" lists. This pull request adds the §6.1 row; the leg's entry names its issue once created.
 - **Pending the user's answer: multi-device start lands here (D5).** The plan's expected content does
   not name it, but two rows this epic owns need two devices and epic 12 left `WithDevices` to this epic.
-  It costs T19.6's 5 man-days and follows the first part's epic 6 D10. Which device a new share is placed
+  It costs T19.6's 5 man-days and follows the first part's epic 6 D10. The other option defers T19.6
+  with placement: the two-device legs of "§2.5 unsuitable journal at start" and "§2.5 unread range at
+  start" then stay known failures naming the placement row's issue, and the epic is 34 man-days. Which device a new share is placed
   on is the §6.1 row this pull request adds, so until the control plane names one, every share created
   in production lands on a one-device node's journal or is refused by name on a node with several.
-- **The amendments the implementing pull requests carry:** RFC 6 §10.1 (`EncodingCount`, `Destroyed`)
-  and RFC 16 §4.2 (the census keys, `J‖journal‖ack`, the shard's journal identity), each with its
+- **The amendments the implementing pull requests carry:** RFC 8 §2.5's handle limit (D8, T19.12),
+  RFC 6 §10.1 (`EncodingCount`, `Destroyed`) and RFC 16 §4.2 (the census keys, `J‖journal‖ack`, the shard's journal identity), each with its
   subtask, as epic 11's open points have the adding epic amend RFC 8 §2.1.
 - **For epic 15:** the census delta is one more key in every block commit (D1), which its T15.2 floor
   and its "K floor" row must count; T19.1's pull request raises the floor by one key with it.
