@@ -977,6 +977,7 @@ What this plan knowingly does not build. Each row names the section that defers 
 | Hedged cold reads (RFC 3 §9, "Deferred") | not measured | unowned | a cold-read latency measurement asks for it |
 | A bandwidth cap per direction (RFC 3 §9, "Deferred") | not measured | unowned | a measurement shows the pool cannot bound the link |
 | Limiting a demand's eviction past its own full queue to flows under their waiter share, so one flow cannot fill the fetch half's waiter bound and starve other flows' background fetches (epic 3's D8) | narrows RFC 3 §4.4; the user kept §4.4 as written for v1.1 (2026-11-26) | unowned | benchmarks show other flows' background fetches starved: `waiters_full` refusals while one flow's `syncer_waiters` holds most of the bound |
+| A hierarchical debt wheel in the syncer's scheduler, so one `Next` never re-parks flows whose debt passes the 63-round cap (epic 3's D3 `ponytail:`) | such debts come only from a slot held minutes past its charge, and then every flow of the class is in debt | unowned | a profile of `Next` with debts over 63 rounds shows the re-parks |
 | Weighted flows (RFC 3 §2.9) | no operator needs it | unowned | an operator names a workload that needs one flow weighted |
 | A fixed value of RFC 3 §2.10 becoming a setting | RFC 3 §2.10 forbids it until measured | unowned | epic 9's measurement shows a value wrong for a named workload |
 | §4.3's slow-tail `ponytail:` upgrade | simple is enough until profiled | unowned | the marker's trigger |
