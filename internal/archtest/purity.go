@@ -21,9 +21,10 @@ type Purity struct {
 // each function that is not a method unless rule allows them, init always,
 // since it runs on import, and each interface type, an alias or a type defined over one
 // included, unless rule allows them. These are the state and behaviour an
-// import walk and an export pin cannot see.
+// import walk and an export pin cannot see. A symbol files for different
+// platforms both declare is checked in each file, not refused as redeclared.
 func Impurities(imp types.Importer, path, dir string, rule Purity, planted ...string) ([]string, error) {
-	pkg, files, err := load(imp, path, dir, planted)
+	pkg, files, err := load(imp, path, dir, planted, true)
 	if err != nil {
 		return nil, err
 	}

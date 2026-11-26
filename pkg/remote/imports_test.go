@@ -26,7 +26,8 @@ var table = []archtest.Row{
 }
 
 // Every package under pkg/remote reaches, through its production code, only
-// what its row allows.
+// what its row allows, and every file under it is built for a platform the
+// walk lists.
 func TestImportWalk(t *testing.T) {
 	graphs, err := archtest.Walk(".", false)
 	if err != nil {
@@ -40,6 +41,15 @@ func TestImportWalk(t *testing.T) {
 	}
 
 	for _, v := range archtest.Check(table, graphs...) {
+		t.Error(v)
+	}
+
+	unwalked, err := archtest.Unwalked(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, v := range unwalked {
 		t.Error(v)
 	}
 }
@@ -104,6 +114,10 @@ func TestImportCheck(t *testing.T) {
 		{"a library a store imports", m("pkg/remote/s3"), map[string][]string{
 			m("pkg/remote/s3"): {m("pkg/remote"), m("pkg/remote/s3/internal/sign"), "github.com/aws/aws-sdk-go-v2/service/s3", "github.com/aws/smithy-go"},
 		}, nil},
+		{"a library a store reaches through the SDK", m("pkg/remote/s3"), map[string][]string{
+			m("pkg/remote/s3"):                        {"github.com/aws/aws-sdk-go-v2/service/s3"},
+			"github.com/aws/aws-sdk-go-v2/service/s3": {"github.com/jmespath/go-jmespath"},
+		}, []string{"pkg/remote/s3 reaches github.com/jmespath/go-jmespath through github.com/aws/aws-sdk-go-v2/service/s3, which row pkg/remote/s3/... does not allow"}},
 		{"a store reaching its fault transport", m("pkg/remote/s3"), map[string][]string{
 			m("pkg/remote/s3"): {m("pkg/remote"), m("pkg/remote/s3/s3fault")},
 		}, []string{"pkg/remote/s3 reaches pkg/remote/s3/s3fault, which row pkg/remote/s3/... does not allow"}},

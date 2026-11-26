@@ -52,15 +52,21 @@ func TestImportRule(t *testing.T) {
 	}
 }
 
-// A file behind a tag the walk never sets is named, since go list leaves it
-// out of every graph; one built for a walked platform or with cgo is not.
+// A file no target builds is named, since go list leaves it out of every
+// graph: one behind a tag the walk never sets, one built only without cgo, and
+// one built for another platform by its file name. One built for a walked
+// platform, with cgo, or without the race detector is not.
 func TestImportRuleNamesUnwalkedFiles(t *testing.T) {
 	got, err := archtest.Unwalked("testdata/walk/pkg/carver")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	want := []string{"testdata/walk/pkg/carver/carve/tagged.go needs never, which the walk never sets"}
+	want := []string{
+		"testdata/walk/pkg/carver/carve/cut_nocgo.go is built for no platform the walk lists",
+		"testdata/walk/pkg/carver/carve/tagged.go is built for no platform the walk lists",
+		"testdata/walk/pkg/carver/carve/x_plan9.go is built for no platform the walk lists",
+	}
 	if !slices.Equal(got, want) {
 		t.Errorf("unwalked files %q, want %q", got, want)
 	}
@@ -133,8 +139,13 @@ func TestImportRuleRefuses(t *testing.T) {
 		}, []string{"pkg/carver reaches pkg/metadata/kvstore through pkg/metadata/entity, which row pkg/carver does not allow"}},
 		{"the root reaching a library through the entity package", m("pkg/carver"), map[string][]string{
 			m("pkg/carver"):          {m("pkg/metadata/entity")},
-			m("pkg/metadata/entity"): {"github.com/klauspost/cpuid/v2"},
-		}, []string{"pkg/carver reaches github.com/klauspost/cpuid/v2 through pkg/metadata/entity, which row pkg/carver does not allow"}},
+			m("pkg/metadata/entity"): {"github.com/klauspost/compress/zstd"},
+		}, []string{"pkg/carver reaches github.com/klauspost/compress/zstd through pkg/metadata/entity, which row pkg/carver does not allow"}},
+		{"the root reaching a library through BLAKE3", m("pkg/carver"), map[string][]string{
+			m("pkg/carver"):           {m("pkg/metadata/entity")},
+			m("pkg/metadata/entity"):  {"lukechampine.com/blake3"},
+			"lukechampine.com/blake3": {"github.com/klauspost/compress/zstd"},
+		}, []string{"pkg/carver reaches github.com/klauspost/compress/zstd through pkg/metadata/entity -> lukechampine.com/blake3, which row pkg/carver does not allow"}},
 		{"the settings value importing the entity package", m("pkg/carver/internal/params"), map[string][]string{
 			m("pkg/carver/internal/params"): {m("pkg/metadata/entity")},
 		}, []string{"pkg/carver/internal/params reaches pkg/metadata/entity, which row pkg/carver/internal/params does not allow"}},

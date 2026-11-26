@@ -1,6 +1,7 @@
 package archtest
 
 import (
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -33,8 +34,10 @@ func GoFiles(dir string) ([]string, error) {
 
 // load parses dir's non-test .go files, whatever their build tags, so a file
 // behind a tag cannot hide a declaration, plus the planted files, and
-// type-checks them as the package path, reading each import through imp.
-func load(imp types.Importer, path, dir string, planted []string) (*types.Package, []*ast.File, error) {
+// type-checks them as the package path, reading each import through imp. With
+// redeclared, a symbol two files declare, as files for different platforms
+// do, is no error: the first declaration stands in the package's scope.
+func load(imp types.Importer, path, dir string, planted []string, redeclared bool) (*types.Package, []*ast.File, error) {
 	paths, err := GoFiles(dir)
 	if err != nil {
 		return nil, nil, err
@@ -51,14 +54,30 @@ func load(imp types.Importer, path, dir string, planted []string) (*types.Packag
 			return nil, nil, err
 		}
 
+		// decision: a file of another package, such as a generator behind
+		// //go:build ignore, is not part of the package and is skipped; the
+		// package's name is its path's last element.
+		if f.Name.Name != filepath.Base(path) {
+			continue
+		}
+
 		files = append(files, f)
 	}
 
-	conf := types.Config{Importer: imp}
+	var errs []error
 
-	pkg, err := conf.Check(path, fset, files, nil)
-	if err != nil {
-		return nil, nil, err
+	conf := types.Config{Importer: imp, Error: func(err error) {
+		var te types.Error
+		if redeclared && errors.As(err, &te) && (strings.Contains(te.Msg, "redeclared in this block") || strings.HasPrefix(te.Msg, "\tother declaration of")) {
+			return
+		}
+
+		errs = append(errs, err)
+	}}
+
+	pkg, _ := conf.Check(path, fset, files, nil)
+	if len(errs) > 0 {
+		return nil, nil, errs[0]
 	}
 
 	return pkg, files, nil
@@ -71,7 +90,7 @@ func load(imp types.Importer, path, dir string, planted []string) (*types.Packag
 // struct with its exported and embedded fields only, since an opaque struct
 // may gain unexported fields.
 func Exports(imp types.Importer, path, dir string, planted ...string) ([]string, error) {
-	pkg, _, err := load(imp, path, dir, planted)
+	pkg, _, err := load(imp, path, dir, planted, false)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +157,9 @@ func Exports(imp types.Importer, path, dir string, planted ...string) ([]string,
 }
 
 // typeString prints t as types.TypeString does, but a struct with its
-// exported and embedded fields only and no tags, nested anonymous structs included.
+// exported and embedded fields only and no tags; a struct a field holds
+// directly is printed the same way. A struct under a pointer, slice, map or
+// array is printed whole, as types.TypeString does: the pinned types hold none.
 func typeString(t types.Type, qualify types.Qualifier) string {
 	st, ok := t.(*types.Struct)
 	if !ok {
