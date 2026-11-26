@@ -343,9 +343,10 @@ already state with their two exceptions.
   3 plan's epic 3 outline, which has E3 write the whole table, by rule 12. Prior art: none found.
 - **D10, the admission step is one function E5 extends.** Every call passes `admit` before it
   queues: a closed flow or syncer, a full queue, the waiter bound with its displacement and
-  eviction. E5 adds the unhealthy direction to it, first, so a call refused for health never takes
-  a waiter slot (RFC 3 §2.8, §2.9). E6's join counts a joined caller in the waiter bound through
-  the same count `admit` reads. No marker. Prior art: none found.
+  eviction. E5 adds the unhealthy direction to it, after the closed check and before the rest, so
+  a call refused for health never takes a waiter slot (RFC 3 §2.8, §2.9). E6's join counts a
+  joined caller in the waiter bound through the same count `admit` reads. No marker. Prior art:
+  none found.
 - **D11, `Stats` is read without the half's lock.** Each of R38's counts is an atomic the half
   updates at the event, read by `Stats` walking the registry under the registry's lock (R39). No
   transfer call and no dispatch takes that lock: D6's count is an atomic, and only `Register`,
