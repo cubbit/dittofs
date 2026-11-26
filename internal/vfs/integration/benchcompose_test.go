@@ -169,6 +169,8 @@ func (c *bench) start(b *testing.B, clock *wallClock, age time.Duration) {
 	opens, err := openstate.New(
 		openstate.Deps{
 			Records: meta,
+			Clients: meta.Clients(),
+			Opens:   meta.Opens(),
 			Node:    benchNode,
 			Clock:   clock,
 			Rand:    rand.Reader,

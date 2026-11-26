@@ -859,7 +859,7 @@ func TestRefusedWideningOpenLeavesNoRecord(t *testing.T) {
 		if err == nil {
 			t.Fatal("the widening open whose write failed was granted")
 		}
-		recs, err := f.d.Records.Opens().Of(ctx, file.Share, file.ID)
+		recs, err := f.d.Opens.Of(ctx, file.Share, file.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -887,7 +887,7 @@ func TestRefusedWideningOpenWritesItsRecordLast(t *testing.T) {
 		if err == nil {
 			t.Fatal("the widening open whose write failed was granted")
 		}
-		recs, err := f.d.Records.Opens().Of(ctx, file.Share, file.ID)
+		recs, err := f.d.Opens.Of(ctx, file.Share, file.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -911,7 +911,7 @@ func TestOpenWhoseLandedWriteErredLeavesNoRecord(t *testing.T) {
 	if !errors.Is(err, errWrite) {
 		t.Fatalf("an open whose write is answered an error: %v, want that error", err)
 	}
-	if recs, err := f.d.Records.Opens().Of(ctx, file.Share, file.ID); err != nil || len(recs) != 0 {
+	if recs, err := f.d.Opens.Of(ctx, file.Share, file.ID); err != nil || len(recs) != 0 {
 		t.Errorf("stored opens after the refused open: %d, %v; want none", len(recs), err)
 	}
 }

@@ -52,7 +52,7 @@ type Params struct {
 // opens and starts nothing; the caller passes the Deps to engine.New, and
 // Start and Stop start and stop the two in the order the node ships.
 func Compose(p Params) (*openstate.Table, engine.Deps, error) {
-	open, err := openstate.New(openstate.Deps{Records: p.Store, Node: p.Node, Clock: p.Clock, Rand: rand.Reader, Logger: p.Logger})
+	open, err := openstate.New(openstate.Deps{Records: p.Store, Clients: p.Store.Clients(), Opens: p.Store.Opens(), Node: p.Node, Clock: p.Clock, Rand: rand.Reader, Logger: p.Logger})
 	if err != nil {
 		return nil, engine.Deps{}, err
 	}
