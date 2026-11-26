@@ -100,5 +100,5 @@ Use this list to guide the review. Do not paste it into the review: report only 
 
 - If you applied the change: `Done in <short sha>.` Nothing else.
 - To add to or correct something you already posted, edit that comment in place rather than posting a new one: one notification instead of two.
-- If you did not: one or two sentences on why, plus a link if relevant. If you still disagree after one round, suggest talking live.
+- If you did not: one or two sentences on why, plus a link if relevant. If you still disagree after two rounds, suggest talking live, as under "Rules" above.
 - A top-level comment in the Conversation tab cannot be threaded. Answer it in a single thread: one file comment on the most relevant file that links the comment and answers its points one by one, however many there are.

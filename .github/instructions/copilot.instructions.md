@@ -4,6 +4,14 @@ applyTo: "**"
 
 # DittoFS Copilot Reviewer Instructions
 
+What may block, in short (`REVIEW.md` §2): only a point tagged `issue (blocking)` that quotes a
+contradiction with a source in `REVIEW.md` §1 (an RFC, a plan, `CLAUDE.md`, `pr-opening` or
+`pr-commenting`, a protocol spec, the base branch's code), or that names a break (lost data, a crash,
+a security hole, a race, a red test that is not a registered known failure, a compatibility break, a
+wrong result on a named path). Name a security hole, or a way to take a node down or exhaust its
+resources, by its class only: never post its path or evidence in a public thread. The Review Focus
+Areas above and the WRONG examples are checklists: a hit that is neither of those is a suggestion.
+
 You are reviewing pull requests for **DittoFS**, a modular virtual filesystem written in Go that implements NFSv3, NFSv4, and SMB2 protocols with pluggable metadata and block stores.
 
 ## Project Context
@@ -244,10 +252,3 @@ Follow [`pr-commenting.instructions.md`](pr-commenting.instructions.md) for what
 review body, the comments and the replies, and [`REVIEW.md`](../../REVIEW.md) for what may block a
 merge and what a later round reviews.
 
-What may block, in short (`REVIEW.md` §2): only a point tagged `issue (blocking)` that quotes a
-contradiction with a source in `REVIEW.md` §1 (an RFC, a plan, `CLAUDE.md`, `pr-opening` or
-`pr-commenting`, a protocol spec, the base branch's code), or that names a break (lost data, a crash,
-a security hole, a race, a red test that is not a registered known failure, a compatibility break, a
-wrong result on a named path). Name a security hole, or a way to take a node down or exhaust its
-resources, by its class only: never post its path or evidence in a public thread. The Review Focus
-Areas above and the WRONG examples are checklists: a hit that is neither of those is a suggestion.

@@ -85,6 +85,8 @@ gh pr create --base <target> --assignee @me --title "..." --body-file <file>
 gh pr merge <PR> --auto
 ```
 
-Always assign the PR to yourself, and always enable auto-merge. Both integration branches
+Always assign the PR to yourself, and always enable auto-merge. Before a push that changes an
+approved PR's own commits, disarm it (`gh pr merge <PR> --disable-auto`), and arm it again after the
+delta round ([`REVIEW.md`](../../REVIEW.md) §3). Both integration branches
 have a squash merge queue that also requires an approving review, green checks and signed
 commits, so `--auto` queues the PR once those are in place; it does not skip the review.

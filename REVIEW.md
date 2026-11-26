@@ -50,13 +50,18 @@ these two, *with the evidence quoted*:
    on the PR's head, checks what a §1 source or the PR itself claims, and
    either passes on the base, or checks behaviour the PR adds or a fix it
    claims to make.
+   A break blocks only when the PR introduces it, exposes it, or claims to
+   fix it. A break that is only on the base, in code the PR does not
+   change, is a follow-up issue (§4).
    A compatibility break (wire, on-disk, API or config) or a wrong result
    on a named path is a break too, with or without a red test.
    A security hole, or a way to take a node down or exhaust its resources,
    names only its class in a public thread. Its path and evidence go to a
-   maintainer privately, as `docs/guide/security.md` asks, never into a public
-   issue. It still blocks: it blocks on a maintainer's private confirmation
-   instead of on quoted evidence. A maintainer is a repository admin.
+   maintainer in a private channel the maintainers use (a direct message on
+   the team's Slack), never into a public thread or issue. A bot's finding
+   reaches a maintainer through the PR's author. It still blocks: it blocks
+   on a maintainer's private confirmation instead of on quoted evidence. A
+   maintainer is a repository admin.
 
 Only `issue (blocking)` blocks. Other tags in use, such as `must:`,
 `should:` or `[important]`, do not. A reviewer who means to block uses
@@ -84,8 +89,10 @@ that every reference to the old path follows it.
 
 ## 3. Rounds: review the delta, not the PR again
 
-- An approval is a checkpoint. The approved SHA is the commit your Approve
-  review names on GitHub. Your next round covers only what changed since:
+- Every review you post is a checkpoint: an Approve, a Request changes or a
+  Comment. Your next round covers what changed since, plus your threads
+  still open. The approved SHA is the commit your latest review names on
+  GitHub. Your next round covers only what changed since:
   `git diff <approved-sha>..<pr-head>`. If the PR was rebased since, use
   `git range-diff <approved-base>..<approved-sha> <base>..<pr-head>`, where
   `<approved-base>` is the commit just below the PR's own commits at the
@@ -127,7 +134,9 @@ requires it. If the author leaves it out and the reviewer still wants it, it
 becomes a follow-up issue labelled `follow-up` and with the
 RFC's or epic's label (for example `rfc-20-epic-6`). The reviewer who raised
 the point files it before approving and links it in the thread. An agent
-reviewer drafts it for the person who runs it, who files it. Standup
+reviewer drafts it for the person who runs it, who files it. A suggestion
+from a bot that runs on its own, such as Copilot, needs no follow-up unless
+a person adopts it on the thread; that person then files it. Standup
 prioritizes it like all other work. If the author folds such a point in, the
 PR reports it on its own line. A plan's estimate stays as merged, and only
 standup moves it.
@@ -138,7 +147,8 @@ feedback: give it its own planning PR.
 ## 5. Silence belongs to the author
 
 Where the sources in §1 are silent, the author's choice stands, unless it is
-a break (§2.2). A break blocks whether or not a source covers it. A reviewer
+a break (§2.2). A break the PR introduces, exposes or claims to fix blocks
+whether or not a source covers it. A reviewer
 who thinks the choice hides a real gap shows the gap. The gap then gets
 **its own document PR** (a ruling). It is not folded into the open PR, and it
 does not block that PR.
