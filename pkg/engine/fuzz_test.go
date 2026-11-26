@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/cubbit/dittofs/pkg/engine"
 	"github.com/cubbit/dittofs/pkg/engine/enginetest"
@@ -177,6 +178,11 @@ func (s *faultState) crashed() {
 // With the store failing, a crash after such a step leaves the file shorter:
 // the journal no longer holds where it ended. The target skips the step then.
 // With the store working the removal commits before the step ends, so it runs.
+//
+// decision: a deallocate of a tail the store has not recorded is skipped while
+// the store fails, because a crash after it leaves the file shorter (an engine
+// bug, issue #6499). Delete this guard when that is fixed; the seed then
+// becomes its regression test.
 func tailOverUnrecordedSize(size, recorded, off, length int) bool {
 	// A range that starts past the end takes no byte of the file.
 	if off >= size || off+length < size {
@@ -364,7 +370,7 @@ func owedRemovalsStay(env *fuzz.Env, w *engineWorld) error {
 // never gets there ends the run at the harness's step bound.
 func (w *engineWorld) awaitRemovalLoop() {
 	for !w.fix.E.LoopIdle(w.fix.Share.ID) || !w.fix.E.LoopParked(w.fix.Share.ID) {
-		runtime.Gosched()
+		time.Sleep(time.Millisecond)
 	}
 }
 

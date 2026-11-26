@@ -181,3 +181,38 @@ func TestAStepPastItsBoundEndsTheProcess(t *testing.T) {
 		}
 	}
 }
+
+// logRecorder keeps what a test logs.
+type logRecorder struct {
+	testing.TB
+	logged []string
+}
+
+func (r *logRecorder) Log(args ...any) {
+	for _, arg := range args {
+		r.logged = append(r.logged, arg.(string))
+	}
+}
+
+func TestTheTraceIsLoggedOnlyWhenAsked(t *testing.T) {
+	target := registerTarget(register{})
+	program := Decode(target, Seed(target, "write(v=1)"))
+
+	t.Setenv("DITTOFS_FUZZ_TRACE", "")
+
+	quiet := &logRecorder{TB: t}
+	logTrace(quiet, program)
+
+	if len(quiet.logged) != 0 {
+		t.Fatalf("logged %q with DITTOFS_FUZZ_TRACE unset, want nothing", quiet.logged)
+	}
+
+	t.Setenv("DITTOFS_FUZZ_TRACE", "1")
+
+	traced := &logRecorder{TB: t}
+	logTrace(traced, program)
+
+	if len(traced.logged) != 1 || !strings.Contains(traced.logged[0], "#00 write(v=1)") {
+		t.Fatalf("logged %q with DITTOFS_FUZZ_TRACE=1, want the trace of write(v=1)", traced.logged)
+	}
+}

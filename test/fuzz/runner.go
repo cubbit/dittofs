@@ -25,10 +25,21 @@ func Fuzz[R, M any](f *testing.F, target Target[R, M]) {
 	CheckCoverage(f, target)
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		if err := executeShrinking(t, target, Decode(target, data)); err != nil {
+		program := Decode(target, data)
+		logTrace(t, program)
+
+		if err := executeShrinking(t, target, program); err != nil {
 			t.Fatal(err)
 		}
 	})
+}
+
+// logTrace logs the program's trace when DITTOFS_FUZZ_TRACE is set, so a
+// corpus can be read after a change to a target's table.
+func logTrace(t testing.TB, program Program) {
+	if os.Getenv("DITTOFS_FUZZ_TRACE") != "" {
+		t.Log("\n" + program.String())
+	}
 }
 
 // Deterministic fails the test when two runs of an input differ, or when one
