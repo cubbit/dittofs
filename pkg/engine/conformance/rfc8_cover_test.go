@@ -687,7 +687,8 @@ func TestRFC8B_JournalFullOnAFullDevice(t *testing.T) {
 	})
 }
 
-// §2.4 settings, the engine's half: each setting Apply checks, at 0, is
+// §2.4 settings, the engine's half: each setting Apply checks, at a value it
+// refuses (0, a fraction of 1 or NaN, or a retry floor or cap out of order), is
 // refused and leaves the earlier settings in force, so a clone longer than
 // the clone_max_len in force is refused and one of exactly it accepted. Its
 // pool settings, Min and Target, and a share's profile

@@ -207,10 +207,7 @@ func (e *Engine) Apply(s Settings) error {
 		return fmt.Errorf("engine: clone_max_len %d is not positive", s.CloneMaxLen)
 	case s.OffloadRetryMin <= 0:
 		return fmt.Errorf("engine: offload.retry_min %v is not positive", s.OffloadRetryMin)
-	case s.OffloadRetryMax <= 0:
-		return fmt.Errorf("engine: offload.retry_max %v is not positive", s.OffloadRetryMax)
-	case s.OffloadRetryMaxPressure <= 0:
-		return fmt.Errorf("engine: offload.retry_max_pressure %v is not positive", s.OffloadRetryMaxPressure)
+	// With retry_min positive, the two orderings keep both caps positive.
 	case s.OffloadRetryMin > s.OffloadRetryMaxPressure:
 		return fmt.Errorf("engine: offload.retry_min %v is above offload.retry_max_pressure %v",
 			s.OffloadRetryMin, s.OffloadRetryMaxPressure)
