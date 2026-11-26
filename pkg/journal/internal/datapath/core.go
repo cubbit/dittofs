@@ -936,10 +936,11 @@ func newCore(deps Deps, state State, o coreOptions) (*Core, error) {
 
 	// The workers register their stops as they start, in the order their
 	// pieces were built: the retirer, then the reclaim worker, then the idle
-	// sealer, then the pool, then the durability layer. Close stops them in
-	// the reverse of this order — the durability layer, whose Stop wakes
-	// every durability waiter, first, then the pool, then the idle sealer,
-	// then the reclaim worker, then the retirer — so the pool is stopped
+	// sealer, then the read-ahead worker, then the pool, then the durability
+	// layer. Close stops them in the reverse of this order — the durability
+	// layer, whose Stop wakes every durability waiter, first, then the pool,
+	// then the read-ahead worker, then the idle sealer, then the reclaim
+	// worker, then the retirer — so the pool is stopped
 	// before the retirer, the order the segment package's group close
 	// documents for the same parts it owns: the wake the retirer's queue drop
 	// sends must reach a pool that makes nothing, and a retirement still in
