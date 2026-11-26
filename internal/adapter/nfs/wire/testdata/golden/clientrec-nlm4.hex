@@ -1,0 +1,7 @@
+# The Adapter bytes of an NLM host reached over IPv4, version 1.
+01                                   # version
+00000003                             # kind: NLM
+0000000e 636c6965 6e742e65 78616d70 6c650000   # mon_name "client.example", padded
+a0a1a2a3 a4a5a6a7 a8a9aaab acadaeaf # priv, 16 bytes
+00000004 c0a80001                    # Host 192.168.0.1
+00000004 c0a80002                    # Server 192.168.0.2

@@ -1,0 +1,11 @@
+# The Adapter bytes of an NFSv4.1 client, version 1: the version byte, then an XDR union on the
+# record's kind (2, NFSv4), whose arm is written by hand from the layout, never by the encoder.
+01                                   # version
+00000002                             # kind: NFSv4
+00000001                             # minor version that confirmed the record
+00000005                             # last csa_sequence applied
+00000005 0102030405 000000           # CREATE_SESSION4res: 5 bytes, padded to four
+00000002 00000003 00000010           # spo_must_enforce: 2 words
+00000000                             # spo_must_allow: 0 words
+00000000                             # NFSv4.0 callback: absent
+00000000                             # NFSv4.0 confirm: absent

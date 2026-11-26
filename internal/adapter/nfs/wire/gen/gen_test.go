@@ -206,3 +206,55 @@ func TestGenerateTypesListsEveryStruct(t *testing.T) {
 		t.Errorf("listed:\n%s\nwant B and A alone, in that order", out)
 	}
 }
+
+// A codec written for package wire has no import of wire and no qualifier on
+// its runtime, which is the package itself; for any other package both stay
+// (RFC 20 section 5.1).
+func TestGenerateInsideWire(t *testing.T) {
+	for _, c := range []struct {
+		pkg     string
+		imports bool
+	}{
+		{"wire", false},
+		{"wire_test", true},
+		{"v4", true},
+	} {
+		t.Run(c.pkg, func(t *testing.T) {
+			dir := t.TempDir()
+
+			src := "package " + c.pkg + "\n\ntype S struct{ A uint32 }\n"
+			if err := os.WriteFile(filepath.Join(dir, "in.go"), []byte(src), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			out, err := generate(dir, []string{"in.go"})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if got := bytes.Contains(out, []byte("nfs/wire\"")); got != c.imports {
+				t.Errorf("import of wire is %v, want %v, in:\n%s", got, c.imports, out)
+			}
+
+			if !bytes.Contains(out, []byte("pkg/resources\"")) {
+				t.Errorf("no import of pkg/resources in:\n%s", out)
+			}
+
+			q := ""
+			if c.imports {
+				q = "wire."
+			}
+
+			for _, want := range []string{
+				":= " + q + "Decoder{B: b}",
+				":= " + q + "Encoder{B: out.B}",
+				"(d *" + q + "Decoder, v uint32)",
+				"(e *" + q + "Encoder, v uint32)",
+			} {
+				if !bytes.Contains(out, []byte(want)) {
+					t.Errorf("no %q in:\n%s", want, out)
+				}
+			}
+		})
+	}
+}

@@ -207,7 +207,7 @@ func since(b *bytes.Buffer, n int, body func()) {
 func (g *gen) methods(b *bytes.Buffer, s *strct) {
 	fmt.Fprintf(b, `
 func (x *%[1]s) DecodeWire(b []byte, v uint32) (int, error) {
-	d := wire.Decoder{B: b}
+	d := %[2]sDecoder{B: b}
 	x.decodeXDR(&d, v)
 	return d.N, d.Err
 }
@@ -216,7 +216,7 @@ func (x *%[1]s) EncodeWire(v uint32, out *resources.Buf) error {
 	if x == nil {
 		x = new(%[1]s)
 	}
-	e := wire.Encoder{B: out.B}
+	e := %[2]sEncoder{B: out.B}
 	x.encodeXDR(&e, v)
 	if e.Err != nil {
 		return e.Err
@@ -224,13 +224,14 @@ func (x *%[1]s) EncodeWire(v uint32, out *resources.Buf) error {
 	out.B = e.B
 	return nil
 }
-`, s.name)
+`, s.name, g.q)
 
 	fields := s.fields
 	if s.union {
 		fields = s.fields[:1]
 	}
-	fmt.Fprintf(b, "\nfunc (x *%s) decodeXDR(d *wire.Decoder, v uint32) {\n", s.name)
+
+	fmt.Fprintf(b, "\nfunc (x *%s) decodeXDR(d *%sDecoder, v uint32) {\n", s.name, g.q)
 	for _, f := range fields {
 		since(b, f.since, func() { g.decode(b, "x."+f.name, f.t, 0) })
 	}
@@ -239,7 +240,7 @@ func (x *%[1]s) EncodeWire(v uint32, out *resources.Buf) error {
 	}
 	b.WriteString("}\n")
 
-	fmt.Fprintf(b, "\nfunc (x *%s) encodeXDR(e *wire.Encoder, v uint32) {\n", s.name)
+	fmt.Fprintf(b, "\nfunc (x *%s) encodeXDR(e *%sEncoder, v uint32) {\n", s.name, g.q)
 	for _, f := range fields {
 		since(b, f.since, func() { g.encode(b, "x."+f.name, f.t, 0) })
 	}
