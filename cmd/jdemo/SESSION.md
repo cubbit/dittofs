@@ -75,8 +75,8 @@ story walks on — the tool never claims a layer beneath the built ones.
 ## Numbers worth narrating
 
 - `used` counts each segment at the format's 256 MiB cap: the pool holds
-  six of them (content, spares, headroom, reserve), so a fresh journal
-  reads about 1.5 GiB committed and the roll beat does not raise it — a
+  five of them (headroom, reserve, content), so a fresh journal
+  reads about 1.25 GiB committed and the roll beat does not raise it — a
   spare simply becomes the next content segment.
 - Every write draws a version: hello is v1, the overwrite v2, the roll v3,
   the truncate v4 — `versions left` falls one each.

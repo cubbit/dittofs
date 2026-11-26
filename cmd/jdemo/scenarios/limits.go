@@ -118,11 +118,11 @@ func LimitsStory() ([]jdemo.Beat, journal.Settings) {
 		},
 		{
 			Title:   "the headroom math",
-			Caption: "used counts every segment at its cap: the pool's four are the journal's own overhead, and the share's budget lives in what remains — walk the numbers with the stats look",
+			Caption: "used counts every segment at its cap: the pool's five are the journal's own overhead, and the share's budget lives in what remains — walk the numbers with the stats look",
 			Run: func(d *jdemo.Demo) {
 				d.Printf("    max bytes:      %s\n", jdemo.HumanSize(limitsMaxBytes))
 				d.Printf("    share budget:   %s\n", jdemo.HumanSize(limitsShareEach))
-				d.Printf("    (open the stats look: used vs max; the pool's own quarter is the difference)\n")
+				d.Printf("    (open the stats look: used vs max; the pool's own five segments are the difference)\n")
 			},
 		},
 		{

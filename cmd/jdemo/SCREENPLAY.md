@@ -43,31 +43,36 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
     Every byte range answers to one."**
 - Now open `i` — **THE MOMENT**: "the honesty period ends here — here is
   the placement index itself, the in-memory structure every read walks:
-  ONE held entry, v1, backed by the record at segment 3, offset 48." Let
-  the room read the row; point at `record 3@48` — "the same place the
+  ONE held entry, v1, backed by the record at segment 4, offset 48." Let
+  the room read the row; point at `record 4@48` — "the same place the
   data dump will take you to."
 - Then `f` — **the room sees this:**
-  - **"Four segments already on disk, before we wrote anything. This is the
-    open's work, and it isn't waste — walk the numbers:"**
-    - **"Segment 1 — the HEADROOM spare. The class records that RETURN
-      space (forget, release) must always have somewhere to roll, even with
-      the journal full."**
-    - **"Segment 2 — the REPACK RESERVE. Repack's copying needs its own
+  - **"Five segments on disk before we wrote anything — the open made them,
+    and not one is waste. Walk the numbers:"** (the dump says `spare, never
+    taken` for every one of them)
+    - **"Segments 1 and 2 — the HEADROOM spares, one per stream. The class
+      records that RETURN space (forget, release) must always have somewhere
+      to roll, even with the journal full."**
+    - **"Segment 3 — the REPACK RESERVE. Repack's copying needs its own
       room, reserved the same way."**
-    - **"Segments 3 and 4 — the CONTENT spares. Two streams, one roll
-      each, without waiting on a filesystem."**
+    - **"Segments 4 and 5 — the CONTENT spares. Two streams, one roll each,
+      without waiting on a filesystem."**
     - **"Content fills LAST, deliberately: if it filled first, a full journal
       could write until every spare is gone with no class left that accepts
       the records that would free space again."**
+  - The new row marked `+` after the write is a SIXTH segment, file 6:
+    **"The write took segment 4 — the first content spare. The maker
+    refilled the content class straight away, so the NEXT roll already has a
+    spare waiting. That's the point."**
 - Open `d`:
-  - **"Right here: segment 3 keeps `hello world`. Forty-eight bytes of
-    segment header, then the record — its mtime, then the payload, aligned."**
-  - **"The other segments say `spare, never taken` — the honest decode of a
-    segment nobody has written to."**
-- `(f)` again if asked why a 5th appeared after an 11-byte write:
-  - **"The take left the content class short of its target for a moment —
-    the maker refills to stay ahead. The NEXT roll already has a spare
-    waiting. That's the point."**
+  - **"Right here: segment 4 keeps `hello world`. Forty-eight bytes of
+    segment header, then the record — its mtime, then the payload,
+    aligned."**
+  - **"The others say `spare, never taken` — the honest decode of a segment
+    nobody has written to."**
+- Stats (`+`) shows `used` at 1.25 GiB and `spares 2` the whole time — spares
+  are counted by the pool and charged at the segment cap, which is why `used`
+  doesn't move when one is taken.
 
 ## STEP 4 — overwrite half of it
 
