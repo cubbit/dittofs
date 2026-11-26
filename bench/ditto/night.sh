@@ -287,30 +287,40 @@ files() {
 # nights, stays from a night with a new flag or failure, or with any while no alert is open, to the
 # next night with neither.
 post() {
-    local work="${1%/*}" text broadcast=no
+    local work text broadcast=no open="" ts
+    work="$(cd "$1/.." && pwd)"
     text="$(cat "$1/slack.txt")"
     case "$(cat "$1/alert" 2>/dev/null)" in
     new)
-        broadcast=yes
-        touch "$work/alert-open"
+        broadcast=yes open=yes
         ;;
     same)
-        test -e "$work/alert-open" || broadcast=yes
-        touch "$work/alert-open"
+        # score.py marks a title only for a new flag, so an alert this opens gets its mark here.
+        if test ! -e "$work/alert-open"; then
+            broadcast=yes
+            case "$text" in :x:*) ;; *) text=":warning: $text" ;; esac
+        fi
+        open=yes
         ;;
     clear)
         if test -e "$work/alert-open"; then
-            broadcast=yes
+            broadcast=yes open=no
             text=":white_check_mark: *Nightly performance: nothing flagged or failing any more*
 $text"
-            rm "$work/alert-open"
         fi
         ;;
     esac
     test -n "${SLACK_DIR:-}" || return 0
     # shellcheck source-path=SCRIPTDIR source=../../test/scenarios/lib/slack.sh
     . "$TREE/test/scenarios/lib/slack.sh"
-    slack "$text" "$(slack_day "$work/slack-day" "Nightly performance")" "$broadcast" >/dev/null
+    ts="$(slack "$text" "$(slack_day "$work/slack-day" "Nightly performance")" "$broadcast")"
+    # The alert state moves only with a post that went out, so the next night decides on what the
+    # channel saw.
+    test -n "$ts" || return 0
+    case "$open" in
+    yes) touch "$work/alert-open" ;;
+    no) rm -f "$work/alert-open" ;;
+    esac
 }
 
 case "${1:-}" in
@@ -330,7 +340,7 @@ elif test -z "${HARNESS:-}"; then
     tree="$WORK/harness/$HARNESS"
     if test ! -d "$tree"; then
         mkdir -p "$tree.$$"
-        git -C "$REPO" archive "$HARNESS" bench test/scenarios/lib/slack.sh | tar -x -C "$tree.$$"
+        git -C "$REPO" archive "$HARNESS" bench test/scenarios/lib | tar -x -C "$tree.$$"
         mv -T "$tree.$$" "$tree" 2>/dev/null || rm -rf "$tree.$$"
     fi
     touch "$tree"
@@ -425,8 +435,12 @@ finish() {
     rm -rf "$WORK/build" "$RUN"
     if ! python3 "$HERE/score.py" "$NIGHT" "$REPO" >"$NIGHT/slack.txt"; then
         echo ":x: Nightly performance: scoring failed, see $NIGHT/night.log" >"$NIGHT/slack.txt"
-        echo new >"$NIGHT/alert"
+        # A failure that repeats the last night's is not new: it replies in the open alert's thread.
+        if test -e "$WORK/scoring-failed"; then echo same; else echo new; fi >"$NIGHT/alert"
+        touch "$WORK/scoring-failed"
         test "$rc" -ne 0 || rc=1
+    else
+        rm -f "$WORK/scoring-failed"
     fi
     if test "$SMOKE" = no && test -s "$NIGHT/points.csv"; then
         test -s "$WORK/trend.csv" || head -1 "$NIGHT/points.csv" >"$WORK/trend.csv"

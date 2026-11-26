@@ -167,9 +167,10 @@ run_case() { # name holder_path tester_path
   touch "$REL"; wait $hpid 2>/dev/null
   # The holder has exited, but its unlock travels through its client's kernel
   # to the server, and one try after a fixed pause can arrive first. Poll the
-  # conflicting lock for up to 10 s instead.
-  local res2=""
-  for _ in $(seq 1 100); do
+  # conflicting lock for up to 10 s instead, by the clock: each try starts
+  # python3 and makes a round trip, so a count of tries runs longer.
+  local res2="" deadline=$((SECONDS + 10))
+  while [ "$SECONDS" -lt "$deadline" ]; do
     res2=$(python3 "$LOCKPY" try "$tp" w 0 100 2>/dev/null)
     [ "$res2" = ACQUIRED ] && break
     sleep 0.1

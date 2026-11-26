@@ -16,8 +16,10 @@ if [ -n "${DITTOFS_SKIP_PREPUSH:-}" ]; then
 fi
 
 # $1 = remote name, $2 = remote URL. Stdin: "<local-ref> <local-sha> <remote-ref> <remote-sha>"
-# We don't need per-ref granularity — use the working tree against origin/develop.
-BASE_REF="${DITTOFS_PREPUSH_BASE:-origin/develop}"
+# We don't need per-ref granularity — use the working tree against the branch's base.
+# decision: the default base is this branch's development branch, not develop: a
+# branch cut from it differs from develop in thousands of files.
+BASE_REF="${DITTOFS_PREPUSH_BASE:-origin/feat/storage-v2}"
 if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
     echo "pre-push: $BASE_REF not found, skipping test selection" >&2
     exit 0
@@ -82,8 +84,9 @@ ROOT_BUILD=$(list . "$BUILDS_ONLY" $ROOT_PKGS)
 OPERATOR_GO=$(list "$OPERATOR_DIR" "or .GoFiles .CgoFiles .TestGoFiles .XTestGoFiles .InvalidGoFiles" $OPERATOR_PKGS)
 
 if [ -n "$ROOT_BUILD" ]; then
+    # -o /dev/null: one main package would write its binary into the checkout.
     # shellcheck disable=SC2086
-    go build $ROOT_BUILD || fail "go build"
+    go build -o /dev/null $ROOT_BUILD || fail "go build"
 fi
 # --packages takes one comma-separated value; several words would read as the
 # suite's TEST patterns and the run would refuse them.

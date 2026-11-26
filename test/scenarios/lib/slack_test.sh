@@ -164,9 +164,9 @@ check "a quiet night with no alert open stays in the thread" \
 PARENT="$(next_ts)"
 night 2026-11-24 same
 take brief
-check "flags or failures already seen, back after a clear night, show in the channel too" \
+check "flags or failures already seen, back after a clear night, show in the channel too, marked" \
     ":calendar: *Nightly performance, 2026-11-24* | top | not
-2026-11-24 summary | $PARENT | broadcast"
+:warning: 2026-11-24 summary | $PARENT | broadcast"
 
 # A day's parent that fails to post: the night's reply goes at the top, the day is not kept, and the
 # next post that day tries the parent again.
@@ -187,6 +187,11 @@ if (unset SLACK_DIR && night 2026-11-26 new); then
     check "without SLACK_DIR a night posts nothing" ""
 else
     fail "without SLACK_DIR a night posts nothing: the post failed"
+fi
+if test -e "$TMP/perf/alert-open"; then
+    fail "a night that posts nothing leaves the alert state: alert-open was created"
+else
+    ok "a night that posts nothing leaves the alert state"
 fi
 
 test "$FAILURES" -eq 0 || { echo "$FAILURES failed"; exit 1; }
