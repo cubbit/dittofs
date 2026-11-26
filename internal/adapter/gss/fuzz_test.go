@@ -5,6 +5,10 @@ import (
 	"crypto/hmac"
 	"encoding/asn1"
 	"encoding/binary"
+	"encoding/hex"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -219,6 +223,29 @@ func FuzzWrapToken(f *testing.F) {
 	f.Add([]byte("\x05\x04\x02\xfe\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")) // a header whose filler is altered
 	f.Add([]byte("\x04\x04\x02\xff\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")) // a MIC token's ID
 	f.Add([]byte("\x05\x04\x02\xff\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"))     // a header cut short
+	// The Linux client's and knfsd's krb5p tokens in knfsd's capture, under
+	// another key: each body ends with its token, after its 4-byte length.
+	for _, name := range []string{"knfsd-nfs3-gss3-krb5p-write-call", "knfsd-nfs3-gss3-krb5p-write-reply", "knfsd-nfs4-gss41-krb5p-write-call", "knfsd-nfs4-gss41-krb5p-write-reply"} {
+		raw, err := os.ReadFile(filepath.Join("..", "nfs", "wire", "testdata", "golden", name+".hex"))
+		if err != nil {
+			f.Fatal(err)
+		}
+		var h strings.Builder
+		for line := range strings.Lines(string(raw)) {
+			if !strings.HasPrefix(line, "#") {
+				h.WriteString(strings.Join(strings.Fields(line), ""))
+			}
+		}
+		msg, err := hex.DecodeString(h.String())
+		if err != nil {
+			f.Fatal(err)
+		}
+		i := bytes.LastIndex(msg, []byte{0x05, 0x04})
+		if i < 4 || int(binary.BigEndian.Uint32(msg[i-4:])) != len(msg)-i {
+			f.Fatalf("%s: no Wrap token closes the message", name)
+		}
+		f.Add(msg[i:])
+	}
 	for _, msg := range [][]byte{nil, []byte("a krb5p call's arguments"), bytes.Repeat([]byte{0x5a}, 1000)} {
 		tok := seal(init, msg)
 		f.Add(tok)
