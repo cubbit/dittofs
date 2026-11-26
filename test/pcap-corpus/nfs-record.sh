@@ -18,6 +18,14 @@
 #          sm-notify -f sends, as a server restart does. It runs last by
 #          default: its restart opens a grace period, in which knfsd refuses
 #          a non-reclaim NFSv4 OPEN with NFS4ERR_GRACE
+#   gss    RPCSEC_GSS: a throwaway KDC in the harness's image (dittofs-dt-kdc,
+#          built from test/smb-conformance/kdc), the export re-exported
+#          sec=krb5:krb5i:krb5p, and for NFSv3 with MOUNT, NFSv4.0 and
+#          NFSv4.1 a mount at each of krb5, krb5i and krb5p, where a user
+#          principal stats, writes and reads a file before the unmount. Its
+#          nfs/ keytab is kept as <outdir>/gss/nfs.keytab, rpc.gssd's and
+#          rpc.svcgssd's logs beside it. It restarts nfs-server, and runs
+#          only when named, since it needs docker and the image
 #
 # Each area's frames that tshark reads as RPC are kept in
 # <outdir>/<area>/reference.pcap; everything else on lo is dropped.
@@ -32,7 +40,8 @@
 # Needs root, the kernel NFS server (nfs-kernel-server), tcpdump, tshark,
 # xfsprogs, attr and python3. Run by hand; no suite runs it. On exit it
 # releases what it started itself: its background processes, its mount, its
-# export and its loop-mounted image.
+# export and its loop-mounted image, and for gss its KDC container, its
+# rpc.gssd and rpc.svcgssd and the user's credential cache.
 #
 # Usage:
 #   sudo NFS_RECORD_THROWAWAY_HOST=1 nfs-record.sh <outdir> [area...]
@@ -54,6 +63,7 @@ done
 
 scratch="$(mktemp -d /tmp/nfs-record.XXXXXX)"
 exp="$scratch/export" mnt="$scratch/mnt" dump_pid="" holder="" exported=""
+kdc="" gssd="" svcgssd=""
 
 # cleanup releases only what this script holds: fd 3, which would keep $mnt
 # busy, its own tcpdump and lock holder, then the mount, export and image it
@@ -65,8 +75,18 @@ cleanup() {
     [[ -n "$p" ]] && kill "$p" 2>/dev/null && wait "$p" 2>/dev/null
   done
   mountpoint -q "$mnt" && umount -f "$mnt"
-  [[ -n "$exported" ]] && exportfs -u "127.0.0.1:$exp"
-  mountpoint -q "$exp" && umount "$exp"
+  for p in "$gssd" "$svcgssd"; do
+    [[ -n "$p" ]] && kill "$p" 2>/dev/null && wait "$p" 2>/dev/null
+  done
+  [[ -n "$kdc" ]] && docker rm -f "$kdc" >/dev/null
+  [[ -n "$exported" ]] && exportfs -u "127.0.0.1:$exp" && exportfs -f
+  # Polled, bounded at 10 s: knfsd's file cache lets go of the export's files
+  # a moment after the export is gone, and until then the unmount is busy.
+  local i
+  for ((i = 0; i < 100; i++)); do
+    mountpoint -q "$exp" || break
+    umount "$exp" 2>/dev/null || sleep 0.1
+  done
   mountpoint -q "$exp" || mountpoint -q "$mnt" || rm -rf --one-file-system "$scratch"
 }
 trap cleanup EXIT
@@ -188,6 +208,80 @@ area_nfs42() {
   setfattr -x user.dittofs "$f"
   rm "$f" "$mnt/nfs42-copy" "$mnt/nfs42-clone"
   umount "$mnt"
+}
+
+# The gss area's realm. Its keys protect nothing but the capture: the nfs/
+# keytab is committed beside it so tests can decrypt the captured tickets.
+# The user principal is nobody@ so that knfsd maps it to the host's nobody
+# user rather than to no uid, which it refuses to create files as.
+realm=DITTOFS.TEST kdc_port=18888 gss_user=nobody gss_uid=65534
+
+# as_user <cmd...>: run as the user principal's uid, whose credential cache
+# rpc.gssd finds under its -d directory.
+as_user() { setpriv --reuid="$gss_uid" --regid="$gss_uid" --clear-groups "$@"; }
+
+area_gss() {
+  for t in docker rpc.gssd rpc.svcgssd kinit setpriv; do
+    command -v "$t" >/dev/null || { echo "missing: $t" >&2; exit 2; }
+  done
+  # rpc.gssd names the server by a reverse lookup of 127.0.0.1, the address
+  # mounted, so the nfs/ principal holds the host's name for it.
+  local srv krb="$scratch/krb" cc="$scratch/ccache"
+  srv="$(getent hosts 127.0.0.1 | awk '{print $2; exit}')"
+  mkdir -p "$krb" "$cc"
+  chmod 755 "$scratch" # the user reaches $mnt through it
+  chmod 1777 "$cc"
+  kdc="nfs-record-kdc-$$"
+  docker run -d --rm --name "$kdc" --network host -v "$krb:/keytabs" \
+    -e KRB5_REALM="$realm" -e KDC_HOST=127.0.0.1 -e KDC_PORT="$kdc_port" \
+    -e DITTOFS_SPN="nfs/$srv" -e DITTOFS_UID=0 -e DITTOFS_GID=0 \
+    -e USER_PRINCIPAL="$gss_user" -e USER_PASSWORD=nfs-record dittofs-dt-kdc >/dev/null
+  export KRB5_CONFIG="$krb/krb5.conf" KRB5_KTNAME="$krb/dittofs.keytab"
+  # Until the KDC answers with the keytab it wrote, bounded at 60 s.
+  local i
+  for ((i = 0; i < 600; i++)); do
+    [[ -s $krb/dittofs.keytab ]] && kinit -k -c "MEMORY:probe" "nfs/$srv@$realm" 2>/dev/null && break
+    sleep 0.1
+  done
+  ((i < 600)) || { docker logs "$kdc" >&2; exit 1; }
+  # The client's machine principal, which rpc.gssd finds in its own keytab.
+  docker exec "$kdc" kadmin.local -q "addprinc -randkey host/$(hostname -f)@$realm" >/dev/null
+  docker exec "$kdc" kadmin.local -q "ktadd -k /keytabs/client.keytab host/$(hostname -f)@$realm" >/dev/null
+  kinit -c "FILE:$cc/krb5cc_$gss_uid" "$gss_user@$realm" <<<nfs-record >/dev/null
+  chown "$gss_uid:$gss_uid" "$cc/krb5cc_$gss_uid"
+  cp "$krb/dittofs.keytab" "$out/gss/nfs.keytab"
+
+  # A restart forgets the NFSv4 clients of earlier areas, whose AUTH_SYS
+  # principal would make the client's krb5 SETCLIENTID NFS4ERR_CLID_INUSE.
+  systemctl restart nfs-server
+  rpc.svcgssd -f -vvv -p "nfs/$srv@$realm" 2>"$scratch/svcgssd.log" &
+  svcgssd=$!
+  rpc.gssd -f -vvv -k "$krb/client.keytab" -d "$cc" 2>"$scratch/gssd.log" &
+  gssd=$!
+  # fsid=0 makes the export NFSv4's root: knfsd's generated pseudo-root
+  # allows only AUTH_SYS, so a sec=krb5 PUTROOTFH there is NFS4ERR_WRONGSEC.
+  exportfs -o rw,sync,no_subtree_check,no_root_squash,fsid=0,sec=krb5:krb5i:krb5p "127.0.0.1:$exp"
+
+  local m vers path sec f
+  for m in "vers=3,proto=tcp,mountproto=tcp,port=2049 $exp" "vers=4.0 /" "vers=4.1 /"; do
+    read -r vers path <<<"$m"
+    for sec in krb5 krb5i krb5p; do
+      mount -t nfs -o "$vers,sec=$sec" "127.0.0.1:$path" "$mnt"
+      f="$mnt/gss-$sec"
+      as_user stat "$mnt" >/dev/null
+      as_user sh -c "echo hello >'$f'"
+      echo 3 >/proc/sys/vm/drop_caches
+      as_user cat "$f" >/dev/null
+      as_user rm "$f"
+      umount "$mnt"
+    done
+  done
+
+  kill "$gssd" "$svcgssd"; wait "$gssd" "$svcgssd" || true; gssd="" svcgssd=""
+  cp "$scratch/gssd.log" "$scratch/svcgssd.log" "$out/gss/"
+  docker rm -f "$kdc" >/dev/null; kdc=""
+  unset KRB5_CONFIG KRB5_KTNAME
+  export_scratch
 }
 
 for a in "${areas[@]}"; do
