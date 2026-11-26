@@ -38,11 +38,17 @@ func devTracing() (trace.Tracer, func(context.Context) error, error) {
 	if endpoint == "" {
 		return nil, func(context.Context) error { return nil }, nil
 	}
-	if u, err := url.Parse(endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+	u, err := url.Parse(endpoint)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, nil, fmt.Errorf("the OTLP endpoint %q is no http(s) URL", endpoint)
 	}
+	// The exporter posts to the URL's path as given, so a collector's base URL
+	// gets the OTLP/HTTP traces path.
+	if u.Path == "" || u.Path == "/" {
+		u.Path = "/v1/traces"
+	}
 	exp, err := otlptracehttp.New(context.Background(),
-		otlptracehttp.WithEndpointURL(endpoint))
+		otlptracehttp.WithEndpointURL(u.String()))
 	if err != nil {
 		return nil, nil, fmt.Errorf("an OTLP trace exporter for %s: %w", endpoint, err)
 	}

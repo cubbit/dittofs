@@ -10,11 +10,11 @@
 #   files    5,000 files of 4 KiB, 64 KiB and 1.75 MiB, created (each fsynced), then read back
 # Each target starts after an fstrim of the data's file system, and the two take turns going first:
 # one order on odd repeats, the other on even ones, swapped from one date to the next.
-# score.py then compares the two targets point by point and writes the summary. Slack gets it by the
-# scenarios' rules, through their reporting (test/scenarios/lib/report.sh), same bot, same channel:
-# a quiet night posts nothing; the first new flag or failure is a message; while that alert is open,
-# a new one replies in its thread and a repeat posts nothing; the night with no flag and no failure
-# replies there, shown in the channel too, and closes it. See post.
+# score.py then compares the two targets point by point and writes the summary. Slack gets it
+# through the scenarios' Slack library (test/scenarios/lib/slack.sh), same bot, same channel, as a
+# reply in the day's thread: a night with a new flag or failure, or with any while no alert is open,
+# shows in the channel too, and so does the first night with no flag and no failure after it; any
+# other night stays in the thread. See post.
 #
 #   night.sh              as root, from cron at 18:45 (setup.sh writes the cron file)
 #   SMOKE=yes night.sh    one short point of each kind, a few minutes; never posts
@@ -23,7 +23,7 @@
 #
 # Run from cron, the checkout's working tree is not what runs. night.sh fetches develop and the branch the checkout
 # is on, then hands over to the night.sh of that branch as fetched, extracted under
-# /var/tmp/dittofs-perf/harness/<commit>: its scripts, the mailbox jobs and the scenarios' reporting
+# /var/tmp/dittofs-perf/harness/<commit>: its scripts, the mailbox jobs and the Slack library
 # all come from there, and dfs is built from develop as fetched. Both commits are recorded. A fetch
 # that fails leaves the last fetched commits.
 #
@@ -282,31 +282,44 @@ files() {
     test "$failed" -eq 0
 }
 
-# post NIGHT: posts NIGHT's summary by the rules above. score.py's NIGHT/alert says new, same or clear,
-# and WORK/slack-ts keeps the open alert's message.
+# post NIGHT: posts NIGHT's summary by the rules above, in the thread of the day that slack-day,
+# beside the nights, keeps. score.py's NIGHT/alert says new, same or clear; alert-open, beside the
+# nights, stays from a night with a new flag or failure, or with any while no alert is open, to the
+# next night with neither.
 post() {
-    local text ts
+    local work text broadcast=no open="" ts
+    work="$(cd "$1/.." && pwd)"
     text="$(cat "$1/slack.txt")"
-    ts="$(cat "$WORK/slack-ts" 2>/dev/null || true)"
-    # shellcheck disable=SC2034 # report.sh reads them
-    HERE="$TREE/test/scenarios" CACHE="$WORK"
-    # shellcheck source-path=SCRIPTDIR source=../../test/scenarios/lib/report.sh
-    . "$TREE/test/scenarios/lib/report.sh"
     case "$(cat "$1/alert" 2>/dev/null)" in
     new)
-        if test -n "$ts"; then
-            slack "$text" "$ts" >/dev/null
-        else
-            ts="$(slack "$text")"
-            test -z "$ts" || echo "$ts" >"$WORK/slack-ts"
+        broadcast=yes open=yes
+        ;;
+    same)
+        # score.py marks a title only for a new flag, so an alert this opens gets its mark here.
+        if test ! -e "$work/alert-open"; then
+            broadcast=yes
+            case "$text" in :x:*) ;; *) text=":warning: $text" ;; esac
         fi
+        open=yes
         ;;
     clear)
-        test -n "$ts" || return 0
-        slack ":white_check_mark: *Nightly performance: nothing flagged or failing any more*
-$text" "$ts" yes >/dev/null
-        rm -f "$WORK/slack-ts"
+        if test -e "$work/alert-open"; then
+            broadcast=yes open=no
+            text=":white_check_mark: *Nightly performance: nothing flagged or failing any more*
+$text"
+        fi
         ;;
+    esac
+    test -n "${SLACK_DIR:-}" || return 0
+    # shellcheck source-path=SCRIPTDIR source=../../test/scenarios/lib/slack.sh
+    . "$TREE/test/scenarios/lib/slack.sh"
+    ts="$(slack "$text" "$(slack_day "$work/slack-day" "Nightly performance")" "$broadcast")"
+    # The alert state moves only with a post that went out, so the next night decides on what the
+    # channel saw.
+    test -n "$ts" || return 0
+    case "$open" in
+    yes) touch "$work/alert-open" ;;
+    no) rm -f "$work/alert-open" ;;
     esac
 }
 
@@ -422,8 +435,13 @@ finish() {
     rm -rf "$WORK/build" "$RUN"
     if ! python3 "$HERE/score.py" "$NIGHT" "$REPO" >"$NIGHT/slack.txt"; then
         echo ":x: Nightly performance: scoring failed, see $NIGHT/night.log" >"$NIGHT/slack.txt"
-        echo new >"$NIGHT/alert"
+        # A failure that repeats the last posted night's is not new: it replies in the open alert's
+        # thread. Only a night that posts keeps the marker, so a smoke run cannot hide a failure.
+        if test -e "$WORK/scoring-failed"; then echo same; else echo new; fi >"$NIGHT/alert"
+        test "$CALIBRATION" = yes || test "$SMOKE" = yes || touch "$WORK/scoring-failed"
         test "$rc" -ne 0 || rc=1
+    else
+        test "$CALIBRATION" = yes || test "$SMOKE" = yes || rm -f "$WORK/scoring-failed"
     fi
     if test "$SMOKE" = no && test -s "$NIGHT/points.csv"; then
         test -s "$WORK/trend.csv" || head -1 "$NIGHT/points.csv" >"$WORK/trend.csv"

@@ -12,7 +12,8 @@ These rules apply when a PR is opened, and when its title or description is edit
 PRs target an integration branch: `develop`, or `feat/storage-v2` for storage-v2 work, which
 has the same rules and its own merge queue. A stacked PR targets the PR below it (below).
 Branch from a fresh `origin/<target>` and rebase onto it before pushing; never merge the
-target in. When the target is not `develop`, set `DITTOFS_PREPUSH_BASE=origin/<target>` and
+target in. The pre-push hook compares with `origin/feat/storage-v2` unless
+`DITTOFS_PREPUSH_BASE=origin/<target>` names another target. When the target is not `develop`,
 pass `dt run --base origin/<target>`.
 
 Storage-v2 docs (its RFCs, plans and epic breakdowns under `.planning/`, and their follow-ups)

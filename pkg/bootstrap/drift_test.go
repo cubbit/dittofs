@@ -757,7 +757,7 @@ func TestScanFlagsATestOnlyNameNobodyUses(t *testing.T) {
 var driftFloor = map[string]int{
 	".githooks/pre-commit":      16,
 	".githooks/commit-msg":      4,
-	".githooks/pre-push":        5,
+	".githooks/pre-push":        3,
 	"cmd/dfs/commands/start.go": 1,
 }
 
