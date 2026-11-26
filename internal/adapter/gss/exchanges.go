@@ -2,7 +2,6 @@ package gss
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/cubbit/dittofs/pkg/vfs"
@@ -45,7 +44,7 @@ func (x *Exchanges) Step(ctx context.Context, key Key, newMech func() Mechanism,
 		return nil, nil, err
 	}
 	if !ok {
-		return nil, nil, logonFailure(errors.New("a mechanism that takes a second leg"))
+		return nil, nil, fmt.Errorf("%w: gss: a mechanism that takes a second leg", vfs.ErrLogonFailure)
 	}
 	return out, m.Context(), nil
 }
