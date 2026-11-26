@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
 	"github.com/cubbit/dittofs/pkg/node/apiv1/client"
 	"github.com/cubbit/dittofs/test/e2e/framework"
 	"github.com/cubbit/dittofs/test/harness/fixture"
@@ -25,6 +26,10 @@ import (
 
 // served is the server Run started for the package's tests.
 var served *fixture.Server
+
+// mounter is the group every NFS mount presents and every share grants
+// read, which Run creates on the server it starts.
+var mounter Group
 
 // Server is the running server as a test reaches it.
 type Server struct {
@@ -69,6 +74,12 @@ func run(m *testing.M, f registry.Fixture) (int, error) {
 	if served, err = fixture.Start(ctx, f, bin, out, os.Stderr); err != nil {
 		return 0, fmt.Errorf("starting the server: %w; its log is %s", err, filepath.Join(out, "dfs.log"))
 	}
+	g, err := served.Client().Groups().Create(ctx, apiv1.GroupSpec{Name: "mount"})
+	if err != nil || g.Spec.GID == nil {
+		_ = served.Stop()
+		return 0, fmt.Errorf("creating the mount group: answered %+v, %v; want the group with a gid", g.Spec, err)
+	}
+	mounter = Group{ID: g.ID, GID: *g.Spec.GID}
 	code := m.Run()
 	if err := served.Stop(); err != nil {
 		return 0, fmt.Errorf("stopping the server: %w; its log is %s", err, filepath.Join(out, "dfs.log"))

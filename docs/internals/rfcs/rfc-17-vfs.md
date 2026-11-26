@@ -685,8 +685,8 @@ protocol; an adapter **MUST** state, per call, one of the profiles below,
 chosen by program and procedure, never a value built from a field of the
 request. The zero value of every
 capability is the plain behaviour and each capability changes only the rule
-it names; for `HostCall`, `PrivilegeOnEveryCall`, `WantOpenID`, `ClientIsMachine`
-and `SeesPseudoFS` the zero value is the narrower one, so one left unset fails
+it names; for `HostCall`, `PrivilegeOnEveryCall`, `WantOpenID`, `ClientIsMachine`,
+`SeesPseudoFS`, `SpellsReservedNames` and `ListsEveryEntry` the zero value is the narrower one, so one left unset fails
 closed. `OpenFilesKeepNames` and `GrantBelongsToOpen` are the exception (below). Each rule reads its capability in one named place, a method of the
 type that owns the rule (`Caller.keepsNames` reads `OpenFilesKeepNames`), so
 a search for `Has(OpenFilesKeepNames)` finds every rule that reads it.
@@ -708,15 +708,18 @@ const (
 	ClientIsMachine                       // the client is a whole machine its users share: its record names no owner
 	HostCall                              // the call comes from a host's lock or mount service, which proves no user
 	SeesPseudoFS                          // the client sees a pseudo-filesystem above the shares; LOOKUPP at a share's root goes up to it
+	SpellsReservedNames                   // on a windows-rule share, a reserved character or trailing space or dot in a name is stored in its private-use spelling, not refused
+	ListsEveryEntry                       // a listing is never filtered by access-based enumeration
 )
 
 func (c Caps) Has(x Caps) bool // every bit of x is set
 func (c Caps) String() string  // the set bits, short names joined by "|", "" for none: "keep-names|open-id|oplock|machine"
 
-// The profile each adapter states, declared once beside Caps:
-var (
-	NFSv3Caps = PrivilegeOnEveryCall
-	NFSv4Caps = PrivilegeOnEveryCall | SeesPseudoFS
+// The profile each adapter states, declared once beside Caps, as constants, so
+// no code, a test included, can change one:
+const (
+	NFSv3Caps = PrivilegeOnEveryCall | SpellsReservedNames | ListsEveryEntry
+	NFSv4Caps = PrivilegeOnEveryCall | SeesPseudoFS | SpellsReservedNames | ListsEveryEntry
 	MountCaps = PrivilegeOnEveryCall | HostCall
 	NLMCaps   = PrivilegeOnEveryCall | ClientIsMachine | HostCall
 	SMBCaps   = OpenFilesKeepNames | WantOpenID | GrantBelongsToOpen | ClientIsMachine
@@ -735,6 +738,8 @@ states `MountCaps` on `MNT` and `EXPORT` alone, and `NFSv3Caps` otherwise.
 | `GrantBelongsToOpen` | SMB | A batch oplock covers its one open, and a second open of the file by the same machine breaks it; an NFSv4 read delegation is the client's, covers none of its opens, is not broken by its own client's opens, and never caches handles ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)). |
 | `SeesPseudoFS` | NFSv4 | `Lookup` of `..` at a share's root answers the pseudo directory the share is mounted in, so an NFSv4 `LOOKUPP` from `/data` walks up to `/`; an NFSv3 or SMB caller's `..` there answers the share's root itself, as a share is its own top. |
 | `ClientIsMachine` | SMB, NLM | The record names no owner, so a second user signing in from the same Windows machine joins it; an NFSv4 `EXCHANGE_ID` of the same name from another principal is refused ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). |
+| `SpellsReservedNames` | NFSv3, NFSv4 | On a share under the `windows` name rule, an NFS create of `a:b` is stored and listed as `a` U+F022 `b`, and a lookup of either spelling finds it; an SMB create of `a:b` fails `ErrInvalid` ([RFC 7 §3.8](rfc-7-namespace-metadata.md#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use)). |
+| `ListsEveryEntry` | NFSv3, NFSv4 | On a share asking access-based enumeration, bob's SMB listing of `home/` shows only `bob/`, and his NFS `READDIR` of it shows `alice/` and `bob/` ([RFC 19 §3.7](rfc-19-authorization.md#3.7%20Listings%20hide%20what%20the%20caller%20cannot%20read)). |
 
 The request fields that already carry an intent state the rest:
 

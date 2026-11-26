@@ -14,7 +14,7 @@ import (
 // returns the next, until done.
 type Mechanism interface {
 	Step(ctx context.Context, in []byte) (out []byte, done bool, err error)
-	Context() *Context // once done; nil before, and after a failed Step
+	Context() *Context // once done; nil before, and after a failed first Step
 }
 
 // Context is what a finished exchange leaves: what it proved, and the keys.

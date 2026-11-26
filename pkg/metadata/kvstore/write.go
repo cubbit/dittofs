@@ -168,12 +168,7 @@ var _ entity.ControlPlaneTx = controlTx{}
 func (c controlTx) principals() (uint64, error) { return raisePrincipals(c.tx, c.pgen) }
 
 func (c controlTx) Setting(scope entity.SettingScope, key string) (entity.Setting, bool, error) {
-	b, ok, err := get(c.tx, settingKey(scope, key))
-	if err != nil || !ok {
-		return entity.Setting{}, false, err
-	}
-	s, err := decodeSetting(scope, key, b)
-	return s, err == nil, err
+	return settingIn(c.tx, scope, key)
 }
 
 func (c controlTx) User(p entity.Principal) (entity.User, bool, error) {

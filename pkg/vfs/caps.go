@@ -15,6 +15,8 @@ const (
 	ClientIsMachine      = caps.ClientIsMachine
 	HostCall             = caps.HostCall
 	SeesPseudoFS         = caps.SeesPseudoFS
+	SpellsReservedNames  = caps.SpellsReservedNames
+	ListsEveryEntry      = caps.ListsEveryEntry
 
 	NFSv3Caps = caps.NFSv3Caps
 	NFSv4Caps = caps.NFSv4Caps

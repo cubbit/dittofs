@@ -4,7 +4,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/openstate/state"
 )
 
 // The filesystem service maps each of these once to its own neutral errors.
@@ -43,7 +44,7 @@ var (
 	ErrFileOpen       = errors.New("openstate: file has an open, so it is not released")
 	ErrReleasing      = errors.New("openstate: file is being released") // answered as for a released file, stale
 	ErrAccess         = errors.New("openstate: the open was not granted the access the request needs")
-	ErrLocked         = errors.New("openstate: range locked") // as *LockedError from a lock request, naming the holder
+	ErrLocked         = state.ErrLocked // as *LockedError from a lock request, naming the holder
 	ErrRangeNotLocked = errors.New("openstate: unlock of a range the owner does not hold")
 	ErrBadSeqID       = errors.New("openstate: owner sequence out of order")
 	ErrLocksHeld      = errors.New("openstate: the owner or lock state still holds locks")
@@ -57,7 +58,7 @@ var (
 
 	// ErrRecordChanged is the store's own: AddSession hands its refusal on
 	// as it is, with the current record.
-	ErrRecordChanged = kvstore.ErrRecordChanged
+	ErrRecordChanged = entity.ErrRecordChanged
 
 	// ErrLost is a flush through an open across a loss of the file's
 	// acknowledged writes; the service maps it to the content error it
@@ -96,13 +97,6 @@ const (
 
 func (e *DelayError) Error() string        { return ErrDelay.Error() }
 func (e *DelayError) Is(target error) bool { return target == ErrDelay }
-
-// LockedError is a lock conflict. errors.Is(err, ErrLocked) holds for it, and
-// Holder is the conflicting lock, which a protocol's denial reports.
-type LockedError struct{ Holder Lock }
-
-func (e *LockedError) Error() string        { return ErrLocked.Error() }
-func (e *LockedError) Is(target error) bool { return target == ErrLocked }
 
 // RevokedError names revoked state. errors.Is(err, ErrRevoked) holds for it,
 // and Cause is why it was revoked: RevokedByAdmin or RevokedGrant.

@@ -54,12 +54,12 @@ func (s *Store) nextNumber(ctx context.Context, share entity.ShareID) (uint64, e
 }
 
 // IDKind names one server-wide ID allocator, kept under IDS‖kind.
-type IDKind byte
+type IDKind = entity.IDKind
 
 const (
-	IDClient IDKind = 1
-	IDOpen   IDKind = 2
-	IDLock   IDKind = 3
+	IDClient = entity.IDClient
+	IDOpen   = entity.IDOpen
+	IDLock   = entity.IDLock
 )
 
 // idShard is the shard number allocator's kind. A share's creation reads and

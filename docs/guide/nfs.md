@@ -338,6 +338,24 @@ No mode keeps root's administrator rights on a share. Admin access comes only
 from a share grant ([access control](access-control.md)). A squashed caller acts
 as the installation's anonymous user; you cannot choose another.
 
+### Groups from the server (manage-gids)
+
+An AUTH_SYS client sends the user's groups with every request, at most 16 of
+them, taken from the client's own group database. With `--manage-gids`,
+DittoFS ignores the groups the client sends and uses the groups it holds for
+the user instead: the user's groups and nested groups, and, for a directory
+user, the directory's. This is the same as `rpc.mountd --manage-gids` on Linux.
+The group the client names first still becomes the group of the files the
+user creates.
+
+```bash
+dfsctl share export-policy update archive --manage-gids
+```
+
+It is off by default. Turn it on when DittoFS or your directory holds the
+groups, or when users are in more than 16 groups. Leave it off when clients
+take groups from a local `/etc/group` that DittoFS does not know.
+
 ### Worked example
 
 A file owned by UID 1000 with mode `0644`, on a share whose grant admits the

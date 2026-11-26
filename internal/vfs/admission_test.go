@@ -191,7 +191,7 @@ func TestADenyOnlyPrincipalMatchesDenyEntriesOnly(t *testing.T) {
 func TestNewRefusesADepsWithoutIdentity(t *testing.T) {
 	fs := kvstoretest.NewFS(t, memKV)
 	clock := sim.NewTestClock(time.Unix(0, 0))
-	tab, err := openstate.New(openstate.Deps{Records: fs.Store, Node: entity.NodeID{15: 1}, Clock: clock, Rand: rand.Reader})
+	tab, err := openstate.New(openstate.Deps{Records: fs.Store, Clients: fs.Store.Clients(), Opens: fs.Store.Opens(), Node: entity.NodeID{15: 1}, Clock: clock, Rand: rand.Reader})
 	if err != nil {
 		t.Fatal(err)
 	}
