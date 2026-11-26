@@ -18,7 +18,7 @@ that generates decks will be distilled from it once the first deck exists.
 ## Publishing
 
 `.github/workflows/learning-pages.yml` mirrors `learn-dittofs/` to the
-`dittofs-learning` bucket on Cubbit DS3 whenever a push to `develop` changes it,
+`dittofs-learning` bucket on Cubbit DS3 whenever a push to `feat/storage-v2` changes it,
 and the site is then at <https://dittofs-learning.s3.cubbit.eu/index.html>. The
 bucket serves objects, not directories: `intro/` is not resolved to
 `intro/index.html`. So a link to a page names its file,
