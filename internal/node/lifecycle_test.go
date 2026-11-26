@@ -317,13 +317,13 @@ func TestStartFailureUndoesTheEarlierSteps(t *testing.T) {
 			}
 		}, registered: true, epoch: 1, undone: []string{"stop engine"}, want: "before any State was applied"},
 		{step: "filesystem", fault: func(string) sim.Rule { return failOn(kvtest.OpSet, "SH‖*", 2) }, registered: true, epoch: 1, undone: []string{"stop identity", "stop engine"}},
+		{step: "first reconcile", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 4) }, registered: true, epoch: 1, undone: []string{"stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine"}, want: "first reconcile: injected"},
 		// The first status write fails the start rather than being logged, or
 		// the node would read ready while the store holds the last start's
 		// status, ports a restart has released.
 		{step: "reconcile", fault: func(k string) sim.Rule {
 			return failOn(kvtest.OpSet, k+hex.EncodeToString([]byte{keys.NSt}), 1)
 		}, registered: true, epoch: 1, undone: []string{"stop adapters", "stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine"}, want: "write the node status: injected"},
-		{step: "first reconcile", fault: func(string) sim.Rule { return failOn(kvtest.OpGet, "CFGGEN", 4) }, registered: true, epoch: 1, undone: []string{"stop runner", "stop filesystem", "stop budgets", "stop identity", "stop engine"}, want: "first reconcile: injected"},
 	} {
 		t.Run(tc.step, func(t *testing.T) {
 			var h *nodetest.Harness
