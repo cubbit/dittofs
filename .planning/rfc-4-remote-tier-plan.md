@@ -111,8 +111,8 @@ configuration struct (epic 7). The codec imports `pkg/remote` and the root `pkg/
 RFC 5's contract, and no transform package: the chain and the name derivation are handed to it
 by the content wiring, and it asks the chain for `MaxDecodeLen` (a method of the root
 `transform.Chain`), so it imports neither the carver nor the engine (D3). The store
-imports no codec, transform, syncer or engine package. RFC 5's `keys`
-(`pkg/transform/keys`) imports `pkg/remote`'s contract, for its errors, and reaches the
+imports no codec, transform, syncer or engine package. RFC 5's key
+provider (`pkg/transform/keys/provider`) imports `pkg/remote`'s contract, for its errors, and reaches the
 store through a two-call interface it declares, which the node's content wiring fills. The S3
 store imports `aws-sdk-go-v2`, already in `go.mod`. Rule 7 lists each package's allowed imports.
 
@@ -311,9 +311,8 @@ fault transport is epic 3's.
      contracts it imports, never `pkg/transform/chain` or a transform's package;
    - `pkg/remote/memory`: `pkg/remote` and `pkg/sim`'s clock;
    - `pkg/remote/s3` and its `internal/` packages: `pkg/remote` and `aws-sdk-go-v2`;
-   - `pkg/remote/s3/s3fault`, test support over the S3 transport: `pkg/remote`, `pkg/sim` and
-     `aws-sdk-go-v2`, for the admin client of its fresh buckets and the operation name of the
-     request it alters;
+   - `pkg/remote/s3/s3fault`, test support over the S3 transport: `aws-sdk-go-v2` alone, for the
+     admin client of its fresh buckets and the operation name of the request it alters;
    - `pkg/remote/remotetest`: `pkg/remote` and `internal/prof`.
 
    No package imports `pkg/settings`, `pkg/metrics` or `pkg/health`, which count as
