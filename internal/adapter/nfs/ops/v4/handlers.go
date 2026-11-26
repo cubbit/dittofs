@@ -7,5 +7,10 @@ package v4
 
 import "github.com/cubbit/dittofs/pkg/vfs"
 
-// Handlers is what NFSv4's handlers share: the service every operation calls.
-type Handlers struct{ VFS vfs.Service }
+// Handlers is what NFSv4's handlers share: the service every operation calls,
+// and the constructor of the callbacks value Connect registers per client.
+type Handlers struct {
+	VFS vfs.Service
+	// Callbacks is set by nfs.New; the value Connect registers.
+	Callbacks func(cl vfs.ClientID, p vfs.Protocol) vfs.Callbacks
+}

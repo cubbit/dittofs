@@ -58,10 +58,20 @@ func tables(d adapter.Deps) protocol.Tables {
 	aux := errorTable(core.Status(wire.StatusAccept | wire.AcceptSystemErr))
 	return protocol.Tables{
 		V3:    table("nfs3", errorTable(core.Status(wire.NFS3ErrServerFault))),
-		V4:    v4.Table(&v4.Handlers{VFS: d.VFS}),
+		V4:    v4.Table(handlers(d)),
 		Mount: table("nfs3", aux),
 		NLM:   table("nfs3", aux),
 		NSM:   table("nfs3", aux),
+	}
+}
+
+// handlers builds NFSv4's handlers: the service its operations call and the
+// constructor of the callbacks value Connect registers per client (RFC 20
+// section 3.3).
+func handlers(d adapter.Deps) *v4.Handlers {
+	return &v4.Handlers{
+		VFS:       d.VFS,
+		Callbacks: newCallbacks,
 	}
 }
 
