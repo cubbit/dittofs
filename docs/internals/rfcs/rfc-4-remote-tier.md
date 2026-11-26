@@ -586,13 +586,18 @@ type ChunkRange struct {
 }
 
 // Meter receives a transfer's wire bytes (RFC 3 §2.4): Moved with each count of
-// the encoded block's bytes sent or read, its header and index included, and
-// Sent once a put's last byte has been sent. A nil func is skipped, so the
+// the encoded block's bytes sent or read, header and index included when the
+// transfer carries them, and Sent once a put's last byte has been sent. A nil func is skipped, so the
 // zero Meter meters nothing. It is two funcs and carries no behaviour of its own.
 type Meter struct {
 	Moved func(n int64)
 	Sent  func()
 }
+
+// Cursor is where a walk of List resumes: the last service key the previous
+// page listed, block or not. It is opaque to callers, who hold one and pass it
+// back to the store that returned it; the zero Cursor starts at the beginning.
+type Cursor string
 
 // Info describes one stored block, as a listing reports it.
 type Info struct {
@@ -640,12 +645,11 @@ type Store interface {
 	DeleteVersions(ctx context.Context, names []Name) []error
 
 	// List reads one page, with one request, of at most n stored blocks in
-	// ascending name order, starting after the given name (the zero Name starts
-	// at the beginning); next is the last name of the page or, when the page
-	// ends on a key that is not a block, the smallest block name after that key,
-	// and done is true
-	// once the walk has passed the last block (§4.6).
-	List(ctx context.Context, after Name, n int) (page []Info, next Name, done bool, err error)
+	// ascending name order, starting after the cursor (the zero Cursor starts
+	// at the beginning); next holds the last key the page listed, a block's or
+	// a skipped foreign key's, and done is true once the walk has passed the
+	// last block (§4.6).
+	List(ctx context.Context, after Cursor, n int) (page []Info, next Cursor, done bool, err error)
 
 	// Health makes one bounded probe round trip of direction d against the
 	// store's own namespace (§4.7): a probe put for Put, a probe get for Get.
@@ -921,7 +925,7 @@ type Put struct{ /* ... */ }
 
 // Attempt is one try: it measures when it must, then sends the header and each
 // chunk encoded as it goes, in one remote Put. It calls m.Moved with each count
-// of the block's bytes sent, header included, and m.Sent after the last, and
+// of the block's bytes sent, header and index included, and m.Sent after the last, and
 // returns nil only once the block is stored. Its method value is the attempt the syncer's Upload runs.
 func (p *Put) Attempt(ctx context.Context, m remote.Meter) error
 
@@ -1031,8 +1035,9 @@ A listing:
 - **MUST** yield exactly once every block that exists for the whole walk. A block
   put or deleted during the walk may or may not appear;
 - **MUST** yield blocks in ascending name order and accept a starting point
-  (`after`), so a walk interrupted by a crash or a cancelled context resumes where
-  it stopped instead of restarting over millions of blocks;
+  (`after`, a `Cursor` an earlier page returned), so a walk interrupted by a crash
+  or a cancelled context resumes where it stopped instead of restarting over
+  millions of blocks;
 - **MUST** report each block's size and the time the service stored it;
 - **MUST** make exactly one request per call and return at most `n` blocks;
 - **MUST** skip an entry under the block namespace whose key is not a block name,
@@ -1040,7 +1045,16 @@ A listing:
 
 A walk is a sequence of `List` calls, each one page, the next starting after the
 `next` the previous returned, so the caller holds at most one page and decides
-the page size. A caller that runs a page as one `Small` call
+the page size. `next` is a `Cursor`, not a `Name`, because a page can end on a
+key that is not a block. A name cannot stand for that key: resuming after the
+smallest name sorting past it would skip a block of exactly that name, and
+resuming after the largest name sorting at or before it would list the same
+foreign keys again, forever when a page holds nothing else. The cursor holds the
+last key the service listed, so the next request resumes after exactly that key.
+A caller **MUST NOT** build a cursor or read one; it may keep one, across a
+restart too, and pass it back to the store that returned it. A page the service
+marks truncated that holds no key cannot advance and is `ErrTransient`, never
+`done` false with `next` equal to `after`. A caller that runs a page as one `Small` call
 ([RFC 3 §1.3](rfc-3-syncer.md#1.3%20Interface)) — a backup folder's sweep — asks for at most 500 blocks, which
 keeps the reply under the small-body cap: a page of 1,000 keys with sizes and
 times is roughly 250–350 KB of listing on the S3 profile, an estimate.
@@ -1153,7 +1167,7 @@ is `ErrInvalid` for that put alone, since those bodies have bounds of their own
 | `ErrInvalid` | the request was wrong: a range past the end, an operation the service does not support, a size refusal of a put that is not a block's, or a block put whose name does not match its nonce, chain and chunks (§4.3); never a quota refusal | fails the call; not retried |
 | `ErrDenied` | the store refused, or does not exist: credentials, permissions, a missing bucket (cause `access`); a quota or storage limit of the service is reached (cause `quota`); a body-size limit refused a block put (cause `size`) | fails the call; the syncer's health rules decide what follows, and it reports the cause per direction ([RFC 3 §2.8](rfc-3-syncer.md#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | `ErrTransient` | retrying may help: network, timeout, a server error, a short body | the syncer retries within its bound ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
-| `ErrThrottled` (wraps `ErrTransient`) | the service asked to be sent less: a throttling or slow-down reply | the syncer holds the flow and retries after backoff; it is backpressure and **MUST NOT** count toward health ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
+| `ErrThrottled` (wraps `ErrTransient`) | the service asked to be sent less: a throttling or slow-down reply | the syncer holds the flow and retries after backoff; it is backpressure and **MUST NOT** count toward health ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)); since `errors.Is` also finds `ErrTransient` in it, a caller tests for `ErrThrottled` first |
 | `ErrCorrupt` | a put's checksum or digest mismatched in transit, or the codec's verification of a chunk failed ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)) | a put is retried; a chunk that failed verification is re-got once, then reported corrupt ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)) |
 | `ErrMalformed` (wraps `ErrCorrupt`) | the store rejected a recorded range as past the end, so the stored block is shorter than its record ([§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec)) | reported at once, never re-got ([RFC 3 §2.4](rfc-3-syncer.md#2.4%20Every%20transfer%20terminates%2C%20and%20reports)); since `errors.Is` also finds `ErrCorrupt` in it, a caller tests for `ErrMalformed` first |
 
@@ -1241,7 +1255,8 @@ how to test them: they are specific to each backend and live in its profile
 - every object the store puts is written in one storage class, the remote
   store's configured class (`STANDARD` when none is configured), sent explicitly
   and never left to the service's default, and the check reads back the class
-  the service reports for what it wrote. A class or a tiering rule that can move
+  the service reports for what it wrote, a reply that reports no class reading as
+  `STANDARD`, since a service such as AWS sends no class header for it. A class or a tiering rule that can move
   an object out of immediate reach — an archive class, or an automatic tier that
   archives objects nobody reads for a while — **MUST** refuse the open: a get of
   an archived block fails until a restore the store never requests, and blocks
@@ -1789,7 +1804,7 @@ in-memory store).
 | [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | A transport that truncates a body under a `Content-Range` matching the request: the get fails with `ErrTransient`. | T |
 | [§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent) | Delete a batch twice, including a never-written name: every result is `nil`. A batch of 2,500 (above the service's limit): every block gone. | |
 | [§4.5](#4.5%20Delete%20is%20batched%20and%20idempotent) | A transport that fails one key inside a batch: exactly that name's result is an error, the others `nil`. A batch whose response is dropped: every result is `ErrTransient`. | T |
-| [§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | Write 2,500 blocks; list with pages of 1,000; stop after 1,200 and resume from the last name: every block seen exactly once, in order, with size and time, and each `List` call sends one request and returns at most its `n`. With `n` 500, no page's reply exceeds the small-body cap. | |
+| [§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | Write 2,500 blocks; list with pages of 1,000; stop after the second page and resume, in a new walk, from the cursor it returned: every block seen exactly once, in order, with size and time, and each `List` call sends one request and returns at most its `n`. With `n` 500, no page's reply exceeds the small-body cap. | |
 | [§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk) | Put a key that is not a block name under the block namespace: the listing skips it and counts it. Cancel mid-page: the call ends with the context's error. | |
 | [§4.2](#4.2%20Names%20in%2C%20locations%20kept%20inside) | After the whole suite, list the store's raw namespace: nothing but blocks, control objects and check objects, and every block key is the prefix followed directly by the name. | |
 | [§4.13](#4.13%20Control%20objects) | Put and get each role: bytes equal, a second put replaces the first, an absent role is `ErrNotFound`, and a block listing yields none of them. | |
@@ -1805,7 +1820,7 @@ in-memory store).
 | [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer every request with the service's throttling reply: each call fails with `ErrThrottled`, which also matches `ErrTransient`. | |
 | [§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly) | A transport that answers `404` to the first get after a successful put of the name: the get fails, and the capability check of a service that does so refuses the open. | T |
 | [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Answer each request with every status from 100 to 599 but the 2xx successes ([§7.2](#7.2%20Fault%20transport)), with known and unknown error codes, and with a body that does not parse: each call wraps exactly one sentinel, and a response checksum mismatch on a get is `ErrTransient`, never `ErrCorrupt`. | T |
-| [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Truncate the body of a real 2xx reply so it does not parse, a `ListObjectsV2` reply to `List` and a `DeleteObjects` reply to `Delete`: each call fails with `ErrTransient`, never `ErrInvalid` and never success, and `Delete` reports no name as deleted. | T |
+| [§4.8](#4.8%20Errors%20are%20a%20closed%20set) | Truncate the body of a real 2xx reply so it does not parse, a `ListObjectsV2` reply to `List` and a `DeleteObjects` reply to `Delete`: `List` fails with `ErrTransient` and every name's result from `Delete` is `ErrTransient`, never `ErrInvalid` and never success, so `Delete` reports no name as deleted. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | A bucket that stores what the check wrote in an archive storage class, or holds a tiering rule with an archive tier whose filter could match the prefix: open fails naming it, and `Recheck` fails when either appears later. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | Turn versioning on after open: `Recheck` fails, GC issues no delete, and the syncer refuses puts while gets still succeed; turn it off: the next `Recheck` clears both. Count `Recheck` calls over an hour: exactly one per GC recheck period, none from a GC pass. | T |
 | [§4.11](#4.11%20A%20store%20checks%20its%20service%20before%20it%20opens) | A suspended store with an object version left behind: `Recheck` lists versions and fails; after the repair writes the proof, ten further `Recheck` calls list no versions and pass. Enable versioning again: the proof is emptied, and the next suspended `Recheck` lists again. | T |
@@ -1884,7 +1899,7 @@ are the negative tests.
 | [§3.3](#3.3%20Transforms) | Run the engine's read and write tests with and without transforms: no difference observable apart from offsets and timing. |
 | [§3.4](#3.4%20Every%20read%20is%20verified%20by%20the%20codec) | A ranged read at a wrong offset or length fails with `ErrCorrupt`, and nothing re-reads the header. |
 | [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | Encode the same block twice, once from declared lengths and once after a measuring pass, under every transform configuration: the bytes, the header and the checksum are identical, and the declared size equals the bytes streamed. |
-| [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | Through `codec.Store` on the in-memory store, in a mode that needs a measuring pass: a second `Attempt` of one `Put` reads `src` once, only to send; after an `Attempt` ending in `ErrCorrupt` the next measures again. Two `Attempt`s of one `Put` overlap under `-race`: no race is reported. An `Attempt` whose `ctx` ends mid-body has released its chunk buffers when it returns. The `Meter`'s `Moved` counts sum to the encoded bytes the store received, header and index included, and `Sent` is called once, after the last. A zero `Meter{}` passed to `Get` and to `Attempt` is skipped: both complete without a panic. |
+| [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | Through `codec.Store` on the in-memory store, in a mode that needs a measuring pass: a second `Attempt` of one `Put` reads `src` once, only to send; after an `Attempt` ending in `ErrCorrupt` the next measures again. Two `Attempt`s of one `Put` overlap under `-race`: no race is reported. An `Attempt` whose `ctx` ends mid-body has released its chunk buffers when it returns. The `Meter`'s `Moved` counts sum to the encoded bytes the store received, header and index included, and `Sent` is called once, after the last. On a whole `Get` they sum to the encoded block's size, and on a ranged `Get` to the range's length, with no header. A zero `Meter{}` passed to `Get` and to `Attempt` is skipped: both complete without a panic. |
 | [§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success) | Through `codec.Store` on the in-memory store, `NewPut` with a name minted from another nonce, and with one minted over other chunks: `Attempt` returns `ErrInvalid`, and the store received no put. |
 | [§3.5](#3.5%20Format%20changes%20are%20migrations) | A stored fixture of every released version decodes. |
 
@@ -2207,6 +2222,7 @@ Several stores may share a bucket under different prefixes, never one prefix
 | connection pool ([§4.10](#4.10%20The%20connection%20pool%20is%20derived%20from%20its%20callers)) | one HTTP client per store configuration: its per-host connection cap, its idle connections per host and its total idle connections all set to the derived limit, over HTTP/1.1 only, since these caps bind no HTTP/2 stream |
 | put integrity ([§4.3](#4.3%20Put%3A%20a%20whole%20block%2C%20checksummed%2C%20stored%20on%20success)) | send the checksum header chosen by the check, computed by the measuring pass. If the service enforces none, `Checksum` is `None`: compute the MD5 while streaming, compare the returned ETag with it, and return `ErrCorrupt` on a mismatch; the retry puts the same bytes again |
 | exact get ([§4.4](#4.4%20Get%3A%20a%20whole%20block%20or%20one%20range%2C%20exactly)) | compare `Content-Range` with the request, then the body's length with `Content-Range` |
+| listing resume ([§4.6](#4.6%20List%20is%20a%20complete%2C%20resumable%20walk)) | `ListObjectsV2`'s `start-after` set to the cursor's key, the last key of the previous reply, block or not; none for the zero cursor |
 | `ErrNotFound` | `404 NoSuchKey`; `404 NoSuchVersion` on `GetVersion`, `GetControlVersion`, `GetObject` and every retention read or extension naming a version |
 | `ErrInvalid` | `416`; a `Content-Range` that differs from the request (a clamp); `400` codes not listed elsewhere; `501` |
 | `ErrDenied`, cause `access` | `401`, `403`, `404 NoSuchBucket`, `400 InvalidToken`; any `3xx`, which on this service means the endpoint or region is wrong, never a block's state |
@@ -2246,7 +2262,8 @@ namespace, with the production client configuration of [Appendix C.3](#C.3%20How
    match — since services change checksum, ETag and server-side encryption
    behaviour with size.
 2. Put a 10-byte object in the configured storage class; get it at once, and
-   expect it back, with that class reported; get bytes 2–5 and expect exactly 4
+   expect it back, with that class reported (no class reported reads as
+   `STANDARD`); get bytes 2–5 and expect exactly 4
    bytes; get from offset 20 and expect `416`; get a key never written and
    expect `404`, not `403`.
 3. Batch-delete two keys that exist and one that was never written, and expect

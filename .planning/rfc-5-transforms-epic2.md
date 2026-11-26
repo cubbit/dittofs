@@ -102,13 +102,15 @@ names keeps a `known.yaml`.
 
 | Row | Epic |
 | --- | --- |
-| T2 round trip; §2.1 bound; concurrency; §2.7 byte flips; T9 twice and from two instances | E2 builds them in `transformtest.Run`; E4 and E5 run them; E3's test transforms run them |
+| T2 round trip; §2.1 bound; concurrency; §2.7 byte flips; T9 twice and from two instances | E2 builds them in `transformtest.Run`; E4 and E5 run them |
 | T2 and T9 fixtures | E2 builds the rows and the format; E4 and E5 ship fixtures |
 | T4 fuzz of `Decode`, `max + 1` refused | E2 builds `FuzzDecode`; E4 and E5 add targets |
 | §2.7 authenticating rows (every flip, another chunk's hash, destroyed material) | E2 builds them; E5 turns them on |
 | Appendix B.1 salts, nonces and keystream | E5 |
 | Appendix B.1 wrap count at 2³² − 1, salvage and escrow wraps counted | E6 |
-| Appendix B.1 labels distinct, each pinned | E5; E2 computes the vectors |
+| Appendix B.1 labels distinct, each pinned, but the four export labels and the chunking label | E5; E2 computes the vectors |
+| Appendix B.1 export labels (`dittofs export frame v1`, `mac`, `state`, `progress`) | deferred: RFC 26, with the export vectors (§1.2) |
+| Appendix B.1 chunking label (`dittofs chunking key v1`) | the RFC 2 plan, with the keyed gear table |
 | Appendix B.1 golden vectors | E2 computes them; E5 checks the chunk part, E6 the fingerprint; the gear table is the RFC 2 plan's |
 | T22 stored wrap, key file | E2 computes it; E6 checks it |
 | T22 stored wrap, key service, as bytes | E7 |
@@ -212,6 +214,8 @@ suite" is `keystest.Run`.
 | R13 | One suite, which every transform passes, shipped and custom alike | test row | §4 item 7, §8.1 | T2.3 |
 | R32 | `Decode` runs against a provider view that answers only the material its census lists, of the namespace read, and returns `ErrMalformed` for any other ID without asking the provider | MUST | §2.5 ("A read asks only for material its block recorded"), §3.1 | T2.3 |
 | R29 | `LengthKey` carries every setting that changes a body's length: two settings whose bodies differ in length for one input have different `LengthKey`s | MUST | §2.8 (length-affecting settings), §4 item 2 | T2.3 |
+| R33 | `MaxEncodedLen(n, m)` never decreases as `n` grows, under the subject's material and under nil, so the chain's per-stage maximum (E3's D2) bounds every smaller chunk | MUST, test row | §3.1 (`MaxEncodedLen`); E3's D2 | T2.3 |
+| R34 | `Encode` asks the provider for no current material: it gets the pinned material's content through `Get` alone | MUST NOT, test row | §3.1 (`Transform.Encode`) | T2.3 |
 | R30 | `dst` never overlaps the input, and the result is `dst` resliced or a new slice: a round trip with a nil `dst`, and with a `dst` of spare capacity holding junk, gives the right bytes and leaves the input unchanged | MUST NOT | §3.1 | T2.3 |
 
 **The in-memory provider and the provider suite**
@@ -250,7 +254,9 @@ suite" is `keystest.Run`.
   broken subject; a row with none is not listed. A broken subject never races, since the race
   detector would fail the whole binary rather than the row: the one breaking R3 keeps state
   under a mutex, and its `Encode` waits until a second call has entered before it reads that
-  state, so the two calls overlap on every scheduler, `GOMAXPROCS=1` included. Prior art: Go's
+  state, so the two calls overlap on every scheduler, `GOMAXPROCS=1` included. It waits only on
+  calls carrying a context value, unexported in `transformtest`, that the R3 row alone sets, so
+  every other row calls it one at a time without waiting; one generous timeout backstops the wait. Prior art: Go's
   `testing/fstest.TestFS`, a suite run per implementation, which returns an error rather than
   failing a `testing.T` (from memory).
 - **D2, one call per transform package.** `transformtest.Run` is called from each transform's own
@@ -268,12 +274,13 @@ suite" is `keystest.Run`.
   under an ID and keeps the recorded fingerprint; `Destroy` marks an ID lost for good, since
   `Remove` lands later. `Get` looks material up by namespace, kind and ID, and compares content
   with the fingerprint the provider recorded, never with the caller's: a transform's body names
-  a key ID, not a fingerprint. `keystest.Harness` is those three plus `Calls`, and E6 adapts its
+  a key ID, not a fingerprint. `keystest.Harness` is those three plus `Calls` and the salvage-key wrap (D10), and E6 adapts its
   provider to it over key records and a key file. RFC 5 §3.1 does not say what `Current` returns
   for a kind never given in a namespace; the user decided (#5857) that it is `ErrUnknownMaterial`,
   the error `Get` gives for the same absence, and that `keystest.Run` asserts it (R31), so E6's
-  provider is held to it too. `ErrMaterialUnavailable` was rejected because it is retried, so a
-  namespace with no key of a kind would retry forever. A `decision:` marker at `Memory.Current`
+  provider is held to it too. `ErrMaterialUnavailable` was rejected because RFC 5 §2.7 attaches a
+  configuration health condition to `ErrUnknownMaterial`, which names the absence, and because it
+  matches `Get`. A `decision:` marker at `Memory.Current`
   says so, to be withdrawn if RFC 5 names another error. Prior art: none found for the harness;
   the error follows `Provider.Get`'s own.
 - **D4, the call count is an output `Memory` exports and the suite covers.** `Calls` counts
@@ -333,7 +340,9 @@ suite" is `keystest.Run`.
   provider suite's row checks what holds for every provider, the layout included, and E6 checks
   its provider's wrap bytes against the stored-wrap vector and its unwrap. Prior art: none found.
 - **D10, the exported surface of §6 is the user's approved one** (#5857): `Memory` and its six
-  methods, `Harness` and `keystest.Run`; `Subject`, `transformtest.Run`, `FuzzDecode`, `Fixture`,
+  methods plus the salvage-key wrap E1's `keys.SalvageWrapper` declares (T2.2), `Harness`, which
+  embeds `keys.SalvageWrapper` so the salvage row reaches every provider without a type assertion,
+  and `keystest.Run`; `Subject`, `transformtest.Run`, `FuzzDecode`, `Fixture`,
   `Vectors` and `LoadVectors`. A change to it is a revision of this document. Prior art: none
   needed.
 - **D11, the suite decodes through a census view, as the chain does.** RFC 5 §3.1 gives a
@@ -378,7 +387,8 @@ pkg/carver/internal/carvetest/  T2.5  RFC 5's vectors added to the RFC 2 plan's 
 **Subtask T2.1 estimate: 2.5 man-days.**
 
 - **Track:** team. **Depends on:** S1.
-- **Covers:** R14, R15, R16, R17, R19, R31, R6 (its destroyed-material half, through `Destroy`).
+- **Covers:** R14, R15, R16, R17, R18 (the fingerprint `Give` records), R19, R31, R6 (its
+  destroyed-material half, through `Destroy`).
 - **Deliverables:**
   - `keystest.Memory`, a `keys.Provider` (D3), consumed by T2.3, E3, E5, E6, E8, E11 and the RFC
     8 offload plan's engine epics:
@@ -393,7 +403,8 @@ pkg/carver/internal/carvetest/  T2.5  RFC 5's vectors added to the RFC 2 plan's 
     func (m *Memory) Calls() uint64
     ```
 
-  - `keystest.Harness` (`keys.Provider` plus `Give`, `Replace`, `Destroy`, `Calls`) and
+  - `keystest.Harness` (`keys.Provider` and `keys.SalvageWrapper` plus `Give`, `Replace`,
+    `Destroy`, `Calls`) and
     `keystest.Run(t *testing.T, newHarness func(t *testing.T) Harness)`, consumed by E6, which
     runs it over its provider, and by E8, which adds the notice's rows.
 - **Acceptance criteria:**
@@ -443,10 +454,10 @@ pkg/carver/internal/carvetest/  T2.5  RFC 5's vectors added to the RFC 2 plan's 
 **Subtask T2.3 estimate: 3.5 man-days.**
 
 - **Track:** team. **Depends on:** T2.1.
-- **Covers:** R1, R2, R3, R4, R5, R6, R7, R9, R13, R29, R30, R32.
+- **Covers:** R1, R2, R3, R4, R5, R6, R7, R9, R13, R29, R30, R32, R33, R34.
 - **Deliverables:**
   - `transformtest.Subject` and `transformtest.Run`, consumed by E4 and E5 for the shipped
-    transforms and by E3 for its test transforms (D2):
+    transforms (D2):
 
     ```go
     type Subject struct {
@@ -463,7 +474,9 @@ pkg/carver/internal/carvetest/  T2.5  RFC 5's vectors added to the RFC 2 plan's 
 
   - The seeded inputs (D8). The material each call uses is `Memory`'s current material for the
     transform's `Kinds`, read once per namespace as a pin would; every decode goes through the
-    census view of D11, over the material that body's `Encode` returned.
+    census view of D11, over the material that body's `Encode` returned. The `Factory` is given a
+    view of `Memory` whose `Current` fails the row that called it, so an `Encode` that asks for
+    current material is caught (R34).
   - In the package's tests: a correct test transform, and the broken transforms (D1).
 - **Acceptance criteria:**
   - The test transform passes `Run` under `-race`.
@@ -474,7 +487,8 @@ pkg/carver/internal/carvetest/  T2.5  RFC 5's vectors added to the RFC 2 plan's 
     transform that accepts one flip, and one that ignores the hash (R5, R6); a random byte in
     each body, and a `LengthOf` one off (R7); one that clamps to `max` instead of refusing (R9);
     a `LengthKey` that omits a length-affecting setting (R29); one that writes into its input
-    (R30).
+    (R30); a `MaxEncodedLen` that shrinks as `n` grows (R33); an `Encode` that calls `Current`
+    (R34).
   - A destroyed material, through `Memory.Destroy`, gives `ErrMaterialDestroyed` from an
     authenticating subject.
 - **Tests:** at `Run`, the function every transform's package calls: the passing run and the
@@ -501,9 +515,15 @@ pkg/carver/internal/carvetest/  T2.5  RFC 5's vectors added to the RFC 2 plan's 
     `testdata/fixtures`.
   - `transformtest.FuzzDecode(f *testing.F, s Subject)`, consumed by E4's and E5's fuzz
     targets: seeds from the fixtures, from round-trip bodies and from bodies claiming 4 × `max`;
-    decodes through D11's census view over the seeds' material, as R5 does; asserts no panic, an error of §2.7's five or at most `max` bytes, and D5's allocation bound;
-    on a successful decode, `Encode`s the output under the seed's material, `Decode`s that body
-    through the view again, and asserts the result equals the first decode's output. This one
+    every seed's material is given to one `Memory` at the target's start, and each fuzz input is
+    `(seed uint8, body []byte)`, the index, modulo the seed count, selecting that seed's namespace,
+    plaintext hash and census, so a mutated body or a crasher replayed from `testdata/fuzz/` still
+    finds its material and hash; decodes through D11's census view over that census, as R5 does;
+    asserts no panic, an error of §2.7's five or at most `max` bytes, and D5's allocation bound;
+    on a successful decode, `Encode`s the output under the seed's material and, when `Applied` is
+    true, `Decode`s that body through the view again and asserts the result equals the first
+    decode's output; when `Applied` is false, it asserts the body equals the output, since a
+    declined chunk never reaches the transform's `Decode`. This one
     re-encode check covers compression and encryption, so E4's and E5's targets need no copy.
   - The test transform's fixture under `testdata/fixtures/v1/`.
 - **Acceptance criteria:**

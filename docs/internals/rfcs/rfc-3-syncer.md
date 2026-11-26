@@ -621,7 +621,7 @@ registered here, so they have no flow to run on
 ([RFC 4 §4.15](rfc-4-remote-tier.md#4.15%20Versioned%20objects%20at%20a%20backup%20location)).
 
 **A small call is one bounded request.** `Small` runs an opaque closure, so the
-throughput floor, trickle rule and first-byte bound, which measure body bytes,
+throughput floor, trickle rule and first-byte bound, which measure wire bytes,
 cannot see it. Each `call` therefore **MUST** make exactly one request, or one
 read followed by one write of the same object — an extension's read and raise of
 a retain-until ([RFC 4 §4.14](rfc-4-remote-tier.md#4.14%20A%20backup%20location%20opens%20in%20one%20of%20two%20modes)) — and its `ctx` ends at the **small-call bound**
@@ -1046,9 +1046,9 @@ no sharing; a floor of a few bytes per second catches a stalled connection but
 not a crawling one, and the aggregate test catches the crawl.
 
 **Time to the first byte is bounded per direction**, since a request can stall
-before any byte moves. For a get it is from dispatch to the first body byte
-received. For a put it is from dispatch to the first body byte accepted, and
-again from the last body byte sent to the acknowledgement: a service that takes
+before any byte moves. For a get it is from dispatch to the first byte
+received. For a put it is from dispatch to the first byte accepted, and
+again from the last byte sent to the acknowledgement: a service that takes
 the whole body and then does not answer is stalled as surely as one that never
 starts.
 
@@ -1056,7 +1056,7 @@ starts.
 The syncer does not see a put's body or a get's encoded bytes: the codec does.
 So the syncer passes a `remote.Meter` into every call of `attempt` and every
 `Store.Get`. The codec calls its `Moved` with each count of the encoded block's bytes,
-header and index included, sent to the store or read from it, and a put's
+header and index included when the transfer carries them, sent to the store or read from it, and a put's
 `Sent` once its last byte has been sent. The floor, the stall and trickle rules, the first-byte bound,
 the worker-time estimate ([§2.9](#2.9%20Workers%20are%20shared%20fairly%20across%20flows)) and `syncer_bytes_total` ([§2.12](#2.12%20What%20the%20syncer%20makes%20observable)) all read
 these counts. Decoded chunks are not wire bytes: a compressed body yields more
@@ -1522,7 +1522,7 @@ setting:
 | re-admission backoff | the probe interval × 2^(*n*−1), at most 15 min, per store and direction; *n* starts at one, rises when the direction turns unhealthy within 60 s of its re-admission or with `ErrDenied`, and returns to one when a transfer in that direction succeeds | a direction that keeps failing is re-admitted ever more rarely, never latched; an unprobed direction turns healthy when it runs out ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | failure window | 30 s | a direction whose every transfer failed for this long, with its probe passing or with no probe, turns unhealthy, and recovers only on its own evidence ([§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work)) |
 | throughput floor | 64 KiB/s over 30 s, judged on the store's aggregate per direction; a transfer moving no byte for 30 s, or under a quarter of its store's mean per-transfer rate over 30 s, fails regardless | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
-| first-byte bound | 10 s: to the first body byte of a get; to the first body byte accepted of a put, and from its last byte sent to the acknowledgement | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
+| first-byte bound | 10 s: to the first byte of a get; to the first byte accepted of a put, and from its last byte sent to the acknowledgement | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) |
 | small-call bound | 30 s per `Small` attempt, for its one request or its one read-then-write pair | a small-object call, whose body bytes no floor can see, holds a worker for at most this long per attempt ([§1.3](#1.3%20Interface)) |
 | small-body cap | 256 KiB per `Small` body, in either direction; progress batches and listing pages are sized to fit | at 32 KiB/s, a working link's share for one of 32 transfers on 1 MiB/s ([§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports)), a capped body takes 8 s, so with the first-byte bound one attempt fits the small-call bound ([§1.3](#1.3%20Interface)) |
 | detach bound | 5 s without taking the next chunk | a joined caller that falls behind is detached ([§4.3](#4.3%20Concurrent%20demand%20for%20one%20chunk%20is%20one%20fetch)) |
@@ -1966,7 +1966,7 @@ half-complete. A backend that always succeeds asserts nothing about any of them.
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) retry budget | Fail every call on one store; assert retries on it stay within its budget, no transfer makes more than four attempts, exhausted attempts are reported with the last error, and the backoffs of transfers that failed together are spread. |
 | [§1.3](#1.3%20Interface) partial prefetch | `Prefetch` two non-adjacent chunks of a block; assert the store is asked for those ranges only, and that an empty `want` asks for the whole block. |
 | [§1.3](#1.3%20Interface) RFC 4's errors, as they are | Build the syncer with an import test that follows imports transitively; assert it reaches RFC 4's contract and no implementation: no codec, no store, no transforms. Answer through RFC 4's fault wrapper with each error of RFC 4's set, and with an error that wraps none of them; assert each gets the row of [§1.3](#1.3%20Interface)'s table it names, and that the last is returned as it is. |
-| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) first byte, per direction | Hold a get before its first body byte, and a put after its last body byte sent; assert both fail at the first-byte bound. |
+| [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) first byte, per direction | Hold a get before its first byte, and a put after its last byte sent; assert both fail at the first-byte bound. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) wire bytes | Fetch a block of highly compressible chunks: assert `syncer_bytes_total` counts the encoded bytes the store sent, not the decoded ones. Trickle a get's encoded body below the floor while its chunks decode to more than the floor: assert it fails on the floor. |
 | [§2.4](#2.4%20Every%20transfer%20terminates%2C%20and%20reports) fetch resume | Fail a whole-block fetch transiently after three chunks; assert the retry requests only the rest and no chunk is yielded twice. |
 | [§2.8](#2.8%20An%20unhealthy%20store%20refuses%20work) per direction | Fail every put probe and put; assert fetches from the store still run. Fail every get; assert uploads still run. |

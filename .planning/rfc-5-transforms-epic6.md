@@ -425,9 +425,11 @@ R22, the bucket gate (E8, §1.2) and R35.
 - **D13, a salvage key is wrapped under the provider's own configuration's current master key.**
   Appendix B.2 says "the installation's current master key", but master keys belong to a store
   configuration and an installation may have several. The provider serves one configuration, so
-  `WrapSalvageKey` wraps under that configuration's current master key, and which provider the
-  engine is handed is the content wiring's choice. A `decision:` marker at `WrapSalvageKey` names
-  the reading, pending the RFC author's answer (§9). Prior art: none found.
+  `WrapSalvageKey` wraps under that configuration's current master key, and that configuration is
+  the one the content wiring names for the stranded tag's journal: the store configuration of the
+  shares that journal serves, the lowest configuration ID when they span several, and refused when
+  none of them has a master key (the RFC 8 offload plan's epic 20, its D5; the user's decision,
+  2026-11-26). A `decision:` marker at `WrapSalvageKey` names the reading. Prior art: none found.
 
 - **D14, `internal/keyfile` takes the whole format, not the file's publication.** It holds the
   encoding and decoding of the key file: `Generate(passphrase string, weak bool)` and
@@ -919,17 +921,14 @@ A suggestion only: one pull request per subtask works as well.
 
 ## 9. Open points
 
-- **Which master key wraps a salvage key, for RFC 5's author.** Appendix B.2 says "the
-  installation's current master key", but a master key belongs to a store configuration (B.2's
-  table, RFC 13 §4.2) and an installation may have several. The recommendation, which D13 builds:
-  the current master key of the store configuration of the stranded tag's share, so the salvage key
-  is held off the host exactly where that share's data keys are; when the node cannot establish the
-  share's configuration at all, no provider exists to wrap under, which RFC 1 §3 and the RFC 8
-  offload plan's epic 20 decide. The wording to propose: "wrapped under the current master key of
-  its share's store configuration". E6's code does not change with the answer: only which provider
-  the content wiring hands the engine does. E1's open point asks for the answer before E6 builds
-  the wrap; T6.4 departs from that and builds on D13's reading, because the wrap's code is the
-  same under every answer, and D13's `decision:` marker holds the reading until RFC 5 states it.
+- **Which master key wraps a salvage key: settled** (D13). The current master key of the store
+  configuration the content wiring names for the stranded tag's journal: that of the shares the
+  journal serves, the lowest configuration ID when they span several, refused when none has a
+  master key (the RFC 8 offload plan's epic 20, D5; the user's decision, 2026-11-26). Appendix
+  B.2's "the installation's current master key" is still to be reworded to match, as RFC 5's
+  author's edit. E6's code does not change: only which provider the content wiring hands the
+  engine does. E1's open point asks for the answer before E6 builds the wrap; T6.4 builds on D13,
+  and D13's `decision:` marker holds the reading until RFC 5 states it.
 - **The salvage AAD as RFC text (D12).** Proposed for Appendix B.1's joined-inputs table: "salvage
   key wrap AAD | namespace ID (4-byte length 0) ‖ `salvage-key` (4-byte length, ASCII) ‖ the export's
   name (4-byte length, its bytes)", so a recovery tool can rebuild it, with a golden vector beside
