@@ -299,7 +299,10 @@ the scheduler itself guarantees is epic 13's, held by its tests; a row here stat
   the entry's error, so its run answers `Retry`, counted, and stalls it (R27) rather than answering
   `Done` over a removal its prefix read cannot see; the file's other entries and the shard's other
   removals go on. The recorded error clears when a later rescan reads the entry cleanly or finds it
-  gone, and the file's next run goes on from there. A `decision:` at step 4 names the fail-closed
+  gone, and the file's next run goes on from there. An orphan entry, one whose removal record is
+  missing, is never removed by the engine: its file stalls, `removal_stalled` names the file (R31),
+  and start step 4 keeps failing closed on it until an operator repairs it, the user's decision of
+  2026-11-26. A `decision:` at step 4 names the fail-closed
   start, withdrawn if a clone's protection is ever rebuilt from a record other than the destination's
   removal. The offload plan keeps this call "as it is"; this decision is the one change, which its
   three callers, start step 4, the rebuild at a runtime `Bind` and the rescan, absorb. Prior art: a
