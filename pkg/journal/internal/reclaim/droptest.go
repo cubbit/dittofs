@@ -324,6 +324,11 @@ func (t *Tracker) pruneMarks(seg core.SegmentID) []core.FileID {
 // Both walks the retirement runs are scoped to the segment: the records
 // over the files the union named, the forgets over the segment's bucket
 // of the forget index.
+//
+// ponytail: the records walk still ranges each union file's whole registry,
+// so a retirement pays O(records of the segment's files) whatever the
+// segment held of them. Index the records by segment too when a retirement
+// of a journal whose files hold many records shows in a profile.
 func (t *Tracker) SegmentRetired(seg core.SegmentID, files []core.FileID) {
 	t.rm.Lock()
 	// The in-flight class gate's clear: this sweep is the end of the

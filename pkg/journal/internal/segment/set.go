@@ -1050,10 +1050,10 @@ func (s *Set) Snapshot() []Row {
 	return rows
 }
 
-// Row reads the one segment named, absent or present, as Snapshot reads one
-// row: one lock, a copy of the row with its Tags cloned, spares excluded from
-// the set's answer. A caller that acts on the row must still re-check the
-// segment, as every claim does.
+// Row reads the one segment named, in the set or not — a segment outside
+// the set answers false, spares among them — as Snapshot reads one row: one
+// lock, a copy of the row with its Tags cloned. A caller that acts on the
+// row must still re-check the segment, as every claim does.
 func (s *Set) Row(id core.SegmentID) (Row, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -218,7 +218,10 @@ type Tracker struct {
 	// fills one entry per snapshot segment its member re-check left —
 	// never one for a segment the re-check pruned — and every path that
 	// drops a forget record's snapshot prunes the record from the buckets
-	// that snapshot named. Guarded by rm, like forgets.
+	// that snapshot named. A re-registration replaces a snapshot without
+	// pruning the replaced snapshot's buckets, so a bucket keeps ghost
+	// entries the bucket walk's re-read of the current snapshot skips.
+	// Guarded by rm, like forgets.
 	forgetSegs map[core.SegmentID]map[Rec]struct{}
 	// marks is each live unsynced loss record's presence marks, keyed by
 	// the whole Rec of the loss itself: the segments still holding copies

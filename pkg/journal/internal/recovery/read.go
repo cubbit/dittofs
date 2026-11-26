@@ -72,9 +72,10 @@ func (r *reader) warnUnreadable(name string, err error) {
 // about the device, so it is only returned.
 //
 // The read takes the handle the reader holds for name when it was the last
-// name read, opening the file only for a name it holds none for; interleaved
-// reads of two segments still pay an open per switch, a cost to revisit only
-// with a bounded map of handles if a profile ever shows that thrash.
+// name read, opening the file only for a name it holds none for.
+//
+// ponytail: interleaved reads of two segments still pay an open per switch.
+// Upgrade to a bounded map of handles when a profile shows that thrash.
 func (r *reader) ReadAt(name string, buf []byte, off int64) (n int, err error) {
 	// decision: an I/O error suspends, a bad checksum discards. A failed
 	// read returned no bytes, so the device may return them later or after

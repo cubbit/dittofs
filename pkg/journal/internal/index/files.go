@@ -146,9 +146,9 @@ type files struct {
 	// it without walking every file. The zero value works; the map is made on
 	// the first registration.
 	inv map[core.SegmentID]map[core.FileID]struct{}
-	// invMu guards inv and is a leaf: it is taken inside a file's lock, with
-	// a shard's never held, nothing is acquired under it, and its readers
-	// hold nothing else.
+	// decision: invMu is a leaf, the inverted registry's own domain: it is
+	// taken inside a file's lock, with a shard's never held, nothing is
+	// acquired under it, and its readers hold nothing else.
 	invMu sync.Mutex
 }
 
