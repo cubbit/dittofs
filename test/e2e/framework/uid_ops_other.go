@@ -23,7 +23,7 @@ func ExecAsUID(t *testing.T, uid, gid uint32, name string, args ...string) ([]by
 }
 
 // WriteFileAsUID is unsupported off Linux.
-func WriteFileAsUID(t *testing.T, uid, gid uint32, path string, data []byte) error {
+func WriteFileAsUID(t *testing.T, uid, gid uint32, path string, data []byte, groups ...uint32) error {
 	t.Helper()
 	return errUIDOpsUnsupported
 }
@@ -59,7 +59,7 @@ func MkdirAllAsUID(t *testing.T, uid, gid uint32, path string) error {
 }
 
 // RemoveAsUID is unsupported off Linux.
-func RemoveAsUID(t *testing.T, uid, gid uint32, path string) error {
+func RemoveAsUID(t *testing.T, uid, gid uint32, path string, groups ...uint32) error {
 	t.Helper()
 	return errUIDOpsUnsupported
 }
@@ -87,7 +87,7 @@ func FileExistsAsUID(t *testing.T, uid, gid uint32, path string) bool {
 }
 
 // ListDirAsUID is unsupported off Linux.
-func ListDirAsUID(t *testing.T, uid, gid uint32, path string) ([]string, error) {
+func ListDirAsUID(t *testing.T, uid, gid uint32, path string, groups ...uint32) ([]string, error) {
 	t.Helper()
 	return nil, errUIDOpsUnsupported
 }
