@@ -23,7 +23,7 @@ const storeExport = "type Store interface{" +
 	"Get(ctx context.Context, name Name, r Range) (body io.ReadCloser, stored StoredSum, err error); " +
 	"GetControl(ctx context.Context, role Role) (body []byte, v Version, err error); " +
 	"Health(ctx context.Context, d Direction) error; " +
-	"List(ctx context.Context, after Name, n int) (page []Info, next Name, done bool, err error); " +
+	"List(ctx context.Context, after Cursor, n int) (page []Info, next Cursor, done bool, err error); " +
 	"Put(ctx context.Context, name Name, body io.Reader, size int64, sum []byte) error; " +
 	"PutControl(ctx context.Context, role Role, body []byte) error}"
 
@@ -53,6 +53,7 @@ var frozenExports = []string{
 	"type Chunk struct{Hash [32]byte; Bytes []byte}",
 	"type ChunkRange struct{Hash [32]byte; Range Range}",
 	"type Meter struct{Moved func(n int64); Sent func()}",
+	"type Cursor string",
 	"type Info struct{Name Name; Size int64; ModTime time.Time}",
 	storeExport,
 	"var ErrNotFound error",

@@ -36,11 +36,11 @@ type Store interface {
 	Delete(ctx context.Context, names []Name) []error
 
 	// List reads one page, with one request, of at most n stored blocks in
-	// ascending name order, starting after the given name (the zero Name starts
-	// at the beginning); next is the last name of the page or, when the page
-	// ends on a key that is not a block, the largest name that sorts at or
-	// before that key, so resuming after it skips no block; and done is true once the walk has passed the last block (RFC 4 §4.6).
-	List(ctx context.Context, after Name, n int) (page []Info, next Name, done bool, err error)
+	// ascending name order, starting after the cursor (the zero Cursor starts
+	// at the beginning); next holds the last key the page listed, a block's or
+	// a skipped foreign key's, and done is true once the walk has passed the
+	// last block (RFC 4 §4.6).
+	List(ctx context.Context, after Cursor, n int) (page []Info, next Cursor, done bool, err error)
 
 	// Health makes one bounded probe round trip of direction d against the
 	// store's own namespace: a probe put for DirPut, a probe get for DirGet.

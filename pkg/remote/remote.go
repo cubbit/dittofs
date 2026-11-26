@@ -113,6 +113,12 @@ type Meter struct {
 	Sent  func()
 }
 
+// Cursor is where a walk of List resumes: the last service key the previous
+// page listed, block or not, since a Name cannot stand for a key that is not
+// a block (RFC 4 §4.6). It is opaque to callers, who keep one and pass it back
+// to the store that returned it; the zero Cursor starts at the beginning.
+type Cursor string
+
 // Info describes one stored block, as a listing reports it.
 type Info struct {
 	Name    Name
