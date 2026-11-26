@@ -14,7 +14,7 @@ target is replaced once, by measurement". [RFC 29](../docs/internals/rfcs/rfc-29
 which the sweep runs as the engine does them. Every citation is `develop`'s text. The code lands on
 `feat/storage-v2`, and the paths below are paths there.
 **Track:** the team.
-**Epic 6 estimate: 5 subtasks, 10 man-days.**
+**Epic 6 estimate: 5 subtasks, 11.5 man-days.**
 **Depends on:** **S3**, a pass runs end to end: a file written through the journal is offered,
 carved, packed, put through a flow to RFC 4's in-memory store, committed and reported offloaded,
 over E4's `Cut` and E5's fold (the RFC 8 offload plan's epic 16, over its S5 and S6). **E4**'s
@@ -47,8 +47,8 @@ runs on any host and two runs at one commit give the same report.
   buffer twice (T6.2);
 - `dt run carver-sweep` writes each workload through the journal of a composed engine at each
   candidate `Target`, offloads it as the engine's own offers, age and widening decide, and writes
-  the report; it fails when a workload does not offload, or the chunk records pass RFC 2 §3.2's
-  ceiling (T6.3);
+  the report; it fails when a workload does not offload, the chunk records pass RFC 2 §3.2's
+  ceiling, or a control workload's re-stored bytes differ from its whole-file twin's (T6.3);
 - RFC 2 Appendix C holds the real-path table of that run, with its commit and corpus (T6.4);
 - RFC 2 §11 lists the default as settled, RFC 13 Appendix B's `Target` row reads it as settled, and
   `section.Default()` returns it (T6.5).
@@ -191,34 +191,50 @@ this epic's.
   other plans, since `internal/vfs/integration` cannot import `pkg/carver/internal/carvetest`; it
   skips naming `DITTOFS_CORPUS_DIR` when the variable is unset, and the cell's command refuses to
   start without it, as `engine-bench`'s does for its directory, so a skipped run never passes. The
-  report is printed, and the cell redirects it to `{out}/report.md` (`format: exit`), as
-  `engine-bench` writes `{out}/bench.txt`. It is a new suite and not an option of E7's
+  report is written to `report.md` in `t.ArtifactDir()`, and the cell passes `-artifacts
+  -outputdir={out}` and copies it to `{out}/report.md` (`format: exit`), as `engine-bench` does for
+  `b7-bursts.txt`: in package list mode a passing test's output is printed only with `-v`, so a
+  printed report would never reach the file. The cell passes `-count=1`, since `dt` adds it only
+  to `go-json` cells and a repeat run would otherwise replay the first from the test cache. It is a new suite and not an option of E7's
   `carver-bench`, since RFC 29 §4.9 makes an option a variant of one command, and the two run
   different packages; it joins no group, since none needs it. Its own tag keeps it out of
   `engine-conformance`, which would otherwise report it skipped on every pull request. Prior art: `engine-bench` and
   `reconcile-bench` on `feat/storage-v2` (checked), manual cells over a composition.
 - **D2, one composition per candidate, isolated from the stages that do not depend on `Target`.**
   Each run is a fresh composition: a non-encrypting namespace, so the unkeyed gear table; the empty
-  transform chain; RFC 4's in-memory store; the fixture's metadata store and journal, under
-  `t.TempDir()`; the engine's settings at their RFC 13 Appendix B
+  transform chain; RFC 4's in-memory store; the fixture's metadata store, badger in memory, and its
+  journal under `t.TempDir()`; the engine's settings at their RFC 13 Appendix B
   defaults (`offload.max_age`, the pass bound, the block target of 4 MiB, fixed for every candidate
-  and never varied with `Target`, the user's decision of 2026-11-26, D7); and the candidate
-  `Target` as the namespace's setting, which reaches the engine with the share at `Bind` (the RFC 8
-  offload plan's epic 12, D7, whose `TestRFC8C_Settings/the_pool_half` epic 16 turns green by S3).
-  The content wiring builds the carver's settings from it with `carve.NewSettings`, as for any
+  and never varied with `Target`, the user's decision of 2026-11-26, D7); a share journal limit of
+  `8 << 30`, `benchcompose`'s, above phase 0 and phase 1 held together (about 2.8 GB on the next
+  release); and the candidate `Target` as the namespace's setting, which reaches the engine with
+  the share at `Bind` (the RFC 8 offload plan's epic 12, D7, whose `TestRFC8C_Settings/the_pool_half`
+  epic 16 turns green by S3). `compose`'s `shareLimit` of 8 MiB is set inside its closure, so no
+  option overrides it, and at 8 MiB a phase's writes are refused `ErrDelay` (the journal's share
+  limit), pressure offers files mid-burst and phase 0 is released from the journal, so widening,
+  which reaches only held offloaded neighbours (RFC 8 §6.7), never happens: `compose` takes the
+  limit as a parameter, its existing callers passing `shareLimit`. The candidate is set by a
+  fixture option, `enginetest.WithTarget`, which configures it in the fixture's settings table and
+  records it in the namespace's `Bound` when `enginetest.New` creates the namespace, before the
+  first `Start`: epic 16's D7 reads the recorded `Target` at `Bind`, and a `Target` changed after
+  the namespace exists is the migration its T16.9 refuses. The content wiring builds the carver's settings from it with `carve.NewSettings`, as for any
   namespace, so the sweep never builds `carver.Settings` itself and needs no section registered
   (epic 21). RFC 2 §3.2 says blocks
   pack to their own target, so the number and size of remote objects do not depend on `Target`; a
   chain compresses or seals whole blocks and would scale every candidate alike, so the empty chain
   measures what the carver changes. A keyed table moves boundaries but not their distribution,
   which E3's §9 rows check under both tables. A `decision:` at the composition says so, and that a
-  chain whose cost depends on chunk sizes withdraws it. Nothing is timed, so the run needs no
+  chain whose cost depends on chunk sizes withdraws it. Each (workload, candidate) runs in its own
+  `t.Run`, one after another and never parallel, under a parent test that is not watched: the
+  fixture calls `prof.Watch` on the test it is given, and twenty compositions on one test would
+  overlap its watches, which fails them all, and keep every engine and store alive to the end. Nothing is timed, so the run needs no
   reference box. Prior art: Appendix C's own baseline, measured without transforms (RFC 2
   Appendix C).
 - **D3, the candidates are the baseline's four rows: 64 KiB, 256 KiB, 1 MiB and 4 MiB.** Every
   real-path figure then has its whole-file twin, which R3's rule compares against. The twin is
   recomputed by the sweep on the same corpus files and operations, by `Cut` over the whole file
-  before and after phase 1, as Appendix C's baseline did, not transcribed from Appendix C's table:
+  before and after phase 1 (for the sustained overwrites, before and after each round, summed), as
+  Appendix C's baseline did, not transcribed from Appendix C's table:
   that table was measured on another corpus, a compiler toolchain whose next release was mostly new
   at every `Target`, so a ratio against it would credit the corpus change to the path. Each is a power
   of two RFC 2 §3.7 accepts. Prior art: the baseline table itself.
@@ -229,20 +245,40 @@ this epic's.
 
   | Workload | Corpus file | Phase 1 |
   | --- | --- | --- |
-  | next release | `source/linux-6.6.tar` | `source/linux-6.6.1.tar` written over it from offset 0, truncated to its length |
+  | next release | `source/linux-6.6-git.tar` | `source/linux-6.6.1-git.tar` written over it from offset 0, truncated to its length |
   | 256 pages | `vm/debian-12-genericcloud-amd64.raw` | 256 distinct 4 KiB-aligned pages, chosen by the seed, each overwritten with fresh seeded bytes |
-  | 64 inserts | `source/linux-6.6.tar` | 64 offsets chosen by the seed; at each, 100 fresh bytes inserted, and the edited file written once, as an editor saves it: from the first insertion point to its end, as the baseline measured one edited version |
+  | 64 inserts | `source/linux-6.6-git.tar` | 64 offsets chosen by the seed; at each, 100 fresh bytes inserted, and the edited file written once, as an editor saves it: from the first insertion point to its end, as the baseline measured one edited version |
   | streaming append | `media/big-buck-bunny-1080p.mp4` | phase 1 alone: the whole file appended in 64 KiB writes to an empty file, the injected clock advanced by a quarter of `offload.max_age` every 16 MiB, so the age trigger fires mid-stream |
   | sustained overwrites | `vm/debian-12-genericcloud-amd64.raw` | 16 rounds of 256 pages as above, each round offloaded before the next; the report gives the last round and the round with the most chunk records |
 
-  `source/linux-6.6.1.tar` is one entry this epic adds to E2's pinned list, the next patch release of
-  the same tree, as the baseline's "next release" column measured, marked not repetitive as E2's
-  entries are; it adds about 1.4 GB to every fetch, E7's included. Offload "until clean" waits on
-  the condition itself: the injected clock advanced past `offload.max_age` so the age trigger
-  offers every file, then the engine's offload work quiescent (no offload key queued, no pass in
-  flight, read from the engine's `Stats`, whose fields the RFC 8 offload plan's epic 11 declares)
-  and the namespace's dirty bytes in the journal zero. Quiescent with dirty bytes left fails the
-  run at once on that assertion; one generous timeout stays as the backstop. A `ponytail:` at the schedule names its ceiling: each phase's edits land
+  `source/linux-6.6-git.tar` and `source/linux-6.6.1-git.tar` are two entries this epic adds to E2's
+  pinned list: the Linux 6.6 and 6.6.1 trees, the next patch release as the baseline's "next
+  release" column measured, each built by the fetch with `git archive --prefix=linux/
+  --mtime=<one fixed time>` from the tag's tree and pinned by its SHA-256, marked not repetitive as
+  E2's entries are. kernel.org's two tarballs differ in every tar header, by the prefix, the mtime
+  and so the checksum, and a header falls about every 16 KiB, so nearly every chunk at every
+  candidate would change and the unchanged files would give almost no repetition; built with one
+  prefix and one mtime, an unchanged file's header and bytes are the same in both. The two add about
+  2.8 GB to every fetch, E7's included.
+
+  Every phase but the streaming append is written with offload held, by a fixture control that
+  holds the engine's offload dispatch as `HoldNextCommit` holds a commit, and released once its
+  last write returns, so the phase lands as one burst before offload. Without it the byte trigger
+  offers a rewritten run mid-burst, the run ends real at the offloaded phase-0 bytes past the write
+  front (RFC 8 §6.7), and that forced cut falls where the scheduler happened to offer. The drain
+  then runs as the engine runs it, never by aging the files first: a clock moved past
+  `offload.max_age` before the drain makes every pass's artificial end old enough to be passed as
+  real (RFC 8 §6.7), so no tail is held back, cuts fall at the pass limits, and the figures stop
+  repeating. The sweep waits on the condition: no offload key queued and no pass in flight, read
+  from the engine's `Stats` (whose fields the RFC 8 offload plan's epic 11 declares), polled with a
+  short pause. Dirty bytes left then are not a failure, since a drain of several passes goes idle
+  between them until the next age tick posts the file again (that plan's epic 14, R18): the sweep
+  takes `Clock.Armed` for the tick period, a quarter of `offload.max_age`, advances the clock by one
+  period, waits for the tick to re-arm, which it does only after it has posted what is due, and
+  polls again. The drain ends when the namespace's dirty bytes in the journal are zero. It fails
+  on its own assertion when the clock has passed `offload.max_age` plus one tick period since the
+  phase's last write with dirty bytes left, the bound epic 14's R41 holds the age tick to; one
+  generous timeout stays as the backstop. A `ponytail:` at the schedule names its ceiling: each phase's edits land
   as one burst before offload, so passes coalesce neighbouring edits that a slower writer would
   offer apart; the upgrade is a trace-driven schedule, once a trace of a real workload exists.
   Prior art: Appendix C's baseline workloads, which this table runs through the engine; fio's
@@ -250,8 +286,8 @@ this epic's.
 - **D5, every figure is read where the bytes land.** Bytes stored: the sizes of the objects RFC
   4's in-memory store holds that phase 0 did not, read from the store's listing. Chunk records and
   sizes: the live refs of the workload's file in the metadata store, zero refs counted as holes and
-  never as chunks. The ceiling is checked as an integer, records ≤ ⌈live bytes / `Min`⌉ + holes
-  + 1, the one for the file's last chunk, which may fall under `Min`; per GiB it is only reported.
+  never as chunks. The ceiling is checked as an integer, records ≤ ⌈live bytes / `Min`⌉ +
+  holes + 1, the one for the file's last chunk, which may fall under `Min`; per GiB it is only reported.
   Blocks per pass: objects put in phase 1 over the passes that put them, the passes counted as the
   change in the engine's `Stats.OffloadPasses` across phase 1, the count the RFC 8 offload plan's
   epic 16 exports (its pass registry is internal and holds only passes in flight). Short blocks: blocks whose carried bytes are under the
@@ -274,31 +310,54 @@ this epic's.
   decision, 2026-11-26).** R3's "the whole-file baseline's margins" has more than one reading, and
   with no deduplication in the first release bytes stored alone cannot show what the baseline's
   columns showed (D5). The reading the user chose, which T6.1 writes as `selectDefault` and states
-  in RFC 2 §11: 256 KiB was chosen accepting the baseline's trade-off,
-  and a candidate replaces it only if the real path moves that trade-off in the candidate's
-  favour. For each of the baseline's three workloads, the baseline ratio is the candidate's
-  re-stored bytes over 256 KiB's on the whole-file twin (D3), and the real ratio is the same with
-  D5's re-stored bytes. A candidate is adopted if its real ratio is below its baseline ratio on all
-  three and its chunk records stay under R13's ceiling; of two that qualify, the one with the larger
-  total margin (Σ baseline ratio − real ratio), then the smaller `Target`. Bytes stored, the two new
-  workloads and the other figures are reported and decide nothing. The chunk and byte figures leave
-  no room for noise: the corpus is pinned, the workloads seeded and boundaries a function of the
-  bytes, so they repeat to the byte. Blocks per pass may not, since how offers group into passes can
+  in RFC 2 §11, as amended here and pending the user's confirmation: 256 KiB was chosen accepting
+  the baseline's trade-off, and a candidate replaces it only if it beats 256 KiB on the real path
+  and the real path moves that trade-off in its favour.
+
+  On the next release and the 64 inserts the path cuts exactly as whole-file `Cut` does, so they
+  are controls and decide nothing. Each rewrites one run to the file's end from a boundary both
+  cuts share: offset 0 for the next release, and for the inserts the start of the ref the first
+  insertion falls in, where re-tiling widens the run. Artificial ends are held back, so each next
+  offer "cuts exactly as one long stretch would have" (RFC 2 §2.4), and the run ends real at the
+  file's end. Their real re-stored bytes equal the twin's at every candidate, so their real ratio
+  equals the baseline ratio by construction, and only a forced cut can move it. The run fails
+  when a candidate's real re-stored bytes on either differ from its twin's, which names a forced
+  cut.
+
+  The decision rests on the two workloads where the path cuts otherwise: the 256 pages and the
+  sustained overwrites, whose runs widen to the refs a page partially replaces and end real at the
+  offloaded neighbour. For each, the baseline ratio is the candidate's re-stored bytes over 256
+  KiB's on the whole-file twin (D3), and the real ratio is the same with D5's re-stored bytes,
+  summed over the sixteen rounds for the sustained workload. A candidate is adopted if, on both,
+  its real ratio is below 1, so it re-stores fewer bytes than 256 KiB on the real path, and below
+  its baseline ratio, and its chunk records stay under R13's ceiling. Of two that qualify, the one
+  with the larger total relative margin, Σ (baseline ratio − real ratio) / baseline ratio, wins,
+  then the smaller `Target`. The margin is relative because an absolute one scales with the
+  baseline ratio: on Appendix C's 256 pages, 1 MiB's ratio is 165/70 ≈ 2.36 and 64 KiB's is 24/70
+  ≈ 0.34, so 2 % better at 1 MiB (0.047) would beat 10 % better at 64 KiB (0.034). Without the
+  bound of 1, a 1 MiB or 4 MiB candidate whose real ratio merely fell below its baseline ratio
+  would qualify while re-storing more than 256 KiB. Bytes stored, the streaming append and the
+  other figures are reported and decide nothing. The chunk and byte figures leave
+  no room for noise: the corpus is pinned, the workloads seeded, boundaries a function of the
+  bytes and no cut forced by age or by a mid-burst offer (D4), so they repeat to the byte. Blocks per pass may not, since how offers group into passes can
   depend on the scheduler; they decide nothing. The block target stays at 4 MiB for every candidate
   (D2), also the user's decision: it does not co-vary with `Target`, so at a 4 MiB `Target` a block
   often holds one chunk, which the short-block and blocks-per-pass figures report and which decides
   nothing. Rejected: one cost per candidate (bytes stored plus a metadata cost per chunk record,
   lowest wins), which needs a price per record no RFC states; and an absolute bound (at least 10 %
-  fewer re-stored bytes on all three workloads), whose 10 % nothing derives. Example: if 1 MiB re-stores r
-  times 256 KiB's bytes on the next release's whole-file twin, it is adopted only if its real-path
-  ratio there is below r, likewise on the other two workloads, and its records stay under the
-  ceiling.
+  fewer re-stored bytes on all three workloads), whose 10 % nothing derives. Example: 64 KiB
+  re-stores about 0.34 times 256 KiB's bytes on the 256 pages' whole-file twin, so it is adopted
+  only if its real-path ratio there is below 0.34, likewise against its own twin on the sustained
+  overwrites, and its records stay under the ceiling; 1 MiB, whose twin ratio there is about 2.36,
+  must also come under 1 on both.
   The rule is written and reviewed before the run, so the run cannot choose its own test. Prior
   art: a pre-registered analysis, the usual guard against choosing a criterion after seeing the
   data (from memory); none found for chunk sizes.
 - **D8, the record is a table in RFC 2 Appendix C, and the raw report stays in the run's output.**
   The real-path table sits under the measurement plan, one row per candidate and workload with
-  R11 to R16's figures, preceded by the run's fields (R17): the commit, the host's CPU and memory,
+  R11 to R16's figures and the ones D7 decides on: re-stored bytes, the twin's re-stored bytes, and
+  the real and baseline ratios, so the frozen default can be checked from the table alone. It is
+  preceded by the run's fields (R17): the commit, the host's CPU and memory,
   its operating system, the toolchain and the corpus entries' hashes. A `decision:` beside the
   table says the device's raw figures, mount options, concurrency and BLAKE3's SIMD extensions do
   not apply, because nothing in the run is timed and every figure is a count; it is withdrawn if a
@@ -316,8 +375,12 @@ internal/vfs/integration/
   sweep_workload_test.go     T6.2  the five workloads as seeded operation lists, D4's ponytail:
   target_sweep_test.go       T6.3  TestTargetSweep: composition per candidate (D2's decision:),
                                    phases, store reads, the report
+  compose_test.go            T6.3  compose takes the share limit as a parameter
+pkg/engine/enginetest/
+  fixture.go                 T6.3  WithTarget; the control that holds offload dispatch
 pkg/carver/internal/carvetest/corpus/
-  corpus.go                  T6.2  one more pinned entry, source/linux-6.6.1.tar
+  corpus.go                  T6.2  two pinned entries built with git archive,
+                                   source/linux-6.6-git.tar and source/linux-6.6.1-git.tar
 test/suites.yaml             T6.3  carver-sweep, tier manual; target_sweep in lint-go's vet tags
 docs/internals/rfcs/rfc-2-carver.md
                              T6.3  §10.6's suites paragraph names carver-sweep
@@ -372,7 +435,8 @@ pkg/carver/section/
       Chunks chunkFigures
       Blocks blockFigures
   }
-  // selectDefault applies D7 to the rows of the baseline's three workloads; it takes no time.
+  // selectDefault applies D7 to a report's rows, deciding on the 256 pages and the
+  // sustained overwrites alone; it takes no time.
   func selectDefault(rows []row) int64
   ```
   RFC 2 §11 amended to state D7's rule and the block target fixed at 4 MiB for every candidate,
@@ -383,7 +447,8 @@ pkg/carver/section/
     candidate's `Min`.
   - `restoredWholeFile` is zero for a file against itself, and counts an appended chunk's bytes.
   - `selectDefault` returns 256 KiB on a report whose ratios equal the baseline's, and a candidate
-    only when D7's condition holds for it.
+    only when D7's condition holds for it on the 256 pages and the sustained overwrites; the next
+    release and the 64 inserts never decide.
   - RFC 2 §11 states the rule `selectDefault` applies and the fixed 4 MiB block target, merged on
     `develop` before T6.4's run (held by review).
 - **Tests:** at the functions T6.3 calls: a hand-built size list whose Σs²/Σs is worked out in the
@@ -394,25 +459,30 @@ pkg/carver/section/
   bytes (`math/rand/v2`'s ChaCha8, since `carvetest` is internal to the carver) against itself and
   with 1 MiB of other seeded bytes appended (catches a twin that
   counts every chunk); block lists with one short block and none (R16);
-  `selectDefault` on a report whose ratios equal the twin's, on one where 64 KiB's three real
-  ratios fall below its twin's, on one where only two do, on one where all three do but its chunk
-  records pass the ceiling, and on one where 64 KiB and 1 MiB both qualify with different total
-  margins (catches a rule that adopts on one workload, on bytes alone, or a tie-break that never
-  decides, R3, R4). R5 is held by the signature: no input
+  `selectDefault` on a report whose ratios equal the twin's, on one where 64 KiB's real ratios on
+  the 256 pages and the sustained overwrites fall below its twin's, on one where only one does, on
+  one where both do but its chunk records pass the ceiling, on one where 1 MiB's real ratios fall
+  below its twin's but stay above 1, on one where a control's real ratio falls below its twin's
+  and no deciding one does, and on one where 64 KiB and 1 MiB both qualify, 1 MiB by the larger
+  absolute margin and 64 KiB by the larger relative one (catches a rule that adopts on one
+  workload, on bytes alone, without beating 256 KiB, on a control, or by an absolute margin, R3,
+  R4). R5 is held by the signature: no input
   carries a duration. No test double.
 - **Rules:** rule 10, the planted breaks above. Others as §2 says.
 
 ### T6.2 The workloads
 
-**Subtask T6.2 estimate: 1.5 man-days.**
+**Subtask T6.2 estimate: 2 man-days.**
 
 - **Track:** the team. **Depends on:** none.
 - **Covers:** R7, R10.
 - **Deliverables:** `sweep_workload_test.go`: one function per workload of D4, from a seed and the
   corpus file's length to an operation list (offset, length, the bytes' source: the corpus at an
   offset or the seeded stream at an offset), and the bytes produced lazily from it, so no workload
-  holds a file in memory; D4's `ponytail:` at the schedule. One pinned entry,
-  `source/linux-6.6.1.tar`, added to E2's corpus list, with both of its SHA-256s. Consumed by T6.3.
+  holds a file in memory; D4's `ponytail:` at the schedule. Two pinned entries,
+  `source/linux-6.6-git.tar` and `source/linux-6.6.1-git.tar`, added to E2's corpus list, each built
+  by the fetch with `git archive` from its tag's tree under one prefix and one mtime (D4) and pinned
+  by the SHA-256 of the tar. Consumed by T6.3.
 - **Acceptance criteria:**
   - The same seed gives the same operations and bytes; another seed gives other offsets.
   - The 256 pages are distinct and 4 KiB-aligned inside the image; the inserts fall inside the
@@ -429,35 +499,42 @@ pkg/carver/section/
 
 ### T6.3 The sweep over the composed engine
 
-**Subtask T6.3 estimate: 4 man-days.**
+**Subtask T6.3 estimate: 5 man-days.**
 
 - **Track:** the team. **Depends on:** S3, T6.1, T6.2.
 - **Covers:** R6, R8, R9, R11 to R16, R18.
 - **Deliverables:** `target_sweep_test.go`, `TestTargetSweep`, tagged `engine_conformance &&
   target_sweep`: for each candidate of D3 and each workload of D4, a fresh composition as D2
-  states it with D2's `decision:`, phase 0 and phase 1 written through the filesystem service and
-  offloaded until clean, the stores read as D5 states, the whole-file twin cut on the same files, and the
+  states it with D2's `decision:`, each in its own `t.Run` (D2), phase 0 and phase 1 written
+  through the filesystem service with offload held and then drained as D4 states, the stores read
+  as D5 states, the whole-file twin cut on the same files, and the
   report printed: one table per workload, the histogram per candidate, the sustained workload's two
   rounds (D4), and the `Target` `selectDefault` returns. `carver-sweep` in `test/suites.yaml`,
-  `tier: manual`, `format: exit`, its `cmd` passing `-run ^TestTargetSweep$` and an explicit
-  `-timeout` with the cell's above it, redirecting the output to `{out}/report.md`, refusing to
-  start without `DITTOFS_CORPUS_DIR`, with a comment naming the host memory the in-memory store
-  needs and the temporary space the journal and the metadata store take (about the largest corpus
-  file, once per candidate); `target_sweep` added to lint-go's `go vet -tags=` list (D1); RFC 2 §10.6's suites paragraph names `carver-sweep`, and `docs/internals/testing.md`
+  `tier: manual`, `format: exit`, its `cmd` passing `-count=1`, `-run ^TestTargetSweep$`, an
+  explicit `-timeout` with the cell's above it and `-artifacts -outputdir={out}`, copying the
+  report from `{out}/_artifacts` to `{out}/report.md` (D1), refusing to start without
+  `DITTOFS_CORPUS_DIR`, with a comment naming the host memory the in-memory store and the in-memory
+  metadata store need and the temporary space the journal takes (§9 point 4); `compose`'s share
+  limit as a parameter, `enginetest.WithTarget` and the fixture control that holds offload dispatch
+  (D2, D4); `target_sweep` added to lint-go's `go vet -tags=` list (D1); RFC 2 §10.6's suites paragraph names `carver-sweep`, and `docs/internals/testing.md`
   regenerated with `dt docs`. Consumed by T6.4, which runs it.
 - **Acceptance criteria:**
   - Each run builds the carver through the content wiring as S3 does, with no option that changes
     the mask, the chain or the pipeline beyond D2's settings (R6, R8, R9).
   - Each composition cuts at its candidate: the run fails when two candidates leave the same live
     chunk sizes on one workload (D2).
-  - The run fails a workload whose phase ends quiescent with dirty bytes left, or whose chunk
+  - The run fails a workload whose drain passes its bound with dirty bytes left, or whose chunk
     records pass R13's ceiling (D4, D5).
+  - The run fails when a candidate's real re-stored bytes on the next release or the 64 inserts
+    differ from its twin's (D7).
   - `dt docs --check` passes with the suite named.
 - **Tests:** the sweep is itself the check of R13 at the consumer, over the real path. Its own
   failure paths are seen before the pull request, as the RFC 2 plan's rule 6 asks of a test no
-  suite holds red: with the age trigger disabled in a local edit, phase 1 goes quiescent with dirty
-  bytes left and the run fails on that assertion, not on the timeout (catches a "clean" read from
-  the wrong journal); with widening disabled in a local edit, the sustained workload at the 1 MiB
+  suite holds red: with the age trigger disabled in a local edit, the 256 pages' phase 1 stays
+  dirty past the drain's bound and the run fails on that assertion, not on the timeout (catches a
+  "clean" read from the wrong journal); with the clock advanced past `offload.max_age` before the
+  drain in a local edit, the next release's cuts fall at the pass limits and the run fails on the
+  control's assertion (catches a forced cut, D7); with widening disabled in a local edit, the sustained workload at the 1 MiB
   and 4 MiB candidates passes R13's ceiling and fails on it (at 64 KiB and 256 KiB sixteen rounds of
   pages stay under it, so those candidates do not show the break); with the share bound without
   the candidate in a local edit, every candidate cuts at the default and the run fails on the
@@ -475,7 +552,8 @@ pkg/carver/section/
   where S3 holds; RFC 2 Appendix C's real-path table under its measurement plan, with D8's run
   fields and `decision:`; `{out}/report.md` attached to the pull request. Consumed by T6.5.
 - **Acceptance criteria:**
-  - Every candidate and workload of D3 and D4 has its row, each with R11 to R16's figures.
+  - Every candidate and workload of D3 and D4 has its row, each with R11 to R16's figures and D8's
+    re-stored, twin and ratio figures.
   - A second run at the same commit gives the same chunk and byte figures, run once on the
     smallest file to show it; blocks per pass may differ (D7).
 - **Tests:** none in Go: the deliverable is a measurement. Its check is the repeat run, which
@@ -526,7 +604,7 @@ Checkpoint after T6.3: the sweep runs by hand on any host with the corpus. T6.1 
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T6.1, T6.2, T6.3 | 7.5 | S3 | the sweep, end to end: its arithmetic, its workloads and its suite |
+| 1 | T6.1, T6.2, T6.3 | 9 | S3 | the sweep, end to end: its arithmetic, its workloads and its suite |
 | 2 | T6.4, T6.5 | 2.5 | PR 1 | the run and the freeze it decides, so the recorded table and the frozen value land together |
 
 A suggestion only: one pull request per subtask works as well. The code lands on `feat/storage-v2`;
@@ -537,7 +615,7 @@ the programme's other RFC edits are.
 ## 9. Open points
 
 1. **The estimate against the RFC 2 plan's figure.** The plan says "planned after S3" and gives no
-   figure, so there is none to compare with; this document gives 5 subtasks and 10 man-days, broken
+   figure, so there is none to compare with; this document gives 5 subtasks and 11.5 man-days, broken
    down before S3 at the programme's request. T6.3 builds on the composition the RFC 8 offload
    plan's epics 15, 16 and 21 shape, none of it written yet, so its 4 man-days may move.
 2. **A default other than 256 KiB moves figures in other RFCs and one constant.** RFC 2 §5.2 derives
@@ -554,14 +632,22 @@ the programme's other RFC edits are.
 3. **`Target`'s key is not this epic's.** E3's D8 names it `carver.target`, the user's decision of
    2026-11-26, which closes the RFC 2 plan's §6 point 2; this epic changes the section's default,
    never its key.
-4. **The sweep's host.** The in-memory store holds each run's objects, about the largest corpus file
-   per composition with one composition alive at a time: the 1.4 GB tar, or the VM image if it is
-   larger (its zero runs become zero refs and store nothing, but the journal takes the whole file).
-   T6.3's comment gives the figure once E2 pins the image. A finding about the
+4. **The sweep's host.** The in-memory store holds each run's objects, and nothing frees any while
+   it runs: the first release has no deduplication and the run no collection, so phase 1 stores
+   again every byte it rewrites. The next release alone stores about 2.8 GB, phase 0's 1.4 GB tar
+   and its rewrite, with one composition alive at a time (D2); the metadata store is badger in
+   memory too, beside it. The journal under `t.TempDir()` holds both phases, about 2.8 GB of
+   temporary space, or more for the VM image if it is larger (its zero runs become zero refs and
+   store nothing, but the journal takes the whole file). T6.3's comment gives the figures once E2
+   pins the image. A finding about the
    pipeline itself, such as a ceiling passed, is filed against the RFC 8 offload plan and blocks
    T6.4 until fixed; how many such findings the first full run surfaces cannot be known, which makes
    T6.4 the least certain estimate here.
 5. **The candidate's route into the carver is another plan's.** D2 binds the share with the
    candidate `Target` as the namespace's setting, the route the RFC 8 offload plan's epic 12 fixes
-   (its D7) and its epic 16 makes real by S3. If epic 16 carries `Target` another way, D2 follows
-   it; T6.3's same-sizes assertion fails a run where the candidate never reaches the carver.
+   (its D7) and its epic 16 makes real by S3, where epic 16's D7 reads the `Target` the namespace
+   recorded at creation. Nothing in that plan creates a fixture namespace with a chosen `Target`,
+   so this epic adds `enginetest.WithTarget` (T6.3), and the fixture control that holds offload
+   dispatch (D4), which that plan does not list either. If epic 16 carries `Target` another way,
+   D2 follows it; T6.3's same-sizes assertion fails a run where the candidate never reaches the
+   carver.
