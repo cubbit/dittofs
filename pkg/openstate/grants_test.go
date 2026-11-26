@@ -72,7 +72,7 @@ func delayedFor(err error) DelayCause {
 }
 
 func delegated(g *CachingGrant, file FileKey) OpenRef {
-	return OpenRef{Kind: RefDelegated, State: g.ID.ref(), Handle: handle(file.ID)}
+	return OpenRef{Kind: RefDelegated, State: grantRef(g.ID), Handle: handle(file.ID)}
 }
 
 func (f *fixture) ack(who Caller, g *CachingGrant, to GrantKind) error {
@@ -192,21 +192,21 @@ func TestRecallDeadline(t *testing.T) {
 	if s, _ := f.Renew(ctx, a.Client); !s.RecallableRevoked || s.AdminRevoked {
 		t.Errorf("renewal %+v, want RecallableRevoked alone", s)
 	}
-	wrong := d.ID.ref()
+	wrong := grantRef(d.ID)
 	wrong.Type = StateOpen
 	if errs := f.Recovery().TestState(ctx, a, []StateRef{wrong}); !errors.Is(errs[0], ErrBadState) {
 		t.Errorf("the revoked delegation named as an open: %v, want ErrBadState", errs[0])
 	}
-	if err := f.Recovery().FreeState(ctx, b, d.ID.ref()); !errors.Is(err, ErrNotYours) {
+	if err := f.Recovery().FreeState(ctx, b, grantRef(d.ID)); !errors.Is(err, ErrNotYours) {
 		t.Errorf("another client freeing the revoked delegation: %v, want ErrNotYours", err)
 	}
-	if err := f.Recovery().FreeState(ctx, a, d.ID.ref()); err != nil {
+	if err := f.Recovery().FreeState(ctx, a, grantRef(d.ID)); err != nil {
 		t.Fatal(err)
 	}
 	if s, _ := f.Renew(ctx, a.Client); s.RecallableRevoked {
 		t.Error("the flag outlived FreeState")
 	}
-	if errs := f.Recovery().TestState(ctx, a, []StateRef{d.ID.ref()}); !errors.Is(errs[0], ErrBadState) {
+	if errs := f.Recovery().TestState(ctx, a, []StateRef{grantRef(d.ID)}); !errors.Is(errs[0], ErrBadState) {
 		t.Errorf("a freed reference: %v, want ErrBadState", errs[0])
 	}
 
@@ -506,7 +506,7 @@ func TestRevoke(t *testing.T) {
 		t.Errorf("waiters granted by the revoke: %v; want one, under the file's admission lock", w)
 	}
 	f.mustOpen(t, b, file, OpenRequest{Access: wr})
-	for _, ref := range []StateRef{o.Ref, d.ID.ref()} {
+	for _, ref := range []StateRef{o.Ref, grantRef(d.ID)} {
 		var rev *RevokedError
 		if errs := f.Recovery().TestState(ctx, a, []StateRef{ref}); !errors.As(errs[0], &rev) || rev.Cause != RevokedByAdmin {
 			t.Errorf("%v after the revoke: %v, want ErrRevoked(RevokedByAdmin)", ref.Type, errs[0])
@@ -531,7 +531,7 @@ func TestRevoke(t *testing.T) {
 	if err := f.Expire(ctx, a.Client); err != nil {
 		t.Fatal(err)
 	}
-	if errs := f.Recovery().TestState(ctx, a, []StateRef{d.ID.ref()}); !errors.Is(errs[0], ErrBadState) {
+	if errs := f.Recovery().TestState(ctx, a, []StateRef{grantRef(d.ID)}); !errors.Is(errs[0], ErrBadState) {
 		t.Errorf("a revoked reference of an expired client: %v, want ErrBadState", errs[0])
 	}
 
@@ -655,7 +655,7 @@ func TestDelegationIsItsClients(t *testing.T) {
 	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), entity.WriteData); !errors.Is(err, ErrAccess) {
 		t.Errorf("a write under a read delegation: %v, want ErrAccess", err)
 	}
-	if err := f.Grants().AckRecall(ctx, a, GrantID{o.Ref.Shard, o.Ref.Instance, o.Ref.Token}, GrantNone); !errors.Is(err, ErrBadState) {
+	if err := f.Grants().AckRecall(ctx, a, GrantID{Shard: o.Ref.Shard, Instance: o.Ref.Instance, Token: o.Ref.Token}, GrantNone); !errors.Is(err, ErrBadState) {
 		t.Errorf("an open's token named as a grant: %v, want ErrBadState", err)
 	}
 	if err := f.Checks().CheckIO(ctx, a, file, delegated(d, file), br(0, 1), entity.ReadData); err != nil {

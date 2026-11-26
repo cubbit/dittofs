@@ -1153,8 +1153,9 @@ enforces it for every protocol, at the boundary of [§3.2](#3.2%20A%20name%20is%
   `LPT9` and `LPT¹` to `LPT³`, in any case, alone or followed by spaces, a dot and
   anything, as `con.txt` and `CON .txt`), and keeps out of every stored name a
   **reserved character** (`"`, `*`, `:`, `<`, `>`, `?`, `\`, `|` and the
-  controls 0x01 to 0x1F) and a trailing space or dot. In a name a call over NFS
-  gives (its `vfs.Call`'s `Protocol`), each such character is stored as its
+  controls 0x01 to 0x1F) and a trailing space or dot. In a name given by a call
+  that states `SpellsReservedNames` ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)),
+  as both NFS profiles do, each such character is stored as its
   private-use code point ([RFC 22 Appendix B](rfc-22-smb.md#Appendix%20B%20%E2%80%94%20private-use%20mapping)):
   `:` as U+F022, a trailing space as U+F028, a trailing dot as U+F029, each
   character of a trailing run spelled, so `a..` is stored as `a` U+F029 U+F029;
@@ -1162,8 +1163,8 @@ enforces it for every protocol, at the boundary of [§3.2](#3.2%20A%20name%20is%
   The
   spelling is applied before the name is keyed, wherever such a name is looked
   up or stored: a create, a link, a rename's target and every lookup, after `.`
-  and `..` are resolved ([§3.2](#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary)). From any
-  other protocol such a create fails `ErrInvalid`, as a device name does from
+  and `..` are resolved ([§3.2](#3.2%20A%20name%20is%20bytes%2C%20and%20it%20is%20validated%20at%20the%20boundary)). From a call
+  that does not state it, as SMB's does not, such a create fails `ErrInvalid`, as a device name does from
   every protocol, so no client makes a name the share's other clients cannot
   open. The device-name check runs first, on the name with its trailing
   spaces and dots ignored, as Windows reads it, so `CON.` from NFS is refused

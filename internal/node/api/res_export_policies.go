@@ -24,7 +24,7 @@ type policyDoc struct {
 // an account of their own.
 func policyOf(p entity.ExportPolicy) apiv1.ExportPolicySpec {
 	v := apiv1.ExportPolicySpec{Flavors: []string{}, MinProof: p.MinProof.String(), MinProtection: p.MinProtection.String(),
-		ReadOnly: p.ReadOnly, Clients: []apiv1.ClientRule{}, Squash: p.Squash.String(),
+		ReadOnly: p.ReadOnly, Clients: []apiv1.ClientRule{}, Squash: p.Squash.String(), ManageGIDs: p.ManageGIDs,
 		SMB: apiv1.SMBShare{Encrypt: p.SMB&entity.SMBEncrypt != 0, Hidden: p.SMB&entity.SMBHidden != 0,
 			ContinuouslyAvailable: p.SMB&entity.SMBContinuouslyAvailable != 0}}
 	for _, f := range p.Flavors {
@@ -50,7 +50,7 @@ func policyOf(p entity.ExportPolicy) apiv1.ExportPolicySpec {
 // store holds it under, and a rule naming one that does not exist fails
 // closed.
 func policyFrom(share entity.ShareID, spec apiv1.ExportPolicySpec, at string) (entity.ExportPolicy, error) {
-	p := entity.ExportPolicy{Share: share, ReadOnly: spec.ReadOnly, Squash: entity.SquashRoot}
+	p := entity.ExportPolicy{Share: share, ReadOnly: spec.ReadOnly, Squash: entity.SquashRoot, ManageGIDs: spec.ManageGIDs}
 	if len(spec.Flavors) == 0 {
 		return p, &fieldError{field: at + "flavors", detail: "a policy names at least one flavour: none, sys or kerberos"}
 	}

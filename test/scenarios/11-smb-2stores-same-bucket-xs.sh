@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # Two namespaces on the same bucket and prefix, each on a remote store of its own (RFC 6 §2.6, App A;
 # RFC 9 §5.3): they are one remote namespace under two names, so GC on one can delete the other's
-# objects. The second store, or its namespace, must be refused.
+# objects. The second namespace must be refused.
 # If it is accepted, /x and /y get a file each; deleting /x's file, GC on /x and a reclaim must leave /y's
 # objects and data intact.
-# The overlap may be refused at the second store's create or at its namespace's; either counts. Under
-# v1's CLI both were accepted, and /y's data survived (GC reported 8 objects swept, the bucket kept its 4).
+# A store carries no prefix, and setup's store is already on bucket dittofs under test/, so a second
+# store on the bucket is no overlap: only the namespace's bucket and prefix are. Under v1's CLI both
+# were accepted, and /y's data survived (GC reported 8 objects swept, the bucket kept its 4).
 
 rclone mkdir s3:dittofs/shared
-S="$(dfs-store dittofs)"
-NX="$(dfsctl namespace create --store "$S" --setting namespace.prefix=shared/ -o json | jq -r .id)"
-S="$(dfs-store dittofs 2>/tmp/ny.err)" &&
-  NY="$(dfsctl namespace create --store "$S" --setting namespace.prefix=shared/ -o json 2>/tmp/ny.err | jq -r .id)" && Y=accepted || Y=refused
+SX="$(dfs-store dittofs)"
+NX="$(dfsctl namespace create --store "$SX" --setting namespace.prefix=shared/ -o json | jq -er .id)"
+SY="$(dfs-store dittofs)"
+NY="$(dfsctl namespace create --store "$SY" --setting namespace.prefix=shared/ -o json 2>/tmp/ny.err | jq -er .id)" && Y=accepted || Y=refused
 cat /tmp/ny.err
 echo "second namespace on the same bucket and prefix: $Y"
 if test "$Y" = accepted; then
@@ -38,4 +39,4 @@ fi
 test "$Y" = refused
 # The refusal must be the overlap, named by the setting, not some other failure
 if grep -q unknown_key /tmp/ny.err; then exit 1; fi
-grep -Eq 'namespace.prefix|remote.bucket' /tmp/ny.err
+grep -q '(field namespace\.prefix)' /tmp/ny.err

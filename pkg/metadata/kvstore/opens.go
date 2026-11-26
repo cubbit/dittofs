@@ -141,10 +141,7 @@ func heldOpen(tx kv.Txn, share entity.ShareID, file entity.FileID) (bool, error)
 }
 
 // DurableOpen is one entry of a share's durable-open index.
-type DurableOpen struct {
-	File entity.FileID
-	Open entity.OpenID
-}
+type DurableOpen = entity.DurableOpen
 
 // Durable lists the durable opens in one shard of a share, from that
 // shard's range of the index: what a new primary reads at grace end to

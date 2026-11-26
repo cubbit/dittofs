@@ -10,7 +10,7 @@ import (
 
 	"github.com/cubbit/dittofs/pkg/identity"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
-	"github.com/cubbit/dittofs/pkg/openstate"
+	"github.com/cubbit/dittofs/pkg/openstate/state"
 )
 
 // The metadata store's types an adapter passes or receives.
@@ -38,73 +38,73 @@ type (
 
 // Open state's types an adapter passes or receives.
 type (
-	StateRef     = openstate.StateRef
-	StateType    = openstate.StateType
-	OpenRef      = openstate.OpenRef
-	RefKind      = openstate.RefKind
-	Seqs         = openstate.Seqs
-	GrantID      = openstate.GrantID
-	GrantKind    = openstate.GrantKind
-	LeaseKey     = openstate.LeaseKey
-	WatchID      = openstate.WatchID
-	ClientStatus = openstate.ClientStatus
-	ClientRecord = openstate.Client
-	SessionEnd   = openstate.SessionEnd
-	Proposal     = openstate.Proposal
-	GraceRef     = openstate.GraceRef
-	Revocation   = openstate.Revocation
-	RevokeReason = openstate.RevokeReason
-	LockOwner    = openstate.LockOwner
-	ByteRange    = openstate.ByteRange
-	LockRange    = openstate.LockRange
-	Lock         = openstate.Lock
-	LockedError  = openstate.LockedError
-	LockSequence = openstate.LockSequence
-	LockWaiter   = openstate.LockWaiter
-	WaitKind     = openstate.WaitKind
-	CachingGrant = openstate.CachingGrant
-	ChangeMask   = openstate.ChangeMask
-	Change       = openstate.Change
-	AppInstance  = openstate.AppInstance
+	StateRef     = state.StateRef
+	StateType    = state.StateType
+	OpenRef      = state.OpenRef
+	RefKind      = state.RefKind
+	Seqs         = state.Seqs
+	GrantID      = state.GrantID
+	GrantKind    = state.GrantKind
+	LeaseKey     = state.LeaseKey
+	WatchID      = state.WatchID
+	ClientStatus = state.ClientStatus
+	ClientRecord = state.Client
+	SessionEnd   = state.SessionEnd
+	Proposal     = state.Proposal
+	GraceRef     = state.GraceRef
+	Revocation   = state.Revocation
+	RevokeReason = state.RevokeReason
+	LockOwner    = state.LockOwner
+	ByteRange    = state.ByteRange
+	LockRange    = state.LockRange
+	Lock         = state.Lock
+	LockedError  = state.LockedError
+	LockSequence = state.LockSequence
+	LockWaiter   = state.LockWaiter
+	WaitKind     = state.WaitKind
+	CachingGrant = state.CachingGrant
+	ChangeMask   = state.ChangeMask
+	Change       = state.Change
+	AppInstance  = state.AppInstance
 )
 
 // The values of open state's enumerations, so an adapter names them from here.
 const (
-	StateOpen  = openstate.StateOpen
-	StateLock  = openstate.StateLock
-	StateGrant = openstate.StateGrant
-	StateWatch = openstate.StateWatch
+	StateOpen  = state.StateOpen
+	StateLock  = state.StateLock
+	StateGrant = state.StateGrant
+	StateWatch = state.StateWatch
 
-	RefOpened    = openstate.RefOpened
-	RefLocked    = openstate.RefLocked
-	RefDelegated = openstate.RefDelegated
-	RefAnonymous = openstate.RefAnonymous
+	RefOpened    = state.RefOpened
+	RefLocked    = state.RefLocked
+	RefDelegated = state.RefDelegated
+	RefAnonymous = state.RefAnonymous
 
-	GrantNone   = openstate.GrantNone
-	GrantRead   = openstate.GrantRead
-	GrantWrite  = openstate.GrantWrite
-	GrantHandle = openstate.GrantHandle
+	GrantNone   = state.GrantNone
+	GrantRead   = state.GrantRead
+	GrantWrite  = state.GrantWrite
+	GrantHandle = state.GrantHandle
 
-	WaitNone     = openstate.WaitNone
-	WaitPoll     = openstate.WaitPoll
-	WaitCallback = openstate.WaitCallback
+	WaitNone     = state.WaitNone
+	WaitPoll     = state.WaitPoll
+	WaitCallback = state.WaitCallback
 
-	RevokedLeaseExpired = openstate.RevokedLeaseExpired
-	RevokedByAdmin      = openstate.RevokedByAdmin
-	RevokedGrant        = openstate.RevokedGrant
-	RevokedShardState   = openstate.RevokedShardState
-	RevokedShare        = openstate.RevokedShare
+	RevokedLeaseExpired = state.RevokedLeaseExpired
+	RevokedByAdmin      = state.RevokedByAdmin
+	RevokedGrant        = state.RevokedGrant
+	RevokedShardState   = state.RevokedShardState
+	RevokedShare        = state.RevokedShare
 
-	ChangeRemove    = openstate.ChangeRemove
-	ChangeRename    = openstate.ChangeRename
-	ChangeAddEntry  = openstate.ChangeAddEntry
-	ChangeAttrs     = openstate.ChangeAttrs
-	ChangeSetID     = openstate.ChangeSetID
-	ChangeSize      = openstate.ChangeSize
-	ChangeTimes     = openstate.ChangeTimes
-	ChangeSecurity  = openstate.ChangeSecurity
-	ChangeStreams   = openstate.ChangeStreams
-	ChangeEnumerate = openstate.ChangeEnumerate
+	ChangeRemove    = state.ChangeRemove
+	ChangeRename    = state.ChangeRename
+	ChangeAddEntry  = state.ChangeAddEntry
+	ChangeAttrs     = state.ChangeAttrs
+	ChangeSetID     = state.ChangeSetID
+	ChangeSize      = state.ChangeSize
+	ChangeTimes     = state.ChangeTimes
+	ChangeSecurity  = state.ChangeSecurity
+	ChangeStreams   = state.ChangeStreams
+	ChangeEnumerate = state.ChangeEnumerate
 )
 
 // Identity's value types an adapter passes or receives.
