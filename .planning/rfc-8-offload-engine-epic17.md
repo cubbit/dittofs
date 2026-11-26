@@ -19,8 +19,10 @@ location), §2.2, §2.5, §6.6 and §7.2; [RFC 3](../docs/internals/rfcs/rfc-3-s
 options; **epic 11's frozen surface**: `Settings.FillLowWater`, `ShareSettings`' read-ahead caps and
 speculation budget, the `Stats` fields `Fetches`, `FetchBytes`, `Fills`, `SpeculationBytes`,
 `SpeculationUsedBytes`, `Reresolves`, and the recorded declarations `Handle.Fill` and the flow's
-`Fetch` and `Prefetch`; **epic 16, partly**: a binding's flow opened at `Bind` (until it lands, this
-epic's tests install a flow over RFC 4's in-memory store on the binding through `export_test.go`);
+`Fetch` and `Prefetch`; **epic 16's T16.1**: the binding's `flow`, opened at attach as a demand flow, and
+every engine the fixture and the in-package tests build composing RFC 3's syncer over two in-memory
+stores, with `FaultRemote` real (its D9, D10); **epic 16's D6**, the gates' switch `Deps.Gates`,
+which `fill` reads (pending the user's answer in epic 16's document);
 **S5's first half, partly**: RFC 3's syncer (`pkg/syncer/pool`) over RFC 4's in-memory store through
 `codec.Store`, and RFC 5's material errors in the `pkg/transform` root (epic 15 admits that root into
 the engine's import walk). The conformance rows also wait on epics 15 and 16 (the carver, chain and
@@ -70,7 +72,8 @@ series and span of these paths; the fixture controls epic 12 proposed for these 
   pre-warm action is specified (the offload plan's §6.1 row on `PreWarm`).
 - Posting capacity pressure from `admit` and the pacing path, and so cancelling speculation there:
   epic 18, which calls T17.7's entry point.
-- Opening a binding's flow at `Bind` and closing it at `Drop`: epic 16.
+- Opening a binding's flow at attach and closing it at `Drop`, composing the syncer in every
+  fixture, and the gates' switch itself: epic 16 (its T16.1, D6, D9).
 - Relocating a chunk (RFC 6 §7.3): RFC 9's, with GC; the relocation leg of "§7.7 re-resolution"
   waits on it (the offload plan's §6.1 row this pull request adds; §9's first point).
 - A read's span linking to a joined fetch's span (RFC 8 §14): unowned until RFC 3 reports a join
@@ -93,7 +96,7 @@ series and span of these paths; the fixture controls epic 12 proposed for these 
   `Unmark`, …).
 - **§7.4 S1, S2, S3, S4, S5** are RFC 8 §7.4's five speculator rules, never synchronisation points;
   this document always writes them with the section ("§7.4 S3").
-- **E9, E10, E14, E25, E34** are RFC 8 §13's invariants of those numbers, not epics.
+- **E3, E9, E10, E14, E25, E34** are RFC 8 §13's invariants of those numbers, not epics.
 - **The first part**: the journal-only engine, epics 1 to 10 of RFC 8's first plan, whose read and
   clone code this epic extends.
 - **The integration epic**, epic 21: the node's content wiring composes offload.
@@ -174,6 +177,7 @@ can cite them. Rows of §15 the epic turns green are listed last.
 | --- | --- | --- | --- | --- |
 | R26 | `fill` decides per demanded extent: fill unless the journal's free capacity is below the fill low-water mark, or the read is part of a sequential scan longer than the read-ahead window | SHOULD | RFC 8 §7.3, §3.1 | T17.5 |
 | R27 | `fill` takes plain inputs, does no I/O, holds no component, and calls no other policy function | MUST NOT | RFC 8 §3.1 | T17.5 |
+| R63 | `fill` is a gate, never what keeps a read correct: with the gates' switch off it fills every demanded extent, and the Group A rows still pass | MUST NOT | RFC 8 §3.2, E3; epic 16, D6 | T17.5 |
 | R28 | `Fill` is passed exactly the verified bytes fetched for that extent, with step 1's `asOf` and the ref's version | MUST | RFC 8 §7.2; RFC 1 §3.4 | T17.5 |
 | R29 | A refused fill is not an error, and a fill never delays or fails the reply | MUST NOT | RFC 8 §7.2, E10; RFC 3 §4.2 | T17.5 |
 
@@ -271,8 +275,9 @@ Each is green in whichever change lands last of this epic, S3 and, where the row
   asynchronously and drops readahead under memory pressure (from memory).
 - **D4, one flow per share serves every carved read of the share.** A ref of an older namespace
   generation is fetched through the share's one flow, on the share's store. In v1.1 every
-  generation of a share lives on one store, since only a re-home (RFC 27) moves a share between
-  namespaces. A `decision:` at the fetch names the ceiling and RFC 27 as what withdraws it. Prior
+  generation of a share lives on one store: only a re-home (RFC 27) moves a share between
+  namespaces, and `Bind` refuses a new store or write namespace for a served share (epic 16's D5),
+  so a binding's flow never changes under a read. A `decision:` at the fetch names the ceiling and RFC 27 as what withdraws it. Prior
   art: none found.
 - **D5, a file's read state lives in the speculator's own table.** The first part's file entry
   exists only while it holds pending work, so a file that is only read has none. The speculator
@@ -410,9 +415,9 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
   and `read_test.go`'s "carved after a hole" row, which runs over a stub covering lookup, is
   rewritten over `kvstore` (`CLAUDE.md`: a touched test is brought in line). `readClass` gains
   `classRemote`; `Stats.Fetches` and `FetchBytes` filled; an `engine.fetch` child span per fetch
-  with share, file, bytes and outcome (D9's `decision:`). Until epic 16 opens flows at `Bind`, an
-  `export_test.go` setter installs a flow on a binding, and a hook between the journal step and the
-  metadata step is set per instance there. A test helper, `carved(t, ...)`, writes a file's
+  with share, file, bytes and outcome (D9's `decision:`). The fetch runs on the binding's `flow`
+  epic 16's T16.1 opens; a hook between the journal step and the metadata step is set per instance
+  from `export_test.go`. A test helper, `carved(t, ...)`, writes a file's
   existence and refs through `kvstore`'s `Commit` and `Intend` and the block through
   `codec.Store`'s put into RFC 4's in-memory store, so the journal never held the bytes. Consumed by
   `Read`'s callers and T17.3 to T17.9.
@@ -502,9 +507,10 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
 **Subtask T17.5 estimate: 2.5 man-days.**
 
 - **Track:** C. **Depends on:** T17.4.
-- **Covers:** R13, R16, R18, R26 to R29, R41, R42.
+- **Covers:** R13, R16, R18, R26 to R29, R41, R42, R63.
 - **Deliverables:** `fill(r readInfo, s journalStats) bool` in `policy.go`, pure (R27), rules 1 and
-  2 (D7), the low-water mark from `Settings.FillLowWater` and the scan length from T17.4's state;
+  2 (D7), answering fill whatever its inputs when `Deps.Gates` is ungated (epic 16's D6), the
+  low-water mark from `Settings.FillLowWater` and the scan length from T17.4's state;
   `Handle.Fill` joins `Deps`, its first caller here; `fill.go`'s hand-off (D3): a copy of each
   demanded extent's verified bytes, with step 1's `asOf` and the ref's `Newest`, filled in its own
   goroutine under the binding's 4 MiB byte semaphore, joined at `Close`; a `journal.ErrStaleFill`
@@ -520,7 +526,8 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
   - A fill makes the next read of the extent local (`Stats.Fetches` unchanged by it).
   - Below the low-water mark, or in a sequential scan past the window's cap, the fill is `declined`.
 - **Tests:** `fill` by table over free capacity at and either side of the mark and scan lengths
-  either side of the cap (each row catches one inverted rule, R26); at `Read`: `FailNextFill`,
+  either side of the cap (each row catches one inverted rule, R26); the same table ungated, every row filling (catches
+  a gate that ignores the switch, R63); at `Read`: `FailNextFill`,
   asserting the bytes and no error (catches a reply that waits on or fails with the fill, R29); a
   fill held before its `Fill` call while the extent is written, then released, asserting the write
   reads back and the fill counted `refused` (catches a fill that overwrites, R28, R29); a second
@@ -635,7 +642,8 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
   as a test of their own beside `TestRFC8A_TheJoin`, with refs written as
   `TestRFC8A_CarvedRunFailsUnavailable` writes them. Every row of R50 to R62 runs past its controls;
   each that passes leaves `test/engine/known.yaml`, and each still red has its `message:` rewritten
-  to the check it now meets: the carver's refusal until epic 15, the syncer's until epic 16,
+  to the check it now meets: the carver's refusal until epic 15, `RunPass`'s until epic 16's
+  T16.3,
   `Evict`'s until S6 (rule 6). The unit tests of T17.2 to T17.8 that check what a row checks stay:
   they are the green coverage until the row turns green.
 - **Acceptance criteria:**
@@ -688,5 +696,7 @@ once T17.5 is in.
 - **Rows that need the real journal's `Release`** ("§7.1 the order", "§7.2 streaming, verified",
   the fill rows, "§9.1 no pre-clone fill", the cold-read row) stay red after this epic until S6;
   whichever of this epic and the journal plan's epic 9b lands second removes their entries.
+- **The gates' switch** (epic 16's D6) is pending the user's answer there; `fill` reads whatever
+  form it settles on, and R63's test follows it.
 - **The fill bound** (4 MiB per share, D3) and **the read table's size** (10⁴ files, D5) are
   guesses; B4 in epic 22 measures declined fills, re-fetches and windows relearnt.
