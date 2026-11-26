@@ -320,7 +320,7 @@ the second because this plan takes over rows of two other plans' ledgers.
 | E6 | NFSv4 ACL attributes | `translate`'s NFSv4 functions, `acl`, `dacl`, `sacl`, `aclsupport`, `who`, `mode_umask` | 5 | 12 | C | E16 |
 | E7 | Identity's NFS side | `AUTH_SYS` and `AUTH_NONE` resolution, uid and gid mapping and mints, owner strings, `ManageGIDs`, RFC 18 §10's NFS rows | 5 | 16 | B | E6, partly; E16 |
 | E8 🔀 | Clients and sessions | the callbacks value and the `Adapter` bytes first; `EXCHANGE_ID`, `SETCLIENTID`, confirms, `CREATE_SESSION`, `SEQUENCE`'s slots and reply cache, the session registry, lease and reclaim signals; A1's runner change after S2b | 10 | 28 | A | E10; E9, E11 and E12, partly; S4 |
-| E9 | Opens, stateids and locks | `OPEN` and its claims, stateid rules, NFSv4.0 owner sequences, `LOCK`, `LOCKT`, `LOCKU`, `TEST_STATEID`, `FREE_STATEID`, drain roles per request | 8 | 25 | C | E10 and E12, partly; E16 |
+| E9 | Opens, stateids and locks | `OPEN` and its claims, stateid rules, NFSv4.0 owner sequences, `LOCK`, `LOCKT`, `LOCKU`, `TEST_STATEID`, `FREE_STATEID`, drain roles per request | 11 | 31.25 | C | E10 and E12, partly; E16 |
 | E10 | Delegations and the back channel | the back channel's calls, delegations offered, recalled, returned and revoked, administrator's revoke, path down with A2's service half after S2b, the drain test | 9 | 28.75 | A | E16 |
 | E11 🔀 | NLM, NSM and the datagram path | `core`'s datagram listener, NLM v4, NSM, grants resent, `SM_NOTIFY`, `DialClient`'s network | 7 | 22 | B | E16 |
 | E12 | NFSv4.2 operations | `DEALLOCATE`, `SEEK`, `READ_PLUS`, `COPY`, `CLONE`, xattrs, the hold budget | 8 | 20.5 | C | E16 |
@@ -583,9 +583,11 @@ for body types two procedures share) are in RFC 20 §2.5 by amendment A4; §6.2,
   (`pkg/openstate/clients.go`), so the confirming `CREATE_SESSION` of a new client finds its
   proposal, its ID, confirm and `csa_sequence`, only in the adapter's memory (#5090's §3.5 note).
   Prior art: knfsd holds unconfirmed clients in memory (from memory). Applied in E8.
-- **D8. NFSv4.0 owners' last replies** are a per-node table keyed by (client, owner), bounded by the
-  connection-state pool, beside the sessions (RFC 21 §4.2's last reply in gateway memory). Prior art:
-  knfsd's `so_replay` per state owner (from memory). Applied in E9.
+- **D8. NFSv4.0 owners' last replies** are a per-node table keyed by the state a request names:
+  (client, owner) for an `OPEN`, and the stateid's `other` for a request that names only a stateid,
+  which carries no owner the adapter can read; bounded by the connection-state pool under a ceiling
+  of its own, beside the sessions (RFC 21 §4.2's last reply in gateway memory). Prior art: knfsd's
+  `so_replay` per state owner, found through the stateid (from memory). Applied in E9 (its D3).
 - **D9. `CB_NOTIFY_LOCK` is not sent.** RFC 21 §5.5 makes it optional and the poll decides; a client
   that asked for it polls anyway. Prior art: knfsd sends it, Linux clients poll regardless (from
   memory). Applied in E10; its row is in §6.6.
@@ -920,7 +922,7 @@ signal, N18, N20, N27; the `FlowControl` conformance check; RFC 20 §10.1's
 
 ### Epic 9 — Opens, stateids and locks
 
-**Epic 9 estimate: 8 subtasks, 25 man-days.**
+**Epic 9 estimate: 11 subtasks, 31.25 man-days.**
 
 The state a client takes through an open: open stateids and their sequence, NFSv4.0 owners,
 byte-range locks, and the rules a stateid is checked by.
@@ -945,7 +947,8 @@ reboot racing renew *(1 node)*", the "§3.5 confirm" step of a rebooted client h
 - Stateids: the six rules, the special stateids within an open's context, extending E5's stateid
   function, the current stateid, `TEST_STATEID`,
   `FREE_STATEID`, `FreeState` on an NFSv4.0 client's behalf.
-- NFSv4.0 owner sequences and owners' last replies (D8).
+- NFSv4.0 owner sequences and owners' last replies (D8); the lease renewed by NFSv4.0's stateful
+  operations (RFC 21 §5.1), `SEQUENCE` and `RENEW` renewing it in E8.
 - Each member row's `Cacheable` column, which E3's NFSv4.0 duplicate-request cache reads: set on
   each non-idempotent member it adds whose retransmission the owners' last replies do not already
   answer.
