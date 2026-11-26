@@ -352,7 +352,7 @@ R13 by epic 15's Mark-after-commit check (T15.9), since only Mark sets the bit e
 - **D10, one lock orders the notice against Mark, fills and releases.** The engine keeps the
   material IDs reported destroyed in this incarnation (namespace, kind, ID), each marked scanned or
   not, in one map behind a `sync.RWMutex`. Mark holds the read lock across its check of every
-  material its refs depend on (the commit's answer, D15) and its `report`; a fill of epic 17 holds it
+  material its refs depend on (the commit's answer, D15) and its `report`; a fill of epic 17 holds it at `fillExtent`, epic 17's one `Fill` site (its T17.5),
   across its check of the materials of the block it fetched from, read with `Materials`, and its
   `Fill`, landing the bytes unmarked on a hit; a release holds it as D9 says. The notice's read takes
   the write lock only to add the IDs it read. A Mark or fill that checked before the add has
@@ -591,7 +591,7 @@ test/journal/known.yaml   T18.1  the real journal's Release and Unmark legs, red
 
 **Subtask T18.4 estimate: 5 man-days.**
 
-- **Track:** B. **Depends on:** T18.1, T18.3. Epic 15's Mark and `encodings`; epic 17's fill; S5's
+- **Track:** B. **Depends on:** T18.1, T18.3. Epic 15's Mark and `encodings`; epic 17's fill (its T17.5's `fillExtent`); S5's
   `keys.DestroyedNotice` on `keystest`'s in-memory provider.
 - **Covers:** R3, R41, R43, R45, R46, R53.
 - **Deliverables:** `Handle.Unmark` declared; `Deps.Destroyed func(syncer.StoreID)
@@ -604,7 +604,8 @@ test/journal/known.yaml   T18.1  the real journal's Release and Unmark legs, red
   A release skips a unit whose namespace holds an unscanned ID or whose notice's last read failed
   (D9). In `offload/`, Mark takes the read lock, checks every material the commit's answer names
   (D15) against the map, and reports only when none is in it, leaving the extents Dirty otherwise;
-  epic 17's fill takes it the same way over the materials `Materials` reads for the fetched extent,
+  epic 17's fill takes it the same way, at `fillExtent`, the one function every `Fill` call goes
+  through (epic 17's T17.5), over the materials `Materials` reads for the fetched extent,
   landing a hit unmarked. Consumed by T18.6, T18.8 and epic 19, whose reseed calls `Materials` and
   `unmarkCovered`.
 - **Acceptance criteria:**
@@ -958,8 +959,9 @@ beside PR 1.
   master key, since `encodings` name data keys; T18.4's master-key test holds it, and RFC 5 epic 8's
   D9 is read so ("adds the IDs to the notice"). If it names the master key alone, T18.4 maps it to
   the data keys through the key records it wraps.
-- **Epic 17's fill takes the destroyed-material lock (D10).** Epic 17 builds the fill; this epic
-  adds its check. Epic 17's document should name the read lock at its `Fill` call.
+- **Epic 17's fill takes the destroyed-material lock (D10).** Epic 17 builds the fill with one
+  `Fill` site, `fillExtent` (its T17.5, #6002); this epic adds the read lock and the materials check
+  there, landing a hit unmarked, and epic 17 builds no lock.
 - **Estimate.** 29 man-days in 9 subtasks against the offload plan's 30 in 8: the in-memory
   journal's calls are a subtask of their own (T18.1), and the material path is three, with the
   adopted-block repoint (D15) and the fill's check the plan did not foresee. T18.4 is the least
