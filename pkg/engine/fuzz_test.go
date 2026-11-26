@@ -567,6 +567,8 @@ type restartedAnswer struct {
 	gone    [fuzzFiles]bool
 	sizes   [fuzzFiles]int64
 	replay  [fuzzFiles]int
+	// counted says replay was counted, which only a restart does.
+	counted bool
 }
 
 func (a restartedAnswer) String() string {
@@ -574,8 +576,12 @@ func (a restartedAnswer) String() string {
 		return a.err.Error()
 	}
 
-	answer := fmt.Sprintf("%s, released %v, committed sizes %v, left to replay %v",
-		describeFiles(a.files), a.gone, a.sizes, a.replay)
+	answer := fmt.Sprintf("%s, released %v, committed sizes %v",
+		describeFiles(a.files), a.gone, a.sizes)
+	if a.counted {
+		answer += fmt.Sprintf(", left to replay %v", a.replay)
+	}
+
 	if a.variant != "" {
 		return a.variant + ": " + answer
 	}
@@ -830,11 +836,12 @@ func engineRestart(env *fuzz.Env, w *engineWorld, _ fuzz.Args) fuzz.Result {
 	w.faults.started(files)
 
 	return restartedAnswer{
-		err:    errors.Join(replayErr, err),
-		files:  files,
-		gone:   gone,
-		sizes:  w.committedSizes(),
-		replay: replay,
+		err:     errors.Join(replayErr, err),
+		files:   files,
+		gone:    gone,
+		sizes:   w.committedSizes(),
+		replay:  replay,
+		counted: true,
 	}
 }
 
@@ -2066,6 +2073,47 @@ func TestACrashVariantKeepsTheUnsyncedWritesItNames(t *testing.T) {
 				t.Errorf("the second unsynced write survived: %v, want %v", holds[2], c.second)
 			}
 		})
+	}
+}
+
+// A crash cuts the power, so nothing counts what was left to replay, and its
+// answer must not print a count. A restart counts it, and prints it even when
+// it is zero.
+func TestOnlyARestartSaysWhatWasLeftToReplay(t *testing.T) {
+	target := engineTarget()
+	program, err := fuzz.Parse(target, strings.Join([]string{
+		"write(file=0, off=0, len=512)",
+		"crash()",
+		"crash_reordered(seed=1)",
+		"restart()",
+	}, "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := &fuzz.Env{
+		T:       t,
+		Cleanup: t.Cleanup,
+	}
+	w, err := newEngineWorld(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i, step := range program {
+		env.Step = i
+		answer := target.Ops[step.Op].Real(env, w, step.Args).String()
+		switch step.Name {
+		case "write":
+		case "restart":
+			if !strings.Contains(answer, "left to replay [0 0 0]") {
+				t.Errorf("%s -> %s, want it to say what was left to replay", step, answer)
+			}
+		default:
+			if strings.Contains(answer, "left to replay") {
+				t.Errorf("%s -> %s, want no word of a replay, which nothing counted", step, answer)
+			}
+		}
 	}
 }
 
