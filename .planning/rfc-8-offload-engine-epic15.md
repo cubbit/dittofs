@@ -18,7 +18,7 @@ with its attempt, stable bytes); [RFC 4](../docs/internals/rfcs/rfc-4-remote-tie
 `Attempt`, `Stored`); [RFC 5](../docs/internals/rfcs/rfc-5-transforms.md) §2.7, §3.1 and Appendix B.2
 (the pin, its release, a destroyed current material, a plan keyed under another namespace).
 **Track:** B.
-**Epic 15 estimate: 10 subtasks, 34 man-days.**
+**Epic 15 estimate: 10 subtasks, 34.25 man-days.**
 **Depends on:** sync point **S2**, red rows in CI (epic 12): the fixture's `WithCarver` and
 `WithChain`, refusing by name, and the 41 entries whose message is the carver's refusal; **S5's
 first half** for the finish: RFC 2's carver and fold, RFC 3's syncer over RFC 4's in-memory store
@@ -258,7 +258,7 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
 | R62 | K floor: limits giving `K` one below the floor are refused, naming `K` and the floor; one key's cost more opens, and a one-chunk commit with every tracked read, a key record per material included, commits within `T` | test row | RFC 6 §11.2 | T15.2 |
 | R63 | O1's crash leg: a process crash in each state, over the real journal on a real directory and `kvstore`, leaves every extent offloaded or **Dirty** and readable after restart | test row | RFC 8 §6.3 (checks); plan rule 8 | T15.10 |
 | R64 | The failure counts a binding's concurrent passes update and `offloadDue`'s inputs read are reached only under their lock | invariant | RFC 8 §6.3 O6 (the count in the binding's policy state); D11 | T15.10 |
-| R65 | A pass pins the chain and reads the material of its namespace's store configuration, never another's; a namespace whose configuration the content wiring was not given is refused before any intent | MUST | RFC 5 §3.2, §2.5; RFC 8 §2.1 (the store's transform chain); D16 | T15.5 |
+| R65 | A pass pins the chain and reads the material of its namespace's store configuration, never another's, and puts only to a store of that configuration; a namespace whose configuration the content wiring was not given, or a pass whose store is not one of its namespace's configuration's stores, is refused before any intent | MUST | RFC 5 §3.2, §2.5; RFC 8 §2.1 (the store's transform chain); D16 | T15.5, T15.8 |
 
 Enforced elsewhere once this epic lands: R3's "never builds settings" by the compiler, since
 `carver.Settings` is sealed and the engine's walk refuses `carve` (T15.5's walk names the import);
@@ -441,6 +441,12 @@ other row has a test here.
   Rejected: a store argument on `Pin` and `Current`, which `Settings(ns)` at `Bind` would need too
   and which lets a caller pair a namespace with another configuration's store. Prior art: the RFC 5
   plan's epic 8 D12, one provider per store configuration per node (read the document).
+  The pass's store comes from the binding, not from the namespace, so `Puts.NewPut` takes the
+  namespace too and refuses, with an error naming both, a store that is not one of that namespace's
+  configuration's stores: without it a pass whose share's namespace belongs to B and whose store
+  belongs to A puts B's transforms and material into A's store. The engine builds the put before
+  `Store.Intend`, and `NewPut` does no I/O, so the refusal refuses the plan before any intent with
+  its content left **Dirty**, as the namespace's refusal does.
 
 ## 5. Target tree
 
@@ -650,8 +656,8 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
     	Pin(ctx context.Context, ns entity.NamespaceID) (transform.Attempt, error)
     }
     type Puts interface {
-    	NewPut(store syncer.StoreID, name remote.Name, nonce [16]byte, pin transform.Attempt,
-    		src iter.Seq2[remote.Chunk, error]) (Put, error)
+    	NewPut(ns entity.NamespaceID, store syncer.StoreID, name remote.Name, nonce [16]byte,
+    		pin transform.Attempt, src iter.Seq2[remote.Chunk, error]) (Put, error)
     }
     type Put interface {
     	Attempt(ctx context.Context, m remote.Meter) error
@@ -692,7 +698,8 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
     and the two keys of the namespace's configuration's provider, `Cut`, `ChunkID`, `BlockName`, `NewFold` over `assembler.New`), `Chain`
     (one `chain.NewChain` per store configuration, over that configuration's provider, `Pin`
     answering from the namespace's configuration, D16), `Material` (`Current` from the namespace's
-    configuration's provider), and, for D2, `Puts`; `enginetest`'s `WithCarver` and
+    configuration's provider), and, for D2, `Puts` (refusing a store outside the namespace's
+    configuration, D16); `enginetest`'s `WithCarver` and
     `WithChain` composed through it, over one `keystest` provider per store configuration; every entry of
     `test/engine/known.yaml` whose message is `fixture: the carver is not composed`, 41 of them,
     rewritten to `fixture: the syncer is not composed`, the refusal they now meet.
@@ -738,8 +745,13 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   `Puts`, the values the engine is handed: two store configurations, A with the empty chain and B
   encrypting, each over its own `keystest` provider, a block put through `Puts` under `Pin` of a
   namespace of each, in both orders, `Stored()`'s census for B's block naming the encrypt stage and
-  B's data key and A's naming no transform, and `Current` for B's namespace answering B's material
-  (catches one chain or one provider for the node, which stores B's namespace unencrypted, R65); a
+  B's data key and A's naming no transform; for each namespace, `Current` of every kind its
+  configuration's provider holds equal to that provider's `Current` and not the other's, and each
+  block's chunk IDs equal to `ChunkID` under its own provider's chunk-ID key, recomputed from that
+  provider apart from the wiring, and different from the IDs the other's key gives (catches one
+  chain or one provider for the node, whichever configuration's it is, R65); `NewPut` with A's
+  namespace and B's store, and with B's namespace and A's store, each refused naming both, and
+  nothing at either store (catches a put into another configuration's store, R65); a
   namespace whose store names no composed configuration, `Pin`, `Current` and `Settings` each
   refused naming it (catches a fallback to another configuration, R65).
 - **Rules:** rule 6, the 41 messages; rule 7, the walk; rule 9, D2's `decision:` at `New`; rule 12, each port with its first caller, D2's members excepted.
@@ -814,10 +826,10 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
 
 ### T15.8 Intent and Put
 
-**Subtask T15.8 estimate: 4.5 man-days.**
+**Subtask T15.8 estimate: 4.75 man-days.**
 
 - **Track:** B. **Depends on:** T15.7.
-- **Covers:** R27 to R35, R54, R55, R58.
+- **Covers:** R27 to R35, R54, R55, R58, R65 (the put's store).
 - **Deliverables:** `intent.go`: the namespace check against the pass's current-namespace function
   (D8, its `decision:`); `Chain.Pin`, and `Material.Current(ctx, ns, "chunk-id-key")`, a
   `keys.ErrMaterialDestroyed` from either refusing the plan before any intent with its extents left
@@ -827,7 +839,8 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   with the primary epoch and node epoch, retried in place within the step's bound. `put.go`: the
   source, an `iter.Seq2[remote.Chunk, error]` reading each carried chunk from the offer's `Offered`
   into one buffer per worker, recomputing its ID with `Carver.ChunkID` under the captured settings and
-  failing on a mismatch; `Puts.NewPut(store, name, nonce, pin, src)` and one `Flow.Upload(ctx, name, size,
+  failing on a mismatch; `Puts.NewPut(ns, store, name, nonce, pin, src)`, built before `Store.Intend` so its refusal
+  (D16) refuses the plan before any intent, and one `Flow.Upload(ctx, name, size,
   put.Attempt)`; on failure the attempt abandoned (T15.9) and the file's outcome `Throttled` for
   `remote.ErrThrottled` (D13), `Retry` otherwise. `unit/engine-allocs` registered in
   `test/suites.yaml`, running the source's allocation test. Consumed by T15.9.
@@ -845,7 +858,10 @@ docs/internals/rfcs/rfc-6-block-metadata.md  this pull request: §10.1's Content
   second retry layer, R55, R32, R33); a namespace function changed between Capture and Intent,
   nothing put and the content re-offered and read back (R27, R58); `keystest`'s provider destroying
   the current data key, and in a second leg the namespace's chunk-ID key, the pass refused before
-  any intent and nothing at the store (catches a check of the data key alone, R28); the store's intent records read
+  any intent and nothing at the store (catches a check of the data key alone, R28); a pass whose
+  store belongs to another configuration than its namespace's, no intent recorded, nothing at
+  either store and the extents **Dirty** (catches a put built after the intent, or not checked,
+  R65); the store's intent records read
   back with both epochs before the object exists, and nothing at the store when `Intend` fails
   past its bound, the attempt abandoned (R31); two attempts over one plan's chunks, their names each
   equal to `BlockName` over the captured namespace, its nonce, the pin's chain ID and the carried IDs
@@ -964,7 +980,7 @@ joins them.
 | 2 | T15.2, T15.3, T15.4 | 8 | — | `kvstore`'s three changes: the floor, the record's `encodings`, the commit's two shapes; can be open beside PR 1 |
 | 3 | T15.5 | 4.5 | PR 1 | the ports, Capture, and the fixture's carver and chain with the 41 messages |
 | 4 | T15.6, T15.7 | 6.5 | PR 2, PR 3 | the pass from the offer to its plans |
-| 5 | T15.8, T15.9 | 8 | PR 4 | the plan from its intent to its report: a pass end to end in `unit` |
+| 5 | T15.8, T15.9 | 8.25 | PR 4 | the plan from its intent to its report: a pass end to end in `unit` |
 | 6 | T15.10 | 4.5 | PR 5 | the deadlines, the outcomes and the §6.3 check table |
 
 A suggestion only: one pull request per subtask works as well.
@@ -980,7 +996,8 @@ A suggestion only: one pull request per subtask works as well.
 - **`Stats.Carver` is a field epic 11 did not freeze** (D14). It is additive; the S1 reviewers were
   not asked about it.
 - **Departures from epic 11's recorded declarations**, all additive, which the S1 reviewers did not
-  see: `Deps.Puts` is the `offload.Puts` interface, not a function field (D1); the `Carver` port
+  see: `Deps.Puts` is the `offload.Puts` interface, not a function field (D1), and its `NewPut`
+takes the namespace (D16); the `Carver` port
   adds `ChunkID`, which the put source's recompute needs; `Content` adds `Budget` and `Abandon`
   (D4, O4); `Stats.Carver` (D14). Epic 11's `PassesAborted`, a wholly removed pass, is epic 16's,
   with §8.3.
@@ -991,6 +1008,6 @@ A suggestion only: one pull request per subtask works as well.
   so epic 16 carries it, though the plan's epic 15 lists it.
 - **The §6.3 check table's O6 leg "a source with `Deadline` 10 s"** checks the scheduler's
   `Expired` dispatch, epic 13's and epic 14's, not the pipeline's.
-- **Estimate.** 34 man-days in 10 subtasks against the plan's 33.5 in 8: `kvstore`'s three changes
+- **Estimate.** 34.25 man-days in 10 subtasks against the plan's 33.5 in 8: `kvstore`'s three changes
   are subtasks of their own (8 man-days), and the long-outage row moved to epic 16. The least
   certain figures are T15.6's key-budget end over dense refs and T15.10's per-state fault table.
