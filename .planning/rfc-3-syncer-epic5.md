@@ -28,11 +28,11 @@ paths there.
 **Epic 5 estimate: 5 subtasks, 14 man-days.**
 **Depends on:** **S2**, epic 2's `Inject` with `Op: "health"`, `Fail` and `Hold` over RFC 4's
 in-memory store. **E3**: T3.2's registry (`Register`, `Unregister`, the group by `ProbeKey`),
-T3.5's `admit`, `fixed.go` and the half's counters, T3.7's in-memory opener and the bubble its
-D12 recommends (pending the user's answer; §9). **E4**: T4.1's first-byte bound in `fixed.go` (its D12),
-for T5.2's probe bound; for T5.4, T4.6's outcome hook (its D10), `half.onOutcome`, handed
-`outcome{dir, ok, counts, cause}` once per ended try, `counts` and `cause` being T4.1's
-`verdict.counts` and `verdict.cause`, and the retries the "§2.8 re-admission backoff" row runs
+T3.5's `admit`, `fixed.go` and the half's counters, T3.7's in-memory opener and its D12's
+`testing/synctest` bubble, which the user chose on 2026-11-26. **E4**: T4.1's first-byte bound in
+`fixed.go` (its D12), for T5.2's probe bound; for T5.4, T4.6's outcome hook (its D10),
+`half.onOutcome`, handed `outcome{dir, ok, counts, cause}` once per ended try, `counts` and
+`cause` being T4.1's `verdict.counts` and `verdict.cause`, and the retries the "§2.8 re-admission backoff" row runs
 over.
 **RFC 4 plan epic 6**, `codec.Store`, whose `Health` the probes call; for the "§1.3 destroyed
 material" row also RFC 5's chain and its in-memory key provider reporting a material destroyed.
@@ -40,6 +40,12 @@ material" row also RFC 5's chain and its in-memory key provider reporting a mate
 **Blocks:** E7, whose sweep asserts the refusal rules. S3. Outside RFC 3's epics, RFC 8 offload
 plan epic 20, which reads `Flow.Healthy` and `Flow.Health` as the share's health, and epic 21,
 which registers T5.3's `health.Source` in the node.
+
+**Decided by the user, 2026-11-26:** epic 3's D12, so every test here runs in a `testing/synctest`
+bubble; and the RFC 3 wordings §9 names for §2.8, §7.2's "§2.8 failure window" row and §8.5,
+accepted as written. Each wording lands with the subtask pull request that needs it, not with this
+document: §2.8's recovery evidence with T5.1, §2.8's refusal wrapping and §8.5 with T5.2, the
+failure-window row with T5.4.
 
 ---
 
@@ -113,7 +119,7 @@ number and title, not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | `next` is a pure function tested by table (T5.1). The loops, refusal and outcomes are tested through `Syncer` and `Flow`, and through `export_test.go`, over `codec.Store` on RFC 4's in-memory store (kind 2) under E2's wrapper (kind 3), on E3's injected clock (kind 1). The `health.Source` is tested over a real syncer. No test double is written |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | `next` is a pure function tested by table (T5.1). The loops, refusal and outcomes are tested through `Syncer` and `Flow`, and through `export_test.go`, over `codec.Store` on RFC 4's in-memory store (kind 2) under E2's wrapper (kind 3), on E3's injected clock in its `testing/synctest` bubble (kind 1). The `health.Source` is tested over a real syncer. No test double is written |
 | rule 2, fuzz tests where relevant ([`CLAUDE.md`, "Writing tests", "By kind"](../CLAUDE.md#writing-tests)) | none | Nothing here reads bytes, and the step function's table states every transition |
 | rule 3, observability follows RFC 25, with RFC 3's own exception | T5.3, T5.5 | RFC 3 §2.8's two lines, and no summary line while the outage lasts, against RFC 25 §5.2 (D10). `Stats`' health fields (T5.5). The conditions as a `health.Source` in `internal/node/content` (T5.3). No span |
 | rule 4, profiling | T5.2, T5.4 | Every test runs under `internal/prof`'s leak check, which catches a probe loop left running after `Unregister` or `Close`, or a probe goroutine left on a hung call. No hot path: a probe is one call per interval, and the refusal is one atomic load (D7) |
@@ -426,6 +432,9 @@ internal/node/content/
   which keeps a recovered store unhealthy (R21). A sequence of a thousand re-trips reaches the
   cap from *n* = 9 and ends with the backoff at 15 min, never more and never latched (R15, R18).
   Per-direction separation is held at `Flow` (T5.2), since a pure function shares nothing.
+- **Rules:** its pull request amends RFC 3 §2.8's recovery evidence for a window-tripped
+  direction to "a probe of that direction against the store's own namespace", dropping "a
+  successful transfer, or" (D1), as the user accepted on 2026-11-26.
 
 ### T5.2 Probe loops, refusal and `Flow.Health`
 
@@ -445,7 +454,8 @@ internal/node/content/
   - `pool.go`: `Register` joins its two groups, a zero key making new ones; `Unregister` leaves
     them, cancelling and waiting for its store's probe in flight, whose result is dropped, ending
     a loop with its last member and handing the shared probe to the next member;
-    `Close` stops every loop and waits for it, inside E3's D6 count.
+    `Close` stops every loop and waits for it on a channel, holding no lock (E3's D12), beside
+    E3's D6 wait for callers.
   - `health.go`: D7's snapshot, `Flow.Health` and `Flow.Healthy` over it.
   - `half.go`: `admit` refuses an unhealthy direction first, before the closed, queue and waiter
     checks, returning the snapshot's error and counting `Refused.Unhealthy` (E3's D10); a queued
@@ -498,6 +508,9 @@ internal/node/content/
   - `Unregister` while the store's probe is held: it returns once the probe has, and the probe's
     failure turns nothing (R22).
   - `Flow.Health` and `Flow.Healthy` return while a test holds the half's lock (R20, D7).
+- **Rules:** its pull request amends RFC 3 §2.8 so that a refused call "wraps the direction's
+  cause" (R24), and RFC 3 §8.5 to "within one probe interval plus the probe's bound when probes
+  fail at once, and plus three bounds when they hang" (D4), as the user accepted on 2026-11-26.
 
 ### T5.3 The conditions' `health.Source`
 
@@ -582,6 +595,8 @@ internal/node/content/
   - The *K*-store wait of the acceptance criteria, against the design that runs own probes ahead
     of the shared one (the shared probe late by *K* round trips) and the one that probes every
     due store at once (more than one entry in flight, R6).
+- **Rules:** its pull request amends RFC 3 §7.2's "§2.8 failure window" row to say puts are
+  retried "once per re-admission backoff, not continuously", as the user accepted on 2026-11-26.
 
 ### T5.5 The two log lines and the health series
 
@@ -644,35 +659,35 @@ A suggestion only: one pull request per subtask works as well.
 The estimate is 14 man-days against the plan's 13, over the same five subtasks: the extra day
 is D2's second-member probe and T5.2's wait for probes to end at shutdown and at `Unregister`.
 
-- **The bubble is epic 3's D12, pending the user's answer.** The tests here run on E3's injected
-  clock inside a `testing/synctest` bubble, as #5940 recommends. If the user declines it, they run
-  on `pkg/sim`'s `TestClock` under the idle wait E3's fallback builds; no test here changes, only
-  how its opener moves time.
-- **E4's document is draft #5998.** This epic consumes its `half.onOutcome` and
+- **The bubble is epic 3's D12, which the user chose on 2026-11-26.** The tests here run on
+  E3's injected clock inside a `testing/synctest` bubble, under D12's rules: no wait while
+  holding a lock, everything created inside the bubble, and `Env.Wait`'s one-hour bound in fake
+  time, which is what ends a row whose `done` never closes once the 5 s probe loop keeps a timer
+  pending.
+- **E4's document is #5998.** This epic consumes its `half.onOutcome` and
   `outcome{dir, ok, counts, cause}` (its D10), its `fixed.go` first-byte bound (its D12), and
-  reads `counts`, never the error (its D11). What it lacks for E5: nothing. If #5998 changes the
-  hook's shape, only T5.4's recorder follows.
+  reads `counts`, never the error (its D11). What it lacks for E5: nothing.
 - **RFC 4 plan epic 8's §9 point 3 is answered by D3.** The wait is checked in T5.4 against 200
   stores on one key; its ceiling, about 9,000 window-tripped stores on one key at 50 ms, is D3's
   `ponytail:`. The customer scale target has 10⁴ namespaces, which could sit on one configuration;
   for all of them to be tripped by the failure window at once, a fault must deny every block
   prefix while the shared probe passes.
-- **RFC 3 §7.2's "§2.8 failure window" row says puts are retried "once per probe interval".**
-  Under R16 a denial raises *n*, so after the `ErrDenied` run the retry comes once per backoff,
-  two intervals. Proposed row text, for the user to accept: "once per re-admission backoff, not
-  continuously".
-- **A successful transfer never re-admits (D1).** RFC 3 §2.8 lists one as recovery evidence for
-  a window-tripped direction, but refusal leaves only transfers dispatched before the turn, whose
-  success predates it. Recovery is by own probes. Proposed RFC 3 §2.8 text: "a probe of that
-  direction against the store's own namespace", dropping "a successful transfer, or".
-- **What a refused call wraps.** RFC 3 §2.8 says the probe's error; a direction the window
-  turned has a transfer's error as its cause. This epic returns `Flow.Health`'s error, as E1's
-  D1 settled, and RFC 3 §2.8's sentence would read "wraps the direction's cause".
-- **D4 reads §8.5's "within one probe interval plus the probe's bound" for a probe that fails at
-  once.** A hung probe takes one interval plus three bounds: two for the pair, one for an own probe
-  in flight (D4); a second member's probe (D2) can add a fourth when only the representative
-  hangs. Proposed RFC 3 §8.5 text, for the user to accept: "within one probe interval
-  plus the probe's bound when probes fail at once, and plus three bounds when they hang".
+- **Four RFC 3 wordings, accepted by the user on 2026-11-26.** Each lands with its subtask's
+  pull request (the subtask's **Rules:** line):
+  - §7.2's "§2.8 failure window" row says puts are retried "once per probe interval"; under R16 a
+    denial raises *n*, so after the `ErrDenied` run the retry comes once per backoff, two
+    intervals. The row reads "once per re-admission backoff, not continuously" (T5.4).
+  - A successful transfer never re-admits (D1). RFC 3 §2.8 lists one as recovery evidence for a
+    window-tripped direction, but refusal leaves only transfers dispatched before the turn, whose
+    success predates it. §2.8 reads "a probe of that direction against the store's own
+    namespace", dropping "a successful transfer, or" (T5.1).
+  - What a refused call wraps. RFC 3 §2.8 says the probe's error; a direction the window turned
+    has a transfer's error as its cause. This epic returns `Flow.Health`'s error, as E1's D1
+    settled, and §2.8 reads "wraps the direction's cause" (T5.2).
+  - D4's reading of §8.5. A hung probe takes one interval plus three bounds: two for the pair, one
+    for an own probe in flight (D4); a second member's probe (D2) can add a fourth when only the
+    representative hangs. §8.5 reads "within one probe interval plus the probe's bound when probes
+    fail at once, and plus three bounds when they hang" (T5.2).
 - **RFC 25 §5.2 and RFC 3 §2.8 disagree on a summary line** (D10). This epic follows RFC 3, the
   owner; RFC 25 §5.2's sentence would name RFC 3 §2.8's two lines as the exception.
 - **The plan's epic 5 outline names an unprobed direction re-admitted by its backoff.** That is row
