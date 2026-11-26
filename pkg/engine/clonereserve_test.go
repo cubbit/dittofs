@@ -32,7 +32,7 @@ func TestACloneReservesItsCopiesRecordBytes(t *testing.T) {
 	// Stop the refill so the clone has to finish with the spares it started
 	// with: the first make, the one the clone's hold kicks, parks here, and
 	// the pool's one worker makes nothing past it.
-	f.Seam.HoldFirst(t, "allocate", "*")
+	refill := f.Seam.HoldFirst(t, "allocate", "*")
 	if _, err := f.E.Write(t.Context(), f.Share.ID, src, 0, want, engine.WriteOpts{Done: func() {}}); err != nil {
 		t.Fatalf("write the source: %v", err)
 	}
@@ -40,6 +40,13 @@ func TestACloneReservesItsCopiesRecordBytes(t *testing.T) {
 	defer cancel()
 	if err := f.E.Clone(ctx, f.Share.ID, src, f.Share.ID, dst, vfserr.Extent{Len: n}); err != nil {
 		t.Fatalf("Clone of %d journal-held bytes: %v, want nil", n, err)
+	}
+	// The clone ran with the refill held: the make its hold kicked is parked
+	// at the seam, so the spares it rolled onto were the ones it started with.
+	select {
+	case <-refill.Reached():
+	case <-ctx.Done():
+		t.Fatalf("no spare make reached the held seam by the clone's end: %v", ctx.Err())
 	}
 	got := make([]byte, n)
 	if read, err := f.E.Read(ctx, f.Share.ID, dst, 0, got); read != n || err != nil {
