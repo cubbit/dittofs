@@ -77,6 +77,14 @@ func logonFailure(err error) error {
 // id: the tag 0x60, a DER length covering every byte after it, the
 // mechanism's OID, the token ID and the message. The message is a slice of
 // tok.
+//
+// decision: develop's framing, which this one lifts, also accepted a raw
+// AP-REQ with no RFC 2743 §3.1 wrapper, bytes past the token's length, and
+// any mechanism OID, Microsoft's legacy Kerberos OID among them. Each is
+// refused here: RFC 2743 §3.1 allows none, the Linux client's captured INIT
+// tokens use none, and Microsoft's OID arrives only inside SPNEGO, whose
+// mechanism list maps it before this mechanism is reached. Overturned if a
+// client the capture corpus holds sends any of the three.
 func unframe(tok []byte, id uint16) ([]byte, error) {
 	if len(tok) == 0 || tok[0] != 0x60 {
 		return nil, errors.New("not an initial context token")

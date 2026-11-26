@@ -93,8 +93,11 @@ var noSpan = trace.SpanFromContext(context.Background())
 // Otherwise a proven caller's groups are its closure unioned with those of
 // its evidence's SIDs, its deny-only SIDs mapped apart, and a claimed
 // caller's are its claimed gids, each mapped, with Group the holder of its
-// primary gid (see claimedGroups). A caller in more than groupCap groups is
-// refused.
+// primary gid (see claimedGroups). On a share whose policy sets ManageGIDs, a
+// claimed caller's groups are instead the closure of the principal its uid
+// mapped to, with a directory principal's directory groups, and its claimed
+// gids other than the primary one are not read. A caller in more than
+// groupCap groups is refused.
 //
 // Access is the share's grant (see grant): for a proven caller with a uid,
 // read for the principal it mapped to, with that principal's own groups,
@@ -234,11 +237,18 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 	root := named && mapped == entity.RootPrincipal
 	fileUser := root || named && slices.ContainsFunc(u.IDs, func(i entity.ProtocolID) bool { return i.Scheme == entity.SchemeUID })
 
+	onShare := p.Share != (entity.ShareID{})
+	squashed := !fileUser || p.Squash == entity.SquashAll || root && p.Squash == entity.SquashRoot
+	// ManageGIDs replaces an unsquashed claimed caller's gids with its
+	// principal's closure (RFC 18 §3.2, §6.3).
+	managed := claimed && onShare && !squashed && p.ManageGIDs
+
 	// A directory principal's enabled state and groups are the directory's,
 	// read on every resolution; a local principal's step sends no query. Its
 	// groups are read only where they are used, on a share for a proven file
-	// user: a claimed caller's groups are its claimed gids, so its step reads
-	// the entry alone, refusing it once the directory disables it.
+	// user or a managed claimed caller: any other claimed caller's groups are
+	// its claimed gids, so its step reads the entry alone, refusing it once
+	// the directory disables it.
 	var dirClosure []entity.Principal
 	if entryID, ok := dirEntryID(u); named && ok {
 		now := s.deps.Clock.Now()
@@ -247,7 +257,7 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 		if claimed {
 			ch = &charges{s: s, client: id.Client}
 		}
-		if dirClosure, oldest, err = s.dirStep(ctx, st, mapped, entryID, id.Evidence, proven && fileUser && p.Share != (entity.ShareID{}), ch); err != nil {
+		if dirClosure, oldest, err = s.dirStep(ctx, st, mapped, entryID, id.Evidence, proven && fileUser && onShare || managed, ch); err != nil {
 			return nil, err
 		}
 		c.Fresh = freshUntil(now, oldest, c.Fresh, st.Settings.DirectoryStaleGrace)
@@ -257,11 +267,10 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 	// runs the map step alone, under no share's policy, and acts as Mapped:
 	// no squash, group or grant applies outside a share. Overturned if a call
 	// naming no share ever acts on a share's files.
-	if p.Share == (entity.ShareID{}) {
+	if !onShare {
 		return c, nil
 	}
 
-	squashed := !fileUser || p.Squash == entity.SquashAll || root && p.Squash == entity.SquashRoot
 	// decision: a root squash replaces only a caller mapped to root, as RFC
 	// 18 §6.2 has it, so a claimed non-root uid claiming gid 0 keeps root's
 	// group on a root-squashed share, where Linux's root_squash also squashes
@@ -300,10 +309,21 @@ func (s *Server) resolve(ctx context.Context, span trace.Span, st *State, id ide
 		}
 	case claimed && !squashed:
 		// An unsquashed claim's groups are its claimed gids, each mapped
-		// (RFC 18 §6.3), and its grant is read for the principal its uid
-		// mapped to, unauthenticated, so the grant to authenticated users
-		// never matches it.
-		if c.Group, groups, err = s.claimedGroups(ctx, st, pr, id); err != nil {
+		// (RFC 18 §6.3), or under ManageGIDs its principal's closure, and its
+		// grant is read for the principal its uid mapped to, unauthenticated,
+		// so the grant to authenticated users never matches it.
+		if managed {
+			// The credential's gid still names the group a create stamps
+			// (RFC 21 §11.1); only the groups the caller holds are replaced.
+			primary := id
+			primary.Claims.GIDs = nil
+			if c.Group, _, err = s.claimedGroups(ctx, st, pr, primary); err != nil {
+				return nil, err
+			}
+			if groups, _, err = collect(ctx, pr, mapped, identity.Evidence{}, dirClosure); err != nil {
+				return nil, err
+			}
+		} else if c.Group, groups, err = s.claimedGroups(ctx, st, pr, id); err != nil {
 			return nil, err
 		}
 		if err := s.capped(ctx, mapped, groups); err != nil {

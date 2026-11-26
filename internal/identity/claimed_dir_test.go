@@ -543,3 +543,40 @@ func TestClaimedDirectoryPrincipalWithinTheGrace(t *testing.T) {
 		t.Errorf("bob's claim past the grace = %+v, %v; want nil, ErrUnavailable", c, err)
 	}
 }
+
+// Under ManageGIDs, the closure query a claimed directory principal's
+// directory step sends is a lookup its address is charged for: bob, minted
+// by a first claim, claims again from the same address past the TTL, after
+// 99 unknown uids. His entry read is the 100th lookup, and his closure
+// query, the 101st, is refused ErrUnavailable, counted lookup_cap, and never
+// sent. Catches the closure read uncharged, which lets an address send one
+// more query per minted directory user every TTL on top of its 100.
+func TestClaimedManageGIDsChargesTheClosure(t *testing.T) {
+	e := newAD(t)
+	managed := fileShare()
+	managed.ManageGIDs = true
+	resolve := func(id pid.Identity) (*pid.Caller, error) {
+		return e.s.Resolve(context.Background(), id, managed, pid.ReadOnlyNotNarrowed)
+	}
+	e.numbered(t, "bob", 5000, nil)
+	if c, err := resolve(claimFrom(hostA, 5000, 0)); err != nil || c.Mapped == entity.AnonymousPrincipal {
+		t.Fatalf("bob's first claim = %+v, %v; want bob minted", c, err)
+	}
+	e.clock.Advance(5*time.Minute + time.Second)
+	for i := range 99 {
+		if _, err := resolve(claimFrom(hostA, uint32(10000+i), 0)); err != nil {
+			t.Fatalf("unknown uid %d of 99: %v", i, err)
+		}
+	}
+	groups := e.sent(t, "groups")
+	c, err := resolve(claimFrom(hostA, 5000, 0))
+	if !errors.Is(err, vfserr.ErrUnavailable) || c != nil {
+		t.Errorf("bob's claim past the TTL, his closure query the address's 101st lookup = %+v, %v; want nil, ErrUnavailable", c, err)
+	}
+	if got := e.refusals(t, "lookup_cap"); got != 1 {
+		t.Errorf("refusals{lookup_cap} = %v, want 1", got)
+	}
+	if got := e.sent(t, "groups") - groups; got != 0 {
+		t.Errorf("closure queries sent for the refused call %v, want 0", got)
+	}
+}

@@ -123,6 +123,11 @@ dfs-server start
 
 # Share test (path /test, namespace prefix test/ on bucket dittofs) for user tester (uid and group
 # 1000), SMB on 445 and NFS on 2049. smbclient defaults to SMB3 and, through USER, to tester.
+# decision: setup exits 3 only from here on, where the first store create is refused while the
+# settings table does not declare the store's keys. A failure before it (the build, a package, the
+# server's start) keeps exiting 1, so the known entries that match "exited 3" never excuse it.
+# Tracing stops in the trap, so the failing command stays the trace's last line.
+trap '{ set +x; } 2>/dev/null; exit 3' ERR
 S="$(dfs-store dittofs)"
 N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=test/ -o json | jq -r .id)"
 dfsctl share create test --path /test --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
@@ -157,23 +162,33 @@ fi
 exec 9<"$CACHE"
 flock -n 9 || { echo "not run: another run holds $CACHE" >&2; exit 75; }
 
-# A scenario runs after the same setup. Each of its commands is traced as
+# A scenario runs after the same setup, which exits 3 when it stops at its refused store create,
+# so such a run is told apart from a scenario's own failure. Tracing is off before the run line,
+# so a failure's last trace line is its own check. Each of the scenario's commands is traced as
 # "+ <epoch seconds> <line> <command>".
-NODE="$SETUP
+# decision: the run line maps every scenario exit to 1, so no code from 30 to 39 reaches the
+# batch and "exited 3" matches only setup's 3. Keep the "|| exit 1" while the entries match it.
+NODE="set -E
+$SETUP
+trap - ERR; set +E; { set +x; } 2>/dev/null
 $(cat <<'RUN'
-USER=tester%tester-secret bash -c 'PS4="+ \$EPOCHREALTIME \$LINENO "; set -euxo pipefail; . /scenario.sh'
+USER=tester%tester-secret bash -c 'PS4="+ \$EPOCHREALTIME \$LINENO "; set -euxo pipefail; . /scenario.sh' || exit 1
 RUN
 )"
 
 FAILED=0
+SETUP_FAILED=0
 for SCENARIO in "${SCENARIOS[@]}"; do
     rm -rf "$CACHE/run"
     mkdir -p "$CACHE/run/logs"
     timeout "${SCENARIO_TIMEOUT:-900}" "${P[@]}" run --rm -i --log-driver k8s-file "${IMAGES[@]}" \
         -v "$HERE/$SCENARIO:/scenario.sh:ro" -e LOGS=run/logs \
         --name "dittofs-${SCENARIO%.sh}" --replace \
-        docker.io/library/ubuntu:26.04 bash -s <<<"$NODE" >"$CACHE/run/run.log" 2>&1 && RESULT=pass || RESULT=fail
+        docker.io/library/ubuntu:26.04 bash -s <<<"$NODE" >"$CACHE/run/run.log" 2>&1 && CODE=0 || CODE=$?
+    if test "$CODE" -eq 0; then RESULT=pass; else RESULT=fail; fi
     report "$SCENARIO" "$RESULT"
     test "$RESULT" = pass || FAILED=$((FAILED + 1))
+    test "$CODE" -ne 3 || SETUP_FAILED=$((SETUP_FAILED + 1))
 done
-test "$FAILED" -eq 0
+# 0 when every scenario passed, 3 when every failure stopped in setup, 1 otherwise.
+test "$FAILED" -eq 0 || { test "$SETUP_FAILED" -eq "$FAILED" && exit 3; exit 1; }

@@ -454,7 +454,7 @@ func testShareReadsPolicyAndGrantsTogether(t *testing.T, kvo Opener) {
 }
 
 // The share's identity policy comes from one ShareIndex.Share read through
-// ExportPolicy.SharePolicy: the stored squash, the anonymous principal a
+// ExportPolicy.SharePolicy: the stored squash and ManageGIDs, the anonymous principal a
 // policy naming none reads back as, the policy's version and the grant-list
 // version the share's last grant write set.
 func testSharePolicyFromOneRead(t *testing.T, kvo Opener) {
@@ -463,7 +463,7 @@ func testSharePolicyFromOneRead(t *testing.T, kvo Opener) {
 	sh, u := share("photos", "/photos"), user("alice")
 	must(t, errOf(CreateShare(ctx, cp, sh)))
 	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
-	polVersion, err := cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: sh.ID, Squash: entity.SquashRoot}, 0)
+	polVersion, err := cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: sh.ID, Squash: entity.SquashRoot, ManageGIDs: true}, 0)
 	must(t, err)
 	v, err := cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: u.Principal, Access: entity.AccessRead}, 0)
 	must(t, err)
@@ -476,6 +476,9 @@ func testSharePolicyFromOneRead(t *testing.T, kvo Opener) {
 	}
 	if sp.Squash != entity.SquashRoot {
 		t.Errorf("SharePolicy.Squash = %v, want %v", sp.Squash, entity.SquashRoot)
+	}
+	if !sp.ManageGIDs {
+		t.Errorf("SharePolicy.ManageGIDs = false, want the stored true")
 	}
 	if sp.Anonymous == (entity.Principal{}) {
 		t.Errorf("SharePolicy.Anonymous is zero, want the anonymous principal")
@@ -635,10 +638,11 @@ func testExportPolicy(t *testing.T, kvo Opener) {
 	sh := share("photos", "/photos")
 	must(t, errOf(CreateShare(ctx, cp, sh)))
 	pol := entity.ExportPolicy{
-		Share:   sh.ID,
-		Flavors: []entity.AuthFlavor{entity.FlavorSys},
-		Clients: []entity.ClientRule{{Match: entity.ClientMatch{CIDR: netip.MustParsePrefix("10.0.0.0/8")}, Access: entity.AccessRead}},
-		Squash:  entity.SquashRoot,
+		Share:      sh.ID,
+		Flavors:    []entity.AuthFlavor{entity.FlavorSys},
+		Clients:    []entity.ClientRule{{Match: entity.ClientMatch{CIDR: netip.MustParsePrefix("10.0.0.0/8")}, Access: entity.AccessRead}},
+		Squash:     entity.SquashRoot,
+		ManageGIDs: true,
 	}
 	must(t, errOf(cp.PutExportPolicy(ctx, pol, 0)))
 	got, err := cp.ExportPolicy(ctx, sh.ID)
@@ -649,8 +653,8 @@ func testExportPolicy(t *testing.T, kvo Opener) {
 		t.Errorf("versions %d then %d", got.Version, again.Version)
 	}
 	got.Version = 0
-	if !slices.Equal(got.Clients, pol.Clients) || got.Squash != pol.Squash {
-		t.Errorf("policy %+v", got)
+	if !slices.Equal(got.Clients, pol.Clients) || got.Squash != pol.Squash || !got.ManageGIDs {
+		t.Errorf("policy %+v, want clients %v, squash %v and ManageGIDs on", got, pol.Clients, pol.Squash)
 	}
 	pol.Clients[0].Access = entity.AccessAdmin
 	if _, err := cp.PutExportPolicy(ctx, pol, 0); err == nil {
@@ -707,6 +711,56 @@ func testNetgroupsAndSettings(t *testing.T, kvo Opener) {
 	}
 	if _, err := cp.PutSetting(ctx, entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeShare}, Key: "a"}, 0); err == nil {
 		t.Error("share scope with no ID accepted")
+	}
+}
+
+// One key of a scope reads as the row the scope's listing holds for it, in its
+// own scope, and a key never written is not found.
+func testSettingOneKey(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp := s.ControlPlane()
+	a := entity.SettingScope{Kind: entity.ScopeNode, ID: uuid.New()}
+	b := entity.SettingScope{Kind: entity.ScopeNode, ID: uuid.New()}
+
+	const n = 40
+
+	for i := range n {
+		key := fmt.Sprintf("key-%02d", i)
+		sa := entity.Setting{Scope: a, Key: key, Value: []byte("a-" + key)}
+		sb := entity.Setting{Scope: b, Key: key, Value: []byte("b-" + key)}
+
+		must(t, errOf(cp.PutSetting(ctx, sa, 0)))
+		must(t, errOf(cp.PutSetting(ctx, sb, 0)))
+	}
+
+	listed := all(t, cp.Settings(ctx, a))
+	if len(listed) != n {
+		t.Fatalf("%d settings listed, want %d", len(listed), n)
+	}
+
+	for _, want := range listed {
+		got, ok, err := cp.Setting(ctx, a, want.Key)
+		must(t, err)
+
+		if !ok || got.Key != want.Key || got.Scope != a || string(got.Value) != "a-"+want.Key ||
+			got.Generation != want.Generation || got.Position != want.Position {
+			t.Errorf("Setting(%s) = %+v, %v; listing has %+v", want.Key, got, ok, want)
+		}
+	}
+
+	got, ok, err := cp.Setting(ctx, a, "key-99")
+	must(t, err)
+
+	if ok || got.Key != "" || got.Value != nil {
+		t.Errorf("Setting of a key never written = %+v, %v", got, ok)
+	}
+
+	other := entity.SettingScope{Kind: entity.ScopeNode, ID: uuid.New()}
+	got, ok, err = cp.Setting(ctx, other, "key-00")
+	must(t, err)
+
+	if ok || got.Key != "" {
+		t.Errorf("Setting at a scope with none = %+v, %v", got, ok)
 	}
 }
 

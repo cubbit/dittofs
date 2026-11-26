@@ -192,7 +192,7 @@ type known struct {
 
 // New builds an empty table. It starts nothing: Start does.
 func New(d Deps) (*Table, error) {
-	if d.Records == nil || d.Clock == nil || d.Rand == nil {
+	if d.Records == nil || d.Clients == nil || d.Opens == nil || d.Clock == nil || d.Rand == nil {
 		return nil, errors.New("openstate: a table needs a store, a clock and a source of random bits")
 	}
 	if d.Logger == nil {
