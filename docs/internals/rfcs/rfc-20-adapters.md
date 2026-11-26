@@ -2413,7 +2413,9 @@ type ReplayCache interface {
 	// protocol that chains returns copies.
 	Lookup(ctx context.Context, h Header) (*Buf, error)
 	// Store keeps its own clear copy of a cacheable row's encoded reply, taken
-	// before Wrap; the caller's reply is then wrapped in place.
+	// before Wrap; the caller's reply is then wrapped in place. It is called
+	// only for a call that ran (§4.7), so a delay or a fault is never replayed
+	// to a retransmission of a call that did not run.
 	//
 	// ponytail: the copies Store keeps for NFSv3's and NFSv4.0's duplicate
 	// request cache and for SMB's replay are charged to no pool; RFC 24 §4.5
@@ -2794,7 +2796,7 @@ if !send { if tbl.Holds { conn.write(interim(h, true, after)) }; freeReply(); re
 failed := st != 0 && !notFailure
 runner.after(h, failed) // the compound runner stops a compound, and fails a chain's related members, only after a failed member (§4.3)
 reply := encode(stages.Header, h, st, inv)
-if op.Cacheable { stages.Replay.Store(h, reply) } // a clear copy, before Wrap
+if op.Cacheable && ran(err, st) { stages.Replay.Store(h, reply) } // a clear copy, before Wrap; ran: below
 err = stages.Security.Wrap(h, reply) // a chain's replies: once, joined (below)
 conn.write(reply) // the writer's queue (§6.2)
 ```
@@ -2841,7 +2843,17 @@ there and fails the related members of a chain after it; a status its row marks
 writes the compound's `Invocation.EncodeHead` first, then each member's result as
 `Members.EncodeResult` followed by that member's `Encode`, and last writes the
 head again over its own bytes with the compound's status and the count of
-results, so no result is copied. A chain encodes each member's reply, joins them with
+results, so no result is copied.
+
+A call **ran** when its handler was called and returned no error, or one its
+table maps to a status other than the fault; `ErrDelay` does not count, and
+neither does a refusal before the handler, `core`'s `ErrDecode` among them. A
+single call's reply is stored when its row is `Cacheable` and it ran. A
+compound row's own `Cacheable` column is not read: the runner stores the
+compound's reply when a member that ran has a `Cacheable` row, so a compound
+whose `CREATE` ran before a later member's delay is stored, and one of reads
+alone never is, and cannot turn the cache over and evict the replies it is
+kept for. A chain encodes each member's reply, joins them with
 `HeaderCodec.Chain`, which `core` calls between members only, and calls `Wrap`
 once on the joined record: SMB's `Wrap` pads the chain's last reply to 8
 (MS-SMB2 3.3.4.1.3, a SHOULD), signs each member over its own bytes,
