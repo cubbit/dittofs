@@ -80,7 +80,7 @@ jobs:
           fi
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@3d82dc1587053cd8272fa3801faaebfc2e8a12ac # v7
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           distribution: goreleaser
           version: "~> v2.19"

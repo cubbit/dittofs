@@ -56,7 +56,7 @@ jobs:
           lower_pr=""
           case "$BASE" in
             develop|main|feat/storage-v2) ;;
-            *) lower_pr=$(gh api "repos/$REPO/pulls?head=$OWNER:$BASE&state=open" --jq '.[0].number // empty' || true) ;;
+            *) lower_pr=$(gh api -X GET "repos/$REPO/pulls" -f head="$OWNER:$BASE" -f state=open --jq '.[0].number // empty' || true) ;;
           esac
           if [ -n "$lower_pr" ]; then
             inherited=$( {
