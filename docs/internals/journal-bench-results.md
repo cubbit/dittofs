@@ -40,11 +40,19 @@ passes the check, so name the real device. The mount options are empty on macOS.
 Free space: a 16-stream journal makes about 8.25 GiB of spares when it opens (16 content, 16
 headroom, one per stream, and one reserve, each a 256 MiB segment), and J2 and J3 open one per
 count, so each needs that much free on the device besides the bytes it writes. The large-file row
-needs its span besides the spares, and its twin prepares the same again zero-filled.
+needs its span besides the spares, and its twin prepares the same again zero-filled. Every row
+also stays under the journal's capacity, `MaxBytes`, 80% of the filesystem by default: writes
+past it are refused with the journal's limit, not retried, and nothing in a row offloads,
+releases or repacks — so the 100 GiB override needs a filesystem whose 80% exceeds the span plus
+the spares (well over 140 GiB free at the minimum).
 
 The large-file row streams 30 GiB at the full sizes, 512 MiB at the small ones. `JOURNAL_BENCH_LARGE_BYTES`
 sizes it for a bigger customer-shaped file instead — `100g` for a 100 GiB one; the value is a
-multiple of 1 MiB and a typo fails the row rather than running a size nobody asked for.
+multiple of 1 MiB and a typo fails the row rather than running a size nobody asked for. Each
+count writes the span through the journal and prepares and writes it again for the twin, so the
+default ten counts carry about 90 GiB of I/O for the 30 GiB row and ten times the span for an
+override — past the suite's 290-minute timeout on a slow device, so run overrides with
+`JOURNAL_BENCH_COUNT=1`.
 
 Notes on what a row measures:
 
@@ -54,29 +62,35 @@ Notes on what a row measures:
   so it can understate when a roll happens inside the burst. The large-file row reports the
   complement beside it: `p99-write-waited-µs`, the whole call from first attempt to success, so
   every spare refusal's wait is timed in, and `spare-refusals/iter` counts the refusals. Its MB/s
-  is the rate after the device's write cache is empty.
+  is the average over the whole stream, the cache-absorbed start included; the rate past the
+  device's write cache is a separate figure no row reports yet.
 - `BenchmarkJ1_LargeSequential` is the customer-shaped write: one writer, one file tens of
-  gigabytes long (30 GiB at the full sizes), 1 MiB blocks, one sync at the file's end. It is the
-  only row over more than a couple of segment caps, so it is where rolls, spare refusals and the
-  empty cache show.
+  gigabytes long (30 GiB at the full sizes), 1 MiB blocks, one sync at the file's end (its report
+  is this list's rows above: MB/s, `p99-write-µs`, `p99-write-waited-µs`, `spare-refusals/iter`).
+  It is the only row over more than a couple of segment caps, so it is where rolls and spare
+  refusals show. Its twin is flattering beside it: the twin's prepare spends the device's write
+  cache zero-filling the full file right before its timed stream, while the journal row starts
+  after its spares' own writes, and the twin overwrites a file it owns where the journal appends
+  new segments — read the fraction with that.
 - `BenchmarkJ3_PointLookup` times a block of 100,000 `ReadAt` calls of one 64-byte extent each
   and reports `ns/lookup`. It is an upper bound: it includes the pread syscall and the copy
   into the caller's buffer, and the public API cannot time the index alone. RFC 1's
   "point lookup <= 1 µs at 10^6" is therefore not judged from this row, and nothing is filled in
   as a measured target from it.
 - Sizes are the suite's fixed bursts: 128 MiB over all writers without a sync after each write,
-  16 MiB with one; J2 spreads 128 MiB over its files; the mixed case streams one 256 MiB file,
-  one segment, as RFC 1 §9.6's J1 sets it. Every burst stays under one segment; the mixed case,
-  sharing its stream with the small writer, ends at about one segment; only the large-file row
-  rolls for certain.
+  16 MiB with one; J2 spreads 128 MiB over its files; every burst stays under one segment, so a
+  one-iteration run never rolls. The mixed case streams one 256 MiB file, as RFC 1 §9.6's J1
+  sets it: the stream's payload alone fills one segment, so at the full sizes it rolls beside
+  the small writer mid-run and the roll's seal sync lands inside the small writer's window. The
+  large-file row rolls throughout.
 - The mixed-durability row has no raw twin and no target: it is judged on its own, by its
   `p99-sync-write-µs` against the same box's earlier runs.
 - A journal is opened with its content spares, headroom and repack reserve at full size before
   the timer starts.
 
 Do not quote a figure of this suite as the device's speed: its bursts are short and run on a
-fresh journal, so they report a warm-cache rate. The large-file row is the exception, the one
-figure to quote past the cache.
+fresh journal, so they report a warm-cache rate. The large-file row's stream is long enough to
+pass the cache, but its MB/s still averages the whole stream, cache-absorbed start included.
 
 To add a result: copy the box's field table (commit, CPU and memory, device and its raw figures,
 operating system and kernel, filesystem and mount options, sync bound) from the `bench.txt` box
@@ -90,11 +104,14 @@ RFC 1 §9.6's method asks for more than these rows give. Each item below is OPEN
 #5182 and the deferral list of the epic 12 plan, and comes back when a reference-box run exists.
 That run is the precondition for any keep-or-change decision below:
 
-- Write-cache exhaustion, and the rate after it: carried by the large-file row, whose span is
-  far past any write cache — its MB/s is that rate. Its figures wait for the reference run, as
-  every table's do.
-- More data than the journal holds, rolls and refusals timed into the latency: carried by the
-  large-file row's `p99-write-waited-µs` and `spare-refusals/iter`. Same wait.
+- Write-cache exhaustion, and the rate after it. The large-file row's span is far past any write
+  cache, but its MB/s averages the whole stream, cache-absorbed start included, so the rate with
+  the cache exhausted is still unreported.
+- More data than the journal holds. No row reaches it: nothing in a row offloads, releases or
+  repacks, and writes past the journal's capacity are refused, not timed. What the large-file
+  row does time in is the spare refusals of its rolls, `p99-write-waited-µs` and
+  `spare-refusals/iter`; the capacity refusal is a different limit, refused for the whole
+  journal, not retried by any row.
 - Submission and completion latency reported apart.
 - Create and overwrite reported apart. The random rows overwrite within a burst and the
   sequential rows create.
@@ -133,7 +150,7 @@ Reference box. Not yet run: the first run lands in the first window outside its 
 | J1 random, 4 KiB to 1 MiB, each sync pattern | 16 | `RawRandom`, same name | | ≥ 90% of its IOPS at 4 KiB with a sync per write | |
 | J1 `WriteAt` p99 | 16 | | | ≤ 20 µs | |
 | J1 mixed durability | 2 (one stream) | | | none | |
-| J1 large sequential, one writer, one file 30 GiB (`JOURNAL_BENCH_LARGE_BYTES`), one sync at its end | 1 | `RawLargeSequential` (same span, preallocated) | | none: the customer-shaped report below | |
+| J1 large sequential, one writer, one file 30 GiB (`JOURNAL_BENCH_LARGE_BYTES`), one sync at its end | 1 | `RawLargeSequential` (same span, preallocated; see the Notes' caveat on its cache state) | | none: reported by the metrics the Notes' large-file bullet names, no fraction judged | |
 | J2 write scaling, 1, 4, 16, 64 files, each synced at its end | 1 to 64 | `RawScaling` (same files, 1 MiB blocks, sync at end) | | within 5% of the filesystem, flat to 64 | |
 | J3 `ReadAt` of one 64-byte extent, 10^3 and 10^6 extents (upper bound, includes pread and copy) | 1 | | | ≤ 1 µs at 10^6 (index lookup; not judged from this row) | none: not filled in from this row |
 | J3 warm 1 MiB read | 1 | | | ≥ 2 GB/s | |
