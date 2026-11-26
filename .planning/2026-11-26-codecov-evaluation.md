@@ -8,10 +8,11 @@ condition the evidence makes unavoidable: the uploads must first reach a Codecov
 repo that indexes them (§2). The reshape config is in §8; the trial that can
 overturn or confirm it is in §9.
 
-**Provenance:** measurements taken on 2026-11-26 against `origin/develop`
-(`e0b3ecd1f`), the Codecov API, and the CI run of `develop@d219266ac`
-(`tests.yml` run 45796112142). Package numbers come from that run's unit
-`coverage.txt` artifact, not from Codecov.
+**Provenance:** measurements taken on 2026-11-26 against the CI run of
+`develop@d219266ac` (`tests.yml` run 45796112142; its unit artifact supplies the
+coverage profile, and every tree scan in this document runs at that same commit,
+per the appendix — not at the current develop tip), the Codecov API, and a peek
+at `origin/feat/storage-v2` (`b6affb589`) for the v2 package layout.
 
 ---
 
@@ -82,21 +83,32 @@ nothing. The choice is fix-and-reshape, drop, or replace with `dt`.
 The issue names three. Measured against the repository:
 
 **(a) Is v2's coverage as good as v1's before v1 is deleted? — yes, this is a
-live decision.** `feat/storage-v2` replaces `pkg/block`, `pkg/metadata` and the
-storage engine with `pkg/engine`, `pkg/journal`, `pkg/vfs`, `pkg/openstate` and
-friends. The paths differ, so a path-based component map tells v1 from v2
-without any per-branch bookkeeping. This is the one decision worth a dashboard,
-and it recurs with every component cutover.
+live decision.** v1 and v2 never share a branch, so (a) is always a develop
+line against a `feat/storage-v2` line. Where a component moved, the paths tell
+it apart: v2 `pkg/engine`, `pkg/journal`, `pkg/remote`, `pkg/syncer`,
+`pkg/carver`, `pkg/transform`, `pkg/workqueue` replace v1's `pkg/block` tree.
+`pkg/metadata` and the control plane were rewritten **in place**, so their v1
+and v2 halves are split by subdirectory instead (`store`/`lock`/`acl` against
+`entity`/`kv`/`kvstore`; `pkg/controlplane` against `pkg/node`/`pkg/settings`).
+§8.1 encodes that split; the comparison is read across the two branches' rows on
+the dashboard. This is the one decision worth a dashboard, and it recurs with
+every component cutover.
 
-**(b) Which packages have no tests? — already answered, and already gated.** The
-newest unit profile names 183 packages; `go list ./...` minus those leaves
-**seven**, and none is an untested package with coverable statements:
-`internal/bench`, `pkg/auth` and `pkg/metadata/store/metabench` have tests but
-only type or benchmark files, so `go test` reports "[no statements]";
-`bench/workloads` is an embed, `portmap/types` constants, `api/dto` structs, and
-`scripts` a build-time command. `test/new-package-tests.sh` fails a PR that adds
-a package without a test, and `test/required-tests.sh` pins named authorisation
-and encryption gates. Codecov adds nothing here.
+**(b) Which packages have no tests? — measurable, but not by subtracting.** At the
+profile's commit, **32 directories under `pkg/`, `internal/` and `cmd/` hold Go
+files and no `_test.go`**: the whole `cmd/dfsctl` command wiring (17), the
+adapters' wire-format and type helpers (`nlm`'s dispatch, `nlm/types`,
+`nsm/types`, `nsm/xdr`, `portmap/sysreg`, `portmap/types`, `xdr/core`,
+`v3/handlers/testing`), `internal/cli/prompt`, `internal/cli/timeutil`,
+`internal/dfsbench/config`, `pkg/block/blockstoretest`, `pkg/block/remote`,
+`pkg/controlplane/api/dto` and `pkg/metadata/store/internal/sharecache`. The
+subtraction `go list` minus profile is the wrong tool: since Go 1.22 the profile
+lists test-less packages at 0% (`nlm` shows up that way), so the difference only
+ever finds packages with no coverable statements. `test/new-package-tests.sh`
+guards only directories **new against the base**, so these predate the guard and
+nothing catches them. A one-line `git ls-tree` scan answers the question
+(appendix), so Codecov still adds nothing here — but the guard's gap is recorded
+in §12.
 
 **(c) Did a deletion take its tests with it? — partially covered.** The two
 scripts above catch a new package with no test and a deleted named gate test, but
@@ -122,10 +134,10 @@ From the same run's profile (unit cell, `-race`, without `-short`: this is the
 | **whole unit profile** | **59.71%** | **52,172 / 87,374** |
 
 The adapter averages hide the shape that matters. In unit, `nlm` is **0%**
-(client bookkeeping no unit test reaches), and the top-level `nfs/v3` dispatch is
-**1.3%** (2/151) — but its handler package is 51.1%. Beside it:
-`nlm/handlers` 54.3%, `mount/handlers` 33.9%, `v41/handlers` 13.7%, against SMB
-handlers at 71.3% and NFSv4 state at 88.1%. The **handler** packages are the
+(that package is `dispatch.go` alone, with no test file), and the top-level
+`nfs/v3` dispatch is **1.3%** (2/151) — but its handler package is 51.1%. Beside
+it: `nlm/handlers` 54.3%, `mount/handlers` 33.9%, `v41/handlers` 13.7%, against
+SMB handlers at 71.3% and NFSv4 state at 88.1%. The **handler** packages are the
 protocol paths a kernel client drives, and unit leaves the weaker ones half
 covered or worse; the e2e suite, which exercises them, uploads nothing. A
 unit-only number therefore says little about the code a rewrite of the adapters
@@ -167,8 +179,8 @@ scope.** Recorded as deferred work in §12.
 | `GOCOVERDIR` collection | mechanism verified: built `dfs -cover`, ran a command, `go tool covdata percent` read the data; 581 KB meta per run | passes |
 
 The e2e number is an estimate by design: the issue's cost question is answered
-for unit and integration, and e2e is the only unknown. The trial measures it
-with/without on the same runner tier before the e2e flag is made permanent.
+for unit alone; integration and e2e are estimates the trial measures on the same
+runner tier before any of it is made permanent.
 
 ## 8. The reshape, concretely
 
@@ -178,10 +190,10 @@ Two changes: make the data land, and make the data mean something per component.
 
 ```yaml
 # decision: a per-component trend dashboard, not a gate. Tests land before the
-# code they guard and components are replaced whole, so a PR-side percentage is
-# frequently a known failure becoming a test, not a regression. Overturn the
-# no-gate half if a stabilised release needs an enforced component floor; see
-# .planning/2026-11-26-codecov-evaluation.md §11.
+# code they guard and components are replaced whole, so a percentage judged
+# against a commit is frequently a known failure becoming a test, not a
+# regression. Enforce a component floor only once a stabilised release needs
+# one, and only on a component whose known failures are gone.
 coverage:
   precision: 2
   round: down
@@ -189,11 +201,8 @@ coverage:
 
   status:
     project: off                # repo-wide % averages v1 next to v2: no signal
-    patch:
-      default:
-        informational: true     # visible if a PR ever uploads; never blocking
-        target: auto
-        threshold: 1%
+    patch: off                  # push runs upload whole reports; a per-commit
+                                # delta is the signal this config keeps off
 
 flags:
   unittests:
@@ -205,32 +214,73 @@ flags:
 
 component_management:
   individual_components:
-    # v2 components, by path, so a rewrite is measured next to its predecessor
-    - component_id: engine
+    # v1 cards, populated by develop's runs
+    - component_id: block-v1
+      name: block (v1)
+      paths: [pkg/block/**]
+    # the fine-grained v1 cards overlap block-v1: pairing them with the v2
+    # cards below makes decision (a) like for like, engine against engine
+    - component_id: block-engine-v1
+      name: block engine (v1)
+      paths: [pkg/block/engine/**]
+    - component_id: block-journal-v1
+      name: block journal (v1)
+      paths: [pkg/block/journal/**]
+    - component_id: block-remote-v1
+      name: remote tier (v1)
+      paths: [pkg/block/remote/**]
+    - component_id: block-syncer-v1
+      name: syncer (v1)
+      paths: [pkg/block/syncer/**]
+    - component_id: block-carver-v1
+      name: carver (v1)
+      paths: [pkg/block/carver/**]
+    - component_id: metadata-v1
+      name: metadata (v1)
+      paths: [pkg/metadata/store/**, pkg/metadata/lock/**, pkg/metadata/acl/**,
+              pkg/metadata/backup/**, pkg/metadata/storetest/**]
+    - component_id: controlplane-v1
+      name: control plane (v1)
+      paths: [pkg/controlplane/**, internal/controlplane/**]
+    # v2 cards, populated by feat/storage-v2's runs
+    - component_id: engine-v2
       name: engine (v2)
       paths: [pkg/engine/**, pkg/journal/**]
-    - component_id: vfs
+    - component_id: remote-v2
+      name: remote tier + syncer (v2)
+      paths: [pkg/remote/**, pkg/syncer/**]
+    - component_id: carver-v2
+      name: carver (v2)
+      paths: [pkg/carver/**]
+    - component_id: transform-v2
+      name: transform + workqueue (v2)
+      paths: [pkg/transform/**, pkg/workqueue/**]
+    - component_id: vfs-v2
       name: vfs (v2)
       paths: [pkg/vfs/**, internal/vfs/**]
-    - component_id: openstate
+    - component_id: openstate-v2
       name: open state (v2)
       paths: [pkg/openstate/**]
-    # shared and v1 components, so their lines are not averaged into v2's
-    - component_id: metadata
-      name: metadata
-      paths: [pkg/metadata/**]
-    - component_id: block-v1
-      name: block (v1, to be deleted)
-      paths: [pkg/block/**]
+    - component_id: metadata-v2
+      name: metadata (v2)
+      paths: [pkg/metadata/entity/**, pkg/metadata/kv/**, pkg/metadata/kvstore/**]
+    - component_id: controlplane-v2
+      name: control plane (v2)
+      paths: [pkg/node/**, pkg/settings/**, internal/node/**]
+    - component_id: setup-v2
+      name: bootstrap + keys (v2)
+      paths: [pkg/bootstrap/**, pkg/secrets/**, pkg/keyprovider/**]
+    - component_id: identity-v2
+      name: identity + adapter core (v2)
+      paths: [pkg/identity/**, internal/identity/**, internal/adapter/core/**]
+    # shared paths while the migration runs (RFC 17 §9 moves the adapters onto
+    # the VFS service, so both branches carry these paths today)
     - component_id: adapters-nfs
       name: adapters/nfs
       paths: [internal/adapter/nfs/**, pkg/adapter/nfs/**]
     - component_id: adapters-smb
       name: adapters/smb
       paths: [internal/adapter/smb/**, pkg/adapter/smb/**]
-    - component_id: controlplane
-      name: control plane
-      paths: [pkg/controlplane/**, pkg/node/**, pkg/settings/**]
 
 comment: false                  # no PR upload exists to comment on; see §9
 
@@ -254,18 +304,28 @@ Deliberate omissions:
   *done* — known failures gone — which is not a Codecov concept. The card is
   informational until then; a done component gets an enforced rule in a follow-up
   change, recorded in the issue, not silently in this file.
-- **`ignore` for v1 is `block-v1` as its own component, not an ignore entry.**
-  Its line falling to zero on deletion is evidence the deletion happened; hiding
-  it would discard the second use in §3(c).
-- **`develop`, `main` and `feat/storage-v2` stay in the same flags.** Components
-  are path-based, so the v2 branch's numbers land on the v2 components regardless
-  of branch; per-branch trend filtering is a dashboard query, not a config split.
+- **v1 stays a component rather than an ignore entry, so its deletion is
+  visible.** Note the rendering: once `pkg/block/**` is gone no files match, and
+  a component with no files shows as empty or no-data rather than 0%, while
+  `carryforward` can keep stale figures on a card. The deletion is read as the
+  card emptying (and from the commit that removes the package), not as a step to
+  zero; verify the rendering during the trial before relying on it.
+- **`develop` and `feat/storage-v2` write to different cards, one set of
+  flags.** The v1 cards are populated by develop's pushes and the v2 cards by
+  `feat/storage-v2`'s, because v1 and v2 never share a branch; read decision (a)
+  as one card against the other, with per-branch filtering a dashboard query, not
+  a config split.
 
 ### 8.2 CI changes
 
-1. **Fix ingestion (prerequisite).** Activate `cubbit/dittofs` on Codecov and
-   update `CODECOV_TOKEN`; confirm the upload log prints the `cubbit` slug and the
-   commit appears in the API. Without this the rest is unobservable.
+1. **Fix ingestion (prerequisite), on both branches.** Activate
+   `cubbit/dittofs` on Codecov and update `CODECOV_TOKEN`; confirm the upload log
+   prints the `cubbit` slug and the commit appears in the API. `feat/storage-v2`
+   carries its **own** `codecov.yml` and its own upload step (which is missing the
+   `matrix.name == 'unit'` guard), and the v2 half of decision (a) comes only
+   from that branch's runs — so the same activation, token and reshaped config
+   must land there too, or the trial has nothing v2 to compare against. Without
+   this the rest is unobservable.
 2. **Integration upload.** `test/suites.yaml` integration `cmd` gains
    `-coverprofile={out}/coverage.txt`; a Codecov step uploads it with
    `flags: integration` on non-PR runs. Its retry guard must name the integration
@@ -278,32 +338,46 @@ Deliberate omissions:
    `go tool covdata textfmt` writes `{out}/coverage.txt`, uploaded with
    `flags: e2e`. Landed only if the trial's measurement keeps the cell within
    ~2–3 min of its 13.1 min baseline; otherwise the flag uploads from nightly
-   alone. This is the only `dt` code in the reshape.
-4. Unit step unchanged except its condition: keep skipping PRs and retries. Patch
-   coverage is informational and PR uploads stay out, so no partial profile is
-   ever read as a drop.
+   alone. This is the only `dt` code in the reshape. One measurement the trial
+   runs first, because a `-cover` binary flushes its counters only on a clean
+   exit: the fixture stops the server with SIGTERM and falls back to SIGKILL
+   (`test/e2e/helpers/server.go` `ForceKill`), so the trial confirms that a
+   normal teardown leaves data in `GOCOVERDIR`; a server that has to be
+   hard-killed loses its counters for that run.
+4. Unit step's condition narrows, on both branches: it already excludes pull
+   requests and retries, and it must also exclude `merge_group` — the merge
+   queue runs the `pr` tier, where the unit cell adds `-short`, so a queued
+   commit uploads a reduced profile under `unittests` today. With `merge_group`
+   excluded and `patch: off`, no reduced profile is uploaded at all and no
+   per-commit delta is computed from one.
 
 ## 9. Trial (what makes this a recommendation rather than a guess)
 
-Run for **one week of `develop` pushes and at least five PRs** after ingestion is
-fixed. PR-bound signals are deliberately out of scope: the upload step excludes
-`pull_request` (and a changed-packages-only profile would misread as a drop), so
-Codecov has no PR upload from which to produce a patch status or a comment. The
-trial measures what the reshape can actually deliver:
+Run for **one week of `develop` and `feat/storage-v2` pushes** after ingestion is
+fixed. PR-bound signals are out of scope by construction: the upload step
+excludes pull requests (and a changed-packages-only profile would misread as a
+drop), the merge queue is excluded as a reduced-profile source, and project,
+patch and comment are all off — so the issue's "actionable vs noise PR signals"
+tally is structurally **zero**, which is recorded here as the answer rather than
+left assumed; §12 holds the deferred work that would bring PR signals back.
 
-- Data lands for `cubbit/dittofs`: today's commit appears in the API, and the
-  `unittests` flag updates on each develop push.
-- Use the component dashboard at least once for decision (a): compare a v2
-  component against the v1 path it replaces and record whether the comparison
-  changed a cutover decision.
-- Record any signal on a non-PR run (merge queue), and whether it was actionable
-  or noise; zero is an acceptable count, since none is configured to fire.
-- Measure the e2e cell with and without `-cover` on the same runner tier.
+- Data lands for `cubbit/dittofs` on both branches: today's commit appears in
+  the API, the `unittests` flag updates on each push, and the v1 cards (develop)
+  and v2 cards (`feat/storage-v2`) both populate.
+- Use the component dashboard at least once for decision (a): compare a v2 card
+  against the v1 card it replaces and record whether the comparison changed a
+  cutover decision.
+- Record anything Codecov posts anyway — a status, a comment, an annotation.
+  None is configured to fire, so every appearance is either a misconfiguration
+  or a real signal, and each is judged as actionable or noise by the trial's
+  last day.
+- Measure the e2e cell with and without `-cover` on the same runner tier, and
+  confirm `GOCOVERDIR` holds data after a normal e2e teardown (§8.2, item 3).
 
-**Pass:** data lands; the component view answers (a) without manual profile
-aggregation and is used in at least one decision; e2e overhead ≤ 3 min (else the
-e2e flag moves to nightly). **Fail any of these → drop**, with the `dt` floors in
-§10 as the alternative if decision (a) still needs a number.
+**Pass:** data lands on both branches; the component view answers (a) without
+manual profile aggregation and is used in at least one decision; e2e overhead
+≤ 3 min (else the e2e flag moves to nightly). **Fail any of these → drop**, with
+the `dt` floors in §10 as the alternative if decision (a) still needs a number.
 
 PR-side coverage signals return only if full, non-partial PR uploads become
 affordable; that is deferred in §12, not assumed here. The `comment: false` in
@@ -331,8 +405,11 @@ tells us whether the question is still being asked.
 
 - **Ingestion cannot be fixed** (token/org constraints): drop, because a
   dashboard that receives nothing is not a dashboard.
-- **The trial produces only noise**: more than two non-actionable PR signals, or
-  no cutover decision uses the component view in a week. Drop and revisit `dt`.
+- **The view is not used, or something fires that should not**: no cutover
+  decision consults the component view in a week, or more than one status,
+  comment or annotation appears that cannot be explained (none is configured).
+  Either way the dashboard has become exactly the unopened noise #3483 silenced:
+  drop and revisit `dt`.
 - **e2e overhead exceeds ~3 minutes**: keep the reshape for unit+integration but
   make e2e nightly-only; if even nightly is too slow, drop the e2e flag and note
   that adapter numbers stay a lower bound.
@@ -348,6 +425,7 @@ tells us whether the question is still being asked.
 | Duplicate-test detection via a `dt` profile-diff scan | O(tests) suite runs; detects coverage redundancy, not assertion redundancy; Codecov cannot do it | unowned | someone asks "which tests are redundant" with a budget for the runs |
 | Per-component enforced status once a v2 component is done | a Codecov component has no "done" state; flipping it early recreates the noise the issue is about | unowned | the component's known failures are gone and the trial passed |
 | PR-side coverage signals (patch status, comment) | the upload step excludes pull requests, and a changed-packages-only profile would read as a drop | unowned | full, non-partial PR uploads become affordable |
+| A `new-package-tests.sh` guard for pre-existing packages | the script checks only directories new against the base; 32 untested directories predate it (§3b) | unowned | a rewrite touches one of the 32, or a cleanup pass adds their tests |
 
 Test Analytics is declined, not deferred: §5 records why it adds nothing over
 `dt history` and quarantine.
@@ -360,7 +438,9 @@ gh run download 45796112142 -R cubbit/dittofs -n dt-run-unit-1
 # -> <timestamp>-<sha>/unit/coverage.txt
 ```
 
-Per-package aggregation (the §4 table; package = directory of each profile line):
+Per-package aggregation, with the prefix rollup and percentages that build the
+§4 table (run the tree scan at the profile's own commit, `d219266ac`, not at the
+current tip — the provenance line above names both):
 
 ```python
 import collections, os
@@ -369,11 +449,36 @@ for line in open("coverage.txt"):
     if line.startswith("mode:") or not line.strip():
         continue
     f, rest = line.rsplit(":", 1)
+    path = f.removeprefix("github.com/cubbit/dittofs/")   # trim the module prefix
     stmts, count = rest.split()[-2:]
-    cov[os.path.dirname(f)][0] += int(stmts)
+    cov[os.path.dirname(path)][0] += int(stmts)
     if int(count) > 0:
-        cov[os.path.dirname(f)][1] += int(stmts)
+        cov[os.path.dirname(path)][1] += int(stmts)
+
+GROUPS = ["pkg/block", "pkg/metadata", "pkg/controlplane",
+          "pkg/adapter", "internal/adapter/nfs", "internal/adapter/smb",
+          "internal/adapter/common", "cmd"]
+for g in GROUPS:
+    t = h = 0
+    for d, (st, hit) in cov.items():
+        if d.startswith(g):
+            t, h = t + st, h + hit
+    print(f"{100*h/t:6.2f}%  {h:6}/{t:<6} {g}")
+t = sum(v[0] for v in cov.values()); h = sum(v[1] for v in cov.values())
+print(f"TOTAL {100*h/t:.2f}% ({h}/{t}) over {len(cov)} packages")
 ```
+
+The §3(b) count (directories with Go files and no `_test.go`, excluding
+`k8s/`, `scripts/` and `bench/`; run at the same commit):
+
+```bash
+git ls-tree -r --name-only d219266ac | grep '\.go$' | grep -v '_test\.go$' \
+  | sed 's![^/]*\.go$!!' | sort -u > /tmp/dirs
+git ls-tree -r --name-only d219266ac | grep '\_test\.go$' \
+  | sed 's![^/]*_test\.go$!!' | sort -u > /tmp/testdirs
+comm -23 /tmp/dirs /tmp/testdirs | grep -v '^k8s/\|^scripts/\|^bench/'
+```
+
 
 The dashboard state in §2:
 
