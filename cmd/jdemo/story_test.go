@@ -36,7 +36,7 @@ func TestBasicStoryRunsToQuit(t *testing.T) {
 	}
 	screen := out.String()
 
-	if !strings.Contains(screen, `[]byte("hello world")`) {
+	if !strings.Contains(screen, `h.WriteAt(id=FILE, off=0, p="hello world", mtime=0)`) {
 		t.Errorf("story: the first write's call not shown source-style:\n%s", screen)
 	}
 	if !strings.Contains(screen, "→ v1") {
@@ -47,7 +47,7 @@ func TestBasicStoryRunsToQuit(t *testing.T) {
 	if !strings.Contains(screen, "2 (1 sealed)") {
 		t.Errorf("story: the stats look after the roll does not name segments 2 (1 sealed):\n%s", screen)
 	}
-	if !strings.Contains(screen, "Truncate(ctx, FILE, 32)") {
+	if !strings.Contains(screen, "Truncate(id=FILE, size=32)") {
 		t.Errorf("story: the truncate beat's call missing:\n%s", screen)
 	}
 	// Review Focus 4: a stub answer prints verbatim and the story goes on

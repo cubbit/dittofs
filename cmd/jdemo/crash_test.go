@@ -24,7 +24,7 @@ func TestCrashStoryRunsToQuit(t *testing.T) {
 	}
 	screen := out.String()
 	for _, want := range []string{
-		"h.Sync(ctx, FILE)",     // the mark, real
+		"h.Sync(ids=FILE)",      // the mark, real
 		"Through:", "Sequence:", // its fields
 		"retained",                           // the overwrite's index truth
 		"journal closed; only the directory", // the beat's guard note

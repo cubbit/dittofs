@@ -64,6 +64,10 @@ func HumanSize(n int64) string {
 	return strconv.FormatInt(n, 10) + " B"
 }
 
+// Bytes is HumanSize with no space ("80MiB"), the way the demo's call lines
+// write a size argument.
+func Bytes(n int64) string { return strings.ReplaceAll(HumanSize(n), " ", "") }
+
 // journalClosed answers plainly when a view runs with no live journal:
 // a story that closes mid-run still offers the chooser, and the view names
 // the closure rather than dereferencing what it would read. The journal

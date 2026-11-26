@@ -1,7 +1,9 @@
 # jdemo — presenter's screenplay
 
 A speaker-support script for the twelve-beat story. Every line in **bold** is a
-thing to say out loud; everything else is a stage direction for you. Keystrokes:
+thing to say out loud; everything else is a stage direction for you. The call lines on screen are pseudo-code with named arguments (`n=80MiB`,
+`limit=512MiB`; `ctx` left out) — read the name aloud, it carries the meaning.
+Keystrokes:
 `⏎` runs the beat; view keys open a look; an empty `⏎` moves on.
 
 ## Setup (before the room fills)
@@ -296,7 +298,7 @@ the numbers below assume empty.
   3."**
 - `⏎`. Four lines print:
   - `// → journal closed; only the directory, the identity and the marks remain`
-  - `journal.Open(ctx, dir, floor, id, marks, opts...)` — **"Open scans every
+  - `journal.Open(dir=dir, floor=floor, expect=id, marks=marks)` — **"Open scans every
     segment, replays the records, rebuilds the index, and checks the tails it
     found against the mark. A tail shorter than the mark would be a
     reported loss."**
@@ -342,7 +344,7 @@ tall enough for the stats look.
 - **"Basic passed zero here. Now the second argument is real: 512 MiB. That
   is this SHARE's budget for record bytes, and it is checked before anything
   else."**
-- `⏎`: `h, err := j.Share(1, 536870912, journal.Version{})`, handle attached.
+- `⏎`: `h, err := j.Share(tag=1, limit=512MiB, floor=Version())`, handle attached.
 
 ## STEP 3 — reserve BEFORE the burst
 
@@ -350,7 +352,7 @@ tall enough for the stats look.
   80 and not 40? Each write costs a little more than its payload — entries,
   a footer — so a reservation of exactly the payload cannot hold the write
   it was made for."**
-- `⏎`: `res, err := h.Reserve(83886080, 1)`.
+- `⏎`: `res, err := h.Reserve(n=80MiB, writes=1)`.
 - **"The reservation is charged against the 512. Take it while there is
   budget — the escape hatch has to be built BEFORE the room is full. Reserve
   after, and it is refused with everything else."**
@@ -375,7 +377,7 @@ tall enough for the stats look.
 
 - **"Same share, same file — a refused write a second ago. Now the same bytes
   through the RESERVATION."** `⏎`.
-- `res.WriteAt(ctx, FILE, 536870912, fill40MiB, 0)` answers `v31`, served.
+- `res.WriteAt(id=FILE, off=512MiB, p=fill40MiB, mtime=0)` answers `v31`, served.
 - **"Its bytes were set aside up front. No limit refuses it. That is the
   hatch: the engine uses it for the records that FREE space — forget,
   release. If it had to ask for room first, a full journal could never

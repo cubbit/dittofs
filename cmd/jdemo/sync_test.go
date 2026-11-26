@@ -18,8 +18,8 @@ func TestSyncBeatPrintsItsMark(t *testing.T) {
 	}
 	screen := out.String()
 	for _, want := range []string{
-		"h.Sync(ctx, FILE)", // the call, storybook-qualified
-		"Through:",          // …the mark's fields
+		"h.Sync(ids=FILE)", // the call, storybook-qualified
+		"Through:",         // …the mark's fields
 		"Sequence:",
 		"Segment:",     // a real mark, naming a real segment
 		"STEP 6 OF 13", // the beat's place in the story
