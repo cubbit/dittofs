@@ -187,7 +187,6 @@ func TestServices(t *testing.T) {
 	if !slices.Contains(env, "DITTOFS_TEST_KMIP_ENDPOINT=127.0.0.1:"+port) || slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "LOCALSTACK") }) {
 		t.Errorf("service env %q: want KMIP's variables only", env)
 	}
-	t.Setenv("DITTOFS_TEST_KMIP", "1")
 	t.Setenv("DITTOFS_TEST_KMIP_ENDPOINT", "127.0.0.1:"+refusedPort)
 	if err := Check("", "service:kmip"); err == nil || !strings.Contains(err.Error(), "nothing answers") {
 		t.Errorf("nothing listening: %v", err)

@@ -417,6 +417,10 @@ cmd_cleanup() {
         fi
     fi
     cmd_services down
+    # decision: the postgres service is gone, but a checkout that started it
+    # before still has its container, which no service name stops any more.
+    # Drop this line once no such container can be left.
+    docker rm -f dittofs-harness-pg-it >/dev/null 2>&1 || true
     local left
     left="$(docker ps --format '{{.Names}}' | grep -E '^(dittofs-|dt-|dtc-)' |
         grep -vxF "${DT_CONTAINER_NAME:-none}" || true)"
