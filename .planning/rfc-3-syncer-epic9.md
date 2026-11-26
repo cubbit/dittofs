@@ -276,7 +276,7 @@ a schedule, which is RFC 4's (§1.2).
     first, and `benchstat` drops those samples.
   - The wait is timed where a caller sees it: from B's `Upload` call to its
     return, less the link's time for that block's put, which the benchmark set. It therefore includes any of
-    B's own entries queued ahead, which §2.9's bound of one round does not cover; a correct syncer keeps A above its cap, since §2.9 lets A take a worker whenever B has nothing
+    B's own entries queued ahead, which §2.9's bound of one round does not cover; a correct syncer keeps A at or above its cap, since §2.9 lets A take a worker whenever B has nothing
     queued and takes none back, but while A holds its cap or more and B has an upload queued,
     every worker that frees goes to B. B's P/8 outstanding uploads are fewer than the P − cap
     workers A's cap would leave, so each of B's queued uploads takes the next worker that frees,
@@ -389,11 +389,14 @@ a schedule, which is RFC 4's (§1.2).
     It runs with the `DITTOFS_TEST_S3_*` secrets set, and T9.5 attaches `{out}`, so the `content`
     test greps `{out}` as RFC 4 plan epic 9's service cell does (its R8, from RFC 25 §5.4): an SDK
     error a `b.Fatal` prints would otherwise reach the attached record. The grep runs whatever
-    the guard found, before the script exits, and the script exits with the worse of the two
-    codes, since a `b.Fatal` that leaks a key also leaves its sub-benchmark short of lines. Its
-    patterns are `Signature=` and `SignatureProvided` always, and the access key, the secret, the
-    endpoint and the bucket only when set, so a LocalStack run with none set greps no empty
-    pattern that matches every file; they go to `grep -rlF -f -` on stdin, never on the command
+    the guard found, before the script exits. A hit (grep's 0) fails, naming the files; 1 is
+    clean; 2, a read error, fails naming it, so a scan that failed never passes. The script
+    exits 2 if either the guard or the scan failed, since a `b.Fatal` that leaks a key also leaves its sub-benchmark short of lines. Its patterns are `Signature=` and
+    `SignatureProvided` always, and the access key and the secret only when non-empty after CR
+    and LF are stripped, so a LocalStack run with none set, an exported empty value or a value
+    with a trailing newline adds no blank pattern that matches every file. The endpoint and the
+    bucket are not patterns, as in RFC 4 plan epic 9's cell: a bucket named `dittofs` would
+    match the `pkg: github.com/cubbit/dittofs/…` line of a clean run; they go to `grep -rlF -f -` on stdin, never on the command
     line, and only file names are printed. `content`'s `go test` output goes to
     `{out}/content.txt` alone, not to stdout, since `dt` tees stdout to the cell's log outside
     `{out}`, where nothing scans it; the script prints the guard's verdict and, once the grep is
@@ -456,7 +459,7 @@ a schedule, which is RFC 4's (§1.2).
     many goroutines as each half's worker count, ranging over `Get`'s chunks as D1's twin does.
   - The upload half deletes each block once its upload returns, as B1 does, so the store holds
     no more than the pool's blocks rather than about 4 GiB per upload sub-benchmark. A cleanup registered with `b.Cleanup` before the first write stays as the backstop, deleting
-    whatever a listing of B5's prefix still shows, so a `b.Fatal` mid-run leaves no block behind. The store's health object and key records are
+    the blocks a listing of B5's prefix still shows, so a `b.Fatal` mid-run leaves no block behind. The store's health object and key records are
     never deleted through `remote.Store` (RFC 4 §4.7), so B5 opens its store under the fresh namespace prefix of `_BUCKET` that `s3fault.Service`
     hands it, which RFC 4 plan epic 9's sweep (its D10) deletes, with whatever a killed run
     left, once older than the cell's timeout.
