@@ -35,9 +35,9 @@ func TestSegmentFilesAnswersOnlyTheFilesTheSegmentHolds(t *testing.T) {
 		{3, []core.FileID{b, c}},
 		{9, nil},
 	} {
-		got := sortedIDs(ix.SegmentFiles(tc.seg))
+		got := sortedIDs(ix.FilesOfSegment(tc.seg))
 		if !slices.Equal(got, sortedIDs(tc.want)) {
-			t.Errorf("SegmentFiles(%d) = %v, want %v", tc.seg, got, tc.want)
+			t.Errorf("FilesOfSegment(%d) = %v, want %v", tc.seg, got, tc.want)
 		}
 	}
 }
@@ -79,13 +79,13 @@ func TestSegmentFilesMatchesTheEntries(t *testing.T) {
 		t.Helper()
 		byTable, byEntry := segsOfEveryFile(fs)
 		for seg := core.SegmentID(0); seg < 8; seg++ {
-			got := sortedIDs(ix.SegmentFiles(seg))
+			got := sortedIDs(ix.FilesOfSegment(seg))
 			if want := sortedIDs(byTable[seg]); !slices.Equal(got, want) {
-				t.Errorf("%s: SegmentFiles(%d) = %v, want the files whose table names it, %v", step, seg, got, want)
+				t.Errorf("%s: FilesOfSegment(%d) = %v, want the files whose table names it, %v", step, seg, got, want)
 			}
 			for _, id := range byEntry[seg] {
 				if !slices.Contains(got, id) {
-					t.Errorf("%s: SegmentFiles(%d) = %v lacks %v, whose entry names the segment", step, seg, got, id)
+					t.Errorf("%s: FilesOfSegment(%d) = %v lacks %v, whose entry names the segment", step, seg, got, id)
 				}
 			}
 		}

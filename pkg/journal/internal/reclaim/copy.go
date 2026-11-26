@@ -190,7 +190,7 @@ func (c *Copier) read(ctx context.Context, set *segment.Set, seg core.SegmentID)
 		return nil, fmt.Errorf("reclaim: segment %d is not in the set", seg)
 	}
 	fileOf := make(map[index.RecordAt]core.FileID)
-	for _, file := range c.ix.SegmentFiles(seg) {
+	for _, file := range c.ix.FilesOfSegment(seg) {
 		for _, e := range c.ix.FileEntries(file) {
 			if e.Record.Segment == seg {
 				if _, ok := fileOf[e.Record]; !ok {
