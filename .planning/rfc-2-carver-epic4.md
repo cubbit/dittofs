@@ -216,8 +216,8 @@ which.
 | R34 | The reader fails at every byte offset of a stretch spanning several chunks and at least two buffer refills, and `emit` at every chunk; after each, the chunks delivered are exactly a prefix of the clean run's, byte for byte, none a shortened one, and a retry delivers the clean run | MUST | RFC 2 §10.3 | T4.8 |
 | R35 | The same input through two buffer sizes gives identical output | test row | RFC 2 §10.3 ("the property tests run the same input with two buffer sizes and require identical output") | T4.8 |
 | R36 | C1, C4 and C7 are fuzzed properties over random input and random valid settings, asserting on what `emit` saw; fuzzing past the seeds runs in the shared nightly fuzz suite and the seeds in `unit`. C2 and C3 are E3's | invariant | RFC 2 §10.1 (Properties), §10.6; RFC 2 plan, §1.4 (the `fuzz` suite), epic 4's expected content ("property fuzzing of C1, C4, C7") | T4.8 |
-| R38 | Two implementations over the same random input emit identical chunks: `Cut` and the reference chunker over E2's tables agree on every end | MUST | RFC 2 §10.1 (Differential), §1.3; RFC 2 plan, §1.4 | T4.4, T4.8 |
 | R37 | Only the fault sweep runs reduced in a per-change run: every chunk end and buffer refill, one byte either side, and a seeded sample of other offsets, at the smallest `Target`; the full sweep runs in no per-change run, only nightly | bound | RFC 2 plan, D8; RFC 2 §10.6 | T4.8 |
+| R38 | Two implementations over the same random input emit identical chunks: `Cut` and the reference chunker over E2's tables agree on every end | MUST | RFC 2 §10.1 (Differential), §1.3; RFC 2 plan, §1.4 | T4.4, T4.8 |
 
 How each row is enforced once this epic lands, where no test of this epic can break it: R1's
 transitive walk by E1's `imports_test.go`, which T4.4 extends, and `pkg/transform`'s admission of
