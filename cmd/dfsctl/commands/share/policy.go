@@ -21,6 +21,7 @@ func policyFlags(cmd *cobra.Command) {
 	f.Bool("smb-encrypt", false, "Seal every SMB message")
 	f.Bool("smb-hidden", false, "Leave the share out of SMB share enumeration")
 	f.Bool("smb-continuously-available", false, "Make the share's SMB handles continuously available")
+	f.Bool("manage-gids", false, "Replace an AUTH_SYS caller's gids with the groups the store and directory hold for its user")
 }
 
 // applyPolicy sets each field of p whose flag cmd was given, leaving the
@@ -33,7 +34,7 @@ func applyPolicy(cmd *cobra.Command, p *apiv1.ExportPolicySpec) error {
 		}
 	}
 	for flag, into := range map[string]*bool{"read-only": &p.ReadOnly, "smb-encrypt": &p.SMB.Encrypt,
-		"smb-hidden": &p.SMB.Hidden, "smb-continuously-available": &p.SMB.ContinuouslyAvailable} {
+		"smb-hidden": &p.SMB.Hidden, "smb-continuously-available": &p.SMB.ContinuouslyAvailable, "manage-gids": &p.ManageGIDs} {
 		if f.Changed(flag) {
 			*into, _ = f.GetBool(flag)
 		}
@@ -166,7 +167,7 @@ func newPolicyWriteCmd(env cmdutil.Env, verb, short string, whole bool) *cobra.C
 		requirePolicy(cmd)
 	} else {
 		cmd.MarkFlagsOneRequired("flavor", "min-proof", "min-protection", "read-only", "client", "squash",
-			"smb-encrypt", "smb-hidden", "smb-continuously-available")
+			"smb-encrypt", "smb-hidden", "smb-continuously-available", "manage-gids")
 	}
 	return cmd
 }

@@ -27,21 +27,27 @@ import (
 // chmod/stat/ls) so they mirror exactly what a user typing the same commands
 // would experience — the colleague bug that motivated this was a plain `cp`.
 
-// uidCredential builds a SysProcAttr that runs a child process as uid:gid.
-// NoSetGroups avoids setgroups(2), which would otherwise require the
-// supplementary group list and is unnecessary for these single-identity ops.
-func uidCredential(uid, gid uint32) *syscall.SysProcAttr {
+// uidCredential builds a SysProcAttr that runs a child process as uid:gid
+// with groups as its supplementary groups, none when groups is empty, so the
+// child never carries the harness's own groups, which AUTH_SYS would send.
+func uidCredential(uid, gid uint32, groups []uint32) *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{
-		Credential: &syscall.Credential{Uid: uid, Gid: gid, NoSetGroups: true},
+		Credential: &syscall.Credential{Uid: uid, Gid: gid, Groups: groups},
 	}
 }
 
-// execAsUID runs name+args as uid:gid. stdin (may be nil) is fed on the child's
-// stdin; the child's stdout is written to stdoutW (may be nil to discard). On
-// failure the returned error carries the captured stderr.
+// execAsUID runs name+args as uid:gid with no supplementary group.
 func execAsUID(uid, gid uint32, stdin []byte, stdoutW io.Writer, name string, args ...string) error {
+	return execAs(uid, gid, nil, stdin, stdoutW, name, args...)
+}
+
+// execAs runs name+args as uid:gid with the supplementary groups groups.
+// stdin (may be nil) is fed on the child's stdin; the child's stdout is
+// written to stdoutW (may be nil to discard). On failure the returned error
+// carries the captured stderr.
+func execAs(uid, gid uint32, groups []uint32, stdin []byte, stdoutW io.Writer, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
-	cmd.SysProcAttr = uidCredential(uid, gid)
+	cmd.SysProcAttr = uidCredential(uid, gid, groups)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
@@ -51,8 +57,8 @@ func execAsUID(uid, gid uint32, stdin []byte, stdoutW io.Writer, name string, ar
 		cmd.Stdout = stdoutW
 	}
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("run %q %v as uid=%d gid=%d: %w: %s",
-			name, args, uid, gid, err, strings.TrimSpace(errb.String()))
+		return fmt.Errorf("run %q %v as uid=%d gid=%d groups=%v: %w: %s",
+			name, args, uid, gid, groups, err, strings.TrimSpace(errb.String()))
 	}
 	return nil
 }
@@ -67,11 +73,12 @@ func ExecAsUID(t *testing.T, uid, gid uint32, name string, args ...string) ([]by
 	return out.Bytes(), err
 }
 
-// WriteFileAsUID writes data to path as uid:gid (truncating any existing file).
-func WriteFileAsUID(t *testing.T, uid, gid uint32, path string, data []byte) error {
+// WriteFileAsUID writes data to path as uid:gid with the supplementary groups
+// groups (truncating any existing file).
+func WriteFileAsUID(t *testing.T, uid, gid uint32, path string, data []byte, groups ...uint32) error {
 	t.Helper()
 	// tee opens the file with O_CREAT|O_TRUNC; discard its stdout copy.
-	return execAsUID(uid, gid, data, io.Discard, "tee", path)
+	return execAs(uid, gid, groups, data, io.Discard, "tee", path)
 }
 
 // ReadFileAsUID reads and returns the contents of path as uid:gid.
@@ -120,10 +127,11 @@ func MkdirAllAsUID(t *testing.T, uid, gid uint32, path string) error {
 	return execAsUID(uid, gid, nil, nil, "mkdir", "-p", path)
 }
 
-// RemoveAsUID removes a single file as uid:gid (errors if it does not exist).
-func RemoveAsUID(t *testing.T, uid, gid uint32, path string) error {
+// RemoveAsUID removes a single file as uid:gid with the supplementary groups
+// groups (errors if it does not exist).
+func RemoveAsUID(t *testing.T, uid, gid uint32, path string, groups ...uint32) error {
 	t.Helper()
-	return execAsUID(uid, gid, nil, nil, "rm", path)
+	return execAs(uid, gid, groups, nil, nil, "rm", path)
 }
 
 // RemoveAllAsUID removes a file or directory tree as uid:gid (no error if
@@ -145,12 +153,13 @@ func FileExistsAsUID(t *testing.T, uid, gid uint32, path string) bool {
 	return execAsUID(uid, gid, nil, nil, "test", "-e", path) == nil
 }
 
-// ListDirAsUID returns the entry names in path as seen by uid:gid (excluding
-// "." and ".."), mirroring framework.ListDir.
-func ListDirAsUID(t *testing.T, uid, gid uint32, path string) ([]string, error) {
+// ListDirAsUID returns the entry names in path as seen by uid:gid with the
+// supplementary groups groups (excluding "." and ".."), mirroring
+// framework.ListDir.
+func ListDirAsUID(t *testing.T, uid, gid uint32, path string, groups ...uint32) ([]string, error) {
 	t.Helper()
 	var out bytes.Buffer
-	if err := execAsUID(uid, gid, nil, &out, "ls", "-1A", path); err != nil {
+	if err := execAs(uid, gid, groups, nil, &out, "ls", "-1A", path); err != nil {
 		return nil, err
 	}
 	var names []string
