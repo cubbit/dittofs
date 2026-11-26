@@ -113,7 +113,7 @@ cited by number and title and not copied.
 | --- | --- | --- |
 | rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | tests run over the first part's in-memory journal and `kvstore` over the in-memory `kv.KV`, refs and blocks written through `kvstore`'s `Intend` and `Commit` and `codec.Store`'s put into RFC 4's in-memory store (kind 2, RFC 4's suite), fetched through RFC 3's real syncer, faults from RFC 4's fault wrapper (kind 3); a carved extent is one the journal never held, so no pass and no `Release` is needed; no engine-side double is written |
 | rule 2, fuzz the key and ref decoders the queue's rebuild reads | none | no decoder: the chunk location arrives decoded by `kvstore`, and the block body is RFC 4's codec's |
-| rule 3, observability follows RFC 25 | T17.2, T17.3, T17.4, T17.5, T17.7 | `engine_reads_total`'s `remote` class, `engine_fetches_total` by `shape`, `engine_fetch_bytes_total`, `engine_fills_total` by `result`, `engine_speculation_bytes_total`, `engine_speculation_used_bytes_total` and `engine_reresolves_total`, as `Stats` fields with no share label; the `engine.fetch` span |
+| rule 3, observability follows RFC 25 | T17.2, T17.3, T17.4, T17.5, T17.7 | `engine_reads_total`'s `remote` class, `engine_fetches_total` by `shape`, `engine_fetch_bytes_total`, `engine_fills_total` by `result` and, on `declined`, `reason`, `engine_speculation_bytes_total`, `engine_speculation_used_bytes_total` and `engine_reresolves_total`, as `Stats` fields with no share label; the `engine.fetch` span |
 | rule 4, profiling | T17.2, T17.5, T17.6, T17.7 | every test runs under `prof.Watch`; a read's fetch goroutines are joined before it returns, and each fill and prefetch consumer runs inside its binding's gate, so `Unbind` and `Close` wait for it and a leak fails the run; a read of held content still updates the read table (R30, R49) and counts used speculative bytes (D11), and that work must not allocate, asserted under `unit/engine-allocs`, the suite epic 15's T15.8 registers |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | asserted at `Read`'s reply and error, which the filesystem service consumes; a fill at the journal's next `ReadAt`; a location at the engine's re-resolution, not at the store; `-race` on every concurrent leg |
 | rule 6, known failures shrink | T17.2, T17.9 | each row of §15.1 and §15.2 this epic owns leaves `known.yaml` in the change that turns it green, or has its `message:` rewritten in the change that moves its first failing check |
@@ -212,7 +212,7 @@ can cite them. Rows of §15 the epic turns green are listed last.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R41 | No lock, queue or other serialisation point shared by more than one file or share is held across I/O or a wait on a read's path: its fetch, and its hand-off to a fill and to the speculator; a fill and a hint run off that path (D3) | MUST NOT | RFC 8 §1.1 | T17.2, T17.5, T17.7 |
-| R42 | `engine_reads_total` counts a read served from the remote under `remote`; `engine_fetches_total` by `shape` `chunks` or `block`; `engine_fetch_bytes_total`; `engine_fills_total` by `result` `done`, `declined` or `refused`; `engine_speculation_bytes_total` and `engine_speculation_used_bytes_total`; `engine_reresolves_total`; none share-labelled | MUST | RFC 8 §14 | T17.2, T17.3, T17.4, T17.5, T17.7 |
+| R42 | `engine_reads_total` counts a read served from the remote under `remote`; `engine_fetches_total` by `shape` `chunks` or `block`; `engine_fetch_bytes_total`; `engine_fills_total` by `result` `done`, `declined` or `refused`, a declined fill also by `reason` `low_water`, `scan` or `bound`; `engine_speculation_bytes_total` and `engine_speculation_used_bytes_total`; `engine_reresolves_total`; none share-labelled | MUST | RFC 8 §14 | T17.2, T17.3, T17.4, T17.5, T17.7 |
 | R43 | A content call opens an `engine.fetch` child span per fetch it waits on, carrying the share, the file, the bytes and the outcome | MUST | RFC 8 §14 | T17.2 |
 | R44 | A **Lost** or corrupt read logs the file and extent at `Error`, once per extent, on the remote path as on the journal's | MUST | RFC 8 §14 | T17.2, T17.3 |
 
@@ -288,7 +288,7 @@ Each is green in whichever change lands last of this epic, S3 and, where the row
   bytes, at most one chunk (RFC 2's `Max`, 1 MiB by default), filled with that span's ref's `Newest`
   and the `asOf` R28 names, so a read of any size fills span by span and one `Fill` never mixes
   versions. Each binding holds a byte semaphore of 4 MiB of fills in flight, each span taking its
-  size by try-acquire, never waiting; a span that does not fit is declined, counted `declined`, so
+  size by try-acquire, never waiting; a span that does not fit is declined, counted `declined` with `reason` `bound`, so
   no fill waits and no share's fills hold another's. A span always fits a semaphore no fill holds,
   so a chunk over 4 MiB (RFC 2 allows a `Max` up to 16 MiB, §3.7) still fills alone and the
   bound is at most the larger of 4 MiB and one chunk. Speculative fills do not take it: their bytes stay charged to the
@@ -297,7 +297,8 @@ Each is green in whichever change lands last of this epic, S3 and, where the row
   (RFC 8 E13). A fill runs beside the reply, off the request path RFC 8 §1.1 constrains, so epic 18's
   engine-wide destroyed-material read lock at `fillExtent` breaks no rule of R41. A `decision:` at the
   hand-off names these rules and the ceiling, fills declined under a burst of cold reads, withdrawn if
-  B4 shows declined fills costing re-fetches; a `ponytail:` says one `Fill` per span writes a record
+  B4 shows declined fills costing re-fetches, which the `bound` reason lets B4 tell from
+  `fill`'s own declines (`low_water`, `scan`; the user's decision of 2026-11-26); a `ponytail:` says one `Fill` per span writes a record
   per chunk, and names the upgrade, adjacent spans of one version filled together, if journal record
   counts show in a profile. Prior art: Linux's page cache inserts read pages
   asynchronously and drops readahead under memory pressure (from memory).
@@ -618,7 +619,7 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
   demanded carved span's verified bytes, with the `asOf` R28 names and that span's ref's `Newest`,
   filled in its own goroutine under the binding's 4 MiB byte semaphore, each span taking its own
   size by try-acquire, never waiting, and always fitting a semaphore no fill holds (D3), inside the binding's gate, so `Unbind`, `Drop` and `Close` wait for it; a `journal.ErrStaleFill`
-  or a capacity refusal counted `refused`, never returned; `Stats.Fills` by result; D3's
+  or a capacity refusal counted `refused`, never returned; `Stats.Fills` by result, and declines by reason; D3's
   `decision:`. Every `Fill` call goes through one function, `fillExtent`, the site where epic 18's
   T18.4 holds its destroyed-material read lock (its D10) across the check of the fetched block's
   materials (`Materials`) and the `Fill`, landing the extent unmarked when that material was
@@ -636,9 +637,12 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
   - An 8 MiB cold read of 1 MiB chunks, its fills held, fills the first 4 MiB and declines the
     rest; a 16 MiB chunk fills alone.
   - A share unbound while one of its fills is held returns only once the fill has.
-  - Below the low-water mark, or in a sequential scan past the window's cap, the fill is `declined`.
+  - Below the low-water mark, or in a sequential scan past the window's cap, the fill is `declined`,
+    with `reason` `low_water` or `scan`; one the semaphore has no room for, with `reason` `bound`.
 - **Tests:** `fill` by table over free capacity at and either side of the mark and scan lengths
-  either side of the cap (each row catches one inverted rule, R26); at `Read`: `FailNextFill`,
+  either side of the cap (each row catches one inverted rule, R26), and at `Read` one cold read
+  below the mark and one in a scan past the cap, each counted `declined` with its own `reason`
+  (catches a decline counted under the wrong reason, R42); at `Read`: `FailNextFill`,
   asserting the bytes and no error (catches a reply that waits on or fails with the fill, R29); a
   fill held before its `Fill` call while the extent is written, then released, asserting the write
   reads back and the fill counted `refused` (catches a fill that overwrites, R28, R29); a second
@@ -646,12 +650,12 @@ test/engine/known.yaml              T17.9  entries removed or their messages rew
   span's `Held.Version` equal to its ref's `Newest` and its bytes equal to the chunk's, over an
   extent of two refs of different `Newest` (catches a fill of the wrong extent, version or bytes,
   R28); an 8 MiB cold read of 1 MiB chunks with every fill held, then released, four counted `done`
-  and four `declined` (catches a fill that waits for room, D3); a read of one 16 MiB chunk, under a
+  and four `declined` with `reason` `bound` (catches a fill that waits for room, D3, R42); a read of one 16 MiB chunk, under a
   carver `Max` of 16 MiB, counted `done` (catches a bound no chunk over 4 MiB can fit, D3);
   the read held after its covering lookup while the file is written, then released, the fill counted
   `refused` (catches an `asOf` read after the lookup, R28); the reply's bytes asserted while the fill is still held (catches a reply answered by
   re-reading the journal, R13); a share's semaphore filled by held fills, a further fill of that
-  share declined while another share's fill is done (catches an unbounded hand-off or one shared
+  share declined with `reason` `bound` while another share's fill is done (catches an unbounded hand-off or one shared
   across shares, R18, R41); `Unbind` of a share with a fill held before its `Fill`, returning only
   after its release, and no `Fill` reaching the dropped handle (catches a fill outliving its share,
   E13); the agreement test (catches the in-memory `Fill` drifting from the real one).
