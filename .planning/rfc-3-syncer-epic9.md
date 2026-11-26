@@ -13,16 +13,17 @@ read here); [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) §4.3 and §
 and how benchmarks are tracked. Every citation is `develop`'s text. The code lands on
 `feat/storage-v2`, and the paths below are paths there.
 **Track:** the team.
-**Epic 9 estimate: 5 subtasks, 10.75 man-days.**
+**Epic 9 estimate: 5 subtasks, 11.5 man-days.**
 **Depends on:** **S3**, the syncer complete over the in-memory store: E1's `pool.New`, `Config`,
 `Clock` and `Stats`; E2's fault wrapper with `Link` and `Hold` (`pkg/remote/memory`, its T2.2)
 and the in-memory store's load record; E3's `internal/sched`, its in-memory opener (its T3.7) and
 the clock its tests pass to `pool.New`; E4's attempt loop and `Upload`; E6's `Fetch`, `Prefetch`
 and single flight; E7's `Stats` snapshot. For T9.4 only: **E8**'s settings section, for the
 default worker counts; **RFC 8 offload plan S7**, the node composition built, whose epic 21
-builds each store's `codec.Store` and the root's syncer in `internal/node/content`; **RFC 4 plan
-epic 3**, `s3fault.LocalStack` at `LOCALSTACK_HTTPS_ENDPOINT`; and, for a real service, **RFC 4
-plan epic 9**'s T9.1, `s3fault.Service` and its `DITTOFS_TEST_S3_*` variables. `internal/prof`
+builds in `internal/node/content` the S3 opener with its transport hook (its T21.2), the chain
+(its T21.3), and `NewCodecStore` and `NewSyncer` (its T21.4); **RFC 4 plan epic 3**,
+`s3fault.LocalStack` at `LOCALSTACK_HTTPS_ENDPOINT`; and, for a real service, **RFC 4 plan epic
+9**'s T9.1, `s3fault.Service` and its `DITTOFS_TEST_S3_*` variables. `internal/prof`
 is already on `feat/storage-v2`.
 **Blocks:** no epic of RFC 3's. Its measurements are the trigger of two rows of the RFC 3 plan's
 §6.1 ledger (a fixed value becoming a setting; the fixed values no benchmark bears on), and they
@@ -48,9 +49,10 @@ fixed values of RFC 3 §2.10 that a run bears on are confirmed or proposed anew.
   variables name one, each half beside raw calls at the configured worker counts, with RFC 3
   §7.4's B3 shape (uploads saturating while fetches wait) run over the store's shared
   connections.
-- `dt run syncer-bench` runs all five by hand, and fails when any expected result line is
-  missing, never on a throughput or latency figure. `syncer-bench-smoke` runs B1 to B4 once on
-  every pull request, without blocking it, so they cannot rot unseen.
+- `dt run syncer-bench` runs B1 to B4 by hand, and its `real-link` option B5; each fails when
+  any expected result line is missing, never on a throughput or latency figure.
+  `syncer-bench-smoke` runs B1 to B4 once on every pull request, without blocking it, under the
+  same guard, so they cannot rot unseen.
 - One run on the reference box is recorded with RFC 3 §8.6's fields and the RFC index's, and
   RFC 3 §8.5's proposed targets and §9's open question are amended from it.
 
@@ -123,7 +125,7 @@ number and title, not copied.
 | rule 7, v2 ignores v1 | all | Nothing reads `pkg/block`. The benchmarks are test files, which import RFC 4's codec, its stores and `s3fault` as amended RFC 0 §1.2 allows; T9.1's sampler adds `runtime/metrics` to `internal/prof` only |
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T9.4, T9.5 | B5 is the rule's last clause: the S3 store against LocalStack over HTTPS and against a real service, where credentials are. Nothing needs a disk |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T9.1, T9.2, T9.3, T9.4 | `decision:` markers at B2's level (D2), at B3's round (D3), at the peak memory B1 reports (D4), at B5's bandwidth record (D6) and on the `syncer-bench` entry (D5); a `ponytail:` at the sampler (D4) |
-| rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T9.1, T9.3 | The sampler's test fails on a sampler that reads the heap only at `stop`. The cell's guard is seen to fail on a run missing one expected result line. A figure is never asserted, so no figure needs a planted failure |
+| rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T9.1, T9.3 | The sampler's test fails on a sampler that reads the heap only at `stop`, and on one whose finalizer still runs after `stop`. The cell's guard is seen to fail on a run missing one expected result line. A figure is never asserted, so no figure needs a planted failure |
 | rule 11, a symbol is exported only if the RFC's interface uses it | T9.1 | One export, `prof.PeakLiveHeap`, which two packages' benchmarks call (B1, B3 and B4 in `pool`, B5 in `content`), and `internal/prof` exists to serve tests. No syncer symbol is added |
 | rule 12, each subtask creates only what it declares | all | The sampler lands with B1, its first consumer; the cells with the benchmarks they run (T9.3), and B5's option with B5 |
 
@@ -137,7 +139,7 @@ can cite them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R1 | The benchmarks run on the real clock, never the virtual one | invariant | RFC 3 §7.4; §8.1, "Benchmark" | T9.1, T9.2, T9.4 |
-| R2 | B1 to B4 run on the in-memory store with a simulated link, a per-call latency and a per-byte time, neither ever zero: a backend that returns instantly never binds the pool | MUST NOT | RFC 3 §7.3; §7.4; §8.1, "Benchmark" | T9.1, T9.2 |
+| R2 | B1, B3 and B4 run on the in-memory store with a simulated link, a per-call latency and a per-byte time, neither ever zero: a backend that returns instantly never binds the pool. B2 runs on the scheduler alone (D2), as T9.3's amendment of §8.1 says | MUST NOT | RFC 3 §7.3; §7.4; §8.1, "Benchmark" | T9.1, T9.2, T9.3 |
 | R3 | B5 runs on a real store: a local emulator of the remote service, and a real service where credentials are | invariant | RFC 3 §7.4; §8.1, "Benchmark"; §8.6, "Suites" | T9.4, T9.5 |
 | R4 | Each benchmark reports throughput, allocations and peak memory; B2, which holds no transfer, reports dispatches per second and allocations | invariant | RFC 3 §7.4 | T9.1, T9.2, T9.4 |
 | R5 | A benchmark never gates a change; what gates one is the counts of RFC 3 §8.4, each standing behind one benchmark | invariant | RFC 3 §7.4; §8.1, "Benchmark"; §8.4; RFC index, "Test tiers" | T9.3 |
@@ -152,12 +154,12 @@ can cite them.
 | R9 | B1: the syncer's own overhead, at one pool size, once through the syncer and once as raw calls on the in-memory store; target throughput through the syncer at least 97% of raw, read on D1's `fast` link | bound | RFC 3 §7.4, B1; §8.5, B1 | T9.1 |
 | R10 | B1: no allocation per chunk once warm, buffers being reused, reported beside the raw twin's allocations | bound | RFC 3 §7.4, B1; §8.4, "allocations" | T9.1 |
 | R11 | B2: one transfer dispatched with 1, 10, 100 and 1,000 flows waiting; target at most 1 µs at 1,000, and flat from 1 | bound | RFC 3 §7.4, B2; §8.5, B2; §2.9 | T9.2 |
-| R12 | B3: one flow saturating uploads on a slow store while a second issues fetches; target the second flow's p99 queue wait within one round, and the first never above its cap | bound | RFC 3 §7.4, B3; §8.5, B3 | T9.2, T9.4 |
+| R12 | B3: one flow saturating demand fetches on a slow store while a second on it wants more workers than the first leaves free (D3); target the second flow's p99 queue wait within one round, and the first never above its cap while the second has work waiting. The cross-half shape of RFC 3 §7.4 is B5's mixed shape (R23) | bound | RFC 3 §7.4, B3; §8.5, B3; §2.9 | T9.2 |
 | R13 | B4: N readers on one cold chunk make one transfer, whatever N | bound | RFC 3 §7.4, B4; §8.5 ("B4 is a count") | T9.2 |
 | R14 | B5: the syncer over the store, and raw calls on the same store at the same pool size: `codec.Store`'s put attempt and `Get`, encoding and checksum included, called directly at the configured `upload_workers` and `fetch_workers`; target at least 95% of raw, below 90% a regression | bound | RFC 3 §7.4, B5; §8.5, B5 | T9.4 |
 | R15 | B5 reports its throughput as a fraction of the raw calls', with the pools' occupancy beside it | invariant | RFC 3 §7.4 | T9.4 |
-| R16 | Peak memory per half: target at most the pool size times the per-transfer figure of RFC 3 §2.2, plus 10%. No benchmark here has a detached caller, so §2.2's detached term is zero in every run | bound | RFC 3 §8.5; §2.2 | T9.1, T9.4 |
-| R23 | Whether uploads and fetches need a joint cap is measured: a cold read's latency under full upload load on a real store, beside whether the store's connections were all in use; a miss with connections to spare overturns RFC 3 §9's settled point 1 | test row | RFC 3 §9, settled point 1 | T9.4, T9.5 |
+| R16 | Peak memory per half: target at most the pool size times the per-transfer figure of RFC 3 §2.2, plus 10%, read on B5 alone (D4). No benchmark here has a detached caller, so §2.2's detached term is zero in every run | bound | RFC 3 §8.5; §2.2 | T9.4 |
+| R23 | Whether uploads and fetches need a joint cap is measured: a cold read's latency under full upload load on a real service, beside its latency with no upload load and the most connections of the store's client in use against the client's limit; a miss with connections to spare overturns RFC 3 §9's settled point 1 | test row | RFC 3 §9, settled point 1; §8.5, B3 | T9.4, T9.5 |
 
 **Recording results**
 
@@ -165,7 +167,7 @@ can cite them.
 | --- | --- | --- | --- | --- |
 | R17 | A result is recorded with the revision it measured, in absolute numbers, with the box (CPU and memory), the operating system and each row's concurrency | invariant | RFC 3 §7.4; §8.5; RFC index, "Recording results" | T9.1, T9.3, T9.5 |
 | R18 | B5's result records the backend and its region, the round-trip time, the bandwidth, the block size, the pool sizes and the raw calls' throughput | MUST | RFC 3 §8.6 | T9.4 |
-| R19 | B1 to B4's results record the in-memory store's simulated latency and per-byte time | MUST | RFC 3 §8.6 | T9.1, T9.2 |
+| R19 | B1, B3 and B4's results record the in-memory store's simulated latency and per-byte time; B2 has no link (D2) | MUST | RFC 3 §8.6 | T9.1, T9.2 |
 | R20 | A target is stated against something measured on the same box: B1 against raw calls on the same in-memory store, B5 against raw calls on the same store at the same pool size | invariant | RFC 3 §8.5; RFC index, "Recording results" | T9.1, T9.4 |
 | R21 | A proposed benchmark target is replaced once, by the first run on the reference box, with the measured value plus headroom stated beside the result; a target that run misses is a design finding against RFC 3, changed in the design or withdrawn with its reason, never relaxed; results from another box are compared only with themselves and replace no target | invariant | RFC index, "A proposed target is replaced once, by measurement", "Recording results" | T9.5 |
 | R22 | RFC 3 §2.10's fixed values are proposals until §8.5's benchmarks measure them; each one a run bears on is confirmed or proposed anew through RFC 3, and none becomes a setting unless a measurement shows it wrong for a workload an operator can name | invariant | RFC 3 §9, open question 1; §2.10 and its decision note | T9.5 |
@@ -194,13 +196,20 @@ a schedule, which is RFC 4's (§1.2).
     B1 moves 1,024 blocks from as many callers as the pool has workers; B3 issues 1,000 of the
     second flow's fetches. So the workers are kept busy, and B3's p99 is of a thousand samples,
     not of the handful `-benchtime=1s` would give at 200 ms a call.
+  - No two fetches in flight at once name one chunk, so single flight (RFC 3 §4.3) joins none and
+    the syncer makes as many `Get`s as its raw twin: each fetching caller owns one block (B1) or
+    one chunk (B3) of its own, stored before the timer, and fetches it again only after its last
+    fetch returned. B1's fetch half so stores one block per caller, 64 MiB at 16 workers and
+    512 MiB at 128, not the 4 GiB 1,024 distinct blocks would hold; B3 stores one chunk per caller
+    of either flow.
   - B1 runs two configurations, each with name keys `half=upload|fetch` and `impl=syncer|raw`:
     `link=fast/workers=16`, 1 ms per call and a per-byte time of a tenth of the working link's,
     where the syncer's own CPU is not hidden behind the wait, and against which R9's 97% is read;
     and `link=working/workers=128`, 20 ms per call and the per-byte time that makes one 4 MiB
     block take about 200 ms (RFC 3 §2.10's working link), the defaults' shape.
   - The raw twin calls `Env.NewPut(…).Attempt` and `Env.Store.Get` from as many goroutines as
-    the pool's size. Its allocations per operation are reported beside the syncer's, since
+    the pool's size, reading each `Get`'s body in 256 KiB reads into a reused buffer, the
+    syncer's chunk, so `Link`'s per-byte waits come in the same sizes on both sides. Its allocations per operation are reported beside the syncer's, since
     `Link`'s timers and the in-memory store's copies allocate in both: the difference is the
     syncer's (R10), and the gate is E7's.
 
@@ -210,10 +219,12 @@ a schedule, which is RFC 4's (§1.2).
   at 1 µs. Through the pool, a dispatch also wakes the waiting caller's goroutine, which is the Go
   runtime's cost, not DRR's, and would sit above 1 µs at any number of flows. B2 therefore runs in
   `internal/sched`'s own benchmark file: per iteration one `Add`, `Next` and `Done`, while 1, 10,
-  100 and 1,000 flows each hold one queued entry on one store, every flow fresh or every flow in
-  debt, as E3's count is taken (its T3.1). `Next` hands out round robin, so the entry it returns
-  is added back after its `Done`, keeping every flow waiting and in its state. It needs no store
-  and no link. B1 measures the whole path, so the goroutine hand-off is still measured, where it
+  100 and 1,000 flows each hold two queued entries on one store, every flow fresh or every flow in
+  debt, as E3's count is taken (its T3.1). The entry `Next` returns is added back before its
+  `Done`, so no flow's queue empties and RFC 3 §2.9's reset of an emptied flow's deficit never
+  fires: with one entry a flow, `Next` would empty it and the `debt` rows would time fresh flows
+  after one pass. Under `flows=debt`, `Done` reports a held time of twice the charge, so the flow
+  parks in its wheel again on every pass. It needs no store and no link. B1 measures the whole path, so the goroutine hand-off is still measured, where it
   belongs. A `decision:` marker at the benchmark says so; withdraw it if a profile of B1 shows
   dispatch, not transfer, dominating. Prior art: none found for a fair scheduler's own benchmark;
   E3's operation count (its D3) is the same split.
@@ -229,14 +240,21 @@ a schedule, which is RFC 4's (§1.2).
   - RFC 3 uses "one round" in time (§2.12, `syncer_queue_wait_seconds`) without stating it in
     time. B3 takes a round as the link's time for one largest encoded block on the slow store,
     `perCall + bytes × perByte`: within it every busy worker frees once, so each waiting flow is
-    visited. B3 reports `wait-p99/round` and `round-ns`, and prints the cap as a configuration
-    line.
+    visited. B3 reports `wait-p99/round` and `round-ns`, and prints the cap and the link as
+    configuration lines once, from a parent benchmark with one sub-benchmark as B5 does: printed
+    by a leaf benchmark, they land between its name and its figures on every count after the
+    first, and `benchstat` drops those samples.
   - The wait is timed where a caller sees it: from B's `Fetch` call to its first yielded chunk,
     less the link's time for that chunk, which the benchmark set. `Stats` counts busy workers per
     store, not per flow, so A's are counted by a `syncer.Store` the benchmark registers in place
     of `codec.Store`, passing every call through and counting A's `Get`s open, A's blocks having
     names of their own (the pass-through recording wrapper `CLAUDE.md` allows); the most is
-    reported as `a-peak-workers`.
+    reported as `a-peak-workers`. RFC 3 §2.9 binds the per-flow cap only while another flow on the
+    store has work waiting, and takes no worker back: A holds the whole pool before B's first
+    fetch queues and again once B's last one is dispatched, and above the cap until enough of its
+    transfers end. So the most is taken only from the moment A's open `Get`s first fall to the
+    cap after B's first fetch is called until B's last fetch reaches its `Get`, and a correct
+    syncer reads at most the cap.
 
   A `decision:` marker at the benchmark names the round and why it differs from §7.4's setup.
   T9.5's pull request amends RFC 3 with the accepted text: §2.9, "In time, a round is at most one
@@ -247,13 +265,18 @@ a schedule, which is RFC 4's (§1.2).
 - **D4, peak memory is the most live heap seen at the end of a collection.** `prof.PeakLiveHeap`
   reads `runtime/metrics`' `/gc/heap/live:bytes`, the heap marked live at the last collection, in
   a finalizer re-armed on each collection, and `stop` forces one last collection and reads it
-  too. It is the live heap without the garbage a sampled `HeapAlloc` counts, and reads without
+  too. `stop` also clears the re-arm, so no finalizer runs after it. It is the live heap without
+  the garbage a sampled `HeapAlloc` counts, and reads without
   stopping the world as `runtime.ReadMemStats` does. A collection that ends before the finalizer
   is re-armed is missed, so the figure is a lower bound: `ponytail:` it misses collections closer
   together than a finalizer's turn; upgrade to a goroutine polling the metric when a benchmark's
   peak moves between runs of one commit by more than its noise. B1, B3, B4 and B5 report it, less
-  the live heap before the timed region, as `peak-heap-B`, beside `bound-B`, the pool size times
-  `Max + MaxDecodeLen(Max) + header cap` (RFC 3 §2.2) at the run's figures. On the in-memory store
+  the live heap read before the syncer and the store are built, and at zero where the peak is
+  below that, as `peak-heap-B`, beside `bound-B`, the pool size times
+  `Max + MaxDecodeLen(Max) + header cap` (RFC 3 §2.2) at the run's figures. The baseline is read
+  before the build, not before the timed region, so the pool's warmed buffers (RFC 3 §2.2's
+  per-worker figure, reused once warm) are inside the peak: read after warm-up, they would sit in
+  the baseline and the check against the bound could hardly fail. On the in-memory store
   the heap also holds every stored body and the load record's calls, so B1 reports the raw twin's
   peak beside the syncer's, the difference being what the syncer adds, and neither is read
   against `bound-B`; a `decision:` marker at B1 says so. B5's bodies live in the emulator's
@@ -272,69 +295,109 @@ a schedule, which is RFC 4's (§1.2).
     [§8.4](#8.4%20What%20CI%20checks%20instead%20of%20timing)." RFC 29 §4.10's after-merge step,
     which gates nothing, could run them once T9.5's baseline exists; joining it is left to the run
     after that baseline.
-  - One `sh` command, as `engine-bench` has: `go test -count=$n -benchtime=1x -run=^$ -bench=.
-    -timeout=110m` over `./pkg/syncer/pool/` and `./pkg/syncer/pool/internal/sched/`, written to
-    `{out}/bench.txt` and printed. `n` is 10 unless `SYNCER_BENCH_COUNT` says otherwise, as
-    `ENGINE_BENCH_COUNT` does. The explicit `-timeout`, since `go test` stops a benchmark binary
-    at ten minutes, sits under the cell's `timeout: { test: 120m, cell: 130m }`.
-  - The guard counts result lines: each of B1 to B4 must print its expected number (8, 8, 1 and 4,
-    times `n`), or the cell exits 2 naming the benchmark short of it, so a skipped sub-benchmark
-    fails too (R6).
-  - B5 is the cell's option `real-link`, with its own command, the same guard (4 lines times `n`,
-    plus the mixed shape's 1) and `needs: [docker, "service:localstack"]`, so B1 to B4 still run
-    on a host without docker.
-  - `metrics: go-bench`, so `dt` keeps each figure's median in its history beside the commit, the
+  - The cell follows `journal-bench-data`: `cmd: test/syncer/bench.sh {test} {out}`, `tests:
+    [pool, sched]`, `format: exit`, `metrics: go-bench`. The registry refuses `go-bench` without
+    `format: exit` and a tests list (`test/harness/registry/check.go`, checked), and `dt` reads a
+    test's figures from `{out}/{test}.txt` (`test/harness/run/run.go`, checked), so each test
+    writes its own file and `dt` keeps each figure's median in its history beside the commit, the
     host and the operating system it records with every run (`test/harness/run/gobench.go`,
-    checked). The varying conditions are name keys (`half=upload/impl=syncer/workers=128`), so
+    checked).
+  - `pool` runs `go test -count=$n -benchtime=1x -run=^$ -bench='^Benchmark(B1|B3|B4)$'
+    -timeout=110m ./pkg/syncer/pool/`, one workload per iteration (D1). `sched` runs B2 in its own
+    `go test -count=$n -run=^$ -bench=^BenchmarkB2$ ./pkg/syncer/pool/internal/sched/` at Go's
+    default `-benchtime`, since one of its iterations is one dispatch and a benchmark cannot
+    override the command line's `-benchtime`: at `1x`, B2's figure would be one cold dispatch.
+    `n` is 10 unless `SYNCER_BENCH_COUNT` says otherwise, as `ENGINE_BENCH_COUNT` does. The
+    explicit `-timeout`, since `go test` stops a benchmark binary at ten minutes, sits under the
+    cell's `timeout: { test: 120m, cell: 130m }`.
+  - The script's guard counts result lines per sub-benchmark name: each must print `n` lines,
+    for 8 names under B1, 1 under B3 and 4 under B4 in `pool`, and 8 under B2 in `sched`, or the
+    test exits 2 naming the benchmark short of it, so a skipped or dropped sub-benchmark fails
+    too (R6). A total alone would pass a run that lost one name's lines to another's surplus.
+  - B5 is the cell's option `real-link`, `tests: [content]`, the same script and guard, `n` lines
+    for each of its 5 names (`upload` and `fetch`, each through the syncer and raw, and `mixed`),
+    and `needs: [docker, "service:localstack"]`, so B1 to B4 still run on a host without docker.
+  - The varying conditions are name keys (`half=upload/impl=syncer/workers=128`), so
     `benchstat -col /impl` reads B1's and B5's ratio from one run; the fixed ones are Go benchmark
-    configuration lines.
+    configuration lines, printed once.
   - No build tag: a benchmark runs only under `-bench`, so `unit` never runs one, and untagged
     files stay under `go vet` and the linter. This drops the RFC 3 plan's `syncer_bench` tag and
     its line in `lint-go`. The `syncer` group holds `[syncer-bench, syncer-bench-smoke]`, as
     RFC 29 §4.9 names a `syncer` group for the component. A `decision:` comment on the entry says
     it is manual and gates nothing.
   - `go test` never runs a benchmark function, so a manual cell alone would let B1 to B4 rot while
-    every check stays green. `syncer-bench-smoke` runs them once each (`-count=1 -benchtime=1x`)
-    over the two packages, `format: exit` (a `go-json` cell grades a passing benchmark as failed,
-    `engine-bench`'s note says), `tier: pr`, `blocking: { pr: false }`, as `settings-scan-smoke` is: it
-    fails only on a benchmark that panics or fails its setup, never on a figure (R5), and blocks
-    after a merge.
+    every check stays green. `syncer-bench-smoke` runs them once each through the same script,
+    `tests: [pool, sched]` and `env: { SYNCER_BENCH_COUNT: "1" }`, so the guard holds at `n` = 1;
+    `format: exit` (a `go-json` cell grades a passing benchmark as failed, `engine-bench`'s note
+    says), no `metrics`, `tier: pr`, `blocking: { pr: false }`, as `settings-scan-smoke` is. It
+    fails on a benchmark that panics, fails its setup, or skips or drops a sub-benchmark, never on
+    a figure (R5), and blocks after a merge. On `feat/storage-v2` a `pr` suite runs only once
+    `.github/workflows/tests.yml`'s select names it (its comment: "a new suite runs only once it
+    is named there"), so T9.3 adds `or .suite == "syncer-bench-smoke"` beside
+    `settings-scan-smoke`'s line.
 
-  Prior art: `engine-bench`'s and `journal-bench`'s guard and `sh` form, and
-  `settings-scan-smoke` (`test/suites.yaml`, checked); RFC 4 plan epic 9's `remote-bench` (its
+  Prior art: `journal-bench-data`'s script, tests list and `go-bench` reading;
+  `journal-bench`'s guard, a single `grep -q` for any result line, which this one tightens to a
+  count per name; `settings-scan-smoke` and its `tests.yml` line (`test/suites.yaml` and
+  `.github/workflows/tests.yml` on `feat/storage-v2`, checked); RFC 4 plan epic 9's `remote-bench` (its
   D6), which instead blocks after merge on counts, which here are E3 to E7's in `unit`.
 - **D6, B5 runs on the target RFC 4's tests already choose, through the content wiring's own
-  builders.**
-  - The target is `s3fault.Service(b)` (RFC 4 plan epic 9, its D1): LocalStack at
+  constructors.**
+  - The target is `s3fault.Service(b)` (RFC 4 plan epic 9, its D2): LocalStack at
     `LOCALSTACK_HTTPS_ENDPOINT` unless `DITTOFS_TEST_S3_ENDPOINT` names a real service, so one body
     runs on both and a run by hand with a service's variables is B5 against it (R3). Until that
     epic lands, `s3fault.LocalStack(b)` (RFC 4 plan epic 3) gives LocalStack alone. Neither
     reachable, it skips naming the variable, as `CLAUDE.md` says of an absent backend, and the
     option's guard turns the missing lines into a failure (R6).
-  - The store, its `codec.Store` and the syncer are built by the functions RFC 8 offload plan
-    epic 21 writes in `internal/node/content` for one store configuration and for the root's
-    syncer, at the settings section's default `upload_workers` and `fetch_workers` (E8), so B5
-    measures what the node composes (R8). B5 is an internal test file of package `content`, so
-    those builders need not be exported for it (rule 11).
+  - The store, its `codec.Store` and the syncer are built as `node.New` builds them, by RFC 8
+    offload plan epic 21's exported constructors: the store opened through T21.2's
+    `content.S3Opener` with the benchmark's transport on its hook, then T21.4's
+    `content.NewCodecStore(store, chain, census, token)` with the chain T21.3 builds for the store
+    configuration, the census lookup and the token as T21.4 builds them, and
+    `content.NewSyncer(cfg, stores)` at the settings section's default `upload_workers` and
+    `fetch_workers` (E8), so B5 measures what the node composes (R8). They are exported because
+    `node.New` calls them from its own package, so B5 is an external test of `content`.
   - The raw twin calls the same `codec.Store`'s `NewPut(…).Attempt` and `Get` directly, from as
-    many goroutines as each half's worker count.
-  - `half=mixed` is RFC 3 §7.4's B3 shape on this store: uploads saturate the upload half while
-    one flow issues 1,000 cold fetches, reporting the fetch's `wait-p99/round` and the store's
-    connections in use at that p99, from the client's counters RFC 4 plan epic 4 exports, which
-    is what RFC 3 §9's settled point 1 is overturned by (R23).
-  - §8.6's fields are configuration lines, printed once: `service:`, `region:`, `rtt:` (the
-    median of 21 get probes, `Store.Health`, before the timed region), `block:`,
-    `upload-workers:`, `fetch-workers:`; the raw throughput is the twin's own line. The link's
-    bandwidth is not measured apart: §8.6's bandwidth is recorded as the raw twin's aggregate get
-    throughput at the full pool, the most the link carried in the run, and a `decision:` marker
-    says so.
+    many goroutines as each half's worker count, reading as D1's twin does.
+  - Every block B5 writes is deleted through the store by a cleanup registered with `b.Cleanup`
+    before the first write, so a `b.Fatal` mid-run leaves nothing on a real service; RFC 4 plan
+    epic 9's sweep (its D10) catches a killed run.
+  - `half=mixed` is RFC 3 §7.4's cross-half B3 shape on this store, which D3 moves here: uploads
+    saturate the upload half while one flow issues 1,000 cold fetches. RFC 3 §9's settled point 1
+    is overturned by a cold read's *latency* under full upload load missing its target while the
+    store's connection pool is not full, and the halves share no worker, so the contention shows
+    in latency, not in the fetch half's queue wait. The mixed shape therefore reports:
+    - `cold-p99-ns`, the p99 from `Fetch` to its first chunk under the upload load, and
+      `idle-p99-ns`, the same 1,000 fetches run first with no upload load;
+    - `round-ns`, a round from measured figures, since no `Link` is set here: `rtt` plus the
+      largest encoded block over the raw twin's per-worker get throughput;
+    - `wait-p99/round`, `cold-p99-ns` less `idle-p99-ns` over `round-ns`, read against §8.5's B3
+      target of one round, which D3's amendment moves under B5;
+    - `conns-max`, the most connections of the store's client in use at once during the loaded
+      fetches, beside the client's limit as a configuration line, `limit:`. The benchmark's
+      transport counts a request from its `RoundTrip` until its response body closes or the call
+      fails, the pass-through recording wrapper `CLAUDE.md` allows, so no counter of RFC 4's
+      client is read and none is exported for it. RFC 4 §4.10 sizes the pool at the two worker
+      counts plus probe slots, so uploads alone should leave room; `conns-max` at `limit:` says
+      the pool was full and the miss is not this question's.
+    R23 is read from a real service's run alone: on LocalStack the emulator, not the client's
+    connections, is the likely bottleneck, so the LocalStack run shows the shape runs and answers
+    nothing.
+  - §8.6's fields are configuration lines, printed once: `service:`, the target's
+    `DITTOFS_TEST_S3_SERVICE` name (`cubbit-ds3`) or `localstack`, never an endpoint or a bucket,
+    since T9.5 commits these lines to the RFC; `region:`, `rtt:` (the median of 21 get probes,
+    `Store.Health`, before the timed region), `block:`, `upload-workers:`, `fetch-workers:`,
+    `limit:`; the raw throughput is the twin's own line. The link's bandwidth is not measured
+    apart: §8.6's bandwidth is recorded as the raw twin's aggregate get throughput at the full
+    pool, the most the link carried in the run, and a `decision:` marker says so.
   - Beside throughput and allocations, B5 reports per half `occupancy` (the mean of `Stats`'
     `WorkersBusy` over `Workers`, read at each block's end), `fb-p999-ns` (the bucket bound
     holding `FirstByte`'s 99.9th percentile) and the `Floor` and `Stalled` retry counts, which
     RFC 3 §2.10's decision note reads against the first-byte bound and the floor.
 
   Prior art: RFC 4 plan epic 9's D1, D2 and D5 (one service per run, named by variables; the
-  configuration lines), which this follows so both plans' benchmarks read alike.
+  configuration lines), which this follows so both plans' benchmarks read alike; its D10, the
+  sweep.
 - **D7, §9's open question is answered value by value, and only for what a run bears on.** RFC 3
   §2.10's decision note names what would move each fixed value. A run here bears on two groups:
   B5's first-byte tail and floor and stall counts on the first-byte bound and the throughput
@@ -356,7 +419,7 @@ a schedule, which is RFC 4's (§1.2).
 internal/prof/
   peak.go                  T9.1  PeakLiveHeap: the most live heap seen at a collection's end (D4)
   peak_test.go             T9.1  a peak between collections is seen; stop ends the watch
-  export_test.go           T9.1  the sampler's current most, for its test to wait on
+  export_test.go           T9.1  the sampler's current most and its finalizer runs, for its test
 pkg/syncer/pool/
   opener_test.go           T9.1  E3's in-memory construction moved into a helper over testing.TB (D1)
   bench_test.go            T9.1  B1, the rig: links, the raw twin, the configuration lines
@@ -365,10 +428,15 @@ pkg/syncer/pool/
     bench_test.go          T9.2  B2 (D2)
 internal/node/content/
   syncer_bench_test.go     T9.4  B5 and its mixed shape over the content wiring's store and syncer (D6)
+test/syncer/
+  bench.sh                 T9.3  runs one test (pool, sched) to {out}/{test}.txt, the guard (D5);
+                           T9.4  the content test
 test/suites.yaml           T9.3  syncer-bench, syncer-bench-smoke, the syncer group (D5);
                            T9.4  syncer-bench's real-link option
+.github/workflows/tests.yml
+                           T9.3  syncer-bench-smoke named in the select (D5)
 docs/internals/rfcs/rfc-3-syncer.md
-                           T9.3  §8.6's suites paragraph
+                           T9.3  §8.6's suites paragraph, §7.4's and §8.1's sentences on when and where the benchmarks run
                            T9.5  §8.5's targets, §9's open question
 docs/internals/testing.md  T9.3  regenerated by dt docs
 ```
@@ -380,7 +448,7 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
 **Subtask T9.1 estimate: 2.75 man-days.**
 
 - **Track:** the team. **Depends on:** S3.
-- **Covers:** R1, R2, R4, R9, R10, R16, R17, R19, R20.
+- **Covers:** R1, R2, R4, R9, R10, R17, R19, R20.
 - **Deliverables:**
   - `internal/prof/peak.go` (D4), with its `ponytail:`:
 
@@ -398,7 +466,8 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
     target in chunks of 256 KiB, the upload half deleting each block once its `Upload` returns,
     in both variants, so the store holds no more than the pool's bodies. The configuration lines
     `link-per-call:` and `link-per-byte:` per link, `block:` and `chunk:`; the metrics
-    `peak-heap-B` and `bound-B` (D4), with D4's `decision:` marker. Consumed by T9.2, which adds
+    `peak-heap-B` and `bound-B` (D4), with D4's `decision:` marker; the fetch half's set and the
+    raw twin's 256 KiB reads of D1. Consumed by T9.2, which adds
     B3 and B4 to the file, and T9.3's cells.
 - **Acceptance criteria:**
   - `go test -run=^$ -benchtime=1x -bench=B1 ./pkg/syncer/pool/` prints eight results, each with
@@ -411,9 +480,12 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
 - **Tests:** `peak_test.go`, at the value the benchmarks report: a 64 MiB slice allocated and
   kept across a forced collection, the test waiting until the sampler's current most, read
   through `export_test.go`, reaches it, polled with a short pause, then the slice dropped before
-  `stop`: `stop` must report at least 64 MiB (catches a sampler that reads once at `stop`, R16).
-  After `stop` no finalizer is re-armed, under `internal/prof`'s own leak check (catches a watch
-  that never ends). No test double: the store is kind 2, the wrapper kind 3.
+  `stop`: `stop` must report at least 64 MiB (catches a sampler that reads once at `stop`, D4).
+  After `stop`, the sampler's count of finalizer runs, read through `export_test.go`, stays the
+  same across several `runtime.GC()` calls (catches a `stop` that never clears the re-arm, which
+  `internal/prof`'s leak check cannot see: the finalizer goroutine is hidden from its goroutine
+  dump, opens no descriptor and holds a few bytes). No test double: the store is kind 2, the
+  wrapper kind 3.
 
 ### T9.2 B2, B3 and B4
 
@@ -423,82 +495,111 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
 - **Covers:** R1, R2, R4, R11, R12, R13, R19.
 - **Deliverables:**
   - `internal/sched/bench_test.go`: `BenchmarkB2` (D2), name keys `waiting=1|10|100|1000` and
-    `flows=fresh|debt`, the waiting flows' entries queued before `b.ResetTimer()`, the
-    dispatched entry added back each iteration; at Go's default `-benchtime`, since one
-    iteration is one dispatch; the `decision:` marker of D2.
+    `flows=fresh|debt`, two entries a flow queued before `b.ResetTimer()`, the dispatched entry
+    added back before its `Done` each iteration, `Done` reporting twice the charge under `debt`;
+    at Go's default `-benchtime`, since one iteration is one dispatch, which T9.3's `sched` test
+    runs it at; the `decision:` marker of D2.
   - In `pool`'s `bench_test.go`:
     - `BenchmarkB3` (D3): the slow store under `Link` at 200 ms per call; per iteration 1,000 of
-      flow B's fetches; metrics `wait-p99/round`, `round-ns` and `a-peak-workers`; the cap and
-      the link as configuration lines; the peak heap as in B1; D3's `decision:` marker.
+      flow B's fetches, each fetching caller of either flow owning one chunk (D1); metrics
+      `wait-p99/round`, `round-ns` and `a-peak-workers`, the last over D3's window; the cap and
+      the link as configuration lines printed once by a parent benchmark; the peak heap as in B1;
+      D3's `decision:` marker.
     - `BenchmarkB4`: N of 1, 10, 100 and 1,000 readers on one cold chunk of a stored block, each
       a `Fetch` on its own flow, at the default fetch pool of 128, whose waiter bound of 1,024
-      holds the 1,000 joined readers (RFC 3 §2.10). Per iteration a fresh block is stored and the
+      holds the 1,000 joined readers (RFC 3 §2.10), on D1's working link (R2), whose per-call and
+      per-byte times, `block:` and `chunk:` are configuration lines (R19). The bound is read from
+      `fixed.go` at run time: a later default pool that puts it below 1,000 fails B4 before the
+      timer, naming the bound, rather than refusing joins mid-run. Per iteration a fresh block is stored and the
       flows opened between `b.StopTimer()` and `b.StartTimer()`. The first `Get` is held at its
       first body byte (`Env.Faults.Hold`) until `Stats`' `Joined` for the store has risen by N−1,
       polled with a short pause, then released, so every reader has joined before the chunk
       passes: a reader arriving after it would rightly start a fetch of its own. The `Get`s that
-      reached the in-memory store, read from its load record, are reported as `gets/op`.
+      reached the in-memory store, read from its load record, are reported as `gets/op`, beside
+      the readers' throughput (`b.SetBytes` of N chunks, R4) and the peak heap as in B1.
 - **Acceptance criteria:**
   - B2 prints eight results in ns per dispatch, read against R11's 1 µs and against each other
     for flatness, with no allocation per dispatch once the flows exist; none asserted (R5).
   - B3 prints the second flow's p99 wait against the round, and the first flow's most busy
     workers beside the cap printed with it (R12).
-  - B4 prints `gets/op` at every N.
+  - B4 prints `gets/op`, MB/s and the peak heap at every N, with its link's lines.
 - **Tests:** none of their own: B2's flatness is E3's operation count in `unit` (its T3.1), and
   B4's one `Get` is E6's single-flight count, which these benchmarks stand on (§1.2). Under the
   leak check.
 
 ### T9.3 The `syncer-bench` and `syncer-bench-smoke` cells, and the suites paragraph
 
-**Subtask T9.3 estimate: 1 man-days.**
+**Subtask T9.3 estimate: 1.25 man-days.**
 
 - **Track:** the team. **Depends on:** T9.2.
-- **Covers:** R5, R6, R7, R17.
-- **Deliverables:** `test/suites.yaml`: `syncer-bench` and `syncer-bench-smoke` (D5), with the
-  `decision:` comment, and the `syncer` group. RFC 3 §8.6's suites paragraph naming both and the
-  group, and its last sentence rewritten to name only the suites still unregistered when this
-  lands, and §7.4's sentence on when the benchmarks run (D5). `test/harness/bin/dt docs`, regenerating `docs/internals/testing.md`. Consumed by T9.4,
-  which adds the `real-link` option, and T9.5's run.
+- **Covers:** R2, R5, R6, R7, R17.
+- **Deliverables:**
+  - `test/syncer/bench.sh {test} {out}`: one `go test` per test (`pool`, `sched`) as D5 gives
+    them, written to `{out}/{test}.txt` and printed, then the per-name line guard, exiting 2 naming
+    the benchmark short of its lines.
+  - `test/suites.yaml`: `syncer-bench` and `syncer-bench-smoke` (D5), with the `decision:`
+    comment, and the `syncer` group.
+  - `.github/workflows/tests.yml`: `syncer-bench-smoke` named in the plan job's select on
+    `feat/storage-v2`, beside `settings-scan-smoke`.
+  - RFC 3, in this subtask's pull request: §8.6's suites paragraph naming both cells and the
+    group, its last sentence rewritten to name only the suites still unregistered when this
+    lands; §7.4's sentence on when the benchmarks run (D5); and §8.1's "Benchmark" row, "real
+    time; B1, B3 and B4 on the in-memory store with a simulated link, B2 on the scheduler alone,
+    B5 on a real store; by hand in the syncer's manual suite, never gating", which D2 and D5
+    would otherwise contradict.
+  - `test/harness/bin/dt docs`, regenerating `docs/internals/testing.md`.
+
+  Consumed by T9.4, which adds the `real-link` option and the script's `content` test, and
+  T9.5's run.
 - **Acceptance criteria:**
-  - `dt run syncer-bench` runs B1 to B4 and writes `{out}/bench.txt`, which `dt`'s go-bench
-    reader parses.
-  - Run with one B1 sub-benchmark filtered out, the cell exits 2 naming B1 (R6).
+  - `dt run syncer-bench` runs B1, B3 and B4 at `-benchtime=1x` and B2 at the default
+    `-benchtime`, and writes `{out}/pool.txt` and `{out}/sched.txt`, whose figures `dt`'s go-bench
+    reader records for each test.
+  - Run with one B1 sub-benchmark filtered out, the `pool` test exits 2 naming B1 (R6).
   - `dt run syncer-bench-smoke` runs every benchmark of the two packages once and passes; a
-    planted panic in one fails it.
+    planted panic in one fails it, and so does a dropped sub-benchmark.
+  - The pull request's own workflow run shows the `syncer-bench-smoke` cell.
   - `dt docs --check` passes.
 - **Tests:** the guard, checked by running the cell once with a filter that drops one expected
-  line, the failing run attached to the pull request (catches a guard that only checks a
-  benchmark printed something). `dt docs --check` catches a suite the paragraph names and the
-  registry lacks.
+  name's lines, the failing run attached to the pull request (catches a guard that only checks a
+  benchmark printed something, or that counts a total). `dt docs --check` catches a suite the
+  paragraph names and the registry lacks, and the registry's own check an entry it refuses.
 
 ### T9.4 B5, the real link
 
-**Subtask T9.4 estimate: 3 man-days.**
+**Subtask T9.4 estimate: 3.5 man-days.**
 
-- **Track:** the team. **Depends on:** T9.3, and E8, RFC 8 offload plan S7 and RFC 4 plan epic 3;
+- **Track:** the team. **Depends on:** T9.3, and E8, RFC 8 offload plan S7 (its epic 21's T21.2,
+  T21.3 and T21.4) and RFC 4 plan epic 3;
   for a real service, RFC 4 plan epic 9's `s3fault.Service`, until which B5 uses
   `s3fault.LocalStack` and runs against LocalStack only.
-- **Covers:** R1, R3, R4, R6, R8, R12, R14, R15, R16, R18, R20, R23.
+- **Covers:** R1, R3, R4, R6, R8, R14, R15, R16, R18, R20, R23.
 - **Deliverables:**
   - `internal/node/content/syncer_bench_test.go` (D6): `BenchmarkB5` with name keys
     `half=upload|fetch|mixed` and `impl=syncer|raw` (raw for the two plain halves), on
-    `s3fault.Service(b)`'s target, the store, its `codec.Store` and the syncer built by the
-    content wiring's builders at the section's default worker counts; one workload per iteration
-    as in D1; the configuration lines and metrics of D6, D6's `decision:` marker, and the peak
-    heap per half beside its bound and the raw twin's (D4). Every block written is deleted after
-    the run, through the store, so a run leaves nothing on a real service.
-  - `test/suites.yaml`: `syncer-bench`'s `real-link` option (D5).
+    `s3fault.Service(b)`'s target, the store opened through `content.S3Opener` with the
+    connection-counting transport on its hook, its `codec.Store` from `content.NewCodecStore` and
+    the syncer from `content.NewSyncer` at the section's default worker counts (D6); one workload
+    per iteration as in D1; the configuration lines and metrics of D6, the mixed shape's loaded
+    and idle latencies, measured round and `conns-max` beside `limit:`, D6's `decision:` marker,
+    and the peak heap per half beside its bound and the raw twin's (D4). The delete of every
+    block written is registered with `b.Cleanup` before the first write.
+  - `test/syncer/bench.sh`: the `content` test, `-benchtime=1x -bench=^BenchmarkB5$
+    ./internal/node/content/`, its guard `n` lines for each of 5 names (D5).
+  - `test/suites.yaml`: `syncer-bench`'s `real-link` option, `tests: [content]` (D5).
 - **Acceptance criteria:**
   - Against LocalStack, B5 prints both halves through the syncer and raw, with every field of
     RFC 3 §8.6 for B5 (R18), occupancy beside throughput (R15), and the peak heap per half beside
-    its bound (R16); and the mixed shape's fetch wait beside the connections in use (R23).
+    its bound (R16); and the mixed shape's `cold-p99-ns`, `idle-p99-ns`, `round-ns`,
+    `wait-p99/round` and `conns-max` beside `limit:` (R23).
   - Once RFC 4 plan epic 9's `s3fault.Service` has landed, with a service's `DITTOFS_TEST_S3_*`
     variables set by hand, the same run reports against that service, the configuration lines
     naming it.
   - With neither LocalStack nor a service reachable, B5 skips naming the variable it needs and
     `dt run syncer-bench/real-link` fails on the missing lines (R6).
 - **Tests:** B5 is checked by one run against LocalStack in the pull request, and by the
-  option's guard (T9.3). The raw twin and the syncer share one `codec.Store`, so a twin that
+  option's guard (T9.3). The connection count is checked in that run: `conns-max` is at least 1
+  and at most `limit:` (catches a transport that is not the client's, or that never decrements). The raw twin and the syncer share one `codec.Store`, so a twin that
   built its own store would be visible in review as a second construction (R8). Under the leak
   check.
 
@@ -521,7 +622,9 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
     named as a design finding against RFC 3, with an issue against the epic that owns the code
     (R21); §2.9's round in time and §7.4's B3 setup (D3); §9's open
     question rewritten as D7 says; §9's settled point 1 confirmed, or reopened if the mixed
-    shape's fetch wait missed its round with connections to spare (R23).
+    shape's `wait-p99/round` was above one with `conns-max` below `limit:`, read from a real
+    service's run alone (R23, D6). With no real-service run, the settled point stays as it is and
+    the pull request says R23 is unanswered.
 - **Acceptance criteria:**
   - Every §8.5 benchmark row carries a measured value and headroom from the reference box, or is
     named as a finding with its issue, or the pull request names the missing measurement that
@@ -529,7 +632,7 @@ docs/internals/testing.md  T9.3  regenerated by dt docs
   - No fixed value of RFC 3 §2.10 becomes a setting.
   - No figure from another box replaces a target.
 - **Tests:** the run itself; the RFC edit is checked in review against the attached
-  `bench.txt`, through `benchstat`.
+  `{out}/*.txt`, through `benchstat`.
 
 ## 7. Order of work
 
@@ -556,8 +659,8 @@ late, so T9.1 to T9.3 can land well before it. Checkpoint after T9.3: B1 to B4 r
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T9.1, T9.2, T9.3 | 6.25 | — | B1 to B4 and the cells that run them, everything over the in-memory store |
-| 2 | T9.4 | 3 | PR 1, E8, RFC 8 offload plan S7, RFC 4 plan epic 3 | B5 on the composed node's store, which waits on S7 |
+| 1 | T9.1, T9.2, T9.3 | 6.5 | — | B1 to B4 and the cells that run them, everything over the in-memory store |
+| 2 | T9.4 | 3.5 | PR 1, E8, RFC 8 offload plan S7, RFC 4 plan epic 3 | B5 on the composed node's store, which waits on S7 |
 | 3 | T9.5 | 1.5 | PR 2 | the reference-box run and the RFC 3 amendments it supports, on `develop` |
 
 A suggestion only: one pull request per subtask works as well. PR 3 changes only the RFC, so it
@@ -565,21 +668,19 @@ goes to `develop` and is picked onto `feat/storage-v2`.
 
 ## 9. Open points
 
-- **The RFC 3 plan's epic 9 outline differs from this document in four places, and in size.** It
-  estimates 4 subtasks and 10 man-days; this document has 5 and 10.75, the difference being the
-  smoke cell, the peak heap sampler and B5's mixed shape. It puts B5 in the external tests of
-  `internal/node/content`, where D6 makes it an internal test file, so the content wiring's
-  builders need not be exported for a benchmark. It has B1 to B3 "meet
-  RFC 3 §8.5", where the RFC index makes a miss a design finding (R21); it reads B1 and B3's peak
-  heap against the bound, which D4 reads on B5 only, since the in-memory store's bodies and call
-  records share the heap; and it adds a `syncer_bench` tag and its `lint-go` line, which D5 drops,
-  since a benchmark needs no tag to stay out of `unit` and a tag would hide the files from
-  `go vet`.
-- **B5 waits on RFC 8 offload plan epic 21's builders**, which are not broken down yet. It needs
-  the content wiring to build one store's `codec.Store` and the root's syncer in functions a test
-  of package `content` can call with a store configuration and the two worker counts, not inline
-  in `node.New`. It also reads the S3 client's connections in use, which RFC 4 plan epic 4's
-  counters give.
+- **The RFC 3 plan's epic 9 outline differs from this document in three places, and in size.**
+  It estimates 4 subtasks and 10 man-days; this document has 5 and 11.5, the difference being the
+  smoke cell and its workflow line, the peak heap sampler, the cells' script, and B5's mixed shape
+  with its loaded and idle latencies and its connection count. It has B1 to B3 "meet RFC 3 §8.5",
+  where the RFC index makes a miss a design finding (R21); it reads B1 and B3's peak heap against
+  the bound, which D4 reads on B5 only, since the in-memory store's bodies and call records share
+  the heap; and it adds a `syncer_bench` tag and its `lint-go` line, which D5 drops, since a
+  benchmark needs no tag to stay out of `unit` and a tag would hide the files from `go vet`.
+- **B5 waits on RFC 8 offload plan epic 21's T21.2 to T21.4**: `content.S3Opener` and its
+  transport hook, the chain per store configuration, and `content.NewCodecStore` and
+  `content.NewSyncer`, which that epic's D6 writes for this benchmark. B5 counts the client's
+  connections in use on its own transport (D6), so it needs no counter of RFC 4 plan epic 4's
+  client, whose connection counters stay unexported.
 - **The reference box may lack what a decision on numbers needs.** The RFC index requires three
   measurements there first, one of them taken with RFC 3 §2.11's sizing tool, whose §6.1 row is
   `unowned`. If they are missing when T9.5 runs, T9.5 records its run and replaces no target
