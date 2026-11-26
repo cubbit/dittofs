@@ -150,8 +150,8 @@ func (w Watching) confirmed(before, after journal.Stats) string {
 		name, value = "files", signedCount(delta)
 	case WatchEntries:
 		name, value = "index", signedCount(delta)+" entry"
-		if delta != 1 {
-			value += "ies"
+		if delta != 1 && delta != -1 {
+			value = signedCount(delta) + " entries"
 		}
 	case WatchSegments:
 		name, value = "segments", signedCount(delta)

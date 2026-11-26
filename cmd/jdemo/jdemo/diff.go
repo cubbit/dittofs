@@ -61,7 +61,7 @@ func (d *Demo) renderView(name string, rows []viewRow) string {
 		case !seen:
 			fmt.Fprintf(&sb, "%s\n", c.green("+ "+r.text))
 		case old == r.text:
-			fmt.Fprintf(&sb, "%s\n", c.dim(r.text))
+			fmt.Fprintf(&sb, "%s\n", c.dim("  "+r.text))
 		default:
 			fmt.Fprintf(&sb, "%s\n", c.yellow("~ "+r.text))
 		}

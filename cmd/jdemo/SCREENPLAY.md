@@ -41,11 +41,13 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
 - **"Eleven bytes became ONE record — that's the unit: never a partial write."**
 - **"v1 is not a timestamp — it's a drawn version, from the window we raised.
     Every byte range answers to one."**
-- Now open `i` — **THE MOMENT**: "the honesty period ends here — here is
-  the placement index itself, the in-memory structure every read walks:
-  ONE held entry, v1, backed by the record at segment 4, offset 48." Let
-  the room read the row; point at `record 4@48` — "the same place the
-  data dump will take you to."
+- Now open `i` — **THE MOMENT**: "here is the placement index itself, the
+  in-memory structure every read walks." The ruler on top is the file's byte
+  range: ONE held piece, `├── v1 ──┤`, offsets 0 to 11. Underneath, the
+  index's own shape — held, retained, markers, three separate sets — and the
+  row `0 ─ 11  v1  record 4@48`: "backed by the record in segment 4 at offset
+  48 — the same place the data dump will take you to." Open `s` too:
+  `seg 4 … held 11 … active` — the segment that holds it.
 - Then `f` — **the room sees this:**
   - **"Five segments on disk before we wrote anything — the open made them,
     and not one is waste. Walk the numbers:"** (the dump says `spare, never
@@ -60,7 +62,8 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
     - **"Content fills LAST, deliberately: if it filled first, a full journal
       could write until every spare is gone with no class left that accepts
       the records that would free space again."**
-  - The new row marked `+` after the write is a SIXTH segment, file 6:
+  - The new row marked `+` after the write is a SIXTH file, first
+    `00…06.spare.tmp` (spooling), a moment later `00…06.seg`:
     **"The write took segment 4 — the first content spare. The maker
     refilled the content class straight away, so the NEXT roll already has a
     spare waiting. That's the point."**
@@ -70,17 +73,23 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
     aligned."**
   - **"The others say `spare, never taken` — the honest decode of a segment
     nobody has written to."**
-- Stats (`+`) shows `used` at 1.25 GiB and `spares 2` the whole time — spares
-  are counted by the pool and charged at the segment cap, which is why `used`
-  doesn't move when one is taken.
+- Stats (`+`) after the write: `segments 1`, `spares 2 → 1`, `used` 1.25 →
+  1.5 GiB. Every segment — written or spare — is counted at the 256 MiB cap,
+  so each spare the pool makes raises `used` by one segment.
 
 ## STEP 4 — overwrite half of it
 
 - **"Now overwrite `XY` over bytes 2–4."**
-- `⏎`. Then `d`:
-  - **"A second record. The old range was NOT destroyed —"**
-  - **"the old entry narrows, the superseded bytes stay RETAINED until
-    metadata says it has recorded the change."**
+- `⏎`, then `i` straight away — the ruler splits in three, and a second lane
+  appears: `retained  ├─ v1 by v2 ─┤`, underneath the new piece:
+  - **"The old entry split around the overwrite: v1 0–2, the new v2 2–4, v1
+    4–11. The superseded v1 2–4 is NOT destroyed — it sits in its own set,
+    RETAINED, never served to a read."**
+  - **"It stays until the new write is synced. If a crash loses the new
+    bytes, the old ones are still there."**
+- The journal syncs in the background shortly after, so the retained row
+  leaves on its own a moment later (it is gone by the next beat). Open `d`
+  for the second record: `record 4@168`.
 - **"This is the crash story: nothing is ever lost that a synced version
   might still name."**
 
@@ -98,8 +107,9 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
 
 - **"The write is on the disk — now make it a promise."**
 - `⏎`:
-  - **"Sync returns a MARK, one per stream: which segment, through which
-    offset, at which sequence number. That is durability's receipt."**
+  - **"Sync returns a MARK, one per stream that has bytes: which segment,
+    through which offset, at which sequence number. That is durability's
+    receipt."** (One stream wrote, so one mark.)
   - Point at the mark — **"The engine records this mark, and hands it to
     the next Open — recovery checks the scanned tails against it. THIS is
     the sync mark you have heard named all week."**
@@ -118,8 +128,8 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
 - `⏎`:
   - **"Everything a file owes, version by version — this is what metadata
     reads after a crash to catch up."**
-  - **"Notice both states of the same range: the write that got superseded
-    shows beside the one that replaced it."**
+  - **"Notice the overwrite's mark on it: v1 survives as two pieces, 0–2 and
+    4–11, around the v2 that replaced the middle."**
 
 ## STEP 9 — truncate
 
@@ -134,8 +144,12 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
 
 - **"Settle is that confirmation."**
 - `⏎`:
-  - **"The marker is gone; Since has nothing more to say about this file.
-    The bookkeeping footprint of a settled change is exactly nothing."**
+  - **"The marker is gone, and Since no longer reports the truncate — only
+    what is still held, the three small writes. The bookkeeping footprint of
+    a settled removal is exactly nothing."**
+  - Stats: `removal markers 0`, but `unreclaimed` still reads about 300 MB —
+    **"the space comes back when repack rewrites the segments, not when
+    metadata settles."**
 
 ## STEP 11 — a reserved write
 
@@ -189,29 +203,33 @@ thing to say out loud; everything else is a stage direction for you. Keystrokes:
 
 # SCENARIO 2 — crash (--story crash)
 
-*A six-beat story about durability: what survives, in what order, and the
-honest seam. Runs after a basic run if the room wants the safety half.*
+*A seven-beat story about durability: what survives, in what order, and a
+real restart. Runs after a basic run if the room wants the safety half.*
 
 ## the beats
 
 1. journal online (same opening)
-2. **write + sync mark — THE receipt beat.** Run, then read the mark out
+2. attach the share (same as basic)
+3. **write + sync mark — THE receipt beat.** Run, then read the mark out
    loud: stream, segment, offset, sequence. *"Durability has a name. The
    engine records THIS and hands it to the next Open."*
-3. **overwrite, retained.** Open `i` right after. The index shows the
-   narrowed old entry AND the retained range: *"the old bytes are still
-   findable — that is the crash story: nothing synced is lost."*
-4. **truncate, durable on return.** Watch the marker arrive unsettled.
-5. **the Since feed.** *"Everything a recovering caller replays — this is
+4. **overwrite, retained.** Open `i` right after. The ruler splits and a
+   retained lane appears under the new piece: *"the old bytes are kept until
+   the new write is synced — if a crash loses the new bytes, the old ones are
+   still there."*
+5. **truncate, durable on return.** Watch the marker arrive unsettled. Its
+   fsync also makes the overwrite durable, so the retained lane disappears:
+   *"synced now — the old bytes are no longer needed."*
+6. **the Since feed.** *"Everything a recovering caller replays — this is
    the journal's side of the contract."*
-6. **close, restart.** The journal closes, `journal.Open` runs against the
+7. **close, restart.** The journal closes, `journal.Open` runs against the
    state file's identity with the marks from beat 1 — recovery rebuilds the
    index: *"same entries before and after, and the bytes read back. Nothing
    synced was lost."*
 
 # SCENARIO 3 — limits (--story limits)
 
-*A seven-beat story about space: the share budget, the reserve that must
+*An eight-beat story about space: the share budget, the reserve that must
 come first, and what truncate does not give back.*
 
 ## the beats
@@ -219,16 +237,22 @@ come first, and what truncate does not give back.*
 1. journal online — note the **2 GiB world** in the banner.
 2. **attach with a 512 MiB budget.** Basic passed zero for this same
    call — the share IS the budget here.
-3. **reserve BEFORE the burst.** *"The reservation is charged the budget
-   too — you take it while budget remains or the hatch is gone."*
-4. **fill until the share says no.** 40 MiB at a time; the refusal is
-   the SHARE's, with the bytes it's missing. Read it verbatim.
+3. **reserve BEFORE the burst.** 80 MiB — two fills' worth. *"The
+   reservation is charged the budget too — you take it while budget remains
+   or the hatch is gone."*
+4. **fill until the share says no.** 40 MiB at a time; ten fit, the eleventh
+   is refused by the SHARE (512 MiB minus the 80 MiB held for the
+   reservation), with the bytes it's missing. Read it verbatim. The index
+   ruler lines the ten pieces up: 0 to 400 MiB.
 5. **the reserved write walks through it.** v-late, served — the escape
    hatch in the only order that works.
-6. **headroom math.** Stats look: what's used vs the 2 GiB — the pool's
-   own quarter is overhead the budget lives under.
+6. **headroom math.** The beat prints the real numbers: used vs the 2 GiB,
+   counting every segment — written or spare — at the cap. *"The world has
+   to hold the pool's spares as well as the share's budget."*
 7. **truncate gives back nothing — yet.** held falls, used doesn't:
-   *"reclaimed space is repack's to free."* The honesty ledger ends it.
+   *"reclaimed space is repack's to free."*
+8. **the honesty ledger.** Offload answers `not implemented`: the drain is
+   not built, and the journal says so itself.
 
 ---
 
@@ -249,8 +273,8 @@ same beat in plain nouns. Read the caption OR the gloss — not both.
   never half of one. The 11 lands, and the journal hands back v1: the
   first version of this file it has never seen before."
 - **STEP 4 (overwrite):** "I overwrite two bytes. The old bytes are NOT
-  deleted — kept where a restart can find them, until the layer above
-  confirms it has noted the change. Delete-later is the whole game."
+  deleted — kept where a restart can find them, until the new bytes are
+  safely on the disk. Delete-later is the whole game."
 - **STEP 5 (the roll):** "Now 300 MB. Watch the segment count: the
   current file filled up, and the journal switched to a spare it had
   already prepared — that switch is the only cost of a full disk file."

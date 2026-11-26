@@ -17,7 +17,7 @@ import (
 const (
 	limitsMaxBytes  = 2 << 30   // the world: 8 caps
 	limitsShareEach = 512 << 20 // the share's record-byte budget
-	limitsFillEach  = 40 << 20  // one filler write: 13 cross the budget
+	limitsFillEach  = 40 << 20  // one filler write; the reservation holds two of them
 )
 
 // LimitsStory is the space half of the paper's story: the share budget,
@@ -56,7 +56,7 @@ func LimitsStory() ([]jdemo.Beat, journal.Settings) {
 					d.Yellowf("    // → %v  // the reserve is charged the budget too", err)
 					return
 				}
-				d.Yellowf("    // → reservation held: %s exempt from every limit while it lasts", jdemo.HumanSize(limitsFillEach))
+				d.Yellowf("    // → reservation held: %s exempt from every limit while it lasts", jdemo.HumanSize(2*limitsFillEach))
 				d.LimitsReservation = res
 			},
 		},
@@ -118,11 +118,12 @@ func LimitsStory() ([]jdemo.Beat, journal.Settings) {
 		},
 		{
 			Title:   "the headroom math",
-			Caption: "used counts every segment at its cap: the pool's five are the journal's own overhead, and the share's budget lives in what remains — walk the numbers with the stats look",
+			Caption: "used counts every segment at its cap, written or spare: the pool's spares are the journal's own overhead, and the world has to hold them as well as the share's budget — read it off the stats look",
 			Run: func(d *jdemo.Demo) {
+				st := d.J.Stats()
 				d.Printf("    max bytes:      %s\n", jdemo.HumanSize(limitsMaxBytes))
-				d.Printf("    share budget:   %s\n", jdemo.HumanSize(limitsShareEach))
-				d.Printf("    (open the stats look: used vs max; the pool's own five segments are the difference)\n")
+				d.Printf("    used:           %s  (%d segments written, %d spares, each at the segment cap)\n", jdemo.HumanSize(st.UsedBytes), st.Segments, st.Spares)
+				d.Printf("    share budget:   %s  (held %s)\n", jdemo.HumanSize(limitsShareEach), jdemo.HumanSize(st.HeldBytes))
 			},
 		},
 		{
@@ -149,7 +150,7 @@ func LimitsStory() ([]jdemo.Beat, journal.Settings) {
 		},
 		{
 			Title:   "the honesty ledger",
-			Caption: "the share limit and the escape hatch are live wiring; the drain — offload, release, repack — is what the T9 subtasks add, and the story will tell you the same when you run it there",
+			Caption: "the share limit and the escape hatch are live wiring; the drain — offload, release, repack — is not built in this journal yet, and the journal says so in its own words",
 			Run: func(d *jdemo.Demo) {
 				d.Codef("    err := h.Offload(ctx, FILE, through, limit, widen, sink)")
 				d.Yellowf("    // → journal: not implemented")

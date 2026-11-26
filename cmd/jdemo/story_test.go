@@ -107,8 +107,8 @@ func TestDemoEndToEndInteractive(t *testing.T) {
 	}
 	screen := out.String()
 	for _, want := range []string{
-		"+ held", // a view marked the beat's new index entry
-		"→ v1",   // the first write's version
+		"+   0 ─ 11  v1", // the index view marked the beat's new held piece
+		"→ v1",           // the first write's version
 		"journal: not implemented",
 	} {
 		if !strings.Contains(screen, want) {

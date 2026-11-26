@@ -1,6 +1,7 @@
 package jdemo
 
 import (
+	"github.com/cubbit/dittofs/pkg/journal"
 	"testing"
 )
 
@@ -20,4 +21,22 @@ func registerTestStories(t *testing.T) {
 				d.Codef("      j.SetVersionLimit(journal.Version{Counter: %d})            // spares ready: %d", st.VersionLimit.Counter, st.Spares)
 			}},
 	}, Settings: demoSettings}
+}
+
+func TestWatchedEntriesAreCountedInGoodEnglish(t *testing.T) {
+	w := Watching{Kind: WatchEntries, Hint: "entries"}
+	for _, c := range []struct {
+		delta int64
+		want  string
+	}{
+		{1, "✓ index +1 entry"},
+		{3, "✓ index +3 entries"},
+		{-1, "✓ index -1 entry"},
+		{-2, "✓ index -2 entries"},
+	} {
+		got := w.confirmed(journal.Stats{}, journal.Stats{ExtentCount: c.delta})
+		if got != c.want {
+			t.Errorf("entry delta %d: got %q, want %q", c.delta, got, c.want)
+		}
+	}
 }

@@ -66,10 +66,10 @@ func basicBeats() []jdemo.Beat {
 		},
 		{
 			Title:   "overwrite half of it",
-			Caption: "a newer version supersedes part of the old extent: the index narrows the old entry and keeps the superseded range retained until its settle",
+			Caption: "a newer version supersedes part of the old extent: the old entry splits around it, and the superseded range stays RETAINED — never served, kept until the new write is synced, so a crash that loses the new bytes still has the old ones",
 			Mutates: true,
 			Watch: []jdemo.Watching{
-				{Kind: jdemo.WatchEntries, Hint: "one more index entry, the old range narrowed"},
+				{Kind: jdemo.WatchEntries, Hint: "the old entry splits in three: the new range held, the superseded range retained"},
 				{Kind: jdemo.WatchVersions, Hint: "another version drawn"},
 			},
 			Run: func(d *jdemo.Demo) {

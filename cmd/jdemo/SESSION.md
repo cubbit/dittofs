@@ -29,7 +29,7 @@ go run ./cmd/jdemo --dir talk-journal        # name the directory (a used one is
 
 | key | what it shows |
 | --- | --- |
-| `i` | the story file's placement entries, straight from `Inspect()` |
+| `i` | the story file's placement index as the journal keeps it: a byte ruler on top (held pieces, retained pieces under the one that superseded them, a removal marker running to the end), then the three sets — held, retained, markers — straight from `Inspect()` |
 | `s` | per-segment accounting (`Inspect().Segments()`) |
 | `f` | the journal directory: `format`, the 20-digit segments, spooling spares, human sizes |
 | `d` | the on-disk truth: every record decoded and hexdumped with an ASCII lane — headers' columns (kind, file, extent, version, tag, seq) and the payload bytes right where they sit |
@@ -76,8 +76,9 @@ story walks on — the tool never claims a layer beneath the built ones.
 
 - `used` counts each segment at the format's 256 MiB cap: the pool holds
   five of them (headroom, reserve, content), so a fresh journal
-  reads about 1.25 GiB committed and the roll beat does not raise it — a
-  spare simply becomes the next content segment.
+  reads about 1.25 GiB committed. Each time a spare becomes a content
+  segment the pool makes a replacement, so `used` rises by one segment: the
+  first write takes it to 1.5 GiB, the roll to 1.75.
 - Every write draws a version: hello is v1, the overwrite v2, the roll v3,
   the truncate v4 — `versions left` falls one each.
 - The `(d)` tail lines tell three stories apart: "untaken" is an

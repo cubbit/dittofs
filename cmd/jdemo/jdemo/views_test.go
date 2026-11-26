@@ -84,9 +84,9 @@ func TestIndexViewAnswersRealRows(t *testing.T) {
 	d.viewIndex()
 	screen := out.String()
 	for _, want := range []string{
-		"held", // the entry's kind
-		"0–11", // its extent
-		"v1",   // its version
+		"held",   // the entry's kind
+		"0 ─ 11", // its extent
+		"v1",     // its version
 		fmt.Sprintf("record %d@%d", rec.Segment, rec.Offset), // its backing record, where the dump walks to it
 	} {
 		if !strings.Contains(screen, want) {

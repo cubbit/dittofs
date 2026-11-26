@@ -127,9 +127,9 @@ func TestViewDiffShowsOnlyTheCurrentBeatsChanges(t *testing.T) {
 	var first, second string
 	for _, l := range strings.Split(out.String(), "\n") {
 		switch {
-		case strings.Contains(l, "100–104"):
+		case strings.Contains(l, "100 ─ 104"):
 			second = l
-		case strings.Contains(l, "  0–4"):
+		case strings.Contains(l, "0 ─ 4 "):
 			first = l
 		}
 	}

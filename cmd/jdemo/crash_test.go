@@ -39,3 +39,23 @@ func TestCrashStoryRunsToQuit(t *testing.T) {
 		t.Errorf("crash story: an eighth beat exists; the story is seven")
 	}
 }
+
+func TestCrashRestartRaisesTheVersionWindowAgain(t *testing.T) {
+	// A reopened journal has no version window until the caller raises it:
+	// the stats look on the restart beat must show versions left, not zero.
+	script := crashScript()[:len(crashScript())-len("\n\n")] + "\n+\n\n" // look at stats on the last beat
+	base := t.TempDir()
+	d, out := newStoryDemo(t, filepath.Join(base, "journal"), script)
+	d.StoryID = "crash"
+	if err := d.Run(); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	screen := out.String()
+	restart := screen[strings.LastIndex(screen, "STEP 7 OF 7"):]
+	if strings.Contains(restart, "versions left                 0") {
+		t.Errorf("the restarted journal has no version window:\n%s", restart)
+	}
+	if !strings.Contains(restart, "versions left") {
+		t.Errorf("the stats look did not run on the restart beat:\n%s", restart)
+	}
+}

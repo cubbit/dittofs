@@ -126,17 +126,16 @@ func (d *Demo) viewIndex() {
 		d.Printf("index: %v\n", err)
 		return
 	}
-	rows := make([]viewRow, 0, len(es))
-	for _, e := range es {
-		entry := e
-		rows = append(rows, viewRow{
-			key: fmt.Sprintf("%d-%d@v%d", entry.Extent.Off, entry.Extent.Off+entry.Extent.Len, entry.Version.Counter),
-			text: fmt.Sprintf("%-9s %3d–%-4d v%-3d tag %d  record %d@%d  offloaded %v",
-				entryKindName(entry.Kind), entry.Extent.Off, entry.Extent.Off+entry.Extent.Len,
-				entry.Version.Counter, entry.Tag, entry.Location.Segment, entry.Location.Offset,
-				entry.Offloaded),
-		})
+	if !d.recording {
+		if len(es) > 0 {
+			d.Printf("FILE · owner tag %d\n", es[0].Tag)
+		}
+		for _, line := range indexRuler(es) {
+			d.Printf("%s\n", line)
+		}
+		d.Printf("\n")
 	}
+	rows := indexRows(es)
 	d.renderView("index", rows)
 }
 
@@ -147,6 +146,10 @@ func (d *Demo) viewSegments() {
 	}
 	segs := d.J.Inspect().Segments()
 	if len(segs) == 0 {
+		if d.recording {
+			d.renderView("segments", nil) // an empty baseline: the first segment shows as new, not as a first look
+			return
+		}
 		d.Printf("(the journal reports no segments)\n")
 		return
 	}
@@ -175,17 +178,4 @@ func segState(s journal.SegmentInfo) string {
 		st = "active"
 	}
 	return st
-}
-
-// entryKindName is the one word an index entry's kind prints.
-func entryKindName(k journal.EntryKind) string {
-	switch k {
-	case journal.EntryHeld:
-		return "held"
-	case journal.EntryRetained:
-		return "retained"
-	case journal.EntryMarker:
-		return "marker"
-	}
-	return fmt.Sprintf("kind%d", uint8(k))
 }

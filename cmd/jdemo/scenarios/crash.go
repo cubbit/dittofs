@@ -45,10 +45,10 @@ func CrashStory() ([]jdemo.Beat, journal.Settings) {
 		},
 		{
 			Title:   "overwrite — retention is the crash story",
-			Caption: "a newer version supersedes part of the old: the index narrows and the superseded range stays RETAINED — the old bytes are findable until settle says metadata has them",
+			Caption: "a newer version supersedes part of the old: the old entry splits around it and the superseded range stays RETAINED — never served, kept until the new write is synced, so a crash that loses the new bytes still has the old ones",
 			Mutates: true,
 			Watch: []jdemo.Watching{
-				{Kind: jdemo.WatchEntries, Hint: "one more index entry"},
+				{Kind: jdemo.WatchEntries, Hint: "the old entry splits in three: the new range held, the superseded range retained"},
 				{Kind: jdemo.WatchVersions, Hint: "another version drawn"},
 			},
 			Run: func(d *jdemo.Demo) {
@@ -60,7 +60,7 @@ func CrashStory() ([]jdemo.Beat, journal.Settings) {
 		},
 		{
 			Title:   "truncate — durable the moment it returns",
-			Caption: "the removal marker is written and fsynced before Truncate answers; crash here and the truncate still happened",
+			Caption: "the removal marker is written and fsynced before Truncate answers; crash here and the truncate still happened — the same fsync makes the overwrite before it durable, so its retained range leaves the index",
 			Mutates: true,
 			Watch: []jdemo.Watching{
 				{Kind: jdemo.WatchMarkers, Hint: "a removal marker waits, unsettled"},
@@ -105,10 +105,15 @@ func CrashStory() ([]jdemo.Beat, journal.Settings) {
 					return
 				}
 				d.Codef("    j, err = journal.Open(ctx, dir, floor, id, marks, opts...)")
+				d.Codef("    j.SetVersionLimit(limit)          // the window, raised again before any write")
 				j, oerr := journal.Open(context.Background(), d.Dir, d.Stashed,
 					st.ID, marks, d.OpenOptions()...)
 				if oerr != nil {
 					d.Yellowf("    // → %v", oerr)
+					return
+				}
+				if lerr := j.SetVersionLimit(journal.Version{Counter: st.Limit}); lerr != nil {
+					d.Yellowf("    // → version limit: %v", lerr)
 					return
 				}
 				d.J = j
