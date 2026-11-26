@@ -1929,10 +1929,11 @@ type Exchanges struct{ /* … */ }
 
 func (x *Exchanges) Step(ctx context.Context, key Key, newMech func() Mechanism, in []byte) (out []byte, done *Context, err error)
 
-// Identity builds a request's Identity from a context, or from an AUTH_SYS
-// credential, which proves nothing (RFC 18 §3.2). It is the one place either
-// protocol builds one (§4.4).
-func Identity(c *Context, sys *SysCred, proto vfs.Protocol, addr netip.Addr) (vfs.Identity, error)
+// Identity builds a request's Identity from a context. It is the one place
+// either protocol builds one from a security context (§4.4). An AUTH_SYS or
+// AUTH_NONE credential, which proves nothing (RFC 18 §3.2), is no context:
+// only NFS has one, and NFS translates it itself (RFC 21 §11.1).
+func Identity(c *Context, proto vfs.Protocol, addr netip.Addr) (vfs.Identity, error)
 ```
 
 | Piece | Where | NFS | SMB | Why there |
@@ -1942,7 +1943,8 @@ func Identity(c *Context, sys *SysCred, proto vfs.Protocol, addr netip.Addr) (vf
 | SPNEGO, which composes the two | `gss` | — | `SESSION_SETUP` | wire format, no secret |
 | `Exchanges`: multi-leg state, deadline, cleanup | `gss` | keyed by GSS context handle | keyed by session ID | one exchange machine for both |
 | RFC 4121 per-message tokens (MIC and wrap) | `gss.Context`, called from NFS's `Security` stage (§5.5) | `krb5i`, `krb5p` and the verifier | `MIC`, inside SPNEGO for the mechanism-list MIC over Kerberos; its own keys from `Keys.Session` | RFC 4121, the Kerberos mechanism's |
-| `Identity`, expiry | `gss` | the RPC `Router` stage | the SMB `Router` stage | the one place either protocol builds one |
+| `Identity`, expiry | `gss` | the RPC `Router` stage | the SMB `Router` stage | the one place either protocol builds one from a context |
+| `Identity` from an `AUTH_SYS` or `AUTH_NONE` credential | NFS adapter, `nfs/protocol`: a pure function the RPC `Router` stage calls | yes | — | only NFS has the flavour, and it proves nothing for `gss` to hold |
 | failure handling: every error a logon failure, never guest | `gss` | GSS `CREDPROBLEM` | `STATUS_LOGON_FAILURE` | decided once for both |
 | NTLMv2 verification — local NT hash, or pass-through to a domain controller over NETLOGON | the server's authenticator behind `SignIn` ([RFC 18 §3.5](rfc-18-identity.md#3.5%20NTLMv2)) | — | through the NTLM mechanism | needs the NT hash or the machine account's secure channel |
 | Kerberos AP-REQ acceptance, keytab, PAC verification | the server's authenticator behind `SignIn` ([RFC 18 §3.3](rfc-18-identity.md#3.3%20Kerberos), [§3.4](rfc-18-identity.md#3.4%20The%20PAC)) | through the Kerberos mechanism | through the Kerberos mechanism | needs the keytab; its rotation is RFC 18's |
@@ -1962,8 +1964,9 @@ exchange is not a middleware, since it spans several requests; what runs on
 every request is:
 
 1. the **Router** stage asks `gss.Identity` for the request's `Identity` from
-   the session's or GSS context's `gss.Context` — one function for both — and
-   builds `r.Call` from it. For an SMB2 chain this and the `needs` check run
+   the session's or GSS context's `gss.Context` — one function for both — or,
+   for an NFS call under `AUTH_SYS` or `AUTH_NONE`, translates the credential
+   itself, and builds `r.Call` from it. For an SMB2 chain this and the `needs` check run
    once per member, each a request of its own; for an NFSv4 `COMPOUND` the
    Router runs once, its members passing its `r.Call`, and the `needs` check
    once per member, through the compound row's `Op.Members` (§4.7), so a
