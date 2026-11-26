@@ -5002,8 +5002,8 @@ shares the reason's minute
    belong in `Row`'s arguments instead is open.
 7. **Which stage builds the caller.** §4.4 has the `Router` resolve the
    credential into `r.Call` and the pipeline check `needs`, not the `Security`
-   stage: `Security` is nil for `AUTH_SYS` and runs before a table is chosen,
-   so it cannot see a row's `Needs`. Revisit if `Security` is moved after
+   stage: `Security` passes an `AUTH_SYS` call unchanged and runs before a
+   table is chosen, so it cannot see a row's `Needs`. Revisit if `Security` is moved after
    routing.
 
 ## Appendix A — prior art
