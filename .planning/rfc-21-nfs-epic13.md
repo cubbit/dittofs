@@ -744,8 +744,9 @@ test/pcap-corpus/
   check skipped, or `develop`'s two checks lost in the rewrite); the round trip per accepted type
   (catches a type `SignIn` and the mechanism accept that `gss` cannot protect); `testing.Benchmark`'s bytes
   per operation for both at 4 KiB and 1 MiB, equal (catches a copy of the message, R23), skipped
-  under `-race`, where `sync.Pool` drops its items and the count flakes, and added to `unit`'s
-  `nonrace` cell's `-run` list instead (T13.12's and T13.6's allocation checks likewise);
+  under `-race`, where `sync.Pool` drops its items and the count flakes, and run in
+  `unit/adapter-allocs` instead, whose package list gains `./internal/adapter/gss/` (T13.12's
+  allocation checks likewise, and T13.6's in `./internal/adapter/nfs/protocol/`, already on it);
   `FuzzWrapToken` (R32). No test double: the capture's tokens are a real peer's.
 - **Rules:** rule 7, the lifted code; rule 9's `decision:` and `ponytail:` markers for D11; rule 4,
   the allocation check; rule 11, the two fields for `nfs/protocol`.
@@ -801,7 +802,8 @@ test/pcap-corpus/
   budget is zero (catches a deleted context linked back into a list, or its charge taken again,
   D4). A `-race` run of 64 goroutines over 1 000 contexts, some reaching `MAXSEQ`, ends with the
   lists' lengths equal to the map's and the budget zero once the table is emptied, and reports the
-  mutex and block profiles (rule 4); the same run without `-race`, in `unit`'s `nonrace` cell, gives
+  mutex and block profiles (rule 4); the same run without `-race`, in `unit/adapter-allocs`, which already runs the table's
+  package, `./internal/adapter/nfs/protocol/`, gives
   the profile D4's marker reads. No test double.
 - **Rules:** rule 9's `ponytail:` markers of RFC 21 §10 and D4; rule 3, the
   `nfs_gss_contexts` producer, §1.2.
