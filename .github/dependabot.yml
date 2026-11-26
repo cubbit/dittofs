@@ -2,19 +2,19 @@
 # this file GitHub still reports vulnerabilities but never opens a PR for them,
 # so they accumulate until someone bumps by hand.
 #
-# Every ecosystem sets target-branch: develop. That is now the default branch
-# too, so the setting is redundant — but it is kept because it is the only thing
-# in this file that survives the default moving again. Dependabot reads this
-# config from the DEFAULT branch, not from the PR base, so while main was the
-# default and carried a copy without target-branch, the setting on develop was
-# never consulted and every bump opened against main regardless. Bumps landing
-# on main directly would put commits there that develop does not have, breaking
-# the strict-ancestor invariant the release flow depends on.
+# Every ecosystem sets target-branch: feat/storage-v2, the default branch, so
+# the setting is redundant, but it is the only line here that survives the
+# default moving again. Dependabot reads this config from the default branch,
+# not from the PR base: while main was the default and its copy had no
+# target-branch, every bump opened against main. A bump on main puts a commit
+# there that develop does not have, and breaks the release flow, which needs
+# main to be an ancestor of develop. develop gets no bumps from here: it holds
+# the released line, and a fix it needs is carried by hand.
 version: 2
 updates:
   - package-ecosystem: gomod
     directory: /
-    target-branch: develop
+    target-branch: feat/storage-v2
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -32,7 +32,7 @@ updates:
 
   - package-ecosystem: gomod
     directory: /k8s/dittofs-operator
-    target-branch: develop
+    target-branch: feat/storage-v2
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -49,7 +49,7 @@ updates:
   - package-ecosystem: github-actions
     # The root scans .github/workflows; the composite actions each need theirs.
     directories: ["/", "/.github/actions/*"]
-    target-branch: develop
+    target-branch: feat/storage-v2
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

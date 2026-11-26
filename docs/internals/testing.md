@@ -478,8 +478,8 @@ of its own with `dt run CELL --ci`. A new suite in the registry reaches CI with 
 - **Always:** Go Checks, Repo Checks, ShellCheck, the secret scan (gitleaks) and CodeQL.
 - **Blocking or not:** `e2e`'s options, `bench-smoke` and `unit/windows` don't block a pull
   request. Everything else does.
-- **On `feat/storage-v2`:** `tests.yml` skips the suites that haven't moved there yet (its `V2`
-  filter): `e2e`, `pjdfstest`, `pynfs`, `wpts`, `smbtorture`, `cthon04`, `nfstest`, `clients`,
+- **On `feat/storage-v2`:** `tests.yml` skips the suites that haven't moved there yet, on every
+  run, a PR stacked on another branch included: `e2e`, `pjdfstest`, `pynfs`, `wpts`, `smbtorture`, `cthon04`, `nfstest`, `clients`,
   `fio-verify`, `bench-smoke`, `system`, `unit/windows` and `integration/kerberos`.
 
 **Required to merge** into `develop` or `feat/storage-v2`:
