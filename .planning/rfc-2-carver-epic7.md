@@ -47,17 +47,18 @@ measured beside it in the same run.
   targets (T7.2);
 - `carver-bench/arm64` runs the carver's checks nightly on arm64, golden vectors and allocation
   counts gated, and records K1 to K3 there without holding them to a ratio (T7.3);
-- `carver-bench/sweep` runs §10.3's fault sweep at full size nightly, and no other run does (T7.4);
+- `carver-fault-sweep`, the `carver` group's second suite, runs §10.3's fault sweep at full size
+  nightly, and no other run does (T7.4, D8);
 - RFC 2's suites paragraph names each of these, and `docs/internals/testing.md` is regenerated.
 
 ### 1.1 In scope
 
 `test/carver/bench.sh`; the ratio checker `pkg/carver/internal/carvetest/ratios`; a `BLAKE3`
 sub-benchmark beside K1's; `BenchmarkCorpus`, K4 and K5 as benchmarks with their own metrics; the
-`carver` group, the `carver-bench` suite with its `arm64`, `corpus` and `sweep` options; their lines
-in `tests.yml`'s `plan` job select; `TestFaultSweep`'s full-size flag; the settling run and the RFC
-2 §10.5 edit it makes; RFC 2's §10.6 suites paragraph and `docs/internals/testing.md`; the
-import-test rows of what this epic adds.
+`carver` group, the `carver-bench` suite with its `arm64` and `corpus` options, the
+`carver-fault-sweep` suite; their lines in `tests.yml`'s `plan` job select; `TestFaultSweep`'s
+full-size flag; the settling run and the RFC 2 §10.5 edit it makes; RFC 2's §10.6 suites paragraph
+and `docs/internals/testing.md`; the import-test rows of what this epic adds.
 
 ### 1.2 Out of scope
 
@@ -90,7 +91,7 @@ import-test rows of what this epic adds.
 - **E7**, this epic.
 - **The reference box**: the harness's dedicated host, which a cell reaches with
   `needs: [linux, host:dedicated]` and which runs develop's latest commit each night.
-- **D1** to **D7** are this epic's decisions (§4). A decision of another epic is written with the
+- **D1** to **D8** are this epic's decisions (§4). A decision of another epic is written with the
   epic named ("E4's D6").
 
 ## 2. How the general rules apply
@@ -106,7 +107,7 @@ title and not copied.
 | rule 3, observability follows RFC 25, with RFC 2's exception | none | nothing here is a carver package |
 | rule 4, profiling | T7.1, T7.3 | the checker fails a K1 to K3 line with an allocation or with no allocation figure, so the nightly run counts allocations at 64 MiB too; T7.3 runs the allocation counts on arm64 |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | T7.1 | the gate reads the very file `dt` records, so the gate and the series cannot disagree |
-| rule 6, known failures shrink | none | `carver-bench` keeps no `known.yaml`: a missed ratio or target is a finding, as `journal-bench` decides |
+| rule 6, known failures shrink | none | `carver-bench` and `carver-fault-sweep` keep no `known.yaml`: a missed ratio or target is a finding, as `journal-bench` decides |
 | rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | T7.1, T7.2 | `ratios` imports the standard library and `carvetest`, a row in E1's import test; `carve`'s test row admits `carvetest/corpus`; the chunker's test files use `internal/blake3`, which their row already admits through what `carve` reaches (E3's T3.2). v1's measurements are not read |
 | rule 8, real dependencies for properties of those dependencies | all | the speed ratios on the reference box and a real arm64 machine, the golden vectors on that machine's BLAKE3 path, K4 and K5 on real files |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T7.1, T7.3 | `decision:` markers for D1 at the checker's targets, D3 at the script's record, D5 in the `arm64` option's comment; `ponytail:` at `medians` (D1). D6's `decision:` at the flag is E4's |
@@ -165,14 +166,14 @@ another epic's, the row says so.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R23 | K1 to K3 on the reference box, the fault sweep at full size and the golden vectors on a second architecture run nightly, and K4 and K5 by hand, in a suite named for the carver, `carver-bench`, which a `carver` group holds | invariant | RFC 2 §10.6 (Suites); RFC 29 §4.9; RFC 2 plan, §1.4, epic 7 | T7.1, T7.2, T7.3, T7.4 |
+| R23 | K1 to K3 on the reference box, the fault sweep at full size and the golden vectors on a second architecture run nightly, and K4 and K5 by hand, in a suite named for the carver, `carver-bench`, which a `carver` group holds; the full sweep in that group's second suite, `carver-fault-sweep` (D8) | invariant | RFC 2 §10.6 (Suites); RFC 29 §4.9; RFC 2 plan, §1.4, epic 7 | T7.1, T7.2, T7.3, T7.4 |
 | R24 | RFC 2's suites paragraph names each suite, option and group registered, and says which planned checks no suite runs yet | invariant | RFC 29 §4.9; RFC 2 §10.6 | T7.1, T7.2, T7.3, T7.4 |
 
 How each row is enforced once this epic lands, where no test of this epic can break it: R9 by the
 registry, whose `carver-bench` cells are `nightly` and `manual`; R11 by
 `needs: [linux, host:dedicated]` on the gated cell and the arm64 option's `-record` (D5); R12 by
 `metrics: go-bench`, which keeps each night's absolute medians in `dt history`, while the decision
-is the owner's, by hand (D1); R22 by E4's flag, which only `carver-bench/sweep` passes; R23 and
+is the owner's, by hand (D1); R22 by E4's flag, which only `carver-fault-sweep` passes; R23 and
 R24 by `lint-repo`'s `dt docs --check` for a name the registry lacks, and by review for a
 registered cell the paragraph leaves out.
 
@@ -211,19 +212,19 @@ E5). §10.1's "no crash test, no soak and no concurrency test" describes the des
   `strconv.Itoa(t)` for each `t` of `carvetest.Targets` (`BenchmarkCut/262144/BLAKE3`). E4's T4.4
   spells its names exactly so; E3's T3.2 has one level, which T7.1 splits into
   `Search`, E3's body unchanged, and `BLAKE3`, the same bytes through `internal/blake3`'s keyed
-  hash in `Target`-sized pieces, as E4's baseline. With `GOMAXPROCS` 1 in the cell, `go test` adds
-  no `-N` suffix. A benchmark spelled otherwise fails the checker by name. Prior art: `go test`'s
+  hash in `Target`-sized pieces, as E4's baseline. `bench.sh` passes `-cpu=1`, so `go test` adds no `-N`
+  suffix in the cell or in a hand run. A benchmark spelled otherwise fails the checker by name. Prior art: `go test`'s
   sub-benchmark naming (from memory). Applied by T7.1.
 
 - **D3, the record: what `go test` prints, plus `meta.txt`.** `go test -bench` heads its output with
   `goos`, `goarch` and `cpu`, and `dt`'s summary holds the commit. `bench.sh` writes
   `{out}/meta.txt` once per run, as `test/journal/bench-data.sh` does (checked): `go version`; the
   kernel (`uname -srm`); the memory (`MemTotal` on Linux, `sysctl -n hw.memsize` on macOS);
-  `GOMAXPROCS`, 1, the rows' concurrency, since neither `Cut` nor the boundary search starts a
-  goroutine; the SIMD extensions a BLAKE3 backing dispatches on, `avx512f`, `avx2` and `sse4_1`
-  from `/proc/cpuinfo` on amd64 and `hw.optional.arm.AdvSIMD` on macOS arm64 (checked on an
-  M-series Mac); and the backing module `go list -deps ./internal/blake3` names, since which path
-  that backing takes depends on it. The device, the filesystem and its mount options are not
+  `GOMAXPROCS`, the `-cpu` value `bench.sh` passed, which is the one in effect for the rows, since neither `Cut` nor the boundary search starts a
+  goroutine; the SIMD paths the backing E4's T4.1 picks dispatches on, read from its source: for
+  `lukechampine.com/blake3`, AVX-512F and AVX2 on amd64, from `/proc/cpuinfo` (`avx512f`, `avx2`),
+  and none on arm64, which it runs as generic Go (read the code, `guts/cpu.go`); and the backing's
+  module and version, from `go list -m`, since which path it takes depends on both. The device, the filesystem and its mount options are not
   recorded: the inputs are built in memory before the timer starts and nothing measured touches a
   device. A `decision:` at the record says so, and that it is withdrawn if a carver benchmark ever
   reads a file. Applied by T7.1 and T7.3.
@@ -235,13 +236,16 @@ E5). §10.1's "no crash test, no soak and no concurrency test" describes the des
   pinned bytes and the settings, so one count is the whole sample, and the run fails with
   `b.Errorf` on a missed K4 or K5 target. Each entry is read up to its first 1 GiB, the size K4's
   target names, through `Cut` with a buffer of 2 × `Max`; the edit is one byte, `0x5A`, inserted at
-  offset 4,096. The metrics: `shared-frac`, the fraction of the edited file's chunks whose hash the
+  offset 4,096 into that prefix, so the edited stream is 1 GiB + 1 bytes and both end on the same
+  content. The metrics: `shared-frac`, the fraction of the edited file's chunks whose hash the
   original has; `far-unshared`, how many chunks starting more than 2 × `Max` past the edit the
   original lacks, which K4's target holds at 0; `mean-B`; `at-max-frac`, which K5's target holds
   at 0.01 on an entry not marked `Repetitive`; and the histogram as `lt-half-frac`,
   `lt-target-frac`, `lt-double-frac` and `lt-max-frac`, the chunks in `[Min, T/2)`, `[T/2, T)`,
   `[T, 2T)` and `[2T, Max)`. The keyed table is left out: no K4 or K5 row asks for it, §9's keyed
-  boundaries row is E3's per-change check, and it would double a run of most of an hour. Prior
+  boundaries row is E3's per-change check. A run cuts at most about 2.7 GiB, twice, at seven
+  `Target`s, about 38 GiB through `Cut`: a few minutes (computed, not measured), and the cell's
+  timeouts are sized from that. Prior
   art: Go's `testing.B.ReportMetric` (checked, the standard library). Applied by T7.2.
 
 - **D5, arm64 gates the checks and records the speeds.** The `arm64` option runs the carver's tests
@@ -264,7 +268,7 @@ E5). §10.1's "no crash test, no soak and no concurrency test" describes the des
   `-short` is absent would run its 655,360 offsets there, raced, against `unit`'s 25-minute limit,
   and in a developer's plain `go test ./...`. So E4's `TestFaultSweep` runs the reduced sweep unless
   the test flag `-carver.sweep-full` is set, which E4's T4.8 declares in `carve`'s test files with
-  `flag.Bool` and its `decision:` (E4's D6). This epic adds no flag: `carver-bench/sweep` sets it, nightly,
+  `flag.Bool` and its `decision:` (E4's D6). This epic adds no flag: `carver-fault-sweep` sets it, nightly,
   without the race detector, which a sweep over `Cut`'s output needs none of. A flag rather than an
   environment variable: an option's `env` replaces the suite's whole, and a `DITTOFS_` name would
   join the start's drift check. Prior art: `unit --nonrace` in RFC 29 §4.1 (checked). Applied by
@@ -275,10 +279,22 @@ E5). §10.1's "no crash test, no soak and no concurrency test" describes the des
   headroom sits below the measurement, at the index's 10 % regression line, and a target the RFC
   chose is never loosened by a box that beat it. A measured ratio below the proposed floor is R13's
   design finding: the run is recorded, the settling stops, and RFC 2's author decides. K4 and K5
-  are deterministic on a pinned corpus, so their targets stand as written, with the first run's
-  figures beside them. §10.5 states each result with the commit, the box, the toolchain and the
+  are deterministic on a pinned corpus, so the first run replaces each as R13 asks with its
+  proposed value, "proposed" dropped, its figures beside it and the headroom stated as none: a
+  figure that repeats to the byte needs no margin, and a missed one is R13's design finding. §10.5 states each result with the commit, the box, the toolchain and the
   SIMD extensions, and `ratios`' constants change in the same pull request. Prior art: the index's
   rule, which this applies. Applied by T7.1 and T7.2.
+
+- **D8, the full sweep is a suite of its own in the `carver` group, which amends §10.6's one
+  suite.** An option of `carver-bench` inherits the suite's `tests: [speed]` and
+  `metrics: go-bench`: the registry's `merge` copies only an option's set fields, so none can clear
+  them (`test/harness/registry/registry.go` on `feat/storage-v2`, checked), and `dt` would read
+  `{out}/speed.txt`, which the sweep never writes, and report the cell not run every night
+  (`test/harness/run/run.go`, checked). `unit` is not the answer either, since R23 places the run
+  with the carver. So `carver-fault-sweep` joins `carver-bench` in the `carver` group, and T7.4
+  words RFC 2 §10.6's suites paragraph as the carver's two suites, the amendment this decision
+  records. Its name stays apart from E6's manual `carver-sweep`. Prior art: `journal-bench` and
+  `journal-bench-data`, two suites of one component (checked). Applied by T7.4.
 
 ## 5. Target tree
 
@@ -295,9 +311,9 @@ pkg/carver/
     bench_test.go                 T7.1  BenchmarkNextBoundary split into Search and BLAKE3
   carve/
     corpus_bench_test.go          T7.2  BenchmarkCorpus (K4, K5)
-test/suites.yaml                  T7.1, T7.2, T7.3, T7.4  carver group; carver-bench with its arm64,
-                                                          corpus and sweep options
-.github/workflows/tests.yml       T7.3, T7.4  carver-bench/arm64 and carver-bench/sweep in the
+test/suites.yaml                  T7.1, T7.2, T7.3, T7.4  carver group; carver-bench with its arm64
+                                                          and corpus options; carver-fault-sweep
+.github/workflows/tests.yml       T7.3, T7.4  carver-bench/arm64 and carver-fault-sweep in the
                                               plan job's select
 docs/internals/rfcs/rfc-2-carver.md  T7.1, T7.2, T7.3, T7.4  §10.6's suites paragraph; §10.5's
                                                             settled targets and first figures
@@ -316,7 +332,7 @@ docs/internals/testing.md         T7.1, T7.2, T7.3, T7.4  regenerated by dt docs
 - **Deliverables:**
   - `BenchmarkNextBoundary` split into `Search` and `BLAKE3` per `Target` (D2). Consumed by the
     `speed` group.
-  - `test/carver/bench.sh GROUP OUT`, its `speed` group: `go test -p 1 -count=10 -run '^$' -bench
+  - `test/carver/bench.sh GROUP OUT`, its `speed` group: `go test -p 1 -cpu=1 -count=10 -run '^$' -bench
     '^(BenchmarkNextBoundary|BenchmarkCut)$' -timeout=25m ./pkg/carver/internal/chunker/
     ./pkg/carver/carve/ > OUT/speed.txt`, then `meta.txt` (D3), with D3's `decision:`; it exits with
     `go test`'s status. Consumed by the `carver-bench` cell, T7.2 and T7.3.
@@ -398,20 +414,20 @@ docs/internals/testing.md         T7.1, T7.2, T7.3, T7.4  regenerated by dt docs
 - **Deliverables:**
   - `pkg/carver/carve/corpus_bench_test.go`, `BenchmarkCorpus` (D4): for each entry of
     `corpus.Entries` under `corpus.Dir(b)` and each `Target` of `carvetest.Targets`, with settings
-    from `carve.NewSettings` and `Vectors.ChunkIDKey`, it cuts the entry's first 1 GiB and the same
-    bytes with the edit, both through `Cut`'s reader, so no input is held whole, and reports D4's
+    from `carve.NewSettings` and `Vectors.ChunkIDKey`, it cuts the entry's first 1 GiB and that prefix
+    with the edit, 1 GiB + 1 bytes (D4), both through `Cut`'s reader, so no input is held whole, and reports D4's
     metrics. Consumed by the `corpus` group.
   - `bench.sh`'s `corpus` group: it exits 2 naming `DITTOFS_CORPUS_DIR` when the variable is unset
     or names no directory, before `go test` runs, as `journal-bench` refuses an unset
     `DITTOFS_BENCH_DIR`, since `corpus.Dir` would otherwise skip and pass; then `go test -count=1
-    -benchtime=1x -run '^$' -bench '^BenchmarkCorpus$' -timeout=55m ./pkg/carver/carve/ >
+    -benchtime=1x -run '^$' -bench '^BenchmarkCorpus$' -timeout=10m ./pkg/carver/carve/ >
     OUT/corpus.txt`, fails if no `BenchmarkCorpus/` line came out, and writes `meta.txt`.
   - In E1's `imports_test.go`, `carve`'s test row admits `carvetest/corpus`.
   - `carver-bench`'s `corpus` option: `cmd: test/carver/bench.sh {test} {out}`, `tests: [corpus]`,
     `tier: manual`, `needs: [linux]`, since D4's figures hold on any box, and `timeout: { test:
-    60m, cell: 70m }`.
+    15m, cell: 20m }`.
   - The first run on the reference box, by hand: RFC 2 §10.5's K4 and K5 rows gain its figures,
-    with the commit, beside targets that stand (D7), and later runs compare against that row.
+    with the commit, beside targets settled at their written values (D7), and later runs compare against that row.
   - RFC 2 §10.6's suites paragraph names `carver-bench/corpus`; `testing.md` regenerated.
 - **Acceptance criteria:**
   - With the corpus fetched, `dt run carver-bench --corpus` reports every metric of D4 for every
@@ -442,12 +458,13 @@ docs/internals/testing.md         T7.1, T7.2, T7.3, T7.4  regenerated by dt docs
       needs: [macos]
       timeout: { test: 50m, cell: 60m }
     ```
-  - In `.github/workflows/tests.yml`'s `plan` job select, `carver-bench/arm64` beside
-    `unit/windows`.
+  - In `.github/workflows/tests.yml`'s `plan` job select, `carver-bench/arm64` in the
+    keep list, beside `integration/ad-dc` and `bench-smoke`, never the storage-v2 skip list that
+    also names `unit/windows`.
   - RFC 2 §10.6's suites paragraph names `carver-bench/arm64`; `testing.md` regenerated.
 - **Acceptance criteria:**
   - On an arm64 machine, `dt run carver-bench --arm64` passes, and its `meta.txt` names arm64, the
-    backing and the CPU's `AdvSIMD` flag.
+    backing's module and version, and the path it runs there.
   - With one byte of `carvetest`'s `vectors.json` changed, the cell fails, naming its first command.
   - A `workflow_dispatch` of `tests.yml` on `feat/storage-v2` at the nightly tier plans and runs
     the cell on the macOS runner.
@@ -460,17 +477,18 @@ docs/internals/testing.md         T7.1, T7.2, T7.3, T7.4  regenerated by dt docs
 
 **Subtask T7.4 estimate: 1 man-days.**
 
-- **Track:** the team. **Depends on:** T7.1, whose `carver-bench` suite the option extends. It
+- **Track:** the team. **Depends on:** T7.1, whose `carver` group the suite joins. It
   runs E4's `TestFaultSweep` with E4's `-carver.sweep-full` flag, so it lands after E4's T4.8.
 - **Covers:** R21 to R24.
 - **Deliverables:**
-  - `carver-bench`'s `sweep` option, `needs: [linux]`: `go test -timeout=55m -run=^TestFaultSweep$
+  - The suite `carver-fault-sweep` in the `carver` group (D8), `format: exit`, `needs: [linux]`: `go test -timeout=55m -run=^TestFaultSweep$
     ./pkg/carver/carve/ -args -carver.sweep-full`, `tier: nightly`, `timeout: { test: 60m, cell:
     70m }`.
-  - In `tests.yml`'s `plan` job select, `carver-bench/sweep`.
-  - RFC 2 §10.6's suites paragraph names `carver-bench/sweep`; `testing.md` regenerated.
+  - In `tests.yml`'s `plan` job select, `carver-fault-sweep` in the keep list, beside
+    `integration/ad-dc` and `bench-smoke`, never the storage-v2 skip list.
+  - RFC 2 §10.6's suites paragraph names `carver-fault-sweep` with K1 to K3's suite (D8); `testing.md` regenerated.
 - **Acceptance criteria:**
-  - `dt run carver-bench --sweep` runs the sweep at all 655,360 offsets of E4's D6 and passes; its
+  - `dt run carver-fault-sweep` runs the sweep at all 655,360 offsets of E4's D6 and passes; its
     time on a hosted Linux runner, from a `workflow_dispatch` run, is in the pull request.
   - If that time exceeds 30 minutes, the option is not registered and the figure goes to RFC 2's
     author as a §10.3 amendment, rather than a smaller stretch chosen in the test.
@@ -498,7 +516,7 @@ flowchart TD
 
 T7.1 is the blocker: the script, the checker and the suite every other cell extends.
 T7.2 goes before T7.3 as the riskier, a corpus target a first run can miss. T7.4 needs only
-T7.1's suite and is a branch of its own, open beside T7.2 and T7.3 once E4's sweep has landed. Checkpoint
+T7.1's group and is a branch of its own, open beside T7.2 and T7.3 once E4's sweep has landed. Checkpoint
 after T7.1.
 
 ## 8. Suggested pull requests
@@ -508,7 +526,7 @@ after T7.1.
 | 1 | T7.1 | 3.25 | — | the speed cell, its checker, the settling run and the suite the others extend |
 | 2 | T7.2 | 2.25 | PR 1 | K4 and K5 and their first recorded figures |
 | 3 | T7.3 | 1.25 | PR 1 | the arm64 option; open beside PR 2 |
-| 4 | T7.4 | 1 | PR 1 | the full sweep's nightly option of PR 1's suite; open beside PRs 2 and 3 |
+| 4 | T7.4 | 1 | PR 1 | the full sweep's nightly suite, in PR 1's group; open beside PRs 2 and 3 |
 
 A suggestion only: one pull request per subtask works as well.
 
