@@ -23,7 +23,7 @@ Cited, not owned: RFC 1813's NLM v4 appendix and the Open Group's XNFS, the only
 the wire structures, RFC 1833 for the port mapper's `GETPORT`, RFC 17 §4.9's admission (amendment A3, keyed on
 `Call.HostCall`, built by E4), RFC 18 §5.4, RFC 24 §6.1's goroutine and connection bounds.
 **Track:** B.
-**Epic 11 estimate: 12 subtasks, 35.25 man-days.**
+**Epic 11 estimate: 12 subtasks, 35.5 man-days.**
 **Depends on:** **S2**, NFS's test foundations in CI: E2's `nfsharness` on `memory.New` and knfsd's
 NLM and NSM captures (`test/pcap-corpus/nlm/`) cut into golden files. From the epics on other tracks,
 before the subtasks that name them: E3's T3.2, the scripted client and its call encoder, and T3.4,
@@ -321,8 +321,12 @@ that subtasks and tests can cite them.
   none, answered `ErrNotFound`; the host then holds nothing here, so `TEST` runs `TestLock` with no
   `Client` and `UNLOCK`, `CANCEL` and `UNSHARE` are answered `NLM4_GRANTED` with no further call.
   Records are therefore made only by a lock or a share reservation, which a released lock's
-  `dropIdle` or a `Close` then ends, never by a call that leaves nothing held: an NLM record has no
+  `dropIdle` then ends, never by a call that leaves nothing held: an NLM record has no
   lease and `Connect` skips `Propose`'s per-source caps, so one made by a `TEST` would stay for good.
+  On `feat/storage-v2` only `CancelLock`, `WaitAnswered`, `Unlock` and `ReleaseLockOwner` run
+  `dropIdle`, and `Close` does not, so a host that sends `SHARE` then `UNSHARE`, or whose first `LOCK`
+  is refused, would keep a durable record with no lease: T11.12 has the service run `dropIdle` after a
+  `Close` and after a refused lock too.
   Under `Connect` as it stands a state-0 miss is unsafe twice: it is a
   reboot of a record held under a real state, and a record it creates is expired by the host's next
   `LOCK` with its real state (`pkg/openstate/clients.go` keeps a record only on an equal `Boot`), so
@@ -354,7 +358,10 @@ that subtasks and tests can cite them.
   the request's handle, cookie, floating address, and `l_offset` and `l_len` as sent under (`FileID`, owner,
   range), so a grant names the range the host asked for: a to-end-of-file `l_len` 0, held by the
   service as reaching 2⁶⁴−1, goes back as 0; `LockWaitOver`
-  takes the entry, and `CancelLock`'s return, a grant, a refusal or a share's `Revoked` removes it.
+  takes the entry, and a grant, a refusal, a share's `Revoked`, or `CancelLock` returning false removes
+  it. `CancelLock` returns true when the lock was granted first, and the grant's `LockWaitOver` comes on a
+  background goroutine (`internal/vfs/sink.go`) that may run after the `CANCEL` is answered, so that
+  entry stays for it, which finds the handle and cookie.
   The `GetAttr` sets `HostCall` like every NLM call (R60), and RFC 17 §4.9 admits it at `Claimed`,
   as it does the lock calls; until #5734 builds that on `feat/storage-v2` it is `ErrInvalid` and
   every blocking `LOCK` fails, so T11.4 depends on it (A3). A
@@ -757,6 +764,8 @@ pkg/openstate/clients.go         T11.12 an NLM record's zero Boot and its first 
   - `GRANTED` names the request's handle, `svid`, `oh` and range.
   - A `CANCEL` is answered only after `CancelLock` returns: with `CancelLock` held by
     `vfstest.Faults.Hold(vfs.OpCancelLock)`, no reply leaves until it is released.
+  - A `CANCEL` that finds the lock granted (`CancelLock` true) with `LockWaitOver` held until after the
+    reply: the `GRANTED` it then sends still names the request's handle and cookie.
   - A host answering `NLM4_DENIED` to `GRANTED` gets the lock released to the next waiter; a host
     answering `NLM4_DENIED_GRACE_PERIOD`, and one that closes the connection after reading the call,
     keep it, and the next `LockWaitOver` sends again.
@@ -812,7 +821,7 @@ pkg/openstate/clients.go         T11.12 an NLM record's zero Boot and its first 
 
 ### T11.12 An NLM record adopts its host's first state
 
-**Subtask T11.12 estimate: 2.25 man-days.**
+**Subtask T11.12 estimate: 2.5 man-days.**
 
 - **Track:** B. **Depends on:** T11.3, Q4 agreed with option (b) and its RFC 17 and RFC 14 pull request.
 - **Covers:** R18, R19, R41, R42, R60.
@@ -828,7 +837,7 @@ pkg/openstate/clients.go         T11.12 an NLM record's zero Boot and its first 
   `Boot` differs from the state, `Boot` 0 included, raising `ClientEnded` as `Connect`'s reboot does
   (`pkg/openstate/clients.go`), so the adapter's `Revoked` drops D5's and D10's entries and the
   registry the host's path; it never adopts, and writes nothing when the name has no record, a later
-  lock call creating it. `internal/vfs`'s `TestAHostRestartConnectsItWithTheNotice`, which asserts
+  lock call creating it. `pkg/openstate`'s `Close` and a lock refused with no lock left held run `dropIdle`, so a `SHARE` then `UNSHARE`, or a first `LOCK` that is refused, leaves no record (D5). `internal/vfs`'s `TestAHostRestartConnectsItWithTheNotice`, which asserts
   that a restart of an unknown host creates a record, is rewritten to assert none. A `decision:` marker at the adoption: a host that
   reboots while its record is held under 0, and whose notice is lost, has its first `LOCK` adopted,
   so the old instance's share reservations survive; overturned if one is seen doing so. RFC 17's
@@ -840,6 +849,8 @@ pkg/openstate/clients.go         T11.12 an NLM record's zero Boot and its first 
     unchanged.
   - A record connected under 5 with one floating address's `Adapter` bytes, then under 5 with
     another's, holds the second's.
+  - An `UNSHARE` of a host's only `SHARE`, and a first `LOCK` refused, each leave the name with no
+    record.
   - A record under 0 holding an open that denies write, as a `SHARE` makes, then `HostRestarted`
     with state *s*, as an `SM_NOTIFY` or a `FREE_ALL` calls it: the open is gone and the name has no
     record.
@@ -1099,7 +1110,7 @@ path. T11.11 closes the epic once S3 holds, its restart row once S5 does.
 | --- | --- | --- | --- | --- |
 | 1 | T11.1, T11.2 | 7 | E3's T3.2 and T3.4; E10's T10.1 | the NLM translations and the outbound client every handler and callback builds on |
 | 2 | T11.3, T11.4, T11.5 | 9.5 | PR 1; #5734 (D6) | NLM locking end to end: a host's client, its locks, a blocked lock granted, the asynchronous forms |
-| 3 | T11.12, T11.6, T11.7, T11.8 | 10.25 | PR 2 | share reservations and NSM's notices, the service halves once Q4 and Q1 are agreed |
+| 3 | T11.12, T11.6, T11.7, T11.8 | 10.5 | PR 2 | share reservations and NSM's notices, the service halves once Q4 and Q1 are agreed |
 | 4 | T11.9 | 4 | PR 1 | `core`'s datagram listener, which needs only `Conn.Local`; open beside PR 2 |
 | 5 | T11.10, T11.11 | 4.5 | PR 3, PR 4; E4's T4.1, E7's T7.1, S3, S5 | NLM and NSM over UDP, which serves T11.3's rows, and the RFC's rows over loopback and on the composed node |
 
@@ -1187,7 +1198,7 @@ A second batch, after those:
 
 Gaps and assumptions, not questions:
 
-- **The estimate is 35.25 man-days against the plan's 22 for 7 subtasks**, +13.25, and this pull request
+- **The estimate is 35.5 man-days against the plan's 22 for 7 subtasks**, +13.5, and this pull request
   updates the plan's two lines for the epic (its §2 row and its epic estimate line); the
   programme totals reconcile when the breakdown pull requests merge. The difference is mostly work the
   plan did not list: the two service halves, T11.8 (2.5) and T11.12 (1.5); the outbound queue and
@@ -1195,7 +1206,7 @@ Gaps and assumptions, not questions:
   (D11, 0.5); the notice path that never adopts nor creates (T11.12, 0.5); the outbound cap, the
   2 s bounds and the per-host result (R61, D9, 0.5); the back-off and the 16 slots for failed hosts
   (D9, T11.2, 0.5); records made only by a lock or a share reservation, and `Restarted` raising
-  `ClientEnded` (D5, T11.3, T11.12, 0.5); the `UNSHARE` miss through the service (D10, T11.6, 0.25);
+  `ClientEnded` (D5, T11.3, T11.12, 0.75); the `UNSHARE` miss through the service (D10, T11.6, 0.25);
   the fault store and positive notice of T11.11 (0.25). The remaining 5.25 is the plan's own content priced subtask by subtask, `core`'s
   datagram listener (T11.9, 4) chief among it.
 - The plan's §4.3 listed "NLM grants resent by one timer each" for this epic, and its expected content
