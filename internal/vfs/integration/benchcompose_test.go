@@ -216,11 +216,9 @@ func (c *bench) start(b *testing.B, clock *wallClock, age time.Duration) {
 
 	b.Cleanup(opens.Stop)
 
-	settings := engine.Settings{
-		ExistenceAge:        age,
-		GroupCommitMaxFiles: benchMaxFiles,
-		CloneMaxLen:         1 << 30,
-	}
+	settings := enginetest.Settings
+	settings.ExistenceAge = age
+	settings.GroupCommitMaxFiles = benchMaxFiles
 	if err := e.Apply(settings); err != nil {
 		b.Fatalf("bench: engine settings: %v", err)
 	}

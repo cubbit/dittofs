@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/cubbit/dittofs/pkg/journal"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
@@ -72,46 +71,6 @@ func TestNewRefusesEmptyDevices(t *testing.T) {
 	d.Devices = []string{}
 	if _, err := New(d); err == nil || !strings.Contains(err.Error(), "Deps.Devices ") {
 		t.Fatalf("New with no device = %v; want Devices refused", err)
-	}
-}
-
-func TestApplyRefusesInvalidAndKeepsLast(t *testing.T) {
-	e, err := New(fullDeps())
-	if err != nil {
-		t.Fatal(err)
-	}
-	good := Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}
-	if err := e.Apply(good); err != nil {
-		t.Fatalf("Apply(%+v) = %v", good, err)
-	}
-	for _, c := range []struct {
-		key string
-		bad func(*Settings)
-	}{
-		{"existence_age", func(s *Settings) { s.ExistenceAge = 0 }},
-		{"existence_age", func(s *Settings) { s.ExistenceAge = -time.Second }},
-		{"group_commit.max_files", func(s *Settings) { s.GroupCommitMaxFiles = 0 }},
-		{"group_commit.max_files", func(s *Settings) { s.GroupCommitMaxFiles = -1 }},
-		{"clone_max_len", func(s *Settings) { s.CloneMaxLen = 0 }},
-		{"clone_max_len", func(s *Settings) { s.CloneMaxLen = -1 }},
-	} {
-		s := good
-		s.ExistenceAge, s.GroupCommitMaxFiles, s.CloneMaxLen = 2*time.Second, 128, 1<<20
-		c.bad(&s)
-		err := e.Apply(s)
-		if err == nil || !strings.Contains(err.Error(), c.key) {
-			t.Errorf("Apply(%+v) = %v; want refused naming %s", s, err, c.key)
-		}
-		if got := *e.settings.Load(); got != good {
-			t.Errorf("after refused Apply(%+v): settings %+v, want the last %+v kept", s, got, good)
-		}
-	}
-	next := Settings{ExistenceAge: 2 * time.Second, GroupCommitMaxFiles: 1, CloneMaxLen: 1}
-	if err := e.Apply(next); err != nil {
-		t.Fatalf("Apply(%+v) = %v", next, err)
-	}
-	if got := *e.settings.Load(); got != next {
-		t.Fatalf("settings %+v after Apply, want %+v", got, next)
 	}
 }
 

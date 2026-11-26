@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/engine/enginetest"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
 	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
@@ -22,7 +22,10 @@ const chunk = 64 << 10
 func copyUnit(t *testing.T, opts ...func(*engine.Deps)) *unit {
 	t.Helper()
 	u := clonedUnit(t, opts...)
-	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Minute, GroupCommitMaxFiles: 1, CloneMaxLen: chunk}); err != nil {
+	settings := enginetest.Settings
+	settings.GroupCommitMaxFiles = 1
+	settings.CloneMaxLen = chunk
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	return u

@@ -1,7 +1,12 @@
-// Package archtest gives architecture tests an importer that reads each
-// package's types from the export data the go command compiled, so a test
-// that type-checks one package's files does not type-check every
-// dependency from source. Only tests import it.
+// Package archtest is the architecture tests' toolkit: an importer that reads
+// each package's types from the export data the go command compiled, so a
+// test that type-checks one package's files does not type-check every
+// dependency from source; an export pin's printer (Exports, Violations); a
+// purity check (Impurities); and a transitive import walk over go list's
+// graph, per platform, with or without tests (Walk, Check). Planted files
+// reach the pin and the purity check as extra paths, or through WithHidden
+// behind a build tag; a planted module reaches the walk as a directory. Only
+// tests import it.
 package archtest
 
 import (

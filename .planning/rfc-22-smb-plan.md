@@ -116,11 +116,11 @@ and E5 to E8, for sign-in (§3.2).
   and 25.
 - **A7. RFC 7 §3.2 and §3.8, RFC 22 §12.3: on a `windows` share a reserved character from NFS is
   stored in its private-use spelling.** Simone's answer to plan gap 27, with the user's choices: in
-  a name a call over NFS gives, RFC 7's reserved characters and a trailing space or dot are stored
+  a name given by a call that states `SpellsReservedNames`, as both NFS profiles do, RFC 7's reserved characters and a trailing space or dot are stored
   as RFC 22 Appendix B's code points, at a create, a link, a rename's target and every lookup after
   `.` and `..` are resolved, so an NFS client lists that spelling, finds the entry by either and
-  gets `ErrExist` creating one beside the other; a device name stays refused, and from any other
-  protocol a reserved character stays refused. No migration: v2 starts from a fresh store, and
+  gets `ErrExist` creating one beside the other; a device name stays refused, and from a call that does
+  not state it a reserved character stays refused. No migration: v2 starts from a fresh store, and
   v1's rule refused these names; a name a Mac stored with the code points is reachable from NFS
   by that spelling, by design. RFC 21 §7.3 says what an NFS client lists. A `posix` share is
   unchanged and makes no promise

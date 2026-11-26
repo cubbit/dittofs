@@ -37,6 +37,12 @@ var (
 	ErrNotRaised       = errNotRaised
 )
 
+// AppliedSettings is the settings the engine holds: what the last Apply it
+// took stored.
+func (e *Engine) AppliedSettings() Settings {
+	return *e.settings.Load()
+}
+
 // SetJournalsForTest sets the journals the engine has open, each with the
 // limit last passed read from the journal itself. Start opens one journal
 // only, so this is the one way to give the engine two, for Bind's refusal of

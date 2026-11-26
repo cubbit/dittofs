@@ -70,7 +70,10 @@ func newLoggedUnit(t *testing.T, age time.Duration, maxFiles int) (*unit, *callL
 		deps: []func(*engine.Deps){onCommit(logCommits(log))},
 		wrap: func(h engine.Handle) engine.Handle { return loggedHandle{h, log} },
 	})
-	if err := u.e.Apply(engine.Settings{ExistenceAge: age, GroupCommitMaxFiles: maxFiles, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = age
+	settings.GroupCommitMaxFiles = maxFiles
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	u.h = loggedHandle{u.h, log}
@@ -349,7 +352,9 @@ func TestADropBetweenTakeAndCapture(t *testing.T) {
 func TestASoonerFileWakesTheLoop(t *testing.T) {
 	u := newUnit(t)
 	apply := func(age time.Duration) {
-		if err := u.e.Apply(engine.Settings{ExistenceAge: age, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+		settings := enginetest.Settings
+		settings.ExistenceAge = age
+		if err := u.e.Apply(settings); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -433,7 +438,9 @@ func TestCommitAllWaitsForTheBatchInFlight(t *testing.T) {
 // set, so its writes are taken once that operation is gone.
 func TestAFileHeldByAnUncapturedOperationStaysDue(t *testing.T) {
 	u := newUnit(t)
-	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Second
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	f := u.create(t, "a")
@@ -567,7 +574,9 @@ func TestAFailedFileIsRetriedAlone(t *testing.T) {
 		deps: []func(*engine.Deps){onCommit(logCommits(log))},
 		wrap: func(h engine.Handle) engine.Handle { return loggedHandle{h, log} },
 	})
-	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Second
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	_, dir := u.fs.Create(t, u.fs.Admin, u.fs.Root, "d", kvstore.Dir(0o755))
@@ -662,7 +671,9 @@ func TestABatchConflictSplitsBeforeTheConflictBound(t *testing.T) {
 		return next.Commit(ctx, p, marks)
 	}))
 	u.e.SetConflictBound(time.Hour)
-	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Second
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	a := u.create(t, "a")
@@ -695,7 +706,9 @@ func TestASplitLeafBacksOffAtOnce(t *testing.T) {
 		}
 		return next.Commit(ctx, p, marks)
 	}))
-	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Second
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	a := u.create(t, "a")
@@ -811,11 +824,9 @@ func TestTheSplitIsBoundedOverAConflictingStore(t *testing.T) {
 					return conflictOnKV{k, bad}
 				},
 			})
-			if err := u.e.Apply(engine.Settings{
-				ExistenceAge:        time.Second,
-				GroupCommitMaxFiles: 64,
-				CloneMaxLen:         1 << 30,
-			}); err != nil {
+			settings := enginetest.Settings
+			settings.ExistenceAge = time.Second
+			if err := u.e.Apply(settings); err != nil {
 				t.Fatal(err)
 			}
 
@@ -1084,7 +1095,10 @@ func TestAFailureThatBlamesNoFileRetriesTheBatchWhole(t *testing.T) {
 			log := &callLog{}
 			cfg, on := tc.cfg(log)
 			u := newUnitWith(t, cfg)
-			if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 16, CloneMaxLen: 1 << 30}); err != nil {
+			settings := enginetest.Settings
+			settings.ExistenceAge = time.Second
+			settings.GroupCommitMaxFiles = 16
+			if err := u.e.Apply(settings); err != nil {
 				t.Fatal(err)
 			}
 			var fs []entity.FileID
@@ -1195,7 +1209,10 @@ func TestMarksGoAloneAfterAFailureThatIsNoConflict(t *testing.T) {
 		}
 		return next.Commit(ctx, p, marks)
 	}), onCommit(logCommits(log))}})
-	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 16, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Second
+	settings.GroupCommitMaxFiles = 16
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 4 {
@@ -1318,7 +1335,10 @@ func TestABatchSlowerThanTheBoundIsHalvedUntilItCommits(t *testing.T) {
 		return next.Commit(ctx, p, marks)
 	}))
 	u.e.SetConflictBound(100 * time.Millisecond)
-	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 16, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Second
+	settings.GroupCommitMaxFiles = 16
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 4 {
@@ -1410,7 +1430,9 @@ func TestAClockPastTheAgeWhileTheTimerIsArmedCommits(t *testing.T) {
 	u := newUnit(t, func(d *engine.Deps) {
 		d.Clock = &lateArmClock{TestClock: d.Clock.(*sim.TestClock), wait: time.Second, step: 2 * time.Second}
 	})
-	if err := u.e.Apply(engine.Settings{ExistenceAge: time.Second, GroupCommitMaxFiles: 64, CloneMaxLen: 1 << 30}); err != nil {
+	settings := enginetest.Settings
+	settings.ExistenceAge = time.Second
+	if err := u.e.Apply(settings); err != nil {
 		t.Fatal(err)
 	}
 	f := u.create(t, "a")

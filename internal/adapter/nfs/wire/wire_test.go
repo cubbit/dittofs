@@ -210,29 +210,7 @@ var knfsdAreas = map[string]struct {
 	"gss41": {map[[2]uint32]bool{{100003, 4}: true}, 1, true},
 }
 
-// RPCSEC_GSS's credential (RFC 2203 section 5): its flavour, and the gss_proc
-// and service values the gss areas' names stand for.
-const (
-	authGSS        = 6
-	gssProcData    = 0
-	gssProcInit    = 1
-	gssProcDestroy = 3
-)
-
-var gssServices = map[string]uint32{"krb5": 1, "krb5i": 2, "krb5p": 3}
-
-// gssCred decodes an RPCSEC_GSS credential body by hand from RFC 2203 section
-// 5: version, gss_proc, seq_num, service and the context handle.
-func gssCred(b []byte) (proc, seq, service uint32, handle []byte, ok bool) {
-	if len(b) < 20 || binary.BigEndian.Uint32(b) != 1 {
-		return 0, 0, 0, nil, false
-	}
-	n := binary.BigEndian.Uint32(b[16:])
-	if uint64(n+3)&^3 != uint64(len(b)-20) {
-		return 0, 0, 0, nil, false
-	}
-	return binary.BigEndian.Uint32(b[4:]), binary.BigEndian.Uint32(b[8:]), binary.BigEndian.Uint32(b[12:]), b[20 : 20+n], true
-}
+var gssServices = map[string]uint32{"krb5": wire.GSSSvcNone, "krb5i": wire.GSSSvcIntegrity, "krb5p": wire.GSSSvcPrivacy}
 
 // checkGSSCall checks a gss area's call, named <sec>-<what>: an RPCSEC_GSS
 // credential whose gss_proc is INIT for "init", DESTROY for "destroy" and DATA
@@ -241,22 +219,23 @@ func gssCred(b []byte) (proc, seq, service uint32, handle []byte, ok bool) {
 // other call carries the service of its mount's sec=.
 func checkGSSCall(t *testing.T, name, what string, fl uint32, body []byte) {
 	t.Helper()
-	if fl != authGSS {
+	if fl != wire.AuthGSS {
 		t.Errorf("%s: credential flavour %d, want RPCSEC_GSS", name, fl)
 		return
 	}
-	proc, _, service, handle, ok := gssCred(body)
-	if !ok {
-		t.Errorf("%s: an RPCSEC_GSS credential that does not decode: %x", name, body)
+	cred, err := wire.DecodeGSSCred(body)
+	if err != nil {
+		t.Errorf("%s: an RPCSEC_GSS credential that does not decode: %v", name, err)
 		return
 	}
+	proc, service, handle := cred.Proc, cred.Service, cred.Handle
 	sec, op, _ := strings.Cut(what, "-")
-	wantProc, wantService := uint32(gssProcData), gssServices[sec]
+	wantProc, wantService := wire.GSSProcData, gssServices[sec]
 	switch op {
 	case "init-call":
-		wantProc, wantService = gssProcInit, gssServices["krb5"]
+		wantProc, wantService = wire.GSSProcInit, wire.GSSSvcNone
 	case "destroy-call":
-		wantProc = gssProcDestroy
+		wantProc = wire.GSSProcDestroy
 	}
 	if wantService == 0 {
 		t.Errorf("%s: no krb5, krb5i or krb5p in its name", name)
@@ -265,7 +244,7 @@ func checkGSSCall(t *testing.T, name, what string, fl uint32, body []byte) {
 	if proc != wantProc || service != wantService {
 		t.Errorf("%s: gss_proc %d, service %d, want %d, %d", name, proc, service, wantProc, wantService)
 	}
-	if (len(handle) == 0) != (wantProc == gssProcInit) {
+	if (len(handle) == 0) != (wantProc == wire.GSSProcInit) {
 		t.Errorf("%s: a %d-byte context handle under gss_proc %d", name, len(handle), proc)
 	}
 }
@@ -300,7 +279,7 @@ func checkKnfsdCaptures(t *testing.T, dir string) {
 			call := readGoldenFile(t, strings.TrimSuffix(f, "-reply.hex")+"-call.hex")
 			if len(rec) < 8 || len(call) < 4 || !bytes.Equal(rec[:4], call[:4]) || binary.BigEndian.Uint32(rec[4:8]) != 1 {
 				t.Errorf("%s: not a reply to its call's transaction ID %x", name, call[:min(4, len(call))])
-			} else if area.gss && (len(rec) < 16 || binary.BigEndian.Uint32(rec[8:]) != 0 || binary.BigEndian.Uint32(rec[12:]) != authGSS) {
+			} else if area.gss && (len(rec) < 16 || binary.BigEndian.Uint32(rec[8:]) != 0 || binary.BigEndian.Uint32(rec[12:]) != wire.AuthGSS) {
 				t.Errorf("%s: not an accepted reply with an RPCSEC_GSS verifier", name)
 			}
 			continue
@@ -308,20 +287,12 @@ func checkKnfsdCaptures(t *testing.T, dir string) {
 			t.Errorf("%s: neither a call nor a reply", name)
 			continue
 		}
-		// Under krb5i and krb5p a COMPOUND's arguments are a protected body,
-		// yet ParseCall reads a tag and minor version from them, and refuses
-		// a krb5p call whose ciphertext does not read as one. Such a call's
-		// credential is read by hand: what these files pin is the header and
-		// credential knfsd accepted, not ParseCall's reading of the body.
-		protected := area.gss && !strings.HasPrefix(parts[2], "krb5-")
 		c, err := wire.ParseCall(rec)
-		fl, cred := c.Credential()
-		if err != nil && protected && c.Program() == 100003 && c.Version() == 4 && c.Procedure() == 1 && len(rec) >= 32 {
-			fl, cred = binary.BigEndian.Uint32(rec[24:]), rec[32:min(len(rec), 32+int(binary.BigEndian.Uint32(rec[28:])))]
-		} else if err != nil {
+		if err != nil {
 			t.Errorf("%s: %v", name, err)
 			continue
 		}
+		fl, cred := c.Credential()
 		pv := [2]uint32{c.Program(), c.Version()}
 		if !area.progs[pv] {
 			t.Errorf("%s: program %d version %d, not one of area %s's", name, pv[0], pv[1], parts[1])
@@ -335,7 +306,13 @@ func checkKnfsdCaptures(t *testing.T, dir string) {
 		} else if fl != 0 && fl != 1 {
 			t.Errorf("%s: credential flavour %d, want AUTH_NONE or AUTH_SYS", name, fl)
 		}
-		if minor, ok := compoundMinor(c); ok && minor != area.minor && !protected {
+		// Under krb5i and krb5p a data call's arguments are a protected
+		// body: the parse reads no COMPOUND prefix from them, so its tag and
+		// minor version wait for the GSS stage's unwrap.
+		protected := area.gss && strings.Contains(parts[2], "-write-") && !strings.HasPrefix(parts[2], "krb5-")
+		if minor, ok := compoundMinor(c); protected && (ok || c.Tag() != nil) {
+			t.Errorf("%s: a protected body read as a COMPOUND of minor version %d, tag %x", name, minor, c.Tag())
+		} else if ok && minor != area.minor {
 			t.Errorf("%s: minor version %d, want %d", name, minor, area.minor)
 		}
 		if reached[parts[1]] == nil {
