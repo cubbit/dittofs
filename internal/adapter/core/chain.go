@@ -182,7 +182,16 @@ func (c *chain) next(e *entry) bool {
 	if next <= e.off || next >= len(c.rec.B) {
 		c.flush(splits, nil)
 		if !c.stopped {
-			c.p.l.closeAfterSent(fmt.Errorf("%w: %w: a chain's step from %d to %d, in a record of %d bytes", errWalk, ErrDecode, e.off, next, len(c.rec.B)))
+			c.p.l.closeAfterSent(
+				fmt.Errorf(
+					"%w: %w: a chain's step from %d to %d, in a record of %d bytes",
+					errWalk,
+					ErrDecode,
+					e.off,
+					next,
+					len(c.rec.B),
+				),
+			)
 		}
 		return false
 	}
@@ -240,7 +249,7 @@ func (c *chain) resume(answer func()) {
 func (c *chain) at(off int) entry {
 	p := c.p
 	tr := p.begin(c.rec)
-	h, err := p.st.Header.Decode(c.rec, off)
+	h, err := p.decodeMember(c.rec, off)
 	p.lap(tr, stageDecodeHeader)
 	if h == nil {
 		c.abort(tr, fmt.Errorf("%w: %v", ErrDecode, err))
@@ -382,7 +391,9 @@ func (c *chain) admit(e *entry) {
 	release, err := p.st.Flow.Admit(try, e.u)
 	if err != nil && errors.Is(err, context.DeadlineExceeded) {
 		c.giveBack() // never wait at flow control holding a place
-		if release, err = p.st.Flow.Admit(try, e.u); err != nil && errors.Is(err, context.DeadlineExceeded) {
+
+		if release, err = p.st.Flow.Admit(try, e.u); err != nil &&
+			errors.Is(err, context.DeadlineExceeded) {
 			c.flush(splitFlow, e.tr)
 			release, err = p.st.Flow.Admit(e.tr.ctx, e.u)
 		}
@@ -564,7 +575,15 @@ func (c *chain) lookup(tr *track, h Header) (*resources.Buf, error) {
 	return c.p.st.Replay.Lookup(ctx, h)
 }
 
-func (c *chain) answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, failed bool, err error) {
+func (c *chain) answered(
+	tr *track,
+	h Header,
+	reply *resources.Buf,
+	key uint64,
+	s Status,
+	failed bool,
+	err error,
+) {
 	c.failed, c.failS = failed, s
 	if tr.cached {
 		// A hit's copy is reserved under no client's key, which Join refuses
@@ -595,7 +614,14 @@ func (c *chain) answered(tr *track, h Header, reply *resources.Buf, key uint64, 
 // after it do not run, and the replies before it go out with its interim,
 // where its table holds, which grants its credits and those of the members
 // after it, whose headers alone are decoded (§4.7).
-func (c *chain) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf, err error, release func()) {
+func (c *chain) unanswered(
+	tr *track,
+	h Header,
+	tb *OpTable,
+	reply *resources.Buf,
+	err error,
+	release func(),
+) {
 	p := c.p
 	release()
 	defer func() { c.stopped = true }() // once its interim, if any, is out
@@ -651,7 +677,7 @@ func (c *chain) later(hs []Header) []Header {
 	p := c.p
 	off, next := c.cur.off, c.cur.h.Next()
 	for next > off && next < len(c.rec.B) {
-		h, err := p.st.Header.Decode(c.rec, next)
+		h, err := p.decodeMember(c.rec, next)
 		if h == nil || err != nil {
 			break
 		}

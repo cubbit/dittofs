@@ -1,13 +1,12 @@
 package core
 
 import (
-	"fmt"
-	"testing"
-
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
@@ -216,11 +215,19 @@ var (
 	ErrStatusWait = errStatusWait
 )
 
-func (sh *shared) ReserveReply(ctx context.Context, key netip.Addr, bound int) (*resources.Buf, error) {
+func (sh *shared) ReserveReply(
+	ctx context.Context,
+	key netip.Addr,
+	bound int,
+) (*resources.Buf, error) {
 	return sh.reserveReply(ctx, key, bound)
 }
 
-func (sh *shared) ReserveStatus(ctx context.Context, key netip.Addr, close func(error)) *resources.Buf {
+func (sh *shared) ReserveStatus(
+	ctx context.Context,
+	key netip.Addr,
+	close func(error),
+) *resources.Buf {
 	return sh.reserveStatus(ctx, key, 0, time.Time{}, close)
 }
 
@@ -229,7 +236,13 @@ type TestReader struct{ r *reader }
 
 // NewTestReader returns a record cut over nc, its records charged to key from
 // recv, with timeout as read_timeout; its bytes count nowhere.
-func NewTestReader(nc net.Conn, f Framer, recv *resources.BufPool, key netip.Addr, timeout time.Duration) *TestReader {
+func NewTestReader(
+	nc net.Conn,
+	f Framer,
+	recv *resources.BufPool,
+	key netip.Addr,
+	timeout time.Duration,
+) *TestReader {
 	return &TestReader{r: newReader(nc, f, recv, key, timeout, nop{})}
 }
 
@@ -239,6 +252,15 @@ func (t *TestReader) Read(ctx context.Context) (*resources.Buf, error) { return 
 // ErrFrame is the framing refusal every record-level error wraps, so a close
 // can name its reason.
 var ErrFrame = errFrame
+
+// The TLS refusals StartTLS answers with, so a test tells a refusal of one
+// kind from another, not only nil from an error.
+var (
+	ErrTLSAgain    = errTLSAgain
+	ErrTLSClosing  = errTLSClosing
+	ErrTLSNoConfig = errTLSNoConfig
+	ErrTLSOutside  = errTLSOutside
+)
 
 // The pipeline at its seam: a test builds one over a link of its own parts
 // and hands serve the records a reader would.
@@ -250,8 +272,29 @@ var (
 	ErrNoHold        = errNoHold
 )
 
-func NewPipeline(sh *Shared, st Stages, ctx context.Context, remote netip.Addr, set settings.Settings, record int, out func(*resources.Buf, uint64, uint64, uint64) error, close func(error)) *Pipeline {
-	return newPipeline(sh, st, link{ctx: ctx, remote: remote, set: set, record: record, out: out, close: close, closeAfterSent: close})
+func NewPipeline(
+	sh *Shared,
+	st Stages,
+	ctx context.Context,
+	remote netip.Addr,
+	set settings.Settings,
+	record int,
+	out func(*resources.Buf, uint64, uint64, uint64) error,
+	close func(error),
+) *Pipeline {
+	return newPipeline(
+		sh,
+		st,
+		link{
+			ctx:            ctx,
+			remote:         remote,
+			set:            set,
+			record:         record,
+			out:            out,
+			close:          close,
+			closeAfterSent: close,
+		},
+	)
 }
 
 func (p *pipeline) Serve(rec *resources.Buf)       { p.serve(rec) }
@@ -285,7 +328,12 @@ type TestWriter struct{ w *writer }
 
 // NewTestWriter starts a writer over nc, its gathered writes bounded by
 // timeout and closeConn its connection's close; its bytes count nowhere.
-func NewTestWriter(nc net.Conn, f Framer, timeout time.Duration, closeConn func(error)) *TestWriter {
+func NewTestWriter(
+	nc net.Conn,
+	f Framer,
+	timeout time.Duration,
+	closeConn func(error),
+) *TestWriter {
 	return &TestWriter{w: newWriter(nc, f, timeout, closeConn, nop{})}
 }
 
@@ -328,7 +376,13 @@ func Later(st Stages, rec *resources.Buf, off int, h Header) []Header {
 }
 
 // Judge is judge over the members rest holds, decoded as the runner does.
-func Judge(row *Op, inv Invocation, rest []byte, v Version, r *Request) (whole bool, handles []vfs.Handle) {
+func Judge(
+	row *Op,
+	inv Invocation,
+	rest []byte,
+	v Version,
+	r *Request,
+) (whole bool, handles []vfs.Handle) {
 	ms, _, _, err := members(row, inv, rest, v)
 	return judge(ms, err == nil, r)
 }
@@ -365,7 +419,13 @@ func ServeConnCharged(s *Server, nc net.Conn, l *Listener, charge *resources.Res
 // ServeConnAdmitted hands the server a socket with the count its accept loop
 // took at admission beside the connection-state charge, as the loop does: a
 // handover the server refuses then gives both back, each once.
-func ServeConnAdmitted(s *Server, nc net.Conn, l *Listener, count *resources.ConnLimit, charge *resources.Reservation) *Conn {
+func ServeConnAdmitted(
+	s *Server,
+	nc net.Conn,
+	l *Listener,
+	count *resources.ConnLimit,
+	charge *resources.Reservation,
+) *Conn {
 	return s.serveConn(nc, l, nil, count, charge)
 }
 
@@ -426,7 +486,12 @@ func Runs(p *Pipeline) int {
 // socket closes and its loop ends with Stop, as Start's own do, and loopDone
 // reports the loop's end.
 func AddBound(s *Server, l *Listener, ln net.Listener) (loopDone <-chan struct{}) {
-	b := &bound{l: l, addr: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), 0), ln: ln, stopped: make(chan struct{})}
+	b := &bound{
+		l:       l,
+		addr:    netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), 0),
+		ln:      ln,
+		stopped: make(chan struct{}),
+	}
 	b.loopDone = make(chan struct{})
 	s.mu.Lock()
 	s.bound = append(s.bound, b)
@@ -449,6 +514,29 @@ func WatchIdleArms(c *Conn) (current func() bool) {
 		c.timersMu.Lock()
 		defer c.timersMu.Unlock()
 		return c.idleT != nil && last == c.idleGen.Load()
+	}
+}
+
+// ConnCloseErr is the error the connection's close carries.
+func ConnCloseErr(c *Conn) error {
+	return c.closeErr()
+}
+
+// HoldServed parks the connection's reader between the record it served and
+// its wait for the upgrade, and returns what releases it: a test holds the
+// reader past the handshake's end and the wait still finds the upgrade, which
+// the connection's own by then does not name.
+func HoldServed(c *Conn) (release func()) {
+	gate := make(chan struct{})
+
+	c.upMu.Lock()
+	c.afterServed = func() {
+		<-gate
+	}
+	c.upMu.Unlock()
+
+	return func() {
+		close(gate)
 	}
 }
 

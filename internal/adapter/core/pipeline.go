@@ -63,7 +63,21 @@ type shared struct {
 // discards, d.Tracer, d.TraceIDs and d.VFS; held requests past a connection's
 // floor of 256 requests and 32 MiB go to d.Budgets' hold pool (§4.6).
 func newShared(d adapter.Deps, reply *resources.BufPool) *shared {
-	sh := &shared{clock: runtimeClock{}, log: d.Logger, tracer: d.Tracer, shares: d.VFS, sample: sampleBound(d.SampleRatio), traceIDs: d.TraceIDs, reply: reply, tables: map[*OpTable]*tableSeries{}, panics: map[[2]string]*frameLines{}, closes: map[reason]*lineLimiter{}, addressLines: map[netip.Addr]*lineLimiter{}, floorRequests: 256, floorBytes: 32 << 20}
+	sh := &shared{
+		clock:         runtimeClock{},
+		log:           d.Logger,
+		tracer:        d.Tracer,
+		shares:        d.VFS,
+		sample:        sampleBound(d.SampleRatio),
+		traceIDs:      d.TraceIDs,
+		reply:         reply,
+		tables:        map[*OpTable]*tableSeries{},
+		panics:        map[[2]string]*frameLines{},
+		closes:        map[reason]*lineLimiter{},
+		addressLines:  map[netip.Addr]*lineLimiter{},
+		floorRequests: 256,
+		floorBytes:    32 << 20,
+	}
 	if d.Budgets != nil {
 		sh.hold = d.Budgets.Hold
 	}
@@ -139,7 +153,11 @@ func (c capped) Admit(ctx context.Context, _ Header) (release func(), err error)
 // unreserved small buffer, or set one aside per connection at accept for its
 // statuses, when the reply budget is shown to bind before the receive budget
 // does.
-func (sh *shared) reserveReply(ctx context.Context, key netip.Addr, bound int) (*resources.Buf, error) {
+func (sh *shared) reserveReply(
+	ctx context.Context,
+	key netip.Addr,
+	bound int,
+) (*resources.Buf, error) {
 	// A reply that fits at once arms no deadline.
 	if buf, ok := sh.reply.TryGet(key, bound); ok {
 		return buf, nil
@@ -215,7 +233,13 @@ func (p *pipeline) takeStatus(ctx context.Context) (at time.Time, ok bool) {
 // with errReplyWait. It returns nil, with nothing reserved, when the wait
 // ended. Its caller keeps the request's record, and so its receive charge,
 // until the status goes out or the wait ends (RFC 24 §6.1).
-func (sh *shared) reserveStatus(ctx context.Context, key netip.Addr, n int, at time.Time, close func(error)) *resources.Buf {
+func (sh *shared) reserveStatus(
+	ctx context.Context,
+	key netip.Addr,
+	n int,
+	at time.Time,
+	close func(error),
+) *resources.Buf {
 	// A status is encoded by appending to B[:0], within n's class.
 	if buf, ok := sh.reply.TryGet(key, n); ok {
 		return buf
@@ -277,6 +301,17 @@ type link struct {
 	closeAfterSent func(err error)
 	idle           func() // called at each moment nothing runs any more
 	turn           func() // called when a request starts or ends, under the pipeline's mutex, so a connection's idle deadline knows its arm was superseded
+	// open starts the decode of a header, first for a call's first header, and
+	// shut ends it, returning the TLS upgrade that decode asked for, nil for
+	// none; outUpgrade queues the reply that is the last message sent in
+	// plaintext, after which the writer hands the socket to TLS; withdraw ends
+	// an upgrade that will not happen. A connection's pipeline has all of them;
+	// one built with no connection, as a test builds it, has none, and asks
+	// nothing.
+	open       func(first bool)
+	shut       func() *upgrade
+	outUpgrade func(msg *resources.Buf, lo, hi uint64, up *upgrade) error
+	withdraw   func(up *upgrade)
 }
 
 // The stages a protocol leaves nil, filled once at accept so the pipeline
@@ -412,6 +447,10 @@ func newPipeline(sh *shared, st Stages, l link) *pipeline {
 // connection at its bound is not read; the request runs on a goroutine of its
 // own from there.
 //
+// It returns the TLS upgrade the record's decode asked for, nil for none, so
+// the reader waits on that upgrade and on no later state of the connection,
+// whose handoff may have cleared it by the time the reader waits.
+//
 // A record whose first header names a next is a chain, which serveChain
 // takes from there (§4.7).
 //
@@ -432,17 +471,18 @@ func newPipeline(sh *shared, st Stages, l link) *pipeline {
 // nconnect spread a client over several readers. Move decryption to the
 // worker, with admission re-checked after it, when a single-connection
 // encrypted write benchmark shows the reader CPU-bound.
-func (p *pipeline) serve(rec *resources.Buf) {
+func (p *pipeline) serve(rec *resources.Buf) *upgrade {
 	tr := p.begin(rec)
-	h, err := p.st.Header.Decode(rec, 0)
+	h, up, err := p.decode(rec)
+	tr.up = up
 	p.lap(tr, stageDecodeHeader)
 	if h == nil {
 		p.drop(tr, rec, fmt.Errorf("%w: %v", ErrDecode, err))
-		return
+		return up
 	}
 	if h.Next() != 0 {
 		p.serveChain(tr, rec, h, err)
-		return
+		return up
 	}
 	if err != nil {
 		// The refusal of a header that failed Decode is not passed to Wrap:
@@ -450,7 +490,7 @@ func (p *pipeline) serve(rec *resources.Buf) {
 		// session would hand a peer a valid checksum under a key it does not
 		// hold (§5.5).
 		p.refuse(tr, rec, h, stageDecodeHeader, fmt.Errorf("%w: %v", ErrDecode, err), false, false)
-		return
+		return up
 	}
 	u, err := p.st.Security.Unwrap(h, rec, nil)
 	p.lap(tr, stageUnwrap)
@@ -464,18 +504,20 @@ func (p *pipeline) serve(rec *resources.Buf) {
 			err = fmt.Errorf("%w: %w", errUnwrapClose, err)
 		}
 		p.drop(tr, rec, err)
-		return
+
+		return up
 	}
 	if err != nil {
 		p.refuse(tr, rec, u, stageUnwrap, err, true, false)
-		return
+		return up
 	}
 	if key, ok := p.st.Hold.Cancels(u); ok {
 		// A cancel gets no reply of its own (§4.7).
 		p.end(tr, false, 0, 0, nil)
 		rec.Release()
 		p.endHold(key)
-		return
+
+		return up
 	}
 	release, err := p.st.Flow.Admit(tr.ctx, u)
 	p.lap(tr, stageAdmit)
@@ -483,10 +525,12 @@ func (p *pipeline) serve(rec *resources.Buf) {
 		if p.endedByClose(err) {
 			p.end(tr, false, 0, 0, nil)
 			rec.Release()
-			return
+
+			return up
 		}
 		p.refuse(tr, rec, u, stageAdmit, err, true, false)
-		return
+
+		return up
 	}
 	// Admit tries once under a context close ended, and may still grant: a
 	// request admitted after close is not run. It counts as running before
@@ -498,11 +542,43 @@ func (p *pipeline) serve(rec *resources.Buf) {
 		release()
 		p.end(tr, false, 0, 0, nil)
 		rec.Release()
-		return
+
+		return up
 	}
+
 	tr.label.admitted()
 	tr.flight = true
 	go p.run(tr, rec, u, release)
+
+	return up
+}
+
+// decode decodes a call's first header and returns the TLS upgrade its decode
+// asked for.
+func (p *pipeline) decode(rec *resources.Buf) (Header, *upgrade, error) {
+	if p.l.open == nil {
+		h, err := p.st.Header.Decode(rec, 0)
+		return h, nil, err
+	}
+
+	p.l.open(true)
+	h, err := p.st.Header.Decode(rec, 0)
+
+	return h, p.l.shut(), err
+}
+
+// decodeMember decodes the header at off of a chain's later member, which may
+// not ask for TLS.
+func (p *pipeline) decodeMember(rec *resources.Buf, off int) (Header, error) {
+	if p.l.open == nil {
+		return p.st.Header.Decode(rec, off)
+	}
+
+	p.l.open(false)
+	h, err := p.st.Header.Decode(rec, off)
+	p.l.shut()
+
+	return h, err
 }
 
 // drop ends a record whose stage says close: nothing is answered, and the
@@ -538,7 +614,11 @@ func (p *pipeline) mapRefusal(tr *track, h Header, st stage, err error) (Status,
 	if st == stageUnwrap && p.misbehaved.CompareAndSwap(false, true) {
 		// A client that sends what Unwrap refuses is logged once per
 		// connection, not once per request (§10.3).
-		p.sh.log.LogAttrs(tr.ctx, slog.LevelWarn, "a message the connection's security refused", tr.attrs(err)...)
+		p.sh.log.LogAttrs(
+			tr.ctx,
+			slog.LevelWarn,
+			"a message the connection's security refused",
+			tr.attrs(err)...)
 	}
 	p.lap(tr, stageMapError)
 	return s, send
@@ -552,7 +632,14 @@ func (p *pipeline) mapRefusal(tr *track, h Header, st stage, err error) (Status,
 // connection has one such wait at a time: a second refusal waits here, on
 // the reader, for the first to end, its statusWait running from there on
 // through its wait for its buffer.
-func (p *pipeline) refuse(tr *track, rec *resources.Buf, h Header, st stage, err error, wrap, closeAfter bool) {
+func (p *pipeline) refuse(
+	tr *track,
+	rec *resources.Buf,
+	h Header,
+	st stage,
+	err error,
+	wrap, closeAfter bool,
+) {
 	s, send := p.mapRefusal(tr, h, st, err)
 	if !send {
 		p.end(tr, false, 0, 0, err)
@@ -597,7 +684,15 @@ func (p *pipeline) refuse(tr *track, rec *resources.Buf, h Header, st stage, err
 
 // answer sends a refusal's status in buf, then releases rec, and closes the
 // connection after where closeAfter.
-func (p *pipeline) answer(tr *track, rec *resources.Buf, h Header, s Status, buf *resources.Buf, wrap, closeAfter bool, cause error) {
+func (p *pipeline) answer(
+	tr *track,
+	rec *resources.Buf,
+	h Header,
+	s Status,
+	buf *resources.Buf,
+	wrap, closeAfter bool,
+	cause error,
+) {
 	defer rec.Release()
 	buf.B = buf.B[:0] // a buffer comes back as long as its reservation
 	if err := p.st.Header.Encode(h, s, buf); err != nil {
@@ -634,6 +729,19 @@ func (p *pipeline) out(msg *resources.Buf, lo, hi uint64) bool {
 	return p.l.out(msg, lo, hi, 0) == nil
 }
 
+// outUpgrade is out for the reply of the call that asked for TLS: the last
+// message sent in plaintext.
+func (p *pipeline) outUpgrade(msg *resources.Buf, lo, hi uint64, up *upgrade) bool {
+	if p.ctx.Err() != nil {
+		msg.Release()
+		return false
+	}
+
+	up.queued = p.l.outUpgrade(msg, lo, hi, up) == nil
+
+	return up.queued
+}
+
 // run is one admitted request alone, on its own goroutine, from the replay
 // check to out.
 func (p *pipeline) run(tr *track, rec *resources.Buf, h Header, release func()) {
@@ -658,7 +766,15 @@ type answerer interface {
 	halted() bool
 	// answered takes the message's encoded reply, its key, its status and
 	// whether that status is a failure (RFC 20 §4.3).
-	answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, failed bool, err error)
+	answered(
+		tr *track,
+		h Header,
+		reply *resources.Buf,
+		key uint64,
+		s Status,
+		failed bool,
+		err error,
+	)
 	// unanswered ends a message a NoReply row answered.
 	unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf, err error, release func())
 	// pended sends the interim of a message that went pending, keyed key,
@@ -707,16 +823,37 @@ func copyWaits(err error) bool {
 
 func (alone) halted() bool { return false }
 
-func (a alone) answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, _ bool, err error) {
+func (a alone) answered(
+	tr *track,
+	h Header,
+	reply *resources.Buf,
+	key uint64,
+	s Status,
+	_ bool,
+	err error,
+) {
 	n := len(reply.B)
 	a.p.end(tr, a.p.send(tr, h, reply, key), s, n, err)
 }
 
-func (a alone) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf, err error, release func()) {
+func (a alone) unanswered(
+	tr *track,
+	h Header,
+	tb *OpTable,
+	reply *resources.Buf,
+	err error,
+	release func(),
+) {
 	a.p.unanswered(tr, h, tb, reply, err, release)
 }
 
-func (a alone) pended(h Header, interim *resources.Buf, key uint64) { a.p.send(nil, h, interim, key) }
+func (a alone) pended(
+	h Header,
+	interim *resources.Buf,
+	key uint64,
+) {
+	a.p.send(nil, h, interim, key)
+}
 
 func (alone) resume(answer func()) { answer() }
 
@@ -726,7 +863,14 @@ func (alone) resume(answer func()) { answer() }
 // Route returns one, and by that table after. It returns the message's
 // request, for a related member after it, and whether it is held between
 // attempts, which its answer then ends.
-func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Request, release func(), a answerer) (*Request, bool) {
+func (p *pipeline) message(
+	tr *track,
+	rec *resources.Buf,
+	h Header,
+	prev *Request,
+	release func(),
+	a answerer,
+) (*Request, bool) {
 	ctx := tr.ctx
 	cached, err := a.lookup(tr, h)
 	p.lap(tr, stageReplayCheck)
@@ -872,7 +1016,13 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 
 // reserve takes the reply buffer of h's attempt through a, its wait timed
 // and its refusal counted. resolve_ids starts where it ends.
-func (p *pipeline) reserve(tr *track, a answerer, inv Invocation, h Header, r *Request) (*resources.Buf, error) {
+func (p *pipeline) reserve(
+	tr *track,
+	a answerer,
+	inv Invocation,
+	h Header,
+	r *Request,
+) (*resources.Buf, error) {
 	n, _ := inv.Bound(r, p.l.record-p.st.Header.ReplyLen(h))
 	reply, err := a.reserve(tr.ctx, n+p.st.Header.ReplyLen(h))
 	if err != nil {
@@ -922,7 +1072,19 @@ func (p *pipeline) resolve(tr *track, r *Request, op *Op, inv Invocation, draini
 // and its span ended unsent (§3.1, §6.5). Its error is still mapped, unless
 // it is the close's own cancel, or the ErrParked of a handler whose Park the
 // close dropped, which are no error.
-func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op *Op, inv Invocation, reply *resources.Buf, err error, release func(), a answerer, pd *pending) {
+func (p *pipeline) finish(
+	tr *track,
+	h Header,
+	tb *OpTable,
+	errs *ErrorTable,
+	op *Op,
+	inv Invocation,
+	reply *resources.Buf,
+	err error,
+	release func(),
+	a answerer,
+	pd *pending,
+) {
 	ctx := tr.ctx
 	var s Status
 	send, notFailure := true, false
@@ -984,6 +1146,11 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 		// service returned (§4.7, §10.2).
 		err = pd.last
 	}
+	// The upgrade a call asked for is made only by one the router admitted and
+	// its row answered with success, answered alone.
+	if _, alone := a.(alone); alone && tr.up != nil && err == nil {
+		tr.upSend = true
+	}
 	a.answered(tr, eh, reply, key, s, s != 0 && !notFailure, err)
 }
 
@@ -1010,7 +1177,9 @@ type track struct {
 	notLast   bool // refused ErrNotLast in place of a held error, its result that error (§4.7)
 	op        *Op
 	refused   bool
-	stage     stage // the stage that refused it
+	stage     stage    // the stage that refused it
+	up        *upgrade // the TLS upgrade its header asked for; nil for none
+	upSend    bool     // its reply is the last one sent in plaintext
 }
 
 // begin draws a request's trace ID from Deps.TraceIDs as serve takes its
@@ -1196,7 +1365,14 @@ func (p *pipeline) routed(tr *track, ts *tableSeries, code uint32) {
 // or a service error a row answers is expected, and the service logs its own
 // faults. RFC 20 §4.5 gives examples of each level, not a closed set.
 // Overturned if an operator needs a mapped error at a level that pages.
-func (p *pipeline) mapped(tr *track, errs *ErrorTable, err error, op *Op, v Version, log bool) (s Status, send, notFailure bool) {
+func (p *pipeline) mapped(
+	tr *track,
+	errs *ErrorTable,
+	err error,
+	op *Op,
+	v Version,
+	log bool,
+) (s Status, send, notFailure bool) {
 	r, matched := errs.row(err, op, v)
 	tr.unmapped = !matched
 	if !matched {
@@ -1215,7 +1391,14 @@ func (p *pipeline) mapped(tr *track, errs *ErrorTable, err error, op *Op, v Vers
 
 // unanswered ends a request refused with a NoReply row, err: no final
 // reply, and where tb holds, an interim in reply's place.
-func (p *pipeline) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf, err error, release func()) {
+func (p *pipeline) unanswered(
+	tr *track,
+	h Header,
+	tb *OpTable,
+	reply *resources.Buf,
+	err error,
+	release func(),
+) {
 	if tb != nil && tb.Holds {
 		p.interim(tr.ctx, h, reply)
 	} else if reply != nil {
@@ -1248,6 +1431,11 @@ func (p *pipeline) end(tr *track, sent bool, s Status, reply int, err error) {
 	if tr == nil {
 		// The interim of a request still pending: its request goes on.
 		return
+	}
+
+	if tr.up != nil && !tr.up.queued {
+		// No reply left for TLS, so the reader goes on in plaintext.
+		p.l.withdraw(tr.up)
 	}
 	tr.req.runs.observe(tr)
 	if tr.flight {
@@ -1403,7 +1591,13 @@ func (p *pipeline) send(tr *track, h Header, reply *resources.Buf, key uint64) b
 		return false
 	}
 	p.lap(tr, stageWrap)
-	sent := p.out(reply, key, key)
+
+	var sent bool
+	if tr != nil && tr.upSend {
+		sent = p.outUpgrade(reply, key, key, tr.up)
+	} else {
+		sent = p.out(reply, key, key)
+	}
 	p.lap(tr, stageSend)
 	return sent
 }
