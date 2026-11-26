@@ -497,7 +497,8 @@ pkg/transform/keys/provider/
   record.go             T6.5  the key record and its codec
   escrow.go             T6.7  VerifyEscrow, the escrow gate, Reconfigure
   create.go             T6.8  CreateKeys
-  export_test.go        T6.8  the pause before CreateKeys' Update
+  export_test.go        T6.6  the reload hook that drops the cache, for the Harness adapter
+                        T6.8  the pause before CreateKeys' Update
   wrap_test.go          T6.3  vectors, the AAD rows, the count, the storage keys, FuzzStoredWrap
   salvage_test.go       T6.4  the salvage wrap and its unwrap
   record_test.go        T6.5  FuzzKeyRecord, the codec's refusals
@@ -776,10 +777,13 @@ pkg/transform/keys/provider/
 
     An ID leaves `Unavailable` or `Unknown` at its next successful read.
   - `keystest_test.go`: the `Harness` adapter, in package `provider`, over `Records`. `Give` wraps the
-    material under the key file and writes its row through `Update`, retiring the kind's previous
-    current row; `Replace` rewrites the row with the new material's wrap and the old fingerprint;
-    `Destroy` marks the row `destroyed`. After each, the adapter opens a fresh provider over the same
-    `Records`, since the cache holds what the old one read (D10); `Calls` sums across them.
+    material under the key file and writes its row through `Update`, marking `retired` the kind's
+    previous current row; `Replace` rewrites the row with the new material's wrap and the old
+    fingerprint; `Destroy` marks the row `destroyed`. After each, the adapter calls the provider's
+    per-instance reload hook (`export_test.go`), which drops its cached rows and keys (D10) and
+    re-opens each namespace it held, so one provider serves the whole run, and once E8 lands a row
+    `Destroy` marks feeds its notice as `Open` does, under one incarnation; `Calls` is that
+    provider's.
 - **Acceptance criteria:**
   - `keystest.Run` passes on the provider under `-race`, its salvage row included (R12).
   - After a failed `Get` of an ID never given, `Status().Unknown` names it; once it is given and read,
