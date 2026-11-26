@@ -57,6 +57,7 @@
 //	Create    the name
 //	Park      the name
 //	Notify    target (8 bytes), the message ID of the request it names
+//	Upgrade   mode (1 byte): 0 succeeds, 1 answers not supported, 2 answers no reply
 //	Compound  count (4 bytes), tag length (4), the tag, then per member: operation (4), length (4), arguments
 //
 // Every other operation has none. A Cancel names its target by carrying the
@@ -128,6 +129,9 @@ const (
 	OpCancel                      // never routed: HoldCodec.Cancels names the request keyed by Msg.Target
 	OpCompound                    // version 1: the compound row, its members Msg.Members
 	OpRead                        // NeedsTree|NeedsFH; one vfs.Service.Read of Msg.Count bytes at Msg.Offset, its count clamped to its room
+	// OpUpgrade: NeedsNothing; its header's Decode asks Conn.StartTLS; its
+	// answer is Msg.Mode's
+	OpUpgrade
 )
 
 // ErrFragmentedReply is a reply whose record mark says more fragments follow:
@@ -312,7 +316,11 @@ func xorKey(b []byte, session uint32) {
 // headerCodec decodes a request's header and encodes its reply's. flow is the
 // connection's credits, which a reply's grant is added to; nil grants without
 // counting, as Bare does.
-type headerCodec struct{ flow *flow }
+type headerCodec struct {
+	flow *flow
+	c    *core.Conn // nil where the stages were built for no connection
+	up   *Upgrade   // nil: an Upgrade asks nothing
+}
 
 // Decode returns the header at off in the record. A header whose fields
 // decoded and whose next is bad comes back with its error, so its refusal
@@ -320,8 +328,26 @@ type headerCodec struct{ flow *flow }
 // tag is read with its header, as RFC 20 §4.1 reads an NFSv4 COMPOUND's,
 // where its arguments are clear, under session 0, so stages with no Security
 // echo and count it too; under a session, Unwrap reads it once they are.
-func (headerCodec) Decode(rec *resources.Buf, off int) (core.Header, error) {
+func (c headerCodec) Decode(rec *resources.Buf, off int) (core.Header, error) {
 	h, err := headerAt(rec.B, off)
+	if err == nil && h.Op() == OpUpgrade && c.up != nil && c.c != nil {
+		// The header stage asks for TLS here, as a protocol's does: core
+		// performs it after the reply, once the call has succeeded.
+		if c.up.Gate != nil {
+			c.up.Gate()
+		}
+
+		asks := 1
+		if c.up.Twice {
+			asks = 2
+		}
+
+		for range asks {
+			if rerr := c.c.StartTLS(c.up.Config); c.up.Result != nil {
+				c.up.Result(rerr)
+			}
+		}
+	}
 	if errors.Is(err, errNext) {
 		return stepless{h}, err
 	}
