@@ -229,10 +229,8 @@ func shareRows() []row {
 		}},
 		{name: "share mount builds its line with the adapter record's port", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, c *client.Client) {
 			sh := s.share(t, c)
-			if _, err := s.Harness.Store().ControlPlane().PutSetting(t.Context(), entity.Setting{Scope: entity.SettingScope{Kind: entity.ScopeInstallation},
-				Key: "adapters.smb.port", Value: []byte("1445")}, 0); err != nil {
-				t.Fatalf("put the SMB adapter's port: %v", err)
-			}
+			// The adapter stays disabled, so the node binds no port for the write.
+			mustRun(t, run, "adapter", "set", "smb", "--setting", "port=1445")
 			out := mustRun(t, run, "share", "mount", sh.Spec.Name, "/mnt/x", "--protocol", "smb", "-u", "alice", "--dry-run")
 			// The port as each platform's line spells it: Linux's port=,
 			// macOS's URL, Windows' /TCPPORT:.

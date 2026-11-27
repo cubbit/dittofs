@@ -476,7 +476,8 @@ PR 4 can be open beside any other. A suggestion only: one pull request per subta
     `connection_limit` through the API and reads both applied, and has the port rule refuse an SMB
     port equal to that NFS port, at the node's scope and at the installation's, `400` `invalid`
     naming the key, an undeclared adapter key `unknown_key` and a key the node may not override
-    `wrong_scope`, none committing. The sections still missing are the remote store's `remote.*`
+    `wrong_scope`, none committing. E6's `share mount` row writes the SMB port with `adapter set`
+    rather than through the store. The sections still missing are the remote store's `remote.*`
     (RFC 4's section, RFC 13's Appendix B), the namespace's, and every section at a namespace's, a
     store's or a share's scope (the sweep's `gc.schedule` is RFC 9's). Until they are, `store
     create`, `store update`, a store credential's delete, `namespace create` and a setting's write
@@ -490,8 +491,8 @@ PR 4 can be open beside any other. A suggestion only: one pull request per subta
   - R17, R18 and R21 run through the API over sections the test declares (`node.DeclareSections`)
     in place of the components that will declare them: a live level per share, a node's
     restart-class key, and a remote store's live and bound keys. R18's node-scoped live key is the
-    real `adapters.nfs.enabled`, since no adapter's key waits for a restart (its slot rebuilds for
-    a port), so the restart-class one stays a stand-in. A write the node itself must
+    real `connection_limit`; the restart-class one stays a stand-in, since no declared key waits
+    for a node's restart (an adapter's slot rebuilds for its port). A write the node itself must
     not apply yet (R18's frozen change, R17's change while reads fail) goes through the store, as
     another node's would, since the API's write waits for its own node to apply it.
   - R17 faults the node's scans of the settings rows, not every read: with the counters' read

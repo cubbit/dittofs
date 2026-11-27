@@ -24,8 +24,8 @@ func Unsupported(f *registry.Fixture, goos string) string {
 //
 // decision: a DittoFS fixture that serves NFS or SMB, and so one with
 // namespaced clients, is refused, since dt enables no adapter through the
-// API and reads no port a cell could reach from the adapter's status; one on the S3 profile,
-// since dt seeds no remote store a share's blocks could reach; one naming a
+// API and reads no port a cell could reach from the adapter's status; one on
+// the S3 profile, since dt seeds no remote store a share's blocks could reach; one naming a
 // shares file, since a share's settings are written only through the
 // settings API, which refuses them while the node's settings table declares
 // no section at a share's scope; and

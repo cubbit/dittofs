@@ -35,7 +35,7 @@ import (
 // for: an adapter's port is rebuilt by its slot. Each such section is
 // declared by the component that reads it. The write path, the reconcile and
 // the applied count they test are the node's own whatever section a key is
-// in. A node's live key is the adapters' own. Declare none here once the
+// in. A node's live key is its connection_limit. Declare none here once the
 // node's table holds a section of each scope and class these rows need.
 
 // standIns declares, on h's node, the sections the rows below write: gamma,
@@ -214,12 +214,12 @@ func TestWiredAppliedReadFromTheNodeThatRuns(t *testing.T) {
 		w.appliedReaches(t, path, apiv1.Applied{Nodes: 1, Of: 1})
 
 		nodeAt := "/api/v1/nodes/" + uuid.UUID(w.h.NodeID()).String() + "/settings/"
-		for _, kv := range [][2]string{{"boots.halt", "5"}, {"adapters.nfs.enabled", "false"}} {
+		for _, kv := range [][2]string{{"boots.halt", "5"}, {"connection_limit", "64"}} {
 			if r := w.putSetting(t, w.admin, nodeAt+kv[0], kv[1]); r.status != http.StatusOK {
 				t.Fatalf("PUT %s%s: answered %d %s, want 200", nodeAt, kv[0], r.status, r.body)
 			}
 		}
-		w.appliedReaches(t, nodeAt+"adapters.nfs.enabled", apiv1.Applied{Nodes: 1, Of: 1})
+		w.appliedReaches(t, nodeAt+"connection_limit", apiv1.Applied{Nodes: 1, Of: 1})
 		if got := w.appliedAt(t, nodeAt+"boots.halt"); got != (apiv1.Applied{Nodes: 0, Of: 1}) {
 			t.Errorf("the node's restart-class boots.halt before a restart: applied %+v, want on 0 of 1", got)
 		}
@@ -275,14 +275,13 @@ func TestWiredBoundSettingRefusedWhileContentExists(t *testing.T) {
 }
 
 // The node's own settings through the API: an override of the NFS adapter's
-// port and the node's connection_limit are written at the node's scope and
-// read applied on its one node. The port rule refuses 400 invalid, naming
-// the key, an SMB port that would equal that NFS port on the node, written
-// at the node's scope or at the installation's that the node reads it from,
-// and commits neither; a key the adapter's section does not declare is
-// refused unknown_key, and one the node may not override wrong_scope.
-// Catches a node's setting the API refuses or never reads applied, and two
-// adapters of one node written onto one port.
+// port, the adapter left disabled, and the node's connection_limit read
+// applied on its one node. The port rule refuses an SMB port equal to that
+// NFS port, at the node's scope or the installation's, 400 invalid; an
+// undeclared adapter key is unknown_key, one the node may not override
+// wrong_scope; none moves the store. A port apart is written. Catches a
+// node's setting the API refuses or never reads applied, and two adapters of
+// one node written onto one port.
 func TestWiredNodeSettingsAppliedAndThePortRule(t *testing.T) {
 	onBackends(t, func(t *testing.T, memory bool) {
 		w := newWired(t, memory, nil)
@@ -313,6 +312,9 @@ func TestWiredNodeSettingsAppliedAndThePortRule(t *testing.T) {
 		}
 		if after := storeOf(t, w.h); after != before {
 			t.Errorf("the refused writes changed the store:\n got %s\nwant %s", after, before)
+		}
+		if r := w.putSetting(t, w.admin, nodeAt+"adapters.smb.port", "2050"); r.status != http.StatusOK {
+			t.Errorf("PUT %sadapters.smb.port 2050, apart from NFS's 2049: answered %d %s, want 200", nodeAt, r.status, r.body)
 		}
 	})
 }
