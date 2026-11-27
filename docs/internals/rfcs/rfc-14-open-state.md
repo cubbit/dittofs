@@ -3067,7 +3067,7 @@ type Clients interface {
 	Propose(ctx, c Client, from netip.Addr) (Proposal, error)               // §2.9; changes no state; ErrDelay past the node's or the source's cap
 	Connect(ctx, c Client, p *Proposal) (id ClientID, gen uint64, err error) // nil p: confirmed in one step; a new Boot under a known name is a reboot, a restart notice included; SMB: lists the calling node in Reach.Sessions, replacing an older-epoch entry, and returns its Gen (§2.1)
 	Record(ctx, c ClientID) (Client, error)                                 // the record as written, Adapter included; changes nothing
-	ByName(ctx, p protocol.Kind, name []byte) (c Client, found bool, err error) // the confirmed record under (p, name), through the table's index as Propose reads it, never a pending proposal; found false when there is none; changes nothing, and compares no principal: RFC 17's ClientByName
+	ByName(ctx, p protocol.Kind, name []byte, who Principal) (c Client, found, sameOwner bool, err error) // the confirmed record under (p, name), through the table's index as Propose reads it, never a pending proposal; found false when there is none; sameOwner is whether who, the caller's mapped principal (§2.1), is the record's Owner or the record has none, the record returned either way so the caller can answer a verifier first; changes nothing: RFC 17's ClientByName
 	AddSession(ctx, c ClientID, node NodeID, prev, next []byte) (Client, error) // records node's session, listing node in Reach.Sessions as Connect does, and writes next as Adapter if it still equals prev; else ErrRecordChanged with the current record
 	Renew(ctx, c ClientID) (ClientStatus, error)
 	Expire(ctx, c ClientID) error                                           // node-local: ends the client's state here (§4.3)

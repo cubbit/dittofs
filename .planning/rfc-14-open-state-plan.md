@@ -331,7 +331,7 @@ watches that use them.
 Done when: L26, L27 (→6), L49 (→6), L56 (→8), L57 (→8) pass.
 
 **Piece 2: Clients and leases** (§2.1, §2.9, §4.1, §4.3; #3330)
-Builds: `Start`, `Stop` and the `Sink`; `Clients.Propose/Connect/Record/AddSession/Renew/Expire/Destroy`;
+Builds: `Start`, `Stop` and the `Sink`; `Clients.Propose/Connect/Record/ByName/AddSession/Renew/Expire/Destroy`;
 the `ClientEnded` event. `Propose` holds a client pending confirmation at the node that answered
 it, capped per node and per source address (§2.9), and `Connect` confirms it; an NLM host's
 restart notice is `Connect` with a new `Boot` (§4.5). `CREATE_SESSION`'s sequence and reply are the

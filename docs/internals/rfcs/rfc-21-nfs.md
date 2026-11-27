@@ -660,10 +660,11 @@ the wire:
   `Pending` proposal (RFC 8881 §18.35.5).
 - An `EXCHANGE_ID` with `EXCHGID4_FLAG_UPD_CONFIRMED_REC_A` **MUST** make no
   proposal. The adapter reads the owner with `ClientByName`
-  ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), which changes no state, and
+  ([RFC 17 §3.1](rfc-17-vfs.md#3.1%20Operations)), which changes no state and
+  compares the caller's mapped principal itself (the adapter holds none, RFC 18 §6.1), and
   answers `NFS4ERR_NOENT` when no confirmed record holds it, `NFS4ERR_NOT_SAME`
   when the record's `Boot` is not the one the request's verifier gives (§11.4),
-  `NFS4ERR_PERM` when the verifier matches and the principal is another, and
+  `NFS4ERR_PERM` when the verifier matches and `ClientByName` reports another owner (`sameOwner` false), and
   otherwise the existing client ID as above (RFC 8881 §18.35.4, items 6 to 9).
 - For any `EXCHANGE_ID` or `SETCLIENTID`, the adapter reads the owner with `ClientByName`
   before it calls `Propose`. A record with `Protect` set is read this way, and the adapter runs the

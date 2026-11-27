@@ -131,7 +131,7 @@ The questions piece 1's build left open, which may add more, are plan §5 Q4.
   the mark, so until its later steps land, that is each share it has marked.
 - The filesystem keeps no event queue: it calls the sink, which never blocks and alone counts drops
   (§2.5, §3.3, §7).
-- `Record` and `Spell` are on `Mutates`' read-only list; `Find`, which can mint a principal, is
+- `Record`, `ClientByName` and `Spell` are on `Mutates`' read-only list; `Find`, which can mint a principal, is
   not (§3.1).
 - `*vfs.Server` is `*vfs.Filesystem` (#3529's review).
 - Shard numbers are installation-wide (#3551, RFC 16 §2.3.1): each share has its own shard,
