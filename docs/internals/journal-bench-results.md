@@ -4,9 +4,10 @@
 dedicated host's figures feed the keep-or-change decisions below; a developer machine's run
 compares only against that same machine's earlier figures, and a Mac's absolute values are
 `F_FULLFSYNC` figures that feed no decision (RFC 29 §4.10, and the RFC index's "Recording
-results" rule). The dedicated host's table holds its first recorded run, a baseline before
-`#6472` and `#6511`; its scheduled runs from `7e3505d0e` on are the reference the trend compares
-against. Every figure is the median of the run's ten counts; none is invented.
+results" rule). The dedicated host's section holds its two recorded fulls — the `e5e487cbe`
+baseline before `#6472` and `#6511`, and the `7e3505d0e` reference carrying both; the Tuesday and
+Friday fulls from there are the reference the trend compares against. Every median is of its
+run's ten counts, the device's raw figures of its 64-overwrite probe; none is invented.
 
 ## How a run is made
 
@@ -15,8 +16,16 @@ DITTOFS_BENCH_DIR=<a directory on the device under test> \
   JOURNAL_BENCH_COUNT=10 test/harness/bin/dt run journal-bench
 ```
 
-Run it by hand, or read the scheduled runs' folders: the host runs small on working days at
-13:00 and full Tuesdays and Fridays at 08:30, so a hand run waits for the lock beside them.
+Run it by hand — the suite itself takes no lock (`bench-run.sh` locks only when `BENCH_LOCK`
+names one), so on the host take the run lock around it, beside the 13:00 and 08:30 scheduled
+runs:
+
+```
+flock -w 3600 /run/lock/dittofs-run.lock \
+  env DITTOFS_BENCH_DIR=<a directory on the device under test, not tmpfs> \
+  JOURNAL_BENCH_COUNT=10 test/harness/bin/dt run journal-bench
+```
+
 The suite's `bench.txt` carries the
 box lines the run prints (commit, memory, device, filesystem, mount options, kernel, the device's
 own figure, the p50 and p99 of 64 overwrites of 4 KiB in a prefilled, synced span, each flushed as
@@ -127,14 +136,14 @@ To add a result: copy the box's field table (commit, CPU and memory, device and 
 operating system and kernel, filesystem and mount options, sync bound) from the `bench.txt` box
 lines into the box's heading below, then each row's figures beside its raw twin, as RFC 1 §9.6
 asks ("each result also records the device's raw figures, the filesystem and mount options").
-The first run on the dedicated host is recorded below; the open rows remain tracked by
-issue #5182.
+The first runs on the dedicated host are recorded below; the open rows remain tracked by
+issue #6611.
 
 ## What the suite does not yet measure (open)
 
 RFC 1 §9.6's method asks for more than these rows give. Each item below is OPEN, owned by issue
-#5182 and the deferral list of the epic 12 plan, and turns on the recorded run's figures or its
-trend:
+#6611 and the deferral list of the epic 12 plan, and comes back when a row that measures it is
+built:
 
 - Write-cache exhaustion, and the rate after it. The large-file row's span is far past any write
   cache, but its MB/s averages the whole stream, cache-absorbed start included, so the rate with
@@ -147,8 +156,8 @@ trend:
   here is.
 - Submission and completion latency reported apart.
 
-Three method items are carried by built rows, and wait on nothing but the reference run's
-figures: create and overwrite are reported apart by the overwrite rows, with the create rows
+Three method items are carried by built rows, recorded in the dedicated host's two fulls
+below and carried forward by the scheduled ones: create and overwrite are reported apart by the overwrite rows, with the create rows
 drawing each block once (the Notes above); the index sizes between 10^3 and 10^6 by J3's
 point per decade at the full sizes; and the 256 MiB mixed stream of RFC 1 §9.6's J1 by the
 mixed case, which streams it as the RFC sets it, rolls beside the small writer included
@@ -205,7 +214,9 @@ the fraction beside):
 | J3 warm 1 MiB read | 1 | | 12.0 GB/s | ≥ 2 GB/s | met, 6× over |
 
 The first reference full — 2026-11-27 08:30, `7e3505d0e`, carrying `#6472` and `#6511`,
-1h38m, same box, medians of its counts, journal against its raw twin:
+1h38m, same box, medians of its counts, journal against its raw twin. Its box lines: commit
+`v0.36.0-1170-g7e3505d0e`, the same kernel, filesystem and mounts, device-raw 4 KiB
+overwrite-flush p50 1.387 ms, p99 1.610 ms — the probe that moved under the baseline's.
 
 | Row | Result (journal against twin) |
 | --- | --- |
@@ -217,15 +228,16 @@ The first reference full — 2026-11-27 08:30, `7e3505d0e`, carrying `#6472` and
 | J1 mixed durability | 518 ms p99, beside the stream's 349 MB/s |
 | J1 overwrite sequential | nosync: 288 / 16525 (1.7%), 7194 / 21757 (33%), 9296 / 21681 (43%), 7659 / 21120 (36%); sync: 10.9 / 2.6 (4.2×), 141 / 52.2 (2.7×), 336 / 170 (2.0×), 547 / 656 (83%) |
 | J1 overwrite random | nosync: 281 / 16349 (1.7%), 7180 / 28108 (26%), 9001 / 23697 (38%), 7368 / 24784 (30%); sync: 10.7 / 2.7 (3.9×), 141 / 53.8 (2.6×), 338 / 179 (1.9×), 499 / 692 (72%) |
-| J1 large sequential, 30 GiB | 197 / 894 MB/s (22%), p99-write 365 µs, p99-write-waited 367 µs, 107 spare-refusals/iter — the refusals flat against the baseline's 104.5, the waits as short (2 µs at the p99) |
+| J1 large sequential, 30 GiB | 197 / 894 MB/s (22%), p99-write 365 µs, p99-write-waited 367 µs, 107 spare-refusals/iter — flat against the baseline's 104.5; at 0.35% of the calls, the refusals stay out of a p99's reach, so the waited figure rounds the plain one and cannot see the waits |
 | J2 write scaling, 1, 4, 16, 64 files | 451 / 554 (81%), 357 / 650 (55%), 275 / 884 (31%), 294 / 897 (33%) |
 | J3 point lookups, 10^3 to 10^6 | 2.23, 2.28, 2.47, 2.69 µs |
 | J3 warm 1 MiB read | 12.9 GB/s |
 
 Read the two tables with the device's own state in each: the raw probe moved from p50 3.08 ms
 (baseline) to 1.39 ms (reference), so a pair of runs cannot name a cause. What survives the
-device moving under them: the large-file row's refusals stay ~one per roll with waits short in
-both runs; the group-commit rows stay above 3× their twins; the warm read stays 6× its target;
+device moving under them: the large-file row's refusals stay ~one per roll in both runs (a p99 cannot
+see their waits: they touch under 0.4% of the calls); the group-commit rows stay about 3× their
+twins; the warm read stays 6× its target;
 and J2's 1-file fraction went from 16 to 81% while the other J2 rows moved less — the shape
 `#6511` (an opening spare held until the first stream rolls) predicts, but the trend over more
 fulls still decides. The synced rows swing most between runs and are the last to read.
@@ -237,7 +249,7 @@ which carry `#6472` and `#6511` — is the trend's first entry:
 
 | Constant | Today | Decision | Evidence |
 | --- | --- | --- | --- |
-| Segment cap | 256 MiB | open: the trend decides | the large-file row: 104.5 refusals over the ~120 rolls of a 30 GiB stream, each wait short (the waited p99 within 3 µs of the plain), at 25% of a flattering twin (the Notes); whether a smaller cap (cheaper spares, more rolls) or a bigger one trades better is what the twice-weekly fulls accumulate |
+| Segment cap | 256 MiB | open: the trend decides | the large-file row: 104.5 refusals over the ~120 rolls of a 30 GiB stream, at 25% of a flattering twin (the Notes) — the refusals are 0.34% of the calls, out of p99 reach, so the waited p99 cannot see the waits and a max-waited or per-iteration wait total is the figure the cap's decision needs; whether a smaller cap (cheaper spares, more rolls) or a bigger one trades better is what the twice-weekly fulls accumulate |
 | Sync bound | 1 s | open: not exercised | the bound times records that wait by their own accord, when no Sync names their file (limits.go); the mixed row's 522 ms is an explicit Sync's latency, which the bound does not govern, and no row measures the timer's own cost yet |
 | Idle seal | 30 s, 16 MiB | open: not exercised | no row waits out a 30 s idle segment; nothing in this run bears on it |
 
