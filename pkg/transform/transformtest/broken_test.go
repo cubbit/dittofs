@@ -259,8 +259,13 @@ func sealSubject(mac func(key []byte, hash [32]byte, head, plain []byte) []byte,
 		},
 		Max:       testMax,
 		WorstCase: randomBytes,
+		fixtures:  sealFixtures,
 	}
 }
+
+// sealFixtures holds seal's fixture apart from frame's, as seal's own
+// package would.
+const sealFixtures = "testdata/seal/fixtures"
 
 func asFrame(f *frame) transform.Transform { return f }
 func asSeal(s *seal) transform.Transform   { return s }
@@ -644,6 +649,49 @@ func keepsFirstKey(s *seal) transform.Transform {
 	return s
 }
 
+// frameFixture is the input and body of frame's fixture.
+var frameFixture = struct{ input, body []byte }{
+	[]byte("transformtest fixture: frame, version 1, pad 7"),
+	append([]byte{1, 7, 0, 0, 0, 0, 0, 0, 0}, "transformtest fixture: frame, version 1, pad 7"...),
+}
+
+// changedEncoder turns the last byte of the body of frame's fixture input
+// over, as an encoder changed under an unchanged format version would.
+type changedEncoder struct{ *frame }
+
+func (c changedEncoder) Encode(ctx context.Context, ns entity.NamespaceID, m []keys.MaterialID, dst []byte, hash [32]byte, plain []byte) (transform.Encoded, error) {
+	enc, err := c.frame.Encode(ctx, ns, m, dst, hash, plain)
+	if bytes.Equal(plain, frameFixture.input) {
+		enc.Body[len(enc.Body)-1] ^= 0x01
+	}
+
+	return enc, err
+}
+
+// stoppedDecoding refuses the body of frame's fixture, as a decoder that
+// dropped what an older encoder wrote would.
+type stoppedDecoding struct{ *frame }
+
+func (s stoppedDecoding) Decode(ctx context.Context, ns entity.NamespaceID, dst []byte, hash [32]byte, body []byte, max int, m keys.Provider) ([]byte, error) {
+	if bytes.Equal(body, frameFixture.body) {
+		return nil, transform.ErrMalformed
+	}
+
+	return s.frame.Decode(ctx, ns, dst, hash, body, max, m)
+}
+
+// version2 writes format version 2, for which frame ships no fixture.
+type version2 struct{ *frame }
+
+func (version2) Version() uint8 { return 2 }
+
+func (v version2) Encode(ctx context.Context, ns entity.NamespaceID, m []keys.MaterialID, dst []byte, hash [32]byte, plain []byte) (transform.Encoded, error) {
+	enc, err := v.frame.Encode(ctx, ns, m, dst, hash, plain)
+	enc.Version = 2
+
+	return enc, err
+}
+
 // brokenSubject is one subject of the suite's own test, and what each row it
 // must fail says: none for a correct transform.
 type brokenSubject struct {
@@ -682,12 +730,18 @@ func brokenSubjects() []brokenSubject {
 			map[string]string{"flips": "byte 0 of the body flipped: Decode returned the input unchanged"}},
 		{"another body each call", broken(perCall),
 			map[string]string{
-				"buffers":       "Encode into a junk dst gave another body than into a nil one",
-				"concurrent":    "a concurrent Encode gave another body",
-				"deterministic": "a second Encode gave another body",
+				"buffers":        "Encode into a junk dst gave another body than into a nil one",
+				"concurrent":     "a concurrent Encode gave another body",
+				"deterministic":  "a second Encode gave another body",
+				"fixture-decode": "pad7.json: decodes to other bytes than its input, from byte 0",
+				"fixture-encode": "pad7.json: Encode gave another body than the recorded one",
 			}},
 		{"another body each instance", broken(perInstance()),
-			map[string]string{"deterministic": "an Encode by a second instance gave another body"}},
+			map[string]string{
+				"deterministic":  "an Encode by a second instance gave another body",
+				"fixture-decode": "pad7.json: decodes to other bytes than its input, from byte 0",
+				"fixture-encode": "pad7.json: Encode gave another body than the recorded one",
+			}},
 		{"a LengthOf one byte off", broken(func(f *frame) transform.Transform { return lengthOfOff{f} }),
 			map[string]string{"deterministic": "LengthOf answered 6, the body is 5 bytes"}},
 		{"an output clamped to max", broken(func(f *frame) transform.Transform { return clamps{f} }),
@@ -699,7 +753,11 @@ func brokenSubjects() []brokenSubject {
 		{"an Encode writing into its input", broken(func(f *frame) transform.Transform { return writesInput{f} }),
 			map[string]string{"buffers": "Encode wrote into its input at byte 0"}},
 		{"a body that is its input", broken(func(*frame) transform.Transform { return identity{} }),
-			map[string]string{"buffers": "the body Encode returned shares memory with its input"}},
+			map[string]string{
+				"buffers":        "the body Encode returned shares memory with its input",
+				"fixture-decode": "pad7.json: decodes to other bytes than its input, from byte 0",
+				"fixture-encode": "pad7.json: Encode gave another body than the recorded one",
+			}},
 		{"an output that is part of its body", broken(func(f *frame) transform.Transform { return decodeAliases{f} }),
 			map[string]string{"buffers": "the bytes Decode returned share memory with its body"}},
 		{"a decoder trusting dst to hold zeros", broken(func(f *frame) transform.Transform { return zeroedDst{f} }),
@@ -707,14 +765,32 @@ func brokenSubjects() []brokenSubject {
 		{"an Encode calling Current", broken(func(f *frame) transform.Transform { return asksCurrent{f} }),
 			map[string]string{"no-current": "Encode called the provider's Current 1 times, want 0"}},
 		{"a tag accepting one flip", sealSubject(lastByteUncovered, asSeal),
-			map[string]string{"authenticated-flips": "flipped: Decode returned <nil>, want transform: malformed body"}},
+			map[string]string{
+				"authenticated-flips": "flipped: Decode returned <nil>, want transform: malformed body",
+				"fixture-decode":      "seal.json: Decode: transform: malformed body",
+				"fixture-encode":      "seal.json: Encode gave another body than the recorded one",
+			}},
 		{"a tag ignoring the hash", sealSubject(hashUncovered, asSeal),
-			map[string]string{"hash": "hash: got <nil>, want transform: malformed body"}},
+			map[string]string{
+				"hash":           "hash: got <nil>, want transform: malformed body",
+				"fixture-decode": "seal.json: Decode: transform: malformed body",
+				"fixture-encode": "seal.json: Encode gave another body than the recorded one",
+			}},
 		{"destroyed material reported as malformed", sealSubject(fullMAC, func(s *seal) transform.Transform { return destroyedAsMalformed{s} }),
 			map[string]string{"destroyed": "want keys: material destroyed"}},
 		{"a decoder going around the census", sealSubject(fullMAC, func(s *seal) transform.Transform { return aroundCensus{s} }),
-			map[string]string{"census-only": "Decode called its Factory's provider", "authenticated-flips": "want transform: malformed body"}},
+			map[string]string{
+				"census-only":         "Decode called its Factory's provider",
+				"authenticated-flips": "want transform: malformed body",
+				"fixture-decode":      "seal.json: Decode: seal: transformtest-seal-key \"seal-fixture-key\" of namespace 10111213-1415-1617-1819-1a1b1c1d1e1f: keys: unknown material",
+			}},
 		{"the first key kept", sealSubject(fullMAC, keepsFirstKey),
 			map[string]string{"rotated": "under the rotated pin: Decode: transform: malformed body"}},
+		{"an encoder whose body for the fixture's input changed one byte", broken(func(f *frame) transform.Transform { return changedEncoder{f} }),
+			map[string]string{"fixture-encode": "pad7.json: Encode gave another body than the recorded one, from byte 54"}},
+		{"a decoder that stopped decoding the fixture's body", broken(func(f *frame) transform.Transform { return stoppedDecoding{f} }),
+			map[string]string{"fixture-decode": "pad7.json: Decode: transform: malformed body"}},
+		{"a format version with no fixture", broken(func(f *frame) transform.Transform { return version2{f} }),
+			map[string]string{"fixture-current": "no fixture under testdata/fixtures/v2 for format version 2"}},
 	}
 }

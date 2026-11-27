@@ -35,11 +35,17 @@ type Subject struct {
 	WorstCase     func(n int) []byte // an n-byte input whose body reaches MaxEncodedLen under the pinned material
 	Scratch       int                // Decode's working memory beyond dst, which the fuzz helper's allocation bound allows
 	Authenticates bool               // adds the authenticating rows outside the encrypt stage
+
+	// fixtures is the directory the fixture rows read in place of
+	// testdata/fixtures: set only by this package's own tests, whose two
+	// test transforms would otherwise read each other's fixtures.
+	fixtures string
 }
 
 // Run holds the transform s builds to RFC 5 §2.1, §2.7, §3.1 and §4, one
 // subtest per row, each over a fresh keystest.Memory holding the material of
-// the transform's kinds. The authenticating rows run for a transform of the
+// the transform's kinds, and to the fixtures under testdata/fixtures in the
+// calling package's directory. The authenticating rows run for a transform of the
 // encrypt stage, and for any other whose Subject sets Authenticates.
 //
 // decision: Run is called from each transform's own tests, not from the
@@ -117,6 +123,9 @@ var rows = []row{
 	{"no-current", false, noCurrent},
 	{"census-only", false, censusOnly},
 	{"rotated", false, rotated},
+	{"fixture-decode", false, fixtureDecode},
+	{"fixture-encode", false, fixtureEncode},
+	{"fixture-current", false, fixtureCurrent},
 	{"authenticated-flips", true, authenticatedFlips},
 	{"hash", true, otherHash},
 	{"destroyed", true, destroyed},
