@@ -182,7 +182,7 @@ scope.** Recorded as deferred work in §12.
 | --- | --- | --- |
 | Unit upload | 4.3 s, 2.4 MB sent (4.6 MB profile), on a 20.9 min cell | passes; keep |
 | Plan limits | public repo, free Codecov tier; no seat or private-repo cost | passes |
-| Integration `-coverprofile` | integration cell 3.4 min baseline; profiling re-instruments and recompiles the packages under test (separate build-cache keys), so cost is **estimated** at seconds to ~1 min, not the baseline | measure with the flag in the trial |
+| Integration `-coverprofile` | integration cell 3.4 min baseline; profiling re-instruments and recompiles the packages under test (separate build-cache keys), so cost is **estimated** at seconds to ~1 min, not the baseline; the flag is tier-scoped (§8.2), so the profile is only written on merge and nightly runs — measure those | write the flag at all, then measure in the trial |
 | e2e `go build -cover` | binary 78.3 MB vs 76.3 MB; build cost measured like for like on this host: warm **+0.06 s** (0.34 vs 0.28), cold **+2.9 s** (70.5 vs 67.6), separate GOCACHEs | passes: ~3 s of the build, once per cell |
 | e2e runtime instrumentation | e2e cell **13.1 min**; rule-of-thumb coverage overhead is 5–15% CPU (no benchmark source), and e2e is dominated by mount/setup/IO, so **≈0.7–2.0 min estimated** | borderline: measure in the trial; if > 2–3 min, nightly-only or drop |
 | `GOCOVERDIR` collection | mechanism verified: built `dfs -cover`, ran a command, `go tool covdata percent` read the data; 581 KB meta per run | passes |
@@ -218,10 +218,9 @@ flags:
   unittests:
     carryforward: true          # reuses the last flag upload when a run skips it
   integration:
-    carryforward: true          # a push whose upload the retry check skipped,
-                                # or while e2e is nightly-only
+    carryforward: true          # a push whose upload the retry check skipped
   e2e:
-    carryforward: true
+    carryforward: true          # the same, or while e2e runs nightly-only
 
 component_management:
   individual_components:
@@ -278,16 +277,26 @@ component_management:
       name: bootstrap + keys (v2)
       paths: [pkg/bootstrap/**, pkg/secrets/**, pkg/keyprovider/**]
     # shared paths while the migration runs: pkg/identity and the adapters
-    # exist on both branches, so these cards are read per branch
+    # exist on both branches; internal/identity and internal/adapter/core
+    # are v2-only and live on the card below. Shared cards are read per branch.
     - component_id: identity
-      name: identity + adapter core
-      paths: [pkg/identity/**, internal/identity/**, internal/adapter/core/**]
+      name: identity (shared)
+      paths: [pkg/identity/**]
+    - component_id: identity-v2
+      name: identity + adapter core (v2)
+      paths: [internal/identity/**, internal/adapter/core/**]
     - component_id: adapters-nfs
       name: adapters/nfs
       paths: [internal/adapter/nfs/**, pkg/adapter/nfs/**]
     - component_id: adapters-smb
       name: adapters/smb
       paths: [internal/adapter/smb/**, pkg/adapter/smb/**]
+    # deliberate overlap with the two protocol cards: this card carries the
+    # adapter tree neither of them names (v1 sidecar, v2 settings, gss,
+    # adaptertest, common, pool, testruntime, internal/sidecar)
+    - component_id: adapters-plumbing
+      name: adapters + plumbing
+      paths: [internal/adapter/**, pkg/adapter/**, internal/sidecar/**]
 
 comment: false                  # no PR upload exists to comment on; see §9
 
@@ -343,37 +352,51 @@ Deliberate omissions:
    and reads `env.TIER != 'pr' && hashFiles('…/unit/go-test-*-retry-*.json') == ''
    && github.ref == 'refs/heads/feat/storage-v2'`. Without this the rest is
    unobservable.
-2. **Integration upload.** `test/suites.yaml` integration `cmd` gains
-   `-coverprofile={out}/coverage.txt`; a Codecov step uploads it with
-   `flags: integration` under the same gate as the unit step — `env.TIER != 'pr'`,
-   a `develop` or `feat/storage-v2` ref, and its own retry guard,
+2. **Integration upload.** The `-coverprofile` goes in tier-scoped `args` —
+   `args: { merge: "-coverprofile={out}/coverage.txt", nightly:
+   "-coverprofile={out}/coverage.txt" }`, the same mechanism unit uses to scope
+   `-short` to `pr` — so a pull request's integration cell never pays the
+   recompilation for a profile its tier does not upload. A Codecov step uploads
+   the written profile with `flags: integration` under the same gate as the unit
+   step — `env.TIER != 'pr'`, a `develop` or `feat/storage-v2` ref, and its own
+   retry guard,
    `hashFiles('test/harness/results/*/integration/go-test-*-retry-*.json') == ''`
    — not a bare "not on PRs", which would let the merge queue and manual runs on
    feature branches upload. Its options (`ad-dc`, `kerberos`, `portmap`) write
    their own cell directories.
 3. **e2e upload (conditional).** The plumbing goes through `dt`, not the
    workflow:
-   - `buildBin` gains a cover flag that builds `dfs` (and only `dfs`) with
-     `-cover`, and only when the cell's tier asks for e2e coverage.
-   - `GOCOVERDIR` goes in the e2e suite's **tier-scoped** env (`Env.ByTier`,
-     merge and nightly — the suite's shared `env:` would leak into the `pr`-tier
-     options like `e2e/kerberos`, and a tier-scoped value is what makes the
-     nightly-only fallback expressible), pointing at a directory dt creates under
-     `{out}`. The suite runs as root through dt's `sudo -n env …` wrapper, which
-     resets the environment and passes only the suite's env, so a
-     workflow-level `GOCOVERDIR` never reaches the server, and a missing
-     directory means the runtime writes nothing.
-   - `go tool covdata textfmt` runs **as `dt` work after the cell's `go test`
-     commands** — the registry rejects a go-json suite command that does not
-     begin with `go test` — writing `{out}/coverage.txt`, uploaded with
-     `flags: e2e` under item 2's gate.
+   - `buildBin` skips the build whenever `{bin}/dfs` already exists ("an earlier
+     cell of this run built them"), so the `-cover` build is **keyed by name**:
+     coverage builds write `dfs` to `{bin}/cover/dfs` (or `dfs.cover`). Anything
+     else lets cell order decide which build every later cell runs, and a
+     cross-cell run hands a `-cover` dfs to cells that never set `GOCOVERDIR`. A
+     stamp, or the separate directory alone, is the check.
+   - The suite's env cannot carry `GOCOVERDIR`: `Registry.Units` merges each
+     option over the suite (`merge(base, o)`), so `e2e/kerberos` and
+     `e2e/stress` inherit `Env.ByTier` too, and tiers are cumulative
+     (`plan.RunsIn`) — a merge or nightly run would instrument the kerberos and
+     stress cells for data no gate uploads. Instead the cover build, the
+     `GOCOVERDIR` variable and the covdata step are **keyed to the base e2e
+     cell alone** (the unit without an option); dt passes nothing coverage-
+     related to the options. `GOCOVERDIR` points at a directory dt creates
+     under `{out}` — the suite runs as root through the `sudo -n env …`
+     wrapper, so a workflow-level variable never reaches the server, and a
+     missing directory means the runtime writes nothing.
+   - `go tool covdata textfmt` runs **as `dt` work after the base cell's
+     `go test` commands** — the registry rejects a go-json suite command that
+     does not begin with `go test` — writing `{out}/coverage.txt`, uploaded
+     with `flags: e2e` under item 2's gate.
    - The fixture's teardown is the first thing the trial fixes: `ForceKill`
-     waits **2 s** after SIGTERM before SIGKILL, less than `dfs`'s own shutdown
-     limit, so the trial lengthens that wait (or switches to `StopGracefully`'s
-     wait) whenever GOCOVERDIR is set — a `-cover` binary flushes its counters
-     only on a clean exit, so a normal teardown losing the race loses the
-     coverage, and the cell's data looking near-empty would be a teardown
-     artifact, not a test result.
+     waits **2 s** after SIGTERM before SIGKILL, and `StopGracefully` waits
+     only **10 s** — both shorter than `dfs`'s default `shutdown_timeout`
+     (30 s), which `StopGracefully` does not even enforce (it returns an
+     error, and a later cleanup kills). So the trial's wait is raised to at
+     least `shutdown_timeout` whenever `GOCOVERDIR` is set, or the e2e
+     fixture's config sets a `shutdown_timeout` shorter than the wait — a
+     `-cover` binary flushes its counters only on a clean exit, so a normal
+     teardown losing the race loses the coverage, and an empty-looking
+     `GOCOVERDIR` would be a teardown artifact, not a test result.
    Landed only if the trial's measurement keeps the cell within ~2–3 min of
    its 13.1 min baseline; otherwise the flag uploads from nightly alone.
 4. The unit step's upload condition keys on the tier and the ref, not on event
@@ -411,7 +434,9 @@ left assumed; §12 holds the deferred work that would bring PR signals back.
 
 **Pass:** data lands on both branches; the component view answers (a) without
 manual profile aggregation, compares like-shaped cards and is used in at least
-one decision. **Fail either of those → drop**, with the `dt` floors in §10 as
+one decision. A single unexplained signal is judged as actionable or noise by
+the trial's last day; two or more unexplained → **drop**, the §11 trigger.
+**Fail either → drop**, with the `dt` floors in §10 as
 the alternative if decision (a) still needs a number. e2e overhead is a
 placement decision, not a pass/fail: ≤ 3 min keeps the flag on merge runs,
 more moves it to nightly (§11's third bullet), and nothing in that choice
@@ -427,7 +452,7 @@ merge-queue run would be noise.
 | | Drop | Reshape (chosen) | Replace with `dt` |
 | --- | --- | --- | --- |
 | Work | delete step + `codecov.yml`, document the `dt` recipe | fix token/slug, config, integration upload, conditional e2e | per-package floors in `test/suites.yaml`, a `dt` coverage check over its own profile, trend in `dt history`; profile-diff for duplicates |
-| Cost | ~zero | ~1 day config + 1–2 days e2e collection **in `dt`** (the `-cover` build flag, the tier-scoped `GOCOVERDIR`, the lengthened teardown wait, and the post-cell `covdata textfmt` step) — estimates | new Go in the harness (Go 1.26), floors that must not fire while a component is half-built, and a trend view that does not exist in `dt history` today; an estimate of 1–2 weeks |
+| Cost | ~zero | ~1 day config + 1–2 days e2e collection **in `dt`** (the name-keyed `-cover` build, the base-cell-only `GOCOVERDIR`, the teardown wait raised to `shutdown_timeout`, and the post-cell `covdata textfmt` step) — estimates | new Go in the harness (Go 1.26), floors that must not fire while a component is half-built, and a trend view that does not exist in `dt history` today; an estimate of 1–2 weeks |
 | Keeps | nothing | per-component trend, third party, no repo code | everything in-repo, one tool, one registry (RFC 29's shape) |
 | Loses | the only cheap answer to (a) | a dependency and a second place coverage is defined | the cheapest route to (a) now; duplicates still need the O(tests) scan |
 | When it wins | the trial fails | decision (a) stays live through the rewrites | the team wants coverage defined beside the suites and is willing to build it |
@@ -444,10 +469,11 @@ tells us whether the question is still being asked.
 - **Ingestion cannot be fixed** (token/org constraints): drop, because a
   dashboard that receives nothing is not a dashboard.
 - **The view is not used, or something fires that should not**: no cutover
-  decision consults the component view in a week, or more than one status,
-  comment or annotation appears that cannot be explained (none is configured).
-  Either way the dashboard has become exactly the unopened noise #3483 silenced:
-  drop and revisit `dt`.
+  decision consults the component view in a week, or **two or more statuses,
+  comments or annotations appear that cannot be explained** (none is
+  configured; §9 makes one unexplained appearance a judgement call and two the
+  trigger). Either way the dashboard has become exactly the unopened noise
+  #3483 silenced: drop and revisit `dt`.
 - **e2e overhead exceeds ~3 minutes**: keep the reshape for unit+integration but
   make e2e nightly-only; if even nightly is too slow, drop the e2e flag and note
   that adapter numbers stay a lower bound.
