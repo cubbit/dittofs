@@ -171,7 +171,7 @@ so that subtasks and tests can cite them.
 | R4 | A callback returns once its message is queued, never after the client's answer, and within its context's deadline whether or not the client answers | MUST | RFC 20 §3.3; RFC 17 §3.2 | T10.2, T10.3 |
 | R5 | A pending callback has no goroutine of its own and waits in no queue of the adapter's: only the writer's queue, bounded by the callback deadline | MUST NOT | RFC 24 §5.1 ("callbacks to clients"), §6.1 | T10.2 |
 | R6 | The back channel's credential is `AUTH_NONE` or `AUTH_SYS`, as the client asked in `csa_sec_parms`; Kerberos (`RPCSEC_GSS`) is never sent on it | MUST | RFC 21 §3.4 | T10.2 |
-| R7 | No more callbacks are in flight on a session's back channel than the slots `CREATE_SESSION` granted it, at most 16; a back channel granted none is no working back channel (D4) | bound | RFC 21 §3.1 | T10.2 |
+| R7 | No more callbacks are in flight on a session's back channel than the lesser of the slots `CREATE_SESSION` granted, which echo what the client offered, and the node's limit of 16; a back channel granted none is no working back channel (D4) | bound | RFC 21 §3.1 | T10.2 |
 | R8 | A connection carrying a back channel holds `Conn.Keep` while it does, so the idle timeout passes it over | MUST | RFC 20 §4.7 (`Keep`) | T10.2 |
 | R9 | The per-client callbacks value knows the client's connections and nothing about files | invariant | RFC 20 §3.3 | T10.3 |
 | R10 | The callback program's procedures join the one golden-vector suite and the one fuzz target every program has, and every decoder of bytes the client sends back is fuzzed | MUST | RFC 21 §11.6 | T10.1 |
