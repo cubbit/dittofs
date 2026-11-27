@@ -155,6 +155,8 @@ func namespacesApart(ctx context.Context, v view) error {
 		return fmt.Errorf("two namespaces' Updates: %w", err)
 	}
 
+	// A transaction a stalled scheduler holds past the backend's age limit
+	// also runs fn again, and reads here as a conflict.
 	if runsA != 1 || runsB != 1 {
 		return fmt.Errorf("two namespaces' Updates ran fn %d and %d times, want once each: they conflicted", runsA, runsB)
 	}

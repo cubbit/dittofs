@@ -33,18 +33,6 @@ func TestRecordsPassesTheSuite(t *testing.T) {
 	}
 }
 
-// version is ns's commit count, 0 for a namespace never written.
-func (r *Records) version(ns entity.NamespaceID) uint64 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if set := r.sets[ns]; set != nil {
-		return set.version
-	}
-
-	return 0
-}
-
 // noConflict commits each Update over whatever committed since its snapshot.
 type noConflict struct{ *Records }
 
@@ -62,13 +50,15 @@ func (v noConflict) Update(_ context.Context, ns entity.NamespaceID, fn func([]r
 		}
 	}
 
-	v.commit(ns, v.version(ns), out)
-
-	return nil
+	for {
+		if _, now := v.snapshot(ns); v.commit(ns, now, out) {
+			return nil
+		}
+	}
 }
 
-// onePerKind deletes, on each write, the other records of the written row's
-// kind.
+// onePerKind deletes, on each write, the records of the written rows' kinds
+// that the write did not return.
 type onePerKind struct{ *Records }
 
 func (v onePerKind) Update(ctx context.Context, ns entity.NamespaceID, fn func([]record) ([]record, error)) error {
@@ -83,12 +73,17 @@ func (v onePerKind) Update(ctx context.Context, ns entity.NamespaceID, fn func([
 		return err
 	}
 
+	returned := make(map[recordSlot]bool, len(out))
+	for _, row := range out {
+		returned[recordSlot{row.Kind, row.ID}] = true
+	}
+
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
 	for _, row := range out {
 		for slot := range v.sets[ns].rows {
-			if slot.kind == row.Kind && slot.id != row.ID {
+			if slot.kind == row.Kind && !returned[slot] {
 				delete(v.sets[ns].rows, slot)
 			}
 		}
@@ -123,6 +118,23 @@ func (v oneNamespace) Load(ctx context.Context, _ entity.NamespaceID) ([]record,
 
 func (v oneNamespace) Update(ctx context.Context, _ entity.NamespaceID, fn func([]record) ([]record, error)) error {
 	return v.Records.Update(ctx, entity.NamespaceID{}, fn)
+}
+
+// loadsAll returns from Load every namespace's records.
+type loadsAll struct{ *Records }
+
+func (v loadsAll) Load(context.Context, entity.NamespaceID) ([]record, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	var rows []record
+	for _, set := range v.sets {
+		for _, row := range set.rows {
+			rows = append(rows, row)
+		}
+	}
+
+	return rows, nil
 }
 
 // anyName writes rows of any kind and state.
@@ -160,6 +172,7 @@ func TestEachBrokenViewFailsItsRow(t *testing.T) {
 		{"an Update deleting a record it did not return", func() view { return onePerKind{NewRecords()} }, []string{"replace"}},
 		{"a raise past the limit", func() view { return raisesWhileBelow{NewRecords()} }, []string{"wrapcount"}},
 		{"records shared across namespaces", func() view { return oneNamespace{NewRecords()} }, []string{"namespaces"}},
+		{"a Load returning every namespace's records", func() view { return loadsAll{NewRecords()} }, []string{"namespaces"}},
 		{"any kind and state written", func() view { return anyName{NewRecords()} }, []string{"refusals"}},
 	} {
 		var failed []string
@@ -190,6 +203,8 @@ func TestEachBrokenViewFailsItsRow(t *testing.T) {
 // Each broken view fails its row on the check written for it, not on an
 // earlier one.
 func TestEachBrokenViewFailsOnItsCheck(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
 	for _, c := range []struct {
 		name string
 		v    view
@@ -197,14 +212,17 @@ func TestEachBrokenViewFailsOnItsCheck(t *testing.T) {
 		want string
 	}{
 		{"an Update without the conflict", noConflict{NewRecords()}, conflicting, "want exactly one of them"},
-		{"an Update deleting a record it did not return", onePerKind{NewRecords()}, replacing, "Load after writing"},
+		{"an Update deleting a record it did not return", onePerKind{NewRecords()}, replacing, "Load after rewriting"},
 		{"a raise past the limit", raisesWhileBelow{NewRecords()}, wrapCount, `RaiseWrapCount("\x00m\x00", 2, 3) = true, want false`},
 		{"records shared across namespaces", oneNamespace{NewRecords()}, namespacesApart, "want once each"},
+		{"a Load returning every namespace's records", loadsAll{NewRecords()}, namespacesApart, "want only"},
 		{"any kind and state written", anyName{NewRecords()}, refusals, "a kind RFC 5 does not name succeeded"},
 	} {
-		err := c.row(t.Context(), c.v)
-		if got := fmt.Sprint(err); err == nil || !strings.Contains(got, c.want) {
-			t.Errorf("%s: row error %q, want one containing %q", c.name, got, c.want)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			err := c.row(t.Context(), c.v)
+			if got := fmt.Sprint(err); err == nil || !strings.Contains(got, c.want) {
+				t.Errorf("%s: row error %q, want one containing %q", c.name, got, c.want)
+			}
+		})
 	}
 }

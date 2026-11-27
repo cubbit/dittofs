@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
 	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
@@ -75,11 +76,11 @@ func wrapCountKey(masterKeyID []byte) []byte {
 func encodeKeyRecord(ns entity.NamespaceID, row keyRow) (key, value []byte, err error) {
 	kind, ok := keyRecordKinds[row.Kind]
 	if !ok {
-		return nil, nil, fmt.Errorf("%w: key record kind %q", errMalformed, row.Kind)
+		return nil, nil, merrs.NewInvalidArgumentError(fmt.Sprintf("key record kind %q", row.Kind))
 	}
 	state, ok := keyRecordStates[row.State]
 	if !ok {
-		return nil, nil, fmt.Errorf("%w: key record state %q", errMalformed, row.State)
+		return nil, nil, merrs.NewInvalidArgumentError(fmt.Sprintf("key record state %q", row.State))
 	}
 	key = keys.String(append(keyRecordPrefix(ns), kind), []byte(row.ID))
 	return key, codec.NewWriter(v1).Uint8(state).Fixed(row.Record).Encode(), nil
@@ -95,7 +96,7 @@ func decodeKeyRecord(prefix []byte, e kv.KeyValue) (keyRow, error) {
 	}
 	kind, ok := nameOf(keyRecordKinds, rest[0])
 	if !ok {
-		return row, fmt.Errorf("%w: key record kind %#x", errMalformed, rest[0])
+		return row, fmt.Errorf("%w: key record kind %#x in %s", keys.ErrMalformed, rest[0], keys.Describe(e.Key))
 	}
 	id, rest, err := keys.ReadString(rest[1:])
 	if err == nil && len(rest) > 0 {
@@ -104,18 +105,21 @@ func decodeKeyRecord(prefix []byte, e kv.KeyValue) (keyRow, error) {
 	if err != nil {
 		return row, fmt.Errorf("%w: key record key %s", err, keys.Describe(e.Key))
 	}
-	if _, err := open(e.Value); err != nil {
-		return row, err
+	r, err := open(e.Value)
+	if err != nil {
+		return row, fmt.Errorf("%w: key record at %s", err, keys.Describe(e.Key))
 	}
-	if len(e.Value) < 2 {
-		return row, codec.ErrTruncated
+	stateByte := r.Uint8()
+	record := r.Fixed(len(e.Value) - 2)
+	if err := r.Done(); err != nil {
+		return row, fmt.Errorf("%w: key record at %s", err, keys.Describe(e.Key))
 	}
-	state, ok := nameOf(keyRecordStates, e.Value[1])
+	state, ok := nameOf(keyRecordStates, stateByte)
 	if !ok {
-		return row, fmt.Errorf("%w: key record state %#x", errMalformed, e.Value[1])
+		return row, fmt.Errorf("%w: key record state %#x at %s", errMalformed, stateByte, keys.Describe(e.Key))
 	}
 	row.Kind, row.ID, row.State = kind, string(id), state
-	row.Record = append([]byte(nil), e.Value[2:]...)
+	row.Record = append([]byte(nil), record...)
 	return row, nil
 }
 
@@ -135,7 +139,7 @@ func loadKeyRecords(r kv.Reader, ns entity.NamespaceID) ([]keyRow, error) {
 	return rows, nil
 }
 
-// Load returns every key record of ns.
+// Load returns every key record of ns, in no order a caller may rely on.
 func (k KeyRecords) Load(ctx context.Context, ns entity.NamespaceID) ([]keyRow, error) {
 	var rows []keyRow
 	err := k.s.kv.View(ctx, func(r kv.Reader) error {
@@ -146,7 +150,7 @@ func (k KeyRecords) Load(ctx context.Context, ns entity.NamespaceID) ([]keyRow, 
 	return rows, err
 }
 
-// Update runs fn on ns's key records in one transaction that conflicts with
+// Update runs fn on ns's key records, in no order a caller may rely on, in one transaction that conflicts with
 // any other write of them, and writes the rows fn returns, each replacing the
 // record of its kind and ID. It deletes nothing. fn may run more than once
 // and must have no other effect. A row whose kind or state RFC 5 does not
@@ -200,6 +204,9 @@ func (k KeyRecords) RaiseWrapCount(ctx context.Context, masterKeyID []byte, n, l
 			return nil
 		}
 		raised = true
+		if n == 0 {
+			return nil
+		}
 		return tx.Set(key, encodeCounter(count+n))
 	})
 	return raised && err == nil, err

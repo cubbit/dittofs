@@ -83,7 +83,7 @@ func (r *Records) snapshot(ns entity.NamespaceID) ([]record, uint64) {
 	return rows, set.version
 }
 
-// Load returns every key record of ns.
+// Load returns every key record of ns, in no order a caller may rely on.
 func (r *Records) Load(_ context.Context, ns entity.NamespaceID) ([]record, error) {
 	rows, _ := r.snapshot(ns)
 	return rows, nil
