@@ -431,15 +431,21 @@ A session has two directions: the **fore channel**, for client requests, and the
 **back channel**, for the server's calls to the client (§3.4). The slot count of
 a channel is how many requests may be in flight on it at once.
 
-- The fore channel offers at most **64 slots**, the back channel at most **16**.
-  The call that opens a session (`CREATE_SESSION`) grants the lesser of what the
-  client asks and these, and fewer where the node cannot charge the session's
-  reply cache: the slots it can charge, at least one; where it cannot charge
-  one, `CREATE_SESSION` is answered `NFS4ERR_DELAY`
+- The fore channel offers at most **64 slots**. The call that opens a session
+  (`CREATE_SESSION`) grants the lesser of what the client asks and that, and
+  fewer where the node cannot charge the session's reply cache: the slots it
+  can charge, at least one; where it cannot charge one, `CREATE_SESSION` is
+  answered `NFS4ERR_DELAY`
   ([RFC 24 §4.5](rfc-24-resources.md#4.5%20Sessions%20and%20reply%20caches)).
-- `CREATE_SESSION` grants a `ca_maxoperations` of the lesser of what the
-  client asks and §11.5's compound cap, 128 (RFC 8881 §18.36). A `COMPOUND` on
-  the session longer than what it was granted is refused
+- The back channel echoes what the client offers: `CREATE_SESSION` returns its
+  `ca_maxrequests` and `ca_maxoperations` unchanged, because the server
+  **MUST NOT** change them for the back channel (RFC 8881 §18.36.3). The node
+  limits only the callbacks it has in flight on a session at once, to the
+  lesser of the slots the client offered and **16**, and each stays within the
+  `ca_maxoperations` the client offered.
+- `CREATE_SESSION` grants the fore channel a `ca_maxoperations` of the lesser
+  of what the client asks and §11.5's compound cap, 128 (RFC 8881 §18.36.3). A
+  `COMPOUND` on the session longer than what it was granted is refused
   `NFS4ERR_TOO_MANY_OPS` before any of its operations runs, as one past the
   cap is ([RFC 20 §4.3](rfc-20-adapters.md#4.3%20A%20handler%20makes%20at%20most%20one%20mutating%20call)).
 - Under memory pressure the server **MAY** ask the client to use fewer slots (by
@@ -723,8 +729,8 @@ gateway node's memory like the reply cache, and fares worse on a node loss.
 
 - `SETCLIENTID` and `SETCLIENTID_CONFIRM` map onto the client record as
   `EXCHANGE_ID` and `CREATE_SESSION` do: the client's `nfs_client_id4` id is
-  its `Name`, its verifier its `Boot`, which tells a reboot
-  ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)), and the proposal is
+  its `Name`, its verifier and the call it came by its `Boot` (§11.4), which
+  tells a reboot ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)), and the proposal is
   confirmed as §3.5 says: at the node that answered `SETCLIENTID`, under a
   random confirm verifier, and `NFS4ERR_STALE_CLIENTID` anywhere else.
 - The callback address (`r_addr`) and program are kept in the adapter's own
@@ -1474,8 +1480,8 @@ client, are RFC 14's.
 ### 6.2 NSM
 
 The server monitors clients as its peers expect: a host's first NLM call
-registers it for restart notification, its `mon_name` and `priv` cookie kept
-in the client record's `Adapter` bytes (§3.3); `SM_MON` and `SM_UNMON` are calls a server makes to its
+registers it for restart notification, its `mon_name` and `priv` cookie and the
+two addresses (§11.4) kept in the client record's `Adapter` bytes (§3.3); `SM_MON` and `SM_UNMON` are calls a server makes to its
 own monitor, never requests a peer sends it
 ([RFC 14 §4.5](rfc-14-open-state.md#4.5%20NLM%20locks%20and%20restart%20notification)).
 
@@ -2494,7 +2500,7 @@ in RFC 14's durable client record
 | RFC 14 field | ← NFS field | Used by |
 | --- | --- | --- |
 | `Name`, indexed by (protocol, name) | the owner string: `co_ownerid` (`EXCHANGE_ID`), the `nfs_client_id4` id (`SETCLIENTID`); for an NLM host its `caller_name` with the source address it sends from (§6.1) | an `EXCHANGE_ID` / `SETCLIENTID` from a client that rebooted or reconnected through another node finds its record, and `Boot` tells which |
-| `Boot` | the boot verifier; for an NLM host its NSM state number, big-endian in the low four bytes, so the bytes order as the numbers do | a new `Boot` under the same name is a new client instance |
+| `Boot` | for an NFSv4 client, the first 8 bytes of the SHA-256 of its 8-byte verifier followed by one byte, 0 for `SETCLIENTID` and 1 for `EXCHANGE_ID` (whether its `COMPOUND` is minor version 1 or 2), so one verifier sent by each call is a new `Boot`; for an NLM host its NSM state number, big-endian in the low four bytes, so the bytes order as the numbers do | a new `Boot` under the same name is a new client instance |
 | `Pending` | an unconfirmed `SETCLIENTID` or `EXCHANGE_ID`: nothing durable, held at the node that answered, `Confirm` sent as the NFSv4.0 confirm verifier or, low 32 bits, as the NFSv4.1 `eir_sequenceid` ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation)) | `SETCLIENTID_CONFIRM`, or NFSv4.1's first `CREATE_SESSION`, at that node (§3.5) |
 | `Owner` | the principal that created the client ID, mapped before squashing; zero for an NLM host, whose `Connect` sets `ClientIsMachine` | an `EXCHANGE_ID` or `SETCLIENTID` for the same name from another principal is `NFS4ERR_CLID_INUSE` (RFC 8881 §18.35.5) and leaves no `Pending` |
 | `Protect` | set for `SP4_MACH_CRED`, false for `SP4_NONE`; `spo_must_allow` stays in the adapter's bytes, and the adapter refuses a machine-credential call outside it before calling the service | each node admits the machine principal the same way |
@@ -2519,8 +2525,9 @@ with a version byte, and hold:
 - for NFSv4.0, the callback address and program (`cb_client4`,
   `callback_ident`), taken from the `Pending` proposal's `Adapter` by the
   confirm (§4.1);
-- for an NLM host, where its restart notice goes: `mon_name` and the `priv`
-  cookie (§6.2).
+- for an NLM host, where its restart notice goes: `mon_name`, the `priv`
+  cookie, the host's address and the server address the notice leaves from
+  (§6.2).
 
 The `Reach.Sessions` row is cluster-only: on one node the list is local. Without it,
 a node asked to destroy a client would see none of the client's sessions on
@@ -2692,7 +2699,7 @@ status, in a row naming it that wins there; `ErrMoved` to
 row of NFSv4's table naming them in `Ops`; NFSv3, MOUNT and NLM each have a
 table of their own, RFC 20 §4.5), §7.4; `ErrDraining`, and `ErrMoved` for any other
 NFSv4 operation and for NFSv3, MOUNT and NLM, which have no move signal, to no
-reply. The compound cap is 128 operations, and an NFSv4.1 session's
+reply. The compound cap is 128 operations, and a session's fore channel
 `ca_maxoperations` is never above it (§3.1).
 
 **A status names its layer.** Each row's status is one `core.Status` whose two
@@ -2862,7 +2869,7 @@ a name, an owner string, a principal or a client address
 | N15 | An NLM host is its name and source address; NLM callbacks are calls to the host's NLM service, on a connection the server opens from the floating address the host used. |
 | N16 | Audit entries are read or changed only by an administrator, on every minor version; the ctime NFS reports moves on every change. |
 | N17 | A stability reply waits for the journal sync of its range, for the existence commit of every pending overwrite of committed content in it, never for an append's or hole fill's, and, where its range covers committed content, for a recorded sync mark covering the sync; a capacity refusal is answered as RFC 8 §10.2 classifies it, a transient one retry-later for as long as it lasts, never "no space" because a deadline passed; only a logical quota or a permanent cause is answered at once. |
-| N18 | The owner string (`Name`), verifier (`Boot`), creating principal (`Owner`), state protection (`Protect`), back-channel node, session holders and, in the adapter's own bytes, the last `CREATE_SESSION` sequence and reply of a client are in its durable record; its lease expiry is not; an unconfirmed client is a `Pending` proposal, volatile at the node that answered; an NFSv4.0 owner's sequence and confirmation are in its `Sequence`. |
+| N18 | The owner string (`Name`), `Boot` (derived from the verifier and the call it came by), creating principal (`Owner`), state protection (`Protect`), back-channel node, session holders and, in the adapter's own bytes, the last `CREATE_SESSION` sequence and reply of a client are in its durable record; its lease expiry is not; an unconfirmed client is a `Pending` proposal, volatile at the node that answered; an NFSv4.0 owner's sequence and confirmation are in its `Sequence`. |
 | N19 | A directory's `change_info4` is never reported atomic, and NFSv3 pre-operation attributes are returned only when read from the File and its overlay in the hold of the file's accept lock that accepts the operation, never for a directory. |
 | N20 | A single node advertises no pNFS role and answers every layout operation `NFS4ERR_NOTSUPP`. |
 | N21 | An NLM waiter ends only as RFC 14's lifetime ends it; no adapter timer drops it, and no cancel is answered before `CancelLock` returns; an `NLMPROC4_GRANTED` is resent until the host answers, and a granted lock is never released for a silence. |
