@@ -303,7 +303,6 @@ func EntityLibs(extra ...string) []string {
 	return append([]string{
 		"github.com/google/uuid",
 		"github.com/klauspost/cpuid/v2",
-		"golang.org/x/sys/unix",
 		"lukechampine.com/blake3",
 		"lukechampine.com/blake3/bao",
 		"lukechampine.com/blake3/guts",
