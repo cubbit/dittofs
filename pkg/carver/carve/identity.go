@@ -2,8 +2,26 @@ package carve
 
 import (
 	"github.com/cubbit/dittofs/internal/blake3"
+	"github.com/cubbit/dittofs/pkg/carver"
+	"github.com/cubbit/dittofs/pkg/carver/internal/params"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
+
+// ChunkID is the chunk ID of p: BLAKE3's keyed hash under s's chunk-ID key,
+// over p and nothing else (RFC 2 §4.1). It panics on a zero Settings, which
+// only a caller that skipped NewSettings holds.
+func ChunkID(s carver.Settings, p []byte) entity.ChunkHash {
+	key := params.ChunkIDKey(s)
+	if key == ([32]byte{}) {
+		panic("carve: ChunkID over Settings that hold no chunk-ID key")
+	}
+
+	var h blake3.Hasher
+	h.InitKeyed(&key)
+	h.Write(p)
+
+	return h.Sum256()
+}
 
 // nameContext separates a block's name from a chunk's ID, which is a keyed
 // hash, by BLAKE3's key-derivation mode (RFC 2 §4.2).
