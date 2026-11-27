@@ -3,11 +3,13 @@ package protocol
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"sync/atomic"
 
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/internal/adapter/nfs/wire"
 	"github.com/cubbit/dittofs/pkg/resources"
+	"github.com/cubbit/dittofs/pkg/vfs"
 )
 
 var (
@@ -182,7 +184,9 @@ func (s *stage) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.R
 	if c.RPCVersion() != 2 {
 		return nil, nil, errRPCMismatch
 	}
-	if err := checkAuth(c); err != nil {
+
+	flavour, sys, err := checkAuth(c)
+	if err != nil {
 		return nil, nil, err
 	}
 	prog, vers := c.Program(), c.Version()
@@ -200,38 +204,97 @@ func (s *stage) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.R
 	if s.conn != nil && s.established.CompareAndSwap(false, true) {
 		s.conn.Established()
 	}
+
+	var parms *wire.AuthSysParms
+	if flavour == wire.AuthSys {
+		parms = &sys
+	}
 	if compound {
 		// decision: Route keeps one allocation per call, a COMPOUND's state
 		// inside it: the state lives as long as the request, which core holds
 		// until the compound's last member has run. Overturned if core ever
 		// releases a request before its compound's members finish with the
 		// state.
-		cr := &compoundRequest{req: core.Request{Version: hd.Version(), Level: core.NeedsNothing, Conn: s.conn}}
+		cr := &compoundRequest{
+			req: core.Request{Version: hd.Version(), Level: core.NeedsNothing, Conn: s.conn},
+		}
 		cr.req.State = &cr.state
+		if err := s.build(&cr.req, &cr.gids, flavour, parms, c); err != nil {
+			return nil, nil, err
+		}
 		return table, &cr.req, nil
 	}
-	return table, &core.Request{Version: hd.Version(), Level: core.NeedsNothing, Conn: s.conn}, nil
+
+	r := &callRequest{
+		req: core.Request{Version: hd.Version(), Level: core.NeedsNothing, Conn: s.conn},
+	}
+	if err := s.build(&r.req, &r.gids, flavour, parms, c); err != nil {
+		return nil, nil, err
+	}
+
+	return table, &r.req, nil
 }
 
-// compoundRequest is a COMPOUND's request and its state, allocated together.
+// callRequest is a call's request and the group list its Identity's claims
+// point into, allocated together.
+//
+// decision: the claims' groups point into an array held in the request's own
+// allocation, so Route stays at one allocation per call whatever the
+// credential carries. Overturned if core ever releases a request while a
+// service call still reads its Identity.
+type callRequest struct {
+	req  core.Request
+	gids [16]uint32
+}
+
+// compoundRequest is a COMPOUND's request, its state and the group list its
+// Identity's claims point into, allocated together.
 type compoundRequest struct {
 	req   core.Request
 	state State
+	gids  [16]uint32
+}
+
+// build sets r's Call and Protocol from the decoded credential and the call's
+// program, version and procedure.
+func (s *stage) build(
+	r *core.Request,
+	gids *[16]uint32,
+	flavour uint32,
+	sys *wire.AuthSysParms,
+	c wire.Call,
+) error {
+	var addr netip.Addr
+	if s.conn != nil {
+		addr = s.conn.Remote()
+	}
+
+	id, err := identity(flavour, sys, addr, gids)
+	if err != nil {
+		return err
+	}
+
+	prog, vers := c.Program(), c.Version()
+	r.Call = vfs.Call{Identity: id, Caps: callCaps(prog, vers, c.Procedure())}
+	r.Protocol = callProtocol(prog, vers)
+
+	return nil
 }
 
 // checkAuth judges the credential and the verifier: AUTH_NONE or a whole
 // AUTH_SYS credential, and a verifier of an empty AUTH_NONE, everything else
-// refused (RFC 21 section 11.1).
-func checkAuth(c wire.Call) error {
+// refused (RFC 21 section 11.1). It returns the credential's flavour and, for
+// AUTH_SYS, the credential it decoded.
+func checkAuth(c wire.Call) (flavour uint32, sys wire.AuthSysParms, err error) {
 	flavour, body := c.Credential()
 	switch flavour {
 	case wire.AuthNone:
 		if len(body) != 0 {
-			return errAuthCred
+			return 0, sys, errAuthCred
 		}
 	case wire.AuthSys:
-		if _, err := wire.DecodeAuthSys(body); err != nil {
-			return errAuthCred
+		if sys, err = wire.DecodeAuthSys(body); err != nil {
+			return 0, sys, errAuthCred
 		}
 	default:
 		// decision: RPCSEC_GSS is refused AUTH_BADCRED with every flavour not
@@ -240,26 +303,31 @@ func checkAuth(c wire.Call) error {
 		// not serve and answers it as RFC 21 section 11.1 answers those.
 		// Withdrawn by that stage, which the deferral ledger's row "RPCSEC_GSS
 		// context table and window; NFSv4.1 slots and reply cache" brings.
-		return errAuthCred
+		return 0, sys, errAuthCred
 	}
 	vflavour, vbody := c.Verifier()
 	if vflavour != wire.AuthNone || len(vbody) != 0 {
-		return errAuthVerf
+		return 0, sys, errAuthVerf
 	}
-	return nil
+
+	return flavour, sys, nil
 }
 
 // newErrors is the stages' error table: the refusals above, GARBAGE_ARGS for a
 // record that does not decode, and the fault for anything else (RFC 21 section
 // 11.5).
 func newErrors() *core.ErrorTable {
-	return core.NewErrorTable(core.Status(wire.StatusAccept|wire.AcceptSystemErr),
+	return core.NewErrorTable(
+		core.Status(wire.StatusAccept|wire.AcceptSystemErr),
 		core.ErrorRow{Err: errNotCall, NoReply: true},
 		core.ErrorRow{Err: errRPCMismatch, Status: statusRPCMismatch},
 		core.ErrorRow{Err: errProgUnavail, Status: statusProgUnavail},
 		core.ErrorRow{Err: core.ErrVersion, Status: statusProgMismatch},
 		core.ErrorRow{Err: errAuthCred, Status: statusAuthCred},
 		core.ErrorRow{Err: errAuthVerf, Status: statusAuthVerf},
-		core.ErrorRow{Err: core.ErrDecode, Status: core.Status(wire.StatusAccept | wire.AcceptGarbageArgs)},
+		core.ErrorRow{
+			Err:    core.ErrDecode,
+			Status: core.Status(wire.StatusAccept | wire.AcceptGarbageArgs),
+		},
 	)
 }

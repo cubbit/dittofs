@@ -1,0 +1,6 @@
+# An AUTH_SYS credential's body of uid 0, gid 0 and no group (RFC 5531 Appendix A): root stays the claim 0.
+00000000  # stamp
+00000000  # machine name: no bytes
+00000000  # uid 0
+00000000  # gid 0
+00000000  # no group

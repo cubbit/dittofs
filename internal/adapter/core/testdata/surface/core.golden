@@ -19,6 +19,8 @@ func (c *Conn) Established()
 
 func (c *Conn) Keep() (release func())
 
+func (c *Conn) Remote() netip.Addr
+
 func (c *Conn) Send(h Header, msg *resources.Buf, before uint64) error
 
 func (c *Conn) Settings() settings.Settings
@@ -223,6 +225,8 @@ type Request struct {
 	Version Version
 	Level   Needs
 	Conn    *Conn
+
+	Protocol vfs.Protocol
 
 	State any
 }

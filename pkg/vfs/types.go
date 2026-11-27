@@ -36,6 +36,14 @@ type (
 	SMBFlags   = entity.SMBShareFlags
 )
 
+// The protocols an NFS request is labelled with: NFSv3 with MOUNT, NFSv4, and
+// NLM with NSM. Each kind's label is entity's.
+const (
+	ProtocolNFSv3 = entity.ProtocolNFSv3
+	ProtocolNFSv4 = entity.ProtocolNFSv4
+	ProtocolNLM   = entity.ProtocolNLM
+)
+
 // Open state's types an adapter passes or receives.
 type (
 	StateRef     = state.StateRef

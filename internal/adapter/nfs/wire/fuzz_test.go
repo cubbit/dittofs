@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/cubbit/dittofs/internal/adapter/nfs/wire"
@@ -431,6 +432,122 @@ func FuzzClientRec(f *testing.F) {
 		again, err := wire.DecodeClientRec(enc)
 		if err != nil || !reflect.DeepEqual(again, got) {
 			t.Fatalf("%+v encodes to %x, which reads %+v (%v)", got, enc, again, err)
+		}
+	})
+}
+
+// handAuthSysBody is an authsys_parms written by RFC 5531 Appendix A's
+// grammar: the stamp, the machine name as an XDR string, the uid, the gid and
+// the group list as an XDR array.
+func handAuthSysBody(stamp uint32, name []byte, uid, gid uint32, gids []uint32) []byte {
+	b := binary.BigEndian.AppendUint32(nil, stamp)
+	b = binary.BigEndian.AppendUint32(b, uint32(len(name)))
+	b = append(b, name...)
+	b = append(b, make([]byte, roundTo4(len(name))-len(name))...)
+	b = binary.BigEndian.AppendUint32(b, uid)
+	b = binary.BigEndian.AppendUint32(b, gid)
+
+	b = binary.BigEndian.AppendUint32(b, uint32(len(gids)))
+	for _, g := range gids {
+		b = binary.BigEndian.AppendUint32(b, g)
+	}
+
+	return b
+}
+
+// handAuthSys reads an authsys_parms by the same grammar, with no regard for
+// the decoder under test: its limits are RFC 5531's, a machine name of at most
+// 255 bytes and at most 16 groups, and the body is exactly one authsys_parms,
+// so a byte past the group list refuses it. A padding byte's value is not
+// read, as the decoder does not read it. ok is false for a body the grammar
+// refuses.
+func handAuthSys(b []byte) (stamp uint32, name []byte, uid, gid uint32, gids []uint32, ok bool) {
+	word := func() (uint32, bool) {
+		if len(b) < 4 {
+			return 0, false
+		}
+
+		w := binary.BigEndian.Uint32(b)
+		b = b[4:]
+
+		return w, true
+	}
+
+	var more bool
+	if stamp, more = word(); !more {
+		return
+	}
+
+	n, more := word()
+	if !more || n > 255 || int(n) > len(b) || roundTo4(int(n)) > len(b) {
+		return
+	}
+
+	name, b = b[:n], b[roundTo4(int(n)):]
+
+	if uid, more = word(); !more {
+		return
+	}
+
+	if gid, more = word(); !more {
+		return
+	}
+
+	count, more := word()
+	if !more || count > 16 || 4*int(count) > len(b) {
+		return
+	}
+
+	for range count {
+		g, _ := word()
+		gids = append(gids, g)
+	}
+
+	return stamp, name, uid, gid, gids, len(b) == 0
+}
+
+// FuzzAuthSys fuzzes an AUTH_SYS credential's body against a second decoder
+// written in this test from RFC 5531 Appendix A: no panic, the decoder accepts
+// exactly the bodies the grammar does, and reads the same fields from them (RFC
+// 5531 section 8.2, RFC 20 section 5.4).
+func FuzzAuthSys(f *testing.F) {
+	groups := func(n int) []uint32 {
+		g := make([]uint32, n)
+		for i := range g {
+			g[i] = uint32(i + 1)
+		}
+
+		return g
+	}
+	for _, n := range []int{0, 16, 17} {
+		f.Add(handAuthSysBody(7, []byte("host"), 1000, 100, groups(n)))
+	}
+
+	for _, n := range []int{255, 256} {
+		f.Add(handAuthSysBody(7, make([]byte, n), 1000, 100, groups(3)))
+	}
+
+	whole := handAuthSysBody(7, []byte("host"), 1000, 100, groups(3))
+	f.Add(append(whole[:len(whole):len(whole)], 0))
+	f.Add(whole[:len(whole)-2])
+	f.Fuzz(func(t *testing.T, body []byte) {
+		a, err := wire.DecodeAuthSys(body)
+
+		stamp, name, uid, gid, gids, ok := handAuthSys(body)
+		if (err == nil) != ok {
+			t.Fatalf("the decoder answers %v for %x, the grammar accepts it: %v", err, body, ok)
+		}
+
+		if err != nil {
+			return
+		}
+
+		same := a.Stamp == stamp && bytes.Equal(a.MachineName(), name)
+
+		same = same && a.UID == uid && a.GID == gid
+		if !same || !slices.Equal(a.Groups(), gids) {
+			t.Fatalf("the decoder reads %+v from %x, the grammar reads %d %q %d %d %v",
+				a, body, stamp, name, uid, gid, gids)
 		}
 	})
 }

@@ -416,6 +416,7 @@ var exempt = map[string]string{
 	"Needs":      "its values are used; the type itself is never written out",
 	"RoleNone":   "the zero role: a row that sets none has it",
 	"RoleFlush":  "a role Echo carries from its arguments, never names",
+	"Remote":     "the client's address, which a router reads; testproto's has no address rule",
 }
 
 // Every exported name of core, and every method of Conn and Request, is

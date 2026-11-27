@@ -271,6 +271,12 @@ func (c *Conn) armHandshake() {
 	)
 }
 
+// Remote is the client's address as it reached this node, without its port
+// and unmapped: an IPv4 client of a dual-stack listener is its IPv4 address.
+func (c *Conn) Remote() netip.Addr {
+	return c.remote
+}
+
 // Settings is the settings snapshot this connection loaded at accept, the
 // protocol's whole shape; NewConn reads its own from it.
 func (c *Conn) Settings() settings.Settings { return c.snap }
