@@ -66,3 +66,38 @@ func Impurities(imp types.Importer, path, dir string, rule Purity, planted ...st
 
 	return bad, nil
 }
+
+// ErrorTypes type-checks the package as Impurities does and names each
+// package-level type that is an error: one whose method set, or its pointer's,
+// has Error() string, a method promoted from an embedded field, one on a
+// generic type and an alias's included. Such a type is an error of the
+// package's own, which a constant or a return site can carry with no variable
+// declared.
+func ErrorTypes(imp types.Importer, path, dir string, planted ...string) ([]string, error) {
+	pkg, _, err := load(imp, path, dir, planted, true)
+	if err != nil {
+		return nil, err
+	}
+
+	var bad []string
+
+	for _, name := range pkg.Scope().Names() {
+		tn, ok := pkg.Scope().Lookup(name).(*types.TypeName)
+		if !ok {
+			continue
+		}
+
+		obj, _, _ := types.LookupFieldOrMethod(tn.Type(), true, pkg, "Error")
+		if fn, ok := obj.(*types.Func); ok && isErrorMethod(fn.Type().(*types.Signature)) {
+			bad = append(bad, "type "+name+" is an error")
+		}
+	}
+
+	return bad, nil
+}
+
+// isErrorMethod reports whether sig is the error interface's Error() string.
+func isErrorMethod(sig *types.Signature) bool {
+	return sig.Params().Len() == 0 && sig.Results().Len() == 1 &&
+		types.Identical(sig.Results().At(0).Type(), types.Typ[types.String])
+}
