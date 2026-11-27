@@ -4,8 +4,9 @@
 dedicated host's figures feed the keep-or-change decisions below; a developer machine's run
 compares only against that same machine's earlier figures, and a Mac's absolute values are
 `F_FULLFSYNC` figures that feed no decision (RFC 29 §4.10, and the RFC index's "Recording
-results" rule). No figure here was measured yet: every table is empty until its box's first run,
-and none is invented.
+results" rule). The dedicated host's table holds its first recorded run, a baseline before
+`#6472` and `#6511`; its scheduled runs from `7e3505d0e` on are the reference the trend compares
+against. Every figure is the median of the run's ten counts; none is invented.
 
 ## How a run is made
 
@@ -150,10 +151,10 @@ point per decade at the full sizes; and the 256 MiB mixed stream of RFC 1 §9.6'
 mixed case, which streams it as the RFC sets it, rolls beside the small writer included
 (the Notes' sizes bullet).
 
-The keep-or-change decisions for the segment cap, the sync bound and the idle seal wait for rows
-that exercise them. Only the large-file row makes the journal roll under a sustained stream, so
-only its figures can bear on the segment cap; the sync bound and the idle seal wait for their own
-rows, and the tables below stay empty until the reference run exists.
+The keep-or-change decisions for the segment cap, the sync bound and the idle seal now have
+their rows and a first recorded run. One baseline names each question — the cap under the
+large-file row's sustained rolls, the bound under the mixed row's in-window seal sync — and
+the scheduled twice-weekly fulls accumulate the trend that decides them.
 
 Today's values, from `pkg/journal/internal/core/limits.go` and `config.go`:
 
@@ -165,36 +166,50 @@ Today's values, from `pkg/journal/internal/core/limits.go` and `config.go`:
 
 ## The dedicated host
 
-Reference box. Not yet run: the first run lands in the first window outside its nightly work.
+Reference box. The first recorded run is a by-hand full run of 2026-11-26 23:21 to 01:08 CET
+(`full/20261126T222154Z-e5e487cbe9e5`, ten counts, medians below), a **baseline that predates
+the two journal speed-ups** (`#6472`, `#6511`): every scheduled run from 2026-11-27 08:30
+(commit `7e3505d0e`, carrying both) on is the reference the trend compares against, and the
+pair is the first same-box benchstat of those two changes. The scheduled runs: small on working
+days at 13:00, full Tuesdays and Fridays at 08:30, both under the host's run lock, folders under
+`/var/tmp/dittofs-perf/journal/` on the host.
 
 | Field | Value |
 | --- | --- |
-| Commit | |
-| CPU, memory | |
-| Device and its raw figures | |
-| Operating system, kernel | |
-| Filesystem and mount options | |
-| Sync bound | |
+| Commit | `v0.36.0-1166-ge5e487cbe` (before `#6472` and `#6511`; the 2026-11-27 08:30 run at `7e3505d0e` is the reference going forward) |
+| CPU, memory | AMD Ryzen 7 PRO 8700GE, 64 GB |
+| Device and its raw figures | `/dev/md2` (ext4 on RAID), 4 KiB overwrite-flush p50 3.08 ms, p99 3.64 ms |
+| Operating system, kernel | Linux 7.0.0-44-generic, amd64 |
+| Filesystem and mount options | ext4, `rw,relatime` |
+| Sync bound | 1 s |
+
+Medians of ten counts, journal against its raw twin (MB/s; the fraction beside):
 
 | Row | Queue depth | Raw twin | Result | RFC 1's proposed target | Measured target |
 | --- | --- | --- | --- | --- | --- |
-| J1 sequential, 4 KiB to 1 MiB, each sync pattern | 16 | `RawSequential`, same name | | ≥ 95% of the filesystem at ≥ 256 KiB | |
-| J1 random, 4 KiB to 1 MiB, each sync pattern | 16 | `RawRandom`, same name | | ≥ 90% of its IOPS at 4 KiB with a sync per write | |
-| J1 `WriteAt` p99 | 16 | | | ≤ 20 µs | |
-| J1 mixed durability | 2 (one stream) | | | none | |
-| J1 overwrite, sequential and random, 4 KiB to 1 MiB, each sync pattern (create pass synced untimed) | 16 | `RawOverwriteSequential` (streamed) / `RawOverwriteRandom`; the sequential sync rows twin `RawSequential`'s | | none named: reported apart | |
-| J1 large sequential, one writer, one file 30 GiB (`JOURNAL_BENCH_LARGE_BYTES`), one sync at its end | 1 | `RawLargeSequential` (same span, preallocated; see the Notes' caveat on its cache state) | | none: reported by the metrics the Notes' large-file bullet names, no fraction judged | |
-| J2 write scaling, 1, 4, 16, 64 files, each synced at its end | 1 to 64 | `RawScaling` (same files, 1 MiB blocks, sync at end) | | within 5% of the filesystem, flat to 64 | |
-| J3 `ReadAt` of one 64-byte extent, a point per decade 10^3 to 10^6 at the full sizes (upper bound, includes pread and copy) | 1 | | | ≤ 1 µs at 10^6 (index lookup; not judged from this row) | none: not filled in from this row |
-| J3 warm 1 MiB read | 1 | | | ≥ 2 GB/s | |
+| J1 sequential, nosync, 4 KiB to 1 MiB | 16 | `RawSequential`, same name | 166 / 19010 (0.9%), 4363 / 25854 (17%), 6123 / 22358 (27%), 5209 / 22352 (23%) | ≥ 95% of the filesystem at ≥ 256 KiB | not met on one run: the trend decides whether the target or the design changes |
+| J1 sequential, sync each, 4 KiB to 1 MiB | 16 | `RawSequential`, same name | 8.7 / 2.65 (3.3×), 32.7 / 54.2 (60%), 65.7 / 131.5 (50%), 75.2 / 495.1 (15%) | | |
+| J1 random, nosync, 4 KiB to 1 MiB | 16 | `RawRandom`, same name | 164 / 17653 (0.9%), 4630 / 23311 (20%), 5972 / 23700 (25%), 5079 / 21285 (24%) | ≥ 90% of its IOPS at 4 KiB with a sync per write | met past the proposal: 8.8 against 2.8 MB/s at 4 KiB — the group commit serves 3.2× the raw fsync rate |
+| J1 random, sync each, 4 KiB to 1 MiB | 16 | `RawRandom`, same name | 8.8 / 2.8 (3.2×), 34.5 / 49.6 (70%), 74.7 / 175.5 (43%), 409 / 696 (59%) | | |
+| J1 `WriteAt` p99 (median of p99-write-µs, sync rows and nosync rows apart) | 16 | | nosync: 1525 (4k) to 7310 µs (1m); sync: 202 (4k) to 3933 µs (1m) | ≤ 20 µs | not met on one run, and the figure includes the payload copy and the writers' shared-stream wait the RFC's target excludes; what to judge from it is the trend's first question |
+| J1 mixed durability (p99 of the small writer's write and sync together) | 2 (one stream) | | 522 ms p99, beside the stream's 324 MB/s | none | none: the roll's seal sync lands in the small writer's window, as the RFC's 256 MiB stream sizes it |
+| J1 overwrite sequential, nosync (halved span) | 16 | `RawOverwriteSequential` | 276 / 16811 (1.6%), 5593 / 25460 (22%), 7592 / 23203 (33%), 5967 / 19795 (30%); sync rows: 4k 10.9 / 2.65 (4.1×), 64k 147 / 54.2 (2.7×), 256k 368 / 131.5 (2.8×), 1m 462 / 495.1 (93%) | none named: reported apart | none |
+| J1 overwrite random | 16 | `RawOverwriteRandom` | nosync: 268 / 16390 (1.6%), 5492 / 31224 (18%), 7608 / 28626 (27%), 6151 / 27878 (22%); sync: 10.8 / 2.7 (4×), 141 / 56.7 (2.5×), 351 / 172.1 (2×), 582 / 686.8 (85%) | none named: reported apart | none |
+| J1 large sequential, 30 GiB, one sync at its end | 1 | `RawLargeSequential` | 214 / 865 MB/s (25%), p99-write-waited 840 µs, 104.5 spare-refusals/iter | none: the Notes' metrics | none |
+| J2 write scaling, each synced at its end | 1 to 64 | `RawScaling` | 150 / 912 (16%), 235 / 970 (24%), 182 / 990 (18%), 152.7 / 811 (19%) for 1, 4, 16, 64 files | within 5% of the filesystem, flat to 64 | not met on one run: 16 to 19% through 1 to 64 files |
+| J3 `ReadAt` of one 64-byte extent, point per decade | 1 | | 2.32, 2.35, 2.46, 2.72 µs at 10^3 to 10^6 extents | ≤ 1 µs at 10^6 (index lookup) | none: not judged from this row (the figure includes the pread and the copy) |
+| J3 warm 1 MiB read | 1 | | 12.0 GB/s | ≥ 2 GB/s | met, 6× over |
 
-Keep-or-change decision for each constant, with the evidence:
+Keep-or-change decision for each constant, with the evidence. One baseline run cannot
+decide any of the three; what it does is name the questions the trend now answers, and the
+first same-box benchstat — the baseline against the reference runs at `7e3505d0e` and later,
+which carry `#6472` and `#6511` — is the trend's first entry:
 
 | Constant | Today | Decision | Evidence |
 | --- | --- | --- | --- |
-| Segment cap | 256 MiB | | |
-| Sync bound | 1 s | | |
-| Idle seal | 30 s, 16 MiB | | |
+| Segment cap | 256 MiB | open: the trend decides | the large-file row runs at 25% of its twin with 104.5 spare refusals per iteration — the pool falls behind a stream that rolls every 256 MiB; whether a smaller cap (cheaper spares, more refusals) or a bigger one trades better is what the twice-weekly fulls accumulate |
+| Sync bound | 1 s | open: holds on one run | the mixed row's small writer waited 522 ms p99, inside the 1 s bound with the roll's seal sync in its window — the bound held, but one run does not size the headroom |
+| Idle seal | 30 s, 16 MiB | open: not exercised | no row waits out a 30 s idle segment; nothing in this run bears on it |
 
 ## Davide's MacBook
 
