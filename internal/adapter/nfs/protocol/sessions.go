@@ -26,7 +26,9 @@ const pendingCost int64 = 1 << 10
 // Pending is one proposal waiting for its confirm: the client ID and confirm
 // the service's Propose answered, the minor version that proposed, and the
 // ClientInfo the confirm's Connect registers, which carries the adapter's
-// own bytes.
+// own bytes. An NFSv4.1 confirm is checked through the record's stored sequence
+// ID, which Confirm's low 32 bits made, so nothing reads Confirm there; the
+// NFSv4.0 confirm, once it is served, compares its verifier with it.
 type Pending struct {
 	Proposal vfs.Proposal // handed to Connect only
 	Minor    uint32
@@ -80,8 +82,9 @@ func NewSessions(b *resources.Budgets, clk Clock, rnd io.Reader) *Sessions {
 	}
 }
 
-// NewConfirm draws the adapter's own confirm: eight bytes the confirming
-// CREATE_SESSION is checked against.
+// NewConfirm draws the adapter's own confirm: eight bytes. For NFSv4.1 only
+// their low 32 bits matter, the sequence ID the confirming CREATE_SESSION must
+// carry; the NFSv4.0 confirm, once it is served, compares all eight.
 //
 // decision: the confirm is drawn here and not taken from the service's
 // proposal, because open state stores the adapter bytes Propose is handed and
@@ -336,6 +339,13 @@ func (b *BackChannel) Unbind(c *core.Conn) (last bool) {
 // Bound is one connection's list of the sessions it is bound to, in the order
 // bound, under its own mutex: the one place a close and a bind meet (RFC 21
 // section 3.4's list). The zero value is an open, empty list.
+//
+// decision: nothing calls Close, nor Unbind on the back channels, when a
+// connection ends: no OnClose stage is set yet, so a closed connection stays on
+// the sessions it was bound to until the client's lease ends and EndClient
+// drops them. Wiring the stage needs a registry call that takes the connection
+// off each session and back channel, which the code that serves a connection's
+// bind after SEQUENCE adds. Overturned by that code.
 type Bound struct {
 	mu     sync.Mutex
 	closed bool
@@ -416,6 +426,12 @@ func cost(n, cached uint32) int64 {
 // cannot charge that, the error is a delay of resources and nothing is kept
 // (RFC 24 section 4.5).
 //
+// decision: a back channel given way to none still answers the call OK, with
+// CONN_BACK_CHAN clear and no callbacks registered, where a client that asked
+// to be called may expect an error. RFC 21 section 3.1 has a session granted
+// fewer slots where the node cannot charge them, and the client sees the flag.
+// Overturned if a client is seen to rely on the callback it asked for.
+//
 // Create takes the whole spec, and draws the session's ID itself, since the
 // back channel is named by the ID it is built under.
 //
@@ -443,6 +459,10 @@ func (s *Sessions) Create(cl vfs.ClientID, sp Spec) (*Session, error) {
 
 	fore.Slots = foreSlots
 	if sp.Callback != nil {
+		// The reply's attributes keep the one slot of grant, charged to
+		// nothing here: a back channel the pool left no slot for is none, which
+		// the unset CONN_BACK_CHAN flag and a nil Back say, and a client reads
+		// no attributes of a channel it was not given.
 		back.Slots = max(backSlots, 1) // a back channel with no slot is none
 	}
 

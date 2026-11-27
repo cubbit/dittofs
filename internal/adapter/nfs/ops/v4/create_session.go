@@ -185,6 +185,14 @@ func (h *Handlers) fromRecord(
 
 // replay answers a sequence ID the record has applied with the reply it
 // stored, byte for byte: none stored is a sequence ID out of order.
+//
+// decision: a replay is a pure answer: it binds no connection and registers no
+// callbacks, since RFC 21 section 3.5 has a resent sequence ID answered the
+// stored reply and nothing written. The new connection reaches the fore channel
+// through SEQUENCE; BIND_CONN_TO_SESSION binds it to the back channel, and
+// BACKCHANNEL_CTL registers the callbacks again. Known exception: when attach's
+// Connect failed after AddSession, a resend is answered OK with the callbacks
+// still unregistered. Overturned when a replay re-registers them.
 func replay(id vfs.ClientID, rec wire.ClientRec) (createSessionRes, bool, error) {
 	if len(rec.NFS4.SessionReply) == 0 {
 		return createSessionRes{}, false, errSeqMisordered
