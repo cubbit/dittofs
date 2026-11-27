@@ -9,6 +9,7 @@ DittoFS is in active development and welcomes contributions! This guide will hel
 - [Testing](#testing)
 - [Benchmarking](#benchmarking)
 - [Common Development Tasks](#common-development-tasks)
+- [Branches and releases](#branches-and-releases)
 - [Areas Needing Attention](#areas-needing-attention)
 
 ## Getting Started
@@ -164,7 +165,7 @@ The hook checks `gofmt -s` on staged Go files, then runs `go vet ./...` and `gol
 
 `test/harness/bin/dt hooks install --container` runs the same hooks in the dtc Linux container instead, so the machine needs no Go toolchain, and `dt hooks uninstall` goes back to `.githooks`. Both set `core.hooksPath` without keeping a custom value you had, and `make check-hooks` accepts only `.githooks`, so it fails in container mode.
 
-On a branch stacked on another branch, set `DITTOFS_PREPUSH_BASE=origin/<epic>` for the pre-push hook and pass `dt run --base origin/<epic>`.
+On a branch stacked on another branch, set `DITTOFS_PREPUSH_BASE=origin/<branch>` for the pre-push hook and pass `dt run --base origin/<branch>`.
 
 ### Linting and Formatting
 
@@ -368,16 +369,55 @@ top of [`.github/scripts/combined-tree.sh`](../../.github/scripts/combined-tree.
 -- the one place they can drift out of agreement with the code that applies
 them is a second prose copy here.
 
+## Branches and releases
+
+`develop` is the one development branch and the default. Every pull request targets it and
+merges through the merge queue as a squash:
+
+```bash
+git fetch origin && git switch -c fix/my-change origin/develop
+gh pr create --base develop
+```
+
+`main` holds releases only. Each release fast-forwards `main` to `develop` and tags it there,
+so tags live on `main` and `main` is always an ancestor of `develop`:
+
+```bash
+scripts/release.sh 0.38.0          # on an up-to-date develop
+```
+
+A hotfix of a released line is made on `main`, not through `develop`. Cut `hotfix/X.Y.Z` from
+`main`'s latest tag, add the fix and its `## [X.Y.Z]` changelog section, push the branch, and
+run `scripts/hotfix.sh`. It tags the release, fast-forwards `main`, and merges `main` back into
+`develop` so the next `release.sh` finds `main` an ancestor. Pass `--ours` when the fix does not
+apply to `develop`'s code; the merge is then recorded and `develop`'s tree stays as it is.
+
+```bash
+git switch -c hotfix/0.37.1 v0.37.0
+# commit the fix and the CHANGELOG.md section, then
+git push -u origin hotfix/0.37.1
+scripts/hotfix.sh --ours 0.37.1
+```
+
+"Latest" goes only to the highest version: Docker `:latest`, the Homebrew casks, the Scoop
+manifests, the install script's `latest` file and GitHub's latest release move only when the tag
+is the highest non-rc version in the repository. A hotfix of an older line publishes its own
+versioned binaries, images and release, and leaves "latest" where it is.
+
+Long-lived feature branches are avoided. If one is ever needed, it goes through the same
+rulesets as `develop`. `feat/storage-v2`, the v2 line, was merged into `develop` on 2026-11-27
+and is read-only.
+
 ## Submitting Changes
 
 1. Fork the repository
 2. Set up pre-commit hooks (`make setup-hooks`)
-3. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Create a feature branch from `develop` (`git checkout -b feature/amazing-feature origin/develop`)
 4. Make your changes
 5. Run tests (`go test ./...`)
 6. Commit your changes — pre-commit hooks check formatting and lint automatically
 7. Push to the branch (`git push origin feature/amazing-feature`)
-8. Open a Pull Request
+8. Open a Pull Request against `develop`
 
 ## Getting Help
 
