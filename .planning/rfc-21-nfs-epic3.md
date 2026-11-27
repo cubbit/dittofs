@@ -616,6 +616,8 @@ internal/adapter/adaptertest/nfsclient/
   `core`'s pipeline, by E4's cacheable rows and by E8, which adds a session's slots beside it.
   Golden files of calls and the key's fields each gives, never the hash, which `hash/maphash` seeds
   per process (§11.6's retry-identity table).
+  This subtask's RFC 21 pull request rewords §11.2's cache sentence to D5's key (§9, the bullet on
+  §11.2) and is merged before this subtask's code starts.
 - **Acceptance criteria:**
   - A cacheable NFS v3 call sent twice with one XID from one address, on two connections, is
     answered twice with the same bytes and calls the service once; so is an NFSv4.0 `COMPOUND` whose member is cacheable, while one whose
@@ -715,6 +717,12 @@ internal/adapter/adaptertest/nfsclient/
     `ErrLogonFailure` at `NFS4ERR_SERVERFAULT`.
   - `wire`'s `AuthTooWeak`, `NFS4ErrNoFileHandle`, `NFS4ErrMoved`; hand-written golden calls and
     replies for each `NULL` E2's captures do not already hold, and for each answered row.
+  - This subtask's RFC 21 pull request adds NSM's `ErrMoved` case, no reply (R19), and MOUNT's and
+    NSM's `ErrLogonFailure` case, `SYSTEM_ERR` (R22), to §11.5, whose text names NFSv3, MOUNT and
+    NLM for the first and NFSv3 and NLM for the second, and is merged before this subtask's code
+    starts. E4's RFC 21 pull request writes MOUNT's other cells (E4's D3 and §9, point 10); neither
+    goes first, and whichever lands second adds its own beside the other's and adapts to the table
+    as the first left it (E4's D2).
   - Consumed by `nfs.go`, T3.6's probe, E4 and E11, which fill the packages, E5 (a member before any
     `PUTFH`), E10's T10.9 (the drain), S3's and S4's first call, and E16's totality test (T16.11).
 - **Acceptance criteria:**
@@ -995,7 +1003,7 @@ Gaps, not questions:
   verified on develop; its `Protocol` in `r.Call` is not, and the follow-up removes it). Q3's sentence
   for RFC 21 §2.2 has no pull request yet, since Q3 is pending the user's answer. §11.5's NSM and
   MOUNT cases (bullet below) go in T3.4's RFC 21 pull request and §11.2's key (bullet below) in
-  T3.3's, each opened before its subtask's code; neither is on develop. This plan's own pull
+  T3.3's, each merged before its subtask's code starts; neither is on develop. This plan's own pull
   request adds only a `.planning/` file and carries no RFC text.
   Its RFC 20 pull request also carries E8's Q1 to Q3, E11's Q2, E13's Q3 and E16's Q3. E5's pull
   request touches RFC 20 §4.10, and E4's and E5's other rows of RFC 21 §11.5.
