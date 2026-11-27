@@ -49,8 +49,9 @@ func (s surface) planted(name string) []string {
 
 // surfaces are the carver's packages: the root, the contract, with no
 // function, no interface and no state but its error (RFC 0 §1.2, RFC 2 §1.1,
-// §1.3); the settings value it aliases, data only; carve and the fold, which
-// declare functions but no interface and keep nothing between calls.
+// §1.3); the settings value it aliases, with the function that builds it and
+// no state; carve and the fold, which declare functions but no interface and
+// keep nothing between calls.
 var surfaces = []surface{
 	{
 		dir: ".",
@@ -77,13 +78,16 @@ var surfaces = []surface{
 	{
 		dir: "internal/params",
 		exports: []string{
+			"func Bits(s Settings) (before int, after int)",
+			"func Gear(s Settings) *[256]uint64",
+			"func New(target int, gear *[256]uint64) Settings",
 			"type Settings struct{}",
 			"func (Settings).Max() int",
 			"func (Settings).Min() int",
 			"func (Settings).Target() int",
 		},
-		// Data only: methods over the value. The function that builds one widens this rule when it lands.
-		purity: archtest.Purity{},
+		// The value, the function that builds it and two readers; no state.
+		purity: archtest.Purity{Funcs: true},
 	},
 	{
 		dir: "carve",
@@ -160,8 +164,8 @@ func TestCarverIsPure(t *testing.T) {
 		{".", "defined_iface.go", []string{"type sink is an interface"}},
 		{"internal/params", "", nil},
 		{"internal/params", "state.go", []string{"var defaults is state"}},
-		{"internal/params", "func.go", []string{"func derive is not a method"}},
 		{"internal/params", "iface.go", []string{"type Deriver is an interface"}},
+		{"internal/params", "init.go", []string{"func init is not a method"}},
 		{"carve", "", nil},
 		{"carve", "state.go", []string{"var tables is state"}},
 		{"carve", "iface.go", []string{"type Cutter is an interface"}},
