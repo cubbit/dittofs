@@ -5,15 +5,11 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"encoding/base64"
-	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
 
-	"github.com/google/uuid"
-	"golang.org/x/crypto/argon2"
+	"github.com/cubbit/dittofs/internal/keyfile"
 )
 
 // localPassphraseEnv names the environment variable holding the
@@ -21,48 +17,6 @@ import (
 // configuration file by design — it must travel through the process
 // environment only.
 const localPassphraseEnv = "DITTOFS_ENCRYPTION_PASSPHRASE"
-
-const localPEMType = "DITTOFS ENCRYPTED MASTER KEY"
-
-const localKeyFileVersion = 1
-
-// Argon2 KDF parameter bounds enforced on read. The lower bounds keep
-// argon2.IDKey from panicking on a corrupt/tampered file (it panics when
-// time < 1 or threads < 1) and reject a key file weaker than was ever
-// generated. The upper bounds cap unwrap cost so an attacker who can write
-// the key file cannot turn startup into an OOM-kill or a multi-minute
-// hang: maxArgonMemoryKiB ≈ 4 GiB and maxArgonTime/maxArgonThreads are far
-// above any sane configuration. Defaults written by GenerateKeyFile
-// (t=3, m=64 MiB, p=4) sit comfortably inside this window.
-const (
-	minArgonTime      = 1
-	maxArgonTime      = 64
-	minArgonMemoryKiB = 8 * 1024
-	maxArgonMemoryKiB = 4 * 1024 * 1024
-	minArgonThreads   = 1
-	maxArgonThreads   = 64
-)
-
-// argon2Params holds the KDF parameters persisted alongside the wrapped
-// master key. Defaults follow the OWASP 2024 password-storage cheat
-// sheet for Argon2id (m=64 MiB, t=3, p=4).
-type argon2Params struct {
-	Algo      string `json:"algo"`
-	Salt      string `json:"salt"`
-	Time      uint32 `json:"time"`
-	MemoryKiB uint32 `json:"memory_kib"`
-	Threads   uint8  `json:"threads"`
-}
-
-// localKeyFile is the JSON body wrapped inside the PEM block.
-type localKeyFile struct {
-	Version          int          `json:"version"`
-	MasterKeyID      string       `json:"master_key_id"`
-	KDF              argon2Params `json:"kdf"`
-	Wrap             string       `json:"wrap"`
-	Nonce            string       `json:"nonce"`
-	WrappedMasterKey string       `json:"wrapped_master_key"`
-}
 
 // localProvider unlocks a single master key from a passphrase-protected
 // file and uses AES-256-GCM with a random nonce to wrap per-block keys.
@@ -109,15 +63,8 @@ func loadLocalKeyFile(path, passphrase string) (string, []byte, error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("keyprovider: read key file: %w", err)
 	}
-	kf, err := decodeKeyFile(raw)
-	if err != nil {
-		return "", nil, err
-	}
-	masterKey, err := unwrapMasterKey(kf, passphrase)
-	if err != nil {
-		return "", nil, err
-	}
-	return kf.MasterKeyID, masterKey, nil
+	id, key, err := keyfile.Open(raw, passphrase)
+	return id, key, keyFileError(err)
 }
 
 // GenerateKeyFile produces the bytes of a fresh passphrase-protected key
@@ -126,131 +73,33 @@ func loadLocalKeyFile(path, passphrase string) (string, []byte, error) {
 // CLI can offer an "auto-create on first use" affordance without
 // reinventing the encoding.
 func GenerateKeyFile(passphrase string) ([]byte, error) {
-	return generateKeyFile(passphrase, 3, 64*1024)
+	raw, err := keyfile.Generate(passphrase, false)
+	return raw, keyFileError(err)
 }
 
 // GenerateWeakKeyFile is GenerateKeyFile at the lowest Argon2 cost a key file
-// may record, minArgonTime and minArgonMemoryKiB, for tests that open many
-// key files: it derives about 24 times faster and protects the master key as
-// much less. Never write one where a key protects data.
+// may record, for tests that open many key files: it derives about 24 times
+// faster and protects the master key as much less. Never write one where a
+// key protects data.
 func GenerateWeakKeyFile(passphrase string) ([]byte, error) {
-	return generateKeyFile(passphrase, minArgonTime, minArgonMemoryKiB)
+	raw, err := keyfile.Generate(passphrase, true)
+	return raw, keyFileError(err)
 }
 
-func generateKeyFile(passphrase string, argTime, argMemKiB uint32) ([]byte, error) {
-	if passphrase == "" {
-		return nil, ErrPassphraseMissing
+// keyFileError translates the key-file format's errors into this package's:
+// ErrUnwrapFailed is also the block-key unwrap's error, and
+// ErrPassphraseMissing's message names the passphrase's variable.
+func keyFileError(err error) error {
+	for _, t := range [...]struct{ from, to error }{
+		{keyfile.ErrCorrupt, ErrKeyFileCorrupt},
+		{keyfile.ErrUnwrap, ErrUnwrapFailed},
+		{keyfile.ErrPassphrase, ErrPassphraseMissing},
+	} {
+		if errors.Is(err, t.from) {
+			return fmt.Errorf("%w: %w", t.to, err)
+		}
 	}
-	masterKey := make([]byte, 32)
-	if _, err := rand.Read(masterKey); err != nil {
-		return nil, fmt.Errorf("keyprovider: read master key: %w", err)
-	}
-	salt := make([]byte, 16)
-	if _, err := rand.Read(salt); err != nil {
-		return nil, fmt.Errorf("keyprovider: read salt: %w", err)
-	}
-	const argThreads = 4
-	derived := argon2.IDKey([]byte(passphrase), salt, argTime, argMemKiB, argThreads, 32)
-	aead, err := newGCM(derived)
-	if err != nil {
-		return nil, err
-	}
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, fmt.Errorf("keyprovider: read wrap nonce: %w", err)
-	}
-	wrapped := aead.Seal(nil, nonce, masterKey, nil)
-	kf := localKeyFile{
-		Version:     localKeyFileVersion,
-		MasterKeyID: uuid.NewString(),
-		KDF: argon2Params{
-			Algo:      "argon2id",
-			Salt:      base64.StdEncoding.EncodeToString(salt),
-			Time:      argTime,
-			MemoryKiB: argMemKiB,
-			Threads:   argThreads,
-		},
-		Wrap:             "aes-256-gcm",
-		Nonce:            base64.StdEncoding.EncodeToString(nonce),
-		WrappedMasterKey: base64.StdEncoding.EncodeToString(wrapped),
-	}
-	body, err := json.MarshalIndent(kf, "", "  ")
-	if err != nil {
-		return nil, fmt.Errorf("keyprovider: marshal key file: %w", err)
-	}
-	return pem.EncodeToMemory(&pem.Block{Type: localPEMType, Bytes: body}), nil
-}
-
-func decodeKeyFile(raw []byte) (*localKeyFile, error) {
-	block, _ := pem.Decode(raw)
-	if block == nil || block.Type != localPEMType {
-		return nil, fmt.Errorf("%w: missing %q PEM block", ErrKeyFileCorrupt, localPEMType)
-	}
-	var kf localKeyFile
-	if err := json.Unmarshal(block.Bytes, &kf); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrKeyFileCorrupt, err)
-	}
-	if kf.Version != localKeyFileVersion {
-		return nil, fmt.Errorf("%w: unsupported version %d", ErrKeyFileCorrupt, kf.Version)
-	}
-	if kf.KDF.Algo != "argon2id" {
-		return nil, fmt.Errorf("%w: unsupported kdf %q", ErrKeyFileCorrupt, kf.KDF.Algo)
-	}
-	if kf.Wrap != "aes-256-gcm" {
-		return nil, fmt.Errorf("%w: unsupported wrap %q", ErrKeyFileCorrupt, kf.Wrap)
-	}
-	if kf.MasterKeyID == "" {
-		return nil, fmt.Errorf("%w: empty master_key_id", ErrKeyFileCorrupt)
-	}
-	if err := validateKDFParams(kf.KDF); err != nil {
-		return nil, err
-	}
-	return &kf, nil
-}
-
-// validateKDFParams bounds the Argon2 parameters read from disk before they
-// reach argon2.IDKey. Without these guards a corrupt or attacker-replaced
-// key file with time=0 or threads=0 panics the daemon at startup, and a
-// huge memory_kib triggers an OOM-kill — both an availability/DoS vector.
-func validateKDFParams(p argon2Params) error {
-	if p.Time < minArgonTime || p.Time > maxArgonTime {
-		return fmt.Errorf("%w: kdf time %d out of range [%d,%d]", ErrKeyFileCorrupt, p.Time, minArgonTime, maxArgonTime)
-	}
-	if p.MemoryKiB < minArgonMemoryKiB || p.MemoryKiB > maxArgonMemoryKiB {
-		return fmt.Errorf("%w: kdf memory_kib %d out of range [%d,%d]", ErrKeyFileCorrupt, p.MemoryKiB, minArgonMemoryKiB, maxArgonMemoryKiB)
-	}
-	if p.Threads < minArgonThreads || p.Threads > maxArgonThreads {
-		return fmt.Errorf("%w: kdf threads %d out of range [%d,%d]", ErrKeyFileCorrupt, p.Threads, minArgonThreads, maxArgonThreads)
-	}
-	return nil
-}
-
-func unwrapMasterKey(kf *localKeyFile, passphrase string) ([]byte, error) {
-	salt, err := base64.StdEncoding.DecodeString(kf.KDF.Salt)
-	if err != nil {
-		return nil, fmt.Errorf("%w: salt: %v", ErrKeyFileCorrupt, err)
-	}
-	nonce, err := base64.StdEncoding.DecodeString(kf.Nonce)
-	if err != nil {
-		return nil, fmt.Errorf("%w: nonce: %v", ErrKeyFileCorrupt, err)
-	}
-	wrapped, err := base64.StdEncoding.DecodeString(kf.WrappedMasterKey)
-	if err != nil {
-		return nil, fmt.Errorf("%w: wrapped_master_key: %v", ErrKeyFileCorrupt, err)
-	}
-	derived := argon2.IDKey([]byte(passphrase), salt, kf.KDF.Time, kf.KDF.MemoryKiB, kf.KDF.Threads, 32)
-	aead, err := newGCM(derived)
-	if err != nil {
-		return nil, err
-	}
-	plain, err := aead.Open(nil, nonce, wrapped, nil)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUnwrapFailed, err)
-	}
-	if len(plain) != 32 {
-		return nil, fmt.Errorf("%w: unwrapped master key has unexpected length %d", ErrKeyFileCorrupt, len(plain))
-	}
-	return plain, nil
+	return err
 }
 
 // aesGCMKEK is the shared Wrap / Unwrap / Close implementation used by
