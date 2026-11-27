@@ -54,6 +54,7 @@ func (p *Protocol) NewConn(c *core.Conn) core.Stages {
 	s := &stage{errs: p.errs, conn: c}
 	if c != nil {
 		s.served = newServed(c.Settings().(settings.NFS).Versions, p.tables)
+		s.bound = new(Bound)
 	}
 
 	st := core.Stages{Header: s, Router: s, Errors: p.errs, Protocol: "nfs3"}
