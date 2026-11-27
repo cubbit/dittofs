@@ -273,8 +273,8 @@ func refusals(ctx context.Context, v view) error {
 // the limit, never in part, one raise at a time under contention, and each
 // master key's count on its own.
 func wrapCount(ctx context.Context, v view) error {
-	// IDs holding zero bytes, one the other's prefix, so a store's key encoding
-	// that merges them is seen.
+	// IDs holding zero bytes, one the other's prefix, so a key encoding that
+	// stops at a zero byte, or reads one ID as the other's prefix, is seen.
 	contended, stepped, near := []byte("\x00m"), []byte("\x00m\x00"), []byte("m\x00\xff")
 
 	var raised atomic.Int32
