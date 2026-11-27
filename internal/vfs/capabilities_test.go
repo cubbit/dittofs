@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"testing"
 
 	"github.com/cubbit/dittofs/internal/vfs/authz"
@@ -41,7 +42,8 @@ func eachCase(t *testing.T, x vfs.Caps, fn func(t *testing.T, c vfs.Caps, set bo
 
 // HostCall lowers a share's minimums only for the calls a host's mount or
 // lock service makes: Root and ListShares meet none, a lock call, a GetAttr
-// and an open meet MinProof lowered to Claimed and no MinProtection, and any
+// and an open meet MinProof lowered to Claimed and no MinProtection, and a
+// SetAttr or a Write, which no such service calls, is ErrInvalid, as is any
 // other call
 // naming the share, or any call with a Session, which no mount or lock
 // service has, is ErrInvalid. Without it the same call meets the share's own
@@ -95,9 +97,13 @@ func TestHostCallLowersTheMinimumsOnlyForItsCalls(t *testing.T) {
 				_, err := s.SetAttr(ctx, c, vfs.Target{H: h}, vfs.AttrChange{Attrs: entity.Attrs{}.WithMode(0o644)})
 				return err
 			},
+			"Write": func(c vfs.Call) error {
+				_, err := s.Write(ctx, c, vfs.Anonymous(h), 0, []byte("x"), vfs.Unstable)
+				return err
+			},
 		}
 		all := func(err error) map[string]error {
-			return map[string]error{"Root": err, "ListShares": err, "TestLock": err, "Open": err, "GetAttr": err, "SetAttr": err}
+			return map[string]error{"Root": err, "ListShares": err, "TestLock": err, "Open": err, "GetAttr": err, "SetAttr": err, "Write": err}
 		}
 		cases := []struct {
 			name string
@@ -113,9 +119,9 @@ func TestHostCallLowersTheMinimumsOnlyForItsCalls(t *testing.T) {
 				c    vfs.Call
 				want map[string]error
 			}{
-				{"at a secret", secret, map[string]error{"Root": nil, "ListShares": nil, "TestLock": nil, "Open": nil, "GetAttr": nil, "SetAttr": vfs.ErrInvalid}},
+				{"at a secret", secret, map[string]error{"Root": nil, "ListShares": nil, "TestLock": nil, "Open": nil, "GetAttr": nil, "SetAttr": vfs.ErrInvalid, "Write": vfs.ErrInvalid}},
 				{"with a session", withSession, all(vfs.ErrInvalid)},
-				{"proving nothing", none, map[string]error{"Root": pastMinimums, "ListShares": vfs.ErrWrongSecurity, "TestLock": vfs.ErrWrongSecurity, "Open": vfs.ErrWrongSecurity, "GetAttr": vfs.ErrWrongSecurity, "SetAttr": vfs.ErrInvalid}},
+				{"proving nothing", none, map[string]error{"Root": pastMinimums, "ListShares": vfs.ErrWrongSecurity, "TestLock": vfs.ErrWrongSecurity, "Open": vfs.ErrWrongSecurity, "GetAttr": vfs.ErrWrongSecurity, "SetAttr": vfs.ErrInvalid, "Write": vfs.ErrInvalid}},
 			}
 		}
 		for _, tc := range cases {
@@ -428,4 +434,57 @@ func TestTheProtocolLabelChangesNothingAndReachesAReleasesEvent(t *testing.T) {
 func label(ctx context.Context) string {
 	p, _ := vfs.ProtocolFrom(ctx)
 	return p.Label()
+}
+
+// The lowered minimums are the exemption, never the rules or the state: a
+// HostCall Root from a client the rules refuse is ErrAccess, the share is
+// left out of a host's ListShares as of anyone's, a host's lock of it is
+// refused, and a quiesced share answers a host's Root ErrDelay, the state
+// gate closing what the exemption opened. With no profile stated an ordinary
+// caller meets the share's own minimums, as any caller does.
+func TestHostCallsMeetTheRulesAndAZeroProfileMeetsTheMinimums(t *testing.T) {
+	s := newShares(t, nil, nil)
+	ctx := t.Context()
+	// The share asks a ticket, so the rules' refusals are not the minimums'.
+	s.must(t, errOf(s.cp.PutExportPolicy(ctx, entity.ExportPolicy{Share: s.share,
+		MinProof: entity.ProofTicket, MinProtection: entity.ProtectionIntegrity}, policyVersion(t, s.cp, s.share))))
+	c := vfs.Call{Identity: vfs.Identity{Proof: vfs.ProofTicket, Protection: vfs.ProtectionPrivacy, Evidence: vfs.Evidence{Principal: s.fs.Admin.Principal}, Client: outside}, Caps: vfs.NFSv3Caps}
+	id, _, err := s.Connect(ctx, c, nlmHost("host", 1), &vfstest.Callbacks{})
+	s.must(t, err)
+	host := c
+	host.Client, host.Caps = id, vfs.MountCaps
+	o := vfs.LockOwner{Client: id, Name: []byte("lo")}
+	rule := entity.ExportPolicy{Share: s.share,
+		Clients: []entity.ClientRule{{Match: entity.ClientMatch{CIDR: netip.MustParsePrefix("10.0.0.0/8")}, Access: entity.AccessReadWrite}}}
+	// With no profile stated, an ordinary caller meets the share's own
+	// minimums and is refused by them, not for having none.
+	anonymous := vfs.Call{Client: id}
+	if _, _, err := s.Root(ctx, anonymous, vfs.ShareRef{Path: "/data"}); !errors.Is(err, vfs.ErrWrongSecurity) {
+		t.Errorf("a zero-profile Root of minimums the caller does not meet: %v, want ErrWrongSecurity", err)
+	}
+	// The host's Root of a share whose rules refuse its client is ErrAccess.
+	s.must(t, errOf(s.cp.PutExportPolicy(ctx, rule, policyVersion(t, s.cp, s.share))))
+	h, _, err := s.Root(ctx, host, vfs.ShareRef{Path: "/data"})
+	if !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("a host's Root of a share its rules refuse: %v, want ErrAccess (handle %v)", err, h)
+	}
+	// A host's ListShares leaves the share out.
+	list, err := s.ListShares(ctx, host)
+	s.must(t, err)
+	for _, i := range list {
+		if i.Name == "data" {
+			t.Errorf("a host's ListShares names the share its rules refuse")
+		}
+	}
+	// A host's lock of it is refused too.
+	f, _ := s.fs.Create(t, s.fs.Admin, s.fs.Root, "f", kvstore.Regular(0o644))
+	if _, err := s.TestLock(ctx, host, vfs.Anonymous(f), o, vfs.ByteRange{Length: 1}, false); !errors.Is(err, vfs.ErrAccess) {
+		t.Errorf("a host's lock of a share its rules refuse: %v, want ErrAccess", err)
+	}
+	// The rules admitting nothing else, the share quiesced: the state gate
+	// answers a host's Root ErrDelay, as anyone's.
+	s.must(t, s.cp.SetShareState(ctx, s.share, entity.ShareEnabled, entity.ShareQuiesced))
+	if _, _, err := s.Root(ctx, host, vfs.ShareRef{Path: "/data"}); !errors.Is(err, vfs.ErrDelay) {
+		t.Errorf("a host's Root of a quiesced share: %v, want ErrDelay", err)
+	}
 }
