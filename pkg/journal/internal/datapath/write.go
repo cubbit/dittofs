@@ -352,13 +352,8 @@ func (c *Core) publishPiece(s *Share, id core.FileID, v core.Version, grant *cap
 	// is ignored, and the worker lifts again after this write releases the
 	// file's append domain and logs a failure. Its delta is accounted
 	// before the error is looked at. Overturned by an index write that
-	// takes a durable flag per piece.
-	//
-	// ponytail: Durable scans every stream's ledger forward under that
-	// stream's mutex, once per published piece, and a ledger holds up to
-	// one sync bound of writes, so the cost grows with concurrent small
-	// writes. Upgrade to a scan from the end of each ledger, or one stream,
-	// inside Durable when a profile of small concurrent writes shows it.
+	// takes a durable flag per piece. Durable answers the piece just
+	// appended from its own stream's ledger tail (see Durable).
 	if c.dur.Durable(pl.Loc) {
 		lh, lifted, _ := c.index.LiftSuperseded(id, v, core.Extent{Off: pc.off, Len: pl.N})
 		c.Account(lh)

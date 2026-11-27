@@ -3,6 +3,7 @@ package datapath
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"slices"
 	"sync"
@@ -51,6 +52,8 @@ type syncWhileHeld struct {
 	// at what the write alone left.
 	gate     atomic.Pointer[chan struct{}]
 	openOnce sync.Once
+	// parked counts the domain takes that reached the closed gate.
+	parked atomic.Int32
 }
 
 // Lock lets the core's own domain table through unless the gate is closed
@@ -62,6 +65,7 @@ type gatedDomains struct {
 
 func (g gatedDomains) Lock(id core.FileID) func() {
 	if ch := g.h.gate.Load(); ch != nil {
+		g.h.parked.Add(1)
 		<-*ch
 	}
 	return g.Domains.Lock(id)
@@ -284,6 +288,74 @@ func TestWriteAt_SyncCompletesBetweenAppendAndPublish(t *testing.T) {
 			t.Fatalf("held = %d after the failed record was dropped, want A's 4096", held)
 		}
 	})
+}
+
+// The publish asks Durable about the record it just appended, which the
+// record's own stream answers from its ledger alone. On each stream of a
+// several-stream core the answer is the record's own: a sync that completes
+// between the append and the publish makes the publish lift what the write
+// superseded, and one that fails there leaves it retained, for the failed
+// record is no longer in its stream's ledger and reads durable only if the
+// own-stream answer skipped the pass that finds it in its window. A failed
+// write publishes only once the worker has taken its window and parked on the
+// file's domain, so the record has left the ledger by the publish.
+func TestWriteAt_PublishAsksTheRecordsOwnStream(t *testing.T) {
+	for stream := range testStreams {
+		for _, failing := range []bool{false, true} {
+			t.Run(fmt.Sprintf("stream %d failing %v", stream, failing), func(t *testing.T) {
+				var h *syncWhileHeld
+				h, c := newHeld(t, failing, func(o *coreOptions) {
+					o.afterAppend = func() {
+						h.hook()
+						if !failing || h.gate.Load() == nil {
+							return
+						}
+						for deadline := time.Now().Add(5 * time.Second); h.parked.Load() == 0; runtime.Gosched() {
+							if time.Now().After(deadline) {
+								panic("the failed sync's window never reached the file's domain")
+							}
+						}
+					}
+				})
+				s := mustShare(t, c, 1)
+				f := fileOnStream(t, c, stream)
+				h.f = f
+				a := mustWrite(t, c, s, f, 0, make([]byte, 4096))
+				syncFiles(t, c, f)
+				h.arm()
+				b := mustWrite(t, c, s, f, 0, make([]byte, 4096))
+				ret := c.Index().Retained(f)
+				switch {
+				case failing && (len(ret) != 1 || ret[0].Version != a || ret[0].By != b):
+					t.Fatalf("Retained after a write whose sync failed before its publish = %+v, want A's extent at %v kept for %v", ret, a, b)
+				case !failing && len(ret) != 0:
+					t.Fatalf("Retained after a write whose sync completed before its publish = %+v, want none", ret)
+				}
+				h.open()
+				if err := <-h.done; (err != nil) != failing {
+					t.Fatalf("Sync = %v, want an error %v", err, failing)
+				}
+				if failing {
+					eventually(t, "A to be served again", func() bool {
+						p, ok := c.Index().Lookup(f, 0)
+						return ok && p.Version == a
+					})
+				}
+			})
+		}
+	}
+}
+
+// fileOnStream returns a file id the core routes to stream.
+func fileOnStream(t *testing.T, c *Core, stream int) core.FileID {
+	t.Helper()
+	for i := 1; i < 256; i++ {
+		if f := testFile(byte(i)); streamOf(c, f) == stream {
+			return f
+		}
+	}
+	t.Fatalf("no file id routes to stream %d", stream)
+	return core.FileID{}
 }
 
 // pieceLoc is the ledger location of the held piece of f at off: where the
