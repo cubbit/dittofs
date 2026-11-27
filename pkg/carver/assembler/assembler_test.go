@@ -14,7 +14,7 @@ import (
 func valid() carver.AssemblerConfig {
 	return carver.AssemblerConfig{
 		BlockTarget: 4 << 20,
-		MaxChunks:   1024,
+		MaxChunks:   512,
 		KeyBudget:   10_000,
 		BlockKeys:   3,
 		FileKeys:    1,
@@ -22,35 +22,43 @@ func valid() carver.AssemblerConfig {
 	}
 }
 
+// checkNew asserts New accepts c when field is empty, and otherwise refuses it
+// with ErrInvalidSettings, a nil fold and an error naming field.
+func checkNew(t *testing.T, c carver.AssemblerConfig, field string) {
+	t.Helper()
+	f, err := assembler.New(c)
+	if field == "" {
+		if err != nil || f == nil {
+			t.Fatalf("New(%+v): got (%v, %v), want a fold and no error", c, f, err)
+		}
+		return
+	}
+	if !errors.Is(err, carver.ErrInvalidSettings) || f != nil {
+		t.Fatalf("New(%+v): got (%v, %v), want (nil, ErrInvalidSettings)", c, f, err)
+	}
+	if !strings.Contains(err.Error(), field) {
+		t.Errorf("New(%+v): error %q does not name %s", c, err, field)
+	}
+}
+
 func TestNewRefusesBlockTarget(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		target int64
-		ok     bool
+		field  string // "BlockTarget" when refused, empty when accepted
 	}{
-		{"512 KiB", 512 << 10, false},
-		{"128 MiB", 128 << 20, false},
-		{"1 MiB - 1", 1<<20 - 1, false},
-		{"64 MiB + 1", 64<<20 + 1, false},
-		{"1 MiB", 1 << 20, true},
-		{"64 MiB", 64 << 20, true},
+		{"0", 0, "BlockTarget"},
+		{"512 KiB", 512 << 10, "BlockTarget"},
+		{"128 MiB", 128 << 20, "BlockTarget"},
+		{"1 MiB - 1", 1<<20 - 1, "BlockTarget"},
+		{"64 MiB + 1", 64<<20 + 1, "BlockTarget"},
+		{"1 MiB", 1 << 20, ""},
+		{"64 MiB", 64 << 20, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := valid()
 			c.BlockTarget = tc.target
-			f, err := assembler.New(c)
-			if tc.ok {
-				if err != nil || f == nil {
-					t.Fatalf("New(BlockTarget=%d): got (%v, %v), want a fold and no error", tc.target, f, err)
-				}
-				return
-			}
-			if !errors.Is(err, carver.ErrInvalidSettings) || f != nil {
-				t.Fatalf("New(BlockTarget=%d): got (%v, %v), want (nil, ErrInvalidSettings)", tc.target, f, err)
-			}
-			if !strings.Contains(err.Error(), "BlockTarget") {
-				t.Errorf("New(BlockTarget=%d): error %q does not name BlockTarget", tc.target, err)
-			}
+			checkNew(t, c, tc.field)
 		})
 	}
 }
@@ -62,8 +70,9 @@ func TestNewRefusesConfig(t *testing.T) {
 		edit  func(*carver.AssemblerConfig)
 	}{
 		{"valid", "", func(*carver.AssemblerConfig) {}},
-		{"no ages, no keys per block or file", "", func(c *carver.AssemblerConfig) { c.BlockKeys, c.FileKeys, c.MaxAge = 0, 0, 0 }},
+		{"no age, no keys per block or file", "", func(c *carver.AssemblerConfig) { c.BlockKeys, c.FileKeys, c.MaxAge = 0, 0, 0 }},
 		{"count cap 1", "", func(c *carver.AssemblerConfig) { c.MaxChunks = 1 }},
+		{"count cap 1024", "", func(c *carver.AssemblerConfig) { c.MaxChunks = 1024 }},
 		{"key budget 1", "", func(c *carver.AssemblerConfig) { c.KeyBudget = 1 }},
 		{"count cap 0", "MaxChunks", func(c *carver.AssemblerConfig) { c.MaxChunks = 0 }},
 		{"count cap 1025", "MaxChunks", func(c *carver.AssemblerConfig) { c.MaxChunks = 1025 }},
@@ -75,19 +84,7 @@ func TestNewRefusesConfig(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := valid()
 			tc.edit(&c)
-			f, err := assembler.New(c)
-			if tc.field == "" {
-				if err != nil || f == nil {
-					t.Fatalf("New(%+v): got (%v, %v), want a fold and no error", c, f, err)
-				}
-				return
-			}
-			if !errors.Is(err, carver.ErrInvalidSettings) || f != nil {
-				t.Fatalf("New(%+v): got (%v, %v), want (nil, ErrInvalidSettings)", c, f, err)
-			}
-			if !strings.Contains(err.Error(), tc.field) {
-				t.Errorf("New(%+v): error %q does not name %s", c, err, tc.field)
-			}
+			checkNew(t, c, tc.field)
 		})
 	}
 }

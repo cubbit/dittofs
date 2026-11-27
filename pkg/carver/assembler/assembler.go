@@ -32,16 +32,16 @@ type Fold struct{}
 // a nil Fold.
 //
 // decision: the BlockTarget range's upper bound is derived from P4 and the
-// default chunking Target: 1,024 chunks of the default 64 KiB Min. The 4 MiB
-// default and the 1 MiB floor are proposals, not measurements; the default is
-// confirmed per service by the block-size benchmark (RFC 4 Appendix B), and the
-// floor is lowered if it finds a supported service whose put cost per byte is
-// flat below 1 MiB.
+// default chunking Target: 64 MiB is 1,024 chunks of its 64 KiB Min. The 4 MiB
+// default and the 1 MiB floor are proposals, not measurements: the block-size
+// benchmark (RFC 4 Appendix B) confirms the default per service, and lowers the
+// floor if it finds a supported service whose put cost per byte is flat below
+// 1 MiB.
 //
 // decision: New does not refuse a KeyBudget too small to hold the per-block
 // and per-file keys and one chunk's: that is RFC 6 §5.2's floor on K, which is
-// derived from the backend, never configured, and checked when the store
-// starts. New refuses only what no fold could honour.
+// derived from the backend, never configured, and is the caller's to check
+// at start, before it builds any fold.
 func New(c carver.AssemblerConfig) (*Fold, error) {
 	switch {
 	case c.BlockTarget < carver.MinBlockTarget || c.BlockTarget > carver.MaxBlockTarget:
