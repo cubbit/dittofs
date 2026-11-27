@@ -184,10 +184,14 @@ dockers_v2:
       - dfs
     images:
       - "marmos91c/dittofs"
+    # decision: latest and the major tag move only when release.yml's IS_LATEST
+    # says this tag is the highest non-rc version, so a hotfix of an older line
+    # never takes them over. The minor tag stays: a hotfix is the newest patch
+    # of its minor. Empty tags are dropped.
     tags:
       - "{{ .Tag }}"
-      - "{{ if not .Prerelease }}latest{{ end }}"
-      - "{{ if not .Prerelease }}v{{ .Major }}{{ end }}"
+      - '{{ if eq (index .Env "IS_LATEST") "true" }}latest{{ end }}'
+      - '{{ if eq (index .Env "IS_LATEST") "true" }}v{{ .Major }}{{ end }}'
       - "{{ if not .Prerelease }}v{{ .Major }}.{{ .Minor }}{{ end }}"
     platforms:
       - linux/amd64
@@ -212,8 +216,10 @@ homebrew_casks:
       - dfs
     # The binaries are not notarized, so Gatekeeper kills a quarantined copy
     # on launch (exit 137). Casks quarantine downloads; strip it after install.
-    # decision: this skips Gatekeeper, so the release's cosign signature is the
-    # only integrity check on macOS. Notarizing the binaries replaces the strip.
+    # decision: this skips Gatekeeper. The checks left are the cask's sha256,
+    # which brew checks on every download, and the release's cosign signature,
+    # which only a user who verifies it checks: brew never does. Notarizing the
+    # binaries replaces the strip.
     hooks:
       post:
         install_steps: |
@@ -231,7 +237,10 @@ homebrew_casks:
       email: bot@goreleaser.com
     homepage: "https://github.com/cubbit/dittofs"
     description: "DittoFS server daemon: modular virtual filesystem with pluggable storage"
-    skip_upload: auto
+    # decision: only the highest non-rc version updates the tap and the bucket
+    # (release.yml's IS_LATEST); any other tag, a hotfix of an older line or an
+    # rc, leaves the manifest in dist/.
+    skip_upload: '{{ if eq (index .Env "IS_LATEST") "true" }}false{{ else }}true{{ end }}'
 
   - name: dfsctl
     ids:
@@ -240,8 +249,10 @@ homebrew_casks:
       - dfsctl
     # The binaries are not notarized, so Gatekeeper kills a quarantined copy
     # on launch (exit 137). Casks quarantine downloads; strip it after install.
-    # decision: this skips Gatekeeper, so the release's cosign signature is the
-    # only integrity check on macOS. Notarizing the binaries replaces the strip.
+    # decision: this skips Gatekeeper. The checks left are the cask's sha256,
+    # which brew checks on every download, and the release's cosign signature,
+    # which only a user who verifies it checks: brew never does. Notarizing the
+    # binaries replaces the strip.
     hooks:
       post:
         install_steps: |
@@ -259,7 +270,10 @@ homebrew_casks:
       email: bot@goreleaser.com
     homepage: "https://github.com/cubbit/dittofs"
     description: "DittoFS CLI client — remote management for DittoFS servers"
-    skip_upload: auto
+    # decision: only the highest non-rc version updates the tap and the bucket
+    # (release.yml's IS_LATEST); any other tag, a hotfix of an older line or an
+    # rc, leaves the manifest in dist/.
+    skip_upload: '{{ if eq (index .Env "IS_LATEST") "true" }}false{{ else }}true{{ end }}'
 
 # Scoop bucket manifests for Windows distribution
 scoops:
@@ -277,7 +291,10 @@ scoops:
     homepage: "https://github.com/cubbit/dittofs"
     description: "DittoFS server daemon — modular virtual filesystem with pluggable storage backends"
     license: "MIT"
-    skip_upload: auto
+    # decision: only the highest non-rc version updates the tap and the bucket
+    # (release.yml's IS_LATEST); any other tag, a hotfix of an older line or an
+    # rc, leaves the manifest in dist/.
+    skip_upload: '{{ if eq (index .Env "IS_LATEST") "true" }}false{{ else }}true{{ end }}'
 
   - name: dfsctl
     ids:
@@ -293,7 +310,10 @@ scoops:
     homepage: "https://github.com/cubbit/dittofs"
     description: "DittoFS CLI client — remote management for DittoFS servers"
     license: "MIT"
-    skip_upload: auto
+    # decision: only the highest non-rc version updates the tap and the bucket
+    # (release.yml's IS_LATEST); any other tag, a hotfix of an older line or an
+    # rc, leaves the manifest in dist/.
+    skip_upload: '{{ if eq (index .Env "IS_LATEST") "true" }}false{{ else }}true{{ end }}'
 
 release:
   github:
@@ -302,6 +322,10 @@ release:
 
   # Prerelease detection
   prerelease: auto
+
+  # decision: GitHub's "latest" release goes only to the highest non-rc version
+  # (release.yml's IS_LATEST), so a hotfix of an older line never takes it.
+  make_latest: '{{ if eq (index .Env "IS_LATEST") "true" }}true{{ else }}false{{ end }}'
 
   # Release notes
   header: |
