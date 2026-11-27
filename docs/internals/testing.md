@@ -172,7 +172,7 @@ The suites that need a backend find it on localhost. `dt run` never starts one, 
 first:
 
 ```bash
-test/harness/bin/dt services up localstack           # S3 for the badger-s3 profile and e2e
+test/harness/bin/dt services up localstack           # S3 for integration, the badger-s3 profile and e2e
 test/harness/bin/dt services up kmip                 # for integration
 test/harness/bin/dt services status                  # both
 test/harness/bin/dt services down
@@ -180,10 +180,10 @@ test/harness/bin/dt services down
 
 | Service | Address | Used by |
 |---|---|---|
-| `localstack` | `127.0.0.1:4566`, S3 only | `e2e`, and every `badger-s3` cell: pjdfstest, pynfs, wpts, smbtorture, cthon04, nfstest, clients, fio-verify |
+| `localstack` | `127.0.0.1:4566`, S3 only, over HTTP and over HTTPS at `https://localhost.localstack.cloud:4566` | `integration`, `e2e`, and every `badger-s3` cell: pjdfstest, pynfs, wpts, smbtorture, cthon04, nfstest, clients, fio-verify |
 | `kmip` | `127.0.0.1:5696`, with throwaway certificates under `test/harness/state/` | `integration` |
 
-To use services of your own instead, set `LOCALSTACK_ENDPOINT` or the
+To use services of your own instead, set `LOCALSTACK_ENDPOINT` and `LOCALSTACK_HTTPS_ENDPOINT`, or the
 `DITTOFS_TEST_KMIP*` variables.
 
 ### dtc, the Linux container
@@ -681,6 +681,7 @@ go test ./pkg/metadata/...                        # plain go test works for a qu
 
 ```bash
 test/harness/bin/dt services up kmip
+test/harness/bin/dt services up localstack
 test/harness/bin/dt run integration
 test/harness/bin/dt run integration --kerberos    # against a real KDC, in Docker
 test/harness/bin/dt run integration --portmap     # Linux, with rpcbind running

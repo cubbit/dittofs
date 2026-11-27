@@ -378,7 +378,7 @@ suites:
     cmd: go test -tags=integration -p 1 -timeout=20m {packages}
     packages: { tag: integration }
     tier: pr
-    needs: [docker, "service:kmip"]
+    needs: [docker, "service:kmip", "service:localstack"]
     options:
       portmap:  { cmd: go test -tags=portmap_system -timeout=2m ./test/integration/portmap/..., needs: [linux, rpcbind] }
       kerberos: { cmd: go test -tags=kerberos -timeout=5m ./test/integration/kerberos/, needs: [docker] }

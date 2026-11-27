@@ -627,6 +627,9 @@ jobs:
       - name: Start PyKMIP
         run: '"$RUNNER_TEMP/dt" services up kmip'
 
+      - name: Start LocalStack
+        run: '"$RUNNER_TEMP/dt" services up localstack'
+
       - *suite
 
       # decision: integration's portmap option runs as a step of the job the

@@ -199,8 +199,11 @@ var services = map[string]struct {
 	localFile                string
 	parse                    func(string) (string, error)
 }{
-	"localstack": {prefix: "LOCALSTACK_ENDPOINT", address: "LOCALSTACK_ENDPOINT",
-		local: []string{"LOCALSTACK_ENDPOINT=http://127.0.0.1:4566"}, parse: urlAddress},
+	// Localstack serves HTTPS on its one port too, under a certificate that
+	// covers localhost.localstack.cloud, a public name for 127.0.0.1, and
+	// neither 127.0.0.1 nor localhost when it downloaded its certificate.
+	"localstack": {prefix: "LOCALSTACK_", address: "LOCALSTACK_ENDPOINT",
+		local: []string{"LOCALSTACK_ENDPOINT=http://127.0.0.1:4566", "LOCALSTACK_HTTPS_ENDPOINT=https://localhost.localstack.cloud:4566"}, parse: urlAddress},
 	"kmip": {prefix: "DITTOFS_TEST_KMIP", address: "DITTOFS_TEST_KMIP_ENDPOINT", enabled: "DITTOFS_TEST_KMIP",
 		localFile: "test/harness/state/kmip.env", parse: hostPort},
 }
@@ -265,6 +268,12 @@ func checkService(root, name string) error {
 		return fmt.Errorf("%s: %w", s.address, err)
 	}
 	if name == "localstack" {
+		// decision: the HTTPS endpoint must be set too, so a developer's
+		// own Localstack, named by its plain address alone, is reported
+		// unmet rather than met with every HTTPS test skipped.
+		if value("LOCALSTACK_HTTPS_ENDPOINT") == "" {
+			return errors.New("LOCALSTACK_HTTPS_ENDPOINT isn't set")
+		}
 		return localstackS3(value(s.address))
 	}
 	// decision: every other service is met by a connection to its port,
