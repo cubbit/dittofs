@@ -9,3 +9,6 @@ func Reopen(s *Store) *Store { return s.reopen() }
 
 // RawKeys returns every key beneath s, for the opener's Subject.Raw.
 func RawKeys(s *Store) []string { return s.rawKeys() }
+
+// DeleteRaw removes the object under key beneath s.
+func DeleteRaw(s *Store, key string) { s.deleteRaw(key) }

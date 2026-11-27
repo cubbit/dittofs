@@ -96,3 +96,11 @@ func (s *Store) rawKeys() []string {
 
 	return keys
 }
+
+// deleteRaw removes the object under key, relative to the prefix, beneath the
+// contract: how a test removes an object the store owns.
+func (s *Store) deleteRaw(key string) {
+	s.ns.mu.Lock()
+	delete(s.ns.objects, key)
+	s.ns.mu.Unlock()
+}

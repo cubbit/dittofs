@@ -3,6 +3,7 @@ package memory_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -13,7 +14,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/remote"
@@ -164,30 +164,98 @@ func (s appendsControl) PutControl(ctx context.Context, r remote.Role, body []by
 	return s.Store.PutControl(ctx, r, append(old, body...))
 }
 
-// withoutHealth is a fault around the in-memory store: it is opened without
-// its health object, which reads as absent until a put of it.
-type withoutHealth struct {
-	*memory.Store
+// inventsHealth is a fault around the in-memory store, opened without its
+// health object: a get of the absent health object answers an empty body
+// instead of ErrNotFound.
+type inventsHealth struct{ *memory.Store }
 
-	put atomic.Bool
-}
-
-func (s *withoutHealth) PutControl(ctx context.Context, r remote.Role, body []byte) error {
-	err := s.Store.PutControl(ctx, r, body)
-	if err == nil && r == remote.RoleHealth {
-		s.put.Store(true)
-	}
-
-	return err
-}
-
-func (s *withoutHealth) GetControl(ctx context.Context, r remote.Role) ([]byte, remote.Version, error) {
+func (s inventsHealth) GetControl(ctx context.Context, r remote.Role) ([]byte, remote.Version, error) {
 	body, v, err := s.Store.GetControl(ctx, r)
-	if err == nil && r == remote.RoleHealth && !s.put.Load() {
-		return nil, "", fmt.Errorf("no health object: %w", remote.ErrNotFound)
+	if r == remote.RoleHealth && errors.Is(err, remote.ErrNotFound) {
+		return []byte{}, "", nil
 	}
 
 	return body, v, err
+}
+
+// absentControlEmpty is a fault around the in-memory store: a get of any
+// absent control object answers an empty body instead of ErrNotFound.
+type absentControlEmpty struct{ *memory.Store }
+
+func (s absentControlEmpty) GetControl(ctx context.Context, r remote.Role) ([]byte, remote.Version, error) {
+	body, v, err := s.Store.GetControl(ctx, r)
+	if errors.Is(err, remote.ErrNotFound) {
+		return []byte{}, "", nil
+	}
+
+	return body, v, err
+}
+
+// controlInProcess is a fault around the in-memory store: control objects it
+// is given live in its own memory, never in the namespace, so they read back
+// through it alone.
+type controlInProcess struct {
+	*memory.Store
+
+	mu      sync.Mutex
+	objects map[remote.Role][]byte
+}
+
+func (s *controlInProcess) PutControl(ctx context.Context, r remote.Role, body []byte) error {
+	// The store's own get refuses what a closed store refuses.
+	if _, _, err := s.Store.GetControl(ctx, remote.RoleHealth); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	s.objects[r] = bytes.Clone(body)
+	s.mu.Unlock()
+
+	return nil
+}
+
+func (s *controlInProcess) GetControl(ctx context.Context, r remote.Role) ([]byte, remote.Version, error) {
+	s.mu.Lock()
+	body, ok := s.objects[r]
+	s.mu.Unlock()
+
+	if ok {
+		if _, _, err := s.Store.GetControl(ctx, remote.RoleHealth); err != nil {
+			return nil, "", err
+		}
+
+		return bytes.Clone(body), "", nil
+	}
+
+	return s.Store.GetControl(ctx, r)
+}
+
+// controlAsBlock is a fault around the in-memory store: a control put also
+// leaves a copy under a key that spells a block name, which a listing yields.
+type controlAsBlock struct{ *memory.Store }
+
+func (s controlAsBlock) PutControl(ctx context.Context, r remote.Role, body []byte) error {
+	if err := s.Store.PutControl(ctx, r, body); err != nil {
+		return err
+	}
+
+	n := sha256.Sum256([]byte("control/" + r.String()))
+	memory.PutRaw(s.Store, "blocks/"+hex.EncodeToString(n[:]), body)
+
+	return nil
+}
+
+// storesRefusedControl is a fault around the in-memory store: a control put
+// the store refuses still leaves its body at the role's key.
+type storesRefusedControl struct{ *memory.Store }
+
+func (s storesRefusedControl) PutControl(ctx context.Context, r remote.Role, body []byte) error {
+	err := s.Store.PutControl(ctx, r, body)
+	if err != nil {
+		memory.PutRaw(s.Store, "control/"+r.String(), body)
+	}
+
+	return err
 }
 
 // controlAfterClose is a fault around the in-memory store: its control calls
@@ -238,25 +306,41 @@ func (s storesRefusedPut) Put(ctx context.Context, n remote.Name, body io.Reader
 	return nil
 }
 
-// broken names each fault and the one row it must fail. A row naming a
-// subtest, Control/RawNamespace, must fail through that subtest.
+// broken names each fault, the one row it must fail, and a piece of the
+// failure that row reports, so the row fails on the assertion that holds the
+// rule the fault breaks.
 var broken = map[string]struct {
 	wrap func(*memory.Store) remote.Store
 	row  string
+	msg  string
 }{
-	"serves-empty":           {func(s *memory.Store) remote.Store { return servesEmpty{s} }, "GetEmptyRange"},
-	"serves-after-close":     {func(s *memory.Store) remote.Store { return servesAfterClose{s} }, "AfterClose"},
-	"fails-absent-delete":    {func(s *memory.Store) remote.Store { return failsAbsentDelete{s} }, "DeleteTwice"},
-	"deletes-one-page":       {func(s *memory.Store) remote.Store { return deletesOnePage{s} }, "DeleteBatch"},
-	"instance-cursor":        {func(s *memory.Store) remote.Store { return instanceCursor{s} }, "ListWalk"},
-	"accepts-foreign-cursor": {func(s *memory.Store) remote.Store { return acceptsForeignCursor{s} }, "ListForeignCursor"},
-	"yields-foreign":         {func(s *memory.Store) remote.Store { return &yieldsForeign{Store: s} }, "ListForeignKey"},
-	"ctx-at-entry":           {func(s *memory.Store) remote.Store { return ctxAtEntry{s} }, "ListCancel"},
-	"appends-control":        {func(s *memory.Store) remote.Store { return appendsControl{s} }, "Control"},
-	"without-health":         {func(s *memory.Store) remote.Store { return &withoutHealth{Store: s} }, "Control"},
-	"control-after-close":    {func(s *memory.Store) remote.Store { return controlAfterClose{s, memory.Reopen(s)} }, "AfterClose"},
-	"control-under-blocks":   {func(s *memory.Store) remote.Store { return controlUnderBlocks{s} }, "Control/RawNamespace"},
-	"stores-refused-put":     {func(s *memory.Store) remote.Store { return storesRefusedPut{s} }, "AfterClose/RawNamespace"},
+	"serves-empty":           {func(s *memory.Store) remote.Store { return servesEmpty{s} }, "GetEmptyRange", "of a 16-byte block: 0 bytes and error <nil>"},
+	"serves-after-close":     {func(s *memory.Store) remote.Store { return servesAfterClose{s} }, "AfterClose", "Put after Close: error <nil>"},
+	"fails-absent-delete":    {func(s *memory.Store) remote.Store { return failsAbsentDelete{s} }, "DeleteTwice", "the first Delete: result 1 is"},
+	"deletes-one-page":       {func(s *memory.Store) remote.Store { return deletesOnePage{s} }, "DeleteBatch", "of them are not ErrNotFound on Get"},
+	"instance-cursor":        {func(s *memory.Store) remote.Store { return instanceCursor{s} }, "ListWalk", "unknown cursor"},
+	"accepts-foreign-cursor": {func(s *memory.Store) remote.Store { return acceptsForeignCursor{s} }, "ListForeignCursor", "outside the block namespace: "},
+	"yields-foreign":         {func(s *memory.Store) remote.Store { return &yieldsForeign{Store: s} }, "ListForeignKey", "a walk in pages of 1000 yielded"},
+	"ctx-at-entry":           {func(s *memory.Store) remote.Store { return ctxAtEntry{s} }, "ListCancel", "List under a context ended mid-page"},
+	"appends-control":        {func(s *memory.Store) remote.Store { return appendsControl{s} }, "Control", "after put 2 of 1000 bytes"},
+	"absent-control-empty":   {func(s *memory.Store) remote.Store { return absentControlEmpty{s} }, "Control", "GetControl of claim before any put of it"},
+	"without-health":         {withoutHealth, "Control", "GetControl of the health object before any put of it"},
+	"invents-health":         {func(s *memory.Store) remote.Store { return inventsHealth{withoutHealth(s).(*memory.Store)} }, "Control", "the raw namespace lacks control/health"},
+	"control-in-process": {func(s *memory.Store) remote.Store {
+		return &controlInProcess{Store: s, objects: map[remote.Role][]byte{}}
+	}, "Control", "the raw namespace lacks control/claim"},
+	"control-as-block":       {func(s *memory.Store) remote.Store { return controlAsBlock{s} }, "Control", "a walk after a put of every role yielded"},
+	"control-under-blocks":   {func(s *memory.Store) remote.Store { return controlUnderBlocks{s} }, "Control", `the raw namespace holds the key "blocks/control/claim"`},
+	"control-after-close":    {func(s *memory.Store) remote.Store { return controlAfterClose{s, memory.Reopen(s)} }, "AfterClose", "PutControl after Close: error <nil>"},
+	"stores-refused-put":     {func(s *memory.Store) remote.Store { return storesRefusedPut{s} }, "AfterClose", "which the row's puts did not store"},
+	"stores-refused-control": {func(s *memory.Store) remote.Store { return storesRefusedControl{s} }, "AfterClose", "after a PutControl refused after Close"},
+}
+
+// withoutHealth opens the in-memory store without its health object, as a
+// store whose open skipped it.
+func withoutHealth(s *memory.Store) remote.Store {
+	memory.DeleteRaw(s, "control/health")
+	return s
 }
 
 // brokenEnv selects the fault TestBrokenStore runs the suite over, in the
@@ -301,17 +385,15 @@ func TestTheSuiteFailsABrokenStoreOnItsRow(t *testing.T) {
 		cmd.Env = append(os.Environ(), brokenEnv+"="+fault)
 		out, _ := cmd.CombinedOutput()
 
-		var rows, failed []string
+		var rows []string
 		for _, m := range failedRow.FindAllStringSubmatch(string(out), -1) {
-			failed = append(failed, m[1])
 			if !strings.Contains(m[1], "/") {
 				rows = append(rows, m[1])
 			}
 		}
 
-		row, _, _ := strings.Cut(b.row, "/")
-		if !slices.Equal(rows, []string{row}) || !slices.Contains(failed, b.row) {
-			t.Errorf("the suite over a store that %s failed rows %q, want exactly %q; output:\n%s", fault, rows, b.row, out)
+		if !slices.Equal(rows, []string{b.row}) || !strings.Contains(string(out), b.msg) {
+			t.Errorf("the suite over a store that %s failed rows %q, want exactly %q failing with %q; output:\n%s", fault, rows, b.row, b.msg, out)
 		}
 	}
 }
