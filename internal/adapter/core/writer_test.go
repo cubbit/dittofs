@@ -564,8 +564,8 @@ func TestTheSegmentedReply(t *testing.T) {
 		b.Release() // the service lets its data go; the reply lends it
 		return b
 	}
-	seg(strings.Repeat("a", 900_000))
-	seg("second-segment")
+	seg(strings.Repeat("a", 600_000))
+	seg(strings.Repeat("b", (1<<20)-600_000-32)) // the two nearly fill the record cap
 	msg.B = append(msg.B, "tail"...)
 	w.Out(msg, 0, 0, 0)
 
@@ -573,18 +573,19 @@ func TestTheSegmentedReply(t *testing.T) {
 		t.Fatalf("the segmented reply gathered %d messages, want 1", n)
 	}
 	// The flat encoding: the same parts, concatenated.
-	want := []byte("reply/" + strings.Repeat("a", 900_000) + "second-segment" + "tail")
+	want := []byte("reply/" + strings.Repeat("a", 600_000) + strings.Repeat("b", (1<<20)-600_000-32) + "tail")
 
 	if err := peer.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	var got []byte
+	records := 0
 	for total := 0; total < len(want); {
 		hdr := make([]byte, f.HeaderLen())
 		if _, err := io.ReadFull(peer, hdr); err != nil {
 			t.Fatal(err)
 		}
-		n, _, err := f.BodyLen(hdr)
+		n, last, err := f.BodyLen(hdr)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -594,6 +595,13 @@ func TestTheSegmentedReply(t *testing.T) {
 		}
 		got = append(got, body...)
 		total += n
+		records++
+		if !last && records > 3 {
+			t.Fatalf("%d fragments", records)
+		}
+	}
+	if records > 1 {
+		t.Errorf("the segmented reply went out as %d records, want 1", records)
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("the segmented record answered %d bytes, want %d", len(got), len(want))
