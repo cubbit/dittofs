@@ -91,6 +91,8 @@ type removalLoop struct {
 	done    chan struct{}
 	ctx     context.Context
 	cancel  context.CancelFunc
+
+	parkedCh chan struct{} // made by a test waiting for the park, closed at it, under mu
 }
 
 func newRemovalLoop(e *Engine) *removalLoop {
@@ -141,7 +143,15 @@ func (l *removalLoop) run() {
 		if wait >= 0 {
 			timer = l.e.d.Clock.After(wait)
 		}
+
+		l.mu.Lock()
 		l.parked.Store(true)
+
+		if l.parkedCh != nil {
+			close(l.parkedCh)
+			l.parkedCh = nil
+		}
+		l.mu.Unlock()
 		select {
 		case <-l.wake:
 		case <-timer:

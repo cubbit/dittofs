@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/journal"
@@ -53,6 +54,16 @@ type groupCommit struct {
 	stopOnce sync.Once    // the stop is signalled once, however often Close joins it
 
 	cap capState // the journal's refusals: passes running, failing steps, journal_full's figures
+
+	// What a test reads to wait for the loop to go idle: pokes counts every
+	// poke; parked, under mu, is that the loop waits, having seen parkSeen
+	// pokes, with parkTimer armed; parkedCh, made by a waiter, is closed at
+	// the next park.
+	pokes     atomic.Uint64
+	parked    bool
+	parkSeen  uint64
+	parkTimer <-chan struct{}
+	parkedCh  chan struct{}
 }
 
 // marks is what a group commit knows of its journal's sync marks. Its
@@ -435,6 +446,7 @@ func (g *groupCommit) refusedLocked() error {
 }
 
 func (g *groupCommit) poke() {
+	g.pokes.Add(1) // before the send, so a waiter never misses a poke the loop has not seen
 	select {
 	case g.wake <- struct{}{}:
 	default:
@@ -450,6 +462,8 @@ func (g *groupCommit) run() {
 			return
 		default:
 		}
+
+		seen := g.pokes.Load()
 		if h := g.e.beforeTake.Load(); h != nil {
 			(*h)()
 		}
@@ -494,13 +508,32 @@ func (g *groupCommit) run() {
 				continue
 			}
 		}
+
+		g.park(seen, timer)
 		select {
 		case <-g.wake:
 		case <-timer:
 		case <-g.stop:
 			return
 		}
+
+		g.mu.Lock()
+		g.parked = false
+		g.mu.Unlock()
 	}
+}
+
+// park records that the loop waits, having seen seen pokes, with timer armed,
+// and wakes a test waiting for it.
+func (g *groupCommit) park(seen uint64, timer <-chan struct{}) {
+	g.mu.Lock()
+
+	g.parked, g.parkSeen, g.parkTimer = true, seen, timer
+	if g.parkedCh != nil {
+		close(g.parkedCh)
+		g.parkedCh = nil
+	}
+	g.mu.Unlock()
 }
 
 // groupSettings is existence_age and group_commit.max_files, or, before the

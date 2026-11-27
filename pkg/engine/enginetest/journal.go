@@ -11,17 +11,24 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
 
-// wrapJournal returns j, handing each handle its Share returns to opened.
-// Once crashed is set, its Close answers nil where the crash already closed
-// the files it would close.
-func wrapJournal(j engine.Journal, crashed *atomic.Bool, opened func(journal.ShareTag, engine.Handle)) engine.Journal {
-	return &wrappedJournal{j, crashed, opened}
+// wrapJournal returns j, handing each handle its Share returns to opened,
+// and each sync a handle answers without error to synced, when not nil. Once
+// crashed is set, its Close answers nil where the crash already closed the
+// files it would close.
+func wrapJournal(
+	j engine.Journal,
+	crashed *atomic.Bool,
+	opened func(journal.ShareTag, engine.Handle),
+	synced func([]journal.FileID, []entity.SyncMark),
+) engine.Journal {
+	return &wrappedJournal{j, crashed, opened, synced}
 }
 
 type wrappedJournal struct {
 	engine.Journal
 	crashed *atomic.Bool
 	opened  func(journal.ShareTag, engine.Handle)
+	synced  func([]journal.FileID, []entity.SyncMark)
 }
 
 func (j *wrappedJournal) Share(tag journal.ShareTag, limit int64, floor journal.Version) (engine.Handle, error) {
@@ -30,12 +37,14 @@ func (j *wrappedJournal) Share(tag journal.ShareTag, limit int64, floor journal.
 		return nil, err
 	}
 	j.opened(tag, h)
-	return wrappedHandle{h, j.crashed}, nil
+
+	return wrappedHandle{h, j.crashed, j}, nil
 }
 
 type wrappedHandle struct {
 	engine.Handle
 	crashed *atomic.Bool
+	j       *wrappedJournal // its synced, held by pointer so two handles still compare
 }
 
 // Sync does nothing once crashed is set: a dead process syncs nothing, and the
@@ -49,7 +58,12 @@ func (h wrappedHandle) Sync(ctx context.Context, ids ...journal.FileID) ([]entit
 		return nil, nil
 	}
 
-	return h.Handle.Sync(ctx, ids...)
+	marks, err := h.Handle.Sync(ctx, ids...)
+	if err == nil && h.j.synced != nil {
+		h.j.synced(ids, marks)
+	}
+
+	return marks, err
 }
 
 // Close closes the journal. After a crash, the seam has closed every file the
