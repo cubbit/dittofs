@@ -143,6 +143,9 @@ func TestImportRuleRefuses(t *testing.T) {
 		{"carve importing the chunker's settings section", m("pkg/carver/carve"), map[string][]string{
 			m("pkg/carver/carve"): {m("pkg/carver"), m("pkg/carver/section")},
 		}, []string{"pkg/carver/carve reaches pkg/carver/section, which row pkg/carver/carve does not allow"}},
+		{"carve importing the settings package", m("pkg/carver/carve"), map[string][]string{
+			m("pkg/carver/carve"): {m("pkg/carver"), m("internal/blake3"), m("pkg/settings")},
+		}, []string{"pkg/carver/carve reaches pkg/settings, which row pkg/carver/carve does not allow"}},
 		{"a test importing a store", m("pkg/carver/carve [test]"), map[string][]string{
 			m("pkg/carver/carve [test]"): {m("pkg/carver"), m("internal/archtest"), m("pkg/metadata/kvstore")},
 		}, []string{"pkg/carver/carve [test] reaches pkg/metadata/kvstore, which row pkg/carver/carve does not allow"}},

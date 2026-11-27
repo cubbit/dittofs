@@ -1,6 +1,8 @@
 package carve_test
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"lukechampine.com/blake3"
@@ -53,11 +55,12 @@ func TestChunkIDIsKeyed(t *testing.T) {
 	}
 }
 
-// A zero Settings holds no key, and ChunkID refuses to hash under one.
+// A zero Settings holds no key, and ChunkID refuses to hash under one; any
+// other panic, such as a nil dereference, is not that refusal.
 func TestChunkIDPanicsOnZeroSettings(t *testing.T) {
 	defer func() {
-		if recover() == nil {
-			t.Error("ChunkID over a zero Settings: returned, want a panic")
+		if r := recover(); !strings.Contains(fmt.Sprint(r), "no chunk-ID key") {
+			t.Errorf("ChunkID over a zero Settings: recovered %v, want the no-key panic", r)
 		}
 	}()
 	carve.ChunkID(carver.Settings{}, []byte("x"))

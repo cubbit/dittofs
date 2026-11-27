@@ -8,8 +8,8 @@ import (
 )
 
 // ChunkID is the chunk ID of p: BLAKE3's keyed hash under s's chunk-ID key,
-// over p and nothing else (RFC 2 §4.1). It panics on a zero Settings, which
-// only a caller that skipped NewSettings holds.
+// over p and nothing else (RFC 2 §4.1). It panics on Settings that hold no
+// chunk-ID key: the zero value, or one built without NewSettings.
 func ChunkID(s carver.Settings, p []byte) entity.ChunkHash {
 	key := params.ChunkIDKey(s)
 	if key == ([32]byte{}) {
