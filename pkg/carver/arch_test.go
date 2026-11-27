@@ -50,8 +50,8 @@ func (s surface) planted(name string) []string {
 // surfaces are the carver's packages: the root, the contract, with no
 // function, no interface and no state but its error (RFC 0 §1.2, RFC 2 §1.1,
 // §1.3); the settings value it aliases, with the function that builds it and
-// no state; carve and the fold, which declare functions but no interface and
-// keep nothing between calls.
+// no state; the chunker, one function and no state; carve and the fold, which
+// declare functions but no interface and keep nothing between calls.
 var surfaces = []surface{
 	{
 		dir: ".",
@@ -101,6 +101,11 @@ var surfaces = []surface{
 		purity: archtest.Purity{Funcs: true},
 	},
 	{
+		dir:     "internal/chunker",
+		exports: []string{"func NextBoundary(s params.Settings, buf []byte, final bool) int"},
+		purity:  archtest.Purity{Funcs: true},
+	},
+	{
 		dir: "assembler",
 		exports: []string{
 			"type Fold struct{}",
@@ -132,6 +137,7 @@ func TestCarverExports(t *testing.T) {
 		{".", "iface.go", "extra export: type Chunker interface{Next() int}"},
 		{"internal/params", "iface.go", "extra export: type Deriver interface{Derive(target int) Settings}"},
 		{"carve", "iface.go", "extra export: type Cutter interface{Cut(s carver.Settings) error}"},
+		{"internal/chunker", "iface.go", "extra export: type Boundary interface{Next() int}"},
 		{"assembler", "iface.go", "extra export: type Assembler interface{Add(c carver.ChunkInfo) ([]carver.BlockPlan, carver.Disposition)}"},
 	} {
 		s := surfaces[slices.IndexFunc(surfaces, func(s surface) bool { return s.dir == tc.dir })]
@@ -170,6 +176,9 @@ func TestCarverIsPure(t *testing.T) {
 		{"carve", "state.go", []string{"var tables is state"}},
 		{"carve", "iface.go", []string{"type Cutter is an interface"}},
 		{"carve", "init.go", []string{"func init is not a method"}},
+		{"internal/chunker", "", nil},
+		{"internal/chunker", "state.go", []string{"var last is state"}},
+		{"internal/chunker", "iface.go", []string{"type Boundary is an interface"}},
 		{"assembler", "", nil},
 		{"assembler", "state.go", []string{"var open is state"}},
 		{"assembler", "iface.go", []string{"type Assembler is an interface"}},
@@ -315,6 +324,65 @@ func TestCutSaysEmitsBytesAreBorrowed(t *testing.T) {
 
 		if !slices.Equal(missing, tc.want) {
 			t.Errorf("%s: Cut's doc lacks %q, want it to lack %q", tc.dir, missing, tc.want)
+		}
+	}
+}
+
+// imports returns the import paths of dir's non-test .go files, whatever their
+// build tags, and of the planted files, sorted and without repeats.
+func imports(dir string, planted ...string) ([]string, error) {
+	paths, err := archtest.GoFiles(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	var got []string
+
+	for _, p := range append(paths, planted...) {
+		f, err := parser.ParseFile(token.NewFileSet(), p, nil, parser.ImportsOnly)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, imp := range f.Imports {
+			got = append(got, strings.Trim(imp.Path.Value, `"`))
+		}
+	}
+
+	slices.Sort(got)
+
+	return slices.Compact(got), nil
+}
+
+// The chunker's production files import the settings value and nothing else,
+// the standard library included, so it cannot read or hash (RFC 2 §1.2); a
+// planted read through io and a planted BLAKE3 hash are caught.
+func TestChunkerImportsTheSettingsValueAlone(t *testing.T) {
+	const dir = "internal/chunker"
+
+	s := surfaces[slices.IndexFunc(surfaces, func(s surface) bool { return s.dir == dir })]
+	params := archtest.Module + "pkg/carver/internal/params"
+
+	for _, tc := range []struct {
+		planted string
+		want    []string
+	}{
+		{"", nil},
+		{"reads.go", []string{"io"}},
+		{"hashes.go", []string{"lukechampine.com/blake3"}},
+	} {
+		var planted []string
+		if tc.planted != "" {
+			planted = s.planted(tc.planted)
+		}
+
+		got, err := imports(dir, planted...)
+		if err != nil {
+			t.Fatalf("%s with %q: %v", dir, tc.planted, err)
+		}
+
+		if bad := slices.DeleteFunc(got, func(p string) bool { return p == params }); !slices.Equal(bad, tc.want) {
+			t.Errorf("%s with %q: imports %q besides the settings value, want %q", dir, tc.planted, bad, tc.want)
 		}
 	}
 }
