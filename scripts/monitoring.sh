@@ -72,6 +72,11 @@ prechecks() {
     [ "$RUNTIME" = "docker" ] || die "only Docker is supported; MONITORING_RUNTIME='$RUNTIME' was never tested (podman and rootless daemons do not give node-exporter the host's view)."
     command -v "$RUNTIME" >/dev/null 2>&1 \
         || die "$RUNTIME is not installed."
+    # The podman-docker shim answers to "docker" and only fails later, at the
+    # bridge gateway, with a cryptic template error — refuse it for what it is.
+    case "$(readlink -f "$(command -v "$RUNTIME")" 2>/dev/null || echo x)" in
+        *podman*) die "\`$RUNTIME\` is the podman-docker shim; only real Docker is supported (rootful — a rootless daemon would show the VM, not the host)." ;;
+    esac
     runt info >/dev/null 2>&1 || die "the $RUNTIME daemon is not reachable."
     # Numeric ports up front: a bad value must die before anything starts.
     case "$GRAFANA_PORT:$NODE_EXPORTER_PORT" in
