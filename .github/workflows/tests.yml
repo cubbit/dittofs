@@ -4,8 +4,8 @@
 # plan lists the tier's cells with dt plan. Each cell runs as a job of its own,
 # dt run CELL, on the runner the plan names: the blocking cells in run, the
 # others in non-blocking, which nothing waits for. gate waits for plan and run,
-# always runs, and is the check that decides. post, after a merge and on the
-# schedule, posts the blocking cells' failures to the develop-status issue.
+# always runs, and is the check that decides. post, after a push to develop,
+# posts the blocking cells' failures to the develop-status issue.
 #
 # The suites move in from their own workflows one at a time. A conformance
 # suite runs here beside its old job until their results match on 5
@@ -702,6 +702,11 @@ jobs:
           jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
           jq -e '.plan.result == "success" and all(.[]; .result == "success" or .result == "skipped")' <<<"$NEEDS" >/dev/null
 
+  # decision: GitHub fires the schedule only on the default branch,
+  # feat/storage-v2, and only develop's runs post, so no nightly run posts:
+  # feat/storage-v2's nightly results show on its run alone. Posting them needs
+  # an issue of feat/storage-v2's own, as dt report --post writes develop's.
+  #
   # After the retry, on develop only, pushed or scheduled: dt report --post
   # writes the new failures and unexpected passes of every job gate waits for,
   # and the cells that failed or didn't run, to the develop-status issue, and

@@ -479,8 +479,9 @@ of its own with `dt run CELL --ci`. A new suite in the registry reaches CI with 
 - **Blocking or not:** `e2e`'s options, `bench-smoke` and `unit/windows` don't block a pull
   request. Everything else does.
 - **On `feat/storage-v2`:** `tests.yml` skips the suites that haven't moved there yet, on every
-  run, a PR stacked on another branch included: `e2e`, `pjdfstest`, `pynfs`, `wpts`, `smbtorture`, `cthon04`, `nfstest`, `clients`,
-  `fio-verify`, `bench-smoke`, `system`, `unit/windows` and `integration/kerberos`.
+  run, a PR stacked on another branch included: the suites `pjdfstest`, `pynfs`, `wpts`,
+  `smbtorture`, `cthon04`, `nfstest`, `clients`, `fio-verify`, `bench-smoke` and `system`, and the
+  cells `e2e`, `e2e/kerberos`, `e2e/cross-protocol`, `e2e/stress` and `unit/windows`.
 
 **Required to merge** into `develop` or `feat/storage-v2`:
 
