@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -44,7 +45,7 @@ func lenByte(planted int, s string) byte {
 	return byte(len(s))
 }
 
-// rawHeader is a version 1 header laid out by hand from D1's table, apart from
+// rawHeader is a version 1 header laid out by hand from the format's table, apart from
 // the codec's encoder. Each field left at its zero value takes the true value
 // of the bytes written.
 type rawHeader struct {
@@ -138,11 +139,11 @@ func TestParseHeaderAtEveryBound(t *testing.T) {
 		t.Errorf("parsed %d index and %d census entries, want %d and %d", len(h.index), len(h.census), maxChunks, maxCensus)
 	}
 	if got := encodeHeader(nil, h); !bytes.Equal(got, raw) {
-		t.Error("the header at every bound does not re-encode to its bytes")
+		t.Errorf("the header at every bound re-encodes differently from byte %d", firstDiff(got, raw))
 	}
 }
 
-// The encoder writes D1's layout: a header built as a value encodes to the
+// The encoder writes the version 1 layout: a header built as a value encodes to the
 // bytes laid out by hand, and those parse back to the same fields.
 func TestEncodeHeaderLayout(t *testing.T) {
 	want := validHeader().bytes()
@@ -167,9 +168,9 @@ func TestEncodeHeaderLayout(t *testing.T) {
 	for i := range fp {
 		fp[i] = 7
 	}
-	h.census = []censusEntry{{version: 1}, {transform: 2, version: 1, fingerprint: fp, kind: []byte("data-key"), id: []byte("k1")}}
+	h.census = []censusEntry{{version: 1, kind: []byte{}, id: []byte{}}, {transform: 2, version: 1, fingerprint: fp, kind: []byte("data-key"), id: []byte("k1")}}
 	if got := encodeHeader(nil, h); !bytes.Equal(got, want) {
-		t.Fatalf("encodeHeader =\n%x\nwant\n%x", got, want)
+		t.Fatalf("encodeHeader differs from the layout from byte %d: got %d bytes, want %d", firstDiff(got, want), len(got), len(want))
 	}
 
 	// The body after the header is left unread.
@@ -181,11 +182,20 @@ func TestEncodeHeaderLayout(t *testing.T) {
 	if r.Len() != len("bodies") {
 		t.Errorf("parseHeader left %d bytes unread, want %d", r.Len(), len("bodies"))
 	}
-	if got.name != h.name || got.nonce != h.nonce || got.chain != h.chain || !slices.Equal(got.index, h.index) {
-		t.Errorf("parsed fixed fields or index differ from those encoded")
-	}
-	if len(got.census) != 2 || compareCensus(&got.census[0], &h.census[0]) != 0 || compareCensus(&got.census[1], &h.census[1]) != 0 {
-		t.Errorf("parsed census %+v, want %+v", got.census, h.census)
+	for _, f := range []struct {
+		field     string
+		got, want any
+	}{
+		{"version", got.version, h.version},
+		{"name", got.name, h.name},
+		{"nonce", got.nonce, h.nonce},
+		{"chain ID", got.chain, h.chain},
+		{"index", got.index, h.index},
+		{"census", got.census, h.census},
+	} {
+		if !reflect.DeepEqual(f.got, f.want) {
+			t.Errorf("parsed %s %+v, want %+v", f.field, f.got, f.want)
+		}
 	}
 }
 
@@ -213,8 +223,25 @@ func TestParseHeaderRefusals(t *testing.T) {
 		{"1,025 chunks", func(h *rawHeader) { h.declare = maxChunks + 1 }, "chunk count 1025", true},
 		{"3,073 census entries", func(h *rawHeader) { h.count = maxCensus + 1 }, "census count 3073", true},
 		{"an index that does not fit", func(h *rawHeader) { h.census = nil; h.chunks = 2; h.declare = 3 }, "index of 3 entries does not fit", false},
-		{"a census entry past the header", func(h *rawHeader) { h.count = 3 }, "census entry 2 runs past", false},
+		{"a census that does not fit", func(h *rawHeader) { h.count = 3 }, "census of 3 entries does not fit", false},
+		{"a census entry past the header", func(h *rawHeader) {
+			h.census, h.count, h.tail = h.census[1:], 2, make([]byte, censusFixedLen-1)
+		}, "census entry 1 runs past", false},
 		{"a kind length of 33", func(h *rawHeader) { h.census[1] = kind33 }, "census entry 1 kind length 33", false},
+		{"a kind one byte past the header", func(h *rawHeader) { h.census[1] = entry(2, 7, "ab", ""); h.census[1].kindLen = 4 }, "census entry 1 kind runs past", false},
+		{"a kind that ends the header", func(h *rawHeader) { h.census[1] = entry(2, 7, "ab", ""); h.census[1].kindLen = 3 }, "census entry 1 ID length runs past", false},
+		{"an ID one byte past the header", func(h *rawHeader) { h.census[1].idLen = len("k1") + 1 }, "census entry 1 ID runs past", false},
+		{"kinds out of order", func(h *rawHeader) { h.census = []rawEntry{entry(2, 7, "kb", "k1"), entry(2, 7, "ka", "k1")} }, "census entry 1 is out of order", false},
+		{"IDs out of order", func(h *rawHeader) { h.census = []rawEntry{entry(2, 7, "k", "b"), entry(2, 7, "k", "a")} }, "census entry 1 is out of order", false},
+		{"fingerprints out of order", func(h *rawHeader) { h.census = []rawEntry{entry(2, 8, "k", "a"), entry(2, 7, "k", "a")} }, "census entry 1 is out of order", false},
+		{"versions out of order", func(h *rawHeader) {
+			h.census = []rawEntry{entry(2, 7, "k", "a"), entry(2, 7, "k", "a")}
+			h.census[0].v = 2
+		}, "census entry 1 is out of order", false},
+		{"the marker before the version", func(h *rawHeader) { h.marker, h.version = "DFSX", 2 }, "marker", true},
+		{"the version before the length", func(h *rawHeader) { h.version, h.length = 2, 1 }, "version 2 is unknown", true},
+		{"the length before the chunk count", func(h *rawHeader) { h.length, h.declare = 1, maxChunks+1 }, "header length 1", true},
+		{"the chunk count before the census count", func(h *rawHeader) { h.declare, h.count = maxChunks+1, maxCensus+1 }, "chunk count 1025", true},
 		{"a kind past the census", func(h *rawHeader) { h.census[1] = kindPast }, "census entry 1 kind runs past", false},
 		{"an ID past the census", func(h *rawHeader) { h.census[1] = idPast }, "census entry 1 ID runs past", false},
 		{"a census short of the header length", func(h *rawHeader) { h.tail = []byte{0} }, "census ends at", false},
@@ -278,6 +305,33 @@ func fixedPartValid(b []byte) (length int, ok bool) {
 	return length, length >= fixedLen && length <= 1_036_381 && chunks >= 1 && chunks <= 1024 && census <= 3072
 }
 
+// firstDiff is the first offset at which a and b differ.
+func firstDiff(a, b []byte) int {
+	for i := range min(len(a), len(b)) {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	return min(len(a), len(b))
+}
+
+// A census whose entries differ only in kind, ID, fingerprint or version is
+// accepted in ascending order (the refusals hold the descending one).
+func TestParseHeaderCensusOrder(t *testing.T) {
+	for _, census := range [][]rawEntry{
+		{entry(2, 7, "ka", "k1"), entry(2, 7, "kb", "k1")},
+		{entry(2, 7, "k", "a"), entry(2, 7, "k", "b")},
+		{entry(2, 7, "k", "a"), entry(2, 8, "k", "a")},
+		{entry(2, 7, "k", ""), entry(2, 7, "k", "a")},
+	} {
+		h := validHeader()
+		h.census = census
+		if _, err := parseHeader(bytes.NewReader(h.bytes()), makeBuf); err != nil {
+			t.Errorf("census %+v in ascending order refused: %v", census, err)
+		}
+	}
+}
+
 // FuzzHeader: parseHeader never panics; it allocates nothing until the fixed
 // part is valid and then exactly the declared length, at most MaxHeaderLen(1);
 // it reads no further than the header; and a header it accepts re-encodes to
@@ -298,6 +352,9 @@ func FuzzHeader(f *testing.F) {
 	add(func(h *rawHeader) {
 		h.census[1].kind, h.census[1].id = strings.Repeat("k", maxKindLen), strings.Repeat("i", maxIDLen)
 	})
+	add(func(h *rawHeader) { h.census[1].kind, h.census[1].kindLen, h.census[1].id = "ab", 3, "" })
+	add(func(h *rawHeader) { h.census[1].kind, h.census[1].kindLen, h.census[1].id = "ab", 4, "" })
+	add(func(h *rawHeader) { h.census[1].idLen = len("k1") + 1 })
 	add(func(h *rawHeader) { slices.Reverse(h.census) })
 	add(func(h *rawHeader) { h.census[0] = h.census[1] })
 

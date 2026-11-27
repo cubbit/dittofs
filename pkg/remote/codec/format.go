@@ -76,9 +76,11 @@ func (h *header) size() int {
 }
 
 // encodeHeader appends h's bytes to dst. The caller has already held h to the
-// format's bounds and D1's canonical census (sorted, distinct, kinds of at
+// format's bounds and its canonical census (sorted, distinct, kinds of at
 // most maxKindLen and IDs of at most maxIDLen bytes): encodeHeader checks
 // nothing, so a header out of bounds encodes to bytes parseHeader refuses.
+// It writes h.version as given in version 1's layout: the write-version gate,
+// not the encoder, decides that the version is one this codec writes.
 func encodeHeader(dst []byte, h *header) []byte {
 	dst = append(dst, marker...)
 	dst = append(dst, h.version)
@@ -104,9 +106,6 @@ func encodeHeader(dst []byte, h *header) []byte {
 	}
 	return dst
 }
-
-// makeBuf is the allocator a decoder uses outside its tests.
-func makeBuf(n int) []byte { return make([]byte, n) }
 
 // parseHeader reads one header from r, taking its buffer from alloc. Every
 // bound of the fixed part is checked before alloc is asked for anything, and
@@ -168,6 +167,9 @@ func parseHeader(r io.Reader, alloc func(int) []byte) (*header, error) {
 		at += indexEntryLen
 	}
 
+	if at+entries*censusFixedLen > len(buf) {
+		return nil, malformed("census of %d entries does not fit a header of %d bytes", entries, length)
+	}
 	h.census = make([]censusEntry, entries)
 	for i := range h.census {
 		if at+censusFixedLen > len(buf) {
@@ -177,18 +179,20 @@ func parseHeader(r io.Reader, alloc func(int) []byte) (*header, error) {
 		e.transform = binary.LittleEndian.Uint16(buf[at:])
 		e.version = buf[at+2]
 		copy(e.fingerprint[:], buf[at+3:at+35])
-		at += 35
+		at += 2 + 1 + 32
 		kind := int(buf[at])
 		if kind > maxKindLen {
 			return nil, malformed("census entry %d kind length %d is above %d", i, kind, maxKindLen)
 		}
 		at++
-		// at+kind+1 leaves room for the ID's length byte after the kind.
-		if at+kind+1 > len(buf) {
+		if at+kind > len(buf) {
 			return nil, malformed("census entry %d kind runs past the header", i)
 		}
 		e.kind = buf[at : at+kind : at+kind]
 		at += kind
+		if at >= len(buf) {
+			return nil, malformed("census entry %d ID length runs past the header", i)
+		}
 		id := int(buf[at])
 		at++
 		if at+id > len(buf) {
@@ -214,7 +218,7 @@ func parseHeader(r io.Reader, alloc func(int) []byte) (*header, error) {
 }
 
 // compareCensus orders census entries by transform ID, version, kind, ID and
-// fingerprint, D1's canonical order.
+// fingerprint, the census's canonical order.
 func compareCensus(a, b *censusEntry) int {
 	return cmp.Or(
 		cmp.Compare(a.transform, b.transform),

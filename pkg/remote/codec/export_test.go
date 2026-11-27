@@ -8,3 +8,6 @@ func (a *allocRecord) alloc(n int) []byte {
 	a.sizes = append(a.sizes, n)
 	return make([]byte, n)
 }
+
+// makeBuf is an allocator that records nothing.
+func makeBuf(n int) []byte { return make([]byte, n) }
