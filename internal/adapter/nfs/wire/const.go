@@ -29,14 +29,20 @@ const (
 const (
 	NFS3ErrServerFault uint32 = 10006 // NFS3ERR_SERVERFAULT
 
+	NFS4ErrPerm              uint32 = 1     // NFS4ERR_PERM
+	NFS4ErrNoEnt             uint32 = 2     // NFS4ERR_NOENT
+	NFS4ErrInval             uint32 = 22    // NFS4ERR_INVAL
 	NFS4ErrNotSupp           uint32 = 10004 // NFS4ERR_NOTSUPP
 	NFS4ErrServerFault       uint32 = 10006 // NFS4ERR_SERVERFAULT
+	NFS4ErrDelay             uint32 = 10008 // NFS4ERR_DELAY
+	NFS4ErrClientIDInUse     uint32 = 10017 // NFS4ERR_CLID_INUSE
 	NFS4ErrResource          uint32 = 10018 // NFS4ERR_RESOURCE
 	NFS4ErrMinorVersMismatch uint32 = 10021 // NFS4ERR_MINOR_VERS_MISMATCH
 	NFS4ErrBadXDR            uint32 = 10036 // NFS4ERR_BADXDR
 	NFS4ErrOpIllegal         uint32 = 10044 // NFS4ERR_OP_ILLEGAL
 	NFS4ErrRepTooBig         uint32 = 10066 // NFS4ERR_REP_TOO_BIG
 	NFS4ErrTooManyOps        uint32 = 10070 // NFS4ERR_TOO_MANY_OPS
+	NFS4ErrEncrAlgUnsupp     uint32 = 10079 // NFS4ERR_ENCR_ALG_UNSUPP
 )
 
 // The message types, reply states, accept states, reject states, auth stats
