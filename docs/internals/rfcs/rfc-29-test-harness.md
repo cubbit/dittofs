@@ -1008,7 +1008,7 @@ its server's output goes beside them, to `{out}/dfs.log` (§4.6).
 | Tier | Runs on | Contains | Budget (wall clock) |
 |---|---|---|---|
 | `pr` | every pull request, and the merge queue's run on the merged result (`merge_group`) | suites and options with `tier: pr`, narrowed by `select.pr` | p90 ≤ 20 min |
-| `merge` | every push to develop, that is, every merge, and to `main` and `feat/storage-v2` | `pr` plus `tier: merge`, every profile | ≤ 60 min |
+| `merge` | every push to develop, that is, every merge, and to `main` | `pr` plus `tier: merge`, every profile | ≤ 60 min |
 | `nightly` | schedule, and the dedicated host | everything except `manual` | ≤ 4 h |
 | `manual` | `dt run NAME`, or `workflow_dispatch` | the benchmarks, comparisons and long simulations run by hand (§4.10) | none |
 
@@ -1216,7 +1216,7 @@ the tracker as #1705's alarm did:
 commit: `success` for exit status 0, `failure` for 1, `error` for any other, described by the
 counts of passed tests, new failures and known ones, of cells that failed with no test to name,
 and of cells not run, and linked to the workflow run when there is one. It takes one run of the
-merge or nightly tier on develop, `main` or `feat/storage-v2`, the branches whose pushes run the
+merge or nightly tier on develop or `main`, the branches whose pushes run the
 merge tier, where `--post` takes develop's alone, and uses the same token. The dedicated host
 passes it for the cells it runs after a merge (§4.5), so a commit shows their result next to the
 workflow's.
@@ -1310,7 +1310,7 @@ should almost never be used for public repositories", because any pull request c
 them. The host runs `dt run --tier nightly --place dedicated` from cron, on develop's latest commit
 only: just the cells hosted runners don't take, so it doesn't repeat the hosted nightly. It
 publishes its summary to the develop-status issue (§4.8). Between nightly runs it checks the heads
-of develop, `main` and `feat/storage-v2` every 10 minutes, and when one has moved and nothing else
+of develop and `main` every 10 minutes, and when one has moved and nothing else
 runs on the host, it runs `dt run --tier merge --place dedicated --ci` on that commit, the system
 scenarios, and sets the commit status `system (dedicated)` with `dt report --commit-status`
 (§4.4); only develop's new failures go to the develop-status issue. Merges that land during a run
@@ -1751,8 +1751,8 @@ then green, a regression shows as a new failure, and a fix shows as an unexpecte
 One workflow, `tests.yml`, runs every registered suite:
 
 - **Triggers:** `pull_request` runs tier `pr`, a push `merge`, the schedule `nightly`, and
-  `workflow_dispatch` the tier it's given, only one suite's cells when it names a suite. Pull requests and pushes are those to `develop`, `main`
-  and `feat/storage-v2`, as the workflows it replaces take them. Only develop's results alert or
+  `workflow_dispatch` the tier it's given, only one suite's cells when it names a suite. Pull requests and pushes are those to `develop` and
+  `main`, as the workflows it replaces take them. Only develop's results alert or
   post: the develop-status issue, a test's own issue (§4.4) and `ci-health.yml` read develop's
   runs alone.
 - **Jobs:**
@@ -1813,7 +1813,7 @@ One workflow, `tests.yml`, runs every registered suite:
   for. `Unit Tests (1.26.x)` uploads the coverage profile `unit` writes to its `{out}` to Codecov, as
   the unit job did, unless a retry rewrote it with the retried tests' alone. Codecov sets no status,
   comment or annotation (`codecov.yml`) while the code moves fast, so the upload only keeps the
-  coverage history for when its checks come back on. On feat/storage-v2, `Unit Tests (1.26.x)`
+  coverage history for when its checks come back on. `Unit Tests (1.26.x)`
   runs `unit` with `--changed` on a pull request, from a checkout with the whole history so its
   base resolves, and uploads no coverage then; the merge queue and a push run every package. A
   fixed job's
@@ -1847,7 +1847,7 @@ that no longer reports, and `integration`'s Kerberos and portmap options became 
 again. A single gate that always runs avoids GitHub's path-filter trap by construction.
 
 GitHub's merge queue is "available in any public repository owned by an organization", and this
-repository is owned by one, so the queue is enabled on develop and `feat/storage-v2`: it squash-merges
+repository is owned by one, so the queue is enabled on develop: it squash-merges
 pull requests in groups of up to five, and `tests.yml` runs on `merge_group`, so a queued pull
 request runs the `pr` tier again on the merged result before it lands. The ruleset still requires
 branches to be up to date as well, so a merge to develop makes open PRs re-run, which a fast `pr`
