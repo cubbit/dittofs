@@ -60,15 +60,17 @@ func TestSettingsValidate(t *testing.T) {
 		{"http endpoint", func(s *Settings) { s.Endpoint = "http://s3.example.com" }, []string{"endpoint", "not https"}},
 		{"no scheme", func(s *Settings) { s.Endpoint = "s3.example.com" }, []string{"endpoint", "not https"}},
 		{"host-less endpoint", func(s *Settings) { s.Endpoint = "https://" }, []string{"endpoint", "no host"}},
+		{"endpoint with user info", func(s *Settings) { s.Endpoint = "https://user:pw@s3.example.com" }, []string{"endpoint", "user info"}},
 		{"port only endpoint", func(s *Settings) { s.Endpoint = "https://:443" }, []string{"endpoint", "no host"}},
 		{"unparsable endpoint", func(s *Settings) { s.Endpoint = "https://exa mple.com\x7f" }, []string{"endpoint", "not a URL"}},
 		{"empty endpoint", func(s *Settings) { s.Endpoint = "" }, []string{"endpoint", "not https"}},
 		{"other region", func(s *Settings) { s.Region = "eu-west-1" }, nil},
 		{"empty region", func(s *Settings) { s.Region = "" }, []string{"region", "empty"}},
 		{"empty bucket", func(s *Settings) { s.Bucket = "" }, []string{"bucket", "empty"}},
-		{"empty storage class", func(s *Settings) { s.StorageClass = "" }, []string{"storage_class", "no restore"}},
+		{"empty storage class", func(s *Settings) { s.StorageClass = "" }, []string{"storage_class", "empty"}},
 		{"lower-case class", func(s *Settings) { s.StorageClass = "standard" }, []string{"storage_class", "no restore"}},
 		{"one trust root", func(s *Settings) { s.TrustRoots = cert }, nil},
+		{"trust root with CRLF line ends", func(s *Settings) { s.TrustRoots = strings.ReplaceAll(cert, "\n", "\r\n") }, nil},
 		{"two trust roots with whitespace", func(s *Settings) { s.TrustRoots = "\n" + cert + "\n\n" + cert + "  \n" }, nil},
 		{"trust roots of whitespace", func(s *Settings) { s.TrustRoots = " \n" }, []string{"trust_roots", "no certificate"}},
 		{"trust roots of plain text", func(s *Settings) { s.TrustRoots = "hello" }, []string{"trust_roots", "before the first block"}},
@@ -118,15 +120,16 @@ func TestSettingsValidateStorageClass(t *testing.T) {
 		s := good()
 		s.StorageClass = class
 		err := s.Validate()
-		if err == nil || !strings.Contains(err.Error(), "storage_class") || !strings.Contains(err.Error(), class) {
-			t.Errorf("Validate() with storage class %q = %v, want a refusal naming storage_class and the class", class, err)
+		if err == nil || !strings.Contains(err.Error(), "storage_class") || !strings.Contains(err.Error(), class) ||
+			!strings.Contains(err.Error(), "no restore") {
+			t.Errorf("Validate() with storage class %q = %v, want a refusal naming storage_class, the class and the rule", class, err)
 		}
 	}
 }
 
 // No refusal of the endpoint prints it, since url.Parse's error would.
 func TestSettingsValidateEndpointNotPrinted(t *testing.T) {
-	for _, endpoint := range []string{"http://user:hunter2@host", "https://hunter2\x7f", "https://:hunter2@"} {
+	for _, endpoint := range []string{"https://user:hunter2@host", "https://hunter2\x7f", "https://:hunter2@"} {
 		s := good()
 		s.Endpoint = endpoint
 		err := s.Validate()
@@ -136,23 +139,46 @@ func TestSettingsValidateEndpointNotPrinted(t *testing.T) {
 	}
 }
 
+// No refusal of the trust roots prints the PEM text.
+func TestSettingsValidateTrustRootsNotPrinted(t *testing.T) {
+	cert := testCert(t)
+	body := strings.Split(cert, "\n")[1]
+	badDER := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not a certificate")}))
+	for _, roots := range []string{cert + "x" + body, cert + badDER, body, strings.Replace(cert, "CERTIFICATE", "X"+body, 1)} {
+		s := good()
+		s.TrustRoots = roots
+		err := s.Validate()
+		if err == nil {
+			t.Errorf("Validate() with trust roots %q = nil, want a refusal", roots)
+			continue
+		}
+		for _, line := range strings.Split(roots, "\n") {
+			if len(line) > 8 && !strings.HasPrefix(line, "-----") && strings.Contains(err.Error(), line) {
+				t.Errorf("Validate() = %q, want it not to print the trust roots' line %q", err, line)
+			}
+		}
+	}
+}
+
 func TestNamespaceSettingsValidate(t *testing.T) {
 	cases := []struct {
 		prefix string
-		ok     bool
+		want   string // a substring of the error; "" is accepted
 	}{
-		{"", false},
-		{"ns", false},
-		{"ns/", true},
-		{"a/b/", true},
+		{"", `prefix: does not end in "/"`},
+		{"ns", `prefix: does not end in "/"`},
+		{"ns/", ""},
+		{"a/b/", ""},
 	}
 	for _, c := range cases {
-		err := NamespaceSettings{Prefix: c.prefix}.Validate()
-		if c.ok != (err == nil) {
-			t.Errorf("Validate() with prefix %q = %v, want accepted %v", c.prefix, err, c.ok)
-		}
-		if err != nil && !strings.Contains(err.Error(), "prefix") {
-			t.Errorf("Validate() with prefix %q = %q, want it to name prefix", c.prefix, err)
-		}
+		t.Run(c.prefix, func(t *testing.T) {
+			err := NamespaceSettings{Prefix: c.prefix}.Validate()
+			switch {
+			case c.want == "" && err != nil:
+				t.Errorf("Validate() with prefix %q = %v, want nil", c.prefix, err)
+			case c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)):
+				t.Errorf("Validate() with prefix %q = %v, want an error naming %q", c.prefix, err, c.want)
+			}
+		})
 	}
 }

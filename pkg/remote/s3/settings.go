@@ -44,6 +44,9 @@ func (s Settings) Validate() error {
 	if s.Bucket == "" {
 		return errors.New("bucket: is empty")
 	}
+	if s.StorageClass == "" {
+		return errors.New("storage_class: is empty")
+	}
 	if !restoreFree(s.StorageClass) {
 		return fmt.Errorf("storage_class: %q is not a class whose gets need no restore", s.StorageClass)
 	}
@@ -68,7 +71,9 @@ func (s NamespaceSettings) Validate() error {
 }
 
 // checkEndpoint refuses an endpoint that is not an https URL with a host
-// (RFC 4 C.3). Its error never holds the endpoint, which url.Parse's would.
+// (RFC 4 C.3), and one carrying user info, which would put a credential in a
+// setting that is no secret (RFC 13 §7). Its error never holds the endpoint,
+// which url.Parse's would.
 func checkEndpoint(endpoint string) error {
 	u, err := url.Parse(endpoint)
 	switch {
@@ -78,12 +83,15 @@ func checkEndpoint(endpoint string) error {
 		return errors.New("is not https")
 	case u.Hostname() == "":
 		return errors.New("names no host")
+	case u.User != nil:
+		return errors.New("holds user info")
 	}
 	return nil
 }
 
-// checkPrefix refuses a prefix that is empty or does not end in "/", so no
-// namespace's keys run into another's.
+// checkPrefix refuses a prefix that is empty or does not end in "/", so a
+// namespace's keys never run on into a sibling's (ns/ beside ns2/). It does not
+// judge whether one prefix nests inside another (a/ beside a/b/).
 func checkPrefix(prefix string) error {
 	if !strings.HasSuffix(prefix, "/") {
 		return errors.New(`does not end in "/"`)
@@ -138,8 +146,8 @@ func checkTrustRoots(roots string) error {
 		n++
 		block, after := pem.Decode(rest)
 		// pem.Decode skips a malformed block and returns the next one, so a
-		// second BEGIN inside what it consumed is a block it dropped.
-		if block == nil || bytes.Count(rest[:len(rest)-len(after)], []byte("-----BEGIN ")) > 1 {
+		// second BEGIN line inside what it consumed is a block it dropped.
+		if block == nil || bytes.Contains(rest[:len(rest)-len(after)], []byte("\n-----BEGIN ")) {
 			return fmt.Errorf("block %d is not a well-formed PEM block", n)
 		}
 		if block.Type != "CERTIFICATE" {
