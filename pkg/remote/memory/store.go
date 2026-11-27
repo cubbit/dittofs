@@ -1,0 +1,231 @@
+// Package memory is the in-memory remote store: a verified implementation of
+// remote.Store (RFC 4 §4.1) that the conformance suite in remotetest holds to
+// the real one, for other components' tests to run against (RFC 0 §1.2).
+//
+// It lays its objects out as the S3 store's bucket does (RFC 4 Appendix C.2)
+// under an empty prefix, and refuses what the contract refuses. It loses no
+// acknowledged write and never delays, so a property of a real service is
+// never proven against it alone. It reads time only through the clock it is
+// given, and imports the contract and the standard library only.
+package memory
+
+import (
+	"bytes"
+	"context"
+	"crypto/md5"
+	"encoding/hex"
+	"fmt"
+	"hash"
+	"hash/crc32"
+	"io"
+	"sync"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/remote"
+)
+
+// Store is the in-memory remote store. Its methods are safe for concurrent
+// use, two puts of one name overlapping included.
+type Store struct {
+	now func() time.Time
+	sum remote.Checksum
+
+	mu      sync.Mutex
+	objects map[string]object // by key relative to the prefix
+}
+
+// object is one stored object. Its body is never changed once stored: a put
+// replaces the object whole.
+type object struct {
+	body    []byte
+	modTime time.Time
+}
+
+var _ remote.Store = (*Store)(nil)
+
+// New returns an empty store that checks each put's checksum in kind sum, as a
+// service that checks the put does, or compares nothing for remote.ChecksumNone.
+// now is the node's clock's Now, read only for Info.ModTime. A kind outside
+// the three panics, since a store that cannot check it would accept every put
+// unverified.
+func New(now func() time.Time, sum remote.Checksum) *Store {
+	switch sum {
+	case remote.ChecksumNone, remote.ChecksumCRC32C, remote.ChecksumMD5:
+	default:
+		panic(fmt.Sprintf("memory: unknown checksum kind %d", sum))
+	}
+
+	return &Store{now: now, sum: sum, objects: make(map[string]object)}
+}
+
+// blockKey is a block's key: blocks/ and the name in lowercase hex, nothing
+// between them (RFC 4 §4.2, Appendix C.2).
+func blockKey(n remote.Name) string { return "blocks/" + hex.EncodeToString(n[:]) }
+
+// Checksum is the kind the store was built with.
+func (s *Store) Checksum() remote.Checksum { return s.sum }
+
+// readChunk is how much of a body Put asks for in one Read.
+const readChunk = 32 << 10
+
+// Put reads body once, as a stream of exactly size bytes, checking ctx before
+// each read, verifies sum over it in the store's mode, and only then stores it
+// under name, replacing any block there. A put that fails stores nothing and
+// leaves a block already under name as it was. A stream shorter or longer than
+// size is remote.ErrInvalid; a sum that does not match is remote.ErrCorrupt. A
+// cancelled ctx or a failing reader is returned as itself. In
+// remote.ChecksumNone mode sum is not read.
+func (s *Store) Put(ctx context.Context, name remote.Name, body io.Reader, size int64, sum []byte) error {
+	if size < 0 {
+		return fmt.Errorf("memory: put of %d bytes: %w", size, remote.ErrInvalid)
+	}
+
+	// decision: a sum of the wrong length for the store's kind, nil included, is
+	// a malformed request, ErrInvalid before any byte is read, not a mismatch
+	// over the body (ErrCorrupt), so a caller that re-measures on ErrCorrupt does
+	// not loop on a sum it never sent. Change it if the S3 store reports such a
+	// sum as ErrCorrupt.
+	h := s.hash()
+	if h != nil && len(sum) != h.Size() {
+		return fmt.Errorf("memory: put with a %d-byte checksum, want %d: %w", len(sum), h.Size(), remote.ErrInvalid)
+	}
+
+	// The buffer grows as the body is read, never from size, so a size the
+	// body does not back allocates nothing. One byte past size shows a stream
+	// longer than declared; size+1 overflowing reads nothing, a short stream.
+	var buf []byte
+
+	lr, scratch := io.LimitReader(body, size+1), make([]byte, readChunk)
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		n, err := lr.Read(scratch)
+		buf = append(buf, scratch[:n]...)
+
+		if h != nil {
+			h.Write(scratch[:n])
+		}
+
+		if err == io.EOF {
+			break
+		}
+
+		if err != nil {
+			return err
+		}
+	}
+
+	switch {
+	case int64(len(buf)) > size:
+		return fmt.Errorf("memory: put declared %d bytes, body is longer: %w", size, remote.ErrInvalid)
+	case int64(len(buf)) < size:
+		return fmt.Errorf("memory: put declared %d bytes, body held %d: %w", size, len(buf), remote.ErrInvalid)
+	}
+
+	if h != nil {
+		if got := h.Sum(nil); !bytes.Equal(got, sum) {
+			return fmt.Errorf("memory: put checksum %x, body's %x: %w", sum, got, remote.ErrCorrupt)
+		}
+	}
+
+	s.mu.Lock()
+	s.objects[blockKey(name)] = object{body: buf, modTime: s.now()}
+	s.mu.Unlock()
+
+	return nil
+}
+
+// hash returns a new hash of the store's checksum kind, or nil for none.
+func (s *Store) hash() hash.Hash {
+	switch s.sum {
+	case remote.ChecksumCRC32C:
+		return crc32.New(crc32.MakeTable(crc32.Castagnoli))
+	case remote.ChecksumMD5:
+		return md5.New()
+	}
+
+	return nil
+}
+
+// Get returns a reader over a copy of the bytes of r, or of the whole block for
+// the zero Range. A range that is empty, negative or extends past the end is
+// remote.ErrInvalid, never fewer bytes; an absent block is remote.ErrNotFound.
+//
+// ponytail: a whole-block get reports no stored checksum (StoredSum.Kind is
+// remote.ChecksumNone, as RFC 4 §4.1 allows when the service reports none), so
+// a raw copy's test cannot read one here. Keep the sum the put was checked
+// against and report it when a raw copy's test needs one without a service.
+func (s *Store) Get(ctx context.Context, name remote.Name, r remote.Range) (io.ReadCloser, remote.StoredSum, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, remote.StoredSum{}, err
+	}
+
+	s.mu.Lock()
+	o, ok := s.objects[blockKey(name)]
+	s.mu.Unlock()
+
+	if !ok {
+		return nil, remote.StoredSum{}, fmt.Errorf("memory: get of block %x: %w", name, remote.ErrNotFound)
+	}
+
+	b := o.body
+	if r != (remote.Range{}) {
+		// decision: a non-zero range of no bytes, {Off: 1} among them, is
+		// ErrInvalid: the contract gives the whole block only to the zero Range,
+		// and a range header of no bytes is one S3 ignores and answers whole.
+		// Change it if the contract defines an empty range.
+		size := int64(len(b))
+		if r.Off < 0 || r.Len <= 0 || r.Len > size-r.Off {
+			return nil, remote.StoredSum{}, fmt.Errorf("memory: get of %+v of a %d-byte block: %w", r, size, remote.ErrInvalid)
+		}
+
+		b = b[r.Off : r.Off+r.Len]
+	}
+
+	return io.NopCloser(bytes.NewReader(bytes.Clone(b))), remote.StoredSum{}, nil
+}
+
+// Delete is not served yet: every name's result wraps remote.ErrInvalid.
+func (s *Store) Delete(ctx context.Context, names []remote.Name) []error {
+	errs := make([]error, len(names))
+	for i := range errs {
+		errs[i] = unserved("Delete")
+	}
+
+	return errs
+}
+
+// List is not served yet: it refuses with remote.ErrInvalid.
+func (s *Store) List(ctx context.Context, after remote.Cursor, n int) ([]remote.Info, remote.Cursor, bool, error) {
+	return nil, after, false, unserved("List")
+}
+
+// Health is not served yet: it refuses with remote.ErrInvalid.
+func (s *Store) Health(ctx context.Context, d remote.Direction) error {
+	return unserved("Health")
+}
+
+// PutControl is not served yet: it refuses with remote.ErrInvalid.
+func (s *Store) PutControl(ctx context.Context, role remote.Role, body []byte) error {
+	return unserved("PutControl")
+}
+
+// GetControl is not served yet: it refuses with remote.ErrInvalid.
+func (s *Store) GetControl(ctx context.Context, role remote.Role) ([]byte, remote.Version, error) {
+	return nil, "", unserved("GetControl")
+}
+
+// unserved is the refusal of a call the store does not serve yet.
+func unserved(call string) error {
+	return fmt.Errorf("memory: %s is not served: %w", call, remote.ErrInvalid)
+}
+
+// Close releases nothing: the store holds no client.
+//
+// decision: calls after Close are served, not refused, because only the holder
+// that opened a store closes it and no test here reaches one after. Refuse them
+// with ErrInvalid if a consumer's test is found using a closed store.
+func (s *Store) Close() error { return nil }
