@@ -24,12 +24,12 @@ DittoFS has two programs:
 
 This guide describes the new node (v2), which no release ships yet. Homebrew, the
 install script, the packages and the Docker image all install the released server,
-which works differently. So build both programs from the `feat/storage-v2` branch.
+which works differently. So build both programs from the `develop` branch.
 You need [Go](https://go.dev/dl/) 1.26 or later and `git`.
 
 ```bash
 cd ~
-git clone --depth 1 --branch feat/storage-v2 https://github.com/cubbit/dittofs.git
+git clone --depth 1 --branch develop https://github.com/cubbit/dittofs.git
 cd dittofs
 go build -o dfs ./cmd/dfs
 go build -o dfsctl ./cmd/dfsctl

@@ -489,7 +489,7 @@
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-16", "rfc-8"],
     "code": ["pkg/metadata", "pkg/metadata (Store, store.go)", "pkg/metadata/store/badger"],
-    "target": ["pkg/metadata/kvstore (feat/storage-v2)"]
+    "target": ["pkg/metadata/kvstore"]
   },
   "namespace": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
@@ -518,52 +518,52 @@
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-14", "rfc-21", "rfc-22"],
     "code": ["internal/adapter/nfs/v4/state/client.go"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "open": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-14", "rfc-17"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "lock-owner": {
     "source": "docs/internals/rfcs/rfc-14-open-state.md#2-the-entities",
     "sourceLabel": "RFC 14 §2",
     "rfcs": ["rfc-14"],
     "code": ["internal/adapter/nfs/v4/state/lockowner.go"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "byte-range-lock": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-14"],
     "code": ["pkg/metadata/lock/byterange.go"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "lock-waiter": {
     "source": "docs/internals/rfcs/rfc-14-open-state.md#210-lock-waiters",
     "sourceLabel": "RFC 14 §2.10",
     "rfcs": ["rfc-14"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "state-reference": {
     "source": "docs/internals/rfcs/rfc-14-open-state.md#211-state-references",
     "sourceLabel": "RFC 14 §2.11",
     "rfcs": ["rfc-14", "rfc-17"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "open-state-step": {
     "source": "docs/internals/rfcs/rfc-14-open-state.md#3-one-table-per-file-at-one-primary",
     "sourceLabel": "RFC 14 §3",
     "rfcs": ["rfc-14", "rfc-17"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "client-lease": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-14"],
     "code": ["internal/adapter/nfs/v4/state/lease.go"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "lease-owner": {
     "source": "docs/internals/rfcs/rfc-14-open-state.md#41-a-client-lease",
@@ -575,72 +575,72 @@
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-14", "rfc-17", "rfc-21", "rfc-22", "rfc-27"],
     "code": ["pkg/metadata/lock/grace.go", "internal/adapter/nfs/v4/state/grace.go"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "grace-instance": {
     "source": "docs/internals/rfcs/rfc-14-open-state.md#44-grace-is-per-shard",
     "sourceLabel": "RFC 14 §4.4",
     "rfcs": ["rfc-14", "rfc-11"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "open-reclaim": {
     "source": "docs/internals/rfcs/rfc-14-open-state.md#42-grace-makes-volatile-state-safe",
     "sourceLabel": "RFC 14 §4.2",
     "rfcs": ["rfc-14", "rfc-21", "rfc-22"],
     "code": ["pkg/metadata/lock/reclaim.go"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "recall": {
     "source": "docs/internals/rfcs/rfc-14-open-state.md#52-a-recall-and-why-nothing-is-merged",
     "sourceLabel": "RFC 14 §5.2",
     "rfcs": ["rfc-14", "rfc-17"],
     "code": ["pkg/metadata/lock/break.go"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "delegation": {
     "source": "docs/internals/rfcs/rfc-14-open-state.md#51-what-a-grant-is",
     "sourceLabel": "RFC 14 §5.1",
     "rfcs": ["rfc-14", "rfc-21"],
     "code": ["internal/adapter/nfs/v4/state/delegation.go"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "oplock": {
     "source": "docs/internals/rfcs/rfc-22-smb.md#62-oplocks-are-leases",
     "sourceLabel": "RFC 22 §6.2",
     "rfcs": ["rfc-0", "rfc-14", "rfc-22"],
     "code": ["internal/adapter/smb/lease"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "revoked-set": {
     "source": "docs/internals/rfcs/rfc-14-open-state.md#53-a-recall-must-end-within-a-bounded-time",
     "sourceLabel": "RFC 14 §5.3",
     "rfcs": ["rfc-14"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "grant-budget": {
     "source": "docs/internals/rfcs/rfc-14-open-state.md#55-a-clients-grants-are-bounded",
     "sourceLabel": "RFC 14 §5.5",
     "rfcs": ["rfc-14", "rfc-24"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "delete-pending": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-14", "rfc-17", "rfc-22", "rfc-7"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "smb-durable-open": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-14", "rfc-22"],
     "code": ["pkg/metadata/lock/durable_store.go", "internal/adapter/smb/handlers/durable_context.go"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "persistent-open": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-14", "rfc-15", "rfc-22"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "nlm": {
     "source": "docs/internals/rfcs/rfc-14-open-state.md#45-nlm-locks-and-restart-notification",
@@ -653,7 +653,7 @@
     "sourceLabel": "RFC 14 §2.5",
     "rfcs": ["rfc-14", "rfc-22"],
     "code": ["internal/adapter/smb/changenotify"],
-    "target": ["pkg/openstate (built on feat/storage-v2)"]
+    "target": ["pkg/openstate"]
   },
   "installation": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
@@ -679,37 +679,37 @@
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-16"],
-    "target": ["pkg/metadata/entity (feat/storage-v2)"]
+    "target": ["pkg/metadata/entity"]
   },
   "metadata-record": {
     "source": "docs/internals/rfcs/rfc-16-metadata-store.md#42-keys-per-file-per-share-content-addressed",
     "sourceLabel": "RFC 16 · §4.2 Keys",
     "rfcs": ["rfc-16"],
-    "target": ["pkg/metadata/kvstore/keys.go (feat/storage-v2)"]
+    "target": ["pkg/metadata/kvstore/keys.go"]
   },
   "kv": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-16"],
-    "target": ["pkg/metadata/kv (feat/storage-v2)", "pkg/metadata/kv/badgerkv", "pkg/metadata/kv/fdbkv"]
+    "target": ["pkg/metadata/kv", "pkg/metadata/kv/badgerkv", "pkg/metadata/kv/fdbkv"]
   },
   "guard": {
     "source": "docs/internals/rfcs/rfc-0-data-lifecycle.md#glossary",
     "sourceLabel": "RFC 0 · Glossary",
     "rfcs": ["rfc-0", "rfc-7", "rfc-16"],
-    "target": ["pkg/metadata/kv: Txn.Guard, Txn.GuardRange (feat/storage-v2)"]
+    "target": ["pkg/metadata/kv: Txn.Guard, Txn.GuardRange"]
   },
   "delta-fold": {
     "source": "docs/internals/rfcs/rfc-16-metadata-store.md#44-counters-that-many-writers-change",
     "sourceLabel": "RFC 16 · §4.4",
     "rfcs": ["rfc-16", "rfc-7"],
-    "target": ["pkg/metadata/kvstore: usage.go, dirfold.go (feat/storage-v2)"]
+    "target": ["pkg/metadata/kvstore: usage.go, dirfold.go"]
   },
   "fold-rule": {
     "source": "docs/internals/rfcs/rfc-16-metadata-store.md#46-store-format",
     "sourceLabel": "RFC 16 · §4.6",
     "rfcs": ["rfc-16", "rfc-7"],
-    "target": ["pkg/metadata/entity: fold.go, upcase_table.go (feat/storage-v2)"]
+    "target": ["pkg/metadata/entity: fold.go, upcase_table.go"]
   },
   "view": {
     "source": "docs/internals/rfcs/rfc-16-metadata-store.md#3-interfaces-by-consumer",
@@ -720,43 +720,43 @@
     "source": "docs/internals/rfcs/rfc-16-metadata-store.md#46-store-format",
     "sourceLabel": "RFC 16 · §4.6",
     "rfcs": ["rfc-16", "rfc-13"],
-    "target": ["pkg/metadata/kv/keys: Format (feat/storage-v2)"]
+    "target": ["pkg/metadata/kv/keys: Format"]
   },
   "store-group-commit": {
     "source": "docs/internals/rfcs/rfc-16-metadata-store.md#41-one-small-interface-per-backend",
     "sourceLabel": "RFC 16 · §4.1",
     "rfcs": ["rfc-16", "rfc-8"],
-    "target": ["pkg/metadata/kv/badgerkv/sync.go (feat/storage-v2)"]
+    "target": ["pkg/metadata/kv/badgerkv/sync.go"]
   },
   "store-time": {
     "source": "docs/internals/rfcs/rfc-16-metadata-store.md#41-one-small-interface-per-backend",
     "sourceLabel": "RFC 16 · §4.1",
     "rfcs": ["rfc-16", "rfc-9", "rfc-11"],
-    "target": ["pkg/metadata/kv: Txn.Now (feat/storage-v2)"]
+    "target": ["pkg/metadata/kv: Txn.Now"]
   },
   "value-codec": {
     "source": "docs/internals/rfcs/rfc-16-metadata-store.md#43-codecs",
     "sourceLabel": "RFC 16 · §4.3",
     "rfcs": ["rfc-16"],
-    "target": ["pkg/metadata/kv/codec (feat/storage-v2)"]
+    "target": ["pkg/metadata/kv/codec"]
   },
   "principal": {
     "source": "docs/internals/rfcs/rfc-16-metadata-store.md#22-identity-types",
     "sourceLabel": "RFC 16 · §2.2",
     "rfcs": ["rfc-16", "rfc-18"],
-    "target": ["pkg/metadata/entity: Principal (feat/storage-v2)"]
+    "target": ["pkg/metadata/entity: Principal"]
   },
   "change-sequence": {
     "source": "docs/internals/rfcs/rfc-16-metadata-store.md#41-one-small-interface-per-backend",
     "sourceLabel": "RFC 16 · §4.1",
     "rfcs": ["rfc-16", "rfc-27"],
-    "target": ["pkg/metadata/kv: Reader.Versions (feat/storage-v2)"]
+    "target": ["pkg/metadata/kv: Reader.Versions"]
   },
   "key-budget": {
     "source": "docs/internals/rfcs/rfc-16-metadata-store.md#41-one-small-interface-per-backend",
     "sourceLabel": "RFC 16 · §4.1",
     "rfcs": ["rfc-16", "rfc-6"],
-    "target": ["pkg/metadata/kv: KV.Limits (feat/storage-v2)"]
+    "target": ["pkg/metadata/kv: KV.Limits"]
   },
   "inspect": {
     "source": "docs/internals/rfcs/rfc-16-metadata-store.md#31-lookups-by-id-listings-and-who-may-use-them",
