@@ -57,16 +57,35 @@ func TestTablesBuild(t *testing.T) {
 	}
 	c := v1.Ops[OpCompound]
 	if c == nil || c.Members == nil || c.Members.ReadOp == nil || v2.Ops[OpCompound] != nil {
-		t.Fatalf("the compound row is %+v in version 1 and %+v in version 2; want it in version 1 alone, with its members' table", c, v2.Ops[OpCompound])
+		t.Fatalf(
+			"the compound row is %+v in version 1 and %+v in version 2; "+
+				"want it in version 1 alone, with its members' table",
+			c,
+			v2.Ops[OpCompound],
+		)
 	}
-	if got, reply, _ := v2.Errors.Map(vfs.ErrDelay, v2.Ops[OpCreate], 2); got != StatusDelay || !reply {
+
+	if got, reply, _ := v2.Errors.Map(vfs.ErrDelay, v2.Ops[OpCreate], 2); got != StatusDelay ||
+		!reply {
 		t.Errorf("version 2 maps ErrDelay to %d, reply %v; want %d", got, reply, StatusDelay)
 	}
+
 	if v1.Protocol != Name || v2.Protocol != Name {
 		t.Errorf("the tables record under %q and %q, want %q", v1.Protocol, v2.Protocol, Name)
 	}
-	if one, two := (core.Range{First: 1, Last: 1}), (core.Range{First: 2, Last: 2}); v1.Versions == nil || *v1.Versions != one || v2.Versions == nil || *v2.Versions != two {
-		t.Errorf("the tables hold versions %v and %v, want %v and %v", v1.Versions, v2.Versions, one, two)
+
+	one, two := (core.Range{First: 1, Last: 1}), (core.Range{First: 2, Last: 2})
+	if v1.Versions == nil ||
+		*v1.Versions != one ||
+		v2.Versions == nil ||
+		*v2.Versions != two {
+		t.Errorf(
+			"the tables hold versions %v and %v, want %v and %v",
+			v1.Versions,
+			v2.Versions,
+			one,
+			two,
+		)
 	}
 }
 
@@ -90,7 +109,12 @@ func TestEchoAnswersItsPayloadUnderItsOwnRole(t *testing.T) {
 		t.Errorf("Role = %d, want the role its arguments carry, %d", got, core.RoleRelease)
 	}
 	if got, ok := inv.Bound(nil, 1); got != 5 || !ok {
-		t.Errorf("Bound in a room of 1 = %d, %v; want the payload's 5 bytes, ok, since Echo ignores its room", got, ok)
+		t.Errorf(
+			"Bound in a room of 1 = %d, %v; want the payload's 5 bytes, ok, "+
+				"since Echo ignores its room",
+			got,
+			ok,
+		)
 	}
 	r, _ := request(1)
 	if err := inv.Call(t.Context(), r); err != nil {
@@ -123,8 +147,18 @@ func TestReadsBoundIsClampedToItsRoom(t *testing.T) {
 		{10, 100, 11, true},
 	} {
 		req := &readReq{count: c.count}
-		if got, ok := readBound(nil, req, c.room); got != c.want || ok != c.ok || (ok && req.count != got-1) {
-			t.Errorf("a Read of %d bytes in a room of %d: bound %d, ok %v, count %d; want %d, %v", c.count, c.room, got, ok, req.count, c.want, c.ok)
+		if got, ok := readBound(nil, req, c.room); got != c.want || ok != c.ok ||
+			(ok && req.count != got-1) {
+			t.Errorf(
+				"a Read of %d bytes in a room of %d: bound %d, ok %v, count %d; want %d, %v",
+				c.count,
+				c.room,
+				got,
+				ok,
+				req.count,
+				c.want,
+				c.ok,
+			)
 		}
 	}
 }
@@ -139,7 +173,12 @@ func TestEveryRowEncodesWithNoReply(t *testing.T) {
 		}
 		out := &resources.Buf{}
 		if err := inv.Encode(out, 2); err != nil || len(out.B) != 0 {
-			t.Errorf("%s: Encode with no reply = %v, %d bytes; want nothing", op.Name, err, len(out.B))
+			t.Errorf(
+				"%s: Encode with no reply = %v, %d bytes; want nothing",
+				op.Name,
+				err,
+				len(out.B),
+			)
 		}
 	}
 }
@@ -163,7 +202,11 @@ func TestPutFHNamesItsHandleAndSetsTheCurrentOne(t *testing.T) {
 		t.Errorf("the current filehandle is %q after PutFH", s.fh)
 	}
 	if r.Level&core.NeedsFH == 0 {
-		t.Errorf("the request's level is %#x after PutFH: the members after it in a compound have no current filehandle", r.Level)
+		t.Errorf(
+			"the request's level is %#x after PutFH: the members after it "+
+				"in a compound have no current filehandle",
+			r.Level,
+		)
 	}
 }
 
@@ -178,10 +221,17 @@ func TestNegotiatePicksTheLowerOfTheOfferAndTheCap(t *testing.T) {
 			t.Fatal(err)
 		}
 		if got := core.Version(s.conn.version.Load()); got != c.want {
-			t.Errorf("an offer of %d under a cap of %d negotiated %d, want %d", c.offer, c.max, got, c.want)
+			t.Errorf(
+				"an offer of %d under a cap of %d negotiated %d, want %d",
+				c.offer,
+				c.max,
+				got,
+				c.want,
+			)
 		}
 		out := &resources.Buf{}
-		if err := inv.Encode(out, c.offer); err != nil || !bytes.Equal(out.B, []byte{uint8(c.want)}) {
+		if err := inv.Encode(out, c.offer); err != nil ||
+			!bytes.Equal(out.B, []byte{uint8(c.want)}) {
 			t.Errorf("the reply is % x, %v; want the version picked, %d", out.B, err, c.want)
 		}
 	}
@@ -221,17 +271,31 @@ func TestRows(t *testing.T) {
 		OpNotify:    {both, core.NeedsNothing, core.RoleNone, false, false},
 		OpViolate:   {both, core.NeedsNothing, core.RoleNone, false, false},
 		OpRead:      {both, core.NeedsTree | core.NeedsFH, core.RoleNone, false, false},
+		OpUpgrade:   {both, core.NeedsNothing, core.RoleNone, false, false},
 	}
 	seen := map[uint32]bool{}
 	for _, op := range New(adapter.Deps{}).ops() {
 		w, ok := want[op.Code]
 		switch {
 		case !ok:
-			t.Errorf("a row for operation %d, %s, which the table of rows does not list", op.Code, op.Name)
+			t.Errorf(
+				"a row for operation %d, %s, which the table of rows does not list",
+				op.Code,
+				op.Name,
+			)
 		case seen[op.Code]:
 			t.Errorf("operation %d has two rows", op.Code)
 		case op.Versions != w.versions || op.Needs != w.needs || op.Role != w.role || op.Expired != w.expired || op.Cacheable != w.cacheable:
-			t.Errorf("%s: versions %v needs %#x role %d expired %v cacheable %v; want %+v", op.Name, op.Versions, op.Needs, op.Role, op.Expired, op.Cacheable, w)
+			t.Errorf(
+				"%s: versions %v needs %#x role %d expired %v cacheable %v; want %+v",
+				op.Name,
+				op.Versions,
+				op.Needs,
+				op.Role,
+				op.Expired,
+				op.Cacheable,
+				w,
+			)
 		}
 		seen[op.Code] = true
 	}
@@ -239,14 +303,20 @@ func TestRows(t *testing.T) {
 		t.Errorf("%d of the %d rows", len(seen), len(want))
 	}
 	if seen[OpCancel] || seen[OpCompound] {
-		t.Error("Cancel is never routed, and the compound row is the first version's alone, over its members")
+		t.Error(
+			"Cancel is never routed, and the compound row is the first " +
+				"version's alone, over its members",
+		)
 	}
 
 	// A row served in the second version alone sits in both tables, so the
 	// first refuses it by its Versions column; the compound row has none of
 	// the preconditions, and no member negotiates.
 	c := compound(nil)
-	if c.Versions != (core.Range{First: 1, Last: 1}) || c.Needs != core.NeedsNothing || c.Role != core.RoleNone || c.Expired || c.Cacheable {
+	if c.Versions != (core.Range{First: 1, Last: 1}) || c.Needs != core.NeedsNothing ||
+		c.Role != core.RoleNone ||
+		c.Expired ||
+		c.Cacheable {
 		t.Errorf("the compound row: %+v", c)
 	}
 	members := memberRows(New(adapter.Deps{}).ops())
@@ -303,7 +373,12 @@ func TestErrorRows(t *testing.T) {
 				continue
 			}
 			if r.Status == StatusOK || r.Status == StatusFault {
-				t.Errorf("holds %v: %v maps to status %d, want one of its own", holds, err, r.Status)
+				t.Errorf(
+					"holds %v: %v maps to status %d, want one of its own",
+					holds,
+					err,
+					r.Status,
+				)
 			}
 			if other, dup := statuses[r.Status]; dup {
 				t.Errorf("holds %v: %v and %v share status %d", holds, err, other, r.Status)
@@ -320,14 +395,29 @@ func TestErrorRows(t *testing.T) {
 			}
 			p.SetHold(time.Minute)
 			if got := r.Hold(vfs.ErrDelay, start); !got.Equal(start.Add(time.Minute)) {
-				t.Errorf("with a minute set the hold ends at %v, want a minute after its start", got)
+				t.Errorf(
+					"with a minute set the hold ends at %v, want a minute after its start",
+					got,
+				)
 			}
 		}
-		if r := first(resources); r == nil || r == first(vfs.ErrDelay) || r.Hold != nil || r.NoReply || r.Status != StatusDelay {
-			t.Errorf("holds %v: %v is answered by %+v; want a typed row answering StatusDelay at once", holds, resources, r)
+
+		if r := first(resources); r == nil || r == first(vfs.ErrDelay) || r.Hold != nil ||
+			r.NoReply ||
+			r.Status != StatusDelay {
+			t.Errorf(
+				"holds %v: %v is answered by %+v; want a typed row answering StatusDelay at once",
+				holds,
+				resources,
+				r,
+			)
 		}
 		if first(vfs.ErrNotFound) != nil {
-			t.Errorf("holds %v: a row maps ErrNotFound; the tables leave service errors to the fault status", holds)
+			t.Errorf(
+				"holds %v: a row maps ErrNotFound; the tables leave service "+
+					"errors to the fault status",
+				holds,
+			)
 		}
 	}
 }
@@ -358,7 +448,8 @@ func TestRouteRefusesAVersionItDoesNotServe(t *testing.T) {
 		v    core.Version
 	}{{"version 0", full, 0}, {"version 3", full, 3}, {"version 2 on Bare", full.Bare(), 2}} {
 		st := c.p.NewConn(nil)
-		if tb, _, err := st.Router.Route(header(c.v), nil); !errors.Is(err, core.ErrVersion) || tb != nil {
+		if tb, _, err := st.Router.Route(header(c.v), nil); !errors.Is(err, core.ErrVersion) ||
+			tb != nil {
 			t.Errorf("%s: Route = %v, %v; want ErrVersion and no table", c.name, tb, err)
 		}
 	}
@@ -367,8 +458,14 @@ func TestRouteRefusesAVersionItDoesNotServe(t *testing.T) {
 	// a connection that negotiated 1.
 	st := full.NewConn(nil)
 	st.Router.(*router).cs.version.Store(1)
-	if tb, _, err := st.Router.Route(header(2), nil); !errors.Is(err, core.ErrVersion) || tb != full.tables()[1] {
-		t.Errorf("version 2 after negotiating 1: Route = %v, %v; want version 2's table with ErrVersion", tb, err)
+
+	if tb, _, err := st.Router.Route(header(2), nil); !errors.Is(err, core.ErrVersion) ||
+		tb != full.tables()[1] {
+		t.Errorf(
+			"version 2 after negotiating 1: Route = %v, %v; want version 2's table with ErrVersion",
+			tb,
+			err,
+		)
 	}
 }
 
@@ -405,7 +502,14 @@ func TestStagesMapTheirRefusals(t *testing.T) {
 			&vfs.Delay{Cause: vfs.DelayResources}: StatusDelay,
 		} {
 			if got, reply, _ := errs.Map(err, nil, 1); got != want || !reply {
-				t.Errorf("the %s protocol's stages map %v to %d (reply %v), want %d", name, err, got, reply, want)
+				t.Errorf(
+					"the %s protocol's stages map %v to %d (reply %v), want %d",
+					name,
+					err,
+					got,
+					reply,
+					want,
+				)
 			}
 		}
 	}

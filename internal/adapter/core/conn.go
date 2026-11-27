@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -54,6 +55,21 @@ type Conn struct {
 	idleT      timer         // armed whenever nothing runs, resting under a Keep or a record
 	onIdleArm  func(uint64)  // a test's hook, set from hooks_test.go: each arm's generation, under timersMu; nil in production
 	idleGen    atomic.Uint64 // the generation an arm carries: each arm, and each request a connection starts or ends, advances it, so a timer the current generation superseded closes nothing
+
+	// upMu guards the fields below and the hook under them. up is the TLS
+	// upgrade a Decode asked for and the call that asked has not settled; nil
+	// for none. afterServed is a test's hook, set from hooks_test.go: the
+	// reader calls it between a served record and its wait for the upgrade,
+	// under upMu; nil in production.
+	upMu        sync.Mutex
+	up          *upgrade
+	tlsOn       bool
+	afterServed func()
+
+	// decodeSem holds a token while a header is decoded, one at a time, so
+	// decoding says which call is asking.
+	decodeSem chan struct{}
+	decoding  atomic.Int32
 }
 
 // Send queues a message on the writer: a callback, or an interim reply. core
@@ -77,6 +93,52 @@ func (c *Conn) Send(h Header, msg *resources.Buf, before uint64) error {
 		return err
 	}
 	return c.w.out(msg, 0, 0, before)
+}
+
+// StartTLS asks that the connection switch to TLS: a header stage calls it from
+// Decode, and core performs the switch after the call's reply, in plaintext,
+// has been written, then reads and writes through crypto/tls under cfg. It is
+// refused with an error outside the decode of a call's first header, once the
+// connection began closing, while an upgrade is pending and after one happened.
+// A nil return means requested, not upgraded:
+// the switch happens only if Route admits the call and its row answers with
+// success, and where the handshake fails the connection closes. No record is
+// read after the call that asked until it ended, and the bytes already read
+// past it go to crypto/tls first, never cut as records.
+//
+// decision: StartTLS is accepted only while the reader decodes a call's first
+// header, which core marks around that decode, one header at a time, so a
+// chain member decoded on the chain's goroutine, even while the reader decodes
+// the next record, is refused and cannot turn another call into the upgrade.
+// Overturned if a protocol must ask from a later member of a chain.
+//
+// decision: the header stage asks and core upgrades, so the reply goes out in
+// plaintext before the writer and reader move to the TLS conn, and a call the
+// router refuses never leaves the connection stuck. Overturned if core ever
+// reads ahead of a record's reply on another path.
+func (c *Conn) StartTLS(cfg *tls.Config) error {
+	if cfg == nil {
+		return errTLSNoConfig
+	}
+
+	c.upMu.Lock()
+	defer c.upMu.Unlock()
+
+	if c.decoding.Load() != decodeFirst {
+		return errTLSOutside
+	}
+
+	if c.closed.Load() {
+		return errTLSClosing
+	}
+
+	if c.up != nil || c.tlsOn {
+		return errTLSAgain
+	}
+
+	c.up = &upgrade{cfg: cfg, done: make(chan struct{})}
+
+	return nil
 }
 
 // Established ends the handshake deadline: SMB at its first authenticated
@@ -200,7 +262,13 @@ func (c *Conn) armHandshake() {
 	}
 	c.timersMu.Lock()
 	defer c.timersMu.Unlock()
-	c.handshakeT = c.sh.clock.AfterFunc(c.snap.Common().HandshakeTimeout, func() { c.Close(errHandshake) })
+
+	c.handshakeT = c.sh.clock.AfterFunc(
+		c.snap.Common().HandshakeTimeout,
+		func() {
+			c.Close(errHandshake)
+		},
+	)
 }
 
 // Settings is the settings snapshot this connection loaded at accept, the
@@ -334,7 +402,22 @@ func closeReason(err error) reason {
 func (s *Server) serveConn(nc net.Conn, l *Listener, b *bound, count *resources.ConnLimit, charge *resources.Reservation) *Conn {
 	snap := *s.settings.Load()
 	remote, port := remoteOf(nc)
-	c := &Conn{nc: nc, srv: s, snap: snap, sh: s.sh, series: s.sh.label(l.label), remote: remote, remoteAddr: port, accept: b, service: l.Services[0], since: time.Now(), charge: charge, count: count, done: make(chan struct{})}
+	c := &Conn{
+		nc:         nc,
+		srv:        s,
+		snap:       snap,
+		sh:         s.sh,
+		series:     s.sh.label(l.label),
+		remote:     remote,
+		remoteAddr: port,
+		accept:     b,
+		service:    l.Services[0],
+		since:      time.Now(),
+		charge:     charge,
+		count:      count,
+		done:       make(chan struct{}),
+		decodeSem:  make(chan struct{}, 1),
+	}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.series.accepted()
 	common := snap.Common()
@@ -357,8 +440,33 @@ func (s *Server) serveConn(nc net.Conn, l *Listener, b *bound, count *resources.
 	}
 	f := l.Protocol.Framer()
 	record, _ := f.MaxRecord()
-	c.w = newWriter(nc, f, common.WriteTimeout, func(err error) { c.Close(fmt.Errorf("%w: %w", errAtWrite, err)) }, c.series.out)
-	c.p = newPipeline(c.sh, st, link{ctx: c.ctx, remote: c.remote, set: snap, record: record, out: c.w.out, close: c.Close, closeAfterSent: c.closeAfterSent, idle: c.idle, turn: func() { c.idleGen.Add(1) }})
+	c.w = newWriter(
+		nc,
+		f,
+		common.WriteTimeout,
+		func(err error) {
+			c.Close(fmt.Errorf("%w: %w", errAtWrite, err))
+		},
+		c.series.out,
+	)
+	c.w.upgrade = c.handoff
+	c.p = newPipeline(c.sh, st, link{
+		ctx:            c.ctx,
+		remote:         c.remote,
+		set:            snap,
+		record:         record,
+		out:            c.w.out,
+		close:          c.Close,
+		closeAfterSent: c.closeAfterSent,
+		idle:           c.idle,
+		turn: func() {
+			c.idleGen.Add(1)
+		},
+		open:       c.openDecode,
+		shut:       c.shutDecode,
+		outUpgrade: c.w.outUpgrade,
+		withdraw:   c.withdrawUpgrade,
+	})
 	c.rd = newReader(nc, f, s.recv, c.remote, common.ReadTimeout, c.series.in)
 	// Armed only once the writer, pipeline and reader exist, so a deadline
 	// that fires at once never races their assignment.

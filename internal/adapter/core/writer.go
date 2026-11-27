@@ -21,10 +21,13 @@ import (
 const writeBound = 64
 
 // queued is one message the writer holds: its record, and the least and
-// greatest keys of the replies it carries, 0 for none.
+// greatest keys of the replies it carries, 0 for none. up, nil for the
+// others, is the reply that asked for TLS, the last message sent in
+// plaintext.
 type queued struct {
 	msg    *resources.Buf
 	lo, hi uint64
+	up     *upgrade
 }
 
 // writer sends a connection's messages: a bounded queue, net.Buffers writes
@@ -37,9 +40,18 @@ type writer struct {
 	framer   Framer
 	capBytes int // the bodies one gathered write carries past its first: the protocol's record cap
 	timeout  time.Duration
-	outBytes adder       // the direction the connection's series resolved; never nil, nop{} counts nowhere
-	close    func(error) // Conn.Close: a failed write calls it on the writer's goroutine once run has ended, so it may stop the writer
-	onBatch  func(n int) // a test's view of what one write gathered; nil otherwise
+
+	// outBytes is the direction the connection's series resolved; never nil,
+	// nop{} counts nowhere.
+	outBytes adder
+	// close is Conn.Close: a failed write calls it on the writer's goroutine
+	// once run has ended, so it may stop the writer.
+	close func(error)
+	// onBatch is a test's view of what one write gathered; nil otherwise.
+	onBatch func(n int)
+	// upgrade is the connection's handoff to TLS, run once the reply that
+	// asked for it is written; nil for none.
+	upgrade func(*upgrade) net.Conn
 
 	mu       sync.Mutex
 	batch    []queued    // the messages of the write in flight, reused across batches; run only
@@ -85,6 +97,17 @@ func newWriter(nc net.Conn, f Framer, timeout time.Duration, closeConn func(erro
 // ahead of the first queued message whose keys span it. The writer takes the
 // message's reference whatever it returns.
 func (w *writer) out(msg *resources.Buf, lo, hi, before uint64) error {
+	return w.put(msg, lo, hi, before, nil)
+}
+
+// outUpgrade queues the reply that asked for TLS, the last message the writer
+// sends in plaintext: what is queued after it goes over TLS.
+func (w *writer) outUpgrade(msg *resources.Buf, lo, hi uint64, up *upgrade) error {
+	return w.put(msg, lo, hi, 0, up)
+}
+
+// put queues msg as out does, carrying up where it asked for TLS.
+func (w *writer) put(msg *resources.Buf, lo, hi, before uint64, up *upgrade) error {
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
@@ -102,7 +125,7 @@ func (w *writer) out(msg *resources.Buf, lo, hi, before uint64) error {
 	}
 	w.queue = append(w.queue, queued{})
 	copy(w.queue[at+1:], w.queue[at:])
-	w.queue[at] = queued{msg: msg, lo: lo, hi: hi}
+	w.queue[at] = queued{msg: msg, lo: lo, hi: hi, up: up}
 	w.held++
 	if w.held >= writeBound && isClosed(w.room) {
 		w.room = make(chan struct{})
@@ -207,7 +230,7 @@ func (w *writer) take() []queued {
 		return nil
 	}
 	n, size := 1, len(w.queue[0].msg.B)
-	for n < len(w.queue) && size+len(w.queue[n].msg.B) <= w.capBytes {
+	for n < len(w.queue) && w.queue[n-1].up == nil && size+len(w.queue[n].msg.B) <= w.capBytes {
 		size += len(w.queue[n].msg.B)
 		n++
 	}
@@ -249,6 +272,8 @@ func (w *writer) flush() error {
 		w.hdrs = w.framer.Frame(w.hdrs, len(m.msg.B))
 		w.bufs = append(w.bufs, w.hdrs[at:], m.msg.B)
 	}
+
+	up := q[len(q)-1].up
 	b := w.bufs // WriteTo consumes the slice it is called on
 	n, err := b.WriteTo(w.nc)
 	w.outBytes.Add(float64(n))
@@ -258,7 +283,35 @@ func (w *writer) flush() error {
 		m.msg.Release()
 	}
 	clear(q)
-	return err
+
+	if err != nil || up == nil {
+		return err
+	}
+	// The reply is out in plaintext: what is queued after it goes over TLS, and
+	// the handshake is bounded by its own deadline, not by the reply's write.
+	w.clearDeadline()
+
+	tc := w.upgrade(up)
+	if tc == nil {
+		return net.ErrClosed
+	}
+
+	w.mu.Lock()
+	w.nc = tc
+	w.mu.Unlock()
+
+	return nil
+}
+
+// clearDeadline ends the write deadline the last batch armed, unless the
+// writer is closed or stopped, whose past deadline it must not overwrite.
+func (w *writer) clearDeadline() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if !w.closed {
+		_ = w.nc.SetWriteDeadline(time.Time{})
+	}
 }
 
 // fail ends the writer on a failed or late write: it releases what is queued

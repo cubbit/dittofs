@@ -23,6 +23,8 @@ func (c *Conn) Send(h Header, msg *resources.Buf, before uint64) error
 
 func (c *Conn) Settings() settings.Settings
 
+func (c *Conn) StartTLS(cfg *tls.Config) error
+
 func (r *Request) Park(cancel func()) (done func(err error), err error)
 
 func (s *Server) Addrs() map[adapter.Socket][]netip.AddrPort
