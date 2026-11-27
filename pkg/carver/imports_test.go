@@ -20,6 +20,10 @@ var table = []archtest.Row{
 	{Pkg: "pkg/carver/internal/params", Tests: archtest.Support},
 	{Pkg: "pkg/carver/carve", Reach: []string{"pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: archtest.Support},
 	{Pkg: "pkg/carver/assembler", Reach: []string{"pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: archtest.Support},
+	// The corpus and its fetch command reach the standard library alone, and
+	// no other row admits them.
+	{Pkg: "pkg/carver/internal/carvetest/corpus"},
+	{Pkg: "pkg/carver/internal/carvetest/corpus/fetch", Reach: []string{"pkg/carver/internal/carvetest/corpus"}},
 }
 
 // Every package under pkg/carver, its tests included, reaches only what its
@@ -31,7 +35,7 @@ func TestImportRule(t *testing.T) {
 	}
 
 	for _, g := range graphs {
-		for _, want := range []string{"pkg/carver", "pkg/carver [test]", "pkg/carver/internal/params", "pkg/carver/carve", "pkg/carver/assembler"} {
+		for _, want := range []string{"pkg/carver", "pkg/carver [test]", "pkg/carver/internal/params", "pkg/carver/carve", "pkg/carver/assembler", "pkg/carver/internal/carvetest/corpus", "pkg/carver/internal/carvetest/corpus/fetch"} {
 			if !slices.Contains(g.Roots, archtest.Module+want) {
 				t.Fatalf("the walk listed %q, not %s", g.Roots, want)
 			}
