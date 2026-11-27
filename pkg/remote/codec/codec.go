@@ -10,8 +10,8 @@
 //
 // The surface is fixed ahead of its bodies, and each doc states the contract
 // the body keeps once written. Until then New, Get, Health and Attempt refuse
-// with remote.ErrInvalid, NewPut returns a Put whose Attempt refuses, Stored
-// returns nothing and MaxHeaderLen knows no version. New refuses every
+// with remote.ErrInvalid, NewPut returns a Put whose Attempt refuses and Stored
+// returns nothing; MaxHeaderLen answers format version 1. New refuses every
 // configuration, so no caller holds a Store whose stub could answer in a real
 // one's place, Health's included.
 package codec
@@ -148,6 +148,9 @@ func (s *Store) Health(ctx context.Context, d remote.Direction) error {
 // version this codec does not know (RFC 4 §3.2, §3.5). The content wiring
 // reads it before any Store exists, to bound the largest encoded block.
 func MaxHeaderLen(v uint8) (n int, ok bool) {
+	if v == 1 {
+		return maxHeaderLenV1, true
+	}
 	return 0, false
 }
 
