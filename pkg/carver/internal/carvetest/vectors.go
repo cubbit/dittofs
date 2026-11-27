@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -80,75 +82,90 @@ type gearFile struct {
 func LoadVectors(tb testing.TB) Vectors {
 	tb.Helper()
 
-	f := loadFile(tb)
-
-	v := Vectors{
-		GearUnkeyed: gear(tb, "gear_unkeyed.bytes", f.GearUnkeyed.Bytes),
-		GearKeyed:   gear(tb, "gear_keyed.bytes", f.GearKeyed.Bytes),
-		ChunkInput:  decode(tb, "chunk_id.input", f.ChunkID.Input),
-	}
-	copy(v.ChunkingKey[:], fixed(tb, "gear_keyed.key", f.GearKeyed.Key, 32))
-	copy(v.ChunkIDKey[:], fixed(tb, "chunk_id.key", f.ChunkID.Key, 32))
-	copy(v.ChunkID[:], fixed(tb, "chunk_id.id", f.ChunkID.ID, 32))
-	copy(v.Name.Scope[:], fixed(tb, "name.scope", f.Name.Scope, 16))
-	copy(v.Name.Nonce[:], fixed(tb, "name.nonce", f.Name.Nonce, 16))
-	copy(v.Name.ChainID[:], fixed(tb, "name.chain.id", f.Name.Chain.ID, 32))
-	copy(v.Name.Name[:], fixed(tb, "name.name", f.Name.Name, 32))
-
-	if len(f.Name.IDs) == 0 {
-		tb.Fatal("vectors: name.ids is empty, want the block's chunk IDs")
-	}
-
-	v.Name.IDs = make([][32]byte, len(f.Name.IDs))
-	for i, s := range f.Name.IDs {
-		copy(v.Name.IDs[i][:], fixed(tb, "name.ids", s, 32))
+	v, err := parseVectors(vectorsJSON)
+	if err != nil {
+		tb.Fatalf("vectors: %v", err)
 	}
 
 	return v
 }
 
-func loadFile(tb testing.TB) vectorsFile {
-	tb.Helper()
-
+// parseVectors decodes raw, refusing a value that is not hex or not its
+// field's length, and a name with no chunk IDs.
+func parseVectors(raw []byte) (Vectors, error) {
 	var f vectorsFile
-	if err := json.Unmarshal(vectorsJSON, &f); err != nil {
-		tb.Fatalf("vectors: decoding testdata/vectors.json: %v", err)
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return Vectors{}, fmt.Errorf("decoding testdata/vectors.json: %w", err)
 	}
 
-	return f
+	var d decoder
+
+	v := Vectors{
+		GearUnkeyed: d.gear("gear_unkeyed.bytes", f.GearUnkeyed.Bytes),
+		GearKeyed:   d.gear("gear_keyed.bytes", f.GearKeyed.Bytes),
+		ChunkInput:  d.hex("chunk_id.input", f.ChunkID.Input),
+	}
+	d.fixed(v.ChunkingKey[:], "gear_keyed.key", f.GearKeyed.Key)
+	d.fixed(v.ChunkIDKey[:], "chunk_id.key", f.ChunkID.Key)
+	d.fixed(v.ChunkID[:], "chunk_id.id", f.ChunkID.ID)
+	d.fixed(v.Name.Scope[:], "name.scope", f.Name.Scope)
+	d.fixed(v.Name.Nonce[:], "name.nonce", f.Name.Nonce)
+	d.fixed(v.Name.ChainID[:], "name.chain.id", f.Name.Chain.ID)
+	d.fixed(v.Name.Name[:], "name.name", f.Name.Name)
+
+	if len(v.ChunkInput) == 0 {
+		d.fail(errors.New("chunk_id.input is empty, want the bytes the chunk ID hashes"))
+	}
+
+	if len(f.Name.IDs) == 0 {
+		d.fail(errors.New("name.ids is empty, want the block's chunk IDs"))
+	}
+
+	v.Name.IDs = make([][32]byte, len(f.Name.IDs))
+	for i, s := range f.Name.IDs {
+		d.fixed(v.Name.IDs[i][:], fmt.Sprintf("name.ids[%d]", i), s)
+	}
+
+	return v, d.err
 }
 
-func decode(tb testing.TB, field, s string) []byte {
-	tb.Helper()
+// decoder keeps the first error of a run of decodes.
+type decoder struct{ err error }
 
+func (d *decoder) fail(err error) {
+	if d.err == nil {
+		d.err = err
+	}
+}
+
+func (d *decoder) hex(field, s string) []byte {
 	b, err := hex.DecodeString(s)
 	if err != nil {
-		tb.Fatalf("vectors: %s: %v", field, err)
+		d.fail(fmt.Errorf("%s: %w", field, err))
 	}
 
 	return b
 }
 
-// fixed decodes s, failing tb unless it is exactly n bytes.
-func fixed(tb testing.TB, field, s string, n int) []byte {
-	tb.Helper()
-
-	b := decode(tb, field, s)
-	if len(b) != n {
-		tb.Fatalf("vectors: %s is %d bytes, want %d", field, len(b), n)
+// fixed decodes s into dst, refusing it unless it is exactly len(dst) bytes.
+func (d *decoder) fixed(dst []byte, field, s string) {
+	b := d.hex(field, s)
+	if len(b) != len(dst) {
+		d.fail(fmt.Errorf("%s is %d bytes, want %d", field, len(b), len(dst)))
+		return
 	}
 
-	return b
+	copy(dst, b)
 }
 
 // gear decodes a 2,048-byte table into its 256 words, little-endian whatever
 // the host's byte order (RFC 2 §3.2).
-func gear(tb testing.TB, field, s string) [256]uint64 {
-	tb.Helper()
-
+func (d *decoder) gear(field, s string) [256]uint64 {
 	var g [256]uint64
 
-	b := fixed(tb, field, s, 8*len(g))
+	b := make([]byte, 8*len(g))
+	d.fixed(b, field, s)
+
 	for i := range g {
 		g[i] = binary.LittleEndian.Uint64(b[8*i:])
 	}

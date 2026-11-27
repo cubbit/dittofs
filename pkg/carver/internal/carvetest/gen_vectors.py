@@ -61,6 +61,9 @@ def encode_chain(transforms):
         out += struct.pack(">HB", t["id"], t["version"])
         out += struct.pack(">I", len(t["length_key"])) + t["length_key"]
         materials = sorted(t["materials"], key=lambda m: (m["kind"].encode("ascii"), m["id"]))
+        keys = [(m["kind"], m["id"]) for m in materials]
+        if len(set(keys)) != len(keys):
+            raise ValueError("a material appears twice")
         out.append(len(materials))
         for m in materials:
             kind = m["kind"].encode("ascii")
@@ -70,6 +73,25 @@ def encode_chain(transforms):
             out += struct.pack(">I", len(m["id"])) + m["id"]
             out += m["fingerprint"]
     return bytes(out)
+
+
+def check_encode_chain():
+    """encode_chain against bytes written by hand from RFC 5 §2.8's table,
+    with two materials given out of order, so the sort and the material
+    fields are pinned before any vector uses them."""
+    got = encode_chain([{
+        "id": 0x0002, "version": 1, "length_key": b"",
+        "materials": [
+            {"kind": "b", "id": b"\x01", "fingerprint": b"\xff" * 32},
+            {"kind": "a", "id": b"\x02", "fingerprint": b"\xee" * 32},
+        ],
+    }])
+    want = (
+        bytes.fromhex("01" "0002" "01" "00000000" "02")
+        + bytes.fromhex("00000001") + b"a" + bytes.fromhex("00000001" "02") + b"\xee" * 32
+        + bytes.fromhex("00000001") + b"b" + bytes.fromhex("00000001" "01") + b"\xff" * 32
+    )
+    assert got == want, f"encode_chain gave {got.hex()}, want {want.hex()}"
 
 
 def chain_id(transforms):
@@ -129,6 +151,6 @@ def vectors():
 
 
 if __name__ == "__main__":
+    check_encode_chain()
     out = pathlib.Path(__file__).parent / "testdata" / "vectors.json"
-    out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps(vectors(), indent=2) + "\n")

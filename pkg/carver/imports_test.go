@@ -15,7 +15,7 @@ import (
 // v1's carver. Besides the package it tests, a test may reach the
 // architecture tests' support and carvetest, the carver's test components,
 // which no production row admits; carvetest reaches the standard library
-// alone, and its tests BLAKE3 and the race constant besides. A row is an upper
+// alone, and its tests BLAKE3 and internal/prof besides. A row is an upper
 // bound: a package that reaches less passes.
 var table = []archtest.Row{
 	{Pkg: "pkg/carver", Reach: []string{"pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: carverTests},
@@ -28,14 +28,9 @@ var table = []archtest.Row{
 // carverTests is what every carver package's tests may reach besides.
 var carverTests = append(slices.Clone(archtest.Support), "pkg/carver/internal/carvetest")
 
-// blake3Libs is lukechampine.com/blake3 with what it imports.
-var blake3Libs = []string{
-	"github.com/klauspost/cpuid/v2",
-	"golang.org/x/sys/unix",
-	"lukechampine.com/blake3",
-	"lukechampine.com/blake3/bao",
-	"lukechampine.com/blake3/guts",
-}
+// blake3Libs is lukechampine.com/blake3 with what it imports: the entity
+// package's libraries but its UUID one.
+var blake3Libs = slices.DeleteFunc(archtest.EntityLibs(), func(lib string) bool { return lib == "github.com/google/uuid" })
 
 // Every package under pkg/carver, its tests included, reaches only what its
 // row allows, on every platform the walk lists.
@@ -46,7 +41,7 @@ func TestImportRule(t *testing.T) {
 	}
 
 	for _, g := range graphs {
-		for _, want := range []string{"pkg/carver", "pkg/carver [test]", "pkg/carver/internal/params", "pkg/carver/carve", "pkg/carver/assembler", "pkg/carver/internal/carvetest"} {
+		for _, want := range []string{"pkg/carver", "pkg/carver [test]", "pkg/carver/internal/params", "pkg/carver/carve", "pkg/carver/assembler", "pkg/carver/internal/carvetest", "pkg/carver/internal/carvetest [test]"} {
 			if !slices.Contains(g.Roots, archtest.Module+want) {
 				t.Fatalf("the walk listed %q, not %s", g.Roots, want)
 			}
@@ -176,6 +171,9 @@ func TestImportRuleRefuses(t *testing.T) {
 		{"the test components importing the root", m("pkg/carver/internal/carvetest"), map[string][]string{
 			m("pkg/carver/internal/carvetest"): {m("pkg/carver")},
 		}, []string{"pkg/carver/internal/carvetest reaches pkg/carver, which row pkg/carver/internal/carvetest does not allow"}},
+		{"the test components' tests importing the root", m("pkg/carver/internal/carvetest [test]"), map[string][]string{
+			m("pkg/carver/internal/carvetest [test]"): {m("pkg/carver")},
+		}, []string{"pkg/carver/internal/carvetest [test] reaches pkg/carver, which row pkg/carver/internal/carvetest does not allow"}},
 		{"the test components' tests importing BLAKE3", m("pkg/carver/internal/carvetest [test]"), map[string][]string{
 			m("pkg/carver/internal/carvetest [test]"): {"lukechampine.com/blake3", m("internal/prof")},
 		}, nil},
