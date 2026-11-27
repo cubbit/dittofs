@@ -178,6 +178,7 @@ func TestStartAndStopInOrder(t *testing.T) {
 		"identity":        {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 1},
 		"filesystem":      {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
 		"runner":          {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
+		"api":             {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
 		"first reconcile": {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
 		"adapters":        {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},
 		"reconcile":       {ready: starting, metrics: scraped, registered: true, address: api, epoch: 1, incarnation: before + 2},

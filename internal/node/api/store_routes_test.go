@@ -304,6 +304,25 @@ func TestStorePatchAppliesTheSettingClasses(t *testing.T) {
 			t.Errorf("PATCH of a store that does not exist: answered %d %s, want 404", r.status, r.body)
 		}
 	})
+	t.Run("a stored setting that is no JSON", func(t *testing.T) {
+		s := serve(t, as(entity.RoleOperator, false), func(d *api.Deps) {
+			d.Settings = settings.Table{settings.Of("remote", settings.At(entity.ScopeRemote), patchedRemote{})}
+		})
+		id := uuid.New()
+		gen := s.putSetting(t, storeAt(id), "remote.endpoint", `"https://s3.example"`)
+		s.putSetting(t, storeAt(id), "remote.tags", `{"a":`)
+		path := "/api/v1/stores/" + id.String()
+		if r := s.do(t, http.MethodGet, path, ""); r.status != http.StatusInternalServerError || r.problem(t).Code != "corrupt" {
+			t.Errorf("GET of a store holding a value that is no JSON: answered %d %s, want 500 corrupt", r.status, r.body)
+		}
+		r := s.do(t, http.MethodPatch, path, `{"spec":{"settings":{"remote.tags":{"b":2}}}}`, "If-Match", strconv.Quote(strconv.FormatUint(gen, 10)))
+		if r.status != http.StatusInternalServerError {
+			t.Fatalf("PATCH over a stored value that is no JSON: answered %d %s, want 500 corrupt", r.status, r.body)
+		}
+		if p := r.problem(t); p.Code != "corrupt" || p.Field != "remote.tags" {
+			t.Errorf("PATCH over a stored value that is no JSON: answered %s, want corrupt naming remote.tags", r.body)
+		}
+	})
 }
 
 // Two patches read at one tag cannot both commit, whichever settings they

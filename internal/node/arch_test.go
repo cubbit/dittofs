@@ -1778,7 +1778,7 @@ func apiExports(dir, path string) ([]string, error) {
 // a planted extra method is caught.
 func TestAPIExports(t *testing.T) {
 	t.Parallel()
-	want := []string{"Deps", "New", "OpenAPI", "Server", "Server.Start", "Server.Stop"}
+	want := []string{"Deps", "New", "OpenAPI", "Server", "Server.Close", "Server.Start", "Server.Stop"}
 	for _, tc := range []struct {
 		dir, path string
 		want      []string

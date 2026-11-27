@@ -20,6 +20,7 @@ import (
 	"github.com/cubbit/dittofs/internal/node/api/auth"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // maxKey bounds an Idempotency-Key, in bytes.
@@ -440,7 +441,7 @@ func (s *Server) replayed(err error) (answer, error) {
 	s.replays.Inc()
 	var rc recorded
 	if err := json.Unmarshal(replay.Answer, &rc); err != nil {
-		return answer{}, err
+		return answer{}, fmt.Errorf("%w: the stored answer of an idempotent write: %w", vfserr.ErrCorrupt, err)
 	}
 	return answer{status: rc.Status, header: rc.Header, body: rc.Body}, nil
 }

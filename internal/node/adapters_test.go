@@ -326,6 +326,7 @@ func TestAnAdapterListensOnlyFromTheAdaptersStep(t *testing.T) {
 		{"identity", false},
 		{"filesystem", false},
 		{"runner", false},
+		{"api", false},
 		{"first reconcile", false},
 		{"adapters", true},
 		{"reconcile", true},
@@ -490,7 +491,7 @@ func TestADrainPastItsBoundLeavesTheFilesystemOpen(t *testing.T) {
 			t.Errorf("Stop with SMB's drain held: got %v, want it to say %q", err, want)
 		}
 	}
-	if got, want := stopsIn(s.reported()), []string{"stop reconcile", "stop runner", "stop listeners"}; !slices.Equal(got, want) {
+	if got, want := stopsIn(s.reported()), []string{"stop reconcile", "stop api", "stop runner", "stop listeners"}; !slices.Equal(got, want) {
 		t.Errorf("parts stopped with SMB's drain held: got %v, want %v", got, want)
 	}
 
