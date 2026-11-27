@@ -87,7 +87,8 @@ func (g *batchLog) drain() {
 // startContent is the store's content view wrapped twice over: a
 // pass-through record of each phase 2, prune and listing that reaches the
 // store, which never answers in its place; and a fault wrapper, which fails
-// them when a test freezes the view, arms failPrune or sets listErr.
+// them when a test freezes the view, arms failPrune or sets listErr, and holds
+// a prune while a test holds it.
 type startContent struct {
 	engine.Content
 
@@ -100,6 +101,8 @@ type startContent struct {
 	pruneErr  error // what a failing PruneRemovals answers; errPruneFailed when nil
 	listErr   error // when set, the listing yields it and nothing else
 	attempts  map[entity.FileID]int
+	held      chan struct{} // when set, a prune signals entered and waits for it to close
+	entered   chan struct{}
 }
 
 func newStartContent() *startContent {
@@ -169,7 +172,14 @@ func (c *startContent) PruneRemovals(
 		c.failPrune--
 	}
 
+	held, entered := c.held, c.entered
 	c.mu.Unlock()
+
+	if held != nil {
+		entered <- struct{}{}
+
+		<-held
+	}
 
 	if frozen {
 		return errFrozen
@@ -205,6 +215,21 @@ func (c *startContent) freeze(on bool) {
 	c.mu.Lock()
 	c.frozen = on
 	c.mu.Unlock()
+}
+
+// holdPrunes makes each later prune wait, before it reaches the store, until
+// release, and answers a channel each one sends on once it waits. A test's
+// cleanup releases them, so a failed test leaves no step held.
+func (c *startContent) holdPrunes(t *testing.T) (entered <-chan struct{}, release func()) {
+	held, in := make(chan struct{}), make(chan struct{}, 1)
+	once := sync.OnceFunc(func() { close(held) })
+	t.Cleanup(once)
+
+	c.mu.Lock()
+	c.held, c.entered = held, in
+	c.mu.Unlock()
+
+	return in, once
 }
 
 // forget drops what the calls so far recorded.

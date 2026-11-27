@@ -454,6 +454,91 @@ func (e *Engine) LoopIdle(s entity.ShareID) bool {
 	})
 }
 
+// Idle returns once the share's journal's group commit and removal loop both
+// wait with nothing due: no batch in flight, no poke or timer fire the group
+// commit has not looked at, and no removal running or past its backoff. It
+// waits on the loops' parks, never on time, and answers ctx's error when ctx
+// ends first; an ended ctx asks whether they are idle now.
+//
+// decision: the group commit is checked again after the removal loop, since
+// a removal step that ended between the two checks may have noted a file.
+func (e *Engine) Idle(ctx context.Context, s entity.ShareID) error {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return err
+	}
+
+	g, l := b.gc, b.gc.removals
+	for {
+		gp, lp := g.idleOrPark(), l.idleOrPark()
+		if gp == nil && lp == nil {
+			if gp = g.idleOrPark(); gp == nil {
+				return nil
+			}
+		}
+
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		select {
+		case <-gp:
+		case <-lp:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// idleOrPark is nil when the loop waits with nothing to look at, else a
+// channel closed at its next park.
+func (g *groupCommit) idleOrPark() <-chan struct{} {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	fired := false
+
+	// This read takes nothing from the loop only because the clock's After
+	// closes its channel, as the test clock does: a channel that sent one value
+	// would hand the fire to this read, and the loop would never wake to it.
+	select {
+	case <-g.parkTimer:
+		fired = true
+	default:
+	}
+
+	if g.parked && !g.inFlight && !fired && len(g.wake) == 0 && g.pokes.Load() == g.parkSeen {
+		return nil
+	}
+
+	if g.parkedCh == nil {
+		g.parkedCh = make(chan struct{})
+	}
+
+	return g.parkedCh
+}
+
+// idleOrPark is nil when the loop waits with no item running or due, else a
+// channel closed at its next park.
+func (l *removalLoop) idleOrPark() <-chan struct{} {
+	now := l.e.d.Clock.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	due := slices.ContainsFunc(l.items, func(it *loopItem) bool {
+		return !it.refused() && !it.notBefore.After(now)
+	})
+	if l.parked.Load() && l.running == nil && !due {
+		return nil
+	}
+
+	if l.parkedCh == nil {
+		l.parkedCh = make(chan struct{})
+	}
+
+	return l.parkedCh
+}
+
 // Registrations is the count of f's source and destination registrations.
 func (e *Engine) Registrations(f entity.FileID) (src, dst int) {
 	fe := e.files.lockOf(f)
