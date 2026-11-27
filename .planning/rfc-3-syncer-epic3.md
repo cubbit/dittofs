@@ -182,7 +182,7 @@ them.
 | R25 | The per-store and per-flow cap is three quarters of the pool, rounded down, at least one worker, and with a pool of more than one at most the pool less one | invariant | §2.10, "per-store and per-flow cap" | T3.5 |
 | R26 | No dispatch gives a store more workers than its cap while another store has work waiting in the class being served, nor a flow more than its cap while another flow on its store has; a store or flow that only holds workers, with nothing queued, only has work in a lower class, or is only registered, binds nothing. A store already above its cap when another arrives is not preempted: it gets no further worker until it is below. A lone busy flow on a lone busy store uses the whole pool, and no worker idles while work of the class being served waits | invariant | §2.9; §6, RFC 3 S17 | T3.3, T3.8, T3.9 |
 | R27 | A store's dispatch is also gated by its per-store bound, which is inert while it equals the cap and, once lowered below the cap, binds whatever else waits. In E3 it always equals the cap; E4 lowers it to the throttle limit, never above the cap | invariant | §2.1; §2.9; §6, RFC 3 S17 | T3.3 |
-| R28 | No store gets a worker beyond its fair share, the pool divided by the stores holding or waiting for workers in the class being served, while another store with work waiting in that class holds none; a store holding no worker may always take its first, so a pool smaller than the waiting stores is served by the round robin (D13) | invariant | §2.9; §6, RFC 3 S17 | T3.3, T3.8, T3.9 |
+| R28 | No store gets a worker beyond its fair share, the pool divided by the stores holding or waiting for workers in the class being served, while another store with work waiting in that class holds none, but for D3's lag of up to one round while stores rejoining from the store wheel wait for their turns; a store holding no worker may always take its first, so a pool smaller than the waiting stores is served by the round robin (D13) | invariant | §2.9; §6, RFC 3 S17 | T3.3, T3.8, T3.9 |
 
 **Queues and the waiter bound**
 
@@ -287,7 +287,7 @@ already state with their two exceptions.
     counter, so stores sitting out to one round cost one step at that round and one at each of their
     turns. Until their turns, *n* and the quantum can lag by up to one round: with pool 8, store A
     holding 4 and four stores spliced behind it, A can take a fifth worker. The `decision:` marker
-    names that lag.
+    names that lag (R28).
   - Whenever a flow of a sitting-out store becomes runnable, the store is unlinked from its slot and
     rejoins the store ring as at a due rejoin: new work on a flow not in debt, E4 releasing a held
     flow's head, or a `Done` that clears a parked flow's debt. When a `Done` moves a parked flow to
@@ -328,7 +328,11 @@ already state with their two exceptions.
     not work waiting, and that a queue emptying forgives its flow's debt. That forgiveness is RFC 3
     §2.9's rule (R17), and its ceiling is that R23 holds only for flows that keep work queued: a
     reader with one transfer outstanding at a time has every overrun forgiven and never parks. The
-    marker also names that a flow's slot is fixed by the quantum it parked at, so a quantum that
+    marker also names the lag of *n* and the quantum while stores rejoining from the store wheel wait
+    for their turns: its ceiling is one round, in which a store can reach its cap, not only one
+    worker past its fair share, and the evidence that overturns it is a B3 run or a profile showing a
+    store taking more than its fair share across rounds, not only within one. It names that a
+    flow's slot is fixed by the quantum it parked at, so a quantum that
     rises meanwhile can keep it parked past the round its debt was paid, until its slot. It names
     the evidence that overturns the forgiveness: a profile or B3 run showing flows whose queues
     empty between overruns, by one-at-a-time issue or by cancelling queued transfers, taking more
@@ -511,7 +515,9 @@ already state with their two exceptions.
   - S17, accepted text: "No dispatch gives a store more workers of a half than its cap while another
     store has work waiting in the class being served, nor more than its throttle limit; …; and no
     store holding a worker gets another beyond its fair share while another store with work waiting
-    in that class holds none." Without the class, a store with only speculation waiting caps a store
+    in that class holds none." This epic checks S17 with D3's one-round lag of *n* while stores
+    rejoining from the store wheel wait for their turns, as the user accepted on 2026-11-27 (R28);
+    RFC 3's text does not change for it. Without the class, a store with only speculation waiting caps a store
     whose demand it cannot overtake, and workers idle (pool 8, cap 6: 2 idle). Without "holding a
     worker", a pool of 1 with two stores waiting breaks it on every dispatch. Checked at dispatch,
     since a lone store above its cap when another arrives is not preempted (§2.9: "the cap binds
@@ -961,11 +967,12 @@ test/suites.yaml           T3.8  FuzzSched in the fuzz suite's commands
   plain loops over slices, O(n) per step, importing only the standard library and `sched`; a
   property test over seeded sequences (kind 1) of arrivals, classes, charges, cancellations, ends
   with their held time, and flow closes. The model derives the quantum as D4 does, credits a parked
-  flow as D3 does, its 63-round cap included, and picks a victim as D7 and D8 do; everything else is
+  flow as D3 does, its 63-round cap included, copies D3's lag of up to one round in *n* and the
+  quantum while stores rejoining from the store wheel wait for their turns, and picks a victim as D7 and D8 do; everything else is
   written from §2.9. After every step the two agree on the entry dispatched, and RFC 3 S1, S3, S13,
   S17, S18, S20 and S22 hold as this epic reads them: S17 but its throttle clause, checked at each
   dispatch rather than after an arrival, per class, with a store's first worker exempt from the fair
-  share (R26, R28); S18 and S22 with a round counted per level, and a flow in debt exempt until its
+  share and D3's one-round lag allowed (R26, R28); S18 and S22 with a round counted per level, and a flow in debt exempt until its
   debt is paid (R22, R23); S20 with D7's refused case named. This pull request lands every RFC 3
   edit D13 lists, and S20's (D7) lands with T3.4's. `fuzz_test.go`'s `FuzzSched` over the same
   steps, its seeds committed. Its command in the `fuzz` suite in `test/suites.yaml` and a line in
