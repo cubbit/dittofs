@@ -73,34 +73,22 @@ func (s deletesOnePage) Delete(ctx context.Context, names []remote.Name) []error
 	return errs
 }
 
-// instanceCursor is a fault around the in-memory store: its cursor is a token
-// only the store instance that issued it can read, so a walk resumed on a
-// store opened again fails.
-type instanceCursor struct {
-	*memory.Store
+// instanceCursor is a fault around the in-memory store: its cursor is
+// tagged with the store instance that issued it, which alone can read it, so
+// a walk resumed on a store opened again fails.
+type instanceCursor struct{ *memory.Store }
 
-	mu     sync.Mutex
-	tokens map[remote.Cursor]remote.Cursor
-}
+func (s instanceCursor) List(ctx context.Context, after remote.Cursor, n int) ([]remote.Info, remote.Cursor, bool, error) {
+	tag := fmt.Sprintf("%p/", s.Store)
 
-func (s *instanceCursor) List(ctx context.Context, after remote.Cursor, n int) ([]remote.Info, remote.Cursor, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	real, ok := s.tokens[after]
+	real, ok := strings.CutPrefix(string(after), tag)
 	if after != "" && !ok {
 		return nil, after, false, fmt.Errorf("unknown cursor %q: %w", after, remote.ErrInvalid)
 	}
 
-	page, next, done, err := s.Store.List(ctx, real, n)
-	if err != nil {
-		return nil, after, false, err
-	}
+	page, next, done, err := s.Store.List(ctx, remote.Cursor(real), n)
 
-	token := remote.Cursor(fmt.Sprintf("token/%d", len(s.tokens)))
-	s.tokens[token] = next
-
-	return page, token, done, nil
+	return page, remote.Cursor(tag + string(next)), done, err
 }
 
 // yieldsForeign is a fault around the in-memory store: a key planted under
@@ -167,13 +155,11 @@ var broken = map[string]struct {
 	wrap func(*memory.Store) remote.Store
 	row  string
 }{
-	"serves-empty":        {func(s *memory.Store) remote.Store { return servesEmpty{s} }, "GetEmptyRange"},
-	"serves-after-close":  {func(s *memory.Store) remote.Store { return servesAfterClose{s} }, "AfterClose"},
-	"fails-absent-delete": {func(s *memory.Store) remote.Store { return failsAbsentDelete{s} }, "DeleteTwice"},
-	"deletes-one-page":    {func(s *memory.Store) remote.Store { return deletesOnePage{s} }, "DeleteBatch"},
-	"instance-cursor": {func(s *memory.Store) remote.Store {
-		return &instanceCursor{Store: s, tokens: map[remote.Cursor]remote.Cursor{}}
-	}, "ListWalk"},
+	"serves-empty":           {func(s *memory.Store) remote.Store { return servesEmpty{s} }, "GetEmptyRange"},
+	"serves-after-close":     {func(s *memory.Store) remote.Store { return servesAfterClose{s} }, "AfterClose"},
+	"fails-absent-delete":    {func(s *memory.Store) remote.Store { return failsAbsentDelete{s} }, "DeleteTwice"},
+	"deletes-one-page":       {func(s *memory.Store) remote.Store { return deletesOnePage{s} }, "DeleteBatch"},
+	"instance-cursor":        {func(s *memory.Store) remote.Store { return instanceCursor{s} }, "ListWalk"},
 	"accepts-foreign-cursor": {func(s *memory.Store) remote.Store { return acceptsForeignCursor{s} }, "ListForeignCursor"},
 	"yields-foreign":         {func(s *memory.Store) remote.Store { return &yieldsForeign{Store: s} }, "ListForeignKey"},
 	"ctx-at-entry":           {func(s *memory.Store) remote.Store { return ctxAtEntry{s} }, "ListCancel"},

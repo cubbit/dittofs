@@ -429,3 +429,21 @@ func TestAListOfNoKeysIsRefusedAndAnEmptyStoreIsDone(t *testing.T) {
 		t.Errorf("List of an empty store: %d blocks, next %q, done %v, error %v; want none, the zero Cursor, done, nil", len(page), next, done, err)
 	}
 }
+
+// A delete under a context already ended returns the context's error for
+// every name and deletes nothing.
+func TestADeleteUnderAnEndedContextDeletesNothing(t *testing.T) {
+	s := newStore(remote.ChecksumNone)
+	mustPut(t, s, blockA, first)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	for i, err := range s.Delete(ctx, []remote.Name{blockA, {0xb}}) {
+		checkErr(t, fmt.Sprintf("Delete under an ended context, result %d", i), err, context.Canceled)
+	}
+
+	if got, err := read(t, s, blockA); err != nil || !bytes.Equal(got, first) {
+		t.Errorf("Get after a Delete under an ended context: %d bytes and error %v, want the %d bytes put", len(got), err, len(first))
+	}
+}

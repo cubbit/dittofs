@@ -9,11 +9,13 @@ import (
 	"context"
 	"crypto/md5"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -36,6 +38,8 @@ type Subject struct {
 }
 
 // Run runs every row against a fresh subject from open, one row at a time.
+// Each subject's store is over an empty namespace of its own, since a listing
+// row asserts the exact set of blocks it walks.
 //
 // Each row watches for leaks before it calls open, so the cleanups open
 // registers, closing the store among them, run before the leak check: a row
@@ -344,71 +348,85 @@ func testListWalk(t *testing.T, sub Subject) {
 	var (
 		seen []remote.Info
 		next remote.Cursor
-		done bool
+		s    = sub.Store
 	)
 
-	for range 2 {
-		var page []remote.Info
-
-		page, next, done = listPage(t, sub.Store, next, pageSize)
-		seen = append(seen, page...)
-
-		if done {
-			t.Fatalf("List reported done after %d of %d blocks", len(seen), len(names))
-		}
-	}
-
-	again, err := sub.Reopen(t.Context())
-	if err != nil {
-		t.Fatalf("Reopen: %v", err)
-	}
-
-	t.Cleanup(func() {
-		if err := again.Close(); err != nil {
-			t.Errorf("Close of the reopened store: %v", err)
-		}
-	})
-
-	// A walk that makes progress ends within one call per block.
-	for calls := 0; !done; calls++ {
+	// Two pages on the store the blocks were put through, then the rest on a
+	// store opened again; a walk that makes progress ends within one call per
+	// block.
+	for calls, done := 0, false; !done; calls++ {
 		if calls > len(names) {
-			t.Fatalf("the resumed walk did not end after %d calls", calls)
+			t.Fatalf("the walk did not end after %d calls", calls)
+		}
+
+		if calls == 2 {
+			var err error
+			if s, err = sub.Reopen(t.Context()); err != nil {
+				t.Fatalf("Reopen: %v", err)
+			}
+
+			t.Cleanup(func() {
+				if err := s.Close(); err != nil {
+					t.Errorf("Close of the reopened store: %v", err)
+				}
+			})
 		}
 
 		var page []remote.Info
 
-		page, next, done = listPage(t, again, next, pageSize)
+		page, next, done = listPage(t, s, next, pageSize)
 		seen = append(seen, page...)
 	}
 
 	checkWalk(t, seen, names)
 
-	page, end, done, err := again.List(t.Context(), next, pageSize)
+	page, end, done, err := s.List(t.Context(), next, pageSize)
 	if err != nil || len(page) != 0 || !done || end != next {
-		t.Errorf("List after the walk's end: %d blocks, cursor moved %v, done %v, error %v; want no block, the same cursor, done, nil", len(page), end != next, done, err)
+		t.Errorf("List after the walk's end: %d blocks, cursor %q, done %v, error %v; want no block, cursor %q, done, nil", len(page), end, done, err, next)
 	}
 }
 
-// A cursor from a store under another prefix, so outside this store's block
-// namespace, is ErrInvalid, never a starting point.
+// A cursor outside the store's block namespace, one a store under another
+// prefix would return or one naming a key of this store outside blocks/, is
+// ErrInvalid, never a starting point.
 func testListForeignCursor(t *testing.T, sub Subject) {
-	put(t, sub.Store, name("list-foreign-cursor"), block("list-foreign-cursor", 16))
+	n := name("list-foreign-cursor")
+	put(t, sub.Store, n, block("list-foreign-cursor", 16))
 
 	_, next, _ := listPage(t, sub.Store, "", 1)
 
-	// The cursor a store under the prefix "elsewhere/" followed by this
-	// store's would return for the same block.
-	foreign := remote.Cursor("elsewhere/" + string(next))
+	// The cursor holds the full key, the store's prefix then blocks/ and the
+	// name.
+	h := hex.EncodeToString(n[:])
 
-	page, _, _, err := sub.Store.List(t.Context(), foreign, 10)
-	if !only(err, remote.ErrInvalid) {
-		t.Errorf("List after a cursor outside the block namespace: %d blocks and error %v, want ErrInvalid and no other sentinel", len(page), err)
+	prefix, ok := strings.CutSuffix(string(next), "blocks/"+h)
+	if !ok {
+		t.Fatalf("List's cursor after the only block is %q, want its key, ending blocks/%s", next, h)
+	}
+
+	// The first is the cursor a store under the prefix "elsewhere/" and then
+	// this store's would return for the same block.
+	foreign := []remote.Cursor{
+		remote.Cursor("elsewhere/" + string(next)),
+		remote.Cursor(prefix + "control/" + h),
+	}
+	if prefix != "" {
+		foreign = append(foreign, remote.Cursor("blocks/"+h))
+	}
+
+	for _, c := range foreign {
+		page, _, _, err := sub.Store.List(t.Context(), c, 10)
+		if !only(err, remote.ErrInvalid) {
+			t.Errorf("List after the cursor %q, outside the block namespace: %d blocks and error %v, want ErrInvalid and no other sentinel", c, len(page), err)
+		}
 	}
 }
 
-// A key under the block namespace that is not a block name, sorting between
-// two blocks, is skipped: a walk yields both blocks and only them, in pages
-// of any size, a page of one that ends on the key included.
+// A key under the block namespace that is not a block name is skipped: a walk
+// yields the blocks put and only them, in pages of any size, a page of one
+// that ends on such a key included. One key is short, sorting just before the
+// block whose name it would pad to, so a cursor read as a name skips that
+// block; one is a name in uppercase hex, which is not the key of any name.
 func testListForeignKey(t *testing.T, sub Subject) {
 	if sub.PutRaw == nil {
 		t.Skip("the subject has no PutRaw hook")
@@ -416,16 +434,19 @@ func testListForeignKey(t *testing.T, sub Subject) {
 
 	lo, hi := name("list-foreign-lo"), name("list-foreign-hi")
 	lo[0], hi[0] = 0x00, 0xff
+	padded := remote.Name{0x7f}
 
-	put(t, sub.Store, lo, block("list-foreign-lo", 16))
-	put(t, sub.Store, hi, block("list-foreign-hi", 17))
-
-	// Valid hex, too short for a name, sorting between lo and hi.
-	if err := sub.PutRaw(t.Context(), "blocks/7f", []byte("not a block")); err != nil {
-		t.Fatalf("PutRaw of blocks/7f: %v", err)
+	want := []remote.Name{lo, padded, hi}
+	for i, n := range want {
+		put(t, sub.Store, n, block(fmt.Sprintf("list-foreign/%d", i), 16+i))
 	}
 
-	want := []remote.Name{lo, hi}
+	upper := remote.Name{0xab}
+	for _, k := range []string{"blocks/7f", "blocks/" + strings.ToUpper(hex.EncodeToString(upper[:]))} {
+		if err := sub.PutRaw(t.Context(), k, []byte("not a block")); err != nil {
+			t.Fatalf("PutRaw of %s: %v", k, err)
+		}
+	}
 
 	for _, n := range []int{1000, 1} {
 		var (
@@ -434,8 +455,8 @@ func testListForeignKey(t *testing.T, sub Subject) {
 		)
 
 		for calls, done := 0, false; !done; calls++ {
-			if calls > 3 {
-				t.Fatalf("a walk in pages of %d over 3 keys did not end after %d calls", n, calls)
+			if calls > 5 {
+				t.Fatalf("a walk in pages of %d over 5 keys did not end after %d calls", n, calls)
 			}
 
 			var page []remote.Info
@@ -447,7 +468,7 @@ func testListForeignKey(t *testing.T, sub Subject) {
 		}
 
 		if !slices.Equal(got, want) {
-			t.Errorf("a walk in pages of %d yielded %d blocks %x, want the 2 blocks put %x", n, len(got), got, want)
+			t.Errorf("a walk in pages of %d yielded %d blocks %x, want the %d blocks put %x", n, len(got), got, len(want), want)
 		}
 	}
 }
@@ -467,6 +488,12 @@ func testListCancel(t *testing.T, sub Subject) {
 // endsOnSecondCheck is a fault around a context: it reports itself ended from
 // its second check on, through Err or Done, so a call that checks it only once,
 // at entry, runs to its end.
+//
+// ponytail: a store that derives a context from it first, as
+// context.WithTimeout does, is attached to the parent's own cancellation and
+// never asks it again, so the row fails such a store though it honours an
+// ended context. Cancel a real context from a subject hook mid-page when a
+// store derives one.
 type endsOnSecondCheck struct {
 	context.Context
 

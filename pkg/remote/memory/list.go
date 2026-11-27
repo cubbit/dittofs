@@ -48,8 +48,8 @@ func (s *Store) Delete(ctx context.Context, names []remote.Name) []error {
 // blocks/, or an n of zero or less, is remote.ErrInvalid. ctx is checked
 // before each key, so a context ended mid-page ends the call with its error.
 //
-// ponytail: each call collects and sorts every key under blocks/, O(k log k)
-// per page over k keys. Keep a sorted index if a test lists over enough blocks
+// ponytail: each call scans every object and sorts the keys under blocks/
+// after the cursor, O(k log k) per page over k objects. Keep a sorted index if a test lists over enough blocks
 // for its pages to show in its run time.
 func (s *Store) List(ctx context.Context, after remote.Cursor, n int) ([]remote.Info, remote.Cursor, bool, error) {
 	if err := s.open("List"); err != nil {
@@ -113,15 +113,13 @@ func (s *Store) List(ctx context.Context, after remote.Cursor, n int) ([]remote.
 func parseName(s string) (remote.Name, bool) {
 	var n remote.Name
 
-	if len(s) != hex.EncodedLen(len(n)) || strings.ToLower(s) != s {
+	if len(s) != hex.EncodedLen(len(n)) {
 		return n, false
 	}
 
-	if _, err := hex.Decode(n[:], []byte(s)); err != nil {
-		return n, false
-	}
+	_, err := hex.Decode(n[:], []byte(s))
 
-	return n, true
+	return n, err == nil && hex.EncodeToString(n[:]) == s
 }
 
 // putRaw stores body under key, relative to the prefix, beneath the contract:
