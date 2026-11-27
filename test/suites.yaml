@@ -622,8 +622,7 @@ suites:
     fixture: { profile: badger-s3, smb: { mount: true } }
     needs: [linux, root, smb-client]
     # decision: Linux runs after each merge, as the SMB client workflow this replaces ran on SMB
-    # changes, and on feat/storage-v2 too, which has no nightly; macOS and Windows, on scarcer
-    # runners, run nightly on develop only.
+    # changes; macOS and Windows, on scarcer runners, run nightly on develop only.
     tier: merge
     # decision: macOS and Windows stay on memory, since badger-s3 needs Localstack, a Linux
     # container, and their hosted runners run none: macOS's have no Docker, Windows's run Windows
@@ -683,8 +682,7 @@ suites:
   # is judged in CI). Nothing posts to the develop-status issue, since the host doesn't post
   # there; a failure counts in the host run's exit and status, as any cell's does. blocking:
   # false is the declared intent, and what tests.yml would honour if the cell ever ran there.
-  # decision: the host runs develop's latest commit, so the stream starts when storage-v2
-  # reaches develop; empty until then is the design, not a bug.
+  # decision: the host runs develop's latest commit.
   # decision: the host's results directory keeps these figures as long as its own cleanup
   # does, and no GitHub artifact holds them (GitHub's 90-day default doesn't apply); revisit
   # with the first trend longer than that is wanted, by offloading older runs, not before.

@@ -86,7 +86,7 @@ func FromEnv() (Client, error) {
 
 // statusBranches are the branches whose merge and nightly runs set a commit
 // status: those a push to runs the merge tier on. Only develop's post.
-var statusBranches = []string{"develop", "main", "feat/storage-v2"}
+var statusBranches = []string{"develop", "main"}
 
 // Check sets the commit status name on r's commit, whose full hash is sha, as
 // the API takes no shorter one: success when r passed, failure when a test or
