@@ -12,7 +12,6 @@ import (
 	"github.com/cubbit/dittofs/internal/adapter/core"
 	"github.com/cubbit/dittofs/internal/adapter/nfs/protocol"
 	"github.com/cubbit/dittofs/internal/adapter/nfs/wire"
-	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	"github.com/cubbit/dittofs/pkg/vfs"
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest"
 )
@@ -130,24 +129,7 @@ func protected(rn *adaptertest.Runner, p vfs.Protection) vfs.Call {
 func alice(t *testing.T, rn *adaptertest.Runner) vfs.Call {
 	t.Helper()
 
-	u := entity.User{
-		Principal: entity.NewUser(),
-		Name:      "alice",
-		IDs: entity.ProtocolIDs{
-			{Scheme: entity.SchemeUID, Value: "101"},
-			{Scheme: entity.SchemeSID, Value: "sid-101"},
-		},
-	}
-
-	_, err := rn.Mem.Store.Store.ControlPlane().PutUser(t.Context(), u, 0, entity.Alloc{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	c := plain(rn)
-	c.Identity.Evidence.Principal = u.Principal
-
-	return c
+	return adaptertest.OtherUser(t, rn.Mem)
 }
 
 // args is EXCHANGE_ID4args as RFC 8881 section 18.35.1 lays it out, built
@@ -235,7 +217,7 @@ func seed(
 		Name:     []byte(owner),
 		Boot:     boot,
 		Adapter:  adapter,
-		Recovery: entity.RecoverStatus,
+		Recovery: recoverStatus,
 	}
 
 	p, err := rn.Mem.Propose(context.Background(), call, info)
@@ -603,7 +585,7 @@ func TestExchangeIDProtectedOwner(t *testing.T) {
 		Boot:     boot2Minor1,
 		Protect:  true,
 		Adapter:  recBytes(t, 1, 7),
-		Recovery: entity.RecoverStatus,
+		Recovery: recoverStatus,
 	}
 	call := protected(rn, vfs.ProtectionIntegrity)
 
@@ -743,10 +725,10 @@ func TestExchangeIDErrorRows(t *testing.T) {
 	}
 }
 
-// The status of recoverStatus is open state's.
+// The status of recoverStatus is open state's, by the name open state gives it.
 func TestRecoverStatusIsOpenStates(t *testing.T) {
-	if recoverStatus != entity.RecoverStatus {
-		t.Errorf("recoverStatus is %d, want open state's %d", recoverStatus, entity.RecoverStatus)
+	if got := recoverStatus.String(); got != "status" {
+		t.Errorf("recoverStatus is named %q, want open state's \"status\"", got)
 	}
 }
 

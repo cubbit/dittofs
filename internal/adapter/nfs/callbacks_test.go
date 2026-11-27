@@ -3,6 +3,7 @@ package nfs
 import (
 	"testing"
 
+	"github.com/cubbit/dittofs/internal/adapter/adaptertest"
 	"github.com/cubbit/dittofs/pkg/adapter"
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 )
@@ -13,7 +14,7 @@ import (
 // value (RFC 20 section 3.3), and a nil, swapped or shared one would send a
 // recall or a revocation to the wrong client or to none.
 func TestHandlersCarryACallbacksConstructorForTheClientAsked(t *testing.T) {
-	h := handlers(adapter.Deps{})
+	h := handlers(adapter.Deps{Budgets: adaptertest.Budgets()})
 	if h.Callbacks == nil {
 		t.Fatal("h.Callbacks = nil, want a constructor")
 	}
