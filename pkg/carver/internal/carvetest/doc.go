@@ -4,7 +4,10 @@
 // carver's for the chunk ID and the block name. It hands out bytes, words and
 // hashes, never the carver's own types, and imports the standard library
 // alone, so a check written with it needs no store, network, clock or
-// goroutine (RFC 2 §1.3).
+// goroutine (RFC 2 §1.3). Input streams seeded bytes of every content kind
+// at every supported Target; Boundaries is RFC 2 §3.2's boundary function
+// read literally, the second implementation the chunker is compared against,
+// and LoadBoundaries the golden boundaries it wrote.
 //
 // gen_vectors.py writes testdata/vectors.json with the BLAKE3 team's Python
 // binding; vectors_test.go recomputes every value in Go and holds the BLAKE3
