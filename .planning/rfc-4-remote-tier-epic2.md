@@ -12,7 +12,7 @@ the fault wrapper around it. [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle
 where a verified in-memory implementation ships. The
 [RFC index](../docs/internals/rfcs/rfc-index.md), "Test harness" item 1, for the clock the store
 reads. Cited, not owned: [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) §4.11 (test
-doubles). Every citation is `develop`'s text. The code lands on `feat/storage-v2`, and the paths
+doubles). Every citation is `develop`'s text. The code lands on `develop`, and the paths
 below are paths there.
 **Track:** the team.
 **Epic 2 estimate: 5 subtasks, 8.75 man-days.**

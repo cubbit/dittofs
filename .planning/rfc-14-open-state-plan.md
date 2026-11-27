@@ -275,7 +275,7 @@ return res.Ref, openErr(err)
 
 ## 3. Pieces, in build order
 
-Each piece lands as its PR into `feat/storage-v2`, with its tests (plan §4), each after the
+Each piece lands as its PR into `develop`, with its tests (plan §4), each after the
 one before it. A row may be split: its first piece lands the cases it can reach, and the piece that
 completes it is named beside it, e.g. L27 (→6). The piece an arrow names lists the row again in its
 own "Done when", so the row's completion is gated there. "Done when" means every listed row passes

@@ -96,7 +96,7 @@ exist; the filter entries D2 gives this epic.
   of S3 each protocol brings.
 - **X3**, the RFC 13 plan's epic 5, which wires `Check`, `Diff` and `Get`.
 - **CP9, CP14**, RFC 23 §10's invariants of those numbers.
-- **plan D9**, RFC 23's plan's decision on the `feat/storage-v2` filter (#3714, `tests.yml`'s `V2`)
+- **plan D9**, RFC 23's plan's decision on `tests.yml`'s data-path skip (#3714)
   and who turns each cell back on.
 
 ## 2. How the general rules apply

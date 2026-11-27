@@ -9,7 +9,7 @@ probes), §7.1 and §7.2's rows, §7.4 (the simulated link) and §8.6 (the suite
 wrapper wraps), §4.3's `codec.Store` and §4.4 (a range past the end); RFC 4 §7.1, the
 conformance suite the wrapper passes with nothing injected;
 [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) §4.11, the test doubles. Every citation
-is `develop`'s text. The code lands on `feat/storage-v2`, and the paths below are paths there.
+is `develop`'s text. The code lands on `develop`, and the paths below are paths there.
 **Track:** the team.
 **Epic 2 estimate: 3 subtasks, 8.5 man-days.**
 **Depends on:** **S1**, E1's surface agreed: `pkg/syncer`'s `Syncer`, `Flow`, `Store`, the

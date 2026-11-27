@@ -55,7 +55,7 @@ review and declined there.
 §7's row map needs them.
 **Defaults used from Step 0:** dashboards none (#9); output path the default (#10). Where v2 lives
 is RFC 20's plan §4's layout, its differences flagged in §6.2. The target branch is
-`feat/storage-v2`; the plan document lands there too, as the other
+`develop`; the plan document lands there too, as the other
 planning documents do. External dependencies: RFC 20's plan's S1, S2 and S3, its epic 6's SMB half,
 and its S4 (`internal/node`, #4050's S2) for anything node-level; RFC 18's plan (#4058), its S2
 and E5 to E8, for sign-in (§3.2).
@@ -194,7 +194,7 @@ need Windows in `clients/windows`, the platform clients' workloads in `clients`,
 `clients/macos`, smbfuzz's rounds in `smb-fuzz`, and the hour-long profile-container run in `system`.
 Every one of those suites is registered already. **Epic 2 registers no red suite**: `unit` keeps no
 `known.yaml`, so its tests land green with the epic that makes them pass. Every other suite named
-there stays off on `feat/storage-v2` under `tests.yml`'s V2 filter until the cutover. `e2e` keeps no
+there stays off under `tests.yml`'s data-path skip until the cutover. `e2e` keeps no
 `known.yaml` either, so its SMB rows land green in epic 16, once epic 15 has turned it on.
 `smbtorture`, `smbtorture/kerberos`, `wpts` and `system` keep one each, and epic 15 rewrites them for
 v2 once `dfs` serves SMB, each v2 failure an entry `status: fail`, `fix: planned`,
@@ -533,7 +533,7 @@ holds its S4 and its epic 7.
 | 🔀 S6a | S4b; E4, E5, E6, E12 and E16, partly | a `SignIn` that succeeds, and `Spell` and `Find` that answer: NTLM and names on `memory.New` at RFC 18's plan's S2, on the composed node at its E8 |
 | 🔀 S6b | E4 and E16, partly | Kerberos at RFC 18's plan's E5; a domain user's session needs pass-through, the PAC and the directory |
 | 🔀 S7 | E15 | no node to wire into, no `dfs` serving SMB |
-| 🔀 E15 | E16, partly | the SMB suites run only once `dfs` serves SMB and the V2 filter lets them |
+| 🔀 E15 | E16, partly | the SMB suites run only once `dfs` serves SMB and the data-path skip lets them |
 | E6, E8, E10, E11, E12, E13, 🔀 E14 | E16 | the suites, end-to-end rows and benchmarks run every area |
 
 ### 3.4 Splitting the work
@@ -1722,7 +1722,7 @@ the row names it, of the open points (§9) of RFC 20's [epic 2](rfc-20-adapters-
 | the authenticator | not here: RFC 18's plan (#4058), its S2 and E5 to E7 (§6.2, point 1) |
 | the `/durable-handles` listing | not here: unowned, §6.5's deferral ledger (plan gap 13) |
 | `test/required-tests.json` pins for SMB's authorization gates | E16 |
-| SMB's suites skipped by the V2 filter (`smbtorture`, `smbtorture/kerberos`, `wpts`, `clients`, `smb-fuzz`) | E15 (turned on), E16 (green) |
+| SMB's suites skipped by the data-path skip (`smbtorture`, `smbtorture/kerberos`, `wpts`, `clients`, `smb-fuzz`) | E15 (turned on), E16 (green) |
 | `ConnInfo.Session`: the `Conn` call that names the session a connection carries (RFC 20 §3.4) | E5, with the session registry (T5.2) |
 | a `FlowControl` conformance check in `adaptertest` that each protocol's `Flow` passes: under an ended context `Admit` takes a free place or returns at once (RFC 20's epic 5, its D8) | E3, with `Flow` (T3.6) |
 | RFC 20 §10.1's `adapter_translation_refused_total`, `adapter_record_decode_failures_total` and `adapter_record_replays_total` | with `translate` (E7, E8, E12) and the client record (T5.4) |

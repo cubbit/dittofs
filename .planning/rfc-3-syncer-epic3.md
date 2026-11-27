@@ -13,7 +13,7 @@ five scheduler counts. Cited for what they hand over: §2.2 (the largest encoded
 throttle limit, the `Meter`), §2.8 (refusal at admission), §4.3 and §4.4 (joined callers,
 re-homing, eviction). Cited, not owned: epic 1's D1 (what a refused call returns), epic 2's D1 to
 D5 (the fault wrapper's `Hold` and `Link`, `syncertest`'s `Run`, `Env` and `Wait`). Every
-citation is `develop`'s text. The code lands on `feat/storage-v2`, and the paths below are paths
+citation is `develop`'s text. The code lands on `develop`, and the paths below are paths
 there.
 **Track:** A.
 **Epic 3 estimate: 10 subtasks, 33.25 man-days.**

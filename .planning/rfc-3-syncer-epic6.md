@@ -22,7 +22,7 @@ displacement, the fixed-values table, `admit`, the counters, the `testing/syncte
 `internal/sched` and model; epic 4's D1, D2, D4 and D9 (classification, the throttled requeue, the
 get loop, a get retried only while it has yielded nothing); epic 5's refusal at `admit`. Every
 citation is `develop`'s text, epics 3, 4 and 5 that of their open pull requests (#5940, #5998,
-#6001). The code lands on `feat/storage-v2`, and the paths below are paths there.
+#6001). The code lands on `develop`, and the paths below are paths there.
 **Track:** A.
 **Epic 6 estimate: 8 subtasks, 24.5 man-days.**
 **Depends on:** **S2**, epic 2's fault wrapper and `syncertest`'s frame. **Epic 3**: T3.4's

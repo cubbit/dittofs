@@ -641,8 +641,8 @@ one.
 - **Prior art (from memory).** TrueNAS's job manager runs beside its middleware's API.
 - **Applied by** epic 3.
 
-**D9. v1 is deleted in epic 1; the cells that start its server are already off.** On
-`feat/storage-v2`, the plan job's filter (#3714, `tests.yml`'s `V2`) skips `e2e`, `pjdfstest`,
+**D9. v1 is deleted in epic 1; the cells that start its server are already off.** The
+plan job's data-path skip (#3714, in `tests.yml`) skips `e2e`, `pjdfstest`,
 `pynfs`, `wpts`, `smbtorture`, `cthon04`, `nfstest`, `clients`, `fio-verify`, `bench-smoke`,
 `system`, `unit/windows`, `integration/ad-dc` and `integration/kerberos`, so `test/suites.yaml`
 keeps develop's entries and every RFC's suites paragraph still names a registered suite. The `operator` cell runs envtest in its own module

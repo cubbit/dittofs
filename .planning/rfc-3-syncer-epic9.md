@@ -11,7 +11,7 @@ by measurement" and "The reference box". Cited for what they hand over, not owne
 (the per-worker figure), §2.9 (a round), §2.10 (the cap, the waiter bound), §2.12 (the `Stats`
 read here); [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) §4.3 and §4.10, the tiers
 and how benchmarks are tracked. Every citation is `develop`'s text. The code lands on
-`feat/storage-v2`, and the paths below are paths there.
+`develop`, and the paths below are paths there.
 **Track:** the team.
 **Epic 9 estimate: 5 subtasks, 12 man-days.**
 **Depends on:** **S3**, the syncer complete over the in-memory store: E1's `pool.New`, `Config`,
@@ -417,7 +417,7 @@ a schedule, which is RFC 4's (§1.2).
     `format: exit` (a `go-json` cell grades a passing benchmark as failed, `engine-bench`'s note
     says), no `metrics`, `tier: pr`, `blocking: { pr: false }`, as `settings-scan-smoke` is. It
     fails on a benchmark that panics, fails its setup, or skips or drops a sub-benchmark, never on
-    a figure (R5), and blocks after a merge. On `feat/storage-v2` a `pr` suite runs only once
+    a figure (R5), and blocks after a merge. A `pr` suite runs only once
     `.github/workflows/tests.yml`'s select names it (its comment: "a new suite runs only once it
     is named there"), so T9.3 adds `or .suite == "syncer-bench-smoke"` beside
     `settings-scan-smoke`'s line.
@@ -425,7 +425,7 @@ a schedule, which is RFC 4's (§1.2).
   Prior art: `journal-bench-data`'s script, tests list and `go-bench` reading;
   `journal-bench`'s guard, a single `grep -q` for any result line, which this one tightens to a
   count per name; `settings-scan-smoke` and its `tests.yml` line (`test/suites.yaml` and
-  `.github/workflows/tests.yml` on `feat/storage-v2`, checked); RFC 4 plan epic 9's `remote-bench` (its
+  `.github/workflows/tests.yml`, checked); RFC 4 plan epic 9's `remote-bench` (its
   D6), which instead blocks after merge on counts, which here are E3 to E7's in `unit`.
 - **D6, B5 runs on the target RFC 4's tests already choose, through the content wiring's own
   constructors.**

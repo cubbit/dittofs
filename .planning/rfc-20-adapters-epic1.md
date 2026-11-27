@@ -28,7 +28,7 @@ every later epic builds against types that no longer move.
 - `internal/adapter/`, `pkg/adapter/`, `pkg/controlplane/runtime/adapters` and everything that
   only they served are gone; the branch builds, `go vet` passes with every build tag that still
   has files, and `unit`, `integration`, `lint-go` and `lint-repo` are green;
-- the suites that need a served protocol are skipped by `tests.yml`'s V2 filter, and
+- the suites that need a served protocol are skipped by `tests.yml`'s data-path skip, and
   `required-tests.sh` passes on two surviving authorization gates;
 - `pkg/adapter`, `pkg/adapter/settings`, `pkg/resources`, `pkg/adapter/nfs`, `pkg/adapter/smb`
   and `internal/adapter/core` compile with RFC 20's signatures, each with a test that can fail;
@@ -176,7 +176,7 @@ which epic owns the rest.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R8 | `tests.yml`'s V2 filter gains `integration/kerberos`; the required job's fixed `dt run integration/kerberos` step is removed on the branch; `test/suites.yaml` stays as develop has it | MUST | owner decision | T1.3 |
+| R8 | `tests.yml`'s data-path skip gains `integration/kerberos`; the required job's fixed `dt run integration/kerberos` step is removed on the branch; `test/suites.yaml` stays as develop has it | MUST | owner decision | T1.3 |
 | R9 | `test/required-tests.json` is repinned to the anonymous gates admission resolves through identity: `TestNoAnonymousPrincipalFailsClosed` and `TestResolveRefusesASquashToADeletedAnonymous` in `internal/identity`, and `TestANewShareSquashesToAnonymous` in `internal/vfs`, so `required-tests.sh` neither loses its subject nor fails on an empty manifest | MUST | owner decision | T1.3 |
 | R10 | `lint-go`'s `go vet -tags=` line keeps a tag only while a file behind it compiles | MUST | owner decision | T1.3 |
 | R11 | A per-change cell vets the adapter packages with `GOOS=windows` and `GOOS=darwin` | MUST | owner decision | T1.7 |
@@ -439,7 +439,7 @@ which epic owns the rest.
 ## 5. Target tree
 
 ```text
-.github/workflows/tests.yml          T1.3  V2 filter + integration/kerberos; fixed kerberos step gone; GOOS vet cell (T1.7)
+.github/workflows/tests.yml          T1.3  data-path skip + integration/kerberos; fixed kerberos step gone; GOOS vet cell (T1.7)
 test/required-tests.json             T1.3  two internal/vfs/admit gates
 test/suites.yaml                     T1.3  lint-go vet tags without kerberos
 docs/internals/rfcs/rfc-20-adapters.md  T1.9  S1 amendments (on feat/storage-v2)
@@ -594,7 +594,7 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
 - **Track:** the team. **Depends on:** T1.1, T1.2 (same pull request).
 - **Covers:** R8, R9, R10.
 - **Deliverables:**
-  - `tests.yml`'s V2 filter gains `integration/kerberos`; the integration job's fixed
+  - `tests.yml`'s data-path skip gains `integration/kerberos`; the integration job's fixed
     `dt run integration/kerberos` step is removed on the branch; `test/suites.yaml`'s cells
     otherwise stay as develop has them;
   - `test/required-tests.json` pins `TestNoAnonymousPrincipalFailsClosed` and
@@ -605,7 +605,7 @@ internal/auth/kerberos/ internal/mfsymlink/                    T1.1  deleted (D3
   - `lint-go`'s `go vet -tags=` line loses `kerberos`, the one tag whose files are all
     deleted; every other tag keeps files.
 - **What still runs, and why it stays green.** `dt plan` for the pr and merge tiers, through
-  the V2 filter, keeps twelve cells; the nightly tier runs on develop's schedule only. Of
+  the data-path skip, keeps twelve cells; the nightly tier runs on develop's schedule only. Of
   those, `integration/kerberos` is the one whose subject the deletion removes, and it leaves
   here. The other eleven need no served protocol:
   - `lint-go`: `go vet` with the tags compiles the surviving e2e files, which is why D5 keeps

@@ -25,7 +25,7 @@ table" row, its data-key rotation clause and its key-object clause, and Appendix
 (its R14 and D5), E2's `keystest.Harness` and the keys MAC vector (its R28), E6's key-record view
 and provider, E7's custody reads (its D3), and the RFC 4 plan's deferral row on the `Recheck`
 pass, which leaves each writer's own read-back to this epic. Every citation is the text on
-`develop`; the code lands on `feat/storage-v2`, and the paths below are paths there.
+`develop`; the code lands on `develop`, and the paths below are paths there.
 **Track:** C.
 **Epic 8 estimate: 8 subtasks, 17.25 man-days.**
 **Depends on:** **S2**: from E2, `keystest.Memory`, `keystest.Harness` and `keystest.Run`, and

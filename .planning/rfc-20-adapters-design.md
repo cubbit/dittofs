@@ -87,7 +87,7 @@ Clean slate, decided by the owner:
    and serves no protocol, and loses that API and config surface until RFC 21/22 bring it back.
    develop keeps the whole implementation and stays the reference for parity.
 2. In the same epic, the suites that need a served protocol stay skipped on the branch by
-   `tests.yml`'s V2 filter, which already skips `e2e`, `pjdfstest`, `pynfs`, `wpts`,
+   `tests.yml`'s data-path skip, which already skips `e2e`, `pjdfstest`, `pynfs`, `wpts`,
    `smbtorture`, the conformance and client suites and `integration/ad-dc`. The filter grows by
    `integration/kerberos`, whose package is deleted, and the required job's fixed
    `dt run integration/kerberos` step goes on the branch. `test/suites.yaml` gains one cell,
@@ -323,6 +323,5 @@ Settled by the builder from the architect and over-engineering reviews; the owne
   headers; revisit in RFC 22's plan.
 - Open questions 2 and 3: the scaffold leaves the `Replay` slot and the datagram listener in place;
   RFC 21's plan decides.
-- **(builder's call)** The plan document lands on develop as a `docs(planning)` commit and is
-  cherry-picked to `feat/storage-v2`, as other planning docs; the code PRs target
-  `feat/storage-v2`.
+- **(builder's call)** The plan document lands on develop as a `docs(planning)` commit, as other
+  planning docs; the code PRs target `develop` too.

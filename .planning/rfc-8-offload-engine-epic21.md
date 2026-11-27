@@ -21,7 +21,7 @@ and §10's `health_conditions`; [RFC 21](../docs/internals/rfcs/rfc-21-nfs.md) �
 journal" row, its store-unreachable leg; [RFC 22](../docs/internals/rfcs/rfc-22-smb.md) §18's "§16.5
 remote outage on reads" row; and the journal plan's system scenario catalogue,
 [`rfc-1-journal-epic2.md`](rfc-1-journal-epic2.md) §7.1 and §7.2, the rows it leaves to RFC 8's
-second part. Every citation is `develop`'s text; the code lands on `feat/storage-v2`, and the paths
+second part. Every citation is `develop`'s text; the code lands on `develop`, and the paths
 below are paths there.
 **Track:** the team.
 **Epic 21 estimate: 12 subtasks, 38.75 man-days.**

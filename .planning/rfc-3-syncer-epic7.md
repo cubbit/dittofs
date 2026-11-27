@@ -15,7 +15,7 @@ bound) and §7.3 (a cancelled try dropping its buffers, the codec's check); epic
 4 plan's epic 1 D11 (`codec.MaxHeaderLen`), its epic 2 (`memory.Wrap`, `SetReadOnly`, `Delete`)
 and its epic 6 (the header's bound). Every citation is `develop`'s text, epics 3 to 5 and RFC 4's
 epic 6 that of their open pull requests (#5940, #5998, #6001, #5942). The code lands on
-`feat/storage-v2`, and the paths below are paths there.
+`develop`, and the paths below are paths there.
 **Track:** B.
 **Epic 7 estimate: 4 subtasks, 10.5 man-days.**
 **Depends on:** **E4, E5 and E6 landed**, both halves complete: E4's attempt loops, slow-tail

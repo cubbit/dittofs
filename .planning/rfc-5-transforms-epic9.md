@@ -20,7 +20,7 @@ transform chain, the material provider and `with_encryption`.
 §2.1 (prefixes), §2.4 and §2.5 (labels and the series budget), §2.9 (recording), §3.9's
 `material_unavailable`, `material_unknown` and `material_destroyed` rows, §7 (alerting), §8
 (injection from the root). The RFC 5 plan's §5 entry for this epic, D15 and §6.1, where a row cites
-them. Every citation is the RFCs' text on `develop`; the code lands on `feat/storage-v2`, and the
+them. Every citation is the RFCs' text on `develop`; the code lands on `develop`, and the
 paths below are paths there.
 **Track:** the team.
 **Epic 9 estimate: 6 subtasks, 16.75 man-days.**

@@ -12,7 +12,7 @@ root `transform` package: `Chain`, `Attempt`, `Encoded`, `Chain.Decode`'s census
 [RFC 2](../docs/internals/rfcs/rfc-2-carver.md) §4.1 and §4.2 (a chunk's ID, a block's name and
 their inputs); [RFC 24](../docs/internals/rfcs/rfc-24-resources.md) §6.2 (the background CPU
 token); [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §8.1 (what the root injects).
-Every citation is `develop`'s text. The code lands on `feat/storage-v2`, and the paths below are
+Every citation is `develop`'s text. The code lands on `develop`, and the paths below are
 paths there.
 **Track:** the team.
 **Epic 1 estimate: 3 subtasks, 4 man-days.**

@@ -184,7 +184,7 @@ set for it.
 | R34 | `Dockerfile`, `Dockerfile.goreleaser` and `Dockerfile.prebuilt` never initialise on their own: their entrypoint stays `dfs` and their `CMD` stays `dfs start`, so a store volume that is unbound, mistyped or mounted late refuses the start | MUST NOT | RFC 13 §2.2 | T6.9 |
 | R35 | For the images, initialisation is `docker run … init --config /config/config.yaml` with the first password by reference to a file the operator mounts, then `docker run … start --config /config/config.yaml` (an argument replaces the image's whole `CMD`, its `--config` with it), both mounting the same five volumes the images declare, since an `init` without them writes anonymous volumes that `--rm` deletes | invariant | RFC 13's plan, epic 6; RFC 23 §5.4 | T6.9 |
 | R36 | The password file is read whole, one trailing LF or CRLF dropped; a file over 4 KiB, its trailing newline counted, an empty file, or one missing, refuses the step, naming the path, and never falls back to a generated password. RFC 23's epic 5 builds and tests it; this epic documents it | MUST | RFC 23 §5.4; RFC 23's plan, epic 5 | T6.9 |
-| R37 | The unit file (`packaging/dfs.service` on `feat/storage-v2`, `scripts/packaging/dfs.service` on `develop`) keeps `dfs start`, and initialisation is an explicit step before the unit is enabled | invariant | RFC 13's plan, epic 6 | T6.9 |
+| R37 | The unit file (`scripts/packaging/dfs.service`) keeps `dfs start`, and initialisation is an explicit step before the unit is enabled | invariant | RFC 13's plan, epic 6 | T6.9 |
 | R38 | `docs/guide/install.md` names both steps, for the images and for the packages before the unit is enabled; it adds the two steps and does not rewrite the guide | invariant | RFC 13's plan, epic 6, O8 | T6.9 |
 
 **Transport (RFC 13 §2.2; RFC 23 §5.3)**
@@ -546,8 +546,8 @@ docs/guide/install.md            T6.9  the two steps
 - **Track:** the team. **Depends on:** T6.7.
 - **Covers:** R34 to R38, R39, R40, R44.
 - **Deliverables:** `test/launchers/images_test.go`, which reads `Dockerfile`,
-  `Dockerfile.goreleaser`, `Dockerfile.prebuilt` and `packaging/dfs.service`, the paths on
-  `feat/storage-v2` where the work lands, and asserts what R34, R37 and R40 say;
+  `Dockerfile.goreleaser`, `Dockerfile.prebuilt` and `scripts/packaging/dfs.service`, and
+  asserts what R34, R37 and R40 say;
   `docs/guide/install.md` gains the two steps for the images (R35, R36: `init --config` then
   `start --config`, the five volumes, a mounted password file, a mounted certificate and key) and
   for the packages before the unit is enabled, in its Docker and package sections (R38). The
@@ -645,8 +645,7 @@ Further points, each changed in this document's pull request:
   `docker run` of the image read with `docker inspect` (R44).
 - **RFC 13's plan's §6.1 ledger** gains the two rows of §1.2 above, with owner `unowned`, since the
   drain's readability and a second format version have no plan yet.
-- **RFC 13's plan, epic 6** names `scripts/packaging/dfs.service`; the file is
-  `packaging/dfs.service` on `feat/storage-v2`, where the work lands, and the text names both.
+- **RFC 13's plan, epic 6** names `scripts/packaging/dfs.service`, the file's path.
 
 Not changed here:
 

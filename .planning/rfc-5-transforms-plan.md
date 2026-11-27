@@ -55,7 +55,7 @@ v2 is RFC 5's chain, built in `pkg/transform`, a new top-level path that waits o
 integration epics touch no v1 code (§1.5 rule 7).
 
 **Where the code lands.** The plan and its RFC amendments land on `develop`. The code lands on
-`feat/storage-v2`, where the engine v2, `pkg/keyprovider`, `pkg/secrets`, `pkg/settings` and
+`develop`, where the engine v2, `pkg/keyprovider`, `pkg/secrets`, `pkg/settings` and
 `pkg/metadata/kvstore` live (`develop` has none of them).
 
 **Defaults used from the skill's inputs:** dashboards none; output path

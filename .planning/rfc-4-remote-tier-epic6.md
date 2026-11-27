@@ -17,7 +17,7 @@ CPU token); [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §8.1 (what
 E1's document fixes the surface this epic fills (its D5, D6, D9, D10 and D11): "E1 D<n>" below is
 that document's decision. Every citation is `develop`'s text with the RFC 4 change of #5904
 (`NewPut(name, nonce, pin, src)`, and the census lookup by name that E1 D10 calls
-`Config.Census`). The code lands on `feat/storage-v2`, and the paths below are paths there.
+`Config.Census`). The code lands on `develop`, and the paths below are paths there.
 **Track:** A.
 **Epic 6 estimate: 9 subtasks, 17.25 man-days.**
 **Depends on:** **S1**, E1's frozen surface: `pkg/remote`'s types and errors (T1.1) and the codec's

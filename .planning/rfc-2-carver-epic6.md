@@ -12,7 +12,7 @@ target is replaced once, by measurement". [RFC 29](../docs/internals/rfcs/rfc-29
 §4.9: adding a suite and naming it in the RFC. Cited, not owned: [RFC 8](../docs/internals/rfcs/rfc-8-engine.md)
 §6.2, §6.5 and §6.7, the offers, the dedup oracle that the first release leaves out, and widening,
 which the sweep runs as the engine does them. Every citation is `develop`'s text. The code lands on
-`feat/storage-v2`, and the paths below are paths there.
+`develop`, and the paths below are paths there.
 **Track:** the team.
 **Epic 6 estimate: 5 subtasks, 11.5 man-days.**
 **Depends on:** **S3**, a pass runs end to end: a file written through the journal is offered,
@@ -661,7 +661,7 @@ Checkpoint after T6.3: the sweep runs by hand on any host with the corpus. T6.1 
 | 1 | T6.1, T6.2, T6.3 | 9 | S3 | the sweep, end to end: its arithmetic, its workloads and its suite |
 | 2 | T6.4, T6.5 | 2.5 | PR 1 | the run and the freeze it decides, so the recorded table and the frozen value land together |
 
-A suggestion only: one pull request per subtask works as well. The code lands on `feat/storage-v2`;
+A suggestion only: one pull request per subtask works as well. The code lands on `develop`;
 the RFC text each pull request edits (§10.6's suites line, Appendix C, §3.2, §11, RFC 13 Appendix
 B) goes to `feat/storage-v2` in a pull request of its own, as the programme's other RFC edits do.
 

@@ -9,7 +9,7 @@ trust-roots row, which the cell must meet. The
 [RFC 8](../docs/internals/rfcs/rfc-8-engine.md) §2's "One clock and one fault interface", for the
 one fault interface the transport consults. Cited, not owned:
 [RFC 29](../docs/internals/rfcs/rfc-29-test-harness.md) §4.11 (test doubles). Every citation is
-`develop`'s text. The code lands on `feat/storage-v2`, and the paths below are paths there.
+`develop`'s text. The code lands on `develop`, and the paths below are paths there.
 **Track:** C.
 **Epic 3 estimate: 5 subtasks, 10 man-days.**
 **Depends on:** **R4-S2**, the conformance suite and the in-memory store in CI (E2). Nothing of

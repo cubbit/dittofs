@@ -22,7 +22,7 @@ D10 and D12 (the fixed-values table, the admission step, the bubble), as its ope
 #5940 gives them; epic 4's D10, D11 and D12 (the outcome hook `half.onOutcome`, the syncer's own
 trips wrapping `remote.ErrTransient`, its values in `fixed.go`) and T4.1's `verdict`, as its open
 pull request #5998 gives them; RFC 4 plan epic 8's D6 and its §9 point 3, which this document answers (D3).
-Every citation is `develop`'s text. The code lands on `feat/storage-v2`, and the paths below are
+Every citation is `develop`'s text. The code lands on `develop`, and the paths below are
 paths there.
 **Track:** C.
 **Epic 5 estimate: 5 subtasks, 14.5 man-days.**

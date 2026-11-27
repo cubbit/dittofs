@@ -8,7 +8,7 @@ every block record until it is pruned), §7's T14 as the listing shows one names
 [RFC 25](../docs/internals/rfcs/rfc-25-observability.md) §2.1, §2.3, §2.4, §2.5 and §2.8 as they
 bind one gauge; [RFC 23](../docs/internals/rfcs/rfc-23-control-plane.md) §4.1, §4.2 and §5.2 as
 they bind one read; [RFC 0](../docs/internals/rfcs/rfc-0-data-lifecycle.md) §1.2 as amended by
-#5774. The code lands on `feat/storage-v2`, and the paths below are paths there.
+#5774. The code lands on `develop`, and the paths below are paths there.
 **Track:** the team.
 **Epic 10 estimate: 2 subtasks, 5.25 man-days.**
 **Depends on:** **S7**: from the RFC 8 offload plan, the block commit that records each block's

@@ -1084,7 +1084,7 @@ follows the journal's, not this part's (§6 point 7).
 
 - T10.1 A soak: crash and restart in a loop at the integration tier under fault schedules,
   asserting every acknowledged synced write reads back or reads **Lost**. It runs on every
-  push to `feat/storage-v2` with a short list of seeds (the `pr` tier, which `merge` contains),
+  push to `develop` with a short list of seeds (the `pr` tier, which `merge` contains),
   since `nightly` runs only on `develop`, and in `nightly` with the long list.
 - T10.2 B5, B7 and B9 at the service tier (B9 adapted: stable overwrites through `vfs.Service`
   rather than SMB), baselines recorded.

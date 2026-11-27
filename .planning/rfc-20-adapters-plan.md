@@ -41,7 +41,7 @@ the `pkg/adapter` and `internal/adapter` paths, so no name carries a version.
 **Estimates** are human man-days on the shared scale of `rfc-to-epic-plan`, kept as they are
 although the code is written by an agent; a scale for agent-written work is proposed on #3524.
 **Defaults used from Step 0:** dashboards none (#9); output path the default (#10). The target
-branch is `feat/storage-v2`, on which RFC 17's plan has merged; the plan document lands there
+branch is `develop`, on which RFC 17's plan has merged; the plan document lands there
 too, as the other planning documents do.
 
 ## 1. Introduction
@@ -95,7 +95,7 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
   `internal/vfs/arch_test.go` keeps its adapter clause, RFC 17's check that the service imports
   no adapter: its fixtures live in `testdata/arch/`, which Go never builds, so deleting v1 breaks
   nothing there. `docs/guide/cli.md` is regenerated with `go run ./cmd/gendocs`.
-- **Suites.** On `feat/storage-v2` what runs is decided by `tests.yml`'s V2 filter, which
+- **Suites.** What runs is decided by `tests.yml`'s data-path skip, which
   already skips `e2e`, `pjdfstest`, `pynfs`, `wpts`, `smbtorture`, `cthon04`, `nfstest`,
   `clients`, `fio-verify`, `bench-smoke`, `system` and `integration/ad-dc`; `test/suites.yaml`
   stays as develop has it, so each suite keeps one switch. The filter grows by
@@ -581,7 +581,7 @@ deleted).
   adapter`, and the `dfsctl grace`, `netgroup` and `client` commands whose routes go with them;
   `testruntime` moved to `internal/controlplane/runtimetest`; regenerate `docs/guide/cli.md`.
   3 man-days.
-- T1.3 `tests.yml`'s V2 filter extended by `integration/kerberos` and the fixed
+- T1.3 `tests.yml`'s data-path skip extended by `integration/kerberos` and the fixed
   `dt run integration/kerberos` step removed on the branch; `test/required-tests.json` repinned
   to `internal/vfs/admit`'s gate tests; `lint-go`'s vet tags pruned to those with files left.
   1.25 man-days.
@@ -1006,7 +1006,7 @@ decision to drop it (its issue closed as not planned).
 | the `require_kerberos` boot refusal (D25) (epic 1's §9) | the branch's boot does not read the key; the refusal returns with the adapter that needs Kerberos, its setting's row kept | the RFC 21 plan, with the NFS adapter | with the NFS adapter |
 | the NFS lock grace period setting, which the start path no longer applies (epic 1's §9) | D4 keeps the row that holds it; nothing on the branch applies it | the RFC 21 plan | with the NFS adapter |
 | identity-mapping config (deleted in T1.1) | squash and mapping are RFC 18 §6's, per share | RFC 18's plan (#4058): squash in its epic 3; uid and gid mapping deferred by its O2 to RFC 21's plan | its epic 3; RFC 21's plan |
-| suites skipped on the branch by `tests.yml`'s V2 filter, `integration/kerberos` added to it and its fixed step removed in T1.3; the e2e build tags | nothing to mount | cutover | each green against v2; the V2 filter deleted once the adapters run on `vfs.Service`, as its own comment says |
+| suites skipped on the branch by `tests.yml`'s data-path skip, `integration/kerberos` added to it and its fixed step removed in T1.3; the e2e build tags | nothing to mount | cutover | each green against v2; the data-path skip deleted once the adapters run on `vfs.Service`, as its own comment says |
 | `test/harness/fixture`'s five real-protocol tests (`TestRealSMB`, `TestRealMount`, `TestRealSMBMount`, `TestRealClients`, `TestRealKerberos`), skipped by `needsServedProtocol` inside a suite that still runs | nothing to mount | cutover | each green against v2; `needsServedProtocol` deleted |
 | `test/required-tests.json` pins for the adapters' authorization gates | the v1 tests are deleted | RFC 21/22 plans | each gate's test re-written |
 | `vfs.WithRequestID` (RFC 17 §4.7), set from the protocol's retry identity | its one reader is the gateway, which RFC 17's plan leaves to the cluster stage (D2) | the cluster stage, in core's pipeline (RFC 20 §6.4), from each protocol's retry identity | when the gateway is built |

@@ -16,7 +16,7 @@ material) and §15.1's "§10.4 destroyed material" row, and
 [RFC 3](../docs/internals/rfcs/rfc-3-syncer.md) §1.3 (material errors fail the call unretried), as
 constraints. The [RFC index](../docs/internals/rfcs/rfc-index.md), "Test tiers" (no timed check
 per change; recording results; the reference box). Every citation is the RFCs' text on `develop`;
-the code lands on `feat/storage-v2`, and the paths below are paths there.
+the code lands on `develop`, and the paths below are paths there.
 **Track:** the team.
 **Epic 11 estimate: 6 subtasks, 8.5 man-days.**
 **Depends on:**
