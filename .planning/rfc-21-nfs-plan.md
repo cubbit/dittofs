@@ -501,7 +501,7 @@ man-days, E7 included since a `Claimed` caller answers `ErrAccess` on the compos
 
 ```text
 pkg/adapter/
-  deps.go                     E11: DialClient takes its network, as RFC 20 §3.4 has it
+  deps.go                     E11: DialClient takes its network, as RFC 20 §3.4 has it; E8: `Server`
   settings/                   RFC 20's E1; this plan adds no field
   nfs/                        RFC 20's E1 and E6: New
 internal/adapter/
@@ -1440,6 +1440,7 @@ What this plan knowingly does not build. Each row cites the section that defers 
 | RFC 20 §3.1's datagram listener | E11 |
 | RFC 20 §3.3 (NFS callbacks) | E8, E9, E10, E11 |
 | RFC 20 §3.4 (`DialClient`'s network) | E11 |
+| RFC 20 §3.4 (`Deps.Server`) | E8 (T8.3) |
 | RFC 20 §4.3, §4.7 (compound row, `Bound`) | E1, E5, E8 (D15, A1) |
 | RFC 20 §4.4 (`Identity`, `Call`; `gss`'s Kerberos side, `Wrap`, `Unwrap`) | E3, E13 |
 | RFC 20 §4.5 (error tables) | E3, each handler epic |
