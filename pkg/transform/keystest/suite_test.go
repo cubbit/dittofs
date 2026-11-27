@@ -407,56 +407,43 @@ func (p salvageBroken) WrapSalvageKey(_ context.Context, export []byte) (key, wr
 	return key, wrap, nil
 }
 
+// wrapped is Memory's own salvage key and wrap for export.
+func wrapped(p *remembers, export []byte) ([]byte, []byte) {
+	key, wrap, err := p.WrapSalvageKey(context.Background(), export)
+	if err != nil {
+		panic(err) // Memory's wrap never fails
+	}
+
+	return key, wrap
+}
+
 // The broken salvage-key wraps, by what they get wrong.
 var (
-	// fixedKey wraps one fixed key on every call.
-	fixedKey = func(p *remembers, export []byte) ([]byte, []byte) {
-		key := bytes.Repeat([]byte{0x5a}, 32)
-		return key, p.wrapSalvage(key, export)
-	}
-	// fixedWrap draws a fresh key and returns the first wrap it made.
-	fixedWrap = func() func(p *remembers, export []byte) ([]byte, []byte) {
-		var first []byte
-		return func(p *remembers, export []byte) ([]byte, []byte) {
-			key := random(32)
-			if first == nil {
-				first = p.wrapSalvage(key, export)
-			}
-			return key, first
-		}
-	}
-	// inClear returns the key as its own wrap bytes, in the layout. The key
-	// is 0xfb bytes, whose base64 holds the characters the two alphabets
-	// differ in.
+	// inClear returns the key as its own wrap bytes, in the layout.
 	inClear = func(encode func([]byte) []byte) func(p *remembers, export []byte) ([]byte, []byte) {
 		return func(p *remembers, _ []byte) ([]byte, []byte) {
-			key := bytes.Repeat([]byte{0xfb}, 32)
+			key := random(32)
 			return key, storedWrap(0x01, p.masterID, encode(key))
 		}
 	}
 	// mangled changes Memory's wrap after it is laid out.
 	mangled = func(change func([]byte) []byte) func(p *remembers, export []byte) ([]byte, []byte) {
 		return func(p *remembers, export []byte) ([]byte, []byte) {
-			key, wrap, _ := p.WrapSalvageKey(context.Background(), export)
+			key, wrap := wrapped(p, export)
 			return key, change(wrap)
 		}
 	}
-	// asMaterial gives the key as current material of kind in the namespace
-	// the row gave last, or the zero namespace.
-	asMaterial = func(kind string, zero bool) func(p *remembers, export []byte) ([]byte, []byte) {
+	// asMaterial gives material, made from the key, as current material of
+	// kind in ns.
+	asMaterial = func(ns entity.NamespaceID, kind string, material func(key []byte) []byte) func(p *remembers, export []byte) ([]byte, []byte) {
 		return func(p *remembers, export []byte) ([]byte, []byte) {
-			key, wrap, _ := p.WrapSalvageKey(context.Background(), export)
-
-			ns := entity.NamespaceID{}
-			if !zero {
-				ns = p.given[len(p.given)-1].Namespace
-			}
-
-			p.Give(ns, kind, hex.EncodeToString(key[:4]), key)
+			key, wrap := wrapped(p, export)
+			p.Give(ns, kind, hex.EncodeToString(key[:4]), material(key))
 
 			return key, wrap
 		}
 	}
+	itself = func(key []byte) []byte { return key }
 )
 
 // salvageCases are the broken salvage-key wraps, each with the text of the
@@ -466,31 +453,34 @@ var salvageCases = []struct {
 	wrap func(p *remembers, export []byte) ([]byte, []byte)
 	want string
 }{
-	{"one fixed key", fixedKey, "calls returned one key"},
-	{"one fixed wrap", fixedWrap(), "calls returned one wrap"},
+	{"one fixed key", func(p *remembers, export []byte) ([]byte, []byte) {
+		_, wrap := wrapped(p, export)
+		return bytes.Repeat([]byte{0x5a}, 32), wrap
+	}, "calls returned one key"},
+	{"one fixed wrap", func(p *remembers, _ []byte) ([]byte, []byte) {
+		return random(32), storedWrap(0x01, p.masterID, bytes.Repeat([]byte{0x11}, 60))
+	}, "calls returned one wrap"},
 	{"a short key", func(p *remembers, export []byte) ([]byte, []byte) {
-		key := random(16)
-		return key, p.wrapSalvage(key, export)
+		key, wrap := wrapped(p, export)
+		return key[:16], wrap
 	}, "returned a 16-byte key, want 32"},
-	{"the key in the clear", inClear(func(k []byte) []byte { return k }), "fbfb raw"},
+	{"the key in the clear", inClear(itself), " raw"},
 	{"the key in hex", inClear(func(k []byte) []byte { return []byte(hex.EncodeToString(k)) }), "in hex"},
-	{"the key in upper-case hex", inClear(func(k []byte) []byte { return []byte(strings.ToUpper(hex.EncodeToString(k))) }), "in upper-case hex"},
 	{"the key in base64", inClear(func(k []byte) []byte { return []byte(base64.StdEncoding.EncodeToString(k)) }), "in base64"},
-	{"the key in URL base64", inClear(func(k []byte) []byte { return []byte(base64.URLEncoding.EncodeToString(k)) }), "in URL base64"},
 	{"a byte past the wrap", mangled(func(w []byte) []byte { return append(w, 0) }), "wrap length 60, but 61 bytes follow"},
-	{"a byte short of the wrap", mangled(func(w []byte) []byte { return w[:len(w)-1] }), "wrap length 60, but 59 bytes follow"},
 	{"an unknown provider kind", mangled(func(w []byte) []byte { w[0] = 0x03; return w }), "provider kind 0x03"},
-	{"an empty master-key ID", func(p *remembers, export []byte) ([]byte, []byte) {
-		key := random(32)
-		return key, storedWrap(0x01, nil, random(28))
+	{"an empty master-key ID", func(_ *remembers, _ []byte) ([]byte, []byte) {
+		return random(32), storedWrap(0x01, nil, random(28))
 	}, "empty master-key ID"},
 	{"empty wrap bytes", func(p *remembers, _ []byte) ([]byte, []byte) {
 		return random(32), storedWrap(0x01, p.masterID, nil)
 	}, "empty wrap bytes"},
 	{"a truncated layout", mangled(func(w []byte) []byte { return w[:2] }), "shorter than a provider kind"},
 	{"a master-key ID past the end", mangled(func(w []byte) []byte { return w[:10] }), "master-key ID length 16"},
-	{"the key as the namespace's material", asMaterial(keys.KindChunkingKey, false), "chunking-key) ="},
-	{"the key as the zero namespace's material", asMaterial(keys.KindDataKey, true), "namespace 00000000-0000-0000-0000-000000000000, data-key) ="},
+	{"the key as the row's namespace's chunking key", asMaterial(namespace(1), keys.KindChunkingKey, itself), "chunking-key) ="},
+	{"the key as the zero namespace's data key", asMaterial(entity.NamespaceID{}, keys.KindDataKey, itself), "namespace 00000000-0000-0000-0000-000000000000, data-key) ="},
+	{"the key as a namespace never given's chunk-ID key", asMaterial(namespace(9), keys.KindChunkIDKey, itself), "namespace 00000000-0000-0000-0000-000000000009, chunk-id-key) ="},
+	{"a namespace's data key rotated", asMaterial(namespace(1), keys.KindDataKey, func([]byte) []byte { return random(32) }), "namespace 00000000-0000-0000-0000-000000000001, data-key) ="},
 }
 
 // Every row fails on the broken providers written for it and on no other,

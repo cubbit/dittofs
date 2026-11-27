@@ -200,27 +200,29 @@ func (m *Memory) Calls() uint64 { return m.calls.Load() }
 
 // WrapSalvageKey draws a fresh 32-byte key and seals it with AES-256-GCM
 // under Memory's master key, the associated data naming export, in RFC 5
-// Appendix B.1's stored-wrap layout as the key file writes it: provider kind
-// 0x01, the master key's ID, nonce ‖ ciphertext ‖ tag. The key joins no
-// namespace, since a salvage key belongs to none.
+// Appendix B.1's stored-wrap layout: provider kind 0x01, the key file's, the
+// master key's ID, nonce ‖ ciphertext ‖ tag. The key joins no namespace,
+// since a salvage key belongs to none.
 func (m *Memory) WrapSalvageKey(_ context.Context, export []byte) (key, wrap []byte, err error) {
 	key = random(32)
-
-	return key, m.wrapSalvage(key, export), nil
-}
-
-// wrapSalvage seals key for export under the master key, in the stored-wrap
-// layout.
-func (m *Memory) wrapSalvage(key, export []byte) []byte {
 	nonce := random(m.master.NonceSize())
 
-	return storedWrap(0x01, m.masterID, m.master.Seal(nonce, nonce, key, salvageAAD(export)))
+	return key, storedWrap(0x01, m.masterID, m.master.Seal(nonce, nonce, key, salvageAAD(export))), nil
 }
 
-// salvageAAD is the associated data a salvage key of export is sealed under.
-// The fixed label comes first, so no two exports frame to the same bytes.
+// salvageAAD is the associated data a salvage key of export is sealed under:
+// the key wrap's, namespace ID ‖ kind ‖ ID, each with a 4-byte big-endian
+// length (RFC 5 Appendix B.1), with an empty namespace ID, kind salvage-key
+// and export as the ID. Every namespace ID is 16 bytes, so it never equals a
+// namespace key's.
 func salvageAAD(export []byte) []byte {
-	return append([]byte("salvage-key"), export...)
+	var b []byte
+	for _, f := range [][]byte{nil, []byte("salvage-key"), export} {
+		b = binary.BigEndian.AppendUint32(b, uint32(len(f)))
+		b = append(b, f...)
+	}
+
+	return b
 }
 
 // storedWrap lays wrapped out as RFC 5 Appendix B.1's stored wrap: provider

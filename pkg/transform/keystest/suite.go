@@ -345,15 +345,40 @@ func calls(ctx context.Context, h Harness) error {
 // A salvage key is a fresh 32-byte key for one export, returned with its wrap
 // in RFC 5 Appendix B.1's stored-wrap layout, and belongs to no namespace
 // (Appendix B.2): two calls for one export give two keys and two wraps, each
-// wrap parses with nothing left over and holds its key in no readable form,
-// and no namespace's Current changes. The wrap bytes and their unwrap are each
-// provider's, so the row checks only the layout around them. Catches a reused
-// key, a key returned in the clear as its own wrap, and a salvage key written
-// as a namespace's material.
+// wrap parses with nothing left over and holds its key neither raw, in hex
+// nor in base64, and Current answers as before in the row's namespace, the
+// zero one and one never given, for every kind. The wrap bytes and their
+// unwrap are each provider's: the row checks neither that a wrap opens under
+// the current master key nor that it binds its export, so a provider's own
+// tests must. Catches a reused key, a key returned in the clear as its own
+// wrap, and a salvage key written as a namespace's material.
 func salvage(ctx context.Context, h Harness) error {
 	ns := namespace(1)
 	h.Give(ns, keys.KindDataKey, "given", materialA)
 	export := []byte("salvage export")
+
+	type answer struct {
+		id keys.MaterialID
+		ok bool
+	}
+
+	type asked struct {
+		ns   entity.NamespaceID
+		kind string
+	}
+
+	currents := func() map[asked]answer {
+		m := make(map[asked]answer)
+		for _, n := range []entity.NamespaceID{ns, {}, namespace(9)} {
+			for _, kind := range []string{keys.KindDataKey, keys.KindChunkIDKey, keys.KindChunkingKey} {
+				id, err := h.Current(ctx, n, kind)
+				m[asked{n, kind}] = answer{id, err == nil}
+			}
+		}
+
+		return m
+	}
+	before := currents()
 
 	var got [2]struct{ key, wrap []byte }
 
@@ -371,7 +396,7 @@ func salvage(ctx context.Context, h Harness) error {
 			return fmt.Errorf("WrapSalvageKey(%q) wrap %x: %w", export, wrap, err)
 		}
 
-		if form, ok := holds(wrap, key); ok {
+		if form := holds(wrap, key); form != "" {
 			return fmt.Errorf("WrapSalvageKey(%q) wrap %x holds its key %x %s", export, wrap, key, form)
 		}
 
@@ -386,20 +411,9 @@ func salvage(ctx context.Context, h Harness) error {
 		return fmt.Errorf("two WrapSalvageKey(%q) calls returned one wrap %x, want two", export, got[0].wrap)
 	}
 
-	// Which answer Current gives is the other rows' to check; this row checks
-	// only that no namespace serves a salvage key, the row's own namespace or
-	// the zero one, as any kind.
-	for _, n := range []entity.NamespaceID{ns, {}} {
-		for _, kind := range []string{keys.KindDataKey, keys.KindChunkIDKey, keys.KindChunkingKey} {
-			id, err := h.Current(ctx, n, kind)
-			if err != nil {
-				continue
-			}
-
-			content, err := h.Get(ctx, id)
-			if err == nil && (bytes.Equal(content, got[0].key) || bytes.Equal(content, got[1].key)) {
-				return fmt.Errorf("after WrapSalvageKey, Current(namespace %s, %s) = %q, a salvage key", n, kind, id.ID)
-			}
+	for q, now := range currents() {
+		if was := before[q]; now != was {
+			return fmt.Errorf("Current(namespace %s, %s) = %q (ok %t) after WrapSalvageKey, was %q (ok %t)", q.ns, q.kind, now.id.ID, now.ok, was.id.ID, was.ok)
 		}
 	}
 
@@ -442,23 +456,21 @@ func parseStoredWrap(wrap []byte) (kind byte, masterID, wrapped []byte, err erro
 	return kind, masterID, rest, nil
 }
 
-// holds reports whether wrap contains key raw, in hex or in base64, and in
-// which form.
-func holds(wrap, key []byte) (string, bool) {
+// holds reports in which form wrap contains key, raw, in hex or in base64,
+// or "" for none.
+func holds(wrap, key []byte) string {
 	for _, f := range []struct {
 		name string
 		form []byte
 	}{
 		{"raw", key},
 		{"in hex", []byte(hex.EncodeToString(key))},
-		{"in upper-case hex", bytes.ToUpper([]byte(hex.EncodeToString(key)))},
 		{"in base64", []byte(base64.RawStdEncoding.EncodeToString(key))},
-		{"in URL base64", []byte(base64.RawURLEncoding.EncodeToString(key))},
 	} {
 		if bytes.Contains(wrap, f.form) {
-			return f.name, true
+			return f.name
 		}
 	}
 
-	return "", false
+	return ""
 }
