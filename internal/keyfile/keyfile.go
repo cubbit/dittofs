@@ -44,9 +44,9 @@ const (
 // Argon2 parameter bounds a key file must record. The lower bounds keep
 // argon2.IDKey from panicking on a corrupt or tampered file (it panics when
 // time or threads is 0) and refuse a file weaker than was ever generated. The
-// upper bounds cap the unwrap's cost, so whoever can write the key file cannot
-// turn a start into an OOM kill or a minutes-long hang: about 4 GiB, and a
-// time and a thread count far above any sane configuration. Generate's
+// upper bounds cap the unwrap's cost at about 4 GiB of memory and 64 passes,
+// far above any sane configuration, so whoever can write the key file can
+// make a start slow and large but not unbounded. Generate's
 // default, t=3, m=64 MiB, p=4, sits well inside them.
 const (
 	minTime      = 1

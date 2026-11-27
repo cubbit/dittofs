@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/cubbit/dittofs/internal/keyfile"
 )
@@ -86,7 +87,8 @@ func GenerateWeakKeyFile(passphrase string) ([]byte, error) {
 	return raw, keyFileError(err)
 }
 
-// keyFileError translates the key-file format's errors into this package's:
+// keyFileError translates the key-file format's errors into this package's,
+// rather than aliasing them:
 // ErrUnwrapFailed is also the block-key unwrap's error, and
 // ErrPassphraseMissing's message names the passphrase's variable.
 func keyFileError(err error) error {
@@ -96,7 +98,12 @@ func keyFileError(err error) error {
 		{keyfile.ErrPassphrase, ErrPassphraseMissing},
 	} {
 		if errors.Is(err, t.from) {
-			return fmt.Errorf("%w: %w", t.to, err)
+			// Only this package's sentinel matches; the detail after keyfile's
+			// own keeps the message this package always wrote.
+			if detail, ok := strings.CutPrefix(err.Error(), t.from.Error()); ok {
+				return fmt.Errorf("%w%s", t.to, detail)
+			}
+			return fmt.Errorf("%w: %v", t.to, err)
 		}
 	}
 	return err

@@ -1,12 +1,9 @@
 package keyprovider
 
 import (
-	"bytes"
-	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,7 +19,8 @@ import (
 
 const localPEMType = "DITTOFS ENCRYPTED MASTER KEY"
 
-// The lowest Argon2 cost a key file may record, which a weak file records.
+// The lowest Argon2 cost a key file may record, which a weak file records,
+// copied rather than read from internal/keyfile so a floor moved there fails.
 const (
 	minArgonTime      = 1
 	minArgonMemoryKiB = 8 * 1024
@@ -45,7 +43,8 @@ type localKeyFile struct {
 	WrappedMasterKey string       `json:"wrapped_master_key"`
 }
 
-// decodeKeyFile reads raw's PEM block and JSON body, checking nothing else.
+// decodeKeyFile reads raw's PEM block and JSON body; unlike the format's
+// decoder it validates nothing, so a test can read any field back.
 func decodeKeyFile(raw []byte) (*localKeyFile, error) {
 	block, _ := pem.Decode(raw)
 	if block == nil || block.Type != localPEMType {
@@ -68,46 +67,41 @@ func unwrapMasterKey(kf *localKeyFile, passphrase string) ([]byte, error) {
 	return key, keyFileError(err)
 }
 
-// A file internal/keyfile generates loads here as the master key it wraps:
-// the provider reports its ID, and a block key it wraps opens under the key
-// keyfile.Open returns.
+// A file internal/keyfile generates loads here under the ID this package's
+// own copy of the format reads from it, as a master key a block key wraps
+// under and unwraps from.
 func TestAFileKeyfileGeneratesLoadsHere(t *testing.T) {
 	raw, err := keyfile.Generate(testPassphrase, true)
 	if err != nil {
 		t.Fatalf("keyfile.Generate: %v", err)
 	}
-	id, masterKey, err := keyfile.Open(raw, testPassphrase)
+	kf, err := decodeKeyFile(raw)
 	if err != nil {
-		t.Fatalf("keyfile.Open: %v", err)
+		t.Fatalf("decodeKeyFile: %v", err)
 	}
 	path := filepath.Join(t.TempDir(), "master.key")
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	p, err := NewProviderWithPassphrase(context.Background(), Config{Kind: KindLocal, File: path}, testPassphrase)
+	gotID, gotKey, err := loadLocalKeyFile(path, testPassphrase)
 	if err != nil {
-		t.Fatalf("NewProviderWithPassphrase: %v", err)
+		t.Fatalf("loadLocalKeyFile: %v", err)
 	}
-	t.Cleanup(func() { _ = p.Close() })
-	if got := p.CurrentMasterKeyID(); got != id {
-		t.Errorf("CurrentMasterKeyID: got %q, want the file's %q", got, id)
+	if gotID != kf.MasterKeyID || len(gotKey) != 32 {
+		t.Errorf("loadLocalKeyFile: got ID %q and %d key bytes, want %q and 32", gotID, len(gotKey), kf.MasterKeyID)
 	}
-	blockKey := bytes.Repeat([]byte{0x5a}, 32)
-	wrapped, _, err := p.Wrap(context.Background(), blockKey)
-	if err != nil {
-		t.Fatalf("Wrap: %v", err)
+}
+
+// A key-file error reaches this package's callers as this package's sentinel
+// alone, with the message it always had.
+func TestAKeyFileErrorKeepsThisPackagesSentinelAndMessage(t *testing.T) {
+	kf := loadKeyFile(t, testPassphrase)
+	kf.Version = 99
+	_, err := newLocalProvider(Config{Kind: KindLocal, File: writeMutatedKeyFile(t, kf)}, testPassphrase)
+	if want := "keyprovider: key file corrupt: unsupported version 99"; err == nil || err.Error() != want {
+		t.Errorf("an unsupported version: got %v, want %q", err, want)
 	}
-	block, err := aes.NewCipher(masterKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		t.Fatal(err)
-	}
-	n := aead.NonceSize()
-	plain, err := aead.Open(nil, wrapped[:n], wrapped[n:], nil)
-	if err != nil || !bytes.Equal(plain, blockKey) {
-		t.Errorf("a block key wrapped by the provider, opened under keyfile.Open's key: got %x, %v; want %x", plain, err, blockKey)
+	if errors.Is(err, keyfile.ErrCorrupt) {
+		t.Errorf("an unsupported version: %v matches keyfile.ErrCorrupt, want only ErrKeyFileCorrupt", err)
 	}
 }

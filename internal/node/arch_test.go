@@ -503,7 +503,8 @@ func settingsImports(_ string, files []fileImports) ([]string, error) {
 }
 
 // weakKeyCallers returns each non-test file under root that references
-// keyprovider's GenerateWeakKeyFile, once per file, whose key file protects
+// keyprovider's GenerateWeakKeyFile, or outside keyprovider internal/keyfile's
+// Generate, which writes the same file when asked, once per file, whose key file protects
 // its master key at the lowest cost a key file may record: only a test, or a
 // package of test helpers whose name ends in test, may write one. A name is
 // keyprovider's when it is selected from an import of keyprovider, under any
@@ -557,8 +558,14 @@ func weakKeyCallers(root string, _ []fileImports) ([]string, error) {
 		}
 		// Every use of keyprovider's name counts, a value as much as a call;
 		// only the declaring package's own declaration of it is not a use.
-		if refersToWeakKey(f, path.Dir(filepath.ToSlash(rel)) == "pkg/keyprovider") {
+		dir := path.Dir(filepath.ToSlash(rel))
+		if refersTo(f, keyproviderPath, "keyprovider", "GenerateWeakKeyFile", dir == "pkg/keyprovider") {
 			bad = append(bad, filepath.ToSlash(rel)+" references GenerateWeakKeyFile")
+		}
+		// keyfile.Generate writes a weak file when asked, so only keyprovider,
+		// whose two generators choose the cost by name, may reference it.
+		if dir != "pkg/keyprovider" && refersTo(f, keyfilePath, "keyfile", "Generate", dir == "internal/keyfile") {
+			bad = append(bad, filepath.ToSlash(rel)+" references keyfile.Generate")
 		}
 		return nil
 	})
@@ -566,21 +573,25 @@ func weakKeyCallers(root string, _ []fileImports) ([]string, error) {
 	return bad, err
 }
 
-// keyproviderPath is the package that declares GenerateWeakKeyFile.
-const keyproviderPath = module + "pkg/keyprovider"
+// keyproviderPath is the package that declares GenerateWeakKeyFile, and
+// keyfilePath the one that declares keyfile.Generate.
+const (
+	keyproviderPath = module + "pkg/keyprovider"
+	keyfilePath     = module + "internal/keyfile"
+)
 
-// refersToWeakKey reports whether f uses keyprovider's GenerateWeakKeyFile:
-// selected from a name f imports keyprovider under, or bare when f
-// dot-imports it or, self, is keyprovider's own file.
-func refersToWeakKey(f *ast.File, self bool) bool {
+// refersTo reports whether f uses the function fn of the package at pkgPath,
+// named pkgName: selected from a name f imports that package under, or bare
+// when f dot-imports it or, self, is that package's own file.
+func refersTo(f *ast.File, pkgPath, pkgName, fn string, self bool) bool {
 	names, bare := map[string]bool{}, self
 	for _, imp := range f.Imports {
-		if p, err := strconv.Unquote(imp.Path.Value); err != nil || p != keyproviderPath {
+		if p, err := strconv.Unquote(imp.Path.Value); err != nil || p != pkgPath {
 			continue
 		}
 		switch {
 		case imp.Name == nil:
-			names["keyprovider"] = true
+			names[pkgName] = true
 		case imp.Name.Name == ".":
 			bare = true
 		default:
@@ -597,14 +608,14 @@ func refersToWeakKey(f *ast.File, self bool) bool {
 			}
 			return false
 		case *ast.SelectorExpr:
-			if id, ok := x.X.(*ast.Ident); ok && names[id.Name] && x.Sel.Name == "GenerateWeakKeyFile" {
+			if id, ok := x.X.(*ast.Ident); ok && names[id.Name] && x.Sel.Name == fn {
 				found = true
 			}
 			// Sel is a field or a method of whatever X is, never a bare name.
 			ast.Inspect(x.X, visit)
 			return false
 		case *ast.Ident:
-			if bare && x.Name == "GenerateWeakKeyFile" {
+			if bare && x.Name == fn {
 				found = true
 			}
 		}
@@ -773,6 +784,8 @@ func TestImportRules(t *testing.T) {
 				"internal/dot/dot.go references GenerateWeakKeyFile",
 				"internal/dotvalue/value.go references GenerateWeakKeyFile",
 				"internal/install/weak.go references GenerateWeakKeyFile",
+				"internal/keyfile/keyfile.go references keyfile.Generate",
+				"internal/keyfilegen/gen.go references keyfile.Generate",
 				"pkg/amdtest is named amdtest and linked into a binary",
 				"pkg/armtest is named armtest and linked into a binary",
 				"pkg/attest is named attest and linked into a binary",
