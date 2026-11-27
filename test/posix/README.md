@@ -28,7 +28,7 @@ It needs Linux, the kernel NFS client and passwordless sudo; on macOS, run it in
 container, `test/harness/bin/dtc run pjdfstest/badger-s3/3`.
 
 To run a server and mount it by hand instead, run `test/harness/bin/dt stack up` and then
-`test/harness/bin/dt stack mount`.
+`test/harness/bin/dt stack mount`: see [Running DittoFS by hand](../../docs/internals/testing.md#running-dittofs-by-hand).
 
 ## NFSv4 Testing
 

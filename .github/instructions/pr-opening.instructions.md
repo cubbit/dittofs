@@ -75,6 +75,30 @@ Part of: RFC 1 T7.2
 - No keyword fires on these lines and nothing links them: GitHub ignores them, only the
   burn-up reads them.
 
+### Out of scope
+
+When the PR leaves something out, the body carries an `Out of scope` section, a table
+with one row per thing a reviewer would reasonably have expected this PR to do and that
+it does not, and the reason it was left out:
+
+```markdown
+## Out of scope
+
+| Out of scope | Reason |
+| --- | --- |
+| Retry on a transient S3 error in the syncer | Changes the failure contract; needs its own review |
+```
+
+- A row is only something that was in reach of the change: part of the issue, the
+  subtask or the original ask, a case the change visibly leaves unhandled, or a
+  follow-up a reviewer would otherwise ask for. Not a list of everything the PR does not
+  touch.
+- The reason says why it is not here: too big for this PR, needs a decision first,
+  blocked on another PR, belongs to another RFC or epic, judged not worth doing. "Later"
+  alone is not a reason.
+- A subtask finished only in part (`Part of #<N>`, `Part of:`) names its remainder here.
+- Nothing left out: delete the section rather than leave it empty.
+
 ## Stack or not
 
 Stack a PR on another one only when they must merge in order: this PR builds on code that
@@ -118,6 +142,8 @@ gh pr create --base <target> --assignee @me --title "..." --body-file <file>
 gh pr merge <PR> --auto
 ```
 
-Always assign the PR to yourself, and always enable auto-merge. Both integration branches
+Always assign the PR to yourself, and always enable auto-merge. Before a push that changes an
+approved PR's own commits, disarm it (`gh pr merge <PR> --disable-auto`), and arm it again after the
+delta round ([`REVIEW.md`](../../REVIEW.md) §3). Both integration branches
 have a squash merge queue that also requires an approving review, green checks and signed
 commits, so `--auto` queues the PR once those are in place; it does not skip the review.

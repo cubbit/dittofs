@@ -1894,9 +1894,12 @@ holds only the result in its security context. A handshake that fails is
 answered as the protocol's logon failure, and never becomes an anonymous or
 guest session.
 
-An `Identity` **MUST** be built afresh for each request from the connection's
-security context. Any cache keyed on identity carries every field the
-`Identity` has, so two principals that share numeric IDs never share an entry.
+An `Identity` **MUST** be built afresh for each request from the security
+context the request runs under: a GSS context, through `gss.Identity`, or, for
+`AUTH_SYS` and `AUTH_NONE`, the credential the request carries, through NFS's
+own translation (the NFS row of the pieces table below). Any cache keyed on
+identity carries every field the `Identity` has, so two principals that share
+numeric IDs never share an entry.
 
 **Kerberos, Active Directory and LDAP, split between the two.** The adapter
 speaks the protocol's security messages; RFC 18's authenticator holds every
@@ -1986,10 +1989,13 @@ encryption keys from `Context.Keys.Session`, and binds a session to a channel.
 exchange is not a middleware, since it spans several requests; what runs on
 every request is:
 
-1. the **Router** stage asks `gss.Identity` for the request's `Identity` from
-   the session's or GSS context's `gss.Context` — one function for both — or,
-   for an NFS call under `AUTH_SYS` or `AUTH_NONE`, translates the credential
-   itself, and builds `r.Call` from it. For an SMB2 chain this and the `needs` check run
+1. the **Router** stage builds the request's `Identity` and `r.Call`. For an
+   SMB session or an RPCSEC_GSS context it asks `gss.Identity` for the
+   `Identity` from the session's or GSS context's `gss.Context`, one function for
+   both. For an NFS call under `AUTH_SYS` or `AUTH_NONE` it is NFS's own
+   translation of the credential, a pure function the Router calls
+   ([RFC 21 §11.1](rfc-21-nfs.md#11.1%20Identity)); `gss.Identity` is not called.
+   It then builds `r.Call` from the `Identity`. For an SMB2 chain this and the `needs` check run
    once per member, each a request of its own; for an NFSv4 `COMPOUND` the
    Router runs once, its members passing its `r.Call`, and the `needs` check
    once per member, through the compound row's `Op.Members` (§4.7), so a
@@ -2018,8 +2024,8 @@ handler builds an `Identity` or a `Call` of its own, NFSv4's included.
 **The `Call` is built beside the `Identity`, never inside it.** Every service
 method takes a `vfs.Call`
 ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), and the same `Router`
-stage builds it, as `r.Call`, once per request: the `Identity` above, the
-request's `Protocol`, and what the request's session gives — `Session` and
+stage builds it, as `r.Call`, once per request: the `Identity` above, and what
+the request's session gives: `Session` and
 `Client`, the SMB session's or the NFSv4.1 session a `SEQUENCE` names, and
 `Channel`, an SMB request's `ChannelSequence` and replay flag. Where no session
 names the client, the row's `Resolve` (§4.7), which the pipeline runs before
@@ -2030,7 +2036,10 @@ owner's client, and only one confirmed under NFSv4.0 ([RFC 14 §2.2](rfc-14-open
 [RFC 21 §5.2](rfc-21-nfs.md#5.2%20Stateids)), and for NLM the `ClientID`
 of the host's client record, keyed by `caller_name` and source address
 ([RFC 21 §6.1](rfc-21-nfs.md#6.1%20NLM)). An NFSv3 call names no client and
-leaves it zero.
+leaves it zero. The protocol is not in the `Call`: the Router sets
+`Request.Protocol` beside it (§4.7), and core labels the call's context with it,
+since RFC 17 §3.0 keeps the protocol a label on the context, which no rule of
+the service reads.
 
 **Tested without a domain.** The package carries the initiator side of each
 mechanism, used only by tests, so every exchange runs in-process:
@@ -3118,6 +3127,12 @@ type Request struct {
 	Version Version  // the version or dialect the router chose
 	Level   Needs    // what this message's session and tree reached; Op.Needs is checked against it
 	Conn    *Conn    // what a handler keeps state on (Keep) and the stages send callbacks on
+	// Protocol is the label the request's context carries. The Router sets it
+	// (§4.4) and core puts it on the call's context with vfs.WithProtocol once
+	// it routes, so every call the request makes, each member of a compound's
+	// included, carries it. It is not a field of vfs.Call (RFC 17 §3.0): no
+	// rule of the service reads it. Zero: no label, nothing set.
+	Protocol vfs.Protocol
 	// State is the protocol's own: SMB's session, tree, Caps and FileId table
 	// and the chain's current open; NFS's session and current filehandle. The
 	// Router sets it, from prev for a related member; core carries it and

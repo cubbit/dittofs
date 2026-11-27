@@ -1199,16 +1199,19 @@ pool:
 
 - a fixed **session cost**, for the session object and its channel state;
 - a fixed **slot cost** per slot of each channel, for its slot-table entry,
-  whatever reply it caches;
-- each channel's reply cache — slots times the cached reply size, at most
-  64 × 8 KiB = 512 KiB on the fore channel
+  whatever reply it caches; the back channel is charged at most the 16 slots
+  the node uses ([RFC 21 §3.1](rfc-21-nfs.md#3.1%20Slot%20tables)), though it
+  is granted what the client offered;
+- the fore channel's reply cache, slots times the cached reply size, at most
+  64 × 8 KiB = 512 KiB
   ([RFC 21 §3.1](rfc-21-nfs.md#3.1%20Slot%20tables)).
 
 The two fixed costs are proposed at 4 KiB and 256 bytes and settled by §8's M2.
 They are charged however small a cache the client asks for, so a session that
 caches nothing still costs its slots. Whether the session fits is decided on
 the sum of all three. Where the pool cannot charge the slots asked for,
-the session is granted the slots it can charge, at least one; where it cannot
+the session is granted the fore channel slots it can charge, at least one (the
+back channel's echo is never reduced); where it cannot
 charge one, `CREATE_SESSION` is answered `NFS4ERR_DELAY`. The charge of every
 slot the client retires is released. The copies kept by NFSv3's and NFSv4.0's
 duplicate request cache and by SMB's replay are charged nowhere yet

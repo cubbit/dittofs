@@ -114,12 +114,12 @@ nfpms:
     formats: [deb, rpm, archlinux]
     bindir: /usr/local/bin
     contents:
-      - src: packaging/dfs.service
+      - src: scripts/packaging/dfs.service
         dst: /usr/lib/systemd/system/dfs.service
     scripts:
-      postinstall: packaging/postinstall.sh
-      preremove: packaging/preremove.sh
-      postremove: packaging/postremove.sh
+      postinstall: scripts/packaging/postinstall.sh
+      preremove: scripts/packaging/preremove.sh
+      postremove: scripts/packaging/postremove.sh
 
   - id: dfsctl
     ids: [dfsctl]

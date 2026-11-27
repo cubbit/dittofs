@@ -233,7 +233,7 @@ jobs:
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           mkdir -p "$RUNNER_TEMP/out"
-          cp README.md LICENSE packaging/FOUNDATIONDB.txt "$RUNNER_TEMP/bin/"
+          cp README.md LICENSE scripts/packaging/FOUNDATIONDB.txt "$RUNNER_TEMP/bin/"
           tar -czf "$RUNNER_TEMP/out/dfs-foundationdb_${TAG#v}_Linux_${ARCH}.tar.gz" \
             -C "$RUNNER_TEMP/bin" dfs README.md LICENSE FOUNDATIONDB.txt
 
