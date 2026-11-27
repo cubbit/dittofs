@@ -56,6 +56,7 @@ type writer struct {
 	mu       sync.Mutex
 	batch    []queued    // the messages of the write in flight, reused across batches; run only
 	bufs     net.Buffers // each batch's gathered write, reused across batches; run only
+	parts    net.Buffers // one message's parts, its segments Attach lent included; run only
 	hdrs     []byte      // their framed headers, appended into one; run only
 	queue    []queued
 	held     int // messages out took and has not yet written or released
@@ -229,9 +230,13 @@ func (w *writer) take() []queued {
 	if len(w.queue) == 0 {
 		return nil
 	}
-	n, size := 1, len(w.queue[0].msg.B)
-	for n < len(w.queue) && w.queue[n-1].up == nil && size+len(w.queue[n].msg.B) <= w.capBytes {
-		size += len(w.queue[n].msg.B)
+	n, size := 1, w.body(w.queue[0])
+	for n < len(w.queue) && w.queue[n-1].up == nil {
+		s := w.body(w.queue[n])
+		if size+s > w.capBytes {
+			break
+		}
+		size += s
 		n++
 	}
 	w.batch = append(w.batch[:0], w.queue[:n]...)
@@ -242,6 +247,20 @@ func (w *writer) take() []queued {
 		_ = w.nc.SetWriteDeadline(time.Now().Add(w.timeout))
 	}
 	return w.batch
+}
+
+// body is one message's framed body length, its segments Attach lent
+// included: the record the next message joins must fit the protocol's cap
+// whole, header and tail alike. It walks the message's parts through the
+// same reused scratch the flush gathers into, on the writer's goroutine
+// alone.
+func (w *writer) body(m queued) int {
+	w.parts = m.msg.AppendBuffers(w.parts[:0])
+	total := 0
+	for _, part := range w.parts {
+		total += len(part)
+	}
+	return total
 }
 
 // written accounts for n messages once their write returned: they leave the
@@ -267,10 +286,21 @@ func (w *writer) flush() error {
 	}
 	w.hdrs = slices.Grow(w.hdrs[:0], w.framer.HeaderLen()*len(q))
 	w.bufs = w.bufs[:0]
+	// A message's parts are collected first, their summed length framing
+	// the record, then its header is inserted ahead of them: a segmented
+	// reply is one record of all its parts, sent in their order, the
+	// header's framing aside. w.parts is reused across messages, so the
+	// gather adds no allocation per segment.
 	for _, m := range q {
+		w.parts = m.msg.AppendBuffers(w.parts[:0])
+		total := 0
+		for _, part := range w.parts {
+			total += len(part)
+		}
 		at := len(w.hdrs)
-		w.hdrs = w.framer.Frame(w.hdrs, len(m.msg.B))
-		w.bufs = append(w.bufs, w.hdrs[at:], m.msg.B)
+		w.hdrs = w.framer.Frame(w.hdrs, total)
+		w.bufs = append(w.bufs, w.hdrs[at:])
+		w.bufs = append(w.bufs, w.parts...)
 	}
 
 	up := q[len(q)-1].up

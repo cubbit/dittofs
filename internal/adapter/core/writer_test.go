@@ -1,6 +1,7 @@
 package core_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -528,4 +530,76 @@ func TestABatchStopsAtTheRecordCap(t *testing.T) {
 			t.Errorf("the gathered writes took %v messages, want %v", batches, want)
 		}
 	})
+}
+
+// A reply of three segments goes out as one record in one write: the
+// framed body equals the same parts appended flat, and the write is one
+// gathered call whatever the parts. Catches a lost or reordered segment,
+// a copy into the tail, and a framing that counts the record by its last
+// part alone.
+func TestTheSegmentedReply(t *testing.T) {
+	f := testproto.New(adapter.Deps{}).Framer()
+	conn, peer := net.Pipe()
+	defer func() { _ = peer.Close() }()
+	budget := resources.NewWaitBudget("reply", 1<<30)
+	adaptertest.CheckLeaks(t, &resources.Budgets{Reply: budget})
+	pool := resources.NewBufPool(budget)
+	w := core.NewTestWriter(conn, f, 0, func(error) {})
+	batches := make(chan int, 16)
+	core.OnBatch(w, func(n int) { batches <- n })
+
+	msg, err := pool.Get(context.Background(), netip.Addr{}, 512)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The reply's head: result, count and the segment's length word.
+	msg.B = append(msg.B[:0], "reply/"...)
+	seg := func(fill string) *resources.Buf {
+		b, err := pool.Get(context.Background(), netip.Addr{}, 1<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.B = append(b.B[:0], fill...)
+		msg.Attach(b)
+		b.Release() // the service lets its data go; the reply lends it
+		return b
+	}
+	seg(strings.Repeat("a", 900_000))
+	seg("second-segment")
+	msg.B = append(msg.B, "tail"...)
+	w.Out(msg, 0, 0, 0)
+
+	if n := <-batches; n != 1 {
+		t.Fatalf("the segmented reply gathered %d messages, want 1", n)
+	}
+	// The flat encoding: the same parts, concatenated.
+	want := []byte("reply/" + strings.Repeat("a", 900_000) + "second-segment" + "tail")
+
+	if err := peer.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var got []byte
+	for total := 0; total < len(want); {
+		hdr := make([]byte, f.HeaderLen())
+		if _, err := io.ReadFull(peer, hdr); err != nil {
+			t.Fatal(err)
+		}
+		n, _, err := f.BodyLen(hdr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := make([]byte, n)
+		if _, err := io.ReadFull(peer, body); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, body...)
+		total += n
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("the segmented record answered %d bytes, want %d", len(got), len(want))
+	}
+	w.Stop()
+	if r := budget.Reserved(); r != 0 {
+		t.Errorf("%d bytes stay reserved after the send, want 0", r)
+	}
 }

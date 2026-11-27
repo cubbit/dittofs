@@ -2,6 +2,10 @@ func (b *Budget) Reserve(n int64) (Reservation, error)
 
 func (b *Budget) Reserved() int64
 
+func (b *Buf) AppendBuffers(dst net.Buffers) net.Buffers
+
+func (b *Buf) Attach(seg *Buf)
+
 func (b *Buf) Charge() int64
 
 func (b *Buf) Recharge(to *Budget) error
