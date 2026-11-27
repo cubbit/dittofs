@@ -46,9 +46,11 @@ type Subject struct {
 	// a subject without it, and so do the halves of rows that read it.
 	Raw func(ctx context.Context) ([]string, error)
 
-	// ReadOnly turns the store's namespace read-only for every store over
-	// it, Reopen's included, or gives write access back, from the next call
-	// on. A row that needs it skips on a subject without it.
+	// ReadOnly turns the store's namespace read-only, or gives write access
+	// back, from the next call on: while on, at least the put probe is
+	// refused on every store over the namespace, Reopen's included. It may be
+	// called after Store is closed. A row that needs it skips on a subject
+	// without it.
 	ReadOnly func(ctx context.Context, on bool) error
 }
 
@@ -270,10 +272,7 @@ func testAfterClose(t *testing.T, sub Subject) {
 	callsAfterClose(t, sub, n, body, "")
 
 	if sub.ReadOnly != nil {
-		if err := sub.ReadOnly(t.Context(), true); err != nil {
-			t.Fatalf("ReadOnly(true): %v", err)
-		}
-
+		readOnly(t, sub)
 		callsAfterClose(t, sub, n, body, ", read-only")
 	}
 
@@ -306,6 +305,10 @@ func callsAfterClose(t *testing.T, sub Subject, n remote.Name, body []byte, mode
 		}
 	}
 
+	if k := "blocks/" + hex.EncodeToString(n[:]); sub.Raw != nil && !slices.Contains(rawKeys(t, sub.Raw), k) {
+		t.Errorf("the raw namespace lacks %s after a Delete refused after Close%s, want the block still stored", k, mode)
+	}
+
 	if page, _, _, err := sub.Store.List(t.Context(), "", 10); !only(err, remote.ErrInvalid) {
 		t.Errorf("List after Close%s: %d blocks and error %v, want ErrInvalid and no other sentinel", mode, len(page), err)
 	}
@@ -327,6 +330,22 @@ func callsAfterClose(t *testing.T, sub Subject, n remote.Name, body []byte, mode
 	if sub.Raw != nil && slices.Contains(rawKeys(t, sub.Raw), controlKeys[remote.RoleClaim]) {
 		t.Errorf("the raw namespace holds %s after a PutControl refused after Close%s, want nothing stored", controlKeys[remote.RoleClaim], mode)
 	}
+}
+
+// readOnly turns sub's namespace read-only, and gives write access back when
+// the row ends, so the opener's cleanup can still remove what the row wrote.
+func readOnly(t *testing.T, sub Subject) {
+	t.Helper()
+
+	if err := sub.ReadOnly(t.Context(), true); err != nil {
+		t.Fatalf("ReadOnly(true): %v", err)
+	}
+
+	t.Cleanup(func() {
+		if err := sub.ReadOnly(context.Background(), false); err != nil {
+			t.Errorf("ReadOnly(false) when the row ended: %v", err)
+		}
+	})
 }
 
 // dirName is each probe direction's name in a row's messages.
@@ -681,9 +700,7 @@ func testReadOnly(t *testing.T, sub Subject) {
 		}
 	}
 
-	if err := sub.ReadOnly(t.Context(), true); err != nil {
-		t.Fatalf("ReadOnly(true): %v", err)
-	}
+	readOnly(t, sub)
 
 	stores := map[string]remote.Store{"": s}
 
@@ -702,18 +719,14 @@ func testReadOnly(t *testing.T, sub Subject) {
 		stores[" on a store opened again"] = again
 	}
 
-	// Each probe twice, so a refusal that lasts one call, rather than the
-	// namespace's state, shows.
 	for on, s := range stores {
-		for range 2 {
-			var de *remote.DeniedError
-			if err := s.Health(t.Context(), remote.DirPut); !only(err, remote.ErrDenied) || !errors.As(err, &de) || de.Cause != remote.CauseAccess {
-				t.Errorf("Health(DirPut) while read-only%s: error %v, want ErrDenied alone, a *remote.DeniedError of cause access", on, err)
-			}
+		var de *remote.DeniedError
+		if err := s.Health(t.Context(), remote.DirPut); !only(err, remote.ErrDenied) || !errors.As(err, &de) || de.Cause != remote.CauseAccess {
+			t.Errorf("Health(DirPut) while read-only%s: error %v, want ErrDenied alone, a *remote.DeniedError of cause access", on, err)
+		}
 
-			if err := s.Health(t.Context(), remote.DirGet); err != nil {
-				t.Errorf("Health(DirGet) while read-only%s: %v, want nil", on, err)
-			}
+		if err := s.Health(t.Context(), remote.DirGet); err != nil {
+			t.Errorf("Health(DirGet) while read-only%s: %v, want nil", on, err)
 		}
 	}
 

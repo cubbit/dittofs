@@ -319,6 +319,20 @@ func (s healthAfterClose) Health(ctx context.Context, d remote.Direction) error 
 	return s.health.Health(ctx, d)
 }
 
+// deletesAfterClose is a fault around the in-memory store: its deletes go to a
+// second store over the same objects, which Close leaves open, and still
+// report the closed store's refusal.
+type deletesAfterClose struct {
+	*memory.Store
+
+	other *memory.Store
+}
+
+func (s deletesAfterClose) Delete(ctx context.Context, names []remote.Name) []error {
+	s.other.Delete(ctx, names)
+	return s.Store.Delete(ctx, names)
+}
+
 // probeThrough is a fault around the wrapper: its put probe goes to the store
 // beneath it, so it passes while the namespace is read-only.
 type probeThrough struct {
@@ -336,20 +350,37 @@ func (s probeThrough) Health(ctx context.Context, d remote.Direction) error {
 }
 
 // readOnlyFault is a fault around the wrapper that keeps its own copy of the
-// read-only setting: refuseGet refuses a get probe that passed while
-// read-only, and
-// denyFirst refuses a put with access denied before the closed store's own
-// refusal.
+// read-only setting. While read-only, refuseProbe refuses a get probe that
+// passed, refuseRead refuses a get that passed, and denyFirst refuses a put
+// with access denied before the closed store's own refusal.
 type readOnlyFault struct {
 	*memory.Wrapper
 
-	on                   atomic.Bool
-	refuseGet, denyFirst bool
+	on                                 atomic.Bool
+	refuseProbe, refuseRead, denyFirst bool
+}
+
+func (s *readOnlyFault) Get(ctx context.Context, n remote.Name, r remote.Range) (io.ReadCloser, remote.StoredSum, error) {
+	body, stored, err := s.Wrapper.Get(ctx, n, r)
+	if err == nil && s.refuseRead && s.on.Load() {
+		_ = body.Close()
+		return nil, remote.StoredSum{}, &remote.DeniedError{Cause: remote.CauseAccess, Code: "AccessDenied"}
+	}
+
+	return body, stored, err
+}
+
+// unservedHealth is a fault around the wrapper: every probe is ErrInvalid, as
+// a store that serves no probe answers.
+type unservedHealth struct{ *memory.Wrapper }
+
+func (unservedHealth) Health(context.Context, remote.Direction) error {
+	return fmt.Errorf("memory: Health is not served: %w", remote.ErrInvalid)
 }
 
 func (s *readOnlyFault) Health(ctx context.Context, d remote.Direction) error {
 	err := s.Wrapper.Health(ctx, d)
-	if err == nil && s.refuseGet && d == remote.DirGet && s.on.Load() {
+	if err == nil && s.refuseProbe && d == remote.DirGet && s.on.Load() {
 		return &remote.DeniedError{Cause: remote.CauseAccess, Code: "AccessDenied"}
 	}
 
@@ -378,47 +409,6 @@ func withReadOnlyFault(s *memory.Store, f *readOnlyFault) remotetest.Subject {
 	}
 
 	return sub
-}
-
-// readOnlyBroken names each fault of the read-only namespace, the one row it
-// must fail, and a piece of the failure that row reports. Each builds the
-// whole subject, since a fault there may sit in a hook rather than the store.
-var readOnlyBroken = map[string]struct {
-	sub func(*memory.Store) remotetest.Subject
-	row string
-	msg string
-}{
-	"probe-through-read-only": {func(s *memory.Store) remotetest.Subject {
-		sub := subject(s)
-		sub.Store = probeThrough{sub.Store.(*memory.Wrapper), s}
-
-		return sub
-	}, "ReadOnly", "Health(DirPut) while read-only: error <nil>"},
-	"read-only-latches": {func(s *memory.Store) remotetest.Subject {
-		sub := subject(s)
-		ro := sub.ReadOnly
-		sub.ReadOnly = func(ctx context.Context, on bool) error {
-			if !on {
-				return nil
-			}
-
-			return ro(ctx, on)
-		}
-
-		return sub
-	}, "ReadOnly", "Health(DirPut) after read-only ended: remote: denied"},
-	"read-only-refuses-reads": {func(s *memory.Store) remotetest.Subject {
-		return withReadOnlyFault(s, &readOnlyFault{refuseGet: true})
-	}, "ReadOnly", "Health(DirGet) while read-only: remote: denied"},
-	"reopen-unwrapped": {func(s *memory.Store) remotetest.Subject {
-		sub := subject(s)
-		sub.Reopen = func(context.Context) (remote.Store, error) { return memory.Reopen(s), nil }
-
-		return sub
-	}, "ReadOnly", "Health(DirPut) while read-only on a store opened again: error <nil>"},
-	"denies-after-close": {func(s *memory.Store) remotetest.Subject {
-		return withReadOnlyFault(s, &readOnlyFault{denyFirst: true})
-	}, "AfterClose", "Put after Close, read-only: error remote: denied"},
 }
 
 // broken names each fault, the one row it must fail, and a piece of the
@@ -450,6 +440,57 @@ var broken = map[string]struct {
 	"stores-refused-put":     {func(s *memory.Store) remote.Store { return storesRefusedPut{s} }, "AfterClose", "which the row's puts did not store"},
 	"stores-refused-control": {func(s *memory.Store) remote.Store { return storesRefusedControl{s} }, "AfterClose", "after a PutControl refused after Close"},
 	"health-after-close":     {func(s *memory.Store) remote.Store { return healthAfterClose{s, memory.Reopen(s)} }, "AfterClose", "Health(DirPut) after Close: error <nil>"},
+	"deletes-after-close":    {func(s *memory.Store) remote.Store { return deletesAfterClose{s, memory.Reopen(s)} }, "AfterClose", "after a Delete refused after Close, want"},
+}
+
+// readOnlyBroken names each fault of the read-only namespace as broken does
+// a store's. Each builds the whole subject, since such a fault may sit in a
+// hook rather than the store.
+var readOnlyBroken = map[string]struct {
+	sub func(*memory.Store) remotetest.Subject
+	row string
+	msg string
+}{
+	"probe-through-read-only": {func(s *memory.Store) remotetest.Subject {
+		sub := subject(s)
+		sub.Store = probeThrough{sub.Store.(*memory.Wrapper), s}
+
+		return sub
+	}, "ReadOnly", "Health(DirPut) while read-only: error <nil>"},
+	"read-only-latches": {func(s *memory.Store) remotetest.Subject {
+		sub := subject(s)
+		ro := sub.ReadOnly
+		sub.ReadOnly = func(ctx context.Context, on bool) error {
+			if !on {
+				return nil
+			}
+
+			return ro(ctx, on)
+		}
+
+		return sub
+	}, "ReadOnly", "Health(DirPut) after read-only ended: remote: denied"},
+	"read-only-refuses-reads": {func(s *memory.Store) remotetest.Subject {
+		return withReadOnlyFault(s, &readOnlyFault{refuseProbe: true})
+	}, "ReadOnly", "Health(DirGet) while read-only: remote: denied"},
+	"read-only-refuses-gets": {func(s *memory.Store) remotetest.Subject {
+		return withReadOnlyFault(s, &readOnlyFault{refuseRead: true})
+	}, "ReadOnly", "Get while read-only: 0 bytes and error remote: denied"},
+	"unserved-health": {func(s *memory.Store) remotetest.Subject {
+		sub := subject(s)
+		sub.Store = unservedHealth{sub.Store.(*memory.Wrapper)}
+
+		return sub
+	}, "ReadOnly", "Health(DirPut) on a fresh store: memory: Health is not served"},
+	"reopen-unwrapped": {func(s *memory.Store) remotetest.Subject {
+		sub := subject(s)
+		sub.Reopen = func(context.Context) (remote.Store, error) { return memory.Reopen(s), nil }
+
+		return sub
+	}, "ReadOnly", "Health(DirPut) while read-only on a store opened again: error <nil>"},
+	"denies-after-close": {func(s *memory.Store) remotetest.Subject {
+		return withReadOnlyFault(s, &readOnlyFault{denyFirst: true})
+	}, "AfterClose", "Put after Close, read-only: error remote: denied"},
 }
 
 // withoutHealth opens the in-memory store without its health object, as a

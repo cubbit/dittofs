@@ -11,8 +11,9 @@ import (
 const healthKey = "control/health"
 
 // Health makes one probe of direction d against the store's own namespace
-// (RFC 4 §4.7). The put probe puts the health object again, with the empty
-// body New puts; the get probe reads it, and finds it absent only when
+// (RFC 4 §4.7). The put probe puts the health object again, keeping the body
+// it holds, the empty one New puts or one a control put stored, as a health
+// object's nonce is kept by every later put; the get probe reads it, and finds it absent only when
 // something removed it beneath the store, remote.ErrNotFound. The store keeps
 // no health status: each call returns its own probe's outcome. A direction
 // outside the two is remote.ErrInvalid.
@@ -33,7 +34,13 @@ func (s *Store) Health(ctx context.Context, d remote.Direction) error {
 	defer s.ns.mu.Unlock()
 
 	if d == remote.DirPut {
-		s.ns.objects[healthKey] = object{body: []byte{}, modTime: s.now()}
+		body := s.ns.objects[healthKey].body
+		if body == nil {
+			body = []byte{}
+		}
+
+		s.ns.objects[healthKey] = object{body: body, modTime: s.now()}
+
 		return nil
 	}
 

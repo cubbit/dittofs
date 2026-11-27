@@ -66,7 +66,7 @@ func New(now func() time.Time, sum remote.Checksum) *Store {
 	// The health object exists from the moment the store is returned, as a
 	// real store's capability check writes it before the open returns
 	// (RFC 4 §4.7).
-	objects := map[string]object{"control/health": {body: []byte{}, modTime: now()}}
+	objects := map[string]object{healthKey: {body: []byte{}, modTime: now()}}
 
 	return &Store{now: now, sum: sum, ns: &namespace{objects: objects}}
 }

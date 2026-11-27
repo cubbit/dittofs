@@ -517,7 +517,7 @@ func TestTheGetProbeReadsTheHealthObject(t *testing.T) {
 	checkErr(t, "Health(DirGet) with the health object removed", s.Health(t.Context(), remote.DirGet), remote.ErrNotFound)
 
 	if err := s.Health(t.Context(), remote.DirPut); err != nil {
-		t.Fatalf("Health(DirPut): %v", err)
+		t.Fatalf("Health(DirPut) after the health object was removed: %v, want nil", err)
 	}
 
 	if !slices.Contains(memory.RawKeys(s), "control/health") {
@@ -529,11 +529,23 @@ func TestTheGetProbeReadsTheHealthObject(t *testing.T) {
 	}
 
 	checkErr(t, "Health of direction 0", s.Health(t.Context(), 0), remote.ErrInvalid)
+
+	if err := s.PutControl(t.Context(), remote.RoleHealth, first); err != nil {
+		t.Fatalf("PutControl of the health object: %v", err)
+	}
+
+	if err := s.Health(t.Context(), remote.DirPut); err != nil {
+		t.Fatalf("Health(DirPut) over a health object a control put stored: %v, want nil", err)
+	}
+
+	if got, _, err := s.GetControl(t.Context(), remote.RoleHealth); err != nil || !bytes.Equal(got, first) {
+		t.Errorf("GetControl of the health object after a put probe: %q and error %v, want the body the control put stored", got, err)
+	}
 }
 
 // While read-only, every write and the put probe are ErrDenied of cause
-// access and reach no key; every read passes; and the first write once write
-// access returns is stored.
+// access and reach no key, and the first write once write access returns is
+// stored. The suite's read-only row holds the reads.
 func TestAReadOnlyWrapperRefusesEveryWriteBeforeTheStore(t *testing.T) {
 	s := newStore(remote.ChecksumCRC32C)
 	mustPut(t, s, blockA, first)
@@ -555,9 +567,12 @@ func TestAReadOnlyWrapperRefusesEveryWriteBeforeTheStore(t *testing.T) {
 
 	denied("Put while read-only", w.Put(t.Context(), blockB, bytes.NewReader(second), int64(len(second)), sumOf(s.Checksum(), second)))
 	denied("PutControl while read-only", w.PutControl(t.Context(), remote.RoleClaim, first))
-	denied("Health(DirPut) while read-only", w.Health(t.Context(), remote.DirPut))
+	errs := w.Delete(t.Context(), []remote.Name{blockA, blockB})
+	if len(errs) != 2 {
+		t.Errorf("Delete of 2 names while read-only: %d results, want 2", len(errs))
+	}
 
-	for i, err := range w.Delete(t.Context(), []remote.Name{blockA, blockB}) {
+	for i, err := range errs {
 		denied(fmt.Sprintf("Delete while read-only, result %d", i), err)
 	}
 
@@ -565,27 +580,13 @@ func TestAReadOnlyWrapperRefusesEveryWriteBeforeTheStore(t *testing.T) {
 		t.Errorf("keys after writes refused while read-only: %q, want %q as before", after, before)
 	}
 
-	if got, err := read(t, s, blockA); err != nil || !bytes.Equal(got, first) {
-		t.Errorf("Get of a block a refused Delete named: %d bytes and error %v, want the bytes put", len(got), err)
-	}
+	// The health object removed first, so a put probe that reaches the store
+	// while refused shows as the key put again.
+	memory.DeleteRaw(s, "control/health")
+	denied("Health(DirPut) while read-only", w.Health(t.Context(), remote.DirPut))
 
-	r, _, err := w.Get(t.Context(), blockA, remote.Range{Off: 1, Len: 2})
-	if err != nil {
-		t.Errorf("Get through the wrapper while read-only: %v, want nil", err)
-	} else if err := r.Close(); err != nil {
-		t.Errorf("Close of the reader: %v", err)
-	}
-
-	if _, _, err := w.GetControl(t.Context(), remote.RoleHealth); err != nil {
-		t.Errorf("GetControl while read-only: %v, want nil", err)
-	}
-
-	if page, _, _, err := w.List(t.Context(), "", 10); err != nil || len(page) != 1 {
-		t.Errorf("List while read-only: %d blocks and error %v, want the one block put", len(page), err)
-	}
-
-	if err := w.Health(t.Context(), remote.DirGet); err != nil {
-		t.Errorf("Health(DirGet) while read-only: %v, want nil", err)
+	if slices.Contains(memory.RawKeys(s), "control/health") {
+		t.Errorf("keys after a put probe refused while read-only hold control/health, want the probe to reach no key")
 	}
 
 	w.SetReadOnly(false)

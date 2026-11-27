@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"io"
+	"slices"
 	"sync/atomic"
 
 	"github.com/cubbit/dittofs/pkg/remote"
@@ -34,7 +35,15 @@ func Wrap(s *Store) *Wrapper { return &Wrapper{s: s} }
 func (w *Wrapper) SetReadOnly(on bool) { w.readOnly.Store(on) }
 
 // denied is the refusal of a write while read-only. A closed store refuses
-// first, so every call after Close is remote.ErrInvalid, read-only or not.
+// first, so every call after Close is remote.ErrInvalid, read-only or not; a
+// fault added to the wrapper keeps that order.
+//
+// decision: read-only refuses before the store checks the call's arguments,
+// so a put of a negative size, a sum of the wrong length, a role outside the
+// set or an oversized control body is ErrDenied while read-only, where a real
+// store would refuse it ErrInvalid before any request. A test of a caller's
+// argument errors runs with write access; check the arguments first if one
+// needs both at once.
 func (w *Wrapper) denied(call string) error {
 	if err := w.s.open(call); err != nil {
 		return err
@@ -63,12 +72,7 @@ func (w *Wrapper) Get(ctx context.Context, name remote.Name, r remote.Range) (io
 
 func (w *Wrapper) Delete(ctx context.Context, names []remote.Name) []error {
 	if err := w.denied("Delete"); err != nil {
-		errs := make([]error, len(names))
-		for i := range errs {
-			errs[i] = err
-		}
-
-		return errs
+		return slices.Repeat([]error{err}, len(names))
 	}
 
 	return w.s.Delete(ctx, names)
