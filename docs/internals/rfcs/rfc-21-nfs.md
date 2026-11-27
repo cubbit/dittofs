@@ -549,7 +549,9 @@ sessions, because a session's slots live in one node's memory (§3.2).
   installation's identity
   ([RFC 16 §2.3](rfc-16-metadata-store.md#2.3%20Server-wide%20and%20control-plane%20entities)),
   the minor ID the node's own
-  ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)).
+  ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). The adapter reads both
+  from `Deps.Server`, the installation's ID and the node's ID
+  ([RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface)).
 - **Client ID trunking** across nodes is allowed: one client ID, sessions on
   several nodes, each node's connections bound to its own sessions.
 - **Session trunking** — one session with connections to several nodes — is

@@ -161,7 +161,7 @@ cited by number and title, and how it applies here or why it does not.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R1 | Each enabled adapter is built through its protocol's public `New`, `nfs.New` or `smb.New`, from the node's `Deps` and its protocol's settings shape; `New` opens nothing; nothing else builds an adapter | MUST | §3.4; RFC 23 §2.1 (row 10, "two things are not built by `New`"), §2.3 | T7.2 |
-| R2 | `Deps.VFS` is the `vfs.Service`, the filesystem on one node; the adapter is handed nothing of identity | MUST | §3.4; RFC 23 §2.1 (row 10) | T7.2 |
+| R2 | `Deps.VFS` is the `vfs.Service`, the filesystem on one node; the adapter is handed nothing of sign-in identity, besides `Server` | MUST | §3.4; RFC 23 §2.1 (row 10) | T7.2 |
 | R3 | Every adapter gets the same `Deps.Budgets`, the node's receive, reply, connection-state and hold budgets and its one connection count; a rebuilt adapter gets the same ones back; no adapter replaces or closes one | MUST | §3.4, §3.6; RFC 24 §2.7, §4.4 | T7.1, T7.2 |
 | R4 | `Deps.Watch` registers each accept loop with the node's watchdog; `Deps.Metrics` is the node's registry and `Deps.Logger` its logger; `Deps.SampleRatio` is 0 while no tracer is configured | MUST | §3.4, §3.7; RFC 25 §3.5, §8.1 | T7.2 |
 | R5 | `settings.Adapter.Addrs` is supplied by the node from the host's `adapters.listen`, never from a settings record; the port is the adapter's `port` setting | MUST | §3.6; RFC 13 §2.2, Appendix C; RFC 23 §3.4 | T7.2 |
@@ -220,7 +220,7 @@ other components in RFC 23 §2.2's order; `Stop`'s readiness turning `draining` 
 that misses its bound leaving what it uses open (`internal/node/lifecycle.go`).
 
 What enforces the rows with no test of their own when this epic lands: R2's "nothing of
-identity", `adapter.Deps`, which has no identity field; R22, review and `core`'s own
+identity", `adapter.Deps`, which has no sign-in identity field (`Server` is the node's ID, not a caller's); R22, review and `core`'s own
 `decision:` at `Health`; R24, `internal/node/arch_test.go`'s `TestNoComponentImports`, whose
 `componentAllowed` admits no adapter or sidecar package.
 
@@ -355,8 +355,8 @@ are unexported, in package `node`. `node`'s exports and `pkg/adapter/settings` d
 - **Deliverables:**
   - In `node.New`: `adapters.listen` parsed as §9's O10 has it. One `adapter.Deps`: `VFS` the
     filesystem, `Budgets` T7.1's, `Metrics` and `Logger` the node's, `Watch` returning the
-    watchdog's `Loop` for the name it is given (it satisfies `adapter.Loop` as it is), every
-    other field zero. The runner, `sidecar.New()` over no sidecar (§1.2).
+    watchdog's `Loop` for the name it is given (it satisfies `adapter.Loop` as it is), `Server` the
+    store's `Installation` ID and the bootstrap's node ID (§3.4), every other field zero. The runner, `sidecar.New()` over no sidecar (§1.2).
   - In `adapters.go`, one slot per protocol, `nfs` and `smb`. Its one call takes whether the
     adapter is enabled and its protocol's settings shape, and sets `Addrs` from the parsed list
     (R5).

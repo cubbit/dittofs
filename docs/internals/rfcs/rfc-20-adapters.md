@@ -1073,7 +1073,7 @@ package adapter // pkg/adapter
 // A field is an interface where it has two implementations, a concrete type
 // where it has one. Only VFS and Budgets, its Conns included, are required,
 // and New refuses a missing one by name; every other field has a working
-// zero value.
+// zero value, Server excepted for NFS (below).
 type Deps struct {
 	VFS     vfs.Service         // RFC 17: the only dependency on the core (§2.3): files, clients, sign-in and principal spellings; the filesystem or the gateway, and the adapter cannot tell which (RFC 17 §2)
 	Budgets *resources.Budgets  // RFC 24 §2.5 (pkg/resources): the four budgets on the request path, receive, reply, connection state and hold, and the node's connection count (§3.6)
@@ -1113,6 +1113,18 @@ type Deps struct {
 	// returns a newer Gen (§3.2, RFC 14 §2.1). The node stops it after its
 	// adapters (RFC 23 §2.2). nil drops the call.
 	Retry func(call func(ctx context.Context) error)
+	// Server is the node's identity for a protocol that names its server:
+	// Installation is the installation's ID, the same on every node
+	// (RFC 16 §2.3's Installation.ID), and Node is this node's ID, the bytes
+	// of its NodeID (RFC 23 §2.1; a UUID, RFC 13 §2.2, from the bootstrap).
+	// Both are constant for the adapter's life, and node.New fills them at
+	// build from the store and the bootstrap, so no service call carries them.
+	// NFS builds its server owner and scope from them (RFC 21 §3.3); an
+	// adapter that names no server ignores it.
+	Server struct {
+		Installation [16]byte
+		Node         [16]byte
+	}
 }
 
 // Loop is one watched loop (RFC 25 §3.5).
@@ -3449,7 +3461,7 @@ func New(d adapter.Deps, s settings.NFS) (adapter.Adapter, error) {
 	}
 	t := protocol.Tables{
 		V3:    v3.Table(&v3.Handlers{VFS: d.VFS}),
-		V4:    v4.Table(&v4.Handlers{VFS: d.VFS}), // minor versions are its rows' Versions column
+		V4:    v4.Table(&v4.Handlers{VFS: d.VFS, Server: d.Server}), // minor versions are its rows' Versions column
 		Mount: mount.Table(&mount.Handlers{VFS: d.VFS}),
 		NLM:   nlm.Table(&nlm.Handlers{VFS: d.VFS}),
 		NSM:   nsm.Table(&nsm.Handlers{VFS: d.VFS}),

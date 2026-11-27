@@ -400,9 +400,9 @@ reclaims themselves and stale stateids (E9); the lease owner and `Reach.Sessions
   with RFC 14 §2.9's own trigger; a second at the confirm's draw, naming why it is the adapter's
   and not open state's, overturned if RFC 14's `Connect` comes to write the bytes it is handed.
 - **D4. Server owner and scope.** `so_major_id` and `server_scope` are the installation's ID (RFC 16
-  §2.3's `Installation`), and `so_minor_id` the node's own, both read once at `New`. Neither reaches
-  the adapter today, so this document writes them as a field of RFC 20 §3.4's `Deps`, **pending the
-  user's answer** (Q1). Prior art: knfsd uses the host name for both by default (from memory). No
+  §2.3's `Installation`), and `so_minor_id` the node's own, both read once at `New`. Both reach the
+  adapter as RFC 20 §3.4's `Deps.Server`, the installation's ID and the node's 16-byte ID, from which
+  the wire's 64-bit minor ID from the 16-byte one is RFC 21 §3.3's to state (a follow-up). Prior art: knfsd uses the host name for both by default (from memory). No
   marker: the RFC's text once amended.
 - **D5. Who reads `SEQUENCE`, and who answers its errors.** The header codec reads a compound's
   first operation and, for `SEQUENCE`, its session ID, slot, sequence, highest slot and
@@ -1319,10 +1319,10 @@ A suggestion only: one pull request per subtask works as well.
 
 Questions pending the user's answer. Each recommended option is written in place above.
 
-- **Q1. Where the server owner and scope come from** (D4, R16). The installation's ID is in the
+- **Q1. Where the server owner and scope come from** (D4, R16). **Decided: (a).** The installation's ID is in the
   store (RFC 16 §2.3) and reaches no adapter.
   - (a) **Recommended:** RFC 20 §3.4's `Deps` gains `Server struct{ Installation [16]byte; Node
-    uint64 }`, filled by the node at build, which knows both; constant for the adapter's life, so
+    [16]byte }`, filled by the node at build, which knows both; constant for the adapter's life, so
     no service call per `EXCHANGE_ID`. One RFC 20 pull request, with Q3's.
   - (b) RFC 17 adds a read, `vfs.Service.Server(ctx) (installation [16]byte, node uint64, err
     error)`, called once by `nfs.New`: no `Deps` change, one more service method every
