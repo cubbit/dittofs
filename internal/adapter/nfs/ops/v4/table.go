@@ -31,15 +31,18 @@ const lastMinor = 2
 const maxOps = 128
 
 // Table is NFS version 4's one table, labelled nfs4, for every minor version:
-// its COMPOUND row, procedure 1, whose members' table holds each operation as a
-// row naming the minor versions it serves, ILLEGAL among them (RFC 20 section
-// 4.8). A procedure it lacks, NULL among them, is PROC_UNAVAIL.
+// its NULL, procedure 0, and its COMPOUND row, procedure 1, whose members'
+// table holds each operation as a row naming the minor versions it serves,
+// ILLEGAL among them (RFC 20 section 4.8, RFC 5531 section 9). A procedure
+// the table lacks is PROC_UNAVAIL.
 func Table(h *Handlers) *core.OpTable {
+	nullRow := core.Row[void, void](0, "NULL", core.NeedsNothing, null)
+	nullRow.Versions = core.Range{First: 0, Last: lastMinor}
 	illegal := core.Row[illegalArgs, illegalRes](opIllegal, "ILLEGAL", core.NeedsNothing, h.illegal)
 	illegal.Versions = core.Range{First: 0, Last: lastMinor}
 	members := core.NewOpTable(memberErrors(), false, illegal)
 	members.ReadOp, members.EncodeResult = readOp, encodeResult
-	t := core.NewOpTable(compoundErrors(), false, &core.Op{
+	t := core.NewOpTable(compoundErrors(), false, nullRow, &core.Op{
 		Code:       wire.ProcCompound,
 		Name:       "COMPOUND",
 		Versions:   core.Range{First: 0, Last: lastMinor},

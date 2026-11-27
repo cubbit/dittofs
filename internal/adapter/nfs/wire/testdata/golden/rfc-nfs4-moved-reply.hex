@@ -1,0 +1,11 @@
+# The header stage's reply for the status NFS4ERR_MOVED 10019 on the COMPOUND call of
+# rfc-nfs4-nofh-call, the same shape with the moved status (RFC 8881 sections 16.2 and 15.1.2.4):
+# no results follow the tag of a COMPOUND refused before any operation ran.
+00000030  # xid
+00000001  # REPLY
+00000000  # MSG_ACCEPTED
+00000000 00000000  # verifier: AUTH_NONE, no body
+00000000  # SUCCESS
+00002723  # NFS4ERR_MOVED
+00000005 61626364 65000000  # the tag
+00000000  # no results

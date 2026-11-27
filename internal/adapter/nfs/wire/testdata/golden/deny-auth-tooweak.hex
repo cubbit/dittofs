@@ -1,0 +1,8 @@
+# The denied reply the header stage writes for a security flavour the server refuses, AUTH_ERROR
+# with auth_stat AUTH_TOOWEAK 5 (RFC 5531 section 9; RFC 21 section 10): the xid is
+# the stages' test harness's, whose header the encoder answers.
+11223344  # xid
+00000001  # REPLY
+00000001  # MSG_DENIED
+00000001  # AUTH_ERROR
+00000005  # auth_stat AUTH_TOOWEAK

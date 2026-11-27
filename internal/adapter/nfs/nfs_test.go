@@ -22,6 +22,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/adapter/settings"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/cubbit/dittofs/pkg/resources"
+	"github.com/cubbit/dittofs/pkg/vfs"
 	"github.com/cubbit/dittofs/pkg/vfs/vfstest/memory"
 )
 
@@ -277,33 +278,96 @@ func TestStartBindsOneTCPPortForEveryProgram(t *testing.T) {
 // Under the default range, each path a refusal takes is answered over one
 // connection, the call after a malformed one too, and counts under the label
 // of the table that answered it, or nfs3 before Route (RFC 20 sections 4.8
-// and 10.1, RFC 21 sections 2.1, 11.1 and 11.5). NFSv4's COMPOUNDs, against
-// the reply files written from RFC 8881 and RFC 7530, echo their tag in every
-// reply that carries their status: an empty one served, an undefined
-// operation code answered NFS4ERR_OP_ILLEGAL at it, at the cap too, one past
-// the cap refused NFS4ERR_TOO_MANY_OPS and over NFSv4.0, on the call after,
-// NFS4ERR_RESOURCE, a member that does not decode NFS4ERR_BADXDR, a defined
-// code no row serves NFS4ERR_NOTSUPP, and a COMPOUND whose own arguments do
-// not decode GARBAGE_ARGS. A COMPOUND a member answers counts no refusal of
-// core's, but records under nfs4.
+// and 10.1, RFC 21 sections 2.1, 11.1 and 11.5). Each program's NULL is a
+// call a row serves now, against the captured and hand-written reply files:
+// an accepted success, an empty AUTH_NONE verifier, no result, no refusal of
+// core's counted, under AUTH_NONE and under AUTH_SYS, and the service's
+// recorded calls empty (RFC 5531 section 9, RFC 21 section 11.5); a NULL row's
+// handler holds no service today, so that last check guards a later change. NFSv4's COMPOUNDs,
+// against the reply files written from RFC 8881 and RFC 7530, echo their tag
+// in every reply that carries their status: an empty one served, an
+// undefined operation code answered NFS4ERR_OP_ILLEGAL at it, at the cap
+// too, one past the cap refused NFS4ERR_TOO_MANY_OPS and over NFSv4.0, on
+// the call after, NFS4ERR_RESOURCE, a member that does not decode
+// NFS4ERR_BADXDR, a defined code no row serves NFS4ERR_NOTSUPP, and a
+// COMPOUND whose own arguments do not decode GARBAGE_ARGS. A call a row
+// serves counts no refusal of core's, but records under its label.
 func TestEachRefusalIsAnswered(t *testing.T) {
 	d := leakChecked(t)
 	c := dial(t, serve(t, d, nfsSettings(allVersions)))
 	sys := append(words(0), opaque(nil)...) // stamp, machine name
 	sys = append(sys, words(0, 0, 17)...)   // uid, gid, 17 groups, one past RFC 5531's 16
 	sys = append(sys, make([]byte, 17*4)...)
+	inRule := words(1000, 100, 0) // uid, gid, no groups, within RFC 5531 Appendix A
+	inRuleCred := append(
+		words(authSys),
+		opaque(append(append(words(0), opaque(nil)...), inRule...))...)
 	tag := opaque([]byte("abcde"))
 	for _, tc := range []struct {
 		name, label string
 		call, want  []byte
-		served      bool // no refusal of core's: answered by its members
+		served      bool // a row served the call: no refusal of core's counted
 	}{
-		{"MOUNT's NULL from its empty table", "nfs3",
-			call(1, progMount, 3, 0, none), accepted(1, procUnavail), false},
-		{"NLM's NULL from its empty table", "nfs3",
-			call(31, progNLM, 4, 0, none), accepted(31, procUnavail), false},
-		{"NSM's NULL from its empty table", "nfs3",
-			call(32, progNSM, 1, 0, none), accepted(32, procUnavail), false},
+		{
+			name: "NFSv3's NULL as knfsd answers it", label: "nfs3", served: true,
+			call: golden(t, "knfsd-nfs3-nfs3-v3-null-call"),
+			want: golden(t, "knfsd-nfs3-nfs3-v3-null-reply"),
+		},
+		{
+			name: "MOUNT's NULL as knfsd answers it", label: "nfs3", served: true,
+			call: golden(t, "knfsd-nfs3-nfs3-mount-null-call"),
+			want: golden(t, "knfsd-nfs3-nfs3-mount-null-reply"),
+		},
+		{
+			name: "NLM's NULL as the hand-written vector answers it", label: "nfs3", served: true,
+			call: golden(t, "rfc-nlm4-null-call"),
+			want: golden(t, "rfc-nlm4-null-reply"),
+		},
+		{
+			name: "NSM's NULL as knfsd answers it", label: "nfs3", served: true,
+			call: golden(t, "knfsd-nfs3-nlm-nsm-null-call"),
+			want: golden(t, "knfsd-nfs3-nlm-nsm-null-reply"),
+		},
+		{
+			name: "NFSv4's NULL as knfsd answers it", label: "nfs4",
+			served: true,
+			call:   golden(t, "knfsd-nfs4-nfs40-null-call"),
+			want:   golden(t, "knfsd-nfs4-nfs40-null-reply"),
+		},
+		{
+			name:  "MOUNT's NULL under AUTH_SYS, the hand-written vector",
+			label: "nfs3", served: true,
+			call: golden(t, "mount-v3-null-call")[4:],
+			want: accepted(0x11223344, 0),
+		},
+		{
+			"NFSv3's NULL under AUTH_SYS", "nfs3",
+			call(30, progNFS, 3, 0, inRuleCred), accepted(30, 0), true,
+		},
+		{
+			"NLM's NULL under AUTH_SYS", "nfs3",
+			call(33, progNLM, 4, 0, inRuleCred), accepted(33, 0), true,
+		},
+		{
+			"NSM's NULL under AUTH_SYS", "nfs3",
+			call(34, progNSM, 1, 0, inRuleCred), accepted(34, 0), true,
+		},
+		{
+			"NFSv4's NULL under AUTH_SYS", "nfs4",
+			call(35, progNFS, 4, 0, inRuleCred), accepted(35, 0), true,
+		},
+		{
+			"MOUNT's procedure 999, no table holds it", "nfs3",
+			call(36, progMount, 3, 999, none), accepted(36, procUnavail), false,
+		},
+		{
+			"NLM's procedure 999, no table holds it", "nfs3",
+			call(37, progNLM, 4, 999, none), accepted(37, procUnavail), false,
+		},
+		{
+			"NSM's procedure 999, no table holds it", "nfs3",
+			call(38, progNSM, 1, 999, none), accepted(38, procUnavail), false,
+		},
 		{"NFS v2 from the stages' table", "nfs3",
 			call(2, progNFS, 2, 0, none), accepted(2, progMismatch, 3, 4), false},
 		{"an AUTH_SYS credential of 17 groups", "nfs3",
@@ -314,8 +378,10 @@ func TestEachRefusalIsAnswered(t *testing.T) {
 			append(append(accepted(4, 0, nfs4ErrMinorVersMismatch), tag...), words(0)...), false}, // SUCCESS, the status, the tag, no results
 		{"a verifier past the record", "nfs3",
 			words(5, 0, 2, progNFS, 3, 0, authNone, 0, authNone, 8), accepted(5, garbageArgs), false},
-		{"a NULL after it", "nfs3",
-			call(6, progNFS, 3, 0, none), accepted(6, procUnavail), false},
+		{
+			"a procedure 999 after it, no table holds it", "nfs3",
+			call(6, progNFS, 3, 999, none), accepted(6, procUnavail), false,
+		},
 		{name: "a COMPOUND of no operation", label: "nfs4", served: true,
 			call: golden(t, "rfc-nfs4-empty-call"), want: golden(t, "rfc-nfs4-empty-reply")},
 		{name: "a COMPOUND whose first operation is code 9999", label: "nfs4", served: true,
@@ -352,6 +418,12 @@ func TestEachRefusalIsAnswered(t *testing.T) {
 		if got := recorded(t, d.Metrics, "adapter_refusals_total", other) - otherBefore; got != 0 {
 			t.Errorf("%s: %v refusals under %s, want none", tc.name, got, other)
 		}
+		// vfstest's Mutations record: no case reaches the service. No row's
+		// handler holds the service today, so this cannot fail for a row as
+		// written; it fails the day one is given the service and calls it.
+		if ops := d.VFS.(*memory.Service).Ops(); len(ops) != 0 {
+			t.Errorf("%s: the service saw %v, want no call", tc.name, ops)
+		}
 	}
 }
 
@@ -361,16 +433,20 @@ func TestEachRefusalIsAnswered(t *testing.T) {
 func TestFragmentsUpToTheCaps(t *testing.T) {
 	d := leakChecked(t)
 	srv := serve(t, d, nfsSettings(allVersions))
-	null := call(7, progMount, 3, 0, none)
-	padded := func(n int) []byte { return append(slices.Clone(null), make([]byte, n-len(null))...) }
+	refusal := call(7, progMount, 3, 999, none) // a procedure no table holds
+
+	padded := func(n int) []byte {
+		return append(slices.Clone(refusal), make([]byte, n-len(refusal))...)
+	}
+
 	for _, tc := range []struct {
 		name   string
 		record []byte
 		answer bool
 	}{
-		{"a NULL in 2 fragments", fragments(null, 2), true},
-		{"a NULL in 64 fragments", fragments(null, 64), true},
-		{"a NULL in 65 fragments", fragments(null, 65), false},
+		{"a call in 2 fragments", fragments(refusal, 2), true},
+		{"a call in 64 fragments", fragments(refusal, 64), true},
+		{"a call in 65 fragments", fragments(refusal, 65), false},
 		{"a call of the cap in 2 fragments", fragments(padded(maxRecord), 2), true},
 		// The second fragment's body is not sent: the reader closes at its mark.
 		{"a call a byte past the cap in 2 fragments", fragments(padded(maxRecord+1), 2)[:4+(maxRecord+1)/2+4], false},
@@ -411,18 +487,15 @@ func golden(t *testing.T, name string) []byte {
 	return b
 }
 
-// A table of one row, NULL on version 4, its void arguments and result
-// encoded by the generated codec, answers the reference server's capture
-// byte for byte: its NULL call (frame 4) with its reply (frame 6), counted
-// under nfs4. A procedure is its structs and one core.Row line.
+// The version 4 table answers the reference server's capture byte for byte:
+// its NULL call (frame 4) with its reply (frame 6), counted under nfs4, the
+// NULL a row serves, an accepted success, no result (RFC 5531 section 9;
+// RFC 21 sections 2.1 and 7).
 func TestANullRowAnswersAsTheReferenceServer(t *testing.T) {
 	d := leakChecked(t)
-	v4 := core.NewOpTable(tables(d).V4.Errors, false,
-		core.Row[void, void](0, "null", core.NeedsNothing,
-			func(context.Context, *core.Request, void) (void, error) { return void{}, nil }))
-	v4.Protocol = "nfs4"
 	srv, err := core.NewServer(d, nfsSettings(allVersions), core.Listener{
-		Services: []string{"nfs"}, Network: "tcp", Protocol: protocol.New(protocol.Tables{V4: v4}),
+		Services: []string{"nfs"}, Network: "tcp",
+		Protocol: protocol.New(protocol.Tables{V4: tables(d).V4}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -452,14 +525,23 @@ func TestTheFirstRoutedCallEndsTheHandshake(t *testing.T) {
 	s.HandshakeTimeout = time.Second
 	srv := serve(t, d, s)
 	talker, silent := dial(t, srv), dial(t, srv)
-	if got, want := ask(t, talker, call(8, progNFS, 3, 0, none)), accepted(8, procUnavail); !bytes.Equal(got, want) {
-		t.Fatalf("the first NULL answered %x, want %x", got, want)
+	got := ask(t, talker, call(8, progNFS, 3, 999, none))
+
+	want := accepted(8, procUnavail)
+
+	if !bytes.Equal(got, want) {
+		t.Fatalf("the first routed call answered %x, want %x", got, want)
 	}
 	if !closed(t, silent) {
 		t.Fatal("the silent connection answered something")
 	}
-	if got, want := ask(t, talker, call(9, progNFS, 3, 0, none)), accepted(9, procUnavail); !bytes.Equal(got, want) {
-		t.Errorf("past the deadline a NULL answered %x, want %x", got, want)
+
+	got2 := ask(t, talker, call(9, progNFS, 3, 999, none))
+
+	want2 := accepted(9, procUnavail)
+
+	if !bytes.Equal(got2, want2) {
+		t.Errorf("past the deadline a call answered %x, want %x", got2, want2)
 	}
 }
 
@@ -499,7 +581,12 @@ func TestAConnectionKeepsTheRangeItWasAcceptedWith(t *testing.T) {
 		if err := srv.Reconfigure(t.Context(), nfsSettings(allVersions)); err != nil {
 			t.Fatal(err)
 		}
-		if got, want := ask(t, dial(t, srv), call(14, progMount, 3, 0, none)), accepted(14, procUnavail); !bytes.Equal(got, want) {
+
+		got := ask(t, dial(t, srv), call(14, progMount, 3, 999, none))
+
+		want := accepted(14, procUnavail)
+
+		if !bytes.Equal(got, want) {
 			t.Errorf("MOUNT after answered %x, want %x", got, want)
 		}
 	})
@@ -523,63 +610,194 @@ func TestTwoAdaptersServeTheirOwnRanges(t *testing.T) {
 	}
 }
 
-// Each program's table maps what the loopback tests leave unreached, each
-// row by minor version where NFSv4's differ: arguments that do not decode,
-// which only a row decodes, an error no row names, which is its program's
-// fault, a procedure NFSv4's table lacks, a COMPOUND past the cap or whose
-// reply is too big, NFSv4.0 answering NFS4ERR_RESOURCE for both, and, in
-// NFSv4's members' table, a member that does not decode, names a code no row
-// serves or one its minor version does not define (RFC 21 section 11.5).
+// Each program's table maps what the loopback tests leave unreached, each row
+// by minor version where NFSv4's differ: arguments that do not decode, which
+// only a row decodes, an error no row names, which is its program's fault,
+// ErrNotLast, ErrTooManyPending and ErrCancelled, which never reach NFS, and a
+// failed logon, all at the fault, a security flavour the share refuses,
+// AUTH_ERROR with AUTH_TOOWEAK, and the calls that
+// answer nothing, a move and the adapter draining, a procedure NFSv4's table
+// lacks, a COMPOUND past the cap or whose reply is too big, NFSv4.0 answering
+// NFS4ERR_RESOURCE for both, and, in NFSv4's members' table, a member that does
+// not decode, names a code no row serves or one its minor version does not
+// define, the moved and no-filehandle rows by their operation lists (RFC 21
+// sections 10 and 11.5; RFC 5531 section 9; RFC 8881 sections 15.1.2.4 and
+// 15.1.2.5). A row left out of a table lands on the fault status, which this
+// test cannot tell from the same row answering the fault, so the loopback
+// test's adapter_unmapped_errors_total counters are what catch a missing row:
+// keep both.
 func TestEachTableMapsCoresRefusals(t *testing.T) {
 	adaptertest.CheckLeaks(t, nil)
 	// accept is an RPC accept state's status, as the header stage encodes it:
-	// 1 in the two high bits.
+	// 1 in the two high bits; auth an AUTH_ERROR's, 3 in them.
 	accept := func(state uint32) core.Status { return core.Status(1<<30 | state) }
-	// The nfsstat4 values, from RFC 7530 section 13 and RFC 8881 section 15.
+	auth := func(stat uint32) core.Status {
+		return core.Status(3<<30 | stat)
+	}
+	// The nfsstat4 values, from RFC 7530 section 13 and RFC 8881 section 15,
+	// and the auth_stat of AUTH_TOOWEAK from RFC 5531 section 9.
 	const (
 		serverFault  = 10006 // NFS3ERR_SERVERFAULT and NFS4ERR_SERVERFAULT
 		notSupp      = 10004 // NFS4ERR_NOTSUPP
 		resource     = 10018 // NFS4ERR_RESOURCE
+		moved        = 10019 // NFS4ERR_MOVED
+		noFileHandle = 10020 // NFS4ERR_NOFILEHANDLE
 		badXDR       = 10036 // NFS4ERR_BADXDR
 		opIllegal    = 10044 // NFS4ERR_OP_ILLEGAL
 		repTooBig    = 10066 // NFS4ERR_REP_TOO_BIG
 		tooManyOps   = 10070 // NFS4ERR_TOO_MANY_OPS
+		authTooWeak  = 5     // AUTH_TOOWEAK
 		compoundProc = 1
 	)
 	ts := tables(adapter.Deps{})
 	members := ts.V4.Ops[compoundProc].Members
 	other := errors.New("an error no row names")
+	// A wrapped refusal, the error a row maps through errors.Is.
+	wrapped := func(err error) error {
+		return errors.Join(err, other)
+	}
 	for _, tc := range []struct {
-		name  string
-		table *core.OpTable
-		err   error
-		minor core.Version
-		want  core.Status
+		name    string
+		table   *core.OpTable
+		err     error
+		op      *core.Op // an operation a row names: nil where none does
+		minor   core.Version
+		want    core.Status
+		noreply bool // true sends nothing: no reply at all
 	}{
-		{"NFSv3's decode", ts.V3, core.ErrDecode, 0, accept(garbageArgs)},
-		{"NFSv3's fault", ts.V3, other, 0, serverFault},
-		{"NFSv4's not supported", ts.V4, core.ErrNotSupported, 0, accept(procUnavail)},
-		{"NFSv4's decode", ts.V4, core.ErrDecode, 1, accept(garbageArgs)},
-		{"NFSv4's fault", ts.V4, other, 1, serverFault},
-		{"NFSv4's minor version", ts.V4, core.ErrVersion, 3, nfs4ErrMinorVersMismatch},
-		{"NFSv4.0's cap", ts.V4, core.ErrTooLong, 0, resource},
-		{"NFSv4.1's cap", ts.V4, core.ErrTooLong, 1, tooManyOps},
-		{"NFSv4.2's cap", ts.V4, core.ErrTooLong, 2, tooManyOps},
-		{"NFSv4.0's reply too big", ts.V4, core.ErrReplyTooBig, 0, resource},
-		{"NFSv4.1's reply too big", ts.V4, core.ErrReplyTooBig, 1, repTooBig},
-		{"NFSv4.2's reply too big", ts.V4, core.ErrReplyTooBig, 2, repTooBig},
-		{"an NFSv4.0 member's decode", members, core.ErrDecode, 0, badXDR},
-		{"an NFSv4.2 member's decode", members, core.ErrDecode, 2, badXDR},
-		{"an NFSv4 member no row serves", members, core.ErrNotSupported, 1, notSupp},
-		{"an NFSv4 member its minor version lacks", members, core.ErrVersion, 0, opIllegal},
-		{"an NFSv4 member's fault", members, other, 1, serverFault},
-		{"MOUNT's decode", ts.Mount, core.ErrDecode, 0, accept(garbageArgs)},
-		{"MOUNT's fault", ts.Mount, other, 0, accept(systemErr)},
-		{"NLM's fault", ts.NLM, other, 0, accept(systemErr)},
-		{"NSM's fault", ts.NSM, other, 0, accept(systemErr)},
+		{"NFSv3's decode", ts.V3, core.ErrDecode, nil, 0, accept(garbageArgs), false},
+		{"NFSv3's fault", ts.V3, other, nil, 0, serverFault, false},
+		{"NFSv3's not supported", ts.V3, core.ErrNotSupported, nil, 0, accept(procUnavail), false},
+		{"NFSv3's not last", ts.V3, core.ErrNotLast, nil, 0, serverFault, false},
+		{"NFSv3's too many pending", ts.V3, core.ErrTooManyPending, nil, 0, serverFault, false},
+		{"NFSv3's cancelled", ts.V3, core.ErrCancelled, nil, 0, serverFault, false},
+		{"NFSv3's failed logon", ts.V3, wrapped(vfs.ErrLogonFailure), nil, 0, serverFault, false},
+		{"NFSv3's wrong security", ts.V3, vfs.ErrWrongSecurity, nil, 0, auth(authTooWeak), false},
+		{"NFSv3's moved", ts.V3, core.ErrMoved, nil, 0, 0, true},
+		{"NFSv3's draining", ts.V3, core.ErrDraining, nil, 0, 0, true},
+		{"NFSv4's not supported", ts.V4, core.ErrNotSupported, nil, 0, accept(procUnavail), false},
+		{"NFSv4's decode", ts.V4, core.ErrDecode, nil, 1, accept(garbageArgs), false},
+		{"NFSv4's fault", ts.V4, other, nil, 1, serverFault, false},
+		{"NFSv4's minor version", ts.V4, core.ErrVersion, nil, 3, nfs4ErrMinorVersMismatch, false},
+		{"NFSv4's not last", ts.V4, core.ErrNotLast, nil, 1, serverFault, false},
+		{"NFSv4's too many pending", ts.V4, core.ErrTooManyPending, nil, 1, serverFault, false},
+		{"NFSv4's cancelled", ts.V4, core.ErrCancelled, nil, 1, serverFault, false},
+		{"NFSv4's failed logon", ts.V4, wrapped(vfs.ErrLogonFailure), nil, 1, serverFault, false},
+		{"NFSv4's moved", ts.V4, core.ErrMoved, nil, 1, 0, true},
+		{"NFSv4's draining", ts.V4, core.ErrDraining, nil, 1, 0, true},
+		{"NFSv4.0's cap", ts.V4, core.ErrTooLong, nil, 0, resource, false},
+		{"NFSv4.1's cap", ts.V4, core.ErrTooLong, nil, 1, tooManyOps, false},
+		{"NFSv4.2's cap", ts.V4, core.ErrTooLong, nil, 2, tooManyOps, false},
+		{"NFSv4.0's reply too big", ts.V4, core.ErrReplyTooBig, nil, 0, resource, false},
+		{"NFSv4.1's reply too big", ts.V4, core.ErrReplyTooBig, nil, 1, repTooBig, false},
+		{"NFSv4.2's reply too big", ts.V4, core.ErrReplyTooBig, nil, 2, repTooBig, false},
+		{"an NFSv4.0 member's decode", members, core.ErrDecode, nil, 0, badXDR, false},
+		{"an NFSv4.2 member's decode", members, core.ErrDecode, nil, 2, badXDR, false},
+		{"an NFSv4 member no row serves", members, core.ErrNotSupported, nil, 1, notSupp, false},
+		{
+			"an NFSv4 member its minor version lacks", members, core.ErrVersion,
+			nil, 0, opIllegal, false,
+		},
+		{"an NFSv4 member's fault", members, other, nil, 1, serverFault, false},
+		{"an NFSv4 member's not last", members, core.ErrNotLast, nil, 1, serverFault, false},
+		{
+			"an NFSv4 member's too many pending", members, core.ErrTooManyPending,
+			nil, 1, serverFault, false,
+		},
+		{
+			"an NFSv4 member's cancelled", members, core.ErrCancelled,
+			nil, 1, serverFault, false,
+		},
+		{
+			"an NFSv4 member's failed logon", members, wrapped(vfs.ErrLogonFailure),
+			nil, 1, serverFault, false,
+		},
+		{
+			"an NFSv4 member's moved over DELEGRETURN", members, core.ErrMoved,
+			&core.Op{Code: 8}, 1, moved, false,
+		},
+		{
+			"an NFSv4 member's moved over SEQUENCE", members, core.ErrMoved,
+			&core.Op{Code: 53}, 1, 0, true,
+		},
+		{"an NFSv4 member's draining", members, core.ErrDraining, nil, 1, 0, true},
+		{
+			"an NFSv4.0 member with no filehandle", members, core.ErrNoFH,
+			nil, 0, noFileHandle, false,
+		},
+		{
+			"an NFSv4.1 member with no filehandle", members, core.ErrNoFH,
+			nil, 1, noFileHandle, false,
+		},
+		{
+			"an NFSv4.2 member with no filehandle", members, core.ErrNoFH,
+			nil, 2, noFileHandle, false,
+		},
+		{"MOUNT's decode", ts.Mount, core.ErrDecode, nil, 0, accept(garbageArgs), false},
+		{"MOUNT's fault", ts.Mount, other, nil, 0, accept(systemErr), false},
+		{
+			"MOUNT's not supported", ts.Mount, core.ErrNotSupported,
+			nil, 0, accept(procUnavail), false,
+		},
+		{"MOUNT's not last", ts.Mount, core.ErrNotLast, nil, 0, accept(systemErr), false},
+		{
+			"MOUNT's too many pending", ts.Mount, core.ErrTooManyPending,
+			nil, 0, accept(systemErr), false,
+		},
+		{"MOUNT's cancelled", ts.Mount, core.ErrCancelled, nil, 0, accept(systemErr), false},
+		{
+			"MOUNT's failed logon", ts.Mount, wrapped(vfs.ErrLogonFailure),
+			nil, 0, accept(systemErr), false,
+		},
+		{
+			"MOUNT's wrong security", ts.Mount, vfs.ErrWrongSecurity,
+			nil, 0, auth(authTooWeak), false,
+		},
+		{"MOUNT's moved", ts.Mount, core.ErrMoved, nil, 0, 0, true},
+		{"MOUNT's draining", ts.Mount, core.ErrDraining, nil, 0, 0, true},
+		{"NLM's decode", ts.NLM, core.ErrDecode, nil, 0, accept(garbageArgs), false},
+		{"NLM's fault", ts.NLM, other, nil, 0, accept(systemErr), false},
+		{"NLM's not supported", ts.NLM, core.ErrNotSupported, nil, 0, accept(procUnavail), false},
+		{"NLM's not last", ts.NLM, core.ErrNotLast, nil, 0, accept(systemErr), false},
+		{
+			"NLM's too many pending", ts.NLM, core.ErrTooManyPending,
+			nil, 0, accept(systemErr), false,
+		},
+		{"NLM's cancelled", ts.NLM, core.ErrCancelled, nil, 0, accept(systemErr), false},
+		{
+			"NLM's failed logon", ts.NLM, wrapped(vfs.ErrLogonFailure),
+			nil, 0, accept(systemErr), false,
+		},
+		{"NLM's wrong security", ts.NLM, vfs.ErrWrongSecurity, nil, 0, auth(authTooWeak), false},
+		{"NLM's moved", ts.NLM, core.ErrMoved, nil, 0, 0, true},
+		{"NLM's draining", ts.NLM, core.ErrDraining, nil, 0, 0, true},
+		{"NSM's decode", ts.NSM, core.ErrDecode, nil, 0, accept(garbageArgs), false},
+		{"NSM's fault", ts.NSM, other, nil, 0, accept(systemErr), false},
+		{"NSM's not supported", ts.NSM, core.ErrNotSupported, nil, 0, accept(procUnavail), false},
+		{"NSM's not last", ts.NSM, core.ErrNotLast, nil, 0, accept(systemErr), false},
+		{
+			"NSM's too many pending", ts.NSM, core.ErrTooManyPending,
+			nil, 0, accept(systemErr), false,
+		},
+		{"NSM's cancelled", ts.NSM, core.ErrCancelled, nil, 0, accept(systemErr), false},
+		{
+			"NSM's failed logon", ts.NSM, wrapped(vfs.ErrLogonFailure),
+			nil, 0, accept(systemErr), false,
+		},
+		{"NSM's wrong security", ts.NSM, vfs.ErrWrongSecurity, nil, 0, auth(authTooWeak), false},
+		{"NSM's moved", ts.NSM, core.ErrMoved, nil, 0, 0, true},
+		{"NSM's draining", ts.NSM, core.ErrDraining, nil, 0, 0, true},
 	} {
-		if got, _, _ := tc.table.Errors.Map(tc.err, nil, tc.minor); got != tc.want {
-			t.Errorf("%s: %#x, want %#x", tc.name, uint32(got), uint32(tc.want))
+		if got, replied, _ := tc.table.Errors.Map(tc.err, tc.op, tc.minor); got != tc.want ||
+			tc.noreply == replied {
+			t.Errorf(
+				"%s: %#x, replied %v, want %#x replying %v",
+				tc.name,
+				uint32(got),
+				replied,
+				uint32(tc.want),
+				!tc.noreply,
+			)
 		}
 	}
 }

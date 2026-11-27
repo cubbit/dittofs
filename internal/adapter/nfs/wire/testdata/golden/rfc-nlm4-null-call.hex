@@ -1,0 +1,12 @@
+# A NULL call to NLM version 4 under AUTH_NONE, written by hand from RFC 5531 section 9
+# and, for AUTH_NONE, section 10.1, since the knfsd captures hold NULL for NFSv3,
+# MOUNT, NFSv4 and NSM alone: xid, CALL, RPC version 2, the program NLM, version 4, procedure NULL, an empty AUTH_NONE
+# credential and verifier. Procedure 0 takes no argument in every ONC RPC program.
+00000055  # xid
+00000000  # CALL
+00000002  # RPC version 2
+000186b5  # program NLM
+00000004  # version 4
+00000000  # procedure NULL
+00000000 00000000  # credential: AUTH_NONE, no body
+00000000 00000000  # verifier: AUTH_NONE, no body

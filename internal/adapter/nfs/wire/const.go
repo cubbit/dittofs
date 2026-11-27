@@ -32,6 +32,8 @@ const (
 	NFS4ErrNotSupp           uint32 = 10004 // NFS4ERR_NOTSUPP
 	NFS4ErrServerFault       uint32 = 10006 // NFS4ERR_SERVERFAULT
 	NFS4ErrResource          uint32 = 10018 // NFS4ERR_RESOURCE
+	NFS4ErrMoved             uint32 = 10019 // NFS4ERR_MOVED
+	NFS4ErrNoFileHandle      uint32 = 10020 // NFS4ERR_NOFILEHANDLE
 	NFS4ErrMinorVersMismatch uint32 = 10021 // NFS4ERR_MINOR_VERS_MISMATCH
 	NFS4ErrBadXDR            uint32 = 10036 // NFS4ERR_BADXDR
 	NFS4ErrOpIllegal         uint32 = 10044 // NFS4ERR_OP_ILLEGAL
@@ -68,6 +70,9 @@ const (
 	AuthBadCred uint32 = 1
 	// AuthBadVerf is a verifier the server refuses.
 	AuthBadVerf uint32 = 3
+	// AuthTooWeak is the auth_stat of an AUTH_ERROR the server answers a
+	// security flavour it refuses (RFC 5531 section 9).
+	AuthTooWeak uint32 = 5
 
 	rpcVersion uint32 = 2 // the only RPC version
 

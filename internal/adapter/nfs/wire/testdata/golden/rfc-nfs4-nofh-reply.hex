@@ -1,0 +1,11 @@
+# The header stage's reply for the status NFS4ERR_NOFILEHANDLE 10020 on the call above: the
+# accepted header, the status, the tag echoed and no results, a COMPOUND refused before any
+# operation ran (RFC 8881 sections 16.2 and 15.1.2.5).
+00000030  # xid
+00000001  # REPLY
+00000000  # MSG_ACCEPTED
+00000000 00000000  # verifier: AUTH_NONE, no body
+00000000  # SUCCESS
+00002724  # NFS4ERR_NOFILEHANDLE
+00000005 61626364 65000000  # the tag
+00000000  # no results
