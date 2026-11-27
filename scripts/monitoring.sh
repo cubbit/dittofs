@@ -83,10 +83,13 @@ prechecks() {
         || die "$RUNTIME is not installed."
     # The podman-docker shim answers to "docker" and only fails later, at the
     # bridge gateway, with a cryptic template error — refuse it for what it is.
+    # Some distros ship it as a wrapper binary rather than a symlink to
+    # /usr/bin/podman, so its version banner names it too.
     if [ "$RUNTIME" = "docker" ]; then
-        case "$(readlink -f "$(command -v "$RUNTIME")" 2>/dev/null || echo x)" in
-            *podman*) die "\`$RUNTIME\` is the podman-docker shim; only real Docker is supported (rootful — a rootless daemon would show the VM, not the host)." ;;
-        esac
+        if readlink -f "$(command -v docker)" 2>/dev/null | grep -q podman \
+           || runt version 2>/dev/null | grep -q "Podman Engine"; then
+            die "\`docker\` is the podman-docker shim; only real Docker is supported (rootful — a rootless daemon would show a user namespace, not the host). Install docker.io, or use MONITORING_RUNTIME=podman with its socket."
+        fi
     fi
     if [ "$RUNTIME" = "podman" ]; then
         # Connection shape before the daemon probe, so a remote mode is named
