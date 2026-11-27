@@ -295,10 +295,12 @@ func localhostCert(t *testing.T) *tls.Certificate {
 }
 
 // A bucket, dotted or not, is addressed on the path of the endpoint's host,
-// never as a subdomain of it. The endpoint names a host, not an address, since
-// the SDK addresses an IP endpoint by path whatever it is told.
+// never as a subdomain of it. The endpoint names a host, not an address, and
+// one bucket is a name a subdomain could carry, since the SDK addresses an IP
+// endpoint, and a bucket too short or dotted for a host name, by path whatever
+// it is told.
 func TestClientAddressesTheBucketByPath(t *testing.T) {
-	for _, bucket := range []string{"b", "bucket.with.dots"} {
+	for _, bucket := range []string{"bkt", "bucket.with.dots"} {
 		var (
 			mu    sync.Mutex
 			paths []string
