@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"runtime"
+	"runtime/debug"
 	"testing"
 
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
@@ -206,12 +207,23 @@ func TestMICFlags(t *testing.T) {
 }
 
 // MIC and VerifyMIC allocate the same bytes per call for a 4 KiB and a
-// 1 MiB message. Catches a copy of the message. Skipped under the race
-// detector, where sync.Pool drops its HMACs and the count varies.
+// 1 MiB message, and neither exceeds maxBytesPerCall, which a copy of a
+// 4 KiB message already does. Catches a copy of the message. Skipped under
+// the race detector, where sync.Pool drops its HMACs and the count varies.
+// It counts on one P with the collector held off, as a pool keeps its items
+// per P and a collection empties it: a pool refilled mid-count is not a copy
+// of the message. Both settings are process-wide, so it must never call
+// t.Parallel.
 func TestMICAllocatesNoCopy(t *testing.T) {
 	if raceEnabled {
 		t.Skip("sync.Pool drops items under the race detector")
 	}
+
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+	// A copy of the smallest message is 4096 bytes per call; the honest
+	// calls allocate under 64 bytes: MIC its token, VerifyMIC its checksum.
+	const maxBytesPerCall = 1024
 	acc := kerberosContext(t, vfs.Keys{Session: bytes.Repeat([]byte{7}, 32)}, false)
 	init := kerberosContext(t, vfs.Keys{Session: bytes.Repeat([]byte{7}, 32)}, true)
 	// bytesPerOp is the heap bytes per call over a fixed count of calls,
@@ -248,6 +260,12 @@ func TestMICAllocatesNoCopy(t *testing.T) {
 	for name, b := range got {
 		if b[0] != b[1] {
 			t.Errorf("%s allocates %d bytes per call at 4 KiB and %d at 1 MiB, want equal", name, b[0], b[1])
+		}
+
+		for i, n := range []string{"4 KiB", "1 MiB"} {
+			if b[i] > maxBytesPerCall {
+				t.Errorf("%s at %s: %d bytes per call, want <= %d", name, n, b[i], maxBytesPerCall)
+			}
 		}
 	}
 }
