@@ -51,6 +51,16 @@ type Deps struct {
 	// reached, so a floating address keeps working after a takeover. nil: a
 	// net.Dialer bound to from. A test supplies one returning a pipe.
 	DialClient func(ctx context.Context, from netip.Addr, to netip.AddrPort) (net.Conn, error)
+	// Server is what the node is called to an NFSv4.1 client: the
+	// installation's ID, the same on every node, and this node's number,
+	// constant for the adapter's life.
+	Server Server
+}
+
+// Server names a node to a client (RFC 21 section 3.3).
+type Server struct {
+	Installation [16]byte
+	Node         uint64
 }
 
 // Loop is one watched loop: Turn reports a pass, Idle a wait with nothing to
