@@ -463,6 +463,12 @@ func (e *Engine) stage(ctx context.Context, r *removal, j func(*fileEntry) (jour
 // the store or a truncate set is recorded by them, and a deallocate wholly
 // below or past the size masks no byte that sets it. Withdraw it if the
 // journal's deallocate record ever carries the size.
+//
+// decision: the committed size read before this is not stale in a way that
+// matters. Deallocate reads it after begin took the file's guard, and a
+// truncate down holds that guard across its phase 1, so none commits between
+// the read and this stage. A write only raises the size, so a stale-low
+// committed size is safe. Revisit if a truncate down stops holding the guard.
 func (e *Engine) keepSize(
 	ctx context.Context,
 	r *removal,
