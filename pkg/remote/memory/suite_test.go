@@ -50,5 +50,6 @@ func subject(s *memory.Store) remotetest.Subject {
 			return nil
 		},
 		Reopen: func(context.Context) (remote.Store, error) { return memory.Reopen(s), nil },
+		Raw:    func(context.Context) ([]string, error) { return memory.RawKeys(s), nil },
 	}
 }

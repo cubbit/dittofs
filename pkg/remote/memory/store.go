@@ -50,8 +50,9 @@ type object struct {
 
 var _ remote.Store = (*Store)(nil)
 
-// New returns an empty store that checks each put's checksum in kind sum, as a
-// service that checks the put does, or compares nothing for remote.ChecksumNone.
+// New returns a store holding only its health object, which checks each put's
+// checksum in kind sum, as a service that checks the put does, or compares
+// nothing for remote.ChecksumNone.
 // now is the node's clock's Now, read only for Info.ModTime. A kind outside
 // the three panics, since a store that cannot check it would accept every put
 // unverified.
@@ -62,7 +63,13 @@ func New(now func() time.Time, sum remote.Checksum) *Store {
 		panic(fmt.Sprintf("memory: unknown checksum kind %d", sum))
 	}
 
-	return &Store{now: now, sum: sum, ns: &namespace{objects: make(map[string]object)}}
+	// The health object exists from the moment the store is returned, as a
+	// real store's capability check writes it before the open returns
+	// (RFC 4 §4.7).
+	health, _ := controlKey(remote.RoleHealth)
+	objects := map[string]object{health: {body: []byte{}, modTime: now()}}
+
+	return &Store{now: now, sum: sum, ns: &namespace{objects: objects}}
 }
 
 // blockKey is a block's key: blocks/ and the name in lowercase hex, nothing
@@ -202,16 +209,6 @@ func (s *Store) Get(ctx context.Context, name remote.Name, r remote.Range) (io.R
 // Health is not served yet: it refuses with remote.ErrInvalid.
 func (s *Store) Health(ctx context.Context, d remote.Direction) error {
 	return unserved("Health")
-}
-
-// PutControl is not served yet: it refuses with remote.ErrInvalid.
-func (s *Store) PutControl(ctx context.Context, role remote.Role, body []byte) error {
-	return unserved("PutControl")
-}
-
-// GetControl is not served yet: it refuses with remote.ErrInvalid.
-func (s *Store) GetControl(ctx context.Context, role remote.Role) ([]byte, remote.Version, error) {
-	return nil, "", unserved("GetControl")
 }
 
 // unserved is the refusal of a call the store does not serve yet.

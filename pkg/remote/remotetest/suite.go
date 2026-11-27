@@ -16,6 +16,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -35,11 +36,23 @@ type Subject struct {
 	// Reopen opens a second store over Store's namespace, which the row
 	// closes. A row that needs it skips on a subject without it.
 	Reopen func(ctx context.Context) (remote.Store, error)
+
+	// Raw returns every key the service holds under the store's namespace,
+	// relative to its prefix, read beneath the store. The raw-namespace check
+	// after each row skips on a subject without it.
+	Raw func(ctx context.Context) ([]string, error)
 }
 
 // Run runs every row against a fresh subject from open, one row at a time.
 // Each subject's store is over an empty namespace of its own, since a listing
 // row asserts the exact set of blocks it walks.
+//
+// After each row, its subtest RawNamespace lists the raw namespace and fails
+// on any key but a block the row's puts stored and its deletes did not remove,
+// at the prefix followed directly by the name, a control object, a check
+// object, or a key the row planted through PutRaw (RFC 4 §4.2, Appendix C.2).
+// It runs per row rather than once after the suite, so a misplaced key is
+// blamed on the row that wrote it.
 //
 // Each row watches for leaks before it calls open, so the cleanups open
 // registers, closing the store among them, run before the leak check: a row
@@ -62,6 +75,7 @@ func Run(t *testing.T, open func(t *testing.T) Subject) {
 		{"ListForeignCursor", testListForeignCursor},
 		{"ListForeignKey", testListForeignKey},
 		{"ListCancel", testListCancel},
+		{"Control", testControl},
 	} {
 		t.Run(r.name, func(t *testing.T) {
 			prof.Watch(t, prof.Options{})
@@ -71,7 +85,10 @@ func Run(t *testing.T, open func(t *testing.T) Subject) {
 				t.Fatal("the opener returned a Subject with no Store")
 			}
 
+			w := track(&sub)
 			r.fn(t, sub)
+
+			t.Run("RawNamespace", func(t *testing.T) { checkRaw(t, sub.Raw, w) })
 		})
 	}
 }
@@ -228,7 +245,8 @@ func testGetEmptyRange(t *testing.T, sub Subject) {
 	}
 }
 
-// Every call after Close is ErrInvalid; Close again returns nil.
+// Every call after Close is ErrInvalid, and a put refused so stores nothing;
+// Close again returns nil.
 func testAfterClose(t *testing.T, sub Subject) {
 	n, body := name("after-close"), block("after-close", 16)
 	put(t, sub.Store, n, body)
@@ -237,7 +255,9 @@ func testAfterClose(t *testing.T, sub Subject) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	err := sub.Store.Put(t.Context(), n, bytes.NewReader(body), int64(len(body)), sum(t, sub.Store.Checksum(), body))
+	// A name never stored, so a put that stores what it refuses shows in the
+	// raw namespace.
+	err := sub.Store.Put(t.Context(), name("after-close-new"), bytes.NewReader(body), int64(len(body)), sum(t, sub.Store.Checksum(), body))
 	if !only(err, remote.ErrInvalid) {
 		t.Errorf("Put after Close: error %v, want ErrInvalid and no other sentinel", err)
 	}
@@ -255,6 +275,14 @@ func testAfterClose(t *testing.T, sub Subject) {
 
 	if page, _, _, err := sub.Store.List(t.Context(), "", 10); !only(err, remote.ErrInvalid) {
 		t.Errorf("List after Close: %d blocks and error %v, want ErrInvalid and no other sentinel", len(page), err)
+	}
+
+	if err := sub.Store.PutControl(t.Context(), remote.RoleClaim, body); !only(err, remote.ErrInvalid) {
+		t.Errorf("PutControl after Close: error %v, want ErrInvalid and no other sentinel", err)
+	}
+
+	if got, _, err := sub.Store.GetControl(t.Context(), remote.RoleHealth); !only(err, remote.ErrInvalid) {
+		t.Errorf("GetControl after Close: %d bytes and error %v, want ErrInvalid and no other sentinel", len(got), err)
 	}
 
 	if err := sub.Store.Close(); err != nil {
@@ -522,6 +550,189 @@ func (c *endsOnSecondCheck) Done() <-chan struct{} {
 	}
 
 	return c.Context.Done()
+}
+
+// roles is the closed set of control roles, each at control/<role> (RFC 4
+// Appendix C.2).
+var roles = []remote.Role{remote.RoleClaim, remote.RoleHealth, remote.RoleKeys}
+
+// Each role's object round-trips, and a second, shorter put replaces it
+// whole; an absent role is ErrNotFound, but for the health object, which
+// exists from the store's open and so is read before any put of it; and a
+// block listing yields the one block put and no control object.
+func testControl(t *testing.T, sub Subject) {
+	s := sub.Store
+
+	if _, _, err := s.GetControl(t.Context(), remote.RoleHealth); err != nil {
+		t.Errorf("GetControl of the health object before any put of it: %v, want the object the store holds from its open", err)
+	}
+
+	for _, r := range roles {
+		if r != remote.RoleHealth {
+			if got, _, err := s.GetControl(t.Context(), r); !only(err, remote.ErrNotFound) {
+				t.Errorf("GetControl of %v before any put of it: %d bytes and error %v, want ErrNotFound and no other sentinel", r, len(got), err)
+			}
+		}
+
+		for i, size := range []int{4099, 1000} {
+			want := block(fmt.Sprintf("control/%v/%d", r, i), size)
+			if err := s.PutControl(t.Context(), r, want); err != nil {
+				t.Fatalf("PutControl of %v, %d bytes: %v", r, size, err)
+			}
+
+			got, _, err := s.GetControl(t.Context(), r)
+			if err != nil || !bytes.Equal(got, want) {
+				t.Errorf("GetControl of %v after put %d of %d bytes: %d bytes and error %v, want exactly the bytes put (first difference at %d)", r, i+1, size, len(got), err, firstDiff(got, want))
+			}
+		}
+	}
+
+	n := name("control-neighbour")
+	put(t, s, n, block("control-neighbour", 16))
+
+	var (
+		got  []remote.Name
+		next remote.Cursor
+	)
+
+	for calls, done := 0, false; !done; calls++ {
+		if calls > 4 {
+			t.Fatalf("a walk over one block did not end after %d calls", calls)
+		}
+
+		var page []remote.Info
+
+		page, next, done = listPage(t, s, next, 1000)
+		for _, i := range page {
+			got = append(got, i.Name)
+		}
+	}
+
+	if !slices.Equal(got, []remote.Name{n}) {
+		t.Errorf("a walk after a put of every role yielded %d blocks %x, want only the block put %x", len(got), got, n)
+	}
+}
+
+// written is what a row wrote through its subject: the blocks its puts stored
+// and its deletes did not remove, and the keys it planted beneath the store.
+type written struct {
+	mu      sync.Mutex
+	blocks  map[remote.Name]bool
+	planted map[string]bool
+}
+
+// track points sub's Store, Reopen and PutRaw at wrappers that pass every
+// call through and record what it wrote, and returns the record.
+func track(sub *Subject) *written {
+	w := &written{blocks: make(map[remote.Name]bool), planted: make(map[string]bool)}
+
+	sub.Store = tracked{Store: sub.Store, w: w}
+
+	if reopen := sub.Reopen; reopen != nil {
+		sub.Reopen = func(ctx context.Context) (remote.Store, error) {
+			s, err := reopen(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			return tracked{Store: s, w: w}, nil
+		}
+	}
+
+	if putRaw := sub.PutRaw; putRaw != nil {
+		sub.PutRaw = func(ctx context.Context, key string, body []byte) error {
+			w.mu.Lock()
+			w.planted[key] = true
+			w.mu.Unlock()
+
+			return putRaw(ctx, key, body)
+		}
+	}
+
+	return w
+}
+
+// tracked passes every call through to its store, and records in w the
+// blocks each put stored and each delete removed.
+type tracked struct {
+	remote.Store
+
+	w *written
+}
+
+func (s tracked) Put(ctx context.Context, n remote.Name, body io.Reader, size int64, sum []byte) error {
+	err := s.Store.Put(ctx, n, body, size, sum)
+	if err == nil {
+		s.w.mu.Lock()
+		s.w.blocks[n] = true
+		s.w.mu.Unlock()
+	}
+
+	return err
+}
+
+func (s tracked) Delete(ctx context.Context, names []remote.Name) []error {
+	errs := s.Store.Delete(ctx, names)
+
+	s.w.mu.Lock()
+	defer s.w.mu.Unlock()
+
+	for i, err := range errs {
+		if err == nil && i < len(names) {
+			delete(s.w.blocks, names[i])
+		}
+	}
+
+	return errs
+}
+
+// checkRaw fails t on each key of the raw namespace that is not a block w
+// holds at blocks/ and its name in lowercase hex, a control object, a check
+// object or a key the row planted.
+func checkRaw(t *testing.T, raw func(context.Context) ([]string, error), w *written) {
+	if raw == nil {
+		t.Skip("the subject has no Raw hook")
+	}
+
+	keys, err := raw(t.Context())
+	if err != nil {
+		t.Fatalf("Raw: %v", err)
+	}
+
+	control := make(map[string]bool, len(roles))
+	for _, r := range roles {
+		control["control/"+r.String()] = true
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	var bad []string
+
+	for _, k := range keys {
+		if w.planted[k] || control[k] || strings.HasPrefix(k, "check/") {
+			continue
+		}
+
+		h, ok := strings.CutPrefix(k, "blocks/")
+		if b, err := hex.DecodeString(h); ok && err == nil && len(b) == len(remote.Name{}) && hex.EncodeToString(b) == h {
+			if !w.blocks[remote.Name(b)] {
+				bad = append(bad, fmt.Sprintf("block %s, which the row's puts did not store or its deletes removed", h))
+			}
+
+			continue
+		}
+
+		bad = append(bad, fmt.Sprintf("the key %q, neither blocks/ and a name in lowercase hex, control/ and a role, nor under check/", k))
+	}
+
+	for _, b := range bad[:min(len(bad), 10)] {
+		t.Errorf("the raw namespace holds %s", b)
+	}
+
+	if len(bad) > 10 {
+		t.Errorf("the raw namespace holds %d keys it should not, %d more than listed", len(bad), len(bad)-10)
+	}
 }
 
 // putMany puts count blocks of sizes 1 to 61 bytes, derived from label, and

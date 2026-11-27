@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/remote"
@@ -150,7 +151,95 @@ func (s acceptsForeignCursor) List(ctx context.Context, after remote.Cursor, n i
 	return s.Store.List(ctx, after, n)
 }
 
-// broken names each fault and the one row it must fail.
+// appendsControl is a fault around the in-memory store: a control put appends
+// its body to the object already there instead of replacing it.
+type appendsControl struct{ *memory.Store }
+
+func (s appendsControl) PutControl(ctx context.Context, r remote.Role, body []byte) error {
+	old, _, err := s.GetControl(ctx, r)
+	if err != nil && !errors.Is(err, remote.ErrNotFound) {
+		return err
+	}
+
+	return s.Store.PutControl(ctx, r, append(old, body...))
+}
+
+// withoutHealth is a fault around the in-memory store: it is opened without
+// its health object, which reads as absent until a put of it.
+type withoutHealth struct {
+	*memory.Store
+
+	put atomic.Bool
+}
+
+func (s *withoutHealth) PutControl(ctx context.Context, r remote.Role, body []byte) error {
+	err := s.Store.PutControl(ctx, r, body)
+	if err == nil && r == remote.RoleHealth {
+		s.put.Store(true)
+	}
+
+	return err
+}
+
+func (s *withoutHealth) GetControl(ctx context.Context, r remote.Role) ([]byte, remote.Version, error) {
+	body, v, err := s.Store.GetControl(ctx, r)
+	if err == nil && r == remote.RoleHealth && !s.put.Load() {
+		return nil, "", fmt.Errorf("no health object: %w", remote.ErrNotFound)
+	}
+
+	return body, v, err
+}
+
+// controlAfterClose is a fault around the in-memory store: its control calls
+// go to a second store over the same objects, which Close leaves open.
+type controlAfterClose struct {
+	*memory.Store
+
+	control *memory.Store
+}
+
+func (s controlAfterClose) PutControl(ctx context.Context, r remote.Role, body []byte) error {
+	return s.control.PutControl(ctx, r, body)
+}
+
+func (s controlAfterClose) GetControl(ctx context.Context, r remote.Role) ([]byte, remote.Version, error) {
+	return s.control.GetControl(ctx, r)
+}
+
+// controlUnderBlocks is a fault around the in-memory store: a control put also
+// leaves a copy at blocks/control/<role>, a key a listing skips.
+type controlUnderBlocks struct{ *memory.Store }
+
+func (s controlUnderBlocks) PutControl(ctx context.Context, r remote.Role, body []byte) error {
+	if err := s.Store.PutControl(ctx, r, body); err != nil {
+		return err
+	}
+
+	memory.PutRaw(s.Store, "blocks/control/"+r.String(), body)
+
+	return nil
+}
+
+// storesRefusedPut is a fault around the in-memory store: a put the store
+// refuses still leaves its body under the block's key.
+type storesRefusedPut struct{ *memory.Store }
+
+func (s storesRefusedPut) Put(ctx context.Context, n remote.Name, body io.Reader, size int64, sum []byte) error {
+	b, err := io.ReadAll(body)
+	if err != nil {
+		return err
+	}
+
+	if err := s.Store.Put(ctx, n, bytes.NewReader(b), size, sum); err != nil {
+		memory.PutRaw(s.Store, "blocks/"+hex.EncodeToString(n[:]), b)
+		return err
+	}
+
+	return nil
+}
+
+// broken names each fault and the one row it must fail. A row naming a
+// subtest, Control/RawNamespace, must fail through that subtest.
 var broken = map[string]struct {
 	wrap func(*memory.Store) remote.Store
 	row  string
@@ -163,6 +252,11 @@ var broken = map[string]struct {
 	"accepts-foreign-cursor": {func(s *memory.Store) remote.Store { return acceptsForeignCursor{s} }, "ListForeignCursor"},
 	"yields-foreign":         {func(s *memory.Store) remote.Store { return &yieldsForeign{Store: s} }, "ListForeignKey"},
 	"ctx-at-entry":           {func(s *memory.Store) remote.Store { return ctxAtEntry{s} }, "ListCancel"},
+	"appends-control":        {func(s *memory.Store) remote.Store { return appendsControl{s} }, "Control"},
+	"without-health":         {func(s *memory.Store) remote.Store { return &withoutHealth{Store: s} }, "Control"},
+	"control-after-close":    {func(s *memory.Store) remote.Store { return controlAfterClose{s, memory.Reopen(s)} }, "AfterClose"},
+	"control-under-blocks":   {func(s *memory.Store) remote.Store { return controlUnderBlocks{s} }, "Control/RawNamespace"},
+	"stores-refused-put":     {func(s *memory.Store) remote.Store { return storesRefusedPut{s} }, "AfterClose/RawNamespace"},
 }
 
 // brokenEnv selects the fault TestBrokenStore runs the suite over, in the
@@ -207,12 +301,16 @@ func TestTheSuiteFailsABrokenStoreOnItsRow(t *testing.T) {
 		cmd.Env = append(os.Environ(), brokenEnv+"="+fault)
 		out, _ := cmd.CombinedOutput()
 
-		var rows []string
+		var rows, failed []string
 		for _, m := range failedRow.FindAllStringSubmatch(string(out), -1) {
-			rows = append(rows, m[1])
+			failed = append(failed, m[1])
+			if !strings.Contains(m[1], "/") {
+				rows = append(rows, m[1])
+			}
 		}
 
-		if !slices.Equal(rows, []string{b.row}) {
+		row, _, _ := strings.Cut(b.row, "/")
+		if !slices.Equal(rows, []string{row}) || !slices.Contains(failed, b.row) {
 			t.Errorf("the suite over a store that %s failed rows %q, want exactly %q; output:\n%s", fault, rows, b.row, out)
 		}
 	}

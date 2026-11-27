@@ -447,3 +447,62 @@ func TestADeleteUnderAnEndedContextDeletesNothing(t *testing.T) {
 		t.Errorf("Get after a Delete under an ended context: %d bytes and error %v, want the %d bytes put", len(got), err, len(first))
 	}
 }
+
+// A control body of exactly 256 KiB is stored; one byte more is ErrInvalid and
+// leaves the object there as it was.
+func TestAControlBodyIsBoundedAt256KiB(t *testing.T) {
+	s := newStore(remote.ChecksumNone)
+
+	at := bytes.Repeat([]byte{0xc}, 256<<10)
+	if err := s.PutControl(t.Context(), remote.RoleKeys, at); err != nil {
+		t.Fatalf("PutControl of %d bytes: %v, want it stored", len(at), err)
+	}
+
+	checkErr(t, "PutControl of 256 KiB + 1", s.PutControl(t.Context(), remote.RoleKeys, append(at, 0xd)), remote.ErrInvalid)
+
+	if got, _, err := s.GetControl(t.Context(), remote.RoleKeys); err != nil || !bytes.Equal(got, at) {
+		t.Errorf("GetControl after a refused put over the bound: %d bytes and error %v, want the %d bytes put first", len(got), err, len(at))
+	}
+}
+
+// A role outside the closed set is ErrInvalid on a put and a get, and reaches
+// no key.
+func TestAControlCallOfARoleOutsideTheSetIsRefused(t *testing.T) {
+	s := newStore(remote.ChecksumNone)
+	before := memory.RawKeys(s)
+
+	for _, r := range []remote.Role{0, remote.RoleKeys + 1} {
+		checkErr(t, fmt.Sprintf("PutControl of %v", r), s.PutControl(t.Context(), r, first), remote.ErrInvalid)
+
+		_, _, err := s.GetControl(t.Context(), r)
+		checkErr(t, fmt.Sprintf("GetControl of %v", r), err, remote.ErrInvalid)
+	}
+
+	if after := memory.RawKeys(s); !slices.Equal(after, before) {
+		t.Errorf("keys after control calls of roles outside the set: %q, want %q as before", after, before)
+	}
+}
+
+// A control object is the bytes put, whatever the caller later does to the
+// slice it put or the slice a get returned.
+func TestAControlObjectIsACopy(t *testing.T) {
+	s := newStore(remote.ChecksumNone)
+
+	body := bytes.Clone(first)
+	if err := s.PutControl(t.Context(), remote.RoleClaim, body); err != nil {
+		t.Fatalf("PutControl: %v", err)
+	}
+
+	body[0] ^= 0xff
+
+	got, _, err := s.GetControl(t.Context(), remote.RoleClaim)
+	if err != nil {
+		t.Fatalf("GetControl: %v", err)
+	}
+
+	got[1] ^= 0xff
+
+	if again, _, err := s.GetControl(t.Context(), remote.RoleClaim); err != nil || !bytes.Equal(again, first) {
+		t.Errorf("GetControl after the caller changed its slices: %q and error %v, want the bytes put", again, err)
+	}
+}
