@@ -134,6 +134,14 @@ type ReplayCache interface {
 	// NFSv4.1's slot cache is charged. Charge them to the connection-state
 	// budget when a replay cache's size shows in a profile.
 	Store(h Header, reply *resources.Buf)
+	// Drop tells the cache that a request whose Lookup returned nil, nil
+	// ended with nothing stored: refused at Route or before its handler,
+	// ended with no reply, answered with a reply Store is not handed, or its
+	// context ended. A cache that marks a looked-up call in progress, so a
+	// retransmission arriving while the first send runs is answered with no
+	// reply through Stages.Errors, clears the mark here; one that keeps no
+	// such mark does nothing.
+	Drop(h Header)
 }
 
 // Header is a protocol's decoded header. core reads it only through these

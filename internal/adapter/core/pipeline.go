@@ -317,6 +317,7 @@ func (passSecurity) Wrap(Header, *resources.Buf) error                          
 
 func (noReplay) Lookup(context.Context, Header) (*resources.Buf, error) { return nil, nil }
 func (noReplay) Store(Header, *resources.Buf)                           {}
+func (noReplay) Drop(Header)                                            {}
 
 func (noHold) Key(Header) uint64                                    { return 1 << 63 }
 func (noHold) Interim(Header, bool, []Header, *resources.Buf) error { return errNoHold }
@@ -859,6 +860,7 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 		}
 		if serr != nil {
 			release()
+			p.st.Replay.Drop(h)
 			p.drop(tr, nil, serr)
 			return nil, false
 		}
@@ -931,6 +933,7 @@ func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Reques
 			reply.Release()
 		}
 		release()
+		p.st.Replay.Drop(h)
 		p.end(tr, false, 0, 0, nil)
 		return r, false
 	}
@@ -1007,10 +1010,20 @@ func (p *pipeline) resolve(tr *track, r *Request, op *Op, inv Invocation, draini
 	return err
 }
 
+// storedReply says a single call's reply is one the duplicate-request cache
+// keeps: its row is Cacheable and the call ran, its handler called and
+// answered no error, or one its table maps to a status other than the fault;
+// ErrDelay does not count, and neither does a refusal before the handler,
+// whose handler was never called (§4.7).
+func storedReply(tr *track, op *Op, err error, errs *ErrorTable, s Status) bool {
+	return op != nil && op.Cacheable && tr.ran && !errors.Is(err, vfs.ErrDelay) && (err == nil || s != errs.fault)
+}
+
 // finish answers a request whose call, or refusal, gave err: its status
 // mapped by errs, encoded into reply or, with none reserved, a status's
-// buffer, stored where its row is cacheable, and handed to a; or, for a
-// NoReply row, a's unanswered. A request pd says is pending is answered
+// buffer, stored where it ran on a Cacheable row, else dropped from the
+// cache, and handed to a; or, for a NoReply row, a's unanswered.
+// A request pd says is pending is answered
 // under Final's header. A request whose context the connection's close
 // cancelled is dropped instead: its reservations released, nothing encoded,
 // and its span ended unsent (§3.1, §6.5). Its error is still mapped, unless
@@ -1039,6 +1052,7 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 			reply.Release()
 		}
 		release()
+		p.st.Replay.Drop(h)
 		p.end(tr, false, 0, 0, err)
 		return
 	}
@@ -1049,6 +1063,7 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 	if reply == nil {
 		if reply = a.status(ctx, p.st.Header.ReplyLen(h)); reply == nil {
 			release()
+			p.st.Replay.Drop(h)
 			p.end(tr, false, 0, 0, err)
 			return
 		}
@@ -1061,13 +1076,16 @@ func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op
 	if encErr := p.encode(eh, s, reply, inv); encErr != nil {
 		reply.Release()
 		release()
+		p.st.Replay.Drop(h)
 		p.drop(tr, nil, stageFault(encErr))
 		return
 	}
 	p.lap(tr, stageEncode)
 	release()
-	if op != nil && op.Cacheable {
+	if storedReply(tr, op, err, errs, s) {
 		p.st.Replay.Store(h, reply)
+	} else {
+		p.st.Replay.Drop(h)
 	}
 	var key uint64
 	if tb != nil && tb.Holds {
@@ -1315,8 +1333,10 @@ func (p *pipeline) mapped(tr *track, errs *ErrorTable, err error, op *Op, v Vers
 }
 
 // unanswered ends a request refused with a NoReply row, err: no final
-// reply, and where tb holds, an interim in reply's place.
+// reply, and where tb holds, an interim in reply's place. Nothing is
+// stored, so the lookup's mark, if any, is dropped (§4.7).
 func (p *pipeline) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf, err error, release func()) {
+	p.st.Replay.Drop(h)
 	if tb != nil && tb.Holds {
 		p.interim(tr.ctx, h, reply)
 	} else if reply != nil {
