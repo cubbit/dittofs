@@ -168,8 +168,8 @@ func TestPassSplitPlacementRepointsEveryFact(t *testing.T) {
 // the way an open leaves one standing, holds the first sync at the seam and
 // runs a pass: the source is not handed over while the record's sync is
 // held, and once the hold lifts, the pass ends the deferral at the durable
-// event and retires the source — the registry entry gone, the freed returned
-// and counted.
+// event: the registry entry is gone and the source is retired and counted,
+// by the pass or by the core's retirement worker.
 func TestPassDeferredLossHandover(t *testing.T) {
 	p := newPassFixture(t)
 	d := p.f.core.Durability()
@@ -211,13 +211,22 @@ func TestPassDeferredLossHandover(t *testing.T) {
 	if r.err != nil {
 		t.Fatalf("Repack over a deferred loss: %v", r.err)
 	}
-	if r.freed <= 0 {
-		t.Fatalf("Repack over a deferred loss freed %d, want the source retired once its record was durable", r.freed)
-	}
 	if entries := d.DeferredAgainst(src); len(entries) != 0 {
 		t.Fatalf("the deferred registry after the pass holds %+v, want the entry ended at the durable event", entries)
 	}
-	if gain := p.freedGain(freedBefore); int64(gain) != r.freed {
+	// Once the record is durable the source is not held, so the core's
+	// retirement worker may claim it in the pass's own gap, and retire it a
+	// tick later; the pass then answers a visit that freed nothing. Either
+	// retirer satisfies the hand-over, so the test waits on the source
+	// leaving the set and on the storage being counted, not on who did it.
+	for deadline := time.Now().Add(copyWait); !p.setGone(src) || p.freedGain(freedBefore) == 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the source gone=%v and freed %d after %v, want it retired once its record was durable", p.setGone(src), p.freedGain(freedBefore), copyWait)
+		}
+	}
+	// When the pass itself retired the source, the count is exactly what it
+	// returned: a segment counted twice shows here.
+	if gain := p.freedGain(freedBefore); r.freed > 0 && int64(gain) != r.freed {
 		t.Fatalf("the retirer freed %d, want the %d the pass returned", gain, r.freed)
 	}
 }
