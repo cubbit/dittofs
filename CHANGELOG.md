@@ -12,6 +12,186 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > that actually shipped them. Nothing here has been reconstructed after the
 > fact.
 
+## [0.37.0] — 2026-11-27
+
+0.37.0 is a fix release, mostly for SMB access control and share removal.
+Before upgrading, check three things. **SMB now applies the share's squash mode
+and access policy**, so the built-in `admin` user no longer acts as root over
+SMB on a default share. **The Homebrew tap moved to `cubbit/tap`**. **A share
+whose NFS options cannot be read now stops the server at boot.** See Changed
+below. No on-disk format changes in this release.
+
+### Changed
+
+- **SMB applies the share's squash mode, as NFS does.** Before, the squash mode
+  ran only on the NFS path. A session whose user maps to uid 0, such as the
+  built-in `admin`, skipped every permission and ACL check on every share, and
+  `all_to_guest` never turned SMB users into guests. Now the default mode,
+  `root_to_guest`, maps uid 0 to 65534 over SMB too, and a live squash change
+  takes effect on the next request. If you rely on admin acting as root over
+  SMB, set `dfsctl share nfs-config set <share> --squash root_to_admin`. SMB
+  guests stay at 65534 under every mode.
+
+- **SMB applies the share's access policy at TREE_CONNECT and on every
+  request.** `require_kerberos`, `allow_auth_sys`, `min_kerberos_level` and the
+  netgroup allowlist, set with `dfsctl share nfs-config set`, used to apply to
+  NFS only. A Kerberos-only share restricted to a netgroup accepted an NTLM
+  session from outside the netgroup, and that session could write. Now
+  `require_kerberos` refuses NTLM, guest and anonymous sessions, a client
+  outside the netgroup is refused, and `krb5p` refuses a session that cannot
+  encrypt. A refusal is `STATUS_ACCESS_DENIED`. The check runs again on each
+  request, so a policy change or a re-authentication with a weaker proof takes
+  effect on the next request. The defaults admit every session.
+
+- **The Homebrew casks and the Scoop bucket moved to the `cubbit`
+  organization.** Install with `brew install --cask cubbit/tap/dfs` and
+  `cubbit/tap/dfsctl`, and on Windows with
+  `scoop bucket add cubbit https://github.com/cubbit/scoop-bucket`. The old
+  `marmos91/tap` and `marmos91` bucket get no new releases, so re-tap to
+  upgrade. Release downloads and the install script are now under
+  `github.com/cubbit/dittofs`. The Go module path is now
+  `github.com/cubbit/dittofs`. The Docker images keep their `marmos91c/` names.
+
+- **A share whose NFS options cannot be read stops the server at boot.** Before,
+  a failed lookup or parse of the options fell back to the defaults. A transient
+  store error then served the share without its squash and auth-flavor policy.
+  Now `dfs start` fails with `look up the NFS options of share "<name>"` or
+  `parse the NFS options of share "<name>"`. A failed lookup of the share's
+  metadata store stops the boot the same way. A share with no NFS options still
+  gets the defaults, and a share that names a metadata store that does not exist
+  is still skipped.
+
+### Security
+
+- **Releases and images are built with Go 1.26.10.** 0.36.0 was built with Go
+  1.26.0, so its binaries and the operator image missed every standard-library
+  security fix since then. One of them is in `crypto/x509`, which the NFS
+  RPC-with-TLS handshake uses.
+
+- **SMB no longer grants every right on a file that has no stored ACL.** Any
+  user with a read-write share grant could delete another user's `0644` file,
+  through delete-on-close or a disposition SET_INFO, and could open it for
+  write. The same REMOVE over NFS was refused. Now the file's mode, owner and
+  parent decide the rights. DELETE is granted only when the caller could unlink
+  the file over NFS, sticky bit included. Other opens answer
+  `STATUS_ACCESS_DENIED`. The MxAc reply on CREATE now offers DELETE by the same
+  rule. Durable handles opened before the upgrade keep their old rights until
+  they close.
+
+- **srvsvc lists only the shares the session may connect to.** `NetrShareEnum`
+  listed every share to any session that could open `\pipe\srvsvc`, and
+  `NetrShareGetInfo` at level 502 returned a share's security descriptor to a
+  session that TREE_CONNECT refuses. Now a refused share is left out of the list,
+  and `NetrShareGetInfo` answers `NERR_NetNameNotFound` for it, as for a share
+  that does not exist.
+
+- **A SESSION_SETUP that names a `PreviousSessionId` logs that session off only
+  after a successful sign-in by the same user.** Before, the previous session
+  was logged off before the new credential was checked, and whoever owned it. A
+  wrong password or another user's sign-in could end someone else's session.
+  Now every other case leaves the previous session alone. A guest or anonymous
+  sign-in never replaces a session.
+
+- **NFS refuses an unusable RPC credential with `AUTH_BADCRED`.** An AUTH_SYS
+  body that fails to decode, AUTH_SHORT, AUTH_DH, an unknown flavor and
+  AUTH_TLS on a data call were served as an anonymous caller. Now they get
+  MSG_DENIED with `AUTH_BADCRED`, over TCP and UDP. AUTH_SYS bodies with bytes
+  left over after the groups are refused too. The UDP listener refuses
+  RPCSEC_GSS with `AUTH_TOOWEAK`, since it cannot verify it. AUTH_NONE is
+  unchanged.
+
+### Fixed
+
+- **Removing a share deletes its metadata, its journal and its local blocks.**
+  Before, removal deleted only the control-plane row. A share created again under
+  the same name got the old root back, files and all, so a second user could
+  read the first user's files. Now the new share starts empty and old handles
+  fail. A failed purge fails the removal with a 500 and keeps the share, so
+  repeating the removal repeats the purge. Blocks already synced to a remote
+  store stay there for garbage collection.
+
+- **A share removal purges only the share it names, and only once.** A second
+  removal running at the same time, a cancelled metadata-store lookup and a
+  `DELETE` by share ID could each purge the wrong data. Now a second removal
+  gets 409 while the first runs, and a removal whose share is already gone gets
+  404 and leaves alone a new share with the same name. The name stays taken
+  until the removal ends, so creating it again meanwhile answers "already
+  exists".
+
+- **A share created with `--commit-ack block-store` waits for the block store on
+  COMMIT at once.** The value was stored, but the running share kept
+  acknowledging COMMIT and SMB Flush from the journal until the share was edited
+  or the server restarted. `relaxed_metadata_commit` had the same gap.
+
+- **`dfs start` in background mode reports a server that fails to start.** It
+  used to print `DittoFS server started` and exit 0 as soon as it launched the
+  process, even when the server then died on `bind: address already in use`.
+  Now it waits up to 30 s for `/health`. If the server exits first, `dfs start`
+  prints `DittoFS server failed to start`, the last lines of the log and the log
+  path, and exits 1. It no longer mistakes a server already on the port for the
+  new one, even one started in the same second. `/health` `started_at` now
+  carries fractional seconds. With mTLS, where `/health` is not probed, it prints
+  `DittoFS server is running (PID: N); /health was not checked`. The probe
+  ignores `HTTP_PROXY`. A `--log-file` that cannot be seeked, such as
+  `/dev/stdout` or a FIFO, no longer stops the start.
+
+- **`brew install --cask cubbit/tap/dfs` gives binaries that run on macOS.**
+  Casks quarantine what they download, and the binaries are not notarized, so
+  Gatekeeper killed `dfs` and `dfsctl` on launch with exit 137. The casks now
+  remove the quarantine attribute after install.
+
+- **`seekdir()` works on Linux NFS clients.** Directory cookies used the full
+  64-bit hash. The Linux client does not seek to a cookie with bit 63 set, so in
+  about half of all directories the next `readdir()` after `seekdir()` returned
+  nothing. Cookies now stay below 2^63.
+
+- **A GETATTR during a COMMIT or CLOSE sees the write it follows.** The flush
+  of a write's deferred metadata removed the pending size and times before the
+  store held them. A GETATTR in that window, common under an NFSv4 write
+  delegation, returned the times from before the write. Now the pending state
+  stays until its commit.
+
+- **A non-owner can delete a file another handle still holds open over SMB.** On
+  a Linux cifs client, such an `unlink()` failed with `EIO` and left a
+  `.__smbXXXX` file behind. An open with `FILE_WRITE_ATTRIBUTES` now covers the
+  DOS attributes as well as the timestamps, as MS-FSA states, so the client's
+  hidden-attribute write succeeds. A non-owner with that right can therefore set
+  `READONLY`, which refuses writes over both protocols until it is cleared. A
+  rename now also updates every other open of that name, so the last close
+  deletes the file where it now is.
+
+- **An SMB authorization re-check keeps IPC$ trees.** Every re-check, which runs
+  after a control-plane change, disconnected every session's IPC$ tree. The
+  client's next named-pipe call then failed.
+
+- **SMB answers DFS referral requests with `STATUS_FS_DRIVER_REQUIRED`.**
+  `FSCTL_DFS_GET_REFERRALS` and `FSCTL_DFS_GET_REFERRALS_EX` got
+  `STATUS_FILE_CLOSED`. Now the client learns the server has no DFS and opens
+  the path as an ordinary share.
+
+- **SMB IOCTL checks its Flags and the VALIDATE_NEGOTIATE_INFO output size, as
+  MS-SMB2 states.** An IOCTL whose Flags are not exactly
+  `SMB2_0_IOCTL_IS_FSCTL` gets `STATUS_NOT_SUPPORTED`. A VALIDATE_NEGOTIATE_INFO
+  whose `MaxOutputResponse` is below 24 bytes drops the connection.
+
+- **A remote store that stops answering no longer holds share creation, startup
+  or garbage collection for minutes.** The health probe sent one request with up
+  to 10 retries and no time limit. Now each probe is one request bounded to
+  10 s. GC deletes and listing pages are bounded to 30 s, compaction calls to
+  2 min, and the first call that times out ends the GC pass, so the next run
+  continues. A compaction timeout now counts in the run's errors.
+
+- **`dfsctl store block stats` shows a remote that refuses every upload.** A
+  remote that answered the health probe but failed each upload showed nothing
+  wrong. A new `Uploads Failing` row turns true after 3 failed uploads in a row,
+  throttling included, and false after the next success.
+
+- **Writing the same bytes again after an uncertain GC delete no longer loses
+  them.** When a remote applied a GC delete but the answer never arrived, a write
+  of the same content could skip the upload and point at the deleted block. Its
+  reads then failed with `chunk not found`. Now the write uploads the content
+  again. The old block is left for `dfsctl store block reclaim`.
+
 ## [0.36.0] — 2026-10-19
 
 0.36.0 is a fix release, mostly for SMB. Before upgrading, check any SMB
