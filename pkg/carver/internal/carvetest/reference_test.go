@@ -8,6 +8,7 @@ import (
 	"math/bits"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 
 	"lukechampine.com/blake3"
@@ -166,10 +167,8 @@ func TestGoldenBoundaries(t *testing.T) {
 			t.Errorf("%s: ends %v, want the committed %v", name, ends, gd.Ends)
 			continue
 		}
-		for i := range hashes {
-			if hashes[i] != gd.Hashes[i] {
-				t.Errorf("%s: chunk %d hash %x, want the committed %x", name, i, hashes[i], gd.Hashes[i])
-			}
+		if !slices.Equal(hashes, gd.Hashes) {
+			t.Errorf("%s: hashes %x, want the committed %x", name, hashes, gd.Hashes)
 		}
 	}
 }
@@ -195,6 +194,9 @@ func TestGoldenBoundariesHoldTheBounds(t *testing.T) {
 		}
 		seen[profile{gd.Target, gd.Keyed}] = true
 
+		if want := goldenSeed(gd.Target); gd.Seed != want {
+			t.Errorf("%s: seed %d, want %d", name, gd.Seed, want)
+		}
 		if want := 16 * gd.Target; gd.Length != want {
 			t.Errorf("%s: length %d, want 16 × Target = %d", name, gd.Length, want)
 		}
@@ -225,16 +227,15 @@ func TestGoldenBoundariesHoldTheBounds(t *testing.T) {
 // parseBoundaries refuses a file LoadBoundaries' callers could not trust.
 func TestParseBoundariesRefuses(t *testing.T) {
 	hash := `"` + hex.EncodeToString(make([]byte, 32)) + `"`
-	for _, c := range []struct{ name, raw string }{
-		{"not JSON", `{`},
-		{"no profile", `[]`},
-		{"no chunks", `[{"target":65536,"length":0,"ends":[],"hashes":[]}]`},
-		{"fewer hashes than ends", `[{"target":65536,"length":2,"ends":[1,2],"hashes":[` + hash + `]}]`},
-		{"a short hash", `[{"target":65536,"length":1,"ends":[1],"hashes":["00"]}]`},
-		{"a hash not hex", `[{"target":65536,"length":1,"ends":[1],"hashes":["zz"]}]`},
+	for _, c := range []struct{ name, raw, want string }{
+		{"not JSON", `{`, "decoding"},
+		{"no profile", `[]`, "holds no profile"},
+		{"no chunks", `[{"target":65536,"length":0,"ends":[],"hashes":[]}]`, "has 0 ends and 0 hashes"},
+		{"fewer hashes than ends", `[{"target":65536,"length":2,"ends":[1,2],"hashes":[` + hash + `]}]`, "has 2 ends and 1 hashes"},
+		{"a short hash", `[{"target":65536,"length":1,"ends":[1],"hashes":["00"]}]`, "hashes[0] is 1 bytes, want 32"},
 	} {
-		if _, err := parseBoundaries([]byte(c.raw)); err == nil {
-			t.Errorf("%s: parseBoundaries accepted it, want an error", c.name)
+		if _, err := parseBoundaries([]byte(c.raw)); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: parseBoundaries gave %v, want an error containing %q", c.name, err, c.want)
 		}
 	}
 

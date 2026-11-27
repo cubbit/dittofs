@@ -6,18 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"math/bits"
+	"slices"
 	"testing"
 )
 
 // Boundaries cuts p, a stretch with a real end, under gear table g and
-// target, and returns each chunk's end offset in order, the last len(p). It
+// target, and returns each chunk's end offset in order, the last len(p), or
+// nil for an empty p. It
 // follows RFC 2 §3.2 one byte at a time: fp ← (fp << 1) + G[b] mod 2⁶⁴; a
 // byte is a boundary when the top m bits of fp are zero, m being t + 1 while
 // the chunk's length before the byte is under target (2^t) and t − 3 from
 // target on; the first byte tested is the chunk's at index Min − 1; a chunk
 // reaching Max ends there. Min is target / 4 and Max 4 × target. It panics on
-// a target that is not a power of two of at least 16, where t − 3 bits is no
-// test.
+// a target that is not one of Targets.
 //
 // decision: the fingerprint starts at zero at each chunk's first byte and is
 // built over every byte of the chunk, the literal reading of §3.2 with nothing
@@ -26,8 +27,8 @@ import (
 // warm-up gives the same ends, and this is the side the chunker's warm-up is
 // compared against. Withdraw the exemption if the reference ever ships.
 func Boundaries(g *[256]uint64, target int, p []byte) []int {
-	if target < 16 || target&(target-1) != 0 {
-		panic(fmt.Sprintf("carvetest: target %d is not a power of two of at least 16", target))
+	if !slices.Contains(Targets[:], target) {
+		panic(fmt.Sprintf("carvetest: target %d is not a supported Target %v", target, Targets))
 	}
 
 	t := bits.TrailingZeros(uint(target))
