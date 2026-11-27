@@ -297,6 +297,9 @@ func (w *deltaWorld) check(f *deltaFile, d HeldDelta, err error, wantTag core.Sh
 		}
 		f.onList = false
 	}
+	if err := newestMismatch(w.fs, f.id); err != nil {
+		w.fatalf(f, "%v (last delta %+v)", err, d)
+	}
 	got := walkTotals(w.fs, f.id)
 	if want := (fileTotals{f.sum.held, f.sum.dirty, f.sum.retained, f.onList}); got != want {
 		w.fatalf(f, "the deltas sum to %+v, the read-out says %+v (last delta %+v)", want, got, d)

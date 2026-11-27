@@ -351,6 +351,11 @@ func (m *ModelIndex) CheckAccounting() error {
 	if entries != m.fs.extentCount() {
 		return fmt.Errorf("index: the read-out counts %d entries, extentCount() says %d", entries, m.fs.extentCount())
 	}
+	for id := range m.fs.inspectAll() {
+		if err := newestMismatch(m.fs, id); err != nil {
+			return err
+		}
+	}
 	for seg := core.SegmentID(1); seg <= m.last; seg++ {
 		want := SegmentBytes{}
 		if b, ok := perSeg[seg]; ok {

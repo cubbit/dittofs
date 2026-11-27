@@ -308,3 +308,39 @@ func TestSyncRefusesAClosedHandle(t *testing.T) {
 		t.Fatalf("Sync through a closed handle = %v, want ErrClosed", err)
 	}
 }
+
+// TestSyncOfACleanFileMarksItsNewestRecord checks the mark of a Sync naming a
+// file with nothing unsynced, which comes from the file's newest record the
+// index names: the later of two synced writes, and, once a truncation removed
+// every byte of that write and was synced in turn, the earlier one again,
+// which the index finds only by looking past the record it last named.
+func TestSyncOfACleanFileMarksItsNewestRecord(t *testing.T) {
+	c, seam := newTestCore(t)
+	s := mustShare(t, c, 1)
+	f := testFile(1)
+	mustWrite(t, c, s, f, 0, make([]byte, 4096))
+	mustWrite(t, c, s, f, 4096, make([]byte, 4096))
+	syncFiles(t, c, f)
+	cleanMark := func(when string, off int64) {
+		t.Helper()
+		want := pieceRecord(t, seam, f, off)
+		marks, err := c.Durability().Sync(context.Background(), f)
+		if err != nil {
+			t.Fatalf("Sync %s: %v", when, err)
+		}
+		if len(marks) != 1 {
+			t.Fatalf("Sync %s returned %d marks, want the one of the file's stream: %+v", when, len(marks), marks)
+		}
+		m := marks[0]
+		if m.Segment != uint64(want.Segment) || m.Offset != want.Header.Offset+want.Header.Size() || m.Sequence != uint64(want.Header.Seq) {
+			t.Fatalf("Sync %s marked segment %d offset %d seq %d, want the record of offset %d: segment %d, end %d, seq %d",
+				when, m.Segment, m.Offset, m.Sequence, off, want.Segment, want.Header.Offset+want.Header.Size(), want.Header.Seq)
+		}
+	}
+	cleanMark("after both writes synced", 4096)
+	if _, err := c.Truncate(context.Background(), s, f, 4096); err != nil {
+		t.Fatalf("Truncate: %v", err)
+	}
+	syncFiles(t, c, f)
+	cleanMark("after the newest write was truncated away", 0)
+}

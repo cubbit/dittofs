@@ -631,6 +631,9 @@ func (s *heldSet) put(p Piece) {
 			s.acct.add(p.Record.Segment, p.Extent.Len, 0)
 		}
 	}
+	if s.of != nil {
+		s.of.newest.raise(p.Record, p.Extent)
+	}
 	s.cut(p.Extent)
 	s.tree.set(uint64(p.Extent.Off), s.toHeld(p))
 	s.coalesce(p.Extent.Off + p.Extent.Len)
