@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/remote"
@@ -306,6 +307,120 @@ func (s storesRefusedPut) Put(ctx context.Context, n remote.Name, body io.Reader
 	return nil
 }
 
+// healthAfterClose is a fault around the in-memory store: its probes go to a
+// second store over the same objects, which Close leaves open.
+type healthAfterClose struct {
+	*memory.Store
+
+	health *memory.Store
+}
+
+func (s healthAfterClose) Health(ctx context.Context, d remote.Direction) error {
+	return s.health.Health(ctx, d)
+}
+
+// probeThrough is a fault around the wrapper: its put probe goes to the store
+// beneath it, so it passes while the namespace is read-only.
+type probeThrough struct {
+	*memory.Wrapper
+
+	s *memory.Store
+}
+
+func (s probeThrough) Health(ctx context.Context, d remote.Direction) error {
+	if d == remote.DirPut {
+		return s.s.Health(ctx, d)
+	}
+
+	return s.Wrapper.Health(ctx, d)
+}
+
+// readOnlyFault is a fault around the wrapper that keeps its own copy of the
+// read-only setting: refuseGet refuses a get probe that passed while
+// read-only, and
+// denyFirst refuses a put with access denied before the closed store's own
+// refusal.
+type readOnlyFault struct {
+	*memory.Wrapper
+
+	on                   atomic.Bool
+	refuseGet, denyFirst bool
+}
+
+func (s *readOnlyFault) Health(ctx context.Context, d remote.Direction) error {
+	err := s.Wrapper.Health(ctx, d)
+	if err == nil && s.refuseGet && d == remote.DirGet && s.on.Load() {
+		return &remote.DeniedError{Cause: remote.CauseAccess, Code: "AccessDenied"}
+	}
+
+	return err
+}
+
+func (s *readOnlyFault) Put(ctx context.Context, n remote.Name, body io.Reader, size int64, sum []byte) error {
+	if s.denyFirst && s.on.Load() {
+		return &remote.DeniedError{Cause: remote.CauseAccess, Code: "AccessDenied"}
+	}
+
+	return s.Wrapper.Put(ctx, n, body, size, sum)
+}
+
+// withReadOnlyFault returns the in-memory subject over s with its store
+// behind f, which follows the subject's read-only setting.
+func withReadOnlyFault(s *memory.Store, f *readOnlyFault) remotetest.Subject {
+	sub := subject(s)
+	f.Wrapper = sub.Store.(*memory.Wrapper)
+	sub.Store = f
+
+	ro := sub.ReadOnly
+	sub.ReadOnly = func(ctx context.Context, on bool) error {
+		f.on.Store(on)
+		return ro(ctx, on)
+	}
+
+	return sub
+}
+
+// readOnlyBroken names each fault of the read-only namespace, the one row it
+// must fail, and a piece of the failure that row reports. Each builds the
+// whole subject, since a fault there may sit in a hook rather than the store.
+var readOnlyBroken = map[string]struct {
+	sub func(*memory.Store) remotetest.Subject
+	row string
+	msg string
+}{
+	"probe-through-read-only": {func(s *memory.Store) remotetest.Subject {
+		sub := subject(s)
+		sub.Store = probeThrough{sub.Store.(*memory.Wrapper), s}
+
+		return sub
+	}, "ReadOnly", "Health(DirPut) while read-only: error <nil>"},
+	"read-only-latches": {func(s *memory.Store) remotetest.Subject {
+		sub := subject(s)
+		ro := sub.ReadOnly
+		sub.ReadOnly = func(ctx context.Context, on bool) error {
+			if !on {
+				return nil
+			}
+
+			return ro(ctx, on)
+		}
+
+		return sub
+	}, "ReadOnly", "Health(DirPut) after read-only ended: remote: denied"},
+	"read-only-refuses-reads": {func(s *memory.Store) remotetest.Subject {
+		return withReadOnlyFault(s, &readOnlyFault{refuseGet: true})
+	}, "ReadOnly", "Health(DirGet) while read-only: remote: denied"},
+	"reopen-unwrapped": {func(s *memory.Store) remotetest.Subject {
+		sub := subject(s)
+		sub.Reopen = func(context.Context) (remote.Store, error) { return memory.Reopen(s), nil }
+
+		return sub
+	}, "ReadOnly", "Health(DirPut) while read-only on a store opened again: error <nil>"},
+	"denies-after-close": {func(s *memory.Store) remotetest.Subject {
+		return withReadOnlyFault(s, &readOnlyFault{denyFirst: true})
+	}, "AfterClose", "Put after Close, read-only: error remote: denied"},
+}
+
 // broken names each fault, the one row it must fail, and a piece of the
 // failure that row reports, so the row fails on the assertion that holds the
 // rule the fault breaks.
@@ -334,6 +449,7 @@ var broken = map[string]struct {
 	"control-after-close":    {func(s *memory.Store) remote.Store { return controlAfterClose{s, memory.Reopen(s)} }, "AfterClose", "PutControl after Close: error <nil>"},
 	"stores-refused-put":     {func(s *memory.Store) remote.Store { return storesRefusedPut{s} }, "AfterClose", "which the row's puts did not store"},
 	"stores-refused-control": {func(s *memory.Store) remote.Store { return storesRefusedControl{s} }, "AfterClose", "after a PutControl refused after Close"},
+	"health-after-close":     {func(s *memory.Store) remote.Store { return healthAfterClose{s, memory.Reopen(s)} }, "AfterClose", "Health(DirPut) after Close: error <nil>"},
 }
 
 // withoutHealth opens the in-memory store without its health object, as a
@@ -350,17 +466,28 @@ const brokenEnv = "MEMORY_SUITE_BROKEN"
 // TestBrokenStore runs the suite over the fault brokenEnv names, and is
 // skipped without it: the failures it reports are the parent test's evidence.
 func TestBrokenStore(t *testing.T) {
-	b, ok := broken[os.Getenv(brokenEnv)]
-	if !ok {
+	fault := os.Getenv(brokenEnv)
+
+	b, ok := broken[fault]
+	ro, rok := readOnlyBroken[fault]
+
+	if !ok && !rok {
 		t.Skip("runs only as the child of TestTheSuiteFailsABrokenStoreOnItsRow")
 	}
 
 	remotetest.Run(t, func(t *testing.T) remotetest.Subject {
 		inner := memory.New(sim.NewTestClock(epoch).Now, remote.ChecksumNone)
 
+		if rok {
+			return ro.sub(inner)
+		}
+
+		// The fault sits around the store itself, so no wrapper is in front
+		// of it to turn the namespace read-only.
 		sub := subject(inner)
 		sub.Store = b.wrap(inner)
 		sub.Reopen = func(context.Context) (remote.Store, error) { return b.wrap(memory.Reopen(inner)), nil }
+		sub.ReadOnly = nil
 
 		if p, ok := sub.Store.(interface{ plant(string) }); ok {
 			putRaw := sub.PutRaw
@@ -380,7 +507,18 @@ var failedRow = regexp.MustCompile(`(?m)^\s*--- FAIL: TestBrokenStore/(\S+)`)
 // The suite fails each broken store on exactly the row that holds the rule it
 // breaks, and on no other row.
 func TestTheSuiteFailsABrokenStoreOnItsRow(t *testing.T) {
-	for fault, b := range broken {
+	type want struct{ row, msg string }
+
+	faults := make(map[string]want, len(broken)+len(readOnlyBroken))
+	for f, b := range broken {
+		faults[f] = want{b.row, b.msg}
+	}
+
+	for f, b := range readOnlyBroken {
+		faults[f] = want{b.row, b.msg}
+	}
+
+	for fault, b := range faults {
 		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestBrokenStore$", "-test.v", "-test.count=1")
 		cmd.Env = append(os.Environ(), brokenEnv+"="+fault)
 		out, _ := cmd.CombinedOutput()

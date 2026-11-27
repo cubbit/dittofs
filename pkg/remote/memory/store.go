@@ -205,16 +205,6 @@ func (s *Store) Get(ctx context.Context, name remote.Name, r remote.Range) (io.R
 	return io.NopCloser(bytes.NewReader(bytes.Clone(b))), remote.StoredSum{}, nil
 }
 
-// Health is not served yet: it refuses with remote.ErrInvalid.
-func (s *Store) Health(ctx context.Context, d remote.Direction) error {
-	return unserved("Health")
-}
-
-// unserved is the refusal of a call the store does not serve yet.
-func unserved(call string) error {
-	return fmt.Errorf("memory: %s is not served: %w", call, remote.ErrInvalid)
-}
-
 // Close marks the store closed: every later call but Close is refused with
 // remote.ErrInvalid. Its objects are dropped by no call.
 func (s *Store) Close() error {
