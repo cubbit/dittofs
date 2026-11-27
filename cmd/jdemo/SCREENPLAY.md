@@ -9,7 +9,7 @@ Keystrokes:
 
 ## Setup (before the room fills)
 
-- `go run ./cmd/jdemo --dir talk-journal` — named dir, so it survives a rehearsal
+- `go run -tags jdemo ./cmd/jdemo --dir talk-journal` — named dir, so it survives a rehearsal
 - a named dir is recovered on the next run; rm it for a clean basic story
 - Terminal: dark theme, reasonably tall; the colours are picked for one
 - Have `SESSION.md` next to this — it is the audience-facing contract
@@ -218,7 +218,7 @@ real restart. Runs after a basic run if the room wants the safety half. The
 whole story is about ONE sentence: **nothing is lost that a synced version
 might still name.** Say it at the start and again at the end.*
 
-Setup: a fresh `--dir` (`go run ./cmd/jdemo --story crash --dir /tmp/crash`).
+Setup: a fresh `--dir` (`go run -tags jdemo ./cmd/jdemo --story crash --dir /tmp/crash`).
 If the dir already has data the story still runs — the open recovers it — but
 the numbers below assume empty.
 

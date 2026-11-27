@@ -3,10 +3,10 @@
 One binary, one journal, one story at a time:
 
 ```sh
-go run ./cmd/jdemo                            # a fresh journal under $TMPDIR, the basic story
-go run ./cmd/jdemo --story crash             # the durability story: retention, the mark, a real restart
-go run ./cmd/jdemo --story limits            # the space story: the share budget, the reserve-first escape
-go run ./cmd/jdemo --dir talk-journal        # name the directory (a used one is recovered on open)
+go run -tags jdemo ./cmd/jdemo                            # a fresh journal under $TMPDIR, the basic story
+go run -tags jdemo ./cmd/jdemo --story crash             # the durability story: retention, the mark, a real restart
+go run -tags jdemo ./cmd/jdemo --story limits            # the space story: the share budget, the reserve-first escape
+go run -tags jdemo ./cmd/jdemo --dir talk-journal        # name the directory (a used one is recovered on open)
 ```
 
 ## Driving
