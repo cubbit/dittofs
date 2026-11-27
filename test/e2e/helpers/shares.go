@@ -3,272 +3,83 @@
 package helpers
 
 import (
-	"fmt"
-	"strings"
+	"testing"
+
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
 )
 
-// =============================================================================
-// Share Management Types
-// =============================================================================
-
-// Share represents a share returned from the API.
+// Share is a share a test created: its ID, which grants name, and its name,
+// which a client mounts.
 type Share struct {
-	Name              string `json:"name"`
-	MetadataStoreID   string `json:"metadata_store_id"`
-	BlockStoreID      string `json:"block_store_id"`
-	ReadOnly          bool   `json:"read_only"`
-	DefaultPermission string `json:"default_permission"`
-	Description       string `json:"description,omitempty"`
+	ID   string
+	Name string
 }
 
-// ShareOption is a functional option for share operations.
-type ShareOption func(*shareOptions)
-
-type shareOptions struct {
-	readOnly          *bool
-	defaultPermission string
-	description       string
-	trashEnabled      *bool
-	quotaBytes        string
-}
-
-// WithShareReadOnly sets the read-only flag for the share.
-func WithShareReadOnly(readOnly bool) ShareOption {
-	return func(o *shareOptions) {
-		o.readOnly = &readOnly
-	}
-}
-
-// WithShareDefaultPermission sets the default permission level for the share.
-// Valid values: "none", "read", "read-write", "admin"
-func WithShareDefaultPermission(permission string) ShareOption {
-	return func(o *shareOptions) {
-		o.defaultPermission = permission
-	}
-}
-
-// WithShareDescription sets the description for the share.
-func WithShareDescription(desc string) ShareOption {
-	return func(o *shareOptions) {
-		o.description = desc
-	}
-}
-
-// WithShareTrashEnabled enables the per-share recycle bin so deletes move to
-// #recycle instead of being permanent.
-func WithShareTrashEnabled() ShareOption {
-	return func(o *shareOptions) {
-		enabled := true
-		o.trashEnabled = &enabled
-	}
-}
-
-// WithShareQuotaBytes sets the per-share byte quota (e.g. "1MiB"). A write that
-// would grow the share past it is refused with "no space".
-func WithShareQuotaBytes(size string) ShareOption {
-	return func(o *shareOptions) {
-		o.quotaBytes = size
-	}
-}
-
-// =============================================================================
-// Share CRUD Methods
-// =============================================================================
-
-// CreateShare creates a new share via the CLI.
-// Returns the created share or an error with CLI output on failure.
-// Share names MUST have a leading slash (e.g., "/myshare").
-func (r *CLIRunner) CreateShare(name, metadataStore, blockStore string, opts ...ShareOption) (*Share, error) {
-	options := &shareOptions{}
-	for _, opt := range opts {
-		opt(options)
-	}
-
-	args := []string{"share", "create", "--name", name, "--metadata", metadataStore, "--block-store", blockStore}
-
-	if options.readOnly != nil {
-		args = append(args, "--read-only", fmt.Sprintf("%t", *options.readOnly))
-	}
-	// e2e shares default to read-write so the root-mounted kernel NFS client can
-	// exercise file ops. #1419 made the server default "none" (deny until
-	// granted), so without this every functional e2e test that mounts and writes
-	// is denied at the export gate. Permission-denial behaviour is covered by
-	// dedicated tests that opt out via WithShareDefaultPermission("none").
-	defaultPermission := options.defaultPermission
-	if defaultPermission == "" {
-		defaultPermission = "read-write"
-	}
-	args = append(args, "--default-permission", defaultPermission)
-	if options.description != "" {
-		args = append(args, "--description", options.description)
-	}
-	if options.trashEnabled != nil && *options.trashEnabled {
-		args = append(args, "--enable-trash")
-	}
-	if options.quotaBytes != "" {
-		args = append(args, "--quota-bytes", options.quotaBytes)
-	}
-
-	output, err := r.Run(args...)
-	if err != nil {
-		return nil, err
-	}
-
-	var share Share
-	if err := ParseJSONResponse(output, &share); err != nil {
-		return nil, err
-	}
-
-	return &share, nil
-}
-
-// ListShares lists all shares via the CLI.
-func (r *CLIRunner) ListShares() ([]*Share, error) {
-	output, err := r.Run("share", "list")
-	if err != nil {
-		return nil, err
-	}
-
-	var shares []*Share
-	if err := ParseJSONResponse(output, &shares); err != nil {
-		return nil, err
-	}
-
-	return shares, nil
-}
-
-// GetShare retrieves a share by name.
+// NewShare creates a share named after prefix, unique on the server, in the
+// fixture's namespace, whose export policy offers AUTH_SYS and then Kerberos
+// to every client and squashes nobody, and waits until the node applied it.
+// Its one grant gives the mount group read, so MountNFS's own calls are
+// admitted. The test's end deletes it.
 //
-// It uses `share show`, which returns the full per-share detail (store IDs,
-// read-only, default permission). `share list` only renders resolved store
-// *names* for table display, so it cannot satisfy callers that assert on
-// store IDs or read-only state.
-func (r *CLIRunner) GetShare(name string) (*Share, error) {
-	output, err := r.Run("share", "show", name)
+// decision: nobody is squashed, so Admin()'s uid 0 reaches admission as
+// root rather than as nobody, and a root bypass, which squashing would hide,
+// shows as root reaching the share with no group.
+//
+// decision: a share is never one that admits nobody, as the mount, which
+// runs as root, needs a grant, and the API grants root nothing. A row's
+// "refused" therefore means refused to the accounts the row creates, which
+// never hold the mount group. Grant root's mount another way, and drop this
+// grant, if the API comes to name a share's anonymous principal or root.
+func NewShare(t *testing.T, prefix string) Share {
+	t.Helper()
+	c := Start(t).API
+	ctx, cancel := call()
+	defer cancel()
+	name := unique(prefix)
+	sh, err := c.CreateShare(ctx, apiv1.NewShare{
+		Spec:         apiv1.ShareSpec{Name: name, Path: "/" + name, Namespace: served.Namespace()},
+		ExportPolicy: apiv1.ExportPolicySpec{Flavors: []string{"sys", "kerberos"}, Squash: "none", Clients: []apiv1.ClientRule{}},
+	})
 	if err != nil {
-		return nil, err
+		t.Fatalf("creating the share %s: %v", name, err)
 	}
-
-	var share Share
-	if err := ParseJSONResponse(output, &share); err != nil {
-		return nil, err
+	t.Cleanup(func() { remove(t, "share "+name, Start(t).API.Shares(), sh.ID, "") })
+	if err := served.WaitApplied(ctx, sh.ID); err != nil {
+		t.Fatalf("waiting for the share %s: %v", name, err)
 	}
-
-	return &share, nil
+	share := Share{ID: sh.ID, Name: name}
+	Grant(t, share, mounter.ID, Read)
+	return share
 }
 
-// EditShare edits an existing share via the CLI.
-// At least one option must be provided.
-func (r *CLIRunner) EditShare(name string, opts ...ShareOption) (*Share, error) {
-	options := &shareOptions{}
-	for _, opt := range opts {
-		opt(options)
+// Grant gives the principal whose ID is principal access on share, through a put that creates the grant, refused
+// when the principal already holds one. The test's end deletes it unless
+// Ungrant did.
+func Grant(t *testing.T, share Share, principal string, access Access) {
+	t.Helper()
+	c := Start(t).API
+	ctx, cancel := call()
+	defer cancel()
+	if _, err := c.Grants(share.ID).Put(ctx, principal, apiv1.GrantSpec{Access: string(access)}, "*"); err != nil {
+		t.Fatalf("granting %s %s on the share %s: %v", principal, access, share.Name, err)
 	}
+	t.Cleanup(func() {
+		remove(t, "grant of "+principal+" on "+share.Name, Start(t).API.Grants(share.ID), principal, "")
+	})
+}
 
-	args := []string{"share", "edit", name}
-	hasUpdate := false
-
-	if options.readOnly != nil {
-		args = append(args, "--read-only", fmt.Sprintf("%t", *options.readOnly))
-		hasUpdate = true
+// Ungrant deletes the grant the principal whose ID is principal holds on
+// share, failing t when it holds none.
+func Ungrant(t *testing.T, share Share, principal string) {
+	t.Helper()
+	c := Start(t).API
+	ctx, cancel := call()
+	defer cancel()
+	g, err := c.Grants(share.ID).Get(ctx, principal)
+	if err == nil {
+		_, err = c.Grants(share.ID).Delete(ctx, principal, g.ETag)
 	}
-	if options.defaultPermission != "" {
-		args = append(args, "--default-permission", options.defaultPermission)
-		hasUpdate = true
-	}
-	if options.description != "" {
-		args = append(args, "--description", options.description)
-		hasUpdate = true
-	}
-
-	if !hasUpdate {
-		return nil, fmt.Errorf("at least one option (WithShareReadOnly, WithShareDefaultPermission, or WithShareDescription) is required for EditShare")
-	}
-
-	output, err := r.Run(args...)
 	if err != nil {
-		return nil, err
+		t.Fatalf("deleting the grant of %s on the share %s: %v", principal, share.Name, err)
 	}
-
-	var share Share
-	if err := ParseJSONResponse(output, &share); err != nil {
-		return nil, err
-	}
-
-	return &share, nil
-}
-
-// DeleteShare deletes a share via the CLI.
-// Uses --force to skip confirmation prompt.
-func (r *CLIRunner) DeleteShare(name string) error {
-	_, err := r.Run("share", "remove", name, "--force")
-	return err
-}
-
-// =============================================================================
-// Share Permission Types
-// =============================================================================
-
-// SharePermission represents a permission on a share.
-type SharePermission struct {
-	Type  string `json:"type"`  // "user" or "group"
-	Name  string `json:"name"`  // username or group name
-	Level string `json:"level"` // "none", "read", "read-write", "admin"
-}
-
-// =============================================================================
-// Share Permission Methods
-// =============================================================================
-
-// GrantUserPermission grants a permission level to a user on a share.
-// Level must be one of: "none", "read", "read-write", "admin".
-func (r *CLIRunner) GrantUserPermission(shareName, username, level string) error {
-	_, err := r.Run("share", "permission", "grant", shareName, "--user", username, "--level", level)
-	return err
-}
-
-// GrantGroupPermission grants a permission level to a group on a share.
-// Level must be one of: "none", "read", "read-write", "admin".
-func (r *CLIRunner) GrantGroupPermission(shareName, groupName, level string) error {
-	_, err := r.Run("share", "permission", "grant", shareName, "--group", groupName, "--level", level)
-	return err
-}
-
-// RevokeUserPermission revokes a user's permission from a share.
-func (r *CLIRunner) RevokeUserPermission(shareName, username string) error {
-	_, err := r.Run("share", "permission", "revoke", shareName, "--user", username)
-	return err
-}
-
-// RevokeGroupPermission revokes a group's permission from a share.
-func (r *CLIRunner) RevokeGroupPermission(shareName, groupName string) error {
-	_, err := r.Run("share", "permission", "revoke", shareName, "--group", groupName)
-	return err
-}
-
-// ListSharePermissions returns all permissions configured on a share.
-// Returns an empty slice (not error) if no permissions are configured.
-func (r *CLIRunner) ListSharePermissions(shareName string) ([]*SharePermission, error) {
-	output, err := r.Run("share", "permission", "list", shareName)
-	if err != nil {
-		return nil, err
-	}
-
-	// Handle empty output or "null" JSON response
-	trimmed := strings.TrimSpace(string(output))
-	if trimmed == "" || trimmed == "null" || trimmed == "[]" {
-		return []*SharePermission{}, nil
-	}
-
-	var perms []*SharePermission
-	if err := ParseJSONResponse(output, &perms); err != nil {
-		return nil, err
-	}
-
-	// Ensure we never return nil slice
-	if perms == nil {
-		return []*SharePermission{}, nil
-	}
-
-	return perms, nil
 }

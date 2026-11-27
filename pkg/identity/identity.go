@@ -1,98 +1,68 @@
-// Package identity provides pluggable identity resolution for DittoFS.
-//
-// This package defines the core abstractions for mapping external identity
-// claims (Kerberos principals, OIDC tokens, AD SIDs, etc.) to DittoFS users.
-// Each external identity system is implemented as a Provider in its own
-// sub-package (e.g., identity/kerberos, identity/oidc).
-//
-// Protocol adapters (NFS, SMB) extract credentials from protocol-specific
-// auth data and pass them to the Resolver, which chains Providers to find
-// a matching DittoFS user. The control plane is the single source of truth
-// for user identity (username, UID, GID).
-//
-// This package is intentionally decoupled from both protocol adapters and
-// the control plane. Dependencies are injected via interfaces (LinkStore)
-// and callbacks (UserLookup) to prevent circular imports.
+// Package identity is the contract of identity and authentication: the values
+// an adapter's proof becomes, the interfaces the identity server implements
+// and the filesystem and management API call, and the errors they answer. It
+// is a leaf: it imports only the standard library, the metadata store's value
+// types, the SID codec, the filesystem's error values, and x/crypto's argon2
+// and md4, which NewHashes derives with. pkg/vfs aliases the
+// value types an adapter needs, so an adapter imports pkg/vfs alone.
 package identity
 
-import "context"
+import (
+	"net/netip"
+	"time"
 
-// Credential represents an identity claim from an external system.
-// Protocol adapters construct this from protocol-specific auth data.
-type Credential struct {
-	// Provider identifies which identity provider should handle this credential
-	// (e.g., "kerberos", "oidc", "ad"). When empty, the Resolver tries all providers.
-	Provider string
+	"github.com/cubbit/dittofs/pkg/auth/sid"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+)
 
-	// ExternalID is the canonical identifier in the external system.
-	// Format is provider-specific:
-	//   - Kerberos: "alice@EXAMPLE.COM" (principal@realm)
-	//   - OIDC:     "https://accounts.google.com|sub123" (issuer|subject)
-	//   - AD:       "S-1-5-21-...-1001" (SID)
-	ExternalID string
+// SID is a Windows security identifier.
+type SID = sid.SID
 
-	// Attributes holds provider-specific metadata needed for resolution.
-	Attributes map[string]string
+// Identity is what the adapter proved for one request, not yet mapped through
+// any share's policy, in no protocol's terms. It names no flavour, mechanism
+// or protocol: each adapter maps its own to a ProofKind and a Protection. It
+// never carries a key.
+type Identity struct {
+	Proof      ProofKind
+	Protection Protection
+	Claims     Claims     // what the client asserted; read only at ProofClaimed, never as proof
+	Evidence   Evidence   // what sign-in established; zero below ProofSecret
+	Client     netip.Addr // the client's address, which client rules read
 }
 
-// ResolvedIdentity is the result of resolving an external credential
-// to a DittoFS user.
-type ResolvedIdentity struct {
-	Username string
-	UID      uint32
-	GID      uint32
+// ProofKind is how the sender was proved, in increasing order. ProofSecret
+// and ProofTicket prove a principal.
+type ProofKind uint8
+
+const (
+	ProofNone    ProofKind = iota // nothing: an anonymous or guest caller
+	ProofClaimed                  // POSIX ids asserted, nothing verified
+	ProofSecret                   // NTLMv2's challenge and response, and nothing else
+	ProofTicket                   // a third party's mutual proof, such as Kerberos
+)
+
+// Protection is how the request's messages are protected, in increasing order.
+type Protection uint8
+
+const (
+	ProtectionNone      Protection = iota
+	ProtectionIntegrity            // every message signed
+	ProtectionPrivacy              // every message sealed
+)
+
+// Claims are POSIX ids a client asserted. They name no principal until
+// resolution maps them, and they never make a caller authenticated.
+type Claims struct {
+	UID, GID uint32
 	GIDs     []uint32
-	Domain   string
-	Found    bool
-
-	// SID is the user's Windows Security Identifier, when known. Empty when
-	// no Windows identity is associated with the user. Populated from the
-	// persisted control-plane user record so the same identity surfaces
-	// regardless of which protocol (NFS/SMB) or provider resolved it.
-	SID string
-
-	// GroupSIDs is the list of Windows group SIDs for the user, when known.
-	GroupSIDs []string
-
-	// IsGroup marks a resolution whose subject is a group object rather than a
-	// user account. It is set when a directory SID lookup matches a group (e.g.
-	// resolving "Domain Admins" for the SMB Security-tab display of a group
-	// share grant), so the LSARPC path can report SID_NAME_USE = SidTypeGroup
-	// instead of SidTypeUser. Login/authz paths always resolve a user and leave
-	// this false.
-	IsGroup bool
 }
 
-// IdentityProvider resolves external credentials to DittoFS users.
-// Each identity system (Kerberos, OIDC, AD, LDAP) implements this interface.
-//
-// Providers are stateless resolvers — they do not manage authentication.
-// Protocol adapters handle authentication; providers handle identity mapping.
-//
-// Thread safety: implementations must be safe for concurrent use.
-type IdentityProvider interface {
-	// Name returns the provider identifier (e.g., "kerberos", "oidc", "ad").
-	Name() string
-
-	// CanResolve returns true if this provider can handle the given credential.
-	CanResolve(cred *Credential) bool
-
-	// Resolve maps an external credential to a DittoFS user.
-	// Returns Found=false if the credential is valid but no mapping exists.
-	// Returns error only for infrastructure failures.
-	Resolve(ctx context.Context, cred *Credential) (*ResolvedIdentity, error)
-}
-
-// UserLookup resolves a DittoFS username to UID/GID/groups.
-// Injected by the control plane at wiring time to avoid circular imports.
-type UserLookup func(ctx context.Context, username string) (*ResolvedIdentity, error)
-
-// NobodyIdentity returns a ResolvedIdentity for the "nobody" user (UID/GID 65534).
-func NobodyIdentity() *ResolvedIdentity {
-	return &ResolvedIdentity{
-		Username: "nobody",
-		UID:      65534,
-		GID:      65534,
-		Found:    true,
-	}
+// Evidence is what one sign-in established, and nothing more. It holds no
+// key, so it is safe to copy into every request's Identity.
+type Evidence struct {
+	Name      string           // canonical: "alice@CORP.EXAMPLE", "CORP\\alice", a local user name; empty: none
+	Principal entity.Principal // what sign-in bound Name to; every call acts as it; zero: none
+	SIDs      []SID            // from a verified PAC or a pass-through reply: the user's first; else empty
+	DenyOnly  []SID            // marked deny-only by the signer
+	Expires   time.Time        // the ticket's end time; zero for NTLM
 }

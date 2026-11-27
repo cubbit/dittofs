@@ -1,0 +1,785 @@
+package kvstore
+
+import (
+	"bytes"
+	"context"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log/slog"
+	"maps"
+	"slices"
+
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
+)
+
+// Lifecycle is the engine's store access outside block metadata's views: a
+// node's devices' journal identities, the installation's tags, the shares'
+// version limits and the shards' incarnations (RFC 16 §3).
+type Lifecycle struct {
+	s   *Store
+	log *slog.Logger // where SyncMarks logs a mark it leaves out; nil logs nothing
+}
+
+// Lifecycle is the engine's view of the store outside block metadata.
+func (s *Store) Lifecycle() Lifecycle {
+	return Lifecycle{s: s}
+}
+
+// WithLogger is l logging to log each sync mark SyncMarks leaves out. A
+// Lifecycle with no logger logs nothing.
+func (l Lifecycle) WithLogger(log *slog.Logger) Lifecycle {
+	l.log = log
+	return l
+}
+
+// journalRecord is a journal's J‖journal value: the node and device it lives
+// on.
+type journalRecord struct {
+	Node   entity.NodeID
+	Device entity.JournalDir
+}
+
+func encodeJournal(j journalRecord) []byte {
+	return codec.NewWriter(v1).Fixed(j.Node[:]).String(string(j.Device)).Encode()
+}
+
+func decodeJournal(b []byte) (journalRecord, error) {
+	r, err := open(b)
+	if err != nil {
+		return journalRecord{}, err
+	}
+
+	var j journalRecord
+	copy(j.Node[:], r.Fixed(len(j.Node)))
+	j.Device = entity.JournalDir(r.String())
+
+	return j, r.Done()
+}
+
+// encodeJournalIndex is a JD‖node‖device value: the journal identity on that
+// node's device.
+func encodeJournalIndex(id [16]byte) []byte {
+	return codec.NewWriter(v1).Fixed(id[:]).Encode()
+}
+
+func decodeJournalIndex(b []byte) ([16]byte, error) {
+	r, err := open(b)
+	if err != nil {
+		return [16]byte{}, err
+	}
+
+	var id [16]byte
+	copy(id[:], r.Fixed(len(id)))
+
+	return id, r.Done()
+}
+
+// removalStep is how far a share's removal has gone on one shard, as its
+// SH‖shard‖rm row records it (RFC 16 §2.3.2, §4.2), in the order the steps
+// run. A shard with no row has not started its step 3.
+type removalStep uint8
+
+const (
+	stepThree removalStep = iota + 1
+	stepOffloaded
+	stepForgotten
+	stepFour
+	stepDone
+)
+
+// decodeRemovalStep reads an rm row: its step after the codec version.
+func decodeRemovalStep(b []byte) (removalStep, error) {
+	r, err := open(b)
+	if err != nil {
+		return 0, err
+	}
+
+	f := r.Fixed(1)
+
+	if f == nil {
+		return 0, codec.ErrTruncated
+	}
+
+	step := removalStep(f[0])
+
+	if step < stepThree || step > stepDone {
+		return 0, fmt.Errorf("%w: removal step %d", errMalformed, step)
+	}
+
+	return step, r.Done()
+}
+
+func encodeRemovalStep(step removalStep) []byte {
+	return codec.NewWriter(v1).Uint8(uint8(step)).Encode()
+}
+
+func journalKey(id [16]byte) []byte {
+	return keys.ID([]byte{keys.KindJ}, id[:])
+}
+
+func journalIndexKey(node entity.NodeID, device entity.JournalDir) []byte {
+	return keys.String(keys.ID([]byte{keys.KindJD}, node[:]), []byte(device))
+}
+
+func shardRemovalKey(shard uint64) []byte {
+	return append(shardKey(shard), keys.SHRm)
+}
+
+// JournalID is the identity recorded for node's device, for the engine's
+// Open; zero when none is, which Open refuses. The device is matched byte for
+// byte as RecordJournal recorded it.
+func (l Lifecycle) JournalID(
+	ctx context.Context,
+	node entity.NodeID,
+	device entity.JournalDir,
+) (id [16]byte, err error) {
+	err = l.s.kv.View(ctx, func(r kv.Reader) error {
+		b, ok, err := get(r, journalIndexKey(node, device))
+		if err != nil || !ok {
+			return err
+		}
+
+		id, err = decodeJournalIndex(b)
+
+		return err
+	})
+
+	return id, err
+}
+
+// SyncMarks is journal j's recorded sync marks, for its Open, and the open
+// generation it raises J‖journal‖og to in the same transaction, which every
+// marks write of that open carries. An og never raised reads as 0. A mark
+// that does not decode is left out, as absent, fails nothing, and is logged
+// with its stream and the journal's device, read from J‖journal in the same
+// transaction, once the transaction commits (RFC 16 §3). A non-nil error
+// means the transaction failed and og was not raised.
+//
+// A key whose stream is not 4 bytes is deleted in the same transaction: no
+// marks write produces it, so none would ever replace it, and the open would
+// log it again. A well-formed key whose value does not decode is kept: the
+// next marks write carrying its stream, if any, replaces it.
+func (l Lifecycle) SyncMarks(ctx context.Context, j [16]byte) (marks []entity.SyncMark, gen OpenGen, err error) {
+	pre := syncMarksPrefix(j)
+	var undecodable []uint32 // well-formed keys whose value does not decode
+	var malformed [][]byte   // each key deleted, whole
+	var device string        // the journal's device, for the warnings; "" when unrecorded
+	err = l.s.kv.Update(ctx, func(tx kv.Txn) error {
+		marks, undecodable, malformed, device = nil, nil, nil, ""
+
+		og, err := counterIn(tx, openGenKey(j))
+		if err != nil {
+			return err
+		}
+
+		og++
+		if err := tx.Set(openGenKey(j), encodeCounter(og)); err != nil {
+			return err
+		}
+		gen = OpenGen(og)
+
+		for row, err := range tx.Scan(pre, nil) {
+			if err != nil {
+				return err
+			}
+			stream, ok := syncMarkStream(row.Key[len(pre):])
+			if !ok {
+				malformed = append(malformed, slices.Clone(row.Key))
+				continue
+			}
+			m, derr := decodeSyncMark(row.Value)
+			if derr != nil {
+				undecodable = append(undecodable, stream)
+				continue
+			}
+			m.Stream = stream
+			marks = append(marks, m)
+		}
+		for _, k := range malformed {
+			if err := tx.Delete(k); err != nil {
+				return err
+			}
+		}
+		if len(undecodable)+len(malformed) > 0 {
+			// The device only names the journal in a warning, so a record
+			// that is missing, does not decode or cannot be read leaves it
+			// unnamed rather than failing the generation raise.
+			if b, ok, gerr := get(tx, journalKey(j)); gerr == nil && ok {
+				if rec, derr := decodeJournal(b); derr == nil {
+					device = string(rec.Device)
+				}
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if l.log != nil {
+		id := hex.EncodeToString(j[:])
+		for _, s := range undecodable {
+			l.log.Warn("sync mark left out: its value does not decode; the next marks write carrying its stream, if any, replaces it",
+				"journal", id, "device", device, "stream", s)
+		}
+		for _, k := range malformed {
+			l.log.Warn("sync mark left out and deleted: its key does not decode",
+				"journal", id, "device", device, "key", hex.EncodeToString(k[len(pre):]))
+		}
+	}
+
+	return marks, gen, nil
+}
+
+// RecordJournal records journal id as living on node's device, the store's
+// part of creating or adopting a journal: the initialisation step calls it
+// after the journal's Init, and a recovery import for each journal it adopts.
+// The engine never does. In one transaction it writes J‖journal with the node
+// and device and JD‖node‖device with the identity. Recording a device again,
+// as its re-initialisation does, deletes the J‖journal of the identity the
+// device's index named. The device is kept as given: the bootstrap, which
+// builds the paths, names each device one way.
+//
+// decision: recording a journal that J‖journal places on another node or
+// directory also deletes that older index key, so each journal keeps one and
+// the old node or path never opens it. RFC 16 says nothing on that key;
+// withdraw this if it settles it.
+//
+// decision: a re-initialised device rewrites no shard record, because no
+// shard record names its primary's journal yet. Withdraw this when the shard
+// record carries that identity: this call must then rewrite it in the same
+// transaction.
+func (s *Store) RecordJournal(
+	ctx context.Context,
+	id [16]byte,
+	node entity.NodeID,
+	device entity.JournalDir,
+) error {
+	return s.kv.Update(ctx, func(tx kv.Txn) error {
+		index := journalIndexKey(node, device)
+
+		b, ok, err := get(tx, index)
+		if err != nil {
+			return err
+		}
+
+		if ok {
+			old, err := decodeJournalIndex(b)
+			if err != nil {
+				return err
+			}
+
+			// A journal this one replaces takes its open generation and sync
+			// marks with it, at most one key per stream; recorded again, a
+			// journal keeps its own.
+			if old == id {
+				err = tx.Delete(journalKey(old))
+			} else {
+				err = deleteUnder(tx, journalKey(old))
+			}
+
+			if err != nil {
+				return err
+			}
+		}
+
+		b, ok, err = get(tx, journalKey(id))
+		if err != nil {
+			return err
+		}
+
+		if ok {
+			prev, err := decodeJournal(b)
+			if err != nil {
+				return err
+			}
+
+			// When the journal stays where it was, this is the index key
+			// itself, which the Set below writes again.
+			if err := tx.Delete(journalIndexKey(prev.Node, prev.Device)); err != nil {
+				return err
+			}
+		}
+
+		rec := encodeJournal(journalRecord{
+			Node:   node,
+			Device: device,
+		})
+
+		if err := tx.Set(journalKey(id), rec); err != nil {
+			return err
+		}
+
+		return tx.Set(index, encodeJournalIndex(id))
+	})
+}
+
+// Tags is every share record of the installation, attached or not, being
+// removed or retired, with its journal tag and how far its removal has gone,
+// read from every one of its shards' rm rows (RFC 16 §2.3.2): Forgotten when
+// every row is at forgotten or later, Offloaded when every row is at
+// offloaded or later, and Serving otherwise, a shard with no row included.
+//
+// It walks the shares in ShareID order in batches of K, each its own View,
+// so no transaction reads every share, and each batch resumes after the last
+// share the one before it read. A share is read whole in one View, its record
+// and its shards' rm rows from one snapshot. Every share the walk visits
+// counts toward K, one with no record included, so a run of such shares
+// cannot make one View read past K of them.
+//
+// decision: start learns the removals and the installation's tags from this
+// one store read, keyed by ShareID because a resumed removal's Drop names only
+// the share, rather than from the node handing them to Start: the source
+// RFC 16 §3 names. RFC 16 §3 still calls it a proposal, settled when the
+// engine's start is built; withdraw this if it takes the other reading.
+//
+// ponytail: seeks once per share in the store and reads each one's shard
+// rows, as nothing indexes the share records by tag. Nothing writes an rm row
+// yet, as only a removal's mark runs, so every share reads Serving until the
+// removal's per-shard steps record their progress there in this format.
+func (l Lifecycle) Tags(ctx context.Context) (map[entity.ShareID]entity.TagRecord, error) {
+	out := map[entity.ShareID]entity.TagRecord{}
+	var after []byte
+
+	for {
+		var (
+			batch map[entity.ShareID]entity.TagRecord
+			next  []byte
+			done  bool
+		)
+
+		err := l.s.kv.View(ctx, func(r kv.Reader) error {
+			var err error
+			batch, next, done, err = tagsBatch(r, after, max(1, l.s.k))
+
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		maps.Copy(out, batch)
+
+		if done {
+			return out, nil
+		}
+
+		after = next
+	}
+}
+
+// tagsBatch reads the tags of at most n shares past after, and returns where
+// the next batch resumes and whether no share is left.
+func tagsBatch(
+	r kv.Reader,
+	after []byte,
+	n int,
+) (batch map[entity.ShareID]entity.TagRecord, next []byte, done bool, err error) {
+	batch = map[entity.ShareID]entity.TagRecord{}
+	prefix := []byte{keys.KindS}
+
+	for range n {
+		id, found, err := nextShare(r, prefix, after)
+		if err != nil {
+			return nil, nil, false, err
+		}
+
+		if !found {
+			return batch, nil, true, nil
+		}
+
+		after = shareKey(id, 0xFF) // past every key of the share: no sub-kind is 0xFF
+
+		b, ok, err := get(r, shareKey(id, keys.SInfo))
+		if err != nil {
+			return nil, nil, false, err
+		}
+
+		if !ok {
+			continue
+		}
+
+		sh, err := decodeShareInfo(id, b)
+		if err != nil {
+			return nil, nil, false, err
+		}
+
+		state, err := tagState(r, id)
+		if err != nil {
+			return nil, nil, false, err
+		}
+
+		batch[id] = entity.TagRecord{
+			Tag:   sh.Tag,
+			State: state,
+		}
+	}
+
+	return batch, after, false, nil
+}
+
+// nextShare is the first share with a key under prefix past after.
+func nextShare(r kv.Reader, prefix, after []byte) (id entity.ShareID, found bool, err error) {
+	for row, err := range r.Scan(prefix, after) {
+		if err != nil {
+			return id, false, err
+		}
+
+		if len(row.Key) < 1+len(id) {
+			return id, false, merrs.NewInvalidArgumentError("a share key shorter than its ID")
+		}
+
+		copy(id[:], row.Key[1:])
+
+		return id, true, nil
+	}
+
+	return id, false, nil
+}
+
+// TagState is how far share's removal has gone, as Tags reads it for every
+// share: Forgotten once every shard's rm row is at forgotten or later.
+func (l Lifecycle) TagState(ctx context.Context, share entity.ShareID) (st entity.TagState, err error) {
+	err = l.s.kv.View(ctx, func(r kv.Reader) (err error) {
+		st, err = tagState(r, share)
+		return err
+	})
+	return st, err
+}
+
+// tagState is how far share's removal has gone: the least step any of its
+// shards' rm rows reached, a shard with no row counting as not started.
+func tagState(r kv.Reader, share entity.ShareID) (entity.TagState, error) {
+	least, sharded := stepDone, false
+
+	for row, err := range r.Scan(shardsPrefix(share), nil) {
+		if err != nil {
+			return 0, err
+		}
+
+		shard, rest, err := keys.ReadUint64(row.Key[len(shardsPrefix(share)):])
+		if err != nil || len(rest) != 0 {
+			return 0, merrs.NewInvalidArgumentError("a share's shard row does not decode")
+		}
+
+		sharded = true
+
+		b, ok, err := get(r, shardRemovalKey(shard))
+		if err != nil {
+			return 0, err
+		}
+
+		if !ok {
+			return entity.TagServing, nil
+		}
+
+		step, err := decodeRemovalStep(b)
+		if err != nil {
+			return 0, err
+		}
+
+		least = min(least, step)
+	}
+
+	switch {
+	case !sharded || least < stepOffloaded:
+		return entity.TagServing, nil
+	case least < stepForgotten:
+		return entity.TagOffloaded, nil
+	}
+
+	return entity.TagForgotten, nil
+}
+
+// VersionLimits is each share's version limit, for the floor the engine's
+// Open is given; zero for a share none was written for. It reads the shares
+// in batches of K, each its own View reading its limits with one GetMany, so
+// no transaction reads every share and a batch costs one round trip.
+func (l Lifecycle) VersionLimits(
+	ctx context.Context,
+	shares []entity.ShareID,
+) (map[entity.ShareID]entity.JournalVersion, error) {
+	out := make(map[entity.ShareID]entity.JournalVersion, len(shares))
+
+	for chunk := range slices.Chunk(shares, max(1, l.s.k)) {
+		var batch map[entity.ShareID]entity.JournalVersion
+
+		err := l.s.kv.View(ctx, func(r kv.Reader) error {
+			var err error
+			batch, err = versionLimitsIn(r, chunk)
+
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		maps.Copy(out, batch)
+	}
+
+	return out, nil
+}
+
+// versionLimitsIn reads the limits of shares with one GetMany.
+func versionLimitsIn(
+	r kv.Reader,
+	shares []entity.ShareID,
+) (map[entity.ShareID]entity.JournalVersion, error) {
+	ks := make([][]byte, len(shares))
+
+	for i, id := range shares {
+		ks[i] = versionLimitKey(id)
+	}
+
+	vs, err := r.GetMany(ks)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(map[entity.ShareID]entity.JournalVersion, len(shares))
+
+	for i, id := range shares {
+		var v entity.JournalVersion
+
+		if vs[i] != nil {
+			if v, err = decodeVersion(vs[i]); err != nil {
+				return nil, err
+			}
+		}
+
+		out[id] = v
+	}
+
+	return out, nil
+}
+
+// RaiseVersionLimits raises each share's version limit to its value in to,
+// a tracked max-write: it reads the stored limit in the transaction that
+// writes it and never lowers it (RFC 8 §2.7). The shares go in batches of
+// half the key budget, so a batch writes at most K/2 keys and reads three
+// keys a share with tracking (its info, its state and its limit), and no
+// transaction holds every share. A share being removed or retired is
+// skipped, since it draws no version and it must not fail the raise for the
+// shares batched with it, and so is one with no record, which a removal
+// leaves at its last step (RFC 16 §2.3.2), its ShareID never reused. A batch
+// that fails leaves the earlier ones raised: a raise is safe to run again.
+func (l Lifecycle) RaiseVersionLimits(
+	ctx context.Context,
+	to map[entity.ShareID]entity.JournalVersion,
+) error {
+	ids := make([]entity.ShareID, 0, len(to))
+
+	for id := range to {
+		ids = append(ids, id)
+	}
+
+	slices.SortFunc(ids, func(a, b entity.ShareID) int {
+		return bytes.Compare(a[:], b[:])
+	})
+
+	batch := max(1, l.s.k/2)
+
+	for chunk := range slices.Chunk(ids, batch) {
+		err := l.s.kv.Update(ctx, func(tx kv.Txn) error {
+			for _, id := range chunk {
+				err := raiseVersionLimitIn(tx, id, to[id])
+				if errors.Is(err, entity.ErrStale) || merrs.IsNotFoundError(err) {
+					continue
+				}
+
+				if err != nil {
+					return err
+				}
+			}
+
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// raiseVersionLimitIn raises share's limit to v in tx, a tracked max-write.
+// It refuses a share being removed or retired with ErrStale and one with no
+// record as not found, writing nothing. The state is read first: a removal
+// deletes the share's other records before it (RFC 16 §2.3.2, step 6), so a
+// share part way through that step reads stale, not missing.
+func raiseVersionLimitIn(tx kv.Txn, share entity.ShareID, v entity.JournalVersion) error {
+	if err := liveShare(tx, share); err != nil {
+		return err
+	}
+
+	_, ok, err := get(tx, shareKey(share, keys.SInfo))
+	if err != nil {
+		return err
+	}
+
+	if !ok {
+		return merrs.NewNotFoundError(share.String(), "share")
+	}
+
+	b, ok, err := get(tx, versionLimitKey(share))
+	if err != nil {
+		return err
+	}
+
+	if ok {
+		old, err := decodeVersion(b)
+		if err != nil {
+			return err
+		}
+
+		if !old.Less(v) {
+			return nil
+		}
+	}
+
+	return tx.Set(versionLimitKey(share), encodeVersion(v))
+}
+
+// RaiseAtStart raises each named shard's incarnation by one, before the
+// node answers any open-state request for them, so no incarnation and no
+// grace instance repeats across starts. A shard named twice is raised once;
+// one past the 24-bit shard space refuses the call before anything is
+// written. It returns the incarnation it wrote for each shard.
+//
+// The shards go in batches of K, sorted, each its own transaction (RFC 8
+// §2.5, RFC 16 §3), which reads its records with one GetMany. A batch holds K
+// shards, not fewer: each shard reads and writes the same key, the budget's
+// cost of a key already counts the conflict range of reading it, and K bounds
+// the keys a transaction writes. A batch that fails leaves the earlier ones
+// raised and the call returns its error; the next start raises every shard
+// again, those already raised included, which is safe because a raise only
+// goes up.
+//
+// decision: this raise also opens a new grace instance, GraceInstance =
+// Incarnation, because the shard's open state is lost: a single node's start
+// loses every shard's, the table living in the process that stopped, and a
+// shard this process has not raised yet lost its with that restart, or is
+// new, cloned or restored and has none (RFC 14 §4.4). A shard whose open
+// state this process holds is raised by RaiseAtAttach instead, which keeps the
+// grace instance, or every client of the shard would reclaim for nothing.
+// Revisit when a handover ships the table, which keeps it too.
+func (l Lifecycle) RaiseAtStart(
+	ctx context.Context,
+	shards []entity.ShardID,
+) (map[entity.ShardID]uint64, error) {
+	ids := slices.Clone(shards)
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
+
+	for _, id := range ids {
+		if id >= entity.ShardLimit {
+			msg := fmt.Sprintf("shard %d past the 24-bit shard space", id)
+
+			return nil, merrs.NewInvalidArgumentError(msg)
+		}
+	}
+
+	out := make(map[entity.ShardID]uint64, len(ids))
+
+	for chunk := range slices.Chunk(ids, max(1, l.s.k)) {
+		var raised map[entity.ShardID]uint64
+
+		err := l.s.kv.Update(ctx, func(tx kv.Txn) error {
+			var err error
+			raised, err = raiseAtStartIn(tx, chunk)
+
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		maps.Copy(out, raised)
+	}
+
+	return out, nil
+}
+
+// raiseAtStartIn raises each of shards by one in tx and sets its grace
+// instance to it, reading every record with one GetMany, and returns the
+// incarnations written. A shard with no record starts at zero.
+func raiseAtStartIn(tx kv.Txn, shards []entity.ShardID) (map[entity.ShardID]uint64, error) {
+	ks := make([][]byte, len(shards))
+
+	for i, id := range shards {
+		ks[i] = shardKey(uint64(id))
+	}
+
+	vs, err := tx.GetMany(ks)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(map[entity.ShardID]uint64, len(shards))
+
+	for i, id := range shards {
+		sh := entity.Shard{
+			ID: id,
+		}
+
+		if vs[i] != nil {
+			if sh, err = decodeShard(id, vs[i]); err != nil {
+				return nil, err
+			}
+		}
+
+		sh.Incarnation++
+		sh.GraceInstance = sh.Incarnation
+
+		if err := tx.Set(ks[i], encodeShard(sh)); err != nil {
+			return nil, err
+		}
+
+		out[id] = sh.Incarnation
+	}
+
+	return out, nil
+}
+
+// RaiseAtAttach raises the shard's incarnation by one and keeps its grace
+// instance, for an attach of a shard whose open state this process holds,
+// and returns the incarnation it wrote. That shard was raised already, by
+// this process or by the node whose handover shipped its table (RFC 16 §3),
+// so one with no shard record is refused as not found, as is one past the
+// 24-bit shard space, and neither writes anything.
+func (l Lifecycle) RaiseAtAttach(ctx context.Context, shard entity.ShardID) (inc uint64, err error) {
+	if shard >= entity.ShardLimit {
+		msg := fmt.Sprintf("shard %d past the 24-bit shard space", shard)
+
+		return 0, merrs.NewInvalidArgumentError(msg)
+	}
+
+	err = l.s.kv.Update(ctx, func(tx kv.Txn) error {
+		_, ok, err := get(tx, shardKey(uint64(shard)))
+		if err != nil {
+			return err
+		}
+
+		if !ok {
+			return merrs.NewNotFoundError(fmt.Sprint(shard), "shard")
+		}
+
+		sh, err := shardIn(tx, shard)
+		if err != nil {
+			return err
+		}
+
+		sh.Incarnation++
+		inc = sh.Incarnation
+
+		return tx.Set(shardKey(uint64(shard)), encodeShard(sh))
+	})
+
+	return inc, err
+}

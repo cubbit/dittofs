@@ -1,0 +1,21 @@
+# A hand-written SMB2 header in its async form (MS-SMB2 2.2.1.1), a signed
+# CANCEL request's, as MS-SMB2 2.2.1 has a client cancel a request that
+# received an interim response. Then the CANCEL request's body. Every field's
+# bytes differ, so the async ID read at the sync form's TreeId, or in the
+# wrong byte order, reads another value. Multi-byte fields are little-endian
+# (MS-SMB2 2.2).
+fe 53 4d 42                 # [0,4)   ProtocolId 0xFE 'S' 'M' 'B'
+40 00                       # [4,6)   StructureSize 64
+01 00                       # [6,8)   CreditCharge 1
+00 00 00 00                 # [8,12)  ChannelSequence 0, Reserved 0
+0c 00                       # [12,14) Command 0x000C, CANCEL
+01 00                       # [14,16) CreditRequest 1
+0a 00 00 00                 # [16,20) Flags 0x0000000A, ASYNC_COMMAND and SIGNED
+00 00 00 00                 # [20,24) NextCommand 0: no member follows
+31 32 33 34 35 36 37 38     # [24,32) MessageId 0x3837363534333231
+41 42 43 44 45 46 47 48     # [32,40) AsyncId 0x4847464544434241
+21 22 23 24 25 26 27 28     # [40,48) SessionId 0x2827262524232221
+51 52 53 54 55 56 57 58     # [48,64) Signature
+59 5a 5b 5c 5d 5e 5f 60
+04 00                       # [64,66) the CANCEL request's StructureSize 4
+00 00                       # [66,68) its Reserved

@@ -1,0 +1,862 @@
+package resources
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"maps"
+	"math/rand/v2"
+	"net/netip"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/cubbit/dittofs/internal/prof"
+)
+
+var client = netip.MustParseAddr("192.0.2.1")
+
+// kinds runs a test over both kinds of budget through what they share: a
+// reserve that fits, and Reserved.
+var kinds = []struct {
+	name string
+	// clamps, when given, is the logger the budget clamps to as production does.
+	new func(name string, ceiling int64, clamps *slog.Logger) (reserve func(int64) (Reservation, error), reserved func() int64)
+}{
+	{"Budget", func(name string, ceiling int64, clamps *slog.Logger) (func(int64) (Reservation, error), func() int64) {
+		b := NewBudget(name, ceiling)
+		if clamps != nil {
+			b.clampTo(clamps)
+		}
+		return b.Reserve, b.Reserved
+	}},
+	{"WaitBudget", func(name string, ceiling int64, clamps *slog.Logger) (func(int64) (Reservation, error), func() int64) {
+		b := NewWaitBudget(name, ceiling)
+		if clamps != nil {
+			b.clampTo(clamps)
+		}
+		return func(n int64) (Reservation, error) { return b.Reserve(context.Background(), client, n) }, b.Reserved
+	}},
+}
+
+func mustReserve(t *testing.T, reserve func(int64) (Reservation, error), n int64) Reservation {
+	t.Helper()
+	r, err := reserve(n)
+	if err != nil {
+		t.Fatalf("reserve %d: %v", n, err)
+	}
+	return r
+}
+
+// A Budget charges what fits, up to and including its ceiling, and a refusal
+// charges nothing.
+func TestBudgetRefusesPastItsCeiling(t *testing.T) {
+	b := NewBudget("hold", 10)
+	if _, err := b.Reserve(6); err != nil || b.Reserved() != 6 {
+		t.Fatalf("Reserve(6) = %v with %d reserved, want 6 reserved", err, b.Reserved())
+	}
+	if _, err := b.Reserve(5); err == nil || b.Reserved() != 6 {
+		t.Errorf("Reserve(5) over 6 of 10 = %v with %d reserved, want a refusal and 6", err, b.Reserved())
+	}
+	if _, err := b.Reserve(4); err != nil || b.Reserved() != 10 {
+		t.Errorf("Reserve(4) over 6 of 10 = %v with %d reserved, want 10: the ceiling itself fits", err, b.Reserved())
+	}
+	if _, err := b.Reserve(-1); err == nil || !strings.Contains(err.Error(), "cannot be negative") || b.Reserved() != 10 {
+		t.Errorf("Reserve(-1) = %v with %d reserved, want a refusal naming the negative charge and 10", err, b.Reserved())
+	}
+}
+
+// Release lowers the count once: a second Release and a Release of the zero
+// Reservation change nothing.
+func TestReleaseReturnsItsBytesOnce(t *testing.T) {
+	for _, k := range kinds {
+		t.Run(k.name, func(t *testing.T) {
+			reserve, reserved := k.new("b", 10, nil)
+			first, second := mustReserve(t, reserve, 4), mustReserve(t, reserve, 3)
+			first.Release()
+			if got := reserved(); got != 3 {
+				t.Fatalf("after releasing 4 of 7, %d reserved, want 3", got)
+			}
+			first.Release()
+			var zero Reservation
+			zero.Release()
+			if got := reserved(); got != 3 {
+				t.Errorf("after a second Release and a zero Release, %d reserved, want 3", got)
+			}
+			second.Release()
+			if got := reserved(); got != 0 {
+				t.Errorf("at the end %d reserved, want 0", got)
+			}
+		})
+	}
+}
+
+// Shrink returns what a reservation holds past n and keeps n, which its
+// Release then returns; a Shrink to more than it holds charges nothing.
+func TestShrinkReturnsTheExcess(t *testing.T) {
+	for _, k := range kinds {
+		t.Run(k.name, func(t *testing.T) {
+			reserve, reserved := k.new("b", 10, nil)
+			r := mustReserve(t, reserve, 8)
+			r.Shrink(3)
+			if got := reserved(); got != 3 {
+				t.Fatalf("after shrinking 8 to 3, %d reserved, want 3", got)
+			}
+			r.Shrink(5)
+			if got := reserved(); got != 3 {
+				t.Errorf("after a Shrink above what it holds, %d reserved, want 3", got)
+			}
+			r.Release()
+			if got := reserved(); got != 0 {
+				t.Errorf("after Release, %d reserved, want 0", got)
+			}
+		})
+	}
+}
+
+// A copy released after its original takes the count past zero: in a test
+// binary that panics, and the count reads zero after it.
+func TestReleasePastZeroPanicsInTests(t *testing.T) {
+	for _, k := range kinds {
+		t.Run(k.name, func(t *testing.T) {
+			reserve, reserved := k.new("b", 10, nil)
+			r := mustReserve(t, reserve, 4)
+			twin := r
+			r.Release()
+			func() {
+				defer func() {
+					if recover() == nil {
+						t.Error("releasing a copy past zero did not panic")
+					}
+				}()
+				twin.Release()
+			}()
+			// The panic left the copy zeroed too: releasing it again does nothing.
+			twin.Release()
+			if got := reserved(); got != 0 {
+				t.Errorf("after the panic %d reserved, want 0", got)
+			}
+		})
+	}
+}
+
+// records keeps what the budgets' logger was handed.
+type records struct {
+	mu  sync.Mutex
+	got []slog.Record
+}
+
+func (h *records) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *records) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *records) WithGroup(string) slog.Handler { return h }
+
+func (h *records) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.got = append(h.got, r)
+	return nil
+}
+
+// Outside tests a release past zero clamps the count and logs one Error
+// record naming the budget, once per budget.
+func TestReleasePastZeroClampsAndLogsOncePerBudget(t *testing.T) {
+	for _, k := range kinds {
+		t.Run(k.name, func(t *testing.T) {
+			h := &records{}
+			pastZero := func(name string) {
+				reserve, reserved := k.new(name, 10, slog.New(h))
+				r := mustReserve(t, reserve, 4)
+				twin := r
+				r.Release()
+				twin.Release()
+				if got := reserved(); got != 0 {
+					t.Errorf("%s: after a release past zero %d reserved, want 0", name, got)
+				}
+				// The budget still counts, and logs no second time.
+				again := mustReserve(t, reserve, 2)
+				twin = again
+				again.Release()
+				twin.Release()
+				if got := reserved(); got != 0 {
+					t.Errorf("%s: after a second release past zero %d reserved, want 0", name, got)
+				}
+			}
+			pastZero("first")
+			pastZero("second")
+
+			var names []string
+			for _, r := range h.got {
+				if r.Level != slog.LevelError {
+					t.Errorf("record %q at %v, want Error", r.Message, r.Level)
+				}
+				r.Attrs(func(a slog.Attr) bool {
+					if a.Key == "budget" {
+						names = append(names, a.Value.String())
+					}
+					return true
+				})
+			}
+			if len(h.got) != 2 || len(names) != 2 || names[0] != "first" || names[1] != "second" {
+				t.Errorf("%d records naming %v, want one for first then one for second", len(h.got), names)
+			}
+		})
+	}
+}
+
+// waiting starts a Reserve that is expected to block, and returns once it has.
+// done is closed when the Reserve returns.
+type waiting struct {
+	res  Reservation
+	err  error
+	done chan struct{}
+}
+
+func (w *waiting) returned() bool {
+	select {
+	case <-w.done:
+		return true
+	default:
+		return false
+	}
+}
+
+func startWaiting(t *testing.T, ctx context.Context, b *WaitBudget, n int64) *waiting {
+	t.Helper()
+	w := &waiting{done: make(chan struct{})}
+	go func() {
+		defer close(w.done)
+		w.res, w.err = b.Reserve(ctx, client, n)
+	}()
+	synctest.Wait()
+	if w.returned() {
+		t.Fatalf("Reserve(%d) returned (%v) with %d of %d reserved, want it waiting", n, w.err, b.Reserved(), b.c.ceiling)
+	}
+	return w
+}
+
+// Waiters are granted in arrival order, one per release that makes room for
+// one.
+func TestWaitBudgetGrantsInArrivalOrder(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := NewWaitBudget("receive", 10)
+		held := []Reservation{mustReserve(t, kindOf(b), 5), mustReserve(t, kindOf(b), 5)}
+		ws := []*waiting{
+			startWaiting(t, t.Context(), b, 5),
+			startWaiting(t, t.Context(), b, 5),
+			startWaiting(t, t.Context(), b, 5),
+		}
+		for i := range ws {
+			if i < len(held) {
+				held[i].Release()
+			} else {
+				ws[i-len(held)].res.Release()
+			}
+			synctest.Wait()
+			for j, w := range ws {
+				if got, want := w.returned(), j <= i; got != want {
+					t.Fatalf("after release %d, waiter %d returned = %v, want %v", i, j, got, want)
+				}
+			}
+		}
+		ws[1].res.Release()
+		ws[2].res.Release()
+		if got := b.Reserved(); got != 0 {
+			t.Errorf("at the end %d reserved, want 0", got)
+		}
+	})
+}
+
+func kindOf(b *WaitBudget) func(int64) (Reservation, error) {
+	return func(n int64) (Reservation, error) { return b.Reserve(context.Background(), client, n) }
+}
+
+// One release grants every waiter that fits, in order, on its own goroutine,
+// and stops at the first that does not: nothing passes the head, and a
+// Reserve that would fit queues behind a waiter.
+func TestWaitBudgetReleaseGrantsEachWaiterThatFits(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := NewWaitBudget("receive", 10)
+		held := mustReserve(t, kindOf(b), 10)
+		three := startWaiting(t, t.Context(), b, 3)
+		four := startWaiting(t, t.Context(), b, 4)
+		six := startWaiting(t, t.Context(), b, 6)
+		one := startWaiting(t, t.Context(), b, 1)
+
+		held.Release()
+		if got := b.Reserved(); got != 7 {
+			t.Fatalf("on the line after Release %d reserved, want 7: the waiters of 3 and 4 charged by the release itself", got)
+		}
+		synctest.Wait()
+		if !three.returned() || !four.returned() || six.returned() || one.returned() {
+			t.Fatalf("returned: 3 %v, 4 %v, 6 %v, 1 %v; want the first two only: 1 fits but is behind 6",
+				three.returned(), four.returned(), six.returned(), one.returned())
+		}
+
+		three.res.Release()
+		synctest.Wait()
+		if !six.returned() || one.returned() || b.Reserved() != 10 {
+			t.Fatalf("after releasing 3: 6 returned %v, 1 returned %v, %d reserved; want 6 granted, 1 waiting at 10",
+				six.returned(), one.returned(), b.Reserved())
+		}
+
+		four.res.Release()
+		synctest.Wait()
+		if !one.returned() {
+			t.Fatal("after releasing 4 the waiter of 1 still waits")
+		}
+		six.res.Release()
+		one.res.Release()
+		if got := b.Reserved(); got != 0 {
+			t.Errorf("at the end %d reserved, want 0", got)
+		}
+	})
+}
+
+// A waiter of exactly the freed size is charged before Release returns.
+func TestWaitBudgetReleaseChargesItsWaiterBeforeItReturns(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := NewWaitBudget("reply", 10)
+		held := mustReserve(t, kindOf(b), 10)
+		w := startWaiting(t, t.Context(), b, 10)
+		held.Release()
+		if got := b.Reserved(); got != 10 {
+			t.Errorf("on the line after Release %d reserved, want 10", got)
+		}
+		synctest.Wait()
+		w.res.Release()
+	})
+}
+
+// ended is a context of each kind that has already ended.
+func ended(t *testing.T) map[string]context.Context {
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	late, stop := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	t.Cleanup(stop)
+	return map[string]context.Context{"cancelled": cancelled, "past its deadline": late}
+}
+
+func matches(ctx context.Context, err error) bool {
+	return err != nil && errors.Is(err, ctx.Err())
+}
+
+// Under a context that has already ended, Reserve tries once: it takes the
+// charge when it fits and nobody waits, and otherwise returns at once.
+func TestWaitBudgetReserveUnderAnEndedContextTriesOnce(t *testing.T) {
+	for _, name := range []string{"cancelled", "past its deadline"} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx := ended(t)[name]
+				b := NewWaitBudget("reply", 10)
+				r, err := b.Reserve(ctx, client, 6)
+				if err != nil || b.Reserved() != 6 {
+					t.Fatalf("with room: Reserve = %v with %d reserved, want 6 charged", err, b.Reserved())
+				}
+				if _, err := b.Reserve(ctx, client, 5); !matches(ctx, err) || b.Reserved() != 6 {
+					t.Errorf("without room: Reserve = %v with %d reserved, want the context's error and 6", err, b.Reserved())
+				}
+
+				w := startWaiting(t, t.Context(), b, 5)
+				if _, err := b.Reserve(ctx, client, 1); !matches(ctx, err) || b.Reserved() != 6 {
+					t.Errorf("with room behind a waiter: Reserve = %v with %d reserved, want the context's error and 6", err, b.Reserved())
+				}
+				// Neither refusal stayed queued: the waiter alone is granted.
+				r.Release()
+				synctest.Wait()
+				if !w.returned() || b.Reserved() != 5 {
+					t.Fatalf("after the release: waiter returned %v with %d reserved, want it granted alone at 5", w.returned(), b.Reserved())
+				}
+				w.res.Release()
+			})
+		})
+	}
+}
+
+// A waiter whose context is cancelled leaves the queue with nothing reserved,
+// and those behind it are granted as if it had never queued.
+func TestWaitBudgetCancelledWaiterLeavesTheQueue(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := NewWaitBudget("receive", 10)
+		held := mustReserve(t, kindOf(b), 10)
+		ctx, cancel := context.WithCancel(t.Context())
+		first := startWaiting(t, t.Context(), b, 5)
+		middle := startWaiting(t, ctx, b, 5)
+		last := startWaiting(t, t.Context(), b, 5)
+
+		cancel()
+		synctest.Wait()
+		if !middle.returned() || !errors.Is(middle.err, context.Canceled) || b.Reserved() != 10 {
+			t.Fatalf("cancelled waiter: returned %v, err %v, %d reserved; want Canceled and 10", middle.returned(), middle.err, b.Reserved())
+		}
+		if first.returned() || last.returned() {
+			t.Fatal("a waiter beside the cancelled one returned")
+		}
+
+		held.Release()
+		if got := b.Reserved(); got != 10 {
+			t.Fatalf("after the release %d reserved, want 10: the two waiters left, both granted", got)
+		}
+		synctest.Wait()
+		first.res.Release()
+		last.res.Release()
+		if got, queued := b.Reserved(), b.waiters.Len(); got != 0 || queued != 0 {
+			t.Errorf("at the end %d reserved and %d queued, want 0 and 0", got, queued)
+		}
+	})
+}
+
+// When the head of the queue is cancelled, the waiters it was holding back
+// are granted what already fits.
+func TestWaitBudgetCancelledHeadLetsTheNextFit(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := NewWaitBudget("receive", 10)
+		held := mustReserve(t, kindOf(b), 6)
+		ctx, cancel := context.WithCancel(t.Context())
+		head := startWaiting(t, ctx, b, 6)
+		behind := startWaiting(t, t.Context(), b, 4)
+
+		cancel()
+		synctest.Wait()
+		if !head.returned() || !behind.returned() || behind.err != nil || b.Reserved() != 10 {
+			t.Fatalf("head returned %v, behind returned %v (%v), %d reserved; want both, and 10",
+				head.returned(), behind.returned(), behind.err, b.Reserved())
+		}
+		held.Release()
+		behind.res.Release()
+	})
+}
+
+// A grant and a cancel that both reach a waiter before it wakes leave nothing
+// lost, and the bytes reach the waiter behind it either way. Granted first,
+// the parked waiter wakes on ready and returns the reservation. Cancelled
+// first, with the release run inline under the mutex so the waiter its cancel
+// woke cannot take the lock before the grant, it finds the grant made, gives
+// it back and returns the context's error.
+func TestWaitBudgetCancelRacingGrant(t *testing.T) {
+	orders := map[string]struct {
+		both func(b *WaitBudget, held Reservation, cancel func())
+		want error
+	}{
+		// The waiter is parked in its select, so the first close wakes it.
+		"grant then cancel": {func(_ *WaitBudget, held Reservation, cancel func()) { held.Release(); cancel() }, nil},
+		// The release runs inline under the mutex, so the waiter woken by
+		// its cancel cannot take the lock before the grant is made.
+		"cancel then grant": {func(b *WaitBudget, _ Reservation, cancel func()) {
+			b.c.mu.Lock()
+			cancel()
+			b.releaseLocked(10)
+			b.c.mu.Unlock()
+		}, context.Canceled},
+	}
+	for name, order := range orders {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				b := NewWaitBudget("receive", 10)
+				held := mustReserve(t, kindOf(b), 10)
+				ctx, cancel := context.WithCancel(t.Context())
+				w := startWaiting(t, ctx, b, 10)
+				behind := startWaiting(t, t.Context(), b, 10)
+				order.both(b, held, cancel)
+				synctest.Wait()
+				if !w.returned() || !errors.Is(w.err, order.want) {
+					t.Fatalf("the waiter returned %v (%v), want %v", w.returned(), w.err, order.want)
+				}
+				if w.err == nil {
+					w.res.Release()
+				}
+				synctest.Wait()
+				if !behind.returned() || behind.err != nil {
+					t.Fatalf("the waiter behind returned %v (%v), want it granted the bytes", behind.returned(), behind.err)
+				}
+				behind.res.Release()
+				if got, queued := b.Reserved(), b.waiters.Len(); got != 0 || queued != 0 {
+					t.Fatalf("the round ended at %d reserved and %d queued, want 0 and 0", got, queued)
+				}
+			})
+		})
+	}
+}
+
+// A charge larger than the ceiling can never fit: it is refused at once under
+// any context, with ErrTooLarge, which a caller cannot take for a delay.
+func TestWaitBudgetRefusesAChargePastItsCeiling(t *testing.T) {
+	for _, name := range []string{"live", "cancelled", "past its deadline"} {
+		t.Run(name, func(t *testing.T) {
+			// In a bubble, so a Reserve that waited would end the test as a deadlock.
+			synctest.Test(t, func(t *testing.T) {
+				ctxs := ended(t)
+				ctxs["live"] = t.Context()
+				ctx := ctxs[name]
+				b := NewWaitBudget("receive", 10)
+				_, err := b.Reserve(ctx, client, 11)
+				if !errors.Is(err, ErrTooLarge) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					t.Errorf("Reserve(11) of 10 = %v, want ErrTooLarge, matching no context error", err)
+				}
+				if _, err := b.Reserve(ctx, client, -1); err == nil || !strings.Contains(err.Error(), "cannot be negative") {
+					t.Errorf("Reserve(-1) = %v, want a refusal naming the negative charge", err)
+				}
+				if got, queued := b.Reserved(), b.waiters.Len(); got != 0 || queued != 0 {
+					t.Errorf("after the refusals %d reserved and %d queued, want 0 and 0", got, queued)
+				}
+			})
+		})
+	}
+}
+
+// Many goroutines reserve random sizes from a small budget, some under a
+// context cancelled at a random moment: the count never passes the ceiling,
+// every reservation taken is released, and the budget ends idle.
+func TestWaitBudgetModel(t *testing.T) {
+	const (
+		ceiling    = 16
+		goroutines = 8
+		rounds     = 2000
+	)
+	b := NewWaitBudget("receive", ceiling)
+	var held atomic.Int64
+	var wg sync.WaitGroup
+	for g := range goroutines {
+		wg.Go(func() {
+			rng := rand.New(rand.NewPCG(1, uint64(g)))
+			for range rounds {
+				n := 1 + rng.Int64N(ceiling/2)
+				ctx, cancel := context.WithCancel(context.Background())
+				switch rng.IntN(4) {
+				case 0:
+					cancel()
+				case 1:
+					go cancel()
+				}
+				r, err := b.Reserve(ctx, client, n)
+				if err == nil {
+					if now := held.Add(n); now > ceiling {
+						t.Errorf("%d bytes held at once, over the ceiling of %d", now, ceiling)
+					}
+					if got := b.Reserved(); got > ceiling {
+						t.Errorf("%d reserved, over the ceiling of %d", got, ceiling)
+					}
+					held.Add(-n)
+					r.Release()
+				} else if !errors.Is(err, context.Canceled) {
+					t.Errorf("Reserve(%d) = %v, want a grant or Canceled", n, err)
+				}
+				cancel()
+			}
+		})
+	}
+	// A waiter never granted would otherwise hang the package to its timeout.
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Minute):
+		t.Fatal("reservers still running after a minute: a waiter was never granted")
+	}
+	if got, queued := b.Reserved(), b.waiters.Len(); got != 0 || queued != 0 {
+		t.Errorf("at the end %d reserved and %d queued, want 0 and 0", got, queued)
+	}
+}
+
+// A reservation is a value and the path with no waiter makes none: reserving
+// and releasing allocates nothing on either kind.
+func TestReserveAndReleaseAllocateNothing(t *testing.T) {
+	if prof.RaceEnabled {
+		t.Skip("the race detector changes allocation counts")
+	}
+	ctx := t.Context()
+	wait, refuse := NewWaitBudget("receive", 10), NewBudget("hold", 10)
+	allocs := testing.AllocsPerRun(100, func() {
+		w, err := wait.Reserve(ctx, client, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := refuse.Reserve(1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Release()
+		r.Release()
+	})
+	if allocs != 0 {
+		t.Errorf("a reserve and release on each kind allocate %v times, want 0", allocs)
+	}
+}
+
+// addrs is n distinct addresses the connection count is taken for.
+func addrs(n int) []netip.Addr {
+	as := make([]netip.Addr, n)
+	for i := range as {
+		as[i] = netip.AddrFrom4([4]byte{192, 0, 2, byte(i + 1)})
+	}
+	return as
+}
+
+// mustTake takes one connection for addr, or fails the test at the count's
+// refusal.
+func mustTake(t *testing.T, l *ConnLimit, addr netip.Addr) {
+	t.Helper()
+	if err := l.Take(addr); err != nil {
+		t.Fatalf("take from %s: %v", addr, err)
+	}
+}
+
+// The node's limit holds eight connections, one from each of eight
+// addresses, and a ninth is refused with ErrConnLimit: a Release lets the
+// next Take in (RFC 24 section 4.4).
+func TestTheConnectionLimitHoldsEightAndRefusesTheNinth(t *testing.T) {
+	l := NewConnLimit(8)
+	a := addrs(9)
+	for _, addr := range a[:8] {
+		mustTake(t, l, addr)
+	}
+	if err := l.Take(a[8]); !errors.Is(err, ErrConnLimit) {
+		t.Fatalf("a ninth Take of the limit = %v, want ErrConnLimit", err)
+	}
+	l.Release(a[3])
+	if err := l.Take(a[8]); err != nil {
+		t.Errorf("after a Release the next Take = %v, want it admitted", err)
+	}
+}
+
+// An address is held at a quarter of the limit, rounded down: at 8 its third
+// connection is refused with ErrConnQuarter, and once one of its two is
+// released its next is admitted (RFC 24 section 4.4).
+func TestAnAddressIsHeldAtAQuarterOfTheConnectionLimit(t *testing.T) {
+	l := NewConnLimit(8)
+	mustTake(t, l, client)
+	mustTake(t, l, client)
+	if err := l.Take(client); !errors.Is(err, ErrConnQuarter) {
+		t.Fatalf("an address's third Take of a quarter of 8 = %v, want ErrConnQuarter", err)
+	}
+	l.Release(client)
+	if err := l.Take(client); err != nil {
+		t.Errorf("after the Release the same address's Take = %v, want it admitted", err)
+	}
+}
+
+// A limit whose quarter would round to 0 still holds each address at one:
+// limits 1 to 3 give each address a quarter of 1, without which maximum a
+// quarter of 0 would refuse every Take. At 2 and 3 the address's second Take
+// is the quarter's refusal alone; at 1 the address holds the whole node's
+// limit too, which Take names first, the order RFC 24 section 4.4 lists the
+// bounds in (RFC 24 section 4.4).
+func TestALimitOfThreeGivesEachAddressAQuarterOfOne(t *testing.T) {
+	for limit := 1; limit <= 3; limit++ {
+		t.Run(strconv.Itoa(limit), func(t *testing.T) {
+			l := NewConnLimit(limit)
+			mustTake(t, l, client)
+			err := l.Take(client)
+			if limit == 1 {
+				if !errors.Is(err, ErrConnLimit) {
+					t.Fatalf("at limit 1 an address's second Take = %v, want ErrConnLimit, whose bound it holds with its quarter's", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrConnQuarter) {
+				t.Fatalf("at limit %d an address's second Take = %v, want ErrConnQuarter", limit, err)
+			}
+		})
+	}
+}
+
+// SetLimit is read by the next Take while the connections open stay counted:
+// with 6 open a limit of 4 refuses every Take, an address's own included,
+// until fewer than 4 are open, and makes the quarter 1; a limit of 8 then
+// admits again, the quarter with it. It recounts nothing: an address's count
+// survives the change, and the open count with it (RFC 24 sections 2.5 and
+// 4.4).
+func TestSetLimitRefusesUntilFewerThanTheLimitAreOpen(t *testing.T) {
+	l := NewConnLimit(8)
+	a := addrs(5)
+	for _, addr := range a[:3] {
+		mustTake(t, l, addr)
+		mustTake(t, l, addr) // 6 open, each of the three at its quarter of 8
+	}
+	l.SetLimit(4)
+	if err := l.Take(a[0]); !errors.Is(err, ErrConnLimit) {
+		t.Fatalf("with 6 open at a limit of 4 an address's Take = %v, want ErrConnLimit", err)
+	}
+	if err := l.Take(a[3]); !errors.Is(err, ErrConnLimit) {
+		t.Fatalf("with 6 open at a limit of 4 a fresh address's Take = %v, want ErrConnLimit", err)
+	}
+	for _, addr := range a[:3] {
+		l.Release(addr) // 3 open, each of the three at 1
+	}
+	if err := l.Take(a[0]); !errors.Is(err, ErrConnQuarter) {
+		t.Fatalf("at the new quarter of 1 an address holding one = %v, want ErrConnQuarter", err)
+	}
+	mustTake(t, l, a[3]) // 4 open: the limit exactly
+	if err := l.Take(a[4]); !errors.Is(err, ErrConnLimit) {
+		t.Fatalf("at a limit of 4 with 4 open a Take = %v, want ErrConnLimit", err)
+	}
+	l.SetLimit(8)
+	mustTake(t, l, a[0]) // its count 1 under the quarter of 2
+	if err := l.Take(a[0]); !errors.Is(err, ErrConnQuarter) {
+		t.Fatalf("with a count of 2 at the quarter of 8 = %v, want ErrConnQuarter", err)
+	}
+}
+
+// Many goroutines taking and releasing against a small limit, one address
+// each, a live SetLimit running among them, never pass the limit in play;
+// once they end the count reads zero: nothing they took leaked and nothing
+// went below zero (RFC 24 sections 2.5 and 4.4). A field of the count
+// changed outside its mutex fails here on the race detector.
+func TestConcurrentTakesNeverPassTheLimit(t *testing.T) {
+	l := NewConnLimit(32)
+	const goroutines = 64
+	var held atomic.Int64
+	var wg sync.WaitGroup
+	for i := range goroutines {
+		wg.Go(func() {
+			addr := netip.AddrFrom4([4]byte{198, 51, 100, byte(i + 1)})
+			for round := range 200 {
+				switch round % 50 {
+				case 0:
+					l.SetLimit(64)
+				case 25:
+					l.SetLimit(32)
+				}
+				if err := l.Take(addr); err != nil {
+					if !errors.Is(err, ErrConnLimit) {
+						t.Errorf("take = %v, want a grant or ErrConnLimit", err)
+					}
+					continue
+				}
+				if now := held.Add(1); now > 64 {
+					t.Errorf("%d connections held at once, over the limit", now)
+				}
+				held.Add(-1)
+				l.Release(addr)
+			}
+		})
+	}
+	wg.Wait()
+	if n := held.Load(); n != 0 {
+		t.Fatalf("%d connections still held after the rounds, want 0", n)
+	}
+	if n := l.InUse(); n != 0 {
+		t.Fatalf("the count reads %d after the rounds released every take, want 0", n)
+	}
+}
+
+// An address's entry is dropped at zero: the count keeps one entry per
+// address holding connections, never one per address that ever did.
+func TestAnAddressEntryIsDroppedAtZero(t *testing.T) {
+	l := NewConnLimit(8)
+	peer := netip.MustParseAddr("192.0.2.2")
+	mustTake(t, l, client)
+	mustTake(t, l, peer)
+	l.Release(client)
+	if n := len(l.addrs); n != 1 {
+		t.Errorf("after one of two addresses released the count keeps %d entries, want 1", n)
+	}
+	l.Release(peer)
+	if n := len(l.addrs); n != 0 {
+		t.Errorf("after both addresses released the count keeps %d entries, want 0", n)
+	}
+}
+
+// releasedPastZero releases one connection of addr from l, and returns what
+// that panicked with, or nil.
+func releasedPastZero(l *ConnLimit, addr netip.Addr) (v any) {
+	defer func() { v = recover() }()
+	l.Release(addr)
+	return nil
+}
+
+// A second Release of the node's last connection panics in a test binary,
+// naming the connection count, and leaves the count at zero and usable (RFC
+// 24 section 2.7).
+func TestConnLimitReleasePastZeroPanicsInTests(t *testing.T) {
+	l := NewConnLimit(8)
+	mustTake(t, l, client)
+	l.Release(client)
+	v := releasedPastZero(l, client)
+	if msg, _ := v.(string); !strings.Contains(msg, "release past zero on conns") {
+		t.Errorf("a second Release of the last connection panicked with %v, want a release past zero on conns", v)
+	}
+	if n := l.InUse(); n != 0 {
+		t.Errorf("after the panic InUse() = %d, want 0", n)
+	}
+	mustTake(t, l, client)
+	if n := l.InUse(); n != 1 {
+		t.Errorf("a Take after the panic leaves InUse() = %d, want 1", n)
+	}
+	l.Release(client)
+	if n, entries := l.InUse(), len(l.addrs); n != 0 || entries != 0 {
+		t.Errorf("its Release leaves InUse() = %d with %d address entries, want 0 and none", n, entries)
+	}
+}
+
+// A Release for an address holding no connection is a release past zero
+// too: it panics in a test binary and lowers no count, so another address's
+// connection stays counted for the zero check, and the address gets no entry.
+func TestConnLimitReleaseForAnAddressNeverTakenPanics(t *testing.T) {
+	l := NewConnLimit(8)
+	peer := netip.MustParseAddr("192.0.2.2")
+	mustTake(t, l, client)
+	if v := releasedPastZero(l, peer); v == nil {
+		t.Error("a Release for an address never taken did not panic")
+	}
+	if n := l.InUse(); n != 1 {
+		t.Errorf("after it InUse() = %d, want 1: the other address's connection is still open", n)
+	}
+	if want := map[netip.Addr]int{client: 1}; !maps.Equal(l.addrs, want) {
+		t.Errorf("after it the address counts are %v, want %v", l.addrs, want)
+	}
+	l.Release(client)
+	if n, entries := l.InUse(), len(l.addrs); n != 0 || entries != 0 {
+		t.Errorf("the last Release leaves InUse() = %d with %d address entries, want 0 and none", n, entries)
+	}
+}
+
+// Outside tests a release past zero, for an address holding none or of the
+// node's last connection, lowers no count, and each limit logs one Error
+// record naming conns however many of its releases pass zero.
+func TestConnLimitReleasePastZeroClampsAndLogsOncePerLimit(t *testing.T) {
+	h := &records{}
+	peer := netip.MustParseAddr("192.0.2.2")
+	for i := 1; i <= 2; i++ {
+		l := NewConnLimit(8)
+		l.clampTo(slog.New(h))
+		mustTake(t, l, client)
+		mustTake(t, l, peer)
+		l.Release(client)
+		l.Release(client) // past zero on client's count, peer's connection open
+		if n := l.InUse(); n != 1 {
+			t.Errorf("limit %d: a second Release for client leaves InUse() = %d, want peer's 1", i, n)
+		}
+		l.Release(peer)
+		l.Release(peer) // past zero on the node's count
+		if n, entries := l.InUse(), len(l.addrs); n != 0 || entries != 0 {
+			t.Errorf("limit %d: a second Release of the last connection leaves InUse() = %d with %d address entries, want 0 and none", i, n, entries)
+		}
+		// The limit still counts.
+		mustTake(t, l, client)
+		if n := l.InUse(); n != 1 {
+			t.Errorf("limit %d: a Take after the clamps leaves InUse() = %d, want 1", i, n)
+		}
+		l.Release(client)
+		if len(h.got) != i {
+			t.Errorf("after limit %d's releases past zero %d records, want %d: one per limit", i, len(h.got), i)
+		}
+	}
+	for _, r := range h.got {
+		var name string
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Key == "budget" {
+				name = a.Value.String()
+			}
+			return true
+		})
+		if r.Level != slog.LevelError || name != "conns" {
+			t.Errorf("record %q at %v naming %q, want Error naming conns", r.Message, r.Level, name)
+		}
+	}
+}

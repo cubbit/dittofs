@@ -1,0 +1,12 @@
+# test/pcap-corpus/nfsv4-acl/reference.pcap, frame 8: the SETCLIENTID4args (RFC 7530 section
+# 16.33) of its COMPOUND's one operation, bytes 100 to 195 of the TCP payload, cut with tshark.
+18bba263 bf7e2647                      # client.verifier, opaque[8]: no length word (RFC 4506 4.9)
+00000029                               # client.id, opaque<>: 41 bytes (RFC 4506 4.10)
+4c696e75 78204e46 5376342e 30206469    # "Linux NFSv4.0 dittofs-knfsd-ref/127.0.0.1"
+74746f66 732d6b6e 6673642d 7265662f
+3132372e 302e302e 31 000000            # its last byte, and 3 bytes of padding
+40000000                               # callback.cb_program
+00000003 74637000                      # callback.cb_location.na_r_netid, string<>: "tcp", 1 pad
+00000011 3132372e 302e302e 312e3135    # na_r_addr: 17 bytes, "127.0.0.1.151.157"
+312e3135 37 000000                     # and 3 bytes of padding
+00000001                               # callback_ident

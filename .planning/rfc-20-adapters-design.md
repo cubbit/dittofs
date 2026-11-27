@@ -8,7 +8,7 @@ owner and the plan may change it.
 ## Intent
 
 Programme #3119, stage 5 ("adapters"). The filesystem service of RFC 17 (`pkg/vfs`,
-`internal/vfs.Filesystem`, `vfstest.Record` and `vfstest.Null`) exists on `feat/storage-v2` and no
+`internal/vfs.Filesystem`, `vfstest.RecordMutations` and `vfstest.Null`) exists on `feat/storage-v2` and no
 adapter calls it. Today's adapters reach the stores through `pkg/controlplane/runtime`, written
 twice, with the drift Appendix B lists. Stage 5 replaces them with RFC 20's shape: one shared
 `core`, thin per-protocol parts, a boundary the build proves.
@@ -24,7 +24,7 @@ planned separately with the same skill afterwards.
    §4.1's pipeline; `OpTable`, `Op`, `Invocation`, `Bind`; the compound runner; held requests;
    the middleware chain; the `ErrorTable` type and its totality check.
 2. The public surface in `pkg/adapter`: the contract (`Adapter`, `Health`, `ConnInfo`,
-   `Sidecar`, `Serving`), `Deps`, the settings shapes in `pkg/adapter/config`, and the
+   `Sidecar`, `Serving`), `Deps`, the settings shapes in `pkg/adapter/settings`, and the
    constructors `pkg/adapter/nfs.New` and `pkg/adapter/smb.New`.
 3. A minimal `pkg/resources` (RFC 24 §2.8, amended from `pkg/resources`), shared by every component, not only adapters:
    `Budget` and `Reservation` (reserve, release, reserved bytes; wait or refuse per pool) and
@@ -96,7 +96,7 @@ Clean slate, decided by the owner:
    running.
 3. An adapter holds no durable state (A2), and RFC 14's `Adapter` bytes are new with v2. What
    the control plane persists for adapters (the `NFSAdapterSettings` and `SMBAdapterSettings`
-   rows, the share adapter config) is mapped onto `pkg/adapter/config` at cutover; the plan's
+   rows, the share adapter config) is mapped onto `pkg/adapter/settings` at cutover; the plan's
    ledger carries it.
 
 ## Order
@@ -114,7 +114,7 @@ protocol. Decided: `adaptertest` carries a test-only protocol — length-prefixe
 operation, a delay, an operation that panics, one that holds — and every `core` test
 (lifecycle, drain, reconfigure, connection limit, flow control, writer order, slow-client
 isolation, panic recovery, cancellation, no buffer leaked) and §6.10's pipeline micro-benchmark run
-on it over loopback, the tests against `vfstest.Memory` and the benchmark and allocation gate
+on it over loopback, the tests against `memory.New` and the benchmark and allocation gate
 against `vfstest.Null`. The plan includes the amendment to RFC 20 §7 (and the §3.6 and §6.10 sentences that name NFSv3 for this) saying so.
 
 ### What a protocol scaffold is
@@ -144,10 +144,10 @@ Decided by the owner: **the public surface is in `pkg/`, the implementation in `
 | `metrics` | `pkg/metrics` (exists) | shared by every component |
 | `Budget`, `Reservation`, `Pools`, `Buf`, `BufPool` | `pkg/resources` | RFC 24's package, public because `adapter.Deps` carries `Pools`; the adapters, open state and the service charge it, and any component wanting pooled buffers takes it; imports only the standard library and `pkg/metrics` |
 | `Adapter`, `Health`, `ConnInfo`, `Sidecar`, `Serving`, `Deps` | `pkg/adapter` | the contract the node drives and `core.Server` implements; the control plane's client list names `ConnInfo` |
-| `Adapter`, `NFS`, `SMB` settings shapes | `pkg/adapter/config` | a leaf the config loader, the management API and `dfsctl` name, with the live vs restart-only marks |
-| `New` | `pkg/adapter/nfs`, `pkg/adapter/smb` | one public constructor per protocol, `New(adapter.Deps, config.NFS) (adapter.Adapter, error)`, a one-line call into the implementation; returns the contract, never `*core.Server` |
+| `Adapter`, `NFS`, `SMB` settings shapes | `pkg/adapter/settings` | a leaf the config loader, the management API and `dfsctl` name, with the live vs restart-only marks |
+| `New` | `pkg/adapter/nfs`, `pkg/adapter/smb` | one public constructor per protocol, `New(adapter.Deps, settings.NFS) (adapter.Adapter, error)`, a one-line call into the implementation; returns the contract, never `*core.Server` |
 | `core`, `adaptertest` (later `gss`, `translate`) | `internal/adapter/…` | implementation; `core`'s API is not public |
-| each protocol's implementation | `internal/adapter/nfs`, `internal/adapter/smb` | imports `pkg/adapter` and `pkg/adapter/config`, never its constructor package, so there is no cycle |
+| each protocol's implementation | `internal/adapter/nfs`, `internal/adapter/smb` | imports `pkg/adapter` and `pkg/adapter/settings`, never its constructor package, so there is no cycle |
 | the sidecar runner; the concrete sidecars at cutover | `internal/sidecar` (root), `internal/sidecar/…` | built and driven by the node only |
 | TLS loading | `internal/tlsconfig` (exists) | shared with the control plane's listener |
 | keytab, PAC, NETLOGON, LDAP | `internal/identity` (RFC 18; today `internal/auth`, `pkg/auth`, `pkg/identity/ldap`) | the authenticator behind `SignIn`, not adapter code; adapter packages never import it |
@@ -188,7 +188,7 @@ pkg/
   adapter/
     adapter.go              Adapter, Health, ConnInfo, Sidecar, Serving
     deps.go                 Deps
-    config/                 Adapter, NFS, SMB settings, live vs restart-only marks (leaf)
+    settings/               Adapter, NFS, SMB settings, live vs restart-only marks (leaf)
     nfs/  smb/              New: the public constructors
   identity/                 RFC 18's contract: Evidence, SignInStep, SID…; adapters see it only as pkg/vfs aliases. RFC 18's plan's epic 1 makes it, once RFC 23's plan's epic 1 deletes v1's
 internal/
@@ -257,8 +257,8 @@ Gone: today's `pkg/adapter/` (replaced by the public surface above), today's
 `internal/adapter/{common,nfs,smb,pool,testruntime}`, and `pkg/controlplane/runtime/adapters`.
 
 The import test of §7.1 checks: no adapter implementation imports a core package other than
-`pkg/vfs`, `pkg/metrics`, `pkg/resources`, `pkg/adapter` and `pkg/adapter/config`; `pkg/adapter`,
-`pkg/adapter/config` and `pkg/resources` import nothing under `internal/`; only
+`pkg/vfs`, `pkg/metrics`, `pkg/resources`, `pkg/adapter` and `pkg/adapter/settings`; `pkg/adapter`,
+`pkg/adapter/settings` and `pkg/resources` import nothing under `internal/`; only
 `pkg/adapter/nfs` and `pkg/adapter/smb` import `internal/adapter/`, each its own protocol; and no
 implementation imports a constructor package.
 
@@ -271,7 +271,7 @@ The skill derives the test set from RFC 20's obligations, and each is a `dt` sui
   protocol; the import
   and call-site test (§7.1), seeded with one violation it must report; the `TCP_NODELAY` and
   keepalive assertion (§6.7); the middleware-order pin; the one-mutating-call
-  check, read from `vfstest.Memory`'s record (§7.2).
+  check, read from `memory.New`'s record (§7.2).
 - `unit/adapter-allocs`, per change and non-race: §6.10's codec 0-alloc gates and the pipeline
   allocation ceiling. `unit/nonrace` is nightly, and the nightly never runs `feat/storage-v2`.
 - Registered but not yet run (they need handlers): error-table totality per protocol (§7.3), the
@@ -283,7 +283,7 @@ The skill derives the test set from RFC 20's obligations, and each is a `dt` sui
 | RFC | Scope here |
 | --- | --- |
 | 17 (service) | constraints only: `pkg/vfs` exists; a missing service method is a finding against RFC 17, not adapter code |
-| 13 (configuration) | only the `pkg/adapter/config` shapes and the live vs restart-only marking `Reconfigure` needs |
+| 13 (configuration) | only the `pkg/adapter/settings` shapes and the live vs restart-only marking `Reconfigure` needs |
 | 14 (open state) | constraints only: `Callbacks`, `Adapter` bytes format rules |
 | 18 (identity) | constraints only: `gss` is deferred |
 | 21, 22 (protocols) | constraints only: the scaffold's stage shapes |

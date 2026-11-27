@@ -7,7 +7,8 @@ conventions, and playbooks.
 ## Project
 
 DittoFS is an experimental modular virtual filesystem in Go. NFSv3/v4.0/v4.1 + SMB2/3 servers
-in userspace (no FUSE), with pluggable metadata and block stores. **Not production ready.**
+in userspace (no FUSE), with pluggable metadata stores; on this branch `dfs` serves
+no file protocol (rule 2 below). **Not production ready.**
 
 Two binaries: `dfs` (server, `cmd/dfs/`) and `dfsctl` (REST client, `cmd/dfsctl/`). Both use Cobra.
 
@@ -19,7 +20,7 @@ Two binaries: `dfs` (server, `cmd/dfs/`) and `dfsctl` (REST client, `cmd/dfsctl/
 - `docs/guide/cli.md` — full `dfs` / `dfsctl` reference (**generated** — see below)
 - `docs/guide/nfs.md`, `docs/guide/smb.md` — user mounting guides (protocol internals in `docs/internals/`)
 - `docs/guide/smb-acl-fidelity.md` — SMB Windows-ACL/SD interop matrix (Works/Partial/Unsupported)
-- `docs/internals/implementing-stores.md` — metadata/block store contracts
+- `docs/internals/implementing-stores.md` — the metadata store contract; where the block tier stands
 - `docs/internals/debugging.md` — SMB/NFS pcap-diff interop playbook
 - `docs/guide/faq.md` — known limitations (ETXTBSY, POSIX gaps, single-node)
 - `docs/internals/contributing.md` — dev workflow
@@ -92,8 +93,11 @@ go vet ./...
 # Regenerate docs/guide/cli.md after changing any command/flag
 go run ./cmd/gendocs
 
+# Regenerate pkg/node/apiv1/openapi.json after changing an API route or wire type
+go run ./cmd/genopenapi
+
 # Run server with debug logging
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 ```
 
 Default NFS port is `12049` (not 2049). Server config lives at `~/.config/dittofs/config.yaml`
@@ -104,101 +108,86 @@ change the command definitions and rerun `go run ./cmd/gendocs`.
 
 ## Architecture invariants
 
-The Runtime (`pkg/controlplane/runtime/`) is the single entrypoint for all operations — a
-composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mounts/`,
-`lifecycle/`, `identity/`. API handlers and protocol adapters both go through it.
+The node (`internal/node`, built by `node.New`) is the one object each process builds. It
+replaces v1's Runtime, whose jobs now have three owners:
+
+- **The node** builds every component once from the bootstrap (`pkg/bootstrap`), starts and
+  stops them in order, reconciles them with the records each second, and runs long work as
+  operations on its runner. Reconcile's calls are unexported: nothing else changes a
+  component.
+- **The management API** (`internal/node/api`, wire types in `pkg/node/apiv1`) is the one door
+  for every change. It writes records, with their audit record, in one transaction through the
+  store's control-plane view, and never changes a component: it reads their progress and
+  health and, for sign-in and a domain join, calls the identity server. `dfsctl` is only its client.
+- **The filesystem service** (`vfs.Service`, `pkg/vfs`, implemented in `internal/vfs`) is the
+  one entrypoint for file operations. Adapters reach files and the engine only through it.
+
+v1's share gates map onto v2 owners; each gate's adapter half waits on RFC 20's plan (RFC 21's
+for NFS):
+
+- `CheckShareAccess` (flavor, Kerberos level, netgroup allowlist): `admit.Check`
+  (`internal/vfs/admit`), the share's security minimums and client rules, run by the service's
+  admission on every call.
+- `shareEntryStatus` (NFSv4's PUTFH and junction-LOOKUP gate): none at entry. The service admits
+  the share each handle names on every call that takes one (`admitHandle`,
+  `internal/vfs/admission.go`) and owns the pseudo-filesystem (`internal/vfs/pseudofs`).
+- The per-operation flavor and share checks (`CheckExportAccess`, `refuseCurrentFHAccess`,
+  SMB's `prepareDispatch`) and the `*metadata.AuthContext` each operation carried: the same
+  admission on every call, over the caller a `vfs.Call` carries.
+- `ApplyIdentityMapping` (squash): the identity server's `Resolve` (`internal/identity/resolve.go`),
+  which maps and squashes the caller on the share after admission.
+- `SquashMode.RootKeepsAdmin`: dropped. Admin on a share comes only from a share grant (RFC 18
+  §6.5).
 
 **Key rules you must preserve when editing:**
 
 1. **Protocol handlers handle only protocol concerns.** XDR/SMB wire encoding, framing,
    dispatch, type conversion. Permission checks, file ops, and directory traversal belong in
-   `pkg/metadata/` and the store implementations. Don't inline business logic into handlers.
+   the filesystem service (`internal/vfs`) and the store (`pkg/metadata/kvstore`). Don't inline
+   business logic into handlers.
 
-2. **Every operation carries an `*metadata.AuthContext`.** For NFS it is built in two steps.
-   Dispatch copies the RPC credentials into a handler context (`middleware.ExtractHandlerContext`
-   for v3, `ExtractV4HandlerContext` for v4). The handler then builds the `*metadata.AuthContext`,
-   with share permission and squashing applied (`BuildAuthContextWithMapping` for v3, reached
-   through `GetCachedAuthContext`; `buildV4AuthContext` for v4). For SMB it is built in the SMB
-   session layer (`BuildAuthContextFromUser`). It threads through handler → store. The share's
-   squash maps the identity in one place both adapters call, `Runtime.ApplyIdentityMapping`
-   (`pkg/controlplane/runtime/identity`), after the share's grants have resolved against the
-   unsquashed identity, so only file operations run as the squashed one. SMB guest sessions are
-   not mapped: they stay at the unprivileged nobody identity under every mode. Root's admin bypass
-   at the share gate is `models.SquashMode.RootKeepsAdmin`, which both `ResolveSharePermission`
-   (`internal/adapter/nfs/auth/share_permission.go`) and the SMB Tree Connect check
-   (`internal/adapter/smb/handlers/tree_connect.go`) use.
-
-   The share policy (`AllowAuthSys`, `RequireKerberos`, `MinKerberosLevel`, the netgroup client
-   allowlist) lives once, protocol-neutral, in `runtime.CheckShareAccess`
-   (`pkg/controlplane/runtime/export_auth_policy.go`). NFS's `CheckExportAccess`
-   (`internal/adapter/nfs/auth/export_access.go`) translates an RPC flavor and GSS service into a
-   proof and a protection, and applies the netgroup check only when its caller supplies a lookup.
-   It has three callers: MOUNT supplies one, the NFSv3 per-operation dispatch does not, and the
-   NFSv4 auth-context builder does not either, because it runs its own netgroup check first with
-   its own status. SMB maps a session onto the same two (`checkSharePolicy`,
-   `internal/adapter/smb/handlers/tree_connect.go`) in `admitTreeConnect`, which TREE_CONNECT and
-   the srvsvc share list both apply, and on every request in `prepareDispatch`
-   (`internal/adapter/smb/response.go`), CLOSE, TREE_DISCONNECT and LOCK exempt (LOCK's handler
-   checks an acquisition itself). COPYCHUNK also checks its source handle's tree, which the
-   request's TreeID does not name. `allow_auth_sys=false` refuses only a request nothing verified
-   (AUTH_SYS, AUTH_NULL, an SMB guest or anonymous session), so NTLM passes it, and
-   `min_kerberos_level` is the floor for NTLM too. The flavor gates run per operation, not only at
-   mount.
-
-   **NFSv4 needs a second gate, and it is not that one.** A compound can enter a share's handle
-   and then run only operations that make no metadata call of their own (LOCK, LOCKT, LOCKU and
-   GET_DIR_DELEGATION among them), so the share is also gated where its handle *enters* the
-   compound. There are exactly two such places: PUTFH, and a LOOKUP that crosses an export
-   junction out of the pseudo-fs. Both route through `shareEntryStatus`
-   (`internal/adapter/nfs/v4/handlers/helpers.go`) — keep it that way rather than growing a second
-   copy. Its two checks previously existed at one of the two sites only, which is how both a
-   quiesced share and a netgroup-restricted one stayed reachable by walking the pseudo-fs.
-
-   **That gate covers the share's enabled flag and its netgroup allowlist, not the flavor
-   policy.** Refusing a flavor at PUTFH would answer NFS4ERR_WRONGSEC, which sends the client to
-   SECINFO rather than to a stronger flavor, so `CheckExportAccess` runs only where an auth
-   context is built. LOCK, LOCKT and LOCKU therefore call `refuseCurrentFHAccess`, and
-   GET_DIR_DELEGATION calls `CheckCurrentFHAccess`, just before they touch state. Both reach
-   `currentFHAccessStatus` (also in `helpers.go`), which runs `buildV4AuthContext` and so
-   `CheckExportAccess`. Those four operations are gated twice: at handle entry for the enabled
-   flag and the netgroup allowlist, and per operation for the flavor policy and share permission.
-   Do not write a comment or a rule asserting the handle-entry path is fully gated: two comments
-   claimed exactly that, in opposite directions, and both were wrong.
+2. **On this branch the v1 adapters and their share gates are gone.** The NFS and SMB
+   adapters and their `AuthContext` builders were deleted; nothing serves a file protocol.
+   Admission is `internal/vfs/admit` (RFC 18 and RFC 19), with the gates mapped above, and
+   RFC 20's v2 adapters reach the filesystem only through `vfs.Service`. `develop` keeps the
+   v1 description of this rule.
 
 3. **File handles are opaque.** Generated by the metadata store; they encode share identity so
-   the Runtime can route. Handlers never parse or interpret them. They must stay stable across
+   the filesystem service can route. Handlers never parse or interpret them. They must stay stable across
    restarts for persistent backends.
 
-4. **Block stores are per-share, and every share has one.** Each share owns a
-   `*engine.Store` (journal + block store + syncer). No global block store exists.
-   Resolve via `rt.GetBlockStoreForHandle(ctx, handle)`. The `*engine.Store` itself is never
-   shared, but the S3/memory store behind it is ref-counted when shares reference the same
-   config. Each share's journal hangs off the server-level `blockstore.journal.path` in its
-   own subdirectory, so two shares never share one. Lifecycle is tied to `AddShare` /
-   `RemoveShare`.
+4. **The data path is live below the adapters; no adapter serves it yet.** `node.New`
+   builds the engine, `pkg/engine` over `pkg/journal`, and `vfs.Service` over
+   it (`internal/node/node.go`); `vfs.Service`'s Read, Write and Commit read and write
+   content through the engine (`internal/vfs/data.go`). The NFS and SMB adapters have no
+   file operations yet, so no client reads or writes a file (see
+   [Data path](docs/internals/architecture.md#data-path)). The adapters reach the engine
+   only through `vfs.Service`, never directly. One engine per node runs over the node's
+   journal devices (`bootstrap.journals`); shares bind to it at `engine.Start`. No remote
+   store is wired yet.
 
-5. **WRITE coordinates metadata + block store in this order:** `metadataStore.WriteFile`
-   (permission check, size/mtime update, returns pre-op attrs for WCC) →
-   `GetBlockStoreForHandle` → `blockStore.WriteAt` → return updated attrs.
+5. **WRITE judges before it stages:** `vfs.Service.Write` admits the caller and judges
+   the file's type, a read-only share, the caller's rights and open state, and reserves the
+   quota, before the engine stages a byte — and refuses an immutable file, or an append-only one below its end,
+   at staging (`internal/vfs/data.go`); a zero-count write returns once judged. On this
+   branch no protocol WRITE handler exists yet
+   ([Data path](docs/internals/architecture.md#data-path)); `develop` keeps the v1 rule.
 
-6. **Error codes:** return `metadata.ExportError` values (`ErrNotDirectory`, `ErrNoEntity`,
-   `ErrAccess`, `ErrExist`, `ErrNotEmpty`, …). Log expected errors at `Debug`, unexpected at `Error`.
+6. **Error codes:** the store returns `*StoreError` values from `pkg/metadata/errors` (codes
+   `ErrNotFound`, `ErrNotDirectory`, `ErrAccessDenied`, …). The filesystem service maps them to the
+   `pkg/vfs/vfserr` sentinels (`ErrNotFound`, `ErrNotDir`, `ErrAccess`, `ErrExist`, `ErrNotEmpty`,
+   …) in `storeErr` (`internal/vfs/errors.go`), and each adapter maps those to its own. Log
+   expected errors at `Debug`, unexpected at `Error`.
 
-7. **Store contracts** live in `pkg/metadata/storetest/` — any new metadata backend must pass
-   that conformance suite. Block stores have exactly one suite,
-   `blockstoretest.RemoteBlockStoreConformance`, and it covers only the block-keyed
-   `remote.RemoteBlockStore` surface. There is **no hash-keyed suite**: the CAS `block.Store`
-   interface and its `BlockStoreConformance` were deleted. The local tier is payload-keyed and
-   is covered by its own package tests.
+7. **Store contracts:** a new key-value backend passes `pkg/metadata/kv/kvtest`'s suite, and the
+   store over it `pkg/metadata/kvstore/kvstoretest`'s. The block tier has no pluggable store and
+   no store suite; the remote tier returns with its own contract. The journal and the engine carry their own
+   conformance suites (`journal_conformance`, `engine_conformance` tags).
 
-   **`pkg/block` no longer declares a whole-block-store interface.** `Reader`, `Writer`, `Flusher` and
-   `ComposedStore` are gone too — nothing consumed them but one `var _` assertion and some doc
-   cross-references, while every method they declared was already pinned by concrete call sites
-   on `*engine.Store`. The tier contracts live with their tiers (`remote.RemoteBlockStore`,
-   `journal.LocalStore`); what stays in `pkg/block/blockstore.go` is what both sides speak —
-   `Meta`, `DurabilityReporter` and `IsDurable`, all live. So a method reachable only from tests
-   now has nothing holding its signature up: say so with a `decision:` marker at the method
-   rather than reintroducing an interface to pin it.
+   **The block tier is `pkg/engine` and `pkg/journal`; no shared root package remains.** No interface
+   declares the engine's or the journal's surface: each is its own package API. So a method
+   reachable only from tests has nothing holding its signature up: say so with a `decision:`
+   marker at the method rather than reintroducing an interface to pin it.
 
 ## Writing tests
 
@@ -212,8 +201,8 @@ collaborators:
 - Put the logic in a function of its inputs, and test that function. Keep the I/O at the edge,
   in a thin layer.
 - Take a dependency as a small interface the consumer declares, and test against a **real**
-  implementation of it: the memory metadata or block store, `t.TempDir()`, a listener on
-  `127.0.0.1:0`, an in-memory SQLite control-plane store.
+  implementation of it: a journal under `t.TempDir()` (`journaltest`), `t.TempDir()`, a listener
+  on `127.0.0.1:0`, a Badger key-value store, in memory or under `t.TempDir()`.
 
 Only three kinds of test double are allowed:
 
@@ -302,14 +291,16 @@ Its `message:` is the text of the check that fails, specific enough that no othe
 contains it, since it is matched as a substring. The entry is written with the test, and CI on
 that pull request confirms it. A Go suite with a `known` file is registered for the purpose:
 its own build tag, `format: go-json`, `tier: pr` and `known:`, the tag added to lint-go's
-`go vet -tags=` list, as `engine-conformance` is on `feat/storage-v2`. The change that makes the
-test pass removes its entry (§4.7 fails a run whose known failure passes).
+`go vet -tags=` list, and its name added to the plan job's select in
+`.github/workflows/tests.yml`, without which CI never runs it (RFC 29 §4.8), as
+`engine-conformance` is on `feat/storage-v2`. The change that makes the test pass removes its
+entry (§4.7 fails a run whose known failure passes).
 
 **Integration** (`-tags=integration`, `-p 1`) is for a backend the host must provide: a KMIP
 server for the key provider, and a real S3-compatible endpoint. Postgres is gone: the stores are
 Badger, and FoundationDB for a cluster, so don't add a Postgres test. CI starts no S3 endpoint
 yet, so a test that needs one skips in every run and guards nothing until one is wired in; don't
-count it as coverage. Badger under `t.TempDir()` and in-memory SQLite are real implementations, and their
+count it as coverage. Badger under `t.TempDir()` is a real implementation, and its
 tests run untagged. Durability and ordering changes need a test on a real filesystem with
 the crash simulated beneath the code under test (RFC 1 §1.3), because a memory backend proves
 nothing about fsync or a crash. A backend the host lacks is a skip that names the environment
@@ -334,9 +325,8 @@ that decode to the same value (padding and reserved fields may differ). A target
 encode and decode agree passes when both share a bug. Commit every crasher to
 `testdata/fuzz/<FuzzName>/`, where it becomes a regression seed that plain `go test` runs.
 
-**Benchmarks**: `bench-smoke` runs on pull requests, non-blocking, and `fio-verify` and
-`perf-night` nightly. The others, Go's `-bench` and `dfsbench`'s full runs, are run by hand, and
-RFC 29 §4.10 plans two `manual` suites, a metadata-scale benchmark and a journal simulation. A
+**Benchmarks**: the `manual` tier's `engine-bench`, `reconcile-bench` and
+`version-limit-probe-bench` are run by hand, with Go's `-bench` and `dfsbench`'s full runs. A
 benchmark measures only the operation. Do setup before `b.ResetTimer()`, or between
 `b.StopTimer()` and `b.StartTimer()`, but remember that Go sizes `b.N` from the timed region
 alone, so an expensive untimed setup inside the loop multiplies the run's wall time. Call
@@ -361,10 +351,9 @@ from an unused import is not proof.
 **When a change starts populating a field that was always empty, audit the cache keys.** Keys,
 dedup keys and equality checks written against the old field set are invisible to `rg` for the
 field name, because the bug is in the key rather than the field. Carrying SID/GroupSIDs into
-`AuthContext.Identity` silently made `authCacheKey`
-(`internal/adapter/nfs/v3/handlers/doc.go`) incomplete: it keyed on share + flavor + uid + gid +
-gids, and two Kerberos principals can share that triple because a user record with no UID
-defaults to 1000 (`pkg/adapter/identity.go`). The second principal would have been served the
+`AuthContext.Identity` silently made the NFSv3 handlers' `authCacheKey` incomplete (in the v1
+NFS adapter, on `develop`): it keyed on share + flavor + uid + gid + gids, and two Kerberos
+principals can share that triple because a user record with no UID defaulted to 1000. The second principal would have been served the
 first's cached identity and inherited its SID-keyed ACE grants — failing **open**, unlike the
 missing-SID bug the change set out to fix.
 
@@ -385,16 +374,15 @@ A `ponytail:` comment marks a **knowingly-simple implementation**, naming its ce
 the upgrade path that would justify replacing it:
 
 ```go
-// ponytail: a covered read scans O(n) keys once; a hole or nested overlap adds
-// a second full scan, O(n log n) sorting and at most O(n) row loads. Upgrade to
-// a numeric offset index, which costs migrating the existing decimal keys, when
-// a payload's row count makes those per-hole row loads show up in a profile.
-func (s *BadgerMetadataStore) GetFileChunkAtOffset(...)
+// ponytail: decides each right of want on its own, up to 32 decisions over
+// one snapshot, each reading the ACL again. Compute the granted mask in one
+// walk of the grant, flags and ACL when MAXIMAL_ACCESS shows in a profile.
+func (f Files) Granted(ctx context.Context, id entity.Identity, h, via entity.Handle, want entity.AccessMask) (entity.AccessMask, error) {
 ```
 
 They are a **debt ledger, not TODOs**: each one records a decision that was correct at the
 time along with the evidence that would overturn it. They appear throughout the codebase,
-mostly in `pkg/block/engine`, `pkg/block/journal` and `pkg/metadata/store`.
+mostly in `pkg/engine`, `pkg/journal` and `pkg/metadata/kvstore`.
 
 This is the one sanctioned exception to the "no external references" rule above — the
 prefix is what makes the set harvestable as a group. Keep the marker when editing nearby
@@ -430,13 +418,13 @@ changing the line.
 
 ### Deferral ledgers
 
-The same ledger, kept by a plan. Every implementation plan in `.planning/` ends
+The same ledger, kept by a plan. Every RFC implementation plan, `.planning/rfc-*-plan.md`, ends
 §6 with a table, `| Deferred | Why | Owner | Trigger |`: what the plan knowingly does
 not build, why, who owns it later, and the event that brings it back. The owner is an RFC,
 another plan (or one of its epics) or a programme stage, or `unowned` when none is yet; never
 the plan itself or one of its epics, since what the plan builds is not a row. A row leaves only
 by moving to another owner or by a recorded decision to drop it. When the plan's issues are
-made (`epic-breakdown/issues.md` 6.6), each row becomes an issue labelled `deferred` and with
+made (`epic-breakdown` Step 6.6), each row becomes an issue labelled `deferred` and with
 the RFC's label, under the deferring RFC's roadmap epic and so due in its release; a later
 release only when the row's Trigger says `post-v1` or the user decides, never on an agent's
 judgement. The issue links its row, never the other way round, and closes through `Closes #<n>`

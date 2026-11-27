@@ -2121,8 +2121,8 @@ open such a name through their own path parsing, so one made over SMB would
 be a file its own creator cannot reach. A name holding the private-use code
 points of Appendix B is not refused. **On a `posix` share** it is case 2's
 spelling of a reserved character, and is stored with that character. **On a
-`windows` share**, whose rule stores a reserved character arriving over NFS in
-this spelling and refuses it from any other protocol
+`windows` share**, whose rule stores a reserved character given by a call that
+states `SpellsReservedNames` in this spelling and refuses it from one that does not
 ([RFC 7 §3.8](rfc-7-namespace-metadata.md#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use)),
 cases 2 and 3's mapping is not applied: such a name, like any holding the
 private-use code points U+F001–U+F07F, is stored and shown with the code points
@@ -2430,7 +2430,9 @@ are checked against; an SMB session carries no claims.
 - **Capabilities.** The `Call` the router builds for every SMB request carries
   `SMBCaps`, which sets `OpenFilesKeepNames` (§13), `WantOpenID`,
   `GrantBelongsToOpen` and `ClientIsMachine`, and leaves `PrivilegeOnEveryCall`
-  unset (§11) ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)). An adapter that left `OpenFilesKeepNames` unset would get NFS's rule
+  (§11), `SpellsReservedNames` and `ListsEveryEntry` unset, so on a `windows`
+  share a reserved character in a name is refused, and a share asking
+  access-based enumeration filters every listing ([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)). An adapter that left `OpenFilesKeepNames` unset would get NFS's rule
   without an error, so §18's row for §13 is what catches it.
 
 ### 16.2 Request identity
@@ -2788,7 +2790,10 @@ built; the totality test fails until they have rows.
 of the request's flags it keeps only `SMB2_FLAGS_RELATED_OPERATIONS`,
 `SMB2_FLAGS_PRIORITY_MASK`, `SMB2_FLAGS_DFS_OPERATIONS` and
 `SMB2_FLAGS_REPLAY_OPERATION`. The reply to a request the server puts off
-takes the async form, with the async ID the server chose.
+takes the async form, with the async ID the server chose. Any other reply takes
+the sync form (MS-SMB2 3.3.4.4, 3.3.5.2), with `Reserved` and `TreeId` zero for a
+request that arrived in the async form, whose async ID's bytes name no tree
+connect.
 
 **A status's body.** A reply whose status is not success is MS-SMB2 2.2.2's
 error response, which the header codec writes after the header, and a command's
@@ -3201,8 +3206,10 @@ re-authentication ones in `smbtorture/kerberos`, the MS-FSA cases in `wpts`, the
 rows reaching one file over SMB and NFS in `e2e/cross-protocol`, those with a
 Linux kernel client in `e2e`, those that need Windows itself in
 `clients/windows`, the platform clients' workloads over a mount in `clients`,
-`clients/smb21` and `clients/macos`, smbfuzz's rounds in `smb-fuzz`, and the
-hour-long profile-container run in `system`. No suite
+`clients/smb21` and `clients/macos`, and the hour-long profile-container run
+in `system`. smbfuzz's rounds have no suite yet: its fixture drove v1's API and
+left with it, and it returns, from test/smbfuzz at v0.37.0, once it drives
+this one's. No suite
 runs yet the wire tests against a reference or Windows server, or the steps §18
 marks cluster.
 

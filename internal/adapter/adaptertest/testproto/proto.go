@@ -1,0 +1,800 @@
+package testproto
+
+import (
+	"context"
+	"crypto/tls"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/cubbit/dittofs/internal/adapter/core"
+	"github.com/cubbit/dittofs/pkg/adapter"
+	"github.com/cubbit/dittofs/pkg/adapter/settings"
+	"github.com/cubbit/dittofs/pkg/resources"
+	"github.com/cubbit/dittofs/pkg/vfs"
+)
+
+// The statuses, one per error-table row.
+const (
+	StatusOK             core.Status = iota
+	StatusFault                      // an error no row maps
+	StatusNotSupported               // core.ErrNotSupported
+	StatusVersion                    // core.ErrVersion
+	StatusNotNegotiated              // core.ErrNotNegotiated
+	StatusNoSession                  // core.ErrNoSession
+	StatusNoTree                     // core.ErrNoTree
+	StatusNoFH                       // core.ErrNoFH
+	StatusTooLong                    // core.ErrTooLong: a compound past its cap
+	StatusExpired                    // core.ErrExpired
+	StatusNotLast                    // core.ErrNotLast
+	StatusTooManyPending             // core.ErrTooManyPending
+	StatusDelay                      // vfs.ErrDelay: at once in version 1, once its hold passes in version 2; of DelayResources, at once in both
+	StatusCancelled                  // core.ErrCancelled: a parked or held request its client cancelled
+	StatusDecode                     // core.ErrDecode: a record or arguments it cannot decode
+	StatusReplyTooBig                // core.ErrReplyTooBig: a reply's charge past a quarter of the reply pool's ceiling, or a compound past the record cap
+	StatusChecksum                   // a checksum that does not match, or a message sent clear under a session: the stages' table
+	StatusOverdraw                   // a message that charges more credits than the connection holds: the stages' table
+	StatusNotFailure                 // an Echo whose payload is NotFailure: a NotFailure row's, so a compound runs on past it and a chain's related members run
+	StatusIO                         // vfs.ErrIO: an Echo whose payload is JoinedIO, its NotFailure error joined to ErrIO
+	StatusOverflow                   // a parked Park whose name its reply's buffer cannot hold
+	StatusMoved                      // core.ErrMoved on version 1's Create: the move signal
+)
+
+// NotFailure is the Echo payload that asks for StatusNotFailure, a status
+// its table marks as no failure (RFC 20 §4.7's ErrorRow.NotFailure).
+const NotFailure = "not a failure"
+
+// errNotFailure is what Echo returns for a NotFailure payload: an error of
+// its own, which no other operation returns, as a NotFailure row's must be.
+var errNotFailure = errors.New("testproto: an Echo answered no failure")
+
+// JoinedIO is the Echo payload whose call returns errNotFailure joined to
+// vfs.ErrIO, which maps to StatusIO, a failure, never to StatusNotFailure
+// (RFC 20 §4.7's Map).
+const JoinedIO = "not a failure, joined to an I/O error"
+
+// Name is the protocol label testproto's tables and stages record under.
+const Name = "testproto"
+
+// HoldFor is how long version 2 holds a request the service answered
+// ErrDelay before it answers StatusDelay, until a test sets another with
+// SetHold.
+const HoldFor = 10 * time.Second
+
+// Settings is testproto's shape; its Router reads it from Conn.Settings() at
+// a Negotiate.
+type Settings struct {
+	settings.Adapter
+	MaxVersion core.Version // the highest version Negotiate picks; 0: both
+}
+
+// Validate refuses a MaxVersion past 2 and checks nothing else.
+//
+// decision: the common part is not checked here, because package settings
+// exports no check of it: NFS's and SMB's shapes run theirs from inside that
+// package. A test handing core a testproto.Settings supplies a common part
+// taken from settings' own defaults. Withdraw it, and call the check, if
+// settings ever exports one.
+func (s Settings) Validate() error {
+	if s.MaxVersion > 2 {
+		return fmt.Errorf("testproto: max version %d: there are versions 1 and 2", s.MaxVersion)
+	}
+
+	return nil
+}
+
+// Protocol is the test-only protocol, as core.Protocol.
+//
+// decision: testproto is not a test double. It is a third implementation of
+// core.Protocol, and a core test's subject is core, with this as its input.
+// It stays honest by doing nothing in the service's place: a handler decodes,
+// makes at most one service call and encodes, and every error, delay and hold
+// a test needs comes from the service the test supplies. Withdraw it, and
+// hold this package to a conformance suite, if a core test ever needs
+// testproto to decide something the service would.
+type Protocol struct {
+	d      adapter.Deps
+	bare   bool
+	reg    *registry
+	pool   *resources.BufPool // over the reply budget; nil when d has no budgets
+	tables func() [2]*core.OpTable
+	errs   *core.ErrorTable // the stages' own, for a refusal before Route returns a table
+	call   vfs.Call         // what every request's Call starts from
+	hold   *atomic.Int64    // version 2's hold, in nanoseconds; shared by every copy of p
+	up     *Upgrade         // what an Upgrade's Decode asks; nil: it asks nothing
+
+	// echoSeen, if not nil, receives the payload of each Echo the handler
+	// serves, before the reply; a test's observer, nil otherwise.
+	echoSeen func([]byte)
+}
+
+// Upgrade is what an OpUpgrade message's header stage asks of its connection:
+// a Conn.StartTLS under Config.
+type Upgrade struct {
+	Config *tls.Config
+	Gate   func()      // if not nil, the Decode calls it and waits for it to return, before it asks
+	Result func(error) // if not nil, receives what StartTLS returned, on the reader's goroutine
+	Twice  bool        // the Decode asks a second time, and Result receives both answers
+}
+
+// WithUpgrade is p with its OpUpgrade messages asking for TLS as u says.
+func (p *Protocol) WithUpgrade(u Upgrade) *Protocol {
+	q := *p
+	q.up = &u
+
+	return &q
+}
+
+// WithEchoSeen is p whose Echo handler hands f the payload of every Echo it
+// serves, before the reply: a test tells a served Echo from one the
+// connection never read. The copy rebuilds its own tables, whose Echo handler
+// closes over the copy, not over p.
+func (p *Protocol) WithEchoSeen(f func([]byte)) *Protocol {
+	q := *p
+	q.echoSeen = f
+	q.tables = sync.OnceValue(q.build)
+
+	return &q
+}
+
+// SetHold makes version 2 hold a request the service answered ErrDelay for d
+// from the hold's start, read afresh on each attempt, as a live setting is.
+func (p *Protocol) SetHold(d time.Duration) { p.hold.Store(int64(d)) }
+
+// WithCall is p with every request's Call starting from c: the identity a
+// session would resolve, which testproto does not model, so a test hands it
+// the call its service admits. A session's expiry is still its own.
+func (p *Protocol) WithCall(c vfs.Call) *Protocol {
+	q := *p
+	q.call = c
+
+	return &q
+}
+
+// New returns the protocol over d: its handlers call d.VFS, and the replay
+// cache's copies and Notify's message are reserved from d.Budgets.Reply. Its
+// tables are built once, at the first Tables or Route; NewServer calls Tables
+// before any listener accepts, so a table that fails its checks shows at
+// configured.
+func New(d adapter.Deps) *Protocol {
+	p := &Protocol{d: d, reg: newRegistry(), hold: new(atomic.Int64)}
+	p.hold.Store(int64(HoldFor))
+	if d.Budgets != nil && d.Budgets.Reply != nil {
+		p.pool = resources.NewBufPool(d.Budgets.Reply)
+	}
+	p.tables = sync.OnceValue(p.build)
+	p.errs = stagesErrors()
+
+	return p
+}
+
+// Bare is the same frames with the Header and Router stages only, on version
+// 1: what core's defaults for every other stage are tested on.
+func (p *Protocol) Bare() core.Protocol {
+	q := *p
+	q.bare = true
+
+	return &q
+}
+
+// Framer finds a record's length.
+func (p *Protocol) Framer() core.Framer { return framer{} }
+
+// Tables is every table the Router can return (RFC 20 §4.7): both versions'
+// on the full protocol, version 1's alone on Bare. The two share version 1's
+// table, which a server listing both resolves once.
+func (p *Protocol) Tables() []*core.OpTable {
+	t := p.tables()
+	if p.bare {
+		return t[:1]
+	}
+
+	return t[:]
+}
+
+// NewConn returns the connection's stages: every one on the full protocol,
+// the Hold stage included since the connection may reach version 2, and the
+// Header and Router alone on Bare.
+func (p *Protocol) NewConn(c *core.Conn) core.Stages {
+	cs := &connState{p: p, c: c}
+	if p.bare {
+		return core.Stages{
+			Header:   headerCodec{c: c, up: p.up},
+			Router:   &router{cs},
+			Errors:   p.errs,
+			Protocol: Name,
+		}
+	}
+	credits := newFlow()
+	cs.replay = &replay{pool: p.pool, flow: credits, m: map[replayKey][]byte{}}
+
+	return core.Stages{
+		Header:     headerCodec{flow: credits, c: c, up: p.up},
+		Router:     &router{cs},
+		Errors:     p.errs,
+		Security:   security{},
+		Flow:       credits,
+		Replay:     cs.replay,
+		Hold:       hold{flow: credits},
+		MaxPending: 8,
+		OnClose:    func(context.Context) { p.reg.leave(cs) },
+		Protocol:   Name,
+	}
+}
+
+// connState is one connection's state.
+type connState struct {
+	p       *Protocol
+	c       *core.Conn
+	version atomic.Uint32 // the version Negotiate picked; 0 before one
+	replay  *replay       // the connection's replay cache; nil on Bare
+}
+
+// state is one request's, as Request.State: a related member shares the one
+// of the member before it, so the filehandle a PutFH set is the next's.
+type state struct {
+	conn *connState
+	sid  uint32       // the session the header names, resolved
+	tid  uint32       // the tree the header names
+	fh   vfs.Handle   // the current filehandle; nil: none
+	max  core.Version // on a Negotiate: the highest version it may pick
+}
+
+// router chooses the version's table and builds the Request.
+type router struct{ cs *connState }
+
+// Route answers the table of the header's version: 1 or 2, and 1 alone on
+// Bare. A refusal after it has chosen that table comes back with it, and is
+// mapped there; a version with no table, with none.
+func (rt *router) Route(h core.Header, prev *core.Request) (*core.OpTable, *core.Request, error) {
+	v := h.Version()
+	if v < 1 || v > 2 || (rt.cs.p.bare && v != 1) {
+		return nil, nil, fmt.Errorf("testproto: version %d: %w", v, core.ErrVersion)
+	}
+	tb := rt.cs.p.tables()[v-1]
+	r, err := rt.request(h, prev)
+	if err != nil {
+		return tb, nil, err
+	}
+
+	return tb, r, nil
+}
+
+// request builds the Request: its level is what the connection negotiated
+// and what the header's session and tree reach, and its credential ends when
+// the session's does.
+func (rt *router) request(h core.Header, prev *core.Request) (*core.Request, error) {
+	hd, ok := plain(h)
+	if !ok {
+		return nil, errors.New("testproto: route a header of another protocol")
+	}
+	v := h.Version()
+	// A connection keeps what it negotiated: a request in a version above it
+	// is refused, one below it is served by that version's table.
+	if n := rt.cs.version.Load(); n != 0 && uint32(v) > n {
+		return nil, fmt.Errorf("testproto: version %d on a connection that negotiated %d: %w",
+			v, n, core.ErrVersion)
+	}
+	var s *state
+	if prev != nil && h.Related() {
+		s, _ = prev.State.(*state)
+	}
+	if s == nil {
+		s = &state{conn: rt.cs}
+	}
+	// A router built by NewConn(nil), as the seam builds it, has no
+	// connection to read settings from, and negotiates up to version 2.
+	if h.Op() == OpNegotiate {
+		s.max = 2
+		if rt.cs.c != nil {
+			switch set := rt.cs.c.Settings().(type) {
+			case Settings:
+				s.max = set.MaxVersion
+			case *Settings:
+				s.max = set.MaxVersion
+			}
+		}
+		if s.max == 0 {
+			s.max = 2
+		}
+	}
+	s.sid, s.tid = hd.session(), hd.tree()
+
+	r := &core.Request{
+		Call: rt.cs.p.call, Version: v, Level: core.NeedsNothing,
+		Conn: rt.cs.c, State: s,
+	}
+	if rt.cs.version.Load() != 0 {
+		r.Level = core.NeedsNegotiated
+		if carried, expires, hasTree := rt.cs.p.reg.look(s.sid, rt.cs, s.tid); carried &&
+			!rt.cs.p.bare {
+			r.Level = core.NeedsSession
+			if hasTree {
+				r.Level = core.NeedsTree
+			}
+			r.Call.Identity.Evidence.Expires = expires
+		}
+	}
+	if s.fh != nil {
+		r.Level |= core.NeedsFH
+	}
+
+	return r, nil
+}
+
+// build is both versions' tables: version 1 answers every error at once,
+// version 2 holds. They hold the same names, told apart by their Versions,
+// {1, 1} and {2, 2}; version 1's compound row's members take its {1, 1}.
+func (p *Protocol) build() [2]*core.OpTable {
+	errs := core.NewErrorTable(StatusFault, p.errorRows(false)...)
+	members := core.NewOpTable(errs, false, memberRows(p.ops())...)
+	members.ReadOp, members.EncodeResult = readOp, encodeResult
+
+	tables := [2]*core.OpTable{
+		core.NewOpTable(errs, false, append(p.ops(), compound(members))...),
+		core.NewOpTable(core.NewErrorTable(StatusFault, p.errorRows(true)...), true, p.ops()...),
+	}
+	for i, t := range tables {
+		t.Protocol = Name
+		t.Versions = &core.Range{First: core.Version(i + 1), Last: core.Version(i + 1)}
+	}
+
+	return tables
+}
+
+// errorRows is a table's rows, with the hold row's Hold set where the table
+// holds: p's hold from the hold's start.
+//
+// decision: the tables are not total. They map core's refusals, the service's
+// ErrDelay and its DelayResources delay, a cancel, the two drain errors,
+// Echo's NotFailure pair and ErrIO, which Echo's JoinedIO joins to that
+// pair's error, Park's overflow, and nothing else, so a service error no row maps is
+// reachable and answered StatusFault. Totality is a real protocol's property,
+// checked on NFS's and SMB's tables. Withdraw it if a core test needs a
+// service error this table leaves unmapped to have a status of its own.
+func (p *Protocol) errorRows(holds bool) []core.ErrorRow {
+	// decision: this row is testproto's only hold. A request is held because
+	// the service a test supplied answered ErrDelay, never because an
+	// operation here waits or answers an error itself; ErrDelay of
+	// DelayResources, a node pool's refusal, is answered at once by its typed
+	// row in both tables, as a table that holds must (RFC 20 §6.3). Withdraw
+	// it if core gains a hold that no service error can cause.
+	delay := core.ErrorRow{Err: vfs.ErrDelay, Status: StatusDelay}
+	if holds {
+		delay.Hold = func(_ error, start time.Time) time.Time { return start.Add(time.Duration(p.hold.Load())) }
+	}
+
+	rows := []core.ErrorRow{
+		{Err: core.ErrNotSupported, Status: StatusNotSupported},
+		{Err: core.ErrVersion, Status: StatusVersion},
+		{Err: core.ErrNotNegotiated, Status: StatusNotNegotiated},
+		{Err: core.ErrNoSession, Status: StatusNoSession},
+		{Err: core.ErrNoTree, Status: StatusNoTree},
+		{Err: core.ErrNoFH, Status: StatusNoFH},
+		{Err: core.ErrTooLong, Status: StatusTooLong},
+		{Err: core.ErrReplyTooBig, Status: StatusReplyTooBig},
+		{Err: core.ErrExpired, Status: StatusExpired},
+		{Err: core.ErrNotLast, Status: StatusNotLast},
+		{Err: core.ErrTooManyPending, Status: StatusTooManyPending},
+		delay,
+		{Err: &vfs.Delay{Cause: vfs.DelayResources}, Status: StatusDelay},
+		{Err: core.ErrDecode, Status: StatusDecode},
+		{Err: core.ErrCancelled, Status: StatusCancelled},
+		{Err: core.ErrDraining, NoReply: true},
+		{Err: core.ErrMoved, NoReply: true},
+		{Err: errNotFailure, Ops: []uint32{OpEcho}, NotFailure: true, Status: StatusNotFailure},
+		{Err: vfs.ErrIO, Status: StatusIO},
+		{Err: errOverflow, Status: StatusOverflow},
+	}
+	if !holds {
+		// Version 1 answers ErrMoved with a move signal on Create, its one
+		// operation that uses the current filehandle, as NFSv4 does; its other
+		// operations, and version 2, have none and send no reply (RFC 20 §3.1).
+		rows = append(
+			rows,
+			core.ErrorRow{Err: core.ErrMoved, Ops: []uint32{OpCreate}, Status: StatusMoved},
+		)
+	}
+
+	return rows
+}
+
+// stagesErrors is the stages' own table, which answers with no operation a
+// refusal before Route returns a table: a header's decode error, a bad
+// checksum or a message sent clear under a session, an overdraw, a version
+// the router serves no table of, and the replay copy's delay.
+func stagesErrors() *core.ErrorTable {
+	return core.NewErrorTable(StatusFault,
+		core.ErrorRow{Err: core.ErrDecode, Status: StatusDecode},
+		core.ErrorRow{Err: errChecksum, Status: StatusChecksum},
+		core.ErrorRow{Err: errOverdraw, Status: StatusOverdraw},
+		core.ErrorRow{Err: core.ErrVersion, Status: StatusVersion},
+		core.ErrorRow{Err: &vfs.Delay{Cause: vfs.DelayResources}, Status: StatusDelay},
+	)
+}
+
+// ops is the rows both tables hold, each with the versions it is served in:
+// Park's is version 2 alone, so version 1's table refuses it by its Versions
+// column. Version 1's compound row is build's, over its members' table.
+func (p *Protocol) ops() []*core.Op {
+	both := core.Range{First: 1, Last: 2}
+
+	return []*core.Op{
+		{
+			Code:     OpSession,
+			Name:     "Session",
+			Versions: both,
+			Needs:    core.NeedsNegotiated,
+			Expired:  true,
+			Decode: core.Bind(
+				decodeSession, noBound[sessionReq], nil, nil, nil, p.session, encodeNothing[empty]),
+		},
+		{
+			Code:     OpLogoff,
+			Name:     "Logoff",
+			Versions: both,
+			Needs:    core.NeedsSession,
+			Role:     core.RoleRelease,
+			Expired:  true,
+			Decode: core.Bind(
+				noArguments[empty], noBound[empty], nil, nil, nil, p.logoff, encodeNothing[empty]),
+		},
+		{Code: OpTree, Name: "Tree", Versions: both, Needs: core.NeedsSession, Decode: core.Bind(
+			noArguments[empty], noBound[empty], nil, nil, nil, p.tree, encodeNothing[empty])},
+		{
+			Code:     OpNotify,
+			Name:     "Notify",
+			Versions: both,
+			Needs:    core.NeedsNothing,
+			Decode: core.Bind(
+				decodeTarget, noBound[targetReq], nil, nil, nil, p.notify, encodeNothing[empty]),
+		},
+		{
+			Code:     OpViolate,
+			Name:     "Violate",
+			Versions: both,
+			Needs:    core.NeedsNothing,
+			Decode: core.Bind(
+				noArguments[empty], noBound[empty], nil, nil, nil, violate, encodeNothing[empty]),
+		},
+		{
+			Code:     OpPark,
+			Name:     "Park",
+			Versions: core.Range{First: 2, Last: 2},
+			Needs:    core.NeedsTree | core.NeedsFH,
+			Decode: core.Bind(
+				decodeName, nameBound, nil, nil, nil, p.park, encodeName),
+		},
+		{
+			Code:     OpNegotiate,
+			Name:     "Negotiate",
+			Versions: both,
+			Needs:    core.NeedsNothing,
+			Decode: core.Bind(
+				noArguments[empty], noBound[empty], nil, nil, nil, negotiate, encodeVersion),
+		},
+		{
+			Code:     OpPutFH,
+			Name:     "PutFH",
+			Versions: both,
+			Needs:    core.NeedsTree,
+			Role:     core.RoleContext,
+			Decode: core.Bind(
+				decodeHandle, noBound[handleReq], nil, nil, handleOf, putFH, encodeNothing[empty]),
+		},
+		{Code: OpEcho, Name: "Echo", Versions: both, Needs: core.NeedsNothing, Decode: core.Bind(
+			decodeEcho, echoBound, nil, echoRole, nil, p.echo, encodeEcho)},
+		{
+			Code:      OpCreate,
+			Name:      "Create",
+			Versions:  both,
+			Needs:     core.NeedsTree | core.NeedsFH,
+			Cacheable: true,
+			Decode: core.Bind(
+				decodeName,
+				noBound[nameReq],
+				p.inSession,
+				nil,
+				nil,
+				p.create,
+				encodeNothing[empty],
+			),
+		},
+		{Code: OpPanic, Name: "Panic", Versions: both, Needs: core.NeedsNothing, Decode: core.Bind(
+			noArguments[empty], noBound[empty], nil, nil, nil, panics, encodeNothing[empty])},
+		{
+			Code: OpUpgrade, Name: "Upgrade", Versions: both, Needs: core.NeedsNothing,
+			Decode: core.Bind(
+				decodeMode, noBound[modeReq], nil, nil, nil, upgrade, encodeNothing[empty]),
+		},
+		{
+			Code:     OpRead,
+			Name:     "Read",
+			Versions: both,
+			Needs:    core.NeedsTree | core.NeedsFH,
+			Decode: core.Bind(
+				decodeRead, readBound, nil, nil, nil, p.read, encodeRead),
+		},
+	}
+}
+
+// empty is the arguments, or the reply, of an operation that has none.
+type empty struct{}
+
+func noArguments[Req any](b []byte, _ core.Version, _ *Req) (int, error) { return len(b), nil }
+
+func noBound[Req any](*core.Request, *Req, int) (int, bool) { return 0, true }
+
+// encodeNothing encodes a reply with no body, a nil one included.
+func encodeNothing[Rep any](*Rep, core.Version, *resources.Buf) error { return nil }
+
+// stateOf is the request's state, which the Router set.
+func stateOf(r *core.Request) (*state, error) {
+	s, ok := r.State.(*state)
+	if !ok {
+		return nil, errors.New("testproto: a request the Router did not build")
+	}
+
+	return s, nil
+}
+
+// negotiate picks the lower of the version the request came in and the
+// highest the settings allow, and answers it.
+func negotiate(_ context.Context, r *core.Request, _ *empty) (*core.Version, error) {
+	s, err := stateOf(r)
+	if err != nil {
+		return nil, err
+	}
+	v := min(r.Version, s.max)
+	s.conn.version.Store(uint32(v))
+
+	return &v, nil
+}
+
+// encodeVersion appends the version picked, one byte; a nil reply has no
+// body.
+func encodeVersion(v *core.Version, _ core.Version, out *resources.Buf) error {
+	if v != nil {
+		out.B = append(out.B, uint8(*v))
+	}
+
+	return nil
+}
+
+// handleReq is PutFH's arguments: the handle's bytes.
+type handleReq struct{ handle vfs.Handle }
+
+func decodeHandle(b []byte, _ core.Version, req *handleReq) (int, error) {
+	req.handle = append(vfs.Handle(nil), b...)
+
+	return len(b), nil
+}
+
+func handleOf(req *handleReq) (vfs.Handle, bool) { return req.handle, true }
+
+// putFH makes the handle the current filehandle of the request and of the
+// related members after it.
+func putFH(_ context.Context, r *core.Request, req *handleReq) (*empty, error) {
+	s, err := stateOf(r)
+	if err != nil {
+		return nil, err
+	}
+	s.fh = req.handle
+	r.Level |= core.NeedsFH // for the members after it in a compound, which is routed once
+
+	return &empty{}, nil
+}
+
+// echoReq is Echo's arguments: its per-request role, then the payload.
+type echoReq struct {
+	role    core.Role
+	payload []byte
+}
+
+func decodeEcho(b []byte, _ core.Version, req *echoReq) (int, error) {
+	if len(b) < 1 {
+		return 0, errors.New("testproto: an Echo with no role")
+	}
+	req.role, req.payload = core.Role(b[0]), b[1:]
+
+	return len(b), nil
+}
+
+func echoBound(_ *core.Request, req *echoReq, _ int) (int, bool) { return len(req.payload), true }
+
+func echoRole(_ *core.Request, req *echoReq) core.Role { return req.role }
+
+// echo hands the payload it serves to the test that asked to see it, then
+// answers it as the Echo handler does.
+func (p *Protocol) echo(ctx context.Context, r *core.Request, req *echoReq) (*[]byte, error) {
+	if p.echoSeen != nil {
+		p.echoSeen(req.payload)
+	}
+
+	return echo(ctx, r, req)
+}
+
+// echo answers the payload, errNotFailure where the payload is NotFailure,
+// and errNotFailure joined to vfs.ErrIO where it is JoinedIO.
+func echo(_ context.Context, _ *core.Request, req *echoReq) (*[]byte, error) {
+	switch string(req.payload) {
+	case NotFailure:
+		return nil, errNotFailure
+	case JoinedIO:
+		return nil, errors.Join(errNotFailure, vfs.ErrIO)
+	}
+
+	return &req.payload, nil
+}
+
+func encodeEcho(payload *[]byte, _ core.Version, out *resources.Buf) error {
+	if payload != nil {
+		out.B = append(out.B, *payload...)
+	}
+
+	return nil
+}
+
+// nameReq is Create's and Park's arguments: a name.
+type nameReq struct{ name []byte }
+
+func decodeName(b []byte, _ core.Version, req *nameReq) (int, error) {
+	req.name = b
+
+	return len(b), nil
+}
+
+// nameBound is Park's reply: the name.
+func nameBound(_ *core.Request, req *nameReq, _ int) (int, bool) { return len(req.name), true }
+
+// nameRep is Park's reply: the name it parked on.
+type nameRep struct{ name []byte }
+
+// errOverflow is Park's encoder's refusal of a name the buffer it is handed
+// cannot hold: a parked reply is encoded into a small-class buffer, and its
+// protocol answers an overflow (RFC 20 §4.7).
+var errOverflow = errors.New("testproto: a reply past the buffer it is encoded in")
+
+// encodeName appends the name, or refuses with errOverflow, appending
+// nothing, where out's capacity cannot hold it; a nil reply has no body.
+func encodeName(rep *nameRep, _ core.Version, out *resources.Buf) error {
+	if rep == nil {
+		return nil
+	}
+	if len(out.B)+len(rep.name) > cap(out.B) {
+		return errOverflow
+	}
+	out.B = append(out.B, rep.name...)
+
+	return nil
+}
+
+// inSession is Create's Resolve: it refuses ErrNoSession once the request's
+// session has ended, as a held Create's re-drive finds after a Logoff.
+func (p *Protocol) inSession(r *core.Request, _ *nameReq) error {
+	s, err := stateOf(r)
+	if err != nil {
+		return err
+	}
+	if carried, _, _ := p.reg.look(s.sid, s.conn, s.tid); !carried {
+		return core.ErrNoSession
+	}
+
+	return nil
+}
+
+// create makes one service call: a Create of a regular file of the name in
+// the current filehandle's directory.
+func (p *Protocol) create(ctx context.Context, r *core.Request, req *nameReq) (*empty, error) {
+	s, err := stateOf(r)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.d.VFS.Create(ctx, r.Call, s.fh, req.name, vfs.CreateArgs{Kind: vfs.CreateRegular}); err != nil {
+		return nil, err
+	}
+
+	return &empty{}, nil
+}
+
+// readReq is Read's arguments: the offset and the count of bytes asked.
+type readReq struct {
+	off   int64
+	count int
+}
+
+func decodeRead(b []byte, _ core.Version, req *readReq) (int, error) {
+	if len(b) < 12 {
+		return 0, errors.New("testproto: a Read with short arguments")
+	}
+	req.off, req.count = int64(binary.BigEndian.Uint64(b)), int(binary.BigEndian.Uint32(b[8:]))
+
+	return 12, nil
+}
+
+// readBound is Read's reply, its eof byte and its data. It clamps the count
+// to room, never below one byte, and reports ok false where room cannot hold
+// one, as every READ's row does (RFC 20 §4.3).
+func readBound(_ *core.Request, req *readReq, room int) (int, bool) {
+	if 1+req.count > room {
+		if room < 2 {
+			return 1 + req.count, false
+		}
+		req.count = room - 1
+	}
+
+	return 1 + req.count, true
+}
+
+// readRep is Read's reply: whether the file ends at its data, and the data.
+type readRep struct {
+	eof  bool
+	data []byte
+}
+
+// read makes one service call: a Read of the count at the offset, from the
+// current filehandle.
+func (p *Protocol) read(ctx context.Context, r *core.Request, req *readReq) (*readRep, error) {
+	s, err := stateOf(r)
+	if err != nil {
+		return nil, err
+	}
+	data := make([]byte, req.count)
+	n, eof, err := p.d.VFS.Read(ctx, r.Call, vfs.Anonymous(s.fh), req.off, data)
+	if err != nil {
+		return nil, err
+	}
+
+	return &readRep{eof: eof, data: data[:n]}, nil
+}
+
+// encodeRead appends the eof byte, 1 where the file ends at the data, then
+// the data; a nil reply has no body.
+func encodeRead(rep *readRep, _ core.Version, out *resources.Buf) error {
+	if rep == nil {
+		return nil
+	}
+	var eof uint8
+	if rep.eof {
+		eof = 1
+	}
+	out.B = append(append(out.B, eof), rep.data...)
+
+	return nil
+}
+
+// modeReq is Upgrade's arguments: how its call ends.
+type modeReq struct {
+	mode uint8
+}
+
+func decodeMode(b []byte, _ core.Version, req *modeReq) (int, error) {
+	if len(b) < 1 {
+		return 0, errors.New("testproto: an Upgrade with no mode")
+	}
+
+	req.mode = b[0]
+
+	return 1, nil
+}
+
+// upgrade answers mode 0 with success, mode 1 with an error its table maps
+// (not supported) and mode 2 with the one its table answers no reply.
+func upgrade(_ context.Context, _ *core.Request, req *modeReq) (*empty, error) {
+	switch req.mode {
+	case 1:
+		return nil, core.ErrNotSupported
+	case 2:
+		return nil, core.ErrDraining
+	}
+
+	return &empty{}, nil
+}
+
+// panics is Panic's handler.
+func panics(context.Context, *core.Request, *empty) (*empty, error) {
+	panic("testproto: the Panic operation")
+}

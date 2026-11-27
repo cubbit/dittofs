@@ -13,6 +13,9 @@ groups:              # `dt run GROUP` runs every suite in it
   go: [unit, integration, e2e, operator]
   conformance: [pjdfstest, pynfs, wpts, smbtorture]
   perf: [fio-verify, bench-smoke, perf-night]
+  journal: [journal-conformance]
+  engine: [engine-conformance, engine-soak]
+  adapters: [adapter-conformance]
 
 suites:
   # Lint. `job` keeps the check names the develop ruleset requires. Every command of a list
@@ -27,12 +30,17 @@ suites:
       - go vet ./...
       # Tagged tests compile in no other check, so one could stop compiling without anything
       # going red. None of these tags excludes another.
-      - go vet -tags=e2e,integration,ad_dc,portmap_system,kerberos,stress ./...
+      - go vet -tags=e2e,integration,ad_dc,kerberos,portmap_system,stress,journal_conformance,journal_plant_split,journal_plant_truncate,journal_model,journal_soak,journal_bench,engine_conformance,engine_soak,engine_bench,adapter_conformance,foundationdb ./...
+      # The adapters run on every platform a node does, and their socket code differs by
+      # platform, so they are vetted for Windows and macOS beside the host's own.
+      - { sh: 'for os in windows darwin; do GOOS=$os go vet ./pkg/adapter/... ./pkg/resources/... ./internal/adapter/... || exit 1; done' }
       - go run ./test/spec-citations          # the MS-FSCC, MS-FSA and MS-SMB2 citations
       # The tests that pin an authorization or encryption gate, run by name: the edit that
       # reopens a gate can delete its test in the same change.
       - test/required-tests.sh
+      # The build that ships, then the FoundationDB backend, which builds only with its tag.
       - golangci-lint run --timeout=5m
+      - golangci-lint run --build-tags=foundationdb --timeout=5m
   lint-repo:
     job: Repo Checks
     parallel: true
@@ -50,13 +58,15 @@ suites:
       - test/commit-type-matches-diff_test.sh
       - test/commit-type-matches-diff.sh {base}
       - test/no-ai-attribution.sh {base}
-      # The test that reads the docs. A docs-only change plans no unit cell, on its pull
-      # request or in the merge queue, so it runs here, on every change. A test renamed in its
-      # package drops out of this list without a word: rename it here too.
-      - go test -timeout=5m -run=^TestDocsCommandReferences$ ./cmd/gendocs/
+      # The tests that read the docs and the RFCs. A docs-only change plans no unit cell, on its
+      # pull request or in the merge queue, so they run here, on every change. A test renamed in
+      # its package drops out of this list without a word: rename it here too.
+      - go test -timeout=5m -run=^(TestReferenceMatchesCommandTrees|TestDocsCommandReferences|TestPagesNameNoDeletedPath|TestGuideDocumentsEveryKey|TestSettingKeysMatchAppendixB|TestRetiredKeysMatchAppendixC|TestNoTableRowForTypedRefusals|TestRepositoryNamesNoRefusedVariable|TestAppendixBMatchesTheTable|TestAppendixBRFC23Rows|TestAppendixBScopeForms|TestAppendixBDriftFails|TestKindRolesMatchRFC|TestSchemaPropertiesAreAppendixC)$ ./cmd/gendocs/ ./pkg/bootstrap/ ./internal/node/ ./pkg/secrets/ ./cmd/dfs/commands/config/
+      - test/go-cache-push-only.sh             # only a push run saves to the Actions cache
       # Plans moved to .planning/; a change cut before the move would recreate the old folder.
       - { sh: 'f=$(git ls-files docs/internals/planning | grep -vxF docs/internals/planning/README.md); test -z "$f" || { echo "move to .planning/: $f"; exit 1; }; git ls-files --error-unmatch docs/internals/planning/README.md >/dev/null' }
       - go test ./test/harness/...              # dt's own tests
+      - go test ./test/journal/                 # every journal RFC row maps to a test or an owner
   # Every shell script: the *.sh files, and the executables without an extension whose first
   # line is a shell's shebang.
   shellcheck:
@@ -75,6 +85,7 @@ suites:
           printf '%s\0' "$f"
         done | xargs -0 shellcheck --severity=warning
   unit:
+    job: Unit Tests (1.26.x)
     parallel: true
     format: go-json
     # Its coverage profile goes beside the cell's results, for the coverage report.
@@ -87,19 +98,287 @@ suites:
         cmd: go test -short -race -p 2 -timeout=25m ./...
         needs: [windows]
         blocking: { pr: false }
-      nonrace:
-        # Not the aggregate random-write gate: with no baseline it passes whatever it measures.
-        cmd: "go test -timeout=25m -run=^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$ ./pkg/block/ ./pkg/block/middleware/compression/"
-        # decision: blocking at nightly, the one tier it runs in, so a gate that trips again on the
-        # retry turns the run red and posts to the develop-status issue. The throughput gate
-        # measures on a shared runner, where a busy neighbour can trip it; it fails no pull request.
-        tier: nightly
+      # The journal's allocation and memory checks — the index's, the data path's, durability's,
+      # the record codec's, the segment cache's and reclaim's — and the profiler's heap checks,
+      # which skip under -race. The large packages run only their checks, by name, since unit
+      # already runs the rest of them under -race.
+      journal-index:
+        cmd:
+          - go test -timeout=5m ./pkg/journal/internal/index/ ./pkg/journal/internal/durability/ ./pkg/journal/internal/format/ ./internal/prof/
+          - go test -timeout=5m -run=^(TestReadOfALargeRecordAllocatesFlat|TestRFC1D_StatsCostIsFlat)$ ./pkg/journal/internal/datapath/
+          - go test -timeout=5m -run=^(TestDescriptorsHitAllocatesNothing|TestStreamReservationAllocatesNothing)$ ./pkg/journal/internal/segment/
+          - go test -timeout=5m -run=^TestRegisterUnregisterAllocations$ ./pkg/journal/internal/reclaim/
+      # The index built with a bug planted in its split and the truncate marker with one planted
+      # past its size, which the model fuzz and the model's runs must find. The planted builds
+      # break the packages' other tests by design, so only these tests run.
+      journal-plant:
+        cmd:
+          - go test -tags=journal_plant_split -timeout=2m -run=^TestFuzzFindsPlantedSplit$ ./pkg/journal/internal/index/
+          - go test -tags=journal_plant_split,journal_conformance -timeout=10m -run=^TestModelDataPathFindsPlantedSupersession$ ./pkg/journal/conformance/
+          - go test -tags=journal_plant_truncate,journal_conformance,journal_model -timeout=10m -run=^TestModelManySeedsFindsPlantedTruncate$ ./pkg/journal/conformance/
+      # The journal's allocation checks, which the race detector makes unmeasurable, so the race
+      # leg of journal-conformance excludes them with -skip and this cell enforces them instead:
+      # the counted calls of RFC 1 §9.7, running without -race, where allocation counting works,
+      # with the flat-Stats check, whose rig builds 10^5 extents under the profiler's heap check,
+      # which it passed once the fixture stopped keeping the closed journal's core reachable at
+      # that check, and the same cost check over the figures a reopened journal serves. The two
+      # lists stay identical: a test a change adds to this cell's -run is added to the raced
+      # cell's -skip in the same change, or the raced run goes red on a skip no known row grades,
+      # while a name reaching only -skip would silently lose its enforcement.
+      journal-conformance-norace:
+        cmd: go test -timeout=5m -tags=journal_conformance -run=^(TestCounted_AllocationsPerCall|TestRFC1D_StatsCostIsFlat|TestStatsAfterOpenWalksNoLock) ./pkg/journal/conformance/
+        tier: pr
+      # The adapters' allocation gates, which skip under -race.
+      adapter-allocs:
+        cmd: go test -timeout=5m ./internal/adapter/adaptertest/testproto/ ./internal/adapter/core/ ./internal/adapter/gss/ ./internal/adapter/nfs/protocol/ ./pkg/resources/ ./internal/adapter/nfs/wire/ ./internal/adapter/smb/protocol/ ./internal/adapter/smb/wire/
+      # The architecture rules, the CLI reference check and the scan for environment names the
+      # start refuses read the whole module, so a change anywhere can break them, and the OpenAPI
+      # document check reads openapi.json, a file that is no Go package's; with no {packages},
+      # dt run --changed never narrows them away.
+      whole-tree:
+        cmd: go test -race -timeout=5m -run=^(TestImportRules|TestNodeExports|TestReferenceMatchesCommandTrees|TestImports|TestOpenAPIMatchesRouteTable|TestRepositoryNamesNoRefusedVariable)$ ./internal/node/ ./internal/node/api/ ./cmd/gendocs/ ./pkg/identity/ ./pkg/bootstrap/
+  # The journal's conformance checks, behind their own tag: they fail until the journal they
+  # check is written, and each failure is a known one, so the unit suite would turn red on them.
+  journal-conformance:
+    format: go-json
+    cmd: go test -race -tags=journal_conformance -skip=^(TestCounted_AllocationsPerCall|TestRFC1D_StatsCostIsFlat|TestStatsAfterOpenWalksNoLock) -timeout=30m -artifacts -outputdir={out} ./pkg/journal/conformance/...
+    known: test/journal/known.yaml
+    tier: pr
+  # The reference model over many seeds, each seed a fresh random timeline of the same
+  # operations: the change runs its handful of seeds, and the rare timeline only many of
+  # them see is nightly, not per-change, with DITTOFS_MODEL_SEEDS holding the count. No
+  # -race: the seeds multiply the run's cost, and journal-conformance already races a change.
+  # decision: no known: file — the model red on one seed is a divergence to fix, and an
+  # entry would mute every later seed's telling of it. A flake goes to quarantine, with
+  # an issue and an expiry date, never to a known list.
+  journal-model:
+    format: go-json
+    cmd: go test -tags=journal_conformance,journal_model -run ^TestModelManySeeds$ -timeout=110m -artifacts -outputdir={out} ./pkg/journal/conformance/
+    env:
+      DITTOFS_MODEL_SEEDS: "100"
+      # The base turns over every night: the day's count of days times the seed count
+      # gives each night its own block of seeds, one no other night's block overlaps,
+      # while a rerun the same night draws the same ones
+      # and a failure's line names the number its rerun needs. The registry's
+      # own {out}/{base} substitution reaches no run date, so the value is this
+      # spelled word the test itself resolves - the smallest change until a
+      # date-valued key lands in the harness.
+      DITTOFS_MODEL_SEED_BASE: "night"
+    tier: nightly
+    # The cell limit sits above the seeded run: the registry's default 60m cell would kill
+    # it mid-seed, red for the wrong reason.
+    timeout: { test: 110m, cell: 120m }
+  # The hours-long soak: counters, descriptors and the footprint held flat for
+  # DITTOFS_SOAK_DURATION, a stability no short checked run can show. No -race, as for the
+  # model: the detector changes the timing a soak explores.
+  # decision: no known: file — drift in a counter the soak checks is a leak to fix, not a
+  # figure to list. A flake goes to quarantine, with an issue and an expiry date, never
+  # to a known list.
+  journal-soak:
+    format: go-json
+    cmd: go test -tags=journal_conformance,journal_soak -run ^TestJournalSoak -timeout=150m -artifacts -outputdir={out} ./pkg/journal/conformance/
+    env:
+      DITTOFS_SOAK_DURATION: "2h"
+    tier: nightly
+    # Mandatory, and above the soak's own 2h run: the registry's default cell timeout (60m)
+    # would kill the soak with its drift unmeasured; the test limit stops a hung one.
+    timeout: { test: 150m, cell: 160m }
+  # RFC 1's J1 to J3, the journal's write path, scaling and point lookups, written to
+  # {out}/bench.txt for benchstat. Interpretable only beside the raw figures of the same
+  # device, so run by hand with DITTOFS_BENCH_DIR on it, gating nothing, as engine-bench:
+  # JOURNAL_BENCH_COUNT=1 in the environment takes one count. The pattern takes the raw
+  # twins (BenchmarkRaw*) with the J rows, since a J row is read only as a fraction of its
+  # twin. A directory on a RAM-backed filesystem fails the benchmark on its own check, so
+  # that refusal exits 1 (b.Fatalf in the rows), deliberately unlike the unset-variable
+  # guard's 2. No -race: it changes the latency they measure. An explicit -timeout=290m, as go test would otherwise stop a benchmark binary at
+  # 10 minutes; the cell's limit sits above it — engine-bench's, the same headroom, not the registry's
+  # default 60m, which a real run's counts could outlive.
+  # decision: format exit, not go-json: go test -json sends no pass event for a passing
+  # benchmark, which a go-json cell grades as failed.
+  # decision: manual, at the full sizes. The daily small-size run is journal-bench-data, on the
+  # dedicated host, which is also this suite's reference box: a figure compares only against
+  # that host's own, and the nightly's carry profiler overhead this one's don't.
+  # decision: no known: file — a benchmark that refuses to run is a finding to fix; its
+  # b.Fatalf line is in bench.txt. A flake goes to quarantine, with an issue and an
+  # expiry date, never to a known list.
+  journal-bench:
+    cmd:
+      # The bench pattern's quotes rule out the flow style shellcheck's and engine-bench's
+      # single-quoted lines use, so the entry takes the literal block the shellcheck one does.
+      - sh: |
+          test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; n=10; test -z "$JOURNAL_BENCH_COUNT" || n=$JOURNAL_BENCH_COUNT; case $n in [!1-9]*|*[!0-9]*) echo "JOURNAL_BENCH_COUNT must be a number of 1 or more, without a leading zero" >&2; exit 2;; esac; go test -count=$n -benchtime=1x -timeout=290m -tags=journal_conformance,journal_bench -run ^$ -bench '^Benchmark(J[123]_|Raw)' ./pkg/journal/conformance/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; test $s -ne 0 || grep -q '^BenchmarkJ' {out}/bench.txt || { echo "no BenchmarkJ benchmark ran" >&2; exit 2; }; exit $s
+    tier: manual
+    timeout: { test: 300m, cell: 310m }
+  # The engine's conformance checks, behind their own tag for the same reason: they run
+  # against the real journal and fail until the engine and the journal calls they need land.
+  engine-conformance:
+    format: go-json
+    cmd: go test -race -tags=engine_conformance -timeout=30m ./pkg/engine/conformance/... ./internal/vfs/integration/...
+    known: test/engine/known.yaml
+    tier: pr
+  # The crash-and-restart soak over the composed engine, a short fixed list of seeds. Its run
+  # over the real journal is red until the journal can sync and recover. No -race: the race
+  # detector changes the timing a soak explores. engine-conformance covers the engine's races, and
+  # unit runs the soak's fault log, which carries no tag, under -race.
+  engine-soak:
+    format: go-json
+    cmd: go test -tags=engine_conformance,engine_soak -run=^(TestSoak|TestOracle) -timeout=20m ./internal/vfs/integration/...
+    known: test/engine/soak-known.yaml
+    tier: pr
+  # The engine's benchmarks, RFC 8 §15.4's B5, B7 and B9, over a composition on a real directory
+  # with an on-disk store and the real clock; run by hand on the dedicated host, gating nothing.
+  # Each iteration is one run of a workload, so -benchtime=1x -count=10 gives benchstat its
+  # samples, written to {out}/bench.txt; ENGINE_BENCH_COUNT=1 in the environment takes one.
+  # DITTOFS_BENCH_DIR must name a directory on the device under test: without it every
+  # benchmark skips and go test passes, so the cell fails before running it.
+  # No -race: it changes the latency they measure, and engine-conformance covers the races.
+  # An explicit -timeout=290m, as go test would otherwise stop a benchmark binary at 10 minutes;
+  # the cell's limit sits above it.
+  # decision: format exit, not go-json: go test -json sends no pass event for a passing
+  # benchmark, which a go-json cell grades as failed. A count a benchmark breaks fails the cell,
+  # which then names the command rather than the benchmark; its b.Fatalf line is in bench.txt.
+  # B7 writes a line a burst to b7-bursts.txt in its artifact directory, one directory a sample
+  # under {out}/_artifacts (-artifacts -outputdir). The cell joins them into {out}/b7-bursts.txt:
+  # find -exec cat keeps each sample's lines together but gives no sample order and no sample id.
+  # The find runs after s=$? so the cell's exit stays go test's.
+  engine-bench:
+    cmd:
+      - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; n=10; test -z "$ENGINE_BENCH_COUNT" || n=$ENGINE_BENCH_COUNT; case $n in [!1-9]*|*[!0-9]*) echo "ENGINE_BENCH_COUNT must be a number of 1 or more, without a leading zero" >&2; exit 2;; esac; go test -count=$n -benchtime=1x -timeout=290m -artifacts -outputdir={out} -tags=engine_conformance,engine_bench -run ^$ -bench . ./internal/vfs/integration/ > {out}/bench.txt; s=$?; find {out}/_artifacts -name b7-bursts.txt -exec cat {} + > {out}/b7-bursts.txt; cat {out}/bench.txt; exit $s' }
+    tier: manual
+    timeout: { test: 300m, cell: 310m }
+  # The reconcile pass a live change waits on, at 10⁴ shares cold and under share churn, against
+  # RFC 23 §8's 5 s; run by hand, gating nothing. -count=10 gives benchstat its samples, written
+  # to {out}/bench.txt. A figure over the bound is a finding, not a failure: the cell fails only
+  # when a pass leaves a change unbound. No -race, as for engine-bench. Badger and the journal live
+  # under t.TempDir(), so TMPDIR is pointed at DITTOFS_BENCH_DIR, a directory on the device under
+  # test: on tmpfs the fsyncs a bind waits on vanish and the figures are not comparable. A cold
+  # pass at 10⁴ shares allocates about 22 GB, so run it on a host that holds that.
+  # The settings case of this benchmark is the whole settings reconcile a live settings change
+  # waits on, shares pass included, guarded so its figure answers only a pass which refused
+  # nothing and published the change. Its figure is read against the plan's 100 ms ceiling of
+  # the walk, a tenth of the one-second settings poll, by hand and goes in the PR; the cell
+  # itself only fails a broken pass. Every one of the ten counts seeds its own 10⁴ share
+  # fixture, about twenty seconds of seeding a count on an idle host and up to five
+  # minutes with the machine loaded, so the timeout keeps its headroom over cold and
+  # churn alone.
+  # An explicit -timeout, as go test would otherwise stop a benchmark binary at 10 minutes; the cell's limit sits above it.
+  reconcile-bench:
+    cmd:
+      - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; TMPDIR=$DITTOFS_BENCH_DIR go test -count=10 -benchtime=1x -timeout=230m -run ^$ -bench ^BenchmarkReconcile$ ./internal/node/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+    tier: manual
+    timeout: { test: 240m, cell: 250m }
+  # Admission's caller cache at 10⁴ callers on 25 shares with the identity State's serial
+  # raised once a second: warm Ticket callers, and Secret callers, which carry no freshness and
+  # so resolve on every call. Reports ns/op, allocs/op, p99-ns, reads/s, reads/op, misses/op, raises and misses/raise; compare
+  # the two with benchstat -col /proof on bench.txt. A -benchtime of tens of seconds, so that a
+  # run spans many raises; an explicit -timeout, as go test would otherwise stop a benchmark
+  # binary at 10 minutes. No -race: it changes the latency measured.
+  caller-cache-bench:
+    cmd:
+      - { sh: 'go test -count=5 -benchtime=30s -timeout=60m -run ^$ -bench ^BenchmarkAdmissionCallers$ ./internal/vfs/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+    tier: manual
+    timeout: { test: 70m, cell: 80m }
+  # A metadata commit's cost with checked sign-ins from many sources beside it, each costing two
+  # commits, against none; compare with benchstat -col /signins on bench.txt. No -race, as for
+  # engine-bench. Badger lives under t.TempDir(), so TMPDIR is pointed at DITTOFS_BENCH_DIR, a
+  # directory on the device under test: on tmpfs the fsync a commit waits on vanishes.
+  signin-bench:
+    cmd:
+      - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; TMPDIR=$DITTOFS_BENCH_DIR go test -count=10 -run ^$ -bench ^BenchmarkSignInCommitCost$ ./internal/node/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+    tier: manual
+  # A directory principal's cold resolution, alone, as 50 first sign-ins at once and with a PAC of
+  # 1 024 SIDs, against the in-memory directory with every search delayed 5, 20 and 50 ms on the
+  # wall clock; every search is delayed alike, so the cells price query count and concurrency, not
+  # the filter. A resolution that fails or reaches its 20-second bound fails the cell; its b.Fatalf
+  # line is in bench.txt. No -race: it changes the latency they measure. -timeout, because go
+  # test's default 10 minutes covers a benchmark run too, and ten counts outlive it.
+  identity-dir-bench:
+    cmd:
+      - { sh: 'go test -count=10 -timeout=50m -run ^$ -bench ^BenchmarkDirectory ./internal/identity/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+    tier: manual
+    timeout: { test: 55m, cell: 60m }
+  # Measures only the version-limit probe, with journal setup outside the timer.
+  version-limit-probe-bench:
+    cmd:
+      - { sh: 'go test -count=10 -run ^$ -bench ^BenchmarkVersionLimitProbe$ ./pkg/engine > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+    tier: manual
+  # The commit rate of eight concurrent Seal and PutSecret writers with the settings generation's
+  # raise and without it, to read RFC 13's plan §4.3 trigger (the raise under half the baseline's
+  # rate). Compare with benchstat -col /mode on bench.txt. No -race and the default -benchtime, as a
+  # rate needs a timed run of many commits. Badger lives under t.TempDir(), so TMPDIR is pointed at
+  # DITTOFS_BENCH_DIR, a directory on the device under test: on tmpfs the fsync a commit waits on
+  # vanishes and the rates are not comparable.
+  settings-gen-bench:
+    cmd:
+      - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; TMPDIR=$DITTOFS_BENCH_DIR go test -count=10 -run ^$ -bench ^BenchmarkSettingsGenerationCost$ ./pkg/secrets/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+    tier: manual
+  # The reconcile's own walk and diff at 10⁴ shares' settings, against RFC 13's plan §4.3 trigger
+  # (the walk and the diff passing 100 ms, a tenth of the one-second poll): Read through Nodes and
+  # Diff alone, `sparse` about 10⁵ rows and `dense` 2×10⁵, sparse and dense each timing read,
+  # diff_one_key, diff_first and the two together. Each sub-benchmark fails itself when Read
+  # refuses a section or Diff lists another key set than the one it answers, so its b.Fatalf line
+  # lands in bench.txt rather than a wrong figure. The seeding runs before the timer and dominates:
+  # one count of both cases was measured under three minutes on a laptop, so ten need under half
+  # an hour and the -timeout sits above that, as go test would otherwise stop a benchmark binary at
+  # ten minutes. Badger lives under t.TempDir(), so TMPDIR is pointed at DITTOFS_BENCH_DIR, as
+  # settings-gen-bench's is. Compare with benchstat over the ten counts on one machine.
+  # decision: format exit (the default), not go-json: go test -json sends no pass event for a
+  # passing benchmark, which a go-json cell grades as failed.
+  # decision: no known: file. A benchmark that refuses to run is a finding to fix, and one that
+  # fails itself on code is exactly what it exists to catch. A flake goes to quarantine, with an
+  # issue and an expiry date, never a known list.
+  settings-scan-bench:
+    cmd:
+      - { sh: 'test -n "$DITTOFS_BENCH_DIR" || { echo "set DITTOFS_BENCH_DIR to a directory on the device under test" >&2; exit 2; }; TMPDIR=$DITTOFS_BENCH_DIR go test -count=10 -timeout=50m -run ^$ -bench ^BenchmarkReconcileScan$ ./pkg/settings/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+    tier: manual
+    timeout: { test: 55m, cell: 60m }
+  # The same benchmark once per change at -benchtime=1x, so a code change that makes Read refuse a
+  # section or Diff list the wrong keys fails a pull request instead of only a manual run. The full
+  # fixture is seeded outside the timer each run; no -race (it changes the figure) and format exit
+  # (the default), as the manual one's comments say.
+  # decision: non-blocking on pull requests, as bench-smoke is: the seeding costs minutes of an
+  # unattended runner, and a failing run posts instead of blocking the merge. Make it blocking
+  # once its run time has settled on the hosted runners.
+  # decision: no known: file. A benchmark that refuses to run is a finding to fix.
+  settings-scan-smoke:
+    cmd:
+      - { sh: 'go test -count=1 -benchtime=1x -timeout=25m -run ^$ -bench ^BenchmarkReconcileScan$ ./pkg/settings/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s' }
+    tier: pr
+    blocking: { pr: false }
+  # The settings case of the reconcile benchmark once per change at -benchtime=1x. The case fails
+  # itself on a pass that refused, never reached the commit or did not publish the change, and
+  # prints its figure to bench.txt; the figure read against the walk's ceiling, a tenth of the
+  # settings poll's second, goes into the PR by hand. The cell compares no number and posts
+  # nothing.
+  # The whole fixture is seeded and held before the timer: the run holds about 540 MB at its
+  # peak and takes minutes, so an explicit -timeout, as go test would otherwise stop a benchmark
+  # binary at 10 minutes. No -race: it changes the figure. The cell's output is plain text (the
+  # default format, not go-json), so a failing b.Fatalf line lands in bench.txt readable, as
+  # settings-scan-smoke's is.
+  # decision: non-blocking on pull requests, as settings-scan-smoke is: the seeding costs minutes
+  # of an unattended runner, and a failing run reports without holding the merge.
+  # decision: no known: file. A benchmark that refuses to run is a finding to fix.
+  reconcile-settings-smoke:
+    cmd:
+      - sh: |
+          go test -count=1 -benchtime=1x -timeout=25m -run '^$' -bench '^BenchmarkReconcile$/^settings$' ./internal/node/ > {out}/bench.txt; s=$?; cat {out}/bench.txt; exit $s
+    tier: pr
+    blocking: { pr: false }
+    timeout: { test: 25m, cell: 30m }
+  # The adapters' specifications that wait on a stub, behind their own tag: each fails until the
+  # epic that fills its stub, and each failure is a known one.
+  adapter-conformance:
+    format: go-json
+    cmd: go test -race -tags=adapter_conformance -run ^TestConformance ./internal/adapter/...
+    known: test/adapter/known.yaml
+    tier: pr
   integration:
+    job: Integration Tests (1.26.x)
     format: go-json
     cmd: go test -tags=integration -p 1 -timeout=20m {packages}
     packages: { tag: integration }
     tier: pr
-    needs: [docker, "service:postgres", "service:kmip"]
+    needs: [docker, "service:kmip"]
     options:
       portmap:  { cmd: go test -tags=portmap_system -timeout=2m ./test/integration/portmap/..., needs: [linux, rpcbind] }
       kerberos: { cmd: go test -tags=kerberos -timeout=5m ./test/integration/kerberos/, needs: [docker] }
@@ -131,6 +410,17 @@ suites:
     blocking: { pr: false }
     options:
       stress: { cmd: "go test -tags=e2e,stress -run ^TestStress -timeout=30m ./test/e2e/", tier: nightly }
+      # The CLI's suite from a dfsctl child run as uid 65534, to whom the node's files and the
+      # bootstrap are unreadable.
+      second-user:
+        cmd: go test -tags=e2e -run SecondUser -timeout=5m ./cmd/dfsctl
+        tier: pr
+        needs: [linux, root]
+        paths:
+          - cmd/dfsctl/**
+          - pkg/node/**
+          - internal/node/**
+          - internal/cli/**                 # the credentials file the child writes
       kerberos:                         # the Kerberos mounts, on pull requests that can affect them
         cmd: go test -tags=e2e -run Kerberos -timeout=30m ./test/e2e/
         tier: pr
@@ -138,15 +428,15 @@ suites:
           - internal/adapter/**
           - pkg/adapter/**
           - pkg/metadata/**
-          - internal/auth/**
+          - internal/identity/**            # the identity server: sign-in and resolution
+          - pkg/identity/**                 # identity's contract
           - pkg/auth/**
-          - pkg/identity/**
-          - pkg/controlplane/**             # export auth policy, users and identity mappings
-          - internal/controlplane/**        # the identity mapping and provider API
-          - pkg/config/**                   # the Kerberos keytab and principal
+          - pkg/bootstrap/**                # the Kerberos keytab and principal
           - cmd/dfs/**                      # the server's Kerberos capability at start
-          - "test/e2e/*kerberos*"
+          - internal/node/**                # the sign-in, the keytab and the export policy reach the mount
+          - pkg/node/**                     # through the node and its API
           - test/e2e/framework/kerberos.go
+          - test/e2e/admission_kerberos_test.go
           - test/integration/kerberos/**
       # The tests that reach one file through both protocols, on pull requests that can break
       # them: a drift between NFS and SMB is invisible to every single-protocol suite. The
@@ -165,13 +455,11 @@ suites:
           - internal/vfs/**
           - pkg/vfs/**
           - pkg/metadata/**
-          - pkg/controlplane/runtime/**       # CheckShareAccess, ApplyIdentityMapping: both adapters' admission
-          - pkg/auth/**                       # the SID mapper both adapters call
-          - "test/e2e/cross_protocol*"
-          - test/e2e/helpers/**               # error_triggers.go, used by CrossProtocol_ErrorConformance
+          - pkg/auth/**                       # the SIDs both adapters encode
+          - pkg/identity/**                   # the caller and identity types both adapters carry
+          - internal/node/**                  # the grants and export policy both adapters admit by
+          - pkg/node/**
           - test/e2e/framework/**             # the mount and fixture code the option runs on
-          - test/e2e/grace_period_test.go    # the reclaim across both protocols
-          - test/e2e/nfsv4_acl_test.go        # a file with an NFSv4 ACL, read over SMB
 
   # Conformance runs the production profile, badger-s3, only.
   pjdfstest:
@@ -374,6 +662,46 @@ suites:
     # A night of one repeat takes about 1 h 30 min, its build and lock wait included. STOP_AFTER
     # cuts it to end 5 minutes before the limit, so it still cleans up and posts.
     timeout: { test: 3h }
+  # journal-bench's bodies at the small sizes (DITTOFS_BENCH_SCALE=small: blocks of 4 to 64 KiB,
+  # bursts of a few MiB), ten counts of one iteration, nightly on the dedicated host: dt's
+  # go-bench reader puts each night's medians in the run's summary.json (results.tests[].extra
+  # .metrics) for dt history, and {out} keeps each group's bench.txt-shaped file (for
+  # benchstat), its cpu, mutex, block and heap profiles, and meta.txt (toolchain, filesystem
+  # and mount options, the device's raw fsync probe). One test per group because the reader
+  # reads per named test; test/journal/bench-data.sh runs it. DITTOFS_BENCH_DIR, unset being
+  # exit 2 as journal-bench's, is the host's data drive below, which the host owner confirmed.
+  # needs host:dedicated, not a shared runner, whose busy neighbours' noise the throughput
+  # gate admits: one fixed box makes the absolute figures mean something, beside perf-night's
+  # medians. It follows perf-night in this file, which is the order the host's night runs
+  # them in, so perf-night keeps its quiet host and these few minutes come after it.
+  # The host's own `dt run --tier nightly --place dedicated` runs it, as it runs perf-night:
+  # tests.yml's plan select names neither, and a hosted job could never be placed on that host.
+  # host:dedicated is met only by --place dedicated, so a hand run of this one cell on the host
+  # goes through that place, which runs the whole nightly tier, perf-night included.
+  # decision: the figures are collected, never checked: a regression is a finding, and a
+  # check would need a ruling that names a counted bound (RFC 1 §9.7 stays intact: no timing
+  # is judged in CI). Nothing posts to the develop-status issue, since the host doesn't post
+  # there; a failure counts in the host run's exit and status, as any cell's does. blocking:
+  # false is the declared intent, and what tests.yml would honour if the cell ever ran there.
+  # decision: the host runs develop's latest commit, so the stream starts when storage-v2
+  # reaches develop; empty until then is the design, not a bug.
+  # decision: the host's results directory keeps these figures as long as its own cleanup
+  # does, and no GitHub artifact holds them (GitHub's 90-day default doesn't apply); revisit
+  # with the first trend longer than that is wanted, by offloading older runs, not before.
+  # decision: the nightly figures carry the block and mutex profilers' sampled overhead, so
+  # they compare only with other nightly figures, never with a manual journal-bench run.
+  # decision: format exit, as journal-bench's: go test sends no pass event for a passing
+  # benchmark, which a go-json cell grades as failed.
+  journal-bench-data:
+    cmd: test/journal/bench-data.sh {test} {out}
+    tests: [j1, j2, j3]
+    env: { DITTOFS_BENCH_DIR: /srv/perf/data/journal-bench }
+    format: exit
+    metrics: go-bench
+    tier: nightly
+    blocking: false
+    needs: [linux, host:dedicated]
+    timeout: { test: 30m, cell: 100m }
   # The system scenarios: a real server in a container, real clients, faults injected.
   # setup.sh takes a scenario by its file name, in its own directory. A run through dt is reported
   # by dt, and never posts to the scenarios' Slack channel.
@@ -394,29 +722,6 @@ suites:
     needs_by_test:
       "9?-*.sh": ["disk:110"]
     timeout: { test: size, cell: 90m }
-  smb-fuzz:
-    # smbfuzz (test/smbfuzz/DESIGN.md): random plans of system calls as several domain users, run on a Samba member share
-    # and on DittoFS joined to the same domain, compared errno by errno. The fixture is the
-    # tool's own (a DC, a Samba member, DittoFS and two kernel cifs mounts on this host).
-    # decision: manual until its cost per round is measured; test/smbfuzz/DESIGN.md §12.3 leaves the tiers open.
-    tier: manual
-    format: junit   # one test per round, from --junit; the exit status says only what didn't run (75)
-    # dt builds smbfuzz and dfs into {bin} as the user, since every command here runs as root and
-    # root never runs go build. The workers run the fuzzer under the domain users' uids, which
-    # may not reach {bin} inside the user's results, so root copies it out, world-executable, outside
-    # the fixture's state directory; dfs runs as root and stays in {bin}. `fixture down` runs after
-    # a failed command too, and removes the containers, the network, the mounts and dfs that
-    # `fixture up` left.
-    # decision: no minimisation and 200 rounds until known.yaml is triaged: nearly every round
-    # diverges, and each divergence is replayed twice for stability (about 15 s), so 300 rounds
-    # would pass the test timeout even unminimised. Raise both once the known set is in.
-    cmd:
-      - install -m 0755 {bin}/smbfuzz /var/tmp/smbfuzz-bin
-      - /var/tmp/smbfuzz-bin fixture up --dfs {bin}/dfs
-      - /var/tmp/smbfuzz-bin run --from 1 --count 200 --minimise=false --reports {out}/smb-fuzz --junit {out}/smb-fuzz.xml
-      - /var/tmp/smbfuzz-bin fixture down
-    needs: [linux, root, docker, smb-client]
-    timeout: { test: 60m, cell: 120m }
   fio-verify:
     # The job files are templates, as dfsbench's are: fio doesn't expand their ${VAR:-default}s, so
     # perl fills them from the environment into a copy below {out}, which fio runs.

@@ -63,7 +63,7 @@ ip netns exec cns ping -c1 -W2 $SIP >/dev/null 2>&1 && log "veth up" || { log "v
 
 # --- 2. server (dfs) in sns with a private /run + rpcbind ------------------
 cat > "$WORK/config.yaml" <<CFG
-logging: {level: INFO, format: text, output: stdout}
+logging: {level: info, format: text, output: stdout}
 controlplane:
   port: $API
   jwt: {secret: "test-secret-key-for-e2e-testing-only-must-be-32-chars"}
@@ -75,15 +75,14 @@ ip netns exec sns unshare --mount bash -c "
   mkdir -p /run/rpcbind /run/sendsigs.omit.d
   rpcbind
   sleep 0.5
-  export DITTOFS_ADMIN_INITIAL_PASSWORD=$PW
-  exec $DFS start --foreground --config $WORK/config.yaml --pid-file $WORK/dfs.pid --log-file $WORK/dfs.log
+  exec $DFS start --config $WORK/config.yaml
 " >"$WORK/dfs.out" 2>&1 &
 
 for _ in $(seq 1 80); do
   ip netns exec sns curl -sf http://127.0.0.1:$API/health >/dev/null 2>&1 && { log "server ready"; break; }
   sleep 0.3
 done
-ip netns exec sns curl -sf http://127.0.0.1:$API/health >/dev/null 2>&1 || { log "server never ready"; tail -20 "$WORK/dfs.log" 2>/dev/null; exit 1; }
+ip netns exec sns curl -sf http://127.0.0.1:$API/health >/dev/null 2>&1 || { log "server never ready"; tail -20 "$WORK/dfs.out" 2>/dev/null; exit 1; }
 
 # --- 3. provision (dfsctl, inside sns so the API is reachable) -------------
 NS="ip netns exec sns"
@@ -168,9 +167,10 @@ run_case() { # name holder_path tester_path
   touch "$REL"; wait $hpid 2>/dev/null
   # The holder has exited, but its unlock travels through its client's kernel
   # to the server, and one try after a fixed pause can arrive first. Poll the
-  # conflicting lock for up to 10 s instead.
-  local res2=""
-  for _ in $(seq 1 100); do
+  # conflicting lock for up to 10 s instead, by the clock: each try starts
+  # python3 and makes a round trip, so a count of tries runs longer.
+  local res2="" deadline=$((SECONDS + 10))
+  while [ "$SECONDS" -lt "$deadline" ]; do
     res2=$(python3 "$LOCKPY" try "$tp" w 0 100 2>/dev/null)
     [ "$res2" = ACQUIRED ] && break
     sleep 0.1

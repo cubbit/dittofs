@@ -1,0 +1,19 @@
+# The header of the reply to sync_request.hex, answered STATUS_NOT_SUPPORTED
+# (MS-ERREF 2.3.1) with a grant of 1 credit, written by hand from MS-SMB2
+# 3.3.4.4: the request's header with Status set, NextCommand 0 and
+# SERVER_TO_REDIR set. The request's other flags, its Reserved and its tree ID
+# are kept. Multi-byte fields are little-endian (MS-SMB2 2.2).
+fe 53 4d 42                 # [0,4)   ProtocolId 0xFE 'S' 'M' 'B'
+40 00                       # [4,6)   StructureSize 64
+02 00                       # [6,8)   CreditCharge 2, the request's (MS-SMB2 3.3.4.1)
+bb 00 00 c0                 # [8,12)  Status 0xC00000BB, STATUS_NOT_SUPPORTED
+08 00                       # [12,14) Command 0x0008, READ
+01 00                       # [14,16) CreditResponse 1
+01 00 00 10                 # [16,20) Flags 0x10000001: the request's DFS_OPERATIONS and SERVER_TO_REDIR
+00 00 00 00                 # [20,24) NextCommand 0
+01 02 03 04 05 06 07 08     # [24,32) MessageId, the request's
+ff fe 00 00                 # [32,36) Reserved, the request's
+11 12 13 14                 # [36,40) TreeId, the request's
+21 22 23 24 25 26 27 28     # [40,48) SessionId, the request's
+00 00 00 00 00 00 00 00     # [48,64) Signature: not signed
+00 00 00 00 00 00 00 00

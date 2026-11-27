@@ -1,2478 +1,496 @@
-# DittoFS Configuration Guide
+# Configuration
 
-DittoFS uses a flexible configuration system with support for YAML/TOML files and environment variable overrides.
+DittoFS is configured in two places:
 
-> Unfamiliar with terms like CAS, AUTH_UNIX, NTLM, or root-squash? See the
-> [Glossary](glossary.md) for plain-language definitions.
+- **The config file** holds what the node must know about its host before it can
+  open any store: the node's ID, where its metadata and journals live, its key
+  files, its listen addresses and its logging. You edit it on the host.
+- **The management API** holds everything else: shares, users, groups, grants,
+  adapters, remote stores, namespaces and settings. You change these with `dfsctl`
+  while the node runs. They are kept in the metadata store, never in the file.
+
+Read this page when you write or change the config file, or when `dfs` refuses it.
+For the first setup, follow [Getting started](getting-started.md) instead.
+
+> Unfamiliar with a term? See the [Glossary](glossary.md).
 
 ## Table of Contents
 
-- [Configuration Files](#configuration-files)
-- [Configuration Structure](#configuration-structure)
-  - [Logging](#1-logging)
-  - [Observability](#2-observability)
-  - [Server Settings](#3-server-settings)
-  - [Database (Control Plane)](#4-database-control-plane)
-  - [API Server](#5-api-server)
-  - [Block Store Configuration](#6-block-store-configuration)
-  - [Metadata Configuration](#7-metadata-configuration)
-  - [Shares (Exports)](#8-shares-exports)
-  - [User Management](#9-user-management)
-  - [Protocol Adapters](#10-protocol-adapters)
-  - [Snapshot Scheduler](#14-snapshot-scheduler)
-- [Metrics (Prometheus)](#metrics-prometheus)
-- [Environment Variables](#environment-variables)
-- [Configuration Precedence](#configuration-precedence)
-- [Configuration Examples](#configuration-examples)
-- [IDE Support with JSON Schema](#ide-support-with-json-schema)
+- [A first config file](#a-first-config-file)
+- [Where the file is](#the-file)
+- [Not working as documented yet](#not-working-as-documented-yet)
+- [Every key](#the-keys)
+- [Adding the protocol key](#adding-the-protocol-key)
+- [The state and runtime directories](#the-state-and-runtime-directories)
+- [FoundationDB metadata](#foundationdb-metadata)
+- [Environment variables](#the-environment)
+- [Reading a refusal](#refusals)
+- [Checking a config file](#the-commands)
+- [The management API and settings](#the-management-api)
 
-## Configuration Files
+## A first config file
 
-### Default Location
-
-The config file is resolved per platform:
-
-| Platform | Default config file |
-| --- | --- |
-| Linux / macOS | `$XDG_CONFIG_HOME/dittofs/config.yaml` (typically `~/.config/dittofs/config.yaml`) |
-| Windows | `%APPDATA%\dittofs\config.yaml` (typically `...\AppData\Roaming\dittofs\config.yaml`) |
-
-Pass `--config <path>` to any `dfs` command to override the location.
-
-### State Directory
-
-Runtime state — the log file (`dittofs.log`) and PID file — lives in a separate state directory, also resolved per platform:
-
-| Platform | Default state directory |
-| --- | --- |
-| Linux / macOS | `$XDG_STATE_HOME/dittofs` (typically `~/.local/state/dittofs`); falls back to the system temp directory if no home is resolvable |
-| Windows | `%LOCALAPPDATA%\dittofs` |
-
-### Initialization
-
-```bash
-# Generate default configuration file
-./dfs init
-
-# Generate with custom path
-./dfs init --config /etc/dittofs/config.yaml
-
-# Force overwrite existing config
-./dfs init --force
-```
-
-### Supported Formats
-
-YAML (`.yaml`, `.yml`) and TOML (`.toml`)
-
-## Configuration Structure
-
-DittoFS uses a flexible configuration approach with named, reusable stores. This allows different shares to use completely different backends, or multiple shares can efficiently share the same store instances.
-
-### 1. Logging
-
-Controls log output behavior:
+This is the smallest file `dfs init` and `dfs start` accept:
 
 ```yaml
-logging:
-  level: "INFO"           # DEBUG, INFO, WARN, ERROR
-  format: "text"          # text, json
-  output: "stdout"        # stdout, stderr, or file path
-```
-
-**Log Formats:**
-
-- **text**: Human-readable format with colored output (when terminal supports it)
-  ```
-  2024-01-15T10:30:45.123Z INFO  Starting DittoFS server component=server version=1.0.0
-  ```
-
-- **json**: Structured JSON format for log aggregation (Elasticsearch, Loki, etc.)
-  ```json
-  {"time":"2024-01-15T10:30:45.123Z","level":"INFO","msg":"Starting DittoFS server","component":"server","version":"1.0.0"}
-  ```
-
-### 2. Observability
-
-DittoFS has **no OpenTelemetry / distributed-tracing subsystem**. Observability is
-provided by an opt-in Prometheus `/metrics` endpoint on a dedicated listener. See
-[Metrics (Prometheus)](#metrics-prometheus) below for the full configuration.
-### 3. Server Settings
-
-Application-wide server configuration:
-
-```yaml
-shutdown_timeout: 30s   # Maximum time to wait for graceful shutdown
-```
-
-> The Prometheus `metrics:` block is a top-level key, documented in its own
-> section below ([Metrics (Prometheus)](#metrics-prometheus)).
-
-### 4. Database (Control Plane)
-
-DittoFS uses a control plane database to store persistent configuration for users, groups, shares, and permissions. This enables dynamic management via CLI commands and REST API without restarting the server.
-
-```yaml
-database:
-  # Database type: sqlite (single-node) or postgres (HA-capable)
-  type: sqlite
-
-  # SQLite configuration (default)
-  sqlite:
-    # Path to the SQLite database file
-    # Default: $XDG_CONFIG_HOME/dittofs/controlplane.db
-    path: /var/lib/dittofs/controlplane.db
-
-  # PostgreSQL configuration (for HA deployments)
-  postgres:
-    host: localhost
-    port: 5432
-    database: dfs
-    user: dfs
-    password: ${POSTGRES_PASSWORD}  # Use environment variable
-    sslmode: require               # disable, require, verify-ca, verify-full
-    ssl_root_cert: ""              # Path to CA certificate
-    max_open_conns: 25             # Maximum open connections
-    max_idle_conns: 5              # Maximum idle connections
-```
-
-**Database Types:**
-
-| Type | Description | Use Case |
-|------|-------------|----------|
-| `sqlite` | Embedded SQLite database | Single-node deployments (default) |
-| `postgres` | PostgreSQL database | High-availability, multi-node deployments |
-
-**SQLite Configuration:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `path` | `~/.config/dittofs/controlplane.db` | Database file path |
-
-**PostgreSQL Configuration:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `host` | (required) | PostgreSQL server hostname |
-| `port` | `5432` | PostgreSQL server port |
-| `database` | (required) | Database name |
-| `user` | (required) | Database user |
-| `password` | (required) | Database password |
-| `sslmode` | `disable` | SSL mode: disable, require, verify-ca, verify-full |
-| `ssl_root_cert` | | Path to CA certificate for SSL verification |
-| `max_open_conns` | `25` | Maximum number of open connections |
-| `max_idle_conns` | `5` | Maximum number of idle connections |
-
-> **Note**: The control plane database automatically creates tables and runs migrations on startup.
-
-### 5. API Server
-
-The REST API server provides endpoints for authentication, user management, and configuration. It is enabled by default.
-
-```yaml
-controlplane:
-  host: 127.0.0.1            # Bind interface (loopback by default; see below)
-  port: 8080                 # HTTP/HTTPS port for API endpoints
-  read_timeout: 10s          # Max time to read request
-  write_timeout: 10s         # Max time to write response
-  idle_timeout: 60s          # Max idle time for keep-alive
-  drain_stall_timeout: 5m    # Abort POST /api/v1/system/drain-uploads only if
-                             # no upload completes within this window WHILE
-                             # bytes are still unsynced (inactivity timeout,
-                             # NOT a total cap — a large flush may run for as
-                             # long as it keeps making progress, and a drain
-                             # with nothing left to upload is never aborted)
-
-  # Force the bootstrap "admin" user to set a new password on first login.
-  # Default true (secure by default). Set to false for automated/test
-  # deployments that provision the admin password out-of-band and don't want
-  # the forced first-login change. (Supplying DITTOFS_ADMIN_INITIAL_PASSWORD
-  # also skips the forced change, since the operator already chose the password.)
-  require_initial_password_change: true
-
-  # Native TLS (optional). DittoFS only loads these files; it does not issue,
-  # renew, or rotate certificates. When cert_file and key_file are both set,
-  # the API serves HTTPS and hot-reloads the files when they change on disk.
-  # When unset, the API serves plain HTTP. See docs/SECURITY.md.
-  # tls:
-  #   cert_file: /etc/dittofs/tls/tls.crt
-  #   key_file: /etc/dittofs/tls/tls.key
-  #   client_ca: /etc/dittofs/tls/ca.crt   # optional: require + verify client certs (mTLS)
-  #   min_version: "1.2"                    # "1.2" (default) or "1.3"
-
-  # Profiling (disabled by default; for benchmarks/diagnostics only).
-  # The rate keys only take effect when pprof is true; with pprof off all
-  # sampling stays off regardless of their values. When pprof is on and a rate
-  # is unset/0 it falls back to the default shown below.
-  pprof: false                 # Expose /debug/pprof/* endpoints
-  # pprof_mutex_rate: 100        # runtime.SetMutexProfileFraction (default 100 when pprof on)
-  # pprof_block_rate_ns: 1000000 # runtime.SetBlockProfileRate ns (default 1000000 when pprof on)
-
-  # JWT authentication configuration
-  jwt:
-    # HMAC signing key for JWT tokens (min 32 characters)
-    # Can also be set via DITTOFS_CONTROLPLANE_SECRET environment variable
-    secret: "your-secret-key-at-least-32-characters"
-    access_token_duration: 15m   # Access token lifetime
-    refresh_token_duration: 168h # Refresh token lifetime (7 days)
-```
-
-**API Configuration Options:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `enabled` | `true` | Enable/disable the API server |
-| `host` | `127.0.0.1` | Bind interface. Loopback-only by default (secure-by-default for single-host). Set to `0.0.0.0` for multi-host / Kubernetes (then front it with TLS termination — see [TLS and bind address](#tls-and-bind-address)) |
-| `port` | `8080` | HTTP/HTTPS port for API endpoints |
-| `read_timeout` | `10s` | Maximum duration to read request |
-| `write_timeout` | `10s` | Maximum duration to write response |
-| `idle_timeout` | `60s` | Maximum idle time for keep-alive |
-| `drain_stall_timeout` | `5m` | Inactivity bound for `POST /api/v1/system/drain-uploads`. The drain has **no total time cap** — a multi-GiB flush runs as long as it keeps making progress — and is aborted (504) only if no upload completes within this window while bytes are still unsynced (the remote stalled). A drain with nothing left to upload is never aborted: no attempt can conclude, so a flat counter says nothing about liveness. Mirrors rclone's `--timeout` |
-| `require_initial_password_change` | `true` | Force the bootstrap `admin` user to change its password on first login. Set to `false` to opt out (automated/test deployments). Also skipped when `DITTOFS_ADMIN_INITIAL_PASSWORD` is set |
-| `pprof` | `false` | Expose Go `/debug/pprof/*` profiling endpoints |
-| `pprof_mutex_rate` | `100` (when `pprof: true`; else `0`) | Mutex contention sampling, 1 per N events. Applied only when `pprof: true`; unset/`0` then falls back to `100`. Without it `/debug/pprof/mutex` is header-only. Disable profiling via `pprof: false`, not by zeroing this |
-| `pprof_block_rate_ns` | `1000000` (when `pprof: true`; else `0`) | Block profiling rate in ns, 1 sample per N ns blocked. Applied only when `pprof: true`; unset/`0` then falls back to `1000000`. Without it `/debug/pprof/block` is header-only. Disable profiling via `pprof: false`, not by zeroing this |
-
-**JWT Configuration Options:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `secret` | (required) | HMAC signing key (min 32 chars) |
-| `access_token_duration` | `15m` | Access token lifetime |
-| `refresh_token_duration` | `168h` | Refresh token lifetime (7 days) |
-
-> **Security Note**: The JWT secret should be kept confidential. Use the `DITTOFS_CONTROLPLANE_SECRET` environment variable in production to avoid storing secrets in config files.
-
-#### TLS and bind address
-
-The control plane API carries admin logins, the `dfsctl` remote password login, operator credentials, and JWTs. By default the server binds to `127.0.0.1` (loopback only) so a fresh `dfs start` is not reachable off-host. For any deployment that must accept connections from another machine — multi-host, Kubernetes — set `host: 0.0.0.0` and protect the listener with TLS.
-
-DittoFS offers **native, file-based TLS** as a secure-by-default floor. It is intentionally thin: DittoFS **loads** certificate files (and an optional client CA for mTLS) — it is **not a certificate authority**, does **not** generate self-signed certificates, and does **not** do ACME, issuance, renewal, or rotation. Certificate *lifecycle* is left to your platform (cert-manager, a mounted Kubernetes Secret, Vault, your PKI). When the platform rewrites the files on disk, DittoFS hot-reloads them with no restart.
-
-```yaml
-controlplane:
-  host: 0.0.0.0
-  port: 8080
-  tls:
-    cert_file: /etc/dittofs/tls/tls.crt
-    key_file: /etc/dittofs/tls/tls.key
-    client_ca: /etc/dittofs/tls/ca.crt   # optional → mutual TLS
-    min_version: "1.2"
-```
-
-**TLS Configuration Options:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `cert_file` | (unset) | Path to the PEM server certificate (or chain). Both `cert_file` and `key_file` must be set to enable HTTPS; setting one without the other is a fatal config error |
-| `key_file` | (unset) | Path to the PEM private key for `cert_file` |
-| `client_ca` | (unset) | Path to a PEM CA bundle. When set, the server **requires and verifies** a client certificate signed by one of these CAs (mutual TLS). Requires `cert_file`/`key_file` |
-| `min_version` | `1.2` | Minimum negotiated TLS version: `"1.2"` or `"1.3"` |
-
-When `cert_file`/`key_file` are unset, the server serves plain HTTP exactly as before (back-compatible). When set, it serves HTTPS; the files are read and parsed at startup, so a missing or malformed certificate fails fast with a clear error.
-
-**Recommended deployment model:** terminate TLS for the edge at an ingress / service mesh / reverse proxy (NGINX), and use DittoFS native TLS (or mTLS via `client_ca`) as the secure floor for non-Kubernetes hosts and direct `dfsctl` access. See [docs/SECURITY.md](security.md) and [docs/DEPLOYMENT.md](install.md). For Kubernetes, the operator renders `host: 0.0.0.0` automatically so the API `Service` can reach the pod; see [docs/DEPLOYMENT.md](install.md).
-
-Related glossary terms: [TLS / mTLS](glossary.md#authentication).
-
-**API Endpoints:**
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check |
-| `/api/v1/auth/login` | POST | Authenticate and get tokens |
-| `/api/v1/auth/refresh` | POST | Refresh access token |
-| `/api/v1/users` | GET/POST | List/create users |
-| `/api/v1/users/{id}` | GET/PUT/DELETE | Get/update/delete user |
-| `/api/v1/groups` | GET/POST | List/create groups |
-| `/api/v1/groups/{id}` | GET/PUT/DELETE | Get/update/delete group |
-| `/api/v1/shares` | GET/POST | List/create shares |
-| `/api/v1/shares/{id}` | GET/PUT/DELETE | Get/update/delete share |
-
-### 6. Block Store Configuration
-
-Every share has exactly **one block store** — the durable home for its content —
-plus an on-disk **journal** that absorbs writes in front of it. Block stores are
-created with `dfsctl store block …` and attached to a share with
-`dfsctl share create/edit --block-store <name>`. Valid types are `s3` and
-`memory`; a block store has no *kind*, and the old local/remote split is gone.
-
-The journal is **not** a store you create. It is provisioned automatically under
-one server-level root, `blockstore.journal.path`, with each share getting its own
-subdirectory (`<path>/shares/<share-name>/journal/`). The block store lives in
-`pkg/block/engine/` and composes the journal, the block store, the unified
-CAS-keyed in-memory `Cache`, a syncer (async journal-to-block-store transfer), and
-a garbage collector.
-
-#### Journal tuning (`blockstore.journal`)
-
-The journal (`pkg/block/journal/`) is an append-only, log-structured write-back
-tier. Writes append to it and are acknowledged locally; a background flush pass
-packs dirty ranges into packed blocks (`blocks/<id>`) and offloads them to the
-block store. Pre-v0.16 `{payloadID}/block-{idx}` layouts must be converted with
-dittofs ≤ v0.21 (its `migrate-to-cas` command) before the server will start.
-
-Its knobs are **server-level** config, not per-share store JSON. They used to live
-in a per-share `local` block store `config` blob; that store is gone and every key
-below moved into the top-level `blockstore.journal` block:
-
-```yaml
-blockstore:
-  journal:
-    path: /var/lib/dittofs/blocks   # journal root; default <state dir>/blocks
-    chunk_size: 0                   # FastCDC minimum chunk size; 0 = built-in profile
-    chunk_max: 0                    # override the derived maximum; 0 = derived from chunk_size
-    dirty_expire: 30s               # dirty-age fsync ceiling; negative disables the loop
-    max_log_bytes: 2147483648       # 2 GiB append-log pressure budget
-    backpressure_max_wait: 60s      # how long a write stalls before ErrDiskFull
-```
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `path` | string | `<state dir>/blocks` | Root holding every share's journal. Must be absolute (a leading `~` is expanded). |
-| `chunk_size` | int | `0` (built-in profile) | FastCDC minimum chunk size in bytes — see [Chunk size](#chunk-size--random-access-shares-chunk_size). |
-| `chunk_max` | int | `0` (derived) | Overrides the derived maximum chunk size. |
-| `dirty_expire` | duration | `30s` | Dirty-age fsync ceiling — see [below](#dirty-age-fsync-ceiling-dirty_expire). Negative disables it; values under 1 s are clamped with a warning. |
-| `max_log_bytes` | int | deduced (25% of RAM, floor 1 GiB) | Append-log pressure budget. `AppendWrite` stalls once the buffered total exceeds it. |
-| `backpressure_max_wait` | duration | `60s` | How long a write blocks waiting for the syncer to drain before returning `ErrDiskFull`. |
-
-Env-var mapping follows the dot-path convention, e.g.
-`DITTOFS_BLOCKSTORE_JOURNAL_MAX_LOG_BYTES`.
-
-A config file still carrying the old `blockstore.local.*` keys is **refused at
-startup**, naming both spellings — see [Upgrading](#upgrading-from-the-localremote-block-store-split).
-Because these knobs are now server-level, a node mixing a VM-image share with a
-general-purpose one gets a single chunking profile for both.
-
-There is no `metadata.RollupStore` backend requirement any more — the journal
-owns its own local state; a metadata backend only needs the block-record and
-synced-hash contracts (see [implementing stores](../internals/implementing-stores.md)).
-
-##### Journal size and eviction
-
-The journal's ceiling is a **per-share** setting, `--journal-size` on
-`dfsctl share create` / `share edit` (`journal_size` in the share JSON). It
-replaces the old `--local-store-size` flag and the deleted
-`blockstore.journal.default_remote_cache_size` key.
-
-- **Unset** — the share has no configured ceiling. The journal still sizes a soft
-  default off the volume's free space when it opens (80% of what is free at that
-  moment), and only degrades to genuinely unbounded growth if the free-space probe
-  fails, which it warns about. This is a real change from the old behaviour, which
-  deduced a ceiling from RAM (25%) or capped a remote-backed share at 10 GiB: a
-  fast writer against a slow uploader can now fill much more of the volume before
-  anything pushes back.
-- **Set** — the value is the ceiling eviction reclaims against.
-
-Eviction can only reclaim blocks **already offloaded to the block store**.
-Anything else is still the only copy of those bytes, so dropping it would lose
-them. The consequence is easy to get wrong: **a cap reached with nothing yet
-offloaded cannot be honoured by eviction at all** — the write path falls straight
-through to backpressure, stalls for up to
-`blockstore.journal.backpressure_max_wait`, and then returns `ErrLocalStoreFull`
-(surfaced as disk-full to the protocol). That is the correct response, not dead
-code: a healthy block store lets the flush pass drain dirty bytes, eviction frees
-space, and the writer proceeds.
-
-A stall logs its cause so the next move is unambiguous:
-
-```
-WARN journal local store full: nothing evictable, backpressuring writes
-     dir=… disk_bytes=… max_local_bytes=… unsynced_bytes=…
-     eviction_suspended=… eviction_pinned=…
-```
-
-`unsynced_bytes > 0` means the flush pass is behind and the wait will clear;
-`eviction_suspended` means the block store is unhealthy (fix the outage);
-`eviction_pinned` means a retention policy is holding the blocks (change the
-policy).
-
-#### Durability & the CLOSE/COMMIT contract
-
-Durability is a **per-store property**: whether bytes a store has accepted survive
-a daemon crash / restart. Each store resolves an effective `durable` flag at
-construction — a **type default** that an operator may override.
-
-| Store | Default `durable` |
-|-------|-------------------|
-| journal (every share) | `true` — bytes are on disk; un-offloaded chunks are never evicted, survive restart, and offload asynchronously |
-| `s3` block store | `true` — durable object storage |
-| `memory` block store | `false` — test/dev fixture, lost on restart |
-
-Override the default per store by adding a `durable` bool to the store's `config`
-JSON — `{"durable": false}` for a journal on a volatile tmpfs mount, or
-`{"durable": true}` to deliberately treat a memory store as durable in a test/dev
-setup. A non-bool value is ignored with a startup warning (the type default
-stands). The effective values are surfaced as `Local Durable` / `Remote Durable`
-in `dfsctl store block stats`.
-
-**CLOSE/COMMIT semantics.** SMB CLOSE and NFS COMMIT (and the NFSv3 stable-WRITE
-path) call the engine flush. A **hard** flush error (I/O fault, block-store
-rejection, metadata error) is **always** surfaced to the client. Beyond that, what
-a COMMIT waits for is the per-share **commit acknowledgement**, `commit_ack`
-(default `journal`):
-
-| `commit_ack` | CLOSE/COMMIT behavior |
-|--------------|-----------------------|
-| `journal` (default) | Acknowledge once the write is durable in the share's journal. The offload to the block store stays fully **asynchronous** and observable via the unsynced-bytes metric / `Pending Remote (bytes)`. Ordinary NFS/POSIX writes **never** EIO. |
-| `block-store` | Acknowledge only when the data is on a durable store: `committed := localDurable \|\| (Finalized && remoteDurable)`. Every commit waits for an upload. |
-
-`dfsctl share show <name>` prints the setting in force as a **Commit Ack** row.
-See [Durability](durability.md) for what each one survives and the throughput
-cost — and note that the metadata-commit relaxation is a **separate, independent**
-axis, not a third value of this one.
-
-Under `commit_ack: block-store` the COMMIT drives the offload inline — it flushes
-the file's dirty ranges into packed blocks, uploads them, and only then returns.
-What happens when that cannot finish depends on whether the journal is durable:
-
-- **Durable journal (the normal case):** an unhealthy block store makes the flush
-  return its soft, non-finalized result, and the COMMIT is acked anyway — the
-  bytes already survive a restart, and the syncer keeps retrying.
-- **Volatile local tier** (a journal explicitly marked `{"durable": false}`):
-  nothing crash-safe holds the bytes, so the
-  COMMIT returns a transient I/O error (`NFS3ERR_IO` / `NFS4ERR_IO` / SMB
-  `STATUS_UNEXPECTED_IO_ERROR`) and the client re-drives.
-
-(NFS *unstable* WRITE is unaffected either way: it still returns `UNSTABLE` and
-defers durability to a later COMMIT.)
-
-`dfsctl store block stats` also shows `Pending Remote (bytes)` — the headline
-data-at-risk gauge (journal bytes not yet offloaded) — which is the way to observe
-the async offload backlog under the default policy.
-
-#### Chunk size — random-access shares (`chunk_size`)
-
-DittoFS splits file data into content-defined (FastCDC) chunks. A chunk is the
-unit of dedup, of the local cache, and — critically — of a **read fetch**: a
-small random read pulls the whole chunk covering its offset. The default chunk
-floor is ~1 MiB, so a 4 KiB random read into a large file amplifies to ~1 MiB
-(~256×). That is fine for sequential and archival workloads but poor for random
-I/O (VM images, databases).
-
-`chunk_size` (bytes) lowers the FastCDC minimum for a share, shrinking the read
-unit. Effective average chunk size ≈ `chunk_size`; a hard ceiling is derived
-(8× `chunk_size`) unless you set `chunk_max` explicitly.
-
-Random-access node: ~128 KiB chunks (≈8× less read amplification) — set
-`blockstore.journal.chunk_size: 131072` in the server config. This is a
-server-level knob, so it applies to every share on the node.
-
-| Setting | Effective avg | 4 KiB random-read amplification | Trade-off |
-|---------|---------------|---------------------------------|-----------|
-| default (unset) | ~1 MiB | ~256× | best dedup, fewest manifest rows |
-| `65536` (64 KiB) | ~94 KiB | ~16× | ~16× more `FileChunk` rows; ~0 extra dedup loss on VM/DB |
-| `131072` (128 KiB) | ~159 KiB | ~32× | ~8× more manifest rows |
-| `262144` (256 KiB) | ~287 KiB | ~64× | ~4× more manifest rows |
-
-Notes:
-
-- **S3 object count is unchanged.** Chunks are packed into ~16 MiB block objects
-  regardless of `chunk_size`, so smaller chunks do **not** create more/smaller
-  S3 objects — only more `FileChunk` manifest rows. Writes/uploads keep their
-  full throughput.
-- **Write-time only.** Reads never re-chunk — the manifest records each chunk's
-  boundaries — so changing `chunk_size` affects only newly written data, and old
-  data stays readable. Dedup is not restored across a change (different
-  boundaries → different hashes), but on VM/DB images dedup is already ~0.
-- An invalid `chunk_size` / `chunk_max` combination is warned about and dropped,
-  leaving the built-in profile in force — a bad profile would otherwise cut every
-  newly written block to the wrong size, and reads never re-chunk, so the damage
-  would outlive the misconfiguration.
-
-#### Dirty-age fsync ceiling (`dirty_expire`)
-
-A client that writes and never issues an NFS `COMMIT`/`FILE_SYNC` or an SMB
-`FLUSH`/`CLOSE` never asks the server for durability. A background loop fsyncs
-each journal shard still holding uncommitted records once per interval, so those
-writes reach the device within roughly that window instead of waiting for the
-shard's next 256 MiB segment rotation.
-
-The default is 30s; tighten it with `blockstore.journal.dirty_expire: 5s` in the
-server config, or set a negative value to disable the loop. It used to be a
-per-share `dirty_expire_seconds` key in the local block store's `config` JSON.
-
-- Default **30 s**, on for every share; the loop costs an idle store nothing and
-  never runs on the ack path.
-- Negative disables it, leaving the client's own fsync and segment rotation as
-  the only durability points — the loss window is then unbounded in time.
-- Values below 1 s are clamped with a warning.
-- This is a **ceiling on the loss window, not a durability guarantee**: only a
-  returned `COMMIT`/`FLUSH` says the bytes are on the device. See
-  [Durability](durability.md#the-dirty-age-ceiling-dirty_expire).
-
-#### GC knobs
-
-The CAS write path uses an async syncer and a fail-closed mark-sweep
-garbage collector. The syncer's sizing (claim timeout, etc.) is **not** an
-operator-facing config section — it is auto-deduced from system resources at
-startup and constructed in code; there is no `syncer:` config block (a stale
-`syncer:` section in a config file is tolerated but ignored, logged as an
-unknown key). Upload concurrency is **adaptive by default** — see below.
-
-#### Adaptive upload concurrency
-
-When you mirror a share to its block store (S3 or memory), DittoFS uploads
-CAS chunks concurrently. Uploads are **network-latency bound**, not CPU bound:
-a single PUT to a remote region sustains only a few MiB/s, so throughput scales
-with the number of concurrent uploads until the uplink saturates. The right
-number depends on the link, not the host — a CPU-derived default throttled fast
-links and over-subscribed slow ones.
-
-By default DittoFS **discovers the right concurrency itself**. It starts
-conservative and ramps the number of in-flight uploads up while delivered
-throughput (goodput) keeps rising, settling at the point where opening more
-connections stops helping. It backs off only on upload errors or a real
-throughput collapse — never on the latency rise that healthy concurrency itself
-causes. No configuration is required to saturate the uplink.
-
-To **pin** a fixed concurrency instead (disabling auto-tuning), set
-`--parallel-uploads N` on the remote:
-
-```bash
-dfsctl store block add --name r1 --type s3 \
-  --bucket … --region … --endpoint … \
-  --parallel-uploads 32          # fixed window of 32; 0 (default) = adaptive
-```
-
-`dfsctl store block edit r1 --parallel-uploads 0` returns a remote
-to adaptive mode. Observe the live window via the Prometheus gauge
-`dittofs_datapath_upload_window` (target concurrency) alongside
-`dittofs_datapath_uploads_inflight` (actual in-flight uploads); see
-[Metrics](#metrics-prometheus).
-
-The mark-sweep GC is the one tunable surface, configured via the top-level
-`gc:` server-config section:
-
-```yaml
-gc:
-  grace_period: 1h            # Objects whose LastModified is newer than
-                              # (snapshot - grace_period) are NEVER
-                              # deleted. Default 1h. Values in (0, 5m)
-                              # are REJECTED at config load; values in
-                              # [5m, 10m) are accepted but emit a
-                              # warning. The cushion protects in-flight
-                              # uploads whose metadata-txn lands after
-                              # the snapshot.
-  dry_run_sample_size: 1000   # Maximum candidate keys reported in
-                              # --dry-run mode. Default 1000.
-  compaction_live_ratio: 0    # Reclaim dead bytes from partially-dead
-                              # blocks. After each sweep, a block whose
-                              # live bytes / object size is below this
-                              # ratio is repacked (live chunks only) and
-                              # the old block deleted. Must be in [0, 1];
-                              # 0 (default) disables compaction. A value
-                              # like 0.5 compacts a block once it is more
-                              # than half dead.
-  auto_enabled: true          # Run background GC automatically so you
-                              # don't have to invoke the CLI. Default
-                              # true. Set false to require manual
-                              # `dfsctl store block gc`.
-  auto_interval: 15m          # Period between background GC runs.
-                              # Default 15m. Values in (0, 1m) are
-                              # REJECTED. Ignored when auto_enabled is
-                              # false.
-```
-
-**Tuning guidance:**
-
-- Background GC is **on by default** (`auto_enabled: true`, every
-  `auto_interval`) and reclaims orphaned blocks on **both** the local
-  and remote tiers. Disable it (`auto_enabled: false`) only if you want
-  to drive GC entirely on demand or via external scheduling.
-- You can still run GC on demand at any time:
-  `dfsctl store block gc <share>` (add `--dry-run` to preview, capped by
-  `gc.dry_run_sample_size`; add `--reconcile` to also reap rows leaked by
-  older versions).
-- `gc.grace_period` MUST be longer than your worst-case
-  metadata-commit latency after a successful PUT. The default 1h is
-  comfortable for any commit path that completes in seconds.
-
-Env-var mapping (dot-path convention; the top-level `gc` block binds
-directly):
-`DITTOFS_GC_GRACE_PERIOD`,
-`DITTOFS_GC_DRY_RUN_SAMPLE_SIZE`,
-`DITTOFS_GC_AUTO_ENABLED`,
-`DITTOFS_GC_AUTO_INTERVAL`.
-
-See [ARCHITECTURE.md](../internals/architecture.md#garbage-collection-mark-sweep)
-for the full mark-sweep design and [CLI.md](cli.md) for the on-demand
-`dfsctl store block gc` command.
-
-#### Background integrity scan
-
-A share's manifest can end up disagreeing with its own files' block lists:
-a file claims bytes in a range that no manifest row covers. At read time
-that is indistinguishable from a legitimate sparse hole — absent rows are
-how sparse files are represented — so the read returns zeros and reports
-success. Nothing on the data path can report it. The background scan is
-what finds it.
-
-```yaml
-integrity:
-  auto_enabled: true          # Run the structural manifest scan
-                              # automatically. Default true. Set false to
-                              # require manual `dfsctl store check`.
-  auto_interval: 24h          # Period between scans. Default 24h. Values
-                              # in (0, 5m) are REJECTED — a scan is a full
-                              # metadata walk of every share. Ignored when
-                              # auto_enabled is false.
-```
-
-The scan is **metadata-only**: it fetches no block and touches no remote
-object, so it costs a metadata walk regardless of how much data a share
-holds and generates **no S3 egress**. It writes nothing — it neither plans
-nor applies repairs. Shares are scanned one at a time.
-
-Findings surface in three places:
-
-- `dfsctl share show <name>` reports when the share was last scanned and
-  what was found. A share with damaged payloads reads as `degraded` even
-  when every subsystem probe is healthy.
-- Prometheus: `dittofs_integrity_last_scan_timestamp_seconds`,
-  `dittofs_integrity_last_scan_failed`,
-  `dittofs_integrity_last_scan_duration_seconds`,
-  `dittofs_integrity_files_scanned`, and
-  `dittofs_integrity_findings{kind="..."}` broken out by
-  `payloads_with_findings`, `damaged_payloads`,
-  `claimed_uncovered_ranges`, `unplaceable_rows` and `unknown_hash_rows`.
-
-  The last-scan timestamp is 0 both for a share never scanned and for one
-  whose last scan failed — a failed scan completes nothing, so it has no
-  time to report. `dittofs_integrity_last_scan_failed` is what separates
-  them: `0` with a zero timestamp means the scan has not run yet, `1` means
-  it is running and erroring. Without that second series a scanner failing
-  on every tick would look exactly like one that was never switched on, and
-  stay that way indefinitely.
-- The server log, at `WARN`, for any share with damaged payloads.
-
-Run `dfsctl store check <share>` for the per-file detail behind a finding,
-and `--repair` to act on it.
-
-#### Offline read safety
-
-A share's journal is a cache in front of its block store: once a range is
-offloaded it becomes evictable, and an evicted range is served by fetching it
-back. Reads of such a range fail while the block store is unreachable. Whether a
-box would keep serving through an outage therefore depends on how much of its
-data is currently block-store-only, and that number moves with every eviction and
-every warm.
-
-The server reports it per share:
-
-- `dfsctl share show <name>` prints `Offline Safe: yes`, or
-  `no (12.4 GiB remote-only across 431 ranges)`.
-- Prometheus: `dittofs_offline_safe{share}` (1/0),
-  `dittofs_offline_remote_only_bytes{share}` and
-  `dittofs_offline_remote_only_ranges{share}`.
-
-Zero remote-only bytes is a provably offline-safe share. To get there, warm
-the share and stop it evicting again:
-
-```bash
-dfsctl share warm /archive
-dfsctl share edit /archive --retention pin
-```
-
-The measurement never guesses. Three cases report **unknown** rather than a
-number, because a zero would read as "provably safe" for exactly the shares
-whose data is most likely to be remote-only:
-
-- the share's journal does not track residency (the in-memory backend),
-- the journal has not been seeded from the manifest yet — it holds no
-  record of ranges that live only in the block store, so they would count as
-  absent rather than remote-only,
-- the block store is closed,
-- the residency scan did not finish inside the request's deadline.
-
-An unknown share reports `dittofs_offline_safe = 0` but publishes no byte
-counts, so a dashboard cannot mistake it for a clean fully-local share.
-
-A share whose block store was swapped out after it had already evicted is the
-awkward case: the evicted ranges stay recorded in the journal and are replayed
-from its cold log on the next open, but there is no longer anything to fetch them
-from, so they never serve. Those shares report a non-zero remote-only figure
-rather than being waved through as safe.
-
-The figure is **bytes, not blocks**. The journal tracks byte ranges, which
-split and merge independently of manifest chunk rows; a block count would
-need a metadata walk to produce and would not answer "how much would break
-offline" any more precisely.
-
-Note this is read availability only. Offline **writes** already work — writes
-land in the journal and drain when the block store returns.
-
-
-The schedule restarts from zero on server start, so a box restarted more
-often than `auto_interval` never completes a scan. Lower the interval on a
-host that reboots frequently.
-
-Env-var mapping:
-`DITTOFS_INTEGRITY_AUTO_ENABLED`,
-`DITTOFS_INTEGRITY_AUTO_INTERVAL`.
-
-#### Journal size limit & write backpressure
-
-The on-disk journal is a **temporary write-through tier**, not the durable copy —
-every chunk is offloaded to the block store and may be evicted locally once
-offloaded. To stop a fast writer with a slow/lagging uploader from filling the
-host volume, the journal is bounded and writes apply **graceful, observable
-backpressure** when it fills:
-
-- **Bounded journal.** The ceiling is the per-share `--journal-size`. With none
-  set, the journal claims a soft default of 80% of the volume's free space at open
-  time — see [Journal size and eviction](#journal-size-and-eviction) for the full
-  rule and for why eviction can only reclaim already-offloaded blocks. The cap is
-  enforced **lazily, on the write/flush path** (it evicts offloaded segments to
-  make room for new writes); it
-  is **not** a background reaper, so on an idle or read-only workload the
-  resident local tier is not shrunk toward the cap. To reclaim local disk — or
-  to force cold, remote-served reads for read-path benchmarking — evict on
-  demand with `dfsctl store block evict` (drops the read buffer and drains
-  resident offloaded blocks; never drops not-yet-uploaded data). Read-miss
-  volume (the read-amplification signal) is observable via the
-  `dittofs_datapath_block_range_read_bytes_total` metric.
-- **Backpressure stall.** When the journal is full and every resident chunk is
-  still unsynced, a write **stalls** waiting for the syncer to drain to the
-  block store and free space, rather than failing. The stall is bounded by
-  `blockstore.journal.backpressure_max_wait` (default **60s**).
-- **Hard failure only when the block store cannot drain.** If it is
-  **unhealthy** (genuinely unreachable, not merely slow) or the backpressure
-  window is exceeded, the write fails with disk-full
-  (`NFS3ERR_NOSPC` / `NFS4ERR_NOSPC` / SMB `STATUS_DISK_FULL`) instead of
-  silently filling the disk.
-
-**Diagnosing a stall.** A stall warns once with the state that explains it, so a
-stalled writer is never a mystery — see
-[Journal size and eviction](#journal-size-and-eviction) for how to read the
-fields:
-
-```
-WARN  journal local store full: nothing evictable, backpressuring writes
-      dir=… disk_bytes=… max_local_bytes=… unsynced_bytes=…
-      eviction_suspended=… eviction_pinned=…
-```
-
-These knobs live in the top-level server-config `blockstore.journal` block:
-
-```yaml
-blockstore:
-  journal:
-    backpressure_max_wait: 60s               # Max time a write stalls for the
-                                             # syncer to drain before disk-full.
-    max_log_bytes: 2147483648                # Append-log pressure budget
-                                             # (see above). 0/unset = deduced.
-```
-
-`default_remote_cache_size` was deleted along with its "10 GiB when a remote is
-configured, deduced size otherwise" conditional; the per-share `--journal-size`
-is now the whole of the sizing policy.
-
-Env-var mapping (dot-path convention):
-`DITTOFS_BLOCKSTORE_JOURNAL_BACKPRESSURE_MAX_WAIT`,
-`DITTOFS_BLOCKSTORE_JOURNAL_MAX_LOG_BYTES`.
-
-> Prometheus metrics for cache pressure / unsynced bytes are tracked
-> separately (server-wide instrumentation, issue #1188); today the signal is
-> the structured logs above.
-
-#### Recycle bin (trash)
-
-The recycle bin is configured **per share** via `dfsctl share create` /
-`dfsctl share edit` (or the REST share create/update body), not the
-server config file. When enabled, deleting a file or directory moves it
-into a visible `#recycle` directory at the share root instead of
-destroying it; it can be restored over the mount or with `dfsctl trash`.
-
-| Setting (`dfsctl` flag) | REST field | Type | Default | Meaning |
-|---|---|---|---|---|
-| `--enable-trash` | `trash_enabled` | bool | `false` | Turn the per-share recycle bin on or off. Disabling it auto-empties the bin (permanently deletes its contents). |
-| `--trash-retention-days` | `trash_retention_days` | int | `0` | Auto-purge bin entries older than N days. `0` = keep forever. |
-| `--trash-restrict-empty-to-admin` | `trash_restrict_to_admin` | bool | `false` | Restrict emptying the bin to admins. Users may still restore. |
-| `--trash-max-size` | `trash_max_bytes` | int64 (bytes) | `0` | Cap total bytes held in the bin; over-cap evicts oldest-first. `0` = unbounded. |
-| `--trash-exclude` | `trash_exclude_patterns` | glob (repeatable) | (none) | Deletions matching any glob bypass the bin and are removed immediately. |
-
-A background reaper enforces `trash_retention_days` and
-`trash_max_bytes` on an hourly interval. Deletes of items already
-*inside* `#recycle` are permanent, and in-place truncate/overwrite of a
-file's content is not recycled (only unlink and replace-overwrite are).
-`dfsctl share show <name>` displays the active trash configuration.
-
-```bash
-# Enable the bin with a 30-day retention and a 10 GiB cap
-./dfsctl share create --name /docs --metadata badger-main --block-store s3-remote \
-  --enable-trash --trash-retention-days 30 --trash-max-size 10737418240
-
-# Change settings on an existing share (applied live)
-./dfsctl share edit /docs --trash-retention-days 7 \
-  --trash-exclude '*.tmp' --trash-exclude '*.cache'
-```
-
-See [CLI.md](cli.md#dfsctl-trash) for the `dfsctl trash`
-management commands and [ARCHITECTURE.md](../internals/architecture.md#metadataservice)
-for the recycle-trap design.
-
-#### Remote block-level compression (opt-in)
-
-A remote block store may compress block payloads before upload and
-decompress on download. The plaintext BLAKE3 hash remains the CAS key,
-so dedup and GC are unaffected. The decorator is per-remote: every
-share that references the remote inherits its compression policy.
-
-Add a `compression` block to the remote store's `config` JSON when
-creating it:
-
-```bash
-./dfsctl store block add --name prod-s3 --type s3 \
-  --config '{"region":"us-east-1","bucket":"dfs-production","compression":{"algo":"zstd"}}'
-```
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `algo` | string | `"zstd"` | Algorithm: `"zstd"` or `"lz4"`. Defaults to zstd when the `compression` block is present but `algo` is omitted. |
-
-Notes:
-
-- Absence of the `compression` block means no wrapping — zero behavior
-  change for existing remotes.
-- Per-block adaptive: if the compressed body is not strictly smaller
-  than the plaintext, the decorator stores the raw plaintext with no
-  header. Incompressible payloads (random data, already-compressed
-  media) cost only the encoder pass, no on-wire expansion.
-- `GetRange` on a framed block decompresses the full block before
-  slicing — there is no random access into a compressed body. Read
-  paths that consume whole CDC chunks are unaffected.
-- The policy is captured at remote-store creation; restart the share
-  after editing the config to switch algorithms. Mixed framed and raw
-  blocks coexist within one remote and the reader auto-detects via the
-  5-byte `DFCMP` magic prefix.
-
-#### Remote block-level encryption (opt-in)
-
-A remote block store may also encrypt block payloads before upload using
-client-side envelope encryption. Compression (when enabled) runs
-**before** encryption — encrypted bytes are incompressible by design.
-See [ENCRYPTION.md](encryption.md) for the full threat model and design.
-
-Add an `encryption` block to the remote store's `config` JSON:
-
-```yaml
-encryption:
-  aead: aes-256-gcm           # aes-256-gcm | chacha20-poly1305 | xchacha20-poly1305
-  key:
-    kind: local               # local | kmip
-    # kind=local
-    file: /etc/dittofs/keys/share.key
-    # kind=kmip
-    endpoint: kms.example.com:5696
-    server_ca: /etc/dittofs/kmip/ca.pem
-    client_cert: /etc/dittofs/kmip/client.pem
-    client_key:  /etc/dittofs/kmip/client.key
-    key_uid: 12345-abcde-...
-    timeout_ms: 5000
-```
-
-The passphrase that unlocks a local key file is read from the
-`DITTOFS_ENCRYPTION_PASSPHRASE` environment variable — never the config
-file or command line.
-
-#### S3-compatible backend presets
-
-The `s3` remote store talks the AWS S3 API, so any S3-compatible object
-store works — set a custom `endpoint` (and credentials) and DittoFS connects
-to it instead of AWS. The store reads exactly these config keys (see
-`pkg/block/remote/s3/store.go` and the factory in
-`pkg/controlplane/runtime/shares/service.go`):
-
-| Key | Required | Default | Notes |
-| --- | --- | --- | --- |
-| `bucket` | yes | — | Bucket name. Must already exist; DittoFS does not create it. |
-| `access_key_id` | yes | — | S3 access key. For GCS use an **HMAC** key, not a service-account JSON. |
-| `secret_access_key` | yes | — | S3 secret key. |
-| `region` | no | `us-east-1` | Some providers ignore it but the SDK still requires a value; the default is sent when omitted. |
-| `endpoint` | no (AWS) / yes (others) | AWS | Service URL. Scheme optional — `https://` is prepended when absent. |
-| `force_path_style` | no | auto | **Auto-enabled whenever `endpoint` is set.** Set explicitly to `false` to opt back into virtual-hosted-style for providers that require it (e.g. GCS). |
-| `prefix` | no | — | Key prefix prepended to every block (e.g. `dittofs/`). End it with `/`. |
-| `allow_private_endpoint` | no | `false` | Required to point `endpoint` at a loopback or private-network address (MinIO, LocalStack, self-hosted RGW). See the SSRF note below. |
-
-> Path-style addressing (`endpoint.example.com/bucket/key`) is the safe
-> default for non-AWS providers because virtual-hosted style
-> (`bucket.endpoint.example.com/key`) needs wildcard DNS and TLS SANs that
-> most S3-compatible gateways do not provide. DittoFS therefore flips
-> `force_path_style` on automatically the moment you set a custom `endpoint`;
-> the only providers below that need it turned back **off** are those that
-> require virtual-hosted style (GCS).
-
-> **Private endpoints (MinIO, LocalStack, self-hosted RGW).** DittoFS rejects
-> an `endpoint` that resolves to a loopback or private-network address
-> (`127.0.0.0/8`, `10/8`, `172.16/12`, `192.168/16`, link-local, ULA) as an
-> SSRF guard; the cloud metadata address (`169.254.169.254`) is always blocked.
-> Self-hosted gateways normally live on exactly those networks, so add
-> `"allow_private_endpoint": true` to their `--config` to permit them, as the
-> MinIO and Ceph recipes below do.
-
-Credentials live in the store's own config (the `--config` blob below, or the
-equivalent `--access-key` / `--secret-key` flags) — they are not read from the
-`DITTOFS_*` server-config environment. Each recipe is a
-`dfsctl store block add` invocation; attach the resulting store to a
-share with `dfsctl share create … --block-store <name>`.
-
-##### Verified providers
-
-These run against an emulator (or a documented public endpoint) and are
-exercised by the e2e suite where an emulator exists:
-
-| Provider | Verified by | Endpoint | Region | `force_path_style` | Notes |
-| --- | --- | --- | --- | --- | --- |
-| AWS S3 | unit + prod use | _(omit — SDK default)_ | your bucket region | unset (virtual-hosted) | The native case; no `endpoint`. |
-| MinIO | **e2e emulator** | `http://minio.example:9000` | `us-east-1` | auto-on | Self-hosted; HTTP fine on a trusted network. |
-| LocalStack | **e2e emulator** | `http://localstack:4566` | `us-east-1` | auto-on | Test/CI only; not a production target. |
-| Ceph RGW | documented | `https://rgw.example:7480` | `us-east-1` | auto-on | RGW ignores region; any non-empty value is accepted. |
-
-```bash
-# MinIO  (verified by e2e emulator)
-dfsctl store block add --name minio-store --type s3 \
-  --config '{"endpoint":"http://minio.example:9000","bucket":"dittofs","region":"us-east-1","access_key_id":"minioadmin","secret_access_key":"minioadmin","allow_private_endpoint":true}'
-
-# LocalStack  (verified by e2e emulator)
-dfsctl store block add --name localstack-store --type s3 \
-  --config '{"endpoint":"http://localstack:4566","bucket":"dittofs","region":"us-east-1","access_key_id":"test","secret_access_key":"test","allow_private_endpoint":true}'
-
-# Ceph RGW (RADOS Gateway)
-dfsctl store block add --name ceph-store --type s3 \
-  --config '{"endpoint":"https://rgw.example:7480","bucket":"dittofs","region":"us-east-1","access_key_id":"ACCESS","secret_access_key":"SECRET","allow_private_endpoint":true}'
-```
-
-##### Documented-only providers
-
-These are configured exactly like the verified ones but have **not** been run
-against a live account in CI — they are documented from each provider's S3
-compatibility guide. The per-provider column flags the one gotcha that bites.
-
-| Provider | Endpoint | Region | `force_path_style` | Gotcha |
-| --- | --- | --- | --- | --- |
-| **Cubbit DS3** ⭐ _(DittoFS sponsor)_ | `https://s3.cubbit.eu` | `eu-west-1` | auto-on | Geo-distributed, S3-compatible object storage from [Cubbit](https://www.cubbit.io/). Create an S3 access key/secret in the DS3 console; the bucket lives in your assigned region. |
-| Google Cloud Storage (XML/HMAC) | `https://storage.googleapis.com` | `us-east-1` | **set `false`** | Use an **HMAC** key (`access_key_id`/`secret_access_key`), not a service-account JSON. GCS ignores `region` (any non-empty value works), so send the `us-east-1` default. GCS wants virtual-hosted style, so override the auto path-style default to `false`. |
-| Backblaze B2 | `https://s3.us-west-004.backblazeb2.com` | `us-west-004` | auto-on | Endpoint embeds the region (`s3.<region>.backblazeb2.com`); `region` must match it. Use an **application key**, not the master key. |
-| Wasabi | `https://s3.us-east-1.wasabisys.com` | `us-east-1` | auto-on | Region is in the hostname; mismatched `region` causes auth failures. |
-| DigitalOcean Spaces | `https://nyc3.digitaloceanspaces.com` | `us-east-1` | auto-on | Endpoint is the datacenter (`<region>.digitaloceanspaces.com`); send `region: us-east-1` (Spaces ignores it but the SDK requires a value). |
-| Alibaba Cloud OSS | `https://oss-us-west-1.aliyuncs.com` | `us-west-1` | auto-on | Region is encoded in the endpoint host; use the matching OSS region. |
-| Tencent Cloud COS | `https://cos.ap-guangzhou.myqcloud.com` | `ap-guangzhou` | auto-on | Bucket name must include the AppID suffix (`name-1250000000`); endpoint carries the region. |
-| Oracle Cloud (OCI) Object Storage | `https://<namespace>.compat.objectstorage.us-ashburn-1.oraclecloud.com` | `us-ashburn-1` | auto-on | Endpoint contains your tenancy **namespace**; generate a **Customer Secret Key** for S3 compat. |
-| Storj (S3 gateway) | `https://gateway.storjshare.io` | `us-east-1` | auto-on | Use S3-gateway access keys (`uplink share --register`), not the API access grant. |
-
-```bash
-# Cubbit DS3 (DittoFS sponsor) — geo-distributed, S3-compatible object storage
-dfsctl store block add --name ds3-store --type s3 \
-  --config '{"endpoint":"https://s3.cubbit.eu","bucket":"dittofs","region":"eu-west-1","access_key_id":"DS3_ACCESS_KEY","secret_access_key":"DS3_SECRET_KEY"}'
-
-# Google Cloud Storage — note force_path_style:false (GCS wants virtual-hosted)
-dfsctl store block add --name gcs-store --type s3 \
-  --config '{"endpoint":"https://storage.googleapis.com","bucket":"dittofs","region":"us-east-1","access_key_id":"GOOG_HMAC_KEY","secret_access_key":"GOOG_HMAC_SECRET","force_path_style":false}'
-
-# Backblaze B2 — region is baked into the endpoint host
-dfsctl store block add --name b2-store --type s3 \
-  --config '{"endpoint":"https://s3.us-west-004.backblazeb2.com","bucket":"dittofs","region":"us-west-004","access_key_id":"B2_KEY_ID","secret_access_key":"B2_APP_KEY"}'
-
-# Wasabi
-dfsctl store block add --name wasabi-store --type s3 \
-  --config '{"endpoint":"https://s3.us-east-1.wasabisys.com","bucket":"dittofs","region":"us-east-1","access_key_id":"ACCESS","secret_access_key":"SECRET"}'
-
-# DigitalOcean Spaces
-dfsctl store block add --name spaces-store --type s3 \
-  --config '{"endpoint":"https://nyc3.digitaloceanspaces.com","bucket":"dittofs","region":"us-east-1","access_key_id":"SPACES_KEY","secret_access_key":"SPACES_SECRET"}'
-
-# Alibaba Cloud OSS
-dfsctl store block add --name oss-store --type s3 \
-  --config '{"endpoint":"https://oss-us-west-1.aliyuncs.com","bucket":"dittofs","region":"us-west-1","access_key_id":"ACCESS","secret_access_key":"SECRET"}'
-
-# Tencent Cloud COS — bucket name carries the AppID suffix
-dfsctl store block add --name cos-store --type s3 \
-  --config '{"endpoint":"https://cos.ap-guangzhou.myqcloud.com","bucket":"dittofs-1250000000","region":"ap-guangzhou","access_key_id":"SECRET_ID","secret_access_key":"SECRET_KEY"}'
-
-# Oracle Cloud (OCI) Object Storage — endpoint embeds your namespace
-dfsctl store block add --name oci-store --type s3 \
-  --config '{"endpoint":"https://my-namespace.compat.objectstorage.us-ashburn-1.oraclecloud.com","bucket":"dittofs","region":"us-ashburn-1","access_key_id":"OCI_ACCESS","secret_access_key":"OCI_SECRET"}'
-
-# Storj (S3-compatible gateway)
-dfsctl store block add --name storj-store --type s3 \
-  --config '{"endpoint":"https://gateway.storjshare.io","bucket":"dittofs","region":"us-east-1","access_key_id":"STORJ_ACCESS","secret_access_key":"STORJ_SECRET"}'
-```
-
-All of the above accept the same optional knobs as AWS S3 —
-`prefix`, `compression`, `encryption`, and `durable` (see the preceding
-subsections) — because they share the single `s3` store implementation.
-
-#### Upgrading from the local/remote block store split
-
-Before this release a share carried **two** block stores — a local one (type `fs`
-or `memory`) and an optional remote one — and both the config file and the
-control-plane schema were shaped around that split. The first start after the
-upgrade migrates them, and **refuses to start** in six cases where guessing would
-silently change what an operator configured. Each refusal is recoverable; none of
-them lose data.
-
-**1. A config file still using `blockstore.local.*`**
-
-```
-config uses renamed keys; update them and restart:
-  blockstore.local.max_log_bytes -> blockstore.journal.max_log_bytes
-```
-
-Unknown keys are normally warned about and ignored, but a *renamed* one cannot
-ride that policy: the operator believes the setting is live, an equivalent exists
-under the new name, and dropping it silently changes runtime behaviour.
-
-**Action:** rename the section to `blockstore.journal` (every key beneath it keeps
-its name) and restart.
-
-**2. Shares whose journals do not live under the configured root**
-
-```
-shares do not live under the configured journal root
-  configured blockstore.journal.path: /var/lib/dittofs/blocks
-  share "/archive" stores its data in: /srv/dittofs/archive
-
-Set blockstore.journal.path to /srv/dittofs/archive and restart.
-```
-
-A share's journal holds the only copy of every byte not yet offloaded, so a root
-that disagrees with where the data actually is would serve a share whose bytes are
-somewhere else — reads would return zeros for everything written before the
-change, with nothing failing. Relocating the directories automatically would mean
-moving that only copy during startup, where a partial move cannot be undone.
-
-**Action:** when every share agrees on one directory, the error names it — set
-`blockstore.journal.path` to that directory and restart. When shares are spread
-across several directories, one root cannot express that: move them under a single
-parent (preserving the `shares/<name>/` level), point `blockstore.journal.path` at
-it, and restart.
-
-**3. Both size columns present**
-
-```
-shares table has both local_store_size and journal_size;
-copy the intended values into journal_size, drop local_store_size, and restart
-```
-
-An earlier upgrade added the new column without moving the values across. Which
-one is authoritative is not recoverable from the schema, and choosing wrong
-silently changes every share's size ceiling.
-
-**Action:** copy the values you intend to keep into `journal_size`, drop
-`local_store_size`, and restart.
-
-**4. Both store-id columns present**
-
-```
-shares table has both remote_block_store_id and block_store_id;
-copy the intended values into block_store_id, drop the old column, and restart
-```
-
-Same shape as above, with a worse failure mode: picking the empty column would
-leave every share without a block store.
-
-**Action:** copy the values into `block_store_id`, drop
-`remote_block_store_id`, and restart.
-
-**5. A share left with no block store**
-
-```
-share has no block store after upgrade
-  "/archive" has no block store
-
-These shares kept their data in a local block store and never had a
-remote one. Every share now needs a block store, and the local store
-they used cannot become one — pick an s3 or memory block store for
-each, with the server stopped:
-  UPDATE shares SET block_store_id = '<block store id>' WHERE name = '<share>';
-```
-
-A share that kept its data in a local store and never had a remote one reaches
-the new model with nothing to bind to: the rename in case 4 hands it an empty
-`block_store_id`. Carrying the old local id across is not a repair — that tier
-was typically an `fs` store, a type that exists only locally, so the share would
-come up bound to a block store that cannot be built. The choice of a real store
-is the operator's.
-
-**Action:** pick an `s3` or `memory` block store for each named share and set
-`block_store_id` to its id, with the server stopped, then restart. The old
-column is left in place until every share is bound, so the record of which local
-store each one used is still there to consult.
-
-**6. Two block stores sharing a name**
-
-```
-two block stores share a name
-  "archive" is used by more than one block store
-
-Block stores no longer have a kind, so their names must be unique.
-Rename one of each pair with `dfsctl store block edit`, then restart.
-```
-
-Names used to be unique per `(name, kind)`, so a local `archive` and a remote
-`archive` could coexist. With the kind column gone they collide. Renaming one
-automatically would break the operator's scripts at some later point; deleting one
-would orphan any share referencing it.
-
-**Action:** give one store of each colliding pair a different name, then restart.
-`dfsctl store block edit <name> --name <new name>` renames a store, but it talks
-to a running server and this collision stops the server from starting — so break
-the tie in the control-plane database first, with the server stopped:
-
-```sql
-UPDATE block_store_configs SET name = 'archive-local' WHERE id = '<the row to rename>';
-```
-
-Pick the row by `id`; `SELECT id, name, kind, type FROM block_store_configs` shows
-which is which while the `kind` column still exists. A share normally holds the
-store's UUID, but older rows written through the REST update path hold the *name*
-instead, so check
-`SELECT name, block_store_id FROM shares` afterwards and repoint any share that
-was matching on the old name.
-
-**What migrates without asking**
-
-- `shares.local_store_size` → `shares.journal_size`
-- `shares.remote_block_store_id` → `shares.block_store_id`
-- `shares.local_block_store_id` → dropped, after its `durability` / `writeback` /
-  `require_durable_commit` settings are carried onto the share as `commit_ack` and
-  `relaxed_metadata_commit` (see [Durability](durability.md))
-- `block_store_configs.kind` → dropped, after the collision check above
-- `blockstore.journal.default_remote_cache_size` → deleted; per-share
-  `--journal-size` is now the whole of the sizing policy
-
-### 7. Metadata Configuration
-
-Metadata store instances are created through `dfsctl`; the server config file
-contains the global BadgerDB cache settings below. `badger` is the only metadata
-store type: on disk for single-node deployments, or fully in memory for tests. A
-distributed transactional key-value store — TiKV is the preferred one — is the
-planned backend for multi-node deployments; it is not implemented yet.
-
-A store row naming `memory`, `sqlite` or `postgres` (types earlier releases
-accepted) fails with `unsupported metadata store type "<x>": badger is the only
-metadata store type`; see the
-[metadata store migration guide](metadata-store-migration.md). Filesystem capabilities and
-limits are supplied by the metadata store and protocol implementation, not by a
-config-file capabilities block.
-
-#### BadgerDB cache sizing (config file)
-
-The BadgerDB metadata engine keeps two in-memory caches that dominate read
-performance under concurrent NFS/SMB load:
-
-- the **block cache** — decompressed LSM-tree data blocks, and
-- the **index cache** — the block-offset indices used to locate keys.
-
-Badger's own defaults are tiny (256 MiB block, index cache disabled), which
-thrashes on a busy server over a large directory tree. The symptom in the logs
-is `Block cache might be too small ... hit-ratio: 0.26 ... sets-rejected`; every
-cold lookup then walks the LSM tree from disk, which also widens the window for
-the dedup transaction-conflict race and the local-cache write-path backpressure
-stall.
-
-By default both sizes **auto-scale with the memory available to the process**,
-so no tuning is required:
-
-| Cache | Fraction of available RAM | Floor   | Ceiling |
-|-------|---------------------------|---------|---------|
-| block | 15 %                      | 512 MiB | 4 GiB   |
-| index | 7.5 %                     | 256 MiB | 2 GiB   |
-
-The fractions are deliberately conservative because the same process also holds
-the local journal cache, the metadata working set, and read buffers. The available-memory
-figure is the cgroup limit inside a container, or physical RAM otherwise (same
-detection used for block-store sizing). Examples:
-
-- **4 GiB host** → ~614 MiB block / ~307 MiB index (the floors don't bind).
-- **2 GiB host / 2 GiB cgroup** → 512 MiB block / 256 MiB index (floors bind).
-- **64 GiB host** → 4 GiB block / 2 GiB index (ceilings bind).
-
-To override the auto-sizing, set the sizes explicitly (in MiB) in the top-level
-`metadata.badger` block. Setting one dimension still auto-sizes the other:
-
-```yaml
+node:
+  id: 6f1c2a4e-8d3b-4f7a-9c5e-2b8d4a6f0e13   # generate once with uuidgen
 metadata:
   badger:
-    block_cache_mb: 2048   # 0 (default) = auto-size from available RAM
-    index_cache_mb: 1024   # 0 (default) = auto-size from available RAM
-```
-
-Environment overrides: `DITTOFS_METADATA_BADGER_BLOCK_CACHE_MB`,
-`DITTOFS_METADATA_BADGER_INDEX_CACHE_MB`.
-
-**Recommended sizing vs. object/metadata count.** As a rule of thumb the block
-cache should hold the hot directory/inode working set. Each cached file/inode is
-on the order of a few hundred bytes of decompressed LSM data, so:
-
-| Hot metadata objects | Suggested `block_cache_mb` | Suggested `index_cache_mb` |
-|----------------------|----------------------------|----------------------------|
-| up to ~1 M           | auto (≥512)                | auto (≥256)                |
-| ~1–10 M              | 1024–2048                  | 512–1024                   |
-| ~10–50 M             | 2048–4096                  | 1024–2048                  |
-| > 50 M               | 4096+ (raise host RAM)     | 2048+                      |
-
-If you still see `hit-ratio` below ~0.8 or `sets-rejected` in the Badger logs,
-the cache is undersized for the working set — raise `block_cache_mb` first.
-
-These global sizes apply to every BadgerDB metadata store on the node. A single
-store can be overridden via its config-map keys when it is created (see below):
-`--config '{"path":"...","block_cache_mb":2048,"index_cache_mb":1024}'`.
-
-#### `relaxed_durability`
-
-Applies to on-disk `badger` metadata stores. **Defaults to `true`.**
-
-Namespace operations (`create`, `unlink`, `rename`, `mkdir`, `rmdir`,
-attribute-only `setattr`) commit without an inline flush; a background syncer
-makes them durable within ~100 ms. Writes paired with file data commit
-synchronously either way, so this is bounded loss, never corruption.
-
-```bash
-# Strict: fsync every namespace commit (roughly a third of the create throughput)
-./dfsctl store metadata add --name badger-strict --type badger \
-  --config '{"path":"/var/lib/dittofs/metadata","relaxed_durability":false}'
-```
-
-Only an event that takes the kernel down — power loss, kernel panic, hypervisor
-reset — can lose that window. Killing the `dfs` process (`SIGKILL`, OOM-kill,
-panic) loses nothing at either setting, because an acknowledged write is already
-in the kernel page cache. See
-[Durability → Namespace durability](durability.md#namespace-durability-relaxed_durability).
-
-#### Metadata Store Instances (CLI)
-
-Metadata stores are managed at runtime via `dfsctl` and persisted in the control plane database:
-
-```bash
-# In-memory BadgerDB for tests and throwaway servers (no path; lost on restart)
-./dfsctl store metadata add --name memory-fast --in-memory
-
-# BadgerDB for persistent metadata
-./dfsctl store metadata add --name badger-main --type badger \
-  --config '{"path":"/tmp/dittofs-metadata-main"}'
-
-# BadgerDB with explicit per-store cache sizes (MiB). Omit either key (or set 0)
-# to auto-size that cache from available RAM. See "BadgerDB cache sizing" above.
-./dfsctl store metadata add --name badger-big --type badger \
-  --config '{"path":"/tmp/dittofs-metadata-big","block_cache_mb":2048,"index_cache_mb":1024}'
-
-# Separate BadgerDB instance for isolated shares
-./dfsctl store metadata add --name badger-isolated --type badger \
-  --config '{"path":"/tmp/dittofs-metadata-isolated"}'
-
-# List all metadata stores
-./dfsctl store metadata list
-
-# Remove a metadata store
-./dfsctl store metadata remove memory-fast
-```
-
-> **Persistence Options** (`badger` config keys: `path`, `in_memory`,
-> `block_cache_mb`, `index_cache_mb`, `relaxed_durability`):
-> - **On disk** (`path`): persistent embedded database for single-node deployments. File handles and metadata survive restarts.
-> - **In memory** (`in_memory: true`, no `path`): everything is lost on restart. For tests and throwaway servers.
-
-### 8. Shares (Exports)
-
-Shares are managed at runtime via `dfsctl` and persisted in the control plane database. Each share references metadata and block stores by name:
-
-```bash
-# Create shares referencing existing stores
-./dfsctl share create --name /fast --metadata memory-fast --block-store mem-blocks
-./dfsctl share create --name /cloud --metadata badger-main --block-store s3-remote
-./dfsctl share create --name /archive --metadata badger-main --block-store s3-archive
-
-# Grant permissions on shares
-./dfsctl share permission grant /fast --user alice --level read-write
-./dfsctl share permission grant /cloud --user alice --level read-write
-./dfsctl share permission grant /cloud --group editors --level read
-
-# List shares and their permissions
-./dfsctl share list
-./dfsctl share permission list /cloud
-
-# Delete a share
-./dfsctl share remove /fast
-```
-
-**Configuration Patterns:**
-
-- **Shared Metadata**: `/cloud` and `/archive` both use `badger-main` - they share the same metadata database
-- **Performance Tiering**: Different shares use different storage backends (memory, S3)
-- **Isolation**: Each share gets its own BlockStore and its own journal directory beneath `blockstore.journal.path`
-- **Resource Efficiency**: Block stores are shared (ref counted) when multiple shares reference the same config
-
-#### Per-share and per-identity quotas
-
-DittoFS supports two complementary quota layers, both enforced by NFS *and* SMB:
-
-1. **Per-share quota** (`dfsctl share create/edit --quota-bytes`) — a single byte
-   ceiling for the whole share. Exceeding it returns `NFS3ERR_NOSPC` /
-   `STATUS_DISK_FULL`.
-
-2. **Per-identity quotas** (`dfsctl quota …`) — per-**user** (uid) and per-**group**
-   (gid) limits, plus an optional **default-user** fallback applied to any user
-   without an explicit quota. Each quota bounds both **bytes** and **inodes**
-   (file count) and supports a **soft** threshold with a **grace period** before
-   the soft threshold is enforced as a hard limit. Usage is charged to the file
-   *owner* (standard quota semantics). Exceeding a hard limit (or an expired
-   soft+grace) returns `NFS3ERR_DQUOT` / `NFS4ERR_DQUOT` /
-   `STATUS_QUOTA_EXCEEDED`. `df` / FSSTAT and SMB `FS_FULL_SIZE_INFORMATION`
-   report the smallest applicable quota for the calling identity.
-
-```bash
-# Per-user quota: uid 1000 limited to 10 GiB / 100k files, soft at 8 GiB,
-# 7-day grace (604800s) before the soft byte threshold becomes hard.
-./dfsctl quota set /cloud --scope user --id 1000 \
-    --limit-bytes 10GiB --soft-bytes 8GiB \
-    --limit-files 100000 --soft-files 90000 --grace-seconds 604800
-
-# Per-group quota: gid 2000 limited to 50 GiB.
-./dfsctl quota set /cloud --scope group --id 2000 --limit-bytes 50GiB
-
-# Default-user fallback (applies to any user without an explicit quota).
-./dfsctl quota set /cloud --scope default-user --limit-bytes 5GiB
-
-# Inspect and remove.
-./dfsctl quota list /cloud
-./dfsctl quota remove /cloud --scope user --id 1000
-```
-
-Per-identity quota usage is tracked incrementally by every metadata backend
-(badger, on disk or in memory), keyed by owner uid and gid, and is reconstructed
-from the file rows on startup. A `chown` that changes a file's owner moves its
-bytes and inode count between identities. Limits live in the control-plane DB
-and are also manageable via the REST API
-(`/api/v1/shares/{name}/quotas[/{scope}/{id}]`).
-
-The **soft → grace → hard** state machine records when an identity first crosses
-its soft threshold and enforces the soft limit as hard once the grace window
-elapses. For an explicit user/group quota the grace timer lives on the quota
-row. For the **default-user** fallback the timer is inherently per-user (each
-user trips soft at a different time, and the single shared template row cannot
-hold per-user state), so it is recorded in a small side table keyed by
-`(share, uid)`, written the first time a default-user breaches soft and reaped
-when usage drops back under soft. This makes default-user grace **durable across
-a server restart** — a restart no longer hands every over-soft default user a
-fresh grace window.
-
-> **Note**: enforcement is best-effort (matching the per-share soft quota):
-> under high write concurrency a few operations may briefly exceed a limit until
-> usage catches up. This is standard for userspace NFS/SMB servers.
->
-> **Kubernetes operator**: the operator manages infrastructure only — there is
-> no Share/Quota CRD. Quotas are managed via the REST API / `dfsctl` as above.
-
-### 9. User Management
-
-DittoFS supports a unified user management system for both NFS and SMB protocols. Users, groups, and their permissions are stored in the control plane database (see [Database Configuration](#4-database-control-plane)) and can be managed via:
-
-1. **CLI commands** (`dfsctl user`, `dfsctl group`) - Recommended for initial setup
-2. **REST API** - For programmatic management and integrations
-
-Permission resolution follows a priority order: user explicit permissions > group permissions (highest wins) > share default.
-
-The server config bootstraps only the administrator through `admin` settings;
-it does not import top-level user or group lists. Create other accounts and
-memberships through the CLI or REST API.
-
-#### Users
-
-Create named users through the CLI; the password is prompted interactively:
-
-```bash
-dfsctl group create --name editors --gid 101
-dfsctl user create --username editor --uid 1001 --gid 101 --groups editors
-```
-
-**NFS Authentication**: NFS clients authenticate via AUTH_UNIX. The client's UID is matched against DittoFS user UIDs. If a match is found, the user's permissions are applied.
-
-**SMB Authentication**: SMB clients authenticate via NTLM. The username is matched against DittoFS users, and permissions are applied from the user's configuration.
-
-#### Groups
-
-Create a group, add members, and grant access to an existing share:
-
-```bash
-dfsctl group create --name viewers --gid 102
-dfsctl group add-user viewers editor
-dfsctl share permission grant /archive --group viewers --level read
-```
-
-#### Guest Configuration
-
-There is no top-level guest bootstrap section. Configure anonymous NFS identity
-mapping per export, for example with
-`dfsctl share nfs-config set /public --squash root_to_guest`. SMB guest sessions
-are governed by adapter authentication policy and share permissions. See
-[NFS access controls](nfs.md) and [SMB authentication](smb.md).
-
-#### Permission Levels
-
-| Permission | Description |
-|------------|-------------|
-| `none` | No access (cannot connect to share) |
-| `read` | Read-only access |
-| `read-write` | Read and write access |
-| `admin` | Full access including delete and ownership |
-
-#### Permission Resolution Order
-
-1. **User explicit permission**: If the user has a direct `share_permissions` entry for the share, use it
-2. **Group permissions**: Check all groups the user belongs to, use the highest permission level
-3. **Share default**: Fall back to the share's `default_permission` setting
-
-**Example** (with the `viewers` group and `/archive` share already created):
-
-```bash
-dfsctl user create --username special-viewer --groups viewers
-dfsctl share permission grant /archive --group viewers --level read
-dfsctl share permission grant /archive --user special-viewer --level read-write
-```
-
-In this example, `special-viewer` gets `read-write` on `/archive` (user explicit), even though the `viewers` group only has `read`.
-
-#### CLI Management Commands
-
-Users and groups live in the control-plane database, not the config file. Manage them with
-`dfsctl` against a running server (run `dfsctl login` first). See [CLI.md](cli.md) for the
-complete, generated reference.
-
-**User Commands:**
-
-```bash
-# Create a user (password prompted interactively)
-dfsctl user create --username alice
-dfsctl user create --username alice --host-uid                 # map to your current host UID
-dfsctl user create --username bob --email bob@example.com --groups editors,viewers
-
-# Inspect and edit
-dfsctl user list
-dfsctl user get alice
-dfsctl user edit alice --email alice@example.com
-dfsctl user remove alice
-
-# Passwords
-dfsctl user change-password           # change your own
-dfsctl user password alice            # admin: reset another user's password
-```
-
-**Group Commands:**
-
-```bash
-dfsctl group create --name editors
-dfsctl group list
-dfsctl group get editors
-dfsctl group add-user editors alice
-dfsctl group remove-user editors alice
-dfsctl group remove editors
-```
-
-**Share Permissions:**
-
-Permissions are granted per share to a user or group via `dfsctl share permission`:
-
-```bash
-dfsctl share permission list  /export
-dfsctl share permission grant /export --user alice  --level read-write
-dfsctl share permission grant /export --group editors --level read
-dfsctl share permission revoke /export --user alice
-```
-
-### 10. Protocol Adapters
-
-Protocol adapters and their settings live in the control-plane database. Log in
-with `dfsctl login`, then use `adapter enable`, `adapter disable`, and
-`adapter edit` for lifecycle and ports; use `adapter settings` for protocol tuning.
-These settings do not belong in the server YAML/TOML file and are not read from
-`DITTOFS_ADAPTERS_*` environment variables.
-
-```bash
-# Set listen ports (the default NFS/SMB ports are 12049/12445)
-dfsctl adapter edit nfs --port 12049
-dfsctl adapter edit smb --port 12445
-
-# Inspect persisted protocol settings
-dfsctl adapter settings nfs show
-dfsctl adapter settings smb show
-```
-
-#### NFS settings migration
-
-The old names below were nested under the removed NFS adapter config section.
-Timeout flags take seconds, rather than duration strings such as `90s`.
-
-| Old name | Current command or status |
-| --- | --- |
-| `enabled`, `port` | `dfsctl adapter enable nfs`, `dfsctl adapter disable nfs`, or `dfsctl adapter edit nfs --port 12049` |
-| `max_connections` | `dfsctl adapter settings nfs update --max-connections 1024` |
-| `portmapper.enabled`, `portmapper.port` | `dfsctl adapter settings nfs update --portmapper-enabled --portmapper-port 10111` (restart the adapter to apply) |
-| `udp.enabled` | `dfsctl adapter settings nfs update --udp-enabled` (restart the adapter to apply) |
-| `v4_enabled` | No supported switch for NFSv4 alone; the enabled NFS adapter serves both NFSv3 and NFSv4. |
-| `delegations_enabled`, `max_delegations` | `dfsctl adapter settings nfs update --delegations-enabled --max-delegations 10000` |
-| `grace_period`, `lease_time` | `dfsctl adapter settings nfs update --grace-period 90 --lease-time 90` |
-| `timeouts.read`, `timeouts.write`, `timeouts.idle`, `timeouts.shutdown` | No corresponding transport-timeout CLI flags. The server's top-level `shutdown_timeout` controls server shutdown, not these adapter fields. |
-| `metrics_log_interval`, `rate_limiting.*` | No supported replacement in server config or adapter settings. Use the top-level [Prometheus metrics configuration](#metrics-prometheus) for observability. |
-
-#### SMB settings migration
-
-The old names below were nested under the removed SMB adapter config section.
-Rows without a supported flag are explicitly marked. For keys without an
-exposed override, `adapter edit smb --config` is not a workaround.
-
-| Old name | Current command or status |
-| --- | --- |
-| `enabled`, `port` | `dfsctl adapter enable smb`, `dfsctl adapter disable smb`, or `dfsctl adapter edit smb --port 12445` |
-| `max_connections` | `dfsctl adapter settings smb update --max-connections 1024` |
-| `min_dialect`, `max_dialect` | `dfsctl adapter settings smb update --min-dialect SMB3.0 --max-dialect SMB3.1.1` |
-| `signing.enabled`, `signing.required` | `dfsctl adapter settings smb update --signing required`; modes are `disabled`, `enabled`, and `required`. SMB 3.1.1 still requires signing. |
-| `signing.preferred_algorithms` | No exposed override; algorithms are negotiated from built-in support. |
-| `encryption.encryption_mode` | No equivalent three-mode flag. `dfsctl adapter settings smb update --enable-encryption` can enable encryption support, but does not select a global `required` policy; see [encryption below](#smb3-encryption-configuration). |
-| `encryption.allowed_ciphers` | Not configurable: the cipher set is fixed, and `adapter edit smb --config` refuses a non-empty list. |
-| `leases.enabled` | No exposed global lease toggle. |
-| `leases.directory_leases` | REST-only `directory_leasing_enabled` in `PATCH /api/v1/adapters/smb/settings`; no CLI flag. |
-| `leases.lease_break_timeout` | No SMB CLI override: lease breaks use a fixed **5-second** bound. `--oplock-break-timeout` controls traditional oplocks only. |
-| `durable_handles.enabled`, `durable_handles.max_handles_per_session` | No exposed equivalents. Durable-handle support requires a suitable metadata store. |
-| `durable_handles.default_timeout` | No server override; the runtime default/maximum is 300 seconds, and clients may request less. |
-| `durable_handles.scavenger_interval` | No exposed override; the built-in scan interval is 10 seconds. |
-| `timeouts.read`, `timeouts.write`, `timeouts.idle`, `timeouts.shutdown` | No corresponding transport-timeout CLI flags. `--session-timeout` is not a replacement for transport idle timeout. |
-| `max_requests_per_connection`, `metrics_log_interval` | No exposed overrides; the request limit is fixed at 100, and the old metrics-log setting is not consumed. |
-| `credits.strategy`, `credits.min_grant`, `credits.max_grant`, `credits.initial_grant`, `credits.max_session_credits` | No exposed overrides; built-in defaults are `echo`, 1, 8192, 1, and 8192, respectively. |
-| `credits.load_threshold_high`, `credits.load_threshold_low`, `credits.aggressive_client_threshold` | No exposed overrides; the default `echo` strategy does not use adaptive thresholds. |
-| `cross_protocol.delegation_recall_timeout`, `cross_protocol.anti_storm_ttl` | No SMB CLI overrides; see [cross-protocol coordination](#cross-protocol-coordination). |
-
-For example, require signing and allow SMB 3.x clients:
-
-```bash
-dfsctl adapter settings smb update --signing required \
-  --min-dialect SMB3.0 --max-dialect SMB3.1.1
-```
-
-### SMB3 Encryption Configuration
-
-The shipped adapter uses `preferred` encryption mode. The
-`--enable-encryption` flag enables support; setting it to `false` does not switch
-the running adapter to `disabled`. There is no CLI flag for selecting a global
-`required` mode.
-
-Require encrypted SMB traffic for a particular share with `--encrypt-data`:
-
-```bash
-dfsctl share create --name /secure --metadata default \
-  --block-store s3-remote --encrypt-data
-```
-
-See the [SMB security model](security.md#smb-encryption) for protocol-level
-enforcement and the distinction between session and per-share encryption.
-
-### SMB3 Signing Configuration
-
-Use `dfsctl adapter settings smb update --signing required` to require signing.
-`enabled` offers signing and `disabled` relaxes it for older dialects; SMB 3.1.1
-requires signing regardless of this setting. Signing algorithms are negotiated;
-there is no `preferred_algorithms` CLI flag.
-
-### SMB3 Dialect Configuration
-
-Use `--min-dialect` and `--max-dialect` on `dfsctl adapter settings smb update`,
-with names such as `SMB2.1`, `SMB3.0`, `SMB3.0.2`, and `SMB3.1.1`. The example
-above excludes SMB 2.x clients.
-
-### SMB3 Lease Configuration
-
-SMB lease breaks have a fixed 5-second bound. For **traditional oplocks**,
-`dfsctl adapter settings smb update --oplock-break-timeout 35` sets the wait in
-seconds (supported range: 5–120). This does not change lease-break timing.
-Directory leasing is controlled by the REST setting listed in the migration table.
-
-### SMB3 Durable Handle Configuration
-
-Durable handles require a metadata store that implements durable-handle storage.
-The adapter does not expose the removed timeout, capacity, enable, or scavenger
-fields through the CLI or server config. The migration table records the current
-runtime timeout and scan interval.
-
-### Cross-Protocol Coordination
-
-Cross-protocol coordination uses programmatic defaults rather than SMB YAML or
-environment overrides. The delegation recall timeout is 90 seconds and the
-anti-storm TTL is 5 seconds; neither has an SMB adapter settings flag.
-
-#### Network discovery (mDNS / WS-Discovery)
-
-DittoFS can advertise itself on the LAN so it appears in **macOS Finder →
-Network**, Linux file managers (via Avahi), and the **Windows Explorer →
-Network** view — the same job the external `avahi-daemon` and `wsdd`/`wsdd2`
-daemons do for Samba, but built in-process. Discovery is **off by default** and
-managed through the live adapter settings (`dfsctl` / REST), so it applies
-immediately without an adapter restart:
-
-```bash
-# mDNS / DNS-SD — macOS Finder + Linux Avahi
-dfsctl adapter settings nfs update --mdns-enabled          # advertises _nfs._tcp (port 12049)
-dfsctl adapter settings smb update --mdns-enabled          # advertises _smb._tcp + _device-info._tcp
-
-# WS-Discovery — Windows Explorer Network (SMB only; Windows does not browse NFS)
-dfsctl adapter settings smb update --wsdiscovery-enabled
-```
-
-This opens additional listeners: mDNS on UDP `5353`, and — for WS-Discovery —
-UDP `3702` plus an HTTP metadata endpoint on TCP `5357`. NFS advertises the
-first export's path in a `path=` TXT record so Finder mounts the right share.
-
-**Advertised name.** All advertisers share one instance-wide name, so a server
-shows up consistently across Finder and Explorer. It defaults to
-`DittoFS-<hostname>` (e.g. `DittoFS-VM2`) — distinct per host so several DittoFS
-servers on one LAN stay distinguishable — and is overridable:
-
-```bash
-dfsctl settings set discovery.name "Marketing Files"   # custom instance name
-dfsctl settings set discovery.name ""                  # revert to DittoFS-<hostname>
-```
-
-Each adapter formats the name for its own protocol: mDNS uses it verbatim, while
-WS-Discovery folds it to a NetBIOS-legal computer name (upper-cased, illegal
-characters replaced with `-`, capped at 15 characters) since Explorer renders it
-as a Windows computer name. A name change takes effect the next time an
-advertiser (re)starts — toggle discovery off/on, or restart the adapter.
-
-> **Note:** discovery is multicast-based and LAN-local. It works on a host
-> network (bare metal, VM, or a `hostNetwork` pod) but does **not** traverse
-> standard Kubernetes / overlay networks — Explorer and Finder will only see the
-> server on the same L2 segment. Mounting by name/IP always works regardless.
-> WS-Discovery makes the machine *appear* in Explorer; Windows still connects to
-> SMB on port `445`, so the SMB adapter must be reachable there.
-
-> **Windows host firewall:** when DittoFS runs *on* a Windows host, the built-in
-> "Network Discovery" firewall rules only cover Windows' own services (they are
-> scoped to `System` / `svchost`), so inbound traffic to `dfs.exe` is dropped by
-> default. Explorer then discovers the server over multicast but silently fails
-> the follow-up metadata fetch (a TCP `5357` connection that never completes),
-> and the machine never renders. Add inbound allow rules for the `dfs.exe`
-> program on TCP `5357` and UDP `3702`/`5353`:
->
-> ```powershell
-> New-NetFirewallRule -DisplayName "DittoFS Discovery (WSD meta)"  -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5357 -Program "C:\path\to\dfs.exe" -Profile Any
-> New-NetFirewallRule -DisplayName "DittoFS Discovery (WSD probe)" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 3702 -Program "C:\path\to\dfs.exe" -Profile Any
-> New-NetFirewallRule -DisplayName "DittoFS Discovery (mDNS)"      -Direction Inbound -Action Allow -Protocol UDP -LocalPort 5353 -Program "C:\path\to\dfs.exe" -Profile Any
-> ```
->
-> This is a Windows-host concern only; a Linux DittoFS host needs no equivalent
-> (any host firewall there just needs the same ports open).
-
-### 11. NFSv4 Configuration
-
-Manage NFSv4 settings through the running server after `dfsctl login`:
-
-```bash
-dfsctl adapter settings nfs update --delegations-enabled --max-delegations 10000 \
-  --grace-period 90 --lease-time 90
-```
-
-The timeout flags above accept integer seconds.
-
-### 12. Kerberos Configuration
-
-`kerberos` is a top-level config block (it backs both NFS RPCSEC_GSS and SMB
-SPNEGO — not nested under `adapters`):
-
-```yaml
-# Kerberos (RPCSEC_GSS + SMB SPNEGO) settings — top-level block
-kerberos:
-  enabled: true
-  keytab_path: /etc/dittofs/dittofs.keytab
-  service_principal: nfs/server.example.com@EXAMPLE.COM
-  krb5_conf: /etc/krb5.conf
-
-  # AD domain identity (optional; for an Active-Directory-joined server).
-  # When all three are unset the server is standalone and advertises the
-  # NetBIOS workgroup "WORKGROUP" exactly as a non-domain server does —
-  # leaving these empty is fully backward-compatible.
-  realm: EXAMPLE.COM            # Kerberos realm; defaults to the @REALM of service_principal
-  netbios_domain: EXAMPLE       # NetBIOS short name; NOT derivable, must be set to enable domain-aware SMB
-  dns_domain: example.com       # defaults to the lowercased realm
-```
-
-| Key | Env var | Default |
-|---|---|---|
-| `kerberos.realm` | `DITTOFS_KERBEROS_REALM` | `@REALM` of `service_principal` |
-| `kerberos.netbios_domain` | `DITTOFS_KERBEROS_NETBIOS_DOMAIN` | (empty → standalone `WORKGROUP`) |
-| `kerberos.dns_domain` | `DITTOFS_KERBEROS_DNS_DOMAIN` | lowercased `realm` |
-
-#### Domain-aware SMB
-
-When `netbios_domain` is set, the SMB server advertises the AD domain in the
-NTLM challenge (`MsvAvNbDomainName` / `MsvAvDnsDomainName`) and stamps it on
-authenticated sessions, so domain users authenticate against the correct domain.
-Unset → the server advertises `WORKGROUP` / `local` (pre-AD-4 standalone
-behavior).
-
-#### Offline keytab import (one keytab, both protocols)
-
-A keytab can hold multiple service principals, so a single file serves SMB and
-NFS. Pre-create the computer/service account in AD and export a keytab
-containing **both** `cifs/<host>@REALM` (SMB) and `nfs/<host>@REALM` (NFS):
-
-```bash
-# On a domain-joined admin host (samba-tool / adcli / Windows ktpass):
-samba-tool domain exportkeytab /etc/dittofs/dittofs.keytab \
-    --principal=cifs/server.example.com@EXAMPLE.COM
-samba-tool domain exportkeytab /etc/dittofs/dittofs.keytab \
-    --principal=nfs/server.example.com@EXAMPLE.COM
-```
-
-Point `kerberos.keytab_path` at the combined keytab. The SMB handler selects
-the `cifs/` principal (deriving it from the NFS `service_principal`, or via an
-explicit override); NFS RPCSEC_GSS uses the `nfs/` principal.
-
-#### NTLM pass-through for AD domain users (NETLOGON machine account)
-
-The keytab above authenticates AD users over **Kerberos** (mounting by the SPN
-FQDN, e.g. `\\server.example.com\share`). But when a client connects by a name
-that has **no Kerberos SPN** — an IP address, or the LAN-discovery name a user
-gets by **double-clicking the server in Explorer → Network** (§10) — Windows
-falls back to **NTLM**, which the KDC never sees. To let AD domain users
-authenticate on that path, DittoFS validates their NTLM response against a
-Domain Controller via **NETLOGON pass-through** (MS-NRPC `NetrLogonSamLogon`).
-
-This is **opt-in** and requires a dedicated **machine (computer) account** —
-distinct from the `cifs/` service account in the keytab, because NETLOGON needs
-a *workstation-trust* secure channel that only a machine account can establish.
-The secure channel rides a Kerberos-authenticated SMB session to the DC's
-`\PIPE\netlogon` (reusing the same `krb5_conf` / realm as above). On success the
-DC returns the user's SID **and group SIDs**, which resolve to a UID/GID through
-the directory idmap (§13 / the LDAP identity provider, or `idmap_rid`) and are
-matched against share grants — the **same SID-based authorization** as the
-Kerberos/PAC path, so a domain user or **group** (e.g. `Domain Admins`) granted
-on a share is authorized identically over NTLM.
-
-```yaml
-kerberos:
-  # ... realm / netbios_domain / keytab_path as above ...
-
-  machine_account:
-    enabled: true                 # opt-in; false (default) => no NTLM pass-through
-    account_name: "DITTOFS$"      # the machine account sAMAccountName (trailing '$')
-    dc_address:                   # optional; empty => discover the DC via DNS SRV
-      - "10.0.0.10"
-
-    # Provisioning — pick ONE:
-
-    # (A) OFFLINE: you pre-create the computer account and give DittoFS its
-    #     password. Nothing is written to AD at runtime.
-    secret: "the-machine-account-password"
-
-    # (B) ONLINE JOIN: DittoFS creates the computer object itself over LDAPS on
-    #     first domain logon, owns the password, and rotates it. Requires a
-    #     privileged bind account that can create computer objects. Omit
-    #     `secret` when using this. LDAPS (or ldap:// + start_tls) is mandatory —
-    #     AD refuses a machine-password write over an unencrypted connection.
-    online_join:
-      enabled: true
-      ldap_url: "ldaps://dc.example.com"
-      bind_dn: "CN=Administrator,CN=Users,DC=example,DC=com"
-      bind_password: "..."
-      base_dn: "DC=example,DC=com"
-      # ou: "OU=Servers,DC=example,DC=com"   # default: CN=Computers,<base_dn>
-      rotation_interval: 168h                 # 0 disables rotation (AD max age ~30d)
-      # ca_cert_file: /etc/dittofs/dc-ca.pem  # pin the DC cert (recommended)
-      # insecure_skip_verify: false           # lab only; exposes the password to MITM
-```
-
-| Key | Env var | Default |
-|---|---|---|
-| `kerberos.machine_account.enabled` | `DITTOFS_KERBEROS_MACHINE_ACCOUNT_ENABLED` | `false` |
-| `kerberos.machine_account.account_name` | `DITTOFS_KERBEROS_MACHINE_ACCOUNT_ACCOUNT_NAME` | (empty) |
-| `kerberos.machine_account.secret` | `DITTOFS_KERBEROS_MACHINE_ACCOUNT_SECRET` | (empty; offline path) |
-| `kerberos.machine_account.dc_address` | `DITTOFS_KERBEROS_MACHINE_ACCOUNT_DC_ADDRESS` | (empty → DNS SRV discovery) |
-| `kerberos.machine_account.online_join.enabled` | `DITTOFS_KERBEROS_MACHINE_ACCOUNT_ONLINE_JOIN_ENABLED` | `false` |
-| `kerberos.machine_account.online_join.ldap_url` | `DITTOFS_KERBEROS_MACHINE_ACCOUNT_ONLINE_JOIN_LDAP_URL` | (empty) |
-
-`realm` and `netbios_domain` are **required** for pass-through (the secure
-channel and NTLM `TargetInfo` both need them). The `secret` / `bind_password`
-are redacted in `dfs config show`. For a full walkthrough — pre-creating the
-`DITTOFS$` account and testing the Explorer double-click — see
-[docs/guide/windows-ad-setup.md](windows-ad-setup.md).
-
-### 13. Identity Mapping Configuration
-
-```yaml
-identity:
-  # Pin this node's machine SID (Windows S-1-5-21-{a}-{b}-{c}).
-  #
-  # When unset, the machine SID is generated once on first boot and
-  # persisted, staying stable across restarts. Local/algorithmic SIDs are
-  # derived purely from the machine SID + the Samba RID formula
-  # (user RID = uid*2+1000, group RID = gid*2+1001), so pinning the SAME
-  # value on every node in a cluster makes them compute IDENTICAL SIDs for
-  # the same Unix UID/GID — required for cross-node identity parity.
-  # Foreign (Active Directory / LDAP) domain SIDs are NOT derived this way;
-  # they are bound to stable UID/GIDs durably in the control-plane store.
-  #
-  # Env override: DITTOFS_IDENTITY_MACHINE_SID
-  machine_sid: "S-1-5-21-1111111111-2222222222-3333333333"
-```
-
-Map an authenticated Kerberos principal to an existing user through the
-control-plane identity mapping API. For the `editor` account created above:
-
-```bash
-dfsctl idmap add --principal editor@EXAMPLE.COM --username editor
-```
-
-This complements the Kerberos setup above; it does not enable Kerberos by itself.
-
-### 14. Snapshot Scheduler
-
-Controls the background scheduler that drives per-share snapshot policies
-(schedule + retention). Policies themselves are configured per share via
-`dfsctl share snapshot-policy` or the REST API — see
-[SNAPSHOTS.md §12](snapshots.md#12-scheduled-snapshots-policies). These
-knobs only tune the daemon-wide scheduler loop.
-
-```yaml
-snapshot:
-  # How often the daemon scans for due policies. The per-share policy
-  # interval (not this knob) controls how often a share is snapshotted.
-  scheduler_poll_interval: 1m   # default 1m
-  # Turn the scheduler off entirely. Policies are still stored and can be
-  # run manually with `dfsctl share snapshot-policy run`.
-  scheduler_disabled: false     # default false
-  # Per-request budget for the synchronous restore endpoint.
-  restore_http_timeout: 30m     # default 30m
-```
-
-| Key | Env var | Default |
-|---|---|---|
-| `snapshot.scheduler_poll_interval` | `DITTOFS_SNAPSHOT_SCHEDULER_POLL_INTERVAL` | `1m` |
-| `snapshot.scheduler_disabled` | `DITTOFS_SNAPSHOT_SCHEDULER_DISABLED` | `false` |
-| `snapshot.restore_http_timeout` | `DITTOFS_SNAPSHOT_RESTORE_HTTP_TIMEOUT` | `30m` |
-
-### 15. LDAP / Active Directory Identity Provider
-
-Resolves directory principals (a `user@REALM` form or an AD SID) to a Unix
-identity by querying LDAP/AD. It reads the **RFC2307** `uidNumber`/`gidNumber`
-POSIX attributes (the `idmap_ad` model) or falls back to **RID**-based
-derivation (`idmap_rid`), and resolves the user's group memberships — including
-nested AD groups via the `LDAP_MATCHING_RULE_IN_CHAIN` matching rule. The
-provider is registered in the identity-resolution chain after Kerberos, so an AD
-principal/SID with no local user mapping is resolved against the directory.
-
-**Security:** the connection is encrypted by default. A plaintext `ldap://`
-connection is **refused** unless it is upgraded with `start_tls: true` or the
-operator explicitly opts in with `allow_plaintext: true`. Prefer `ldaps://`.
-
-```yaml
-ldap:
-  enabled: true
-  url: ldaps://dc.example.com:636        # ldaps:// (preferred) or ldap:// + start_tls
-  start_tls: false                       # upgrade an ldap:// connection to TLS
-  allow_plaintext: false                 # explicit opt-in for an unencrypted bind (off)
-  base_dn: "DC=example,DC=com"
-  bind_dn: "CN=svc-dittofs,CN=Users,DC=example,DC=com"
-  bind_password: "********"              # service-account password (redacted on show)
-  user_attr: sAMAccountName              # attribute matched against the bare username
-  realm: EXAMPLE.COM                     # matches "user@REALM" credentials
-  idmap: rfc2307                          # "rfc2307" (uidNumber/gidNumber) or "rid"
-  nested_groups: true                     # resolve transitive AD group membership
-  max_group_results: 200                  # cap on (nested) groups resolved per user
-  timeout: 10s
-  tls:
-    ca_cert_file: /etc/dittofs/ad-ca.pem  # CA bundle to verify the directory cert
-    client_cert_file: ""                  # optional mutual-TLS client cert
-    client_key_file: ""
-    insecure_skip_verify: false           # lab-only escape hatch (off)
-    min_version: "1.2"                    # "1.2" or "1.3"
-```
-
-| Key | Env var | Default |
-|---|---|---|
-| `ldap.enabled` | `DITTOFS_LDAP_ENABLED` | `false` |
-| `ldap.url` | `DITTOFS_LDAP_URL` | (required when enabled) |
-| `ldap.start_tls` | `DITTOFS_LDAP_START_TLS` | `false` |
-| `ldap.allow_plaintext` | `DITTOFS_LDAP_ALLOW_PLAINTEXT` | `false` |
-| `ldap.base_dn` | `DITTOFS_LDAP_BASE_DN` | (required when enabled) |
-| `ldap.bind_dn` | `DITTOFS_LDAP_BIND_DN` | (required when enabled) |
-| `ldap.bind_password` | `DITTOFS_LDAP_BIND_PASSWORD` | (required when enabled; empty triggers an anonymous bind and is rejected) |
-| `ldap.user_attr` | `DITTOFS_LDAP_USER_ATTR` | `sAMAccountName` |
-| `ldap.realm` | `DITTOFS_LDAP_REALM` | (empty) |
-| `ldap.idmap` | `DITTOFS_LDAP_IDMAP` | `rfc2307` |
-| `ldap.nested_groups` | `DITTOFS_LDAP_NESTED_GROUPS` | `false` |
-| `ldap.max_group_results` | `DITTOFS_LDAP_MAX_GROUP_RESULTS` | `200` |
-| `ldap.timeout` | `DITTOFS_LDAP_TIMEOUT` | `10s` |
-| `ldap.tls.ca_cert_file` | `DITTOFS_LDAP_TLS_CA_CERT_FILE` | (system roots) |
-| `ldap.tls.client_cert_file` | `DITTOFS_LDAP_TLS_CLIENT_CERT_FILE` | (empty) |
-| `ldap.tls.client_key_file` | `DITTOFS_LDAP_TLS_CLIENT_KEY_FILE` | (empty) |
-| `ldap.tls.insecure_skip_verify` | `DITTOFS_LDAP_TLS_INSECURE_SKIP_VERIFY` | `false` |
-| `ldap.tls.min_version` | `DITTOFS_LDAP_TLS_MIN_VERSION` | `1.2` |
-
-Admin-configured identity links (`dfsctl idmap add`) take precedence over the
-directory query: a link for an `ldap` external ID resolves to the mapped local
-user before any LDAP search is issued.
-
-**Samba AD-DC self-signed certificates.** A default Samba AD-DC serves an
-auto-generated TLS certificate that commonly has a *negative serial number*.
-Go's `crypto/x509` rejects such certificates at parse time — before TLS
-verification runs — so `ldap.tls.insecure_skip_verify` does **not** bypass it.
-The `dfs` binary is built with `x509negativeserial=1` so `ldaps://` against a
-default Samba AD-DC works out of the box. For production directories, prefer a
-properly-issued DC certificate (the Go toggle is slated for removal in a future
-release).
-
-**Managing identity providers over the API (no restart).** The `ldap.*` and
-`kerberos.*` keys above seed the configuration on first boot. After that, both
-providers can be read, updated, and tested over the control-plane API without
-editing files:
-
-| Method & path | Purpose |
-|---|---|
-| `GET /api/v1/identity-providers` | List providers + enabled state (no secrets). |
-| `GET /api/v1/identity-providers/{type}/config` | Read config (bind password redacted to `********`). |
-| `PUT /api/v1/identity-providers/{type}/config` | Create/replace config (validated). |
-| `POST /api/v1/identity-providers/{type}/test` | Dry-run dial+bind (LDAP) / keytab check (Kerberos); never persists. |
-
-`{type}` is `ldap` or `kerberos`; all routes are admin-only. A persisted config
-**takes precedence over the file/env config** on subsequent boots. **LDAP
-changes hot-reload the live resolver**; **Kerberos changes take effect on the
-next server restart** (the NFS/SMB adapters bind it at startup). The bind
-password is write-only — submit `********` (or omit it) on `PUT` to keep the
-stored secret. Equivalent CLI: `dfsctl identity-provider {list,get,set,test}`
-(see [CLI.md](cli.md)).
-
-## Migration
-
-### Standalone CAS (v0.16 - v0.21) → packed blocks: removed
-
-Current servers store remote data as packed `blocks/<id>` containers. The
-automatic startup conversion for shares still holding standalone-CAS state
-(per-chunk `cas/` objects and locators from v0.16-v0.21 servers) has been
-removed: such a store cannot be upgraded in place by this build, and a
-locator still pointing at a standalone object fails closed on read. See
-[the migration guide](block-store-migration.md).
-
-### Pre-v0.16 `.blk` layouts: migrate with dittofs ≤ v0.21 first
-
-The offline `migrate-to-cas` command was removed after v0.21. On startup,
-`dfs start` still probes each share for the legacy `.blk` layout (a
-`.cas-migrated-v1` sentinel from an old migration short-circuits the probe)
-and refuses to start un-migrated shares:
-
-- Exits with code **78** (`EX_CONFIG` per sysexits(3)).
-- Prints a directive to stderr naming the offending share and pointing at
-  dittofs ≤ v0.21 for the `.blk` migration.
-- Halts on the FIRST share that surfaces the legacy layout.
-
-Run `migrate-to-cas` with a v0.21 binary, verify the per-share `.cas-migrated-v1`
-sentinel exists, then upgrade — the automatic conversion above finishes the
-job.
-
-## Metrics (Prometheus)
-
-DittoFS exposes a Prometheus `/metrics` endpoint on a **dedicated listener**,
-separate from the control-plane API and the protocol adapters. It is **opt-in
-and disabled by default**. When enabled it serves the standard Go/process
-collectors plus the DittoFS instruments (request RED metrics per adapter,
-connection counts, sync/remote/local-store/quota/GC gauges, and snapshot
-timestamps).
-
-```yaml
-# Top-level metrics block (NOT nested under `server:`).
-metrics:
-  enabled: true            # opt-in; default false
-  host: 127.0.0.1          # bind interface; default loopback only
-  port: 9090               # default 9090
-  path: /metrics           # default /metrics
-  auth: none               # "none" (default) or "token"
-  token_file: ""           # path to a file holding the Bearer token (auth: token)
-  tls:                     # optional; reuses the control-plane TLS shape
-    cert_file: ""
-    key_file: ""
-    client_ca: ""          # set for mTLS
-    min_version: "1.2"     # minimum TLS version: "1.2" (default) or "1.3"
-```
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `enabled` | `false` | Turn the metrics listener on. |
-| `host` | `127.0.0.1` | Bind interface. Binds loopback by default; set `0.0.0.0` to expose it deliberately (pair with a firewall/NetworkPolicy). |
-| `port` | `9090` | TCP port for the endpoint. |
-| `path` | `/metrics` | HTTP path. Must start with `/`. |
-| `auth` | `none` | `none` (rely on bind host + network policy) or `token` (require a Bearer token). |
-| `token_file` | | File whose trimmed contents are the expected Bearer token. Required when `auth: token`. |
-| `tls.cert_file` / `tls.key_file` | | Serve the endpoint over HTTPS. |
-| `tls.client_ca` | | Require + verify client certificates (mTLS). |
-| `tls.min_version` | `1.2` | Minimum negotiated TLS version: `1.2` or `1.3`. |
-
-> **Security**: the endpoint binds `127.0.0.1` by default so it is not reachable
-> off-host without an explicit `host` change. In production prefer one of:
-> bind loopback and scrape via a sidecar; restrict with a firewall/NetworkPolicy;
-> or enable `auth: token` (and/or TLS). Never expose `0.0.0.0` unauthenticated on
-> an untrusted network.
-
-### Environment variable overrides
-
-Every key is overridable with the `DITTOFS_METRICS_*` prefix:
-
-| Variable | Maps to |
-|----------|---------|
-| `DITTOFS_METRICS_ENABLED` | `metrics.enabled` |
-| `DITTOFS_METRICS_HOST` | `metrics.host` |
-| `DITTOFS_METRICS_PORT` | `metrics.port` |
-| `DITTOFS_METRICS_PATH` | `metrics.path` |
-| `DITTOFS_METRICS_AUTH` | `metrics.auth` |
-| `DITTOFS_METRICS_TOKEN_FILE` | `metrics.token_file` |
-| `DITTOFS_METRICS_TLS_CERT_FILE` | `metrics.tls.cert_file` |
-| `DITTOFS_METRICS_TLS_KEY_FILE` | `metrics.tls.key_file` |
-| `DITTOFS_METRICS_TLS_CLIENT_CA` | `metrics.tls.client_ca` |
-| `DITTOFS_METRICS_TLS_MIN_VERSION` | `metrics.tls.min_version` |
-
-```bash
-export DITTOFS_METRICS_ENABLED=true
-export DITTOFS_METRICS_HOST=0.0.0.0
-export DITTOFS_METRICS_PORT=9090
-```
-
-### Ownership model
-
-**DittoFS is only a scrape target.** It never runs, bundles, manages, or depends
-on a Prometheus/Thanos/Mimir instance. Point your cluster's existing Prometheus
-at the endpoint. For production, the standard path is the
-[kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)
-(prometheus-operator) with long-term storage via Thanos or Mimir. DittoFS ships
-**no** dashboards or compose artifacts — the guidance below is enough to wire it
-into any standard stack.
-
-> **DittoFS Pro** bundles a turnkey monitoring stack on top of this endpoint: a
-> `docker compose --profile monitoring` profile that stands up Prometheus +
-> Grafana with a pre-provisioned DittoFS dashboard, plus an in-dashboard Metrics
-> section. The endpoint and config documented here are the contract it builds on.
-
-### Scraping (standalone Prometheus)
-
-Add a static or service-discovery scrape job:
-
-```yaml
-scrape_configs:
-  - job_name: dittofs
-    metrics_path: /metrics
-    static_configs:
-      - targets: ["dittofs-host:9090"]
-    # When auth: token is enabled:
-    # authorization:
-    #   type: Bearer
-    #   credentials_file: /etc/prometheus/dittofs-token
-```
-
-### Scraping (Kubernetes via the operator)
-
-The DittoFS Kubernetes operator wires this up for you when you opt in on the
-`DittoServer` spec. It renders the metrics container port, a dedicated metrics
-`Service` carrying `prometheus.io/scrape` annotations (for annotation-based
-discovery), and — **only if the `monitoring.coreos.com` CRDs are installed and
-you enable it** — a `ServiceMonitor` for the prometheus-operator. If those CRDs
-are absent the operator skips the `ServiceMonitor` (logged) and never fails the
-reconcile.
-
-```yaml
-apiVersion: dittofs.dittofs.com/v1alpha1
-kind: DittoServer
-metadata:
-  name: example
-spec:
+    path: /var/lib/dittofs/metadata
+journals:
+  - path: /var/lib/dittofs/journal           # must exist before dfs init
+keys:
   storage:
-    metadataSize: 10Gi
-  metrics:
-    enabled: true            # renders the metrics Service + scrape annotations
-    port: 9090
-    path: /metrics
-    # bearerTokenSecret:     # optional authed scrape
-    #   name: dittofs-metrics-token
-    #   key: token
-    serviceMonitor:
-      enabled: true          # requires the prometheus-operator CRDs
-      interval: 30s
-      labels:                # match your Prometheus serviceMonitorSelector
-        release: kube-prometheus-stack
+    kind: local
+    local:
+      file: /var/lib/dittofs/storage.key     # dfs init creates it
 ```
 
-### Core series (⭐ = key signals)
-
-| Metric | Meaning |
-|--------|---------|
-| ⭐ `dittofs_adapter_requests_total{protocol,op,status}` | Per-protocol request RED counter (`status` is `ok` or `error`). |
-| `dittofs_adapter_request_duration_seconds{protocol,op}` | Request latency histogram. |
-| `dittofs_adapter_connections_total{protocol}` | Connections accepted since start, by protocol. |
-| `dittofs_client_connections_active{protocol}` | Active client connections, by protocol. |
-| `dittofs_auth_attempts_total{protocol,mechanism}` / `dittofs_auth_failures_total{protocol,mechanism}` | Authentication attempts and failures (`mechanism` is `sys`/`krb5`/`ntlm`). |
-| ⭐ `dittofs_remote_up{share}` | `1` if the share's remote backend is healthy, else `0`. |
-| ⭐ `dittofs_sync_pending_bytes{share}` | On-disk bytes present locally but not yet mirrored to the remote (data at risk). |
-| `dittofs_localstore_disk_used_bytes{share}` | Local block-store disk bytes in use. |
-| `dittofs_localstore_evictions_total` / `dittofs_localstore_backpressure_total` | Local block-store segments evicted under disk pressure (an operator drain is not counted) and appends held waiting for space (process-wide). |
-| `dittofs_quota_used_bytes{scope,principal,share}` | Bytes used by a quota principal (`scope` user/group, `principal` is the uid/gid). |
-| `dittofs_gc_runs_total{result}` / `dittofs_gc_last_run_timestamp_seconds` / `dittofs_gc_freed_bytes_total` | GC run count (`result` ok/error), last-run time, bytes reclaimed. |
-| ⭐ `dittofs_snapshot_operations_total{op,result}` | Snapshot operations by `op` (create/delete/restore) and `result` (ok/error). |
-| `dittofs_snapshot_duration_seconds{op}` | Snapshot operation latency histogram, by `op` (create/delete/restore). |
-| ⭐ `dittofs_snapshot_last_success_timestamp_seconds{share}` | Unix time of the last successful snapshot create (backup-freshness signal). |
-| ⭐ `dittofs_integrity_findings{share,kind}` | Findings from the last structural manifest scan, by `kind`: `payloads_with_findings`, `damaged_payloads`, `claimed_uncovered_ranges`, `unplaceable_rows`, `unknown_hash_rows`. |
-| ⭐ `dittofs_integrity_last_scan_timestamp_seconds{share}` | Unix time the structural manifest scan last completed. 0 means it has never run since process start **or** its last attempt failed. |
-| ⭐ `dittofs_integrity_last_scan_failed{share}` | `1` when the most recent structural manifest scan failed, `0` when it completed or has never run. Pairs with the timestamp above to tell "never scanned" from "scans are erroring". |
-| `dittofs_integrity_last_scan_duration_seconds{share}` / `dittofs_integrity_files_scanned{share}` | Cost and reach of the last structural manifest scan. |
-| ⭐ `dittofs_offline_safe{share}` | `1` when every byte the share holds can be served with the remote unreachable, else `0`. A share whose residency cannot be determined reports `0` and publishes no byte counts. |
-| `dittofs_offline_remote_only_bytes{share}` / `dittofs_offline_remote_only_ranges{share}` | Data the local tier no longer holds and would have to fetch from the remote to serve, and how many ranges it spans. |
-
-### Example alert expressions
+A fuller file adds the protocol key, logging, and the API and metrics addresses:
 
 ```yaml
-groups:
-  - name: dittofs
-    rules:
-      # Scheduled snapshots stale: a share with no successful create in 24h.
-      # Uses the last-success gauge (its value is the snapshot time); timestamp()
-      # on a counter would return the scrape time, not the last snapshot time.
-      # Evaluated PER SHARE — an aggregate max() would let a freshly-snapshotted
-      # share mask one that has never been snapshotted.
-      - alert: DittoFSSnapshotStale
-        expr: |
-          (time() - dittofs_snapshot_last_success_timestamp_seconds) > 86400
-        for: 1h
-        labels: { severity: warning }
-        annotations:
-          summary: "DittoFS has had no successful snapshot create in >24h"
-
-      # A share holding manifest damage. The read path cannot report this
-      # class: an uncovered range a file still claims reads back as a sparse
-      # hole, so reads return zeros and succeed. Only the scan sees it.
-      - alert: DittoFSManifestDamage
-        expr: dittofs_integrity_findings{kind="damaged_payloads"} > 0
-        for: 15m
-        labels: { severity: critical }
-        annotations:
-          summary: "DittoFS share {{ $labels.share }} has damaged payloads; run dfsctl store check"
-
-      # The integrity scan has not completed in 48h. A last-scan value of 0
-      # means never scanned since process start, which this expression catches
-      # because time() - 0 is far past the threshold.
-      - alert: DittoFSIntegrityScanStale
-        expr: (time() - dittofs_integrity_last_scan_timestamp_seconds) > 172800
-        for: 1h
-        labels: { severity: warning }
-        annotations:
-          summary: "DittoFS share {{ $labels.share }} has not been integrity-scanned in >48h"
-
-      # The scan is running but failing. Without this the share looks
-      # identical to one whose scanner was never enabled: both report a
-      # last-scan timestamp of 0, forever.
-      - alert: DittoFSIntegrityScanFailing
-        expr: dittofs_integrity_last_scan_failed == 1
-        for: 1h
-        labels: { severity: warning }
-        annotations:
-          summary: "DittoFS integrity scan for {{ $labels.share }} is failing; the share is not being verified"
-
-      # Remote block store unreachable.
-      - alert: DittoFSRemoteDown
-        expr: dittofs_remote_up == 0
-        for: 5m
-        labels: { severity: critical }
-        annotations:
-          summary: "DittoFS remote store for {{ $labels.share }} is down"
-
-      # Sync backlog growing (unsynced data not draining).
-      - alert: DittoFSSyncBacklogGrowing
-        expr: delta(dittofs_sync_pending_bytes[30m]) > 0 and dittofs_sync_pending_bytes > 1e9
-        for: 30m
-        labels: { severity: warning }
-        annotations:
-          summary: "DittoFS sync backlog for {{ $labels.share }} is growing"
-
-      # Local cache disk usage near a target ceiling (adjust threshold to your PVC size).
-      - alert: DittoFSLocalStoreNearLimit
-        expr: dittofs_localstore_disk_used_bytes > 0.9 * 100e9
-        for: 10m
-        labels: { severity: warning }
-        annotations:
-          summary: "DittoFS local store for {{ $labels.share }} is near its disk limit"
-
-      # Elevated adapter error rate (>5% of requests over 5m).
-      - alert: DittoFSAdapterErrorRate
-        expr: |
-          sum(rate(dittofs_adapter_requests_total{status="error"}[5m])) by (protocol)
-            / sum(rate(dittofs_adapter_requests_total[5m])) by (protocol) > 0.05
-        for: 5m
-        labels: { severity: warning }
-        annotations:
-          summary: "DittoFS {{ $labels.protocol }} error rate above 5%"
-```
-
-### Dashboard guidance
-
-Build (or import) a Grafana dashboard around the ⭐ core series: an adapter RED
-row (rate of `dittofs_adapter_requests_total`, error ratio, latency percentiles
-from `dittofs_adapter_request_duration_seconds`), a durability row
-(`dittofs_remote_up`, `dittofs_sync_pending_bytes`, and snapshot success rate
-from `dittofs_snapshot_operations_total`), and a capacity row
-(`dittofs_localstore_disk_used_bytes`, `dittofs_quota_used_bytes`). DittoFS does
-not ship a dashboard JSON; these series are stable and named for direct use.
-
-## Environment Variables
-
-Override configuration using environment variables with the `DITTOFS_` prefix:
-
-**Format**: `DITTOFS_<SECTION>_<SUBSECTION>_<KEY>`
-
-- Use uppercase
-- Replace dots with underscores
-- Nested paths use underscores
-
-**Special Variables** (not config overrides):
-
-```bash
-# Set the initial admin password on first start (instead of auto-generating one)
-export DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password
-```
-
-> **Note**: `DITTOFS_ADMIN_INITIAL_PASSWORD` is only used during the very first server start when the admin user is created. It has no effect on subsequent starts. When set, the admin account's `MustChangePassword` flag is not enabled.
-
-#### Bootstrap admin password
-
-On the **first** start (when no `admin` user exists yet) the initial admin password is chosen in this precedence:
-
-1. **`DITTOFS_ADMIN_INITIAL_PASSWORD`** (env, plaintext) — sets a known password and also derives the NT hash, so the admin can authenticate over **SMB** as well as the REST/control-plane API.
-2. **`admin.password_hash`** (config, bcrypt `$2a$`/`$2b$`/`$2y$`) — sets a known credential without writing a plaintext secret to disk. No NT hash is derivable from a bcrypt hash, so an admin bootstrapped this way works for the **control-plane/REST API only, not SMB** (use option 1 for SMB). A value that is not a valid bcrypt hash is rejected at startup.
-3. **Auto-generated** — a random password is generated. It is printed once **only when `dfs start` runs with stdout attached to an interactive terminal** (i.e. `dfs start --foreground` in a real TTY). In background/daemon mode, and under Docker/systemd/CI where stdout is a pipe, the password is **not written to the log and cannot be recovered** — the log only records that an admin user was created. Recovery via `dfsctl user password admin` is not possible in this state (it requires an authenticated admin session). Options 1 and 2 are consulted **only while bootstrapping a new admin**, so once this first start has created the admin user, setting them and restarting will **not** change the password — you must delete the `admin` row from the `users` table of the control-plane database (not the database itself, which also holds your shares, stores, mounts and other users) and re-bootstrap with option 1 or 2 set. For any non-interactive deployment, set option 1 or 2 before the very first start.
-
-Options 1 and 2 also skip the forced first-login password change (the operator already chose the password). All three apply only on first start; later starts never change an existing admin's password.
-
-```yaml
-admin:
-  username: admin
-  # bcrypt hash, e.g. from `htpasswd -bnBC 10 "" 'my-secure-password' | tr -d ':\n'`
-  password_hash: "$2b$10$..."
-```
-
-**Examples**:
-
-```bash
-# Logging
-export DITTOFS_LOGGING_LEVEL=DEBUG
-export DITTOFS_LOGGING_FORMAT=json
-
-# Server
-export DITTOFS_SHUTDOWN_TIMEOUT=60s
-
-# Database (Control Plane)
-export DITTOFS_DATABASE_TYPE=sqlite
-export DITTOFS_DATABASE_SQLITE_PATH=/var/lib/dittofs/controlplane.db
-# PostgreSQL
-export DITTOFS_DATABASE_TYPE=postgres
-export DITTOFS_DATABASE_POSTGRES_HOST=localhost
-export DITTOFS_DATABASE_POSTGRES_PORT=5432
-export DITTOFS_DATABASE_POSTGRES_DATABASE=dfs
-export DITTOFS_DATABASE_POSTGRES_USER=dfs
-export DITTOFS_DATABASE_POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-export DITTOFS_DATABASE_POSTGRES_SSLMODE=require
-
-# Control Plane API Server
-export DITTOFS_CONTROLPLANE_PORT=8080
-export DITTOFS_CONTROLPLANE_SECRET=your-secret-key-at-least-32-characters
-export DITTOFS_CONTROLPLANE_PPROF=false
-export DITTOFS_CONTROLPLANE_PPROF_MUTEX_RATE=100
-export DITTOFS_CONTROLPLANE_PPROF_BLOCK_RATE_NS=1000000
-
-# Start server with overrides
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
-```
-
-Store instances and protocol adapters are managed through the control-plane
-API and `dfsctl`; their settings are persisted in the database.
-After logging in, use `dfsctl store metadata add` to create a metadata store,
-`dfsctl adapter edit nfs --port 12049` to set the NFS port, and
-`dfsctl adapter settings nfs show` or `dfsctl adapter settings smb show` to
-inspect protocol settings. See the [CLI reference](cli.md) for supported
-settings and update flags.
-
-## Configuration Precedence
-
-Server settings are applied in the following order (highest to lowest priority).
-This precedence does not apply to stores or adapters managed through `dfsctl`:
-
-1. **Environment Variables** (`DITTOFS_*`) - Highest priority
-2. **Configuration File** (YAML/TOML)
-3. **Default Values** - Lowest priority
-
-Example:
-
-```bash
-# config.yaml has shutdown_timeout: 30s
-# Override the server shutdown timeout for this process
-DITTOFS_SHUTDOWN_TIMEOUT=60s ./dfs start
-```
-
-## Configuration Examples
-
-### Minimal Configuration
-
-Server config file with minimal settings:
-
-```yaml
-logging:
-  level: INFO
-```
-
-Then create stores, shares, and enable adapters via CLI:
-
-```bash
-./dfsctl store metadata add --name default --in-memory
-./dfsctl store block add --name default-blocks --type memory
-./dfsctl share create --name /export --metadata default --block-store default-blocks
-./dfsctl adapter enable nfs
-```
-
-### Development Setup
-
-Fast iteration with in-memory stores:
-
-```yaml
-logging:
-  level: DEBUG
-  format: text
-```
-
-```bash
-./dfsctl store metadata add --name dev-memory --in-memory
-./dfsctl store block add --name dev-blocks --type memory
-./dfsctl share create --name /export --metadata dev-memory --block-store dev-blocks
-./dfsctl adapter enable nfs --port 12049
-```
-
-### Production Setup
-
-Persistent storage with access control, structured logging, and metrics:
-
-```yaml
-logging:
-  level: WARN
-  format: json
-  output: /var/log/dittofs/server.log
-
-shutdown_timeout: 30s
-
+node:
+  id: 6f1c2a4e-8d3b-4f7a-9c5e-2b8d4a6f0e13
+metadata:
+  badger:
+    path: /var/lib/dittofs/metadata
+journals:
+  - path: /data/j1
+  - path: /data/j2
+keys:
+  storage:
+    kind: local
+    local:
+      file: /etc/dittofs/keys/storage.key
+  protocol:
+    kind: local
+    local:
+      file: /etc/dittofs/keys/protocol.key
+api:
+  listen:
+    - 127.0.0.1:8080
 metrics:
-  enabled: true
-  host: 127.0.0.1
-  port: 9090
+  listen: 127.0.0.1:9090
+logging:
+  level: info
+  format: json
+  rotation:
+    max_size: "100MiB"
+    max_age: "720h"
 ```
 
-Then create stores, shares, and enable adapters via CLI:
+Both key files are unlocked with the passphrase in the `DITTOFS_ENCRYPTION_PASSPHRASE`
+environment variable. Every `dfs` command that opens the installation needs it.
+
+## The file
+
+`dfs` reads one YAML file. It uses the first of these that applies:
+
+| Order | Path |
+|-------|------|
+| 1 | the path `--config` names |
+| 2 | the path the `DITTOFS_CONFIG` variable names |
+| 3 | `$XDG_CONFIG_HOME/dittofs/config.yaml`, when `XDG_CONFIG_HOME` is set |
+| 4 | `$HOME/.config/dittofs/config.yaml` |
+
+If `--config` or `DITTOFS_CONFIG` names a file that does not exist, `dfs` refuses to
+start. If the default file does not exist, that is not an error: `dfs` runs on the
+defaults and the environment.
+
+An environment variable overrides the same key in the file, and only that key. For
+example, `DITTOFS_LOGGING_LEVEL=debug` changes `logging.level` and leaves the rest of
+`logging` as the file has it.
+
+Rules that catch people out:
+
+- **Keys are exact.** `Logging.Level` is not `logging.level`. A misspelled or
+  unknown key stops the start, and the message names the closest real key.
+- **Settings are not keys.** A key such as `adapters.nfs.port` is a setting. The
+  file refuses it and tells you to use the management API.
+- **Paths are absolute and clean.** A relative path, a `~` or a trailing slash is
+  refused, not rewritten. This matters most for journals: a journal's path is its
+  identity, so `/data/j1/` and `/data/j1` would be two different journals.
+- **One document.** The file holds one YAML document.
+
+## Not working as documented yet
+
+> **Not working as documented yet.** Four keys behave differently from
+> [the table below](#the-keys) on this version:
+>
+> - `dfs config validate` refuses a file without `keys.protocol`, while `dfs init`
+>   and `dfs start` run without it.
+> - `dfs init`, `dfs start` and `dfs reset-admin` refuse a file without `node.id`,
+>   with `node.id is not set`, because nothing else names the node yet.
+> - `dfs start` fails on `metrics.listen: off`, because it tries to bind `off` as an
+>   address.
+> - `api.listen` takes one address: the node refuses to start with a second.
+>
+> `dfs config validate` passes the last three of these, and also passes overlapping
+> `adapters.listen` entries: only `dfs start` refuses them. So a clean `validate`
+> does not yet promise a clean start.
+
+## The keys
+
+Every key the file accepts. `<role>` is `protocol` or `storage`, so
+`keys.<role>.local.file` means both `keys.protocol.local.file` and
+`keys.storage.local.file`.
+
+| Key | Type | Default | What it sets |
+| --- | --- | --- | --- |
+| `node.id` | UUID | none; the journals' `node-id` files remember it | The node's identity. Generate it once and never change it. Needed today: see [above](#not-working-as-documented-yet). |
+| `node.roles` | list of `protocol`, `storage` | `[protocol, storage]` | The node's roles. Both is the only accepted value today; a repeated role is refused. |
+| `metadata.backend` | `badger` or `foundationdb` | `badger` | Which metadata store to use. Only the block it names is read; a key of the other block is refused. |
+| `metadata.badger.path` | path | `metadata` in the state directory | Badger's directory. |
+| `metadata.foundationdb.cluster_file` | path | required with `foundationdb` | FoundationDB's cluster file. |
+| `metadata.foundationdb.tls.cert_file` | path | none | The client certificate for FoundationDB's TLS. Name it with the key and CA files, or none of them. |
+| `metadata.foundationdb.tls.key_file` | path | none | The client certificate's key. Name it with the certificate and CA files, or none of them. |
+| `metadata.foundationdb.tls.ca_file` | path | none | The CA file for FoundationDB's TLS. Name it with the certificate and key files, or none of them. |
+| `journals` | list of entries, each with a `path` | required | The journal devices, one directory each. A path listed twice, or two paths for one directory, is refused. `DITTOFS_JOURNALS` replaces the list with a comma-separated list of paths; an empty entry, such as a trailing comma, is refused. |
+| `adapters.listen` | list of IP addresses | every interface | The addresses the NFS and SMB adapters bind. Unset, they bind `0.0.0.0`, plus `::` when the host has IPv6. A written list binds as written. Overlapping entries, such as `0.0.0.0` beside `192.0.2.10`, or one address twice, stop the start. Each adapter's port is a setting, not a key. |
+| `api.listen` | list of `ip:port` | `127.0.0.1:8080` | The management API's address. Write a full address: `:8080` is refused; use `0.0.0.0:8080` or `[::]:8080` for every interface. One address only today. |
+| `api.tls.cert_file` | path | required off loopback | The API's TLS certificate. Required when `api.listen` or `metrics.listen` is not a loopback IP (`127.0.0.0/8` or `::1`). A host name, `localhost` included, and `0.0.0.0` or `::` are not loopback. |
+| `api.tls.key_file` | path | required off loopback | The key of the API's certificate. Required in the same cases as `api.tls.cert_file`. |
+| `api.socket` | path | `dfs.sock` in the runtime directory | The API's local socket, created with mode `0600`. `dfsctl login --server` takes this path. A path longer than the system's socket limit (about 104 to 108 bytes) is refused. |
+| `metrics.listen` | `ip:port`, or `off` | `127.0.0.1:9090` | The Prometheus metrics address. Off loopback it is served over the API's TLS. `off` is the only way to turn it off, in the file and in the environment, since a YAML null and an empty variable both mean not set; but see [above](#not-working-as-documented-yet). |
+| `logging.level` | `debug`, `info`, `warn`, `error` | `info` | The log level, in lower case. |
+| `logging.format` | `text` or `json` | `text` | The log format. |
+| `logging.output` | `stdout`, `stderr` or a path | `dittofs.log` in the state directory | Where logs go. |
+| `logging.rotation.max_size` | size in whole `MiB`, at least `1MiB` | `"100MiB"` | A log file's size before it rotates. A fraction is refused, since it would turn rotation off. |
+| `logging.rotation.max_backups` | integer | `5` | Rotated files kept; `0` keeps all. |
+| `logging.rotation.max_age` | duration in whole days, or `0s` | `"720h"` | How long rotated files are kept; `0s` keeps all. Less than a day is refused, since it would mean never. |
+| `logging.rotation.compress` | boolean | `false` | Whether rotated files are compressed. |
+| `keys.<role>.kind` | `local` or `kmip` | required for `storage`; for `protocol` see [above](#not-working-as-documented-yet) | Where the role's key is held. Only the block `kind` names is read. The two roles must use two different keys. |
+| `keys.<role>.local.file` | path | required with `local` | The key file that seals new secrets. |
+| `keys.<role>.local.retired_files` | list of paths | none | Older key files that still open what they sealed, during a rotation. |
+| `keys.<role>.kmip.endpoint` | string | none | The KMIP server that holds the role's key. |
+| `keys.<role>.kmip.server_ca` | path | none | The CA file that checks the KMIP server. |
+| `keys.<role>.kmip.client_cert` | path | none | The client certificate the node shows the KMIP server. |
+| `keys.<role>.kmip.client_key` | path | none | That certificate's key. |
+| `keys.<role>.kmip.key_uid` | string | none | The KMIP key that seals. |
+| `keys.<role>.kmip.timeout` | duration | none | How long a call to the KMIP server may take. |
+| `keys.<role>.kmip.retired_key_uids` | list of strings | none | Older KMIP keys that still open what they sealed. |
+
+What the two keys protect:
+
+| Key | Protects | Needed by |
+|-----|----------|-----------|
+| `keys.storage` | the administrator's password hash and the API's signing key | `dfs init` and `dfs start` |
+| `keys.protocol` | users' NT hashes for SMB passwords, and directory bind credentials | `dfsctl user set-password`, binding to a directory, `dfs reset-admin` for an account with a uid |
+
+`dfs init` creates the storage key file. Nothing creates the protocol key file for
+you; the next section shows how.
+
+## Adding the protocol key
+
+You need `keys.protocol` before you set any user's password with
+`dfsctl user set-password` or bind to a directory. Without it, `set-password`
+answers `503 unavailable`.
+
+> **Not available yet on this version:** a `dfs` command that writes a key file.
+> Use the short Go program below, run from your DittoFS clone (see
+> [Getting started](getting-started.md#1-build-from-source)).
+
+1. Write the key file, with the same passphrase as the storage key:
+
+   ```bash
+   cd ~/dittofs                                   # your clone
+   mkdir -p /tmp/dfs-keygen
+   cat > /tmp/dfs-keygen/main.go <<'EOF'
+   package main
+
+   import (
+   	"os"
+
+   	"github.com/cubbit/dittofs/pkg/keyprovider"
+   )
+
+   func main() {
+   	b, err := keyprovider.GenerateKeyFile(os.Getenv("DITTOFS_ENCRYPTION_PASSPHRASE"))
+   	if err != nil {
+   		panic(err)
+   	}
+   	if err := os.WriteFile(os.Args[1], b, 0o600); err != nil {
+   		panic(err)
+   	}
+   }
+   EOF
+   go run /tmp/dfs-keygen/main.go ~/dittofs-data/protocol.key
+   ```
+
+2. Name it in the config file, under `keys`:
+
+   ```yaml
+   keys:
+     protocol:
+       kind: local
+       local:
+         file: /home/alice/dittofs-data/protocol.key
+   ```
+
+3. Check the file, then restart the node:
+
+   ```console
+   $ dfs config validate
+   Configuration file: /home/alice/.config/dittofs/config.yaml
+   Validation: OK
+   ```
+
+Copy the key file off the host, as you did the storage key. More on key files,
+KMIP and rotation is in [Encryption](encryption.md#local-key-files).
+
+## The state and runtime directories
+
+The node keeps its log, and by default its metadata store, in a **state
+directory**. It keeps its local socket in a **runtime directory**. The environment
+chooses both; they are not keys.
+
+| Directory | First of |
+|-----------|----------|
+| State | `$STATE_DIRECTORY` (set by systemd's `StateDirectory=`), `$XDG_STATE_HOME/dittofs`, `$HOME/.local/state/dittofs` |
+| Runtime | `$RUNTIME_DIRECTORY` (set by systemd's `RuntimeDirectory=`), `$XDG_RUNTIME_DIR/dittofs`, a `run` directory inside the state directory, mode `0700` |
+
+A systemd unit may set these variables as a colon-separated list; the first entry
+is used. Two nodes on one host each get their own directories from their own units.
+
+So a node you run as yourself, with nothing set, writes its metadata, its log and
+`dfs.sock` under `~/.local/state/dittofs`.
+
+An existing directory is checked before it is used, because whoever can write the
+runtime directory could replace `dfs.sock` with their own socket:
+
+| Directory | Refused when it is |
+|-----------|--------------------|
+| State | a symlink, owned by neither the node's user nor root, or writable by others |
+| Runtime | a symlink, not owned by the node's user, or writable by its group or others |
+
+Today only `dfs config validate` runs all of these checks. `dfs start` checks only
+a runtime directory it creates itself.
+
+## FoundationDB metadata
+
+`metadata.backend: foundationdb` keeps the metadata, users, shares and settings in a
+FoundationDB 7.3 cluster instead of a Badger directory. Only a `dfs` built with the
+`foundationdb` tag can open it: the `-foundationdb` image and tarballs (see
+[Installation](install.md#foundationdb-metadata)). Any other build refuses it and
+names the tag.
+
+```yaml
+metadata:
+  backend: foundationdb
+  foundationdb:
+    cluster_file: /etc/foundationdb/fdb.cluster
+```
+
+- `cluster_file` is required. An empty one is refused rather than falling back to
+  the client's default cluster.
+- The installation owns the whole cluster. Keys are written with no prefix, so the
+  cluster must hold nothing else. Opening the store writes the node's clock-ceiling key
+  before the start check reads the cluster, so a `cluster_file` that points at someone
+  else's cluster by mistake is refused, but leaves that one key behind in it.
+- A `metadata.badger` key beside `foundationdb` is refused, and the other way round.
+- `tls.cert_file`, `tls.key_file` and `tls.ca_file` are named together or not at
+  all. With them, every command that opens the store (`dfs init`, `dfs start` and
+  `dfs reset-admin`) connects over TLS, and refuse a missing
+  file by name before connecting. Without them, the client connects without TLS.
+- Every command that opens the store waits up to 30 seconds to connect.
+
+## The environment
+
+Every key has an environment variable: `DITTOFS_`, then the key in upper case with
+dots as underscores.
+
+| Key | Variable |
+|-----|----------|
+| `logging.level` | `DITTOFS_LOGGING_LEVEL` |
+| `logging.rotation.max_size` | `DITTOFS_LOGGING_ROTATION_MAX_SIZE` |
+| `keys.protocol.local.file` | `DITTOFS_KEYS_PROTOCOL_LOCAL_FILE` |
+| `journals` | `DITTOFS_JOURNALS` (comma-separated paths) |
 
 ```bash
-# Create stores
-./dfsctl store metadata add --name prod-badger --type badger \
-  --config '{"path":"/var/lib/dittofs/metadata"}'
-./dfsctl store block add --name prod-s3 --type s3 \
-  --config '{"region":"us-east-1","bucket":"dfs-production"}'
-
-# Create share and grant permissions
-./dfsctl share create --name /export --metadata prod-badger --block-store prod-s3
-./dfsctl share permission grant /export --user alice --level read-write
-
-# Enable NFS adapter
-./dfsctl adapter enable nfs --port 12049
+DITTOFS_LOGGING_LEVEL=debug dfs start
 ```
 
-### Multi-Share with Different Backends
+Names are exact: a lower-case name is ignored. A `DITTOFS_` variable that is not a
+key stops the start, unless it is one of these:
 
-Different shares using different storage backends:
+| Variable | Read by |
+| --- | --- |
+| `DITTOFS_CONFIG` | `dfs`, the config file's path when `--config` is not given |
+| `DITTOFS_ENCRYPTION_PASSPHRASE` | `dfs`, the passphrase of every local key file |
+| `DITTOFS_PASSWORD` | `dfsctl`, which a shell running both may export |
+| `DITTOFS_OTLP_ENDPOINT` | `dfs start`, where to send traces; temporary, until tracing has a key of its own |
+| `DITTOFS_<service>_PORT*`, `DITTOFS_<service>_SERVICE_*` | Kubernetes, which sets them for every Service in the pod's namespace whose name starts with `dittofs`. Ignored while the value looks like what Kubernetes sets (a `tcp://`, `udp://` or `sctp://` address, an IP, a port or a protocol name); refused otherwise |
+| `DITTOFS_TEST_*`, `DITTOFS_E2E_*`, `DITTOFS_PREPUSH_*` and the other names the repository's development tools export | those tools; a key's own name wins over them |
 
-```bash
-# Create metadata stores
-./dfsctl store metadata add --name fast-memory --in-memory
-./dfsctl store metadata add --name persistent-badger --type badger \
-  --config '{"path":"/var/lib/dittofs/metadata"}'
+A variable that was a key in an older version is refused, and the message names its
+replacement. A refusal never prints a variable's value.
 
-# Create block stores
-./dfsctl store block add --name cloud-s3 --type s3 \
-  --config '{"region":"us-east-1","bucket":"my-dfs-bucket"}'
+## Refusals
 
-# Create shares with different backends
-./dfsctl store block add --name mem-blocks --type memory
-./dfsctl share create --name /temp --metadata fast-memory --block-store mem-blocks
-./dfsctl share create --name /cloud --metadata persistent-badger --block-store cloud-s3
-./dfsctl share create --name /public --metadata persistent-badger --block-store cloud-s3
+When `dfs` refuses the file or the environment, it prints every problem at once, so
+you can fix them in one pass. Each line reads:
 
-# Grant permissions
-./dfsctl share permission grant /temp --user alice --level read-write
-./dfsctl share permission grant /cloud --user alice --level read-write
-
-# Enable NFS adapter
-./dfsctl adapter enable nfs
+```text
+<where>: <key>: <rule>[; <what to do>]
 ```
 
-### Shared Metadata Pattern
+*Where* is the file's path or `environment`. For example, this file has four
+mistakes:
 
-Multiple shares sharing the same metadata database:
-
-```bash
-# Create shared metadata store
-./dfsctl store metadata add --name shared-badger --type badger \
-  --config '{"path":"/var/lib/dittofs/shared-metadata"}'
-
-# Create block stores
-./dfsctl store block add --name s3-production --type s3 \
-  --config '{"region":"us-east-1","bucket":"prod-bucket"}'
-./dfsctl store block add --name s3-archive --type s3 \
-  --config '{"region":"us-east-1","bucket":"archive-bucket"}'
-
-# Both shares use the same metadata store, different block stores
-./dfsctl share create --name /prod --metadata shared-badger --block-store s3-production
-./dfsctl share create --name /archive --metadata shared-badger --block-store s3-archive
-
-# Enable NFS adapter
-./dfsctl adapter enable nfs
+```yaml
+loging:
+  level: info
+adapters:
+  smb:
+    port: 1445
+journals:
+  - path: data/j1
+api:
+  listen:
+    - localhost:8080
 ```
 
-## IDE Support with JSON Schema
-
-DittoFS provides a JSON schema for configuration validation and autocomplete in VS Code and other editors.
-
-### Setup for VS Code
-
-1. The `.vscode/settings.json` file is already configured
-2. Install the [YAML extension](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)
-3. Open any `dittofs.yaml` or `config.yaml` file
-4. Get autocomplete, validation, and inline documentation
-
-### Generate Schema
-
-If modified:
-
-```bash
-go run ./cmd/dfs config schema --output config.schema.json
+```console
+$ dfs config validate --config /etc/dittofs/config.yaml
+Error: /etc/dittofs/config.yaml: adapters.smb.port: a setting, not a host fact; set it through the management API
+/etc/dittofs/config.yaml: api.listen: localhost:8080: the host is not an IP literal
+/etc/dittofs/config.yaml: journals: data/j1 is not an absolute path
+/etc/dittofs/config.yaml: loging.level: unknown key; did you mean logging.level?
 ```
 
-### Features
+A file from an older version gets one line per old key, naming what replaced it:
 
-- ✅ Field autocomplete
-- ✅ Type validation
-- ✅ Inline documentation on hover
-- ✅ Error highlighting for invalid values
-
-## Viewing Active Configuration
-
-Check the generated config file:
-
-```bash
-# Default location
-cat ~/.config/dittofs/config.yaml
-
-# Custom location
-cat /path/to/config.yaml
+```text
+/etc/dittofs/config.yaml: controlplane.port: no longer read; write api.listen
+/etc/dittofs/config.yaml: database.type: no longer read; the metadata store is metadata.backend
+/etc/dittofs/config.yaml: shutdown_timeout: no longer read; set adapters.<protocol>.drain_timeout through the management API
 ```
 
-Start server with debug logging to see loaded configuration:
+A refusal never prints the value of a variable, of a key that holds a credential, or
+of an unknown key.
 
-```bash
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+## The commands
+
+Four `dfs config` commands read the same file `dfs start` would.
+
+### `dfs config validate`
+
+Checks the file and the host without starting anything, and creates no directory.
+Beyond what a start checks, it opens both key files, and checks the roles, the
+journals, the API certificate off loopback, the socket path and the two
+directories. So it can refuse a host that `dfs start` would still run on. It also
+misses a few things a start refuses; see
+[Not working as documented yet](#not-working-as-documented-yet).
+
+```console
+$ dfs config validate
+Configuration file: /home/alice/.config/dittofs/config.yaml
+Validation: OK
 ```
+
+### `dfs config show`
+
+Prints the file it read, the two directories and what chose them, the socket
+path, and every key with its value and where the value came from: `file`, the
+variable that set it, or `default`. It never prints a variable's value or a key
+file's content. `--output json` prints the same as JSON. The output is a report,
+not a config file you can load.
+
+```console
+$ dfs config show
+file: /home/alice/.config/dittofs/config.yaml
+directories:
+  state:
+    path: /home/alice/.local/state/dittofs
+    source: HOME
+  runtime:
+    path: /home/alice/.local/state/dittofs/run
+    source: HOME
+socket:
+  path: /home/alice/.local/state/dittofs/run/dfs.sock
+  source: default
+...
+sources:
+  journals: file
+  logging.level: default
+  metadata.badger.path: file
+  node.id: file
+...
+```
+
+### `dfs config schema`
+
+Prints [the table above](#the-keys) as a JSON Schema, for editors that check YAML.
+`--output <file>` writes it to a file, for example
+`dfs config schema --output dittofs.schema.json`. The schema checks the file's
+shape only: a file whose journals or keys come from variables fails its required
+keys. `dfs config validate` is what decides whether a file is valid.
+
+### `dfs config edit`
+
+Opens the file in `$EDITOR`, else `$VISUAL`, else `vi`. It checks nothing; run
+`dfs config validate` afterwards.
+
+## The management API
+
+Everything except the config file lives in the metadata store and is changed
+through the management API: shares and their export policies, users, groups,
+grants, netgroups, quotas, adapters, remote stores, namespaces and settings.
+`dfs init` and `dfs reset-admin` are the only commands that write it on the host.
+Most changes apply without a restart.
+
+The API listens on `api.listen` and on the socket `api.socket` names. Off loopback
+it serves TLS only, with `api.tls.cert_file` and `api.tls.key_file`. Two health
+checks need no sign-in:
+
+```console
+$ curl http://127.0.0.1:8080/health/live
+live
+$ curl http://127.0.0.1:8080/health/ready
+ready
+```
+
+Every other route under `/api/v1/`, apart from sign-in and token refresh, needs a
+signed-in caller. The caller's role, `viewer`, `operator` or `admin`, decides what
+it may do. `dfsctl` is the API's client; see the [CLI reference](cli.md).
+
+### Settings
+
+A setting is read and written by its scope and key:
+
+```console
+$ dfsctl setting set installation api.session_lifetime 8h
+KEY                   VALUE  APPLIED
+api.session_lifetime  "8h"
+
+$ dfsctl setting get installation api.session_lifetime
+KEY                   VALUE  APPLIED
+api.session_lifetime  "8h"   0/1
+
+$ dfsctl setting unset installation api.session_lifetime   # back to the default
+```
+
+`APPLIED` counts the nodes that have applied the value so far. A scope is
+`installation`, `node:<id>`, `namespace:<id>`, `store:<id>` or `share:<name>`, but
+every setting today exists at `installation` only, and a write at another scope is
+refused. A `get` of a key that has no value at that scope answers `404 not_found`; it does not
+print the default.
+
+These settings exist today, all at the `installation` scope only:
+
+| Section | Keys | Who may write |
+| --- | --- | --- |
+| `api` | `session_lifetime` (default `12h`), `token_max_lifetime` (default a year) | `admin` |
+| `audit` | `retention` (default 400 days, at least 90) | `admin` |
+| `identity` | `id_range`, `ntlm`, `netbios_name`, `keytab`, `directory_stale_grace`, `nfs4_domain` | `operator`; `ntlm` and `keytab` `admin` only |
+| `identity.directory` | the directory record; see [Identity](identity.md) | `admin` |
+
+> **Not available yet on this version:** settings for the NFS and SMB adapters,
+> remote stores and namespaces. Any other key is refused with `unknown_key`, so
+> `dfsctl adapter set`, `dfsctl store create` and `dfsctl namespace create` fail:
+>
+> ```console
+> $ dfsctl adapter set nfs --enabled
+> Error: dfsctl adapter set: writing adapter nfs: 400 unknown_key: Bad Request: refused by the settings table (field adapters.nfs.enabled)
+> ```

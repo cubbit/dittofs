@@ -1,0 +1,6 @@
+# The test's Sample at minor version 1: as at 0, with its since=1 field after them.
+00000001 00000002 00000003             # words
+00000001                               # flag
+00000008 61626364 65666768             # name
+00000003 00000007 00000008 00000009    # mask
+01020304 05060708                      # extra, an unsigned hyper on the wire from version 1

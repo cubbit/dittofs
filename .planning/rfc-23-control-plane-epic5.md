@@ -144,8 +144,8 @@ them.
 | R11 | The access token is a signed JWT naming the account's principal, the session and an expiry 15 min ahead, and carries no role | MUST | RFC 23 §5.3 | T5.3 |
 | R12 | The access token is HS256, signed with `golang-jwt`, its `kid` naming the signing key's version, so a token signed before a rotation still verifies | MUST | RFC 23 plan §4.2 D3 | T5.3 |
 | R13 | On every call the API refuses a disabled or deleted account, a revoked session, and a token issued before the account's not-before time: an access token by its issue time, a refresh or an API token by its session's or its own creation time | MUST | RFC 23 §5.3, CP10 | T5.5, T5.6, T5.8 |
-| R14 | An issue or creation time is the store time of the write that issued the token or created the session, raised to the account's not-before when that is later; times compare in whole seconds; a raise sets not-before to the whole second after its commit | MUST | RFC 23 §5.3; RFC 16 §2.3 (`Session`, `APIToken`) | T5.5, T5.7 |
-| R15 | Changing a role raises no not-before: the account's sessions and API tokens survive it, and its new role applies on the next call | MUST | RFC 23 §5.3 | T5.6 |
+| R14 | An issue or creation time is the store time of the write that issued the token or created the session, raised to the account's not-before when that is later; times compare in whole seconds; a raise sets not-before to the whole second after its commit, or past the not-before it held when that is later, so two raises in one second both end what came before them | MUST | RFC 23 §5.3; RFC 16 §2.3 (`Session`, `APIToken`) | T5.5, T5.7 |
+| R15 | Changing a role raises no not-before: the account's sessions and API tokens survive it, and its new role applies on the next call | MUST | RFC 23 §5.3 | T5.6, T5.8 |
 | R16 | The refresh token is opaque and random, kept only as its hash in a session that expires `api.session_lifetime` after sign-in; each use returns a new one and invalidates the old, and presenting an invalidated one revokes the whole session | MUST | RFC 23 §5.3; RFC 16 §2.3 (`Session`) | T5.5 |
 | R17 | An API token is opaque and random, shown once at creation, kept only as its hash, with an expiry no later than `api.token_max_lifetime`, and checked as an access token is, with its record in place of the session | MUST | RFC 23 §5.3; RFC 16 §2.3 (`APIToken`) | T5.8 |
 | R18 | The signing key is one installation `Secret` sealed under the storage wrapping key, owned by the installation record under `signing_key` | MUST | RFC 23 §5.3; RFC 16 §2.3 (`Secret`, `SecretOwner`) | T5.3 |
@@ -191,7 +191,7 @@ them.
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
 | R40 | Every sign-in whose password is checked, failed or not, and every request refused after authentication, is audited; a request refused before authentication, a `429` included, is counted, not recorded | MUST | RFC 23 §6 | T5.5, T5.6 |
-| R41 | `api_sign_ins_total{method, result}` counts sign-ins, `result` `ok` or the problem code, and `api_auth_failures_total{reason}` counts refused authentication; no subject, address or name is a label | MUST | RFC 23 §11 | T5.5, T5.6 |
+| R41 | `api_sign_ins_total{method, result}` counts sign-ins, `result` `ok` or the problem code, and `api_auth_failures_total{reason}` counts refused authentication, never a call refused after it, which `api_requests_total{op, outcome}` counts by its code; no subject, address or name is a label | MUST | RFC 23 §11 | T5.5, T5.6 |
 
 **Initialisation and recovery**
 
@@ -216,7 +216,7 @@ them.
   view, `APISignIn`, the sealer, `apisettings.Settings`, the clock and the registry), whose methods
   take decoded values and return results and errors; it never imports `internal/node/api`. Its
   sign-in, refresh and password change are rows on E4's call adapter; `:set-password`, token
-  creation and revocation, and sign-out (which sends a key, E4's R67) on the write adapter. `node.New` sets
+  creation and revocation, and sign-out (keyless, as RFC 23 §4.5 and E4's R67 say) on the write adapter. `node.New` sets
   `Deps.Authenticate` to `Service.Authenticate`, which reads the request's peer address and E4's
   local-socket mark. Its throttle error answers `RetryAfter()`, which E4's problem writer turns
   into the header. No marker. Prior art: Vault's `logical` backends behind its `http` layer (from
@@ -288,13 +288,23 @@ internal/node/api/auth/
   rights.go                                T5.1  E4's table, already holding this epic's rights; unchanged
   throttle.go throttle_test.go             T5.2  decide, settle, takeBack, sourceOf; the store side
   tokens.go tokens_test.go                 T5.3  the signing key's versions, issue, verify
-  signin.go signin_test.go bench_test.go   T5.5  Service, Authenticate, sign-in, refresh, sign-out
-  check.go check_test.go                   T5.6  the account check, last_admin, the role-raise rule
+  service.go                               T5.5  Service, its Deps, the shared token and error helpers
+  signin.go                                T5.5  sign-in: reserve, the password check, the settling write
+  session.go                               T5.5  refresh, Authenticate: the credential, then the account
   password.go password_test.go             T5.7  POST /auth/password, :set-password
   apitokens.go apitokens_test.go           T5.8  API tokens; the credential routes' table test
   rotate.go rotate_test.go                 T5.9  the rotation's runner step
 internal/install/
   install.go install_test.go export_test.go T5.4 Run, Deps, the crash point (D6)
+internal/node/api/
+  res_users.go principals.go               T5.6  the role field, the role-raise rule, checkLastAdmin, the
+                                                 hiding keyed to the accounts read right (on E4's write
+                                                 adapter, which holds the users row's hidden hook, D1)
+  handler.go                               T5.6  a hidden record's refused read audited
+internal/node/
+  check_test.go                            T5.6  the per-call check's tests over the harness
+  auth_test.go auth_bench_test.go          T5.5  auth's tests over the harness, the benchmark: a whole
+                                                 node, so they live with the node's own tests
 internal/node/nodetest/                    T5.4  installation through install.Run; T5.6 a caller per role
 pkg/metadata/kvstore/                      T5.2  ClearSourceSignIns, a bounded batch
 cmd/dfs/commands/
@@ -422,15 +432,16 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   failure settled and audited only on `errors.Is(err, vfserr.ErrLogonFailure)`, and
   `ErrUnavailable` answered `503` with no settlement, no refusal audit and the source's raise taken
   back (R47);
-  refresh through `Session(id)`, reading the account through `APISignIn.Account` as `Authenticate`
+  refresh through `SessionByRefresh(hash)`, reading the account through `APISignIn.Account` as `Authenticate`
   does, an invalidated token revoking the session with `DeleteSession`; `Account`'s `ErrUnavailable`
   answered `503`, not `401`, in refresh and in `Authenticate` alike (R47);
   sign-out; the two series; RFC 23 §4.5's `decision:` at the credential routes; the client's
-  `SignIn`, `Refresh` and `ChangePassword` sent through E4's client core with refresh off (E4's
-  T4.8), so a `401` from any of them is returned as it is, never refreshed and replayed; `pkg/identity`
-  added to E4's import allow-list for `auth` (T5.1), while `pkg/vfs/vfserr`, where the sign-in
-  errors are declared, needs no edit, since E4's rule admits it for the whole node; `bench_test.go`,
-  checked sign-ins from many sources beside metadata commits, in the manual tier. Consumed by T5.6
+  `SignIn` and `Refresh` sent through E4's client core with refresh off (E4's
+  T4.8), so a `401` from either is returned as it is, never refreshed and replayed; `auth` reaches
+  identity through D1's own interfaces, so no import allow-list changes, and `pkg/vfs/vfserr`, where
+  the sign-in errors are declared, needs no edit, since E4's rule admits it for the whole node;
+  `internal/node/auth_bench_test.go`, checked sign-ins from many sources beside metadata commits,
+  in the manual tier. Consumed by T5.6
   and E6's `login`.
 - **Acceptance criteria:**
   - A refresh presenting an already-rotated token revokes its session.
@@ -446,9 +457,10 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   per checked sign-in (R33); 4 failures as `alice` and 1 as `ALICE`, then `CORP\alice` answering
   `429` (R25, R32); a checked failure audited, a `429` not; the series read from the registry
   (R40, R41); a captured log, the audit records and the series' labels holding no password or
-  token (R39); a `kvtest` fault on the user read under the real identity: a sign-in answering `503`,
+  token (R39); a `kvtest` fault on the sealed password's read under the real identity, since one on
+the user's read fails `reserve` first: a sign-in answering `503`,
   no settled failure and no refusal audit record, the source's count as before, and a refresh and a
-  call with a valid access token each `503`, not `401` (R47); a wrong password's body answering
+  call with a valid access token, the account's read faulted, each `503`, not `401` (R47); a wrong password's body answering
   `401` with code `unauthenticated`, and E4's totality test over `vfs.Errors()` passing with both
   identity errors mapped (R48); E4's client with a token source of
   the test's own over `Client.SignIn` and `Client.Refresh` on these routes, the clock advanced past
@@ -463,14 +475,22 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
 
 - **Track:** C. **Depends on:** T5.5; E2 (`EnabledAdmins`).
 - **Covers:** R3, R4, R5, R6, R7, R13, R15, R35, R40, R41; E4's R42 (the API-only account).
-- **Deliverables:** in `check.go`: `Authenticate`'s check, `verify` then `APISignIn.Account`, the
-  session's revocation and `NotBefore`, the caller's `MustChange`, which E4's row flag reads;
-  `checkLastAdmin(tx, before, after)` reading `EnabledAdmins` in the write's transaction, and the
+- **Deliverables:** in package `api`, not in `auth`: the user handlers in `res_users.go` and the
+  rules in `principals.go`, since the role rules run inside E4's write adapter, whose `users` row
+  holds the `hidden` hook that `:set-password` and token writes reach too (D1). On top of T5.5's
+  `Authenticate`, which already verifies the
+  token, reads `APISignIn.Account`, and refuses a revoked session and a `NotBefore`, and sets the
+  caller's `MustChange`, which E4's row flag reads: the per-route rights and roles, the refused
+  call's audit, a read hidden by a role among them, and `checkLastAdmin(tx, before, after)` reading
+  `EnabledAdmins` in the write's transaction, and the
   role-raise rule, for E4's user handlers; a role on a machine principal refused; `nodetest`'s
   signed-in caller of each role; the role field on E4's user routes, with R42's API-only account:
   one created with a role and no spelling gets none, so its create allocates no uid and no RID,
-  where T4.10's `createUser` always allocates both today; this check replaces T4.10's hiding of a
-  user holding a role from a caller below `admin` (`404` on read and write, left out of listings).
+  where T4.10's `createUser` always allocates both today, and an edit giving it a Kerberos name is
+  refused while it holds no uid; the check KEEPS T4.10's hiding of a user holding a role from a
+  caller below `admin` (`404` on read and write, left out of listings), keyed now to the role
+  table's accounts read right, its reach and its leaks named by the `decision:` marker at
+  `hiddenFrom`.
   Consumed by every E4 route,
   E6 and E7.
 - **Acceptance criteria:**
@@ -479,10 +499,12 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
 - **Tests:** over the harness: every route as each role against RFC 23 §5.2, `404` where the caller
   may not read (R4); an operator giving itself `admin`, and editing another user that holds a
   role, refused (R5); the two demotions held after their reads by a fault that blocks on a channel
-  (R6); a role written on a machine principal refused `400` (R7); a disabled account and a revoked
+  (R6); a role written on a machine principal refused by the store as an invalid argument, and
+  the user route answering `404` for a machine's ID (R7); a disabled account and a revoked
   session refused on the next call, the clock not advanced (R3, R13); a demotion leaving the
   session and token alive with viewer rights (R15); a must-change session refused `403`
-  `password_change_required` on other routes (R35); a refused call audited and counted (R40, R41);
+  `password_change_required` on other routes (R35); a refused call audited (R40) and counted in
+  `api_requests_total{outcome}`, not in `api_auth_failures_total` (R41);
   an API-only account, created with a role and no spelling, holding none (E4's R42, moved here
   from T4.10 with the role field).
 
@@ -500,13 +522,21 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   returns one, under the protocol role, both before one `Write` that reads `identity.ntlm` tracked and
   refuses a moved revision, puts both versions, prunes the previous ones with `tx.PruneSecret`,
   raises `NotBefore` from `tx.Now()`, clears must-change and creates the answered session;
-  `:set-password` with the same write and `resetAccount`; no other route writes a hash. Consumed by
+  `:set-password` with the same write and `ResetAccount`; no other route writes a hash; the client's
+  `ChangePassword`, sent with refresh off as T5.5's `SignIn` is. An account written between the
+  check of the current password and the write answers `503` `unavailable`, its raise taken back,
+  never a settled failure; a moved `identity.ntlm` seals the change again, up to 3 times, while
+  `:set-password` answers `503` `unavailable`. The seal and the write are one, `auth.SealPassword`
+  and `auth.WritePassword`, which T5.10's `reset-admin` makes too, with must-change set. Consumed by
   E6 and E7.
 - **Acceptance criteria:**
   - After a change, the session that made it refreshes no more, and the answered one does.
-  - An NTLM-off committed while a change is held after its read leaves no NT hash stored.
+  - An NTLM-off committed while a change is held after its read leaves no NT hash stored, and so
+    does the NT-hash deletion run in the same window, which answers the change `503` or its tokens,
+    never `401`.
 - **Tests:** over the harness and the real identity: both sessions after a change (R36); a refresh
-  and an API-token call made before the change refused after it (R14); no current password refused
+  made before the change refused after it, and a change's session refused after a `:set-password`
+  in the same second (R14; the API-token half is T5.8's); no current password refused
   (R34); a must-change account changing its password and then reaching other routes (R35); three
   failed current-password checks and two sign-ins from one address, the next of either `429` (R31,
   R32); `:set-password` resetting a raised count (R29); the old password hash's and the old NT hash's versions gone, for a user holding a file spelling
@@ -516,25 +546,45 @@ docs/guide/cli.md                          T5.4, T5.10  regenerated
   keys and the captured log holding neither password (R39); with NTLM on, after `POST /auth/password`,
   identity's `SignIn` verifying an NTLMv2 AUTHENTICATE for the new password and refusing one for the
   old (R37, at the consumer of the NT hash); an operator setting an admin's
-  password refused (R8).
+  password refused `404` `not_found`, the account hidden from it (T5.6), its generation and its
+  password's version unchanged (R8); an account written while a change or a `:set-password` is held
+  after its seal answered `503`, nothing written, the change settling no failure; an empty new
+  password refused `400`, a change's raising no count and a `:set-password`'s leaving the version
+  unchanged; a directory principal's `:set-password` refused `400`.
 
 ### T5.8 API tokens
 
 **Subtask T5.8 estimate: 1.5 man-days.**
 
 - **Track:** C. **Depends on:** T5.7.
-- **Covers:** R2, R13, R17, R38, R39.
-- **Deliverables:** in `apitokens.go`: creation for a service account, the token shown once and
-  stored as its hash, its expiry capped by `api.token_max_lifetime`, its `Created` from `tx.Now()`
+- **Covers:** R2, R13, R14 (the API-token half), R15, R17, R38, R39.
+- **Deliverables:** in `apitokens.go`: creation for an enabled account holding a role, a service
+  account or one that signs in by password (RFC 23 §12's "§5.3 revocation" row has one account hold
+  both a session and an API token); each account creates, lists and revokes its own tokens, and an
+  admin creates one for another account only when it is a service account (a role, no
+  password and no protocol spelling, R2), and lists and revokes any account's, a `decision:` at the check since that is wider
+  than §5.2's "service tokens of others" in the direction that only ends credentials; a creation
+  presented with an API token is refused `400` `invalid`, so a token mints no successor, and so is
+  a sign-out presented with one, an API token ending only by its revocation; the token shown once
+  and stored as its hash, its expiry capped by `api.token_max_lifetime`, its `Created` from `tx.Now()`
   raised to `NotBefore`; listing an account's tokens; revocation; the per-call check reading the
-  token's record in place of a session. Consumed by E6.
+  token's record in place of a session, an access token told from an API token by its form (a JWT
+  holds dots, base64url none). The routes are `GET` and `POST /api/v1/users/{id}/api-tokens` and
+  `DELETE /api/v1/users/{id}/api-tokens/{sub}`, right `Self`, another account's tokens `404` to a
+  caller below admin; creation is keyless and answers `200`; a token is never rewritten, so its tag,
+  which a revocation's `If-Match` names, is always 1. Sign-in, refresh and the password change
+  refuse an `Idempotency-Key` `400` here too (R38), which their adapter did not before, every row
+  whose answer carries a credential keyless, held by a route-table test; the password change's
+  refusals before its handler are audited against the caller's account (R40). Consumed by E6.
 - **Acceptance criteria:**
   - A token asked for past the maximum lifetime is refused.
 - **Tests:** over the harness: create, call, revoke, call refused (R17); a token past its expiry on
   the injected clock refused (R17); one created before a `NotBefore` raise refused (R13); a password
-  sign-in for the service account refused (R2); the raw keys holding only the hash (R39); one table
+  sign-in for the service account refused (R2); an API token surviving its account's demotion
+  (R15); the raw keys holding only the hash (R39); one table
   test over sign-in, refresh, the password change, `:set-password` and token creation, each refusing
-  an `Idempotency-Key` `400` and leaving no idempotency record (R38).
+  an `Idempotency-Key` `400` and leaving no idempotency record (R38); an API token created before a
+  password change refused after it (R14).
 
 ### T5.9 Signing-key rotation
 

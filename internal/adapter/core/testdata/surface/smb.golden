@@ -1,0 +1,2 @@
+func New(d adapter.Deps, s settings.SMB) (adapter.Adapter, error)
+

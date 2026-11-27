@@ -2,72 +2,22 @@ package cmdutil
 
 import (
 	"bytes"
-	"encoding/json"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
-	"net/http/httptest"
-	"runtime"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/cubbit/dittofs/internal/cli/credentials"
-	"github.com/cubbit/dittofs/internal/cli/output"
-	"github.com/cubbit/dittofs/pkg/apiclient"
+	"github.com/spf13/cobra"
+
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/node/apiv1/client"
 )
-
-func TestParseCommaSeparatedList(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected []string
-	}{
-		{
-			name:     "empty string",
-			input:    "",
-			expected: nil,
-		},
-		{
-			name:     "single item",
-			input:    "foo",
-			expected: []string{"foo"},
-		},
-		{
-			name:     "multiple items",
-			input:    "foo,bar,baz",
-			expected: []string{"foo", "bar", "baz"},
-		},
-		{
-			name:     "items with spaces",
-			input:    "foo, bar , baz",
-			expected: []string{"foo", "bar", "baz"},
-		},
-		{
-			name:     "empty items filtered out",
-			input:    "foo,,bar,",
-			expected: []string{"foo", "bar"},
-		},
-		{
-			name:     "only whitespace filtered out",
-			input:    "foo, , bar",
-			expected: []string{"foo", "bar"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := ParseCommaSeparatedList(tt.input)
-			if len(result) != len(tt.expected) {
-				t.Errorf("ParseCommaSeparatedList(%q) = %v, want %v", tt.input, result, tt.expected)
-				return
-			}
-			for i, v := range result {
-				if v != tt.expected[i] {
-					t.Errorf("ParseCommaSeparatedList(%q)[%d] = %q, want %q", tt.input, i, v, tt.expected[i])
-				}
-			}
-		})
-	}
-}
 
 func TestBoolToYesNo(t *testing.T) {
 	tests := []struct {
@@ -102,312 +52,248 @@ func (t testTableRenderer) Rows() [][]string {
 	return t.rows
 }
 
-func TestPrintOutput_JSON(t *testing.T) {
-	// Set flags to JSON format
-	Flags.Output = "json"
-
+// newCmd returns a command whose --output flag says format and whose output
+// lands in the returned buffer, as a subcommand of the root sees both.
+func newCmd(format string) (*cobra.Command, *bytes.Buffer) {
 	var buf bytes.Buffer
-	data := []string{"foo", "bar"}
-	renderer := testTableRenderer{
-		headers: []string{"NAME"},
-		rows:    [][]string{{"foo"}, {"bar"}},
-	}
-
-	err := PrintOutput(&buf, data, false, "No items", renderer)
-	if err != nil {
-		t.Fatalf("PrintOutput() error = %v", err)
-	}
-
-	// JSON output is indented
-	result := buf.String()
-	if len(result) == 0 {
-		t.Error("PrintOutput() returned empty output for JSON")
-	}
-	// Check that it contains the expected data
-	if !bytes.Contains(buf.Bytes(), []byte("foo")) || !bytes.Contains(buf.Bytes(), []byte("bar")) {
-		t.Errorf("PrintOutput() = %q, missing expected data", result)
-	}
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String("output", format, "")
+	cmd.Flags().Bool("no-color", true, "")
+	cmd.SetOut(&buf)
+	return cmd, &buf
 }
 
-func TestPrintOutput_YAML(t *testing.T) {
-	// Set flags to YAML format
-	Flags.Output = "yaml"
-
-	var buf bytes.Buffer
-	data := []string{"foo", "bar"}
-	renderer := testTableRenderer{
-		headers: []string{"NAME"},
-		rows:    [][]string{{"foo"}, {"bar"}},
-	}
-
-	err := PrintOutput(&buf, data, false, "No items", renderer)
-	if err != nil {
-		t.Fatalf("PrintOutput() error = %v", err)
-	}
-
-	expected := "- foo\n- bar\n"
-	if buf.String() != expected {
-		t.Errorf("PrintOutput() = %q, want %q", buf.String(), expected)
-	}
-}
-
-func TestPrintOutput_Table_Empty(t *testing.T) {
-	// Set flags to table format
-	Flags.Output = "table"
-
-	var buf bytes.Buffer
-	data := []string{}
-	renderer := testTableRenderer{
-		headers: []string{"NAME"},
-		rows:    [][]string{},
-	}
-
-	err := PrintOutput(&buf, data, true, "No items found.", renderer)
-	if err != nil {
-		t.Fatalf("PrintOutput() error = %v", err)
-	}
-
-	expected := "No items found.\n"
-	if buf.String() != expected {
-		t.Errorf("PrintOutput() = %q, want %q", buf.String(), expected)
-	}
-}
-
-func TestPrintOutput_Table_WithData(t *testing.T) {
-	// Set flags to table format
-	Flags.Output = "table"
-
-	var buf bytes.Buffer
-	data := []string{"foo", "bar"}
-	renderer := testTableRenderer{
-		headers: []string{"NAME"},
-		rows:    [][]string{{"foo"}, {"bar"}},
-	}
-
-	err := PrintOutput(&buf, data, false, "No items found.", renderer)
-	if err != nil {
-		t.Fatalf("PrintOutput() error = %v", err)
-	}
-
-	// Table output should contain headers and rows
-	result := buf.String()
-	if len(result) == 0 {
-		t.Errorf("PrintOutput() returned empty output for table")
-	}
-}
-
-func TestGetOutputFormatParsed(t *testing.T) {
-	tests := []struct {
-		flagValue string
-		expected  output.Format
-		wantErr   bool
+func TestPrintOutput(t *testing.T) {
+	renderer := testTableRenderer{headers: []string{"NAME"}, rows: [][]string{{"foo"}, {"bar"}}}
+	for _, tt := range []struct {
+		format  string
+		isEmpty bool
+		want    string
 	}{
-		{"table", output.FormatTable, false},
-		{"json", output.FormatJSON, false},
-		{"yaml", output.FormatYAML, false},
-		{"invalid", output.FormatTable, true},
+		{"json", false, "[\n  \"foo\",\n  \"bar\"\n]\n"},
+		{"yaml", false, "- foo\n- bar\n"},
+		{"table", true, "No items found.\n"},
+	} {
+		cmd, buf := newCmd(tt.format)
+		if err := PrintOutput(cmd, []string{"foo", "bar"}, tt.isEmpty, "No items found.", renderer); err != nil {
+			t.Fatalf("PrintOutput -o %s: %v", tt.format, err)
+		}
+		if buf.String() != tt.want {
+			t.Errorf("PrintOutput -o %s: got %q, want %q", tt.format, buf.String(), tt.want)
+		}
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.flagValue, func(t *testing.T) {
-			Flags.Output = tt.flagValue
-			result, err := GetOutputFormatParsed()
-			if (err != nil) != tt.wantErr {
-				t.Errorf("GetOutputFormatParsed() error = %v, wantErr %v", err, tt.wantErr)
-				return
+	cmd, buf := newCmd("table")
+	if err := PrintOutput(cmd, nil, false, "No items found.", renderer); err != nil {
+		t.Fatalf("PrintOutput -o table: %v", err)
+	}
+	if !strings.Contains(buf.String(), "NAME") || !strings.Contains(buf.String(), "bar") {
+		t.Errorf("PrintOutput -o table: got %q, want the header NAME and the row bar", buf.String())
+	}
+
+	// The API's wire types name their fields for JSON only; YAML prints
+	// those names.
+	cmd, buf = newCmd("yaml")
+	spec := struct {
+		CaseSensitivity string `json:"case_sensitivity"`
+	}{"sensitive"}
+	if err := PrintOutput(cmd, spec, false, "", nil); err != nil || buf.String() != "case_sensitivity: sensitive\n" {
+		t.Errorf("PrintOutput -o yaml of a JSON-tagged struct: got %q (%v), want %q", buf.String(), err, "case_sensitivity: sensitive\n")
+	}
+
+	if err := PrintOutput(func() *cobra.Command { c, _ := newCmd("xml"); return c }(), nil, false, "", renderer); err == nil {
+		t.Error("PrintOutput -o xml: got no error, want the format refused")
+	}
+}
+
+// With no person at Env's reader a removal refuses before prompting, naming
+// --force, and --force removes without a prompt either way. With a person
+// there, the answer read from Env.In decides, and the prompt goes to Env.Err;
+// an interrupt while it waits ends the removal with an error, removing
+// nothing.
+func TestRunDeleteWithConfirmation(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		in          string
+		interactive bool
+		force       bool
+		wantDeleted bool
+		wantErr     string
+		wantStderr  string
+		interrupted bool
+	}{
+		{name: "terminal, yes", in: "y\n", interactive: true, wantDeleted: true, wantStderr: "Remove Context 'c'? [y/N] "},
+		{name: "terminal, no", in: "n\n", interactive: true, wantStderr: "Remove Context 'c'? [y/N] Aborted.\n"},
+		{name: "terminal, reader ends", interactive: true, wantStderr: "Remove Context 'c'? [y/N] \nAborted.\n"},
+		{name: "terminal, interrupted", interactive: true, interrupted: true, wantErr: "context canceled", wantStderr: "Remove Context 'c'? [y/N] "},
+		{name: "no terminal", in: "y\n", wantErr: "test: removing Context 'c' needs confirmation; pass --force"},
+		{name: "no terminal, forced", force: true, wantDeleted: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, _ := newCmd("table")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var in io.Reader = strings.NewReader(tt.in)
+			if tt.interrupted {
+				// A reader that never answers, and the context ended.
+				pr, pw := io.Pipe()
+				defer func() { _ = pw.Close() }()
+				in = pr
+				cancel()
 			}
-			if !tt.wantErr && result != tt.expected {
-				t.Errorf("GetOutputFormatParsed() = %v, want %v", result, tt.expected)
+			cmd.SetContext(ctx)
+			var stderr bytes.Buffer
+			env := Env{In: in, Err: &stderr, Interactive: tt.interactive}
+			deleted := false
+			done := make(chan error, 1)
+			go func() {
+				done <- RunDeleteWithConfirmation(cmd, env, "Context", "c", tt.force, func() (*apiv1.Operation, error) { deleted = true; return nil, nil })
+			}()
+			// The bound is the assertion for the interrupted row: a prompt
+			// that ignores its context never returns.
+			var err error
+			select {
+			case err = <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("still prompting 10 s on, want the removal ended")
+			}
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Fatalf("error: got %v, want %q", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("error: got %v, want none", err)
+			}
+			if deleted != tt.wantDeleted {
+				t.Errorf("deleted: got %v, want %v", deleted, tt.wantDeleted)
+			}
+			if stderr.String() != tt.wantStderr {
+				t.Errorf("stderr: got %q, want %q", stderr.String(), tt.wantStderr)
 			}
 		})
 	}
 }
 
-func TestIsColorDisabled(t *testing.T) {
-	Flags.NoColor = true
-	if !IsColorDisabled() {
-		t.Error("IsColorDisabled() = false, want true")
-	}
-
-	Flags.NoColor = false
-	if IsColorDisabled() {
-		t.Error("IsColorDisabled() = true, want false")
-	}
-}
-
-func TestIsVerbose(t *testing.T) {
-	Flags.Verbose = true
-	if !IsVerbose() {
-		t.Error("IsVerbose() = false, want true")
-	}
-
-	Flags.Verbose = false
-	if IsVerbose() {
-		t.Error("IsVerbose() = true, want false")
-	}
-}
-
-// seedExpiredContext writes a config.json with one expired-but-refreshable
-// context pointing at serverURL, using an isolated config dir. credentials.Store
-// reads APPDATA on Windows and XDG_CONFIG_HOME elsewhere.
-func seedExpiredContext(t *testing.T, serverURL string) {
-	t.Helper()
-	dir := t.TempDir()
-	if runtime.GOOS == "windows" {
-		t.Setenv("APPDATA", dir)
-	} else {
-		t.Setenv("XDG_CONFIG_HOME", dir)
-	}
-	store, err := credentials.NewStore()
-	if err != nil {
-		t.Fatalf("new store: %v", err)
-	}
-	ctx := &credentials.Context{
-		ServerURL:    serverURL,
-		Username:     "admin",
-		AccessToken:  "stale-access",
-		RefreshToken: "valid-refresh",
-		ExpiresAt:    time.Now().Add(-time.Hour),
-	}
-	if err := store.SetContext("test-ctx", ctx); err != nil {
-		t.Fatalf("set context: %v", err)
-	}
-	if err := store.UseContext("test-ctx"); err != nil {
-		t.Fatalf("use context: %v", err)
-	}
-}
-
-// newRefreshServer answers /api/v1/auth/refresh with the given response.
-func newRefreshServer(t *testing.T, resp apiclient.TokenResponse) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/auth/refresh" || r.Method != http.MethodPost {
-			http.NotFound(w, r)
-			return
+// The merge patch from one spec to another names each changed field, nulls
+// each removed one, recurses into an object both hold, and leaves out what
+// is unchanged.
+func TestMergePatch(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		a, b map[string]any
+		want map[string]any
+	}{
+		{"unchanged", map[string]any{"path": "/a"}, map[string]any{"path": "/a"}, map[string]any{}},
+		{"changed", map[string]any{"path": "/a", "name": "n"}, map[string]any{"path": "/b", "name": "n"}, map[string]any{"path": "/b"}},
+		{"removed", map[string]any{"email": "a@b"}, map[string]any{}, map[string]any{"email": nil}},
+		{"added", map[string]any{}, map[string]any{"gid": 7.0}, map[string]any{"gid": 7.0}},
+		{"nested", map[string]any{"o": map[string]any{"x": 1.0, "y": 2.0}}, map[string]any{"o": map[string]any{"x": 1.0, "y": 3.0}},
+			map[string]any{"o": map[string]any{"y": 3.0}}},
+		{"list replaced whole", map[string]any{"l": []any{"a"}}, map[string]any{"l": []any{"a", "b"}}, map[string]any{"l": []any{"a", "b"}}},
+	} {
+		if got := mergePatch(tt.a, tt.b); !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("mergePatch %s: got %v, want %v", tt.name, got, tt.want)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-}
-
-// clearGlobalFlags prevents state bleed between tests that mutate Flags.
-func clearGlobalFlags(t *testing.T) {
-	t.Helper()
-	orig := *Flags
-	Flags.ServerURL = ""
-	Flags.Token = ""
-	t.Cleanup(func() { *Flags = orig })
-}
-
-func TestGetAuthenticatedClient_RefreshRejectsEmptyRefreshToken(t *testing.T) {
-	// Server refreshes access but omits the new refresh token — if we let this
-	// through, store.UpdateTokens would wipe out the caller's existing refresh.
-	server := newRefreshServer(t, apiclient.TokenResponse{
-		AccessToken:  "new-access",
-		RefreshToken: "",
-		TokenType:    "Bearer",
-		ExpiresIn:    900,
-		ExpiresAt:    time.Now().Add(time.Hour),
-	})
-	defer server.Close()
-
-	clearGlobalFlags(t)
-	seedExpiredContext(t, server.URL)
-
-	_, err := GetAuthenticatedClient()
-	if err == nil {
-		t.Fatal("expected error when refresh returns empty refresh_token, got nil")
-	}
-	if !strings.Contains(err.Error(), "incomplete tokens") {
-		t.Errorf("error should mention incomplete tokens, got: %v", err)
 	}
 }
 
-func TestConfirmDestructive_YesShortCircuits(t *testing.T) {
-	var inCalls, outBuf bytes.Buffer
-	origIn, origOut := ConfirmInput, ConfirmOutput
-	ConfirmInput, ConfirmOutput = &inCalls, &outBuf
-	defer func() { ConfirmInput, ConfirmOutput = origIn, origOut }()
-
-	ok, err := ConfirmDestructive("delete?", true)
-	if err != nil || !ok {
-		t.Fatalf("yes flag must return (true,nil); got (%v,%v)", ok, err)
-	}
-	if outBuf.Len() != 0 {
-		t.Errorf("yes flag must not print a prompt; got %q", outBuf.String())
-	}
-}
-
-func TestConfirmDestructive_YInputConfirms(t *testing.T) {
-	var outBuf bytes.Buffer
-	origIn, origOut := ConfirmInput, ConfirmOutput
-	ConfirmInput, ConfirmOutput = strings.NewReader("y\n"), &outBuf
-	defer func() { ConfirmInput, ConfirmOutput = origIn, origOut }()
-
-	ok, err := ConfirmDestructive("delete?", false)
-	if err != nil || !ok {
-		t.Fatalf("y input must confirm; got (%v,%v)", ok, err)
-	}
-	if !strings.Contains(outBuf.String(), "delete?") {
-		t.Errorf("expected prompt in output, got %q", outBuf.String())
-	}
-}
-
-func TestConfirmDestructive_NInputAborts(t *testing.T) {
-	var outBuf bytes.Buffer
-	origIn, origOut := ConfirmInput, ConfirmOutput
-	ConfirmInput, ConfirmOutput = strings.NewReader("n\n"), &outBuf
-	defer func() { ConfirmInput, ConfirmOutput = origIn, origOut }()
-
-	ok, err := ConfirmDestructive("delete?", false)
-	if err != nil || ok {
-		t.Fatalf("n input must not confirm; got (%v,%v)", ok, err)
-	}
-}
-
-func TestConfirmDestructive_EmptyInputAborts(t *testing.T) {
-	origIn, origOut := ConfirmInput, ConfirmOutput
-	ConfirmInput, ConfirmOutput = strings.NewReader(""), &bytes.Buffer{}
-	defer func() { ConfirmInput, ConfirmOutput = origIn, origOut }()
-
-	ok, err := ConfirmDestructive("delete?", false)
+// A pair's value is JSON when it parses as JSON and a JSON string
+// otherwise; a pair with no '=' or no key is refused naming it.
+func TestSettings(t *testing.T) {
+	got, err := Settings([]string{"port=8080", "on=true", "name=builds", "obj={\"a\":1}", "quoted=\"true\"", "empty=", "eq=a=b"})
 	if err != nil {
-		t.Fatalf("EOF must not be a hard error; got %v", err)
+		t.Fatalf("Settings: %v", err)
 	}
-	if ok {
-		t.Errorf("empty input must not confirm")
+	for k, want := range map[string]string{"port": `8080`, "on": `true`, "name": `"builds"`, "obj": `{"a":1}`, "quoted": `"true"`, "empty": `""`, "eq": `"a=b"`} {
+		if string(got[k]) != want {
+			t.Errorf("Settings %s: got %s, want %s", k, got[k], want)
+		}
 	}
-}
-
-func TestConfirmDestructive_YesWord(t *testing.T) {
-	origIn, origOut := ConfirmInput, ConfirmOutput
-	ConfirmInput, ConfirmOutput = strings.NewReader("YES\n"), &bytes.Buffer{}
-	defer func() { ConfirmInput, ConfirmOutput = origIn, origOut }()
-
-	ok, err := ConfirmDestructive("delete?", false)
-	if err != nil || !ok {
-		t.Fatalf("YES (uppercase) must confirm; got (%v,%v)", ok, err)
+	for _, bad := range []string{"novalue", "=v", "port=null", "port= null "} {
+		if _, err := Settings([]string{bad}); err == nil || !strings.Contains(err.Error(), bad) {
+			t.Errorf("Settings %q: got %v, want a refusal naming it", bad, err)
+		}
 	}
 }
 
-func TestGetAuthenticatedClient_RefreshRejectsEmptyAccessToken(t *testing.T) {
-	server := newRefreshServer(t, apiclient.TokenResponse{
-		AccessToken:  "",
-		RefreshToken: "new-refresh",
-		TokenType:    "Bearer",
-		ExpiresIn:    900,
-	})
-	defer server.Close()
-
-	clearGlobalFlags(t)
-	seedExpiredContext(t, server.URL)
-
-	_, err := GetAuthenticatedClient()
-	if err == nil {
-		t.Fatal("expected error when refresh returns empty access_token, got nil")
+// A wait's refusal carries the resume hint only past what a resumed wait
+// may get past: a 5xx, a 408, a 429, a retryable refusal, a failure to
+// reach the server and an interrupt, and not a 4xx refusal of the request
+// or an operation in a state this client does not know.
+func TestResumable(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"503", &apiv1.Problem{Status: http.StatusServiceUnavailable}, true},
+		{"408", &apiv1.Problem{Status: http.StatusRequestTimeout}, true},
+		{"429", &apiv1.Problem{Status: http.StatusTooManyRequests}, true},
+		{"a retryable 409", &apiv1.Problem{Status: http.StatusConflict, Retryable: true}, true},
+		{"404", &apiv1.Problem{Status: http.StatusNotFound}, false},
+		{"403", &apiv1.Problem{Status: http.StatusForbidden}, false},
+		{"an unknown state", fmt.Errorf("client: an operation in state %q: %w", "paused", client.ErrUnknownState), false},
+		{"a dial failure", &net.OpError{Op: "dial", Err: errors.New("connection refused")}, true},
+		{"an interrupt", context.Canceled, true},
+	} {
+		if got := resumable(tc.err); got != tc.want {
+			t.Errorf("resumable(%s): got %v, want %v", tc.name, got, tc.want)
+		}
 	}
-	if !strings.Contains(err.Error(), "incomplete tokens") {
-		t.Errorf("error should mention incomplete tokens, got: %v", err)
+}
+
+// nameOf answers the name of each kind Resolve resolves by name, and no
+// name for any other spec, which Resolve then refuses to resolve.
+func TestNameOf(t *testing.T) {
+	for _, tc := range []struct {
+		spec   any
+		want   string
+		wantOK bool
+	}{
+		{apiv1.ShareSpec{Name: "builds"}, "builds", true},
+		{apiv1.UserSpec{Name: "alice"}, "alice", true},
+		{apiv1.GroupSpec{Name: "staff"}, "staff", true},
+		{apiv1.NetgroupSpec{}, "", false},
+	} {
+		if got, ok := nameOf(tc.spec); got != tc.want || ok != tc.wantOK {
+			t.Errorf("nameOf(%T): got %q, %v, want %q, %v", tc.spec, got, ok, tc.want, tc.wantOK)
+		}
+	}
+}
+
+// A refusal a resumed wait would meet again keeps its cause and gets no
+// hint even when the context ended as it arrived; an error a resumed wait
+// may get past is reported as the interrupt.
+func TestWaitFailedUnderAnEndedContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	cmd := &cobra.Command{Use: "wait"}
+	cmd.SetContext(ctx)
+	gone := waitFailed(cmd, "op", &apiv1.Problem{Status: http.StatusNotFound, Title: "Not Found"}, true)
+	if !strings.Contains(gone.Error(), "404") || strings.Contains(gone.Error(), "resumes the wait") {
+		t.Errorf("waitFailed of a 404 under an ended context: got %v, want the 404 and no resume hint", gone)
+	}
+	lost := waitFailed(cmd, "op", &net.OpError{Op: "dial", Err: errors.New("connection refused")}, true)
+	if !errors.Is(lost, context.Canceled) || !strings.Contains(lost.Error(), "resumes the wait") {
+		t.Errorf("waitFailed of a dial failure under an ended context: got %v, want context.Canceled with the resume hint", lost)
+	}
+}
+
+// A listed name is the asked one under case folding, but a name that is not
+// UTF-8 only byte for byte.
+func TestSameName(t *testing.T) {
+	for _, tc := range []struct {
+		got, name string
+		want      bool
+	}{
+		{"builds", "BUILDS", true},
+		{"builds", "staging", false},
+		{"a\xff", "a\xff", true},
+		{"a\xff", "a\xfe", false},
+		{"a\uFFFD", "a\xfe", false},
+	} {
+		if got := sameName(tc.got, tc.name); got != tc.want {
+			t.Errorf("sameName(%q, %q): got %v, want %v", tc.got, tc.name, got, tc.want)
+		}
 	}
 }

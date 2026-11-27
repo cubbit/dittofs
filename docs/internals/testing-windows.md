@@ -88,30 +88,23 @@ On the macOS or Linux host:
 go build -o dfs ./cmd/dfs
 go build -o dfsctl ./cmd/dfsctl
 
-# 2. Initialize config (first time only)
+# 2. Initialise the installation once, then start DittoFS (it runs in the foreground)
 ./dfs init
-
-# 3. Start DittoFS; on its first start it prints the admin's initial password
 ./dfs start
 
-# 4. Log in
-./dfsctl login --server http://localhost:8080 --username admin
+# 3. In another shell, sign in as admin with the password dfs init printed
+./dfsctl login --server http://127.0.0.1:8080 --username admin
+./dfsctl password change    # a generated password must be changed first
 
-# 5. Create test stores
-./dfsctl store metadata add --name test-meta --in-memory
-./dfsctl store block add --name test-blocks --type memory
+# 4. Create a test share (it needs a namespace; see docs/guide/configuration.md)
+./dfsctl share create smbbasic --path /smbbasic --namespace <namespace-id> --flavor sys --client 0.0.0.0/0=read-write
 
-# 6. Create a test share
-./dfsctl share create --name /smbbasic --metadata test-meta --block-store test-blocks
+# 5. Create a test user
+./dfsctl user create testuser
+./dfsctl user set-password testuser    # enter password when prompted
 
-# 7. Create a test user
-./dfsctl user create --username testuser    # enter password when prompted
-
-# 8. Grant permissions
-./dfsctl share permission grant /smbbasic --user testuser --level read-write
-
-# 9. Verify the SMB adapter is listening on port 12445
-./dfsctl adapter list
+# 6. Grant permissions
+./dfsctl grant set smbbasic --user testuser --access read-write
 ```
 
 Connect from the Windows VM:

@@ -423,7 +423,7 @@ at S2 (D3) and the epic whose issue its entry names. "c, ch, s" stands for `With
   made real by epic 17): `FailNextFill(err error)` at the journal's `Fill`, `HoldBetweenReadSteps()
   (entered <-chan struct{}, release func())`, `HoldNextRelease() (entered <-chan struct{}, release
   func())` on a clone source's `Release`, `Relocate(id entity.FileID, chunk int)` (a chunk moved to
-  a new block and the old one swept), `Evict(id entity.FileID)`, the file's offloaded extents
+  a new block and the old one swept; it stays refused until RFC 9 builds GC's relocation, epic 17's D2), `Evict(id entity.FileID)`, the file's offloaded extents
   released through the real journal's `Release`. That call answers `ErrNotImplemented` until S6, so
   a row that evicts stays red past epic 17 until S6; the engine's own eviction, `evict` and its
   loop, is epic 18's, and no row here needs it. Fetches are held and chunks corrupted through
@@ -437,6 +437,7 @@ at S2 (D3) and the epic whose issue its entry names. "c, ch, s" stands for `With
   | §7.2 fill cannot fail a read | `TestRFC8A_FillCannotFailARead` | c, ch, s | carver | 17 |
   | §7.2 fill loses to a write | `TestRFC8A_FillLosesToAWrite` | c, ch, s | carver | 17 |
   | §7.7 re-resolution | `TestRFC8A_Reresolution` | c, ch, s | carver | 17 |
+  | §7.7 re-resolution, relocation leg | `TestRFC8A_ReresolutionRelocation`, split out by epic 17's T17.9, not one of this epic's tests | c, ch, s | carver | RFC 9 (epic 17's D2) |
   | §7.6 zero ref under an overwrite | `TestRFC8A_ZeroRefUnderAnOverwrite` | c, ch, s | carver | 17 |
   | §9.1 clone keeps writes outside its extent, offload half | `TestRFC8A_CloneKeepsWritesOutsideItsExtentOffloaded` | c, ch, s | carver | 17 |
   | §9.1 no pre-clone fill, demand read | `TestRFC8A_NoPreCloneFill` | c, ch, s | carver | 17 |

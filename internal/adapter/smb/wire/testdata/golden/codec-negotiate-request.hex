@@ -1,0 +1,46 @@
+# test/pcap-corpus/smb-sd/reference.pcap, frame 4: the body of a client's
+# SMB2 NEGOTIATE request (MS-SMB2 2.2.3), bytes 68 to 230 of the frame's TCP
+# payload as tshark cuts it (tcp.payload): five dialects, then four negotiate
+# contexts, each 8-byte aligned (MS-SMB2 2.2.3.1), two of types with a struct
+# and two kept as bytes. Positions count from the SMB2 header's first byte,
+# as the offsets do. Multi-byte fields are little-endian (MS-SMB2 2.2).
+24 00                       # [64,66)   StructureSize 36
+05 00                       # [66,68)   DialectCount 5
+01 00                       # [68,70)   SecurityMode 1: SIGNING_ENABLED
+00 00                       # [70,72)   Reserved
+7f 00 00 00                 # [72,76)   Capabilities 0x7F
+cb 71 c5 d4 dd c6 96 44     # [76,92)   ClientGuid
+b8 1a 6d 7f 9e f5 de f1
+70 00 00 00                 # [92,96)   NegotiateContextOffset 112
+04 00                       # [96,98)   NegotiateContextCount 4
+00 00                       # [98,100)  Reserved2
+02 02 10 02 00 03 02 03     # [100,110) Dialects 0x0202, 0x0210, 0x0300, 0x0302, 0x0311
+11 03
+00 00                       # [110,112) Padding to 8
+01 00                       # [112,114) ContextType 1: PREAUTH_INTEGRITY_CAPABILITIES (2.2.3.1.1)
+26 00                       # [114,116) DataLength 38
+00 00 00 00                 # [116,120) Reserved
+01 00                       # [120,122) HashAlgorithmCount 1
+20 00                       # [122,124) SaltLength 32
+01 00                       # [124,126) HashAlgorithms: SHA-512
+2d e6 db 8f 9d 54 5e 10     # [126,158) Salt
+32 6a 9a 4e d8 f7 d1 f6
+a0 e1 45 2f 71 16 e6 06
+08 c7 a9 8a 65 e1 bb bd
+00 00                       # [158,160) Padding to 8
+02 00                       # [160,162) ContextType 2: ENCRYPTION_CAPABILITIES (2.2.3.1.2)
+0a 00                       # [162,164) DataLength 10
+00 00 00 00                 # [164,168) Reserved
+04 00                       # [168,170) CipherCount 4
+02 00 01 00 04 00 03 00     # [170,178) Ciphers: AES-128-GCM, AES-128-CCM, AES-256-GCM, AES-256-CCM
+00 00 00 00 00 00           # [178,184) Padding to 8
+08 00                       # [184,186) ContextType 8: SIGNING_CAPABILITIES (2.2.3.1.7), no struct
+08 00                       # [186,188) DataLength 8
+00 00 00 00                 # [188,192) Reserved
+03 00 02 00 01 00 00 00     # [192,200) Data: 3 algorithms, AES-GMAC, AES-CMAC, HMAC-SHA256
+05 00                       # [200,202) ContextType 5: NETNAME_NEGOTIATE_CONTEXT_ID (2.2.3.1.4), no struct
+12 00                       # [202,204) DataLength 18
+00 00 00 00                 # [204,208) Reserved
+31 00 32 00 37 00 2e 00     # [208,226) Data: NetName "127.0.0.1" in UTF-16LE
+30 00 2e 00 30 00 2e 00
+31 00

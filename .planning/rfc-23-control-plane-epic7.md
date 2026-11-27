@@ -7,7 +7,7 @@ here through the API; §3.3's bound fields; §10's CP7; Appendix B's rows for §
 **Track:** the team.
 **Epic 7 estimate: 7 subtasks, 12 man-days.**
 **Depends on:** E3 (`dfs start`, `nodetest`, the runner), E4 (the routes and the client), E5
-(`install.Run`, signed-in callers), E6 (its suite's child-safe rows); outside RFC 23's plan, X3
+(`install.Run`, signed-in callers), E6 (its suite); outside RFC 23's plan, X3
 and the RFC 18 plan's epic 8's T8.10 for T7.5, and X1 with the RFC 18 plan's epics 7 and 8 for
 T7.6.
 **Blocks:** E8, which starts its cells through this epic's server fixture (T7.1) once S3 is in.
@@ -29,7 +29,7 @@ node, the rows that wait for another plan's wiring, and the pages that still des
 - an operation survives the node killed without `Stop` and reads back through the API (CP7);
 - one sweep calls every route as every role on a fully wired node: each answers as §5.2 says, each
   mutating route writes one audit record, and no error goes unmapped;
-- the CLI's child-safe rows pass against a real node from a separate `dfsctl` process;
+- the CLI's suite passes against a real node from a separate `dfsctl` process;
 - once X3 is in, the rows that write a setting pass, and once X1 and the RFC 18 plan's epics 7 and
   8 are in, the domain's idempotency clauses pass;
 - no page names a deleted v1 path, and `CLAUDE.md` names the v2 owner of what v1's Runtime did.
@@ -38,7 +38,7 @@ node, the rows that wait for another plan's wiring, and the pages that still des
 
 The server fixture's rebuild; CP7 and the §12 rows that kill the node; the cross-epic sweep (route
 list, roles, audit, error table) and the §12 and §8.1 clauses only a fully wired node shows; the
-rule-3 condition read through `/api/v1/health`; the CLI's child-safe rows; the rows and success
+rule-3 condition read through `/api/v1/health`; the CLI's suite from a child; the rows and success
 paths other epics hand here until X3; the domain's idempotency clauses; the pages.
 
 ### 1.2 Out of scope
@@ -90,7 +90,7 @@ and title and not copied.
 
 | Rule | Subtasks | How |
 | --- | --- | --- |
-| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T7.2–T7.6 | every row builds the node through `nodetest` over the in-memory KV or Badger under `t.TempDir()`, signed in through E5's callers; the doubles are `sim.TestClock` (kind 1), `kvtest.FaultKV` with a fault the test implements (kind 3), and, for T7.6, the RFC 18 plan's `pkg/identity/identitytest` directory and domain controller, held to their suites (kind 2) |
+| rule 1, independent unit tests ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T7.2–T7.6 | every in-process row builds the node through `nodetest` over the in-memory KV or Badger under `t.TempDir()`, signed in through E5's callers; T7.2's rows run a real `dfs start` child over Badger under `t.TempDir()` instead (D1); the doubles are `sim.TestClock` (kind 1), `kvtest.FaultKV` with a fault the test implements (kind 3), and, for T7.6, the RFC 18 plan's `pkg/identity/identitytest` directory and domain controller, held to their suites (kind 2) |
 | rule 2, fuzz every decoder of untrusted bytes ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | none | this epic adds no decoder; E2 and E4 fuzz the bodies, the cursor and the codecs |
 | rule 3, observability follows RFC 25 | T7.3 | no new series; `config_generation_behind` is read through `/api/v1/health`, and `api_unmapped_errors_total` stays 0 after the error table's run |
 | rule 4, profiling | T7.2–T7.6 | every in-process row runs under `nodetest`'s `Watch()`, which registers `internal/prof`'s `prof.Watch`, at its top level; a child-process row checks the child exited |
@@ -100,7 +100,7 @@ and title and not copied.
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T7.2, T7.3 | a crash is a process killed with `SIGKILL` over Badger on disk (D1); the audit's all-or-nothing runs on Badger with its commit faulted |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T7.1, T7.3 | E1's `decision:` markers on the kept `Server` and on `ErrNoServer` go with what they guarded; T7.1's store seeding until X3 and T7.3's error-table exceptions each carry a `decision:` |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each row is broken once on purpose before it lands and fails on its assertion |
-| rule 11, a symbol is exported only if RFC 23's interface uses it | T7.1 | the fixture's exports are the harness's own surface; nothing under `internal/node` gains one |
+| rule 11, a symbol is exported only if RFC 23's interface uses it | T7.1, T7.4 | the fixture's exports are the harness's own surface; under `internal/node` only `nodetest` gains one, `StartAt`, for T7.4's child, which reads the wall clock (D4) |
 | rule 12, each subtask creates only what it declares | all | no new package |
 
 ## 3. Requirements and invariants
@@ -114,7 +114,7 @@ it, in the part this epic owns.
 | --- | --- | --- | --- | --- |
 | R1 | The harness's server fixture initialises its installation with `dfs init` and starts it with `dfs start`, for the cells E8 runs | MUST | RFC 23 plan §5 epic 7 | T7.1 |
 | R2 | Long work is an operation whose progress is the owning component's durable cursor; it survives a crash and is readable through the API | invariant | RFC 23 §10 (CP7) | T7.2 |
-| R3 | `§3.2 delete`: a share with 10⁵ files, the node killed during the "files" phase once `Done` > 0 and restarted, reports the same operation `running` with `Done` at least that value and rising, and ends `succeeded`; a second delete with a new key answers `409` `stale` | test row | RFC 23 §12 | T7.2 |
+| R3 | `§3.2 delete`: a share with 10⁵ files (seeded at 50 until the runner runs a step again at once while it reports work left, a row of [the deferral ledger](rfc-23-control-plane-plan.md#61-deferral-ledger)), the node killed during the "files" phase once `Done` > 0 and restarted, reports the same operation `running` with `Done` at least that value and rising, and ends `succeeded`; a second delete with a new key answers `409` `stale` | test row | RFC 23 §12 | T7.2 |
 | R4 | `§2.1 API writes only records`, its crash half: a share create committed, the node killed before it reads the share list and restarted, serves the share | test row | RFC 23 §12 | T7.2 |
 
 **One fully wired node**
@@ -167,12 +167,14 @@ it, in the part this epic owns.
 ## 4. Decisions this epic takes
 
 - **D1, a crash is a child process killed on an event.** R2 to R4 kill the node. The child is the
-  test binary run again (`-test.run` naming one child test, its data directory a flag the test
-  file registers), which builds the node through `nodetest` over Badger on disk. A
-  `kvtest.FaultKV` fault holds the one operation and key the row cues on (the removal's next
-  batch, the reconcile's read of the share list), the child prints `held`, and the parent sends
-  `SIGKILL` when it reads that line, then restarts over the same directory with E3's `Restart`,
-  which keeps `New`'s options. An in-process abandon cannot stand in: Badger's directory lock
+  test binary run again as E3's `TestStartChild`, which runs the real `dfs start` with the
+  arguments `DFS_START_CHILD_ARGS` holds, over an installation `dfs init` made under
+  `t.TempDir()`, Badger on disk. `DFS_START_CHILD_HOLD` sets `runStart`'s `kvKey{}` context hook,
+  which wraps the KV in a `kvtest.FaultKV` before `node.New`; its fault holds the one operation
+  and key the row cues on (the removal's next batch, the reconcile's read of the share list), the
+  child prints `held`, and the parent sends `SIGKILL` when it reads that line. A restart is a
+  fresh child over the same directory, not `nodetest` and not E3's `Restart`.
+  An in-process abandon cannot stand in: Badger's directory lock
   refuses a second open in the same process, and `Close` flushes what a kill does not. The fault
   filters by key, so the API's reads of other keys pass; `node.Config` takes one KV, so the
   reconcile cannot have a fault of its own. No marker. Prior art: Go's own `os/exec` tests re-exec
@@ -189,9 +191,14 @@ it, in the part this epic owns.
   the fixture, and T7.3's rows that create a share, write the namespace, its remote store and the
   adapters' settings through the metadata store before `dfs start`, and T7.5 moves them onto the
   API. A `decision:` marker at the seeding names X3 as its end.
-- **D4, `§7 CLI` runs E6's child-safe rows.** A `dfsctl` child, its `HOME` and `XDG_*` directories
-  empty, runs E6's `clisuite` rows marked child-safe against an in-process node. No path reaches
-  the bootstrap or the store; E6's closure rule (`go list -deps ./cmd/dfsctl`) shows it links none
+- **D4, `§7 CLI` runs E6's suite from a child.** A `dfsctl` child, its `HOME` and `XDG_*` directories
+  empty, runs every row of E6's `clisuite` against an in-process node: the harness-only rows too,
+  since the test, not the child, writes through the store and advances the clock. Each noun runs
+  over a node of its own whose clock starts at the wall clock the child reads (`nodetest.StartAt`)
+  and is moved up to it before each invocation, as one node for every noun runs ahead of it by
+  every wait the rows before advanced. The child's home holds an unreadable file at the bootstrap's
+  default path, so a command that loads the bootstrap fails rather than loading the defaults a
+  missing file gives. No path reaches the bootstrap or the store; E6's closure rule (`go list -deps ./cmd/dfsctl`) shows it links none
   of their code. Running as a second OS user needs root, which `e2e` has; E8 adds that form. No
   marker.
 - **D5, a hold is a fault the test implements.** Where a row must observe the node mid-step (R6's
@@ -199,13 +206,15 @@ it, in the part this epic owns.
   blocks on a channel for one operation and key and is released after its read. R18 holds the
   binding's commit, as E3's T3.7 does. No marker.
 - **D6, the pages are held by a test.** A case beside `cmd/gendocs`' command-reference tests walks
-  `docs/**`, `CLAUDE.md` and `README.md`, but `docs/internals/rfcs`, which is design history, and fails on a page naming a path E1 deleted. No marker.
+  `docs/**`, `CLAUDE.md` and `README.md`, skipping every `rfcs` or `planning` folder under them,
+  which are design history (`.planning` is outside the walk), and fails on a page naming a path
+  E1 deleted. No marker.
 - **D7, the X3 rows wait in one subtask.** Every row that writes a setting is unreachable before X3,
   so they land together in T7.5. No marker.
 - **D8, the fixture's start is the runner's input.** `run`'s `startFixture` and `fixture`'s
   `interfaces` are package-level variables dt's tests swap, which `CLAUDE.md` bans. The runner
-  takes its fixture start as a field set by its constructor, and the fixture takes its interface
-  list the same way. Exactly one test, `fixture/server_test.go`, starts the real server; dt's
+  takes its fixture start as a field set by its constructor, and the interface list is an
+  argument of a pure function choosing `{server}` from it, `pickAddress`. Exactly one test, `fixture/server_test.go`, starts the real server; dt's
   lifecycle tests pass a start of their own through the field. No marker.
 
 ## 5. Target tree
@@ -219,7 +228,7 @@ test/harness/run/
   fixture.go run.go                        T7.1  the fixture start is the runner's field (D8)
 cmd/dfs/commands/crash_unix_test.go        T7.2  the child and the rows that kill it, //go:build unix
 internal/node/integration_test.go          T7.3, T7.5, T7.6  the cross-epic rows, package node_test
-cmd/dfsctl/integration_test.go             T7.4  E6's child-safe rows from a dfsctl child
+cmd/dfsctl/integration_test.go             T7.4  E6's rows from a dfsctl child
 cmd/gendocs/helpref_test.go                T7.7  D6's case
 docs/guide/*.md, docs/internals/*.md       T7.7
 README.md, CLAUDE.md                       T7.7
@@ -238,8 +247,10 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
 - **Deliverables:** `Server`'s start (D2): the bootstrap under the fixture's data directory naming
   `127.0.0.1:0`; `dfs init` with its password by environment variable; `dfs start` in its own
   process group, the API address read from its log, `/health/ready` waited on; a sign-in through
-  the client; the users `User` and `User2` with their UIDs, the shares, and grants for both users
-  on each share, created through the client (namespaces, remote stores and adapters seeded per
+  the client; the users `User` and `User2` with their UIDs, the shares, and the grants
+  [RFC 29 §4.2](../docs/internals/rfcs/rfc-29-test-harness.md) gives (none on `/export` unless the fixture mounts
+  it over SMB, then `{user}`'s `read-write`; `{user}`'s `admin` on a shares file's shares; none for
+  `{user2}`), created through the client (namespaces, remote stores and adapters seeded per
   D3); `Reset` recreating the share and its grants; stop by `SIGTERM`, the group killed after
   `stopGrace`; `Kill` and `Restart`. `ErrNoServer` and `run`'s refusal deleted; the start injected
   through the runner (D8). Consumed by E8.
@@ -248,7 +259,7 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
     exit 0.
   - `dt`'s own fixture tests pass with the start passed through the runner's field.
 - **Tests:** `fixture/server_test.go`, the one real start, under `t.TempDir()` and `127.0.0.1:0`:
-  start, the users, shares and both users' grants read back through the client (catches a
+  start, the users, shares and exactly RFC 29's grants read back through the client (catches a
   configure step or a grant skipped); `Reset`, the grants read back again (catches a reset that
   drops them); a second `dfs init` over the same data directory refused and nothing changed;
   `Kill`, `Restart`, the shares still there. `TestDittoFSFixtureRefused` deleted with what it
@@ -261,8 +272,10 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
 - **Track:** the team. **Depends on:** T7.1; E3 (the runner, share removal, `Restart`).
 - **Covers:** R2, R3, R4.
 - **Deliverables:** `cmd/dfs/commands/crash_unix_test.go`, beside E3's `dfs start` child test
-  (D1): the child test; `§3.2 delete`, the share's 10⁵ files seeded through the metadata store's
-  view, its delete started through the API, the child held at the removal's next batch once the
+  (D1): the child test; `§3.2 delete`, the share's files seeded through the metadata store's
+  view, 50 of them until the runner runs a step again at once while it reports work left (10⁵
+  waits on that; a row of the plan's deferral ledger),
+  its delete started through the API, the child held at the removal's next batch once the
   operation's `Done` > 0, killed, restarted, and the operation polled to `succeeded`, skipped under
   `testing.Short()`; `§2.1`'s crash half, the child held at the reconcile's read of the share list
   after the create's `201`, killed, restarted, the share serving.
@@ -310,10 +323,10 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
 - **Track:** the team. **Depends on:** E6 (its `clisuite`); E3.
 - **Covers:** R16.
 - **Deliverables:** `cmd/dfsctl/integration_test.go`: a `nodetest` node, a `dfsctl` child built
-  from the module with `HOME` and `XDG_*` empty, running each of E6's child-safe rows through
-  `clisuite` against the node's address (D4).
+  from the module with `HOME` and `XDG_*` empty, running every row of E6's suite through
+  `clisuite` against the node's address, one node per noun (D4).
 - **Acceptance criteria:**
-  - Every child-safe row passes from the child.
+  - Every row passes from the child.
 - **Tests:** the rows (catch a command that reads the bootstrap or the store).
 
 ### T7.5 The rows that write a setting
@@ -321,7 +334,7 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
 **Subtask T7.5 estimate: 2 man-days.**
 
 - **Track:** the team. **Depends on:** X3; T7.3, T7.4; the RFC 18 plan's epic 8's T8.10.
-- **Covers:** R17, R18, R19, R20, R21.
+- **Covers:** R17, R18, R19, R20, R21; R13's applied and secret halves for the settings-backed writes.
 - **Deliverables:** in `integration_test.go`: `§2.3 reconcile`, the `view` operation faulted while
   writes pass; `§2.4 applied` with D5's hold on the binding's commit; `§4.1 NTLM back on`, the
   deletion failed by a `User` record its codec refuses (the RFC 18 plan's epic 2's R36), written
@@ -330,6 +343,11 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
   while content exists; E4's settings, adapter, remote-store and namespace success paths through
   the API, and E6's refusal rows for them flipped to success; D3's seeding moved onto the API and
   its marker removed.
+  R13's applied and secret halves for the writes the settings table still refuses (a setting at
+  every scope, an adapter, a namespace's create, a store's create, a store credential's delete)
+  and a store's first credential: each moved from the waiting writes of T7.3's `sweepApplied`
+  into its applied writes, its audit record checked for no credential. The store create is sent
+  with no `Idempotency-Key`, as it carries its credential.
 - **Acceptance criteria:**
   - Each row passes with `Check` wired, and no fixture or row seeds through the store any more.
 - **Tests:** the rows (catch a missed generation lost for good, R17; "applied" inferred from the
@@ -348,6 +366,9 @@ docs/guide/metadata-store-migration.md     T7.7  deleted
   Also, through the API over the same directory, E6's success paths, which `nodetest` cannot
   reach: a grant by directory name runs `resolve-principal` and grants the ID it returned (E6's
   R16), and `resolve-principal` and `test-directory` end `succeeded`.
+  The test drives the two calls the CLI makes; the CLI's side is E6's T6.4, whose `clisuite`
+  row `grant set by a directory name with no directory …` sends `resolve-principal` with the name
+  through `dfsctl grant set --directory` and checks that nothing is granted when it fails.
 - **Acceptance criteria:**
   - Neither join leaves an idempotency record, and neither credential is found raw where CP11
     names.
@@ -409,6 +430,101 @@ PR 4 can be open beside any other. A suggestion only: one pull request per subta
 
 - A consumer-side row for the `krb` link (a PAC-bearing ticket binding the linked local user, refused once the directory account is recreated) needs a Kerberos sign-in this unit tier cannot make; it belongs to the RFC 18 plan's epic 8 or E8's `e2e/kerberos`.
 - RFC 23's plan §5 epic 7 still says the cancelled state is written into the operation's record; RFC 23 §4.1 gives the deletion no cancel, so that clause goes when the plan is next revised.
+- T7.3 as built differs from its text in these places.
+  - R13's applied half reaches today only the routes that can succeed on this node. Since the
+    node hands its API its settings table (#5472), a store's and a namespace's delete are applied
+    here. Since it hands its API its sealer (#5456) and the per-key write role is built (#5478),
+    the keytab's `PUT` and `DELETE` are applied here too, so T7.6 no longer carries them. A
+    setting's write and delete at every scope, an adapter's write, a store's create, a namespace's
+    create and a store credential's delete are still refused `unknown_key`, the node's table
+    holding no section that reads their keys, and wait with T7.5; a store's first credential waits
+    on the store's capability check; `:cancel`'s waits on the first
+    cancellable operation kind (§6.1 of the plan). Each waits in `sweepApplied` as a write that
+    must still answer its current refusal, so it fails the day the route succeeds. The directory's
+    actions (`resolve-principal`, `test-directory`, `join-domain`, `rotate-machine-password`) start
+    their operations on the composed node, so they are applied here.
+  - R13's secret half is shown here only for what today's applied routes carry: the passwords of
+    `:set-password` and `POST /auth/password`, an API token, the bearer of each call, and the
+    online join's administrator password, none of them found in an audit record, and the keytab,
+    found in no audit record, no answer and no log line. The routes that write a store's secret (a
+    store's create and its credential) are waiting ones, so their secret half moves to T7.5 with
+    their applied halves.
+  - The store create takes no `Idempotency-Key` since #5472, as a call carrying a credential. RFC
+    23 §4.5's rule covers it, but its list of such calls does not name it; the plan's §6.1
+    deferral ledger holds that edit, owned by RFC 23.
+  - R15 is held by the API's `TestGrants`, which needs no wiring; T7.3's error table keeps the
+    machine grant, refused `400` `invalid` since the grant's write refuses a machine principal
+    itself.
+  - R8 proves the mapping only: a store read failing `vfserr.ErrUnavailable` answers `503`
+    `unavailable` with `Retry-After`. The API sets no deadline on its store calls, so a hung store
+    never answers; #5471 owns that, and the row for a hung store comes with its fix.
+  - R14's `::ffff:127.0.0.1` clause cannot be driven from a client: on a listener of both families
+    the platform hands the node an IPv4 peer as `127.0.0.1` whatever spelling was dialled, so the
+    row sprays `127.0.0.1` and `entity.SourceKey`'s unit test owns the unmapping. Its `127.0.0.6`
+    clause runs where the host routes that address to loopback (Linux; macOS with an `lo0` alias).
+  - R6 holds, but the node's API stays open past §2.2's step 3: Stop closes its listeners after the
+    engine. #5469 owns that.
+- T7.5 as built differs from its text in these places.
+  - X3 hands the node's table to the write path. At first it held only the `api`, `audit`,
+    `identity` and `identity.directory` sections, all at the installation's scope, so only a
+    setting's write and delete there moved into the applied writes, as `audit.retention`. RFC 20's
+    plan's T7.6 (#6440) then declared the adapters' sections, `adapters.nfs` and `adapters.smb`
+    (installation wide, a node's record overriding `port` and `enabled`), and the node-scope
+    `connection_limit`, with the port rule as their write check. So `adapter set` and a setting's
+    write and delete at a node's scope (`adapters.nfs.port`) are applied writes in `sweepApplied`
+    now, and `TestWiredNodeSettingsAppliedAndThePortRule` writes the node's port override and its
+    `connection_limit` through the API and reads both applied, and has the port rule refuse an SMB
+    port equal to that NFS port, at the node's scope and at the installation's, `400` `invalid`
+    naming the key, an undeclared adapter key `unknown_key` and a key the node may not override
+    `wrong_scope`, none committing. E6's `share mount` row writes the SMB port with `adapter set`
+    rather than through the store. The sections still missing are the remote store's `remote.*`
+    (RFC 4's section, RFC 13's Appendix B), the namespace's, and every section at a namespace's, a
+    store's or a share's scope (the sweep's `gc.schedule` is RFC 9's). Until they are, `store
+    create`, `store update`, a store credential's delete, `namespace create` and a setting's write
+    and delete at those scopes still answer `400` `unknown_key`, and wait in `sweepApplied` as
+    before; a store's first credential still waits on the capability check. E6's refusal rows for
+    them stay, and D3's seeding through the store stays in the fixture and in T7.3's rows, with its
+    `decision:` marker naming the missing sections. dt's fixture enables no adapter through the
+    API yet, so its NFS and SMB cells stay refused (`fixture.Unserved`); that is the harness's
+    work, not a row. So this subtask's acceptance criterion "no fixture or row seeds through the
+    store" is not met; it is met when those sections land, and the issue stays open until then.
+  - R17, R18 and R21 run through the API over sections the test declares (`node.DeclareSections`)
+    in place of the components that will declare them: a live level per share, a node's
+    restart-class key, and a remote store's live and bound keys. R18's node-scoped live key is the
+    real `connection_limit`; the restart-class one stays a stand-in, since no declared key waits
+    for a node's restart (an adapter's slot rebuilds for its port). A write the node itself must
+    not apply yet (R18's frozen change, R17's change while reads fail) goes through the store, as
+    another node's would, since the API's write waits for its own node to apply it.
+  - R17 faults the node's scans of the settings rows, not every read: with the counters' read
+    failing too, no pass gets far enough to lose a generation. The change is shown applied by the
+    node's snapshot as well as the API's count, since a position moved past a walk that failed
+    still reads applied there.
+  - R18's node-scoped restart-class setting is read not applied before a restart, and held
+    restart-pending, not refused, in the node's status; the restart itself is not driven, as
+    `nodetest`'s wired node is not restarted in place. R18's case of a record whose own
+    generation is 2 while the counter stands at 100 cannot be posed: the store raises a record's
+    generation to at least the position its change raised. "Applied" inferred from the writing
+    node needs a second node. Both are left to the multi-node rows.
+  - The rows landed in `internal/node/settingrows_test.go` beside `integration_test.go`, not in it.
+    R18 freezes the node by the reconcile-read hook `NewPausing` sets (as T7.3's R10 row does),
+    not by a `FaultKV` hold on the binding's commit (D5): the setting changed is a share's, and
+    its apply is the settings walk, which binds nothing.
+  - R19's refusal after a failed deletion names no operation, as the API's rule cannot list one
+    inside its transaction; the row checks the code and leaves the name to that rule's
+    `ponytail:`.
+  - R20's `api.password_sign_in` is refused `unknown_key`, not `forbidden`: the `api` section
+    declares it with OpenID Connect's sign-in policy, a row of the deferral ledger.
+- T7.6 as built differs from its text in these places.
+  - Its directory rows run on RFC 18's machine node (`newMachine` in `machine_test.go`), which
+    builds through `NewWithDialers` over `identitytest`'s directory and domain controller, seeds
+    the directory's settings and tees the log, and whose API takes every caller as an admin, so
+    these rows test no role; T7.3's rows hold the roles. R26's row needs no directory and runs on
+    the signed-in node `newAuthNode` builds.
+  - The grant by directory name is driven through the API by the test: `resolve-principal`, then
+    the grant's `PUT` under the ID its result names. The CLI's grant by name (T6.4) is not built
+    yet; when it is, it is to make the same two calls, and its `clisuite` row tests R16.
+  - The keyless rule is shown falsifiable on the node by a join of each mode sent with an
+    `Idempotency-Key`, refused `400` naming the key and leaving no record.
 - E3's T3.9 stop-bound exit test may move to this epic's fixture (§1.2); E3 decides when T3.9
   lands.
 - The proposals to RFC 23's plan that this document leaves to a later pull request: §5 epic 7's

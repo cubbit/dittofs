@@ -1,0 +1,14 @@
+# The Adapter bytes of an NFSv4.0 client, version 1: callback and confirm present.
+01                                   # version
+00000002                             # kind: NFSv4
+00000000                             # minor version
+00000000                             # last csa_sequence applied
+00000000                             # CREATE_SESSION4res: empty
+00000001 00000001                    # spo_must_enforce: 1 word
+00000003 00000001 00000002 00000004  # spo_must_allow: 3 words
+00000001                             # NFSv4.0 callback: present
+40000000                             # cb_program
+00000003 74637000                    # netid "tcp", padded
+0000000c 31302e30 2e302e31 2e382e31  # addr "10.0.0.1.8.1"
+00000007                             # callback_ident
+00000001 0102030405060708            # confirm: present, its verifier

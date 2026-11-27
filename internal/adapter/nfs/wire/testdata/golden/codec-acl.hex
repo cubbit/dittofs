@@ -1,0 +1,12 @@
+# test/pcap-corpus/nfsv4-acl/reference.pcap, frame 44: the attr_vals of its SETATTR, bytes 156
+# to 259 of the TCP payload, cut with tshark: one attribute, fattr4_acl, nfsace4<> (RFC 7530
+# section 6.2.1).
+00000004                               # 4 entries (RFC 4506 4.13)
+00000000 00000000 0016019f             # type ALLOW, flag 0, access_mask
+00000006 4f574e45 5240 0000            # who, utf8str_mixed: "OWNER@", 2 bytes of padding
+00000000 00000000 00160187
+00000006 4f574e45 5240 0000            # "OWNER@"
+00000000 00000000 00120081
+00000006 47524f55 5040 0000            # "GROUP@"
+00000000 00000000 00120081
+00000009 45564552 594f4e45 40 000000   # "EVERYONE@", 3 bytes of padding

@@ -6,7 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/dfs start --foreground
+ExecStart=/usr/local/bin/dfs start
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

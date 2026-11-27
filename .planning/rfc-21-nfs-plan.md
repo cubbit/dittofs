@@ -64,8 +64,8 @@ although the code is written by an agent.
 epic-level figure, and no subtask id. Where it depends on RFC 22's plan, it names that plan's epic
 and what the epic builds.
 **Defaults used from Step 0:** dashboards none (#9); output path the default (#10). The target
-branch is `feat/storage-v2`; the plan document lands on `develop` and is cherry-picked, as the
-other planning documents are. External dependencies: RFC 20's plan (its scaffold, landed; its epic
+branch is `feat/storage-v2`; the plan document lands there too, as the
+other planning documents do. External dependencies: RFC 20's plan (its scaffold, landed; its epic
 7 for S5 and S7), RFC 18's plan (#4058): its
 S2 for `Spell`, `Find` and resolution (S6a), its E5 for Kerberos (S6b); RFC 17's service on
 `feat/storage-v2`, with its plan's piece 13, the held clone wait, reaching the branch with the next
@@ -328,9 +328,9 @@ the second because this plan takes over rows of two other plans' ledgers.
 | E14 🔀 | Capture diffs against knfsd | NFS scripts over `pcap-diff.sh`, the divergence entries; the two-client conflict captures, from a recording host with client namespaces, deferred in §6.6 | 4 | 11.5 | A | E16 |
 | E15 🔀 | Integration with the node | settings, the NFS suites turned on | none | planned after S7 | team | E16, partly |
 | E16 🔀 | E2E green | in-process and restart rows, cross-protocol rows, e2e, benchmarks, soak, the totality test, pins; the burn-down after E15 | 8 | 25.5 | team | none |
-| | **Total** | | **109** | **307** | | |
+| | **Total** | | **117** | **329.5** | | |
 
-**Plan estimate: 109 subtasks, 307 man-days, not counting epic 15.**
+**Plan estimate: 117 subtasks, 329.5 man-days, not counting epic 15.**
 
 Nor E16's burn-down of the four NFS and POSIX suites, which waits for E15 as E15 waits for S7 (§6.2, point
 6), nor the rows parked in §6.6's deferral ledger.
@@ -476,22 +476,22 @@ Figures are man-days from S2.
   man-days in, at 21, before track C's E9 needs them and well before track B's E11 at 42. E10 starts
   at 45, as track C's E9 brings `OPEN`. E14's scripts use E3's scripted client against knfsd and its
   DittoFS side waits for S5; the track ends at 71, nine before track B, and fills with E16's
-  in-process rows as their epics allow. 91.75 man-days by its epics' rows; the start and end
+  in-process rows as their epics allow. 93.25 man-days by its epics' rows; the start and end
   figures above predate the epic breakdowns and are not yet moved.
 - **Track B: E4, E7, E11, E13.** NFSv3 and MOUNT, then identity's NFS side, then NLM and NSM, then
   RPCSEC_GSS. E4 comes first so S3 holds at 26 (D12); E7 follows, ending at 42, before track C reaches
   E6 at 48; E13 starts at 64, builds S6c, `gss`'s Kerberos side, itself, and needs S6b for its signed-in rows,
-  which, if late, leave E13's table and refusals done and its sign-in rows waiting. 92 man-days.
+  which, if late, leave E13's table and refusals done and its sign-in rows waiting. 106.75 man-days.
 - **Track C: E5, E9, E6, E12.** The NFSv4 namespace and data path, then opens, stateids and locks on
   it, then ACL attributes, then NFSv4.2. E9 runs on `memory.New` from 23, after E8's callbacks value
   at 21, and its loopback rows wait for S4 at 45; E6 starts at 48 with E7 done; E12 last, with E8's
-  slot count and E9's stateids in. 80.5 man-days.
+  slot count and E9's stateids in. 86.75 man-days.
 - **The team.** E1 and E2 before the tracks; E15 at S7; E16 after the tracks. E1, E2 and E16, 42.75
-  man-days, are the difference between the tracks' 264.25 and the plan's 307.
+  man-days, are the difference between the tracks' 286.75 and the plan's 329.5.
 
-**The first mount.** By D12, an NFSv3 mount over `AUTH_SYS` comes first: E1 to E4 and E7, about 76.25
+**The first mount.** By D12, an NFSv3 mount over `AUTH_SYS` comes first: E1 to E4 and E7, about 81.25
 man-days of plan work, the critical path E1 → E2 → E4 → E7, 59.25 man-days in series, then S5, S7 and
-E15 for `dfs`. An NFSv4.1 mount, Linux's default, needs E1, E2, E3, E5, E7, E8 and E9, about 129.25
+E15 for `dfs`. An NFSv4.1 mount, Linux's default, needs E1, E2, E3, E5, E7, E8 and E9, about 140.5
 man-days, E7 included since a `Claimed` caller answers `ErrAccess` on the composed node without it
 (§6.3, point 2); its critical path runs through track A to S4 at 45 and track C's E9 to 48, from S2.
 

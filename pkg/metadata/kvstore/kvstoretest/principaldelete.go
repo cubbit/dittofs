@@ -1,0 +1,209 @@
+package kvstoretest
+
+import (
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
+)
+
+// A put naming Deleted stores the principal unmarked: only a deletion
+// marks. From its mark, a deleted group grants nothing to its members, and
+// a primary naming it reads as none; a deleted user is found by no name or
+// ID, nor are its tokens and sessions; a write naming either is refused as
+// not found; a new principal may take the name and the ID the mark freed;
+// and the deletion then runs to its end.
+func testMarkedPrincipalReads(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp, p := s.ControlPlane(), s.Principals()
+	gid := entity.ProtocolID{Scheme: entity.SchemeGID, Value: "50"}
+	staff, outer := group("staff"), group("all")
+	staff.IDs[0] = gid
+	u := user("alice", uid("1000"))
+	u.Primary = staff.Principal
+	sh := share("photos", "/photos")
+	staff.Deleted, u.Deleted = true, true
+	must(t, errOf(cp.PutGroup(ctx, staff, 0, entity.Alloc{})))
+	must(t, errOf(cp.PutGroup(ctx, outer, 0, entity.Alloc{})))
+	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
+	if got, err := p.User(ctx, u.Principal); err != nil || got.Primary != staff.Principal {
+		t.Errorf("a user and its primary group put with Deleted set: got primary %v, %v; want %v, unmarked", got.Primary, err, staff.Principal)
+	}
+	must(t, errOf(CreateShare(ctx, cp, sh)))
+	must(t, cp.AddMember(ctx, entity.Membership{Group: staff.Principal, Member: u.Principal}))
+	must(t, cp.AddMember(ctx, entity.Membership{Group: outer.Principal, Member: staff.Principal}))
+	must(t, errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: outer.Principal, Access: entity.AccessRead}, 0)))
+	staffGen := groupGeneration(t, cp, staff.Principal)
+
+	must(t, cp.DeleteGroup(ctx, staff.Principal, staffGen))
+	if got := all(t, p.Groups(ctx, u.Principal)); len(got) != 0 {
+		t.Errorf("alice's groups with staff marked: got %v, want none, as all is reached only through staff", got)
+	}
+	if a := effective(t, s, sh.ID, u.Principal); a != entity.AccessNone {
+		t.Errorf("alice's access through a marked group: got %v, want none", a)
+	}
+	if got, err := p.User(ctx, u.Principal); err != nil || !got.Primary.IsZero() {
+		t.Errorf("alice's primary naming a marked group: got %v, %v; want zero", got.Primary, err)
+	}
+	must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		got, _, err := tx.User(u.Principal)
+		if err == nil && !got.Primary.IsZero() {
+			t.Errorf("alice's primary naming a marked group, read in a write: got %v, want zero", got.Primary)
+		}
+		return err
+	}))
+	for name, err := range map[string]error{
+		"ByName":       errOf(p.ByName(ctx, entity.PrincipalGroup, "staff")),
+		"ByProtocolID": errOf(p.ByProtocolID(ctx, gid)),
+		"AddMember":    cp.AddMember(ctx, entity.Membership{Group: staff.Principal, Member: u.Principal}),
+		"SetGrant":     errOf(cp.SetGrant(ctx, entity.ShareGrant{Share: sh.ID, Principal: staff.Principal, Access: entity.AccessRead}, 0)),
+		"PutGroup":     errOf(cp.PutGroup(ctx, staff, staffGen, entity.Alloc{})),
+		"DeleteGroup":  cp.DeleteGroup(ctx, staff.Principal, staffGen),
+	} {
+		if !merrs.IsNotFoundError(err) {
+			t.Errorf("%s naming a marked group: got %v, want not found", name, err)
+		}
+	}
+	again := group("staff")
+	again.IDs[0] = gid
+	if _, err := cp.PutGroup(ctx, again, 0, entity.Alloc{}); err != nil {
+		t.Errorf("a new group taking a marked group's name and gid: %v", err)
+	}
+
+	e := time.Unix(1_900_000_000, 0).UTC()
+	sess := entity.Session{ID: uuid.New(), Account: u.Principal, Refresh: [32]byte{1}, Expires: e}
+	tok := entity.APIToken{ID: uuid.New(), Account: u.Principal, Hash: [32]byte{2}, Expires: e}
+	must(t, cp.PutSession(ctx, sess))
+	must(t, cp.PutAPIToken(ctx, tok))
+	userGen := userGeneration(t, s, u.Principal)
+	must(t, cp.DeleteUser(ctx, u.Principal, userGen))
+	for name, err := range map[string]error{
+		"APITokenByHash":   absent(cp.APITokenByHash(ctx, tok.Hash)),
+		"APIToken":         absent(cp.APIToken(ctx, tok.ID)),
+		"SessionByRefresh": absent(cp.SessionByRefresh(ctx, sess.Refresh)),
+		"Session":          absent(cp.Session(ctx, sess.ID)),
+	} {
+		if err != nil {
+			t.Errorf("%s of a marked user's: %v, want absent", name, err)
+		}
+	}
+	must(t, cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+		for name, err := range map[string]error{
+			"User":             absent(tx.User(u.Principal)),
+			"Session":          absent(tx.Session(sess.ID)),
+			"APIToken":         absent(tx.APIToken(tok.ID)),
+			"SessionByRefresh": absent(tx.SessionByRefresh(sess.Refresh)),
+			"APITokenByHash":   absent(tx.APITokenByHash(tok.Hash)),
+		} {
+			if err != nil {
+				t.Errorf("%s of a marked user's, read in a write: %v, want absent", name, err)
+			}
+		}
+		return nil
+	}))
+	if got := all(t, cp.Sessions(ctx, u.Principal)); len(got) != 0 {
+		t.Errorf("a marked user's sessions: got %v, want none", got)
+	}
+	if got := all(t, cp.APITokens(ctx, u.Principal, [16]byte{})); len(got) != 0 {
+		t.Errorf("a marked user's tokens: got %v, want none", got)
+	}
+	for name, err := range map[string]error{
+		"User":          errOf(p.User(ctx, u.Principal)),
+		"ByName":        errOf(p.ByName(ctx, entity.PrincipalUser, "alice")),
+		"ByProtocolID":  errOf(p.ByProtocolID(ctx, uid("1000"))),
+		"PutUser":       errOf(cp.PutUser(ctx, u, userGen, entity.Alloc{})),
+		"DeleteUser":    cp.DeleteUser(ctx, u.Principal, userGen),
+		"SetQuota":      errOf(cp.SetQuota(ctx, sh.ID, entity.Quota{Principal: u.Principal, Hard: entity.Limit{Files: 1}}, 0)),
+		"PutAPIToken":   cp.PutAPIToken(ctx, entity.APIToken{ID: uuid.New(), Account: u.Principal, Hash: [32]byte{3}, Expires: e}),
+		"PutSession":    cp.PutSession(ctx, entity.Session{ID: uuid.New(), Account: u.Principal, Refresh: [32]byte{4}, Expires: e}),
+		"UpdateSession": cp.UpdateSession(ctx, sess),
+		"PutSignInFailures": cp.Write(ctx, entity.WriteMeta{}, func(tx entity.ControlPlaneTx) error {
+			return tx.PutSignInFailures(entity.SignInKey{Account: u.Principal}, entity.SignInFailures{Count: 1})
+		}),
+	} {
+		if !merrs.IsNotFoundError(err) {
+			t.Errorf("%s naming a marked user: got %v, want not found", name, err)
+		}
+	}
+	must(t, deleted(s, nil, u.Principal))
+}
+
+// absent is nil for a read that found nothing.
+func absent[T any](_ T, found bool, err error) error {
+	if err == nil && found {
+		err = errors.New("found")
+	}
+	return err
+}
+
+// ContinueDelete ends a deletion whose record is gone, as after its last
+// batch, and refuses a principal no deletion marked.
+func testContinueDeleteEnds(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp, n := s.ControlPlane(), s.Nodes()
+	if done, err := n.ContinueDelete(ctx, entity.NewUser()); err != nil || !done {
+		t.Errorf("ContinueDelete on a user with no record: got done %v, %v; want done", done, err)
+	}
+	u := user("alice")
+	must(t, errOf(cp.PutUser(ctx, u, 0, entity.Alloc{})))
+	if done, err := n.ContinueDelete(ctx, u.Principal); err == nil || done {
+		t.Errorf("ContinueDelete on an unmarked user: got done %v, %v; want refused", done, err)
+	}
+}
+
+// A marked user's and group's dir spellings are found by no lookup, are
+// reported marked, and refuse a mint of a new principal holding them, until
+// the deletion ends; then neither is marked and a new principal is minted
+// with each.
+func testMarkedDirSpelling(t *testing.T, kvo Opener) {
+	s, _ := newStore(t, kvo)
+	cp, p := s.ControlPlane(), s.Principals()
+	u, g := mintUser("alice"), mintGroup("finance")
+	udir, gdir := entity.ProtocolID{Scheme: entity.SchemeDir, Value: "entry-alice"}, entity.ProtocolID{Scheme: entity.SchemeDir, Value: "entry-finance"}
+	u.User.IDs, g.Group.IDs = entity.ProtocolIDs{udir}, entity.ProtocolIDs{gdir}
+	must(t, s.Minter().Create(ctx, entity.MintBatch{Users: []entity.MintUser{u}, Groups: []entity.MintGroup{g}}))
+	must(t, cp.DeleteUser(ctx, u.User.Principal, userGeneration(t, s, u.User.Principal)))
+	must(t, cp.DeleteGroup(ctx, g.Group.Principal, groupGeneration(t, cp, g.Group.Principal)))
+
+	again := func() entity.MintBatch {
+		u2, g2 := mintUser("alice"), mintGroup("finance")
+		u2.User.IDs, g2.Group.IDs = entity.ProtocolIDs{udir}, entity.ProtocolIDs{gdir}
+		return entity.MintBatch{Users: []entity.MintUser{u2}, Groups: []entity.MintGroup{g2}}
+	}
+	for _, id := range []entity.ProtocolID{udir, gdir} {
+		if _, err := p.ByProtocolID(ctx, id); !merrs.IsNotFoundError(err) {
+			t.Errorf("ByProtocolID(%s) of a marked principal: got %v, want not found", id.Value, err)
+		}
+		if m, err := p.Marked(ctx, id); err != nil || !m {
+			t.Errorf("Marked(%s) while its holder's deletion runs: got %v, %v; want true", id.Value, m, err)
+		}
+		b := again()
+		if id == udir {
+			b.Groups = nil
+		} else {
+			b.Users = nil
+		}
+		if err := s.Minter().Create(ctx, b); !merrs.IsAlreadyExistsError(err) {
+			t.Errorf("minting a new principal with %s while its holder is marked: got %v, want already exists", id.Value, err)
+		}
+	}
+
+	must(t, deleted(s, nil, u.User.Principal))
+	must(t, deleted(s, nil, g.Group.Principal))
+	for _, id := range []entity.ProtocolID{udir, gdir} {
+		if m, err := p.Marked(ctx, id); err != nil || m {
+			t.Errorf("Marked(%s) after the deletion ended: got %v, %v; want false", id.Value, m, err)
+		}
+	}
+	b := again()
+	if err := s.Minter().Create(ctx, b); err != nil {
+		t.Fatalf("minting new principals with the spellings a finished deletion freed: %v", err)
+	}
+	if got, err := p.ByProtocolID(ctx, udir); err != nil || got != b.Users[0].User.Principal {
+		t.Errorf("ByProtocolID(%s) after a new mint: got %v, %v; want %v", udir.Value, got, err, b.Users[0].User.Principal)
+	}
+}

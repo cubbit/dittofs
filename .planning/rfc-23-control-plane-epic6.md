@@ -60,7 +60,7 @@ regenerated reference.
 - The success paths of every settings-backed write (settings, adapters, remote stores,
   namespaces): the empty settings table refuses them until X3, so they are E7's (D9).
 - RFC 23 §12's "§7 CLI" row with the bootstrap and the store unreadable to the CLI's user: E7, on
-  the shared suite's child-safe rows (D8).
+  the shared suite's rows from a child (D8).
 - Snapshots and snapshot policies, uploads draining, GC and trash: no resource of RFC 23 serves
   them, so their commands go (D7); each comes back with its owning RFC's route, through rows of the
   same ledger, proposed in §9.
@@ -98,7 +98,7 @@ and title and not copied.
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T6.2 | the lock file is tested with two real `dfsctl` processes on one credentials file; `--cacert` on a real TLS listener |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T6.2, T6.4 | D4's lock and D11's mount exception carry a `decision:` marker each; D12's grant wait one too |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | the lock test fails with the lock removed; the package-state test fails on a new package variable; the removed commands are checked absent, not merely refused |
-| rule 11, a symbol is exported only if RFC 23's interface uses it | T6.1, T6.2 | `NewRoot`, `cmdutil.Env` and each noun's `New` are exported only across packages under `cmd/dfsctl`, which nothing outside imports but `cmd/gendocs` (D1); `credentials.NewStoreAt` for the same reason; the client edits are E4's |
+| rule 11, a symbol is exported only if RFC 23's interface uses it | T6.1, T6.2 | `NewRoot`, `cmdutil.Env` and each noun's `New` are exported only across packages under `cmd/dfsctl`, which nothing outside imports but `cmd/gendocs` (D1); `credentials.Read` and `credentials.Update` for the same reason; the client edits are E4's |
 | rule 12, each subtask creates only what it declares | all | a noun package moves to `New(env)` in the subtask that rebuilds it; `clisuite` lands with its first rows |
 
 ## 3. Requirements and invariants
@@ -129,7 +129,7 @@ and title and not copied.
 | R9 | Names resolve to IDs with the list filters | MUST | RFC 23 §7, §4.1 | T6.3 |
 | R10 | A write reads before it writes and echoes the `ETag` it read, opaque, in `If-Match` | MUST | RFC 23 §7, §4.4 | T6.3 |
 | R11 | On `412` the CLI shows the difference and stops rather than retrying | MUST | RFC 23 §7 | T6.3 |
-| R12 | A command sends one idempotency key on every call that takes one, and none on sign-in, refresh, the password change, `:set-password` or API-token creation | MUST | RFC 23 §7, §4.5 | T6.2, T6.5 |
+| R12 | A command sends one idempotency key on every call that takes one, and none on sign-in, refresh, the password change, sign-out, `:set-password` or API-token creation | MUST | RFC 23 §7, §4.5 | T6.2, T6.5 |
 | R13 | For an operation the CLI prints its ID and, with `--wait`, follows it to its end with `?wait=` | MUST | RFC 23 §7, §4.6 | T6.3 |
 | R14 | An interrupted wait resumes with `operation wait <id>` from any machine | MUST | RFC 23 §7 | T6.3 |
 
@@ -155,13 +155,15 @@ this epic's part is that every command reaches the API through that client and n
 ## 4. Decisions this epic takes
 
 - **D1, one root per invocation, no package state.** `commands.NewRoot(env cmdutil.Env)`;
-  `cmdutil.Env{In io.Reader; Out, Err io.Writer; ConfigPath string; Interactive bool}`, beside the
+  `cmdutil.Env{In io.Reader; Out, Err io.Writer; ConfigPath string; Interactive bool; Now func() time.Time}`,
+  `Now` the clock a command reads a time it sends from, such as an API token's expiry, nil for the
+  machine's and the harness's clock in a test (kind 1), beside the
   client builder and the lock, in `cmdutil`, because `commands` imports every noun package and a
   noun cannot import it back; each noun package exports `New(env cmdutil.Env)`. No package under
   `cmd/dfsctl` declares a package-level variable but the build's version, which `-ldflags` set:
   lower-case `version`, `commit` and `date` in `cmd/dfsctl` (main), where the linker writes them,
   and exported `Version`, `Commit` and `Date` in `cmd/dfsctl/commands`, which main copies them
-  into; each set is allowed only in its own directory. `cmdutil.Flags` goes. `credentials.NewStoreAt(path)` replaces the store's
+  into; each set is allowed only in its own directory. `cmdutil.Flags` goes. `credentials.Read(path)` and `credentials.Update` replace the store's
   fixed path, for `ConfigPath`. `internal/cli/prompt` takes its reader from `Env.In` in place of
   `promptui`'s `os.Stdin`; with `Interactive` false a command that would prompt refuses, naming the
   `--…-file` flag to use, which also suits a later MCP subcommand. These exports cross only packages
@@ -172,17 +174,31 @@ this epic's part is that every command reaches the API through that client and n
   prefix. No marker. Prior art: kubectl takes names only (from memory).
 - **D3, the `412` diff is of the spec as YAML.** On `412` the command reads the resource again and
   prints a unified diff, through `github.com/pmezard/go-difflib` (already in `go.mod`), between the
-  spec it read and the one the server now holds, and exits non-zero. No marker. Prior art:
-  `kubectl apply`'s conflict report (from memory).
-- **D4, every change to the credentials file runs under a lock file beside it.** `<config>.lock`,
-  created with `O_CREATE|O_EXCL` (the standard library, the same on every OS, and blocking no
-  reader, unlike `LockFileEx`), held across load, change and save, by `login`, `logout`,
-  `context` changes and a refresh; a save writes a temporary file and renames it into place. The
-  CLI decides that a token has expired only by a `401`, never by its own clock, so `ExpiresAt` and
-  `IsExpired` go. A command that gets `401` takes the lock, re-reads the file, refreshes only if the
-  token it holds is still the one that failed, and saves the new pair. `decision:` at the lock: a
-  lock left by a killed process blocks until removed by hand, named in the error; withdraw it for a
-  lease if that bites. Prior art: git's `index.lock` (from memory).
+  spec it read and the one the server now holds, and exits non-zero. The write is the route's:
+  `cmdutil.ByPatch` sends a JSON merge patch of what the command changed, so a field it empties is
+  cleared rather than left as it was (a share's route takes `PATCH` only), `cmdutil.ByPut` the
+  whole spec as this dfsctl decoded it (a netgroup's takes `PUT` only), so against a newer server a
+  field this dfsctl does not know is sent empty and reset, and a write that may start an operation, a user's,
+  passes its own `cmdutil.Write`, answering `client.Result`; a change that changes nothing writes
+  nothing. YAML, the diff's and `-o yaml`'s, goes through the spec's JSON, so its keys are the API's
+  field names. Marker: `decision:` at `cmdutil.ByPut`, for the reset field. Prior art: `kubectl
+  apply`'s conflict report (from memory).
+- **D4, every change to the credentials file runs under the operating system's lock on a file
+  beside it.** `credentials.Update(ctx, path, waiting, fn)` opens `<config>.lock` and takes an
+  exclusive lock on it without waiting (`flock(LOCK_EX|LOCK_NB)` on Unix, `LockFileEx` with
+  `LOCKFILE_FAIL_IMMEDIATELY` on Windows, both from `golang.org/x/sys`), polling while another
+  process holds it, and holds it across load, change and save, by `login`, `logout`, `context`
+  changes and a refresh; a save writes a temporary file and renames it into place. An unlocked
+  read (`credentials.Read`) answers a view with no method that writes. The lock is the OS's, not a
+  file created `O_EXCL`, because the OS releases it when its holder exits however it exits, so an
+  interrupted or killed dfsctl never leaves every later one waiting; `LockFileEx`'s mandatory lock
+  blocks no reader here, since it is taken on the `.lock` file, which nothing else opens. The lock
+  file itself may stay. The CLI decides that a token has expired only by a `401`, never by its own
+  clock, so `ExpiresAt` and `IsExpired` go. A command that gets `401` takes the lock, re-reads the
+  file, refuses a context that no longer names the server, CA bundle and account it dialled,
+  refreshes only if the token it holds is still the one that failed, within a 30 s bound, and
+  saves the new pair. No marker. Prior art: git's `index.lock` (from memory), which this departs
+  from for the stale-lock reason.
 - **D5, a secret never comes from a flag value.** A password, a domain administrator's credential,
   an offline join's password, a remote store's credential and an API token are read from a prompt,
   or from a file named by a `--…-file` flag; the global `--token` goes, `login --token-file` takes
@@ -202,9 +218,11 @@ this epic's part is that every command reaches the API through that client and n
 - **D8, the shared suite is a package outside the binary.** `cmd/dfsctl/internal/clisuite` holds the
   command rows and `Run(t, Runner, Server)`, where a `Runner` takes arguments and returns stdout,
   stderr and the exit status; only tests import it, so `go list -deps ./cmd/dfsctl` never names it.
-  E6's tests pass an in-process `NewRoot` against the harness; E7 passes a child `dfsctl`. Each row
+  E6's tests pass an in-process `NewRoot` against the harness; E7 passes a child `dfsctl`, so E7's
+  test of it lives under `cmd/dfsctl`, the only tree that may import an internal package there. Each row
   is marked harness-only (it advances the injected clock or writes through the store) or child-safe;
-  E7 runs the child-safe rows. Consumed by E7. No marker.
+  E7 runs every row from a child against an in-process node, where the test does the harness's
+  part; a server the test did not start runs only the child-safe ones. Consumed by E7. No marker.
 - **D9, a settings-backed write is tested as its refusal.** Until X3 hands in the settings table,
   E4 refuses every setting, adapter, remote-store and namespace write `400`; this epic tests that the
   command prints the problem's code and detail and exits non-zero. No marker.
@@ -261,10 +279,10 @@ cmd/dfsctl/
     idmap/ identityprovider/ netlogon/
     trash/ system/ settings/ switch_user.go T6.1  deleted (D7)
   cmdutil/
-    env.go client.go lock.go               T6.2  Env, the client builder, the token source, D4
+    env.go client.go lock.go               T6.2  Env, the client builder, the token source, the wait message
     resolve.go update.go wait.go           T6.3
   internal/clisuite/                       T6.3  the shared rows and Run (D8)
-internal/cli/credentials/                  T6.2  NewStoreAt; mTLS and skip-verify fields gone
+internal/cli/credentials/                  T6.2  Read, Update and the OS lock (D4); mTLS and skip-verify fields gone
 internal/cli/prompt/                       T6.1  reads Env.In
 cmd/gendocs/                               T6.1  builds NewRoot
 docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
@@ -299,33 +317,34 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
 - **Track:** A. **Depends on:** T6.1; E4 (the client, with §9's edits); E5 (sign-in, refresh,
   sign-out, the password change, API tokens).
 - **Covers:** R5, R6, R7, R8, R12, R20.
-- **Deliverables:** `credentials.NewStoreAt`, the mTLS and skip-verify fields gone and a stored
+- **Deliverables:** `credentials.Read` and `credentials.Update`, the mTLS and skip-verify fields gone and a stored
   `tls_skip_verify: true` refused on load (D7), `ExpiresAt` gone (D4); `cmdutil`'s lock file, the
   save by rename, and the token source over the locked file (D4, D6); contexts holding a URL or the
   local socket's path, the account and `--cacert` (R5); `login` (a password from a prompt or
   `--password-file`, or `--token-file` for an API token) and `password change`, each a credential
-  call with no idempotency key, and `logout`, which sends one (R8, R12); `login`'s
+  call with no idempotency key, and `logout`, whose sign-out the server also takes keyless,
+  since its idempotency record is keyed by account (R8, R12); `login`'s
   `-p`/`--password` flag deleted (D5): T6.1 deleted only `login`'s `--client-cert`, `--client-key`
   and `--tls-skip-verify` flags, leaving `-p` to this subtask; the file `0600` in a `0700` directory (R6).
-  `internal/cli/prompt/password.go` is kept for this subtask and takes a writer, but it still runs
-  on promptui: chaining two prompts on one reader (`PasswordWithConfirmation`) loses input to
-  readline's read-ahead, and promptui races under `-race`. `login` and `password change` read the
-  password through one `bufio.Reader` per invocation, or `golang.org/x/term.ReadPassword` on a
-  terminal. Consumed by every later subtask.
+  `internal/cli/prompt/password.go` goes, with `promptui`: chaining two prompts on one reader
+  loses input to readline's read-ahead, and promptui races under `-race`. `login` and `password
+  change` read the password through one `bufio.Reader` per invocation, or
+  `golang.org/x/term.ReadPassword` on a terminal, which an interrupt leaves with its echo restored.
+  Consumed by every later subtask.
 - **Acceptance criteria:**
   - Two commands refreshing one context at once both succeed and the session survives.
   - A command after the access token's expiry succeeds and leaves the file holding the new pair.
 - **Tests:** against the harness, the clock injected: `login`, the clock advanced past the access
   token's lifetime, a command succeeding and the file holding a new refresh token; the lock test:
-  the test holds `<config>.lock`, starts two `dfsctl` processes after the expiry, waits until both
+  the test holds the lock on `<config>.lock`, starts two `dfsctl` processes after the expiry, waits until both
   are blocked on it, releases it, and asserts both succeed and a third command is still signed in,
   failing with the lock removed (R20, rule 8); a context naming the harness's local socket (R5); a
   context with `--cacert` against a real TLS listener the harness starts, and the same without it
   refused (R5); the file's mode `0600` and its directory's `0700` read back, and on Windows the
   file's ACL granting only the user (R6); a stored `tls_skip_verify: true` refused naming the field
   (D7); a must-change account refused `password_change_required`, `password change`, then the
-  command succeeding (R8); `login` and `password change` each succeeding, which the server refuses
-  `400` had a key been sent, and `logout` succeeding with one (R12).
+  command succeeding (R8); `login`, `password change` and `logout` each succeeding, which the
+  server refuses `400` had a key been sent (R12).
 
 ### T6.3 Name resolution, read-modify-write, operations and the shared suite
 
@@ -338,11 +357,18 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
   `cmdutil.Wait`; `operation get|list|wait|cancel`; `-o table|json|yaml` through
   `internal/cli/output`; `clisuite` with its runner and its first rows (D8); a pause hook in
   `cmdutil.Update`, between its read and its write, set per instance from `export_test.go`.
-  Consumed by T6.4–T6.6 and E7.
+  `clisuite.Run(t, func(*testing.T) Runner, Server, noun)` runs the rows of one noun, a row's name
+  starting with it, so each noun's package tests its own rows, or every row with `noun` empty;
+  E7's child process runs each noun over a node of its own; it gives each row a runner of its own over a
+  credentials file of its own, signed in to `Server`'s address as its admin account, so a row that
+  ends a session ends none of another's; `Server.Harness` is nil for a server the test did not start, which skips a harness-only
+  row, and `Server.Settle` waits for an operation to end, advancing the injected clock only when
+  there is one, so a row over an ended operation stays child-safe. Consumed by T6.4–T6.6 and E7.
 - **Acceptance criteria:**
   - A name that matches nothing, and an `--id` that names nothing, each fail naming it.
   - A `412` changes nothing on the server and prints the diff.
-- **Tests:** over the harness, through a share's update: a name resolved and the record read back
+- **Tests:** over the harness, through a share's update and delete written in the test on the
+  machinery, since `share update` and `share delete` are T6.4's: a name resolved and the record read back
   changed (R9); the pause hook holding the command after its read while the test changes the share
   through the client, so the command gets `412`, prints a diff naming the field and the share keeps
   the test's value (R10, R11); a delete with `--wait` following the runner to its end as the clock
@@ -381,11 +407,17 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
   tokens, the signing key's rotation).
 - **Covers:** R3, R12, R15.
 - **Deliverables:** `user create|list|get|update|delete|set-password` (`--email`, an empty value
-  clearing it; `--uid`, `--gid`; the password from a prompt or a file, sent with no idempotency
-  key); `group create|list|get|update|delete|add-member|remove-member`;
-  `netgroup create|list|get|update|delete`; `token create|list|revoke`, `create` sent with no key and
-  the token printed once; `installation rotate-signing-key`; their `clisuite` rows; `cli.md`
-  regenerated. Consumed by E7.
+  clearing it; `--uid`, `--role`, `--disabled`, the user spec's fields, which hold no gid; the
+  password from a prompt or a file, sent with no idempotency key);
+  `group create|list|get|update|delete|add-member|remove-member`;
+  `netgroup create|list|get|update|delete`; `token create|list|revoke` (the routes are under the
+  account's user ID, which no route gives a non-admin: a role holder is hidden from `/users` below
+  admin, so `Tokens` gains `user_id`, which `login` keeps in the context, and `--user` names
+  another account by its name), `create` sent with no key and the token printed once;
+  `installation rotate-signing-key`, on `POST /installation:rotate-signing-key`, the route E5's
+  T5.9 step was built for and no epic added; their `clisuite` rows; `cli.md` regenerated. A
+  membership and an API token have no read route, so `remove-member` and `token revoke` send the
+  one tag each ever has, `"1"`, with a `decision:` marker each. Consumed by E7.
 - **Acceptance criteria:**
   - `user update --email ""` clears the address.
   - A token from `token create` signs a context in through `login --token-file`.
@@ -401,22 +433,35 @@ docs/guide/cli.md                          T6.1, T6.4–T6.6  regenerated
 - **Track:** A. **Depends on:** T6.3; E4 (stores, namespaces, secrets, adapters, settings, nodes, the
   audit, the domain's routes, `GET /api/v1/health`).
 - **Covers:** R3, R17.
-- **Deliverables:** `store create|list|get|update|delete|set-credential` (the credential from a
-  prompt or a file); `namespace create|list|get|delete`; `adapter list|get|set`;
+- **Deliverables:** `store create|list|get|update|delete|set-credential` (`create`'s credential,
+  which it may go without, from a file; `set-credential`'s from a prompt or a file);
+  `namespace create|list|get|delete`; `adapter list|get|set`;
   `setting get|set|unset <scope> <key>`; `node list|get`; `audit list` with its filters;
   `domain resolve|test|join|rotate-machine-password`, `join` online or `--offline`, neither sending
   a key; `status`, reading `GET /api/v1/health`; their `clisuite` rows; `cli.md` regenerated.
-  Consumed by E7.
+  `store list`, `store update` and `adapter list` read `GET /stores`, write `PATCH /stores/{id}`
+  and read `GET /adapters`; `store update` changes a store's settings, and `set-credential` its
+  credential. A remote store, a
+  namespace and a node carry no name, so their commands take the ID as the argument. A scope is
+  `installation`, `node:<id>`, `namespace:<id>`, `store:<id>` or `share:<name>`; a value, a
+  `setting set`'s or a `--setting key=value`'s, is taken as JSON when it parses and as a string
+  otherwise. `audit list --actor` takes a user's name, resolved, `kind:id` or `schedule`. A
+  refusal naming a field prints it, which a problem's text leaves out. Consumed by E7.
 - **Acceptance criteria:**
   - A setting, adapter, store or namespace write prints the server's refusal and exits non-zero
     (D9).
   - `audit list --actor` shows the record of a change the test made.
 - **Tests:** the `clisuite` rows over the harness; one table over the settings-backed writes, each
   printing the problem's code and detail and exiting non-zero (D9); `setting get` of a record the
-  test writes through the store, at two scopes (R17); `audit list --actor` after a share create;
-  `domain resolve`, `domain test` and `join` sending their arguments and, with no directory wired,
-  printing the refusal and exiting non-zero (their success is E7's T7.6); `status` naming the harness's readiness; `node list` naming the harness's
-  node; the reference matching (R3).
+  test writes through the store, at two scopes (R17), and `setting set`, `set` again and `unset` of
+  a key the table declares, read back through the API; `audit list --actor` after a group create
+  by the actor and one by another account, listing the first and not the second;
+  `domain resolve`, `domain test`, `rotate-machine-password` and `join` sending their arguments,
+  each a field the server refuses naming it, `join` with no idempotency key in its audit record and,
+  with no directory wired, their operations ending failed under `--wait` and the command exiting
+  non-zero, since the harness wires identity and the action starts (their success is E7's T7.6);
+  `status` naming the harness's readiness; `node list` naming the harness's node; the reference
+  matching (R3).
 
 ## 7. Order of work
 
@@ -433,7 +478,7 @@ flowchart TD
 ```
 
 Checkpoint after T6.3: the machinery every resource command uses. Checkpoint after T6.6: the whole
-suite, whose child-safe rows E7 runs.
+suite, whose rows E7 runs from a child.
 
 ## 8. Suggested pull requests
 
@@ -458,6 +503,19 @@ A suggestion only: one pull request per subtask works as well. PR 2 and PR 3 can
   they land, `test/scenarios`' `41-smb-dedup-delete-original-gc-xs.sh` (`system drain-uploads`,
   `store block gc`) and `72-smb-snapshot-s3-down-s.sh` cannot be rebuilt; the `system` suite that
   runs them is already off on `feat/storage-v2`.
+- **T6.4 as built.** `cmdutil.Set` is `Update` for a resource a write creates (a grant, a
+  quota): absent, it writes the zero spec the change fills in with `If-None-Match: *`, and a `412`
+  there refuses with nothing written. `cmdutil.ByName` is `Resolve`'s name lookup, and
+  `cmdutil.Principal` resolves `--user`, `--group` or `--directory`, the last through
+  `resolve-principal`, waited on (D12), or takes `--principal-id` as it is, so a grant
+  `grant list` prints can be removed with no resolution, which would mint a principal; a
+  principal flag given empty is refused. `quota` with no principal flag is the share's own quota;
+  `quota remove` puts all-zero limits, which the server deletes. `share export-policy set` writes
+  by `PUT`, `update` by `PATCH`. `share mount` reads the installation's adapter record, not a node
+  override, since dfsctl does not know which node it mounts from, falling back to the adapter's
+  default port, which a test holds equal to the adapter settings' default; it passes no SMB
+  password, leaving the host's mount command to ask, and `--dry-run` prints the line, which is how
+  the suite checks R18 without root.
 - **Names this document uses from open pull requests:** E4's `Resource`, `Action`, `Wait`,
   `WithoutIdempotencyKey` and `GET /api/v1/health` (#4337); E5's credential routes and API tokens
   (#4338); E3's `nodetest.New` and its injected clock (#4336).

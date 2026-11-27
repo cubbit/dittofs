@@ -493,6 +493,7 @@ suites:
         done | xargs -0 shellcheck --severity=warning
 
   unit:
+    job: Unit Tests (1.26.x)            # the name the ruleset requires, until it requires the gate (§4.8)
     format: go-json
     cmd: go test -race {args} -timeout=25m -coverprofile={out}/coverage.txt {packages}   # the profile Codecov gets (§4.8)
     packages: { patterns: [./pkg/..., ./internal/..., ./cmd/..., ./test/...] }   # dt run --changed narrows them (§4.4)
@@ -503,15 +504,13 @@ suites:
         cmd: go test -short -race -p 2 -timeout=25m ./...
         needs: [windows]
         blocking: { pr: false }         # reported on PRs, blocking after merge (§9)
-      nonrace:                          # the throughput and allocation gates that skip under -race
-        cmd: "go test -timeout=25m -run=^(TestBLAKE3FasterThanSHA256|TestSealChunk_AllocBounded)$ ./pkg/block/ ./pkg/block/middleware/compression/"
-        tier: nightly                   # blocking there: a tripped gate posts (§4.10)
   integration:
+    job: Integration Tests (1.26.x)
     format: go-json
     cmd: go test -tags=integration -p 1 -timeout=20m {packages}
     packages: { tag: integration }      # the packages whose tests the tag changes, from `go list`
     tier: pr
-    needs: [docker, "service:postgres", "service:kmip"]
+    needs: [docker, "service:kmip"]
     options:
       portmap:  { cmd: go test -tags=portmap_system -timeout=2m ./test/integration/portmap/..., needs: [linux, rpcbind] }
       kerberos: { cmd: go test -tags=kerberos -timeout=5m ./test/integration/kerberos/, needs: [docker] }
@@ -745,7 +744,7 @@ suites:
 | `cmd` | A command, or a list of commands, from the repository root or inside `image`. Every command of a list runs, in order, and the cell fails if any of them failed, so one run reports every problem, as the lint jobs do today. A command is a string, split into arguments at spaces, and never passes through a shell; `{ sh: "..." }` runs one through `sh -c` (Git Bash on Windows) when it needs pipes or `$(...)`. Its placeholders are below | required, unless the image provides one |
 | `dir` | The directory the commands run in, such as `{mount}`. With `image`, the commands run in the container, so `dir` is a directory inside it, given to `docker run -w` | the repository root; with `image`, the image's own working directory |
 | `format` | How each test's result is read: `exit`, `go-json`, `junit`, `tap`, `subunit`, `trx`, `nfstest` (§4.6) | `exit` |
-| `metrics` | A reader of numbers the tool reports: `fio-json`, `dfsbench-json` (§4.6) | none |
+| `metrics` | A reader of numbers the tool reports: `fio-json`, `dfsbench-json`, `go-bench` (§4.6) | none |
 | `tier` | The smallest tier that runs the suite (§4.3) | `merge` |
 | `blocking` | `false`: results are recorded and reported, but never fail the gate. May be per tier | `true` |
 | `timeout` | `test`: each test's limit; `cell`: the whole cell's, including the fixture. The two keys are set separately: an option, suite or default that sets one keeps the other from the level above. `test: size` takes it from a scenario's size class (below). A `.txt` test list may give a test its own | `{ test: 30m, cell: 60m }` |
@@ -767,7 +766,7 @@ suites:
 | `names` | What `{names}` holds when a run names no tests, for a tool that finds its own tests and takes their names as arguments, as pynfs takes `all` or test codes | none |
 | `known` | The suite's known failures and expected skips (§4.7) | none |
 | `shards` | Split `tests` over this many CI jobs | `1` |
-| `job` | Run in a CI job of this fixed name, outside the matrix: for checks the branch ruleset requires by name | none: a matrix cell |
+| `job` | Run in a CI job of this fixed name, outside the matrix: for checks the branch ruleset requires by name. `unit` and `integration` keep theirs only until the ruleset requires the gate (§4.8) | none: a matrix cell |
 | `parallel` | `true`: under `--parallel`, the suite's cells may run beside others (§4.4), set once someone has checked that they hold nothing else of the host's ([testing-parallel.md](../testing-parallel.md)) | `false`: they run alone |
 
 **Placeholders.** `dt` fills them once per cell, before the first test, and `{test}` again for
@@ -1258,7 +1257,7 @@ alert in §4.8 treats them differently, which is the main defence against anothe
 - **hosts:** `host:dedicated`, met only by the dedicated test host, which says it is one by running
   `dt run --place dedicated`;
 - **infrastructure:** `cloud:<provider>` (credentials and provisioned infrastructure), and
-  `service:<name>` for the services `dt services` starts (`localstack`, `postgres`, `kmip`).
+  `service:<name>` for the services `dt services` starts (`localstack`, `kmip`).
 
 `dt doctor` reports which are met. For an unmet need, `dt run` either moves the whole run to the
 `dtc` container (when it provides it and `--in` allows, §4.4), or reports the suite as not run, with the reason. It is
@@ -1491,14 +1490,25 @@ in the channel too; one that repeats the state stays in the thread.
 
 **Metrics.** `metrics` reads numbers, not results: `fio-json` takes bandwidth, IOPS and latency
 per job from fio's JSON, and fails a job whose `error` field is non-zero, a failed verify
-included. `dfsbench-json` takes dfsbench's per-cell results. Numbers are recorded for `dt history`
-and never grade a run on their own (§4.10). `fio-json` reads the report fio writes to
+included. `dfsbench-json` takes dfsbench's per-cell results. `go-bench` takes `go test -bench`'s
+per-benchmark figures. Numbers are recorded for `dt history` and never grade a run on their own
+(§4.10). A reader dt runs reads each test's own numbers, so it needs `format: exit` and a `tests`
+list. `fio-json` reads the report fio writes to
 `{out}/{test}.json`, and records each job's `bw_bytes`, `iops` and mean `lat_ns` for each direction
 it did I/O in, in its test's `extra.metrics`, keyed `JOB/DIRECTION/NAME`, as
 `seq-write/write/bw_bytes`. A job whose `error` isn't 0 fails its test even when fio exits 0, as it
 does for a job that continues on errors, which logs them in the report's file before the report. A
 test that passes without a report has no numbers, which is lost coverage: its cell is not run, exit
-2. `dt` doesn't read `dfsbench-json` yet: it comes with the tracked runs (§8 step 6).
+2. `go-bench` reads what `go test -bench` writes to `{out}/{test}.txt`, and records each benchmark's
+number for each unit, keyed `NAME UNIT` as `BenchmarkAppend/4KiB ns/op`, without the `-N` suffix
+`go test` adds for the GOMAXPROCS it ran at, the cell env's or the host's, which it leaves off at 1;
+a name that only ends in digits keeps them. A benchmark that prints has its figures read from the
+line after its output. A benchmark run more than once, by `-count`, records the median of its runs;
+the samples stay in the file for `benchstat`. The command runs at one GOMAXPROCS, with no `-cpu`
+list. A `--- FAIL` line, as a failed benchmark behind a `tee` leaves, or one name in two packages,
+whose figures would merge, fails its test. A test that passes without benchmark lines has no numbers
+either: its cell is not run, exit 2.
+`dt` doesn't read `dfsbench-json` yet: it comes with the tracked runs (§8 step 6).
 
 **Grades in CTRF and JUnit.** `dt` grades each result of each test, and writes the grade in
 `extra.grade`:
@@ -1759,7 +1769,8 @@ One workflow, `tests.yml`, runs every registered suite:
     into one report: its job summary is each blocking cell's `report.md`, one after another, from
     the cell's latest attempt. It
     fails unless `plan` passed and every other job it needs passed or was skipped: a `run` job
-    passes only when its cell exited 0.
+    passes only when its cell exited 0, and a fixed job (below) is skipped when the plan has no
+    cell of its suite.
   - Non-blocking cells run in a second matrix the gate doesn't wait for, so a slow non-blocking
     cell, such as the Windows unit run, doesn't lengthen the PR. Their new failures are annotated,
     and a failed job still shows on the PR. It is the job `non-blocking`, and its artifacts
@@ -1775,8 +1786,10 @@ One workflow, `tests.yml`, runs every registered suite:
     concurrency group of its own that cancels nothing, so posts run one at a time and a merge run's
     and a nightly run's never overwrite each other's. Non-blocking cells don't post: they never
     fail the gate, so they never make develop red.
-- **Moving in:** every suite runs in `tests.yml` (§8 step 3): `plan` keeps every cell but the
-  dedicated host's, which that host runs itself and reports as its own commit status.
+- **Moving in:** while the suites move into `tests.yml` (§8 step 3), `plan` keeps only the cells
+  of the suites that have moved, pynfs first. A suite joins by being added to that filter, less
+  the options that move later, with any step its cells need that `run` doesn't give yet, such as
+  a service or a package; the filter goes once every suite runs there.
 - **Concurrency:** as the other workflows: a newer run of a pull request cancels the older, and
   a scheduled run has a group of its own, so it and a push never replace each other. A push waits
   for the run in progress, and a newer push replaces it while it waits: pushes that land faster
@@ -1790,15 +1803,20 @@ One workflow, `tests.yml`, runs every registered suite:
   develop ruleset's required checks don't change. They don't wait for `plan`, so a docs-only
   change, which plans no cell, still has its commits and the suite tables checked. `Go Checks`
   also vets every build-tagged test, as #3002 added, and runs `go mod verify`, as the unit jobs
-  did. `unit`, `integration` and its Kerberos and portmap options are cells of the plan like the
-  rest. The `run` job starts the services a cell's needs name (`dt services up postgres kmip` for
-  `integration`) and rpcbind for a cell that needs it running (`integration/portmap`), and for the
-  `unit` cell uploads the coverage profile `unit` writes to its `{out}` to Codecov, as the unit job
-  did, unless a retry rewrote it with the retried tests' alone. Codecov sets no status, comment
-  or annotation (`codecov.yml`) while the code moves fast, so the upload only keeps the coverage
-  history for when its checks come back on. On a pull request the `unit` cell runs with
-  `--changed`, from a checkout with the whole history so its base resolves, and uploads no
-  coverage then; the merge queue and a push run every package. A fixed job's
+  did. `unit` and `integration` run the same way, as `Unit Tests (1.26.x)` and
+  `Integration Tests (1.26.x)`, until the ruleset requires the gate, except that each waits for
+  `plan` and is skipped when the plan has no cell of its suite, which passes the required check.
+  When `plan` fails they run, so a required check never passes on a plan that wasn't made.
+  `Integration Tests (1.26.x)` starts its services with `dt services up kmip`, and runs
+  `integration`'s Kerberos and portmap options as steps after the suite, each even when one
+  before it failed, as the old job ran them, rather than as `run` cells, which only `gate` waits
+  for. `Unit Tests (1.26.x)` uploads the coverage profile `unit` writes to its `{out}` to Codecov, as
+  the unit job did, unless a retry rewrote it with the retried tests' alone. Codecov sets no status,
+  comment or annotation (`codecov.yml`) while the code moves fast, so the upload only keeps the
+  coverage history for when its checks come back on. On feat/storage-v2, `Unit Tests (1.26.x)`
+  runs `unit` with `--changed` on a pull request, from a checkout with the whole history so its
+  base resolves, and uploads no coverage then; the merge queue and a push run every package. A
+  fixed job's
   artifact is `dt-run-SUITE-ATTEMPT`, and `gate` needs every fixed job, so its report has theirs
   too. On a push to develop,
   `{base}` is the commit before the push, so the commit checks still cover commits pushed straight
@@ -1945,9 +1963,9 @@ a percentage.
   needing no secrets, and a parse of the mailbox job files, which `dfsbench` doesn't run) runs on
   every PR but a docs-only one, where `bench-smoke.yml` ran only on those that touched the
   benchmark paths, and after every merge and nightly. It is non-blocking on PRs and blocks after a
-  merge and nightly, and writes its results to its `{out}` (§4.6). `unit --nonrace` runs nightly,
-  and blocks there: the throughput and allocation gates that skip under `-race` and `-short`
-  (#2999). A gate that trips again on the retry turns the nightly run red and posts, as
+  merge and nightly, and writes its results to its `{out}` (§4.6). A non-race option of `unit`,
+  added with the first such gate, runs nightly and blocks there: the throughput and allocation
+  gates that skip under `-race` and `-short` (#2999). A gate that trips again on the retry turns the nightly run red and posts, as
   `perf-gates.yml`'s run went red, and fails no PR. The aggregate random-write gate joins once it
   has a baseline: without one it passes whatever it measures.
 - **Comparison against a stored baseline:** after every merge, a step runs each benchmark of the
@@ -2216,7 +2234,7 @@ suite, whoever takes them. They don't wait for the harness, and each fix makes a
    `dt report --failures --post`, and `dt known prune`, which reads `dt history`'s recent runs
    (§4.4).
    *Exit:* two weeks with one alert per real regression and none from flakes.
-6. **Benchmarks.** `bench-smoke` on every tier, non-blocking on PRs, and `unit --nonrace` nightly;
+6. **Benchmarks.** `bench-smoke` on every tier, non-blocking on PRs, and a non-race option of `unit` nightly;
    tracked runs on the dedicated host.
 7. **Component RFCs name their suites.** Each RFC under `docs/internals/rfcs/` ends its test section
    with its suites paragraph (R11, §4.9), and the component groups follow as each component gets a

@@ -1,6 +1,6 @@
 # Assign Reviewers: request one maintainer on every new PR, picked at random
 # from the author's own reviewer pool. An author outside the table, or a pool
-# emptied by an exclusion, falls back to any maintainer but the author.
+# emptied by an exclusion, falls back to any known maintainer but the author.
 #
 # A stacked PR, one whose base branch is the head of another open PR, instead
 # inherits the people of the PR below it: its author, whoever is still
@@ -39,9 +39,12 @@ jobs:
           # Stacked PR: take the author and reviewers of the open PR whose head
           # is our base, keeping only the maintainers in the table below, so a
           # bot or an outside reviewer can't make --add-reviewer refuse the lot.
-          # Our own author is left out. The step runs under -eo pipefail, so the
-          # `|| true` keeps a grep that filters everyone out from ending the
-          # step before the pool is reached.
+          # Our own author is left out. A failed lookup falls through to the
+          # pool: the step runs under bash -e, so each lookup ends in `|| true`.
+          #
+          # decision: a base that is a long-lived branch is never stacked. A PR
+          # whose head is develop, main or feat/storage-v2 (a landing or sync PR)
+          # would otherwise hand its reviewers to every PR into that branch.
           #
           # decision: the journal rule further down is not applied here. A
           # stacked PR is reviewed in the context of the PR below it, so whoever
@@ -50,17 +53,21 @@ jobs:
           # Withdraw this if a stacked PR is ever where a journal change itself
           # needs a reviewer other than Lucian.
           known="didimelli llucian-iws rif viquitorreis marmos91 simonebaracchi AntonioBusillo"
-          lower_pr=$(gh api "repos/$REPO/pulls?head=$OWNER:$BASE&state=open" --jq '.[0].number // empty')
+          lower_pr=""
+          case "$BASE" in
+            develop|main|feat/storage-v2) ;;
+            *) lower_pr=$(gh api -X GET "repos/$REPO/pulls" -f head="$OWNER:$BASE" -f state=open --jq '.[0].number // empty' || true) ;;
+          esac
           if [ -n "$lower_pr" ]; then
-            inherited=$( {
-              gh api "repos/$REPO/pulls/$lower_pr" --jq '.user.login'
-              gh api "repos/$REPO/pulls/$lower_pr/requested_reviewers" --jq '.users[].login'
-              gh api "repos/$REPO/pulls/$lower_pr/reviews" --paginate --jq '.[].user.login'
-            } | sort -u | grep -xF -f <(printf '%s\n' $known) | grep -vx "$AUTHOR" | paste -sd, - || true)
+            # All three lookups or none: a partial set would skip the pool.
+            people=$(gh api "repos/$REPO/pulls/$lower_pr" --jq '.user.login' &&
+              gh api "repos/$REPO/pulls/$lower_pr/requested_reviewers" --jq '.users[].login' &&
+              gh api "repos/$REPO/pulls/$lower_pr/reviews" --paginate --jq '.[].user.login') || people=""
+            inherited=$(printf '%s\n' "$people" | sort -u | grep -xF -f <(printf '%s\n' $known) | grep -vx "$AUTHOR" | paste -sd, - || true)
             if [ -n "$inherited" ]; then
               echo "Stacked on #$lower_pr: requesting $inherited"
-              gh pr edit "$PR" --repo "$REPO" --add-reviewer "$inherited"
-              exit 0
+              # GitHub refuses the whole list if it refuses one login: fall through to the pool.
+              if gh pr edit "$PR" --repo "$REPO" --add-reviewer "$inherited"; then exit 0; fi
             fi
           fi
 
@@ -76,13 +83,15 @@ jobs:
 
           # Lucian does not review Radu's journal changes.
           # The files API, unlike gh pr diff, lists PRs past 300 files.
-          if [ "$AUTHOR" = rif ] && gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename' | grep -qE '^pkg/block/journal(v2)?/'; then
+          if [ "$AUTHOR" = rif ] && gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename' | grep -qE '^pkg/journal(v2)?/'; then
             pool="${pool/llucian-iws/}"
           fi
 
-          # Maintainers are the repo's collaborators with write access.
-          [ -n "${pool// /}" ] || pool=$(gh api "repos/$REPO/collaborators" --paginate \
-            --jq '.[] | select(.permissions.push) | .login' | grep -vx "$AUTHOR")
+          # An author outside the team (Dependabot, an outside contributor) or an
+          # emptied pool falls back to the known maintainers, not to every
+          # collaborator with write access: that list also holds bots and people
+          # who do not review here.
+          [ -n "${pool// /}" ] || pool=$(printf '%s\n' $known | grep -vx "$AUTHOR")
 
           pick=$(printf '%s\n' $pool | shuf -n 1)
           gh pr edit "$PR" --repo "$REPO" --add-reviewer "$pick"

@@ -1,0 +1,41 @@
+name: FoundationDB client
+description: >
+  Install FoundationDB's client library and headers. The fdbkv backend links
+  libfdb_c and builds only with the foundationdb tag, so every job that
+  compiles with that tag (vet, lint, CodeQL, the FoundationDB tests) needs them.
+
+runs:
+  using: composite
+  steps:
+    - name: Pick the package for this machine
+      id: pick
+      shell: bash
+      run: |
+        set -euo pipefail
+        version=7.3.77
+        # The release's own digests, so the job installs exactly this package.
+        case "$(dpkg --print-architecture)" in
+          amd64) arch=amd64 sum=b6c263723009bddbc30b6ae8cf9854340bd35cef14152abb0da8fb5af2b91254 ;;
+          arm64) arch=aarch64 sum=b3a5dd972ffd37c1d5dc0c29ffa00e2169bcac62c0186571acced8b006af7cc2 ;;
+          *) echo "::error::no foundationdb-clients package for $(dpkg --print-architecture)"; exit 1 ;;
+        esac
+        {
+          echo "version=$version"
+          echo "deb=foundationdb-clients_${version}-1_${arch}.deb"
+          echo "sum=$sum"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Fetch foundationdb-clients
+      id: fetch
+      uses: ./.github/actions/release-asset
+      with:
+        repo: apple/foundationdb
+        tag: ${{ steps.pick.outputs.version }}
+        asset: ${{ steps.pick.outputs.deb }}
+        sha256: ${{ steps.pick.outputs.sum }}
+
+    - name: Install foundationdb-clients
+      shell: bash
+      env:
+        DEB: ${{ steps.fetch.outputs.path }}
+      run: sudo dpkg -i "$DEB"

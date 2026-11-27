@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# dfs-store BUCKET [dfsctl store create flag ...]: creates a remote store on the local S3's BUCKET,
+# with setup's credential and any further flags (--setting key=value, say), and prints its ID.
+#   S="$(dfs-store x)"
+#   N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=x/ -o json | jq -r .id)"
+# Assign it first: inside --store "$(...)" a failure here would not stop the caller.
+set -euo pipefail
+B="$1"
+shift
+dfsctl store create --setting remote.endpoint=http://127.0.0.1:9000 --setting "remote.bucket=$B" \
+    --credential-file /etc/dittofs-s3.credential "$@" -o json | jq -r .id

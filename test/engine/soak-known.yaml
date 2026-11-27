@@ -1,0 +1,8 @@
+# The soak's seeds that fail today over the real journal, one entry per seed, never a pattern.
+# A seed that starts to pass fails the run: remove its entry in the change that turned it
+# green, a journal change included. Each entry's message is the failure it is known by.
+#
+# None today: a seed's outcome here depends on goroutine scheduling (which I/O meets the Nth
+# injected fault varies with the order the engine's goroutines reach the seam), so a seed that
+# fails on most runs also passes on some, and a known entry would fail those runs. Such seeds
+# are quarantined in test/harness/quarantine.yaml with the issue that fixes them.

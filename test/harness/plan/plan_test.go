@@ -32,8 +32,8 @@ func names(cells []Cell) []string {
 
 // The pr tier is today's pull-request checks, with the conformance suites on
 // the production profile, badger-s3, only, and smbtorture over two runners.
-// With no change given, the Kerberos and cross-protocol e2e runs, which have
-// paths, are planned too, non-blocking as e2e is. A cell names the test tools
+// With no change given, the second-user, Kerberos and cross-protocol e2e
+// runs, which have paths, are planned too, non-blocking as e2e is. A cell names the test tools
 // it takes from {tools}.
 func TestPRTier(t *testing.T) {
 	cells, err := Plan("../../..", repo(t), "pr", nil)
@@ -42,10 +42,13 @@ func TestPRTier(t *testing.T) {
 	}
 	want := []string{
 		"lint-go", "lint-repo", "shellcheck",
-		"unit", "unit/windows",
+		"unit", "unit/windows", "unit/journal-index", "unit/journal-plant", "unit/journal-conformance-norace", "unit/adapter-allocs", "unit/whole-tree",
+		"journal-conformance",
+		"engine-conformance", "engine-soak", "settings-scan-smoke", "reconcile-settings-smoke",
+		"adapter-conformance",
 		"integration", "integration/portmap", "integration/kerberos",
 		"operator",
-		"e2e/kerberos", "e2e/cross-protocol",
+		"e2e/second-user", "e2e/kerberos", "e2e/cross-protocol",
 		"pjdfstest/badger-s3/3", "pjdfstest/badger-s3/4", "pjdfstest/badger-s3/4.1",
 		"pynfs/badger-s3/0", "pynfs/badger-s3/1",
 		"wpts/badger-s3", "smbtorture/badger-s3/shard-1", "smbtorture/badger-s3/shard-2",
@@ -56,7 +59,9 @@ func TestPRTier(t *testing.T) {
 		t.Fatalf("pr cells:\n got %v\nwant %v", got, want)
 	}
 	for _, c := range cells {
-		nonBlocking := c.Name == "unit/windows" || c.Name == "bench-smoke" || c.Suite == "e2e"
+		nonBlocking := c.Name == "unit/windows" ||
+			c.Name == "bench-smoke" || c.Name == "settings-scan-smoke" ||
+			c.Name == "reconcile-settings-smoke" || c.Suite == "e2e"
 		if c.Blocking == nonBlocking {
 			t.Errorf("%s: blocking %t", c.Name, c.Blocking)
 		}
@@ -89,10 +94,11 @@ func TestConformanceRunsBadgerS3(t *testing.T) {
 // the performance night on a host quiet for it, then every scenario, the long
 // ones in a cell of their own. No scenario runs anywhere else, and no pull
 // request sends a cell there. The night stops itself before dt's limit, which
-// kills it with no cleanup and no post.
+// kills it with no cleanup and no post. The journal's small-size bench cell runs after
+// the night, on the same host.
 func TestDedicatedHost(t *testing.T) {
 	r := repo(t)
-	want := map[string][]string{"merge": {"system"}, "nightly": {"perf-night", "system", "system/dedicated"}}
+	want := map[string][]string{"merge": {"system"}, "nightly": {"perf-night", "journal-bench-data", "system", "system/dedicated"}}
 	for _, tier := range []string{"pr", "merge", "nightly"} {
 		cells, err := Plan("../../..", r, tier, nil)
 		if err != nil {
@@ -301,28 +307,38 @@ func TestChangedPaths(t *testing.T) {
 	if got := plan("docs/guide/x.md", "README.md", "test/e2e/README.md"); len(got) != 0 {
 		t.Errorf("docs-only change planned %v", got)
 	}
-	if got := plan("pkg/block/engine/flush.go"); slices.Contains(got, "e2e/kerberos") || slices.Contains(got, "e2e/cross-protocol") || !slices.Contains(got, "unit") {
+	if got := plan("pkg/engine/flush.go"); slices.Contains(got, "e2e/kerberos") || slices.Contains(got, "e2e/cross-protocol") || !slices.Contains(got, "unit") {
 		t.Errorf("a block change: %v", got)
 	}
-	if got := plan("pkg/config/config.go"); slices.Contains(got, "e2e/cross-protocol") {
+
+	if got := plan("pkg/bootstrap/config.go"); slices.Contains(got, "e2e/cross-protocol") {
 		t.Errorf("a configuration change plans e2e/cross-protocol: %v", got)
 	}
 	for _, p := range []string{
 		"internal/adapter/nfs/v4/handlers/open.go", "pkg/adapter/smb/adapter.go", "pkg/metadata/file.go",
-		"pkg/vfs/service.go", "internal/vfs/server.go", "test/e2e/cross_protocol_lock_test.go",
+		"pkg/vfs/service.go", "internal/vfs/server.go", "test/e2e/framework/mount.go",
+		"internal/node/reconcile.go", "pkg/node/apiv1/share.go",
 	} {
 		if got := plan(p); !slices.Contains(got, "e2e/cross-protocol") {
 			t.Errorf("a change to %s doesn't plan e2e/cross-protocol", p)
 		}
 	}
 	for _, p := range []string{
-		"internal/adapter/smb/handlers/session_setup.go", "pkg/metadata/file.go", "test/e2e/smb_kerberos_test.go",
-		"pkg/controlplane/runtime/export_auth_policy.go", "internal/controlplane/api/handlers/identity_mappings.go",
-		"pkg/config/config.go", "cmd/dfs/commands/start.go",
+		"internal/adapter/smb/handlers/session_setup.go", "pkg/metadata/file.go", "test/e2e/framework/kerberos.go",
+		"pkg/bootstrap/config.go", "cmd/dfs/commands/start.go",
+		"internal/node/reconcile.go", "pkg/node/apiv1/share.go",
 	} {
 		if got := plan(p); !slices.Contains(got, "e2e/kerberos") {
 			t.Errorf("a change to %s doesn't plan e2e/kerberos", p)
 		}
+	}
+	for _, p := range []string{"cmd/dfsctl/commands/status.go", "internal/cli/credentials/store.go", "internal/node/node.go", "pkg/node/apiv1/client/client.go"} {
+		if got := plan(p); !slices.Contains(got, "e2e/second-user") {
+			t.Errorf("a change to %s doesn't plan e2e/second-user", p)
+		}
+	}
+	if got := plan("pkg/engine/flush.go"); slices.Contains(got, "e2e/second-user") {
+		t.Errorf("a block change plans e2e/second-user: %v", got)
 	}
 	// Other tiers ignore the change: everything runs after a merge.
 	cells, err := Plan("../../..", r, "merge", []string{"docs/x.md"})

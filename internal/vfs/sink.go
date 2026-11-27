@@ -1,0 +1,441 @@
+package vfs
+
+import (
+	"context"
+	"slices"
+	"sync"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/openstate"
+	"github.com/cubbit/dittofs/pkg/vfs"
+)
+
+// The filesystem is open state's Sink: the table raises each of these after
+// the step that raised it has released every table lock, on a goroutine that
+// may still hold the file's admission lock. So the filesystem hands each to
+// the Callbacks the client registered, on a goroutine of its own, and returns: the
+// table's goroutine never waits on a client, and a method that took that lock
+// itself, or through a table call that serves waiters, would wait on its own
+// caller. An event for a client with no Callbacks here is dropped: a recall
+// then ends at its deadline, as one the client never answered. A callback
+// that fails, or finds no Callbacks or session to go to, is counted in
+// vfs_callback_errors_total by its kind.
+//
+// A recall of a lease or an oplock, an SMB break, is routed by the opens it
+// covers, never by the client: it names the session holding a connected one
+// of them, and the adapter only delivers on it. With every one disconnected,
+// it names no session but their openers, and the adapter picks one of its
+// own sessions of the client signed in now as an opener, or none, and the
+// break is asked again until one is picked or its deadline passes. Only the
+// adapter knows what a session is signed in as now, so no copy of it here
+// goes stale when a session re-authenticates. A ClientGuid travels in clear,
+// so anyone can connect under a machine's and register its Callbacks; a
+// session signed in as another principal is never one the break goes to.
+//
+// decision: every other callback, a delegation's recall, a revocation, a lock
+// wait's end, a recall-any, names no session: the adapter delivers it by the
+// state or waiter it names. So a stranger whose Connect under a machine's
+// ClientGuid registered the Callbacks may receive them. They carry no cached
+// data: a revocation tells of state ended already, and a lock wait's end
+// tells only that a range was granted, so the stranger can hold up the
+// machine's lock wait, not read its data. Overturned if an SMB lock
+// completion is seen held up this way: then a lock wait's end names its
+// waiter's session as a break does.
+//
+// A client's Notify calls reach it in the order open state raised them, one
+// at a time, as SMB reports a directory's changes in the order they occurred
+// (MS-FSA 2.1.5.10): a create and a delete must not arrive reversed.
+//
+// ponytail: every other callback runs on a goroutine of its own, so two
+// raised for one client, or one of them and a Notify, may reach it out of
+// order. Queue them through inOrder too if an adapter is found acting on a
+// revocation before the recall it ends.
+
+// callbackDeadline bounds each callback: the lease or oplock break deadline,
+// past which a client's answer changes nothing.
+//
+// decision: every callbackDeadline is real time, a context timeout, while
+// the waits between a grant's resends and a recall's retries run on the
+// filesystem's clock. In production both are the host's clock; under a test
+// clock a send that hangs, or a recall left retrying, still ends after
+// callbackDeadline of real time whether or not the test advances its clock.
+// Put the deadline on the filesystem's clock if a test must drive one past it.
+const callbackDeadline = 35 * time.Second
+
+// grantRetry is how long a lock grant the client did not answer waits before
+// it is sent again, and how often a recall not yet sent, or whose send
+// failed, looks for a new path to send it through.
+const grantRetry = 10 * time.Second
+
+// grantResendFor is how long after its first send an unanswered lock grant
+// to a client other than an NLM host is sent again: one lease period. Past it
+// the grant stays offered, unsent, until the client answers it or ends. An
+// NLM host's grant is resent until it answers or its record ends, never given
+// up for a silence.
+//
+// ponytail: one goroutine per unanswered grant, resending each grantRetry:
+// an SMB client's for up to grantResendFor, or until it ends or its record is
+// released, after which an SMB client that signs in again is not told of its
+// grant; an NLM host's for as long as its record lives. Resend at the
+// client's next Connect, and bound the NLM goroutines, if hosts that stay
+// down are seen missing their grants or holding goroutines.
+const grantResendFor = 90 * time.Second
+
+// ClientEnded tells the client its state ended, then drops its path and
+// its watches.
+//
+// ponytail: on one node the table has already released the client's state
+// everywhere, so the client is only told; with peers, end it at each primary
+// of shards through Peers.ClientState first.
+func (fs *Filesystem) ClientEnded(c entity.ClientID, shards []openstate.ShardID, why openstate.RevokeReason) {
+	fs.deliver(fs.latest("Revoked", c), func(ctx context.Context, cb vfs.Callbacks) {
+		cb.Revoked(ctx, vfs.Revocation{Client: c, Reason: why})
+	})
+	fs.reg.unregister(c)
+	fs.watchers.drop(c, entity.ShareID{})
+}
+
+// LockWaitOver tells the waiting owner's client, and hands its answer to a
+// grant back to open state, under the file's admission lock. A grant the
+// client gives no answer to is sent again each grantRetry, through the
+// client's Callbacks as they are then, until the client ends or is released,
+// or, but for an NLM host, grantResendFor has passed; the lock stays granted,
+// the grant offered, until it answers or ends.
+func (fs *Filesystem) LockWaitOver(w openstate.LockWaiter, granted bool) {
+	c := w.Owner.Client
+	fs.deliver(fs.latest("LockWaitOver", c), func(ctx context.Context, cb vfs.Callbacks) {
+		until := fs.clock.Elapsed() + grantResendFor
+		refused, err := cb.LockWaitOver(ctx, w, granted)
+		for granted && err != nil {
+			fs.callbackErrors.WithLabelValues("LockWaitOver").Inc()
+			select {
+			case <-fs.stop.Done():
+				return
+			case <-fs.clock.After(fs.retry):
+			}
+			if fs.clock.Elapsed() > until && !fs.reg.isNLM(c) {
+				return
+			}
+			if cb = fs.counted("LockWaitOver", fs.reg.latest(c)); cb == nil {
+				return
+			}
+			refused, err = grantAgain(fs.stop, cb, w)
+		}
+		if err != nil {
+			fs.callbackErrors.WithLabelValues("LockWaitOver").Inc()
+		}
+		if granted {
+			unlock := fs.Admission(w.File)
+			_ = fs.lockState.WaitAnswered(fs.stop, openstate.Caller{Client: c}, w, refused)
+			unlock()
+		}
+	})
+}
+
+// grantAgain sends w's grant once more, bounded as every callback is.
+func grantAgain(stop context.Context, cb vfs.Callbacks, w openstate.LockWaiter) (bool, error) {
+	ctx, cancel := context.WithTimeout(stop, callbackDeadline)
+	defer cancel()
+	return cb.LockWaitOver(ctx, w, true)
+}
+
+// RecallGrant sends the recall through the client's Callbacks, to the
+// session its break goes to. One not sent looks again every grantRetry,
+// until the callback's deadline or the grant is gone: one the adapter sent
+// nowhere, finding no session signed in as an opener, is asked again by the
+// same route, and one whose send failed only once the client registers
+// other Callbacks or the break finds another session, as a failed send may
+// still have reached the client. So a client that reconnects, or signs in
+// again, is recalled there. A recall with no Callbacks at first, or sent
+// nowhere at first, is counted once.
+//
+// decision: only the grant's end or the deadline stops it, not an answer to
+// the recall: nothing here tells whether one is still in flight. An answer
+// comes from an opener's session, one the break went to already, so it is
+// sent again only after a send that failed yet reached the client. Have
+// Openers report the recall in flight if an adapter is seen misreading such
+// a break.
+func (fs *Filesystem) RecallGrant(g openstate.CachingGrant) {
+	to := openstate.GrantNone
+	if g.Recall != nil {
+		to = g.Recall.To
+	}
+	fs.background(func(stop context.Context) {
+		ctx, cancel := context.WithTimeout(stop, callbackDeadline)
+		defer cancel()
+		var tried recallRoute // the route last sent through; zero: none yet
+		for first := true; ; first = false {
+			opens, err := fs.grants.Openers(ctx, g.ID)
+			if err != nil {
+				return // gone since: nothing is left to recall
+			}
+			r := fs.reg.recallRoute(g.Client, opens)
+			if first {
+				fs.counted("RecallGrant", r.cb)
+			}
+			if r.cb != nil && !r.same(tried) {
+				sent, err := r.cb.RecallGrant(ctx, r.sess, r.openers, g, to)
+				switch {
+				case sent && err == nil:
+					return
+				case err != nil:
+					fs.callbackErrors.WithLabelValues("RecallGrant").Inc()
+					tried = r
+				case first:
+					fs.callbackErrors.WithLabelValues("RecallGrant").Inc()
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-fs.clock.After(fs.retry):
+			}
+		}
+	})
+}
+
+// recallRoute is where a recall goes: the client's Callbacks, the generation
+// that registered them, and the session to deliver on, zero for a
+// delegation, or zero with the openers for the adapter to pick by.
+type recallRoute struct {
+	cb      vfs.Callbacks
+	gen     uint64
+	sess    entity.SessionRef
+	openers []entity.Principal
+}
+
+// same reports whether r and o go the same way: through Callbacks one
+// registration made, to one session. Callbacks need not be comparable.
+func (r recallRoute) same(o recallRoute) bool { return r.gen == o.gen && r.sess == o.sess }
+
+func (fs *Filesystem) RecallAny(c entity.ClientID, keep int) {
+	fs.deliver(fs.latest("RecallAny", c), func(ctx context.Context, cb vfs.Callbacks) {
+		if cb.RecallAny(ctx, keep) != nil {
+			fs.callbackErrors.WithLabelValues("RecallAny").Inc()
+		}
+	})
+}
+
+// Revoked tells the client its state ended. The watches it ended stop
+// delivering at once: a share's on a removed share's revocation, a shard's
+// on its lost state's, none on a single grant's, and every one of the
+// client's on any other.
+func (fs *Filesystem) Revoked(r openstate.Revocation) {
+	switch r.Reason {
+	case openstate.RevokedGrant:
+	case openstate.RevokedShare:
+		fs.watchers.drop(r.Client, r.Share)
+	case openstate.RevokedShardState:
+		fs.watchers.dropShard(r.Client, r.Shard)
+	default:
+		fs.watchers.drop(r.Client, entity.ShareID{})
+	}
+	fs.deliver(fs.latest("Revoked", r.Client), func(ctx context.Context, cb vfs.Callbacks) { cb.Revoked(ctx, r) })
+}
+
+// deliver runs send in the background with the Callbacks path finds there,
+// under a context ending at callbackDeadline or at Stop. With none found, or
+// once the filesystem is stopped, it sends nothing.
+func (fs *Filesystem) deliver(path func(context.Context) vfs.Callbacks, send func(ctx context.Context, cb vfs.Callbacks)) {
+	fs.background(boundedSend(path, send))
+}
+
+// boundedSend is send with the Callbacks path finds, under a context ending at
+// callbackDeadline or at stop.
+func boundedSend(path func(context.Context) vfs.Callbacks, send func(ctx context.Context, cb vfs.Callbacks)) func(stop context.Context) {
+	return func(stop context.Context) {
+		ctx, cancel := context.WithTimeout(stop, callbackDeadline)
+		defer cancel()
+		if cb := path(ctx); cb != nil {
+			send(ctx, cb)
+		}
+	}
+}
+
+// inOrder is, for each client, the Notify deliveries not yet done, the first
+// of them being delivered.
+type inOrder struct {
+	mu sync.Mutex
+	q  map[entity.ClientID][]func(stop context.Context)
+}
+
+// deliverInOrder is deliver for client c, but sends each once every one
+// raised before it for c has returned: one goroutine at a time drains c's
+// queue, started when it goes from empty to not, ending when it is empty
+// again or the filesystem stops.
+//
+// decision: order costs a slow client its later notifications: each waits
+// for the one before it, and each may take up to callbackDeadline once it
+// starts. A client whose every Notify hangs drains one per callbackDeadline
+// while the table hands it up to one per watch each sweep, so its queue
+// grows without bound until the client ends; one goroutine per Notify freed
+// each within callbackDeadline. Bound a client's queue, or collapse what
+// waits behind a stall into a ChangeEnumerate, if a stalled client is seen
+// holding its watches' changes back that long.
+func (fs *Filesystem) deliverInOrder(c entity.ClientID, path func(context.Context) vfs.Callbacks, send func(ctx context.Context, cb vfs.Callbacks)) {
+	run := boundedSend(path, send)
+	q := &fs.notifying
+	q.mu.Lock()
+	if q.q == nil {
+		q.q = map[entity.ClientID][]func(context.Context){}
+	}
+	q.q[c] = append(q.q[c], run)
+	first := len(q.q[c]) == 1
+	q.mu.Unlock()
+	if !first {
+		return
+	}
+	drain := func(stop context.Context) {
+		for run := run; ; {
+			run(stop)
+			q.mu.Lock()
+			rest := q.q[c][1:]
+			if len(rest) == 0 || stop.Err() != nil {
+				delete(q.q, c)
+				q.mu.Unlock()
+				return
+			}
+			q.q[c], run = rest, rest[0]
+			q.mu.Unlock()
+		}
+	}
+	if !fs.background(drain) {
+		q.mu.Lock()
+		delete(q.q, c)
+		q.mu.Unlock()
+	}
+}
+
+// background runs run on a goroutine of its own, which Stop ends and waits
+// for, under a context ending at Stop; once the filesystem is stopped it runs
+// nothing, answering false.
+func (fs *Filesystem) background(run func(ctx context.Context)) bool {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if fs.state == stopped {
+		return false
+	}
+	fs.sending.Go(func() { run(fs.stop) })
+	return true
+}
+
+// latest is a path for deliver: client c's Callbacks as they are now, a
+// callback of kind dropped for want of them counted.
+func (fs *Filesystem) latest(kind string, c entity.ClientID) func(context.Context) vfs.Callbacks {
+	cb := fs.counted(kind, fs.reg.latest(c))
+	return func(context.Context) vfs.Callbacks { return cb }
+}
+
+// counted is cb, counting a callback of kind dropped when it is nil.
+func (fs *Filesystem) counted(kind string, cb vfs.Callbacks) vfs.Callbacks {
+	if cb == nil {
+		fs.callbackErrors.WithLabelValues(kind).Inc()
+	}
+	return cb
+}
+
+// registry is, at this node, each client's Callbacks, which its latest
+// Connect registered, and the client each NLM host last connected as.
+//
+// ponytail: an NLM host's entry stays once its client has ended, one per host
+// ever connected. Drop it with the client's Callbacks if host churn shows it.
+type registry struct {
+	mu  sync.Mutex
+	gen uint64 // raised by each register, naming the Callbacks it registered
+	cb  map[entity.ClientID]registered
+	nlm map[string]entity.ClientID
+}
+
+// registered is a client's Callbacks and the register that made them.
+type registered struct {
+	cb  vfs.Callbacks
+	gen uint64
+}
+
+func newRegistry() *registry {
+	return &registry{cb: map[entity.ClientID]registered{}, nlm: map[string]entity.ClientID{}}
+}
+
+// register makes cb client id's Callbacks. A reboot's ended ID has already gone, through
+// ClientEnded. For a non-empty NLM host, it drops the Callbacks of the client
+// the host connected as before when that is another: open state deletes an
+// idle host's record without raising ClientEnded, and the host's next Connect
+// makes a new client. It registers nothing for a host already connected as a
+// newer client: IDs only grow, so id is one open state has deleted, and a
+// Connect that got it registering late must not displace the live one.
+func (r *registry) register(id entity.ClientID, host string, cb vfs.Callbacks) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if old, ok := r.nlm[host]; ok && old != id {
+		if old > id {
+			return
+		}
+		delete(r.cb, old)
+	}
+	if host != "" {
+		r.nlm[host] = id
+	}
+	r.gen++
+	r.cb[id] = registered{cb, r.gen}
+}
+
+// unregister drops client id's Callbacks.
+func (r *registry) unregister(id entity.ClientID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.cb, id)
+}
+
+// isNLM reports whether client id is the one an NLM host last connected as.
+func (r *registry) isNLM(id entity.ClientID) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, c := range r.nlm {
+		if c == id {
+			return true
+		}
+	}
+	return false
+}
+
+// latest is client id's Callbacks, or nil.
+func (r *registry) latest(id entity.ClientID) vfs.Callbacks {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cb[id].cb
+}
+
+// recallRoute is where a recall of a grant covering opens, of client id,
+// goes. With no opens, a delegation, it goes to the client naming no
+// session. Otherwise, a break, it goes to the session holding a connected one
+// of them, or, with every one disconnected, to no session but with their
+// openers, for the adapter to pick one of its sessions signed in as one.
+//
+// ponytail: only this node's adapter is asked to pick, and an open's session
+// is taken to be on this node, so a client signed in as an opener on another
+// node is not reached. Once the filesystem runs in a cluster, route a
+// connected open's break through Peers.Recall to the node its SessionRef
+// names, and fan a disconnected one out through Peers.Recall to every node in
+// the client's Reach.Sessions in parallel. Then mirror the decision that a
+// client signed in as an opener on two nodes may be sent one break on both,
+// its second acknowledgement refused: asked in turn, an unreachable node not
+// yet declared lost would use up the deadline before a live one is asked.
+func (r *registry) recallRoute(id entity.ClientID, opens []openstate.Open) recallRoute {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	reg := r.cb[id]
+	if len(opens) == 0 || reg.cb == nil {
+		return recallRoute{cb: reg.cb, gen: reg.gen}
+	}
+	var openers []entity.Principal
+	for _, o := range opens {
+		if o.Session != (entity.SessionRef{}) {
+			return recallRoute{cb: reg.cb, gen: reg.gen, sess: o.Session}
+		}
+		if !slices.Contains(openers, o.Principal) {
+			openers = append(openers, o.Principal)
+		}
+	}
+	return recallRoute{cb: reg.cb, gen: reg.gen, openers: openers}
+}

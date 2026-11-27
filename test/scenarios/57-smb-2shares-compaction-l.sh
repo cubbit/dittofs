@@ -14,16 +14,19 @@
 # passed with compaction off, and passes since that PR, which skips compaction for such a store.
 
 rclone mkdir s3:export
-dfsctl store block add --name s3-export --type s3 --config "$(jq -c '.bucket = "export"' /etc/dittofs-s3.json)"
-dfsctl share create --name /export --metadata md --block-store s3-export --default-permission none
-dfsctl share permission grant /export --user tester --level read-write
+S="$(dfs-store export)"
+N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=export/ -o json | jq -r .id)"
+dfsctl share create export --path /export --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
+dfsctl grant set export --user tester --access read-write
 rclone mkdir s3:cubbit
-dfsctl store block add --name s3-cubbit --type s3 --config "$(jq -c '.bucket = "cubbit"' /etc/dittofs-s3.json)"
-dfsctl share create --name /cubbit --metadata md --block-store s3-cubbit --default-permission none
+S="$(dfs-store cubbit)"
+N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=cubbit/ -o json | jq -r .id)"
+dfsctl share create cubbit --path /cubbit --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
 
-# Compaction for blocks less than half live, the 5 min grace (its floor), 64 KiB minimum chunks
+# The compaction ratio and the grace period return as settings, the chunk size as the namespace's target
+# The run wants a 0.5 ratio, the 5 min grace (its floor) and 64 KiB minimum chunks, which the launcher no longer sets
 dfs-server stop
-dfs-server start DITTOFS_GC_COMPACTION_LIVE_RATIO=0.5 DITTOFS_GC_GRACE_PERIOD=5m DITTOFS_BLOCKSTORE_JOURNAL_CHUNK_SIZE=65536
+dfs-server start
 
 mkdir /tmp/f /tmp/want /tmp/back
 for k in 1 2 3 4; do head -c 16M /dev/urandom >/tmp/f/f$k; head -c 6000000 /tmp/f/f$k >/tmp/want/f$k; done
@@ -38,7 +41,6 @@ done
 # Past the grace for the newest object: the reclaim, then every file read cold
 sleep 310
 dfsctl store block reclaim -o json | tee /tmp/reclaim.json
-dfsctl store block evict --share /export
 for k in 1 2 3 4; do smbclient //127.0.0.1/export -c "get f$k /tmp/back/f$k" || true; done
 
 # Outcomes first, then the checks: the cut swept many chunks (the chunk size took effect), every

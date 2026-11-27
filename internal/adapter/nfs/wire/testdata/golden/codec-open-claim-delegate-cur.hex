@@ -1,0 +1,5 @@
+# open_claim4, by hand: CLAIM_DELEGATE_CUR's arm, an open_claim_delegate_cur4.
+00000002                               # claim: CLAIM_DELEGATE_CUR
+00000007                               # delegate_stateid.seqid
+0a0b0c0d 0e0f1011 12131415             # delegate_stateid.other, opaque[12]
+00000001 62 000000                     # file: "b", 3 bytes of padding

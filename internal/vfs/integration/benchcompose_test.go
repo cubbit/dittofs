@@ -1,0 +1,680 @@
+//go:build engine_conformance && engine_bench
+
+package integration
+
+import (
+	"context"
+	"crypto/rand"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"slices"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/cubbit/dittofs/internal/identity/identitymem"
+	"github.com/cubbit/dittofs/internal/node/content"
+	"github.com/cubbit/dittofs/internal/prof"
+	filesystem "github.com/cubbit/dittofs/internal/vfs"
+	"github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/engine/enginetest"
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest/benchdir"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
+	"github.com/cubbit/dittofs/pkg/openstate"
+	"github.com/cubbit/dittofs/pkg/vfs"
+)
+
+// The benchmark composition's sizes. The share limit holds every burst of a
+// run, since nothing frees journal space while it runs; the existence age is
+// short enough for the group commit to come due between two bursts and long
+// enough that a burst on a fast device ends before it.
+const (
+	benchShareLimit   = 8 << 30
+	benchExistenceAge = time.Second
+	benchMaxFiles     = 64 // the group commit's batch bound, G
+)
+
+// benchCreators is how many goroutines create a composition's files, so a
+// large pool is made in seconds rather than one transaction after another.
+const benchCreators = 32
+
+// benchDirEnv names a directory on the device under test. Without it the
+// benchmarks skip: the temporary directory may be RAM, and measures no device.
+const benchDirEnv = "DITTOFS_BENCH_DIR"
+
+// benchInstall is the installation ID the benchmark's journal is created under.
+var benchInstall = journal.InstallationID{'e', 'n', 'g', 'b', 'e', 'n', 'c', 'h'}
+
+// benchNode is the node the benchmark's engine runs as.
+var benchNode = entity.NodeID{'b', 'e', 'n', 'c', 'h'}
+
+// bench is the filesystem service over the engine as production composes it:
+// the journal on a real directory, opened through the operating system's
+// files, the metadata store on badger in a directory beside it, the open-state
+// table over the store, and the wall clock read by all of them. Counts is the
+// store's kv.Counting: every Update the store committed or failed.
+type bench struct {
+	fs     *filesystem.Filesystem
+	e      *engine.Engine
+	store  *kvstoretest.FS
+	share  engine.Share
+	admin  vfs.Call
+	files  []entity.Handle
+	ids    []entity.FileID // each file's ID, in the order of files
+	dir    string
+	counts *kv.Counting
+	txns   *txnRecord // the committed transactions, classified by the keys they wrote
+}
+
+// composeBench builds the benchmark composition, with existence age age, and
+// creates n files in the share's root, all before the benchmark's timer
+// starts. heapSlack is the live heap growth the profiler allows; zero is its
+// default.
+func composeBench(b *testing.B, n int, age time.Duration, heapSlack uint64) *bench {
+	b.Helper()
+
+	// Registered first, so its checks run after every other cleanup.
+	prof.Watch(b, prof.Options{HeapSlack: heapSlack})
+
+	base := benchBase(b)
+
+	jdir := filepath.Join(base, "journal")
+	if err := os.Mkdir(jdir, 0o700); err != nil {
+		b.Fatalf("bench: journal directory: %v", err)
+	}
+
+	clock := newWallClock()
+	ctx := b.Context()
+
+	id, err := journal.Init(ctx, jdir, benchInstall, journal.WithClock(clock),
+		journal.WithSettings(benchJournalSettings))
+	if err != nil {
+		b.Fatalf("bench: journal init: %v", err)
+	}
+
+	rec := &txnRecord{}
+
+	store := kvstoretest.NewFS(b, func(tb testing.TB) kv.KV {
+		db, err := badgerkv.Open(badgerkv.Options{Dir: filepath.Join(base, "store")})
+		if err != nil {
+			tb.Fatalf("bench: store: %v", err)
+		}
+
+		tb.Cleanup(func() {
+			_ = db.Close()
+		})
+
+		rec.KV = db
+
+		return rec
+	})
+	if err := store.Store.RecordJournal(ctx, id, benchNode, entity.JournalDir(jdir)); err != nil {
+		b.Fatalf("bench: record the journal: %v", err)
+	}
+
+	c := &bench{
+		store:  store,
+		share:  enginetest.ShareOf(b, store.Store, store.Share.ID, benchShareLimit),
+		dir:    jdir,
+		counts: store.Counts,
+		txns:   rec,
+	}
+	c.start(b, clock, age)
+	c.signIn(b)
+
+	c.files, c.ids = make([]entity.Handle, n), make([]entity.FileID, n)
+	created := time.Now()
+
+	if err := togetherWithin(ctx, benchCreators, benchSetupDeadline, func(ctx context.Context, w int) error {
+		for i := w; i < n; i += benchCreators {
+			name := []byte(fmt.Sprintf("f%05d", i))
+			ns := store.Store.Namespace()
+
+			h, f, err := ns.Create(ctx, store.Admin, store.Root, name, kvstore.Regular(0o644))
+			if err != nil {
+				return fmt.Errorf("create file %d: %w", i, err)
+			}
+
+			c.files[i], c.ids[i] = h, f.ID
+		}
+
+		return nil
+	}); err != nil {
+		b.Fatalf("bench: files: %v", err)
+	}
+
+	b.Logf("bench: %d files created in %v", n, time.Since(created))
+
+	printBox(b, base)
+
+	return c
+}
+
+// start builds the open-state table, the engine and the filesystem, starts
+// them in that order, and stops them in reverse when the benchmark ends.
+func (c *bench) start(b *testing.B, clock *wallClock, age time.Duration) {
+	b.Helper()
+	ctx := b.Context()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	meta := c.store.Store
+
+	opens, err := openstate.New(
+		openstate.Deps{
+			Records: meta,
+			Clients: meta.Clients(),
+			Opens:   meta.Opens(),
+			Node:    benchNode,
+			Clock:   clock,
+			Rand:    rand.Reader,
+			Logger:  logger,
+		},
+	)
+	if err != nil {
+		b.Fatalf("bench: open state: %v", err)
+	}
+
+	e, err := engine.New(engine.Deps{
+		Node:      benchNode,
+		Devices:   []string{c.dir},
+		Open:      openJournal(clock),
+		Existence: meta.Existence(),
+		Content:   meta.Content(),
+		Lifecycle: meta.Lifecycle(),
+		Holds:     content.EngineHolds(opens, meta.Opens()),
+		Clock:     clock,
+		Logger:    logger,
+		Tracer:    noTrace,
+	})
+	if err != nil {
+		b.Fatalf("bench: engine: %v", err)
+	}
+
+	c.e = e
+
+	c.fs, err = filesystem.New(filesystem.Deps{
+		Meta:     meta,
+		Open:     opens,
+		Engine:   e,
+		Logger:   logger,
+		Identity: identitymem.New(b, meta),
+	})
+	if err != nil {
+		b.Fatalf("bench: filesystem: %v", err)
+	}
+
+	if err := opens.Start(ctx, c.fs, c.fs.Admission); err != nil {
+		b.Fatalf("bench: open state start: %v", err)
+	}
+
+	b.Cleanup(opens.Stop)
+
+	settings := enginetest.Settings
+	settings.ExistenceAge = age
+	settings.GroupCommitMaxFiles = benchMaxFiles
+	if err := e.Apply(settings); err != nil {
+		b.Fatalf("bench: engine settings: %v", err)
+	}
+
+	if err := e.Start(ctx, []engine.Share{c.share}); err != nil {
+		b.Fatalf("bench: engine start: %v", err)
+	}
+
+	b.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+
+		if err := e.Close(ctx); err != nil {
+			b.Errorf("bench: engine close: %v", err)
+		}
+	})
+
+	if err := c.fs.Start(ctx); err != nil {
+		b.Fatalf("bench: filesystem start: %v", err)
+	}
+
+	b.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), benchBurstDeadline)
+		defer cancel()
+
+		if err := c.fs.Drain(ctx); err != nil {
+			b.Errorf("bench: filesystem drain: %v", err)
+		}
+
+		if err := c.fs.Stop(); err != nil {
+			b.Errorf("bench: filesystem stop: %v", err)
+		}
+	})
+}
+
+// signIn records the store's administrator as a user holding a uid and its
+// SID, so it signs in as itself rather than as the share's anonymous
+// principal.
+func (c *bench) signIn(b *testing.B) {
+	b.Helper()
+
+	cp := c.store.Store.ControlPlane()
+	p := c.store.Admin.Principal
+
+	u := entity.User{
+		Principal: p,
+		Name:      "admin",
+		IDs: entity.ProtocolIDs{
+			{Scheme: entity.SchemeUID, Value: "100"},
+			{Scheme: entity.SchemeSID, Value: "sid-100"},
+		},
+	}
+	// The administrator may already be a user with a grant: each write
+	// expects what it replaces.
+	old, err := c.store.Store.Principals().User(b.Context(), p)
+	if err != nil && !merrs.IsNotFoundError(err) {
+		b.Fatalf("bench: admin user: %v", err)
+	}
+	if _, err := cp.PutUser(b.Context(), u, old.Generation, entity.Alloc{}); err != nil {
+		b.Fatalf("bench: admin user: %v", err)
+	}
+
+	g, _, err := cp.ShareGrant(b.Context(), c.share.ID, p)
+	if err != nil {
+		b.Fatalf("bench: admin grant: %v", err)
+	}
+	grant := entity.ShareGrant{
+		Share:     c.share.ID,
+		Principal: p,
+		Access:    entity.AccessAdmin,
+	}
+	if _, err := cp.SetGrant(b.Context(), grant, g.Version); err != nil {
+		b.Fatalf("bench: admin grant: %v", err)
+	}
+
+	c.admin = signedInAdmin(p)
+}
+
+// fill writes size bytes to each writer's file and commits their existence
+// through the engine at once, so the content is committed without waiting out
+// the existence age.
+func (c *bench) fill(b *testing.B, size int64) {
+	b.Helper()
+
+	ctx := b.Context()
+	data := make([]byte, size)
+
+	if err := together(ctx, benchWriters, func(ctx context.Context, w int) error {
+		ref := vfs.Anonymous(c.files[w])
+		if _, err := c.fs.Write(ctx, c.admin, ref, 0, data, vfs.Unstable); err != nil {
+			return err
+		}
+
+		return c.e.CommitExistence(ctx, c.share.ID, c.ids[w])
+	}); err != nil {
+		b.Fatalf("bench: the content to overwrite: %v", err)
+	}
+
+	c.awaitSizes(b, size, benchBurstDeadline)
+}
+
+// committedSize is file i's size as the store has committed it.
+func (c *bench) committedSize(b *testing.B, i int) int64 {
+	b.Helper()
+
+	f, err := c.store.Store.Files().Get(b.Context(), c.store.Admin, c.files[i])
+	if err != nil {
+		b.Fatalf("bench: read file %d's record: %v", i, err)
+	}
+
+	return f.Size
+}
+
+// committedSizes is the committed size of each writer's file, the first
+// benchWriters files.
+func (c *bench) committedSizes(b *testing.B) []int64 {
+	b.Helper()
+
+	sizes := make([]int64, min(len(c.files), benchWriters))
+	for i := range sizes {
+		sizes[i] = c.committedSize(b, i)
+	}
+
+	return sizes
+}
+
+// awaitSizes waits until every writer's file has committed size want, polling the
+// store, and fails at the deadline.
+func (c *bench) awaitSizes(b *testing.B, want int64, deadline time.Duration) {
+	b.Helper()
+
+	ctx, cancel := context.WithTimeout(b.Context(), deadline)
+	defer cancel()
+
+	for {
+		differ := func(s int64) bool {
+			return s != want
+		}
+		if !slices.ContainsFunc(c.committedSizes(b), differ) {
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			b.Fatalf(
+				"bench: committed sizes %v after %v, want every one %d",
+				c.committedSizes(b),
+				deadline,
+				want,
+			)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// openJournal opens the journal on the operating system's files, waits for
+// its first spares and hands it to the engine.
+func openJournal(
+	clock journal.Clock,
+) func(context.Context, string, journal.Version, journal.JournalID, []entity.SyncMark) (engine.Journal, error) {
+	return func(
+		ctx context.Context,
+		dir string,
+		floor journal.Version,
+		expect journal.JournalID,
+		_ []entity.SyncMark,
+	) (engine.Journal, error) {
+		j, err := journal.Open(ctx, dir, floor, expect, nil, journal.WithClock(clock),
+			journal.WithSettings(benchJournalSettings))
+		if err != nil {
+			return nil, err
+		}
+
+		if err := awaitJournalSpares(ctx, j); err != nil {
+			_ = j.Close()
+			return nil, err
+		}
+
+		return benchJournal{j}, nil
+	}
+}
+
+// benchSpares is the journal's spare target: every write holds a spare for as
+// long as it runs, so a burst of benchWriters concurrent writes needs one each,
+// plus one per stream of the default 16 for its first roll. The default target,
+// one per stream, refuses the rest of a 64-writer burst as retry-later.
+const benchSpares = benchWriters + 16
+
+// benchJournalSettings are the journal's defaults but for the spare target.
+var benchJournalSettings = journal.Settings{SpareTarget: benchSpares}
+
+// awaitJournalSpares returns once j's pool holds its spares: Open returns
+// while the pool is still making them, and a write that needs one first is
+// refused. It polls the real condition, since the pool works in real time,
+// and fails at a backstop well above the pace measured here: about 25 spares
+// a minute on an idle box, and 76 of 80 in 10 minutes on a loaded one.
+func awaitJournalSpares(ctx context.Context, j *journal.Journal) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+
+	want := benchSpares
+	for j.Stats().Spares < want {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf(
+				"bench: the journal's pool made %d of %d spares: %w",
+				j.Stats().Spares,
+				want,
+				ctx.Err(),
+			)
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	return nil
+}
+
+// The journal's Share and Reserve return its concrete handle and reservation,
+// and Go does not accept a concrete result for a method whose interface
+// declares an interface result, so these wrap the two calls to pass the
+// journal as the engine's Journal. Every other method is the journal's own.
+type benchJournal struct {
+	*journal.Journal
+}
+
+func (j benchJournal) Share(
+	tag journal.ShareTag,
+	limit int64,
+	floor journal.Version,
+) (engine.Handle, error) {
+	h, err := j.Journal.Share(tag, limit, floor)
+	if err != nil {
+		return nil, err
+	}
+
+	return benchHandle{h}, nil
+}
+
+// decision: the journal's Sync returns its per-stream marks, but its
+// Stats.SyncMarks and MarksRecorded, which the group commit reads and hands
+// the recorded marks to, do not exist yet, so over the real journal the engine
+// records none and no stability point waits on one. These two and
+// benchHandle.Sync's drop of the marks stand in for all of it and withdraw
+// together once the journal reports its marks: real marks reaching the
+// engine while nothing records them would block every stability point.
+func (benchJournal) SyncMarks() []entity.SyncMark {
+	return nil
+}
+
+func (benchJournal) MarksRecorded([]entity.SyncMark) {}
+
+type benchHandle struct {
+	*journal.Handle
+}
+
+func (h benchHandle) Sync(ctx context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
+	_, err := h.Handle.Sync(ctx, ids...)
+
+	return nil, err
+}
+
+func (h benchHandle) Reserve(n int64, writes int) (engine.Reservation, error) {
+	r, err := h.Handle.Reserve(n, writes)
+	if err != nil {
+		return nil, err
+	}
+
+	return r, nil
+}
+
+// noTrace is a Tracer that records no span.
+func noTrace(ctx context.Context, _ string, _ ...slog.Attr) (context.Context, func(error)) {
+	return ctx, func(error) {}
+}
+
+// wallClock is the node's clock read from the operating system: Now is the
+// wall time, Elapsed the monotonic time since the clock was made, and After a
+// real timer.
+type wallClock struct {
+	origin time.Time
+}
+
+func newWallClock() *wallClock {
+	return &wallClock{origin: time.Now()}
+}
+
+func (c *wallClock) Now() time.Time {
+	return time.Now()
+}
+
+func (c *wallClock) Elapsed() time.Duration {
+	return time.Since(c.origin)
+}
+
+func (c *wallClock) After(d time.Duration) <-chan struct{} {
+	ch := make(chan struct{})
+
+	time.AfterFunc(d, func() {
+		close(ch)
+	})
+
+	return ch
+}
+
+// benchBase is a fresh directory under benchDirEnv, removed when the benchmark
+// ends; the benchmark skips when benchDirEnv is unset.
+func benchBase(b *testing.B) string {
+	b.Helper()
+
+	root := os.Getenv(benchDirEnv)
+	if root == "" {
+		b.Skipf("set %s to a directory on the device under test", benchDirEnv)
+	}
+
+	dir, err := os.MkdirTemp(root, "engine-bench-")
+	if err != nil {
+		b.Fatalf("bench: directory under %s: %v", benchDirEnv, err)
+	}
+
+	b.Cleanup(func() {
+		_ = os.RemoveAll(dir)
+	})
+
+	return dir
+}
+
+// boxOnce prints the box once per run.
+var boxOnce sync.Once
+
+// printBox prints, before the first result line, what each result is
+// recorded with, as key: value lines, which benchstat reads as the
+// configuration of the results below them; go test prints the CPU, the
+// operating system and the architecture the same way.
+func printBox(b *testing.B, dir string) {
+	b.Helper()
+	boxOnce.Do(func() {
+		box, err := benchdir.Describe(dir)
+		if err != nil {
+			b.Fatalf("bench: %v", err)
+		}
+
+		box.Print(os.Stdout)
+	})
+}
+
+// percentile is the p-th percentile of took, nearest rank; zero when empty.
+func percentile(took []time.Duration, p int) time.Duration {
+	if len(took) == 0 {
+		return 0
+	}
+
+	s := slices.Clone(took)
+	slices.Sort(s)
+	rank := (p*len(s) + 99) / 100
+
+	return s[max(rank, 1)-1]
+}
+
+// microseconds is d in microseconds, as a metric value.
+func microseconds(d time.Duration) float64 {
+	return float64(d) / float64(time.Microsecond)
+}
+
+// benchBurstDeadline bounds one burst, and every other wait of a benchmark
+// on the code under test: a call stuck past it fails the benchmark with the
+// workers still running, rather than hanging it.
+const benchBurstDeadline = time.Minute
+
+// benchSetupDeadline bounds the creation of a composition's files: 100 000
+// files take 10 to 17 s on a quiet box and passed a minute while the disk was
+// busy, which is not a burst and must not fail as one.
+const benchSetupDeadline = 10 * time.Minute
+
+// together runs fn(ctx, i) for every i below n at once and waits for all of
+// them: the calls between two of its barriers are one burst, and the return
+// of one call of together is the barrier the next one's writers start from. The first error
+// cancels the others' ctx; it returns that error, naming the writer, or, once
+// benchBurstDeadline passes, the workers still running.
+func together(ctx context.Context, n int, fn func(ctx context.Context, i int) error) error {
+	return togetherWithin(ctx, n, benchBurstDeadline, fn)
+}
+
+// togetherWithin is together, with deadline in place of benchBurstDeadline.
+func togetherWithin(
+	ctx context.Context,
+	n int,
+	deadline time.Duration,
+	fn func(ctx context.Context, i int) error,
+) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	errs := make([]error, n)
+	running := make([]bool, n)
+
+	var mu sync.Mutex
+
+	done := make(chan struct{})
+
+	var wg sync.WaitGroup
+
+	for i := range n {
+		running[i] = true
+
+		wg.Go(func() {
+			err := fn(ctx, i)
+
+			mu.Lock()
+			errs[i], running[i] = err, false
+			mu.Unlock()
+
+			if err != nil {
+				cancel()
+			}
+		})
+	}
+
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(deadline):
+		mu.Lock()
+		defer mu.Unlock()
+
+		var stuck []int
+
+		for i, r := range running {
+			if r {
+				stuck = append(stuck, i)
+			}
+		}
+
+		for i, err := range errs {
+			if err != nil {
+				return fmt.Errorf(
+					"worker %d: %w; workers %v still running after %v",
+					i,
+					err,
+					stuck,
+					deadline,
+				)
+			}
+		}
+
+		return fmt.Errorf("workers %v still running after %v", stuck, deadline)
+	}
+
+	for i, err := range errs {
+		if err != nil {
+			return fmt.Errorf("writer %d: %w", i, err)
+		}
+	}
+
+	return nil
+}

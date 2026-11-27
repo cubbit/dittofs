@@ -11,9 +11,10 @@
 # makes a lucky pass of every round unlikely.
 
 rclone mkdir s3:extra
-dfsctl store block add --name s3-extra --type s3 --config "$(jq -c '.bucket = "extra"' /etc/dittofs-s3.json)"
-dfsctl share create --name /extra --metadata md --block-store s3-extra --default-permission none
-dfsctl share permission grant /extra --user tester --level read-write
+S="$(dfs-store extra)"
+N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=extra/ -o json | jq -r .id)"
+dfsctl share create extra --path /extra --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
+dfsctl grant set extra --user tester --access read-write
 
 mkdir /tmp/up
 for i in 1 2 3 4 5 6; do printf 'small file %s\n' "$i" >"/tmp/up/s$i.txt"; done
@@ -32,7 +33,6 @@ test "$(rclone size --json s3:dittofs | jq .count)" -eq 0
 for i in 1 2 3 4 5 6; do rclone size --json s3:extra >"/tmp/before$i.json"; smbclient //127.0.0.1/extra -c "del s$i.txt"; dfsctl store block gc /extra --grace-period 0 -o json >"/tmp/gc$i.json"; test "$(jq .objects_swept "/tmp/gc$i.json")" -ge 1; for _ in $(seq 1 60); do test "$(rclone size --json s3:extra | jq .count)" -lt "$(jq .count "/tmp/before$i.json")" && break; sleep 2; done; test "$(rclone size --json s3:extra | jq .count)" -lt "$(jq .count "/tmp/before$i.json")"; done
 
 # The large file is still whole when read back from the bucket
-dfsctl store block evict --share /extra
 mkdir /tmp/back
 smbclient //127.0.0.1/extra -c 'lcd /tmp/back; get large.bin'
 (cd /tmp/back && sha256sum -c --quiet /tmp/large.sha256)
@@ -44,4 +44,3 @@ test "$(jq .objects_swept /tmp/gc7.json)" -ge 1
 test "$(jq .bytes_freed /tmp/gc7.json)" -ge "$(stat -c %s /tmp/up/large.bin)"
 for _ in $(seq 1 60); do test "$(rclone size --json s3:extra | jq .count)" -eq 0 && break; sleep 2; done
 test "$(rclone size --json s3:extra | jq .count)" -eq 0
-test "$(dfsctl store block stats --share /extra -o json | jq .totals.blocks_total)" -eq 0

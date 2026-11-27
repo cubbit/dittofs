@@ -1,0 +1,689 @@
+package engine
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"slices"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
+)
+
+// answer is what one run of a loop item answers.
+type answer uint8
+
+const (
+	itemDone           answer = iota + 1 // the item is finished
+	itemRetry                            // it failed: retried after the backoff, counted toward a stall
+	itemRetryUncounted                   // it is held by something outside it: retried, never counted
+	itemAdvanced                         // it advanced and has more to do: run again at once, its failures reset
+)
+
+// runResult is a phase-2 run's outcome, one bounded Resume and the prune
+// after it, as engine_removal_runs_total labels it.
+type runResult uint8
+
+const (
+	runDone runResult = iota
+	runAdvanced
+	runConflict
+	runError
+	runResults
+)
+
+var runResultNames = [runResults]string{"done", "advanced", "conflict", "error"}
+
+// stallAfter is the count of consecutive failures after which an item is
+// removal_stalled.
+const stallAfter = 5
+
+// loopBackoff is the wait before an item that did not finish runs again.
+const loopBackoff = time.Second
+
+// loopItem is one piece of removal work: a removal's phase 2 and prune, or a
+// phase 1 the call that began it could not finish.
+type loopItem struct {
+	b    *binding
+	f    entity.FileID
+	kind entity.RemovalKind
+	run  func(ctx context.Context) answer
+	// end is called once if the loop ends, or its share is dropped, before
+	// the item finished; nil when there is nothing to end.
+	end func()
+
+	queued    time.Time // when it was first enqueued
+	notBefore time.Time
+	fails     int
+	// stalled is written by the loop while the item runs, outside l.mu, or by
+	// halt or dropShare once the item left the loop, and read by stalledOn.
+	// It is set after the removal_stalled condition is raised and cleared
+	// before it is, so stalledOn true implies the condition is in Stats,
+	// never the reverse.
+	stalled atomic.Bool
+}
+
+// removalLoop runs one journal's removal work.
+//
+// ponytail: removal phase 2 and its prune run from one loop per journal, a
+// FIFO with a fixed backoff, not the shared work scheduler. Replace it with
+// the scheduler's removal source when offload adds the first work that needs
+// fairness between shares.
+type removalLoop struct {
+	e       *Engine
+	mu      sync.Mutex
+	items   []*loopItem
+	closed  bool
+	ending  []*loopItem              // the items the stop took, ended once the loop's goroutine has
+	dropped map[entity.ShareID]bool  // shares dropped: an item of one, running or enqueued, is ended
+	waits   map[*loopItem]bool       // items waiting outside the loop, removal_stalled: see waiting
+	running *loopItem                // the item the loop is running, nil between two
+	ran     chan struct{}            // closed when the running item's step returned
+	steps   atomic.Int64             // items run, for a test to wait on a run
+	parked  atomic.Bool              // waiting with its timer armed, for a test to step the clock past it
+	runs    [runResults]atomic.Int64 // engine_removal_runs_total by result
+	wake    chan struct{}
+	stop    chan struct{}
+	done    chan struct{}
+	ctx     context.Context
+	cancel  context.CancelFunc
+}
+
+func newRemovalLoop(e *Engine) *removalLoop {
+	l := &removalLoop{e: e, wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}
+	l.ctx, l.cancel = context.WithCancel(withRetryingOwner(context.Background()))
+	return l
+}
+
+// enqueue adds it at the loop's back. On a closed loop, or for a dropped
+// share, it is ended at once. An item of a share being unbound is queued
+// parked, never run (see refused): Drop ends it.
+func (l *removalLoop) enqueue(it *loopItem) {
+	now := l.e.d.Clock.Now()
+	l.mu.Lock()
+	if l.closed || l.dropped[it.b.share.ID] {
+		l.mu.Unlock()
+		if it.end != nil {
+			it.end()
+		}
+		return
+	}
+	it.queued = now
+	l.items = append(l.items, it)
+	l.mu.Unlock()
+	select {
+	case l.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (l *removalLoop) run() {
+	defer close(l.done)
+	defer l.e.fence.release(ownerOf(l.ctx)) // a stopped owner fails no more
+	for {
+		it, wait := l.next()
+		if it != nil {
+			l.step(it)
+			l.finish()
+
+			continue
+		}
+		select {
+		case <-l.wake: // an enqueue since next looked: look again before arming a timer
+			continue
+		default:
+		}
+		var timer <-chan struct{}
+		if wait >= 0 {
+			timer = l.e.d.Clock.After(wait)
+		}
+		l.parked.Store(true)
+		select {
+		case <-l.wake:
+		case <-timer:
+		case <-l.stop:
+			return
+		}
+		l.parked.Store(false)
+	}
+}
+
+// refused reports whether the item's share is being unbound and the item is
+// not a clone's: such an item is never run, since the share admits no new
+// removal batch but the batches of a clone its join waits on (RFC 8 §2.3).
+func (it *loopItem) refused() bool {
+	return it.kind != entity.RemoveClone && it.b.gate.isShut()
+}
+
+// next is the first item whose backoff has passed, taken off the loop and
+// recorded as the running one, or how long until the first one's has, -1 when
+// the loop is empty. An item of a share being unbound stays parked on the
+// loop, never run: Drop ends it.
+func (l *removalLoop) next() (*loopItem, time.Duration) {
+	now := l.e.d.Clock.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	wait := time.Duration(-1)
+	for i, it := range l.items {
+		if it.refused() {
+			continue
+		}
+		if !it.notBefore.After(now) {
+			l.items = slices.Delete(l.items, i, i+1)
+			l.running, l.ran = it, make(chan struct{})
+			return it, 0
+		}
+		if w := it.notBefore.Sub(now); wait < 0 || w < wait {
+			wait = w
+		}
+	}
+	return nil, wait
+}
+
+// finish records that the running item's step returned, waking the join.
+func (l *removalLoop) finish() {
+	l.mu.Lock()
+	close(l.ran)
+	l.running, l.ran = nil, nil
+	l.mu.Unlock()
+}
+
+// joinRunning waits until the item the loop is running for share s, if any,
+// has returned, or until ctx ends, answering its error. The items queued
+// behind it are not waited for.
+func (l *removalLoop) joinRunning(ctx context.Context, s entity.ShareID) error {
+	l.mu.Lock()
+	ran := l.ran
+	mine := l.running != nil && l.running.b.share.ID == s
+	l.mu.Unlock()
+
+	if !mine {
+		return nil
+	}
+
+	select {
+	case <-ran:
+		return nil
+	default:
+	}
+
+	if f := l.e.seams.joining.Load(); f != nil {
+		(*f)(whatRemovalBatch)
+	}
+
+	select {
+	case <-ran:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// step runs it once, under a root span, and puts it back at the loop's end
+// unless it finished, raising removal_stalled after five failures in a row
+// and clearing it once it finishes or advances.
+func (l *removalLoop) step(it *loopItem) {
+	ctx, end := l.e.d.Tracer(l.ctx, "engine.removal_batch", slog.String("kind", it.kind.String()))
+	a := it.run(ctx)
+	end(nil)
+	l.steps.Add(1)
+	log := l.e.d.Logger
+	backoff := loopBackoff
+	switch a {
+	case itemDone:
+		l.unstall(it)
+		l.forget(it)
+		return
+	case itemAdvanced:
+		l.unstall(it)
+		it.fails, backoff = 0, 0
+	case itemRetry:
+		it.fails++
+		if it.fails >= stallAfter && !it.stalled.Load() {
+			log.Log(l.ctx, stallLevel(it.kind), "removal_stalled", "file", it.f, "kind", it.kind)
+			l.e.conds.raise(condKey{conditionRemovalStalled, it}, Condition{
+				Name:    conditionRemovalStalled,
+				Subject: Subject{Scope: ScopeShare, ID: it.b.share.ID.String()},
+				Cause:   errRemovalStalled,
+				Detail:  "file " + it.f.String() + ", kind " + it.kind.String() + ": retried at its backoff",
+			}, time.Time{})
+			it.stalled.Store(true) // after the raise: a reader that sees it finds the condition in Stats
+		}
+	}
+	it.notBefore = l.e.d.Clock.Now().Add(backoff)
+	l.mu.Lock()
+	ended := l.closed || l.dropped[it.b.share.ID]
+	if !ended {
+		l.items = append(l.items, it)
+	}
+	l.mu.Unlock()
+	if ended {
+		l.unstall(it)
+		l.forget(it)
+		if it.end != nil {
+			it.end()
+		}
+	}
+}
+
+// unstall clears removal_stalled for it, once it finished, advanced or left
+// the loop.
+func (l *removalLoop) unstall(it *loopItem) {
+	if !it.stalled.Swap(false) {
+		return
+	}
+	l.e.d.Logger.Info("removal_stalled cleared", "file", it.f, "kind", it.kind)
+	l.e.conds.clear(condKey{conditionRemovalStalled, it})
+}
+
+// forget ends the self-fence's store failure of the item's file once it left the
+// loop, unless another item of the loop holds that file and retries it.
+func (l *removalLoop) forget(it *loopItem) {
+	l.mu.Lock()
+	held := slices.ContainsFunc(l.items, func(o *loopItem) bool { return o.f == it.f })
+	l.mu.Unlock()
+	if !held {
+		l.e.fence.forget(ownerOf(l.ctx), it.f)
+	}
+}
+
+// halt stops the loop, joins its goroutine within the bound b and ends every
+// item left. It reports false when the join did not end in b, or when b ended
+// between two items' ends, leaving the loop stopped and the items not yet
+// ended to a later halt: the stop is signalled once, and each item ended
+// once, by whichever call takes it from the list.
+//
+// decision: the ends run one at a time and the bound is checked before each,
+// since an end can wait on the store: a clone's end releases its hold on the
+// source, bounded by the conflict bound but outside the stop bound, so a
+// Close with many clones would otherwise run past it by that bound for each.
+// One end can still run past the bound by the conflict bound.
+func (l *removalLoop) halt(b *stopBound) bool {
+	l.mu.Lock()
+	first := !l.closed
+
+	if first {
+		l.closed = true
+		l.ending = l.items
+		l.items = nil
+	}
+
+	l.mu.Unlock()
+
+	if first {
+		l.cancel()
+		close(l.stop)
+	}
+
+	if !b.join(l.done, "a removal loop") {
+		return false
+	}
+
+	for {
+		l.mu.Lock()
+
+		if len(l.ending) == 0 {
+			l.ending = nil
+			l.mu.Unlock()
+
+			return true
+		}
+
+		if b.over() {
+			l.mu.Unlock()
+
+			return false
+		}
+
+		it := l.ending[0]
+		l.ending = l.ending[1:]
+		l.mu.Unlock()
+
+		l.unstall(it)
+		if it.end != nil {
+			it.end()
+		}
+	}
+}
+
+// dropShare ends everything the loop holds for share s, and answers the files
+// of the items it ended. An item of the share the loop runs now is ended when
+// its run returns, and none of the share's is enqueued after: a share that
+// was dropped runs nothing again. It clears the removal_stalled each ended
+// item raised.
+func (l *removalLoop) dropShare(s entity.ShareID) (files []entity.FileID) {
+	l.mu.Lock()
+
+	if l.dropped == nil {
+		l.dropped = map[entity.ShareID]bool{}
+	}
+
+	l.dropped[s] = true
+
+	var ended []*loopItem
+
+	l.items = slices.DeleteFunc(l.items, func(it *loopItem) bool {
+		if it.b.share.ID == s {
+			ended = append(ended, it)
+
+			return true
+		}
+
+		return false
+	})
+
+	// The running item is a clone's (an unbound share's gate refuses the rest).
+	// A clone's copies are not noted for a commit and its end leaves the
+	// destination's guard held, so this file is on no due set: only discard,
+	// through this file, frees its guard.
+	if l.running != nil && l.running.b.share.ID == s {
+		files = append(files, l.running.f)
+	}
+
+	l.mu.Unlock()
+
+	for _, it := range ended {
+		files = append(files, it.f)
+
+		l.unstall(it)
+		l.forget(it)
+
+		if it.end != nil {
+			it.end()
+		}
+	}
+
+	return files
+}
+
+// isDropped reports whether share s was dropped: nothing of it is noted for
+// a commit again.
+func (l *removalLoop) isDropped(s entity.ShareID) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.dropped[s]
+}
+
+// pending is the count of items on the loop and the oldest one's age:
+// engine_removals_pending and engine_removals_oldest_seconds.
+func (l *removalLoop) pending() (n int, oldest time.Duration) {
+	now := l.e.d.Clock.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, it := range l.items {
+		oldest = max(oldest, now.Sub(it.queued))
+	}
+	return len(l.items), oldest
+}
+
+// stalledOn reports whether f has an item removal_stalled, the one running
+// included: a retry takes the item off the list while it runs, and its stall
+// holds until a run finishes or advances it.
+func (l *removalLoop) stalledOn(f entity.FileID) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if r := l.running; r != nil && r.f == f && r.stalled.Load() {
+		return true
+	}
+	for _, it := range l.items {
+		if it.f == f && it.stalled.Load() {
+			return true
+		}
+	}
+	for it := range l.waits {
+		if it.f == f {
+			return true
+		}
+	}
+	return false
+}
+
+// waiting raises removal_stalled for it, an item still waiting outside the
+// loop before it is posted, or clears it, logging each change.
+func (l *removalLoop) waiting(it *loopItem, stalled bool) {
+	l.mu.Lock()
+	was := l.waits[it]
+	if stalled {
+		if l.waits == nil {
+			l.waits = map[*loopItem]bool{}
+		}
+		l.waits[it] = true
+	} else {
+		delete(l.waits, it)
+	}
+	l.mu.Unlock()
+	switch {
+	case stalled && !was:
+		l.e.d.Logger.Log(l.ctx, stallLevel(it.kind), "removal_stalled", "file", it.f, "kind", it.kind)
+	case !stalled && was:
+		l.e.d.Logger.Info("removal_stalled cleared", "file", it.f, "kind", it.kind)
+	}
+}
+
+// stallLevel is removal_stalled's level at its raise: Error for a clone's,
+// which holds its destination's writes and is unhealthy, Warn for the rest,
+// which are degraded; its clear is logged at Info (RFC 25 section 3.4).
+func stallLevel(k entity.RemovalKind) slog.Level {
+	if k == entity.RemoveClone {
+		return slog.LevelError
+	}
+	return slog.LevelWarn
+}
+
+// phase2 is the item that drops r's masked records and prunes its removal
+// record: the store's Resume runs every batch of the file's removals not
+// done, and the prune, with no pass in flight, is at r's own version. One
+// bound covers a run; a run the bound cuts after a batch committed advanced,
+// so a removal larger than one bound's worth of batches is never counted
+// toward removal_stalled while each run moves its cursor.
+func (e *Engine) phase2(r *removal) *loopItem {
+	share, v := r.b.share.ID, entity.JournalVersion(r.v.Bytes())
+	return &loopItem{b: r.b, f: r.f, kind: r.kind, run: func(ctx context.Context) answer {
+		ctx, cancel := e.bounded(ctx)
+		defer cancel()
+		advanced, err := e.d.Content.Resume(ctx, share, r.f)
+		if err == nil {
+			err = e.d.Content.PruneRemovals(ctx, share, r.f, v)
+		}
+		res, a := phase2Result(advanced, err)
+		r.b.gc.removals.runs[res].Add(1)
+		return a
+	}}
+}
+
+// phase2Result is a phase-2 run's result and answer from whether Resume
+// advanced and the run's error, Resume's or the prune's.
+func phase2Result(advanced bool, err error) (runResult, answer) {
+	switch {
+	case err == nil:
+		return runDone, itemDone
+	case advanced:
+		return runAdvanced, itemAdvanced
+	case errors.Is(err, kvstore.ErrConflict):
+		return runConflict, itemRetry
+	default:
+		return runError, itemRetry
+	}
+}
+
+// clonePhase2 is clone c's item once its phase 1 committed, r the clone's
+// removal of the destination extent: phase2's item, its run preceded by the
+// hold on the source and followed by the clone's end, its registrations
+// dropped and its done signal raised, then the hold's release, and only then
+// its leave of both shares' gates. Hold and Release are each bounded by the
+// conflict bound, and a failed one is retried counted, as a phase 2 run is.
+// The loop runs it with no entry lock or guard held.
+func (e *Engine) clonePhase2(c *cloneRun, r *removal) *loopItem {
+	it := e.phase2(r)
+	p2 := it.run
+	var (
+		asked, held, p2done bool
+		hold                entity.OpenID
+	)
+	// decision: a clone's source open is keyed in its share's own shard, the
+	// one Bind named; nothing the engine receives names a finer shard. A share
+	// split into per-child shards needs Existence.Clone to return the hold's key.
+	//
+	// decision: the hold names the clone's version v, not asOf, as the store's
+	// phase 1 records the source's open with v and CloneOpen matches on it,
+	// while CloneSrc.AsOf says asOf. Pass asOf once the store records it, or
+	// rename the field if v is kept.
+	src := CloneSrc{Share: c.sb.share.ID, Shard: c.sb.share.Shard, File: c.src, Dst: c.dst,
+		AsOf: entity.JournalVersion(r.v.Bytes())}
+	release := func(ctx context.Context) error {
+		ctx, cancel := e.bounded(ctx)
+		defer cancel()
+		return e.d.Holds.Release(ctx, hold)
+	}
+	it.run = func(ctx context.Context) answer {
+		if !asked {
+			hctx, cancel := e.bounded(ctx)
+			id, err := e.d.Holds.Hold(hctx, src)
+			cancel()
+			var d *vfserr.Delay
+			switch {
+			case errors.As(err, &d) && d.Cause == vfserr.DelayFrozen:
+				// decision: a shard not yet served is retried uncounted with no
+				// ceiling, as serving it is open state's to raise, not a fault
+				// of this removal. A shard never served keeps both
+				// registrations, so writes to either extent keep answering
+				// DelayClone, and raises no removal_stalled. Count it toward
+				// the stall if a shard is seen staying unserved with nothing
+				// of open state's own reporting it.
+				return itemRetryUncounted
+			case errors.Is(err, entity.ErrStale):
+				// decision: a Hold refused for good, the source holding no
+				// open of the clone's, holds nothing and phase 2 runs on, with
+				// no Release after it; any other error is retried below. The
+				// clone's registration on the source keeps a release of it
+				// pending until the clone ends, so its bytes stay; opens of
+				// the source are refused meanwhile. Hold it back instead if a
+				// release is ever seen passing a source whose Hold failed.
+				e.d.Logger.Error("a clone's hold on its source was refused: phase 2 runs without it",
+					"src", c.src, "dst", c.dst, "err", err)
+			case err != nil:
+				e.d.Logger.Warn("a clone's hold on its source failed: retried", "src", c.src, "dst", c.dst, "err", err)
+				return itemRetry
+			default:
+				hold, held = id, true
+			}
+			asked = true
+		}
+		if !p2done {
+			if a := p2(ctx); a != itemDone {
+				return a
+			}
+			p2done = true
+			// decision: the clone ends once its last batch set the removal
+			// done, before the Release: its registrations drop, the
+			// destination extent is served and the call answered, and a
+			// failed Release is retried alone. Neither registration guards
+			// anything past that batch: every ref of the destination is
+			// written, the source extent is no longer read, and the clone's
+			// open, which the Release closes, refuses a release of the source
+			// until then, deferring it to the open's close: open state's rule,
+			// which TestASourceUnlinkedBeforeTheHoldIsReleasedAfterTheClone
+			// checks over the real table. Keep the registrations until the
+			// Release instead if a source is seen released while the clone's
+			// open is still held. The clone leaves both shares' gates only
+			// after the Release, so an Unbind of the source's share returns
+			// with the source released.
+			e.settleClone(c, nil)
+		}
+		if held {
+			if err := release(ctx); err != nil {
+				e.d.Logger.Warn("a clone's release of its source failed: retried", "src", c.src, "dst", c.dst, "err", err)
+				return itemRetry
+			}
+			held = false
+		}
+		c.leave()
+		return itemDone
+	}
+	it.end = func() {
+		// The loop ended, its context with it: the release runs under its own,
+		// and only once the clone is done or its share was dropped. A loop
+		// that Close stopped before the last batch takes no Release, so the
+		// source's clone-kind open record stays and the next start's rebuild
+		// holds the source from it, its phase 2 left to finish (RFC 8 §2.5
+		// step 2).
+		//
+		// decision: a dropped destination share releases the hold mid-clone,
+		// as Drop is to take the clone's removal record with the share,
+		// leaving no start to rebuild it. Drop is not built, so only the test
+		// seam reaches this today. The source's clone-kind open record stays
+		// in the source share and holds it again at the next start, so Drop
+		// must delete it too (dropCloneHold).
+		if held && (p2done || c.db.gc.removals.isDropped(c.db.share.ID)) {
+			if err := release(context.Background()); err != nil {
+				e.d.Logger.Warn("a clone's release of its source at its loop's end failed", "src", c.src, "dst", c.dst, "err", err)
+			}
+		}
+		if !p2done { // a clone done already settled, its Release alone left
+			e.settleClone(c, errLoopEnded)
+		}
+		c.leave()
+	}
+	return it
+}
+
+// finish ends r after its phase 1 committed: the guard released, the
+// journal settled through it, and its phase 2 posted to its journal's loop.
+func (e *Engine) finish(r *removal) {
+	e.release(r, true)
+	r.b.gc.removals.enqueue(e.phase2(r))
+}
+
+// retryLater hands r's phase 1, which its call could not commit, to its
+// journal's loop, which retries it keeping the guard and the in-flight mark
+// until it commits, until the file is found gone, or until a read-only
+// journal is found to have undone it. outcome, when not nil,
+// is told once how it ended: nil once it commits.
+//
+// decision: a phase 1 its loop's end cuts short, as Close's stop of the work
+// queue does, leaves its file as it is: every pending operation, the
+// removal's own included, stays in the entry and the guard stays held, so no
+// group commit after it, Close's last included, commits any of them, and the
+// journal's unsettled marker leaves the removal to the next start's recovery
+// (RFC 8 §2.5 step 2). A caller waiting on the guard waits to its own
+// deadline. Withdraw it if the loop can ever end while the engine still
+// serves the file.
+func (e *Engine) retryLater(r *removal, op kvstore.RemoveOp, outcome func(error)) {
+	tell := func(err error) {
+		if outcome != nil {
+			outcome(err)
+		}
+	}
+	r.b.gc.removals.enqueue(&loopItem{b: r.b, f: r.f, kind: r.kind,
+		run: func(ctx context.Context) answer {
+			ctx, cancel := e.bounded(ctx)
+			defer cancel()
+			err := e.tryPhase1(ctx, r, op)
+			switch {
+			case err == nil:
+				tell(nil)
+				return itemDone
+			case errors.Is(err, kvstore.ErrHeld):
+				tell(e.abort(r))
+				return itemDone
+			case undid(err):
+				tell(e.undone(r, err))
+				return itemDone
+			case terminal(err):
+				e.unstage(r, err)
+				tell(e.storeErr(err))
+				return itemDone
+			}
+			return itemRetry
+		},
+		end: func() { tell(errLoopEnded) },
+	})
+}
+
+// errLoopEnded is a retried phase 1's outcome when its loop ended first:
+// vfserr.ErrUnavailable.
+var errLoopEnded = errClosed

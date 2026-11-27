@@ -1,0 +1,19 @@
+package storage_test
+
+import (
+	"testing"
+
+	"github.com/cubbit/dittofs/pkg/journal/internal/platform"
+	"github.com/cubbit/dittofs/pkg/journal/internal/storage"
+)
+
+// The operating system's storage is implemented on Windows, so the contract
+// runs on it here, on NTFS.
+func init() {
+	targets = append(targets, target{
+		name: "platform.OS",
+		open: func(t *testing.T, dir string) storage.FS {
+			return platform.NewOS(dir)
+		},
+	})
+}

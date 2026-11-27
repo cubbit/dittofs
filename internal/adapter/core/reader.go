@@ -1,0 +1,322 @@
+package core
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/netip"
+	"sync/atomic"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/resources"
+)
+
+// readBufLen is one connection's read buffer: the small class's capacity, so a
+// burst of small records is read once (RFC 20 section 6.8).
+const readBufLen = 4 << 10
+
+// errFrame wraps every framing refusal, so the connection's close can name the
+// reason `frame` rather than the client's own.
+var errFrame = errors.New("core: the record's framing")
+
+var (
+	errFragments = errors.New("a record past its fragment count")
+	errCap       = errors.New("a record past the protocol's cap")
+)
+
+// reader cuts records from one connection: one small-class read buffer, each
+// record returned as a receive Buf of its class whose charge was reserved
+// before its body was read (RFC 24 section 3.2), a fragmented record charged
+// once at the cap and counted, and the frame deadline running from the
+// record's first byte (RFC 20 section 6.4). in counts every byte the socket
+// gave, framing included (§10.1).
+type reader struct {
+	nc      net.Conn
+	framer  Framer
+	recv    *resources.BufPool
+	key     netip.Addr
+	timeout time.Duration
+	in      adder
+	buf     []byte // buf[off:n] is read and not yet consumed
+	off     int
+	n       int
+	armed   bool
+	held    atomic.Bool // bytes of a record are in hand, or one is read and not yet served; the idle deadline rests on it (RFC 20 section 6.4)
+}
+
+// newReader wraps a connection's bytes: f frames them, recv reserves each
+// record's charge for the connection, timeout, where it is not zero, is
+// read_timeout, and in counts its bytes of the direction the connection's
+// series resolved.
+func newReader(nc net.Conn, f Framer, recv *resources.BufPool, key netip.Addr, timeout time.Duration, in adder) *reader {
+	return &reader{
+		nc:      nc,
+		framer:  f,
+		recv:    recv,
+		key:     key,
+		timeout: timeout,
+		in:      in,
+		buf:     make([]byte, readBufLen),
+	}
+}
+
+// Read returns the next record: its body, in a receive Buf reserved at its
+// class. Its length is checked against the protocol's cap before anything is
+// reserved; a record in fragments reserves the cap's class once, before the
+// first body is read, and is charged nothing more.
+func (r *reader) Read(ctx context.Context) (*resources.Buf, error) {
+	// A context that ended before the read started stops it before it blocks:
+	// a close disarms, which clears the deadline its stop set.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// A record's deadline runs while the reader cuts it: from its first byte,
+	// here or already read.
+	if r.n > r.off {
+		if err := r.arm(ctx); err != nil {
+			return nil, err
+		}
+	}
+	hdr, err := r.header(ctx)
+	if err != nil {
+		return nil, err
+	}
+	n, last, err := r.framer.BodyLen(hdr)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errFrame, err)
+	}
+	r.off += r.framer.HeaderLen()
+	r.held.Store(true) // a record is cut: its body may still be outstanding
+
+	reserve, frags := n, 1
+	if !last {
+		reserve, frags = r.framer.MaxRecord()
+	}
+	rec, err := r.reserve(ctx, reserve)
+	if err != nil {
+		return nil, err
+	}
+	// The grant starts the deadline afresh, once: a full read_timeout for the
+	// rest of the record (RFC 20 section 6.4, as the amendment states it).
+	if err := r.arm(ctx); err != nil {
+		rec.Release()
+		return nil, err
+	}
+	total := 0
+	for i := 0; ; i++ {
+		if i >= frags {
+			rec.Release()
+			return nil, fmt.Errorf("%w: %w past %d", errFrame, errFragments, frags)
+		}
+		if total+n > reserve {
+			rec.Release()
+			return nil, fmt.Errorf("%w: %w: %d bytes past %d", errFrame, errCap, total+n, reserve)
+		}
+		if err := r.body(rec.B[total:], n); err != nil {
+			rec.Release()
+			return nil, err
+		}
+		total += n
+		if last {
+			break
+		}
+		if hdr, err = r.header(ctx); err != nil {
+			if err == io.EOF {
+				// A fragment of the record is already served: the peer's end
+				// here is the cut record's, not a clean close between records.
+				err = io.ErrUnexpectedEOF
+			}
+			rec.Release()
+			return nil, err
+		}
+		if n, last, err = r.framer.BodyLen(hdr); err != nil {
+			rec.Release()
+			return nil, fmt.Errorf("%w: %w", errFrame, err)
+		}
+		r.off += r.framer.HeaderLen()
+	}
+	rec.B = rec.B[:total]
+	r.disarm()
+	// The record is whole and in hand, not yet served: held counts it until
+	// the loop has handed it to the pipeline, so the whole of serve, a
+	// request's decode and admission included, runs under the idle deadline's
+	// rest.
+	r.held.Store(true)
+	return rec, nil
+}
+
+// served reports what the reader holds once the record it handed out is with
+// the pipeline: the records left unread in the buffer, and nothing else, so a
+// reader waiting at the writer's bound holds nothing.
+func (r *reader) served() { r.held.Store(r.off < r.n) }
+
+// header returns the next fragment's header, reading until it is whole.
+func (r *reader) header(ctx context.Context) ([]byte, error) {
+	l := r.framer.HeaderLen()
+	for r.n-r.off < l {
+		if err := r.fill(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return r.buf[r.off : r.off+l], nil
+}
+
+// body fills dst with the next n bytes of the record: those already read, then
+// the rest straight from the connection.
+//
+// decision: a record that fits in what was read is copied into its own receive
+// buffer rather than cut from the read buffer, since a Buf cannot be a slice of
+// another. Overturned if Buf gains sub-slices.
+func (r *reader) body(dst []byte, n int) error {
+	dst = dst[:n]
+	part := min(n, r.n-r.off)
+	copy(dst, r.buf[r.off:r.off+part])
+	r.off += part
+	if part < n {
+		read, err := io.ReadFull(r.nc, dst[part:])
+		r.in.Add(float64(read))
+		if err != nil {
+			if err == io.EOF {
+				// The body the record's mark promised, cut by the peer's end:
+				// the unexpected end inside a record, told apart from a clean
+				// close between them.
+				return io.ErrUnexpectedEOF
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// fill compacts the read buffer and reads once into its free part; the first
+// bytes of a record arm the frame deadline.
+func (r *reader) fill(ctx context.Context) error {
+	if r.off > 0 {
+		copy(r.buf, r.buf[r.off:r.n])
+		r.n -= r.off
+		r.off = 0
+	}
+	if r.n == len(r.buf) {
+		return fmt.Errorf("%w: %w: a header of %d bytes", errFrame, errCap, r.framer.HeaderLen())
+	}
+	m, err := r.nc.Read(r.buf[r.n:])
+	r.n += m
+	r.in.Add(float64(m))
+	r.held.Store(r.n > r.off)
+	if m > 0 && !r.armed {
+		if aerr := r.arm(ctx); aerr != nil {
+			return aerr
+		}
+	}
+	if err == io.EOF && m == 0 && r.n > r.off {
+		// A part of what the record's mark promised is already in hand, so the
+		// peer cut the record: the unexpected end, told apart from a clean
+		// close between records.
+		err = io.ErrUnexpectedEOF
+	}
+	return err
+}
+
+// reserve takes the record's charge. The deadline it holds is not stopped for
+// the wait: nothing reads the connection while it waits, so a deadline set
+// before it cannot expire there, and the grant arms the one that covers the
+// record's rest (RFC 20 section 6.4).
+func (r *reader) reserve(ctx context.Context, n int) (*resources.Buf, error) {
+	return r.recv.Get(ctx, r.key, n)
+}
+
+// holding reports whether bytes of a record are in hand: one partly read, one
+// read whole and not yet served, or ones left unread in the buffer. The idle
+// deadline rests on it: a connection mid-record is never idle (RFC 20 section
+// 6.4).
+func (r *reader) holding() bool { return r.held.Load() }
+
+// arm starts the frame deadline, and stops the reader at once if its context
+// has ended: a connection's close cancels the context before it sets a deadline
+// in the past, so the stop is never overwritten by an arm.
+func (r *reader) arm(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if r.timeout > 0 {
+		_ = r.nc.SetReadDeadline(time.Now().Add(r.timeout))
+	}
+	r.armed = true
+	return ctx.Err()
+}
+
+func (r *reader) disarm() {
+	if r.armed {
+		_ = r.nc.SetReadDeadline(time.Time{})
+		r.armed = false
+	}
+}
+
+// readLoop cuts the connection's records and hands each to the pipeline: it
+// waits while the writer is at its bound, holding no record, then cuts one and
+// serves it. Its end runs the connection's teardown (RFC 20 sections 6.1 and
+// 6.2). A failed read closes the connection on the reader's side (§10.1):
+// the client's reason for a peer that closed or reset and for any other
+// failed read, read_timeout for its own deadline.
+func (c *Conn) readLoop() {
+	defer c.teardown()
+	for {
+		if err := c.waitForRoom(); err != nil {
+			return
+		}
+		rec, err := c.rd.Read(c.ctx)
+		if err != nil {
+			c.Close(fmt.Errorf("%w: %w", errAtRead, err))
+			return
+		}
+
+		up := c.p.serve(rec)
+		// The record is served: only the buffer's leftovers are held now.
+		c.rd.served()
+		c.upMu.Lock()
+		after := c.afterServed
+		c.upMu.Unlock()
+
+		if after != nil {
+			after()
+		}
+
+		if err := c.awaitUpgrade(up); err != nil {
+			return
+		}
+	}
+}
+
+// takeHeld copies the bytes read and not consumed: what crypto/tls reads first
+// once the connection switched to TLS. It leaves the buffer as it is, for the
+// reader's goroutine, which is not reading, to reset in swap.
+func (r *reader) takeHeld() []byte {
+	return bytes.Clone(r.buf[r.off:r.n])
+}
+
+// swap makes nc the connection the reader reads from, its buffer's bytes
+// having gone to nc first.
+func (r *reader) swap(nc net.Conn) {
+	r.nc = nc
+	r.off, r.n = 0, 0
+	r.held.Store(false)
+}
+
+// waitForRoom waits while the writer's queue is at its bound, so a client that
+// reads nothing stops being read rather than growing the queue (RFC 20 section
+// 6.2, R32).
+func (c *Conn) waitForRoom() error {
+	room, at := c.w.pause()
+	if !at {
+		return nil
+	}
+	select {
+	case <-room:
+		return nil
+	case <-c.ctx.Done():
+		return c.ctx.Err()
+	}
+}

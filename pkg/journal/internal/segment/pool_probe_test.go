@@ -1,0 +1,91 @@
+package segment
+
+import (
+	"sync"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/journal/internal/core"
+)
+
+// WantRecycleForTest runs wantRecycle: the retire tests reach the pool's
+// recycle reservation from the external test package, which cannot name the
+// unexported method.
+func (p *Pool) WantRecycleForTest() (Class, bool) { return p.wantRecycle() }
+
+// RecycledForTest runs recycled with the reservation wantRecycle took.
+func (p *Pool) RecycledForTest(id core.SegmentID, c Class) { p.recycled(id, c) }
+
+// RecycleFailedForTest runs recycleFailed on the class the reservation was
+// taken for.
+func (p *Pool) RecycleFailedForTest(c Class) { p.recycleFailed(c) }
+
+// RetryEveryForTest shortens the retirer's retry interval, so a test's
+// worker pass arrives in milliseconds rather than the second the default
+// asks. It must run before Start: the ticker it feeds is the worker's own.
+func RetryEveryForTest(r *Retirer, d time.Duration) { r.retryEvery = d }
+
+// KickForTest wakes the retirer's worker from the external test package.
+func (r *Retirer) KickForTest() { r.kickWorker() }
+
+// PendingForTest reads the demand level a refused Hold recorded, so a check
+// can assert the ask it records and that a made or recycled spare cleared it.
+func (p *Pool) PendingForTest() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.pending
+}
+
+// ExtraNamesForTest reports how many extra names the executor still records
+// for a segment id, so a check can assert a completed retirement leaves none
+// behind: the map is bounded by the retirements still owed a retry.
+func (r *Retirer) ExtraNamesForTest(id core.SegmentID) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.extra[id])
+}
+
+// ParkedWaitersForTest reports how many WaitSpares calls are parked on the
+// pool's settle condition now, so a test sequences a stop (or a release)
+// against a wait it has confirmed is parked, rather than racing the wait's
+// arrival with a sleep.
+func (p *Pool) ParkedWaitersForTest() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.parked
+}
+
+// FillingForTest reports whether a refill pass is running or its kick is
+// still queued, so a test can wait for a pass it expects to make nothing: no
+// counter moves over such a pass, and its end is the only event it leaves.
+func (p *Pool) FillingForTest() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.filling
+}
+
+// KickQueuedForTest reports whether a kick sits in the pool's one-slot channel
+// unconsumed, so a test can place a waiter provably between a take's ask and
+// the pass it asked for, whatever the scheduler does with the worker.
+func (p *Pool) KickQueuedForTest() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.kick) > 0
+}
+
+// HoldMuForTest takes the retirer's lock and returns its release, so a test
+// holds a pool wait inside its question to the retirer.
+func (r *Retirer) HoldMuForTest() (release func()) {
+	r.mu.Lock()
+	var once sync.Once
+	return func() { once.Do(r.mu.Unlock) }
+}
+
+// QueueForTest reads the retirer's queue: the ids still listed for a pass,
+// the queued ids a recycle would take, and those refused for another path's
+// claim, so a test sees what the refill and the spare wait will read.
+func (r *Retirer) QueueForTest() (listed, full, claimBlocked int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.queue), len(r.full), len(r.claimBlocked)
+}

@@ -1022,7 +1022,9 @@ type Adapter interface {
 
 	// Connections lists the connections open now, for the API's client
 	// list. It is read from core's connection registry, never written by
-	// protocol code.
+	// protocol code. A connection is listed from its accept, before its
+	// first byte is read, until its teardown ends, before its socket is
+	// closed.
 	Connections() iter.Seq[ConnInfo]
 }
 
@@ -1515,7 +1517,7 @@ An adapter contributes three things, all from `core`, none from protocol code:
 | Answer | What the adapter supplies |
 | --- | --- |
 | **liveness** ([RFC 25 §3.5](rfc-25-observability.md#3.5%20Liveness)) | each accept loop reports a turn through `Deps.Watch`, or reports idle; a loop that does neither for 60 s fails liveness. A connection's reader legitimately blocks on its socket and is not watched. Nothing else the adapter does can fail it |
-| **readiness** ([RFC 25 §3.6](rfc-25-observability.md#3.6%20Readiness)) | `Health()`: ready when serving with every listener bound; not ready while configured or draining. The node turns ready for clients once its start has started every enabled adapter, each serving or refused at configured; from then on only an adapter's lost listener turns it not ready, so an adapter refused, rebuilt for a `port` change or enabled after the start leaves it ready. A refused adapter has no `Health`: the node raises `adapter_refused` from the error `New` or `Start` returned, and the others keep serving |
+| **readiness** ([RFC 25 §3.6](rfc-25-observability.md#3.6%20Readiness)) | `Health()`: ready when serving with every listener bound; not ready while configured or draining. The node turns ready for clients once its start has started every enabled adapter, each serving or refused at configured, and has written its status ([RFC 23 §2.2](rfc-23-control-plane.md#2.2%20Start%20and%20stop), step 10); from then on only an adapter's lost listener turns it not ready, so an adapter refused, rebuilt for a `port` change or enabled after the start leaves it ready. A refused adapter has no `Health`: the node raises `adapter_refused` from the error `New` or `Start` returned, and the others keep serving |
 | **conditions** ([RFC 25 §3.1](rfc-25-observability.md#3.1%20Conditions)) | `adapter_listener_lost`, a listener whose `Accept` has kept failing for 60 s while serving (§6.4), `unhealthy`; `adapter_refused`, raised by the node for an adapter whose `New` or `Start` failed, `unhealthy` with the error; `sidecar_failed` (§3.5), `degraded`; `adapter_record_unreadable`, naming the protocol, `degraded` while `Adapter` bytes fail to decode (the usual cause a rolling upgrade across record versions), raising a ticket at once. Each derived from current evidence and cleared when it no longer holds |
 
 A refused setting is not readiness either: it is refused on every node that reads it, so steering clients elsewhere helps none of them, and an unready node would take the management API that can fix the setting out of service with it. A sidecar's failure and a single client's trouble are not readiness: a node
@@ -3705,8 +3707,13 @@ A decoder **MUST** check every length, count and offset against both the bytes
 remaining and the protocol's cap before it allocates or reads: an array count
 of four billion in a 200-byte request is refused, not allocated. The generated
 decoder does so for every field, and the generator refuses a variable-length
-field that carries no maximum, so no command can leave one unbounded. Caps are the
-protocol RFCs' sizes ([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes),
+field that carries no maximum, so no command can leave one unbounded. Both
+generators, the XDR codec's and the SMB2 codec's, also refuse a struct whose
+largest encoding, its maxima multiplied, passes 2^31-1 bytes, and the XDR
+codec's a maximum past an XDR length's 2^32-1, so no `MaxWire` overflows an
+`int`, and no sum `core` makes of them with a header's length or a compound's
+members overflows a 64-bit one. Caps are the protocol RFCs' sizes
+([RFC 21 §2.3](rfc-21-nfs.md#2.3%20Transfer%20sizes),
 [RFC 22 §3.3](rfc-22-smb.md#3.3%20Sizes%20and%20credits)). A decoder refuses
 trailing bytes the protocol forbids and accepts the ones it allows, as the
 specification says for each message — SMB's 8-byte alignment padding, XDR's
@@ -4256,7 +4263,7 @@ func (p *BufPool) Charge(n int) int64                           // RFC 24 §2.5:
 func Join(n int, bufs ...*Buf) *Buf                             // RFC 24 §2.5: a chain's record (§4.7), an empty buffer with room for n that takes over bufs' reservations: no new charge, no wait
 func (b *Buf) Retain() *Buf                                  // a new borrower: the service, the writer, a held request
 func (b *Buf) Release()                                      // the last release returns the bytes and the reservation
-func (b *Buf) Recharge(to *Budget) error                     // RFC 24 §4.3: the whole charge moved to a reservation from to; refused, nothing changes
+func (b *Buf) Recharge(to *Budget) error                     // RFC 24 §4.3: the whole charge moved to a reservation from to, one already from to kept; refused, nothing changes
 func (b *Buf) Charge() int64                                 // RFC 24 §4.3: the whole charge, class capacity and per-request overhead, which the hold floor counts
 func (b *Buf) Attach(seg *Buf)                               // §5.3: ends b's current segment and lends seg as the next one, a READ's data, never copied; what b appends after it starts a new segment
 func (b *Buf) AppendBuffers(dst net.Buffers) net.Buffers     // §6.2: b's bytes in order, its own and every segment Attach lent, appended to dst with no copy: what the writer gathers into its one net.Buffers write, the framing aside
@@ -4336,7 +4343,7 @@ Three, each per protocol:
 | Benchmark | Measures | Runs | Gate |
 | --- | --- | --- | --- |
 | **codec micro**: `BenchmarkDecode*`, `BenchmarkEncode*` per message | ns and allocations per message | per change, in a non-race cell of its own: allocation gates skip under `-race` ([RFC 29 §4.10](rfc-29-test-harness.md#4.10%20Benchmarks%20and%20long%20runs)) | `READ`, `WRITE`, `GETATTR`, SMB `READ`/`WRITE`/`QUERY_INFO` decode and encode at **0 allocations**, asserted with `testing.AllocsPerRun` |
-| **pipeline micro**: the whole pipeline over loopback against a *null service*, a `vfs.Service` answering every call at once from memory | the adapter's own cost per request, ns and allocations, with no storage underneath | per change, as above | allocations per request, a chain's per record it sends, asserted equal to a checked-in number that may only fall, a count below it failing until the number is lowered, with tracing off; at ratio 0.01, with `Deps.TraceIDs` returning only IDs the ratio rule rejects (bit 63 of the low eight bytes set), warm-up included, `testing.AllocsPerRun(N, …)` asserted equal to tracing off's (§10.2). In `core`'s run, `testproto`'s `Create`, whose handler returns a zero-size reply on either answer, run at a level that drops every line once with the call answered success and once through a wrapper around the null service, declared in the test, that answers every call one `ErrDelay` of `DelayResources`, which both of `testproto`'s tables map to `StatusDelay` at once, an expected refusal logged at debug (§4.5), arming nothing per call: the two counts asserted equal (§10.3). ns per request reported, with no gate until a baseline is checked in |
+| **pipeline micro**: the whole pipeline over loopback against a *null service*, a `vfs.Service` answering every call at once from memory | the adapter's own cost per request, ns and allocations, with no storage underneath | per change, as above | allocations per request, a chain's per record it sends, asserted equal to a checked-in number that may only fall, a count below it failing until the number is lowered, with tracing off; at ratio 0.01, with `Deps.TraceIDs` returning only IDs the ratio rule rejects (bit 63 of the low eight bytes set), warm-up included, `testing.AllocsPerRun(N, …)` asserted equal to tracing off's (§10.2). Over every run, with tracing off and at ratio 0.01, each record starts one goroutine, its request's (§6.9) or its chain's (§4.7), by the runtime's count of goroutines created, and leaves none running once its requests end ([RFC 24 §6.1](rfc-24-resources.md#6.1%20Goroutines)). In `core`'s run, `testproto`'s `Create`, whose handler returns a zero-size reply on either answer, run at a level that drops every line once with the call answered success and once through a wrapper around the null service, declared in the test, that answers every call one `ErrDelay` of `DelayResources`, which both of `testproto`'s tables map to `StatusDelay` at once, an expected refusal logged at debug (§4.5), arming nothing per call: the two counts asserted equal (§10.3). ns per request reported, with no gate until a baseline is checked in |
 | **end to end**: the composed node with its real stores | small operations (`GETATTR`, `LOOKUP`, SMB `QUERY_INFO`) per second on one connection and on the node; 1 MiB sequential read and write on one and four connections; p99 of a 4 KiB write at half the request budget | nightly, dedicated host | tracked, not gated: a point, an area or the night's figure that falls below its 7-day median by more than its noise band is flagged, which fails nothing ([RFC 29 §4.10](rfc-29-test-harness.md#4.10%20Benchmarks%20and%20long%20runs)) |
 
 The gates cover the served path and the mapped refusal above; a request
@@ -4707,8 +4714,8 @@ tests, per change, without waiting for the nightly run.
 **Suites.** §7's codec, stage, core, handler, boundary and in-process layers,
 the translation tables and their fuzz seeds run in `unit`, and §6.10's codec and
 pipeline allocation gates per change in a non-race cell of their own. A test of
-those layers that waits on a stub runs red in a suite of its own, under its
-own build tag, as a known failure
+those layers that waits on a stub runs red in a suite of its own,
+`adapter-conformance`, under its own build tag, as a known failure
 ([RFC 29 §4.7](rfc-29-test-harness.md#4.7%20Grading%3A%20known%20failures%2C%20expected%20skips%2C%20quarantine%2C%20retries)),
 until the change that fills the stub removes its entry; it fails on an
 assertion or an error, never a crash ([RFC 29 §4.6](rfc-29-test-harness.md#4.6%20Results)). The conformance layer is
@@ -4861,7 +4868,8 @@ a healthy node; any increase is a bug, and alerts as one.
 **How they are recorded.** The reader and writer count connections and bytes;
 the pipeline counts refusals by stage and replay hits, and times the stages; the
 compound runner counts, as a shortened read, each member whose `Bound` its room
-lowered (§4.3), which only a `READ`'s or `READ_PLUS`'s hook does; the metrics
+lowered (§4.3), which only a `READ`'s or `READ_PLUS`'s hook does, and a
+compound the drain refuses whole, which runs no member, counts none; the metrics
 middleware (§4.7) marks the call's start and end, between which nothing is timed.
 A compound the drain refuses whole is counted under `decode_args`; it is
 judged once its reply is reserved (§3.1), so `decode_args` and `reply_wait`

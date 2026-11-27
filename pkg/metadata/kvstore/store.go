@@ -1,0 +1,247 @@
+package kvstore
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"math"
+	"slices"
+
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/keys"
+	"github.com/google/uuid"
+)
+
+var (
+	ErrNotInitialised = errors.New("kvstore: store not initialised")
+	ErrInitialised    = errors.New("kvstore: store already initialised")
+	ErrFormat         = errors.New("kvstore: store format not supported")
+	// ErrFormatRecord is a format record that does not decode: a damaged
+	// store, not one a newer binary reads, so it is not ErrFormat.
+	ErrFormatRecord = errors.New("kvstore: the store's format record does not decode")
+	ErrForeignStore = errors.New("kvstore: store holds a foreign backend's keys")
+	// ErrV1Store is the ErrForeignStore whose first key is one v1's Badger
+	// store wrote; a refusal that is ErrV1Store is ErrForeignStore too.
+	ErrV1Store = errors.New("kvstore: store holds v1's keys")
+)
+
+// v1Prefixes is every key prefix v1's Badger metadata store wrote, from its
+// first commit to its deletion, with its two single keys, srvepoch and
+// srvclean. Each starts with a lowercase letter, which no kind of this
+// format's keys is, so a match is never one of this format's records.
+var v1Prefixes = []string{
+	"block:", "br:", "c:", "cap:", "cfg:", "chunk-blocks:", "chunk:", "cn:", "crec:",
+	"d:", "dh:", "f:", "fb-file:", "fb-hash:", "fb-local:", "fb:", "fm:", "fmt:",
+	"fsmeta:", "hmap:", "l:", "li:", "lkclient:", "lkfile:", "lkowner:", "lock:",
+	"m:", "nsm:", "obj-chunks:", "obj:", "p:", "pl:", "qu:", "ro:", "s:",
+	"srvclean", "srvepoch", "synced:", "w:",
+}
+
+func isV1Key(k []byte) bool {
+	return slices.ContainsFunc(v1Prefixes, func(p string) bool { return bytes.HasPrefix(k, []byte(p)) })
+}
+
+// MinFormat and MaxFormat are the store formats this binary reads and
+// writes, the range a node registers for the store format. Format n names
+// the codec versions a binary may write in it, so raising the active format
+// is the only way a newer codec version reaches the store.
+//
+// decision: format 1 is not frozen yet. No release has created a store, so
+// new record kinds join it and the control-plane codecs change in place at
+// version 1, with no reader to break. The first release that creates a store
+// freezes it: from then on a new record kind or codec version raises the
+// format, and the codecs' golden vectors fail any change that does not.
+const (
+	MinFormat = 1
+	MaxFormat = 1
+)
+
+// knownFolds is every fold rule this binary implements, by the ID the
+// format record names it by.
+var knownFolds = func() []uint32 {
+	var ids []uint32
+	for _, r := range entity.FoldRules {
+		ids = append(ids, uint32(r))
+	}
+	return ids
+}()
+
+// format is the store format record: the active store format and the fold
+// rules the store's shares use.
+type format struct {
+	Version uint64
+	Folds   []uint32
+}
+
+func encodeFormat(f format) []byte {
+	w := codec.NewWriter(v1).Uint64(f.Version).Len(len(f.Folds))
+	for _, id := range f.Folds {
+		w.Uint32(id)
+	}
+	return w.Encode()
+}
+
+func decodeFormat(b []byte) (format, error) {
+	r, err := open(b)
+	if err != nil {
+		return format{}, err
+	}
+	f := format{Version: r.Uint64()}
+	if n := r.Len(); n > 0 {
+		f.Folds = make([]uint32, n)
+		for i := range f.Folds {
+			f.Folds[i] = r.Uint32()
+		}
+	}
+	return f, r.Done()
+}
+
+// Store is the metadata store over one KV.
+type Store struct {
+	kv      kv.KV
+	format  uint64
+	numbers numbers
+	bounds  boundCache
+	k       int // the key budget of a batch
+
+	settingSchema uint32 // the newest settings schema PutSetting writes
+}
+
+// Option sets one of a Store's values at Open.
+type Option func(*Store)
+
+// SettingSchema is the newest settings record schema the store writes, the
+// one the settings component registers; the composer passes it, since the
+// store does not import that component.
+//
+// decision: a store opened without it writes a row of any schema, as a
+// tool, a test or an installer that writes only schema 0 needs nothing from
+// the settings component. The node passes it, so no node writes a row its
+// readers refuse. Make it a required argument of Open once a second writer
+// of settings rows serves requests.
+func SettingSchema(max uint32) Option {
+	return func(s *Store) { s.settingSchema = max }
+}
+
+// Init creates the store: the format record at the newest format, the
+// Installation record with the ID the initialisation step minted and a fresh
+// instance, and ShareList at zero, in one
+// transaction. It refuses a store that already has a format record, so two
+// racing initialisations cannot both commit. Opening never initialises.
+func Init(ctx context.Context, db kv.KV, install [16]byte) error {
+	return db.Update(ctx, func(tx kv.Txn) error {
+		if _, err := tx.Get(keys.Format); err == nil {
+			return ErrInitialised
+		} else if !errors.Is(err, kv.ErrNotFound) {
+			return err
+		}
+		if err := refuseForeign(tx); err != nil {
+			return err
+		}
+		in := entity.Installation{ID: install, Instance: uuid.New()}
+		for _, kvs := range [][2][]byte{
+			{keys.Format, encodeFormat(format{Version: MaxFormat, Folds: knownFolds})},
+			{installationKey, encodeInstallation(in)},
+			{shareListKey, encodeCounter(0)},
+		} {
+			if err := tx.Set(kvs[0], kvs[1]); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// refuseForeign answers ErrForeignStore, naming the first key that is not a
+// clock ceiling, over a store with no format record: ErrV1Store as well when
+// that key has one of v1's prefixes, so this format's records with the format
+// record lost are never answered as v1's.
+//
+// decision: Init and Open refuse every key but the clock ceiling a store's
+// own Open leaves in whatever directory it opened — v1's text keys and this
+// format's records alike. Init, the initialisation step, would otherwise
+// write a new Installation over storage it can no longer name, and Open
+// would answer ErrNotInitialised, sending the operator to that step for a
+// store that is not empty. A store holding nothing but ceilings is one whose
+// records went wholesale, which is what the initialisation step exists to
+// recover, so it stays not initialised. Overturned when a store can name its
+// records without opening: a read-only open the backend tolerates after an
+// unclean close.
+func refuseForeign(r kv.Reader) error {
+	for k, err := range r.Scan(nil, nil) {
+		if err != nil {
+			return err
+		}
+		ceil := k.Key
+		if len(ceil) != 1+keys.IDLen+1 || ceil[0] != keys.KindN || ceil[len(ceil)-1] != keys.NClk {
+			if isV1Key(k.Key) {
+				return fmt.Errorf("%w: %w: key %q is v1's", ErrV1Store, ErrForeignStore, k.Key)
+			}
+			return fmt.Errorf("%w: key %q names a record a new installation must not overwrite", ErrForeignStore, k.Key)
+		}
+	}
+	return nil
+}
+
+// Open reads the format record before any other key and refuses, with
+// ErrFormatRecord, a store whose record does not decode and, with ErrFormat,
+// one whose format or fold rules this binary does not implement. With no format
+// record it answers ErrForeignStore over a store holding any key but a clock
+// ceiling, and ErrNotInitialised otherwise. It never rewrites the record: a
+// store's format is raised only by the control plane's gate, so an older
+// binary keeps opening it until then.
+func Open(ctx context.Context, db kv.KV, opts ...Option) (*Store, error) {
+	var f format
+	err := db.View(ctx, func(r kv.Reader) error {
+		b, err := r.Get(keys.Format)
+		if errors.Is(err, kv.ErrNotFound) {
+			if err := refuseForeign(r); err != nil {
+				return err
+			}
+			return ErrNotInitialised
+		}
+		if err != nil {
+			return err
+		}
+		if f, err = decodeFormat(b); err != nil {
+			return fmt.Errorf("%w: %w", ErrFormatRecord, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if f.Version < MinFormat || f.Version > MaxFormat {
+		return nil, fmt.Errorf(
+			"%w: format %d, this binary reads %d to %d",
+			ErrFormat,
+			f.Version,
+			MinFormat,
+			MaxFormat,
+		)
+	}
+	for _, id := range f.Folds {
+		if !slices.Contains(knownFolds, id) {
+			return nil, fmt.Errorf("%w: fold rule %d", ErrFormat, id)
+		}
+	}
+	k, err := keyBudget(db.Limits())
+	if err != nil {
+		return nil, err
+	}
+	s := &Store{kv: db, format: f.Version, k: k, settingSchema: math.MaxUint32}
+	for _, o := range opts {
+		o(s)
+	}
+	return s, nil
+}
+
+// Format is the store format the store was opened at, read from \x00format
+// by Open: the store format's active version.
+func (s *Store) Format() uint64 {
+	return s.format
+}

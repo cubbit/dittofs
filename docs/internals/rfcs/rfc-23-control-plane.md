@@ -639,9 +639,14 @@ begins. Steps 5, 6, 7 and 9 start the components in build order (§2.1):
    only from here, so no client reaches a node that has not reconciled or has
    no node epoch to stamp, and no call is answered retry-later while the node
    starts.
-10. **Reconcile** (§2.3) until `Stop`.
+10. **The node's status** (§2.4) is written once, naming what step 9 started,
+    the port each adapter bound included; a write that fails, or does not answer within its bound, fails the start.
+    Then **reconcile** (§2.3) until `Stop`.
 
-Readiness turns true once every adapter the records enable is serving or was refused at configured ([RFC 20 §3.7](rfc-20-adapters.md#3.7%20Health%20and%20probes)); a refused one raises `adapter_refused` and the others serve.
+Readiness turns true once every adapter the records enable is serving or was refused at configured ([RFC 20 §3.7](rfc-20-adapters.md#3.7%20Health%20and%20probes)), and step 10 has written the node's status; a refused one raises `adapter_refused` and the others serve.
+Until that write commits, the store holds the last start's status, whose ports
+a restart may have released, so a reader that waits on `/health/ready` reads
+this start's.
 
 **Stop.** `Node.Stop` stops the components in reverse build order, each step
 completing before the next, except that the node's shards are handed over
@@ -748,8 +753,8 @@ it discards the walk and starts it again at the next poll.
 
 ### 2.4 What a node reports
 
-Each node writes, in its own node-status record, at most once a second and only
-when a value changed:
+Each node writes, in its own node-status record, once at start step 10 (§2.2)
+and then at most once a second and only when a value changed:
 
 - the **settings generation**, **share list version** and **principals
   generation** it has reconciled through: the highest value of each counter
@@ -761,8 +766,8 @@ when a value changed:
   restart-pending set;
 - its health conditions, as [RFC 25](rfc-25-observability.md) derives them;
 - each adapter, by protocol: its state (configured, serving, draining or
-  stopped) and the settings generation it runs, so §3.4's status shows it per
-  node;
+  stopped), the settings generation it runs and, while it serves, the TCP port
+  its protocol's listener bound, so §3.4's status shows it per node;
 - the version of each secret it holds, so that an old version is deleted only
   once every node that resolves the secret holds the new one
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)).
@@ -990,7 +995,8 @@ node override where one host must bind elsewhere, a node-scoped `Setting`
 written through the setting resource (§3.1)
 ([RFC 20 §3.6](rfc-20-adapters.md#3.6%20Changing%20settings%20while%20serving)). Its listen addresses are bootstrap
 facts of each host ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20holds%20only%20its%20bootstrap)), not records. The resource is
-`/adapters/{protocol}`, with `enabled` and the protocol's settings:
+`/adapters/{protocol}`, with `enabled` and the protocol's settings, and
+`GET /adapters` lists every protocol's:
 
 - **enable** moves the adapter from configured to serving on every node
   whose effective record enables it; a setting the adapter cannot apply fails
@@ -1003,7 +1009,12 @@ facts of each host ([RFC 13 §2.2](rfc-13-configuration.md#2.2%20A%20host%20hold
   If the new one fails to start, the last settings that served are built and
   started again and the record is reported refused (§2.3).
 
-The status of an adapter shows, per node, its state and the generation it runs.
+The status of an adapter shows, per node, its state and the generation it runs,
+and, while it serves, the TCP port its protocol's listener bound, written once
+it starts serving:
+the port a client dials, which `adapters.<protocol>.port` does not tell when it
+is 0 and the system picks one, or after a restart binds anew. An adapter that is
+not serving names no port.
 A namespace move's release of an address is not an adapter edit: it is RFC 27's
 reconfigure, which the node applies as RFC 20 §3.1 describes.
 
@@ -1232,8 +1243,12 @@ for turning NTLM back on is this one, and RFC 18 §3.5 points here:
 - The settings route enforces all three, reading `NTLMOff` and the running
   index tracked in the write's own transaction, since a section's validator
   reads no operation. A provisioning apply ([RFC 13 §2.4](rfc-13-configuration.md#2.4%20Records%20can%20be%20declared%20in%20a%20provisioning%20file))
-  writes `identity.ntlm` through the same check, as the API would. A write
-  that starts a deletion answers as a call that starts
+  writes `identity.ntlm` through the same check, as the API would. Only an
+  admin writes `identity.ntlm`: the write takes the installation right, as
+  the keytab's writes do, not the operator's right over settings, since it
+  decides whether NTLM sign-in is accepted at all and turning it off starts
+  the irreversible deletion of every NT hash, so an operator's write is
+  refused `403`. A write that starts a deletion answers as a call that starts
   an operation does (§4.6), `202` with the operation's `Location`, and the
   operation's target is the installation; one that starts none answers as a
   setting's write does.
@@ -1291,8 +1306,11 @@ serves:
   lists now — protocol, remote address, session, since
   ([RFC 20 §3.4](rfc-20-adapters.md#3.4%20Interface)) — from that node, not
   from the store, for `viewer`. It is read-only and writes no client or
-  principal record. **(single node)** An `{id}` other than the answering node's
-  answers `404 not_found`, before any adapter is read.
+  principal record. Its cursor is the last connection's `since`, then
+  `remote`, then `protocol`, the order its pages are sorted in, so
+  connections accepted in the same instant are each read once.
+  **(single node)** An `{id}` other than the answering node's answers
+  `404 not_found`, before any adapter is read.
 
 ### 4.3 Writes
 
@@ -1435,7 +1453,12 @@ against, and every node computes the same digest:
 Sign-in, refresh, `POST /auth/password`, `:set-password`, API-token creation and
 `join-domain`, online or offline, **MUST NOT** carry an `Idempotency-Key` — one is refused `400` — and the server
 records neither their digest nor their answer, so no token, password or digest
-of one is kept anywhere but §5.3's hashes. A retry is a new call:
+of one is kept anywhere but §5.3's hashes. **Sign-out** carries no
+`Idempotency-Key` either, refused `400` the same way, for another reason: an
+idempotency record is keyed by the account, so a key one session's sign-out
+used would answer another session's sign-out from the first one's record and
+leave that session live; a retried sign-out that applied is refused `401`,
+its session gone. A retry is a new call:
 
 - a retried **sign-in** opens a second session; the first expires unused;
 - a retried **refresh** presents the token the lost answer rotated, so §5.3's
@@ -1662,7 +1685,9 @@ second store.
   ([RFC 18 §8.1](rfc-18-identity.md#8.1%20The%20API%27s%20sign-in%20interface)), never through `vfs`: the account's password hash is a
   `Secret` sealed under the `storage` wrapping key, which every API node opens
   ([RFC 13 §7](rfc-13-configuration.md#7.%20Secrets)). It returns an
-  **access token** and a **refresh token**. A disabled or deleted account
+  **access token** and a **refresh token**, and the account's ID, which names it
+  in the routes under `/users/{id}` it may call on itself, such as its API
+  tokens'. A disabled or deleted account
   ([RFC 18 §3.7](rfc-18-identity.md#3.7%20Disabled%20and%20deleted%20principals)) cannot sign in, and the refusal does not say which.
 - **The access token** is a signed JWT (RFC 7519) naming the account's principal,
   the session and an expiry 15 min ahead, a fixed value. It carries no role. On every call the
@@ -1814,7 +1839,12 @@ second store.
 - **The first password.** The step takes the password from a reference — an
   environment variable or a file on the host, as a provisioning file names a
   secret — or, if none is given, generates 24 random bytes, encodes them, and
-  prints them once to the step's own standard output, never to a log.
+  prints them once to the step's own standard output, never to a log. A file
+  may hold at most 4 KiB, its trailing newline counted; a longer one is
+  refused before the step writes anything. When the reference is
+  `--admin-password-env <name>`, the step removes that variable from the
+  environment its bootstrap scan reads, so a `DITTOFS_` name holding the
+  password is never read as a setting.
 - **It must be changed.** A generated password marks the account
   **must-change**. Until it changes, a sign-in returns a token that permits only
   `POST /auth/password` and sign-out; every other call is refused `403`
@@ -2111,7 +2141,7 @@ builds a node any other way, and an architecture test fails on a caller of
 | Requirement | Check | Catches |
 | --- | --- | --- |
 | §2.1 API writes only records | Fault the metadata store's commit of a share create; assert `503`, no storage binding exists, and none appears after the store recovers and a full reconcile runs. Then let the commit succeed and kill the node before it reads the share list; restart: assert the share serves. | a handler calling the engine directly |
-| §2.2 order | Record each component's start and stop. Assert the order of §2.2, that the health endpoints answered `starting` before step 5 ended, that a refused registration started no component, that no adapter listened before the first reconcile completed, that **(cluster)** the shards were handed over before `vfs.Serve` stopped, and that an operation readable before stop is readable through the API until step 3. | an API that stops before the drain it reports |
+| §2.2 order | Record each component's start and stop. Assert the order of §2.2, that the health endpoints answered `starting` before step 5 ended, that a refused registration started no component, that no adapter listened before the first reconcile completed, that readiness turned ready only once the node's status naming each adapter's port this start bound had committed, that **(cluster)** the shards were handed over before `vfs.Serve` stopped, and that an operation readable before stop is readable through the API until step 3. | an API that stops before the drain it reports |
 | §2.3 reconcile | Change a live share setting while the store is unreachable to the node's reads but not its writes; restore reads: assert the change applies at the next read, not at the next generation move. | a missed generation lost for good |
 | §2.4 applied | Freeze one node's reconcile after a share setting changes. Assert the resource's status names that node as behind and, after 5 s, a health condition names it. Change a setting whose own generation is 2 while the settings generation stands at 100, and freeze a node at 100: assert the setting reads not applied there. Change a node-scoped restart-class setting, then a live one: assert the first reads not applied and the second applied on that node until it restarts. | "applied" inferred from the writing node, from a record's own generation, or past a pending restart |
 | §2.5 health | Call the unauthenticated endpoints during start, serving, drain and stop: assert `live` from the live endpoint and one of the four readiness words from the ready one, and nothing else, and that `GET /api/v1/health` without a token is `401`. Assert the metrics listener answers without a token. | grace state or names leaked to anonymous callers |
@@ -2237,6 +2267,6 @@ in `e2e`, their Kerberos flavours in `e2e/kerberos`. No suite runs yet the multi
 | §5.3, CP11 | no secret is read | store configurations are redacted, identity-provider secrets are write-only, but the settings routes return raw values, and the NETLOGON machine secret is kept as a setting |
 | §5.4 | first password printed once by initialisation; current password always required | the admin is seeded at start from an environment variable, a configured hash, or a random 24-character password printed only when standard output is a terminal; while must-change is set, the password change does not ask for the current password |
 | §6 | an audit record per action, in its transaction | none; nine adapter-settings handlers write an informational log line naming the user |
-| §7 | the CLI only calls the API | `dfsctl` is a REST client over `pkg/apiclient`, with contexts in `~/.config/dfsctl/config.json` (mode 0600, access and refresh tokens); `share mount` and `unmount` run the host's mount tools, which is client-side and allowed; `docs/guide/cli.md` is generated by `cmd/gendocs` from both command trees |
+| §7 | the CLI only calls the API | `dfsctl` is a REST client over `pkg/node/apiv1/client`, with contexts in `~/.config/dfsctl/config.json` (mode 0600, access and refresh tokens); `share mount` and `unmount` run the host's mount tools, which is client-side and allowed; `docs/guide/cli.md` is generated by `cmd/gendocs` from both command trees |
 | §9 | version discovery and schema gate | only the `/api/v1` prefix; no version endpoint, header or client check; `dfsctl version` is local |
 | RFC 13 §2.4 | provisioning file | none; the start seeds the admin, default groups and adapters, and seeds identity providers from the host file when no row exists |

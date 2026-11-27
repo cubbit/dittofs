@@ -1,0 +1,2 @@
+# NULL's arguments, void (RFC 4506 section 4.16): no bytes, as the capture's NULL
+# call (nfsv4-null-call) ends at its verifier.

@@ -1,0 +1,215 @@
+package engine
+
+import (
+	"context"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/syncer"
+)
+
+// Settings are the engine's node-level settings, handed to Apply. Every one
+// is required: a duration or a size must be positive, a fraction inside
+// (0, 1), and the retry floor and caps ordered as Apply checks.
+type Settings struct {
+	ExistenceAge        time.Duration // existence_age: how long a write's existence may stay uncommitted
+	GroupCommitMaxFiles int           // group_commit.max_files: the most files one group commit batch holds
+	CloneMaxLen         int64         // clone_max_len: the longest extent one Clone takes, in bytes
+
+	OffloadRetryMin         time.Duration // offload.retry_min: the offload and removal retry backoff's floor
+	OffloadRetryMax         time.Duration // offload.retry_max: its cap
+	OffloadRetryMaxPressure time.Duration // offload.retry_max_pressure: its cap under capacity pressure
+	RemovalRescan           time.Duration // removal.rescan: how often each served shard's unfinished removals are read again
+	RepackThreshold         float64       // eviction.repack_threshold: the unreclaimed fraction of a journal's capacity that requests a repack
+	EvictionTarget          float64       // the eviction occupancy target: the fraction of a journal's maximum footprint eviction frees down to
+	FillLowWater            float64       // the fill low-water mark: the free fraction of a journal's maximum footprint below which a demanded extent is not filled
+}
+
+// Share is one share's storage binding, as Start and Bind take it.
+type Share struct {
+	ID        entity.ShareID
+	Tag       journal.ShareTag   // the share's tag in every journal
+	Shard     entity.ShardID     // the share's own shard, which keys a clone's source open
+	Namespace entity.NamespaceID // the share's write namespace: a clone's two shares must share it
+	Limit     int64              // the share's journal limit, in bytes
+	State     ShareState
+	// Store is the share's remote block store, as the syncer registered it
+	// (RFC 8 §12.1); zero while no flow is opened, and not validated, since
+	// nothing reads it yet. A served share's Bind logs a change and keeps
+	// the Store it was bound with.
+	Store    syncer.StoreID
+	Settings ShareSettings // validated by Start and Bind (RFC 8 §2.4)
+}
+
+// ShareSettings are one share's settings, carried on its Share. Every one is
+// required and must be positive.
+type ShareSettings struct {
+	MaxAge            time.Duration // offload.max_age: the longest a file's dirty bytes wait below the dirty-byte threshold before it is offered
+	ReadaheadBlocks   int           // readahead.max_blocks: the read-ahead cap, in blocks ahead of one reader
+	ReadaheadBytes    int64         // readahead.max_bytes: the read-ahead cap, in bytes ahead of one reader
+	SpeculationBudget int64         // the speculation budget: the bytes of speculative fetches in flight for the share
+}
+
+// ShareState is what a bound share admits.
+type ShareState uint8
+
+const (
+	Serving  ShareState = iota + 1 // reads and writes
+	Quiesced                       // nothing new admitted: every content call but LossSeq answers ErrDelay (DelayFrozen)
+)
+
+// Stats is the engine's counters and conditions, per journal and per share.
+// Every map belongs to the caller.
+type Stats struct {
+	Journals map[string]JournalStats // per device, as Deps.Devices names it
+	Shares   map[entity.ShareID]ShareStats
+	Node     NodeStats
+	// SelfFences is engine_self_fences_total{reason="store"}: each time the
+	// node fenced for a store that committed no write transaction.
+	SelfFences int64
+	// StabilityPoints is engine_stability_points_total.
+	StabilityPoints int64
+	// WriteRefusals is engine_write_refusals_total.
+	WriteRefusals int64
+	// PendingExistenceOps is engine_pending_existence_ops' sum: the
+	// operations the existence commits committed.
+	PendingExistenceOps int64
+	// GroupCommitSplits is engine_group_commit_splits_total.
+	GroupCommitSplits int64
+	// Reads is engine_reads_total by its class label, and ReadSeconds
+	// engine_read_seconds.
+	Reads       map[string]int64
+	ReadSeconds Series
+	// FileStateLockWaits is engine_lock_wait_seconds{area="file_state"}: the
+	// contended takes of a file's state lock.
+	FileStateLockWaits Series
+	// RemovalRuns is engine_removal_runs_total by its result label, over
+	// every journal.
+	RemovalRuns map[string]int64
+
+	// The offload figures, every one zero or nil until offload records it.
+	// DirtyBytes is engine_dirty_bytes and DrainBytesPerSecond
+	// engine_drain_bytes_per_second, each summed over the shares; DrainTime
+	// is engine_drain_seconds, the node's dirty bytes at its drain rate, not
+	// a sum of the shares' times, as they drain at once. DrainTime is zero
+	// only with no dirty bytes; dirty bytes at a zero rate, an idle drain or
+	// a remote that takes nothing, are the largest time.Duration, so a
+	// stalled offload never reads as drained. OldestUnoffloaded is
+	// engine_unoffloaded_oldest_seconds, the largest of the shares'.
+	DirtyBytes          int64
+	DrainBytesPerSecond float64
+	DrainTime           time.Duration
+	OldestUnoffloaded   time.Duration
+	// RemovalsPending is engine_removals_pending summed over the shares, and
+	// OldestRemoval engine_removals_oldest_seconds, the largest of the
+	// shares'.
+	RemovalsPending int64
+	OldestRemoval   time.Duration
+	// OffloadPasses is engine_offload_passes_total by its result label.
+	OffloadPasses map[string]int64
+	// PipelineStateSeconds is engine_pipeline_state_seconds, and
+	// PipelineRetries engine_pipeline_retries_total, by their state label.
+	PipelineStateSeconds map[string]Series
+	PipelineRetries      map[string]int64
+	// AttemptsAbandoned is engine_attempts_abandoned_total, and
+	// IntentsAbandoned engine_intents_abandoned_total.
+	AttemptsAbandoned int64
+	IntentsAbandoned  int64
+	// FailingFiles is engine_failing_files: the files backed off as failing.
+	FailingFiles int64
+	// PassesAborted is engine_passes_aborted_total, and IntentMissing
+	// engine_intent_missing_total.
+	PassesAborted int64
+	IntentMissing int64
+	// StageBusy is engine_stage_busy_ratio by its stage: carve, assemble,
+	// put or commit.
+	StageBusy map[string]float64
+	// Fetches is engine_fetches_total by its shape label, and FetchBytes
+	// engine_fetch_bytes_total.
+	Fetches    map[string]int64
+	FetchBytes int64
+	// Fills is engine_fills_total by its result label.
+	Fills map[string]int64
+	// SpeculationBytes is engine_speculation_bytes_total, and
+	// SpeculationUsedBytes engine_speculation_used_bytes_total.
+	SpeculationBytes     int64
+	SpeculationUsedBytes int64
+	// Reresolves is engine_reresolves_total.
+	Reresolves int64
+	// EvictedBytes is engine_evicted_bytes_total, and PacingSeconds
+	// engine_pacing_seconds.
+	EvictedBytes  int64
+	PacingSeconds Series
+	// LedgerMismatches is engine_ledger_mismatches_total.
+	LedgerMismatches int64
+	// ShareTableLockWaits is engine_lock_wait_seconds{area="share_table"}, and
+	// WorkQueueLockWaits engine_lock_wait_seconds{area="work_queue"}, beside
+	// FileStateLockWaits.
+	ShareTableLockWaits Series
+	WorkQueueLockWaits  Series
+}
+
+// Series is a duration series as a count and a sum.
+type Series struct {
+	Count int64
+	Total time.Duration
+}
+
+// WriteOpts is what a write carries besides its bytes.
+type WriteOpts struct {
+	Suspend entity.TimeMask // the times this write leaves alone
+	// Done is called exactly once for every write Write accepted: by the
+	// existence commit that records its usage or the commit recording its
+	// loss, or by the engine, charging nothing, when it drops the write
+	// uncommitted. It is never called if Write fails. Close does not call
+	// it for a write it leaves to the next start's recovery: the quota
+	// reservation it releases went with the filesystem service, which stops
+	// before Close.
+	Done func()
+}
+
+// suspendedKey is the context key of the times a call leaves alone.
+type suspendedKey struct{}
+
+// WithSuspended returns ctx carrying m, the times a Truncate, Deallocate,
+// Clone or Copy called with it leaves alone, as WriteOpts.Suspend is a
+// write's: those the open the call came through suspended. Of them only the
+// modification time is one these calls move; the change time moves whatever
+// m names.
+//
+// decision: the mask rides the context, as the admitted hook does, rather
+// than a parameter of each of the four calls, which every caller of them
+// would pass as none. Make it a parameter if a second option joins it.
+//
+// decision: only the journal's removal and clone records lack the mask, so a
+// truncate, deallocate or clone replayed or rebuilt at a start, a grow
+// included (stageGrow), moves the modification time. A suspended write is not
+// in this gap: its record holds modification time 0, and replay keeps it
+// (stageWrite), except above a clone marker, where rebuildMarker stages every
+// write as moving it, a client write outside the extent included, since its
+// record is not told from a copy's. So a persistent open (RFC 14 §2.2),
+// whose mask outlives a crash, can see its frozen Modify move after one, for
+// an operation still uncommitted then. Overturned once those records carry
+// the mask.
+func WithSuspended(ctx context.Context, m entity.TimeMask) context.Context {
+	return context.WithValue(ctx, suspendedKey{}, m)
+}
+
+// Suspended is the times ctx carries for its call to leave alone
+// (WithSuspended), none when it carries none: what the engine reads, and
+// what another Content reads at the same calls.
+func Suspended(ctx context.Context) entity.TimeMask {
+	m, _ := ctx.Value(suspendedKey{}).(entity.TimeMask)
+	return m
+}
+
+// Overlay is a file's size, times and version as its uncommitted operations
+// leave them, replayed in version order: a truncate sets Size and SizeSet, and
+// each later write raises Size to its end.
+type Overlay struct {
+	Size         int64 // SizeSet: the size; else the end of the pending writes
+	SizeSet      bool  // a truncate is pending, so Size is exact
+	Mtime, Ctime time.Time
+	Version      entity.JournalVersion
+}

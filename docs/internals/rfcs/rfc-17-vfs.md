@@ -685,8 +685,8 @@ protocol; an adapter **MUST** state, per call, one of the profiles below,
 chosen by program and procedure, never a value built from a field of the
 request. The zero value of every
 capability is the plain behaviour and each capability changes only the rule
-it names; for `HostCall`, `PrivilegeOnEveryCall`, `WantOpenID`, `ClientIsMachine`
-and `SeesPseudoFS` the zero value is the narrower one, so one left unset fails
+it names; for `HostCall`, `PrivilegeOnEveryCall`, `WantOpenID`, `ClientIsMachine`,
+`SeesPseudoFS`, `SpellsReservedNames` and `ListsEveryEntry` the zero value is the narrower one, so one left unset fails
 closed. `OpenFilesKeepNames` and `GrantBelongsToOpen` are the exception (below). Each rule reads its capability in one named place, a method of the
 type that owns the rule (`Caller.keepsNames` reads `OpenFilesKeepNames`), so
 a search for `Has(OpenFilesKeepNames)` finds every rule that reads it.
@@ -708,15 +708,18 @@ const (
 	ClientIsMachine                       // the client is a whole machine its users share: its record names no owner
 	HostCall                              // the call comes from a host's lock or mount service, which proves no user
 	SeesPseudoFS                          // the client sees a pseudo-filesystem above the shares; LOOKUPP at a share's root goes up to it
+	SpellsReservedNames                   // on a windows-rule share, a reserved character or trailing space or dot in a name is stored in its private-use spelling, not refused
+	ListsEveryEntry                       // a listing is never filtered by access-based enumeration; without it, a share asking that filter hides what the caller cannot read
 )
 
 func (c Caps) Has(x Caps) bool // every bit of x is set
 func (c Caps) String() string  // the set bits, short names joined by "|", "" for none: "keep-names|open-id|oplock|machine"
 
-// The profile each adapter states, declared once beside Caps:
-var (
-	NFSv3Caps = PrivilegeOnEveryCall
-	NFSv4Caps = PrivilegeOnEveryCall | SeesPseudoFS
+// The profile each adapter states, declared once beside Caps, as constants, so
+// no code, a test included, can change one:
+const (
+	NFSv3Caps = PrivilegeOnEveryCall | SpellsReservedNames | ListsEveryEntry
+	NFSv4Caps = PrivilegeOnEveryCall | SeesPseudoFS | SpellsReservedNames | ListsEveryEntry
 	MountCaps = PrivilegeOnEveryCall | HostCall
 	NLMCaps   = PrivilegeOnEveryCall | ClientIsMachine | HostCall
 	SMBCaps   = OpenFilesKeepNames | WantOpenID | GrantBelongsToOpen | ClientIsMachine
@@ -735,6 +738,8 @@ states `MountCaps` on `MNT` and `EXPORT` alone, and `NFSv3Caps` otherwise.
 | `GrantBelongsToOpen` | SMB | A batch oplock covers its one open, and a second open of the file by the same machine breaks it; an NFSv4 read delegation is the client's, covers none of its opens, is not broken by its own client's opens, and never caches handles ([RFC 14 §2.4](rfc-14-open-state.md#2.4%20CachingGrant)). |
 | `SeesPseudoFS` | NFSv4 | `Lookup` of `..` at a share's root answers the pseudo directory the share is mounted in, so an NFSv4 `LOOKUPP` from `/data` walks up to `/`; an NFSv3 or SMB caller's `..` there answers the share's root itself, as a share is its own top. |
 | `ClientIsMachine` | SMB, NLM | The record names no owner, so a second user signing in from the same Windows machine joins it; an NFSv4 `EXCHANGE_ID` of the same name from another principal is refused ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)). |
+| `SpellsReservedNames` | NFSv3, NFSv4 | On a share under the `windows` name rule, an NFS create of `a:b` is stored and listed as `a` U+F022 `b`, and a lookup of either spelling finds it; an SMB create of `a:b` fails `ErrInvalid` ([RFC 7 §3.8](rfc-7-namespace-metadata.md#3.8%20Names%20every%20protocol%20of%20a%20share%20can%20use)). |
+| `ListsEveryEntry` | NFSv3, NFSv4 | On a share asking access-based enumeration, bob's SMB listing of `home/` shows only `bob/`, and his NFS `READDIR` of it shows `alice/` and `bob/` ([RFC 19 §3.7](rfc-19-authorization.md#3.7%20Listings%20hide%20what%20the%20caller%20cannot%20read)). |
 
 The request fields that already carry an intent state the rest:
 
@@ -1383,7 +1388,7 @@ qualified so as not to read as the store's `metadata.Clients`, and a bare
 | `Create`, `Link` | `Namespace.Create` / `Link`, `Checks.CheckChange` on the parent | `Draw` (parent, new file) | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
 | `Unlink`, `Rmdir`, `Rename` | `Namespace.Lookup`, `Files.Authorize`, `Checks.CheckChange` on the file, a replaced target and the destination parent, `Namespace.Unlink` / `Rename`; `Opens.Renamed` after a rename, and after an unlink or a rename over a file to clear its opens' entry | `Draw`; `Delete` for an orphan | coordinator; each other primary through `Peers.Prepare` and `Outcome` |
 | `GetAttr` | `Files.Get` | `Overlay` | primary |
-| `SetAttr` | `Files.SetAttrs`, `Files.Authorize`; `Checks.CheckChange` through the target's open, `ChangeSetID` for a mode setting setuid or setgid; `Opens.Update` for delete on close and suspended times; `Capacity.Usage` for quota on an owner or group change; `Opens.Entry` and `Watches.Changed` for the change (below) | `Draw`; `Truncate` for a size; `CommitExistence` first for an owner or group change (§5.5) | primary |
+| `SetAttr` | `Files.SetAttrs`, `Files.Authorize`; `Checks.CheckChange` through the target's open, `ChangeSetID` for a mode setting setuid or setgid; `Opens.Update` for delete on close and suspended times; `Opens.Suspended` for the times its open suspends, for a size; `Capacity.Usage` for quota on an owner or group change; `Opens.Entry` and `Watches.Changed` for the change (below) | `Draw`; `Truncate` for a size; `CommitExistence` first for an owner or group change (§5.5) | primary |
 | `GetACL`, `Xattrs`, `Streams` | `Files.ACL`, `Xattrs`, `Streams`, authorised inside ([RFC 7 §11.1](rfc-7-namespace-metadata.md#11.1%20Interface)) | — | primary |
 | `Access` | `Files.Granted`, through `authz` (§4.6) | — | primary |
 | `SetACL`, `SetXattr`, `RemoveXattr` | `Files.SetACL`, `SetXattr`, `RemoveXattr`; `Opens.Entry` and `Watches.Changed` for the change (below) | `Draw` | primary |
@@ -1393,8 +1398,8 @@ qualified so as not to read as the store's `metadata.Clients`, and a bare
 | `Read` | `Checks.CheckIO`; `Files.Authorize` for an anonymous or delegated open | `Read` | primary |
 | `Write` | `Checks.CheckIO`; `Opens.Suspended` for the times its open suspends; `Files.Authorize`; `Files.SetAttrs` to clear setuid; `Capacity.Usage` for quota; `Opens.Entry` and `Watches.Changed` for the change (below) | `Draw`, `Allocation` for the reservation, `Write`, `Overlay`, `Commit` when stable | primary |
 | `Commit` | `Opens.Flushed` through an open, as SMB's `FLUSH` names one | `Commit` | primary |
-| `Deallocate`, `Seek` | `Checks.CheckIO`; for `Deallocate`, `Opens.Entry` and `Watches.Changed` for the change (below) | `Deallocate`; `Allocation` | primary |
-| `Copy`, `Clone` | `Checks.CheckIO` on both | `Copy`, `Clone`, each with the admitted hook (`WithAdmitted`, §5.9 step 4); across shards `Read` and `Write` | the destination's primary, reading at the source's across shards through `Peers.ReadAt` |
+| `Deallocate`, `Seek` | `Checks.CheckIO`; for `Deallocate`, `Opens.Suspended` for the times its open suspends, `Opens.Entry` and `Watches.Changed` for the change (below) | `Deallocate`; `Allocation` | primary |
+| `Copy`, `Clone` | `Checks.CheckIO` on both; `Opens.Suspended` for the times the destination's open suspends | `Copy`, `Clone`, each with the admitted hook (`WithAdmitted`, §5.9 step 4) and the suspended times (`WithSuspended`); across shards `Read` and `Write` | the destination's primary, reading at the source's across shards through `Peers.ReadAt` |
 | `Lock`, `CancelLock`, `TestLock`, `Unlock` | `Locks.Lock`, `CancelLock`, `TestLock`, `Unlock`, each passing the call's `LockOwner`, and `Unlock` its `LockSequence`; `Files.Authorize` through `authz.LockState` for a `Lock` or `TestLock` under no open (§5.11) | — | primary ([§2.2](#2.2%20Who%20owns%20open%20state%20and%20locks)); an NFSv4.0 owner's sequence at its home primary through `Peers.Sequence` |
 | `AckRecall` | `Grants.AckRecall`, `GrantNone` included | — | the primary of the shard the `GrantID` names |
 | `Watch`, `Unwatch` | `Watches.Watch`, `Unwatch` | — | the directory's primary; `Unwatch`, the primary of the shard the `WatchID` names |

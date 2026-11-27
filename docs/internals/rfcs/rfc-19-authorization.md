@@ -668,14 +668,18 @@ audit policy is applied after the decision and is in no key.
 
 A share whose policy asks for access-based enumeration (the share setting of
 [RFC 13 Appendix B](rfc-13-configuration.md#Appendix%20B%20%E2%80%94%20the%20settings),
-spelled on the wire by RFC 22) has every listing the service returns on it filter
-each entry: an entry is listed only when `Granted` on its file, through the
+spelled on the wire by RFC 22) has every listing the service returns on it, to a
+call that does not state `ListsEveryEntry`
+([RFC 17 §3.0](rfc-17-vfs.md#3.0%20Value%20types)), filter each entry: an entry is listed only when `Granted` on its file, through the
 listed directory, holds read data, read attributes, read extended attributes or
 read the ACL. Each entry's answer is an ordinary `Granted`, run at the chokepoint
 and keyed as RFC 7 §7.5 says; no adapter decides it.
 
-> decision: access-based enumeration filters SMB listings only; an NFS listing is
-> never filtered. A hidden name still exists, so an NFS client's create of it
+> decision: access-based enumeration filters every listing except one from a
+> profile stating `ListsEveryEntry`; both NFS profiles state it, so an NFS
+> listing is never filtered. The capability's
+> zero value filters, so an adapter that leaves it unset hides names rather than
+> shows them. A hidden name still exists, so an NFS client's create of it
 > fails with "exists" and `rm -r` of its parent with "not empty", with nothing the
 > client was shown explaining either, and POSIX tools assume a listing is
 > complete. Windows clients expect the filter, and home-directory shares rely on

@@ -27,8 +27,8 @@ nothing switches over until stage 5.
 - **The durable records** (step 9 of #3119, merged with #3120). `kvstore` stores what §8 makes
   durable: client records, durable opens and their locks, delete pending, ID allocation and the
   restart-notice number. Their shape trails RFC 16; piece 0 reshapes them.
-- **Today's `pkg/metadata/lock`** (about 9.9k lines plus tests) serves today's server and stays on
-  that path untouched. Its design is not RFC 14's:
+- **v1's lock package** (about 9.9k lines plus tests) served v1's server until stage 4 deleted
+  it. Its design is not RFC 14's:
   - one manager and one mutex per share, state keyed by handle strings, two parallel lock tables;
   - workers block on recalls (up to 10 s), which RFC 17 §3.2 forbids;
   - grace per share without instances; every lock persisted, where RFC 14 keeps a lock volatile
@@ -78,7 +78,7 @@ Inside the table the only placement rule is that a call naming a shard not begun
 reference that names one. The refusal arrives with `ServeShard` in piece 6; pieces 1–5 serve every
 shard under instance zero, which nothing can reach before stage 2.
 
-**D3. Port the pure logic, not the manager.** From `pkg/metadata/lock`:
+**D3. Port the pure logic, not the manager.** From v1's lock package, now deleted:
 - range math (`RangesOverlap`, `SplitLock`, merge); today's merge wraps (`UnifiedLock.End` is
   `Offset + Length`), so the port saturates instead, as `pkg/openstate/ranges` does;
 - the SMB conflict and mandatory-I/O rules (`IsLockConflicting`, `CheckIOConflict`: Samba's
@@ -90,9 +90,8 @@ shard under instance zero, which nothing can reach before stage 2.
 Not ported: the manager, its blocking waits, its grace manager, lock persistence, and its deadlock
 detector: §2.10 decides against deadlock detection, so smbtorture's open-brlock-deadlock, which
 expects a refusal, is recorded as a known failure. Route B skips RFC 17 §9's slice 3 shim (its `decision:`): the filesystem
-service is built against the seven views from its first piece, and `pkg/metadata/lock` stays only
-under today's server until stage 5, then is deleted. Stage 4 carries none of its lock persistence
-over.
+service is built against the seven views from its first piece, and v1's lock package stayed only
+under today's server until stage 4 deleted it, carrying none of its lock persistence over.
 
 From today's NFSv4 state (`internal/adapter/nfs/v4/state`, 12.6k lines plus 20.8k of tests, one
 manager under one lock):
@@ -106,7 +105,7 @@ manager under one lock):
   through `kvstore`), leases (per-client timers; §4.1 runs on the declared clock), grace
   (server-wide; §4.4 is per shard), revocation (§5.3's revoked set), the stateid owner check
   (skipped for a v4.0 caller, making the stateid a bearer token; §2.2 checks the principal), and
-  every lock path, which waits on `pkg/metadata/lock`'s recalls.
+  every lock path, which waited on v1's lock package's recalls.
 - **Stays in the adapter:** sessions, slot tables, the reply cache's bytes, connections and the back
   channel, special stateids, and XDR.
 - **Tests worth porting as scenarios:** the SETCLIENTID and EXCHANGE_ID cases, the seqid and stateid
@@ -439,8 +438,9 @@ cannot fail are not written (the team's rule), so a row the compiler or another 
 covers gets no case of its own.
 
 Ported test scenarios, rewritten to RFC 14's semantics (a recall answers `ErrDelay`, never waits):
-`pkg/metadata/lock`'s lock and split tests (owners), lease key and epoch tests, progressive-break
-and late-ack tests (recall deadline), cross-protocol tests, and reconnect-matching tests.
+v1's lock package's lock and split tests (owners; deleted with it, in git history), lease key and
+epoch tests, progressive-break and late-ack tests (recall deadline), cross-protocol tests, and
+reconnect-matching tests.
 
 Of §13.3's benchmarks, heap per state (RFC 24 M6) is built (#3456); the rest wait for a
 registered suite that runs `go test -bench` (§6.1).
@@ -475,7 +475,6 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | Every "(cluster)" rule: one lease owner per client (§4.1), handover and batch moves (§10) with `Recovery.ReleaseShard`, layouts (§2.6), state lost to a takeover, L8 (D2, plan §3) | single node first; the seams are the service's | the cluster stage | the cluster stage |
 | A deadline heap (D4) | a 10 s sweep fires each deadline up to one interval late | unowned | the upgrade `sweepEvery`'s `ponytail:` names |
 | Deadlock detection; smbtorture's open-brlock-deadlock stays a known failure (D3) | RFC 14 §2.10 decides against it | RFC 14 | RFC 14 §2.10 revisited |
-| Deleting `pkg/metadata/lock` (D3) | it serves today's server until the adapters move | stage 5 | stage 5 |
 | L1 and L20, the service's; L9, the engine's; L29's restart case (plan §3) | rows of other layers; L9 needs eviction | RFC 17 plan (L1, L20, L29), RFC 8 second part plan (L9) | stage 2; offload |
 | L52's SMB session cases (piece 8) | they are SMB session steps | RFC 22 plan | the SMB adapter, stage 5 |
 | L36's rename case (piece 3) | RFC 22's plan's amendment A6 added it after piece 3 merged; that plan builds it with the service's refusal | RFC 22 plan (E2, T2.4) | that plan's T2.4 lands |

@@ -1,0 +1,16 @@
+# The body of an SMB2 WRITE request (MS-SMB2 2.2.21) of "hello" at 4 GiB,
+# written by hand, with no channel information. Positions count from the SMB2
+# header's first byte, as the offsets do. Multi-byte fields are little-endian
+# (MS-SMB2 2.2).
+31 00                       # [64,66)   StructureSize 49
+70 00                       # [66,68)   DataOffset 112
+05 00 00 00                 # [68,72)   Length 5
+00 00 00 00 01 00 00 00     # [72,80)   Offset 4 GiB
+11 12 13 14 15 16 17 18     # [80,96)   FileId: Persistent, then Volatile
+21 22 23 24 25 26 27 28
+00 00 00 00                 # [96,100)  Channel 0: none
+00 00 00 00                 # [100,104) RemainingBytes 0
+00 00                       # [104,106) WriteChannelInfoOffset 0: no channel information
+00 00                       # [106,108) WriteChannelInfoLength 0
+00 00 00 00                 # [108,112) Flags 0
+68 65 6c 6c 6f              # [112,117) Buffer: "hello"

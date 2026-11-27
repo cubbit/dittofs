@@ -102,7 +102,7 @@ start_dittofs() {
     local data="$DATA/dittofs"
     mkdir -p "$data"
     cat >"$RUN/config.yaml" <<EOF
-logging: { level: INFO, format: text, output: stdout }
+logging: { level: info, format: text, output: stdout }
 controlplane:
   port: $PORT_API
   jwt: { secret: "$(secret)$(secret)" }
@@ -115,13 +115,15 @@ EOF
     # The first start creates the NFS and SMB adapters on their default ports, which another server
     # on the host may hold. So it runs in a network namespace of its own (setup_boot), where the
     # stores, the user, the share and the adapters are set up, and the measured server is the second
-    # start. The admin password goes through the environment only, not as an argument (of env either).
-    DITTOFS_ADMIN_INITIAL_PASSWORD="$(secret)"
-    export DITTOFS_ADMIN_INITIAL_PASSWORD
+    # start. The admin password goes through the environment only, under the script's own name, not as
+    # an argument (of env either). dfs start no longer reads it, and this launcher starts no usable
+    # server until it runs dfs init, which sets the first one.
+    NIGHT_ADMIN_PASSWORD="$(secret)"
+    export NIGHT_ADMIN_PASSWORD
     dfs_env unshare --net "$HERE/night.sh" setup_boot "$data" >>"$RES/dfs-setup.log" 2>&1 9<&-
-    unset DITTOFS_ADMIN_INITIAL_PASSWORD
+    unset NIGHT_ADMIN_PASSWORD
     env HOME="$RUN" XDG_CONFIG_HOME="$RUN/config" XDG_STATE_HOME="$RUN/state" \
-        setsid "$WORK/build/bin/dfs" start --foreground --config "$RUN/config.yaml" >>"$RES/dfs.log" 2>&1 </dev/null 9<&- &
+        setsid "$WORK/build/bin/dfs" start --config "$RUN/config.yaml" >>"$RES/dfs.log" 2>&1 </dev/null 9<&- &
     echo "$!" >"$RUN/pid"
     # Up to three minutes: the start waits for the block store's first probe, ten attempts with backoff.
     wait_port "$PORT_DFS" 280
@@ -138,11 +140,11 @@ setup_boot() {
     ip link set lo up
     python3 "$HERE/s3stub.py" "$PORT_DEAD" &
     STUB=$!
-    dfs start --foreground --config "$RUN/config.yaml" &
+    dfs start --config "$RUN/config.yaml" &
     DFS=$!
     trap 'kill "$STUB" "$DFS" 2>/dev/null; wait' EXIT
     for _ in $(seq 60); do
-        printf '%s\n' "$DITTOFS_ADMIN_INITIAL_PASSWORD" | dfsctl login --server "$api" --username admin >/dev/null 2>&1 && break
+        printf '%s\n' "$NIGHT_ADMIN_PASSWORD" | dfsctl login --server "$api" --username admin >/dev/null 2>&1 && break
         sleep 0.5
     done
     dfsctl adapter edit nfs --enabled false
@@ -150,7 +152,7 @@ setup_boot() {
     dfsctl store block add --name s3 --type s3 --config "{\"endpoint\":\"http://127.0.0.1:$PORT_DEAD\",\"bucket\":\"perf\",\"access_key_id\":\"perf\",\"secret_access_key\":\"unreachable\",\"allow_private_endpoint\":true}"
     # dfsctl takes a new user's password only as an argument, or twice at a prompt that a pipe can't
     # answer, so the user comes from the API. The passwords are hex, so they need no JSON escaping.
-    token="$(printf 'data = "{\\"username\\":\\"admin\\",\\"password\\":\\"%s\\"}"\n' "$DITTOFS_ADMIN_INITIAL_PASSWORD" |
+    token="$(printf 'data = "{\\"username\\":\\"admin\\",\\"password\\":\\"%s\\"}"\n' "$NIGHT_ADMIN_PASSWORD" |
         curl -sf -K - -H 'Content-Type: application/json' "$api/api/v1/auth/login" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')"
     printf 'header = "Authorization: Bearer %s"\ndata = "{\\"username\\":\\"%s\\",\\"password\\":\\"%s\\",\\"uid\\":%s,\\"gid\\":%s,\\"role\\":\\"user\\"}"\n' \
         "$token" "$PERF_USER" "$PASSWORD" "$(id -u "$PERF_USER")" "$(id -g "$PERF_USER")" |
@@ -285,30 +287,40 @@ files() {
 # nights, stays from a night with a new flag or failure, or with any while no alert is open, to the
 # next night with neither.
 post() {
-    local work="${1%/*}" text broadcast=no
+    local work text broadcast=no open="" ts
+    work="$(cd "$1/.." && pwd)"
     text="$(cat "$1/slack.txt")"
     case "$(cat "$1/alert" 2>/dev/null)" in
     new)
-        broadcast=yes
-        touch "$work/alert-open"
+        broadcast=yes open=yes
         ;;
     same)
-        test -e "$work/alert-open" || broadcast=yes
-        touch "$work/alert-open"
+        # score.py marks a title only for a new flag, so an alert this opens gets its mark here.
+        if test ! -e "$work/alert-open"; then
+            broadcast=yes
+            case "$text" in :x:*) ;; *) text=":warning: $text" ;; esac
+        fi
+        open=yes
         ;;
     clear)
         if test -e "$work/alert-open"; then
-            broadcast=yes
+            broadcast=yes open=no
             text=":white_check_mark: *Nightly performance: nothing flagged or failing any more*
 $text"
-            rm "$work/alert-open"
         fi
         ;;
     esac
     test -n "${SLACK_DIR:-}" || return 0
     # shellcheck source-path=SCRIPTDIR source=../../test/scenarios/lib/slack.sh
     . "$TREE/test/scenarios/lib/slack.sh"
-    slack "$text" "$(slack_day "$work/slack-day" "Nightly performance")" "$broadcast" >/dev/null
+    ts="$(slack "$text" "$(slack_day "$work/slack-day" "Nightly performance")" "$broadcast")"
+    # The alert state moves only with a post that went out, so the next night decides on what the
+    # channel saw.
+    test -n "$ts" || return 0
+    case "$open" in
+    yes) touch "$work/alert-open" ;;
+    no) rm -f "$work/alert-open" ;;
+    esac
 }
 
 case "${1:-}" in
@@ -328,7 +340,7 @@ elif test -z "${HARNESS:-}"; then
     tree="$WORK/harness/$HARNESS"
     if test ! -d "$tree"; then
         mkdir -p "$tree.$$"
-        git -C "$REPO" archive "$HARNESS" bench test/scenarios/lib/slack.sh | tar -x -C "$tree.$$"
+        git -C "$REPO" archive "$HARNESS" bench test/scenarios/lib | tar -x -C "$tree.$$"
         mv -T "$tree.$$" "$tree" 2>/dev/null || rm -rf "$tree.$$"
     fi
     touch "$tree"
@@ -423,8 +435,13 @@ finish() {
     rm -rf "$WORK/build" "$RUN"
     if ! python3 "$HERE/score.py" "$NIGHT" "$REPO" >"$NIGHT/slack.txt"; then
         echo ":x: Nightly performance: scoring failed, see $NIGHT/night.log" >"$NIGHT/slack.txt"
-        echo new >"$NIGHT/alert"
+        # A failure that repeats the last posted night's is not new: it replies in the open alert's
+        # thread. Only a night that posts keeps the marker, so a smoke run cannot hide a failure.
+        if test -e "$WORK/scoring-failed"; then echo same; else echo new; fi >"$NIGHT/alert"
+        test "$CALIBRATION" = yes || test "$SMOKE" = yes || touch "$WORK/scoring-failed"
         test "$rc" -ne 0 || rc=1
+    else
+        test "$CALIBRATION" = yes || test "$SMOKE" = yes || rm -f "$WORK/scoring-failed"
     fi
     if test "$SMOKE" = no && test -s "$NIGHT/points.csv"; then
         test -s "$WORK/trend.csv" || head -1 "$NIGHT/points.csv" >"$WORK/trend.csv"

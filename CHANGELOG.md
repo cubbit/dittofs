@@ -12,6 +12,154 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > that actually shipped them. Nothing here has been reconstructed after the
 > fact.
 
+## [Unreleased]
+
+### Added
+
+- **The adapter reads each connection's records as framed byte streams.** A
+  record is cut from a 4 KiB read buffer into its own receive buffer of the
+  matching class, charged before its body is read; a fragmented record is
+  charged once at the protocol's cap and read to its last fragment, at
+  most the protocol's fragment cap; and the rest of a request, once its first
+  byte has arrived, has
+  `read_timeout` to arrive or the connection closes, the deadline resting
+  while the receive charge waits. A record the peer cuts mid-stream is an
+  unexpected end, told apart from a clean close between records.
+
+- **The adapter sends each connection's replies through a bounded queue in
+  gathered writes.** A worker hands its reply over without blocking; the
+  reader stops reading the connection once 64 messages are held, so the
+  client's TCP window pushes back. Queued replies go out framed in one
+  `net.Buffers` write each, up to the protocol's record cap of bodies, each
+  write bounded by `write_timeout`; a failed or late write closes the
+  connection and releases everything queued.
+
+- **A record that chains several requests is answered as one record.** Each
+  member is decoded where the one before it points, admitted, run and
+  answered in turn. A related member runs under the state the member before
+  it left, and after a failure it is answered that status with no call. The
+  replies are joined and wrapped once. They go out in more than one record
+  only where the chain would otherwise wait on flow control or the reply
+  pool while holding reply buffers, or would pass a quarter of the reply
+  pool or the protocol's record cap, or where Unwrap refuses a member or its
+  header fails to decode, whose refusal goes out in a record of its own; each
+  such split is counted by its reason.
+
+- **The request path is measurable, per protocol and per operation.** Prometheus
+  now carries requests in flight, refusals and wire time by stage, replay hits,
+  held requests and bytes, chain splits by reason, and per operation the
+  routed counts, unmapped errors, status mappings, hold refusals and handler
+  panics, as `dittofs_adapter_*`. Each series is registered once per node and
+  resolved once per table or stages label, so recording is one atomic add or
+  histogram observation with no label lookup.
+- **The v2 metadata store numbers its users and groups itself.** A create may
+  ask for a uid or gid, drawn from a range the caller passes, and a RID under
+  the installation's own domain SID; a drawn ID is never given again, even
+  after its principal is deleted. A user holds a uid and a SID together or
+  neither, a group always both, and a SID never changes once given. The store
+  also keeps machine principals, holding one Kerberos name and nothing else,
+  and users and groups with no name, found only by their IDs.
+
+- **A compound's reply stays within the protocol's record cap, and only a
+  failure stops it.** Before any of a compound's operations runs, each READ
+  is shortened to the room the operations beside it leave in one record,
+  never below one byte, and counted in `adapter_reads_shortened_total`; a
+  compound that would leave a READ no byte, or whose replies pass the cap
+  with nothing to shorten, is refused whole. A compound reads whether the
+  adapter is draining once, after its reply buffer is reserved and before
+  its first member runs, and a drained compound is answered like one request:
+  `ErrMoved` when the service names a gateway for the share of every
+  filehandle its members name, `ErrDraining` otherwise. A status the
+  protocol's error table marks as no failure no longer ends a compound or
+  fails the related requests of a chain after it.
+
+- **A request's trace ID decides its sampling, once.** A request draws its
+  trace ID from a uniformly random source, the node's `Deps.TraceIDs` or
+  `math/rand/v2`'s global source by default, never from wire data, which a
+  client could steer to force or evade sampling; the pipeline samples by the
+  tracing API's ratio rule before it opens the first span, and an unsampled
+  request, or tracing off altogether, allocates nothing for spans and reads
+  no clock, which the pipeline benchmark asserts.
+
+- **Held requests, and a 30 s deadline on every attempt.** Each request runs
+  under a 30 s deadline from its arrival, its waits for reply memory and a
+  replay copy included. Where the protocol holds, a request still in the
+  service after 1 s, or answered a delay, gets an interim reply and is retried
+  on a 10 ms to 1 s backoff until its hold's bound, keeping no goroutine or
+  reply buffer between attempts; a cancel or a closed connection ends it.
+
+### Changed
+
+- **The journal's open now reports what it recovered of each append stream.**
+  `Stats.SyncMarks` names, per stream, the end and sequence number of the
+  stream's last verifying record — a record the open re-appended counted at
+  the sealed copy it wrote — so the group commit records the recovered
+  position and a stream that lost its acknowledged tail reads lowered once
+  instead of reporting the loss at every open. The damaged segments the open
+  reports stay counted in `DamagedSegments` under their old ids until the
+  journal closes, also once the open has emptied or retired them, and the
+  emptying's span of the open trace carries how many segments the open read
+  by their catalog and how many by scan.
+- **The journal's open proves its unproven tail on the device.** A seal marker
+  only the live view serves no longer seals at open: the marker is re-read on
+  the device before it counts. Each tail record no sync or seal proved is
+  read whole, and one that reached only the cache is re-appended from the copy
+  the open kept, while one whose bytes never verify is dropped as never
+  written — its marker goes with it, so a removal the crash tore is never
+  reported.
+- **A sync that fails while the open proves the tail is a failed window.** The
+  records whose first read verified are handed to the re-append the same way
+  as lost ones, so the open still succeeds and the journal repairs itself
+  without operator action.
+- **The journal's open tells a crash's torn tail from damage.** A record that
+  fails its checksum no longer refuses the open on the spot: it is dropped and
+  reported as corrupt where a sync or a seal proved it whole, and cut as a torn
+  tail where nothing did. A sealed segment whose footer disagrees with a record
+  that verifies is read by scanning it, as one with no footer is. The open
+  still refuses a named predecessor that ends without its seal marker, at any
+  length, and a range inside a sealed segment that no footer names.
+- **The journal's open settles a crash's spare segments before it answers.**
+  A record-less segment a crash left untaken has its header and trailer slots
+  zeroed when its file holds exactly the segment cap and its body is allocated
+  whole, and is unlinked when it does not. A segment a sync mark names is left
+  as it stands, and so is a record-less take whose header names a
+  predecessor still on disk, until that predecessor's end is proven.
+  These spares are not yet handed to the pool.
+- **User and group names in the v2 metadata store are case-insensitive.**
+  `Alice` and `aLICE` are one name under Unicode simple case folding, found
+  under any case and read back as written; a user and a group may still share
+  a name. A local name holding `@` is refused, as are uid and gid 0 and 65534,
+  which belong to root and anonymous. Deleting a user deletes its NT hash
+  along with its password hash.
+
+- **The journal's open cuts and seals a crash's torn tail on the device.**
+  A segment the tear reached is truncated at the offset its last verifying
+  record ends, the truncation is made durable, and the segment is sealed
+  with a catalogue its own surviving bytes answer, so the next open reads
+  no tear and appends behind none. The open also records what the crash
+  corrupted: every corrupt drop and every record a failed window left
+  unrecorded gets a loss record, drawn on a reserve the headroom keeps for
+  the open. A sealed segment holding more failed records than that reserve
+  takes is copied out without them and unlinked instead, so no record is owed
+  for them. Corrupt losses past that reserve defer: the open serves and the
+  segment holding each deferred drop stays in place. When the open ends that
+  segment, or empties it for its failed records, the loss record is written
+  into the copy the emptying makes. Any other sealed segment holding a
+  deferred drop stays held and its loss is never recorded: the deferral
+  never ends in the process that made it, and it stands across restarts,
+  since each open finds the drop again and defers it again. A segment the
+  recovery ends is copied out whole into a sealed spare and unlinked before
+  the journal serves, its served pieces repointed to the copy. An open still
+  refuses what it cannot settle, such as a copy that needs more than one
+  segment: it answers `ErrOpenRefused`, the engine leaves the device's shares
+  unattached under `journal_open_refused` and retries the open.
+  Known gap: the engine opens its journal with no sync marks, so nothing
+  proves a record in an unproven tail was synced. With the ended-segment
+  refusal gone, a synced record that rotted there now reads through the
+  engine as a torn tail: the open cuts it and empties the segment without
+  recording the loss, and the extent reads zeros with no error. Handing the
+  engine's recorded sync marks to the open closes it (#4711).
+
 ## [0.37.0] — 2026-11-27
 
 0.37.0 is a fix release, mostly for SMB access control and share removal.
@@ -326,7 +474,7 @@ any of them.
   copying its files to a share on a new instance. A `memory` store is removed
   before the upgrade and recreated as a Badger store kept in RAM, with
   `dfsctl store metadata add --name <store> --in-memory`. See the
-  [metadata store migration guide](docs/guide/metadata-store-migration.md) before
+  [metadata store migration guide](https://github.com/cubbit/dittofs/blob/v0.35.0/docs/guide/metadata-store-migration.md) before
   upgrading. The control-plane database (`database:`, SQLite or PostgreSQL) is not
   affected.
 

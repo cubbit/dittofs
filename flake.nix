@@ -294,8 +294,12 @@
             perl
             # POSIX filesystem compliance testing (C version - authoritative)
             pjdfstest
-            # Docker client for PostgreSQL testing (daemon must be running on host)
+            # Docker client for the test services (daemon must be running on host)
             docker-client
+            # FoundationDB's client library and headers: builds with the
+            # foundationdb tag compile the fdbkv backend, which links libfdb_c.
+            # Any 7.3 client speaks to any 7.3 server.
+            foundationdb
             # Helper scripts that need the Linux NFS client.
             dfs-mount
             dfs-umount
@@ -351,8 +355,8 @@
               echo "  test/harness/bin/dt run e2e [TestName]"
               echo ""
             fi
-            echo "PostgreSQL for the integration tests:"
-            echo "  test/harness/bin/dt services up postgres"
+            echo "PyKMIP for the integration tests:"
+            echo "  test/harness/bin/dt services up kmip"
             echo ""
             echo "NFSv4 protocol conformance (no mount, no root):"
             echo "  pynfs-4.0 / pynfs-4.1       pynfs test client"
@@ -393,7 +397,7 @@
 
               # Auto-updated by .github/workflows/nix-update-hash.yml on go.mod/go.sum changes.
               # Manual: go run scripts/update-nix-hash.go
-              vendorHash = "sha256-8yMRc+2IWSu1inBLdZhUfABM/dx9XUoQHjAvc0s7yCE=";
+              vendorHash = "sha256-flcJ8LnxSvk0Uj8vjriEYzRGGeymL939Kuefs8qepe0=";
 
               ldflags = [
                 "-s"

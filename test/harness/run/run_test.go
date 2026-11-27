@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cubbit/dittofs/test/harness/fixture"
 	"github.com/cubbit/dittofs/test/harness/registry"
 	"github.com/cubbit/dittofs/test/harness/report"
 )
@@ -52,16 +53,21 @@ func anyRepo(t *testing.T, y string, files map[string]string) (string, *registry
 	return root, r
 }
 
-// runTarget selects and runs target at tier pr, and returns the report and
-// everything the run printed.
-func runTarget(t *testing.T, root string, r *registry.Registry, target string, ci bool) (Report, string) {
+// runTarget selects and runs target at tier pr, its fixtures started by
+// start when one is given, and returns the report and everything the run
+// printed.
+func runTarget(t *testing.T, root string, r *registry.Registry, target string, ci bool, start ...startFunc) (Report, string) {
 	t.Helper()
 	cells, err := Select(root, r, target, "", "pr", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	rep, err := Run(context.Background(), cells, Options{Root: root, Results: filepath.Join(root, "results"), CI: ci, Out: &out})
+	o := Options{Root: root, Results: filepath.Join(root, "results"), CI: ci, Out: &out}
+	if len(start) > 0 {
+		o.start = start[0]
+	}
+	rep, err := Run(context.Background(), cells, o)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -491,13 +497,25 @@ func TestInterruptIsNotRun(t *testing.T) {
 suites:
   slow: { cmd: "sh {test}", tests: "t/*.sh" }
   next: { cmd: "true" }
-`, map[string]string{"t/a.sh": "sleep 30\n", "t/b.sh": "exit 0\n"})
+`, map[string]string{"t/a.sh": "touch started\nsleep 30\n", "t/b.sh": "exit 0\n"})
 	cells, err := Select(root, r, "g", "", "pr", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(300*time.Millisecond, cancel)
+	// The script touches started before it sleeps, so the cancel lands on a
+	// running test. The deadline is a backstop: reaching it is the failure,
+	// the script never having started.
+	go func() {
+		defer cancel()
+		deadline := time.Now().Add(time.Minute)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(filepath.Join(root, "started")); err == nil {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
 	rep, err := Run(ctx, cells, Options{Root: root, Results: filepath.Join(root, "results"), Out: &bytes.Buffer{}})
 	if err != nil {
 		t.Fatal(err)
@@ -735,6 +753,52 @@ func TestFioJSON(t *testing.T) {
 	}
 }
 
+// metrics: go-bench records each benchmark's number for each unit from what
+// go test wrote to {out}/{test}.txt, in summary.json too: by name and unit,
+// without the -N suffix of the GOMAXPROCS it ran at, which go test leaves off
+// at 1, so a name that ends in digits keeps them; the median of a -count
+// run's lines; a benchmark that prints read across its lines. A --- FAIL line,
+// or one name in two packages, fails its test; a test that passes without
+// benchmark lines leaves its cell not run.
+func TestGoBench(t *testing.T) {
+	bench := func(lines string) string { return "cat > \"$1\" <<'EOF'\n" + lines + "EOF\n" }
+	root, r := repo(t, `suites:
+  s: { cmd: "sh {test} {out}/{test}.txt", tests: "w/*.sh", metrics: go-bench, env: { GOMAXPROCS: "8" } }
+  u: { cmd: "sh {test} {out}/{test}.txt", tests: "u/*.sh", metrics: go-bench, env: { GOMAXPROCS: "1" } }
+`, map[string]string{
+		"w/a.sh": bench("goos: linux\npkg: journal\n" +
+			"BenchmarkJ1/4KiB-8   3   300 ns/op   64 B/op   2 allocs/op\n" +
+			"BenchmarkJ1/4KiB-8   3   100 ns/op   64 B/op   2 allocs/op\n" +
+			"BenchmarkJ1/4KiB-8   3   200 ns/op   64 B/op   2 allocs/op\n" +
+			"BenchmarkJ2-8   5   10 ns/op\nBenchmarkJ2-8   5   30 ns/op\n" +
+			"BenchmarkLog-8   \thello\nhello\n      10\t      1600 ns/op\nPASS\nok  \tjournal\t1.2s\n"),
+		"w/b.sh": bench("pkg: a\nBenchmarkX-8   1   10 ns/op\npkg: b\nBenchmarkX-8   1   1000 ns/op\n--- FAIL: BenchmarkY-8\n"),
+		"w/c.sh": "true\n",
+		"u/a.sh": bench("BenchmarkJ3/size-4096   2   5 ns/op\n"),
+	})
+	rep, out := runTarget(t, root, r, "s", false)
+	if o := rep.Outcomes[0]; o.Result != report.Failed || !strings.Contains(o.Note, "w/b.sh: BenchmarkX ran in a and b; --- FAIL: BenchmarkY-8") ||
+		!strings.Contains(o.Note, "w/c.sh: go's benchmark output: ") {
+		t.Errorf("want failed, naming w/b.sh's two packages and its FAIL line, and w/c.sh's missing lines; got %+v\n%s", o, out)
+	}
+	sum, err := report.Read(rep.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]float64{"BenchmarkJ1/4KiB ns/op": 200, "BenchmarkJ1/4KiB B/op": 64, "BenchmarkJ1/4KiB allocs/op": 2, "BenchmarkJ2 ns/op": 20, "BenchmarkLog ns/op": 1600}
+	if got := sum.Cells[0].Tests[0]; got.Name != "w/a.sh" || got.Status != report.Passed || !reflect.DeepEqual(got.Metrics, want) {
+		t.Errorf("in summary.json: %+v, want w/a.sh passed with %v", got, want)
+	}
+	rep, out = runTarget(t, root, r, "u", false)
+	if sum, err = report.Read(rep.Dir); err != nil {
+		t.Fatal(err)
+	}
+	want = map[string]float64{"BenchmarkJ3/size-4096 ns/op": 5}
+	if got := sum.Cells[0].Tests[0]; !reflect.DeepEqual(got.Metrics, want) {
+		t.Errorf("at GOMAXPROCS 1: %+v, want %v\n%s", got, want, out)
+	}
+}
+
 // An annotation's text can't end it early or break it: %, CR and LF are
 // escaped, and in its title : and , too.
 func TestAnnotation(t *testing.T) {
@@ -805,7 +869,9 @@ func TestFirstScenarioLimit(t *testing.T) {
 // --in auto moves a run to dtc when a cell needs what is missing here and the
 // container gives, unless a cell needs what is met here and the container
 // lacks. A cell dtc can't run doesn't move it, and keeps it here when it runs
-// here. The tests set hostOS to darwin.
+// here. The tests set hostOS to darwin. The fixtures are judged as a start of
+// a test's own judges them, by what dt itself sets up, since the DittoFS
+// server serves none of them yet; through Container, an NFS cell stays here.
 func TestContainer(t *testing.T) {
 	was := hostOS
 	hostOS = "darwin"
@@ -849,9 +915,12 @@ func TestContainer(t *testing.T) {
 		{"one missing need the container lacks too", []Cell{cell("linux", "rpcbind")}, []string{"linux", "rpcbind"}, false},
 		{"a service missing here, so in the container too", []Cell{cell("linux", "service:localstack")}, []string{"linux", "service:localstack"}, false},
 	} {
-		if got := Container(c.cells, missing(c.unmet...)); got != c.want {
+		if got := container(c.cells, missing(c.unmet...), fixture.NotSetUp); got != c.want {
 			t.Errorf("%s: %v, want %v", c.name, got, c.want)
 		}
+	}
+	if Container([]Cell{nfs}, missing("linux")) {
+		t.Errorf("an NFS mount the server can't serve yet moves the run to dtc, want it kept here")
 	}
 }
 

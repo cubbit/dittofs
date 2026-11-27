@@ -1,0 +1,49 @@
+# The engine's conformance tests that fail today, one entry per test, never a pattern, each
+# naming the epic expected to turn it green. A test that starts to pass fails the run: remove
+# its entry in the change that turned it green, a journal change included. Each entry's
+# message is the failure it is known by: a test failing for any other reason is unexpected.
+- test: TestRFC8A_SyncedLossReadsLost
+  message: 'Read = vfs: retry shortly: frozen, want ErrLost'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'a synced write the crash corrupted is committed as lost at start, charges nothing and reads ErrLost. The row commits the file through the engine and commits another file''s existence after it, so the group commit records a sync mark covering the corrupted record, the stream''s last, and the restart hands it to the open; an open whose recorded mark proves a synced record lost, with no copy of it verifying, is refused (refuseLostTail, pkg/journal/internal/recovery/marks.go) until the journal''s reconcile half lands, so the share is refused at start and serves only the frozen delay; the row goes green once that refusal is withdrawn and the open reads the proved lost tail as lost.'
+  issue: '#5261'
+- test: TestRFC8A_RetryLaterAtTheShareLimit
+  message: 'the share limit has nothing left to free'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Waits on offload being composed. The settled answer gives retry-later for dirty bytes only with a put-healthy store behind them (RFC 8 section 10.2), and this part composes no store, so the settled no-space in settled() stands; the row assumes a put-healthy store and goes green once offload reads the store put-health for the dirty half. The journal''s repack is real, and the share at its limit holds only live bytes, so the refusal''s repack passes leave no sealed or ended segment and the answer''s figure reads zero.'
+  issue: '#5757'
+
+- test: TestRFC8A_CloneRetryLaterAtTheDestinationLimit
+  message: 'a clone its destination''s journal cannot reserve: engine: the share limit has nothing left to free'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Waits on offload being composed. The settled answer gives retry-later for dirty bytes only with a put-healthy store behind them (RFC 8 section 10.2), and this part composes no store, so the settled no-space in settled() stands; this row checks only that a clone refused at its destination''s journal limit answers retry-later, and goes green once offload reads the store put-health for the dirty half. The rest of the clone row, the prior content kept and the registrations undone, is TestRFC8A_Clone and passes.'
+  issue: '#5757'
+
+- test: TestRFC8A_CloneResumedAtAFullLimit
+  message: 'the share limit has nothing left to free: vfs: no space without operator action, want only the capacity delay'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Waits on offload being composed. The settled answer gives retry-later for dirty bytes only with a put-healthy store behind them (RFC 8 section 10.2), and this part composes no store, so the settled no-space in settled() stands; the fill of the share wants the retry-later a put-healthy store would give. Separately, this row does not run the resume it names: after the restart the fixture wires only the first share and the clone is on the second, so the resume code never runs and three breaks of it (dropping the rebuild''s kept runs in rebuild.go, turning off the copy flag in the same loop, and making rebuildMarker return nil) are not caught by it: run with the fill passing, the test still passes under each of them. It goes green on the fill once offload lands, and covers the resume only once the fixture''s restart wires every share.'
+  issue: '#5757'
+
+- test: TestRFC8A_TheJoin
+  message: 'read 4096 bytes at 8192: 0, vfs: retry shortly: frozen'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'a committed hole reads zeros and a synced record the journal lost reads Lost after the restart. The row commits its overwrite through the engine, which returns once a recorded sync mark covers the record, the stream''s last, and the restart hands that mark to the open; an open whose recorded mark proves a synced record lost, with no copy of it verifying, is refused (refuseLostTail, pkg/journal/internal/recovery/marks.go) until the journal''s reconcile half lands, so the share is refused at start and serves only the frozen delay; the row goes green once that refusal is withdrawn and the open reads the proved lost tail as lost.'
+  issue: '#5261'
+- test: TestRFC8B_SharedJournalRetryLaterAtTheLimit
+  message: 'the filling write: engine: the share limit has nothing left to free'
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Waits on offload being composed. The settled answer gives retry-later for dirty bytes only with a put-healthy store behind them (RFC 8 section 10.2), and this part composes no store, so the settled no-space in settled() stands; this row checks only that the share filled to its limit is refused with retry-later while another share is healthy, and goes green once offload reads the store put-health for the dirty half. The other share being served is TestRFC8B_SharedJournal and passes.'
+  issue: '#5757'

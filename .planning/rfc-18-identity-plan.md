@@ -1192,16 +1192,28 @@ err = store.Write(ctx, meta, func(tx entity.ControlPlaneTx) error {
 	if err != nil || s.Generation != ntlm.Generation {
 		return orConflict(err)
 	}
+	// Both new versions are put and every version below each pruned at once
+	// with tx.PruneSecret (RFC 23 plan's R37).
 	if err := tx.PutSecret(pw, pw.Version-1); err != nil {
 		return err
 	}
-	u.Password = pw.ID
+	if err := tx.PruneSecret(pw.ID, pw.Version); err != nil {
+		return err
+	}
+	u.Password, u.NTHash = pw.ID, entity.SecretRef{}
 	if h.NTHash != nil {
 		if err := tx.PutSecret(nt, nt.Version-1); err != nil {
 			return err
 		}
+		if err := tx.PruneSecret(nt.ID, nt.Version); err != nil {
+			return err
+		}
 		u.NTHash = nt.ID
 	}
+	// With no new NT hash the account names none, and the old password's is
+	// left to the NT-hash deletion turning NTLM off starts, which drops every
+	// secret of that kind; with NTLM on NewHashes derives none only for an
+	// account holding no uid, which never held one.
 	return tx.PutUser(u, u.Generation, entity.Alloc{})
 })
 ```
@@ -1729,11 +1741,9 @@ This epic waits for an SMB adapter serving through the node (S3).
   Directory Users and Computers with no encryption types and no service names, `sPNMappings`). A
   deferral (§6.1).
 
-### 6.1 Deferral ledger
-
-What the plan knowingly does not build. Each row cites the section that defers it.
-
-Rows of RFC 20's plan's deferral ledger and its epic documents that name this plan:
+**RFC 20's ledger rows for identity.** Each row is one of [RFC 20's plan](rfc-20-adapters-plan.md)'s
+deferral ledger (its §6.2), or, where the row names it, of the open points (§9) of RFC 20's
+[epic 1 document](rfc-20-adapters-epic1.md).
 
 | Row of RFC 20's plan's deferral ledger | Here |
 | --- | --- |
@@ -1741,6 +1751,10 @@ Rows of RFC 20's plan's deferral ledger and its epic documents that name this pl
 | identity-mapping config, deleted by RFC 20's T1.1 | E3 (squash); uid and gid mapping not here: §6.1, RFC 21 plan (O2) |
 | `pkg/auth`, `pkg/auth/kerberos`, `pkg/identity/kerberos` and `internal/auth/kerberos`, deleted by RFC 20's T1.1 for having no importer | E5, which lifts from `develop`'s history what rule 7 keeps of them: the replay cache and AP-REQ handling |
 | the share-policy gates (epic 1's §9, its D23): flavor and Kerberos-level policy, the netgroup allowlist and root's admin bypass at the share gate, re-derived in `internal/vfs/admit` | the root bypass: dropped (§1.1, ID6); the flavor and Kerberos-level policy and the netgroup allowlist: not here, unowned in §6.1 |
+
+### 6.1 Deferral ledger
+
+What the plan knowingly does not build. Each row cites the section that defers it.
 
 | Deferred | Why | Owner | Trigger |
 | --- | --- | --- | --- |
@@ -1761,9 +1775,9 @@ Rows of RFC 20's plan's deferral ledger and its epic documents that name this pl
 | Leaving the domain | O5: RFC 18 states no rule for it | RFC 18 | RFC 18 defines leaving the domain |
 | Interop against a Windows Server domain controller: online and offline join, pass-through, a Windows client's ticket | O11: CI has only Samba AD (§1.5 rule 8) | unowned | v1.0's release candidate is cut |
 | "roles grant nothing" | §1.4: RFC 23 §12's row | RFC 23 plan (#4050) | its epic that runs RFC 23 §12 |
+| Listing every user or group record: machines, unnamed users and unnamed groups, which `ControlPlane.Users` and `ControlPlane.Groups` leave out because they walk the name index (RFC 16 §3; RFC 18 §2.4 gives a machine no name, §5.1 leaves a directory group without one) | E2: no RFC asks for it, and no RFC 23 endpoint lists them; T2.3's `UnnamedPrincipals` conformance case pins the subset | RFC 23 plan (#4050) | an RFC 23 endpoint that lists machines, unnamed users or unnamed groups, which brings an RFC 16 §3 amendment for a walk of the `U‖` and `G‖` records |
 | The share gate's flavor and Kerberos-level policy and its netgroup allowlist, deleted by RFC 20's epic 1 (its D23), to be re-derived in `internal/vfs/admit` | §6's RFC 20 rows: no epic of this plan builds them | unowned | their owner is ruled on |
 | the v1 NTLM and service-principal switches, which RFC 13's rows do not carry (RFC 20's epic 1, its §9) | NTLM through pass-through is this plan's S2; nothing on the branch reads the switches | this plan | claimed or dropped before the cutover (stage 7) |
-| Listing every user or group record: machines, unnamed users and unnamed groups, which `ControlPlane.Users` and `ControlPlane.Groups` leave out because they walk the name index (RFC 16 §3; RFC 18 §2.4 gives a machine no name, §5.1 leaves a directory group without one) | E2: no RFC asks for it, and no RFC 23 endpoint lists them; T2.3's `UnnamedPrincipals` conformance case pins the subset | RFC 23 plan (#4050) | an RFC 23 endpoint that lists machines, unnamed users or unnamed groups, which brings an RFC 16 §3 amendment for a walk of the `U‖` and `G‖` records |
 | The prune rows of E7's T7.12 (R57: the previous version pruned, no longer listed by `Versions`, and reported revocable; none pruned after a failed rotation; the prune's audited `Write` and its failed commit) and T7.15's prune of a failed offline join's kept versions (R36) | #4059's provider's `Prune` is unbuilt; T7.12 tolerates only its stub's error (epic 7's D14) | RFC 13 plan, epic 4 (T4.5, #4652) | T4.5 lands |
 | Local user and group names compared after Unicode normalisation (NFC) (RFC 18 §4.6's `ponytail:`) | the store folds case only (E2), and the store's name check (T2.10: invalid UTF-8, control characters, edge white space, over 255 bytes) normalises nothing: a name is stored as given, so two names equal after normalisation are two names | unowned | an RFC states the rule, or two names that look alike are reported |
 

@@ -308,11 +308,14 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   row "Recording which settings produced a namespace's content" gives the record to the namespace's
   `Bound`, which the node writes at creation. `content.Params` gains the node's settings table, and
   the wiring's `Settings(ns)` (epic 15's carver port) reads the namespace's `Bound` through it
-  (`DecodeBound`), compares its `Target` with the namespace's configured one, and answers
-  `settings.ErrBound` wrapped with both values when they differ, and `carver.ErrInvalidSettings` for
-  a `Target` `carve.NewSettings` refuses. A namespace whose record holds no `Target`, as every one
-  does until the integration epic registers `Target`'s section in the node's table, gets RFC 2's
-  default: a `decision:` there, withdrawn when the section is registered. The fixture's table
+  (`DecodeBound`) and checks in this order: first the namespace's configured `Target` through
+  `carve.NewSettings`, answering `carver.ErrInvalidSettings` when it refuses, whatever the record
+  holds; then the recorded `Target` against it, answering `settings.ErrBound` wrapped with both
+  values when they differ. A record holding no `Target`, as every one does until the integration
+  epic registers `Target`'s section in the node's table, skips only the comparison: a configured
+  `Target` is still validated and used (R36), and RFC 2's default applies only to a namespace that
+  configures none. A `decision:` there names the comparison skipped, withdrawn when the section is
+  registered. The fixture's table
   registers `pkg/carver/section` now, so the rows have a recorded `Target` to change. Prior art:
   restic's repository config records the chunker polynomial at `init` and never changes it (from
   memory).
@@ -350,8 +353,14 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   `Tenant`. So one function, `retune(b)`, under the binding's lock, computes each shard's `Tenant`
   from the binding's state (removing, dropped), its kept put health, the journal's pressure and the
   switch, and calls `SetTenant` only when the result differs from the last it applied; it never calls
-  it for a dropped binding. Every writer, epic 14's pressure cap included, goes through it. A
-  `decision:` at `retune`. Prior art: Kubernetes controllers' single reconcile of desired state
+  it for a dropped binding. It records a `Tenant` as applied only when `SetTenant` returned nil, so
+  a refused or failed call is sent again by the next `retune`, which every age tick runs. It only
+  changes a tenant the scheduler holds: the attach path adds each shard's tenant as epic 14 does,
+  outside every lock, with the `Tenant` `retune`'s computation gives, and records it on the binding
+  once the add returned nil; `retune` skips a shard with none recorded. So the `SetTenant` it sends
+  under the binding's lock never adds a tenant and never runs a `Rebuild` there (epic 13 D10). Every
+  writer of a held tenant, epic 14's pressure cap included, goes through it. A `decision:` at
+  `retune`. Prior art: Kubernetes controllers' single reconcile of desired state
   (from memory).
 
 ## 5. Target tree
@@ -429,7 +438,10 @@ test/engine/known.yaml    T16.1, T16.3, T16.6, T16.9, T16.10  messages rewritten
   - In `enginetest`: every engine composes the syncer (D9); `FaultRemote(s sim.Fault)` made real
     over RFC 4's fault wrapper. In-package tests that build `Deps` by hand get one from
     `export_test.go`. Every `known.yaml` entry whose message is `fixture: the syncer is not composed`
-    rewritten to the refusal it meets now, `fixture: RunPass is not built`, in the same change.
+    rewritten, in the same change, to the first refusal its row meets now: `WithRefs`'s for a row
+    that asks for it, since `New` checks it right after the syncer (epic 12 D1); `PrimaryPair`'s for
+    a row that calls it before its first pass; otherwise the first unbuilt control it calls,
+    `fixture: RunPass is not built` for most.
     `Recorder()`, epic 12's D8 control for RFC 5's engine rows, made real: what the codec under the
     syncer recorded (RFC 4's outputs, such as its verification failures), read after the fact.
   Consumed by T16.3 (the flow a pass puts through), T16.4 (`Healthy`), T16.5 (the close order),
@@ -495,7 +507,10 @@ test/engine/known.yaml    T16.1, T16.3, T16.6, T16.9, T16.10  messages rewritten
     (D1), with the binding's flow and store, its `Failures`, `register` and `release` (T16.2), the
     settings `Bind` checked (§9) and `func() entity.NamespaceID` reading the binding's current write
     namespace (R14). Each file's result goes to `done` as its pass returns; a file `offloadDue`
-    placed in no pass answers `Done`, since the age tick re-posts it when due. Epic 14's run hook, which
+    placed in no pass answers `Done` when the binding's `Failures` holds no failure for it, since the
+    age tick re-posts it when due, and `Retry` when it holds one, so the backoff its failures grew is
+    not reset by a run that never tried it (`Done` resets it, epic 13's R14); the `Retry` counts no
+    failure, `Failures` being the pass's to change. Epic 14's run hook, which
     delivers each batch, is kept, now around the pass.
   - In `health.go`, `offload.Stats` copied into epic 11's fields and into `Stats.Carver
     map[entity.NamespaceID]CarverStats` (epic 15 D14).
@@ -505,7 +520,8 @@ test/engine/known.yaml    T16.1, T16.3, T16.6, T16.9, T16.10  messages rewritten
     `fixture: RunPass is not built` rewritten to the failure it meets now, over the real journal the
     journal's `stub: Offload`; epic 15's O1 crash test (`TestRFC8A_OffloadSurvivesACrashInEachState`)
     rewritten to the same.
-  Consumed by T16.4 to T16.10, epic 18 (the refusal path's pass), epic 19 (the re-offer) and epic 20
+  Consumed by T16.4 to T16.10, epic 18 (the passes its refusal path's step 3 starts by posting
+  `Pressure(on)`, runs of this source like any other), epic 19 (the re-offer) and epic 20
   (the outcomes).
 - **Acceptance criteria:**
   - A batch of a share's files ends with every file reported offloaded once its commit lands, and
@@ -514,13 +530,18 @@ test/engine/known.yaml    T16.1, T16.3, T16.6, T16.9, T16.10  messages rewritten
   - A pass whose `Upload` returned `remote.ErrThrottled` returns `Throttled`, its file's failure
     count unchanged.
   - A pass offers no more than `uploadWorkers` block targets.
+  - A file placed in no pass after a failure keeps its backoff; one with no failure answers `Done`.
 - **Tests:** at the scheduler's results and the in-memory journal's offloaded bits (what `Release`
   reads): three files, each offloaded and reported once (catches a lost or doubled result, R10); a
   poison file's pass held by the store's delay while the other two report (catches a batch run as one
   pass, D1); the store throttling every attempt past the syncer's own throttle bound, so `Upload`
   itself returns `ErrThrottled`, and the file's count read through `offload.Stats` (catches a
   throttled pass counted, R13); `uploadWorkers` set to 2 on the instance with four block targets dirty, the offer read from
-  the in-memory journal's offer record (catches an unbounded pass, R11); RFC 8 §6.1's "one run per
+  the in-memory journal's offer record (catches an unbounded pass, R11); a file below the block target failed
+  twice through `FaultRemote` under pressure, then dispatched with pressure off and so placed in no
+  pass, then due by age and failed again, its next dispatch on the test clock later than twice
+  `offload.retry_min` with its jitter, where a reset backoff dispatches it within one (catches a
+  `Done` resetting it); RFC 8 §6.1's "one run per
   key" with puts, over the store's object listing (each block put once) and the commit results (no
   `ErrInconsistent`) (R15); its "rebuild" pass half, the engine restarted over the in-memory journal
   with a pass between Put and Commit, every dirty file offered again (R16); a pass's block named
@@ -536,8 +557,9 @@ test/engine/known.yaml    T16.1, T16.3, T16.6, T16.9, T16.10  messages rewritten
 - **Track:** B. **Depends on:** T16.3.
 - **Covers:** R13 (the skip), R21, R22, R23, R24, R25, R26, R27, R29 (no tenant added back).
 - **Deliverables:** in `pause.go`, `retune(b)` (D13), under the binding's lock, computing each of the
-  share's shards' offload `Tenant` from the kept put health and the journal's pressure, and never
-  calling `SetTenant` for a dropped binding; epic 14's pressure cap routed through it, its D8 answer
+  share's shards' offload `Tenant` from the kept put health and the journal's pressure, never
+  calling `SetTenant` for a dropped binding or a shard whose add is not recorded, and recording a
+  `Tenant` as applied only once `SetTenant` returned nil; epic 14's pressure cap routed through it, its D8 answer
   withdrawn. At each age tick, `Healthy(remote.Put)` read once per binding into its kept put health,
   then `retune`. Before each pass the source reads it again; a put-unhealthy store skips the pass:
   the kept health written and `retune` called first, then `Done`, counted `result="skipped"` (D2,
@@ -550,15 +572,21 @@ test/engine/known.yaml    T16.1, T16.3, T16.6, T16.9, T16.10  messages rewritten
     it.
   - A get-unhealthy, put-healthy store pauses nothing; under pressure a put-unhealthy shard's cap
     stays `offload.retry_max`.
-  - No `SetTenant` reaches a dropped share's shards.
+  - No `SetTenant` reaches a dropped share's shards, and none from `retune` adds a tenant.
+  - A `SetTenant` that failed is sent again at the next tick.
 - **Tests:** at the scheduler's `Stats` per tenant and at `offload.Stats`, on the test clock:
   RFC 8 §6.3's "O2 long outage", the pause half: 10⁴ dirty files, the store's fault wrapper failing
   every put and probe for 24 simulated hours, the tenant paused, its entries held, nothing
   dispatched, every count below five, and every file offered within one age tick of the faults
   clearing, with no pass dispatched before the probe turned the store healthy (R22, R25);
-  the pressure leg epic 14's T14.4 hands over, one file failing every put through `FaultRemote`
-  until its backoff reaches the 60 s cap, then pressure on, and the file re-run within
-  `offload.retry_max_pressure` on the test clock (catches a cap the scheduler never applies, R24); a pass dispatched just as the store turns unhealthy, skipped, then the store
+  the pressure leg epic 14's T14.4 hands over, one file failing every put through a `FaultRemote`
+  rule matching its share's namespace, beside a second share on the same store whose file is written
+  and offloaded at every age tick, so not every put in RFC 3 §2.8's failure window fails and the
+  store stays put-healthy, which the test asserts at each tick, since a put-unhealthy store would
+  skip the file's passes, answering `Done` and resetting its backoff (D2), and keep its cap at
+  `offload.retry_max` (R24); the file's backoff reaching the 60 s cap, then pressure on, and the
+  file re-run within `offload.retry_max_pressure` on the test clock (catches a cap the scheduler
+  never applies, R24); a pass dispatched just as the store turns unhealthy, skipped, then the store
   healthy and one tick, and the files dispatched (catches a pause the tick never lifts, D2); a
   get-only fault pausing nothing (catches a get gate, R23); the "pressure band" put-unhealthy leg
   with cause `ErrTransient`, every cap at `offload.retry_max` (R24, R26); the "starvation" throttling
@@ -566,7 +594,9 @@ test/engine/known.yaml    T16.1, T16.3, T16.6, T16.9, T16.10  messages rewritten
   share, the fast one's oldest unoffloaded age below `MaxAge` and its offered bytes per simulated
   second within 10 % of its run alone (R27); `Drop` racing a tick by a hook between the tick's health
   read and its `retune`, and the scheduler's `Stats` naming no shard of the share afterwards
-  (catches a tenant added back, R29). R21's "never probes" is held by the engine's import walk: it
+  (catches a tenant added back, R29); a `retune` change whose `SetTenant` is failed once by a
+  per-instance fault hook set from `export_test.go` (kind 3), then the next tick's `retune` sending it again and the scheduler's `Stats`
+  showing the change (catches a failed call recorded as applied, D13). R21's "never probes" is held by the engine's import walk: it
   imports no store and declares no probe, only `Healthy` on the flow it holds.
 - **Rules:** rule 9, D2's and D13's markers; epic 14's D8 withdrawn.
 
@@ -701,7 +731,8 @@ test/engine/known.yaml    T16.1, T16.3, T16.6, T16.9, T16.10  messages rewritten
   binding's settings.
 - **Acceptance criteria:**
   - A `Bind` of a share whose namespace's `Target` the carver refuses is refused with
-    `carver.ErrInvalidSettings`, and a served share's earlier binding still serves.
+    `carver.ErrInvalidSettings`, whether its record holds another `Target` or none, and a served
+    share's earlier binding still serves.
   - A `Bind` of a share whose namespace's recorded `Target` differs from its configured one is
     refused with `settings.ErrBound`, naming both, and nothing is offered under either.
 - **Tests:** at `Bind` and `Start`, through the fixture, which composes the wiring: the two refusals
@@ -709,7 +740,9 @@ test/engine/known.yaml    T16.1, T16.3, T16.6, T16.9, T16.10  messages rewritten
   such share and a valid one attaching neither (R40); RFC 13's "§5.3 recorded", the namespace's
   stored `Target` edited underneath its record through the fixture's store, the share not attached at
   the next `Start` (R39); the wiring's table of the comparison, recorded and configured equal,
-  different, absent and invalid (catches a swapped comparison).
+  different, absent and invalid, and an invalid configured `Target` beside a different record and
+  beside none, each `carver.ErrInvalidSettings` (catches a swapped comparison, the checks run out of
+  order, and an invalid `Target` given the default, R36).
 - **Rules:** rule 6, the entry removed; rule 9, D7's marker.
 
 ### T16.10 S3: the rows a pass turns green

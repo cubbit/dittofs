@@ -8,9 +8,10 @@
 F=/inputs/125GB.testfile
 
 rclone mkdir s3:cubbit
-dfsctl store block add --name s3-cubbit --type s3 --config "$(jq -c '.bucket = "cubbit"' /etc/dittofs-s3.json)"
-dfsctl share create --name /cubbit --metadata md --block-store s3-cubbit --default-permission none
-dfsctl share permission grant /cubbit --user tester --level read-write
+S="$(dfs-store cubbit)"
+N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=cubbit/ -o json | jq -r .id)"
+dfsctl share create cubbit --path /cubbit --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write
+dfsctl grant set cubbit --user tester --access read-write
 rclone lsf -R --files-only --format ps s3:cubbit >/tmp/cubbit0.lst
 
 # Disk for three copies (the input, the local tier's, SeaweedFS's) and 10 GB; a kept input counts as room
@@ -20,10 +21,8 @@ test -f "$F" || head -c 125GB /dev/urandom >"$F"
 
 smbclient //127.0.0.1/test -c "put $F 125GB.testfile"
 dfsctl system drain-uploads --timeout 120m
-dfsctl store block stats --share /test -o json | jq -c '.totals | {unsynced_bytes, pending_uploads, local_disk_used}'
 rclone size --json s3:dittofs/test/ | tee /tmp/test.json
 rclone lsf -R --files-only --format ps s3:cubbit | tee /tmp/cubbit.lst
 test "$(jq .bytes /tmp/test.json)" -ge "$(stat -c %s "$F")"
 cmp /tmp/cubbit.lst /tmp/cubbit0.lst
-dfsctl store block evict --share /test
 smbclient //127.0.0.1/test -c 'get 125GB.testfile -' | cmp - "$F"

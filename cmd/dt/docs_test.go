@@ -121,7 +121,7 @@ func TestDocsCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(path)
-	for _, want := range []string{"(?m)^### `dt run`$", `(?m)^ +--o\[=true\|false\] +run the suite's o option$`, "(?m)^### `dt docs`$", `(?m)^dt docs \[--check\] \[flags\]$`, `(?m)^ +--check\[=true\|false\] +only check`, "(?m)^### `dt known prune`$"} {
+	for _, want := range []string{"(?m)^### `dt run`$", `(?m)^ +--o(\[=true\|false\])? +run the suite's o option$`, "(?m)^### `dt docs`$", `(?m)^dt docs \[--check\] \[flags\]$`, `(?m)^ +--check(\[=true\|false\])? +only check`, "(?m)^### `dt known prune`$"} {
 		if !regexp.MustCompile(want).Match(got) {
 			t.Errorf("written reference lacks %s:\n%s", want, got)
 		}

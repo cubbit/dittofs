@@ -1,6 +1,11 @@
 # Frequently Asked Questions
 
-Common questions about DittoFS and their answers.
+Short answers to common questions about DittoFS, and the list of its known
+limitations. If something does not work, see [Troubleshooting](troubleshooting.md).
+
+> **This version is a rebuild (v2), in progress.** It runs a node and its management
+> API, but serves no NFS or SMB yet and cannot create a share yet. Answers about the
+> protocols describe the released server and say so.
 
 ## Table of Contents
 
@@ -8,6 +13,7 @@ Common questions about DittoFS and their answers.
 - [Technical Questions](#technical-questions)
 - [Usage Questions](#usage-questions)
 - [Comparison Questions](#comparison-questions)
+- [Durability and caching](#durability-and-caching)
 - [Known Limitations](#known-limitations)
   - [NFS Protocol Limitations](#nfs-protocol-limitations)
   - [SMB Client Limitations](#smb-client-limitations)
@@ -19,748 +25,418 @@ Common questions about DittoFS and their answers.
 
 ### What is DittoFS?
 
-DittoFS is a modular virtual filesystem written entirely in Go that decouples file access protocols
-from storage backends. It supports NFSv3, NFSv4/v4.1, and SMB2 with pluggable metadata and block
-stores, making it easy to serve files over multiple protocols from various backends (BadgerDB,
-on disk or in memory, for metadata; memory or S3 for blocks).
+A file server written in Go that serves the same files over NFS and SMB, entirely in
+userspace. The released server speaks NFSv3, NFSv4.0, v4.1 and v4.2, and SMB 2 and 3.
+This version keeps metadata in Badger on disk (or in FoundationDB) and file content in
+an on-disk journal; see [Choosing stores](choosing-stores.md).
 
 ### Why not use FUSE?
 
-FUSE adds an additional abstraction layer and requires kernel modules. DittoFS runs entirely in
-userspace and implements protocols directly, giving better control over protocol behavior, easier
-debugging, and no kernel dependencies. This also makes deployment simpler - just a single binary with
-no special permissions.
+FUSE puts a kernel module between the client and the server. DittoFS implements the
+protocols itself, in one process, so it needs no kernel module and no special
+privileges, and protocol behaviour is easier to control and to debug.
 
 ### Can I use this in production?
 
-**Not yet**. DittoFS is experimental and needs:
-- More testing and hardening
-- Security auditing
-- Performance optimization
-- Production deployment experience
-
-Use it for development, testing, and experimentation, but wait for a stable 1.0 release before production use.
+**No, not yet.** DittoFS is experimental. It has had no security audit, it needs more
+testing and hardening, and its on-disk formats may still change. Use it for
+development, testing and evaluation until a stable 1.0 release.
 
 ### What license is DittoFS under?
 
-DittoFS is released under the MIT License, which is permissive and allows commercial use.
+The MIT License, which allows commercial use.
 
 ## Technical Questions
 
 ### Which NFS versions are supported?
 
-DittoFS supports **NFSv3 over TCP** (28 procedures fully implemented), **NFSv4.0**, **NFSv4.1**, and **NFSv4.2** (extended attributes, RFC 8276) with features including:
-- Compound operations and sessions
-- File and directory delegations with CB_NOTIFY
-- ACLs (Access Control Lists)
-- Kerberos authentication via RPCSEC_GSS
+Not served on this version. The released server supports:
+
+- **NFSv3** over TCP, all 28 procedures.
+- **NFSv4.0** and **NFSv4.1**: compound operations, sessions, file and directory
+  delegations, and ACLs.
+- **NFSv4.2**: extended attributes and sparse files.
+
+Kerberos for NFS is not served yet; see
+[Does it support Kerberos?](#does-it-support-kerberos-authentication)
 
 ### Does it support file locking?
 
-Yes. **NFSv4** provides built-in (in-protocol) file locking — nothing extra to
-enable, and the recommended path. **SMB2** supports byte-range locking (shared
-and exclusive).
+On the released server, yes:
 
-**NFSv3** locking uses the separate NLM (Network Lock Manager) side protocol.
-DittoFS implements NLM (v1/v3 with 32-bit offsets, v4 with 64-bit) and NSM, over
-both TCP and UDP. Because BSD/macOS lock clients (`rpc.lockd`/`rpc.statd`) reach
-NLM/NSM over **UDP** and discover it via the standard portmapper on **port 111**,
-NFSv3 locking from those clients requires two opt-in settings on the server:
+- **NFSv4** has locking built into the protocol. Nothing to set up; this is the
+  recommended way.
+- **SMB** supports shared and exclusive byte-range locks.
+- **NFSv3** locks through a separate protocol, NLM, with NSM for crash recovery, over
+  TCP and UDP. macOS and BSD clients reach NLM over UDP and find it through the
+  portmapper on port 111. So for those clients, two settings of the NFS adapter must
+  be turned on, then the adapter restarted:
+  - `udp_enabled`, for the UDP transport;
+  - `portmapper_enabled` and `portmapper_port`, for a portmapper on port 111. Binding
+    port 111 needs root or `CAP_NET_BIND_SERVICE`.
 
-- enable the UDP transport: `dfsctl adapter settings nfs update --udp-enabled true`
-- enable the portmapper, reachable on **port 111**: `dfsctl adapter settings nfs
-  update --portmapper-enabled true --portmapper-port 111` (binding 111 needs root
-  / `NET_BIND_SERVICE`; on Kubernetes the operator exposes it via the Service)
-
-then restart the adapter. Both are **disabled by default**. Note that NFSv3
-**mount and read/write work without any of this** — only NLM locking needs it.
-If you don't need cross-client locking, mount with `-o nolock`, or prefer
-`-o vers=4` (`dfsctl share mount --nfs-version 4.1`) to get locking in-protocol
-with no NLM/portmapper setup. See [NFS.md](nfs.md#nfsv3-file-locking-nlmnsm).
+  Both are off by default. NFSv3 mounting, reading and writing work without them; only
+  locking needs them. If you don't need locks across clients, mount with `-o nolock`,
+  or use NFSv4 (`dfsctl share mount --nfs-version 4.1`). See
+  [the NFS guide](nfs.md#nfsv3-file-locking-nlmnsm).
 
 ### Does it support Kerberos authentication?
 
-Yes. NFSv4 supports Kerberos via RPCSEC_GSS, and SMB supports Kerberos via SPNEGO alongside NTLM.
+- **NFS:** not available yet on this version. The NFS adapter refuses Kerberos
+  (RPCSEC_GSS). Use `AUTH_SYS` on a trusted network or a VPN.
+- **SMB:** the released server supports Kerberos through SPNEGO, beside NTLM. See
+  [Identity](identity.md).
 
-### Can I implement my own protocol adapter?
+### Can I write my own protocol adapter?
 
-Yes! That's one of the main goals of DittoFS. Implement the `Adapter` interface and wire it to the metadata/block stores:
+Yes, but the adapter interface is still changing. An adapter reaches files only
+through the node's file service, never the stores directly, and the node starts,
+reconfigures and stops it. See [Architecture](../internals/architecture.md).
 
-```go
-type Adapter interface {
-    Serve(ctx context.Context) error
-    Stop(ctx context.Context) error
-    SetRuntime(*runtime.Runtime)
-    Protocol() string
-    Port() int
-}
-```
+### Can I write my own storage backend?
 
-See [ARCHITECTURE.md](../internals/architecture.md) for details.
-
-### Can I implement my own storage backend?
-
-Absolutely! Implement either or both of these interfaces:
-
-- **Metadata Store**: `pkg/metadata/Store` interface
-- **Block Store**: `pkg/block/remote.RemoteStore` interface
-
-See [IMPLEMENTING_STORES.md](../internals/implementing-stores.md) for implementation guidelines.
+A metadata backend, yes: it must pass the metadata store's conformance suite. File
+content has no pluggable backend today: the journal is local, and the released
+server's remote stores were removed. See
+[Implementing stores](../internals/implementing-stores.md).
 
 ### How does performance compare to kernel NFS?
 
-The lack of FUSE overhead and optimized Go implementation provides competitive performance for most workloads. Results show:
-
-- Good sequential read/write performance
-- Efficient handling of small files
-- Low latency for metadata operations
-- Scales well with concurrent connections
-
-### My BadgerDB logs "Block cache might be too small ... hit-ratio: 0.26 ... sets-rejected" — what do I do?
-
-That message means the BadgerDB metadata engine's in-memory **block cache** is
-undersized for your working set, so it is thrashing: most lookups miss the cache
-and hit disk. A low hit-ratio also widens the window for the dedup
-transaction-conflict race and the local-cache write-path backpressure stall, so
-it is worth fixing.
-
-By default the block and index caches **auto-size from the memory available to
-the process** (≈15 % / ≈7.5 %, with 512/256 MiB floors and 4 GiB/2 GiB
-ceilings), so a 4 GiB host already gets ~614 MiB / ~307 MiB without tuning. If
-you still see the warning, your hot metadata set is larger than the auto-sized
-cache — raise it explicitly:
-
-```yaml
-metadata:
-  badger:
-    block_cache_mb: 2048   # raise first; 0 = auto-size
-    index_cache_mb: 1024
-```
-
-or via env (`DITTOFS_METADATA_BADGER_BLOCK_CACHE_MB=2048`). See
-[CONFIGURATION.md → BadgerDB cache sizing](configuration.md#badgerdb-cache-sizing-config-file)
-for a sizing table keyed to object/metadata count. Aim for a hit-ratio above
-~0.8 with no `sets-rejected`.
+There are no published numbers for this version. The benchmark tools and how to run
+them are in [`bench/`](../../bench/README.md); measure with your own workload.
 
 ### Does metadata persist across server restarts?
 
-It depends on how the `badger` metadata store is configured:
+Yes. The metadata lives in Badger on disk, in the directory `metadata.badger.path`
+names; there is no in-memory mode. For a FoundationDB cluster instead, set
+`metadata.backend: foundationdb`, which only a build with FoundationDB support opens
+([Installation](install.md#foundationdb-metadata),
+[Configuration](configuration.md#foundationdb-metadata)).
 
-- **On disk** (`path`): Yes, all metadata persists
-- **In memory** (`in_memory: true`): No, all data is lost on restart
-
-`badger` is the only metadata store type. A store row still naming `memory`,
-`sqlite` or `postgres` fails with `unsupported metadata store type "<x>": badger is
-the only metadata store type`; see the
-[metadata store migration guide](metadata-store-migration.md). A distributed transactional
-key-value store (TiKV preferred) is the planned backend for multi-node deployments;
-it is not implemented yet.
-
-Configure your metadata store accordingly:
-
-```bash
-./dfsctl store metadata add --name persistent --type badger \
-  --config '{"path":"/var/lib/dittofs/metadata"}'
-```
+This version does not open a metadata store the released server wrote: see
+[Upgrading from v1](upgrading-from-v1.md).
 
 ### Can I import an existing filesystem into DittoFS?
 
-Not yet, but the path-based file handle strategy in BadgerDB enables this as a future feature. The
-handles are deterministic based on file paths (`shareName:/path/to/file`), making filesystem scanning
-and import possible.
+Not yet.
 
-### Does DittoFS deduplicate blocks across files?
+### Does DittoFS deduplicate data?
 
-Yes. The block store is content-addressable (CAS): file content is chunked
-with FastCDC (min 1 MiB / avg 4 MiB / max 16 MiB, normalization level 2),
-each chunk is hashed with BLAKE3, and chunks are stored under a hash-keyed
-`blocks/{hh}/{hh}/{hex}` layout locally and `cas/{hh}/{hh}/{hex}` remotely.
-Two files that share a chunk reference the same stored object, so
-**chunk-level dedup is automatic** on write.
-
-There is no separate file-level dedup: a file identical to another simply
-shares all of its chunks the same way.
+Not on this version. The released server split files into content-addressed chunks
+and stored each chunk once; that block store was removed, and the journal stores
+what is written as it is.
 
 ### How does garbage collection work?
 
-The block-store GC is a fail-closed mark-sweep over the union of every live
-block's `ContentHash`:
-
-1. **Mark.** Stream every `FileChunk`'s `ContentHash` via the
-   `MetadataStore.EnumerateFileChunks(ctx, fn)` cursor across **every
-   share that targets the same remote** (cross-share aggregation by
-   `bucket+endpoint+prefix`, not share name). The live set is built on
-   disk under `<localStore>/gc-state/<runID>/db/` (memory-bounded
-   regardless of metadata size). Hold providers then add hashes the
-   namespace no longer references but that must survive: snapshot
-   manifests, and files unlinked while still held open (NFSv4 open
-   stateids, SMB open handles) — POSIX unlink-while-open data stays
-   readable until the last close, beyond the grace period.
-2. **Sweep.** A single `RemoteStore.Walk` enumerates every CAS object
-   cluster-wide (the backend paginates internally). An object is kept
-   iff its hash is in the live set OR its `LastModified` is newer than
-   `snapshot − gc.grace_period` (default 1h). Otherwise it is deleted.
-
-The mark phase is fail-closed: any error aborts the sweep entirely.
-Sweep-side per-object DELETE failures are captured and continue;
-garbage that survives a transient is reclaimed on the next run.
-
-Triggers:
-
-- Periodic, on by default. The server runs GC every `gc.auto_interval`
-  (default 15m; values in (0, 1m) are refused) unless `gc.auto_enabled` is
-  false. See [Garbage Collection](garbage-collection.md#automatic-gc-default).
-  A scheduled run reports in the server log only; `gc-status` shows the last
-  on-demand run.
-- On-demand via `dfsctl store block gc <share> [--dry-run]`. Inspect the
-  most recent run with `dfsctl store block gc-status <share>`. The
-  mark-sweep is global across every share that targets the same remote, and
-  every run scans every remote. `<share>` only selects where the run
-  summary is written.
-
-See [ARCHITECTURE.md](../internals/architecture.md#garbage-collection-mark-sweep)
-and [CONFIGURATION.md](configuration.md) for the full design and every
-`gc.*` knob.
-
-### Why is the cache cold after a write?
-
-It is **not**. Cache invalidation is **surgical**: a write drops only the
-chunk-level entries that the write actually invalidated, not the entire
-file. Other chunks referenced by the file — and any chunks shared with
-other files via cross-file dedup — stay warm.
-
-If you are seeing whole-file cold misses after a write, that is a bug.
-File a report with the `dfsctl store block audit-refcounts <share>`
-output (see below).
-
-The mechanism: `engine.WriteAt` returns the new `[]BlockRef`, the
-caller commits it in the same metadata transaction that updates
-`Mtime`/`Size`, then calls `Cache.InvalidateFile(payloadID,
-removedHashes)` with **only the hashes that disappeared from the
-file**. Hashes that survived (unchanged ranges) and hashes still
-referenced by other files via dedup remain in the cache.
-
-### How do I run the manifest audit (`audit-refcounts`)?
-
-The audit walks every file in the share and checks that each block
-reference in the file's manifest (`FileAttr.Blocks`) has a backing
-`FileChunk` row in the metadata store, at the same offset and with the
-same hash. A reference without one is a dangling reference: the file
-claims a chunk the store has no record of, so a read of that range
-returns zeros or fails.
-
-```bash
-# Aggregate counts to stdout (text by default)
-dfsctl store block audit-refcounts /archive
-
-# Structured JSON for log aggregation / alerting
-dfsctl store block audit-refcounts /archive -o json
-
-# YAML if your tooling prefers it
-dfsctl store block audit-refcounts /archive -o yaml
-```
-
-The JSON output reports, under `result`: `share`, `started_at`,
-`completed_at`, `duration_ms`, `total_files`, `total_refs`, `backed_refs`,
-`dangling_refs`, and `delta` (equal to `dangling_refs`). The invariant is
-`dangling_refs == 0`. **A non-zero count is real corruption**: the command
-reports it and exits non-zero in every output format, so
-`audit-refcounts <share> || alert` works. The audit also persists its
-last-run summary at `<localStore>/audit-state/last-inv02.json`.
-
-The audit does not look for unreferenced (leaked) blocks. Use
-`dfsctl store block reconcile` for a read-only orphan report, or
-`dfsctl store block gc <share> --dry-run` to preview what GC would delete.
-
-The audit is **operator-invoked**, not periodic. Schedule via cron at
-the cadence that matches your operational risk tolerance.
-
-See [CLI.md](cli.md) for the full reference.
-
-### What's a BlockRef?
-
-A `BlockRef` is the 3-tuple `(Hash ContentHash, Offset uint64, Size
-uint32)` defined in `pkg/block/types.go`. `FileAttr.Blocks
-[]BlockRef` is the **authoritative content list** for every file: which
-chunks compose the file, where each chunk sits inside the file, and how
-big it is.
-
-The list is:
-
-- **Sorted by `Offset`** so the engine can resolve a read range against it.
-- **Populated on every sync finalization** — the engine returns the
-  new `[]BlockRef` from `WriteAt`/`Truncate`/`Delete`/`CopyPayload`
-  and the caller persists it in the same metadata transaction.
-
-`BlockRef.Hash` is the `ContentHash` (32-byte BLAKE3) under which the
-chunk is stored in the CAS keyspace `cas/{hh}/{hh}/{hex}`. Two files
-referencing the same chunk via dedup share one `Hash`, which is what
-makes cross-file dedup work both for storage (CAS) and in the cache (a
-shared hash hits the same entry).
-
-See [ARCHITECTURE.md](../internals/architecture.md#engine-api--blockref--cache)
-for the full design and
-[IMPLEMENTING_STORES.md](../internals/implementing-stores.md) for storage-encoding
-requirements.
+The released server's collector went with its block and metadata stores, and its
+`gc.*` and `integrity.*` keys are refused in the config file. See
+[Garbage collection](garbage-collection.md) for what frees space today.
 
 ### How do I migrate an older store layout?
 
-Upgrades from the v0.16–v0.21 standalone-CAS layout are automatic: each
-share converts its leftover per-chunk objects into packed blocks on the
-first start after the upgrade, blocking until done (idempotent and
-resumable — a killed migration converges on the next start).
-
-Stores still on the pre-v0.16 `.blk` layout must first be migrated with
-dittofs v0.21 or earlier (its `migrate-to-cas` command, removed in later
-releases); the boot guard refuses `.blk` layouts with exit code 78. See
-[the migration guide](block-store-migration.md) for the full runbook.
-
-A share's pre-journal local cache (the `blobs/` + `logs/` on-disk layout
-from v0.26 and earlier) is also migrated automatically on first start:
-
-- Bytes already offloaded to the block store are re-materialized from it
-  using the surviving metadata manifest — always safe.
-- Bytes that never reached the block store are re-ingested from the append
-  logs in the background; reads that arrive mid-migration fault their file in
-  on demand, and the old on-disk data is deleted only once every file has
-  been re-ingested (a crash mid-migration simply resumes on the next start).
-
-  This only works when the append logs are complete. A local cache large
-  enough to have *compacted* its logs moved some bytes into the packed
-  `blobs/` substrate, and the index that located them (`local_chunk_index`)
-  is dropped by the metadata schema upgrade — so those bytes cannot be
-  recovered. When any log was compacted, the boot guard refuses to open the
-  share (exit code 78) and leaves every byte on disk untouched. Recover such
-  a share by restoring the metadata store from a **pre-upgrade backup** and
-  reading it with the matching older dittofs release, or by rebuilding the
-  share's contents from its authoritative source.
+You can't, in place. This version reads none of the released server's block layouts:
+not the `.blk` files from before v0.16, not standalone or packed CAS objects, and not
+the `blobs/` and `logs/` cache. Copy the files back in through a protocol instead. See
+[the migration guide](block-store-migration.md).
 
 ## Usage Questions
 
 ### Can I use this with Windows clients?
 
-Yes. DittoFS supports SMB2, which is the native Windows file sharing protocol. Windows clients can connect directly without additional software. NFS is also available (Windows 10 Pro and Enterprise include an NFS client).
+On the released server, yes. Windows connects over SMB with no extra software.
+Windows 10 Pro and Enterprise also include an NFS client. See
+[Windows clients](windows.md).
 
 ### How do I mount DittoFS shares?
 
-**Linux (NFS):**
+Not served on this version. On the released server, for a share named `archive`:
+
 ```bash
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 localhost:/export /mnt/test
+# Linux (NFS)
+sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049 127.0.0.1:/archive /mnt/archive
+
+# macOS (NFS)
+sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,resvport 127.0.0.1:/archive /tmp/archive
+
+# Any of them: let dfsctl build the command
+dfsctl share mount archive /mnt/archive --protocol nfs
 ```
 
-**macOS (NFS):**
-```bash
-sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,resvport localhost:/export /mnt/test
-```
-
-**Windows (SMB):**
 ```powershell
-net use Z: \\localhost\export /user:username password
+# Windows (SMB), prompts for alice's password
+net use Z: \\192.0.2.10\archive /user:alice
 ```
 
-See [NFS.md](nfs.md) and [SMB.md](smb.md) for more details.
+See the [NFS guide](nfs.md) and the [SMB guide](smb.md).
 
 ### Can I have multiple shares with different backends?
 
-Yes! This is a core feature. Create stores and shares via CLI:
+No. A node keeps every share in its one metadata store and its journal, so a share
+does not name stores of its own. Shares differ in their export policy: client rules,
+squash mode, read-only, and so on. The released server let each share name its own
+stores; see [Upgrading from v1](upgrading-from-v1.md).
 
-```bash
-# Create metadata stores
-./dfsctl store metadata add --name fast-memory --in-memory
-./dfsctl store metadata add --name persistent-db --type badger \
-  --config '{"path":"/var/lib/dittofs/metadata"}'
+### Can multiple shares use the same metadata store?
 
-# Create block stores — every share needs one
-./dfsctl store block add --name scratch --type memory
-./dfsctl store block add --name cloud-s3 --type s3 \
-  --config '{"region":"us-east-1","bucket":"my-bucket"}'
+They always do: one metadata store serves the whole node.
 
-# Create shares referencing different stores
-./dfsctl share create --name /temp --metadata fast-memory \
-  --block-store scratch
-./dfsctl share create --name /archive --metadata persistent-db \
-  --block-store cloud-s3
-```
+### Is there a recycle bin? Can I recover deleted files?
 
-See [CONFIGURATION.md](configuration.md) for more examples.
-
-### Can multiple shares share the same metadata store?
-
-Yes! Multiple shares can reference the same store instance for resource efficiency:
-
-```bash
-# Create one shared metadata store
-./dfsctl store metadata add --name shared-meta --type badger \
-  --config '{"path":"/var/lib/dittofs/shared-metadata"}'
-
-# Create separate remote block stores
-./dfsctl store block add --name s3-prod --type s3 \
-  --config '{"region":"us-east-1","bucket":"prod-bucket"}'
-./dfsctl store block add --name s3-archive --type s3 \
-  --config '{"region":"us-east-1","bucket":"archive-bucket"}'
-
-# Both shares use the same metadata store; remote stores are ref-counted
-./dfsctl share create --name /prod --metadata shared-meta --block-store s3-prod
-./dfsctl share create --name /archive --metadata shared-meta --block-store s3-archive
-```
-
-### Is there a recycle bin / can I recover deleted files?
-
-Yes, on an opt-in, per-share basis. When a share has the recycle bin
-enabled, deleting a file or directory moves it into a visible
-`#recycle` directory at the share root instead of destroying it. You
-can browse and restore from `#recycle` over NFS or SMB like any other
-folder (just drag the item back out), or manage it with
-`dfsctl trash`:
-
-```bash
-# Enable the bin on a new or existing share
-dfsctl share create --name /docs ... --enable-trash
-dfsctl share edit /docs --enable-trash true
-
-# List, restore, inspect, and empty the bin
-dfsctl trash list /docs
-dfsctl trash restore /docs "#recycle/report.txt"
-dfsctl trash status /docs
-dfsctl trash empty /docs --force
-```
-
-Retention is configurable per share: `--trash-retention-days N`
-auto-purges entries older than N days (`0` = keep forever), and
-`--trash-max-size BYTES` caps the bin and evicts oldest-first when
-exceeded (`0` = unbounded). A background reaper enforces both hourly.
-
-Caveats:
-
-- The bin is a **single shared `#recycle` per share** — not per-user.
-- Triggers are **unlink** (NFS REMOVE/RMDIR, SMB delete-on-close) and
-  **replace-overwrite** (a rename/copy that clobbers an existing file
-  recycles the victim). In-place truncate/overwrite of a file's
-  *content* is **not** recycled.
-- Deleting an item that is already inside `#recycle` is **permanent**.
-- **Disabling trash auto-empties the bin**, permanently deleting its
-  contents.
-- Exclude globs (`--trash-exclude GLOB`, repeatable) cause matching
-  deletions to bypass the bin entirely.
-
-See [CLI.md](cli.md#dfsctl-trash) for the full command reference,
-[CONFIGURATION.md](configuration.md#recycle-bin-trash) for the
-per-share settings, and [ARCHITECTURE.md](../internals/architecture.md#metadataservice)
-for the recycle-trap design.
+No. The released server's per-share recycle bin (`#recycle`) went with its metadata
+store, and nothing replaces it yet.
 
 ### How do I enable debug logging?
 
-**Via environment variable:**
+Set the level in the environment for one run:
+
 ```bash
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug dfs start
 ```
 
-**Via configuration:**
+or in the config file:
+
 ```yaml
 logging:
-  level: DEBUG
+  level: debug
   format: text
 ```
 
+The log goes to `~/.local/state/dittofs/dittofs.log` by default; see
+[Troubleshooting](troubleshooting.md#where-the-log-is).
+
 ### Why do I get "permission denied" errors?
 
-Common causes:
+On the released server, the usual causes are:
 
-1. **Squash mode**: Try `dfsctl share nfs-config set <share> --squash none` for development
-2. **Root directory permissions**: Set `mode: 0777` temporarily to isolate the issue
-3. **Client UID mismatch**: Check your UID with `id` command
-4. **Export restrictions**: Check the share's netgroup allowlist with `dfsctl share nfs-config show <share>`
+1. **Squash mode:** for development, try
+   `dfsctl share export-policy update archive --squash none`.
+2. **No grant:** a share admits nobody until a grant names them;
+   check `dfsctl grant list archive`.
+3. **User ID mismatch:** your `id -u` must match the DittoFS user's `--uid`.
+4. **Client rules:** check them with `dfsctl share export-policy get archive`.
 
-See [TROUBLESHOOTING.md](troubleshooting.md) for solutions.
+See [Troubleshooting](troubleshooting.md#permission-issues).
 
 ## Comparison Questions
 
-### How does DittoFS compare to traditional NFS servers?
+### How does DittoFS compare to a kernel NFS server?
 
-| Feature | Traditional NFS | DittoFS |
-|---------|----------------|---------|
-| Permission Requirements | Kernel-level | Userspace only |
-| Storage Backend | Filesystem only | Pluggable |
-| Metadata Backend | Filesystem only | BadgerDB (on disk or in memory) |
-| Language | C/C++ | Pure Go |
-| Deployment | Complex (kernel modules) | Single binary |
-| Multi-protocol | Separate servers | Unified (NFS + SMB) |
-| Customization | Limited | Full control |
-
-### How does DittoFS compare to cloud storage gateways?
-
-| Feature | Cloud Gateways | DittoFS |
-|---------|---------------|---------|
-| Vendor Lock-in | Often present | None |
-| Protocol Support | Limited | Extensible |
-| Storage Backend | Vendor-specific | Pluggable |
-| Cost | Often high | Free and open-source |
-| Customization | Limited | Full control |
-| Deployment | Complex | Single binary |
+| | Kernel NFS server | DittoFS |
+|---|---|---|
+| Runs in | the kernel | a userspace process |
+| Protocols | NFS only; SMB needs Samba beside it | NFS and SMB over the same files (released server) |
+| Metadata | the local filesystem | Badger on disk, or FoundationDB |
+| Language | C | Go |
+| Maturity | decades of production use | experimental |
 
 ### How does DittoFS compare to go-nfs?
 
-Both are NFS implementations in Go, but with different goals:
+Both are NFS servers in Go, with different goals. go-nfs is a library you embed in
+your own program, with minimal configuration. DittoFS is a complete server: NFS and
+SMB together, many shares, a management API and CLI, users and grants, and metrics.
 
-**go-nfs:**
-- Library-focused
-- Embeddable in other projects
-- Minimal configuration
+## Durability and caching
 
-**DittoFS:**
-- Complete server application
-- Store registry pattern for sharing resources
-- Multi-share and multi-protocol support (NFS + SMB)
-- Extensive configuration system
-- Multiple backend options
-- Production features (metrics, rate limiting, graceful shutdown)
-- NFSv4/v4.1 support with delegations and Kerberos
+**What durability does a write get?**
 
-### What's unique about DittoFS?
+DittoFS follows the NFS and SMB durability contract, as a Linux kernel NFS server or
+Samba does:
 
-1. **Store Registry Pattern**: Named, reusable stores that can be shared across exports
-2. **Multi-Protocol**: NFS (v3, v4, v4.1) and SMB2 from a single server
-3. **Production-Oriented**: Built-in metrics, rate limiting, graceful shutdown
-4. **Flexible Storage**: Mix and match backends per share
-5. **Pure Go**: Easy deployment, no C dependencies
-6. **Modern Architecture**: Designed for cloud-native deployments
+- A write is acknowledged quickly and is made durable when the client asks: at
+  `COMMIT` over NFSv3, at `FLUSH` or `CLOSE` over SMB. That is what the protocols
+  specify. The kernel server's default `sync` export and Samba's default
+  `strict sync = yes` behave the same way. DittoFS does not do what the kernel
+  server's unsafe `async` option does.
+- At `COMMIT` or `FLUSH` the data is written and `fsync`'d to the journal on the
+  node's local disk. A committed write survives a process crash or a power loss.
+- On this version there is no remote copy: the journal holds the only copy of every
+  byte. Losing the disk that holds the journal loses that data. The released server
+  also uploaded data to S3 in the background.
 
-## Durability & caching
-
-**What durability guarantee does a write get?**
-
-DittoFS follows the standard NFS and SMB durability contract — the same one a stock
-Linux kernel NFS server or Samba gives you:
-
-- **Writes are buffered and acknowledged fast; durability is guaranteed at COMMIT
-  (NFSv3), or at FLUSH / CLOSE (SMB2/3).** This is exactly what the protocols
-  specify. A Linux `knfsd` export defaults to `sync` (durable at COMMIT); Samba
-  defaults to `strict sync = yes` (honor client FLUSH). DittoFS matches both. The
-  `async` knfsd mode some setups use is a non-default, explicitly-unsafe opt-in that
-  can silently lose data on a crash — DittoFS does **not** do that by default.
-- **At COMMIT/FLUSH the data is made durable in the share's journal**
-  (fsync'd to local disk), and is uploaded to the object store (S3) **asynchronously**
-  by the background syncer. So a write that has been COMMIT-acked is **crash-durable**
-  — it survives a server process crash or power loss via the local journal — and its
-  object-store copy follows shortly after. This is the same "local-durable, async to
-  object store" tier as JuiceFS `--writeback` or a kernel NFS server over a local
-  disk. It means a *total node loss* (local disk destroyed) between COMMIT and the
-  syncer catching up can lose the not-yet-uploaded tail; use snapshots / the syncer's
-  drain for stronger guarantees before decommissioning a node.
+See [Durability](durability.md).
 
 **Do I need to configure durability?**
 
-Usually no — the tradeoff is already in your hands through the **standard protocol**,
-and DittoFS honors whatever the client asks:
+Usually not. The client already decides through the standard protocol, and DittoFS
+does what it asks:
 
-- NFSv3 clients tag each write `UNSTABLE` / `FILE_SYNC` and decide when to COMMIT
-  (on `fsync`/`close`/cache pressure). Want maximum speed? Let the client buffer and
-  COMMIT less often, or the application skip `fsync`. Want stricter safety? The client
-  can mount `sync` or issue `FILE_SYNC` writes. DittoFS obeys the flag either way.
-- SMB2/3 clients get the same via the write-through flag + SMB2 FLUSH.
+- An NFSv3 client marks each write `UNSTABLE` or `FILE_SYNC` and chooses when to
+  `COMMIT`: on `fsync`, on `close`, or under cache pressure. For speed, let the client
+  buffer and the application skip `fsync`. For safety, mount with `sync` or have the
+  application call `fsync`.
+- SMB clients do the same with the write-through flag and `FLUSH`.
 
-There is no DittoFS-specific durability knob to learn — you tune it the way you'd tune
-any NFS/SMB server: with mount options and application `fsync` behavior.
-
-**Caching and read performance.** DittoFS is a *native userspace* server (no kernel
-FUSE), so warm reads are served from the standard NFS/SMB **client** page cache (as
-with any server) plus the share's own on-disk journal. Standard client mount
-tunings — `actimeo` (attribute cache), `nconnect` (parallel connections, default 1),
-`rsize`/`wsize` — apply exactly as they would to a kernel NFS server.
+**Caching and reads.** Warm reads come from the client's own page cache, as with any
+NFS or SMB server, and from the node's journal. The usual client mount options apply:
+`actimeo` for the attribute cache, `nconnect` for parallel connections, `rsize` and
+`wsize` for transfer size.
 
 ## Known Limitations
 
 ### NFS Protocol Limitations
 
-These limitations are fundamental constraints of the NFSv3 protocol. Many are resolved by NFSv4.
+These limits come from the NFS protocols. Many are lifted by NFSv4. They describe the
+released server, since this version serves no NFS yet.
 
-#### ETXTBSY (Text File Busy)
+#### ETXTBSY (text file busy)
 
 | Status | Reason |
 |--------|--------|
 | Not supported | NFS protocol limitation |
 
-NFS servers have no way to know if any client is executing a file, so ETXTBSY cannot be enforced. This affects all NFS implementations. In practice, most package managers remove-then-replace rather than overwrite executables.
+An NFS server cannot know whether a client is running a file, so it cannot refuse
+to overwrite it. Every NFS server has this limit. Most package managers remove and
+replace an executable rather than overwrite it, so it rarely matters.
 
-#### Share Name Length
-
-| Status | Reason |
-|--------|--------|
-| Max 27 bytes | RFC 1813 caps a file handle at 64 bytes |
-
-A file handle is `"<share-name>:<uuid>"`. The canonical UUID is 36 bytes and the
-separator is 1, leaving 27 bytes for the share name — and the leading `/` counts,
-so `/media-archive-2026` is 19. Longer names are rejected at share creation; a
-share that got one before the check existed is skipped at startup with a warning
-rather than loaded, since it could never mint a handle for a single file.
-
-#### Timestamps (Y2106 Limitation)
+#### Share name length
 
 | Status | Reason |
 |--------|--------|
-| NFSv3: Max 2106-02-07 | NFSv3 uses 32-bit unsigned seconds |
-| NFSv4: No practical limit | NFSv4 uses 64-bit timestamps |
+| At most 80 characters on this version | the SMB share-name limit |
+| At most 27 bytes on the released server | an NFSv3 file handle is at most 64 bytes |
 
-NFSv3's `nfstime3` structure uses a 32-bit unsigned integer for seconds since Unix epoch. NFSv4 resolves this with 64-bit timestamps.
+On this version a share name is 1 to 80 characters, none of them a control character
+or one of `\ / : * ? " < > |`, and not `IPC$`.
 
-#### File Locking (NFSv3)
+The released server put the share name inside each NFS file handle, beside a
+36-byte UUID and a separator, which left 27 bytes for the name, its leading `/`
+included. It refused a longer name when the share was created.
 
-| Status | Reason |
-|--------|--------|
-| NFSv3: Supported (opt-in) | NLM/NSM over TCP+UDP; needs `--udp-enabled` and a portmapper on port 111 for BSD/macOS clients |
-| NFSv4: Supported | Built-in (in-protocol) locking, no setup |
-
-NFSv3 mount and read/write work with no extra configuration. Only NLM byte-range
-locking needs the UDP transport plus a portmapper reachable on port 111 — see
-[Does it support file locking?](#does-it-support-file-locking) above. NFSv4 is
-the simplest path: locking is in-protocol.
-
-NFSv3 relies on the NLM (Network Lock Manager) side protocol for locking. DittoFS
-implements NLM (v1/v3/v4) and NSM over TCP and UDP, but they are opt-in: enable
-`--udp-enabled` and a portmapper on port 111 for BSD/macOS clients (see above).
-NFSv4 has built-in locking support with no setup.
-
-#### Extended Attributes
+#### Timestamps (year 2106)
 
 | Status | Reason |
 |--------|--------|
-| NFSv3 / v4.0 / v4.1: Not supported | No xattr operations in those protocol versions |
-| NFSv4.2: Supported | RFC 8276 (`user.*` namespace, values up to 64 KiB, 256 KiB per file in total) |
+| NFSv3: up to 2106-02-07 | NFSv3 stores seconds in 32 bits |
+| NFSv4: no practical limit | NFSv4 stores seconds in 64 bits |
 
-Extended attributes are not part of NFSv3, NFSv4.0, or NFSv4.1. Mount with `-o vers=4.2`
-to use them via the standard Linux tools (`setfattr` / `getfattr`). Only the `user.*`
-namespace is exposed, and values are stored inline up to 64 KiB (a larger value returns
-`NFS4ERR_XATTR2BIG`). A file's attributes are additionally bounded at 256 KiB encoded in
-total, counting names as well as values, so a write that would carry the file past it is
-refused with `NFS4ERR_XATTR2BIG` and changes nothing; remove an attribute to make room.
-Values are base64-encoded in that total, which costs a third on top, so the budget is
-roughly 192 KiB of value bytes in practice — enough for two attributes at the 64 KiB
-per-value ceiling, or thousands of ordinary ones.
-That is still far more than ext4 (one 4 KiB block for a file's whole set) or NTFS
-(64 KiB - 5) allow. The xattr namespace is shared with SMB extended attributes / named
-streams, so a value set over one protocol is readable over the other. See
-[NFS.md → Supported Versions](nfs.md#supported-versions) for details.
-
-#### fallocate/posix_fallocate
+#### File locking (NFSv3)
 
 | Status | Reason |
 |--------|--------|
-| NFSv3: not supported | No ALLOCATE procedure in NFSv3 |
-| NFSv4.2: supported (best-effort) | In-protocol ALLOCATE / DEALLOCATE (RFC 7862) |
+| NFSv3: supported, opt-in | NLM and NSM over TCP and UDP; macOS and BSD clients need UDP and a portmapper on port 111 |
+| NFSv4: supported | locking is part of the protocol |
 
-NFSv3 has no procedure for pre-allocating disk space, so `fallocate` over a
-v3 mount is unsupported (space is allocated on actual write).
+NFSv3 mounting, reading and writing need no extra setup; only locking does. See
+[Does it support file locking?](#does-it-support-file-locking)
 
-Over a **NFSv4.2** mount DittoFS implements the RFC 7862 sparse-file cluster —
-`ALLOCATE`, `DEALLOCATE`, `SEEK` (SEEK_HOLE/SEEK_DATA) and `READ_PLUS`:
-
-- `fallocate <file>` (ALLOCATE) extends the file's logical size; the
-  newly-covered range reads back as zeros.
-- `fallocate -p <file>` (DEALLOCATE / punch hole) marks a byte range as a hole
-  that reads as zeros and reclaims the backing block storage.
-- `lseek(SEEK_HOLE)` / `lseek(SEEK_DATA)` report the next hole/data boundary.
-
-**ALLOCATE is best-effort, not a physical reservation.** DittoFS is
-thin-provisioned over a content-addressed/deduplicating block store (and
-optionally S3), so a true up-front physical reservation is neither possible nor
-meaningful. RFC 7862 permits a server to satisfy ALLOCATE without a physical
-reservation: DittoFS guarantees the requested range is readable (as a sparse
-hole until written) and grows the file size, but does **not** pre-reserve space
-— an out-of-space condition surfaces on the eventual write, exactly as for an
-ordinary sparse file.
-
-#### Concurrent Writers and the Change Attribute
+#### Extended attributes
 
 | Status | Reason |
 |--------|--------|
-| NFSv4: `change` is stable within a write session | Timestamps are frozen per session, and `change` derives from `ctime` |
+| NFSv3, v4.0, v4.1: not supported | those versions have no xattr operations |
+| NFSv4.2: supported | `user.*` names, values up to 64 KiB, 256 KiB per file in total |
 
-While a client is writing to a file, DittoFS holds that file's `mtime` and
-`ctime` at the value from the first write of the session instead of advancing
-them on every WRITE. The Linux NFS client keys its page cache on
-`(mtime, ctime, size)` and drops the cache whenever the timestamps move, so
-without this a client would invalidate its own cache on each write it had just
-issued.
+Mount with `-o vers=4.2` and use `setfattr` and `getfattr`. Only the `user.*`
+namespace is exposed.
 
-The freeze is per file, not per client, and it bites from the *second* write of
-a session onward. NFSv4's `change` attribute is derived from `ctime`, so the
-first write of a session does move `change` and is seen — but every later write
-in that same session leaves it untouched. A second client that noticed the first
-write, refetched the file and re-cached it will then keep serving that copy
-through every later in-place write of that session.
+- A value larger than 64 KiB is refused with `NFS4ERR_XATTR2BIG`.
+- A file's attributes together, names and values, may take up to 256 KiB. Values are
+  stored base64-encoded, which adds a third, so in practice about 192 KiB of values
+  fit: two attributes at the 64 KiB maximum, or thousands of ordinary ones. A write
+  past the limit is refused with `NFS4ERR_XATTR2BIG` and changes nothing; remove an
+  attribute to make room.
+- That is still much more than ext4 (one 4 KiB block per file) or NTFS (64 KiB - 5).
+- NFS extended attributes and SMB named streams share one namespace, so a value set
+  over one protocol can be read over the other.
 
-RFC 7530 is specific about why that matters. §10.3.1 has the client revalidate a
-cached file by fetching `change` and comparing it with the cached value, and
-warns implementers off using `time_modify` in its place precisely because
-"[t]he change attribute is guaranteed to change for each update to the file",
-so substituting a timestamp "runs the risk of the client incorrectly marking
-stale data as valid". §5.8.1.4 does allow a server to derive `change` from
-`time_metadata`, but only "if the file system object cannot be updated more
-frequently than the resolution of time_metadata" — and a file under an open
-write session can be. DittoFS is knowingly outside that condition, so this is a
-real divergence rather than merely a coarse timestamp.
+See [the NFS guide](nfs.md#supported-versions).
 
-`size` is not frozen, so a later write that *extends* the file still moves
-`size`, which the Linux client also watches, and may be noticed on that basis
-alone. A later write that overwrites bytes in place moves no attribute at all.
+#### fallocate and posix_fallocate
 
-This is a deliberate trade — DittoFS is single-node and the overwhelmingly
-common case is one writer per file — and it is why the pynfs `WRT18` case is
-listed as a documented divergence rather than a bug. Applications that need two
-clients to observe each other's writes to the *same* file should coordinate
-through locking (NFSv4 in-protocol locks, or NLM over NFSv3) rather than by
-polling attributes.
+| Status | Reason |
+|--------|--------|
+| NFSv3: not supported | NFSv3 has no ALLOCATE operation |
+| NFSv4.2: supported, best effort | ALLOCATE and DEALLOCATE |
 
-The window is exactly the open write session. Ending it commits the frozen
-timestamp rather than a fresh one, so `change` does not jump at commit time
-either — it advances again on the first write of the *next* session, which
-carries a current timestamp.
+Over NFSv3, space is allocated only when data is written.
+
+Over NFSv4.2:
+
+- `fallocate <file>` grows the file; the new range reads as zeros.
+- `fallocate -p <file>` punches a hole: the range reads as zeros and its storage is
+  freed.
+- `lseek` with `SEEK_HOLE` and `SEEK_DATA` finds the next hole or data.
+
+**ALLOCATE does not reserve space.** Storage is thin-provisioned, so DittoFS makes
+the range readable and grows the file, but sets no space aside. Running out of space
+shows up on a later write, as with any sparse file. The NFSv4.2 standard allows this.
+
+#### Concurrent writers and the change attribute
+
+| Status | Reason |
+|--------|--------|
+| NFSv4: `change` does not move during a write session | timestamps are held for the session, and `change` follows `ctime` |
+
+While a client writes to a file, DittoFS keeps the file's `mtime` and `ctime` at the
+value of the session's first write, instead of moving them on every write. The Linux
+NFS client drops its cached pages whenever those timestamps move, so otherwise a
+client would throw away its own cache after each write it made.
+
+What this means for a second client reading the same file:
+
+- The first write of a session moves `change`, so the second client sees it.
+- Later writes in the same session do not move `change`. A second client that cached
+  the file after the first write keeps serving that copy.
+- A write that grows the file still moves `size`, which the Linux client also
+  watches. A write that overwrites bytes in place moves nothing.
+- When the session ends, `change` does not jump. It moves again on the first write of
+  the next session.
+
+The NFSv4 standard expects `change` to move on every update, so this is a deliberate
+difference, not a coarse timestamp. It is why the pynfs test `WRT18` is listed as a
+known difference. DittoFS runs on one node and the usual case is one writer per file.
+If two clients must see each other's writes to the same file, have them use locks
+(NFSv4 locks, or NLM over NFSv3) rather than poll attributes.
 
 ### SMB Client Limitations
 
-#### macOS Mount Owner-Only Access
+#### macOS mount owner-only access
 
 | Status | Reason |
 |--------|--------|
-| Handled by dfsctl | Apple security restriction - only mount owner can access |
+| Handled by `dfsctl` | macOS lets only a mount's owner reach its files |
 
-macOS restricts SMB mount access to the mount owner regardless of Unix permissions. When using `sudo dfsctl share mount`, it automatically uses `sudo -u $SUDO_USER` to mount as your user. See [SMB.md](smb.md) for workarounds.
+macOS lets only the user who made an SMB mount reach its files, whatever their
+permissions. `dfsctl share mount` runs `mount_smbfs` as you, never through `sudo`, so
+the mount is yours. Run `dfsctl` as yourself, not with `sudo`. See
+[the SMB guide](smb.md).
 
 ### Storage Backend Limitations
 
-#### Hard Links
+#### Hard links
 
-The BadgerDB metadata store fully supports hard links via the NFS LINK procedure.
+The metadata store supports hard links; no protocol serves them yet.
 
-#### Special Files
+#### Special files
 
 | Type | Status | Notes |
 |------|--------|-------|
-| Character devices | Metadata only | MKNOD creates entry, no device functionality |
-| Block devices | Metadata only | MKNOD creates entry, no device functionality |
-| FIFOs | Metadata only | MKNOD creates entry, no pipe functionality |
-| Sockets | Metadata only | MKNOD creates entry, no socket functionality |
-
-DittoFS can create special file entries via MKNOD, but they don't function as actual devices, pipes, or sockets.
+| Character devices | Metadata only | MKNOD creates the entry; it is not a device |
+| Block devices | Metadata only | MKNOD creates the entry; it is not a device |
+| FIFOs | Metadata only | MKNOD creates the entry; it is not a pipe |
+| Sockets | Metadata only | MKNOD creates the entry; it is not a socket |
 
 ### General Limitations
 
-#### Single Node Only
+#### Single node only
 
-DittoFS currently runs as a single server instance:
-- No clustering or high availability
-- No replication (except via S3 bucket replication)
-- Single point of failure
+One node serves an installation:
+
+- No clustering and no high availability.
+- No replication: on this version the journal on the node's disks holds the only copy
+  of the data.
+- The node is a single point of failure.
 
 #### Security
 
-DittoFS is experimental and has not been security audited. See [SECURITY.md](security.md) for detailed recommendations.
+DittoFS is experimental and has had no security audit. See [Security](security.md).
 
 ### POSIX Compliance Summary
 
-DittoFS achieves **99.99% pass rate** on [pjdfstest](https://github.com/saidsay-so/pjdfstest) POSIX compliance tests (8789 tests, 1 expected failure).
-
-This pass rate is measured on the BadgerDB metadata store.
+The released server passes **99.99%** of the
+[pjdfstest](https://github.com/saidsay-so/pjdfstest) POSIX suite over NFSv3, with the
+Badger metadata store: 8,788 of 8,789 tests. This version has not been measured,
+since it serves no NFS yet.
 
 | Metric | Value |
 |--------|-------|
@@ -769,26 +445,25 @@ This pass rate is measured on the BadgerDB metadata store.
 | Failed (expected) | 1 |
 | Pass rate | 99.99% |
 
-#### Expected Failures
+#### Expected failures
 
-| Test Pattern | Reason |
+| Test pattern | Reason |
 |--------------|--------|
-| `utimensat/09.t:test5` | NFSv3 32-bit timestamp limit (max year 2106) |
-| `open::etxtbsy` | NFS protocol limitation (not testable) |
-| `flock/*` | NFSv3 NLM locking is opt-in (`--udp-enabled` + portmapper on 111); use `vers=4` |
-| `fcntl/lock*` | NFSv3 NLM locking is opt-in (`--udp-enabled` + portmapper on 111); use `vers=4` |
-| `lockf/*` | NFSv3 NLM locking is opt-in (`--udp-enabled` + portmapper on 111); use `vers=4` |
-| `xattr/*`, `*xattr/*` | Not in NFSv3 |
-| `fallocate/*` | No ALLOCATE in NFSv3 (supported over NFSv4.2 — see above) |
-| `chflags/*` | BSD-specific file flags, not supported; on Linux pjdfstest ends these tests early and reports them as passed |
+| `utimensat/09.t:test5` | NFSv3 32-bit timestamps (year 2106) |
+| `open::etxtbsy` | NFS protocol limitation; not testable |
+| `flock/*`, `fcntl/lock*`, `lockf/*` | NFSv3 locking is opt-in (UDP and a portmapper on port 111); use NFSv4 |
+| `xattr/*`, `*xattr/*` | not in NFSv3 |
+| `fallocate/*` | no ALLOCATE in NFSv3; supported over NFSv4.2 |
+| `chflags/*` | BSD file flags, not supported; on Linux pjdfstest ends these early and reports them as passed |
 
-**Note**: Only `utimensat/09.t:test5` actually fails in current pjdfstest runs. Other patterns either don't have tests in the suite or the tests are skipped.
-
-See `test/posix/known.yaml` for the complete list with detailed explanations.
+Only `utimensat/09.t:test5` actually fails. The other patterns have no tests in the
+suite, or their tests are skipped. The full list, with explanations, is in
+`test/posix/known.yaml`.
 
 ## Still Have Questions?
 
-- Check the other documentation in [docs/](.)
-- Search [existing GitHub issues](https://github.com/cubbit/dittofs/issues)
-- Open a [new issue](https://github.com/cubbit/dittofs/issues/new) for bugs or feature requests
-- Review [CLAUDE.md](../../CLAUDE.md) for detailed development guidance
+- Browse the other guides in [docs/guide/](.).
+- Search the [GitHub issues](https://github.com/cubbit/dittofs/issues).
+- Open a [new issue](https://github.com/cubbit/dittofs/issues/new) for a bug or a
+  feature request.
+- To contribute, read [Contributing](../internals/contributing.md).

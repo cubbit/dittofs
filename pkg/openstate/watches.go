@@ -1,0 +1,243 @@
+package openstate
+
+import (
+	"context"
+	"slices"
+
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+)
+
+func watchRef(w WatchID) StateRef {
+	return StateRef{Type: StateWatch, Shard: w.Shard, Instance: w.Instance, Token: w.Token}
+}
+
+// Watches is the view of change notifications on directories; it runs at the
+// directory's primary, and Unwatch at the primary of the shard the WatchID
+// names.
+type Watches interface {
+	// Watch registers who's watch of the changes to dir that m names, and
+	// with recursive of those below it too. It is volatile and never
+	// reclaimed: in grace it is ErrGrace, and it ends with the client's
+	// lease, a revoke or Unwatch. A client past its watches here is ErrDelay.
+	Watch(ctx context.Context, who Caller, dir FileKey, recursive bool, m ChangeMask) (WatchID, error)
+	// Unwatch ends who's watch w, dropping the changes it has not reported.
+	Unwatch(ctx context.Context, who Caller, w WatchID) error
+	// Changed reports a change the service committed in dir, or below it
+	// with ch.Nested, to each watch of dir it matches, through Sink.Notify.
+	// It never fails the change. A watch reports its first change at once
+	// and holds the changes after it until the timer hands them over, at
+	// most 64 or 64 KiB of them: past either they collapse to one
+	// ChangeEnumerate. So it hands the Sink at most 65 changes a sweep, and
+	// what the client has not read is the Sink's to bound.
+	Changed(ctx context.Context, dir FileKey, ch Change)
+}
+
+type watches struct{ t *Table }
+
+// Watches is the view of change notifications.
+func (t *Table) Watches() Watches { return watches{t} }
+
+// ponytail: a watch holds at most 64 changes or 64 KiB of them, and hands
+// what it holds to the Sink at once only when it handed nothing since the
+// timer last looked; the rest wait for the timer, so a busy directory's
+// changes reach the client up to a sweep late. Hand them over on the
+// client's read instead, if a call is added that tells the table when the
+// client reads.
+const (
+	maxChanges     = 64
+	maxChangeBytes = 64 << 10
+)
+
+// watch is a watch as the table holds it, on its directory's entry.
+type watch struct {
+	id        WatchID
+	client    entity.ClientID
+	recursive bool
+	filter    ChangeMask
+	pending   []Change // matched and not yet handed to the Sink
+	size      int      // the bytes pending holds
+	handed    bool     // changes went to the Sink since the timer last looked
+	raising   bool     // the last hand-off's Notify has not returned yet
+}
+
+// noteOut is one Notify.
+type noteOut struct {
+	c  entity.ClientID
+	w  WatchID
+	ch []Change
+}
+
+// changeSize is what ch costs a watch holding it.
+func changeSize(ch Change) int { return 16 + len(ch.Name) + len(ch.To) + 16*len(ch.Dirs) }
+
+func (v watches) Watch(ctx context.Context, who Caller, dir FileKey, recursive bool, m ChangeMask) (WatchID, error) {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return WatchID{}, err
+	}
+	var id WatchID
+	err := t.step(dir.ID, func(e *entry) error {
+		if _, err := t.admit(who, dir.Shard, false); err != nil {
+			return err
+		}
+		// decision: a watch carries no session mark, as only an open, a lock
+		// state and a grant are marked: a watch is SMB's, whose every call has
+		// a session, so the mark would never refuse one. Mark it from
+		// who.Sessioned if a protocol with no session can ever watch.
+		ref, err := t.mintUnder(e, who.Client, false, dir.Shard, StateWatch, func(StateRef) error {
+			if !t.current(who.Client) {
+				return ErrStaleClient
+			}
+			return t.chargeLocked(who.Client, cappedWatches, 1, true)
+		})
+		if err != nil {
+			return err
+		}
+		id = WatchID{Shard: ref.Shard, Instance: ref.Instance, Token: ref.Token}
+		if e.watches == nil {
+			e.watches = map[uint64]*watch{}
+		}
+		e.watches[ref.Token] = &watch{id: id, client: who.Client, recursive: recursive, filter: m}
+		return nil
+	})
+	return id, err
+}
+
+func (v watches) Unwatch(ctx context.Context, who Caller, id WatchID) error {
+	t := v.t
+	if _, err := t.running(); err != nil {
+		return err
+	}
+	h, err := t.resolve(who, entity.FileID{}, watchRef(id))
+	if err != nil {
+		return err
+	}
+	return t.step(h.file, func(e *entry) error {
+		if _, err := t.resolve(who, e.file, watchRef(id)); err != nil {
+			return err
+		}
+		t.dropWatch(e, e.watches[id.Token])
+		return nil
+	})
+}
+
+// dropWatch drops w from e, under its step, with what it holds.
+func (t *Table) dropWatch(e *entry, w *watch) {
+	delete(e.watches, w.id.Token)
+	t.release(e, watchRef(w.id))
+	_ = t.charge(w.client, cappedWatches, -1, false)
+}
+
+func (v watches) Changed(ctx context.Context, dir FileKey, ch Change) {
+	t := v.t
+	sink, err := t.running()
+	if err != nil {
+		return
+	}
+	// A directory no one watches has no entry: it is not made for a change.
+	fs := &t.files[dir.ID[0]]
+	fs.mu.Lock()
+	_, held := fs.entries[dir.ID]
+	fs.mu.Unlock()
+	if !held {
+		return
+	}
+	ch.Name, ch.To, ch.Dirs = slices.Clone(ch.Name), slices.Clone(ch.To), slices.Clone(ch.Dirs)
+	var out outbox
+	var handed []*watch
+	_ = t.step(dir.ID, func(e *entry) error {
+		for _, w := range e.watches {
+			if w.filter&ch.What == 0 || ch.Nested && !w.recursive {
+				continue
+			}
+			w.hold(ch)
+			if !w.handed {
+				w.hand(&out)
+				handed = append(handed, w)
+			}
+			t.idx.Lock()
+			t.watched[e.file] = struct{}{}
+			t.idx.Unlock()
+		}
+		return nil
+	})
+	out.raise(t, sink)
+	t.raised(dir.ID, handed)
+}
+
+// hold adds ch to w's pending changes; past their bound they collapse to one
+// ChangeEnumerate, and stay one.
+//
+// decision: this bound, with the per-client watch cap, replaces the SMB
+// adapter's changenotify.NotifyRegistry overflow, which caps watches at
+// MaxPendingWatches for the whole node, once the adapter moves onto the
+// table; until then the registry is the live one. The overflow past a
+// request's MaxOutputLength stays in the adapter, which alone sees the
+// request: what it holds for an unread client must still collapse to
+// STATUS_NOTIFY_ENUM_DIR when it does not fit (MS-FSA 2.1.5.10).
+func (w *watch) hold(ch Change) {
+	switch {
+	case len(w.pending) == 1 && w.pending[0].What == ChangeEnumerate:
+	case len(w.pending) >= maxChanges || w.size+changeSize(ch) > maxChangeBytes:
+		w.pending, w.size = []Change{{What: ChangeEnumerate}}, 0
+	default:
+		w.pending, w.size = append(w.pending, ch), w.size+changeSize(ch)
+	}
+}
+
+// hand moves w's pending changes to out. w hands nothing more until raised
+// says out was raised.
+func (w *watch) hand(out *outbox) {
+	out.notes = append(out.notes, noteOut{w.client, w.id, w.pending})
+	w.pending, w.size, w.handed, w.raising = nil, 0, true, true
+}
+
+// raised lets ws, on directory d, hand off again, now the outbox their last
+// hand-off went to has been raised. So a watch's Notify calls never overlap,
+// and reach the Sink in the order its changes were held: the timer cannot
+// raise a later change while an earlier one is between its step and its
+// Notify.
+func (t *Table) raised(d entity.FileID, ws []*watch) {
+	if len(ws) == 0 {
+		return
+	}
+	_ = t.step(d, func(*entry) error {
+		for _, w := range ws {
+			w.raising = false
+		}
+		return nil
+	})
+}
+
+// handWatched hands each watch on dirs what it holds, for the timer, and
+// lets one that held nothing hand its next change at once; a directory
+// leaves the timer's set once none of its watches handed anything. A watch
+// whose last hand-off is still being raised is left for a later pass.
+func (t *Table) handWatched(sink Sink, dirs []entity.FileID) {
+	for _, d := range dirs {
+		var out outbox
+		var handed []*watch
+		_ = t.step(d, func(e *entry) error {
+			busy := false
+			for _, w := range e.watches {
+				if w.raising {
+					busy = true
+					continue
+				}
+				if w.handed = len(w.pending) > 0; w.handed {
+					w.hand(&out)
+					handed = append(handed, w)
+				}
+				busy = busy || w.handed
+			}
+			if !busy {
+				t.idx.Lock()
+				delete(t.watched, d)
+				t.idx.Unlock()
+			}
+			return nil
+		})
+		out.raise(t, sink)
+		t.raised(d, handed)
+	}
+}

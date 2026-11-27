@@ -1,7 +1,12 @@
+// Package metrics provides the DittoFS Prometheus metrics surface: an owned
+// registry, typed instruments registered against it, and the /metrics HTTP
+// handler. It imports nothing from the runtime, so instrumented packages can
+// depend on it without an import cycle.
 package metrics
 
 import (
 	"net/http"
+	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -17,8 +22,15 @@ const Namespace = "dittofs"
 // testable and isolated.
 type Metrics struct {
 	registry *prometheus.Registry
-	in       *instruments
+
+	specsMu sync.Mutex
+	specs   map[string]Spec // the first spec registered under each name, for register's comparisons
 }
+
+// ponytail: an alias of Metrics, which has RFC 25 §8.2's Counter, Gauge and
+// Histogram; rename Metrics to Registry, turning the alias around, when RFC
+// 25's registry replaces it.
+type Registry = Metrics
 
 // New creates a Metrics with an owned registry pre-populated with the Go
 // runtime collector, the process collector, and a dittofs_build_info gauge
@@ -39,14 +51,7 @@ func New(version, commit string) *Metrics {
 	buildInfo.Set(1)
 	reg.MustRegister(buildInfo)
 
-	return &Metrics{registry: reg, in: newInstruments(reg)}
-}
-
-// RegisterProvider wires a read-through collector backed by p. The collector
-// calls p.MetricsSnapshot once per scrape and emits the result as ConstMetrics.
-// Safe to call once after New.
-func (m *Metrics) RegisterProvider(p Provider) {
-	m.registry.MustRegister(newRuntimeCollector(p))
+	return &Metrics{registry: reg, specs: map[string]Spec{}}
 }
 
 // Registry returns the owned registry (for tests and for advanced wiring).

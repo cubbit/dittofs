@@ -1,0 +1,394 @@
+package testproto
+
+import (
+	"crypto/tls"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"sync/atomic"
+	"time"
+
+	"github.com/cubbit/dittofs/internal/adapter/core"
+	"github.com/cubbit/dittofs/pkg/vfs"
+)
+
+// Msg is one request message, as a test writes it.
+type Msg struct {
+	Op      uint32
+	Version core.Version
+	ID      uint64
+	Session uint32 // all ones: inherited from the member before
+	Tree    uint32
+	Credits uint16 // charged by this message
+	Seq     uint32 // 0: not sequenced, never cached; a request repeating a session's sequence is answered from the replay cache once a reply under it was stored
+	Related bool
+	Pend    bool       // HoldCodec.Pends answers true for this member
+	Role    core.Role  // OpEcho: its per-request role
+	Keep    bool       // OpSession: keep the connection past the idle timeout
+	Expires time.Time  // OpSession: the credential's end
+	Handle  vfs.Handle // OpPutFH
+	Name    string     // OpCreate, OpPark
+	Target  uint64     // OpNotify, OpCancel: the message ID of the request it names; a Cancel carries it as its own ID, and its ID is ignored
+	Mode    uint8      // OpUpgrade: 0 succeeds, 1 answers not supported, 2 answers no reply
+	Payload []byte     // OpEcho
+	Offset  int64      // OpRead
+	Count   uint32     // OpRead: the bytes asked
+	Clear   bool       // sent neither sealed nor checksummed under its session
+	Members []Msg      // OpCompound
+	Tag     []byte     // OpCompound: what its reply's head echoes
+}
+
+// Reply is one reply message, as a test reads it.
+type Reply struct {
+	ID       uint64 // the request's; with the top bit set on the interim and final replies to a held or parked request
+	Status   core.Status
+	Interim  bool
+	Credits  uint16 // granted by this reply
+	Session  uint32 // the session it came under
+	Signed   bool   // checksummed under it and not sealed
+	Checksum uint32 // 0: neither signed nor sealed
+	Body     []byte
+}
+
+// Append appends one record carrying msgs to b, chained when several.
+func Append(b []byte, msgs ...Msg) []byte {
+	start := len(b)
+	b = append(b, 0, 0, 0, 0)
+	body := len(b)
+	var session uint32
+	for i, m := range msgs {
+		at := len(b)
+		b = appendHeader(b, m)
+		b = appendArguments(b, m)
+		if i < len(msgs)-1 {
+			binary.BigEndian.PutUint32(b[at+offNext:], uint32(len(b)-body))
+		}
+		if m.Session != inherited {
+			session = m.Session
+		}
+		if session != 0 && !m.Clear {
+			xorKey(b[at+headerLen:], session)
+			binary.BigEndian.PutUint32(b[at+offChecksum:], checksum(b[at:], session))
+		}
+	}
+	binary.BigEndian.PutUint32(b[start:], uint32(len(b)-body))
+
+	return b
+}
+
+// appendHeader appends m's header, its next and checksum zero.
+func appendHeader(b []byte, m Msg) []byte {
+	var flags uint8
+	if m.Related {
+		flags |= flagRelated
+	}
+	if m.Pend {
+		flags |= flagPend
+	}
+	if m.Clear {
+		flags |= flagClear
+	}
+	b = binary.BigEndian.AppendUint32(b, 0)
+	b = append(b, flags, uint8(m.Version))
+	b = binary.BigEndian.AppendUint16(b, m.Credits)
+	id := m.ID
+	if m.Op == OpCancel {
+		id = m.Target
+	}
+	b = binary.BigEndian.AppendUint32(b, m.Op)
+	b = binary.BigEndian.AppendUint64(b, id)
+	b = binary.BigEndian.AppendUint32(b, m.Session)
+	b = binary.BigEndian.AppendUint32(b, m.Tree)
+	b = binary.BigEndian.AppendUint32(b, m.Seq)
+	b = binary.BigEndian.AppendUint32(b, 0)
+
+	return binary.BigEndian.AppendUint32(b, 0)
+}
+
+// appendArguments appends m's arguments, as the format states them for its
+// operation.
+func appendArguments(b []byte, m Msg) []byte {
+	switch m.Op {
+	case OpSession:
+		var keep uint8
+		if m.Keep {
+			keep = 1
+		}
+		var expires int64
+		if !m.Expires.IsZero() {
+			expires = m.Expires.UnixNano()
+		}
+		b = append(b, keep)
+		b = binary.BigEndian.AppendUint64(b, uint64(expires))
+	case OpPutFH:
+		b = append(b, m.Handle...)
+	case OpEcho:
+		b = append(b, uint8(m.Role))
+		b = append(b, m.Payload...)
+	case OpCreate, OpPark:
+		b = append(b, m.Name...)
+	case OpNotify:
+		b = binary.BigEndian.AppendUint64(b, m.Target)
+	case OpUpgrade:
+		b = append(b, m.Mode)
+	case OpRead:
+		b = binary.BigEndian.AppendUint64(b, uint64(m.Offset))
+		b = binary.BigEndian.AppendUint32(b, m.Count)
+	case OpCompound:
+		b = binary.BigEndian.AppendUint32(b, uint32(len(m.Members)))
+		b = binary.BigEndian.AppendUint32(b, uint32(len(m.Tag)))
+		b = append(b, m.Tag...)
+		for _, member := range m.Members {
+			b = binary.BigEndian.AppendUint32(b, member.Op)
+			at := len(b)
+			b = binary.BigEndian.AppendUint32(b, 0)
+			b = appendArguments(b, member)
+			binary.BigEndian.PutUint32(b[at:], uint32(len(b)-at-4))
+		}
+	}
+
+	return b
+}
+
+// Client writes testproto records to a connection and keeps the credit
+// balance its replies grant.
+type Client struct {
+	c       net.Conn
+	tls     *tls.Conn    // the connection once StartTLS switched it; nil before
+	balance atomic.Int64 // one goroutine may Send while another is in Recv
+}
+
+// NewClient returns a client over c with the one credit a connection opens
+// with.
+func NewClient(c net.Conn) *Client {
+	cl := &Client{c: c}
+	cl.balance.Store(1)
+
+	return cl
+}
+
+// Send writes msgs as one record and charges their credits.
+func (c *Client) Send(msgs ...Msg) error {
+	if _, err := c.c.Write(Append(nil, msgs...)); err != nil {
+		return fmt.Errorf("testproto: send: %w", err)
+	}
+	for _, m := range msgs {
+		c.balance.Add(-int64(m.Credits))
+	}
+
+	return nil
+}
+
+// SendRaw writes b as it is, in one write: records back to back, or whatever
+// bytes a test needs on the wire at once. It charges no credits.
+func (c *Client) SendRaw(b []byte) error {
+	if _, err := c.c.Write(b); err != nil {
+		return fmt.Errorf("testproto: send: %w", err)
+	}
+
+	return nil
+}
+
+// StartTLS runs the client's handshake over the connection, which carries every
+// later message once it ends. Where msgs are given they are written in the same
+// write as the ClientHello, ahead of it, and the reply to them, sent in
+// plaintext, is read before the handshake goes on, and returned.
+func (c *Client) StartTLS(cfg *tls.Config, msgs ...Msg) ([]Reply, error) {
+	pc := &prefixConn{Conn: c.c}
+	if len(msgs) > 0 {
+		pc.prefix = Append(nil, msgs...)
+		pc.reading = true
+	}
+
+	tc := tls.Client(pc, cfg)
+	if err := tc.Handshake(); err != nil {
+		return nil, fmt.Errorf("testproto: handshake: %w", err)
+	}
+
+	c.c, c.tls = tc, tc
+
+	return pc.replies, pc.err
+}
+
+// TLS is the state of the client's TLS connection; the zero state before
+// StartTLS.
+func (c *Client) TLS() tls.ConnectionState {
+	if c.tls == nil {
+		return tls.ConnectionState{}
+	}
+
+	return c.tls.ConnectionState()
+}
+
+// prefixConn is the socket as a handshake starts over it: the bytes of prefix
+// go ahead of the first write, and, while reading is set, the first read first
+// takes the plaintext record that answers them off the socket.
+type prefixConn struct {
+	net.Conn
+	prefix  []byte
+	reading bool
+	replies []Reply
+	err     error
+}
+
+func (p *prefixConn) Write(b []byte) (int, error) {
+	if len(p.prefix) == 0 {
+		return p.Conn.Write(b)
+	}
+
+	out := append(p.prefix, b...)
+	p.prefix = nil
+	n, err := p.Conn.Write(out)
+
+	return max(n-(len(out)-len(b)), 0), err
+}
+
+func (p *prefixConn) Read(b []byte) (int, error) {
+	if p.reading {
+		p.reading = false
+
+		var prefix [lengthLen]byte
+		if _, err := io.ReadFull(p.Conn, prefix[:]); err != nil {
+			return 0, err
+		}
+
+		n, _, err := framer{}.BodyLen(prefix[:])
+		if err != nil {
+			return 0, err
+		}
+
+		body := make([]byte, n)
+		if _, err := io.ReadFull(p.Conn, body); err != nil {
+			return 0, err
+		}
+
+		p.replies, p.err = openReplies(body)
+	}
+
+	return p.Conn.Read(b)
+}
+
+// Recv reads one record and returns its replies, an interim included, adding
+// the credits each grants.
+func (c *Client) Recv() ([]Reply, error) {
+	var prefix [lengthLen]byte
+	if _, err := io.ReadFull(c.c, prefix[:]); err != nil {
+		return nil, fmt.Errorf("testproto: receive: %w", err)
+	}
+	n, last, err := framer{}.BodyLen(prefix[:])
+	if err != nil {
+		return nil, err
+	}
+	if !last {
+		// The server never sends a reply in fragments; a client that reads one
+		// would be reading a record this protocol does not write.
+		return nil, ErrFragmentedReply
+	}
+	body := make([]byte, n)
+	if _, err := io.ReadFull(c.c, body); err != nil {
+		return nil, fmt.Errorf("testproto: receive: %w", err)
+	}
+
+	replies, err := openReplies(body)
+	for _, r := range replies {
+		c.balance.Add(int64(r.Credits))
+	}
+
+	return replies, err
+}
+
+// openReplies reads a record's replies, checking each one under its session,
+// and opening the sealed ones; a reply with a zero checksum is read clear.
+func openReplies(body []byte) ([]Reply, error) {
+	var replies []Reply
+	for off := 0; ; {
+		h, err := headerAt(body, off)
+		if err != nil {
+			return replies, err
+		}
+		args := arguments(body, off, h)
+		signed := h.flags()&flagSigned != 0
+		if s := h.session(); s != 0 && s != inherited && h.checksum() != 0 {
+			if checksum(body[off:off+headerLen+len(args)], s) != h.checksum() {
+				return replies, fmt.Errorf("%w: the reply to message %d", errChecksum, h.id())
+			}
+			if !signed {
+				xorKey(args, s)
+			}
+		}
+		replies = append(replies, Reply{
+			ID:       h.id(),
+			Status:   core.Status(h.status()),
+			Interim:  h.flags()&flagInterim != 0,
+			Credits:  h.credits(),
+			Session:  h.session(),
+			Signed:   signed,
+			Checksum: h.checksum(),
+			Body:     args,
+		})
+		if off = h.Next(); off == 0 {
+			return replies, nil
+		}
+	}
+}
+
+// Balance is the credits every Reply received granted, interims included, less
+// the credits every Msg sent charged; it starts at 1, the credit a connection
+// opens with.
+func (c *Client) Balance() int { return int(c.balance.Load()) }
+
+// Result is one member's result in a compound's reply.
+type Result struct {
+	Op     uint32
+	Status core.Status
+	Body   []byte
+}
+
+// Head is a compound reply's head: its status and the tag it echoes.
+type Head struct {
+	Status core.Status
+	Tag    []byte
+}
+
+// Results reads a compound's reply body: its head and its results.
+func Results(body []byte) (Head, []Result, error) {
+	if len(body) < 12 {
+		return Head{}, nil, fmt.Errorf("testproto: a compound reply of %d bytes", len(body))
+	}
+	tagLen := int(binary.BigEndian.Uint32(body[4:]))
+	if tagLen > len(body)-12 {
+		return Head{}, nil, fmt.Errorf(
+			"testproto: a compound's tag of %d bytes past its reply",
+			tagLen,
+		)
+	}
+	status := Head{Status: core.Status(binary.BigEndian.Uint32(body)), Tag: body[8 : 8+tagLen]}
+	n := int(binary.BigEndian.Uint32(body[8+tagLen:]))
+	body = body[12+tagLen:]
+	var results []Result
+	for range n {
+		if len(body) < resultHead {
+			return status, results, errors.New("testproto: a compound result past the reply")
+		}
+		length := int(binary.BigEndian.Uint32(body[8:]))
+		if length > len(body)-resultHead {
+			return status, results, errors.New("testproto: a compound result's body past the reply")
+		}
+		results = append(results, Result{
+			Op:     binary.BigEndian.Uint32(body),
+			Status: core.Status(binary.BigEndian.Uint32(body[4:])),
+			Body:   body[resultHead : resultHead+length],
+		})
+		body = body[resultHead+length:]
+	}
+	if len(body) > 0 {
+		return status, results, fmt.Errorf(
+			"testproto: %d bytes after a compound's last result",
+			len(body),
+		)
+	}
+
+	return status, results, nil
+}

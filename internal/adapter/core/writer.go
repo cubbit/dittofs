@@ -1,0 +1,398 @@
+package core
+
+import (
+	"net"
+	"slices"
+	"sync"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/resources"
+)
+
+// writeBound is the writer's queue's bound, by messages: the reader stops
+// reading the connection at it, so the client's TCP window pushes back, and a
+// worker that hands over a reply is never blocked (RFC 20 sections 6.1 and
+// 6.2).
+//
+// ponytail: a fixed bound of 64 messages, which is also testproto's credit
+// target. Set it from the connection's flow-control bound when a protocol
+// bounds its session below that and the queue, not the credits, turns out to
+// bind (RFC 24 section 5.1).
+const writeBound = 64
+
+// queued is one message the writer holds: its record, and the least and
+// greatest keys of the replies it carries, 0 for none. up, nil for the
+// others, is the reply that asked for TLS, the last message sent in
+// plaintext.
+type queued struct {
+	msg    *resources.Buf
+	lo, hi uint64
+	up     *upgrade
+}
+
+// writer sends a connection's messages: a bounded queue, net.Buffers writes
+// that each gather up to a record cap of bodies with each record framed, a
+// write deadline per gathered write, and a failed or late write that closes
+// the connection (RFC 20 sections 6.2, 6.4 and 6.6). out counts the bytes its
+// socket took, framing included (§10.1).
+type writer struct {
+	nc       net.Conn
+	framer   Framer
+	capBytes int // the bodies one gathered write carries past its first: the protocol's record cap
+	timeout  time.Duration
+
+	// outBytes is the direction the connection's series resolved; never nil,
+	// nop{} counts nowhere.
+	outBytes adder
+	// close is Conn.Close: a failed write calls it on the writer's goroutine
+	// once run has ended, so it may stop the writer.
+	close func(error)
+	// onBatch is a test's view of what one write gathered; nil otherwise.
+	onBatch func(n int)
+	// upgrade is the connection's handoff to TLS, run once the reply that
+	// asked for it is written; nil for none.
+	upgrade func(*upgrade) net.Conn
+
+	mu       sync.Mutex
+	batch    []queued    // the messages of the write in flight, reused across batches; run only
+	bufs     net.Buffers // each batch's gathered write, reused across batches; run only
+	parts    net.Buffers // one message's parts, its segments Attach lent included; run only
+	hdrs     []byte      // their framed headers, appended into one; run only
+	queue    []queued
+	held     int // messages out took and has not yet written or released
+	wake     chan struct{}
+	room     chan struct{} // closed while the messages held are below the bound
+	empty    chan struct{} // made by a drain's wait while messages are held, closed when none are
+	closed   bool          // out takes nothing more: the connection closed, or the writer stopped or failed
+	stopped  chan struct{}
+	done     chan struct{}
+	stopOnce sync.Once
+}
+
+// newWriter starts a writer over nc, framing with f and bounding each gathered
+// write by timeout, where it is not zero; closeConn is the connection's close,
+// and outBytes counts its bytes of the direction the connection's series
+// resolved, framing included.
+func newWriter(nc net.Conn, f Framer, timeout time.Duration, closeConn func(error), outBytes adder) *writer {
+	capBytes, _ := f.MaxRecord()
+	w := &writer{
+		nc:       nc,
+		framer:   f,
+		capBytes: capBytes,
+		timeout:  timeout,
+		outBytes: outBytes,
+		close:    closeConn,
+		wake:     make(chan struct{}, 1),
+		room:     make(chan struct{}),
+		stopped:  make(chan struct{}),
+		done:     make(chan struct{}),
+	}
+	close(w.room) // nothing is queued
+	go w.run()
+	return w
+}
+
+// out queues msg, returning before it is sent: past the bound the queue still
+// takes it, so a caller never blocks. lo and hi are the least and greatest
+// keys of the replies msg carries; a message handed with before goes out
+// ahead of the first queued message whose keys span it. The writer takes the
+// message's reference whatever it returns.
+func (w *writer) out(msg *resources.Buf, lo, hi, before uint64) error {
+	return w.put(msg, lo, hi, before, nil)
+}
+
+// outUpgrade queues the reply that asked for TLS, the last message the writer
+// sends in plaintext: what is queued after it goes over TLS.
+func (w *writer) outUpgrade(msg *resources.Buf, lo, hi uint64, up *upgrade) error {
+	return w.put(msg, lo, hi, 0, up)
+}
+
+// put queues msg as out does, carrying up where it asked for TLS.
+func (w *writer) put(msg *resources.Buf, lo, hi, before uint64, up *upgrade) error {
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		msg.Release()
+		return net.ErrClosed
+	}
+	at := len(w.queue)
+	if before != 0 {
+		for i := range w.queue {
+			if w.queue[i].lo <= before && before <= w.queue[i].hi {
+				at = i
+				break
+			}
+		}
+	}
+	w.queue = append(w.queue, queued{})
+	copy(w.queue[at+1:], w.queue[at:])
+	w.queue[at] = queued{msg: msg, lo: lo, hi: hi, up: up}
+	w.held++
+	if w.held >= writeBound && isClosed(w.room) {
+		w.room = make(chan struct{})
+	}
+	w.mu.Unlock()
+
+	select {
+	case w.wake <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+// pause returns a channel closed once the messages held fall below the bound,
+// and whether they are at it: the reader waits there rather than refuse a record
+// (RFC 20 section 6.2).
+func (w *writer) pause() (<-chan struct{}, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.held < writeBound {
+		return nil, false
+	}
+	return w.room, true
+}
+
+// refuse ends what out takes, the connection's close calls it: a message
+// handed after that is dropped, while run still sends what was queued before
+// it, until the teardown's stop.
+func (w *writer) refuse() {
+	w.mu.Lock()
+	w.closed = true
+	w.mu.Unlock()
+}
+
+// stop ends the writer: what is queued is released unsent. The connection's
+// teardown calls it last.
+func (w *writer) stop() {
+	w.stopOnce.Do(func() {
+		w.mu.Lock()
+		w.closed = true
+		// A write the peer holds ends now rather than at write_timeout.
+		_ = w.nc.SetWriteDeadline(time.Now().Add(-time.Second))
+		q := w.queue
+		w.queue = nil
+		w.less(len(q))
+		if !isClosed(w.room) {
+			close(w.room)
+		}
+		w.mu.Unlock()
+		for _, m := range q {
+			m.msg.Release()
+		}
+		close(w.stopped)
+		<-w.done
+	})
+}
+
+// run writes each wake's messages in gathered writes, until the queue is
+// empty. A failed write ends it, and the connection's close runs once done is
+// closed, so a close that stops the writer does not wait on itself.
+func (w *writer) run() {
+	var failed error
+	defer func() {
+		close(w.done)
+		if failed != nil {
+			w.close(failed)
+		}
+	}()
+	for {
+		select {
+		case <-w.wake:
+		case <-w.stopped:
+			return
+		}
+		for w.queued() {
+			if err := w.flush(); err != nil {
+				if w.fail() {
+					failed = err
+				}
+				return
+			}
+		}
+	}
+}
+
+// queued reports whether any message waits.
+func (w *writer) queued() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.queue) > 0
+}
+
+// take moves one gathered write's messages into w.batch, the first queued and
+// those behind it while their bodies stay within the record cap, so
+// write_timeout bounds no more bytes than the largest single record's. It arms
+// the write deadline for them under the mutex: a stop that set a deadline in
+// the past is never overwritten, because the stop empties the queue under it.
+func (w *writer) take() []queued {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.queue) == 0 {
+		return nil
+	}
+	n, size := 1, w.body(w.queue[0])
+	for n < len(w.queue) && w.queue[n-1].up == nil {
+		s := w.body(w.queue[n])
+		if size+s > w.capBytes {
+			break
+		}
+		size += s
+		n++
+	}
+	w.batch = append(w.batch[:0], w.queue[:n]...)
+	k := copy(w.queue, w.queue[n:])
+	clear(w.queue[k:])
+	w.queue = w.queue[:k]
+	if w.timeout > 0 {
+		_ = w.nc.SetWriteDeadline(time.Now().Add(w.timeout))
+	}
+	return w.batch
+}
+
+// body is one message's framed body length, its segments Attach lent
+// included: the record the next message joins must fit the protocol's cap
+// whole, header and tail alike. It walks the message's parts through the
+// same reused scratch the flush gathers into, on the writer's goroutine
+// alone.
+func (w *writer) body(m queued) int {
+	w.parts = m.msg.AppendBuffers(w.parts[:0])
+	total := 0
+	for _, part := range w.parts {
+		total += len(part)
+	}
+	return total
+}
+
+// written accounts for n messages once their write returned: they leave the
+// bound's count, and a paused reader is released when it falls below it.
+func (w *writer) written(n int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.less(n)
+	if w.held < writeBound && !isClosed(w.room) {
+		close(w.room)
+	}
+}
+
+// flush sends the messages one gathered write takes in one net.Buffers write,
+// its records framed and its deadline armed, and releases each once written.
+func (w *writer) flush() error {
+	q := w.take()
+	if len(q) == 0 {
+		return nil
+	}
+	if w.onBatch != nil {
+		w.onBatch(len(q))
+	}
+	w.hdrs = slices.Grow(w.hdrs[:0], w.framer.HeaderLen()*len(q))
+	w.bufs = w.bufs[:0]
+	// A message's parts are collected first, their summed length framing
+	// the record, then its header is inserted ahead of them: a segmented
+	// reply is one record of all its parts, sent in their order, the
+	// header's framing aside. w.parts is reused across messages, so the
+	// gather adds no allocation per segment.
+	for _, m := range q {
+		total := w.body(m)
+		at := len(w.hdrs)
+		w.hdrs = w.framer.Frame(w.hdrs, total)
+		w.bufs = append(w.bufs, w.hdrs[at:])
+		w.bufs = append(w.bufs, w.parts...)
+	}
+
+	up := q[len(q)-1].up
+	b := w.bufs // WriteTo consumes the slice it is called on
+	n, err := b.WriteTo(w.nc)
+	w.outBytes.Add(float64(n))
+	clear(w.bufs)
+	clear(w.parts) // the batch's messages are released; nothing of theirs stays reachable
+	w.written(len(q))
+	for _, m := range q {
+		m.msg.Release()
+	}
+	clear(q)
+
+	if err != nil || up == nil {
+		return err
+	}
+	// The reply is out in plaintext: what is queued after it goes over TLS, and
+	// the handshake is bounded by its own deadline, not by the reply's write.
+	w.clearDeadline()
+
+	tc := w.upgrade(up)
+	if tc == nil {
+		return net.ErrClosed
+	}
+
+	w.mu.Lock()
+	w.nc = tc
+	w.mu.Unlock()
+
+	return nil
+}
+
+// clearDeadline ends the write deadline the last batch armed, unless the
+// writer is closed or stopped, whose past deadline it must not overwrite.
+func (w *writer) clearDeadline() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if !w.closed {
+		_ = w.nc.SetWriteDeadline(time.Time{})
+	}
+}
+
+// fail ends the writer on a failed or late write: it releases what is queued
+// and reports whether the connection's close is owed, which it is unless the
+// close or a stop came first.
+func (w *writer) fail() bool {
+	w.mu.Lock()
+	q := w.queue
+	w.queue = nil
+	w.less(len(q))
+	if !isClosed(w.room) {
+		close(w.room)
+	}
+	closed := w.closed
+	w.closed = true
+	w.mu.Unlock()
+	for _, m := range q {
+		m.msg.Release()
+	}
+	return !closed
+}
+
+// less drops n messages from the held count, under w.mu, and wakes a drain
+// waiting for none to be held.
+func (w *writer) less(n int) {
+	w.held -= n
+	if w.held == 0 && w.empty != nil {
+		close(w.empty)
+		w.empty = nil
+	}
+}
+
+// flushed returns a channel closed once the writer holds no message, each one
+// out took written, failed or released, or nil when it holds none now: the
+// drain waits there, so the reply of a request it let finish is sent before
+// the close (RFC 20 section 3.1).
+func (w *writer) flushed() <-chan struct{} {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.held == 0 {
+		return nil
+	}
+	if w.empty == nil {
+		w.empty = make(chan struct{})
+	}
+	return w.empty
+}
+
+// isClosed reports whether ch is closed.
+func isClosed(ch chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}

@@ -41,8 +41,8 @@ the `pkg/adapter` and `internal/adapter` paths, so no name carries a version.
 **Estimates** are human man-days on the shared scale of `rfc-to-epic-plan`, kept as they are
 although the code is written by an agent; a scale for agent-written work is proposed on #3524.
 **Defaults used from Step 0:** dashboards none (#9); output path the default (#10). The target
-branch is `feat/storage-v2`, on which RFC 17's plan has merged; the plan document itself lands on
-`develop` and is cherry-picked, as the other planning documents are.
+branch is `feat/storage-v2`, on which RFC 17's plan has merged; the plan document lands there
+too, as the other planning documents do.
 
 ## 1. Introduction
 
@@ -105,8 +105,9 @@ last epic checks the per-change allocation cell and hands the deferral ledger ov
   and `GOOS=darwin`, which the filter's skip of `unit/windows` would otherwise leave unbuilt
   once T4.8's socket options differ by platform; it lands with `core` (T1.7), the first
   package whose files will differ by platform. `test/required-tests.json`, whose every entry names a v1 test, is repinned to the surviving
-  authorization gates in `internal/vfs/admit` (`TestNoAnonymousPrincipalFailsClosed`,
-  `TestAnUnmappedClaimedRootIsPrivileged`), so `required-tests.sh` neither loses its subject nor
+  anonymous gates admission resolves through identity (`TestNoAnonymousPrincipalFailsClosed` and
+  `TestResolveRefusesASquashToADeletedAnonymous` in `internal/identity`,
+  `TestANewShareSquashesToAnonymous` in `internal/vfs`), so `required-tests.sh` neither loses its subject nor
   fails on an empty manifest. A build tag on `lint-go`'s `go vet -tags=` line stays while any file
   behind it compiles; a tag whose files are all deleted leaves the line.
 - **`pkg/adapter`** (RFC 20 §3.4, §3.5): `Adapter` (`Reconfigure` taking `settings.Settings`),
@@ -469,7 +470,9 @@ it gets back (epic 7, after S4; RFC 20 §3.4, §4.7):
 smbA, err := smb.New(adapter.Deps{
 	VFS:     svc,     // required
 	Budgets: budgets, // required: Receive, Reply, Connection, Hold (RFC 24)
-	Metrics: reg, Tracer: tr, Logger: log, Watch: watchdog.Loop,
+	Metrics: reg, Tracer: tr, Logger: log,
+	SampleRatio: ratio, // §10.2's sampling rate: 0 samples none; the node passes 0 while no tracer is configured
+	Watch: watchdog.Loop,
 }, settings.DefaultSMB())
 if err != nil {
 	return err // invalid settings, or a required Deps field missing
@@ -983,6 +986,7 @@ decision to drop it (its issue closed as not planned).
 | the alert rules for `adapter_unmapped_errors_total` and `adapter_handler_panics_total` (RFC 20 §10.1, RFC 25 §7; epic 7's §9, O5) | the repository holds no alert-rule home | the RFC 25 plan | an alert-rule home exists |
 | `Deps.Retry` and the node's retrier: the field, the failing `Disconnect` it holds, and its stop after the adapters (RFC 20 §3.2, §3.4; RFC 23 §2.2's stop step 2; epic 7's §9, O6) | no caller: only a session registry hands it a `Disconnect` | the RFC 22 plan, with the first session registry that calls it (its T5.2 and T5.4; RFC 21's `DESTROY_SESSION` the NFS half) | on top of epic 7's T7.3; RFC 20 §3.2 settles the pending-`Disconnect` bound: one per client record per adapter, a newer one replacing it |
 | `adapter_listener_lost`'s address, which RFC 25 §3.9 names beside the adapter (RFC 20 §3.4 declares it as `Health.Lost []netip.AddrPort`; epic 7's §9, O8) | the RFC is settled; the code is not: `pkg/adapter`'s `Health` has no `Lost`, and `core` fills none | this plan: `pkg/adapter`'s `Health` declares `Lost`, and `core` fills it as it raises the condition | RFC 15's floating addresses |
+| the trace-ID generator's own source (`newTraceID`, `math/rand/v2`'s global per-thread source, shared without a lock) | no hand of `Deps.TraceIDs` names a per-installation source; RFC 20 §10.2 sets the global source as the default, and no owner has defined what an installation-scoped source derives from | `unowned` | an owner defines the source an installation's IDs come from |
 | the conditions' severities (RFC 20 §3.7, RFC 25 §3.9): `adapter_listener_lost` and `adapter_refused` unhealthy, `sidecar_failed` degraded | `health.Condition` carries none (`pkg/health/evaluator.go`'s `ponytail:`; epic 7's §1.2) | the RFC 25 plan | RFC 25's condition registry is built |
 | `Check` wired into reconcile and the settings routes, the one settings table | need `internal/node` and `pkg/settings` | RFC 13's plan (#4059), epic 5 | that epic |
 | concrete sidecars: mDNS, WS-Discovery (`pkg/discovery`), the port mapper, rpcbind registration, with their enabled settings and `Runner.SetEnabled`'s caller, and the port mapper's half of RFC 13 §6's port rule at start | need serving protocols | cutover | stage 7 |

@@ -33,8 +33,25 @@ REALM="${AD_REALM:-DITTOFS.AD}"
 DOMAIN="${AD_DOMAIN:-DITTOFS}"
 ADMIN_PASSWORD="${AD_ADMIN_PASSWORD:-Passw0rd!2024}"
 KEYTAB_DIR="${KEYTAB_DIR:-/keytabs}"
+# The provisioned smb.conf names the TLS files issue_tls_cert writes here.
+TLS_DIR=/var/lib/samba/private/tls
 
-# Service principals the DittoFS server presents to clients.
+# The DC's dynamic RPC ports, NETLOGON's on ncacn_ip_tcp among them, which the
+# endpoint mapper on 135 hands out. Pinned to a small range, as a firewalled
+# site pins a Windows DC's, so a firewall guide can name it. Read at provision
+# only; the tests pass it from fixture_test.go's adRPCPortLow/adRPCPortHigh.
+RPC_PORT_RANGE="${RPC_PORT_RANGE:-50000-50019}"
+
+# Whether the domain database skips fsync on each commit, read at provision
+# only. Each LDAP add or delete is its own transaction, so with fsync a test
+# seeding thousands of entries spends minutes in it. The Go tests set it, as
+# their container is thrown away with the test; the k8s fixture keeps a
+# volume and leaves it off.
+LDB_NOSYNC="${LDB_NOSYNC:-false}"
+
+# Service principals the DittoFS server presents to clients, and the account
+# that holds them.
+SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-dittofs-svc}"
 SMB_SPN="${SMB_SPN:-cifs/dittofs.${REALM,,}}"
 NFS_SPN="${NFS_SPN:-nfs/dittofs.${REALM,,}}"
 
@@ -77,7 +94,12 @@ if [ ! -f /var/lib/samba/.provisioned ]; then
         --domain="$DOMAIN" \
         --server-role=dc \
         --dns-backend=SAMBA_INTERNAL \
-        --adminpass="$ADMIN_PASSWORD"
+        --adminpass="$ADMIN_PASSWORD" \
+        --option="rpc server dynamic port range = $RPC_PORT_RANGE" \
+        --option="tls certfile = $TLS_DIR/cert.pem" \
+        --option="tls keyfile = $TLS_DIR/key.pem" \
+        --option="tls cafile = $TLS_DIR/ca.pem" \
+        --option="ldb:nosync = $LDB_NOSYNC"
 
     # Samba writes its own krb5.conf during provision; expose it to other
     # containers / the Go test on the shared volume.
@@ -88,6 +110,39 @@ if [ ! -f /var/lib/samba/.provisioned ]; then
     log "Provision complete"
 fi
 
+# The DC serves LDAPS and StartTLS with a certificate from a CA made here once
+# per domain and exported as $KEYTAB_DIR/ca.pem, so a client verifies the DC
+# rather than skipping verification. Samba's own generated certificate names
+# the DC in its CN only, which Go refuses. The provisioned smb.conf names the
+# files written here, so Samba serves them rather than generating its own. The
+# certificate is issued again at every start because its SANs carry the
+# container's IPs, which a restart can change; its DNS SAN is the DC's host
+# name, fixed by the container's --hostname.
+issue_tls_cert() {
+    local tls="$TLS_DIR" fqdn san ip
+    fqdn="$(hostname -s).${REALM,,}"
+    mkdir -p "$tls"
+    if [ ! -f "$tls/ca.key" ]; then
+        log "Creating the fixture CA"
+        openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=DittoFS AD-DC test CA" \
+            -addext basicConstraints=critical,CA:TRUE \
+            -addext keyUsage=critical,keyCertSign,cRLSign \
+            -keyout "$tls/ca.key" -out "$tls/ca.pem" 2>/dev/null
+    fi
+    san="DNS:$fqdn,DNS:$(hostname -s)"
+    for ip in $(hostname -I) 127.0.0.1; do san="$san,IP:$ip"; done
+    log "Issuing the DC certificate for $san"
+    openssl req -newkey rsa:2048 -nodes -subj "/CN=$fqdn" \
+        -keyout "$tls/key.pem" -out "$tls/csr.pem" 2>/dev/null
+    openssl x509 -req -in "$tls/csr.pem" -CA "$tls/ca.pem" -CAkey "$tls/ca.key" \
+        -CAcreateserial -days 825 -out "$tls/cert.pem" -extfile <(printf '%s\n' \
+            "subjectAltName=$san" "extendedKeyUsage=serverAuth" "basicConstraints=critical,CA:FALSE") \
+        2>/dev/null
+    chmod 0600 "$tls/key.pem" "$tls/ca.key"
+    cp "$tls/ca.pem" "$KEYTAB_DIR/ca.pem"
+    chmod 0644 "$KEYTAB_DIR/ca.pem"
+}
+
 # Start samba once and keep it: samba-tool below talks to the running DC, and a
 # test starts using the DC as soon as the setup marks it ready, so the samba that
 # serves the setup must be the one that keeps serving. Restarting it after the
@@ -97,6 +152,7 @@ fi
 # earlier start of this container is dropped first.
 if [ "${1:-}" != --populate ]; then
     rm -f "$KEYTAB_DIR/.ready"
+    issue_tls_cert
     "$0" --populate &
     log "Starting samba in foreground..."
     exec samba --foreground --no-process-group
@@ -123,6 +179,12 @@ create_user_if_absent() {
     fi
 }
 
+# dn_of KIND NAME prints the distinguishedName of a samba-tool user or computer.
+dn_of() {
+    samba-tool "$1" show "$2" --attributes=distinguishedName 2>/dev/null \
+        | sed -n 's/^distinguishedName: //p' | head -n1
+}
+
 create_group_if_absent() {
     local group="$1"
     if ! samba-tool group show "$group" >/dev/null 2>&1; then
@@ -140,6 +202,12 @@ create_group_if_absent devs
 # the "no LDAP group-walk needed" property AD-1 demonstrates.
 samba-tool group addmembers engineering devs >/dev/null 2>&1 || true
 
+# --- Lockout ---------------------------------------------------------------
+# Samba counts badPwdCount only under a lockout threshold, which a provisioned
+# domain leaves at 0. 100 counts every wrong password and locks no test out,
+# including one that sends more than ten.
+samba-tool domain passwordsettings set --account-lockout-threshold=100 >/dev/null
+
 # --- Users ----------------------------------------------------------------
 # alice: RFC2307 attrs set (idmap_ad path), member of devs (=> nested in engineering).
 create_user_if_absent "$USER_ALICE" \
@@ -151,87 +219,118 @@ samba-tool group addmembers devs "$USER_ALICE" >/dev/null 2>&1 || true
 create_user_if_absent "$USER_BOB"
 samba-tool group addmembers engineering "$USER_BOB" >/dev/null 2>&1 || true
 
-# --- Machine account for NETLOGON passthrough tests (#1314, #1345) --------
-# Creates the DITTOFS$ computer account used by TestNetlogonPassthroughAlice.
-# samba-tool computer create yields a sAMAccountName of "dittofs$" (AD uppercases
-# it to DITTOFS$ on lookup).
+# --- Computer accounts for the joins --------------------------------------
+# Each is set up once, its password set only then, so a restart leaves it as
+# the tests or a join last left it. A marker written after the last step decides
+# "done", not the account's existence, so a start that died half-way through
+# an account finishes it on the next start.
+#
+# dittofs$ is the account an installation with the default NetBIOS name would
+# join as. It already exists, so an online join of that name must refuse it
+# rather than reset the password of whoever holds it; the NETLOGON tests sign
+# in as it with its password.
+#
+# offjoinaes$ and offjoinlegacy$ are pre-staged for an offline join, as an
+# administrator creates them and hands their password over: the first with
+# msDS-SupportedEncryptionTypes 0x18, which an offline join accepts, the second
+# without the attribute, as Active Directory Users and Computers creates one,
+# which an offline join refuses.
+#
+# offjoinowned$ is created by joiner, a user granted only "create computer
+# objects" on the Computers container, so its owner is joiner's SID rather
+# than Domain Admins, as a delegated administrator's pre-staged account is. It
+# carries msDS-SupportedEncryptionTypes 0x18 and an
+# msDS-AllowedToActOnBehalfOfOtherIdentity naming dittofs$, the two things a
+# join reports on such an account besides its owner.
+#
+# BUILD01$ is a plain workstation account with a known password, one a join
+# meets already holding the name it asks for.
 #
 # NOTE (#1345): `samba-tool computer create --computerpassword=...` is NOT a
-# valid option on this samba (4.17.x) — it errors with "no such option", and the
-# old `|| true` SILENTLY SWALLOWED that, so the machine account was NEVER created
-# and every NETLOGON test ran against a nonexistent account. Create the computer
-# first, then set its password via `user setpassword` (which derives proper
-# Kerberos keys, making the account usable for both NETLOGON and Kerberos-SMB).
+# valid option on this samba (4.17.x). Create the computer first, then set its
+# password via `user setpassword`, which derives its Kerberos keys.
 MACHINE_PASSWORD="${MACHINE_PASSWORD:-MachinePass01!}"
-if ! samba-tool computer list 2>/dev/null | grep -qix 'dittofs\$'; then
-    log "Creating machine account dittofs\$ (NETLOGON passthrough)"
-    samba-tool computer create dittofs
+OFFJOIN_AES_PASSWORD="${OFFJOIN_AES_PASSWORD:-OffJoinAES01!}"
+OFFJOIN_LEGACY_PASSWORD="${OFFJOIN_LEGACY_PASSWORD:-OffJoinLegacy01!}"
+OFFJOIN_OWNED_PASSWORD="${OFFJOIN_OWNED_PASSWORD:-OffJoinOwned01!}"
+BUILD01_PASSWORD="${BUILD01_PASSWORD:-Build01Pass01!}"
+USER_JOINER="${USER_JOINER:-joiner}"
+
+# create_computer_if_absent NAME PASSWORD ["ATTRIBUTE: VALUE"]...
+# Each ATTRIBUTE is replaced as Administrator on the local database, which
+# leaves the owner as it was. With CREATED_BY set, that user creates the
+# account over LDAP, so it becomes the owner.
+create_computer_if_absent() {
+    local name="$1" password="$2" dn attr
+    shift 2
+    local marker="/var/lib/samba/.computer-$name"
+    [ -f "$marker" ] && return 0
+    log "Creating computer account $name\$"
+    local create=(samba-tool computer create "$name")
+    [ -n "${CREATED_BY:-}" ] && create+=(-H ldap://127.0.0.1 -U "$DOMAIN\\$CREATED_BY%$USER_PASSWORD")
+    samba-tool computer show "$name" >/dev/null 2>&1 || "${create[@]}"
+    dn="$(dn_of computer "$name")"
+    for attr in "$@"; do
+        printf 'dn: %s\nchangetype: modify\nreplace: %s\n%s\n' "$dn" "${attr%%:*}" "$attr" \
+            | ldbmodify -H /var/lib/samba/private/sam.ldb
+    done
+    samba-tool user setpassword "$name\$" --newpassword="$password"
+    touch "$marker"
+}
+create_computer_if_absent dittofs "$MACHINE_PASSWORD"
+create_computer_if_absent offjoinaes "$OFFJOIN_AES_PASSWORD" "msDS-SupportedEncryptionTypes: 24"
+create_computer_if_absent offjoinlegacy "$OFFJOIN_LEGACY_PASSWORD"
+create_computer_if_absent BUILD01 "$BUILD01_PASSWORD"
+
+# joiner may create computer objects in the Computers container and nothing
+# more: an object-specific create-child ACE for the computer class.
+create_user_if_absent "$USER_JOINER"
+joiner_sid="$(samba-tool user show "$USER_JOINER" --attributes=objectSid | sed -n 's/^objectSid: //p')"
+computers_dn="CN=Computers,DC=${REALM,,}"
+computers_dn="${computers_dn//./,DC=}"
+if ! samba-tool dsacl get --objectdn="$computers_dn" | grep -q "$joiner_sid"; then
+    log "Granting $USER_JOINER create computer objects on $computers_dn"
+    samba-tool dsacl set --objectdn="$computers_dn" \
+        --sddl="(OA;;CC;bf967a86-0de6-11d0-a285-00aa003049e2;;$joiner_sid)" >/dev/null
 fi
-# Always (re)set the password so a reused domain DB (the .provisioned restart
-# path) or an account left by an earlier run reconciles to the expected
-# credential — and the AES/RC4 Kerberos keys regenerate from it each time.
-samba-tool user setpassword 'dittofs$' --newpassword="$MACHINE_PASSWORD"
+dittofs_sid="$(samba-tool computer show dittofs --attributes=objectSid | sed -n 's/^objectSid: //p')"
+CREATED_BY="$USER_JOINER" create_computer_if_absent offjoinowned "$OFFJOIN_OWNED_PASSWORD" \
+    "msDS-SupportedEncryptionTypes: 24" \
+    "msDS-AllowedToActOnBehalfOfOtherIdentity: O:BAD:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;$dittofs_sid)"
 
 # --- Combined service keytab ----------------------------------------------
-# Register BOTH the DittoFS SMB (cifs/) AND NFS (nfs/) service principals on the
-# Administrator account and export their keys into ONE keytab. A single keytab
-# serving both protocols is what AD-4 exercises: the dittofs server loads one
-# keytab and decrypts client AP-REQs for either the SMB or the NFS SPN with it.
+# Register BOTH the DittoFS SMB (cifs/) AND NFS (nfs/) service principals on a
+# service account of their own and export their keys into ONE keytab. A single
+# keytab serving both protocols is what AD-4 exercises: the dittofs server loads
+# one keytab and decrypts client AP-REQs for either the SMB or the NFS SPN.
 #
 # `samba-tool domain exportkeytab <file> --principal=...` APPENDS the principal's
 # keys to <file> when it already exists, so two successive invocations into the
-# same path produce a combined keytab containing both SPNs (each with all the
-# enctypes the DC holds). AD-1's PAC test consumes the cifs/ entry of this same
-# keytab, so keeping both in one file keeps AD-1 working unchanged.
+# same path produce a combined keytab containing both SPNs. AD-1's PAC test
+# consumes the cifs/ entry of this same keytab.
+#
+# The account is AES only: msDS-SupportedEncryptionTypes 0x18 (AES128 + AES256),
+# set before the keytab is exported, so the KDC refuses a ticket for these names
+# under RC4 or DES and exportkeytab writes no RC4 key, whose key would be the
+# account's NT hash.
 keytab="$KEYTAB_DIR/dittofs.keytab"
 if [ ! -f "$keytab" ]; then
-    log "Registering SPNs and exporting COMBINED keytab to $keytab ($SMB_SPN + $NFS_SPN)"
+    log "Registering SPNs on $SERVICE_ACCOUNT and exporting COMBINED keytab to $keytab ($SMB_SPN + $NFS_SPN)"
 
-    # Register both SPNs on Administrator. `spn add` is idempotent-ish: it errors
-    # if the SPN already exists, which is fine on a re-provisioned fixture.
-    samba-tool spn add "$SMB_SPN" "$DOMAIN\\Administrator" >/dev/null 2>&1 || true
-    samba-tool spn add "$NFS_SPN" "$DOMAIN\\Administrator" >/dev/null 2>&1 || true
-
-    # Force AES kerberos keys on the SPN-holding account (issue #1318).
-    #
-    # By default the Administrator account that holds the cifs/ + nfs/ SPNs may
-    # carry only the arcfour-hmac (RC4) kerberos key, so `exportkeytab` emits an
-    # RC4-only keytab. Windows 11 refuses RC4 (arcfour-hmac) service tickets, so
-    # the exported keytab must carry AES256/AES128 keys for the SPNs.
-    #
-    # Two steps are required, in order:
-    #   1. Advertise AES support on the account by setting
-    #      msDS-SupportedEncryptionTypes. 0x1F (31) = DES-CBC-CRC + DES-CBC-MD5 +
-    #      RC4-HMAC + AES128-CTS + AES256-CTS; keeping the legacy bits set avoids
-    #      breaking any RC4/DES client while adding AES. (0x18 / 24 would be
-    #      AES-only.)
-    #   2. Regenerate the kerberos keys. AES keys are derived from the account
-    #      password + salt, so they only materialise on a password change. Reset
-    #      the Administrator password to itself to force key regeneration without
-    #      changing the credential the rest of the fixture relies on.
-    #
-    # exportkeytab (below) then emits the full key set the DC now holds — AES256,
-    # AES128, and RC4 — because we never restrict it to a single --enctype.
-    admin_dn="$(samba-tool user show Administrator --attributes=distinguishedName 2>/dev/null \
-        | sed -n 's/^distinguishedName: //p' | head -n1)"
-    if [ -n "$admin_dn" ]; then
-        log "Enabling AES enctypes on $admin_dn (msDS-SupportedEncryptionTypes=31)"
-        ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF || \
-            log "WARN: failed to set msDS-SupportedEncryptionTypes (continuing)"
-dn: $admin_dn
+    if ! samba-tool user show "$SERVICE_ACCOUNT" >/dev/null 2>&1; then
+        samba-tool user create "$SERVICE_ACCOUNT" --random-password
+    fi
+    for spn in "$SMB_SPN" "$NFS_SPN"; do
+        samba-tool spn list "$SERVICE_ACCOUNT" | grep -qix "[[:space:]]*$spn" \
+            || samba-tool spn add "$spn" "$SERVICE_ACCOUNT"
+    done
+    svc_dn="$(dn_of user "$SERVICE_ACCOUNT")"
+    ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF
+dn: $svc_dn
 changetype: modify
 replace: msDS-SupportedEncryptionTypes
-msDS-SupportedEncryptionTypes: 31
+msDS-SupportedEncryptionTypes: 24
 EOF
-    else
-        log "WARN: could not resolve Administrator DN; skipping enctype attribute set"
-    fi
-
-    # Reset the password to itself to regenerate kerberos keys (incl. AES) now
-    # that AES enctypes are advertised on the account.
-    log "Regenerating kerberos keys for Administrator (password reset to force AES)"
-    samba-tool user setpassword Administrator --newpassword="$ADMIN_PASSWORD" \
-        >/dev/null 2>&1 || log "WARN: setpassword failed (continuing)"
 
     # Export cifs/ then APPEND nfs/ into the same keytab file.
     samba-tool domain exportkeytab "$keytab" \
@@ -275,8 +374,8 @@ EOF
 fi
 
 # Tests wait for this marker, so it is written last: once the keytab is whole
-# and the KDC, LDAP and DNS accept connections.
-for port in 88 389 53; do
+# and the KDC, LDAP, DNS and the RPC endpoint mapper accept connections.
+for port in 88 389 53 135; do
     for _ in $(seq 1 60); do
         (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && continue 2
         sleep 1

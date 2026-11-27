@@ -1,0 +1,7 @@
+# READ4resok's shape for the codec's suite: an eof, the data's
+# count, "segment"'s seven bytes and its padding.
+00000001  # eof: true
+00000007  # the data's count: 7
+7365676d
+656e74    # "segment"
+00        # the padding

@@ -1,0 +1,2 @@
+# settime4, by hand: SET_TO_SERVER_TIME4, which takes the union's default arm, void.
+00000000                               # set_it: SET_TO_SERVER_TIME4, and nothing after it

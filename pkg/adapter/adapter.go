@@ -1,158 +1,150 @@
-// Package adapter provides protocol adapter interfaces for DittoFS.
-//
-// Each protocol adapter (NFS, SMB) embeds BaseAdapter for shared lifecycle,
-// listener and connection management, and implements Adapter to plug into
-// DittoServer. Authentication mechanisms themselves live in pkg/auth.
+// Package adapter is the adapters' public surface: the contract the node
+// drives, the sidecars it runs beside them, and what an adapter is built from.
+// Both the node and the adapters' shared core import it, and it imports
+// neither, so neither imports the other.
 package adapter
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"iter"
+	"net/netip"
+	"time"
 
-	"github.com/cubbit/dittofs/pkg/health"
-	"github.com/cubbit/dittofs/pkg/metadata/lock"
+	"github.com/cubbit/dittofs/pkg/adapter/settings"
 )
 
-// Adapter represents a protocol-specific server adapter that can be managed by DittoServer.
+// Adapter is what the node moves through the adapter's states: configured,
+// serving, draining, stopped. One server type in the adapters' core implements
+// it for every protocol.
 //
-// Each adapter implements a specific file sharing protocol (e.g., NFS, SMB)
-// and provides a unified interface for lifecycle management. All adapters share the
-// same metadata and content repositories, ensuring consistency across protocols.
-//
-// Lifecycle:
-//  1. Creation: Adapter is created with protocol-specific configuration
-//  2. Runtime injection: SetRuntime() provides the shared runtime
-//  3. Startup: Serve() starts the protocol server and blocks until shutdown
-//  4. Shutdown: Stop() initiates graceful shutdown with timeout
-//
-// Thread safety:
-// Implementations must be safe for concurrent use. SetRuntime() is called
-// once before Serve(), but Stop() may be called concurrently with Serve().
+// decision: an interface with one implementation, against the rule that an
+// interface needs two, because only the two protocol constructors may import
+// the adapters' implementation under internal/adapter: the node, which drives
+// every adapter, names this contract rather than the server type. Withdraw it
+// if the node is ever allowed to import that implementation.
 type Adapter interface {
-	// Serve starts the protocol server and blocks until the context is cancelled
-	// or an unrecoverable error occurs.
-	//
-	// When the context is cancelled, Serve must initiate graceful shutdown:
-	//   - Stop accepting new connections
-	//   - Wait for active operations to complete (with timeout)
-	//   - Clean up resources
-	//   - Return context.Canceled or nil
-	//
-	// If Serve returns before context cancellation, DittoServer treats it as
-	// a fatal error and stops all other adapters.
-	//
-	// Parameters:
-	//   - ctx: Controls the server lifecycle. Cancellation triggers shutdown.
-	//
-	// Returns:
-	//   - nil on graceful shutdown
-	//   - context.Canceled if cancelled via context
-	//   - error if startup fails or shutdown is not graceful
-	Serve(ctx context.Context) error
+	// Start moves configured to serving: every listener bound, or none, and
+	// the error names what failed. Start after Stop is refused: a stopped
+	// adapter is never started again, and the node builds a new one with New.
+	Start(ctx context.Context) error
 
-	// SetRuntime injects the shared Runtime containing all stores and shares.
-	//
-	// Called exactly once by Runtime before Serve() is called.
-	// Implementations should store the runtime for use during operation to
-	// resolve shares and access their corresponding stores.
-	//
-	// The parameter is typed as any to satisfy the adapters.RuntimeSetter
-	// interface, which cannot import *runtime.Runtime without creating an
-	// import cycle. Implementations type-assert to *runtime.Runtime.
-	//
-	// Parameters:
-	//   - rt: Runtime containing all metadata stores, content stores, and shares
-	//
-	// Thread safety:
-	// Called before Serve(), no synchronization needed.
-	SetRuntime(rt any)
+	// Reconfigure adds and removes listeners and applies live settings to
+	// connections set up after it returns. s is the adapter's own protocol's
+	// shape, settings.NFS or settings.SMB; the other protocol's, or any other
+	// type, is refused with an error. Every setting is live but Port, which
+	// never reaches Reconfigure: the node builds a new adapter for it.
+	Reconfigure(ctx context.Context, s settings.Settings) error
 
-	// Stop initiates graceful shutdown of the protocol server.
-	//
-	// May be called concurrently with Serve() during DittoServer shutdown.
-	// Implementations must:
-	//   - Be safe to call multiple times (idempotent)
-	//   - Be safe to call concurrently with Serve()
-	//   - Respect the context timeout for shutdown operations
-	//   - Clean up all resources (listeners, connections, goroutines)
-	//
-	// Parameters:
-	//   - ctx: Controls the shutdown timeout. When cancelled, force cleanup.
-	//
-	// Returns:
-	//   - nil if shutdown completed successfully
-	//   - error if shutdown exceeded timeout or encountered errors
+	// Stop moves serving to draining to stopped. ctx's deadline is the drain
+	// deadline; requests still running at it are abandoned. A request refused
+	// while draining is told its share moved when the service names another
+	// gateway node for it, and is left unanswered otherwise; the service is
+	// asked per request. Stop is idempotent: a second call returns once the
+	// adapter is stopped.
 	Stop(ctx context.Context) error
 
-	// Protocol returns the human-readable protocol name for logging and metrics.
-	//
-	// Examples: "NFS", "SMB", "WebDAV", "FTP"
-	//
-	// The returned value should be constant for the lifecycle of the adapter.
-	Protocol() string
+	// Addrs is every address each listener is bound on now, by service and
+	// network, in a fresh map the caller owns, slices included: each address
+	// as the settings name it, its port the one bound, so a port of 0 is
+	// resolved and a wildcard such as 0.0.0.0 is reported as itself, never as
+	// the [::] its socket reports. A mapped wildcard such as
+	// ::ffff:0.0.0.0 is reported as written too, and IsUnspecified is false
+	// in that form while its socket listens on every IPv4 interface: Unmap
+	// before asking whether an address is every interface, as the settings
+	// validation does. An address Reconfigure added is included and one it
+	// removed gone. It is empty before Start and after Stop, and while
+	// serving on an empty Addrs, which a node with every listener on no
+	// address of its own is: serving, bound nowhere, ready. The node builds
+	// each Serving from it.
+	Addrs() map[Socket][]netip.AddrPort
 
-	// Port returns the TCP/UDP port the adapter is listening on.
-	//
-	// This is used for logging and health checks. The returned value should
-	// be constant after Serve() is called.
-	//
-	// Returns 0 if the adapter has not yet started or uses dynamic port allocation.
-	Port() int
+	// Health is ready when serving with every listener bound; configured and
+	// draining report not ready. A server serving on an empty Addrs, none of
+	// its listeners bound anywhere, is ready.
+	Health() Health
 
-	// Healthcheck returns the adapter's current health as a structured
-	// [health.Report] and satisfies [health.Checker]. The API layer wraps
-	// this in a [health.CachedChecker] and serves it from
-	// /adapter/{name}/status.
-	//
-	// Implementations should derive status from cheap, already-tracked
-	// signals — never run a fresh probe per call. Mapping:
-	//
-	//   - [health.StatusDisabled] when the adapter is configured off
-	//     (config.Enabled == false). Operators turned it off; nothing
-	//     to probe.
-	//   - [health.StatusUnknown] when the adapter exists but has not
-	//     yet established a known running state — most commonly the
-	//     pre-Serve startup window, but also any state the
-	//     implementation cannot positively classify (canceled probe
-	//     context, BaseAdapter without failed-start tracking, etc.).
-	//   - [health.StatusUnhealthy] when the implementation explicitly
-	//     tracks a failed lifecycle state — for example a stopped or
-	//     crashed adapter, or one whose listener died after running.
-	//     [BaseAdapter] tracks no such state, so it never returns
-	//     Unhealthy for "configured-on but not started"; adding a
-	//     serveAttempted / lastServeErr field would lift that
-	//     limitation.
-	//   - [health.StatusDegraded] when running but reporting recent
-	//     errors above whatever per-protocol threshold the
-	//     implementation tracks. [BaseAdapter] tracks no such
-	//     instrumentation either; only adapters that already had a
-	//     degraded-detection mechanism can return this today.
-	//   - [health.StatusHealthy] when running with no recent issues.
-	Healthcheck(ctx context.Context) health.Report
+	// Connections lists the connections open now, for the API's client list.
+	// It is read from the core's connection registry, never written by
+	// protocol code.
+	Connections() iter.Seq[ConnInfo]
 }
 
-// SMBOpenFilesProviderKey is the Runtime adapter provider key under which the
-// SMB handler registers itself as an open-file enumerator for the block-GC
-// open-handle hold. The NFSv4 state manager needs no dedicated key: it is
-// already registered under "nfs" and the runtime discovers open-file
-// enumerators structurally across all registered adapter providers.
-const SMBOpenFilesProviderKey = "smb_open_files"
+// State is one of the adapter's states.
+type State uint8
 
-// OplockBreaker provides cross-protocol oplock break coordination.
-// Adapters holding opportunistic locks register an implementation via
-// Runtime.SetAdapterProvider("oplock_breaker", breaker).
-// Other adapters retrieve and call it to trigger breaks before conflicting operations.
+const (
+	StateConfigured State = iota
+	StateServing
+	StateDraining
+	StateStopped
+)
+
+// String is the state's name, as logs and the API spell it.
+func (s State) String() string {
+	switch s {
+	case StateConfigured:
+		return "configured"
+	case StateServing:
+		return "serving"
+	case StateDraining:
+		return "draining"
+	case StateStopped:
+		return "stopped"
+	}
+	return fmt.Sprintf("State(%d)", uint8(s))
+}
+
+// Health is what the node reads for readiness and its conditions.
+type Health struct {
+	State      State
+	Conditions []string // the conditions this adapter raises now, by name: adapter_listener_lost
+}
+
+// Ready is serving with no condition raised, so every listener bound.
+func (h Health) Ready() bool { return h.State == StateServing && len(h.Conditions) == 0 }
+
+// ConnInfo is one open connection.
+type ConnInfo struct {
+	Protocol string         // "nfs", "smb"
+	Remote   netip.AddrPort // the client's address
+	Session  string         // the protocol's session the connection carries, as text; empty where none
+	Since    time.Time      // accepted at
+}
+
+// ErrPortChanged is what Reconfigure refuses a changed Port with: Port is
+// restart-class, the node builds a new adapter for it and never calls
+// Reconfigure with one.
+var ErrPortChanged = errors.New("adapter: port changed")
+
+// Sidecar runs beside adapters, reaches no service and holds no client state:
+// it tells clients where an adapter is, or that something happened.
 //
-// This generic interface decouples protocol adapters: NFS handlers don't
-// import SMB packages and vice versa. The SMBOplockBreaker in the SMB lease
-// package satisfies this interface via the shared LockManager.
-type OplockBreaker interface {
-	// CheckAndBreakForWrite triggers lease break for write-conflicting oplocks.
-	// Returns nil if no break needed, ErrLeaseBreakPending if break initiated.
-	CheckAndBreakForWrite(ctx context.Context, fileHandle lock.FileHandle) error
+// decision: a sidecar is the one auxiliary kind that is a type; a service
+// that answers beside an adapter's protocol and shares its state (MOUNT, NLM,
+// NSM) is no type, only more operation tables on its adapter's server. Folded
+// into one kind, every rule would become a flag whose two values behave
+// oppositely: who builds it, whether its failure stops the adapter, whether
+// it may reach the service. Revisit if a third kind appears that fits neither.
+type Sidecar interface {
+	Name() string       // "mdns", "wsd", "portmap", "rpcbind": for logs and health
+	Adapters() []string // the adapters it serves: {"nfs"}, {"smb"}, {"nfs", "smb"}
+	// Sync is called with those of Adapters now serving, whenever that set or
+	// their listeners change, and with none to stop. It returns once the
+	// sidecar matches, and is idempotent.
+	Sync(ctx context.Context, serving []Serving) error
+}
 
-	// CheckAndBreakForRead triggers lease break for read-conflicting oplocks (Write leases).
-	CheckAndBreakForRead(ctx context.Context, fileHandle lock.FileHandle) error
+// Serving is one adapter as a sidecar sees it: what to advertise or answer.
+type Serving struct {
+	Adapter   string // "nfs"
+	Listeners map[Socket][]netip.AddrPort
+}
 
-	// CheckAndBreakForDelete triggers lease break for Handle leases before deletion.
-	CheckAndBreakForDelete(ctx context.Context, fileHandle lock.FileHandle) error
+// Socket is one service on one network: the key its bound addresses share. A
+// service served over TCP and UDP, as NLM and NSM are, is two Sockets.
+type Socket struct {
+	Service string // "nfs", "mount", "nlm", "nsm", "smb"
+	Network string // "tcp" or "udp"
 }

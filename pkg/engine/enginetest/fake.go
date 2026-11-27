@@ -1,0 +1,1437 @@
+// Package enginetest holds the engine's test components: a fake journal for
+// unit tests of the engine's own logic, and the fixture composing the engine
+// over the real journal and metadata store for its conformance checks.
+package enginetest
+
+import (
+	"cmp"
+	"context"
+	"errors"
+	"fmt"
+	"iter"
+	"slices"
+	"sync"
+	"syscall"
+
+	"github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+)
+
+// fakeStream is the number of the fake's one append stream, not 0 so that a
+// mark that drops its stream shows.
+const fakeStream uint32 = 3
+
+// FakeJournal is an in-memory journal answering the engine's data path:
+// versions, held and missing extents, asOf, removal markers, Since, the loss
+// ring and generation, and the journal's named refusals. Every call it does
+// not model answers journal.ErrNotImplemented, as the journal's own stubs
+// do.
+//
+// It stands in for the journal only where the logic under test is the
+// engine's: no check of what the journal itself does runs over it. Every
+// operation is synced and durable at once, unless the test loses it with
+// Lose or FailNextWindow.
+//
+// Its records lie on one append stream: each write and removal appends one,
+// a write of its length and a removal of none, so a sync's marks name where
+// they end. A Sync returns the stream's mark over the newest record of the
+// files it names; SyncMarks is the mark of the stream's last sync, over its
+// every record. Each mark names the stream, fakeStream.
+type FakeJournal struct {
+	mu            sync.Mutex
+	last          uint64 // the counter of the last version issued
+	floor         uint64 // the highest floor Share raised to: the asOf of a file with no records
+	limit         uint64 // no version is issued at or above it; zero until set
+	files         map[journal.FileID]*fakeFile
+	held          map[journal.ShareTag]int64 // held bytes per tag
+	used          map[journal.ShareTag]int64 // record bytes appended per tag, never given back
+	reservedBytes int64                      // bytes held by reservations not yet closed
+	reservedTag   map[journal.ShareTag]int64 // the same per share, the real journal's ReservedByTag
+	offloaded     map[journal.ShareTag]int64 // SetOffloaded's bytes per tag, held and not dirty
+	stranded      []journal.ShareTag         // Strand's tags, in order; forgotten at a reopen
+	losses        []journal.LossEvent
+	gen           uint64
+	closed        bool
+	handles       []*FakeHandle
+	failing       map[journal.FileID]bool // FailSync's files: the next Sync naming one fails its window
+	undurable     map[journal.FileID]bool // files a failed window left undurable, until a Sync of theirs succeeds
+	failWindow    bool                    // FailNextWindow's: the next Sync fails the window
+	doomNext      map[journal.FileID]bool // FailNextWrite's files: the next write of one is doomed
+	doomed        []doomedWrite           // doomed writes, whose window the next Sync fails
+	syncedAt      uint64                  // the counter of the last version issued when the window last closed
+	seg           uint64                  // the stream's segment, from 1
+	end           int64                   // the end of the stream's last record in seg
+	seq           uint64                  // the stream's last record's sequence number
+	synced        entity.SyncMark         // the mark of the stream's last sync; zero before one
+	recorded      []entity.SyncMark       // the marks MarksRecorded was last handed
+
+	readOnly journal.ReadOnlyState   // ReadOnly's state, reported by Stats
+	refusal  error                   // what a write answers once read-only
+	undone   map[journal.FileID]bool // ReadOnly's files: every Sync naming one answers the refusal
+
+	afterRefusal func()         // AfterRefusal's action, run inside a refused WriteAt
+	refused      map[Call]error // Refuse's errors, until cleared
+
+	sm *segModel // the opt-in segment model, nil when off
+
+	refuseReserve error // RefuseReserve's error: the next Reserve answers it
+}
+
+// fakeFile is one file: its tag, its held pieces in offset order, and its
+// unsettled removal markers and synced losses in version order.
+type fakeFile struct {
+	tag     journal.ShareTag
+	pieces  []piece
+	changes []journal.Change // markers and losses
+	over    []overRun        // where each write superseded held bytes, kept for Since
+	settled journal.Version  // Settle's newest version: changes at or below it are hidden until a reopen
+	asOf    journal.Version
+	rec     record       // its newest record
+	pending []superseded // bytes whose superseding record is not synced yet
+}
+
+// doomedWrite is a write FailNextWrite doomed: the extent and version of its
+// record, whose window fails at the next Sync.
+type doomedWrite struct {
+	id journal.FileID
+	e  journal.Extent
+	v  journal.Version
+}
+
+// overRun is one run where the write of version by superseded bytes the write
+// of version was held.
+type overRun struct {
+	extent  journal.Extent
+	by, was journal.Version
+}
+
+// unsettled is the file's markers and losses that Settle has not covered.
+func (f *fakeFile) unsettled() []journal.Change {
+	return slices.DeleteFunc(slices.Clone(f.changes), func(c journal.Change) bool {
+		return c.Version.Compare(f.settled) <= 0
+	})
+}
+
+// newest is the newer of two versions.
+func newest(a, b journal.Version) journal.Version {
+	if a.Compare(b) < 0 {
+		return b
+	}
+
+	return a
+}
+
+// record is where a record lies on the stream: its segment, its end there,
+// its length and its sequence number, zero for none.
+type record struct {
+	seg uint64
+	end int64
+	n   int64
+	seq uint64
+}
+
+// piece is a held extent: its bytes from off, and the version and mtime of
+// the write that put them there.
+type piece struct {
+	off   int64
+	b     []byte
+	v     journal.Version
+	mtime int64
+	seg   *fseg // the segment holding it, with the segment model on
+}
+
+func (p piece) end() int64 { return p.off + int64(len(p.b)) }
+
+// NewFakeJournal returns an empty fake journal. It issues no version until
+// SetVersionLimit, as the journal does not.
+func NewFakeJournal() *FakeJournal {
+	return &FakeJournal{
+		files:     map[journal.FileID]*fakeFile{},
+		held:      map[journal.ShareTag]int64{},
+		used:      map[journal.ShareTag]int64{},
+		offloaded: map[journal.ShareTag]int64{},
+		seg:       1,
+	}
+}
+
+var _ engine.Journal = (*FakeJournal)(nil)
+
+// FakeHandle is one share's handle on a FakeJournal.
+type FakeHandle struct {
+	j      *FakeJournal
+	tag    journal.ShareTag
+	limit  int64
+	closed bool
+}
+
+var _ engine.Handle = (*FakeHandle)(nil)
+
+// Share attaches tag with limit, raising the version counter above floor and
+// the asOf of a file with no records to floor, as the journal raises its floor
+// buckets (RFC 1 §3.4). A tag whose handle is open gets that handle back, its
+// limit replaced by limit, so one Close closes it for every caller, as the
+// journal's Share does. Tag 0 and a negative limit are refused with
+// ErrInvalidSetting, and a floor with a non-zero epoch with ErrUnknownFormat,
+// raising nothing.
+func (j *FakeJournal) Share(tag journal.ShareTag, limit int64, floor journal.Version) (engine.Handle, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	switch {
+	case j.closed:
+		return nil, journal.ErrClosed
+	case tag == 0 || limit < 0:
+		return nil, journal.ErrInvalidSetting
+	case floor.Epoch != 0:
+		return nil, journal.ErrUnknownFormat
+	}
+	j.last = max(j.last, floor.Counter)
+	j.floor = max(j.floor, floor.Counter)
+	for _, h := range j.handles {
+		if h.tag == tag && !h.closed {
+			h.limit = limit
+			return h, nil
+		}
+	}
+	h := &FakeHandle{j: j, tag: tag, limit: limit}
+	j.handles = append(j.handles, h)
+	return h, nil
+}
+
+// NextVersion reports the version the next successful Draw would issue.
+func (j *FakeJournal) NextVersion() journal.Version {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.closed {
+		return journal.Version{}
+	}
+	return journal.Version{Counter: j.last + 1}
+}
+
+// Draw issues the next version.
+func (j *FakeJournal) Draw() (journal.Version, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.closed {
+		return journal.Version{}, journal.ErrClosed
+	}
+
+	if err := j.refused[CallDraw]; err != nil {
+		return journal.Version{}, err
+	}
+	return j.draw()
+}
+
+// draw issues the next version, refused at the version limit. j.mu is held.
+func (j *FakeJournal) draw() (journal.Version, error) {
+	if j.last+1 >= j.limit {
+		return journal.Version{}, &journal.NoSpaceError{Limit: journal.LimitVersion, Missing: 1, Unit: journal.UnitVersions}
+	}
+	j.last++
+	return journal.Version{Counter: j.last}, nil
+}
+
+// SetVersionLimit sets the version limit; a mark with a non-zero epoch is
+// refused.
+func (j *FakeJournal) SetVersionLimit(mark journal.Version) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if mark.Epoch != 0 {
+		return journal.ErrUnknownFormat
+	}
+	j.limit = mark.Counter
+	return nil
+}
+
+// SkipTo moves the version counter forward so the next version issued is
+// to+1, issuing none of those it skips, as the journal's counter moves past
+// versions a crash reported and never synced. A to at or below the last
+// version issued moves nothing.
+func (j *FakeJournal) SkipTo(to uint64) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.last = max(j.last, to)
+}
+
+// Stats reports the loss ring and generation, each tag's held bytes and, as
+// its used bytes, the record bytes appended under it, the version limit last
+// set and the next version the counter issues.
+func (j *FakeJournal) Stats() journal.Stats {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	s := journal.Stats{
+		Losses:         slices.Clone(j.losses),
+		LossGeneration: j.gen,
+		Shares:         map[journal.ShareTag]journal.ShareStats{},
+		VersionLimit:   journal.Version{Counter: j.limit},
+		NextVersion:    journal.Version{Counter: j.last + 1},
+		ReadOnly:       j.readOnly,
+		ReservedBytes:  j.reservedBytes,
+	}
+
+	for tag, n := range j.held {
+		s.Shares[tag] = journal.ShareStats{
+			HeldBytes:  n,
+			DirtyBytes: max(0, n-j.offloaded[tag]),
+		}
+		s.HeldBytes += n
+	}
+	for tag, n := range j.used {
+		ts := s.Shares[tag]
+		ts.UsedBytes = n
+		s.Shares[tag] = ts
+		s.UsedBytes += n
+	}
+
+	if j.sm != nil {
+		j.segStats(&s)
+	}
+	return s
+}
+
+// Losses returns the losses Stats reports, on the read the engine's drain
+// uses — the one that takes the events away, the genuine reader the journal
+// marks served. The fake keeps no served state, so it changes nothing.
+func (j *FakeJournal) Losses() []journal.LossEvent {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return slices.Clone(j.losses)
+}
+
+// headroomRefusal reports whether err is a refusal naming the headroom, which
+// a write under a reservation passes (RFC 1 §6).
+func headroomRefusal(err error) bool {
+	var ns *journal.NoSpaceError
+
+	return errors.As(err, &ns) && ns.Limit == journal.LimitHeadroom
+}
+
+// Close closes the journal and every handle.
+func (j *FakeJournal) Close() error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.closed {
+		return journal.ErrClosed
+	}
+	j.closed = true
+	for _, h := range j.handles {
+		h.closed = true
+	}
+	return nil
+}
+
+// Reopen models the journal after a restart. It first closes what the
+// process ending closes, every handle, as Close does, so a late call of the
+// old process fails with ErrClosed; then it opens again with the held pieces
+// kept, and with every marker and synced loss unsettled again, as RFC 1 §3.10
+// has recovery rebuild them: Settle is not persisted. A read-only journal
+// writes again, as the state ends with a reopen (RFC 1 §5.4).
+func (j *FakeJournal) Reopen() {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	for _, h := range j.handles {
+		h.closed = true
+	}
+
+	j.handles = nil
+	j.closed = false
+	j.stranded = nil
+
+	for _, f := range j.files {
+		f.settled = journal.Version{}
+	}
+
+	j.syncedAt = j.last               // what the fake kept across the restart is durable
+	j.failing, j.undurable = nil, nil // a restart loses the unreported failures
+	j.doomNext, j.doomed = nil, nil   // and the windows not yet failed
+
+	j.readOnly, j.refusal, j.undone = journal.ReadOnlyState{}, nil, nil
+}
+
+// Lose drops what file id holds in e as the journal does on a loss: the bytes
+// are no longer held, and the loss, at the newest version it dropped, is an
+// event in the loss ring and, unless its sync window failed, a synced change
+// Since reports; a corrupt loss and a failed window's also raise the loss
+// generation, a stale one does not. A loss of nothing held records nothing.
+// The event says the dropped record was synced unless its window failed.
+//
+// ponytail: an unsynced loss (a failed window's, or a corrupt one with
+// synced false) cuts the extent and raises the generation once per call,
+// where RFC 1 holds again what the dropped record superseded and raises once
+// per window. Model both once a test drops several extents in one window or
+// reads what an unsynced write overwrote.
+func (j *FakeJournal) Lose(id journal.FileID, e journal.Extent, why journal.LossReason) {
+	j.LoseLater(id, e, why)()
+}
+
+// LoseUnsynced is a corrupt Lose of a record never synced: its event says so,
+// and Since reports nothing of it.
+func (j *FakeJournal) LoseUnsynced(id journal.FileID, e journal.Extent) {
+	j.loseLater(id, e, journal.LossCorrupt, false)()
+}
+
+// LoseLater is Lose with the event held back until publish is called, as
+// the journal raises the generation before it publishes the event: in
+// between, Stats shows the raised generation and a ring without the event.
+func (j *FakeJournal) LoseLater(id journal.FileID, e journal.Extent, why journal.LossReason) (publish func()) {
+	return j.loseLater(id, e, why, why != journal.LossFailedWindow)
+}
+
+func (j *FakeJournal) loseLater(id journal.FileID, e journal.Extent, why journal.LossReason, synced bool) (publish func()) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	f := j.files[id]
+	if f == nil {
+		return func() {}
+	}
+	v, ok := j.cut(f, e.Off, e.Off+e.Len)
+	if !ok {
+		return func() {}
+	}
+	if synced { // Since has nothing of a record never synced
+		f.changes = append(f.changes, journal.Change{Kind: journal.ChangeLoss, Extent: e, Version: v})
+	}
+	if why == journal.LossCorrupt || why == journal.LossFailedWindow {
+		j.gen++
+	}
+	return func() {
+		j.mu.Lock()
+		defer j.mu.Unlock()
+		j.losses = append(j.losses, journal.LossEvent{SeqNum: j.nextSeq(), Share: f.tag, File: id, Extent: e, Version: v, Reason: why, Synced: synced})
+	}
+}
+
+// Report puts ev in the loss ring as the journal reports a loss whose
+// content it already dropped, raising the loss generation: ev's SeqNum, when
+// set, skips the events between, as a ring that overflowed would; zero is the
+// next one.
+func (j *FakeJournal) Report(ev journal.LossEvent) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if ev.SeqNum == 0 {
+		ev.SeqNum = j.nextSeq()
+	}
+	j.gen++
+	j.losses = append(j.losses, ev)
+}
+
+func (j *FakeJournal) nextSeq() uint64 {
+	if len(j.losses) == 0 {
+		return 1
+	}
+	return j.losses[len(j.losses)-1].SeqNum + 1
+}
+
+// Forget drops tag whole: every file of the tag and the bytes it holds. It is
+// refused with ErrHandleOpen while a handle of tag is open, and forgetting a
+// tag that holds nothing succeeds.
+func (j *FakeJournal) Forget(_ context.Context, tag journal.ShareTag) error {
+	j.mu.Lock()
+
+	defer j.mu.Unlock()
+
+	if j.closed {
+		return journal.ErrClosed
+	}
+
+	for _, h := range j.handles {
+		if h.tag == tag && !h.closed {
+			return journal.ErrHandleOpen
+		}
+	}
+
+	for id, f := range j.files {
+		if f.tag == tag {
+			delete(j.files, id)
+		}
+	}
+
+	delete(j.held, tag)
+	delete(j.used, tag)
+
+	return nil
+}
+
+// Strand marks tag as claimed by no share. Like the journal's it refuses tag
+// 0, and keeps the mark in memory only: a reopen forgets it (RFC 1 §3). The
+// fake does not change what a read of the tag's extents answers.
+func (j *FakeJournal) Strand(tag journal.ShareTag) error {
+	j.mu.Lock()
+
+	defer j.mu.Unlock()
+
+	switch {
+	case j.closed:
+		return journal.ErrClosed
+	case tag == 0:
+		return journal.ErrInvalidSetting
+	}
+
+	if !slices.Contains(j.stranded, tag) {
+		j.stranded = append(j.stranded, tag)
+	}
+
+	return nil
+}
+
+// Stranded is the tags Strand named since the last open, in order.
+func (j *FakeJournal) Stranded() []journal.ShareTag {
+	j.mu.Lock()
+
+	defer j.mu.Unlock()
+
+	return slices.Clone(j.stranded)
+}
+
+// SetOffloaded makes n of tag's held bytes offloaded, so Stats reports them
+// held but not dirty.
+//
+// ponytail: the fake offloads no extent by itself, so only a test marks bytes
+// offloaded, by count and not by extent. Track the offloaded bit per piece
+// when a test needs which bytes are dirty.
+func (j *FakeJournal) SetOffloaded(tag journal.ShareTag, n int64) {
+	j.mu.Lock()
+
+	defer j.mu.Unlock()
+
+	j.offloaded[tag] = n
+}
+
+// cut stops holding [from, to) of f, narrowing or splitting the pieces it
+// crosses, and answers the newest version it dropped, ok false when it
+// dropped nothing. j.mu is held.
+func (j *FakeJournal) cut(f *fakeFile, from, to int64) (newest journal.Version, ok bool) {
+	var kept []piece
+	for _, p := range f.pieces {
+		if p.end() <= from || p.off >= to {
+			kept = append(kept, p)
+			continue
+		}
+		if p.off < from {
+			kept = append(kept, piece{p.off, p.b[:from-p.off], p.v, p.mtime, p.seg})
+		}
+		if p.end() > to {
+			kept = append(kept, piece{to, p.b[to-p.off:], p.v, p.mtime, p.seg})
+		}
+		j.held[f.tag] -= min(p.end(), to) - max(p.off, from)
+		if j.sm != nil {
+			j.supersede(f, p.seg, min(p.end(), to)-max(p.off, from))
+		}
+		if !ok || p.v.Compare(newest) > 0 {
+			newest, ok = p.v, true
+		}
+	}
+	f.pieces = kept
+	return newest, ok
+}
+
+// file returns id's file for h's tag, or refuses a file of another tag. A
+// file with no records belongs to no tag: claim gives it to h's tag, as a
+// write or a removal does by leaving a record; without claim it is answered
+// empty, as of the floor, and stays unclaimed. j.mu is held.
+//
+// ponytail: the journal keeps a floor per bucket of files, set at open and
+// raised when a file's entry is dropped as well as by Share, and a file not
+// changed since open reads as of its bucket. The fake keeps one floor, raised
+// by Share only. Model the rest once a test depends on the asOf of a file read
+// after a Reopen or after another file's entry is dropped.
+func (h *FakeHandle) file(id journal.FileID, claim bool) (*fakeFile, error) {
+	if h.closed {
+		return nil, journal.ErrClosed
+	}
+	f := h.j.files[id]
+	if f == nil {
+		f = &fakeFile{tag: h.tag, asOf: journal.Version{Counter: h.j.floor}}
+		if claim {
+			h.j.files[id] = f
+		}
+	}
+	if f.tag != h.tag {
+		return nil, &journal.OtherShareError{File: id, Tag: h.tag, Owner: f.tag}
+	}
+	return f, nil
+}
+
+// noteOver records, before e is overwritten by the write of version by, one
+// run for each held piece it overlaps, as the journal does when a write
+// supersedes held bytes (RFC 1 §3.10). A removal records none.
+func (f *fakeFile) noteOver(e journal.Extent, by journal.Version) {
+	for _, p := range f.pieces {
+		lo, hi := max(p.off, e.Off), min(p.end(), e.Off+e.Len)
+		if lo < hi {
+			f.over = append(f.over, overRun{
+				extent: journal.Extent{Off: lo, Len: hi - lo},
+				by:     by,
+				was:    p.v,
+			})
+		}
+	}
+}
+
+// overOf is the runs of the piece p's write that superseded a write above
+// from, clipped to p, in offset order and merged where they touch. Settle
+// hides the runs of writes at or below the version it covered, until a
+// reopen, as it drops them in the journal (RFC 1 §3.10).
+func (f *fakeFile) overOf(p piece, from journal.Version) []journal.Extent {
+	var out []journal.Extent
+
+	for _, r := range f.over {
+		lo, hi := max(r.extent.Off, p.off), min(r.extent.Off+r.extent.Len, p.end())
+		if r.by != p.v || lo >= hi || r.was.Compare(from) <= 0 || r.by.Compare(f.settled) <= 0 {
+			continue
+		}
+
+		out = append(out, journal.Extent{Off: lo, Len: hi - lo})
+	}
+
+	slices.SortFunc(out, func(a, b journal.Extent) int {
+		return cmp.Compare(a.Off, b.Off)
+	})
+
+	var merged []journal.Extent
+	for _, e := range out {
+		if n := len(merged); n > 0 && e.Off <= merged[n-1].Off+merged[n-1].Len {
+			merged[n-1].Len = max(merged[n-1].Off+merged[n-1].Len, e.Off+e.Len) - merged[n-1].Off
+			continue
+		}
+
+		merged = append(merged, e)
+	}
+
+	return merged
+}
+
+// WriteAt holds p at off under a new version, refused by the share's limit
+// on held bytes or the version limit. A zero-length p holds nothing and
+// answers the zero version, as the journal does.
+func (h *FakeHandle) WriteAt(
+	ctx context.Context,
+	id journal.FileID,
+	off int64,
+	p []byte,
+	mtime int64,
+) (journal.Version, error) {
+	v, err := h.writeAt(ctx, id, off, p, mtime, false)
+
+	var noSpace *journal.NoSpaceError
+	if !errors.As(err, &noSpace) {
+		return v, err
+	}
+
+	h.j.mu.Lock()
+	after := h.j.afterRefusal
+	h.j.mu.Unlock()
+
+	if after != nil {
+		after()
+	}
+
+	return v, err
+}
+
+// AfterRefusal arms f to run inside every WriteAt the journal refuses by a
+// limit, after the journal released its lock and before the call answers, so f
+// may call the journal; nil disarms it. It is how a test lets the raise of the
+// version limit commit between the refusal and the caller's wait.
+func (j *FakeJournal) AfterRefusal(f func()) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	j.afterRefusal = f
+}
+
+func (h *FakeHandle) writeAt(
+	_ context.Context,
+	id journal.FileID,
+	off int64,
+	p []byte,
+	mtime int64,
+	reserved bool,
+) (journal.Version, error) {
+	j := h.j
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.refusal != nil {
+		return journal.Version{}, j.refusal
+	}
+	f, err := h.file(id, len(p) > 0)
+	if err != nil || len(p) == 0 {
+		return journal.Version{}, err
+	}
+
+	if err := j.refused[CallWriteAt]; err != nil && (!reserved || !headroomRefusal(err)) {
+		return journal.Version{}, err
+	}
+
+	var seg *fseg
+
+	if j.sm != nil {
+		if seg, err = j.place(h, id, int64(len(p))); err != nil {
+			return journal.Version{}, err
+		}
+	}
+	// ponytail: the share's limit counts held bytes, not record bytes, so an
+	// overwrite counts its new bytes only once the old are cut. A unit test of
+	// the engine's refusal mapping needs only that a refusal names its limit.
+	if j.sm == nil && h.limit > 0 && j.held[h.tag]+int64(len(p)) > h.limit {
+		return journal.Version{}, &journal.NoSpaceError{Limit: journal.LimitShare, Missing: j.held[h.tag] + int64(len(p)) - h.limit, Unit: journal.UnitBytes}
+	}
+	v, err := j.draw()
+	if err != nil {
+		return journal.Version{}, err
+	}
+
+	f.noteOver(journal.Extent{Off: off, Len: int64(len(p))}, v)
+	j.cut(f, off, off+int64(len(p)))
+	j.appendRecord(f, int64(len(p)))
+
+	if seg != nil {
+		n := int64(len(p))
+		seg.fill += n
+		seg.rec[h.tag] += n
+		seg.live[h.tag] += n
+	}
+
+	f.pieces = append(f.pieces, piece{off, slices.Clone(p), v, mtime, seg})
+	slices.SortFunc(f.pieces, func(a, b piece) int { return cmp.Compare(a.off, b.off) })
+	j.held[h.tag] += int64(len(p))
+	f.asOf = v
+
+	if j.doomNext[id] {
+		delete(j.doomNext, id)
+
+		e := journal.Extent{Off: off, Len: int64(len(p))}
+		j.doomed = append(j.doomed, doomedWrite{id, e, v})
+	}
+
+	return v, nil
+}
+
+// ReadAt fills p from the pieces held over [off, off+len(p)), reports every
+// part not held in missing, leaving those bytes of p untouched, and names the
+// version of each part served.
+func (h *FakeHandle) ReadAt(_ context.Context, id journal.FileID, off int64, p []byte) (n int, missing []journal.Extent, held []journal.Held, asOf journal.Version, err error) {
+	j := h.j
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	f, err := h.file(id, false)
+	if err != nil {
+		return 0, nil, nil, journal.Version{}, err
+	}
+	end, at := off+int64(len(p)), off
+	for _, pc := range f.pieces {
+		lo, hi := max(pc.off, off), min(pc.end(), end)
+		if lo >= hi {
+			continue
+		}
+		if lo > at {
+			missing = append(missing, journal.Extent{Off: at, Len: lo - at})
+		}
+		n += copy(p[lo-off:hi-off], pc.b[lo-pc.off:])
+		held = append(held, journal.Held{Extent: journal.Extent{Off: lo, Len: hi - lo}, Version: pc.v})
+		at = hi
+	}
+	if at < end {
+		missing = append(missing, journal.Extent{Off: at, Len: end - at})
+	}
+	return n, missing, held, f.asOf, nil
+}
+
+// appendRecord appends a record of n bytes of f to the stream. j.mu is held.
+func (j *FakeJournal) appendRecord(f *fakeFile, n int64) {
+	j.seq++
+	j.end += n
+	j.used[f.tag] += n
+	f.rec = record{j.seg, j.end, n, j.seq}
+}
+
+// Sync answers at once: every operation of the fake is durable on return,
+// with the stream's mark over the newest record of the files named, none
+// when none holds a record. The first Sync naming a file FailSync armed
+// answers a SyncError naming those of its files. Every Sync naming a file
+// ReadOnly undid answers the refusal bare, never a SyncError, ahead of any
+// FailSync's, as the journal does; one naming no such file answers as above,
+// read-only or not.
+func (h *FakeHandle) Sync(_ context.Context, ids ...journal.FileID) ([]entity.SyncMark, error) {
+	h.j.mu.Lock()
+	defer h.j.mu.Unlock()
+	if h.closed {
+		return nil, journal.ErrClosed
+	}
+	for _, id := range ids {
+		if h.j.undone[id] {
+			return nil, h.j.refusal
+		}
+	}
+	if h.j.failWindow {
+		h.j.failWindow = false
+		h.j.loseWindow()
+	}
+
+	h.j.failDoomed()
+	h.j.syncedAt = h.j.last
+	var failed []journal.FileID
+	for _, id := range ids {
+		if h.j.failing[id] {
+			failed = append(failed, id)
+			delete(h.j.failing, id)
+		}
+	}
+	if len(failed) > 0 {
+		return nil, &journal.SyncError{Files: failed, Err: journal.ErrSyncFailed}
+	}
+	j := h.j
+	var newest record
+	for _, id := range ids {
+		delete(j.undurable, id)
+
+		if f := j.files[id]; f != nil {
+			f.flush()
+		}
+		if f := j.files[id]; f != nil && f.rec.seq > newest.seq {
+			newest = f.rec
+		}
+	}
+	if j.seq > 0 {
+		j.synced = entity.SyncMark{Stream: fakeStream, Segment: j.seg, Through: j.end, Offset: j.end, Sequence: j.seq}
+	}
+	if newest.seq == 0 {
+		return nil, nil
+	}
+	return []entity.SyncMark{{Stream: fakeStream, Segment: newest.seg, Through: j.end, Offset: newest.end, Sequence: newest.seq}}, nil
+}
+
+// EndSegment ends the stream's segment, as a failed sync does: each file's
+// newest record is appended again, keeping its number, to a new segment and
+// synced there, so the stream's mark names the new segment.
+func (j *FakeJournal) EndSegment() {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	var fs []*fakeFile
+	for _, f := range j.files {
+		if f.rec.seq != 0 {
+			fs = append(fs, f)
+		}
+	}
+	slices.SortFunc(fs, func(a, b *fakeFile) int { return cmp.Compare(a.rec.seq, b.rec.seq) })
+	j.seg, j.end = j.seg+1, 0
+	for _, f := range fs {
+		j.end += f.rec.n
+		f.rec.seg, f.rec.end = j.seg, j.end
+	}
+	j.synced = entity.SyncMark{Stream: fakeStream, Segment: j.seg, Through: j.end, Offset: j.end, Sequence: j.seq}
+}
+
+// SyncMarks is the mark of the stream's last sync, none before one.
+func (j *FakeJournal) SyncMarks() []entity.SyncMark {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.synced.Segment == 0 {
+		return nil
+	}
+	return []entity.SyncMark{j.synced}
+}
+
+// MarksRecorded keeps marks as the newest the metadata recorded.
+func (j *FakeJournal) MarksRecorded(marks []entity.SyncMark) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.recorded = slices.Clone(marks)
+}
+
+// RecordedMarks is the marks the journal last learned the metadata
+// recorded, nil before it learned any.
+func (j *FakeJournal) RecordedMarks() []entity.SyncMark {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return slices.Clone(j.recorded)
+}
+
+// Durable reports whether file id's writes are durable: false from a
+// FailSync naming it until a Sync of it succeeds.
+func (j *FakeJournal) Durable(id journal.FileID) bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return !j.undurable[id]
+}
+
+// FailSync fails the sync window of file id's extent e: the extent is lost
+// as a failed window's, and the next Sync naming id answers a SyncError
+// naming it, as the journal reports a failed window to the next Sync of each
+// file that had a write in it. Each of also, and id, is left undurable until
+// a Sync of it succeeds, as a failed window promises nothing durable.
+func (j *FakeJournal) FailSync(id journal.FileID, e journal.Extent, also ...journal.FileID) {
+	j.Lose(id, e, journal.LossFailedWindow)
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.failing == nil {
+		j.failing = map[journal.FileID]bool{}
+		j.undurable = map[journal.FileID]bool{}
+	}
+	j.failing[id] = true
+	j.undurable[id] = true
+	for _, a := range also {
+		j.undurable[a] = true
+	}
+}
+
+// FailNextWrite dooms the next write of file id, or, with on false, stops
+// doing so if no write took it yet: the window holding that write's record
+// fails at the next Sync, whatever files it names, as the journal fails a
+// window at the sync that closes it. The record is lost as a failed window's,
+// the loss generation rises, and file id is left undurable, its next Sync
+// answering a SyncError naming it, even when a newer write or a removal
+// replaced the record before that Sync; that newer content is kept.
+//
+// ponytail: the journal drops every record of a failed window, the newer
+// writes in it included; the fake drops only the doomed record's own pieces.
+// Model the whole window once a test reads a newer write a failed window
+// should have dropped.
+func (j *FakeJournal) FailNextWrite(id journal.FileID, on bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	if !on {
+		delete(j.doomNext, id)
+
+		return
+	}
+
+	if j.doomNext == nil {
+		j.doomNext = map[journal.FileID]bool{}
+	}
+
+	j.doomNext[id] = true
+}
+
+// failDoomed fails the window of every doomed write, as FailNextWrite says.
+// j.mu is held.
+func (j *FakeJournal) failDoomed() {
+	for _, d := range j.doomed {
+		f := j.files[d.id]
+		if f == nil {
+			continue
+		}
+
+		// Only the doomed record's own pieces: cut each one alone.
+		var own []piece
+
+		for _, p := range f.pieces {
+			if p.v == d.v && p.off < d.e.Off+d.e.Len && d.e.Off < p.end() {
+				own = append(own, p)
+			}
+		}
+
+		for _, p := range own {
+			j.cut(f, p.off, p.end())
+		}
+
+		// The window failed whether or not a newer write replaced the
+		// record meanwhile: the file had a write in it, so it is told.
+		j.gen++
+		j.losses = append(j.losses, journal.LossEvent{
+			SeqNum:  j.nextSeq(),
+			Share:   f.tag,
+			File:    d.id,
+			Extent:  d.e,
+			Version: d.v,
+			Reason:  journal.LossFailedWindow,
+		})
+
+		if j.failing == nil {
+			j.failing = map[journal.FileID]bool{}
+			j.undurable = map[journal.FileID]bool{}
+		}
+
+		j.failing[d.id], j.undurable[d.id] = true, true
+	}
+
+	j.doomed = nil
+}
+
+// FailNextWindow fails the window the next Sync closes, whatever files it
+// names, as a failed fsync whose read-back does not verify does: every write
+// issued since the window last closed is lost as a failed window's, the loss
+// generation rises once, and each file that had a write in the window is left
+// undurable, its next Sync answering a SyncError naming it. Removals in the
+// window are kept, as the journal re-appends a header-only record.
+func (j *FakeJournal) FailNextWindow() {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.failWindow = true
+}
+
+// loseWindow drops every write issued since the window last closed, as
+// FailNextWindow says. j.mu is held.
+//
+// ponytail: it finds the window's writes among the pieces still held and cuts
+// each one's extent, where RFC 1 §5.3 drops each of the window's records as one
+// loss event and holds again what it superseded. So a write a later one in the
+// window splits gives two events, a write overwritten or removed whole in the
+// window gives none and its file is not told, and the failed segment keeps
+// taking appends, where §5.3 starts a new one. Model each once a row fails a
+// window holding such writes, reads what a lost write overwrote, or appends
+// after one.
+func (j *FakeJournal) loseWindow() {
+	if j.failing == nil {
+		j.failing = map[journal.FileID]bool{}
+		j.undurable = map[journal.FileID]bool{}
+	}
+	type lostWrite struct {
+		id journal.FileID
+		f  *fakeFile
+		p  piece
+	}
+	var window []lostWrite
+	for id, f := range j.files {
+		for _, p := range f.pieces {
+			if p.v.Counter > j.syncedAt {
+				window = append(window, lostWrite{id, f, p})
+			}
+		}
+	}
+	slices.SortFunc(window, func(a, b lostWrite) int { return a.p.v.Compare(b.p.v) })
+	for _, w := range window {
+		e := journal.Extent{Off: w.p.off, Len: int64(len(w.p.b))}
+		j.cut(w.f, e.Off, e.Off+e.Len)
+		j.losses = append(j.losses, journal.LossEvent{SeqNum: j.nextSeq(), Share: w.f.tag, File: w.id, Extent: e, Version: w.p.v, Reason: journal.LossFailedWindow})
+		j.failing[w.id], j.undurable[w.id] = true, true
+	}
+	if len(window) > 0 {
+		j.gen++
+	}
+}
+
+// ReadOnly turns the journal read-only for cause: every write and removal
+// from then on until Reopen is refused with journal.ErrJournalReadOnly wrapping cause,
+// and Stats reports the state. Each of undone is a file with a removal the
+// entry undid, so every Sync naming it answers the refusal bare. The fake
+// neither undoes that removal nor restores what it cut: a test reads the
+// engine's answer and the metadata, not the journal's index.
+func (j *FakeJournal) ReadOnly(cause error, undone ...journal.FileID) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.readOnly = journal.ReadOnlyState{ReadOnly: true, Err: cause}
+	j.refusal = fmt.Errorf("%w: %w", journal.ErrJournalReadOnly, cause)
+	if j.undone == nil {
+		j.undone = map[journal.FileID]bool{}
+	}
+	for _, id := range undone {
+		j.undone[id] = true
+	}
+}
+
+// FailCheck has Stats report err as the check the read-only journal's probe
+// found failing, which keeps it read-only.
+func (j *FakeJournal) FailCheck(err error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.readOnly.Check = err
+}
+
+// remove runs a removal of kind k over [from, to) under a new version and
+// leaves its marker.
+func (h *FakeHandle) remove(id journal.FileID, k journal.ChangeKind, from, to int64) (journal.Version, error) {
+	j := h.j
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.refusal != nil {
+		return journal.Version{}, j.refusal
+	}
+	f, err := h.file(id, true)
+	if err != nil {
+		return journal.Version{}, err
+	}
+
+	if err := j.refused[callOf(k)]; err != nil {
+		return journal.Version{}, err
+	}
+	v, err := j.draw()
+	if err != nil {
+		return journal.Version{}, err
+	}
+	j.cut(f, from, to)
+	j.appendRecord(f, 0)
+	f.changes = append(f.changes, journal.Change{Kind: k, Extent: journal.Extent{Off: from, Len: to - from}, Version: v})
+	f.asOf = v
+	return v, nil
+}
+
+// endOfFile is the end offset a truncate or delete marker covers to.
+const endOfFile = 1<<63 - 1
+
+// Truncate stops holding every byte at or beyond size.
+func (h *FakeHandle) Truncate(_ context.Context, id journal.FileID, size int64) (journal.Version, error) {
+	return h.remove(id, journal.ChangeTruncate, size, endOfFile)
+}
+
+// Deallocate stops holding e; a zero-length e is refused.
+func (h *FakeHandle) Deallocate(_ context.Context, id journal.FileID, e journal.Extent) (journal.Version, error) {
+	if e.Len == 0 {
+		return journal.Version{}, journal.ErrZeroLength
+	}
+	return h.remove(id, journal.ChangeDeallocate, e.Off, e.Off+e.Len)
+}
+
+// Delete stops holding every byte of the file.
+func (h *FakeHandle) Delete(_ context.Context, id journal.FileID) (journal.Version, error) {
+	return h.remove(id, journal.ChangeDelete, 0, endOfFile)
+}
+
+// Since yields every held piece, unsettled marker and synced loss of the
+// file above from, in version order, each write with the runs where it
+// superseded another write above from.
+func (h *FakeHandle) Since(_ context.Context, id journal.FileID, from journal.Version) iter.Seq2[journal.Change, error] {
+	j := h.j
+	j.mu.Lock()
+	f, err := h.file(id, false)
+	var out []journal.Change
+	if err == nil {
+		for _, p := range f.pieces {
+			out = append(out, journal.Change{
+				Kind:    journal.ChangeWrite,
+				Extent:  journal.Extent{Off: p.off, Len: int64(len(p.b))},
+				Version: p.v,
+				Mtime:   p.mtime,
+				Over:    f.overOf(p, from),
+			})
+		}
+		out = append(out, f.unsettled()...)
+	}
+	j.mu.Unlock()
+	out = slices.DeleteFunc(out, func(c journal.Change) bool { return c.Version.Compare(from) <= 0 })
+	slices.SortStableFunc(out, func(a, b journal.Change) int { return a.Version.Compare(b.Version) })
+	return func(yield func(journal.Change, error) bool) {
+		if err != nil {
+			yield(journal.Change{}, err)
+			return
+		}
+		for _, c := range out {
+			if !yield(c, nil) {
+				return
+			}
+		}
+	}
+}
+
+// Settle covers the file's markers and losses at or below v: Since and Files
+// stop yielding them, until the journal is reopened.
+func (h *FakeHandle) Settle(id journal.FileID, v journal.Version) {
+	h.j.mu.Lock()
+	defer h.j.mu.Unlock()
+	if f := h.j.files[id]; f != nil && f.tag == h.tag {
+		f.settled = newest(f.settled, v)
+	}
+}
+
+// Settled is the newest version Settle covered file id through since the
+// journal last opened, zero when none.
+func (j *FakeJournal) Settled(id journal.FileID) journal.Version {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if f := j.files[id]; f != nil {
+		return f.settled
+	}
+	return journal.Version{}
+}
+
+// Files yields the share's files holding a piece, a marker or a loss.
+func (h *FakeHandle) Files() iter.Seq[journal.FileID] {
+	h.j.mu.Lock()
+	var ids []journal.FileID
+	for id, f := range h.j.files {
+		if f.tag == h.tag && len(f.pieces)+len(f.unsettled()) > 0 {
+			ids = append(ids, id)
+		}
+	}
+	h.j.mu.Unlock()
+	return slices.Values(ids)
+}
+
+// Close closes the handle; its pieces stay held.
+func (h *FakeHandle) Close() error {
+	h.j.mu.Lock()
+	defer h.j.mu.Unlock()
+	if h.closed {
+		return journal.ErrClosed
+	}
+	h.closed = true
+	return nil
+}
+
+// CloneTarget stops holding spec's destination extent of file id, as
+// Deallocate does, under a new version, and leaves a marker carrying spec,
+// which Since yields as Change.Clone.
+func (h *FakeHandle) CloneTarget(_ context.Context, id journal.FileID, spec journal.CloneSpec) (journal.Version, error) {
+	if spec.Len == 0 {
+		return journal.Version{}, journal.ErrZeroLength
+	}
+	v, err := h.remove(id, journal.ChangeCloneTarget, spec.DstOff, spec.DstOff+spec.Len)
+	if err != nil {
+		return journal.Version{}, err
+	}
+	j := h.j
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	f := j.files[id]
+	f.changes[len(f.changes)-1].Clone = &spec
+	return v, nil
+}
+
+// Reserve takes n bytes and writes for a clone's copies: refused with the
+// error RefuseReserve armed, once; else a reservation whose writes are held
+// as WriteAt holds them, never refused by the share's limit.
+func (h *FakeHandle) Reserve(n int64, writes int) (engine.Reservation, error) {
+	j := h.j
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if h.closed {
+		return nil, journal.ErrClosed
+	}
+	if err := j.refuseReserve; err != nil {
+		j.refuseReserve = nil
+		return nil, err
+	}
+
+	if err := j.refused[CallReserve]; err != nil {
+		return nil, err
+	}
+	j.reservedBytes += n
+	if j.reservedTag == nil {
+		j.reservedTag = map[journal.ShareTag]int64{}
+	}
+	j.reservedTag[h.tag] += n
+	return &fakeReservation{h: h, left: writes, n: n}, nil
+}
+
+// RefuseReserve arms the next Reserve to answer err.
+func (j *FakeJournal) RefuseReserve(err error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.refuseReserve = err
+}
+
+// Markers is every removal marker the journal holds for file id, settled or
+// not, in version order: what Since yields of them after a reopen, as
+// recovery rebuilds them (RFC 1 §3.10).
+func (j *FakeJournal) Markers(id journal.FileID) []journal.Change {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	f := j.files[id]
+	if f == nil {
+		return nil
+	}
+	return slices.DeleteFunc(slices.Clone(f.changes), func(c journal.Change) bool { return c.Kind == journal.ChangeLoss })
+}
+
+// fakeReservation is what Reserve took: writes it may still take.
+type fakeReservation struct {
+	h      *FakeHandle
+	left   int
+	n      int64 // the bytes it reserved
+	filled int64 // the bytes its writes have taken, as the real reservation fills
+	closed bool
+}
+
+// WriteAt holds p at off as the handle's WriteAt does, past the share's
+// limit, while the reservation holds a write; past its writes it is refused
+// by the index, as a write the reservation no longer covers can be.
+func (r *fakeReservation) WriteAt(ctx context.Context, id journal.FileID, off int64, p []byte, mtime int64) (journal.Version, error) {
+	if r.left == 0 {
+		return journal.Version{}, &journal.NoSpaceError{Limit: journal.LimitIndex, Missing: 1, Unit: journal.UnitEntries}
+	}
+	r.left--
+	h := *r.h
+	h.limit = 0
+
+	v, err := h.writeAt(ctx, id, off, p, mtime, true)
+	if err == nil {
+		// The reserved figure holds what open reservations have not yet
+		// filled, the real journal's own gauge, so a record landing takes
+		// its whole charge off it here rather than all at once at Close:
+		// the run the write placed, header and payload together, not the
+		// payload alone — a fully-written reservation holds none, headers
+		// included.
+		j := r.h.j
+		taken := min(fakeRecordBytes(int64(len(p))), r.n-r.filled)
+		if taken > 0 {
+			r.filled += taken
+			j.mu.Lock()
+			j.reservedBytes -= taken
+			if j.reservedTag != nil {
+				j.reservedTag[r.h.tag] -= taken
+			}
+			j.mu.Unlock()
+		}
+	}
+	return v, err
+}
+
+// fakeRecordBytes is what one write of n payload bytes charges the journal,
+// the whole record the engine reserves for a copy run of that size: header,
+// payload and padding together, rounded to the record grid.
+func fakeRecordBytes(n int64) int64 { return (96 + 8 + n + 7) &^ 7 }
+
+// Close gives back what the reservation did not use: the bytes its writes
+// already took left the reserved figure as they landed, so what stays is the
+// unwritten part alone.
+func (r *fakeReservation) Close() error {
+	if r.closed {
+		return journal.ErrClosed
+	}
+	r.closed = true
+	left := max(0, r.n-r.filled)
+	r.h.j.mu.Lock()
+	r.h.j.reservedBytes -= left
+	if r.h.j.reservedTag != nil {
+		r.h.j.reservedTag[r.h.tag] -= left
+	}
+	r.h.j.mu.Unlock()
+	return nil
+}
+
+// Call names a journal call whose refusal a test arms with Refuse.
+type Call uint8
+
+// The calls Refuse can arm.
+const (
+	CallWriteAt Call = iota + 1
+	CallDraw
+	CallTruncate
+	CallDeallocate
+	CallDelete
+	CallCloneTarget
+	CallReserve
+)
+
+// Refuse arms every call of kind c to answer err until Refuse is called with a
+// nil err for it. It arms capacity refusals only: it returns an error, arming
+// nothing, for any other error and for a capacity refusal RFC 1 does not let
+// the journal answer to c, so the fake never refuses more than the journal
+// does. Only WriteAt can meet a full device.
+func (j *FakeJournal) Refuse(c Call, err error) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	if err == nil {
+		delete(j.refused, c)
+
+		return nil
+	}
+
+	if !refusalAllowed(c, err) {
+		return fmt.Errorf("fake: RFC 1 does not let call %d answer %w", c, err)
+	}
+
+	if j.refused == nil {
+		j.refused = map[Call]error{}
+	}
+
+	j.refused[c] = err
+
+	return nil
+}
+
+// refusalLimits are the limits a NoSpaceError can name for each call, from
+// the journal handle's contract (RFC 1 §6): a header-only record is never
+// refused by a share's limit, the journal's maximum or the spare pool.
+var refusalLimits = map[Call][]journal.Limit{
+	CallWriteAt: {
+		journal.LimitShare, journal.LimitJournal, journal.LimitIndex,
+		journal.LimitVersion, journal.LimitSpare, journal.LimitHeadroom,
+	},
+	CallDraw:        {journal.LimitVersion},
+	CallTruncate:    {journal.LimitHeadroom, journal.LimitVersion},
+	CallDelete:      {journal.LimitHeadroom, journal.LimitVersion},
+	CallDeallocate:  {journal.LimitHeadroom, journal.LimitVersion, journal.LimitIndex},
+	CallCloneTarget: {journal.LimitHeadroom, journal.LimitVersion, journal.LimitIndex},
+	CallReserve: {
+		journal.LimitShare, journal.LimitJournal, journal.LimitIndex,
+		journal.LimitVersion, journal.LimitSpare,
+	},
+}
+
+// refusalAllowed reports whether the journal can answer err to call c: a
+// NoSpaceError naming one of the call's limits, or, for WriteAt alone, a full
+// device.
+func refusalAllowed(c Call, err error) bool {
+	var noSpace *journal.NoSpaceError
+
+	if errors.As(err, &noSpace) {
+		return slices.Contains(refusalLimits[c], noSpace.Limit)
+	}
+
+	return c == CallWriteAt && errors.Is(err, syscall.ENOSPC)
+}
+
+// callOf is the call that leaves a removal marker of kind k, and zero for a
+// kind no call of Refuse names, which no refusal is ever armed for.
+func callOf(k journal.ChangeKind) Call {
+	switch k {
+	case journal.ChangeTruncate:
+		return CallTruncate
+	case journal.ChangeDeallocate:
+		return CallDeallocate
+	case journal.ChangeDelete:
+		return CallDelete
+	case journal.ChangeCloneTarget:
+		return CallCloneTarget
+	}
+
+	return 0
+}
+
+// Fail arms every call of kind c to answer err until Fail is called with a nil
+// err for it. It arms only the errors other than a capacity refusal that the
+// journal's contract lets that call return: a file of another share (RFC 1
+// §3) and a read-only journal (RFC 1 §5.4), for the calls that name a file,
+// and, for WriteAt alone, EIO, which a failed write answers (RFC 28 §2.2; RFC
+// 1 lists EIO among the faults it injects). It returns an error, arming
+// nothing, for any other, a capacity refusal included, which is Refuse's.
+//
+// Left out on purpose: ErrClosed, which the fake models through Close; the
+// argument errors, which the fake makes itself; and a read-only journal's
+// state, which a test sets with ReadOnly, so that Stats reports it as well.
+// Fail and Refuse arm one map, so either one disarms what the other armed.
+func (j *FakeJournal) Fail(c Call, err error) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	if err == nil {
+		delete(j.refused, c)
+
+		return nil
+	}
+
+	if !failureAllowed(c, err) {
+		return fmt.Errorf("fake: RFC 1 does not let call %d fail with %w", c, err)
+	}
+
+	if j.refused == nil {
+		j.refused = map[Call]error{}
+	}
+
+	j.refused[c] = err
+
+	return nil
+}
+
+// failureAllowed reports whether the journal can answer err to call c besides
+// a capacity refusal; see Fail. It names none for Draw or Reserve.
+func failureAllowed(c Call, err error) bool {
+	switch c {
+	case CallWriteAt:
+		return errors.Is(err, syscall.EIO) || namesFile(err)
+	case CallTruncate, CallDeallocate, CallDelete, CallCloneTarget:
+		return namesFile(err)
+	}
+
+	return false
+}
+
+// namesFile reports whether err is one a call that names a file can answer: a
+// file of another share, or a read-only journal.
+func namesFile(err error) bool {
+	return errors.Is(err, journal.ErrOtherShare) || errors.Is(err, journal.ErrJournalReadOnly)
+}

@@ -67,18 +67,21 @@ takes no lock, so it does not block a scheduled run.
 
 ## What setup.sh gives a scenario
 
-- Share `/test`: metadata store `md`, block store `s3` (bucket `dittofs`, prefix `test/`).
-- User `tester` (uid/gid 1000, password `tester-secret`), read-write on `/test`, the default SMB user.
+- Share `test`, path `/test`, in a namespace with prefix `test/` on a remote store on bucket `dittofs`.
+- User `tester` (uid 1000, in group `tester`, gid 1000, password `tester-secret`), granted read-write on
+  `test`, the default SMB user.
 - SMB on 445 (SMB3) and NFS on 2049: `smbclient //127.0.0.1/test -c 'ls'`,
   `nfs-ls 'nfs://127.0.0.1/test?version=4&uid=1000&gid=1000'`. Another SMB user: `-U bob%bob-secret`.
-- `dfsctl`, logged in as admin, and `dfsctl system drain-uploads`, which waits until every
-  share's pending uploads are done.
-- `/etc/dittofs-s3.json`, the S3 block-store config without a bucket:
-  `dfsctl store block add --name s3-x --type s3 --config "$(jq -c '.bucket = "x"' /etc/dittofs-s3.json)"`.
+- `dfsctl`, logged in as admin. v1's `dfsctl system drain-uploads`, which waited until every share's
+  pending uploads were done, has no v2 command yet: the scenarios still call it, and fail there.
+- `dfs-store BUCKET`, which creates a remote store on the local S3's bucket and prints its ID; a share
+  on it: `S="$(dfs-store x)"`, `N="$(dfsctl namespace create --store "$S" --setting namespace.prefix=x/ -o json | jq -r .id)"`,
+  `dfsctl share create x --path /x --namespace "$N" --flavor sys --client 0.0.0.0/0=read-write`,
+  `dfsctl grant set x --user tester --access read-write`.
 - The `s3:` rclone remote, for the buckets (`rclone mkdir s3:x`, `rclone size --json s3:x`).
 - Userspace clients: `smbclient`, `nfs-cp`, `nfs-ls`, libnfs's `nfs-io` (mkdir, unlink, rmdir), `jq`.
 - The tools in `lib/tools` (each file says how to use it): `s3 start | stop | pause | resume`,
-  `dfs-server start | stop | kill`, `nfs-truncate`, `smb-truncate`, `nfs-hold` (keeps a file open
+  `dfs-server start | stop | kill`, `dfs-store`, `nfs-truncate`, `smb-truncate`, `nfs-hold` (keeps a file open
   over NFS) and `smb-open` (an SMB open with a given access and share mode, held open).
 - One volume, the cache (`/var/tmp/dittofs-scenarios`) at `/cache`. Whatever a scenario keeps
   goes under it: `/inputs` is `/cache/inputs`, for large inputs worth keeping between runs, and
@@ -87,6 +90,9 @@ takes no lock, so it does not block a scheduled run.
 - A run is capped at `SCENARIO_TIMEOUT` (900) seconds.
 - One batch run at a time per cache. A second one prints `not run: another run holds …` and
   exits 75 without running anything, so a scheduled run that tested nothing never reads as a pass.
+- A batch exits 0 when every scenario passed, 3 when every failed one stopped at the shared
+  setup's refused store create, before its own first line, and 1 otherwise. A setup that fails
+  earlier, hangs to `SCENARIO_TIMEOUT` (124) or is killed (137) exits 1.
 
 ## Writing one
 

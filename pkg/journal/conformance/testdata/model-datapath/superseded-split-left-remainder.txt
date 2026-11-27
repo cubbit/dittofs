@@ -1,0 +1,9 @@
+# A write into the middle of another write's extent splits the range the held
+# set shares, and both remainders of the older write stay held beside the newer
+# record. Shrunk from the first sequence of the planted-run sweep that the
+# model checked on a build with a planted bug in that very three-way split,
+# which reported the left remainder [66,78) of the older write missing after
+# the newer write, as though the newer record superseded the whole range. The
+# journal without the planted bug answers it held, as this corpus file checks.
+write f=2 off=66 len=60 b=233 pick=196
+write f=2 off=78 len=1 b=106 pick=219

@@ -179,7 +179,7 @@ Outcome: a record always names the object until it is gone, so nothing leaks and
 2. The compactor copies B2's live chunks into a new block T, then one transaction points h at T and retires B2 ([§4.2](#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)).
 3. B2 waits out the trash like any retired block, so the read almost always still finds it ([§3.7](#3.7%20Trash), [§4.2](#4.2%20Read%20verified%2C%20mint%2C%20put%2C%20then%20move)).
 4. A read that arrives after B2 is deleted is told "absent"; it looks h up again, finds T, and retries ([§4.3](#4.3%20A%20reader%20can%20hold%20the%20old%20location)).
-5. It reports the data lost only if the same block name misses twice, or h has no record at all ([§4.3](#4.3%20A%20reader%20can%20hold%20the%20old%20location)).
+5. It reports the data lost only if the same block name misses twice, or h has no record at all or names a deleted block or one with no record ([§4.3](#4.3%20A%20reader%20can%20hold%20the%20old%20location)).
 
 Outcome: compaction never shows up as an error to a reader.
 
@@ -1170,7 +1170,8 @@ is in flight.
 When the remote store reports a block absent, the read path **MUST** resolve the
 chunk again and retry **while the resolved block name keeps changing**, bounded
 by the read's deadline, and **MUST** report **Lost** only when the same block name
-misses twice or no chunk record for the chunk exists ([RFC 8 §7.7](rfc-8-engine.md#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)). A fixed retry
+misses twice, or no chunk record for the chunk exists or its record names a deleted block or
+a block with no record ([RFC 8 §7.7](rfc-8-engine.md#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)). A fixed retry
 count turns two compactions in a row into a spurious error; retrying a name that
 did not change turns a lost chunk into a hung read.
 

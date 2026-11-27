@@ -18,7 +18,7 @@ constraints. The [RFC index](../docs/internals/rfcs/rfc-index.md), "Test tiers" 
 per change; recording results; the reference box). Every citation is the RFCs' text on `develop`;
 the code lands on `feat/storage-v2`, and the paths below are paths there.
 **Track:** the team.
-**Epic 11 estimate: 6 subtasks, 9 man-days.**
+**Epic 11 estimate: 6 subtasks, 8.5 man-days.**
 **Depends on:**
 - **The RFC 8 offload plan's S7**, store adapter and node composition built: the node's content
   wiring (`internal/node/content`) builds one `codec.Store` per store with RFC 5's chain and opens
@@ -104,7 +104,7 @@ two rows in the codec's `chains_test.go`, a `chain` dimension in the codec's S3 
   on the reference box, which no cell runs on (§9).
 - The retry that opens a store whose provider failed at start once the provider answers again
   (every 30 s, D2): the RFC 8 offload plan's epic 21, which opens stores and namespaces (#6063, its
-  D10). T11.1 asserts it at the node.
+  D10). Its T21.3 asserts it at the node; T11.1 does not repeat it.
 
 ### 1.3 Names used here
 
@@ -153,7 +153,7 @@ Every obligation RFC 5 places on this epic, numbered so that subtasks and tests 
 | --- | --- | --- | --- | --- |
 | R1 | A store whose chain cannot be built, because a transform's factory fails, does not open: no body reaches its remote, and it never writes without its chain | MUST NOT | §2.7 (a chain that cannot be built), §7 T5, §8.2 T5 | T11.1 |
 | R2 | A store whose material cannot be loaded at start, the provider unreachable or a key it needs missing, does not open and puts nothing; a store configured to encrypt never falls back to a body without the encrypt stage | MUST NOT | §2.7, Appendix B.4 (unreachable at start), Appendix D D9 | T11.1, T11.2 |
-| R3 | A provider failure at start fails the store it serves, not the journal: the journal keeps serving its shares; once the provider answers again, the store opens within 30 s with no restart, and its journal-held content offloads (D2) | invariant | Appendix D D10 ("recovers"), Appendix B.4 (a key failure is the remote being unavailable); the user's decision, 2026-11-26 | T11.1 |
+| R3 | A provider failure at start fails the store it serves, not the journal: the journal keeps serving its shares; once the provider answers again, the store opens within 30 s with no restart, and its journal-held content offloads (D2) | invariant | Appendix D D10 ("recovers"), Appendix B.4 (a key failure is the remote being unavailable); the user's decision, 2026-11-26 | T11.1; the recovery, the RFC 8 offload plan's T21.3 |
 | R4 | Against a real key-management server, a store configured on it opens and a body round-trips through the codec; a missing key, an unreachable server and an invalid certificate each leave the store unopened, and none falls back to another provider or to writing without encryption | test row | §8.1's Appendix B.2 row, its store half | T11.2 |
 
 **Material failures through the engine**
@@ -227,8 +227,8 @@ key-management row's provider half, and its decode leg ("or the decode returns
   the user decided on 2026-11-26 that its provider's open is retried every 30 s on the node's
   clock, with no restart, as RFC 8 §2.5 retries a refused journal, `material_unavailable` naming
   the namespace meanwhile, and that once it opens its journal-held content offloads. The retry and
-  its `decision:` are the RFC 8 offload plan's epic 21's (#6063, its D10); T11.1 holds it at the
-  node. Rejected: opening it at the next start only, which turns a key server's outage into a
+  its `decision:` are the RFC 8 offload plan's epic 21's (#6063, its D10), and its T21.3 tests it at
+  the node. Rejected: opening it at the next start only, which turns a key server's outage into a
   restart. A chain that cannot build is a configuration defect and is not what the retry covers;
   T11.1's chain leg is unchanged by it. Appendix B.4's
   "the namespace takes no new write" is read as RFC 8 §10.4 implements it: the journal still stages
@@ -246,7 +246,8 @@ key-management row's provider half, and its decode leg ("or the decode returns
 - **D4, two chains are two runs over the same stores.** §5.1 has a configuration change govern the
   next write, so R13's row writes under chain A, closes the fixture, opens it again over the same
   metadata store, journal directory and remote store with chain B and a rotated data key, and writes
-  again. Prior art: none found. Leaves no marker.
+  a second file of new content from the test's seeded source: the chunk-ID key never rotates, so A's
+  bytes written again would dedup to A's chunks and put no block under K2. Prior art: none found. Leaves no marker.
 - **D5, the benchmark is a `chain` dimension of the codec's S3 benchmark.** §8.3 says "run after
   merge", which is `remote-bench`'s tier, and the RFC 4 plan's epic 9 already runs the codec's put
   there with the empty chain (its T9.4, D5, D6). This epic adds a whole-block get beside that put
@@ -280,7 +281,7 @@ docs/internals/rfcs/rfc-5-transforms.md
 
 ### T11.1 A store that cannot start writes nothing
 
-**Subtask T11.1 estimate: 2.5 man-days.**
+**Subtask T11.1 estimate: 2 man-days.**
 
 - **Track:** the team. **Depends on:** S7, E9.
 - **Covers:** R1, R2, R3.
@@ -290,8 +291,8 @@ docs/internals/rfcs/rfc-5-transforms.md
   failures of B at start: its stored `transforms` record edited underneath to a `zstd` level outside
   Appendix A's range, which the settings validator would have refused, so the factory fails at
   `NewChain` (R1); and, with B configured `[{name: aes-gcm}]`, its key file replaced by one under
-  another passphrase, so the provider cannot load (R2, Appendix D D9). The recovery leg: the
-  original key file put back, and the node's injected clock advanced past 30 s (D2).
+  another passphrase, so the provider cannot load (R2, Appendix D D9). The recovery once the key
+  returns is the RFC 8 offload plan's T21.3's, not repeated here (D2).
 - **Acceptance criteria:**
   - In both cases, B's remote store's load record shows no put, ever; no other provider and no
     empty chain is built for B (R1, R2).
@@ -300,17 +301,10 @@ docs/internals/rfcs/rfc-5-transforms.md
   - With the key file replaced, `material_unavailable` names B's namespace; with the chain-build
     failure no material condition is raised, and the build's `Error` line names `zstd` and the
     reason (RFC 5 §6) (R2, R1).
-  - Recovery, with no restart: with the key file put back and the clock short of 30 s, B is still
-    unopened and nothing is put; past 30 s, B's store opens, `material_unavailable` clears, the
-    write B's journal held offloads (a put on B's remote's load record, encrypted under B's chain),
-    and reads back after eviction (R3, D2).
 - **Tests:** at the node, where a share is served. Each names its break: a wiring that builds B's
   store with the chain it could build, or with none, puts to B's remote (R1); a wiring that falls
   back to a store without encryption when the provider fails puts a body (R2, D9); a failure that
-  fails the engine's `Start` or closes the journal stops both shares' reads (R3, D10); a node with
-  no retry, or one that retries without rebuilding the provider, leaves B unopened past 30 s, and
-  one that retries on a timer of its own rather than the node's clock never fires under the test
-  (R3, D2). No test
+  fails the engine's `Start` or closes the journal stops both shares' reads (R3, D10). No test
   double: editing B's record is the RFC 13 rows' way of planting a record the validator would
   refuse.
 
@@ -354,12 +348,13 @@ docs/internals/rfcs/rfc-5-transforms.md
     off, and the same read succeeds with no restart (R5, unreachable).
   - `Memory.Replace` of the data key with other bytes: the read fails the same way; `Replace` with
     the original bytes, and it succeeds (R5, fingerprint).
-  - Restart onto a fresh `keystest.Memory` given a new current data key but not the one the file's
-    blocks name: the read fails the same way; `Give` the old key, and it succeeds (R5, never given:
-    T7's second row).
-  - In "§10.4 destroyed material", the read of a remote-only chunk after `Memory.Destroy` issues one
-    fetch, counted on the in-memory store's load record, and the codec's verification-failure count
-    read from the fixture's `Recorder` is unchanged (R6).
+  - Restart onto a fresh `keystest.Memory` given the namespace's chunk-ID key under its original ID
+    and a new current data key, but not the data key the file's blocks name: the read fails the same
+    way; `Give` the old data key, and it succeeds (R5, never given: T7's second row). Without the
+    chunk-ID key no chunk could be verified, so the read could never succeed.
+  - In "§10.4 destroyed material", the read of a remote-only chunk after `Memory.Destroy` fails as
+    **Lost** and issues at most one fetch, counted on the in-memory store's load record, and the
+    codec's verification-failure count read from the fixture's `Recorder` is unchanged (R6).
   - `Memory.Destroy` of the namespace's chunk-ID key: a read of a remote-only chunk fails as
     **Lost**; a write after it is staged, and no put reaches the remote for it (R7).
 - **Tests:** at the engine's read and pass, the consumers of the codec's errors and of the current
@@ -389,7 +384,7 @@ docs/internals/rfcs/rfc-5-transforms.md
     the verified bytes, and the in-memory store's load record shows one ranged get at block
     metadata's range for that chunk, starting past the header (R12).
   - Chain A `[aes-gcm]` under data key K1, then, per D4, chain B `[zstd with with_encryption:
-    accept, aes-gcm]` under K2: each block record's census, read through the `Census` view, equals
+    accept, aes-gcm]` under K2, over a second file of new content: each block record's census, read through the `Census` view, equals
     the census in that block's header and lists exactly `aes-gcm` with K1 for A's blocks, and `zstd`
     where a chunk was not declined plus `aes-gcm` with K2 for B's (R13).
 - **Tests:** at block metadata and the stored bytes, where T21, Appendix B.5 and §5.3 make their
@@ -473,7 +468,7 @@ any point.
 
 | PR | Subtasks | Man-days | After | Why together |
 | --- | --- | --- | --- | --- |
-| 1 | T11.1, T11.2 | 3.75 | — | a store that cannot start, with a key file and with a key server |
+| 1 | T11.1, T11.2 | 3.25 | — | a store that cannot start, with a key file and with a key server |
 | 2 | T11.3, T11.4 | 3.5 | — | RFC 5's rows in `engine-conformance`, in one new file |
 | 3 | T11.5, T11.6 | 1.75 | — | the codec's rows and the benchmark, both in `pkg/remote/codec` |
 
@@ -496,6 +491,7 @@ subtask works as well.
 4. **The 10% target is proposed.** It is replaced by the first run on the reference box, as the RFC
    index says; no cell runs there, and the result attached to T11.6's pull request is a real
    service's, not the reference link's.
-5. The estimate is 6 subtasks and 9 man-days against the plan's 6 and 10: T8's main leg, the
+5. The estimate is 6 subtasks and 8.5 man-days against the plan's 6 and 10: T8's main leg, the
    codec halves (D1) and T20's journal legs (RFC 8 §15.1) are run elsewhere, and the key-management
-   row's store half reuses E7's failure setups, while T11.1 gains D2's recovery leg.
+   row's store half reuses E7's failure setups, and D2's recovery leg is the RFC 8 offload plan's
+   T21.3's.

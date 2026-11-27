@@ -1,0 +1,534 @@
+# Every row the journal's conformance suite answers to, mapped to the tests that check it, to
+# the epic that owns it, or to both when the row is split. trace_test.go parses the rows from
+# the RFC files and the tests from the conformance package, and fails on a row with no entry,
+# an entry for a row that is gone, a test that does not exist, or a test in no entry. A test
+# that turns green leaves known.yaml and stays here. "pending: 2.x" names the subtask whose
+# test is not written yet; the subtask removes it when the test lands.
+rfc1 / 9.4 / A / "no zero-fill":
+  tests: [TestRFC1A_NoZeroFill]
+rfc1 / 9.4 / A / "write during offload":
+  tests: [TestRFC1A_WriteDuringOffload]
+rfc1 / 9.4 / A / "offer stops at `through`, per-extent stamps":
+  tests: [TestRFC1A_OfferStopsAtThrough]
+rfc1 / 9.4 / A / "lost stamp is offered":
+  tests: [TestRFC1A_LostStampIsOffered]
+rfc1 / 9.4 / A / "fill safety":
+  tests: [TestRFC1A_FillSafety]
+rfc1 / 9.4 / A / "fill sets the bit":
+  tests: [TestRFC1A_FillSetsTheBit]
+rfc1 / 9.4 / A / "refusal":
+  tests: [TestRFC1A_Refusal]
+rfc1 / 9.4 / A / "unsuitable storage refused":
+  owner: epic 7
+  reason: 'Init and Open refuse what epic 3''s Appendix A probes reject'
+rfc1 / 9.4 / A / "a failed number is never issued again":
+  owner: epic 7
+  reason: 'T7.6 rebuilds the counters at reopen; the row''s test lands with it'
+rfc1 / 9.4 / A / "partial release keeps the record whole":
+  tests: [TestRFC1A_PartialReleaseKeepsRecordWhole]
+rfc1 / 9.4 / A / "release frees nothing inside a segment":
+  tests: [TestRFC1A_ReleaseFreesNothingInsideSegment]
+rfc1 / 9.4 / A / "repack copies the live part":
+  tests: [TestRFC1A_RepackCopiesLivePart]
+rfc1 / 9.4 / A / "crash mid-repack":
+  tests: [TestRFC1A_CrashMidRepack, TestRFC1A_CrashAfterARemovalRecordCarriedToItsCopy, TestRFC1A_CrashWhileARemovalRecordsUnlinkIsNotDurable, TestRFC1A_CrashWhileARemovalRecordsCopyWaitsItsSync]
+rfc1 / 9.4 / A / "unlink under read":
+  tests: [TestRFC1A_UnlinkUnderRead]
+rfc1 / 9.4 / A / "repack under read":
+  tests: [TestRFC1A_RepackUnderRead]
+rfc1 / 9.4 / A / "removals survive to `Since`":
+  tests: [TestRFC1A_RemovalsSurviveToSince]
+rfc1 / 9.4 / A / "`Since` yields `Over` after the superseded write left the index":
+  tests: [TestRFC1A_SinceYieldsOver]
+  owner: epic 7
+  reason: 'the reopen leg: each held write keeps its Over, rebuilt from the records it superseded, once recovery lands'
+rfc1 / 9.4 / A / "`Settle` drops by version, never content":
+  owner: epic 8
+  reason: 'Settle is built and its datapath tests hold held extents, markers and synced losses; the check over the real journal needs Sync and recovery'
+rfc1 / 9.4 / A / "no resurrection":
+  tests: [TestRFC1A_NoResurrection]
+rfc1 / 9.4 / A / "removal outlives its segment":
+  tests: [TestRFC1A_RemovalOutlivesItsSegment, TestRFC1A_SettledRemovalOutlivesItsUnlinks]
+rfc1 / 9.4 / A / "removal during offload":
+  tests: [TestRFC1A_RemovalDuringOffload]
+rfc1 / 9.4 / A / "neighbours are frozen":
+  tests: [TestRFC1A_NeighboursAreFrozen]
+rfc1 / 9.4 / A / "removal records carried forward":
+  tests: [TestRFC1A_RemovalRecordsCarriedForward]
+rfc1 / 9.4 / A / "copy loses to a newer write":
+  tests: [TestRFC1A_CopyLosesToNewerWrite]
+rfc1 / 9.4 / A / "loss raises the loss generation":
+  tests: [TestRFC1A_LossRaisesLossGeneration]
+rfc1 / 9.4 / A / "a recycled segment keeps its new records":
+  tests: [TestRFC1A_RecycledSegmentKeepsNewRecords, TestFailedAppendCarriedOnceResolvedJournalLevel]
+rfc1 / 9.4 / A / "failed sync window":
+  tests: [TestRFC1A_FailedSyncWindow, TestRFC1A_FailedWindowsCarryNoMarks]
+rfc1 / 9.4 / A / "offered bytes verified":
+  tests: [TestRFC1A_OfferedBytesVerified]
+rfc1 / 9.4 / A / "repack verifies the whole source":
+  tests: [TestRFC1A_RepackVerifiesWholeSource]
+rfc1 / 9.4 / A / "retained extents survive repack":
+  tests: [TestRFC1A_RetainedExtentsSurviveRepack]
+rfc1 / 9.4 / A / "removal dropped by version":
+  tests: [TestRFC1A_RemovalDroppedByVersion]
+rfc1 / 9.4 / A / "drops decided after the pass's copies":
+  tests: [TestRFC1A_DropsDecidedAfterCopies]
+rfc1 / 9.4 / A / "carried release keeps its sequence":
+  tests: [TestRFC1A_CarriedReleaseKeepsItsSequence]
+rfc1 / 9.4 / A / "re-append trusts no page cache":
+  tests: [TestRFC1A_ReappendTrustsNoPageCache]
+rfc1 / 9.4 / A / "loss by exact record":
+  tests: [TestRFC1A_LossByExactRecord]
+rfc1 / 9.4 / A / "a synced loss masks what it superseded":
+  tests: [TestRFC1A_SyncedLossMasksSuperseded, TestALossRecordCarriedFromItsSegmentJournalLevel]
+rfc1 / 9.4 / A / "a failed window is reported once":
+  tests: [TestRFC1A_FailedWindowReportedOnce, TestRFC1A_FailedWindowsCarryNoMarks]
+rfc1 / 9.4 / A / "a re-append keeps its numbers":
+  tests: [TestRFC1A_ReappendKeepsItsNumbers]
+rfc1 / 9.4 / A / "no pin on a segment under repack":
+  tests: [TestRFC1A_NoPinOnSegmentUnderRepack]
+rfc1 / 9.4 / B / "reservation":
+  tests: [TestRFC1B_Reservation]
+rfc1 / 9.4 / B / "reserve ahead":
+  tests: [TestRFC1B_ReserveAhead]
+rfc1 / 9.4 / B / "handle close":
+  tests: [TestRFC1B_HandleClose]
+rfc1 / 9.4 / B / "named refusal":
+  tests: [TestRFC1B_NamedRefusal]
+rfc1 / 9.4 / B / "share limit":
+  tests: [TestRFC1B_ShareLimit]
+rfc1 / 9.4 / B / "repack at capacity":
+  tests: [TestRFC1B_RepackAtCapacity, TestRepackAtCapacityJournalLevel, TestRepackUnitsRunOnePerReserve, TestRFC1B_RepackAtTheLimitRecoversTheHeadroom]
+rfc1 / 9.4 / B / "descriptors":
+  tests: [TestRFC1B_Descriptors]
+rfc1 / 9.4 / B / "coalescing":
+  tests: [TestRFC1B_Coalescing]
+rfc1 / 9.4 / B / "index bound refuses":
+  tests: [TestRFC1B_IndexBoundRefuses]
+rfc1 / 9.4 / B / "repack beside a share at its limit":
+  tests: [TestRFC1B_RepackBesideShareAtLimit, TestRepackBesideShareAtLimitJournalLevel]
+rfc1 / 9.4 / B / "headroom is allocated":
+  tests: [TestRFC1B_HeadroomIsAllocated]
+rfc1 / 9.4 / B / "pinned segments bounded":
+  tests: [TestRFC1B_PinnedSegmentsBounded]
+rfc1 / 9.4 / B / "a failed window does not wedge":
+  tests: [TestRFC1B_FailedWindowDoesNotWedge, TestRFC28C_AFailedWindowAtTheMaximumIsFailedWhole]
+rfc1 / 9.4 / B / "floor buckets":
+  tests: [TestRFC1B_FloorBuckets]
+rfc1 / 9.4 / B / "bounds":
+  owner: epic 4
+  reason: 'comparison counts per lookup need the index''s counters'
+rfc1 / 9.4 / B / "sync failure":
+  tests: [TestRFC1B_SyncFailure]
+rfc1 / 9.4 / B / "no version repeats":
+  tests: [TestRFC1B_NoVersionRepeats]
+rfc1 / 9.4 / B / "offloaded records below half the headroom":
+  tests: [TestRFC1B_OffloadedRecordsBelowHalfTheHeadroom]
+rfc1 / 9.4 / B / "records without bytes at the limit":
+  tests: [TestRFC1B_RecordsWithoutBytesAtTheLimit]
+rfc1 / 9.4 / B / "freed means freed":
+  tests: [TestRFC1B_FreedMeansFreed]
+rfc1 / 9.4 / B / "storage returned":
+  tests: [TestRFC1B_StorageReturned]
+rfc1 / 9.4 / B / "reclaim not starved":
+  tests: [TestRFC1B_ReclaimNotStarved]
+rfc1 / 9.4 / B / "removals do not wait on offload":
+  tests: [TestRFC1B_RemovalsDoNotWaitOnOffload]
+rfc1 / 9.4 / B / "no deadlock":
+  tests: [TestRFC1B_NoDeadlock]
+  owner: epic 8
+  reason: 'the lock-order half: the lock-order recorder is internal to the data path; the public half is the test'
+rfc1 / 9.4 / B / "background joined":
+  tests: [TestRFC1B_BackgroundJoined]
+rfc1 / 9.4 / B / "removal records dropped per extent":
+  tests: [TestRFC1B_RemovalRecordsDroppedPerExtent]
+rfc1 / 9.4 / B / "repack aimed at a share":
+  tests: [TestRFC1B_RepackAimedAtShare]
+rfc1 / 9.4 / B / "segment and record accounting":
+  tests: [TestRFC1B_SegmentAndRecordAccounting]
+rfc1 / 9.4 / B / "pins bounded across offers":
+  tests: [TestRFC1B_PinsBoundedAcrossOffers]
+rfc1 / 9.4 / C / "reseed after repack":
+  tests: [TestRFC1C_ReseedAfterRepack]
+rfc1 / 9.4 / C / "release survives restart":
+  tests: [TestRFC1C_ReleaseSurvivesRestart, TestStats_TheEndedFigureSurvivesAReopen]
+rfc1 / 9.4 / C / "release record lost":
+  tests: [TestRFC1C_ReleaseRecordLost]
+rfc1 / 9.4 / C / "fill beats an older write":
+  tests: [TestRFC1C_FillBeatsOlderWrite]
+rfc1 / 9.4 / C / "stale Fill":
+  tests: [TestRFC1C_StaleFill]
+rfc1 / 9.4 / C / "incremental report":
+  tests: [TestRFC1C_IncrementalReport]
+rfc1 / 9.4 / C / "epoch half is zero":
+  tests: [TestRFC1C_EpochHalfIsZero]
+rfc1 / 9.4 / C / "monotonicity":
+  tests: [TestRFC1C_Monotonicity]
+rfc1 / 9.4 / C / "attached share raises the counter":
+  tests: [TestRFC1C_AttachedShareRaisesCounter]
+rfc1 / 9.4 / C / "unclaimed tags are the caller's to name":
+  tests: [TestRFC1C_UnclaimedTagsAreTheCallersToName]
+rfc1 / 9.4 / C / "a cancelled call changes nothing or completes":
+  tests: [TestRFC1C_CancelledCallChangesNothingOrCompletes, TestRFC1C_ForgetRules]
+rfc1 / 9.4 / C / "restamp after a lost store":
+  tests: [TestRFC1C_RestampAfterLostStore]
+rfc1 / 9.4 / C / "forget leaves nothing to settle":
+  # Forget's row of the 8.4 atomicity table pairs it with fills of the tag; that
+  # half has no leg here: a Fill needs a handle of the tag, and Forget refuses
+  # while one is open, so the pair cannot be driven through the journal's own
+  # API. The barrier the same table names is covered by the pass legs of
+  # TestRFC1C_ForgetRules.
+  tests: [TestRFC1C_ForgetLeavesNothingToSettle, TestRFC1C_ForgetRules]
+rfc1 / 9.4 / C / "unclaimed tag reported":
+  tests: [TestRFC1C_UnclaimedTagReported]
+rfc1 / 9.4 / C / "a file is its share's":
+  tests: [TestRFC1C_FileIsItsSharesShare]
+rfc1 / 9.4 / C / "stranded tag salvaged after serving":
+  owner: 'RFC 8''s second part'
+  reason: 'needs the store, a recovery import, salvage.path and the master key'
+rfc1 / 9.4 / C / "clone target survives a crash":
+  tests: [TestRFC1C_CloneTargetSurvivesCrash]
+rfc1 / 9.4 / C / "header-only records are re-appended outside a read-only journal":
+  tests: [TestRFC1C_HeaderOnlyRecordsReappended]
+rfc1 / 9.4 / C / "a loss survives restart":
+  tests: [TestRFC1C_LossSurvivesRestart]
+rfc1 / 9.4 / D / "wedge is visible":
+  tests: [TestRFC1D_WedgeIsVisibleDirty, TestRFC1D_WedgeIsVisibleUnreclaimed]
+rfc1 / 9.4 / D / "accounting follows the cap":
+  tests: [TestRFC1D_AccountingFollowsCap]
+  owner: parked
+  reason: 'the speculative-preallocation leg needs a filesystem host nobody provisions (XFS); the leg on the test host''s filesystem is the test'
+rfc1 / 9.4 / D / "generation never repeats":
+  tests: [TestRFC1D_GenerationNeverRepeats]
+rfc1 / 9.4 / D / "stats are cheap":
+  tests: [TestRFC1D_StatsTakeNoWriteLock, TestRFC1D_StatsCostIsFlat, TestStatsAfterOpenWalksNoLock]
+  owner: epic 8
+  reason: 'the lock a write takes and drops before its storage call needs the lock-order recorder, and a walk that allocates nothing needs a counted hook in the journal: both are internal to the data path; the public half is the tests'
+rfc1 / 9.4 / D / "named inequalities hold":
+  tests: [TestRFC1D_NamedInequalitiesHold]
+rfc1 / 9.4 / D / "backlog age":
+  tests: [TestRFC1D_BacklogAge]
+rfc1 / 9.4 / D / "clean bytes count as occupancy":
+  tests: [TestRFC1D_CleanBytesCountAsOccupancy]
+rfc1 / 9.4 / D / "metrics are reachable":
+  tests: [TestRFC1D_MetricsAreReachable, TestMetrics_ConditionsMoveTheirMetric]
+rfc1 / 9.4 / D / "loss events":
+  tests: [TestRFC1D_LossEvents]
+rfc1 / 9.4 / D / "segment held-bytes":
+  tests: [TestRFC1D_SegmentHeldBytes]
+rfc1 / 9.4 / D / "verification reports":
+  tests: [TestRFC1D_VerificationReports]
+
+rfc28 / 4.2 / A / "corrupt, dirty":
+  tests: [TestRFC28A_CorruptDirty]
+rfc28 / 4.2 / A / "corrupt, offloaded":
+  tests: [TestRFC28A_CorruptOffloaded]
+rfc28 / 4.2 / A / "directory entry survives":
+  tests: [TestRFC28A_DirectoryEntrySurvives]
+rfc28 / 4.2 / A / "footer is not authoritative":
+  tests: [TestRFC28A_FooterIsNotAuthoritative]
+rfc28 / 4.2 / A / "unmark clears":
+  tests: [TestRFC28A_UnmarkClears]
+rfc28 / 4.2 / A / "write carries its mtime":
+  tests: [TestRFC28A_WriteCarriesItsMtime]
+rfc28 / 4.2 / A / "unproven tail verified at open":
+  tests: [TestRFC28A_UnprovenTailVerifiedAtOpen]
+rfc28 / 4.2 / A / "directory flush on NTFS":
+  owner: parked
+  reason: 'epic 3 parks it: no host has real NTFS and a power cut'
+rfc28 / 4.2 / A / "a zero slot is not the end":
+  tests: [TestRFC28A_AZeroSlotIsNotTheEnd]
+rfc28 / 4.2 / B / "segment reclaimable":
+  tests: [TestRFC28B_SegmentReclaimable]
+rfc28 / 4.2 / C / "rebuild":
+  tests: [TestRFC28C_Rebuild]
+rfc28 / 4.2 / C / "sources agree":
+  tests: [TestRFC28C_SourcesAgree]
+rfc28 / 4.2 / C / "synced damage is not a torn tail":
+  tests: [TestRFC28C_SyncedDamageIsNotATornTail]
+rfc28 / 4.2 / C / "bits survive restart":
+  tests: [TestRFC28C_BitsSurviveRestart]
+rfc28 / 4.2 / C / "reseed by version":
+  tests: [TestRFC28C_ReseedByVersion]
+rfc28 / 4.2 / C / "trailer torn":
+  tests: [TestRFC28C_TrailerTorn]
+rfc28 / 4.2 / C / "a seal marker only the cache holds":
+  tests: [TestRFC28C_ASealMarkerOnlyTheCacheHolds]
+  reason: 'the test asserts the reopen-in-place half; the killed-process half, its cache kept, is asserted once the open of a directory holding segments is built'
+rfc28 / 4.2 / C / "truncated sealed segment":
+  tests: [TestRFC28C_TruncatedSealedSegment]
+rfc28 / 4.2 / C / "foreign segment":
+  tests: [TestRFC28C_ForeignSegment]
+rfc28 / 4.2 / C / "version floor":
+  tests: [TestRFC28C_VersionFloor]
+rfc28 / 4.2 / C / "stale extent":
+  tests: [TestRFC28C_StaleExtent]
+rfc28 / 4.2 / C / "unidentified directory":
+  tests: [TestRFC28C_UnidentifiedDirectory]
+rfc28 / 4.2 / C / "journal gone":
+  tests: [TestRFC28C_JournalGone]
+rfc28 / 4.2 / C / "spares are re-adopted":
+  tests: [TestRFC28C_SparesAreReAdopted]
+rfc28 / 4.2 / C / "a spare is whole or absent":
+  tests: [TestRFC28C_SpareIsWholeOrAbsent]
+rfc28 / 4.2 / C / "retired segments are recycled":
+  tests: [TestRFC28C_RetiredSegmentsAreRecycled, TestAwaitSpareWhoseRollReleasesAHeldCreate]
+rfc28 / 4.2 / C / "a recycled segment's old catalog is never read":
+  tests: [TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead]
+rfc28 / 4.2 / C / "interrupted `Init`":
+  tests: [TestRFC28C_InterruptedInit]
+rfc28 / 4.2 / C / "unknown version":
+  tests: [TestRFC28C_UnknownVersion]
+rfc28 / 4.2 / C / "neighbours survive":
+  tests: [TestRFC28C_NeighboursSurvive]
+rfc28 / 4.2 / C / "a scan resynchronises":
+  tests: [TestRFC28C_ScanResynchronises]
+rfc28 / 4.2 / C / "torn tail cut off":
+  tests: [TestRFC28C_TornTailCutOff]
+rfc28 / 4.2 / C / "a bad copy does not mask a good one":
+  tests: [TestRFC28C_BadCopyDoesNotMaskAGoodOne]
+rfc28 / 4.2 / C / "record layout":
+  owner: epic 3
+  reason: 'golden vectors of the encoders'
+rfc28 / 4.2 / C / "kind values":
+  tests: [TestRFC28C_KindValuesRefused]
+  owner: epic 3
+  reason: 'the encoding half: golden vectors of the encoders, compared with raw'
+rfc28 / 4.2 / C / "segment header and seal marker":
+  tests: [TestRFC28C_ForeignHeaderIsForeignNotDamaged, TestRFC28C_SealMarkerCopiedIntoAPayload]
+  owner: epic 3
+  reason: 'the encoding half: golden vectors of the encoders, compared with raw'
+rfc28 / 4.2 / C / "`format` file":
+  tests: [TestRFC28C_FormatFile]
+  owner: epic 3
+  reason: 'the encoding half: golden vectors of the encoders, compared with raw'
+rfc28 / 4.2 / C / "trailer":
+  owner: epic 3
+  reason: 'golden vectors of the encoders'
+
+rfc1 / 9.2 / "Extent shape":
+  tests: [TestEdge_ZeroLengthWrite, TestEdge_WriteNearLargestOffset, TestEdge_ThreeWaySplit,
+          TestEdge_OverwriteSpansManyExtents, TestEdge_ManyOverwritesFlatHeldBytes,
+          TestEdge_WriteCrossesSegment, TestEdge_RecordExactlyFillsSegment, TestEdge_FirstHeldByteFarFromZero]
+rfc1 / 9.2 / "Lifecycle":
+  tests: [TestEdge_TruncateInsideExtent, TestEdge_TruncateToZeroAndWriteAgain, TestEdge_TruncateDownAndBackUp,
+          TestEdge_DeallocateInsideAndAcross, TestEdge_FillOverHeldDirtyAndAbsent,
+          TestEdge_OffloadReportsUnofferedOrNone, TestEdge_ReleasePartlyOffloaded,
+          TestEdge_ReleaseMiddleEndsAndAll, TestEdge_FullyReleasedSegmentReclaimedWithoutRead]
+rfc1 / 9.2 / "Capacity and storage":
+  tests: [TestEdge_ReservationExactFitShare, TestEdge_ReservationExactFitJournal,
+          TestEdge_FilesystemENOSPCIsNotErrNoSpace, TestEdge_SyncFailsThenSucceeds,
+          TestEdge_RecordsWithoutBytesAtMaximum, TestEdge_SegmentRetiredByEvictionAndRepack]
+
+rfc28 / 4.1 / -:
+  tests: [TestEdge_WriteLargerThanSegmentRest, TestEdge_WriteLargerThanSegment]
+rfc28 / 4.1 / "Opening":
+  tests: [TestEdge_OpenEmptyDirectory, TestEdge_OpenFormatOnly, TestEdge_OpenUnrecognisedFormatVersion]
+  owner: parked
+  reason: 'the older-format leg reaches only an unrecognised version, which TestEdge_OpenUnrecognisedFormatVersion covers; no version other than 1 exists, so a recognised older or newer format is tested once a second version lands'
+
+rfc1 / 9.7 / "syncs per write":
+  tests: [TestCounted_SyncsPerWrite]
+rfc1 / 9.7 / "mixed durability":
+  tests: [TestCounted_MixedDurability, TestCounted_MixedChoreography]
+rfc1 / 9.7 / "index cost":
+  owner: epic 4
+  reason: 'the index''s comparison counters'
+rfc1 / 9.7 / "allocations per operation":
+  tests: [TestCounted_AllocationsPerCall, TestCounted_AllocationsPerCallFailsWithOneAdded]
+rfc1 / 9.7 / "index memory":
+  owner: epic 4
+  reason: 'the index''s bytes per entry'
+rfc1 / 9.7 / "report cost":
+  owner: epic 9
+  reason: 'needs offload over the index''s counters'
+
+rfc28 / 4.4 / "Bit corruption":
+  tests: [TestDamage_BitFlip]
+rfc28 / 4.4 / "Crashes":
+  tests: [TestDamage_LostWrites, TestDamage_TornWrites, TestDamage_ReorderedWrites, TestDamage_SuccessorTakenAfterSealSync, TestDamage_OpenUnlinksAfterItsCopiesAreDurable, TestDamage_RefusedOpenNamesAndServesNothing, TestModel_DataPathCrashes]
+rfc28 / 4.4 / "Edits from outside":
+  tests: [TestRFC28C_NeighboursSurvive, TestDamage_SegmentDeleted, TestRFC28C_FormatFile, TestRFC28C_UnidentifiedDirectory, TestRFC28C_JournalGone, TestDamage_UnnamedFileLeftAlone, TestRFC28C_TruncatedSealedSegment, TestRFC28C_ForeignSegment, TestDamage_DirectoryRestored, TestRFC28C_StaleExtent]
+rfc28 / 4.4 / edit / "bytes of a record changed":
+  tests: [TestRFC28C_NeighboursSurvive]
+rfc28 / 4.4 / edit / "a segment deleted":
+  tests: [TestDamage_SegmentDeleted]
+rfc28 / 4.4 / edit / "the `format` file removed or changed":
+  tests: [TestRFC28C_FormatFile, TestRFC28C_UnidentifiedDirectory]
+rfc28 / 4.4 / edit / "the whole directory deleted, emptied or replaced":
+  tests: [TestRFC28C_JournalGone]
+rfc28 / 4.4 / edit / "a file the journal did not name added":
+  tests: [TestDamage_UnnamedFileLeftAlone]
+rfc28 / 4.4 / edit / "a sealed segment truncated":
+  tests: [TestRFC28C_TruncatedSealedSegment]
+rfc28 / 4.4 / edit / "a valid segment copied in from another journal":
+  tests: [TestRFC28C_ForeignSegment]
+rfc28 / 4.4 / edit / "the whole directory restored from an old copy":
+  tests: [TestDamage_DirectoryRestored]
+rfc28 / 4.4 / edit / "one old segment of this journal restored":
+  tests: [TestRFC28C_StaleExtent]
+
+rfc1 / 9.1 / "Model-based":
+  tests: [TestModel, TestModel_DataPath, TestModelDataPathFindsPlantedSupersession,
+          TestModel_RepackAndForget, TestModel_RepackHeavyDraws, TestModelManySeeds,
+          TestModelManySeedsFindsPlantedTruncate]
+
+rfc1 / 9.1 / "Soak":
+  tests: [TestJournalSoak, TestJournalSoakFindsPlantedDescriptor, TestJournalSoakFindsPlantedFootprint,
+          TestSoakRemovalChurnDrains]
+
+rfc0 / 1.4 / "clock bound":
+  owner: 'RFC 8''s second part'
+  reason: 'a wait on another clock''s timeout; the journal has none'
+
+rfc8 / 15 / "one clock":
+  tests: [TestClock_WallJumpMovesNoTimer]
+  owner: 'RFC 8''s second part'
+  reason: 'the node half: two TestClocks across every component of a node; the journal''s half is the test'
+rfc1 / 9.4 / A / "a read's `asOf` against a change in flight":
+  tests: [TestRFC1A_ReadAsOfAgainstAChangeInFlight]
+rfc1 / 9.4 / B / "read-only stops the drain":
+  tests: [TestRFC1B_ReadOnlyStopsTheDrain, TestRFC1B_ReadOnlyProbe, TestRFC1B_ReadOnlyOpenRefusedStaysClosed]
+  reason: 'the three tests assert only part of the row, and the row stays uncertified until the rest is added. Asserted: the sync refused with ErrJournalReadOnly, WriteAt and Release refused, B''s failed window reported once, its next Sync answering nil, A reading back, Stats naming the state and the spare, writes again after a reopen, a failing check, a mount without cache flushes, leaving no spare and named in Stats, a refused open leaving the journal closed; outside the conformance suite, TestReadOnlySyncAnswersAsRFC1Says (pkg/journal) asserts a truncate undone and every Sync of its file failing with the bare ErrJournalReadOnly. Not asserted, by owner. Epic 6: the loss generation rising once, the spare tried every 30 s; the offloaded extent not evicted and the offload report succeeding are held as state by epic 6 and acted on by epics 8 and 9. Epic 7, which builds Open: the reopen holding neither B nor the truncate in the whole segment whose sync failed, the unsynced loss record appended for each, and a reopen in a new process. Epic 11: retry-later reads of content only the closed journal held'
+rfc28 / 4.2 / C / "an ended segment is emptied once":
+  pending: 2.13b
+rfc28 / 4.2 / C / "an open at an exhausted headroom":
+  tests: [TestRFC28C_AnOpenAtAnExhaustedHeadroom]
+  owner: epic 7
+  reason: >-
+    The test asserts only part of the row; the row stays uncertified until the rest is added.
+    Asserted: an open at an exhausted headroom succeeds.
+    One synced loss record on the open reserve names the corrupt record of a sealed segment.
+    The superseded content is never served, and a second open appends no second loss record.
+    Asserted only by the journal's package tests: the corrupt records past the reserve defer;
+    an ended holder's emptying writes the deferred loss record into its target;
+    a sealed segment holding failed records past the reserve is emptied without them.
+    Not built, epic 7: ending a sealed holder's deferral. It never ends in-process and stands
+    across restarts, each open re-detecting and re-deferring it.
+    Not built, epic 7: the emptying of an unsealed segment holding failed records past the reserve.
+    Not built, epic 9: the repack of the segments holding deferred records, whose targets carry
+    their loss records; the copier has no production caller.
+    Not checked: Files and Since listing a deferred loss before Settle.
+rfc1 / 9.4 / B / "a closed writer forgets its error":
+  owner: epic 5
+  reason: 'the descriptor cache does not keep a writer''s error past its close yet'
+rfc28 / 4.2 / A / "a failed read is not damage":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "unproven tail with a failed re-read":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "failed window with a failed read":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "unreadable is not empty":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "acknowledging a range":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a removal whose phase 2 is done":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "an unread file at start":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "same-commit supersession":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "resume after the unlink":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a deferred drop in another segment":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a drop races a repack copy":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "partial drops at the maximum":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a resume scoped by the mark":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a drop held up by a pinned segment":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a partial drop survives a restart":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a removal from offset 0":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a header-only record by version":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a lost hold fails its snapshot":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "`format` rebuilt":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "an unread file keeps its order":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "unread, offloaded":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc28 / 4.2 / A / "a dead unread record":
+  owner: epic 7
+  reason: 'a read failing with EIO and AcknowledgeUnreadable are not built yet'
+rfc1 / 9.4 / A / "`DropOlder`":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc1 / 9.4 / A / "two drop calls, two reasons":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc1 / 9.4 / A / "an unread `reconcile` or `reconciled` record":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc1 / 9.4 / A / "a reconcile-retained piece is never held again":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc1 / 9.4 / A / "an ended segment outlives its copies' proof":
+  owner: epic 6
+  reason: 'an ended segment held until a recorded mark or a seal past its copies is not built yet'
+rfc1 / 9.4 / A / "the hold on an ended segment is bounded":
+  owner: epic 6
+  reason: 'an ended segment held until a recorded mark or a seal past its copies is not built yet'
+rfc1 / 9.4 / A / "read-only fails every stream's unsynced records":
+  owner: epic 6
+  reason: 'the read-only transition failing every stream''s unsynced records is not built yet'
+rfc1 / 9.4 / C / "`Share` twice on one tag":
+  owner: epic 8
+  reason: 'Share of an open tag is built (T8.3); the row''s Fill waits for T8.7, and the fixture for epic 7''s Init and Open'
+rfc28 / 4.2 / C / "a range that names no record":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc28 / 4.2 / C / "the reconcile stays owed":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc28 / 4.2 / C / "a recovery seal holds no catalog of a range":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc28 / 4.2 / C / "a mark proves only up to `Through`":
+  tests: [TestRFC1A_SyncMarksNameTheRecordsTheyProve, TestRFC28C_AMarkProvesOnlyUpToThrough, TestRFC1A_StatsSyncMarksCoverWhatSyncReturned]
+  owner: epic 7
+  reason: 'Sync names its marks, and the journal serves each stream''s last one as Stats.SyncMarks, which follows the last sync that named a file of the stream, and takes MarksRecorded; the tests check what each mark claims and that the served entry covers what Sync returned. What remains is the open''s use of a recorded mark -- cutting a scanned tail at `Through`, counting a lost tail, running the reconcile -- which is epic 7''s recovery.'
+rfc28 / 4.2 / C / "a counted range is not counted again":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc28 / 4.2 / C / "a held superseded piece stays owed":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc28 / 4.2 / C / "the reconcile settles when the hold ends":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc28 / 4.2 / C / "`Reconciled` with no headroom":
+  owner: epic 7
+  reason: 'the metadata reconcile, DropOlder and Reconciled are not built yet'
+rfc28 / 4.2 / C / "a lost synced tail":
+  owner: epic 7
+  reason: 'sync marks and the open''s use of them are not built yet'
+rfc28 / 4.2 / C / "a partly superseded record is still checked":
+  tests: [TestRFC28C_APartlySupersededRecordIsStillChecked]

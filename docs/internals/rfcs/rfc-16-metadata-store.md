@@ -934,7 +934,7 @@ type NodeStatus struct {
 	RestartPending []RecordRef
 	Secrets        []SecretVersion // each secret reference it resolves, and the version it holds (RFC 13 §7)
 	Conditions     []byte // the node's health conditions (RFC 25)
-	Adapters       []AdapterStatus // RFC 23 §2.4: each protocol's state and the settings generation it runs
+	Adapters       []AdapterStatus // RFC 23 §2.4: each protocol's state, the settings generation it runs and the port it bound
 }
 
 // AdapterStatus is one of a node's adapters as the node reports it.
@@ -942,6 +942,7 @@ type AdapterStatus struct {
 	Protocol   string
 	State      AdapterState // configured, serving, draining or stopped (RFC 20); the zero value names none
 	Generation uint64       // the settings generation the adapter runs
+	Port       uint16       // the TCP port its listener bound while serving, 0 otherwise
 }
 ```
 
@@ -2722,7 +2723,9 @@ path blocks until explained, as [Test tiers](rfc-index.md#Test%20tiers) sets out
 - Every operation runs under a profiler label naming it (`op=create`,
   `op=getattr`, …) and its area, so a CPU or allocation profile of a mixed
   workload splits by operation.
-- A trace span per operation carries one child span per `KV` call, with keys
+- Under a sampled parent
+  ([RFC 25 §6.1](rfc-25-observability.md#6.1%20Spans)), a trace span per
+  operation carries one child span per `KV` call, with keys
   read, keys written and retries as attributes. A slow operation shows whether
   it waited on the KV, on a conflict retry, or on itself.
 - The in-memory `KV`'s `Counts` of §6.3 are also a profiling tool: run a
@@ -2823,7 +2826,7 @@ API. Principal labels are never used.
 
 Expected errors (`ErrNoEntity`, `ErrExist`, `ErrAccess`, stale handle) are
 `Debug`; a codec refusal, a refused format or fold rule, and an invariant
-violation found by audit are `Error` with the entity ID. Each such event carries the operation's trace ID.
+violation found by audit are `Error` with the entity ID. Each such event carries a trace ID: an operation's when its request is sampled, and an audit's, which is a pass, always ([RFC 25 §5.3](rfc-25-observability.md#5.3%20Structure%20and%20correlation)).
 
 ### 8.3 Health and debugging
 

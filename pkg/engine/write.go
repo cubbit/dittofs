@@ -1,0 +1,291 @@
+package engine
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"math"
+	"slices"
+	"syscall"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
+)
+
+// Write stages p at off of file f of share s and answers once the journal
+// holds it: it makes no store call and waits for nothing but the journal. The
+// verifier is sampled before the write is staged. The write's operation is in
+// f's entry before Write answers, so a read that starts after reflects it. A
+// zero-length write stages nothing and calls o.Done once; a refused one never
+// calls it. A range below zero or past the largest offset is ErrInvalid.
+// While the self-fence holds it answers ErrDelay with DelayCommit, or a
+// read-only journal's refusal ahead of it.
+func (e *Engine) Write(ctx context.Context, s entity.ShareID, f entity.FileID, off int64, p []byte, o WriteOpts) (vfserr.Verifier, error) {
+	if off < 0 || int64(len(p)) > math.MaxInt64-off {
+		return vfserr.Verifier{}, vfserr.ErrInvalid
+	}
+
+	b, err := e.enter(s)
+	if err != nil {
+		return vfserr.Verifier{}, err
+	}
+	defer b.gate.leave()
+	if err := e.fenceGate(b); err != nil {
+		return vfserr.Verifier{}, err
+	}
+	v := e.verifier(b)
+	if len(p) == 0 {
+		if o.Done != nil {
+			o.Done()
+		}
+		return v, nil
+	}
+	var now time.Time // the last attempt's reading: the entry keeps the time the journal records
+	var mtime int64   // nanoseconds since the Unix epoch; 0 leaves the modification time alone
+	// Each attempt admits the write under the entry's lock, where a clone's
+	// registration is checked and installed, counts it until the journal has
+	// answered, and leaves, so a write waiting for the raise holds neither the
+	// lock nor a registration that a removal or a clone would wait on.
+	x := entity.Extent{Offset: off, Length: int64(len(p))}
+
+	got, err := answeringRefusals(ctx, e, b, true, func() (admitted, error) {
+		// Read on each attempt, so a write that waited for the raise lands
+		// with the time the journal took it, not one older than a write that
+		// arrived after it and was served first.
+		now = e.d.Clock.Now()
+		mtime = 0
+
+		if o.Suspend&entity.TimeModify == 0 {
+			mtime = now.UnixNano()
+		}
+
+		fe, err := e.admitAfterStaging(ctx, f)
+		if err != nil {
+			return admitted{}, err
+		}
+
+		if err := fe.refuseWrite(x); err != nil {
+			e.files.unlock(f, fe)
+
+			return admitted{}, err
+		}
+
+		fe.writing = append(fe.writing, x)
+		gone := fe.forgetOver(f, x) // a done clone over x is a retry's no more
+		e.files.unlock(f, fe)
+		e.unremember(gone...)
+
+		ver, err := b.h.WriteAt(ctx, fileID(f), off, p, mtime)
+		fe = e.files.lockFor(f) // the admitted write keeps the entry alive
+		fe.leave(x)
+
+		if err != nil {
+			e.files.unlock(f, fe)
+
+			if _, refused := capacityRefusal(err); refused {
+				return admitted{}, err
+			}
+
+			return admitted{}, e.journalErr(err)
+		}
+
+		return admitted{ver: ver, fe: fe}, nil
+	})
+	if err != nil {
+		return vfserr.Verifier{}, err
+	}
+
+	e.acceptedWrite(b)
+
+	ver, fe := got.ver, got.fe
+	// A loss drained since WriteAt answered found no pending write to apply
+	// to and was kept: one that drops its write (see drops) drops it, its
+	// Done run and nothing charged, any other inserts the write with the run
+	// it names lost.
+	var lost, unsynced []entity.Extent
+	for _, ev := range b.gc.losses.unmatched(f, ver) {
+		if !drops(ev, journal.Extent{Off: off, Len: int64(len(p))}) {
+			lost, unsynced = addLoss(lost, unsynced, journal.Extent{Off: off, Len: int64(len(p))}, ev)
+			continue
+		}
+		e.files.unlock(f, fe)
+		if o.Done != nil {
+			o.Done()
+		}
+		return v, nil
+	}
+	// Refused once the engine closed or the journal's device was lost: the
+	// write is answered unavailable and its Done is not called, as for any
+	// write Write refuses. A file's first pending write also makes it due.
+	if len(fe.ops) == 0 {
+		err = b.gc.note(b, f, now)
+	} else {
+		err = b.gc.refused()
+	}
+	if err != nil {
+		e.files.unlock(f, fe)
+		return vfserr.Verifier{}, err
+	}
+	fe.insert(pendingOp{
+		version:   ver,
+		kind:      opWrite,
+		extent:    journal.Extent{Off: off, Len: int64(len(p))},
+		at:        now,
+		setsMtime: mtime != 0,
+		lost:      lost,
+		unsynced:  unsynced,
+		done:      o.Done,
+	})
+	// A loss drained between this write's WriteAt and its insert may have
+	// left an earlier write's pieces covered only once this one is in the
+	// entry, and this write's own kept losses may cover it: drop what is.
+	dones := fe.dropCovered()
+	e.files.unlock(f, fe)
+	runAll(dones)
+	e.issued(b.vl, ver)
+
+	return v, nil
+}
+
+// admitted is a write the journal accepted: its version, and its file's entry,
+// locked.
+type admitted struct {
+	ver journal.Version
+	fe  *fileEntry
+}
+
+// admitAfterStaging is f's entry, locked, once no removal is waiting out the
+// writes admitted before it, so a write admitted now reaches the journal
+// after that removal. An entry that died during the wait is looked up again.
+func (e *Engine) admitAfterStaging(ctx context.Context, f entity.FileID) (*fileEntry, error) {
+	fe := e.files.lockFor(f)
+	for fe.staging {
+		stop := context.AfterFunc(ctx, func() {
+			fe.mu.Lock()
+			fe.staged.Broadcast()
+			fe.mu.Unlock()
+		})
+		for fe.staging && ctx.Err() == nil {
+			fe.staged.Wait()
+		}
+		stop()
+		if err := ctx.Err(); err != nil {
+			e.files.unlock(f, fe)
+			return nil, err
+		}
+		if fe.dead {
+			fe.mu.Unlock()
+			fe = e.files.lockFor(f)
+		}
+	}
+	return fe, nil
+}
+
+// Draw is the next version of the journal holding file f of share s, for a
+// change stored outside the journal: above every version staged or drawn on
+// that journal before it, and no version of the engine's own. The caller
+// holds the file's accept lock, so Draw takes no lock and creates no entry.
+func (e *Engine) Draw(ctx context.Context, s entity.ShareID, f entity.FileID) (entity.JournalVersion, error) {
+	b, err := e.bindingOf(s)
+	if err != nil {
+		return entity.JournalVersion{}, err
+	}
+
+	v, err := refusing(ctx, e, b, true, func() (journal.Version, error) { return b.j.Draw() })
+	if err != nil {
+		return entity.JournalVersion{}, err
+	}
+
+	e.issued(b.vl, v)
+
+	return entity.JournalVersion(v.Bytes()), nil
+}
+
+// insert adds op to the entry's operations in version order. The caller
+// holds the entry's lock.
+//
+// decision: the entry's lock is not held across the journal's WriteAt, so an
+// operation is inserted after the journal answers, by its version. Writes of
+// one file reach the engine in version order because the filesystem holds the
+// file's accept lock across Write, so a capture never sees a later write
+// before an earlier one. Withdraw this if a caller can ever stage two writes
+// of one file at once.
+func (fe *fileEntry) insert(op pendingOp) {
+	i, _ := slices.BinarySearchFunc(fe.ops, op.version, func(o pendingOp, v journal.Version) int {
+		return o.version.Compare(v)
+	})
+	fe.ops = slices.Insert(fe.ops, i, op)
+}
+
+// fileID is f as the journal names it.
+func fileID(f entity.FileID) journal.FileID { return journal.NewFileID(f) }
+
+// journalErr is the content methods' answer for an error the journal
+// returned, so no journal type crosses the content boundary.
+func (e *Engine) journalErr(err error) error {
+	// A capacity refusal of a call that does not go through the refusal path
+	// (Forget at Drop is one) is answered by the table, uncounted and
+	// unlogged, as it answers no client write. A read-only journal is no
+	// capacity refusal, so its case below is unchanged.
+	if answer, ok := tableAnswer(err); ok {
+		return answer
+	}
+
+	var other *journal.OtherShareError
+	switch {
+	case errors.As(err, &other):
+		return fmt.Errorf("engine: %v: %w", err, vfserr.ErrCorrupt)
+	case errors.Is(err, journal.ErrJournalReadOnly):
+		// A read-only journal refuses every write until it is reopened, so
+		// a refusal is expected and logged at Debug: noteReadOnly logs the
+		// state once. EROFS, a remount only an operator
+		// clears, is ErrReadOnly; any other cause may pass, so it is
+		// retry-later, DelayJournal (RFC 8 §11.2; the cause per RFC 17 §4.3).
+		e.noteReadOnly(true, err)
+		e.d.Logger.Debug("journal read-only", "err", err)
+		if errors.Is(err, syscall.EROFS) {
+			return fmt.Errorf("engine: %v: %w", err, vfserr.ErrReadOnly)
+		}
+		return &vfserr.Delay{Cause: vfserr.DelayJournal}
+	case errors.Is(err, journal.ErrClosed):
+		return fmt.Errorf("engine: journal closed: %w", vfserr.ErrUnavailable)
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return err
+	}
+	e.d.Logger.Error("journal call failed", "err", err)
+	return fmt.Errorf("engine: %v: %w", err, vfserr.ErrUnavailable)
+}
+
+// noteReadOnly logs at Error, once per transition, the journal turning
+// read-only, cause what entered the state, as journal_read_only is an
+// unhealthy condition (RFC 25 §3.4); ro false clears the mark, so a journal
+// turned read-only again is logged again. A write's refusal and every sync's
+// drain report the state.
+//
+// ponytail: one mark for the engine, as Start serves one journal. Key it by
+// journal once Start serves several.
+func (e *Engine) noteReadOnly(ro bool, cause error) {
+	if e.readOnlyLogged.Swap(ro) || !ro {
+		return
+	}
+	e.d.Logger.Error("journal turned read-only: it refuses writes until it is reopened", "err", cause)
+}
+
+// journalReadErr is journalErr for the journal's answer to a read: the
+// device's EIO is ErrIO, answered at once and never retried here, the bytes
+// kept (RFC 17 §4.3). A write's EIO stays journalErr's ErrUnavailable.
+//
+// decision: any EIO a read returns is ErrIO. The RFC names the journal's
+// ErrUnreadable, a read its bounded retry could not complete (RFC 8 §12.1,
+// RFC 17 §4.3); the journal declares the error but no read of the running
+// journal returns it yet, and a read that fails on the device ends in EIO.
+// Match ErrUnreadable here once the journal's reads return it.
+func (e *Engine) journalReadErr(err error) error {
+	if errors.Is(err, syscall.EIO) {
+		e.d.Logger.Error("journal device read failed", "err", err)
+		return fmt.Errorf("engine: %v: %w", err, vfserr.ErrIO)
+	}
+	return e.journalErr(err)
+}

@@ -23,7 +23,7 @@ var Tiers = []string{"pr", "merge", "nightly", "manual"}
 
 var (
 	formats    = set("exit", "go-json", "junit", "tap", "subunit", "trx", "nfstest")
-	metrics    = set("fio-json", "dfsbench-json")
+	metrics    = set("fio-json", "dfsbench-json", "go-bench")
 	plainNeeds = set("linux", "windows", "macos", "root", "docker", "podman", "rpcbind", "knfsd", "nfs-client", "smb-client", "smbclient", "nfs4-acl-tools", "kerberos", "dm-flakey", "fio", "host:dedicated")
 	// Placeholders every cell may use; a cell's matrix axes add their own.
 	placeholders = set("test", "test-args", "args", "names", "base", "bin", "tools", "out", "packages", "server", "nfs-port", "smb-port", "mount", "bucket", "share", "user", "user2", "password", "realm", "krb5-conf", "client2")
@@ -36,7 +36,7 @@ var (
 	// PlaceholderRE matches a {name}, or a shell's ${VAR}, which Placeholders
 	// and dt run leave alone.
 	PlaceholderRE = regexp.MustCompile(`\$?\{([A-Za-z0-9_.-]+)\}`)
-	// toolRE matches the name after a {tools} or a {bin}, as /pjdfstest.
+	// toolRE matches the tool's name after a {tools}, as /pjdfstest.
 	toolRE = regexp.MustCompile(`^/([A-Za-z0-9_.-]+)`)
 )
 
@@ -122,7 +122,13 @@ func checkUnit(root string, u *Suite) []error {
 		fail("format %q is not one of exit, go-json, junit, tap, subunit, trx, nfstest", u.Format)
 	}
 	if u.Metrics != "" && !metrics[u.Metrics] {
-		fail("metrics %q is not fio-json or dfsbench-json", u.Metrics)
+		fail("metrics %q is not fio-json, dfsbench-json or go-bench", u.Metrics)
+	}
+	// dt reads a test's own numbers, after an exit-format test: a reader on
+	// another format or without tests records nothing. dt doesn't read
+	// dfsbench-json yet.
+	if (u.Metrics == "fio-json" || u.Metrics == "go-bench") && (u.Format != "exit" || !u.Tests.Set()) {
+		fail("metrics %q needs format exit and a tests list", u.Metrics)
 	}
 	if !isTier(u.Tier) {
 		fail("tier %q is not one of %s", u.Tier, strings.Join(Tiers, ", "))
@@ -270,14 +276,9 @@ func checkUnit(root string, u *Suite) []error {
 		for _, p := range u.Unknown(s) {
 			fail("unknown placeholder {%s}", p)
 		}
-		for _, name := range refs(s, "tools") {
+		for _, name := range toolRefs(s) {
 			if _, ok := ToolDirs[name]; !ok {
 				fail("{tools}/%s: no such tool; write {tools}/NAME, NAME one of %s", name, strings.Join(slices.Sorted(maps.Keys(ToolDirs)), ", "))
-			}
-		}
-		for _, name := range refs(s, "bin") {
-			if _, ok := BinPackages[name]; !ok && name != "" {
-				fail("{bin}/%s: no such program; NAME is one of %s", name, strings.Join(slices.Sorted(maps.Keys(BinPackages)), ", "))
 			}
 		}
 	}
@@ -483,16 +484,10 @@ func (a Axis) fillNames() []string {
 
 // Tools returns the test tools the suite names, as {tools}/NAME in any of its
 // fields, each once, sorted by name.
-func (u *Suite) Tools() []string { return u.named("tools") }
-
-// Bins returns the programs the suite names, as {bin}/NAME in any of its
-// fields, each once, sorted by name.
-func (u *Suite) Bins() []string { return u.named("bin") }
-
-func (u *Suite) named(placeholder string) []string {
+func (u *Suite) Tools() []string {
 	var out []string
 	for _, s := range u.allStrings() {
-		for _, name := range refs(s, placeholder) {
+		for _, name := range toolRefs(s) {
 			if name != "" && !slices.Contains(out, name) {
 				out = append(out, name)
 			}
@@ -502,12 +497,12 @@ func (u *Suite) named(placeholder string) []string {
 	return out
 }
 
-// refs returns what each {placeholder} in s names as {placeholder}/NAME, or
-// "" for one that names none. A shell's ${tools} is the shell's own.
-func refs(s, placeholder string) []string {
+// toolRefs returns the tool each {tools} in s names as {tools}/NAME, or ""
+// for one that names none. A shell's ${tools} is the shell's own.
+func toolRefs(s string) []string {
 	var out []string
 	for _, m := range PlaceholderRE.FindAllStringSubmatchIndex(s, -1) {
-		if s[m[0]] == '$' || s[m[2]:m[3]] != placeholder {
+		if s[m[0]] == '$' || s[m[2]:m[3]] != "tools" {
 			continue
 		}
 		name := ""

@@ -628,7 +628,12 @@ names ([RFC 28 §3.3](rfc-28-journal-format.md#A%20read%20that%20fails%20is%20no
 its device and the rule or the range, and the engine raises `journal_unsuitable`
 or `journal_range_unreadable` and retries the open — every 30 s for unsuitable
 storage, the probe constant of [RFC 1 §5.4](rfc-1-journal.md#5.4%20A%20journal%20that%20cannot%20write), and every 60 s (proposal) for an
-unread range, which waits on a device rather than a probe. An unread range
+unread range, which waits on a device rather than a probe. A share whose journal
+`Open` refuses at its own recovery, with `ErrOpenRefused` ([RFC 1 §3](rfc-1-journal.md#3.%20Interface)) for a cause a retry can
+clear, a lost synced tail or a range that names no record, is left unattached
+the same way, raises `journal_open_refused` and is retried every 30 s; a record
+kind the journal cannot build answers `ErrNotImplemented`, which no retry
+clears, and fails `Start`. An unread range
 also ends when an operator acknowledges it ([RFC 28 §3.3](rfc-28-journal-format.md#An%20operator%20acknowledges%20a%20range%20that%20never%20reads)): the retry then
 runs `AcknowledgeUnreadable`, passed the sync marks step 1 read for `Open`, opens the journal, drops what metadata cannot show
 current before step 3 — as a start that finds an acknowledgement running with
@@ -662,8 +667,8 @@ device, gated as below, and raises `journal_lost` in place of
 `journal_unsuitable` or `journal_range_unreadable`. A retried open, or a late attach, that fails for any
 other cause closes what it opened, in reverse, leaves the shares unattached,
 and is retried; `journal_unsuitable` then names that cause. Each retry
-follows the cause its latest open met — unsuitable storage at 30 s, an unread
-range at 60 s, raising that cause's condition and clearing the other — so a
+follows the cause its latest open met — unsuitable storage and a recovery
+refusal at 30 s, an unread range at 60 s, raising that cause's condition and clearing the other — so a
 journal whose cause changes between opens is never held on the wrong one. A recovery import
 whose adopted journal is refused publishes nothing, since it cannot raise the
 tag counter above that journal's tags ([RFC 26 §2.3](rfc-26-catalog-backups.md#2.3%20Restore)).
@@ -2924,7 +2929,9 @@ says the file ends at or before that offset, as a short read does there.
   engine asks the journal again, as [§7.1](#7.1%20Resolution%20asks%20the%20journal%20first%2C%20then%20metadata) does: keyed on `applied` alone it misses
   a pending existence split over several transactions.
 - It **MUST** fail the read as **Lost** when an answer names a location that
-  already missed, or names a chunk with no chunk record.
+  already missed, or names a chunk with no chunk record or whose record names a
+  deleted block or a block with no record: such a span carries no location
+  ([RFC 6 §8.1](rfc-6-block-metadata.md#8.1%20Covering%20lookup)).
 - A ranged read that fails verification is **corrupt**, not stale, and **MUST
   NOT** trigger re-resolution; neither does a transport error or a timeout.
 
@@ -2957,7 +2964,11 @@ spent for nothing.
 **Proposal:** a read asks for **only the chunks it covers** when its missing bytes
 are at most a quarter of the block **and** it is not sequential — it neither
 starts at the block's beginning nor continues where the file's previous read
-ended. Otherwise it asks for **the whole block**. Read-ahead and pre-warm follow
+ended. Otherwise it asks for **the whole block**, unless the read's fill will be
+declined ([§7.3](#7.3%20Filling%20is%20a%20decision)): the block's other chunks would then be fetched and
+dropped, and a long scan, which continues every read and fills none, would fetch
+each block once per read over it, so such a read asks for only its chunks.
+Read-ahead and pre-warm follow
 the same rule over the bytes the journal does not hold, and skip a block it holds
 whole (S5, [§7.4](#7.4%20The%20speculator)).
 
@@ -3091,6 +3102,11 @@ which calls the journal's `Delete`, never its `Release`, which evicts
    none, whatever the extent's size: every ref over the extent is dropped or
    narrowed in phase 2 ([RFC 6 §6.2](rfc-6-block-metadata.md#6.2%20Truncation%20and%20deallocation)). A deallocate's phase 1 does write one
    hole: the extent's merged hole, at *v*, under the merged hole's own start key ([§8.2](#8.2%20Deallocate%20records%20a%20hole%3B%20it%20does%20not%20write%20zeros)).
+   A truncate's or deallocate's phase 1 moves the file's change time, and its
+   modification time unless the call's suspended times (`WithSuspended`) name Modify: the times the open it
+   came through suspended, as a write's `Suspend` does ([RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write)). The mask
+   is held in memory only, since the journal's removal record carries none, so
+   a truncate or deallocate replayed at a start moves Modify whatever it suspended ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)).
 4. Release the guard, `Settle(id, v)`, post `RemovalPending(file)` ([§6.1](#6.1%20The%20work%20queue)),
    and return. A pending release has returned its retry channel already, and
    runs this step once its retried phase 1 commits.
@@ -3401,7 +3417,10 @@ refusal of the first chunk returns the error.
    — left to phase 2's batches ([RFC 6 §6.6](rfc-6-block-metadata.md#6.6%20Clone%20and%20server-side%20copy)), and raises the destination's
    `MaxSpan` to the extent's length, the longest hole a batch can write
    there, joined holes included. A crash between the two leaves the clone's
-   journal marker, from which start rebuilds the clone ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). Release the
+   journal marker, from which start rebuilds the clone ([§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). As a truncate's or
+   deallocate's does ([§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches)), phase 1 leaves the destination's modification time
+   alone when the call's suspended times name Modify; a clone rebuilt at a
+   start moves it, the journal's clone marker carrying no mask. Release the
    guard and `Settle(dst, v)`.
 5. **Phase 2**, once `Hold` has taken over the source's open ([§2.6](#2.6%20Dependencies%20and%20wiring)), batches within the key budget `K` through `Resume`, metadata only:
    each resolves its source extent by the covering lookup ([RFC 6 §8.1](rfc-6-block-metadata.md#8.1%20Covering%20lookup)).
@@ -3752,6 +3771,10 @@ The engine raises these [RFC 25 §3.9](rfc-25-observability.md#3.9%20The%20condi
 open or late attach, the rule or another cause, until the late attach serves, [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)),
 `journal_headroom_short` (journal, while `Stats.HeadroomSparesShort` is above zero, [RFC 1 §6](rfc-1-journal.md#6.%20Capacity)),
 `journal_unreconciled` (share, naming the metadata read that failed, or journal, naming the `Reconciled` refusal or a settling step the headroom refuses, while the metadata reconcile of [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing) is retried),
+`journal_open_refused` (journal, naming the directory and the recovery rule the
+open refused, when an open at start, a retried open or a reopen is refused by
+the journal's own recovery for a cause a retry can clear, until an open stops
+refusing, [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)),
 `journal_range_unreadable` (journal, naming the segment and the byte range,
 when an open at start, a retried open or a reopen fails on an unread range
 nothing names or on an unreadable `format`, until the range reads or an operator
@@ -3884,6 +3907,7 @@ removal ([RFC 16 §2.3.2](rfc-16-metadata-store.md#2.3.2%20Removing%20a%20share)
 | `Truncate(share, file, size)`, `Deallocate(share, file, off, n)`, `Delete(share, file)` | [§8](#8.%20Truncate%2C%20deallocate%20and%20release) |
 | `Clone(srcShare, src, dstShare, dst, x)`, `Copy(srcShare, src, dstShare, dst, xs)` | [§9](#9.%20Clone) |
 | `WithAdmitted(ctx, hook)`, `Admitted(ctx)` | the hook `Clone`, and each chunk of `Copy`, calls on the calling goroutine with none of the engine's locks held: on a new clone once its admission's refusals have passed and it holds its registrations, before step 1; on a join once it has found the running clone, which may already have changed the destination. A retry of a done clone answers without calling it. Its error refuses the call, changing nothing; on a copy's later chunk it ends the copy short. `Admitted` runs it, for another `Content` to call at the same point. [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally), [RFC 17 §5.9](rfc-17-vfs.md#5.9%20Copy%20and%20clone) |
+| `WithSuspended(ctx, m)`, `Suspended(ctx)` | the times `Truncate`, `Deallocate`, `Clone` and `Copy` leave alone, those the calling open suspended, as a write's `Suspend` is; of them only Modify is one these calls move, and the change time moves whatever `m` names. `Suspended` answers none for a ctx that carries none, for another `Content` to read at the same calls. [§8.1](#8.1%20A%20removal%20is%20one%20transaction%2C%20then%20batches), [§9.1](#9.1%20Clone%20adopts%20carved%20refs%20and%20copies%20the%20rest%20locally), [RFC 17 §5.1](rfc-17-vfs.md#5.1%20Write) |
 | `Overlay(share, file)` | size, times and version of the journal's uncommitted operations of the file, replayed in version order, and whether any is pending ([§4.1](#4.1%20A%20write%20is%20staged%20and%20acknowledged%2C%20and%20nothing%20more)) |
 | `Allocation(share, file, off)` | [§7.6](#7.6%20Allocation%20answers%20from%20the%20hole%20set) |
 | `PrepareCut(shard)`, `CommitCut(shard)` | the snapshot cut, [§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal) |
@@ -3981,6 +4005,11 @@ func (e *Engine) Allocation(ctx context.Context, s ShareID, f FileID, off int64)
 func WithAdmitted(ctx context.Context, admitted func() error) context.Context
 // Admitted runs the hook ctx carries, if any, and answers its error.
 func Admitted(ctx context.Context) error
+// WithSuspended returns ctx carrying m, the times a Truncate, Deallocate, Clone
+// or Copy called with it leaves alone; only Modify is one they move.
+func WithSuspended(ctx context.Context, m TimeMask) context.Context
+// Suspended answers the times ctx carries, none when it carries none.
+func Suspended(ctx context.Context) TimeMask
 
 // Control: node-local.
 func (e *Engine) PrepareCut(ctx context.Context, shard ShardID) error              // RFC 12 §2.3 prepare, gate open
@@ -4072,7 +4101,7 @@ remote, cold, or pinned. Residency is computed ([RFC 0 §4.2](rfc-0-data-lifecyc
 | E11 | Only the offloaded bit — set after the offload commit, cleared when the remote body's material is destroyed — decides whether an extent may be evicted; journal durability never does. |
 | E12 | Sustained offload failure is a health condition, distinct from an unreachable remote. |
 | E13 | No background work outlives a component it uses. |
-| E14 | A get that finds its object absent re-runs the covering lookup while the location changes, and fails as **Lost** only when a location misses twice or a named chunk has no record. |
+| E14 | A get that finds its object absent re-runs the covering lookup while the location changes, and fails as **Lost** only when a location misses twice or a named chunk has no record, or no live block ([RFC 6 §8.1](rfc-6-block-metadata.md#8.1%20Covering%20lookup)). |
 | E15 | Existence is answered from the journal until committed — before the stability reply for an overwrite, lazily otherwise, up to the cut points behind a closed gate — always after the sync that made it recoverable, and re-applied at recovery before a file is served, except an unread file, which takes writes before its re-apply and serves no read ([§5.1](#5.1%20Commit%20is%20answered%20by%20the%20journal), [§2.5](#2.5%20Start%20in%20order%2C%20stop%20in%20reverse%2C%20and%20join%20before%20closing)). |
 | E16 | An upload survives a removal under it; its commit drops every ref overlapping a removal of higher version than the ref's `newest`, straddlers whole, and reports none of their extents. |
 | E17 | Correctness never depends on the per-file guard; the metadata store's conflicts order commits. |
@@ -4132,7 +4161,7 @@ pipeline states, `count` for operations per commit.
 | stability points, the operations each committed, and group-commit splits ([§5.2](#5.2%20Group%20commit%20is%20bounded%2C%20and%20retries%20only%20the%20files%20that%20conflict)) | `engine_stability_points_total`, `engine_pending_existence_ops`, `engine_group_commit_splits_total` | counter, histogram, counter |
 | reads, labelled `class` = `journal`, `hole`, `remote`, `lost`, `corrupt` or `unavailable`; read latency ([§7.2](#7.2%20The%20reply%20holds%20only%20verified%20chunks%2C%20in%20file%20order)) | `engine_reads_total`, `engine_read_seconds` | counter, histogram |
 | fetches, labelled `shape` = `chunks` or `block` ([§7.8](#7.8%20A%20cold%20read%20asks%20for%20chunks%2C%20or%20for%20the%20block)), and bytes fetched against bytes read | `engine_fetches_total`, `engine_fetch_bytes_total` | counter |
-| fills, labelled `result` = `done`, `declined` or `refused` ([§7.3](#7.3%20Filling%20is%20a%20decision)) | `engine_fills_total` | counter |
+| fills, labelled `result` = `done`, `declined` or `refused`, and a declined fill also `reason` = `low_water` (free capacity below the fill low-water mark), `scan` (a sequential scan past the read-ahead window) or `bound` (the share's fills in flight at their bound); the other results carry no `reason` ([§7.3](#7.3%20Filling%20is%20a%20decision)) | `engine_fills_total` | counter |
 | speculative bytes fetched, and those read before eviction ([§7.4](#7.4%20The%20speculator)) | `engine_speculation_bytes_total`, `engine_speculation_used_bytes_total` | counter |
 | re-resolutions after an absent object ([§7.7](#7.7%20An%20absent%20object%20is%20re-resolved%20while%20its%20location%20moves)) | `engine_reresolves_total` | counter |
 | evictions and bytes freed; pacing delays; refusals ([§10](#10.%20Local%20space)) | `engine_evicted_bytes_total`, `engine_pacing_seconds`, `engine_write_refusals_total` | counter, histogram, counter |
@@ -4154,7 +4183,9 @@ carrying the share and file by ID, the bytes and the outcome. The span names,
 proposals. An offload pass, a removal batch, a reseed and a pre-warm page open
 root spans of their own; a read that joins a fetch already in flight *links* to
 that fetch's span. Waits on a file's guard, a registration or the cut gate are
-span events. An unsampled span costs no allocation ([RFC 25 §6.3](rfc-25-observability.md#6.3%20Sampling%20and%20cost)).
+span events. A content call opens its spans only under a sampled parent, so an
+unsampled request's content calls allocate nothing for tracing
+([RFC 25 §6.1](rfc-25-observability.md#6.1%20Spans), [§6.3](rfc-25-observability.md#6.3%20Sampling%20and%20cost)).
 
 A **Lost** or corrupt read logs the file and extent at `Error`, once per extent.
 A share entering or leaving an offload health condition logs at `Warn`, and so

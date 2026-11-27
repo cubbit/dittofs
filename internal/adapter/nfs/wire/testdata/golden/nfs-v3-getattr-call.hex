@@ -1,0 +1,17 @@
+# An NFS version 3 GETATTR under AUTH_SYS, written from RFC 5531 sections 9 and 11 and
+# Appendix A: no COMPOUND prefix belongs to it.
+8000004c  # record mark: last fragment, 76 bytes
+99aabbcc  # xid
+00000000  # CALL
+00000002  # RPC version 2
+000186a3  # program NFS
+00000003  # version 3
+00000001  # procedure GETATTR
+00000001 0000001c  # credential: AUTH_SYS, 28 bytes
+  00000000  # stamp
+  00000004 686f7374  # machine name "host", 4 bytes, no padding
+  000003e8  # uid 1000
+  00000064  # gid 100
+  00000001 0000001b  # one auxiliary group, 27
+00000000 00000000  # verifier: AUTH_NULL, no body
+0102030405060708  # the filehandle's first eight bytes; the parse does not read arguments

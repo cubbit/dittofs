@@ -164,26 +164,6 @@ func TestEnvRefusesBeforeDocker(t *testing.T) {
 	}
 }
 
-// A service starts under its own name, published on 127.0.0.1 only, and
-// postgres is ready only once it answers over TCP.
-func TestServicesUpOnLoopback(t *testing.T) {
-	script, _ := envCopy(t)
-	calls := fakeTools(t)
-	t.Setenv("FAKE_DOCKER_STATUS", "0")
-	if out, status := envRun(t, script, "services", "up", "postgres"); status != 0 {
-		t.Fatalf("services up postgres: exit status %d\n%s", status, out)
-	}
-	got := takeCalls(t, calls)
-	for _, want := range []string{
-		"docker run -d --name dittofs-harness-pg-it -p 127.0.0.1:15432:5432 ",
-		"docker exec dittofs-harness-pg-it pg_isready -h 127.0.0.1 -U postgres",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("no %q among the docker calls:\n%s", want, got)
-		}
-	}
-}
-
 // kmip runs its pinned PyKMIP on loopback with certificates of its own, and
 // writes its environment file whole or not at all: a failed provisioning
 // leaves none.

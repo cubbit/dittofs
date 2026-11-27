@@ -1,0 +1,16 @@
+# A file's removals settle: a truncate and a deallocate each leave a marker,
+# the settle at pick=128 drops only the truncate's, the one after the delete
+# at pick=255 drops the rest, and the reads and the fill between check the
+# answers of a file with markers settled and not. Settling is not persisted,
+# but this sequence crashes nowhere, so the markers stay dropped.
+write s=1 f=1 len=32 b=97
+truncate s=1 f=1 off=8
+write s=1 f=1 off=8 len=8 b=120
+deallocate s=1 f=1 off=16 len=4
+read s=1 f=1 len=64
+settle s=1 f=1 pick=128
+fill s=1 f=1 off=24 len=8 b=200
+read s=1 f=1 len=64
+delete s=1 f=1
+settle s=1 f=1 pick=255
+read s=1 f=1 len=64

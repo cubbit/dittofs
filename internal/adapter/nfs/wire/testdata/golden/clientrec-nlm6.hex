@@ -1,0 +1,7 @@
+# The Adapter bytes of an NLM host reached over IPv6, version 1.
+01                                   # version
+00000003                             # kind: NLM
+00000001 68000000                    # mon_name "h", padded
+00010203 04050607 08090a0b 0c0d0e0f  # priv, 16 bytes
+00000010 20010db8 00000000 00000000 00000001   # Host 2001:db8::1
+00000010 20010db8 00000000 00000000 00000002   # Server 2001:db8::2

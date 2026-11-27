@@ -19,13 +19,19 @@ var fixtureSetup = plan.FixtureSetup
 // reports the server ending before its cell did.
 type fixtureServer interface {
 	Placeholders() map[string]string
-	Reset(share string) error
+	Reset(ctx context.Context, share string) error
 	Command(argv []string, dir string, env []string) ([]string, error)
 	Stop() error
 }
 
-// startFixture starts a cell's server; the tests replace it.
-var startFixture = func(ctx context.Context, f registry.Fixture, services []string, bin, out string, w io.Writer) (fixtureServer, error) {
+// startFunc starts a cell's server: fixture f, with the variables of the
+// services it needs, from the binaries in bin, its output under out and dt's
+// lines on its setup to w.
+type startFunc func(ctx context.Context, f registry.Fixture, services []string, bin, out string, w io.Writer) (fixtureServer, error)
+
+// startFixture is the start a run takes when its Options name none: the
+// kernel's NFS server for a knfsd fixture, DittoFS otherwise.
+func startFixture(ctx context.Context, f registry.Fixture, _ []string, bin, out string, w io.Writer) (fixtureServer, error) {
 	if f.Server == "knfsd" {
 		k, err := fixture.StartKnfsd(ctx, f, out, w)
 		if err != nil {
@@ -33,7 +39,7 @@ var startFixture = func(ctx context.Context, f registry.Fixture, services []stri
 		}
 		return k, nil
 	}
-	s, err := fixture.Start(ctx, f, services, bin, out, w)
+	s, err := fixture.Start(ctx, f, bin, out, w)
 	if err != nil {
 		return nil, err
 	}

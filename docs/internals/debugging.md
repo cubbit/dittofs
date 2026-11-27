@@ -61,3 +61,67 @@ behavior sometimes drifts in subtle ways:
 
 - NFS: <https://github.com/torvalds/linux/tree/master/fs/nfs>
 - SMB: <https://github.com/samba-team/samba>
+
+## Viewing metrics and traces
+
+A dev node gives a laptop two kinds of telemetry to watch. Its series, on the
+metrics listener the bootstrap's `metrics.listen` names — a start refuses an
+empty one. And, behind the `DITTOFS_OTLP_ENDPOINT` environment gate, its
+journals' spans, over OTLP/HTTP: no key in the configuration file turns tracing
+on, the gate is the environment alone, and unset it leaves the node untraced.
+
+Run the Grafana LGTM stack — Loki, Grafana, Tempo and Prometheus in one image,
+Grafana on 3000 and OTLP/HTTP on 4318. Prometheus in the image needs the node
+as a scrape target: the image's own config at `/otel-lgtm/prometheus.yaml`
+carries no scrape (its metrics arrive over OTLP), and a mounted file replaces
+it wholesale, so start from the image's own (`docker/prometheus.yaml` in the
+`grafana/docker-otel-lgtm` repository, whose `otlp` and `storage` sections
+the image's dashboards need) and append, for a node configured with
+`metrics.listen: 127.0.0.1:9100`, the job below
+(`host.docker.internal` reaches the host from Docker Desktop; on Linux pass
+`--add-host=host.docker.internal:host-gateway`):
+
+```yaml
+scrape_configs:
+  - job_name: dittofs
+    static_configs:
+      - targets: ["host.docker.internal:9100"]
+```
+
+Mount it where the image reads it:
+
+```sh
+docker run --name otel-lgtm -p 3000:3000 -p 4318:4318 \
+  -v "$(pwd)/prometheus.yaml:/otel-lgtm/prometheus.yaml:ro" \
+  grafana/otel-lgtm:latest
+```
+
+Then start the node with the gate:
+
+```sh
+DITTOFS_OTLP_ENDPOINT=http://localhost:4318 dfs start
+```
+
+The export is unauthenticated OTLP/HTTP to whatever the variable names, in
+clear for an `http` URL, and every span carries the journal's identity: point it only at a collector you
+trust, on a network you control.
+
+What to look for, in Grafana's Explore:
+
+- **Series**, from Prometheus: every journal series is prefixed
+  `dittofs_journal_` — `dittofs_journal_syncs_total` over a committed write,
+  `dittofs_journal_reservation_refused_total` as a fill reaches the journal's
+  limit — each labelled with the `journal` identity it belongs to.
+- **Spans**, from Tempo, under the service `dittofs`: each journal opens one
+  per sync (`journal.sync`), per refused reservation
+  (`journal.reserve_refused`), per repack pass (`journal.repack_pass`), the
+  open (`journal.open`, its phases `journal.open.*`) over a written segment
+  on a restart. Every span carries the `journal` attribute — the same 32 hex
+  characters of identity the series label holds — so a trace filters to one
+  journal the same way its series do, by the same value.
+
+When the node stops and the start unwinds, the provider flushes what it
+recorded within a five-second bound and shuts down — enough for a collector
+on the same laptop, but a collector that will not answer loses that run's
+spans rather than holding the exit, and a second termination signal ends the
+process before the flush runs at all.

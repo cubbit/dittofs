@@ -467,7 +467,10 @@ Uncovered: []fuzz.Omission{
 `fuzz.CheckCoverage(t, target)` enumerates the methods of each interface by reflection and the
 points of each fault source, and fails when one is named by no operation's `Covers` and by no
 `Omission`. It also fails on the reverse: an `Omission` or a `Covers` entry naming something
-that does not exist. `fuzz.Fuzz` runs the check before `f.Fuzz`, so it runs on every plain
+that does not exist. One kind of `Omission` belongs to no surface:
+`fuzz.Skipped(name, why)`, listed in `Uncovered` as `skip:name`, is a behaviour the target
+leaves out on purpose, such as a step it does not run in some state. The check fails when it has
+no name or no reason. `fuzz.Fuzz` runs the check before `f.Fuzz`, so it runs on every plain
 `go test`. A method added to an interface, or a fault point added to a wrapper, then breaks the
 target until someone decides whether to fuzz it, which is the point.
 

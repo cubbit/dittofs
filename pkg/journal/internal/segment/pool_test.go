@@ -1,0 +1,3003 @@
+package segment_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"runtime"
+	"slices"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/cubbit/dittofs/internal/prof"
+	"github.com/cubbit/dittofs/pkg/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/journal/internal/segment"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest/kit"
+)
+
+// poolAttempts bounds the polls a test makes on the pool before it gives up:
+// a count of yields, never a sleep — the refill worker is a goroutine the test
+// cannot hold, so a test watches the counters move instead of sleeping.
+const poolAttempts = 1 << 22
+
+// poolOf is a pool over a fresh seam and ledger: the Maker seeded with last,
+// reserving against max, the pool keeping spares of t ready under a nil
+// read-only check. The set the pool reaches through the Maker is the set
+// returned beside it, so a test reads the ledger's counters directly.
+func poolOf(t *testing.T, t2 segment.Targets, max int64, last core.SegmentID, log *slog.Logger) (
+	*kit.Seam, *segment.Set, *segment.Maker, *segment.Pool,
+) {
+	t.Helper()
+
+	seam := newSeam(t)
+	set := segment.NewSet(segCap, nil)
+	m := segment.NewMaker(seam.FS(), set, max, last, log)
+	return seam, set, m, segment.NewPool(m, t2, nil, log)
+}
+
+// awaitCounters fails t unless what the pool reports satisfies want within a
+// bounded count of yields.
+func awaitCounters(t *testing.T, what string, p *segment.Pool, want func(segment.PoolCounters) bool) {
+	t.Helper()
+
+	for range poolAttempts {
+		if c := p.Counters(); want(c) {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatalf("the pool never reached %s: it reports %+v", what, p.Counters())
+}
+
+// awaitDeviceFull fails t unless DeviceFull reports want within a bounded
+// count of yields: one make's outcome lands in the state only once the
+// worker returns.
+func awaitDeviceFull(t *testing.T, want bool, p *segment.Pool) {
+	t.Helper()
+
+	for range poolAttempts {
+		if p.DeviceFull() == want {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatalf("the pool's device-full state never became %v", want)
+}
+
+// assertSpareRefusal fails t unless err is the NoSpaceError the spare pool
+// owes: the spare limit, missing segments, the segments unit. Every refused
+// take a test checks also checks the two spellings of the limit's own.
+func assertSpareRefusal(t *testing.T, where string, err error, missing int64) {
+	t.Helper()
+
+	var ns *core.NoSpaceError
+	if !errors.As(err, &ns) {
+		t.Fatalf("%s: %v, want a *core.NoSpaceError", where, err)
+	}
+	if ns.Limit != core.LimitSpare {
+		t.Fatalf("%s named the %s limit, want %s", where, ns.Limit, core.LimitSpare)
+	}
+	if ns.Missing != missing {
+		t.Fatalf("%s said %d missing, want %d", where, ns.Missing, missing)
+	}
+	if ns.Unit != core.UnitSegments {
+		t.Fatalf("%s counted %s, want %s", where, ns.Unit, core.UnitSegments)
+	}
+}
+
+// assertJournalRefusal fails t unless err is the answer a roll draws when no
+// spare is ready and the journal's own maximum refuses to make one: the
+// ErrNoSegmentForTheRoll sentinel carrying the spare-class take's NoSpaceError
+// with the missing bytes the reservation lacked, never the pool's own `spare`,
+// and a spare-refusal counter the answer never raises.
+func assertJournalRefusal(t *testing.T, where string, err error, missing int64) {
+	t.Helper()
+
+	if !errors.Is(err, segment.ErrNoSegmentForTheRoll) {
+		t.Fatalf("%s: %v, want the ErrNoSegmentForTheRoll the refusing maximum answers with", where, err)
+	}
+	var ns *core.NoSpaceError
+	if !errors.As(err, &ns) {
+		t.Fatalf("%s: %v, want a *core.NoSpaceError", where, err)
+	}
+	if ns.Limit != core.LimitJournal {
+		t.Fatalf("%s named the %s limit, want %s", where, ns.Limit, core.LimitJournal)
+	}
+	if ns.Missing != missing {
+		t.Fatalf("%s said %d missing, want %d", where, ns.Missing, missing)
+	}
+	if ns.Unit != core.UnitBytes {
+		t.Fatalf("%s counted %s, want %s", where, ns.Unit, core.UnitBytes)
+	}
+}
+
+// recording is a slog Handler keeping every record handed to it, so a test
+// can assert the pool logged a refusal and at which level. The refill worker
+// logs from its own goroutine, so the records are kept under a mutex.
+type logRecorder struct {
+	mu   sync.Mutex
+	recs []slog.Record
+}
+
+func (r *logRecorder) Enabled(context.Context, slog.Level) bool { return true }
+
+func (r *logRecorder) Handle(_ context.Context, msg slog.Record) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recs = append(r.recs, msg.Clone())
+	return nil
+}
+
+func (r *logRecorder) WithAttrs([]slog.Attr) slog.Handler { return r }
+func (r *logRecorder) WithGroup(string) slog.Handler      { return r }
+
+// countAt returns how many records the handler holds at level whose message
+// contains sub.
+func (r *logRecorder) countAt(level slog.Level, sub string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	n := 0
+	for _, rec := range r.recs {
+		if rec.Level == level && strings.Contains(rec.Message, sub) {
+			n++
+		}
+	}
+	return n
+}
+
+// awaitHoldReached fails t unless the hold confirms its call arrived within
+// ten seconds: it proves a take's kick started the refill, so the test reads
+// what it reads with the replacement really in flight. Without the bound a
+// regression that never kicks would leave the test hanging at the channel
+// instead of failing; the hold's own Cleanup releases it on that path, so a
+// create that reaches the seam afterwards passes through instead of parking
+// the worker.
+func awaitHoldReached(t *testing.T, h *kit.Hold) {
+	t.Helper()
+
+	select {
+	case <-h.Reached():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the take never kicked the worker: its refill's create never reached the seam")
+	}
+}
+
+// awaitLogged fails t unless the handler holds n records at level whose
+// message contains sub, within a bounded count of yields: the worker logs
+// from its own goroutine, the test cannot hold.
+func awaitLogged(t *testing.T, h slog.Handler, level slog.Level, sub string, n int) {
+	t.Helper()
+
+	recs, ok := h.(*logRecorder)
+	if !ok {
+		t.Fatalf("awaitLogged: the handler is not the test's recorder")
+	}
+	for range poolAttempts {
+		if got := recs.countAt(level, sub); got >= n {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatalf("the pool never logged %d records at %s containing %q; the handler holds %d",
+		n, level, sub, recs.countAt(level, sub))
+}
+
+// TestPoolContentTakeNeverTakesHeadroomOrReserve: a content take is refused
+// `spare` when only the headroom's and the reserve's spares are ready, while
+// those two classes' takes are served — the classes never lend to one
+// another, because the headroom and the reserve are what keep a full journal
+// able to free space. The journal's maximum is pinned at the fill, so every
+// refill the takes kick is refused by the ledger before any storage is
+// touched and the counts below stand on the takes alone, never on a race
+// with the worker. It catches a class fallback that trades a permanent
+// wedge for one served roll.
+func TestPoolContentTakeNeverTakesHeadroomOrReserve(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, set, _, p := poolOf(t, segment.Targets{Content: 0, Headroom: 2, Reserve: 1}, 3*segCap, 0, nil)
+	p.Start()
+
+	// The fill makes the headroom's two and the reserve's one; content keeps
+	// none, so the fill stops there.
+	awaitCounters(t, "headroom 2 and reserve 1 ready", p,
+		func(c segment.PoolCounters) bool {
+			return c.HeadroomBytes == 2*segCap && c.RepackReserveBytes == segCap && c.Spares == 0
+		})
+	before := set.Counters()
+
+	_, err := p.Take(segment.Content)
+	assertSpareRefusal(t, "the content take over the other classes", err, 1)
+
+	if id, err := p.Take(segment.Headroom); err != nil || id == 0 {
+		t.Fatalf("the headroom take over a ready headroom spare: (%d, %v)", id, err)
+	}
+	if id, err := p.Take(segment.Reserve); err != nil || id == 0 {
+		t.Fatalf("the reserve take over a ready reserve spare: (%d, %v)", id, err)
+	}
+
+	c := set.Counters()
+	if c.Segments != 2 {
+		t.Fatalf("after the two takes the ledger holds %d segments, want 2", c.Segments)
+	}
+	if c.UsedBytes != before.UsedBytes {
+		t.Fatalf("the takes moved the footprint to %d, want the %d of the fill alone: a take allocates nothing",
+			c.UsedBytes, before.UsedBytes)
+	}
+	if err := set.Check(); err != nil {
+		t.Fatalf("after the takes: %v", err)
+	}
+
+	p.Stop()
+	if got := seam.Calls(kit.OpCreate); got != 3 {
+		t.Fatalf("the pool made %d files for targets of 3, want 3", got)
+	}
+}
+
+// TestPoolTakeMakesNoSeamCall: a take costs only the take — it performs no
+// storage call itself, however short the pool sits behind it. The take's
+// return happens while the worker's next create is held at the seam, so a
+// take that made its own spare would block on the hold it can never pass; the
+// worker's own create is then the only storage call that moved, and it moved
+// once. It catches a make on the write path that a pinned maximum would have
+// hidden, because a take-side make would be refused by the ledger before the
+// seam and leave every count untouched either way.
+func TestPoolTakeMakesNoSeamCall(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	h := &logRecorder{}
+	log := slog.New(h)
+	// No maximum: the pool can always make another spare, so the counts
+	// below prove the take made none rather than the ledger refusing one.
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, log)
+	p.Start()
+	awaitCounters(t, "the content spare ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 1 })
+
+	// The worker's next create is parked at the seam, so whatever runs after
+	// this point and makes anything blocks where the test can see it.
+	hold := seam.HoldFirst(t, kit.OpCreate, "*")
+
+	ops := []string{
+		kit.OpAllocate,
+		kit.OpSync,
+		kit.OpRename,
+		kit.OpSyncDir,
+	}
+	before := make(map[string]int, len(ops))
+	for _, op := range ops {
+		before[op] = seam.Calls(op)
+	}
+	creates := seam.Calls(kit.OpCreate)
+
+	// The take must return while the worker's create is held: a take that
+	// made its own spare would wait on this hold and never answer.
+	id, err := p.Take(segment.Content)
+	if err != nil || id == 0 {
+		t.Fatalf("the take over the ready spare while the worker is parked: (%d, %v)", id, err)
+	}
+
+	// The take's kick woke the worker, whose own create is the held one.
+	awaitHoldReached(t, hold)
+
+	// The worker's create is the only call that moved — the take itself made
+	// no seam call — and it moved exactly once.
+	if got := seam.Calls(kit.OpCreate); got != creates+1 {
+		t.Fatalf("after the take, create was called %d times, want %d: the worker's own make alone",
+			got, creates+1)
+	}
+	for _, op := range ops {
+		if got := seam.Calls(op); got != before[op] {
+			t.Fatalf("after the take of spare %d, %s was called %d times, want still %d: a take makes no storage call",
+				id, op, got, before[op])
+		}
+	}
+	hold.Release()
+	p.Stop()
+}
+
+// TestPoolTakeFindsNoSpareRefusedAtOnce: a take that finds no spare is
+// refused at once, never waiting for the refill's make in flight — space is
+// the caller's to free, so a take that waited would wait on the make it
+// cannot hold. The worker's create is held at the seam when the take runs;
+// the take must return the spare refusal before the hold ever opens. It
+// catches a take that blocks on the pool's filling.
+func TestPoolTakeFindsNoSpareRefusedAtOnce(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+	// "*" holds the create whichever name the worker drew, which the test
+	// cannot know: the id is drawn inside the worker's own make.
+	h := seam.HoldFirst(t, kit.OpCreate, "*")
+	p.Start()
+
+	// The worker is parked at its first create; the pool holds no content
+	// spare. The take must answer at once: the hold proves the make has begun,
+	// so a take that waited on it would still be blocked here when the
+	// refusal is checked.
+	done := make(chan error, 1)
+	go func() { _, err := p.Take(segment.Content); done <- err }()
+
+	select {
+	case err := <-done:
+		assertSpareRefusal(t, "the take with the make held", err, 1)
+	case <-h.Reached():
+		select {
+		case err := <-done:
+			assertSpareRefusal(t, "the take with the make held at the seam", err, 1)
+		case <-time.After(10 * time.Second):
+			t.Fatal("the take is blocked on the held make, want the refusal at once")
+		}
+	}
+
+	h.Release()
+	p.Stop()
+}
+
+// TestPoolHoldKeepsSparesFromUnreservedTake: a hold's spares are not
+// available to unreserved takes. The journal's maximum holds exactly the
+// content target, so no refill can ever raise the pool above it and the
+// test's counts stand on the takes alone, not on a race with the worker.
+// A Hold(2) over the pool's two spares owns both: the unreserved take is
+// refused `spare` while the hold's own two takes succeed, and a hold asking
+// beyond what is ready is refused with the count it fell short by. It catches
+// a hold that accounts its takes but not the spares it owes, which would
+// serve a reserved write its own spare's refusal.
+func TestPoolHoldKeepsSparesFromUnreservedTake(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	_, set, _, p := poolOf(t, segment.Targets{Content: 2}, 2*segCap, 0, nil)
+	p.Start()
+	awaitCounters(t, "the two content spares ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+	h, err := p.Hold(2)
+	if err != nil {
+		t.Fatalf("Hold(2) over two ready spares: %v", err)
+	}
+	defer h.Close()
+	if c := p.Counters(); c.Held != 2 {
+		t.Fatalf("after the hold the pool owes %d spares, want 2", c.Held)
+	}
+
+	// The two spares are the hold's: an unreserved take is refused.
+	_, err = p.Take(segment.Content)
+	assertSpareRefusal(t, "the unreserved take over a two-spare hold", err, 1)
+
+	// The hold takes both, ahead of every unreserved write.
+	for i := 1; i <= 2; i++ {
+		id, err := h.Take()
+		if err != nil || id == 0 {
+			t.Fatalf("the hold's take %d: (%d, %v)", i, id, err)
+		}
+	}
+	if c := p.Counters(); c.Held != 0 || c.Spares != 0 {
+		t.Fatalf("after the hold's takes the counters are %+v, want no spare ready and none owed", c)
+	}
+	if c := set.Counters(); c.Segments != 2 || c.Spares != 0 {
+		t.Fatalf("after the hold's takes the ledger holds %d segments and %d spares, want 2 and 0", c.Segments, c.Spares)
+	}
+
+	// A hold beyond what is left is refused with what it fell short by. The
+	// maximum holds nothing more, so the pool stands at 0 ready and a
+	// Hold(1) is a whole hold short: 1 missing. A Hold(3) over nothing is
+	// short 3.
+	_, err = p.Hold(1)
+	assertSpareRefusal(t, "the hold of 1 over none ready", err, 1)
+	_, err = p.Hold(3)
+	assertSpareRefusal(t, "the hold of 3 over none ready", err, 3)
+	if c := p.Counters(); c.Held != 0 {
+		t.Fatalf("after the refused holds the pool owes %d spares, want none: a refusal changes nothing", c.Held)
+	}
+	p.Stop()
+}
+
+// TestPoolHoldReplaceGoesAheadOfUnreserved: a replacement goes to the
+// reservation ahead of every unreserved write. The worker's makes are parked
+// at the seam — no spare can be made, but the pool itself stays open — and
+// the hold of one takes its spare and replaces it. The test allows one spare
+// to be made, so the replace leaves the pool holding one ready spare that
+// the unreserved take is still refused, because the pool owes that spare to
+// the reservation, while the hold's own take succeeds. It catches a
+// replacement that cannot outrank an unreserved take, and a hold whose Close
+// leaves its spares owed.
+func TestPoolHoldReplaceGoesAheadOfUnreserved(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, set, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+	p.Start()
+	awaitCounters(t, "the one content spare ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 1 })
+
+	// The pool's only made spare is the one the target holds, so the worker
+	// parks at its next create: the takes' kicks hold it there, and nothing
+	// refills until the last one is freed.
+	h := seam.HoldFirst(t, kit.OpCreate, "*")
+
+	hold, err := p.Hold(1)
+	if err != nil {
+		t.Fatalf("Hold(1) over the ready spare: %v", err)
+	}
+	if _, err := hold.Take(); err != nil {
+		t.Fatalf("the hold's take: %v", err)
+	}
+	hold.Replace()
+	if c := p.Counters(); c.Spares != 0 || c.Held != 1 {
+		t.Fatalf("after the replace the counters are %+v, want none ready and 1 owed", c)
+	}
+
+	// The take's kick has the worker parked at its create — no spare is
+	// ready and none can be made while it is held — and the unreserved take
+	// is refused: the pool owes its next spare to the reservation.
+	_, err = p.Take(segment.Content)
+	assertSpareRefusal(t, "the unreserved take with the pool short", err, 1)
+
+	// The hold's take is refused too, while no spare is ready: a reserved
+	// write never meets the no-spare refusal while the pool can be refilled,
+	// and while it cannot, neither does it go ahead of one.
+	_, err = hold.Take()
+	assertSpareRefusal(t, "the hold's take with no spare ready", err, 1)
+
+	// Freed, the make runs, and the hold's take goes through — the
+	// replacement is its spare. The unreserved take, having been refused
+	// while this spare was owed to the hold, never saw it: the refill filled
+	// the target and the debt above it, so the pool holds two ready spares
+	// with one still owed.
+	h.Release()
+	awaitCounters(t, "the replaced spare made above the target", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 && c.Held == 1 })
+	if id, err := hold.Take(); err != nil || id == 0 {
+		t.Fatalf("the hold's take over the replaced spare: (%d, %v)", id, err)
+	}
+	hold.Close()
+	// The target is 1: the spare the pool holds above it was the replaced
+	// demand, which the reserved take spent, so the pool settles back at its
+	// target.
+	awaitCounters(t, "the pool back at its target after the close", p,
+		func(c segment.PoolCounters) bool { return c.Held == 0 && c.Spares == 1 })
+	if _, err := hold.Take(); !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("the closed hold's take: %v, want ErrClosed", err)
+	}
+	if err := set.Check(); err != nil {
+		t.Fatalf("after the holds: %v", err)
+	}
+	p.Stop()
+}
+
+// TestPoolAdoptCountsTowardClassAtCap: a spare found at open is adopted into
+// its class at the cap. Three spare files are made over a second pair of
+// seam and ledger — the open the test stands in for — and adopted one per
+// class into a fresh set and pool: the counters report {content 1, cap
+// bytes, cap bytes}, the ledger's footprint holds all three at the cap, and
+// the check passes. Adopt also works over a maximum below the footprint —
+// the file already exists, so a lowered maximum refuses only new spares —
+// and is refused once the pool has started, because open syncs the
+// directory before any re-adopted spare is taken. A Take before Start is
+// refused as well: the pool hands nothing out before that sync returned. It
+// catches an adoption that accounts no cap, and one a take could reach before
+// the directory sync.
+func TestPoolAdoptCountsTowardClassAtCap(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	// The "directory at open": three whole spare files made over a ledger
+	// the pool under test never reaches.
+	_, set2, m2 := maker(t, 0, noMax)
+	ids := make([]core.SegmentID, 3)
+	for i := range ids {
+		id, err := m2.Make()
+		if err != nil {
+			t.Fatalf("the spare's making %d: %v", i, err)
+		}
+		ids[i] = id
+	}
+	// What open does with the maker's ledger: its spares leave it, for open
+	// adopts the files into the journal's own.
+	for _, id := range ids {
+		if err := set2.Take(id); err != nil {
+			t.Fatalf("the directory's ledger: Take %d: %v", id, err)
+		}
+	}
+
+	// The journal's own ledger and pool, at a maximum one cap below the
+	// footprint the adoptions make: adopting is still served.
+	_, set, m := maker(t, 4, 2*segCap)
+	p := segment.NewPool(m, segment.Targets{Content: 1, Headroom: 1, Reserve: 1}, nil, nil)
+
+	classes := []struct {
+		id  core.SegmentID
+		cls segment.Class
+	}{
+		{ids[0], segment.Content},
+		{ids[1], segment.Headroom},
+		{ids[2], segment.Reserve},
+	}
+	for _, tc := range classes {
+		if err := p.Adopt(tc.id, tc.cls); err != nil {
+			t.Fatalf("the adoption of %d into %s over the lowered maximum: %v", tc.id, tc.cls, err)
+		}
+	}
+
+	c := p.Counters()
+	if c.Spares != 1 || c.HeadroomBytes != segCap || c.RepackReserveBytes != segCap {
+		t.Fatalf("after the adoptions the pool reports %+v, want one content spare, cap bytes of headroom and cap bytes of reserve", c)
+	}
+	l := set.Counters()
+	if l.UsedBytes != 3*segCap || l.Spares != 3 {
+		t.Fatalf("after the adoptions the ledger holds %d bytes in %d spares, want three caps in 3", l.UsedBytes, l.Spares)
+	}
+	if err := set.Check(); err != nil {
+		t.Fatalf("after the adoptions: %v", err)
+	}
+
+	// The ids the file already holds are refused by the ledger, not the
+	// pool's classes: a spare is never adopted twice.
+	if err := p.Adopt(ids[0], segment.Content); !errors.Is(err, segment.ErrDuplicateID) {
+		t.Fatalf("the second adoption of %d: %v, want ErrDuplicateID", ids[0], err)
+	}
+	if err := p.Adopt(0, segment.Content); !errors.Is(err, segment.ErrBadID) {
+		t.Fatalf("the adoption of the null id: %v, want ErrBadID", err)
+	}
+	var bad segment.Class
+	if err := p.Adopt(core.SegmentID(7), bad); !errors.Is(err, segment.ErrBadClass) {
+		t.Fatalf("the adoption of a bad class: %v, want ErrBadClass", err)
+	}
+
+	// Before Start, nothing is taken: the directory sync has not returned.
+	_, err := p.Take(segment.Content)
+	assertSpareRefusal(t, "the take before Start", err, 1)
+	if _, err := p.Hold(1); err == nil {
+		t.Fatal("a hold before Start succeeded, want the spare refusal")
+	} else {
+		assertSpareRefusal(t, "the hold before Start", err, 1)
+	}
+
+	p.Start()
+	if err := p.Adopt(core.SegmentID(9), segment.Content); !errors.Is(err, segment.ErrStarted) {
+		t.Fatalf("the adoption after Start: %v, want ErrStarted", err)
+	}
+
+	// What was adopted is taken: the content spare the journal found at open
+	// is its next segment.
+	id, err := p.Take(segment.Content)
+	if err != nil || id != ids[0] {
+		t.Fatalf("the take of the adopted content spare: (%d, %v), want %d", id, err, ids[0])
+	}
+	if l := set.Counters(); l.Segments != 1 || l.Spares != 2 {
+		t.Fatalf("after the take the ledger holds %d segments and %d spares, want 1 and 2", l.Segments, l.Spares)
+	}
+	if err := set.Check(); err != nil {
+		t.Fatalf("after the take: %v", err)
+	}
+	p.Stop()
+}
+
+// TestPoolBytesFiguresFollowTheClasses: the headroom and reserve figures
+// follow the classes' spares at the cap, as allocated now. After the fill at
+// targets {1, 2, 3}, the headroom holds two spares' worth and the reserve
+// three; a headroom take takes the figure with the spare while the refill's
+// make is parked at the seam, so the dip is read with the replacement really
+// in flight — a poll instead could miss it, the worker refilling before the
+// poll saw the take's dip. The two classes' spares are journal-accounted:
+// charged to no share's tag, sitting in the ledger's own spare count, which
+// holds all six. It catches a figure that counts a class as bytes it no
+// longer holds, and a class spare charged to a share.
+func TestPoolBytesFiguresFollowTheClasses(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, set, _, p := poolOf(t, segment.Targets{Content: 1, Headroom: 2, Reserve: 3}, noMax, 0, nil)
+	p.Start()
+	awaitCounters(t, "targets {1,2,3} filled", p,
+		func(c segment.PoolCounters) bool {
+			return c.Spares == 1 && c.HeadroomBytes == 2*segCap && c.RepackReserveBytes == 3*segCap
+		})
+
+	// The classes' spares are journal-accounted: no share's tag holds a
+	// record byte of them, and the ledger's own spare count holds all six.
+	if c := set.Counters(); c.Spares != 6 {
+		t.Fatalf("after the fill the ledger holds %d spares, want 6", c.Spares)
+	}
+	for _, tag := range []core.ShareTag{1, 2, 42} {
+		if got := set.ShareBytes(tag); got != 0 {
+			t.Fatalf("share tag %d holds %d record bytes, want none: a spare is charged to no share", tag, got)
+		}
+	}
+
+	// The take's kick is the only make the fill leaves owed, so arming the
+	// hold now parks exactly its refill: the replacement's make stands at
+	// the seam until the test releases it, holding the dip. Arming any
+	// earlier — before the fill is done — would park the fill's own make
+	// instead of the take's. Released before Stop is called, for Stop
+	// joins the worker, and a worker parked at the seam would never
+	// return.
+	hold := seam.HoldFirst(t, kit.OpCreate, "*")
+
+	if id, err := p.Take(segment.Headroom); err != nil || id == 0 {
+		t.Fatalf("the headroom take: (%d, %v)", id, err)
+	}
+	awaitHoldReached(t, hold)
+	if c := p.Counters(); c.HeadroomBytes != segCap || c.RepackReserveBytes != 3*segCap {
+		t.Fatalf("after the headroom take, with the refill's make parked at the seam, the headroom holds %d bytes and the reserve %d, want %d and %d: one spare's worth taken with the spare, the reserve untouched", c.HeadroomBytes, c.RepackReserveBytes, segCap, 3*segCap)
+	}
+	hold.Release()
+	// The figure rides the class back to its target once the worker's made
+	// spare lands: a settled end state, nothing takes after it.
+	awaitCounters(t, "the headroom refilled to two", p,
+		func(c segment.PoolCounters) bool { return c.HeadroomBytes == 2*segCap })
+	if err := set.Check(); err != nil {
+		t.Fatalf("after the take: %v", err)
+	}
+	p.Stop()
+}
+
+// TestPoolDeviceFullOnENOSPC: the state a roll reads is set by the ENOSPC of
+// a failed make and cleared by the first make that succeeds. With every
+// allocation failing ENOSPC, DeviceFull turns true; the fault cleared and the
+// worker kicked, one make succeeds and the state is false again. With an EIO
+// instead, the state stays false: a wrong device is a fault to name, not a
+// full one. It catches a state that never clears, and one set by any error
+// that is not ENOSPC.
+func TestPoolDeviceFullOnENOSPC(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	t.Run("ENOSPC sets it and a made spare clears it", func(t *testing.T) {
+		seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+		if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.ENOSPC)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		p.Start()
+		awaitDeviceFull(t, true, p)
+
+		if err := seam.Schedule(); err != nil {
+			t.Fatalf("the cleared Schedule: %v", err)
+		}
+		p.Kick()
+		awaitCounters(t, "the spare made over the cleared fault", p,
+			func(c segment.PoolCounters) bool { return c.Spares == 1 })
+		awaitDeviceFull(t, false, p)
+		p.Stop()
+	})
+
+	t.Run("EIO sets nothing", func(t *testing.T) {
+		h := &logRecorder{}
+		seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, slog.New(h))
+		if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.EIO)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		p.Start()
+
+		// The worker's failed make must land before the state is read: a
+		// read that can race the make passing asserts nothing. The Warn the
+		// failure logs is what the test waits on.
+		awaitLogged(t, h, slog.LevelWarn, "did not make a spare", 1)
+		if p.DeviceFull() {
+			t.Fatal("the EIO set the device-full state, want it left false: only the ENOSPC of a failed make sets it")
+		}
+		if _, err := p.Take(segment.Content); err == nil {
+			t.Fatal("a take over the faulted pool succeeded, want the spare refusal")
+		}
+		p.Stop()
+	})
+}
+
+// TestPoolSecondRefusedSpareDirSyncEntersReadOnly checks the
+// refused-segment rule reached from the making of spares: a new spare whose
+// directory sync the device refused is one refused segment, so the second in
+// a row enters the wired read-only state with the refusal that met it,
+// while one refused alone, and a row broken by a made spare, enter nothing.
+// The decision at the counter in refill states the rule's ceiling.
+func TestPoolSecondRefusedSpareDirSyncEntersReadOnly(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	t.Run("the second in a row enters with the device's refusal", func(t *testing.T) {
+		h := &logRecorder{}
+		entered := make(chan error, 4)
+		seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, slog.New(h))
+		p.SetReadOnlyEnter(func(cause error) { entered <- cause })
+		if err := seam.Schedule(kit.Failing(kit.OpSyncDir, "*", 0, syscall.EIO)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		p.Start()
+		// One failed make ends the pass, its Warn logged; the kick a take
+		// sends after it starts the second, whose failure is the second
+		// refused segment in a row.
+		awaitLogged(t, h, slog.LevelWarn, "did not make a spare", 1)
+		select {
+		case cause := <-entered:
+			t.Fatalf("one refused sync entered the read-only state already: %v", cause)
+		default:
+		}
+		p.Kick()
+		awaitLogged(t, h, slog.LevelWarn, "did not make a spare", 2)
+		select {
+		case cause := <-entered:
+			if !errors.Is(cause, segment.ErrDirSyncRefused) || !errors.Is(cause, syscall.EIO) {
+				t.Fatalf("the read-only entry = %v, want the refused directory sync naming the device's EIO", cause)
+			}
+		default:
+			t.Fatal("the second refused spare in a row entered no read-only state")
+		}
+		if got := p.Counters().Spares; got != 0 {
+			t.Fatalf("%d spares ready over two refused makes, want none", got)
+		}
+		p.Stop()
+	})
+
+	t.Run("a row broken by a made spare enters nothing", func(t *testing.T) {
+		h := &logRecorder{}
+		entered := make(chan error, 4)
+		seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, slog.New(h))
+		p.SetReadOnlyEnter(func(cause error) { entered <- cause })
+		if err := seam.Schedule(kit.Failing(kit.OpSyncDir, "*", 1, syscall.EIO)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		p.Start()
+		// The first make fails at its directory sync; one made spare brings
+		// the row back to nothing before the next refusal.
+		awaitLogged(t, h, slog.LevelWarn, "did not make a spare", 1)
+		p.Kick()
+		awaitCounters(t, "the spare made over the cleared fault", p,
+			func(c segment.PoolCounters) bool { return c.Spares == 1 })
+		if err := seam.Schedule(kit.Failing(kit.OpSyncDir, "*", 1, syscall.EIO)); err != nil {
+			t.Fatalf("the second Schedule: %v", err)
+		}
+		// The take the kick rides on: the one spare made over the cleared
+		// fault leaves the pool short, so the take's kick starts a make
+		// whose refused directory sync is the first of a new row, never the
+		// second in a row.
+		if _, err := p.Take(segment.Content); err != nil {
+			t.Fatalf("the take of the made spare: %v", err)
+		}
+		awaitLogged(t, h, slog.LevelWarn, "did not make a spare", 2)
+		select {
+		case cause := <-entered:
+			t.Fatalf("a row broken by a made spare entered the read-only state: %v", cause)
+		default:
+		}
+		p.Stop()
+	})
+}
+
+// TestPoolRefillRefusedByMaximumStopsThePass: a pass the journal maximum
+// refuses stops, one make per kick, and does not turn the refusal into a
+// full device: with a maximum of two caps and a content target of 3, exactly
+// two spares are made and no third create is attempted, while DeviceFull
+// stays false — the maximum is the pool working as configured, not a device
+// that has run out. It catches a busy loop hammering the reservation, and a
+// maximum mistaken for ENOSPC.
+func TestPoolRefillRefusedByMaximumStopsThePass(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	h := &logRecorder{}
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 3}, 2*segCap, 0, slog.New(h))
+	p.Start()
+	awaitCounters(t, "the two spares the maximum holds", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+	// The fill's own pass ends on the refused third make, which the worker
+	// logs once at Debug: the maximum is the pool working as configured.
+	// Waiting on that record is what makes the busy-loop count below
+	// meaningful — a pass that never ran would draw no refusals either.
+	awaitLogged(t, h, slog.LevelDebug, "did not make a spare", 1)
+
+	// A busy pass — one that retried the refused make without a kick —
+	// would log refusals in a tight loop. A bounded settle, with no kick
+	// in it, catches it: the count must not grow while nothing kicked.
+	before := h.countAt(slog.LevelDebug, "did not make a spare")
+	for range 1 << 16 {
+		runtime.Gosched()
+	}
+	if grown := h.countAt(slog.LevelDebug, "did not make a spare") - before; grown != 0 {
+		t.Fatalf("with no kick the worker drew %d more refused-makes, want none: a pass stops on its refusal",
+			grown)
+	}
+
+	// One kick draws exactly one more pass: one more refusal record, and no
+	// spin behind it.
+	p.Kick()
+	awaitLogged(t, h, slog.LevelDebug, "did not make a spare", before+1)
+	if grown := h.countAt(slog.LevelDebug, "did not make a spare") - before; grown > 4 {
+		t.Fatalf("one kick drew %d refused-makes, want one pass stopping on its refusal",
+			grown)
+	}
+	p.Stop()
+
+	if got := seam.Calls(kit.OpCreate); got != 2 {
+		t.Fatalf("after the kicks the pool made %d files, want 2: a refused reservation makes no storage call",
+			got)
+	}
+	if p.DeviceFull() {
+		t.Fatal("a maximum's refusal set the device-full state, want it false")
+	}
+}
+
+// TestPoolFillOrderHeadroomReserveContent: a pass fills the headroom first,
+// then the reserve, then the content class — the headroom and the reserve
+// are what keep a full journal able to free space, so a pass that made a
+// content spare while a reserve sat short would trade a permanent wedge for
+// one more served roll. The ids the Maker draws ascend as it makes, so the
+// headroom's spare is the lowest id, the reserve's the next, the content's
+// the highest. It catches a fill order that leaves the reserves for last.
+func TestPoolFillOrderHeadroomReserveContent(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	_, set, _, p := poolOf(t, segment.Targets{Content: 1, Headroom: 1, Reserve: 1}, noMax, 0, nil)
+	p.Start()
+	awaitCounters(t, "targets {1,1,1} filled", p,
+		func(c segment.PoolCounters) bool {
+			return c.Spares == 1 && c.HeadroomBytes == segCap && c.RepackReserveBytes == segCap
+		})
+
+	// No hold parks the worker here: each class holds exactly one spare and
+	// the takes are FIFO, so a refill the takes' kicks wake appends behind
+	// the one spare the class already holds, and the ids below are the ones
+	// the fill itself drew. A take moves the spare into the set as a
+	// segment, whose id is what the test reads.
+	head := takeClass(t, p, segment.Headroom)
+	res := takeClass(t, p, segment.Reserve)
+	con := takeClass(t, p, segment.Content)
+
+	if head >= res || res >= con {
+		t.Fatalf("the fill drew the headroom %d, the reserve %d and the content %d, want them ascending in that order",
+			head, res, con)
+	}
+	if c := set.Counters(); c.Segments != 3 {
+		t.Fatalf("after the three takes the ledger holds %d segments, want 3", c.Segments)
+	}
+	p.Stop()
+}
+
+// takeClass takes the one spare the class holds, refusing the test on any
+// error: the helper of the fill-order test alone, where every class holds
+// exactly one spare.
+func takeClass(t *testing.T, p *segment.Pool, c segment.Class) core.SegmentID {
+	t.Helper()
+
+	id, err := p.Take(c)
+	if err != nil || id == 0 {
+		t.Fatalf("the take of the %s class: (%d, %v)", c, id, err)
+	}
+	return id
+}
+
+// TestPoolStopJoinsWorkerAndKeepsSpares: Stop joins the worker — a make in
+// flight when Stop is called completes first, and Stop returns only after
+// the worker has exited — and removes nothing: the untaken spares stay on
+// disk and in the ledger for the next open to re-adopt, the take after Stop
+// answers ErrClosed, and no remove call was ever made. It catches a Stop
+// that leaves the worker's make running behind it and one that unlinks the
+// spares it holds.
+func TestPoolStopJoinsWorkerAndKeepsSpares(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, set, _, p := poolOf(t, segment.Targets{Content: 2}, noMax, 0, nil)
+
+	// Both holds are registered before the worker starts, so the sequence is
+	// the scheduler's to keep, not a race: h1 parks the first create — its
+	// release also lets every later call pass — and h2, registered before
+	// that release, parks the second create, the make Stop must join.
+	h1 := seam.Hold(t, kit.OpCreate, "*")
+	p.Start()
+	<-h1.Reached()
+	h2 := seam.HoldFirst(t, kit.OpCreate, "*")
+	h1.Release()
+	awaitCounters(t, "the first spare ready while the second is parked", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 1 })
+	<-h2.Reached()
+
+	stopped := make(chan struct{})
+	go func() { p.Stop(); close(stopped) }()
+
+	// Stop is joined in parallel and h2 keeps its second make parked at the
+	// seam, so Stop cannot pass wg.Wait until h2 releases below.
+	h2.Release()
+
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Stop never returned once the held make finished, want the join right after")
+	}
+
+	if got := seam.Calls(kit.OpRemove); got != 0 {
+		t.Fatalf("Stop removed %d files, want none: the untaken spares are the next open's to re-adopt",
+			got)
+	}
+	if _, err := p.Take(segment.Content); !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("the take after Stop: %v, want ErrClosed", err)
+	}
+	if _, err := p.Hold(1); !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("the hold after Stop: %v, want ErrClosed", err)
+	}
+	p.Stop()
+	if err := set.Check(); err != nil {
+		t.Fatalf("after Stop: %v", err)
+	}
+
+	// The spares stay in the ledger: the one taken by nothing and one the
+	// worker may have finished while Stop joined — whichever way the held
+	// create ended, the check above holds and no spare left the ledger
+	// but through a take, of which there was none after the first.
+	c := set.Counters()
+	if c.Spares < 1 {
+		t.Fatalf("after Stop the ledger holds %d spares, want at least the one the pool had ready", c.Spares)
+	}
+	if c.Segments != 0 {
+		t.Fatalf("after Stop the ledger holds %d segments, want none: nothing was taken", c.Segments)
+	}
+}
+
+// TestPoolRaceTakesHoldsAndRefill: takes, holds and the refill over one pool
+// under the race detector. Eight goroutines loop a bounded count of
+// unreserved content takes — tolerating the spare refusal, which is what the
+// pool owes — holds that take and close, and kicks. At the end the ledger
+// checks, no id was handed out twice, and the pool holds no spares it owes.
+func TestPoolRaceTakesHoldsAndRefill(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	_, set, _, p := poolOf(t, segment.Targets{Content: 4, Headroom: 1, Reserve: 1}, noMax, 0, nil)
+	p.Start()
+
+	const (
+		goroutines = 8
+		rounds     = 64
+	)
+	var (
+		mu   sync.Mutex
+		seen = make(map[core.SegmentID]bool)
+		wg   sync.WaitGroup
+	)
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for r := 0; r < rounds; r++ {
+				switch g % 3 {
+				case 0:
+					id, err := p.Take(segment.Content)
+					if err == nil {
+						mu.Lock()
+						if seen[id] {
+							mu.Unlock()
+							panic("the pool handed one spare to two takes")
+						}
+						seen[id] = true
+						mu.Unlock()
+					}
+				case 1:
+					h, err := p.Hold(1)
+					if err == nil {
+						id, terr := h.Take()
+						var ns *core.NoSpaceError
+						if terr != nil && !errors.As(terr, &ns) && !errors.Is(terr, core.ErrClosed) {
+							panic(fmt.Sprintf("the hold's take: %v", terr))
+						}
+						if terr == nil {
+							mu.Lock()
+							if seen[id] {
+								mu.Unlock()
+								panic("the pool handed one spare to two takes")
+							}
+							seen[id] = true
+							mu.Unlock()
+						}
+						h.Close()
+					}
+				case 2:
+					p.Kick()
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	p.Stop()
+
+	if err := set.Check(); err != nil {
+		t.Fatalf("the raced pool left the ledger: %v", err)
+	}
+	if c := p.Counters(); c.Held != 0 {
+		t.Fatalf("after the race the pool owes %d spares, want none: every hold closed", c.Held)
+	}
+	l := set.Counters()
+	if l.Segments != int64(len(seen)) {
+		t.Fatalf("the pool handed %d ids out while the ledger holds %d segments, want them equal",
+			len(seen), l.Segments)
+	}
+}
+
+// TestPoolHoldCloseReturnsSparesToUnreservedTakes: a hold's Close returns
+// the spares it still owes to unreserved takes, a spent hold takes as an
+// unreserved one does, and a Hold made while the pool owes more than it
+// holds reports itself short by no more than the hold it refused. It catches
+// a Close that leaks its spares owed — which would refuse every later
+// unreserved roll for as long as the journal is open — and a refusal that
+// blames a debt larger than the hold the caller asked for.
+func TestPoolHoldCloseReturnsSparesToUnreservedTakes(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	t.Run("Close returns the spares a reservation left unused", func(t *testing.T) {
+		// The journal's maximum holds exactly the content target, so nothing
+		// the takes kick can make another spare and the counts stand still.
+		_, _, _, p := poolOf(t, segment.Targets{Content: 2}, 2*segCap, 0, nil)
+		p.Start()
+		awaitCounters(t, "the two content spares ready", p,
+			func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+		h, err := p.Hold(2)
+		if err != nil {
+			t.Fatalf("Hold(2) over two ready spares: %v", err)
+		}
+		if _, err := p.Take(segment.Content); err == nil {
+			t.Fatal("an unreserved take over a two-spare hold succeeded, want the refusal")
+		}
+
+		// The reservation ends with both spares still owed: Close returns
+		// them, and the unreserved take they held back is served at once.
+		h.Close()
+		if c := p.Counters(); c.Held != 0 {
+			t.Fatalf("after the close the pool owes %d spares, want none: a reservation that ends unused must return what it held", c.Held)
+		}
+		if id, err := p.Take(segment.Content); err != nil || id == 0 {
+			t.Fatalf("the unreserved take after the close: (%d, %v), want the returned spare", id, err)
+		}
+
+		// A second Close changes nothing.
+		h.Close()
+		if c := p.Counters(); c.Held != 0 {
+			t.Fatalf("after the second close the pool owes %d spares, want none: Close is idempotent", c.Held)
+		}
+		p.Stop()
+	})
+
+	t.Run("a spent hold takes as an unreserved take does", func(t *testing.T) {
+		_, _, _, p := poolOf(t, segment.Targets{Content: 3}, 3*segCap, 0, nil)
+		p.Start()
+		awaitCounters(t, "the three content spares ready", p,
+			func(c segment.PoolCounters) bool { return c.Spares == 3 })
+
+		h, err := p.Hold(1)
+		if err != nil {
+			t.Fatalf("Hold(1) over three ready spares: %v", err)
+		}
+		// One spare goes to an unreserved take, one to the hold itself; one
+		// stays ready for the second hold below.
+		if id, err := p.Take(segment.Content); err != nil || id == 0 {
+			t.Fatalf("the unreserved take beside the hold: (%d, %v)", id, err)
+		}
+		if _, err := h.Take(); err != nil {
+			t.Fatalf("the hold's own take: %v", err)
+		}
+		if c := p.Counters(); c.Spares != 1 || c.Held != 0 {
+			t.Fatalf("after the hold spent its spare the counters are %+v, want 1 ready and none owed", c)
+		}
+
+		// The hold has spent its own spares, so its next take behaves as an
+		// unreserved one. A second hold owns the one spare still ready, so
+		// the spent hold is refused `spare` exactly as an unreserved take
+		// over it would be — and, like every refusal, takes nothing. A spent
+		// hold that took the reserved branch would steal the other hold's
+		// spare and eat its debt: the counters here are what catch that.
+		h2, err := p.Hold(1)
+		if err != nil {
+			t.Fatalf("Hold(1) over the last spare: %v", err)
+		}
+		_, err = h.Take()
+		assertSpareRefusal(t, "the spent hold's take over another hold's spare", err, 1)
+		if c := p.Counters(); c.Spares != 1 || c.Held != 1 {
+			t.Fatalf("after the spent hold's refused take the counters are %+v, want 1 ready spare and 1 owed: the refusal changed nothing", c)
+		}
+
+		// Over an empty pool the spent hold is refused the same way.
+		if id, err := h2.Take(); err != nil || id == 0 {
+			t.Fatalf("the second hold's take: (%d, %v)", id, err)
+		}
+		_, err = h.Take()
+		assertSpareRefusal(t, "the spent hold's take over an empty pool", err, 1)
+		if c := p.Counters(); c.Spares != 0 || c.Held != 0 {
+			t.Fatalf("after the spent hold's refused take the counters are %+v, want the refusal to change nothing", c)
+		}
+		h2.Close()
+
+		// A replacement owed to the spent hold makes the next Hold's
+		// shortage one the pool's own debt doubles: ready stands below held,
+		// and the refusal still blames no more than the hold it refused.
+		h.Replace()
+		if _, err := p.Hold(1); err == nil {
+			t.Fatal("a Hold over a pool owing more than it holds succeeded, want the refusal")
+		} else {
+			assertSpareRefusal(t, "the Hold the replaced debt refused", err, 1)
+		}
+		h.Close()
+		if c := p.Counters(); c.Held != 0 {
+			t.Fatalf("after the close of the replaced hold the pool owes %d spares, want none", c.Held)
+		}
+		p.Stop()
+	})
+}
+
+// TestPoolHoldTakeAfterStopRefused: a hold opened before the pool's Stop
+// takes nothing after it. Stop's contract — Take and Hold return
+// core.ErrClosed — covers a reservation's takes too: closing the journal
+// hands out no held spare and moves none into the set, whatever the hold
+// still owes. It catches a reservation that outlives the journal's close.
+func TestPoolHoldTakeAfterStopRefused(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	_, set, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+	p.Start()
+	awaitCounters(t, "the content spare ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 1 })
+
+	hold, err := p.Hold(1)
+	if err != nil {
+		t.Fatalf("Hold(1) over the ready spare: %v", err)
+	}
+	p.Stop()
+
+	if _, err := hold.Take(); !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("the held take after Stop: %v, want core.ErrClosed", err)
+	}
+	if c := p.Counters(); c.Held != 1 {
+		t.Fatalf("after the refused take the pool owes %d spares, want the hold's 1 untouched", c.Held)
+	}
+
+	// Close is still safe after Stop, and returns what the hold owes.
+	hold.Close()
+	if c := p.Counters(); c.Held != 0 {
+		t.Fatalf("after the close the pool owes %d spares, want none", c.Held)
+	}
+	l := set.Counters()
+	if l.Segments != 0 {
+		t.Fatalf("after Stop the ledger holds %d segments, want none: the shutting-down journal handed out no spare", l.Segments)
+	}
+	if err := set.Check(); err != nil {
+		t.Fatalf("after Stop: %v", err)
+	}
+}
+
+// TestPoolDeviceFullOnlyAMadeSpareClears: the state a roll reads as a full
+// device is set by the ENOSPC of a failed make and cleared only by a make
+// that succeeds — a later failure of any other kind does not clear it,
+// however it fails, for no spare has been made since the device filled. It
+// catches a state cleared by a wrong error while the device is still full.
+func TestPoolDeviceFullOnlyAMadeSpareClears(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+
+	// The device fills: every allocation fails ENOSPC.
+	if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.ENOSPC)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	p.Start()
+	awaitDeviceFull(t, true, p)
+
+	// The device still fails, now with an ordinary fault. No spare has been
+	// made: the state a roll reads must stand.
+	if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	// The second failure must land before the state is read: the count of
+	// allocations — two, one per failed make — is the arrival of both.
+	p.Kick()
+	for seam.Calls(kit.OpAllocate) < 2 {
+		runtime.Gosched()
+	}
+	awaitDeviceFull(t, true, p)
+	if !p.DeviceFull() {
+		t.Fatal("the EIO after the ENOSPC cleared the device-full state, want it to stand until a spare is made")
+	}
+
+	// The fault clears and a spare is made: only now does the state go.
+	if err := seam.Schedule(); err != nil {
+		t.Fatalf("the cleared Schedule: %v", err)
+	}
+	p.Kick()
+	awaitCounters(t, "the spare made over the cleared fault", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 1 })
+	awaitDeviceFull(t, false, p)
+	p.Stop()
+}
+
+// TestPoolSpentHoldTakesAnUnowedSpare: a spent hold takes exactly as an
+// unreserved take does, including succeeding: over a spare no hold owes, the
+// spent hold returns it and the counters drop as an unreserved take's do. It
+// catches a spent hold that always refuses, whose reservation would lose the
+// spares the unreserved takes around it are free to take.
+func TestPoolSpentHoldTakesAnUnowedSpare(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	// The journal's maximum holds exactly the content target, so the counts
+	// below stand on the takes alone and no refill races them.
+	_, set, _, p := poolOf(t, segment.Targets{Content: 2}, 2*segCap, 0, nil)
+	p.Start()
+	awaitCounters(t, "the two content spares ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+	h, err := p.Hold(1)
+	if err != nil {
+		t.Fatalf("Hold(1) over two ready spares: %v", err)
+	}
+	// The hold spends its own spare; one ready spare remains, owed to no one.
+	if id, err := h.Take(); err != nil || id == 0 {
+		t.Fatalf("the hold's own take: (%d, %v)", id, err)
+	}
+	if c := p.Counters(); c.Spares != 1 || c.Held != 0 {
+		t.Fatalf("after the hold spent its spare the counters are %+v, want 1 ready and none owed", c)
+	}
+
+	// The spent hold takes the unowed spare as an unreserved take would.
+	id, err := h.Take()
+	if err != nil || id == 0 {
+		t.Fatalf("the spent hold's take over an unowed spare: (%d, %v), want the spare", id, err)
+	}
+	if c := p.Counters(); c.Spares != 0 || c.Held != 0 {
+		t.Fatalf("after the spent hold's take the counters are %+v, want the pool empty", c)
+	}
+	if c := set.Counters(); c.Segments != 2 || c.Spares != 0 {
+		t.Fatalf("after both takes the ledger holds %d segments and %d spares, want 2 and 0", c.Segments, c.Spares)
+	}
+	if err := set.Check(); err != nil {
+		t.Fatalf("after the takes: %v", err)
+	}
+	h.Close()
+	p.Stop()
+}
+
+// TestPoolHoldAboveTheTargetIsSatisfiableOnRetry: a reservation asking for
+// more spares than the content target is refused `spare` once and served on
+// the retry, because `spare` is the one refusal that clears on its own — the
+// pool makes up the shortfall off the write path rather than answering a
+// request the journal can serve with a refusal that never clears. It catches
+// a hold above the target that is refused forever.
+func TestPoolHoldAboveTheTargetIsSatisfiableOnRetry(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	_, set, _, p := poolOf(t, segment.Targets{Content: 2}, noMax, 0, nil)
+	p.Start()
+	awaitCounters(t, "the target's two spares ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+	// The first ask falls one spare short and is refused with what it lacked.
+	_, err := p.Hold(3)
+	assertSpareRefusal(t, "the Hold(3) above the target", err, 1)
+
+	// The refused ask is demand the refill makes up: the retry must find the
+	// third spare. The retry is the engine's own — refused, then asked again
+	// once the pool has made the spare up — so it is bounded-yielded here.
+	// The bound counts attempts, not time, and the waits it has to cover are
+	// a make or two each: a runner whose makes are slow spends the budget on
+	// yields, not on the makes, and the settle below settles however long
+	// the makes take, because demand is a level (see the accumulation test)
+	// and never refills more than the shortfall.
+	var h *segment.Hold
+	for range poolAttempts {
+		var herr error
+		h, herr = p.Hold(3)
+		if herr == nil {
+			break
+		}
+		assertSpareRefusal(t, "a retried Hold(3) while the shortfall is made up", herr, 1)
+		runtime.Gosched()
+	}
+	if h == nil {
+		t.Fatalf("the retried Hold(3) never cleared: the pool made up no shortfall the refusal asked for")
+	}
+	if c := p.Counters(); c.Held != 3 {
+		t.Fatalf("after the retried hold the pool owes %d spares, want the hold's 3", c.Held)
+	}
+
+	// The hold's three takes are served, and its close returns the pool to
+	// its target's shape.
+	for i := 1; i <= 3; i++ {
+		if id, err := h.Take(); err != nil || id == 0 {
+			t.Fatalf("the hold's take %d: (%d, %v)", i, id, err)
+		}
+	}
+	h.Close()
+	awaitCounters(t, "the pool back at its target after the close", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 && c.Held == 0 })
+	if err := set.Check(); err != nil {
+		t.Fatalf("after the holds: %v", err)
+	}
+	p.Stop()
+}
+
+// TestPoolHoldShortByMoreThanOneIsSatisfiableOnRetry: a reservation short by
+// more than one spare is served on a bounded retry, as one short by one is.
+// Each landed spare must close the gap between the pool and the refused ask
+// by exactly one. It catches a refill whose goal falls as each spare lands
+// while the ready count rises, so the gap closes by two a spare and the
+// refill stops one spare short of an ask whose shortfall exceeds one: the
+// retried hold is then refused for ever.
+func TestPoolHoldShortByMoreThanOneIsSatisfiableOnRetry(t *testing.T) {
+	for _, ask := range []int{4, 5} {
+		t.Run(fmt.Sprintf("Hold(%d)", ask), func(t *testing.T) {
+			prof.Watch(t, prof.Options{})
+
+			_, _, _, p := poolOf(t, segment.Targets{Content: 2}, noMax, 0, nil)
+			p.Start()
+			defer p.Stop()
+			awaitCounters(t, "the target's two spares ready", p,
+				func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+			var h *segment.Hold
+			for range poolAttempts {
+				var err error
+				if h, err = p.Hold(ask); err == nil {
+					break
+				}
+				var ns *core.NoSpaceError
+				if !errors.As(err, &ns) || ns.Limit != core.LimitSpare {
+					t.Fatalf("a retried Hold(%d): %v, want served or refused `spare`", ask, err)
+				}
+				runtime.Gosched()
+			}
+			if h == nil {
+				t.Fatalf("the retried Hold(%d) never cleared: the pool stopped at %+v", ask, p.Counters())
+			}
+			if c := p.Counters(); c.Held != int64(ask) {
+				t.Fatalf("after the retried hold the pool owes %d spares, want the hold's %d", c.Held, ask)
+			}
+			h.Close()
+		})
+	}
+}
+
+// TestPoolOpenHoldDoesNotStarveUnreservedRolls: a hold's spares ride above
+// the content target rather than inside it, so an open reservation does not
+// consume the spares the target exists to keep: every stream can still roll
+// once without waiting for a spare. It catches a target that a hold empties,
+// whose unreserved rolls would be refused for the life of the reservation.
+func TestPoolOpenHoldDoesNotStarveUnreservedRolls(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	_, set, _, p := poolOf(t, segment.Targets{Content: 2}, noMax, 0, nil)
+	p.Start()
+	awaitCounters(t, "the target's two spares ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+	h, err := p.Hold(2)
+	if err != nil {
+		t.Fatalf("Hold(2) over two ready spares: %v", err)
+	}
+	defer h.Close()
+
+	// The take right after the hold may race the refill that fills above the
+	// held pair; the bounded wait is the retry the engine performs, and the
+	// take must be served while the pool can make.
+	var id core.SegmentID
+	for range poolAttempts {
+		id, err = p.Take(segment.Content)
+		if err == nil {
+			break
+		}
+		assertSpareRefusal(t, "a refused unreserved take over an open hold", err, 1)
+		runtime.Gosched()
+	}
+	if err != nil || id == 0 {
+		t.Fatalf("the unreserved take over an open hold: (%d, %v), want served: the target keeps spares above what the hold owes", id, err)
+	}
+	if err := set.Check(); err != nil {
+		t.Fatalf("after the take: %v", err)
+	}
+	p.Stop()
+}
+
+// TestPoolReservedTakeServesAReadySpareItOwesMoreThan: a reserved take is
+// refused only when no spare is ready, never because more are owed to holds
+// — the spares a reservation holds are its own demand, and R80's "a reserved
+// roll takes one of them" is served over the one ready spare whatever the
+// debt above it. It catches a reserved take that demands spares it was never
+// owed, which would starve the very reservation Replace stands for.
+func TestPoolReservedTakeServesAReadySpareItOwesMoreThan(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	// The journal's maximum is pinned at the fill, so no make can raise the
+	// ready count and the debt stands for the test to read.
+	_, set, _, p := poolOf(t, segment.Targets{Content: 2}, 2*segCap, 0, nil)
+	p.Start()
+	awaitCounters(t, "the two content spares ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+	h1, err := p.Hold(1)
+	if err != nil {
+		t.Fatalf("the first Hold(1): %v", err)
+	}
+	h2, err := p.Hold(1)
+	if err != nil {
+		t.Fatalf("the second Hold(1): %v", err)
+	}
+	// The first hold takes its spare, then its write is rolled short by
+	// interleaving and the reservation takes a replacement: the pool now
+	// owes 2 with one spare ready.
+	if _, err := h1.Take(); err != nil {
+		t.Fatalf("the first hold's take: %v", err)
+	}
+	h1.Replace()
+	if c := p.Counters(); c.Spares != 1 || c.Held != 2 {
+		t.Fatalf("after the replace the counters are %+v, want 1 ready and 2 owed", c)
+	}
+
+	// The second hold's reserved take is served over the one ready spare,
+	// although the pool owes more than it holds.
+	if id, err := h2.Take(); err != nil || id == 0 {
+		t.Fatalf("the reserved take over the one ready spare: (%d, %v), want served", id, err)
+	}
+	if c := p.Counters(); c.Spares != 0 || c.Held != 1 {
+		t.Fatalf("after the reserved take the counters are %+v, want none ready and the replaced hold's 1 owed", c)
+	}
+	if err := set.Check(); err != nil {
+		t.Fatalf("after the takes: %v", err)
+	}
+	h1.Close()
+	h2.Close()
+	p.Stop()
+}
+
+// TestPoolReplaceAloneWakesTheRefill: a replacement's own kick is what wakes
+// the worker — the spares a replace re-owes the reservation are demand the
+// refill makes up, and nothing else is in flight by then. It catches a
+// Replace that leaves its demand on a kick some earlier take may have left
+// buffered, whose reserved write would then wait on a wake that never comes.
+func TestPoolReplaceAloneWakesTheRefill(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+	p.Start()
+	awaitCounters(t, "the first spare ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 1 && seam.Calls(kit.OpCreate) == 1 })
+
+	h, err := p.Hold(1)
+	if err != nil {
+		t.Fatalf("Hold(1) over the ready spare: %v", err)
+	}
+	if _, err := h.Take(); err != nil {
+		t.Fatalf("the hold's take: %v", err)
+	}
+	// The take's own refilled spare must land, and then the worker must be
+	// calm: nothing short, no kicks buffered. A settle with no makes is what
+	// makes the replace below the only wake in flight.
+	awaitCounters(t, "the take's refill landed", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 1 && seam.Calls(kit.OpCreate) == 2 })
+	made := seam.Calls(kit.OpCreate)
+	for range 1 << 14 {
+		if seam.Calls(kit.OpCreate) != made {
+			t.Fatalf("the pool made a file while nothing was short, want the settle calm")
+		}
+		runtime.Gosched()
+	}
+
+	// The replace alone re-owes a spare the pool holds no spare for: its own
+	// kick is what wakes the worker to make it. The wait's condition is the
+	// pool's own settled state — the make landed in the class, not merely
+	// begun at the seam — with the create count risen beside it, so nothing
+	// after the wait can still race the make in flight.
+	h.Replace()
+	awaitCounters(t, "the replaced demand made and landed", p,
+		func(c segment.PoolCounters) bool {
+			return c.Spares == 2 && c.Held == 1 && seam.Calls(kit.OpCreate) == made+1
+		})
+	h.Close()
+	p.Stop()
+}
+
+// TestPoolTakeServesTheOldestSpareFirst: the ready list is FIFO, so a class's
+// takes hand out the spares in the order the worker made them — the oldest
+// first. It catches a pop from the wrong end, whose youngest spare would be
+// handed out first and the oldest left to age behind every burst.
+func TestPoolTakeServesTheOldestSpareFirst(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	// The journal's maximum is pinned at the fill, so the two spares of the
+	// target are all the pool will ever hold and their order is the order
+	// the worker made them in, ascending ids.
+	_, _, _, p := poolOf(t, segment.Targets{Content: 2}, 2*segCap, 0, nil)
+	p.Start()
+	awaitCounters(t, "the two content spares ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+	first, err := p.Take(segment.Content)
+	if err != nil || first == 0 {
+		t.Fatalf("the first take: (%d, %v)", first, err)
+	}
+	second, err := p.Take(segment.Content)
+	if err != nil || second == 0 {
+		t.Fatalf("the second take: (%d, %v)", second, err)
+	}
+	if first >= second {
+		t.Fatalf("the takes handed out %d then %d, want the ids ascending: the oldest spare first",
+			first, second)
+	}
+	p.Stop()
+}
+
+// TestPoolRefusedHoldRetriesDoNotAccumulateDemand: a refused Hold's demand
+// is a level, not a running sum. Ten refusals of the same ask, made while
+// the worker's make is parked so none can land in between, are one
+// shortfall of one spare — the ask is the same hold retrying — and the pool
+// settles at exactly the target plus that one. It catches a refill that
+// over-makes spares for every refusal, whose extra segments sit above the
+// target for good and whose made files a slow runner keeps churning out
+// behind a test that long gave up.
+func TestPoolRefusedHoldRetriesDoNotAccumulateDemand(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 2}, noMax, 0, nil)
+	p.Start()
+	awaitCounters(t, "the target's two spares ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+	// Park the worker's next create, so the refusals below land while nothing
+	// can make: every shortfall is recorded before any spare arrives, the
+	// exact window a retrying engine widens.
+	park := seam.Hold(t, kit.OpCreate, "*")
+
+	// The same hold is refused ten times — the ask is 3 over a pool holding
+	// 2, short one spare each time.
+	for i := 1; i <= 10; i++ {
+		_, err := p.Hold(3)
+		assertSpareRefusal(t, fmt.Sprintf("the refused Hold(3), ask %d of 10", i), err, 1)
+	}
+
+	// Freed, the worker serves the shortfall: one make beyond the fill's
+	// two, the pool settling at exactly three ready.
+	park.Release()
+	awaitCounters(t, "the one-spare shortfall made", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 3 })
+	made := seam.Calls(kit.OpCreate)
+	if made != 3 {
+		t.Fatalf("after the shortfall the pool made %d files, want 3: two of the fill and one spare of demand, not one per refusal", made)
+	}
+	// The settle: a refill that accumulated the demand would draw its next
+	// make here, one fsync chain at a time, and the count would move.
+	for range 1 << 16 {
+		if got := seam.Calls(kit.OpCreate); got != made {
+			t.Fatalf("with the demand level settled the worker began another make (%d files, want still %d): refusals accumulated as demand", got, made)
+		}
+		runtime.Gosched()
+	}
+	if c := p.Counters(); c.Spares != 3 || c.Held != 0 {
+		t.Fatalf("the settled pool reports %+v, want 3 ready and none owed", c)
+	}
+
+	// The retried hold is served, its three takes go through, and its close
+	// returns the pool to its target's shape.
+	h, err := p.Hold(3)
+	if err != nil {
+		t.Fatalf("the retried Hold(3): %v", err)
+	}
+	for i := 1; i <= 3; i++ {
+		if id, err := h.Take(); err != nil || id == 0 {
+			t.Fatalf("the hold's take %d: (%d, %v)", i, id, err)
+		}
+	}
+	h.Close()
+	awaitCounters(t, "the pool back at its target after the close", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 && c.Held == 0 })
+	p.Stop()
+}
+
+// TestPoolAHoldClosedDuringAMakeLeavesTheTarget: a hold closed while a make
+// it drew is still in flight leaves the pool refilling back to its target. The
+// make was drawn by the hold's demand, the close returns that demand, and
+// the spare it lands sits above the target's need: the level pays for
+// nothing there, and the pool settles at its target rather than one spare
+// below it. It catches a negative level that makes the pool under-fill for
+// as long as nothing else touches the level.
+func TestPoolAHoldClosedDuringAMakeLeavesTheTarget(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 2}, noMax, 0, nil)
+	p.Start()
+	awaitCounters(t, "the target's two spares ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+	// The hold is served; the refill, now wanting the target plus what the
+	// hold demands, starts its make and parks at the create.
+	park := seam.Hold(t, kit.OpCreate, "*")
+	h, err := p.Hold(1)
+	if err != nil {
+		t.Fatalf("Hold(1) over two ready spares: %v", err)
+	}
+	for park.Waiting() == 0 {
+		runtime.Gosched()
+
+	}
+
+	// The hold closes before the make lands, returning its demand.
+	h.Close()
+
+	// Freed, the make lands: three ready over a target of two with no holds
+	// open — one spare above what the pool needs.
+	park.Release()
+	awaitCounters(t, "the in-flight make landed above the target", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 3 })
+
+	// Two takes spend the ready spares; the refill must still see the target
+	// of two it owes and fill back to it, not sit one short of it forever.
+	for i := 1; i <= 2; i++ {
+		if id, err := p.Take(segment.Content); err != nil || id == 0 {
+			t.Fatalf("the unreserved take %d: (%d, %v)", i, id, err)
+		}
+	}
+	awaitCounters(t, "the pool back at its target", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+	p.Stop()
+}
+
+// TestPoolWantRecycleReservesTheShortestClassFirst: a recycle's spare is
+// reserved in the first class short of its target — the reserve, then the
+// headroom, then content, the reserve ahead of the refill's own order — and
+// the reservation counts against
+// the next one, so two reservations against a target of one give one true and
+// one false. No class short and a stopped pool answer false.
+func TestPoolWantRecycleReservesTheShortestClassFirst(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	t.Run("the reserve first", func(t *testing.T) {
+		// No class is short: nothing to reserve.
+		_, _, _, empty := poolOf(t, segment.Targets{Content: 0, Headroom: 0, Reserve: 0}, noMax, 0, nil)
+		if _, ok := empty.WantRecycleForTest(); ok {
+			t.Fatal("a recycle was wanted over a pool at its targets, want none")
+		}
+
+		// The headroom alone is short: it is wanted first, and a second
+		// reservation against the one-spare headroom is refused — the
+		// reservation counts against the next one, so a target of one holds
+		// exactly one recycle.
+		_, _, _, head := poolOf(t, segment.Targets{Content: 0, Headroom: 1, Reserve: 0}, noMax, 0, nil)
+		if c, ok := head.WantRecycleForTest(); !ok || c != segment.Headroom {
+			t.Fatalf("a recycle was wanted for %v over a short headroom, want Headroom", c)
+		}
+		if _, ok := head.WantRecycleForTest(); ok {
+			t.Fatal("a second recycle was wanted against a headroom one reservation fills, want none")
+		}
+		// The failure gives the slot back, so the headroom is short again.
+		head.RecycleFailedForTest(segment.Headroom)
+		if c, ok := head.WantRecycleForTest(); !ok || c != segment.Headroom {
+			t.Fatalf("after the giveback no recycle was wanted for the headroom, want it short again: %v", c)
+		}
+
+		// The headroom is wanted after the reserve, which the outstanding
+		// reservation fills: over targets the reserve's and the headroom's,
+		// the headroom answers once the reserve's slot is taken.
+		_, _, _, res := poolOf(t, segment.Targets{Content: 0, Headroom: 2, Reserve: 1}, noMax, 0, nil)
+		if c, ok := res.WantRecycleForTest(); !ok || c != segment.Reserve {
+			t.Fatalf("a recycle was wanted for %v over a short reserve, want Reserve", c)
+		}
+		res.RecycleFailedForTest(segment.Reserve)
+		c, ok := res.WantRecycleForTest()
+		if !ok || c != segment.Reserve {
+			t.Fatalf("after the giveback a recycle was wanted for %v, want the short reserve again", c)
+		}
+		// The reserve's slot stays reserved: the headroom answers next.
+		c, ok = res.WantRecycleForTest()
+		if !ok || c != segment.Headroom {
+			t.Fatalf("a recycle was wanted for %v over a short headroom the reserve's reservation leaves, want Headroom", c)
+		}
+
+		// Content rides last: once the reserve's and the headroom's slots are
+		// reserved against them, the content class answers.
+		_, _, _, con := poolOf(t, segment.Targets{Content: 2, Headroom: 1, Reserve: 1}, noMax, 0, nil)
+		if c, ok := con.WantRecycleForTest(); !ok || c != segment.Reserve {
+			t.Fatalf("a recycle was wanted for %v over a short reserve, want Reserve", c)
+		}
+		if c, ok := con.WantRecycleForTest(); !ok || c != segment.Headroom {
+			t.Fatalf("a recycle was wanted for %v over the headroom the reserve's reservation leaves, want Headroom", c)
+		}
+		c, ok = con.WantRecycleForTest()
+		if !ok || c != segment.Content {
+			t.Fatalf("a recycle was wanted for %v with the reserve and the headroom reserved, want Content", c)
+		}
+	})
+
+	t.Run("the content class", func(t *testing.T) {
+		h2 := &logRecorder{}
+		seam, _, _, p := poolOf(t, segment.Targets{Content: 1, Headroom: 1, Reserve: 1}, noMax, 0, slog.New(h2))
+		p.Start()
+		awaitCounters(t, "all three classes filled", p,
+			func(c segment.PoolCounters) bool {
+				return c.Spares == 1 && c.HeadroomBytes == segCap && c.RepackReserveBytes == segCap
+			})
+
+		// The take's kick is the only wake the fill leaves owed, and the
+		// makes it drives are made to fail at their create: every create
+		// the seam sees after this point fails, so no spare can ever land
+		// in the content class again and the reservation below reads a
+		// class that is short for good, not one short only while a make
+		// is parked mid-flight — a make in flight is invisible to the
+		// reservation, and nothing here leans on that. The fault is
+		// armed after the fill, the only make the test itself causes,
+		// and the pool's own Warn at the failed make is the gate that
+		// proves the take's kick ran the refill and it returned. The
+		// recycle path the landing below stands for renames and writes;
+		// it creates nothing, so the fault leaves it untouched.
+		if err := seam.Schedule(kit.Failing(kit.OpCreate, "*", 0, syscall.EIO)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+
+		// One spare is taken from the content class, leaving it short
+		// while the other two stand at their targets.
+		if _, err := p.Take(segment.Content); err != nil {
+			t.Fatalf("the content take: %v", err)
+		}
+		awaitLogged(t, h2, slog.LevelWarn, "did not make a spare", 1)
+		c, ok := p.WantRecycleForTest()
+		if !ok || c != segment.Content {
+			t.Fatalf("a recycle was wanted for %v over a short content class, want Content", c)
+		}
+
+		// A recycled spare lands in the class its reservation chose, and the
+		// landing cleared the reservation: the class holds its target now. A
+		// real recycle minted the spare in the ledger before it landed here,
+		// so the test carries that step too: the spare the recycle answers is
+		// adopted into the ledger, then handed to the pool.
+		id := core.SegmentID(99)
+		if err := p.Adopt(id, segment.Content); err != nil && !errors.Is(err, segment.ErrStarted) {
+			t.Fatalf("the adopted landing of the recycled spare: %v", err)
+		}
+		p.RecycledForTest(id, segment.Content)
+		if c := p.Counters(); c.Spares != 1 {
+			t.Fatalf("after the recycled spare landed the pool holds %d content spares, want 1", c.Spares)
+		}
+		if _, ok := p.WantRecycleForTest(); ok {
+			t.Fatal("a recycle was wanted after one landed in the short class, want none")
+		}
+		p.Stop()
+	})
+
+	t.Run("false once stopped", func(t *testing.T) {
+		_, _, _, p := poolOf(t, segment.Targets{Content: 0, Headroom: 2, Reserve: 0}, noMax, 0, nil)
+		p.Stop()
+		if _, ok := p.WantRecycleForTest(); ok {
+			t.Fatal("a recycle was wanted over a stopped pool, want none")
+		}
+	})
+}
+
+// TestPoolRefillMakesNoSpareForAnIncomingRecycle: the refill counts a
+// recycle's reservation against the class it reserved in — all three of them,
+// not the content class alone — so the worker makes no spare for a slot a
+// recycle is filling.
+//
+// The take that empties the class kicks on its own, and that kick is a race
+// the test cannot hold: it may wake the worker before the reservation stands,
+// and when the fill's own pass has not yet run its closing check, the take's
+// kick waits in the channel behind that pass and wakes a second one. So the
+// pass that finds the class empty first is parked at its allocate, and the
+// reservation is taken while it waits: whichever pass that is, every later
+// one chooses its class with the reservation standing. Released, the parked
+// make fails at the allocate, and the pool's own Warn at the failed make is
+// the gate that proves it returned; no pass then still holds a class it chose
+// before the reservation, so the fault can be cleared and the passes the test
+// kicks are the first that could make anything. They must make nothing, for
+// the slot a recycle is filling is short only to the reservation. The passing
+// code leaves the class empty over every kick; a refill that misses the
+// reservation makes the spare, and the counter fills against the check.
+func TestPoolRefillMakesNoSpareForAnIncomingRecycle(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	for _, tc := range []struct {
+		class   segment.Class
+		targets segment.Targets
+	}{
+		{segment.Headroom, segment.Targets{Content: 0, Headroom: 1, Reserve: 0}},
+		{segment.Reserve, segment.Targets{Content: 0, Headroom: 0, Reserve: 1}},
+		{segment.Content, segment.Targets{Content: 1, Headroom: 0, Reserve: 0}},
+	} {
+		t.Run(tc.class.String(), func(t *testing.T) {
+			h := &logRecorder{}
+			seam, _, _, p := poolOf(t, tc.targets, noMax, 0, slog.New(h))
+			p.Start()
+			full := func(c segment.PoolCounters) bool {
+				switch tc.class {
+				case segment.Headroom:
+					return c.HeadroomBytes == segCap
+				case segment.Reserve:
+					return c.RepackReserveBytes == segCap
+				default:
+					return c.Spares == 1
+				}
+			}
+			awaitCounters(t, "the class filled", p, full)
+
+			// The next make fails at its allocate, and is parked there before
+			// it fails: the first pass to find the class empty, the fill's
+			// own or the take's, waits at the hold with the class it chose.
+			if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 1, syscall.EIO)); err != nil {
+				t.Fatalf("Schedule: %v", err)
+			}
+			parked := seam.HoldFirst(t, kit.OpAllocate, "*")
+			if _, err := p.Take(tc.class); err != nil {
+				t.Fatalf("the %s take: %v", tc.class, err)
+			}
+			awaitHoldReached(t, parked)
+			if c := p.Counters(); full(c) {
+				t.Fatalf("the take left the %s class full: %+v", tc.class, c)
+			}
+
+			// The reservation is taken with the class provably empty and the
+			// one pass that chose before it parked, so every pass after it
+			// sees the slot reserved.
+			class, ok := p.WantRecycleForTest()
+			if !ok || class != tc.class {
+				t.Fatalf("no recycle was wanted for the emptied %s class: got (%v, %v), want (%v, true)", tc.class, class, ok, tc.class)
+			}
+
+			// Released, the parked make fails at its allocate, and its Warn
+			// proves the pass returned. A wake the take queued behind it runs
+			// a pass that chooses with the reservation standing, so clearing
+			// the fault now lets no make land that the reservation should
+			// have stopped: the kicks below are the first passes that could
+			// make anything for the open slot.
+			parked.Release()
+			awaitLogged(t, h, slog.LevelWarn, "did not make a spare", 1)
+			if err := seam.Schedule(); err != nil {
+				t.Fatalf("the cleared Schedule: %v", err)
+			}
+
+			// The reservation holds the slot: no pass may make a spare for a
+			// class a recycle is filling. A refill that misses the
+			// reservation makes one and the counter fills against this
+			// check.
+			for range 16 {
+				p.Kick()
+				for range 1 << 10 {
+					runtime.Gosched()
+				}
+				if c := p.Counters(); full(c) {
+					t.Fatalf("with the recycle's reservation held a pass refilled the empty %s class: %+v, want the slot still held", tc.class, c)
+				}
+			}
+
+			// The recycle fails and gives the slot back: the class is short
+			// again, and the next kick's make both begins and lands — a
+			// refill that counts the reservation makes only this one, and the
+			// class holds exactly one spare.
+			p.RecycleFailedForTest(tc.class)
+			awaitCounters(t, "the class refilled once the recycle gave the slot back", p, full)
+			p.Stop()
+		})
+	}
+}
+
+// TestPoolARecycledContentSparePaysTheDemandLevel: a recycled content spare
+// serves the demand level exactly as a made one does — the landed spare makes
+// up the refused ask, and the level a refused Hold recorded is demand the
+// refill served, not demand that must be served twice. It catches a recycled
+// spare that leaves the level standing, whose next refused take would make
+// one spare the pool does not owe.
+func TestPoolARecycledContentSpareClearsTheDemandLevel(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+	p.Start()
+	awaitCounters(t, "the content spare ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 1 })
+
+	// Park the worker's makes, so the refused Hold below records its
+	// ask as a level while its demand's make is still parked at the
+	// create and nothing else lands in between. The test waits for the make
+	// to reach the hold: a pass that had not yet chosen its class when the
+	// recycle landed would find the level paid and make nothing, and the
+	// parked make this test is about would never exist.
+	park := seam.Hold(t, kit.OpCreate, "*")
+	_, err := p.Hold(2)
+	assertSpareRefusal(t, "the Hold(2) over one ready spare", err, 1)
+	if got := p.PendingForTest(); got != 2 {
+		t.Fatalf("the refused Hold recorded the demand level %d, want its ask of 2", got)
+	}
+	awaitHoldReached(t, park)
+
+	// A recycle reserves the open content slot — below the goal the level
+	// sets, the make in flight invisible to the reservation — and the
+	// recycled spare lands, making up the ask and clearing the level as a
+	// made one would.
+	class, ok := p.WantRecycleForTest()
+	if !ok || class != segment.Content {
+		t.Fatalf("no recycle was wanted for the content class: (%v, %v), want (Content, true)", class, ok)
+	}
+	p.RecycledForTest(core.SegmentID(99), segment.Content)
+	if got := p.PendingForTest(); got != 0 {
+		t.Fatalf("after the recycled spare landed the demand level stands at %d, want 0: a recycled content spare clears the level exactly as a made one does", got)
+	}
+	if c := p.Counters(); c.Spares != 2 {
+		t.Fatalf("with the demand's make parked the pool holds %d content spares, want 2: the target's and the recycled one", c.Spares)
+	}
+
+	// The parked make was drawn for the level the refill owed: released, it
+	// lands one spare over the target and the level the recycle cleared, the
+	// overlap wantRecycle's ponytail accepts.
+	park.Release()
+	awaitCounters(t, "the demand's make landed", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 3 })
+	p.Stop()
+}
+
+// TestPoolReadOnlyMakesNoSpare: while the read-only check refuses, the refill
+// worker makes no spare below the pool's target — the seam sees no call, the
+// pool's counters and the ledger's own stay at zero. The waits below prove two
+// things beyond the spares' absence, both through the check's call count.
+// First, that each pass ran and then ended: a kick is sent after the first
+// check call and the second call awaited, which one worker goroutine can
+// only reach once the first pass returned — the assertions that follow
+// therefore see a pass that has ended, not one still in flight, and a branch
+// that loops instead of ending its pass (a `continue` where the pass returns)
+// spins the count up without a kick. Second, bounded: each wait fails within
+// poolAttempts yields rather than hanging, so a worker that never wakes is a
+// failure, not a timeout. A check that returns nil again lets the next kick
+// fill every class: a property of the refill, not a claim that a journal
+// clears (a read-only journal stays so until it is reopened, which builds a
+// new pool), and it catches a check that wedged the worker (R89).
+func TestPoolReadOnlyMakesNoSpare(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	ro := &readOnlyFlag{}
+	ro.set(true)
+	seam := newSeam(t)
+	set := segment.NewSet(segCap, nil)
+	m := segment.NewMaker(seam.FS(), set, noMax, 0, nil)
+	p := segment.NewPool(m, segment.Targets{Content: 2, Headroom: 1, Reserve: 1}, ro.check, nil)
+	// A failed assertion must stop the worker too, or the profiler reports
+	// the leak beside the failure and buries it.
+	t.Cleanup(p.Stop)
+
+	// A counting fault on the seam proves the read-only journal makes no call
+	// at all: a make would reach the seam whatever it failed at.
+	fault := &countingFault{}
+	seam.SetFault(fault)
+	p.Start()
+
+	// The first pass ran: the check was asked. Without this wait the
+	// assertions below would pass vacuously, for a worker that never woke
+	// makes no spare either.
+	for range poolAttempts {
+		if ro.count() > 0 {
+			break
+		}
+		runtime.Gosched()
+	}
+	if first := ro.count(); first < 1 {
+		t.Fatalf("the refill worker never asked the read-only check in %d yields: a worker that never woke makes no spare either", poolAttempts)
+	}
+
+	// A pass that asked the check must end without making: the kick is held
+	// for the next pass while this one runs, so a kick now makes the worker
+	// ask again, which one goroutine can only do once this pass returned. The
+	// count over the interval stays the two asks these kicks caused while the
+	// pass ends as it should; a branch that spins on the refusal instead
+	// drives the count unbounded.
+	p.Kick()
+	for range poolAttempts {
+		if ro.count() > 1 {
+			break
+		}
+		runtime.Gosched()
+	}
+	if got := ro.count(); got < 2 {
+		t.Fatalf("the read-only pass never ended: after the kick the check was asked %d times in %d yields, want the first pass returned and a second asked", got, poolAttempts)
+	}
+
+	if got := fault.count(); got > 0 {
+		t.Fatalf("the read-only journal made %d seam calls, want none: a read-only pass makes no spare (RFC 1 §5.4)", got)
+	}
+	if c := p.Counters(); c.Spares != 0 || c.HeadroomBytes != 0 || c.RepackReserveBytes != 0 || c.Held != 0 {
+		t.Fatalf("over the read-only interval the pool reports %+v, want every class empty", c)
+	}
+	if c := set.Counters(); c.UsedBytes != 0 || c.Spares != 0 {
+		t.Fatalf("over the read-only interval the ledger holds %+v, want no spare accounted", c)
+	}
+
+	// The read-only interval held exactly two asks, one per kick: a branch
+	// that loops on the refusal rather than ending its pass would have asked
+	// many more, none of which a kick caused (R89: the worker waits for the
+	// next kick once the check refuses).
+	if got := ro.count(); got != 2 {
+		t.Fatalf("over the read-only interval the check was asked %d times, want once per kick: a read-only pass ends, it does not spin", got)
+	}
+
+	// The check returns nil again (the refill's property; a journal does not
+	// clear): the next kick — not the change itself — refills, every class to
+	// its target. A worker the check wedged would leave the
+	// pool short past this wait.
+	seam.SetFault(nil)
+	ro.set(false)
+	p.Kick()
+
+	awaitCounters(t, "the pool filled once the journal was writable", p,
+		func(c segment.PoolCounters) bool {
+			return c.Spares == 2 && c.HeadroomBytes == segCap && c.RepackReserveBytes == segCap
+		})
+	if err := set.Check(); err != nil {
+		t.Fatalf("after the fill: %v", err)
+	}
+
+	// The full pool turned read-only is the same: a class is chosen before
+	// the check, so a pass over a pool no class of which is short ends
+	// without asking. The count is read once the fill's last pass has ended,
+	// then a kick runs a pass over the read-only full pool. A check asked
+	// before the class choice would be asked once per kick whatever the
+	// pool's fill.
+	for range poolAttempts {
+		runtime.Gosched()
+	}
+	before := ro.count()
+	ro.set(true)
+	p.Kick()
+	for range poolAttempts {
+		runtime.Gosched()
+	}
+	if got := ro.count(); got != before {
+		t.Fatalf("a kick at a full read-only pool moved the check's count from %d to %d, want it unmoved: the check runs only once a class is short", before, got)
+	}
+
+	// Stopped here rather than left to the cleanup, so a Stop that wedges
+	// fails this test on its own line rather than at the cleanup's.
+	p.Stop()
+}
+
+// waitSpares runs WaitSpares until it answers, bounded only by the test's own
+// context: it is the helper of waits expected to settle, whose success must not
+// depend on real time. A wait that never answers fails at the panicking
+// deadline the go test runner gives the suite, not here.
+func waitSpares(t *testing.T, p *segment.Pool) error {
+	t.Helper()
+
+	type answered struct {
+		err error
+	}
+	done := make(chan answered, 1)
+	go func() {
+		done <- answered{p.WaitSpares(t.Context())}
+	}()
+	select {
+	case a := <-done:
+		return a.err
+	case <-t.Context().Done():
+		t.Fatalf("WaitSpares was still blocked when the test ended: %v", t.Context().Err())
+		return nil
+	}
+}
+
+// waitStillParked asserts the wait does not answer on its own: the wait is
+// started, confirmed parked on the pool's settle condition, and only then
+// cancelled — no timer takes part, so a wait that never parks fails on the
+// parked count and a wait that wrongly wakes fails on its wrong answer. It
+// returns what the wait answered when the cancel reached it, which waits
+// expected to stay parked read as their context's cancellation.
+func waitStillParked(t *testing.T, p *segment.Pool) error {
+	t.Helper()
+
+	type answered struct {
+		err error
+	}
+	done := make(chan answered, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		done <- answered{p.WaitSpares(ctx)}
+	}()
+	awaitParked(t, p, 1)
+	cancel()
+	select {
+	case a := <-done:
+		return a.err
+	case <-t.Context().Done():
+		t.Fatalf("WaitSpares was still blocked when the test ended: %v", t.Context().Err())
+		return nil
+	}
+}
+
+// TestPoolWaitSparesReturnsOnlyOnceSettled: the wait blocks while the refill
+// pass runs — a make held at the seam holds it — and returns nil only once
+// every class holds its target; a second wait over a settled pool returns at
+// once, with no further settle to wake it.
+func TestPoolWaitSparesReturnsOnlyOnceSettled(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 2, Headroom: 1, Reserve: 1}, noMax, 0, nil)
+
+	// Both holds registered before Start, the first parking the headroom's
+	// single make: the refill fills headroom first, so the wait cannot reach
+	// its answer until that make is let go. The wait is confirmed parked
+	// before the block below reads its answer, so the check does not race
+	// the wait's arrival against the held make.
+	h1 := seam.HoldFirst(t, kit.OpCreate, "*")
+	p.Start()
+	err := waitStillParked(t, p)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitSpares while the fill's first make was held returned %v, want the context's cancellation", err)
+	}
+	var ns *core.NoSpaceError
+	if errors.As(err, &ns) {
+		t.Fatalf("WaitSpares while the fill was held answered the spare refusal naming %s over a pass still promised", ns.Limit)
+	}
+
+	// The settle itself: released, the pass fills every class and the wait
+	// reads the pool at its targets.
+	h1.Release()
+	if err := waitSpares(t, p); err != nil {
+		t.Fatalf("WaitSpares over the settled pool: %v", err)
+	}
+	c := p.Counters()
+	if c.Spares != 2 || c.HeadroomBytes != segCap || c.RepackReserveBytes != segCap {
+		t.Fatalf("WaitSpares returned with the pool at %+v, want content 2, headroom and reserve at a segment each", c)
+	}
+
+	// A pool already settled answers a fresh wait at once, with no kick to
+	// wake it: that the wait below returns is the whole check.
+	if err := waitSpares(t, p); err != nil {
+		t.Fatalf("a second WaitSpares over the settled pool: %v", err)
+	}
+
+	p.Stop()
+}
+
+// awaitParked waits for the pool to report n waits parked on its settle
+// condition, within a bounded count of yields.
+func awaitParked(t *testing.T, p *segment.Pool, n int) {
+	t.Helper()
+
+	for range poolAttempts {
+		if p.ParkedWaitersForTest() == n {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatalf("the pool never showed %d waits parked: %d are", n, p.ParkedWaitersForTest())
+}
+
+// awaitKickQueued waits for the pool's kick channel to report want, within a
+// bounded count of yields.
+func awaitKickQueued(t *testing.T, p *segment.Pool, want bool) {
+	t.Helper()
+
+	for range poolAttempts {
+		if p.KickQueuedForTest() == want {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatalf("the pool's kick channel never reported %v", want)
+}
+
+// TestPoolWaitSparesQueuedKickIsNotAShortage: the kick a take enqueues while
+// the pool's worker is inside a pass stands as a promised pass — a wait
+// arriving in the gap between the pass's settle and the pass the queued kick
+// will run parks for that pass, and is not answered as a shortage, because
+// the settle sees the kick still queued.
+func TestPoolWaitSparesQueuedKickIsNotAShortage(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, set, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+
+	// The worker is held inside the first pass, parked at the make the
+	// first hold takes, before any spare exists: a take now cannot be
+	// served from the pool — it refuses, naming spare — and the kick it
+	// enqueues cannot be consumed, because the worker is busy in the pass
+	// the hold has not released. The take's refusal is what places the ask
+	// without consuming anything.
+	h1 := seam.HoldFirst(t, kit.OpCreate, "*")
+	p.Start()
+	awaitCounters(t, "the worker parked at the first held make", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 0 })
+	<-h1.Reached()
+	if _, err := p.Take(segment.Content); !errors.Is(err, core.ErrNoSpace) {
+		h1.Release()
+		t.Fatalf("the take over an empty pool returned %v, want the spare refusal", err)
+	}
+	awaitKickQueued(t, p, true)
+
+	// The waiter now arrives in the gap the review's case names: the pass
+	// is still inside its held make, the kick for the take's replacement
+	// sits queued. An unmarked settle — the make failing, or the pass
+	// ending below target — answers a wait arriving here as a shortage the
+	// queued pass will lift; with the kick the settle leaves the pool
+	// filling, and the wait parks for the pass the queue holds. The wait
+	// is joined, confirmed parked, and only then is the hold let go, so
+	// the pass completes, the queued pass runs, and the wait reads the
+	// refill.
+	// A single create failure is armed while the held make still sits in
+	// the seam: the fault is consulted when the call resumes, so the held
+	// make itself fails on release, the pass ends at its make-failure
+	// settle — and the take's kick still sits queued. That settle is the
+	// review's case in miniature: the queue holds a pass that will retry,
+	// and the parked waiter must read it as promised, never as a pool
+	// standing short.
+	if err := seam.Schedule(kit.Failing(kit.OpCreate, "*", 1, syscall.ENOSPC)); err != nil {
+		h1.Release()
+		t.Fatal(err)
+	}
+	answered := make(chan error, 1)
+	go func() { answered <- p.WaitSpares(t.Context()) }()
+	awaitParked(t, p, 1)
+	h1.Release()
+	select {
+	case err := <-answered:
+		if err != nil {
+			t.Fatalf("WaitSpares over a take's queued kick answered %v, want the refill it promised", err)
+		}
+	case <-time.After(10 * time.Second):
+		h1.Release()
+		t.Fatal("WaitSpares never answered the fill its queued pass owed")
+	}
+
+	// The queued pass ran after the failed one: the fault spent its single
+	// failure, and the pool holds the content spare its target names.
+	awaitCounters(t, "the content spare the queued pass owed", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 1 })
+	if err := set.Check(); err != nil {
+		t.Fatalf("the ledger after the fill: %v", err)
+	}
+	p.Stop()
+}
+
+// TestPoolWaitSparesCountsAnOpenHoldsSparesBesideTheTarget: a wait beside an
+// open Hold reads the content class at the refill's held-aware goal, so it
+// parks while the pass fills the goal the hold raised and answers with the
+// pool holding it — never with the bare target while the fill is mid-make.
+// A wait that read the target alone answered nil here, unparked, with the
+// pool short of the goal the hold demanded.
+func TestPoolWaitSparesCountsAnOpenHoldsSparesBesideTheTarget(t *testing.T) {
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 2}, noMax, 0, nil)
+
+	p.Start()
+	if err := waitSpares(t, p); err != nil {
+		t.Fatalf("WaitSpares over the settled pool: %v", err)
+	}
+	if got := p.Counters().Spares; got != 2 {
+		t.Fatalf("WaitSpares answered at %d ready spares, want the target 2", got)
+	}
+
+	// The pass the hold's own kick queues is parked at its first create, so
+	// the wait below can only answer short of the goal or park for it.
+	holdMake := seam.HoldFirst(t, kit.OpCreate, "*")
+	holdSpares, err := p.Hold(1)
+	if err != nil {
+		t.Fatalf("Hold(1) over the two ready spares: %v", err)
+	}
+
+	answered := make(chan error, 1)
+	go func() { answered <- p.WaitSpares(t.Context()) }()
+	awaitParked(t, p, 1)
+	holdMake.Release()
+
+	select {
+	case err := <-answered:
+		if err != nil {
+			t.Fatalf("WaitSpares beside an open hold: got %v, want the pool at its goal", err)
+		}
+	case <-t.Context().Done():
+		t.Fatalf("WaitSpares was still blocked when the test ended: %v", t.Context().Err())
+	}
+	if got := p.Counters().Spares; got != 3 {
+		t.Fatalf("WaitSpares answered at %d ready spares, want the goal 3 the open hold raised", got)
+	}
+
+	holdSpares.Close()
+	p.Stop()
+}
+
+// TestPoolWaitSparesRefusedWhenNeverStarted: a pool that has never started
+// never settles, so its wait refuses at once, naming the spare limit as a
+// take does.
+func TestPoolWaitSparesRefusedWhenNeverStarted(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+	err := waitSpares(t, p)
+	assertSpareRefusal(t, "the wait before Start", err, 1)
+	if seam.Calls(kit.OpCreate) != 0 {
+		t.Fatalf("the wait before Start made %d spares, want none: the wait never fills", seam.Calls(kit.OpCreate))
+	}
+}
+
+// TestPoolWaitSparesShortWhenAMakeFails: a wait over a pool whose makes fail
+// returns the spare refusal once the pass has ended in shortage — the pool
+// reporting it cannot reach its targets — rather than blocking for a spare
+// the device will not give.
+func TestPoolWaitSparesShortWhenAMakeFails(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+	if err := seam.Schedule(kit.Failing(kit.OpCreate, "*", 0, syscall.ENOSPC)); err != nil {
+		t.Fatal(err)
+	}
+	p.Start()
+
+	err := waitSpares(t, p)
+	var ns *core.NoSpaceError
+	if !errors.As(err, &ns) {
+		t.Fatalf("the wait over a pool whose every make failed returned %v, want the spare refusal naming the shortage", err)
+	}
+	if ns.Limit != core.LimitSpare {
+		t.Fatalf("the wait named the %s limit, want %s", ns.Limit, core.LimitSpare)
+	}
+	p.Stop()
+}
+
+// TestPoolWaitSparesStoppedDuringTheWait: a wait blocked on a fill the seam
+// holds returns core.ErrClosed once the pool stops, and the Stop joins the
+// worker with the waiter gone, leaking nothing. The wait is confirmed parked
+// before the stop, so the check exercises the wake a stop sends a parked
+// waiter, not the entry refusal a late arrival takes.
+func TestPoolWaitSparesStoppedDuringTheWait(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+	h1 := seam.HoldFirst(t, kit.OpCreate, "*")
+	p.Start()
+
+	answered := make(chan error, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() { answered <- p.WaitSpares(ctx) }()
+	awaitParked(t, p, 1)
+
+	// The wait is confirmed parked on the held make, and Stop joins the
+	// worker — which cannot leave the held create until the hold below is
+	// let go — so Stop runs on a goroutine of its own: its settle answers
+	// the parked wait, the release then lets the join return, and the
+	// stopped pool must refuse a fresh wait at once rather than park it.
+	stopped := make(chan struct{})
+	go func() { p.Stop(); close(stopped) }()
+	select {
+	case err := <-answered:
+		if !errors.Is(err, core.ErrClosed) {
+			t.Fatalf("the parked wait the pool stopped returned %v, want core.ErrClosed", err)
+		}
+	case <-time.After(10 * time.Second):
+		h1.Release()
+		t.Fatal("the parked wait blocked in a fill the pool left behind: Stop did not answer it")
+	}
+	h1.Release()
+	<-stopped
+	if err := waitSpares(t, p); !errors.Is(err, core.ErrClosed) {
+		t.Fatalf("a wait over the stopped pool returned %v, want core.ErrClosed", err)
+	}
+}
+
+// TestPoolAnAbandonedAskIsClearedByTheSpareThatCoversIt: a Hold refused once
+// and never retried leaves no standing demand once the refill has made up
+// its ask, so the pool does not refill above its target after every take.
+func TestPoolAnAbandonedAskIsClearedByTheSpareThatCoversIt(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	_, _, _, p := poolOf(t, segment.Targets{Content: 2}, noMax, 0, nil)
+	p.Start()
+	defer p.Stop()
+	awaitCounters(t, "the target's two spares ready", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 2 })
+
+	// Refused once and never retried: the caller gave up.
+	_, err := p.Hold(4)
+	assertSpareRefusal(t, "the Hold(4) over two ready spares", err, 2)
+	awaitCounters(t, "the refill made up the ask", p,
+		func(c segment.PoolCounters) bool { return c.Spares == 4 })
+	if got := p.PendingForTest(); got != 0 {
+		t.Fatalf("the made spare that covered the ask left the level at %d, want 0", got)
+	}
+}
+
+// TestTargetsAdoptClassesFollowsTheRefillsFillOrder drives the pool's own
+// refill over an empty pool and records the class of each spare it makes,
+// one make at a time: every make but the last is parked at the seam on the
+// allocation its making owes, and between parks exactly one class's ready
+// count has grown — the class of the make that completed — so the sequence
+// the leaves read off is the fill order the refill itself ran in. The last
+// make's class is the one each class's total is still short of at the end.
+// AdoptClasses over the same Targets must return that same set of classes
+// with the reserve's moved first: the spares phase records the classes the
+// pool's own worker would have filled, adopting into the reserve before the
+// headroom (see AdoptClasses).
+func TestTargetsAdoptClassesFollowsTheRefillsFillOrder(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	for _, row := range []struct {
+		name string
+		t    segment.Targets
+	}{
+		{"a pool filling every class", segment.Targets{Content: 2, Headroom: 1, Reserve: 1}},
+		{"a pool whose reserve keeps none", segment.Targets{Content: 1, Headroom: 3, Reserve: 0}},
+		{"a pool whose content class keeps none", segment.Targets{Content: 0, Headroom: 0, Reserve: 2}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			seam, _, _, p := poolOf(t, row.t, noMax, 0, nil)
+
+			n := row.t.Content + row.t.Headroom + row.t.Reserve
+			if n < 2 {
+				t.Fatal("the row needs at least two makes to record a fill order")
+			}
+
+			// ready reads each class's ready spares out of the pool's counters:
+			// the counts one make moves.
+			ready := func(c segment.PoolCounters) [4]int {
+				return [4]int{0,
+					int(c.Spares),
+					int(c.HeadroomBytes / segCap),
+					int(c.RepackReserveBytes / segCap)}
+			}
+			// Each make is parked at the allocation its making owes, the next
+			// parking hold armed before the parked one is released — so no
+			// make slips past unheld — and, being the only making goroutine,
+			// exactly one make lands between two parks: the counters read at
+			// each park name the class of the make that just landed, never a
+			// race between two. The read at the first park is the baseline:
+			// nothing has landed yet.
+			held := seam.HoldFirst(t, kit.OpAllocate, "*")
+			p.Start()
+
+			// A refusal releases the parked make first, for the deferred Stop
+			// joins the worker and would wait on it forever.
+			refuse := func(format string, args ...any) {
+				held.Release()
+				p.Stop()
+				t.Fatalf(format, args...)
+			}
+
+			<-held.Reached()
+			var seq []segment.Class
+			was := ready(p.Counters())
+			for range n - 1 {
+				next := seam.HoldFirst(t, kit.OpAllocate, "*")
+				held.Release()
+				held = next
+				select {
+				case <-held.Reached():
+				case <-time.After(10 * time.Second):
+					refuse("the refill parked no next make after %d landed: the pool reports %+v", len(seq), p.Counters())
+				}
+				now := ready(p.Counters())
+				grew := 0
+				for _, cls := range []segment.Class{segment.Content, segment.Headroom, segment.Reserve} {
+					switch d := now[cls] - was[cls]; {
+					case d < 0:
+						refuse("a class's ready count fell between two makes: %+v then %+v", was, now)
+					case d > 1:
+						refuse("more than one spare landed between two parks: %+v before, %+v after", was, now)
+					case d == 1:
+						grew++
+						seq = append(seq, cls)
+					}
+				}
+				if grew != 1 {
+					refuse("a park saw %d classes grow, want exactly the one spare the completed make landed in: %+v", grew, now)
+				}
+				was = now
+			}
+			// The last armed hold parks the final make or is gone before it
+			// reaches storage: releasing it lets the pass end either way.
+			held.Release()
+
+			// The last make is the one no further call parks: its class is
+			// the one each class's total is still short of once it lands.
+			awaitCounters(t, "every target filled", p, func(c segment.PoolCounters) bool {
+				return int(c.Spares) == row.t.Content && int(c.HeadroomBytes/segCap) == row.t.Headroom &&
+					int(c.RepackReserveBytes/segCap) == row.t.Reserve
+			})
+			final := ready(p.Counters())
+			last := [4]int{0, row.t.Content, row.t.Headroom, row.t.Reserve}
+			missing := 0
+			for _, cls := range []segment.Class{segment.Content, segment.Headroom, segment.Reserve} {
+				switch d := last[cls] - was[cls]; {
+				case d < 0 || d > 1:
+					t.Fatalf("the last make moved class %v by %d, want exactly one spare short: before %+v, after %+v", cls, d, was, final)
+				case d == 1:
+					missing++
+					seq = append(seq, cls)
+				}
+			}
+			if missing != 1 {
+				t.Fatalf("the last make filled %d classes, want the one each class was short of: %+v", missing, final)
+			}
+
+			want := slices.Concat(
+				slices.DeleteFunc(slices.Clone(seq), func(c segment.Class) bool { return c != segment.Reserve }),
+				slices.DeleteFunc(slices.Clone(seq), func(c segment.Class) bool { return c == segment.Reserve }))
+			if got := row.t.AdoptClasses(len(seq)); !slices.Equal(got, want) {
+				t.Errorf("AdoptClasses over %d adoptions got %v, want %v, the classes the refill itself made its spares in with the reserve's first", len(seq), got, want)
+			}
+			p.Stop()
+		})
+	}
+}
+
+// TestTargetsAdoptClassesNamesTheFillOrder pins the fill order the spares
+// phase reads through the one method that owns it: the repack reserve first,
+// then the headroom, then the content class, and every spare past every
+// target takes the content class — the refill's classes with the reserve
+// moved ahead of the headroom.
+func TestTargetsAdoptClassesNamesTheFillOrder(t *testing.T) {
+	same := segment.Targets{Content: 2, Headroom: 1, Reserve: 1}
+	for _, row := range []struct {
+		name string
+		t    segment.Targets
+		n    int
+		want []segment.Class
+	}{
+		{"none adopted", same, 0, nil},
+		{"the repack reserve first", same, 1, []segment.Class{segment.Reserve}},
+		{"then the headroom", same, 2, []segment.Class{segment.Reserve, segment.Headroom}},
+		{"then the content class", same, 4,
+			[]segment.Class{segment.Reserve, segment.Headroom, segment.Content, segment.Content}},
+		{"every spare past every target takes the content class", segment.Targets{}, 3,
+			[]segment.Class{segment.Content, segment.Content, segment.Content}},
+	} {
+		if got := row.t.AdoptClasses(row.n); !slices.Equal(got, row.want) {
+			t.Errorf("AdoptClasses over %d adoptions of %s got %v, want %v", row.n, row.name, got, row.want)
+		}
+	}
+}
+
+// TestPoolHoldTakenStandsInTheHeadroom: the count the open's held takes stand
+// at rides the pool's own shortage decisions over the headroom. With a
+// headroom target of one and one held take, the refill pass that starts the
+// pool makes nothing — the held take occupies the target's only slot — while
+// the same pool over a zero count fills it; and the recycle's reservation
+// answers the reserve the headroom's taken slot leaves short, never the
+// headroom itself.
+func TestPoolHoldTakenStandsInTheHeadroom(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	t.Run("the refill makes no spare a held take occupies the slot of", func(t *testing.T) {
+		seam, _, _, p := poolOf(t, segment.Targets{Headroom: 1}, noMax, 0, nil)
+		p.HoldTaken(1)
+		p.Start()
+		defer p.Stop()
+
+		// A bounded wait is the assertion, for the pass may make nothing and
+		// so move no counter: it has run once its kick drained and a yield
+		// had it, and a spare made over the held take would show in the
+		// counters or the creates either side of it.
+		creates := seam.Calls(kit.OpCreate)
+		for range 1 << 20 {
+			if !p.KickQueuedForTest() && !p.FillingForTest() {
+				// the queued kick behind this check lets the pass run once
+				// more before the wait ends
+				for range 16 {
+					runtime.Gosched()
+				}
+				break
+			}
+			runtime.Gosched()
+		}
+		c := p.Counters()
+		if c.HeadroomBytes != 0 || c.Spares != 0 {
+			t.Fatalf("the pool over a held take reports headroom %d and content %d, want none made: the held take occupies the headroom's only slot", c.HeadroomBytes, c.Spares)
+		}
+		if got, want := seam.Calls(kit.OpCreate), creates; got != want {
+			t.Fatalf("the pool made %d new files over a held take, want %d, the count before: no spare is created for a slot a held take occupies", got, want)
+		}
+
+		// The count standing down frees the slot: the kick HoldTaken sends
+		// fills the headroom it kept empty.
+		p.HoldTaken(0)
+		awaitCounters(t, "the freed headroom refilled", p,
+			func(c segment.PoolCounters) bool { return c.HeadroomBytes == segCap })
+		p.Stop()
+	})
+
+	t.Run("a recycle reserves past the taken headroom, never over it", func(t *testing.T) {
+		_, _, _, p := poolOf(t, segment.Targets{Headroom: 1, Reserve: 1}, noMax, 0, nil)
+		p.HoldTaken(1)
+
+		if c, ok := p.WantRecycleForTest(); !ok || c != segment.Reserve {
+			t.Fatalf("a recycle was wanted for %v over a held-taken headroom, want Reserve: the held take occupies the headroom's only slot", c)
+		}
+		if _, ok := p.WantRecycleForTest(); ok {
+			t.Fatal("a second recycle was wanted over a reserve one reservation fills, want none")
+		}
+		p.RecycleFailedForTest(segment.Reserve)
+		if c, ok := p.WantRecycleForTest(); !ok || c != segment.Reserve {
+			t.Fatalf("after the giveback no recycle was wanted for the reserve, want it short again: %v", c)
+		}
+		p.Stop()
+	})
+}
+
+// TestPoolAWaitReadsTheHeadroomTheHoldsFill: the wait answers by the same
+// accounting the refill fills to. With one held take standing in a
+// one-spare headroom, the refill's own pass makes nothing — the slot is
+// occupied — and the settled pool the wait then reads is exactly at that
+// filled-to target: the wait returns satisfied, never a refusal over a
+// headroom its own refill will not fill. A wait that read the ready
+// spares alone would refuse a pool holding exactly what its refill fills
+// to once the hold is set.
+func TestPoolAWaitReadsTheHeadroomTheHoldsFill(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Headroom: 1}, noMax, 0, nil)
+	p.HoldTaken(1)
+	p.Start()
+	defer p.Stop()
+
+	// The pass has run once the kick it owed has drained and a yield had
+	// it: over a held take it makes nothing, moves no counter and leaves
+	// only its end behind.
+	creates := seam.Calls(kit.OpCreate)
+	for range 1 << 20 {
+		if !p.KickQueuedForTest() && !p.FillingForTest() {
+			for range 16 {
+				runtime.Gosched()
+			}
+			break
+		}
+		runtime.Gosched()
+	}
+	if got, want := seam.Calls(kit.OpCreate), creates; got != want {
+		t.Fatalf("the pool made %d new files over a held take, want %d: the headroom's slot is occupied", got, want)
+	}
+
+	// A settled pool, no pass running or queued, answering the wait.
+	if p.FillingForTest() || p.KickQueuedForTest() {
+		t.Fatal("the pool still owes a pass; the wait below would park on it, not read the settled state")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := p.WaitSpares(ctx); err != nil {
+		var ns *core.NoSpaceError
+		if errors.As(err, &ns) {
+			t.Fatalf("WaitSpares refused a pool holding exactly what its refill fills to, naming %d missing: the one held take stands in the headroom's only slot", ns.Missing)
+		}
+		t.Fatalf("WaitSpares: %v, want nil over a pool whose held take fills the headroom the refill leaves empty", err)
+	}
+}
+
+// TestPoolWaitRecordSparesAsksNoMoreThanThePoolKeeps: a wait for more spares
+// than the pool ever holds ready answers once the pool is full, not the spare
+// refusal an idle pool short of the count would give, so a plan spanning more
+// streams than the kept spares still opens and lands what they cover.
+func TestPoolWaitRecordSparesAsksNoMoreThanThePoolKeeps(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	_, _, _, p := poolOf(t, segment.Targets{Content: 1, Headroom: 1}, noMax, 0, nil)
+	p.Start()
+	if err := p.WaitRecordSpares(t.Context(), 4); err != nil {
+		t.Fatalf("the wait for 4 spares over a pool keeping 2 returned %v, want the filled pool", err)
+	}
+	p.Stop()
+}
+
+// TestPoolWaitReserveSpareAnswersTheReserveAlone: a pool whose maximum lets
+// it make its headroom and reserve spares and no content spare settles short
+// of its whole goal, yet the wait for one reserve spare answers nil, for the
+// spare the open's copy draws is ready. A wait for the whole goal refuses
+// here with the content class short.
+func TestPoolWaitReserveSpareAnswersTheReserveAlone(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	_, _, _, p := poolOf(t, segment.Targets{Headroom: 1, Reserve: 1, Content: 1}, 2*segCap, 0, nil)
+	p.Start()
+	defer p.Stop()
+
+	if err := p.WaitReserveSpare(t.Context()); err != nil {
+		t.Fatalf("the wait for one reserve spare over a pool whose maximum holds the headroom and the reserve returned %v, want nil", err)
+	}
+	if c := p.Counters(); c.Spares != 0 {
+		t.Fatalf("the pool made %d content spares past a maximum of two caps, want 0: the case needs the content class short", c.Spares)
+	}
+	if _, err := p.Take(segment.Reserve); err != nil {
+		t.Fatalf("Take(Reserve) after the wait answered: %v, want the ready reserve spare", err)
+	}
+}
+
+// TestPoolCheckMatchesTheListsAfterEveryTake: the ready counts Counters serves
+// are stored beside each change of a ready list, and Check walks the lists
+// against them. Every way a class loses a spare is driven here, the floored
+// reserve take that removes from the middle of its list included, so a path
+// that changes a list and forgets its count fails Check naming the class.
+func TestPoolCheckMatchesTheListsAfterEveryTake(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	_, _, _, p := poolOf(t, segment.Targets{Content: 2, Headroom: 2, Reserve: 3}, noMax, 0, nil)
+	p.Start()
+	defer p.Stop()
+	awaitCounters(t, "targets {2,2,3} filled", p, func(c segment.PoolCounters) bool {
+		return c.Spares == 2 && c.HeadroomBytes == 2*segCap && c.RepackReserveBytes == 3*segCap
+	})
+	check := func(when string) {
+		t.Helper()
+		if err := p.Check(); err != nil {
+			t.Fatalf("%s: %v", when, err)
+		}
+	}
+	check("after the fill")
+	takeClass(t, p, segment.Content)
+	check("after a content take")
+	takeClass(t, p, segment.Headroom)
+	check("after a headroom take")
+	if _, err := p.TakeReserveAbove(0); err != nil {
+		t.Fatalf("TakeReserveAbove(0): %v", err)
+	}
+	check("after a floored reserve take")
+}
+
+// TestPoolTakeReserveAboveRenamesALowSpare: at a maximum of one cap, a
+// reserve whose one ready spare is an adopted id below the floor answers the
+// take with that spare under a fresh id above the seed — its file renamed,
+// the footprint unchanged — where a make would need a cap the maximum
+// refuses.
+func TestPoolTakeReserveAboveRenamesALowSpare(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, set, p := lowReservePool(t)
+	defer p.Stop()
+
+	id, err := p.TakeReserveAbove(5)
+	if err != nil || id <= 10 {
+		t.Fatalf("TakeReserveAbove(5) over a reserve holding only spare 3 at a one-cap maximum = %d, %v, want the spare renamed above the seed 10", id, err)
+	}
+	if _, err := seam.Durable(format.SegmentName(3)); err == nil {
+		t.Errorf("the low spare's old name %s is still durable, want it renamed", format.SegmentName(3))
+	}
+	if _, err := seam.Durable(format.SegmentName(id)); err != nil {
+		t.Errorf("the renamed spare %s is not durable: %v", format.SegmentName(id), err)
+	}
+	if got := set.Counters().UsedBytes; got != segCap {
+		t.Errorf("the footprint after the floored take = %d, want the one cap %d: a rename allocates nothing", got, segCap)
+	}
+	if st, err := set.State(id); err != nil || st != segment.Active {
+		t.Errorf("the taken spare %d is %v (%v) in the ledger, want Active", id, st, err)
+	}
+}
+
+// lowReservePool is a started pool at a one-cap maximum, seeded at 10, whose
+// one ready reserve spare is the adopted 3, its file on disk at the cap.
+func lowReservePool(t *testing.T) (*kit.Seam, *segment.Set, *segment.Pool) {
+	t.Helper()
+	seam, set, _, p := poolOf(t, segment.Targets{Reserve: 1}, segCap, 10, nil)
+	f, err := seam.Create(format.SegmentName(3))
+	if err != nil {
+		t.Fatalf("create the adopted spare's file: %v", err)
+	}
+	if err := errors.Join(f.Truncate(segCap), f.Sync(), f.Close(), seam.SyncDir()); err != nil {
+		t.Fatalf("write the adopted spare's file: %v", err)
+	}
+	if err := p.Adopt(3, segment.Reserve); err != nil {
+		t.Fatalf("Adopt(3, Reserve): %v", err)
+	}
+	p.Start()
+	return seam, set, p
+}
+
+// TestPoolTakeReserveAboveFailedRenameStrandsNothing: a floored take whose
+// rename or directory sync fails answers the failure with the spare still
+// accounted — the footprint one cap, one spare — out of every ready list, and
+// its file under exactly one of its two names, for the next open to re-adopt.
+func TestPoolTakeReserveAboveFailedRenameStrandsNothing(t *testing.T) {
+	for _, op := range []string{kit.OpRename, kit.OpSyncDir} {
+		t.Run(op, func(t *testing.T) {
+			seam, set, p := lowReservePool(t)
+			defer p.Stop()
+			if err := seam.Schedule(kit.Failing(op, "*", 1, syscall.EIO)); err != nil {
+				t.Fatalf("schedule the %s fault: %v", op, err)
+			}
+			if _, err := p.TakeReserveAbove(5); err == nil {
+				t.Fatalf("TakeReserveAbove under a failing %s answered nil, want the failure", op)
+			}
+			if c := set.Counters(); c.UsedBytes != segCap || c.Spares != 1 {
+				t.Errorf("the ledger after the failed %s holds %d bytes and %d spares, want %d and 1", op, c.UsedBytes, c.Spares, segCap)
+			}
+			if got := p.Counters().RepackReserveBytes; got != 0 {
+				t.Errorf("the pool's ready reserve after the failed %s holds %d bytes, want 0: the spare is out of every ready list", op, got)
+			}
+			// The spare's file stands under exactly one name, read from the
+			// directory rather than pinned to a drawn id: the pool's own
+			// Start-kicked pass draws from the same id counter the take's
+			// rename renames under, and a draw it wins the race to burns the
+			// id the test has no claim on.
+			stand := make([]string, 0, 1)
+			for _, name := range listNames(t, seam) {
+				if kind, _ := format.ClassifyName(name); kind == format.NameSegment || kind == format.NameSpare {
+					stand = append(stand, name)
+				}
+			}
+			if len(stand) != 1 {
+				t.Errorf("the spare's file stands under %d names after the failed %s, want exactly 1: %v", len(stand), op, stand)
+			} else if f, err := seam.Open(stand[0]); err != nil {
+				t.Errorf("the spare's file %s does not open after the failed %s: %v", stand[0], op, err)
+			} else {
+				_ = f.Close()
+				if op == kit.OpSyncDir && stand[0] == format.SegmentName(3) {
+					t.Errorf("the spare's file still stands under its old name %s after the failed %s, want the drawn fresh one", stand[0], op)
+				}
+			}
+		})
+	}
+}
+
+// TestSetRenameSpareRefusals pins the re-key's three refusals.
+func TestSetRenameSpareRefusals(t *testing.T) {
+	s := segment.NewSet(segCap, nil)
+	for _, id := range []core.SegmentID{1, 2} {
+		if err := s.AddSpare(id, noMax); err != nil {
+			t.Fatalf("AddSpare(%d): %v", id, err)
+		}
+	}
+	for _, tc := range []struct {
+		name       string
+		old, fresh core.SegmentID
+		want       error
+	}{
+		{"a zero fresh id", 1, 0, segment.ErrBadID},
+		{"an old id that is no spare", 9, 10, segment.ErrNotInSet},
+		{"a fresh id the ledger owns", 1, 2, segment.ErrDuplicateID},
+	} {
+		if err := s.RenameSpare(tc.old, tc.fresh); !errors.Is(err, tc.want) {
+			t.Errorf("%s: RenameSpare(%d, %d) = %v, want %v", tc.name, tc.old, tc.fresh, err, tc.want)
+		}
+	}
+}
+
+// TestPoolHeadroomShortCountsTheSparesAnOpenBorrowed: the gauge is the
+// headroom's shortfall against its target capped at the spares an open
+// borrowed for its re-appends, so a pool whose open borrowed none reads zero
+// however empty its headroom, a held take stands in the headroom, and the
+// pool's own refill brings the borrowed spare back and the gauge to zero.
+func TestPoolHeadroomShortCountsTheSparesAnOpenBorrowed(t *testing.T) {
+	_, set2, m2 := maker(t, 0, noMax)
+	id, err := m2.Make()
+	if err != nil {
+		t.Fatalf("the directory's spare: %v", err)
+	}
+	if err := set2.Take(id); err != nil {
+		t.Fatalf("the directory's ledger: Take %d: %v", id, err)
+	}
+
+	_, _, m := maker(t, 4, noMax)
+	p := segment.NewPool(m, segment.Targets{Headroom: 3}, nil, nil)
+	if err := p.Adopt(id, segment.Headroom); err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	if got := p.Counters().HeadroomSparesShort; got != 0 {
+		t.Fatalf("a pool whose open borrowed nothing reads %d short with its headroom two spares under target, want 0", got)
+	}
+	p.BorrowHeadroom(1)
+	if got := p.HeadroomShort(); got != 1 {
+		t.Fatalf("after the open borrowed one spare the pool reads %d short, want 1: the shortfall of 2 is capped at what was borrowed", got)
+	}
+	if got := p.Counters().HeadroomSparesShort; got != 1 {
+		t.Fatalf("Counters reads %d short, want 1: the same reading", got)
+	}
+	p.HoldTaken(2)
+	if got := p.HeadroomShort(); got != 0 {
+		t.Fatalf("with two held takes standing in the headroom the pool reads %d short, want 0", got)
+	}
+	p.HoldTaken(0)
+
+	p.Start()
+	t.Cleanup(p.Stop)
+	if err := p.WaitSpares(t.Context()); err != nil {
+		t.Fatalf("the refill's settle: %v", err)
+	}
+	if got := p.HeadroomShort(); got != 0 {
+		t.Fatalf("after the refill settled the pool reads %d short, want 0: the refill makes the spare an open borrowed", got)
+	}
+	// An ordinary take of a headroom spare after the borrow was made again is
+	// the pool running, not the open's debt.
+	if _, err := p.Take(segment.Headroom); err != nil {
+		t.Fatalf("a headroom take after the settle: %v", err)
+	}
+	if got := p.HeadroomShort(); got != 0 {
+		t.Fatalf("after an ordinary headroom take the pool reads %d short, want 0: the borrow was already made again", got)
+	}
+}
+
+// TestPoolCheckAfterAMakeLandsPastStop: a make parked at its create while Stop
+// marks the pool stopped still lands its spare in the ready list, and the
+// ready count Counters serves says so. Check walks the list against the count
+// and Counters reports the spare, so a stopped-pool landing that forgets the
+// count fails both.
+func TestPoolCheckAfterAMakeLandsPastStop(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+	h := seam.Hold(t, kit.OpCreate, "*")
+	p.Start()
+	<-h.Reached()
+
+	stopped := make(chan struct{})
+	go func() { p.Stop(); close(stopped) }()
+	// Stop marks the pool stopped before it joins the parked make, and a Hold
+	// answers ErrClosed from that mark on: the landing below is past it.
+	closed := false
+	for range poolAttempts {
+		hold, err := p.Hold(1)
+		if errors.Is(err, core.ErrClosed) {
+			closed = true
+			break
+		}
+		if err == nil {
+			hold.Close()
+		}
+		runtime.Gosched()
+	}
+	if !closed {
+		h.Release()
+		<-stopped
+		t.Fatal("Stop never marked the pool stopped: the landing below would not be past it")
+	}
+	h.Release()
+	<-stopped
+
+	if err := p.Check(); err != nil {
+		t.Fatalf("after a make landed past Stop: %v", err)
+	}
+	if c := p.Counters(); c.Spares != 1 {
+		t.Fatalf("after a make landed past Stop Counters.Spares = %d, want the 1 spare the make landed", c.Spares)
+	}
+}
+
+// TestPoolHoldOnFullDevice: a reservation's hold on a pool whose make failed
+// ENOSPC answers the device's ENOSPC, as the roll does, never the retryable
+// spare limit a caller would retry forever; a pool whose make failed with EIO
+// still answers the spare limit, since no device is full. It catches a hold
+// that reads no device-full state, and one that reads it for any failure.
+func TestPoolHoldOnFullDevice(t *testing.T) {
+	prof.Watch(t, prof.Options{})
+
+	t.Run("ENOSPC answers ENOSPC", func(t *testing.T) {
+		seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+		if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.ENOSPC)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		p.Start()
+		t.Cleanup(p.Stop)
+		awaitDeviceFull(t, true, p)
+		_, err := p.Hold(1)
+		if !errors.Is(err, syscall.ENOSPC) {
+			t.Fatalf("Hold on a full device = %v, want the device's ENOSPC", err)
+		}
+		var ns *core.NoSpaceError
+		if errors.As(err, &ns) || errors.Is(err, core.ErrNoSpace) {
+			t.Fatalf("Hold on a full device = %v, want no NoSpaceError and no ErrNoSpace", err)
+		}
+	})
+
+	t.Run("EIO answers the spare limit", func(t *testing.T) {
+		h := &logRecorder{}
+		seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, slog.New(h))
+		if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.EIO)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		p.Start()
+		t.Cleanup(p.Stop)
+		awaitLogged(t, h, slog.LevelWarn, "did not make a spare", 1)
+		_, err := p.Hold(1)
+		var ns *core.NoSpaceError
+		if !errors.As(err, &ns) || ns.Limit != core.LimitSpare {
+			t.Fatalf("Hold over an EIO pool = %v, want the spare limit's NoSpaceError", err)
+		}
+	})
+
+	// The device's answer comes only from the shortage branch: a ready spare
+	// is still served on a full device, and only a hold the pool falls short
+	// for answers ENOSPC.
+	t.Run("a ready spare serves despite the state", func(t *testing.T) {
+		seam, _, _, p := poolOf(t, segment.Targets{Content: 1}, noMax, 0, nil)
+		p.Start()
+		t.Cleanup(p.Stop)
+		awaitCounters(t, "a content spare made", p, func(c segment.PoolCounters) bool { return c.Spares == 1 })
+		if err := seam.Schedule(kit.Failing(kit.OpAllocate, "*", 0, syscall.ENOSPC)); err != nil {
+			t.Fatalf("Schedule: %v", err)
+		}
+		held, err := p.Hold(1)
+		if err != nil {
+			t.Fatalf("a hold over the ready spare: %v", err)
+		}
+		// The hold rode above the target, so the refill tried to make it up
+		// and found the device full.
+		awaitDeviceFull(t, true, p)
+		if _, err := p.Hold(1); !errors.Is(err, syscall.ENOSPC) {
+			t.Fatalf("a hold over the spare the other hold keeps: %v, want the device's ENOSPC", err)
+		}
+		held.Close()
+		if _, err := p.Hold(1); err != nil {
+			t.Fatalf("a hold over a ready spare on a full device: %v, want it served", err)
+		}
+	})
+}

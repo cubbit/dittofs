@@ -1,0 +1,407 @@
+package vfs
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+
+	"github.com/cubbit/dittofs/internal/vfs/admit"
+	"github.com/cubbit/dittofs/internal/vfs/authz"
+	"github.com/cubbit/dittofs/internal/vfs/pseudofs"
+	"github.com/cubbit/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/vfs"
+)
+
+// admitted is one call admitted to one share: the caller it acts as there,
+// and the share as admission read it.
+type admitted struct {
+	caller     authz.Caller
+	share      entity.Share
+	policy     entity.ExportPolicy
+	sessioned  bool // the call has a session, which open state marks the state it creates with
+	privileged bool // the caller's privilege as resolved; caller.Privileged holds it only where the call lets it count
+}
+
+// how is what admission makes of a call beyond its Call: whether it only
+// releases state, and which of the share's minimums it must meet.
+type how uint8
+
+const (
+	releasing how = 1 << iota // the call only releases state: exempt from the client rules' refusal
+	unsecured                 // the share's minimums are skipped, for the one call whose answer is the remedy for failing them
+	hostMount                 // a HostCall meets no minimum: Root and ListShares, which a mount service calls
+	hostLock                  // a HostCall meets MinProof lowered to at most Claimed and no MinProtection: the lock calls, GetAttr, which a blocking lock makes first, and Open and Close, which a lock service calls
+)
+
+// root is the share's root handle.
+func (a *admitted) root() vfs.Handle { return entity.NewHandle(a.share.ID, a.share.Root) }
+
+// admitHandle admits a call naming h to h's share, before anything resolves
+// h: a handle of no valid form is ErrStale, and a pseudo directory's handle
+// names no share and is admitted to none, answering nil. The release, never
+// nil, uncounts the call; it is called once the call has answered.
+func (fs *Filesystem) admitHandle(ctx context.Context, c vfs.Call, h vfs.Handle) (*admitted, func(), error) {
+	return fs.admitHandleFor(ctx, c, h, 0)
+}
+
+// admitHandleFor is admitHandle for a call admission takes as w says, as
+// admit runs it.
+func (fs *Filesystem) admitHandleFor(ctx context.Context, c vfs.Call, h vfs.Handle, w how) (*admitted, func(), error) {
+	if pseudofs.IsHandle(h) {
+		if hostRefused(c, w) {
+			return nil, func() {}, vfs.ErrInvalid
+		}
+		return nil, func() {}, nil
+	}
+	share, _, err := h.Parse()
+	if err != nil {
+		return nil, func() {}, vfs.ErrStale
+	}
+	return fs.admit(ctx, c, share, w)
+}
+
+// admit runs admission for the call c reaching share: it counts the call
+// against the share, then runs the share's state, its security minimums and
+// its client rules, then Deps.Identity resolves its Identity on the share.
+// w says which of the share's minimums the call meets and whether it only
+// releases state, which check exempts from the client rules' refusal. A share
+// never created is ErrStale, as a handle naming it is.
+//
+// decision: a share the node has not bound, one just created or one it
+// refused, answers a Delay rather than an error, as a share reconcile binds
+// within a second of its creation. A share it refused for its configuration
+// keeps answering it until the configuration changes. Answer ErrUnavailable
+// for a refused share if clients are seen retrying one for long.
+//
+// ponytail: every admitted call asks the node's running set, which takes the
+// node's reconcile mutex, one lock all calls share. Publish the running set
+// as an atomic snapshot if that lock shows in a profile.
+//
+// decision: the share cap on the node's request buffers, admission's last
+// step, is not run: no request-buffer pool exists to charge. Add it, refusing
+// with DelayResources except for a call that only releases or reclaims
+// state, releases among them, with the pools.
+func (fs *Filesystem) admit(ctx context.Context, c vfs.Call, share entity.ShareID, w how) (*admitted, func(), error) {
+	release := fs.count(share)
+	if _, err := fs.tree(ctx); err != nil {
+		release()
+		return nil, func() {}, err
+	}
+	a, err := fs.check(ctx, c, share, false, w)
+	if err == nil && fs.running != nil && !fs.running(share) {
+		err = &vfs.Delay{Cause: vfs.DelayFrozen}
+	}
+	if err == nil {
+		err = fs.servedShard(ctx, a.share)
+	}
+	if err != nil {
+		release()
+		return nil, func() {}, err
+	}
+	return a, release, nil
+}
+
+// servedShard serves sh's shard when no serve of it has succeeded, as when
+// the tree's serve of it failed, holding the token a rebuild holds so no
+// two serve it at once: a failure is answered to this call alone.
+func (fs *Filesystem) servedShard(ctx context.Context, sh entity.Share) error {
+	fs.mu.Lock()
+	ok := fs.served[sh.ID]
+	fs.mu.Unlock()
+	if ok {
+		return nil
+	}
+	select {
+	case fs.build <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-fs.build }()
+	fs.mu.Lock()
+	ok = fs.served[sh.ID]
+	fs.mu.Unlock()
+	if ok {
+		return nil
+	}
+	return openErr(fs.serve(ctx, []entity.Share{sh}))
+}
+
+// check is admission's steps 1 to 4 for the call c on share, counting nothing:
+// whether a call would be admitted. Once the share is read, the admission it
+// answers holds it and its policy, refused or not. With paused, a quiesced
+// share is admitted as an enabled one would be, and ErrDelay answered only
+// once every later step admits the call. With releasing, a call that only
+// releases state, the client rules' refusal is not answered: the call is
+// admitted narrowed to read-only, as a client rule narrows one; nor is an
+// unsquashed caller's share grant of none (see acting, which names the
+// squashed caller's gap).
+//
+// decision: a call that only releases state is exempt from the client rules'
+// refusal, as RFC 17 §4.9 step 5 and RFC 19 §3.1 ask, so a client the rules
+// stop admitting can still give up the locks and opens it holds, which would
+// otherwise block every other client until its lease or host ends. The share's
+// state, the minimums and resolution still gate it, and open state still
+// refuses a caller that does not own the state. Close, Unlock and CancelLock
+// are the calls that pass it; another release-only call passes it once it is
+// written.
+//
+// decision: HostCall lowers the minimums only for the calls a host's mount or
+// lock service makes, which w names: Root and ListShares, the lock calls,
+// GetAttr, Close, and an Open of an existing file by handle that neither
+// creates, overwrites nor deletes on close. Any other call that sets it,
+// naming a share or a pseudo directory, is ErrInvalid, a creating or deleting
+// open included, and so is one with a Session, which no mount or lock service
+// has, so an adapter setting it by mistake lowers nothing there. Within those
+// calls the flag is the only guard: one an NFSv4 or SMB adapter set by mistake
+// on a lock call, a GetAttr or such an open would admit it at Claimed. The
+// lowered minimums are worth only what those calls reach: a share's root and
+// flavours, a byte-range lock, a file's attributes, and an open of an existing
+// file with its close. Key the lowering on something an adapter cannot set by
+// mistake if a mis-set flag is ever found.
+func (fs *Filesystem) check(ctx context.Context, c vfs.Call, share entity.ShareID, paused bool, w how) (*admitted, error) {
+	if hostRefused(c, w) {
+		return nil, vfs.ErrInvalid
+	}
+	if fs.beforeShareRead != nil {
+		fs.beforeShareRead()
+	}
+	sh, p, err := fs.meta.ShareIndex().Share(ctx, share)
+	if merrs.IsNotFoundError(err) {
+		return nil, vfs.ErrStale
+	}
+	if err != nil {
+		return nil, storeErr(err)
+	}
+	a := &admitted{share: sh, policy: p}
+	delay := paused && sh.State == entity.ShareQuiesced
+	if err := sh.State.Gate(); err != nil && !delay {
+		return a, storeErr(err)
+	}
+	in := p
+	switch {
+	case w&unsecured != 0, hostCall(c) && w&hostMount != 0:
+		in.MinProof, in.MinProtection = entity.ProofNone, entity.ProtectionNone
+	case hostCall(c):
+		in.MinProof, in.MinProtection = min(in.MinProof, entity.ProofClaimed), entity.ProtectionNone
+	}
+	byClient, err := admit.Check(ctx, in, c.Identity, netgroups{fs.meta.ShareIndex()})
+	if w&releasing != 0 && errors.Is(err, admit.ErrClientRule) {
+		byClient, err = true, nil
+	}
+	if err != nil {
+		return a, storeErr(err)
+	}
+	ro := identity.ReadOnlyNotNarrowed
+	switch {
+	case p.ReadOnly:
+		ro = identity.ReadOnlyShare
+	case byClient:
+		ro = identity.ReadOnlyClient
+	}
+	a.caller = authz.Caller{Share: sh.ID, Proved: c.Identity, Client: c.Client, Caps: c.Caps}
+	a.sessioned = c.Session != (vfs.SessionRef{})
+	a.caller.Identity, a.caller.Mapped, err = fs.resolve(ctx, c.Identity, sh, p, ro, w&releasing != 0)
+	// Without PrivilegeOnEveryCall privilege counts only on a backup-intent
+	// open and on calls through the handle it made (through).
+	a.privileged = a.caller.Privileged
+	a.caller.Privileged = a.privileged && privilegeOnEveryCall(c)
+	if err == nil && delay {
+		err = &vfs.Delay{Cause: vfs.DelayFrozen}
+	}
+	return a, err
+}
+
+// hostRefused reports whether c sets HostCall on a call no host's mount or
+// lock service makes, which w names, or with a Session, which neither has. It
+// holds on a pseudo directory's handle as on a share's.
+func hostRefused(c vfs.Call, w how) bool {
+	return hostCall(c) && (w&(hostMount|hostLock) == 0 || c.Session != (vfs.SessionRef{}))
+}
+
+// count counts a call against share, before admission reads the share's
+// state, and returns its uncount: so a removal whose mark has committed, and
+// which then waits in JoinShare, waits for every call that read the state
+// before the mark, and one counting after the mark reads it.
+func (fs *Filesystem) count(share entity.ShareID) func() {
+	fs.mu.Lock()
+	j := fs.joins[share]
+	if j == nil {
+		j = &join{zero: make(chan struct{})}
+		fs.joins[share] = j
+	}
+	j.n++
+	fs.mu.Unlock()
+	return func() {
+		fs.mu.Lock()
+		defer fs.mu.Unlock()
+		if j.n--; j.n == 0 {
+			close(j.zero)
+			delete(fs.joins, share)
+		}
+	}
+}
+
+// join is the calls counted against one share.
+type join struct {
+	n    int
+	zero chan struct{} // closed when n reaches zero
+}
+
+// JoinShare returns once no call is counted against share: every call
+// admitted to it before JoinShare was called, and any counted since, has
+// answered. A share's removal calls it once its mark has committed, and
+// before it ends the share's open state; every call counted after the mark
+// reads the mark and is refused at once. At ctx's end it answers ctx's
+// error. The node's removal driver calls it, while serving and again at its
+// start, so a delete answers at once and a crash between the mark and the
+// join is finished at the next start.
+//
+// ponytail: waits for the share's count to reach zero, not for the calls
+// counted before it was called, so calls counted after the mark that keep
+// overlapping one another hold it, each refused but never all at once.
+// Count each share's calls per epoch, and wait for the epochs before the
+// mark's, if a removal is seen to wait on them.
+func (fs *Filesystem) JoinShare(ctx context.Context, share entity.ShareID) error {
+	fs.mu.Lock()
+	j := fs.joins[share]
+	fs.mu.Unlock()
+	if j == nil {
+		return nil
+	}
+	select {
+	case <-j.zero:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// flavors is what a share lists, as SECINFO and a share's info list it, in
+// the policy's preference order: each flavour it names that its minimums
+// would admit.
+//
+// decision: Kerberos lists krb5p, krb5i and krb5, strongest first, down to
+// the protection floor; sys is listed only while the proof floor admits a
+// claim, and none only while it admits no proof. A policy naming no flavour
+// lists sys, the three Kerberos levels and none, as its minimums allow. NTLM
+// is not listed: it is no NFS flavour, and an SMB client negotiates its
+// mechanism apart from this list. List it if a caller of ShareInfo is found
+// that needs it.
+func flavors(p entity.ExportPolicy) []vfs.AuthFlavor {
+	names := p.Flavors
+	if len(names) == 0 {
+		names = []entity.AuthFlavor{entity.FlavorSys, entity.FlavorKerberos, entity.FlavorNone}
+	}
+	var out []vfs.AuthFlavor
+	for _, f := range names {
+		switch {
+		case f == entity.FlavorKerberos:
+			out = append(out, kerberos(vfs.Protection(p.MinProtection))...)
+		case f == entity.FlavorSys && p.MinProof <= entity.ProofClaimed:
+			out = append(out, vfs.FlavorSys)
+		case f == entity.FlavorNone && p.MinProof == entity.ProofNone:
+			out = append(out, vfs.FlavorNone)
+		}
+	}
+	return out
+}
+
+// kerberos is the Kerberos flavours protecting at least from, strongest
+// first.
+func kerberos(from vfs.Protection) []vfs.AuthFlavor {
+	var out []vfs.AuthFlavor
+	for _, k := range []struct {
+		p vfs.Protection
+		f vfs.AuthFlavor
+	}{{vfs.ProtectionPrivacy, vfs.FlavorKrb5p}, {vfs.ProtectionIntegrity, vfs.FlavorKrb5i}, {vfs.ProtectionNone, vfs.FlavorKrb5}} {
+		if k.p >= from {
+			out = append(out, k.f)
+		}
+	}
+	return out
+}
+
+// netgroups is admission's read of a netgroup.
+type netgroups struct{ x kvstore.ShareIndex }
+
+func (n netgroups) Members(ctx context.Context, name string) ([]string, bool, error) {
+	g, found, err := n.x.Netgroup(ctx, name)
+	return g.Members, found, err
+}
+
+// resolve is admission's step 4: what id acts as on sh under its policy p,
+// narrowed to read-only by ro, resolved through Deps.Identity, and the
+// principal it mapped to before any squash. The policy is the one sh's read
+// returned, keyed on that read's grant version, which the share read took
+// before any read of the grants resolution makes. The caller comes from
+// admission's cache where one built under the current State is held for the
+// same key. With releases, a call that only releases state, an unsquashed
+// caller's grant of none is not refused (see acting).
+func (fs *Filesystem) resolve(ctx context.Context, id vfs.Identity, sh entity.Share, p entity.ExportPolicy, ro identity.ReadOnlyCause, releases bool) (entity.Identity, entity.Principal, error) {
+	k := callerKey{proof: id.Key(), policy: p.SharePolicy(sh.GrantVersion), narrowed: ro}
+	// A Claimed caller's key carries its address as a client rule's does:
+	// resolution charges its directory lookups to that address, so a call
+	// from another address never joins its resolution, nor is served its
+	// refusal at the lookup cap.
+	if len(p.Clients) > 0 || id.Proof == identity.ProofClaimed {
+		k.client = id.Client.Unmap()
+	}
+	c, err := fs.callers.resolve(ctx, k, func(ctx context.Context) (*identity.Caller, error) {
+		return fs.identity.Resolve(ctx, id, k.policy, k.narrowed)
+	})
+	if err != nil {
+		return entity.Identity{}, entity.Principal{}, err
+	}
+	a, err := acting(c, releases)
+	return a, c.Mapped, err
+}
+
+// acting is c as the chokepoint takes it: its principal, groups, deny-only
+// principals and flags, held to c's Access, with a read narrowed by the
+// share or a client rule kept as the cause the chokepoint answers ErrReadOnly for. A read grant is
+// no such cause: Access alone holds the caller to it, refused ErrAccess.
+// Access is admission's snapshot of the grant, read with the share: the
+// chokepoint takes it in place of re-reading the grants in the operation's
+// transaction, so a grant revoked between admission's share read and the
+// operation still lets that one call through.
+//
+// decision: a caller whose Access is none is refused here, and so is not
+// audited, because the chokepoint cannot be handed a none: it reads a zero
+// Access as "read the grants", and a call that never reaches it, a lock, a
+// watch or a share listing, would act on a share no grant admits it to.
+// Overturned once the chokepoint takes a grant of none in Access, or
+// admission's refusals are audited.
+//
+// decision: with releases, a call that only releases state, an unsquashed
+// caller whose Access is none is admitted with Access zero, as admission
+// exempts such a call from the client rules' refusal, so a caller whose
+// grant was removed still gives up the locks and opens it holds. The grants
+// the chokepoint would read are then the ones resolution read, which name
+// none, and open state still refuses a caller that does not own the state.
+// A squashed caller gets no such exemption: resolution refuses a squashed
+// proven caller granted none before acting sees it, so on a share squashing
+// its file users a user whose grant was removed cannot close its opens or
+// release its locks, which stay held until its lease or session ends.
+// Extend the exemption to it, by telling resolution the call only releases
+// state, if such held state is seen to block other clients.
+func acting(c *identity.Caller, releases bool) (entity.Identity, error) {
+	if c.Access == entity.AccessNone && !releases {
+		return entity.Identity{}, fmt.Errorf("%w: the share grants the caller none", vfs.ErrAccess)
+	}
+	ro := entity.NotNarrowed
+	switch c.ReadOnly {
+	case identity.ReadOnlyShare:
+		ro = entity.NarrowedByShare
+	case identity.ReadOnlyClient:
+		ro = entity.NarrowedByClient
+	}
+	return entity.Identity{
+		Principal: c.Principal, Group: c.Group, Groups: slices.Clip(c.Groups), DenyOnly: slices.Clip(c.DenyOnly),
+		Privileged: c.Privileged, Authenticated: c.Authenticated, Admin: c.Admin,
+		ReadOnly: ro, Access: c.Access,
+	}, nil
+}

@@ -12,21 +12,26 @@ These rules apply when a PR is opened, and when its title or description is edit
 PRs target an integration branch: `develop`, or `feat/storage-v2` for storage-v2 work, which
 has the same rules and its own merge queue. A stacked PR targets the PR below it (below).
 Branch from a fresh `origin/<target>` and rebase onto it before pushing; never merge the
-target in. When the target is not `develop`, set `DITTOFS_PREPUSH_BASE=origin/<target>` and
+target in. The pre-push hook compares with `origin/feat/storage-v2` unless
+`DITTOFS_PREPUSH_BASE=origin/<target>` names another target. When the target is not `develop`,
 pass `dt run --base origin/<target>`.
+
+Storage-v2 docs (its RFCs, plans and epic breakdowns under `.planning/`, and their follow-ups)
+target `feat/storage-v2` directly. They do not go to `develop` first, and nothing is
+cherry-picked from `develop` to `feat/storage-v2` for them.
 
 ## Title and description
 
 Follow [`.github/pull_request_template.md`](../pull_request_template.md), including the
 guidance in its comments, and the ground rules of
 [`pr-commenting.instructions.md`](pr-commenting.instructions.md). If the PR fixes an issue,
-the body carries `Closes #<N>`. That keyword fires only on `develop`, the default branch: on
-any other target, close the issue by hand after the PR merges. A PR that finishes a subtask
+the body carries `Closes #<N>`. That keyword fires only on `feat/storage-v2`, the default
+branch: on any other target, `develop` included, close the issue by hand after the PR merges. A PR that finishes a subtask
 of an epic closes that subtask's issue the same way, one `Closes #<N>` line per subtask, on
 any target: that line is what credits the PR to the subtask on the burn-up. A subtask
 finished only in part is named, not closed. On every target, also link the PR to each issue
 it closes from the issue's or the PR's sidebar ("Development"), so the issue shows the PR:
-on `develop` the keyword creates that link itself, so check it is there; on any other target
+on `feat/storage-v2` the keyword creates that link itself, so check it is there; on any other target
 the sidebar or the API creates it. From a script or an agent:
 
 ```bash
@@ -63,7 +68,7 @@ Part of: RFC 1 T7.2
   subtasks once across them. Never the bare `3.4` or `E3-4`.
 - If an RFC ever has more than one plan, the plan's slug, from its file name
   `rfc-<n>-<slug>-plan.md`, follows the number: `RFC 8 journal-only-engine T3.4`. With one
-  plan, as every RFC has today, leave it out.
+  plan, leave it out.
 - One PR may carry both `Closes #<N>` lines and one `Closes:` line.
 - A subtask with an issue that this PR finishes only in part is named `Part of #<N>`, on a
   line of its own, never on the `Part of:` line.

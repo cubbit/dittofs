@@ -1,186 +1,169 @@
 package commands
 
 import (
+	"cmp"
+	"context"
+	"errors"
 	"fmt"
-	"net/url"
 	"path/filepath"
+	"strings"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/cubbit/dittofs/internal/cli/credentials"
-	"github.com/cubbit/dittofs/internal/cli/prompt"
-	"github.com/cubbit/dittofs/pkg/apiclient"
+	"github.com/cubbit/dittofs/pkg/node/apiv1/client"
 	"github.com/spf13/cobra"
 )
 
-var (
-	loginServer      string
-	loginUsername    string
-	loginPassword    string
-	loginContextName string
+func newLoginCmd(env cmdutil.Env) *cobra.Command {
+	loginCmd := &cobra.Command{
+		Use:   "login",
+		Short: "Authenticate with DittoFS server",
+		Long: `Sign in to a DittoFS server and keep the session in a named context.
 
-	loginCACert        string
-	loginClientCert    string
-	loginClientKey     string
-	loginTLSSkipVerify bool
-)
-
-var loginCmd = &cobra.Command{
-	Use:   "login",
-	Short: "Authenticate with DittoFS server",
-	Long: `Authenticate with a DittoFS server and store credentials locally.
-
-Contacts the control-plane API at the given server URL, exchanges credentials
-for an access/refresh token pair, and saves them to ~/.config/dfsctl/config.json
-under a named context (default: auto-derived from the server URL). Subsequent
-commands reuse the stored token and refresh it automatically when it expires.
-TLS client certificates and a custom CA bundle can be pinned at login time and
-are persisted into the context for later commands.
+The server is an https URL, an http URL on a loopback address, or the path of
+the node's local socket. The password is read from a prompt, or from the file
+--password-file names; --token-file signs in with an API token instead. The
+context keeps the server, the account, the CA bundle --cacert names and the
+session's tokens, in a file only its owner can read; later commands refresh
+the session themselves. Without --server, --cacert or --username, login reuses
+the context's.
 
 Examples:
-  # First login to a local server (prompts for password)
-  dfsctl login --server http://localhost:8080 --username admin
+  # Sign in to a node through its local socket (prompts for the password)
+  dfsctl login --server /run/dittofs/api.sock --username admin
 
-  # Login to a remote server with mutual TLS
-  dfsctl login --server https://dfs.example.com --username admin --cacert ca.pem --client-cert client.pem --client-key client.key
+  # Sign in to a remote server whose certificate a private CA signs
+  dfsctl login --server https://dfs.example.com --username admin --cacert ca.pem
 
-  # Login passing password on the command line (less secure; avoid in shared environments)
-  dfsctl login --server http://localhost:8080 -u admin -p secret
+  # Sign in from a script
+  dfsctl login --server https://dfs.example.com -u admin --password-file pw.txt
 
-  # Re-login to the already-stored server (password prompt only)
+  # Use an API token in a context of its own
+  dfsctl login --server https://dfs.example.com --token-file token.txt -c ci
+
+  # Sign in again to the current context (password prompt only)
   dfsctl login`,
-	RunE: runLogin,
-}
-
-func init() {
-	loginCmd.Flags().StringVar(&loginServer, "server", "http://localhost:8080", "Server URL")
-	loginCmd.Flags().StringVarP(&loginUsername, "username", "u", "", "Username")
-	loginCmd.Flags().StringVarP(&loginPassword, "password", "p", "", "Password")
-	loginCmd.Flags().StringVarP(&loginContextName, "context", "c", "", "Context name (defaults to current or auto-generated)")
-	loginCmd.Flags().StringVar(&loginCACert, "cacert", "", "Path to a PEM CA bundle trusted for the server certificate")
-	loginCmd.Flags().StringVar(&loginClientCert, "client-cert", "", "Path to a PEM client certificate for mutual TLS")
-	loginCmd.Flags().StringVar(&loginClientKey, "client-key", "", "Path to the PEM client private key for mutual TLS")
-	loginCmd.Flags().BoolVar(&loginTLSSkipVerify, "tls-skip-verify", false, "Disable TLS certificate verification (insecure)")
-}
-
-// absPath resolves p to an absolute path so it can be persisted and re-read
-// from a different working directory. An empty path stays empty (unset).
-func absPath(p string) (string, error) {
-	if p == "" {
-		return "", nil
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error { return runLogin(cmd, env) },
 	}
-	return filepath.Abs(p)
+	loginCmd.Flags().String("server", "", "Server URL or local socket path (defaults to the context's)")
+	loginCmd.Flags().StringP("username", "u", "", "Username")
+	loginCmd.Flags().String("password-file", "", "File holding the password (prompts without it)")
+	loginCmd.Flags().String("token-file", "", "File holding an API token to sign in with instead of a password")
+	loginCmd.Flags().StringP("context", "c", "", "Context name (defaults to the current one, or \"default\")")
+	loginCmd.Flags().String("cacert", "", "Path to a PEM CA bundle trusted for the server certificate")
+	loginCmd.MarkFlagsMutuallyExclusive("password-file", "token-file")
+	return loginCmd
 }
 
-func runLogin(cmd *cobra.Command, args []string) error {
-	// Load credential store
-	store, err := credentials.NewStore()
+// staticToken is an API token's source: it never refreshes.
+type staticToken string
+
+func (t staticToken) Token(context.Context) (string, error) { return string(t), nil }
+
+func (staticToken) Refresh(context.Context, string) (string, error) {
+	return "", errors.New("the server refused the API token")
+}
+
+func runLogin(cmd *cobra.Command, env cmdutil.Env) error {
+	s, err := credentials.Read(env.ConfigPath)
 	if err != nil {
-		return fmt.Errorf("failed to initialize credential store: %w", err)
+		return err
 	}
-
-	// Determine server URL (defaults to http://localhost:8080)
-	serverURLStr := loginServer
-
-	// Validate server URL
-	parsedURL, err := url.Parse(serverURLStr)
+	name, _ := cmd.Flags().GetString("context")
+	if name == "" {
+		name = cmp.Or(s.GetCurrentContextName(), "default")
+	}
+	prev := &credentials.Context{}
+	if c, err := s.GetContext(name); err == nil {
+		prev = c
+	}
+	server, _ := cmd.Flags().GetString("server")
+	user, _ := cmd.Flags().GetString("username")
+	cacert, _ := cmd.Flags().GetString("cacert")
+	if server, err = normalServer(server); err != nil {
+		return err
+	}
+	stored, err := normalServer(prev.ServerURL)
 	if err != nil {
-		return fmt.Errorf("invalid server URL: %w", err)
+		return err
 	}
-	if parsedURL.Scheme == "" {
-		parsedURL.Scheme = "http"
-		serverURLStr = parsedURL.String()
-	}
-
-	// Get username (prompt if not provided)
-	username := loginUsername
-	if username == "" {
-		username, err = prompt.InputRequired("Username")
-		if err != nil {
-			return cmdutil.HandleAbort(err)
+	if cacert != "" {
+		if cacert, err = filepath.Abs(cacert); err != nil {
+			return err
 		}
+	} else if server == "" || server == stored {
+		cacert = prev.CACert
 	}
+	server = cmp.Or(server, stored)
+	if server == "" {
+		return fmt.Errorf("%s: context %q names no server; pass --server", cmd.CommandPath(), name)
+	}
+	next := &credentials.Context{ServerURL: server, Username: cmp.Or(user, prev.Username), CACert: cacert}
 
-	// Get password (prompt if not provided)
-	password := loginPassword
-	if password == "" {
-		password, err = prompt.PasswordWithValidation("Password", 8)
+	mustChange := false
+	sec := cmdutil.NewSecrets(env)
+	if cmd.Flags().Changed("token-file") {
+		// An API token names its account to the server, not to dfsctl: the
+		// context keeps only a --username given with it.
+		next.Username = user
+		b, err := sec.Read(cmd, "token-file", "API token")
 		if err != nil {
-			return cmdutil.HandleAbort(err)
+			return err
 		}
+		next.AccessToken = string(b)
+		c, err := cmdutil.Dial(server, cacert, client.WithTokenSource(staticToken(next.AccessToken)))
+		if err != nil {
+			return err
+		}
+		// The health read checks the server's version and that it accepts
+		// the token before the token is kept.
+		if _, err := c.Health(cmd.Context()); err != nil {
+			return fmt.Errorf("%s: %w", cmd.CommandPath(), err)
+		}
+	} else {
+		if next.Username == "" {
+			return fmt.Errorf("%s: no account to sign in; pass --username", cmd.CommandPath())
+		}
+		password, err := sec.Read(cmd, "password-file", "password")
+		if err != nil {
+			return err
+		}
+		c, err := cmdutil.Dial(server, cacert)
+		if err != nil {
+			return err
+		}
+		tk, err := c.SignIn(cmd.Context(), next.Username, password)
+		if err != nil {
+			return fmt.Errorf("%s: %w", cmd.CommandPath(), err)
+		}
+		next.AccessToken, next.RefreshToken, next.UserID, mustChange = tk.Access, tk.Refresh, tk.UserID, tk.MustChange
 	}
 
-	// Normalize TLS cert paths to absolute before they are captured and
-	// persisted. The stored paths are re-read by later commands from a
-	// potentially different working directory, so a relative path supplied here
-	// (e.g. --cacert ca.pem) would otherwise resolve against the wrong cwd.
-	if loginCACert, err = absPath(loginCACert); err != nil {
-		return fmt.Errorf("resolve --cacert: %w", err)
+	if err := cmdutil.Locked(cmd.Context(), env, func(st *credentials.Store) error { return st.SetContext(name, next) }); err != nil {
+		return err
 	}
-	if loginClientCert, err = absPath(loginClientCert); err != nil {
-		return fmt.Errorf("resolve --client-cert: %w", err)
+	who := next.Username
+	if next.RefreshToken == "" {
+		who = "an API token"
 	}
-	if loginClientKey, err = absPath(loginClientKey); err != nil {
-		return fmt.Errorf("resolve --client-key: %w", err)
+	_, _ = fmt.Fprintf(env.Out, "Logged in to %s as %s (context %s)\n", server, who, name)
+	if mustChange {
+		_, _ = fmt.Fprintln(env.Err, "The password must be changed before any other call: run 'dfsctl password change'")
 	}
-
-	// Create API client. TLS material is captured here and persisted into the
-	// context below so later commands reuse it without re-specifying flags.
-	tlsOpts := cmdutil.TLSClientOptions(loginCACert, loginClientCert, loginClientKey, loginTLSSkipVerify)
-	client := apiclient.New(serverURLStr, tlsOpts...)
-
-	// Attempt login
-	fmt.Printf("Logging in to %s as %s...\n", serverURLStr, username)
-	tokens, err := client.Login(username, password)
-	if err != nil {
-		return fmt.Errorf("login failed: %w", err)
-	}
-
-	// Guard against empty tokens — a server that omits them from the response
-	// body would cause every later command to fail with "no access token".
-	if tokens == nil {
-		return fmt.Errorf("login succeeded but server returned an empty response body")
-	}
-	if tokens.AccessToken == "" || tokens.RefreshToken == "" {
-		return fmt.Errorf(
-			"login succeeded but server returned no tokens (access=%t, refresh=%t); "+
-				"the server may be misconfigured or returning a stripped response",
-			tokens.AccessToken != "", tokens.RefreshToken != "",
-		)
-	}
-
-	// Determine context name
-	contextName := loginContextName
-	if contextName == "" {
-		contextName = store.GetCurrentContextName()
-	}
-	if contextName == "" {
-		contextName = credentials.GenerateContextName(serverURLStr)
-	}
-
-	// Save credentials
-	ctx := &credentials.Context{
-		ServerURL:     serverURLStr,
-		Username:      username,
-		AccessToken:   tokens.AccessToken,
-		RefreshToken:  tokens.RefreshToken,
-		ExpiresAt:     tokens.ExpiresAt,
-		CACert:        loginCACert,
-		ClientCert:    loginClientCert,
-		ClientKey:     loginClientKey,
-		TLSSkipVerify: loginTLSSkipVerify,
-	}
-
-	if err := store.SetContext(contextName, ctx); err != nil {
-		return fmt.Errorf("failed to save credentials: %w", err)
-	}
-
-	if err := store.UseContext(contextName); err != nil {
-		return fmt.Errorf("failed to set current context: %w", err)
-	}
-
-	fmt.Printf("Logged in successfully as %s\n", username)
-	fmt.Printf("Context: %s\n", contextName)
-	fmt.Printf("Credentials saved to: %s\n", store.ConfigPath())
-
 	return nil
+}
+
+// normalServer is server as a context stores it, so two spellings of one
+// server compare equal: a URL without its trailing "/", and a path, which
+// has a separator and no scheme, made absolute. Anything else, as host:port,
+// is left for the client to refuse by name.
+func normalServer(server string) (string, error) {
+	switch {
+	case strings.Contains(server, "://"):
+		return strings.TrimRight(server, "/"), nil
+	case strings.ContainsAny(server, `/`+string(filepath.Separator)):
+		return filepath.Abs(server)
+	}
+	return server, nil
 }

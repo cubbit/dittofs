@@ -2,19 +2,17 @@ package context
 
 import (
 	"fmt"
-	"os"
 
+	"github.com/cubbit/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/cubbit/dittofs/internal/cli/credentials"
-	"github.com/cubbit/dittofs/internal/cli/output"
 	"github.com/spf13/cobra"
 )
 
-var currentOutput string
-
-var currentCmd = &cobra.Command{
-	Use:   "current",
-	Short: "Show current context",
-	Long: `Display the name and connection details of the currently active context.
+func newCurrentCmd(env cmdutil.Env) *cobra.Command {
+	currentCmd := &cobra.Command{
+		Use:   "current",
+		Short: "Show current context",
+		Long: `Display the name and connection details of the currently active context.
 
 The output shows the server URL, logged-in user, and authentication status. Use this command to confirm which server subsequent dfsctl commands will target before running destructive operations.
 
@@ -24,16 +22,14 @@ Examples:
 
   # Get the active context as JSON for scripting
   dfsctl context current --output json`,
-	RunE: runContextCurrent,
+		RunE: func(cmd *cobra.Command, args []string) error { return runContextCurrent(cmd, env, args) },
+	}
+	return currentCmd
 }
 
-func init() {
-	currentCmd.Flags().StringVarP(&currentOutput, "output", "o", "table", "Output format (table|json|yaml)")
-}
-
-func runContextCurrent(cmd *cobra.Command, args []string) error {
+func runContextCurrent(cmd *cobra.Command, env cmdutil.Env, args []string) error {
 	// Load credential store
-	store, err := credentials.NewStore()
+	store, err := credentials.Read(env.ConfigPath)
 	if err != nil {
 		return fmt.Errorf("failed to initialize credential store: %w", err)
 	}
@@ -43,7 +39,7 @@ func runContextCurrent(cmd *cobra.Command, args []string) error {
 	if contextName == "" {
 		return fmt.Errorf("no current context set\n\n" +
 			"Login to a server first:\n" +
-			"  dfsctl login --server http://localhost:8080")
+			"  dfsctl login --server https://<host> --username <name>")
 	}
 
 	ctx, err := store.GetContext(contextName)
@@ -56,31 +52,8 @@ func runContextCurrent(cmd *cobra.Command, args []string) error {
 		Current:   true,
 		ServerURL: ctx.ServerURL,
 		Username:  ctx.Username,
-		LoggedIn:  ctx.AccessToken != "" && !ctx.IsExpired(),
+		LoggedIn:  ctx.AccessToken != "",
 	}
 
-	// Parse output format
-	format, err := output.ParseFormat(currentOutput)
-	if err != nil {
-		return err
-	}
-
-	// Print output
-	switch format {
-	case output.FormatJSON:
-		return output.PrintJSON(os.Stdout, info)
-	case output.FormatYAML:
-		return output.PrintYAML(os.Stdout, info)
-	default:
-		fmt.Printf("Current context: %s\n", contextName)
-		fmt.Printf("  Server:    %s\n", ctx.ServerURL)
-		fmt.Printf("  User:      %s\n", ctx.Username)
-		if info.LoggedIn {
-			fmt.Printf("  Status:    Logged in\n")
-		} else {
-			fmt.Printf("  Status:    Not logged in\n")
-		}
-	}
-
-	return nil
+	return cmdutil.PrintOutput(cmd, info, false, "", ContextList{info})
 }

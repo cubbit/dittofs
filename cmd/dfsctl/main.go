@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/cubbit/dittofs/cmd/dfsctl/commands"
@@ -15,13 +14,8 @@ var (
 )
 
 func main() {
-	// Set version info for commands package
 	commands.Version = version
 	commands.Commit = commit
 	commands.Date = date
-
-	if err := commands.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
+	os.Exit(commands.Main(os.Args[1:]))
 }

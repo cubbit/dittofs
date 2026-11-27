@@ -33,7 +33,6 @@ make setup-hooks
 
 # Build and run
 go build -o dfs cmd/dfs/main.go
-./dfs init
 ./dfs start
 ```
 
@@ -50,6 +49,7 @@ The Nix flake provides:
 The binaries also run straight from the flake, without a clone:
 
 ```bash
+nix run github:cubbit/dittofs#dfs -- init
 nix run github:cubbit/dittofs#dfs -- start
 nix run github:cubbit/dittofs#dfsctl -- --help
 ```
@@ -65,6 +65,35 @@ If you prefer not to use Nix, install dependencies manually:
   - Linux: `nfs-common` package
   - macOS: Built-in NFS client
 - Git
+- FoundationDB client library, to build with the `foundationdb` tag and to run
+  `test/harness/bin/dt run lint-go`, on every OS
+
+#### FoundationDB client
+
+The FoundationDB metadata backend links `libfdb_c`, so it builds only with the
+`foundationdb` tag; `go build ./...` and `go test ./...` leave it out and need
+nothing. With the tag, `go build -tags=foundationdb ./...` fails with
+`foundationdb/fdb_c.h: No such file or directory` until the client is
+installed. `dt run lint-go` vets and lints with the tag, so it needs the
+client on macOS too, where the Nix dev shell does not provide it: install
+the macOS package from FoundationDB's releases.
+
+On Debian or Ubuntu, install the same release CI uses, checked against the
+digest CI pins (on ARM, use `aarch64` and the arm64 digest from
+`.github/actions/fdb-client/action.yml`):
+
+```bash
+v=7.3.77
+curl -fLO https://github.com/apple/foundationdb/releases/download/$v/foundationdb-clients_${v}-1_amd64.deb
+echo "b6c263723009bddbc30b6ae8cf9854340bd35cef14152abb0da8fb5af2b91254  foundationdb-clients_${v}-1_amd64.deb" | sha256sum -c -
+sudo dpkg -i foundationdb-clients_${v}-1_amd64.deb
+```
+
+On other x86_64 distributions, `test/fdb/cluster.sh client` downloads the library and
+headers under `~/.cache/dittofs-fdb/` without installing anything, and
+`test/fdb/cluster.sh test -tags=foundationdb ./...` runs `go test` with them on the cgo paths.
+That script also starts a local cluster for the backend's tests
+(`test/fdb/cluster.sh up`, then `down`); without one they skip.
 
 ### Clone and Setup
 
@@ -82,9 +111,10 @@ go mod download
 # Build
 go build -o dfs cmd/dfs/main.go
 
-# Run with development settings
+# Initialise an installation (see docs/guide/configuration.md for the file it
+# reads), then run it with debug logging
 ./dfs init
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 ```
 
 ## Development Workflow
@@ -102,19 +132,25 @@ go mod download
 ### Running
 
 ```bash
-# Run server with defaults (NFS port 12049, INFO logging)
+# Initialise the installation once: metadata store, journals, admin account.
+# It reads the config file, which names the journals and both wrapping keys.
+./dfs init
+
+# Run the node with the defaults (info logging)
 ./dfs start
 
-# Run with debug logging and custom settings
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+# Run with debug logging
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 
-# Use environment variables for quick config overrides
-DITTOFS_LOGGING_LEVEL=DEBUG DITTOFS_SHUTDOWN_TIMEOUT=60s ./dfs start
+# Sign in to the node's management API
+./dfsctl login --server http://127.0.0.1:8080 --username admin
 ```
 
-Protocol adapters are stored in the control-plane database. After logging in
-with `dfsctl`, use `dfsctl adapter edit nfs --port 12049` to set the NFS port;
-`DITTOFS_ADAPTERS_*` variables do not configure adapters.
+This build serves no file protocol: `dfs start` runs the management API and
+metrics. An adapter's settings are records under `adapters.<protocol>`, managed
+through the API, never config-file keys or `DITTOFS_ADAPTERS_*` variables; the
+config file holds only the host's bootstrap (see
+[Configuration](../guide/configuration.md)).
 
 ### Pre-commit Hooks
 
@@ -173,11 +209,11 @@ section and "Writing tests" in [CLAUDE.md](../../CLAUDE.md).
 
 ## Benchmarking
 
-`bench-smoke` runs on pull requests, non-blocking; `fio-verify` and `perf-night` run nightly. The
-others, Go's `-bench` and `dfsbench`'s full runs, are run by hand, and RFC 29 §4.10 plans two
-`manual` suites, a metadata-scale benchmark and a journal simulation.
-[`bench/README.md`](../../bench/README.md) covers how to run them: `dfsbench`, the components'
-`go test -bench` and `make bench-blockstore`.
+On storage-v2, `tests.yml` drops `bench-smoke` and `fio-verify`, as it does every suite that
+hasn't moved to storage-v2 yet. Go's `-bench`, `dfsbench`'s full runs and the `manual` tier's
+`engine-bench`, `reconcile-bench` and `version-limit-probe-bench` are run by hand (RFC 29 §4.3).
+[`bench/README.md`](../../bench/README.md) covers how to run `dfsbench` and the components'
+`go test -bench`.
 
 To compare a change, run the same benchmark with `-count=10` before and after it on one machine
 and compare the two with `benchstat`; never against a number from another host. Call
@@ -187,163 +223,56 @@ and compare the two with `benchstat`; never against a number from another host. 
 
 ### Adding a New NFS Procedure
 
-1. Add handler in `internal/adapter/nfs/v3/handlers/` or `internal/adapter/nfs/mount/handlers/`
-2. Implement XDR request/response parsing
-3. Build the auth context (NFSv3 handlers call `h.GetCachedAuthContext(ctx)`, which applies share permission and squashing)
-4. Delegate business logic to repository methods
-5. Add the procedure to its dispatch table (for NFSv3, `NfsDispatchTable` in `internal/adapter/nfs/v3/procedures.go`)
-6. Add test coverage
-
-For a complete example, follow READLINK: the handler is `ReadLink` in
-`internal/adapter/nfs/v3/handlers/readlink.go`, its XDR codec is in `readlink_codec.go`
-next to it, and `handleNFSReadLink` in `internal/adapter/nfs/v3/procedures.go` decodes
-the request, calls the handler and encodes the reply.
+v1's NFS handlers are deleted. RFC 20's adapter lives in `internal/adapter/nfs`:
+`wire` decodes, `ops` holds the operation tables, and each operation reaches files
+only through `vfs.Service`, which admits the caller and resolves its identity, so
+a handler builds no auth context of its own. The tables hold no file operation
+yet; [RFC 21's plan](../../.planning/rfc-21-nfs-plan.md) says how they are added.
 
 ### Adding a New Store Backend
 
-DittoFS uses a Service-oriented architecture where **stores are simple CRUD interfaces**. Business logic (permission checking, caching, locking) lives in the Service layer (`MetadataService`) and the per-share `BlockStore` engine.
+Business logic (permission checking, locking, quotas) lives in the filesystem service (`internal/vfs`) and the engine (`pkg/engine`), which the adapters reach through `vfs.Service` once its file operations land (see [Data path](architecture.md#data-path)).
 
 **Metadata Store:**
 
-1. Implement `pkg/metadata/MetadataStore` interface (simple CRUD operations)
-2. Handle file handle generation (must be unique and stable)
-3. Implement root directory creation (`CreateRootDirectory`)
-4. Ensure thread safety (concurrent access across shares)
-5. Consider persistence strategy for handles
-6. Implement `EnumerateFileChunks(ctx, authCtx, fn)` using a backend-native cursor (no full-set load, honors `ctx.Done()`); pass the v0.15.0 conformance scenarios in `pkg/metadata/storetest/`. See [IMPLEMENTING_STORES.md](implementing-stores.md#metadatastoreenumeratefilechunks-v0150-phase-11).
-7. **Note**: Permission checking is handled by `MetadataService`, not stores
+The metadata store (`pkg/metadata/kvstore`) is written once, over `kv.KV`
+(`pkg/metadata/kv/kv.go`). A new backend implements `kv.KV` and passes
+`pkg/metadata/kv/kvtest`'s suite, and the store over it
+`pkg/metadata/kvstore/kvstoretest`'s. See
+[IMPLEMENTING_STORES.md](implementing-stores.md#implementing-metadata-stores).
 
-**Block Store (Local):**
+**Journal (local tier):**
 
-1. Implement the `pkg/block/journal.LocalStore` interface. It is the
-   journal-native surface keyed by `(payloadID, offset)` — `WriteAt`,
-   `ReadAt`, `Hydrate`, `Commit`, `Truncate`, `Delete` — plus carve,
-   eviction, lifecycle and retention methods. See `pkg/block/journal/localstore.go`
-   for the full list.
-2. Storage is payload-keyed, NOT content-addressed: the local tier is a
-   per-file byte cache, so it does not implement `block.Store`.
-3. Each share gets an isolated local storage directory
-4. The `pkg/block/blockstoretest/` suites do not apply here — they target the
-   hash-keyed and block-keyed remote surfaces. Model tests on the existing
-   package tests under `pkg/block/journal/`.
+The local tier is `pkg/journal`, one journal per device with a handle per
+share; it is not a pluggable backend. Its conformance checks run under the
+`journal_conformance` tag (`pkg/journal/conformance/`).
 
-**Block Store (Remote):**
+**Block Store (Remote):** none yet. The v1 remote tier and its conformance suite are
+deleted, and the engine takes no remote store.
 
-1. Implement `pkg/block/remote.RemoteStore` interface. It embeds `RemoteBlockStore`,
-   `ChunkReader` and `ChunkSealer`, and adds `HealthCheck`, `Healthcheck`, and
-   `Close` — see `pkg/block/remote/remote.go`.
-2. Remote stores are shared across shares via ref counting
-3. Test with the `RemoteBlockStoreConformance` suite in `pkg/block/blockstoretest/`
+### Adding a new metadata error code
 
-See [IMPLEMENTING_STORES.md](implementing-stores.md) for detailed implementation guide.
-
-### Adding a new metadata.ErrorCode
-
-Every `metadata.ErrorCode` that should surface to NFS and/or SMB clients is
-mapped to protocol-specific status codes by the per-package `StatusFor`
-switch in the adapter types packages (`internal/adapter/nfs/types`,
-`internal/adapter/nfs/v4/types`, `internal/adapter/smb/types`). Adding a
-new code is a one-edit-per-package contract — the enum-walk test in each
-package fails loudly if a switch arm or expectation row is missing.
-
-1. **Declare the constant** — add the new value in
-   `pkg/metadata/errors/errors.go` and re-export it from
-   `pkg/metadata/errors.go`.
-
-2. **Add the switch arm + expectation row in each types package** —
-   extend the `StatusFor` switch and the `expected` table in
-   `statusfor_test.go` for every package whose protocol should observe
-   the code:
-
-   ```go
-   case merrs.ErrFooBar:
-       return nfs3types.NFS3ErrXXX
-   ```
-
-   The enum-walk test (`TestStatusFor_EnumWalk`) iterates the full
-   `ErrorCode` range and fails if either the arm or the expectation row
-   is missing.
-
-3. **SMB lock-context override (if applicable)** — if the code has
-   different semantics in SMB2 LOCK requests versus general I/O, give it
-   an arm in `smb/types`'s `StatusForLock` (and a row in the lock
-   expectation table). `StatusForLockErr` consults the lock switch;
-   `StatusForErr` consults the general one.
-
-4. **Add a test case** — pick the right tier:
-   - **E2E tier** (triggerable via real NFS/SMB file operations): add a
-     trigger helper in `test/e2e/helpers/error_triggers.go` and a row in
-     `TestCrossProtocol_ErrorConformance` in
-     `test/e2e/cross_protocol_test.go`. Expected errnos are derived at
-     runtime from `nfs/types.StatusForErr` / `smb/types.StatusForErr` —
-     you do not hand-transcribe protocol codes into the test table.
-   - **Unit tier** (exotic codes — quota, grace-period, deadlock,
-     connection-limits): add the code to the expectation table in the
-     relevant `statusfor_test.go`. `TestStatusFor_EnumWalk` picks it up
-     automatically and asserts every switch returns the expected value.
-   - **Not sure which tier**: the enum-walk test fails on any code
-     missing an expectation row, so the tier decision cannot leave the
-     code uncovered.
-
-6. **Run the test suite** — `go test -race ./internal/adapter/common/...`
-   must stay green.
+To add a store error code, declare it in `pkg/metadata/errors/errors.go`, before
+`errCodeSentinel` and with a `String` arm, and give it a row in `storeCodes`
+(`internal/vfs/errors.go`), which maps it to one of the `pkg/vfs/vfserr` sentinels. An unmapped
+code answers `ErrUnavailable`, a retry. The node API answers store codes from its own table in
+`internal/node/api/problems.go`; `TestProblemTableIsTotal` fails on a code without a row there.
 
 ### Adding a New Protocol Adapter
 
-Adapters receive a runtime reference and **interact with services, not stores directly**.
+An adapter reaches files only through the `vfs.Service` the node hands it in
+`adapter.Deps`, never a store directly, and keeps to protocol concerns.
 
-1. Create new package in `pkg/adapter/`
-2. Implement `Adapter` interface:
-   - `Serve(ctx)`: Start protocol server
-   - `Stop(ctx)`: Graceful shutdown
-   - `SetRuntime(rt any)`: Receive the runtime reference (provides access to services)
-   - `Protocol()`: Return name
-   - `Port()`: Return listen port
-   - `Healthcheck(ctx)`: Report health from cheap, already-tracked signals
-3. Use `runtime.GetBlockStoreForHandle()` for per-share block store access
-4. Register in `cmd/dfs/main.go`
-5. Update README with usage instructions
-
-Embed `*adapter.BaseAdapter` for the shared TCP lifecycle (listener bind, accept loop
-with backoff, connection tracking, graceful drain) instead of reimplementing it.
-
-`SetRuntime` takes `any` rather than `*runtime.Runtime` on purpose: the adapter
-interface must not import the runtime package, which imports the adapters. The
-implementation type-asserts:
-
-Example:
-```go
-// pkg/adapter/smb/adapter.go
-type Adapter struct {
-    *adapter.BaseAdapter // holds Registry *runtime.Runtime, set by SetRuntime
-
-    config  Config
-    handler *handlers.Handler
-}
-
-// SetRuntime takes any, not *runtime.Runtime: the Adapter interface lives in
-// pkg/adapter, which must not import the runtime package (the runtime imports
-// the adapters). BaseAdapter.SetRuntime type-asserts and panics otherwise.
-func (a *Adapter) SetRuntime(rtAny any) {
-    a.BaseAdapter.SetRuntime(rtAny) // sets a.Registry
-    rt := rtAny.(*runtime.Runtime)
-
-    // Protocol-specific wiring: hand the runtime to the components that need it.
-    a.handler.Registry = rt
-}
-
-func (a *Adapter) handleRead(ctx context.Context, handle []byte, blockID string) ([]byte, error) {
-    // Resolve the per-share block store from the file handle.
-    blockStore, _ := a.Registry.GetBlockStoreForHandle(ctx, handle)
-    buf := make([]byte, size)
-    blockStore.ReadAt(ctx, blockID, buf, 0)
-    return buf, nil
-}
-```
-
-Adapters therefore reach the runtime through `a.Registry` (or a component they wired in
-`SetRuntime`), not through a `rt *runtime.Runtime` field of their own — storing it directly would
-reintroduce the import cycle the `any` parameter exists to avoid.
+1. Create a package under `pkg/adapter/`, with a constructor of the shape of
+   `nfs.New(d adapter.Deps, s settings.NFS) (adapter.Adapter, error)`.
+2. Implement `pkg/adapter`'s `Adapter` interface: `Start`, `Reconfigure`, `Stop`,
+   `Addrs`, `Health` and `Connections`.
+3. Declare its settings shape in `pkg/adapter/settings`, each field's `json` tag its
+   key under `adapters.<protocol>` and its `class` tag its binding class.
+4. Add its slot to the node (`internal/node/adapters.go`), which builds, starts,
+   reconfigures and stops it from its settings.
+5. Build the connection loop on `internal/adapter/core` rather than reimplementing
+   it, and test it against `internal/adapter/adaptertest`.
 
 ## Areas Needing Attention
 
@@ -401,16 +330,10 @@ func HandleLookup(ctx *AuthContext, dirHandle, name string) {
 
 ### Error Handling
 
-Return proper NFS error codes via `metadata.ExportError`:
-
-```go
-// Examples from metadata/errors.go
-ErrNotDirectory      // NFS3ERR_NOTDIR
-ErrNoEntity          // NFS3ERR_NOENT
-ErrAccess            // NFS3ERR_ACCES
-ErrExist             // NFS3ERR_EXIST
-ErrNotEmpty          // NFS3ERR_NOTEMPTY
-```
+The store returns `*StoreError` values from `pkg/metadata/errors` (codes `ErrNotFound`,
+`ErrNotDirectory`, `ErrAccessDenied`, …). The filesystem service maps them to the
+`pkg/vfs/vfserr` sentinels (`ErrNotFound`, `ErrNotDir`, `ErrAccess`, `ErrExist`, `ErrNotEmpty`, …)
+in `storeErr` (`internal/vfs/errors.go`), and each adapter maps those to its own status codes.
 
 Log appropriately:
 - `logger.Debug()`: Expected/normal errors (permission denied, file not found)

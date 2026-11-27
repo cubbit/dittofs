@@ -4,16 +4,17 @@ RUN apk add --no-cache ca-certificates tzdata && \
     adduser -u 65532 -S -G dittofs -h /app dittofs
 WORKDIR /app
 COPY dfs-linux-amd64 /app/dfs
-RUN mkdir -p /data/metadata /data/blocks /data/cache /data/state /config && \
+RUN mkdir -p /data/metadata /data/blocks/journal /data/cache /data/state /config && \
     chown -R 65532:65532 /app /data /config
 USER 65532:65532
 # Expose ports:
 # - 12049: NFS server (default)
 # - 12445: SMB server (default)
 # - 8080: REST API (health checks, management)
-# - 9090: Prometheus metrics endpoint. Opt-in and loopback-bound by default,
-#         so publishing this port alone exposes nothing: enable metrics and set
-#         their host to 0.0.0.0 for it to be reachable from outside the container.
+# - 9090: Prometheus metrics endpoint. On by default and loopback-bound,
+#         so publishing this port alone exposes nothing: set metrics.listen
+#         to 0.0.0.0:9090 (which needs api.tls.cert_file and key_file) for it
+#         to be reachable from outside the container.
 # - 5353/udp: mDNS / DNS-SD network discovery (macOS Finder, Linux Avahi)
 # - 3702/udp: WS-Discovery (Windows Explorer Network)
 # - 5357/tcp: WS-Discovery device metadata (HTTP)
@@ -21,7 +22,13 @@ USER 65532:65532
 # it does not traverse standard container/K8s overlay networks.
 EXPOSE 12049/tcp 12445/tcp 8080/tcp 9090/tcp 5353/udp 3702/udp 5357/tcp
 VOLUME ["/data/metadata", "/data/blocks", "/data/cache", "/data/state", "/config"]
+# Health check on the API's liveness probe. The API is served over TLS on
+# every address but loopback, and the certificate names the host rather than
+# localhost, so it is not verified.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider --no-check-certificate https://localhost:8080/health/live || exit 1
+# The state directory resolves under $STATE_DIRECTORY, else $XDG_STATE_HOME/dittofs,
+# else $HOME/.local/state/dittofs; $HOME is /app, so point it at the volume.
+ENV XDG_STATE_HOME=/data/state
 ENTRYPOINT ["/app/dfs"]
-CMD ["start", "--foreground", "--config", "/config/config.yaml"]
+CMD ["start", "--config", "/config/config.yaml"]

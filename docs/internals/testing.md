@@ -64,7 +64,7 @@ To see what CI will run for your branch, `test/harness/bin/dt plan --tier pr --b
 
 - **Suite:** one entry in `test/suites.yaml`: the command, the format its results come in, its
   tier, what it needs and the fixture it runs against. The table below lists each one.
-- **Option:** a named variant of a suite, such as `unit/nonrace` or `smbtorture/kerberos`. Each
+- **Option:** a named variant of a suite, such as `unit/windows` or `smbtorture/kerberos`. Each
   option is also a flag of `dt run`: `dt run smbtorture --kerberos`.
 - **Matrix:** the axes a suite runs across, such as the storage profile and the NFS version.
 - **Shard:** a suite's tests dealt over N cells, so a long suite fits a runner's time budget.
@@ -76,7 +76,8 @@ To see what CI will run for your branch, `test/harness/bin/dt plan --tier pr --b
   SMB mounts, a Kerberos KDC.
 - **Tier:** when a suite runs: `pr` on every pull request, `merge` after a merge, `nightly` each
   night, `manual` only when asked. Each tier includes the ones before it.
-- **Group:** a name for several suites: `lint`, `go`, `conformance` and `perf`.
+- **Group:** a name for several suites: `lint`, `go`, `conformance`, `perf`, `journal`, `engine` and
+  `adapters`.
 - **Needs:** what a cell requires of the machine, such as `linux`, `root`, `nfs-client` or
   `service:localstack`. `dt doctor` checks each one and says how to meet it.
 - **Place:** where CI runs a cell: a hosted `ubuntu`, `windows` or `macos` runner, or the
@@ -90,8 +91,19 @@ To see what CI will run for your branch, `test/harness/bin/dt plan --tier pr --b
 | `lint-go` | `go mod verify`, `gofmt -s`, `go vet` with every build tag, spec citations, the pinned tests, golangci-lint (the "Go Checks" job) | pr | any machine |
 | `lint-repo` | `dt docs --check`, `dt doctor`, the harness's own tests, the commit checks (the "Repo Checks" job) | pr | any machine |
 | `shellcheck` | every tracked shell script, at `--severity=warning` (the "ShellCheck" job) | pr | any machine |
-| `unit` | `go test -race` over every package; `-short` on pull requests | pr | any machine; `unit/windows` on Windows, `unit/nonrace` nightly |
-| `integration` | `-tags=integration` tests against real services | pr | Docker with Postgres and KMIP up; `integration/portmap` needs a Linux host with rpcbind |
+| `unit` | `go test -race` over every package; `-short` on pull requests | pr | any machine; `unit/windows` on Windows |
+| `journal-conformance` | the journal's conformance checks, behind their own tag: they fail until the journal they check is written, each a known failure | pr | any machine |
+| `engine-conformance` | the engine's conformance checks against the real journal, behind their own tag, red until the engine and journal calls they need land | pr | any machine |
+| `engine-soak` | the crash-and-restart soak over the composed engine, a short fixed list of seeds | pr | any machine |
+| `engine-bench` | the engine's benchmarks, RFC 8 §15.4's B5, B7 and B9, on a real directory and an on-disk store | manual | any machine, with `DITTOFS_BENCH_DIR` on the device under test |
+| `reconcile-bench` | the reconcile pass at 10⁴ shares, cold and under share churn, against RFC 23 §8's 5 s | manual | any machine, with `DITTOFS_BENCH_DIR` |
+| `version-limit-probe-bench` | the engine's version-limit probe alone | manual | any machine |
+| `settings-gen-bench` | the commit rate of eight concurrent secret writers with the settings generation's raise and without it, RFC 13 plan §4.3's trigger | manual | any machine, with `DITTOFS_BENCH_DIR` |
+| `settings-scan-bench` | the reconcile's walk and diff at 10⁴ shares' settings, sparse and dense, against RFC 13 plan §4.3's 100 ms | manual | any machine, with `DITTOFS_BENCH_DIR` |
+| `settings-scan-smoke` | the reconcile scan benchmark once per change at `-benchtime=1x`, non-blocking | pr | any machine |
+| `reconcile-settings-smoke` | the reconcile benchmark's settings case, the whole settings reconcile, once per change at `-benchtime=1x`, non-blocking | pr | any machine |
+| `adapter-conformance` | the adapters' conformance specifications, behind their own tag | pr | any machine |
+| `integration` | `-tags=integration` tests against real services | pr | Docker with KMIP up; `integration/portmap` needs a Linux host with rpcbind |
 | `operator` | the Kubernetes operator: `make test`, `make lint`, manifests, kustomize | pr | any machine with `make` and `kubectl` |
 | `e2e` | `-tags=e2e` tests through real kernel NFS and SMB mounts, as root | merge | Linux, or dtc |
 | `pjdfstest` | POSIX semantics over an NFS mount, on NFSv3, v4 and v4.1 | pr | Linux, or dtc |
@@ -105,7 +117,6 @@ To see what CI will run for your branch, `test/harness/bin/dt plan --tier pr --b
 | `bench-smoke` | a short run of the benchmark tool, non-blocking | pr | any machine with `fio` |
 | `system` | whole-system scenarios: DittoFS in a container, real clients, injected faults | merge | the dedicated host |
 | `perf-night` | the nightly performance run | nightly | the dedicated host |
-| `smb-fuzz` | an SMB request fuzzer that compares error codes with a reference server | manual | Linux with Docker |
 
 `dt list` prints the same registry with each suite's format, needs, and a HERE column that says
 whether this machine can run it, or why not.
@@ -162,19 +173,18 @@ first:
 
 ```bash
 test/harness/bin/dt services up localstack           # S3 for the badger-s3 profile and e2e
-test/harness/bin/dt services up postgres kmip        # for integration
-test/harness/bin/dt services status                  # all three
+test/harness/bin/dt services up kmip                 # for integration
+test/harness/bin/dt services status                  # both
 test/harness/bin/dt services down
 ```
 
 | Service | Address | Used by |
 |---|---|---|
 | `localstack` | `127.0.0.1:4566`, S3 only | `e2e`, and every `badger-s3` cell: pjdfstest, pynfs, wpts, smbtorture, cthon04, nfstest, clients, fio-verify |
-| `postgres` | `127.0.0.1:15432`, database `dittofs_test` | `integration` |
 | `kmip` | `127.0.0.1:5696`, with throwaway certificates under `test/harness/state/` | `integration` |
 
-To use services of your own instead, set `LOCALSTACK_ENDPOINT`, `DITTOFS_TEST_POSTGRES_DSN` or
-the `DITTOFS_TEST_KMIP*` variables.
+To use services of your own instead, set `LOCALSTACK_ENDPOINT` or the
+`DITTOFS_TEST_KMIP*` variables.
 
 ### dtc, the Linux container
 
@@ -197,7 +207,7 @@ test/harness/bin/dtc clean                        # remove the image and its cac
   suite can start containers beside it; and three volumes that keep the Go module, build and lint
   caches between runs.
 - **Network:** on Docker Desktop the container reaches the services you started on the host
-  through forwarders for ports 4566, 15432 and 5696. On a Linux engine it uses the host network.
+  through forwarders for ports 4566 and 5696. On a Linux engine it uses the host network.
 - **Mounts it makes** stay inside the container: a program on the host can't see them.
 - **Limits:** Docker Desktop's kernel has no `rpcsec_gss_krb5` and no `dm-flakey`, and dtc refuses
   `cthon04` and `nfstest`.
@@ -221,7 +231,7 @@ test/harness/bin/dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...]
 
 ```bash
 test/harness/bin/dt run unit                                   # one suite, every cell
-test/harness/bin/dt run unit --nonrace                         # an option, as a flag
+test/harness/bin/dt run unit --journal-index                   # an option, as a flag
 test/harness/bin/dt run pjdfstest/badger-s3/4.1                # one cell
 test/harness/bin/dt run pynfs/badger-s3                        # every cell under a name: both NFSv4 minor versions
 test/harness/bin/dt run smbtorture/badger-s3/shard-1           # one shard
@@ -331,7 +341,7 @@ run can exit 0 having skipped most of what you asked for. Read the table it prin
 
 | Variable | Effect |
 |---|---|
-| `LOCALSTACK_ENDPOINT`, `DITTOFS_TEST_POSTGRES_DSN`, `DITTOFS_TEST_KMIP*` | Use these services instead of the local ones |
+| `LOCALSTACK_ENDPOINT`, `DITTOFS_TEST_KMIP*` | Use these services instead of the local ones |
 | `GITHUB_TOKEN` | Lets `dt history --ci`, `dt plan --estimate --ci` and `dt known prune --ci` read CI's results |
 | `DITTOFS_REPO` | Points `dtc` and the environment commands at another checkout |
 | `DITTOFS_E2E_*`, `DT_*` | Passed through into dtc |
@@ -468,6 +478,10 @@ of its own with `dt run CELL --ci`. A new suite in the registry reaches CI with 
 - **Always:** Go Checks, Repo Checks, ShellCheck, the secret scan (gitleaks) and CodeQL.
 - **Blocking or not:** `e2e`'s options, `bench-smoke` and `unit/windows` don't block a pull
   request. Everything else does.
+- **On `feat/storage-v2`:** `tests.yml` skips the suites that haven't moved there yet, on every
+  run, a PR stacked on another branch included: the suites `pjdfstest`, `pynfs`, `wpts`,
+  `smbtorture`, `cthon04`, `nfstest`, `clients`, `fio-verify`, `bench-smoke` and `system`, and the
+  cells `e2e`, `e2e/kerberos`, `e2e/cross-protocol`, `e2e/stress` and `unit/windows`.
 
 **Required to merge** into `develop` or `feat/storage-v2`:
 
@@ -542,7 +556,7 @@ test/harness/bin/dt hooks status
 | `pre-push` | builds the changed packages, and runs `dt run unit --packages` on those with tests | `DITTOFS_SKIP_PREPUSH=1` |
 
 `git commit --no-verify` and `git push --no-verify` skip them all. The pre-push hook compares
-with `DITTOFS_PREPUSH_BASE` (default `origin/develop`); on a branch based on another branch, set
+with `DITTOFS_PREPUSH_BASE` (default `origin/feat/storage-v2`); on a branch based on another branch, set
 it to that branch.
 
 ## Writing tests
@@ -559,7 +573,7 @@ fake.
 **No mocks, no stubs.** Needing one means the code is coupled to something it should take as an
 argument. Put the logic in a function of its inputs and keep I/O in a thin layer at the edge, or
 take the dependency as a small interface and test against a real implementation of it: the memory
-metadata or block store, `t.TempDir()`, a listener on `127.0.0.1:0`, an in-memory SQLite store.
+metadata store, `t.TempDir()`, a listener on `127.0.0.1:0`, Badger in memory.
 Three kinds of double are allowed ([RFC 29 §4.11](rfcs/rfc-29-test-harness.md#411-test-doubles) has
 the reasoning):
 
@@ -590,8 +604,8 @@ Table-driven cases suit several inputs to one rule.
 
 **By kind:**
 
-- **Unit:** untagged and fast; `-short` on pull requests. Badger under `t.TempDir()` and
-  in-memory SQLite are real implementations, so their tests run untagged.
+- **Unit:** untagged and fast; `-short` on pull requests. Badger, under `t.TempDir()` or
+  in memory, is a real implementation, so its tests run untagged.
 - **Integration** (`-tags=integration`, `-p 1`): for a backend the host must provide, such as a
   KMIP server. External systems (a KDC, a domain controller, S3) are tested for real here; their
   parsing and logic are pure functions with unit tests. A missing backend is a skip that names the
@@ -663,13 +677,10 @@ test/harness/bin/dt run unit --packages ./pkg/metadata/...,./internal/adapter/nf
 go test ./pkg/metadata/...                        # plain go test works for a quick loop
 ```
 
-`unit/nonrace` runs two performance gate tests without the race detector, which would distort
-what they measure. It runs nightly.
-
 **Integration.**
 
 ```bash
-test/harness/bin/dt services up postgres kmip
+test/harness/bin/dt services up kmip
 test/harness/bin/dt run integration
 test/harness/bin/dt run integration --kerberos    # against a real KDC, in Docker
 test/harness/bin/dt run integration --portmap     # Linux, with rpcbind running
@@ -711,6 +722,10 @@ Localstack. The table comes from the registry:
 
 | Suite | Protocol | Profiles | Variants | Tier | Known failures and skips |
 |---|---|---|---|---|---|
+| `journal-conformance` | none | none | none | `pr` | [`test/journal/known.yaml`](../../test/journal/known.yaml) |
+| `engine-conformance` | none | none | none | `pr` | [`test/engine/known.yaml`](../../test/engine/known.yaml) |
+| `engine-soak` | none | none | none | `pr` | [`test/engine/soak-known.yaml`](../../test/engine/soak-known.yaml) |
+| `adapter-conformance` | none | none | none | `pr` | [`test/adapter/known.yaml`](../../test/adapter/known.yaml) |
 | `pjdfstest` | NFS | `badger-s3` | nfs: `3`, `4`, `4.1` | `pr` | [`test/posix/known.yaml`](../../test/posix/known.yaml) |
 | `pynfs` | NFS | `badger-s3` | minor: `0`, `1` | `pr` | [`test/nfs-conformance/pynfs/known.yaml`](../../test/nfs-conformance/pynfs/known.yaml) |
 | `pynfs/knfsd` | NFS | none | minor: `0`, `1` | `manual` | [`test/nfs-conformance/pynfs/known.yaml`](../../test/nfs-conformance/pynfs/known.yaml) |
@@ -823,11 +838,6 @@ it holds on. The client setup, and how to compare with the Linux kernel's server
 test/harness/bin/dt run clients/macos          # on a Mac, against the memory profile
 ```
 
-### smb-fuzz
-
-A manual suite that sends generated SMB requests to a reference server and to DittoFS and compares
-their error codes. `dt run smb-fuzz`; see [`test/smbfuzz/README.md`](../../test/smbfuzz/README.md).
-
 ### Spec citations
 
 Code comments that cite a protocol specification section are checked against the specifications'
@@ -860,8 +870,8 @@ Performance is tracked, not gated: hosted runners are too noisy for a threshold.
 - **`fio-verify`:** fio jobs over an NFS 4.1 mount (`fio-verify/smb` over SMB) with data
   verification, so a verify error fails the test. Nightly.
 - **`perf-night`:** the full nightly performance run on the dedicated host.
-- **Go benchmarks:** `go test -bench=. -benchmem -run=^$ ./pkg/block/engine/`, and
-  `make bench-blockstore`.
+- **Go benchmarks:** `go test -bench=. -benchmem -run=^$ ./pkg/engine/`, and the `manual`
+  suites `engine-bench`, `reconcile-bench` and `version-limit-probe-bench`.
 
 Writing a benchmark: measure only the operation. Do setup before `b.ResetTimer()`, call
 `b.ReportAllocs()` on hot paths, and compare with `benchstat` over `-count=10` runs on the same
@@ -893,7 +903,7 @@ sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,resvport localhost
 ## Real NFSv3 NLM lock testing (network-namespace isolation)
 
 DittoFS coordinates byte-range locks across NFSv3 NLM, NFSv4 and SMB through a single
-cross-protocol lock manager (`pkg/metadata/lock/manager.go`). Proving this end to end with a
+cross-protocol lock table (`pkg/openstate`). Proving this end to end with a
 **real kernel NFSv3 client** (not the `nolock` mount option, which makes the kernel resolve locks
 locally and never contact the server) takes a specific harness. This section explains why, and how
 the e2e suite does it.
@@ -937,20 +947,8 @@ Each of these is a real failure mode:
   misbound rpcbind.
 - **Use IP addresses, not hostnames,** for the mount target and NSM: the two namespaces don't share
   name resolution.
-- **DittoFS must register with the system rpcbind, with UDP on** (below); UDP carries NSM and
+- **DittoFS must register with the system rpcbind, with UDP on**; UDP carries NSM and
   `SM_NOTIFY`.
-
-### Enabling server-side registration
-
-Registration is off by default. The e2e harness turns it on at run time:
-
-```
-PATCH /api/v1/adapters/nfs/settings
-{ "portmapper_register_with_system": true, "udp_enabled": true }
-```
-
-From the command line, `dfsctl adapter settings nfs update --portmapper-register-with-system
---udp-enabled`, then restart the adapter.
 
 ### What it covers
 
@@ -1245,36 +1243,41 @@ dt run SUITE|GROUP[/CELL] [--OPTION] [TEST...] | --place P [flags]
 Flags:
 
 ```text
-      --ad-dc[=true|false]            run the suite's ad-dc option
-      --base string                   compare the branch with REF wherever a command uses {base}, instead of the base dt finds: origin/develop, or in CI the event's
-      --changed[=true|false]          where a suite's packages gives patterns, test only the packages with a change committed since the base: every one without a base, when go.mod, go.sum or go.work changed, or when a changed file is in no package
-      --ci[=true|false]               an unmet need fails the run instead of skipping the cell, and new failures are annotated
-      --cross-protocol[=true|false]   run the suite's cross-protocol option
-      --in string                     where the run happens: host, container (dtc) or auto, which moves it to dtc when a cell needs what only the container gives (default auto, host with --ci)
-      --json[=true|false]             print the run's results on stdout as dt report --format json does, once the run ends, and the rest on stderr
-      --kerberos[=true|false]         run the suite's kerberos option
-      --knfsd[=true|false]            run the suite's knfsd option
-      --macos[=true|false]            run the suite's macos option
-      --no-color[=true|false]         don't color the results, as NO_COLOR set does; without either, they're colored on a terminal
-      --nonrace[=true|false]          run the suite's nonrace option
-      --only strings                  run only these suites of the group
-      --packages strings              test only these packages, where a suite's commands take {packages}: they replace the patterns and --changed's selection
-      --parallel int                  run up to N cells at once; cells that conflict, as two on one fixed port, still run one at a time (default 1)
-      --place string                  run the cells of the tier that dt plan gives place P, as the dedicated host does; that place's host need is met
-      --portmap[=true|false]          run the suite's portmap option
-      --results string                where results go, relative to the checkout's root (default test/harness/results)
-      --retry int                     run each test that failed new again, up to N times: a pass on a retry is flaky
-      --skip strings                  skip these suites of the group
-      --smb[=true|false]              run the suite's smb option
-      --smb21[=true|false]            run the suite's smb21 option
-      --stress[=true|false]           run the suite's stress option
-      --tier string                   run at tier T, or at a suite's own tier when wider: it sets args, env and select (default "pr")
-      --windows[=true|false]          run the suite's windows option
+      --ad-dc[=true|false]                        run the suite's ad-dc option
+      --adapter-allocs[=true|false]               run the suite's adapter-allocs option
+      --base string                               compare the branch with REF wherever a command uses {base}, instead of the base dt finds: origin/develop, or in CI the event's
+      --changed[=true|false]                      where a suite's packages gives patterns, test only the packages with a change committed since the base: every one without a base, when go.mod, go.sum or go.work changed, or when a changed file is in no package
+      --ci[=true|false]                           an unmet need fails the run instead of skipping the cell, and new failures are annotated
+      --cross-protocol[=true|false]               run the suite's cross-protocol option
+      --in string                                 where the run happens: host, container (dtc) or auto, which moves it to dtc when a cell needs what only the container gives (default auto, host with --ci)
+      --journal-conformance-norace[=true|false]   run the suite's journal-conformance-norace option
+      --journal-index[=true|false]                run the suite's journal-index option
+      --journal-plant[=true|false]                run the suite's journal-plant option
+      --json[=true|false]                         print the run's results on stdout as dt report --format json does, once the run ends, and the rest on stderr
+      --kerberos[=true|false]                     run the suite's kerberos option
+      --knfsd[=true|false]                        run the suite's knfsd option
+      --macos[=true|false]                        run the suite's macos option
+      --no-color[=true|false]                     don't color the results, as NO_COLOR set does; without either, they're colored on a terminal
+      --only strings                              run only these suites of the group
+      --packages strings                          test only these packages, where a suite's commands take {packages}: they replace the patterns and --changed's selection
+      --parallel int                              run up to N cells at once; cells that conflict, as two on one fixed port, still run one at a time (default 1)
+      --place string                              run the cells of the tier that dt plan gives place P, as the dedicated host does; that place's host need is met
+      --portmap[=true|false]                      run the suite's portmap option
+      --results string                            where results go, relative to the checkout's root (default test/harness/results)
+      --retry int                                 run each test that failed new again, up to N times: a pass on a retry is flaky
+      --second-user[=true|false]                  run the suite's second-user option
+      --skip strings                              skip these suites of the group
+      --smb[=true|false]                          run the suite's smb option
+      --smb21[=true|false]                        run the suite's smb21 option
+      --stress[=true|false]                       run the suite's stress option
+      --tier string                               run at tier T, or at a suite's own tier when wider: it sets args, env and select (default "pr")
+      --whole-tree[=true|false]                   run the suite's whole-tree option
+      --windows[=true|false]                      run the suite's windows option
 ```
 
 ### `dt services`
 
-Start, stop or show the services the suites use: localstack, postgres, kmip
+Start, stop or show the services the suites use: localstack, kmip
 
 ```text
 dt services [ARGS]
@@ -1324,7 +1327,6 @@ dt unit [ARGS...]
 
 - [RFC 29: the test harness](rfcs/rfc-29-test-harness.md), the design and its reasons.
 - [`testing-windows.md`](testing-windows.md): the manual checklists for real Windows applications, over SMB and NFS.
-- [`test/crash/`](../../test/crash/README.md): two rigs, run by hand as root on a Linux VM, that check data lost under DittoFS reads back as an error.
 - [`testing-parallel.md`](testing-parallel.md): when a suite may run beside others.
 - [`test/suites.yaml`](../../test/suites.yaml): the registry itself.
 - [`test/harness/demo/`](../../test/harness/demo/README.md): a ten-step terminal demo of `dt`,
@@ -1334,5 +1336,4 @@ dt unit [ARGS...]
   [`test/nfs-mount/`](../../test/nfs-mount/README.md),
   [`test/smb-conformance/`](../../test/smb-conformance/README.md),
   [`test/scenarios/`](../../test/scenarios/README.md),
-  [`test/smbfuzz/`](../../test/smbfuzz/README.md),
   [`test/pcap-corpus/`](../../test/pcap-corpus/README.md), [`bench/`](../../bench/README.md).

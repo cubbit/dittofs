@@ -25,8 +25,9 @@ slack() {
     TEXT="${TEXT//\"/\\\"}"
     TEXT="${TEXT//$'\n'/\\n}"
     TITLE="${TEXT%%\\n*}"
-    DETAILS="${TEXT#*\\n}"
-    BODY="{\"channel\":\"$(cat "$SLACK_DIR/slack-channel")\",\"text\":\"$TITLE\",\"attachments\":[{\"color\":\"$COLOR\",\"text\":\"$DETAILS\",\"mrkdwn_in\":[\"text\"]}]${2:+,\"thread_ts\":\"$2\"}"
+    # A one-line text is its title alone: it gets no attachment, which would repeat it.
+    case "$TEXT" in *\\n*) DETAILS="${TEXT#*\\n}" ;; *) DETAILS="" ;; esac
+    BODY="{\"channel\":\"$(cat "$SLACK_DIR/slack-channel")\",\"text\":\"$TITLE\"${DETAILS:+,\"attachments\":[{\"color\":\"$COLOR\",\"text\":\"$DETAILS\",\"mrkdwn_in\":[\"text\"]\}]}${2:+,\"thread_ts\":\"$2\"}"
     test "${3:-no}" = no || BODY="$BODY,\"reply_broadcast\":true"
     printf 'header = "Authorization: Bearer %s"\n' "$(cat "$SLACK_DIR/slack-token")" |
         curl -sf -K - -H 'Content-Type: application/json; charset=utf-8' -d "$BODY}" "${SLACK_API:-https://slack.com/api}/chat.postMessage" |

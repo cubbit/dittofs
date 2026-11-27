@@ -1,0 +1,570 @@
+package kvstore
+
+import (
+	"bytes"
+	"errors"
+	"maps"
+	"slices"
+	"time"
+
+	authsid "github.com/cubbit/dittofs/pkg/auth/sid"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/codec"
+)
+
+// Every control-plane codec is at version 1. A field the key carries is not
+// repeated in the value: the decoders take it from the caller.
+const v1 = 1
+
+// errMalformed is a value whose fields decode but name no valid choice.
+var errMalformed = errors.New("kvstore: malformed value")
+
+// fileRecordError is one of a file's own ref, hole, overwrite or removal
+// records, its value or its key, that does not decode.
+type fileRecordError struct{ error }
+
+func (e fileRecordError) Unwrap() error { return e.error }
+
+// fileRecord marks err, a decode of one of a file's own records, as that
+// file's; nil stays nil.
+func fileRecord(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fileRecordError{err}
+}
+
+// FileRecordUndecodable reports that err is one of a file's own ref, hole,
+// overwrite or removal records, or its key, that does not decode: every call
+// reading it fails the same way until the record is repaired, whatever the
+// store's health, and no other file's call reads it. A record shared by
+// files, a journal's open generation or a share's namespaces, is not one.
+func FileRecordUndecodable(err error) bool {
+	var fe fileRecordError
+	return errors.As(err, &fe)
+}
+
+func open(b []byte) (*codec.Reader, error) {
+	r, _, err := codec.NewReader(b, v1)
+	return r, err
+}
+
+func putPrincipal(w *codec.Writer, p entity.Principal) *codec.Writer {
+	return w.Uint8(uint8(p.Kind)).Fixed(p.ID[:])
+}
+
+func readPrincipal(r *codec.Reader) entity.Principal {
+	p := entity.Principal{Kind: entity.PrincipalKind(r.Uint8())}
+	copy(p.ID[:], r.Fixed(16))
+	return p
+}
+
+func putResource(w *codec.Writer, ref entity.ResourceRef) *codec.Writer {
+	return w.Uint8(uint8(ref.Kind)).Bytes(ref.ID)
+}
+
+// readResource reads a resource reference, setting *known false for one of a
+// kind this build does not know.
+func readResource(r *codec.Reader, known *bool) entity.ResourceRef {
+	ref := entity.ResourceRef{Kind: entity.ResourceKind(r.Uint8()), ID: cloneOrNil(r.Bytes())}
+	*known = *known && ref.Kind.String() != ""
+	return ref
+}
+
+func putIDs(w *codec.Writer, ids entity.ProtocolIDs) {
+	w.Len(len(ids))
+	for _, id := range ids {
+		putLinked(w.Uint8(uint8(id.Scheme)).String(id.Value), id)
+	}
+}
+
+func readIDs(r *codec.Reader) (entity.ProtocolIDs, error) {
+	n := r.Len()
+	if n == 0 {
+		return nil, nil
+	}
+	ids := make(entity.ProtocolIDs, n)
+	for i := range ids {
+		ids[i] = entity.ProtocolID{Scheme: entity.ProtocolScheme(r.Uint8()), Value: r.String()}
+		var err error
+		if ids[i].Linked, err = readLinked(r, ids[i].Scheme); err != nil {
+			return nil, err
+		}
+	}
+	return ids, nil
+}
+
+// putLinked writes a krb spelling's linked SID, empty for none. No other
+// scheme carries the field, so their encodings are unchanged.
+//
+// decision: the field changes the krb spellings' layout in the user record
+// and the PX krb row in place, at codec version 1, so a value written before
+// it fails to decode, closed. That holds while store format 1
+// is not frozen (store.go): no release has created a store. The release
+// that first creates one freezes the format, and from then on a layout
+// change takes a new codec version that decodes the old one.
+func putLinked(w *codec.Writer, id entity.ProtocolID) *codec.Writer {
+	if id.Scheme != entity.SchemeKerberos {
+		return w
+	}
+	return w.String(id.Linked)
+}
+
+// readLinked reads what putLinked wrote for a spelling of scheme, refusing
+// a SID linkedSID refuses.
+func readLinked(r *codec.Reader, scheme entity.ProtocolScheme) (string, error) {
+	if scheme != entity.SchemeKerberos {
+		return "", nil
+	}
+	linked := r.String()
+	if linked != "" && !linkedSID(linked) {
+		return "", errMalformed
+	}
+	return linked, nil
+}
+
+// linkedSID reports the binary form of a domain account SID,
+// S-1-5-21-a-b-c-rid, exactly as long as its five sub-authorities: the
+// directory user SID, or a machine's from its PAC, the only SID a krb
+// spelling is linked for. A well-known or builtin SID never is.
+func linkedSID(b string) bool {
+	s, n, err := authsid.DecodeSID([]byte(b))
+	return err == nil && n == len(b) && s.Revision == 1 && s.IdentifierAuthority == [6]byte{5: 5} &&
+		s.SubAuthorityCount == 5 && s.SubAuthorities[0] == 21
+}
+
+// encodeUser writes the record's kind, a user or a machine, which its key
+// does not hold.
+func encodeUser(u entity.User) []byte {
+	w := codec.NewWriter(v1).Uint8(uint8(u.Principal.Kind)).String(u.Name)
+	putIDs(w, u.IDs)
+	putPrincipal(w, u.Primary).Bool(u.Disabled).Fixed(u.Password[:]).Fixed(u.NTHash[:]).String(u.Email).Uint8(uint8(u.Role))
+	return putSeconds(w, u.NotBefore).Bool(u.MustChange).Uint64(u.Generation).Uint64(u.Position).Bool(u.Deleted).Encode()
+}
+
+// putSeconds writes t in whole seconds, the zero time as zero.
+func putSeconds(w *codec.Writer, t time.Time) *codec.Writer {
+	if t.IsZero() {
+		return w.Int64(0)
+	}
+	return w.Int64(t.Unix())
+}
+
+func readSeconds(r *codec.Reader) time.Time {
+	t := time.Unix(r.Int64(), 0).UTC()
+	if t.Unix() == 0 || t.IsZero() {
+		return time.Time{}
+	}
+	return t
+}
+
+func decodeUser(id entity.PrincipalID, b []byte) (entity.User, error) {
+	r, err := open(b)
+	if err != nil {
+		return entity.User{}, err
+	}
+	kind := entity.PrincipalKind(r.Uint8())
+	u := entity.User{Principal: entity.Principal{Kind: kind, ID: id}, Name: r.String()}
+	if u.IDs, err = readIDs(r); err != nil {
+		return u, err
+	}
+	u.Primary = readPrincipal(r)
+	u.Disabled = r.Bool()
+	copy(u.Password[:], r.Fixed(16))
+	copy(u.NTHash[:], r.Fixed(16))
+	u.Email, u.Role = r.String(), entity.APIRole(r.Uint8())
+	u.NotBefore, u.MustChange, u.Generation, u.Position, u.Deleted = readSeconds(r), r.Bool(), r.Uint64(), r.Uint64(), r.Bool()
+	if err := r.Done(); err != nil {
+		return u, err
+	}
+	// A role or kind this build does not know is refused rather than read as
+	// some other, so a record from a newer build grants no rights by accident.
+	if u.Role.String() == "" || kind != entity.PrincipalUser && kind != entity.PrincipalMachine {
+		return u, errMalformed
+	}
+	return u, nil
+}
+
+func encodeGroup(g entity.Group) []byte {
+	w := codec.NewWriter(v1).String(g.Name)
+	putIDs(w, g.IDs)
+	return w.Uint64(g.Generation).Uint64(g.Position).Bool(g.Deleted).Encode()
+}
+
+func decodeGroup(id entity.PrincipalID, b []byte) (entity.Group, error) {
+	r, err := open(b)
+	if err != nil {
+		return entity.Group{}, err
+	}
+	g := entity.Group{Principal: entity.Principal{Kind: entity.PrincipalGroup, ID: id}, Name: r.String()}
+	if g.IDs, err = readIDs(r); err != nil {
+		return g, err
+	}
+	g.Generation, g.Position, g.Deleted = r.Uint64(), r.Uint64(), r.Bool()
+	return g, r.Done()
+}
+
+// A membership row's value is the member's kind, so a walk knows which
+// members are nested groups without reading them. Both directions carry it.
+func encodeKind(k entity.PrincipalKind) []byte { return codec.NewWriter(v1).Uint8(uint8(k)).Encode() }
+
+func decodeKind(b []byte) (entity.PrincipalKind, error) {
+	r, err := open(b)
+	if err != nil {
+		return 0, err
+	}
+	k := entity.PrincipalKind(r.Uint8())
+	return k, r.Done()
+}
+
+// encodeID is a name or path index row's value: the ID it names.
+func encodeID(id [16]byte) []byte { return codec.NewWriter(v1).Fixed(id[:]).Encode() }
+
+// encodeNameRow is a user or group name row's value: the principal's ID and
+// its name as written, which the row's key holds only folded.
+func encodeNameRow(id entity.PrincipalID, name string) []byte {
+	return codec.NewWriter(v1).Fixed(id[:]).String(name).Encode()
+}
+
+func decodeNameRow(b []byte) (entity.PrincipalID, error) {
+	var id entity.PrincipalID
+	r, err := open(b)
+	if err != nil {
+		return id, err
+	}
+	copy(id[:], r.Fixed(16))
+	_ = r.String()
+	return id, r.Done()
+}
+
+func decodeID(b []byte) ([16]byte, error) {
+	var id [16]byte
+	r, err := open(b)
+	if err != nil {
+		return id, err
+	}
+	copy(id[:], r.Fixed(16))
+	return id, r.Done()
+}
+
+// encodeProtocolRow is id's protocol-ID row's value: a SID names a user or
+// a group, so the row carries the kind as well as the ID, and a krb row
+// also the SID it is linked for.
+//
+// decision: the krb row's linked SID is written but not read back: lookups
+// return only the row's principal. RFC 18 §4.2 keeps the SID beside the
+// principal in the row, and the record holds the same field, which is what
+// sign-in reads, since it reads the user's record anyway. Return the row's
+// copy from the lookup if a reader ever needs the SID without the record.
+func encodeProtocolRow(p entity.Principal, id entity.ProtocolID) []byte {
+	return putLinked(putPrincipal(codec.NewWriter(v1), p), id).Encode()
+}
+
+// decodeProtocolRow reads a protocol-ID row of scheme: its principal, and
+// the SID a krb row is linked for.
+func decodeProtocolRow(scheme entity.ProtocolScheme, b []byte) (entity.Principal, string, error) {
+	r, err := open(b)
+	if err != nil {
+		return entity.Principal{}, "", err
+	}
+	p := readPrincipal(r)
+	linked, err := readLinked(r, scheme)
+	if err != nil {
+		return p, "", err
+	}
+	return p, linked, r.Done()
+}
+
+// encodeShareInfo writes the fields a share put owns; State is its own record.
+func encodeShareInfo(s entity.Share) []byte {
+	return codec.NewWriter(v1).String(s.Name).String(s.Path).Fixed(s.Root[:]).
+		Uint32(uint32(s.Fold)).Uint8(uint8(s.Names)).Fixed(s.DigestKey[:]).Uint32(s.Tag).Uint64(s.Generation).Uint64(s.Position).Encode()
+}
+
+func decodeShareInfo(id entity.ShareID, b []byte) (entity.Share, error) {
+	r, err := open(b)
+	if err != nil {
+		return entity.Share{}, err
+	}
+	s := entity.Share{ID: id, Name: r.String(), Path: r.String()}
+	copy(s.Root[:], r.Fixed(16))
+	s.Fold = entity.FoldRule(r.Uint32())
+	s.Names = entity.NameRule(r.Uint8())
+	copy(s.DigestKey[:], r.Fixed(entity.DigestKeyLen))
+	s.Tag, s.Generation, s.Position = r.Uint32(), r.Uint64(), r.Uint64()
+	return s, r.Done()
+}
+
+// shareState is a share's state record: its state and, while it is being
+// removed, how far the removal has got, the key its current pass resumes
+// after and what it does with snapshots, so a crash resumes the removal
+// where it stopped.
+type shareState struct {
+	State     entity.ShareState
+	Step      uint8
+	Snapshots entity.SnapshotDisposition
+	Cursor    []byte // nil: the pass starts at its range's first key
+}
+
+func encodeState(s shareState) []byte {
+	return codec.NewWriter(v1).Uint8(uint8(s.State)).Uint8(s.Step).Uint8(uint8(s.Snapshots)).Bytes(s.Cursor).Encode()
+}
+
+func decodeState(b []byte) (shareState, error) {
+	r, err := open(b)
+	if err != nil {
+		return shareState{}, err
+	}
+	s := shareState{State: entity.ShareState(r.Uint8()), Step: r.Uint8(), Snapshots: entity.SnapshotDisposition(r.Uint8())}
+	if c := r.Bytes(); len(c) > 0 {
+		s.Cursor = bytes.Clone(c)
+	}
+	return s, r.Done()
+}
+
+func encodeGrant(g entity.ShareGrant) []byte {
+	return codec.NewWriter(v1).Uint8(uint8(g.Principal.Kind)).Uint8(uint8(g.Access)).Uint64(g.Version).Encode()
+}
+
+func decodeGrant(share entity.ShareID, p entity.PrincipalID, b []byte) (entity.ShareGrant, error) {
+	r, err := open(b)
+	if err != nil {
+		return entity.ShareGrant{}, err
+	}
+	g := entity.ShareGrant{Share: share, Principal: entity.Principal{Kind: entity.PrincipalKind(r.Uint8()), ID: p}}
+	g.Access = entity.ShareAccess(r.Uint8())
+	g.Version = r.Uint64()
+	return g, r.Done()
+}
+
+// Client match tags.
+const (
+	matchCIDR     = 1
+	matchNetgroup = 2
+)
+
+// encodePolicy is p's record at codec version 1.
+//
+// decision: ManageGIDs, the last field, was appended to version 1 in place,
+// so a policy written before it fails to decode, closed. That holds while
+// store format 1 is not frozen (store.go): no release has created a store.
+// The release that first creates one freezes the format, and from then on a
+// new field takes a new codec version that decodes the old one.
+func encodePolicy(p entity.ExportPolicy) []byte {
+	w := codec.NewWriter(v1).Len(len(p.Flavors))
+	for _, f := range p.Flavors {
+		w.Uint8(uint8(f))
+	}
+	w.Uint8(uint8(p.MinProof)).Uint8(uint8(p.MinProtection)).Bool(p.ReadOnly).Len(len(p.Clients))
+	for _, c := range p.Clients {
+		if c.Match.CIDR.IsValid() {
+			b, _ := c.Match.CIDR.MarshalBinary()
+			w.Uint8(matchCIDR).Bytes(b)
+		} else {
+			w.Uint8(matchNetgroup).String(c.Match.Netgroup)
+		}
+		w.Uint8(uint8(c.Access))
+	}
+	w.Uint8(uint8(p.Squash))
+	return putPrincipal(w, p.Anonymous).Uint8(uint8(p.SMB)).Uint64(p.Version).Bool(p.ManageGIDs).Encode()
+}
+
+func decodePolicy(share entity.ShareID, b []byte) (entity.ExportPolicy, error) {
+	r, err := open(b)
+	if err != nil {
+		return entity.ExportPolicy{}, err
+	}
+	p := entity.ExportPolicy{Share: share}
+	if n := r.Len(); n > 0 {
+		p.Flavors = make([]entity.AuthFlavor, n)
+		for i := range p.Flavors {
+			p.Flavors[i] = entity.AuthFlavor(r.Uint8())
+		}
+	}
+	p.MinProof, p.MinProtection, p.ReadOnly = entity.ProofKind(r.Uint8()), entity.Protection(r.Uint8()), r.Bool()
+	if n := r.Len(); n > 0 {
+		p.Clients = make([]entity.ClientRule, n)
+		for i := range p.Clients {
+			c := &p.Clients[i]
+			switch r.Uint8() {
+			case matchCIDR:
+				if err := c.Match.CIDR.UnmarshalBinary(r.Bytes()); err != nil && r.Done() == nil {
+					return entity.ExportPolicy{}, errMalformed
+				}
+			case matchNetgroup:
+				c.Match.Netgroup = r.String()
+			default:
+				if r.Done() == nil {
+					return entity.ExportPolicy{}, errMalformed
+				}
+				return entity.ExportPolicy{}, r.Done()
+			}
+			c.Access = entity.ShareAccess(r.Uint8())
+		}
+	}
+	p.Squash = entity.Squash(r.Uint8())
+	if p.Anonymous = readPrincipal(r); p.Anonymous.IsZero() {
+		p.Anonymous = entity.AnonymousPrincipal
+	}
+	p.SMB = entity.SMBShareFlags(r.Uint8())
+	p.Version = r.Uint64()
+	p.ManageGIDs = r.Bool()
+	return p, r.Done()
+}
+
+func encodeNetgroup(g entity.Netgroup) []byte {
+	w := codec.NewWriter(v1).Len(len(g.Members))
+	for _, m := range g.Members {
+		w.String(m)
+	}
+	return w.Uint64(g.Version).Encode()
+}
+
+func decodeNetgroup(name string, b []byte) (entity.Netgroup, error) {
+	r, err := open(b)
+	if err != nil {
+		return entity.Netgroup{}, err
+	}
+	g := entity.Netgroup{Name: name}
+	if n := r.Len(); n > 0 {
+		g.Members = make([]string, n)
+		for i := range g.Members {
+			g.Members[i] = r.String()
+		}
+	}
+	g.Version = r.Uint64()
+	return g, r.Done()
+}
+
+func encodeInstallation(in entity.Installation) []byte {
+	w := codec.NewWriter(v1).Fixed(in.ID[:]).Fixed(in.Instance[:]).Bytes(in.Generation).
+		Uint64(in.NTLMOff.Off).Fixed(in.NTLMOff.Deleted[:]).
+		Fixed(in.MachinePassword[:]).Fixed(in.SigningKey[:])
+	j := in.Join
+	w.Bool(j.Joined).String(j.Account).Bytes(j.Owner).Bytes(j.Delegation).Len(len(j.Names))
+	for _, n := range j.Names {
+		w.String(n)
+	}
+	rot := j.LastRotation
+	putTime(w, rot.At).Bool(rot.Failed).Uint32(rot.Tag).Uint32(rot.Read).Uint64(rot.Version)
+	putTime(w, rot.Confirmed)
+	// Active is the last field, sorted by format: a test that writes active
+	// versions as raw bytes appends them to the record Init wrote.
+	w.Len(len(in.Active))
+
+	for _, f := range slices.Sorted(maps.Keys(in.Active)) {
+		w.Uint8(uint8(f)).Uint32(in.Active[f])
+	}
+
+	return w.Encode()
+}
+
+func decodeInstallation(b []byte) (entity.Installation, error) {
+	r, err := open(b)
+	if err != nil {
+		return entity.Installation{}, err
+	}
+	var in entity.Installation
+	copy(in.ID[:], r.Fixed(16))
+	copy(in.Instance[:], r.Fixed(16))
+	if g := r.Bytes(); len(g) > 0 {
+		in.Generation = append([]byte(nil), g...)
+	}
+	in.NTLMOff.Off = r.Uint64()
+	copy(in.NTLMOff.Deleted[:], r.Fixed(16))
+	copy(in.MachinePassword[:], r.Fixed(16))
+	copy(in.SigningKey[:], r.Fixed(16))
+	j := &in.Join
+	j.Joined, j.Account, j.Owner, j.Delegation = r.Bool(), r.String(), cloneOrNil(r.Bytes()), cloneOrNil(r.Bytes())
+	if n := r.Len(); n > 0 {
+		j.Names = make([]string, n)
+		for i := range j.Names {
+			j.Names[i] = r.String()
+		}
+	}
+	rot := &j.LastRotation
+	rot.At, rot.Failed, rot.Tag, rot.Read, rot.Version = readTime(r), r.Bool(), r.Uint32(), r.Uint32(), r.Uint64()
+	rot.Confirmed = readTime(r)
+	if n := r.Len(); n > 0 {
+		in.Active = make(map[entity.Format]uint32, n)
+		for range n {
+			f := entity.Format(r.Uint8())
+			in.Active[f] = r.Uint32()
+		}
+	}
+	return in, r.Done()
+}
+
+// encodeCounter is ShareList's and the settings generation's value.
+func encodeCounter(v uint64) []byte { return codec.NewWriter(v1).Uint64(v).Encode() }
+
+func decodeCounter(b []byte) (uint64, error) {
+	r, err := open(b)
+	if err != nil {
+		return 0, err
+	}
+	v := r.Uint64()
+	return v, r.Done()
+}
+
+func encodeSetting(s entity.Setting) []byte {
+	return codec.NewWriter(v1).Bytes(s.Value).Uint64(s.Generation).Uint32(s.Schema).Uint64(s.Position).Encode()
+}
+
+func decodeSetting(scope entity.SettingScope, key string, b []byte) (entity.Setting, error) {
+	r, err := open(b)
+	if err != nil {
+		return entity.Setting{}, err
+	}
+	s := entity.Setting{Scope: scope, Key: key}
+	if v := r.Bytes(); len(v) > 0 {
+		s.Value = append([]byte(nil), v...)
+	}
+	s.Generation = r.Uint64()
+	s.Schema, s.Position = r.Uint32(), r.Uint64()
+	return s, r.Done()
+}
+
+// encodeSecret writes every field of s but its ID and version, which its key
+// holds.
+func encodeSecret(s entity.Secret) []byte {
+	o := s.Owner
+	w := codec.NewWriter(v1).Uint8(uint8(s.Kind)).String(s.KeyID)
+	putResource(w, o.Record)
+	w.Uint8(uint8(o.Scope.Kind)).Fixed(o.Scope.ID[:]).String(o.Key)
+
+	return w.Bytes(s.Value).Uint32(s.KeyVersion).Bool(s.HandedOver).Encode()
+}
+
+// decodeSecret refuses a kind this build does not declare rather than read
+// it as some other, and copies the bytes it keeps out of b.
+func decodeSecret(id entity.SecretRef, version uint64, b []byte) (entity.Secret, error) {
+	r, err := open(b)
+	if err != nil {
+		return entity.Secret{}, err
+	}
+
+	s := entity.Secret{
+		ID:      id,
+		Version: version,
+		Kind:    entity.SecretKind(r.Uint8()),
+		KeyID:   r.String(),
+	}
+	s.Owner.Record.Kind = entity.ResourceKind(r.Uint8())
+	s.Owner.Record.ID = cloneOrNil(r.Bytes())
+	s.Owner.Scope.Kind = entity.ScopeKind(r.Uint8())
+	copy(s.Owner.Scope.ID[:], r.Fixed(16))
+	s.Owner.Key = r.String()
+	s.Value = cloneOrNil(r.Bytes())
+
+	s.KeyVersion, s.HandedOver = r.Uint32(), r.Bool()
+	if err := r.Done(); err != nil {
+		return s, err
+	}
+
+	if s.Kind.String() == "" {
+		return s, errMalformed
+	}
+
+	return s, nil
+}

@@ -1,701 +1,460 @@
-# Active Directory / LDAP / Kerberos / NTLM Integration
+# Identity: Active Directory, LDAP, Kerberos and NTLM
 
-Operator guide for joining DittoFS to an Active Directory (or compatible LDAP)
-directory so that **one AD user resolves to the same Unix UID/GID over both SMB
-and NFS**. This covers the two halves of AD integration:
+This page shows how to let the users of an Active Directory (or another LDAP directory)
+use DittoFS with their own accounts, with no local DittoFS user for each of them. It
+covers connecting the directory, importing a Kerberos keytab and joining the domain.
+You need it when your users already have directory accounts; for a handful of local
+users, `dfsctl user create` is enough (see [Access Control](access-control.md)).
 
-- **LDAP idmap** — resolves a directory principal (a `user@REALM` form or an AD
-  SID) to a Unix identity by reading RFC2307 `uidNumber`/`gidNumber` attributes
-  (the `idmap_ad` model) or deriving them algorithmically from the RID
-  (`idmap_rid`), and resolves nested group membership.
-- **Kerberos** — accepts Kerberos service tickets for the server's SPN over both
-  SMB (SPNEGO) and NFS (RPCSEC_GSS), from a single service keytab. NTLM remains
-  available as a fallback for SMB.
+A directory user gets one Unix identity (uid and gid) that is the same over SMB and NFS,
+so a file alice creates from Windows shows alice as its owner from Linux too.
 
-> **Status.** AD/LDAP/Kerberos support is functional but the project is **not
-> production ready**. Read [docs/FAQ.md](faq.md) for known limitations.
+For a step-by-step Windows Server walkthrough, see
+[windows-ad-setup.md](windows-ad-setup.md). This page is the reference for every setting
+it uses.
 
-See also: [docs/CONFIGURATION.md](configuration.md) (every config key + env var),
-[docs/SMB.md](smb.md), [docs/NFS.md](nfs.md), and [docs/ACLS.md](access-control.md) (the
-cross-protocol ACL/SID model).
+> **On this version:**
+>
+> - This build serves no file protocol yet, so nobody mounts a share. The directory,
+>   keytab and join steps below run today.
+> - NFS Kerberos is not served: the NFS server answers every Kerberos (RPCSEC_GSS)
+>   request with `AUTH_BADCRED`, so `sec=krb5` mounts fail. Kerberos works for SMB.
+> - The Kubernetes operator does not run this release (see
+>   [Part D](#part-d-kubernetes-operator-dittoserver-cr)).
+> - The directory's bind password is sealed under `keys.protocol`, so add that key to
+>   the config file before you set it (see [Encryption](encryption.md)).
 
-> **Joining a real Windows Server AD?** For an end-to-end operator runbook
-> (`ktpass` keytab, LDAP, granting AD users/groups directly, and per-user
-> "mount on login"), see [windows-ad-setup.md](windows-ad-setup.md). This page
-> is the reference for every provider field; that page is the step-by-step.
+## What you set up, and why
 
----
+| Piece | What it does | Set with |
+| --- | --- | --- |
+| **The directory** | Finds a user or group by name or SID, gives it a uid or gid, and lists its groups, nested ones included | `dfsctl setting set installation identity.directory.*` |
+| **A Kerberos keytab** | Lets clients sign in with a Kerberos ticket for a service name such as `cifs/files.example.com` | the management API (`PUT /api/v1/installation/keytab`) |
+| **A domain join** | Gives DittoFS a computer account. Its service names accept Kerberos tickets, and it lets domain users sign in over NTLM | `dfsctl domain join` |
 
-## Overview: cross-protocol identity unification
-
-DittoFS resolves every authenticated principal through a single identity
-resolver chain. The LDAP/AD provider is registered in that chain after Kerberos,
-so a directory principal or SID with no local mapping is resolved against the
-directory. Because **both** the NFS and SMB adapters consume the same resolver,
-an AD user maps to the **same Unix UID/GID regardless of which protocol they
-arrive on** — the property the `go test -tags=ad_dc` suite asserts (alice →
-uid 10001, gid 10000 over LDAP; the same identity over an SMB Kerberos session).
-
-The two providers play complementary roles:
-
-| Provider | What it does | When it applies |
-|---|---|---|
-| **Kerberos** | Authenticates the ticket (SMB SPNEGO / NFS RPCSEC_GSS), yields a principal + PAC group SIDs | At session/RPC auth time |
-| **LDAP idmap** | Maps the principal / SID to a Unix UID/GID + group GIDs | When resolving the authenticated identity to POSIX |
-
-You can enable LDAP alone (idmap for NTLM/AUTH_UNIX-named principals), Kerberos
-alone, or both together (the full AD-joined deployment).
+You can use the directory alone, or with a keytab, a join, or both. Each part below is
+one of them. All of these settings are written by an `admin` account and are applied
+without a restart. None of them goes in the config file: an `ldap:` or `kerberos:` block
+there is refused.
 
 ---
 
-## Prerequisites
+## Part A: A test domain to try it on
 
-- A reachable directory: a real Windows Server AD-DC, a Samba AD-DC, or any
-  RFC2307-capable LDAP server. For a throwaway dev directory see **Part A**.
-- LDAP idmap: a read-only **service account** (bind DN + password) and the
-  directory's **base DN**. RFC2307 mode additionally requires `uidNumber` /
-  `gidNumber` POSIX attributes to be stamped on the user/group objects.
-- Kerberos: a **service keytab** containing the DittoFS SPN(s) and (optionally) a
-  `krb5.conf`. See **Part C**.
-- For verification: `kinit` (the `krb5-user` package) and `mount.cifs` /
-  `smbclient` on the client.
+To try this without a production domain, the repository has a Samba AD domain
+controller for testing, in `test/integration/ad-dc/` (Docker) and `k8s/samba-ad-dc/`
+(a dev Kubernetes cluster). It is for testing only: in production you point DittoFS at
+your existing Active Directory and install no Samba.
+
+The test domain has realm `DITTOFS.AD` and NetBIOS domain `DITTOFS`, and contains:
+
+| Account | What it is |
+| --- | --- |
+| `alice` | user with `uidNumber 10001`, `gidNumber 10000`, member of `devs` (nested in `engineering`) |
+| `bob` | user with no uid in the directory, so DittoFS allocates one; member of `engineering` |
+| `dittofs-svc` | service account holding `cifs/dittofs.dittofs.ad` and `nfs/dittofs.dittofs.ad`, AES keys only; its keytab is written to `/keytabs/dittofs.keytab` |
+| `dittofs$` | computer account for joins (password `MachinePass01!`) |
+
+The users' password is `TestPassword01!` and Administrator's is `Passw0rd!2024`. The
+container also writes its CA certificate to `/keytabs/ca.pem`, which you need for
+`identity.directory.trust_roots` below. Set `AD_REALM`, `AD_DOMAIN`,
+`AD_ADMIN_PASSWORD` and `USER_PASSWORD` to change the defaults. The container must run
+privileged, since it binds ports 53, 88, 389, 464 and 636.
+
+The test domain's NetBIOS name, `DITTOFS`, is also DittoFS's default server name
+(`identity.netbios_name`), and the two must differ. Before you connect it, give the
+server another name:
+
+```bash
+dfsctl setting set installation identity.netbios_name FILES
+```
+
+Contributors run the integration suite against this domain on a Linux Docker host with
+`go test -tags=ad_dc -timeout 20m ./test/integration/ad-dc/`. Its containers and
+networks are named with the prefix `dittofs-ad-dc-test`; on a Docker host shared with
+others, set `DITTOFS_AD_DC_NAME_PREFIX` to use another.
+
+The examples below use a production-style domain, `EXAMPLE.COM` (NetBIOS `EXAMPLE`),
+with a domain controller `dc1.example.com` and DittoFS at `files.example.com`.
 
 ---
 
-## Part A: Stand up a dev Samba AD-DC
+## Part B: Connect the directory
 
-> **DEV / TEST ONLY.** The Samba AD-DC described here is an identity authority
-> (Kerberos KDC on 88, LDAP on 389/636, AD DNS on 53, kpasswd on 464) used to
-> exercise the LDAP-idmap and Kerberos paths against a *real* AD without a
-> Windows Server license. **It is not a file server, is not a DittoFS component,
-> and is not managed by the dittofs-operator.** In production you install **no**
-> Samba — you point DittoFS at your existing enterprise AD. Port 445 (SMB) is
-> deliberately not exposed by the fixture; DittoFS owns 445.
-
-The provisioning logic below lives in `test/integration/ad-dc/entrypoint.sh`. It
-provisions realm **`DITTOFS.AD`** / domain **`DITTOFS`** and creates:
-
-- user `alice` — RFC2307 `uidNumber=10001`, `gidNumber=10000`, member of `devs`
-  (which is nested under `engineering`).
-- user `bob` — no RFC2307 attrs (the RID-fallback case), member of `engineering`.
-- groups `engineering` and `devs` (with `devs` nested under `engineering`).
-- a combined keytab at `/keytabs/dittofs.keytab` holding the `cifs/` and `nfs/`
-  SPNs.
-
-### What the provisioning does
-
-The one-shot provision (run on first start) is:
-
-```bash
-samba-tool domain provision \
-    --use-rfc2307 \
-    --realm=DITTOFS.AD \
-    --domain=DITTOFS \
-    --server-role=dc \
-    --dns-backend=SAMBA_INTERNAL \
-    --adminpass="$ADMIN_PASSWORD"
-```
-
-`--use-rfc2307` enables the POSIX (`uidNumber`/`gidNumber`) schema so those
-attributes can be stamped on objects. Users and groups are then created:
-
-```bash
-samba-tool group add engineering
-samba-tool group add devs
-# Nest devs under engineering so a member of devs carries BOTH group SIDs
-# in their Kerberos PAC (AD resolves the nesting at the DC):
-samba-tool group addmembers engineering devs
-
-# alice: RFC2307 attrs (idmap_ad path), member of devs (=> nested in engineering)
-samba-tool user create alice "$USER_PASSWORD" \
-    --uid-number=10001 --gid-number=10000 \
-    --unix-home=/home/alice --login-shell=/bin/bash
-samba-tool group addmembers devs alice
-
-# bob: no RFC2307 attrs (idmap_rid algorithmic-fallback path)
-samba-tool user create bob "$USER_PASSWORD"
-samba-tool group addmembers engineering bob
-```
-
-### The AES-keytab requirement (issue #1318)
-
-The DittoFS SPNs are registered on the Administrator account and exported to a
-combined keytab:
-
-```bash
-samba-tool spn add cifs/dittofs.dittofs.ad 'DITTOFS\Administrator'
-samba-tool spn add nfs/dittofs.dittofs.ad  'DITTOFS\Administrator'
-```
-
-By default the account may carry only an **RC4 (arcfour-hmac)** Kerberos key, so
-`exportkeytab` would emit an RC4-only keytab. **Windows 11 refuses RC4
-(arcfour-hmac) service tickets**, so the keytab must carry AES256/AES128 keys.
-Two steps are required, in order:
-
-1. **Advertise AES** on the SPN-holding account by setting
-   `msDS-SupportedEncryptionTypes` to `31` (`0x1F` = DES-CBC-CRC + DES-CBC-MD5 +
-   RC4-HMAC + AES128-CTS + AES256-CTS; the legacy bits are kept so RC4/DES
-   clients still work):
+1. Set the directory's address first; the other settings are refused until it is set.
+   Then the rest:
 
    ```bash
-   ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF
-   dn: <Administrator-DN>
-   changetype: modify
-   replace: msDS-SupportedEncryptionTypes
-   msDS-SupportedEncryptionTypes: 31
-   EOF
+   dfsctl setting set installation identity.directory.address ldaps://dc1.example.com:636
+   dfsctl setting set installation identity.directory.base 'DC=example,DC=com'
+   dfsctl setting set installation identity.directory.realm EXAMPLE.COM
+   dfsctl setting set installation identity.directory.netbios_domain EXAMPLE
+   dfsctl setting set installation identity.directory.bind_name 'CN=svc-dittofs,CN=Users,DC=example,DC=com'
+   dfsctl setting set installation identity.directory.bind_credential "$BIND_PASSWORD"
+   dfsctl setting set installation identity.directory.trust_roots -- "$(cat /etc/dittofs/directory-ca.pem)"
    ```
 
-2. **Regenerate the Kerberos keys.** AES keys derive from the account password +
-   salt, so they only materialise on a password change. Reset the password to
-   itself to force regeneration without changing the credential:
+   ```console
+   KEY                         VALUE                          APPLIED
+   identity.directory.address  "ldaps://dc1.example.com:636"
+   ```
+
+   The `--` before the certificate is needed because a PEM file starts with dashes.
+   `APPLIED` fills in, as `1/1`, once the node has applied the setting.
+
+2. Test the connection:
 
    ```bash
-   samba-tool user setpassword Administrator --newpassword="$ADMIN_PASSWORD"
+   dfsctl domain test --wait
    ```
 
-Then export both principals into one keytab (a second `exportkeytab` into the
-same path **appends**):
+   It binds to the directory and reports the result. With no directory set, it fails
+   with `no directory is configured on this node`.
 
-```bash
-samba-tool domain exportkeytab /keytabs/dittofs.keytab --principal=cifs/dittofs.dittofs.ad@DITTOFS.AD
-samba-tool domain exportkeytab /keytabs/dittofs.keytab --principal=nfs/dittofs.dittofs.ad@DITTOFS.AD
-```
+3. Look a user up:
 
-Verify the keytab carries AES keys for both SPNs (the entrypoint fast-fails if
-`aes256-cts` / `aes128-cts` are missing):
+   ```bash
+   dfsctl domain resolve 'EXAMPLE\alice' --wait
+   dfsctl domain resolve --sid S-1-5-21-1004336348-1177238915-682003330-1105 --wait
+   ```
 
-```bash
-klist -ke /keytabs/dittofs.keytab
-```
+The directory settings:
 
-### Route 1 — Docker (the test fixture image)
+| Key | Meaning |
+| --- | --- |
+| `identity.directory.address` | `ldaps://host[:port]`, or `ldap://host[:port]`, which is always upgraded with StartTLS before the bind. Required, and set first |
+| `identity.directory.base` | the distinguished name every search starts from |
+| `identity.directory.schema` | `ad` (the default) or `rfc2307`, for a plain LDAP server |
+| `identity.directory.bind_name` | the distinguished name or UPN of a read-only account DittoFS binds as |
+| `identity.directory.bind_credential` | that account's password. It is stored sealed and never shown again. A password that looks like JSON, such as `12345` or `true`, must be quoted: `'"12345"'` |
+| `identity.directory.trust_roots` | the PEM certificates the directory's certificate must chain to; empty trusts the host's CAs |
+| `identity.directory.realm` | the Kerberos realm, in upper case |
+| `identity.directory.netbios_domain` | the domain's NetBIOS name. It must differ from `identity.netbios_name` (default `DITTOFS`) |
+| `identity.directory.user_name_attr`, `identity.directory.group_name_attr` | the attributes holding a user's and a group's name; empty means `sAMAccountName` for `ad`, `uid` and `cn` for `rfc2307` |
+| `identity.directory.dc_address`, `identity.directory.dns_server` | a domain controller, or a DNS server, to use instead of the domain's DNS service records |
+| `identity.directory.require_pac` | whether a Kerberos ticket from the realm must carry a PAC (group information); unset means `true` |
 
-The image is built from `test/integration/ad-dc/`. The provisioning realm,
-domain, and passwords are controlled by environment variables (defaults shown):
+The connection is always encrypted and the certificate always checked. No setting turns
+that off.
 
-| Env var | Default |
-|---|---|
-| `AD_REALM` | `DITTOFS.AD` |
-| `AD_DOMAIN` | `DITTOFS` |
-| `AD_ADMIN_PASSWORD` | `Passw0rd!2024` |
-| `USER_PASSWORD` | `TestPassword01!` |
-| `KEYTAB_DIR` | `/keytabs` |
-| `DITTOFS_UID` / `DITTOFS_GID` | `65532` / `65532` (keytab ownership) |
+> **Samba's own certificate is refused.** A default Samba AD DC serves a certificate with
+> a negative serial number, which Go refuses, so the bind fails. Give the DC a properly
+> issued certificate, such as the test domain's CA above.
 
-The container needs to bind privileged ports (88/389/636/464/53) and set NT
-ACLs, so it runs privileged. The combined keytab lands in the `KEYTAB_DIR`
-volume; mount that volume (or copy the keytab out) so the `dfs` server can read
-it.
+### How a directory user gets a uid
 
-### Route 2 — In-cluster (k8s/samba-ad-dc manifests)
+A directory user or group gets a DittoFS identity the first time it signs in or a grant
+names it. Its uid or gid is the entry's `uidNumber` or `gidNumber`. An entry with none,
+or with `0`, `65534` or a number another user already holds, gets one from
+`identity.id_range` instead. That number is kept, so it does not change at the next
+sign-in.
 
-For a Kubernetes dev cluster, apply the manifests in `k8s/samba-ad-dc/`:
+### Other identity settings
 
-- `samba-ad-dc.yaml` — a `StatefulSet` + headless `Service` exposing only the
-  directory roles (88, 389, 636, 464, 53). The pod runs privileged, uses Samba's
-  internal DNS (`dnsPolicy: None`, nameserver `127.0.0.1`, search `dittofs.ad`),
-  and persists `/var/lib/samba` and `/keytabs` on PVCs. The image
-  (`docker.io/library/dittofs-ad-dc:dev`, `imagePullPolicy: Never`) is the same
-  one built from `test/integration/ad-dc/`, imported locally (e.g. via
-  `k3s ctr images import`).
-- `krb5-test-client.yaml` — a throwaway pod that reaches the in-cluster AD-DC and
-  the DittoFS adapters, mounting the AD-generated `krb5.conf` from a Secret
-  (`demo-krb5-conf`) at `/etc/krb5.conf` (`KRB5_CONFIG=/etc/krb5.conf`). Use it
-  to `kinit` and then exercise SMB/NFS from inside the cluster.
-
-Both manifests are headed **DEV / TEST only** — the same caveat as above.
-
----
-
-## Part B: Configure the LDAP idmap
-
-LDAP is configured over the control-plane API (hot-reloads the live resolver, no
-restart) or seeded from the config file / environment on first boot.
-
-### Over the API (recommended; hot-reloads)
-
-```bash
-dfsctl identity-provider set ldap --config '{
-  "enabled": true,
-  "url": "ldaps://dc.example.com:636",
-  "base_dn": "DC=example,DC=com",
-  "bind_dn": "CN=svc-dittofs,CN=Users,DC=example,DC=com",
-  "bind_password": "s3cret",
-  "idmap": "rfc2307",
-  "nested_groups": true,
-  "user_attr": "sAMAccountName"
-}'
-```
-
-Validate reachability without persisting:
-
-```bash
-dfsctl identity-provider test ldap --config '{ ... same JSON ... }'
-```
-
-Inspect and list (the bind password is redacted to `********`):
-
-```bash
-dfsctl identity-provider get ldap
-dfsctl identity-provider list
-```
-
-**Config field names** (the JSON shape matches the API schema, source
-`pkg/apiclient/identity_providers.go` / the handler DTO in
-`internal/controlplane/api/handlers/identity_providers.go`):
-
-| JSON field | Meaning |
-|---|---|
-| `enabled` | turn the provider on |
-| `url` | `ldaps://host:636` (preferred) or `ldap://host:389` |
-| `start_tls` | upgrade an `ldap://` connection to TLS |
-| `allow_plaintext` | explicit opt-in to an unencrypted bind (off) |
-| `base_dn` | search base, e.g. `DC=example,DC=com` |
-| `bind_dn` | service-account DN |
-| `bind_password` | service-account password (write-only; send `********` or omit to keep stored) |
-| `user_attr` | attribute matched against the bare username (default `sAMAccountName`) |
-| `realm` | matches `user@REALM` credentials |
-| `idmap` | `rfc2307` (uidNumber/gidNumber) or `rid` |
-| `nested_groups` | resolve transitive AD group membership |
-| `max_group_results` | cap on (nested) groups resolved per user |
-| `timeout` | Go duration string, e.g. `10s` |
-| `tls` | object: `ca_cert_file`, `client_cert_file`, `client_key_file`, `insecure_skip_verify`, `min_version` |
-
-> **Encryption is on by default.** A plaintext `ldap://` bind is refused unless
-> you set `start_tls: true` or explicitly set `allow_plaintext: true`. Prefer
-> `ldaps://`.
-
-> **Samba AD-DC self-signed certs.** A default Samba AD-DC serves a cert with a
-> negative serial number, which Go's `crypto/x509` rejects at parse time. The
-> `dfs` binary is built with `x509negativeserial=1` so `ldaps://` against a
-> default Samba AD-DC works out of the box. For production, use a properly
-> issued DC certificate. (See [docs/CONFIGURATION.md §15](configuration.md).)
-
-### Config-file / environment equivalents (first-boot seed)
-
-The `ldap.*` block seeds the database on first boot; thereafter the DB row wins
-(see **Precedence** below).
-
-```yaml
-ldap:
-  enabled: true
-  url: ldaps://dc.example.com:636
-  start_tls: false
-  allow_plaintext: false
-  base_dn: "DC=example,DC=com"
-  bind_dn: "CN=svc-dittofs,CN=Users,DC=example,DC=com"
-  bind_password: "********"
-  user_attr: sAMAccountName
-  realm: EXAMPLE.COM
-  idmap: rfc2307
-  nested_groups: true
-  max_group_results: 200
-  timeout: 10s
-  tls:
-    ca_cert_file: /etc/dittofs/ad-ca.pem
-    insecure_skip_verify: false
-    min_version: "1.2"
-```
-
-Each key has a `DITTOFS_LDAP_*` env equivalent (e.g. `DITTOFS_LDAP_ENABLED`,
-`DITTOFS_LDAP_URL`, `DITTOFS_LDAP_BASE_DN`, `DITTOFS_LDAP_BIND_DN`,
-`DITTOFS_LDAP_BIND_PASSWORD`, `DITTOFS_LDAP_IDMAP`, `DITTOFS_LDAP_NESTED_GROUPS`,
-`DITTOFS_LDAP_TLS_CA_CERT_FILE`, …). The full table is in
-[docs/CONFIGURATION.md §15](configuration.md).
-
-### Precedence and secret handling
-
-- A **persisted DB row** (set over the API) **wins** over the file/env config on
-  subsequent boots.
-- The file/env config **seeds the DB on first boot** only.
-- **LDAP changes hot-reload** the live resolver — no restart.
-- The **bind password is write-only**: `get` redacts it to `********`; submitting
-  `********` (or omitting `bind_password`) on a `set`/`PUT` preserves the stored
-  secret.
-
-(Verified against `cmd/dfs/commands/start.go` `resolveIdentityProviders` and the
-handler in `internal/controlplane/api/handlers/identity_providers.go`.)
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `identity.id_range` | `{"lo":1000000,"hi":1999999999}` | where missing uids and gids are allocated from; changing it moves no existing ID |
+| `identity.ntlm` | `true` | whether NTLM (password) sign-in is accepted; admin only. Turning it off deletes every stored NT hash |
+| `identity.netbios_name` | `DITTOFS` | the server's NetBIOS name, at most 15 bytes; a join sets it |
+| `identity.keytab` | none | the imported keytab; written only through the keytab route in [Part C](#import-the-keytab) |
+| `identity.nfs4_domain` | the keytab's first realm in lower case, else `localdomain` | the domain of NFSv4 owner strings, `name@domain`. Set it to the domain your NFSv4 clients' idmapper uses (`Domain` in `/etc/idmapd.conf`); a client in another domain sees owners it cannot map. ASCII letters, digits, `.` and `-`, compared ignoring case |
+| `identity.directory_stale_grace` | `15m` | how long past its 5-minute lifetime a cached directory answer may still be used while the directory is down. So a user disabled in the directory during an outage can keep access for up to 5 minutes plus this; `0` limits it to the 5 minutes |
 
 ---
 
 ## Part B2: Grant AD principals directly to shares (no local users)
 
-With LDAP configured, you can grant share access straight to an AD user or group
-— resolved to its **SID** — with **no local DittoFS user/group object** (#1528).
-At login, a Kerberos-authenticated principal's PAC user + group SIDs are matched
-against these grants.
+With the directory connected, grant a share to a directory user or group by its
+`DOMAIN\name`:
 
 ```bash
-# By AD name (resolved to a SID via LDAP; a bare name resolves to a local
-# object first, otherwise to the directory):
-dfsctl share permission grant /ditto --group 'CUBBIT\Cubbit'     --level read-write
-dfsctl share permission grant /ditto --user  alice@cubbit.local  --level read
-
-# By raw SID (no directory lookup — works even with LDAP disabled):
-dfsctl share permission grant /ditto --sid S-1-5-21-...-1104      --level read
-
-dfsctl share permission list /ditto     # shows each grant + its resolved SID
+dfsctl grant set archive --directory 'EXAMPLE\engineering' --access read-write
+dfsctl grant set archive --directory 'EXAMPLE\alice' --access read
+dfsctl grant list archive
 ```
 
-Grants are additive (highest matching level wins) and apply on both SMB (matched
-on PAC SIDs) and NFS (matched on the Unix id the SID resolves to — the RID under
-`idmap: rid`, so grant by name or use `idmap: rid` for an NFS-matchable id). This
-is the Samba `idmap_rid`-style, no-shadow-users model. For the full Windows
-Server walkthrough including per-user "mount on login", see
-[windows-ad-setup.md](windows-ad-setup.md); for the ACE model, see
-[access-control.md](access-control.md).
+DittoFS looks the name up in the directory and grants what it finds. If the directory
+cannot find the name, the command fails and grants nothing. A grant to a group reaches
+every member, including members of nested groups. See
+[Access Control](access-control.md) for how grants combine.
 
 ---
 
 ## Part C: Configure Kerberos
 
-Kerberos backs both NFS RPCSEC_GSS and SMB SPNEGO from a single service keytab.
-**Kerberos changes are restart-required** — the NFS/SMB adapters bind the
-config at startup.
+Kerberos lets a client that already holds a ticket (a Windows user logged on to the
+domain, or a Linux user after `kinit`) sign in with no password prompt. DittoFS needs
+the keys of the service names clients ask tickets for. They come from two places:
 
-### Over the API
+- a **domain join** ([Part C2](#part-c2-join-the-domain)) gives the keys of the computer
+  account's own names (`host/…`, `cifs/…`);
+- an **imported keytab** gives the keys of every other name, such as one registered on a
+  separate service account.
 
-```bash
-dfsctl identity-provider set kerberos --config '{
-  "enabled": true,
-  "keytab_path": "/etc/dittofs/dittofs.keytab",
-  "service_principal": "nfs/server.example.com@EXAMPLE.COM",
-  "realm": "EXAMPLE.COM",
-  "netbios_domain": "EXAMPLE",
-  "dns_domain": "example.com",
-  "krb5_conf": "/etc/krb5.conf"
-}'
-```
-
-The `--config` argument also accepts `@/path/to/krb.json` to read from a file.
-On success, `dfsctl` reminds you the change applies on the next restart. Validate
-the keytab/krb5.conf without persisting:
-
-```bash
-dfsctl identity-provider test kerberos --config '{ ... }'
-dfsctl identity-provider get kerberos
-```
-
-**Config field names** (source `pkg/apiclient/identity_providers.go`
-`KerberosProviderConfig` / the handler `KerberosConfigDTO`):
-
-| JSON field | Meaning |
-|---|---|
-| `enabled` | turn the provider on (requires `keytab_path` + `service_principal`) |
-| `keytab_path` | in-server path to the service keytab |
-| `service_principal` | the SPN, e.g. `nfs/server.example.com@EXAMPLE.COM` |
-| `realm` | Kerberos realm; defaults to the `@REALM` of `service_principal` |
-| `netbios_domain` | short NetBIOS name; single label (no `.`/`@`/`/`/spaces) |
-| `dns_domain` | DNS domain; defaults to the lowercased realm |
-| `krb5_conf` | path to `krb5.conf` |
-| `max_clock_skew` | Go duration string (e.g. `5m`) |
-| `context_ttl` | Go duration string (e.g. `8h`) |
-| `max_contexts` | integer (`>= 0`) |
-
-### Config-file / environment equivalents
-
-`kerberos` is a **top-level** config block (not nested under `adapters`):
-
-```yaml
-kerberos:
-  enabled: true
-  keytab_path: /etc/dittofs/dittofs.keytab
-  service_principal: nfs/server.example.com@EXAMPLE.COM
-  krb5_conf: /etc/krb5.conf
-  realm: EXAMPLE.COM
-  netbios_domain: EXAMPLE
-  dns_domain: example.com
-```
-
-Env equivalents include `DITTOFS_KERBEROS_REALM`, `DITTOFS_KERBEROS_NETBIOS_DOMAIN`,
-and `DITTOFS_KERBEROS_DNS_DOMAIN` (see [docs/CONFIGURATION.md §12](configuration.md)).
+The realm is `identity.directory.realm`. Clocks may differ by at most 5 minutes.
 
 ### One keytab, both protocols
 
-A keytab can hold multiple service principals, so a single file serves SMB and
-NFS. Export a keytab containing **both** the `cifs/` (SMB) and `nfs/` (NFS) SPNs:
+One keytab can hold several service names. Export the SMB (`cifs/`) and NFS (`nfs/`)
+names into one file:
 
 ```bash
 samba-tool domain exportkeytab /etc/dittofs/dittofs.keytab \
-    --principal=cifs/server.example.com@EXAMPLE.COM
+    --principal=cifs/files.example.com@EXAMPLE.COM
 samba-tool domain exportkeytab /etc/dittofs/dittofs.keytab \
-    --principal=nfs/server.example.com@EXAMPLE.COM
+    --principal=nfs/files.example.com@EXAMPLE.COM
+klist -ke /etc/dittofs/dittofs.keytab     # check: aes256-cts and aes128-cts keys only
 ```
 
-Point `kerberos.keytab_path` at the combined keytab. The SMB handler selects the
-`cifs/` principal; NFS RPCSEC_GSS uses the `nfs/` principal.
+On Windows Server, `ktpass` does the same (see
+[windows-ad-setup.md](windows-ad-setup.md)). The keytab must hold AES keys only: one
+with a DES or RC4 key is refused whole. Set the service account's
+`msDS-SupportedEncryptionTypes` to `0x18` (AES128 and AES256) so the domain issues AES
+tickets for it.
 
-### Domain-aware SMB
+### Import the keytab
 
-When `netbios_domain` is set, the SMB server advertises the AD domain in the NTLM
-challenge (`MsvAvNbDomainName` / `MsvAvDnsDomainName`) so domain users
-authenticate against the correct domain. Unset → it advertises `WORKGROUP` /
-`local` (standalone behavior). See [docs/SMB.md](smb.md).
+`dfsctl` has no keytab command, so the import is a call to the management API as an
+admin:
 
-### Precedence (same model as LDAP)
+1. Sign in and keep the access token:
 
-A persisted Kerberos DB row wins over file/env on subsequent boots; file/env
-seeds the DB on first boot. Unlike LDAP, Kerberos does **not** hot-reload —
-a change applies on the next `dfs` restart.
+   ```bash
+   URL=http://127.0.0.1:8080/api/v1
+   TOKEN=$(curl -s -X POST "$URL/auth/sign-in" -H 'Content-Type: application/json' \
+     -d '{"name":"admin","password":"my-secure-password"}' | jq -r .access_token)
+   ```
+
+2. Send the keytab, base64-encoded:
+
+   ```bash
+   curl -s -X PUT "$URL/installation/keytab" \
+     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+     -H 'If-None-Match: *' \
+     -d '{"spec": {"value": "'"$(base64 < /etc/dittofs/dittofs.keytab | tr -d '\n')"'"}}'
+   ```
+
+   A file that is not a keytab of AES keys is refused:
+
+   ```json
+   {"status":400,"code":"invalid","title":"Bad Request","detail":"not a keytab of AES keys alone","field":"spec.value", ...}
+   ```
+
+3. Delete `/etc/dittofs/dittofs.keytab`, or keep it readable by its owner only. The
+   node stores the keytab sealed and does not read the file again.
+
+`If-None-Match: *` says this is the first import; without it the API answers `428`. An
+import over an existing keytab is refused with `409`. To replace a keytab, delete the
+stored one first, then import the new one. A DELETE needs the stored keytab's version,
+which the `identity.keytab` setting's `ETag` header gives, and an `Idempotency-Key` of
+your choice:
+
+```bash
+curl -si "$URL/settings/identity.keytab" -H "Authorization: Bearer $TOKEN" | grep -i '^etag'
+# ETag: "3"
+curl -s -X DELETE "$URL/installation/keytab" -H "Authorization: Bearer $TOKEN" \
+  -H 'If-Match: "3"' -H 'Idempotency-Key: delete-keytab-1'
+```
+
+### Domain-aware SMB sign-in
+
+When an SMB client signs in with NTLM, DittoFS tells it the server's name
+(`identity.netbios_name`) and the domain (`identity.directory.netbios_domain`), so a
+domain user signs in against the right domain. See [SMB](smb.md).
+
+---
+
+## Part C2: Join the domain
+
+Joining creates (or takes over) a **computer account** for DittoFS in the domain. It
+does two things:
+
+- Its service names (`host/…`, `cifs/…` and any others the account holds) accept
+  Kerberos tickets. DittoFS derives their keys from the account's password, so no keytab
+  is needed for them.
+- It lets a domain user sign in over **NTLM**: DittoFS forwards the sign-in to a domain
+  controller over a secure channel. Without a join, a domain user's NTLM sign-in fails
+  with `STATUS_LOGON_FAILURE`. This matters when a Windows user connects by IP address,
+  where Kerberos cannot be used.
+
+### Before you join
+
+- The directory is connected ([Part B](#part-b-connect-the-directory)) with
+  `identity.directory.realm` and `identity.directory.base` set, and its schema is `ad`.
+  An online join's `--ou` must lie under `identity.directory.base`.
+- DittoFS finds domain controllers through DNS, unless `identity.directory.dc_address`
+  names one.
+- The account uses AES keys only (`msDS-SupportedEncryptionTypes` = `0x18`). An online
+  join sets this itself.
+- A firewalled site opens these ports from the DittoFS host to **each** domain
+  controller:
+
+  | Port | Used for |
+  | --- | --- |
+  | 53 | DNS, to find the domain controllers |
+  | 88 | Kerberos |
+  | 135 | the RPC endpoint mapper |
+  | the DC's dynamic RPC range (`49152-65535` on Windows unless narrowed) | the secure channel for NTLM sign-ins |
+  | 636 (or 389 for an `ldap://` address) | LDAP |
+
+### Online join
+
+DittoFS creates the computer account itself, as a domain administrator whose password
+you type. The administrator needs the right to create computer objects in the
+organisational unit:
+
+```bash
+dfsctl domain join --user Administrator@EXAMPLE.COM \
+  --account 'FILES$' --ou 'OU=Servers,DC=example,DC=com' --wait
+```
+
+- The password is read from a prompt, or from the file `--password-file` names. It is
+  used for this join only and never stored or logged.
+- `--account` defaults to the installation's NetBIOS name (`DITTOFS`). `--ou` defaults
+  to the domain's `Computers` container. `--dns-host-name` defaults to the account name
+  in lower case, a dot and the realm in lower case (`files.example.com`).
+- If an account of that name already exists, the join is refused, naming it. This stops
+  a second installation from taking over the first one's account by accident. Pass
+  `--takeover` to replace it on purpose.
+
+### Offline join
+
+An administrator creates the computer account, so DittoFS never holds a credential that
+can create accounts. Create it with AES enabled; an account made in *Active Directory
+Users and Computers* lacks the setting, and the join refuses it:
+
+```powershell
+New-ADComputer -Name FILES -Enabled $true `
+  -AccountPassword (ConvertTo-SecureString 'a-long-random-password' -AsPlainText -Force) `
+  -OtherAttributes @{'msDS-SupportedEncryptionTypes'=0x18}
+```
+
+Put the password in a file and hand it over:
+
+```bash
+dfsctl domain join --offline --account 'FILES$' --password-file machine.txt --wait
+```
+
+DittoFS checks the password with a domain controller, then **changes it twice**, so that
+whoever created the account no longer knows it. The account accepts no Kerberos ticket
+until the second change is done. An offline join takes no `--user`, `--ou` or
+`--dns-host-name`.
+
+**Two things you must do yourself**, because DittoFS cannot check them:
+
+- **Keep the account's creator off the network path to the domain controller while the
+  join runs.** The first password change is authenticated with the handed-over
+  password, so someone who can watch that exchange can learn the next password too. Run
+  the join from a network the creator is not on, or use an online join.
+- **Change the computer object's owner after any join.** The owner can set up
+  delegation (`msDS-AllowedToActOnBehalfOfOtherIdentity`) and get tickets to DittoFS as
+  any user. The account's creator usually stays its owner. In *Active Directory Users and
+  Computers*, set the owner to *Domain Admins* and check that attribute. DittoFS does not
+  report the owner or the attribute yet.
+
+### After a join
+
+`GET /api/v1/installation` shows the join under `status.join`: whether it is joined, the
+account, the service names it holds, and when the password last changed.
+
+The join sets `identity.netbios_name` to the account's name (upper case, no `$`). While
+joined, that setting cannot be changed: `dfsctl setting set` or `unset` of it is refused
+with `409 joined`. To use another name, join again with `--takeover --account` naming the
+new account. There is no way to leave the domain.
+
+The joined account's names get their keys from the join, so a keytab must not hold keys
+for them. Importing such a keytab is refused, and so is a join of an account whose names
+the stored keytab already holds (`409`). Every other service name, such as `nfs/…` or a
+name on a separate service account, still needs an imported keytab.
+
+### Rejoin and takeover
+
+Joining an installation that is already joined is refused with `409 joined` unless you
+pass `--takeover`. A takeover is also how you recover: after an administrator reset the
+account's password (offline join with the new password), or after a domain controller
+stopped answering for an hour. A join is refused with `409 operation_running` while
+another join or a password change runs.
+
+### Password rotation
+
+The computer account's password changes by itself every **seven days**, well inside
+Windows' 30-day limit. A failed change is retried after an hour. To change it now:
+
+```bash
+dfsctl domain rotate-machine-password --wait
+```
+
+A rotation is refused while a join runs, and fails when the installation is not
+joined. Tickets issued under the previous password keep working for ten hours plus the clock
+skew. Two health conditions, shown by `dfsctl status`, report trouble:
+
+| Condition | Meaning | What to do |
+| --- | --- | --- |
+| `machine_password_rotation_failed` | the last password change failed | read the operation's error (`dfsctl operation list`), which names the controller or the cause; fix it and rotate again. A join with `--takeover` is the fallback |
+| `machine_account_unhealthy` | this node cannot reach a domain controller over the secure channel | check the ports above, the account in the directory, and the clock |
 
 ---
 
 ## Part D: Kubernetes operator (DittoServer CR)
 
-The dittofs-operator renders the `ldap:` and `kerberos:` config blocks and mounts
-the keytab/krb5.conf Secrets into the pod. Configure them under
-`spec.identity`. (Source: `k8s/dittofs-operator/api/v1alpha1/dittoserver_types.go`,
-`k8s/dittofs-operator/docs/CRD_REFERENCE.md`.)
-
-```yaml
-apiVersion: dittofs.dittofs.com/v1alpha1
-kind: DittoServer
-metadata:
-  name: dittofs
-spec:
-  identity:
-    ldap:
-      enabled: true
-      url: ldaps://dc.example.com:636
-      baseDN: "DC=example,DC=com"
-      bindDN: "CN=svc-dittofs,CN=Users,DC=example,DC=com"
-      bindPasswordSecretRef:        # injected as DITTOFS_LDAP_BIND_PASSWORD; never in the ConfigMap
-        name: dittofs-ldap-secret
-        key: bind-password
-      idmap: rfc2307                 # rfc2307 | rid
-      nestedGroups: true
-      userAttr: sAMAccountName
-      # caCertFile: /path/in/pod     # mount your own Secret/ConfigMap; operator does not manage this volume
-    kerberos:
-      enabled: true
-      servicePrincipal: nfs/server.example.com@EXAMPLE.COM
-      realm: EXAMPLE.COM
-      netbiosDomain: EXAMPLE         # set explicitly for domain-aware SMB; empty => WORKGROUP
-      dnsDomain: example.com
-      keytabSecretRef:               # mounted read-only at /kerberos/dittofs.keytab
-        name: dittofs-keytab
-        key: dittofs.keytab
-      krb5ConfSecretRef:             # optional; mounted at /kerberos-krb5/krb5.conf
-        name: dittofs-krb5-conf
-        key: krb5.conf
-```
-
-Operator behavior to know:
-
-- The **keytab is supplied via a Secret** (`keytabSecretRef`), mounted **read-only**
-  at `/kerberos/dittofs.keytab`; the operator points `kerberos.keytab_path` at the
-  mount. **Never put a keytab in a ConfigMap** — it is secret key material.
-  Rotating the Secret rolls the pod so the new keys take effect.
-- The optional `krb5ConfSecretRef` is mounted at `/kerberos-krb5/krb5.conf` and
-  wins over `krb5Conf` (an in-pod path). When neither is set, the server default
-  `/etc/krb5.conf` (typically baked into the image) is used.
-- The LDAP **bind password is injected as `DITTOFS_LDAP_BIND_PASSWORD`** from
-  `bindPasswordSecretRef` and is never written to the ConfigMap.
-- `kerberos.enabled: false` (or omitting the block) renders no `kerberos:` block —
-  the server stays AUTH_UNIX/standalone-SMB only.
+The Kubernetes operator does not run this release: it writes the previous release's
+config file, which this release refuses. Until it is rebuilt, set up the directory and
+the keytab through the management API as in Parts B and C. Never put a keytab in a
+ConfigMap: it is secret key material.
 
 ---
 
 ## Part E: Verify
 
-The proven end-to-end fixture is the `ad_dc` integration suite, which provisions
-the realm + alice/bob + nested groups and asserts identity unification:
+Once SMB is served, check from a Linux client that a domain user signs in with Kerberos
+and that files show the same owner over both protocols:
 
 ```bash
-go test -tags=ad_dc -v -timeout 20m ./test/integration/ad-dc/
-```
-
-It verifies, among other things:
-
-- **RFC2307 idmap:** `alice@DITTOFS.AD` resolves to `uid 10001`, `gid 10000`
-  (the `uidNumber`/`gidNumber` stamped by the fixture).
-- **Nested groups:** alice ∈ `devs`, and `devs` ⊂ `engineering`, so both groups'
-  GIDs resolve for alice.
-- **RID fallback:** bob has no RFC2307 attrs (the `idmap_rid` path).
-- **Kerberos accept:** alice's `cifs/` service ticket is accepted via SMB SPNEGO
-  using the exported combined keytab.
-
-### Manual verification (Linux client)
-
-Obtain a ticket, then exercise both protocols. The Kerberos client config must
-point at the AD realm/KDC (the AD-DC's generated `krb5.conf`, e.g. via
-`KRB5_CONFIG`).
-
-The exact mount forms below are the ones the e2e suites use (`test/e2e/`).
-`KRB5_CONFIG` / `KRB5CCNAME` must point at the AD realm config and the ticket
-cache. Substitute your server host, share name, and ports (SMB defaults to 445;
-the DittoFS NFS default is 12049, not 2049).
-
-```bash
-# 1. Get a TGT for the domain user
-kinit alice@DITTOFS.AD
-klist                       # should show a TGT for DITTOFS.AD
+# 1. Get a ticket for the domain user
+kinit alice@EXAMPLE.COM
+klist                        # shows a ticket for EXAMPLE.COM
 
 # 2. Mount over SMB with Kerberos
-mount -t cifs //server/share /mnt/smb -o sec=krb5,port=12445,vers=2.1,cache=none
+sudo mount -t cifs //files.example.com/archive /mnt/smb -o sec=krb5,port=12445,vers=3.0
 
-# 3. Mount over NFSv4 with Kerberos.
-#    Use vers=4.0 explicitly (the e2e suite mounts with vers=4.0, NOT vers=4):
-mount -t nfs //server/share /mnt/nfs -o vers=4.0,port=12049,sec=krb5,actimeo=0
+# 3. Check the owner
+ls -ln /mnt/smb              # alice's files show uid 10001
 ```
 
-For an ad-hoc SMB check once a ticket is present, `smbclient` can force the
-Kerberos path:
+The client's `/etc/krb5.conf` must name the realm's KDC, and the name you mount must
+match a service name in the keytab or the join (`cifs/files.example.com`). `smbclient`
+can test the sign-in without mounting:
 
 ```bash
-smbclient //server/share -I <server-ip> --use-kerberos=required
+smbclient //files.example.com/archive --use-kerberos=required
 ```
 
-Confirm that files created over one protocol show the **same owner UID/GID**
-when read over the other — that is the cross-protocol identity unification goal.
-Expected: alice resolves to `uid 10001` on both.
-
-### NFS `sec=krb5` from a Linux client — verified procedure
-
-An NFSv4.0 `sec=krb5` mount has client-side prerequisites beyond `kinit` that are
-easy to miss. The following sequence is **verified end-to-end** against the demo
-(an external Linux host mounting the DittoFS NFS adapter as the AD user `alice`,
-files resolving to `uid 10001 / gid 10000`):
-
-1. **Kernel modules** (the client node, not a container): `rpcsec_gss_krb5` and
-   `auth_rpcgss` must load (`modprobe rpcsec_gss_krb5`). A pod whose node lacks
-   them — and which cannot `modprobe` — cannot do `sec=krb5` even though the
-   server is correct.
-2. **`krb5.conf`** mapping the realm to the KDC (use the AD-DC's generated
-   `krb5.conf`, or point `kdc =` straight at the DC):
-   ```ini
-   [libdefaults]
-     default_realm = DITTOFS.AD
-   [realms]
-   DITTOFS.AD = { kdc = <dc-host-or-ip> }
-   [domain_realm]
-     .dittofs.ad = DITTOFS.AD
-   ```
-3. **The server SPN must resolve to the NFS endpoint.** The client requests a
-   ticket for `nfs/<the-name-you-mount>@REALM`; that name must match the keytab
-   SPN (`nfs/dittofs.dittofs.ad`). Add a hosts entry if needed:
-   `echo "<nfs-endpoint-ip> dittofs.dittofs.ad" >> /etc/hosts`, then mount
-   `dittofs.dittofs.ad:/<share>`.
-4. **A machine credential at `/etc/krb5.keytab`.** NFSv4 establishes its client
-   lease with a *machine* principal, so `rpc.gssd` needs a host keytab — and the
-   stock `rpc-gssd.service` is **gated on `/etc/krb5.keytab` existing**
-   (`ConditionPathExists`), so without it the service silently never starts.
-   Create a machine account in AD and export its `host/` key:
-   ```bash
-   samba-tool computer create <client-shortname>
-   samba-tool domain exportkeytab /etc/krb5.keytab \
-       --principal=host/<client-shortname>@DITTOFS.AD
-   ```
-5. **A running `rpc.gssd`.** Start it cleanly (`systemctl restart rpc-gssd`, now
-   that the keytab exists). If `rpc.gssd` is not actually serving the upcall, the
-   client silently falls back to **AUTH_SYS `uid=0`**, which a root-squashing
-   export refuses — surfacing as the misleading `mount.nfs4: access denied by
-   server`. If you see that, check `pgrep -a rpc.gssd` and the daemon's `-vvv`
-   log for `do_downcall ... acceptor=nfs@<server>` (success).
-6. **`kinit` + mount:**
-   ```bash
-   kinit alice@DITTOFS.AD
-   mount -t nfs4 -o vers=4.0,sec=krb5,port=12049 dittofs.dittofs.ad:/<share> /mnt/nfs
-   ls -lan /mnt/nfs          # alice's files show uid 10001 / gid 10000
-   ```
-
-Server-side confirmation (`dfs` debug log): `NFSv4 using GSS identity uid=10001
-gid=10000 principal=alice realm=DITTOFS.AD`.
-
-### NTLM fallback (SMB)
-
-When a client cannot use Kerberos, SMB falls back to NTLM. With
-`netbios_domain` set, the server advertises the AD domain in the NTLM challenge
-so domain users authenticate against the correct domain (see Part C / docs/SMB.md).
-
-## Part F: Windows client — domain-join (Kerberos) [dev]
-
-A real Windows client gets the cleanest experience by **joining the domain** and
-authenticating to DittoFS over **Kerberos** — the server side is fully proven
-(SMB SPNEGO/PAC + AES keytab, Part C). Connecting by a name with no Kerberos SPN
-(an IP, or the Explorer → Network discovery name) falls back to **NTLM**, which
-is now supported for AD domain users via **NETLOGON pass-through** — configure a
-machine account (`kerberos.machine_account`, see
-[configuration.md](configuration.md#12-kerberos-configuration) and
-[windows-ad-setup.md](windows-ad-setup.md)). For Kerberos acceptance testing,
-domain-join is still the path with no extra server dependency.
-
-The in-cluster AD-DC is not publicly reachable by default. To let an external
-test VM join, expose the directory roles via the **scoped** dev LoadBalancer
-`k8s/samba-ad-dc/samba-ad-dc-lb.yaml` (Kerberos 88, kpasswd 464, LDAP 389/636,
-DNS 53):
-
-The manifest ships with a closed TEST-NET placeholder in
-`loadBalancerSourceRanges`, so applying it never exposes the AD-DC to the
-internet — the LB routes to nobody until you patch in the client `/32`:
-
-```bash
-# 1. Apply (still closed — placeholder range routes nowhere), then open ONLY
-#    to the Windows VM's public IP.
-kubectl apply -f k8s/samba-ad-dc/samba-ad-dc-lb.yaml
-kubectl -n dittofs patch svc samba-ad-lb --type=merge \
-  -p '{"spec":{"loadBalancerSourceRanges":["<WINDOWS_VM_IP>/32"]}}'
-kubectl -n dittofs get svc samba-ad-lb -o wide      # confirm range + note EXTERNAL-IP
-```
-
-On the Windows VM (PowerShell, Administrator):
+A Windows client joined to the domain connects with its logon ticket:
 
 ```powershell
-# Point DNS at the AD-DC LB so DITTOFS.AD SRV records resolve.
-# Discover your NIC first — the alias is not always "Ethernet".
-$adlb = "<samba-ad-lb EXTERNAL-IP>"
-$nic  = (Get-NetAdapter -Physical | Where-Object Status -eq 'Up')[0].ifIndex
-Set-DnsClientServerAddress -InterfaceIndex $nic -ServerAddresses $adlb
-
-# Join the realm and reboot.
-$cred = Get-Credential DITTOFS\Administrator        # Passw0rd!2024 in the dev fixture
-Add-Computer -DomainName dittofs.ad -Credential $cred -Restart
+net use \\files.example.com\archive
+icacls \\files.example.com\archive\report.txt
 ```
 
-After reboot, log in as `DITTOFS\alice` (dev password `TestPassword01!`). Map the
-DittoFS share and open a file's **Properties > Security** tab. **Prerequisite:**
-the LDAP/AD idmap resolver must be configured (Part B) — with it, owner/ACE SIDs
-resolve to `DITTOFS\<name>` via LSARPC (LsarLookupSids2/3; #1291 + #1341). If the
-directory resolver is unconfigured or unreachable, the server falls back to raw
-`S-1-5-21-…` SIDs (or `unix_user:*` / `unix_group:*`), so confirm the idmap is up
-before reading the GUI as an acceptance signal:
+The Security tab shows owners and ACL entries as `EXAMPLE\name` while the directory is
+reachable. If it is not configured or not reachable, they show as raw `S-1-5-21-…` SIDs.
 
-```powershell
-net use \\<dittofs-smb-ip>\<share>           # Kerberos SSO as the logged-in domain user
-icacls \\<dittofs-smb-ip>\<share>\<file>     # CLI equivalent of the Security tab
-```
+Connecting by IP address, or by a name with no service name registered, falls back to
+NTLM, which needs a domain join for domain users.
 
-> **Tear down after capture:** `kubectl -n dittofs delete svc samba-ad-lb` — the
-> LB publishes a KDC + LDAP directory and must not be left exposed. The AD-DC is
-> dev-only (see Known limitations).
+NFS with `sec=krb5` cannot be verified on this version, as NFS Kerberos is not served.
+The client-side steps it will need are in [NFS](nfs.md).
 
 ---
 
 ## Known limitations
 
-- **AD-DC is dev-only.** The Samba AD-DC in `test/integration/ad-dc/` and
-  `k8s/samba-ad-dc/` is an identity authority for testing — not a file server and
-  not operator-managed. In production, point DittoFS at your existing enterprise
-  AD; install no Samba.
-- **NFS krb5 over the wire needs kernel support.** A Linux NFS client mounting
-  with `sec=krb5` requires the node kernel modules `rpcsec_gss_krb5` /
-  `auth_rpcgss`. An in-cluster k3s node that lacks these modules cannot complete
-  an `sec=krb5` NFS mount even though the server side is correct.
-- **SID → name resolution** is implemented over the LSARPC pipe: `LsarOpenPolicy`
-  (opnum 6/44), `LsarLookupSids` (15), and `LsarLookupSids2/3` (57/76, the EX
-  forms Windows Explorer/`rpcclient` use) translate machine-domain and AD
-  foreign-domain SIDs to `DITTOFS\<name>` (#1291, #1341, #1342). This depends on
-  the directory-backed idmap resolver (Part B) being configured and reachable;
-  when it is not, the server falls back to raw `S-1-5-21-…` SIDs (or
-  `unix_user:*` / `unix_group:*`). See [docs/ACLS.md](access-control.md).
-- **RC4-only keytabs are rejected by Windows 11 (#1318).** Ensure the keytab
-  carries AES256/AES128 keys for the SPNs (Part A).
-- **Machine account (NETLOGON) for NTLM pass-through:** the keytab covers
-  Kerberos; for AD domain users authenticating over **NTLM** (Explorer
-  double-click / connect by IP, no SPN) configure `kerberos.machine_account`.
-  Both **offline** (pre-created computer account + supplied secret) and **online
-  `net ads join`** (DittoFS creates the computer object over LDAPS and rotates
-  the password) are supported. See
-  [configuration.md](configuration.md#12-kerberos-configuration) and
-  [windows-ad-setup.md](windows-ad-setup.md).
+- **NFS Kerberos is not served on this version**; Kerberos works for SMB only.
+- **The test domain is for testing.** The Samba AD DC under `test/integration/ad-dc/`
+  and `k8s/samba-ad-dc/` is not a file server and is not managed by the operator.
+- **AES only.** DittoFS refuses DES and RC4 keys. Windows 11 refuses RC4
+  keytabs too, so give the service account AES keys (`0x18`).
+- **No leave operation.** A joined installation stays joined; `--takeover` moves it to
+  another account.
+- **Names need the directory.** Showing SIDs as `DOMAIN\name` depends on the directory
+  being connected and reachable.

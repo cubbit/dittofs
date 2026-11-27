@@ -11,7 +11,7 @@
 
 name: dittofs
 
-x-admin-password: &admin-password ${DITTOFS_ADMIN_INITIAL_PASSWORD:-dittofs-compose-dev-password}
+x-admin-password: &admin-password ${COMPOSE_ADMIN_PASSWORD:-dittofs-compose-dev-password}
 
 services:
   dittofs:
@@ -26,20 +26,25 @@ services:
       # The NFS and SMB adapters are enabled on these ports on first start.
       - "127.0.0.1:12049:12049"
       - "127.0.0.1:12445:12445"
-    environment:
-      DITTOFS_CONTROLPLANE_SECRET: ${DITTOFS_CONTROLPLANE_SECRET:-dittofs-compose-dev-secret-min-32-chars}
-      DITTOFS_ADMIN_INITIAL_PASSWORD: *admin-password
+    # The server reads no admin password from its environment, so this stack
+    # starts no usable server until it runs dfs init, which sets the first one.
     volumes:
       - ./docker/config.yaml:/config/config.yaml:ro
+      # The image sets XDG_STATE_HOME to this directory. With docker/config.yaml
+      # (log to stdout, store on dittofs-metadata) only the runtime directory
+      # (dittofs/run/dfs.sock) lands here.
       - dittofs-state:/data/state
       - dittofs-metadata:/data/metadata
       # The journal holds the only copy of every byte not yet in the block
       # store, so it never lives in the container's writable layer.
       - dittofs-journal:/data/blocks
     # The image's own healthcheck polls every 30s, which makes the bootstrap
-    # wait far longer than the server takes to come up.
+    # wait far longer than the server takes to come up. It probes readiness
+    # rather than the image's liveness, since the bootstrap provisions through
+    # the API, which refuses calls while the node is starting. The API is
+    # served over TLS, under a certificate naming the host, not localhost.
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/ready"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "--no-check-certificate", "https://localhost:8080/health/ready"]
       interval: 2s
       timeout: 3s
       start_period: 5s
@@ -52,7 +57,7 @@ services:
     restart: "no"
     environment:
       PROFILE: ${COMPOSE_PROFILES:-default}
-      DITTOFS_ADMIN_INITIAL_PASSWORD: *admin-password
+      COMPOSE_ADMIN_PASSWORD: *admin-password
     volumes:
       - ./docker/bootstrap.sh:/bootstrap.sh:ro
     entrypoint: ["sh", "/bootstrap.sh"]

@@ -100,6 +100,16 @@ check "a scenario run's messages are the bodies they always were" \
 {"channel":"C0TEST","text":":warning: *a.sh passed but was slow*","attachments":[{"color":"#ECB22E","text":"31 s (usually 3 s) line 12: x","mrkdwn_in":["text"]}]}
 {"channel":"C0TEST","text":":white_check_mark: *a.sh passes again*","attachments":[{"color":"#2EB67D","text":"host · commit `abc`","mrkdwn_in":["text"]}],"thread_ts":"2.000000","reply_broadcast":true}'
 
+# A one-line text is its title alone, with no attachment to repeat it.
+(
+    # shellcheck source-path=SCRIPTDIR source=slack.sh
+    . "$HERE/lib/slack.sh"
+    slack ":x: Nightly performance: scoring failed" 3.000000 >/dev/null
+)
+take
+check "a one-line message posts its text once" \
+    '{"channel":"C0TEST","text":":x: Nightly performance: scoring failed","thread_ts":"3.000000"}'
+
 # The day's thread: its parent is posted with the day's first result and reused all day; the next
 # day gets a parent of its own.
 # shellcheck source-path=SCRIPTDIR source=slack.sh
@@ -164,9 +174,9 @@ check "a quiet night with no alert open stays in the thread" \
 PARENT="$(next_ts)"
 night 2026-11-24 same
 take brief
-check "flags or failures already seen, back after a clear night, show in the channel too" \
+check "flags or failures already seen, back after a clear night, show in the channel too, marked" \
     ":calendar: *Nightly performance, 2026-11-24* | top | not
-2026-11-24 summary | $PARENT | broadcast"
+:warning: 2026-11-24 summary | $PARENT | broadcast"
 
 # A day's parent that fails to post: the night's reply goes at the top, the day is not kept, and the
 # next post that day tries the parent again.
@@ -187,6 +197,11 @@ if (unset SLACK_DIR && night 2026-11-26 new); then
     check "without SLACK_DIR a night posts nothing" ""
 else
     fail "without SLACK_DIR a night posts nothing: the post failed"
+fi
+if test -e "$TMP/perf/alert-open"; then
+    fail "a night that posts nothing leaves the alert state: alert-open was created"
+else
+    ok "a night that posts nothing leaves the alert state"
 fi
 
 test "$FAILURES" -eq 0 || { echo "$FAILURES failed"; exit 1; }

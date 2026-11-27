@@ -1,0 +1,424 @@
+package journaltest
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/cubbit/dittofs/pkg/journal"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest/kit"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest/model"
+)
+
+// ModelSegmentCap is the segment size of the journals ModelTargets opens:
+// small enough that a sequence of a few hundred short writes rolls segments
+// and leaves repack sealed segments to work on, and large enough to hold the
+// largest record a sequence appends, a write of 1 KiB, with the segment's
+// header and footer.
+const ModelSegmentCap = 2 << 10
+
+// Reach is what the sequences a ModelTargets or a DataPathTargets journal
+// opened reached of the journal, which the journal chooses and the test can
+// only observe.
+type Reach struct {
+	// Streams is the most append streams the records of any one sequence
+	// were on when it ended.
+	Streams int
+	// Files is the distinct files the sequences' calls named.
+	Files int
+	// Shares is the distinct shares the sequences' calls went through.
+	Shares int
+	// Sealed is the most sealed segments one journal had, before a repack or
+	// when its sequence ended.
+	Sealed int
+	// Freed is the bytes every repack freed, over all the sequences.
+	Freed int64
+	// Crashes is the storage losses the sequences ran: the crash steps that
+	// reached the journal, not the ones that found uncertain records and
+	// did nothing.
+	Crashes int
+}
+
+// recorder counts what the calls through the handles reached — the distinct
+// files named, the distinct shares served — into Reach. The handles' wrapper
+// consults it on each call; nothing but the counts depends on it.
+type recorder struct {
+	files  map[journal.FileID]bool
+	shares map[int]bool
+	reach  *Reach
+}
+
+// saw counts one call naming file id through share i.
+func (r *recorder) saw(i int, id journal.FileID) {
+	if !r.shares[i] {
+		r.shares[i] = true
+		r.reach.Shares++
+	}
+	if !r.files[id] {
+		r.files[id] = true
+		r.reach.Files++
+	}
+}
+
+// ModelTargets returns open, the function that opens a fresh fixture
+// journal, with segments of ModelSegmentCap bytes and shares 0 and 1
+// attached, for each sequence the model-based test runs, shrinking attempts
+// included. A failure of the fixture's ends that sequence with an error
+// rather than the test, and what the sequence opened is closed and removed
+// when it ends. The fixtures are unwatched: the test watches itself once,
+// before calling it.
+//
+// It also returns reached, which reports what the sequences that ended
+// reached of the journal, the distinct files and shares their calls named
+// included.
+func ModelTargets(t testing.TB) (open func() (model.Target, func(), error), reached func() Reach) {
+	return targets(t, true)
+}
+
+// DataPathTargets returns open, which opens a fresh fixture journal exactly
+// as ModelTargets does — segments of ModelSegmentCap bytes, shares 0 and 1
+// attached — except its views hide the journal's index, so Compare reads only
+// the answers the journal's handles give today. The sequences over it drive
+// no offload, so they run through model.CheckDataPath, whose fills carry
+// their own steps' bytes. It also returns reached, which reports what the
+// sequences that ended reached of the journal.
+func DataPathTargets(t testing.TB) (open func() (model.Target, func(), error), reached func() Reach) {
+	return targets(t, false)
+}
+
+// targets is what ModelTargets and DataPathTargets return: open opens, for
+// each sequence the model-based test runs, a fresh journal with shares 0 and
+// 1 attached, indexed telling whether its views carry the journal's index.
+func targets(t testing.TB, indexed bool) (open func() (model.Target, func(), error), reached func() Reach) {
+	parent := t.TempDir()
+	var reach Reach
+	rec := &recorder{files: map[journal.FileID]bool{}, shares: map[int]bool{}, reach: &reach}
+	reached = func() Reach { return reach }
+	open = func() (model.Target, func(), error) {
+		tb := &attemptTB{TB: t, parent: parent}
+		var tgt *fixtureTarget
+		err := tb.guard(func() {
+			f := newFixture(tb, nil, false, ModelSegmentCap, nil)
+			f.Share(0)
+			f.Share(1)
+			tgt = &fixtureTarget{f: f, tb: tb, reach: &reach, rec: rec, indexed: indexed}
+		})
+		if err != nil {
+			tb.finish()
+			return nil, nil, err
+		}
+		done := func() {
+			reach.Streams = max(reach.Streams, tgt.streams())
+			tgt.countSealed()
+			tb.finish()
+		}
+		return tgt, done, nil
+	}
+	return open, reached
+}
+
+// attemptFailed is the panic an attemptTB raises for a failure, so that one
+// sequence's fixture failing ends that sequence rather than the test. It is
+// also the error guard returns: its message, wrapping every error the failure
+// was reported with, so errors.Is sees the journal's error through it.
+type attemptFailed struct {
+	msg  string
+	errs []error
+}
+
+func (e attemptFailed) Error() string   { return e.msg }
+func (e attemptFailed) Unwrap() []error { return e.errs }
+
+func failure(msg string, args []any) attemptFailed {
+	f := attemptFailed{msg: msg}
+	for _, a := range args {
+		if err, ok := a.(error); ok {
+			f.errs = append(f.errs, err)
+		}
+	}
+	return f
+}
+
+// attemptTB is the testing.TB of one sequence's fixture. A failure the
+// fixture reports panics with attemptFailed, which guard turns into an error;
+// cleanups run when the sequence ends, not when the test does.
+type attemptTB struct {
+	testing.TB
+	parent   string // where the sequence's directories are made
+	cleanups []func()
+}
+
+func (a *attemptTB) Helper()          {}
+func (a *attemptTB) Cleanup(f func()) { a.cleanups = append(a.cleanups, f) }
+
+// TempDir returns a new directory that is removed when the sequence ends, so
+// a test running many sequences holds the storage of one at a time.
+func (a *attemptTB) TempDir() string {
+	dir, err := os.MkdirTemp(a.parent, "sequence")
+	if err != nil {
+		a.Fatalf("fixture: temporary directory: %v", err)
+	}
+	a.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
+func (a *attemptTB) FailNow()          { panic(attemptFailed{msg: "FailNow"}) }
+func (a *attemptTB) Fatal(args ...any) { panic(failure(fmt.Sprint(args...), args)) }
+func (a *attemptTB) Error(args ...any) { panic(failure(fmt.Sprint(args...), args)) }
+func (a *attemptTB) Fatalf(format string, args ...any) {
+	panic(failure(fmt.Sprintf(format, args...), args))
+}
+func (a *attemptTB) Errorf(format string, args ...any) {
+	panic(failure(fmt.Sprintf(format, args...), args))
+}
+
+// guard runs fn and returns the failure it reported, if any.
+func (a *attemptTB) guard(fn func()) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			failed, ok := r.(attemptFailed)
+			if !ok {
+				panic(r)
+			}
+			err = failed
+		}
+	}()
+	fn()
+	return nil
+}
+
+// finish runs the sequence's cleanups, last first, as the testing package
+// does. A failure of one is reported to the test, since what a closing
+// journal reports is a check of its own.
+func (a *attemptTB) finish() {
+	for _, f := range slices.Backward(a.cleanups) {
+		if err := a.guard(f); err != nil {
+			a.TB.Errorf("%v", err)
+		}
+	}
+	a.cleanups = nil
+}
+
+// fixtureTarget runs model-based sequences against a fixture journal.
+type fixtureTarget struct {
+	f     *Fixture
+	tb    *attemptTB
+	reach *Reach
+	rec   *recorder
+	// indexed is whether the target's views carry the journal's index.
+	indexed bool
+}
+
+func (x *fixtureTarget) Share(i int) model.Handle { return spareRetry{x.f.Share(i), x.f, i, x.rec} }
+
+func (x *fixtureTarget) View(i int) model.View {
+	v := model.HandleView{Handle: x.f.Share(i), Journal: x.f.J}
+	if !x.indexed {
+		return noIndex{v}
+	}
+	return v
+}
+
+func (x *fixtureTarget) Repack(ctx context.Context) error {
+	x.countSealed()
+	freed, err := x.f.J.Repack(ctx, 2*ModelSegmentCap, journal.RepackScope{})
+	x.reach.Freed += freed
+	return err
+}
+
+// Forget closes share i's handle, forgets its tag and leaves the share
+// detached, so the next Share(i) attaches it again.
+func (x *fixtureTarget) Forget(ctx context.Context, i int) error {
+	if err := x.f.Detach(i); err != nil {
+		return err
+	}
+	return x.f.J.Forget(ctx, Tag(i))
+}
+
+// countSealed records how many sealed segments the journal has now.
+func (x *fixtureTarget) countSealed() {
+	if x.f.J == nil {
+		return
+	}
+	n := 0
+	for _, s := range x.f.J.Inspect().Segments() {
+		if s.Sealed {
+			n++
+		}
+	}
+	x.reach.Sealed = max(x.reach.Sealed, n)
+}
+
+// Crash and Reopen wait for the pool's spares once the journal is open
+// again: an open returns while its pool is still filling, and a call that
+// needs a spare or the headroom is refused at once until one lands, an answer
+// the model has no rule for.
+func (x *fixtureTarget) Crash(kind model.CrashKind, arg uint64) error {
+	var opts []kit.CrashOption
+	switch kind {
+	case model.CrashTorn:
+		opts = append(opts, kit.Torn(int(arg)))
+	case model.CrashReordered:
+		opts = append(opts, kit.Reordered(arg))
+	}
+	x.reach.Crashes++
+	return reopened(x.tb.guard(func() {
+		err := x.f.TryCrash(opts...)
+		if errors.Is(err, kit.ErrCrashRefused) {
+			// decision: a torn or reordered crash the seam refuses for want of
+			// an unsynced write to pick is the plain crash, which loses what
+			// no sync covered and so loses nothing here: the sequence goes on
+			// from the same state the refused crash would have left.
+			err = x.f.TryCrash()
+		}
+		if err != nil {
+			x.tb.Fatalf("fixture: crash: %v", err)
+		}
+		// The sequences are handed the journal as the fixture's own open
+		// hands a test one, its spare pool at its target: a reopen adopts
+		// the spares the disk holds and remakes the ones it does not, and a
+		// sequence run before the remake lands draws on the headroom or the
+		// reserve and is refused a segment the pool is still making — a
+		// capacity state the model has no rule for. The wait is the
+		// target's, not a rule the model owes the journal: no operation the
+		// sequences drive names it.
+		x.f.WaitSpares()
+	}))
+}
+
+func (x *fixtureTarget) Reopen() error {
+	return reopened(x.tb.guard(func() {
+		x.f.Reopen()
+		// As for a crash: the pool settles before the sequence runs on.
+		x.f.WaitSpares()
+	}))
+}
+
+// journalFailures are the prefixes of the fixture's failures, during a crash
+// or a reopen, that are the journal's: closing it or a handle, opening it
+// again, and attaching its shares again.
+var journalFailures = []string{"fixture: close", "fixture: open:", "fixture: attach share"}
+
+// reopened returns err, the failure of a crash or a reopen, as a
+// model.ReopenError when the journal failed to close or to open again.
+//
+// decision: the journal's failures are told apart by the prefix of the
+// message the fixture reports them with, since it reports every failure
+// through the test. Anything else, such as the seam failing to crash, stays
+// the target's own error. Give the fixture a crash and a reopen that return
+// their errors if a second caller needs to tell them apart.
+func reopened(err error) error {
+	if err != nil && slices.ContainsFunc(journalFailures, func(p string) bool { return strings.HasPrefix(err.Error(), p) }) {
+		return model.ReopenError{Err: err}
+	}
+	return err
+}
+
+func (x *fixtureTarget) Floor() journal.Version { return x.f.Floor() }
+
+// streams returns how many append streams hold the records the journal's
+// index points at now: none when no journal is open, as after a reopen that
+// failed.
+func (x *fixtureTarget) streams() int {
+	if x.f.J == nil {
+		return 0
+	}
+	in := x.f.J.Inspect()
+	of := map[journal.SegmentID]uint32{}
+	for _, s := range in.Segments() {
+		of[s.ID] = s.Stream
+	}
+	used := map[uint32]bool{}
+	for _, entries := range in.All() {
+		for _, e := range entries {
+			if e.Kind != journal.EntryMarker {
+				if stream, ok := of[e.Location.Segment]; ok {
+					used[stream] = true
+				}
+			}
+		}
+	}
+	return len(used)
+}
+
+// noIndex is a view seen through model.View alone: embedding the interface
+// hides the index HandleView also carries, so Compare skips the index's
+// answers rather than reaching a journal whose inspection does not answer.
+type noIndex struct{ model.View }
+
+// spareRetry retries every appending call refused for want of a spare
+// segment, as its caller would, so that refusal never reaches the model. It
+// also counts each call it carries in rec — the file it named, through which
+// share — passing the call through unchanged.
+type spareRetry struct {
+	*journal.Handle
+	f     *Fixture
+	share int
+	rec   *recorder
+}
+
+// saw counts the calls naming id, through the handle's share, before they
+// pass through.
+func (h spareRetry) saw(id ...journal.FileID) {
+	for _, id := range id {
+		h.rec.saw(h.share, id)
+	}
+}
+
+func (h spareRetry) WriteAt(ctx context.Context, id journal.FileID, off int64, p []byte, mtime int64) (v journal.Version, err error) {
+	h.saw(id)
+	err = h.f.RetrySpare(func() error { v, err = h.Handle.WriteAt(ctx, id, off, p, mtime); return err })
+	return v, err
+}
+
+func (h spareRetry) Sync(ctx context.Context, ids ...journal.FileID) ([]journal.SyncMark, error) {
+	h.saw(ids...)
+	return h.Handle.Sync(ctx, ids...)
+}
+
+func (h spareRetry) ReadAt(ctx context.Context, id journal.FileID, off int64, p []byte) (int, []journal.Extent, []journal.Held, journal.Version, error) {
+	h.saw(id)
+	return h.Handle.ReadAt(ctx, id, off, p)
+}
+
+func (h spareRetry) Fill(ctx context.Context, id journal.FileID, off int64, p []byte, asOf, v journal.Version) error {
+	h.saw(id)
+	return h.f.RetrySpare(func() error { return h.Handle.Fill(ctx, id, off, p, asOf, v) })
+}
+
+func (h spareRetry) Offload(ctx context.Context, id journal.FileID, through journal.Version, limit, widen int64, fn func(ctx context.Context, o journal.Offer, report func(offloaded []journal.Extent) error) error) error {
+	h.saw(id)
+	return h.Handle.Offload(ctx, id, through, limit, widen, fn)
+}
+
+func (h spareRetry) Release(ctx context.Context, id journal.FileID, extents []journal.Extent) error {
+	h.saw(id)
+	return h.f.RetrySpare(func() error { return h.Handle.Release(ctx, id, extents) })
+}
+
+func (h spareRetry) Truncate(ctx context.Context, id journal.FileID, size int64) (v journal.Version, err error) {
+	h.saw(id)
+	err = h.f.RetrySpare(func() error { v, err = h.Handle.Truncate(ctx, id, size); return err })
+	return v, err
+}
+
+func (h spareRetry) Deallocate(ctx context.Context, id journal.FileID, e journal.Extent) (v journal.Version, err error) {
+	h.saw(id)
+	err = h.f.RetrySpare(func() error { v, err = h.Handle.Deallocate(ctx, id, e); return err })
+	return v, err
+}
+
+func (h spareRetry) Delete(ctx context.Context, id journal.FileID) (v journal.Version, err error) {
+	h.saw(id)
+	err = h.f.RetrySpare(func() error { v, err = h.Handle.Delete(ctx, id); return err })
+	return v, err
+}
+
+func (h spareRetry) Settle(id journal.FileID, v journal.Version) {
+	h.saw(id)
+	h.Handle.Settle(id, v)
+}

@@ -15,13 +15,12 @@ dfsctl share snapshot create /test --name s1 -o json | tee /tmp/snap.json
 smbclient //127.0.0.1/test -c 'del a.bin; del b.bin'
 dfsctl store block gc /test --grace-period 0 -o json
 rclone size --json s3:dittofs/test | tee /tmp/after-gc.json
-dfsctl share disable /test
+dfsctl share quiesce test
 dfsctl share snapshot restore /test "$(jq -r .id /tmp/snap.json)" --yes
-dfsctl share enable /test
-dfsctl store block evict --share /test
+dfsctl share resume test
 smbclient //127.0.0.1/test -c 'lcd /tmp/back; get a.bin; get b.bin'
 (cd /tmp/back && sha256sum -c /tmp/ab.sha256) && echo "restore: ok" || echo "restore: FAILED"
-dfsctl share remove /test --force && R=removed || R=refused
+dfsctl share delete test --force --wait && R=removed || R=refused
 echo "share remove with a snapshot: $R"
 
 test "$(jq .bytes /tmp/after-gc.json)" -ge $((16 * 1024 * 1024))

@@ -73,9 +73,10 @@ Then read the specific code. `docs/internals/architecture.md` is the map;
 `refute-root-cause` skill for a stubborn bug.
 
 Respect the invariants in `CLAUDE.md` — protocol handlers stay protocol-only,
-every op carries an `*metadata.AuthContext`, file handles are opaque, block
-stores are per-share, errors are `metadata.ExportError` values. A fix that
-violates one of these will be correct and still get rejected.
+file handles are opaque, block stores are per-share, the store's `*StoreError`
+codes reach adapters only as `pkg/vfs/vfserr` sentinels (`storeErr`,
+`internal/vfs/errors.go`). A fix that violates one of these will be correct and
+still get rejected.
 
 **For protocol questions, go to the source of truth** — guessing at wire
 behaviour is how interop bugs are born:
@@ -238,9 +239,10 @@ go run ./cmd/gendocs      # rewrites docs/guide/cli.md
 Follow `.github/instructions/pr-opening.instructions.md`: target, rebase, push,
 assignee, auto-merge and stacking all live there.
 
-The body's `Closes #<N>` matters here. On `develop`, the default branch, GitHub's
-native auto-close fires on merge and the issue closes itself — do not also close
-it by hand; on any other target it does not, and you close it after the merge. `gh issue close --comment` on an
+The body's `Closes #<N>` matters here. On `feat/storage-v2`, the default branch,
+GitHub's native auto-close fires on merge and the issue closes itself — do not also
+close it by hand; on any other target, `develop` included, it does not, and you
+close it after the merge. `gh issue close --comment` on an
 already-closed issue exits 0 and silently discards the comment, so verification
 notes posted that way are lost; use `gh issue comment` for those.
 `.github/workflows/close-linked-issues.yml` still runs at release time as a

@@ -1,7 +1,7 @@
 # CLAUDE.md — `dfsbench` benchmark harness
 
-Run playbook for the DittoFS-vs-competitors benchmark. The *design* is in
-`.planning/2026-07-08-bench-harness-consolidation.md` (#1602); this file is the
+Run playbook for the DittoFS-vs-competitors benchmark. The *design* was
+`7eeec0da5^:.planning/2026-07-08-bench-harness-consolidation.md` (#1602, since deleted); this file is the
 "how do I actually run it and read the result" that isn't in the code.
 
 Harness = `cmd/bench` (binary `dfsbench`), library here in `internal/dfsbench/`.

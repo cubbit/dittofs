@@ -1,1177 +1,343 @@
 package commands
 
 import (
+	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
-	"net/http"
+	"log/slog"
 	"os"
 	"os/signal"
-	"slices"
-	"strings"
+	"path/filepath"
 	"syscall"
-	"time"
 
-	"github.com/cubbit/dittofs/internal/auth/netlogon"
-	"github.com/cubbit/dittofs/internal/controlplane/api/handlers"
-	"github.com/cubbit/dittofs/internal/logger"
-	"github.com/cubbit/dittofs/internal/sysinfo"
-	"github.com/cubbit/dittofs/pkg/adapter/nfs"
-	"github.com/cubbit/dittofs/pkg/adapter/smb"
-	"github.com/cubbit/dittofs/pkg/auth/kerberos"
-	"github.com/cubbit/dittofs/pkg/block"
-	"github.com/cubbit/dittofs/pkg/block/journal"
-	"github.com/cubbit/dittofs/pkg/config"
-	"github.com/cubbit/dittofs/pkg/controlplane/api"
-	"github.com/cubbit/dittofs/pkg/controlplane/models"
-	"github.com/cubbit/dittofs/pkg/controlplane/runtime"
-	"github.com/cubbit/dittofs/pkg/controlplane/runtime/shares"
-	"github.com/cubbit/dittofs/pkg/controlplane/store"
-	"github.com/cubbit/dittofs/pkg/identity/ldap"
-	badgerstore "github.com/cubbit/dittofs/pkg/metadata/store/badger"
+	"github.com/cubbit/dittofs/internal/node"
+	"github.com/cubbit/dittofs/pkg/bootstrap"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
 	"github.com/cubbit/dittofs/pkg/metrics"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 )
 
-// isTerminal reports whether the given file descriptor is an interactive
-// terminal. Indirected through a package-level var so tests can drive both
-// branches of emitAdminPassword deterministically.
-var isTerminal = func(fd uintptr) bool {
-	return term.IsTerminal(int(fd))
-}
+func newStartCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "start",
+		Short: "Start the DittoFS server",
+		Long: `Start the DittoFS server in the foreground with the specified configuration.
 
-// EX_CONFIG is the exit code per sysexits(3) — "configuration error".
-// Used by the format-mismatch boot guard when a share's on-disk state was
-// written by a release this build cannot read, in either direction: newer
-// state after a downgrade, or a pre-journal layout awaiting migration.
-// Serving either would return zeros for stored files, so boot stops instead.
-const EX_CONFIG = 78
-
-// storeCloseTimeout bounds the control-plane store's close at shutdown. Long
-// enough for an ordinary query to finish, short enough that a wedged one does
-// not outlast the forced-exit deadline it would otherwise defeat.
-const storeCloseTimeout = 5 * time.Second
-
-// exitFn is the production exit path for the boot guards. It is called only by
-// runStart, after runStartWithExit has returned, so the defers registered inside
-// it (notably the control-plane store close) run before the process exits.
-// Indirected through a package-level var so a test can stub it to capture the
-// exit code deterministically without spawning a subprocess. Production code
-// MUST NOT reassign exitFn — only a test does, and only via a
-// t.Cleanup-restored override.
-var exitFn = os.Exit
-
-// notifySignals registers the shutdown signals and returns the channel they are
-// delivered on, plus a stop function that unregisters them. Indirected so a test
-// can drive the serving path's shutdown branch without sending a real signal to
-// the test process — the branch is otherwise reachable only by signalling the
-// process that runs the assertions.
-var notifySignals = func() (<-chan os.Signal, func()) {
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	return sigChan, func() { signal.Stop(sigChan) }
-}
-
-// serveRuntime runs the runtime's serving loop. Indirected so a test can reach
-// the serving state and return from it on demand, which is the seam #2675 asks
-// for: rt.Serve only returns once the adapters have drained, so the shutdown
-// defer's ordering could not otherwise be exercised from a test without
-// signalling the process running the assertions.
-var serveRuntime = func(ctx context.Context, rt *runtime.Runtime) error {
-	return rt.Serve(ctx)
-}
-
-var (
-	foreground bool
-	pidFile    string
-	logFile    string
-)
-
-var startCmd = &cobra.Command{
-	Use:   "start",
-	Short: "Start the DittoFS server",
-	Long: `Start the DittoFS server with the specified configuration.
-
-By default, the server daemonizes into the background and writes its PID to
-$XDG_STATE_HOME/dittofs/dittofs.pid. Use --foreground when running under a
-process supervisor (systemd, Docker) or for interactive debugging. The NFS
-adapter listens on port 12049 and the SMB adapter on port 12445 by default;
-the control-plane REST API is available at http://localhost:8080.
+The server runs until it receives SIGINT or SIGTERM, then stops and exits
+zero once every part stopped. A start that fails for its own reason exits
+non-zero, even when a signal arrived while it failed. Run it under a
+process supervisor (systemd, Docker) to keep it in the background.
 
 Examples:
-  # Start in background (daemon mode)
+  # Start with the default configuration
   dfs start
 
-  # Start in foreground with debug logging
-  DITTOFS_LOGGING_LEVEL=DEBUG dfs start --foreground
+  # Start with debug logging
+  DITTOFS_LOGGING_LEVEL=debug dfs start
 
-  # Start with a custom config file and explicit PID file path
-  dfs start --config /etc/dittofs/config.yaml --pid-file /var/run/dittofs.pid
-
-  # Set admin password via environment on first boot instead of the generated one
-  DITTOFS_ADMIN_INITIAL_PASSWORD=changeme dfs start --foreground`,
-	RunE: runStart,
-}
-
-func init() {
-	startCmd.Flags().BoolVarP(&foreground, "foreground", "f", false, "Run in foreground (default: background/daemon mode)")
-	startCmd.Flags().StringVar(&pidFile, "pid-file", "", "Path to PID file (default: $XDG_STATE_HOME/dittofs/dittofs.pid)")
-	startCmd.Flags().StringVar(&logFile, "log-file", "", "Path to log file for daemon mode (default: $XDG_STATE_HOME/dittofs/dittofs.log)")
-}
-
-func runStart(cmd *cobra.Command, args []string) error {
-	// The boot guards report their exit code as a value rather than terminating
-	// from where they are called, so the decision travels out of
-	// runStartWithExit and every defer it registered runs first — including the
-	// control-plane store close. Calling os.Exit from the guard skipped those
-	// defers outright, leaving the store open with no WAL cleanup on the way out.
-	err := runStartWithExit(cmd, args)
-	var st *exitStatus
-	if errors.As(err, &st) {
-		exitFn(st.code)
-		// Unreachable in production (exitFn == os.Exit terminates).
-		// Defensive: in-process tests stub exitFn to NOT terminate.
-		return nil
+  # Start with a custom config file
+  dfs start --config /etc/dittofs/config.yaml`,
+		Args: cobra.NoArgs,
+		RunE: runStart,
 	}
-	return err
 }
 
-// exitStatus carries the process exit code a boot guard decided on. It travels
-// as an error so the guard can return it without terminating the process, and
-// runStart performs the exit only after the caller's defers have run.
-type exitStatus struct{ code int }
+// runStart reads the bootstrap, refuses v1's control-plane database, runs the
+// start check over the store and journals it finds, opens the metadata
+// store's KV, builds and starts the node, and stops it on SIGINT or SIGTERM.
+// A store with no directory, FoundationDB's, is opened by the check, after
+// its v1 refusal, which reads only local directories, and is read by it.
+// Each error names the step that failed.
+func runStart(cmd *cobra.Command, _ []string) error {
+	configPath, _ := cmd.Flags().GetString("config")
+	// The handler is installed first, so a signal while the store opens or
+	// the node is built stops the start rather than killing the process;
+	// Start then returns at once and the node is stopped.
+	base := cmd.Context()
+	ctx, unnotify := signal.NotifyContext(base, syscall.SIGINT, syscall.SIGTERM)
+	defer unnotify()
+	// Once a signal arrived, a second one ends the process at once.
+	context.AfterFunc(ctx, unnotify)
 
-func (e *exitStatus) Error() string { return fmt.Sprintf("exit status %d", e.code) }
-
-func runStartWithExit(cmd *cobra.Command, args []string) error {
-	// Handle daemon mode (background)
-	if !foreground {
-		return startDaemon()
-	}
-
-	cfg, err := config.MustLoad(GetConfigFile())
+	cfg, err := bootstrap.MustLoad(configPath, os.Environ())
 	if err != nil {
 		return err
 	}
-
-	// Initialize the structured logger
-	if err := InitLogger(cfg); err != nil {
+	if configPath == "" {
+		// decision: the v1 check probes beside the bootstrap MustLoad read:
+		// --config's, else DITTOFS_CONFIG's, else the default. So v1's XDG
+		// default database, $XDG_CONFIG_HOME/dittofs/controlplane.db, is probed
+		// only when neither names a file; a bootstrap named elsewhere probes
+		// beside that file and at the fixed /data paths only. Overturned by a
+		// v1 deployment that kept its database at the XDG default while its
+		// bootstrap moved elsewhere.
+		configPath = cmp.Or(os.Getenv("DITTOFS_CONFIG"), bootstrap.GetDefaultConfigPath())
+	}
+	// The v1 check reads nothing of the bootstrap, so it runs before the
+	// bootstrap's own checks: over a v1 directory it is the first refusal.
+	//
+	// decision: it still runs after MustLoad, which needs --config's path,
+	// and before InitLogger, so a v1 bootstrap that this version's load
+	// refuses gets that config error, not the v1 refusal, and the check's
+	// permission warning goes to the default handler, as text on stderr,
+	// not to the configured log. Both are safe, as nothing is opened yet.
+	// Overturned if operators upgrading from v1 report the config error as
+	// unhelpful: then the check moves before MustLoad, deriving the path
+	// from the flag alone.
+	if err := refuseV1(filepath.Join(filepath.Dir(configPath), "controlplane.db"), v1Databases()); err != nil {
 		return err
 	}
-
-	// Create cancellable context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	fmt.Println("DittoFS - A modular virtual filesystem")
-	logger.Info("Log level", "level", cfg.Logging.Level, "format", cfg.Logging.Format)
-	logger.Info("Configuration loaded", "source", getConfigSource(GetConfigFile()))
-
-	// Validate the control-plane API configuration before anything durable is
-	// written. api.NewServer rejects a missing or too-short JWT signing secret,
-	// but it is built hundreds of lines below, long after the first-boot
-	// bootstrap has already created the admin user. Failing there left a
-	// control-plane database on disk holding an admin whose generated password
-	// was printed only by the run that aborted, so every later start refused
-	// the operator's credentials.
-	if err := cfg.ControlPlane.ValidateStartup(); err != nil {
-		return fmt.Errorf("invalid control plane configuration: %w", err)
+	if err := bootstrap.InitLogger(cfg); err != nil {
+		return err
 	}
-
-	// Initialize control plane store for user management
-	cpStore, err := store.New(&cfg.Database)
-	if err != nil {
-		return fmt.Errorf("failed to initialize control plane store: %w", err)
+	clock := newSystemClock()
+	if err := checkKV(cfg); err != nil {
+		return err
 	}
-	// Declared before the store-close defer so that defer can drain it: the API
-	// handlers hold cpStore directly, so the close must not run until they are
-	// done. Assigned far below, once the runtime is up.
-	var apiServer *api.Server
-	// Registered before any other consumer takes a reference, so it closes last:
-	// after the netlogon defer and after the shutdown wait below returns. The
-	// runtime's background workers reach this store too, and the shutdown drain
-	// waits for them — within its own deadline, which it can lose. Cancelling here
-	// rather than relying on the root defer keeps that true for a ctx-bound
-	// worker added later: the root cancel is registered before this and would
-	// otherwise run after it.
-	//
-	// decision: the API handlers are joined before this close, but two other
-	// synchronous readers of this store are not, so the handle can still close
-	// under one of them. The API drain below waits (bounded) for requests the
-	// API server was tracking, which covers the ordinary SIGTERM-with-a-slow-
-	// handler case: http.Server.Shutdown returns on its own deadline whether or
-	// not the handlers behind it finished, and the drain is what waits for them
-	// anyway. What it does not cover: the metrics scrape handler, whose
-	// collector calls Runtime.MetricsSnapshot (which lists snapshots out of this
-	// store for every share) and which runs on its own listener that nothing
-	// joins; and quotaGracePersister, which data-plane requests call
-	// synchronously on a fresh context.Background(), so cancelling the root
-	// context does not stop it. Both are the same shape as the API case was —
-	// a reader outliving the close — and both are cheaper to fold into one
-	// shutdown fence than to fix one at a time; withdraw this note when that
-	// fence exists.
-	//
-	// What sql.DB.Close actually does cuts both ways, and the second way is why
-	// this is bounded: it stops new queries and makes any later use return an
-	// error instead of panicking, but it does not cut a query already running —
-	// it WAITS for it. Left to run to completion it would hold the process in
-	// this defer behind a wedged reader, and the forced-exit path above has
-	// already given up waiting by then, so the one deadline the operator can
-	// see would be defeated by the cleanup that follows it.
-	//
-	// So the close gets its own deadline, and losing it means exiting with the
-	// handle still open. That costs nothing here: the process is on its way out
-	// and the OS reclaims the descriptor either way, whereas not exiting is
-	// what an operator notices. Withdraw the bound if this ever becomes a path
-	// the process continues past rather than exits from, where an unclosed
-	// handle outlives the decision to abandon it.
+	devices := make([]string, 0, len(cfg.Journals))
+	for _, j := range cfg.Journals {
+		devices = append(devices, j.Path)
+	}
+	// store is the metadata store's KV, held here until node.New takes it
+	// over: every return before that closes it.
+	var store kv.KV
 	defer func() {
-		cancel()
-		// Join the API handlers before closing the store they read directly.
-		// Stop already drains on the normal path, but the forced-exit branch
-		// above returns while Serve — and with it Stop — may still be running,
-		// so the drain is repeated here (idempotent, and free once the counter
-		// is empty). Bounded, so a wedged handler cannot hold the process in
-		// this defer; losing the bound means the store closes under that
-		// handler, which is the same cost the close's own deadline already
-		// accepts.
-		if apiServer != nil {
-			drainCtx, drainCancel := context.WithTimeout(context.Background(), storeCloseTimeout)
-			if !apiServer.Drain(drainCtx) {
-				logger.Warn("API handlers did not drain within their deadline; " +
-					"closing the control-plane store with a request possibly still in flight")
+		if store != nil {
+			if err := store.Close(); err != nil {
+				slog.Warn("dfs: the metadata store did not close clean", "err", err)
 			}
-			drainCancel()
-		}
-		closed := make(chan struct{})
-		go func() {
-			defer close(closed)
-			_ = cpStore.Close()
-		}()
-		select {
-		case <-closed:
-		case <-time.After(storeCloseTimeout):
-			logger.Warn("control-plane store did not close within its deadline; " +
-				"an operation is still holding it and the process is exiting without it")
 		}
 	}()
-
-	// Ensure admin user exists. On first run the password is taken from
-	// DITTOFS_ADMIN_INITIAL_PASSWORD (env, plaintext, also enables SMB admin),
-	// admin.password_hash (config), or a generated random password — in that
-	// precedence. Whether the first-login password change is forced is
-	// operator-configurable (controlplane.require_initial_password_change,
-	// default true) and is skipped when the operator supplied the password.
-	generatedPassword, adminCreated, err := cpStore.EnsureAdminUser(ctx, cfg.ControlPlane.RequiresInitialPasswordChange(), cfg.Admin.PasswordHash)
-	if err != nil {
-		return fmt.Errorf("failed to ensure admin user: %w", err)
-	}
-	if adminCreated {
-		logger.Info("Admin user created", "username", models.AdminUsername)
-	}
-	// Non-empty only when the password was randomly generated: an operator who
-	// supplied one already knows it, and telling them it was generated would
-	// point them at a recovery procedure they do not need.
-	if generatedPassword != "" {
-		emitAdminPassword(generatedPassword)
-	}
-
-	// Ensure default groups exist (admins, operators, users) and add admin to admins group
-	groupsCreated, err := cpStore.EnsureDefaultGroups(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to ensure default groups: %w", err)
-	}
-	if groupsCreated {
-		logger.Info("Default groups created", "groups", "admins, operators, users")
-	}
-
-	// Ensure default adapters exist (NFS and SMB)
-	adaptersCreated, err := cpStore.EnsureDefaultAdapters(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to ensure default adapters: %w", err)
-	}
-	if adaptersCreated {
-		logger.Info("Default adapters created", "adapters", "nfs, smb")
-	}
-
-	// Wire operator-configured Badger metadata-cache defaults into the badger
-	// engine BEFORE any metadata store is opened (InitializeFromStore opens
-	// them). Zero values leave that dimension to RAM-relative auto-sizing
-	// inside the engine (#1245 Bug D).
-	badgerstore.SetGlobalBadgerCacheDefaults(
-		cfg.Metadata.Badger.BlockCacheSizeMB,
-		cfg.Metadata.Badger.IndexCacheSizeMB,
-	)
-
-	// Initialize runtime from database (loads metadata stores and shares)
-	rt, err := runtime.InitializeFromStore(ctx, cpStore)
-	if err != nil {
-		// A metadata store whose format this build cannot read gets the same
-		// exit code and directive as a block store in that state.
-		if stop := handleFormatMismatch(err, os.Stderr); stop != nil {
-			return stop
-		}
-		return fmt.Errorf("failed to initialize runtime: %w", err)
-	}
-
-	// Configure the background snapshot scheduler before Serve launches it.
-	rt.SetSnapshotSchedulerConfig(cfg.Snapshot.SchedulerPollInterval, cfg.Snapshot.SchedulerDisabled)
-
-	// Auto-deduce block store defaults from system resources
-	detector := sysinfo.NewDetector()
-	deduced := block.DeduceDefaults(detector)
-
-	logger.Info("System resources detected",
-		"memory", block.FormatBytes(detector.AvailableMemory()),
-		"memory_source", detector.MemorySource(),
-		"cpus", detector.AvailableCPUs(),
-	)
-	logger.Info("Auto-deduced block store defaults",
-		"read_buffer_size", block.FormatBytes(uint64(deduced.ReadBufferSize)),
-		"max_log_bytes", block.FormatBytes(deduced.MaxLogBytes),
-		"parallel_syncs", deduced.ParallelSyncs,
-		"parallel_fetches", deduced.ParallelFetches,
-		"prefetch_workers", deduced.PrefetchWorkers,
-	)
-
-	if floors := deduced.HitFloors(); len(floors) > 0 {
-		logger.Warn("Some deduced values hit minimum floors; system may be resource-constrained",
-			"floors", floors,
-			"system_memory", block.FormatBytes(detector.AvailableMemory()),
-			"system_cpus", detector.AvailableCPUs(),
-		)
-	}
-
-	// Resolve the effective append-log pressure budget default: the global
-	// config blockstore.journal.max_log_bytes wins when set, otherwise the
-	// system-deduced default.
-	effectiveMaxLogBytes := deduced.MaxLogBytes
-	if cfg.Blockstore.Journal.MaxLogBytes > 0 {
-		effectiveMaxLogBytes = cfg.Blockstore.Journal.MaxLogBytes
-	}
-
-	// Set per-share defaults BEFORE loading shares (AddShare creates BlockStores).
-	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{
-		ReadBufferBytes:     deduced.ReadBufferSize,
-		MaxLogBytes:         block.ClampToInt64(effectiveMaxLogBytes),
-		JournalRoot:         cfg.Blockstore.Journal.Path,
-		ChunkSize:           cfg.Blockstore.Journal.ChunkSize,
-		ChunkMax:            cfg.Blockstore.Journal.ChunkMax,
-		DirtyExpire:         cfg.Blockstore.Journal.DirtyExpire,
-		BackpressureMaxWait: cfg.Blockstore.Journal.BackpressureMaxWait,
-	})
-	rt.SetSyncerDefaults(&shares.SyncerDefaults{
-		ParallelDownloads: deduced.ParallelFetches,
-		PrefetchWorkers:   deduced.PrefetchWorkers,
-	})
-	// Wire operator-configured GC knobs into the runtime so
-	// gc.CollectGarbage receives them in gc.Options. Without this,
-	// the validated gc.* config in pkg/config/config.go is silently dropped
-	// and the engine falls back to hardcoded defaults.
-	rt.SetGCDefaults(&runtime.GCDefaults{
-		GracePeriod:         cfg.GC.GracePeriod,
-		DryRunSampleSize:    cfg.GC.DryRunSampleSize,
-		CompactionLiveRatio: cfg.GC.CompactionLiveRatio,
-	})
-
-	// Thread the operator-configured lock-manager grace period into the
-	// MetadataService BEFORE loading shares: AddShare registers each share's
-	// lock manager and enters the post-restart grace window, so the duration
-	// must be set first. LoadInitial is idempotent (the lifecycle Serve loop
-	// loads settings again); a nil/zero value falls back to the 90s default,
-	// which matches the DB default for grace_period.
-	if sw := rt.GetSettingsWatcher(); sw != nil {
-		if err := sw.LoadInitial(ctx); err != nil {
-			logger.Warn("Failed to load initial adapter settings for lock grace period", "error", err)
-		}
-		if nfsSettings := rt.GetNFSSettings(); nfsSettings != nil && nfsSettings.GracePeriod > 0 {
-			rt.GetMetadataService().SetLockGracePeriod(
-				time.Duration(nfsSettings.GracePeriod) * time.Second)
+	storeDir := cfg.Metadata.Badger.Path
+	var open func(context.Context) (kv.KV, error)
+	if cfg.Metadata.Backend == "foundationdb" {
+		// A cluster has no directory to probe: the check opens the store,
+		// once its local refusals have passed, so a v1 host never reaches
+		// the cluster or writes this node's clock ceiling to it, and reads
+		// it through the KV the node then takes.
+		storeDir = ""
+		open = func(ctx context.Context) (kv.KV, error) {
+			stage(base, stageOpen, ctx)
+			var err error
+			if store, err = openStore(ctx, base, cfg, clock); err == nil {
+				stage(base, stageOpened, ctx)
+			}
+			return store, err
 		}
 	}
 
-	// Legacy-layout detection is a hard boot stop. Other share-loading failures
-	// stay best-effort (logged + ignored, the historical behavior).
-	effectiveKerberos, loadErr := loadSharesWithKerberosCapability(ctx, cpStore, rt, cfg)
-	if stop := handleLoadSharesError(loadErr, os.Stderr); stop != nil {
-		return stop
+	stage(base, stagePreflight, ctx)
+	err = node.Preflight(ctx, storeDir, open, v1ProbeRoot(cfg.Metadata.Badger.Path, devices), devices, clock)
+	stage(base, stagePreflightReturned, ctx)
+	if err != nil {
+		// A check the signal cancelled, its store's open included, ends the
+		// start on the signal: the only thing open is a store with no
+		// directory, which the return closes, so the command exits zero as
+		// a stopped start does. A
+		// refusal of the check's own exits non-zero under a signal too.
+		if ctx.Err() != nil && base.Err() == nil && onlyCanceled(err) {
+			slog.Info("dfs: the start ended on a termination signal", "err", err)
+			return nil
+		}
+		return fmt.Errorf("the start check: %w", err)
 	}
-
-	// A skipped share only shrinks the share count, which reads as normal to
-	// anyone who does not already know how many shares to expect. Name them
-	// here, where an operator is looking at the moment it happens.
-	skipped := rt.SkippedShares()
-	logger.Info("Runtime initialized",
-		"metadata_stores", rt.CountMetadataStores(),
-		"shares", rt.CountShares(),
-		"shares_not_served", len(skipped))
-	for _, name := range slices.Sorted(maps.Keys(skipped)) {
-		logger.Warn("Share is NOT being served", "share", name, "reason", skipped[name])
+	// The tracing provider is built after the start's refusals, so a refused
+	// start builds no exporter, and before a Badger store opens, so a start
+	// refused on its endpoint opens no store directory; a store opened before
+	// the check is closed by the return.
+	tracer, stopTracing, err := devTracing()
+	if err != nil {
+		return fmt.Errorf("building the tracing provider: %w", err)
 	}
-	logger.Info("Per-share BlockStores created during share loading")
-
-	// Build the metrics registry unconditionally so inline instruments (adapter
-	// RED, connection, auth counters) always record; only the /metrics listener
-	// is gated by config. The runtime carries the handle to every adapter.
-	//
-	// This has to precede every goroutine below that reaches the metrics
-	// handle: the GC sweeps read it without synchronisation, so installing it
-	// afterwards both races them and loses the first pass's counters.
-	m := metrics.New(Version, Commit)
-	m.RegisterProvider(rt)
-	rt.SetMetrics(m)
-
-	// One-time stranded-row reconcile migration (#1433): reaps file_blocks
-	// rows leaked by the pre-fix delete path and sweeps the now-orphaned
-	// chunks. Launched AFTER LoadSharesFromStore so ListShares() sees the
-	// registered shares (otherwise it no-ops and never sets its marker).
-	// Guarded by a per-store marker so it runs once per store. Detached from
-	// ctx (WithoutCancel) so a shutdown signal mid-scan doesn't abort it;
-	// errors are logged, never fatal.
-	go rt.RunBlockGCReconcileOnce(context.WithoutCancel(ctx))
-
-	// Background auto-GC (#1433): periodically reclaims orphaned blocks on both
-	// tiers so operators don't have to run `dfsctl store block gc` by hand.
-	// Enabled by default; bound to ctx so it stops on shutdown.
-	if cfg.GC.AutoGCEnabled() {
-		rt.StartScheduledGC(ctx, cfg.GC.AutoInterval)
-	} else {
-		logger.Info("auto-GC disabled by config (gc.auto_enabled=false)")
-	}
-
-	// Background structural manifest scan: periodically checks that each
-	// share's manifest still covers what its files claim to hold — damage the
-	// read path cannot report, because an uncovered range reads back as a
-	// sparse hole. Enabled by default; bound to ctx so it stops on shutdown.
-	if cfg.Integrity.AutoScanEnabled() {
-		rt.StartScheduledIntegrityScan(ctx, cfg.Integrity.AutoInterval)
-	} else {
-		logger.Info("integrity scan disabled by config (integrity.auto_enabled=false)")
-	}
-
-	// Configure runtime
-	rt.SetShutdownTimeout(cfg.ShutdownTimeout)
-	// Seed an operator-pinned machine SID (if configured) BEFORE Serve so the
-	// machine SID is resolved before any adapter reads the SID mapper. Pinning
-	// the same SID on every node yields identical local UID->SID encoding.
-	rt.SetPinnedMachineSID(cfg.Identity.MachineSID)
-
-	// Build the single, process-wide NETLOGON authenticator before the adapter
-	// factory so every SMB adapter instance shares it (one machine account per
-	// process). The online-join provider persists its rotated secret in the
-	// control-plane settings store, so it survives restarts. nlAuth is nil when
-	// machine_account is disabled. nlRotation drives periodic password rotation
-	// and is started below / stopped on shutdown.
-	nlAuth, nlRotation, nlController := buildNetlogonAuthenticator(effectiveKerberos, newMachineSecretStore(cpStore))
-	nlRotation.Start()
-	// Single defer with deterministic ordering: stop the rotation loop FIRST so
-	// no rotation can re-establish (and leak) the secure channel after Close, then
-	// close the authenticator's cached channel.
 	defer func() {
-		nlRotation.Stop()
-		if nlAuth != nil {
-			nlAuth.Close(context.Background())
+		if err := stopTracing(context.Background()); err != nil {
+			slog.Warn("dfs: the trace provider did not shut down clean", "err", err)
 		}
 	}()
-
-	// Expose the machine-account controller to the Runtime so the admin API can
-	// report `netlogon status` and force `netlogon rotate` against this running
-	// authenticator (#1631). nil when passthrough is disabled.
-	if nlController != nil {
-		rt.SetNetlogonController(nlController)
+	// The local socket's default path is in the runtime directory, which the
+	// node does not make, so the start makes it here, after every refusal
+	// above and before the node starts.
+	if _, err := bootstrap.MakeRuntimeDir(os.Environ()); err != nil {
+		return fmt.Errorf("making the runtime directory: %w", err)
 	}
 
-	rt.SetAdapterFactory(createAdapterFactory(&effectiveKerberos, nlAuth))
-
-	// Create and set API server
-	apiServer, err = api.NewServer(cfg.ControlPlane, rt, cpStore, api.Timeouts{
-		Restore:    cfg.Snapshot.RestoreHTTPTimeout,
-		DrainStall: cfg.ControlPlane.DrainStallTimeout,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create API server: %w", err)
-	}
-	rt.SetAPIServer(apiServer)
-	logger.Info("API server configured",
-		"host", cfg.ControlPlane.Host,
-		"port", cfg.ControlPlane.Port,
-		"tls", apiServer.TLSEnabled())
-
-	// Configure the Prometheus metrics endpoint (opt-in). It runs on its own
-	// listener, separate from the API server, so scrapers reach it without API
-	// auth and the two surfaces have independent lifecycles.
-	metricsServer, err := buildMetricsListener(&cfg.Metrics, m)
-	if err != nil {
-		return err
-	}
-	if metricsServer != nil {
-		logger.Info("metrics endpoint configured",
-			"addr", cfg.Metrics.Addr(), "path", cfg.Metrics.Path, "auth", cfg.Metrics.Auth)
-	}
-
-	// Write PID file if specified
-	if pidFile != "" {
-		if err := os.WriteFile(pidFile, fmt.Appendf(nil, "%d", os.Getpid()), 0644); err != nil {
-			return fmt.Errorf("failed to write PID file: %w", err)
-		}
-		defer func() { _ = os.Remove(pidFile) }()
-	}
-
-	// Start runtime in background (loads adapters from store automatically).
-	// Indirected through serveRuntime so a test can reach the serving state and
-	// return from it on demand; rt.Serve only returns once the adapters have
-	// drained, which a test cannot trigger without a signal or a real failure.
-	serverDone := make(chan error, 1)
-	go func() {
-		serverDone <- serveRuntime(ctx, rt)
-	}()
-
-	// Start the metrics listener alongside, cancelled by the same context. A
-	// metrics failure is logged but does not bring down the data plane.
-	if metricsServer != nil {
-		go func() {
-			if err := metricsServer.Serve(ctx); err != nil {
-				logger.Error("metrics server error", "error", err)
-			}
-		}()
-	}
-
-	// Wait for interrupt signal or server error
-	sigChan, stopSignals := notifySignals()
-	defer stopSignals()
-
-	logger.Info("Server is running. Press Ctrl+C to stop.")
-
-	select {
-	case <-sigChan:
-		stopSignals()
-		logger.Info("Shutdown signal received, initiating graceful shutdown")
-		cancel()
-
-		// Wait for the runtime to drain (snapshots -> StopAllAdapters -> flush
-		// -> close stores -> stop API). The drain runs these stages serially
-		// and most are individually bounded by the configured shutdown timeout,
-		// but a wedged stage (e.g. a stuck store flush or an unbounded store
-		// close) could otherwise block the process indefinitely. Under
-		// Kubernetes that means the pod hangs until SIGKILL
-		// at the end of its terminationGracePeriod, dropping clients abruptly —
-		// exactly what #1313 is about. Cap the overall wait so the process
-		// always exits on its own first.
-		//
-		// The factor mirrors the operator's shutdownStageMultiplier=3, which
-		// sizes terminationGracePeriodSeconds as preStop(5) + 3*shutdownTimeout
-		// + 10s. After SIGTERM the process therefore has 3*shutdownTimeout + 10s
-		// before SIGKILL, so 3*shutdownTimeout + 5s self-exits just inside that
-		// window while still letting the common multi-stage drain finish.
-		shutdownDeadline := 3*cfg.ShutdownTimeout + 5*time.Second
-		timer := time.NewTimer(shutdownDeadline)
-		defer timer.Stop()
-		select {
-		case err := <-serverDone:
-			if isExpectedShutdownErr(err) {
-				logger.Info("Server stopped gracefully")
-			} else {
-				logger.Error("Server shutdown error", "error", err)
-				return err
-			}
-		case <-timer.C:
-			logger.Error("Graceful shutdown exceeded deadline; forcing exit",
-				"deadline", shutdownDeadline)
-			return fmt.Errorf("graceful shutdown timed out after %s", shutdownDeadline)
-		}
-
-	case err := <-serverDone:
-		stopSignals()
-		if err != nil {
-			logger.Error("Server error", "error", err)
+	if store == nil {
+		if store, err = openStore(ctx, base, cfg, clock); err != nil {
 			return err
 		}
-		logger.Info("Server stopped")
 	}
-
-	return nil
-}
-
-// isExpectedShutdownErr reports whether err is the normal outcome of a
-// SIGTERM-initiated graceful shutdown rather than a real failure. We cancel the
-// root context on purpose, so context.Canceled — and the http.ErrServerClosed a
-// listener returns once Shutdown is called — are expected. Per the logging
-// convention (expected errors at Info/Debug, unexpected at Error), these must
-// not be logged at ERROR: a clean shutdown emitting ERROR on every restart
-// tripped alerting / log-based health checks (#1329).
-func isExpectedShutdownErr(err error) bool {
-	return err == nil ||
-		errors.Is(err, context.Canceled) ||
-		errors.Is(err, http.ErrServerClosed)
-}
-
-// getConfigSource returns a description of where the config was loaded from.
-func getConfigSource(configFile string) string {
-	if configFile != "" {
-		return configFile
-	}
-	if config.DefaultConfigExists() {
-		return config.GetDefaultConfigPath()
-	}
-	return "defaults"
-}
-
-// buildMetricsListener constructs the Prometheus metrics HTTP listener for the
-// given registry when the endpoint is enabled. Returns (nil, nil) when metrics
-// serving is disabled (the registry still exists and records inline metrics).
-func buildMetricsListener(cfg *config.MetricsConfig, m *metrics.Metrics) (*metrics.Server, error) {
-	if !cfg.Enabled {
-		return nil, nil
-	}
-
-	var token string
-	if cfg.Auth == "token" {
-		b, err := os.ReadFile(cfg.TokenFile)
-		if err != nil {
-			return nil, fmt.Errorf("read metrics token file: %w", err)
-		}
-		token = strings.TrimSpace(string(b))
-		if token == "" {
-			return nil, fmt.Errorf("metrics token file %q is empty", cfg.TokenFile)
-		}
-	}
-
-	srv, err := metrics.NewServer(m, metrics.ServerOptions{
-		Addr:       cfg.Addr(),
-		Path:       cfg.Path,
-		Token:      token,
-		CertFile:   cfg.TLS.CertFile,
-		KeyFile:    cfg.TLS.KeyFile,
-		ClientCA:   cfg.TLS.ClientCA,
-		MinVersion: cfg.TLS.MinVersion,
+	n, err := node.New(node.Config{
+		Bootstrap: *cfg,
+		KV:        store,
+		Clock:     clock,
+		Metrics:   metrics.New(Version, Commit),
+		Logger:    slog.Default(),
+		Tracer:    tracer,
 	})
+	// node.New owns the KV from here on: a New that fails closes it.
+	store = nil
 	if err != nil {
-		return nil, fmt.Errorf("create metrics server: %w", err)
+		return fmt.Errorf("building the node: %w", err)
 	}
-	return srv, nil
-}
 
-// loadSharesWithKerberosCapability publishes the server's Kerberos capability on
-// the runtime and only then loads the persisted shares. The two steps are one
-// function because their order is load-bearing and invisible at either call
-// site: LoadSharesFromStore refuses a share whose export policy requires a
-// Kerberos the server does not have, so a share loaded before the capability is
-// published is judged against a server that always looks Kerberos-less, and a
-// valid require_kerberos share stops the boot it should have survived.
-//
-// It returns the effective Kerberos config for the adapter factory alongside
-// the share-load error, which the caller grades.
-func loadSharesWithKerberosCapability(
-	ctx context.Context,
-	cpStore store.Store,
-	rt *runtime.Runtime,
-	cfg *config.Config,
-) (config.KerberosConfig, error) {
-	// A DB row (managed via the API) wins over the file/env config; on first
-	// boot the file/env config seeds the DB. This also sets the runtime's LDAP
-	// config.
-	effectiveKerberos := resolveIdentityProviders(ctx, cpStore, rt, cfg)
-	rt.SetKerberosEnabled(effectiveKerberos.Enabled)
-
-	// Per-share BlockStores are created during AddShare.
-	return effectiveKerberos, runtime.LoadSharesFromStore(ctx, rt, cpStore)
-}
-
-// resolveIdentityProviders reconciles identity-provider configuration between
-// the file/env config and the control-plane database. A persisted row (managed
-// over the API) takes precedence; when no row exists the file/env config seeds
-// the database on first boot. It sets the runtime's LDAP config directly and
-// returns the effective Kerberos config for the adapter factory.
-//
-// Note: the API does not manage Kerberos static IdentityMapping entries, so a
-// DB-sourced Kerberos config carries none — those are configured via the
-// separate /api/v1/identity-mappings routes.
-func resolveIdentityProviders(ctx context.Context, cpStore store.Store, rt *runtime.Runtime, cfg *config.Config) config.KerberosConfig {
-	// LDAP: DB row wins; else seed from file/env when enabled.
-	if row, err := cpStore.GetIdentityProviderConfig(ctx, models.IdentityProviderTypeLDAP); err == nil {
-		if lc, derr := ldap.UnmarshalStored([]byte(row.Config)); derr == nil {
-			rt.SetLDAPConfig(lc)
-			logger.Info("LDAP identity provider loaded from control-plane store",
-				"enabled", lc.Enabled, "url", lc.URL, "base_dn", lc.BaseDN)
-		} else {
-			logger.Warn("failed to decode stored LDAP config; ignoring", "error", derr)
+	stage(base, stageStart, ctx)
+	startErr := n.Start(ctx)
+	if startErr == nil {
+		<-ctx.Done()
+	}
+	stage(base, stageStartReturned, ctx)
+	signalled := ctx.Err() != nil && base.Err() == nil
+	// ended decides both the record below and the exit code, so the tests
+	// that read the record read the value the exit code is answered from.
+	ended := endedBySignal(startErr, signalled)
+	if signalled {
+		if ended {
+			slog.Info("dfs: the start ended on a termination signal", "err", startErr)
 		}
-	} else if errors.Is(err, models.ErrIdentityProviderConfigNotFound) {
-		if cfg.LDAP.Enabled {
-			lc := cfg.LDAP
-			rt.SetLDAPConfig(&lc)
-			if blob, merr := ldap.MarshalStored(&lc); merr != nil {
-				logger.Warn("failed to marshal LDAP config for seeding", "error", merr)
-			} else if perr := cpStore.PutIdentityProviderConfig(ctx, &models.IdentityProviderConfig{
-				Type: models.IdentityProviderTypeLDAP, Enabled: lc.Enabled, Config: string(blob),
-			}); perr != nil {
-				logger.Warn("failed to seed LDAP config into store", "error", perr)
+		slog.Info("dfs: stopping on a termination signal")
+	}
+	stopErr := n.Stop(base)
+	if stopErr == nil {
+		slog.Info("dfs: stopped")
+	}
+	return answer(startErr, ended, stopErr)
+}
+
+// openStore opens the metadata store's KV, answering ctx's error for an open
+// ctx ended, and wraps it in base's kvKey hook, if any, so every reader of
+// the store, the start check included, sees the wrapped KV.
+func openStore(ctx, base context.Context, cfg *bootstrap.Bootstrap, clock systemClock) (kv.KV, error) {
+	store, err := openKV(ctx, cfg, clock)
+	if err != nil {
+		// A backend may report an open its caller canceled as an error of
+		// its own, FoundationDB's as a deadline: the context's error is the
+		// answer instead, as it is for the start check's store read, and
+		// the backend's own stays in the message.
+		if ctx.Err() != nil {
+			err = fmt.Errorf("%w (the backend answered: %v)", ctx.Err(), err)
+		}
+		return nil, fmt.Errorf("opening the metadata store: %w", err)
+	}
+	if wrap, ok := base.Value(kvKey{}).(func(kv.KV) kv.KV); ok {
+		store = wrap(store)
+	}
+	return store, nil
+}
+
+// stageKey keys a hook in the command's context that runs at each stage of
+// runStart, given the stage and the signal context: a test delivers a signal
+// there, so it lands at a known stage rather than at a timing. Production
+// sets none.
+type stageKey struct{}
+
+// kvKey keys a hook in the command's context that wraps the metadata
+// store's KV right after it opens, before the start check or the node reads
+// it: a test holds one store call there, so the process is killed at a known
+// call rather than at a timing, or records the store's Close. Production
+// sets none.
+type kvKey struct{}
+
+// The stages a stageKey hook is called at: before the start check, as it
+// opens a store with no directory and once that open succeeded, and once the
+// check returned, and before Start and once it returned, each "returned"
+// stage before the command reads whether a signal arrived.
+const (
+	stageOpen              = "open"
+	stageOpened            = "opened"
+	stagePreflight         = "preflight"
+	stagePreflightReturned = "preflight-returned"
+	stageStart             = "start"
+	stageStartReturned     = "start-returned"
+)
+
+// stage runs base's stageKey hook, if any, at name.
+func stage(base context.Context, name string, signal context.Context) {
+	if f, ok := base.Value(stageKey{}).(func(string, context.Context)); ok {
+		f(name, signal)
+	}
+}
+
+// endedBySignal reports whether a termination signal, not a failure of its
+// own, ended a start that failed: a signal arrived and every error Start
+// returned is the signal's cancellation. A start that failed for its own
+// reason while a signal arrived did not end on it, even when another of its
+// errors is a cancellation.
+func endedBySignal(startErr error, signalled bool) bool {
+	return signalled && onlyCanceled(startErr)
+}
+
+// onlyCanceled reports whether err is non-nil and every leaf of its tree,
+// through both forms of Unwrap, is context.Canceled.
+func onlyCanceled(err error) bool {
+	switch u := err.(type) {
+	case interface{ Unwrap() []error }:
+		errs := u.Unwrap()
+		for _, e := range errs {
+			if !onlyCanceled(e) {
+				return false
 			}
-			logger.Info("LDAP identity provider enabled (seeded from config file/env)",
-				"url", lc.URL, "base_dn", lc.BaseDN, "idmap", lc.Idmap)
 		}
-	} else {
-		logger.Warn("failed to read stored LDAP config; falling back to file/env", "error", err)
-		if cfg.LDAP.Enabled {
-			lc := cfg.LDAP
-			rt.SetLDAPConfig(&lc)
+		return len(errs) > 0
+	case interface{ Unwrap() error }:
+		if inner := u.Unwrap(); inner != nil {
+			return onlyCanceled(inner)
 		}
 	}
-
-	// Kerberos: DB row wins; else seed from file/env when enabled.
-	kerberos := cfg.Kerberos
-	if row, err := cpStore.GetIdentityProviderConfig(ctx, models.IdentityProviderTypeKerberos); err == nil {
-		var dto handlers.KerberosConfigDTO
-		if json.Unmarshal([]byte(row.Config), &dto) == nil {
-			kerberos = kerberosDTOToConfig(dto)
-			logger.Info("Kerberos identity provider loaded from control-plane store",
-				"enabled", kerberos.Enabled, "service_principal", kerberos.ServicePrincipal)
-		} else {
-			logger.Warn("failed to decode stored Kerberos config; falling back to file/env")
-		}
-	} else if errors.Is(err, models.ErrIdentityProviderConfigNotFound) && cfg.Kerberos.Enabled {
-		if blob, merr := json.Marshal(kerberosConfigToDTO(cfg.Kerberos)); merr == nil {
-			if perr := cpStore.PutIdentityProviderConfig(ctx, &models.IdentityProviderConfig{
-				Type: models.IdentityProviderTypeKerberos, Enabled: cfg.Kerberos.Enabled, Config: string(blob),
-			}); perr != nil {
-				logger.Warn("failed to seed Kerberos config into store", "error", perr)
-			}
-		}
-	}
-
-	// Overlay the operator/env-injected machine-account config onto the
-	// effective (DB-sourced) Kerberos config. See mergeMachineAccountFromFile
-	// for the precedence rules (#1392).
-	kerberos = mergeMachineAccountFromFile(kerberos, cfg.Kerberos)
-
-	// Overlay deployment-path fields (keytab / krb5.conf mount paths) from
-	// file/env. These are filesystem-mount concerns the operator controls, not
-	// API-managed identity policy: when a volume mount moves (e.g. an operator
-	// upgrade relocating the keytab), the stale DB-row path must not win and
-	// crash the server on a missing file. See overlayDeploymentPaths.
-	kerberos = overlayDeploymentPaths(kerberos, cfg.Kerberos)
-
-	// Seed the runtime's hot-reloadable NETLOGON machine credential from the
-	// effective Kerberos machine-account config (#1325). nil disables passthrough.
-	// The SMB adapter reads this on an identity-provider config change to rebuild
-	// its secure channel without a restart. (Online-join supplies its own
-	// credential via the RotationManager, so the seeded credential is the
-	// offline/static one.)
-	if cred, ok := netlogonCredentialFromConfig(kerberos); ok {
-		rt.SetNetlogonCredential(&cred)
-	} else {
-		rt.SetNetlogonCredential(nil)
-	}
-
-	return kerberos
+	return errors.Is(err, context.Canceled)
 }
 
-// mergeMachineAccountFromFile overlays the operator/env-injected machine-account
-// configuration onto the effective Kerberos config (which is DB-sourced when a
-// control-plane row exists, else the file/env config itself).
-//
-// Two precedence rules, both rooted in the fact that machine-account credentials
-// arrive out-of-band (the online-join bind password and the offline machine
-// secret are injected via the config file / DITTOFS_KERBEROS_MACHINE_ACCOUNT_*
-// env), NOT through the API-managed Kerberos DTO that backs the DB row:
-//
-//   - Online-join carries a privileged LDAP bind password and is intentionally
-//     never persisted in the DB DTO, so it is ALWAYS sourced from file/env.
-//   - The offline machine account (account name + secret) is overlaid from
-//     file/env only when the effective config does not already enable one. This
-//     fixes #1392: a DB Kerberos row seeded before NTLM passthrough was
-//     configured carries no machine_account and would otherwise overwrite (drop)
-//     the file/env credential the operator injected, silently disabling
-//     passthrough. A machine account configured explicitly via the API (present
-//     and enabled in the DB row) still wins.
-func mergeMachineAccountFromFile(effective, file config.KerberosConfig) config.KerberosConfig {
-	effective.MachineAccount.OnlineJoin = file.MachineAccount.OnlineJoin
-
-	if !effective.MachineAccount.Enabled && file.MachineAccount.Enabled {
-		onlineJoin := effective.MachineAccount.OnlineJoin
-		effective.MachineAccount = file.MachineAccount
-		effective.MachineAccount.OnlineJoin = onlineJoin
+// answer is the command's error once the node stopped: a Start that failed
+// but did not end on a termination signal, naming its step, joined with
+// Stop's; otherwise Stop's alone, so a signal exits zero once every part
+// stopped.
+func answer(startErr error, ended bool, stopErr error) error {
+	if startErr != nil && !ended {
+		return errors.Join(fmt.Errorf("starting the node: %w", startErr), stopped(stopErr))
 	}
-	return effective
+	return stopped(stopErr)
 }
 
-// overlayDeploymentPaths lets the file/env config override the keytab and
-// krb5.conf paths carried in a DB-sourced Kerberos config.
-//
-// Unlike realm / service principal / NetBIOS domain (API-managed identity
-// policy, where the DB row is authoritative), these are filesystem-mount
-// concerns owned by the deployment: where the orchestrator mounts the keytab
-// and krb5.conf volumes. Persisting them as policy means a DB row seeded under
-// one layout pins a stale absolute path; when an operator upgrade relocates the
-// mount (e.g. /etc/dittofs/krb5.keytab -> /kerberos/dittofs.keytab) the server
-// would crashloop on "open ...: no such file". So a non-empty file/env path
-// always wins; an empty one leaves the DB value intact (pure-API deployments
-// that never set a path are unaffected).
-func overlayDeploymentPaths(effective, file config.KerberosConfig) config.KerberosConfig {
-	if file.KeytabPath != "" {
-		effective.KeytabPath = file.KeytabPath
-	}
-	if file.Krb5Conf != "" {
-		effective.Krb5Conf = file.Krb5Conf
-	}
-	if file.MachineAccount.KeytabPath != "" {
-		effective.MachineAccount.KeytabPath = file.MachineAccount.KeytabPath
-	}
-	return effective
-}
-
-func kerberosConfigToDTO(c config.KerberosConfig) handlers.KerberosConfigDTO {
-	dto := handlers.KerberosConfigDTO{
-		Enabled:          c.Enabled,
-		KeytabPath:       c.KeytabPath,
-		ServicePrincipal: c.ServicePrincipal,
-		Realm:            c.Realm,
-		NetBIOSDomain:    c.NetBIOSDomain,
-		DNSDomain:        c.DNSDomain,
-		Krb5Conf:         c.Krb5Conf,
-		MaxContexts:      c.MaxContexts,
-		MachineAccount: handlers.KerberosMachineAccountDTO{
-			Enabled:     c.MachineAccount.Enabled,
-			AccountName: c.MachineAccount.AccountName,
-			Secret:      c.MachineAccount.Secret,
-			KeytabPath:  c.MachineAccount.KeytabPath,
-			DCAddresses: c.MachineAccount.DCAddresses,
-		},
-	}
-	if c.MaxClockSkew > 0 {
-		dto.MaxClockSkew = c.MaxClockSkew.String()
-	}
-	if c.ContextTTL > 0 {
-		dto.ContextTTL = c.ContextTTL.String()
-	}
-	return dto
-}
-
-func kerberosDTOToConfig(dto handlers.KerberosConfigDTO) config.KerberosConfig {
-	c := config.KerberosConfig{
-		Enabled:          dto.Enabled,
-		KeytabPath:       dto.KeytabPath,
-		ServicePrincipal: dto.ServicePrincipal,
-		Realm:            dto.Realm,
-		NetBIOSDomain:    dto.NetBIOSDomain,
-		DNSDomain:        dto.DNSDomain,
-		Krb5Conf:         dto.Krb5Conf,
-		MaxContexts:      dto.MaxContexts,
-		MachineAccount: config.MachineAccountConfig{
-			Enabled:     dto.MachineAccount.Enabled,
-			AccountName: dto.MachineAccount.AccountName,
-			Secret:      dto.MachineAccount.Secret,
-			KeytabPath:  dto.MachineAccount.KeytabPath,
-			DCAddresses: dto.MachineAccount.DCAddresses,
-		},
-	}
-	if d, err := time.ParseDuration(dto.MaxClockSkew); err == nil {
-		c.MaxClockSkew = d
-	}
-	if d, err := time.ParseDuration(dto.ContextTTL); err == nil {
-		c.ContextTTL = d
-	}
-	// Restore the defaults config.MustLoad would have applied, since a
-	// DB-sourced config bypasses ApplyDefaults.
-	if c.MaxClockSkew == 0 {
-		c.MaxClockSkew = 5 * time.Minute
-	}
-	if c.ContextTTL == 0 {
-		c.ContextTTL = 8 * time.Hour
-	}
-	if c.MaxContexts == 0 {
-		c.MaxContexts = 10000
-	}
-	return c
-}
-
-// createAdapterFactory returns a factory function that creates protocol adapters
-// from configuration. This factory is used by Runtime to create adapters
-// dynamically when loading from store or when created via API.
-//
-// nlAuth is the shared, process-wide NETLOGON authenticator (one machine
-// account per process). It is built once by the caller — so the online-join
-// provider joins / loads the persisted secret exactly once regardless of how
-// many SMB adapter instances the runtime spins up — and injected here. It is
-// nil when machine_account is disabled.
-func createAdapterFactory(kerberosConfig *config.KerberosConfig, nlAuth *netlogon.Authenticator) runtime.AdapterFactory {
-	return func(cfg *models.AdapterConfig) (runtime.ProtocolAdapter, error) {
-		switch cfg.Type {
-		case "nfs":
-			return createNFSAdapter(cfg, kerberosConfig)
-		case "smb":
-			return createSMBAdapter(cfg, kerberosConfig, nlAuth)
-		default:
-			return nil, fmt.Errorf("unknown adapter type: %s", cfg.Type)
-		}
-	}
-}
-
-func createNFSAdapter(cfg *models.AdapterConfig, kerberosConfig *config.KerberosConfig) (runtime.ProtocolAdapter, error) {
-	port := cfg.Port
-	if port == 0 {
-		port = models.DefaultNFSPort
-	}
-
-	nfsCfg := nfs.NFSConfig{Enabled: true, Port: port}
-
-	parsedConfig, err := cfg.GetConfig()
+// stopped is the command's answer to Stop's error: nil when every part
+// stopped, else the error naming the stop step that failed or missed its
+// bound, which exits non-zero.
+func stopped(err error) error {
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse adapter config: %w", err)
-	}
-	if tlsCfg, ok := parsedConfig["tls"].(map[string]any); ok {
-		if v, ok := tlsCfg["cert_file"].(string); ok {
-			nfsCfg.TLS.CertFile = v
-		}
-		if v, ok := tlsCfg["key_file"].(string); ok {
-			nfsCfg.TLS.KeyFile = v
-		}
-		if v, ok := tlsCfg["client_ca"].(string); ok {
-			nfsCfg.TLS.ClientCA = v
-		}
-		if v, ok := tlsCfg["min_version"].(string); ok {
-			nfsCfg.TLS.MinVersion = v
-		}
-		if v, ok := tlsCfg["mode"].(string); ok {
-			nfsCfg.TLS.Mode = v
-		}
-	}
-
-	adapter := nfs.New(nfsCfg)
-	if kerberosConfig != nil && kerberosConfig.Enabled {
-		adapter.SetKerberosConfig(kerberosConfig)
-	}
-	return adapter, nil
-}
-
-// applyParsedSMBConfig copies the adapter JSON fields this process honors.
-// Signing was already copied. encryption_mode is documented on the same
-// object and has to be copied too: without it, start stays on the preferred
-// default and there is no way to select required. It is read through the
-// same parser Validate uses, so a malformed encryption object is refused here
-// too instead of starting on preferred.
-//
-// An unknown mode is returned from here. smb.New panics on it, and this
-// string comes from a persisted adapter row. Boot has no recover above the
-// factory, so the row has to be refused as a config error.
-func applyParsedSMBConfig(smbCfg *smb.Config, parsedConfig map[string]any) error {
-	if parsedConfig == nil {
-		return nil
-	}
-	if bindAddr, ok := parsedConfig["bind_address"].(string); ok {
-		smbCfg.BindAddress = bindAddr
-	}
-	if signingCfg, ok := parsedConfig["signing"].(map[string]any); ok {
-		if enabled, ok := signingCfg["enabled"].(bool); ok {
-			smbCfg.Signing.Enabled = &enabled
-		}
-		if required, ok := signingCfg["required"].(bool); ok {
-			smbCfg.Signing.Required = required
-		}
-	}
-	mode, err := models.SMBEncryptionMode(parsedConfig)
-	if err != nil {
-		return err
-	}
-	if mode != "" {
-		if err := smb.ValidateEncryptionMode(mode); err != nil {
-			return err
-		}
-		smbCfg.Encryption.Mode = mode
+		return fmt.Errorf("stopping the node: %w", err)
 	}
 	return nil
 }
 
-func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.KerberosConfig, nlAuth *netlogon.Authenticator) (runtime.ProtocolAdapter, error) {
-	port := cfg.Port
-	if port == 0 {
-		port = models.DefaultSMBPort
-	}
+// v1ProbeRoot is the one extra root the start check reads for a pre-journal
+// (v1) layout, beside the devices: `blocks` in the store directory's parent.
+//
+// decision: v1 kept its data under `<state dir>/blocks` unless its
+// blockstore.journal.path said otherwise. That key is gone, so the root is
+// derived from the store's path, which the file or
+// `DITTOFS_METADATA_BADGER_PATH` sets, or the loader defaulting it to
+// `<state dir>/metadata`: `blocks` beside it. It is v1's default root when
+// the store sits at `<state dir>/metadata`; with the store anywhere else the
+// probe can miss a default v1 layout. A layout found there refuses a start
+// before anything opens. The check takes one extra root, so the store
+// directory's parent itself and a custom v1 root stay unprobed until the
+// start check takes more than one.
+// Without an absolute store path with a parent below the root (a store at
+// /x would probe /blocks), the first device stands in, probed twice with no
+// effect, and "" is left for no device at all, which the check refuses
+// before it probes: an empty root would be read as the working directory.
+func v1ProbeRoot(store string, devices []string) string {
+	if store != "" {
+		p := filepath.Clean(store)
+		parent := filepath.Dir(p)
 
-	smbCfg := smb.Config{Enabled: true, Port: port}
-
-	parsedConfig, err := cfg.GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse adapter config: %w", err)
-	}
-
-	if err := applyParsedSMBConfig(&smbCfg, parsedConfig); err != nil {
-		return nil, err
-	}
-
-	smbAdapter := smb.New(smbCfg)
-
-	// Wire Kerberos provider for SPNEGO authentication. When Kerberos is not
-	// configured, the SMB adapter only accepts NTLM/guest auth.
-	if kerberosConfig != nil && kerberosConfig.Enabled {
-		provider, err := kerberos.NewProvider(kerberosConfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize SMB Kerberos provider: %w", err)
+		if filepath.IsAbs(p) && filepath.Dir(parent) != parent {
+			return filepath.Join(parent, "blocks")
 		}
-		smbAdapter.SetKerberosProvider(provider)
 	}
 
-	// Wire the shared NETLOGON authenticator for domain-controller NTLM
-	// pass-through. It is built once by the caller (one machine account per
-	// process) and injected, regardless of kerberosConfig.Enabled — an NTLM-only
-	// / legacy deployment sets kerberos.enabled=false but still needs NETLOGON
-	// passthrough when machine_account.enabled=true. nlAuth is nil when
-	// MachineAccount.Enabled is false, so SetNetlogonAuthenticator no-ops then.
-	if kerberosConfig != nil {
-		// When NTLM pass-through is active, the SMB handler must advertise, in its
-		// NTLM CHALLENGE TargetInfo, both the AD NetBIOS/DNS domain AND the AD
-		// machine-account computer name. Domain clients echo these into their
-		// NTLMv2 response; if the advertised domain is WORKGROUP or the computer
-		// name is the bare OS hostname (not the machine account), Samba's NETLOGON
-		// SamLogon rejects the otherwise-valid response (#1357). SetKerberosProvider
-		// covers the SPNEGO-enabled path, but NTLM-only members (kerberos.enabled
-		// =false) never reach it, so set it explicitly here. The computer name is
-		// the same workstation name the NETLOGON secure channel authenticates as.
-		if nlAuth != nil {
-			smbAdapter.SetADDomain(kerberosConfig.NetBIOSDomain, kerberosConfig.DNSDomain, netbiosWorkstation(*kerberosConfig))
-		}
-		smbAdapter.SetNetlogonAuthenticator(nlAuth)
+	if len(devices) > 0 {
+		return devices[0]
 	}
 
-	return smbAdapter, nil
-}
-
-// handleFormatMismatch prints the operator directive and reports exit 78 when
-// err describes on-disk state this build cannot read. Returns a non-nil status
-// when it did, so the caller stops; the caller performs the exit.
-//
-// Both store-opening paths must route through here. Metadata stores open in
-// InitializeFromStore and block stores in LoadSharesFromStore; a mismatch on
-// either one is the same condition to an operator and deserves the same exit
-// code and the same directive, not a bare cobra error.
-//
-// The status travels back to runStart rather than being exited here: runStart
-// is where the control-plane store's close defer is registered, and exiting
-// from inside this helper would skip it.
-func handleFormatMismatch(err error, stderr *os.File) *exitStatus {
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, block.ErrFutureFormat) && !errors.Is(err, journal.ErrFutureFormat) &&
-		!errors.Is(err, shares.ErrLegacyLocalFormat) {
-		return nil
-	}
-	_, _ = fmt.Fprintln(stderr, formatMismatchDirective(err))
-	return &exitStatus{code: EX_CONFIG}
-}
-
-// handleLoadSharesError centralizes the share-loading error policy so
-// the in-process boot-guard test can exercise the exit-78 path without
-// rebuilding the full daemon setup. Returns a non-nil exit status when the
-// caller should stop runStartWithExit (format-mismatch or unsatisfiable-policy
-// branch hit); nil otherwise (no error, or a warn-and-continue).
-func handleLoadSharesError(err error, stderr *os.File) *exitStatus {
-	if err == nil {
-		return nil
-	}
-	if st := handleFormatMismatch(err, stderr); st != nil {
-		return st
-	}
-	// A persisted export policy no auth flavor can satisfy is an operator
-	// configuration error, not a share that can be skipped: the share would
-	// come up refusing every client. The error already names the share and the
-	// setting at fault, so print it as-is and exit 78.
-	if errors.Is(err, runtime.ErrExportAcceptsNoAuthFlavor) {
-		_, _ = fmt.Fprintln(stderr, err)
-		return &exitStatus{code: EX_CONFIG}
-	}
-	logger.Warn("Failed to load some shares", "error", err)
-	return nil
-}
-
-// emitAdminPassword surfaces a freshly-generated first-run admin password. It
-// is called only when the password was actually generated, never when the
-// operator supplied one via DITTOFS_ADMIN_INITIAL_PASSWORD or
-// admin.password_hash.
-//
-// It prints the plaintext password ONLY when stdout is an interactive terminal
-// (an operator watching a foreground `dfs start`). In daemon mode the child's
-// stdout is redirected to a persistent log file; writing the password there
-// leaves a long-lived on-disk copy of an admin credential readable by anyone
-// who can read the log. When stdout is not a terminal we instead emit a
-// secret-free notice: the generated password is unrecoverable, and because the
-// admin user now exists a restart will not re-bootstrap it, so a known
-// credential can only be pre-set at the next fresh bootstrap.
-func emitAdminPassword(password string) {
-	if isTerminal(os.Stdout.Fd()) {
-		fmt.Printf("\n*** IMPORTANT: Admin user created with password: %s ***\n", password)
-		fmt.Println("Please save this password. It will not be shown again.")
-		fmt.Println()
-		return
-	}
-	// Daemon / non-interactive: never write the secret to the log.
-	logger.Warn("Admin user created with a randomly generated password, which is NOT " +
-		"recoverable in background mode (stdout is not a terminal, so the password is not " +
-		"written to the log). The admin user now exists, so restarting with " +
-		"DITTOFS_ADMIN_INITIAL_PASSWORD or admin.password_hash set will NOT change it. " +
-		"To bootstrap a known credential, set one of those before the first start of a new " +
-		"instance, or start with 'dfs start --foreground' in a terminal to have the generated " +
-		"password printed once. On an instance that is already bootstrapped, delete only the " +
-		"'admin' user row from the control-plane database and restart, which re-runs the " +
-		"bootstrap; do not delete the database itself, which also holds the share, store, " +
-		"mount and user configuration.")
-}
-
-// lastMigratingRelease is the newest release that still carries the pre-journal
-// reader and the in-place migration for the blobs/+logs/ layout. Later builds
-// detect that layout and refuse rather than adopting it as an empty journal, so
-// an operator holding such a share has to pass through this release once.
-//
-// It does not move when a new release ships: the migration was removed, not
-// deferred, so this names the last build that has it rather than the latest
-// build in general.
-const lastMigratingRelease = "v0.31.1"
-
-// formatMismatchDirective renders the multi-line operator directive printed
-// when a store cannot be opened because its on-disk format does not match this
-// build. The wrapped error is embedded verbatim so the operator sees which
-// store, the offending path and the two versions without fragile substring
-// extraction.
-//
-// It covers metadata stores and block stores alike, so the text says "state"
-// rather than naming either: the wrapped error already identifies which one.
-//
-// The two directions need different advice: state from a newer release is a
-// downgrade the operator can undo by going forward again, while a pre-journal
-// layout is an upgrade that has not run yet.
-func formatMismatchDirective(err error) string {
-	if errors.Is(err, block.ErrFutureFormat) || errors.Is(err, journal.ErrFutureFormat) {
-		return fmt.Sprintf(`Refusing to start: %s.
-
-This state was written by a newer release of DittoFS. Opening it with this
-build would serve the stored files as zeros rather than fail, so the daemon
-stops instead.
-
-Upgrades are one-way. To recover, either:
-  - reinstall the release that wrote this state and start again, or
-  - restore the snapshot taken before the upgrade.
-
-No data has been modified.`, err)
-	}
-	return fmt.Sprintf(`Refusing to start: %s.
-
-This share holds a pre-journal blobs/+logs/ layout that this build cannot read.
-Opening it as an empty journal would serve every stored file as zeros, so the
-daemon stops instead. Nothing on disk has been modified.
-
-This build carries no migration for that layout. %[2]s does. To recover:
-
-  1. install %[2]s and start it once — it converts the share in place
-  2. wait for the conversion to finish, then stop it
-  3. upgrade to this build and start again
-
-If that is not possible, restore the snapshot taken before the upgrade.
-
-Do not skip step 1 expecting this build to re-ingest the bytes later: for a
-local-only share compacted before the upgrade, the index that locates bytes
-inside blobs/ is dropped by the metadata migrations, and those bytes cannot be
-recovered from the directory alone.`, err, lastMigratingRelease)
+	return ""
 }

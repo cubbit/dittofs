@@ -155,7 +155,7 @@ that subtasks and tests can cite them.
 
 | # | Requirement | Kind | Source | Subtasks |
 | --- | --- | --- | --- | --- |
-| R11 | `Start` runs its steps in order, each completing before the next: refuse, open the listeners, register the node, read the records and apply them, start open state and the engine, start the filesystem and join interrupted removals, start the runner, complete the first full reconcile, then reconcile until `Stop`; step 9, the adapters, is RFC 20's plan's epic 7 | MUST | RFC 23 §2.2 | T3.3 |
+| R11 | `Start` runs its steps in order, each completing before the next: refuse, open the listeners, register the node, read the records and apply them, start open state and the engine, start the filesystem and join interrupted removals, start the runner, complete the first full reconcile, write the node status once (step 10), then reconcile until `Stop`; step 9, the adapters, is RFC 20's plan's epic 7 | MUST | RFC 23 §2.2 | T3.3 |
 | R12 | Once the store is open, step 1 writes a missing `node-id` copy into each journal directory whose `format` names the journal the store records for this node and device, and into no other | MUST | RFC 23 §2.2 (step 1); RFC 13 §2.2 | T3.10 |
 | R13 | From step 2 the health endpoints answer, live and not ready, and the metrics listener is open unless `metrics.listen` is `off` | MUST | RFC 23 §2.2 (step 2), §2.5 | T3.3 |
 | R14 | Step 3 registers the node, with the binary's version ranges, before the engine's start transactions run; an active version outside them refuses the registration in its transaction, naming the format and both versions; a refused registration stops the node there, with no component started | MUST | RFC 23 §2.2 (step 3); RFC 13 §5.5 | T3.3, T3.10 |
@@ -163,7 +163,7 @@ that subtasks and tests can cite them.
 | R16 | Step 6 starts `*vfs.Filesystem`, then runs step 3 of every removal a crash interrupted, `JoinShare` then `DropShare`, before any adapter serves | MUST | RFC 23 §2.2 (step 6); RFC 16 §2.3.2 | T3.6 |
 | R17 | Step 7 starts the operation runner, which resumes the operations this node holds | MUST | RFC 23 §2.2 (step 7), §4.6 | T3.4 |
 | R18 | No adapter starts before the first full reconcile completes | withdrawn | RFC 23 §2.2 (steps 8, 9): this epic builds no adapter; RFC 20's plan's epic 7 and E8 own it | — |
-| R19 | Readiness turns true once every adapter the records enable is serving or was refused at configured; with none enabled, once the first full reconcile completes | MUST | RFC 23 §2.2 | T3.3 |
+| R19 | Readiness turns true once every adapter the records enable is serving or was refused at configured, and step 10 has written the node's status; with none enabled, once the first full reconcile completes and that status is written | MUST | RFC 23 §2.2 | T3.3 |
 | R20 | A failure at any start step stops the start, closes what earlier steps opened in reverse but the health listener and the store, raises `start_failed` and leaves `/health/ready` answering `not_ready`; `Stop` then closes the health listener just before the store | MUST | RFC 23 §2.2; RFC 25 §3.6 | T3.3 |
 | R21 | `Stop` turns readiness false and stops reconcile, then the runner (each operation left at its last durable step), the filesystem (`Drain`, then `Stop`), the API's calls, identity (a slot the RFC 18 plan's epic 8 fills), the engine, open state after the engine, the health listener, and the metadata store last | MUST | RFC 23 §2.2; CP4 | T3.3 |
 | R22 | The store outlives everything; that the API outlives the adapters is RFC 20's plan's epic 7's, which inserts their stop before the API's | invariant | CP4 | T3.3 |
@@ -671,6 +671,15 @@ Dockerfile                                 T3.9  HEALTHCHECK on https://localhos
   a set the unbind leaves stale); a share whose namespace names no remote store, refused by
   reconcile, its first call refused by admission (catches admission serving the share list in
   place of the running set).
+- **The journal's forget:** step 4 runs. It drops the share's tag through `engine.Drop`, which
+  forgets the tag the store names in the journal, records the shard forgotten, then drops the
+  share's files, and the deletion ends `succeeded`. Two of the four tests that waited on it are
+  written: the deletion run through to `succeeded` with the share's record read back gone, and a
+  restart between the mark and step 3 on a share the node had served. A narrower restart test
+  also exists, one between the tag's drop and the shard's forget record, before any batch of
+  files runs. Two are still to write: a restart during step 4's batches, the operation resumed
+  and its progress read from the removal's record (R40); and the start path ending an open made
+  before the restart, which needs an SMB durable open held across the restart.
 
 ### T3.7 Node status and its series
 

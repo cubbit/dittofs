@@ -17,14 +17,21 @@ that generates decks will be distilled from it once the first deck exists.
 
 ## Publishing
 
-`.github/workflows/learning-pages.yml` on `feat/storage-v2` mirrors that branch's
-`learn-dittofs/` to the `dittofs-learning` bucket on Cubbit DS3 whenever a push changes it,
+`.github/workflows/learning-pages.yml` mirrors `learn-dittofs/` to the
+`dittofs-learning` bucket on Cubbit DS3 whenever a push to `feat/storage-v2` changes it,
 and the site is then at <https://dittofs-learning.s3.cubbit.eu/index.html>. The
 bucket serves objects, not directories: `intro/` is not resolved to
 `intro/index.html`. So a link to a page names its file,
 `rfcs/rfc-8-engine/index.html`, never just its directory. Opening a deck from
 the checkout over `file://` does not work: decks load their strings and
 glossary with `fetch`, which browsers refuse there.
+
+The decks describe the code on `develop`, as of the RFC commit each `deck.json`
+records. The glossary's source links open `develop`, and most of its code paths
+name that branch's tree; a few, such as `pkg/engine`, name this branch's. On
+`feat/storage-v2` many of the others do not exist: that branch deleted the v1
+packages and moved the rest. Read a deck as a guide to the RFC, not to this
+branch's tree.
 
 ## Layout
 

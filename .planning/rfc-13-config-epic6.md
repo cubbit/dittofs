@@ -619,8 +619,8 @@ Pending the user's answer, each written in its recommended form above:
   until E5's T5.4, and E5's D6 then reads a namespace as holding content for its whole life and a
   share scope as an error. So the rows' "no content, accepted" half is reachable only for a store
   with no namespace naming it (R17). `CLAUDE.md` rule 4 and `docs/internals/architecture.md` on
-  that branch still say the data path is cut and `block.ErrNoContentStore` answers every content
-  operation; no code returns that error, and #5280 files the stale lines.
+  that branch said the data path is cut and `block.ErrNoContentStore` answers every content
+  operation; no code returned that error, and the change closing #5280 corrected those lines.
 - **The table declares no bound setting today (D3).** Recommended: the loop plus the test's own
   section. The alternative, requiring at least one declared bound key, fails the epic until
   another plan declares one.

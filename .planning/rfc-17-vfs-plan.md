@@ -24,8 +24,8 @@ stage 5. E11 is the item of #3152 that puts the engine on the RFC 16 store.
 - **The engine:** not built. Journal v2 has its types, errors and data-path declarations
   (#3157, #3159, #3162, #3190); the engine itself is stage 3 (#3152, E11).
 - **Today's server** on `develop`: `pkg/metadata.Service`, the protocol handlers that each order
-  their own calls, and `pkg/metadata/lock`. Route B ports none of it (D1), except the
-  pseudo-filesystem (piece 3).
+  their own calls, and the lock package; stage 4 deleted the service and the lock package from
+  `feat/storage-v2`. Route B ports none of it (D1), except the pseudo-filesystem (piece 3).
 
 ## 2. Decisions to settle
 
@@ -248,7 +248,7 @@ and bound as §4.7 binds `WRITE`; the RFC 20 plan's §4.1 sketches one.
 | 9 | Quota | §5.6 | piece 8; the store's read views (plan §5 Q3) |
 | 10 | Locks, grants, watches | §5.11, §3.2 | pieces 4, 7, 8; stage 1 pieces 4, 5, 8 |
 | 11 | Copy and clone | §5.9 | piece 8; the engine's S3 (#3546), not all of stage 3 |
-| 12 | Test doubles (open) | §8 | pieces 1 and 2; before RFC 20's E4 |
+| 12 | Test doubles (open) | §8 | pieces 1 and 2; before RFC 20's epic 2 import test |
 | 13 | Held wait behind a clone (open) | §5.9 | piece 11; stage 5 puts an adapter on `vfs.Service` that passes a hold (RFC 20 §4.6) |
 
 "Done when" means every listed row passes and each of its cases is revert-checked. A row may be
@@ -402,15 +402,18 @@ its §5.9 row (an `Incomplete` source) waits for RFC 12's snapshot view.
     `truncErr` is a canned answer [RFC 29 §4.11](../docs/internals/rfcs/rfc-29-test-harness.md#4.11%20Test%20doubles)
     does not allow. This piece builds what §8 names instead: `internal/vfs/contenttest`, the
     `Content` suite written first and the in-memory `Content` that passes it (D3); `vfstest.Faults`,
-    every `Service` method wrapped explicitly; `vfstest.Callbacks` in place of
+    every `Service` method wrapped explicitly, with a fault that holds a call until the test
+    releases it (an event, never a timed wait); `vfstest.Callbacks` in place of
     `RecordingCallbacks`; and `memory.New`, the filesystem over the in-memory store, open
     state and that `Content`, with its recording wrapper of mutating calls. It then moves the
     seven `internal/vfs` test files off the old helpers and deletes `Record`, `RecordingCallbacks`
-    and `fakeContent`. Owner: this plan; it lands before RFC 20's E4, whose first test needs
+    and `fakeContent`. Owner: this plan; it lands before RFC 20's T2.3, whose import test needs
     `Memory`. Estimate: 8 man-days (the `Content` suite and in-memory `Content` 2.5, `Faults` 1.5,
     `Memory` and its wrapper 1.5, `Callbacks` 0.5, the test migration and deletions 2).
     Done when: the `Content` suite passes over the in-memory `Content`, `suite.Run` passes over
-    `Memory`, and no Go file names `Record`, `RecordingCallbacks` or `fakeContent`.
+    `Memory`, no Go file names `Record`, `RecordingCallbacks` or `fakeContent`, and a `Faults`
+    test holds a call until it releases it, the call returning only after the release, with no
+    timed wait.
 13. **Held wait behind a clone (open, a follow-up):** §5.9's held wait behind a running clone,
     through `WithHold`: a call behind a clone waits up to its hold and completes when the clone
     ends, instead of answering `DelayClone` at once. Until it lands, every such call answers

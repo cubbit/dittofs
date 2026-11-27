@@ -1,0 +1,379 @@
+package journal
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/journal/internal/core"
+	"github.com/cubbit/dittofs/pkg/journal/internal/datapath"
+	"github.com/cubbit/dittofs/pkg/journal/internal/segment"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest/kit"
+)
+
+// newTestJournal builds a Journal over a core on a real directory, with two
+// streams and small segments, and closes the core when the test ends. The
+// journal has no version limit.
+func newTestJournal(t *testing.T) *Journal {
+	t.Helper()
+	j, _ := newSeamedJournal(t)
+	return j
+}
+
+// newSeamedJournal is newTestJournal that also returns the storage seam, for a
+// test that holds a call at storage.
+func newSeamedJournal(t *testing.T) (*Journal, *kit.Seam) {
+	t.Helper()
+	seam, err := kit.NewSeam(t.TempDir())
+	if err != nil {
+		t.Fatalf("the seam could not be made: %v", err)
+	}
+	c, err := datapath.New(datapath.Deps{
+		FS:          seam.FS(),
+		Clock:       kit.NewStopwatchClock(),
+		Dir:         t.TempDir(),
+		Identity:    core.JournalID{0xd, 0xa, 0x7, 0xa},
+		Streams:     2,
+		SegmentCap:  64 << 10,
+		ExtentLimit: 1 << 20,
+		Descriptors: core.NewDescriptorBudget(64),
+		Targets:     segment.Targets{Content: 4},
+	}, datapath.State{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := c.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	return newJournal(c), seam
+}
+
+// withLimit sets a generous version limit on j.
+func withLimit(t *testing.T, j *Journal) {
+	t.Helper()
+	if err := j.SetVersionLimit(Version{Counter: 1 << 40}); err != nil {
+		t.Fatalf("SetVersionLimit: %v", err)
+	}
+}
+
+// writeReady writes p at offset 0 through h, as writeAtReady does.
+func writeReady(t *testing.T, h *Handle, id FileID, p string) Version {
+	t.Helper()
+	return writeAtReady(t, h, id, 0, []byte(p))
+}
+
+// writeAtReady writes p at off through h, waiting out a refusal for want of a
+// spare segment on the pool's own settle event, which clears once the pool
+// has readied its spares. Any write can meet that refusal, a roll as much as
+// a first write: the pool refills off the write path, so a roll that comes
+// before the refill lands finds no spare. The wait parks on the refill's
+// settle alone, so the helper answers a fill slower than any fixed window
+// would have been; it reports the pool's own answers — a stop, or the idle
+// short a failed make leaves — never its own. The minute below is a
+// backstop, not the wait: a settle is the only other end it has.
+func writeAtReady(t *testing.T, h *Handle, id FileID, off int64, p []byte) Version {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute) // backstop only; the wait is the settle
+	defer cancel()
+	for {
+		v, err := h.WriteAt(ctx, id, off, p, 1)
+		var ns *NoSpaceError
+		if errors.As(err, &ns) && ns.Limit == LimitSpare {
+			if werr := h.j.core.WaitSpares(ctx); werr != nil {
+				t.Fatalf("WaitSpares after a write refused at the spare limit: got %v, want the pool readied", werr)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("WriteAt: %v", err)
+		}
+		return v
+	}
+}
+
+func fileOf(b byte) FileID { return NewFileID([16]byte{b}) }
+
+func TestJournalShare_HandlesCarryTheirTags(t *testing.T) {
+	j := newTestJournal(t)
+	withLimit(t, j)
+	a, err := j.Share(1, 0, Version{})
+	if err != nil {
+		t.Fatalf("Share 1: %v", err)
+	}
+	b, err := j.Share(2, 0, Version{})
+	if err != nil {
+		t.Fatalf("Share 2: %v", err)
+	}
+	if a == b {
+		t.Fatal("two tags share one handle")
+	}
+	if got := a.s.Tag; got != 1 {
+		t.Errorf("first handle carries tag %d, want 1", got)
+	}
+	if got := b.s.Tag; got != 2 {
+		t.Errorf("second handle carries tag %d, want 2", got)
+	}
+
+	f := fileOf(1)
+	writeReady(t, a, f, "owned by one")
+	_, err = b.WriteAt(context.Background(), f, 0, []byte("x"), 1)
+	var other *OtherShareError
+	if !errors.As(err, &other) || other.Owner != 1 || other.Tag != 2 {
+		t.Fatalf("the other handle's write of the file = %v, want an OtherShareError owned by 1", err)
+	}
+	if !errors.Is(err, ErrOtherShare) {
+		t.Errorf("err = %v, want ErrOtherShare", err)
+	}
+}
+
+func TestJournalShare_RefusesWhatTheCoreRefuses(t *testing.T) {
+	j := newTestJournal(t)
+	if _, err := j.Share(0, 0, Version{}); !errors.Is(err, ErrInvalidSetting) {
+		t.Errorf("tag 0: err = %v, want ErrInvalidSetting", err)
+	}
+	if _, err := j.Share(1, -1, Version{}); !errors.Is(err, ErrInvalidSetting) {
+		t.Errorf("negative limit: err = %v, want ErrInvalidSetting", err)
+	}
+	if _, err := j.Share(1, 0, Version{Epoch: 1}); !errors.Is(err, ErrUnknownFormat) {
+		t.Errorf("floor epoch: err = %v, want ErrUnknownFormat", err)
+	}
+}
+
+// TestJournalShare_RefusedOffTheClosedFlag pins Share's closed-flag check
+// under handlesMu and the window that check alone closes: Close raises the
+// flag, and then — as its first act on the core — the fence, both before it
+// takes this lock, so past those two no attach can land behind a close
+// begun; the check's own window is only the sliver between the flag's rise
+// and the fence's, where a racing attach passed the check before the flag
+// rose and the core has not fenced yet, and past that sliver the fence
+// refuses the attach where this check cannot see it. Raising the flag by
+// hand leaves the core unfenced, so the refusal observed is the check's.
+func TestJournalShare_RefusedOffTheClosedFlag(t *testing.T) {
+	j := newTestJournal(t)
+	j.closed.Store(true)
+
+	if _, err := j.Share(1, 0, Version{}); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Share with the close's flag raised before the lock = %v, want ErrClosed", err)
+	}
+}
+
+// TestJournalClose_FencesBeforeItWaitsOnTheHandles pins the close's order
+// against the handles mutex: the core's fence goes up before Close waits on
+// this mutex, so the journal-level calls the fence closes — Draw and
+// SetVersionLimit, which take no handles mutex — already refuse while Close
+// is blocked behind the mutex a Share mid-attach holds across the core's
+// attach. Reordered, with the fence raised only after the snapshot, the
+// whole interval Close spends blocked on the mutex answers both with real
+// results, and the bounded wait below never sees a refused Draw: a Draw
+// succeeding after Close began is the failure it names.
+func TestJournalClose_FencesBeforeItWaitsOnTheHandles(t *testing.T) {
+	j := newTestJournal(t)
+	withLimit(t, j)
+
+	// The mutex is held for the whole test, as a mid-attach Share holds it,
+	// and the deferred release lets the close parked on it run to its end
+	// whatever the test's own outcome was.
+	j.handlesMu.Lock()
+	defer j.handlesMu.Unlock()
+
+	closed := make(chan error, 1)
+	go func() { closed <- j.Close() }()
+
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		_, err := j.Draw()
+		if errors.Is(err, ErrClosed) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Draw was never refused while Close was blocked on the handles mutex: last = %v", err)
+		}
+	}
+	if err := j.SetVersionLimit(Version{Counter: 1 << 41}); !errors.Is(err, ErrClosed) {
+		t.Fatalf("SetVersionLimit while Close is blocked on the handles mutex = %v, want ErrClosed", err)
+	}
+}
+
+func TestJournalShare_SameTagSameHandle(t *testing.T) {
+	j := newTestJournal(t)
+	a, err := j.Share(1, 10, Version{})
+	if err != nil {
+		t.Fatalf("Share: %v", err)
+	}
+	b, err := j.Share(1, 20, Version{})
+	if err != nil {
+		t.Fatalf("second Share: %v", err)
+	}
+	if a != b {
+		t.Fatal("a second Share of an open tag returned another handle")
+	}
+	if got := b.s.Limit(); got != 20 {
+		t.Fatalf("limit after the second Share = %d, want 20", got)
+	}
+
+	var wg sync.WaitGroup
+	got := make([]*Handle, 8)
+	for i := range got {
+		wg.Go(func() {
+			h, err := j.Share(2, 0, Version{})
+			if err != nil {
+				t.Errorf("Share: %v", err)
+				return
+			}
+			got[i] = h
+		})
+	}
+	wg.Wait()
+	for i, h := range got {
+		if h == nil || h != got[0] {
+			t.Fatalf("concurrent Share %d returned another handle", i)
+		}
+	}
+
+	if err := a.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	c, err := j.Share(1, 0, Version{})
+	if err != nil {
+		t.Fatalf("Share after Close: %v", err)
+	}
+	if c == a {
+		t.Fatal("a Share after Close returned the closed handle")
+	}
+}
+
+func TestHandleClose_PublicRefusesAndWaits(t *testing.T) {
+	j, seam := newSeamedJournal(t)
+	withLimit(t, j)
+	h, err := j.Share(1, 0, Version{})
+	if err != nil {
+		t.Fatalf("Share: %v", err)
+	}
+	writeReady(t, h, fileOf(1), "kept")
+	// The pool settles before the hold goes up, so the write below takes a
+	// spare that is ready and never meets the refusal it would have retried.
+	if err := j.core.WaitSpares(t.Context()); err != nil {
+		t.Fatalf("WaitSpares before the hold: %v", err)
+	}
+
+	hold := seam.Hold(t, kit.OpWrite, "*")
+	defer hold.Release()
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		if _, err := h.WriteAt(context.Background(), fileOf(2), 0, []byte("held"), 1); err != nil {
+			t.Errorf("the write in flight: %v", err)
+		}
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for hold.Waiting() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("the write never reached the seam")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- h.Close() }()
+
+	refused := false
+	for deadline := time.Now().Add(5 * time.Second); !refused && time.Now().Before(deadline); {
+		_, err := h.WriteAt(context.Background(), fileOf(3), 0, nil, 1)
+		refused = errors.Is(err, ErrClosed)
+		if !refused {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if !refused {
+		t.Fatal("a new call was never refused once Close began")
+	}
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned %v while a call was in flight", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	hold.Release()
+	wg.Wait()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close never returned after the call finished")
+	}
+	if err := h.Close(); !errors.Is(err, ErrClosed) {
+		t.Errorf("second Close = %v, want ErrClosed", err)
+	}
+	fresh, err := j.Share(1, 0, Version{})
+	if err != nil {
+		t.Fatalf("Share after Close: %v", err)
+	}
+	if fresh == h {
+		t.Fatal("a Share after Close returned the closed handle")
+	}
+	writeReady(t, fresh, fileOf(1), "again")
+}
+
+func TestJournalStrand(t *testing.T) {
+	var zero Journal
+	if err := zero.Strand(1); !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("the zero Journal's Strand = %v, want ErrNotImplemented", err)
+	}
+
+	j := newTestJournal(t)
+	if err := j.Strand(1); err != nil {
+		t.Fatalf("Strand: %v", err)
+	}
+	if err := j.Strand(1); err != nil {
+		t.Fatalf("second Strand of the same tag = %v, want nil", err)
+	}
+	if err := j.Strand(0); !errors.Is(err, ErrInvalidSetting) {
+		t.Errorf("tag 0: Strand = %v, want ErrInvalidSetting", err)
+	}
+
+	if err := j.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := j.Strand(2); !errors.Is(err, ErrClosed) {
+		t.Errorf("Strand after Close = %v, want ErrClosed", err)
+	}
+}
+
+func TestJournalDraw_PublicLimitSurface(t *testing.T) {
+	j := newTestJournal(t)
+	h, err := j.Share(1, 0, Version{})
+	if err != nil {
+		t.Fatalf("Share: %v", err)
+	}
+
+	var ns *NoSpaceError
+	if _, err := j.Draw(); !errors.As(err, &ns) || ns.Limit != LimitVersion {
+		t.Fatalf("Draw before a limit = %v, want a NoSpaceError naming LimitVersion", err)
+	}
+	ns = nil
+	if _, err := h.WriteAt(context.Background(), fileOf(1), 0, []byte("x"), 1); !errors.As(err, &ns) || ns.Limit != LimitVersion {
+		t.Fatalf("WriteAt before a limit = %v, want a NoSpaceError naming LimitVersion", err)
+	}
+
+	if err := j.SetVersionLimit(Version{Epoch: 1, Counter: 5}); !errors.Is(err, ErrUnknownFormat) {
+		t.Fatalf("SetVersionLimit with an epoch = %v, want ErrUnknownFormat", err)
+	}
+	ns = nil
+	if _, err := j.Draw(); !errors.As(err, &ns) {
+		t.Fatalf("a refused mark set a limit: Draw = %v", err)
+	}
+
+	withLimit(t, j)
+	v1, err := j.Draw()
+	if err != nil {
+		t.Fatalf("Draw: %v", err)
+	}
+	v2 := writeReady(t, h, fileOf(1), "x")
+	if v2.Counter <= v1.Counter {
+		t.Errorf("versions did not rise: Draw %v then WriteAt %v", v1, v2)
+	}
+}

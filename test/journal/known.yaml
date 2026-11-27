@@ -1,0 +1,1106 @@
+# The journal's conformance tests that fail or skip today, one entry per test, never a pattern, each
+# naming the epic expected to turn it green. A test that starts to pass fails the run: remove
+# its entry in the change that turned it green. Each entry's message is text the test's output
+# must contain for its failure or skip to count as the one listed; an entry with no message
+# stands for any output of the test it names. Open now works for a directory holding no
+# segment, so the failing tests fail past the fixture: on a journal call not yet written, which
+# the checks fail with "stub:", on a reopen of a journal that has run, which the fixture refuses
+# with "fixture:", or on a journal that does not yet refuse what the RFC refuses -- and any
+# other failure is graded new.
+
+- test: TestClock_WallJumpMovesNoTimer
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs the bounded sync timer and the data path.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestMetrics_ConditionsMoveTheirMetric
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; every leg of the check fails on a stub call. Needs the data path, group commit, window resolution, the loss counters a public call can reach - corrupt, stale and failed windows; superseded and acknowledged have no public call yet - the corrupt outcomes and the read-only state counted.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestModel
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, offload, release, repack and recovery.'
+  issue: '#3379'
+  message: 'stub: Offload; running fill-racing-write.txt: step 1, offload s=1 f=1: stub: Offload'
+
+- test: TestRFC1A_FillSetsTheBit
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs Release.'
+  issue: '#3379'
+  message: 'stub: Release'
+
+- test: TestRFC1A_LostStampIsOffered
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs stamps, offers of unstamped versions, release and repack.'
+  issue: '#3379'
+  message: 'stub: Stamp'
+
+- test: TestRFC1A_NeighboursAreFrozen
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs offers widened to offloaded neighbours, frozen while the callback runs, and release.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1A_NoPinOnSegmentUnderRepack
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs offers that skip segments under repack, and repack.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1A_NoZeroFill
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, MarkOffloaded and Release.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1A_OfferStopsAtThrough
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs sync, offload and release.'
+  issue: '#3379'
+  message: 'stub: Stamp'
+
+- test: TestRFC1A_OfferedBytesVerified
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs offers whose reader verifies whole records, and corrupt drops.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1A_PartialReleaseKeepsRecordWhole
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on the Offload stub, which its release legs reach. Needs offload, release, sealing with catalogs and recovery by catalog and by scan.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1A_Refusal
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded and Release refusing dirty extents.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1A_ReleaseFreesNothingInsideSegment
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded, release and per-segment accounting.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1A_RemovalDuringOffload
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs offers frozen across Truncate and Delete.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1A_UnlinkUnderRead
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs offload marks, offload and release.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1A_WriteDuringOffload
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs offload and its report, and Release refusing dirty extents.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1B_BackgroundJoined
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs repack and recovery; the close joins its background work before it closes every segment.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1B_Coalescing
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded, release, and repack coalescing adjacent extents into one record.'
+  issue: '#3379'
+  message: 'stub: Release'
+
+- test: TestRFC1B_FailedWindowDoesNotWedge
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs failed sync windows resolved, loss events and offload.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1B_FreedMeansFreed
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs release, retirement of segments left holding nothing and repack.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1B_HeadroomIsAllocated
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens and fills the device; the refused content write now answers the filesystem''s ENOSPC, and the check fails on a stub call at its mark leg. Needs release, removal, mark and repack.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1B_IndexBoundRefuses
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Stats serves ExtentLimit; the check now stops on a stub call after it reads it. Needs the index entry bound refusing writes and splitting removals, MarkOffloaded, release and repack.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1B_NamedRefusal
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs capacity refusals naming their limit and shortfall, release and repack.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1B_NoDeadlock
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path, Fill, MarkOffloaded, release, repack and Verify.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1B_OffloadedRecordsBelowHalfTheHeadroom
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Stats serves HeadroomBytes; the check now stops on a stub call after it reads it. Needs the data path, the headroom half rule, offload, holds, stamps and recovery of offloaded bits.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1B_PinnedSegmentsBounded
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs idle sealing, offload pinning a bounded number of segments, release and repack.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1B_PinsBoundedAcrossOffers
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on the Offload stub, which its offload pins need. Needs idle sealing and offload, with pins bounded across running offers.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1B_ReclaimNotStarved
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded, release and repack taking a segment under sustained reads.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1B_RecordsWithoutBytesAtTheLimit
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens, the journal-sized fill is refused naming the limit it reached, and the truncate, deallocate and delete at the journal''s maximum are admitted on the headroom, which keeps a spare per stream to roll into; the check then stops at the stub call it reaches. Needs MarkOffloaded and Release, which the offload epic writes.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1B_RemovalRecordsDroppedPerExtent
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded, release, removals, Settle and repack dropping removal records per extent.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1B_RemovalsDoNotWaitOnOffload
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs offload, removals that never wait on its callback, and repack.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1B_RepackAimedAtShare
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs share limits, MarkOffloaded, release, idle sealing and repack scoped to a share or to segments.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1B_RepackAtCapacity
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens, but not all of what the check exercises is written yet. Needs MarkOffloaded, release and repack.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1B_RepackBesideShareAtLimit
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs share limits, release and repack copies outside every share limit.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1B_StorageReturned
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs release, retirement of segments left holding nothing and repack.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1C_CancelledCallChangesNothingOrCompletes/done_context_appends_nothing
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens and the leg''s write runs; the leg stops at the offload, still a stub, before it can take the append away from the done context.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1C_FileIsItsSharesShare
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; every failing leg of the check fails on a stub call. Needs files owned by the share whose records built them, the cross-share refusals, tag-conflict recovery and forget.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1C_FileIsItsSharesShare/a_planted_second_tag_surfaces_a_conflict
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check plants a second tag and reopens, and a journal that has run cannot be reopened until recovery lands. Needs tag-conflict recovery.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1C_FillBeatsOlderWrite
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs the data path keeping a filled extent over the released offloaded content it covers, across recovery.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1C_HeaderOnlyRecordsReappended
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs the failed-sync re-append of records without payload bytes, and the failed segment never sealed.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1C_IncrementalReport
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal seals both writes idle and the check then stops at the stub call it reaches. Needs Offload with the incremental report, which the offload epic writes.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1C_Monotonicity
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens and the row reads its segments, then fails on the Offload stub. Waits for Offload and the MarkOffloaded it feeds.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1C_ReleaseRecordLost
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs release records holding a segment from being unlinked until they sync, and the released extent staying held after the crash.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1C_ReleaseSurvivesRestart
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs the placement index rebuilt without a released extent, with no resurrection of the older offloaded content.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1C_ReseedAfterRepack
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs the offloaded bits and release permissions reseeded from the index after a repack moved the record.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1C_RestampAfterLostStore
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs the restamp of the format file, durable across a reopen, and its identity refusal.'
+  issue: '#3596'
+  message: 'stub: Restamp'
+
+- test: TestRFC1C_StaleFill
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; its leg that staleness-tests a fill beside a write stops at the Offload stub that write runs first, and its truncate leg passes. Needs the offload the write runs before it can fill over released content.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1C_UnclaimedTagsAreTheCallersToName
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs unattached tags kept and reported, served once their share attaches, and forgotten only when the caller names them.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestRFC1D_BacklogAge
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'Stats serves OldestDirty; the check now stops on a stub call after it reads it. Needs the data path and MarkOffloaded.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1D_LossEvents
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs the loss ring, corrupt reads and the stale rule of MarkOffloaded.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1D_NamedInequalitiesHold
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; every worker''s round stops at the MarkOffloaded stub, the only unwritten call its writes reach — each round marks every other write offloaded before it releases it, and no round varies. Needs MarkOffloaded and Release.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1D_SegmentHeldBytes
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on the MarkOffloaded stub, which its release legs reach. Needs MarkOffloaded, release and repack.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1D_VerificationReports
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs Verify and the data path.'
+  issue: '#3596'
+  message: 'stub: Inspect.Verify'
+
+- test: TestRFC1D_WedgeIsVisibleUnreclaimed
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The check stops on a stub call. Needs MarkOffloaded and release; Stats serves UnreclaimedBytes already.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC28A_CorruptDirty
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal reopens over the run and serves the read back; the check stops at the MarkOffloaded stub, on the reseed marks the restart is expected to hand the remote tier''s content. Needs the offload marks and the release legs behind them.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC28A_CorruptOffloaded
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs Open: the offloaded corrupt drop is built (Durability.Corrupt), the fixture cannot open a journal.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC28A_AZeroSlotIsNotTheEnd
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs reservations, failed writes and a recovery scan that steps over a zero slot.'
+  issue: '#3596'
+  message: 'the failed write''s zero slot was reported as damage or a torn tail'
+
+- test: TestRFC28C_TruncatedSealedSegment
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens and the segment is cut; the reopen is then refused at recovery: the named predecessor''s missing end is a range that names no record, which recovery refuses rather than counting. Needs recovery that counts a range naming no record as a loss and opens over it.'
+  issue: '#3596'
+  message: 'a named predecessor''s missing end at [525168,525364) that names no record'
+
+- test: TestRFC28C_BitsSurviveRestart
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded, release and the rebuild of offloaded bits.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC28A_UnmarkClears
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded, Unmark, release and the rebuild of offloaded bits.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC28C_ReseedByVersion
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded by version, release and recovery.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC28C_SourcesAgree
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs, recovery by scan and the index built the same way from both.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC28C_TrailerTorn
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs catalogs, recovery by scan and Verify.'
+  issue: '#3596'
+  message: 'stub: Inspect.Verify'
+
+- test: TestRFC28A_FooterIsNotAuthoritative
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'decision: parked red on purpose, since the RFC 28 row and recovery disagree and neither changes until the RFC 28 owner rules. The row wants a read through a footer entry its record contradicts refused as corruption; recovery instead demotes the whole segment to a scan at open, so the record''s own verifying header wins, the extent is served and no segment is read by catalog. Overturned by the owner''s ruling on #5227: amend the row and this test, or make recovery confine the record as corrupt.'
+  issue: '#5227'
+  message: 'recovery read 0 segments by catalog, want 1'
+
+- test: TestRFC28C_ScanResynchronises
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the open refuses over the bad record the scan should have stepped past: a refused range that names no record. Needs recovery by scan that resynchronises past a bad record instead of refusing the open over what the catalog cannot name.'
+  issue: '#3596'
+  message: 'that names no record'
+
+- test: TestRFC28C_SealMarkerCopiedIntoAPayload
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens and the seal marker is copied into a payload; the crash''s reopen is then refused at recovery: a refused range that names no record, which recovery refuses rather than counting. Needs recovery that counts a range naming no record as a loss and opens over it.'
+  issue: '#3596'
+  message: 'a refused range at [65688,65792) that names no record'
+
+- test: TestRFC28C_SpareIsWholeOrAbsent/create
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC28C_SpareIsWholeOrAbsent/allocate
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC28C_SpareIsWholeOrAbsent/write
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC28C_SpareIsWholeOrAbsent/sync
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC28C_SpareIsWholeOrAbsent/rename
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs spares made under a temporary name, recovery that unlinks them, repack and the headroom.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC28C_SpareIsWholeOrAbsent/durable_temporary_entry
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens and the check stops at the stub call its setup reaches when it releases the filled segment''s records. Needs MarkOffloaded, which the offload epic writes.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC28C_RetiredSegmentsAreRecycled
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens and the check stops at the stub call its setup reaches when it releases the filled segment''s records. Needs MarkOffloaded, which the offload epic writes.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC28C_RecycledSegmentsOldCatalogIsNeverRead
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens and the check stops at the stub call its setup reaches when it releases the filled segment''s records. Needs MarkOffloaded, which the offload epic writes.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC28C_StaleExtent
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded with the stale rule, release, repack and recovery.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC28C_VersionFloor
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; a journal that has run cannot be reopened until recovery lands. Needs the version floor at open and MarkOffloaded.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC28C_FormatFile
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs the format file checked at open, Restamp by a whole-file replace, and recovery.'
+  issue: '#3596'
+  message: 'stub: Restamp'
+
+
+- test: TestDamage_BitFlip/record_header/magic
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header/kind
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header/reserved_5
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header/segment_id
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header/file_id
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header/file_offset
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header/length
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header/sequence_number
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header/version_epoch
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header/version_counter
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header/share_tag
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header/synced_through
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header/payload_checksum
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header/own_offset
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header/header_checksum
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and catalogs.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/write_body/modification_time
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring, MarkOffloaded and catalogs.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/write_body/payload
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring, MarkOffloaded and catalogs.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/write_body/payload_of_offloaded_record
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring, MarkOffloaded and catalogs.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/write_body/header_checksum_of_offloaded_record
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring, MarkOffloaded and catalogs.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header_scanned/magic
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header_scanned/kind
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header_scanned/reserved_5
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header_scanned/segment_id
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header_scanned/file_id
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header_scanned/file_offset
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header_scanned/length
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header_scanned/sequence_number
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header_scanned/version_epoch
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header_scanned/version_counter
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header_scanned/share_tag
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header_scanned/synced_through
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header_scanned/payload_checksum
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header_scanned/own_offset
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/record_header_scanned/header_checksum
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring and the recovery scan.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/write_body_scanned/modification_time
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring, MarkOffloaded and the recovery scan.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/write_body_scanned/payload
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring, MarkOffloaded and the recovery scan.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/write_body_scanned/payload_of_offloaded_record
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring, MarkOffloaded and the recovery scan.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_BitFlip/write_body_scanned/header_checksum_of_offloaded_record
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs corrupt reads, the loss ring, MarkOffloaded and the recovery scan.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_SegmentDeleted
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs recovery that opens without a segment a successor names, and the data path.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestDamage_DirectoryRestored
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded with the stale rule, the version floor and recovery.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestEdge_RecordsWithoutBytesAtMaximum
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal fills to its maximum and draws the truncate and the delete on its headroom; the check then stops at the stub call it reaches. Needs MarkOffloaded, which the offload epic writes.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestEdge_FillOverHeldDirtyAndAbsent
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs MarkOffloaded.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestEdge_OffloadReportsUnofferedOrNone
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs Offload reports against the offer.'
+  issue: '#3379'
+  message: 'stub: Offload'
+
+- test: TestEdge_ReleasePartlyOffloaded
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs Release of a partly offloaded range.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestEdge_ReleaseMiddleEndsAndAll
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs Release at every place in a record.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestEdge_FullyReleasedSegmentReclaimedWithoutRead
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs the retirement of a fully released segment.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestEdge_SegmentRetiredByEvictionAndRepack
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs retirement by eviction and by repack.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1A_CarriedReleaseKeepsItsSequence
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs repack that keeps a carried release record''s sequence, and recovery.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1A_DropsDecidedAfterCopies
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs repack ordering its drops after its copies, holds, Settle and recovery.'
+  issue: '#3379'
+  message: 'stub: Hold'
+
+- test: TestRFC1A_LossRaisesLossGeneration
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens and its dirty-content leg runs; the check stops at the MarkOffloaded stub, on the mark the leg that drops a corrupt offloaded extent sets up with. Needs the offload marks and the release legs behind them.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1A_RecycledSegmentKeepsNewRecords
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on the MarkOffloaded stub, which its released-content leg reaches. Needs recycled segments serving only new records, a failed append retiring one, and recovery.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1A_RemovalDroppedByVersion
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; every failing leg of the check fails on a stub call. Needs holds, repack ordering its drops after removals, Settle and recovery.'
+  issue: '#3379'
+  message: 'stub: Hold'
+
+- test: TestRFC1A_RemovalDroppedByVersion/share_1
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; every failing leg of the check fails on a stub call. Needs holds, repack ordering its drops after removals, Settle and recovery.'
+  issue: '#3379'
+  message: 'stub: Hold'
+
+- test: TestRFC1A_RemovalDroppedByVersion/share_0
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; every failing leg of the check fails on a stub call. Needs holds, repack ordering its drops after removals, Settle and recovery.'
+  issue: '#3379'
+  message: 'stub: Hold'
+
+- test: TestRFC1A_RemovalOutlivesItsSegment
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs removal markers carried by a repack out of their segment, Settle and recovery.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1A_RemovalRecordsCarriedForward
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs removal markers carried forward by repack and still reached by Since.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1A_RepackCopiesLivePart
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs repack copying the live part and serving both locations, and recovery.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1A_RepackUnderRead
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs offload marks, offload and release.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1A_RepackVerifiesWholeSource
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs repack that verifies a whole source record, takes nothing from a bad one and reports the loss.'
+  issue: '#3379'
+  message: 'stub: MarkOffloaded'
+
+- test: TestRFC1A_RetainedExtentsSurviveRepack
+  status: fail
+  fix: planned
+  category: feature
+  reason: 'The journal opens; the check fails on a stub call. Needs retained extents kept by repack and released once their hold goes.'
+  issue: '#3379'
+  message: 'stub: Hold'

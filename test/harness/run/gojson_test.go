@@ -225,8 +225,13 @@ func TestGoPackages(t *testing.T) {
 // The integration suite runs the KMIP key provider's live tests: its packages
 // include the key provider's, and it needs the KMIP service, without which
 // those tests skip. A tag dropped from their file, or the need from the
-// registry, would leave them out of every run with nothing going red.
+// registry, would leave them out of every run with nothing going red. The
+// listing runs with no module cache, no proxy and the toolchain running the
+// test, as on a runner whose cache is cold and whose every download fails.
 func TestIntegrationRunsTheKMIPTests(t *testing.T) {
+	t.Setenv("GOMODCACHE", t.TempDir())
+	t.Setenv("GOPROXY", "off")
+	t.Setenv("GOTOOLCHAIN", "local")
 	r, err := registry.Load("../../..")
 	if err != nil {
 		t.Fatal(err)
@@ -239,7 +244,8 @@ func TestIntegrationRunsTheKMIPTests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const keyProvider = "github.com/cubbit/dittofs/pkg/block/middleware/encryption/keyprovider"
+
+	const keyProvider = "github.com/cubbit/dittofs/pkg/keyprovider"
 	if !slices.Contains(pkgs, keyProvider) {
 		t.Errorf("integration's packages leave out %s: %q", keyProvider, pkgs)
 	}
@@ -814,18 +820,6 @@ func TestBinOncePerRun(t *testing.T) {
 	}
 }
 
-// A root suite that names a program as {bin}/NAME finds it built, by the
-// user, before its commands run as root.
-func TestBinNamedProgram(t *testing.T) {
-	calls := fakeSudo(t)
-	files := withBins(map[string]string{"go.mod": goModule["go.mod"], "test/smbfuzz/cmd/smbfuzz/main.go": "package main\n\nfunc main() {}\n"})
-	o, out, _ := goRun(t, "suites:\n  g: { cmd: 'test -x {bin}/smbfuzz', needs: [root] }\n", files)
-	ran, _ := os.ReadFile(calls)
-	if o.Result != report.Passed || !strings.Contains(out, "[dt] $ go build") || strings.Contains(string(ran), "build") || !strings.Contains(string(ran), "smbfuzz") {
-		t.Errorf("outcome %+v\nsudo ran:\n%s\n%s", o, ran, out)
-	}
-}
-
 // When dfs or dfsctl doesn't build, the root cell didn't run, and its log
 // has the build's output.
 func TestBinBuildFailure(t *testing.T) {
@@ -834,7 +828,7 @@ func TestBinBuildFailure(t *testing.T) {
 	files["cmd/dfs/main.go"] = "package main\n\nfunc main() { notDefined() }\n"
 	o, _, dir := goRun(t, "suites:\n  g: { cmd: go test ./..., format: go-json, needs: [root] }\n", files)
 	log, _ := os.ReadFile(filepath.Join(dir, "logs", "g.log"))
-	if o.Result != report.NotRun || !strings.Contains(o.Note, "{bin} didn't build") || !strings.Contains(string(log), "notDefined") {
+	if o.Result != report.NotRun || !strings.Contains(o.Note, "dfs and dfsctl didn't build") || !strings.Contains(string(log), "notDefined") {
 		t.Errorf("outcome %+v\nlog:\n%s", o, log)
 	}
 }

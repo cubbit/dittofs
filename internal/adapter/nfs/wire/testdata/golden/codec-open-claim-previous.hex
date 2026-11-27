@@ -1,0 +1,3 @@
+# open_claim4, by hand: CLAIM_PREVIOUS's arm.
+00000001                               # claim: CLAIM_PREVIOUS
+00000002                               # delegate_type: OPEN_DELEGATE_WRITE

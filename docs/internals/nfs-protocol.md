@@ -241,63 +241,20 @@ NFS uses RPC authentication flavors:
 | 10002 | NFS3ERR_NOT_SYNC | Update sync mismatch |
 | 10004 | NFS3ERR_NOTSUPP | Operation not supported |
 
-Internal errors are mapped to NFS status codes in `pkg/metadata/errors.go`.
+### One error table per program
 
-### Per-package translation switches
-
-Every `metadata.ErrorCode` value is translated to an NFSv3 or NFSv4 status
-code by the `StatusFor` switch in the adapter types packages
-(`internal/adapter/nfs/types`, `internal/adapter/nfs/v4/types`). The
-accessors are:
-
-- `nfs/types.StatusForErr(err) uint32` — NFSv3 status (e.g., `NFS3ERR_NOENT`)
-- `nfs/v4/types.StatusForErr(err) uint32` — NFSv4 status (e.g., `NFS4ERR_NOENT`)
-
-Each package owns its protocol's switch; the package name implies the
-protocol. Adding a new error code means adding one switch arm plus one
-expectation row per package — the enum-walk test in each package fails
-loudly if either is missing.
-
-Unwrapping uses `errors.As`, so wrapped StoreError values
-(`fmt.Errorf("...: %w", storeErr)`) map correctly in every handler path.
-Raw block-store errors are normalized to `*merrs.StoreError` at the
-payload choke point (`internal/adapter/common`), so handler paths see one
-error shape.
-
-### Audit-logging wrapper
-
-The NFSv3 audit wrapper at `internal/adapter/nfs/xdr/errors.go`
-(`MapStoreErrorToNFSStatus`) is preserved as a thin logging layer: its body
-calls `nfs/types.StatusForErr(err)` and adds a severity-based log dispatch
-(Warn for client-side faults, Error for server-side I/O/space exhaustion)
-with structured fields (`operation`, `code`, `message`, `path`, `client`).
-Callers that want raw mapping call `nfs/types.StatusForErr` directly;
-callers that want audit output call `xdr.MapStoreErrorToNFSStatus`.
-
-### Lock-context translation
-
-`metadata.ErrLocked`, `ErrDeadlock`, `ErrGracePeriod`, and other
-lock-operation codes have different status codes in lock context
-(SMB2 LOCK) versus general I/O context (READ/WRITE) on SMB: the
-`smb/types` package exposes `StatusForLock`/`StatusForLockErr` for the
-lock context alongside `StatusFor`/`StatusForErr` for general I/O —
-separate functions, same package, so the divergence is visible at the
-call site. NFS has no lock-context split: `ErrLocked` → `NFS4ERR_LOCKED`
-in both contexts (pinned by the nfs/v4/types enum-walk expectations), and
-NFSv3 has no lock procedure (NLM is unimplemented; only NSM exists). SMB
-diverges (e.g., `ErrLocked` → `STATUS_LOCK_NOT_GRANTED` in lock context
-vs. `STATUS_FILE_LOCK_CONFLICT` in general context).
-
-### Conformance testing
-
-`test/e2e/cross_protocol_test.go:TestCrossProtocol_ErrorConformance`
-table-drives every triggerable code through real NFS/SMB mounts and
-asserts the kernel delivers the expected errno. Exotic codes that cannot
-be e2e-triggered (quota, grace-period, connection-limit) are covered by
-the enum-walk tests in the types packages (`statusfor_test.go` per
-package). Both tiers derive from the same switches — adding a new code
-without a switch arm or expectation row fails `TestStatusFor_EnumWalk` at
-CI time.
+The filesystem service answers in its own errors, in no protocol's terms
+(`pkg/vfs/errors.go`, declared in `pkg/vfs/vfserr`). Each NFS program maps them,
+and the adapter core's own refusals (`core.Errors()`), through a
+`core.ErrorTable` (`internal/adapter/core/errors.go`): rows of an error, matched
+with `errors.Is`, optionally narrowed to operations and versions, and a status;
+an error no row matches gets the table's fault status. `tables()` in
+`internal/adapter/nfs/nfs.go` builds the five program tables, NFSv3, NFSv4,
+MOUNT, NLM and NSM. Their operation tables are still empty, so the only rows
+today are core's refusals: a procedure the table lacks is `PROC_UNAVAIL`,
+arguments that do not decode are `GARBAGE_ARGS`, and NFSv4 answers a minor
+version it does not serve `NFS4ERR_MINOR_VERS_MISMATCH`. The rows mapping the
+service's errors land with the operations ([RFC 20 §4.5](rfcs/rfc-20-adapters.md)).
 
 ---
 
@@ -416,7 +373,7 @@ NFSv4.2 extends v4.1 with sparse file operations (RFC 7862: ALLOCATE, DEALLOCATE
 | Operation | Status | Notes |
 | ----------- | -------- | ------- |
 | ALLOCATE | Implemented | Space pre-allocation via block store |
-| DEALLOCATE | Implemented | Punch holes in content-addressed/dedup-safe way via `pkg/block` |
+| DEALLOCATE | Implemented | Punch holes via the engine (`pkg/engine`) |
 | SEEK | Implemented | SEEK_HOLE and SEEK_DATA ([#1303](https://github.com/cubbit/dittofs/issues/1303)) — returns `NFS4_CONTENT_HOLE` for unwritten regions ([#1304](https://github.com/cubbit/dittofs/issues/1304)) |
 | READ_PLUS | Implemented | Returns data segments and hole descriptors; integrates with block storage ([#1305](https://github.com/cubbit/dittofs/issues/1305)) |
 
@@ -546,7 +503,7 @@ dittofs/
 3. Program/version/procedure validated
 4. Credentials copied into a handler context (`middleware.ExtractHandlerContext` for v3, `ExtractV4HandlerContext` for v4)
 5. Procedure handler dispatched
-6. Handler builds the `*metadata.AuthContext` with share permission and squashing applied (`BuildAuthContextWithMapping` for v3, `buildV4AuthContext` for v4), then calls repository methods
+6. Handler calls `vfs.Service` with the operation's `vfs.Call`, whose `Identity` is the caller the adapter authenticated ([RFC 20 §4.4](rfcs/rfc-20-adapters.md))
 7. Response encoded and sent
 
 ### Critical Procedures
@@ -561,8 +518,8 @@ dittofs/
 - `LOOKUP`: Resolve name in directory to file handle
 - `GETATTR`: Get file attributes
 - `SETATTR`: Update attributes (size, mode, times)
-- `READ`: Read file content (uses per-share block store)
-- `WRITE`: Write file content (coordinates metadata + per-share block store)
+- `READ`: Read file content (answers I/O until the data path is wired; see below)
+- `WRITE`: Write file content (validated against metadata; answers I/O until the data path is wired)
 - `CREATE`: Create file
 - `MKDIR`: Create directory
 - `REMOVE`: Delete file
@@ -584,29 +541,10 @@ dittofs/
 - `GET_DIR_DELEGATION`: Request directory delegation with CB_NOTIFY
 - `BACKCHANNEL_CTL`: Configure backchannel for server-initiated callbacks
 
-### Write Coordination Pattern
+### Data path
 
-WRITE operations require coordination between metadata and per-share block stores:
-
-```go
-// 1. Update metadata (validates permissions, updates size/timestamps)
-attr, preSize, preMtime, preCtime, err := metadataStore.WriteFile(handle, newSize, authCtx)
-
-// 2. Resolve per-share block store from file handle
-blockStore, err := rt.GetBlockStoreForHandle(ctx, handle)
-
-// 3. Write actual data via per-share block store
-err = blockStore.WriteAt(ctx, string(attr.PayloadID), data, offset)
-
-// 4. Return updated attributes to client for cache consistency
-```
-
-The metadata store:
-- Validates write permission
-- Returns pre-operation attributes (for WCC data)
-- Updates file size if extended
-- Updates mtime/ctime timestamps
-- Ensures PayloadID exists (content-addressed block reference)
+The NFS adapter has no file operations yet; see
+[Data path](architecture.md#data-path).
 
 ### Buffer Pooling
 
@@ -635,7 +573,7 @@ var NfsDispatchTable = map[uint32]*nfsProcedure{
 Each handler follows the same pattern:
 1. Check context cancellation
 2. Validate request
-3. Get stores from registry (metadata store + per-share block store)
+3. Get the metadata service from the registry
 4. Perform operation via store methods
 5. Build and return response
 
@@ -704,24 +642,15 @@ When a directory is deleted (REMOVE/RMDIR), any directory delegations on that di
 
 ### Configuration
 
-Directory delegation settings are managed via `dfsctl adapter settings nfs`:
+These were v1's NFS adapter settings. The v2 adapter's settings
+(`settings.NFS`, under `adapters.nfs`) declare none of them, so no setting
+changes them on this branch:
 
 | Setting | Default | Description |
 | --------- | --------- | ------------- |
 | `delegations_enabled` | `true` | Enable/disable all delegations (file and directory) |
 | `max_delegations` | `10000` | Maximum concurrent delegations across all clients |
-| `dir_deleg_batch_window_ms` | `50` | Notification batch window in milliseconds |
-
-```bash
-# Enable delegations
-dfsctl adapter settings nfs update --delegations-enabled=true
-
-# Set maximum delegations
-dfsctl adapter settings nfs update --max-delegations 1000
-
-# Adjust batch window (lower = more responsive, higher = less backchannel traffic)
-dfsctl adapter settings nfs update --dir-deleg-batch-window-ms 100
-```
+| `dir_deleg_batch_window_ms` | `50` | Notification batch window in milliseconds (lower = more responsive, higher = less backchannel traffic) |
 
 ### Prometheus Metrics
 

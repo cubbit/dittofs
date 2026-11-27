@@ -1,0 +1,7 @@
+# The same ids as rfc-cred-sys-named under another stamp and machine name: 0x5678 and "other-machine".
+00005678  # stamp
+0000000d 6f746865 722d6d61 6368696e 65000000  # machine name "other-machine", 13 bytes and its padding
+000003e8  # uid 1000
+000003e8  # gid 1000
+00000003  # three groups
+0000000a 00000014 0000001e  # 10, 20, 30

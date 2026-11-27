@@ -1,5 +1,7 @@
 # POSIX Compliance Testing for DittoFS
 
+> This branch serves no file protocol, so there is nothing to mount and the steps below describe the released server (see the note in the [NFS guide](../../docs/guide/nfs.md)).
+
 This directory contains POSIX compliance testing for DittoFS using [pjdfstest](https://github.com/saidsay-so/pjdfstest) (Rust rewrite).
 
 ## Overview

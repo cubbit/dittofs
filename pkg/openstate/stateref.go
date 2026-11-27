@@ -1,0 +1,240 @@
+package openstate
+
+import (
+	"encoding/binary"
+	"fmt"
+	"io"
+
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+)
+
+// ShardID names the shard a file's state is held under: the store's, whose
+// low 24 bits are usable, so an installation numbers at most 2^24 shards.
+type ShardID = entity.ShardID
+
+type refKey struct {
+	shard ShardID
+	token uint64
+}
+
+// revokedRef is a reference in its client's revoked set: what it named, and
+// why it was revoked.
+type revokedRef struct {
+	client    entity.ClientID
+	typ       StateType
+	cause     RevokeReason
+	sessioned bool // as holder's
+}
+
+// holder is what a state reference resolves to.
+type holder struct {
+	typ    StateType
+	file   entity.FileID
+	client entity.ClientID
+	seq    uint32 // the state's current sequence; the first is 1
+
+	sessioned bool // the call that created it had a session: a call with none presenting it is refused
+}
+
+// mine is whether who may present state of client c, marked sessioned when
+// created on a session: a call with no session presenting such state is
+// ErrNotYoursSessioned whatever its client or principal, as the mark alone
+// decides it; another client's state is ErrNotYours.
+func mine(who Caller, c entity.ClientID, sessioned bool) error {
+	switch {
+	case sessioned && !who.Sessioned:
+		return ErrNotYoursSessioned
+	case c != who.Client:
+		return ErrNotYours
+	}
+	return nil
+}
+
+// mintUnder issues a reference to a new piece of state of e's file, held by
+// client c and marked sessioned when created on a session, under that file's
+// step. Its token is 64 bits read from Deps.Rand,
+// outside idx; a failed read mints nothing. under, if set, runs with idx held
+// once the token is free and before the reference is added: an error from it
+// adds nothing. A minted reference carries the low bits of its shard's grace
+// instance.
+//
+// ponytail: one mutex guards the reference index for every file, so mints and
+// resolves on different files serialise on it. Split it by shard like files
+// when step-wait time on unrelated files shows contention on idx.
+func (t *Table) mintUnder(e *entry, c entity.ClientID, sessioned bool, s ShardID, typ StateType, under func(StateRef) error) (StateRef, error) {
+	var b [8]byte
+	for {
+		if _, err := io.ReadFull(t.d.Rand, b[:]); err != nil {
+			return StateRef{}, fmt.Errorf("openstate: minting a reference: %w", err)
+		}
+		k := refKey{s, binary.LittleEndian.Uint64(b[:])}
+		t.idx.Lock()
+		if _, taken := t.refs[k]; taken {
+			t.idx.Unlock()
+			continue
+		}
+		t.cmu.Lock()
+		sh := t.shards[s]
+		t.cmu.Unlock()
+		if sh != nil && sh.dropped {
+			t.idx.Unlock()
+			return StateRef{}, ErrBadState // its share's state was dropped
+		}
+		var inst uint64
+		if sh != nil {
+			inst = sh.instance
+		}
+		ref := StateRef{Type: typ, Shard: s, Instance: uint8(inst & 31), Token: k.token, Seq: 1}
+		if under != nil {
+			if err := under(ref); err != nil {
+				t.idx.Unlock()
+				return StateRef{}, err
+			}
+		}
+		t.refs[k] = holder{typ: typ, file: e.file, client: c, seq: 1, sessioned: sessioned}
+		t.idx.Unlock()
+		e.states++
+		return ref, nil
+	}
+}
+
+// advance raises the sequence of the state ref names, under its file's step,
+// which e must be, and returns the new one. It runs in the step that applies an
+// upgrade, a downgrade, a close or a lock change. It wraps from the highest
+// value to 1, never to zero, which means the current one. A reference that
+// names no record is ErrBadState, and adds none.
+func (t *Table) advance(e *entry, ref StateRef) (uint32, error) {
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	k := refKey{ref.Shard, ref.Token}
+	h, ok := t.refs[k]
+	if !ok || h.file != e.file {
+		return 0, ErrBadState
+	}
+	if h.seq++; h.seq == 0 {
+		h.seq = 1
+	}
+	t.refs[k] = h
+	return h.seq, nil
+}
+
+// rewind sets the sequence of the state ref names, under its file's step,
+// which e must be, back to seq, and answers it.
+func (t *Table) rewind(e *entry, ref StateRef, seq uint32) uint32 {
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	k := refKey{ref.Shard, ref.Token}
+	if h, ok := t.refs[k]; ok && h.file == e.file {
+		h.seq = seq
+		t.refs[k] = h
+	}
+	return seq
+}
+
+// release drops the piece of state ref names, under its file's step, which e
+// must be: a reference to another file's state releases nothing. The
+// reference then resolves as a miss.
+func (t *Table) release(e *entry, ref StateRef) {
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	if h, ok := t.refs[refKey{ref.Shard, ref.Token}]; ok && h.file == e.file {
+		delete(t.refs, refKey{ref.Shard, ref.Token})
+		e.states--
+	}
+}
+
+// resolve finds the state ref names, for who. A non-zero f is the file the
+// request's handle names, and must be the state's. Every call names its
+// client and only that client's state, and a call with no session no state
+// created on one (mine).
+func (t *Table) resolve(who Caller, f entity.FileID, ref StateRef) (holder, error) {
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	return t.resolveLocked(who, f, ref)
+}
+
+// resolveAny is resolve for whichever client holds ref, or held it when
+// revoked. Its caller carries no call, so no session is judged.
+func (t *Table) resolveAny(ref StateRef) (holder, error) {
+	t.idx.Lock()
+	defer t.idx.Unlock()
+	k := refKey{ref.Shard, ref.Token}
+	c := t.refs[k].client
+	if r, gone := t.revoked[k]; gone {
+		c = r.client
+	}
+	return t.resolveLocked(Caller{Client: c, Sessioned: true}, entity.FileID{}, ref)
+}
+
+// resolveLocked is resolve, with idx held.
+func (t *Table) resolveLocked(who Caller, f entity.FileID, ref StateRef) (holder, error) {
+	k := refKey{ref.Shard, ref.Token}
+	h, ok := t.refs[k]
+	if r, gone := t.revoked[k]; !ok && gone {
+		if r.typ != ref.Type {
+			return holder{}, ErrBadState
+		}
+		if err := mine(who, r.client, r.sessioned); err != nil {
+			return holder{}, err
+		}
+		return holder{}, &RevokedError{r.cause}
+	}
+	if !ok {
+		return holder{}, t.missed(ref)
+	}
+	if h.typ != ref.Type || (!f.IsZero() && h.file != f) {
+		return holder{}, ErrBadState
+	}
+	if err := mine(who, h.client, h.sessioned); err != nil {
+		return holder{}, err
+	}
+	if err := seqErr(h.seq, ref.Seq); err != nil {
+		return holder{}, err
+	}
+	return h, nil
+}
+
+// instance is shard s's grace instance; ok is false for a shard not begun.
+func (t *Table) instance(s ShardID) (uint64, bool) {
+	t.cmu.Lock()
+	defer t.cmu.Unlock()
+	if sh := t.shards[s]; sh != nil {
+		return sh.instance, true
+	}
+	return 0, false
+}
+
+// missed judges a reference whose record is not held: stale when it may name
+// state its shard lost, as in grace or minted under another grace instance,
+// so the client reclaims; bad otherwise, as for a released, freed or forged
+// one, or one of a shard not begun, which defaults to no instance.
+//
+// decision: a miss in a shard not begun is ErrBadState, while a minting call
+// there is ErrDelay. The service begins every shard it serves before it
+// answers anything, so a reference naming one it does not serve was forged or
+// names a removed share's state, and a retry would never end; a minting call
+// can only race a takeover. Answer ErrDelay if shards are found to move
+// between nodes, where a reference can reach a node about to serve it.
+func (t *Table) missed(ref StateRef) error {
+	t.cmu.Lock()
+	defer t.cmu.Unlock()
+	sh := t.shards[ref.Shard]
+	if sh != nil && (sh.inGrace(t.d.Clock.Elapsed()) || uint8(sh.instance&31) != ref.Instance) {
+		return ErrStaleState
+	}
+	return ErrBadState
+}
+
+// seqErr judges a presented reference sequence against the state's current
+// one: zero is the current one, an older one ErrOldState, a newer one
+// ErrBadState.
+func seqErr(cur, presented uint32) error {
+	if presented == 0 || presented == cur {
+		return nil
+	}
+	// Sequences wrap, so older is judged on the distance, not the value.
+	if int32(cur-presented) > 0 {
+		return ErrOldState
+	}
+	return ErrBadState
+}

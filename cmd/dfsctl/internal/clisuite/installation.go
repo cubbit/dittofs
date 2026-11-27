@@ -1,0 +1,188 @@
+package clisuite
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/node/apiv1/client"
+)
+
+// installationRows are the rows of the node, audit, domain and status
+// commands. The domain's actions need a directory, which no server the
+// suite starts wires, so their rows are of the refusal; their success is
+// the integration suite's.
+func installationRows() []row {
+	return []row{
+		{name: "node list and get name the server's node", run: func(t *testing.T, run Runner, s Server, c *client.Client) {
+			var want []string
+			for n, err := range c.Nodes().List(t.Context(), nil) {
+				if err != nil {
+					t.Fatalf("list the nodes: %v", err)
+				}
+				want = append(want, n.ID)
+			}
+			if len(want) == 0 {
+				t.Fatal("list the nodes: got none, want at least the server's own")
+			}
+			if s.Harness != nil {
+				if id := uuid.UUID(s.Harness.NodeID()).String(); len(want) != 1 || want[0] != id {
+					t.Fatalf("the harness's nodes: got %v, want [%s]", want, id)
+				}
+			}
+			out := mustRun(t, run, "node", "list")
+			for _, id := range want {
+				if !strings.Contains(out, id) {
+					t.Errorf("node list: got %q, want a row for %s", out, id)
+				}
+				var got apiv1.Node
+				decodeJSON(t, mustRun(t, run, "node", "get", id, "-o", "json"), &got)
+				if got.ID != id {
+					t.Errorf("node get %s: got %+v", id, got)
+				}
+			}
+		}},
+		{name: "audit list --actor shows the records of the actor's changes and of no one else's", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, c *client.Client) {
+			mine, err := c.Groups().Create(t.Context(), apiv1.GroupSpec{Name: "g-" + uuid.NewString()[:8]})
+			if err != nil {
+				t.Fatalf("create a group: %v", err)
+			}
+			other := s
+			other.User, other.Password = "o-"+uuid.NewString()[:8], "the other's password"
+			s.Harness.Account(t, other.User, other.Password, entity.RoleAdmin)
+			theirs, err := other.Client(t).Groups().Create(t.Context(), apiv1.GroupSpec{Name: "g-" + uuid.NewString()[:8]})
+			if err != nil {
+				t.Fatalf("create a group as %s: %v", other.User, err)
+			}
+			var got []apiv1.AuditRecord
+			decodeJSON(t, mustRun(t, run, "audit", "list", "--actor", s.User, "-o", "json"), &got)
+			found := false
+			for _, r := range got {
+				if r.ActorName != s.User || r.Target.ID == theirs.ID {
+					t.Errorf("audit list --actor %s: got a record of %q on %s:%s", s.User, r.ActorName, r.Target.Kind, r.Target.ID)
+				}
+				found = found || r.Target.ID == mine.ID
+			}
+			if !found {
+				t.Errorf("audit list --actor %s: got %d records, want one of group %s's create", s.User, len(got), mine.ID)
+			}
+		}},
+		{name: "domain actions end failed with no directory wired", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, _ *client.Client) {
+			pw := secretFile(t, "a password\n")
+			for _, args := range [][]string{
+				{"domain", "resolve", `CORP\bob`},
+				{"domain", "test"},
+				{"domain", "rotate-machine-password"},
+				{"domain", "join", "--user", "administrator@corp.example.com", "--password-file", pw},
+				{"domain", "join", "--offline", "--account", "FILESRV", "--password-file", pw},
+			} {
+				errOut, status := s.waited(t, run, args...)
+				if status == 0 || !strings.Contains(errOut, "dfsctl "+strings.Join(args[:2], " ")+": operation ") || !strings.Contains(errOut, " failed") {
+					t.Errorf("dfsctl %s --wait: status %d, stderr %q, want non-zero and its operation failed", strings.Join(args, " "), status, errOut)
+				}
+			}
+		}},
+		{name: "domain resolve with neither a name nor --sid, or both, is refused before the server", run: func(t *testing.T, run Runner, _ Server, _ *client.Client) {
+			for _, args := range [][]string{{"domain", "resolve"}, {"domain", "resolve", `CORP\bob`, "--sid", "S-1-5-21-1-2-3-1104"}} {
+				if _, errOut, status := run(t.Context(), args...); status == 0 || strings.Contains(errOut, "400 ") || !strings.Contains(errOut, "name or --sid, exactly one") {
+					t.Errorf("dfsctl %s: status %d, stderr %q, want non-zero naming the one of name and --sid it takes", strings.Join(args, " "), status, errOut)
+				}
+			}
+		}},
+		{name: "domain actions send their arguments", run: func(t *testing.T, run Runner, _ Server, _ *client.Client) {
+			pw := secretFile(t, "a password\n")
+			// Each argument is one the server refuses before it starts
+			// anything, naming the field it arrived in.
+			long := strings.Repeat("x", 2048)
+			for _, tc := range []struct {
+				args          []string
+				field, detail string
+			}{
+				{[]string{"domain", "resolve", long}, "name", "at most "},
+				{[]string{"domain", "resolve", "--sid", "not-a-sid"}, "sid", "not a SID"},
+				{[]string{"domain", "join", "--user", "administrator", "--dns-host-name", "host", "--password-file", pw}, "spec.dns_host_name", "not a DNS host name"},
+				{[]string{"domain", "join", "--offline", "--account", long, "--password-file", pw}, "spec.account", "at most "},
+			} {
+				_, errOut, status := run(t.Context(), tc.args...)
+				if status == 0 || !strings.Contains(errOut, "400 ") || !strings.Contains(errOut, tc.detail) || !strings.Contains(errOut, "(field "+tc.field+")") {
+					t.Errorf("dfsctl %s: status %d, stderr %q, want non-zero and the server's 400 naming %s: %s", strings.Join(tc.args[:2], " "), status, errOut, tc.field, tc.detail)
+				}
+			}
+		}},
+		{name: "domain join sends no idempotency key, online or offline", harnessOnly: true, run: func(t *testing.T, run Runner, s Server, c *client.Client) {
+			pw := secretFile(t, "a password\n")
+			for _, args := range [][]string{
+				{"domain", "join", "--user", "administrator", "--password-file", pw},
+				{"domain", "join", "--offline", "--account", "FILESRV", "--password-file", pw},
+				// A rotation does send one, so the audit is seen to hold it.
+				{"domain", "rotate-machine-password"},
+			} {
+				s.waited(t, run, args...)
+			}
+			seen, keys := map[string]int{}, map[string]bool{}
+			for r, err := range c.Audit(t.Context(), nil) {
+				if err != nil {
+					t.Fatalf("read the audit: %v", err)
+				}
+				var req struct {
+					Path           string `json:"path"`
+					IdempotencyKey string `json:"idempotency_key"`
+				}
+				if err := json.Unmarshal(r.Request, &req); err != nil {
+					t.Fatalf("audit record %s: request %s: %v", r.ID, r.Request, err)
+				}
+				for _, verb := range []string{"join-domain", "rotate-machine-password"} {
+					if strings.HasSuffix(req.Path, ":"+verb) {
+						seen[verb]++
+						keys[verb] = keys[verb] || req.IdempotencyKey != ""
+					}
+				}
+			}
+			if seen["join-domain"] < 2 {
+				t.Errorf("domain join: %d audited requests, want the online and the offline join", seen["join-domain"])
+			}
+			if keys["join-domain"] {
+				t.Error("domain join: an audited request carried an idempotency key, want none")
+			}
+			if !keys["rotate-machine-password"] {
+				t.Error("domain rotate-machine-password: no audited request carried an idempotency key, want one, as the audit records keys")
+			}
+		}},
+		{name: "status names the node's readiness", run: func(t *testing.T, run Runner, _ Server, c *client.Client) {
+			want, err := c.Health(t.Context())
+			if err != nil {
+				t.Fatalf("read the health: %v", err)
+			}
+			var got apiv1.Health
+			decodeJSON(t, mustRun(t, run, "status", "-o", "json"), &got)
+			if got.Ready != want.Ready || got.Ready == "" {
+				t.Errorf("status -o json: ready %q, want %q", got.Ready, want.Ready)
+			}
+			if out := mustRun(t, run, "status"); !strings.Contains(out, want.Ready) {
+				t.Errorf("status: got %q, want it to name %q", out, want.Ready)
+			}
+		}},
+	}
+}
+
+// waited runs args with --wait to the end of the operation the command
+// starts, which on a harness's node only the clock Await advances ends,
+// and returns its stderr and exit status.
+func (s Server) waited(t *testing.T, run Runner, args ...string) (string, int) {
+	t.Helper()
+	type answered struct {
+		errOut string
+		status int
+	}
+	done := make(chan answered, 1)
+	go func() {
+		_, errOut, status := run(t.Context(), append(args, "--wait")...)
+		done <- answered{errOut, status}
+	}()
+	a := Await(t, s, "dfsctl "+strings.Join(args, " ")+" --wait", done)
+	return a.errOut, a.status
+}

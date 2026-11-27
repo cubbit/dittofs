@@ -1,0 +1,154 @@
+package kvstore
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"math"
+	"sync"
+
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+)
+
+// ErrNumbersExhausted is a share that has issued every numeric file id below
+// the bound.
+var ErrNumbersExhausted = errors.New("kvstore: share has no numeric file ids left")
+
+// ErrIDsExhausted is a server-wide counter of client, open or lock IDs that
+// has issued every ID it can.
+var ErrIDsExhausted = errors.New("kvstore: no client, open or lock IDs left")
+
+const (
+	// maxNumber bounds numeric file ids below 2^48, so a snapshot's id can
+	// carry an ordinal above them.
+	maxNumber = 1 << 48
+	// numberRange is how many ids one reservation takes. A range a process
+	// had not used up when it stopped is abandoned, never issued again.
+	numberRange = 1024
+)
+
+// numbers hands out IDs from ranges reserved in the store, one counter per
+// key, so issuing one does not write the counter's record each time: each
+// share's numeric file ids, and the server-wide client, open and lock IDs.
+// Each counter has a lock of its own, held across its reservation, so one
+// share reserving a range holds up only that share's creates.
+type numbers struct {
+	mu       sync.Mutex
+	counters map[string]*idRange // by counter key
+}
+
+// idRange is one key's current range: next, end.
+type idRange struct {
+	mu    sync.Mutex
+	r     [2]uint64
+	ready bool
+}
+
+// nextNumber issues a numeric file id of share that no other file of the
+// share has ever had: from the current range, or a fresh one reserved in its
+// own transaction before it is used.
+func (s *Store) nextNumber(ctx context.Context, share entity.ShareID) (uint64, error) {
+	return s.numbers.next(ctx, s.kv, numberKey(share), false, maxNumber, ErrNumbersExhausted)
+}
+
+// IDKind names one server-wide ID allocator, kept under IDS‖kind.
+type IDKind = entity.IDKind
+
+const (
+	IDClient = entity.IDClient
+	IDOpen   = entity.IDOpen
+	IDLock   = entity.IDLock
+)
+
+// idShard is the shard number allocator's kind. A share's creation reads and
+// raises it in its own transaction, never in ranges, so NextID refuses it.
+const idShard = 7
+
+// IDS kind 8 is retired: it held the node epoch.
+
+// maxOpenID bounds open IDs below 2^40: with the shard, an open ID fills
+// SMB's 8-byte persistent FileId.
+//
+// ponytail: open IDs are never reused, so an installation issues at most
+// 2^40; only SMB, durable and clone-source opens draw on them. At a sustained
+// 1,000 a second that lasts 35 years. Widen it (fewer shard bits in the
+// persistent FileId, routing by lookup) if IDS‖open is seen past 2^39.
+const maxOpenID = 1 << 40
+
+// NextID issues a client, open or lock ID never issued before in this
+// installation, never zero, which names none. Every client and lock takes
+// one, volatile ones too; of opens, only SMB, durable and clone-source opens
+// do, as an NFS open is named by its state token. The store does not check
+// which open asks. The IDs come from server-wide counters under
+// IDS‖kind, reserved in ranges as file numbers are, so issuing one does not
+// write the counter, and a range a process leaves unused is abandoned. A lock
+// ID needs to differ only from the other locks under its open and offset; the
+// server-wide counter gives more than that, at no extra cost. An NFSv4 lock
+// state's ID is random, never one of these. Any other kind is refused.
+//
+// ponytail: in a cluster these three keys are the only server-wide keys
+// opens contend on, once per range. Widen the ranges, or give each node its
+// own, if their reservations show in a profile.
+func (s *Store) NextID(ctx context.Context, kind IDKind) (uint64, error) {
+	bound := uint64(math.MaxUint64)
+	switch kind {
+	case IDClient, IDLock:
+	case IDOpen:
+		bound = maxOpenID
+	default:
+		return 0, merrs.NewInvalidArgumentError(fmt.Sprintf("no ID allocator of kind %d", kind))
+	}
+	for {
+		n, err := s.numbers.next(ctx, s.kv, idKey(byte(kind)), true, bound, ErrIDsExhausted)
+		if err != nil || n != 0 {
+			return n, err
+		}
+	}
+}
+
+// next issues the next ID under key. A counter a share's creation writes is
+// never missing; a server-wide one starts at zero when it is (fresh).
+func (a *numbers) next(ctx context.Context, db kv.KV, key []byte, fresh bool, bound uint64, exhausted error) (uint64, error) {
+	a.mu.Lock()
+	if a.counters == nil {
+		a.counters = map[string]*idRange{}
+	}
+	c := a.counters[string(key)]
+	if c == nil {
+		c = &idRange{}
+		a.counters[string(key)] = c
+	}
+	a.mu.Unlock()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.ready || c.r[0] == c.r[1] {
+		var start uint64
+		err := db.Update(ctx, func(tx kv.Txn) error {
+			b, err := tx.Get(key)
+			switch {
+			case fresh && errors.Is(err, kv.ErrNotFound):
+				start = 0
+			case err != nil:
+				return err
+			default:
+				if start, err = decodeCounter(b); err != nil {
+					return err
+				}
+			}
+			if start > bound || bound-start < numberRange { // never start+numberRange, which wraps near the top
+				return exhausted
+			}
+			return tx.Set(key, encodeCounter(start+numberRange))
+		})
+		if err != nil {
+			return 0, err
+		}
+		c.r, c.ready = [2]uint64{start, start + numberRange}, true
+	}
+	n := c.r[0]
+	c.r[0]++
+	return n, nil
+}

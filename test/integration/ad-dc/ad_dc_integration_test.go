@@ -1,18 +1,8 @@
 //go:build ad_dc
 
-// Package ad_dc_test provides an integration test for AD-1 (#1233): decoding
-// the Kerberos PAC of an Active Directory ticket and surfacing the user's
-// transitive group SIDs through the shared KerberosService.AuthResult.
-//
-// Unlike test/integration/kerberos (an MIT KDC, auth only, no PAC), this test
-// stands up a real Samba Active Directory Domain Controller in Docker. The DC
-// issues service tickets carrying a Microsoft PAC (MS-PAC) whose
-// GroupMembershipSIDs include the user's full transitive group set — AD
-// resolves nested membership at the DC. The test logs in as alice (a member of
-// devs, which is nested under engineering), obtains a service ticket for the
-// SMB SPN, builds the AP-REQ, and asserts that KerberosService.Authenticate
-// returns a non-empty GroupSIDs containing BOTH the devs and engineering
-// domain group SIDs plus a populated UserSID.
+// Package ad_dc_test provides integration tests against a real Samba Active
+// Directory Domain Controller in Docker: NETLOGON pass-through, online join and
+// LDAP lookups. This file holds the DC fixture the tests share.
 //
 // Run with: go test -tags=ad_dc -v -timeout 20m ./test/integration/ad-dc/
 // Requires: Docker (the samba-ad-dc image builds + provisions under linux/amd64
@@ -20,30 +10,21 @@
 package ad_dc_test
 
 import (
+	"cmp"
 	"context"
+	"crypto/rand"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
-
-	"github.com/jcmturner/gokrb5/v8/client"
-	krb5config "github.com/jcmturner/gokrb5/v8/config"
-	"github.com/jcmturner/gokrb5/v8/messages"
-	"github.com/jcmturner/gokrb5/v8/types"
-
-	kerbauth "github.com/cubbit/dittofs/internal/auth/kerberos"
-	"github.com/cubbit/dittofs/pkg/auth/kerberos"
-	dconfig "github.com/cubbit/dittofs/pkg/config"
 )
 
 const (
-	adImageName = "dittofs-ad-dc-test"
-
 	// adExecTimeout bounds every `docker exec` the fixture runs against the DC.
 	// A bare exec.Command has no deadline, so a call issued while the container is
 	// going away blocks until the Docker API call itself gives up — turning a
@@ -53,18 +34,28 @@ const (
 	adRealm  = "DITTOFS.AD"
 	adDomain = "DITTOFS"
 
+	// adDCHostname is the DC's fixed host name, given to its container, and
+	// adDCHost its DNS name, which the DC's TLS certificate names in a SAN.
+	adDCHostname = "dc1"
+	adDCHost     = adDCHostname + ".dittofs.ad"
+
 	adUserAlice = "alice"
 	adUserPass  = "TestPassword01!"
 
-	// SMB service principal the DittoFS server presents; the fixture exports
-	// its key into dittofs.keytab. spnShort is the form gokrb5 uses to request
-	// a service ticket (no realm); spnFull is what Authenticate validates against.
+	// The SMB and NFS service principals, in the form gokrb5 requests a ticket
+	// for (no realm). The fixture puts both on an AES-only service account and
+	// exports their keys into dittofs.keytab.
 	adSMBSPNShort = "cifs/dittofs.dittofs.ad"
-	adSMBSPNFull  = "cifs/dittofs.dittofs.ad@DITTOFS.AD"
+	adNFSSPNShort = "nfs/dittofs.dittofs.ad"
+
+	// The domain administrator, whose bind the online join uses.
+	adAdminPassword = "Passw0rd!2024"
+	adBindDN        = "CN=Administrator,CN=Users,DC=dittofs,DC=ad"
+	adBaseDN        = "DC=dittofs,DC=ad"
 )
 
 // adContainerName is the container the current test's fixture is running in. It
-// is set by setupADDC/setupADDCForLDAP to a name derived from the test, so two
+// is set by setupADDC to a name derived from the test, so two
 // tests never address the same container and one test's teardown cannot reach
 // another's DC.
 //
@@ -72,11 +63,112 @@ const (
 // tests in this package run sequentially (none calls t.Parallel). It is set once
 // per test before any helper reads it. It would need to become a field threaded
 // through the helpers if these tests ever run in parallel.
-var adContainerName = "dittofs-ad-dc-test"
+var adContainerName string
 
-// uniqueContainerName derives a Docker container name unique to t, so a fixture
-// is never shared between tests. Docker names allow only [a-zA-Z0-9][a-zA-Z0-9_.-]*,
-// so the test name is lowercased and every other byte is replaced with '-'.
+// adNamePrefix starts the name of every image, container and network the
+// fixture makes, and is the key of the label they carry. Setting
+// DITTOFS_AD_DC_NAME_PREFIX replaces it on a host whose Docker names are shared
+// between users. It is lowercased because Docker image names must be.
+var adNamePrefix = strings.ToLower(cmp.Or(os.Getenv("DITTOFS_AD_DC_NAME_PREFIX"), "dittofs-ad-dc-test"))
+
+// adRunID tells this run's containers and networks apart from those of any
+// other run on the same Docker host, so two runs never remove each other's DC.
+var adRunID = strings.ToLower(rand.Text()[:8])
+
+// adImage is the DC image, built once per run by the first setupADDC and
+// removed by TestMain when the run ends. Its tag is this run's own, so a
+// concurrent run's build cannot retag it between this run's build and its
+// docker run.
+var adImage = adNamePrefix + ":" + adRunID
+
+var (
+	buildADImageOnce sync.Once
+	adImageErr       error
+	adImageBuilt     bool
+)
+
+// TestMain removes the run's DC image once every test is done with it. Removing
+// it per test would also drop the legacy builder's cache, its untagged parent
+// images, so every test would rebuild the image from scratch.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if adImageBuilt {
+		if out, err := adDockerCombined("rmi", adImage); err != nil {
+			fmt.Fprintf(os.Stderr, "rm AD-DC image %s: %v\n%s", adImage, err, out)
+		}
+	}
+	os.Exit(code)
+}
+
+// adStaleAge is how old a container or labelled network must be before
+// a later run removes it as left behind by a run that was killed before its
+// t.Cleanup ran. It is well above the suite's 20-minute timeout, so a run still
+// in flight on the same host keeps its DC.
+const adStaleAge = time.Hour
+
+var sweepADLeftoversOnce sync.Once
+
+// sweepADLeftovers removes what earlier runs under the same name prefix left
+// behind: a go test timeout panic, Ctrl-C or SIGKILL skips t.Cleanup, and each
+// leaked network holds one of Docker's few default bridge subnets. Containers
+// are matched by name rather than label, so those of a fixture that labelled
+// none go too, and go first, since Docker refuses to remove a network still in
+// use. Failures are only logged: a leftover that stays costs a subnet, not this
+// run.
+//
+// decision: images are not pruned. A fully cached build keeps the Created time
+// of its layers, so no age filter tells a live run's freshly tagged image from a
+// leftover, and pruning one between its build and its docker run fails that
+// run. A killed run therefore leaves its image tag behind; a cached build points
+// it at the image the next run builds anyway, so it costs a tag rather than
+// disk until the Dockerfile changes.
+func sweepADLeftovers(t *testing.T) {
+	t.Helper()
+	// Docker's name filter is an unanchored pattern; staleADContainers checks
+	// the prefix itself.
+	out, err := adDockerOutput("ps", "-a", "--filter", "name="+adNamePrefix+"-",
+		"--format", "{{.ID}}\t{{.Names}}\t{{.CreatedAt}}")
+	if err != nil {
+		t.Logf("list leftover AD-DC containers: %v", err)
+		return
+	}
+	if ids := staleADContainers(string(out), adNamePrefix+"-", time.Now(), adStaleAge); len(ids) > 0 {
+		t.Logf("Removing %d AD-DC container(s) left by killed runs", len(ids))
+		if out, err := adDockerCombined("rm", append([]string{"-f"}, ids...)...); err != nil {
+			t.Logf("remove leftover AD-DC containers: %v\n%s", err, out)
+		}
+	}
+	until := "until=" + adStaleAge.String()
+	if out, err := adDockerCombined("network", "prune", "-f", "--filter", "label="+adNamePrefix, "--filter", until); err != nil {
+		t.Logf("prune leftover AD-DC networks: %v\n%s", err, out)
+	}
+}
+
+// staleADContainers returns the IDs in `docker ps --format
+// '{{.ID}}\t{{.Names}}\t{{.CreatedAt}}'` output whose container's name starts
+// with namePrefix and which was created more than maxAge before now. A line
+// whose fields or time do not parse is left out, so an unexpected format never
+// removes a DC.
+func staleADContainers(psOut, namePrefix string, now time.Time, maxAge time.Duration) []string {
+	var ids []string
+	for _, line := range strings.Split(strings.TrimSpace(psOut), "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 3 || !strings.HasPrefix(fields[1], namePrefix) {
+			continue
+		}
+		id, created := fields[0], fields[2]
+		at, err := time.Parse("2006-01-02 15:04:05 -0700 MST", created)
+		if err == nil && now.Sub(at) > maxAge {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// uniqueContainerName derives a Docker container name unique to t and to this
+// run, so a fixture is never shared between tests or between concurrent runs.
+// Docker names allow only [a-zA-Z0-9][a-zA-Z0-9_.-]*, so the test name is
+// lowercased and every other byte is replaced with '-'.
 func uniqueContainerName(t *testing.T) string {
 	safe := strings.Map(func(r rune) rune {
 		switch {
@@ -88,7 +180,7 @@ func uniqueContainerName(t *testing.T) string {
 			return '-'
 		}
 	}, t.Name())
-	return adImageName + "-" + safe
+	return adNamePrefix + "-" + adRunID + "-" + safe
 }
 
 // adDockerOutput runs `docker <sub> args...` bounded by adExecTimeout and returns
@@ -116,120 +208,64 @@ func adDockerExec(args ...string) ([]byte, error) {
 	return adDockerCombined("exec", append([]string{adContainerName}, args...)...)
 }
 
-// TestADGroupSIDsFromPAC exercises the full AD-1 path: a real AD ticket's PAC
-// group SIDs flow into the KerberosService AuthResult.
-func TestADGroupSIDsFromPAC(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping AD-DC integration test in short mode")
-	}
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("docker not found, skipping AD-DC integration test")
-	}
-
-	// krb5ConfPath already encodes the mapped KDC port, so the gokrb5 client
-	// reaches the DC without a separate port argument.
-	_, keytabPath, krb5ConfPath, cleanup := setupADDC(t)
-	defer cleanup()
-
-	// Build the shared KerberosService from a provider backed by the exported
-	// service keytab. This is the same construction the SMB session layer uses.
-	cfg := &dconfig.KerberosConfig{
-		Enabled:          true,
-		KeytabPath:       keytabPath,
-		ServicePrincipal: adSMBSPNFull,
-		Krb5Conf:         krb5ConfPath,
-		MaxClockSkew:     5 * time.Minute,
-		ContextTTL:       10 * time.Minute,
-		MaxContexts:      100,
-	}
-	provider, err := kerberos.NewProvider(cfg)
-	if err != nil {
-		t.Fatalf("create kerberos provider: %v", err)
-	}
-	defer provider.Close()
-
-	service := kerbauth.NewKerberosService(provider)
-
-	// alice authenticates against the DC and obtains a service ticket for the
-	// SMB SPN, then we build the raw AP-REQ (Authenticate expects the raw
-	// AP-REQ, not a GSS-wrapped token).
-	apReqBytes := getADAPREQ(t, krb5ConfPath)
-
-	result, err := service.Authenticate(apReqBytes, adSMBSPNFull)
-	if err != nil {
-		t.Fatalf("Authenticate failed: %v", err)
-	}
-
-	t.Logf("Authenticated principal=%q realm=%q user_sid=%q group_sids=%v",
-		result.Principal, result.Realm, result.UserSID, result.GroupSIDs)
-
-	// UserSID must be populated from the PAC (logon domain SID + RID).
-	if result.UserSID == "" {
-		t.Error("expected non-empty UserSID from PAC, got empty")
-	} else if !strings.HasPrefix(result.UserSID, "S-1-5-21-") {
-		t.Errorf("UserSID %q does not look like a domain SID (S-1-5-21-...)", result.UserSID)
-	}
-
-	// GroupSIDs must be non-empty and contain BOTH the devs and engineering
-	// group SIDs. AD resolves the nesting (devs ⊂ engineering) at the DC and
-	// stamps both into alice's ticket PAC — no LDAP group-walk required.
-	if len(result.GroupSIDs) == 0 {
-		t.Fatal("expected non-empty GroupSIDs from PAC, got none")
-	}
-
-	devsSID := lookupGroupSID(t, "devs")
-	engineeringSID := lookupGroupSID(t, "engineering")
-
-	if !containsSID(result.GroupSIDs, devsSID) {
-		t.Errorf("GroupSIDs %v missing devs SID %q", result.GroupSIDs, devsSID)
-	}
-	if !containsSID(result.GroupSIDs, engineeringSID) {
-		t.Errorf("GroupSIDs %v missing engineering (nested) SID %q", result.GroupSIDs, engineeringSID)
-	}
-
-	t.Logf("PAC carried devs=%s and engineering=%s (nested resolved at DC) ✓", devsSID, engineeringSID)
-}
-
 // AD-DC Docker Setup
 
-// setupADDC builds the Samba AD-DC image, runs it (letting its own entrypoint
-// provision the domain), waits for the KDC to accept connections, and copies
-// the exported keytab + a host-side krb5.conf pointing at the mapped KDC port.
-func setupADDC(t *testing.T) (kdcHostPort int, keytabPath, krb5ConfPath string, cleanup func()) {
+// setupADDC runs the run's Samba AD-DC image, building it on first use, on a
+// Docker network of its own, letting its entrypoint provision the domain, and
+// returns the DC's IP on that network. t.Cleanup removes the container and
+// network.
+//
+// The DC is reached on its container IP, with no port published on the host,
+// so a run never takes a host port another run or user holds, and NETLOGON's
+// endpoint mapper (port 135) can send clients to dynamic RPC ports without
+// NAT. That needs a container IP the host can route to: true of a Linux Docker
+// host, not of Docker Desktop, where setupADDC fails rather than skips.
+func setupADDC(t *testing.T) (dcIP string) {
 	t.Helper()
 
-	tmpDir := t.TempDir()
+	sweepADLeftoversOnce.Do(func() { sweepADLeftovers(t) })
 
 	// Address a container private to this test so no other test's teardown can
 	// remove the DC out from under an in-flight docker exec.
 	container := uniqueContainerName(t)
+	network := container + "-net"
+	label := adNamePrefix + "=" + adRunID
 	adContainerName = container
 
-	// Register the teardown before the container exists, capturing this test's
-	// name, so a t.Fatalf anywhere below (port discovery, readiness, keytab copy)
-	// cannot orphan the container — sibling tests use different names and their
-	// cleanup cannot reclaim it.
+	// Register the teardown before the container exists, so a t.Fatalf anywhere
+	// below cannot orphan the container or its network. The network goes last:
+	// Docker refuses to remove it while a container uses it.
 	t.Cleanup(func() {
 		t.Log("Cleaning up AD-DC container...")
-		_ = exec.Command("docker", "rm", "-f", container).Run()
+		if out, err := adDockerCombined("rm", "-f", container); err != nil {
+			t.Logf("rm AD-DC container: %v\n%s", err, out)
+		}
+		if out, err := adDockerCombined("network", "rm", network); err != nil {
+			t.Logf("rm AD-DC network: %v\n%s", err, out)
+		}
 	})
 
-	// Clean up any previous container left by an interrupted run of this test.
-	_ = exec.Command("docker", "rm", "-f", adContainerName).Run()
+	// Build the image once per run, cached by Docker across runs. Force
+	// linux/amd64: samba-ad-dc has no native arm64 path in our base and runs
+	// fine under emulation.
+	buildADImageOnce.Do(func() {
+		t.Log("Building Samba AD-DC image (slow on first run)...")
+		buildCmd := exec.Command("docker", "build",
+			"--platform", "linux/amd64",
+			"--label", label,
+			"-t", adImage, findADDockerfileDir(t),
+		)
+		buildCmd.Stdout = os.Stdout
+		buildCmd.Stderr = os.Stderr
+		adImageErr = buildCmd.Run()
+		adImageBuilt = adImageErr == nil
+	})
+	if adImageErr != nil {
+		t.Fatalf("docker build failed: %v", adImageErr)
+	}
 
-	dockerfileDir := findADDockerfileDir(t)
-
-	// Build the image (cached after first run). Force linux/amd64: samba-ad-dc
-	// has no native arm64 path in our base and runs fine under emulation.
-	t.Log("Building Samba AD-DC image (slow on first run)...")
-	buildCmd := exec.Command("docker", "build",
-		"--platform", "linux/amd64",
-		"-t", adImageName, dockerfileDir,
-	)
-	buildCmd.Stdout = os.Stdout
-	buildCmd.Stderr = os.Stderr
-	if err := buildCmd.Run(); err != nil {
-		t.Fatalf("docker build failed: %v", err)
+	if out, err := adDockerCombined("network", "create", "--label", label, network); err != nil {
+		t.Fatalf("docker network create %s: %v\n%s", network, err, out)
 	}
 
 	// Run the container with the AD-DC entrypoint (it provisions the domain,
@@ -240,56 +276,90 @@ func setupADDC(t *testing.T) (kdcHostPort int, keytabPath, krb5ConfPath string, 
 	// container filesystem (e.g. Docker Desktop on macOS), aborting provisioning.
 	// CI's overlay2-on-ext4 happens to allow it unprivileged, but requiring it
 	// keeps the fixture portable across developer machines (issue #1252).
-	runOut, err := exec.Command("docker", "run", "-d",
+	if out, err := adDockerCombined("run", "-d",
 		"--platform", "linux/amd64",
 		"--privileged",
-		"--name", adContainerName,
-		"-p", "0:88/tcp",
-		adImageName,
-	).CombinedOutput()
-	if err != nil {
-		t.Fatalf("docker run failed: %v\n%s", err, runOut)
+		"--name", container,
+		"--label", label,
+		"--network", network,
+		"--hostname", adDCHostname,
+		"-e", fmt.Sprintf("RPC_PORT_RANGE=%d-%d", adRPCPortLow, adRPCPortHigh),
+		"-e", "LDB_NOSYNC=true", // the container dies with the test, so nothing need survive a crash
+		adImage,
+	); err != nil {
+		t.Fatalf("docker run failed: %v\n%s", err, out)
 	}
 
-	// Discover the randomly assigned host port for the KDC.
-	portOut, err := adDockerOutput("port", adContainerName, "88/tcp")
-	if err != nil {
-		dumpADLogs(t)
-		t.Fatalf("docker port: %v", err)
-	}
-	portStr := strings.TrimSpace(string(portOut))
-	parts := strings.Split(portStr, ":")
-	kdcHostPort, err = strconv.Atoi(parts[len(parts)-1])
-	if err != nil {
-		t.Fatalf("parse port %q: %v", portStr, err)
-	}
-	t.Logf("AD-DC KDC mapped to host port %d", kdcHostPort)
-
-	// Wait for the KDC TCP port to come up. Provisioning a fresh AD domain
-	// under emulation is slow, so allow several minutes.
-	t.Log("Waiting for KDC TCP port...")
-	waitForADPort(t, kdcHostPort, 6*time.Minute)
-
-	// The samba that served the setup keeps running, so the DC stays up from here.
+	// The ready marker is written once the KDC, LDAP, DNS and the RPC endpoint
+	// mapper accept connections, so no separate wait on a port is needed. Provisioning a
+	// fresh domain under emulation is slow.
 	t.Log("Waiting for the AD-DC setup to finish...")
-	waitForADReady(t, 4*time.Minute)
+	waitForADReady(t, 10*time.Minute)
 
-	// Copy the keytab out of the container. docker cp reads as root inside the
-	// container, so the fixture's chmod 0400 / chown to the dittofs uid does
-	// not block us (it would block a host volume mount).
-	keytabPath = filepath.Join(tmpDir, "dittofs.keytab")
-	if out, err := adDockerCombined("cp",
-		adContainerName+":/keytabs/dittofs.keytab", keytabPath); err != nil {
-		dumpADLogs(t)
-		t.Fatalf("copy keytab: %v\n%s", err, out)
+	dcIP = getContainerIP(t)
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(dcIP, "389"), 5*time.Second)
+	if err != nil {
+		t.Fatalf("DC at %s is not reachable from this host (%v); the fixture needs a Linux Docker host that routes to container IPs, not Docker Desktop", dcIP, err)
 	}
+	_ = conn.Close()
+	t.Logf("AD-DC reachable at %s on network %s", dcIP, network)
+	return dcIP
+}
 
-	// Write a host-side krb5.conf that points the realm KDC at the mapped host
-	// port (force TCP, the mapped port is TCP only). The Samba-generated
-	// krb5.conf in the container references the DC hostname, which the host
-	// cannot resolve — so we synthesise a minimal one like the MIT KDC test.
-	krb5ConfPath = filepath.Join(tmpDir, "krb5.conf")
-	hostKrb5Conf := fmt.Sprintf(`[libdefaults]
+// getContainerIP returns the IP of adContainerName on its fixture network.
+func getContainerIP(t *testing.T) string {
+	t.Helper()
+	// Newer Docker engines drop the legacy top-level .NetworkSettings.IPAddress
+	// field, so use the per-network Networks map, populated on both old and new
+	// engines. Emit one IP per line so multiple attached networks don't
+	// concatenate into a single invalid address; the AD-DC fixture attaches only
+	// its own network, so the first non-empty line is the IP we want.
+	out, err := adDockerOutput("inspect",
+		"--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}\n{{end}}",
+		adContainerName,
+	)
+	if err != nil {
+		t.Fatalf("docker inspect network IP: %v", err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if ip := strings.TrimSpace(line); ip != "" {
+			return ip
+		}
+	}
+	t.Fatal("could not determine container IP address from docker inspect")
+	return ""
+}
+
+// copyADCA copies the fixture CA, which issued the DC's TLS certificate, out
+// of the running DC and returns its path.
+func copyADCA(t *testing.T) string {
+	t.Helper()
+	caPath := filepath.Join(t.TempDir(), "ca.pem")
+	if out, err := adDockerCombined("cp", adContainerName+":/keytabs/ca.pem", caPath); err != nil {
+		t.Fatalf("copy the fixture CA: %v\n%s", err, out)
+	}
+	return caPath
+}
+
+// copyADKeytab copies the service keytab the entrypoint exports out of the
+// running DC and returns its path. docker cp reads as root inside the
+// container, so the keytab's 0400 mode and dittofs owner do not block it.
+func copyADKeytab(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "dittofs.keytab")
+	if out, err := adDockerCombined("cp", adContainerName+":/keytabs/dittofs.keytab", path); err != nil {
+		t.Fatalf("copy the service keytab: %v\n%s", err, out)
+	}
+	return path
+}
+
+// writeADKrb5Conf writes a host-side krb5.conf whose realm KDC is the DC at
+// dcIP, over TCP, and returns its path. The krb5.conf Samba generates names
+// the DC by a host name the host cannot resolve.
+func writeADKrb5Conf(t *testing.T, dcIP string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "krb5.conf")
+	conf := fmt.Sprintf(`[libdefaults]
     default_realm = %s
     dns_lookup_realm = false
     dns_lookup_kdc = false
@@ -298,18 +368,13 @@ func setupADDC(t *testing.T) (kdcHostPort int, keytabPath, krb5ConfPath string, 
 
 [realms]
     %s = {
-        kdc = 127.0.0.1:%d
+        kdc = %s:88
     }
-`, adRealm, adRealm, kdcHostPort)
-	if err := os.WriteFile(krb5ConfPath, []byte(hostKrb5Conf), 0o644); err != nil {
+`, adRealm, adRealm, dcIP)
+	if err := os.WriteFile(path, []byte(conf), 0o644); err != nil {
 		t.Fatalf("write krb5.conf: %v", err)
 	}
-
-	cleanup = func() {
-		t.Log("Cleaning up AD-DC container...")
-		_ = exec.Command("docker", "rm", "-f", container).Run()
-	}
-	return kdcHostPort, keytabPath, krb5ConfPath, cleanup
+	return path
 }
 
 func findADDockerfileDir(t *testing.T) string {
@@ -351,50 +416,6 @@ func waitForADReady(t *testing.T, timeout time.Duration) {
 	t.Fatalf("AD-DC setup not finished within %s", timeout)
 }
 
-func waitForADPort(t *testing.T, port int, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 1*time.Second)
-		if err == nil {
-			conn.Close()
-			return
-		}
-		time.Sleep(2 * time.Second)
-	}
-	dumpADLogs(t)
-	t.Fatalf("KDC port %d not ready within %s", port, timeout)
-}
-
-// lookupGroupSID queries the running DC for a group's object SID via samba-tool.
-func lookupGroupSID(t *testing.T, group string) string {
-	t.Helper()
-	out, err := adDockerExec("samba-tool", "group", "show", group, "--attributes=objectSid")
-	if err != nil {
-		t.Fatalf("samba-tool group show %s: %v\n%s", group, err, out)
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(strings.ToLower(line), "objectsid:") {
-			sid := strings.TrimSpace(line[len("objectsid:"):])
-			if sid != "" {
-				return sid
-			}
-		}
-	}
-	t.Fatalf("could not parse objectSid for group %s from:\n%s", group, out)
-	return ""
-}
-
-func containsSID(sids []string, want string) bool {
-	for _, s := range sids {
-		if strings.EqualFold(s, want) {
-			return true
-		}
-	}
-	return false
-}
-
 func dumpADLogs(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), adExecTimeout)
@@ -402,70 +423,4 @@ func dumpADLogs(t *testing.T) {
 	out, _ := exec.CommandContext(ctx, "docker",
 		"logs", "--tail", "100", adContainerName).CombinedOutput()
 	t.Logf("---- AD-DC container logs (tail) ----\n%s\n-------------------------------------", out)
-}
-
-// Real AD Ticket Generation
-
-// getADAPREQ logs in as alice against the AD-DC and returns the raw AP-REQ
-// bytes for the SMB SPN (NOT GSS-wrapped — KerberosService.Authenticate
-// expects the raw AP-REQ).
-func getADAPREQ(t *testing.T, krb5ConfPath string) []byte {
-	t.Helper()
-
-	cfg, err := krb5config.Load(krb5ConfPath)
-	if err != nil {
-		t.Fatalf("load krb5.conf: %v", err)
-	}
-
-	// kinit equivalent. DisablePAFXFAST avoids an unnecessary preauth round.
-	cl := client.NewWithPassword(adUserAlice, adRealm, adUserPass, cfg, client.DisablePAFXFAST(true))
-	if err := cl.Login(); err != nil {
-		dumpADLogs(t)
-		t.Fatalf("kinit as alice: %v", err)
-	}
-	defer cl.Destroy()
-	t.Log("alice obtained a TGT from the AD-DC")
-
-	// TGS-REQ for the SMB service principal.
-	tkt, sessionKey, err := cl.GetServiceTicket(adSMBSPNShort)
-	if err != nil {
-		t.Fatalf("get service ticket for %s: %v", adSMBSPNShort, err)
-	}
-	t.Logf("alice obtained a service ticket for %s (enctype=%d)", adSMBSPNShort, sessionKey.KeyType)
-
-	apReqBytes := buildAPREQ(t, cl, tkt, sessionKey)
-	t.Logf("Built raw AP-REQ (%d bytes)", len(apReqBytes))
-	return apReqBytes
-}
-
-// buildAPREQ marshals a raw AP-REQ for the given service ticket.
-func buildAPREQ(t *testing.T, cl *client.Client, tkt messages.Ticket, sessionKey types.EncryptionKey) []byte {
-	t.Helper()
-
-	auth, err := types.NewAuthenticator(cl.Credentials.Domain(), cl.Credentials.CName())
-	if err != nil {
-		t.Fatalf("create authenticator: %v", err)
-	}
-
-	apReq, err := messages.NewAPReq(tkt, sessionKey, auth)
-	if err != nil {
-		t.Fatalf("build AP-REQ: %v", err)
-	}
-
-	apReqBytes, err := apReq.Marshal()
-	if err != nil {
-		t.Fatalf("marshal AP-REQ: %v", err)
-	}
-	// Sanity: a marshalled AP-REQ starts with APPLICATION 14 (0x6e).
-	if len(apReqBytes) == 0 || apReqBytes[0] != 0x6e {
-		t.Fatalf("unexpected AP-REQ prefix: %x", firstBytes(apReqBytes))
-	}
-	return apReqBytes
-}
-
-func firstBytes(b []byte) []byte {
-	if len(b) > 8 {
-		return b[:8]
-	}
-	return b
 }

@@ -1,0 +1,336 @@
+package openstate
+
+import (
+	"context"
+	"slices"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kv"
+	"github.com/cubbit/dittofs/pkg/metadata/kv/badgerkv"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore/kvstoretest"
+)
+
+var ctx = context.Background()
+
+// fakeClock moves only when a test advances it.
+type fakeClock struct {
+	mu      sync.Mutex
+	now     time.Duration
+	waiters []waiter
+}
+
+type waiter struct {
+	at time.Duration
+	ch chan struct{}
+}
+
+func (c *fakeClock) Elapsed() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeClock) After(d time.Duration) <-chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ch := make(chan struct{})
+	c.waiters = append(c.waiters, waiter{c.now + d, ch})
+	return ch
+}
+
+// advance moves the clock by d and fires every timer now due.
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now += d
+	kept := c.waiters[:0]
+	for _, w := range c.waiters {
+		if w.at > c.now {
+			kept = append(kept, w)
+		} else {
+			close(w.ch)
+		}
+	}
+	c.waiters = kept
+}
+
+// ended is one ClientEnded call.
+type ended struct {
+	c      entity.ClientID
+	shards []ShardID
+}
+
+// closed is one Closed call.
+type closed struct {
+	f entity.FileID
+	r CloseResult
+}
+
+// waitOverCall is one LockWaitOver call.
+type waitOverCall struct {
+	w       LockWaiter
+	granted bool
+}
+
+// recallCall is one RecallGrant call.
+type recallCall struct {
+	g  CachingGrant
+	to GrantKind
+}
+
+// recordingSink records what the table raises; onEnded, onWait and onRecall,
+// if set, run inside ClientEnded, LockWaitOver and RecallGrant, and onNotify
+// inside Notify.
+type recordingSink struct {
+	mu       sync.Mutex
+	ended    []ended
+	closed   []closed
+	waits    []waitOverCall
+	recalls  []recallCall
+	revoked  []Revocation
+	full     []recallAny
+	notes    []noteOut
+	graces   []graceEnded
+	onEnded  func(c entity.ClientID)
+	onWait   func(w LockWaiter)
+	onRecall func(g CachingGrant, to GrantKind)
+	onRevoke func(r Revocation)
+	onNotify func(ch []Change) // runs before the Notify is recorded
+}
+
+func (s *recordingSink) RecallGrant(g CachingGrant) {
+	to := g.Recall.To
+	s.mu.Lock()
+	s.recalls = append(s.recalls, recallCall{g, to})
+	fn := s.onRecall
+	s.mu.Unlock()
+	if fn != nil {
+		fn(g, to)
+	}
+}
+
+func (s *recordingSink) Revoked(r Revocation) {
+	s.mu.Lock()
+	s.revoked = append(s.revoked, r)
+	fn := s.onRevoke
+	s.mu.Unlock()
+	if fn != nil {
+		fn(r)
+	}
+}
+
+// graceEnded is one GraceEnded call, with how many Closed calls came before it.
+type graceEnded struct {
+	share  entity.ShareID
+	s      ShardID
+	closed int
+}
+
+func (s *recordingSink) GraceEnded(share entity.ShareID, sh ShardID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.graces = append(s.graces, graceEnded{share, sh, len(s.closed)})
+}
+
+func (s *recordingSink) Notify(c entity.ClientID, w WatchID, ch []Change) {
+	s.mu.Lock()
+	fn := s.onNotify
+	s.mu.Unlock()
+	if fn != nil {
+		fn(ch)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.notes = append(s.notes, noteOut{c, w, ch})
+}
+
+// takeNotes returns the Notify calls since the last take.
+func (s *recordingSink) takeNotes() []noteOut {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.notes
+	s.notes = nil
+	return n
+}
+
+type recallAny struct {
+	c    entity.ClientID
+	keep int
+}
+
+func (s *recordingSink) RecallAny(c entity.ClientID, keep int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.full = append(s.full, recallAny{c, keep})
+}
+
+// takeRecallAny returns the RecallAny calls since the last take.
+func (s *recordingSink) takeRecallAny() []recallAny {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.full
+	s.full = nil
+	return r
+}
+
+// takeRecalls returns the RecallGrant calls since the last take.
+func (s *recordingSink) takeRecalls() []recallCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.recalls
+	s.recalls = nil
+	return r
+}
+
+// takeRevoked returns the Revoked calls since the last take.
+func (s *recordingSink) takeRevoked() []Revocation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.revoked
+	s.revoked = nil
+	return r
+}
+
+func (s *recordingSink) LockWaitOver(w LockWaiter, granted bool) {
+	s.mu.Lock()
+	s.waits = append(s.waits, waitOverCall{w, granted})
+	fn := s.onWait
+	s.mu.Unlock()
+	if fn != nil {
+		fn(w)
+	}
+}
+
+// takeWaits returns the LockWaitOver calls since the last take.
+func (s *recordingSink) takeWaits() []waitOverCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w := s.waits
+	s.waits = nil
+	return w
+}
+
+// orderLog is an Order that records each file it is taken for, and is a real
+// lock per file, as the service's admission lock is: a callback that takes the
+// admission lock again deadlocks any test that reaches it.
+type orderLog struct {
+	mu    sync.Mutex
+	files []entity.FileID
+	held  map[entity.FileID]*sync.Mutex
+}
+
+func (l *orderLog) order(f entity.FileID) func() {
+	l.mu.Lock()
+	l.files = append(l.files, f)
+	if l.held == nil {
+		l.held = map[entity.FileID]*sync.Mutex{}
+	}
+	m := l.held[f]
+	if m == nil {
+		m = &sync.Mutex{}
+		l.held[f] = m
+	}
+	l.mu.Unlock()
+	m.Lock()
+	return m.Unlock
+}
+
+func (s *recordingSink) Closed(f entity.FileID, r CloseResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = append(s.closed, closed{f, r})
+}
+
+func (s *recordingSink) ClientEnded(c entity.ClientID, shards []ShardID, _ RevokeReason) {
+	s.mu.Lock()
+	s.ended = append(s.ended, ended{c, shards})
+	fn := s.onEnded
+	s.mu.Unlock()
+	if fn != nil {
+		fn(c)
+	}
+}
+
+func (s *recordingSink) endedOf(c entity.ClientID) []ended {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.DeleteFunc(slices.Clone(s.ended), func(e ended) bool { return e.c != c })
+}
+
+// fixture is a started table over a fresh in-memory store, with the store's
+// write counts, the clock the table reads and the Sink it raises events to.
+type fixture struct {
+	*Table
+	Clients
+	fs    *kvstoretest.FS
+	clock *fakeClock
+	sink  *recordingSink
+	order *orderLog
+}
+
+func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	return reopen(t, kvstoretest.NewFS(t, memKV), &fakeClock{})
+}
+
+// memKV is a fresh in-memory store, closed with the case.
+func memKV(tb testing.TB) kv.KV {
+	db, err := badgerkv.Open(badgerkv.Options{})
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+// reopen builds and starts a new table over fs's store, as a restart does:
+// the store keeps what is durable, and the table starts empty.
+func reopen(t *testing.T, fs *kvstoretest.FS, clock *fakeClock) *fixture {
+	t.Helper()
+	return reopenServing(t, fs, clock, testShards)
+}
+
+// reopenServing is reopen beginning only shards: each begun shard scans every
+// client record, which a test restarting thousands of times can't afford.
+func reopenServing(t *testing.T, fs *kvstoretest.FS, clock *fakeClock, shards []ShardID) *fixture {
+	t.Helper()
+	f := unstarted(t, fs, clock)
+	f.start(t, shards)
+	return f
+}
+
+// start starts f's table and begins shards, each under a grace instance
+// never used before.
+func (f *fixture) start(t *testing.T, shards []ShardID) {
+	t.Helper()
+	if err := f.Start(ctx, f.sink, f.order.order); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range shards {
+		if err := f.Recovery().ServeShard(ctx, f.fs.Share.ID, s, instances.Add(1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// testShards are the shards the tests hold state in, each begun at every
+// start under a grace instance never used before.
+var (
+	testShards = []ShardID{0, 1, 5, 7}
+	instances  atomic.Uint64
+)
+
+func unstarted(t *testing.T, fs *kvstoretest.FS, clock *fakeClock) *fixture {
+	t.Helper()
+	tab, err := New(Deps{Records: fs.Store, Clients: fs.Store.Clients(), Opens: fs.Store.Opens(), Node: entity.NodeID{15: 1}, Clock: clock, Rand: newSeeded(t.Name())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(tab.Stop)
+	checked(t, tab)
+	return &fixture{Table: tab, Clients: tab.Clients(), fs: fs, clock: clock, sink: &recordingSink{}, order: &orderLog{}}
+}

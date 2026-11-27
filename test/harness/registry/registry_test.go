@@ -55,6 +55,8 @@ func TestLoadRules(t *testing.T) {
 		{"groups name existing suites", ok + "groups: { g: [nope] }\nsuites:\n  a: { cmd: true }\n", `no suite "nope"`},
 		{"commands aren't blank", ok + "suites:\n  a: { cmd: [\"true\", \"\"] }\n", "a command is blank"},
 		{"go-json begins with go test", ok + "suites:\n  a: { cmd: make test, format: go-json }\n", "begins with go test"},
+		{"a read metric needs tests", ok + "suites:\n  a: { cmd: 'go test -bench . > {out}/b.txt', metrics: go-bench }\n", `metrics "go-bench" needs format exit and a tests list`},
+		{"a read metric needs format exit", ok + "suites:\n  a: { cmd: 'go test -json -bench .', tests: [b], format: go-json, metrics: fio-json }\n", `metrics "fio-json" needs format exit and a tests list`},
 		{"every matrix axis is used", ok + "suites:\n  a: { cmd: true, matrix: { profile: [memory] } }\n", `axis "profile" is used by no command`},
 		{"unknown placeholders are refused", ok + "suites:\n  a: { cmd: 'run {nope}' }\n", "unknown placeholder {nope}"},
 		{"placeholders side by side are each checked", ok + "suites:\n  a: { cmd: 'run {out}{nope}' }\n", "unknown placeholder {nope}"},
@@ -69,7 +71,6 @@ func TestLoadRules(t *testing.T) {
 		{"select names matrix values", ok + "suites:\n  a: { cmd: 'run {p}', matrix: { p: [x] }, select: { pr: { p: [y] } } }\n", `has no value "y"`},
 		{"{tools} names a tool", ok + "suites:\n  a: { cmd: 'run {tools}' }\n", "{tools}/: no such tool; write {tools}/NAME, NAME one of cthon04, nfstest, pjdfstest, pynfs"},
 		{"{tools} names a tool dt has", ok + "suites:\n  a: { cmd: 'run {tools}/pjdfstests/x' }\n", "{tools}/pjdfstests: no such tool"},
-		{"{bin} names a program dt builds", ok + "suites:\n  a: { cmd: 'run {bin}/smbfuz' }\n", "{bin}/smbfuz: no such program"},
 		{"an image's own command runs no tests", ok + "suites:\n  a: { image: x, tests: [one, two] }\n", "tests needs a cmd: the image's own command is the same for every test"},
 		{"{test} is only in cmd and volumes", ok + "suites:\n  a: { cmd: 'run {test}', tests: [t], dir: '{test}', env: { T: '{test}' }, fixture: { profile: memory, lease: '{test}' } }\n",
 			"a: dir holds {test}, which has a value only in cmd and volumes: the rest is filled in before the first test\n" +

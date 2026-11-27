@@ -36,11 +36,11 @@ func TestReadGivesBackTheRun(t *testing.T) {
 
 // When one cell's name begins another's, a test goes back to the cell with
 // the longer name that begins its suite: unit's own tests to unit, and
-// unit/nonrace's to it, whatever their order.
+// unit/windows's to it, whatever their order.
 func TestReadNestedCells(t *testing.T) {
 	pkg := []string{"example.com/m/a"}
 	r := Run{Name: "r", Cells: []Cell{
-		{Name: "unit/nonrace", Result: "passed", Tests: []Test{{Name: "TestN", Suite: pkg, Status: Passed}}},
+		{Name: "unit/windows", Result: "passed", Tests: []Test{{Name: "TestN", Suite: pkg, Status: Passed}}},
 		{Name: "unit", Result: "passed", Tests: []Test{{Name: "TestU", Suite: pkg, Status: Passed}}},
 	}}
 	dir := t.TempDir()

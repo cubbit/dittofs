@@ -1,0 +1,11 @@
+# test/pcap-corpus/nfsv4-acl/reference.pcap, frame 44: the SETATTR4args (RFC 7530 section
+# 16.32) of its COMPOUND's second operation, bytes 128 to 259 of the TCP payload, cut with tshark.
+00000000                               # stateid.seqid
+00000000 00000000 00000000             # stateid.other, opaque[12]: no length word
+00000001 00001000                      # obj_attributes.attrmask, uint32<>: 1 word, the ACL's bit
+00000068                               # obj_attributes.attr_vals, opaque<>: 104 bytes, no padding
+00000004                               # fattr4_acl, nfsace4<>: 4 entries (codec-acl.hex)
+00000000 00000000 0016019f 00000006 4f574e45 52400000
+00000000 00000000 00160187 00000006 4f574e45 52400000
+00000000 00000000 00120081 00000006 47524f55 50400000
+00000000 00000000 00120081 00000009 45564552 594f4e45 40000000

@@ -42,11 +42,12 @@ surfaces:
 - **Message tampering:** an attacker modifying in-flight SMB or NFS messages.
   Mitigations: SMB signing (AES-CMAC/GMAC); AEAD authentication tag in SMB3 encryption;
   Kerberos GSS wrap tokens with checksum.
-- **Control plane credential exposure:** admin credentials sent to the REST API in cleartext.
-  Mitigation: loopback-only bind by default; native TLS when exposed to the network.
+- **Control plane credential exposure:** admin credentials sent to the management API in
+  cleartext. Mitigation: loopback-only bind by default, and a start refuses an address off
+  loopback without `api.tls.cert_file` and `api.tls.key_file`; the local socket is mode `0600`.
 - **Keytab/machine-secret exfiltration:** unauthorized read of the keytab or machine account
-  secret. Mitigation: filesystem permissions (`chmod 600`); API write-only redaction for
-  machine secret.
+  secret. Mitigation: both are `Secret` records sealed under the protocol wrapping key in the
+  metadata store, and the API never returns their values.
 
 **Out of scope (no current mitigation):**
 
@@ -59,7 +60,8 @@ surfaces:
 
 ## RPCSEC_GSS internals (NFS/Kerberos)
 
-DittoFS implements RPCSEC_GSS per RFC 2203 in `pkg/auth/kerberos` and the NFS protocol layer.
+DittoFS does not serve RPCSEC_GSS yet: the NFS adapter refuses it with `AUTH_BADCRED`, so the
+steps below describe the design. Kerberos itself lives in `internal/identity`.
 The shared Kerberos layer also serves the SMB SPNEGO path (see below).
 
 **Security context establishment:**
@@ -72,7 +74,7 @@ The shared Kerberos layer also serves the SMB SPNEGO path (see below).
 3. Server returns an `RPCSEC_GSS_INIT` reply with a GSS token (AP-REP) proving its identity to
    the client (mutual authentication). The context handle is stored per-connection.
 4. Subsequent RPCs carry the context handle; the server maps the established principal to
-   UID/GID and builds an `*metadata.AuthContext` for the operation.
+   an identity, the `Identity` of the operation's `vfs.Call`.
 
 **Security services:** DittoFS negotiates the GSS service requested by the client mount:
 
@@ -106,8 +108,8 @@ SMB Kerberos authentication follows the SPNEGO protocol (RFC 4178) during `SESSI
    SMB3 per-purpose keys (see [Key derivation](#key-derivation)).
 
 **Principal mapping:** the SMB adapter automatically derives the `cifs/` SPN from the configured
-`nfs/` service principal. The client Kerberos principal (without realm) is mapped to a DittoFS
-control plane user for authorization.
+`nfs/` service principal. The client Kerberos principal is mapped to a DittoFS
+principal, a local user or a directory principal, for authorization.
 
 **NTLM fallback:** when Kerberos is unavailable, the server falls back to NTLMv2. For local
 DittoFS users, the NTLMv2 response is validated against the stored NT hash. For AD domain users,

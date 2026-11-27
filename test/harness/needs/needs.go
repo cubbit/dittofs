@@ -201,8 +201,6 @@ var services = map[string]struct {
 }{
 	"localstack": {prefix: "LOCALSTACK_ENDPOINT", address: "LOCALSTACK_ENDPOINT",
 		local: []string{"LOCALSTACK_ENDPOINT=http://127.0.0.1:4566"}, parse: urlAddress},
-	"postgres": {prefix: "DITTOFS_TEST_POSTGRES_DSN", address: "DITTOFS_TEST_POSTGRES_DSN",
-		local: []string{"DITTOFS_TEST_POSTGRES_DSN=host=localhost port=15432 dbname=dittofs_test user=postgres password=postgres sslmode=disable"}, parse: dsnAddress},
 	"kmip": {prefix: "DITTOFS_TEST_KMIP", address: "DITTOFS_TEST_KMIP_ENDPOINT", enabled: "DITTOFS_TEST_KMIP",
 		localFile: "test/harness/state/kmip.env", parse: hostPort},
 }
@@ -330,32 +328,6 @@ func urlAddress(v string) (string, error) {
 		port = "443"
 	}
 	return net.JoinHostPort(u.Hostname(), port), nil
-}
-
-// dsnAddress is the host and port of a PostgreSQL connection string, as a
-// URL or as key=value pairs, with PostgreSQL's defaults.
-func dsnAddress(v string) (string, error) {
-	if strings.Contains(v, "://") {
-		u, err := url.Parse(v)
-		if err != nil {
-			return "", fmt.Errorf("%q isn't a URL", v)
-		}
-		port := u.Port()
-		if port == "" {
-			port = "5432"
-		}
-		return net.JoinHostPort(u.Hostname(), port), nil
-	}
-	host, port := "localhost", "5432"
-	for _, field := range strings.Fields(v) {
-		switch k, val, _ := strings.Cut(field, "="); k {
-		case "host":
-			host = val
-		case "port":
-			port = val
-		}
-	}
-	return net.JoinHostPort(host, port), nil
 }
 
 // hostPort checks a host:port address.

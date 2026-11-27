@@ -510,10 +510,10 @@ framer's.
   `StructureSize` other than 64 and for a `NextCommand` not a multiple of 8 or leaving no room
   for a header before the record's end (RFC 22 §16.5); `AppendReply` writes the response
   header as MS-SMB2 3.3.4.3 and 3.3.4.4 have it, matching "the SMB2 header of the request with
-  the following changes": the request's command, message ID, credit charge, session, and the
-  8 bytes after the message ID as they came, since 3.3.4.3 and 3.3.4.4 change them only for a
-  request the server put off, so an async-form request's async ID lands in its sync-form
-  reply's `Reserved` and `TreeId`; and of its flags only `SMB2_FLAGS_RELATED_OPERATIONS`, the
+  the following changes": the request's command, message ID, credit charge, session, and a
+  sync-form request's `Reserved` and `TreeId` as they came, while an async-form request's
+  sync-form reply has both 0, since an async ID names no tree connect (MS-SMB2 2.2.1.2);
+  and of its flags only `SMB2_FLAGS_RELATED_OPERATIONS`, the
   priority mask, `SMB2_FLAGS_DFS_OPERATIONS` and `SMB2_FLAGS_REPLAY_OPERATION`, not
   `SMB2_FLAGS_SIGNED`, which
   `Wrap` sets once it signs (MS-SMB2 3.3.4.1.1), nor `SMB2_FLAGS_ASYNC_COMMAND`, since only the

@@ -1,0 +1,446 @@
+package node
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/netip"
+	"testing"
+
+	iidentity "github.com/cubbit/dittofs/internal/identity"
+	"github.com/cubbit/dittofs/internal/identity/directory"
+	"github.com/cubbit/dittofs/internal/identity/netlogon"
+	"github.com/cubbit/dittofs/internal/node/api/auth"
+	"github.com/cubbit/dittofs/internal/sidecar"
+	"github.com/cubbit/dittofs/internal/vfs"
+	"github.com/cubbit/dittofs/pkg/adapter"
+	"github.com/cubbit/dittofs/pkg/engine"
+	"github.com/cubbit/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/pkg/keyprovider"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/openstate"
+	"github.com/cubbit/dittofs/pkg/resources"
+	"github.com/cubbit/dittofs/pkg/secrets"
+	setting "github.com/cubbit/dittofs/pkg/settings"
+	pvfs "github.com/cubbit/dittofs/pkg/vfs"
+	"slices"
+	"sync"
+)
+
+// HashTree hashes root's whole tree — relative paths, sizes, then contents —
+// so the node's outside tests can compare a directory byte for byte across a
+// start that must touch nothing. The paths named in skip are left out, with
+// everything under them.
+func HashTree(t *testing.T, root string, skip ...string) string { return hashTree(t, root, skip...) }
+
+// Negotiate sends an SMB2 NEGOTIATE under message ID id on c and returns nil
+// once SMB answers it.
+func Negotiate(c net.Conn, id uint64) error { return negotiate(c, id) }
+
+// Null sends an RPC call to NFS's NULL procedure of version vers under xid on
+// c and returns the accepted reply's accept state and the words after it.
+func Null(c net.Conn, xid, vers uint32) ([]uint32, error) { return null(c, xid, vers) }
+
+// LiveStateBound is how long step 3 of a share's removal waits.
+const LiveStateBound = liveStateBound
+
+// BudgetNotZero is the zero check's record.
+const BudgetNotZero = budgetNotZero
+
+// NewStepping is New with stepped called after each start step completes,
+// named as Start's error names it; before each part's stop is waited on,
+// its bound already running, as "wait " and the part's name; and after each
+// part stops, as "stop " and its name.
+func NewStepping(stepped func(n *Node, step string)) func(Config) (*Node, error) {
+	return func(cfg Config) (*Node, error) {
+		n, err := New(cfg)
+		if err == nil {
+			n.life.stepped = func(step string) { stepped(n, step) }
+		}
+		return n, err
+	}
+}
+
+// OnStep has Start call stepped after each start step completes, as
+// NewStepping does, on a node already built. Call it before Start.
+func (n *Node) OnStep(stepped func(step string)) { n.life.stepped = stepped }
+
+// Addrs is the API's and the metrics listener's bound addresses, nil before
+// Start opened them.
+func (n *Node) Addrs() (api, metrics string) {
+	if n.life.api == nil {
+		return "", ""
+	}
+	return n.life.api.String(), n.life.met.String()
+}
+
+// StartFailed is the node's start_failed condition, nil unless a Start failed.
+func (n *Node) StartFailed() []health.Condition { return n.startFailed() }
+
+// Filesystem is the filesystem the node built.
+func (n *Node) Filesystem() *vfs.Filesystem { return n.fs }
+
+// Service is the filesystem as the adapters will be handed it.
+func (n *Node) Service() pvfs.Service { return n.fs }
+
+// Accounts is identity as the management API will be handed it.
+func (n *Node) Accounts() identity.APISignIn { return n.identity }
+
+// ComputerName is the NetBIOS name in identity's applied State.
+func (n *Node) ComputerName() (string, error) { return n.identity.ComputerName() }
+
+// StopIdentity stops identity, dropping its applied State.
+func (n *Node) StopIdentity(ctx context.Context) error { return n.identity.Stop(ctx) }
+
+// Engine is the engine the node built.
+func (n *Node) Engine() *engine.Engine { return n.engine }
+
+// OpenState is the open state the node built.
+func (n *Node) OpenState() *openstate.Table { return n.open }
+
+// Meta is the metadata store the node opened.
+func (n *Node) Meta() *kvstore.Store { return n.meta }
+
+// Progress is op's progress, as the node's operation runner reads it.
+func (n *Node) Progress(ctx context.Context, op entity.Operation) apiv1.Progress {
+	return n.runner.steps[op.Kind].progress(ctx, op)
+}
+
+// NewPausing is New with paused called by each reconcile pass with the
+// counters it read, before it acts on them; the pass waits for it.
+func NewPausing(paused func(read kvstore.Counters)) func(Config) (*Node, error) {
+	return func(cfg Config) (*Node, error) {
+		n, err := New(cfg)
+		if err == nil {
+			n.OnReconcileRead(paused)
+		}
+		return n, err
+	}
+}
+
+// OnReconcileRead has each reconcile pass call paused with the counters it
+// read, before it acts on them, as NewPausing does; the pass waits for it.
+// Call it before Start.
+func (n *Node) OnReconcileRead(paused func(read kvstore.Counters)) { n.rec.paused = paused }
+
+// OnAwaited has each write's wait for the node to apply it call awaited as
+// it starts. The API arms its bound on the clock before it calls the wait,
+// so a test that sees awaited called may advance the clock past the bound.
+// Call it before Start.
+func (n *Node) OnAwaited(awaited func()) { n.rec.awaited = awaited }
+
+// OnBind has reconcile call binding with each share before it binds it. Call
+// it before Start.
+func (n *Node) OnBind(binding func(entity.Share)) { n.rec.binding = binding }
+
+// OnBound has reconcile call bound with each share the engine bound, before
+// reconcile puts it in the running set. Call it before Start.
+func (n *Node) OnBound(bound func(entity.Share)) { n.rec.bound = bound }
+
+// OnEndLiveState has step 3 of each share removal call ending with the
+// share once its bound is set on the node's clock. Call it before Start.
+func (n *Node) OnEndLiveState(ending func(entity.ShareID)) { n.ending = ending }
+
+// OnApply has reconcile call applying with the counters each apply acts on.
+// Call it before Start.
+func (n *Node) OnApply(applying func(kvstore.Counters)) { n.rec.applying = applying }
+
+// OnReconcileWait has reconcile's loop call waiting once each of its waits
+// is set on the node's clock. Call it before Start.
+func (n *Node) OnReconcileWait(waiting func()) { n.rec.waiting = waiting }
+
+// OnReconcilePass has reconcile's loop call passing once as each pass
+// starts, before the pass reads anything. Call it before Start.
+func (n *Node) OnReconcilePass(passing func()) { n.rec.passing = passing }
+
+// OnIdentityApply has the node call handing with each State it hands
+// identity, before identity's Apply. Call it before Start.
+func (n *Node) OnIdentityApply(handing func(iidentity.State)) { n.rec.handing = handing }
+
+// OnSettingsWalkWait has the node call walking each time the settings walk
+// arms its bound for its next page of the store, once per page, with the
+// rows it has received so far: at 0, then at each 256 rows. Call it before
+// Start.
+func (n *Node) OnSettingsWalkWait(walking func(seen int)) { n.rec.walking = walking }
+
+// Applied is the wait a write on this node makes.
+func (n *Node) Applied(ctx context.Context) error { return n.applied(ctx) }
+
+// Declared is one test-declared settings section with the way its changes
+// reach the component the test stands in for. Prefix names the section
+// Section declares, the same string its declaration gives it, and must
+// match it: Section carries no exported prefix, and one that names no
+// declared section leaves it with no path, so a change of it refuses and
+// the test fails. Apply is the component's apply, which the node calls once
+// a pass with a live or bound change of the section, handing it the
+// snapshot the walk is about to publish and refusing the section whole on
+// its error. AtUse marks a section read where its component uses it, so no
+// apply runs for it. A section with neither is one the node holds no way
+// to: its live keys' changes refuse. Empty records that section's entry
+// anyway, holding neither, the way a component that declares its reach but
+// sets no way would. Call DeclareSections before Start.
+type Declared struct {
+	Prefix  string
+	Section setting.Section
+	Apply   func(*setting.Snapshot) error
+	AtUse   bool
+	Empty   bool
+}
+
+// DeclareSections declares the settings sections of the components a test
+// stands in for, each with the way its changes reach its component, beside
+// the ones the node's own components declare, so the walk reads and the
+// snapshot holds a section the test needs and the table lacks. Call it
+// before Start.
+func (n *Node) DeclareSections(secs ...Declared) {
+	for _, s := range secs {
+		n.rec.table = append(n.rec.table, s.Section)
+		if s.Apply != nil {
+			n.rec.reaches[s.Prefix] = reach{apply: s.Apply}
+
+			continue
+		}
+
+		if s.AtUse {
+			n.rec.reaches[s.Prefix] = reach{atUse: true}
+
+			continue
+		}
+
+		if s.Empty {
+			n.rec.reaches[s.Prefix] = reach{}
+		}
+	}
+}
+
+// Settings is the snapshot the settings walks have published, the one a
+// component reads what it runs from at use; nil before the first walk.
+func (n *Node) Settings() *setting.Snapshot { return n.rec.snapshot.Load() }
+
+// Positions is the counters the node has reconciled through.
+func (n *Node) Positions() kvstore.Counters {
+	n.rec.mu.Lock()
+	defer n.rec.mu.Unlock()
+	return n.rec.pos
+}
+
+// Moved is closed once a pass that read the counters without error ends.
+func (n *Node) Moved() <-chan struct{} {
+	n.rec.mu.Lock()
+	defer n.rec.mu.Unlock()
+	return n.rec.moved
+}
+
+// Woken reports whether a wake waits for reconcile to take it.
+func (n *Node) Woken() bool { return len(n.rec.wake) == 1 }
+
+// Refused is the records the node refused, the shares' first.
+func (n *Node) Refused() []entity.RefusedRecord {
+	_, refused, _ := n.rec.report()
+	return refused
+}
+
+// Wake wakes reconcile, as a write on this node does, so a pass runs
+// without the clock moving.
+func (n *Node) Wake() {
+	select {
+	case n.rec.wake <- struct{}{}:
+	default:
+	}
+}
+
+// OnRunnerTurn has the operation runner call turned after each turn, with
+// the runner's context, once the wait for the next, if any, is set on the
+// node's clock. Call it before Start.
+func (n *Node) OnRunnerTurn(turned func(ctx context.Context)) { n.runner.turned = turned }
+
+// RunnerWaits reports whether the operation runner's last turn ended in a
+// wait on the node's clock. Call it only from the OnRunnerTurn hook.
+func (n *Node) RunnerWaits() bool { return n.runner.waits }
+
+// OnStatus has the status writer call turned at the end of each turn with
+// the status it built and whether it committed it. Call it before Start.
+func (n *Node) OnStatus(turned func(s entity.NodeStatus, wrote bool)) { n.status.turned = turned }
+
+// Bound is share id's state as reconcile last bound it in the engine, and
+// false when it has bound none.
+func (n *Node) Bound(id entity.ShareID) (entity.ShareState, bool) {
+	n.rec.mu.Lock()
+	defer n.rec.mu.Unlock()
+	s, ok := n.rec.running[id]
+	return s.State, ok
+}
+
+// OnSweep has the sweep call turned at the end of each turn with what each
+// of its Sweep calls that answered deleted. Call it before Start.
+func (n *Node) OnSweep(turned func([]kvstore.Swept)) { n.sweep.turned = turned }
+
+// NewAuthenticating is New with authenticate as the API's Authenticate in
+// place of the node's sign-in, and no signing key, so a write carrying an
+// Idempotency-Key answers 503.
+func NewAuthenticating(authenticate func(*http.Request) (auth.Caller, error)) func(Config) (*Node, error) {
+	return func(cfg Config) (*Node, error) { return newNode(cfg, seams{authenticate: authenticate}) }
+}
+
+// NewSigning is NewAuthenticating with signingKey as the API's SigningKey
+// in place of the access tokens' current key, so writes carrying an
+// Idempotency-Key are served.
+func NewSigning(authenticate func(*http.Request) (auth.Caller, error), signingKey func(context.Context) ([]byte, error)) func(Config) (*Node, error) {
+	return func(cfg Config) (*Node, error) {
+		return newNode(cfg, seams{authenticate: authenticate, signingKey: signingKey})
+	}
+}
+
+// NewWithDirectory is New with dir as identity's directory dialer, which
+// New sets to the TLS one, and authenticate, when set, as the API's
+// Authenticate.
+func NewWithDirectory(dir directory.Dialer, authenticate func(*http.Request) (auth.Caller, error)) func(Config) (*Node, error) {
+	return func(cfg Config) (*Node, error) {
+		return newNode(cfg, seams{directory: dir, authenticate: authenticate})
+	}
+}
+
+// NewWithDialers is New with dir and dc as identity's directory and domain
+// controllers' dialers, which New sets to the network ones, and
+// authenticate and signingKey as the API's, as NewSigning sets them.
+func NewWithDialers(dir directory.Dialer, dc netlogon.Dialer, authenticate func(*http.Request) (auth.Caller, error), signingKey func(context.Context) ([]byte, error)) func(Config) (*Node, error) {
+	return func(cfg Config) (*Node, error) {
+		return newNode(cfg, seams{directory: dir, dc: dc, authenticate: authenticate, signingKey: signingKey})
+	}
+}
+
+// AppliedIdentity is the State identity runs, the zero State before the
+// first Apply.
+func (n *Node) AppliedIdentity() iidentity.State {
+	if st := n.identity.Applied(); st != nil {
+		return *st
+	}
+	return iidentity.State{}
+}
+
+// AppliedKeytab is the keytab identity holds in force and its current
+// version, as node status reports it.
+func (n *Node) AppliedKeytab() (entity.SecretRef, uint64, []identity.KeytabName) {
+	return n.identity.AppliedKeytab()
+}
+
+// SetSidecar has the node's runner drive sc, and no other sidecar. Call it
+// before Start.
+func (n *Node) SetSidecar(sc adapter.Sidecar) {
+	n.sidecars = sidecar.New(sc)
+	n.nfs.runner, n.smb.runner = n.sidecars, n.sidecars
+}
+
+// OnAdapter has each adapter the slots build handed to wrap with its
+// protocol, and the slots run what wrap returns. Call it before Start.
+func (n *Node) OnAdapter(wrap func(protocol string, a adapter.Adapter) adapter.Adapter) {
+	wrapBuild(n.nfs, wrap)
+	wrapBuild(n.smb, wrap)
+}
+
+func wrapBuild[S shape](s *slot[S], wrap func(string, adapter.Adapter) adapter.Adapter) {
+	build := s.build
+	s.build = func(d adapter.Deps, set S) (adapter.Adapter, error) {
+		a, err := build(d, set)
+		if err != nil {
+			return nil, err
+		}
+		return wrap(s.name, a), nil
+	}
+}
+
+// Reserve reserves bytes from the node's budget pool names, receive, reply,
+// connection or hold, as an adapter would.
+func (n *Node) Reserve(ctx context.Context, pool string, bytes int64) (resources.Reservation, error) {
+	switch pool {
+	case "receive":
+		return n.budgets.Receive.Reserve(ctx, netip.Addr{}, bytes)
+	case "reply":
+		return n.budgets.Reply.Reserve(ctx, netip.Addr{}, bytes)
+	case "connection":
+		return n.budgets.Connection.Reserve(bytes)
+	case "hold":
+		return n.budgets.Hold.Reserve(bytes)
+	}
+	return resources.Reservation{}, fmt.Errorf("node: no budget %q", pool)
+}
+
+// TakeConn counts one connection on the node's connection count, as an
+// adapter's accept does, and never gives it back.
+func (n *Node) TakeConn() error { return n.budgets.Conns.Take(netip.Addr{}) }
+
+// StatsThrough points the node's snapshot at f: the one seam the engine's
+// series, the journal's and the health evaluator read at every scrape.
+// Production hands the engine's own Stats; a test hands a fault on the same
+// seam, one it controls.
+func StatsThrough(n *Node, f func() engine.Stats) {
+	fn := statsFunc(f)
+	n.snap.stats.Store(&fn)
+}
+
+// Tokens is the access tokens the node verifies with.
+func (n *Node) Tokens() *auth.Tokens { return n.tokens }
+
+// RunnerTurn has the operation runner take one turn, as its loop does at
+// each interval. Call it only on a node not started, whose runner runs no
+// loop of its own.
+func (n *Node) RunnerTurn(ctx context.Context) { n.runner.turn(ctx, true) }
+
+// FailStorageKeyClose has the storage key's Close answer err once the real
+// key is closed beneath it.
+func (n *Node) FailStorageKeyClose(err error) { n.storageKey = failingClose{n.storageKey, err} }
+
+// failingClose is a storage key whose Close closes the real one, then fails.
+type failingClose struct {
+	keyprovider.KeyProvider
+	err error
+}
+
+func (f failingClose) Close() error { return errors.Join(f.KeyProvider.Close(), f.err) }
+
+// KeepSigningKeys has the access tokens read the signing key's versions
+// through a pass-through that keeps every value it handed over, which the
+// returned function lists. The rotation keeps the tokens New built. Call it
+// before Start.
+func (n *Node) KeepSigningKeys(ctx context.Context) (func() [][]byte, error) {
+	in, err := n.meta.Installation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p, err := secrets.New(n.meta.ControlPlane(), map[secrets.Role]keyprovider.KeyProvider{secrets.Storage: n.storageKey})
+	if err != nil {
+		return nil, err
+	}
+	k := &keptKeys{KeyVersions: providerKeys{p}}
+	n.tokens = auth.NewTokens(k, in.ID, in.SigningKey, n.cfg.Clock)
+	return func() [][]byte {
+		k.mu.Lock()
+		defer k.mu.Unlock()
+		return slices.Clone(k.values)
+	}, nil
+}
+
+// keptKeys passes Versions through and keeps every value it handed over.
+type keptKeys struct {
+	auth.KeyVersions
+	mu     sync.Mutex
+	values [][]byte
+}
+
+func (k *keptKeys) Versions(ctx context.Context, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]auth.KeyVersion, error) {
+	vs, err := k.KeyVersions.Versions(ctx, kind, owner, ref)
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	for _, v := range vs {
+		k.values = append(k.values, v.Value)
+	}
+	return vs, err
+}
+
+// SignIns is the sign-in service the node hands its API.
+func (n *Node) SignIns() *auth.Service { return n.auth }

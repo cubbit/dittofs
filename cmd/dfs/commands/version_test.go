@@ -6,19 +6,23 @@ import (
 	"testing"
 )
 
+// runDfs runs dfs with args on a root of its own and returns what it printed.
+func runDfs(args ...string) (string, error) {
+	var out bytes.Buffer
+	root := NewRoot()
+	root.SetOut(&out)
+	root.SetArgs(args)
+	err := root.Execute()
+	return out.String(), err
+}
+
 // TestVersionCmd_OutputPrefix verifies that "dfs version" prints the binary
-// name returned by cmd.Root().Name() — not the hardcoded string "dittofs".
+// name returned by cmd.Root().Name(), not the hardcoded string "dittofs".
 func TestVersionCmd_OutputPrefix(t *testing.T) {
-	var buf bytes.Buffer
-	rootCmd.SetOut(&buf)
-	t.Cleanup(func() { rootCmd.SetOut(nil) })
-
-	rootCmd.SetArgs([]string{"version"})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("Execute: %v", err)
+	out, err := runDfs("version")
+	if err != nil {
+		t.Fatalf("dfs version: %v", err)
 	}
-
-	out := buf.String()
 	if !strings.HasPrefix(out, "dfs ") {
 		t.Errorf("version output should start with %q, got: %q", "dfs ", out)
 	}
@@ -33,17 +37,11 @@ func TestVersionCmd_ShortFlag(t *testing.T) {
 	Version = "v1.2.3"
 	t.Cleanup(func() { Version = "dev" })
 
-	var buf bytes.Buffer
-	rootCmd.SetOut(&buf)
-	t.Cleanup(func() { rootCmd.SetOut(nil) })
-
-	rootCmd.SetArgs([]string{"version", "--short"})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("Execute: %v", err)
+	out, err := runDfs("version", "--short")
+	if err != nil {
+		t.Fatalf("dfs version --short: %v", err)
 	}
-
-	out := strings.TrimSpace(buf.String())
-	if out != "v1.2.3" {
+	if out = strings.TrimSpace(out); out != "v1.2.3" {
 		t.Errorf("--short output = %q, want %q", out, "v1.2.3")
 	}
 }

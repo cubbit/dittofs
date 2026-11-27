@@ -354,7 +354,8 @@ Which test or enforcer holds each row is in its subtask's **Tests**.
   `internal/identity`, reads the other's row by key, tracked, in the write's transaction, and
   `Apply` runs the same rule on the `State`. `pkg/settings` holds no rule naming either key and
   imports nothing of identity, as E1's import rule (only `internal/node` and identity's own
-  packages import `internal/identity`) requires.
+  packages import `internal/identity`; `_test.go` files are not checked) requires. RFC 13 §6 sends a rule to the control plane
+  only when its two settings belong to different components, as the port rule's do.
 
 ## 5. Target tree
 
@@ -369,7 +370,6 @@ internal/identity/
                               T6.5  Deps.Directory, the client swapped on a record change
   settings.go                 T6.3  the identity.directory section's registration
                               T6.7  Settings.DirectoryStaleGrace
-                              T6.13 the NetBIOS cross-check in both sections' CheckTx (D13)
   dircache.go                 T6.7  the directory cache, fresh-only answers (D11)
   outage.go                   T6.8  directory_unreachable, the probe (D9), Conditions
   dirmint.go                  T6.9  directory mints, Find's directory spellings, step 3, the bound
@@ -394,6 +394,8 @@ pkg/identity/identitytest/
 pkg/metadata/kvstore/
   minter.go                   T6.10 Rename (D5), SetEmail
   kvstoretest/principals.go   T6.10 their conformance rows
+internal/identity/
+  settings.go                 T6.13 the NetBIOS cross-check in both sections' CheckTx (D13)
 ```
 
 ## 6. Subtasks

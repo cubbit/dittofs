@@ -1,0 +1,513 @@
+// Package identity is the identity server: the one component that signs
+// callers in, maps principals to spellings and back, resolves an Identity to
+// the Caller it acts as on a share, and checks the management API's
+// accounts. Only the node builds it, and hands each consumer only the
+// interface of pkg/identity it calls.
+package identity
+
+import (
+	"context"
+	"crypto/rand"
+	"errors"
+	"fmt"
+	"log/slog"
+	"reflect"
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
+
+	"github.com/cubbit/dittofs/internal/identity/directory"
+	"github.com/cubbit/dittofs/internal/identity/netlogon"
+	"github.com/cubbit/dittofs/pkg/health"
+	"github.com/cubbit/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/metadata/kvstore"
+	"github.com/cubbit/dittofs/pkg/metrics"
+	"github.com/cubbit/dittofs/pkg/secrets"
+)
+
+// Deps is what the server is built over. The node starts and stops each of
+// them, and the server closes none.
+type Deps struct {
+	Store   Store
+	Clock   Clock
+	Metrics *metrics.Registry // nil: registers nothing
+	Tracer  trace.Tracer      // the identity.authenticate, identity.resolve and directory query spans; nil: the no-op tracer
+	Logger  *slog.Logger
+	// Logons receives each sign-in attempt's logon event; New does not
+	// require it, and while it is nil every sign-in answers ErrUnavailable.
+	Logons LogonSink
+	// Secrets resolves the secrets identity holds by reference; New does not
+	// require it.
+	Secrets SecretProvider
+	// Directory dials the directory State.Directory names; nil, as with no
+	// record, answers every directory question ErrUnavailable.
+	Directory directory.Dialer
+	// DomainController opens the domain's controllers; New does not require
+	// it, and while it is nil pass-through answers ErrUnavailable.
+	DomainController netlogon.Dialer
+	// ControlPlane is the store's ControlPlane(), the rotation's, the NT
+	// hashes' deletion's and a machine's link to its first PAC's
+	// control-plane calls; New does not require it, and while it is nil each
+	// of them fails.
+	ControlPlane ControlPlane
+}
+
+// SecretProvider is the secret provider's calls the server makes: Resolve
+// for a bind password, and the machine password's Versions, Seal and Prune
+// for its rotation.
+type SecretProvider interface {
+	Resolve(ctx context.Context, role secrets.Role, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]byte, error)
+	Versions(ctx context.Context, role secrets.Role, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef) ([]secrets.Version, error)
+	Seal(ctx context.Context, role secrets.Role, kind entity.SecretKind, owner entity.SecretOwner, ref entity.SecretRef, value []byte, m secrets.Meta) (entity.Secret, error)
+	Prune(
+		ctx context.Context,
+		tx entity.ControlPlaneTx,
+		kind entity.SecretKind,
+		owner entity.SecretOwner,
+		ref entity.SecretRef,
+	) error
+}
+
+var _ SecretProvider = (*secrets.Provider)(nil)
+
+// Store is the store's calls the server makes: the principals and their
+// records, a group's record, the one write that mints principals, and the
+// installation record the rotation reads. Declaring it here keeps a change
+// to the store's write calls inside the store.
+type Store interface {
+	Principals() kvstore.Principals
+	Records() kvstore.Records
+	Minter() kvstore.Minter
+	Installation(ctx context.Context) (entity.Installation, error)
+}
+
+// ControlPlane is the control-plane store's calls the rotation and the NT
+// hashes' deletion make: the machine password's sealed version, the writes
+// that refuse a running join, record a sealed version and record the last
+// rotation, and the deletion's batches.
+type ControlPlane interface {
+	Write(ctx context.Context, meta entity.WriteMeta, fn func(entity.ControlPlaneTx) error) error
+	Secret(ctx context.Context, id entity.SecretRef, version uint64) (entity.Secret, error)
+	DropNTHashes(ctx context.Context, after entity.SecretRef, n int) (next entity.SecretRef, dropped int, done bool, err error)
+}
+
+var _ ControlPlane = kvstore.ControlPlane{}
+
+// Clock is the server's source of time.
+type Clock interface {
+	Now() time.Time
+	After(d time.Duration) <-chan struct{} // fires after d on the monotonic clock
+}
+
+// State is everything Apply delivers, swapped in as one snapshot: a call
+// reads one State for its whole life, never part of one Apply and part of
+// another.
+type State struct {
+	// Generation is the principals generation as of this Apply. Account
+	// never checks a record under it: it reads the generation per call.
+	Generation uint64
+	// Settings is the identity section as of this Apply.
+	Settings Settings
+	// Keytab is the keytab's versions in force, opened, current first. A
+	// new version takes effect at the Apply that delivers it, and one no
+	// longer delivered is gone from the ring at that Apply.
+	Keytab []secrets.Version
+	// keys is the ring Apply builds from Keytab; whatever the caller
+	// passes is replaced.
+	keys keyRing
+	// keytabNames is the name of each key of the versions keys holds,
+	// read at Apply; whatever the caller passes is replaced.
+	keytabNames []identity.KeytabName
+	// domain is the NFSv4 owner strings' domain Apply derives from
+	// Settings.NFS4Domain and Keytab; whatever the caller passes is replaced.
+	domain string
+	// Machine is the machine password's versions in force, opened, current
+	// first. While Join.Joined, Apply derives each one's keys for the names
+	// in Join.Names, but for a version marked HandedOver.
+	Machine []secrets.Version
+	// Join is the machine account's state as of this Apply; zero while the
+	// installation is not joined.
+	Join entity.MachineJoin
+	// machine is the ring Apply derives from Machine and Join; whatever the
+	// caller passes is replaced.
+	machine machineRing
+	// dropped is the imported keys Apply removed for the computer account's
+	// names; whatever the caller passes is replaced.
+	dropped map[ringKey]bool
+	// Directory is the identity.directory section as of this Apply; nil
+	// when the installation has no directory.
+	Directory *directory.Record
+	// dir is Apply's client of Directory with its cache, kept across
+	// Applies that leave Directory unchanged; nil with no record or no
+	// Deps.Directory.
+	dir *dirCache
+	// Serial is set by Apply, whatever the caller passes: raised only when
+	// the State differs from the current one. A Caller's Built is the Serial
+	// of the State it was resolved under.
+	Serial uint64
+}
+
+// serial is st's Serial, 0 for no State.
+func (st *State) serial() uint64 {
+	if st == nil {
+		return 0
+	}
+	return st.Serial
+}
+
+// errNotApplied is a Start before the first Apply: the server has no State
+// to serve under.
+var errNotApplied = errors.New("identity: started before any State was applied")
+
+// Server is the identity server.
+//
+// decision: identity is one component shared by the filesystem and the
+// management API, not part of the filesystem. The API signs in over no file
+// protocol, so a sign-in path inside the filesystem would have the API
+// depend on it; a handshake round is per connection and acts on no share;
+// and identity is tested without a filesystem. Overturned if the API stops
+// calling identity, leaving the filesystem its only consumer; identity then
+// folds into it.
+type Server struct {
+	deps   Deps
+	state  atomic.Pointer[State] // nil until the first Apply, and again after Stop
+	mu     sync.Mutex            // Apply's: held across its load, compare, serial and store
+	serial uint64                // the last serial Apply handed out, under mu; Stop keeps it
+	loaded func()                // a test's pause just after Resolve loads the State; nil in production
+	// slotTaken is a test's pause just after a pass-through call takes its
+	// slot, before it reaches the channel; nil in production.
+	slotTaken func()
+	// awaiting is a test's pause in a pass-through call just before it waits
+	// for its answer, its bound or its caller's hang-up; nil in production.
+	awaiting   func()
+	tracer     trace.Tracer
+	logger     *slog.Logger
+	refusals   *prometheus.CounterVec   // by reason
+	mints      *prometheus.CounterVec   // by kind
+	unnamed    *prometheus.CounterVec   // by kind
+	remapped   *prometheus.CounterVec   // by kind
+	renamedOff *prometheus.CounterVec   // by kind: records a later answer left without a name
+	refreshErr *prometheus.CounterVec   // by kind: refreshes a resolution could not write
+	skipped    *prometheus.CounterVec   // by reason
+	pacDropped *prometheus.CounterVec   // by reason
+	unmapped   *prometheus.CounterVec   // by scheme
+	hashing    chan struct{}            // the password verifications' slots, GOMAXPROCS of them
+	dummy      []byte                   // the hash a password is verified against for an account that cannot sign in
+	dummyNT    [16]byte                 // the NT hash an NTLMv2 response is verified against for a user that cannot sign in
+	dummyUser  entity.Principal         // the user principal, held by no record, a sign-in reads for a name no user holds
+	dummyRef   entity.SecretRef         // the reference, held by no record, a sign-in resolves for a user with no NT hash to resolve
+	ntHashed   func(nt [16]byte)        // a test's view of each NT hash a sign-in computed its proof with; nil in production
+	verified   func(phc []byte)         // a test's view of each hash VerifyPassword verified against; nil in production
+	holds      holds                    // the joins' administrator credentials
+	throttle   *throttle                // the logon failures per name and client address
+	lookupCap  *lookupCap               // the directory lookups each client's Claimed callers send
+	mintCap    mintCap                  // the records Claimed callers mint on this node
+	replay     *replayCache             // the Kerberos authenticators seen within the clock skew
+	signIns    *prometheus.CounterVec   // by protocol, mechanism and outcome
+	signInSec  *prometheus.HistogramVec // by mechanism
+
+	slots     chan struct{}      // the pass-through's, channelSlots of them
+	chMu      sync.Mutex         // held across the channel's set-up
+	node      *nodeChannel       // the node's secure channel, under chMu; nil until a call sets one up
+	unhealthy atomic.Bool        // the last set-up failed at every controller
+	lifeMu    sync.Mutex         // life's and end's
+	life      context.Context    // ended by Stop, ending every call in flight
+	end       context.CancelFunc // ends life
+
+	mismatches *prometheus.CounterVec // the rotation's confirms whose number differs from the tag
+
+	schedStop func() // ends the rotation's schedule and waits for it, under mu; nil while it does not run
+	scheduled func() // a test's view of each schedule check, its next tick armed; nil in production
+
+	beforeMachineMint func()                 // a test's pause just before a machine's mint plan returns its batch; nil in production
+	beforeMachineLink func()                 // a test's pause just before a machine's link is written; nil in production
+	beforeRename      func()                 // a test's pause between a refresh's plan and its Rename; nil in production
+	beforeCreate      func(entity.MintBatch) // a test's pause between a mint's plan and its Create; nil in production
+}
+
+// Conditions appends identity's conditions: the node's
+// machine_account_unhealthy and directory_unreachable, and the installation's
+// machine_password_rotation_failed (RFC 18 §9.2). Their subjects name no
+// node: the node's own conditions carry its ID.
+func (s *Server) Conditions(dst []health.Condition) []health.Condition {
+	return s.rotationConditions(s.directoryConditions(s.machineAccountConditions(dst)))
+}
+
+// refusalsSpec counts the calls resolution refuses, by the reason refused.
+var refusalsSpec = metrics.Spec{
+	Name:   "identity_resolution_refusals_total",
+	Help:   "Calls refused at resolution, by reason.",
+	Labels: []string{"reason"},
+}
+
+var (
+	_ identity.Authenticator = (*Server)(nil)
+	_ identity.Identities    = (*Server)(nil)
+	_ identity.Resolver      = (*Server)(nil)
+	_ identity.APISignIn     = (*Server)(nil)
+)
+
+// New builds the server from d. It takes no settings and starts nothing: the
+// first State arrives through Apply, before Start.
+func New(d Deps) (*Server, error) {
+	if d.Store == nil {
+		return nil, errors.New("identity: Deps.Store is nil")
+	}
+	// A nil pointer in the interface passes the check above and would panic on
+	// the first Principals call, so it is refused here instead.
+	if v := reflect.ValueOf(d.Store); v.Kind() == reflect.Pointer && v.IsNil() {
+		return nil, errors.New("identity: Deps.Store is a nil pointer")
+	}
+	if d.Clock == nil {
+		return nil, errors.New("identity: Deps.Clock is nil")
+	}
+	s := &Server{deps: d, tracer: d.Tracer, logger: d.Logger, hashing: make(chan struct{}, runtime.GOMAXPROCS(0)),
+		slots: make(chan struct{}, channelSlots)}
+	h, err := identity.NewHashes(entity.User{}, []byte("dummy"), identity.NTLMSetting{})
+	if err != nil {
+		return nil, fmt.Errorf("identity: dummy password hash: %w", err)
+	}
+	s.dummy = h.Password
+	_, _ = rand.Read(s.dummyNT[:]) // crypto/rand.Read never fails
+	_, _ = rand.Read(s.dummyRef[:])
+	s.dummyUser = entity.NewUser()
+	s.life, s.end = context.WithCancel(context.Background())
+	if s.logger == nil {
+		s.logger = slog.New(slog.DiscardHandler)
+	}
+	if s.tracer == nil {
+		s.tracer = noop.NewTracerProvider().Tracer("")
+	}
+	s.refusals = counter(d.Metrics, refusalsSpec)
+	s.mints = counter(d.Metrics, mintsSpec)
+	s.unnamed = counter(d.Metrics, unnamedSpec)
+	s.remapped = counter(d.Metrics, remappedSpec)
+	s.renamedOff = counter(d.Metrics, renamesUnnamedSpec)
+	s.refreshErr = counter(d.Metrics, refreshFailedSpec)
+	s.skipped = counter(d.Metrics, skippedSpec)
+	s.pacDropped = counter(d.Metrics, pacDroppedSpec)
+	s.unmapped = counter(d.Metrics, unmappedSpec)
+	s.mismatches = counter(d.Metrics, mismatchesSpec)
+	s.signIns = counter(d.Metrics, signInsSpec)
+	s.signInSec = histogram(d.Metrics, signInSecondsSpec)
+	s.throttle = newThrottle(throttleBound, counter(d.Metrics, evictionsSpec).WithLabelValues())
+	s.replay = newReplayCache(replayBound, replayShare)
+	s.lookupCap = newLookupCap(claimUnits, s.logger)
+	return s, nil
+}
+
+// counter is spec registered on reg, or an unregistered one for a nil reg.
+func counter(reg *metrics.Registry, spec metrics.Spec) *prometheus.CounterVec {
+	if reg != nil {
+		return reg.Counter(spec)
+	}
+	return prometheus.NewCounterVec(prometheus.CounterOpts{Name: spec.Name, Help: spec.Help}, spec.Labels)
+}
+
+// Apply makes st the State every later call reads, in one swap. A State
+// equal to the current one but for its Serial is not swapped in, so the
+// serial stays; any other gets a serial greater than every one before it.
+//
+// A State whose Settings or Directory fail Validate, or whose NetBIOSName is
+// the directory's NetBIOS domain, is refused and the current one kept.
+//
+// A State whose Directory differs from the current one's gets a new
+// directory client, which dials nothing until its first question; the old
+// one is closed once the questions running on it return.
+//
+// decision: the serial is raised per differing State, not per Apply, so a
+// once-a-second reconcile that changed nothing empties no cache, and under
+// one lock across the load, the compare, the serial and the store, so two
+// concurrent Applies never store two differing States under one serial. A
+// serial survives Stop, so a restarted server never repeats one a cache may
+// still hold. Overturned if Apply ever needs to run without that lock.
+func (s *Server) Apply(st State) error {
+	// The State keeps its own copy of the record, so the caller editing its
+	// record later changes nothing applied. A Record holds only values, no
+	// slice or map, so one level copies it whole.
+	if st.Directory != nil {
+		d := *st.Directory
+		st.Directory = &d
+	}
+	if err := st.validate(); err != nil {
+		return err
+	}
+	st.keys, st.keytabNames = buildRing(st.Keytab, s.logger)
+	st.domain = nfs4Domain(st.Settings.NFS4Domain, st.Keytab)
+	st.machine = buildMachineRing(&st, s.logger)
+	st.dropped = st.keys.dropMachineNames(&st.machine)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur := s.state.Load()
+	for k := range st.dropped {
+		if cur == nil || !cur.dropped[k] {
+			s.logger.Error("identity: imported key for a computer account's name skipped", "name", k.name, "realm", k.realm, "kvno", k.kvno)
+		}
+	}
+	if cur != nil {
+		st.Serial = cur.Serial
+		st.dir = cur.dir
+		// DeepEqual, since a State's keytab versions and Directory are
+		// compared by value.
+		if reflect.DeepEqual(st, *cur) {
+			return nil
+		}
+	}
+	if cur == nil || !reflect.DeepEqual(st.Directory, cur.Directory) {
+		st.dir = s.newDirectoryClient(st.Directory)
+	}
+	s.serial++
+	st.Serial = s.serial
+	s.state.Store(&st)
+	if cur != nil && cur.dir != st.dir && cur.dir != nil {
+		cur.dir.Close()
+	}
+	if !st.Join.Joined || st.Directory == nil {
+		s.closeChannel() // the channel is held only while joined, with a record
+	}
+	return nil
+}
+
+// newDirectoryClient is a client of rec, its bind password resolved through
+// Deps.Secrets at each dial, and its empty cache; nil with no record or no
+// Deps.Directory.
+func (s *Server) newDirectoryClient(rec *directory.Record) *dirCache {
+	if rec == nil || s.deps.Directory == nil {
+		return nil
+	}
+	ref := rec.BindCredential
+	return newDirCache(directory.NewClient(*rec, s.deps.Directory, func(ctx context.Context) ([]byte, error) {
+		return s.bindPassword(ctx, ref)
+	}, s.deps.Clock, s.logger), s.deps)
+}
+
+// bindPassword resolves the directory record's bind password through
+// Deps.Secrets.
+func (s *Server) bindPassword(ctx context.Context, ref entity.SecretRef) ([]byte, error) {
+	if s.deps.Secrets == nil {
+		return nil, errors.New("no secret provider")
+	}
+	return s.deps.Secrets.Resolve(ctx, secrets.Protocol, entity.SecretDirectoryCredential,
+		entity.SecretOwner{
+			Scope: entity.SettingScope{Kind: entity.ScopeInstallation},
+			Key:   DirectoryBindCredentialKey,
+		}, ref)
+}
+
+// validate refuses settings or a directory record that fail their Validate,
+// and an installation NetBIOS name that is the directory's NetBIOS domain,
+// which would make a local NTLMv2 sign-in's domain name both.
+func (st *State) validate() error {
+	if err := st.Settings.Validate(); err != nil {
+		return fmt.Errorf("identity: %w", err)
+	}
+	d := st.Directory
+	if d == nil {
+		return nil
+	}
+	if err := d.Validate(); err != nil {
+		return fmt.Errorf("identity.directory: %w", err)
+	}
+	if equalFoldASCII(st.Settings.NetBIOSName, d.NetBIOSDomain) {
+		return fmt.Errorf("%w: netbios_name %q is identity.directory's netbios_domain %q", ErrNetBIOSClash, st.Settings.NetBIOSName, d.NetBIOSDomain)
+	}
+	return nil
+}
+
+// ErrNetBIOSClash is a State whose NetBIOS name equals its directory's
+// NetBIOS domain, ASCII letters folded, which Apply refuses.
+var ErrNetBIOSClash = errors.New("identity: NetBIOS name clash")
+
+// NetBIOSMoved is the keys of the NetBIOS name and the directory's NetBIOS
+// domain whose value in st differs from last's, byte for byte, so a change of
+// case is a move: a refused State puts back last's rows whole, case
+// included, and each row that differs is one the node does not run. The
+// domain's alone when neither moved, since last passed the clash check, so
+// a clash with neither side moved comes from the directory arriving. For a
+// State Apply refuses with ErrNetBIOSClash, they are the rows that moved
+// into it.
+func NetBIOSMoved(st, last State) []string {
+	var keys []string
+	if st.Settings.NetBIOSName != last.Settings.NetBIOSName {
+		keys = append(keys, KeyNetBIOSName)
+	}
+	if keys == nil || st.Directory == nil || last.Directory == nil ||
+		st.Directory.NetBIOSDomain != last.Directory.NetBIOSDomain {
+		keys = append(keys, KeyNetBIOSDomain)
+	}
+	return keys
+}
+
+// equalFoldASCII compares a and b with ASCII letters folded and every other
+// byte as itself, so a Unicode letter that folds to an ASCII one, the Kelvin
+// sign to k among them, never matches.
+func equalFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range len(a) {
+		x, y := a[i], b[i]
+		if 'a' <= x && x <= 'z' {
+			x -= 'a' - 'A'
+		}
+		if 'a' <= y && y <= 'z' {
+			y -= 'a' - 'A'
+		}
+		if x != y {
+			return false
+		}
+	}
+	return true
+}
+
+// Applied is the State a call starting now reads, which the caller only
+// reads; nil before the first Apply and after Stop.
+func (s *Server) Applied() *State { return s.state.Load() }
+
+// Current is the serial of the State a Resolve starting now reads; 0 before
+// the first Apply and after Stop.
+func (s *Server) Current() uint64 { return s.state.Load().serial() }
+
+// Start starts the server under the State last applied, and the machine
+// password rotation's schedule when Deps.ControlPlane is set, and refuses
+// errNotApplied when no State has been applied.
+func (s *Server) Start(ctx context.Context) error {
+	// Under mu, with Stop's clearing of the State and stopping of the
+	// schedule, so a Stop either ends the schedule this Start started or
+	// leaves no State for it to start on.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state.Load() == nil {
+		return errNotApplied
+	}
+	s.startSchedule()
+	return nil
+}
+
+// Stop drops every in-memory table, the applied State, the held join
+// credentials, the logon throttle and the replay cache among them, so a
+// restart needs an Apply before its Start, ends every call to a domain
+// controller in flight, stops the rotation's schedule, closes the node's
+// secure channel, and closes its directory client once the questions running
+// on it return. It closes nothing it was handed.
+func (s *Server) Stop(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// The schedule's loop never takes mu, so waiting for it here cannot
+	// deadlock.
+	s.stopSchedule()
+	if old := s.state.Swap(nil); old != nil && old.dir != nil {
+		old.dir.Close()
+	}
+	s.dropHolds()
+	s.throttle.drop()
+	s.replay.drop()
+	s.closeChannel()
+	return nil
+}

@@ -11,6 +11,12 @@ regexes = [
   '''wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY''',
   # Localstack / test fixtures use literal "test" credentials.
   '''(?i)(access|secret)[_-]?key["'\s:=]+test["']''',
-  # The JWT signing key of the throwaway DittoFS that test/smbfuzz's fixture starts.
-  '''smbfuzz-jwt-secret-key-that-is-long-enough-32''',
+  # RFC 3962 Appendix B's AES string-to-key vectors (PBKDF2 output and the
+  # derived keys), published test vectors in internal/adapter/gss.
+  '''cdedb5281bb2f801565a1122b2563515(0ad1f7a04bb9f3a333ecc0e2e1f70837)?''',
+  '''42263c6e89f4fc28b8df68ee09799f15''',
+  '''fe697b52bc0d3ce14432ba036a92e65bbb52280990a2fa27883998d72af30161''',
+  # The session key of gss's captured tickets, from the throwaway test realm
+  # whose keytab is committed in test/pcap-corpus/nfs-gss.
+  '''67ddc03452028ad534877bc7ba17287d21c81acce7f4c00497c0187ed7aca84a''',
 ]

@@ -72,6 +72,7 @@ type Options struct {
 	Base     string    // --base: the ref {base} stands for; empty leaves it to the event (see base)
 	Changed  bool      // --changed: {packages} of patterns holds only the packages changed since the base
 	Packages []string  // --packages: runs only these packages, in place of a suite's patterns and of --changed's
+	start    startFunc // a fixture's start; nil is startFixture, and dt's own tests pass their own
 }
 
 // minute is a variable so the tests can shorten a cell's limit.
@@ -226,16 +227,15 @@ func conflict(a, b Cell) bool {
 // that run at once. A step that fails is said here and left to the cells,
 // which try it again and report it as their own.
 func prepare(ctx context.Context, cells []Cell, o Options, dir string) {
-	var tools, progs []string
+	var tools []string
 	bin := false
 	for _, c := range cells {
 		tools = append(tools, c.Unit.Tools()...)
-		progs = append(progs, c.Unit.Bins()...)
-		bin = bin || c.Unit.Fixture != nil && c.Unit.Fixture.Server != "knfsd" || c.Unit.Format == "go-json" && asRoot(c) || len(c.Unit.Bins()) > 0
+		bin = bin || c.Unit.Fixture != nil && c.Unit.Fixture.Server != "knfsd" || c.Unit.Format == "go-json" && asRoot(c)
 	}
 	if bin {
-		if err := buildBin(ctx, o.Root, filepath.Join(dir, "bin"), progs, os.Environ(), o.Out); err != nil {
-			_, _ = fmt.Fprintf(o.Out, "[dt] {bin} didn't build: %v\n", err)
+		if err := buildBin(ctx, o.Root, filepath.Join(dir, "bin"), os.Environ(), o.Out); err != nil {
+			_, _ = fmt.Fprintf(o.Out, "[dt] dfs and dfsctl didn't build: %v\n", err)
 		}
 	}
 	if len(tools) > 0 {
@@ -335,7 +335,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			return didntRun(err.Error())
 		}
 		// What dt can't do yet decides before the needs, as in Blocked.
-		if why := fixture.Unsupported(&spec, hostOS); why != "" {
+		if why := o.unsupported(&spec, hostOS); why != "" {
 			return didntRun(why)
 		}
 	}
@@ -352,7 +352,7 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		podman, err = needs.Podman()
 		return err
 	}
-	if why, unmet := Blocked(c.Unit, c.Needs, check); why != "" {
+	if why, unmet := blocked(c.Unit, c.Needs, check, o.unsupported); why != "" {
 		// A machine that met the needs could run the cell, so without --ci
 		// it's skipped; what dt can't do yet is never a skip.
 		if len(unmet) > 0 && !o.CI {
@@ -385,8 +385,8 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		}
 		lists["packages"] = pkgs
 	}
-	if c.Unit.Format == "go-json" && asRoot(c) || len(c.Unit.Bins()) > 0 {
-		vals["bin"] = filepath.Join(dir, "bin") // built below, or by goJSON, before the commands run
+	if c.Unit.Format == "go-json" && asRoot(c) {
+		vals["bin"] = filepath.Join(dir, "bin") // goJSON builds it before the commands run
 	}
 	if len(c.Unit.Tools()) > 0 {
 		vals["tools"] = filepath.Join(dir, "tools") // laid out below, before the tests are found
@@ -476,13 +476,11 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		}
 		return didntRun(step + ": " + err.Error())
 	}
-	if c.Unit.Fixture != nil || len(c.Unit.Bins()) > 0 {
-		if err := buildBin(setup, o.Root, vals["bin"], c.Unit.Bins(), os.Environ(), w); err != nil {
-			return setupFailed("{bin} didn't build", err)
-		}
-	}
 	var server fixtureServer
 	if c.Unit.Fixture != nil {
+		if err := buildBin(setup, o.Root, vals["bin"], os.Environ(), w); err != nil {
+			return setupFailed("the fixture", fmt.Errorf("dfs and dfsctl didn't build: %w", err))
+		}
 		if spec.Kerberos {
 			build := []string{"docker", "build", "-q", "-t", fixture.KDCImage, filepath.Join("test", "smb-conformance", "kdc")}
 			_, _ = fmt.Fprintf(w, "[dt] $ %s\n", strings.Join(build, " "))
@@ -497,7 +495,11 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 		if spec.Shares != "" {
 			spec.Shares = filepath.Join(o.Root, spec.Shares)
 		}
-		server, err = startFixture(setup, spec, needs.ServiceEnv(o.Root, c.Needs), vals["bin"], out, w)
+		start := o.start
+		if start == nil {
+			start = startFixture
+		}
+		server, err = start(setup, spec, needs.ServiceEnv(o.Root, c.Needs), vals["bin"], out, w)
 		if err != nil {
 			return setupFailed("the fixture", err)
 		}
@@ -575,8 +577,21 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			// decision: a test whose share wasn't reset doesn't run, since it
 			// would run on what the test before it left there. The reset is
 			// one of the fixture's steps, so it isn't retried.
-			if err := server.Reset(vals["share"]); err != nil {
+			reset, done := context.WithTimeout(cellCtx, fixtureSetup)
+			err := server.Reset(reset, vals["share"])
+			done()
+			if err != nil {
 				return nil, []string{prefix + "its share wasn't reset: " + err.Error()}
+			}
+		}
+		if server != nil {
+			// What a start decides, as a port, is read again for each test,
+			// since a restart, a reset's among them, can move it. The share
+			// stays the test's own.
+			for k, v := range server.Placeholders() {
+				if k != "share" {
+					vals[k] = v
+				}
 			}
 		}
 		var output bytes.Buffer
@@ -615,9 +630,10 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 			if r.timedOut {
 				tc.Grade = report.New // a hang, which no entry excuses
 			}
-			// decision: dt reads fio-json alone. dfsbench-json's numbers are
-			// for the tracked benchmark runs, and aren't recorded until then.
-			if c.Unit.Metrics == "fio-json" {
+			// decision: dfsbench-json's numbers are for the tracked benchmark
+			// runs, and aren't recorded until then.
+			switch c.Unit.Metrics {
+			case "fio-json":
 				// A job that continues on errors exits 0, so its report
 				// decides too.
 				numbers, failed, err := readFio(filepath.Join(out, cmp.Or(paths[test], test)+".json"))
@@ -628,6 +644,19 @@ func runCell(ctx context.Context, c Cell, o Options, dir, commit string) (res re
 					// decision: a test that passed without a report has no
 					// numbers, which is lost coverage: its cell isn't run.
 					why = append(why, prefix+"fio's report: "+err.Error())
+				}
+				tc.Metrics = numbers
+			case "go-bench":
+				// A failed benchmark behind a tee exits 0, so its lines
+				// decide too, as fio's report does.
+				numbers, failed, err := readGoBench(filepath.Join(out, cmp.Or(paths[test], test)+".txt"), gomaxprocs(t.env))
+				switch {
+				case len(failed) > 0:
+					tc.Status, tc.Message = report.Failed, strings.TrimSuffix(strings.Join(append(failed, r.note), "; "), "; ")
+				case err != nil && tc.Status == report.Passed:
+					// A test that passed without benchmark lines has no
+					// numbers either: its cell isn't run, as for fio.
+					why = append(why, prefix+"go's benchmark output: "+err.Error())
 				}
 				tc.Metrics = numbers
 			}
@@ -1199,10 +1228,15 @@ var hostOS = runtime.GOOS
 // as another platform. A cell dtc can't run counts for neither, unless it runs
 // here, which keeps the run here.
 func Container(cells []Cell, check func(need string) error) bool {
+	return container(cells, check, fixture.Unsupported)
+}
+
+// container is Container, with fix saying what of a fixture dt can't set up.
+func container(cells []Cell, check func(need string) error, fix func(*registry.Fixture, string) string) bool {
 	move := false
 	for _, c := range cells {
-		if inDtc(c.Unit) != "" {
-			if unsupported(c.Unit, hostOS) == "" && !slices.ContainsFunc(c.Needs, func(n string) bool { return check(n) != nil }) {
+		if inDtc(c.Unit, fix) != "" {
+			if unsupported(c.Unit, hostOS, fix) == "" && !slices.ContainsFunc(c.Needs, func(n string) bool { return check(n) != nil }) {
 				return false
 			}
 			continue
@@ -1229,7 +1263,12 @@ func Container(cells []Cell, check func(need string) error) bool {
 // needs, and is empty when what stops the cell is something dt doesn't do
 // yet. dt run and dt list both decide through it, so they can't disagree.
 func Blocked(u *registry.Suite, list []string, check func(need string) error) (why string, unmet []string) {
-	if why := unsupported(u, hostOS); why != "" {
+	return blocked(u, list, check, fixture.Unsupported)
+}
+
+// blocked is Blocked, with fix saying what of a fixture dt can't set up.
+func blocked(u *registry.Suite, list []string, check func(need string) error, fix func(*registry.Fixture, string) string) (why string, unmet []string) {
+	if why := unsupported(u, hostOS, fix); why != "" {
 		return why, nil
 	}
 	var reasons []string
@@ -1245,8 +1284,8 @@ func Blocked(u *registry.Suite, list []string, check func(need string) error) (w
 // inDtc says why dt can't run suite u in dtc, or returns "": dtc meets the
 // linux need and runs dt as root, which a fixture whose users hold self
 // refuses.
-func inDtc(u *registry.Suite) string {
-	if why := unsupported(u, "linux"); why != "" {
+func inDtc(u *registry.Suite, fix func(*registry.Fixture, string) string) string {
+	if why := unsupported(u, "linux", fix); why != "" {
 		return why
 	}
 	if u.Fixture != nil && slices.Contains(u.Fixture.Users, "self") {
@@ -1256,9 +1295,9 @@ func inDtc(u *registry.Suite) string {
 }
 
 // unsupported says why dt can't run the suite yet on platform goos, or
-// returns "": only a fixture field dt doesn't do yet, since it reads every
-// format.
-func unsupported(u *registry.Suite, goos string) string {
+// returns "": only a fixture field dt doesn't do yet, as fix says, since it
+// reads every format.
+func unsupported(u *registry.Suite, goos string, fix func(*registry.Fixture, string) string) string {
 	if u.Format == "go-json" && u.Fixture != nil && u.Fixture.Client != "" {
 		return "dt doesn't run go test on a namespaced client yet"
 	}
@@ -1269,9 +1308,26 @@ func unsupported(u *registry.Suite, goos string) string {
 		return "dt doesn't run a suite that needs root on a namespaced client yet"
 	}
 	if u.Fixture != nil {
-		return fixture.Unsupported(u.Fixture, goos)
+		return fix(u.Fixture, goos)
 	}
 	return ""
+}
+
+// unsupported says what of fixture f dt can't set up on goos, for o's start.
+//
+// decision: a start of a test's own stands in for the server, so only what
+// dt itself sets up refuses its fixture (fixture.NotSetUp), not what the
+// DittoFS server doesn't serve yet (fixture.Unserved). dt's own tests of a
+// fixture's lifecycle (its reset, its stop, a server that ends, the KDC's
+// image, its mounts) run NFS, SMB, Kerberos and shares fixtures through such
+// a start, which the server's refusals would otherwise leave unreachable.
+// Every real run passes no start, so dt run, dt list and Blocked refuse the
+// same cells.
+func (o Options) unsupported(f *registry.Fixture, goos string) string {
+	if o.start != nil {
+		return fixture.NotSetUp(f, goos)
+	}
+	return fixture.Unsupported(f, goos)
 }
 
 // base is the ref {base} stands for in a run: o.Base (--base) when given, else

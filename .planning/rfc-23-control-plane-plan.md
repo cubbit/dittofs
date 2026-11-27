@@ -222,7 +222,7 @@ without it.
 - the new `cmd/dfs`, whose commands are wired to stub bodies.
 
 The kvstore view's methods with `expect` and amendment A3's entry point are epic 2's, which
-declares and fills them together; `pkg/node/apiv1/client`'s client is epic 4's, which lands it whole with
+declares and fills them together; the client, `pkg/node/apiv1/client`, is epic 4's, which lands it whole with
 its core.
 
 **The seams it exposes:**
@@ -391,11 +391,11 @@ registers no suite and no group, and changes no `lint-go` tag.
     - `internal/node`'s `New`, `Start`, `Stop`, `Config` and `Preflight`, the start check the
       host runs over the store's directory, or its opened KV when it has none;
     - `pkg/node/apiv1`'s wire types;
-    - `pkg/node/apiv1/client`'s client;
+    - the client, `pkg/node/apiv1/client`;
     - kvstore's view methods.
 
     The node's surface and the shared wire types are frozen at S1; kvstore's view methods when
-    epic 2 lands them, `pkg/node/apiv1/client`'s client when epic 4 lands it, and each resource's wire
+    epic 2 lands them, the client, `pkg/node/apiv1/client`, when epic 4 lands it, and each resource's wire
     types with the epic that serves it. A deferred action or resource adds an `OpKind`, a code or a type
     additively, as RFC 23 §9 allows within a major version. The route table, the write path and the
     problem table stay unexported inside `internal/node/api`. The token code is the one exception:
@@ -416,10 +416,10 @@ registers no suite and no group, and changes no `lint-go` tag.
 | E5 🔀 | Accounts and sign-in | on RFC 18 §8.1's interface (X1, X2): resumable `dfs init`, `dfs`'s `reset-admin`, tokens, sessions, roles, throttling, first password, signing key and its retention, their wire types | 10 | 25.5 | C | E6 (partly), E7; X3 (partly); the RFC 13 plan's S4 (#4059, `dfs init`) |
 | E6 | The CLI | `login` and the rebuilt `dfsctl` on epic 4's client, generated reference | 6 | 11.5 | A | E7 |
 | E7 🔀 | Integration | RFC 23 §12's single-node rows through the API, the harness's server fixture, the guides and `CLAUDE.md` | 7 | 12 | team | E8 (partly) |
-| E8 🔀 | E2E green | the e2e helpers rebuilt on the new client, the e2e rows, the #3714 filter's entries removed | planned after S3 | planned after S3 | team | — |
-| | **Total** | | **65** | **166.5** | | |
+| E8 🔀 | E2E green | the e2e helpers rebuilt on the new client, the e2e rows over NFS, the #3714 filter's entries removed; its SMB parts deferred to v1.1 (§6.1) | 9 | 15.5 | team | — |
+| | **Total** | | **74** | **182** | | |
 
-**Plan estimate: 65 subtasks, 166.5 man-days, not counting epic 8.**
+**Plan estimate: 74 subtasks, 182 man-days.**
 
 The figure counts none of the work this plan consumes from the RFC 13 plan (#4059) and the RFC 18
 plan (#4058), which estimate it once, in their own epics.
@@ -514,7 +514,7 @@ flowchart TD
 | E4 | E5 (partly), E6 (partly), E7; the RFC 13 plan's S3 (#4059) | Epic 5's sign-in routes go in the route table; the CLI is built against `pkg/node/apiv1` from S1, and tested against the routes. The RFC 13 plan's epic 5 fills the write path's `Check` slot. |
 | E5 | E6 (partly), E7; X3 (partly); the RFC 13 plan's S4 (#4059) | The CLI's `login` calls sign-in; every integration row runs as a signed-in caller; `dfs init` ends the RFC 13 plan's epic 2, which its epic 5 (X3) waits on (D6), and starts its epic 6. |
 | E6 | E7 | Integration's "§7 CLI" row runs the CLI's whole suite. |
-| E7 | E8 (partly) | E2E green runs the server through the harness's server fixture on `dfs init` and `dfs start`; it waits for that fixture and S3, not for the rest of integration (the guides, the CLI's suite, the throttling and audit rows), so the data-path cells D9 filters come back as soon as both are in. |
+| E7 | E8 (partly) | E2E green runs the server through the harness's server fixture on `dfs init` and `dfs start`; it waits for that fixture, T7.4's CLI rows for its second-user row, and S3, not for the rest of integration (the guides, the throttling and audit rows), so the data-path cells D9 filters come back as soon as both are in. |
 
 ### 3.4 Splitting the work
 
@@ -555,7 +555,7 @@ internal/node/api/auth/       sign-in, tokens, sessions, roles, throttling, the 
                               signing key; imported by internal/node/api only (rule 11)
 internal/node/nodetest/       in-process node harness (KV, clock, 127.0.0.1:0)          E3, E5
 pkg/node/apiv1/               wire types, standard library only, one file per resource  E1 shared, E4, E5
-pkg/node/apiv1/client/        client on pkg/node/apiv1: its core,                       E4, E6
+pkg/node/apiv1/client/        client of pkg/node/apiv1's wire: its core,               E4, E6
                               one generic resource, the accessors in one file
 cmd/dfsctl/commands/<noun>/   CLI: one sub-package per noun, bodies rebuilt             E6
 pkg/health/                   + RFC 25's registry and watchdog, the parts used          E3
@@ -652,7 +652,18 @@ decision.
 - **Applied by** epic 1. Who turns each back on:
   - epic 8 rebuilds the setup that drives v1's `dfsctl` and configuration (`test/harness/env.sh`'s
     `stack_dev_user`, `test/posix/setup-posix.sh`, the SMB-conformance bootstrap, `test/scenarios`)
-    on the new CLI, and removes the entries of every suite but the three below;
+    on the new CLI, and removes the entries of `pjdfstest`, `fio-verify` and `bench-smoke`;
+    `setup-posix.sh` is gone, as `pjdfstest` starts through epic 7's fixture, and the
+    SMB-conformance bootstrap is RFC 22's; `clients`, whose Linux cell mounts over SMB, goes
+    with SMB to RFC 22's plan's epic 15, a row of §6.1;
+  - a cell of `e2e` leaves the filter with its first green test, and the rows after it join a
+    running cell: the `e2e` suite with epic 8's second-user CLI row, which runs in its own
+    `e2e/second-user` option, and `e2e`'s own cell with epic 8's first admission row,
+    `e2e/kerberos` with epic 8's NFS Kerberos rows unless a protocol plan's land first,
+    `e2e/cross-protocol` with the protocol plans' first
+    cross-protocol test;
+  - RFC 21's plan's epic 15 removes `pynfs`, `cthon04` and `nfstest`; RFC 22's plan's epic 15
+    `smbtorture` and `wpts`, and its T16.5 `system`;
   - `integration/ad-dc` is the RFC 18 plan's epic 6 (#4058);
   - `integration/kerberos`, whose code the branch deleted, and `unit/windows`, skipped for its
     cost, go with the `V2` filter itself, deleted at cutover as RFC 20's plan's ledger has it.
@@ -697,8 +708,8 @@ plan also takes over the rows of RFC 20's plan's deferral ledger that name RFC 2
 - `dfsctl share mount` reading the adapter's `port` (epic 6).
 
 An adapter's per-node status splits the other way (RFC 20's epic 7's O7): `NodeStatus.Adapters`,
-each protocol's state and the settings generation it runs, and the per-node read of
-`/adapters/{protocol}` are epic 4's T4.9; the node's write of each slot into it is RFC 20's T7.7.
+each protocol's state, the settings generation it runs and the port it bound while serving
+(#5394), and the per-node read of `/adapters/{protocol}` are epic 4's T4.9; the node's write of each slot into it is RFC 20's T7.7.
 
 Client eviction is O9.
 - **Prior art.** None needed: this is a split between two plans.
@@ -974,7 +985,7 @@ func (n *Node) applySMB(ctx context.Context, s adaptersettings.SMB) error {
 	if n.smb != nil && n.smbPort == s.Port {
 		return n.smb.Reconfigure(ctx, s)
 	}
-	nu, err := smb.New(adapter.Deps{VFS: n.fs, Budgets: n.budgets, Metrics: n.cfg.Metrics, Tracer: n.tracer, Logger: n.cfg.Logger}, s)
+	nu, err := smb.New(adapter.Deps{VFS: n.fs, Budgets: n.budgets, Metrics: n.cfg.Metrics, Tracer: n.tracer, SampleRatio: n.sampleRatio, Logger: n.cfg.Logger}, s)
 	if err != nil {
 		return err // the old one keeps serving
 	}
@@ -1556,12 +1567,12 @@ these RFC 23 §12 rows pass, in their single-node part:
 | Row | What it needs together |
 | --- | --- |
 | "§2.1 API writes only records" | API and node |
-| "§2.2 order" | API and node; its adapter clause is epic 8's, and its syncer, remote-client and GC steps wait in §6.1 |
+| "§2.2 order" | API and node; its adapter clause is held in `unit` by RFC 20's plan's epic 7, and its syncer, remote-client and GC steps wait in §6.1 |
 | "§2.3 reconcile" | API and node |
 | "§2.4 applied" | API and node status |
 | "§2.5 health" | API and node |
 | "§3.2 delete" | API and the runner |
-| "§3.5 grants" | API only: what a grant stores; its admission half is epic 8's |
+| "§3.5 grants" | API only: what a grant stores; its admission half is epic 8's over NFS; over SMB §6.1 |
 | "§4.4 lost update" | API |
 | "§4.5 idempotency" | API and accounts |
 | "§4.7 error table" | every component's errors |
@@ -1597,29 +1608,34 @@ The §1.4 scenarios assigned to epic 7 pass too.
 
 ### Epic 8 — E2E green 🔀
 
-**Epic 8 estimate: planned after S3.**
+**Epic 8 estimate: 9 subtasks, 15.5 man-days.**
 
-This epic waits for adapters that serve through the node (S3) and for epic 7's server fixture,
-not for the rest of epic 7. It then rebuilds the e2e helpers, removes the #3714 filter's entries and
-runs RFC 23's e2e rows.
+The epic's breakdown, [`rfc-23-control-plane-epic8.md`](rfc-23-control-plane-epic8.md), is the
+source for its subtasks. The helpers, the e2e paths and the scripts start before S3, and the
+second-user CLI row once epic 7's T7.4 is in; the fixture serving NFS, the mount rows and
+the data-path cells wait for S3. "§2.2 order"'s adapter clause is held in `unit` by RFC 20's plan's
+epic 7, so it is not this epic's. Its SMB parts wait for SMB, which ships in v1.1: two rows of §6.1.
 
-**Owns:** RFC 23 §12's e2e rows, and "§2.2 order"'s adapter clause.
+**Owns:** RFC 23 §12's e2e rows.
 
 **Done when:**
-- RFC 23 §12's rows "§3.2 create admits nobody" and "§5.1 roles grant nothing" pass in `e2e` and
-  `e2e/kerberos`, and "§2.2 order"'s clause that no adapter listened before the first reconcile
-  completed passes;
-- "§3.5 grants"' admission half passes in `e2e`: alice, a member of `Finance` granted read with her
+- RFC 23 §12's rows "§3.2 create admits nobody" and "§5.1 roles grant nothing" pass over NFS in
+  `e2e` and `e2e/kerberos`, and "§7 CLI" passes as a second OS user;
+- "§3.5 grants"' admission half passes over NFS in `e2e`: alice, a member of `Finance` granted read with her
   own grant `none`, refused a mount; her grant deleted, admitted through `Finance`;
 - the #3714 filter's entries that D9 gives this epic are removed on `feat/storage-v2`.
 
 **Expected content:**
-- The e2e helpers rebuilt on epic 4's client, and the tests epic 1 deleted brought back from
-  history onto them.
+- The e2e helpers rebuilt on epic 4's client. The tests epic 1 deleted are not brought back as
+  such: the CLI-only ones are covered at `unit` by epic 6's `clisuite` and epic 7, those an RFC 23
+  §12 mount row states are replaced by it, and the protocol ones go to RFC 21's, RFC 22's and the
+  RFC 18 plan's e2e epics, onto the helpers (§6.1).
+- RFC 23 §12's "§7 CLI" run as a second OS user, the form epic 7 hands here.
 - The setup D9 names rebuilt on the new CLI, and the filter's entries D9 gives this epic removed,
   the cells running against the new server. RFC 20's plan's ledger lists the same removal at its
   cutover (`rfc-20-adapters-plan.md`, "cutover"); both wait for S3, and this epic does it.
-- RFC 23 §12's mount rows in `e2e`, and their Kerberos flavours in `e2e/kerberos`.
+- RFC 23 §12's mount rows over NFS in `e2e`, and their NFS Kerberos flavours in `e2e/kerberos`;
+  over SMB, §6.1's row.
 - `test/suites.yaml`'s `paths:` for `e2e/kerberos` and `e2e/cross-protocol`, and
   `test/harness/plan/plan_test.go`'s list, re-pointed from the trees epic 1 deleted to the v2
   packages, so a change to them plans those cells again.
@@ -1720,6 +1736,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | A faster sign-in path than two commits per checked attempt (§4.3's `ponytail:`) | a `429` commits nothing, so only checked attempts commit, bounded per source, loopback included, by the wait, and on the local socket by the account's count; the faster path RFC 23 §5.3 would have to allow first | unowned | epic 5's benchmark of checked sign-ins beside metadata commits shows them slowing those commits |
 | OpenID Connect sign-in (RFC 23 §5.5) and `dfsctl login`'s `--oidc` (header, O2, §7) | needs RFC 18 §8.2's `VerifyToken` | unowned; the RFC 18 plan (#4058) defers it too | a plan takes RFC 18 §8.2 |
 | `TokenVerifier.VerifyToken`, identity's check of an OpenID Connect ID token for sign-in (RFC 23 §5.5, RFC 18 §8.2) | identity's, and the API's OpenID Connect sign-in waits on it | the RFC 18 plan's OpenID Connect epic, which it has not yet added: its ledger holds `TokenVerifier` unowned | that epic |
+| A remote store's audit change and tag covering its other settings (RFC 23 §4.4, §6): the audit record of `PATCH /stores/{id}` holds only the endpoint and the credential, so one changing only other settings records no change, and a write through `PUT /stores/{id}/settings/{key}` moves no store ETag (`res_stores.go`'s `ponytail:`) | a write's transaction reads a setting by its key only, and a remote store has no record of its own; a PATCH writes the endpoint again, so its own tag moves | unowned | `ControlPlaneTx` can list a scope, or RFC 16 gives a remote store its own record |
 | The keytab import command, a `dfsctl` command sealing a keytab as a `Secret` version of `identity.keytab`, and a `user update` flag writing a user's Kerberos name (epic 6's §1.2) | RFC 23 §7 names neither; the keytab's check waits on the RFC 18 plan's epic 5's D3, and the Kerberos name's write is epic 4's T4.11 `krb` link | unowned | the RFC 18 plan's epic 5's T5.2 and this plan's epic 4's T4.11 land |
 | The provisioning file (RFC 23 §3.6) and `reload-provisioning` (header, O2) | needs RFC 13 §2.4's loader | unowned; the RFC 13 plan (#4059) defers it too | a plan takes RFC 13 §2.4 |
 | `rehome`, `accept-copy` and the move resource; the "§4.4 background field" row (header, O2, §1.4) | RFC 27 has no implementation | RFC 27's plan | that plan adds the verbs as route-table rows and runner kinds |
@@ -1759,12 +1776,14 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | An exported `node.Records` interface (RFC 23 §2.1) | the node holds kvstore's views directly, and epic 2's `Store.Nodes()` serves its reads and background calls; an interface with one implementation is a stub | unowned | a second implementation, such as a multi-node test's |
 | `node.Config.Transport` (RFC 23 §2.1, epic 1's D2) | it is nil on one node, and nothing reads it | RFC 15, with the cluster rows | a second node |
 | `node.Config.Fault`, the fault seam (RFC 23 §2.1, RFC 8 §2.1; epic 1's D2) | no component's `Deps` takes a fault seam; the store's faults come through the KV, which `kvtest` wraps | unowned | a component's `Deps` takes a fault seam |
-| `/api/v1/adapters`, `dfsctl adapter` and the settings watcher (deleted in T1.2) | built on the Runtime | this plan: the adapter and settings routes in its epic 4, the `adapter` and `setting` commands in its epic 6; the watcher becomes reconcile on `settings.Diff`, RFC 13's plan's epic 5 (#4059) | those epics |
-| the `/clients` and `/mounts` listings and their registries (deleted in T1.2: nothing can add a record), the `/durable-handles` listing, empty once T1.1 deletes its producers; `dfsctl client` (deleted in T1.2) | read v1's connection and handle state; the connection listing itself is served from the adapters' own `Connections()`, RFC 20's epic 7's T7.5 | the registries: this plan (D12); the connection listing: RFC 20's epic 7, its `GET /nodes/{id}/connections`; the `/durable-handles` listing the RFC 22 plan's, its §6.5 carrying the row | with their records; the listing with RFC 20's epic 7's T7.5 |
-| netgroup CRUD under `/api/v1/adapters/{type}/netgroups` (deleted in T1.2) | a control-plane record (RFC 23 §3.5) | this plan (D12) | with RFC 23's records |
-| netgroups stay attached to a share's NFS config, which RFC 20's epic 1's D4 keeps, but cease to be managed, since its T1.2 deletes their routes and commands | the attach needs a share record this plan keeps; the management is the netgroup-CRUD row above | this plan (D12) | with RFC 23's records |
-| `dfsctl share mount`'s discovery of a non-default port (`ListAdapterPorts`); it uses each protocol's default port | its route is deleted in T1.2 | this plan (D12) | its epic 6 |
-| `pkg/apiclient`'s adapter and netgroup methods, kept for the e2e helpers `lint-go` vets; their routes answer 404 | compiled tests still call them | this plan: its epic 1 deletes `pkg/apiclient`'s v1 bodies, these included, since its rule 7 does not keep them, and fixes or removes the e2e code that calls them; its epic 4 writes the client again as `pkg/node/apiv1/client` | its epic 1, which overrides D5 of `rfc-20-adapters-epic1.md` for these methods; its epic 4 |
+| RFC 23 §4.5's keyless list names the store create (epic 7's T7.3) | the store create takes no `Idempotency-Key` since it carries a credential, which §4.5's rule already covers, but its list of such calls names only sign-in, refresh, `POST /auth/password`, `:set-password`, API-token creation and `join-domain` | RFC 23 | the next RFC 23 revision carried to develop |
+| `:cancel`'s applied audit, R13 of epic 7 (epic 7's T7.3) | no operation kind defines a cancel, so `:cancel` answers `409` `not_cancellable` and has no applied write to audit | unowned | the first cancellable operation kind |
+| `§3.2 delete`'s 10⁵ files: epic 7's T7.2 seeds 50 (epic 7's R3, the `ponytail:` on `ContinueShardRemoval`) | the runner now runs a step again at once while it reports work left, but each batch of step 4 rescans from the share's first file key over the rows earlier batches deleted, so the drop grows with the square of the files: under `-race` 4000 files do not end inside the crash row's 60 s child bound | unowned | the shard's drop keeps its last key in the rm row, ending the quadratic rescan |
+| v1's deleted e2e tests of a protocol's own behaviour (sessions, delegations, locks, leases, Kerberos, squash, NLM, the port mapper, the cross-protocol tests), not brought back by epic 8 (its D1) | `e2e` keeps no known file, so a test lands only green, and green needs the protocol's handlers | RFC 21's plan's epic 16 (NFS); RFC 22's plan's epic 16 (SMB, cross-protocol); the RFC 18 plan's epic 9 (squash, Kerberos identity) | each epic, on epic 8's helpers |
+| The SMB-conformance shares file's per-share options (`encrypt-data`, `access-based-enumeration`, …) applied as share settings by the server fixture (epic 8's §1.2) | they bootstrap `smbtorture` and `wpts`, and their keys wait on X3 | RFC 22's plan's epic 15 | X3, and `smbtorture` out of the filter |
+| Epic 8's e2e rows over SMB: RFC 23 §12's "§3.2 create admits nobody", "§3.5 grants"' admission half and "§5.1 roles grant nothing" with NTLM (its T8.7, whole) and with Kerberos (T8.8's SMB half), the bootstrap administrator's own SMB mount among them, on a `MountSMB` helper and the admission table's SMB columns (T8.1's SMB part) (epic 8's §1.2) | SMB ships in release v1.1 (the user's decision, 2026-11-25) | RFC 22's plan's epic 16, its `e2e` rows (T16.4), on epic 8's helpers | `post-v1`, due in v1.1: RFC 22's plan's S7, the node serves SMB, and its epic 15's SMB fixture; S6b for the Kerberos half |
+| The server fixture serving SMB, `{smb-port}` read from the adapter's status (epic 8's T8.5), and the `clients` cell, whose Linux cell mounts over SMB, out of the `feat/storage-v2` filter (T8.9's; D9) (epic 8's §1.2) | SMB ships in release v1.1 (the user's decision, 2026-11-25) | RFC 22's plan's epic 15, which turns the SMB suites on | `post-v1`, due in v1.1: RFC 22's plan's S7, the node serves SMB |
+| `test/scenarios`' calls of `store block gc`, `reclaim`, `audit-refcounts`, `trash` and `stats call`, which no v2 command serves (epic 8's T8.4); `system drain-uploads` waits with the syncer's row and `share snapshot` with the snapshot resource's | RFC 23 names no GC, trash or statistics action or resource | GC's: RFC 9, with the syncer's row; the rest unowned | GC's: GC is built; the rest: an RFC names a trash or statistics resource |
 
 ## 7. RFC coverage
 
@@ -1772,19 +1791,19 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | --- | --- |
 | RFC 23 Start here, In short | — (explanatory) |
 | RFC 23 §1, §1.1 | — (scope) |
-| RFC 23 §2, §2.1, §2.2, §2.3 | E1 (surface), E3; E7 (rows); E8 ("§2.2 order"'s adapter clause); §2.1's syncer, remote clients and GC §6.1 |
+| RFC 23 §2, §2.1, §2.2, §2.3 | E1 (surface), E3; E7 (rows); "§2.2 order"'s adapter clause, RFC 20's plan's epic 7; §2.1's syncer, remote clients and GC §6.1 |
 | RFC 23 §2.4 | E2 (records), E3 (writer), E4 (`applied`); E7 (row) |
 | RFC 23 §2.5 | E3; E7 (row) |
 | RFC 23 §3.1 | E1 (shared types), E2 (records), E4 and E5 (each resource's types) |
-| RFC 23 §3.2 | E2 (removal steps), E3 (driving), E4 (routes); E7 (delete row); E8 (mount row) |
+| RFC 23 §3.2 | E2 (removal steps), E3 (driving), E4 (routes); E7 (delete row); E8 (mount row over NFS); over SMB §6.1 |
 | RFC 23 §3.3 | E4 (with the RFC 13 plan's D9 refusal); rotation and deferred actions O2 |
 | RFC 23 §3.4 | E4 (with A1); the node's adapter rows, RFC 20's plan's epic 7 (D12); O7 |
-| RFC 23 §3.5 | E3 (user and group deletion driven), E4 (with A5), E6; E7 (row) |
+| RFC 23 §3.5 | E3 (user and group deletion driven), E4 (with A5), E6; E7 (row); E8 (admission half over NFS); over SMB §6.1 |
 | RFC 23 §3.6 | deferred, O2 |
 | RFC 23 §4.1, §4.2, §4.3, §4.4, §4.7 | E1 (shared types), E4; E7 (rows) |
 | RFC 23 §4.5 | E2 (record), E4 (server), E5 (credential calls); E7 (row) |
 | RFC 23 §4.6 | E2 (record), E3 (runner), E4 (reading, cancel); takeover O2 |
-| RFC 23 §5.1, §5.2, §5.3 | E5; E7 (rows); E8 (§5.1 mount row) |
+| RFC 23 §5.1, §5.2, §5.3 | E5; E7 (rows); E8 (§5.1 mount row over NFS); over SMB §6.1 |
 | RFC 23 §5.4 | E5; E7 (row) |
 | RFC 23 §5.5 | deferred, O2 |
 | RFC 23 §6 | E2 (append-only, retention), E4 (write, read), E5 (refusals, sign-ins); E7 (row); event streams O2 |
@@ -1793,7 +1812,7 @@ What this plan knowingly does not build. Each row indexes the section that defer
 | RFC 23 §9 | E4 (discovery, and the client's rules in its core); schema gate O2 |
 | RFC 23 §10 | per epic's **Done when:**; CP15 O2 |
 | RFC 23 §11 | E2, E3, E4, E5 (series); alert rules O2 |
-| RFC 23 §12 | E7 (single-node rows), E8 (e2e rows), E1 (architecture); multi-node O2 |
+| RFC 23 §12 | E7 (single-node rows), E8 (e2e rows over NFS), E1 (architecture); multi-node O2; SMB's e2e rows §6.1 |
 | RFC 23 §13 | O3, O5, O6; items 2 and 3 in §6.1's ledger |
 | RFC 23 Appendix A | — (non-normative) |
 | RFC 23 Appendix B | E1 |

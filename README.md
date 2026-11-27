@@ -19,7 +19,7 @@
 **A modular virtual filesystem written entirely in Go**
 
 NFSv3/v4.0/v4.1/v4.2 and SMB2/3 servers in userspace — no FUSE, no kernel modules — with
-pluggable metadata and block stores you can mix and match per share.
+one metadata store and an on-disk journal per node, managed through an API.
 
 [Website](https://dittofs.io) • [Quick Start](#quick-start) • [Documentation](#documentation) • [Features](#features) • [Contributing](docs/internals/contributing.md)
 
@@ -31,24 +31,34 @@ pluggable metadata and block stores you can mix and match per share.
 > been performed. APIs and on-disk formats may change without notice. Do not use for
 > data you cannot afford to lose. See [Security](#security) and [FAQ](docs/guide/faq.md).
 
+> [!NOTE]
+> **This is the development branch.** It holds the next storage design, and it changes every
+> day. Some features of the released versions do not work here yet. For the code you can run
+> today, use the [latest release](https://github.com/cubbit/dittofs/releases/latest) or the
+> [`main`](https://github.com/cubbit/dittofs/tree/main) branch.
+
 ## What is DittoFS?
 
 Traditional file servers are welded to one storage layer and one access protocol.
-DittoFS separates the two. A single server process can:
+DittoFS separates the two. A single server process:
 
-- Speak **NFSv3, NFSv4.0, NFSv4.1, NFSv4.2, and SMB2/3** at the same time, over the same data.
-- Store metadata in **[BadgerDB](https://github.com/dgraph-io/badger)**, on disk or fully in memory — one store per share.
-- Store file content in one **block store** ([S3](https://docs.aws.amazon.com/AmazonS3/latest/API/Welcome.html) or memory)
-  per share, fronted by an on-disk **journal** that absorbs writes, with an async syncer between them.
-- Run **entirely in userspace** — no FUSE, no kernel modules, no special privileges.
+- Speaks **NFSv3, NFSv4.0, NFSv4.1, NFSv4.2 and SMB2/3** at the same time, over the same data.
+- Keeps metadata in **[BadgerDB](https://github.com/dgraph-io/badger)** on disk, one store for
+  the whole node, or in a FoundationDB cluster.
+- Keeps file content in an on-disk **journal** on the node's own devices.
+- Runs **entirely in userspace**: no FUSE, no kernel modules, no special privileges.
 
-Everything is built from **named, reusable stores** wired together into **shares**.
-Two binaries drive it:
+> **This version is a rebuild (v2), in progress.** It serves no NFS or SMB yet, cannot
+> create a share yet, and has no remote (S3) store wired yet. The protocol rows in
+> [Features](#features) describe the released server. The [Quick Start](#quick-start)
+> shows what runs today.
 
-| Binary | Role |
-|--------|------|
-| **`dfs`** | The server daemon — runs the protocol adapters and a control-plane REST API. |
-| **`dfsctl`** | The REST client — manages users, groups, shares, stores, and adapters on a running server. |
+Two programs drive it:
+
+| Program | Role |
+|---------|------|
+| **`dfs`** | The server. `dfs init` creates an installation; `dfs start` runs its node in the foreground: the management API and, once they are served, the NFS and SMB adapters. |
+| **`dfsctl`** | The client of the management API. It manages users, groups, shares, stores and adapters on a running node. |
 
 ## Features
 
@@ -64,16 +74,15 @@ Two binaries drive it:
 | **SMB leases & oplocks** | Leases V2 with directory leasing; oplocks; byte-range locks |
 | **SMB durable handles** | V1 and V2 for session resilience |
 | **SMB security descriptors** | Windows ACL mapping via a shared cross-protocol ACL model |
-| **Authentication** | AUTH_UNIX + Kerberos (RPCSEC_GSS) for NFS; NTLM + Kerberos (SPNEGO) for SMB |
+| **Authentication** | AUTH_UNIX for NFS (Kerberos over RPCSEC_GSS not served yet); NTLM + Kerberos (SPNEGO) for SMB |
 | **Active Directory** | Kerberos service keytab for AD-issued tickets; optional machine account (offline or online domain join) for NTLM pass-through; LDAP idmap (`idmap_ad` / `idmap_rid`) maps AD users and nested groups to the same Unix UID/GID over SMB and NFS |
 | **Cross-protocol coordination** | Bidirectional lease/delegation breaks between SMB and NFS |
-| **Metadata stores** | BadgerDB (on disk, or in memory for tests) — one per share. A distributed transactional KV store (TiKV preferred) is planned for multi-node, not yet implemented |
-| **Block stores** | S3, memory. One per share, fronted by an on-disk journal. Per-share isolation, async sync |
-| **Client-side encryption** | Per-remote envelope encryption (AES-256-GCM / ChaCha20-Poly1305 / XChaCha20-Poly1305) |
-| **Share snapshots** | Point-in-time reference holds (no data copy) with restore |
-| **Control plane** | Unified users/groups, share permissions, REST API with JWT auth |
+| **Metadata stores** | BadgerDB, on disk — one per node. FoundationDB, in the `-foundationdb` image and tarballs; still one node per installation today |
+| **File content** | One engine per node over its on-disk journal devices; every share binds to it. No remote store is wired yet |
+| **Share snapshots** | Not yet: v1's snapshots are gone, and [the snapshots design](docs/internals/rfcs/rfc-12-snapshots.md) describes the new ones |
+| **Control plane** | A management API over the metadata store: users, groups, grants, shares, settings, long operations and an audit log; roles `admin`, `operator`, `viewer`; `dfsctl` is its client |
 | **Observability** | Prometheus metrics endpoint, structured JSON logging |
-| **Deployment** | Single static binary; Docker images; Kubernetes operator |
+| **Deployment** | Single static binary; Docker image. The Kubernetes operator does not run this version yet |
 
 DittoFS passes the pjdfstest POSIX suite at 99.99% (8,788/8,789) on the BadgerDB
 metadata store; the single expected failure is the NFSv3 32-bit timestamp limit
@@ -102,158 +111,115 @@ more at [dittofs.io/pro](https://dittofs.io/pro).
 
 ## Quick Start
 
-### Install
+This gets a node running and `dfsctl` signed in, on macOS or Linux, without root.
+[Getting Started](docs/guide/getting-started.md) is the same walk-through with every
+output and explanation.
+
+### 1. Build
+
+No release ships this version yet: Homebrew, the install script, the packages and the
+Docker image install the released server, which works differently. Build from source
+with [Go](https://go.dev/dl/) 1.26 or later:
 
 ```bash
-# Nix (temporary shell with dfs and dfsctl; no permanent install)
-nix shell github:cubbit/dittofs
-
-# Homebrew
-brew tap cubbit/tap
-brew install cubbit/tap/dfs cubbit/tap/dfsctl
-
-# Quick install script (macOS / Linux)
-curl -fsSL https://github.com/cubbit/dittofs/releases/latest/download/install.sh | sh
-```
-
-Docker, the Kubernetes operator, APT/YUM/Arch packages, and Scoop (Windows) are
-covered in **[docs/guide/install.md](docs/guide/install.md)**.
-
-### Build from source
-
-```bash
-git clone https://github.com/cubbit/dittofs.git
+cd ~
+git clone --depth 1 --branch feat/storage-v2 https://github.com/cubbit/dittofs.git
 cd dittofs
-go build -o dfs    cmd/dfs/main.go
-go build -o dfsctl cmd/dfsctl/main.go
+go build -o dfs ./cmd/dfs
+go build -o dfsctl ./cmd/dfsctl
+export PATH="$PWD:$PATH"
 ```
 
-The commands below use the source-built binaries. With Nix, Homebrew, or the install
-script, use `dfs` and `dfsctl` without the `./` prefix.
-
-### First run & admin password
-
-On first start, DittoFS creates an `admin` user. **Pre-set the password** via the
-`DITTOFS_ADMIN_INITIAL_PASSWORD` environment variable — this is the recommended path for
-every deployment, and the only reliable one for Docker/Kubernetes/CI and systemd:
+### 2. Configure and create the installation
 
 ```bash
-./dfs init     # writes ~/.config/dittofs/config.yaml
-# Replace the example with your own password before the first start.
-# A supplied password also skips the forced password change on first login.
-DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password ./dfs start
+mkdir -p ~/.config/dittofs ~/dittofs-data/journal
+cat > ~/.config/dittofs/config.yaml <<EOF
+node:
+  id: $(uuidgen | tr 'A-Z' 'a-z')
+metadata:
+  badger:
+    path: $HOME/dittofs-data/metadata
+journals:
+  - path: $HOME/dittofs-data/journal
+keys:
+  storage:
+    kind: local
+    local:
+      file: $HOME/dittofs-data/storage.key
+EOF
+
+export DITTOFS_ENCRYPTION_PASSPHRASE='correct horse battery staple'   # pick your own
+dfs init
 ```
 
-If you don't pre-set it, a random password is generated — but it is **shown only when you
-run `./dfs start --foreground` in an interactive terminal** (printed once). In background
-mode (the default `./dfs start`), and under Docker/systemd where stdout is a pipe rather
-than a terminal, the generated password is **not written to the log and cannot be
-recovered**. Because the `admin` user is created on that first start, setting
-`DITTOFS_ADMIN_INITIAL_PASSWORD` and simply restarting will **not** change it — that variable
-is only read while bootstrapping a *new* admin. To recover, delete the `admin` row from the
-`users` table of the control-plane database and start again with the password pre-set; the next
-start re-runs the bootstrap. Do not delete the database itself — it also holds your shares,
-stores, mounts and other users. So: **set it before the very first start.**
+`dfs init` prints the `admin` account's generated password once. Copy it. It also
+creates `~/dittofs-data/storage.key`: keep a copy of that file and the passphrase, since
+losing either loses the installation.
 
-### Serve an NFS share in under a minute
+### 3. Start the node
 
 ```bash
-# 1. Start the server (see above), then log in
-./dfsctl login --server http://localhost:8080 --username admin
-
-# 1a. Only if the admin password was generated: change it on first login.
-# The bootstrap admin starts with a forced-password-change flag — until you
-# clear it here, every other command (including `user create` below) is
-# rejected with HTTP 403:
-#   account "admin" must set a new password before performing other operations;
-#   run 'dfsctl user change-password' (as "admin") to set one
-# This forced change is skipped automatically when you set your own
-# DITTOFS_ADMIN_INITIAL_PASSWORD at first start, and can be disabled entirely
-# via controlplane.require_initial_password_change: false (see docs/guide/configuration.md).
-./dfsctl user change-password
-
-# 2. Create a user mapped to your host UID (needed for NFS write access)
-./dfsctl user create --username $(whoami) --host-uid
-
-# 3. Create the stores (interactive prompts collect paths / S3 credentials)
-./dfsctl store metadata add --name default --type badger
-./dfsctl store block add --name s3-remote --type s3
-
-# 4. Create a share and grant access
-./dfsctl share create --name /export --metadata default --block-store s3-remote
-./dfsctl share permission grant /export --user $(whoami) --level read-write
-
-# 5. Enable the NFS adapter
-./dfsctl adapter enable nfs
-
-# 6. Mount it
-# Linux:
-sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/nfs
-# macOS:
-sudo mount -t nfs -o tcp,port=12049,mountport=12049,resvport,nolock localhost:/export /tmp/nfs
-
-echo "Hello DittoFS!" > /mnt/nfs/hello.txt
+dfs start
 ```
 
-> This uses persistent storage (BadgerDB metadata, S3 durable backend). Writes land in the
-> share's on-disk journal first and sync to S3 in the background. For dependency-free
-> local testing, use `--in-memory` for the metadata store and
-> `--type memory` for the block store instead.
+It runs in the foreground, prints nothing, and logs to
+`~/.local/state/dittofs/dittofs.log`. Stop it with Ctrl+C.
 
-### Mount an SMB share
+### 4. Sign in
 
-SMB always requires user authentication:
+In a second terminal, run `cd ~/dittofs && export PATH="$PWD:$PATH"` again, then:
 
 ```bash
-./dfsctl user create --username alice            # password prompted
-./dfsctl share permission grant /export --user alice --level read-write
-
-# Linux (use a credentials file — never put passwords on the command line)
-sudo mount -t cifs //localhost/export /mnt/smb \
-  -o port=12445,credentials=$HOME/.smbcredentials,vers=3.1.1
-
-# macOS (prompts for password)
-mount -t smbfs //alice@localhost:12445/export /tmp/smb
+dfsctl login --server http://127.0.0.1:8080 --username admin   # the password dfs init printed
+dfsctl password change                                          # required for a generated password
+dfsctl status
+dfsctl user create alice --uid "$(id -u)"
 ```
 
-See [docs/guide/smb.md](docs/guide/smb.md) for dialect, encryption, and client details.
+Write `127.0.0.1`, not `localhost`: over plain `http`, `dfsctl` talks only to a
+loopback IP address.
+
+### Where it stops today
+
+You cannot create a share yet. A share lives in a namespace on a remote store, and the
+node does not accept settings for remote stores, namespaces or the NFS and SMB
+adapters yet:
+
+```console
+$ dfsctl store create --setting remote.endpoint=https://s3.example.com
+Error: dfsctl store create: 400 unknown_key: Bad Request: refused by the settings table (field remote.endpoint)
+```
+
+[Getting Started](docs/guide/getting-started.md#once-shares-can-be-created) shows how a
+share will be created and mounted once they are.
 
 ### Default ports
 
 | Port | Service |
 |------|---------|
-| `12049` | NFS |
-| `12445` | SMB |
-| `8080`  | Control-plane REST API (health checks, management) |
-| `9090`  | Prometheus metrics |
+| `8080`  | Management API and health checks, on `127.0.0.1` (`api.listen`) |
+| `9090`  | Prometheus metrics, on `127.0.0.1` (`metrics.listen`) |
+| `12049` | NFS, once the NFS adapter is served |
+| `12445` | SMB, once the SMB adapter is served |
+
+The API also listens on a local socket, `dfs.sock` in the runtime directory
+(`api.socket`). The NFS and SMB ports are adapter settings, changed through the
+management API rather than the config file.
 
 ## Configuration model
 
-DittoFS configuration has **two layers**:
+DittoFS is configured in **two places**:
 
-1. **Server config file** (`~/.config/dittofs/config.yaml`) — process-level infrastructure:
-   logging, metrics, control-plane API, and the control-plane database. Environment
-   variables with the `DITTOFS_` prefix override any field (e.g. `DITTOFS_LOGGING_LEVEL=DEBUG`).
-2. **Runtime resources** (`dfsctl` / REST API) — stores, shares, adapters, users, groups,
-   and permissions. These live in the control-plane database (SQLite by default, PostgreSQL
-   for HA), not in the config file.
+1. **The config file** (`~/.config/dittofs/config.yaml`) holds what the node needs before
+   it opens any store: its ID, where its metadata and journals live, its key files, its
+   listen addresses, logging and metrics. A `DITTOFS_` environment variable overrides any
+   key, for example `DITTOFS_LOGGING_LEVEL=debug`.
+2. **The management API** holds everything else: shares, users, groups, grants, adapters,
+   stores, namespaces and settings. They live in the metadata store. A config file that
+   names a setting is refused, and the message points you to the API.
 
-```yaml
-# ~/.config/dittofs/config.yaml
-database:
-  type: sqlite            # or "postgres" for HA
-  sqlite:
-    path: ~/.config/dittofs/controlplane.db   # default when omitted: $XDG_CONFIG_HOME/dittofs/controlplane.db
-
-controlplane:
-  port: 8080
-  jwt:
-    secret: "your-secret-key-at-least-32-characters"
-```
-
-Block storage is configured per share through the store CLI — each share points at one block
-store and owns an isolated journal directory beneath `blockstore.journal.path`. See
-[docs/guide/configuration.md](docs/guide/configuration.md) for the full reference.
+See [docs/guide/configuration.md](docs/guide/configuration.md) for every key.
 
 ## Documentation
 
@@ -263,11 +229,11 @@ Full docs live in [`docs/`](docs/), split by audience.
 
 **Start here**
 
-- [Getting Started](docs/guide/getting-started.md) — install, start the server, mount your first share
-- [Installation](docs/guide/install.md) — packages, Docker, Compose, Kubernetes operator
+- [Getting Started](docs/guide/getting-started.md) — build, start a node and sign in
+- [Installation](docs/guide/install.md) — build from source, packages, Docker, systemd, FoundationDB, uninstalling
 - [Configuration](docs/guide/configuration.md) — every config key and environment variable, with defaults
 - [CLI Reference](docs/guide/cli.md) — every `dfs` and `dfsctl` command (generated)
-- [Choosing Stores](docs/guide/choosing-stores.md) — picking metadata and block stores
+- [Choosing Stores](docs/guide/choosing-stores.md) — the metadata store and where file content lives
 - [Sizing & Hardware](docs/guide/sizing.md) — how to size the machine that runs `dfs`
 
 **Connect clients**
@@ -283,8 +249,8 @@ Full docs live in [`docs/`](docs/), split by audience.
 
 - [Snapshots](docs/guide/snapshots.md) · [Quotas](docs/guide/quotas.md) · [Encryption](docs/guide/encryption.md)
 - [Security](docs/guide/security.md) — hardening checklist and secure configuration
-- [Block Store Migration](docs/guide/block-store-migration.md) — migrating legacy block layouts to CAS
-- [Metadata Store Migration](docs/guide/metadata-store-migration.md) — moving shares off the removed SQL and memory metadata stores
+- [Block Store Migration](docs/guide/block-store-migration.md) — what happened to v1's block layouts
+- [Upgrading from v1](docs/guide/upgrading-from-v1.md) — not supported: what a start over v1 data says
 - [Troubleshooting](docs/guide/troubleshooting.md) · [FAQ](docs/guide/faq.md) · [Glossary](docs/guide/glossary.md)
 
 ### For contributors — [`docs/internals/`](docs/internals/)
@@ -306,7 +272,7 @@ Full docs live in [`docs/`](docs/), split by audience.
 
 ```bash
 test/harness/bin/dt run unit                     # the Go tests
-test/harness/bin/dt services up postgres kmip localstack   # the services integration and e2e need
+test/harness/bin/dt services up kmip localstack   # the services integration and e2e need
 test/harness/bin/dt run integration
 test/harness/bin/dt run e2e                      # Linux and root; dt doctor says what else is missing
 ```
@@ -320,14 +286,16 @@ the benchmarks, [bench/README.md](bench/README.md).
 
 DittoFS is experimental and has not been professionally audited.
 
-- **Authentication:** AUTH_UNIX and Kerberos (RPCSEC_GSS) for NFS; NTLM and Kerberos
+- **Authentication:** AUTH_UNIX for NFS (Kerberos over RPCSEC_GSS is not served yet); NTLM and Kerberos
   (SPNEGO) for SMB. AD domain users can authenticate directly against a directory —
   see [docs/guide/identity.md](docs/guide/identity.md).
-- **Transport encryption:** SMB3 encrypts its transport (AES-GCM/CCM). NFS supports
-  NFS-over-TLS (RFC 9289) and Kerberos privacy (`krb5p`); without either, run NFS over a VPN
-  or a trusted network.
-- **At-rest:** optional client-side per-remote envelope encryption protects block content in
-  the remote store. See [docs/guide/encryption.md](docs/guide/encryption.md).
+- **Transport encryption:** SMB3 encrypts its transport (AES-GCM/CCM). NFS-over-TLS
+  (RFC 9289) and Kerberos privacy (`krb5p`) are not served yet, so run NFS over a VPN or a
+  trusted network.
+- **At rest:** file content and metadata are not encrypted on this version. Put the journal
+  devices and the metadata directory on an encrypted filesystem (LUKS, FileVault). The node's
+  own secrets, such as password hashes, are sealed under its key files. See
+  [docs/guide/encryption.md](docs/guide/encryption.md).
 
 See [docs/guide/security.md](docs/guide/security.md) for the full picture and recommendations.
 

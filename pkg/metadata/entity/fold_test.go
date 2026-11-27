@@ -1,0 +1,144 @@
+package entity
+
+import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"strings"
+	"testing"
+	"unicode"
+	"unicode/utf8"
+)
+
+// The upcase table is part of the store format: this hash pins it, so a
+// regeneration under newer Unicode data fails here instead of changing the
+// keys of every case-insensitive share.
+func TestUpcaseTablePinned(t *testing.T) {
+	h := sha256.New()
+	for _, u := range upcasePairs {
+		if err := binary.Write(h, binary.BigEndian, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := hex.EncodeToString(h.Sum(nil)), upcaseTableHash; got != want {
+		t.Fatalf("upcase table hash %s, want %s: a changed table is a new fold rule", got, want)
+	}
+}
+
+const upcaseTableHash = "ef3afc2ef80306f33ab22613219fa1ad074ce73db455a448775bf471139f5a9a"
+
+// The principal fold is part of the store format too, keying every user and
+// group name row: this hash of every rune it changes pins it, so a
+// regenerated table, or a fold that reads the toolchain's Unicode tables
+// again, fails here instead of moving stored name keys.
+func TestPrincipalFoldPinned(t *testing.T) {
+	h := sha256.New()
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if !utf8.ValidRune(r) {
+			continue
+		}
+		if f := []rune(FoldPrincipalName(string(r))); len(f) != 1 || f[0] != r {
+			if err := binary.Write(h, binary.BigEndian, append([]rune{r}, f...)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if got, want := hex.EncodeToString(h.Sum(nil)), principalFoldHash; got != want {
+		t.Fatalf("principal fold hash %s, want %s: a changed fold is a new store format, re-key the name rows", got, want)
+	}
+}
+
+const principalFoldHash = "c57ca6770bf92b0c56447f133229d847285189276709ee3f143f3db71a2e81b9"
+
+// RFC 7 §12.1's case-insensitive name cases.
+func TestFoldUpcase(t *testing.T) {
+	same := func(a, b string) bool {
+		return string(FoldUpcase.Fold([]byte(a))) == string(FoldUpcase.Fold([]byte(b)))
+	}
+	for _, c := range []struct {
+		a, b string
+		same bool
+	}{
+		{"README", "readme", true},
+		{"ReadMe.TXT", "README.txt", true},
+		{"Ǆ", "ǆ", true},
+		{"ǅ", "ǆ", false}, // the titlecase digraph is its own name, as on Windows
+		{"ı", "I", false}, // dotless i
+		{"ſ", "S", false}, // long s
+		{"ς", "σ", false}, // final sigma
+		{"µ", "Μ", false}, // micro sign and capital mu
+		{"Ꭰ", "ꭰ", false}, // a Cherokee pair newer than the Windows table
+		{"Straße.docx", "STRASSE.docx", false},
+		{"K.txt", "K.txt", false}, // the Kelvin sign upcases to itself
+		{"ß", "ẞ", false},
+		{"café", "café", false},            // composed and decomposed stay two
+		{"\U00010428", "\U00010400", false}, // outside the BMP: compared as given
+	} {
+		if got := same(c.a, c.b); got != c.same {
+			t.Errorf("%q vs %q: same %v, want %v", c.a, c.b, got, c.same)
+		}
+	}
+	if got := FoldUpcase.Fold([]byte("a\xffb")); string(got) != "A\xffB" {
+		t.Errorf("invalid UTF-8 folded to %q", got)
+	}
+	if got := FoldIdentity.Fold([]byte("ReadMe")); string(got) != "ReadMe" {
+		t.Errorf("identity fold changed the name: %q", got)
+	}
+}
+
+func TestDigest(t *testing.T) {
+	var k1, k2 [DigestKeyLen]byte
+	k2[0] = 1
+	d := Digest(&k1, []byte("README"))
+	if d < 3 || d>>63 != 0 {
+		t.Fatalf("digest %#x out of range", d)
+	}
+	if Digest(&k1, []byte("README")) != d || Digest(&k2, []byte("README")) == d || Digest(&k1, []byte("README2")) == d {
+		t.Error("digest is not a keyed function of the name")
+	}
+	if got, want := d, uint64(goldenDigest); got != want {
+		t.Errorf("digest %#x, want %#x: the digest is part of the store format", got, want)
+	}
+}
+
+func TestPrincipalUserPart(t *testing.T) {
+	for _, name := range []string{"alice", "ALICE", `CORP\alice`, "alice@CORP.EXAMPLE", `corp\Alice@corp.example`} {
+		if got := PrincipalUserPart(name); got != FoldPrincipalName("alice") {
+			t.Errorf("PrincipalUserPart(%q) = %q, want %q", name, got, FoldPrincipalName("alice"))
+		}
+	}
+}
+
+const goldenDigest = 0x2ca3e6cfaac30e45
+
+func TestFoldPrincipalName(t *testing.T) {
+	for _, c := range []struct{ a, b string }{
+		{"Alice", "aLICE"},
+		{"\u212Aelvin", "kelvin"}, // the Kelvin sign folds with k, which ToLower and an ASCII fold miss
+		{"\u017F", "s"},           // long s, likewise
+	} {
+		if FoldPrincipalName(c.a) != FoldPrincipalName(c.b) {
+			t.Errorf("FoldPrincipalName(%q) = %q, FoldPrincipalName(%q) = %q: want equal", c.a, FoldPrincipalName(c.a), c.b, FoldPrincipalName(c.b))
+		}
+	}
+	if FoldPrincipalName("alice") == FoldPrincipalName("alicia") {
+		t.Error("distinct names fold together")
+	}
+}
+
+// Every rune either name fold maps elsewhere is held equal to its image by
+// strings.EqualFold, so two names a fold keys as one EqualFold also holds
+// equal. A client that cannot link these folds checks a listed name under
+// EqualFold and relies on this to refuse no name the server matched.
+func TestFoldsStayWithinEqualFold(t *testing.T) {
+	for c := rune(0); c < 1<<16; c++ {
+		if u := rune(upcase[c]); u != c && !strings.EqualFold(string(c), string(u)) {
+			t.Errorf("the upcase table maps %U to %U, which strings.EqualFold holds apart", c, u)
+		}
+	}
+	for c, f := range principalFold {
+		if !strings.EqualFold(string(c), string(f)) {
+			t.Errorf("the principal fold maps %U to %U, which strings.EqualFold holds apart", c, f)
+		}
+	}
+}

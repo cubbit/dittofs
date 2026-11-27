@@ -1,0 +1,423 @@
+// Package vfs is the filesystem service's contract: the one interface the
+// protocol adapters call, the values they pass and receive, the errors they
+// map, and the codecs of every name a client holds. An adapter imports this
+// package and nothing else of the core, so every type it needs from the
+// metadata store, open state or identity is aliased here.
+package vfs
+
+import (
+	"time"
+
+	"github.com/cubbit/dittofs/pkg/identity"
+	"github.com/cubbit/dittofs/pkg/metadata/entity"
+	"github.com/cubbit/dittofs/pkg/openstate/state"
+)
+
+// The metadata store's types an adapter passes or receives.
+type (
+	Handle     = entity.Handle // opaque: stored and returned, never built, parsed or compared
+	File       = entity.File
+	FileID     = entity.FileID
+	Attrs      = entity.Attrs
+	ACL        = entity.ACL
+	Xattr      = entity.Xattr
+	Principal  = entity.Principal
+	Access     = entity.AccessMask // an access mask in the store's terms
+	Usage      = entity.Usage
+	Quota      = entity.Quota
+	ShareID    = entity.ShareID
+	ShardID    = entity.ShardID
+	ClientID   = entity.ClientID
+	OpenID     = entity.OpenID
+	SessionRef = entity.SessionRef
+	Durability = entity.Durability
+	Protocol   = entity.Protocol // the client record's kind: NFSv3, NFSv4, NLM or SMB
+	TimeMask   = entity.TimeMask
+	SMBFlags   = entity.SMBShareFlags
+)
+
+// The protocols an NFS request is labelled with: NFSv3 with MOUNT, NFSv4, and
+// NLM with NSM. Each kind's label is entity's.
+const (
+	ProtocolNFSv3 = entity.ProtocolNFSv3
+	ProtocolNFSv4 = entity.ProtocolNFSv4
+	ProtocolNLM   = entity.ProtocolNLM
+)
+
+// Open state's types an adapter passes or receives.
+type (
+	StateRef     = state.StateRef
+	StateType    = state.StateType
+	OpenRef      = state.OpenRef
+	RefKind      = state.RefKind
+	Seqs         = state.Seqs
+	GrantID      = state.GrantID
+	GrantKind    = state.GrantKind
+	LeaseKey     = state.LeaseKey
+	WatchID      = state.WatchID
+	ClientStatus = state.ClientStatus
+	ClientRecord = state.Client
+	SessionEnd   = state.SessionEnd
+	Proposal     = state.Proposal
+	GraceRef     = state.GraceRef
+	Revocation   = state.Revocation
+	RevokeReason = state.RevokeReason
+	LockOwner    = state.LockOwner
+	ByteRange    = state.ByteRange
+	LockRange    = state.LockRange
+	Lock         = state.Lock
+	LockedError  = state.LockedError
+	LockSequence = state.LockSequence
+	LockWaiter   = state.LockWaiter
+	WaitKind     = state.WaitKind
+	CachingGrant = state.CachingGrant
+	ChangeMask   = state.ChangeMask
+	Change       = state.Change
+	AppInstance  = state.AppInstance
+)
+
+// The values of open state's enumerations, so an adapter names them from here.
+const (
+	StateOpen  = state.StateOpen
+	StateLock  = state.StateLock
+	StateGrant = state.StateGrant
+	StateWatch = state.StateWatch
+
+	RefOpened    = state.RefOpened
+	RefLocked    = state.RefLocked
+	RefDelegated = state.RefDelegated
+	RefAnonymous = state.RefAnonymous
+
+	GrantNone   = state.GrantNone
+	GrantRead   = state.GrantRead
+	GrantWrite  = state.GrantWrite
+	GrantHandle = state.GrantHandle
+
+	WaitNone     = state.WaitNone
+	WaitPoll     = state.WaitPoll
+	WaitCallback = state.WaitCallback
+
+	RevokedLeaseExpired = state.RevokedLeaseExpired
+	RevokedByAdmin      = state.RevokedByAdmin
+	RevokedGrant        = state.RevokedGrant
+	RevokedShardState   = state.RevokedShardState
+	RevokedShare        = state.RevokedShare
+
+	ChangeRemove    = state.ChangeRemove
+	ChangeRename    = state.ChangeRename
+	ChangeAddEntry  = state.ChangeAddEntry
+	ChangeAttrs     = state.ChangeAttrs
+	ChangeSetID     = state.ChangeSetID
+	ChangeSize      = state.ChangeSize
+	ChangeTimes     = state.ChangeTimes
+	ChangeSecurity  = state.ChangeSecurity
+	ChangeStreams   = state.ChangeStreams
+	ChangeEnumerate = state.ChangeEnumerate
+)
+
+// Identity's value types an adapter passes or receives.
+type (
+	Identity         = identity.Identity
+	ProofKind        = identity.ProofKind
+	Protection       = identity.Protection
+	Claims           = identity.Claims
+	Evidence         = identity.Evidence
+	SignInStep       = identity.SignInStep
+	SignInService    = identity.Service // vfs.Service is the filesystem's interface
+	Transport        = identity.Transport
+	NTLMAuthenticate = identity.NTLMAuthenticate
+	SignInResult     = identity.SignInResult
+	Keys             = identity.Keys
+	Scheme           = identity.Scheme
+	Spelling         = identity.Spelling
+)
+
+// The values of identity's enumerations, so an adapter names them from here.
+const (
+	ProofNone    = identity.ProofNone
+	ProofClaimed = identity.ProofClaimed
+	ProofSecret  = identity.ProofSecret
+	ProofTicket  = identity.ProofTicket
+
+	ProtectionNone      = identity.ProtectionNone
+	ProtectionIntegrity = identity.ProtectionIntegrity
+	ProtectionPrivacy   = identity.ProtectionPrivacy
+
+	ServiceNFS  = identity.ServiceNFS
+	ServiceCIFS = identity.ServiceCIFS
+	ServiceHost = identity.ServiceHost
+
+	TransportNFS = identity.TransportNFS
+	TransportSMB = identity.TransportSMB
+
+	SchemeUID        = identity.SchemeUID
+	SchemeGID        = identity.SchemeGID
+	SchemeSID        = identity.SchemeSID
+	SchemeKrb        = identity.SchemeKrb
+	SchemeDir        = identity.SchemeDir
+	SchemeUserName   = identity.SchemeUserName
+	SchemeGroupName  = identity.SchemeGroupName
+	SchemeOIDC       = identity.SchemeOIDC
+	SchemeOwner      = identity.SchemeOwner
+	SchemeQualified  = identity.SchemeQualified
+	SchemeOwnerGroup = identity.SchemeOwnerGroup
+	SchemeWho        = identity.SchemeWho
+	SchemeWhoGroup   = identity.SchemeWhoGroup
+)
+
+// Call is one call's caller: the Identity it proved and, beside it, never in
+// it, the client, session and channel it came on. Every Service method that
+// acts for a caller takes one; a call naming no open leaves Client unused.
+// Each call's client is Client, never one the Identity names. Identity is
+// what a resolver caches, keyed on its proof; Identity.Client, its address,
+// is per machine and carried in the key separately wherever a client rule
+// decided. The call's Client is per call, so it is never cached, and two
+// clients proving the same user never pass for each other.
+//
+// An NFSv4.0 call has no session. Its Client is the client on the state its
+// stateid resolves to or, for an operation that names an open or lock owner,
+// that owner's client, and only a client confirmed under NFSv4.0, which the
+// adapter reads from the record's Adapter bytes: a stateid of a client
+// confirmed by EXCHANGE_ID, a delegation's among them, is NotYours, and the
+// service answers state created on a session NotYours, Sessioned. The
+// address SETCLIENTID_CONFIRM recorded is where callbacks go, never a check.
+// NFSv4.0 is offered no delegation, so I/O through an open is checked against
+// the open's principal.
+type Call struct {
+	Identity Identity
+	Caps     Caps       // the adapter's profile (SMBCaps, NFSv4Caps, ...): every rule that differs between clients reads one of its bits
+	Client   ClientID   // the client the adapter proved the call came from; zero: none, as NFSv3 has
+	Session  SessionRef // the SMB or NFSv4.1 session; zero: none, as NFSv4.0 and NFSv3 have
+	Channel  struct {
+		Seq    uint16 // the SMB channel sequence the request carried
+		Replay bool   // the request is marked a replay
+	}
+}
+
+// Target is what a mutation acts on: the file for an attribute change, the
+// directory for a name change. Open, when set, is the open the request came
+// through, whose grant authorises it: always an open of the file the change
+// acts on, never of the directory in H.
+type Target struct {
+	H    Handle
+	Open *OpenRef
+}
+
+// Cursor is where a listing resumes: the 63-bit digest of the last entry
+// returned, zero to start.
+type Cursor uint64
+
+// EntryFields says which fields of each listed entry a listing fills.
+type EntryFields uint8
+
+const (
+	EntryHandle EntryFields = 1 << iota
+	EntryFile
+)
+
+// DirEntry is one listed entry; Handle and File are filled as the listing's
+// EntryFields asks.
+type DirEntry struct {
+	Name   []byte
+	Handle Handle
+	Cursor Cursor
+	File   *File
+}
+
+// Page is one page of a listing.
+type Page struct {
+	Entries []DirEntry
+	Next    Cursor
+	EOF     bool
+}
+
+// AttrChange is an attribute change. Guard, when set, refuses it unless the
+// file's ctime still equals it. Suspend and Resume are set only through an
+// open.
+type AttrChange struct {
+	Attrs
+	Guard           *time.Time
+	DeleteOnClose   *bool
+	Suspend, Resume TimeMask
+}
+
+// WCC is one object's attributes either side of a mutation, from one hold of
+// its accept lock. Before is nil where the service cannot capture it
+// atomically with the change.
+type WCC struct {
+	Before *File
+	After  File
+}
+
+// CreateResult is what Create and Link answer.
+type CreateResult struct {
+	Handle Handle
+	File   File
+	Dir    WCC
+}
+
+// UnlinkResult is what Unlink and Rmdir answer.
+type UnlinkResult struct{ Dir WCC }
+
+// RenameResult is what Rename answers; Moved is set when the moved file's own
+// attributes changed.
+type RenameResult struct {
+	From, To WCC
+	Moved    *WCC
+}
+
+// ShareRef names a share as the client sent it: Path over NFS, Name over SMB.
+// The zero value is the pseudo-root.
+type ShareRef struct {
+	Path string
+	Name string
+}
+
+// ShareInfo is what a share tells a client about itself.
+type ShareInfo struct {
+	Name          string
+	Flavors       []AuthFlavor
+	Comment       string
+	Hidden        bool
+	MaximalAccess Access   // the caller's at the share's root, as an open's is: without what only privilege grants unless the call states PrivilegeOnEveryCall
+	SMB           SMBFlags // encrypt, continuously available
+}
+
+// FilesystemInfo is what a share reports about itself.
+//
+// ponytail: declared here because the store has no Capacity.Info yet; alias
+// the store's once it declares one.
+type FilesystemInfo struct {
+	Share        ShareID
+	Capabilities Capabilities
+	Usage        Usage // the share's, or its project's
+	Quota        Quota // the share-wide limit, or its project's
+}
+
+// Capabilities is what a share's files can carry, fixed while it is mounted.
+type Capabilities struct {
+	CaseSensitive, CasePreserving bool
+	MaxNameBytes                  int
+	ACLs, Xattrs, Streams, Links  bool
+	TimeGranularity               time.Duration
+}
+
+// SnapshotInfo is one snapshot visible at a path.
+//
+// ponytail: it carries nothing while the store has no snapshot view and
+// Snapshots answers an empty list; give it the snapshot's fields with that
+// view.
+type SnapshotInfo struct{}
+
+// ClientInfo is what Propose and Connect register. Proposal is the proposal
+// Connect confirms; nil for a client that confirms in one step.
+type ClientInfo struct {
+	Protocol Protocol // the record's kind, which keys its name; no rule reads it
+	Name     []byte
+	Boot     [8]byte
+	Protect  bool   // state protection: only the client's owner may act on its state
+	Adapter  []byte // the adapter's own bytes, kept with the record, never read by the service and handed back by Record: NFSv4 keeps there the minor version that confirmed the client
+	Proposal *Proposal
+	Recovery RecoveryKind // how a loss of the client's state reaches it, the adapter's pick: status for NFSv4.1, refusal for NFSv4.0, reconnect for SMB, notice for NLM; Connect refuses a zero one ErrInvalid
+}
+
+// RecoveryKind is how a loss of a client's state reaches it.
+type RecoveryKind = entity.RecoveryKind
+
+// AuthFlavor is a flavour a share admits.
+type AuthFlavor uint8
+
+const (
+	FlavorNone AuthFlavor = iota + 1
+	FlavorSys
+	FlavorKrb5
+	FlavorKrb5i
+	FlavorKrb5p
+	FlavorNTLM
+)
+
+// Stability is how durable a write must be before it is answered.
+type Stability uint8
+
+const (
+	Unstable Stability = iota
+	DataSync
+	FileSync
+)
+
+// XattrMode is what SetXattr requires of the name.
+type XattrMode uint8
+
+const (
+	XattrEither  XattrMode = iota
+	XattrCreate            // the name must not exist
+	XattrReplace           // the name must exist
+)
+
+// SeekWhat is what Seek looks for.
+type SeekWhat uint8
+
+const (
+	SeekData SeekWhat = iota
+	SeekHole
+)
+
+// CreateKind is the type of object Create makes.
+type CreateKind uint8
+
+const (
+	CreateRegular CreateKind = iota + 1
+	CreateDir
+	CreateSymlink
+	CreateFifo
+	CreateSocket
+	CreateChar
+	CreateBlock
+)
+
+// CreateArgs is what a create makes. Verifier is an exclusive create's;
+// Target a symlink's; Dev a device's.
+type CreateArgs struct {
+	Kind     CreateKind
+	Attrs    Attrs
+	Verifier *[8]byte
+	Target   []byte
+	Dev      uint64
+}
+
+// WriteResult is what Write answers.
+type WriteResult struct {
+	N        int
+	Verifier Verifier
+	WCC      WCC
+}
+
+// CopyArgs is a copy's or a clone's source and destination: for Copy the
+// extents in order, for Clone exactly one.
+type CopyArgs struct {
+	Src, Dst OpenRef
+	Extents  []Extent
+}
+
+// CopyResult is what Copy answers; N may be short.
+type CopyResult struct {
+	N   int64
+	WCC WCC
+}
+
+// LockReq is one lock request: every range in one step, all or none.
+type LockReq struct {
+	Ranges  []LockRange
+	Wait    WaitKind
+	Reclaim bool
+	Owner   LockOwner
+	Replay  *LockSequence
+	Seqs    Seqs
+}
+
+// WatchSpec is what a watch observes.
+type WatchSpec struct {
+	Dir       Handle
+	Recursive bool
+	Filter    ChangeMask
+}

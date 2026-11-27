@@ -1,0 +1,85 @@
+const (
+	StateConfigured State = iota
+	StateServing
+	StateDraining
+	StateStopped
+)
+
+func (h Health) Ready() bool
+
+func (s State) String() string
+
+func StartRequestSpan(ctx context.Context, t trace.Tracer, id trace.TraceID, name string) (context.Context, trace.Span)
+
+func TraceIDFromContext(ctx context.Context) (trace.TraceID, bool)
+
+type Adapter interface {
+	Start(ctx context.Context) error
+
+	Reconfigure(ctx context.Context, s settings.Settings) error
+
+	Stop(ctx context.Context) error
+
+	Addrs() map[Socket][]netip.AddrPort
+
+	Health() Health
+
+	Connections() iter.Seq[ConnInfo]
+}
+
+type ConnInfo struct {
+	Protocol string
+	Remote   netip.AddrPort
+	Session  string
+	Since    time.Time
+}
+
+type Deps struct {
+	VFS vfs.Service
+
+	Budgets *resources.Budgets
+	Metrics *metrics.Registry
+	Tracer  trace.Tracer
+
+	SampleRatio float64
+
+	TraceIDs func() trace.TraceID
+	Logger   *slog.Logger
+
+	Watch func(loop string) Loop
+
+	DialClient func(ctx context.Context, from netip.Addr, to netip.AddrPort) (net.Conn, error)
+}
+
+type Health struct {
+	State      State
+	Conditions []string
+}
+
+type Loop interface {
+	Turn()
+	Idle()
+	Close()
+}
+
+type Serving struct {
+	Adapter   string
+	Listeners map[Socket][]netip.AddrPort
+}
+
+type Sidecar interface {
+	Name() string
+	Adapters() []string
+
+	Sync(ctx context.Context, serving []Serving) error
+}
+
+type Socket struct {
+	Service string
+	Network string
+}
+
+type State uint8
+
+var ErrPortChanged = errors.New("adapter: port changed")
+

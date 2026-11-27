@@ -1,13 +1,12 @@
 # Samba Active Directory Domain Controller fixture.
 #
-# Unlike the MIT KDC in test/integration/kerberos (auth only, no PAC), a Samba
-# AD-DC issues Kerberos tickets carrying a Microsoft PAC (MS-PAC) with the
-# user's transitive group SIDs — exactly what AD-1 needs to validate PAC
-# decoding (DecodePAC) end to end against a real domain controller.
+# A real domain controller for the ad_dc tests: NETLOGON pass-through and its
+# hot reload, an online domain join followed by a member logon, and LDAP
+# resolution of domain users and groups.
 #
 # The container provisions a fresh domain on first start via entrypoint.sh,
 # creates test users + groups (some with RFC2307 uidNumber/gidNumber, some
-# without, to exercise the AD-3 idmap fallback later), and exports a service
+# without, for the LDAP resolver's RID fallback), and exports a service
 # keytab. It runs linux/amd64 so it works on Apple Silicon under emulation,
 # mirroring the other docker harnesses.
 FROM debian:bookworm-slim
@@ -19,6 +18,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # samba-ad-dc pulls in the AD-DC role (provisioning + KDC + LDAP). winbind and
 # krb5-user give us kadmin-style tooling and samba-tool dependencies. ldb-tools
 # (ldbadd/ldbmodify) lets entrypoint.sh stamp RFC2307 attributes directly.
+# openssl issues the DC's TLS certificate from the fixture's own CA.
 # samba-ad-provision ships the AD schema LDIFs (AD_DS_*.ldf) that
 # `samba-tool domain provision` needs; current debian:bookworm-slim split these
 # out of samba-ad-dc, so provisioning fails without it (issue #1252).
@@ -27,7 +27,7 @@ RUN set -eu; \
         apt-get update \
           && apt-get install -y --no-install-recommends \
                samba samba-ad-dc samba-ad-provision samba-common-bin winbind \
-               krb5-user ldb-tools ldap-utils procps \
+               krb5-user ldb-tools ldap-utils procps openssl \
           && rm -rf /var/lib/apt/lists/* \
           && exit 0; \
         echo "apt-get attempt $i failed, retrying in 5s..." >&2; \
@@ -38,8 +38,10 @@ RUN set -eu; \
 
 COPY --chmod=0755 entrypoint.sh /entrypoint.sh
 
-# 88 = Kerberos KDC, 389 = LDAP, 464 = kpasswd. The test maps 88 to a random
-# host port for the Go Kerberos client to reach.
-EXPOSE 88/tcp 88/udp 389/tcp 464/tcp 464/udp
+# The ports a client of the DC reaches: 53 DNS, 88 Kerberos, 135 the RPC
+# endpoint mapper, 389 LDAP, 445 SMB, 464 kpasswd, 636 LDAPS, and the dynamic
+# RPC range NETLOGON on ncacn_ip_tcp takes a port from (entrypoint.sh's
+# RPC_PORT_RANGE). No EXPOSE lists them: the tests publish none, and reach the
+# DC on its IP on a Docker network of its own.
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -1,0 +1,387 @@
+package resources
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"net/netip"
+	"sync"
+	"sync/atomic"
+)
+
+// classes are the buffer sizes a pool hands out, smallest first: small,
+// directory, transfer and large. A request draws the smallest class that holds
+// it.
+//
+// ponytail: past the small class the steps are 16 times, and a request is
+// charged its class's capacity, so one just past a class pays for the next: a
+// 69,633-byte record reserves 1 MiB and 12 KiB, about 14 times its size, and
+// the receive budget admits that many fewer at once. Add a class between the
+// directory and the transfer one, with RFC 24 §3.1, when the receive budget
+// is shown queuing behind requests between 64 KiB and 1 MiB.
+var classes = [...]int{4 << 10, 64 << 10, 1 << 20, 8 << 20}
+
+// headerRoom is what a class that carries a payload holds past its size, so a
+// payload of the class's size still fits with its protocol's headers.
+//
+// ponytail: 4 KiB, fixed, the same for every protocol, and charged. It is a
+// cost figure and not a limit: a record past its class's size plus this room
+// draws the next class and costs more. Make it the protocol's own figure when
+// a protocol's records are shown to pass it often enough to matter.
+const headerRoom = 4 << 10
+
+// overhead is charged with every buffer for what its request holds besides
+// it: its goroutine's stack, its decoded arguments, its context.
+//
+// ponytail: a flat 8 KiB per request, not measured, so a request whose stack
+// grows past it is under-charged. Charge the measured p99 stack when RFC 24
+// §8's M1 shows stacks past an eighth of the unpooled quarter at the receive
+// pool's ceiling.
+const overhead = 8 << 10
+
+// poisonByte is what a released buffer is filled with under the race detector.
+const poisonByte = 0xdb
+
+// unpooled is the class of a buffer larger than the largest class.
+const unpooled = len(classes)
+
+// capacity is the bytes a buffer of class holds, and is charged for: its size,
+// plus the header room on every class but the small one, which carries
+// headers only.
+func capacity(class int) int {
+	if class == 0 {
+		return classes[0]
+	}
+	return classes[class] + headerRoom
+}
+
+// classOf is the smallest class whose capacity holds n bytes, or unpooled.
+func classOf(n int) int {
+	for class := range classes {
+		if n <= capacity(class) {
+			return class
+		}
+	}
+	return unpooled
+}
+
+// Buf is one pooled buffer, shared by reference count. Its reservation is
+// released with its bytes, at its last Release, so no byte a holder has is
+// uncharged. An idle free list holds bytes no budget counts: see BufPool.
+type Buf struct {
+	// B has the record's or reply's length. Its capacity is its class's: the
+	// class size plus, on every class but the small one, 4 KiB of header room.
+	// Only B[:n] is zeroed: past it lie the last holder's bytes, so a holder
+	// grows B only by appending to B[:0], never by reslicing past len(B).
+	B []byte
+
+	// decision: the pool keeps its own slice of the bytes Get took, since a
+	// holder may cut or reassign B: the last Release poisons and pools these,
+	// not whatever B holds by then.
+	// ended holds each ended segment's bytes in send order and segs the
+	// buffers Attach lent, retained until the last Release: a reply's own
+	// bytes, then its lent segments, then the tail appended after the last
+	// one, which is B. All are nil until the first Attach, and a Buf that
+	// reaches its last Release with none is pooled as it always was.
+	mem   []byte
+	pool  *BufPool // nil on a literal Buf, which has no bytes to return
+	class int
+	res   Reservation
+	ended [][]byte
+	segs  []*Buf
+
+	// decision: borrowers counts the holders beyond the first, so a literal
+	// Buf, as a codec test builds one, is one reference like a buffer from
+	// Get: Retain and Release pair on it and its last Release frees nothing.
+	// The last Release leaves it at -1, where one more Release and any Retain
+	// panic, in tests and in production. That holds only while the buffer
+	// sits released: once the pool hands it out again, a stale Retain or
+	// Release cannot be told from the new holder's. Under the race detector
+	// a stale holder that reads sees the poison until the next Get, and past
+	// the new holder's length after it; a stale Release is not
+	// caught where it happens: it returns the new holder's bytes and
+	// reservation, and the next Get can hand the same bytes to a second
+	// request. The panic falls on whichever holder releases last, unless a
+	// further Get takes the buffer first; outside the race detector nothing
+	// is poisoned, so one request can read another's bytes undetected.
+	borrowers atomic.Int32
+}
+
+// BufPool hands out buffers in the classes above, each reserved from its
+// budget before it is taken, so a Get waits in the budget, never in the
+// allocator.
+//
+// ponytail: a sync.Pool per class behind the reservation counter, so
+// collection frees idle pooled buffers, and until it does a free list keeps
+// bytes no budget counts: resident memory can pass the ceiling by each
+// class's recent peak, at worst about three times the ceiling across the
+// directory, transfer and large classes, kept one more cycle by sync.Pool's
+// victim cache. A []byte holds no pointers, so collection does not scan it;
+// a dropped buffer costs the next Get a fresh allocation and its zeroing.
+// Replace it with a fixed-size slab per class, allocated once at start, when
+// a profile shows that allocation from transfer-class buffers limits
+// throughput.
+type BufPool struct {
+	budget *WaitBudget
+	free   [len(classes)]sync.Pool // of *Buf
+}
+
+// NewBufPool builds a pool whose every buffer is reserved from b, a receive
+// or reply budget.
+func NewBufPool(b *WaitBudget) *BufPool {
+	p := &BufPool{budget: b}
+	for class := range p.free {
+		p.free[class].New = func() any {
+			return &Buf{mem: make([]byte, capacity(class)), pool: p, class: class}
+		}
+	}
+	return p
+}
+
+// Get takes one reservation for key, as Reserve does, of the capacity of n's
+// class plus the fixed 8 KiB per-request overhead, released with the buffer;
+// then a buffer with one reference, whose B is n bytes long.
+func (p *BufPool) Get(ctx context.Context, key netip.Addr, n int) (*Buf, error) {
+	if n < 0 {
+		return nil, fmt.Errorf("resources: get a %d-byte buffer", n)
+	}
+	class, charge := chargeOf(n)
+	res, err := p.budget.Reserve(ctx, key, charge)
+	if err != nil {
+		return nil, fmt.Errorf("resources: get a %d-byte buffer: %w", n, err)
+	}
+	return p.take(class, n, res), nil
+}
+
+// TryGet is Get's one try with no context: it takes Get's charge for key only
+// when it fits and no waiter is ahead of it, and otherwise returns false at
+// once, allocating nothing.
+func (p *BufPool) TryGet(key netip.Addr, n int) (*Buf, bool) {
+	if n < 0 {
+		return nil, false
+	}
+	class, charge := chargeOf(n)
+	res, ok := p.budget.try(key, charge)
+	if !ok {
+		return nil, false
+	}
+	return p.take(class, n, res), true
+}
+
+// Ceiling is the pool's budget's ceiling, what one charge is bounded by.
+func (p *BufPool) Ceiling() int64 {
+	return p.budget.ceiling()
+}
+
+// Charge is what Get would charge for a buffer of n bytes: n's class's
+// capacity, or n itself past the largest class, plus the per-request
+// overhead.
+func (p *BufPool) Charge(n int) int64 {
+	_, charge := chargeOf(n)
+	return charge
+}
+
+// chargeOf is n's class and what a buffer of n bytes is charged: its class's
+// capacity, or n itself past the largest class, plus the overhead.
+func chargeOf(n int) (class int, charge int64) {
+	class = classOf(n)
+	if class == unpooled {
+		return class, int64(n) + overhead
+	}
+	return class, int64(capacity(class)) + overhead
+}
+
+// take hands out a buffer of n bytes in class, holding res.
+func (p *BufPool) take(class, n int, res Reservation) *Buf {
+	// decision: a buffer past the largest class is charged n and the
+	// overhead exactly, allocated at n, and dropped at its last Release. The
+	// largest class is the pool's own, since a pool is told no protocol.
+	if class == unpooled {
+		mem := make([]byte, n)
+		return &Buf{B: mem, mem: mem, pool: p, class: unpooled, res: res}
+	}
+	b := p.free[class].Get().(*Buf)
+	b.res = res
+	// decision: B is handed out at the length asked and zeroed, as
+	// make([]byte, n) would be, so a reader fills it as it is and a holder
+	// that sends it short of what it wrote sends zeros, never the last
+	// holder's bytes; a caller that appends cuts it to B[:0] first, and stays
+	// within cap(B): an append past it allocates bytes no budget is charged.
+	//
+	// ponytail: the n bytes are cleared on every Get, also where the caller
+	// overwrites all of them. Hand them out as they are to a caller that
+	// says it fills B whole, when a profile shows the clear in the cost of a
+	// transfer-class request.
+	b.B = b.mem[:n]
+	clear(b.B)
+	// The count leaves -1 last, so a stale call on the buffer panics until
+	// it is ready to hand out.
+	b.borrowers.Store(0)
+	return b
+}
+
+// Retain adds a borrower: the service, the writer, a held request.
+func (b *Buf) Retain() *Buf {
+	b.borrow(1, "resources: retain of a released buffer")
+	return b
+}
+
+// borrow moves the count of borrowers by delta and returns what it was. On a
+// released buffer it panics having written nothing, so a Get that hands the
+// buffer out in the same moment finds its count intact.
+func (b *Buf) borrow(delta int32, released string) (was int32) {
+	for {
+		was = b.borrowers.Load()
+		if was < 0 {
+			panic(released)
+		}
+		if b.borrowers.CompareAndSwap(was, was+delta) {
+			return was
+		}
+	}
+}
+
+// Join is a chain's record (RFC 20 §4.7): an empty buffer with room for n
+// bytes that takes over every reservation of bufs, with no new charge and no
+// wait, and carries them to its last Release. The caller appends each
+// member's bytes, with what goes between them, and releases the member,
+// which then returns bytes only. n is at most the members' charges summed,
+// and they share one budget and one key; Join panics otherwise. The record's
+// bytes are in no class: allocated at n and dropped at its last Release. A
+// Join of one buffer returns it unchanged.
+//
+// From Join until the caller releases them, the members hold their bytes
+// with no reservation, their record having taken it: resident memory passes
+// what the pool counts by at most the record's length, the one exception to
+// reserving before holding (RFC 24 §2.5).
+//
+// decision: the record takes over its members' reservations rather than
+// reserving its own, which would wait on the reply pool while the chain
+// holds reply reservations (RFC 24 §2.6), or, tried once, could be refused
+// with the replies already encoded. Reserve the record with TryGet, keeping
+// each member's reservation until its release, if chains are seen taking
+// resident memory past the ceiling.
+func Join(n int, bufs ...*Buf) *Buf {
+	var res Reservation
+	for i, b := range bufs {
+		if i > 0 && (b.res.b != res.b || b.res.w != res.w || b.res.key != res.key) {
+			panic("resources: Join of buffers charged to another budget or key")
+		}
+		res.b, res.w, res.key, res.n = b.res.b, b.res.w, b.res.key, res.n+b.res.n
+	}
+	if int64(n) > res.n {
+		panic(fmt.Sprintf("resources: Join of room for %d bytes past its members' charges of %d", n, res.n))
+	}
+	if len(bufs) == 1 {
+		return bufs[0]
+	}
+	var pool *BufPool
+	for _, b := range bufs {
+		b.res = Reservation{}
+		if pool == nil {
+			pool = b.pool
+		}
+	}
+	mem := make([]byte, n)
+	return &Buf{B: mem[:0], mem: mem, pool: pool, class: unpooled, res: res}
+}
+
+// Recharge moves b's whole charge to a reservation from to: it reserves the
+// charge from to, and only then releases b's old reservation and keeps the
+// new one, so the charge is never absent. Refused, it returns the error and
+// nothing changes. A buffer already charged to to keeps its reservation, so
+// a chain's record one member moved is not charged again for the next. The
+// last Release then returns the charge to to. A holder calls it, and Charge,
+// while no other holder does.
+func (b *Buf) Recharge(to *Budget) error {
+	if b.res.b == to {
+		return nil
+	}
+	res, err := to.Reserve(b.res.n)
+	if err != nil {
+		return err
+	}
+	old := b.res
+	b.res = res
+	old.Release()
+	return nil
+}
+
+// Charge is b's whole charge, its class's capacity and the per-request
+// overhead, which a held request counts against its connection's floor.
+func (b *Buf) Charge() int64 {
+	return b.res.n
+}
+
+// Attach ends b's current segment and lends seg as the next one (RFC 20
+// §5.3): a READ's data joins its reply as a segment of its own, never copied.
+// The reply it builds is for the writer's gather alone: nothing else reads a
+// message whole — join it, cache it, wrap it, count it as the span's sent
+// bytes, or rewrite a compound's head in place over reply.B — until the
+// segments ride a copy of their own, as a replay cache must before a
+// cachethis READ lends.
+// The bytes b held at the call end as one part, seg's follow it, and what the
+// caller appends to b afterwards — the padding and any later result — starts
+// b's bytes over past the part just ended, in b's own charged bytes: appending
+// there never overwrites what ended, and neither the parts' slices nor the
+// tail allocates on a pooled reply, whose lists keep their capacity across
+// its releases. seg is retained here and released with b, so its bytes go back
+// to their pool only once the reply's own last Release runs, after the writer
+// sent it. Attach of a nil seg panics.
+func (b *Buf) Attach(seg *Buf) {
+	if seg == nil {
+		panic("resources: Attach of a nil segment")
+	}
+	b.ended = append(b.ended, b.B, seg.B)
+	b.segs = append(b.segs, seg.Retain())
+	// The tail continues past the part just ended: appending there never
+	// overwrites it, and keeps the tail in b's own charged bytes.
+	b.B = b.B[len(b.B):]
+}
+
+// AppendBuffers appends b's bytes to dst in send order with no copy: the
+// bytes b held before each Attach, every segment Attach lent, and the tail
+// appended after the last one, which is b.B. A reply the writer queues goes
+// out with its parts in this order inside the record's framing (RFC 20
+// §6.2). A Buf that never attached is its one part, b.B, as it always was.
+func (b *Buf) AppendBuffers(dst net.Buffers) net.Buffers {
+	if len(b.segs) == 0 {
+		return append(dst, b.B)
+	}
+	for _, part := range b.ended {
+		if len(part) > 0 {
+			dst = append(dst, part)
+		}
+	}
+	if len(b.B) > 0 {
+		dst = append(dst, b.B)
+	}
+	return dst
+}
+
+// Release drops a borrower; the last release returns the bytes and the
+// reservation. One more panics. The last release also releases every segment
+// Attach lent, which is what keeps a READ's buffer until its reply was sent
+// (RFC 20 §5.3).
+func (b *Buf) Release() {
+	if b.borrow(-1, "resources: release of a released buffer") > 0 {
+		return
+	}
+	for _, seg := range b.segs {
+		seg.Release()
+	}
+	// The parts' lists keep their capacity for the next pooled holder.
+	clear(b.segs)
+	clear(b.ended)
+	b.segs, b.ended = b.segs[:0], b.ended[:0]
+	if b.pool == nil {
+		return
+	}
+	poison(b.mem)
+	res := b.res
+	b.res = Reservation{}
+	if b.class != unpooled {
+		b.pool.free[b.class].Put(b)
+	}
+	res.Release()
+}

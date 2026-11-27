@@ -1,88 +1,181 @@
 # Quotas
 
-DittoFS enforces **per-identity** quotas on a share — by user, by group, or a
-default-user fallback — limiting both **bytes** and **inodes (file count)**. Each limit
-has a **soft** threshold, a **hard** ceiling, and a **grace** window between them.
+A quota caps how much one share may hold: how many bytes and how many files. Set one
+when a share is used by several people and one of them must not fill it for everyone,
+or when the share itself must stay under a size.
 
-> Quotas are managed live on a running server via `dfsctl` (or the REST API). There is no
-> config-file or Kubernetes CRD form. The full reference is in
-> [Configuration § Shares](configuration.md#8-shares-exports).
+You manage quotas on a running node with `dfsctl quota` (or the management API). No
+config file key sets them.
+
+> **On this version:** this build serves no file protocol and cannot create a share yet
+> (see [Getting Started](getting-started.md#5-stores-and-namespaces)). The commands below
+> are the ones to use once a share exists; the refusals of bad values in
+> [Values dfsctl refuses](#values-dfsctl-refuses) run today.
+
+## What a quota limits
+
+A quota is set on one of three things in a share:
+
+| On | Flag | What it counts |
+| --- | --- | --- |
+| a user | `--user alice` | the files alice owns in that share |
+| a group | `--group editors` | the files whose group is `editors` in that share |
+| the share | neither flag | every file in the share |
+
+Each quota has up to three limits, each on bytes and on files:
+
+| Limit | Flags | What happens when it is passed |
+| --- | --- | --- |
+| hard | `--hard-bytes`, `--hard-files` | the write or create is refused at once |
+| soft | `--soft-bytes`, `--soft-files`, `--grace` | allowed for the grace period, then refused like a hard limit |
+| advisory | `--advisory-bytes`, `--advisory-files` | never refused |
+
+A limit of `0` limits nothing. A user or group with no quota of its own has no limit;
+there is no default quota for every user.
+
+Every quota that covers a file applies. A write by alice in a share with a share quota,
+a quota on alice and a quota on her file's group must fit under all three, and is
+refused by the first one it would pass.
 
 ## Set a quota
 
-```bash
-# A user (by UID): 10 GiB / 100k files hard, soft at 8 GiB / 90k files,
-# 7-day grace (604800s) before the soft byte limit becomes hard.
-dfsctl quota set /export --scope user --id 1000 \
-    --limit-bytes 10GiB --soft-bytes 8GiB \
-    --limit-files 100000 --soft-files 90000 --grace-seconds 604800
-
-# A group (by GID): 50 GiB, no file-count limit.
-dfsctl quota set /export --scope group --id 2000 --limit-bytes 50GiB
-
-# Everyone without an explicit quota (fallback template):
-dfsctl quota set /export --scope default-user --limit-bytes 5GiB
-```
-
-Sizes accept binary units (`GiB`, `MiB`, …). Omit a flag to leave that dimension
-unlimited.
-
-## Inspect and remove
+Limit alice to 10 GiB and 100,000 files on the `archive` share:
 
 ```bash
-dfsctl quota list /export
-dfsctl quota remove /export --scope user --id 1000
+dfsctl quota set archive --user alice --hard-bytes 10737418240 --hard-files 100000
 ```
 
-## How enforcement works
+```console
+ON                                    HARD-BYTES   HARD-FILES  SOFT-BYTES  SOFT-FILES  GRACE  ADVISORY-BYTES  ADVISORY-FILES
+8c814c1f-9930-4780-b8b5-b96002bba793  10737418240  100000      0           0           0s     0               0
+```
 
-- **Soft → grace → hard.** When an identity crosses its soft threshold, a grace timer
-  starts; once the grace window elapses the soft limit is enforced as hard. Drop back
-  under soft and the timer resets. Default-user grace is tracked per-user and survives a
-  server restart.
-- **Most-specific wins.** A user is limited by its own quota if set, else its group's,
-  else the default-user fallback.
-- **Usage is by owner, within one share.** Bytes and inode counts are keyed by share and
-  by file owner UID/GID, and stored durably alongside the files they account for — updated
-  in the same transaction that writes the file, and read back at startup rather than
-  recomputed, so start-up cost does not grow with the number of files. A `chown` moves a file's
-  usage between identities. Shares that name the same metadata store are served by one
-  store instance, but their usage is still counted separately: one share's bytes never
-  count against another share's quota, and `df` on a share reports only that share.
-- **Best-effort.** Under heavy concurrent writes an identity may briefly exceed a limit
-  before usage catches up — normal for a userspace NFS/SMB server.
+`ON` is the ID of the user, group or share the quota is on. Sizes are in bytes:
+1 GiB is `1073741824`.
 
-Quota limits live in the control-plane database and are also reachable via the REST API
-at `/api/v1/shares/{name}/quotas`.
-
-## Repairing a drifted usage figure
-
-Usage counters are maintained transactionally as files are written and removed, so they
-are normally already correct. If a share reports more bytes than its files hold — most
-visibly, it refuses writes while `dfsctl share list` shows it far from full — first check
-whether the counters really disagree with the file rows:
+Give the `editors` group a soft limit of 50 GiB that it may pass for a week:
 
 ```bash
-dfsctl store metadata recompute-usage /export --dry-run
+dfsctl quota set archive --group editors --soft-bytes 53687091200 --grace 168h
 ```
 
-A dry run derives the same figures, changes nothing, and names every usage bucket whose
-counter disagrees with the rows, with both numbers, so you can see how far apart they are
-and in which direction. A `share` row compares the share's own total rather than one
-owner's bucket — that total is what a share quota is checked against and what `df`
-reports, and it can drift on its own.
-
-Against a store that is taking writes a dry run reports small transient deltas: the rows
-and the counters are read at different instants. Drift from a bug does not look like that
-— it persists across runs and does not track live traffic.
-
-Then rebuild the counters from the file rows:
+Limit the share itself to 1 TiB, by naming no user or group:
 
 ```bash
-dfsctl store metadata recompute-usage /export
+dfsctl quota set archive --hard-bytes 1099511627776
 ```
 
-The rebuild scans every file row in the metadata store, so it takes time in proportion to
-the store's size, and it repairs every share that store serves rather than only the one
-named. Nothing runs it automatically: a per-file walk on every server start would be a
-cost every share pays forever to correct a number that is almost always already right.
+`quota set` changes only the limits whose flags you give. Running it again with
+`--hard-files 200000` raises the file limit and keeps the byte limit as it was. A quota
+that does not exist yet is created.
+
+## Read and remove quotas
+
+```bash
+dfsctl quota list archive
+```
+
+```console
+ON                                    HARD-BYTES     HARD-FILES  SOFT-BYTES   SOFT-FILES  GRACE     ADVISORY-BYTES  ADVISORY-FILES
+3e0d6a2c-5b1f-4c7a-9e8d-2f4b6a8c0e1d  1099511627776  0           0            0           0s        0               0
+8c814c1f-9930-4780-b8b5-b96002bba793  10737418240    100000      0            0           0s        0               0
+fd1591fa-f9b8-4e98-9536-9559fcbff2d7  0              0           53687091200  0           168h0m0s  0               0
+```
+
+The share's own quota comes first. `dfsctl user list` and `dfsctl group list` show
+which name each ID belongs to. The list shows the limits, not how much is used: no
+command shows a quota's current usage yet.
+
+Remove alice's quota:
+
+```bash
+dfsctl quota remove archive --user alice
+```
+
+Remove the share's own quota with `dfsctl quota remove archive`.
+
+## How the soft limit and grace work
+
+1. alice's usage goes above her soft limit. Nothing is refused. The grace period starts
+   from that moment.
+2. While the grace period runs, alice may keep writing, up to her hard limit if she has
+   one.
+3. When the grace period ends and she is still above the soft limit, the soft limit
+   acts as a hard one: her next write that adds bytes or files is refused.
+4. When she deletes enough to drop back under the soft limit, the grace period resets.
+   The next time she passes the limit, she gets a full grace period again.
+
+With a `--grace` of `0`, the write that passes the soft limit is allowed, and every
+later write that adds bytes or files is refused.
+
+## What a client sees over a quota
+
+> **Not available yet on this version:** no file protocol is served, so no client sees a
+> quota refusal yet.
+
+The node refuses the write as "quota exceeded" and names which quota it hit. NFS and
+SMB are designed to report it like this:
+
+| Quota hit | NFS client | SMB client |
+| --- | --- | --- |
+| a user's or a group's | `Disk quota exceeded` (`EDQUOT`) | `STATUS_DISK_QUOTA_EXCEEDED` |
+| the share's own | `No space left on device` (`ENOSPC`) | `STATUS_DISK_FULL` |
+
+A share quota looks like a full disk to the client because, for the client, the share is
+the disk.
+
+An advisory limit refuses nothing. Crossing it is recorded as a quota event, but no
+command or API route shows those events yet, so an advisory limit has no visible effect
+today.
+
+## Values dfsctl refuses
+
+`dfsctl` checks the values before it contacts the server.
+
+A negative limit:
+
+```console
+$ dfsctl quota set archive --hard-bytes -1
+Error: dfsctl quota set: --hard-bytes -1: want 0 or more
+```
+
+A grace period that is not a whole number of seconds, or is negative:
+
+```console
+$ dfsctl quota set archive --grace 1.5s
+Error: dfsctl quota set: --grace 1.5s: want whole seconds, 0 or more
+$ dfsctl quota set archive --grace -1h
+Error: dfsctl quota set: --grace -1h0m0s: want whole seconds, 0 or more
+```
+
+`--grace` takes Go durations: `90s`, `30m`, `168h`. There is no `d` unit, so write a
+week as `168h`.
+
+`quota set` with no limit flag at all is refused too: give at least one of the
+`--hard-*`, `--soft-*`, `--advisory-*` or `--grace` flags.
+
+## Good to know
+
+- **Usage follows the owner.** A file counts against its owner's quota and its group's
+  quota. Changing a file's owner or group (`chown`, `chgrp`) moves its usage to the new
+  owner or group.
+- **Shares are counted apart.** alice's files in one share never count against her quota
+  in another.
+- **A limit can be passed by a little.** Writes landing at the same moment are checked
+  against the usage committed so far, so a hard limit can be passed by what those
+  concurrent writes add.
+- **Usage cannot be rebuilt by hand.** It is kept up to date as files are written and
+  removed. No command checks it against the files or rebuilds it.
+
+## The management API
+
+`dfsctl quota` uses these routes:
+
+| Route | What it is |
+| --- | --- |
+| `GET /api/v1/shares/{id}/quota`, `PUT /api/v1/shares/{id}/quota` | the share's own quota |
+| `GET /api/v1/shares/{id}/quotas` | the share's user and group quotas |
+| `GET /api/v1/shares/{id}/quotas/{sub}`, `PUT /api/v1/shares/{id}/quotas/{sub}` | one user's or group's quota, by principal ID |
+
+Reading a quota needs the `viewer` role; setting one needs `operator`. See
+[Security](security.md#3-give-each-person-an-account-with-the-least-role-it-needs) for the roles.

@@ -55,11 +55,8 @@ go build -o dfsctl cmd/dfsctl/main.go
 # Run tests
 go test ./...
 
-# Initialize the development configuration (overwrites an existing config)
-./dfs init --force
-
-# Run in the foreground
-DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start --foreground
+# Run the server
+DITTOFS_LOGGING_LEVEL=debug ./dfs start
 ```
 
 ### Mount for Testing
@@ -79,7 +76,7 @@ Use the [bug report template](.github/issue_template.md) and include:
 - Steps to reproduce
 - Expected vs. actual behavior
 - Environment details (OS, Go version, NFS client)
-- Relevant logs with `DITTOFS_LOGGING_LEVEL=DEBUG`
+- Relevant logs with `DITTOFS_LOGGING_LEVEL=debug`
 
 ### Suggesting Features
 

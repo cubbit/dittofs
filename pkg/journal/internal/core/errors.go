@@ -1,0 +1,400 @@
+package core
+
+import (
+	"errors"
+	"fmt"
+)
+
+// decision: the error set is declared here and re-exported by the public
+// package, for the reason the value types are: the internal packages return
+// these errors, and they cannot import the public package without a cycle.
+
+// The sentinel errors. A typed error below matches its sentinel under
+// errors.Is; a caller tests for the sentinel and recovers the type with
+// errors.As only when it needs the details.
+var (
+	// ErrNotImplemented is returned by an operation that is declared but not
+	// yet implemented. It is never retried.
+	ErrNotImplemented = errors.New("journal: not implemented")
+
+	// ErrOpenRefused is matched by every refusal Open itself makes at
+	// recovery: a range or a named predecessor's end that names no
+	// surviving record, a mark's lost synced tail or refused range, and an
+	// emptying that cannot read, place or seal the copy of a segment the
+	// open ends. A retry can clear each of these. A record kind this journal
+	// cannot build, a verifying reconcile record or a hold it cannot feed,
+	// answers ErrNotImplemented instead, which is never a refusal of the
+	// open and never retried: a bare one fails the start as any error at open
+	// does.
+	ErrOpenRefused = errors.New("journal: open refused at recovery")
+
+	// ErrClosed is returned by any call that reaches a journal or a handle
+	// after its Close began. The journal's state is unchanged; the call is not
+	// retried on the same journal or handle.
+	ErrClosed = errors.New("journal: closed")
+
+	// ErrHandleOpen is returned by Forget while a handle of the tag is open.
+	// Nothing is forgotten; the caller closes the tag's handles and calls
+	// Forget again.
+	ErrHandleOpen = errors.New("journal: a handle of the tag is open")
+
+	// ErrNotEmpty is returned by Init when the directory holds any entry but
+	// a format.tmp, which an Init that crashed before its rename leaves.
+	// Nothing is written: Init creates a journal only in an empty directory,
+	// so a journal is never laid over files it did not write. It is never
+	// retried; the caller points Init at an empty directory.
+	ErrNotEmpty = errors.New("journal: directory is not empty")
+
+	// ErrNoJournal is returned by Open and Restamp when the directory holds no
+	// journal, empty, missing, or holding neither a format file nor a segment,
+	// whatever identity the caller expected. Neither ever creates one; only
+	// Init does.
+	ErrNoJournal = errors.New("journal: directory holds no journal")
+
+	// ErrUnidentified is returned by Open when the directory holds a segment
+	// file and no format file: a journal this implementation cannot identify,
+	// which is never taken for an empty one. Nothing in the directory is
+	// written, removed or attached. It is never retried; an operator restores
+	// the format file or moves the segments away.
+	ErrUnidentified = errors.New("journal: directory holds segments and no format file")
+
+	// ErrIdentityMismatch is matched by every IdentityError: the journal in
+	// the directory is not the one the caller expected, or the caller expected
+	// none. It is never retried.
+	ErrIdentityMismatch = errors.New("journal: identity does not match")
+
+	// ErrUnknownFormat is returned by Open when the format file names a
+	// format version this implementation does not recognise, or a record
+	// carries an unrecognised kind or a content version with a non-zero epoch.
+	// The journal is not opened, upgraded or repaired. It is never retried.
+	ErrUnknownFormat = errors.New("journal: unknown format")
+
+	// ErrUnreadable is matched by every UnreadableRangesError and by every
+	// read of a held extent, Sync or Since that names an unread file: a read
+	// the device cannot complete, never a record that does not verify. Only
+	// Open returns it today, wrapping it in an UnreadableRangesError that
+	// names the ranges, so a caller reads them from the value, never from
+	// the error's text; the journal's reads return the device's own error
+	// and Sync and Since answer ErrNotImplemented until the reopen that
+	// reads returns it.
+	ErrUnreadable = errors.New("journal: unreadable")
+
+	// ErrCorrupt is returned when a structure the journal must read does not
+	// verify against its checksum and nothing can stand in for it: the format
+	// file at Open, or a record an offer's reader must verify before it returns
+	// its bytes. The structure is not repaired. It is never retried.
+	ErrCorrupt = errors.New("journal: checksum does not verify")
+
+	// ErrStaleFill is returned by Fill when the file's change version is newer
+	// than the asOf the fill was read at. Nothing is written; the caller reads
+	// again and fetches what is still missing.
+	ErrStaleFill = errors.New("journal: fill is older than the file")
+
+	// ErrNotOffloaded is matched by every NotOffloadedError: Release named an
+	// extent whose offloaded bit is unset. Nothing is released.
+	ErrNotOffloaded = errors.New("journal: extent is not offloaded")
+
+	// ErrNotOffered is returned by an offer's report naming an extent the offer
+	// did not contain, and by an offer's reader reading outside the offered
+	// extents. Nothing is marked or returned.
+	ErrNotOffered = errors.New("journal: extent was not offered")
+
+	// ErrOfferEnded is returned by an offer's report, and by its reader, once
+	// the offer's callback has returned. Nothing is marked or returned.
+	ErrOfferEnded = errors.New("journal: offer has ended")
+
+	// ErrZeroLength is returned by a Deallocate or CloneTarget of a
+	// zero-length extent. Nothing is appended and no version is drawn.
+	ErrZeroLength = errors.New("journal: zero-length extent")
+
+	// ErrInvalidExtent is returned by a write whose extent cannot exist: a
+	// negative file offset, or an offset and length whose end overflows. It is
+	// named apart from ErrZeroLength because a zero-length write is accepted
+	// and does nothing. Nothing is appended and no version is drawn. It is
+	// never retried.
+	ErrInvalidExtent = errors.New("journal: invalid extent")
+
+	// ErrSyncFailed is matched by every SyncError: a sync window failed. The
+	// writes it covered are not durable, and a later successful sync never
+	// stands in for them.
+	ErrSyncFailed = errors.New("journal: sync failed")
+
+	// ErrNoSpace is matched by every NoSpaceError: a reservation was refused
+	// by one of the journal's limits.
+	ErrNoSpace = errors.New("journal: no space")
+
+	// ErrReservationExhausted is returned by a write drawn from a reservation
+	// that no longer holds enough: more record bytes than it has left, a
+	// version past the writes it reserved, or a piece past the entries it
+	// holds. Nothing is drawn, appended or published. It is not a
+	// NoSpaceError: no limit of the journal refused the write — the
+	// reservation a caller took for it is simply spent — and no reclaim
+	// frees anything for it. It is never retried on the same reservation.
+	ErrReservationExhausted = errors.New("journal: reservation exhausted")
+
+	// ErrNoClock is returned by Open when it is given no clock. Nothing is
+	// opened. It is never retried: the caller passes WithClock.
+	ErrNoClock = errors.New("journal: no clock")
+
+	// ErrJournalReadOnly is returned by a write the journal refuses because it
+	// is read-only after a failure it cannot recover from. It is returned at
+	// once: nothing is reserved and no spare is taken. It is retried only
+	// after the journal is reopened.
+	ErrJournalReadOnly = errors.New("journal: read-only")
+
+	// ErrInvalidSetting is returned by Init and Open when a setting or the
+	// descriptor limit is negative. Nothing is opened or written. It
+	// is never retried.
+	ErrInvalidSetting = errors.New("journal: invalid setting")
+
+	// ErrOtherShare is matched by every OtherShareError: a call through one
+	// share's handle named a file that belongs to another share. Nothing of
+	// the file is served, appended, changed or offered. It is never retried.
+	ErrOtherShare = errors.New("journal: file belongs to another share")
+
+	// ErrUnsuitableStorage is matched by every refusal of a directory a rule
+	// of the platform profile refuses: a mount whose syncs do not reach the
+	// device, or, on a copy-on-write filesystem, a directory where a write
+	// into allocated space could still allocate. Its message names the rule,
+	// the directory and what to change, so an operator can fix it. An error
+	// met while checking — an I/O error, or a mount table that does not
+	// describe the directory — is returned as itself and never matches it,
+	// so a caller can tell an installation to fix from a fault. It is never
+	// retried.
+	ErrUnsuitableStorage = errors.New("journal: unsuitable storage")
+)
+
+// Limit names the limit that refused a reservation.
+type Limit uint8
+
+// The limits. The zero Limit names none, so a NoSpaceError whose Limit was
+// never set does not read as a refusal by a real limit.
+const (
+	// LimitShare is the share's limit on the record bytes of its records on
+	// disk. Transient while offload, release and repack can drain the share.
+	LimitShare Limit = iota + 1
+
+	// LimitJournal is the journal's configured maximum. Transient while
+	// offload, release and repack can drain the journal.
+	LimitJournal
+
+	// LimitIndex is the bound on placement index entries.
+	LimitIndex
+
+	// LimitHeadroom is the reserved headroom for records that carry no bytes.
+	LimitHeadroom
+
+	// LimitVersion is the version limit: no version is issued at or above it
+	// until the caller raises it.
+	LimitVersion
+
+	// LimitSpare is the pool of spare segments a roll takes from, when no
+	// spare is ready.
+	LimitSpare
+)
+
+var limitNames = [...]string{"", "share", "journal", "index", "headroom", "version", "spare"}
+
+// String returns the limit's name: share, journal, index, headroom, version or
+// spare.
+func (l Limit) String() string {
+	if l != 0 && int(l) < len(limitNames) {
+		return limitNames[l]
+	}
+	return fmt.Sprintf("Limit(%d)", uint8(l))
+}
+
+// Unit is what a NoSpaceError's Missing counts.
+type Unit uint8
+
+// The units. The zero Unit names none.
+const (
+	UnitBytes Unit = iota + 1
+	UnitEntries
+	UnitVersions
+	UnitSegments
+)
+
+var unitNames = [...]string{"", "bytes", "entries", "versions", "segments"}
+
+// String returns the unit's name: bytes, entries, versions or segments.
+func (u Unit) String() string {
+	if u != 0 && int(u) < len(unitNames) {
+		return unitNames[u]
+	}
+	return fmt.Sprintf("Unit(%d)", uint8(u))
+}
+
+// NoSpaceError is a reservation refused by one of the journal's limits. It is
+// returned at once, performs no I/O and never waits: space is freed only by
+// the caller's own offload, release and repack, so a journal that waited would
+// wait on its caller. Missing counts, in Unit, how much the reservation lacked.
+//
+// A refusal by LimitShare or LimitJournal is transient while offload, release
+// and repack can drain it. LimitVersion lasts until the caller raises the
+// version limit, and LimitSpare until a spare is ready.
+//
+// decision: a full filesystem underneath is never a NoSpaceError. It surfaces
+// as the platform's *fs.PathError wrapping syscall.ENOSPC, so for any one
+// error errors.Is(err, ErrNoSpace) and errors.Is(err, syscall.ENOSPC) are
+// never both true. The journal's limits are the caller's to drain; a full
+// device is the operator's, and the two must not be answered alike.
+type NoSpaceError struct {
+	Limit   Limit
+	Missing int64
+	Unit    Unit
+	// Stale is set on a LimitShare refusal only: the record bytes the
+	// share's admission figure stood above the set's own settled bytes for
+	// the tag when it refused, which is room the share has but its figure
+	// does not show. Zero means the refusal is a real full share.
+	Stale int64
+}
+
+func (e *NoSpaceError) Error() string {
+	if e.Stale > 0 {
+		return fmt.Sprintf("journal: no space: refused by the %s limit, %d %s missing, and the share's figure stands %d above the set's",
+			e.Limit, e.Missing, e.Unit, e.Stale)
+	}
+	return fmt.Sprintf("journal: no space: refused by the %s limit, %d %s missing",
+		e.Limit, e.Missing, e.Unit)
+}
+
+// Is reports whether target is ErrNoSpace.
+func (e *NoSpaceError) Is(target error) bool {
+	return target == ErrNoSpace
+}
+
+// OtherShareError is a call through the handle of share Tag that named File,
+// which belongs to share Owner. It is also returned, through either tag, for a
+// file the journal rebuilt under two tags at open, until one is forgotten.
+type OtherShareError struct {
+	File  FileID
+	Tag   ShareTag
+	Owner ShareTag
+}
+
+func (e *OtherShareError) Error() string {
+	return fmt.Sprintf("journal: file %x belongs to share tag %d, not %d",
+		e.File.Bytes(), e.Owner, e.Tag)
+}
+
+// Is reports whether target is ErrOtherShare.
+func (e *OtherShareError) Is(target error) bool {
+	return target == ErrOtherShare
+}
+
+// IdentityError is an Open or Restamp refused because the journal in the
+// directory is not the one expected. Found and Installation are the identity
+// and installation ID the directory's format file holds, and Segments says
+// whether the directory holds a segment a stream took, holding a record's
+// header — an untaken spare is a segment file whose header slot is all
+// zero, and is not one — so a caller that expected no journal can tell an
+// interrupted Init, which leaves none, from a journal in use.
+type IdentityError struct {
+	Found        JournalID
+	Installation InstallationID
+	Segments     bool
+}
+
+func (e *IdentityError) Error() string {
+	return fmt.Sprintf("journal: identity %x of installation %x does not match (segments present: %t)",
+		e.Found, e.Installation, e.Segments)
+}
+
+// Is reports whether target is ErrIdentityMismatch.
+func (e *IdentityError) Is(target error) bool {
+	return target == ErrIdentityMismatch
+}
+
+// SyncError is a failed sync window: the sync of Segment failed with Err, and
+// the writes of Files it covered are not durable.
+type SyncError struct {
+	Segment SegmentID
+	Files   []FileID
+	Err     error
+}
+
+func (e *SyncError) Error() string {
+	return fmt.Sprintf("journal: sync of segment %d failed for %d files: %v",
+		e.Segment, len(e.Files), e.Err)
+}
+
+// Is reports whether target is ErrSyncFailed.
+func (e *SyncError) Is(target error) bool {
+	return target == ErrSyncFailed
+}
+
+// Unwrap returns the cause of the failed sync.
+func (e *SyncError) Unwrap() error {
+	return e.Err
+}
+
+// NotOffloadedError is a Release of File refused because Extents, the part of
+// what it named whose offloaded bit is unset, are not offloaded. A refused
+// Release releases nothing.
+type NotOffloadedError struct {
+	File    FileID
+	Extents []Extent
+}
+
+func (e *NotOffloadedError) Error() string {
+	return fmt.Sprintf("journal: release of file %x refused: %d extents not offloaded",
+		e.File.Bytes(), len(e.Extents))
+}
+
+// Is reports whether target is ErrNotOffloaded.
+func (e *NotOffloadedError) Is(target error) bool {
+	return target == ErrNotOffloaded
+}
+
+// ReadOnlyState is whether the journal is read-only, and what the journal
+// knows about why.
+type ReadOnlyState struct {
+	// ReadOnly is true once the journal refuses writes.
+	ReadOnly bool
+
+	// Err is the error that made the journal read-only; nil while it is not.
+	Err error
+
+	// SpareMade is whether a spare segment was made after the journal went
+	// read-only.
+	SpareMade bool
+
+	// Check is the check a probe of the read-only journal found failing; nil
+	// when the probe passes or has not run.
+	Check error
+}
+
+// UnreadableRangesError is an Open refused on segments whose bytes no bounded
+// read completed: Ranges names each byte range the device never read, and
+// Format is a format file no bounded read completed, so it names no identity.
+// Identity is the one every verifying header names where they agree, set
+// when the caller expected none; zero when the caller told Open its own.
+// The engine and the journal_range_unreadable condition read the ranges from
+// the value, never from the error's text.
+type UnreadableRangesError struct {
+	Ranges   []SegmentRange
+	Format   bool
+	Identity JournalID
+}
+
+func (e *UnreadableRangesError) Error() string {
+	// A zero identity is "no one identity the verifying headers agreed on",
+	// not a journal identity to print: the refusal names the ranges or the
+	// file, and the identity only where one is named.
+	if e.Format {
+		if e.Identity == (JournalID{}) {
+			return "journal: format file is unreadable"
+		}
+		return fmt.Sprintf("journal: format file of identity %x is unreadable", e.Identity)
+	}
+	if e.Identity == (JournalID{}) {
+		return fmt.Sprintf("journal: %d unreadable range(s)", len(e.Ranges))
+	}
+	return fmt.Sprintf("journal: %d unreadable range(s) in identity %x", len(e.Ranges), e.Identity)
+}
+
+// Unwrap returns ErrUnreadable, so the value matches it under errors.Is.
+func (e *UnreadableRangesError) Unwrap() error {
+	return ErrUnreadable
+}

@@ -1,0 +1,22 @@
+# test/pcap-corpus/smb-sd/reference.pcap, frame 126: the body of a client's
+# SMB2 CREATE request (MS-SMB2 2.2.13) for file.txt, with no create contexts,
+# bytes 68 to 140 of the frame's TCP payload as tshark cuts it (tcp.payload).
+# Positions count from the SMB2 header's first byte, as the offsets do.
+# Multi-byte fields are little-endian (MS-SMB2 2.2).
+39 00                       # [64,66)   StructureSize 57
+00                          # [66]      SecurityFlags 0
+00                          # [67]      RequestedOplockLevel 0: none
+02 00 00 00                 # [68,72)   ImpersonationLevel 2: Impersonation
+00 00 00 00 00 00 00 00     # [72,80)   SmbCreateFlags 0
+00 00 00 00 00 00 00 00     # [80,88)   Reserved
+00 00 0c 00                 # [88,92)   DesiredAccess 0x000C0000: WRITE_DAC, WRITE_OWNER
+00 00 00 00                 # [92,96)   FileAttributes 0
+03 00 00 00                 # [96,100)  ShareAccess 3: READ, WRITE
+01 00 00 00                 # [100,104) CreateDisposition 1: FILE_OPEN
+00 00 00 00                 # [104,108) CreateOptions 0
+78 00                       # [108,110) NameOffset 120
+10 00                       # [110,112) NameLength 16
+00 00 00 00                 # [112,116) CreateContextsOffset 0: no contexts
+00 00 00 00                 # [116,120) CreateContextsLength 0
+66 00 69 00 6c 00 65 00     # [120,136) Buffer: "file.txt" in UTF-16LE
+2e 00 74 00 78 00 74 00
