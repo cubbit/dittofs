@@ -194,7 +194,9 @@ func (e *Engine) Truncate(ctx context.Context, s entity.ShareID, f entity.FileID
 	grow, err := e.stageAnswering(ctx, r, func(fe *fileEntry) (journal.Version, error) {
 		return b.h.Truncate(ctx, fileID(f), size)
 	}, opTruncate, journal.Extent{Off: size}, func(fe *fileEntry) bool {
-		return size >= replaySize(committed, fe.ops)
+		current, _ := replaySize(committed, fe.ops)
+
+		return size >= current
 	})
 	if err != nil || grow {
 		e.release(r, false)
@@ -225,8 +227,19 @@ func (e *Engine) Deallocate(ctx context.Context, s entity.ShareID, f entity.File
 		return err
 	}
 	r.suspend = Suspended(ctx)
+
+	committed, err := e.d.Existence.Size(ctx, s, f)
+	if err != nil {
+		e.release(r, false)
+		return e.storeErr(err)
+	}
+
 	x := journal.Extent{Off: off, Len: n}
-	if _, err := e.stageAnswering(ctx, r, func(*fileEntry) (journal.Version, error) {
+	if _, err := e.stageAnswering(ctx, r, func(fe *fileEntry) (journal.Version, error) {
+		if err := e.keepSize(ctx, r, fe, committed, x); err != nil {
+			return journal.Version{}, err
+		}
+
 		return b.h.Deallocate(ctx, fileID(f), x)
 	}, opDeallocate, x, nil); err != nil {
 		e.release(r, false)
@@ -436,20 +449,73 @@ func (e *Engine) stage(ctx context.Context, r *removal, j func(*fileEntry) (jour
 	return g, nil
 }
 
+// keepSize makes a deallocate x of the file's tail leave the file's size to
+// recovery. A deallocate record carries no size and the journal stops holding
+// the extent, so once it masks the bytes of the write that set the size, the
+// journal's changes no longer say how long the file is. When a pending write
+// sets the size and x covers its last byte, it first stages a truncate at
+// that size, a grow, which recovery replays as a grow. The caller holds the
+// file's entry lock, so no write is admitted between this and the deallocate.
+// The grow is its own pending operation: if the write that set the size is
+// lost, the grow still records that size.
+//
+// decision: the grow is made only when a pending write sets the size: a size
+// the store or a truncate set is recorded by them, and a deallocate wholly
+// below or past the size masks no byte that sets it. Withdraw it if the
+// journal's deallocate record ever carries the size.
+//
+// decision: the committed size read before this is not stale in a way that
+// matters. Deallocate reads it after begin took the file's guard, and a
+// truncate down holds that guard across its phase 1, so none commits between
+// the read and this stage. A write only raises the size, so a stale-low
+// committed size is safe. Revisit if a truncate down stops holding the guard.
+func (e *Engine) keepSize(
+	ctx context.Context,
+	r *removal,
+	fe *fileEntry,
+	committed int64,
+	x journal.Extent,
+) error {
+	size, byWrite := replaySize(committed, fe.ops)
+	if !byWrite || x.Off >= size || size > x.Off+x.Len {
+		return nil
+	}
+
+	v, err := r.b.h.Truncate(ctx, fileID(r.f), size)
+	if err != nil {
+		return err
+	}
+
+	fe.insert(pendingOp{
+		version: v,
+		kind:    opTruncate,
+		extent:  journal.Extent{Off: size},
+		at:      r.at,
+		grow:    true,
+	})
+	e.issued(r.b.vl, v)
+
+	return nil
+}
+
 // replaySize is the size the file's operations leave over committed: a
-// truncate sets it, a write raises it to its end.
-func replaySize(committed int64, ops []pendingOp) int64 {
-	size := committed
+// truncate sets it, a write raises it to its end. byWrite reports that a write
+// or a clone set it, not the store's size or a truncate.
+func replaySize(committed int64, ops []pendingOp) (size int64, byWrite bool) {
+	size = committed
 	for _, op := range ops {
 		switch {
 		case op.dropped:
 		case op.kind == opTruncate:
-			size = op.extent.Off
+			size, byWrite = op.extent.Off, false
 		case op.kind == opWrite, op.kind == opClone:
-			size = max(size, opEnd(op.extent))
+			if end := opEnd(op.extent); end > size {
+				size, byWrite = end, true
+			}
 		}
 	}
-	return size
+
+	return size, byWrite
 }
 
 // phase1 is the removal r's first metadata transaction, op at r's version,
