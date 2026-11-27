@@ -30,7 +30,7 @@ type upgrade struct {
 	once sync.Once
 
 	// queued: the call's reply went to the writer as the last plaintext
-	// message; that call's goroutine alone
+	// message; the asking call's goroutine alone writes and reads it.
 	queued bool
 }
 

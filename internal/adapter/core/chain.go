@@ -575,15 +575,7 @@ func (c *chain) lookup(tr *track, h Header) (*resources.Buf, error) {
 	return c.p.st.Replay.Lookup(ctx, h)
 }
 
-func (c *chain) answered(
-	tr *track,
-	h Header,
-	reply *resources.Buf,
-	key uint64,
-	s Status,
-	failed bool,
-	err error,
-) {
+func (c *chain) answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, failed bool, err error) {
 	c.failed, c.failS = failed, s
 	if tr.cached {
 		// A hit's copy is reserved under no client's key, which Join refuses
@@ -614,14 +606,7 @@ func (c *chain) answered(
 // after it do not run, and the replies before it go out with its interim,
 // where its table holds, which grants its credits and those of the members
 // after it, whose headers alone are decoded (§4.7).
-func (c *chain) unanswered(
-	tr *track,
-	h Header,
-	tb *OpTable,
-	reply *resources.Buf,
-	err error,
-	release func(),
-) {
+func (c *chain) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf, err error, release func()) {
 	p := c.p
 	release()
 	defer func() { c.stopped = true }() // once its interim, if any, is out

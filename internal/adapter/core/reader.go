@@ -51,14 +51,7 @@ type reader struct {
 // record's charge for the connection, timeout, where it is not zero, is
 // read_timeout, and in counts its bytes of the direction the connection's
 // series resolved.
-func newReader(
-	nc net.Conn,
-	f Framer,
-	recv *resources.BufPool,
-	key netip.Addr,
-	timeout time.Duration,
-	in adder,
-) *reader {
+func newReader(nc net.Conn, f Framer, recv *resources.BufPool, key netip.Addr, timeout time.Duration, in adder) *reader {
 	return &reader{
 		nc:      nc,
 		framer:  f,

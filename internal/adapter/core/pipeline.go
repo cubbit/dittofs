@@ -153,11 +153,7 @@ func (c capped) Admit(ctx context.Context, _ Header) (release func(), err error)
 // unreserved small buffer, or set one aside per connection at accept for its
 // statuses, when the reply budget is shown to bind before the receive budget
 // does.
-func (sh *shared) reserveReply(
-	ctx context.Context,
-	key netip.Addr,
-	bound int,
-) (*resources.Buf, error) {
+func (sh *shared) reserveReply(ctx context.Context, key netip.Addr, bound int) (*resources.Buf, error) {
 	// A reply that fits at once arms no deadline.
 	if buf, ok := sh.reply.TryGet(key, bound); ok {
 		return buf, nil
@@ -233,13 +229,7 @@ func (p *pipeline) takeStatus(ctx context.Context) (at time.Time, ok bool) {
 // with errReplyWait. It returns nil, with nothing reserved, when the wait
 // ended. Its caller keeps the request's record, and so its receive charge,
 // until the status goes out or the wait ends (RFC 24 §6.1).
-func (sh *shared) reserveStatus(
-	ctx context.Context,
-	key netip.Addr,
-	n int,
-	at time.Time,
-	close func(error),
-) *resources.Buf {
+func (sh *shared) reserveStatus(ctx context.Context, key netip.Addr, n int, at time.Time, close func(error)) *resources.Buf {
 	// A status is encoded by appending to B[:0], within n's class.
 	if buf, ok := sh.reply.TryGet(key, n); ok {
 		return buf
@@ -632,14 +622,7 @@ func (p *pipeline) mapRefusal(tr *track, h Header, st stage, err error) (Status,
 // connection has one such wait at a time: a second refusal waits here, on
 // the reader, for the first to end, its statusWait running from there on
 // through its wait for its buffer.
-func (p *pipeline) refuse(
-	tr *track,
-	rec *resources.Buf,
-	h Header,
-	st stage,
-	err error,
-	wrap, closeAfter bool,
-) {
+func (p *pipeline) refuse(tr *track, rec *resources.Buf, h Header, st stage, err error, wrap, closeAfter bool) {
 	s, send := p.mapRefusal(tr, h, st, err)
 	if !send {
 		p.end(tr, false, 0, 0, err)
@@ -684,15 +667,7 @@ func (p *pipeline) refuse(
 
 // answer sends a refusal's status in buf, then releases rec, and closes the
 // connection after where closeAfter.
-func (p *pipeline) answer(
-	tr *track,
-	rec *resources.Buf,
-	h Header,
-	s Status,
-	buf *resources.Buf,
-	wrap, closeAfter bool,
-	cause error,
-) {
+func (p *pipeline) answer(tr *track, rec *resources.Buf, h Header, s Status, buf *resources.Buf, wrap, closeAfter bool, cause error) {
 	defer rec.Release()
 	buf.B = buf.B[:0] // a buffer comes back as long as its reservation
 	if err := p.st.Header.Encode(h, s, buf); err != nil {
@@ -766,15 +741,7 @@ type answerer interface {
 	halted() bool
 	// answered takes the message's encoded reply, its key, its status and
 	// whether that status is a failure (RFC 20 §4.3).
-	answered(
-		tr *track,
-		h Header,
-		reply *resources.Buf,
-		key uint64,
-		s Status,
-		failed bool,
-		err error,
-	)
+	answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, failed bool, err error)
 	// unanswered ends a message a NoReply row answered.
 	unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf, err error, release func())
 	// pended sends the interim of a message that went pending, keyed key,
@@ -823,27 +790,12 @@ func copyWaits(err error) bool {
 
 func (alone) halted() bool { return false }
 
-func (a alone) answered(
-	tr *track,
-	h Header,
-	reply *resources.Buf,
-	key uint64,
-	s Status,
-	_ bool,
-	err error,
-) {
+func (a alone) answered(tr *track, h Header, reply *resources.Buf, key uint64, s Status, _ bool, err error) {
 	n := len(reply.B)
 	a.p.end(tr, a.p.send(tr, h, reply, key), s, n, err)
 }
 
-func (a alone) unanswered(
-	tr *track,
-	h Header,
-	tb *OpTable,
-	reply *resources.Buf,
-	err error,
-	release func(),
-) {
+func (a alone) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf, err error, release func()) {
 	a.p.unanswered(tr, h, tb, reply, err, release)
 }
 
@@ -863,14 +815,7 @@ func (alone) resume(answer func()) { answer() }
 // Route returns one, and by that table after. It returns the message's
 // request, for a related member after it, and whether it is held between
 // attempts, which its answer then ends.
-func (p *pipeline) message(
-	tr *track,
-	rec *resources.Buf,
-	h Header,
-	prev *Request,
-	release func(),
-	a answerer,
-) (*Request, bool) {
+func (p *pipeline) message(tr *track, rec *resources.Buf, h Header, prev *Request, release func(), a answerer) (*Request, bool) {
 	ctx := tr.ctx
 	cached, err := a.lookup(tr, h)
 	p.lap(tr, stageReplayCheck)
@@ -1016,13 +961,7 @@ func (p *pipeline) message(
 
 // reserve takes the reply buffer of h's attempt through a, its wait timed
 // and its refusal counted. resolve_ids starts where it ends.
-func (p *pipeline) reserve(
-	tr *track,
-	a answerer,
-	inv Invocation,
-	h Header,
-	r *Request,
-) (*resources.Buf, error) {
+func (p *pipeline) reserve(tr *track, a answerer, inv Invocation, h Header, r *Request) (*resources.Buf, error) {
 	n, _ := inv.Bound(r, p.l.record-p.st.Header.ReplyLen(h))
 	reply, err := a.reserve(tr.ctx, n+p.st.Header.ReplyLen(h))
 	if err != nil {
@@ -1072,19 +1011,7 @@ func (p *pipeline) resolve(tr *track, r *Request, op *Op, inv Invocation, draini
 // and its span ended unsent (§3.1, §6.5). Its error is still mapped, unless
 // it is the close's own cancel, or the ErrParked of a handler whose Park the
 // close dropped, which are no error.
-func (p *pipeline) finish(
-	tr *track,
-	h Header,
-	tb *OpTable,
-	errs *ErrorTable,
-	op *Op,
-	inv Invocation,
-	reply *resources.Buf,
-	err error,
-	release func(),
-	a answerer,
-	pd *pending,
-) {
+func (p *pipeline) finish(tr *track, h Header, tb *OpTable, errs *ErrorTable, op *Op, inv Invocation, reply *resources.Buf, err error, release func(), a answerer, pd *pending) {
 	ctx := tr.ctx
 	var s Status
 	send, notFailure := true, false
@@ -1365,14 +1292,7 @@ func (p *pipeline) routed(tr *track, ts *tableSeries, code uint32) {
 // or a service error a row answers is expected, and the service logs its own
 // faults. RFC 20 §4.5 gives examples of each level, not a closed set.
 // Overturned if an operator needs a mapped error at a level that pages.
-func (p *pipeline) mapped(
-	tr *track,
-	errs *ErrorTable,
-	err error,
-	op *Op,
-	v Version,
-	log bool,
-) (s Status, send, notFailure bool) {
+func (p *pipeline) mapped(tr *track, errs *ErrorTable, err error, op *Op, v Version, log bool) (s Status, send, notFailure bool) {
 	r, matched := errs.row(err, op, v)
 	tr.unmapped = !matched
 	if !matched {
@@ -1391,14 +1311,7 @@ func (p *pipeline) mapped(
 
 // unanswered ends a request refused with a NoReply row, err: no final
 // reply, and where tb holds, an interim in reply's place.
-func (p *pipeline) unanswered(
-	tr *track,
-	h Header,
-	tb *OpTable,
-	reply *resources.Buf,
-	err error,
-	release func(),
-) {
+func (p *pipeline) unanswered(tr *track, h Header, tb *OpTable, reply *resources.Buf, err error, release func()) {
 	if tb != nil && tb.Holds {
 		p.interim(tr.ctx, h, reply)
 	} else if reply != nil {

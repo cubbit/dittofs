@@ -399,13 +399,7 @@ func closeReason(err error) reason {
 // withDefaults refuses never starts its reader, so serveConn runs its
 // teardown itself: the close is counted under wiring, the gauge lowered, the
 // error-level line rate-limited (§10.1, §10.3).
-func (s *Server) serveConn(
-	nc net.Conn,
-	l *Listener,
-	b *bound,
-	count *resources.ConnLimit,
-	charge *resources.Reservation,
-) *Conn {
+func (s *Server) serveConn(nc net.Conn, l *Listener, b *bound, count *resources.ConnLimit, charge *resources.Reservation) *Conn {
 	snap := *s.settings.Load()
 	remote, port := remoteOf(nc)
 	c := &Conn{

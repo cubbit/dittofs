@@ -72,13 +72,7 @@ type writer struct {
 // write by timeout, where it is not zero; closeConn is the connection's close,
 // and outBytes counts its bytes of the direction the connection's series
 // resolved, framing included.
-func newWriter(
-	nc net.Conn,
-	f Framer,
-	timeout time.Duration,
-	closeConn func(error),
-	outBytes adder,
-) *writer {
+func newWriter(nc net.Conn, f Framer, timeout time.Duration, closeConn func(error), outBytes adder) *writer {
 	capBytes, _ := f.MaxRecord()
 	w := &writer{
 		nc:       nc,
