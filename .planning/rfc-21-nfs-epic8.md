@@ -315,9 +315,11 @@ reclaims themselves and stale stateids (E9); the lease owner and `Reach.Sessions
   reads the kind, RFC 17 §3.0), since `nfs.go` imports every
   `ops/` package and a handler cannot import the root package's type; one implementation, so no
   interface (RFC 20 §2.5's rule 4). Until its epic, each method answers as a client that cannot be
-  reached: `RecallGrant` and `RecallAny` an error naming no back channel, which the service takes as
-  the client not answering (no grant exists before E10); `LockWaitOver` the same (no NLM waiter
-  exists before E11's T11.4); `Notify` nil, since NFS registers no watch. `Revoked` drops the client's
+  reached: `RecallGrant` an error naming no back channel, which the service takes as
+  the client not answering (no grant exists before E10); `RecallAny` an error naming no back channel
+  for an NFSv4.1 client, and nil, with nothing sent, for an NFSv4.0 one, as RFC 17 §3.2 and E10's R20
+  say; `LockWaitOver` an error naming no back channel too (no NLM waiter exists before E11's
+  T11.4); `Notify` nil, since NFS registers no watch. `Revoked` drops the client's
   sessions on this node for `RevokedLeaseExpired`, this epic's; its other reasons find nothing
   pending until E9, E10 and E11's T11.7. `nlm.Handlers`' field waits for E11's first row (rule 12; §9).
   Prior art: none found; the RFC 21 implementation plan's architect pass proposed the field. A
@@ -707,7 +709,7 @@ internal/adapter/nfs/
     func (s *Sessions) Confirm(cl vfs.ClientID) (Pending, bool) // reads it, if unexpired
     func (s *Sessions) Drop(cl vfs.ClientID)                     // once the confirm's write succeeded
     ```
-  - `ops/v4/exchange_id.go`: `Record` first where the name is known, then, for a new owner or a
+  - `ops/v4/exchange_id.go`: `ClientByName` first (RFC 17 §3.1), then, for a new owner or a
     new verifier, `NewConfirm` and `Propose` with bytes carrying `SessionSeq` = its low 32 bits − 1
     (D3), or the existing client ID for a confirmed owner, verifier and principal, `eir_sequenceid`
     the record's `SessionSeq` + 1, wrapping (R7); for an owner whose confirmed record has `Protect`
@@ -717,7 +719,7 @@ internal/adapter/nfs/
     `SP4_SSV` refused, `SP4_MACH_CRED` outside `RPCSEC_GSS` integrity or privacy refused
     `NFS4ERR_INVAL` (Q5's recommended option), the two bitmaps kept for the confirm's bytes, the
     `ClientInfo`'s `Recovery` `RecoverStatus` (R13), `UPD_CONFIRMED_REC_A` answered
-    from `Record` alone (R67); drain role none. `v4.Handlers`
+    from `ClientByName` alone (R67); drain role none. `v4.Handlers`
     gains `Sessions *protocol.Sessions` and the server identity (Q1). The `ClientInUse` and
     `ErrDelay` rows.
   - Golden files of the client fields table (§11.6), hand-written from RFC 8881.
@@ -774,7 +776,7 @@ internal/adapter/nfs/
   version 2 bytes (catches an unreadable record answered as a new client or rewritten, R2); the
   `ClientInUse` and `ErrDelay` rows' statuses in the golden replies (R60), and `EXCHANGE_ID`
   refused by a drain (R61); a restart of the
-  adapter over the same service finds the confirmed client by `Record` and answers its ID (catches a
+  adapter over the same service finds the confirmed client by `ClientByName` and answers its ID (catches a
   decision kept only in the adapter, R18). Over loopback, the `EXCHANGE_ID` steps of "§3.5 confirm
   *(1 node)*", "§3.3 one name, two principals *(1 node)*" and "§3.3 client record"'s reboot and
   in-use steps (R19, R20, R65). No test double; the second
@@ -1222,7 +1224,7 @@ names, `NFS4ERR_CONN_NOT_BOUND_TO_SESSION`, R72; drain role release), `destroy_c
 
 - **Track:** A. **Depends on:** T8.3, T8.6, T3.2.
 - **Covers:** R6, R8, R9, R10, R11, R66, R74, R12, R76, R13, R19, R20, R44, R48, R49, R50, R51, R60, R61, R62, R63.
-- **Deliverables:** `setclientid.go` (`Record` first for a known name, for an owner whose record
+- **Deliverables:** `setclientid.go` (`ClientByName` first, for an owner whose record
   has `Protect` set T8.3's proof check before principals are compared, a caller that fails it
   `NFS4ERR_CLID_INUSE` with no `Pending` (R76), then `NewConfirm` and
   `Propose` with the callback and that confirm in the proposal's bytes, the confirm sent as the
