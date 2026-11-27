@@ -48,6 +48,8 @@ var allowed = map[string][]string{
 	module + "pkg/metadata/kv/kvtest":           {"enginetest", unitTests},
 	module + "pkg/metadata/kvstore/kvstoretest": {"enginetest", unitTests},
 	module + "pkg/sim":                          {"enginetest", unitTests, internalTests},
+	// The operation sequence harness that the engine's fuzz target runs under.
+	module + "test/fuzz": {unitTests},
 	// The engine reads a full device's free space on Windows through the
 	// system package the journal's platform layer already uses, rather than
 	// wrapping the Win32 call by hand.
