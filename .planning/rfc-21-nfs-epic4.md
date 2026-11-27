@@ -1078,7 +1078,11 @@ PR 3 beside PR 1.
     `translate` (T4.4) are not yet written, and are written once points 1 and 3 are answered. Recommended: one RFC pull request
     against `develop`, cherry-picked onto `feat/storage-v2` with the other RFC changes, merged
     before T4.4 starts, since T4.4, T4.6, T4.9 and T4.11 build against those texts; the
-    alternative adds them to this pull request. The other epics' amendments touch other lines: E5's T5.2 adds `FilesystemInfo.MountedOn` and
+    alternative adds them to this pull request. E3's T3.4 RFC 21 pull request also writes a MOUNT
+    case of §11.5, `ErrLogonFailure`'s (E3's R22), which D3's cells do not include; the two differ in
+    form, a case in a row whose cell names NFSv3 and NLM against D3's MOUNT column. Neither goes first:
+    whichever lands second adds its own beside the other's, the rule D2 gives for E6's fields, and
+    adapts to the table as the first left it. The other epics' amendments touch other lines: E5's T5.2 adds `FilesystemInfo.MountedOn` and
     `Capabilities.UTF8Only` to RFC 17 §3.0 and rewords RFC 17 §4.9 and RFC 20 §4.10, and E5's
     document adds the `ErrInvalid` row of §11.5; E6's ACL amendment adds fields to `CreateArgs`
     and `AttrChange` beside D2's (D2); E3's touches RFC 20 §4.4, §4.7 and §5.5 and RFC 21 §2.2;
