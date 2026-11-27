@@ -952,15 +952,24 @@ func (d *Durability) SpareLanded() {
 // A record a failed window dropped has no entry and no window once the window
 // is resolved, so the stream keeps its location apart and reports false for it.
 //
-// ponytail: it scans every stream's ledger, O(streams x ledger). Upgrade to a
-// per-segment index when a profile shows the scan.
+// Each ledger is scanned newest entry first. The hot caller, a write's publish,
+// asks about the record it just appended, which sits at its own stream's tail,
+// so that stream answers at once rather than in time linear in its unsynced
+// records. The order changes no answer: a location names one record, for a
+// stream reserves each offset of a segment once and segment ids are never
+// reused, and a re-appended record is tracked at its new place.
+//
+// ponytail: every other stream's ledger is still scanned whole, so a call costs
+// O(streams x ledger) on a journal with several streams. Upgrade to scanning
+// the record's own stream first, or to a per-segment index, when a profile of
+// a several-stream journal shows the scan.
 func (d *Durability) Durable(at segment.Location) bool {
 	made := d.snapshot()
 	for _, st := range made {
 		st.mu.Lock()
 		// A re-appended record is asked about where it landed.
 		at := st.followLocked(at)
-		for i := range st.ledger {
+		for i := len(st.ledger) - 1; i >= 0; i-- {
 			if st.ledger[i].w.Loc == at {
 				ok := st.covered(at)
 				st.mu.Unlock()
