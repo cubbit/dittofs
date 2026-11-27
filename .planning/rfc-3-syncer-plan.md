@@ -644,6 +644,9 @@ the same three methods as the engine's `Clock`, declared beside its `Deps`.**
   `ProbeKey` per direction, some half a million requests a month for each, and a put probe writes
   an object each time (RFC 3 §2.8). Skip a direction's probe while its transfers succeed if a
   service's request bill or rate limit shows the probes (§6.1).
+- **The scheduler's debt wheels cap a park at 63 rounds** (epic 3, D3). `ponytail:` when every flow
+  of a class is in debt past the cap, one `Next` re-parks each flow it reaches; upgrade to a
+  hierarchical wheel when a profile of `Next` shows those re-parks, with debts over 63 rounds (§6.1).
 
 ## 5. The epics in detail
 
@@ -977,6 +980,8 @@ What this plan knowingly does not build. Each row names the section that defers 
 | Counting the node's series at RFC 25 §12's reference workload against §2.5's 50,000; the syncer's collector checks only its own metrics against 10,000 each (epic 8) | a count over the whole node, every component's collector registered | unowned | a plan takes RFC 25 §12, or RFC 8 offload plan epic 21 registers every collector |
 | Hedged cold reads (RFC 3 §9, "Deferred") | not measured | unowned | a cold-read latency measurement asks for it |
 | A bandwidth cap per direction (RFC 3 §9, "Deferred") | not measured | unowned | a measurement shows the pool cannot bound the link |
+| Limiting a demand's eviction past its own full queue to flows under their waiter share, so one flow cannot fill the fetch half's waiter bound and starve other flows' background fetches (epic 3's D8) | narrows RFC 3 §4.4; the user kept §4.4 as written for v1.1 (2026-11-26) | unowned | benchmarks show other flows' background fetches starved: `waiters_full` refusals while one flow's `syncer_waiters` holds most of the bound |
+| A hierarchical debt wheel in the syncer's scheduler, so one `Next` never re-parks flows whose debt passes the 63-round cap (epic 3's D3 `ponytail:`) | such debts come only from a slot held minutes past its charge, and then every flow of the class is in debt | unowned | a profile of `Next` with debts over 63 rounds shows the re-parks |
 | Weighted flows (RFC 3 §2.9) | no operator needs it | unowned | an operator names a workload that needs one flow weighted |
 | A fixed value of RFC 3 §2.10 becoming a setting | RFC 3 §2.10 forbids it until measured | unowned | epic 9's measurement shows a value wrong for a named workload |
 | Measuring the throttle limit's halving and the trickle rule's quarter of RFC 3 §2.10, whose values neither a §7.4 benchmark nor the fault and scripted runs of epics 4, 5 and 7 measure (RFC 3 §7.2's "trickle fails" row exercises the quarter rule on a trickle far below it, not where the quarter should sit) (RFC 3 §9, open question 1; epic 9's D7) | B1 to B5 run against stores that neither throttle nor trickle under load | unowned | a benchmark against a store that throttles or trickles under load, or a fault run showing one of those values wrong |
