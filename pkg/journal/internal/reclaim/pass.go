@@ -180,7 +180,10 @@ func (p *Pass) stoppedNow() bool {
 // Every source a unit of this run chose not to hand over stays excluded
 // from the run's own selection: the unit hands its claim to the run, which
 // holds it open — no later Select offers the segment again — and releases it
-// when the run ends.
+// when the run ends. A source whose hand-over another retirement's claim
+// refused stays excluded too, by a second mechanism: the run cannot hold a
+// claim the other holder took, so it keeps the source's id and its selection
+// skips it before trying the claim.
 //
 // decision: the exclusion is the run's own claim, never the selector's pin
 // set — the pins are the offer protocol's, and a run's unpin would delete an
@@ -188,6 +191,16 @@ func (p *Pass) stoppedNow() bool {
 // one claim held per stayed candidate, to the run's end, so the selector
 // leaves it out of every later Select of the run. Overturned by a pin
 // protocol that counts its holders instead of naming them.
+//
+// decision: a source refused because another retirement claimed it is kept
+// in a skip set the run owns, never by a claim, because the claim is the
+// other holder's. Its carry already placed and registered every record the
+// source held, and the source's own registrations leave only when a
+// retirement takes it, so offering it again in the run would carry them a
+// second time. The ceiling: a later Repack call can still carry them again
+// while that holder parks or requeues the source without retiring it, the
+// same extra copy the abandon paths accept, bounded by the budget.
+// Overturned by a hand-over that moves the claim to the retirer whole.
 func (p *Pass) Run(ctx context.Context, budget int64, scope Scope) (Outcome, error) {
 	if err := ctx.Err(); err != nil {
 		return Outcome{}, err
@@ -226,6 +239,8 @@ func (p *Pass) Run(ctx context.Context, budget int64, scope Scope) (Outcome, err
 	// where it is registered, and reheld is empty here.
 	var reheld []core.SegmentID
 	defer func() { p.sel.Done(reheld...) }()
+
+	refused := map[core.SegmentID]struct{}{}
 	for {
 		if err := ctx.Err(); err != nil {
 			return out, err
@@ -243,7 +258,7 @@ func (p *Pass) Run(ctx context.Context, budget int64, scope Scope) (Outcome, err
 		if out.Bytes >= budget {
 			return out, nil
 		}
-		cands := p.sel.Select(scope, 1)
+		cands := p.sel.selectSkipping(scope, 1, refused)
 		if len(cands) == 0 {
 			return out, nil
 		}
@@ -252,7 +267,7 @@ func (p *Pass) Run(ctx context.Context, budget int64, scope Scope) (Outcome, err
 			p.sel.Done(seg)
 			return out, nil
 		}
-		bytes, freed, stayedNow, err := p.unit(ctx, seg)
+		bytes, freed, stayedNow, err := p.unit(ctx, seg, refused)
 		out.Bytes += bytes
 		out.Freed += freed
 		out.Segments++
@@ -272,8 +287,11 @@ func (p *Pass) Run(ctx context.Context, budget int64, scope Scope) (Outcome, err
 // too, while a stay hands the claim to the run it answers, which holds it
 // open and releases it when the run ends. stayed reports a source the unit
 // completed without handing over, whose next selection in the same run would
-// only repeat it.
-func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64, stayed bool, err error) {
+// only repeat it. A hand-over another retirement's claim refused adds seg to
+// refused, the run's skip set, since that claim is not the run's to hold.
+func (p *Pass) unit(
+	ctx context.Context, seg core.SegmentID, refused map[core.SegmentID]struct{},
+) (bytes, freed int64, stayed bool, err error) {
 	res, err := p.cop.Copy(ctx, seg)
 	if err != nil {
 		// A copy that failed midway leaves the copies it already appended
@@ -490,7 +508,12 @@ func (p *Pass) unit(ctx context.Context, seg core.SegmentID) (bytes, freed int64
 		// retiring stalls this segment's reclamation until it releases — the
 		// worker's tick scan then offers the segment for retirement — as the
 		// queue's own ErrClaimed retry does.
-		if errors.Is(terr, segment.ErrClaimed) || errors.Is(terr, segment.ErrNotInSet) {
+		if errors.Is(terr, segment.ErrClaimed) {
+			refused[seg] = struct{}{}
+			return bytes, 0, false, nil
+		}
+
+		if errors.Is(terr, segment.ErrNotInSet) {
 			return bytes, 0, false, nil
 		}
 		return bytes, 0, false, fmt.Errorf("reclaim: the unit over segment %d: %w", seg, terr)
