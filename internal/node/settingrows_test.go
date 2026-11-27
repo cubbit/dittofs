@@ -30,21 +30,20 @@ import (
 //
 // decision: the rows of §2.3 reconcile, §2.4 applied and a bound field
 // declare the sections they write, standing in for the components that will
-// read them, since the node's own table holds no section at a share's, a
-// node's override or a remote store's scope yet: each such section is
-// declared by the component that reads it. The write path, the
-// reconcile and the applied count they test are the node's own whatever
-// section a key is in. Declare none here once the node's table holds a
-// section of each scope and class these rows need.
+// read them, since the node's own table holds no section at a share's or a
+// remote store's scope yet, and no restart-class key a node waits to restart
+// for: an adapter's port is rebuilt by its slot. Each such section is
+// declared by the component that reads it. The write path, the reconcile and
+// the applied count they test are the node's own whatever section a key is
+// in. A node's live key is its connection_limit. Declare none here once the
+// node's table holds a section of each scope and class these rows need.
 
 // standIns declares, on h's node, the sections the rows below write: gamma,
-// one live level per share; alpha, a node's live override of an
-// installation default; boots, a node's restart-class halt; tune, a remote
-// store's live level and bound floor. Call it before Start.
+// one live level per share; boots, a node's restart-class halt; tune, a
+// remote store's live level and bound floor. Call it before Start.
 func standIns(h *nodetest.Harness) {
 	h.Node().DeclareSections(
 		node.Declared{Prefix: "gamma", Section: settings.Of("gamma", settings.At(entity.ScopeShare), walkTuning{Level: 1}), AtUse: true},
-		node.Declared{Prefix: "alpha", Section: settings.Of("alpha", settings.Override(entity.ScopeInstallation, entity.ScopeNode), walkTuning{Level: 1}), AtUse: true},
 		node.Declared{Prefix: "boots", Section: settings.Of("boots", settings.Override(entity.ScopeInstallation, entity.ScopeNode), bootsTuning{Halt: 9}), AtUse: true},
 		node.Declared{Prefix: "tune", Section: settings.Of("tune", settings.At(entity.ScopeRemote), boundTuning{Level: 1, Floor: 1}), AtUse: true},
 	)
@@ -215,12 +214,12 @@ func TestWiredAppliedReadFromTheNodeThatRuns(t *testing.T) {
 		w.appliedReaches(t, path, apiv1.Applied{Nodes: 1, Of: 1})
 
 		nodeAt := "/api/v1/nodes/" + uuid.UUID(w.h.NodeID()).String() + "/settings/"
-		for _, kv := range [][2]string{{"boots.halt", "5"}, {"alpha.level", "7"}} {
+		for _, kv := range [][2]string{{"boots.halt", "5"}, {"connection_limit", "64"}} {
 			if r := w.putSetting(t, w.admin, nodeAt+kv[0], kv[1]); r.status != http.StatusOK {
 				t.Fatalf("PUT %s%s: answered %d %s, want 200", nodeAt, kv[0], r.status, r.body)
 			}
 		}
-		w.appliedReaches(t, nodeAt+"alpha.level", apiv1.Applied{Nodes: 1, Of: 1})
+		w.appliedReaches(t, nodeAt+"connection_limit", apiv1.Applied{Nodes: 1, Of: 1})
 		if got := w.appliedAt(t, nodeAt+"boots.halt"); got != (apiv1.Applied{Nodes: 0, Of: 1}) {
 			t.Errorf("the node's restart-class boots.halt before a restart: applied %+v, want on 0 of 1", got)
 		}
@@ -271,6 +270,51 @@ func TestWiredBoundSettingRefusedWhileContentExists(t *testing.T) {
 		}
 		if r := w.putSetting(t, w.admin, at(storeB, "tune.floor"), "5"); r.status != http.StatusOK {
 			t.Errorf("PUT tune.floor of a store no namespace names: answered %d %s, want 200", r.status, r.body)
+		}
+	})
+}
+
+// The node's own settings through the API: an override of the NFS adapter's
+// port, the adapter left disabled, and the node's connection_limit read
+// applied on its one node. The port rule refuses an SMB port equal to that
+// NFS port, at the node's scope or the installation's, 400 invalid; an
+// undeclared adapter key is unknown_key, one the node may not override
+// wrong_scope; none moves the store. A port apart is written. Catches a
+// node's setting the API refuses or never reads applied, and two adapters of
+// one node written onto one port.
+func TestWiredNodeSettingsAppliedAndThePortRule(t *testing.T) {
+	onBackends(t, func(t *testing.T, memory bool) {
+		w := newWired(t, memory, nil)
+		nodeAt := "/api/v1/nodes/" + uuid.UUID(w.h.NodeID()).String() + "/settings/"
+		for _, kv := range [][2]string{{"adapters.nfs.port", "2049"}, {"connection_limit", "64"}} {
+			if r := w.putSetting(t, w.admin, nodeAt+kv[0], kv[1]); r.status != http.StatusOK {
+				t.Fatalf("PUT %s%s %s: answered %d %s, want 200", nodeAt, kv[0], kv[1], r.status, r.body)
+			}
+			w.appliedReaches(t, nodeAt+kv[0], apiv1.Applied{Nodes: 1, Of: 1})
+		}
+
+		before := storeOf(t, w.h)
+		for _, c := range []struct {
+			at, key, value string
+			code           apiv1.Code
+		}{
+			{nodeAt, "adapters.smb.port", "2049", "invalid"},
+			{"/api/v1/settings/", "adapters.smb.port", "2049", "invalid"},
+			{nodeAt, "adapters.nfs.no_such_key", "1", "unknown_key"},
+			{nodeAt, "adapters.nfs.idle_timeout", `"1m"`, "wrong_scope"},
+		} {
+			what := "PUT " + c.at + c.key + " " + c.value
+			r := w.putSetting(t, w.admin, c.at+c.key, c.value)
+			wantStatus(t, what, r, http.StatusBadRequest, c.code)
+			if r.status == http.StatusBadRequest && r.problem(t).Field != c.key {
+				t.Errorf("%s: refusal names field %q, want %s", what, r.problem(t).Field, c.key)
+			}
+		}
+		if after := storeOf(t, w.h); after != before {
+			t.Errorf("the refused writes changed the store:\n got %s\nwant %s", after, before)
+		}
+		if r := w.putSetting(t, w.admin, nodeAt+"adapters.smb.port", "2050"); r.status != http.StatusOK {
+			t.Errorf("PUT %sadapters.smb.port 2050, apart from NFS's 2049: answered %d %s, want 200", nodeAt, r.status, r.body)
 		}
 	})
 }

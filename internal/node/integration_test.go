@@ -560,10 +560,10 @@ var storeCodes = map[merrs.ErrorCode]struct {
 // decision: some values are neither provoked nor injected here. The
 // filesystem's and the engine's errors (vfserr's file-operation values, the
 // entity errors of the file tree) are raised by components this node's API
-// reaches through no route; of the settings table's refusals, only
-// unknown_key is reached, as the node's table holds no section that reads a
-// key the API writes, so wrong_scope, required, bound_setting, secret_ref,
-// newer_schema and format_version wait for one; of the secret provider's,
+// reaches through no route; of the settings table's refusals, unknown_key
+// is reached here and wrong_scope by the node's own setting rows, while
+// required, bound_setting, secret_ref, newer_schema and format_version wait
+// for a section of the node's table that raises them; of the secret provider's,
 // only the store's unproven is reached; joined needs
 // a joined installation; managed and not_a_copy are raised by no route yet;
 // a KV conflict reaches no caller bare, and only contention makes one. Each

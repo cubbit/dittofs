@@ -303,10 +303,9 @@ func (s *Server) signIn(ctx context.Context) error {
 // discover reads what a start decides that the placeholders carry: each
 // adapter's bound port, which a restart can move.
 //
-// ponytail: the node's adapter status names no port and no fixture that
-// serves a protocol starts (Unserved), so nothing is read yet and the ports
-// stay unset. Read each adapter's port from its status here once it names
-// one.
+// ponytail: no fixture that serves a protocol starts (Unserved), so no
+// adapter's port is read yet and the ports stay unset. Read each adapter's
+// port from its status here once dt enables an adapter.
 func (s *Server) discover(context.Context) error {
 	s.nfsPort, s.smbPort = 0, 0
 	return nil
