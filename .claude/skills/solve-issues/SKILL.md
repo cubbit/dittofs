@@ -236,8 +236,8 @@ What the queue does not do is your part:
   removed from it. Hand it back to that issue's agent with the failure — it has the
   context you do not — and once fixed, it re-queues with `gh pr merge <PR> --auto`.
 
-On `feat/storage-v2`, the default branch, the issues close themselves on merge; on
-any other target, `develop` included, close them by hand. To add verification notes use
+On `develop`, the default branch, the issues close themselves on merge; on
+any other target, close them by hand. To add verification notes use
 `gh issue comment` — `gh issue close --comment` on an already-closed issue exits
 0 and drops the comment.
 
