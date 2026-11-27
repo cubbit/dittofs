@@ -242,6 +242,21 @@ func (s *faultState) committed(file, step int) {
 	}
 }
 
+// advanced takes what a move of the clock past every file's age made durable:
+// each file a sync named, and every stream, which the journal's own timer
+// syncs, so no window holds over a write made before it.
+func (s *faultState) advanced(synced [fuzzFiles]bool, step int) {
+	for file, ok := range synced {
+		if ok {
+			s.synced(file, step)
+		}
+	}
+
+	for i := range s.lastSyncStep {
+		s.lastSyncStep[i] = step
+	}
+}
+
 // armedWindow takes FailNextWindow's call: the armed window fails the stream
 // written last, and drops nothing but its write, the only record a sync has
 // not taken, so the file falls back to what its own last sync served.
@@ -373,6 +388,10 @@ func (s faultState) noEffect(op string, file int) bool {
 	switch op {
 	case "restart":
 		return s.armed || s.anyOwed()
+	case "advance":
+		// A failing store and an owed removal would set the loops retrying
+		// on the clock, which the model does not predict.
+		return s.armed || s.anyOwed()
 	case "write":
 		// A released file is written by no one: the filesystem service
 		// refuses its handle, and the engine would never commit the write.
@@ -440,7 +459,8 @@ func (s faultState) skips(op string, a fuzz.Args) (skippedAnswer, bool) {
 // and a fault step own the whole engine, not one file.
 func fileOf(op string, a fuzz.Args) int {
 	switch op {
-	case "restart", "crash", "crash_keeping", "crash_torn", "crash_reordered", "fail_updates_after", "fail_next_window":
+	case "restart", "crash", "crash_keeping", "crash_torn", "crash_reordered",
+		"fail_updates_after", "fail_next_window", "advance":
 		return -1
 	}
 
@@ -594,15 +614,94 @@ func owedRemovalsStay(env *fuzz.Env, w *engineWorld) error {
 	return nil
 }
 
-// awaitRemovalLoop waits until the removal loop has run everything that is due
-// and waits again. The loop runs on its own goroutine, so a step that went on
-// earlier would leave it to the scheduler whether its first run sees the next
-// step's change of the store. It waits on the loop's own state; a loop that
-// never gets there ends the run at the harness's step bound.
-func (w *engineWorld) awaitRemovalLoop() {
-	for !w.fix.E.LoopIdle(w.fix.Share.ID) || !w.fix.E.LoopParked(w.fix.Share.ID) {
-		time.Sleep(time.Millisecond)
+// idleQuietYields is how many yields in a row must find the journal's seam
+// still for idle to take the journal as done: a timer the clock fired starts
+// its sync on another goroutine, which a yield lets run.
+const idleQuietYields = 1 << 10
+
+// idle waits until the group commit and the removal loop have run everything
+// that is due and wait again, and the journal under them, its own timer's
+// sync among it, has stopped moving. The loops run on their own goroutines,
+// so a step that went on earlier would leave it to the scheduler whether
+// their next run sees the next step's change of the store. It waits on the
+// loops' own state; one that never gets there ends the run at the harness's
+// step bound.
+func (w *engineWorld) idle() {
+	now, cancel := context.WithCancel(w.ctx)
+	cancel()
+
+	for w.fix.E.Idle(w.ctx, w.fix.Share.ID) == nil {
+		if w.seamQuiet() && w.fix.E.Idle(now, w.fix.Share.ID) == nil {
+			return
+		}
 	}
+}
+
+// seamQuiet is whether idleQuietYields yields in a row find no call of the
+// journal's seam in flight and none started or ended.
+func (w *engineWorld) seamQuiet() bool {
+	last, acting := w.fix.Seam.Activity()
+	for range idleQuietYields {
+		if acting {
+			return false
+		}
+
+		runtime.Gosched()
+
+		var moves uint64
+		if moves, acting = w.fix.Seam.Activity(); moves != last {
+			return false
+		}
+	}
+
+	return !acting
+}
+
+// syncedSince is each file a sync of the journal named, from the from-th sync
+// the fixture recorded on.
+func (w *engineWorld) syncedSince(from int) (synced [fuzzFiles]bool) {
+	for _, call := range w.fix.Syncs()[from:] {
+		for i, file := range w.files {
+			synced[i] = synced[i] || slices.Contains(call.IDs, journal.NewFileID(file))
+		}
+	}
+
+	return synced
+}
+
+// uncovered names the first mark that file's own sync, the last sync from the
+// from-th that named file alone, returned and no mark the store recorded
+// covers, or says no such sync ran. Empty when every one is covered. The last,
+// since the commit syncs file again when its record's segment ended while it
+// waited, and then only the later sync's marks are recorded.
+func (w *engineWorld) uncovered(file, from int) string {
+	id := journal.NewFileID(w.files[file])
+	syncs := w.fix.Syncs()[from:]
+
+	i := len(syncs) - 1
+	for i >= 0 && !slices.Equal(syncs[i].IDs, []journal.FileID{id}) {
+		i--
+	}
+
+	if i < 0 {
+		return fmt.Sprintf("no sync of file %d alone ran", file)
+	}
+
+	recorded := w.fix.RecordedMarks()
+	for _, r := range syncs[i].Marks {
+		if !slices.ContainsFunc(recorded, func(m entity.SyncMark) bool { return m.Covers(r) }) {
+			return fmt.Sprintf(
+				"the mark of segment %d at %d of file %d's sync is recorded by none of "+
+					"the store's %d",
+				r.Segment,
+				r.Offset,
+				file,
+				len(recorded),
+			)
+		}
+	}
+
+	return ""
 }
 
 // contents reads every file whole through the engine, and marks the released
@@ -747,11 +846,19 @@ type commitAnswer struct {
 	err      error
 	verifier vfserr.Verifier
 	lossSeq  uint64
+
+	// uncovered, over an extent that held committed content, names a mark
+	// of the commit's own sync the store had not recorded when it returned.
+	uncovered string
 }
 
 func (a commitAnswer) String() string {
 	if a.err != nil {
 		return errorClass(a.err)
+	}
+
+	if a.uncovered != "" {
+		return "ok before its mark was recorded"
 	}
 
 	return fmt.Sprintf("ok loss=%d", a.lossSeq)
@@ -890,25 +997,68 @@ func engineWrite(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 	}
 }
 
+// engineCommit commits the extent the step names. One over committed content
+// returns only once the store recorded a mark covering its own sync's: a
+// crash after it must find the overwrite in the journal. The store is read for
+// that before the commit, and the marks it recorded as the commit returns.
 func engineCommit(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 	file := a.Int("file")
-	verifier, lossSeq, err := w.fix.E.Commit(
-		env.T.Context(),
-		w.fix.Share.ID,
-		w.files[file],
-		int64(a.Int("off")),
-		int64(a.Int("len")),
-	)
+
+	x := entity.Extent{Offset: int64(a.Int("off")), Length: int64(a.Int("len"))}
+	if x.Length == 0 {
+		x.Length = entity.EndOfFile - x.Offset
+	}
+
+	ctx, share, id := env.T.Context(), w.fix.Share.ID, w.files[file]
+
+	over, err := w.fix.FS.Store.Existence().Overwrites(ctx, share, id, []entity.Extent{x})
+	if err != nil {
+		return commitAnswer{step: env.Step, err: fmt.Errorf("read the committed extents: %w", err)}
+	}
+
+	from := len(w.fix.Syncs())
+	verifier, lossSeq, err := w.fix.E.Commit(ctx, share, id, x.Offset, int64(a.Int("len")))
+
+	answer := commitAnswer{step: env.Step, err: err, verifier: verifier, lossSeq: lossSeq}
 	if err == nil {
+		if over {
+			answer.uncovered = w.uncovered(file, from)
+		}
+
 		w.faults.committed(file, env.Step)
 	}
 
-	return commitAnswer{
-		step:     env.Step,
-		err:      err,
-		verifier: verifier,
-		lossSeq:  lossSeq,
+	return answer
+}
+
+// advanceAnswer is what a move of the clock set off, once the loops are idle:
+// the files a sync named, and those still holding pending existence.
+type advanceAnswer struct {
+	step    int
+	synced  [fuzzFiles]bool
+	pending [fuzzFiles]bool
+}
+
+func (a advanceAnswer) String() string {
+	return fmt.Sprintf("synced %v, pending %v", a.synced, a.pending)
+}
+
+// engineAdvance moves the clock by ms milliseconds, past every file's age, and
+// waits for what that set off: the group commit syncs and commits every file
+// holding pending existence, and the journal's own timer syncs what it holds.
+func engineAdvance(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
+	from := len(w.fix.Syncs())
+	w.fix.Clock.Advance(time.Duration(a.Int("ms")) * time.Millisecond)
+	w.idle()
+
+	answer := advanceAnswer{step: env.Step, synced: w.syncedSince(from)}
+	for i, file := range w.files {
+		answer.pending[i] = w.fix.E.HasEntry(file)
 	}
+
+	w.faults.advanced(answer.synced, env.Step)
+
+	return answer
 }
 
 func engineRead(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
@@ -971,7 +1121,7 @@ func (w *engineWorld) removed(env *fuzz.Env, file int, err error) fuzz.Result {
 		w.faults.owed[file] = true
 	}
 
-	w.awaitRemovalLoop()
+	w.idle()
 
 	return removalAnswer{err: err, step: env.Step}
 }
@@ -1005,7 +1155,7 @@ func engineDelete(env *fuzz.Env, w *engineWorld, a fuzz.Args) fuzz.Result {
 		w.faults.removed(env.Step)
 	}
 
-	w.awaitRemovalLoop()
+	w.idle()
 
 	return removalAnswer{
 		err:     err,
@@ -1304,6 +1454,11 @@ func modelCommit(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, er
 		return nil, fmt.Errorf("the commit failed, and nothing allows it: %w", answer.err)
 	}
 
+	if answer.uncovered != "" {
+		return nil, fmt.Errorf("the commit returned before the store recorded its mark: %s",
+			answer.uncovered)
+	}
+
 	file := a.Int("file")
 	m.faults.committed(file, answer.step)
 	m = m.syncedFile(file)
@@ -1314,6 +1469,42 @@ func modelCommit(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, er
 	}
 
 	return one(m.sawVerifier(answer.verifier))
+}
+
+// modelAdvance allows only every file committed: with the store working and
+// no removal owed, the clock past every file's age leaves no pending
+// existence, and a file's unsynced writes are synced before it commits. What a
+// sync named is durable; what only the journal's timer synced is left to a
+// crash to keep or not, which the model allows either way.
+func modelAdvance(m engineModel, _ fuzz.Args, got fuzz.Result) ([]engineModel, error) {
+	answer := got.(advanceAnswer)
+	for i, file := range m.files {
+		if answer.pending[i] {
+			return nil, fmt.Errorf(
+				"file %d still holds pending existence once the clock passed its age",
+				i,
+			)
+		}
+
+		if len(file.unsynced) > 0 && !answer.synced[i] {
+			return nil, fmt.Errorf(
+				"file %d holds %d unsynced writes, and no sync took them once the clock "+
+					"passed their age",
+				i,
+				len(file.unsynced),
+			)
+		}
+	}
+
+	m.faults.advanced(answer.synced, answer.step)
+
+	for i, ok := range answer.synced {
+		if ok {
+			m = m.syncedFile(i)
+		}
+	}
+
+	return []engineModel{m}, nil
 }
 
 func modelRead(m engineModel, a fuzz.Args, got fuzz.Result) ([]engineModel, error) {
@@ -1788,6 +1979,14 @@ func engineTarget() fuzz.Target[*engineWorld, engineModel] {
 				Real:   realUnless("fail_next_window", engineFailWindow),
 				Model:  modelUnless("fail_next_window", modelFailWindow),
 			},
+			// Past every file's age, and past the journal's sync bound.
+			{
+				Name:   "advance",
+				Weight: 1,
+				Params: []fuzz.Param{fuzz.Choice("ms", 60000)},
+				Real:   realUnless("advance", engineAdvance),
+				Model:  modelUnless("advance", modelAdvance),
+			},
 			// Each bit of the mask is one write to the disk that no sync covers,
 			// in the order issued, not one engine write: the first write of a new
 			// segment counts as two, the segment's header and then the record.
@@ -1820,6 +2019,12 @@ func engineTarget() fuzz.Target[*engineWorld, engineModel] {
 		// the target leaves out on purpose.
 		Uncovered: []fuzz.Omission{
 			fuzz.Skipped(
+				"advance_while_the_store_fails_or_a_removal_is_owed",
+				"the clock moves only with the store working, no removal owed and no "+
+					"window waiting: the loops would retry on it, which the model does not "+
+					"predict; the self-fence's tests must lift this",
+			),
+			fuzz.Skipped(
 				"deallocate_of_an_unrecorded_tail",
 				"while the store fails, a deallocate that takes a file's last byte is skipped unless the store is "+
 					"known to hold the file's size: a crash after it leaves the file shorter",
@@ -1850,6 +2055,47 @@ var engineSeeds = []struct {
 	name  string
 	calls []string
 }{
+	{
+		// The clock past every file's age commits both files' existence,
+		// each synced first, and a crash then keeps every write.
+		name: "the clock commits the existence of every file",
+		calls: []string{
+			"write(file=0, off=0, len=8192)",
+			"write(file=2, off=0, len=512)",
+			"advance(ms=60000)",
+			"crash()",
+			"read(file=0, off=0, len=8192)",
+			"read(file=2, off=0, len=512)",
+		},
+	},
+	{
+		// The second write overwrites what the clock committed, so the
+		// commit waits for its existence commit and for the marks it carries.
+		name: "an overwrite waits for its existence commit",
+		calls: []string{
+			"write(file=0, off=0, len=4096)",
+			"advance(ms=60000)",
+			"write(file=0, off=0, len=512)",
+			"commit(file=0, off=0, len=0)",
+			"crash()",
+			"read(file=0, off=0, len=4096)",
+		},
+	},
+	{
+		// The append overwrites nothing, but the whole file holds what the
+		// clock committed: the commit waits for marks the group commit
+		// writes alone, no file being due.
+		name: "a commit waits for the marks alone",
+		calls: []string{
+			"write(file=0, off=0, len=512)",
+			"advance(ms=60000)",
+			"write(file=0, off=4096, len=512)",
+			"commit(file=0, off=0, len=0)",
+			"crash()",
+			"read(file=0, off=0, len=512)",
+			"read(file=0, off=4096, len=512)",
+		},
+	},
 	{
 		// The truncate's mark in the journal is all that says the bytes are
 		// gone when the power goes.
@@ -2459,7 +2705,7 @@ func TestARemovalStepLeavesTheLoopNothingToRun(t *testing.T) {
 	}
 
 	engineFailUpdates(env, w, parsed(t, "fail_updates_after(n=-1)"))
-	w.awaitRemovalLoop()
+	w.idle()
 
 	if size := w.fix.Committed(w.handles[0]).Size; size != 8192 {
 		t.Fatalf("the committed size is %d, want 8192: the first try ran after the store worked again", size)

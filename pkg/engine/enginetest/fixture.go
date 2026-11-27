@@ -155,6 +155,14 @@ type Fixture struct {
 	spansMu sync.Mutex
 	spans   []*Span // every span ended, in the order they ended
 
+	// syncs is every sync a handle of the real journal answered, and stored
+	// every sync mark the store holds from this fixture's processes: those an
+	// Open was handed and those an existence commit it acknowledged carried.
+	// Both outlive a crash, as the journal and the store do.
+	marksMu sync.Mutex
+	syncs   []SyncCall
+	stored  []entity.SyncMark
+
 	compose  func(*Fixture, *engine.Engine) Service // builds the service each process start composes; nil for none
 	settings journal.Settings                       // the settings every open of the journal in Dir takes
 	block    uint64                                 // the engine's version block; zero is its default
@@ -1020,6 +1028,45 @@ func (f *Fixture) JournalSyncMarks() []entity.SyncMark {
 	return (*j).SyncMarks()
 }
 
+// SyncCall is one sync a handle of the real journal answered without error:
+// the files it named and the marks it returned.
+type SyncCall struct {
+	IDs   []journal.FileID
+	Marks []entity.SyncMark
+}
+
+// Syncs is every sync the handles of the real journal answered, across every
+// process of the fixture, in the order they returned.
+func (f *Fixture) Syncs() []SyncCall {
+	f.marksMu.Lock()
+	defer f.marksMu.Unlock()
+
+	return slices.Clone(f.syncs)
+}
+
+// RecordedMarks is every sync mark the store holds from the fixture's
+// processes: those each Open of the real journal was handed and those each
+// existence commit the store acknowledged carried. A mark a sync returned is
+// proven on disk only once one of these covers it (RFC 8 §5.1).
+func (f *Fixture) RecordedMarks() []entity.SyncMark {
+	f.marksMu.Lock()
+	defer f.marksMu.Unlock()
+
+	return slices.Clone(f.stored)
+}
+
+func (f *Fixture) synced(ids []journal.FileID, marks []entity.SyncMark) {
+	f.marksMu.Lock()
+	f.syncs = append(f.syncs, SyncCall{IDs: slices.Clone(ids), Marks: slices.Clone(marks)})
+	f.marksMu.Unlock()
+}
+
+func (f *Fixture) store(marks []entity.SyncMark) {
+	f.marksMu.Lock()
+	f.stored = append(f.stored, marks...)
+	f.marksMu.Unlock()
+}
+
 // HandleOf is the handle the running engine opened on tag.
 func (f *Fixture) HandleOf(tag journal.ShareTag) engine.Handle {
 	f.t.Helper()
@@ -1089,6 +1136,7 @@ func (f *Fixture) start() {
 			return f.fake, nil
 		}
 		f.handedIn.Store(&marks)
+		f.store(marks)
 		j, err := open(ctx, dir, floor, expect, marks)
 		if err != nil {
 			return nil, err
@@ -1097,11 +1145,20 @@ func (f *Fixture) start() {
 			_ = j.Close()
 			return nil, err
 		}
-		wj := wrapJournal(j, crashed, func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) })
+
+		opened := func(tag journal.ShareTag, h engine.Handle) { f.handles.Store(tag, h) }
+		wj := wrapJournal(j, crashed, opened, f.synced)
 		f.opened.Store(&wj)
 		return wj, nil
 	}
-	d.Existence = fencedExistence{Existence: d.Existence, crashed: f.crashed, stalled: &f.stalled, cloneGate: &f.cloneGate, commitGate: &f.commitGate}
+	d.Existence = fencedExistence{
+		Existence:  d.Existence,
+		crashed:    f.crashed,
+		stalled:    &f.stalled,
+		cloneGate:  &f.cloneGate,
+		commitGate: &f.commitGate,
+		stored:     f.store,
+	}
 	d.Content = fencedContent{Content: d.Content, crashed: f.crashed}
 	d.Lifecycle = gatedLifecycle{Lifecycle: d.Lifecycle, startGate: &f.startGate}
 	trace := d.Tracer
@@ -1261,6 +1318,9 @@ type fencedExistence struct {
 	stalled    *atomic.Bool
 	cloneGate  *atomic.Pointer[gate]
 	commitGate *atomic.Pointer[gate]
+	// stored takes the marks of each commit the store acknowledged; nil for
+	// none.
+	stored func([]entity.SyncMark)
 }
 
 // Commit answers a crashed process's existence commit as done and writes
@@ -1281,7 +1341,13 @@ func (x fencedExistence) Commit(ctx context.Context, pending []kvstore.PendingEx
 	if err := pass(ctx, x.commitGate); err != nil {
 		return nil, err
 	}
-	return x.Existence.Commit(ctx, pending, marks)
+
+	failed, err := x.Existence.Commit(ctx, pending, marks)
+	if err == nil && marks != nil && x.stored != nil {
+		x.stored(marks.Marks)
+	}
+
+	return failed, err
 }
 
 func (x fencedExistence) Remove(ctx context.Context, share entity.ShareID, file entity.FileID, epoch uint64, op kvstore.RemoveOp, pending []kvstore.PendingOp) error {

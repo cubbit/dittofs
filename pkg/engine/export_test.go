@@ -435,25 +435,6 @@ func (e *Engine) LoopParked(s entity.ShareID) bool {
 	return b.gc.removals.parked.Load()
 }
 
-// LoopIdle reports whether the share's journal's removal loop runs no item and
-// holds none that is due. LoopSteps and LoopParked cannot tell that: a call may
-// queue nothing, and the loop reads parked until it wakes to what was queued.
-func (e *Engine) LoopIdle(s entity.ShareID) bool {
-	b, err := e.bindingOf(s)
-	if err != nil {
-		return false
-	}
-
-	l := b.gc.removals
-	now := e.d.Clock.Now()
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	return l.running == nil && !slices.ContainsFunc(l.items, func(it *loopItem) bool {
-		return !it.refused() && !it.notBefore.After(now)
-	})
-}
-
 // Idle returns once the share's journal's group commit and removal loop both
 // wait with nothing due: no batch in flight, no poke or timer fire the group
 // commit has not looked at, and no removal running or past its backoff. It
