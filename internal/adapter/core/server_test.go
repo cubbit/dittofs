@@ -523,11 +523,7 @@ func TestAConfiguredPortHeldOnOneAddressClosesWhatItsGroupOpened(t *testing.T) {
 	adaptertest.CheckLeaks(t, deps.Budgets)
 	p := testproto.New(deps)
 
-	held, err := net.Listen("tcp6", "[::1]:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = held.Close() })
+	held := heldOnlyOnIPv6(t)
 	at := held.Addr().(*net.TCPAddr).AddrPort()
 	srv, err := core.NewServer(deps, on("127.0.0.1", "::1"), tcp(p, at.Port(), "a"))
 	if err != nil {
@@ -548,6 +544,49 @@ func TestAConfiguredPortHeldOnOneAddressClosesWhatItsGroupOpened(t *testing.T) {
 	// The group's first socket, the port held on ::1 bound on 127.0.0.1: it
 	// listened there until its own group's failure closed it.
 	dialRefused(t, netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), at.Port()))
+}
+
+// heldOnlyOnIPv6 holds a port on ::1 that was free on 127.0.0.1 a moment
+// ago, so a server configured on both at that port binds 127.0.0.1 and meets
+// the hold on ::1 alone. The kernel picks the ::1 port without looking at
+// 127.0.0.1, where another socket of the test binary may hold it, so a pick
+// taken there is let go and another one tried.
+func heldOnlyOnIPv6(t *testing.T) net.Listener {
+	t.Helper()
+
+	var err error
+
+	for range 100 {
+		var held, probe net.Listener
+
+		held, err = net.Listen("tcp6", "[::1]:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		port := held.Addr().(*net.TCPAddr).Port
+
+		probe, err = net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", port))
+		if err == nil {
+			_ = probe.Close()
+
+			t.Cleanup(func() {
+				_ = held.Close()
+			})
+
+			return held
+		}
+
+		_ = held.Close()
+
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			t.Fatal(err)
+		}
+	}
+
+	t.Fatalf("no port of 100 picked on ::1 was free on 127.0.0.1: %v", err)
+
+	return nil
 }
 
 // lieAboutAddr wraps a listener that reports a non-TCP address: an opener
