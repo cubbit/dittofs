@@ -249,7 +249,7 @@
       "Ogni 10 minuti controlla anche develop, `main` e un branch di feature di lunga durata. Quando uno dei tre ha un commit nuovo e l'host è libero, ci esegue gli scenari di sistema e imposta il commit status `system (dedicated)`.",
       "Il suo token GitHub può scrivere issue e commit status, e nient'altro."
     ],
-    "notes": "§4.5 'The dedicated host is not a self-hosted runner'; §9 'The dedicated host' (ditto, un server che Cubbit prende in affitto; l'alternativa sono VM spot nel cloud). Gira solo quando sull'host non gira nient'altro; i merge che arrivano durante un'esecuzione vengono presi insieme da quella dopo. Solo i nuovi fallimenti di develop vanno nella issue di stato di develop. Gli scenari 9x: la tabella dei posti del §4.5 (lo scenario 92 fa crescere un file fino a 30 GB) e la voce system del §4.1 (needs_by_test '9?-*.sh'). I branch che l'host controlla sono develop, main e feat/storage-v2 (§4.5). I nomi dei file degli scenari sono <numero>-<cosa>-<dimensione>.sh; le esecuzioni lunghe corrispondono a 9?-*.sh (§4.1)."
+    "notes": "§4.5 'The dedicated host is not a self-hosted runner'; §9 'The dedicated host' (ditto, un server che Cubbit prende in affitto; l'alternativa sono VM spot nel cloud). Gira solo quando sull'host non gira nient'altro; i merge che arrivano durante un'esecuzione vengono presi insieme da quella dopo. Solo i nuovi fallimenti di develop vanno nella issue di stato di develop. Gli scenari 9x: la tabella dei posti del §4.5 (lo scenario 92 fa crescere un file fino a 30 GB) e la voce system del §4.1 (needs_by_test '9?-*.sh'). I branch che l'host controlla sono develop e main (§4.5). I nomi dei file degli scenari sono <numero>-<cosa>-<dimensione>.sh; le esecuzioni lunghe corrispondono a 9?-*.sh (§4.1)."
   },
   "tiersK": {
     "kicker": "Tier e gate"
@@ -284,7 +284,7 @@
       ]
     ],
     "footer": "Ogni tier esegue tutto quello che esegue il tier più piccolo: `merge` comprende `pr`, e `nightly` esegue tutto tranne le suite `manual`. Una [[suite]] indica il tier più piccolo che la esegue. Per spostarla basta cambiare una parola, in base ai tempi misurati da `dt history`.",
-    "notes": "§4.3 Tiers (tabella e 'Budgets'); §9 'The tier budgets', da rivedere su numeri misurati. Prima di dt (ottobre 2026) una PR aspettava 25–40 min. Il 2026-10-12 un merge ha impiegato una mediana di 33 minuti fino all'ultimo check (§9). Il tier pr gira anche su merge_group: tests.yml associa quell'evento a pr. La merge queue è attiva su develop e feat/storage-v2, quindi una pull request in coda riesegue il tier pr sul risultato del merge (§4.3, §4.8). Il tier merge gira sui push su develop, main e feat/storage-v2 (§4.3)."
+    "notes": "§4.3 Tiers (tabella e 'Budgets'); §9 'The tier budgets', da rivedere su numeri misurati. Prima di dt (ottobre 2026) una PR aspettava 25–40 min. Il 2026-10-12 un merge ha impiegato una mediana di 33 minuti fino all'ultimo check (§9). Il tier pr gira anche su merge_group: tests.yml associa quell'evento a pr. La merge queue è attiva su develop, quindi una pull request in coda riesegue il tier pr sul risultato del merge (§4.3, §4.8). Il tier merge gira sui push su develop e main (§4.3)."
   },
   "whatruns": {
     "title": "Cosa esegue ogni pull request",
@@ -326,10 +326,10 @@
     ],
     "why": [
       "Su una pull request non gira nessun [[retry]], quindi il test riceve l'esito `new` e la sua [[cell]] esce con 1. Una cell [[blocking|bloccante]] che non esce con 0 fa fallire il [[gate]].",
-      "In CI il retry gira solo su un push in develop, main o `feat/storage-v2`, che in pratica segue un merge, e nelle esecuzioni programmate. Su una pull request non si ripete niente, così una PR non può far entrare un test [[flaky]] introdotto da lei.",
+      "In CI il retry gira solo su un push in develop o main, che in pratica segue un merge, e nelle esecuzioni programmate. Su una pull request non si ripete niente, così una PR non può far entrare un test [[flaky]] introdotto da lei.",
       "Exit 2 è per un test che non è girato. Questo è girato ed è fallito senza una voce in lista, quindi è un nuovo fallimento e la sua [[cell]] esce con 1."
     ],
-    "notes": "'Start here · Scenarios', il primo: esito new, exit 1 (§4.4); nessun retry su una pull request (§4.7 Retry: 'None on pull requests … so a PR can't merge a flaky test it introduced. On a push and on the schedule, --retry 1 …'); il gate fallisce perché una cell bloccante non è uscita con 0 (§4.8). Exit 2 vuol dire not run (§4.4). tests.yml gira su un push solo verso develop, main e feat/storage-v2, quindi un push è in pratica un merge."
+    "notes": "'Start here · Scenarios', il primo: esito new, exit 1 (§4.4); nessun retry su una pull request (§4.7 Retry: 'None on pull requests … so a PR can't merge a flaky test it introduced. On a push and on the schedule, --retry 1 …'); il gate fallisce perché una cell bloccante non è uscita con 0 (§4.8). Exit 2 vuol dire not run (§4.4). tests.yml gira su un push solo verso develop e main, quindi un push è in pratica un merge."
   },
   "grading": {
     "kicker": "Risultati e valutazione"
@@ -500,11 +500,11 @@
     "rTitle": "[[retry|Retry]]",
     "r": [
       "Su una pull request i test non vengono mai ripetuti, quindi una PR non può portare in develop un test flaky che ha introdotto lei.",
-      "Su un push in develop, main o `feat/storage-v2` (in pratica, dopo un merge) e nelle esecuzioni pianificate, `--retry 1` ripete una volta ogni nuovo fallimento, e nient'altro.",
+      "Su un push in develop o main (in pratica, dopo un merge) e nelle esecuzioni pianificate, `--retry 1` ripete una volta ogni nuovo fallimento, e nient'altro.",
       "Un test che passa al retry è flaky. Non fa scattare allarmi, e `dt history` lo conta.",
       "Un test che risulta flaky due volte in una settimana su develop diventa un candidato alla quarantena."
     ],
-    "notes": "§4.7 'Quarantine' e 'Retry'. La lista di quarantena è test/harness/quarantine.yaml; una voce nomina esattamente un test, mai un pattern. Una voce scaduta è un errore di dt doctor, che lint-repo esegue (Repo Checks). Il retry gira sulla fixture della cell, entro il limite della cell; un test che nessuna regola di nome sa indicare non viene ritentato. La race del keytab di AD-DC (#2968) è il caso per cui esiste la quarantena. Scadenza: §4.7 ('its test fails as new and the gate goes red on that test and on Repo Checks'); dt doctor è uno dei comandi di lint-repo (§4.1), e lint-repo è il job Repo Checks, che gira su ogni pull request (§4.8). tests.yml gira su un push solo verso develop, main e feat/storage-v2, quindi un push è in pratica un merge."
+    "notes": "§4.7 'Quarantine' e 'Retry'. La lista di quarantena è test/harness/quarantine.yaml; una voce nomina esattamente un test, mai un pattern. Una voce scaduta è un errore di dt doctor, che lint-repo esegue (Repo Checks). Il retry gira sulla fixture della cell, entro il limite della cell; un test che nessuna regola di nome sa indicare non viene ritentato. La race del keytab di AD-DC (#2968) è il caso per cui esiste la quarantena. Scadenza: §4.7 ('its test fails as new and the gate goes red on that test and on Repo Checks'); dt doctor è uno dei comandi di lint-repo (§4.1), e lint-repo è il job Repo Checks, che gira su ogni pull request (§4.8). tests.yml gira su un push solo verso develop e main, quindi un push è in pratica un merge."
   },
   "ctrf": {
     "title": "Un solo formato: [[ctrf|CTRF]], con JUnit accanto",
