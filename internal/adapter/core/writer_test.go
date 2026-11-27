@@ -567,7 +567,9 @@ func TestTheSegmentedReply(t *testing.T) {
 	seg(strings.Repeat("a", 600_000))
 	seg(strings.Repeat("b", (1<<20)-600_000-32)) // the two nearly fill the record cap
 	msg.B = append(msg.B, "tail"...)
-	w.Out(msg, 0, 0, 0)
+	if err := w.Out(msg, 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
 
 	if n := <-batches; n != 1 {
 		t.Fatalf("the segmented reply gathered %d messages, want 1", n)
