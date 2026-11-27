@@ -12,6 +12,7 @@ import (
 	"github.com/cubbit/dittofs/pkg/metadata/entity"
 	merrs "github.com/cubbit/dittofs/pkg/metadata/errors"
 	"github.com/cubbit/dittofs/pkg/node/apiv1"
+	"github.com/cubbit/dittofs/pkg/vfs/vfserr"
 )
 
 // idRange is the installation's ID range, read tracked in tx, so a create
@@ -26,7 +27,10 @@ func idRange(tx entity.ControlPlaneTx) (entity.IDRange, error) {
 		return entity.DefaultIDRange, err
 	}
 	var r entity.IDRange
-	return r, json.Unmarshal(s.Value, &r)
+	if err := json.Unmarshal(s.Value, &r); err != nil {
+		return r, &componentError{field: s.Key, detail: "the stored value is not an ID range", err: vfserr.ErrCorrupt}
+	}
+	return r, nil
 }
 
 // nameField is err with the store's refusal of a user's or group's name

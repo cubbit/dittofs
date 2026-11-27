@@ -293,7 +293,7 @@ func write[B, I, R any](w writing[B], prepare func(context.Context, request[B]) 
 			}
 			rq.Expect = tag
 			if r.Method == http.MethodPatch {
-				b, err := json.Marshal(doc)
+				b, err := encode(doc)
 				if err != nil {
 					return err
 				}
@@ -595,7 +595,7 @@ func change(old, new any, as string, secret func(path string) bool, set bool) ([
 }
 
 func asJSON(v any) (any, error) {
-	b, err := json.Marshal(v)
+	b, err := encode(v)
 	if err != nil {
 		return nil, err
 	}

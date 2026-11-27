@@ -390,7 +390,7 @@ func keytabOf(ctx context.Context, d Deps, account string) (func(entity.ControlP
 		if applied == (entity.SecretRef{}) {
 			return errKeytabUnapplied
 		}
-		ref, err := refFrom(s.Value)
+		ref, err := refFrom(s)
 		if err != nil {
 			return err
 		}
@@ -506,7 +506,7 @@ func underBase(ctx context.Context, d Deps, ou string) ([]byte, error) {
 	s, ok := all[directoryBase]
 	if ok {
 		if err := json.Unmarshal(s.Value, &base); err != nil {
-			return nil, err
+			return nil, &componentError{field: directoryBase, detail: "the stored base is not a JSON string", err: vfserr.ErrCorrupt}
 		}
 	}
 	b, ok := rdns(base)

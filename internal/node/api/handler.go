@@ -149,11 +149,23 @@ func jsonOr(v any, err error) (answer, error) {
 }
 
 func jsonAnswer(status int, v any) (answer, error) {
-	b, err := json.Marshal(v)
+	b, err := encode(v)
 	if err != nil {
 		return answer{}, err
 	}
 	return answer{status: status, header: http.Header{"Content-Type": {"application/json"}}, body: b}, nil
+}
+
+// encode is v as JSON. A value that fails to encode is one a record
+// carries raw, such as a setting's stored value that is no JSON, since
+// every other field of the API's types always encodes, so its error is
+// corrupt: the node cannot read the record it answers.
+func encode(v any) ([]byte, error) {
+	b, err := json.Marshal(v)
+	if m := (*json.MarshalerError)(nil); errors.As(err, &m) {
+		return nil, fmt.Errorf("%w: %w", vfserr.ErrCorrupt, err)
+	}
+	return b, err
 }
 
 type requestIDKey struct{}

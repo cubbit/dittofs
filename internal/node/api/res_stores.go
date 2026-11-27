@@ -85,7 +85,7 @@ func credentialIn(
 		return nil, err
 	}
 
-	ref, err := refFrom(s.Value)
+	ref, err := refFrom(s)
 	if err != nil {
 		return nil, err
 	}

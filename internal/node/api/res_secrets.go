@@ -24,24 +24,25 @@ type sealer interface {
 // JSON list of the reference's 16 bytes, the form a settings table's strict
 // decode reads a reference field from, so the write's check decodes the row
 // it is given. refFrom reads it back; a read answers an operator the
-// reference as the API spells it, idString.
+// reference as the API spells it, idString, and refuses a row that holds
+// none as corrupt, naming its key.
 func refValue(ref entity.SecretRef) []byte {
 	b, _ := json.Marshal(ref) // a [16]byte always encodes
 	return b
 }
 
-func refFrom(v []byte) (entity.SecretRef, error) {
+func refFrom(s entity.Setting) (entity.SecretRef, error) {
 	var ref entity.SecretRef
-
-	err := json.Unmarshal(v, &ref)
-
-	return ref, err
+	if err := json.Unmarshal(s.Value, &ref); err != nil {
+		return ref, &componentError{field: s.Key, detail: "the stored value is not a secret reference", err: vfserr.ErrCorrupt}
+	}
+	return ref, nil
 }
 
 // secretRefOf is the secret the setting s names, as a read answers it: its
 // reference and its current version, never its value.
 func secretRefOf(ctx context.Context, d Deps, s entity.Setting) (*apiv1.StoreCredential, error) {
-	ref, err := refFrom(s.Value)
+	ref, err := refFrom(s)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +113,7 @@ func (ss secretSetting) writing(kind entity.ResourceKind) writing[apiv1.Credenti
 			if err != nil || !ok {
 				return apiv1.Credential{}, 0, false, err
 			}
-			ref, err := refFrom(s.Value)
+			ref, err := refFrom(s)
 			if err != nil {
 				return apiv1.Credential{}, 0, false, err
 			}
