@@ -16,7 +16,8 @@ const (
 	opLast    = 75    // OP_REMOVEXATTR
 	opIllegal = 10044 // OP_ILLEGAL
 
-	opExchangeID = 42 // OP_EXCHANGE_ID
+	opExchangeID    = 42 // OP_EXCHANGE_ID
+	opCreateSession = 43 // OP_CREATE_SESSION
 )
 
 // lastMinor is the highest minor version the table serves: NFSv4.2.
@@ -46,7 +47,14 @@ func Table(h *Handlers) *core.OpTable {
 		h.ExchangeID,
 	)
 	exchangeID.Versions = core.Range{First: 1, Last: lastMinor}
-	members := core.NewOpTable(memberErrors(), false, illegal, exchangeID)
+	createSession := core.Row[createSessionArgs, createSessionRes](
+		opCreateSession,
+		"CREATE_SESSION",
+		core.NeedsNothing,
+		h.CreateSession,
+	)
+	createSession.Versions = core.Range{First: 1, Last: lastMinor}
+	members := core.NewOpTable(memberErrors(), false, illegal, exchangeID, createSession)
 	members.ReadOp, members.EncodeResult = readOp, encodeResult
 	t := core.NewOpTable(compoundErrors(), false, &core.Op{
 		Code:       wire.ProcCompound,

@@ -20,6 +20,14 @@ var (
 	errEncrAlgUnsupp = errors.New("nfs4: SP4_SSV is not served")
 )
 
+// The refusals CREATE_SESSION answers that no service error stands for (RFC
+// 8881 section 18.36.4).
+var (
+	errTooSmall      = errors.New("nfs4: a fore channel too small for a SEQUENCE reply")
+	errSeqMisordered = errors.New("nfs4: a CREATE_SESSION sequence out of order")
+	errAccess        = errors.New("nfs4: a caller that does not prove the machine")
+)
+
 // minor40 is NFSv4.0 alone.
 var minor40 = &core.Range{First: 0, Last: 0}
 
@@ -69,12 +77,27 @@ func memberErrors() *core.ErrorTable {
 		core.ErrorRow{Err: errNoEnt, Status: core.Status(wire.NFS4ErrNoEnt)},
 		core.ErrorRow{Err: errInval, Status: core.Status(wire.NFS4ErrInval)},
 		core.ErrorRow{Err: errEncrAlgUnsupp, Status: core.Status(wire.NFS4ErrEncrAlgUnsupp)},
+		core.ErrorRow{Err: errTooSmall, Status: core.Status(wire.NFS4ErrTooSmall)},
+		core.ErrorRow{Err: errSeqMisordered, Status: core.Status(wire.NFS4ErrSeqMisordered)},
+		core.ErrorRow{Err: errAccess, Status: core.Status(wire.NFS4ErrAccess)},
+		core.ErrorRow{
+			Err:    &vfs.StateError{Kind: vfs.StateStaleClient},
+			Status: core.Status(wire.NFS4ErrStaleClientID),
+		},
+		core.ErrorRow{
+			Err:    &vfs.StateError{Kind: vfs.StateClientBusy},
+			Status: core.Status(wire.NFS4ErrClientIDBusy),
+		},
 		core.ErrorRow{
 			Err:    &vfs.StateError{Kind: vfs.StateClientInUse},
 			Status: core.Status(wire.NFS4ErrClientIDInUse),
 		},
 		core.ErrorRow{
 			Err:    &vfs.Delay{Cause: vfs.DelayResources},
+			Status: core.Status(wire.NFS4ErrDelay),
+		},
+		core.ErrorRow{
+			Err:    &vfs.Delay{Cause: vfs.DelayConflict},
 			Status: core.Status(wire.NFS4ErrDelay),
 		},
 	)
