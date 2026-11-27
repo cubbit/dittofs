@@ -30,40 +30,33 @@ const text44 = "The quick brown fox jumps over the lazy dog "
 // stream (C2SP chacha8rand), so a seed gives the same bytes on any machine
 // and toolchain, and in any split of reads.
 type input struct {
-	rng      rand.ChaCha8
-	pattern  []byte // the period of a patterned kind; RandomRepeat's middle third
-	random   bool   // bytes come from rng, under the pattern's range when one is set
-	lo, hi   int64  // where pattern replaces the random bytes, for RandomRepeat
+	rng      *rand.ChaCha8 // nil but for the random kinds
+	pattern  []byte        // repeated from offset 0 over [lo, hi)
+	lo, hi   int64
 	off, end int64
 }
 
 // Input returns n bytes of kind k from seed. Read allocates nothing, and the
-// reader holds no buffer of n bytes. The seed is spread little-endian into
-// the first 8 bytes of ChaCha8's 32-byte seed; a pattern drawn from the seed
-// is the first bytes of that stream, and RandomRepeat's bytes outside its
-// middle third are Random's at the same offsets.
+// reader holds no buffer of n bytes. RandomRepeat's middle third is
+// [n/3, n-n/3), and its bytes outside it are Random's at the same offsets.
 func Input(k Kind, seed uint64, n int64) io.Reader {
-	if n < 0 {
-		panic(fmt.Sprintf("carvetest: Input of %d bytes", n))
-	}
-
 	var s [32]byte
 	binary.LittleEndian.PutUint64(s[:], seed)
-	in := &input{end: n}
-	in.rng.Seed(s)
-
+	// A pattern comes from its own stream of the seed, so it is not Random's prefix.
 	drawn := func(period int) []byte {
+		ps := s
+		ps[8] = 1
 		p := make([]byte, period)
-		var r rand.ChaCha8
-		r.Seed(s)
-		_, _ = r.Read(p)
+		_, _ = rand.NewChaCha8(ps).Read(p)
 		return p
 	}
 
+	in := &input{hi: n, end: n}
 	switch k {
 	case Random:
-		in.random = true
+		in.rng, in.hi = rand.NewChaCha8(s), 0
 	case Zeros:
+		in.pattern = make([]byte, 64)
 	case Period64:
 		in.pattern = drawn(64)
 	case Text44:
@@ -71,9 +64,7 @@ func Input(k Kind, seed uint64, n int64) io.Reader {
 	case Period4K:
 		in.pattern = drawn(4096)
 	case RandomRepeat:
-		in.random = true
-		in.pattern = drawn(64)
-		in.lo, in.hi = n/3, 2*n/3
+		in.rng, in.pattern, in.lo, in.hi = rand.NewChaCha8(s), drawn(64), n/3, n-n/3
 	default:
 		panic(fmt.Sprintf("carvetest: unknown kind %d", k))
 	}
@@ -89,19 +80,12 @@ func (in *input) Read(p []byte) (int, error) {
 		p = p[:rest]
 	}
 
-	switch {
-	case in.random:
+	if in.rng != nil {
 		_, _ = in.rng.Read(p)
-		lo, hi := max(in.lo, in.off), min(in.hi, in.off+int64(len(p)))
-		if lo < hi {
-			fill(p[lo-in.off:hi-in.off], in.pattern, lo)
-		}
-	case in.pattern != nil:
-		fill(p, in.pattern, in.off)
-	default:
-		clear(p)
 	}
-
+	if lo, hi := max(in.lo, in.off), min(in.hi, in.off+int64(len(p))); lo < hi {
+		fill(p[lo-in.off:hi-in.off], in.pattern, lo)
+	}
 	in.off += int64(len(p))
 
 	return len(p), nil
