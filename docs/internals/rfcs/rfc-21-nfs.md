@@ -729,7 +729,7 @@ gateway node's memory like the reply cache, and fares worse on a node loss.
 
 - `SETCLIENTID` and `SETCLIENTID_CONFIRM` map onto the client record as
   `EXCHANGE_ID` and `CREATE_SESSION` do: the client's `nfs_client_id4` id is
-  its `Name`, its verifier and the minor version its `Boot` (§11.4), which
+  its `Name`, its verifier and the call it came by its `Boot` (§11.4), which
   tells a reboot ([RFC 14 §2.1](rfc-14-open-state.md#2.1%20Client)), and the proposal is
   confirmed as §3.5 says: at the node that answered `SETCLIENTID`, under a
   random confirm verifier, and `NFS4ERR_STALE_CLIENTID` anywhere else.
@@ -2500,7 +2500,7 @@ in RFC 14's durable client record
 | RFC 14 field | ← NFS field | Used by |
 | --- | --- | --- |
 | `Name`, indexed by (protocol, name) | the owner string: `co_ownerid` (`EXCHANGE_ID`), the `nfs_client_id4` id (`SETCLIENTID`); for an NLM host its `caller_name` with the source address it sends from (§6.1) | an `EXCHANGE_ID` / `SETCLIENTID` from a client that rebooted or reconnected through another node finds its record, and `Boot` tells which |
-| `Boot` | for an NFSv4 client, the first 8 bytes of the SHA-256 of its 8-byte verifier followed by the minor version byte (0 or 1), so one verifier sent over each minor version is a new `Boot`; for an NLM host its NSM state number, big-endian in the low four bytes, so the bytes order as the numbers do | a new `Boot` under the same name is a new client instance |
+| `Boot` | for an NFSv4 client, the first 8 bytes of the SHA-256 of its 8-byte verifier followed by one byte, 0 for `SETCLIENTID` and 1 for `EXCHANGE_ID` (whether its `COMPOUND` is minor version 1 or 2), so one verifier sent by each call is a new `Boot`; for an NLM host its NSM state number, big-endian in the low four bytes, so the bytes order as the numbers do | a new `Boot` under the same name is a new client instance |
 | `Pending` | an unconfirmed `SETCLIENTID` or `EXCHANGE_ID`: nothing durable, held at the node that answered, `Confirm` sent as the NFSv4.0 confirm verifier or, low 32 bits, as the NFSv4.1 `eir_sequenceid` ([RFC 14 §2.9](rfc-14-open-state.md#2.9%20Clients%20pending%20confirmation)) | `SETCLIENTID_CONFIRM`, or NFSv4.1's first `CREATE_SESSION`, at that node (§3.5) |
 | `Owner` | the principal that created the client ID, mapped before squashing; zero for an NLM host, whose `Connect` sets `ClientIsMachine` | an `EXCHANGE_ID` or `SETCLIENTID` for the same name from another principal is `NFS4ERR_CLID_INUSE` (RFC 8881 §18.35.5) and leaves no `Pending` |
 | `Protect` | set for `SP4_MACH_CRED`, false for `SP4_NONE`; `spo_must_allow` stays in the adapter's bytes, and the adapter refuses a machine-credential call outside it before calling the service | each node admits the machine principal the same way |
@@ -2869,7 +2869,7 @@ a name, an owner string, a principal or a client address
 | N15 | An NLM host is its name and source address; NLM callbacks are calls to the host's NLM service, on a connection the server opens from the floating address the host used. |
 | N16 | Audit entries are read or changed only by an administrator, on every minor version; the ctime NFS reports moves on every change. |
 | N17 | A stability reply waits for the journal sync of its range, for the existence commit of every pending overwrite of committed content in it, never for an append's or hole fill's, and, where its range covers committed content, for a recorded sync mark covering the sync; a capacity refusal is answered as RFC 8 §10.2 classifies it, a transient one retry-later for as long as it lasts, never "no space" because a deadline passed; only a logical quota or a permanent cause is answered at once. |
-| N18 | The owner string (`Name`), `Boot` (derived from the verifier and the minor version), creating principal (`Owner`), state protection (`Protect`), back-channel node, session holders and, in the adapter's own bytes, the last `CREATE_SESSION` sequence and reply of a client are in its durable record; its lease expiry is not; an unconfirmed client is a `Pending` proposal, volatile at the node that answered; an NFSv4.0 owner's sequence and confirmation are in its `Sequence`. |
+| N18 | The owner string (`Name`), `Boot` (derived from the verifier and the call it came by), creating principal (`Owner`), state protection (`Protect`), back-channel node, session holders and, in the adapter's own bytes, the last `CREATE_SESSION` sequence and reply of a client are in its durable record; its lease expiry is not; an unconfirmed client is a `Pending` proposal, volatile at the node that answered; an NFSv4.0 owner's sequence and confirmation are in its `Sequence`. |
 | N19 | A directory's `change_info4` is never reported atomic, and NFSv3 pre-operation attributes are returned only when read from the File and its overlay in the hold of the file's accept lock that accepts the operation, never for a directory. |
 | N20 | A single node advertises no pNFS role and answers every layout operation `NFS4ERR_NOTSUPP`. |
 | N21 | An NLM waiter ends only as RFC 14's lifetime ends it; no adapter timer drops it, and no cancel is answered before `CancelLock` returns; an `NLMPROC4_GRANTED` is resent until the host answers, and a granted lock is never released for a silence. |

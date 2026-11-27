@@ -1104,8 +1104,8 @@ pool:
   whatever reply it caches; the back channel is charged at most the 16 slots
   the node uses ([RFC 21 §3.1](rfc-21-nfs.md#3.1%20Slot%20tables)), though it
   is granted what the client offered;
-- each channel's reply cache — slots times the cached reply size, at most
-  64 × 8 KiB = 512 KiB on the fore channel
+- the fore channel's reply cache, slots times the cached reply size, at most
+  64 × 8 KiB = 512 KiB
   ([RFC 21 §3.1](rfc-21-nfs.md#3.1%20Slot%20tables)).
 
 The two fixed costs are proposed at 4 KiB and 256 bytes and settled by §8's M2.
