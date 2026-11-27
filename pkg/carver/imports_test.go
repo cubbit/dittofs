@@ -9,9 +9,9 @@ import (
 
 // table is every package of the carver and what it may reach (RFC 2 §1.1,
 // RFC 0 §1.2): the root, the contract, its own settings value and the entity
-// package; the settings value nothing; carve and the fold the root, with the
-// settings value it brings, and the entity package with the libraries it
-// imports, BLAKE3 among them. Never another component's implementation, never
+// package; the settings value nothing; the chunker the settings value alone;
+// carve and the fold the root, with the settings value it brings, and the
+// entity package with the libraries it imports, BLAKE3 among them. Never another component's implementation, never
 // v1's carver. Besides the package it tests, a test may reach the
 // architecture tests' support and carvetest, the carver's test components,
 // which no production row admits; carvetest reaches the standard library
@@ -21,12 +21,18 @@ var table = []archtest.Row{
 	{Pkg: "pkg/carver", Reach: []string{"pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: carverTests},
 	{Pkg: "pkg/carver/internal/params", Tests: carverTests},
 	{Pkg: "pkg/carver/carve", Reach: []string{"pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: carverTests},
+	{Pkg: "pkg/carver/internal/chunker", Reach: []string{"pkg/carver/internal/params"}, Tests: chunkerTests, TestLibs: archtest.EntityLibs()},
 	{Pkg: "pkg/carver/assembler", Reach: []string{"pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: carverTests},
 	{Pkg: "pkg/carver/internal/carvetest", Tests: []string{"internal/prof"}, TestLibs: blake3Libs},
 }
 
 // carverTests is what every carver package's tests may reach besides.
 var carverTests = append(slices.Clone(archtest.Support), "pkg/carver/internal/carvetest")
+
+// chunkerTests is what the chunker's tests may reach besides: the carver's
+// tests' reach, and carve with what it reaches, so a test cuts under the
+// settings the carver's constructor builds.
+var chunkerTests = append(slices.Clone(carverTests), "pkg/carver", "pkg/carver/carve", "pkg/metadata/entity")
 
 // blake3Libs is lukechampine.com/blake3 with what it imports: the entity
 // package's libraries but its UUID one.
@@ -41,7 +47,7 @@ func TestImportRule(t *testing.T) {
 	}
 
 	for _, g := range graphs {
-		for _, want := range []string{"pkg/carver", "pkg/carver [test]", "pkg/carver/internal/params", "pkg/carver/carve", "pkg/carver/assembler", "pkg/carver/internal/carvetest", "pkg/carver/internal/carvetest [test]"} {
+		for _, want := range []string{"pkg/carver", "pkg/carver [test]", "pkg/carver/internal/params", "pkg/carver/carve", "pkg/carver/internal/chunker", "pkg/carver/internal/chunker [test]", "pkg/carver/assembler", "pkg/carver/internal/carvetest", "pkg/carver/internal/carvetest [test]"} {
 			if !slices.Contains(g.Roots, archtest.Module+want) {
 				t.Fatalf("the walk listed %q, not %s", g.Roots, want)
 			}
