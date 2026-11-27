@@ -12,14 +12,29 @@ import (
 // package; the settings value nothing; carve and the fold the root, with the
 // settings value it brings, and the entity package with the libraries it
 // imports, BLAKE3 among them. Never another component's implementation, never
-// v1's carver. A test may reach besides the package it tests and the
-// architecture tests' support. A row is an upper bound: a
-// package that reaches less passes.
+// v1's carver. Besides the package it tests, a test may reach the
+// architecture tests' support and carvetest, the carver's test components,
+// which no production row admits; carvetest reaches the standard library
+// alone, and its tests BLAKE3 and the race constant besides. A row is an upper
+// bound: a package that reaches less passes.
 var table = []archtest.Row{
-	{Pkg: "pkg/carver", Reach: []string{"pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: archtest.Support},
-	{Pkg: "pkg/carver/internal/params", Tests: archtest.Support},
-	{Pkg: "pkg/carver/carve", Reach: []string{"pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: archtest.Support},
-	{Pkg: "pkg/carver/assembler", Reach: []string{"pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: archtest.Support},
+	{Pkg: "pkg/carver", Reach: []string{"pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: carverTests},
+	{Pkg: "pkg/carver/internal/params", Tests: carverTests},
+	{Pkg: "pkg/carver/carve", Reach: []string{"pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: carverTests},
+	{Pkg: "pkg/carver/assembler", Reach: []string{"pkg/carver", "pkg/carver/internal/params", "pkg/metadata/entity"}, Libs: archtest.EntityLibs(), Tests: carverTests},
+	{Pkg: "pkg/carver/internal/carvetest", Tests: []string{"internal/prof"}, TestLibs: blake3Libs},
+}
+
+// carverTests is what every carver package's tests may reach besides.
+var carverTests = append(slices.Clone(archtest.Support), "pkg/carver/internal/carvetest")
+
+// blake3Libs is lukechampine.com/blake3 with what it imports.
+var blake3Libs = []string{
+	"github.com/klauspost/cpuid/v2",
+	"golang.org/x/sys/unix",
+	"lukechampine.com/blake3",
+	"lukechampine.com/blake3/bao",
+	"lukechampine.com/blake3/guts",
 }
 
 // Every package under pkg/carver, its tests included, reaches only what its
@@ -31,7 +46,7 @@ func TestImportRule(t *testing.T) {
 	}
 
 	for _, g := range graphs {
-		for _, want := range []string{"pkg/carver", "pkg/carver [test]", "pkg/carver/internal/params", "pkg/carver/carve", "pkg/carver/assembler"} {
+		for _, want := range []string{"pkg/carver", "pkg/carver [test]", "pkg/carver/internal/params", "pkg/carver/carve", "pkg/carver/assembler", "pkg/carver/internal/carvetest"} {
 			if !slices.Contains(g.Roots, archtest.Module+want) {
 				t.Fatalf("the walk listed %q, not %s", g.Roots, want)
 			}
@@ -152,6 +167,18 @@ func TestImportRuleRefuses(t *testing.T) {
 		{"the fold importing a library", m("pkg/carver/assembler"), map[string][]string{
 			m("pkg/carver/assembler"): {m("pkg/carver"), "github.com/klauspost/compress/zstd"},
 		}, []string{"pkg/carver/assembler imports github.com/klauspost/compress/zstd, which row pkg/carver/assembler does not allow"}},
+		{"carve importing the test components", m("pkg/carver/carve"), map[string][]string{
+			m("pkg/carver/carve"): {m("pkg/carver"), m("pkg/carver/internal/carvetest")},
+		}, []string{"pkg/carver/carve reaches pkg/carver/internal/carvetest, which row pkg/carver/carve does not allow"}},
+		{"the test components importing BLAKE3", m("pkg/carver/internal/carvetest"), map[string][]string{
+			m("pkg/carver/internal/carvetest"): {"lukechampine.com/blake3"},
+		}, []string{"pkg/carver/internal/carvetest imports lukechampine.com/blake3, which row pkg/carver/internal/carvetest does not allow"}},
+		{"the test components importing the root", m("pkg/carver/internal/carvetest"), map[string][]string{
+			m("pkg/carver/internal/carvetest"): {m("pkg/carver")},
+		}, []string{"pkg/carver/internal/carvetest reaches pkg/carver, which row pkg/carver/internal/carvetest does not allow"}},
+		{"the test components' tests importing BLAKE3", m("pkg/carver/internal/carvetest [test]"), map[string][]string{
+			m("pkg/carver/internal/carvetest [test]"): {"lukechampine.com/blake3", m("internal/prof")},
+		}, nil},
 		{"the settings value importing BLAKE3", m("pkg/carver/internal/params"), map[string][]string{
 			m("pkg/carver/internal/params"): {"lukechampine.com/blake3"},
 		}, []string{"pkg/carver/internal/params imports lukechampine.com/blake3, which row pkg/carver/internal/params does not allow"}},
