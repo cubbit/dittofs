@@ -1,3 +1,5 @@
+//go:build jdemo
+
 package scenarios
 
 import (
@@ -59,6 +61,10 @@ func basicBeats() []jdemo.Beat {
 			},
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
+				if h == nil {
+					d.NoShare()
+					return
+				}
 				v, err := h.WriteAt(context.Background(), jdemo.StoryFile, 0, []byte("hello world"), 0)
 				d.Codef("    v, err := h.WriteAt(ctx, FILE, offset_0, []byte(\"hello world\"), mtimeNone)")
 				d.Stash(v, err)
@@ -74,6 +80,10 @@ func basicBeats() []jdemo.Beat {
 			},
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
+				if h == nil {
+					d.NoShare()
+					return
+				}
 				v, err := h.WriteAt(context.Background(), jdemo.StoryFile, 2, []byte("XY"), 0)
 				d.Codef("    v, err := h.WriteAt(ctx, FILE, offset_2, []byte(\"XY\"), mtimeNone)")
 				d.Stash(v, err)
@@ -90,6 +100,10 @@ func basicBeats() []jdemo.Beat {
 			},
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
+				if h == nil {
+					d.NoShare()
+					return
+				}
 				payload := make([]byte, 300_000_000)
 				pattern := []byte("0123456789abcdef")
 				for i := range payload {
@@ -105,6 +119,10 @@ func basicBeats() []jdemo.Beat {
 			Caption: "Sync is durability's receipt: one mark per stream, naming where the durable records reached — the thing the caller records and hands to the next open",
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
+				if h == nil {
+					d.NoShare()
+					return
+				}
 				marks, err := h.Sync(context.Background(), jdemo.StoryFile)
 				d.Codef("    marks, err := h.Sync(ctx, FILE)")
 				if err != nil {
@@ -122,6 +140,10 @@ func basicBeats() []jdemo.Beat {
 			Caption: "ReadAt serves what the index holds and reports the rest as missing extents — never zeros: the gap between hello and the pattern is right here",
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
+				if h == nil {
+					d.NoShare()
+					return
+				}
 				p := make([]byte, 16)
 				n, missing, held, asOf, err := h.ReadAt(context.Background(), jdemo.StoryFile, 0, p)
 				d.Codef("    n, missing, held, asOf, err := h.ReadAt(ctx, FILE, offset_0, readBuf_16B)")
@@ -143,6 +165,10 @@ func basicBeats() []jdemo.Beat {
 			Caption: "Since walks the versions above the floor: every held extent and removal marker, version by version — the journal's own changelog",
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
+				if h == nil {
+					d.NoShare()
+					return
+				}
 				d.Codef("    for ch := range h.Since(ctx, FILE, fromStart)       // journal.Version{} {")
 				for ch, err := range h.Since(context.Background(), jdemo.StoryFile, journal.Version{}) {
 					if err != nil {
@@ -165,6 +191,10 @@ func basicBeats() []jdemo.Beat {
 			},
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
+				if h == nil {
+					d.NoShare()
+					return
+				}
 				v, err := h.Truncate(context.Background(), jdemo.StoryFile, 32)
 				d.Codef("    v, err := h.Truncate(ctx, FILE, newSize_32B)")
 				d.Stash(v, err)
@@ -172,13 +202,17 @@ func basicBeats() []jdemo.Beat {
 		},
 		{
 			Title:   "settle the removal",
-			Caption: "Settle says metadata has recorded the truncation: the marker goes, the superseded ranges go with it — Since narrows to what is still owed",
+			Caption: "Settle says the removal is accounted for (the demo holds no metadata; it calls it, as an engine that decided never to record would): the marker goes, the superseded ranges go with it — Since narrows to what is still owed",
 			Mutates: true,
 			Watch: []jdemo.Watching{
 				{Kind: jdemo.WatchMarkers, Hint: "the marker goes"},
 			},
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
+				if h == nil {
+					d.NoShare()
+					return
+				}
 				d.Codef("    h.Settle(FILE, truncateVersion)      // journal.Version{Counter: %d}      // the truncate's version", d.Stashed.Counter)
 				h.Settle(jdemo.StoryFile, d.Stashed)
 				d.Codef("    for ch := range h.Since(ctx, FILE, fromStart)       // journal.Version{} {")
@@ -208,6 +242,10 @@ func basicBeats() []jdemo.Beat {
 			},
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
+				if h == nil {
+					d.NoShare()
+					return
+				}
 				res, err := h.Reserve(8192, 2)
 				if err != nil {
 					d.Codef("    res, err := h.Reserve(reserveBytes_8KiB, writes_2)")
@@ -225,6 +263,10 @@ func basicBeats() []jdemo.Beat {
 			Caption: "the engine offloads dirty extents to the remote tier, marking them in the index; the journal's own answer names what this build owes",
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
+				if h == nil {
+					d.NoShare()
+					return
+				}
 				err := h.Offload(context.Background(), jdemo.StoryFile, d.Stashed, 0, 0,
 					func(context.Context, journal.Offer, func([]journal.Extent) error) error {
 						return nil

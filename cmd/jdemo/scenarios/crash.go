@@ -1,3 +1,5 @@
+//go:build jdemo
+
 package scenarios
 
 import (
@@ -27,6 +29,10 @@ func CrashStory() ([]jdemo.Beat, journal.Settings) {
 			},
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
+				if h == nil {
+					d.NoShare()
+					return
+				}
 				v, werr := h.WriteAt(context.Background(), jdemo.StoryFile, 0, []byte("hello world"), 0)
 				d.Codef("    v, err := h.WriteAt(ctx, FILE, offset_0, []byte(\"hello world\"), mtimeNone)")
 				d.Stash(v, werr)
@@ -53,6 +59,10 @@ func CrashStory() ([]jdemo.Beat, journal.Settings) {
 			},
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
+				if h == nil {
+					d.NoShare()
+					return
+				}
 				v, werr := h.WriteAt(context.Background(), jdemo.StoryFile, 2, []byte("XY"), 0)
 				d.Codef("    v, err := h.WriteAt(ctx, FILE, offset_2, []byte(\"XY\"), mtimeNone)")
 				d.Stash(v, werr)
@@ -67,6 +77,10 @@ func CrashStory() ([]jdemo.Beat, journal.Settings) {
 			},
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
+				if h == nil {
+					d.NoShare()
+					return
+				}
 				v, terr := h.Truncate(context.Background(), jdemo.StoryFile, 32)
 				d.Codef("    v, err := h.Truncate(ctx, FILE, newSize_32B)")
 				d.Stash(v, terr)
@@ -77,6 +91,10 @@ func CrashStory() ([]jdemo.Beat, journal.Settings) {
 			Caption: "Since yields everything a recovering caller needs from the journal: held extents and unsettled markers, version by version",
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
+				if h == nil {
+					d.NoShare()
+					return
+				}
 				d.Codef("    for ch := range h.Since(ctx, FILE, fromStart) {")
 				for ch, serr := range h.Since(context.Background(), jdemo.StoryFile, journal.Version{}) {
 					if serr != nil {

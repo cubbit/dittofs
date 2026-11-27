@@ -1,3 +1,5 @@
+//go:build jdemo
+
 // Command jdemo is an interactive, scripted demo of the journal: it owns a
 // real journal in its own process and walks a story of beats, one Enter at
 // a time, with views the presenter picks between beats.
@@ -8,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/cubbit/dittofs/pkg/journal"
 
@@ -28,13 +32,14 @@ func main() {
 var mainOptions []journal.Option
 
 // runMain is the binary: flags, the story, and the cleanup. The default
-// journal directory — six preallocated 256 MiB segments, about 1.5 GiB of
-// real blocks per run — is removed on the way out so rehearsals do not
-// fill the disk; a directory the presenter named stays, it is theirs.
+// journal directory is a fresh unpredictable temporary one, with the spare
+// segments the journal preallocates as real blocks; it is removed on the way
+// out, interrupt included, so rehearsals do not fill the disk. A directory
+// the presenter named stays, it is theirs.
 func runMain(args []string, in io.Reader, out, errw io.Writer) int {
 	flags := flag.NewFlagSet("jdemo", flag.ContinueOnError)
 	flags.SetOutput(errw)
-	dir := flags.String("dir", filepath.Join(os.TempDir(), fmt.Sprintf("jdemo-%d", os.Getpid()), "journal"), "journal directory")
+	dir := flags.String("dir", "", "journal directory (default: a fresh temporary one, removed on exit)")
 	story := flags.String("story", "basic", "which story to walk")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -43,8 +48,25 @@ func runMain(args []string, in io.Reader, out, errw io.Writer) int {
 		_, _ = fmt.Fprintf(errw, "jdemo: no such story %q (have: %s)\n", *story, strings.Join(scenarios.Names(), ", "))
 		return 2
 	}
-	if flags.Lookup("dir").DefValue == *dir {
-		defer func() { _ = os.RemoveAll(filepath.Dir(*dir)) }()
+	if *dir == "" {
+		tmp, err := os.MkdirTemp("", "jdemo-")
+		if err != nil {
+			_, _ = fmt.Fprintf(errw, "jdemo: %v\n", err)
+			return 1
+		}
+		*dir = filepath.Join(tmp, "journal")
+		defer func() { _ = os.RemoveAll(tmp) }()
+		// A blocked read of the presenter's Enter cannot be woken, so an
+		// interrupt removes the temporary directory itself and exits.
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+		defer signal.Stop(sig)
+		go func() {
+			if _, ok := <-sig; ok {
+				_ = os.RemoveAll(tmp)
+				os.Exit(130)
+			}
+		}()
 	}
 
 	d := jdemo.NewDemo(*dir, in, out)

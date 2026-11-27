@@ -1,3 +1,5 @@
+//go:build jdemo
+
 // Package walk re-exports the journal's own segment scanner, so a tool
 // outside the journal's tree can read a journal directory's bytes with the
 // real decoder instead of a copy of the layout.

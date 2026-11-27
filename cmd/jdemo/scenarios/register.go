@@ -1,3 +1,5 @@
+//go:build jdemo
+
 // Package scenarios holds the demo's stories, one file each, registered
 // here: the interactive driver's script, minus its machinery.
 package scenarios

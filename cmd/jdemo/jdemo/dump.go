@@ -1,3 +1,5 @@
+//go:build jdemo
+
 // The (d) view reads the journal's segment files with the journal's own
 // scanner, re-exported by pkg/journal/walk for this throwaway demo
 // branch, so what it shows is the layout the journal reads: a record that
@@ -23,7 +25,8 @@ import (
 type dumpSeg struct {
 	Spare  bool // never taken as a segment: a zero header
 	Scan   walk.Scan
-	Bodies [][]byte
+	Bodies [][]byte // at most dumpBodyLimit bytes of each
+	Sizes  []int    // the true body size of each record
 	Torn   bool
 }
 
@@ -57,11 +60,13 @@ func readSegment(path string, id walk.JournalID) (dumpSeg, error) {
 		}
 	}
 	for _, r := range sc.Records {
-		body := make([]byte, r.Header.BodySize())
+		size := int(r.Header.BodySize())
+		body := make([]byte, min(size, dumpBodyLimit))
 		if _, err := f.ReadAt(body, r.Header.Offset+walk.RecordHeaderSize); err != nil && len(body) > 0 {
 			return dumpSeg{}, err
 		}
 		seg.Bodies = append(seg.Bodies, body)
+		seg.Sizes = append(seg.Sizes, size)
 	}
 	return seg, nil
 }
@@ -110,7 +115,7 @@ func (d *Demo) viewDump() {
 				name, h.Kind, fileHexShort(h.File.Bytes()), h.Extent.Off, h.Extent.Off+h.Extent.Len,
 				h.Version.Counter, h.Tag, h.Seq, h.Offset)
 			if len(seg.Bodies[i]) > 0 {
-				d.Hexdump(seg.Bodies[i], 8+8) // 16 lanes
+				d.hexdumpOf(seg.Bodies[i], seg.Sizes[i], 8+8) // 16 lanes
 			}
 		}
 		switch {
@@ -132,7 +137,10 @@ func (d *Demo) viewDump() {
 // them; a truncated body says what remains.
 const dumpBodyLimit = 512
 
-func (d *Demo) Hexdump(b []byte, wide int) {
+func (d *Demo) Hexdump(b []byte, wide int) { d.hexdumpOf(b, len(b), wide) }
+
+// hexdumpOf dumps b, the first bytes of a body of total bytes.
+func (d *Demo) hexdumpOf(b []byte, total, wide int) {
 	limit := len(b)
 	if limit > dumpBodyLimit {
 		limit = dumpBodyLimit
@@ -150,8 +158,8 @@ func (d *Demo) Hexdump(b []byte, wide int) {
 		}
 		d.Printf("      %-48s  %s\n", hexes.String(), ascii.String())
 	}
-	if len(b) > limit {
-		d.Printf("      (+%d more bytes)\n", len(b)-limit)
+	if total > limit {
+		d.Printf("      (+%d more bytes)\n", total-limit)
 	}
 }
 

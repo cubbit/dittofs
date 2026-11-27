@@ -1,3 +1,5 @@
+//go:build jdemo
+
 package jdemo
 
 import (
@@ -65,10 +67,8 @@ type Demo struct {
 	Stashed journal.Version // the last mutating beat's issued version
 
 	// LimitsReservation holds the limits story's reserve-first beat's
-	// reservation for the escape beat that spends it; LimitsRefused
-	// records that the filler met the share's refusal.
+	// reservation for the escape beat that spends it.
 	LimitsReservation *journal.Reservation
-	LimitsRefused     bool
 
 	// base holds each diffed view's rows as they stood just before the
 	// current beat ran: what the diff layer compares a look against.
@@ -90,7 +90,7 @@ func (d *Demo) story() Story {
 // show on out.
 func NewDemo(dir string, in io.Reader, out io.Writer) *Demo {
 	d := &Demo{
-		out: out, in: bufio.NewReader(in), Dir: dir,
+		out: out, in: bufio.NewReader(in), Dir: filepath.Clean(dir),
 		StoryID: "basic",
 		H:       make(map[journal.ShareTag]*journal.Handle),
 		Tag:     1,
@@ -128,9 +128,8 @@ func (d *Demo) Run() error {
 	return nil
 }
 
-// open initialises or opens the journal exactly the way the CLI's daemon
-// did, minus the socket: state file → open; fresh empty directory → init,
-// record the identity at once, open; anything else refused.
+// open initialises or opens the journal: state file → open; fresh empty
+// directory → init, record the identity at once, open; anything else refused.
 // OpenOptions are the options the demo opened its journal with: a beat that
 // calls journal.Open again passes the same clock and settings, so the
 // answer it gets is the journal's own, not an artifact of a bare call.
@@ -212,6 +211,12 @@ func (d *Demo) open(ctx context.Context) error {
 	return nil
 }
 
+// NoShare is the answer of a beat whose share handle is missing because the
+// attach beat was refused.
+func (d *Demo) NoShare() {
+	d.Yellowf("    // → no share handle; the attach beat was refused")
+}
+
 // RaiseLimit raises j's version limit a window past floor and records the new
 // limit before any write, so a crash leaves a safe lower floor on disk.
 func (d *Demo) RaiseLimit(j *journal.Journal, id journal.JournalID, floor uint64) error {
@@ -255,12 +260,19 @@ func awaitSpares(ctx context.Context, j *journal.Journal, story Story) error {
 func dirEmpty(dir string) (bool, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return true, nil
 		}
 		return false, err
 	}
-	return len(entries) == 0, nil
+	// An Init that crashed leaves only its temporary format file, which a
+	// second Init accepts.
+	for _, e := range entries {
+		if e.Name() != "format.tmp" {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // beat shows what it is about to do — where it stands in the story, its

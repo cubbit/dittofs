@@ -1,3 +1,5 @@
+//go:build jdemo
+
 package jdemo
 
 import (

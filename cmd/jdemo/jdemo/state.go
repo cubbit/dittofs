@@ -1,16 +1,20 @@
+//go:build jdemo
+
 package jdemo
 
 import (
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
 	"github.com/cubbit/dittofs/pkg/journal"
 )
 
-// stateFile is what the demo daemon records durably beside the journal
+// stateFile is what the demo records durably beside the journal
 // directory: the journal's identity, which Open requires, and the version
 // limit it last set, which a caller that records its limit before raising it
 // passes back as the open's floor. Without this file a journal on disk could
@@ -36,8 +40,26 @@ func saveState(path string, st stateFile) error {
 	if err != nil {
 		return fmt.Errorf("state file %s: %w", path, err)
 	}
-	if err := os.WriteFile(path, b, 0o600); err != nil {
+	// Temp file, fsync, rename: a crash leaves the old state or the new,
+	// never a torn file that locks the directory out.
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		return fmt.Errorf("state file %s: %w", path, err)
+	}
+	_, werr := f.Write(b)
+	if werr == nil {
+		werr = f.Sync()
+	}
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Rename(tmp, path)
+	}
+	if werr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("state file %s: %w", path, werr)
 	}
 	return nil
 }
@@ -48,7 +70,7 @@ func saveState(path string, st stateFile) error {
 func LoadState(path string) (stateFile, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return stateFile{}, err
 		}
 		return stateFile{}, fmt.Errorf("state file %s: %w", path, err)

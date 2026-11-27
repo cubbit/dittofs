@@ -1,8 +1,9 @@
+//go:build jdemo
+
 package scenarios
 
 import (
 	"context"
-	"strings"
 
 	"github.com/cubbit/dittofs/pkg/journal"
 
@@ -47,6 +48,10 @@ func LimitsStory() ([]jdemo.Beat, journal.Settings) {
 			Caption: "the reservation is charged the budget it holds — take it while there is budget, or the escape hatch is refused with the rest; this is why the engine reserves before a burst, never after",
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
+				if h == nil {
+					d.NoShare()
+					return
+				}
 				// Reserve the double of one fill: a write costs a little
 				// more than its payload — entries, a footer slot — so an
 				// exactly-payload reservation cannot hold the very write
@@ -66,6 +71,10 @@ func LimitsStory() ([]jdemo.Beat, journal.Settings) {
 			Caption: "40 MiB writes, one at a time, until the share's budget refuses one: the journal's own words, counting what is missing",
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
+				if h == nil {
+					d.NoShare()
+					return
+				}
 				d.Codef("    for { v, err := h.WriteAt(ctx, FILE, offset, payload_%s, mtimeNone) }", jdemo.Bytes(limitsFillEach))
 				off := int64(0)
 				n := 0
@@ -82,7 +91,6 @@ func LimitsStory() ([]jdemo.Beat, journal.Settings) {
 					n++
 					if werr != nil {
 						d.Yellowf("    // → write %d: %v", n, werr)
-						d.LimitsRefused = true
 						return
 					}
 					off += limitsFillEach
@@ -137,6 +145,10 @@ func LimitsStory() ([]jdemo.Beat, journal.Settings) {
 			},
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
+				if h == nil {
+					d.NoShare()
+					return
+				}
 				before := d.J.Stats()
 				v, terr := h.Truncate(context.Background(), jdemo.StoryFile, 32)
 				d.Codef("    v, err := h.Truncate(ctx, FILE, newSize_32B)")
@@ -176,7 +188,7 @@ func LimitsStory() ([]jdemo.Beat, journal.Settings) {
 			Run: func(d *jdemo.Demo) {
 				h := d.H[d.Tag]
 				if h == nil {
-					d.Yellowf("    // → no share handle; the attach beat was refused")
+					d.NoShare()
 					return
 				}
 				err := h.Offload(context.Background(), jdemo.StoryFile, d.Stashed, 0, 0,
@@ -195,5 +207,3 @@ func LimitsStory() ([]jdemo.Beat, journal.Settings) {
 		MaxBytes:        limitsMaxBytes,
 	}
 }
-
-var _ = strings.Contains
