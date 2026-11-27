@@ -55,6 +55,7 @@ var rows = []row{
 	{"unknown", unknown},
 	{"replaced", replaced},
 	{"destroyed", destroyed},
+	{"owned", owned},
 	{"calls", calls},
 }
 
@@ -257,6 +258,39 @@ func destroyed(ctx context.Context, h Harness) error {
 	}
 
 	return served(ctx, h, kept, materialA)
+}
+
+// The caller owns the slice Get returns (keys.Provider.Get): a change to it
+// never reaches the provider, and a later Replace or Destroy never changes it.
+// Catches a provider that returns the slice it holds, and one that wipes the
+// slices it handed out.
+func owned(ctx context.Context, h Harness) error {
+	id := h.Give(namespace(1), keys.KindDataKey, "owned", materialA)
+
+	got, err := h.Get(ctx, id)
+	if err != nil {
+		return fmt.Errorf("Get(%q): %w, want its content", id.ID, err)
+	}
+
+	got[0] ^= 0xff
+
+	if err := served(ctx, h, id, materialA); err != nil {
+		return fmt.Errorf("after the caller changed the slice Get returned: %w", err)
+	}
+
+	held, err := h.Get(ctx, id)
+	if err != nil {
+		return fmt.Errorf("Get(%q): %w, want its content", id.ID, err)
+	}
+
+	h.Replace(id, materialB)
+	h.Destroy(id)
+
+	if !bytes.Equal(held, materialA) {
+		return fmt.Errorf("a slice Get returned = %x after a Replace and a Destroy, want %x unchanged", held, materialA)
+	}
+
+	return nil
 }
 
 // Calls rises by exactly one for each Current and each Get, failing calls

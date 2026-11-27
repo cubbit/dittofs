@@ -227,6 +227,44 @@ func (p callerFingerprint) Get(ctx context.Context, id keys.MaterialID) ([]byte,
 	return b, err
 }
 
+// aliased returns the slice it holds from Get.
+type aliased struct{ *Memory }
+
+func (p aliased) Get(ctx context.Context, id keys.MaterialID) ([]byte, error) {
+	if _, err := p.Memory.Get(ctx, id); err != nil {
+		return nil, err
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.entries[slot{id.Namespace, id.Kind, id.ID}].content, nil
+}
+
+// wipes zeroes on Destroy every slice its Get handed out for that ID.
+type wipes struct {
+	*Memory
+
+	handed map[keys.MaterialID][][]byte
+}
+
+func (p wipes) Get(ctx context.Context, id keys.MaterialID) ([]byte, error) {
+	b, err := p.Memory.Get(ctx, id)
+	if err == nil {
+		p.handed[zeroFingerprint(id)] = append(p.handed[zeroFingerprint(id)], b)
+	}
+
+	return b, err
+}
+
+func (p wipes) Destroy(id keys.MaterialID) {
+	p.Memory.Destroy(id)
+
+	for _, b := range p.handed[zeroFingerprint(id)] {
+		clear(b)
+	}
+}
+
 // destroyedAsUnavailable reports destroyed material as unavailable.
 type destroyedAsUnavailable struct{ *Memory }
 
@@ -329,6 +367,10 @@ func TestEachBrokenProviderFailsItsRow(t *testing.T) {
 			return callerFingerprint{NewMemory(), make(map[keys.MaterialID][]byte)}
 		}, []string{"replaced"}},
 		{"destroyed reported as unavailable", func() Harness { return destroyedAsUnavailable{NewMemory()} }, []string{"destroyed"}},
+		{"the held slice returned", func() Harness { return aliased{NewMemory()} }, []string{"owned"}},
+		{"handed-out slices wiped on Destroy", func() Harness {
+			return wipes{NewMemory(), make(map[keys.MaterialID][][]byte)}
+		}, []string{"owned"}},
 		{"a kind never given reported as unavailable", func() Harness { return unknownKindUnavailable{NewMemory()} }, []string{"unknown"}},
 		{"failing calls left uncounted", func() Harness { return &countsSuccesses{Memory: NewMemory()} }, []string{"calls"}},
 		{"Give counted as a call", func() Harness { return &countsGives{Memory: NewMemory()} }, []string{"calls"}},
@@ -377,6 +419,10 @@ func TestEachBrokenProviderFailsOnItsCheck(t *testing.T) {
 			return callerFingerprint{NewMemory(), make(map[keys.MaterialID][]byte)}
 		}, replaced, "naming its new content's fingerprint"},
 		{"Give counted as a call", func() Harness { return &countsGives{Memory: NewMemory()} }, calls, "over a Give, a Replace and a Destroy"},
+		{"the held slice returned", func() Harness { return aliased{NewMemory()} }, owned, "after the caller changed the slice Get returned"},
+		{"handed-out slices wiped on Destroy", func() Harness {
+			return wipes{NewMemory(), make(map[keys.MaterialID][][]byte)}
+		}, owned, "after a Replace and a Destroy"},
 	} {
 		err := c.row(t.Context(), c.build())
 		if got := fmt.Sprint(err); err == nil || !strings.Contains(got, c.want) {
