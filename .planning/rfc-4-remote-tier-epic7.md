@@ -146,7 +146,7 @@ cited by number and title and not copied.
 | rule 4, profiling | T7.4, T7.5 | recording allocates nothing, asserted with `testing.AllocsPerRun` in `unit`'s `remote-allocs` option, which E6 registers without `-race` and T7.4 widens to `./internal/node/content` (RFC 25 §2.9) |
 | rule 5, public interface and internals ([`CLAUDE.md`, "Verifying a change"](../CLAUDE.md#verifying-a-change)) | all | each key is tested where its value is consumed: a refusal through `Check`, which the API's write calls, and through `Read`, which a start calls; a credential at the API's seal; a trust root by a client that dials with it; a series by a scrape, what an operator reads |
 | rule 6, known failures shrink | none | `unit` keeps no `known.yaml`; each test lands green with its subtask |
-| rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | T7.1, T7.2, T7.3 | `pkg/remote/s3` gains stdlib imports only (`crypto/x509`, `encoding/pem`, `net/url`, `strings`); `pkg/settings`, `pkg/metrics`, `pkg/carver` and `pkg/metadata/entity` are imported by the content wiring alone, a composer; E1's import walk covers the new file. The v1 declarations of `remote.endpoint` and `remote.credential` meet the real section (D12). The API imports neither `internal/node/content` nor `pkg/remote`, as `internal/node/arch_test.go`'s `TestImportRules`, `TestNoComponentImports` and `TestAPIClosure` require: it takes the credential check through its `Deps` (D5) |
+| rule 7, v2 ignores v1, and imports only what RFC 0 §1.2 allows | T7.1, T7.2, T7.3 | `pkg/remote/s3` gains imports from the standard library only; `pkg/settings`, `pkg/metrics`, `pkg/carver` and `pkg/metadata/entity` are imported by the content wiring alone, a composer; E1's import walk covers the new file. The v1 declarations of `remote.endpoint` and `remote.credential` meet the real section (D12). The API imports neither `internal/node/content` nor `pkg/remote`, as `internal/node/arch_test.go`'s `TestImportRules`, `TestNoComponentImports` and `TestAPIClosure` require: it takes the credential check through its `Deps` (D5) |
 | rule 8, real dependencies for properties of those dependencies ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | T7.3 | the trust root converted from a setting is shown trusted by a TLS handshake with an `httptest.NewTLSServer` listener on `127.0.0.1:0`, not by inspecting the pool |
 | rule 9, code comment conventions ([`CLAUDE.md`, "Code comments"](../CLAUDE.md#code-comments)) | T7.2, T7.4, T7.5 | D6's `decision:` at the format version's default, D13's at the bucket's and prefix's location tag, D8's at a value outside the closed sets and at an unbound prefix, D10's at the alert's window and granularity |
 | rule 10, a test must be able to fail ([`CLAUDE.md`, "Writing tests"](../CLAUDE.md#writing-tests)) | all | each test names the break it catches. R7 is a review rule on the key table, backed by the Appendix B comparison, which fails a key with no RFC row; R19 is a review rule while one block format version exists (T7.2) |
@@ -317,8 +317,11 @@ Every obligation the sources place on this epic, numbered so subtasks and tests 
   with `Validate`'s refusal; R17's acceptance criterion reads either. Prior art:
   `internal/node/settings.go`'s `newTable`, which holds `identity` beside `identity.directory`.
 - **D4. One rule per check, shared with the client.** `Settings.Validate` and `NewClient` call one
-  unexported `checkEndpoint` (`https://` and a host); `NamespaceSettings.Validate` and `Open` call
-  one `checkPrefix` (non-empty, ends in `/`, E4's D1); `Validate` and E5's `judgeClass` read one
+  unexported `checkEndpoint` (`https://` and a host, and no query string, fragment or user info,
+  so no credential rides in the URL); `NamespaceSettings.Validate` and `Open` call one
+  `checkPrefix` (non-empty, ends in `/`, E4's D1, valid UTF-8 and free of control bytes). The
+  query, fragment, user-info, UTF-8 and control-byte refusals are the user's decision of
+  2026-11-27. `Validate` and E5's `judgeClass` read one
   unexported allowlist of the classes whose gets need no restore (RFC 4 C.1): `STANDARD`,
   `REDUCED_REDUNDANCY`, `STANDARD_IA`, `ONEZONE_IA`, `INTELLIGENT_TIERING`, `GLACIER_IR` and
   `EXPRESS_ONEZONE`. `GLACIER` and `DEEP_ARCHIVE` are off it because a get of either needs a
@@ -547,17 +550,20 @@ test/suites.yaml                 T7.4  unit's remote-allocs option widened to ./
   `Validate`, over the unexported `checkEndpoint`, `checkPrefix`, `checkTrustRoots` and class allowlist of D4,
   which `NewClient`, `Open` and E5's `judgeClass` call once they land. Consumed by T7.2 and T7.3.
 - **Acceptance criteria:**
-  - `Validate` accepts each of D4's seven classes and refuses an `http://` or host-less endpoint, an
-    empty region, bucket or storage class, `GLACIER`, `DEEP_ARCHIVE` and a class on no list
-    (`OUTPOSTS`), and a trust-root value with no certificate, with a good
+  - `Validate` accepts each of D4's seven classes and refuses an `http://` or host-less endpoint,
+    an endpoint with a query string (`https://h/?a=b`), a fragment (`https://h/#f`) or user info
+    (`https://key:secret@h/`) (the user's decision of 2026-11-27), an empty region, bucket or
+    storage class, `GLACIER`, `DEEP_ARCHIVE` and a class on no list (`OUTPOSTS`), and a trust-root value with no certificate, with a good
     certificate beside a corrupted one, with a block that is not a certificate, or with text left
     over, each error naming the field, the rule and, for a trust root, the block's position.
-  - `NamespaceSettings.Validate` refuses `""` and `ns`, and accepts `ns/`.
+  - `NamespaceSettings.Validate` refuses `""` and `ns`, a prefix that is not valid UTF-8
+    (`"\xffns/"`) and one holding a control byte (`"n\x00s/"`, `"n\ns/"`), and accepts `ns/`
+    (the user's decision of 2026-11-27).
 - **Tests:** tables over values, at `Validate`, the call the control plane makes: each refusal above
   beside its accepted neighbour, and every listed class accepted beside `GLACIER`, `DEEP_ARCHIVE`
   and `OUTPOSTS` refused (catches a rule inverted or missing, the allowlist turned back into a list
   of archive classes, R8, R10–R12). No double.
-- **Rules:** rule 7: `crypto/x509`, `encoding/pem`, `net/url` and `strings` only.
+- **Rules:** rule 7: the standard library only.
 
 ### T7.2 The sections in the content wiring
 
@@ -569,7 +575,8 @@ test/suites.yaml                 T7.4  unit's remote-allocs option widened to ./
 - **Covers:** R1–R8, R14–R17, R19.
 - **Deliverables:** `internal/node/content/remote_settings.go`: `remoteSettings` and its `Validate`
   against `carver.MinBlockTarget` and `carver.MaxBlockTarget`, `formatVersion`, `Sections` (D3),
-  with D6's `decision:` at the format version's default and D13's at the location tags.
+  with D6's `decision:` at the format version's default. D13's `decision:` goes at the
+  `location:"store"` tags on `Bucket` and `Prefix` in `pkg/remote/s3/settings.go`, where they live.
   `internal/node/appendixb_test.go`'s `tableKeys` seeding one instance row for each scope a
   section names, as its `decision:` asks once a section at a per-instance scope is declared, which
   then loses that clause. `internal/node/appendixb_remote_test.go`. D12's `settingKeys` lines and
@@ -620,7 +627,14 @@ test/suites.yaml                 T7.4  unit's remote-allocs option widened to ./
   `docs/guide/configuration.md`'s remote store section: each key with its scope, class and default,
   the credential's JSON form with an example, the trust roots as a PEM bundle, the region, the
   storage class and its failure domain as E5 logs it, and that no key sets the connection limit or
-  skips verification. Consumed by RFC 8 offload plan epic 21's holding and E8.
+  skips verification. For `remote.trust_roots` the guide explains why it exists: the client dials
+  HTTPS only and no key skips verification, so it is the only way to reach an endpoint whose
+  certificate comes from a CA the system does not trust; when to set it: a private or company CA,
+  on-premises S3 such as MinIO or Ceph, a self-signed test endpoint; that the bundle replaces the
+  system's roots for that store and does not add to them, so it holds every CA the chain needs;
+  that `""` uses the system's roots; an example with a PEM bundle in the config file; and that a
+  malformed block is refused at write and at start, naming its position. Consumed by RFC 8
+  offload plan epic 21's holding and E8.
 - **Acceptance criteria:**
   - `clientConfig` maps every field, `Region` `us-east-1` from the default, and refuses, wrapping
     `ErrInvalid`, a credential that is not the object, has an unknown field or an empty one, carries a value after the object, spells a name in
@@ -636,6 +650,10 @@ test/suites.yaml                 T7.4  unit's remote-allocs option widened to ./
     `Validate` and `judgeClass` (`""` diverges on purpose, D4).
     - For every version from 0 to 255, `codec.MaxHeaderLen` answers known exactly when
     `settings.Versions()[entity.FormatBlock]` holds it.
+  - `docs/guide/configuration.md`'s `remote.trust_roots` entry states why the key exists, when to
+    set it, that the bundle replaces the system's roots rather than adding to them, that `""` uses
+    the system's roots, an example PEM bundle in the config file, and that a malformed block is
+    refused at write and at start, naming its position.
 - **Tests:** in `unit`. The credential cases, at `clientConfig` and at the API's `POST /stores`,
   their errors and a test `slog` handler's records grepped for the access key and the secret
   (catches a decoder's text passed on, or a format checked only when the client is built, R20,
