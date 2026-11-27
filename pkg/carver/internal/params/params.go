@@ -1,13 +1,56 @@
 // Package params holds the carver's settings value. Its fields are unexported
 // and the package is internal, so only the carver's own packages can build a
-// value or read beyond its methods. It holds data only.
+// value or read beyond its methods. It holds no state, and imports nothing.
 package params
 
-// Settings is one namespace's chunking settings: the configured Target and
-// the Min and Max derived from it.
+// Settings is one namespace's chunking settings: the configured Target, the
+// Min and Max derived from it, the gear table it cuts under and how many top
+// bits of the fingerprint the boundary test reads before Target and from it on.
 type Settings struct {
 	target, min, max int
+	before, after    int
+	gear             *[256]uint64
 }
+
+// New builds the value for an accepted target over gear: Min is target/4, Max
+// 4×target, and for a target of 2^t the test reads the top t+1 bits before
+// Target, t−3 from it on. It trusts its caller.
+//
+// decision: New checks nothing. Its one production caller, carve.NewSettings,
+// refuses a Target and keys first, so New never sees a refused one; New stays
+// free of hashing so a test builds a value over any table, hand-built or
+// fuzzed. The ceiling is the seal's: code inside pkg/carver can still build a
+// value over a table no key produced, or over a target that is not a power of
+// two, and is trusted not to.
+//
+// decision: the value holds the two bit counts, never masks, and no start-up
+// check compares a mask with Target. The chunker tests fp>>(64−m) == 0 with m
+// read from here, and this is the one place m is computed, from Target, so
+// there is no mask written down apart from Target for such a check to catch;
+// it would compare New with itself. Withdraw this if masks are ever stored
+// beside Target.
+func New(target int, gear *[256]uint64) Settings {
+	t := 0
+	for 2<<t <= target {
+		t++
+	}
+
+	return Settings{
+		target: target,
+		min:    target / 4,
+		max:    4 * target,
+		before: t + 1,
+		after:  t - 3,
+		gear:   gear,
+	}
+}
+
+// Gear is the table s cuts under; nil on the zero value.
+func Gear(s Settings) *[256]uint64 { return s.gear }
+
+// Bits is how many top bits of the fingerprint the test reads before Target
+// and from it on; 0, 0 on the zero value.
+func Bits(s Settings) (before, after int) { return s.before, s.after }
 
 // Target is the configured chunk size; 0 on the zero value.
 func (s Settings) Target() int { return s.target }
