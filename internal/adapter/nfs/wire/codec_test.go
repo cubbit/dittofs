@@ -90,7 +90,6 @@ func vectors(t testing.TB) []struct {
 		{"codec-write-args", 0, &Write4Args{StateID: stateID(1), Offset: 4 << 30, Stable: 2, Data: []byte("hello")}},
 		{"codec-void", 0, &Void{}},
 		{"codec-segmented", 0, &Segmented{EOF: true, Data: &resources.Buf{B: []byte("segment")}}},
-		{"codec-segmented", 0, &Segmented{EOF: true, Data: &resources.Buf{B: []byte("segment")}}},
 		{"codec-sample-v0", 0, &sample},
 		{"codec-sample-v1", 1, &sampleV1},
 	}

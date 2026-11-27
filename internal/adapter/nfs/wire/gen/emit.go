@@ -148,9 +148,9 @@ func (g *gen) encode(b *bytes.Buffer, lv string, t *xtype, depth int) {
 	case kOpaque:
 		fmt.Fprintf(b, "e.Opaque(%s, %d)\n", lv, t.n)
 	case kSegment:
-		fmt.Fprintf(b, "e.Count(len(%s.B), %d)\n", lv, t.n)
-		fmt.Fprintf(b, "out.B = e.B\nout.Attach(%s)\ne.B = out.B\n", lv)
-		fmt.Fprintf(b, "if p := (4 - len(%s.B) %% 4) %% 4; p != 0 {\n e.B = append(e.B, make([]byte, p)...)\n}\n", lv)
+		// A nil segment is the field's zero: an empty opaque, decoder-symmetric
+		// where a zero count decodes to a non-nil empty buffer.
+		fmt.Fprintf(b, "if %s != nil {\ne.Count(len(%s.B), %d)\nout.B = e.B\nout.Attach(%s)\ne.B = out.B\nfor i := (4 - len(%s.B) %% 4) %% 4; i > 0; i-- {\n e.B = append(e.B, 0)\n}\n} else {\ne.Count(0, %d)\n}\n", lv, lv, t.n, lv, lv, t.n)
 	case kString:
 		fmt.Fprintf(b, "e.String(%s, %d)\n", lv, t.n)
 	case kVector:

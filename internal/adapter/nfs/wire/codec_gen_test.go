@@ -767,12 +767,16 @@ func (x *Segmented) decodeXDR(d *wire.Decoder, v uint32) {
 
 func (x *Segmented) encodeXDR(e *wire.Encoder, out *resources.Buf, v uint32) {
 	e.Bool(x.EOF)
-	e.Count(len(x.Data.B), 1048576)
-	out.B = e.B
-	out.Attach(x.Data)
-	e.B = out.B
-	if p := (4 - len(x.Data.B)%4) % 4; p != 0 {
-		e.B = append(e.B, make([]byte, p)...)
+	if x.Data != nil {
+		e.Count(len(x.Data.B), 1048576)
+		out.B = e.B
+		out.Attach(x.Data)
+		e.B = out.B
+		for i := (4 - len(x.Data.B)%4) % 4; i > 0; i-- {
+			e.B = append(e.B, 0)
+		}
+	} else {
+		e.Count(0, 1048576)
 	}
 }
 

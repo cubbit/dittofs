@@ -292,11 +292,7 @@ func (w *writer) flush() error {
 	// header's framing aside. w.parts is reused across messages, so the
 	// gather adds no allocation per segment.
 	for _, m := range q {
-		w.parts = m.msg.AppendBuffers(w.parts[:0])
-		total := 0
-		for _, part := range w.parts {
-			total += len(part)
-		}
+		total := w.body(m)
 		at := len(w.hdrs)
 		w.hdrs = w.framer.Frame(w.hdrs, total)
 		w.bufs = append(w.bufs, w.hdrs[at:])
