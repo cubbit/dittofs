@@ -315,6 +315,9 @@ func (b *Buf) Charge() int64 {
 
 // Attach ends b's current segment and lends seg as the next one (RFC 20
 // §5.3): a READ's data joins its reply as a segment of its own, never copied.
+// The reply it builds is for the writer's gather alone: nothing else reads a
+// message whole — join it, cache it or wrap it — until the segments ride a
+// copy of their own, as a replay cache must before a cachethis READ lends.
 // The bytes b held at the call end as one part, seg's follow it, and what the
 // caller appends to b afterwards — the padding and any later result — starts
 // b's bytes over empty: the tail's first append allocates, the one allocation
