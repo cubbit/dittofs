@@ -1,10 +1,13 @@
 package segment_test
 
 import (
+	"syscall"
 	"testing"
 
 	"github.com/cubbit/dittofs/pkg/journal/internal/core"
 	"github.com/cubbit/dittofs/pkg/journal/internal/format"
+	"github.com/cubbit/dittofs/pkg/journal/internal/segment"
+	"github.com/cubbit/dittofs/pkg/journal/journaltest/kit"
 )
 
 // streamSealRoom is the seal's reserve over n records, the same closed form
@@ -62,5 +65,51 @@ func TestStreamRoom(t *testing.T) {
 			}
 			break
 		}
+	}
+}
+
+// TestStreamRoomFollowsTheSegmentsLife checks the room Room reads without the
+// append lock against every section that moves it: a reservation lowers it to
+// the stream's own fit figure, a seal and an end of the segment by a failed
+// write zero it, and the segment that takes over after a seal reports its own
+// room from its first record on.
+func TestStreamRoomFollowsTheSegmentsLife(t *testing.T) {
+	e := streamOver(t, streamCap, func(streamEnv) {})
+	fid := streamFileID(1)
+	afterOne := func(p segment.Placed) int64 {
+		return streamRoomOf(streamCap, format.SegmentHeaderSize+p.Loc.Len, 2)
+	}
+
+	h, body := streamWriteHeader(fid, 0, make([]byte, 1000), 0, core.Version{Counter: 1})
+	first := streamAppendWrite(t, e, h, body)
+	if got, want := e.s.Room(), afterOne(first); got != want {
+		t.Fatalf("after the first record, Room = %d, want %d", got, want)
+	}
+
+	if _, err := e.s.Seal(false); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if got := e.s.Room(); got != 0 {
+		t.Fatalf("after the seal, Room = %d, want 0", got)
+	}
+
+	h, body = streamWriteHeader(fid, 1000, make([]byte, 1000), 0, core.Version{Counter: 2})
+	second := streamAppendWrite(t, e, h, body)
+	if second.Loc.Segment == first.Loc.Segment {
+		t.Fatalf("the append after the seal landed in the sealed segment %d", first.Loc.Segment)
+	}
+	if got, want := e.s.Room(), afterOne(second); got != want {
+		t.Fatalf("after the first record of the segment that took over, Room = %d, want %d", got, want)
+	}
+
+	if err := e.seam.Schedule(kit.Failing(kit.OpWrite, streamSegName(second.Loc.Segment), 1, syscall.EIO)); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	h, body = streamWriteHeader(fid, 2000, make([]byte, 1000), 0, core.Version{Counter: 3})
+	if _, err := e.s.Append(h, body); err == nil {
+		t.Fatal("Append over a failing write returned no error")
+	}
+	if got := e.s.Room(); got != 0 {
+		t.Fatalf("after a failed write ended the segment, Room = %d, want 0", got)
 	}
 }

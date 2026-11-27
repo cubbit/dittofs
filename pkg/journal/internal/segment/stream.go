@@ -321,6 +321,14 @@ type Stream struct {
 	// holds across its append.
 	openSeg atomic.Uint64
 
+	// room is Room's answer, published for a read without appendMu: the
+	// payload bytes one more write record takes in the active segment, zero
+	// while no segment takes appends. It is stored under appendMu in the
+	// very section that moves any of its inputs (a reservation, a segment
+	// taking over, a seal's start, an end), so at every release of the lock
+	// it equals what the lock-held formula gives.
+	room atomic.Int64
+
 	// idleClock is the clock the idle sealer installed, boxed so the
 	// pointer's loads and stores are lock-free reads before a sealer exists.
 	// It is read before appendMu is taken — the decision comment there says
@@ -999,6 +1007,7 @@ func (s *Stream) AppendRoll(h format.RecordHeader, body format.RecordBody, r Rol
 			s.lastAppend = now
 		}
 		s.count++
+		s.room.Store(WriteRoom(s.set.cap, s.next, s.count))
 		// The reservation names its segment to the end's notifier: the
 		// completion below is the one that clears the name, and the event
 		// waits for it. The stream is already started by this point — the
@@ -1438,6 +1447,7 @@ func (s *Stream) roll(hasPayload bool, r Roll, opening bool) (err error) {
 	s.tracker.reset(format.SegmentHeaderSize)
 	s.sealState = sealOpen
 	s.openSeg.Store(uint64(id))
+	s.room.Store(WriteRoom(s.set.cap, s.next, s.count))
 	// The new segment's own second-refusal state: the roll left a segment
 	// the stream ended — the one this segment replaces, whatever ended it,
 	// its own failure or its own seal's — so a failure in the new one
@@ -1517,23 +1527,20 @@ var appendParkHook func()
 // bytes. Zero when the stream holds no active segment or nothing more fits;
 // never negative.
 //
-// The read takes appendMu briefly and makes no I/O, so it costs only the
-// lock — the segment-append domain, which ranks below the capacity domain
-// in the lock order, so the journal's admission may call this while its
-// own section is held. It is the room an append measured from this
-// snapshot either fills or rolls past, never exceeds: what it reports is a
-// ceiling the appends keep under the same lock.
+// The read takes no lock and makes no I/O: it loads the figure each section
+// of appendMu that moves it stored before releasing the lock (see room), so
+// the journal's admission reads it inside its own capacity section without
+// nesting the stream's append lock there. The load returns the figure as of
+// the last such section to store it, which is the snapshot a read under the
+// lock would have taken at that instant and which an append may move on from
+// right after, exactly as it could once a locked read returned. Within one
+// segment the figure only falls, so a load that races a reservation returns
+// the larger, earlier figure: the room an append measured from it either
+// fills or rolls past, never exceeds, the ceiling the appends keep under
+// the lock. A seal or an end stores zero before its section releases the
+// lock, so no load after it returns the sealed segment's room.
 func (s *Stream) Room() int64 {
-	s.appendMu.Lock()
-	defer s.appendMu.Unlock()
-	if s.id == 0 || s.sealState != sealOpen {
-		return 0
-	}
-	// The charge for one more write record, drawn exactly as the append's
-	// own fit test draws it: the seal's reserve counts the record's footer
-	// entry, the remainder is floored to the record's 8-byte grid, and the
-	// record costs its header and the write kind's own body bytes.
-	return WriteRoom(s.set.cap, s.next, s.count)
+	return s.room.Load()
 }
 
 // WriteRoom is the payload bytes one more write record takes in a segment of
@@ -1805,6 +1812,7 @@ func (s *Stream) sealLocked(early bool) (SealResult, error) {
 	sealedID, sealedRef := s.id, s.ref
 	s.sealState = sealSealing
 	s.openSeg.Store(0)
+	s.room.Store(0)
 
 	// The drain: every append reserved below the seal has left, and every
 	// sync that started before it or alongside it too, so every record the

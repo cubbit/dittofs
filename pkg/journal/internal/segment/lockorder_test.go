@@ -424,10 +424,14 @@ func TestStreamsUnderRecorder(t *testing.T) {
 	// very fixture: with a higher rank held on this goroutine, one read
 	// per lock — a stream's append lock, the pool's and the ledger's —
 	// and each that goes unreported means an unwired Init. The probes
-	// hold a foreign identity, so no real lock is taken.
+	// hold a foreign identity, so no real lock is taken. The append lock's
+	// probe is a seal of a segment no stream holds, refused under the lock
+	// with no I/O; Room reads a published figure and takes no lock.
 	probe := lockorder.StorageGuard
 	e.rec.Acquire(probe, "probe")
-	_ = e.ss.Stream(0).Room()
+	if _, err := e.ss.Stream(0).SealOpen(^core.SegmentID(0), false); !errors.Is(err, segment.ErrNotOpenSegment) {
+		t.Fatalf("the append lock's probe = %v, want ErrNotOpenSegment", err)
+	}
 	_ = e.pool.ReadyContent()
 	_ = e.set.ShareBytes(1)
 	vs := e.rec.Violations()
@@ -861,10 +865,14 @@ func TestStreamRollsTwiceUnderRecorder(t *testing.T) {
 	// The zero above would pass over a recorder that was never wired: the
 	// same recorder is made to prove it saw this fixture's locks, one
 	// probe read per ranked lock, each that goes unreported meaning an
-	// unwired Init.
+	// unwired Init. The append lock's probe is a seal of a segment no
+	// stream holds, refused under the lock with no I/O; Room reads a
+	// published figure and takes no lock.
 	probe := lockorder.StorageGuard
 	rec.Acquire(probe, "probe")
-	_ = s.Room()
+	if _, err := s.SealOpen(^core.SegmentID(0), false); !errors.Is(err, segment.ErrNotOpenSegment) {
+		t.Fatalf("the append lock's probe = %v, want ErrNotOpenSegment", err)
+	}
 	_ = e.pool.ReadyContent()
 	vs := rec.Violations()
 	rec.Release("probe")
