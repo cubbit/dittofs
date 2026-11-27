@@ -31,8 +31,10 @@ func TestImportRule(t *testing.T) {
 	}
 
 	for _, g := range graphs {
-		if !slices.Contains(g.Roots, archtest.Module+"internal/blake3") {
-			t.Fatalf("the walk listed %q, not internal/blake3", g.Roots)
+		for _, want := range []string{"internal/blake3", "internal/blake3 [test]"} {
+			if !slices.Contains(g.Roots, archtest.Module+want) {
+				t.Fatalf("the walk listed %q, not %s", g.Roots, want)
+			}
 		}
 	}
 

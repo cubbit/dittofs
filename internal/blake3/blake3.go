@@ -7,14 +7,15 @@
 // goroutine per subtree once its input spans several BLAKE3 chunks and
 // allocates in proportion to it, so a chunk hashed through it per call could
 // keep neither count at zero. Measured against github.com/zeebo/blake3 v0.2.4
-// in both modes, from 0 bytes to 16 MiB, on arm64 and amd64: neither started a
-// goroutine over 100 calls, this tree made 0 allocations at every length, and
-// zeebo's made 1 at every length, its Hasher escaping to the heap, so this tree
-// won, and it adds no module. guts' AVX2 and AVX-512 paths were not run, the
-// amd64 host having neither; the compiler's escape analysis moves nothing of
-// theirs to the heap. Withdraw the package, and call the library directly, if
-// a later lukechampine.com/blake3 neither allocates nor starts a goroutine on
-// a long write.
+// in both modes, from 0 bytes to 16 MiB, on arm64 and on amd64 under
+// emulation, which has neither AVX2 nor AVX-512 and so runs guts' generic
+// path: neither started a goroutine over 100 calls per length, this tree made
+// 0 allocations at every length, and zeebo's made 1 at every length, its
+// Hasher escaping to the heap, so this tree won, and it adds no module. guts'
+// AVX2 and AVX-512 paths take their arguments without escaping them; the
+// package's tests count them wherever they run on such a host. Withdraw the
+// package, and call the library directly, if a later lukechampine.com/blake3
+// neither allocates nor starts a goroutine on a long write.
 package blake3
 
 import (
@@ -29,6 +30,10 @@ const (
 	// subtree of height groupHeight.
 	group       = guts.MaxSIMD * guts.ChunkSize
 	groupHeight = 4
+
+	// Neither difference is negative only while a group is 2^groupHeight
+	// chunks, so a guts with another MaxSIMD fails to compile here.
+	_ = uint(group-guts.ChunkSize<<groupHeight) + uint(guts.ChunkSize<<groupHeight-group)
 
 	// maxHeight is one chaining value per subtree height: BLAKE3 hashes at
 	// most 2^64 bytes, 2^54 chunks.

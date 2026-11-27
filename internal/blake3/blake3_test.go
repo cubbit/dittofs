@@ -16,7 +16,8 @@ import (
 const nameContext = "dittofs content-defined block name v2"
 
 // lengths are the measured input lengths: either side of one BLAKE3 chunk,
-// one group, and the carver's chunk sizes up to the largest Max.
+// one group, whose sides the splits reach, and the carver's chunk sizes up to
+// the largest Max.
 var lengths = []int{0, 1, 1023, 1024, 1025, 16384, 64 << 10, 256 << 10, 1 << 20, 4 << 20, 16 << 20}
 
 // splits are where an input is cut into two writes: either side of one BLAKE3
@@ -100,7 +101,7 @@ func TestHasherMatchesLibrary(t *testing.T) {
 
 		var h Hasher
 		h.InitKeyed(&key)
-		h.Write(data[:4096])
+		h.Write(data[:2*group+1])
 		_ = h.Sum256()
 		h.InitKeyed(&key)
 		h.Write(p)

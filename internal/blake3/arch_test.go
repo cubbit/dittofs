@@ -8,9 +8,10 @@ import (
 	"github.com/cubbit/dittofs/internal/archtest"
 )
 
-// The package declares no package-level variable and no interface, so it
-// holds no state and stays a library: a planted variable and a planted
-// interface are each reported, and the files as they are report nothing.
+// The package declares no package-level variable, no interface and no
+// function but methods, so it holds no state and stays a library: a planted
+// variable and a planted interface are each reported, and the files as they
+// are report nothing.
 func TestNoStateNoInterface(t *testing.T) {
 	imp := archtest.ExportImporter(".")
 
