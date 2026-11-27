@@ -546,6 +546,35 @@ func TestTheCredentials(t *testing.T) {
 	reply(t, s, h, status(s, err), golden(t, "deny-rpc-mismatch"))
 }
 
+// The encoder answers the hand-written reply vectors: a security flavour the
+// server refuses as MSG_DENIED AUTH_ERROR AUTH_TOOWEAK, and a COMPOUND's
+// status ahead of its tag with no results, NFS4ERR_NOFILEHANDLE and
+// NFS4ERR_MOVED over the call vector that reaches their rows (RFC 5531
+// section 9; RFC 8881 sections 15.1.2.4, 15.1.2.5 and 16.2).
+func TestTheEncodedRefusals(t *testing.T) {
+	s := stageOf(settings.VersionRange{Min: "3", Max: "4.2"})
+
+	h, err := decode(t, s, golden(t, "rfc-nfs4-nofh-call"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reply(t, s, h, core.Status(wire.NFS4ErrNoFileHandle), golden(t, "rfc-nfs4-nofh-reply"))
+
+	reply(t, s, h, core.Status(wire.NFS4ErrMoved), golden(t, "rfc-nfs4-moved-reply"))
+
+	null, err := decode(
+		t,
+		s,
+		nullCall(wire.ProgNFS, 3, 0, wire.AuthNone, nil, wire.AuthNone, nil, nil),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reply(t, s, null, core.Status(wire.StatusAuth|wire.AuthTooWeak), golden(t, "deny-auth-tooweak"))
+}
+
 // A message that is not a call decodes, and Route drops it with no table
 // through a NoReply row, answered nothing; a record too short to address a
 // reply yields no header, so core closes the connection.

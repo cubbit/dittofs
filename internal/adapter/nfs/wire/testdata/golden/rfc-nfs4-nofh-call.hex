@@ -1,0 +1,15 @@
+# An NFSv4.1 COMPOUND counting one operation, code 3 ACCESS, which needs the current
+# filehandle (RFC 8881 sections 16.2 and 18.1). No member row serves ACCESS yet, so this
+# vector reaches a test row built on it, whose arguments read nothing: no bytes follow the code.
+00000030  # xid
+00000000  # CALL
+00000002  # RPC version 2
+000186a3  # program NFS
+00000004  # version 4
+00000001  # procedure COMPOUND
+00000000 00000000  # credential: AUTH_NONE, no body
+00000000 00000000  # verifier: AUTH_NONE, no body
+00000005 61626364 65000000  # tag "abcde", 5 bytes and its padding
+00000001  # minor version 1
+00000001  # one operation
+00000003  # OP_ACCESS
