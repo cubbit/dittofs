@@ -19,6 +19,7 @@ import (
 	"hash/crc32"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cubbit/dittofs/pkg/remote"
@@ -27,8 +28,9 @@ import (
 // Store is the in-memory remote store. Its methods are safe for concurrent
 // use, two puts of one name overlapping included.
 type Store struct {
-	now func() time.Time
-	sum remote.Checksum
+	now    func() time.Time
+	sum    remote.Checksum
+	closed atomic.Bool
 
 	mu      sync.Mutex
 	objects map[string]object // by key relative to the prefix
@@ -80,11 +82,12 @@ func (s *Store) Put(ctx context.Context, name remote.Name, body io.Reader, size 
 		return fmt.Errorf("memory: put of %d bytes: %w", size, remote.ErrInvalid)
 	}
 
-	// decision: a sum of the wrong length for the store's kind, nil included, is
-	// a malformed request, ErrInvalid before any byte is read, not a mismatch
-	// over the body (ErrCorrupt), so a caller that re-measures on ErrCorrupt does
-	// not loop on a sum it never sent. Change it if the S3 store reports such a
-	// sum as ErrCorrupt.
+	if err := s.open("Put"); err != nil {
+		return err
+	}
+
+	// A sum missing or of the wrong length is the caller's error, not a
+	// mismatch over the body, so it is refused before a byte is read.
 	h := s.hash()
 	if h != nil && len(sum) != h.Size() {
 		return fmt.Errorf("memory: put with a %d-byte checksum, want %d: %w", len(sum), h.Size(), remote.ErrInvalid)
@@ -159,6 +162,10 @@ func (s *Store) hash() hash.Hash {
 // a raw copy's test cannot read one here. Keep the sum the put was checked
 // against and report it when a raw copy's test needs one without a service.
 func (s *Store) Get(ctx context.Context, name remote.Name, r remote.Range) (io.ReadCloser, remote.StoredSum, error) {
+	if err := s.open("Get"); err != nil {
+		return nil, remote.StoredSum{}, err
+	}
+
 	if err := ctx.Err(); err != nil {
 		return nil, remote.StoredSum{}, err
 	}
@@ -173,10 +180,6 @@ func (s *Store) Get(ctx context.Context, name remote.Name, r remote.Range) (io.R
 
 	b := o.body
 	if r != (remote.Range{}) {
-		// decision: a non-zero range of no bytes, {Off: 1} among them, is
-		// ErrInvalid: the contract gives the whole block only to the zero Range,
-		// and a range header of no bytes is one S3 ignores and answers whole.
-		// Change it if the contract defines an empty range.
 		size := int64(len(b))
 		if r.Off < 0 || r.Len <= 0 || r.Len > size-r.Off {
 			return nil, remote.StoredSum{}, fmt.Errorf("memory: get of %+v of a %d-byte block: %w", r, size, remote.ErrInvalid)
@@ -223,9 +226,18 @@ func unserved(call string) error {
 	return fmt.Errorf("memory: %s is not served: %w", call, remote.ErrInvalid)
 }
 
-// Close releases nothing: the store holds no client.
-//
-// decision: calls after Close are served, not refused, because only the holder
-// that opened a store closes it and no test here reaches one after. Refuse them
-// with ErrInvalid if a consumer's test is found using a closed store.
-func (s *Store) Close() error { return nil }
+// Close marks the store closed: every later call but Close is refused with
+// remote.ErrInvalid. Its objects are dropped by no call.
+func (s *Store) Close() error {
+	s.closed.Store(true)
+	return nil
+}
+
+// open refuses call once the store is closed.
+func (s *Store) open(call string) error {
+	if s.closed.Load() {
+		return fmt.Errorf("memory: %s after Close: %w", call, remote.ErrInvalid)
+	}
+
+	return nil
+}

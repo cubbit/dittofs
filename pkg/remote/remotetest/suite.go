@@ -37,6 +37,8 @@ func Run(t *testing.T, open func(t *testing.T) Subject) {
 		{"PutThenGet", testPutThenGet},
 		{"GetRanges", testGetRanges},
 		{"GetAbsent", testGetAbsent},
+		{"GetEmptyRange", testGetEmptyRange},
+		{"AfterClose", testAfterClose},
 	} {
 		t.Run(r.name, func(t *testing.T) {
 			prof.Watch(t, prof.Options{})
@@ -186,6 +188,44 @@ func testGetAbsent(t *testing.T, sub Subject) {
 	got, err := get(t, sub.Store, name("get-absent"), remote.Range{})
 	if !only(err, remote.ErrNotFound) {
 		t.Fatalf("Get of a name never put: %d bytes and error %v, want ErrNotFound and no other sentinel", len(got), err)
+	}
+}
+
+// A range of no bytes other than the zero Range is ErrInvalid, never the
+// whole block or nothing.
+func testGetEmptyRange(t *testing.T, sub Subject) {
+	n := name("get-empty-range")
+	put(t, sub.Store, n, block("get-empty-range", 16))
+
+	for _, r := range []remote.Range{{Off: 1}, {Off: 15}, {Off: 16}, {Off: 1, Len: -1}} {
+		got, err := get(t, sub.Store, n, r)
+		if !only(err, remote.ErrInvalid) {
+			t.Errorf("Get of %+v of a 16-byte block: %d bytes and error %v, want ErrInvalid and no other sentinel", r, len(got), err)
+		}
+	}
+}
+
+// Every call after Close is ErrInvalid; Close again returns nil.
+func testAfterClose(t *testing.T, sub Subject) {
+	n, body := name("after-close"), block("after-close", 16)
+	put(t, sub.Store, n, body)
+
+	if err := sub.Store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	err := sub.Store.Put(t.Context(), n, bytes.NewReader(body), int64(len(body)), sum(t, sub.Store.Checksum(), body))
+	if !only(err, remote.ErrInvalid) {
+		t.Errorf("Put after Close: error %v, want ErrInvalid and no other sentinel", err)
+	}
+
+	got, err := get(t, sub.Store, n, remote.Range{})
+	if !only(err, remote.ErrInvalid) {
+		t.Errorf("Get after Close: %d bytes and error %v, want ErrInvalid and no other sentinel", len(got), err)
+	}
+
+	if err := sub.Store.Close(); err != nil {
+		t.Errorf("Close after Close: %v, want nil", err)
 	}
 }
 
