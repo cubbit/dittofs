@@ -43,7 +43,7 @@ jobs:
           # pool: the step runs under bash -e, so each lookup ends in `|| true`.
           #
           # decision: a base that is a long-lived branch is never stacked. A PR
-          # whose head is develop, main or feat/storage-v2 (a landing or sync PR)
+          # whose head is develop or main (a landing or sync PR)
           # would otherwise hand its reviewers to every PR into that branch.
           #
           # decision: the journal rule further down is not applied here. A
@@ -55,7 +55,7 @@ jobs:
           known="didimelli llucian-iws rif viquitorreis marmos91 simonebaracchi AntonioBusillo"
           lower_pr=""
           case "$BASE" in
-            develop|main|feat/storage-v2) ;;
+            develop|main) ;;
             *) lower_pr=$(gh api -X GET "repos/$REPO/pulls" -f head="$OWNER:$BASE" -f state=open --jq '.[0].number // empty' || true) ;;
           esac
           if [ -n "$lower_pr" ]; then

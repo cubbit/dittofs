@@ -17,9 +17,10 @@ fi
 
 # $1 = remote name, $2 = remote URL. Stdin: "<local-ref> <local-sha> <remote-ref> <remote-sha>"
 # We don't need per-ref granularity — use the working tree against the branch's base.
-# decision: the default base is this branch's development branch, not develop: a
-# branch cut from it differs from develop in thousands of files.
-BASE_REF="${DITTOFS_PREPUSH_BASE:-origin/feat/storage-v2}"
+# decision: the default base is develop, the development branch every PR targets.
+# A branch stacked on another sets DITTOFS_PREPUSH_BASE to that branch, or the hook
+# tests every package the lower branch changed too.
+BASE_REF="${DITTOFS_PREPUSH_BASE:-origin/develop}"
 if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
     echo "pre-push: $BASE_REF not found, skipping test selection" >&2
     exit 0

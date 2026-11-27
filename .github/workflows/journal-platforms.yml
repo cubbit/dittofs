@@ -2,15 +2,14 @@
 # cover: each platform's storage, its sync and allocation calls, and every
 # other journal test, under the race detector.
 #
-# Pull requests into feat/storage-v2 and pushes to it only: the journal is not
-# on develop yet.
+# Pull requests into develop and pushes to it.
 name: Journal platforms
 
 on:
   push:
-    branches: [feat/storage-v2]
+    branches: [develop]
   pull_request:
-    branches: [feat/storage-v2]
+    branches: [develop]
 
 permissions:
   contents: read
